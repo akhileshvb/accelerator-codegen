@@ -10,6 +10,15 @@
 namespace accelerator_codegen {
 namespace {
 
+NativeScanSpec CreateCountLineitemScanSpec() {
+    NativeScanSpec scan_spec;
+    scan_spec.table_name = "lineitem";
+    scan_spec.projected_columns = {
+        {"l_shipdate", "shipdate", duckdb::LogicalType::DATE, duckdb::PhysicalType::INT32},
+    };
+    return scan_spec;
+}
+
 struct CountLineitemGlobalState : public duckdb::GlobalTableFunctionState {
     bool emitted = false;
 };
@@ -28,7 +37,7 @@ duckdb::unique_ptr<duckdb::FunctionData> CountLineitemBind(
     duckdb::vector<duckdb::string> &names) {
     names.emplace_back("row_count");
     return_types.emplace_back(duckdb::LogicalType::BIGINT);
-    return CreateLineitemScanBindData(context, {"l_shipdate"});
+    return BindNativeScan(context, CreateCountLineitemScanSpec());
 }
 
 duckdb::unique_ptr<duckdb::GlobalTableFunctionState> CountLineitemInit(
@@ -41,7 +50,7 @@ duckdb::unique_ptr<duckdb::LocalTableFunctionState> CountLineitemLocalInit(
     duckdb::ExecutionContext &context,
     duckdb::TableFunctionInitInput &input,
     duckdb::GlobalTableFunctionState *) {
-    return duckdb::make_uniq<CountLineitemLocalState>(CreateChunkSource(context.client, *input.bind_data));
+    return duckdb::make_uniq<CountLineitemLocalState>(CreateNativeChunkSource(context.client, *input.bind_data));
 }
 
 void CountLineitemDependency(duckdb::LogicalDependencyList &dependencies, const duckdb::FunctionData *bind_data) {

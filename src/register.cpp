@@ -12,6 +12,7 @@ namespace accelerator_codegen {
 duckdb::TableFunction CreateAcceleratorHelloFunction();
 duckdb::TableFunction CreateCountLineitemFunction();
 duckdb::TableFunctionSet CreateTpchQ6FunctionSet();
+duckdb::TableFunctionSet CreateTpchQ1FunctionSet();
 
 void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
     auto &context = *connection.context;
@@ -31,6 +32,9 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
 
         duckdb::CreateTableFunctionInfo q6_info(CreateTpchQ6FunctionSet());
         catalog.CreateTableFunction(context, q6_info);
+
+        duckdb::CreateTableFunctionInfo q1_info(CreateTpchQ1FunctionSet());
+        catalog.CreateTableFunction(context, q1_info);
 
         if (started_transaction) {
             connection.Commit();

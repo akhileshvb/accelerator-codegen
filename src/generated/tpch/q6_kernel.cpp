@@ -8,6 +8,84 @@
 namespace accelerator_codegen {
 namespace {
 
+class SingleChunkSource final : public ChunkSource {
+public:
+    explicit SingleChunkSource(duckdb::DataChunk &chunk_p) : chunk_ref(chunk_p) {
+    }
+
+    bool Next() override {
+        if (consumed) {
+            return false;
+        }
+        consumed = true;
+        return chunk_ref.size() != 0;
+    }
+
+    duckdb::DataChunk &Chunk() override {
+        return chunk_ref;
+    }
+
+private:
+    duckdb::DataChunk &chunk_ref;
+    bool consumed = false;
+};
+
+class Q6Kernel final : public KernelInstance {
+public:
+    explicit Q6Kernel(Q6Parameters params_p) : params(std::move(params_p)) {
+    }
+
+    void ConsumeInput(duckdb::idx_t input_id, duckdb::DataChunk &input) override {
+        if (input_id != 0) {
+            throw duckdb::InternalException("Q6 kernel received unexpected input id %llu",
+                                            static_cast<unsigned long long>(input_id));
+        }
+        SingleChunkSource source(input);
+        auto partial = ExecuteQ6(source, params);
+        if (partial.is_null) {
+            return;
+        }
+        if (result.is_null) {
+            result = partial;
+            return;
+        }
+#if defined(__SIZEOF_INT128__)
+        __int128_t lhs = (static_cast<__int128_t>(result.value.upper) << 64) + result.value.lower;
+        __int128_t rhs = (static_cast<__int128_t>(partial.value.upper) << 64) + partial.value.lower;
+        __int128_t combined = lhs + rhs;
+        result.value = duckdb::hugeint_t(static_cast<int64_t>(combined >> 64), static_cast<uint64_t>(combined));
+#else
+        if (!duckdb::Hugeint::TryAddInPlace(result.value, partial.value)) {
+            throw duckdb::OutOfRangeException("Overflow while accumulating Q6 revenue");
+        }
+#endif
+    }
+
+    void Finalize() override {
+        finalized = true;
+    }
+
+    bool ProduceOutput(duckdb::DataChunk &output) override {
+        if (!finalized || emitted) {
+            return false;
+        }
+        if (result.is_null) {
+            output.SetValue(0, 0, duckdb::Value(duckdb::LogicalType::DECIMAL(38, 4)));
+        } else {
+            output.SetValue(0, 0, duckdb::Value::DECIMAL(result.value, 38, 4));
+        }
+        output.SetCardinality(1);
+        emitted = true;
+        return true;
+    }
+
+private:
+    Q6Parameters params;
+    DecimalSumResult result {duckdb::Hugeint::Convert(0), true};
+    bool finalized = false;
+    bool emitted = false;
+};
+
 #if defined(__SIZEOF_INT128__)
 using native_hugeint_t = __int128_t;
 
@@ -104,6 +182,10 @@ DecimalSumResult ExecuteQ6(ChunkSource &lineitem_scan, const Q6Parameters &param
 #endif
 
     return result;
+}
+
+duckdb::unique_ptr<KernelInstance> CreateQ6Kernel(const Q6Parameters &params) {
+    return duckdb::make_uniq<Q6Kernel>(params);
 }
 
 } // namespace accelerator_codegen

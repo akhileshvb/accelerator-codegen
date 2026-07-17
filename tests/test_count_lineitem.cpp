@@ -1,5 +1,5 @@
-#include "accelerator_codegen/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/register.hpp"
+#include "test_support/native_scan_test_utils.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -56,7 +56,7 @@ void RequireCountMatches(duckdb::Connection &connection, const std::string &labe
 
 void RequireShipdatesMatch(duckdb::Connection &connection, const std::string &label) {
     auto sql_dates = QueryShipdates(connection);
-    auto accel_dates = accelerator_codegen::CollectLineitemShipdates(connection);
+    auto accel_dates = accelerator_codegen::test_support::CollectLineitemShipdates(connection);
     Require(sql_dates == accel_dates, label + ": SQL shipdates and accelerator shipdates differ");
 }
 

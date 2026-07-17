@@ -5,6 +5,8 @@
 #include <vector>
 
 #include "accelerator_codegen/chunk_source.hpp"
+#include "duckdb/common/enums/expression_type.hpp"
+#include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/vector.hpp"
@@ -21,31 +23,30 @@ class TableFilterSet;
 
 namespace accelerator_codegen {
 
-struct NativeColumnContract {
-    std::string name;
+struct NativeColumnSpec {
+    std::string source_name;
+    std::string kernel_column_id;
     duckdb::LogicalType expected_logical_type;
     duckdb::PhysicalType expected_physical_type;
 };
 
-struct NativeTableSpec {
+struct NativeFilterSpec {
+    std::string source_name;
+    duckdb::ExpressionType comparison_type;
+    duckdb::Value constant;
+};
+
+struct NativeScanSpec {
     std::string catalog_name;
     std::string schema_name;
     std::string table_name;
-    duckdb::vector<duckdb::StorageIndex> projected_columns;
-    duckdb::vector<duckdb::LogicalType> projected_types;
-    duckdb::vector<NativeColumnContract> schema_contract;
+    duckdb::vector<NativeColumnSpec> projected_columns;
+    duckdb::vector<NativeFilterSpec> filters;
 };
 
-duckdb::unique_ptr<duckdb::FunctionData> CreateLineitemScanBindData(
-    duckdb::ClientContext &context,
-    const duckdb::vector<std::string> &projected_column_names,
-    duckdb::unique_ptr<duckdb::TableFilterSet> table_filters = nullptr);
+duckdb::unique_ptr<duckdb::FunctionData> BindNativeScan(duckdb::ClientContext &context, const NativeScanSpec &scan_spec);
 void AddNativeTableDependencies(duckdb::LogicalDependencyList &dependencies, const duckdb::FunctionData *bind_data);
-duckdb::unique_ptr<ChunkSource> CreateChunkSource(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data);
-
-uint64_t CountLineitemRows(duckdb::Connection &connection);
-uint64_t CountLineitemRows(duckdb::ClientContext &context);
-std::vector<duckdb::date_t> CollectLineitemShipdates(duckdb::Connection &connection);
-std::vector<duckdb::date_t> CollectLineitemShipdates(duckdb::ClientContext &context);
+duckdb::unique_ptr<ChunkSource> CreateNativeChunkSource(duckdb::ClientContext &context,
+                                                        const duckdb::FunctionData &bind_data);
 
 } // namespace accelerator_codegen
