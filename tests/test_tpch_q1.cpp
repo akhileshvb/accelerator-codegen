@@ -44,6 +44,24 @@ std::unique_ptr<duckdb::QueryResult> RunQuery(duckdb::Connection &connection, co
     return result;
 }
 
+std::string RenderResult(duckdb::MaterializedQueryResult &result) {
+    std::ostringstream out;
+    for (duckdb::idx_t row = 0; row < result.RowCount(); row++) {
+        out << "[";
+        for (duckdb::idx_t col = 0; col < result.ColumnCount(); col++) {
+            if (col > 0) {
+                out << ", ";
+            }
+            out << result.GetValue(col, row).ToString();
+        }
+        out << "]";
+        if (row + 1 < result.RowCount()) {
+            out << "\n";
+        }
+    }
+    return out.str();
+}
+
 std::string ReferenceQ1Sql(int day_offset) {
     return "SELECT l_returnflag, l_linestatus, SUM(l_quantity) AS sum_qty, "
            "SUM(l_extendedprice) AS sum_base_price, "
@@ -76,35 +94,53 @@ void RequireEqualQ1Results(duckdb::Connection &connection,
 
     Require(expected->names == actual->names, label + ": column names differ");
     Require(expected->types == actual->types, label + ": column types differ");
-    Require(expected_materialized.RowCount() == actual_materialized.RowCount(), label + ": row counts differ");
+    Require(expected_materialized.RowCount() == actual_materialized.RowCount(),
+            label + ": row counts differ\nexpected:\n" + RenderResult(expected_materialized) + "\nactual:\n" +
+                RenderResult(actual_materialized));
     Require(expected_materialized.ColumnCount() == actual_materialized.ColumnCount(), label + ": column counts differ");
+    const auto fail = [&](const std::string &message, duckdb::idx_t row, duckdb::idx_t col) {
+        throw std::runtime_error(message + " at row " + std::to_string(row) + ", col " + std::to_string(col) +
+                                 "\nexpected:\n" + RenderResult(expected_materialized) + "\nactual:\n" +
+                                 RenderResult(actual_materialized));
+    };
 
     for (duckdb::idx_t row = 0; row < expected_materialized.RowCount(); row++) {
         for (duckdb::idx_t col = 0; col < expected_materialized.ColumnCount(); col++) {
             const auto expected_value = expected_materialized.GetValue(col, row);
             const auto actual_value = actual_materialized.GetValue(col, row);
-            Require(expected_value.type() == actual_value.type(), label + ": value types differ");
-            Require(expected_value.IsNull() == actual_value.IsNull(), label + ": nullability differs");
+            if (expected_value.type() != actual_value.type()) {
+                fail(label + ": value types differ", row, col);
+            }
+            if (expected_value.IsNull() != actual_value.IsNull()) {
+                fail(label + ": nullability differs", row, col);
+            }
             if (expected_value.IsNull()) {
                 continue;
             }
             switch (expected_value.type().id()) {
             case duckdb::LogicalTypeId::VARCHAR:
-                Require(expected_value.GetValue<std::string>() == actual_value.GetValue<std::string>(),
-                        label + ": varchar payload differs");
+                if (expected_value.GetValue<std::string>() != actual_value.GetValue<std::string>()) {
+                    fail(label + ": varchar payload differs", row, col);
+                }
                 break;
             case duckdb::LogicalTypeId::DECIMAL:
-                Require(expected_value.GetValueUnsafe<duckdb::hugeint_t>() ==
-                            actual_value.GetValueUnsafe<duckdb::hugeint_t>(),
-                        label + ": decimal payload differs");
+                if (expected_value.GetValueUnsafe<duckdb::hugeint_t>() !=
+                    actual_value.GetValueUnsafe<duckdb::hugeint_t>()) {
+                    fail(label + ": decimal payload differs", row, col);
+                }
                 break;
             case duckdb::LogicalTypeId::DOUBLE:
-                RequireDoubleClose(expected_value.GetValue<double>(), actual_value.GetValue<double>(),
-                                   label + ": double payload differs");
+                try {
+                    RequireDoubleClose(expected_value.GetValue<double>(), actual_value.GetValue<double>(),
+                                       label + ": double payload differs");
+                } catch (const std::exception &) {
+                    fail(label + ": double payload differs", row, col);
+                }
                 break;
             case duckdb::LogicalTypeId::BIGINT:
-                Require(expected_value.GetValue<int64_t>() == actual_value.GetValue<int64_t>(),
-                        label + ": bigint payload differs");
+                if (expected_value.GetValue<int64_t>() != actual_value.GetValue<int64_t>()) {
+                    fail(label + ": bigint payload differs", row, col);
+                }
                 break;
             default:
                 throw std::runtime_error(label + ": unsupported Q1 comparison type " + expected_value.type().ToString());

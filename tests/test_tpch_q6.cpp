@@ -115,6 +115,37 @@ void SetupBoundaryTestLineitem(duckdb::Connection &connection) {
     Require(!result->HasError(), result->GetError());
 }
 
+void SetupTransactionTestLineitem(duckdb::Connection &connection) {
+    auto result = connection.Query(R"SQL(
+        CREATE TABLE lineitem(
+            l_orderkey BIGINT NOT NULL,
+            l_partkey BIGINT NOT NULL,
+            l_suppkey BIGINT NOT NULL,
+            l_linenumber BIGINT NOT NULL,
+            l_quantity DECIMAL(15,2) NOT NULL,
+            l_extendedprice DECIMAL(15,2) NOT NULL,
+            l_discount DECIMAL(15,2) NOT NULL,
+            l_tax DECIMAL(15,2) NOT NULL,
+            l_returnflag VARCHAR NOT NULL,
+            l_linestatus VARCHAR NOT NULL,
+            l_shipdate DATE NOT NULL,
+            l_commitdate DATE NOT NULL,
+            l_receiptdate DATE NOT NULL,
+            l_shipinstruct VARCHAR NOT NULL,
+            l_shipmode VARCHAR NOT NULL,
+            l_comment VARCHAR NOT NULL
+        );
+        INSERT INTO lineitem VALUES
+            (1, 10, 100, 1, 10.00, 100.00, 0.05, 0.01, 'N', 'O', DATE '1992-02-29', DATE '1992-03-01', DATE '1992-03-02', 'DELIVER', 'MAIL', 'base_lower_discount'),
+            (2, 20, 200, 1, 23.99, 200.00, 0.07, 0.02, 'N', 'O', DATE '1993-02-27', DATE '1993-02-28', DATE '1993-03-01', 'DELIVER', 'MAIL', 'base_upper_discount'),
+            (3, 30, 300, 1, 23.00, 300.00, 0.04, 0.03, 'N', 'O', DATE '1992-06-01', DATE '1992-06-02', DATE '1992-06-03', 'DELIVER', 'MAIL', 'below_discount'),
+            (4, 40, 400, 1, 24.00, 400.00, 0.06, 0.04, 'N', 'O', DATE '1992-06-01', DATE '1992-06-02', DATE '1992-06-03', 'DELIVER', 'MAIL', 'quantity_boundary'),
+            (5, 50, 500, 1, 20.00, 500.00, 0.06, 0.05, 'N', 'O', DATE '1993-02-28', DATE '1993-03-01', DATE '1993-03-02', 'DELIVER', 'MAIL', 'exclusive_end_date');
+    )SQL");
+    Require(result != nullptr, "failed to set up transaction test lineitem");
+    Require(!result->HasError(), result->GetError());
+}
+
 void SetupSchemaMismatchLineitem(duckdb::Connection &connection) {
     auto result = connection.Query(R"SQL(
         CREATE TABLE lineitem(
@@ -183,6 +214,51 @@ int main() {
             RequireEqualRevenue(connection, "empty_result",
                                 ReferenceQ6Sql("1994-01-01", "0.02", "1"),
                                 AcceleratorQ6Sql("1994-01-01", "0.02", "1"));
+        }
+
+        {
+            duckdb::DuckDB memory_database(nullptr);
+            duckdb::Connection connection(memory_database);
+            SetupTransactionTestLineitem(connection);
+            accelerator_codegen::RegisterAcceleratorFunctions(connection);
+
+            RequireEqualRevenue(connection, "transaction_baseline",
+                                ReferenceQ6Sql("1992-02-29", "0.06", "24"),
+                                AcceleratorQ6Sql("1992-02-29", "0.06", "24"));
+
+            connection.BeginTransaction();
+
+            auto update_aggregate =
+                connection.Query("UPDATE lineitem SET l_extendedprice = 150.00 WHERE l_orderkey = 1");
+            Require(update_aggregate != nullptr && !update_aggregate->HasError(), "q6 aggregate update failed");
+            RequireEqualRevenue(connection, "after_aggregate_update",
+                                ReferenceQ6Sql("1992-02-29", "0.06", "24"),
+                                AcceleratorQ6Sql("1992-02-29", "0.06", "24"));
+
+            auto update_into_range =
+                connection.Query("UPDATE lineitem SET l_shipdate = DATE '1993-02-27' WHERE l_orderkey = 5");
+            Require(update_into_range != nullptr && !update_into_range->HasError(), "q6 into-range update failed");
+            RequireEqualRevenue(connection, "after_into_range_update",
+                                ReferenceQ6Sql("1992-02-29", "0.06", "24"),
+                                AcceleratorQ6Sql("1992-02-29", "0.06", "24"));
+
+            auto update_out_of_range =
+                connection.Query("UPDATE lineitem SET l_quantity = 24.00 WHERE l_orderkey = 2");
+            Require(update_out_of_range != nullptr && !update_out_of_range->HasError(), "q6 out-of-range update failed");
+            RequireEqualRevenue(connection, "after_out_of_range_update",
+                                ReferenceQ6Sql("1992-02-29", "0.06", "24"),
+                                AcceleratorQ6Sql("1992-02-29", "0.06", "24"));
+
+            auto delete_result = connection.Query("DELETE FROM lineitem WHERE l_orderkey = 1");
+            Require(delete_result != nullptr && !delete_result->HasError(), "q6 delete failed");
+            RequireEqualRevenue(connection, "after_delete",
+                                ReferenceQ6Sql("1992-02-29", "0.06", "24"),
+                                AcceleratorQ6Sql("1992-02-29", "0.06", "24"));
+
+            connection.Rollback();
+            RequireEqualRevenue(connection, "after_rollback",
+                                ReferenceQ6Sql("1992-02-29", "0.06", "24"),
+                                AcceleratorQ6Sql("1992-02-29", "0.06", "24"));
         }
 
         {

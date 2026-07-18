@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +27,7 @@ constexpr duckdb::idx_t kQ1OutputBatchSize = 2;
 constexpr duckdb::idx_t kChunkLocalGroupReserve = 16;
 constexpr duckdb::idx_t kFixedSlotComboLimit = 256;
 constexpr duckdb::idx_t kFixedSlotStateLimit = 16;
+constexpr duckdb::idx_t kMaxFixedSlotBanks = 8;
 
 #if defined(__SIZEOF_INT128__)
 using wide_hugeint_t = __int128_t;
@@ -221,6 +224,59 @@ inline uint16_t PackGroupKeyUncheckedBytes(uint8_t returnflag_char, uint8_t line
     return static_cast<uint16_t>((static_cast<uint16_t>(returnflag_char) << 8) | linestatus_char);
 }
 
+struct Q1HotLoopConfig {
+    uint8_t fixed_slot_banks = 1;
+    uint8_t fixed_slot_unroll = 1;
+    bool use_group_int64_partials = false;
+    bool simplify_exact_derived = false;
+    bool trust_native_filter = false;
+};
+
+int ReadPositiveEnvInt(const char *name, int fallback) {
+    const char *value = std::getenv(name);
+    if (!value || !*value) {
+        return fallback;
+    }
+    const auto parsed = std::atoi(value);
+    return parsed > 0 ? parsed : fallback;
+}
+
+bool ReadBoolEnv(const char *name, bool fallback) {
+    const char *value = std::getenv(name);
+    if (!value || !*value) {
+        return fallback;
+    }
+    return value[0] == '1' || value[0] == 't' || value[0] == 'T' || value[0] == 'y' || value[0] == 'Y';
+}
+
+Q1HotLoopConfig LoadQ1HotLoopConfig() {
+    Q1HotLoopConfig config;
+    const auto requested_banks = ReadPositiveEnvInt("ACCEL_Q1_FIXED_SLOT_BANKS", 1);
+    switch (requested_banks) {
+    case 1:
+    case 2:
+    case 4:
+    case 8:
+        config.fixed_slot_banks = static_cast<uint8_t>(requested_banks);
+        break;
+    default:
+        config.fixed_slot_banks = 1;
+        break;
+    }
+
+    const auto requested_unroll = ReadPositiveEnvInt("ACCEL_Q1_FIXED_SLOT_UNROLL", 1);
+    config.fixed_slot_unroll = requested_unroll >= 8 ? 8 : (requested_unroll >= 4 ? 4 : 1);
+    config.use_group_int64_partials = ReadBoolEnv("ACCEL_Q1_GROUP_INT64_PARTIALS", false);
+    config.simplify_exact_derived = ReadBoolEnv("ACCEL_Q1_SIMPLIFY_DERIVED", false);
+    config.trust_native_filter = ReadBoolEnv("ACCEL_Q1_TRUST_NATIVE_FILTER", false);
+    return config;
+}
+
+const Q1HotLoopConfig &GetQ1HotLoopConfig() {
+    static const auto config = LoadQ1HotLoopConfig();
+    return config;
+}
+
 duckdb::idx_t DictionarySizeOrReferencedSpan(const duckdb::Vector &vector,
                                              const duckdb::SelectionVector &sel,
                                              duckdb::idx_t count) {
@@ -386,6 +442,11 @@ struct Q1GroupState {
     q1_acc_t sum_disc_price = 0;
     q1_acc_t sum_charge = 0;
     q1_acc_t sum_discount = 0;
+    int64_t pending_sum_qty = 0;
+    int64_t pending_sum_base_price = 0;
+    int64_t pending_sum_disc_price = 0;
+    int64_t pending_sum_charge = 0;
+    int64_t pending_sum_discount = 0;
     uint64_t count = 0;
     bool used = false;
 };
@@ -433,7 +494,7 @@ struct ReusableDominantPackedKeyChunkLocalCache {
     std::array<uint8_t, kFixedSlotComboLimit> fixed_pair_to_slot {};
     std::array<uint16_t, kFixedSlotStateLimit> fixed_slot_keys {};
     std::array<Q1GroupState *, kFixedSlotStateLimit> fixed_slot_targets {};
-    std::array<ChunkLocalAggregateState, kFixedSlotStateLimit> fixed_slot_states {};
+    std::array<std::array<ChunkLocalAggregateState, kFixedSlotStateLimit>, kMaxFixedSlotBanks> fixed_slot_bank_states {};
     duckdb::idx_t fixed_combo_count = 0;
     duckdb::idx_t fixed_slot_count = 0;
 };
@@ -458,7 +519,7 @@ struct ChunkLocalAggregateBuffer {
     }
 };
 
-template <bool IncludeDerived>
+template <bool IncludeDerived, bool SimplifyDerived>
 inline void UpdateChunkLocalState(ChunkLocalAggregateState &state,
                                   int64_t quantity_raw,
                                   int64_t extendedprice_raw,
@@ -470,16 +531,68 @@ inline void UpdateChunkLocalState(ChunkLocalAggregateState &state,
     state.count += 1;
     if constexpr (IncludeDerived) {
         const auto one_minus_discount_raw = static_cast<int64_t>(100 - discount_raw);
-        state.sum_disc_price += extendedprice_raw * one_minus_discount_raw;
-        const auto one_plus_tax_raw = static_cast<int64_t>(100 + tax_raw);
-        state.sum_charge += extendedprice_raw * one_minus_discount_raw * one_plus_tax_raw;
+        if constexpr (SimplifyDerived) {
+            const auto disc_price_raw = extendedprice_raw * one_minus_discount_raw;
+            state.sum_disc_price += disc_price_raw;
+            state.sum_charge += disc_price_raw * static_cast<int64_t>(100 + tax_raw);
+        } else {
+            state.sum_disc_price += extendedprice_raw * one_minus_discount_raw;
+            const auto one_plus_tax_raw = static_cast<int64_t>(100 + tax_raw);
+            state.sum_charge += extendedprice_raw * one_minus_discount_raw * one_plus_tax_raw;
+        }
     }
+}
+
+inline void FlushGroupPendingPartials(Q1GroupState &state) {
+    if (state.pending_sum_qty == 0 && state.pending_sum_base_price == 0 && state.pending_sum_disc_price == 0 &&
+        state.pending_sum_charge == 0 && state.pending_sum_discount == 0) {
+        return;
+    }
+    AddValue(state.sum_qty, state.pending_sum_qty);
+    AddValue(state.sum_base_price, state.pending_sum_base_price);
+    AddValue(state.sum_discount, state.pending_sum_discount);
+    AddValue(state.sum_disc_price, state.pending_sum_disc_price);
+    AddValue(state.sum_charge, state.pending_sum_charge);
+    state.pending_sum_qty = 0;
+    state.pending_sum_base_price = 0;
+    state.pending_sum_disc_price = 0;
+    state.pending_sum_charge = 0;
+    state.pending_sum_discount = 0;
+}
+
+void MergeChunkLocalIntoGroup(Q1GroupState &state, const ChunkLocalAggregateState &local, bool use_group_int64_partials) {
+    if (!use_group_int64_partials) {
+        AddValue(state.sum_qty, local.sum_qty);
+        AddValue(state.sum_base_price, local.sum_base_price);
+        AddValue(state.sum_discount, local.sum_discount);
+        AddValue(state.sum_disc_price, local.sum_disc_price);
+        AddValue(state.sum_charge, local.sum_charge);
+        state.count += static_cast<uint64_t>(local.count);
+        return;
+    }
+
+    auto append_partial = [&](int64_t &pending, int64_t delta) {
+        if (__builtin_add_overflow(pending, delta, &pending)) {
+            FlushGroupPendingPartials(state);
+            if (__builtin_add_overflow(pending, delta, &pending)) {
+                throw duckdb::OutOfRangeException("Overflow while accumulating Q1 int64 partials");
+            }
+        }
+    };
+
+    append_partial(state.pending_sum_qty, local.sum_qty);
+    append_partial(state.pending_sum_base_price, local.sum_base_price);
+    append_partial(state.pending_sum_discount, local.sum_discount);
+    append_partial(state.pending_sum_disc_price, local.sum_disc_price);
+    append_partial(state.pending_sum_charge, local.sum_charge);
+    state.count += static_cast<uint64_t>(local.count);
 }
 
 template <bool IncludeDerived>
 void MergeChunkLocalState(std::array<Q1GroupState, 1u << 16> &groups,
                           std::vector<uint16_t> &used_keys,
-                          const ChunkLocalAggregateBuffer &buffer) {
+                          const ChunkLocalAggregateBuffer &buffer,
+                          bool use_group_int64_partials) {
     for (duckdb::idx_t idx = 0; idx < buffer.count; idx++) {
         const auto key = buffer.keys[idx];
         const auto &local = buffer.states[idx];
@@ -488,14 +601,14 @@ void MergeChunkLocalState(std::array<Q1GroupState, 1u << 16> &groups,
             state.used = true;
             used_keys.push_back(key);
         }
-        AddValue(state.sum_qty, local.sum_qty);
-        AddValue(state.sum_base_price, local.sum_base_price);
-        AddValue(state.sum_discount, local.sum_discount);
         if constexpr (IncludeDerived) {
-            AddValue(state.sum_disc_price, local.sum_disc_price);
-            AddValue(state.sum_charge, local.sum_charge);
+            MergeChunkLocalIntoGroup(state, local, use_group_int64_partials);
+        } else {
+            ChunkLocalAggregateState derived_free_local = local;
+            derived_free_local.sum_disc_price = 0;
+            derived_free_local.sum_charge = 0;
+            MergeChunkLocalIntoGroup(state, derived_free_local, use_group_int64_partials);
         }
-        state.count += static_cast<uint64_t>(local.count);
     }
 }
 
@@ -573,7 +686,9 @@ bool RebuildReusableDominantPackedKeyChunkLocalCache(
                     fixed_slot = static_cast<uint8_t>(cache.fixed_slot_count);
                     cache.fixed_slot_keys[cache.fixed_slot_count] = key;
                     cache.fixed_slot_targets[cache.fixed_slot_count] = &groups[key];
-                    cache.fixed_slot_states[cache.fixed_slot_count] = {};
+                    for (duckdb::idx_t bank = 0; bank < kMaxFixedSlotBanks; bank++) {
+                        cache.fixed_slot_bank_states[bank][cache.fixed_slot_count] = {};
+                    }
                     cache.fixed_slot_count += 1;
                 }
             }
@@ -606,8 +721,10 @@ bool CanReuseDominantPackedKeyChunkLocalCache(duckdb::DataChunk &input,
 
 void ResetReusableDominantPackedKeyChunkLocalCacheState(ReusableDominantPackedKeyChunkLocalCache &cache) {
     if (cache.use_fixed_slots) {
-        for (duckdb::idx_t idx = 0; idx < cache.fixed_slot_count; idx++) {
-            cache.fixed_slot_states[idx] = {};
+        for (duckdb::idx_t bank = 0; bank < kMaxFixedSlotBanks; bank++) {
+            for (duckdb::idx_t idx = 0; idx < cache.fixed_slot_count; idx++) {
+                cache.fixed_slot_bank_states[bank][idx] = {};
+            }
         }
     }
     for (auto &state : cache.slot_states) {
@@ -615,30 +732,62 @@ void ResetReusableDominantPackedKeyChunkLocalCacheState(ReusableDominantPackedKe
     }
 }
 
-template <class UpdateFn>
-inline void ConsumeReusableFixedSlotChunkLocals(const DominantDictionaryChunkView &view,
-                                                duckdb::idx_t count,
-                                                duckdb::date_t cutoff_date,
-                                                ReusableDominantPackedKeyChunkLocalCache &cache,
-                                                UpdateFn &&update_fn) {
-    for (duckdb::idx_t row = 0; row < count; row++) {
+template <bool TrustFilter, duckdb::idx_t Banks, bool SimplifyDerived>
+inline void ConsumeFixedSlotRowsScalar(const DominantDictionaryChunkView &view,
+                                       duckdb::idx_t begin,
+                                       duckdb::idx_t end,
+                                       duckdb::date_t cutoff_date,
+                                       ReusableDominantPackedKeyChunkLocalCache &cache) {
+    for (duckdb::idx_t row = begin; row < end; row++) {
         const auto numeric_index = view.numeric_sel->get_index(row);
-        if (!(view.shipdates[numeric_index] <= cutoff_date)) {
-            continue;
+        if constexpr (!TrustFilter) {
+            if (!(view.shipdates[numeric_index] <= cutoff_date)) {
+                continue;
+            }
         }
         const auto returnflag_index = view.returnflag_sel->get_index(row);
         const auto linestatus_index = view.linestatus_sel->get_index(row);
         const auto pair_index = returnflag_index * cache.linestatus_dictionary_size + linestatus_index;
-        auto &local = cache.fixed_slot_states[cache.fixed_pair_to_slot[pair_index]];
-        update_fn(local, numeric_index);
+        const auto slot = cache.fixed_pair_to_slot[pair_index];
+        auto &local = cache.fixed_slot_bank_states[row & (Banks - 1)][slot];
+        UpdateChunkLocalState<true, SimplifyDerived>(local, view.quantities[numeric_index],
+                                                     view.extendedprices[numeric_index], view.discounts[numeric_index],
+                                                     view.taxes[numeric_index]);
     }
 }
 
+template <bool TrustFilter, duckdb::idx_t Banks, duckdb::idx_t Unroll, bool SimplifyDerived>
+inline void ConsumeReusableFixedSlotChunkLocals(const DominantDictionaryChunkView &view,
+                                                duckdb::idx_t count,
+                                                duckdb::date_t cutoff_date,
+                                                ReusableDominantPackedKeyChunkLocalCache &cache) {
+    duckdb::idx_t row = 0;
+    if constexpr (Unroll > 1) {
+        const auto limit = count - (count % Unroll);
+        for (; row < limit; row += Unroll) {
+            ConsumeFixedSlotRowsScalar<TrustFilter, Banks, SimplifyDerived>(view, row, row + Unroll, cutoff_date,
+                                                                            cache);
+        }
+    }
+    ConsumeFixedSlotRowsScalar<TrustFilter, Banks, SimplifyDerived>(view, row, count, cutoff_date, cache);
+}
+
 inline void MergeReusableFixedSlotChunkLocals(std::vector<uint16_t> &used_keys,
-                                              ReusableDominantPackedKeyChunkLocalCache &cache) {
+                                              ReusableDominantPackedKeyChunkLocalCache &cache,
+                                              bool use_group_int64_partials,
+                                              duckdb::idx_t bank_count) {
     for (duckdb::idx_t slot = 0; slot < cache.fixed_slot_count; slot++) {
-        const auto &local = cache.fixed_slot_states[slot];
-        if (local.count == 0) {
+        ChunkLocalAggregateState merged_local;
+        for (duckdb::idx_t bank = 0; bank < bank_count; bank++) {
+            const auto &local = cache.fixed_slot_bank_states[bank][slot];
+            merged_local.sum_qty += local.sum_qty;
+            merged_local.sum_base_price += local.sum_base_price;
+            merged_local.sum_disc_price += local.sum_disc_price;
+            merged_local.sum_charge += local.sum_charge;
+            merged_local.sum_discount += local.sum_discount;
+            merged_local.count += local.count;
+        }
+        if (merged_local.count == 0) {
             continue;
         }
         auto &state = *cache.fixed_slot_targets[slot];
@@ -646,12 +795,7 @@ inline void MergeReusableFixedSlotChunkLocals(std::vector<uint16_t> &used_keys,
             state.used = true;
             used_keys.push_back(cache.fixed_slot_keys[slot]);
         }
-        AddValue(state.sum_qty, local.sum_qty);
-        AddValue(state.sum_base_price, local.sum_base_price);
-        AddValue(state.sum_discount, local.sum_discount);
-        AddValue(state.sum_disc_price, local.sum_disc_price);
-        AddValue(state.sum_charge, local.sum_charge);
-        state.count += static_cast<uint64_t>(local.count);
+        MergeChunkLocalIntoGroup(state, merged_local, use_group_int64_partials);
     }
 }
 
@@ -739,7 +883,7 @@ Q1ScanDiagnostics InspectGenericChunk(duckdb::DataChunk &input, const Q1Paramete
 
 class Q1Kernel final : public KernelInstance {
 public:
-    explicit Q1Kernel(Q1Parameters params_p) : params(std::move(params_p)) {
+    explicit Q1Kernel(Q1Parameters params_p) : params(std::move(params_p)), hot_loop_config(GetQ1HotLoopConfig()) {
     }
 
     void ConsumeInput(duckdb::idx_t input_id, duckdb::DataChunk &input) override {
@@ -768,7 +912,10 @@ public:
         }
         ordered_rows.reserve(used_keys.size());
         for (const auto key : used_keys) {
-            const auto &state = groups[key];
+            auto &state = groups[key];
+            if (hot_loop_config.use_group_int64_partials) {
+                FlushGroupPendingPartials(state);
+            }
             Q1OutputRow row {key,
                              FromWideHugeint(state.sum_qty),
                              FromWideHugeint(state.sum_base_price),
@@ -822,16 +969,13 @@ private:
             used_keys.push_back(group_key);
         }
 
-        AddValue(state.sum_qty, quantity_raw);
-        AddValue(state.sum_base_price, extendedprice_raw);
-        AddValue(state.sum_discount, discount_raw);
-
-        const auto one_minus_discount_raw = static_cast<int64_t>(100 - discount_raw);
-        AddValue(state.sum_disc_price, extendedprice_raw * one_minus_discount_raw);
-
-        const auto one_plus_tax_raw = static_cast<int64_t>(100 + tax_raw);
-        AddValue(state.sum_charge, extendedprice_raw * one_minus_discount_raw * one_plus_tax_raw);
-        state.count += 1;
+        ChunkLocalAggregateState local;
+        if (hot_loop_config.simplify_exact_derived) {
+            UpdateChunkLocalState<true, true>(local, quantity_raw, extendedprice_raw, discount_raw, tax_raw);
+        } else {
+            UpdateChunkLocalState<true, false>(local, quantity_raw, extendedprice_raw, discount_raw, tax_raw);
+        }
+        MergeChunkLocalIntoGroup(state, local, hot_loop_config.use_group_int64_partials);
     }
 
     void ConsumeFlatChunk(duckdb::DataChunk &input) {
@@ -844,7 +988,7 @@ private:
         auto linestatuses = duckdb::FlatVector::GetData<duckdb::string_t>(input.data[Q1LineitemChunkLayout::LINESTATUS_INDEX]);
 
         for (duckdb::idx_t row = 0; row < input.size(); row++) {
-            if (!(shipdates[row] <= params.cutoff_date)) {
+            if (!hot_loop_config.trust_native_filter && !(shipdates[row] <= params.cutoff_date)) {
                 continue;
             }
             DirectUpdateGroupByKey(PackGroupKeyUnchecked(returnflags[row], linestatuses[row]), quantities[row],
@@ -864,14 +1008,82 @@ private:
         }
 
         if (reusable_dominant_cache.use_fixed_slots) {
-            ConsumeReusableFixedSlotChunkLocals(
-                view, input.size(), params.cutoff_date, reusable_dominant_cache,
-                [&](ChunkLocalAggregateState &local, duckdb::idx_t numeric_index) {
-                    UpdateChunkLocalState<true>(local, view.quantities[numeric_index],
-                                                view.extendedprices[numeric_index],
-                                                view.discounts[numeric_index], view.taxes[numeric_index]);
-                });
-            MergeReusableFixedSlotChunkLocals(used_keys, reusable_dominant_cache);
+            const auto banks = static_cast<duckdb::idx_t>(hot_loop_config.fixed_slot_banks);
+            const auto use_filter = hot_loop_config.trust_native_filter;
+            const auto simplify = hot_loop_config.simplify_exact_derived;
+            const auto unroll = hot_loop_config.fixed_slot_unroll;
+
+            if (use_filter) {
+                if (banks == 8 && unroll == 8) {
+                    if (simplify) {
+                        ConsumeReusableFixedSlotChunkLocals<true, 8, 8, true>(view, input.size(), params.cutoff_date,
+                                                                               reusable_dominant_cache);
+                    } else {
+                        ConsumeReusableFixedSlotChunkLocals<true, 8, 8, false>(view, input.size(), params.cutoff_date,
+                                                                                reusable_dominant_cache);
+                    }
+                } else if (banks == 4 && unroll >= 4) {
+                    if (simplify) {
+                        ConsumeReusableFixedSlotChunkLocals<true, 4, 4, true>(view, input.size(), params.cutoff_date,
+                                                                               reusable_dominant_cache);
+                    } else {
+                        ConsumeReusableFixedSlotChunkLocals<true, 4, 4, false>(view, input.size(), params.cutoff_date,
+                                                                                reusable_dominant_cache);
+                    }
+                } else if (banks == 2) {
+                    if (simplify) {
+                        ConsumeReusableFixedSlotChunkLocals<true, 2, 1, true>(view, input.size(), params.cutoff_date,
+                                                                               reusable_dominant_cache);
+                    } else {
+                        ConsumeReusableFixedSlotChunkLocals<true, 2, 1, false>(view, input.size(), params.cutoff_date,
+                                                                                reusable_dominant_cache);
+                    }
+                } else {
+                    if (simplify) {
+                        ConsumeReusableFixedSlotChunkLocals<true, 1, 1, true>(view, input.size(), params.cutoff_date,
+                                                                               reusable_dominant_cache);
+                    } else {
+                        ConsumeReusableFixedSlotChunkLocals<true, 1, 1, false>(view, input.size(), params.cutoff_date,
+                                                                                reusable_dominant_cache);
+                    }
+                }
+            } else {
+                if (banks == 8 && unroll == 8) {
+                    if (simplify) {
+                        ConsumeReusableFixedSlotChunkLocals<false, 8, 8, true>(view, input.size(), params.cutoff_date,
+                                                                                reusable_dominant_cache);
+                    } else {
+                        ConsumeReusableFixedSlotChunkLocals<false, 8, 8, false>(
+                            view, input.size(), params.cutoff_date, reusable_dominant_cache);
+                    }
+                } else if (banks == 4 && unroll >= 4) {
+                    if (simplify) {
+                        ConsumeReusableFixedSlotChunkLocals<false, 4, 4, true>(view, input.size(), params.cutoff_date,
+                                                                                reusable_dominant_cache);
+                    } else {
+                        ConsumeReusableFixedSlotChunkLocals<false, 4, 4, false>(
+                            view, input.size(), params.cutoff_date, reusable_dominant_cache);
+                    }
+                } else if (banks == 2) {
+                    if (simplify) {
+                        ConsumeReusableFixedSlotChunkLocals<false, 2, 1, true>(view, input.size(), params.cutoff_date,
+                                                                                reusable_dominant_cache);
+                    } else {
+                        ConsumeReusableFixedSlotChunkLocals<false, 2, 1, false>(
+                            view, input.size(), params.cutoff_date, reusable_dominant_cache);
+                    }
+                } else {
+                    if (simplify) {
+                        ConsumeReusableFixedSlotChunkLocals<false, 1, 1, true>(view, input.size(), params.cutoff_date,
+                                                                                reusable_dominant_cache);
+                    } else {
+                        ConsumeReusableFixedSlotChunkLocals<false, 1, 1, false>(
+                            view, input.size(), params.cutoff_date, reusable_dominant_cache);
+                    }
+                }
+            }
+            MergeReusableFixedSlotChunkLocals(used_keys, reusable_dominant_cache,
+                                              hot_loop_config.use_group_int64_partials, banks);
             return;
         }
 
@@ -882,7 +1094,7 @@ private:
 
         for (duckdb::idx_t row = 0; row < input.size(); row++) {
             const auto numeric_index = view.numeric_sel->get_index(row);
-            if (!(view.shipdates[numeric_index] <= params.cutoff_date)) {
+            if (!hot_loop_config.trust_native_filter && !(view.shipdates[numeric_index] <= params.cutoff_date)) {
                 continue;
             }
             const auto returnflag_index = view.returnflag_sel->get_index(row);
@@ -891,9 +1103,15 @@ private:
                 returnflag_index * reusable_dominant_cache.linestatus_dictionary_size + linestatus_index;
             auto &local =
                 reusable_dominant_cache.slot_states[reusable_dominant_cache.pair_to_slot[pair_index]];
-            UpdateChunkLocalState<true>(local, view.quantities[numeric_index],
-                                        view.extendedprices[numeric_index], view.discounts[numeric_index],
-                                        view.taxes[numeric_index]);
+            if (hot_loop_config.simplify_exact_derived) {
+                UpdateChunkLocalState<true, true>(local, view.quantities[numeric_index],
+                                                  view.extendedprices[numeric_index], view.discounts[numeric_index],
+                                                  view.taxes[numeric_index]);
+            } else {
+                UpdateChunkLocalState<true, false>(local, view.quantities[numeric_index],
+                                                   view.extendedprices[numeric_index], view.discounts[numeric_index],
+                                                   view.taxes[numeric_index]);
+            }
         }
         for (duckdb::idx_t slot = 0; slot < reusable_dominant_cache.slot_states.size(); slot++) {
             const auto &local = reusable_dominant_cache.slot_states[slot];
@@ -905,19 +1123,14 @@ private:
                 state.used = true;
                 used_keys.push_back(reusable_dominant_cache.slot_keys[slot]);
             }
-            AddValue(state.sum_qty, local.sum_qty);
-            AddValue(state.sum_base_price, local.sum_base_price);
-            AddValue(state.sum_discount, local.sum_discount);
-            AddValue(state.sum_disc_price, local.sum_disc_price);
-            AddValue(state.sum_charge, local.sum_charge);
-            state.count += static_cast<uint64_t>(local.count);
+            MergeChunkLocalIntoGroup(state, local, hot_loop_config.use_group_int64_partials);
         }
     }
 
     void ConsumeDominantDictionaryChunkFallback(duckdb::DataChunk &input, const DominantDictionaryChunkView &view) {
         for (duckdb::idx_t row = 0; row < input.size(); row++) {
             const auto numeric_index = view.numeric_sel->get_index(row);
-            if (!(view.shipdates[numeric_index] <= params.cutoff_date)) {
+            if (!hot_loop_config.trust_native_filter && !(view.shipdates[numeric_index] <= params.cutoff_date)) {
                 continue;
             }
             const auto returnflag_index = view.returnflag_sel->get_index(row);
@@ -987,7 +1200,7 @@ private:
                 (!linestatus_all_valid && !linestatus_format.validity.RowIsValidUnsafe(linestatus_index))) {
                 continue;
             }
-            if (!(shipdates[shipdate_index] <= params.cutoff_date)) {
+            if (!hot_loop_config.trust_native_filter && !(shipdates[shipdate_index] <= params.cutoff_date)) {
                 continue;
             }
             DirectUpdateGroupByKey(PackGroupKey(returnflags[returnflag_index], linestatuses[linestatus_index]),
@@ -1001,6 +1214,7 @@ private:
     std::vector<uint16_t> used_keys;
     std::vector<Q1OutputRow> ordered_rows;
     ReusableDominantPackedKeyChunkLocalCache reusable_dominant_cache;
+    Q1HotLoopConfig hot_loop_config;
     duckdb::idx_t output_offset = 0;
     bool finalized = false;
 };
@@ -1104,10 +1318,10 @@ inline void BenchmarkConsumeRowLocal(BenchmarkStageState &state,
         return;
     } else if constexpr (Mode == Q1KernelBenchmarkMode::SimpleAggregates) {
         auto &local = local_buffer.Get(key);
-        UpdateChunkLocalState<false>(local, quantity_raw, extendedprice_raw, discount_raw, tax_raw);
+        UpdateChunkLocalState<false, false>(local, quantity_raw, extendedprice_raw, discount_raw, tax_raw);
     } else {
         auto &local = local_buffer.Get(key);
-        UpdateChunkLocalState<true>(local, quantity_raw, extendedprice_raw, discount_raw, tax_raw);
+        UpdateChunkLocalState<true, false>(local, quantity_raw, extendedprice_raw, discount_raw, tax_raw);
     }
 }
 
@@ -1300,6 +1514,7 @@ Q1KernelBenchmarkResult BenchmarkDominantComponentChunk(duckdb::DataChunk &input
 template <bool UsePackedKeyCache, bool BuildOnly, bool CollectCounters>
 Q1KernelBenchmarkResult BenchmarkDominantCachedStringChunk(duckdb::DataChunk &input, const Q1Parameters &parameters) {
     Q1KernelBenchmarkResult result;
+    const auto &config = GetQ1HotLoopConfig();
     if constexpr (CollectCounters) {
         result.counters.total_chunks = 1;
         result.counters.total_rows = input.size();
@@ -1337,7 +1552,7 @@ Q1KernelBenchmarkResult BenchmarkDominantCachedStringChunk(duckdb::DataChunk &in
     uint64_t packed_key_sum = 0;
     for (duckdb::idx_t row = 0; row < input.size(); row++) {
         const auto numeric_index = view.numeric_sel->get_index(row);
-        if (!(view.shipdates[numeric_index] <= parameters.cutoff_date)) {
+        if (!config.trust_native_filter && !(view.shipdates[numeric_index] <= parameters.cutoff_date)) {
             continue;
         }
         const auto returnflag_index = view.returnflag_sel->get_index(row);
@@ -1364,6 +1579,7 @@ Q1KernelBenchmarkResult BenchmarkDominantCachedStringChunk(duckdb::DataChunk &in
 template <bool UseFixedSlots, bool CollectCounters>
 Q1KernelBenchmarkResult BenchmarkReuseChunkLocalStage(duckdb::DataChunk &input, const Q1Parameters &parameters) {
     Q1KernelBenchmarkResult result;
+    const auto &config = GetQ1HotLoopConfig();
     if constexpr (CollectCounters) {
         result.counters.total_chunks = 1;
         result.counters.total_rows = input.size();
@@ -1378,10 +1594,10 @@ Q1KernelBenchmarkResult BenchmarkReuseChunkLocalStage(duckdb::DataChunk &input, 
         result.counters.dominant_fast_path_rows = input.size();
     }
 
-    std::array<Q1GroupState, 1u << 16> groups {};
+    auto groups = duckdb::make_uniq<std::array<Q1GroupState, 1u << 16>>();
     std::vector<uint16_t> used_keys;
     ReusableDominantPackedKeyChunkLocalCache cache;
-    if (!RebuildReusableDominantPackedKeyChunkLocalCache(input, view, groups, used_keys, cache)) {
+    if (!RebuildReusableDominantPackedKeyChunkLocalCache(input, view, *groups, used_keys, cache)) {
         return result;
     }
 
@@ -1390,19 +1606,26 @@ Q1KernelBenchmarkResult BenchmarkReuseChunkLocalStage(duckdb::DataChunk &input, 
         if (!cache.use_fixed_slots) {
             return result;
         }
-        ConsumeReusableFixedSlotChunkLocals(view, input.size(), parameters.cutoff_date, cache,
-                                            [&](ChunkLocalAggregateState &local, duckdb::idx_t numeric_index) {
-                                                qualifying_rows += 1;
-                                                UpdateChunkLocalState<true>(
-                                                    local, view.quantities[numeric_index],
-                                                    view.extendedprices[numeric_index], view.discounts[numeric_index],
-                                                    view.taxes[numeric_index]);
-                                            });
-        MergeReusableFixedSlotChunkLocals(used_keys, cache);
+        for (duckdb::idx_t row = 0; row < input.size(); row++) {
+            const auto numeric_index = view.numeric_sel->get_index(row);
+            if (!config.trust_native_filter && !(view.shipdates[numeric_index] <= parameters.cutoff_date)) {
+                continue;
+            }
+            qualifying_rows += 1;
+            const auto returnflag_index = view.returnflag_sel->get_index(row);
+            const auto linestatus_index = view.linestatus_sel->get_index(row);
+            const auto pair_index = returnflag_index * cache.linestatus_dictionary_size + linestatus_index;
+            const auto slot = cache.fixed_pair_to_slot[pair_index];
+            auto &local = cache.fixed_slot_bank_states[0][slot];
+            UpdateChunkLocalState<true, false>(local, view.quantities[numeric_index],
+                                               view.extendedprices[numeric_index], view.discounts[numeric_index],
+                                               view.taxes[numeric_index]);
+        }
+        MergeReusableFixedSlotChunkLocals(used_keys, cache, false, 1);
     } else {
         for (duckdb::idx_t row = 0; row < input.size(); row++) {
             const auto numeric_index = view.numeric_sel->get_index(row);
-            if (!(view.shipdates[numeric_index] <= parameters.cutoff_date)) {
+            if (!config.trust_native_filter && !(view.shipdates[numeric_index] <= parameters.cutoff_date)) {
                 continue;
             }
             qualifying_rows += 1;
@@ -1410,8 +1633,9 @@ Q1KernelBenchmarkResult BenchmarkReuseChunkLocalStage(duckdb::DataChunk &input, 
             const auto linestatus_index = view.linestatus_sel->get_index(row);
             const auto pair_index = returnflag_index * cache.linestatus_dictionary_size + linestatus_index;
             auto &local = cache.slot_states[cache.pair_to_slot[pair_index]];
-            UpdateChunkLocalState<true>(local, view.quantities[numeric_index], view.extendedprices[numeric_index],
-                                        view.discounts[numeric_index], view.taxes[numeric_index]);
+            UpdateChunkLocalState<true, false>(local, view.quantities[numeric_index],
+                                               view.extendedprices[numeric_index], view.discounts[numeric_index],
+                                               view.taxes[numeric_index]);
         }
         for (duckdb::idx_t slot = 0; slot < cache.slot_states.size(); slot++) {
             const auto &local = cache.slot_states[slot];
@@ -1434,7 +1658,7 @@ Q1KernelBenchmarkResult BenchmarkReuseChunkLocalStage(duckdb::DataChunk &input, 
 
     uint64_t checksum = qualifying_rows * 11400714819323198485ull;
     for (const auto key : used_keys) {
-        const auto &state = groups[key];
+        const auto &state = (*groups)[key];
         checksum ^= static_cast<uint64_t>(key) * 1315423911ULL;
         checksum += static_cast<uint64_t>(state.count);
     }
@@ -1451,6 +1675,7 @@ void BenchmarkFlatChunk(duckdb::DataChunk &input,
                         Q1KernelBenchmarkResult &result,
                         BenchmarkStageState &state,
                         bool use_chunk_local_partials) {
+    const auto &config = GetQ1HotLoopConfig();
     auto shipdates = duckdb::FlatVector::GetData<duckdb::date_t>(input.data[Q1LineitemChunkLayout::SHIPDATE_INDEX]);
     auto quantities = duckdb::FlatVector::GetData<int64_t>(input.data[Q1LineitemChunkLayout::QUANTITY_INDEX]);
     auto extendedprices = duckdb::FlatVector::GetData<int64_t>(input.data[Q1LineitemChunkLayout::EXTENDEDPRICE_INDEX]);
@@ -1466,7 +1691,7 @@ void BenchmarkFlatChunk(duckdb::DataChunk &input,
     if (use_chunk_local_partials) {
         ChunkLocalAggregateBuffer local_buffer;
         for (duckdb::idx_t row = 0; row < input.size(); row++) {
-            if (!(shipdates[row] <= parameters.cutoff_date)) {
+            if (!config.trust_native_filter && !(shipdates[row] <= parameters.cutoff_date)) {
                 continue;
             }
             BenchmarkConsumeRowLocal<Mode>(state, local_buffer,
@@ -1476,7 +1701,7 @@ void BenchmarkFlatChunk(duckdb::DataChunk &input,
         MergeBenchmarkLocals<Mode>(state, local_buffer);
     } else {
         for (duckdb::idx_t row = 0; row < input.size(); row++) {
-            if (!(shipdates[row] <= parameters.cutoff_date)) {
+            if (!config.trust_native_filter && !(shipdates[row] <= parameters.cutoff_date)) {
                 continue;
             }
             BenchmarkConsumeRow<Mode>(state, PackGroupKeyUnchecked(returnflags[row], linestatuses[row]), quantities[row],
@@ -1492,6 +1717,7 @@ void BenchmarkDominantDictionaryChunk(duckdb::DataChunk &input,
                                       Q1KernelBenchmarkResult &result,
                                       BenchmarkStageState &state,
                                       bool use_chunk_local_partials) {
+    const auto &config = GetQ1HotLoopConfig();
     if constexpr (CollectCounters) {
         result.counters.dominant_fast_path_chunks += 1;
         result.counters.dominant_fast_path_rows += input.size();
@@ -1502,7 +1728,7 @@ void BenchmarkDominantDictionaryChunk(duckdb::DataChunk &input,
         ChunkLocalAggregateBuffer local_buffer;
         for (duckdb::idx_t row = 0; row < input.size(); row++) {
             const auto numeric_index = view.numeric_sel->get_index(row);
-            if (!(view.shipdates[numeric_index] <= parameters.cutoff_date)) {
+            if (!config.trust_native_filter && !(view.shipdates[numeric_index] <= parameters.cutoff_date)) {
                 continue;
             }
             const auto returnflag_index = view.returnflag_sel->get_index(row);
@@ -1520,7 +1746,7 @@ void BenchmarkDominantDictionaryChunk(duckdb::DataChunk &input,
     } else {
         for (duckdb::idx_t row = 0; row < input.size(); row++) {
             const auto numeric_index = view.numeric_sel->get_index(row);
-            if (!(view.shipdates[numeric_index] <= parameters.cutoff_date)) {
+            if (!config.trust_native_filter && !(view.shipdates[numeric_index] <= parameters.cutoff_date)) {
                 continue;
             }
             const auto returnflag_index = view.returnflag_sel->get_index(row);
@@ -1542,6 +1768,7 @@ void BenchmarkGenericChunk(duckdb::DataChunk &input,
                            Q1KernelBenchmarkResult &result,
                            BenchmarkStageState &state,
                            bool use_chunk_local_partials) {
+    const auto &config = GetQ1HotLoopConfig();
     duckdb::UnifiedVectorFormat shipdate_format;
     duckdb::UnifiedVectorFormat quantity_format;
     duckdb::UnifiedVectorFormat extendedprice_format;
@@ -1592,7 +1819,7 @@ void BenchmarkGenericChunk(duckdb::DataChunk &input,
             (!linestatus_all_valid && !linestatus_format.validity.RowIsValidUnsafe(linestatus_index))) {
             continue;
         }
-        if (!(shipdates[shipdate_index] <= parameters.cutoff_date)) {
+        if (!config.trust_native_filter && !(shipdates[shipdate_index] <= parameters.cutoff_date)) {
             continue;
         }
         const auto key = PackGroupKey(returnflags[returnflag_index], linestatuses[linestatus_index]);

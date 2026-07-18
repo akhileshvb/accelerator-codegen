@@ -20,6 +20,8 @@ add_library(accelerator_codegen SHARED
     src/functions/count_lineitem.cpp
     src/generated/tpch/q1_package.cpp
     src/generated/tpch/q1_kernel.cpp
+    src/generated/tpch/q3_package.cpp
+    src/generated/tpch/q3_kernel.cpp
     src/generated/tpch/q6_package.cpp
     src/generated/tpch/q6_kernel.cpp
 )
@@ -83,6 +85,18 @@ target_link_libraries(test_tpch_q1
 
 target_include_directories(test_tpch_q1 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
+add_executable(test_tpch_q3
+    tests/test_tpch_q3.cpp
+)
+
+target_link_libraries(test_tpch_q3
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_tpch_q3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
 add_executable(benchmark_tpch_q6
     benchmarks/tpch/benchmark_q6.cpp
 )
@@ -107,7 +121,31 @@ target_link_libraries(benchmark_tpch_q1
 
 target_include_directories(benchmark_tpch_q1 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
-set_target_properties(accelerator_codegen test_registration test_count_lineitem test_tpch_q6 test_tpch_q1 benchmark_tpch_q6 benchmark_tpch_q1 PROPERTIES
+add_executable(benchmark_tpch_q3
+    benchmarks/tpch/benchmark_q3.cpp
+)
+
+target_link_libraries(benchmark_tpch_q3
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(benchmark_tpch_q3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(benchmark_tpch_breakdown
+    benchmarks/tpch/benchmark_tpch_breakdown.cpp
+)
+
+target_link_libraries(benchmark_tpch_breakdown
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(benchmark_tpch_breakdown PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+set_target_properties(accelerator_codegen test_registration test_count_lineitem test_tpch_q6 test_tpch_q1 test_tpch_q3 benchmark_tpch_q6 benchmark_tpch_q1 benchmark_tpch_q3 benchmark_tpch_breakdown PROPERTIES
     BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
     INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 )
@@ -117,5 +155,6 @@ if(BUILD_TESTING)
     add_test(NAME count_lineitem_smoke_test COMMAND test_count_lineitem)
     add_test(NAME tpch_q6_smoke_test COMMAND test_tpch_q6)
     add_test(NAME tpch_q1_smoke_test COMMAND test_tpch_q1)
-    set_tests_properties(count_lineitem_smoke_test tpch_q6_smoke_test tpch_q1_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
+    add_test(NAME tpch_q3_smoke_test COMMAND test_tpch_q3)
+    set_tests_properties(count_lineitem_smoke_test tpch_q6_smoke_test tpch_q1_smoke_test tpch_q3_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
 endif()

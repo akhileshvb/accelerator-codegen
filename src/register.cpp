@@ -13,6 +13,7 @@ duckdb::TableFunction CreateAcceleratorHelloFunction();
 duckdb::TableFunction CreateCountLineitemFunction();
 duckdb::TableFunctionSet CreateTpchQ6FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ1FunctionSet();
+duckdb::TableFunctionSet CreateTpchQ3FunctionSet();
 
 void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
     auto &context = *connection.context;
@@ -35,6 +36,9 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
 
         duckdb::CreateTableFunctionInfo q1_info(CreateTpchQ1FunctionSet());
         catalog.CreateTableFunction(context, q1_info);
+
+        duckdb::CreateTableFunctionInfo q3_info(CreateTpchQ3FunctionSet());
+        catalog.CreateTableFunction(context, q3_info);
 
         if (started_transaction) {
             connection.Commit();
