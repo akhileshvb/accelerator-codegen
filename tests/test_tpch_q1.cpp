@@ -1,4 +1,5 @@
 #include "accelerator_codegen/register.hpp"
+#include "accelerator_codegen/tpch_q1_aux.hpp"
 #include "test_support/q1_manifest.hpp"
 
 #include <cmath>
@@ -326,7 +327,183 @@ int main() {
             RequireQueryErrorContains(connection, "schema_mismatch", AcceleratorQ1Sql(100), "Unsupported schema");
         }
 
-        std::cout << "tpch_q1_smoke_test passed" << std::endl;
+        std::cout << "tpch_q1_smoke_test passed (default path)" << std::endl;
+
+        auto run_fused_suite = [&](const char *label_prefix) {
+            {
+                duckdb::DuckDB file_database(GetTpchDbPath().c_str());
+                duckdb::Connection connection(file_database);
+                accelerator_codegen::RegisterAcceleratorFunctions(connection);
+
+                RequireExpectedQ1Schema(connection);
+                for (const auto &entry : accelerator_codegen::test_support::kQ1Manifest) {
+                    RequireEqualQ1Results(connection, std::string(label_prefix) + entry.label, ReadFile(entry.sql_path),
+                                          AcceleratorQ1Sql(entry.day_offset));
+                }
+            }
+
+            {
+                duckdb::DuckDB memory_database(nullptr);
+                duckdb::Connection connection(memory_database);
+                SetupQ1EmptyLineitem(connection);
+                accelerator_codegen::RegisterAcceleratorFunctions(connection);
+                RequireEqualQ1Results(connection, std::string(label_prefix) + "empty_qualifying_input", ReferenceQ1Sql(100),
+                                      AcceleratorQ1Sql(100));
+            }
+
+            {
+                duckdb::DuckDB memory_database(nullptr);
+                duckdb::Connection connection(memory_database);
+                SetupQ1OneGroupLineitem(connection);
+                accelerator_codegen::RegisterAcceleratorFunctions(connection);
+                RequireEqualQ1Results(connection, std::string(label_prefix) + "one_group", ReferenceQ1Sql(100),
+                                      AcceleratorQ1Sql(100));
+            }
+
+            {
+                duckdb::DuckDB memory_database(nullptr);
+                duckdb::Connection connection(memory_database);
+                SetupQ1MultiGroupLineitem(connection);
+                accelerator_codegen::RegisterAcceleratorFunctions(connection);
+
+                RequireEqualQ1Results(connection, std::string(label_prefix) + "multi_group_and_multi_chunk_output",
+                                      ReferenceQ1Sql(100), AcceleratorQ1Sql(100));
+
+                connection.BeginTransaction();
+                auto insert_result = connection.Query(R"SQL(
+                    INSERT INTO lineitem VALUES
+                        (6, 60, 600, 1, 60.00, 600.00, 0.08, 0.02, 'E', 'O', DATE '1998-08-05', DATE '1998-08-06', DATE '1998-08-07', 'DELIVER', 'MAIL', 'inserted')
+                )SQL");
+                Require(insert_result != nullptr && !insert_result->HasError(),
+                        std::string(label_prefix) + "insert failed");
+                RequireEqualQ1Results(connection, std::string(label_prefix) + "after_insert", ReferenceQ1Sql(100),
+                                      AcceleratorQ1Sql(100));
+
+                auto update_aggregate =
+                    connection.Query("UPDATE lineitem SET l_quantity = 11.00, l_extendedprice = 110.00 WHERE l_orderkey = 1");
+                Require(update_aggregate != nullptr && !update_aggregate->HasError(),
+                        std::string(label_prefix) + "aggregate update failed");
+                RequireEqualQ1Results(connection, std::string(label_prefix) + "after_aggregate_update", ReferenceQ1Sql(100),
+                                      AcceleratorQ1Sql(100));
+
+                auto update_group =
+                    connection.Query("UPDATE lineitem SET l_returnflag = 'A', l_linestatus = 'O' WHERE l_orderkey = 3");
+                Require(update_group != nullptr && !update_group->HasError(),
+                        std::string(label_prefix) + "group update failed");
+                RequireEqualQ1Results(connection, std::string(label_prefix) + "after_group_update", ReferenceQ1Sql(100),
+                                      AcceleratorQ1Sql(100));
+
+                auto update_into_range =
+                    connection.Query("UPDATE lineitem SET l_shipdate = DATE '1998-08-03' WHERE l_orderkey = 5");
+                Require(update_into_range != nullptr && !update_into_range->HasError(),
+                        std::string(label_prefix) + "into-range update failed");
+                RequireEqualQ1Results(connection, std::string(label_prefix) + "after_into_range_update", ReferenceQ1Sql(100),
+                                      AcceleratorQ1Sql(100));
+
+                auto update_out_of_range =
+                    connection.Query("UPDATE lineitem SET l_shipdate = DATE '1998-09-15' WHERE l_orderkey = 2");
+                Require(update_out_of_range != nullptr && !update_out_of_range->HasError(),
+                        std::string(label_prefix) + "out-of-range update failed");
+                RequireEqualQ1Results(connection, std::string(label_prefix) + "after_out_of_range_update",
+                                      ReferenceQ1Sql(100), AcceleratorQ1Sql(100));
+
+                auto delete_result = connection.Query("DELETE FROM lineitem WHERE l_orderkey = 4");
+                Require(delete_result != nullptr && !delete_result->HasError(),
+                        std::string(label_prefix) + "delete failed");
+                RequireEqualQ1Results(connection, std::string(label_prefix) + "after_delete", ReferenceQ1Sql(100),
+                                      AcceleratorQ1Sql(100));
+
+                connection.Rollback();
+                RequireEqualQ1Results(connection, std::string(label_prefix) + "after_rollback", ReferenceQ1Sql(100),
+                                      AcceleratorQ1Sql(100));
+            }
+        };
+
+        // Fixed-slot preferred (default when fused).
+        setenv("ACCEL_Q1_FUSED_SCAN", "1", 1);
+        unsetenv("ACCEL_Q1_FUSED_SCALAR");
+        setenv("ACCEL_Q1_FUSED_FIXED_SLOT", "1", 1);
+        unsetenv("ACCEL_Q1_FUSED_ALIGNED_PAYLOAD");
+        run_fused_suite("fused_fixed_");
+        std::cout << "tpch_q1_smoke_test passed (fused fixed-slot path)" << std::endl;
+
+        // Aligned payload + fixed-slot (Scan without Slice).
+        setenv("ACCEL_Q1_FUSED_ALIGNED_PAYLOAD", "1", 1);
+        run_fused_suite("fused_aligned_");
+        std::cout << "tpch_q1_smoke_test passed (fused aligned-payload path)" << std::endl;
+        unsetenv("ACCEL_Q1_FUSED_ALIGNED_PAYLOAD");
+
+        // Scalar-only fused path.
+        setenv("ACCEL_Q1_FUSED_SCALAR", "1", 1);
+        unsetenv("ACCEL_Q1_FUSED_FIXED_SLOT");
+        run_fused_suite("fused_scalar_");
+        std::cout << "tpch_q1_smoke_test passed (fused scalar path)" << std::endl;
+
+        unsetenv("ACCEL_Q1_FUSED_SCAN");
+        unsetenv("ACCEL_Q1_FUSED_SCALAR");
+        unsetenv("ACCEL_Q1_FUSED_FIXED_SLOT");
+        unsetenv("ACCEL_Q1_FUSED_ALIGNED_PAYLOAD");
+
+        // Aux prefix-state PoC (immutable snapshot).
+        setenv("ACCEL_Q1_AUX_STATE", "1", 1);
+        accelerator_codegen::InvalidateQ1AuxState();
+        {
+            duckdb::DuckDB file_database(GetTpchDbPath().c_str());
+            duckdb::Connection connection(file_database);
+            accelerator_codegen::RegisterAcceleratorFunctions(connection);
+            auto &context = *connection.context;
+            connection.BeginTransaction();
+            accelerator_codegen::BuildQ1AuxState(context);
+            connection.Commit();
+            for (const auto &entry : accelerator_codegen::test_support::kQ1Manifest) {
+                RequireEqualQ1Results(connection, std::string("aux_") + entry.label, ReadFile(entry.sql_path),
+                                      AcceleratorQ1Sql(entry.day_offset));
+            }
+
+            // Boundary cutoffs relative to SF1 lineitem shipdate domain.
+            // day_offset maps cutoff = 1998-12-01 - offset.
+            // Very early cutoff (before essentially all SF1 shipdates): offset 10000 → ~1971.
+            RequireEqualQ1Results(connection, "aux_boundary_before_all", ReferenceQ1Sql(10000),
+                                  AcceleratorQ1Sql(10000));
+            // Far-future cutoff (after all SF1 shipdates): offset -4000 → ~2009.
+            // day_offset is int; negative means after base date.
+            RequireEqualQ1Results(connection, "aux_boundary_after_all", ReferenceQ1Sql(-4000),
+                                  AcceleratorQ1Sql(-4000));
+            // On/near an existing seed cutoff.
+            RequireEqualQ1Results(connection, "aux_boundary_seed_mid", ReferenceQ1Sql(90), AcceleratorQ1Sql(90));
+            RequireEqualQ1Results(connection, "aux_boundary_between", ReferenceQ1Sql(91), AcceleratorQ1Sql(91));
+        }
+        {
+            duckdb::DuckDB memory_database(nullptr);
+            duckdb::Connection connection(memory_database);
+            SetupQ1MultiGroupLineitem(connection);
+            accelerator_codegen::RegisterAcceleratorFunctions(connection);
+            accelerator_codegen::InvalidateQ1AuxState();
+            RequireEqualQ1Results(connection, "aux_multi_group", ReferenceQ1Sql(100), AcceleratorQ1Sql(100));
+
+            // Uncommitted write must be rejected (never silently stale).
+            connection.BeginTransaction();
+            auto insert_result = connection.Query(
+                "INSERT INTO lineitem VALUES "
+                "(9, 90, 900, 1, 90.00, 900.00, 0.01, 0.01, 'Z', 'F', DATE '1998-08-05', DATE '1998-08-06', "
+                "DATE '1998-08-07', 'DELIVER', 'MAIL', 'aux')");
+            Require(insert_result != nullptr && !insert_result->HasError(), "aux insert setup failed");
+            bool rejected = false;
+            try {
+                auto bad = connection.Query(AcceleratorQ1Sql(100));
+                if (bad && bad->HasError()) {
+                    rejected = true;
+                }
+            } catch (const std::exception &) {
+                rejected = true;
+            }
+            Require(rejected, "aux path must reject uncommitted local writes");
+            connection.Rollback();
+        }
+        accelerator_codegen::InvalidateQ1AuxState();
+        unsetenv("ACCEL_Q1_AUX_STATE");
+        std::cout << "tpch_q1_smoke_test passed (aux prefix-state path)" << std::endl;
+
         return EXIT_SUCCESS;
     } catch (const std::exception &ex) {
         std::cerr << "tpch_q1_smoke_test failed: " << ex.what() << std::endl;
