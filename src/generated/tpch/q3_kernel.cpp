@@ -253,11 +253,11 @@ public:
 			hash_set.insert(custkey);
 			return;
 		}
+		if (custkey > 1'000'000'000) {
+			hash_set.insert(custkey);
+			return;
+		}
 		if (custkey >= capacity) {
-			if (custkey > capacity * 4 && custkey > 10'000'000) {
-				hash_set.insert(custkey);
-				return;
-			}
 			EnsureCapacity(custkey + 1);
 		}
 		const auto word = static_cast<uint64_t>(custkey) >> 6;
@@ -266,12 +266,18 @@ public:
 	}
 
 	bool Contains(int64_t custkey) const {
-		if (!use_dense || custkey < 0 || custkey >= capacity) {
+		if (!use_dense || custkey < 0) {
 			return hash_set.find(custkey) != hash_set.end();
 		}
-		const auto word = static_cast<uint64_t>(custkey) >> 6;
-		const auto bit = uint64_t(1) << (static_cast<uint64_t>(custkey) & 63);
-		return (bits[word] & bit) != 0;
+		if (custkey < capacity) {
+			const auto word = static_cast<uint64_t>(custkey) >> 6;
+			const auto bit = uint64_t(1) << (static_cast<uint64_t>(custkey) & 63);
+			if ((bits[word] & bit) != 0) {
+				return true;
+			}
+		}
+		// Also probe overflow: keys may have spilled before a later dense grow.
+		return hash_set.find(custkey) != hash_set.end();
 	}
 
 	duckdb::idx_t MemoryBytes() const {
@@ -291,7 +297,15 @@ private:
 		if (new_capacity <= capacity) {
 			return;
 		}
-		const auto words = static_cast<size_t>((new_capacity + 63) / 64);
+		int64_t target = new_capacity;
+		if (capacity > 0) {
+			const int64_t doubled = capacity > (std::numeric_limits<int64_t>::max() / 2) ? std::numeric_limits<int64_t>::max()
+			                                                                             : capacity * 2;
+			if (doubled > target) {
+				target = doubled;
+			}
+		}
+		const auto words = static_cast<size_t>((target + 63) / 64);
 		bits.resize(words, 0);
 		capacity = static_cast<int64_t>(words) * 64;
 	}
@@ -306,7 +320,8 @@ private:
 //   * hash only          (use_dense == false)
 //   * parallel dense     (use_dense && !use_slot_map): full-domain arrays + present/has_revenue bitmaps
 //   * slot map           (use_dense && use_slot_map): orderkey->slot map + compact per-slot arrays
-// Negative or far out-of-range keys always spill into the overflow hash_map.
+// Negative or absurdly large keys spill into the overflow hash_map.
+// Dense capacity grows geometrically so larger scale factors need no retuning.
 // Slot map absent sentinel: default -1 (memset 0xFF); ACCEL_Q3_SLOT_ABSENT0 uses 0 with stored slot+1.
 class OrderStore {
 public:
@@ -368,7 +383,8 @@ public:
 			return;
 		}
 		if (orderkey >= capacity) {
-			if (orderkey > capacity * 2 && orderkey > 20'000'000) {
+			// Scale-free: grow dense for normal keys; overflow only absurd outliers.
+			if (orderkey > 1'000'000'000) {
 				auto &state = hash_map[orderkey];
 				state.orderdate = orderdate;
 				state.shippriority = shippriority;
@@ -683,7 +699,16 @@ private:
 		if (new_capacity <= capacity) {
 			return;
 		}
-		const auto words = static_cast<size_t>((new_capacity + 63) / 64);
+		// Geometric growth: exact (key+1) steps across scale factors are pathological.
+		int64_t target = new_capacity;
+		if (capacity > 0) {
+			const int64_t doubled = capacity > (std::numeric_limits<int64_t>::max() / 2) ? std::numeric_limits<int64_t>::max()
+			                                                                             : capacity * 2;
+			if (doubled > target) {
+				target = doubled;
+			}
+		}
+		const auto words = static_cast<size_t>((target + 63) / 64);
 		const auto rounded = static_cast<int64_t>(words) * 64;
 
 		if (use_slot_map) {

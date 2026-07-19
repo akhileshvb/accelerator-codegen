@@ -20,7 +20,7 @@ namespace accelerator_codegen {
 namespace {
 
 constexpr duckdb::idx_t kOutputBatchSize = 64;
-// TPC-H SF1 orderkeys are 1..6000000. Grow on demand; overflow hash covers negatives / far keys.
+// TPC-H orderkeys are dense 1..O(SF). Grow geometrically; overflow covers negatives / absurd keys.
 constexpr size_t kDefaultOrderCapacity = 6000001;
 
 using Clock = std::chrono::steady_clock;
@@ -210,7 +210,7 @@ public:
 		}
 		const auto key = static_cast<size_t>(orderkey);
 		if (key >= capacity) {
-			if (orderkey > static_cast<int64_t>(capacity) * 2 && orderkey > 20'000'000) {
+			if (orderkey > 1'000'000'000) {
 				overflow[orderkey] = priority;
 				return;
 			}
@@ -280,7 +280,15 @@ private:
 		if (new_capacity <= capacity) {
 			return;
 		}
-		classes.resize(new_capacity, static_cast<uint8_t>(PriorityClass::Absent));
+		size_t target = new_capacity;
+		if (capacity > 0) {
+			const size_t doubled = capacity > (std::numeric_limits<size_t>::max() / 2) ? std::numeric_limits<size_t>::max()
+			                                                                          : capacity * 2;
+			if (doubled > target) {
+				target = doubled;
+			}
+		}
+		classes.resize(target, static_cast<uint8_t>(PriorityClass::Absent));
 		capacity = classes.size();
 	}
 

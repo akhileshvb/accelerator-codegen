@@ -158,23 +158,29 @@ public:
 	}
 
 	bool Insert(int64_t orderkey) {
-		if (orderkey < 0) {
+		if (orderkey < 0 || orderkey > 1'000'000'000) {
 			return overflow.insert(orderkey).second;
 		}
 		const auto key = static_cast<uint64_t>(orderkey);
 		if (storage == Storage::Bytes) {
 			if (key >= byte_capacity) {
-				return overflow.insert(orderkey).second;
+				EnsureByteCapacity(key);
 			}
 			const bool was = bytes[key] != 0;
 			bytes[key] = 1;
 			return !was;
 		}
-		if (use_overflow_only || (key >> 6) >= capacity_words) {
+		if (use_overflow_only) {
 			return overflow.insert(orderkey).second;
 		}
-		InsertNonNegUnchecked(key);
-		return true;
+		if ((key >> 6) >= capacity_words) {
+			EnsureCapacity(key);
+		}
+		const auto word_index = key >> 6;
+		const auto mask = uint64_t {1} << (key & 63);
+		const bool was = (words[word_index] & mask) != 0;
+		words[word_index] |= mask;
+		return !was;
 	}
 
 	inline void InsertNonNegUnchecked(uint64_t orderkey) {
@@ -292,6 +298,20 @@ private:
 		}
 		words.resize(new_size, 0);
 		capacity_words = words.size();
+		resize_count += 1;
+	}
+
+	void EnsureByteCapacity(uint64_t max_key_inclusive) {
+		const auto needed = max_key_inclusive + 1;
+		if (needed <= byte_capacity) {
+			return;
+		}
+		auto new_size = byte_capacity == 0 ? needed : byte_capacity;
+		while (new_size < needed) {
+			new_size *= 2;
+		}
+		bytes.resize(new_size, 0);
+		byte_capacity = bytes.size();
 		resize_count += 1;
 	}
 

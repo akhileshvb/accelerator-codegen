@@ -182,7 +182,7 @@ public:
 		}
 		const auto key = static_cast<size_t>(partkey);
 		if (key >= capacity) {
-			if (partkey > static_cast<int64_t>(capacity) * 2 && partkey > 2'000'000) {
+			if (partkey > 1'000'000'000) {
 				overflow[partkey] = promo;
 				return;
 			}
@@ -248,7 +248,15 @@ private:
 		if (new_capacity <= capacity) {
 			return;
 		}
-		classes.resize(new_capacity, static_cast<uint8_t>(PromoClass::Absent));
+		size_t target = new_capacity;
+		if (capacity > 0) {
+			const size_t doubled = capacity > (std::numeric_limits<size_t>::max() / 2) ? std::numeric_limits<size_t>::max()
+			                                                                          : capacity * 2;
+			if (doubled > target) {
+				target = doubled;
+			}
+		}
+		classes.resize(target, static_cast<uint8_t>(PromoClass::Absent));
 		capacity = classes.size();
 	}
 

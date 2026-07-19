@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "duckdb/common/assert.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/string_type.hpp"
@@ -174,6 +175,10 @@ struct PartsuppKeyHash {
 };
 
 uint64_t PackPartsuppKey(int64_t partkey, int64_t suppkey) {
+	// 32|32 packing is collision-free for non-negative keys with both domains < 2^32
+	// (TPC-H through SF100: partkey <= 2e7, suppkey <= 1e6).
+	D_ASSERT(partkey >= 0 && partkey < (int64_t {1} << 32));
+	D_ASSERT(suppkey >= 0 && suppkey < (int64_t {1} << 32));
 	return (static_cast<uint64_t>(partkey) << 32) | static_cast<uint32_t>(suppkey);
 }
 
@@ -260,7 +265,7 @@ public:
 				dense_years[static_cast<size_t>(orderkey)] = static_cast<int16_t>(year);
 				return;
 			}
-			if (orderkey >= capacity && orderkey < capacity * 4 && orderkey < 100000000) {
+			if (orderkey >= capacity && orderkey <= 1'000'000'000) {
 				EnsureCapacity(orderkey + 1);
 				dense_years[static_cast<size_t>(orderkey)] = static_cast<int16_t>(year);
 				return;
@@ -313,8 +318,16 @@ private:
 		if (new_capacity <= capacity) {
 			return;
 		}
-		dense_years.resize(static_cast<size_t>(new_capacity), kAbsentYear);
-		capacity = new_capacity;
+		int64_t target = new_capacity;
+		if (capacity > 0) {
+			const int64_t doubled = capacity > (std::numeric_limits<int64_t>::max() / 2) ? std::numeric_limits<int64_t>::max()
+			                                                                             : capacity * 2;
+			if (doubled > target) {
+				target = doubled;
+			}
+		}
+		dense_years.resize(static_cast<size_t>(target), kAbsentYear);
+		capacity = target;
 	}
 
 	bool use_dense;
@@ -341,11 +354,25 @@ public:
 			hash.insert(partkey);
 			return;
 		}
-		if (partkey >= 0 && partkey < bit_capacity) {
-			bits[static_cast<size_t>(partkey) >> 6] |= (uint64_t {1} << (partkey & 63));
+		if (partkey < 0 || partkey > 1'000'000'000) {
+			overflow.insert(partkey);
 			return;
 		}
-		overflow.insert(partkey);
+		if (partkey >= bit_capacity) {
+			int64_t target = partkey + 1;
+			if (bit_capacity > 0) {
+				const int64_t doubled = bit_capacity > (std::numeric_limits<int64_t>::max() / 2)
+				                            ? std::numeric_limits<int64_t>::max()
+				                            : bit_capacity * 2;
+				if (doubled > target) {
+					target = doubled;
+				}
+			}
+			const auto words = static_cast<size_t>((target + 63) / 64);
+			bits.resize(words, 0);
+			bit_capacity = static_cast<int64_t>(words) * 64;
+		}
+		bits[static_cast<size_t>(partkey) >> 6] |= (uint64_t {1} << (partkey & 63));
 	}
 
 	bool Contains(int64_t partkey) const {
@@ -401,9 +428,18 @@ public:
 			dense[static_cast<size_t>(suppkey)] = nationkey;
 			return;
 		}
-		if (suppkey >= capacity && suppkey < 1000000) {
-			dense.resize(static_cast<size_t>(suppkey + 1), kAbsentNation);
-			capacity = suppkey + 1;
+		if (suppkey >= capacity && suppkey <= 1'000'000'000) {
+			int64_t target = suppkey + 1;
+			if (capacity > 0) {
+				const int64_t doubled = capacity > (std::numeric_limits<int64_t>::max() / 2)
+				                            ? std::numeric_limits<int64_t>::max()
+				                            : capacity * 2;
+				if (doubled > target) {
+					target = doubled;
+				}
+			}
+			dense.resize(static_cast<size_t>(target), kAbsentNation);
+			capacity = target;
 			dense[static_cast<size_t>(suppkey)] = nationkey;
 			return;
 		}

@@ -48,6 +48,56 @@ std::string GetTpchDbPath() {
 	return "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
 }
 
+int InferScaleFactor(const std::string &db_path, int64_t lineitem_count) {
+	const char *env_sf = std::getenv("ACCEL_TPCH_SCALE");
+	if (env_sf && *env_sf) {
+		return std::stoi(env_sf);
+	}
+	if (db_path.find("sf10") != std::string::npos || db_path.find("SF10") != std::string::npos) {
+		return 10;
+	}
+	if (db_path.find("sf100") != std::string::npos || db_path.find("SF100") != std::string::npos) {
+		return 100;
+	}
+	if (lineitem_count == 59986052) {
+		return 10;
+	}
+	if (lineitem_count == 6001215) {
+		return 1;
+	}
+	return 0;
+}
+
+int64_t ExpectedLineitemCount(int scale_factor) {
+	switch (scale_factor) {
+	case 1:
+		return 6001215;
+	case 10:
+		return 59986052;
+	default:
+		return -1;
+	}
+}
+
+std::vector<std::string> SplitCommaSeparated(const std::string &value) {
+	std::vector<std::string> parts;
+	std::stringstream stream(value);
+	std::string item;
+	while (std::getline(stream, item, ',')) {
+		if (!item.empty()) {
+			parts.push_back(item);
+		}
+	}
+	return parts;
+}
+
+bool MatchesFilter(const std::string &label, const std::vector<std::string> &filters) {
+	if (filters.empty()) {
+		return true;
+	}
+	return std::find(filters.begin(), filters.end(), label) != filters.end();
+}
+
 int GetEnvInt(const char *name, int fallback) {
 	const char *value = std::getenv(name);
 	if (!value || !*value) {
@@ -548,8 +598,9 @@ int main() {
 		const int warmup_iterations = GetEnvInt("ACCEL_BENCH_WARMUP", 3);
 		const int measured_iterations = GetEnvInt("ACCEL_BENCH_ITERS", 10);
 		const int session_id = GetEnvInt("ACCEL_BENCH_SESSION", 1);
+		const auto filters = SplitCommaSeparated(GetEnvString("ACCEL_BENCH_FILTER"));
 		Require(warmup_iterations >= 3, "ACCEL_BENCH_WARMUP must be >= 3");
-		Require(measured_iterations >= 10, "ACCEL_BENCH_ITERS must be >= 10");
+		Require(measured_iterations >= 5, "ACCEL_BENCH_ITERS must be >= 5");
 		Require(accelerator_codegen::Q1FusedScanEnabled(), "production Q1 path must enable fused scan");
 		Require(accelerator_codegen::Q1FusedAlignedPayloadEnabled(),
 		        "production Q1 path must enable aligned payload");
@@ -577,7 +628,18 @@ int main() {
 		auto lineitem_count = RunQuery(connection, "SELECT count(*) FROM lineitem");
 		const auto n_lineitem =
 		    lineitem_count->Cast<duckdb::MaterializedQueryResult>().GetValue(0, 0).GetValue<int64_t>();
-		Require(n_lineitem == 6001215, "expected SF1 lineitem count 6001215, got " + std::to_string(n_lineitem));
+		const int scale_factor = InferScaleFactor(GetTpchDbPath(), n_lineitem);
+		const int64_t expected_lineitems = ExpectedLineitemCount(scale_factor);
+		Require(expected_lineitems > 0,
+		        "unsupported TPC-H scale (set ACCEL_TPCH_SCALE=1|10); lineitem_count=" + std::to_string(n_lineitem));
+		Require(n_lineitem == expected_lineitems, "expected SF" + std::to_string(scale_factor) + " lineitem count " +
+		                                               std::to_string(expected_lineitems) + ", got " +
+		                                               std::to_string(n_lineitem));
+		if (scale_factor == 1) {
+			Require(measured_iterations >= 10, "ACCEL_BENCH_ITERS must be >= 10 for SF1");
+		}
+		std::cerr << "verified scale_factor=" << scale_factor << " lineitem_count=" << n_lineitem
+		          << " filter=" << (filters.empty() ? "<all>" : GetEnvString("ACCEL_BENCH_FILTER")) << "\n";
 
 		std::vector<CsvRow> rows;
 
@@ -599,6 +661,9 @@ int main() {
 		// Q1
 		for (std::size_t i = 0; i < accelerator_codegen::test_support::kQ1Manifest.size(); i++) {
 			const auto &entry = accelerator_codegen::test_support::kQ1Manifest[i];
+			if (!MatchesFilter(entry.label, filters)) {
+				continue;
+			}
 			const auto reference_sql = ReadFile(entry.sql_path);
 			const auto accel_sql = "SELECT * FROM accel_tpch_q1(" + std::to_string(entry.day_offset) + ")";
 			RequireEqualResults(connection, entry.label, reference_sql, accel_sql, false);
@@ -627,6 +692,9 @@ int main() {
 		// Q3
 		for (std::size_t i = 0; i < accelerator_codegen::test_support::kQ3Manifest.size(); i++) {
 			const auto &entry = accelerator_codegen::test_support::kQ3Manifest[i];
+			if (!MatchesFilter(entry.label, filters)) {
+				continue;
+			}
 			const auto reference_sql = ReadFile(entry.sql_path);
 			const auto accel_sql = std::string("SELECT * FROM accel_tpch_q3('") + entry.market_segment + "', DATE '" +
 			                       entry.cutoff_date + "')";
@@ -657,6 +725,9 @@ int main() {
 		// Q4
 		for (std::size_t i = 0; i < accelerator_codegen::test_support::kQ4Manifest.size(); i++) {
 			const auto &entry = accelerator_codegen::test_support::kQ4Manifest[i];
+			if (!MatchesFilter(entry.label, filters)) {
+				continue;
+			}
 			const auto reference_sql = ReadFile(entry.sql_path);
 			const auto accel_sql = std::string("SELECT * FROM accel_tpch_q4(DATE '") + entry.start_date + "')";
 			RequireEqualResults(connection, entry.label, reference_sql, accel_sql, false);
@@ -686,6 +757,9 @@ int main() {
 		// Q6
 		for (std::size_t i = 0; i < accelerator_codegen::test_support::kQ6Manifest.size(); i++) {
 			const auto &entry = accelerator_codegen::test_support::kQ6Manifest[i];
+			if (!MatchesFilter(entry.label, filters)) {
+				continue;
+			}
 			const auto reference_sql = ReadFile(entry.sql_path);
 			const auto accel_sql = std::string("SELECT revenue FROM accel_tpch_q6(DATE '") + entry.start_date + "', " +
 			                       entry.discount + ", " + entry.quantity + ")";
@@ -716,6 +790,9 @@ int main() {
 		// Q9
 		for (std::size_t i = 0; i < accelerator_codegen::test_support::kQ9Manifest.size(); i++) {
 			const auto &entry = accelerator_codegen::test_support::kQ9Manifest[i];
+			if (!MatchesFilter(entry.label, filters)) {
+				continue;
+			}
 			const auto reference_sql = ReadFile(entry.sql_path);
 			const auto accel_sql =
 			    std::string("SELECT * FROM accel_tpch_q9('") + EscapeSqlLiteral(entry.color) + "')";
@@ -746,6 +823,9 @@ int main() {
 		// Q12
 		for (std::size_t i = 0; i < accelerator_codegen::test_support::kQ12Manifest.size(); i++) {
 			const auto &entry = accelerator_codegen::test_support::kQ12Manifest[i];
+			if (!MatchesFilter(entry.label, filters)) {
+				continue;
+			}
 			const auto reference_sql = ReadFile(entry.sql_path);
 			const auto accel_sql = std::string("SELECT * FROM accel_tpch_q12('") +
 			                       EscapeSqlLiteral(entry.shipmode1) + "', '" + EscapeSqlLiteral(entry.shipmode2) +
@@ -778,6 +858,9 @@ int main() {
 		// Q14
 		for (std::size_t i = 0; i < accelerator_codegen::test_support::kQ14Manifest.size(); i++) {
 			const auto &entry = accelerator_codegen::test_support::kQ14Manifest[i];
+			if (!MatchesFilter(entry.label, filters)) {
+				continue;
+			}
 			const auto reference_sql = ReadFile(entry.sql_path);
 			const auto accel_sql = std::string("SELECT * FROM accel_tpch_q14(DATE '") + entry.start_date + "')";
 			RequireEqualResults(connection, entry.label, reference_sql, accel_sql, false);
