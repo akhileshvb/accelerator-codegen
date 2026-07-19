@@ -284,4 +284,41 @@ duckdb::unique_ptr<ChunkSource> CreateNativeChunkSource(duckdb::ClientContext &c
     return duckdb::make_uniq<NativeChunkSource>(context, bind_data.Cast<NativeScanBindData>());
 }
 
+bool NativeScanHasFilters(const duckdb::FunctionData &bind_data) {
+    const auto &native = GetNativeScanBindData(&bind_data);
+    return native.translated_filters && !native.translated_filters->filters.empty();
+}
+
+bool RunNativeFilteredScanConsumer(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data,
+                                   const duckdb::FilteredScanConsumer &consumer) {
+    const auto &native = GetNativeScanBindData(&bind_data);
+    auto &table = duckdb::Catalog::GetEntry<duckdb::TableCatalogEntry>(context, native.bound_spec.catalog_name,
+                                                                       native.bound_spec.schema_name,
+                                                                       native.bound_spec.table_name);
+    auto &transaction = duckdb::DuckTransaction::Get(context, duckdb::Catalog::GetCatalog(context, native.bound_spec.catalog_name));
+    auto &storage = table.GetStorage();
+
+    duckdb::vector<duckdb::StorageIndex> storage_indexes;
+    storage_indexes.reserve(native.bound_spec.projected_columns.size());
+    for (const auto &column : native.bound_spec.projected_columns) {
+        storage_indexes.emplace_back(column.storage_index);
+    }
+
+    duckdb::TableScanState scan_state;
+    storage.InitializeScan(context, transaction, scan_state, storage_indexes, native.translated_filters.get());
+
+    duckdb::FilteredScanConsumer wrapped =
+        [&context, &consumer](duckdb::TransactionData transaction_data, duckdb::CollectionScanState &state,
+                              duckdb::RowGroup &row_group, duckdb::SelectionVector &sel,
+                              duckdb::idx_t count) -> duckdb::FilteredScanConsumerResult {
+        if (context.interrupted) {
+            return duckdb::FilteredScanConsumerResult::STOP;
+        }
+        return consumer(transaction_data, state, row_group, sel, count);
+    };
+
+    auto result = storage.ScanFilteredConsumer(transaction, scan_state, wrapped);
+    return result != duckdb::FilteredScanConsumerResult::STOP;
+}
+
 } // namespace accelerator_codegen

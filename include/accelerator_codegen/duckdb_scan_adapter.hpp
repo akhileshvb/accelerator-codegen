@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/storage/storage_index.hpp"
+#include "duckdb/storage/table/filtered_scan_consumer.hpp"
 
 namespace duckdb {
 class ClientContext;
@@ -48,5 +50,13 @@ duckdb::unique_ptr<duckdb::FunctionData> BindNativeScan(duckdb::ClientContext &c
 void AddNativeTableDependencies(duckdb::LogicalDependencyList &dependencies, const duckdb::FunctionData *bind_data);
 duckdb::unique_ptr<ChunkSource> CreateNativeChunkSource(duckdb::ClientContext &context,
                                                         const duckdb::FunctionData &bind_data);
+
+//! True when the bound native scan pushed at least one table filter.
+bool NativeScanHasFilters(const duckdb::FunctionData &bind_data);
+
+//! Drain base + local storage via DataTable::ScanFilteredConsumer.
+//! Returns false if the client was interrupted (consumer returned STOP).
+bool RunNativeFilteredScanConsumer(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data,
+                                   const duckdb::FilteredScanConsumer &consumer);
 
 } // namespace accelerator_codegen

@@ -16,14 +16,20 @@ add_library(accelerator_codegen SHARED
     src/duckdb_scan_adapter.cpp
     src/query_runtime.cpp
     src/register.cpp
-    src/functions/accelerator_hello.cpp
-    src/functions/count_lineitem.cpp
     src/generated/tpch/q1_package.cpp
-    src/generated/tpch/q1_kernel.cpp
+    src/generated/tpch/q1_fused_scan.cpp
     src/generated/tpch/q3_package.cpp
     src/generated/tpch/q3_kernel.cpp
+    src/generated/tpch/q4_package.cpp
+    src/generated/tpch/q4_kernel.cpp
     src/generated/tpch/q6_package.cpp
     src/generated/tpch/q6_kernel.cpp
+    src/generated/tpch/q9_package.cpp
+    src/generated/tpch/q9_kernel.cpp
+    src/generated/tpch/q12_package.cpp
+    src/generated/tpch/q12_kernel.cpp
+    src/generated/tpch/q14_package.cpp
+    src/generated/tpch/q14_kernel.cpp
 )
 
 target_include_directories(accelerator_codegen
@@ -47,19 +53,6 @@ target_link_libraries(test_registration
         accelerator_codegen
         duckdb_sibling
 )
-
-add_executable(test_count_lineitem
-    tests/test_count_lineitem.cpp
-    tests/test_support/native_scan_test_utils.cpp
-)
-
-target_link_libraries(test_count_lineitem
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_count_lineitem PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q6
     tests/test_tpch_q6.cpp
@@ -97,6 +90,54 @@ target_link_libraries(test_tpch_q3
 
 target_include_directories(test_tpch_q3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
+add_executable(test_tpch_q4
+    tests/test_tpch_q4.cpp
+)
+
+target_link_libraries(test_tpch_q4
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_tpch_q4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(test_tpch_q9
+    tests/test_tpch_q9.cpp
+)
+
+target_link_libraries(test_tpch_q9
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_tpch_q9 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(test_tpch_q12
+    tests/test_tpch_q12.cpp
+)
+
+target_link_libraries(test_tpch_q12
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_tpch_q12 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(test_tpch_q14
+    tests/test_tpch_q14.cpp
+)
+
+target_link_libraries(test_tpch_q14
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_tpch_q14 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
 add_executable(benchmark_tpch_q6
     benchmarks/tpch/benchmark_q6.cpp
 )
@@ -133,6 +174,54 @@ target_link_libraries(benchmark_tpch_q3
 
 target_include_directories(benchmark_tpch_q3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
+add_executable(benchmark_tpch_q4
+    benchmarks/tpch/benchmark_q4.cpp
+)
+
+target_link_libraries(benchmark_tpch_q4
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(benchmark_tpch_q4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(benchmark_tpch_q9
+    benchmarks/tpch/benchmark_q9.cpp
+)
+
+target_link_libraries(benchmark_tpch_q9
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(benchmark_tpch_q9 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(benchmark_tpch_q12
+    benchmarks/tpch/benchmark_q12.cpp
+)
+
+target_link_libraries(benchmark_tpch_q12
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(benchmark_tpch_q12 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(benchmark_tpch_q14
+    benchmarks/tpch/benchmark_q14.cpp
+)
+
+target_link_libraries(benchmark_tpch_q14
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(benchmark_tpch_q14 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
 add_executable(benchmark_tpch_breakdown
     benchmarks/tpch/benchmark_tpch_breakdown.cpp
 )
@@ -145,16 +234,31 @@ target_link_libraries(benchmark_tpch_breakdown
 
 target_include_directories(benchmark_tpch_breakdown PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
-set_target_properties(accelerator_codegen test_registration test_count_lineitem test_tpch_q6 test_tpch_q1 test_tpch_q3 benchmark_tpch_q6 benchmark_tpch_q1 benchmark_tpch_q3 benchmark_tpch_breakdown PROPERTIES
+add_executable(benchmark_tpch_validated
+    benchmarks/tpch/benchmark_tpch_validated.cpp
+)
+
+target_link_libraries(benchmark_tpch_validated
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(benchmark_tpch_validated PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+set_target_properties(accelerator_codegen test_registration test_tpch_q6 test_tpch_q1 test_tpch_q3 test_tpch_q4 test_tpch_q9 test_tpch_q12 test_tpch_q14 benchmark_tpch_q6 benchmark_tpch_q1 benchmark_tpch_q3 benchmark_tpch_q4 benchmark_tpch_q9 benchmark_tpch_q12 benchmark_tpch_q14 benchmark_tpch_breakdown benchmark_tpch_validated PROPERTIES
     BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
     INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 )
 
 if(BUILD_TESTING)
     add_test(NAME registration_smoke_test COMMAND test_registration)
-    add_test(NAME count_lineitem_smoke_test COMMAND test_count_lineitem)
     add_test(NAME tpch_q6_smoke_test COMMAND test_tpch_q6)
     add_test(NAME tpch_q1_smoke_test COMMAND test_tpch_q1)
     add_test(NAME tpch_q3_smoke_test COMMAND test_tpch_q3)
-    set_tests_properties(count_lineitem_smoke_test tpch_q6_smoke_test tpch_q1_smoke_test tpch_q3_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
+    add_test(NAME tpch_q4_smoke_test COMMAND test_tpch_q4)
+    add_test(NAME tpch_q9_smoke_test COMMAND test_tpch_q9)
+    add_test(NAME tpch_q12_smoke_test COMMAND test_tpch_q12)
+    add_test(NAME tpch_q14_smoke_test COMMAND test_tpch_q14)
+    set_tests_properties(tpch_q6_smoke_test tpch_q1_smoke_test tpch_q3_smoke_test tpch_q4_smoke_test tpch_q9_smoke_test tpch_q12_smoke_test tpch_q14_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
 endif()

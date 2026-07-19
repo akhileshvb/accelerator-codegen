@@ -3,6 +3,9 @@
 #include <stdexcept>
 #include <utility>
 
+#include "accelerator_codegen/tpch_q1.hpp"
+#include "accelerator_codegen/tpch_q1_fused.hpp"
+#include "accelerator_codegen/tpch_q4.hpp"
 #include "duckdb/catalog/dependency_list.hpp"
 #include "duckdb/execution/execution_context.hpp"
 
@@ -102,10 +105,22 @@ struct RuntimeQueryGlobalState : public duckdb::GlobalTableFunctionState {
 struct RuntimeQueryLocalState : public duckdb::LocalTableFunctionState {
     duckdb::vector<duckdb::unique_ptr<ChunkSource>> inputs;
     duckdb::unique_ptr<KernelInstance> kernel;
+    Q1FusedKernel *fused_kernel = nullptr;
+    Q4Kernel *q4_kernel = nullptr;
+    bool use_fused_q1 = false;
+    bool use_fused_q4_lineitem = false;
     bool inputs_consumed = false;
     bool finalized = false;
     bool output_exhausted = false;
 };
+
+bool IsQ1Package(const QueryPackage &package) {
+    return package.function_name == "accel_tpch_q1";
+}
+
+bool IsQ4Package(const QueryPackage &package) {
+    return package.function_name == "accel_tpch_q4";
+}
 
 const RuntimePackageInfo &GetRuntimePackageInfo(const duckdb::TableFunctionBindInput &input) {
     if (!input.info) {
@@ -159,6 +174,35 @@ duckdb::unique_ptr<duckdb::LocalTableFunctionState> RuntimeLocalInit(duckdb::Exe
                                                                      duckdb::GlobalTableFunctionState *) {
     auto &bound_query = GetBoundQueryData(*input.bind_data);
     auto local_state = duckdb::make_uniq<RuntimeQueryLocalState>();
+
+    // Q1 always uses the fused ScanFilteredConsumer kernel (chunk DataChunk path removed).
+    if (IsQ1Package(bound_query.package)) {
+        if (bound_query.bound_inputs.size() != 1) {
+            throw std::runtime_error("Q1 fused scan expects exactly one bound input");
+        }
+        auto &q1_params = dynamic_cast<const Q1Parameters &>(*bound_query.query_parameters);
+        auto fused = duckdb::make_uniq<Q1FusedKernel>(q1_params);
+        local_state->fused_kernel = fused.get();
+        local_state->kernel = std::move(fused);
+        local_state->use_fused_q1 = true;
+        return local_state;
+    }
+
+    // Experimental Q4 fused lineitem (default off). Orders still drained as chunks.
+    const bool try_fused_q4_lineitem = IsQ4Package(bound_query.package) && Q4LineitemFusedScanEnabled();
+    if (try_fused_q4_lineitem) {
+        if (bound_query.bound_inputs.size() != 2) {
+            throw std::runtime_error("Q4 fused lineitem scan expects lineitem and orders bound inputs");
+        }
+        auto &q4_params = dynamic_cast<const Q4Parameters &>(*bound_query.query_parameters);
+        auto q4_kernel = CreateQ4KernelTyped(q4_params);
+        local_state->q4_kernel = q4_kernel.get();
+        local_state->kernel = std::move(q4_kernel);
+        local_state->use_fused_q4_lineitem = true;
+        local_state->inputs.push_back(CreateNativeChunkSource(context.client, *bound_query.bound_inputs[1]));
+        return local_state;
+    }
+
     local_state->inputs.reserve(bound_query.bound_inputs.size());
     for (const auto &bound_input : bound_query.bound_inputs) {
         local_state->inputs.push_back(CreateNativeChunkSource(context.client, *bound_input));
@@ -188,10 +232,30 @@ void RuntimeExec(duckdb::ClientContext &context,
     auto &local_state = input.local_state->Cast<RuntimeQueryLocalState>();
 
     if (!local_state.inputs_consumed) {
-        for (duckdb::idx_t input_id = 0; input_id < local_state.inputs.size(); input_id++) {
-            auto &source = local_state.inputs[input_id];
-            while (source->Next()) {
-                local_state.kernel->ConsumeInput(input_id, source->Chunk());
+        if (local_state.use_fused_q1) {
+            if (!local_state.fused_kernel) {
+                throw std::runtime_error("Q1 fused kernel missing");
+            }
+            local_state.fused_kernel->RunFusedScan(context, *bound_query.bound_inputs[0]);
+        } else if (local_state.use_fused_q4_lineitem) {
+            if (!local_state.q4_kernel) {
+                throw std::runtime_error("Q4 fused kernel missing");
+            }
+            local_state.q4_kernel->RunFusedLineitemScan(context, *bound_query.bound_inputs[0]);
+            if (local_state.inputs.size() != 1) {
+                throw std::runtime_error("Q4 fused lineitem path expects a single orders chunk source");
+            }
+            auto &orders_source = local_state.inputs[0];
+            while (orders_source->Next()) {
+                local_state.kernel->ConsumeInput(static_cast<duckdb::idx_t>(Q4InputId::ORDERS),
+                                                 orders_source->Chunk());
+            }
+        } else {
+            for (duckdb::idx_t input_id = 0; input_id < local_state.inputs.size(); input_id++) {
+                auto &source = local_state.inputs[input_id];
+                while (source->Next()) {
+                    local_state.kernel->ConsumeInput(input_id, source->Chunk());
+                }
             }
         }
         local_state.inputs_consumed = true;

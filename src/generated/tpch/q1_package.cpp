@@ -1,5 +1,6 @@
 #include "accelerator_codegen/query_runtime.hpp"
 #include "accelerator_codegen/tpch_q1.hpp"
+#include "accelerator_codegen/tpch_q1_fused.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -85,7 +86,7 @@ QueryBindResult BindQ1Package(duckdb::ClientContext &, duckdb::TableFunctionBind
 duckdb::unique_ptr<KernelInstance> CreateQ1KernelInstance(const QueryParameters &parameters,
                                                           const QueryKernelFactoryData *) {
     auto &q1_parameters = dynamic_cast<const Q1Parameters &>(parameters);
-    return CreateQ1Kernel(q1_parameters);
+    return CreateQ1FusedKernel(q1_parameters);
 }
 
 } // namespace

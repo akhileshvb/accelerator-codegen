@@ -89,28 +89,53 @@ void ExecuteAndValidate(duckdb::Connection &connection, const std::string &sql) 
     (void)materialized.GetValue(0, 0);
 }
 
-double BenchmarkQuery(duckdb::Connection &connection,
-                      const std::string &sql,
-                      int warmup_iterations,
-                      int measured_iterations) {
+struct TimingStats {
+    double average_us = 0.0;
+    double median_us = 0.0;
+};
+
+template <class Callback>
+TimingStats BenchmarkOperation(int warmup_iterations, int measured_iterations, Callback &&callback) {
     for (int i = 0; i < warmup_iterations; i++) {
-        ExecuteAndValidate(connection, sql);
+        callback();
     }
 
-    const auto start = Clock::now();
+    std::vector<double> samples_us;
+    samples_us.reserve(measured_iterations);
     for (int i = 0; i < measured_iterations; i++) {
-        ExecuteAndValidate(connection, sql);
+        const auto start = Clock::now();
+        callback();
+        const auto end = Clock::now();
+        samples_us.push_back(
+            static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()));
     }
-    const auto end = Clock::now();
 
-    const auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    return static_cast<double>(total_us) / static_cast<double>(measured_iterations);
+    TimingStats stats;
+    for (const auto sample : samples_us) {
+        stats.average_us += sample;
+    }
+    stats.average_us /= static_cast<double>(samples_us.size());
+
+    std::sort(samples_us.begin(), samples_us.end());
+    const auto middle = samples_us.size() / 2;
+    stats.median_us = samples_us.size() % 2 == 0 ? (samples_us[middle - 1] + samples_us[middle]) / 2.0
+                                                  : samples_us[middle];
+    return stats;
+}
+
+TimingStats BenchmarkQuery(duckdb::Connection &connection,
+                           const std::string &sql,
+                           int warmup_iterations,
+                           int measured_iterations) {
+    return BenchmarkOperation(warmup_iterations, measured_iterations,
+                              [&]() { ExecuteAndValidate(connection, sql); });
 }
 
 struct BenchmarkAggregate {
     int rows = 0;
-    double total_reference_us = 0.0;
-    double total_accelerator_us = 0.0;
+    double total_reference_median_us = 0.0;
+    double total_accelerator_median_us = 0.0;
+    double total_speedup = 0.0;
 };
 
 } // namespace
@@ -127,7 +152,7 @@ int main() {
         connection.Query("PRAGMA threads=1");
 
         BenchmarkAggregate aggregate;
-        std::cout << "label,reference_us,accelerator_us,speedup\n";
+        std::cout << "label,reference_mean_us,reference_median_us,accelerator_mean_us,accelerator_median_us,speedup_median\n";
         for (const auto &entry : accelerator_codegen::test_support::kQ6Manifest) {
             const std::string label = entry.label;
             if (!MatchesFilter(label, filters)) {
@@ -136,24 +161,29 @@ int main() {
 
             const auto reference_sql = ReadFile(entry.sql_path);
             const auto accelerator_sql = AcceleratorQ6Sql(entry);
-            const auto reference_us = BenchmarkQuery(connection, reference_sql, warmup_iterations, measured_iterations);
-            const auto accelerator_us = BenchmarkQuery(connection, accelerator_sql, warmup_iterations, measured_iterations);
-            const auto speedup = reference_us / accelerator_us;
+            const auto reference = BenchmarkQuery(connection, reference_sql, warmup_iterations, measured_iterations);
+            const auto accelerator =
+                BenchmarkQuery(connection, accelerator_sql, warmup_iterations, measured_iterations);
+            const auto speedup = reference.median_us / accelerator.median_us;
 
             aggregate.rows += 1;
-            aggregate.total_reference_us += reference_us;
-            aggregate.total_accelerator_us += accelerator_us;
+            aggregate.total_reference_median_us += reference.median_us;
+            aggregate.total_accelerator_median_us += accelerator.median_us;
+            aggregate.total_speedup += speedup;
 
-            std::cout << label << ',' << std::fixed << std::setprecision(2) << reference_us << ',' << accelerator_us << ','
+            std::cout << label << ',' << std::fixed << std::setprecision(2) << reference.average_us << ','
+                      << reference.median_us << ',' << accelerator.average_us << ',' << accelerator.median_us << ','
                       << speedup << "\n";
         }
 
         Require(aggregate.rows > 0, "benchmark filter selected no Q6 instances");
-        const auto average_reference_us = aggregate.total_reference_us / static_cast<double>(aggregate.rows);
-        const auto average_accelerator_us = aggregate.total_accelerator_us / static_cast<double>(aggregate.rows);
-        const auto average_speedup = average_reference_us / average_accelerator_us;
-        std::cout << "summary_avg," << std::fixed << std::setprecision(2) << average_reference_us << ','
-                  << average_accelerator_us << ',' << average_speedup << "\n";
+        const auto average_reference_us = aggregate.total_reference_median_us / static_cast<double>(aggregate.rows);
+        const auto average_accelerator_us =
+            aggregate.total_accelerator_median_us / static_cast<double>(aggregate.rows);
+        const auto average_speedup = aggregate.total_speedup / static_cast<double>(aggregate.rows);
+        std::cout << "summary_avg_median," << std::fixed << std::setprecision(2) << average_reference_us << ','
+                  << average_reference_us << ',' << average_accelerator_us << ',' << average_accelerator_us << ','
+                  << average_speedup << "\n";
         return EXIT_SUCCESS;
     } catch (const std::exception &ex) {
         std::cerr << "benchmark_q6 failed: " << ex.what() << std::endl;
