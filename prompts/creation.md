@@ -67,7 +67,9 @@ nulls;
 transaction-local vectors;
 unsupported encodings;
 keys outside an expected dense domain.
-Do not introduce multithreading.
+Do not introduce multithreading into the production `accel_tpch_qN` path. Parallel execution is a
+separate compile-time-guarded path (`ACCEL_ENABLE_PARALLEL_TPCH` / `accel_tpch_qN_parallel`) documented
+in `docs/parallel_tpch_design.md`.
 Do not introduce a physical operator, custom decoder, scan-consumer path, SIMD implementation, or aggressive specialization in the first correctness milestone.
 Do not optimize toward a target speedup in the initial pass.
 Do not change the query semantics to make the accelerator easier to implement.

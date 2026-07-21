@@ -80,7 +80,10 @@ nulls and nullable dictionary children;
 transaction-local vectors;
 unsupported encodings;
 sparse, negative, or out-of-range keys.
-Do not introduce multithreading.
+Do not introduce multithreading into the production single-threaded `accel_tpch_qN` path.
+Guarded parallel variants (`accel_tpch_qN_parallel`, `-DACCEL_ENABLE_PARALLEL_TPCH`) are a separate
+benchmark/experimental path; see `docs/parallel_tpch_design.md`. Do not silently flip production
+behavior via ambient environment variables.
 Do not alter query semantics.
 Do not modify benchmark methodology to favor the accelerator.
 Do not hide work outside the timed query execution.
@@ -948,7 +951,8 @@ scan-consumer;
 format-specific decode;
 alternate join order;
 physical operator;
-multithreading as future work.
+multithreading as future work for the production single-threaded path (a separate guarded parallel
+benchmark path already exists behind `-DACCEL_ENABLE_PARALLEL_TPCH`).
 10. Production path
 
 State:
@@ -960,4 +964,7 @@ experimental guards retained;
 files modified;
 whether cleanup changed performance.
 
-The final result must be an auditable, profile-guided accelerator that remains single-threaded, uses native DuckDB storage, has no persistent auxiliary state, preserves exact correctness, and performs well at both SF1 and SF10 without relying on SF1-specific capacities or assumptions.
+The final result must be an auditable, profile-guided accelerator whose **production** path remains
+single-threaded, uses native DuckDB storage, has no persistent auxiliary state, preserves exact
+correctness, and performs well at both SF1 and SF10 without relying on SF1-specific capacities or
+assumptions. Optional guarded parallel variants must not disturb that production path.
