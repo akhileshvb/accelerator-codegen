@@ -44,5 +44,6 @@ struct Q6LineitemChunkLayout {
 
 DecimalSumResult ExecuteQ6(ChunkSource &lineitem_scan, const Q6Parameters &params);
 duckdb::unique_ptr<KernelInstance> CreateQ6Kernel(const Q6Parameters &params);
+duckdb::unique_ptr<KernelInstance> CreateQ6ParallelKernel(const Q6Parameters &params);
 
 } // namespace accelerator_codegen

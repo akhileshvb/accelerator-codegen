@@ -44,6 +44,30 @@ target_link_libraries(accelerator_codegen
 
 target_compile_features(accelerator_codegen PUBLIC cxx_std_17)
 
+option(ACCEL_ENABLE_PARALLEL_TPCH "Build multithreaded TPC-H accelerator variants (accel_tpch_q*_parallel)" OFF)
+if(ACCEL_ENABLE_PARALLEL_TPCH)
+	target_compile_definitions(accelerator_codegen PUBLIC ACCEL_ENABLE_PARALLEL_TPCH)
+	# Q3 shared __int128 revenue CAS uses libatomic (__atomic_*_16).
+	target_link_libraries(accelerator_codegen PRIVATE atomic)
+	target_sources(accelerator_codegen PRIVATE
+		src/parallel/parallel_runtime.cpp
+		src/generated/tpch/parallel/q1_parallel_kernel.cpp
+		src/generated/tpch/parallel/q1_parallel_package.cpp
+		src/generated/tpch/parallel/q3_parallel_kernel.cpp
+		src/generated/tpch/parallel/q3_parallel_package.cpp
+		src/generated/tpch/parallel/q4_parallel_kernel.cpp
+		src/generated/tpch/parallel/q4_parallel_package.cpp
+		src/generated/tpch/parallel/q6_parallel_kernel.cpp
+		src/generated/tpch/parallel/q6_parallel_package.cpp
+		src/generated/tpch/parallel/q9_parallel_kernel.cpp
+		src/generated/tpch/parallel/q9_parallel_package.cpp
+		src/generated/tpch/parallel/q12_parallel_kernel.cpp
+		src/generated/tpch/parallel/q12_parallel_package.cpp
+		src/generated/tpch/parallel/q14_parallel_kernel.cpp
+		src/generated/tpch/parallel/q14_parallel_package.cpp
+	)
+endif()
+
 add_executable(test_registration
     tests/test_registration.cpp
 )
@@ -251,6 +275,19 @@ set_target_properties(accelerator_codegen test_registration test_tpch_q6 test_tp
     INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 )
 
+if(ACCEL_ENABLE_PARALLEL_TPCH)
+	add_executable(test_tpch_parallel
+		tests/parallel/test_tpch_parallel.cpp
+	)
+	target_link_libraries(test_tpch_parallel PRIVATE accelerator_codegen duckdb_sibling)
+	target_include_directories(test_tpch_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+	target_compile_definitions(test_tpch_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
+	set_target_properties(test_tpch_parallel PROPERTIES
+		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
+		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
+	)
+endif()
+
 if(BUILD_TESTING)
     add_test(NAME registration_smoke_test COMMAND test_registration)
     add_test(NAME tpch_q6_smoke_test COMMAND test_tpch_q6)
@@ -261,4 +298,8 @@ if(BUILD_TESTING)
     add_test(NAME tpch_q12_smoke_test COMMAND test_tpch_q12)
     add_test(NAME tpch_q14_smoke_test COMMAND test_tpch_q14)
     set_tests_properties(tpch_q6_smoke_test tpch_q1_smoke_test tpch_q3_smoke_test tpch_q4_smoke_test tpch_q9_smoke_test tpch_q12_smoke_test tpch_q14_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
+	if(ACCEL_ENABLE_PARALLEL_TPCH)
+		add_test(NAME tpch_parallel_smoke_test COMMAND test_tpch_parallel)
+		set_tests_properties(tpch_parallel_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
+	endif()
 endif()

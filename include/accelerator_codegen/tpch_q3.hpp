@@ -164,4 +164,8 @@ bool Q3CustomerChunkCanUsePartialDictFastPath(duckdb::DataChunk &input);
 duckdb::unique_ptr<KernelInstance> CreateQ3Kernel(const Q3Parameters &params);
 duckdb::unique_ptr<KernelInstance> CreateQ3ProfilingKernel(const Q3Parameters &params, Q3ProfileCounters &counters);
 
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+duckdb::unique_ptr<KernelInstance> CreateQ3ParallelKernel(const Q3Parameters &params);
+#endif
+
 } // namespace accelerator_codegen

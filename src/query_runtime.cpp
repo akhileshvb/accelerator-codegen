@@ -6,6 +6,9 @@
 #include "accelerator_codegen/tpch_q1.hpp"
 #include "accelerator_codegen/tpch_q1_fused.hpp"
 #include "accelerator_codegen/tpch_q4.hpp"
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+#include "accelerator_codegen/parallel/parallel_kernel.hpp"
+#endif
 #include "duckdb/catalog/dependency_list.hpp"
 #include "duckdb/execution/execution_context.hpp"
 
@@ -107,6 +110,9 @@ struct RuntimeQueryLocalState : public duckdb::LocalTableFunctionState {
     duckdb::unique_ptr<KernelInstance> kernel;
     Q1FusedKernel *fused_kernel = nullptr;
     Q4Kernel *q4_kernel = nullptr;
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+    ParallelKernelInstance *parallel_kernel = nullptr;
+#endif
     bool use_fused_q1 = false;
     bool use_fused_q4_lineitem = false;
     bool inputs_consumed = false;
@@ -121,6 +127,13 @@ bool IsQ1Package(const QueryPackage &package) {
 bool IsQ4Package(const QueryPackage &package) {
     return package.function_name == "accel_tpch_q4";
 }
+
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+bool IsParallelPackage(const QueryPackage &package) {
+    const auto &name = package.function_name;
+    return name.size() > 9 && name.compare(name.size() - 9, 9, "_parallel") == 0;
+}
+#endif
 
 const RuntimePackageInfo &GetRuntimePackageInfo(const duckdb::TableFunctionBindInput &input) {
     if (!input.info) {
@@ -174,6 +187,24 @@ duckdb::unique_ptr<duckdb::LocalTableFunctionState> RuntimeLocalInit(duckdb::Exe
                                                                      duckdb::GlobalTableFunctionState *) {
     auto &bound_query = GetBoundQueryData(*input.bind_data);
     auto local_state = duckdb::make_uniq<RuntimeQueryLocalState>();
+
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+    if (IsParallelPackage(bound_query.package)) {
+        if (!bound_query.package.create_kernel) {
+            throw std::runtime_error("parallel package missing kernel factory");
+        }
+        local_state->kernel =
+            bound_query.package.create_kernel(*bound_query.query_parameters, bound_query.kernel_factory_data.get());
+        if (!local_state->kernel) {
+            throw std::runtime_error("parallel package returned null kernel");
+        }
+        local_state->parallel_kernel = dynamic_cast<ParallelKernelInstance *>(local_state->kernel.get());
+        if (!local_state->parallel_kernel) {
+            throw std::runtime_error("parallel package kernel must inherit ParallelKernelInstance");
+        }
+        return local_state;
+    }
+#endif
 
     // Q1 always uses the fused ScanFilteredConsumer kernel (chunk DataChunk path removed).
     if (IsQ1Package(bound_query.package)) {
@@ -232,6 +263,11 @@ void RuntimeExec(duckdb::ClientContext &context,
     auto &local_state = input.local_state->Cast<RuntimeQueryLocalState>();
 
     if (!local_state.inputs_consumed) {
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+        if (local_state.parallel_kernel) {
+            local_state.parallel_kernel->RunParallel(context, bound_query.bound_inputs);
+        } else
+#endif
         if (local_state.use_fused_q1) {
             if (!local_state.fused_kernel) {
                 throw std::runtime_error("Q1 fused kernel missing");

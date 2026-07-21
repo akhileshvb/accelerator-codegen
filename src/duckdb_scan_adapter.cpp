@@ -1,4 +1,5 @@
 #include "accelerator_codegen/duckdb_scan_adapter.hpp"
+#include "accelerator_codegen/parallel/parallel_runtime.hpp"
 
 #include <sstream>
 #include <stdexcept>
@@ -319,6 +320,36 @@ bool RunNativeFilteredScanConsumer(duckdb::ClientContext &context, const duckdb:
 
     auto result = storage.ScanFilteredConsumer(transaction, scan_state, wrapped);
     return result != duckdb::FilteredScanConsumerResult::STOP;
+}
+
+void InitializeNativeParallelScanHandle(NativeParallelScanHandle &handle, duckdb::ClientContext &context,
+                                        const duckdb::FunctionData &bind_data) {
+    const auto &native = GetNativeScanBindData(&bind_data);
+    auto &table = duckdb::Catalog::GetEntry<duckdb::TableCatalogEntry>(context, native.bound_spec.catalog_name,
+                                                                       native.bound_spec.schema_name,
+                                                                       native.bound_spec.table_name);
+    auto &transaction =
+        duckdb::DuckTransaction::Get(context, duckdb::Catalog::GetCatalog(context, native.bound_spec.catalog_name));
+    auto &storage = table.GetStorage();
+
+    handle.context = &context;
+    handle.transaction = &transaction;
+    handle.storage = &storage;
+    handle.storage_indexes.clear();
+    handle.projected_types.clear();
+    handle.storage_indexes.reserve(native.bound_spec.projected_columns.size());
+    handle.projected_types.reserve(native.bound_spec.projected_columns.size());
+    for (const auto &column : native.bound_spec.projected_columns) {
+        handle.storage_indexes.emplace_back(column.storage_index);
+        handle.projected_types.emplace_back(column.logical_type);
+    }
+    handle.filters = native.translated_filters.get();
+    handle.tasks_claimed.store(0, std::memory_order_relaxed);
+    handle.failed.store(false, std::memory_order_relaxed);
+
+    // InitializeParallelScan's column_indexes argument is unused by storage; pass empty.
+    duckdb::vector<duckdb::ColumnIndex> column_indexes;
+    storage.InitializeParallelScan(context, handle.parallel_state, column_indexes);
 }
 
 } // namespace accelerator_codegen

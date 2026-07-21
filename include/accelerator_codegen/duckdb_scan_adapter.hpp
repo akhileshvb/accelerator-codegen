@@ -59,4 +59,10 @@ bool NativeScanHasFilters(const duckdb::FunctionData &bind_data);
 bool RunNativeFilteredScanConsumer(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data,
                                    const duckdb::FilteredScanConsumer &consumer);
 
+struct NativeParallelScanHandle;
+
+//! Fill a NativeParallelScanHandle from bound native-scan FunctionData (parallel path).
+void InitializeNativeParallelScanHandle(NativeParallelScanHandle &handle, duckdb::ClientContext &context,
+                                        const duckdb::FunctionData &bind_data);
+
 } // namespace accelerator_codegen

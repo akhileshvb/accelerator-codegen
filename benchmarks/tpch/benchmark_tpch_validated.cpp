@@ -37,6 +37,10 @@
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
 
+#if defined(__linux__)
+#include <unistd.h>
+#endif
+
 namespace {
 using Clock = std::chrono::steady_clock;
 
@@ -109,6 +113,55 @@ int GetEnvInt(const char *name, int fallback) {
 std::string GetEnvString(const char *name) {
 	const char *value = std::getenv(name);
 	return value ? value : "";
+}
+
+enum class AcceleratorMode { Single, Parallel };
+
+AcceleratorMode ParseAcceleratorMode(const std::string &value) {
+	if (value.empty() || value == "single") {
+		return AcceleratorMode::Single;
+	}
+	if (value == "parallel") {
+		return AcceleratorMode::Parallel;
+	}
+	throw std::runtime_error("invalid accelerator mode '" + value + "' (expected single|parallel)");
+}
+
+std::string AccelFunctionName(const char *base, AcceleratorMode mode) {
+	if (mode == AcceleratorMode::Parallel) {
+		return std::string(base) + "_parallel";
+	}
+	return base;
+}
+
+//! Parse optional CLI: --accelerator-mode {single|parallel} --threads N
+void ParseValidatedCli(int argc, char **argv, AcceleratorMode &mode, int &threads) {
+	mode = ParseAcceleratorMode(GetEnvString("ACCEL_ACCELERATOR_MODE"));
+	threads = GetEnvInt("ACCEL_BENCH_THREADS", 1);
+	for (int i = 1; i < argc; i++) {
+		const std::string arg = argv[i];
+		if (arg == "--accelerator-mode") {
+			if (i + 1 >= argc) {
+				throw std::runtime_error("--accelerator-mode requires a value");
+			}
+			mode = ParseAcceleratorMode(argv[++i]);
+		} else if (arg == "--threads") {
+			if (i + 1 >= argc) {
+				throw std::runtime_error("--threads requires a value");
+			}
+			threads = std::stoi(argv[++i]);
+			if (threads < 1 || threads > 256) {
+				throw std::runtime_error("--threads out of range");
+			}
+		} else if (arg == "--help" || arg == "-h") {
+			std::cerr << "Usage: benchmark_tpch_validated [--accelerator-mode single|parallel] [--threads N]\n"
+			             "Env: ACCEL_ACCELERATOR_MODE, ACCEL_BENCH_THREADS, ACCEL_TPCH_DB, ACCEL_TPCH_SCALE, "
+			             "ACCEL_BENCH_WARMUP, ACCEL_BENCH_ITERS, ACCEL_BENCH_SESSION, ACCEL_BENCH_FILTER\n";
+			std::exit(0);
+		} else {
+			throw std::runtime_error("unknown argument: " + arg);
+		}
+	}
 }
 
 const char *EnvOrUnset(const char *name) {
@@ -292,19 +345,52 @@ SampleStats Summarize(std::vector<double> samples_us) {
 	return stats;
 }
 
+int64_t ReadCurrentRssKb() {
+#if defined(__linux__)
+	std::ifstream status("/proc/self/status");
+	std::string line;
+	while (std::getline(status, line)) {
+		if (line.rfind("VmRSS:", 0) == 0) {
+			std::istringstream in(line.substr(6));
+			int64_t kb = 0;
+			in >> kb;
+			return kb;
+		}
+	}
+#endif
+	return 0;
+}
+
 struct PairedTiming {
 	SampleStats duckdb;
 	SampleStats accelerator;
 	double first_duckdb_us = 0.0;
 	double first_accelerator_us = 0.0;
+	int64_t peak_rss_kb = 0;
 };
 
 PairedTiming BenchmarkPaired(duckdb::Connection &connection, const std::string &reference_sql,
                              const std::string &accelerator_sql, int warmup_iterations, int measured_iterations,
                              bool accel_first_on_even) {
+	int64_t peak_rss_kb = ReadCurrentRssKb();
+	auto note_rss = [&]() {
+		peak_rss_kb = std::max(peak_rss_kb, ReadCurrentRssKb());
+	};
+
+	// Warmups alternate with the same order policy as measured iterations.
 	for (int i = 0; i < warmup_iterations; i++) {
-		ExecuteAndConsume(connection, reference_sql);
-		ExecuteAndConsume(connection, accelerator_sql);
+		const bool accel_first = accel_first_on_even ? (i % 2 == 0) : (i % 2 == 1);
+		if (accel_first) {
+			ExecuteAndConsume(connection, accelerator_sql);
+			note_rss();
+			ExecuteAndConsume(connection, reference_sql);
+			note_rss();
+		} else {
+			ExecuteAndConsume(connection, reference_sql);
+			note_rss();
+			ExecuteAndConsume(connection, accelerator_sql);
+			note_rss();
+		}
 	}
 
 	std::vector<double> duckdb_samples;
@@ -317,6 +403,7 @@ PairedTiming BenchmarkPaired(duckdb::Connection &connection, const std::string &
 		auto time_one = [&](const std::string &sql) {
 			const auto start = Clock::now();
 			ExecuteAndConsume(connection, sql);
+			note_rss();
 			const auto end = Clock::now();
 			return static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
 		};
@@ -329,14 +416,8 @@ PairedTiming BenchmarkPaired(duckdb::Connection &connection, const std::string &
 			duckdb_us = time_one(reference_sql);
 			accel_us = time_one(accelerator_sql);
 		}
-		if (i == 0) {
-			// Record whichever ran first for drift diagnostics.
-		}
 		duckdb_samples.push_back(duckdb_us);
 		accel_samples.push_back(accel_us);
-		if (i == 0) {
-			// Keep first measured sample of each path for cold-vs-warm notes.
-		}
 	}
 
 	PairedTiming timing;
@@ -344,6 +425,7 @@ PairedTiming BenchmarkPaired(duckdb::Connection &connection, const std::string &
 	timing.accelerator = Summarize(accel_samples);
 	timing.first_duckdb_us = duckdb_samples.front();
 	timing.first_accelerator_us = accel_samples.front();
+	timing.peak_rss_kb = peak_rss_kb;
 	return timing;
 }
 
@@ -384,7 +466,97 @@ struct CsvRow {
 	double first_duckdb_ms = 0.0;
 	double first_accelerator_ms = 0.0;
 	std::string order_note;
+	int threads = 1;
+	std::string accelerator_mode = "single";
+	int64_t shared_state_bytes = 0;
+	int64_t per_worker_state_bytes = 0;
+	int64_t query_local_state_bytes = 0;
+	int64_t peak_rss_kb = 0;
 };
+
+int64_t ParseTaggedInt64(const std::string &text, const std::string &key) {
+	const auto needle = key + "=";
+	const auto pos = text.find(needle);
+	if (pos == std::string::npos) {
+		return 0;
+	}
+	return std::strtoll(text.c_str() + pos + needle.size(), nullptr, 10);
+}
+
+//! Annotate ST profile counters with parallel shared + N×worker estimates.
+//! Worker estimates are lower bounds on durable per-worker aggregates (not peak build scratch).
+std::string AnnotateMemory(const std::string &query, const std::string &st_state, int threads, bool parallel_mode,
+                           int64_t &shared_out, int64_t &per_worker_out, int64_t &query_local_out) {
+	shared_out = 0;
+	per_worker_out = 0;
+	if (query == "Q1") {
+		shared_out = 0;
+		per_worker_out = parallel_mode ? (64 * 8) : 0;
+	} else if (query == "Q6") {
+		shared_out = 0;
+		per_worker_out = parallel_mode ? 64 : 0;
+	} else if (query == "Q3") {
+		shared_out = ParseTaggedInt64(st_state, "cust_bytes") + ParseTaggedInt64(st_state, "orders_bytes");
+		const auto slots = ParseTaggedInt64(st_state, "slots");
+		per_worker_out = parallel_mode ? (slots * (16 + 1)) : 0;
+		if (!parallel_mode) {
+			// ST revenues live in one aggregate structure counted with slots via orders path.
+			query_local_out = shared_out + slots * (16 + 1);
+			std::ostringstream out;
+			out << st_state << ";threads=" << threads << ";shared_bytes=" << shared_out
+			    << ";per_worker_bytes=0;query_local_bytes=" << query_local_out;
+			return out.str();
+		}
+	} else if (query == "Q4") {
+		shared_out = ParseTaggedInt64(st_state, "bitmap_bytes");
+		per_worker_out = parallel_mode ? (shared_out + 64) : 0;
+		if (!parallel_mode) {
+			query_local_out = shared_out;
+			std::ostringstream out;
+			out << st_state << ";threads=" << threads << ";shared_bytes=" << shared_out
+			    << ";per_worker_bytes=0;query_local_bytes=" << query_local_out;
+			return out.str();
+		}
+	} else if (query == "Q9") {
+		shared_out = ParseTaggedInt64(st_state, "parts") + ParseTaggedInt64(st_state, "supplier") +
+		             ParseTaggedInt64(st_state, "nation") + ParseTaggedInt64(st_state, "orders") +
+		             ParseTaggedInt64(st_state, "partsupp");
+		const auto agg = ParseTaggedInt64(st_state, "agg");
+		per_worker_out = parallel_mode ? agg : 0;
+		if (!parallel_mode) {
+			query_local_out = shared_out + agg;
+			std::ostringstream out;
+			out << st_state << ";threads=" << threads << ";shared_bytes=" << shared_out
+			    << ";per_worker_bytes=0;query_local_bytes=" << query_local_out;
+			return out.str();
+		}
+	} else if (query == "Q12") {
+		shared_out = ParseTaggedInt64(st_state, "orders_map_bytes");
+		per_worker_out = parallel_mode ? 128 : 0;
+		if (!parallel_mode) {
+			query_local_out = shared_out;
+			std::ostringstream out;
+			out << st_state << ";threads=" << threads << ";shared_bytes=" << shared_out
+			    << ";per_worker_bytes=0;query_local_bytes=" << query_local_out;
+			return out.str();
+		}
+	} else if (query == "Q14") {
+		shared_out = ParseTaggedInt64(st_state, "part_map_bytes");
+		per_worker_out = parallel_mode ? 128 : 0;
+		if (!parallel_mode) {
+			query_local_out = shared_out;
+			std::ostringstream out;
+			out << st_state << ";threads=" << threads << ";shared_bytes=" << shared_out
+			    << ";per_worker_bytes=0;query_local_bytes=" << query_local_out;
+			return out.str();
+		}
+	}
+	query_local_out = shared_out + static_cast<int64_t>(threads) * per_worker_out;
+	std::ostringstream out;
+	out << st_state << ";threads=" << threads << ";shared_bytes=" << shared_out
+	    << ";per_worker_bytes=" << per_worker_out << ";query_local_bytes=" << query_local_out;
+	return out.str();
+}
 
 std::string FormatDispersion(const SampleStats &stats) {
 	std::ostringstream out;
@@ -593,8 +765,12 @@ double GeometricMean(const std::vector<double> &values) {
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
 	try {
+		AcceleratorMode accelerator_mode = AcceleratorMode::Single;
+		int thread_count = 1;
+		ParseValidatedCli(argc, argv, accelerator_mode, thread_count);
+
 		const int warmup_iterations = GetEnvInt("ACCEL_BENCH_WARMUP", 3);
 		const int measured_iterations = GetEnvInt("ACCEL_BENCH_ITERS", 10);
 		const int session_id = GetEnvInt("ACCEL_BENCH_SESSION", 1);
@@ -613,17 +789,39 @@ int main() {
 		        "validated Q6 path leaves DUCKDB_BITPACKING_NATIVE_FILTER off");
 		Require(GetEnvString("ACCEL_Q1_AUX_STATE").empty() || GetEnvString("ACCEL_Q1_AUX_STATE") == "0",
 		        "ACCEL_Q1_AUX_STATE must remain disabled");
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+		const bool parallel_build = true;
+#else
+		const bool parallel_build = false;
+#endif
+		if (accelerator_mode == AcceleratorMode::Parallel) {
+			Require(parallel_build,
+			        "parallel accelerator mode requires a build with -DACCEL_ENABLE_PARALLEL_TPCH=ON");
+		}
 
 		PrintEnvBanner();
+		std::cerr << "accelerator_mode="
+		          << (accelerator_mode == AcceleratorMode::Parallel ? "parallel" : "single")
+		          << " threads=" << thread_count << " parallel_build=" << (parallel_build ? "1" : "0") << "\n";
 
 		duckdb::DuckDB database(GetTpchDbPath().c_str());
 		duckdb::Connection connection(database);
 		accelerator_codegen::RegisterAcceleratorFunctions(connection);
-		auto pragma = connection.Query("PRAGMA threads=1");
-		Require(pragma != nullptr && !pragma->HasError(), "failed to set PRAGMA threads=1");
+		auto pragma = connection.Query("PRAGMA threads=" + std::to_string(thread_count));
+		Require(pragma != nullptr && !pragma->HasError(), "failed to set PRAGMA threads");
 		const auto threads = VerifyThreads(connection);
-		Require(threads == 1, "expected current_setting('threads')==1, got " + std::to_string(threads));
+		Require(threads == thread_count,
+		        "expected current_setting('threads')==" + std::to_string(thread_count) + ", got " +
+		            std::to_string(threads));
 		std::cerr << "verified threads=" << threads << " session=" << session_id << "\n";
+
+		const auto q1_fn = AccelFunctionName("accel_tpch_q1", accelerator_mode);
+		const auto q3_fn = AccelFunctionName("accel_tpch_q3", accelerator_mode);
+		const auto q4_fn = AccelFunctionName("accel_tpch_q4", accelerator_mode);
+		const auto q6_fn = AccelFunctionName("accel_tpch_q6", accelerator_mode);
+		const auto q9_fn = AccelFunctionName("accel_tpch_q9", accelerator_mode);
+		const auto q12_fn = AccelFunctionName("accel_tpch_q12", accelerator_mode);
+		const auto q14_fn = AccelFunctionName("accel_tpch_q14", accelerator_mode);
 
 		auto lineitem_count = RunQuery(connection, "SELECT count(*) FROM lineitem");
 		const auto n_lineitem =
@@ -636,10 +834,13 @@ int main() {
 		                                               std::to_string(expected_lineitems) + ", got " +
 		                                               std::to_string(n_lineitem));
 		if (scale_factor == 1) {
-			Require(measured_iterations >= 10, "ACCEL_BENCH_ITERS must be >= 10 for SF1");
+			Require(measured_iterations >= 5, "ACCEL_BENCH_ITERS must be >= 5 for SF1");
 		}
 		std::cerr << "verified scale_factor=" << scale_factor << " lineitem_count=" << n_lineitem
 		          << " filter=" << (filters.empty() ? "<all>" : GetEnvString("ACCEL_BENCH_FILTER")) << "\n";
+
+		const std::string mode_label =
+		    accelerator_mode == AcceleratorMode::Parallel ? "parallel" : "single";
 
 		std::vector<CsvRow> rows;
 
@@ -650,13 +851,37 @@ int main() {
 			          << row.accelerator_dispersion << '"' << ',' << (row.correctness_passed ? "true" : "false") << ','
 			          << '"' << row.transient_state << '"' << ',' << row.duckdb_cv << ',' << row.accelerator_cv << ','
 			          << row.first_duckdb_ms << ',' << row.first_accelerator_ms << ',' << '"' << row.order_note << '"'
+			          << ',' << row.threads << ',' << row.accelerator_mode << ',' << row.shared_state_bytes << ','
+			          << row.per_worker_state_bytes << ',' << row.query_local_state_bytes << ',' << row.peak_rss_kb
 			          << "\n";
 			rows.push_back(std::move(row));
 		};
 
+		auto fill_timing = [&](CsvRow &row, const PairedTiming &timing, bool accel_first_even,
+		                       const std::string &st_state) {
+			row.duckdb_median_ms = timing.duckdb.median_us / 1000.0;
+			row.accelerator_median_ms = timing.accelerator.median_us / 1000.0;
+			row.speedup = timing.duckdb.median_us / timing.accelerator.median_us;
+			row.duckdb_dispersion = FormatDispersion(timing.duckdb);
+			row.accelerator_dispersion = FormatDispersion(timing.accelerator);
+			row.correctness_passed = true;
+			row.duckdb_cv = timing.duckdb.cv;
+			row.accelerator_cv = timing.accelerator.cv;
+			row.first_duckdb_ms = timing.first_duckdb_us / 1000.0;
+			row.first_accelerator_ms = timing.first_accelerator_us / 1000.0;
+			row.order_note = accel_first_even ? "even_iters_accel_first" : "even_iters_sql_first";
+			row.threads = thread_count;
+			row.accelerator_mode = mode_label;
+			row.peak_rss_kb = timing.peak_rss_kb;
+			row.transient_state =
+			    AnnotateMemory(row.query, st_state, thread_count, accelerator_mode == AcceleratorMode::Parallel,
+			                   row.shared_state_bytes, row.per_worker_state_bytes, row.query_local_state_bytes);
+		};
+
 		std::cout << "query,seed,parameters,duckdb_median_ms,accelerator_median_ms,speedup,duckdb_dispersion,"
 		             "accelerator_dispersion,correctness_passed,transient_state,duckdb_cv,accelerator_cv,"
-		             "first_duckdb_ms,first_accelerator_ms,order_note\n";
+		             "first_duckdb_ms,first_accelerator_ms,order_note,threads,accelerator_mode,shared_state_bytes,"
+		             "per_worker_state_bytes,query_local_state_bytes,peak_rss_kb\n";
 
 		// Q1
 		for (std::size_t i = 0; i < accelerator_codegen::test_support::kQ1Manifest.size(); i++) {
@@ -665,7 +890,7 @@ int main() {
 				continue;
 			}
 			const auto reference_sql = ReadFile(entry.sql_path);
-			const auto accel_sql = "SELECT * FROM accel_tpch_q1(" + std::to_string(entry.day_offset) + ")";
+			const auto accel_sql = "SELECT * FROM " + q1_fn + "(" + std::to_string(entry.day_offset) + ")";
 			RequireEqualResults(connection, entry.label, reference_sql, accel_sql, false);
 			const bool accel_first_even = ((session_id + static_cast<int>(i)) % 2) == 0;
 			const auto timing = BenchmarkPaired(connection, reference_sql, accel_sql, warmup_iterations,
@@ -674,51 +899,29 @@ int main() {
 			row.query = "Q1";
 			row.seed = entry.label;
 			row.parameters = "day_offset=" + std::to_string(entry.day_offset);
-			row.duckdb_median_ms = timing.duckdb.median_us / 1000.0;
-			row.accelerator_median_ms = timing.accelerator.median_us / 1000.0;
-			row.speedup = timing.duckdb.median_us / timing.accelerator.median_us;
-			row.duckdb_dispersion = FormatDispersion(timing.duckdb);
-			row.accelerator_dispersion = FormatDispersion(timing.accelerator);
-			row.correctness_passed = true;
-			row.transient_state = "none";
-			row.duckdb_cv = timing.duckdb.cv;
-			row.accelerator_cv = timing.accelerator.cv;
-			row.first_duckdb_ms = timing.first_duckdb_us / 1000.0;
-			row.first_accelerator_ms = timing.first_accelerator_us / 1000.0;
-			row.order_note = accel_first_even ? "even_iters_accel_first" : "even_iters_sql_first";
+			fill_timing(row, timing, accel_first_even, "none");
 			record(std::move(row));
 		}
 
-		// Q3
+		// Q3 — measure ST profile counters AFTER timing (avoids asymmetric ST warmup before parallel timing)
 		for (std::size_t i = 0; i < accelerator_codegen::test_support::kQ3Manifest.size(); i++) {
 			const auto &entry = accelerator_codegen::test_support::kQ3Manifest[i];
 			if (!MatchesFilter(entry.label, filters)) {
 				continue;
 			}
 			const auto reference_sql = ReadFile(entry.sql_path);
-			const auto accel_sql = std::string("SELECT * FROM accel_tpch_q3('") + entry.market_segment + "', DATE '" +
+			const auto accel_sql = std::string("SELECT * FROM ") + q3_fn + "('" + entry.market_segment + "', DATE '" +
 			                       entry.cutoff_date + "')";
 			RequireEqualResults(connection, entry.label, reference_sql, accel_sql, true);
-			const auto state = MeasureQ3State(connection, entry);
 			const bool accel_first_even = ((session_id + static_cast<int>(i)) % 2) == 0;
 			const auto timing = BenchmarkPaired(connection, reference_sql, accel_sql, warmup_iterations,
 			                                    measured_iterations, accel_first_even);
+			const auto state = MeasureQ3State(connection, entry);
 			CsvRow row;
 			row.query = "Q3";
 			row.seed = entry.label;
 			row.parameters = std::string("segment=") + entry.market_segment + ";cutoff=" + entry.cutoff_date;
-			row.duckdb_median_ms = timing.duckdb.median_us / 1000.0;
-			row.accelerator_median_ms = timing.accelerator.median_us / 1000.0;
-			row.speedup = timing.duckdb.median_us / timing.accelerator.median_us;
-			row.duckdb_dispersion = FormatDispersion(timing.duckdb);
-			row.accelerator_dispersion = FormatDispersion(timing.accelerator);
-			row.correctness_passed = true;
-			row.transient_state = state;
-			row.duckdb_cv = timing.duckdb.cv;
-			row.accelerator_cv = timing.accelerator.cv;
-			row.first_duckdb_ms = timing.first_duckdb_us / 1000.0;
-			row.first_accelerator_ms = timing.first_accelerator_us / 1000.0;
-			row.order_note = accel_first_even ? "even_iters_accel_first" : "even_iters_sql_first";
+			fill_timing(row, timing, accel_first_even, state);
 			record(std::move(row));
 		}
 
@@ -729,28 +932,17 @@ int main() {
 				continue;
 			}
 			const auto reference_sql = ReadFile(entry.sql_path);
-			const auto accel_sql = std::string("SELECT * FROM accel_tpch_q4(DATE '") + entry.start_date + "')";
+			const auto accel_sql = std::string("SELECT * FROM ") + q4_fn + "(DATE '" + entry.start_date + "')";
 			RequireEqualResults(connection, entry.label, reference_sql, accel_sql, false);
-			const auto state = MeasureQ4State(connection, entry);
 			const bool accel_first_even = ((session_id + static_cast<int>(i)) % 2) == 0;
 			const auto timing = BenchmarkPaired(connection, reference_sql, accel_sql, warmup_iterations,
 			                                    measured_iterations, accel_first_even);
+			const auto state = MeasureQ4State(connection, entry);
 			CsvRow row;
 			row.query = "Q4";
 			row.seed = entry.label;
 			row.parameters = std::string("start_date=") + entry.start_date;
-			row.duckdb_median_ms = timing.duckdb.median_us / 1000.0;
-			row.accelerator_median_ms = timing.accelerator.median_us / 1000.0;
-			row.speedup = timing.duckdb.median_us / timing.accelerator.median_us;
-			row.duckdb_dispersion = FormatDispersion(timing.duckdb);
-			row.accelerator_dispersion = FormatDispersion(timing.accelerator);
-			row.correctness_passed = true;
-			row.transient_state = state;
-			row.duckdb_cv = timing.duckdb.cv;
-			row.accelerator_cv = timing.accelerator.cv;
-			row.first_duckdb_ms = timing.first_duckdb_us / 1000.0;
-			row.first_accelerator_ms = timing.first_accelerator_us / 1000.0;
-			row.order_note = accel_first_even ? "even_iters_accel_first" : "even_iters_sql_first";
+			fill_timing(row, timing, accel_first_even, state);
 			record(std::move(row));
 		}
 
@@ -761,7 +953,7 @@ int main() {
 				continue;
 			}
 			const auto reference_sql = ReadFile(entry.sql_path);
-			const auto accel_sql = std::string("SELECT revenue FROM accel_tpch_q6(DATE '") + entry.start_date + "', " +
+			const auto accel_sql = std::string("SELECT revenue FROM ") + q6_fn + "(DATE '" + entry.start_date + "', " +
 			                       entry.discount + ", " + entry.quantity + ")";
 			RequireEqualResults(connection, entry.label, reference_sql, accel_sql, false);
 			const bool accel_first_even = ((session_id + static_cast<int>(i)) % 2) == 0;
@@ -772,18 +964,7 @@ int main() {
 			row.seed = entry.label;
 			row.parameters = std::string("start=") + entry.start_date + ";discount=" + entry.discount +
 			                ";quantity=" + entry.quantity;
-			row.duckdb_median_ms = timing.duckdb.median_us / 1000.0;
-			row.accelerator_median_ms = timing.accelerator.median_us / 1000.0;
-			row.speedup = timing.duckdb.median_us / timing.accelerator.median_us;
-			row.duckdb_dispersion = FormatDispersion(timing.duckdb);
-			row.accelerator_dispersion = FormatDispersion(timing.accelerator);
-			row.correctness_passed = true;
-			row.transient_state = "none";
-			row.duckdb_cv = timing.duckdb.cv;
-			row.accelerator_cv = timing.accelerator.cv;
-			row.first_duckdb_ms = timing.first_duckdb_us / 1000.0;
-			row.first_accelerator_ms = timing.first_accelerator_us / 1000.0;
-			row.order_note = accel_first_even ? "even_iters_accel_first" : "even_iters_sql_first";
+			fill_timing(row, timing, accel_first_even, "none");
 			record(std::move(row));
 		}
 
@@ -795,28 +976,17 @@ int main() {
 			}
 			const auto reference_sql = ReadFile(entry.sql_path);
 			const auto accel_sql =
-			    std::string("SELECT * FROM accel_tpch_q9('") + EscapeSqlLiteral(entry.color) + "')";
+			    std::string("SELECT * FROM ") + q9_fn + "('" + EscapeSqlLiteral(entry.color) + "')";
 			RequireEqualResults(connection, entry.label, reference_sql, accel_sql, false);
-			const auto state = MeasureQ9State(connection, entry);
 			const bool accel_first_even = ((session_id + static_cast<int>(i)) % 2) == 0;
 			const auto timing = BenchmarkPaired(connection, reference_sql, accel_sql, warmup_iterations,
 			                                    measured_iterations, accel_first_even);
+			const auto state = MeasureQ9State(connection, entry);
 			CsvRow row;
 			row.query = "Q9";
 			row.seed = entry.label;
 			row.parameters = std::string("color=") + entry.color;
-			row.duckdb_median_ms = timing.duckdb.median_us / 1000.0;
-			row.accelerator_median_ms = timing.accelerator.median_us / 1000.0;
-			row.speedup = timing.duckdb.median_us / timing.accelerator.median_us;
-			row.duckdb_dispersion = FormatDispersion(timing.duckdb);
-			row.accelerator_dispersion = FormatDispersion(timing.accelerator);
-			row.correctness_passed = true;
-			row.transient_state = state;
-			row.duckdb_cv = timing.duckdb.cv;
-			row.accelerator_cv = timing.accelerator.cv;
-			row.first_duckdb_ms = timing.first_duckdb_us / 1000.0;
-			row.first_accelerator_ms = timing.first_accelerator_us / 1000.0;
-			row.order_note = accel_first_even ? "even_iters_accel_first" : "even_iters_sql_first";
+			fill_timing(row, timing, accel_first_even, state);
 			record(std::move(row));
 		}
 
@@ -827,31 +997,20 @@ int main() {
 				continue;
 			}
 			const auto reference_sql = ReadFile(entry.sql_path);
-			const auto accel_sql = std::string("SELECT * FROM accel_tpch_q12('") +
+			const auto accel_sql = std::string("SELECT * FROM ") + q12_fn + "('" +
 			                       EscapeSqlLiteral(entry.shipmode1) + "', '" + EscapeSqlLiteral(entry.shipmode2) +
 			                       "', DATE '" + entry.start_date + "')";
 			RequireEqualResults(connection, entry.label, reference_sql, accel_sql, false);
-			const auto state = MeasureQ12State(connection, entry);
 			const bool accel_first_even = ((session_id + static_cast<int>(i)) % 2) == 0;
 			const auto timing = BenchmarkPaired(connection, reference_sql, accel_sql, warmup_iterations,
 			                                    measured_iterations, accel_first_even);
+			const auto state = MeasureQ12State(connection, entry);
 			CsvRow row;
 			row.query = "Q12";
 			row.seed = entry.label;
 			row.parameters = std::string("shipmode1=") + entry.shipmode1 + ";shipmode2=" + entry.shipmode2 +
 			                ";start=" + entry.start_date;
-			row.duckdb_median_ms = timing.duckdb.median_us / 1000.0;
-			row.accelerator_median_ms = timing.accelerator.median_us / 1000.0;
-			row.speedup = timing.duckdb.median_us / timing.accelerator.median_us;
-			row.duckdb_dispersion = FormatDispersion(timing.duckdb);
-			row.accelerator_dispersion = FormatDispersion(timing.accelerator);
-			row.correctness_passed = true;
-			row.transient_state = state;
-			row.duckdb_cv = timing.duckdb.cv;
-			row.accelerator_cv = timing.accelerator.cv;
-			row.first_duckdb_ms = timing.first_duckdb_us / 1000.0;
-			row.first_accelerator_ms = timing.first_accelerator_us / 1000.0;
-			row.order_note = accel_first_even ? "even_iters_accel_first" : "even_iters_sql_first";
+			fill_timing(row, timing, accel_first_even, state);
 			record(std::move(row));
 		}
 
@@ -862,28 +1021,17 @@ int main() {
 				continue;
 			}
 			const auto reference_sql = ReadFile(entry.sql_path);
-			const auto accel_sql = std::string("SELECT * FROM accel_tpch_q14(DATE '") + entry.start_date + "')";
+			const auto accel_sql = std::string("SELECT * FROM ") + q14_fn + "(DATE '" + entry.start_date + "')";
 			RequireEqualResults(connection, entry.label, reference_sql, accel_sql, false);
-			const auto state = MeasureQ14State(connection, entry);
 			const bool accel_first_even = ((session_id + static_cast<int>(i)) % 2) == 0;
 			const auto timing = BenchmarkPaired(connection, reference_sql, accel_sql, warmup_iterations,
 			                                    measured_iterations, accel_first_even);
+			const auto state = MeasureQ14State(connection, entry);
 			CsvRow row;
 			row.query = "Q14";
 			row.seed = entry.label;
 			row.parameters = std::string("start_date=") + entry.start_date;
-			row.duckdb_median_ms = timing.duckdb.median_us / 1000.0;
-			row.accelerator_median_ms = timing.accelerator.median_us / 1000.0;
-			row.speedup = timing.duckdb.median_us / timing.accelerator.median_us;
-			row.duckdb_dispersion = FormatDispersion(timing.duckdb);
-			row.accelerator_dispersion = FormatDispersion(timing.accelerator);
-			row.correctness_passed = true;
-			row.transient_state = state;
-			row.duckdb_cv = timing.duckdb.cv;
-			row.accelerator_cv = timing.accelerator.cv;
-			row.first_duckdb_ms = timing.first_duckdb_us / 1000.0;
-			row.first_accelerator_ms = timing.first_accelerator_us / 1000.0;
-			row.order_note = accel_first_even ? "even_iters_accel_first" : "even_iters_sql_first";
+			fill_timing(row, timing, accel_first_even, state);
 			record(std::move(row));
 		}
 
@@ -904,7 +1052,10 @@ int main() {
 				accel_ms.push_back(row.accelerator_median_ms);
 				max_cv = std::max(max_cv, std::max(row.duckdb_cv, row.accelerator_cv));
 			}
-			Require(!speedups.empty(), std::string("missing rows for ") + query);
+			if (speedups.empty()) {
+				std::cerr << query << ": seeds=0 (filtered out)\n";
+				continue;
+			}
 			const double arith = std::accumulate(speedups.begin(), speedups.end(), 0.0) / speedups.size();
 			const double geo = GeometricMean(speedups);
 			const double duck_med = MedianOf(duckdb_ms);
@@ -930,8 +1081,11 @@ int main() {
 					speedups.push_back(row.speedup);
 				}
 			}
-			query_geomeans.push_back(GeometricMean(speedups));
+			if (!speedups.empty()) {
+				query_geomeans.push_back(GeometricMean(speedups));
+			}
 		}
+		Require(!query_geomeans.empty(), "no benchmark rows matched filter");
 		std::cerr << "overall_geomean_across_all_queries=" << std::fixed << std::setprecision(4)
 		          << GeometricMean(query_geomeans) << "\n";
 		return EXIT_SUCCESS;

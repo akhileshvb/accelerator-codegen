@@ -3,12 +3,14 @@
 # Q1, Q3, Q4, Q6, Q9, Q12, Q14.
 #
 # Usage:
-#   ./scripts/run_validated_tpch_bench.sh                  # SF1, session 1
+#   ./scripts/run_validated_tpch_bench.sh                  # SF1, session 1, single-threaded accel
 #   ./scripts/run_validated_tpch_bench.sh --scale-factor 10
+#   ./scripts/run_validated_tpch_bench.sh --accelerator-mode parallel --threads 4
 #   ./scripts/run_validated_tpch_bench.sh --scale-factor 10 --session 2 --seeds 1-5
 #   ./scripts/run_validated_tpch_bench.sh 2                # legacy: session 2, SF1
 #
 # Production kernel paths are hardcoded (no ambient ACCEL_* required).
+# Parallel mode requires a build with -DACCEL_ENABLE_PARALLEL_TPCH=ON (build-release-parallel).
 # This script clears experimental ACCEL_* / DUCKDB_* vars so shell inheritance cannot skew results.
 set -euo pipefail
 
@@ -20,6 +22,8 @@ OUT_DIR="${ROOT}/benchmarks/tpch/results"
 SCALE=1
 SESSION=1
 SEEDS=""  # empty = all (SF1 default); SF10 defaults to 1-5 unless overridden
+ACCEL_MODE=single
+THREADS=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,12 +39,20 @@ while [[ $# -gt 0 ]]; do
       SEEDS="${2:?}"
       shift 2
       ;;
+    --accelerator-mode)
+      ACCEL_MODE="${2:?}"
+      shift 2
+      ;;
+    --threads)
+      THREADS="${2:?}"
+      shift 2
+      ;;
     [0-9]*)
       SESSION="$1"
       shift
       ;;
     -h|--help)
-      sed -n '2,12p' "$0"
+      sed -n '2,14p' "$0"
       exit 0
       ;;
     *)
@@ -53,6 +65,15 @@ done
 if [[ "${SCALE}" != "1" && "${SCALE}" != "10" ]]; then
   echo "ERROR: --scale-factor must be 1 or 10 (got ${SCALE})" >&2
   exit 1
+fi
+
+if [[ "${ACCEL_MODE}" != "single" && "${ACCEL_MODE}" != "parallel" ]]; then
+  echo "ERROR: --accelerator-mode must be single or parallel (got ${ACCEL_MODE})" >&2
+  exit 1
+fi
+
+if [[ "${ACCEL_MODE}" == "parallel" ]]; then
+  BUILD="${ROOT}/build-release-parallel"
 fi
 
 SF_DB="${DUCKDB_ROOT}/tpch_sf${SCALE}.duckdb"
@@ -136,26 +157,30 @@ echo "compiler=$(c++ --version | head -1)"
 echo "scale_factor=${SCALE}"
 echo "session=${SESSION}"
 echo "seeds=${SEEDS}"
+echo "accelerator_mode=${ACCEL_MODE}"
+echo "threads=${THREADS}"
+echo "build=${BUILD}"
 echo "db=${SF_DB}"
 
 # Drop any inherited experimental toggles that could affect DuckDB-side paths.
 while IFS= read -r name; do
   unset "${name}" || true
-done < <(env | awk -F= '/^ACCEL_Q|^DUCKDB_BITPACKING|^DUCKDB_Q6_/ {print $1}')
+done < <(env | awk -F= '/^ACCEL_Q|^ACCEL_PARALLEL|^DUCKDB_BITPACKING|^DUCKDB_Q6_/ {print $1}')
 
 export ACCEL_TPCH_DB="${SF_DB}"
 export ACCEL_TPCH_SCALE="${SCALE}"
 export ACCEL_BENCH_SESSION="${SESSION}"
+export ACCEL_ACCELERATOR_MODE="${ACCEL_MODE}"
+export ACCEL_BENCH_THREADS="${THREADS}"
 export DUCKDB_BITPACKING_NATIVE_FILTER=0
 export ACCEL_Q1_AUX_STATE=0
 
+# Protocol: warmup 3, measured 5 (both SF1 and SF10) unless overridden.
+export ACCEL_BENCH_WARMUP="${ACCEL_BENCH_WARMUP:-3}"
+export ACCEL_BENCH_ITERS="${ACCEL_BENCH_ITERS:-5}"
+
 if [[ "${SCALE}" == "10" ]]; then
   preflight_sf10
-  export ACCEL_BENCH_WARMUP=3
-  export ACCEL_BENCH_ITERS=5
-else
-  export ACCEL_BENCH_WARMUP=3
-  export ACCEL_BENCH_ITERS=10
 fi
 
 FILTER="$(build_global_filter)"
@@ -168,16 +193,19 @@ fi
 
 cmake --build "${BUILD}" -j "$(nproc)" --target benchmark_tpch_validated
 
-CSV="${OUT_DIR}/validated_sf${SCALE}_session${SESSION}.csv"
-LOG="${OUT_DIR}/validated_sf${SCALE}_session${SESSION}.log"
-# Keep legacy SF1 session1 alias for existing tooling.
-if [[ "${SCALE}" == "1" && "${SESSION}" == "1" ]]; then
-  ln -sfn "validated_sf1_session1.csv" "${OUT_DIR}/validated_tpch_all_queries.csv" 2>/dev/null || true
+CSV="${OUT_DIR}/validated_sf${SCALE}_session${SESSION}_${ACCEL_MODE}_t${THREADS}.csv"
+LOG="${OUT_DIR}/validated_sf${SCALE}_session${SESSION}_${ACCEL_MODE}_t${THREADS}.log"
+# Keep legacy SF1 session1 single-thread alias for existing tooling.
+if [[ "${SCALE}" == "1" && "${SESSION}" == "1" && "${ACCEL_MODE}" == "single" && "${THREADS}" == "1" ]]; then
+  ln -sfn "validated_sf1_session1_single_t1.csv" "${OUT_DIR}/validated_tpch_all_queries.csv" 2>/dev/null || true
+  ln -sfn "validated_sf1_session1_single_t1.csv" "${OUT_DIR}/validated_sf1_session1.csv" 2>/dev/null || true
 fi
 
-echo "=== running SF${SCALE} session ${SESSION} -> ${CSV} ==="
+echo "=== running SF${SCALE} session ${SESSION} mode=${ACCEL_MODE} threads=${THREADS} -> ${CSV} ==="
 env -u ACCEL_Q1_FUSED_SCAN -u ACCEL_Q1_FUSED_ALIGNED_PAYLOAD -u ACCEL_Q3_DENSE_CUST \
   -u ACCEL_Q4_LINEITEM_FUSED -u ACCEL_Q9_DENSE_ORDERS -u ACCEL_Q12_DENSE_ORDERS -u ACCEL_Q14_DENSE_PART \
-  "${BUILD}/benchmark_tpch_validated" >"${CSV}" 2>"${LOG}"
+  -u ACCEL_PARALLEL_PROFILE -u ACCEL_PARALLEL_AUDIT -u ACCEL_Q1_PARALLEL_CHUNK \
+  "${BUILD}/benchmark_tpch_validated" --accelerator-mode "${ACCEL_MODE}" --threads "${THREADS}" \
+  >"${CSV}" 2>"${LOG}"
 echo "=== session ${SESSION} complete ==="
 tail -n 60 "${LOG}"

@@ -142,4 +142,8 @@ bool Q12SkipBaseReceiptResidualEnabled();
 duckdb::unique_ptr<KernelInstance> CreateQ12Kernel(const Q12Parameters &params);
 duckdb::unique_ptr<KernelInstance> CreateQ12ProfilingKernel(const Q12Parameters &params, Q12ProfileCounters &counters);
 
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+duckdb::unique_ptr<KernelInstance> CreateQ12ParallelKernel(const Q12Parameters &params);
+#endif
+
 } // namespace accelerator_codegen

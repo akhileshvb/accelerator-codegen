@@ -172,4 +172,8 @@ NativeScanSpec CreateQ9LineitemScanSpec(const Q9Parameters &parameters);
 duckdb::unique_ptr<KernelInstance> CreateQ9Kernel(const Q9Parameters &params);
 duckdb::unique_ptr<KernelInstance> CreateQ9ProfilingKernel(const Q9Parameters &params, Q9ProfileCounters &counters);
 
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+duckdb::unique_ptr<KernelInstance> CreateQ9ParallelKernel(const Q9Parameters &params);
+#endif
+
 } // namespace accelerator_codegen

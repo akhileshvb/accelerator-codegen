@@ -164,4 +164,8 @@ duckdb::unique_ptr<KernelInstance> CreateQ4Kernel(const Q4Parameters &params);
 duckdb::unique_ptr<Q4Kernel> CreateQ4KernelTyped(const Q4Parameters &params, Q4ProfileCounters *profile = nullptr);
 duckdb::unique_ptr<KernelInstance> CreateQ4ProfilingKernel(const Q4Parameters &params, Q4ProfileCounters &counters);
 
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+duckdb::unique_ptr<KernelInstance> CreateQ4ParallelKernel(const Q4Parameters &params);
+#endif
+
 } // namespace accelerator_codegen

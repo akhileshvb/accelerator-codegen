@@ -125,5 +125,6 @@ private:
 };
 
 duckdb::unique_ptr<KernelInstance> CreateQ1FusedKernel(const Q1Parameters &params);
+duckdb::unique_ptr<KernelInstance> CreateQ1ParallelKernel(const Q1Parameters &params);
 
 } // namespace accelerator_codegen

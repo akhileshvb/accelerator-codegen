@@ -123,5 +123,6 @@ bool Q14SkipBaseDateResidualEnabled();
 
 duckdb::unique_ptr<KernelInstance> CreateQ14Kernel(const Q14Parameters &params);
 duckdb::unique_ptr<KernelInstance> CreateQ14ProfilingKernel(const Q14Parameters &params, Q14ProfileCounters &counters);
+duckdb::unique_ptr<KernelInstance> CreateQ14ParallelKernel(const Q14Parameters &params);
 
 } // namespace accelerator_codegen

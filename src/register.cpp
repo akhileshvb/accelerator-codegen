@@ -17,6 +17,16 @@ duckdb::TableFunctionSet CreateTpchQ9FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ12FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ14FunctionSet();
 
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+duckdb::TableFunctionSet CreateTpchQ6ParallelFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ1ParallelFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ3ParallelFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ4ParallelFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ9ParallelFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ12ParallelFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ14ParallelFunctionSet();
+#endif
+
 void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
     auto &context = *connection.context;
     auto &catalog = duckdb::Catalog::GetSystemCatalog(context);
@@ -47,6 +57,29 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
 
         duckdb::CreateTableFunctionInfo q14_info(CreateTpchQ14FunctionSet());
         catalog.CreateTableFunction(context, q14_info);
+
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+        duckdb::CreateTableFunctionInfo q6p_info(CreateTpchQ6ParallelFunctionSet());
+        catalog.CreateTableFunction(context, q6p_info);
+
+        duckdb::CreateTableFunctionInfo q1p_info(CreateTpchQ1ParallelFunctionSet());
+        catalog.CreateTableFunction(context, q1p_info);
+
+        duckdb::CreateTableFunctionInfo q3p_info(CreateTpchQ3ParallelFunctionSet());
+        catalog.CreateTableFunction(context, q3p_info);
+
+        duckdb::CreateTableFunctionInfo q4p_info(CreateTpchQ4ParallelFunctionSet());
+        catalog.CreateTableFunction(context, q4p_info);
+
+        duckdb::CreateTableFunctionInfo q9p_info(CreateTpchQ9ParallelFunctionSet());
+        catalog.CreateTableFunction(context, q9p_info);
+
+        duckdb::CreateTableFunctionInfo q12p_info(CreateTpchQ12ParallelFunctionSet());
+        catalog.CreateTableFunction(context, q12p_info);
+
+        duckdb::CreateTableFunctionInfo q14p_info(CreateTpchQ14ParallelFunctionSet());
+        catalog.CreateTableFunction(context, q14p_info);
+#endif
 
         if (started_transaction) {
             connection.Commit();
