@@ -1,4 +1,6 @@
 build/
 build-*/
 benchmarks/tpch/results/
+benchmarks/tpch/tmp/
+**/__pycache__/
 docs/

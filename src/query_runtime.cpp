@@ -6,6 +6,9 @@
 #include "accelerator_codegen/tpch_q1.hpp"
 #include "accelerator_codegen/tpch_q1_fused.hpp"
 #include "accelerator_codegen/tpch_q4.hpp"
+#include "accelerator_codegen/tpch_q2.hpp"
+#include "accelerator_codegen/tpch_q8.hpp"
+#include "accelerator_codegen/tpch_q10.hpp"
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
 #include "accelerator_codegen/parallel/parallel_kernel.hpp"
 #endif
@@ -110,11 +113,14 @@ struct RuntimeQueryLocalState : public duckdb::LocalTableFunctionState {
     duckdb::unique_ptr<KernelInstance> kernel;
     Q1FusedKernel *fused_kernel = nullptr;
     Q4Kernel *q4_kernel = nullptr;
+    bool use_fused_q10_customer = false;
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
     ParallelKernelInstance *parallel_kernel = nullptr;
 #endif
     bool use_fused_q1 = false;
     bool use_fused_q4_lineitem = false;
+    bool use_fused_q8_scans = false;
+    bool use_fused_q2_scans = false;
     bool inputs_consumed = false;
     bool finalized = false;
     bool output_exhausted = false;
@@ -124,8 +130,20 @@ bool IsQ1Package(const QueryPackage &package) {
     return package.function_name == "accel_tpch_q1";
 }
 
+bool IsQ10Package(const QueryPackage &package) {
+    return package.function_name == "accel_tpch_q10";
+}
+
 bool IsQ4Package(const QueryPackage &package) {
     return package.function_name == "accel_tpch_q4";
+}
+
+bool IsQ8Package(const QueryPackage &package) {
+    return package.function_name == "accel_tpch_q8";
+}
+
+bool IsQ2Package(const QueryPackage &package) {
+    return package.function_name == "accel_tpch_q2";
 }
 
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
@@ -219,6 +237,21 @@ duckdb::unique_ptr<duckdb::LocalTableFunctionState> RuntimeLocalInit(duckdb::Exe
         return local_state;
     }
 
+    const bool try_fused_q10_customer = IsQ10Package(bound_query.package) && Q10FusedScansEnabled();
+    if (try_fused_q10_customer) {
+        if (bound_query.bound_inputs.size() != 4) {
+            throw std::runtime_error("Q10 fused customer scan expects four bound inputs");
+        }
+        auto &q10_params = dynamic_cast<const Q10Parameters &>(*bound_query.query_parameters);
+        local_state->kernel = CreateQ10Kernel(q10_params);
+        local_state->use_fused_q10_customer = true;
+        local_state->inputs.reserve(3);
+        for (duckdb::idx_t input_id = 0; input_id < 3; input_id++) {
+            local_state->inputs.push_back(CreateNativeChunkSource(context.client, *bound_query.bound_inputs[input_id]));
+        }
+        return local_state;
+    }
+
     // Experimental Q4 fused lineitem (default off). Orders still drained as chunks.
     const bool try_fused_q4_lineitem = IsQ4Package(bound_query.package) && Q4LineitemFusedScanEnabled();
     if (try_fused_q4_lineitem) {
@@ -231,6 +264,36 @@ duckdb::unique_ptr<duckdb::LocalTableFunctionState> RuntimeLocalInit(duckdb::Exe
         local_state->kernel = std::move(q4_kernel);
         local_state->use_fused_q4_lineitem = true;
         local_state->inputs.push_back(CreateNativeChunkSource(context.client, *bound_query.bound_inputs[1]));
+        return local_state;
+    }
+
+    const bool try_fused_q8_scans = IsQ8Package(bound_query.package) && Q8FusedScansEnabled();
+    if (try_fused_q8_scans) {
+        if (bound_query.bound_inputs.size() != 5) {
+            throw std::runtime_error("Q8 fused scans expect five bound inputs");
+        }
+        auto &q8_params = dynamic_cast<const Q8Parameters &>(*bound_query.query_parameters);
+        local_state->kernel = CreateQ8Kernel(q8_params);
+        local_state->use_fused_q8_scans = true;
+        local_state->inputs.reserve(2);
+        for (duckdb::idx_t input_id = 0; input_id < 2; input_id++) {
+            local_state->inputs.push_back(CreateNativeChunkSource(context.client, *bound_query.bound_inputs[input_id]));
+        }
+        return local_state;
+    }
+
+    const bool try_fused_q2_scans = IsQ2Package(bound_query.package) && Q2FusedScansEnabled();
+    if (try_fused_q2_scans) {
+        if (bound_query.bound_inputs.size() != 4) {
+            throw std::runtime_error("Q2 fused scans expect four bound inputs");
+        }
+        auto &q2_params = dynamic_cast<const Q2Parameters &>(*bound_query.query_parameters);
+        local_state->kernel = CreateQ2Kernel(q2_params);
+        local_state->use_fused_q2_scans = true;
+        local_state->inputs.reserve(2);
+        for (duckdb::idx_t input_id = 0; input_id < 2; input_id++) {
+            local_state->inputs.push_back(CreateNativeChunkSource(context.client, *bound_query.bound_inputs[input_id]));
+        }
         return local_state;
     }
 
@@ -273,6 +336,20 @@ void RuntimeExec(duckdb::ClientContext &context,
                 throw std::runtime_error("Q1 fused kernel missing");
             }
             local_state.fused_kernel->RunFusedScan(context, *bound_query.bound_inputs[0]);
+        } else if (local_state.use_fused_q10_customer) {
+            if (!local_state.kernel) {
+                throw std::runtime_error("Q10 fused customer kernel missing");
+            }
+            if (bound_query.bound_inputs.size() != 4) {
+                throw std::runtime_error("Q10 fused customer path expects four bound inputs");
+            }
+            for (duckdb::idx_t input_id = 0; input_id < 3; input_id++) {
+                auto &source = local_state.inputs[input_id];
+                while (source->Next()) {
+                    local_state.kernel->ConsumeInput(input_id, source->Chunk());
+                }
+            }
+            Q10RunFusedCustomerScan(context, *local_state.kernel, *bound_query.bound_inputs[3]);
         } else if (local_state.use_fused_q4_lineitem) {
             if (!local_state.q4_kernel) {
                 throw std::runtime_error("Q4 fused kernel missing");
@@ -286,6 +363,43 @@ void RuntimeExec(duckdb::ClientContext &context,
                 local_state.kernel->ConsumeInput(static_cast<duckdb::idx_t>(Q4InputId::ORDERS),
                                                  orders_source->Chunk());
             }
+        } else if (local_state.use_fused_q8_scans) {
+            if (!local_state.kernel) {
+                throw std::runtime_error("Q8 fused scan kernel missing");
+            }
+            if (bound_query.bound_inputs.size() != 5) {
+                throw std::runtime_error("Q8 fused scan path expects five bound inputs");
+            }
+            for (duckdb::idx_t input_id = 0; input_id < local_state.inputs.size(); input_id++) {
+                auto &source = local_state.inputs[input_id];
+                while (source->Next()) {
+                    local_state.kernel->ConsumeInput(input_id, source->Chunk());
+                }
+            }
+            Q8RunFusedCustomerScan(context, *local_state.kernel, *bound_query.bound_inputs[2]);
+            {
+                auto orders_source = CreateNativeChunkSource(context, *bound_query.bound_inputs[3]);
+                while (orders_source->Next()) {
+                    local_state.kernel->ConsumeInput(static_cast<duckdb::idx_t>(Q8InputId::ORDERS),
+                                                     orders_source->Chunk());
+                }
+            }
+            Q8RunFusedLineitemScan(context, *local_state.kernel, *bound_query.bound_inputs[4]);
+        } else if (local_state.use_fused_q2_scans) {
+            if (!local_state.kernel) {
+                throw std::runtime_error("Q2 fused scan kernel missing");
+            }
+            if (bound_query.bound_inputs.size() != 4) {
+                throw std::runtime_error("Q2 fused scan path expects four bound inputs");
+            }
+            for (duckdb::idx_t input_id = 0; input_id < local_state.inputs.size(); input_id++) {
+                auto &source = local_state.inputs[input_id];
+                while (source->Next()) {
+                    local_state.kernel->ConsumeInput(input_id, source->Chunk());
+                }
+            }
+            Q2RunFusedPartsuppScan(context, *local_state.kernel, *bound_query.bound_inputs[2]);
+            Q2RunFusedSupplierVarcharScan(context, *local_state.kernel, *bound_query.bound_inputs[3]);
         } else {
             for (duckdb::idx_t input_id = 0; input_id < local_state.inputs.size(); input_id++) {
                 auto &source = local_state.inputs[input_id];

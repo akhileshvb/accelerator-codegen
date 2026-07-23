@@ -1,5 +1,6 @@
 #include "accelerator_codegen/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/parallel/parallel_kernel.hpp"
+#include "accelerator_codegen/parallel/parallel_runtime.hpp"
 #include "accelerator_codegen/tpch_q3.hpp"
 
 #include <algorithm>
@@ -98,6 +99,13 @@ inline bool TestAndSetBit(std::vector<uint64_t> &bits, size_t index) {
 bool IsFlatAllValid(duckdb::Vector &vector) {
 	return vector.GetVectorType() == duckdb::VectorType::FLAT_VECTOR &&
 	       duckdb::FlatVector::Validity(vector).AllValid();
+}
+
+bool IsDictionaryOverFlat(duckdb::Vector &vector) {
+	if (vector.GetVectorType() != duckdb::VectorType::DICTIONARY_VECTOR) {
+		return false;
+	}
+	return duckdb::DictionaryVector::Child(vector).GetVectorType() == duckdb::VectorType::FLAT_VECTOR;
 }
 
 bool StringEquals(const duckdb::string_t &value, const std::string &expected) {
@@ -387,6 +395,31 @@ private:
 	std::function<void()> fn;
 };
 
+struct Q3ParallelProfile {
+	int64_t customer_ns = 0;
+	int64_t orders_collect_ns = 0;
+	int64_t orders_fill_ns = 0;
+	int64_t lineitem_ns = 0;
+	int64_t merge_ns = 0;
+	size_t worker_count = 0;
+	size_t slot_count = 0;
+	size_t lineitem_rows = 0;
+	size_t revenue_contributions = 0;
+	size_t active_slots = 0;
+	size_t lineitem_flat_rows = 0;
+	size_t lineitem_fallback_rows = 0;
+};
+
+void PrintQ3ParallelProfile(const Q3ParallelProfile &profile) {
+	std::cerr << "q3_parallel_profile customer_ns=" << profile.customer_ns
+	          << " orders_collect_ns=" << profile.orders_collect_ns << " orders_fill_ns=" << profile.orders_fill_ns
+	          << " lineitem_ns=" << profile.lineitem_ns << " merge_ns=" << profile.merge_ns
+	          << " worker_count=" << profile.worker_count << " slot_count=" << profile.slot_count
+	          << " lineitem_rows=" << profile.lineitem_rows << " revenue_contributions=" << profile.revenue_contributions
+	          << " active_slots=" << profile.active_slots << " lineitem_flat_rows=" << profile.lineitem_flat_rows
+	          << " lineitem_fallback_rows=" << profile.lineitem_fallback_rows << "\n";
+}
+
 class Q3ParallelKernel final : public ParallelKernelInstance {
 public:
 	explicit Q3ParallelKernel(Q3Parameters params_p) : params(std::move(params_p)) {
@@ -399,21 +432,9 @@ public:
 		}
 
 		using clock = std::chrono::steady_clock;
-		const bool profile = []() {
-			const char *env = std::getenv("ACCEL_PARALLEL_PROFILE");
-			return env && std::string(env) == "1";
-		}();
-		int64_t profile_customer_ns = 0;
-		int64_t profile_orders_collect_ns = 0;
-		int64_t profile_orders_fill_ns = 0;
-		int64_t profile_lineitem_ns = 0;
-		int64_t profile_merge_ns = 0;
-
+		Q3ParallelProfile profile;
 		const auto worker_count = ParallelWorkerCount(context);
-		if (const char *audit = std::getenv("ACCEL_PARALLEL_AUDIT"); audit && audit[0] == '1') {
-			std::cerr << "ACCEL_PARALLEL_AUDIT q3 parallel_build workers=" << worker_count
-			          << " phases=customer,orders_collect,orders_fill,lineitem\n";
-		}
+		profile.worker_count = static_cast<size_t>(worker_count);
 
 		CustomerMembership customers;
 		{
@@ -448,10 +469,8 @@ public:
 			for (const auto &w : customer_workers) {
 				customers.OrBitsFrom(w.value);
 			}
-			if (profile) {
-				profile_customer_ns =
-				    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - customer_t0).count();
-			}
+			profile.customer_ns =
+			    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - customer_t0).count();
 		}
 		// Freeze: customers is immutable for the orders build and lineitem probe.
 
@@ -505,11 +524,9 @@ public:
 					                                                      shippriorities[shippriority_index]});
 				                     }
 			                     });
-			if (profile) {
-				profile_orders_collect_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() -
-				                                                                                orders_collect_t0)
-				                                .count();
-			}
+			profile.orders_collect_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() -
+			                                                                                orders_collect_t0)
+			                                .count();
 		}
 
 		std::vector<size_t> sizes(worker_count, 0);
@@ -553,10 +570,8 @@ public:
 			if (context.interrupted) {
 				throw duckdb::InterruptException();
 			}
-			if (profile) {
-				profile_orders_fill_ns =
-				    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - orders_fill_t0).count();
-			}
+			profile.orders_fill_ns =
+			    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - orders_fill_t0).count();
 		}
 		for (const auto &w : order_workers) {
 			for (const auto &q : w.value) {
@@ -570,6 +585,7 @@ public:
 		order_workers.shrink_to_fit();
 
 		const auto slot_count = orders.SlotCount();
+		profile.slot_count = static_cast<size_t>(slot_count);
 		const auto has_words = (slot_count + 63) / 64;
 		merged_revenues.assign(slot_count, q3_acc_t {});
 		merged_has.assign(slot_count, 0);
@@ -584,12 +600,8 @@ public:
 #endif
 		}
 
-		auto add_revenue = [&](WorkerRevenue &local, int64_t orderkey, int64_t extendedprice_raw,
-		                       int64_t discount_raw) {
-			int32_t slot = -1;
-			if (!orders.ProbeQualifies(orderkey, &slot)) {
-				return;
-			}
+		auto add_revenue_slot = [&](WorkerRevenue &local, int32_t slot, int64_t orderkey, int64_t extendedprice_raw,
+		                            int64_t discount_raw) {
 			if (slot >= 0) {
 				const auto s = static_cast<size_t>(slot);
 #if defined(__SIZEOF_INT128__)
@@ -613,44 +625,87 @@ public:
 
 		{
 			const auto lineitem_t0 = clock::now();
+			std::vector<size_t> lineitem_rows(worker_count, 0);
+			std::vector<size_t> lineitem_flat(worker_count, 0);
+			std::vector<size_t> lineitem_fallback(worker_count, 0);
+			std::vector<size_t> lineitem_contribs(worker_count, 0);
 			RunParallelChunkScan(context, *bound_inputs[2], worker_count,
 			                     [&](duckdb::idx_t worker_id, duckdb::DataChunk &input) {
 				                     auto &local = workers[worker_id].value;
+				                     lineitem_rows[worker_id] += input.size();
 				                     auto &shipdate_vector = input.data[Q3LineitemChunkLayout::SHIPDATE_INDEX];
+				                     auto &orderkey_vector = input.data[Q3LineitemChunkLayout::ORDERKEY_INDEX];
+				                     auto &extendedprice_vector = input.data[Q3LineitemChunkLayout::EXTENDEDPRICE_INDEX];
+				                     auto &discount_vector = input.data[Q3LineitemChunkLayout::DISCOUNT_INDEX];
 				                     const bool skip_residual =
 				                         shipdate_vector.GetVectorType() == duckdb::VectorType::DICTIONARY_VECTOR;
 
-				                     if (IsFlatAllValid(shipdate_vector) &&
-				                         IsFlatAllValid(input.data[Q3LineitemChunkLayout::ORDERKEY_INDEX]) &&
-				                         IsFlatAllValid(input.data[Q3LineitemChunkLayout::EXTENDEDPRICE_INDEX]) &&
-				                         IsFlatAllValid(input.data[Q3LineitemChunkLayout::DISCOUNT_INDEX])) {
+				                     if (IsFlatAllValid(shipdate_vector) && IsFlatAllValid(orderkey_vector) &&
+				                         IsFlatAllValid(extendedprice_vector) && IsFlatAllValid(discount_vector)) {
+					                     lineitem_flat[worker_id] += input.size();
 					                     auto shipdates = duckdb::FlatVector::GetData<duckdb::date_t>(shipdate_vector);
-					                     auto orderkeys = duckdb::FlatVector::GetData<int64_t>(
-					                         input.data[Q3LineitemChunkLayout::ORDERKEY_INDEX]);
-					                     auto extendedprices = duckdb::FlatVector::GetData<int64_t>(
-					                         input.data[Q3LineitemChunkLayout::EXTENDEDPRICE_INDEX]);
-					                     auto discounts = duckdb::FlatVector::GetData<int64_t>(
-					                         input.data[Q3LineitemChunkLayout::DISCOUNT_INDEX]);
+					                     auto orderkeys = duckdb::FlatVector::GetData<int64_t>(orderkey_vector);
+					                     auto extendedprices = duckdb::FlatVector::GetData<int64_t>(extendedprice_vector);
+					                     auto discounts = duckdb::FlatVector::GetData<int64_t>(discount_vector);
 					                     for (duckdb::idx_t row = 0; row < input.size(); row++) {
+						                     int32_t slot = -1;
+						                     if (!orders.ProbeQualifies(orderkeys[row], &slot)) {
+							                     continue;
+						                     }
 						                     if (!skip_residual && !(shipdates[row] > params.cutoff_date)) {
 							                     continue;
 						                     }
-						                     add_revenue(local, orderkeys[row], extendedprices[row], discounts[row]);
+						                     add_revenue_slot(local, slot, orderkeys[row], extendedprices[row], discounts[row]);
+						                     lineitem_contribs[worker_id] += 1;
 					                     }
 					                     return;
 				                     }
 
+				                     if (IsDictionaryOverFlat(shipdate_vector) && IsDictionaryOverFlat(orderkey_vector) &&
+				                         IsDictionaryOverFlat(extendedprice_vector) &&
+				                         IsDictionaryOverFlat(discount_vector)) {
+					                     lineitem_flat[worker_id] += input.size();
+					                     auto &shipdate_sel = duckdb::DictionaryVector::SelVector(shipdate_vector);
+					                     auto &orderkey_sel = duckdb::DictionaryVector::SelVector(orderkey_vector);
+					                     auto &extendedprice_sel =
+					                         duckdb::DictionaryVector::SelVector(extendedprice_vector);
+					                     auto &discount_sel = duckdb::DictionaryVector::SelVector(discount_vector);
+					                     auto shipdates = duckdb::FlatVector::GetData<duckdb::date_t>(
+					                         duckdb::DictionaryVector::Child(shipdate_vector));
+					                     auto orderkeys = duckdb::FlatVector::GetData<int64_t>(
+					                         duckdb::DictionaryVector::Child(orderkey_vector));
+					                     auto extendedprices = duckdb::FlatVector::GetData<int64_t>(
+					                         duckdb::DictionaryVector::Child(extendedprice_vector));
+					                     auto discounts = duckdb::FlatVector::GetData<int64_t>(
+					                         duckdb::DictionaryVector::Child(discount_vector));
+					                     for (duckdb::idx_t row = 0; row < input.size(); row++) {
+						                     const auto orderkey_index = orderkey_sel.get_index(row);
+						                     int32_t slot = -1;
+						                     if (!orders.ProbeQualifies(orderkeys[orderkey_index], &slot)) {
+							                     continue;
+						                     }
+						                     const auto shipdate_index = shipdate_sel.get_index(row);
+						                     const auto extendedprice_index = extendedprice_sel.get_index(row);
+						                     const auto discount_index = discount_sel.get_index(row);
+						                     if (!skip_residual && !(shipdates[shipdate_index] > params.cutoff_date)) {
+							                     continue;
+						                     }
+						                     add_revenue_slot(local, slot, orderkeys[orderkey_index],
+						                                      extendedprices[extendedprice_index], discounts[discount_index]);
+						                     lineitem_contribs[worker_id] += 1;
+					                     }
+					                     return;
+				                     }
+
+				                     lineitem_fallback[worker_id] += input.size();
 				                     duckdb::UnifiedVectorFormat shipdate_format;
 				                     duckdb::UnifiedVectorFormat orderkey_format;
 				                     duckdb::UnifiedVectorFormat extendedprice_format;
 				                     duckdb::UnifiedVectorFormat discount_format;
 				                     shipdate_vector.ToUnifiedFormat(input.size(), shipdate_format);
-				                     input.data[Q3LineitemChunkLayout::ORDERKEY_INDEX].ToUnifiedFormat(input.size(),
-				                                                                                        orderkey_format);
-				                     input.data[Q3LineitemChunkLayout::EXTENDEDPRICE_INDEX].ToUnifiedFormat(
-				                         input.size(), extendedprice_format);
-				                     input.data[Q3LineitemChunkLayout::DISCOUNT_INDEX].ToUnifiedFormat(
-				                         input.size(), discount_format);
+				                     orderkey_vector.ToUnifiedFormat(input.size(), orderkey_format);
+				                     extendedprice_vector.ToUnifiedFormat(input.size(), extendedprice_format);
+				                     discount_vector.ToUnifiedFormat(input.size(), discount_format);
 				                     auto shipdates =
 				                         duckdb::UnifiedVectorFormat::GetData<duckdb::date_t>(shipdate_format);
 				                     auto orderkeys = duckdb::UnifiedVectorFormat::GetData<int64_t>(orderkey_format);
@@ -658,8 +713,8 @@ public:
 				                         duckdb::UnifiedVectorFormat::GetData<int64_t>(extendedprice_format);
 				                     auto discounts = duckdb::UnifiedVectorFormat::GetData<int64_t>(discount_format);
 				                     for (duckdb::idx_t row = 0; row < input.size(); row++) {
-					                     const auto shipdate_index = shipdate_format.sel->get_index(row);
 					                     const auto orderkey_index = orderkey_format.sel->get_index(row);
+					                     const auto shipdate_index = shipdate_format.sel->get_index(row);
 					                     const auto extendedprice_index = extendedprice_format.sel->get_index(row);
 					                     const auto discount_index = discount_format.sel->get_index(row);
 					                     if ((!shipdate_format.validity.AllValid() &&
@@ -672,17 +727,26 @@ public:
 					                          !discount_format.validity.RowIsValidUnsafe(discount_index))) {
 						                     continue;
 					                     }
+					                     int32_t slot = -1;
+					                     if (!orders.ProbeQualifies(orderkeys[orderkey_index], &slot)) {
+						                     continue;
+					                     }
 					                     if (!skip_residual && !(shipdates[shipdate_index] > params.cutoff_date)) {
 						                     continue;
 					                     }
-					                     add_revenue(local, orderkeys[orderkey_index],
-					                                 extendedprices[extendedprice_index], discounts[discount_index]);
+					                     add_revenue_slot(local, slot, orderkeys[orderkey_index],
+					                                      extendedprices[extendedprice_index], discounts[discount_index]);
+					                     lineitem_contribs[worker_id] += 1;
 				                     }
 			                     });
-			if (profile) {
-				profile_lineitem_ns =
-				    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - lineitem_t0).count();
+			for (size_t w = 0; w < worker_count; w++) {
+				profile.lineitem_rows += lineitem_rows[w];
+				profile.lineitem_flat_rows += lineitem_flat[w];
+				profile.lineitem_fallback_rows += lineitem_fallback[w];
+				profile.revenue_contributions += lineitem_contribs[w];
 			}
+			profile.lineitem_ns =
+			    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - lineitem_t0).count();
 		}
 
 		{
@@ -703,18 +767,13 @@ public:
 					AddAccumulated(merged_overflow[entry.first], entry.second);
 				}
 			}
-			if (profile) {
-				profile_merge_ns =
-				    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - merge_t0).count();
-			}
+			profile.active_slots = all_touched.size() + merged_overflow.size();
+			profile.merge_ns =
+			    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - merge_t0).count();
 		}
 
-		if (profile) {
-			std::cerr << "q3_parallel_profile customer_ns=" << profile_customer_ns
-			          << " orders_collect_ns=" << profile_orders_collect_ns
-			          << " orders_fill_ns=" << profile_orders_fill_ns << " lineitem_ns=" << profile_lineitem_ns
-			          << " merge_ns=" << profile_merge_ns << " slot_count=" << slot_count
-			          << " worker_count=" << worker_count << "\n";
+		if (const char *env = std::getenv("ACCEL_PARALLEL_PROFILE"); env && env[0] == '1') {
+			PrintQ3ParallelProfile(profile);
 		}
 	}
 

@@ -21,6 +21,7 @@ class FunctionData;
 class LogicalDependencyList;
 class LogicalType;
 class TableFilterSet;
+struct RowGroupOrderOptions;
 }
 
 namespace accelerator_codegen {
@@ -48,6 +49,12 @@ struct NativeScanSpec {
 
 duckdb::unique_ptr<duckdb::FunctionData> BindNativeScan(duckdb::ClientContext &context, const NativeScanSpec &scan_spec);
 void AddNativeTableDependencies(duckdb::LogicalDependencyList &dependencies, const duckdb::FunctionData *bind_data);
+struct NativeScanConsumerOptions {
+	duckdb::unique_ptr<duckdb::TableFilterSet> additional_filters;
+	duckdb::unique_ptr<duckdb::RowGroupOrderOptions> row_group_order;
+};
+
+duckdb::StorageIndex GetNativeScanColumnStorageIndex(const duckdb::FunctionData &bind_data, const std::string &source_name);
 duckdb::unique_ptr<ChunkSource> CreateNativeChunkSource(duckdb::ClientContext &context,
                                                         const duckdb::FunctionData &bind_data);
 
@@ -57,7 +64,8 @@ bool NativeScanHasFilters(const duckdb::FunctionData &bind_data);
 //! Drain base + local storage via DataTable::ScanFilteredConsumer.
 //! Returns false if the client was interrupted (consumer returned STOP).
 bool RunNativeFilteredScanConsumer(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data,
-                                   const duckdb::FilteredScanConsumer &consumer);
+                                   const duckdb::FilteredScanConsumer &consumer,
+                                   const NativeScanConsumerOptions *options = nullptr);
 
 struct NativeParallelScanHandle;
 

@@ -28,12 +28,14 @@ int main() {
 		    "SELECT DISTINCT function_name FROM duckdb_functions() "
 		    "WHERE function_name IN ("
 		    "'accel_tpch_q1','accel_tpch_q3','accel_tpch_q4','accel_tpch_q6',"
-		    "'accel_tpch_q9','accel_tpch_q12','accel_tpch_q14'"
+		    "'accel_tpch_q9','accel_tpch_q12','accel_tpch_q14','accel_tpch_q17','accel_tpch_q19','accel_tpch_q5','accel_tpch_q7',"
+		    "'accel_tpch_q10','accel_tpch_q11','accel_tpch_q13','accel_tpch_q16','accel_tpch_q18','accel_tpch_q22',"
+		    "'accel_tpch_q15','accel_tpch_q21','accel_tpch_q20','accel_tpch_q8','accel_tpch_q2'"
 		    ") ORDER BY 1");
 		Require(result != nullptr, "registration query returned null result");
 		Require(!result->HasError(), result->GetError());
 		auto &materialized = result->Cast<duckdb::MaterializedQueryResult>();
-		Require(materialized.RowCount() == 7, "expected all seven accel_tpch_* functions registered");
+		Require(materialized.RowCount() == 22, "expected all twenty-two accel_tpch_* functions registered");
 
 		std::cout << "registration_smoke_test passed" << std::endl;
 		return EXIT_SUCCESS;

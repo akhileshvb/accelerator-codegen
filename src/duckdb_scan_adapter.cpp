@@ -16,7 +16,10 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
 #include "duckdb/planner/table_filter.hpp"
+#include "duckdb/planner/filter/in_filter.hpp"
+#include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/table/row_group_reorderer.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 
@@ -36,6 +39,7 @@ struct BoundNativeScanSpec {
     std::string schema_name;
     std::string table_name;
     duckdb::vector<BoundNativeColumnSpec> projected_columns;
+    duckdb::vector<BoundNativeColumnSpec> scan_columns;
 };
 
 struct NativeScanBindData : public duckdb::FunctionData {
@@ -62,6 +66,7 @@ struct NativeScanBindData : public duckdb::FunctionData {
                bound_spec.schema_name == other.bound_spec.schema_name &&
                bound_spec.table_name == other.bound_spec.table_name &&
                ProjectedColumnsEqual(bound_spec.projected_columns, other.bound_spec.projected_columns) &&
+               ProjectedColumnsEqual(bound_spec.scan_columns, other.bound_spec.scan_columns) &&
                duckdb::TableFilterSet::Equals(translated_filters.get(), other.translated_filters.get());
     }
 
@@ -123,14 +128,42 @@ void ValidateProjectedColumn(duckdb::TableCatalogEntry &table, const NativeColum
     }
 }
 
-const BoundNativeColumnSpec &FindProjectedColumn(const BoundNativeScanSpec &bound_spec, const std::string &source_name) {
-    for (const auto &column : bound_spec.projected_columns) {
+const BoundNativeColumnSpec &FindScanColumn(const BoundNativeScanSpec &bound_spec, const std::string &source_name) {
+    for (const auto &column : bound_spec.scan_columns) {
         if (column.source_name == source_name) {
             return column;
         }
     }
-    throw duckdb::BinderException("Scan filter references undeclared projected column \"%s\" on %s.%s.%s", source_name,
+    throw duckdb::BinderException("Scan filter references undeclared scan column \"%s\" on %s.%s.%s", source_name,
                                   bound_spec.catalog_name, bound_spec.schema_name, bound_spec.table_name);
+}
+
+BoundNativeScanSpec AppendFilterOnlyScanColumns(duckdb::TableCatalogEntry &table, BoundNativeScanSpec bound_spec,
+                                                const NativeScanSpec &scan_spec) {
+    bound_spec.scan_columns = bound_spec.projected_columns;
+    std::unordered_map<std::string, bool> scan_names;
+    scan_names.reserve(bound_spec.scan_columns.size() + scan_spec.filters.size());
+    for (const auto &column : bound_spec.scan_columns) {
+        scan_names.emplace(column.source_name, true);
+    }
+    for (const auto &filter_spec : scan_spec.filters) {
+        if (scan_names.find(filter_spec.source_name) != scan_names.end()) {
+            continue;
+        }
+        if (!table.ColumnExists(filter_spec.source_name)) {
+            throw duckdb::BinderException("Scan filter references missing column \"%s\" on %s.%s.%s",
+                                          filter_spec.source_name, table.catalog.GetName(), table.schema.name,
+                                          table.name);
+        }
+        const auto &column = table.GetColumn(filter_spec.source_name);
+        auto mutable_column_name = filter_spec.source_name;
+        auto column_index = table.GetColumnIndex(mutable_column_name);
+        bound_spec.scan_columns.push_back(
+            {filter_spec.source_name, "", column.Type(), column.Type().InternalType(),
+             table.GetStorageIndex(duckdb::ColumnIndex(column_index.index))});
+        scan_names.emplace(filter_spec.source_name, true);
+    }
+    return bound_spec;
 }
 
 BoundNativeScanSpec BindProjectedColumns(duckdb::TableCatalogEntry &table, const NativeScanSpec &scan_spec) {
@@ -173,6 +206,7 @@ BoundNativeScanSpec BindProjectedColumns(duckdb::TableCatalogEntry &table, const
             {column_spec.source_name, column_spec.kernel_column_id, column_spec.expected_logical_type,
              column_spec.expected_physical_type, table.GetStorageIndex(duckdb::ColumnIndex(column_index.index))});
     }
+    bound_spec.scan_columns = bound_spec.projected_columns;
     return bound_spec;
 }
 
@@ -184,22 +218,22 @@ duckdb::unique_ptr<duckdb::TableFilterSet> TranslateFilters(const BoundNativeSca
 
     auto filters = duckdb::make_uniq<duckdb::TableFilterSet>();
     for (const auto &filter_spec : scan_spec.filters) {
-        const auto &column = FindProjectedColumn(bound_spec, filter_spec.source_name);
+        (void)FindScanColumn(bound_spec, filter_spec.source_name);
 
-        duckdb::idx_t projected_index = 0;
+        duckdb::idx_t scan_index = 0;
         bool found_index = false;
-        for (duckdb::idx_t i = 0; i < bound_spec.projected_columns.size(); i++) {
-            if (bound_spec.projected_columns[i].source_name == column.source_name) {
-                projected_index = i;
+        for (duckdb::idx_t i = 0; i < bound_spec.scan_columns.size(); i++) {
+            if (bound_spec.scan_columns[i].source_name == filter_spec.source_name) {
+                scan_index = i;
                 found_index = true;
                 break;
             }
         }
         if (!found_index) {
-            throw std::runtime_error("projected filter column index lookup failed");
+            throw std::runtime_error("scan filter column index lookup failed");
         }
 
-        filters->PushFilter(duckdb::ColumnIndex(projected_index),
+        filters->PushFilter(duckdb::ColumnIndex(scan_index),
                             duckdb::make_uniq<duckdb::ConstantFilter>(filter_spec.comparison_type, filter_spec.constant));
     }
     return filters;
@@ -221,7 +255,7 @@ public:
           table(ResolveTable(context_p, bind_data.bound_spec)),
           storage(table.GetStorage()) {
         duckdb::vector<duckdb::LogicalType> projected_types;
-        for (const auto &column : bind_data.bound_spec.projected_columns) {
+        for (const auto &column : bind_data.bound_spec.scan_columns) {
             ValidateResolvedColumn(table, column);
             projected_types.emplace_back(column.logical_type);
             storage_indexes.emplace_back(column.storage_index);
@@ -270,6 +304,7 @@ private:
 duckdb::unique_ptr<duckdb::FunctionData> BindNativeScan(duckdb::ClientContext &context, const NativeScanSpec &scan_spec) {
     auto &table_entry = LookupTable(context, scan_spec);
     auto bound_spec = BindProjectedColumns(table_entry, scan_spec);
+    bound_spec = AppendFilterOnlyScanColumns(table_entry, std::move(bound_spec), scan_spec);
     auto translated_filters = TranslateFilters(bound_spec, scan_spec);
     duckdb::LogicalDependency dependency(table_entry);
     return duckdb::make_uniq<NativeScanBindData>(std::move(bound_spec), std::move(dependency),
@@ -290,8 +325,19 @@ bool NativeScanHasFilters(const duckdb::FunctionData &bind_data) {
     return native.translated_filters && !native.translated_filters->filters.empty();
 }
 
+duckdb::StorageIndex GetNativeScanColumnStorageIndex(const duckdb::FunctionData &bind_data, const std::string &source_name) {
+    const auto &native = GetNativeScanBindData(&bind_data);
+    for (const auto &column : native.bound_spec.projected_columns) {
+        if (column.source_name == source_name) {
+            return column.storage_index;
+        }
+    }
+    throw std::runtime_error("native scan column not found: " + source_name);
+}
+
 bool RunNativeFilteredScanConsumer(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data,
-                                   const duckdb::FilteredScanConsumer &consumer) {
+                                   const duckdb::FilteredScanConsumer &consumer,
+                                   const NativeScanConsumerOptions *options) {
     const auto &native = GetNativeScanBindData(&bind_data);
     auto &table = duckdb::Catalog::GetEntry<duckdb::TableCatalogEntry>(context, native.bound_spec.catalog_name,
                                                                        native.bound_spec.schema_name,
@@ -300,13 +346,36 @@ bool RunNativeFilteredScanConsumer(duckdb::ClientContext &context, const duckdb:
     auto &storage = table.GetStorage();
 
     duckdb::vector<duckdb::StorageIndex> storage_indexes;
-    storage_indexes.reserve(native.bound_spec.projected_columns.size());
-    for (const auto &column : native.bound_spec.projected_columns) {
+    storage_indexes.reserve(native.bound_spec.scan_columns.size());
+    for (const auto &column : native.bound_spec.scan_columns) {
         storage_indexes.emplace_back(column.storage_index);
     }
 
+    duckdb::unique_ptr<duckdb::TableFilterSet> merged_filters;
+    if (options && options->additional_filters) {
+        if (native.translated_filters) {
+            merged_filters = native.translated_filters->Copy();
+            for (auto &entry : options->additional_filters->filters) {
+                merged_filters->PushFilter(duckdb::ColumnIndex(entry.first), entry.second->Copy());
+            }
+        } else {
+            merged_filters = options->additional_filters->Copy();
+        }
+    }
+    duckdb::optional_ptr<duckdb::TableFilterSet> filters;
+    if (merged_filters) {
+        filters = merged_filters.get();
+    } else if (native.translated_filters) {
+        filters = native.translated_filters.get();
+    }
+
     duckdb::TableScanState scan_state;
-    storage.InitializeScan(context, transaction, scan_state, storage_indexes, native.translated_filters.get());
+    if (options && options->row_group_order) {
+        const duckdb::TransactionData transaction_data(transaction);
+        scan_state.table_state.reorderer = duckdb::make_uniq<duckdb::RowGroupReorderer>(
+            *options->row_group_order, transaction_data);
+    }
+    storage.InitializeScan(context, transaction, scan_state, storage_indexes, filters);
 
     duckdb::FilteredScanConsumer wrapped =
         [&context, &consumer](duckdb::TransactionData transaction_data, duckdb::CollectionScanState &state,
@@ -337,9 +406,9 @@ void InitializeNativeParallelScanHandle(NativeParallelScanHandle &handle, duckdb
     handle.storage = &storage;
     handle.storage_indexes.clear();
     handle.projected_types.clear();
-    handle.storage_indexes.reserve(native.bound_spec.projected_columns.size());
-    handle.projected_types.reserve(native.bound_spec.projected_columns.size());
-    for (const auto &column : native.bound_spec.projected_columns) {
+    handle.storage_indexes.reserve(native.bound_spec.scan_columns.size());
+    handle.projected_types.reserve(native.bound_spec.scan_columns.size());
+    for (const auto &column : native.bound_spec.scan_columns) {
         handle.storage_indexes.emplace_back(column.storage_index);
         handle.projected_types.emplace_back(column.logical_type);
     }

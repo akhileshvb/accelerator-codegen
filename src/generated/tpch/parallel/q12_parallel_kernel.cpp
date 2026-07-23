@@ -55,6 +55,13 @@ bool IsFlatAllValid(duckdb::Vector &vector) {
 	       duckdb::FlatVector::Validity(vector).AllValid();
 }
 
+bool IsDictionaryOverFlat(duckdb::Vector &vector) {
+	if (vector.GetVectorType() != duckdb::VectorType::DICTIONARY_VECTOR) {
+		return false;
+	}
+	return duckdb::DictionaryVector::Child(vector).GetVectorType() == duckdb::VectorType::FLAT_VECTOR;
+}
+
 bool StringEquals(const duckdb::string_t &value, const std::string &expected) {
 	return value.GetSize() == expected.size() &&
 	       std::memcmp(value.GetData(), expected.data(), expected.size()) == 0;
@@ -193,6 +200,67 @@ void ConsumeOrdersChunkParallel(OrderPriorityStore &store, duckdb::DataChunk &in
 		return;
 	}
 
+	if (IsFlatAllValid(orderkey_vector) && IsDictionaryOverFlat(priority_vector)) {
+		auto orderkeys = duckdb::FlatVector::GetData<int64_t>(orderkey_vector);
+		auto &priority_sel = duckdb::DictionaryVector::SelVector(priority_vector);
+		auto &priority_child = duckdb::DictionaryVector::Child(priority_vector);
+		auto priorities = duckdb::FlatVector::GetData<duckdb::string_t>(priority_child);
+		auto &priority_validity = duckdb::FlatVector::Validity(priority_child);
+		PriorityClass class_cache[STANDARD_VECTOR_SIZE];
+		bool class_valid[STANDARD_VECTOR_SIZE] = {};
+		for (duckdb::idx_t row = 0; row < input.size(); row++) {
+			const auto priority_index = priority_sel.get_index(row);
+			PriorityClass priority = PriorityClass::Neither;
+			if (priority_index < STANDARD_VECTOR_SIZE && class_valid[priority_index]) {
+				priority = class_cache[priority_index];
+			} else {
+				if (!priority_validity.AllValid() && !priority_validity.RowIsValidUnsafe(priority_index)) {
+					priority = PriorityClass::Neither;
+				} else {
+					priority = ClassifyPriority(priorities[priority_index]);
+				}
+				if (priority_index < STANDARD_VECTOR_SIZE) {
+					class_cache[priority_index] = priority;
+					class_valid[priority_index] = true;
+				}
+			}
+			store.StoreDenseNoGrow(orderkeys[row], priority, local_overflow);
+		}
+		return;
+	}
+
+	if (IsDictionaryOverFlat(orderkey_vector) && IsDictionaryOverFlat(priority_vector)) {
+		auto &orderkey_sel = duckdb::DictionaryVector::SelVector(orderkey_vector);
+		auto &priority_sel = duckdb::DictionaryVector::SelVector(priority_vector);
+		auto orderkeys = duckdb::FlatVector::GetData<int64_t>(duckdb::DictionaryVector::Child(orderkey_vector));
+		auto &priority_child = duckdb::DictionaryVector::Child(priority_vector);
+		auto priorities = duckdb::FlatVector::GetData<duckdb::string_t>(priority_child);
+		auto &priority_validity = duckdb::FlatVector::Validity(priority_child);
+		const bool shared_sel = &orderkey_sel == &priority_sel;
+		PriorityClass class_cache[STANDARD_VECTOR_SIZE];
+		bool class_valid[STANDARD_VECTOR_SIZE] = {};
+		for (duckdb::idx_t row = 0; row < input.size(); row++) {
+			const auto orderkey_index = orderkey_sel.get_index(row);
+			const auto priority_index = shared_sel ? orderkey_index : priority_sel.get_index(row);
+			PriorityClass priority = PriorityClass::Neither;
+			if (priority_index < STANDARD_VECTOR_SIZE && class_valid[priority_index]) {
+				priority = class_cache[priority_index];
+			} else {
+				if (!priority_validity.AllValid() && !priority_validity.RowIsValidUnsafe(priority_index)) {
+					priority = PriorityClass::Neither;
+				} else {
+					priority = ClassifyPriority(priorities[priority_index]);
+				}
+				if (priority_index < STANDARD_VECTOR_SIZE) {
+					class_cache[priority_index] = priority;
+					class_valid[priority_index] = true;
+				}
+			}
+			store.StoreDenseNoGrow(orderkeys[orderkey_index], priority, local_overflow);
+		}
+		return;
+	}
+
 	duckdb::UnifiedVectorFormat orderkey_format;
 	duckdb::UnifiedVectorFormat priority_format;
 	orderkey_vector.ToUnifiedFormat(input.size(), orderkey_format);
@@ -236,6 +304,48 @@ void ProbeAndAggregate(const OrderPriorityStore &store, ShipModeAggregate fixed_
 	}
 }
 
+void ProcessAlignedLineitemParallel(const OrderPriorityStore &store, const Q12Parameters &params, bool modes_equal,
+                                    ShipModeAggregate fixed_slots[2], const int64_t *orderkeys,
+                                    const duckdb::SelectionVector *orderkey_sel, const duckdb::string_t *shipmodes,
+                                    const duckdb::SelectionVector *shipmode_sel, const duckdb::date_t *commitdates,
+                                    const duckdb::SelectionVector *commit_sel, const duckdb::date_t *receiptdates,
+                                    const duckdb::SelectionVector *receipt_sel, const duckdb::date_t *shipdates,
+                                    const duckdb::SelectionVector *ship_sel, duckdb::idx_t count,
+                                    bool require_receipt_residual, ShipModeSlot *shipmode_cache = nullptr,
+                                    bool *shipmode_cache_valid = nullptr) {
+	const bool identity = orderkey_sel == nullptr;
+	for (duckdb::idx_t row = 0; row < count; row++) {
+		const auto shipmode_index = identity ? row : shipmode_sel->get_index(row);
+		ShipModeSlot slot = ShipModeSlot::Neither;
+		if (shipmode_cache && shipmode_index < STANDARD_VECTOR_SIZE && shipmode_cache_valid[shipmode_index]) {
+			slot = shipmode_cache[shipmode_index];
+		} else {
+			slot = ClassifyShipMode(shipmodes[shipmode_index], params.shipmode1, params.shipmode2, modes_equal);
+			if (shipmode_cache && shipmode_index < STANDARD_VECTOR_SIZE) {
+				shipmode_cache[shipmode_index] = slot;
+				shipmode_cache_valid[shipmode_index] = true;
+			}
+		}
+		if (slot == ShipModeSlot::Neither) {
+			continue;
+		}
+		const auto commit_index = identity ? row : commit_sel->get_index(row);
+		const auto receipt_index = identity ? row : receipt_sel->get_index(row);
+		const auto ship_index = identity ? row : ship_sel->get_index(row);
+		const auto commitdate = commitdates[commit_index];
+		const auto receiptdate = receiptdates[receipt_index];
+		const auto shipdate = shipdates[ship_index];
+		if (!(commitdate < receiptdate) || !(shipdate < commitdate)) {
+			continue;
+		}
+		if (require_receipt_residual && !(receiptdate >= params.start_date && receiptdate < params.end_date)) {
+			continue;
+		}
+		const auto orderkey_index = identity ? row : orderkey_sel->get_index(row);
+		ProbeAndAggregate(store, fixed_slots, orderkeys[orderkey_index], slot);
+	}
+}
+
 void ConsumeLineitemChunk(const OrderPriorityStore &store, const Q12Parameters &params, bool modes_equal,
                           ShipModeAggregate fixed_slots[2], duckdb::DataChunk &input) {
 	auto &orderkey_vector = input.data[Q12LineitemChunkLayout::ORDERKEY_INDEX];
@@ -255,19 +365,82 @@ void ConsumeLineitemChunk(const OrderPriorityStore &store, const Q12Parameters &
 		auto commitdates = duckdb::FlatVector::GetData<duckdb::date_t>(commit_vector);
 		auto receiptdates = duckdb::FlatVector::GetData<duckdb::date_t>(receipt_vector);
 		auto shipdates = duckdb::FlatVector::GetData<duckdb::date_t>(ship_vector);
+		ProcessAlignedLineitemParallel(store, params, modes_equal, fixed_slots, orderkeys, nullptr, shipmodes, nullptr,
+		                               commitdates, nullptr, receiptdates, nullptr, shipdates, nullptr, input.size(),
+		                               !skip_receipt_residual);
+		return;
+	}
+
+	if (IsDictionaryOverFlat(orderkey_vector) && IsDictionaryOverFlat(shipmode_vector) &&
+	    IsDictionaryOverFlat(commit_vector) && IsDictionaryOverFlat(receipt_vector) &&
+	    IsDictionaryOverFlat(ship_vector)) {
+		auto &orderkey_sel = duckdb::DictionaryVector::SelVector(orderkey_vector);
+		auto &shipmode_sel = duckdb::DictionaryVector::SelVector(shipmode_vector);
+		auto &commit_sel = duckdb::DictionaryVector::SelVector(commit_vector);
+		auto &receipt_sel = duckdb::DictionaryVector::SelVector(receipt_vector);
+		auto &ship_sel = duckdb::DictionaryVector::SelVector(ship_vector);
+		const bool shared_sel = &orderkey_sel == &shipmode_sel && &orderkey_sel == &commit_sel &&
+		                        &orderkey_sel == &receipt_sel && &orderkey_sel == &ship_sel;
+		auto orderkeys = duckdb::FlatVector::GetData<int64_t>(duckdb::DictionaryVector::Child(orderkey_vector));
+		auto &shipmode_child = duckdb::DictionaryVector::Child(shipmode_vector);
+		auto shipmodes = duckdb::FlatVector::GetData<duckdb::string_t>(shipmode_child);
+		auto &shipmode_validity = duckdb::FlatVector::Validity(shipmode_child);
+		auto commitdates = duckdb::FlatVector::GetData<duckdb::date_t>(duckdb::DictionaryVector::Child(commit_vector));
+		auto receiptdates =
+		    duckdb::FlatVector::GetData<duckdb::date_t>(duckdb::DictionaryVector::Child(receipt_vector));
+		auto shipdates = duckdb::FlatVector::GetData<duckdb::date_t>(duckdb::DictionaryVector::Child(ship_vector));
+		auto &orderkey_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(orderkey_vector));
+		auto &commit_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(commit_vector));
+		auto &receipt_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(receipt_vector));
+		auto &ship_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(ship_vector));
+		ShipModeSlot shipmode_cache[STANDARD_VECTOR_SIZE];
+		bool shipmode_cache_valid[STANDARD_VECTOR_SIZE] = {};
+
+		if (shared_sel && orderkey_validity.AllValid() && shipmode_validity.AllValid() && commit_validity.AllValid() &&
+		    receipt_validity.AllValid() && ship_validity.AllValid()) {
+			ProcessAlignedLineitemParallel(store, params, modes_equal, fixed_slots, orderkeys, &orderkey_sel, shipmodes,
+			                               &shipmode_sel, commitdates, &commit_sel, receiptdates, &receipt_sel,
+			                               shipdates, &ship_sel, input.size(), !skip_receipt_residual, shipmode_cache,
+			                               shipmode_cache_valid);
+			return;
+		}
+
 		for (duckdb::idx_t row = 0; row < input.size(); row++) {
-			const auto slot = ClassifyShipMode(shipmodes[row], params.shipmode1, params.shipmode2, modes_equal);
+			const auto orderkey_index = orderkey_sel.get_index(row);
+			const auto shipmode_index = shipmode_sel.get_index(row);
+			const auto commit_index = commit_sel.get_index(row);
+			const auto receipt_index = receipt_sel.get_index(row);
+			const auto ship_index = ship_sel.get_index(row);
+			if ((!orderkey_validity.AllValid() && !orderkey_validity.RowIsValidUnsafe(orderkey_index)) ||
+			    (!shipmode_validity.AllValid() && !shipmode_validity.RowIsValidUnsafe(shipmode_index)) ||
+			    (!commit_validity.AllValid() && !commit_validity.RowIsValidUnsafe(commit_index)) ||
+			    (!receipt_validity.AllValid() && !receipt_validity.RowIsValidUnsafe(receipt_index)) ||
+			    (!ship_validity.AllValid() && !ship_validity.RowIsValidUnsafe(ship_index))) {
+				continue;
+			}
+			ShipModeSlot slot = ShipModeSlot::Neither;
+			if (shipmode_index < STANDARD_VECTOR_SIZE && shipmode_cache_valid[shipmode_index]) {
+				slot = shipmode_cache[shipmode_index];
+			} else {
+				slot = ClassifyShipMode(shipmodes[shipmode_index], params.shipmode1, params.shipmode2, modes_equal);
+				if (shipmode_index < STANDARD_VECTOR_SIZE) {
+					shipmode_cache[shipmode_index] = slot;
+					shipmode_cache_valid[shipmode_index] = true;
+				}
+			}
 			if (slot == ShipModeSlot::Neither) {
 				continue;
 			}
-			if (!(commitdates[row] < receiptdates[row]) || !(shipdates[row] < commitdates[row])) {
+			const auto commitdate = commitdates[commit_index];
+			const auto receiptdate = receiptdates[receipt_index];
+			const auto shipdate = shipdates[ship_index];
+			if (!(commitdate < receiptdate) || !(shipdate < commitdate)) {
 				continue;
 			}
-			if (!skip_receipt_residual &&
-			    !(receiptdates[row] >= params.start_date && receiptdates[row] < params.end_date)) {
+			if (!skip_receipt_residual && !(receiptdate >= params.start_date && receiptdate < params.end_date)) {
 				continue;
 			}
-			ProbeAndAggregate(store, fixed_slots, orderkeys[row], slot);
+			ProbeAndAggregate(store, fixed_slots, orderkeys[orderkey_index], slot);
 		}
 		return;
 	}

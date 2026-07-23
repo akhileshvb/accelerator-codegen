@@ -1,19 +1,66 @@
 #include "accelerator_codegen/parallel/parallel_runtime.hpp"
 
+#include <exception>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
-#include "duckdb/parallel/task.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 
 namespace accelerator_codegen {
 namespace {
 
 // Parallel scan bind helpers live in duckdb_scan_adapter.cpp (same TU visibility via extern C++ API).
+
+duckdb::idx_t CapWorkerCountToRowGroups(duckdb::idx_t worker_count, duckdb::idx_t total_rows) {
+	if (total_rows == 0) {
+		return 1;
+	}
+	constexpr duckdb::idx_t kRowsPerRowGroup = 122880;
+	const auto groups = (total_rows + kRowsPerRowGroup - 1) / kRowsPerRowGroup;
+	return std::max<duckdb::idx_t>(1, std::min(worker_count, groups));
+}
+
+template <typename WorkerFn>
+void RunParallelScanWorkers(NativeParallelScanHandle &handle, duckdb::idx_t worker_count, WorkerFn worker_fn) {
+	if (worker_count <= 1) {
+		worker_fn(0);
+		return;
+	}
+
+	std::vector<std::thread> threads;
+	threads.reserve(worker_count - 1);
+	std::mutex error_mutex;
+	std::exception_ptr error;
+
+	auto run_worker = [&](duckdb::idx_t worker_id) {
+		try {
+			worker_fn(worker_id);
+		} catch (...) {
+			handle.failed.store(true, std::memory_order_relaxed);
+			std::lock_guard<std::mutex> lock(error_mutex);
+			if (!error) {
+				error = std::current_exception();
+			}
+		}
+	};
+
+	for (duckdb::idx_t worker_id = 1; worker_id < worker_count; worker_id++) {
+		threads.emplace_back([&, worker_id]() { run_worker(worker_id); });
+	}
+	run_worker(0);
+	for (auto &thread : threads) {
+		thread.join();
+	}
+	if (error) {
+		std::rethrow_exception(error);
+	}
+}
 
 } // namespace
 
@@ -76,81 +123,6 @@ bool DrainParallelAssignmentFiltered(NativeParallelScanHandle &handle, duckdb::T
 	return result != duckdb::FilteredScanConsumerResult::STOP;
 }
 
-namespace {
-
-class ParallelChunkWorkerTask : public duckdb::BaseExecutorTask {
-public:
-	ParallelChunkWorkerTask(duckdb::TaskExecutor &executor, NativeParallelScanHandle &handle_p, duckdb::idx_t worker_id_p,
-	                        std::function<void(duckdb::idx_t, duckdb::DataChunk &)> consume_p)
-	    : BaseExecutorTask(executor), handle(handle_p), worker_id(worker_id_p), consume(std::move(consume_p)) {
-	}
-
-	void ExecuteTask() override {
-		try {
-			duckdb::TableScanState scan_state;
-			PrepareParallelLocalScanState(handle, scan_state);
-			duckdb::DataChunk chunk;
-			chunk.Initialize(*handle.context, handle.projected_types);
-			while (ClaimNextParallelAssignment(handle, scan_state)) {
-				if (!DrainParallelAssignmentChunks(handle, scan_state, chunk,
-				                                   [&](duckdb::DataChunk &c) { consume(worker_id, c); })) {
-					handle.failed.store(true, std::memory_order_relaxed);
-					return;
-				}
-			}
-		} catch (...) {
-			handle.failed.store(true, std::memory_order_relaxed);
-			throw;
-		}
-	}
-
-private:
-	NativeParallelScanHandle &handle;
-	duckdb::idx_t worker_id;
-	std::function<void(duckdb::idx_t, duckdb::DataChunk &)> consume;
-};
-
-class ParallelFilteredWorkerTask : public duckdb::BaseExecutorTask {
-public:
-	using ConsumeFn = std::function<void(duckdb::idx_t, duckdb::TransactionData, duckdb::CollectionScanState &,
-	                                     duckdb::RowGroup &, duckdb::SelectionVector &, duckdb::idx_t)>;
-
-	ParallelFilteredWorkerTask(duckdb::TaskExecutor &executor, NativeParallelScanHandle &handle_p,
-	                           duckdb::idx_t worker_id_p, ConsumeFn consume_p)
-	    : BaseExecutorTask(executor), handle(handle_p), worker_id(worker_id_p), consume(std::move(consume_p)) {
-	}
-
-	void ExecuteTask() override {
-		try {
-			duckdb::TableScanState scan_state;
-			PrepareParallelLocalScanState(handle, scan_state);
-			while (ClaimNextParallelAssignment(handle, scan_state)) {
-				const bool ok = DrainParallelAssignmentFiltered(
-				    handle, scan_state,
-				    [&](duckdb::TransactionData td, duckdb::CollectionScanState &st, duckdb::RowGroup &rg,
-				        duckdb::SelectionVector &sel, duckdb::idx_t count) {
-					    consume(worker_id, td, st, rg, sel, count);
-					    return duckdb::FilteredScanConsumerResult::CONTINUE;
-				    });
-				if (!ok) {
-					handle.failed.store(true, std::memory_order_relaxed);
-					return;
-				}
-			}
-		} catch (...) {
-			handle.failed.store(true, std::memory_order_relaxed);
-			throw;
-		}
-	}
-
-private:
-	NativeParallelScanHandle &handle;
-	duckdb::idx_t worker_id;
-	ConsumeFn consume;
-};
-
-} // namespace
-
 void RunParallelChunkScan(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data,
                           duckdb::idx_t worker_count,
                           const std::function<void(duckdb::idx_t worker_id, duckdb::DataChunk &chunk)> &consume) {
@@ -159,12 +131,22 @@ void RunParallelChunkScan(duckdb::ClientContext &context, const duckdb::Function
 	}
 	NativeParallelScanHandle handle;
 	handle.Initialize(context, bind_data);
+	worker_count = CapWorkerCountToRowGroups(worker_count, handle.storage->GetTotalRows());
 
-	duckdb::TaskExecutor executor(context);
-	for (duckdb::idx_t w = 0; w < worker_count; w++) {
-		executor.ScheduleTask(duckdb::make_uniq<ParallelChunkWorkerTask>(executor, handle, w, consume));
-	}
-	executor.WorkOnTasks();
+	RunParallelScanWorkers(handle, worker_count, [&](duckdb::idx_t worker_id) {
+		duckdb::TableScanState scan_state;
+		PrepareParallelLocalScanState(handle, scan_state);
+		duckdb::DataChunk chunk;
+		chunk.Initialize(*handle.context, handle.projected_types);
+		while (ClaimNextParallelAssignment(handle, scan_state)) {
+			if (!DrainParallelAssignmentChunks(handle, scan_state, chunk,
+			                                   [&](duckdb::DataChunk &input) { consume(worker_id, input); })) {
+				handle.failed.store(true, std::memory_order_relaxed);
+				return;
+			}
+		}
+	});
+
 	if (handle.failed.load(std::memory_order_relaxed) || context.interrupted) {
 		throw duckdb::InterruptException();
 	}
@@ -179,12 +161,26 @@ void RunParallelFilteredScan(
 	}
 	NativeParallelScanHandle handle;
 	handle.Initialize(context, bind_data);
+	worker_count = CapWorkerCountToRowGroups(worker_count, handle.storage->GetTotalRows());
 
-	duckdb::TaskExecutor executor(context);
-	for (duckdb::idx_t w = 0; w < worker_count; w++) {
-		executor.ScheduleTask(duckdb::make_uniq<ParallelFilteredWorkerTask>(executor, handle, w, consume));
-	}
-	executor.WorkOnTasks();
+	RunParallelScanWorkers(handle, worker_count, [&](duckdb::idx_t worker_id) {
+		duckdb::TableScanState scan_state;
+		PrepareParallelLocalScanState(handle, scan_state);
+		while (ClaimNextParallelAssignment(handle, scan_state)) {
+			const bool ok = DrainParallelAssignmentFiltered(
+			    handle, scan_state,
+			    [&](duckdb::TransactionData td, duckdb::CollectionScanState &st, duckdb::RowGroup &rg,
+			        duckdb::SelectionVector &sel, duckdb::idx_t count) {
+				    consume(worker_id, td, st, rg, sel, count);
+				    return duckdb::FilteredScanConsumerResult::CONTINUE;
+			    });
+			if (!ok) {
+				handle.failed.store(true, std::memory_order_relaxed);
+				return;
+			}
+		}
+	});
+
 	if (handle.failed.load(std::memory_order_relaxed) || context.interrupted) {
 		throw duckdb::InterruptException();
 	}

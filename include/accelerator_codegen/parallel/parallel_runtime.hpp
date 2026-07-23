@@ -71,8 +71,8 @@ inline int64_t EstimateTpchDenseOrderCapacity(duckdb::ClientContext &context,
 	return estimated < 1 ? 1 : estimated;
 }
 
-//! Run N TaskExecutor workers that each loop claim → drain chunks → consume.
-//! `worker_count` defaults to ParallelWorkerCount(context).
+//! Run N OS-thread workers that each loop claim → drain chunks → consume via native
+//! DataTable::NextParallelScan. Workers are ephemeral per query (no persistent aux state).
 void RunParallelChunkScan(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data,
                           duckdb::idx_t worker_count,
                           const std::function<void(duckdb::idx_t worker_id, duckdb::DataChunk &chunk)> &consume);
