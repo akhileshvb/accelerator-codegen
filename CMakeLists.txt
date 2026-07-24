@@ -16,50 +16,50 @@ add_library(accelerator_codegen SHARED
     src/duckdb_scan_adapter.cpp
     src/query_runtime.cpp
     src/register.cpp
-    src/generated/tpch/q1_package.cpp
-    src/generated/tpch/q1_fused_scan.cpp
-    src/generated/tpch/q3_package.cpp
-    src/generated/tpch/q3_kernel.cpp
-    src/generated/tpch/q4_package.cpp
-    src/generated/tpch/q4_kernel.cpp
-    src/generated/tpch/q6_package.cpp
-    src/generated/tpch/q6_kernel.cpp
-    src/generated/tpch/q9_package.cpp
-    src/generated/tpch/q9_kernel.cpp
-    src/generated/tpch/q12_package.cpp
-    src/generated/tpch/q12_kernel.cpp
-    src/generated/tpch/q14_package.cpp
-    src/generated/tpch/q14_kernel.cpp
-    src/generated/tpch/q17_package.cpp
-    src/generated/tpch/q17_kernel.cpp
-    src/generated/tpch/q19_package.cpp
-    src/generated/tpch/q19_kernel.cpp
-    src/generated/tpch/q5_package.cpp
-    src/generated/tpch/q5_kernel.cpp
-    src/generated/tpch/q7_package.cpp
-    src/generated/tpch/q7_kernel.cpp
-    src/generated/tpch/q10_package.cpp
-    src/generated/tpch/q10_kernel.cpp
-    src/generated/tpch/q11_package.cpp
-    src/generated/tpch/q11_kernel.cpp
-    src/generated/tpch/q13_package.cpp
-    src/generated/tpch/q13_kernel.cpp
-    src/generated/tpch/q16_package.cpp
-    src/generated/tpch/q16_kernel.cpp
-    src/generated/tpch/q18_package.cpp
-    src/generated/tpch/q18_kernel.cpp
-    src/generated/tpch/q22_package.cpp
-    src/generated/tpch/q22_kernel.cpp
-    src/generated/tpch/q15_package.cpp
-    src/generated/tpch/q15_kernel.cpp
-    src/generated/tpch/q21_package.cpp
-    src/generated/tpch/q21_kernel.cpp
-    src/generated/tpch/q20_package.cpp
-    src/generated/tpch/q20_kernel.cpp
-    src/generated/tpch/q8_package.cpp
-    src/generated/tpch/q8_kernel.cpp
-    src/generated/tpch/q2_package.cpp
-    src/generated/tpch/q2_kernel.cpp
+    src/generated/tpch/single-threaded/q1_package.cpp
+    src/generated/tpch/single-threaded/q1_fused_scan.cpp
+    src/generated/tpch/single-threaded/q3_package.cpp
+    src/generated/tpch/single-threaded/q3_kernel.cpp
+    src/generated/tpch/single-threaded/q4_package.cpp
+    src/generated/tpch/single-threaded/q4_kernel.cpp
+    src/generated/tpch/single-threaded/q6_package.cpp
+    src/generated/tpch/single-threaded/q6_kernel.cpp
+    src/generated/tpch/single-threaded/q9_package.cpp
+    src/generated/tpch/single-threaded/q9_kernel.cpp
+    src/generated/tpch/single-threaded/q12_package.cpp
+    src/generated/tpch/single-threaded/q12_kernel.cpp
+    src/generated/tpch/single-threaded/q14_package.cpp
+    src/generated/tpch/single-threaded/q14_kernel.cpp
+    src/generated/tpch/single-threaded/q17_package.cpp
+    src/generated/tpch/single-threaded/q17_kernel.cpp
+    src/generated/tpch/single-threaded/q19_package.cpp
+    src/generated/tpch/single-threaded/q19_kernel.cpp
+    src/generated/tpch/single-threaded/q5_package.cpp
+    src/generated/tpch/single-threaded/q5_kernel.cpp
+    src/generated/tpch/single-threaded/q7_package.cpp
+    src/generated/tpch/single-threaded/q7_kernel.cpp
+    src/generated/tpch/single-threaded/q10_package.cpp
+    src/generated/tpch/single-threaded/q10_kernel.cpp
+    src/generated/tpch/single-threaded/q11_package.cpp
+    src/generated/tpch/single-threaded/q11_kernel.cpp
+    src/generated/tpch/single-threaded/q13_package.cpp
+    src/generated/tpch/single-threaded/q13_kernel.cpp
+    src/generated/tpch/single-threaded/q16_package.cpp
+    src/generated/tpch/single-threaded/q16_kernel.cpp
+    src/generated/tpch/single-threaded/q18_package.cpp
+    src/generated/tpch/single-threaded/q18_kernel.cpp
+    src/generated/tpch/single-threaded/q22_package.cpp
+    src/generated/tpch/single-threaded/q22_kernel.cpp
+    src/generated/tpch/single-threaded/q15_package.cpp
+    src/generated/tpch/single-threaded/q15_kernel.cpp
+    src/generated/tpch/single-threaded/q21_package.cpp
+    src/generated/tpch/single-threaded/q21_kernel.cpp
+    src/generated/tpch/single-threaded/q20_package.cpp
+    src/generated/tpch/single-threaded/q20_kernel.cpp
+    src/generated/tpch/single-threaded/q8_package.cpp
+    src/generated/tpch/single-threaded/q8_kernel.cpp
+    src/generated/tpch/single-threaded/q2_package.cpp
+    src/generated/tpch/single-threaded/q2_kernel.cpp
 )
 
 target_include_directories(accelerator_codegen
@@ -81,7 +81,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	target_link_libraries(accelerator_codegen PRIVATE atomic)
 	target_sources(accelerator_codegen PRIVATE
 		src/parallel/parallel_runtime.cpp
-		src/generated/tpch/q1_parallel_aligned_agg.cpp
+		src/generated/tpch/parallel/q1_parallel_aligned_agg.cpp
 		src/generated/tpch/parallel/q1_parallel_kernel.cpp
 		src/generated/tpch/parallel/q1_parallel_package.cpp
 		src/generated/tpch/parallel/q3_parallel_kernel.cpp
@@ -130,7 +130,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 endif()
 
 add_executable(test_registration
-    tests/test_registration.cpp
+    tests/single-threaded/test_registration.cpp
 )
 
 target_link_libraries(test_registration
@@ -140,7 +140,7 @@ target_link_libraries(test_registration
 )
 
 add_executable(test_tpch_q6
-    tests/test_tpch_q6.cpp
+    tests/single-threaded/test_tpch_q6.cpp
 )
 
 target_link_libraries(test_tpch_q6
@@ -152,7 +152,7 @@ target_link_libraries(test_tpch_q6
 target_include_directories(test_tpch_q6 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q1
-    tests/test_tpch_q1.cpp
+    tests/single-threaded/test_tpch_q1.cpp
 )
 
 target_link_libraries(test_tpch_q1
@@ -164,7 +164,7 @@ target_link_libraries(test_tpch_q1
 target_include_directories(test_tpch_q1 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q3
-    tests/test_tpch_q3.cpp
+    tests/single-threaded/test_tpch_q3.cpp
 )
 
 target_link_libraries(test_tpch_q3
@@ -176,7 +176,7 @@ target_link_libraries(test_tpch_q3
 target_include_directories(test_tpch_q3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q4
-    tests/test_tpch_q4.cpp
+    tests/single-threaded/test_tpch_q4.cpp
 )
 
 target_link_libraries(test_tpch_q4
@@ -188,7 +188,7 @@ target_link_libraries(test_tpch_q4
 target_include_directories(test_tpch_q4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q9
-    tests/test_tpch_q9.cpp
+    tests/single-threaded/test_tpch_q9.cpp
 )
 
 target_link_libraries(test_tpch_q9
@@ -200,7 +200,7 @@ target_link_libraries(test_tpch_q9
 target_include_directories(test_tpch_q9 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q12
-    tests/test_tpch_q12.cpp
+    tests/single-threaded/test_tpch_q12.cpp
 )
 
 target_link_libraries(test_tpch_q12
@@ -212,7 +212,7 @@ target_link_libraries(test_tpch_q12
 target_include_directories(test_tpch_q12 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q14
-    tests/test_tpch_q14.cpp
+    tests/single-threaded/test_tpch_q14.cpp
 )
 
 target_link_libraries(test_tpch_q14
@@ -224,7 +224,7 @@ target_link_libraries(test_tpch_q14
 target_include_directories(test_tpch_q14 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q17
-    tests/test_tpch_q17.cpp
+    tests/single-threaded/test_tpch_q17.cpp
 )
 
 target_link_libraries(test_tpch_q17
@@ -236,7 +236,7 @@ target_link_libraries(test_tpch_q17
 target_include_directories(test_tpch_q17 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q19
-    tests/test_tpch_q19.cpp
+    tests/single-threaded/test_tpch_q19.cpp
 )
 
 target_link_libraries(test_tpch_q19
@@ -248,7 +248,7 @@ target_link_libraries(test_tpch_q19
 target_include_directories(test_tpch_q19 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q5
-    tests/test_tpch_q5.cpp
+    tests/single-threaded/test_tpch_q5.cpp
 )
 
 target_link_libraries(test_tpch_q5
@@ -260,7 +260,7 @@ target_link_libraries(test_tpch_q5
 target_include_directories(test_tpch_q5 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q7
-    tests/test_tpch_q7.cpp
+    tests/single-threaded/test_tpch_q7.cpp
 )
 
 target_link_libraries(test_tpch_q7
@@ -272,7 +272,7 @@ target_link_libraries(test_tpch_q7
 target_include_directories(test_tpch_q7 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q10
-    tests/test_tpch_q10.cpp
+    tests/single-threaded/test_tpch_q10.cpp
 )
 
 target_link_libraries(test_tpch_q10
@@ -284,7 +284,7 @@ target_link_libraries(test_tpch_q10
 target_include_directories(test_tpch_q10 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q11
-    tests/test_tpch_q11.cpp
+    tests/single-threaded/test_tpch_q11.cpp
 )
 
 target_link_libraries(test_tpch_q11
@@ -296,7 +296,7 @@ target_link_libraries(test_tpch_q11
 target_include_directories(test_tpch_q11 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q13
-    tests/test_tpch_q13.cpp
+    tests/single-threaded/test_tpch_q13.cpp
 )
 
 target_link_libraries(test_tpch_q13
@@ -308,7 +308,7 @@ target_link_libraries(test_tpch_q13
 target_include_directories(test_tpch_q13 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q16
-    tests/test_tpch_q16.cpp
+    tests/single-threaded/test_tpch_q16.cpp
 )
 
 target_link_libraries(test_tpch_q16
@@ -320,7 +320,7 @@ target_link_libraries(test_tpch_q16
 target_include_directories(test_tpch_q16 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q18
-    tests/test_tpch_q18.cpp
+    tests/single-threaded/test_tpch_q18.cpp
 )
 
 target_link_libraries(test_tpch_q18
@@ -332,7 +332,7 @@ target_link_libraries(test_tpch_q18
 target_include_directories(test_tpch_q18 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q22
-    tests/test_tpch_q22.cpp
+    tests/single-threaded/test_tpch_q22.cpp
 )
 
 target_link_libraries(test_tpch_q22
@@ -344,7 +344,7 @@ target_link_libraries(test_tpch_q22
 target_include_directories(test_tpch_q22 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q15
-    tests/test_tpch_q15.cpp
+    tests/single-threaded/test_tpch_q15.cpp
 )
 
 target_link_libraries(test_tpch_q15
@@ -356,7 +356,7 @@ target_link_libraries(test_tpch_q15
 target_include_directories(test_tpch_q15 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q21
-    tests/test_tpch_q21.cpp
+    tests/single-threaded/test_tpch_q21.cpp
 )
 
 target_link_libraries(test_tpch_q21
@@ -368,7 +368,7 @@ target_link_libraries(test_tpch_q21
 target_include_directories(test_tpch_q21 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q20
-    tests/test_tpch_q20.cpp
+    tests/single-threaded/test_tpch_q20.cpp
 )
 
 target_link_libraries(test_tpch_q20
@@ -380,7 +380,7 @@ target_link_libraries(test_tpch_q20
 target_include_directories(test_tpch_q20 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q8
-    tests/test_tpch_q8.cpp
+    tests/single-threaded/test_tpch_q8.cpp
 )
 
 target_link_libraries(test_tpch_q8
@@ -392,7 +392,7 @@ target_link_libraries(test_tpch_q8
 target_include_directories(test_tpch_q8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q2
-    tests/test_tpch_q2.cpp
+    tests/single-threaded/test_tpch_q2.cpp
 )
 
 target_link_libraries(test_tpch_q2
@@ -404,7 +404,7 @@ target_link_libraries(test_tpch_q2
 target_include_directories(test_tpch_q2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q6
-    benchmarks/tpch/benchmark_q6.cpp
+    benchmarks/tpch/single-threaded/benchmark_q6.cpp
 )
 
 target_link_libraries(benchmark_tpch_q6
@@ -416,7 +416,7 @@ target_link_libraries(benchmark_tpch_q6
 target_include_directories(benchmark_tpch_q6 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q1
-    benchmarks/tpch/benchmark_q1.cpp
+    benchmarks/tpch/single-threaded/benchmark_q1.cpp
 )
 
 target_link_libraries(benchmark_tpch_q1
@@ -428,7 +428,7 @@ target_link_libraries(benchmark_tpch_q1
 target_include_directories(benchmark_tpch_q1 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q3
-    benchmarks/tpch/benchmark_q3.cpp
+    benchmarks/tpch/single-threaded/benchmark_q3.cpp
 )
 
 target_link_libraries(benchmark_tpch_q3
@@ -440,7 +440,7 @@ target_link_libraries(benchmark_tpch_q3
 target_include_directories(benchmark_tpch_q3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q4
-    benchmarks/tpch/benchmark_q4.cpp
+    benchmarks/tpch/single-threaded/benchmark_q4.cpp
 )
 
 target_link_libraries(benchmark_tpch_q4
@@ -452,7 +452,7 @@ target_link_libraries(benchmark_tpch_q4
 target_include_directories(benchmark_tpch_q4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q9
-    benchmarks/tpch/benchmark_q9.cpp
+    benchmarks/tpch/single-threaded/benchmark_q9.cpp
 )
 
 target_link_libraries(benchmark_tpch_q9
@@ -464,7 +464,7 @@ target_link_libraries(benchmark_tpch_q9
 target_include_directories(benchmark_tpch_q9 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q12
-    benchmarks/tpch/benchmark_q12.cpp
+    benchmarks/tpch/single-threaded/benchmark_q12.cpp
 )
 
 target_link_libraries(benchmark_tpch_q12
@@ -476,7 +476,7 @@ target_link_libraries(benchmark_tpch_q12
 target_include_directories(benchmark_tpch_q12 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q14
-    benchmarks/tpch/benchmark_q14.cpp
+    benchmarks/tpch/single-threaded/benchmark_q14.cpp
 )
 
 target_link_libraries(benchmark_tpch_q14
@@ -488,7 +488,7 @@ target_link_libraries(benchmark_tpch_q14
 target_include_directories(benchmark_tpch_q14 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q17
-    benchmarks/tpch/benchmark_q17.cpp
+    benchmarks/tpch/single-threaded/benchmark_q17.cpp
 )
 
 target_link_libraries(benchmark_tpch_q17
@@ -500,7 +500,7 @@ target_link_libraries(benchmark_tpch_q17
 target_include_directories(benchmark_tpch_q17 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q19
-    benchmarks/tpch/benchmark_q19.cpp
+    benchmarks/tpch/single-threaded/benchmark_q19.cpp
 )
 
 target_link_libraries(benchmark_tpch_q19
@@ -512,7 +512,7 @@ target_link_libraries(benchmark_tpch_q19
 target_include_directories(benchmark_tpch_q19 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q5
-    benchmarks/tpch/benchmark_q5.cpp
+    benchmarks/tpch/single-threaded/benchmark_q5.cpp
 )
 
 target_link_libraries(benchmark_tpch_q5
@@ -524,7 +524,7 @@ target_link_libraries(benchmark_tpch_q5
 target_include_directories(benchmark_tpch_q5 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q7
-    benchmarks/tpch/benchmark_q7.cpp
+    benchmarks/tpch/single-threaded/benchmark_q7.cpp
 )
 
 target_link_libraries(benchmark_tpch_q7
@@ -536,7 +536,7 @@ target_link_libraries(benchmark_tpch_q7
 target_include_directories(benchmark_tpch_q7 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q10
-    benchmarks/tpch/benchmark_q10.cpp
+    benchmarks/tpch/single-threaded/benchmark_q10.cpp
 )
 
 target_link_libraries(benchmark_tpch_q10
@@ -548,7 +548,7 @@ target_link_libraries(benchmark_tpch_q10
 target_include_directories(benchmark_tpch_q10 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q11
-    benchmarks/tpch/benchmark_q11.cpp
+    benchmarks/tpch/single-threaded/benchmark_q11.cpp
 )
 
 target_link_libraries(benchmark_tpch_q11
@@ -560,7 +560,7 @@ target_link_libraries(benchmark_tpch_q11
 target_include_directories(benchmark_tpch_q11 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q13
-    benchmarks/tpch/benchmark_q13.cpp
+    benchmarks/tpch/single-threaded/benchmark_q13.cpp
 )
 
 target_link_libraries(benchmark_tpch_q13
@@ -572,7 +572,7 @@ target_link_libraries(benchmark_tpch_q13
 target_include_directories(benchmark_tpch_q13 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q16
-    benchmarks/tpch/benchmark_q16.cpp
+    benchmarks/tpch/single-threaded/benchmark_q16.cpp
 )
 
 target_link_libraries(benchmark_tpch_q16
@@ -584,7 +584,7 @@ target_link_libraries(benchmark_tpch_q16
 target_include_directories(benchmark_tpch_q16 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q18
-    benchmarks/tpch/benchmark_q18.cpp
+    benchmarks/tpch/single-threaded/benchmark_q18.cpp
 )
 
 target_link_libraries(benchmark_tpch_q18
@@ -596,7 +596,7 @@ target_link_libraries(benchmark_tpch_q18
 target_include_directories(benchmark_tpch_q18 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_q22
-    benchmarks/tpch/benchmark_q22.cpp
+    benchmarks/tpch/single-threaded/benchmark_q22.cpp
 )
 
 target_link_libraries(benchmark_tpch_q22
@@ -608,7 +608,7 @@ target_link_libraries(benchmark_tpch_q22
 target_include_directories(benchmark_tpch_q22 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_stage_c
-    benchmarks/tpch/benchmark_stage_c.cpp
+    benchmarks/tpch/single-threaded/benchmark_stage_c.cpp
 )
 
 target_link_libraries(benchmark_tpch_stage_c
@@ -620,7 +620,7 @@ target_link_libraries(benchmark_tpch_stage_c
 target_include_directories(benchmark_tpch_stage_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_breakdown
-    benchmarks/tpch/benchmark_tpch_breakdown.cpp
+    benchmarks/tpch/single-threaded/benchmark_tpch_breakdown.cpp
 )
 
 target_link_libraries(benchmark_tpch_breakdown
@@ -632,7 +632,7 @@ target_link_libraries(benchmark_tpch_breakdown
 target_include_directories(benchmark_tpch_breakdown PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(benchmark_tpch_validated
-    benchmarks/tpch/benchmark_tpch_validated.cpp
+    benchmarks/tpch/single-threaded/benchmark_tpch_validated.cpp
 )
 
 target_link_libraries(benchmark_tpch_validated
@@ -661,7 +661,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q20_semantics
-		tests/test_tpch_q20_semantics.cpp
+		tests/parallel/test_tpch_q20_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q20_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q20_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -672,7 +672,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q21_semantics
-		tests/test_tpch_q21_semantics.cpp
+		tests/parallel/test_tpch_q21_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q21_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q21_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -683,7 +683,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q22_semantics
-		tests/test_tpch_q22_semantics.cpp
+		tests/parallel/test_tpch_q22_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q22_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q22_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -694,7 +694,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q10_semantics
-		tests/test_tpch_q10_semantics.cpp
+		tests/parallel/test_tpch_q10_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q10_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q10_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -705,7 +705,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q17_semantics
-		tests/test_tpch_q17_semantics.cpp
+		tests/parallel/test_tpch_q17_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q17_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q17_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -716,7 +716,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q18_semantics
-		tests/test_tpch_q18_semantics.cpp
+		tests/parallel/test_tpch_q18_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q18_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q18_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -727,7 +727,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q3_semantics
-		tests/test_tpch_q3_semantics.cpp
+		tests/parallel/test_tpch_q3_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q3_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q3_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -738,7 +738,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q5_semantics
-		tests/test_tpch_q5_semantics.cpp
+		tests/parallel/test_tpch_q5_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q5_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q5_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -749,7 +749,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q7_semantics
-		tests/test_tpch_q7_semantics.cpp
+		tests/parallel/test_tpch_q7_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q7_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q7_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -760,7 +760,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q8_semantics
-		tests/test_tpch_q8_semantics.cpp
+		tests/parallel/test_tpch_q8_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q8_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q8_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -771,7 +771,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q11_semantics
-		tests/test_tpch_q11_semantics.cpp
+		tests/parallel/test_tpch_q11_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q11_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q11_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -782,7 +782,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q13_semantics
-		tests/test_tpch_q13_semantics.cpp
+		tests/parallel/test_tpch_q13_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q13_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q13_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -793,7 +793,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q1_semantics
-		tests/test_tpch_q1_semantics.cpp
+		tests/parallel/test_tpch_q1_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q1_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q1_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -804,7 +804,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q16_semantics
-		tests/test_tpch_q16_semantics.cpp
+		tests/parallel/test_tpch_q16_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q16_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q16_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -815,7 +815,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(test_tpch_q2_semantics
-		tests/test_tpch_q2_semantics.cpp
+		tests/parallel/test_tpch_q2_semantics.cpp
 	)
 	target_link_libraries(test_tpch_q2_semantics PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(test_tpch_q2_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -826,7 +826,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q5_parallel
-		benchmarks/tpch/benchmark_q5_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q5_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q5_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q5_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -837,7 +837,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q7_parallel
-		benchmarks/tpch/benchmark_q7_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q7_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q7_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q7_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -848,7 +848,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q8_parallel
-		benchmarks/tpch/benchmark_q8_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q8_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q8_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q8_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -859,7 +859,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q1_parallel
-		benchmarks/tpch/benchmark_q1_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q1_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q1_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q1_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -870,7 +870,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q11_parallel
-		benchmarks/tpch/benchmark_q11_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q11_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q11_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q11_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -881,7 +881,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q13_parallel
-		benchmarks/tpch/benchmark_q13_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q13_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q13_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q13_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -892,7 +892,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q16_parallel
-		benchmarks/tpch/benchmark_q16_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q16_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q16_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q16_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -903,7 +903,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q2_parallel
-		benchmarks/tpch/benchmark_q2_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q2_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q2_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q2_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -914,7 +914,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q3_parallel
-		benchmarks/tpch/benchmark_q3_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q3_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q3_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q3_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -925,7 +925,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q18_parallel
-		benchmarks/tpch/benchmark_q18_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q18_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q18_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q18_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -936,7 +936,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q10_parallel
-		benchmarks/tpch/benchmark_q10_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q10_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q10_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q10_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -947,7 +947,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q17_parallel
-		benchmarks/tpch/benchmark_q17_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q17_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q17_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q17_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -958,7 +958,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_q22_parallel
-		benchmarks/tpch/benchmark_q22_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_q22_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_q22_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_q22_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -969,7 +969,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_wave1_parallel
-		benchmarks/tpch/benchmark_wave1_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_wave1_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_wave1_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_wave1_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -980,7 +980,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_wave5_parallel
-		benchmarks/tpch/benchmark_wave5_parallel.cpp
+		benchmarks/tpch/parallel/benchmark_wave5_parallel.cpp
 	)
 	target_link_libraries(benchmark_tpch_wave5_parallel PRIVATE accelerator_codegen duckdb_sibling)
 	target_include_directories(benchmark_tpch_wave5_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -991,7 +991,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 
 	add_executable(benchmark_tpch_scale_proxy
-		benchmarks/tpch/benchmark_scale_proxy.cpp
+		benchmarks/tpch/parallel/benchmark_scale_proxy.cpp
 	)
 	target_compile_definitions(benchmark_tpch_scale_proxy PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
 	set_target_properties(benchmark_tpch_scale_proxy PROPERTIES

@@ -197,13 +197,13 @@ Expected files and wiring include, adapted to the repository’s conventions:
 
 include/accelerator_codegen/tpch_q<QUERY_NUMBER>.hpp
 
-src/generated/tpch/q<QUERY_NUMBER>_package.cpp
-src/generated/tpch/q<QUERY_NUMBER>_kernel.cpp
+src/generated/tpch/single-threaded/q<QUERY_NUMBER>_package.cpp
+src/generated/tpch/single-threaded/q<QUERY_NUMBER>_kernel.cpp
 
 tests/test_support/q<QUERY_NUMBER>_manifest.hpp
-tests/test_tpch_q<QUERY_NUMBER>.cpp
+tests/single-threaded/test_tpch_q<QUERY_NUMBER>.cpp
 
-benchmarks/tpch/benchmark_q<QUERY_NUMBER>.cpp
+benchmarks/tpch/single-threaded/benchmark_q<QUERY_NUMBER>.cpp
 benchmarks/tpch/results/q<QUERY_NUMBER>_baseline.csv
 
 Also update as needed:
