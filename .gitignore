@@ -4,3 +4,5 @@ benchmarks/tpch/results/
 benchmarks/tpch/tmp/
 **/__pycache__/
 docs/
+pipeline/artifacts/q*/
+pipeline/orchestrator/.venv/

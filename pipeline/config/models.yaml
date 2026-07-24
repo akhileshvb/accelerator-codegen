@@ -1,0 +1,15 @@
+# MVP: OpenAI only. TODO: add provider: openrouter via LitellmModel.
+provider: openai
+api_key_env: OPENAI_API_KEY
+
+presets:
+  default: gpt-4.1
+  fast: gpt-4.1-mini
+  strong: gpt-4.1
+  code: gpt-4.1
+
+stages:
+  analysis: fast
+  implementation: strong
+  optimization: default
+  audit: strong
