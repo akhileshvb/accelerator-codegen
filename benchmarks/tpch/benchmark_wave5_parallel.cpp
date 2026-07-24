@@ -1,6 +1,7 @@
 //! DuckDB (matched threads) vs accel_tpch_q{10,18,20,21}_parallel for Wave 5 queries.
 
 #include "accelerator_codegen/register.hpp"
+#include "test_support/benchmark_paired_timing.hpp"
 #include "test_support/q10_manifest.hpp"
 #include "test_support/q18_manifest.hpp"
 #include "test_support/q20_manifest.hpp"
@@ -90,22 +91,6 @@ TimingStats SummarizeMedian(std::vector<double> samples_us) {
 	return stats;
 }
 
-double BenchmarkMedian(duckdb::Connection &connection, const std::string &sql, int warmup, int measured) {
-	for (int i = 0; i < warmup; i++) {
-		ExecuteAndConsume(connection, sql);
-	}
-	std::vector<double> samples;
-	samples.reserve(measured);
-	for (int i = 0; i < measured; i++) {
-		const auto t0 = Clock::now();
-		ExecuteAndConsume(connection, sql);
-		const auto t1 = Clock::now();
-		samples.push_back(
-		    static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count()));
-	}
-	return SummarizeMedian(std::move(samples)).median_us;
-}
-
 double Geomean(const std::vector<double> &values) {
 	double log_sum = 0.0;
 	for (const auto v : values) {
@@ -146,8 +131,10 @@ int main(int argc, char **argv) {
 			const auto &e = accelerator_codegen::test_support::kQ10Manifest[i];
 			const auto duck_sql = ReadFile(e.sql_path);
 			const auto accel_sql = std::string("SELECT * FROM accel_tpch_q10_parallel(DATE '") + e.start_date + "')";
-			const auto duck_us = BenchmarkMedian(connection, duck_sql, warmup, measured);
-			const auto accel_us = BenchmarkMedian(connection, accel_sql, warmup, measured);
+			const auto timing =
+			    accelerator_codegen::tpch_bench::BenchmarkPair(connection, duck_sql, accel_sql, warmup, measured);
+			const auto duck_us = timing.duckdb_median_us;
+			const auto accel_us = timing.accel_median_us;
 			const auto speedup = duck_us / accel_us;
 			std::cout << "Q10," << e.label << ',' << threads << ',' << duck_us << ',' << accel_us << ',' << speedup
 			          << '\n';
@@ -159,8 +146,10 @@ int main(int argc, char **argv) {
 			const auto duck_sql = ReadFile(e.sql_path);
 			const auto accel_sql =
 			    std::string("SELECT * FROM accel_tpch_q18_parallel(") + std::to_string(e.quantity_threshold) + ")";
-			const auto duck_us = BenchmarkMedian(connection, duck_sql, warmup, measured);
-			const auto accel_us = BenchmarkMedian(connection, accel_sql, warmup, measured);
+			const auto timing =
+			    accelerator_codegen::tpch_bench::BenchmarkPair(connection, duck_sql, accel_sql, warmup, measured);
+			const auto duck_us = timing.duckdb_median_us;
+			const auto accel_us = timing.accel_median_us;
 			const auto speedup = duck_us / accel_us;
 			std::cout << "Q18," << e.label << ',' << threads << ',' << duck_us << ',' << accel_us << ',' << speedup
 			          << '\n';
@@ -172,8 +161,10 @@ int main(int argc, char **argv) {
 			const auto duck_sql = ReadFile(e.sql_path);
 			const auto accel_sql = std::string("SELECT * FROM accel_tpch_q20_parallel(DATE '") + e.start_date + "', '" +
 			                       EscapeLiteral(e.part_name_pattern) + "', '" + EscapeLiteral(e.nation_name) + "')";
-			const auto duck_us = BenchmarkMedian(connection, duck_sql, warmup, measured);
-			const auto accel_us = BenchmarkMedian(connection, accel_sql, warmup, measured);
+			const auto timing =
+			    accelerator_codegen::tpch_bench::BenchmarkPair(connection, duck_sql, accel_sql, warmup, measured);
+			const auto duck_us = timing.duckdb_median_us;
+			const auto accel_us = timing.accel_median_us;
 			const auto speedup = duck_us / accel_us;
 			std::cout << "Q20," << e.label << ',' << threads << ',' << duck_us << ',' << accel_us << ',' << speedup
 			          << '\n';
@@ -185,8 +176,10 @@ int main(int argc, char **argv) {
 			const auto duck_sql = ReadFile(e.sql_path);
 			const auto accel_sql =
 			    std::string("SELECT * FROM accel_tpch_q21_parallel('") + EscapeLiteral(e.nation_name) + "')";
-			const auto duck_us = BenchmarkMedian(connection, duck_sql, warmup, measured);
-			const auto accel_us = BenchmarkMedian(connection, accel_sql, warmup, measured);
+			const auto timing =
+			    accelerator_codegen::tpch_bench::BenchmarkPair(connection, duck_sql, accel_sql, warmup, measured);
+			const auto duck_us = timing.duckdb_median_us;
+			const auto accel_us = timing.accel_median_us;
 			const auto speedup = duck_us / accel_us;
 			std::cout << "Q21," << e.label << ',' << threads << ',' << duck_us << ',' << accel_us << ',' << speedup
 			          << '\n';

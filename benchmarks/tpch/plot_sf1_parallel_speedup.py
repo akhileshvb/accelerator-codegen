@@ -16,16 +16,13 @@ DEFAULT_CSV = RESULTS_DIR / "sf1_parallel_22q" / "geomean_by_query.csv"
 OUT_PNG = RESULTS_DIR / "sf1_parallel_speedup_22q.png"
 OUT_CSV = RESULTS_DIR / "sf1_parallel_speedup_22q.csv"
 
-THREADS = [1, 2, 4, 8, 16]
+DEFAULT_THREADS = [1, 2, 4, 8, 16]
 THREAD_COLORS = ["#4C72B0", "#55A868", "#C44E52", "#8172B2", "#CCB974"]
 QUERIES = [f"Q{i}" for i in range(1, 23)]
+THREADS: list[int] = DEFAULT_THREADS
 
 
-def geomean(values: list[float]) -> float:
-    return math.exp(sum(math.log(v) for v in values) / len(values))
-
-
-def load_speedups(csv_path: Path) -> dict[str, list[float]]:
+def load_table(csv_path: Path) -> dict[str, dict[int, float]]:
     table: dict[str, dict[int, float]] = {q: {} for q in QUERIES}
     with csv_path.open(newline="") as f:
         reader = csv.DictReader(f)
@@ -37,24 +34,26 @@ def load_speedups(csv_path: Path) -> dict[str, list[float]]:
                 continue
             threads = int(row["threads"])
             table[query][threads] = float(row["geomean_speedup"])
+    return table
 
-    speedups: dict[str, list[float]] = {}
-    missing: list[str] = []
-    for query in QUERIES:
-        values = []
-        ok = True
-        for t in THREADS:
-            if t not in table[query]:
-                ok = False
-                break
-            values.append(table[query][t])
-        if ok:
-            speedups[query] = values
-        else:
-            missing.append(query)
-    if missing:
-        raise SystemExit(f"Missing thread data for: {', '.join(missing)} (csv={csv_path})")
-    return speedups
+
+def resolve_threads(table: dict[str, dict[int, float]], requested: list[int]) -> list[int]:
+    threads = [t for t in requested if all(t in table[q] for q in QUERIES)]
+    if not threads:
+        raise SystemExit(f"No complete thread column in {requested} (csv missing data)")
+    return threads
+
+
+def load_speedups(csv_path: Path, threads: list[int]) -> dict[str, list[float]]:
+    table = load_table(csv_path)
+    threads = resolve_threads(table, threads)
+    global THREADS
+    THREADS = threads
+    return {q: [table[q][t] for t in threads] for q in QUERIES}
+
+
+def geomean(values: list[float]) -> float:
+    return math.exp(sum(math.log(v) for v in values) / len(values))
 
 
 def write_csv(speedups: dict[str, list[float]]) -> None:
@@ -105,9 +104,16 @@ def plot_grouped_bars(ax, speedups: dict[str, list[float]]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", type=Path, default=DEFAULT_CSV, help="geomean_by_query.csv from matrix run")
+    parser.add_argument(
+        "--threads",
+        type=str,
+        default="",
+        help="Comma-separated thread counts (default: auto 1,2,4,8,16 present in csv)",
+    )
     args = parser.parse_args()
 
-    speedups = load_speedups(args.csv)
+    requested = DEFAULT_THREADS if not args.threads else [int(x) for x in args.threads.split(",")]
+    speedups = load_speedups(args.csv, requested)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     write_csv(speedups)
 
@@ -119,8 +125,7 @@ def main() -> None:
     subtitle = (
         "Overall geomean: "
         + " · ".join(f"t={t}: {overall[i]:.2f}×" for i, t in enumerate(THREADS))
-        + "  |  SF1 tpch_sf1.duckdb  |  warmup=3 iters=5 seeds=5"
-        + "  |  Q17* = nonzero-part synthetic instances, 10 dbgen-matching brand/container pairs (standard SF1 Q17 seeds return zero rows)"
+        + "  |  SF1 tpch_sf1.duckdb  |  warmup=3 iters=5 seeds=5  |  paired-alternate timing"
         + "  |  Q11 uses TPC-H fraction=0.0001 (matched DuckDB SQL)"
     )
     fig.suptitle(

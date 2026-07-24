@@ -1,6 +1,7 @@
 //! DuckDB (matched threads) vs accel_tpch_q22_parallel across manifest seeds.
 
 #include "accelerator_codegen/register.hpp"
+#include "test_support/benchmark_paired_timing.hpp"
 #include "test_support/q22_manifest.hpp"
 
 #include <algorithm>
@@ -79,24 +80,6 @@ void ExecuteAndConsume(duckdb::Connection &connection, const std::string &sql) {
 	}
 }
 
-double BenchmarkMedian(duckdb::Connection &connection, const std::string &sql, int warmup, int measured) {
-	for (int i = 0; i < warmup; i++) {
-		ExecuteAndConsume(connection, sql);
-	}
-	std::vector<double> samples;
-	samples.reserve(measured);
-	for (int i = 0; i < measured; i++) {
-		const auto t0 = Clock::now();
-		ExecuteAndConsume(connection, sql);
-		const auto t1 = Clock::now();
-		samples.push_back(
-		    static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count()));
-	}
-	std::sort(samples.begin(), samples.end());
-	const auto middle = samples.size() / 2;
-	return samples.size() % 2 == 0 ? (samples[middle - 1] + samples[middle]) / 2.0 : samples[middle];
-}
-
 double Geomean(const std::vector<double> &values) {
 	double log_sum = 0.0;
 	for (const auto v : values) {
@@ -133,8 +116,10 @@ int main(int argc, char **argv) {
 			const auto &entry = accelerator_codegen::test_support::kQ22Manifest[i];
 			const auto duck_sql = ReadFile(entry.sql_path);
 			const auto accel_sql = AcceleratorQ22ParallelSql(entry);
-			const auto duck_us = BenchmarkMedian(connection, duck_sql, warmup, measured);
-			const auto accel_us = BenchmarkMedian(connection, accel_sql, warmup, measured);
+			const auto timing =
+			    accelerator_codegen::tpch_bench::BenchmarkPair(connection, duck_sql, accel_sql, warmup, measured);
+			const auto duck_us = timing.duckdb_median_us;
+			const auto accel_us = timing.accel_median_us;
 			const auto speedup = duck_us / accel_us;
 			speedups.push_back(speedup);
 			std::cout << entry.label << ',' << threads << ',' << std::fixed << std::setprecision(2) << duck_us << ','

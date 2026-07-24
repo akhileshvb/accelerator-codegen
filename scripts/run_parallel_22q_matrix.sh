@@ -13,12 +13,14 @@ ROOT=/home/akhilvb/accelerator-codegen
 DUCKDB_ROOT=/home/akhilvb/accelerator-codegen-duckdb
 BUILD="${ROOT}/build-release-parallel"
 SCALE=1
-THREAD_LIST="1,2,4,8,16"
+THREAD_LIST="1,2,4,8"
+FRESH=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --scale-factor) SCALE="${2:?}"; shift 2 ;;
     --threads) THREAD_LIST="${2:?}"; shift 2 ;;
+    --fresh) FRESH=1; shift ;;
     -h|--help)
       sed -n '2,9p' "$0"
       exit 0
@@ -41,6 +43,10 @@ PLOT_SCRIPT="${ROOT}/benchmarks/tpch/plot_sf${SCALE}_parallel_speedup.py"
 IFS=',' read -r -a THREADS <<< "${THREAD_LIST}"
 
 mkdir -p "${OUT}"
+if [[ "${FRESH}" -eq 1 ]]; then
+  rm -f "${CSV}" "${OUT}"/*.log
+  echo "query,threads,geomean_speedup,source,log_file" >"${CSV}"
+fi
 if [[ -f "${CSV}" ]] && [[ $(wc -l <"${CSV}") -gt 1 ]]; then
   log() { echo "[$(date -Is)] $*" | tee -a "${LOG}"; }
   log "Resuming from existing ${CSV}"
@@ -96,6 +102,14 @@ run_individual() {
   log "OK ${query} t=${threads} geomean=${geomean}"
 }
 
+validated_seed_filter() {
+  local q=$1
+  local seeds=()
+  local i
+  for i in $(seq 1 5); do seeds+=("seed_${i}_q${q}"); done
+  (IFS=,; echo "${seeds[*]}")
+}
+
 run_validated_subset() {
   local threads=$1
   local missing=0
@@ -110,8 +124,14 @@ run_validated_subset() {
     return 0
   fi
   local logfile="${OUT}/validated_t${threads}.log"
-  log "RUN validated (Q4,Q6,Q9,Q12,Q14) t=${threads}"
-  env ACCEL_BENCH_THREADS="${threads}" \
+  local filter=""
+  for q in Q4 Q6 Q9 Q12 Q14; do
+    local part
+    part="$(validated_seed_filter "${q#Q}")"
+    if [[ -z "${filter}" ]]; then filter="${part}"; else filter="${filter},${part}"; fi
+  done
+  log "RUN validated (Q4,Q6,Q9,Q12,Q14) t=${threads} seeds=1-5"
+  env ACCEL_BENCH_THREADS="${threads}" ACCEL_BENCH_FILTER="${filter}" \
     "${BUILD}/benchmark_tpch_validated" --accelerator-mode parallel --threads "${threads}" \
     >"${logfile}" 2>&1
   for q in Q4 Q6 Q9 Q12 Q14; do
@@ -195,7 +215,7 @@ export DUCKDB_BITPACKING_NATIVE_FILTER=0
 
 {
   echo "=== SF${SCALE} parallel 22-query matrix start $(date -Is) ==="
-  echo "db=${DB} warmup=3 iters=5 seeds=5 q17_nonzero=10 threads=${THREAD_LIST}"
+  echo "db=${DB} warmup=3 iters=5 seeds=5 threads=${THREAD_LIST} timing=paired_alternate"
 
   cmake --build "${BUILD}" -j "$(nproc)" \
     --target benchmark_tpch_validated \
@@ -219,7 +239,11 @@ export DUCKDB_BITPACKING_NATIVE_FILTER=0
     run_individual Q11 benchmark_tpch_q11_parallel "${threads}"
     run_individual Q13 benchmark_tpch_q13_parallel "${threads}"
     run_individual Q16 benchmark_tpch_q16_parallel "${threads}"
-    run_individual Q17 benchmark_tpch_q17_parallel "${threads}" "ACCEL_BENCH_Q17_NONZERO=1 ACCEL_BENCH_SEED_LIMIT=10"
+    if [[ "${SCALE}" == "1" ]]; then
+      run_individual Q17 benchmark_tpch_q17_parallel "${threads}" "ACCEL_BENCH_Q17_NONZERO=1"
+    else
+      run_individual Q17 benchmark_tpch_q17_parallel "${threads}"
+    fi
     run_individual Q18 benchmark_tpch_q18_parallel "${threads}"
     run_individual Q22 benchmark_tpch_q22_parallel "${threads}"
 
@@ -232,7 +256,7 @@ export DUCKDB_BITPACKING_NATIVE_FILTER=0
 } 2>&1 | tee -a "${LOG}"
 
 if [[ -f "${PLOT_SCRIPT}" ]]; then
-  python3 "${PLOT_SCRIPT}" --csv "${CSV}"
+  python3 "${PLOT_SCRIPT}" --csv "${CSV}" --threads "${THREAD_LIST}" || log "WARN: plot failed for SF${SCALE}"
 else
   log "WARN: plot script not found: ${PLOT_SCRIPT}"
 fi
