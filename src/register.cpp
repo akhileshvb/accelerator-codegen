@@ -1,6 +1,10 @@
 #include "accelerator_codegen/register.hpp"
 
+#include "accelerator_codegen/aux_state/accelerator_registry.hpp"
+#include "accelerator_codegen/tpch_q14_aux.hpp"
+
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/enums/on_create_conflict.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -8,6 +12,16 @@
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
 namespace accelerator_codegen {
+
+namespace {
+
+void RegisterTableFunction(duckdb::Catalog &catalog, duckdb::ClientContext &context, duckdb::TableFunctionSet function_set) {
+	duckdb::CreateTableFunctionInfo info(std::move(function_set));
+	info.on_conflict = duckdb::OnCreateConflict::IGNORE_ON_CONFLICT;
+	catalog.CreateTableFunction(context, info);
+}
+
+} // namespace
 
 duckdb::TableFunctionSet CreateTpchQ6FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ1FunctionSet();
@@ -31,6 +45,9 @@ duckdb::TableFunctionSet CreateTpchQ21FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ20FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ8FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ2FunctionSet();
+duckdb::TableFunctionSet CreateTpchQ14AuxFunctionSet();
+duckdb::TableFunctionSet CreateQ14AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateQ14AuxRebuildPartitionFunctionSet();
 
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
 duckdb::TableFunctionSet CreateTpchQ6ParallelFunctionSet();
@@ -67,138 +84,101 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
     }
 
     try {
-        duckdb::CreateTableFunctionInfo q6_info(CreateTpchQ6FunctionSet());
-        catalog.CreateTableFunction(context, q6_info);
+        aux_state::InstallAcceleratorSubstrate(connection);
+        RegisterQ14AuxAccelerator(connection);
 
-        duckdb::CreateTableFunctionInfo q1_info(CreateTpchQ1FunctionSet());
-        catalog.CreateTableFunction(context, q1_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ6FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q3_info(CreateTpchQ3FunctionSet());
-        catalog.CreateTableFunction(context, q3_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ1FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q4_info(CreateTpchQ4FunctionSet());
-        catalog.CreateTableFunction(context, q4_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ3FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q9_info(CreateTpchQ9FunctionSet());
-        catalog.CreateTableFunction(context, q9_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ4FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q12_info(CreateTpchQ12FunctionSet());
-        catalog.CreateTableFunction(context, q12_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ9FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q14_info(CreateTpchQ14FunctionSet());
-        catalog.CreateTableFunction(context, q14_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ12FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q17_info(CreateTpchQ17FunctionSet());
-        catalog.CreateTableFunction(context, q17_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ14FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q19_info(CreateTpchQ19FunctionSet());
-        catalog.CreateTableFunction(context, q19_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ14AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ14AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ14AuxRebuildPartitionFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q5_info(CreateTpchQ5FunctionSet());
-        catalog.CreateTableFunction(context, q5_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ17FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q7_info(CreateTpchQ7FunctionSet());
-        catalog.CreateTableFunction(context, q7_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ19FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q10_info(CreateTpchQ10FunctionSet());
-        catalog.CreateTableFunction(context, q10_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ5FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q11_info(CreateTpchQ11FunctionSet());
-        catalog.CreateTableFunction(context, q11_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ7FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q13_info(CreateTpchQ13FunctionSet());
-        catalog.CreateTableFunction(context, q13_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ10FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q16_info(CreateTpchQ16FunctionSet());
-        catalog.CreateTableFunction(context, q16_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ11FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q18_info(CreateTpchQ18FunctionSet());
-        catalog.CreateTableFunction(context, q18_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ13FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q22_info(CreateTpchQ22FunctionSet());
-        catalog.CreateTableFunction(context, q22_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ16FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q15_info(CreateTpchQ15FunctionSet());
-        catalog.CreateTableFunction(context, q15_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ18FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q21_info(CreateTpchQ21FunctionSet());
-        catalog.CreateTableFunction(context, q21_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ22FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q20_info(CreateTpchQ20FunctionSet());
-        catalog.CreateTableFunction(context, q20_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ15FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q8_info(CreateTpchQ8FunctionSet());
-        catalog.CreateTableFunction(context, q8_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ21FunctionSet());
 
-        duckdb::CreateTableFunctionInfo q2_info(CreateTpchQ2FunctionSet());
-        catalog.CreateTableFunction(context, q2_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ20FunctionSet());
+
+        RegisterTableFunction(catalog, context, CreateTpchQ8FunctionSet());
+
+        RegisterTableFunction(catalog, context, CreateTpchQ2FunctionSet());
 
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
-        duckdb::CreateTableFunctionInfo q6p_info(CreateTpchQ6ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q6p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ6ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q1p_info(CreateTpchQ1ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q1p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ1ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q3p_info(CreateTpchQ3ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q3p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ3ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q4p_info(CreateTpchQ4ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q4p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ4ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q9p_info(CreateTpchQ9ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q9p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ9ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q12p_info(CreateTpchQ12ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q12p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ12ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q14p_info(CreateTpchQ14ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q14p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ14ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q15p_info(CreateTpchQ15ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q15p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ15ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q17p_info(CreateTpchQ17ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q17p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ17ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q19p_info(CreateTpchQ19ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q19p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ19ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q5p_info(CreateTpchQ5ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q5p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ5ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q7p_info(CreateTpchQ7ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q7p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ7ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q22p_info(CreateTpchQ22ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q22p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ22ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q11p_info(CreateTpchQ11ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q11p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ11ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q13p_info(CreateTpchQ13ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q13p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ13ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q16p_info(CreateTpchQ16ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q16p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ16ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q2p_info(CreateTpchQ2ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q2p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ2ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q8p_info(CreateTpchQ8ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q8p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ8ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q10p_info(CreateTpchQ10ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q10p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ10ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q18p_info(CreateTpchQ18ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q18p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ18ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q20p_info(CreateTpchQ20ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q20p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ20ParallelFunctionSet());
 
-        duckdb::CreateTableFunctionInfo q21p_info(CreateTpchQ21ParallelFunctionSet());
-        catalog.CreateTableFunction(context, q21p_info);
+        RegisterTableFunction(catalog, context, CreateTpchQ21ParallelFunctionSet());
 #endif
 
         if (started_transaction) {

@@ -60,6 +60,30 @@ add_library(accelerator_codegen SHARED
     src/generated/tpch/single-threaded/q8_kernel.cpp
     src/generated/tpch/single-threaded/q2_package.cpp
     src/generated/tpch/single-threaded/q2_kernel.cpp
+    src/aux_state/invalidation_plan.cpp
+    src/aux_state/catalog_dependency.cpp
+    src/aux_state/partitioned_state_store.cpp
+    src/aux_state/execution_gate.cpp
+    src/aux_state/accelerator_registry.cpp
+    src/aux_state/txn_invalidation_buffer.cpp
+    src/aux_state/maintenance/maintenance_action.cpp
+    src/aux_state/maintenance/online_stats.cpp
+    src/aux_state/maintenance/action_selector.cpp
+    src/aux_state/maintenance/staged_publication.cpp
+    src/aux_state/maintenance/maintenance_diagnostics.cpp
+    src/aux_state/q14/tpch_q14_finalize.cpp
+    src/aux_state/q14/q14_aux_dependencies.cpp
+    src/aux_state/q14/q14_incremental.cpp
+    src/aux_state/q14/q14_rebuild_policy.cpp
+    src/aux_state/q14/q14_diagnostics.cpp
+    src/aux_state/q14/q14_mutation_features.cpp
+    src/aux_state/q14/q14_workload_features.cpp
+    src/aux_state/q14/q14_cost_formulas.cpp
+    src/aux_state/q14/q14_maintenance_policy.cpp
+    src/aux_state/q14/q14_decision_csv.cpp
+    src/aux_state/q14/q14_aux_state.cpp
+    src/aux_state/q14/q14_aux_kernel.cpp
+    src/aux_state/q14/q14_aux_package.cpp
 )
 
 target_include_directories(accelerator_codegen
@@ -222,6 +246,78 @@ target_link_libraries(test_tpch_q14
 )
 
 target_include_directories(test_tpch_q14 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(test_txn_invalidation
+    tests/aux_state/test_txn_invalidation.cpp
+)
+
+target_link_libraries(test_txn_invalidation
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_txn_invalidation PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(test_q14_incremental
+    tests/single-threaded/test_q14_incremental.cpp
+)
+
+target_link_libraries(test_q14_incremental
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_q14_incremental PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(test_q14_aux_partition_state
+    tests/single-threaded/test_q14_aux_partition_state.cpp
+)
+
+target_link_libraries(test_q14_aux_partition_state
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_q14_aux_partition_state PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(test_q14_write_policies
+    tests/single-threaded/test_q14_write_policies.cpp
+)
+
+target_link_libraries(test_q14_write_policies
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_q14_write_policies PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+foreach(test_name IN ITEMS q14_hybrid_policy q14_cost_model q14_staged_publication q14_multi_partition_delta q14_action_failure)
+    add_executable(test_${test_name}
+        tests/single-threaded/test_${test_name}.cpp
+    )
+    target_link_libraries(test_${test_name}
+        PRIVATE
+            accelerator_codegen
+            duckdb_sibling
+    )
+    target_include_directories(test_${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+endforeach()
+
+add_executable(test_tpch_q14_aux
+    tests/single-threaded/test_tpch_q14_aux.cpp
+)
+
+target_link_libraries(test_tpch_q14_aux
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_tpch_q14_aux PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q17
     tests/single-threaded/test_tpch_q17.cpp
@@ -487,6 +583,42 @@ target_link_libraries(benchmark_tpch_q14
 
 target_include_directories(benchmark_tpch_q14 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
+add_executable(benchmark_tpch_q14_aux
+    benchmarks/tpch/single-threaded/benchmark_q14_aux.cpp
+)
+
+target_link_libraries(benchmark_tpch_q14_aux
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(benchmark_tpch_q14_aux PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(benchmark_q14_hybrid_eval
+    benchmarks/tpch/single-threaded/benchmark_q14_hybrid_eval.cpp
+)
+
+target_link_libraries(benchmark_q14_hybrid_eval
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(benchmark_q14_hybrid_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(calibrate_q14_aux_cost_model
+    benchmarks/tpch/single-threaded/calibrate_q14_aux_cost_model.cpp
+)
+
+target_link_libraries(calibrate_q14_aux_cost_model
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(calibrate_q14_aux_cost_model PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
 add_executable(benchmark_tpch_q17
     benchmarks/tpch/single-threaded/benchmark_q17.cpp
 )
@@ -643,7 +775,7 @@ target_link_libraries(benchmark_tpch_validated
 
 target_include_directories(benchmark_tpch_validated PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
-set_target_properties(accelerator_codegen test_registration test_tpch_q6 test_tpch_q1 test_tpch_q3 test_tpch_q4 test_tpch_q9 test_tpch_q12 test_tpch_q14 test_tpch_q17 test_tpch_q19 test_tpch_q5 test_tpch_q7 test_tpch_q10 test_tpch_q11 test_tpch_q13 test_tpch_q16 test_tpch_q18 test_tpch_q22 test_tpch_q15 test_tpch_q21 test_tpch_q20 test_tpch_q8 test_tpch_q2 benchmark_tpch_q6 benchmark_tpch_q1 benchmark_tpch_q3 benchmark_tpch_q4 benchmark_tpch_q9 benchmark_tpch_q12 benchmark_tpch_q14 benchmark_tpch_q17 benchmark_tpch_q19 benchmark_tpch_q5 benchmark_tpch_q7 benchmark_tpch_q10 benchmark_tpch_q11 benchmark_tpch_q13 benchmark_tpch_q16 benchmark_tpch_q18 benchmark_tpch_q22 benchmark_tpch_stage_c benchmark_tpch_breakdown benchmark_tpch_validated PROPERTIES
+set_target_properties(accelerator_codegen test_registration test_tpch_q6 test_tpch_q1 test_tpch_q3 test_tpch_q4 test_tpch_q9 test_tpch_q12 test_tpch_q14 test_txn_invalidation test_tpch_q14_aux test_tpch_q17 test_tpch_q19 test_tpch_q5 test_tpch_q7 test_tpch_q10 test_tpch_q11 test_tpch_q13 test_tpch_q16 test_tpch_q18 test_tpch_q22 test_tpch_q15 test_tpch_q21 test_tpch_q20 test_tpch_q8 test_tpch_q2 benchmark_tpch_q6 benchmark_tpch_q1 benchmark_tpch_q3 benchmark_tpch_q4 benchmark_tpch_q9 benchmark_tpch_q12 benchmark_tpch_q14 benchmark_tpch_q14_aux benchmark_tpch_q17 benchmark_tpch_q19 benchmark_tpch_q5 benchmark_tpch_q7 benchmark_tpch_q10 benchmark_tpch_q11 benchmark_tpch_q13 benchmark_tpch_q16 benchmark_tpch_q18 benchmark_tpch_q22 benchmark_tpch_stage_c benchmark_tpch_breakdown benchmark_tpch_validated PROPERTIES
     BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
     INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 )
@@ -1009,6 +1141,16 @@ if(BUILD_TESTING)
     add_test(NAME tpch_q9_smoke_test COMMAND test_tpch_q9)
     add_test(NAME tpch_q12_smoke_test COMMAND test_tpch_q12)
     add_test(NAME tpch_q14_smoke_test COMMAND test_tpch_q14)
+    add_test(NAME txn_invalidation_unit_test COMMAND test_txn_invalidation)
+    add_test(NAME q14_incremental_unit_test COMMAND test_q14_incremental)
+    add_test(NAME q14_aux_partition_state_unit_test COMMAND test_q14_aux_partition_state)
+    add_test(NAME q14_write_policies_unit_test COMMAND test_q14_write_policies)
+    add_test(NAME q14_hybrid_policy_unit_test COMMAND test_q14_hybrid_policy)
+    add_test(NAME q14_cost_model_unit_test COMMAND test_q14_cost_model)
+    add_test(NAME q14_staged_publication_unit_test COMMAND test_q14_staged_publication)
+    add_test(NAME q14_multi_partition_delta_unit_test COMMAND test_q14_multi_partition_delta)
+    add_test(NAME q14_action_failure_unit_test COMMAND test_q14_action_failure)
+    add_test(NAME tpch_q14_aux_smoke_test COMMAND test_tpch_q14_aux)
     add_test(NAME tpch_q17_smoke_test COMMAND test_tpch_q17)
     add_test(NAME tpch_q19_smoke_test COMMAND test_tpch_q19)
     add_test(NAME tpch_q5_smoke_test COMMAND test_tpch_q5)
@@ -1024,7 +1166,7 @@ if(BUILD_TESTING)
     add_test(NAME tpch_q20_smoke_test COMMAND test_tpch_q20)
     add_test(NAME tpch_q8_smoke_test COMMAND test_tpch_q8)
     add_test(NAME tpch_q2_smoke_test COMMAND test_tpch_q2)
-    set_tests_properties(tpch_q6_smoke_test tpch_q1_smoke_test tpch_q3_smoke_test tpch_q4_smoke_test tpch_q9_smoke_test tpch_q12_smoke_test tpch_q14_smoke_test tpch_q17_smoke_test tpch_q19_smoke_test tpch_q5_smoke_test tpch_q7_smoke_test tpch_q10_smoke_test tpch_q11_smoke_test tpch_q13_smoke_test tpch_q16_smoke_test tpch_q18_smoke_test tpch_q22_smoke_test tpch_q15_smoke_test tpch_q21_smoke_test tpch_q20_smoke_test tpch_q8_smoke_test tpch_q2_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
+    set_tests_properties(tpch_q6_smoke_test tpch_q1_smoke_test tpch_q3_smoke_test tpch_q4_smoke_test tpch_q9_smoke_test tpch_q12_smoke_test tpch_q14_smoke_test tpch_q14_aux_smoke_test tpch_q17_smoke_test tpch_q19_smoke_test tpch_q5_smoke_test tpch_q7_smoke_test tpch_q10_smoke_test tpch_q11_smoke_test tpch_q13_smoke_test tpch_q16_smoke_test tpch_q18_smoke_test tpch_q22_smoke_test tpch_q15_smoke_test tpch_q21_smoke_test tpch_q20_smoke_test tpch_q8_smoke_test tpch_q2_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
 	if(ACCEL_ENABLE_PARALLEL_TPCH)
 		add_test(NAME tpch_parallel_smoke_test COMMAND test_tpch_parallel)
 		add_test(NAME tpch_q20_semantics_test COMMAND test_tpch_q20_semantics)
