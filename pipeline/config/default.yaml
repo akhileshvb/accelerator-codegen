@@ -1,0 +1,30 @@
+repo_root: /home/akhilvb/accelerator-codegen
+duckdb_root: /home/akhilvb/accelerator-codegen-duckdb
+build_dir: build-release
+tpch_db_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
+tpch_db_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb
+
+optimization:
+  max_iterations: 5
+  no_improvement_stop: 2
+
+stage_max_turns:
+  analysis: 8
+  implementation: 15
+  optimization: 8
+  audit: 6
+
+write_paths:
+  - include/accelerator_codegen/tpch_q*
+  - src/generated/tpch/q*
+  - tests/test_tpch_q*
+  - tests/test_support/q*
+  - benchmarks/tpch/benchmark_q*
+  - pipeline/artifacts/**
+
+allowed_commands:
+  - "^cmake --build build-release( .*)?$"
+  - "^ctest -R tpch_q\\d+.*$"
+  - "^ninja -C build-release.*$"
+
+gates_dir: pipeline/gates
