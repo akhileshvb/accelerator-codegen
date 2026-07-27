@@ -60,4 +60,13 @@ duckdb::idx_t PartitionedStateStore::TotalPartitionSlots() const {
 	return slots.size();
 }
 
+void PartitionedStateStore::ForEachSlot(
+    const std::function<void(PartitionKey key, PartitionStatus status, const std::shared_ptr<const void> &payload)> &visitor)
+    const {
+	std::lock_guard<std::mutex> guard(mutex);
+	for (const auto &entry : slots) {
+		visitor(entry.first, entry.second.status, entry.second.payload);
+	}
+}
+
 } // namespace accelerator_codegen::aux_state

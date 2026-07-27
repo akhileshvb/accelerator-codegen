@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from accel_pipeline.config import ModelConfig, PipelineConfig
-from accel_pipeline.gates import run_gate
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.stages.gate_plan import run_post_stage_gates, workload_post_audit_gates
 from accel_pipeline.stages.base import run_agent_stage
 
 
@@ -25,6 +25,10 @@ def run(
         dry_run=dry_run,
     )
     if not dry_run:
-        run_gate(pipeline_config, "fairness", query)
-        run_gate(pipeline_config, "sf10", query)
+        run_post_stage_gates(
+            pipeline_config,
+            workload_name,
+            query,
+            workload_post_audit_gates(load_workload(workload_name, pipeline_config.repo_root)),
+        )
     return result

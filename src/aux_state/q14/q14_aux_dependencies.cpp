@@ -1,4 +1,5 @@
 #include "accelerator_codegen/tpch_q14_aux.hpp"
+#include "accelerator_codegen/tpch_q14_incremental.hpp"
 #include "accelerator_codegen/tpch_q14_maintenance.hpp"
 #include "accelerator_codegen/tpch_q14_maintenance_policy.hpp"
 
@@ -18,8 +19,6 @@
 
 namespace accelerator_codegen {
 namespace {
-
-constexpr const char *kQ14AuxId = "tpch_q14_aux";
 
 bool ReadBoolEnv(const char *name, bool fallback) {
 	const char *value = std::getenv(name);
@@ -250,16 +249,20 @@ void RegisterQ14AuxAccelerator(duckdb::Connection &connection) {
 	}
 
 	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
-	registry->RegisterAccelerator(kQ14AuxId,
-	                            [](const duckdb::TableMutationEvent &event,
-	                               const std::vector<aux_state::TableDependency> &dependencies) -> aux_state::InvalidationPlan {
-		                            return InterpretQ14Mutation(event, dependencies);
-	                            });
-	registry->RegisterMaintenanceHook(kQ14AuxId, CreateQ14MaintenanceHook());
-	registry->RegisterTableDependency(kQ14AuxId,
-	                                MakeTableDependency(context, "lineitem",
-	                                                    {"l_shipdate", "l_partkey", "l_extendedprice", "l_discount"}));
-	registry->RegisterTableDependency(kQ14AuxId, MakeTableDependency(context, "part", {"p_partkey", "p_type"}));
+	registry->RegisterAccelerator(
+	    kQ14AuxAcceleratorId,
+	    [](const duckdb::TableMutationEvent &event,
+	       const std::vector<aux_state::TableDependency> &dependencies) -> aux_state::InvalidationPlan {
+		    return InterpretQ14Mutation(event, dependencies);
+	    });
+	registry->RegisterIncrementalBufferFactory(kQ14AuxAcceleratorId,
+	                                           []() { return std::make_unique<Q14IncrementalTxnBuffer>(); });
+	registry->RegisterMutationAccumulator(kQ14AuxAcceleratorId, AccumulateQ14Mutation);
+	registry->RegisterMaintenanceHook(kQ14AuxAcceleratorId, CreateQ14MaintenanceHook());
+	registry->RegisterTableDependency(kQ14AuxAcceleratorId,
+	                                  MakeTableDependency(context, "lineitem",
+	                                                      {"l_shipdate", "l_partkey", "l_extendedprice", "l_discount"}));
+	registry->RegisterTableDependency(kQ14AuxAcceleratorId, MakeTableDependency(context, "part", {"p_partkey", "p_type"}));
 }
 
 bool IsQ14DependentTableMutation(const duckdb::TableMutationEvent &event,

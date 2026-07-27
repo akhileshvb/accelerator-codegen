@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "accelerator_codegen/aux_state/catalog_dependency.hpp"
+#include "accelerator_codegen/aux_state/incremental_txn_buffer.hpp"
 #include "accelerator_codegen/aux_state/invalidation_plan.hpp"
 #include "accelerator_codegen/aux_state/maintenance/maintenance_hook.hpp"
 #include "accelerator_codegen/aux_state/maintenance/staged_publication.hpp"
@@ -21,16 +22,19 @@ class Connection;
 class TableCatalogEntry;
 }
 
-namespace accelerator_codegen {
-class Q14IncrementalTxnBuffer;
-}
-
 namespace accelerator_codegen::aux_state {
 
 class TxnInvalidationBuffer;
 
 using InvalidationInterpreter =
     std::function<InvalidationPlan(const duckdb::TableMutationEvent &, const std::vector<TableDependency> &)>;
+
+using MutationAccumulator = std::function<InvalidationPlan(duckdb::ClientContext &context,
+                                                           const duckdb::TableMutationEvent &event,
+                                                           const std::vector<TableDependency> &dependencies,
+                                                           TxnInvalidationBuffer &txn_buffer)>;
+
+using IncrementalBufferFactory = std::function<std::unique_ptr<IncrementalTxnBuffer>()>;
 
 class AcceleratorStateRegistry final : public duckdb::MutationWatchProvider {
 public:
@@ -50,6 +54,8 @@ public:
 	void RegisterAccelerator(const std::string &accelerator_id, InvalidationInterpreter interpreter);
 	void RegisterMaintenanceHook(const std::string &accelerator_id, maintenance::MaintenanceHookPtr hook);
 	void RegisterTableDependency(const std::string &accelerator_id, TableDependency dependency);
+	void RegisterMutationAccumulator(const std::string &accelerator_id, MutationAccumulator accumulator);
+	void RegisterIncrementalBufferFactory(const std::string &accelerator_id, IncrementalBufferFactory factory);
 	PartitionedStateStore &GetStore(const std::string &accelerator_id);
 	const std::vector<TableDependency> &GetAcceleratorDependencies(const std::string &accelerator_id) const;
 	void ApplyPreCommitInvalidation(const InvalidationPlan &plan, const std::string &accelerator_id);
@@ -61,8 +67,11 @@ public:
 	                            duckdb::vector<duckdb::PhysicalIndex> &old_columns) override;
 
 	InvalidationPlan InterpretMutation(const duckdb::TableMutationEvent &event) const;
+	void OnTableMutation(duckdb::ClientContext &context, const duckdb::TableMutationEvent &event,
+	                   TxnInvalidationBuffer &txn_buffer);
+	IncrementalBufferFactory GetIncrementalBufferFactory(const std::string &accelerator_id) const;
 	void PlanMaintenancePreCommit(const InvalidationPlan &plan, duckdb::ClientContext &context,
-	                                TxnInvalidationBuffer &txn_buffer);
+	                              TxnInvalidationBuffer &txn_buffer);
 	void PublishMaintenanceOnCommit(duckdb::ClientContext &context, TxnInvalidationBuffer &txn_buffer);
 	void DiscardMaintenanceOnRollback(TxnInvalidationBuffer &txn_buffer);
 	void ApplyPreCommitInvalidationAll(const InvalidationPlan &plan, duckdb::ClientContext *context = nullptr,
@@ -74,6 +83,8 @@ private:
 	struct AcceleratorEntry {
 		InvalidationInterpreter interpreter;
 		maintenance::MaintenanceHookPtr maintenance_hook;
+		MutationAccumulator mutation_accumulator;
+		IncrementalBufferFactory incremental_buffer_factory;
 		PartitionedStateStore store;
 		std::vector<TableDependency> dependencies;
 	};

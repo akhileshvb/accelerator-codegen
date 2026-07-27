@@ -2,16 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.backends import StageRunRequest, create_agent_backend
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload, apply_workload_overrides
 from accel_pipeline.models import make_model_id
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt
-from accel_pipeline.tools.tool_policy import build_tools
-
-
-def _wrap_tools(tools: list) -> list:
-    from agents import function_tool
-
-    return [function_tool(fn) for fn in tools]
+from accel_pipeline.tools.tool_policy import TOOL_USAGE_INSTRUCTIONS
 
 
 def run_agent_stage(
@@ -28,6 +23,7 @@ def run_agent_stage(
     dry_run: bool = False,
 ) -> Any:
     workload = load_workload(workload_name, pipeline_config.repo_root)
+    pipeline_config = apply_workload_overrides(pipeline_config, workload)
     prompt = render_prompt(
         pipeline_config,
         prompt_file,
@@ -47,16 +43,30 @@ def run_agent_stage(
     if dry_run:
         return {"dry_run": True, "stage": stage, "prompt_chars": len(prompt)}
 
-    from agents import Agent, Runner
-
     model_id = make_model_id(stage, pipeline_config, model_config, model_overrides)
-    tools = _wrap_tools(build_tools(pipeline_config, query, stage))
-    agent = Agent(
-        name=f"accel_{stage}",
-        model=model_id,
-        instructions=prompt,
-        tools=tools,
+    backend = create_agent_backend(
+        provider=model_config.provider,
+        pipeline_config=pipeline_config,
+        query=query,
+        stage=stage,
+        model_config=model_config,
     )
-    result = Runner.run_sync(agent, user_message)
-    # TODO: SQLiteSession per stage for multi-turn compile-fix loops (cap at stage_max_turns).
+    max_turns = int(pipeline_config.stage_max_turns.get(stage, 15))
+    instructions = prompt
+    if model_config.provider != "cursor":
+        instructions = f"{prompt.rstrip()}\n\n{TOOL_USAGE_INSTRUCTIONS}"
+
+    request = StageRunRequest(
+        stage=stage,
+        instructions=instructions,
+        user_message=user_message,
+        agent_name=f"accel_{stage}",
+        model_id=model_id,
+        max_turns=max_turns,
+    )
+    result = backend.run_stage(request)
+    if result.status != "finished":
+        raise RuntimeError(
+            f"{backend.name} stage {stage} failed: {result.error or result.status}"
+        )
     return result

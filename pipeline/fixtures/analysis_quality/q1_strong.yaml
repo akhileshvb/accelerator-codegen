@@ -1,0 +1,42 @@
+query_number: 1
+workload_name: tpch_q1_aux
+description: Strong aux-state candidate with daily shipdate partitions and per-group sufficient statistics.
+
+expected:
+  fitness:
+    recommended: true
+    required_signals:
+      - stable_partition_grain
+      - reusable_partial_aggregate
+      - bounded_invalidation
+  dependencies:
+    tables:
+      - lineitem
+    columns:
+      lineitem:
+        - l_shipdate
+        - l_quantity
+        - l_extendedprice
+        - l_discount
+        - l_tax
+        - l_returnflag
+        - l_linestatus
+  partition_mapping:
+    key_source: mixed
+  state_design:
+    is_full_result_cache: false
+    chosen_representation_contains: per_day
+    max_read_path_bottleneck_risk: medium
+  mutation_coverage:
+    min_entries: 3
+  base_path_decomposition:
+    required: true
+    required_fields:
+      - dominant_scans
+      - aggregation_grouping_work
+      - work_remaining_after_aux_replacement
+  candidate_search:
+    required: true
+    min_viable_candidates: 3
+    required_design_families:
+      - flat_partitioned_sufficient_summaries

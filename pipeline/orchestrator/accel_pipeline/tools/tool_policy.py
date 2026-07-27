@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from typing import Any, Callable
 
 from accel_pipeline.config import PipelineConfig
@@ -11,45 +12,110 @@ from accel_pipeline.tools.shell_tools import ToolContext as ShellCtx
 from accel_pipeline.tools.shell_tools import make_shell_tools
 
 STAGE_TOOL_NAMES: dict[str, list[str]] = {
-    "analysis": ["read_file", "search_repo", "list_dir"],
+    "analysis": ["read_file", "search_repo", "list_dir", "glob_files", "file_info"],
     "implementation": [
         "read_file",
         "write_file",
         "apply_patch",
+        "insert_lines",
         "delete_file",
         "search_repo",
         "list_dir",
+        "glob_files",
+        "file_info",
         "run_command",
         "request_gate",
     ],
     "optimization": [
         "read_file",
         "apply_patch",
+        "insert_lines",
         "write_file",
         "search_repo",
         "list_dir",
+        "glob_files",
+        "file_info",
         "run_command",
         "request_gate",
     ],
-    "audit": ["read_file", "search_repo", "list_dir", "request_gate"],
+    "audit": ["read_file", "search_repo", "list_dir", "glob_files", "file_info", "request_gate"],
 }
+
+TOOL_USAGE_INSTRUCTIONS = """\
+## Tooling
+
+Use ONLY the pipeline tools listed for this stage (read_file, write_file, apply_patch,
+insert_lines, delete_file, list_dir, glob_files, file_info, search_repo, run_command,
+request_gate). Do not use built-in shell/edit tools even if available.
+
+- read_file: use numbered=true when you need stable line references for patches.
+- apply_patch: old_string must match exactly once; prefer numbered reads first.
+- insert_lines: use after_line=0 to prepend, or a 1-based line number to insert after.
+- run_command: only allowlisted cmake/ctest/ninja commands.
+- request_gate: run official gates; do not claim pass/fail without gate output.
+"""
 
 
 def make_search_repo(pipeline_config: PipelineConfig):
-    import subprocess
-
-    def search_repo(pattern: str, glob: str = "*", path: str = ".") -> str:
+    def search_repo(
+        pattern: str,
+        glob: str = "*",
+        path: str = ".",
+        max_matches: int = 50,
+    ) -> str:
         """Search repo with ripgrep."""
         root = pipeline_config.repo_root / path
         proc = subprocess.run(
-            ["rg", "-n", pattern, root, "-g", glob, "--max-count", "50"],
+            [
+                "rg",
+                "-n",
+                pattern,
+                str(root),
+                "-g",
+                glob,
+                "--max-count",
+                str(max_matches),
+            ],
             capture_output=True,
             text=True,
             check=False,
         )
-        return proc.stdout or proc.stderr
+        output = proc.stdout or proc.stderr or "(no matches)"
+        if proc.returncode not in (0, 1):
+            return f"rg failed (exit={proc.returncode})\n{output[-8000:]}"
+        return output
 
     return search_repo
+
+
+def build_tool_registry(
+    pipeline_config: PipelineConfig,
+    query: int,
+) -> dict[str, Callable[..., Any]]:
+    repo_ctx = RepoCtx(pipeline_config, query)
+    shell_ctx = ShellCtx(pipeline_config, query)
+    gate_ctx = GateCtx(pipeline_config, query)
+
+    read_file, write_file, apply_patch, insert_lines, delete_file, list_dir, glob_files, file_info = (
+        make_repo_tools(repo_ctx)
+    )
+    run_command = make_shell_tools(shell_ctx)
+    request_gate = make_gate_tools(gate_ctx)
+    search_repo = make_search_repo(pipeline_config)
+
+    return {
+        "read_file": read_file,
+        "write_file": write_file,
+        "apply_patch": apply_patch,
+        "insert_lines": insert_lines,
+        "delete_file": delete_file,
+        "list_dir": list_dir,
+        "glob_files": glob_files,
+        "file_info": file_info,
+        "run_command": run_command,
+        "request_gate": request_gate,
+        "search_repo": search_repo,
+    }
 
 
 def build_tools(
@@ -57,28 +123,16 @@ def build_tools(
     query: int,
     stage: str,
 ) -> list[Callable[..., Any]]:
-    repo_ctx = RepoCtx(pipeline_config, query)
-    shell_ctx = ShellCtx(pipeline_config, query)
-    gate_ctx = GateCtx(pipeline_config, query)
-
-    read_file, write_file, apply_patch, delete_file, list_dir = make_repo_tools(repo_ctx)
-    run_command = make_shell_tools(shell_ctx)
-    request_gate = make_gate_tools(gate_ctx)
-    search_repo = make_search_repo(pipeline_config)
-
-    registry = {
-        "read_file": read_file,
-        "write_file": write_file,
-        "apply_patch": apply_patch,
-        "delete_file": delete_file,
-        "list_dir": list_dir,
-        "run_command": run_command,
-        "request_gate": request_gate,
-        "search_repo": search_repo,
-    }
-
+    registry = build_tool_registry(pipeline_config, query)
     names = STAGE_TOOL_NAMES.get(stage, [])
     return [registry[n] for n in names if n in registry]
 
 
-# TODO: OpenAI Agents SDK Guardrails on tool inputs (reject writes outside allowlist before execution).
+def build_stage_tool_registry(
+    pipeline_config: PipelineConfig,
+    query: int,
+    stage: str,
+) -> dict[str, Callable[..., Any]]:
+    registry = build_tool_registry(pipeline_config, query)
+    names = STAGE_TOOL_NAMES.get(stage, [])
+    return {name: registry[name] for name in names if name in registry}

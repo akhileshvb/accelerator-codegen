@@ -8,6 +8,7 @@
 #include <string>
 
 #include "accelerator_codegen/aux_state/maintenance/online_stats.hpp"
+#include "accelerator_codegen/aux_state/maintenance/json_params.hpp"
 #include "accelerator_codegen/aux_state/partitioned_state_store.hpp"
 
 namespace accelerator_codegen {
@@ -32,21 +33,8 @@ uint64_t g_queries_since_last_write = 0;
 std::deque<Q14MaintenanceDecisionRecord> g_decision_log;
 constexpr size_t kMaxDecisionLog = 256;
 
-double ParseJsonDouble(const std::string &content, const std::string &key, double fallback) {
-	const auto pos = content.find('"' + key + '"');
-	if (pos == std::string::npos) {
-		return fallback;
-	}
-	const auto colon = content.find(':', pos);
-	if (colon == std::string::npos) {
-		return fallback;
-	}
-	return std::stod(content.substr(colon + 1));
-}
-
-uint64_t ParseJsonUint64(const std::string &content, const std::string &key, uint64_t fallback) {
-	return static_cast<uint64_t>(ParseJsonDouble(content, key, static_cast<double>(fallback)));
-}
+using aux_state::maintenance::ParseJsonDouble;
+using aux_state::maintenance::ParseJsonUint64;
 
 void ObserveInterval(aux_state::maintenance::RateEwma &rate, std::chrono::steady_clock::time_point &last_time,
                      bool &has_time) {

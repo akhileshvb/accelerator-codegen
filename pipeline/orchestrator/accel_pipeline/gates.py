@@ -16,6 +16,11 @@ GATE_SCRIPTS = {
     "sf10": "run_sf10.sh",
     "profile": "run_profile.sh",
     "fairness": "check_fairness.sh",
+    "aux_correctness": "run_aux_correctness.sh",
+    "aux_unit": "run_aux_unit_tests.sh",
+    "aux_mutation_scenarios": "run_aux_mutation_scenarios.sh",
+    "aux_speedup_verification": "run_aux_speedup_verification.sh",
+    "aux_bench_sweep": "run_aux_bench_sweep.sh",
 }
 
 
@@ -31,6 +36,7 @@ def run_gate(
     pipeline_config: PipelineConfig,
     gate_name: str,
     query: int,
+    workload: dict | None = None,
 ) -> GateResult:
     if gate_name not in GATE_SCRIPTS:
         raise ValueError(f"unknown gate: {gate_name}")

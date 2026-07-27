@@ -20,6 +20,10 @@ out = root / "pipeline" / "artifacts" / f"q{query}" / "gates"
 out.mkdir(parents=True, exist_ok=True)
 
 kernel = root / "src" / "generated" / "tpch" / f"q{query}_kernel.cpp"
+if not kernel.is_file():
+    alt = root / "src" / "generated" / "tpch" / "single-threaded" / f"q{query}_fused_scan.cpp"
+    if alt.is_file():
+        kernel = alt
 issues = []
 if kernel.is_file():
     text = kernel.read_text()

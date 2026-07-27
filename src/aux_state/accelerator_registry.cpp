@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "accelerator_codegen/tpch_q14_write_policy.hpp"
+#include "accelerator_codegen/tpch_q1_write_policy.hpp"
 
 #include "accelerator_codegen/aux_state/txn_invalidation_buffer.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
@@ -45,6 +46,16 @@ void AcceleratorStateRegistry::RegisterTableDependency(const std::string &accele
 	all_dependencies.push_back(std::move(dependency));
 }
 
+void AcceleratorStateRegistry::RegisterMutationAccumulator(const std::string &accelerator_id,
+                                                             MutationAccumulator accumulator) {
+	accelerators[accelerator_id].mutation_accumulator = std::move(accumulator);
+}
+
+void AcceleratorStateRegistry::RegisterIncrementalBufferFactory(const std::string &accelerator_id,
+                                                                IncrementalBufferFactory factory) {
+	accelerators[accelerator_id].incremental_buffer_factory = std::move(factory);
+}
+
 PartitionedStateStore &AcceleratorStateRegistry::GetStore(const std::string &accelerator_id) {
 	return accelerators[accelerator_id].store;
 }
@@ -74,6 +85,36 @@ InvalidationPlan AcceleratorStateRegistry::InterpretMutation(const duckdb::Table
 	return merged;
 }
 
+void AcceleratorStateRegistry::OnTableMutation(duckdb::ClientContext &context, const duckdb::TableMutationEvent &event,
+                                               TxnInvalidationBuffer &txn_buffer) {
+	InvalidationPlan effective;
+	for (auto &entry : accelerators) {
+		InvalidationPlan accelerator_plan;
+		if (entry.second.interpreter) {
+			accelerator_plan = entry.second.interpreter(event, entry.second.dependencies);
+			MergeInvalidationPlan(effective, accelerator_plan);
+		}
+		if (entry.second.mutation_accumulator) {
+			const auto extra =
+			    entry.second.mutation_accumulator(context, event, entry.second.dependencies, txn_buffer);
+			MergeInvalidationPlan(accelerator_plan, extra);
+			MergeInvalidationPlan(effective, extra);
+		} else if (auto *incremental = txn_buffer.TryGetIncrementalBuffer(entry.first)) {
+			MergeInvalidationPlan(accelerator_plan, incremental->ExtraInvalidationPlan());
+		}
+		txn_buffer.RecordAcceleratorPlan(entry.first, accelerator_plan);
+	}
+	txn_buffer.RecordPlan(effective);
+}
+
+IncrementalBufferFactory AcceleratorStateRegistry::GetIncrementalBufferFactory(const std::string &accelerator_id) const {
+	const auto it = accelerators.find(accelerator_id);
+	if (it == accelerators.end()) {
+		return {};
+	}
+	return it->second.incremental_buffer_factory;
+}
+
 void AcceleratorStateRegistry::ApplyPreCommitInvalidation(const InvalidationPlan &plan,
                                                           const std::string &accelerator_id) {
 	auto it = accelerators.find(accelerator_id);
@@ -85,6 +126,8 @@ void AcceleratorStateRegistry::ApplyPreCommitInvalidation(const InvalidationPlan
 		store.InvalidateAll();
 		if (accelerator_id == "tpch_q14_aux") {
 			accelerator_codegen::RecordQ14InvalidationApplied(true, 0);
+		} else if (accelerator_id == "tpch_q1_aux") {
+			accelerator_codegen::RecordQ1InvalidationApplied(true, 0);
 		}
 		return;
 	}
@@ -95,6 +138,8 @@ void AcceleratorStateRegistry::ApplyPreCommitInvalidation(const InvalidationPlan
 	}
 	if (accelerator_id == "tpch_q14_aux" && partition_count > 0) {
 		accelerator_codegen::RecordQ14InvalidationApplied(false, partition_count);
+	} else if (accelerator_id == "tpch_q1_aux" && partition_count > 0) {
+		accelerator_codegen::RecordQ1InvalidationApplied(false, partition_count);
 	}
 }
 
@@ -105,7 +150,8 @@ void AcceleratorStateRegistry::PlanMaintenancePreCommit(const InvalidationPlan &
 			continue;
 		}
 		auto &staged = txn_buffer.GetOrCreateStagedOutcome(entry.first);
-		entry.second.maintenance_hook->PlanMaintenance(context, entry.second.store, plan, txn_buffer, staged);
+		entry.second.maintenance_hook->PlanMaintenance(context, entry.second.store,
+		                                              txn_buffer.AcceleratorPlan(entry.first), txn_buffer, staged);
 	}
 }
 

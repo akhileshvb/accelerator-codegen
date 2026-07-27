@@ -7,6 +7,15 @@ from accel_pipeline.context import build_prompt_context
 from accel_pipeline.config import PipelineConfig
 
 
+def resolve_prompt_path(pipeline_config: PipelineConfig, workload: dict, prompt_name: str) -> Path:
+    subdir = workload.get("prompt_subdir")
+    if subdir:
+        path = pipeline_config.pipeline_root / "prompts" / subdir / prompt_name
+        if path.is_file():
+            return path
+    return pipeline_config.pipeline_root / "prompts" / prompt_name
+
+
 def render_prompt(
     pipeline_config: PipelineConfig,
     prompt_name: str,
@@ -15,7 +24,7 @@ def render_prompt(
     stage: str,
     optimization_iter: int = 0,
 ) -> str:
-    path = pipeline_config.pipeline_root / "prompts" / prompt_name
+    path = resolve_prompt_path(pipeline_config, workload, prompt_name)
     if not path.is_file():
         raise FileNotFoundError(path)
 

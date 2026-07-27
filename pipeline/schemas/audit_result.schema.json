@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://accelerator-codegen.local/schemas/audit_result.schema.json",
+  "title": "AuxStateAuditResult",
+  "type": "object",
+  "required": ["design_success", "speedup_verification"],
+  "properties": {
+    "design_success": { "type": "boolean" },
+    "speedup_verification": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "enum": ["pass", "fail", "skipped_unsuccessful_design"]
+        },
+        "wall_time_base_us": { "type": "number", "minimum": 0 },
+        "wall_time_aux_us": { "type": "number", "minimum": 0 },
+        "speedup_vs_base": { "type": "number" },
+        "work_reduction_pct": { "type": "number" },
+        "operators_eliminated_confirmed": { "type": "boolean" },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

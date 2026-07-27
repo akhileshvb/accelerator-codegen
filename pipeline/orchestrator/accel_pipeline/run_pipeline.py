@@ -5,8 +5,9 @@ import os
 import sys
 from pathlib import Path
 
-from accel_pipeline.config import load_model_config, load_pipeline_config, load_workload
+from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload
 from accel_pipeline.paths import find_repo_root
+from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
 from accel_pipeline.state import STAGES, advance_stage, load_or_create, state_path
 from accel_pipeline.stages import analysis, audit, implementation, optimization
 
@@ -59,7 +60,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Render prompts; skip LLM calls")
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--model", action="append", dest="models", default=[])
-    # TODO: --queries 1,3,6,12 batch mode; --branch auto for isolated git branches per run.
     args = parser.parse_args(argv)
 
     if args.dry_run:
@@ -67,14 +67,23 @@ def main(argv: list[str] | None = None) -> int:
 
     repo_root = find_repo_root()
     pipeline_config = load_pipeline_config(args.config, repo_root)
-    model_config = load_model_config(repo_root=repo_root)
     workload = load_workload(args.workload, repo_root)
+    pipeline_config = apply_workload_overrides(pipeline_config, workload)
+    model_config = load_model_config(repo_root=repo_root)
     query = args.query
     if workload.get("query_number") and int(workload["query_number"]) != query:
         print("warning: --query does not match workload query_number", file=sys.stderr)
 
     model_overrides = _parse_model_overrides(args.models)
     state = load_or_create(repo_root, query, args.workload, resume=args.resume)
+
+    if workload.get("workload_kind") == "aux_state":
+        ensure_base_accelerator_prerequisite(
+            pipeline_config,
+            args.workload,
+            query,
+            dry_run=args.dry_run,
+        )
 
     if args.stage != "all":
         print(f"=== stage: {args.stage} ===", file=sys.stderr)

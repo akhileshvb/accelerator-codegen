@@ -2,6 +2,7 @@
 
 #include "accelerator_codegen/aux_state/accelerator_registry.hpp"
 #include "accelerator_codegen/tpch_q14_aux.hpp"
+#include "accelerator_codegen/tpch_q1_aux.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/on_create_conflict.hpp"
@@ -48,6 +49,9 @@ duckdb::TableFunctionSet CreateTpchQ2FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ14AuxFunctionSet();
 duckdb::TableFunctionSet CreateQ14AuxBuildFunctionSet();
 duckdb::TableFunctionSet CreateQ14AuxRebuildPartitionFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ1AuxFunctionSet();
+duckdb::TableFunctionSet CreateQ1AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateQ1AuxRebuildPartitionFunctionSet();
 
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
 duckdb::TableFunctionSet CreateTpchQ6ParallelFunctionSet();
@@ -86,6 +90,7 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
     try {
         aux_state::InstallAcceleratorSubstrate(connection);
         RegisterQ14AuxAccelerator(connection);
+        RegisterQ1AuxAccelerator(connection);
 
         RegisterTableFunction(catalog, context, CreateTpchQ6FunctionSet());
 
@@ -104,6 +109,10 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
         RegisterTableFunction(catalog, context, CreateTpchQ14AuxFunctionSet());
         RegisterTableFunction(catalog, context, CreateQ14AuxBuildFunctionSet());
         RegisterTableFunction(catalog, context, CreateQ14AuxRebuildPartitionFunctionSet());
+
+        RegisterTableFunction(catalog, context, CreateTpchQ1AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ1AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ1AuxRebuildPartitionFunctionSet());
 
         RegisterTableFunction(catalog, context, CreateTpchQ17FunctionSet());
 

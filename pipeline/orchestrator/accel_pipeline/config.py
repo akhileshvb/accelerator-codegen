@@ -78,10 +78,49 @@ def load_model_config(path: Path | None = None, repo_root: Path | None = None) -
     )
 
 
+def load_aux_state_defaults(repo_root: Path | None = None) -> dict[str, Any]:
+    root = repo_root or find_repo_root()
+    path = pipeline_root(root) / "config" / "aux_state.yaml"
+    if not path.is_file():
+        return {}
+    return _load_yaml(path)
+
+
+def apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str, Any]) -> PipelineConfig:
+    if workload.get("workload_kind") != "aux_state":
+        return pipeline_config
+    aux_defaults = load_aux_state_defaults(pipeline_config.repo_root)
+    extra_write_paths = list(aux_defaults.get("write_paths", []))
+    extra_allowed = list(aux_defaults.get("allowed_commands", []))
+    if not extra_write_paths and not extra_allowed:
+        return pipeline_config
+    return PipelineConfig(
+        repo_root=pipeline_config.repo_root,
+        pipeline_root=pipeline_config.pipeline_root,
+        build_dir=pipeline_config.build_dir,
+        tpch_db_sf1=pipeline_config.tpch_db_sf1,
+        tpch_db_sf10=pipeline_config.tpch_db_sf10,
+        optimization_max_iterations=pipeline_config.optimization_max_iterations,
+        optimization_no_improvement_stop=pipeline_config.optimization_no_improvement_stop,
+        stage_max_turns=dict(pipeline_config.stage_max_turns),
+        write_paths=list(pipeline_config.write_paths) + extra_write_paths,
+        allowed_commands=list(pipeline_config.allowed_commands) + extra_allowed,
+        gates_dir=pipeline_config.gates_dir,
+    )
+
+
 def load_workload(name: str, repo_root: Path | None = None) -> dict[str, Any]:
     root = repo_root or find_repo_root()
     path = pipeline_root(root) / "config" / "workloads" / f"{name}.yaml"
     # TODO: Support benchmark_packs/*.yaml for non-TPC-H workloads (naming, gates, write_paths).
     if not path.is_file():
         raise FileNotFoundError(f"workload not found: {path}")
-    return _load_yaml(path)
+    data = _load_yaml(path)
+    if data.get("workload_kind") == "aux_state":
+        aux_defaults = load_aux_state_defaults(root)
+        for key in ("post_implementation_gates", "post_optimization_gates", "post_audit_gates", "prompt_subdir"):
+            if key in aux_defaults and key not in data:
+                data[key] = aux_defaults[key]
+        if "speedup_verification" in aux_defaults and "speedup_verification" not in data:
+            data["speedup_verification"] = dict(aux_defaults["speedup_verification"])
+    return data

@@ -7,7 +7,7 @@ Four-stage pipeline for generating TPC-H query accelerators:
 ## Prerequisites
 
 - Python 3.11+
-- `OPENAI_API_KEY` in the environment
+- `CURSOR_API_KEY` (default backend) or `OPENAI_API_KEY` (set `provider: openai` in `config/models.yaml`)
 - Release build at `build-release/` (for gate scripts)
 - DuckDB databases in `accelerator-codegen-duckdb`
 
@@ -15,13 +15,19 @@ Four-stage pipeline for generating TPC-H query accelerators:
 
 ```bash
 cd pipeline/orchestrator
+pip install -e ".[cursor]"
+```
+
+For OpenAI-only (no Cursor SDK):
+
+```bash
 pip install -e .
 ```
 
 ## Run (full pipeline)
 
 ```bash
-export OPENAI_API_KEY=sk-...
+export CURSOR_API_KEY=cursor_...
 python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3
 ```
 
@@ -52,8 +58,39 @@ python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --dry-run
 - `artifacts/` — per-query pipeline state and reports
 - `orchestrator/` — Python package (`accel_pipeline`)
 
+## Agent backends
+
+Set `provider` in `config/models.yaml`:
+
+| Provider | Key | Install |
+|----------|-----|---------|
+| `cursor` (default) | `CURSOR_API_KEY` | `pip install -e ".[cursor]"` |
+| `openai` | `OPENAI_API_KEY` | `pip install -e .` |
+| `openrouter` | `OPENROUTER_API_KEY` | not implemented yet |
+
+Both Cursor and OpenAI paths use the same custom pipeline tools (`read_file`, `apply_patch`, `request_gate`, etc.) for parity.
+
+## Aux-state workloads
+
+Use workloads with `workload_kind: aux_state` (e.g. `tpch_q14_aux`). Copy from `config/workloads/tpch_q_aux.template.yaml`.
+
+```bash
+python -m accel_pipeline.run_pipeline --query 14 --workload tpch_q14_aux --dry-run
+```
+
+Aux workloads:
+
+- Prompts: `pipeline/prompts/aux_state/` (pattern library under `shared/`)
+- Config: `pipeline/config/aux_state.yaml` (write paths, gates, speedup thresholds)
+- Analysis schema: `pipeline/schemas/aux_state_analysis.schema.json`
+- Audit measurements: `pipeline/artifacts/q{N}/audit_result.json` (separate from `analysis.json`)
+- Gates: `aux_correctness`, `aux_unit`, `aux_mutation_scenarios`, `aux_speedup_verification`, `fairness`
+- Base accelerator prerequisite: functional `ctest -R tpch_q{N}` before aux stages (auto-runs `prerequisite_workload` if missing)
+
+Tests: `cd pipeline/orchestrator && pip install -e ".[dev]" && pytest tests/test_aux_pipeline.py`
+
 ## TODO
 
 See [orchestrator/accel_pipeline/TODO.md](orchestrator/accel_pipeline/TODO.md) and inline `# TODO:` in source.
 
-- OpenRouter provider via LiteLLM (`models.yaml` `provider: openrouter`)
+- OpenRouter provider via LiteLLM (`models.yaml` `provider: openrouter`, `pip install -e ".[openrouter]"`)

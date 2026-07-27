@@ -80,26 +80,26 @@ bool PrepareQ14RebuildPreCommit(duckdb::ClientContext &context, aux_state::Parti
 		return false;
 	}
 
-	txn_buffer.SetPendingQ14Rebuild(plan);
+	txn_buffer.SetPendingLazyRebuild(kQ14AuxAcceleratorId, plan);
 	return false;
 }
 
 void EnsurePendingQ14RebuildApplied(duckdb::ClientContext &context) {
 	auto buffer = aux_state::GetOrCreateTxnInvalidationBuffer(context);
-	if (!buffer->HasPendingQ14Rebuild()) {
+	if (!buffer->HasPendingLazyRebuild(kQ14AuxAcceleratorId)) {
 		return;
 	}
 	const auto start = std::chrono::steady_clock::now();
-	const auto pending = buffer->PendingQ14Rebuild();
+	const auto pending = buffer->PendingLazyRebuild(kQ14AuxAcceleratorId);
 	const bool started_transaction = !context.transaction.HasActiveTransaction();
 	if (started_transaction) {
 		context.transaction.BeginTransaction();
 	}
 	try {
 		auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
-		auto &store = registry->GetStore("tpch_q14_aux");
+		auto &store = registry->GetStore(kQ14AuxAcceleratorId);
 		ApplyQ14RebuildPlan(context, store, pending);
-		buffer->ClearPendingQ14Rebuild();
+		buffer->ClearPendingLazyRebuild(kQ14AuxAcceleratorId);
 		if (started_transaction) {
 			context.transaction.Commit();
 		}

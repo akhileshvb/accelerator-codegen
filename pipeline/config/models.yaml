@@ -1,12 +1,13 @@
-# MVP: OpenAI only. TODO: add provider: openrouter via LitellmModel.
-provider: openai
-api_key_env: OPENAI_API_KEY
+# Default: Cursor SDK (bills to your Cursor plan via CURSOR_API_KEY).
+# Switch to provider: openai for OpenAI Agents SDK, or openrouter once implemented.
+provider: cursor
+api_key_env: CURSOR_API_KEY
 
 presets:
-  default: gpt-4.1
-  fast: gpt-4.1-mini
-  strong: gpt-4.1
-  code: gpt-4.1
+  default: composer-2.5
+  fast: composer-2.5
+  strong: composer-2.5
+  code: composer-2.5
 
 stages:
   analysis: fast

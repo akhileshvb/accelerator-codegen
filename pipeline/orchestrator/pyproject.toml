@@ -13,6 +13,23 @@ dependencies = [
   "PyYAML>=6.0",
 ]
 
+[project.optional-dependencies]
+cursor = [
+  "cursor-sdk>=0.1.0",
+]
+openrouter = [
+  "openai-agents>=0.1.0",
+  "litellm>=1.0.0",
+]
+dev = [
+  "pytest>=8.0",
+]
+all = [
+  "cursor-sdk>=0.1.0",
+  "litellm>=1.0.0",
+  "pytest>=8.0",
+]
+
 [project.scripts]
 accel-pipeline = "accel_pipeline.run_pipeline:main"
 

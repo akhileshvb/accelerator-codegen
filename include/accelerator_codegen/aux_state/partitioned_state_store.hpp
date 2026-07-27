@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -26,6 +27,9 @@ public:
 	void InvalidateAll();
 	duckdb::idx_t ValidPartitionCount() const;
 	duckdb::idx_t TotalPartitionSlots() const;
+	void ForEachSlot(
+	    const std::function<void(PartitionKey key, PartitionStatus status, const std::shared_ptr<const void> &payload)> &visitor)
+	    const;
 
 private:
 	mutable std::mutex mutex;

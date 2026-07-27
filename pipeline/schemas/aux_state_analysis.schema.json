@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://accelerator-codegen.local/schemas/aux_state_analysis.schema.json",
+  "title": "AuxStateAnalysis",
+  "type": "object",
+  "required": [
+    "accelerator_id",
+    "base_function_name",
+    "aux_function_name",
+    "fitness_assessment",
+    "correctness_facts",
+    "files_to_create"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "accelerator_id": { "type": "string", "minLength": 1 },
+    "base_function_name": { "type": "string", "minLength": 1 },
+    "aux_function_name": { "type": "string", "minLength": 1 },
+    "fitness_assessment": {
+      "type": "object",
+      "required": ["recommended", "confidence", "scope", "signals_for", "signals_against", "rationale"],
+      "properties": {
+        "recommended": { "type": "boolean" },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "scope": { "const": "per_query" },
+        "signals_for": { "type": "array", "items": { "type": "string" } },
+        "signals_against": { "type": "array", "items": { "type": "string" } },
+        "partition_key_source": {
+          "enum": ["bind_parameter", "grouping_attribute", "join_key", "mixed"]
+        },
+        "incidental_reuse": { "type": ["string", "null"] },
+        "rationale": { "type": "string", "minLength": 1 }
+      }
+    },
+    "state_candidate_search": {
+      "type": "object",
+      "properties": {
+        "hints_adopted": { "type": "object" },
+        "hints_rejected": { "type": "object" },
+        "fewer_than_three_explanation": { "type": ["string", "null"] },
+        "candidates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/state_candidate" }
+        }
+      }
+    },
+    "correctness_facts": {
+      "type": "object",
+      "required": [
+        "dependent_tables",
+        "partitioning",
+        "state_design",
+        "state_payload",
+        "mutation_coverage",
+        "fallback_conditions",
+        "maintenance_actions_used"
+      ],
+      "properties": {
+        "dependent_tables": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["name", "watched_columns"],
+            "properties": {
+              "name": { "type": "string" },
+              "watched_columns": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+              "role": { "type": "string" }
+            }
+          }
+        },
+        "partitioning": {
+          "type": "object",
+          "required": ["strategy", "key_function", "key_source", "mutation_to_partition_mapping"],
+          "properties": {
+            "strategy": { "type": "string" },
+            "key_function": { "type": "string" },
+            "key_source": {
+              "enum": ["bind_parameter", "grouping_attribute", "join_key", "mixed"]
+            },
+            "mutation_to_partition_mapping": { "type": "string", "minLength": 1 }
+          }
+        },
+        "state_design": {
+          "type": "object",
+          "required": [
+            "selected_candidate_id",
+            "chosen_representation",
+            "state_grain",
+            "output_grain",
+            "physical_organization",
+            "composition_rule",
+            "is_full_result_cache",
+            "negligible_speedup_risk",
+            "work_eliminated_on_fast_path",
+            "operators_claimed_eliminated",
+            "residual_read_algorithm",
+            "read_path_remaining_work",
+            "read_path_bottleneck_risk",
+            "read_path_scaling_variable",
+            "estimated_state_units_read",
+            "parameter_scaling_argument",
+            "alternatives_considered",
+            "correctness_argument",
+            "speedup_argument"
+          ],
+          "properties": {
+            "selected_candidate_id": { "type": "string", "minLength": 1 },
+            "chosen_representation": { "type": "string" },
+            "state_grain": { "type": "string" },
+            "output_grain": { "type": "string" },
+            "physical_organization": { "type": "string" },
+            "composition_rule": { "type": "string", "minLength": 1 },
+            "is_full_result_cache": { "const": false },
+            "negligible_speedup_risk": { "enum": ["low", "medium", "high"] },
+            "read_path_bottleneck_risk": { "enum": ["low", "medium", "high"] },
+            "read_path_scaling_variable": { "type": "string", "minLength": 1 },
+            "estimated_state_units_read": {
+              "type": "object",
+              "required": ["typical", "worst_case"],
+              "properties": {
+                "typical": { "type": "string", "minLength": 1 },
+                "worst_case": { "type": "string", "minLength": 1 }
+              }
+            },
+            "parameter_scaling_argument": { "type": "string", "minLength": 1 },
+            "residual_read_algorithm": { "type": "string", "minLength": 1 },
+            "alternatives_considered": {
+              "type": "array",
+              "minItems": 2
+            }
+          }
+        },
+        "mutation_coverage": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["table", "mutation", "behavior"],
+            "properties": {
+              "table": { "type": "string" },
+              "mutation": { "type": "string" },
+              "behavior": {
+                "enum": ["supported_delta", "bounded_rebuild", "full_rebuild", "invalidate_safely"]
+              },
+              "notes": { "type": "string" }
+            }
+          }
+        },
+        "fallback_conditions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "maintenance_actions_used": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "legal_deltas": { "type": "array" },
+        "state_payload": { "type": "object" }
+      }
+    },
+    "performance_hypotheses": {
+      "type": "object",
+      "properties": {
+        "base_path_cost_decomposition": { "$ref": "#/$defs/base_path_cost_decomposition" }
+      }
+    },
+    "files_to_create": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "role"],
+        "properties": {
+          "path": { "type": "string" },
+          "role": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "base_path_cost_decomposition": {
+      "type": "object",
+      "required": [
+        "dominant_scans",
+        "dominant_joins",
+        "aggregation_grouping_work",
+        "sorting_topk_work",
+        "parameter_dependent_work",
+        "work_repeated_across_invocations",
+        "cardinality_scaling",
+        "parameter_range_scaling",
+        "output_cardinality_scaling",
+        "work_remaining_after_aux_replacement"
+      ],
+      "properties": {
+        "dominant_scans": { "type": "array", "items": { "type": "string" } },
+        "dominant_joins": { "type": "array", "items": { "type": "string" } },
+        "aggregation_grouping_work": { "type": "string", "minLength": 1 },
+        "sorting_topk_work": { "type": "string", "minLength": 1 },
+        "parameter_dependent_work": { "type": "string", "minLength": 1 },
+        "work_repeated_across_invocations": { "type": "array", "items": { "type": "string" } },
+        "cardinality_scaling": { "type": "string", "minLength": 1 },
+        "parameter_range_scaling": { "type": "string", "minLength": 1 },
+        "output_cardinality_scaling": { "type": "string", "minLength": 1 },
+        "work_remaining_after_aux_replacement": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      }
+    },
+    "estimated_state_units_read": {
+      "type": "object",
+      "required": ["typical", "worst_case"],
+      "properties": {
+        "typical": { "type": "string", "minLength": 1 },
+        "worst_case": { "type": "string", "minLength": 1 }
+      }
+    },
+    "state_candidate": {
+      "type": "object",
+      "required": [
+        "id",
+        "design_family",
+        "viability",
+        "selected",
+        "state_grain",
+        "output_grain",
+        "physical_organization",
+        "state_payload",
+        "composition_rule",
+        "operators_eliminated",
+        "residual_read_algorithm",
+        "estimated_state_units_read",
+        "read_path_bottleneck_risk",
+        "read_path_scaling_variable",
+        "parameter_scaling_argument",
+        "asymptotic_read_complexity",
+        "practical_read_complexity",
+        "point_update_complexity",
+        "batch_update_complexity",
+        "storage_complexity",
+        "mutation_fanout",
+        "rebuild_locality",
+        "parameter_binding_behavior",
+        "history_growth_behavior",
+        "best_regime"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "design_family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "viability": { "enum": ["viable", "rejected"] },
+        "selected": { "type": "boolean" },
+        "rejection_reason": { "type": ["string", "null"] },
+        "state_grain": { "type": "string", "minLength": 1 },
+        "output_grain": { "type": "string", "minLength": 1 },
+        "physical_organization": { "type": "string", "minLength": 1 },
+        "state_payload": { "type": "string", "minLength": 1 },
+        "composition_rule": { "type": "string", "minLength": 1 },
+        "operators_eliminated": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "residual_read_algorithm": { "type": "string", "minLength": 1 },
+        "estimated_state_units_read": { "$ref": "#/$defs/estimated_state_units_read" },
+        "read_path_bottleneck_risk": { "enum": ["low", "medium", "high"] },
+        "read_path_scaling_variable": { "type": "string", "minLength": 1 },
+        "parameter_scaling_argument": { "type": "string", "minLength": 1 },
+        "asymptotic_read_complexity": { "type": "string", "minLength": 1 },
+        "practical_read_complexity": { "type": "string", "minLength": 1 },
+        "point_update_complexity": { "type": "string", "minLength": 1 },
+        "batch_update_complexity": { "type": "string", "minLength": 1 },
+        "storage_complexity": { "type": "string", "minLength": 1 },
+        "mutation_fanout": { "type": "string", "minLength": 1 },
+        "rebuild_locality": { "type": "string", "minLength": 1 },
+        "parameter_binding_behavior": { "type": "string", "minLength": 1 },
+        "history_growth_behavior": { "type": "string", "minLength": 1 },
+        "best_regime": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

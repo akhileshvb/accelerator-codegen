@@ -18,7 +18,7 @@ if [[ ! -d "${BUILD}" ]]; then
 fi
 
 set +e
-LOG="$("${BUILD}/ctest" -R "tpch_q${QUERY}" --output-on-failure 2>&1)"
+LOG="$("${BUILD}/ctest" -R "^tpch_q${QUERY}_smoke_test$" --output-on-failure 2>&1)"
 RC=$?
 set -e
 

@@ -1,4 +1,7 @@
+#include <stdexcept>
+
 #include "accelerator_codegen/tpch_q14_incremental.hpp"
+#include "accelerator_codegen/tpch_q14_write_policy.hpp"
 #include "accelerator_codegen/tpch_q14_maintenance.hpp"
 
 #include <chrono>
@@ -804,6 +807,38 @@ bool TryApplyQ14IncrementalPreCommit(duckdb::ClientContext &context, aux_state::
 	}
 	PublishQ14IncrementalDelta(store, delta);
 	return true;
+}
+
+Q14IncrementalTxnBuffer &GetQ14IncrementalTxnBuffer(aux_state::TxnInvalidationBuffer &txn_buffer) {
+	auto &base = txn_buffer.GetOrCreateIncrementalBuffer(kQ14AuxAcceleratorId);
+	auto *q14 = dynamic_cast<Q14IncrementalTxnBuffer *>(&base);
+	if (!q14) {
+		throw std::runtime_error("incremental buffer for tpch_q14_aux has unexpected type");
+	}
+	return *q14;
+}
+
+aux_state::InvalidationPlan AccumulateQ14Mutation(duckdb::ClientContext &context,
+                                                  const duckdb::TableMutationEvent &event,
+                                                  const std::vector<aux_state::TableDependency> &dependencies,
+                                                  aux_state::TxnInvalidationBuffer &txn_buffer) {
+	auto &incremental = GetQ14IncrementalTxnBuffer(txn_buffer);
+	const bool dependent = IsQ14DependentTableMutation(event, dependencies);
+
+	const auto *lineitem = FindTableDependency(dependencies, "lineitem");
+	const auto *part = FindTableDependency(dependencies, "part");
+	if (lineitem && event.table_oid == lineitem->table_oid) {
+		Q14AccumulateLineitemMutationLight(context, event, dependencies, incremental);
+	} else if (part && event.table_oid == part->table_oid) {
+		Q14AccumulatePartMutationLight(context, event, dependencies, incremental);
+	}
+
+	if (dependent) {
+		RecordQ14DependentTableMutation(incremental.ExtraInvalidationPlan().IsEmpty());
+		RecordQ14WorkloadRelevantWrite();
+	}
+
+	return incremental.ExtraInvalidationPlan();
 }
 
 } // namespace accelerator_codegen

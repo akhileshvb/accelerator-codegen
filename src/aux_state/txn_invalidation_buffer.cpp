@@ -1,11 +1,9 @@
 #include "accelerator_codegen/aux_state/txn_invalidation_buffer.hpp"
 
+#include <stdexcept>
+
 #include "accelerator_codegen/aux_state/accelerator_registry.hpp"
 #include "accelerator_codegen/aux_state/invalidation_plan.hpp"
-#include "accelerator_codegen/tpch_q14_aux.hpp"
-#include "accelerator_codegen/tpch_q14_incremental.hpp"
-#include "accelerator_codegen/tpch_q14_maintenance.hpp"
-#include "accelerator_codegen/tpch_q14_write_policy.hpp"
 #include "duckdb/common/shared_ptr.hpp"
 
 namespace accelerator_codegen::aux_state {
@@ -16,6 +14,26 @@ void TxnInvalidationBuffer::RecordPlan(const InvalidationPlan &plan) {
 	}
 	MergeInvalidationPlan(committed_pending_apply, plan);
 	MergeInvalidationPlan(txn_local_bypass, plan);
+}
+
+void TxnInvalidationBuffer::RecordAcceleratorPlan(const std::string &accelerator_id, const InvalidationPlan &plan) {
+	if (plan.IsEmpty()) {
+		return;
+	}
+	MergeInvalidationPlan(accelerator_plans[accelerator_id], plan);
+}
+
+const InvalidationPlan &TxnInvalidationBuffer::AcceleratorPlan(const std::string &accelerator_id) const {
+	static const InvalidationPlan kEmpty {};
+	const auto it = accelerator_plans.find(accelerator_id);
+	if (it == accelerator_plans.end()) {
+		return kEmpty;
+	}
+	return it->second;
+}
+
+void TxnInvalidationBuffer::ClearAcceleratorPlans() {
+	accelerator_plans.clear();
 }
 
 bool TxnInvalidationBuffer::IsPartitionBypassed(PartitionKey key) const {
@@ -32,22 +50,68 @@ bool TxnInvalidationBuffer::IsAllBypassed() const {
 	return txn_local_bypass.scope == InvalidationScope::AllPartitions;
 }
 
-void TxnInvalidationBuffer::SetPendingQ14Rebuild(const InvalidationPlan &plan) {
-	q14_pending_rebuild = plan;
-	q14_pending_rebuild_active = true;
+void TxnInvalidationBuffer::SetPendingLazyRebuild(const std::string &accelerator_id, const InvalidationPlan &plan) {
+	pending_lazy_rebuilds[accelerator_id] = plan;
 }
 
-bool TxnInvalidationBuffer::HasPendingQ14Rebuild() const {
-	return q14_pending_rebuild_active;
+bool TxnInvalidationBuffer::HasPendingLazyRebuild(const std::string &accelerator_id) const {
+	const auto it = pending_lazy_rebuilds.find(accelerator_id);
+	return it != pending_lazy_rebuilds.end() && !it->second.IsEmpty();
 }
 
-const InvalidationPlan &TxnInvalidationBuffer::PendingQ14Rebuild() const {
-	return q14_pending_rebuild;
+const InvalidationPlan &TxnInvalidationBuffer::PendingLazyRebuild(const std::string &accelerator_id) const {
+	static const InvalidationPlan kEmpty {};
+	const auto it = pending_lazy_rebuilds.find(accelerator_id);
+	if (it == pending_lazy_rebuilds.end()) {
+		return kEmpty;
+	}
+	return it->second;
 }
 
-void TxnInvalidationBuffer::ClearPendingQ14Rebuild() {
-	q14_pending_rebuild = InvalidationPlan {};
-	q14_pending_rebuild_active = false;
+void TxnInvalidationBuffer::ClearPendingLazyRebuild(const std::string &accelerator_id) {
+	pending_lazy_rebuilds.erase(accelerator_id);
+}
+
+void TxnInvalidationBuffer::ClearAllPendingLazyRebuilds() {
+	pending_lazy_rebuilds.clear();
+}
+
+IncrementalTxnBuffer &TxnInvalidationBuffer::GetOrCreateIncrementalBuffer(const std::string &accelerator_id) {
+	auto it = incremental_buffers.find(accelerator_id);
+	if (it != incremental_buffers.end()) {
+		return *it->second;
+	}
+	if (!registry) {
+		throw std::runtime_error("txn invalidation buffer has no registry");
+	}
+	auto factory = registry->GetIncrementalBufferFactory(accelerator_id);
+	if (!factory) {
+		throw std::runtime_error("no incremental buffer factory for accelerator: " + accelerator_id);
+	}
+	auto created = factory();
+	if (!created) {
+		throw std::runtime_error("incremental buffer factory returned null for accelerator: " + accelerator_id);
+	}
+	auto &ref = *created;
+	incremental_buffers.emplace(accelerator_id, std::move(created));
+	return ref;
+}
+
+IncrementalTxnBuffer *TxnInvalidationBuffer::TryGetIncrementalBuffer(const std::string &accelerator_id) {
+	const auto it = incremental_buffers.find(accelerator_id);
+	if (it == incremental_buffers.end()) {
+		return nullptr;
+	}
+	return it->second.get();
+}
+
+bool TxnInvalidationBuffer::AnyIncrementalHasPendingChanges() const {
+	for (const auto &entry : incremental_buffers) {
+		if (entry.second && entry.second->HasPendingChanges()) {
+			return true;
+		}
+	}
+	return false;
 }
 
 maintenance::StagedMaintenanceOutcome &TxnInvalidationBuffer::GetOrCreateStagedOutcome(const std::string &accelerator_id) {
@@ -58,53 +122,20 @@ maintenance::StagedMaintenanceOutcome &TxnInvalidationBuffer::GetStagedOutcome(c
 	return staged_outcomes[accelerator_id];
 }
 
-namespace {
-
-const TableDependency *FindTableDependency(const std::vector<TableDependency> &dependencies,
-                                           const std::string &table_name) {
-	for (const auto &dependency : dependencies) {
-		if (dependency.table_name == table_name) {
-			return &dependency;
-		}
-	}
-	return nullptr;
-}
-
-} // namespace
-
 void TxnInvalidationBuffer::OnTableMutation(duckdb::ClientContext &context, const duckdb::TableMutationEvent &event) {
 	if (!registry) {
 		return;
 	}
-	const auto &q14_dependencies = registry->GetAcceleratorDependencies("tpch_q14_aux");
-	const bool dependent = IsQ14DependentTableMutation(event, q14_dependencies);
-	InvalidationPlan effective = registry->InterpretMutation(event);
-
-	const auto *lineitem = FindTableDependency(q14_dependencies, "lineitem");
-	const auto *part = FindTableDependency(q14_dependencies, "part");
-	if (lineitem && event.table_oid == lineitem->table_oid) {
-		Q14AccumulateLineitemMutationLight(context, event, q14_dependencies, q14_incremental);
-	} else if (part && event.table_oid == part->table_oid) {
-		Q14AccumulatePartMutationLight(context, event, q14_dependencies, q14_incremental);
-	}
-	MergeInvalidationPlan(effective, q14_incremental.ExtraInvalidationPlan());
-
-	if (dependent) {
-		RecordQ14DependentTableMutation(effective.IsEmpty());
-		RecordQ14WorkloadRelevantWrite();
-	}
-	RecordPlan(effective);
+	registry->OnTableMutation(context, event, *this);
 }
 
 void TxnInvalidationBuffer::TransactionPreCommit(duckdb::MetaTransaction &transaction, duckdb::ClientContext &context) {
 	(void)transaction;
-	if (!registry || committed_pending_apply.IsEmpty()) {
-		if (!registry) {
-			return;
-		}
-		if (!q14_incremental.HasPendingChanges()) {
-			return;
-		}
+	if (!registry) {
+		return;
+	}
+	if (committed_pending_apply.IsEmpty() && !AnyIncrementalHasPendingChanges()) {
+		return;
 	}
 	registry->ApplyPreCommitInvalidationAll(committed_pending_apply, &context, this);
 }
@@ -116,7 +147,12 @@ void TxnInvalidationBuffer::TransactionCommit(duckdb::MetaTransaction &transacti
 	}
 	committed_pending_apply = InvalidationPlan {};
 	txn_local_bypass = InvalidationPlan {};
-	q14_incremental.Clear();
+	ClearAcceleratorPlans();
+	for (auto &entry : incremental_buffers) {
+		if (entry.second) {
+			entry.second->Clear();
+		}
+	}
 	staged_outcomes.clear();
 }
 
@@ -128,9 +164,14 @@ void TxnInvalidationBuffer::TransactionRollback(duckdb::MetaTransaction &transac
 	}
 	committed_pending_apply = InvalidationPlan {};
 	txn_local_bypass = InvalidationPlan {};
-	q14_incremental.Clear();
+	ClearAcceleratorPlans();
+	for (auto &entry : incremental_buffers) {
+		if (entry.second) {
+			entry.second->Clear();
+		}
+	}
 	staged_outcomes.clear();
-	ClearPendingQ14Rebuild();
+	ClearAllPendingLazyRebuilds();
 }
 
 duckdb::shared_ptr<TxnInvalidationBuffer> GetOrCreateTxnInvalidationBuffer(duckdb::ClientContext &context) {

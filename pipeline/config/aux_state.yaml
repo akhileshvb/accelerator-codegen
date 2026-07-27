@@ -1,0 +1,53 @@
+# Shared aux-state pipeline settings merged into PipelineConfig when workload_kind=aux_state.
+
+write_paths:
+  - include/accelerator_codegen/tpch_q*_aux*.hpp
+  - include/accelerator_codegen/tpch_q*_incremental.hpp
+  - include/accelerator_codegen/tpch_q*_maintenance*.hpp
+  - include/accelerator_codegen/tpch_q*_rebuild_policy.hpp
+  - include/accelerator_codegen/tpch_q*_write_policy.hpp
+  - include/accelerator_codegen/tpch_q*_diagnostics.hpp
+  - include/accelerator_codegen/tpch_q*_finalize.hpp
+  - src/aux_state/q*
+  - config/q*_aux_cost_model.json
+  - tests/single-threaded/test_q*_*.cpp
+  - tests/single-threaded/test_tpch_q*_aux.cpp
+  - tests/test_support/q*_aux_helpers.hpp
+  - benchmarks/tpch/single-threaded/benchmark_q*_aux.cpp
+  - benchmarks/tpch/single-threaded/benchmark_q*_hybrid_eval.cpp
+  - benchmarks/tpch/single-threaded/calibrate_q*_aux_cost_model.cpp
+
+allowed_commands:
+  - "^ctest -R (q\\d+_|tpch_q\\d+_aux).*"
+  - "^bash scripts/run_aux_bench_sweep\\.sh \\d+$"
+
+aux_bench_sweep:
+  write_frequencies: [0, 1, 10, 50]
+  suites: lineitem_only
+
+post_implementation_gates:
+  - aux_correctness
+  - aux_unit
+  - aux_bench_sweep
+
+post_optimization_gates:
+  - aux_correctness
+  - aux_unit
+  - aux_bench_sweep
+
+post_audit_gates:
+  - aux_correctness
+  - aux_unit
+  - aux_mutation_scenarios
+  - aux_speedup_verification
+  - fairness
+
+prompt_subdir: aux_state
+
+speedup_verification:
+  min_speedup_vs_base: 2.0
+  min_work_reduction_pct: 50
+  metric_preference:
+    - wall_time
+    - scanned_rows
+    - operator_time

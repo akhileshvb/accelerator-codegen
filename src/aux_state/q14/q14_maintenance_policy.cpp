@@ -5,11 +5,10 @@
 #include <iostream>
 #include <unordered_set>
 
-#include "accelerator_codegen/tpch_q14_diagnostics.hpp"
-#include "accelerator_codegen/aux_state/accelerator_registry.hpp"
-#include "accelerator_codegen/aux_state/txn_invalidation_buffer.hpp"
 #include "accelerator_codegen/tpch_q14_aux.hpp"
+#include "accelerator_codegen/tpch_q14_diagnostics.hpp"
 #include "accelerator_codegen/tpch_q14_incremental.hpp"
+#include "accelerator_codegen/aux_state/accelerator_registry.hpp"
 #include "accelerator_codegen/tpch_q14_maintenance.hpp"
 #include "accelerator_codegen/tpch_q14_rebuild_policy.hpp"
 #include "accelerator_codegen/tpch_q14_write_policy.hpp"
@@ -158,7 +157,7 @@ void ExecuteQ14MaintenancePreCommit(duckdb::ClientContext &context, aux_state::P
 	outcome.Clear();
 	outcome.active = true;
 
-	auto &incremental = txn_buffer.GetQ14Incremental();
+	auto &incremental = GetQ14IncrementalTxnBuffer(txn_buffer);
 	const auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
 	const auto &q14_dependencies = registry->GetAcceleratorDependencies("tpch_q14_aux");
 
@@ -277,7 +276,7 @@ void PublishQ14MaintenanceOnCommit(duckdb::ClientContext &context, aux_state::Pa
 	}
 
 	if (!outcome.pending_lazy_rebuild.IsEmpty()) {
-		txn_buffer.SetPendingQ14Rebuild(outcome.pending_lazy_rebuild);
+		txn_buffer.SetPendingLazyRebuild(kQ14AuxAcceleratorId, outcome.pending_lazy_rebuild);
 		RecordQ14LazyRebuildScheduled();
 	}
 

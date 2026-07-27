@@ -21,6 +21,8 @@ struct TableDependency;
 
 namespace accelerator_codegen {
 
+inline constexpr const char *kQ14AuxAcceleratorId = "tpch_q14_aux";
+
 using Q14PartitionKey = aux_state::PartitionKey;
 
 struct Q14MonthTotals {
