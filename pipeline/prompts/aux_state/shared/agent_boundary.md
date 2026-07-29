@@ -12,9 +12,11 @@
 
 ## Hand-written substrate (stable — do not regenerate)
 
-- `PartitionedStateStore`, txn buffer lifecycle, execution gate
-- `AcceleratorStateRegistry` registration hooks
+- `PartitionedStateStore` (with epoch metadata), txn buffer lifecycle, execution gate
+- `AcceleratorStateRegistry` and `AcceleratorMaintenanceState` (global lazy rebuild, per-accelerator epochs)
+- `ReaderMutationEpochState`, `ExecutionLoadRegistry`, `ActiveExecutionScope`
 - `CoreSelectorParams`, `ActionCostEstimate`, `SelectMinCostAction`, `OnlineStats`
+- `EstimateInterferenceUs`, `ActionResourceEstimate`, `PublishValidatedPartitionUpdates`
 - Staged publication and commit/rollback hooks
 - Shared maintenance diagnostics
 - CMake scaffolding: `cmake/AuxState.cmake` (`accel_add_aux_state_query`)
@@ -25,4 +27,8 @@ See `registration_checklist.md` in this directory.
 
 ## Runtime policy
 
-See `runtime_policy.md` in this directory. Default: hybrid cost-based selector; lazy-on-query repair in v1.
+See `runtime_policy.md` in this directory. Default: hybrid cost-based selector; lazy-on-query repair in v1 with global pending rebuild state.
+
+## Concurrency
+
+See `concurrency_contract.md` in this directory. Agents must implement relevance filtering, bounded read paths, and NoOp maintenance for irrelevant mutations.

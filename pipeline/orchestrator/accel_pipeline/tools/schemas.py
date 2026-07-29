@@ -115,4 +115,49 @@ TOOL_SCHEMAS: dict[str, dict] = {
         },
         "required": ["gate_name"],
     },
+    "request_structural_reanalysis": {
+        "type": "object",
+        "properties": {
+            "bottleneck_type": {
+                "type": "string",
+                "enum": sorted(
+                    [
+                        "residual_read_path",
+                        "scan_for_scan",
+                        "wrong_partition_grain",
+                        "maintenance_infeasible",
+                        "insufficient_state_expressiveness",
+                        "other",
+                    ]
+                ),
+            },
+            "evidence": {
+                "type": "string",
+                "description": "Concrete gate output or measurements (>= 40 chars).",
+            },
+            "proposed_direction": {
+                "type": "string",
+                "description": "Structural design change needed (>= 20 chars).",
+            },
+            "current_candidate_id": {
+                "type": "string",
+                "description": "Selected candidate id from analysis.json.",
+            },
+            "alternate_candidate_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional viable alternates to reconsider.",
+            },
+            "cost_model_insufficient_reason": {
+                "type": "string",
+                "description": "Why cost-model tuning cannot fix the bottleneck.",
+            },
+        },
+        "required": [
+            "bottleneck_type",
+            "evidence",
+            "proposed_direction",
+            "current_candidate_id",
+        ],
+    },
 }

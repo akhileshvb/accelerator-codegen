@@ -64,6 +64,9 @@ add_library(accelerator_codegen SHARED
     src/aux_state/invalidation_plan.cpp
     src/aux_state/catalog_dependency.cpp
     src/aux_state/partitioned_state_store.cpp
+    src/aux_state/accelerator_maintenance_state.cpp
+    src/aux_state/reader_mutation_epoch.cpp
+    src/aux_state/execution_load.cpp
     src/aux_state/execution_gate.cpp
     src/aux_state/accelerator_registry.cpp
     src/aux_state/txn_invalidation_buffer.cpp
@@ -72,6 +75,8 @@ add_library(accelerator_codegen SHARED
     src/aux_state/maintenance/action_selector.cpp
     src/aux_state/maintenance/staged_publication.cpp
     src/aux_state/maintenance/maintenance_diagnostics.cpp
+    src/aux_state/maintenance/interference.cpp
+    src/aux_state/maintenance/partition_publish.cpp
 )
 
 target_include_directories(accelerator_codegen
@@ -97,6 +102,19 @@ accel_add_aux_state_benchmarks(
     TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
 )
 
+add_executable(benchmark_aux_multi_connection
+    benchmarks/tpch/single-threaded/benchmark_aux_multi_connection.cpp
+)
+target_link_libraries(benchmark_aux_multi_connection PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(benchmark_aux_multi_connection PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(benchmark_aux_cross_accelerator
+    benchmarks/tpch/single-threaded/benchmark_aux_cross_accelerator.cpp
+    tests/test_support/cross_accel_helpers.cpp
+)
+target_link_libraries(benchmark_aux_cross_accelerator PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(benchmark_aux_cross_accelerator PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
 accel_add_aux_state_query(
     QUERY_NUM 1
     LIBRARY_TARGET accelerator_codegen
@@ -104,6 +122,50 @@ accel_add_aux_state_query(
 )
 accel_add_aux_state_benchmarks(
     QUERY_NUM 1
+    LIBRARY_TARGET accelerator_codegen
+    TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+
+accel_add_aux_state_query(
+    QUERY_NUM 3
+    LIBRARY_TARGET accelerator_codegen
+    TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+accel_add_aux_state_benchmarks(
+    QUERY_NUM 3
+    LIBRARY_TARGET accelerator_codegen
+    TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+
+accel_add_aux_state_query(
+    QUERY_NUM 12
+    LIBRARY_TARGET accelerator_codegen
+    TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+accel_add_aux_state_benchmarks(
+    QUERY_NUM 12
+    LIBRARY_TARGET accelerator_codegen
+    TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+
+accel_add_aux_state_query(
+    QUERY_NUM 10
+    LIBRARY_TARGET accelerator_codegen
+    TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+accel_add_aux_state_benchmarks(
+    QUERY_NUM 10
+    LIBRARY_TARGET accelerator_codegen
+    TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+
+accel_add_aux_state_query(
+    QUERY_NUM 6
+    LIBRARY_TARGET accelerator_codegen
+    TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+accel_add_aux_state_benchmarks(
+    QUERY_NUM 6
     LIBRARY_TARGET accelerator_codegen
     TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
 )
@@ -268,6 +330,19 @@ target_link_libraries(test_txn_invalidation
 )
 
 target_include_directories(test_txn_invalidation PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+foreach(_aux_substrate_test IN ITEMS test_epoch_lazy_rebuild test_commit_visibility test_reader_epoch_visibility test_optimistic_publish test_execution_load test_multi_connection_olap test_concurrent_write_read test_cross_accel_correctness test_cross_accel_isolation test_aux_multi_connection_stress)
+    add_executable(${_aux_substrate_test} tests/aux_state/${_aux_substrate_test}.cpp)
+    target_link_libraries(${_aux_substrate_test} PRIVATE accelerator_codegen duckdb_sibling)
+    target_include_directories(${_aux_substrate_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+endforeach()
+
+target_sources(test_cross_accel_correctness PRIVATE tests/test_support/cross_accel_helpers.cpp)
+target_sources(test_cross_accel_isolation PRIVATE tests/test_support/cross_accel_helpers.cpp)
+target_sources(test_aux_multi_connection_stress PRIVATE
+    tests/test_support/cross_accel_helpers.cpp
+    tests/test_support/multi_connection_stress.cpp
+)
 
 add_executable(test_tpch_q17
     tests/single-threaded/test_tpch_q17.cpp
@@ -1056,8 +1131,15 @@ if(BUILD_TESTING)
     add_test(NAME tpch_q12_smoke_test COMMAND test_tpch_q12)
     add_test(NAME tpch_q14_smoke_test COMMAND test_tpch_q14)
     add_test(NAME txn_invalidation_unit_test COMMAND test_txn_invalidation)
+    foreach(_aux_substrate_test IN ITEMS test_epoch_lazy_rebuild test_commit_visibility test_reader_epoch_visibility test_optimistic_publish test_execution_load test_multi_connection_olap test_concurrent_write_read test_cross_accel_correctness test_cross_accel_isolation test_aux_multi_connection_stress)
+        add_test(NAME ${_aux_substrate_test}_unit_test COMMAND ${_aux_substrate_test})
+    endforeach()
     accel_add_aux_state_ctests(14)
     accel_add_aux_state_ctests(1)
+    accel_add_aux_state_ctests(3)
+    accel_add_aux_state_ctests(12)
+    accel_add_aux_state_ctests(10)
+    accel_add_aux_state_ctests(6)
     add_test(NAME tpch_q17_smoke_test COMMAND test_tpch_q17)
     add_test(NAME tpch_q19_smoke_test COMMAND test_tpch_q19)
     add_test(NAME tpch_q5_smoke_test COMMAND test_tpch_q5)

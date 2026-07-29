@@ -4,3 +4,16 @@ benchmarks/tpch/results/
 benchmarks/tpch/tmp/
 **/__pycache__/
 docs/
+
+# CTest in-source spill (if cmake runs from repo root)
+Testing/
+
+# Pipeline run outputs (per-query state, gate JSON, rendered prompts, audits)
+pipeline/artifacts/**
+!pipeline/artifacts/shared/
+!pipeline/artifacts/shared/optimization_playbook.md
+
+# Python orchestrator local env / build artifacts
+pipeline/orchestrator/.venv/
+pipeline/orchestrator/.pytest_cache/
+*.egg-info/

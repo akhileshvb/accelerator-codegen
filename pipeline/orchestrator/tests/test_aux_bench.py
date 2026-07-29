@@ -19,6 +19,21 @@ lineitem_only,hybrid,single_month,50,1995-06-01,500,250,250,1,166496.00,22845.00
 """
 
 
+def test_parse_sweep_csv_ignores_speedup_gate_lines(tmp_path: Path):
+    csv_path = tmp_path / "results.csv"
+    csv_path.write_text(
+        SAMPLE_CSV.splitlines()[0] + "\n"
+        + SAMPLE_CSV.splitlines()[1] + "\n"
+        + "speedup_gate wall_time_base_us=1.00\n"
+        + SAMPLE_CSV.splitlines()[2] + "\n",
+        encoding="utf-8",
+    )
+    rows = parse_sweep_csv(csv_path)
+    assert len(rows) == 2
+    assert rows[0]["write_frequency_pct"] == 0
+    assert rows[1]["write_frequency_pct"] == 1
+
+
 def test_parse_sweep_csv(tmp_path: Path):
     csv_path = tmp_path / "results.csv"
     csv_path.write_text(SAMPLE_CSV, encoding="utf-8")

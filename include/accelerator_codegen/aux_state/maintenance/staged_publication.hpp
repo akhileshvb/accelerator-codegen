@@ -13,6 +13,7 @@ namespace accelerator_codegen::aux_state::maintenance {
 struct StagedPartitionUpdate {
 	PartitionKey key = 0;
 	std::shared_ptr<const void> payload;
+	uint64_t expected_partition_version = 0;
 };
 
 struct MaintenanceDecisionTrace {
@@ -33,5 +34,7 @@ struct StagedMaintenanceOutcome {
 
 	void Clear();
 };
+
+bool MaintenanceOutcomeHasPublishEffect(const StagedMaintenanceOutcome &outcome);
 
 } // namespace accelerator_codegen::aux_state::maintenance

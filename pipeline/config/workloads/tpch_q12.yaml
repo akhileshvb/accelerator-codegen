@@ -1,0 +1,30 @@
+benchmark_name: tpch
+query_number: 12
+query_id: "12"
+function_name: accel_tpch_q12
+create_fn: CreateTpchQ12FunctionSet
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/12.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: shipmode1
+    type: VARCHAR
+  - name: shipmode2
+    type: VARCHAR
+  - name: start_date
+    type: DATE
+
+reference_accelerators: [3, 14]
+
+output_schema:
+  - name: l_shipmode
+    type: VARCHAR
+  - name: high_line_count
+    type: BIGINT
+  - name: low_line_count
+    type: BIGINT
+
+tables:
+  - orders
+  - lineitem

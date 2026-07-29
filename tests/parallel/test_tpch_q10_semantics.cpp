@@ -12,7 +12,7 @@
 #include "duckdb/main/materialized_query_result.hpp"
 
 #ifndef ACCEL_ENABLE_PARALLEL_TPCH
-#error "test_tpch_q10_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
+#error "test_tpch_q30_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
 #endif
 
 namespace {
@@ -78,7 +78,7 @@ void RequireEqualResults(duckdb::Connection &connection, const std::string &labe
 	}
 }
 
-void CreateQ10Schema(duckdb::Connection &connection) {
+void CreateQ30Schema(duckdb::Connection &connection) {
 	auto result = connection.Query(
 	    "CREATE TABLE customer(c_custkey BIGINT NOT NULL, c_name VARCHAR NOT NULL, c_address VARCHAR NOT NULL, "
 	    "c_nationkey INTEGER NOT NULL, c_phone VARCHAR NOT NULL, c_acctbal DECIMAL(15,2) NOT NULL, "
@@ -129,7 +129,7 @@ void RunSemanticCase(duckdb::Connection &connection, const SemanticFixture &fixt
 	connection.Query("DROP TABLE IF EXISTS orders");
 	connection.Query("DROP TABLE IF EXISTS customer");
 	connection.Query("DROP TABLE IF EXISTS nation");
-	CreateQ10Schema(connection);
+	CreateQ30Schema(connection);
 	fixture.setup(connection);
 	const auto reference = ReferenceQ10Sql();
 	RequireEqualResults(connection, fixture.label + "/serial", reference, AcceleratorQ10Sql());
@@ -255,10 +255,10 @@ int main() {
 			RunSemanticCase(connection, fixture);
 		}
 
-		std::cout << "test_tpch_q10_semantics passed\n";
+		std::cout << "test_tpch_q30_semantics passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q10_semantics failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q30_semantics failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

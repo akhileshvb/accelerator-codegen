@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+QUERY="${1:-}"
+BUILD="${ROOT}/build-release"
+if [[ -z "${QUERY}" ]]; then
+  echo "usage: run_aux_cost_model_calibrate.sh <query_number>" >&2
+  exit 1
+fi
+
+OUT="${ROOT}/pipeline/artifacts/q${QUERY}/gates"
+mkdir -p "${OUT}"
+CONFIG="${ROOT}/config/q${QUERY}_aux_cost_model.json"
+
+# shellcheck source=cmake_ensure_target.sh
+source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
+
+if [[ ! -d "${BUILD}" ]]; then
+  echo "{\"gate\":\"aux_cost_model_calibrate\",\"query\":${QUERY},\"status\":\"skip\",\"reason\":\"build dir missing\"}" > "${OUT}/aux_cost_model_calibrate.json"
+  exit 0
+fi
+
+TARGET="calibrate_q${QUERY}_aux_cost_model"
+BUILD_LOG=""
+if ! ensure_cmake_target "${ROOT}" "${BUILD}" "${TARGET}"; then
+	BUILD_LOG="$(cmake --build "${BUILD}" --target "${TARGET}" -j"$(nproc)" 2>&1 | tail -40 || true)"
+fi
+
+if [[ ! -x "${BUILD}/${TARGET}" ]]; then
+	python3 - <<PY
+import json, pathlib, sys
+path = pathlib.Path("${OUT}/aux_cost_model_calibrate.json")
+payload = {
+    "gate": "aux_cost_model_calibrate",
+    "query": int("${QUERY}"),
+    "status": "fail",
+    "reason": "calibrate binary missing after cmake configure/build",
+    "log_tail": """${BUILD_LOG}"""[-4000:],
+}
+path.write_text(json.dumps(payload, indent=2))
+print(path.read_text())
+sys.exit(1)
+PY
+fi
+
+export ACCEL_MULTI_CONN_TEST_QUERIES="${QUERY}"
+export ACCEL_INTERFERENCE_CALIB_SEC="${ACCEL_INTERFERENCE_CALIB_SEC:-4}"
+export ACCEL_INTERFERENCE_ISOLATED_SAMPLES="${ACCEL_INTERFERENCE_ISOLATED_SAMPLES:-20}"
+
+set +e
+LOG="$("${BUILD}/${TARGET}" "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb" "${CONFIG}" 2>&1)"
+RC=$?
+set -e
+
+python3 - <<PY
+import json, pathlib, sys
+path = pathlib.Path("${OUT}/aux_cost_model_calibrate.json")
+config_path = pathlib.Path("${CONFIG}")
+status = "pass"
+reason = ""
+interference = {}
+if int("${RC}") != 0:
+    status = "fail"
+    reason = "calibrate binary failed"
+elif not config_path.is_file():
+    status = "fail"
+    reason = "cost model json missing"
+else:
+    data = json.loads(config_path.read_text())
+    interference = {k: data.get(k) for k in (
+        "interference_delta_per_query_us",
+        "interference_invalidate_per_query_us",
+        "interference_rebuild_per_query_us",
+        "interference_query_slowdown_factor",
+    )}
+    if float(data.get("interference_delta_per_query_us") or 0) <= 0:
+        status = "fail"
+        reason = "interference_delta_per_query_us must be > 0 after calibration"
+    if float(data.get("interference_rebuild_per_query_us") or 0) <= 0:
+        status = "fail"
+        reason = reason or "interference_rebuild_per_query_us must be > 0 after calibration"
+
+payload = {
+    "gate": "aux_cost_model_calibrate",
+    "query": int("${QUERY}"),
+    "status": status,
+    "exit_code": int("${RC}"),
+    "config_path": str(config_path),
+    "interference": interference,
+    "reason": reason,
+    "log_tail": """${LOG}"""[-4000:],
+}
+path.write_text(json.dumps(payload, indent=2))
+print(path.read_text())
+sys.exit(0 if status == "pass" else 1)
+PY

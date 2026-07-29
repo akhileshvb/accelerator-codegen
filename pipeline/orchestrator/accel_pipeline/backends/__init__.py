@@ -14,16 +14,30 @@ def create_agent_backend(
     query: int,
     stage: str,
     model_config: ModelConfig,
+    workload_name: str = "",
+    optimization_iter: int = 0,
 ) -> AgentBackend:
     if provider == "cursor":
-        registry = build_stage_tool_registry(pipeline_config, query, stage)
+        registry = build_stage_tool_registry(
+            pipeline_config,
+            query,
+            stage,
+            workload_name=workload_name,
+            optimization_iter=optimization_iter,
+        )
         return CursorSDKBackend(
             repo_root=pipeline_config.repo_root,
             api_key_env=model_config.api_key_env,
             tool_registry=registry,
         )
     if provider in {"openai", "openrouter"}:
-        tools = build_tools(pipeline_config, query, stage)
+        tools = build_tools(
+            pipeline_config,
+            query,
+            stage,
+            workload_name=workload_name,
+            optimization_iter=optimization_iter,
+        )
         return OpenAIAgentsBackend(tools=tools)
     raise ValueError(f"unsupported provider: {provider!r}")
 

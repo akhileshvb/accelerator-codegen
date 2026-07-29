@@ -47,7 +47,8 @@ Q1PartitionKey PartitionKeyFromCutoff(const Q1Parameters &parameters);
 
 aux_state::ExecutionGateResult CheckQ1PrefixExecutionGate(const aux_state::PartitionedStateStore &store,
                                                             const aux_state::TxnInvalidationBuffer &txn_buffer,
-                                                            Q1PartitionKey cutoff);
+                                                            Q1PartitionKey cutoff,
+                                                            uint64_t reader_visible_mutation_epoch);
 
 bool IsQ1DependentTableMutation(const duckdb::TableMutationEvent &event,
                                 const std::vector<aux_state::TableDependency> &dependencies);

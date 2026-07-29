@@ -2,6 +2,7 @@
 # Sweep point-write frequency for an aux-state benchmark (0%–50% by default).
 # Usage: run_aux_bench_sweep.sh <query_number>
 # Env: ACCEL_BUILD_DIR, ACCEL_TPCH_DB, ACCEL_AUX_WRITE_FREQUENCIES, ACCEL_AUX_BENCH_WORK_DIR
+# Fast pipeline defaults: ACCEL_BENCH_WARMUP=10 ACCEL_BENCH_QUERIES=100 (override for deep audit runs).
 
 set -euo pipefail
 
@@ -25,10 +26,11 @@ if [[ ! -x "${BENCH_BIN}" ]]; then
   exit 1
 fi
 
-export ACCEL_BENCH_WARMUP="${ACCEL_BENCH_WARMUP:-50}"
-export ACCEL_BENCH_QUERIES="${ACCEL_BENCH_QUERIES:-500}"
-export ACCEL_BENCH_REF_SAMPLES="${ACCEL_BENCH_REF_SAMPLES:-30}"
-export ACCEL_BENCH_BASE_WRITE_SAMPLES="${ACCEL_BENCH_BASE_WRITE_SAMPLES:-10}"
+export ACCEL_BENCH_WARMUP="${ACCEL_BENCH_WARMUP:-10}"
+export ACCEL_BENCH_QUERIES="${ACCEL_BENCH_QUERIES:-100}"
+export ACCEL_BENCH_REF_SAMPLES="${ACCEL_BENCH_REF_SAMPLES:-5}"
+export ACCEL_BENCH_BASE_WRITE_SAMPLES="${ACCEL_BENCH_BASE_WRITE_SAMPLES:-3}"
+export ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB="${ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB:-1}"
 
 FREQUENCIES="${ACCEL_AUX_WRITE_FREQUENCIES:-0,1,10,50}"
 SUITES_VAR="ACCEL_Q${QUERY}_BENCH_SUITES"
@@ -36,6 +38,15 @@ SUITES="${!SUITES_VAR:-${ACCEL_AUX_BENCH_SUITES:-lineitem_only}}"
 
 IFS=',' read -r -a freq_list <<< "${FREQUENCIES}"
 IFS=',' read -r -a suite_list <<< "${SUITES}"
+
+filter_csv_output() {
+  awk -F, '
+    /^suite,/ { if (!header) { print; header = 1 }; next }
+    /^speedup_gate/ { next }
+    /^#/ { next }
+    NF >= 10 { print }
+  '
+}
 
 : > "${RESULTS}"
 printed_header=false
@@ -57,8 +68,7 @@ for suite in "${suite_list[@]}"; do
       env_prefix+=("ACCEL_TPCH_DB=${bench_db}")
       env_prefix+=("ACCEL_Q${QUERY}_BENCH_SUITE=${suite}")
       env_prefix+=("ACCEL_Q${QUERY}_WRITE_FREQUENCY_PCT=${freq}")
-      # Pass through query-specific bench env vars when set.
-      for var in BENCH_MONTH BENCH_DAY_OFFSET WRITE_LOCALITY BENCH_TRACE; do
+      for var in BENCH_MONTH BENCH_DAY_OFFSET BENCH_SEGMENT BENCH_CUTOFF_DATE WRITE_LOCALITY BENCH_TRACE; do
         local full="ACCEL_Q${QUERY}_${var}"
         if [[ -n "${!full:-}" ]]; then
           env_prefix+=("${full}=${!full}")
@@ -68,10 +78,10 @@ for suite in "${suite_list[@]}"; do
     }
 
     if [[ "${printed_header}" == false ]]; then
-      run_bench | tee "${RESULTS}"
+      run_bench | filter_csv_output | tee "${RESULTS}"
       printed_header=true
     else
-      run_bench | tail -n +2 >> "${RESULTS}"
+      run_bench | filter_csv_output | tail -n +2 >> "${RESULTS}"
     fi
     rm -f "${bench_db}"
   done

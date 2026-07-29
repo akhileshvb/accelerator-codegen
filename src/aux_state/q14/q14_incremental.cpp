@@ -17,6 +17,7 @@
 #include "accelerator_codegen/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/tpch_q14_aux.hpp"
 #include "accelerator_codegen/aux_state/maintenance/staged_publication.hpp"
+#include "accelerator_codegen/aux_state/maintenance/partition_publish.hpp"
 #include "accelerator_codegen/tpch_q14_write_policy.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/types/date.hpp"
@@ -778,6 +779,7 @@ bool ComputeQ14IncrementalDelta(duckdb::ClientContext &context, aux_state::Parti
 		aux_state::maintenance::StagedPartitionUpdate update;
 		update.key = partition;
 		update.payload = std::make_shared<Q14MonthTotals>(totals);
+		update.expected_partition_version = store.GetPartitionVersion(partition);
 		out.partition_updates.push_back(std::move(update));
 		out.affected_partitions.scope = aux_state::InvalidationScope::PartitionSet;
 		out.affected_partitions.partitions.insert(partition);
@@ -789,13 +791,12 @@ bool ComputeQ14IncrementalDelta(duckdb::ClientContext &context, aux_state::Parti
 	return true;
 }
 
-void PublishQ14IncrementalDelta(aux_state::PartitionedStateStore &store, const Q14ComputedIncrementalDelta &delta) {
+void PublishQ14IncrementalDelta(aux_state::PartitionedStateStore &store, const Q14ComputedIncrementalDelta &delta,
+                                uint64_t valid_through_mutation_epoch) {
 	if (!delta.success) {
 		return;
 	}
-	for (const auto &update : delta.partition_updates) {
-		store.PublishPartition(update.key, std::static_pointer_cast<const void>(update.payload));
-	}
+	aux_state::maintenance::PublishValidatedPartitionUpdates(store, delta.partition_updates, valid_through_mutation_epoch);
 }
 
 bool TryApplyQ14IncrementalPreCommit(duckdb::ClientContext &context, aux_state::PartitionedStateStore &store,
@@ -805,7 +806,7 @@ bool TryApplyQ14IncrementalPreCommit(duckdb::ClientContext &context, aux_state::
 		RecordQ14IncrementalApplyAttempt(false, 0);
 		return false;
 	}
-	PublishQ14IncrementalDelta(store, delta);
+	PublishQ14IncrementalDelta(store, delta, 0);
 	return true;
 }
 

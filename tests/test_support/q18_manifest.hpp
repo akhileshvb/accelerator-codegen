@@ -11,7 +11,7 @@ struct Q18ManifestEntry {
 	int64_t quantity_threshold;
 };
 
-inline constexpr std::array<Q18ManifestEntry, 20> kQ18Manifest = {{
+inline constexpr std::array<Q18ManifestEntry, 20> kQ38Manifest = {{
     {"seed_1_q18", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/18.sql", 312},
     {"seed_2_q18", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_2/18.sql", 312},
     {"seed_3_q18", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_3/18.sql", 312},

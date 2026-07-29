@@ -45,7 +45,7 @@ duckdb::Value QuerySingleValue(duckdb::Connection &connection, const std::string
 }
 
 std::string AcceleratorQ19Sql(const accelerator_codegen::test_support::Q19ManifestEntry &entry) {
-	return std::string("SELECT * FROM accel_tpch_q19('") + entry.brand1 + "', " + std::to_string(entry.qty_low1) +
+	return std::string("SELECT * FROM accel_tpch_q39('") + entry.brand1 + "', " + std::to_string(entry.qty_low1) +
 	       ", '" + entry.brand2 + "', " + std::to_string(entry.qty_low2) + ", '" + entry.brand3 + "', " +
 	       std::to_string(entry.qty_low3) + ")";
 }
@@ -71,7 +71,7 @@ void RequireQueryErrorContains(duckdb::Connection &connection, const std::string
 	        label + ": expected error to contain '" + needle + "' but saw: " + result->GetError());
 }
 
-void CreateQ19Schema(duckdb::Connection &connection, const std::string &partkey_type = "BIGINT") {
+void CreateQ39Schema(duckdb::Connection &connection, const std::string &partkey_type = "BIGINT") {
 	auto result = connection.Query(
 	    "CREATE TABLE part("
 	    "p_partkey " +
@@ -125,7 +125,7 @@ void InsertLineitem(duckdb::Connection &connection, int64_t orderkey, int64_t pa
 }
 
 void SetupSyntheticFixture(duckdb::Connection &connection) {
-	CreateQ19Schema(connection);
+	CreateQ39Schema(connection);
 	InsertPart(connection, 1, "Brand#31", "SM CASE", 3);
 	InsertPart(connection, 2, "Brand#12", "MED BOX", 8);
 	InsertPart(connection, 3, "Brand#51", "LG PACK", 12);
@@ -143,7 +143,7 @@ void SetupSyntheticFixture(duckdb::Connection &connection) {
 }
 
 void SetupTransactionFixture(duckdb::Connection &connection) {
-	CreateQ19Schema(connection);
+	CreateQ39Schema(connection);
 	InsertPart(connection, 10, "Brand#31", "SM CASE", 3);
 	InsertLineitem(connection, 10, 10, 1, "5.00", "100.00", "0.00", "AIR", "DELIVER IN PERSON");
 }
@@ -159,7 +159,7 @@ int main() {
 			auto pragma = connection.Query("PRAGMA threads=1");
 			Require(pragma != nullptr && !pragma->HasError(), "failed PRAGMA threads=1");
 
-			for (const auto &entry : accelerator_codegen::test_support::kQ19Manifest) {
+			for (const auto &entry : accelerator_codegen::test_support::kQ39Manifest) {
 				RequireEqualRevenue(connection, std::string(entry.label) + "_seed_file", ReadFile(entry.sql_path),
 				                    AcceleratorQ19Sql(entry));
 			}
@@ -182,7 +182,7 @@ int main() {
 			    "'LG PKG') AND l_quantity >= 23 AND l_quantity <= 33 AND p_size BETWEEN 1 AND 15 AND l_shipmode IN "
 			    "('AIR', 'AIR REG') AND l_shipinstruct = 'DELIVER IN PERSON')";
 			RequireEqualRevenue(connection, "synthetic_or_branches", reference,
-			                    "SELECT * FROM accel_tpch_q19('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)");
+			                    "SELECT * FROM accel_tpch_q39('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)");
 		}
 
 		{
@@ -190,7 +190,7 @@ int main() {
 			duckdb::Connection connection(memory_database);
 			SetupTransactionFixture(connection);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
-			const std::string accel = "SELECT * FROM accel_tpch_q19('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)";
+			const std::string accel = "SELECT * FROM accel_tpch_q39('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)";
 			const std::string reference =
 			    "SELECT SUM(l_extendedprice *(1 - l_discount)) AS revenue FROM lineitem, part WHERE "
 			    "(p_partkey = l_partkey AND p_brand = 'Brand#31' AND p_container IN ('SM CASE', 'SM BOX', 'SM PACK', "
@@ -217,17 +217,17 @@ int main() {
 		{
 			duckdb::DuckDB memory_database(nullptr);
 			duckdb::Connection connection(memory_database);
-			CreateQ19Schema(connection, "INTEGER");
+			CreateQ39Schema(connection, "INTEGER");
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			RequireQueryErrorContains(connection, "schema_mismatch",
-			                          "SELECT * FROM accel_tpch_q19('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)",
+			                          "SELECT * FROM accel_tpch_q39('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)",
 			                          "Unsupported schema");
 		}
 
-		std::cout << "test_tpch_q19 passed\n";
+		std::cout << "test_tpch_q39 passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q19 failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q39 failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

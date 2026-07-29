@@ -1,11 +1,13 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/storage/storage_index.hpp"
 
 namespace accelerator_codegen::aux_state {
@@ -33,5 +35,13 @@ struct TableDependency {
 	std::unordered_set<duckdb::idx_t> WatchedPhysicalIndices() const;
 	bool WatchesPhysicalIndex(duckdb::idx_t physical_index) const;
 };
+
+bool TableHasAllColumns(duckdb::TableCatalogEntry &table, const std::vector<std::string> &column_names);
+
+bool CanMakeTableDependency(duckdb::ClientContext &context, const std::string &table_name,
+                            const std::vector<std::string> &column_names);
+
+TableDependency MakeTableDependency(duckdb::ClientContext &context, const std::string &table_name,
+                                    const std::vector<std::string> &column_names);
 
 } // namespace accelerator_codegen::aux_state

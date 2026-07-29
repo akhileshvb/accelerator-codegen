@@ -54,7 +54,7 @@ std::vector<std::string> MaterializeOrderedRows(duckdb::MaterializedQueryResult 
 }
 
 std::string AcceleratorQ18Sql(int64_t quantity_threshold) {
-	return "SELECT * FROM accel_tpch_q18(" + std::to_string(quantity_threshold) + ")";
+	return "SELECT * FROM accel_tpch_q38(" + std::to_string(quantity_threshold) + ")";
 }
 
 void RequireEqualResults(duckdb::Connection &connection, const std::string &label, const std::string &reference_sql,
@@ -110,7 +110,7 @@ int main() {
 			duckdb::Connection connection(file_database);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			connection.Query("PRAGMA threads=1");
-			for (const auto &entry : accelerator_codegen::test_support::kQ18Manifest) {
+			for (const auto &entry : accelerator_codegen::test_support::kQ38Manifest) {
 				RequireEqualResults(connection, entry.label, ReadFile(entry.sql_path),
 				                    AcceleratorQ18Sql(entry.quantity_threshold));
 			}
@@ -131,10 +131,10 @@ int main() {
 			RequireEqualResults(connection, "synthetic_large_order", reference, AcceleratorQ18Sql(300));
 		}
 
-		std::cout << "test_tpch_q18 passed\n";
+		std::cout << "test_tpch_q38 passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q18 failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q38 failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
 from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.pipeline_log import log_analysis_candidates
 from accel_pipeline.stages.base import run_agent_stage
 from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis_file
 
@@ -15,6 +17,9 @@ def run(
     query: int,
     model_overrides: dict[str, str] | None = None,
     dry_run: bool = False,
+    *,
+    user_message: str | None = None,
+    analysis_revision_request: str = "",
 ):
     result = run_agent_stage(
         stage="analysis",
@@ -23,9 +28,11 @@ def run(
         model_config=model_config,
         workload_name=workload_name,
         query=query,
-        user_message="Analyze the query and write analysis.json to the artifacts directory.",
+        user_message=user_message
+        or "Analyze the query and write analysis.json to the artifacts directory.",
         model_overrides=model_overrides,
         dry_run=dry_run,
+        analysis_revision_request=analysis_revision_request,
     )
     if dry_run:
         return result
@@ -42,4 +49,12 @@ def run(
         )
     except AuxAnalysisValidationError as exc:
         raise RuntimeError(f"aux analysis validation failed: {exc}") from exc
+
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    log_analysis_candidates(
+        pipeline_config.repo_root,
+        query,
+        analysis,
+        revision=bool(analysis_revision_request),
+    )
     return result

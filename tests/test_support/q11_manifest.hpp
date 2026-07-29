@@ -11,7 +11,7 @@ struct Q11ManifestEntry {
 	double fraction;
 };
 
-inline constexpr std::array<Q11ManifestEntry, 20> kQ11Manifest = {{
+inline constexpr std::array<Q11ManifestEntry, 20> kQ31Manifest = {{
     {"seed_1_q11", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/11.sql", "ROMANIA", 0.0001},
     {"seed_2_q11", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_2/11.sql", "ARGENTINA", 0.0001},
     {"seed_3_q11", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_3/11.sql", "IRAQ", 0.0001},

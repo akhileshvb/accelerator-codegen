@@ -9,6 +9,8 @@
 #include <unordered_set>
 
 #include "accelerator_codegen/aux_state/catalog_dependency.hpp"
+#include "accelerator_codegen/aux_state/maintenance/staged_publication.hpp"
+#include "accelerator_codegen/aux_state/maintenance/partition_publish.hpp"
 #include "accelerator_codegen/tpch_q1_aux.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/string_type.hpp"
@@ -497,6 +499,7 @@ bool ComputeQ1IncrementalDelta(duckdb::ClientContext &context, aux_state::Partit
 		aux_state::maintenance::StagedPartitionUpdate update;
 		update.key = partition;
 		update.payload = std::make_shared<Q1DayPartition>(day_partition);
+		update.expected_partition_version = store.GetPartitionVersion(partition);
 		out.partition_updates.push_back(std::move(update));
 		out.affected_partitions.scope = aux_state::InvalidationScope::PartitionSet;
 		out.affected_partitions.partitions.insert(partition);
@@ -508,13 +511,12 @@ bool ComputeQ1IncrementalDelta(duckdb::ClientContext &context, aux_state::Partit
 	return true;
 }
 
-void PublishQ1IncrementalDelta(aux_state::PartitionedStateStore &store, const Q1ComputedIncrementalDelta &delta) {
+void PublishQ1IncrementalDelta(aux_state::PartitionedStateStore &store, const Q1ComputedIncrementalDelta &delta,
+                                uint64_t valid_through_mutation_epoch) {
 	if (!delta.success) {
 		return;
 	}
-	for (const auto &update : delta.partition_updates) {
-		store.PublishPartition(update.key, std::static_pointer_cast<const void>(update.payload));
-	}
+	aux_state::maintenance::PublishValidatedPartitionUpdates(store, delta.partition_updates, valid_through_mutation_epoch);
 }
 
 Q1IncrementalTxnBuffer &GetQ1IncrementalTxnBuffer(aux_state::TxnInvalidationBuffer &txn_buffer) {

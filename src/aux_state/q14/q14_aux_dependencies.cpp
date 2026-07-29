@@ -28,25 +28,6 @@ bool ReadBoolEnv(const char *name, bool fallback) {
 	return std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 || std::strcmp(value, "TRUE") == 0;
 }
 
-aux_state::ColumnRef MakeColumnRef(duckdb::TableCatalogEntry &table, const std::string &name) {
-	const auto &column = table.GetColumn(name);
-	return aux_state::ColumnRef {table.oid, column.Physical(), column.Logical(), name};
-}
-
-aux_state::TableDependency MakeTableDependency(duckdb::ClientContext &context, const std::string &table_name,
-                                               const std::vector<std::string> &columns) {
-	auto &table = duckdb::Catalog::GetEntry<duckdb::TableCatalogEntry>(context, INVALID_CATALOG, DEFAULT_SCHEMA, table_name);
-	aux_state::TableDependency dependency;
-	dependency.catalog_oid = table.catalog.GetOid();
-	dependency.schema_oid = table.schema.oid;
-	dependency.table_oid = table.oid;
-	dependency.table_name = table_name;
-	for (const auto &column_name : columns) {
-		dependency.watched_columns.push_back(MakeColumnRef(table, column_name));
-	}
-	return dependency;
-}
-
 const aux_state::ColumnRef *FindColumn(const aux_state::TableDependency &dependency, const std::string &name) {
 	for (const auto &column : dependency.watched_columns) {
 		if (column.column_name == name) {
@@ -239,30 +220,32 @@ Q14PartitionKey PartitionKeyFromStartDate(duckdb::date_t start_date) {
 void RegisterQ14AuxAccelerator(duckdb::Connection &connection) {
 	LoadQ14CostModelParams();
 	auto &context = *connection.context;
-	auto &catalog = duckdb::Catalog::GetSystemCatalog(context);
-	auto lineitem = catalog.GetEntry<duckdb::TableCatalogEntry>(context, INVALID_CATALOG, DEFAULT_SCHEMA, "lineitem",
-	                                                            duckdb::OnEntryNotFound::RETURN_NULL);
-	auto part = catalog.GetEntry<duckdb::TableCatalogEntry>(context, INVALID_CATALOG, DEFAULT_SCHEMA, "part",
-	                                                        duckdb::OnEntryNotFound::RETURN_NULL);
-	if (!lineitem || !part) {
+	static const std::vector<std::string> kLineitemColumns = {
+	    "l_shipdate", "l_partkey", "l_extendedprice", "l_discount",
+	};
+	static const std::vector<std::string> kPartColumns = {"p_partkey", "p_type"};
+	if (!aux_state::CanMakeTableDependency(context, "lineitem", kLineitemColumns) ||
+	    !aux_state::CanMakeTableDependency(context, "part", kPartColumns)) {
 		return;
 	}
 
 	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
-	registry->RegisterAccelerator(
-	    kQ14AuxAcceleratorId,
-	    [](const duckdb::TableMutationEvent &event,
-	       const std::vector<aux_state::TableDependency> &dependencies) -> aux_state::InvalidationPlan {
-		    return InterpretQ14Mutation(event, dependencies);
-	    });
-	registry->RegisterIncrementalBufferFactory(kQ14AuxAcceleratorId,
-	                                           []() { return std::make_unique<Q14IncrementalTxnBuffer>(); });
-	registry->RegisterMutationAccumulator(kQ14AuxAcceleratorId, AccumulateQ14Mutation);
-	registry->RegisterMaintenanceHook(kQ14AuxAcceleratorId, CreateQ14MaintenanceHook());
-	registry->RegisterTableDependency(kQ14AuxAcceleratorId,
-	                                  MakeTableDependency(context, "lineitem",
-	                                                      {"l_shipdate", "l_partkey", "l_extendedprice", "l_discount"}));
-	registry->RegisterTableDependency(kQ14AuxAcceleratorId, MakeTableDependency(context, "part", {"p_partkey", "p_type"}));
+	registry->RegisterAcceleratorIfAbsent(kQ14AuxAcceleratorId, [&]() {
+		registry->RegisterAccelerator(
+		    kQ14AuxAcceleratorId,
+		    [](const duckdb::TableMutationEvent &event,
+		       const std::vector<aux_state::TableDependency> &dependencies) -> aux_state::InvalidationPlan {
+			    return InterpretQ14Mutation(event, dependencies);
+		    });
+		registry->RegisterIncrementalBufferFactory(kQ14AuxAcceleratorId,
+		                                           []() { return std::make_unique<Q14IncrementalTxnBuffer>(); });
+		registry->RegisterMutationAccumulator(kQ14AuxAcceleratorId, AccumulateQ14Mutation);
+		registry->RegisterMaintenanceHook(kQ14AuxAcceleratorId, CreateQ14MaintenanceHook());
+		registry->RegisterTableDependency(kQ14AuxAcceleratorId,
+		                                  aux_state::MakeTableDependency(context, "lineitem", kLineitemColumns));
+		registry->RegisterTableDependency(kQ14AuxAcceleratorId,
+		                                  aux_state::MakeTableDependency(context, "part", kPartColumns));
+	});
 }
 
 bool IsQ14DependentTableMutation(const duckdb::TableMutationEvent &event,

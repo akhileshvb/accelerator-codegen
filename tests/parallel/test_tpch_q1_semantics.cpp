@@ -10,7 +10,7 @@
 #include "duckdb/main/materialized_query_result.hpp"
 
 #ifndef ACCEL_ENABLE_PARALLEL_TPCH
-#error "test_tpch_q1_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
+#error "test_tpch_q3_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
 #endif
 
 namespace {
@@ -71,7 +71,7 @@ std::string ReferenceQ1(int day_offset) {
 }
 
 std::string ParallelQ1(int day_offset) {
-	return "SELECT * FROM accel_tpch_q1_parallel(" + std::to_string(day_offset) + ")";
+	return "SELECT * FROM accel_tpch_q3_parallel(" + std::to_string(day_offset) + ")";
 }
 
 void RunCase(duckdb::Connection &connection, const std::string &label, int day_offset,
@@ -138,10 +138,10 @@ int main() {
 			conn.Query("INSERT INTO lineitem VALUES (1.00, 99999999.99, 0.01, 0.01, 'N', 'F', " + cutoff + ")");
 		});
 
-		std::cout << "tpch_q1_semantics_test passed\n";
+		std::cout << "tpch_q3_semantics_test passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q1_semantics failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q3_semantics failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

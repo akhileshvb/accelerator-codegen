@@ -1,0 +1,25 @@
+benchmark_name: tpch
+query_number: 6
+query_id: "6"
+function_name: accel_tpch_q6
+create_fn: CreateTpchQ6FunctionSet
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/06.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: start_date
+    type: DATE
+  - name: discount
+    type: DECIMAL
+  - name: quantity
+    type: DECIMAL
+
+reference_accelerators: [14]
+
+output_schema:
+  - name: revenue
+    type: DECIMAL
+
+tables:
+  - lineitem

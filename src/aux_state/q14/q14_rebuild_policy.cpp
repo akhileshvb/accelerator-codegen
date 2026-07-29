@@ -3,7 +3,7 @@
 #include <chrono>
 
 #include "accelerator_codegen/aux_state/accelerator_registry.hpp"
-#include "accelerator_codegen/aux_state/txn_invalidation_buffer.hpp"
+#include "accelerator_codegen/aux_state/execution_load.hpp"
 #include "accelerator_codegen/tpch_q14_aux.hpp"
 #include "accelerator_codegen/tpch_q14_maintenance.hpp"
 #include "accelerator_codegen/tpch_q14_write_policy.hpp"
@@ -20,6 +20,10 @@ struct Q14RebuildPolicyTiming {
 };
 
 Q14RebuildPolicyTiming g_rebuild_timing;
+
+aux_state::InvalidationPlan CompletedPlanFromApplied(const aux_state::InvalidationPlan &applied) {
+	return applied;
+}
 
 } // namespace
 
@@ -63,6 +67,7 @@ bool PrepareQ14RebuildPreCommit(duckdb::ClientContext &context, aux_state::Parti
                                 const aux_state::InvalidationPlan &plan, aux_state::TxnInvalidationBuffer &txn_buffer) {
 	(void)context;
 	(void)store;
+	(void)txn_buffer;
 	if (!Q14RebuildMaintenanceEnabled()) {
 		return false;
 	}
@@ -80,45 +85,52 @@ bool PrepareQ14RebuildPreCommit(duckdb::ClientContext &context, aux_state::Parti
 		return false;
 	}
 
-	txn_buffer.SetPendingLazyRebuild(kQ14AuxAcceleratorId, plan);
+	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
+	registry->GetMaintenanceState(kQ14AuxAcceleratorId).MergeGlobalPendingLazyRebuild(plan);
 	return false;
 }
 
 void EnsurePendingQ14RebuildApplied(duckdb::ClientContext &context) {
-	auto buffer = aux_state::GetOrCreateTxnInvalidationBuffer(context);
-	if (!buffer->HasPendingLazyRebuild(kQ14AuxAcceleratorId)) {
-		return;
-	}
-	const auto start = std::chrono::steady_clock::now();
-	const auto pending = buffer->PendingLazyRebuild(kQ14AuxAcceleratorId);
-	const bool started_transaction = !context.transaction.HasActiveTransaction();
-	if (started_transaction) {
-		context.transaction.BeginTransaction();
-	}
-	try {
-		auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
-		auto &store = registry->GetStore(kQ14AuxAcceleratorId);
-		ApplyQ14RebuildPlan(context, store, pending);
-		buffer->ClearPendingLazyRebuild(kQ14AuxAcceleratorId);
+	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
+	auto &maintenance = registry->GetMaintenanceState(kQ14AuxAcceleratorId);
+	maintenance.WithRebuildLock([&]() {
+		auto claim = maintenance.BeginRebuild();
+		if (!claim.HasWork()) {
+			return;
+		}
+
+		const auto start = std::chrono::steady_clock::now();
+		aux_state::ActiveExecutionScope rebuild_scope(aux_state::ExecutionKind::LazyRebuild, kQ14AuxAcceleratorId,
+		                                              static_cast<double>(Q14PartitionRebuildUs()));
+		const bool started_transaction = !context.transaction.HasActiveTransaction();
 		if (started_transaction) {
-			context.transaction.Commit();
+			context.transaction.BeginTransaction();
 		}
-		const auto end = std::chrono::steady_clock::now();
-		const auto total_us = static_cast<uint64_t>(
-		    std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
-		uint64_t rebuild_scan_us = 0;
-		if (pending.scope == aux_state::InvalidationScope::AllPartitions) {
-			rebuild_scan_us = static_cast<uint64_t>(Q14FullRebuildUs());
-		} else if (pending.scope == aux_state::InvalidationScope::PartitionSet) {
-			rebuild_scan_us = static_cast<uint64_t>(Q14PartitionRebuildUs() * pending.partitions.size());
+		try {
+			auto &store = registry->GetStore(kQ14AuxAcceleratorId);
+			ApplyQ14RebuildPlan(context, store, claim.captured_plan);
+			maintenance.CompleteRebuild(claim, CompletedPlanFromApplied(claim.captured_plan));
+			if (started_transaction) {
+				context.transaction.Commit();
+			}
+			const auto end = std::chrono::steady_clock::now();
+			const auto total_us = static_cast<uint64_t>(
+			    std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+			uint64_t rebuild_scan_us = 0;
+			if (claim.captured_plan.scope == aux_state::InvalidationScope::AllPartitions) {
+				rebuild_scan_us = static_cast<uint64_t>(Q14FullRebuildUs());
+			} else if (claim.captured_plan.scope == aux_state::InvalidationScope::PartitionSet) {
+				rebuild_scan_us =
+				    static_cast<uint64_t>(Q14PartitionRebuildUs() * claim.captured_plan.partitions.size());
+			}
+			RecordQ14LazyRebuildObservation(rebuild_scan_us, total_us);
+		} catch (...) {
+			if (started_transaction && context.transaction.HasActiveTransaction()) {
+				context.transaction.Rollback(nullptr);
+			}
+			throw;
 		}
-		RecordQ14LazyRebuildObservation(rebuild_scan_us, total_us);
-	} catch (...) {
-		if (started_transaction && context.transaction.HasActiveTransaction()) {
-			context.transaction.Rollback(nullptr);
-		}
-		throw;
-	}
+	});
 }
 
 void ApplyQ14RebuildPlan(duckdb::ClientContext &context, aux_state::PartitionedStateStore &store,

@@ -55,7 +55,7 @@ std::string ReferenceQ17Sql(const std::string &brand, const std::string &contain
 }
 
 std::string AcceleratorQ17Sql(const std::string &brand, const std::string &container) {
-	return "SELECT * FROM accel_tpch_q17('" + brand + "', '" + container + "')";
+	return "SELECT * FROM accel_tpch_q37('" + brand + "', '" + container + "')";
 }
 
 bool DoublesMatch(double expected, double actual) {
@@ -113,7 +113,7 @@ void RequireExpectedQ17Schema(duckdb::Connection &connection) {
 	Require(result->types == expected_types, "q17 schema types differ");
 }
 
-void CreateQ17Schema(duckdb::Connection &connection, const std::string &partkey_type = "BIGINT") {
+void CreateQ37Schema(duckdb::Connection &connection, const std::string &partkey_type = "BIGINT") {
 	auto result = connection.Query(
 	    "CREATE TABLE part("
 	    "p_partkey " +
@@ -171,7 +171,7 @@ void CompareParams(duckdb::Connection &connection, const std::string &label, con
 }
 
 void SetupSyntheticFixture(duckdb::Connection &connection) {
-	CreateQ17Schema(connection);
+	CreateQ37Schema(connection);
 	InsertPart(connection, 1, "Brand#11", "SM CASE");
 	InsertPart(connection, 2, "Brand#11", "LG BOX");
 	InsertPart(connection, 3, "Brand#22", "SM CASE");
@@ -189,12 +189,12 @@ void SetupSyntheticFixture(duckdb::Connection &connection) {
 }
 
 void SetupEmptyFixture(duckdb::Connection &connection) {
-	CreateQ17Schema(connection);
+	CreateQ37Schema(connection);
 	InsertPart(connection, 1, "Brand#99", "NONE");
 }
 
 void SetupTransactionFixture(duckdb::Connection &connection) {
-	CreateQ17Schema(connection);
+	CreateQ37Schema(connection);
 	InsertPart(connection, 10, "Brand#11", "SM CASE");
 	InsertLineitem(connection, 10, 10, 1, "5.00", "70.00");
 	InsertLineitem(connection, 11, 10, 2, "15.00", "30.00");
@@ -212,7 +212,7 @@ int main() {
 			Require(pragma != nullptr && !pragma->HasError(), "failed PRAGMA threads=1");
 
 			RequireExpectedQ17Schema(connection);
-			for (const auto &entry : accelerator_codegen::test_support::kQ17Manifest) {
+			for (const auto &entry : accelerator_codegen::test_support::kQ37Manifest) {
 				RequireEqualQ17Results(connection, std::string(entry.label) + "_seed_file", ReadFile(entry.sql_path),
 				                       AcceleratorQ17Sql(entry.brand, entry.container));
 				RequireEqualQ17Results(connection, std::string(entry.label) + "_inline_sql",
@@ -280,16 +280,16 @@ int main() {
 		{
 			duckdb::DuckDB memory_database(nullptr);
 			duckdb::Connection connection(memory_database);
-			CreateQ17Schema(connection, "INTEGER");
+			CreateQ37Schema(connection, "INTEGER");
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			RequireQueryErrorContains(connection, "schema_mismatch", AcceleratorQ17Sql("Brand#11", "SM CASE"),
 			                          "Unsupported schema");
 		}
 
-		std::cout << "test_tpch_q17 passed\n";
+		std::cout << "test_tpch_q37 passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q17 failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q37 failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

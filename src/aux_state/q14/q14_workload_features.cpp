@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 
+#include "accelerator_codegen/aux_state/execution_load.hpp"
 #include "accelerator_codegen/aux_state/maintenance/online_stats.hpp"
 #include "accelerator_codegen/aux_state/maintenance/json_params.hpp"
 #include "accelerator_codegen/aux_state/partitioned_state_store.hpp"
@@ -86,6 +87,16 @@ void LoadQ14CostModelParams() {
 		g_cost_params.min_samples = ParseJsonUint64(content, "min_samples", g_cost_params.min_samples);
 		g_cost_params.incremental_failure_prob =
 		    ParseJsonDouble(content, "incremental_failure_prob", g_cost_params.incremental_failure_prob);
+		g_cost_params.interference_rebuild_per_query_us =
+		    ParseJsonDouble(content, "interference_rebuild_per_query_us", g_cost_params.interference_rebuild_per_query_us);
+		g_cost_params.interference_rebuild_scan_byte_us =
+		    ParseJsonDouble(content, "interference_rebuild_scan_byte_us", g_cost_params.interference_rebuild_scan_byte_us);
+		g_cost_params.interference_delta_per_query_us =
+		    ParseJsonDouble(content, "interference_delta_per_query_us", g_cost_params.interference_delta_per_query_us);
+		g_cost_params.interference_invalidate_per_query_us = ParseJsonDouble(
+		    content, "interference_invalidate_per_query_us", g_cost_params.interference_invalidate_per_query_us);
+		g_cost_params.interference_query_slowdown_factor =
+		    ParseJsonDouble(content, "interference_query_slowdown_factor", g_cost_params.interference_query_slowdown_factor);
 	}
 
 	g_aux_hit_us.Observe(g_cost_params.aux_hit_us);
@@ -145,6 +156,7 @@ Q14WorkloadFeatures BuildQ14WorkloadFeatures(aux_state::PartitionedStateStore &s
 	    g_aux_hit_us.HasConfidence(params.min_samples) ? g_aux_hit_us.value : params.aux_hit_us;
 	features.ewma_fallback_latency_us =
 	    g_fallback_us.HasConfidence(params.min_samples) ? g_fallback_us.value : params.fallback_us;
+	features.active_query_count = aux_state::GetExecutionLoadRegistry().Snapshot().total_active;
 	return features;
 }
 

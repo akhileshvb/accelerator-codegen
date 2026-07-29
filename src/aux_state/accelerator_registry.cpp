@@ -1,6 +1,7 @@
 #include "accelerator_codegen/aux_state/accelerator_registry.hpp"
 
 #include <algorithm>
+#include <unordered_set>
 
 #include "accelerator_codegen/tpch_q14_write_policy.hpp"
 #include "accelerator_codegen/tpch_q1_write_policy.hpp"
@@ -33,31 +34,55 @@ void EnsureConnectionCallback(duckdb::DatabaseInstance &db) {
 
 void AcceleratorStateRegistry::RegisterAccelerator(const std::string &accelerator_id,
                                                    InvalidationInterpreter interpreter) {
+	std::lock_guard<std::recursive_mutex> guard(registration_mutex);
 	accelerators[accelerator_id].interpreter = std::move(interpreter);
 }
 
 void AcceleratorStateRegistry::RegisterMaintenanceHook(const std::string &accelerator_id,
                                                        maintenance::MaintenanceHookPtr hook) {
+	std::lock_guard<std::recursive_mutex> guard(registration_mutex);
 	accelerators[accelerator_id].maintenance_hook = std::move(hook);
 }
 
 void AcceleratorStateRegistry::RegisterTableDependency(const std::string &accelerator_id, TableDependency dependency) {
+	std::lock_guard<std::recursive_mutex> guard(registration_mutex);
 	accelerators[accelerator_id].dependencies.push_back(dependency);
 	all_dependencies.push_back(std::move(dependency));
 }
 
 void AcceleratorStateRegistry::RegisterMutationAccumulator(const std::string &accelerator_id,
                                                              MutationAccumulator accumulator) {
+	std::lock_guard<std::recursive_mutex> guard(registration_mutex);
 	accelerators[accelerator_id].mutation_accumulator = std::move(accumulator);
 }
 
 void AcceleratorStateRegistry::RegisterIncrementalBufferFactory(const std::string &accelerator_id,
                                                                 IncrementalBufferFactory factory) {
+	std::lock_guard<std::recursive_mutex> guard(registration_mutex);
 	accelerators[accelerator_id].incremental_buffer_factory = std::move(factory);
 }
 
 PartitionedStateStore &AcceleratorStateRegistry::GetStore(const std::string &accelerator_id) {
 	return accelerators[accelerator_id].store;
+}
+
+AcceleratorMaintenanceState &AcceleratorStateRegistry::GetMaintenanceState(const std::string &accelerator_id) {
+	return accelerators[accelerator_id].maintenance;
+}
+
+bool AcceleratorStateRegistry::IsAcceleratorRegistered(const std::string &accelerator_id) const {
+	const auto it = accelerators.find(accelerator_id);
+	return it != accelerators.end() && static_cast<bool>(it->second.interpreter);
+}
+
+bool AcceleratorStateRegistry::RegisterAcceleratorIfAbsent(const std::string &accelerator_id,
+                                                           const std::function<void()> &register_fn) {
+	std::lock_guard<std::recursive_mutex> guard(registration_mutex);
+	if (IsAcceleratorRegistered(accelerator_id)) {
+		return false;
+	}
+	register_fn();
+	return true;
 }
 
 const std::vector<TableDependency> &AcceleratorStateRegistry::GetAcceleratorDependencies(
@@ -165,7 +190,9 @@ void AcceleratorStateRegistry::PublishMaintenanceOnCommit(duckdb::ClientContext 
 		if (!staged.active) {
 			continue;
 		}
-		entry.second.maintenance_hook->PublishMaintenance(context, entry.second.store, txn_buffer, staged);
+		entry.second.maintenance.WithMaintenancePublishLock([&]() {
+			entry.second.maintenance_hook->PublishMaintenance(context, entry.second.store, txn_buffer, staged);
+		});
 	}
 }
 
@@ -196,15 +223,29 @@ void AcceleratorStateRegistry::ApplyPreCommitInvalidationAll(const InvalidationP
 	}
 }
 
+bool WatchesPhysicalIndex(const std::vector<TableDependency> &dependencies, duckdb::idx_t table_oid,
+                          duckdb::idx_t physical_index) {
+	for (const auto &dependency : dependencies) {
+		if (dependency.table_oid == table_oid && dependency.WatchesPhysicalIndex(physical_index)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool AcceleratorStateRegistry::TryGetWatchedColumns(duckdb::TableCatalogEntry &table,
                                                     duckdb::vector<duckdb::PhysicalIndex> &columns) {
-	const auto *dependency = FindDependency(table.oid);
-	if (!dependency) {
-		return false;
-	}
 	columns.clear();
-	for (const auto &column : dependency->watched_columns) {
-		columns.emplace_back(column.physical_index);
+	std::unordered_set<duckdb::idx_t> seen;
+	for (const auto &dependency : all_dependencies) {
+		if (dependency.table_oid != table.oid) {
+			continue;
+		}
+		for (const auto &column : dependency.watched_columns) {
+			if (seen.insert(column.physical_index.index).second) {
+				columns.emplace_back(column.physical_index);
+			}
+		}
 	}
 	return !columns.empty();
 }
@@ -212,13 +253,12 @@ bool AcceleratorStateRegistry::TryGetWatchedColumns(duckdb::TableCatalogEntry &t
 bool AcceleratorStateRegistry::TryGetUpdateOldColumns(
     duckdb::TableCatalogEntry &table, const duckdb::vector<duckdb::PhysicalIndex> &updated_columns,
     duckdb::vector<duckdb::PhysicalIndex> &old_columns) {
-	const auto *dependency = FindDependency(table.oid);
-	if (!dependency) {
+	if (FindDependency(table.oid) == nullptr) {
 		return false;
 	}
 	bool touches_watched = false;
 	for (const auto &updated : updated_columns) {
-		if (dependency->WatchesPhysicalIndex(updated.index)) {
+		if (WatchesPhysicalIndex(all_dependencies, table.oid, updated.index)) {
 			touches_watched = true;
 			break;
 		}
@@ -228,18 +268,25 @@ bool AcceleratorStateRegistry::TryGetUpdateOldColumns(
 		return true;
 	}
 	for (const auto &updated : updated_columns) {
-		if (dependency->WatchesPhysicalIndex(updated.index)) {
+		if (WatchesPhysicalIndex(all_dependencies, table.oid, updated.index)) {
 			old_columns.emplace_back(updated);
 		}
 	}
-	if (!old_columns.empty() && (dependency->table_name == "lineitem" || dependency->table_name == "part")) {
-		for (const auto &column : dependency->watched_columns) {
-			const bool already_present =
-			    std::any_of(old_columns.begin(), old_columns.end(), [&](const duckdb::PhysicalIndex &existing) {
-				    return existing.index == column.physical_index.index;
-			    });
-			if (!already_present) {
-				old_columns.emplace_back(column.physical_index);
+	const auto *dependency = FindDependency(table.oid);
+	if (!old_columns.empty() && dependency &&
+	    (dependency->table_name == "lineitem" || dependency->table_name == "part")) {
+		for (const auto &dep : all_dependencies) {
+			if (dep.table_oid != table.oid) {
+				continue;
+			}
+			for (const auto &column : dep.watched_columns) {
+				const bool already_present =
+				    std::any_of(old_columns.begin(), old_columns.end(), [&](const duckdb::PhysicalIndex &existing) {
+					    return existing.index == column.physical_index.index;
+				    });
+				if (!already_present) {
+					old_columns.emplace_back(column.physical_index);
+				}
 			}
 		}
 	}

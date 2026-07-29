@@ -3,7 +3,9 @@
 #include <iostream>
 #include <stdexcept>
 
+#include "accelerator_codegen/aux_state/execution_load.hpp"
 #include "accelerator_codegen/aux_state/maintenance/action_selector.hpp"
+#include "accelerator_codegen/aux_state/maintenance/interference.hpp"
 
 namespace {
 
@@ -137,6 +139,42 @@ void TestPointPartSelectsApplyDelta() {
 	        "point part promo flip should prefer ApplyDelta over rebuild/invalidate");
 }
 
+void TestInterferenceDefaultsToZero() {
+	accelerator_codegen::LoadQ14CostModelParams();
+	accelerator_codegen::Q14MutationBatchFeatures mutation;
+	mutation.class_id = accelerator_codegen::Q14MutationClass::PointLineitemUpdate;
+	mutation.incremental_supported = true;
+	mutation.incremental_buffer_complete = true;
+	mutation.old_new_values_available = true;
+	mutation.heavy_capture_available = true;
+	mutation.affected_partition_count = 1;
+	mutation.rows_touched = 1;
+	mutation.recent_incremental_success_rate = 1.0;
+	accelerator_codegen::Q14WorkloadFeatures workload;
+	const auto &params = accelerator_codegen::GetQ14CostModelParams();
+	auto details = accelerator_codegen::EnumerateQ14ActionCandidatesDetailed(mutation, workload, params, false);
+	for (const auto &candidate : details) {
+		Require(candidate.estimate.interference_us == 0.0, "default interference coeffs keep interference at zero");
+	}
+}
+
+void TestInterferenceRebuildExceedsDeltaWhenConfigured() {
+	using namespace accelerator_codegen::aux_state;
+	using namespace accelerator_codegen::aux_state::maintenance;
+	auto params = accelerator_codegen::GetQ14CostModelParams();
+	params.interference_rebuild_per_query_us = 100.0;
+	params.interference_delta_per_query_us = 1.0;
+	ExecutionLoadSnapshot load;
+	load.total_active = 3;
+	load.active_aux_queries = 2;
+	ActionResourceEstimate resources;
+	resources.estimated_duration_us = 1000.0;
+	const auto rebuild =
+	    EstimateInterferenceUs(MaintenanceAction::RebuildPartition, resources, load, params);
+	const auto delta = EstimateInterferenceUs(MaintenanceAction::ApplyDelta, resources, load, params);
+	Require(rebuild > delta, "rebuild interference should exceed delta under configured coeffs");
+}
+
 } // namespace
 
 int main() {
@@ -147,6 +185,8 @@ int main() {
 		TestBulkPartExcludesApplyDelta();
 		TestBulkPartSelectsRebuildAll();
 		TestPointPartSelectsApplyDelta();
+		TestInterferenceDefaultsToZero();
+		TestInterferenceRebuildExceedsDeltaWhenConfigured();
 		std::cout << "test_q14_cost_model passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {

@@ -10,6 +10,8 @@ from accel_pipeline.paths import find_repo_root
 from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
 from accel_pipeline.state import STAGES, advance_stage, load_or_create, state_path
 from accel_pipeline.stages import analysis, audit, implementation, optimization
+from accel_pipeline.structural_reanalysis import process_after_stage
+from accel_pipeline.pipeline_log import log_event, log_pipeline_summary
 
 
 def _parse_model_overrides(values: list[str] | None) -> dict[str, str]:
@@ -20,6 +22,78 @@ def _parse_model_overrides(values: list[str] | None) -> dict[str, str]:
         stage, preset = item.split("=", 1)
         overrides[stage.strip()] = preset.strip()
     return overrides
+
+
+def _maybe_process_structural_reanalysis(
+    *,
+    triggered_after: str,
+    pipeline_config,
+    model_config,
+    workload_name: str,
+    workload: dict,
+    query: int,
+    model_overrides: dict[str, str],
+    dry_run: bool,
+    state,
+) -> int | None:
+    """Run bounded re-analysis if requested. Returns next STAGES index, or None."""
+    if workload.get("workload_kind") != "aux_state":
+        return None
+
+    def run_analysis(**kwargs):
+        analysis.run(
+            pipeline_config,
+            model_config,
+            workload_name,
+            query,
+            model_overrides,
+            dry_run,
+            user_message=kwargs.get("user_message"),
+            analysis_revision_request=kwargs.get("analysis_revision_request", ""),
+        )
+
+    def run_impl():
+        implementation.run(
+            pipeline_config, model_config, workload_name, query, model_overrides, dry_run
+        )
+
+    def run_opt():
+        optimization.run(
+            pipeline_config,
+            model_config,
+            workload_name,
+            query,
+            pipeline_config.optimization_max_iterations,
+            model_overrides,
+            dry_run,
+        )
+
+    result = process_after_stage(
+        repo_root=pipeline_config.repo_root,
+        query=query,
+        workload=workload,
+        triggered_after=triggered_after,
+        structural_reanalysis_count=state.structural_reanalysis_count,
+        run_analysis=run_analysis,
+        run_implementation=run_impl,
+        run_optimization=run_opt,
+        dry_run=dry_run,
+    )
+    if not result:
+        return None
+    new_count, next_idx = result
+    state.structural_reanalysis_count = new_count
+    state.stage = STAGES[next_idx]
+    state.save(state_path(pipeline_config.repo_root, query))
+    log_event(
+        pipeline_config.repo_root,
+        query,
+        "structural_reanalysis_resume",
+        rerun_number=new_count,
+        resume_stage=STAGES[next_idx],
+        triggered_after=triggered_after,
+    )
+    return next_idx
 
 
 def _run_stage(
@@ -94,16 +168,53 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     start_idx = STAGES.index(state.stage) if args.resume else 0
-    for stage in STAGES[start_idx:]:
+    idx = start_idx
+    while idx < len(STAGES):
+        stage = STAGES[idx]
         print(f"=== stage: {stage} ===", file=sys.stderr)
         state.stage = stage
         state.save(state_path(repo_root, query))
         _run_stage(stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run)
+
+        if stage == "implementation":
+            next_idx = _maybe_process_structural_reanalysis(
+                triggered_after="implementation",
+                pipeline_config=pipeline_config,
+                model_config=model_config,
+                workload_name=args.workload,
+                workload=workload,
+                query=query,
+                model_overrides=model_overrides,
+                dry_run=args.dry_run,
+                state=state,
+            )
+            if next_idx is not None:
+                idx = next_idx
+                continue
+
+        if stage == "optimization":
+            next_idx = _maybe_process_structural_reanalysis(
+                triggered_after="optimization",
+                pipeline_config=pipeline_config,
+                model_config=model_config,
+                workload_name=args.workload,
+                workload=workload,
+                query=query,
+                model_overrides=model_overrides,
+                dry_run=args.dry_run,
+                state=state,
+            )
+            if next_idx is not None:
+                idx = next_idx
+                continue
+
         if stage != STAGES[-1]:
             advance_stage(state, repo_root)
+        idx += 1
 
     state.stage = STAGES[-1]
     state.save(state_path(repo_root, query))
+    log_pipeline_summary(repo_root, query)
     print("pipeline complete", file=sys.stderr)
     return 0
 

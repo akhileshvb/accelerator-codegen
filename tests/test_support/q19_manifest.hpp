@@ -16,7 +16,7 @@ struct Q19ManifestEntry {
 	int64_t qty_low3;
 };
 
-inline constexpr std::array<Q19ManifestEntry, 20> kQ19Manifest = {{
+inline constexpr std::array<Q19ManifestEntry, 20> kQ39Manifest = {{
     {"seed_1_q19", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/19.sql", "Brand#31", 4, "Brand#12", 15, "Brand#51", 23},
     {"seed_2_q19", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_2/19.sql", "Brand#24", 5, "Brand#34", 16, "Brand#11", 24},
     {"seed_3_q19", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_3/19.sql", "Brand#24", 4, "Brand#35", 19, "Brand#45", 20},

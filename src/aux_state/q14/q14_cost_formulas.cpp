@@ -5,6 +5,8 @@
 #include <cstring>
 #include <limits>
 
+#include "accelerator_codegen/aux_state/execution_load.hpp"
+#include "accelerator_codegen/aux_state/maintenance/interference.hpp"
 #include "accelerator_codegen/aux_state/maintenance/action_selector.hpp"
 
 namespace accelerator_codegen {
@@ -60,6 +62,12 @@ double ExpectedQueriesForCosting(const Q14WorkloadFeatures &workload) {
 	return std::max(1.0, workload.expected_queries_before_next_write);
 }
 
+void ApplyInterference(MaintenanceAction action, ActionCostEstimate &estimate, const ActionResourceEstimate &resources,
+                       const CostModelParams &params) {
+	const auto load = aux_state::GetExecutionLoadRegistry().Snapshot();
+	estimate.interference_us = EstimateInterferenceUs(action, resources, load, params);
+}
+
 ActionCostEstimate EstimateNoOp() {
 	return {};
 }
@@ -85,6 +93,9 @@ ActionCostEstimate EstimateApplyDelta(const Q14MutationBatchFeatures &features, 
 	    failure_prob * (params.invalidation_overhead_us +
 	                    ExpectedQueriesForCosting(workload) * ExpectedQueryPremium(workload));
 	estimate.differential_future_query_us = 0.0;
+	ActionResourceEstimate resources;
+	resources.estimated_duration_us = estimate.immediate_us;
+	ApplyInterference(MaintenanceAction::ApplyDelta, estimate, resources, params);
 	return estimate;
 }
 
@@ -102,6 +113,10 @@ ActionCostEstimate EstimateLazyRebuildAll(const Q14WorkloadFeatures &workload, c
 	if (workload.expected_queries_before_next_write > 0.0) {
 		estimate.differential_future_query_us = Q14FullRebuildUs() + Q14FirstQueryBlockingUs();
 	}
+	ActionResourceEstimate resources;
+	resources.estimated_duration_us = Q14FullRebuildUs();
+	resources.partitions_locked = 1;
+	ApplyInterference(MaintenanceAction::RebuildAll, estimate, resources, params);
 	(void)params;
 	return estimate;
 }
@@ -115,6 +130,10 @@ ActionCostEstimate EstimateLazyRebuildPartition(const Q14MutationBatchFeatures &
 		const auto rebuild_scan = Q14PartitionRebuildUs() * static_cast<double>(partition_count);
 		estimate.differential_future_query_us = rebuild_scan + Q14FirstQueryBlockingUs();
 	}
+	ActionResourceEstimate resources;
+	resources.estimated_duration_us = Q14PartitionRebuildUs() * static_cast<double>(partition_count);
+	resources.partitions_locked = partition_count;
+	ApplyInterference(MaintenanceAction::RebuildPartition, estimate, resources, params);
 	(void)features;
 	return estimate;
 }
@@ -124,6 +143,8 @@ ActionCostEstimate EstimateInvalidate(const Q14WorkloadFeatures &workload, const
 	estimate.immediate_us = params.invalidation_overhead_us;
 	estimate.differential_future_query_us =
 	    ExpectedQueriesForCosting(workload) * ExpectedQueryPremium(workload);
+	ActionResourceEstimate resources;
+	ApplyInterference(MaintenanceAction::InvalidateAndFallback, estimate, resources, params);
 	(void)params;
 	return estimate;
 }

@@ -11,7 +11,7 @@ struct Q1ManifestEntry {
 	int32_t day_offset;
 };
 
-inline constexpr std::array<Q1ManifestEntry, 5> kQ1Manifest = {{
+inline constexpr std::array<Q1ManifestEntry, 5> kQ3Manifest = {{
     {"seed_1_q1", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/01.sql", 103},
     {"seed_2_q1", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_2/01.sql", 103},
     {"seed_3_q1", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_3/01.sql", 103},

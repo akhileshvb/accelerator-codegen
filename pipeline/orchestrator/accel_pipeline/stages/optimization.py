@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from accel_pipeline.aux_bench import load_optimization_state, process_aux_bench_after_gates
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
-from accel_pipeline.gates import run_gate
 from accel_pipeline.stages.gate_plan import workload_post_optimization_gates
 from accel_pipeline.playbook import append_experiment_log, merge_playbook_proposal
 from accel_pipeline.stages.base import run_agent_stage
@@ -41,8 +40,9 @@ def run(
             continue
 
         prev_best = float(load_optimization_state(pipeline_config.repo_root, query).get("best_composite_score", 0.0) or 0.0)
-        for gate_name in opt_gates:
-            run_gate(pipeline_config, gate_name, query, workload=workload)
+        from accel_pipeline.stages.gate_plan import run_post_stage_gates
+
+        run_post_stage_gates(pipeline_config, workload_name, query, opt_gates)
 
         if "aux_bench_sweep" in opt_gates:
             process_aux_bench_after_gates(

@@ -11,7 +11,7 @@
 #include "duckdb/main/materialized_query_result.hpp"
 
 #ifndef ACCEL_ENABLE_PARALLEL_TPCH
-#error "test_tpch_q13_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
+#error "test_tpch_q33_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
 #endif
 
 namespace {
@@ -86,7 +86,7 @@ std::string ReferenceQ13(const std::string &pattern) {
 }
 
 std::string ParallelQ13(const std::string &pattern) {
-	return "SELECT * FROM accel_tpch_q13_parallel('" + Escape(pattern) + "')";
+	return "SELECT * FROM accel_tpch_q33_parallel('" + Escape(pattern) + "')";
 }
 
 void RunCase(duckdb::Connection &connection, const std::string &label, const std::string &pattern,
@@ -202,10 +202,10 @@ int main() {
 			conn.Query("INSERT INTO orders VALUES (4, 3, 'ok')");
 		});
 
-		std::cout << "test_tpch_q13_semantics passed\n";
+		std::cout << "test_tpch_q33_semantics passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q13_semantics failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q33_semantics failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

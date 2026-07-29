@@ -8,6 +8,8 @@
 
 #include "accelerator_codegen/aux_state/accelerator_registry.hpp"
 #include "accelerator_codegen/aux_state/execution_gate.hpp"
+#include "accelerator_codegen/aux_state/execution_load.hpp"
+#include "accelerator_codegen/aux_state/reader_mutation_epoch.hpp"
 #include "accelerator_codegen/aux_state/txn_invalidation_buffer.hpp"
 #include "accelerator_codegen/duckdb_scan_adapter.hpp"
 #include "duckdb/common/types/interval.hpp"
@@ -56,6 +58,7 @@ struct Q14AuxLocalState : public duckdb::LocalTableFunctionState {
 	duckdb::unique_ptr<KernelInstance> kernel;
 	duckdb::vector<duckdb::unique_ptr<duckdb::FunctionData>> bound_scans;
 	duckdb::vector<duckdb::unique_ptr<ChunkSource>> inputs;
+	std::unique_ptr<aux_state::ActiveExecutionScope> execution_scope;
 	bool use_fallback = false;
 	bool inputs_consumed = false;
 	bool finalized = false;
@@ -84,8 +87,11 @@ void InitQ14AuxLocalState(duckdb::ClientContext &context, Q14AuxLocalState &loca
 	const auto partition = PartitionKeyFromStartDate(parameters.start_date);
 	auto txn_buffer = aux_state::GetOrCreateTxnInvalidationBuffer(context);
 	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
-	auto &store = registry->GetStore("tpch_q14_aux");
-	const auto gate = aux_state::CheckExecutionGate(store, *txn_buffer, partition);
+	auto &store = registry->GetStore(kQ14AuxAcceleratorId);
+	auto &maintenance = registry->GetMaintenanceState(kQ14AuxAcceleratorId);
+	const auto reader_epoch = aux_state::GetReaderVisibleMutationEpoch(context, kQ14AuxAcceleratorId,
+	                                                                   maintenance.GetCommittedMutationEpoch());
+	const auto gate = aux_state::CheckExecutionGate(store, *txn_buffer, partition, reader_epoch);
 
 	ResetQ14AuxDiagnostics();
 	Q14AuxDiagnostics diagnostics;
@@ -102,6 +108,8 @@ void InitQ14AuxLocalState(duckdb::ClientContext &context, Q14AuxLocalState &loca
 			local_state.kernel = CreateQ14AuxFastKernel(*totals);
 			UpdateQ14AuxDiagnostics(diagnostics);
 			RecordQ14AuxQueryOutcome(true);
+			local_state.execution_scope = std::make_unique<aux_state::ActiveExecutionScope>(
+			    aux_state::ExecutionKind::AuxQuery, kQ14AuxAcceleratorId);
 			return;
 		}
 	} else {
@@ -120,6 +128,8 @@ void InitQ14AuxLocalState(duckdb::ClientContext &context, Q14AuxLocalState &loca
 	local_state.inputs.push_back(CreateNativeChunkSource(context, *local_state.bound_scans[0]));
 	local_state.inputs.push_back(CreateNativeChunkSource(context, *local_state.bound_scans[1]));
 	RecordQ14AuxQueryOutcome(false);
+	local_state.execution_scope = std::make_unique<aux_state::ActiveExecutionScope>(
+	    aux_state::ExecutionKind::FallbackQuery, kQ14AuxAcceleratorId);
 }
 
 duckdb::unique_ptr<duckdb::FunctionData> Q14AuxBind(duckdb::ClientContext &, duckdb::TableFunctionBindInput &input,
@@ -171,6 +181,7 @@ void Q14AuxExec(duckdb::ClientContext &, duckdb::TableFunctionInput &input, duck
 
 	if (!local_state.kernel->ProduceOutput(output)) {
 		local_state.output_exhausted = true;
+		local_state.execution_scope.reset();
 		output.SetCardinality(0);
 	}
 }

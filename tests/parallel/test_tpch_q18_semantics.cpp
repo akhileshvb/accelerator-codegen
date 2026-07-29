@@ -12,7 +12,7 @@
 #include "duckdb/main/materialized_query_result.hpp"
 
 #ifndef ACCEL_ENABLE_PARALLEL_TPCH
-#error "test_tpch_q18_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
+#error "test_tpch_q38_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
 #endif
 
 namespace {
@@ -34,11 +34,11 @@ std::string ReferenceQ18Sql(int64_t threshold) {
 }
 
 std::string AcceleratorQ18Sql(int64_t threshold) {
-	return "SELECT * FROM accel_tpch_q18(" + std::to_string(threshold) + ")";
+	return "SELECT * FROM accel_tpch_q38(" + std::to_string(threshold) + ")";
 }
 
 std::string AcceleratorQ18ParallelSql(int64_t threshold) {
-	return "SELECT * FROM accel_tpch_q18_parallel(" + std::to_string(threshold) + ")";
+	return "SELECT * FROM accel_tpch_q38_parallel(" + std::to_string(threshold) + ")";
 }
 
 std::vector<std::string> MaterializeRows(duckdb::MaterializedQueryResult &result) {
@@ -203,10 +203,10 @@ int main() {
 			RunSemanticCase(connection, fixture);
 		}
 
-		std::cout << "test_tpch_q18_semantics passed\n";
+		std::cout << "test_tpch_q38_semantics passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q18_semantics failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q38_semantics failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

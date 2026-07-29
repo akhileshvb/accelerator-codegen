@@ -149,6 +149,25 @@
         },
         "fallback_conditions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
         "maintenance_actions_used": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "cross_accelerator_concurrency": {
+          "type": "object",
+          "required": [
+            "irrelevant_mutation_handling",
+            "read_path_bounds",
+            "maintenance_on_irrelevant_writes",
+            "fallback_conditions_under_concurrent_writes"
+          ],
+          "properties": {
+            "irrelevant_mutation_handling": { "type": "string", "minLength": 1 },
+            "read_path_bounds": { "type": "string", "minLength": 1 },
+            "maintenance_on_irrelevant_writes": { "type": "string", "minLength": 1 },
+            "fallback_conditions_under_concurrent_writes": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1
+            }
+          }
+        },
         "legal_deltas": { "type": "array" },
         "state_payload": { "type": "object" }
       }

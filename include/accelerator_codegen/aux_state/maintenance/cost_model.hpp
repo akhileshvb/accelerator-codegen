@@ -38,6 +38,12 @@ struct CostModelParams {
 	uint64_t min_samples = 8;
 	double incremental_failure_prob = 0.01;
 
+	double interference_rebuild_per_query_us = 0.0;
+	double interference_rebuild_scan_byte_us = 0.0;
+	double interference_delta_per_query_us = 0.0;
+	double interference_invalidate_per_query_us = 0.0;
+	double interference_query_slowdown_factor = 0.0;
+
 	CoreSelectorParams SelectorParams() const {
 		return CoreSelectorParams {decision_margin_us, min_samples};
 	}

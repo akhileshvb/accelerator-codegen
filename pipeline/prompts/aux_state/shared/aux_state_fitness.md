@@ -27,6 +27,7 @@ Evaluate **per-query** suitability using **signals**, not hard requirements. Par
 - Design for **this query only** (`{{aux_function_name}}`).
 - Do not optimize for cross-query state sharing.
 - Note incidental reuse under `fitness_assessment.incidental_reuse` only.
+- **Concurrent correctness** is still required: unrelated accelerators may be active while this query reads aux state. Classify irrelevant mutations as NoOp; bound read iteration to the query window (`concurrency_contract.md`).
 
 ## Analysis output
 

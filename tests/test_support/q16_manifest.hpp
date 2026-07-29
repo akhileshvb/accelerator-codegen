@@ -13,7 +13,7 @@ struct Q16ManifestEntry {
 	std::array<int32_t, 8> sizes;
 };
 
-inline constexpr std::array<Q16ManifestEntry, 20> kQ16Manifest = {{
+inline constexpr std::array<Q16ManifestEntry, 20> kQ36Manifest = {{
     {"seed_1_q16", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/16.sql", "Brand#13", "SMALL BRUSHED%", {26, 24, 27, 29, 7, 20, 22, 33}},
     {"seed_2_q16", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_2/16.sql", "Brand#14", "STANDARD ANODIZED%", {43, 32, 45, 36, 8, 42, 29, 46}},
     {"seed_3_q16", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_3/16.sql", "Brand#41", "MEDIUM PLATED%", {4, 17, 14, 24, 25, 40, 20, 12}},

@@ -6,7 +6,7 @@ namespace accelerator_codegen::test_support {
 
 //! SF1 cases with dbgen-matching brand/container pairs (nonzero qualifying parts).
 //! Selected from part table pairs with >=5 parts; verified nonzero Q17 avg_yearly on tpch_sf1.duckdb.
-inline constexpr std::array<Q17ManifestEntry, 10> kQ17NonzeroManifest = {{
+inline constexpr std::array<Q17ManifestEntry, 10> kQ37NonzeroManifest = {{
     {"nonzero_42_lg_pack",
      "/home/akhilvb/accelerator-codegen/benchmarks/tpch/tmp/q17_sf1_nonzero_42_lg_pack.sql", "Brand#42", "LG PACK"},
     {"nonzero_52_lg_jar",

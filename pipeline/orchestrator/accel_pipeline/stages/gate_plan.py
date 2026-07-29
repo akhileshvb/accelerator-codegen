@@ -34,4 +34,10 @@ def run_post_stage_gates(
 
     workload = load_workload(workload_name, pipeline_config.repo_root)
     for gate_name in gate_names:
-        run_gate(pipeline_config, gate_name, query, workload=workload)
+        run_gate(
+            pipeline_config,
+            gate_name,
+            query,
+            workload=workload,
+            raise_on_failure=True,
+        )

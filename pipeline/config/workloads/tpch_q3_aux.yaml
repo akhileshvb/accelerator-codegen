@@ -1,0 +1,52 @@
+workload_kind: aux_state
+benchmark_name: tpch
+query_number: 3
+query_id: "3"
+accelerator_id: tpch_q3_aux
+base_function_name: accel_tpch_q3
+aux_function_name: accel_tpch_q3_aux
+
+requires_base_accelerator: true
+prerequisite_workload: tpch_q3
+prerequisite_min_stage: implementation
+reference_accelerators: []
+
+allow_poor_fitness: false
+allow_unsuccessful_design: false
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/03.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: market_segment
+    type: VARCHAR
+  - name: cutoff_date
+    type: DATE
+
+dependent_tables:
+  - name: customer
+    watched_columns: [c_custkey, c_mktsegment]
+  - name: orders
+    watched_columns: [o_orderkey, o_orderdate, o_custkey, o_orderstatus, o_shippriority]
+  - name: lineitem
+    watched_columns: [l_orderkey, l_extendedprice, l_discount, l_shipdate]
+
+partitioning: {}   # analysis stage will propose grain
+
+output_schema:
+  - name: l_orderkey
+    type: BIGINT
+  - name: revenue
+    type: DECIMAL
+  - name: o_orderdate
+    type: DATE
+  - name: o_shippriority
+    type: INTEGER
+
+cost_model_config: config/q3_aux_cost_model.json
+
+cmake:
+  query_num: 3
+  aux_state_module: accel_add_aux_state_query
+
+agent_boundary: prompts/aux_state/shared/agent_boundary.md

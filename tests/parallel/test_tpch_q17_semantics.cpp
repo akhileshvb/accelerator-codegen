@@ -14,7 +14,7 @@
 #include "duckdb/main/materialized_query_result.hpp"
 
 #ifndef ACCEL_ENABLE_PARALLEL_TPCH
-#error "test_tpch_q17_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
+#error "test_tpch_q37_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
 #endif
 
 namespace {
@@ -54,11 +54,11 @@ std::string ReferenceQ17Sql() {
 }
 
 std::string AcceleratorQ17Sql() {
-	return std::string("SELECT * FROM accel_tpch_q17('") + kBrand + "', '" + kContainer + "')";
+	return std::string("SELECT * FROM accel_tpch_q37('") + kBrand + "', '" + kContainer + "')";
 }
 
 std::string AcceleratorQ17ParallelSql() {
-	return std::string("SELECT * FROM accel_tpch_q17_parallel('") + kBrand + "', '" + kContainer + "')";
+	return std::string("SELECT * FROM accel_tpch_q37_parallel('") + kBrand + "', '" + kContainer + "')";
 }
 
 void RequireEqualResults(duckdb::Connection &connection, const std::string &label, const std::string &reference_sql,
@@ -78,7 +78,7 @@ void RequireEqualResults(duckdb::Connection &connection, const std::string &labe
 	        label + ": value differs");
 }
 
-void CreateQ17Schema(duckdb::Connection &connection) {
+void CreateQ37Schema(duckdb::Connection &connection) {
 	auto result = connection.Query(
 	    "CREATE TABLE part(p_partkey BIGINT NOT NULL, p_name VARCHAR NOT NULL, p_mfgr VARCHAR NOT NULL, "
 	    "p_brand VARCHAR NOT NULL, p_type VARCHAR NOT NULL, p_size INTEGER NOT NULL, p_container VARCHAR NOT NULL, "
@@ -113,7 +113,7 @@ struct SemanticFixture {
 void RunSemanticCase(duckdb::Connection &connection, const SemanticFixture &fixture) {
 	connection.Query("DROP TABLE IF EXISTS lineitem");
 	connection.Query("DROP TABLE IF EXISTS part");
-	CreateQ17Schema(connection);
+	CreateQ37Schema(connection);
 	fixture.setup(connection);
 	const auto reference = ReferenceQ17Sql();
 	RequireEqualResults(connection, fixture.label + "/serial", reference, AcceleratorQ17Sql());
@@ -224,10 +224,10 @@ int main() {
 			RunSemanticCase(connection, fixture);
 		}
 
-		std::cout << "test_tpch_q17_semantics passed\n";
+		std::cout << "test_tpch_q37_semantics passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q17_semantics failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q37_semantics failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

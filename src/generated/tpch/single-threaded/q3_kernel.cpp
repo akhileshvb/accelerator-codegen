@@ -1,6 +1,7 @@
 #include "accelerator_codegen/tpch_q3.hpp"
 
 #include <algorithm>
+#include <iostream>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>

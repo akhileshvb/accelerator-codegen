@@ -10,7 +10,7 @@ struct Q15ManifestEntry {
 	const char *start_date;
 };
 
-inline constexpr std::array<Q15ManifestEntry, 20> kQ15Manifest = {{
+inline constexpr std::array<Q15ManifestEntry, 20> kQ35Manifest = {{
     {"seed_1_q15", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/15.sql", "1994-11-01"},
     {"seed_2_q15", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_2/15.sql", "1994-06-01"},
     {"seed_3_q15", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_3/15.sql", "1994-02-01"},

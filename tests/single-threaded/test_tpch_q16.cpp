@@ -54,7 +54,7 @@ std::vector<std::string> MaterializeOrderedRows(duckdb::MaterializedQueryResult 
 
 std::string AcceleratorQ16Sql(const accelerator_codegen::test_support::Q16ManifestEntry &entry) {
 	std::ostringstream stream;
-	stream << "SELECT * FROM accel_tpch_q16('" << entry.brand << "', '" << entry.type_pattern << "'";
+	stream << "SELECT * FROM accel_tpch_q36('" << entry.brand << "', '" << entry.type_pattern << "'";
 	for (const auto size : entry.sizes) {
 		stream << ", " << size;
 	}
@@ -88,14 +88,14 @@ int main() {
 		duckdb::Connection connection(file_database);
 		accelerator_codegen::RegisterAcceleratorFunctions(connection);
 		connection.Query("PRAGMA threads=1");
-		for (const auto &entry : accelerator_codegen::test_support::kQ16Manifest) {
+		for (const auto &entry : accelerator_codegen::test_support::kQ36Manifest) {
 			RequireEqualResults(connection, entry.label, ReadFile(entry.sql_path), AcceleratorQ16Sql(entry));
 		}
 
-		std::cout << "test_tpch_q16 passed\n";
+		std::cout << "test_tpch_q36 passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q16 failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q36 failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

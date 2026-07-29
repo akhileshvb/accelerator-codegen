@@ -66,6 +66,8 @@ def make_repo_tools(ctx: ToolContext):
                 "use offset/limit or glob_files to narrow scope"
             )
         lines = raw.decode("utf-8").splitlines()
+        if not offset and not limit:
+            limit = 200
         if offset or limit:
             end = offset + limit if limit else None
             lines = lines[offset:end]

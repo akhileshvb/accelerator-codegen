@@ -112,7 +112,8 @@ bool ComputeQ14IncrementalDelta(duckdb::ClientContext &context, aux_state::Parti
                                 const aux_state::InvalidationPlan &plan, Q14IncrementalTxnBuffer &buffer,
                                 Q14ComputedIncrementalDelta &out);
 
-void PublishQ14IncrementalDelta(aux_state::PartitionedStateStore &store, const Q14ComputedIncrementalDelta &delta);
+void PublishQ14IncrementalDelta(aux_state::PartitionedStateStore &store, const Q14ComputedIncrementalDelta &delta,
+                                uint64_t valid_through_mutation_epoch = 0);
 
 bool TryApplyQ14IncrementalPreCommit(duckdb::ClientContext &context, aux_state::PartitionedStateStore &store,
                                     const aux_state::InvalidationPlan &plan, Q14IncrementalTxnBuffer &buffer);

@@ -28,25 +28,6 @@ bool ReadBoolEnv(const char *name, bool fallback) {
 	return std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 || std::strcmp(value, "TRUE") == 0;
 }
 
-aux_state::ColumnRef MakeColumnRef(duckdb::TableCatalogEntry &table, const std::string &name) {
-	const auto &column = table.GetColumn(name);
-	return aux_state::ColumnRef {table.oid, column.Physical(), column.Logical(), name};
-}
-
-aux_state::TableDependency MakeTableDependency(duckdb::ClientContext &context, const std::string &table_name,
-                                               const std::vector<std::string> &columns) {
-	auto &table = duckdb::Catalog::GetEntry<duckdb::TableCatalogEntry>(context, INVALID_CATALOG, DEFAULT_SCHEMA, table_name);
-	aux_state::TableDependency dependency;
-	dependency.catalog_oid = table.catalog.GetOid();
-	dependency.schema_oid = table.schema.oid;
-	dependency.table_oid = table.oid;
-	dependency.table_name = table_name;
-	for (const auto &column_name : columns) {
-		dependency.watched_columns.push_back(MakeColumnRef(table, column_name));
-	}
-	return dependency;
-}
-
 const aux_state::ColumnRef *FindColumn(const aux_state::TableDependency &dependency, const std::string &name) {
 	for (const auto &column : dependency.watched_columns) {
 		if (column.column_name == name) {
@@ -188,28 +169,29 @@ Q1PartitionKey PartitionKeyFromCutoff(const Q1Parameters &parameters) {
 void RegisterQ1AuxAccelerator(duckdb::Connection &connection) {
 	LoadQ1CostModelParams();
 	auto &context = *connection.context;
-	auto &catalog = duckdb::Catalog::GetSystemCatalog(context);
-	auto lineitem = catalog.GetEntry<duckdb::TableCatalogEntry>(context, INVALID_CATALOG, DEFAULT_SCHEMA, "lineitem",
-	                                                            duckdb::OnEntryNotFound::RETURN_NULL);
-	if (!lineitem) {
+	static const std::vector<std::string> kLineitemColumns = {
+	    "l_shipdate", "l_quantity", "l_extendedprice", "l_discount",
+	    "l_tax", "l_returnflag", "l_linestatus",
+	};
+	if (!aux_state::CanMakeTableDependency(context, "lineitem", kLineitemColumns)) {
 		return;
 	}
 
 	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
-	registry->RegisterAccelerator(
-	    kQ1AuxAcceleratorId,
-	    [](const duckdb::TableMutationEvent &event,
-	       const std::vector<aux_state::TableDependency> &dependencies) -> aux_state::InvalidationPlan {
-		    return InterpretQ1Mutation(event, dependencies);
-	    });
-	registry->RegisterIncrementalBufferFactory(kQ1AuxAcceleratorId,
-	                                           []() { return std::make_unique<Q1IncrementalTxnBuffer>(); });
-	registry->RegisterMutationAccumulator(kQ1AuxAcceleratorId, AccumulateQ1Mutation);
-	registry->RegisterMaintenanceHook(kQ1AuxAcceleratorId, CreateQ1MaintenanceHook());
-	registry->RegisterTableDependency(kQ1AuxAcceleratorId,
-	                                  MakeTableDependency(context, "lineitem",
-	                                                      {"l_shipdate", "l_quantity", "l_extendedprice", "l_discount",
-	                                                       "l_tax", "l_returnflag", "l_linestatus"}));
+	registry->RegisterAcceleratorIfAbsent(kQ1AuxAcceleratorId, [&]() {
+		registry->RegisterAccelerator(
+		    kQ1AuxAcceleratorId,
+		    [](const duckdb::TableMutationEvent &event,
+		       const std::vector<aux_state::TableDependency> &dependencies) -> aux_state::InvalidationPlan {
+			    return InterpretQ1Mutation(event, dependencies);
+		    });
+		registry->RegisterIncrementalBufferFactory(kQ1AuxAcceleratorId,
+		                                           []() { return std::make_unique<Q1IncrementalTxnBuffer>(); });
+		registry->RegisterMutationAccumulator(kQ1AuxAcceleratorId, AccumulateQ1Mutation);
+		registry->RegisterMaintenanceHook(kQ1AuxAcceleratorId, CreateQ1MaintenanceHook());
+		registry->RegisterTableDependency(
+		    kQ1AuxAcceleratorId, aux_state::MakeTableDependency(context, "lineitem", kLineitemColumns));
+	});
 }
 
 bool IsQ1DependentTableMutation(const duckdb::TableMutationEvent &event,

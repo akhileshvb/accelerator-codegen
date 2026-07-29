@@ -12,6 +12,9 @@ fi
 OUT="${ROOT}/pipeline/artifacts/q${QUERY}/gates"
 mkdir -p "${OUT}"
 
+# shellcheck source=cmake_ensure_target.sh
+source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
+
 MIN_SPEEDUP="${ACCEL_AUX_MIN_SPEEDUP:-2.0}"
 MIN_REDUCTION_PCT="${ACCEL_AUX_MIN_WORK_REDUCTION_PCT:-50}"
 
@@ -22,6 +25,9 @@ fi
 
 BENCH_AUX="benchmark_tpch_q${QUERY}_aux"
 BENCH_BASE="benchmark_tpch_q${QUERY}"
+
+ensure_cmake_target "${ROOT}" "${BUILD}" "${BENCH_BASE}" || true
+ensure_cmake_target "${ROOT}" "${BUILD}" "${BENCH_AUX}" || true
 
 if [[ ! -x "${BUILD}/${BENCH_AUX}" ]] || [[ ! -x "${BUILD}/${BENCH_BASE}" ]]; then
   python3 - <<PY
@@ -65,22 +71,27 @@ def parse_us(text: str) -> float | None:
             return float(m.group(1))
     return None
 
+def parse_base_us(base_text: str, aux_text: str) -> float | None:
+    for text in (base_text, aux_text):
+        m = re.search(r"speedup_gate wall_time_base_us=([0-9.]+)", text)
+        if m:
+            return float(m.group(1))
+    m = re.search(r"summary_median,accel_fused_q1,,([0-9.]+)", base_text)
+    if m:
+        return float(m.group(1))
+    # manifest sweep CSV: summary_avg_median,ref_mean,ref_median,accel_mean,accel_median,speedup
+    m = re.search(r"summary_avg_median,[^,\n]+,[^,\n]+,[^,\n]+,([0-9.]+)", base_text)
+    if m:
+        return float(m.group(1))
+    return parse_us(base_text)
+
 def parse_aux_us(text: str) -> float | None:
     m = re.search(r"speedup_gate median_us=([0-9.]+)", text)
     if m:
         return float(m.group(1))
     return parse_us(text)
 
-def parse_base_us(text: str) -> float | None:
-    m = re.search(r"speedup_gate wall_time_base_us=([0-9.]+)", text)
-    if m:
-        return float(m.group(1))
-    m = re.search(r"summary_median,accel_fused_q1,,([0-9.]+)", text)
-    if m:
-        return float(m.group(1))
-    return parse_us(text)
-
-base_us = parse_base_us("""${BASE_LOG}""")
+base_us = parse_base_us("""${BASE_LOG}""", """${AUX_LOG}""")
 aux_us = parse_aux_us("""${AUX_LOG}""")
 
 status = "fail"

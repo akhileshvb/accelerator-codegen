@@ -26,10 +26,29 @@ def base_accelerator_exists(repo_root: Path, query: int) -> bool:
     return header.is_file() or kernel.is_file()
 
 
-def base_correctness_passes(pipeline_config: PipelineConfig, query: int) -> bool:
+def base_smoke_test_binary_path(build_dir: Path, query: int) -> Path:
+    return build_dir / f"test_tpch_q{query}"
+
+
+def ensure_smoke_test_binary(build_dir: Path, query: int) -> Path | None:
+    binary = base_smoke_test_binary_path(build_dir, query)
+    if binary.is_file():
+        return binary
+    target = f"test_tpch_q{query}"
+    subprocess.run(
+        ["cmake", "--build", str(build_dir), "--target", target],
+        cwd=build_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return binary if binary.is_file() else None
+
+
+def base_correctness_passes(pipeline_config: PipelineConfig, query: int) -> tuple[bool, str]:
     build_dir = pipeline_config.build_dir
     if not build_dir.is_dir():
-        return False
+        return False, f"build dir missing: {build_dir}"
     proc = subprocess.run(
         ["ctest", "-R", base_smoke_test_ctest_regex(query), "--output-on-failure"],
         cwd=build_dir,
@@ -37,14 +56,47 @@ def base_correctness_passes(pipeline_config: PipelineConfig, query: int) -> bool
         text=True,
         check=False,
     )
-    return proc.returncode == 0
+    if proc.returncode == 0:
+        return True, ""
+
+    # ctest may report "Not Run" when the smoke test exists but has not been
+    # executed in this build tree yet. Build (if needed) and run the binary.
+    binary = ensure_smoke_test_binary(build_dir, query)
+    if binary is not None:
+        direct = subprocess.run(
+            [str(binary)],
+            cwd=build_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if direct.returncode == 0:
+            return True, ""
+        tail = (direct.stdout or direct.stderr or "").strip().splitlines()
+        reason = tail[-1] if tail else f"smoke binary exit {direct.returncode}"
+        return False, reason
+
+    tail = (proc.stdout or proc.stderr or "").strip().splitlines()
+    reason = tail[-1] if tail else f"ctest exit {proc.returncode}"
+    return False, reason
 
 
 def base_accelerator_ready(pipeline_config: PipelineConfig, query: int) -> bool:
     repo = pipeline_config.repo_root
     if not base_accelerator_exists(repo, query):
         return False
-    return base_correctness_passes(pipeline_config, query)
+    ok, _ = base_correctness_passes(pipeline_config, query)
+    return ok
+
+
+def base_accelerator_not_ready_reason(pipeline_config: PipelineConfig, query: int) -> str:
+    repo = pipeline_config.repo_root
+    if not base_accelerator_exists(repo, query):
+        return "base accelerator source not found"
+    ok, reason = base_correctness_passes(pipeline_config, query)
+    if ok:
+        return ""
+    return f"smoke test failed: {reason}"
 
 
 def ensure_base_accelerator_prerequisite(
@@ -69,9 +121,10 @@ def ensure_base_accelerator_prerequisite(
 
     prereq_name = workload.get("prerequisite_workload") or f"tpch_q{query}"
     min_stage = workload.get("prerequisite_min_stage", "implementation")
+    not_ready = base_accelerator_not_ready_reason(pipeline_config, query)
     print(
-        f"Base accelerator for Q{query} not ready; running prerequisite workload {prereq_name!r} "
-        f"through {min_stage!r}",
+        f"Base accelerator for Q{query} not ready ({not_ready}); "
+        f"running prerequisite workload {prereq_name!r} through {min_stage!r}",
         file=sys.stderr,
     )
 

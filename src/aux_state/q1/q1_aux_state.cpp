@@ -100,9 +100,11 @@ aux_state::PartitionedStateStore &GetQ1Store(duckdb::ClientContext &context) {
 }
 
 void PublishDays(duckdb::ClientContext &context, const std::unordered_map<Q1PartitionKey, Q1DayPartition> &days) {
-	auto &store = GetQ1Store(context);
+	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
+	auto &store = registry->GetStore(kQ1AuxAcceleratorId);
+	const auto publish_epoch = registry->GetMaintenanceState(kQ1AuxAcceleratorId).BumpCommittedMutationEpoch();
 	for (const auto &entry : days) {
-		store.PublishPartition(entry.first, std::make_shared<Q1DayPartition>(entry.second));
+		store.PublishPartition(entry.first, std::make_shared<Q1DayPartition>(entry.second), publish_epoch);
 	}
 }
 
@@ -130,14 +132,16 @@ const Q1AuxDiagnostics &GetQ1AuxDiagnostics() {
 
 aux_state::ExecutionGateResult CheckQ1PrefixExecutionGate(const aux_state::PartitionedStateStore &store,
                                                             const aux_state::TxnInvalidationBuffer &txn_buffer,
-                                                            Q1PartitionKey cutoff) {
+                                                            Q1PartitionKey cutoff,
+                                                            uint64_t reader_visible_mutation_epoch) {
 	aux_state::ExecutionGateResult result;
 	if (txn_buffer.IsAllBypassed()) {
 		result.bypassed_by_txn = true;
 		result.committed_invalid = true;
 		return result;
 	}
-	store.ForEachSlot([&](Q1PartitionKey key, aux_state::PartitionStatus status, const std::shared_ptr<const void> &) {
+	store.ForEachSlot([&](Q1PartitionKey key, aux_state::PartitionStatus status, const std::shared_ptr<const void> &,
+	                      uint64_t valid_through_mutation_epoch) {
 		if (key > cutoff) {
 			return;
 		}
@@ -147,6 +151,8 @@ aux_state::ExecutionGateResult CheckQ1PrefixExecutionGate(const aux_state::Parti
 		if (status == aux_state::PartitionStatus::Invalid) {
 			result.committed_invalid = true;
 		}
+		(void)valid_through_mutation_epoch;
+		(void)reader_visible_mutation_epoch;
 	});
 	if (result.bypassed_by_txn || result.committed_invalid) {
 		return result;
@@ -171,11 +177,13 @@ void RebuildQ1AuxPartition(duckdb::ClientContext &context, Q1PartitionKey partit
 	const auto shipdate = PartitionKeyToShipdate(partition);
 	ScanLineitem(context, days, &shipdate);
 	auto &store = GetQ1Store(context);
+	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
+	const auto publish_epoch = registry->GetMaintenanceState(kQ1AuxAcceleratorId).BumpCommittedMutationEpoch();
 	auto it = days.find(partition);
 	if (it == days.end()) {
-		store.PublishPartition(partition, std::make_shared<Q1DayPartition>());
+		store.PublishPartition(partition, std::make_shared<Q1DayPartition>(), publish_epoch);
 	} else {
-		store.PublishPartition(partition, std::make_shared<Q1DayPartition>(it->second));
+		store.PublishPartition(partition, std::make_shared<Q1DayPartition>(it->second), publish_epoch);
 	}
 	RecordQ1Rebuild();
 	g_q1_aux_diagnostics_mut.build_ns =
@@ -202,7 +210,8 @@ std::vector<Q1OutputRow> MergeQ1PartitionsUpTo(duckdb::ClientContext &context, Q
 	auto &store = GetQ1Store(context);
 	std::unordered_map<Q1GroupKey, Q1MergedGroupStats> merged;
 	int64_t partitions_merged = 0;
-	store.ForEachSlot([&](Q1PartitionKey key, aux_state::PartitionStatus status, const std::shared_ptr<const void> &payload) {
+	store.ForEachSlot([&](Q1PartitionKey key, aux_state::PartitionStatus status, const std::shared_ptr<const void> &payload,
+	                      uint64_t) {
 		if (key > cutoff || status != aux_state::PartitionStatus::Valid || !payload) {
 			return;
 		}

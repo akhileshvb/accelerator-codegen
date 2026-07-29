@@ -18,13 +18,16 @@ class PipelineState:
     stage: str = "analysis"
     optimization_iter: int = 0
     session_id: str = ""
+    structural_reanalysis_count: int = 0
     last_gate: dict[str, str] = field(default_factory=dict)
     models_used: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path) -> PipelineState:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return cls(**data)
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in data.items() if k in known}
+        return cls(**filtered)
 
     def save(self, path: Path) -> None:
         path.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")

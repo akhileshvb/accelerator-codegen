@@ -11,7 +11,7 @@
 #include "duckdb/main/materialized_query_result.hpp"
 
 #ifndef ACCEL_ENABLE_PARALLEL_TPCH
-#error "test_tpch_q16_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
+#error "test_tpch_q36_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
 #endif
 
 namespace {
@@ -100,7 +100,7 @@ std::string ReferenceQ16() {
 }
 
 std::string ParallelQ16() {
-	std::string sql = "SELECT * FROM accel_tpch_q16_parallel('" + Escape(kBrand) + "', '" + Escape(kTypePattern) + "'";
+	std::string sql = "SELECT * FROM accel_tpch_q36_parallel('" + Escape(kBrand) + "', '" + Escape(kTypePattern) + "'";
 	for (const auto size : kSizes) {
 		sql += ", " + std::to_string(size);
 	}
@@ -270,10 +270,10 @@ int main() {
 			conn.Query("INSERT INTO partsupp VALUES (1, 1), (1, 2), (2, 3)");
 		});
 
-		std::cout << "test_tpch_q16_semantics passed\n";
+		std::cout << "test_tpch_q36_semantics passed\n";
 		return 0;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q16_semantics failed: " << ex.what() << '\n';
+		std::cerr << "test_tpch_q36_semantics failed: " << ex.what() << '\n';
 		return 1;
 	}
 }

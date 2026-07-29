@@ -58,6 +58,39 @@ CANDIDATE_REQUIRED_FIELDS = (
     "best_regime",
 )
 
+CANDIDATE_SELECTED_FIELDS = CANDIDATE_REQUIRED_FIELDS
+
+CANDIDATE_ALTERNATE_VIABLE_FIELDS = (
+    "id",
+    "design_family",
+    "viability",
+    "selected",
+    "state_grain",
+    "physical_organization",
+    "composition_rule",
+    "operators_eliminated",
+    "read_path_bottleneck_risk",
+    "best_regime",
+)
+
+CANDIDATE_REJECTED_FIELDS = (
+    "id",
+    "design_family",
+    "viability",
+    "selected",
+    "rejection_reason",
+    "state_grain",
+    "physical_organization",
+)
+
+
+def _required_candidate_fields(candidate: dict[str, Any]) -> tuple[str, ...]:
+    if candidate.get("selected") is True:
+        return CANDIDATE_SELECTED_FIELDS
+    if candidate.get("viability") == "rejected":
+        return CANDIDATE_REJECTED_FIELDS
+    return CANDIDATE_ALTERNATE_VIABLE_FIELDS
+
 
 class AuxAnalysisValidationError(Exception):
     """Raised when aux-state analysis.json fails validation."""
@@ -163,12 +196,14 @@ def _validate_state_candidate_search(analysis: dict[str, Any]) -> None:
         if not isinstance(candidate, dict):
             raise AuxAnalysisValidationError(f"state_candidate_search.candidates[{index}] must be an object")
         label = f"state_candidate_search.candidates[{index}]"
-        for key in CANDIDATE_REQUIRED_FIELDS:
+        required_fields = _required_candidate_fields(candidate)
+        for key in required_fields:
             if key not in candidate:
                 raise AuxAnalysisValidationError(f"{label}.{key} is required")
         if candidate.get("viability") == "rejected" and not str(candidate.get("rejection_reason") or "").strip():
             raise AuxAnalysisValidationError(f"{label}.rejection_reason is required when viability is rejected")
-        _validate_estimated_state_units_read(candidate.get("estimated_state_units_read"), label)
+        if candidate.get("selected") is True:
+            _validate_estimated_state_units_read(candidate.get("estimated_state_units_read"), label)
         signatures.add(_candidate_material_signature(candidate))
         if candidate.get("selected") is True:
             selected_ids.append(str(candidate.get("id", "")))

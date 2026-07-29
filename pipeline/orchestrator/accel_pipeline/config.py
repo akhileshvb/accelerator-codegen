@@ -118,7 +118,13 @@ def load_workload(name: str, repo_root: Path | None = None) -> dict[str, Any]:
     data = _load_yaml(path)
     if data.get("workload_kind") == "aux_state":
         aux_defaults = load_aux_state_defaults(root)
-        for key in ("post_implementation_gates", "post_optimization_gates", "post_audit_gates", "prompt_subdir"):
+        for key in (
+            "post_implementation_gates",
+            "post_optimization_gates",
+            "post_audit_gates",
+            "prompt_subdir",
+            "max_structural_reanalysis",
+        ):
             if key in aux_defaults and key not in data:
                 data[key] = aux_defaults[key]
         if "speedup_verification" in aux_defaults and "speedup_verification" not in data:

@@ -1,6 +1,8 @@
 #include "accelerator_codegen/register.hpp"
 #include "accelerator_codegen/tpch_q14_aux.hpp"
 #include "accelerator_codegen/tpch_q14_maintenance.hpp"
+#include "test_support/interference_calibration.hpp"
+#include "test_support/cross_accel_helpers.hpp"
 #include "test_support/q14_aux_helpers.hpp"
 
 #include <algorithm>
@@ -37,10 +39,12 @@ double TimeQueryUs(duckdb::Connection &connection, const std::string &sql) {
 int main(int argc, char **argv) {
 	const char *db_path = argc > 1 ? argv[1] : "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
 	const char *out_path = argc > 2 ? argv[2] : "config/q14_aux_cost_model.json";
+	const int target_query = 14;
 	try {
 		duckdb::DuckDB database(db_path);
 		duckdb::Connection connection(database);
 		accelerator_codegen::RegisterAcceleratorFunctions(connection);
+		connection.Query("PRAGMA threads=1");
 		connection.Query("SELECT * FROM accel_q14_aux_build()");
 
 		const std::string month = "1995-06-01";
@@ -77,21 +81,38 @@ int main(int argc, char **argv) {
 		const auto full_rebuild_us = static_cast<double>(
 		    std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - full_rebuild_start).count());
 
+		const auto all_queries = accelerator_codegen::test_support::CrossAccelTestQueries();
+		const auto interference =
+		    accelerator_codegen::test_support::CalibrateInterference(database, target_query, all_queries);
+
 		std::ofstream out(out_path);
 		out << "{\n"
 		    << "  \"version\": 1,\n"
-		    << "  \"aux_hit_us\": " << MedianUs(aux_hits) << ",\n"
+		    << "  \"aux_hit_us\": " << aux_hit_median << ",\n"
 		    << "  \"fallback_us\": " << MedianUs(fallbacks) << ",\n"
 		    << "  \"partition_rebuild_us\": " << partition_rebuild_us << ",\n"
 		    << "  \"full_rebuild_us\": " << full_rebuild_us << ",\n"
 		    << "  \"first_query_blocking_us\": " << first_query_blocking_us << ",\n"
 		    << "  \"apply_delta_overhead_us\": 100.0,\n"
+		    << "  \"apply_delta_base_us\": 0.0,\n"
+		    << "  \"apply_delta_per_row_us\": 0.5,\n"
+		    << "  \"apply_delta_part_lineitem_scan_us\": 27000.0,\n"
+		    << "  \"apply_delta_max_rows\": 1024,\n"
+		    << "  \"apply_delta_max_part_fanout\": 16,\n"
 		    << "  \"invalidation_overhead_us\": 10.0,\n"
 		    << "  \"decision_margin_us\": 1000.0,\n"
 		    << "  \"min_samples\": 8,\n"
-		    << "  \"incremental_failure_prob\": 0.01\n"
+		    << "  \"incremental_failure_prob\": 0.01,\n"
+		    << "  \"interference_rebuild_per_query_us\": " << interference.interference_rebuild_per_query_us << ",\n"
+		    << "  \"interference_rebuild_scan_byte_us\": " << interference.interference_rebuild_scan_byte_us << ",\n"
+		    << "  \"interference_delta_per_query_us\": " << interference.interference_delta_per_query_us << ",\n"
+		    << "  \"interference_invalidate_per_query_us\": " << interference.interference_invalidate_per_query_us
+		    << ",\n"
+		    << "  \"interference_query_slowdown_factor\": " << interference.interference_query_slowdown_factor << "\n"
 		    << "}\n";
-		std::cout << "calibrate_q14_aux_cost_model wrote " << out_path << std::endl;
+		std::cout << "calibrate_q14_aux_cost_model wrote " << out_path << '\n';
+		std::cout << "interference_delta_per_query_us=" << interference.interference_delta_per_query_us << '\n';
+		std::cout << "interference_rebuild_per_query_us=" << interference.interference_rebuild_per_query_us << '\n';
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
 		std::cerr << "calibrate_q14_aux_cost_model failed: " << ex.what() << std::endl;

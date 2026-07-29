@@ -188,9 +188,11 @@ aux_state::PartitionedStateStore &GetQ14Store(duckdb::ClientContext &context) {
 }
 
 void PublishMonths(duckdb::ClientContext &context, const std::unordered_map<Q14PartitionKey, Q14MonthTotals> &months) {
-	auto &store = GetQ14Store(context);
+	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
+	auto &store = registry->GetStore(kQ14AuxId);
+	const auto publish_epoch = registry->GetMaintenanceState(kQ14AuxId).BumpCommittedMutationEpoch();
 	for (const auto &entry : months) {
-		store.PublishPartition(entry.first, std::make_shared<Q14MonthTotals>(entry.second));
+		store.PublishPartition(entry.first, std::make_shared<Q14MonthTotals>(entry.second), publish_epoch);
 	}
 }
 
@@ -232,12 +234,14 @@ void RebuildQ14AuxPartition(duckdb::ClientContext &context, Q14PartitionKey part
 	parameters.end_date = MakeQ14Parameters(parameters.start_date).end_date;
 	ScanLineitem(context, build_context, &parameters);
 	auto &store = GetQ14Store(context);
+	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
+	const auto publish_epoch = registry->GetMaintenanceState(kQ14AuxId).BumpCommittedMutationEpoch();
 	auto it = build_context.months.find(partition);
 	if (it == build_context.months.end()) {
 		Q14MonthTotals empty;
-		store.PublishPartition(partition, std::make_shared<Q14MonthTotals>(empty));
+		store.PublishPartition(partition, std::make_shared<Q14MonthTotals>(empty), publish_epoch);
 	} else {
-		store.PublishPartition(partition, std::make_shared<Q14MonthTotals>(it->second));
+		store.PublishPartition(partition, std::make_shared<Q14MonthTotals>(it->second), publish_epoch);
 	}
 	RecordQ14Rebuild();
 	g_q14_aux_diagnostics_mut.build_ns =

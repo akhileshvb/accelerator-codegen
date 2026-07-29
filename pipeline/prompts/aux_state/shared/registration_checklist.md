@@ -12,4 +12,6 @@ Registry hooks:
 - `RegisterMutationAccumulator(accelerator_id, ...)`
 - `RegisterMaintenanceHook(accelerator_id, ...)`
 
-Txn buffer: `SetPendingLazyRebuild(accelerator_id, plan)` for lazy repair.
+Lazy repair: on relevant maintenance commit, merge into **global** `AcceleratorMaintenanceState` pending plan (per-accelerator). Any connection may apply via `EnsurePending*RebuildApplied` — not per-connection `SetPendingLazyRebuild` on commit.
+
+Concurrency: read `concurrency_contract.md` — irrelevant mutations NoOp, bounded read path, per-accelerator epochs.

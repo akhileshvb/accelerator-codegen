@@ -23,6 +23,7 @@ def render_prompt(
     query: int,
     stage: str,
     optimization_iter: int = 0,
+    extra_context: dict[str, str] | None = None,
 ) -> str:
     path = resolve_prompt_path(pipeline_config, workload, prompt_name)
     if not path.is_file():
@@ -30,6 +31,9 @@ def render_prompt(
 
     template = path.read_text(encoding="utf-8")
     ctx = build_prompt_context(pipeline_config, workload, query, stage, optimization_iter)
+    ctx.setdefault("analysis_revision_request", "")
+    if extra_context:
+        ctx.update(extra_context)
 
     def repl(match: re.Match[str]) -> str:
         key = match.group(1)

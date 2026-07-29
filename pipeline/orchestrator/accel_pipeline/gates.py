@@ -21,6 +21,9 @@ GATE_SCRIPTS = {
     "aux_mutation_scenarios": "run_aux_mutation_scenarios.sh",
     "aux_speedup_verification": "run_aux_speedup_verification.sh",
     "aux_bench_sweep": "run_aux_bench_sweep.sh",
+    "aux_cross_accel": "run_aux_cross_accel.sh",
+    "aux_multi_connection": "run_aux_multi_connection.sh",
+    "aux_cost_model_calibrate": "run_aux_cost_model_calibrate.sh",
 }
 
 
@@ -32,11 +35,39 @@ class GateResult:
     path: Path | None = None
 
 
+class GateFailure(RuntimeError):
+    """Raised when a required gate does not pass."""
+
+
+GATES_ALLOW_SKIP = frozenset({"baseline", "sf10", "profile"})
+
+
+def gate_failure_message(result: GateResult) -> str:
+    data = result.data
+    detail = str(data.get("notes") or data.get("reason") or "").strip()
+    if not detail and data.get("log_tail"):
+        detail = str(data["log_tail"]).strip()[-500:]
+    if detail:
+        return f"gate {result.name} {result.status}: {detail}"
+    return f"gate {result.name} {result.status}"
+
+
+def require_gate_pass(result: GateResult, *, allow_skip: bool = False) -> None:
+    if result.status == "pass":
+        return
+    if result.status == "skip" and allow_skip:
+        return
+    raise GateFailure(gate_failure_message(result))
+
+
 def run_gate(
     pipeline_config: PipelineConfig,
     gate_name: str,
     query: int,
     workload: dict | None = None,
+    *,
+    raise_on_failure: bool = False,
+    allow_skip: bool | None = None,
 ) -> GateResult:
     if gate_name not in GATE_SCRIPTS:
         raise ValueError(f"unknown gate: {gate_name}")
@@ -65,4 +96,17 @@ def run_gate(
 
     status = data.get("status", "pass" if proc.returncode == 0 else "fail")
     # TODO: Parse benchmark stdout/CSV into baseline_summary.json and profile_summary.json.
-    return GateResult(name=gate_name, status=status, data=data, path=out_json if out_json.is_file() else None)
+    result = GateResult(name=gate_name, status=status, data=data, path=out_json if out_json.is_file() else None)
+    if gate_name == "aux_bench_sweep":
+        from accel_pipeline.pipeline_log import log_bench_sweep_results
+
+        log_bench_sweep_results(
+            pipeline_config.repo_root,
+            query,
+            gate_status=status,
+            gate_data=data,
+        )
+    if raise_on_failure:
+        skip_ok = allow_skip if allow_skip is not None else gate_name in GATES_ALLOW_SKIP
+        require_gate_pass(result, allow_skip=skip_ok)
+    return result

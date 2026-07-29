@@ -30,6 +30,27 @@ def _base_path_cost_decomposition() -> dict:
     }
 
 
+def _alternate_viable_candidate(
+    *,
+    cid: str,
+    family: str,
+    organization: str,
+    composition: str,
+) -> dict:
+    return {
+        "id": cid,
+        "design_family": family,
+        "viability": "viable",
+        "selected": False,
+        "state_grain": f"{cid} grain",
+        "physical_organization": organization,
+        "composition_rule": composition,
+        "operators_eliminated": ["ScanLineitem"],
+        "read_path_bottleneck_risk": "medium",
+        "best_regime": "alternate regime summary",
+    }
+
+
 def _candidate(
     *,
     cid: str,
@@ -98,13 +119,13 @@ def _sample_valid_analysis() -> dict:
             "fewer_than_three_explanation": None,
             "candidates": [
                 selected,
-                _candidate(
+                _alternate_viable_candidate(
                     cid="join_intermediate_cache",
                     family="compact_join_intermediate",
                     organization="materialized lineitem rows joined to promo part subset",
                     composition="scan narrow joined subset and aggregate",
                 ),
-                _candidate(
+                _alternate_viable_candidate(
                     cid="group_partition_tree",
                     family="tree_or_index_aggregate_organization",
                     organization="ordered index over shipdate months with subtree sums",
@@ -178,6 +199,10 @@ class TestAuxAnalysisValidation:
     def test_valid_analysis_passes(self):
         validate_aux_analysis(_sample_valid_analysis())
 
+    def test_validates_slim_alternate_candidates(self):
+        analysis = _sample_valid_analysis()
+        validate_aux_analysis(analysis)
+
     def test_rejects_poor_fitness(self):
         analysis = _sample_valid_analysis()
         analysis["fitness_assessment"]["recommended"] = False
@@ -237,6 +262,32 @@ class TestAnalysisQualityFixtures:
         assert len(paths) >= 3
 
 
+class TestWorkloadConfig:
+    def test_q10_aux_workload_loads(self):
+        from accel_pipeline.config import load_workload
+
+        workload = load_workload("tpch_q10_aux", REPO_ROOT)
+        assert workload["query_number"] == 10
+        assert workload["workload_kind"] == "aux_state"
+        assert workload["aux_function_name"] == "accel_tpch_q10_aux"
+        assert workload["max_structural_reanalysis"] == 2
+        assert len(workload["parameters"]) == 1
+        tables = {t["name"] for t in workload["dependent_tables"]}
+        assert tables == {"customer", "orders", "lineitem", "nation"}
+
+    def test_q12_aux_workload_loads(self):
+        from accel_pipeline.config import load_workload
+
+        workload = load_workload("tpch_q12_aux", REPO_ROOT)
+        assert workload["query_number"] == 12
+        assert workload["workload_kind"] == "aux_state"
+        assert workload["aux_function_name"] == "accel_tpch_q12_aux"
+        assert workload["max_structural_reanalysis"] == 2
+        assert len(workload["parameters"]) == 3
+        tables = {t["name"] for t in workload["dependent_tables"]}
+        assert tables == {"orders", "lineitem"}
+
+
 class TestPromptRendering:
     def test_aux_analysis_prompt_has_no_q14_reference_leakage(self):
         from accel_pipeline.config import apply_workload_overrides, load_pipeline_config, load_workload
@@ -251,13 +302,31 @@ class TestPromptRendering:
         assert "mirroring q14" not in lowered
         assert "reference implementation" not in lowered
         assert "{{aux_state_fitness}}" not in prompt
-        assert "fitness criteria" in lowered
+        assert "fitness" in lowered
         assert "hints only" in lowered
-        assert "base-path cost decomposition" in lowered
-        assert "state candidate search" in lowered
-        assert "bench sweep" in render_prompt(
-            pipeline_config, "03_optimization.md", workload, 14, "optimization", optimization_iter=1
-        ).lower()
+        assert "read on demand" in lowered or "read_file" in lowered
+        assert "base-path cost decomposition" in lowered or "cost decomposition" in lowered
+        assert "state candidate search" in lowered or "materially different" in lowered
+        assert "revision evidence" in lowered
+        assert "taxonomy_index" in lowered
+        assert "{{analysis_revision_request}}" not in prompt
+        revision_prompt = render_prompt(
+            pipeline_config,
+            "01_analysis.md",
+            workload,
+            14,
+            "analysis",
+            extra_context={"analysis_revision_request": "Bottleneck: scan_for_scan at 50% writes"},
+        )
+        assert "Bottleneck: scan_for_scan at 50% writes" in revision_prompt
+        assert "revision" in revision_prompt.lower()
+        impl = render_prompt(pipeline_config, "02_implementation.md", workload, 14, "implementation")
+        assert "implementation contract" in impl.lower()
+        assert "full analysis" in impl.lower()
+        opt = render_prompt(pipeline_config, "03_optimization.md", workload, 14, "optimization", optimization_iter=1)
+        assert "retrieval brief" in opt.lower()
+        assert "full analysis" in opt.lower()
+        assert "{{analysis_json}}" not in opt
 
     def test_dry_run_all_aux_stages(self):
         from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload

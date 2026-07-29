@@ -57,6 +57,17 @@ class CursorSDKBackend:
         if status != "finished":
             error = final_text or f"run ended with status={status}"
 
+        usage = getattr(result, "usage", None)
+        usage_dict: dict[str, int] | None = None
+        if usage is not None:
+            usage_dict = {
+                "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+                "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+                "cache_read_tokens": int(getattr(usage, "cache_read_tokens", 0) or 0),
+                "cache_write_tokens": int(getattr(usage, "cache_write_tokens", 0) or 0),
+            }
+
         return StageRunResult(
             backend=self.name,
             stage=request.stage,
@@ -68,5 +79,6 @@ class CursorSDKBackend:
             metadata={
                 "duration_ms": getattr(result, "duration_ms", None),
                 "model": getattr(getattr(result, "model", None), "id", request.model_id),
+                "usage": usage_dict,
             },
         )

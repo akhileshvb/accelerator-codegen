@@ -19,13 +19,16 @@ query = sys.argv[2]
 out = root / "pipeline" / "artifacts" / f"q{query}" / "gates"
 out.mkdir(parents=True, exist_ok=True)
 
-kernel = root / "src" / "generated" / "tpch" / f"q{query}_kernel.cpp"
-if not kernel.is_file():
-    alt = root / "src" / "generated" / "tpch" / "single-threaded" / f"q{query}_fused_scan.cpp"
-    if alt.is_file():
-        kernel = alt
+kernel_candidates = [
+    root / "src" / "generated" / "tpch" / f"q{query}_kernel.cpp",
+    root / "src" / "generated" / "tpch" / "single-threaded" / f"q{query}_kernel.cpp",
+    root / "src" / "generated" / "tpch" / "single-threaded" / f"q{query}_fused_scan.cpp",
+]
+kernel = next((path for path in kernel_candidates if path.is_file()), kernel_candidates[0])
 issues = []
+kernel_path = None
 if kernel.is_file():
+    kernel_path = str(kernel.relative_to(root))
     text = kernel.read_text()
     if re.search(r"\bgetenv\s*\(", text):
         issues.append("getenv in kernel")
@@ -38,6 +41,7 @@ result = {
     "gate": "fairness",
     "query": int(query),
     "status": "pass" if not issues else "fail",
+    "kernel_path": kernel_path,
     "issues": issues,
 }
 path = out / "fairness.json"

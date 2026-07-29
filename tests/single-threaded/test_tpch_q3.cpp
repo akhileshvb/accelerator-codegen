@@ -165,6 +165,7 @@ void RequireQueryErrorContains(duckdb::Connection &connection, const std::string
 }
 
 void RequireExpectedQ3Schema(duckdb::Connection &connection) {
+	std::cerr << "before schema query\n";
 	auto result = RunQuery(connection, AcceleratorQ3Sql("BUILDING", "1995-03-15"));
 	const duckdb::vector<duckdb::string> expected_names = {"l_orderkey", "revenue", "o_orderdate", "o_shippriority"};
 	const duckdb::vector<duckdb::LogicalType> expected_types = {
@@ -347,9 +348,11 @@ int main() {
 			duckdb::DuckDB file_database(GetTpchDbPath().c_str());
 			duckdb::Connection connection(file_database);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
+			std::cerr << "after register\n";
 
 			RequireExpectedQ3Schema(connection);
 			for (const auto &entry : accelerator_codegen::test_support::kQ3Manifest) {
+				std::cerr << "seed " << entry.label << "\n";
 				// Use reference SQL with full deterministic tie-break (orderkey, shippriority)
 				// so LIMIT 10 matches the accelerator when DuckDB leaves remaining ties unspecified.
 				RequireEqualQ3Results(connection, entry.label,
@@ -371,8 +374,10 @@ int main() {
 		{
 			duckdb::DuckDB memory_database(nullptr);
 			duckdb::Connection connection(memory_database);
-			SetupBaselineFixture(connection);
+			std::cerr << "TEST baseline\n"; SetupBaselineFixture(connection);
+			std::cerr << "before register baseline\n";
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
+			std::cerr << "after register baseline\n";
 
 			RequireEqualQ3Results(connection, "baseline_fixture", ReferenceQ3Sql("BUILDING", "1995-03-15"),
 			                      AcceleratorQ3Sql("BUILDING", "1995-03-15"));
@@ -381,7 +386,7 @@ int main() {
 		{
 			duckdb::DuckDB memory_database(nullptr);
 			duckdb::Connection connection(memory_database);
-			SetupSyntheticFixture(connection);
+			std::cerr << "TEST synthetic\n"; SetupSyntheticFixture(connection);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 
 			RequireEqualQ3Results(connection, "synthetic_building", ReferenceQ3Sql("BUILDING", "1995-03-15"),
@@ -427,7 +432,7 @@ int main() {
 		{
 			duckdb::DuckDB memory_database(nullptr);
 			duckdb::Connection connection(memory_database);
-			SetupEmptySegmentFixture(connection);
+			std::cerr << "TEST empty_segment\n"; SetupEmptySegmentFixture(connection);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			RequireEqualQ3Results(connection, "empty_segment_household", ReferenceQ3Sql("HOUSEHOLD", "1995-03-15"),
 			                      AcceleratorQ3Sql("HOUSEHOLD", "1995-03-15"));
@@ -436,7 +441,7 @@ int main() {
 		{
 			duckdb::DuckDB memory_database(nullptr);
 			duckdb::Connection connection(memory_database);
-			SetupFewerThanTenFixture(connection);
+			std::cerr << "TEST fewer_than_ten\n"; SetupFewerThanTenFixture(connection);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			RequireEqualQ3Results(connection, "fewer_than_ten", ReferenceQ3Sql("BUILDING", "1995-03-15"),
 			                      AcceleratorQ3Sql("BUILDING", "1995-03-15"));
@@ -447,7 +452,7 @@ int main() {
 		{
 			duckdb::DuckDB memory_database(nullptr);
 			duckdb::Connection connection(memory_database);
-			SetupEmptyResultFixture(connection);
+			std::cerr << "TEST empty_result\n"; SetupEmptyResultFixture(connection);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			RequireEqualQ3Results(connection, "empty_result", ReferenceQ3Sql("BUILDING", "1995-03-15"),
 			                      AcceleratorQ3Sql("BUILDING", "1995-03-15"));
@@ -458,7 +463,7 @@ int main() {
 		{
 			duckdb::DuckDB memory_database(nullptr);
 			duckdb::Connection connection(memory_database);
-			SetupTransactionFixture(connection);
+			std::cerr << "TEST transaction\n"; SetupTransactionFixture(connection);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 
 			RequireEqualQ3Results(connection, "transaction_baseline", ReferenceQ3Sql("BUILDING", "1995-03-15"),

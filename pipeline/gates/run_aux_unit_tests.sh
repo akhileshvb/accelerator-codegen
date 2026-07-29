@@ -12,12 +12,19 @@ fi
 OUT="${ROOT}/pipeline/artifacts/q${QUERY}/gates"
 mkdir -p "${OUT}"
 
+# shellcheck source=cmake_ensure_target.sh
+source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
+
 if [[ ! -d "${BUILD}" ]]; then
   echo "{\"gate\":\"aux_unit\",\"query\":${QUERY},\"status\":\"skip\",\"reason\":\"build dir missing\"}" > "${OUT}/aux_unit.json"
   exit 0
 fi
 
+ensure_aux_unit_tests "${ROOT}" "${BUILD}" "${QUERY}" || true
+
+# Match aux unit tests (q{N}_*) and tpch_q{N}_aux smoke, but not base tpch_q{N}_smoke_test.
 PATTERN="q${QUERY}_"
+EXCLUDE="tpch_q${QUERY}_smoke_test"
 if [[ -x "${BUILD}/ctest" ]]; then
   CTEST="${BUILD}/ctest"
 else
@@ -25,7 +32,7 @@ else
 fi
 
 set +e
-LOG="$(cd "${BUILD}" && "${CTEST}" -R "${PATTERN}" --output-on-failure 2>&1)"
+LOG="$(cd "${BUILD}" && "${CTEST}" -R "${PATTERN}" -E "${EXCLUDE}" --output-on-failure 2>&1)"
 RC=$?
 set -e
 
@@ -43,6 +50,7 @@ path.write_text(json.dumps({
     "status": "${STATUS}",
     "exit_code": int("${RC}"),
     "pattern": "${PATTERN}",
+    "exclude": "${EXCLUDE}",
     "log_tail": """${LOG}"""[-4000:],
 }, indent=2))
 print(path.read_text())

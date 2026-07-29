@@ -2,10 +2,12 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "accelerator_codegen/aux_state/accelerator_maintenance_state.hpp"
 #include "accelerator_codegen/aux_state/catalog_dependency.hpp"
 #include "accelerator_codegen/aux_state/incremental_txn_buffer.hpp"
 #include "accelerator_codegen/aux_state/invalidation_plan.hpp"
@@ -57,6 +59,9 @@ public:
 	void RegisterMutationAccumulator(const std::string &accelerator_id, MutationAccumulator accumulator);
 	void RegisterIncrementalBufferFactory(const std::string &accelerator_id, IncrementalBufferFactory factory);
 	PartitionedStateStore &GetStore(const std::string &accelerator_id);
+	AcceleratorMaintenanceState &GetMaintenanceState(const std::string &accelerator_id);
+	bool IsAcceleratorRegistered(const std::string &accelerator_id) const;
+	bool RegisterAcceleratorIfAbsent(const std::string &accelerator_id, const std::function<void()> &register_fn);
 	const std::vector<TableDependency> &GetAcceleratorDependencies(const std::string &accelerator_id) const;
 	void ApplyPreCommitInvalidation(const InvalidationPlan &plan, const std::string &accelerator_id);
 
@@ -86,11 +91,13 @@ private:
 		MutationAccumulator mutation_accumulator;
 		IncrementalBufferFactory incremental_buffer_factory;
 		PartitionedStateStore store;
+		AcceleratorMaintenanceState maintenance;
 		std::vector<TableDependency> dependencies;
 	};
 
 	std::unordered_map<std::string, AcceleratorEntry> accelerators;
 	std::vector<TableDependency> all_dependencies;
+	mutable std::recursive_mutex registration_mutex;
 
 	const TableDependency *FindDependency(duckdb::idx_t table_oid) const;
 };

@@ -97,7 +97,8 @@ bool ComputeQ1IncrementalDelta(duckdb::ClientContext &context, aux_state::Partit
                                const aux_state::InvalidationPlan &plan, Q1IncrementalTxnBuffer &buffer,
                                Q1ComputedIncrementalDelta &out);
 
-void PublishQ1IncrementalDelta(aux_state::PartitionedStateStore &store, const Q1ComputedIncrementalDelta &delta);
+void PublishQ1IncrementalDelta(aux_state::PartitionedStateStore &store, const Q1ComputedIncrementalDelta &delta,
+                                uint64_t valid_through_mutation_epoch);
 
 Q1IncrementalTxnBuffer &GetQ1IncrementalTxnBuffer(aux_state::TxnInvalidationBuffer &txn_buffer);
 

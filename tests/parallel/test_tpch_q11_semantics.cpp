@@ -11,7 +11,7 @@
 #include "duckdb/main/materialized_query_result.hpp"
 
 #ifndef ACCEL_ENABLE_PARALLEL_TPCH
-#error "test_tpch_q11_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
+#error "test_tpch_q31_semantics requires -DACCEL_ENABLE_PARALLEL_TPCH"
 #endif
 
 namespace {
@@ -92,7 +92,7 @@ std::string ReferenceQ11(const std::string &nation, double fraction) {
 }
 
 std::string ParallelQ11(const std::string &nation, double fraction) {
-	return "SELECT * FROM accel_tpch_q11_parallel('" + Escape(nation) + "', " + std::to_string(fraction) + ")";
+	return "SELECT * FROM accel_tpch_q31_parallel('" + Escape(nation) + "', " + std::to_string(fraction) + ")";
 }
 
 void RunCase(duckdb::Connection &connection, const std::string &label, const std::string &nation, double fraction,
@@ -202,10 +202,10 @@ int main() {
 			conn.Query("INSERT INTO partsupp VALUES (2, 1001, 10, 100.00)");
 		});
 
-		std::cout << "test_tpch_q11_semantics passed\n";
+		std::cout << "test_tpch_q31_semantics passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q11_semantics failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q31_semantics failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

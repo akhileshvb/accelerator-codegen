@@ -5,7 +5,7 @@ tpch_db_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
 tpch_db_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb
 
 optimization:
-  max_iterations: 5
+  max_iterations: 3
   no_improvement_stop: 2
 
 stage_max_turns:
@@ -17,9 +17,9 @@ stage_max_turns:
 write_paths:
   - include/accelerator_codegen/tpch_q*
   - src/generated/tpch/q*
-  - tests/test_tpch_q*
+  - tests/single-threaded/test_tpch_q*
   - tests/test_support/q*
-  - benchmarks/tpch/benchmark_q*
+  - benchmarks/tpch/single-threaded/benchmark_q*
   - pipeline/artifacts/**
 
 allowed_commands:

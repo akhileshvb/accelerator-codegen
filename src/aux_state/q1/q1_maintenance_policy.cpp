@@ -8,6 +8,8 @@
 #include "accelerator_codegen/tpch_q1_aux.hpp"
 #include "accelerator_codegen/tpch_q1_diagnostics.hpp"
 #include "accelerator_codegen/tpch_q1_incremental.hpp"
+#include "accelerator_codegen/aux_state/maintenance/partition_publish.hpp"
+#include "accelerator_codegen/aux_state/maintenance/staged_publication.hpp"
 #include "accelerator_codegen/aux_state/accelerator_registry.hpp"
 #include "accelerator_codegen/tpch_q1_maintenance.hpp"
 #include "accelerator_codegen/tpch_q1_rebuild_policy.hpp"
@@ -257,21 +259,27 @@ void PublishQ1MaintenanceOnCommit(duckdb::ClientContext &context, aux_state::Par
 	if (!outcome.active) {
 		return;
 	}
+	if (!MaintenanceOutcomeHasPublishEffect(outcome)) {
+		outcome.Clear();
+		return;
+	}
+	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
+	auto &maintenance = registry->GetMaintenanceState(kQ1AuxAcceleratorId);
+	const auto publish_epoch = maintenance.BumpCommittedMutationEpoch();
+
 	ApplyInvalidation(store, outcome.invalidations);
 
 	if (!outcome.partition_updates.empty()) {
-		Q1ComputedIncrementalDelta delta;
-		delta.success = true;
-		delta.partition_updates = std::move(outcome.partition_updates);
-		PublishQ1IncrementalDelta(store, delta);
+		aux_state::maintenance::PublishValidatedPartitionUpdates(store, outcome.partition_updates, publish_epoch);
 	}
 
 	if (!outcome.pending_lazy_rebuild.IsEmpty()) {
-		txn_buffer.SetPendingLazyRebuild(kQ1AuxAcceleratorId, outcome.pending_lazy_rebuild);
+		maintenance.MergeGlobalPendingLazyRebuild(outcome.pending_lazy_rebuild);
 		RecordQ1LazyRebuildScheduled();
 	}
 
 	(void)context;
+	(void)txn_buffer;
 	outcome.Clear();
 }
 

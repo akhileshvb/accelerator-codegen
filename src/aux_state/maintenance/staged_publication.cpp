@@ -11,4 +11,9 @@ void StagedMaintenanceOutcome::Clear() {
 	active = false;
 }
 
+bool MaintenanceOutcomeHasPublishEffect(const StagedMaintenanceOutcome &outcome) {
+	return !outcome.partition_updates.empty() || !outcome.invalidations.IsEmpty() ||
+	       !outcome.pending_lazy_rebuild.IsEmpty();
+}
+
 } // namespace accelerator_codegen::aux_state::maintenance

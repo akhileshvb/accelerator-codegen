@@ -55,7 +55,7 @@ std::vector<std::string> MaterializeOrderedRows(duckdb::MaterializedQueryResult 
 
 std::string AcceleratorQ11Sql(const accelerator_codegen::test_support::Q11ManifestEntry &entry) {
 	std::ostringstream stream;
-	stream << "SELECT * FROM accel_tpch_q11('" << entry.nation_name << "', " << entry.fraction << ")";
+	stream << "SELECT * FROM accel_tpch_q31('" << entry.nation_name << "', " << entry.fraction << ")";
 	return stream.str();
 }
 
@@ -91,7 +91,7 @@ void RequireEqualResults(duckdb::Connection &connection, const std::string &labe
 	}
 }
 
-void CreateQ11Schema(duckdb::Connection &connection) {
+void CreateQ31Schema(duckdb::Connection &connection) {
 	auto result = connection.Query(
 	    "CREATE TABLE nation(n_nationkey INTEGER NOT NULL, n_name VARCHAR NOT NULL, n_regionkey INTEGER NOT NULL, "
 	    "n_comment VARCHAR NOT NULL);"
@@ -104,7 +104,7 @@ void CreateQ11Schema(duckdb::Connection &connection) {
 }
 
 void SetupSyntheticFixture(duckdb::Connection &connection) {
-	CreateQ11Schema(connection);
+	CreateQ31Schema(connection);
 	connection.Query("INSERT INTO nation VALUES (10, 'ROMANIA', 1, 'c')");
 	connection.Query("INSERT INTO supplier VALUES (200, 's', 'a', 10, 'p', 0, 'c')");
 	connection.Query("INSERT INTO partsupp VALUES (1, 200, 10, 10.00, 'c')");
@@ -121,7 +121,7 @@ int main() {
 			duckdb::Connection connection(file_database);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			connection.Query("PRAGMA threads=1");
-			for (const auto &entry : accelerator_codegen::test_support::kQ11Manifest) {
+			for (const auto &entry : accelerator_codegen::test_support::kQ31Manifest) {
 				RequireEqualResults(connection, entry.label, DuckdbQ11Sql(entry), AcceleratorQ11Sql(entry));
 			}
 		}
@@ -142,13 +142,13 @@ int main() {
 			    "WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey AND n_name = 'ROMANIA') "
 			    "ORDER BY value DESC";
 			RequireEqualResults(connection, "synthetic_having_threshold", reference,
-			                    "SELECT * FROM accel_tpch_q11('ROMANIA', 0.5)");
+			                    "SELECT * FROM accel_tpch_q31('ROMANIA', 0.5)");
 		}
 
-		std::cout << "test_tpch_q11 passed\n";
+		std::cout << "test_tpch_q31 passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q11 failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q31 failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

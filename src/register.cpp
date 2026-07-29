@@ -3,6 +3,10 @@
 #include "accelerator_codegen/aux_state/accelerator_registry.hpp"
 #include "accelerator_codegen/tpch_q14_aux.hpp"
 #include "accelerator_codegen/tpch_q1_aux.hpp"
+#include "accelerator_codegen/tpch_q3_aux.hpp"
+#include "accelerator_codegen/tpch_q12_aux.hpp"
+#include "accelerator_codegen/tpch_q10_aux.hpp"
+#include "accelerator_codegen/tpch_q6_aux.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/on_create_conflict.hpp"
@@ -12,9 +16,15 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
+#include <mutex>
+#include <unordered_set>
+
 namespace accelerator_codegen {
 
 namespace {
+
+std::mutex g_catalog_register_mutex;
+std::unordered_set<duckdb::DatabaseInstance *> g_catalog_registered_databases;
 
 void RegisterTableFunction(duckdb::Catalog &catalog, duckdb::ClientContext &context, duckdb::TableFunctionSet function_set) {
 	duckdb::CreateTableFunctionInfo info(std::move(function_set));
@@ -52,6 +62,18 @@ duckdb::TableFunctionSet CreateQ14AuxRebuildPartitionFunctionSet();
 duckdb::TableFunctionSet CreateTpchQ1AuxFunctionSet();
 duckdb::TableFunctionSet CreateQ1AuxBuildFunctionSet();
 duckdb::TableFunctionSet CreateQ1AuxRebuildPartitionFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ3AuxFunctionSet();
+duckdb::TableFunctionSet CreateQ3AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateQ3AuxRebuildPartitionFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ12AuxFunctionSet();
+duckdb::TableFunctionSet CreateQ12AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateQ12AuxRebuildPartitionFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ10AuxFunctionSet();
+duckdb::TableFunctionSet CreateQ10AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateQ10AuxRebuildPartitionFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ6AuxFunctionSet();
+duckdb::TableFunctionSet CreateQ6AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateQ6AuxRebuildPartitionFunctionSet();
 
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
 duckdb::TableFunctionSet CreateTpchQ6ParallelFunctionSet();
@@ -79,6 +101,16 @@ duckdb::TableFunctionSet CreateTpchQ21ParallelFunctionSet();
 #endif
 
 void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
+    aux_state::InstallAcceleratorSubstrate(connection);
+
+    auto *database = connection.context->db.get();
+    {
+        std::lock_guard<std::mutex> guard(g_catalog_register_mutex);
+        if (!g_catalog_registered_databases.insert(database).second) {
+            return;
+        }
+    }
+
     auto &context = *connection.context;
     auto &catalog = duckdb::Catalog::GetSystemCatalog(context);
     const bool started_transaction = !connection.HasActiveTransaction();
@@ -88,9 +120,12 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
     }
 
     try {
-        aux_state::InstallAcceleratorSubstrate(connection);
         RegisterQ14AuxAccelerator(connection);
         RegisterQ1AuxAccelerator(connection);
+        RegisterQ3AuxAccelerator(connection);
+        RegisterQ12AuxAccelerator(connection);
+        RegisterQ10AuxAccelerator(connection);
+        RegisterQ6AuxAccelerator(connection);
 
         RegisterTableFunction(catalog, context, CreateTpchQ6FunctionSet());
 
@@ -113,6 +148,22 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
         RegisterTableFunction(catalog, context, CreateTpchQ1AuxFunctionSet());
         RegisterTableFunction(catalog, context, CreateQ1AuxBuildFunctionSet());
         RegisterTableFunction(catalog, context, CreateQ1AuxRebuildPartitionFunctionSet());
+
+        RegisterTableFunction(catalog, context, CreateTpchQ3AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ3AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ3AuxRebuildPartitionFunctionSet());
+
+        RegisterTableFunction(catalog, context, CreateTpchQ12AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ12AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ12AuxRebuildPartitionFunctionSet());
+
+        RegisterTableFunction(catalog, context, CreateTpchQ10AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ10AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ10AuxRebuildPartitionFunctionSet());
+
+        RegisterTableFunction(catalog, context, CreateTpchQ6AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ6AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateQ6AuxRebuildPartitionFunctionSet());
 
         RegisterTableFunction(catalog, context, CreateTpchQ17FunctionSet());
 
@@ -194,6 +245,10 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
             connection.Commit();
         }
     } catch (...) {
+        {
+            std::lock_guard<std::mutex> guard(g_catalog_register_mutex);
+            g_catalog_registered_databases.erase(database);
+        }
         if (started_transaction && connection.HasActiveTransaction()) {
             connection.Rollback();
         }

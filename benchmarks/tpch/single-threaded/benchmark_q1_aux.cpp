@@ -314,10 +314,10 @@ double MeasureBaseWriteMedianUs(duckdb::Connection &connection, const std::strin
 
 int main() {
 	try {
-		const int warmup_queries = GetEnvInt("ACCEL_BENCH_WARMUP", 50);
-		const int measured_queries = GetEnvInt("ACCEL_BENCH_QUERIES", 500);
-		const int ref_samples = GetEnvInt("ACCEL_BENCH_REF_SAMPLES", 30);
-		const int base_write_samples = GetEnvInt("ACCEL_BENCH_BASE_WRITE_SAMPLES", 10);
+		const int warmup_queries = GetEnvInt("ACCEL_BENCH_WARMUP", 10);
+		const int measured_queries = GetEnvInt("ACCEL_BENCH_QUERIES", 100);
+		const int ref_samples = GetEnvInt("ACCEL_BENCH_REF_SAMPLES", 5);
+		const int base_write_samples = GetEnvInt("ACCEL_BENCH_BASE_WRITE_SAMPLES", 3);
 		const auto suite = GetEnvString("ACCEL_Q1_BENCH_SUITE", "lineitem_only");
 		constexpr const char *kWritePolicy = "hybrid";
 		const auto locality = GetEnvString("ACCEL_Q1_WRITE_LOCALITY", "single_month");
@@ -343,7 +343,10 @@ int main() {
 
 		accelerator_codegen::RegisterAcceleratorFunctions(accel_connection);
 		const double setup_full_build_ms = TimeBuildMs(accel_connection);
-		const double partition_rebuild_ms = TimePartitionRebuildMs(accel_connection, query_month);
+		const double partition_rebuild_ms =
+		    GetEnvInt("ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB", 0) != 0
+		        ? 0.0
+		        : TimePartitionRebuildMs(accel_connection, query_month);
 
 		const double duckdb_ref_query_median_us =
 		    MeasureReferenceQueryMedianUs(accel_connection, reference_sql, ref_samples);

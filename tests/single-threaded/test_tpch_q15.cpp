@@ -53,7 +53,7 @@ std::vector<std::string> MaterializeOrderedRows(duckdb::MaterializedQueryResult 
 }
 
 std::string AcceleratorQ15Sql(const std::string &start_date) {
-	return "SELECT * FROM accel_tpch_q15(DATE '" + start_date + "')";
+	return "SELECT * FROM accel_tpch_q35(DATE '" + start_date + "')";
 }
 
 void RequireEqualResults(duckdb::Connection &connection, const std::string &label, const std::string &reference_sql,
@@ -82,14 +82,14 @@ int main() {
 		duckdb::Connection connection(file_database);
 		accelerator_codegen::RegisterAcceleratorFunctions(connection);
 		connection.Query("PRAGMA threads=1");
-		for (const auto &entry : accelerator_codegen::test_support::kQ15Manifest) {
+		for (const auto &entry : accelerator_codegen::test_support::kQ35Manifest) {
 			RequireEqualResults(connection, entry.label, ReadFile(entry.sql_path), AcceleratorQ15Sql(entry.start_date));
 		}
 
-		std::cout << "test_tpch_q15 passed\n";
+		std::cout << "test_tpch_q35 passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {
-		std::cerr << "test_tpch_q15 failed: " << ex.what() << std::endl;
+		std::cerr << "test_tpch_q35 failed: " << ex.what() << std::endl;
 		return EXIT_FAILURE;
 	}
 }

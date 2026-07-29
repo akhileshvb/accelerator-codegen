@@ -9,6 +9,8 @@
 #include <chrono>
 
 #include "accelerator_codegen/aux_state/accelerator_registry.hpp"
+#include "accelerator_codegen/aux_state/execution_load.hpp"
+#include "accelerator_codegen/aux_state/reader_mutation_epoch.hpp"
 #include "accelerator_codegen/aux_state/txn_invalidation_buffer.hpp"
 #include "accelerator_codegen/duckdb_scan_adapter.hpp"
 #include "duckdb/function/function_set.hpp"
@@ -55,6 +57,7 @@ struct Q1AuxLocalState : public duckdb::LocalTableFunctionState {
 	Q1FusedKernel *fused_kernel = nullptr;
 	duckdb::unique_ptr<duckdb::FunctionData> bound_scan;
 	duckdb::unique_ptr<ChunkSource> input;
+	std::unique_ptr<aux_state::ActiveExecutionScope> execution_scope;
 	bool use_fallback = false;
 	bool inputs_consumed = false;
 	bool finalized = false;
@@ -73,7 +76,10 @@ void InitQ1AuxLocalState(duckdb::ClientContext &context, Q1AuxLocalState &local_
 	auto txn_buffer = aux_state::GetOrCreateTxnInvalidationBuffer(context);
 	auto registry = aux_state::AcceleratorStateRegistry::GetOrCreate(*context.db);
 	auto &store = registry->GetStore(kQ1AuxAcceleratorId);
-	const auto gate = CheckQ1PrefixExecutionGate(store, *txn_buffer, cutoff);
+	auto &maintenance = registry->GetMaintenanceState(kQ1AuxAcceleratorId);
+	const auto reader_epoch = aux_state::GetReaderVisibleMutationEpoch(context, kQ1AuxAcceleratorId,
+	                                                                   maintenance.GetCommittedMutationEpoch());
+	const auto gate = CheckQ1PrefixExecutionGate(store, *txn_buffer, cutoff, reader_epoch);
 
 	ResetQ1AuxDiagnostics();
 	Q1AuxDiagnostics diagnostics;
@@ -88,6 +94,8 @@ void InitQ1AuxLocalState(duckdb::ClientContext &context, Q1AuxLocalState &local_
 		local_state.kernel = CreateQ1AuxFastKernel(std::move(rows));
 		UpdateQ1AuxDiagnostics(diagnostics);
 		RecordQ1AuxQueryOutcome(true);
+		local_state.execution_scope = std::make_unique<aux_state::ActiveExecutionScope>(
+		    aux_state::ExecutionKind::AuxQuery, kQ1AuxAcceleratorId);
 		return;
 	}
 
@@ -102,6 +110,8 @@ void InitQ1AuxLocalState(duckdb::ClientContext &context, Q1AuxLocalState &local_
 	local_state.bound_scan = std::move(scan);
 	local_state.input = CreateNativeChunkSource(context, *local_state.bound_scan);
 	RecordQ1AuxQueryOutcome(false);
+	local_state.execution_scope = std::make_unique<aux_state::ActiveExecutionScope>(
+	    aux_state::ExecutionKind::FallbackQuery, kQ1AuxAcceleratorId);
 }
 
 duckdb::unique_ptr<duckdb::FunctionData> Q1AuxBind(duckdb::ClientContext &, duckdb::TableFunctionBindInput &input,
@@ -162,6 +172,7 @@ void Q1AuxExec(duckdb::ClientContext &context, duckdb::TableFunctionInput &input
 	}
 
 	if (!local_state.kernel->ProduceOutput(output)) {
+		local_state.execution_scope.reset();
 		output.SetCardinality(0);
 	}
 }

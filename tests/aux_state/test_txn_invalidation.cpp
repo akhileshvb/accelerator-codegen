@@ -37,12 +37,36 @@ void TestMergeInvalidationPlan() {
 	Require(accum.scope == InvalidationScope::AllPartitions, "all partitions wins");
 }
 
+void TestSubtractInvalidationPlan() {
+	InvalidationPlan pending;
+	pending.scope = InvalidationScope::PartitionSet;
+	pending.partitions.insert(199501);
+	pending.partitions.insert(199502);
+
+	InvalidationPlan completed;
+	completed.scope = InvalidationScope::PartitionSet;
+	completed.partitions.insert(199501);
+	SubtractInvalidationPlan(pending, completed);
+	Require(pending.partitions.count(199501) == 0, "completed partition removed");
+	Require(pending.partitions.count(199502) == 1, "other partition remains");
+}
+
+void TestEmptyPartitionSetIsEmpty() {
+	InvalidationPlan plan;
+	plan.scope = InvalidationScope::PartitionSet;
+	Require(plan.IsEmpty(), "empty partition set is empty");
+
+	InvalidationPlan accum;
+	MergeInvalidationPlan(accum, plan);
+	Require(accum.IsEmpty(), "merging empty partition set leaves accumulator empty");
+}
+
 void TestPartitionedStateStore() {
 	PartitionedStateStore store;
 	Require(store.GetStatus(199501) == PartitionStatus::Absent, "absent initially");
 
 	auto payload = std::make_shared<int>(42);
-	store.PublishPartition(199501, payload);
+	store.PublishPartition(199501, payload, 1);
 	Require(store.GetStatus(199501) == PartitionStatus::Valid, "valid after publish");
 	Require(store.GetReadablePayload(199501) != nullptr, "payload readable");
 
@@ -50,8 +74,8 @@ void TestPartitionedStateStore() {
 	Require(store.GetStatus(199501) == PartitionStatus::Invalid, "invalid after invalidate");
 	Require(store.GetReadablePayload(199501) == nullptr, "payload not readable when invalid");
 
-	store.PublishPartition(199502, std::make_shared<int>(7));
-	store.PublishPartition(199503, std::make_shared<int>(8));
+	store.PublishPartition(199502, std::make_shared<int>(7), 2);
+	store.PublishPartition(199503, std::make_shared<int>(8), 2);
 	Require(store.ValidPartitionCount() == 2, "two valid partitions");
 	store.InvalidateAll();
 	Require(store.ValidPartitionCount() == 0, "none valid after invalidate all");
@@ -69,14 +93,14 @@ void TestTxnInvalidationBufferRyow() {
 	Require(!buffer.IsAllBypassed(), "not all bypassed");
 
 	PartitionedStateStore store;
-	store.PublishPartition(199506, std::make_shared<int>(1));
-	store.PublishPartition(199507, std::make_shared<int>(2));
+	store.PublishPartition(199506, std::make_shared<int>(1), 1);
+	store.PublishPartition(199507, std::make_shared<int>(2), 1);
 
-	auto bypassed = CheckExecutionGate(store, buffer, 199506);
+	auto bypassed = CheckExecutionGate(store, buffer, 199506, 1);
 	Require(!bypassed.use_aux, "bypassed partition cannot use aux");
 	Require(bypassed.bypassed_by_txn, "bypass flag set");
 
-	auto other = CheckExecutionGate(store, buffer, 199507);
+	auto other = CheckExecutionGate(store, buffer, 199507, 1);
 	Require(other.use_aux, "untouched valid partition still accelerated");
 }
 
@@ -87,8 +111,8 @@ void TestTxnInvalidationBufferGlobalBypass() {
 	buffer.RecordPlan(plan);
 
 	PartitionedStateStore store;
-	store.PublishPartition(199501, std::make_shared<int>(1));
-	auto gate = CheckExecutionGate(store, buffer, 199501);
+	store.PublishPartition(199501, std::make_shared<int>(1), 1);
+	auto gate = CheckExecutionGate(store, buffer, 199501, 1);
 	Require(!gate.use_aux, "global bypass blocks aux");
 	Require(buffer.IsAllBypassed(), "all bypassed");
 }
@@ -100,7 +124,7 @@ void TestTxnInvalidationBufferPreCommitApplies() {
 	                                        const std::vector<TableDependency> &) { return InvalidationPlan {}; });
 	buffer.SetRegistry(&registry);
 	auto &store = registry.GetStore("test");
-	store.PublishPartition(199501, std::make_shared<int>(1));
+	store.PublishPartition(199501, std::make_shared<int>(1), 1);
 
 	InvalidationPlan plan;
 	plan.scope = InvalidationScope::PartitionSet;
@@ -142,13 +166,13 @@ void TestStagedMaintenanceOutcomeRollbackDiscards() {
 	outcome.active = true;
 	outcome.selected = MaintenanceAction::ApplyDelta;
 	outcome.partition_updates.push_back(
-	    StagedPartitionUpdate {199501, std::make_shared<int>(99)});
+	    StagedPartitionUpdate {199501, std::make_shared<int>(99), 1});
 	outcome.invalidations.scope = InvalidationScope::PartitionSet;
 	outcome.invalidations.partitions.insert(199502);
 
 	PartitionedStateStore store;
-	store.PublishPartition(199501, std::make_shared<int>(1));
-	store.PublishPartition(199502, std::make_shared<int>(2));
+	store.PublishPartition(199501, std::make_shared<int>(1), 1);
+	store.PublishPartition(199502, std::make_shared<int>(2), 1);
 	Require(store.GetStatus(199501) == PartitionStatus::Valid, "partition valid before rollback");
 	Require(store.GetStatus(199502) == PartitionStatus::Valid, "second partition valid before rollback");
 
@@ -167,6 +191,8 @@ void TestStagedMaintenanceOutcomeRollbackDiscards() {
 int main() {
 	try {
 		TestMergeInvalidationPlan();
+		TestSubtractInvalidationPlan();
+		TestEmptyPartitionSetIsEmpty();
 		TestPartitionedStateStore();
 		TestTxnInvalidationBufferRyow();
 		TestTxnInvalidationBufferGlobalBypass();

@@ -5,7 +5,7 @@
 namespace accelerator_codegen::aux_state {
 
 ExecutionGateResult CheckExecutionGate(const PartitionedStateStore &store, const TxnInvalidationBuffer &txn_buffer,
-                                       PartitionKey key) {
+                                       PartitionKey key, uint64_t reader_visible_mutation_epoch) {
 	ExecutionGateResult result;
 	if (txn_buffer.IsAllBypassed()) {
 		result.bypassed_by_txn = true;
@@ -24,6 +24,10 @@ ExecutionGateResult CheckExecutionGate(const PartitionedStateStore &store, const
 		result.committed_invalid = true;
 		return result;
 	}
+	// v1: Valid status is authoritative — maintenance invalidates or republishes on relevant
+	// mutations. valid_through_mutation_epoch is publish metadata; reader_visible_mutation_epoch
+	// is pinned at statement start for future txn-snapshot integration (see substrate_contract.md).
+	(void)reader_visible_mutation_epoch;
 	result.use_aux = true;
 	return result;
 }

@@ -1,5 +1,7 @@
 # Effective aux-state design
 
+For a catalog of **26 state families** (partitioned aggregates, hierarchies, join-derived state, top-k, existence counts, hybrids, etc.) and a step-by-step selection rubric, read `aux_state_taxonomy.md`.
+
 Aux state must **materially accelerate** the query while remaining maintainable under mutations.
 
 ## Design goal

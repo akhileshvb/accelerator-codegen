@@ -33,6 +33,6 @@ def make_shell_tools(ctx: ToolContext):
             check=False,
         )
         out = (proc.stdout or "") + (proc.stderr or "")
-        return f"exit={proc.returncode}\n{out[-8000:]}"
+        return f"exit={proc.returncode}\n{out[-2000:]}"
 
     return run_command

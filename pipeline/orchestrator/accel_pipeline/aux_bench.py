@@ -28,7 +28,14 @@ def _is_data_row(row: dict[str, str]) -> bool:
     first = next(iter(row.keys()), "")
     if first.startswith("#"):
         return False
-    return "write_frequency_pct" in row and "workload_speedup" in row
+    if "write_frequency_pct" not in row or "workload_speedup" not in row:
+        return False
+    try:
+        float(row["workload_speedup"])
+        int(float(row["write_frequency_pct"]))
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def parse_sweep_csv(path: Path) -> list[dict[str, Any]]:

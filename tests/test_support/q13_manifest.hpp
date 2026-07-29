@@ -10,7 +10,7 @@ struct Q13ManifestEntry {
 	const char *comment_pattern;
 };
 
-inline constexpr std::array<Q13ManifestEntry, 20> kQ13Manifest = {{
+inline constexpr std::array<Q13ManifestEntry, 20> kQ33Manifest = {{
     {"seed_1_q13", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/13.sql", "%unusual%accounts%"},
     {"seed_2_q13", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_2/13.sql", "%unusual%requests%"},
     {"seed_3_q13", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_3/13.sql", "%pending%packages%"},

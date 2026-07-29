@@ -13,10 +13,12 @@ struct InvalidationPlan {
 	std::unordered_set<PartitionKey> partitions;
 
 	bool IsEmpty() const {
-		return scope == InvalidationScope::None;
+		return scope == InvalidationScope::None ||
+		       (scope == InvalidationScope::PartitionSet && partitions.empty());
 	}
 };
 
 void MergeInvalidationPlan(InvalidationPlan &accumulator, const InvalidationPlan &delta);
+void SubtractInvalidationPlan(InvalidationPlan &accumulator, const InvalidationPlan &completed);
 
 } // namespace accelerator_codegen::aux_state

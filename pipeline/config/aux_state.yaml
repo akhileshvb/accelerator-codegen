@@ -18,21 +18,36 @@ write_paths:
   - benchmarks/tpch/single-threaded/calibrate_q*_aux_cost_model.cpp
 
 allowed_commands:
-  - "^ctest -R (q\\d+_|tpch_q\\d+_aux).*"
+  - "^ctest -R (q\\d+_|tpch_q\\d+_aux|test_cross_accel|test_aux_multi_connection).*"
   - "^bash scripts/run_aux_bench_sweep\\.sh \\d+$"
+  - "^bash pipeline/gates/run_aux_cross_accel\\.sh \\d+$"
+  - "^bash pipeline/gates/run_aux_multi_connection\\.sh \\d+$"
+  - "^bash pipeline/gates/run_aux_cost_model_calibrate\\.sh \\d+$"
 
 aux_bench_sweep:
   write_frequencies: [0, 1, 10, 50]
   suites: lineitem_only
+  # Fast defaults for pipeline optimization loops (~5–15 min per sweep on SF1).
+  # Override for audit/deep runs: ACCEL_BENCH_QUERIES=500 ACCEL_BENCH_WARMUP=50
+  bench_warmup: 10
+  bench_queries: 100
+  bench_ref_samples: 5
+  bench_base_write_samples: 3
 
 post_implementation_gates:
   - aux_correctness
   - aux_unit
+  - aux_cost_model_calibrate
+  - aux_multi_connection
+  - aux_cross_accel
   - aux_bench_sweep
 
 post_optimization_gates:
   - aux_correctness
   - aux_unit
+  - aux_cost_model_calibrate
+  - aux_multi_connection
+  - aux_cross_accel
   - aux_bench_sweep
 
 post_audit_gates:
@@ -43,6 +58,9 @@ post_audit_gates:
   - fairness
 
 prompt_subdir: aux_state
+
+# Max times analysis may re-run after implementation/optimization finds a structural bottleneck.
+max_structural_reanalysis: 2
 
 speedup_verification:
   min_speedup_vs_base: 2.0

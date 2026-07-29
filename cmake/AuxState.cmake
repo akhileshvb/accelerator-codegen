@@ -103,6 +103,16 @@ function(accel_add_aux_state_benchmarks)
     _accel_aux_add_bench(benchmark_${_prefix}_hybrid_eval benchmarks/tpch/single-threaded/benchmark_${_prefix}_hybrid_eval.cpp)
     _accel_aux_add_bench(calibrate_${_prefix}_aux_cost_model benchmarks/tpch/single-threaded/calibrate_${_prefix}_aux_cost_model.cpp)
 
+    if(AUX_TEST_ROOT)
+        target_include_directories(calibrate_${_prefix}_aux_cost_model PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/single-threaded)
+        target_sources(calibrate_${_prefix}_aux_cost_model PRIVATE
+            ${AUX_TEST_ROOT}/test_support/multi_connection_stress.cpp
+            ${AUX_TEST_ROOT}/test_support/cross_accel_helpers.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/single-threaded/calibrate_aux_cost_model_common.cpp
+        )
+    endif()
+
     if(AUX_EXTRA_BENCHMARKS)
         foreach(extra_bench IN LISTS AUX_EXTRA_BENCHMARKS)
             _accel_aux_add_bench(${extra_bench} benchmarks/tpch/single-threaded/${extra_bench}.cpp)
