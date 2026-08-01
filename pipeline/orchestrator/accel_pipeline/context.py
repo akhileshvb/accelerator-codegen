@@ -10,6 +10,8 @@ from accel_pipeline.analysis_context import (
     analysis_for_optimization,
     build_optimization_retrieval_brief,
     build_shared_docs_reference,
+    compact_base_analysis_for_implementation,
+    compact_base_analysis_for_optimization,
     compact_bench_summary,
     compact_gate_summary,
     compact_json,
@@ -17,7 +19,14 @@ from accel_pipeline.analysis_context import (
     stage_analysis_json,
 )
 from accel_pipeline.aux_bench import load_bench_summary, load_optimization_state
-from accel_pipeline.config import PipelineConfig
+from accel_pipeline.base_bench import (
+    compact_base_optimization_state,
+    compact_summary_for_prompt,
+    load_base_optimization_state,
+)
+from accel_pipeline.config import PipelineConfig, resolve_workload_paths
+from accel_pipeline.kernel_inspiration import format_kernel_inspiration_section
+from accel_pipeline.optimization_runtime import runtime_path_for_prompt
 from accel_pipeline.paths import pipeline_root, query_artifacts_dir
 
 _AUX_SHARED = Path("prompts") / "aux_state" / "shared"
@@ -43,7 +52,7 @@ def build_retrieval_brief(
     optimization_iter: int = 0,
 ) -> str:
     repo = pipeline_config.repo_root
-    art = query_artifacts_dir(repo, query)
+    art = query_artifacts_dir(repo, query, workload=workload)
     analysis_path = art / "analysis.json"
     analysis: dict[str, Any] = {}
     if analysis_path.is_file():
@@ -74,22 +83,15 @@ def build_retrieval_brief(
         return "\n".join(lines)
 
     bottlenecks = analysis.get("likely_bottlenecks", [])
-    playbook_path = pipeline_root(repo) / "artifacts" / "shared" / "optimization_playbook.md"
-    playbook_excerpt = _read_text(playbook_path)[:2000]
-
-    handbook_path = pipeline_root(repo) / "prompts" / "shared" / "handbook.md"
-    handbook_excerpt = _read_text(handbook_path)[:2500]
+    hypotheses = analysis.get("optimization_hypotheses", [])
 
     lines = [
         "## Retrieval brief",
         f"Query: Q{query}",
         f"Bottlenecks: {json.dumps(bottlenecks)}",
+        f"Hypotheses: {json.dumps(hypotheses[:5])}",
         "",
-        "### Playbook excerpt",
-        playbook_excerpt,
-        "",
-        "### Handbook excerpt",
-        handbook_excerpt,
+        "Full analysis: read `analysis.json` in the query artifacts directory on demand.",
     ]
     return "\n".join(lines)
 
@@ -103,7 +105,7 @@ def build_prompt_context(
 ) -> dict[str, str]:
     repo = pipeline_config.repo_root
     pipe = pipeline_config.pipeline_root
-    art = query_artifacts_dir(repo, query)
+    art = query_artifacts_dir(repo, query, workload=workload)
     is_aux = workload.get("workload_kind") == "aux_state"
 
     reference_sql = ""
@@ -141,7 +143,7 @@ def build_prompt_context(
 
     shared_docs = build_shared_docs_reference("pipeline", stage) if is_aux else ""
     bench_summary = load_bench_summary(repo, query) if is_aux else {}
-    opt_state = load_optimization_state(repo, query) if is_aux else {}
+    opt_state = load_optimization_state(repo, query) if is_aux else load_base_optimization_state(art)
 
     if is_aux and stage == "analysis":
         workload_reference_section = "\n".join(
@@ -173,8 +175,135 @@ def build_prompt_context(
     else:
         workload_reference_section = ""
 
+    paths = resolve_workload_paths(pipeline_config, workload, query)
+    benchmark = str(workload.get("benchmark_name", "tpch"))
+    artifacts_rel = f"pipeline/artifacts/{workload.get('artifact_namespace', benchmark)}/q{query}"
+
+    schema_ref = workload.get("schema_reference_path", "")
+    if schema_ref and Path(schema_ref).is_file():
+        rel = Path(schema_ref)
+        try:
+            rel = rel.relative_to(repo)
+        except ValueError:
+            pass
+        schema_reference_section = (
+            "## Schema reference\n\n"
+            f"Read `{rel}` for table/column layout."
+        )
+    else:
+        schema_reference_section = ""
+
+    if benchmark == "sec_edgar":
+        benchmark_notes = (
+            "- SEC-EDGAR queries use **embedded literals** (no bind parameters); table functions may be zero-arg.\n"
+            "- Correctness requires **full multi-row ordered result match**, not a single scalar.\n"
+            "- Benchmark/profile use **one scale factor** (SF3); size structures from bind-time `row_estimate`, "
+            "not hardcoded row/distinct counts from the current profile."
+        )
+        optimization_gate_suffix = " → profile"
+        audit_gate_suffix = ""
+    else:
+        benchmark_notes = ""
+        optimization_gate_suffix = " → sf10 (if state-sizing) → profile"
+        audit_gate_suffix = " and `sf10`"
+
+    lean_stage = stage in ("optimization", "crash_debug", "implementation", "audit")
+    compact_inspiration = stage in ("optimization", "crash_debug", "implementation", "analysis")
+    kernel_inspiration_section = ""
+    if stage in ("implementation", "optimization", "crash_debug", "analysis"):
+        kernel_inspiration_section = format_kernel_inspiration_section(
+            repo,
+            workload_refs=refs,
+            stage=stage,
+            compact=compact_inspiration,
+        )
+
+    profile_summary_path = art / "profile_summary.json"
+    profile_data: dict[str, Any] = {}
+    if profile_summary_path.is_file():
+        try:
+            profile_data = json.loads(profile_summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            profile_data = {}
+    baseline_data: dict[str, Any] = {}
+    baseline_summary_path = art / "baseline_summary.json"
+    if baseline_summary_path.is_file():
+        try:
+            baseline_data = json.loads(baseline_summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            baseline_data = {}
+
+    if lean_stage:
+        profile_summary_json = compact_summary_for_prompt(profile_data)
+        baseline_summary_json = compact_summary_for_prompt(baseline_data)
+    else:
+        profile_summary_json = profile_summary_path.read_text(encoding="utf-8") if profile_summary_path.is_file() else "{}"
+        baseline_summary_json = (
+            baseline_summary_path.read_text(encoding="utf-8") if baseline_summary_path.is_file() else "{}"
+        )
+    optimization_feedback = _read_text(art / "optimization_feedback.md", "(no gate feedback yet — first optimization iter uses implementation gates)")
+
+    base_kernel_opt_path = pipe / "prompts" / "shared" / "base_kernel_optimization.md"
+    if lean_stage:
+        if stage == "optimization":
+            base_kernel_optimization = ""
+        else:
+            base_kernel_optimization = (
+                "See `pipeline/prompts/shared/base_kernel_optimization.md` (read_file if needed)."
+            )
+        constraints_text = "See `pipeline/prompts/shared/constraints.md` (read_file if needed)."
+        profiling_text = "See `pipeline/prompts/shared/profiling_conventions.md` (read_file if needed)."
+    else:
+        base_kernel_optimization = _read_text(base_kernel_opt_path)
+        constraints_text = _read_text(constraints_path)
+        profiling_text = _read_text(pipe / "prompts" / "shared" / "profiling_conventions.md")
+
+    if is_aux:
+        analysis_json = stage_analysis_json(analysis, stage)
+    elif stage == "implementation":
+        analysis_json = compact_base_analysis_for_implementation(analysis)
+    elif stage == "optimization":
+        analysis_json = compact_base_analysis_for_optimization(analysis)
+    else:
+        analysis_json = _read_text(analysis_path, "{}") if stage == "analysis" else "{}"
+
+    retrieval_brief = ""
+    if stage == "analysis":
+        retrieval_brief = build_retrieval_brief(
+            pipeline_config, workload, query, stage=stage, optimization_iter=optimization_iter
+        )
+
+    optimization_runtime_path = ""
+    if stage == "optimization":
+        optimization_runtime_path = runtime_path_for_prompt(pipeline_config, workload, query)
+
     ctx: dict[str, str] = {
         "query_number": str(query),
+        "benchmark_name": benchmark,
+        "display_name": str(workload.get("display_name", benchmark)),
+        "function_name": paths["function_name"],
+        "create_fn": paths["create_fn"],
+        "source_subdir": paths["source_subdir"],
+        "header_path": paths["header_path"],
+        "kernel_path": paths["kernel_path"],
+        "package_path": paths["package_path"],
+        "test_path": paths["test_path"],
+        "benchmark_path": paths["benchmark_path"],
+        "test_target": paths["test_target"],
+        "bench_target": paths["bench_target"],
+        "ctest_smoke_regex": paths["ctest_smoke_regex"],
+        "dataset_db": paths["dataset_db"],
+        "db_env_var": paths["db_env_var"],
+        "artifacts_path": artifacts_rel,
+        "schema_reference_section": schema_reference_section,
+        "benchmark_notes": benchmark_notes,
+        "kernel_inspiration_section": kernel_inspiration_section,
+        "fused_scan_path": paths["fused_scan_path"],
+        "fused_header_path": paths["fused_header_path"],
+        "optimization_gate_suffix": optimization_gate_suffix,
+        "audit_gate_suffix": audit_gate_suffix,
+        "test_template_path": str(workload.get("test_template_path", "")),
+        "benchmark_template_path": str(workload.get("benchmark_template_path", "")),
         "repo_root": str(repo),
         "duckdb_root": str(pipeline_config.repo_root.parent / "accelerator-codegen-duckdb"),
         "reference_sql": reference_sql,
@@ -199,14 +328,14 @@ def build_prompt_context(
         "constraints": (
             "See `pipeline/prompts/aux_state/shared/constraints.md` (read_file if needed)."
             if is_aux
-            else _read_text(constraints_path)
+            else constraints_text
         ),
         "profiling_conventions": (
             "See `pipeline/prompts/shared/profiling_conventions.md` (read_file if needed)."
-            if is_aux
-            else _read_text(pipe / "prompts" / "shared" / "profiling_conventions.md")
+            if is_aux or lean_stage
+            else profiling_text
         ),
-        "analysis_json": stage_analysis_json(analysis, stage) if is_aux else _read_text(analysis_path, "{}"),
+        "analysis_json": analysis_json,
         "implementation_context_json": compact_json(analysis_for_implementation(analysis))
         if is_aux and analysis
         else "{}",
@@ -216,17 +345,39 @@ def build_prompt_context(
         "audit_context_json": compact_json(analysis_for_audit(analysis))
         if is_aux and analysis
         else "{}",
-        "baseline_summary_json": _read_text(art / "baseline_summary.json", "{}"),
-        "audit_result_json": _read_text(art / "audit_result.json", "{}"),
-        "retrieval_brief": build_retrieval_brief(
-            pipeline_config,
-            workload,
-            query,
-            stage=stage,
-            optimization_iter=optimization_iter,
+        "optimization_runtime_path": optimization_runtime_path,
+        "baseline_summary_json": baseline_summary_json if stage != "optimization" else "(see optimization_runtime.md)",
+        "profile_summary_json": profile_summary_json if stage != "optimization" else "(see optimization_runtime.md)",
+        "optimization_feedback": (
+            "(gates write optimization_feedback.md for humans; metrics live in runtime after optimization)"
+            if stage == "implementation"
+            else "(see optimization_runtime.md)"
+            if stage == "optimization"
+            else "(see optimization_runtime.md or experiment_log.md)"
+            if lean_stage
+            else optimization_feedback
         ),
-        "experiment_log_excerpt": _tail_lines(art / "experiment_log.md", 5),
-        "experiment_summary": _tail_lines(art / "experiment_log.md", 8),
+        "optimization_state_json": (
+            "(see optimization_runtime.md)"
+            if stage == "optimization" and not is_aux
+            else compact_json(
+                compact_optimization_state(opt_state, optimization_iter)
+                if is_aux and stage == "optimization"
+                else compact_base_optimization_state(opt_state, optimization_iter)
+                if stage == "optimization"
+                else opt_state
+            )
+        ),
+        "base_kernel_optimization": base_kernel_optimization,
+        "optimization_max_iterations": str(pipeline_config.optimization_max_iterations),
+        "optimization_goal": (
+            "Beat DuckDB (`speedup_median` > 1.0) and keep improving `best_speedup_median` — "
+            "there is no fixed speedup ceiling; stop only when gates stall progress."
+        ),
+        "audit_result_json": _read_text(art / "audit_result.json", "{}"),
+        "retrieval_brief": retrieval_brief,
+        "experiment_log_excerpt": _tail_lines(art / "experiment_log.md", 2 if lean_stage else 5),
+        "experiment_summary": _tail_lines(art / "experiment_log.md", 2 if lean_stage else 8),
         "handbook_excerpt": "",
         "optimization_iter": str(optimization_iter),
         "aux_state_fitness": "",
@@ -242,17 +393,10 @@ def build_prompt_context(
         )
         if is_aux
         else "{}",
-        "optimization_state_json": compact_json(
-            compact_optimization_state(opt_state, optimization_iter)
-            if stage == "optimization"
-            else opt_state
-        )
-        if is_aux
-        else "{}",
         "full_analysis_path": (
             str(analysis_path.relative_to(repo))
             if analysis_path.is_file()
-            else f"pipeline/artifacts/q{query}/analysis.json"
+            else f"{artifacts_rel}/analysis.json"
         ),
         "analysis_revision_request": "",
     }

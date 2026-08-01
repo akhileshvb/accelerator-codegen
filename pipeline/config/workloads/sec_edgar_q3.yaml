@@ -1,0 +1,11 @@
+benchmark_name: sec_edgar
+query_number: 3
+query_id: "3"
+reference_sql_path: benchmarks/sec_edgar/queries/q3.sql
+parameters: []
+output_schema:
+  - {name: name, type: VARCHAR}
+  - {name: cik, type: INTEGER}
+  - {name: total_value, type: DOUBLE}
+tables: [num, sub]
+reference_accelerators: []

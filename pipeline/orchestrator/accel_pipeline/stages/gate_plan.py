@@ -1,43 +1,86 @@
 from __future__ import annotations
 
-import yaml
+from accel_pipeline.gates import GateFailure, GateResult, gate_failure_message, run_gate
 
-from accel_pipeline.config import PipelineConfig, load_workload
+
+GATES_ALLOW_SKIP = frozenset({"baseline", "sf10", "profile"})
 
 
 def workload_post_implementation_gates(workload: dict) -> list[str]:
     if workload.get("workload_kind") == "aux_state":
         return list(workload.get("post_implementation_gates", ["aux_correctness", "aux_unit"]))
-    return ["correctness", "baseline"]
+    if "post_implementation_gates" in workload:
+        return list(workload["post_implementation_gates"])
+    return ["correctness", "baseline", "profile"]
 
 
 def workload_post_optimization_gates(workload: dict) -> list[str]:
     if workload.get("workload_kind") == "aux_state":
-        gates = list(workload.get("post_optimization_gates", ["aux_correctness", "aux_unit"]))
-        return gates
+        return list(workload.get("post_optimization_gates", ["aux_correctness", "aux_unit"]))
+    if "post_optimization_gates" in workload:
+        return list(workload["post_optimization_gates"])
     return ["correctness", "baseline", "sf10", "profile"]
 
 
 def workload_post_audit_gates(workload: dict) -> list[str]:
     if workload.get("workload_kind") == "aux_state":
         return list(workload.get("post_audit_gates", ["aux_correctness", "aux_unit", "fairness"]))
+    if "post_audit_gates" in workload:
+        return list(workload["post_audit_gates"])
     return ["fairness", "sf10"]
 
 
-def run_post_stage_gates(
-    pipeline_config: PipelineConfig,
+def run_post_stage_gates_collect(
+    pipeline_config,
     workload_name: str,
     query: int,
     gate_names: list[str],
-) -> None:
-    from accel_pipeline.gates import run_gate
+    *,
+    change_kind: str = "",
+    iteration: int = 0,
+) -> tuple[list[GateResult], GateResult | None]:
+    from accel_pipeline.config import load_workload
 
     workload = load_workload(workload_name, pipeline_config.repo_root)
+    results: list[GateResult] = []
     for gate_name in gate_names:
-        run_gate(
+        allow_skip = gate_name in GATES_ALLOW_SKIP
+        result = run_gate(
             pipeline_config,
             gate_name,
             query,
             workload=workload,
-            raise_on_failure=True,
+            raise_on_failure=False,
+            allow_skip=allow_skip,
+            change_kind=change_kind,
+            iteration=iteration,
         )
+        results.append(result)
+        if result.status == "pass":
+            continue
+        if result.status == "skip" and allow_skip:
+            continue
+        return results, result
+    return results, None
+
+
+def run_post_stage_gates(
+    pipeline_config,
+    workload_name: str,
+    query: int,
+    gate_names: list[str],
+    *,
+    change_kind: str = "",
+    iteration: int = 0,
+) -> list[GateResult]:
+    results, failed = run_post_stage_gates_collect(
+        pipeline_config,
+        workload_name,
+        query,
+        gate_names,
+        change_kind=change_kind,
+        iteration=iteration,
+    )
+    if failed is not None:
+        raise GateFailure(gate_failure_message(failed))
+    return results

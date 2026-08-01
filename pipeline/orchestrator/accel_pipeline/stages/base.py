@@ -100,9 +100,12 @@ def run_agent_stage(
     )
     result = backend.run_stage(request)
     if result.status != "finished":
-        raise RuntimeError(
-            f"{backend.name} stage {stage} failed: {result.error or result.status}"
-        )
+        detail = (result.error or result.status or "").strip()
+        final = (result.final_text or "").strip()
+        if final and final not in detail:
+            clipped = final if len(final) <= 3000 else final[:3000] + "\n... [truncated]"
+            detail = f"{detail}\n\n--- agent output ---\n{clipped}"
+        raise RuntimeError(f"{backend.name} stage {stage} failed: {detail}")
     log_stage_complete(
         pipeline_config.repo_root,
         query,

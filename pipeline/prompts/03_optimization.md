@@ -1,29 +1,26 @@
-# Stage 3: Optimization (iteration {{optimization_iter}})
+# Stage 3: Optimization (iter {{optimization_iter}} / {{optimization_max_iterations}})
 
-Optimize **Q{{query_number}}** single-threaded accelerator. One bounded change per iteration.
+**{{display_name}} Q{{query_number}}** — {{optimization_goal}}
 
-## Context
+## State (read every episode — not chat history)
 
-{{retrieval_brief}}
+**`{{optimization_runtime_path}}`** — profile counters, phase timings, **strategy palette**, suggested bundle, A/B trials, episode history.
 
-## Baseline
+Do **not** read `optimization_feedback.md`, `baseline_summary.json`, `profile_summary.json`, or `base_kernel_optimization.md` unless runtime points you there.
 
-{{baseline_summary_json}}
+{{kernel_inspiration_section}}
 
-## Last experiments
+## Workflow
 
-{{experiment_log_excerpt}}
+1. **Read profile** — counters, phase us, dominant phase, and ratios in runtime state.
+2. **Pick a coordinated bundle** — 2–4 related changes from the strategy palette (★ = boosted by profile signals; other options are equally valid if they match your hypothesis).
+3. **Verify** — `grep_context` on `{{kernel_path}}`; trace fused/scan → consume → aggregate.
+4. **A/B test** — `begin_ab_trial` → edit bundle → `run_quick_benchmark(include_profile=true)` → `end_ab_trial`.
 
-## Task
+Ship aggressive bundles when speedup is far below 1.0x — micro-opts won't close a 10× gap.
 
-1. State one hypothesis targeting a measured bottleneck.
-2. Apply exactly one change via `apply_patch` (compile-time guard if experimental).
-3. `run_command`: build + `ctest -R tpch_q{{query_number}}`.
-4. `request_gate`: correctness → baseline → sf10 (if state-sizing) → profile.
-5. Write `playbook_proposal.md` if retain or revert with evidence.
+Forbidden: aux-state, persistent indexes, cross-query cache, production `getenv`.
 
-Do not stack unmeasured changes.
-
-{{handbook_excerpt}}
+{{benchmark_notes}}
 
 {{constraints}}

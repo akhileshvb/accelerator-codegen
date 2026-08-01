@@ -9,6 +9,7 @@ from accel_pipeline.pipeline_log import (
     format_candidate_summary,
     format_usage,
     log_analysis_candidates,
+    log_base_bench_gate,
     log_bench_sweep_results,
     log_event,
     log_pipeline_summary,
@@ -130,6 +131,49 @@ def test_log_bench_sweep_results(capsys, tmp_path):
     payload = json.loads(events[-1])
     assert payload["event"] == "aux_bench_sweep"
     assert len(payload["lines"]) == 2
+
+
+def test_log_base_bench_gate_baseline(capsys, tmp_path):
+    log_base_bench_gate(
+        tmp_path,
+        1,
+        gate_name="baseline",
+        gate_status="pass",
+        gate_data={
+            "log_tail": (
+                "label,reference_ms,accelerator_ms,speedup,speedup_median\n"
+                "summary_avg_median,432.0,728.0,0.59,0.59"
+            )
+        },
+        change_kind="implementation",
+        iteration=0,
+        workload={"artifact_namespace": "sec_edgar"},
+    )
+    captured = capsys.readouterr()
+    assert "gate baseline (implementation): status=pass speedup_median=0.590x" in captured.err
+    assert "SLOWER than DuckDB" in captured.err
+
+
+def test_log_base_bench_gate_profile(capsys, tmp_path):
+    log_base_bench_gate(
+        tmp_path,
+        1,
+        gate_name="profile",
+        gate_status="pass",
+        gate_data={
+            "log_tail": (
+                "label,pre_scan_us,pre_next_us,pre_consume_us,finalize_us,generic_rows,pre_rows\n"
+                "q1_profile,100,200,3000,50,400000,1000000"
+            )
+        },
+        change_kind="optimization",
+        iteration=2,
+        workload={"artifact_namespace": "sec_edgar"},
+    )
+    captured = capsys.readouterr()
+    assert "gate profile (optimization iter=2)" in captured.err
+    assert "pre_consume_us=3000us" in captured.err
+    assert "generic_rows=400000" in captured.err
 
 
 def test_log_event_writes_jsonl(tmp_path, capsys):

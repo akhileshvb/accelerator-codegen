@@ -1,37 +1,37 @@
 # Stage 2: Implementation
 
-Implement correctness-first accelerator for TPC-H **Q{{query_number}}**.
+Implement a **fast, correctness-first** accelerator for **{{display_name}}** **Q{{query_number}}**.
 
-## Context
+## Context (compressed — full analysis on disk)
+
+Full analysis: `{{full_analysis_path}}`
 
 {{analysis_json}}
 
-## Query
+Reference SQL: `{{reference_sql_path}}` · Artifacts: `{{artifacts_path}}/`
 
-```sql
-{{reference_sql}}
-```
+## Files (patch stubs — do not rewrite from scratch)
 
-## Files to create
+- `{{header_path}}`, `{{kernel_path}}`, `{{package_path}}`
+- `{{test_path}}`, `{{benchmark_path}}`
+- Optional fused: `{{fused_scan_path}}`
 
-- `include/accelerator_codegen/tpch_q{{query_number}}.hpp`
-- `src/generated/tpch/q{{query_number}}_kernel.cpp`
-- `src/generated/tpch/q{{query_number}}_package.cpp`
-- `tests/test_support/q{{query_number}}_manifest.hpp`
-- `tests/test_tpch_q{{query_number}}.cpp`
-- `benchmarks/tpch/benchmark_q{{query_number}}.cpp`
+Do not edit `src/register.cpp` or `CMakeLists.txt`.
 
-Do not edit `src/register.cpp` or `CMakeLists.txt` (scaffolded separately).
+{{kernel_inspiration_section}}
 
 ## Requirements
 
-- Seeded differential tests (≥20 seeds when available), synthetic + transaction tests.
-- Profiling: `CreateQ{{query_number}}Kernel` and `CreateQ{{query_number}}ProfilingKernel`.
-- Fair benchmark harness matching existing `benchmark_q3.cpp` patterns.
+- Ordered full-result test: reference SQL vs `{{function_name}}()`
+- `CreateQ{{query_number}}Kernel` + `CreateQ{{query_number}}ProfilingKernel` with phase counters (`num_aggregate_us` on fused paths)
+- Benchmark: median timing, `speedup_median` CSV (templates: `{{test_template_path}}`, `{{benchmark_template_path}}`)
 
-After implementation, use `run_command` to build and run `ctest -R tpch_q{{query_number}}`.
-Use `request_gate` with `correctness` when ready.
+Build: `cmake --build build-release --target {{bench_target}} {{test_target}} -j$(nproc)` then `ctest -R {{ctest_smoke_regex}}`.
+
+Gates run automatically: correctness → baseline → profile.
+
+Shared docs (read_file **only if needed**): `pipeline/prompts/shared/constraints.md`, `profiling_conventions.md`, `base_kernel_optimization.md`.
+
+{{benchmark_notes}}
 
 {{constraints}}
-
-{{profiling_conventions}}

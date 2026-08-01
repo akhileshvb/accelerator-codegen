@@ -17,6 +17,23 @@ ensure_cmake_target() {
 	[[ -x "${build}/${target}" ]]
 }
 
+# Rebuild even when the binary already exists (agent may have changed sources).
+build_cmake_target() {
+	local root="$1"
+	local build="$2"
+	local target="$3"
+	if [[ ! -d "${build}" ]]; then
+		return 1
+	fi
+	cmake -S "${root}" -B "${build}"
+	cmake --build "${build}" --target "${target}" -j"$(nproc)"
+	[[ -x "${build}/${target}" ]]
+}
+
+ensure_base_smoke_test() {
+	build_cmake_target "$1" "$2" "$3"
+}
+
 ensure_aux_smoke_test() {
 	ensure_cmake_target "$1" "$2" "test_tpch_q${3}_aux"
 }

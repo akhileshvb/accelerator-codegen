@@ -15,9 +15,9 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
+#include "duckdb/planner/filter/null_filter.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
-#include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/table/row_group_reorderer.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
@@ -233,6 +233,10 @@ duckdb::unique_ptr<duckdb::TableFilterSet> TranslateFilters(const BoundNativeSca
             throw std::runtime_error("scan filter column index lookup failed");
         }
 
+        if (filter_spec.comparison_type == duckdb::ExpressionType::OPERATOR_IS_NOT_NULL) {
+            filters->PushFilter(duckdb::ColumnIndex(scan_index), duckdb::make_uniq<duckdb::IsNotNullFilter>());
+            continue;
+        }
         filters->PushFilter(duckdb::ColumnIndex(scan_index),
                             duckdb::make_uniq<duckdb::ConstantFilter>(filter_spec.comparison_type, filter_spec.constant));
     }
@@ -248,7 +252,8 @@ const NativeScanBindData &GetNativeScanBindData(const duckdb::FunctionData *bind
 
 class NativeChunkSource : public ChunkSource {
 public:
-    explicit NativeChunkSource(duckdb::ClientContext &context_p, const NativeScanBindData &bind_data)
+    explicit NativeChunkSource(duckdb::ClientContext &context_p, const NativeScanBindData &bind_data,
+                               const duckdb::TableFilterSet *additional_filters_p = nullptr)
         : context(context_p),
           transaction(
               duckdb::DuckTransaction::Get(context_p, duckdb::Catalog::GetCatalog(context_p, bind_data.bound_spec.catalog_name))),
@@ -261,7 +266,22 @@ public:
             storage_indexes.emplace_back(column.storage_index);
         }
         chunk.Initialize(context, projected_types);
-        storage.InitializeScan(context, transaction, scan_state, storage_indexes, bind_data.translated_filters.get());
+
+        duckdb::optional_ptr<duckdb::TableFilterSet> filters;
+        if (additional_filters_p) {
+            if (bind_data.translated_filters) {
+                merged_filters = bind_data.translated_filters->Copy();
+                for (auto &entry : additional_filters_p->filters) {
+                    merged_filters->PushFilter(duckdb::ColumnIndex(entry.first), entry.second->Copy());
+                }
+            } else {
+                merged_filters = additional_filters_p->Copy();
+            }
+            filters = merged_filters.get();
+        } else if (bind_data.translated_filters) {
+            filters = bind_data.translated_filters.get();
+        }
+        storage.InitializeScan(context, transaction, scan_state, storage_indexes, filters);
     }
 
     bool Next() override {
@@ -295,6 +315,7 @@ private:
     duckdb::TableCatalogEntry &table;
     duckdb::DataTable &storage;
     duckdb::vector<duckdb::StorageIndex> storage_indexes;
+    duckdb::unique_ptr<duckdb::TableFilterSet> merged_filters;
     duckdb::TableScanState scan_state;
     duckdb::DataChunk chunk;
 };
@@ -316,8 +337,9 @@ void AddNativeTableDependencies(duckdb::LogicalDependencyList &dependencies, con
 }
 
 duckdb::unique_ptr<ChunkSource> CreateNativeChunkSource(duckdb::ClientContext &context,
-                                                        const duckdb::FunctionData &bind_data) {
-    return duckdb::make_uniq<NativeChunkSource>(context, bind_data.Cast<NativeScanBindData>());
+                                                        const duckdb::FunctionData &bind_data,
+                                                        const duckdb::TableFilterSet *additional_filters) {
+    return duckdb::make_uniq<NativeChunkSource>(context, bind_data.Cast<NativeScanBindData>(), additional_filters);
 }
 
 bool NativeScanHasFilters(const duckdb::FunctionData &bind_data) {
@@ -333,6 +355,20 @@ duckdb::StorageIndex GetNativeScanColumnStorageIndex(const duckdb::FunctionData 
         }
     }
     throw std::runtime_error("native scan column not found: " + source_name);
+}
+
+duckdb::idx_t GetNativeScanTableRowCount(duckdb::ClientContext &context, const NativeScanSpec &scan_spec) {
+    auto &table = LookupTable(context, scan_spec);
+    return table.GetStorage().GetTotalRows();
+}
+
+duckdb::idx_t GetNativeScanTableRowCount(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data) {
+    const auto &native = GetNativeScanBindData(&bind_data);
+    NativeScanSpec scan_spec;
+    scan_spec.catalog_name = native.bound_spec.catalog_name;
+    scan_spec.schema_name = native.bound_spec.schema_name;
+    scan_spec.table_name = native.bound_spec.table_name;
+    return GetNativeScanTableRowCount(context, scan_spec);
 }
 
 bool RunNativeFilteredScanConsumer(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data,

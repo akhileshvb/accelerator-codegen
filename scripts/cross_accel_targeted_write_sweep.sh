@@ -53,9 +53,9 @@ for cfg in "${CONFIGS[@]}"; do
   env "${env_args[@]}" "$BIN" "$DB" isolation 2>&1 | tee "$log" >/dev/null
 
   awk -F, -v label="$label" '
-    /^isolation,/ && $11 ~ /^[0-9]+$/ {
+    /^isolation,/ && $12 ~ /^[0-9]+$/ {
       printf "%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
-        label, $5, $9, $10, $7, $11, $14, $17, $18
+        label, $5, $9, $11, $7, $12, $15, $18, $19
     }
   ' "$log" >>"$OUT"
 done

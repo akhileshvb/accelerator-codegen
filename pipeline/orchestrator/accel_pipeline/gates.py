@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.config import PipelineConfig
+from accel_pipeline.gate_context import write_gate_context
+from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 
 
 GATE_SCRIPTS = {
@@ -60,6 +62,25 @@ def require_gate_pass(result: GateResult, *, allow_skip: bool = False) -> None:
     raise GateFailure(gate_failure_message(result))
 
 
+def _gate_output_json(
+    pipeline_config: PipelineConfig,
+    gate_name: str,
+    query: int,
+    workload: dict[str, Any] | None,
+) -> Path:
+    if workload:
+        art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
+        return gates_dir_for_query(art) / f"{gate_name}.json"
+    return (
+        pipeline_config.repo_root
+        / "pipeline"
+        / "artifacts"
+        / f"q{query}"
+        / "gates"
+        / f"{gate_name}.json"
+    )
+
+
 def run_gate(
     pipeline_config: PipelineConfig,
     gate_name: str,
@@ -68,6 +89,8 @@ def run_gate(
     *,
     raise_on_failure: bool = False,
     allow_skip: bool | None = None,
+    change_kind: str = "",
+    iteration: int = 0,
 ) -> GateResult:
     if gate_name not in GATE_SCRIPTS:
         raise ValueError(f"unknown gate: {gate_name}")
@@ -75,6 +98,9 @@ def run_gate(
     script = pipeline_config.gates_dir / GATE_SCRIPTS[gate_name]
     if not script.is_file():
         raise FileNotFoundError(script)
+
+    if workload:
+        write_gate_context(pipeline_config, workload, query)
 
     proc = subprocess.run(
         ["bash", str(script), str(query)],
@@ -84,7 +110,7 @@ def run_gate(
         check=False,
     )
 
-    out_json = pipeline_config.repo_root / "pipeline" / "artifacts" / f"q{query}" / "gates" / f"{gate_name}.json"
+    out_json = _gate_output_json(pipeline_config, gate_name, query, workload)
     data: dict[str, Any] = {}
     if out_json.is_file():
         data = json.loads(out_json.read_text(encoding="utf-8"))
@@ -95,7 +121,6 @@ def run_gate(
             data = {"stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
 
     status = data.get("status", "pass" if proc.returncode == 0 else "fail")
-    # TODO: Parse benchmark stdout/CSV into baseline_summary.json and profile_summary.json.
     result = GateResult(name=gate_name, status=status, data=data, path=out_json if out_json.is_file() else None)
     if gate_name == "aux_bench_sweep":
         from accel_pipeline.pipeline_log import log_bench_sweep_results
@@ -105,6 +130,19 @@ def run_gate(
             query,
             gate_status=status,
             gate_data=data,
+        )
+    if gate_name in {"correctness", "baseline", "profile"}:
+        from accel_pipeline.pipeline_log import log_base_bench_gate
+
+        log_base_bench_gate(
+            pipeline_config.repo_root,
+            query,
+            gate_name=gate_name,
+            gate_status=status,
+            gate_data=data,
+            change_kind=change_kind,
+            iteration=iteration,
+            workload=workload,
         )
     if raise_on_failure:
         skip_ok = allow_skip if allow_skip is not None else gate_name in GATES_ALLOW_SKIP

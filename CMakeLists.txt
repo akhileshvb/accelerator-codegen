@@ -12,6 +12,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(FindSiblingDuckDB)
 include(AuxState)
+include(BaseQuery)
 
 add_library(accelerator_codegen SHARED
     src/duckdb_scan_adapter.cpp
@@ -114,6 +115,13 @@ add_executable(benchmark_aux_cross_accelerator
 )
 target_link_libraries(benchmark_aux_cross_accelerator PRIVATE accelerator_codegen duckdb_sibling)
 target_include_directories(benchmark_aux_cross_accelerator PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(benchmark_aux_workload_multi_connection
+    benchmarks/tpch/single-threaded/benchmark_aux_workload_multi_connection.cpp
+    tests/test_support/cross_accel_helpers.cpp
+)
+target_link_libraries(benchmark_aux_workload_multi_connection PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(benchmark_aux_workload_multi_connection PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 accel_add_aux_state_query(
     QUERY_NUM 1
@@ -1176,3 +1184,55 @@ if(BUILD_TESTING)
 		set_tests_properties(tpch_parallel_smoke_test tpch_q20_semantics_test tpch_q21_semantics_test tpch_q22_semantics_test tpch_q10_semantics_test tpch_q17_semantics_test tpch_q18_semantics_test tpch_q3_semantics_test tpch_q2_semantics_test tpch_q5_semantics_test tpch_q7_semantics_test tpch_q8_semantics_test tpch_q11_semantics_test tpch_q13_semantics_test tpch_q1_semantics_test tpch_q16_semantics_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
 	endif()
 endif()
+
+target_sources(accelerator_codegen PRIVATE
+	src/generated/sec_edgar/sec_edgar_query_runtime.cpp
+)
+
+accel_add_base_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 1
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+	CTEST_RESOURCE_LOCK sec_edgar_db
+)
+
+accel_add_base_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 2
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+	CTEST_RESOURCE_LOCK sec_edgar_db
+)
+
+accel_add_base_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 3
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+	CTEST_RESOURCE_LOCK sec_edgar_db
+)
+
+accel_add_base_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 4
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+	CTEST_RESOURCE_LOCK sec_edgar_db
+)
+
+accel_add_base_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 6
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+	CTEST_RESOURCE_LOCK sec_edgar_db
+)
+
+accel_add_base_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 24
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+	CTEST_RESOURCE_LOCK sec_edgar_db
+)

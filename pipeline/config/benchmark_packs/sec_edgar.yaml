@@ -1,0 +1,60 @@
+benchmark_name: sec_edgar
+display_name: SEC-EDGAR
+artifact_namespace: sec_edgar
+source_subdir: sec_edgar/single-threaded
+header_prefix: sec_edgar_q
+function_prefix: accel_sec_edgar_q
+create_fn_prefix: CreateSecEdgarQ
+test_target_prefix: test_sec_edgar_q
+bench_target_prefix: benchmark_sec_edgar_q
+ctest_smoke_suffix: _smoke_test
+dataset_key: sec_edgar_sf3
+db_env_var: ACCEL_SEC_EDGAR_DB
+ctest_resource_lock: sec_edgar_db
+schema_reference_path: benchmarks/sec_edgar/schema_reference.md
+test_template_path: pipeline/templates/sec_edgar/test_template.cpp
+benchmark_template_path: pipeline/templates/sec_edgar/benchmark_template.cpp
+
+write_paths:
+  - include/accelerator_codegen/sec_edgar_q*
+  - include/accelerator_codegen/sec_edgar_query_runtime.hpp
+  - include/accelerator_codegen/duckdb_scan_adapter.hpp
+  - src/generated/sec_edgar/**
+  - src/duckdb_scan_adapter.cpp
+  - tests/single-threaded/test_sec_edgar_q*
+  - tests/test_support/sec_edgar_q*
+  - benchmarks/sec_edgar/**
+
+allowed_commands:
+  - "^ctest -R sec_edgar_q\\d+.*$"
+  - "^cmake --build build-release --target (test|benchmark)_sec_edgar_q\\d+.*$"
+  - "^cmake --build build-release --target accelerator_codegen.*$"
+  - "^ACCEL_BENCH_WARMUP=\\d+ ACCEL_BENCH_ITERS=\\d+ ACCEL_SEC_EDGAR_DB=\\S+ ./build-release/benchmark_sec_edgar_q\\d+$"
+
+post_implementation_gates:
+  - correctness
+  - baseline
+  - profile
+
+post_optimization_gates:
+  - correctness
+  - baseline
+  - profile
+  - fairness
+
+post_audit_gates:
+  - fairness
+
+snapshot_paths:
+  - include/accelerator_codegen/sec_edgar_q{N}.hpp
+  - include/accelerator_codegen/sec_edgar_q{N}_fused.hpp
+  - src/generated/sec_edgar/single-threaded/q{N}_kernel.cpp
+  - src/generated/sec_edgar/single-threaded/q{N}_package.cpp
+  - src/generated/sec_edgar/single-threaded/q{N}_fused_scan.cpp
+  - src/generated/sec_edgar/sec_edgar_query_runtime.cpp
+
+fairness:
+  cardinality_constants: []
+  kernel_search_paths:
+    - src/generated/sec_edgar/single-threaded/q{N}_kernel.cpp
+    - src/generated/sec_edgar/single-threaded/q{N}_fused_scan.cpp

@@ -136,6 +136,161 @@ def _bench_sweep_detail_lines(by_freq: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _gate_context_label(change_kind: str, iteration: int) -> str:
+    if change_kind == "optimization" and iteration:
+        return f"{change_kind} iter={iteration}"
+    if change_kind:
+        return change_kind
+    return "gate"
+
+
+def log_base_bench_gate(
+    repo_root: Path,
+    query: int,
+    *,
+    gate_name: str,
+    gate_status: str,
+    gate_data: dict[str, Any],
+    change_kind: str = "",
+    iteration: int = 0,
+    workload: dict[str, Any] | None = None,
+) -> None:
+    """Log correctness / baseline speedup / profile phase breakdown after each gate."""
+    from accel_pipeline.base_bench import parse_benchmark_log
+
+    label = _gate_context_label(change_kind, iteration)
+    lines: list[str] = []
+
+    if gate_name == "correctness":
+        lines.append(f"gate correctness ({label}): status={gate_status}")
+    elif gate_name == "baseline":
+        parsed = parse_benchmark_log(str(gate_data.get("log_tail", "")))
+        speedup = float(parsed.get("speedup_median") or 0.0)
+        ref_ms = parsed.get("reference_ms")
+        acc_ms = parsed.get("accelerator_ms")
+        if ref_ms is None and parsed.get("reference_median_us") is not None:
+            ref_ms = float(parsed["reference_median_us"]) / 1000.0
+        if acc_ms is None and parsed.get("accelerator_median_us") is not None:
+            acc_ms = float(parsed["accelerator_median_us"]) / 1000.0
+        line = f"gate baseline ({label}): status={gate_status} speedup_median={speedup:.3f}x"
+        if ref_ms is not None and acc_ms is not None:
+            line += f" ref={ref_ms:.1f}ms accel={acc_ms:.1f}ms"
+        if speedup < 1.0:
+            line += " (SLOWER than DuckDB)"
+        elif speedup >= 2.0:
+            line += " (target met)"
+        lines.append(line)
+    elif gate_name == "profile":
+        log_tail = str(gate_data.get("log_tail", ""))
+        if not log_tail.strip():
+            summary_path = gate_data.get("profile_summary")
+            if summary_path:
+                path = Path(str(summary_path))
+                if path.is_file():
+                    summary = json.loads(path.read_text(encoding="utf-8"))
+                    log_tail = str(summary.get("log_tail", ""))
+        parsed = parse_benchmark_log(log_tail)
+        phases = {
+            k: float(v)
+            for k, v in {
+                "pre_scan_us": parsed.get("pre_scan_us"),
+                "pre_next_us": parsed.get("pre_next_us"),
+                "pre_consume_us": parsed.get("pre_consume_us"),
+                "finalize_us": parsed.get("finalize_us"),
+            }.items()
+            if v is not None
+        }
+        line = f"gate profile ({label}): status={gate_status}"
+        if phases:
+            dominant = max(phases.items(), key=lambda item: item[1])
+            line += f" dominant={dominant[0]}={dominant[1]:.0f}us"
+            parts = [f"{k}={v:.0f}us" for k, v in sorted(phases.items(), key=lambda x: -x[1])]
+            lines.append(line)
+            lines.append("  phases: " + ", ".join(parts))
+        else:
+            reason = str(gate_data.get("reason") or "no phase data in profile output")
+            lines.append(f"{line} ({reason})")
+        generic = parsed.get("generic_rows") or parsed.get("generic_fallback_rows")
+        if generic is not None:
+            lines.append(f"  counters: generic_rows={generic} pre_rows={parsed.get('pre_rows', 'n/a')}")
+    else:
+        return
+
+    for line in lines:
+        print(f"[pipeline] {line}", file=sys.stderr)
+
+    art = query_artifacts_dir(repo_root, query, workload=workload)
+    event_path = art / "pipeline_events.jsonl"
+    event_path.parent.mkdir(parents=True, exist_ok=True)
+    with event_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "ts": datetime.now(UTC).isoformat(),
+                    "event": f"gate_{gate_name}",
+                    "gate_status": gate_status,
+                    "change_kind": change_kind or None,
+                    "iteration": iteration or None,
+                    "lines": lines,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+
+def log_base_bench_summary(
+    repo_root: Path,
+    query: int,
+    diagnosis: dict[str, Any],
+    *,
+    change_kind: str = "",
+    iteration: int = 0,
+    improved: bool = False,
+    workload: dict[str, Any] | None = None,
+) -> None:
+    """Roll-up after baseline+profile gates: speedup, gap, and suggested focus."""
+    label = _gate_context_label(change_kind, iteration)
+    speedup = float(diagnosis.get("speedup_median") or 0.0)
+    best = float(diagnosis.get("best_speedup_median") or 0.0)
+    header = (
+        f"bench summary ({label}): speedup_median={speedup:.3f}x "
+        f"best={best:.3f}x beats_duckdb={diagnosis.get('beats_duckdb')} "
+        f"{'IMPROVED' if improved else 'no improvement'}"
+    )
+    print(f"[pipeline] {header}", file=sys.stderr)
+    if diagnosis.get("dominant_phase"):
+        print(
+            f"[pipeline]   dominant phase: {diagnosis['dominant_phase']} "
+            f"({diagnosis.get('dominant_phase_us', 0):.0f} us)",
+            file=sys.stderr,
+        )
+    for item in diagnosis.get("lacking", [])[:2]:
+        print(f"[pipeline]   lacking: {item}", file=sys.stderr)
+    for item in diagnosis.get("suggested_focus", [])[:2]:
+        print(f"[pipeline]   next focus: {item}", file=sys.stderr)
+
+    art = query_artifacts_dir(repo_root, query, workload=workload)
+    event_path = art / "pipeline_events.jsonl"
+    with event_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "ts": datetime.now(UTC).isoformat(),
+                    "event": "bench_summary",
+                    "change_kind": change_kind or None,
+                    "iteration": iteration or None,
+                    "speedup_median": speedup,
+                    "best_speedup_median": best,
+                    "improved": improved,
+                    "dominant_phase": diagnosis.get("dominant_phase"),
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+
 def log_bench_sweep_results(
     repo_root: Path,
     query: int,

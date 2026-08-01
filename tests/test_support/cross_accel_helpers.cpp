@@ -142,6 +142,10 @@ std::string CrossAccelAuxSql(int query_num) {
 	return AuxSql(query_num);
 }
 
+std::string CrossAccelReferenceSql(int query_num) {
+	return ReferenceSql(query_num);
+}
+
 std::vector<int> CrossAccelTestQueries() {
 	const char *raw = std::getenv("ACCEL_CROSS_ACCEL_TEST_QUERIES");
 	if (raw == nullptr || *raw == '\0') {

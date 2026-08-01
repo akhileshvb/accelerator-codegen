@@ -11,7 +11,7 @@ BIN="${BUILD}/benchmark_aux_cross_accelerator"
 DB="${DB_PATH:-/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb}"
 OUT="${OUT:-${BUILD}/cross_accel_interference_matrix.csv}"
 PNG="${PNG:-${BUILD}/cross_accel_interference_matrix.png}"
-LOG_DIR="${BUILD}/cross_accel_interference_logs"
+LOG_DIR="${LOG_DIR:-${BUILD}/cross_accel_interference_logs}"
 DURATION="${ACCEL_CROSS_ACCEL_DURATION_SEC:-30}"
 READERS="${ACCEL_CROSS_ACCEL_READERS:-5}"
 QUERIES="${ACCEL_CROSS_ACCEL_QUERIES:-1,3,6,10,12,14}"
@@ -62,9 +62,9 @@ for cfg in "${CONFIGS[@]}"; do
   env "${env_args[@]}" "$BIN" "$DB" isolation 2>&1 | tee "$log" >/dev/null
 
   awk -F, -v label="$label" '
-    /^isolation,/ && $11 ~ /^[0-9]+$/ {
+    /^isolation,/ && $12 ~ /^[0-9]+$/ {
       printf "%s,%s,%s,%s,%s,%s,%s,%s,\n",
-        label, $5, $7, $10, $11, $14, $17, $18
+        label, $5, $7, $11, $12, $15, $18, $19
     }
   ' "$log" >>"$OUT"
 done

@@ -4,14 +4,27 @@ build_dir: build-release
 tpch_db_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
 tpch_db_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb
 
+datasets:
+  tpch_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
+  tpch_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb
+  sec_edgar_sf3: /home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb
+
 optimization:
-  max_iterations: 3
-  no_improvement_stop: 2
+  max_iterations: 5
+  no_improvement_stop: 4
+  episodes_per_iteration: 4
+  max_turns_per_episode: 8
+
+crash_debug:
+  # 0 = keep crash-debugging within the same stage/iter until mandatory gates pass
+  max_rounds: 0
+  safety_cap: 25
 
 stage_max_turns:
   analysis: 8
   implementation: 15
-  optimization: 8
+  optimization: 20
+  crash_debug: 12
   audit: 6
 
 write_paths:

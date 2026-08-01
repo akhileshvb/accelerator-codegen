@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
 from dataclasses import dataclass
 
 from accel_pipeline.config import PipelineConfig
+
+_CTEST_DEFAULT_TIMEOUT_SECONDS = 240
 
 
 @dataclass
@@ -23,16 +27,34 @@ def make_shell_tools(ctx: ToolContext):
         workdir = ctx.pipeline_config.repo_root
         if cwd:
             workdir = ctx.pipeline_config.repo_root / cwd
-        proc = subprocess.run(
+        effective_timeout = timeout
+        if re.search(r"\bctest\b", cmd) and timeout >= 600:
+            effective_timeout = _CTEST_DEFAULT_TIMEOUT_SECONDS
+        proc = subprocess.Popen(
             cmd,
             shell=True,
             cwd=workdir,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            check=False,
+            start_new_session=True,
         )
-        out = (proc.stdout or "") + (proc.stderr or "")
-        return f"exit={proc.returncode}\n{out[-2000:]}"
+        try:
+            stdout, stderr = proc.communicate(timeout=effective_timeout)
+            exit_code = proc.returncode
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                proc.kill()
+            stdout, stderr = proc.communicate()
+            out = (stdout or "") + (stderr or "")
+            return (
+                f"exit=124\n"
+                f"command timed out after {effective_timeout}s (process group killed)\n"
+                f"{out[-2000:]}"
+            )
+        out = (stdout or "") + (stderr or "")
+        return f"exit={exit_code}\n{out[-2000:]}"
 
     return run_command

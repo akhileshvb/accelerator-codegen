@@ -49,6 +49,52 @@ def compact_json(data: Any) -> str:
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
 
+def _truncate_text(text: str, *, max_chars: int) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[: max_chars - 3] + "..."
+
+
+def compact_base_analysis_for_implementation(analysis: dict[str, Any]) -> str:
+    if not analysis:
+        return "{}"
+    logical = analysis.get("logical_plan") if isinstance(analysis.get("logical_plan"), dict) else {}
+    scan = analysis.get("scan_order")
+    if isinstance(scan, str):
+        scan_order = _truncate_text(scan, max_chars=240)
+    else:
+        scan_order = (scan or [])[:2]
+    files = analysis.get("files_to_create") or []
+    file_paths = []
+    for item in files[:6]:
+        if isinstance(item, dict):
+            file_paths.append(item.get("path") or item.get("file") or str(item)[:80])
+        else:
+            file_paths.append(str(item))
+    payload = {
+        "query_summary": _truncate_text(str(analysis.get("query_summary") or ""), max_chars=360),
+        "execution_strategy": _truncate_text(
+            str(logical.get("simplest_execution_strategy") or ""), max_chars=280
+        ),
+        "scan_order": scan_order,
+        "likely_bottlenecks": (analysis.get("likely_bottlenecks") or [])[:2],
+        "optimization_hypotheses": (analysis.get("optimization_hypotheses") or [])[:3],
+        "files_to_create": file_paths,
+    }
+    return compact_json(payload)
+
+
+def compact_base_analysis_for_optimization(analysis: dict[str, Any]) -> str:
+    if not analysis:
+        return "{}"
+    payload = {
+        "likely_bottlenecks": (analysis.get("likely_bottlenecks") or [])[:3],
+        "optimization_hypotheses": (analysis.get("optimization_hypotheses") or [])[:4],
+    }
+    return compact_json(payload)
+
+
 def compact_bench_summary(summary: dict[str, Any]) -> dict[str, Any]:
     if not summary:
         return {}

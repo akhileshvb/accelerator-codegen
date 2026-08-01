@@ -1,0 +1,14 @@
+benchmark_name: sec_edgar
+query_number: 4
+query_id: "4"
+reference_sql_path: benchmarks/sec_edgar/queries/q4.sql
+parameters: []
+output_schema:
+  - {name: sic, type: INTEGER}
+  - {name: tlabel, type: VARCHAR}
+  - {name: stmt, type: VARCHAR}
+  - {name: num_companies, type: BIGINT}
+  - {name: total_value, type: DOUBLE}
+  - {name: avg_value, type: DOUBLE}
+tables: [num, sub, tag, pre]
+reference_accelerators: []

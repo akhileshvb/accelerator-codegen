@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "accelerator_codegen/sec_edgar_query_runtime.hpp"
 #include "accelerator_codegen/tpch_q1.hpp"
 #include "accelerator_codegen/tpch_q1_fused.hpp"
 #include "accelerator_codegen/tpch_q4.hpp"
@@ -16,6 +17,7 @@
 #include "duckdb/execution/execution_context.hpp"
 
 namespace accelerator_codegen {
+
 namespace {
 
 struct RuntimePackageInfo : public duckdb::TableFunctionInfo {
@@ -118,6 +120,7 @@ struct RuntimeQueryLocalState : public duckdb::LocalTableFunctionState {
     ParallelKernelInstance *parallel_kernel = nullptr;
 #endif
     bool use_fused_q1 = false;
+    bool use_fused_sec_edgar_q1 = false;
     bool use_fused_q4_lineitem = false;
     bool use_fused_q8_scans = false;
     bool use_fused_q2_scans = false;
@@ -237,6 +240,17 @@ duckdb::unique_ptr<duckdb::LocalTableFunctionState> RuntimeLocalInit(duckdb::Exe
         return local_state;
     }
 
+    if (IsSecEdgarFusedQuery(bound_query.package)) {
+        if (bound_query.bound_inputs.size() != 1) {
+            throw std::runtime_error("SEC EDGAR fused scan expects exactly one bound input");
+        }
+        if (TryInitSecEdgarFusedKernel(bound_query.package, *bound_query.query_parameters,
+                                       bound_query.kernel_factory_data.get(), local_state->kernel)) {
+            local_state->use_fused_sec_edgar_q1 = true;
+            return local_state;
+        }
+    }
+
     const bool try_fused_q10_customer = IsQ10Package(bound_query.package) && Q10FusedScansEnabled();
     if (try_fused_q10_customer) {
         if (bound_query.bound_inputs.size() != 4) {
@@ -336,6 +350,11 @@ void RuntimeExec(duckdb::ClientContext &context,
                 throw std::runtime_error("Q1 fused kernel missing");
             }
             local_state.fused_kernel->RunFusedScan(context, *bound_query.bound_inputs[0]);
+        } else if (local_state.use_fused_sec_edgar_q1) {
+            if (!local_state.kernel) {
+                throw std::runtime_error("SEC EDGAR Q1 fused kernel missing");
+            }
+            ExecSecEdgarFusedPreScan(*local_state.kernel, context, *bound_query.bound_inputs[0]);
         } else if (local_state.use_fused_q10_customer) {
             if (!local_state.kernel) {
                 throw std::runtime_error("Q10 fused customer kernel missing");

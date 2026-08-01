@@ -16,24 +16,36 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 query = sys.argv[2]
-out = root / "pipeline" / "artifacts" / f"q{query}" / "gates"
+
+sys.path.insert(0, str(root / "pipeline" / "gates"))
+from read_gate_context import find_gate_context
+
+ctx = find_gate_context(root, query)
+art_ns = ctx.get("artifact_namespace", "tpch")
+out = root / "pipeline" / "artifacts" / art_ns / f"q{query}" / "gates"
 out.mkdir(parents=True, exist_ok=True)
 
-kernel_candidates = [
-    root / "src" / "generated" / "tpch" / f"q{query}_kernel.cpp",
-    root / "src" / "generated" / "tpch" / "single-threaded" / f"q{query}_kernel.cpp",
-    root / "src" / "generated" / "tpch" / "single-threaded" / f"q{query}_fused_scan.cpp",
-]
-kernel = next((path for path in kernel_candidates if path.is_file()), kernel_candidates[0])
+fairness = ctx.get("fairness", {})
+kernel_templates = fairness.get(
+    "kernel_search_paths",
+    [
+        f"src/generated/tpch/single-threaded/q{query}_kernel.cpp",
+        f"src/generated/tpch/q{query}_kernel.cpp",
+    ],
+)
+kernel_candidates = [root / tpl.replace("{N}", query) for tpl in kernel_templates]
+
 issues = []
 kernel_path = None
-if kernel.is_file():
+kernel = next((path for path in kernel_candidates if path.is_file()), None)
+if kernel is not None:
     kernel_path = str(kernel.relative_to(root))
     text = kernel.read_text()
     if re.search(r"\bgetenv\s*\(", text):
         issues.append("getenv in kernel")
-    if re.search(r"\b(150000|600000|800000)\b", text):
-        issues.append("possible SF1 cardinality constant")
+    for constant in fairness.get("cardinality_constants", []):
+        if constant in text:
+            issues.append(f"possible cardinality constant: {constant}")
 else:
     issues.append("kernel file missing")
 

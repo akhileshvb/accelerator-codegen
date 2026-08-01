@@ -96,6 +96,29 @@ TOOL_SCHEMAS: dict[str, dict] = {
         },
         "required": ["pattern"],
     },
+    "grep_context": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Repo-relative file to search."},
+            "pattern": {"type": "string", "description": "Regex pattern to match per line."},
+            "context": {
+                "type": "integer",
+                "description": "Lines of context before and after each match.",
+                "default": 3,
+            },
+            "max_matches": {
+                "type": "integer",
+                "description": "Maximum match lines to return.",
+                "default": 12,
+            },
+            "case_insensitive": {
+                "type": "boolean",
+                "description": "Case-insensitive regex matching.",
+                "default": False,
+            },
+        },
+        "required": ["path", "pattern"],
+    },
     "run_command": {
         "type": "object",
         "properties": {
@@ -104,6 +127,39 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "timeout": {"type": "integer", "description": "Timeout in seconds.", "default": 600},
         },
         "required": ["cmd"],
+    },
+    "end_ab_trial": {
+        "type": "object",
+        "properties": {
+            "trial_id": {"type": "string", "description": "Trial id passed to begin_ab_trial."},
+            "keep": {
+                "type": "boolean",
+                "description": "True to keep the modified kernel; false to restore the checkpoint.",
+            },
+        },
+        "required": ["trial_id", "keep"],
+    },
+    "begin_ab_trial": {
+        "type": "object",
+        "properties": {
+            "trial_id": {"type": "string", "description": "Short unique id for this trial, e.g. dict_flat_adsh."},
+            "hypothesis": {
+                "type": "string",
+                "description": "What this trial tests and which profile counter it targets.",
+            },
+        },
+        "required": ["trial_id", "hypothesis"],
+    },
+    "run_quick_benchmark": {
+        "type": "object",
+        "properties": {
+            "include_profile": {
+                "type": "boolean",
+                "description": "Include profile counters in the benchmark run.",
+                "default": True,
+            },
+        },
+        "required": [],
     },
     "request_gate": {
         "type": "object",

@@ -55,8 +55,11 @@ struct NativeScanConsumerOptions {
 };
 
 duckdb::StorageIndex GetNativeScanColumnStorageIndex(const duckdb::FunctionData &bind_data, const std::string &source_name);
+duckdb::idx_t GetNativeScanTableRowCount(duckdb::ClientContext &context, const NativeScanSpec &scan_spec);
+duckdb::idx_t GetNativeScanTableRowCount(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data);
 duckdb::unique_ptr<ChunkSource> CreateNativeChunkSource(duckdb::ClientContext &context,
-                                                        const duckdb::FunctionData &bind_data);
+                                                        const duckdb::FunctionData &bind_data,
+                                                        const duckdb::TableFilterSet *additional_filters = nullptr);
 
 //! True when the bound native scan pushed at least one table filter.
 bool NativeScanHasFilters(const duckdb::FunctionData &bind_data);

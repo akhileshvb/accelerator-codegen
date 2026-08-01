@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,7 +68,7 @@ def make_repo_tools(ctx: ToolContext):
             )
         lines = raw.decode("utf-8").splitlines()
         if not offset and not limit:
-            limit = 200
+            limit = 100
         if offset or limit:
             end = offset + limit if limit else None
             lines = lines[offset:end]
@@ -186,4 +187,77 @@ def make_repo_tools(ctx: ToolContext):
             f"writable={_is_writable(ctx, target)}"
         )
 
-    return read_file, write_file, apply_patch, insert_lines, delete_file, list_dir, glob_files, file_info
+    def grep_context(
+        path: str,
+        pattern: str,
+        context: int = 3,
+        max_matches: int = 12,
+        case_insensitive: bool = False,
+    ) -> str:
+        """Search one file; return matching lines with ±context (prefer over read_file on large files)."""
+        if context < 0:
+            raise ValueError("context must be >= 0")
+        if max_matches < 1:
+            raise ValueError("max_matches must be >= 1")
+        target = _resolve_path(ctx, path)
+        if not target.is_file():
+            raise FileNotFoundError(f"file not found: {path}")
+        raw = target.read_bytes()
+        if b"\x00" in raw[:4096]:
+            raise ValueError(f"refusing to read binary file: {path}")
+        if len(raw) > _MAX_READ_BYTES:
+            raise ValueError(
+                f"file too large ({len(raw)} bytes, max {_MAX_READ_BYTES}): {path}; "
+                "narrow with a more specific path"
+            )
+        lines = raw.decode("utf-8").splitlines()
+        flags = re.IGNORECASE if case_insensitive else 0
+        try:
+            compiled = re.compile(pattern, flags)
+        except re.error as exc:
+            raise ValueError(f"invalid regex pattern: {exc}") from exc
+
+        match_indices: list[int] = []
+        for idx, line in enumerate(lines):
+            if compiled.search(line):
+                match_indices.append(idx)
+                if len(match_indices) >= max_matches:
+                    break
+        if not match_indices:
+            return f"(no matches) pattern={pattern!r} path={path}"
+
+        match_set = set(match_indices)
+        ranges: list[tuple[int, int]] = []
+        for idx in match_indices:
+            start = max(0, idx - context)
+            end = min(len(lines), idx + context + 1)
+            if ranges and start <= ranges[-1][1]:
+                ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+            else:
+                ranges.append((start, end))
+
+        width = len(str(len(lines)))
+        parts: list[str] = [
+            f"{len(match_indices)} match(es) in {path} (pattern={pattern!r}, context=±{context})"
+        ]
+        for block_idx, (start, end) in enumerate(ranges):
+            if block_idx:
+                parts.append("--")
+            for line_no in range(start, end):
+                marker = ">" if line_no in match_set else " "
+                parts.append(f"{line_no + 1:>{width}}{marker}| {lines[line_no]}")
+        if len(match_indices) >= max_matches:
+            parts.append(f"(truncated at {max_matches} matches)")
+        return "\n".join(parts)
+
+    return (
+        read_file,
+        write_file,
+        apply_patch,
+        insert_lines,
+        delete_file,
+        list_dir,
+        glob_files,
+        file_info,
+        grep_context,
+    )

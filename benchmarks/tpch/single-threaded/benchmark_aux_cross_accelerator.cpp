@@ -4,9 +4,11 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <future>
+#include <limits>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -38,7 +40,77 @@ struct QueryStats {
 struct ConcurrentPhaseResult {
 	std::unordered_map<int, std::unique_ptr<QueryStats>> stats_by_query;
 	uint64_t writer_commits = 0;
+	double writer_total_us = 0.0;
 };
+
+double Percentile(std::vector<double> values, double percentile);
+
+double SumReadLatenciesUs(const ConcurrentPhaseResult &phase_result) {
+	double total = 0.0;
+	for (const auto &entry : phase_result.stats_by_query) {
+		std::lock_guard<std::mutex> lock(entry.second->latencies_mutex);
+		for (double sample : entry.second->latencies) {
+			total += sample;
+		}
+	}
+	return total;
+}
+
+uint64_t CountReaderQueries(const ConcurrentPhaseResult &phase_result) {
+	uint64_t total = 0;
+	for (const auto &entry : phase_result.stats_by_query) {
+		total += entry.second->successes.load() + entry.second->failures.load();
+	}
+	return total;
+}
+
+double GeometricMeanReadSpeedup(const ConcurrentPhaseResult &baseline_result,
+                                const ConcurrentPhaseResult &accel_result,
+                                const std::vector<int> &query_order) {
+	double log_sum = 0.0;
+	int count = 0;
+	for (int query_num : query_order) {
+		const auto &baseline_stats = *baseline_result.stats_by_query.at(query_num);
+		const auto &accel_stats = *accel_result.stats_by_query.at(query_num);
+		const double baseline_p50 = Percentile(baseline_stats.latencies, 0.50);
+		const double accel_p50 = Percentile(accel_stats.latencies, 0.50);
+		if (baseline_p50 > 0.0 && accel_p50 > 0.0) {
+			log_sum += std::log(baseline_p50 / accel_p50);
+			count++;
+		}
+	}
+	return count > 0 ? std::exp(log_sum / static_cast<double>(count)) : 0.0;
+}
+
+double ComputeWorkloadSpeedup(const ConcurrentPhaseResult &baseline_result, const ConcurrentPhaseResult &accel_result,
+                              const std::vector<int> &query_order) {
+	const double geom_read_speedup = GeometricMeanReadSpeedup(baseline_result, accel_result, query_order);
+	if (geom_read_speedup <= 0.0) {
+		return 0.0;
+	}
+	const double baseline_read_us = SumReadLatenciesUs(baseline_result);
+	const double accel_read_us = SumReadLatenciesUs(accel_result);
+	const double baseline_write_ratio =
+	    baseline_read_us > 0.0 ? baseline_result.writer_total_us / baseline_read_us : 0.0;
+	const double accel_write_ratio = accel_read_us > 0.0 ? accel_result.writer_total_us / accel_read_us : 0.0;
+	return geom_read_speedup * (1.0 + baseline_write_ratio) / (1.0 + accel_write_ratio);
+}
+
+uint64_t ReaderStrideForWritePct(int write_pct) {
+	if (write_pct <= 0) {
+		return 0;
+	}
+	if (write_pct == 1) {
+		return 100;
+	}
+	if (write_pct == 10) {
+		return 10;
+	}
+	if (write_pct == 50) {
+		return 2;
+	}
+	return static_cast<uint64_t>(100 / write_pct);
+}
 
 double ElapsedMs(const Clock::time_point &start, const Clock::time_point &end) {
 	return static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
@@ -65,6 +137,30 @@ std::string GetEnv(const char *name, const std::string &fallback) {
 int GetEnvInt(const char *name, int fallback) {
 	const char *value = std::getenv(name);
 	return value ? std::stoi(value) : fallback;
+}
+
+double GetEnvDouble(const char *name, double fallback) {
+	const char *value = std::getenv(name);
+	return value ? std::stod(value) : fallback;
+}
+
+void MaybeThrottleAggregateReaderQps(const Clock::time_point &phase_start, uint64_t reader_queries_finished,
+                                     double target_aggregate_qps) {
+	if (target_aggregate_qps <= 0.0) {
+		return;
+	}
+	const double elapsed_sec = ElapsedUs(phase_start, Clock::now()) / 1'000'000.0;
+	if (elapsed_sec <= 0.0) {
+		return;
+	}
+	const double allowed = elapsed_sec * target_aggregate_qps;
+	if (static_cast<double>(reader_queries_finished) <= allowed) {
+		return;
+	}
+	const double sleep_sec = (static_cast<double>(reader_queries_finished) - allowed) / target_aggregate_qps;
+	if (sleep_sec > 0.0) {
+		std::this_thread::sleep_for(std::chrono::duration<double>(sleep_sec));
+	}
 }
 
 bool EnvFlag(const char *name) {
@@ -238,6 +334,30 @@ std::string AuxSql(int query_num) {
 	}
 }
 
+bool ShouldWriteAtQueryIndex(int query_index, int scheduled_write_pct) {
+	if (scheduled_write_pct <= 0) {
+		return false;
+	}
+	if (scheduled_write_pct == 1) {
+		return query_index % 100 == 0;
+	}
+	if (scheduled_write_pct == 10) {
+		return query_index % 10 == 0;
+	}
+	if (scheduled_write_pct == 50) {
+		return query_index % 2 == 0;
+	}
+	const int stride = 100 / scheduled_write_pct;
+	return stride > 0 && (query_index % stride) == 0;
+}
+
+bool RunScheduledInvalidatingWrite(duckdb::Connection &connection, int query_num, int writer_bulk_rows) {
+	const auto sql =
+	    accelerator_codegen::test_support::InvalidatingWriterSqlForQuery(query_num, writer_bulk_rows);
+	auto result = connection.Query(sql);
+	return result && !result->HasError();
+}
+
 bool RunReaderQuery(duckdb::Connection &connection, int query_num, ReaderKind kind) {
 	const auto sql = kind == ReaderKind::Baseline ? BaselineSql(query_num) : AuxSql(query_num);
 	auto result = connection.Query(sql);
@@ -337,22 +457,33 @@ ConcurrentPhaseResult RunConcurrentPhase(duckdb::DuckDB &database, const std::ve
                                          const std::string &writer_mode, const char *custom_writer_sql, int readers,
                                          int duration_sec, bool enable_writer, int join_grace_sec, int writer_sleep_ms,
                                          int writer_prob_pct, int num_writers, const WriterTarget &writer_target,
-                                         int writer_bulk_rows) {
+                                         int writer_bulk_rows, int scheduled_write_pct, int writer_scheduled_write_pct) {
 	ConcurrentPhaseResult phase_result;
 	for (int query_num : query_mix) {
 		phase_result.stats_by_query.emplace(query_num, std::make_unique<QueryStats>());
 	}
 
+	const bool use_writer_scheduled = writer_scheduled_write_pct >= 0;
+
 	std::atomic<uint64_t> writer_commits {0};
 	std::atomic<uint64_t> writer_attempts {0};
 	std::atomic<uint64_t> reader_queries_started {0};
 	std::atomic<uint64_t> reader_queries_finished {0};
+	std::atomic<uint64_t> writer_total_us {0};
+	const uint64_t reader_stride = use_writer_scheduled ? ReaderStrideForWritePct(writer_scheduled_write_pct)
+	                                                     : ReaderStrideForWritePct(scheduled_write_pct);
+	const int reader_pace_us = GetEnvInt("ACCEL_CROSS_ACCEL_READER_PACE_US", 0);
+	const double aggregate_reader_qps = GetEnvDouble("ACCEL_CROSS_ACCEL_AGGREGATE_READER_QPS", 0.0);
 
 	LogProgress("starting " + phase_label + " concurrent phase for " + std::to_string(duration_sec) + " seconds");
-	const int active_writers = enable_writer ? std::max(1, num_writers) : 0;
+	const int active_writers =
+	    use_writer_scheduled ? 1 : (enable_writer ? std::max(1, num_writers) : 0);
 	const int barrier_participants = readers + active_writers;
 	StartBarrier start_barrier(barrier_participants);
 	const auto phase_deadline = Clock::now() + std::chrono::seconds(duration_sec);
+	std::mutex phase_start_mutex;
+	Clock::time_point phase_start = Clock::now();
+	bool phase_start_set = false;
 
 	struct ReaderConnectionHandle {
 		std::mutex mutex;
@@ -371,7 +502,7 @@ ConcurrentPhaseResult RunConcurrentPhase(duckdb::DuckDB &database, const std::ve
 		duckdb::Connection *connection = nullptr;
 	};
 	std::vector<std::unique_ptr<WriterConnectionHandle>> writer_handles;
-	if (enable_writer) {
+	if (active_writers > 0) {
 		writer_handles.reserve(static_cast<size_t>(active_writers));
 		for (int writer = 0; writer < active_writers; writer++) {
 			writer_handles.push_back(std::make_unique<WriterConnectionHandle>());
@@ -394,8 +525,27 @@ ConcurrentPhaseResult RunConcurrentPhase(duckdb::DuckDB &database, const std::ve
 			}
 			ConfigureConnection(connection, mode);
 			start_barrier.ArriveAndWait();
+			{
+				std::lock_guard<std::mutex> lock(phase_start_mutex);
+				if (!phase_start_set) {
+					phase_start = Clock::now();
+					phase_start_set = true;
+				}
+			}
 			auto &stats = *phase_result.stats_by_query.at(query_num);
+			int query_index = 0;
 			while (Clock::now() < phase_deadline) {
+				if (!use_writer_scheduled && scheduled_write_pct >= 0 &&
+				    ShouldWriteAtQueryIndex(query_index, scheduled_write_pct)) {
+					writer_attempts.fetch_add(1);
+					const auto write_start = Clock::now();
+					const bool wrote = RunScheduledInvalidatingWrite(connection, query_num, writer_bulk_rows);
+					writer_total_us.fetch_add(static_cast<uint64_t>(ElapsedUs(write_start, Clock::now())));
+					if (wrote) {
+						writer_commits.fetch_add(1);
+					}
+				}
+				query_index++;
 				reader_queries_started.fetch_add(1);
 				const auto start = Clock::now();
 				if (RunReaderQuery(connection, query_num, reader_kind)) {
@@ -404,10 +554,15 @@ ConcurrentPhaseResult RunConcurrentPhase(duckdb::DuckDB &database, const std::ve
 					stats.failures.fetch_add(1);
 				}
 				reader_queries_finished.fetch_add(1);
+				const auto finished_count = reader_queries_finished.load();
 				const auto us = ElapsedUs(start, Clock::now());
 				if (start < phase_deadline) {
 					std::lock_guard<std::mutex> lock(stats.latencies_mutex);
 					stats.latencies.push_back(us);
+				}
+				MaybeThrottleAggregateReaderQps(phase_start, finished_count, aggregate_reader_qps);
+				if (reader_pace_us > 0) {
+					std::this_thread::sleep_for(std::chrono::microseconds(reader_pace_us));
 				}
 			}
 			{
@@ -418,7 +573,7 @@ ConcurrentPhaseResult RunConcurrentPhase(duckdb::DuckDB &database, const std::ve
 	}
 
 	std::vector<std::thread> writer_threads;
-	if (enable_writer) {
+	if (active_writers > 0) {
 		for (int writer_id = 0; writer_id < active_writers; writer_id++) {
 			auto *writer_handle = writer_handles[static_cast<size_t>(writer_id)].get();
 			writer_threads.emplace_back([&, writer_id, writer_handle]() {
@@ -431,6 +586,32 @@ ConcurrentPhaseResult RunConcurrentPhase(duckdb::DuckDB &database, const std::ve
 				ConfigureConnection(connection, writer_mode);
 				start_barrier.ArriveAndWait();
 				size_t tick = static_cast<size_t>(writer_id);
+				if (use_writer_scheduled) {
+					uint64_t writes_done = 0;
+					while (Clock::now() < phase_deadline) {
+						const uint64_t finished = reader_queries_finished.load();
+						const uint64_t target_writes = reader_stride > 0 ? finished / reader_stride : 0;
+						if (writes_done >= target_writes) {
+							std::this_thread::sleep_for(std::chrono::milliseconds(1));
+							continue;
+						}
+						writer_attempts.fetch_add(1);
+						const auto write_start = Clock::now();
+						const auto sql =
+						    WriterSqlForTick(query_mix, tick, custom_writer_sql, writer_target, writer_bulk_rows);
+						tick++;
+						bool wrote = false;
+						if (!sql.empty()) {
+							auto result = connection.Query(sql);
+							wrote = result && !result->HasError();
+							if (wrote) {
+								writer_commits.fetch_add(1);
+							}
+						}
+						writer_total_us.fetch_add(static_cast<uint64_t>(ElapsedUs(write_start, Clock::now())));
+						writes_done++;
+					}
+				} else {
 				std::mt19937 rng(static_cast<uint32_t>(
 				    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count() ^
 				    static_cast<uint32_t>(writer_id * 2654435761u)));
@@ -454,6 +635,7 @@ ConcurrentPhaseResult RunConcurrentPhase(duckdb::DuckDB &database, const std::ve
 						std::this_thread::sleep_for(std::chrono::milliseconds(writer_sleep_ms));
 					}
 				}
+				}
 				{
 					std::lock_guard<std::mutex> lock(writer_handle->mutex);
 					writer_handle->connection = nullptr;
@@ -463,7 +645,7 @@ ConcurrentPhaseResult RunConcurrentPhase(duckdb::DuckDB &database, const std::ve
 	}
 
 	start_barrier.ArriveAndWait();
-	if (enable_writer) {
+	if (active_writers > 0) {
 		LogProgress(phase_label + ": reader and writer connections ready; concurrent phase running");
 	} else {
 		LogProgress(phase_label + ": reader connections ready; writer disabled");
@@ -517,7 +699,7 @@ ConcurrentPhaseResult RunConcurrentPhase(duckdb::DuckDB &database, const std::ve
 		            " reader thread(s) detached after join grace (" + std::to_string(join_grace_sec) + "s)");
 	}
 
-	if (enable_writer) {
+	if (active_writers > 0) {
 		int hung_writers = 0;
 		for (size_t writer = 0; writer < writer_threads.size(); writer++) {
 			if (!JoinThreadWithTimeout(writer_threads[writer], join_grace)) {
@@ -535,6 +717,7 @@ ConcurrentPhaseResult RunConcurrentPhase(duckdb::DuckDB &database, const std::ve
 	LogProgress(phase_label + " concurrent phase complete");
 
 	phase_result.writer_commits = writer_commits.load();
+	phase_result.writer_total_us = static_cast<double>(writer_total_us.load());
 	return phase_result;
 }
 
@@ -560,28 +743,72 @@ int main(int argc, char **argv) {
 	const int num_writers = GetEnvInt("ACCEL_CROSS_ACCEL_NUM_WRITERS", 1);
 	const int writer_bulk_rows = GetEnvInt("ACCEL_CROSS_ACCEL_WRITER_BULK_ROWS", 1);
 	const WriterTarget writer_target = ParseWriterTarget(GetEnv("ACCEL_CROSS_ACCEL_WRITER_TARGET", "round_robin"));
+	int scheduled_write_pct = -1;
+	if (const char *scheduled_raw = std::getenv("ACCEL_CROSS_ACCEL_SCHEDULED_WRITE_PCT");
+	    scheduled_raw != nullptr && *scheduled_raw != '\0') {
+		scheduled_write_pct = std::stoi(scheduled_raw);
+	}
+	int writer_scheduled_write_pct = -1;
+	if (const char *writer_scheduled_raw = std::getenv("ACCEL_CROSS_ACCEL_WRITER_SCHEDULED_WRITE_PCT");
+	    writer_scheduled_raw != nullptr && *writer_scheduled_raw != '\0') {
+		writer_scheduled_write_pct = std::stoi(writer_scheduled_raw);
+	}
+	bool use_background_writer = enable_writer;
+	if (scheduled_write_pct >= 0 || writer_scheduled_write_pct >= 0) {
+		use_background_writer = false;
+	}
+	if (writer_scheduled_write_pct >= 0 && scheduled_write_pct >= 0) {
+		throw std::runtime_error(
+		    "set only one of ACCEL_CROSS_ACCEL_SCHEDULED_WRITE_PCT (per-reader) or "
+		    "ACCEL_CROSS_ACCEL_WRITER_SCHEDULED_WRITE_PCT (single writer)");
+	}
+	const bool use_writer_scheduled = writer_scheduled_write_pct >= 0;
 
 	try {
 		if (readers <= 0) {
 			throw std::runtime_error("reader count must be positive");
 		}
 
-		if (enable_writer && num_writers <= 0) {
+		if (use_background_writer && num_writers <= 0) {
 			throw std::runtime_error("ACCEL_CROSS_ACCEL_NUM_WRITERS must be positive when writer is enabled");
 		}
+		const auto validate_scheduled_pct = [](int pct, const char *name) {
+			if (pct >= 0 && pct != 0 && pct != 1 && pct != 10 && pct != 50 &&
+			    (pct <= 0 || 100 % pct != 0)) {
+				throw std::runtime_error(std::string(name) +
+				                         " must be 0, 1, 10, 50, or another divisor of 100");
+			}
+		};
+		validate_scheduled_pct(scheduled_write_pct, "ACCEL_CROSS_ACCEL_SCHEDULED_WRITE_PCT");
+		validate_scheduled_pct(writer_scheduled_write_pct, "ACCEL_CROSS_ACCEL_WRITER_SCHEDULED_WRITE_PCT");
 		if (writer_prob_pct < 0 || writer_prob_pct > 100) {
 			throw std::runtime_error("ACCEL_CROSS_ACCEL_WRITER_PROB_PCT must be in [0, 100]");
 		}
 
 		LogProgress("starting db=" + std::string(db_path) + " mode=" + mode + " build_mode=" + build_mode +
 		            " writer_mode=" + writer_mode + " readers=" +
-		            std::to_string(readers) + " writers=" + std::to_string(enable_writer ? num_writers : 0) +
+		            std::to_string(readers) + " writers=" +
+		            std::to_string(use_background_writer ? num_writers : (use_writer_scheduled ? 1 : 0)) +
 		            " duration_sec=" + std::to_string(duration_sec) + " queries=" + QueryMixLabel(query_mix) +
 		            " writer_sleep_ms=" + std::to_string(writer_sleep_ms) +
 		            " writer_prob_pct=" + std::to_string(writer_prob_pct) +
 		            " writer_bulk_rows=" + std::to_string(writer_bulk_rows) +
-		            " writer_target=" + WriterTargetLabel(writer_target));
-		if (enable_writer) {
+		            " writer_target=" + WriterTargetLabel(writer_target) +
+		            " reader_scheduled_write_pct=" +
+		            (scheduled_write_pct >= 0 ? std::to_string(scheduled_write_pct) : "off") +
+		            " writer_scheduled_write_pct=" +
+		            (writer_scheduled_write_pct >= 0 ? std::to_string(writer_scheduled_write_pct) : "off") +
+		            " reader_pace_us=" + std::to_string(GetEnvInt("ACCEL_CROSS_ACCEL_READER_PACE_US", 0)) +
+		            " aggregate_reader_qps=" +
+		            std::to_string(GetEnvDouble("ACCEL_CROSS_ACCEL_AGGREGATE_READER_QPS", 0.0)));
+		if (use_writer_scheduled) {
+			LogProgress("using single-writer scheduled invalidating UPDATEs at " +
+			            std::to_string(writer_scheduled_write_pct) +
+			            "% of aggregate reader queries (target=" + WriterTargetLabel(writer_target) + ")");
+		} else if (scheduled_write_pct >= 0) {
+			LogProgress("using per-reader scheduled invalidating UPDATEs at " + std::to_string(scheduled_write_pct) +
+			            "% write frequency");
+		} else if (use_background_writer) {
 			if (custom_writer_sql != nullptr && *custom_writer_sql) {
 				LogProgress("using custom ACCEL_CROSS_ACCEL_WRITER_SQL");
 			} else {
@@ -617,8 +844,9 @@ int main(int argc, char **argv) {
 		if (!skip_baseline) {
 			baseline_result = RunConcurrentPhase(database, query_mix, ReaderKind::Baseline, "baseline", mode,
 			                                       writer_mode, custom_writer_sql, readers, duration_sec,
-			                                       enable_writer, join_grace_sec, writer_sleep_ms, writer_prob_pct,
-			                                       num_writers, writer_target, writer_bulk_rows);
+			                                       use_background_writer, join_grace_sec, writer_sleep_ms,
+			                                       writer_prob_pct, num_writers, writer_target, writer_bulk_rows,
+			                                       scheduled_write_pct, writer_scheduled_write_pct);
 			std::vector<int> baseline_order(query_mix.begin(), query_mix.end());
 			std::sort(baseline_order.begin(), baseline_order.end());
 			for (int query_num : baseline_order) {
@@ -630,9 +858,10 @@ int main(int argc, char **argv) {
 		}
 
 		const auto accel_result = RunConcurrentPhase(database, query_mix, ReaderKind::Accel, "accel", mode, writer_mode,
-		                                           custom_writer_sql, readers, duration_sec, enable_writer,
+		                                           custom_writer_sql, readers, duration_sec, use_background_writer,
 		                                           join_grace_sec, writer_sleep_ms, writer_prob_pct, num_writers,
-		                                           writer_target, writer_bulk_rows);
+		                                           writer_target, writer_bulk_rows, scheduled_write_pct,
+		                                           writer_scheduled_write_pct);
 
 		if (!skip_correctness) {
 			LogProgress("running differential correctness check after accel phase ...");
@@ -658,14 +887,21 @@ int main(int argc, char **argv) {
 		              static_cast<double>(total_accel_reader_queries)
 		        : 0.0;
 
-		std::cout << "benchmark_mode,duration_sec,readers,num_writers,writer_target,baseline_writer_commits,"
-		             "accel_writer_commits,writer_sleep_ms,writer_prob_pct,effective_write_pct,query_num,"
-		             "accel_samples,accel_throughput_qps,accel_p50_us,accel_p95_us,accel_hit_rate,"
-		             "duckdb_concurrent_p50_us,speedup_p50\n";
-		std::cout.setf(std::ios::unitbuf);
-
 		std::vector<int> output_order(query_mix.begin(), query_mix.end());
 		std::sort(output_order.begin(), output_order.end());
+		const double baseline_read_us = skip_baseline ? 0.0 : SumReadLatenciesUs(baseline_result);
+		const double accel_read_us = SumReadLatenciesUs(accel_result);
+		const double workload_speedup =
+		    skip_baseline ? 0.0 : ComputeWorkloadSpeedup(baseline_result, accel_result, output_order);
+
+		std::cout << "benchmark_mode,duration_sec,readers,num_writers,writer_target,baseline_writer_commits,"
+		             "accel_writer_commits,writer_sleep_ms,writer_prob_pct,scheduled_write_pct,effective_write_pct,"
+		             "query_num,"
+		             "accel_samples,accel_throughput_qps,accel_p50_us,accel_p95_us,accel_hit_rate,"
+		             "duckdb_concurrent_p50_us,speedup_p50,total_baseline_read_us,total_accel_read_us,"
+		             "baseline_write_us,accel_write_us,workload_speedup\n";
+		std::cout.setf(std::ios::unitbuf);
+
 		for (int query_num : output_order) {
 			const auto &stats = *accel_result.stats_by_query.at(query_num);
 			const auto samples = stats.latencies.size();
@@ -680,12 +916,19 @@ int main(int argc, char **argv) {
 				duckdb_p50 = Percentile(baseline_stats.latencies, 0.50);
 			}
 			const auto speedup = accel_p50 > 0.0 && duckdb_p50 > 0.0 ? duckdb_p50 / accel_p50 : 0.0;
-			std::cout << mode << ',' << duration_sec << ',' << readers << ',' << (enable_writer ? num_writers : 0)
-			          << ',' << WriterTargetLabel(writer_target) << ',' << baseline_result.writer_commits << ','
+			const int scheduled_write_out = writer_scheduled_write_pct >= 0 ? writer_scheduled_write_pct
+			                                : scheduled_write_pct >= 0 ? scheduled_write_pct
+			                                                             : -1;
+			std::cout << mode << ',' << duration_sec << ',' << readers << ','
+			          << (use_background_writer ? num_writers : (use_writer_scheduled ? 1 : 0)) << ','
+			          << WriterTargetLabel(writer_target) << ',' << baseline_result.writer_commits << ','
 			          << accel_result.writer_commits << ',' << writer_sleep_ms << ',' << writer_prob_pct << ','
-			          << effective_write_pct << ',' << query_num << ',' << samples << ',' << throughput << ','
+			          << scheduled_write_out << ',' << effective_write_pct << ',' << query_num << ',' << samples << ','
+			          << throughput << ','
 			          << accel_p50 << ',' << Percentile(stats.latencies, 0.95) << ',' << hit_rate << ',' << duckdb_p50
-			          << ',' << speedup << '\n';
+			          << ',' << speedup << ',' << baseline_read_us << ',' << accel_read_us << ','
+			          << baseline_result.writer_total_us << ',' << accel_result.writer_total_us << ','
+			          << workload_speedup << '\n';
 		}
 		LogProgress("done");
 		return EXIT_SUCCESS;

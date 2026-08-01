@@ -2,6 +2,9 @@ build/
 build-*/
 benchmarks/tpch/results/
 benchmarks/tpch/tmp/
+benchmarks/sec_edgar/.venv/
+benchmarks/sec_edgar/data/
+benchmarks/sec_edgar/duckdb/
 **/__pycache__/
 docs/
 

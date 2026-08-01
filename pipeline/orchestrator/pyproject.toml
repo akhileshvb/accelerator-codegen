@@ -15,7 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 cursor = [
-  "cursor-sdk>=0.1.0",
+  "cursor-sdk>=1.0.26",
 ]
 openrouter = [
   "openai-agents>=0.1.0",
@@ -23,9 +23,10 @@ openrouter = [
 ]
 dev = [
   "pytest>=8.0",
+  "duckdb>=1.0.0",
 ]
 all = [
-  "cursor-sdk>=0.1.0",
+  "cursor-sdk>=1.0.26",
   "litellm>=1.0.0",
   "pytest>=8.0",
 ]

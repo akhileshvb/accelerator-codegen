@@ -70,11 +70,11 @@ for cfg in "${CONFIGS[@]}"; do
 
   env "${env_args[@]}" "$BIN" "$DB" isolation 2>&1 | tee "$log" >/dev/null
 
-  total_reader=$(awk -F, '/^isolation,/ && $11 ~ /^[0-9]+$/ {sum += $12} END {print sum+0}' "$log")
+  total_reader=$(awk -F, '/^isolation,/ && $12 ~ /^[0-9]+$/ {sum += $13} END {print sum+0}' "$log")
   awk -F, -v label="$label" -v readers="$readers" -v total_reader="$total_reader" '
-    /^isolation,/ && $11 ~ /^[0-9]+$/ {
+    /^isolation,/ && $12 ~ /^[0-9]+$/ {
       printf "%s,sql,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
-        label, readers, $4, $8, $9, $10, $7, total_reader, $11, $14, $17, $18
+        label, readers, $4, $8, $9, $10, $7, total_reader, $12, $15, $18, $19
     }
   ' "$log" >>"$OUT"
 done

@@ -13,4 +13,5 @@ stages:
   analysis: fast
   implementation: strong
   optimization: default
+  crash_debug: strong
   audit: strong

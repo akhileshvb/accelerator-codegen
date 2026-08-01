@@ -247,7 +247,7 @@ class TestReanalysisToolPolicy:
         art = tmp_path / "pipeline" / "artifacts" / "q3"
         art.mkdir(parents=True)
         state = PipelineState(query=3, workload="tpch_q3_aux", structural_reanalysis_count=2)
-        state.save(state_path(tmp_path, 3))
+        state.save(state_path(tmp_path, 3, "tpch_q3_aux"))
 
         pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
         pipeline_config = type(pipeline_config)(

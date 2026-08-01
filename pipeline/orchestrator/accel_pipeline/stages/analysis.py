@@ -41,7 +41,7 @@ def run(
     if workload.get("workload_kind") != "aux_state":
         return result
 
-    analysis_path = query_artifacts_dir(pipeline_config.repo_root, query) / "analysis.json"
+    analysis_path = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload) / "analysis.json"
     try:
         validate_aux_analysis_file(
             analysis_path,

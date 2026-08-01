@@ -1,0 +1,18 @@
+benchmark_name: sec_edgar
+query_number: 24
+query_id: "24"
+reference_sql_path: benchmarks/sec_edgar/queries/q24.sql
+parameters: []
+output_schema:
+  - {name: tag, type: VARCHAR}
+  - {name: version, type: VARCHAR}
+  - {name: cnt, type: BIGINT}
+  - {name: total, type: DOUBLE}
+tables: [num, pre]
+reference_accelerators:
+  - src/generated/sec_edgar/single-threaded/q6_kernel.cpp
+  - include/accelerator_codegen/sec_edgar_q6.hpp
+  - src/generated/sec_edgar/single-threaded/q4_kernel.cpp
+  - include/accelerator_codegen/sec_edgar_q4.hpp
+  - src/generated/sec_edgar/sec_edgar_query_runtime.cpp
+  - benchmarks/sec_edgar/single-threaded/benchmark_q6.cpp

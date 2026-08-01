@@ -1,0 +1,20 @@
+benchmark_name: sec_edgar
+query_number: 1
+query_id: "1"
+reference_sql_path: benchmarks/sec_edgar/queries/q1.sql
+parameters: []
+output_schema:
+  - {name: stmt, type: VARCHAR}
+  - {name: rfile, type: VARCHAR}
+  - {name: cnt, type: BIGINT}
+  - {name: num_filings, type: BIGINT}
+  - {name: avg_line_num, type: DOUBLE}
+tables: [pre]
+reference_accelerators:
+  - src/generated/tpch/single-threaded/q1_fused_scan.cpp
+  - include/accelerator_codegen/tpch_q1_fused.hpp
+  - src/generated/tpch/single-threaded/q3_kernel.cpp
+  - src/generated/tpch/single-threaded/q12_kernel.cpp
+  - src/generated/tpch/single-threaded/q14_kernel.cpp
+  - src/generated/sec_edgar/sec_edgar_query_runtime.cpp
+  - benchmarks/tpch/single-threaded/benchmark_q3.cpp

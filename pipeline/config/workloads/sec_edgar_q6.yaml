@@ -1,0 +1,19 @@
+benchmark_name: sec_edgar
+query_number: 6
+query_id: "6"
+reference_sql_path: benchmarks/sec_edgar/queries/q6.sql
+parameters: []
+output_schema:
+  - {name: name, type: VARCHAR}
+  - {name: stmt, type: VARCHAR}
+  - {name: tag, type: VARCHAR}
+  - {name: plabel, type: VARCHAR}
+  - {name: total_value, type: DOUBLE}
+  - {name: cnt, type: BIGINT}
+tables: [num, sub, pre]
+reference_accelerators:
+  - src/generated/sec_edgar/single-threaded/q4_kernel.cpp
+  - include/accelerator_codegen/sec_edgar_q4.hpp
+  - src/generated/sec_edgar/single-threaded/q3_kernel.cpp
+  - src/generated/sec_edgar/sec_edgar_query_runtime.cpp
+  - benchmarks/sec_edgar/single-threaded/benchmark_q4.cpp

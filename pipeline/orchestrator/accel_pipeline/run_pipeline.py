@@ -84,7 +84,7 @@ def _maybe_process_structural_reanalysis(
     new_count, next_idx = result
     state.structural_reanalysis_count = new_count
     state.stage = STAGES[next_idx]
-    state.save(state_path(pipeline_config.repo_root, query))
+    state.save(state_path(pipeline_config.repo_root, query, workload_name))
     log_event(
         pipeline_config.repo_root,
         query,
@@ -163,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"=== stage: {args.stage} ===", file=sys.stderr)
         _run_stage(args.stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run)
         state.stage = args.stage
-        state.save(state_path(repo_root, query))
+        state.save(state_path(repo_root, query, args.workload))
         print("pipeline complete", file=sys.stderr)
         return 0
 
@@ -173,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         stage = STAGES[idx]
         print(f"=== stage: {stage} ===", file=sys.stderr)
         state.stage = stage
-        state.save(state_path(repo_root, query))
+        state.save(state_path(repo_root, query, args.workload))
         _run_stage(stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run)
 
         if stage == "implementation":
@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
         idx += 1
 
     state.stage = STAGES[-1]
-    state.save(state_path(repo_root, query))
+    state.save(state_path(repo_root, query, args.workload))
     log_pipeline_summary(repo_root, query)
     print("pipeline complete", file=sys.stderr)
     return 0
