@@ -95,6 +95,8 @@ struct TagVersionKeyHash {
 	}
 };
 
+class StringInterner;
+
 struct TagVersionTable {
 	uint32_t Intern(const duckdb::string_t &tag, const duckdb::string_t &version, uint32_t tlabel_id) {
 		const auto key = TagVersionKey::From(tag, version);
@@ -129,6 +131,8 @@ struct TagVersionTable {
 	uint32_t TlabelId(uint32_t tag_version_id) const {
 		return tlabel_by_id_[tag_version_id];
 	}
+
+	void PopulateAuxPartition(const StringInterner &labels, SecEdgarQ4TagTlabelPartition &out) const;
 
 private:
 	std::unordered_map<TagVersionKey, uint32_t, TagVersionKeyHash> lookup_;
@@ -181,6 +185,25 @@ private:
 	std::vector<std::string> storage_;
 	std::unordered_map<std::string, uint32_t> lookup_;
 };
+
+void TagVersionTable::PopulateAuxPartition(const StringInterner &labels, SecEdgarQ4TagTlabelPartition &out) const {
+	out.tlabel_ids_by_tag_version = tlabel_by_id_;
+	uint32_t max_tlabel_id = 0;
+	for (const auto tlabel_id : tlabel_by_id_) {
+		max_tlabel_id = std::max(max_tlabel_id, tlabel_id);
+	}
+	out.tlabels.clear();
+	out.tlabels.reserve(max_tlabel_id + 1);
+	for (uint32_t id = 0; id <= max_tlabel_id; id++) {
+		out.tlabels.push_back(labels.Get(id));
+	}
+	out.tag_version_lookup.clear();
+	out.tag_version_lookup.reserve(lookup_.size());
+	for (const auto &entry : lookup_) {
+		out.tag_version_lookup.emplace(SecEdgarQ4TagVersionKey::FromStored(entry.first.tag, entry.first.version),
+		                               entry.second);
+	}
+}
 
 struct SubInfo {
 	int32_t cik = 0;
@@ -1189,6 +1212,67 @@ void SecEdgarQ4Kernel::Finalize() {
 	if (profile) {
 		profile->finalize_us =
 		    std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count();
+	}
+}
+
+SecEdgarQ4AdshKey ToAuxAdshKey(const AdshKey &key) {
+	SecEdgarQ4AdshKey out;
+	out.size = key.size;
+	out.w0 = key.w0;
+	out.w1 = key.w1;
+	out.w2 = key.w2;
+	return out;
+}
+
+void SecEdgarQ4Kernel::ExportAuxPartitions(SecEdgarQ4SicCohortPartition &cohort, SecEdgarQ4PreEqBridgePartition &pre_bridge,
+                                           SecEdgarQ4TagTlabelPartition &tag_tlabel,
+                                           SecEdgarQ4GroupAggregatesPartition &aggregates, SecEdgarQ4OutputPartition &output) {
+	if (!state->finalized) {
+		FinalizeGroups();
+	}
+
+	cohort.sub_lookup.clear();
+	cohort.cik_dense_index = state->cik_dense_index;
+	cohort.cik_dense_count = state->cik_dense_count;
+	cohort.cik_bit_word_count = state->cik_bit_word_count;
+	cohort.sub_lookup.reserve(state->sub_lookup.size());
+	for (const auto &entry : state->sub_lookup) {
+		cohort.sub_lookup.emplace(ToAuxAdshKey(entry.first),
+		                          SecEdgarQ4SubInfo {entry.second.cik, entry.second.sic, entry.second.cik_dense_id});
+	}
+
+	pre_bridge.pre_by_adsh.clear();
+	pre_bridge.pre_by_adsh.reserve(state->pre_by_adsh.size());
+	for (const auto &adsh_entry : state->pre_by_adsh) {
+		SecEdgarQ4PreEntriesByTagVersion entries;
+		entries.reserve(adsh_entry.second.size());
+		for (const auto &tv_entry : adsh_entry.second) {
+			entries.emplace(tv_entry.first,
+			                SecEdgarQ4ResolvedPreTriple {tv_entry.second.group_id, tv_entry.second.cik_dense_id,
+			                                               tv_entry.second.multiplicity});
+		}
+		pre_bridge.pre_by_adsh.emplace(ToAuxAdshKey(adsh_entry.first), std::move(entries));
+	}
+
+	state->tag_version_table.PopulateAuxPartition(state->tlabel_intern, tag_tlabel);
+
+	aggregates.group_index.clear();
+	aggregates.groups.clear();
+	aggregates.group_index.reserve(state->group_index.size());
+	aggregates.groups.reserve(state->groups.size());
+	for (const auto &entry : state->group_index) {
+		aggregates.group_index.emplace(SecEdgarQ4GroupKey {entry.first.sic, entry.first.tlabel_id}, entry.second);
+	}
+	for (const auto &group : state->groups) {
+		aggregates.groups.push_back(SecEdgarQ4GroupAggregate {group.sic, group.tlabel_id, group.sum, group.count,
+		                                                    group.cik_bits, group.distinct_cik_count, group.active});
+	}
+
+	output.output_rows.clear();
+	output.output_rows.reserve(state->ordered_output.size());
+	for (const auto &row : state->ordered_output) {
+		output.output_rows.push_back(
+		    SecEdgarQ4OutputRow {row.sic, row.tlabel, "EQ", row.num_companies, row.total_value, row.avg_value});
 	}
 }
 

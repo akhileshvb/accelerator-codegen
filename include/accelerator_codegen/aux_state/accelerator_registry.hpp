@@ -61,6 +61,7 @@ public:
 	PartitionedStateStore &GetStore(const std::string &accelerator_id);
 	AcceleratorMaintenanceState &GetMaintenanceState(const std::string &accelerator_id);
 	bool IsAcceleratorRegistered(const std::string &accelerator_id) const;
+	bool HasMaintenanceHook(const std::string &accelerator_id) const;
 	bool RegisterAcceleratorIfAbsent(const std::string &accelerator_id, const std::function<void()> &register_fn);
 	const std::vector<TableDependency> &GetAcceleratorDependencies(const std::string &accelerator_id) const;
 	void ApplyPreCommitInvalidation(const InvalidationPlan &plan, const std::string &accelerator_id);

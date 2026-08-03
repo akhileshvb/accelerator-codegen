@@ -9,7 +9,11 @@ if [[ -z "${QUERY}" ]]; then
   exit 1
 fi
 
-OUT="${ROOT}/pipeline/artifacts/q${QUERY}/gates"
+# shellcheck source=aux_gate_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+load_aux_gate_context "${ROOT}" "${QUERY}"
+
+OUT="${GATE_OUT}"
 mkdir -p "${OUT}"
 
 # shellcheck source=cmake_ensure_target.sh
@@ -23,8 +27,8 @@ if [[ ! -d "${BUILD}" ]]; then
   exit 0
 fi
 
-BENCH_AUX="benchmark_tpch_q${QUERY}_aux"
-BENCH_BASE="benchmark_tpch_q${QUERY}"
+BENCH_AUX="${AUX_BENCH_TARGET}"
+BENCH_BASE="${BENCH_TARGET}"
 
 ensure_cmake_target "${ROOT}" "${BUILD}" "${BENCH_BASE}" || true
 ensure_cmake_target "${ROOT}" "${BUILD}" "${BENCH_AUX}" || true
@@ -36,6 +40,7 @@ path = pathlib.Path("${OUT}/aux_speedup_verification.json")
 path.write_text(json.dumps({
     "gate": "aux_speedup_verification",
     "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
     "status": "skip",
     "reason": "benchmark binaries missing; build benchmarks first",
 }, indent=2))
@@ -45,9 +50,9 @@ PY
 fi
 
 set +e
-BASE_LOG="$("${BUILD}/${BENCH_BASE}" 2>&1)"
+BASE_LOG="$(env "${DB_ENV_VAR}"="${DATASET_DB}" "${BUILD}/${BENCH_BASE}" 2>&1)"
 BASE_RC=$?
-AUX_LOG="$("${BUILD}/${BENCH_AUX}" 2>&1)"
+AUX_LOG="$(env "${DB_ENV_VAR}"="${DATASET_DB}" "${BUILD}/${BENCH_AUX}" 2>&1)"
 AUX_RC=$?
 set -e
 
@@ -79,7 +84,6 @@ def parse_base_us(base_text: str, aux_text: str) -> float | None:
     m = re.search(r"summary_median,accel_fused_q1,,([0-9.]+)", base_text)
     if m:
         return float(m.group(1))
-    # manifest sweep CSV: summary_avg_median,ref_mean,ref_median,accel_mean,accel_median,speedup
     m = re.search(r"summary_avg_median,[^,\n]+,[^,\n]+,[^,\n]+,([0-9.]+)", base_text)
     if m:
         return float(m.group(1))
@@ -121,6 +125,7 @@ else:
 out = {
     "gate": "aux_speedup_verification",
     "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
     "status": status,
     "wall_time_base_us": base_us,
     "wall_time_aux_us": aux_us,

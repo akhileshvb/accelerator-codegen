@@ -21,9 +21,9 @@ Each point sets `ACCEL_Q{{query_number}}_WRITE_FREQUENCY_PCT` and uses a fresh D
 | `ACCEL_Q{N}_WRITE_FREQUENCY_PCT` | 0, 1, 10, or 50 |
 | `ACCEL_Q{N}_BENCH_SUITE` | e.g. `lineitem_only` |
 | `ACCEL_Q{N}_WRITE_LOCALITY` | e.g. `single_month` / `single_segment` |
-| `ACCEL_BENCH_WARMUP` | Warmup aux queries before measured loop |
-| `ACCEL_BENCH_QUERIES` | Measured queries per point |
-| `ACCEL_BENCH_REF_SAMPLES` | DuckDB reference SQL samples (calibration) |
+| `ACCEL_BENCH_WARMUP` | Warmup queries before measured loop (DuckDB reference, base kernel, and aux) |
+| `ACCEL_BENCH_QUERIES` | Measured queries per point (used for all timed paths) |
+| `ACCEL_BENCH_REF_SAMPLES` | Legacy; ignored when benchmarks use warmup + measured loop |
 | `ACCEL_BENCH_BASE_WRITE_SAMPLES` | Base-path write calibration samples |
 | `ACCEL_Q{N}_MAINTENANCE_MODE` | Set `hybrid` during measured workload |
 
@@ -33,7 +33,8 @@ Query-specific bench params (month/day_offset, segment/cutoff_date, etc.) follow
 
 Print **one header row** and **one data row** to stdout. The row must include at least:
 
-`write_frequency_pct`, `workload_speedup`, `query_only_speedup`, `blended_query_speedup`,
+`write_frequency_pct`, `workload_speedup`, `cold_start_workload_speedup`, `query_only_speedup`,
+`blended_query_speedup`, `cold_start_accel_workload_us`, `setup_full_build_ms`,
 `accel_hit_rate`, `writes_executed`, `duckdb_workload_us`, `accel_workload_us`.
 
 Copy the column layout from `benchmarks/tpch/single-threaded/benchmark_q14_aux.cpp` or `benchmark_q1_aux.cpp`.
@@ -43,8 +44,8 @@ Optional `speedup_gate ...` lines may follow the CSV row (for audit gates); the 
 ## Measured workload
 
 1. Register accelerators, run `accel_q{N}_aux_build()` once.
-2. Warmup loop: `ACCEL_BENCH_WARMUP` aux queries.
-3. Measured loop: `ACCEL_BENCH_QUERIES` iterations. Before selected indices, commit one transactional write (point-update suite). Then run the aux query and record hit vs fallback from diagnostics.
+2. Warmup loop: `ACCEL_BENCH_WARMUP` untimed runs for DuckDB reference SQL, base kernel, and aux query.
+3. Measured loop: `ACCEL_BENCH_QUERIES` timed aux iterations with optional writes. DuckDB reference and base kernel use the same warmup + measured counts on separate connections.
 4. Write scheduling: 1% → every 100th query; 10% → every 10th; 50% → every 2nd.
 
 **Performance:** precompute a small pool of write targets at startup (do not run expensive correlated subqueries per write). Keep write SQL cheap so the sweep finishes in minutes, not hours.
@@ -53,8 +54,9 @@ Optional `speedup_gate ...` lines may follow the CSV row (for audit gates); the 
 
 Parsed by `pipeline/orchestrator/accel_pipeline/aux_bench.py`:
 
-- `composite_workload_speedup` = **min** workload speedup across 0/1/10/50%
-- `read_only_query_speedup` = query-only speedup at 0%
+- `composite_workload_speedup` = **min** steady-state workload speedup across 0/1/10/50%
+- `read_only_query_speedup` = query-only speedup at 0% (base kernel vs aux hit)
+- `read_only_cold_start_workload_speedup` = workload speedup at 0% including one-time `aux_build()` cost
 - `composite_score` = min workload speedup + 0.1 × read-only query speedup
 
 Higher is better. Optimization stops after 2 iterations without improving `composite_score`.

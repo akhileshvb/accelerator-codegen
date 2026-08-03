@@ -20,14 +20,14 @@ void Require(bool condition, const std::string &message) {
 
 int main() {
 	try {
-		const char *db_path = "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb";
+		accelerator_codegen::test_support::EnableCrossAccelHybridMaintenance();
 		const auto targets = accelerator_codegen::test_support::MultiConnectionTestQueries();
 		Require(!targets.empty(), "no target queries configured");
 		const int target_query = targets.front();
 		const auto all_queries =
 		    accelerator_codegen::test_support::CrossAccelQueriesIncludingTarget(target_query);
 
-		duckdb::DuckDB database(db_path);
+		duckdb::DuckDB database(accelerator_codegen::test_support::CrossAccelMutableDatabasePath());
 		const char *duration_env = std::getenv("ACCEL_MULTI_CONN_STRESS_SEC");
 		const int duration_sec = duration_env ? std::stoi(duration_env) : 5;
 		accelerator_codegen::test_support::RunMultiConnectionStress(database, target_query, all_queries, duration_sec);

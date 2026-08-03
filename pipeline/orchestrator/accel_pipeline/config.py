@@ -115,20 +115,32 @@ def resolve_workload_paths(
     query: int,
 ) -> dict[str, str]:
     repo = pipeline_config.repo_root
-    source_subdir = str(workload.get("source_subdir", "tpch/single-threaded"))
+    benchmark = str(workload.get("benchmark_name", "tpch"))
+    source_subdir = str(workload.get("source_subdir", f"{benchmark}/single-threaded"))
     q = int(workload.get("query_number", query))
-    header = str(workload.get("header_basename", f"tpch_q{q}"))
-    return {
+    header_prefix = str(workload.get("header_prefix", f"{benchmark}_q"))
+    header = str(workload.get("header_basename", f"{header_prefix}{q}"))
+    fn_prefix = str(workload.get("function_prefix", f"accel_{benchmark}_q"))
+    test_prefix = str(workload.get("test_target_prefix", f"test_{benchmark}_q"))
+    bench_prefix = str(workload.get("bench_target_prefix", f"benchmark_{benchmark}_q"))
+    smoke_suffix = str(workload.get("ctest_smoke_suffix", "_smoke_test"))
+
+    paths = {
         "source_subdir": source_subdir,
-        "function_name": str(workload.get("function_name", f"accel_tpch_q{q}")),
-        "create_fn": str(workload.get("create_fn", f"CreateTpchQ{q}FunctionSet")),
-        "test_target": str(workload.get("test_target", f"test_tpch_q{q}")),
-        "bench_target": str(workload.get("bench_target", f"benchmark_tpch_q{q}")),
-        "ctest_smoke_name": str(workload.get("ctest_smoke_name", f"tpch_q{q}_smoke_test")),
-        "ctest_smoke_regex": str(workload.get("ctest_smoke_regex", f"^tpch_q{q}_smoke_test$")),
-        "dataset_db": str(
-            workload.get("dataset_db", pipeline_config.tpch_db_sf1)
+        "function_name": str(workload.get("function_name", f"{fn_prefix}{q}")),
+        "create_fn": str(
+            workload.get(
+                "create_fn",
+                f"Create{benchmark.title().replace('_', '')}Q{q}FunctionSet",
+            )
         ),
+        "test_target": str(workload.get("test_target", f"{test_prefix}{q}")),
+        "bench_target": str(workload.get("bench_target", f"{bench_prefix}{q}")),
+        "ctest_smoke_name": str(workload.get("ctest_smoke_name", f"{benchmark}_q{q}{smoke_suffix}")),
+        "ctest_smoke_regex": str(
+            workload.get("ctest_smoke_regex", f"^{benchmark}_q{q}{smoke_suffix}$")
+        ),
+        "dataset_db": str(workload.get("dataset_db", pipeline_config.tpch_db_sf1)),
         "scale_db": str(workload.get("scale_db", pipeline_config.tpch_db_sf10)),
         "db_env_var": str(workload.get("db_env_var", "ACCEL_TPCH_DB")),
         "header_path": f"include/accelerator_codegen/{header}.hpp",
@@ -136,9 +148,54 @@ def resolve_workload_paths(
         "package_path": f"src/generated/{source_subdir}/q{q}_package.cpp",
         "fused_scan_path": f"src/generated/{source_subdir}/q{q}_fused_scan.cpp",
         "fused_header_path": f"include/accelerator_codegen/{header}_fused.hpp",
-        "test_path": f"tests/single-threaded/{workload.get('test_target', f'test_tpch_q{q}')}.cpp",
+        "test_path": f"tests/single-threaded/{workload.get('test_target', f'{test_prefix}{q}')}.cpp",
         "benchmark_path": f"benchmarks/{source_subdir.split('/')[0]}/single-threaded/benchmark_q{q}.cpp",
     }
+
+    if workload.get("workload_kind") == "aux_state":
+        aux_fn = str(workload.get("aux_function_name", f"{fn_prefix}{q}_aux"))
+        aux_test = str(workload.get("aux_test_target", f"{test_prefix}{q}_aux"))
+        aux_bench = str(workload.get("aux_bench_target", f"{bench_prefix}{q}_aux"))
+        aux_hybrid = str(workload.get("aux_hybrid_bench_target", f"benchmark_{benchmark}_q{q}_hybrid_eval"))
+        calibrate = str(
+            workload.get("aux_calibrate_target", f"calibrate_{benchmark}_q{q}_aux_cost_model")
+        )
+        if benchmark == "tpch":
+            aux_state_subdir = f"src/aux_state/q{q}"
+            aux_finalize = f"tpch_q{q}_finalize.cpp"
+        else:
+            aux_state_subdir = f"src/aux_state/{benchmark}/q{q}"
+            aux_finalize = f"{benchmark}_q{q}_finalize.cpp"
+        cost_model = str(workload.get("cost_model_config", f"config/{benchmark}_q{q}_aux_cost_model.json"))
+        bench_sweep = workload.get("aux_bench_sweep", {})
+        if not isinstance(bench_sweep, dict):
+            bench_sweep = {}
+        if benchmark == "sec_edgar":
+            bench_suffix = f"q{q}_aux_bench_sf3"
+        else:
+            bench_suffix = f"q{q}_aux_bench_sf1"
+        paths.update(
+            {
+                "aux_function_name": aux_fn,
+                "aux_test_target": aux_test,
+                "aux_bench_target": aux_bench,
+                "aux_hybrid_bench_target": aux_hybrid,
+                "aux_calibrate_target": calibrate,
+                "aux_ctest_smoke_regex": str(
+                    workload.get("aux_ctest_smoke_regex", f"^{benchmark}_q{q}_aux_smoke_test$")
+                ),
+                "aux_state_subdir": aux_state_subdir,
+                "aux_finalize_path": f"{aux_state_subdir}/{aux_finalize}",
+                "cost_model_config": cost_model,
+                "aux_bench_work_dir_suffix": str(
+                    workload.get("aux_bench_work_dir_suffix", bench_suffix)
+                ),
+                "aux_bench_suites": str(
+                    bench_sweep.get("suites", workload.get("aux_bench_suites", "lineitem_only"))
+                ),
+            }
+        )
+    return paths
 
 
 def load_pipeline_config(
@@ -201,6 +258,51 @@ def load_aux_state_defaults(repo_root: Path | None = None) -> dict[str, Any]:
     return _load_yaml(path)
 
 
+def load_benchmark_aux_state_defaults(
+    benchmark_name: str,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    root = repo_root or find_repo_root()
+    path = pipeline_root(root) / "config" / f"{benchmark_name}_aux_state.yaml"
+    if not path.is_file():
+        return {}
+    return _load_yaml(path)
+
+
+def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
+    aux_defaults = load_aux_state_defaults(repo_root)
+    benchmark = str(workload.get("benchmark_name", "tpch"))
+    bench_aux = load_benchmark_aux_state_defaults(benchmark, repo_root)
+
+    for key in (
+        "post_implementation_gates",
+        "post_optimization_gates",
+        "post_audit_gates",
+        "prompt_subdir",
+        "max_structural_reanalysis",
+    ):
+        if key in aux_defaults:
+            workload[key] = aux_defaults[key]
+    if "speedup_verification" in aux_defaults:
+        workload.setdefault("speedup_verification", dict(aux_defaults["speedup_verification"]))
+
+    for key in ("write_paths", "allowed_commands"):
+        merged = list(aux_defaults.get(key, []))
+        merged.extend(bench_aux.get(key, []))
+        pack_extra = list(workload.get(key, []))
+        workload[key] = merged + pack_extra
+
+    workload_sweep = workload.get("aux_bench_sweep")
+    if isinstance(workload_sweep, dict) and workload_sweep:
+        base = dict(bench_aux.get("aux_bench_sweep") or aux_defaults.get("aux_bench_sweep") or {})
+        base.update(workload_sweep)
+        workload["aux_bench_sweep"] = base
+    elif "aux_bench_sweep" in bench_aux:
+        workload["aux_bench_sweep"] = dict(bench_aux["aux_bench_sweep"])
+    elif "aux_bench_sweep" in aux_defaults:
+        workload["aux_bench_sweep"] = dict(aux_defaults["aux_bench_sweep"])
+
+
 def apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str, Any]) -> PipelineConfig:
     extra_write_paths = list(workload.get("write_paths", []))
     extra_allowed = list(workload.get("allowed_commands", []))
@@ -250,16 +352,5 @@ def load_workload(name: str, repo_root: Path | None = None) -> dict[str, Any]:
         data.setdefault("artifact_namespace", "tpch")
 
     if data.get("workload_kind") == "aux_state":
-        aux_defaults = load_aux_state_defaults(root)
-        for key in (
-            "post_implementation_gates",
-            "post_optimization_gates",
-            "post_audit_gates",
-            "prompt_subdir",
-            "max_structural_reanalysis",
-        ):
-            if key in aux_defaults and key not in data:
-                data[key] = aux_defaults[key]
-        if "speedup_verification" in aux_defaults and "speedup_verification" not in data:
-            data["speedup_verification"] = dict(aux_defaults["speedup_verification"])
+        _merge_aux_defaults(data, root)
     return data

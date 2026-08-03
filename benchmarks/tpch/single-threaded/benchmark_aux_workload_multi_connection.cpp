@@ -5,6 +5,12 @@
 #include "accelerator_codegen/tpch_q10_aux.hpp"
 #include "accelerator_codegen/tpch_q12_aux.hpp"
 #include "accelerator_codegen/tpch_q14_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q1_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q2_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q3_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q4_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q6_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q24_aux.hpp"
 #include "test_support/cross_accel_helpers.hpp"
 
 #include <algorithm>
@@ -25,8 +31,7 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
-
-constexpr int kSupportedQueries[] = {1, 3, 6, 10, 12, 14};
+using CrossAccelBenchmark = accelerator_codegen::test_support::CrossAccelBenchmark;
 
 enum class ReaderKind { Baseline, Accel };
 
@@ -80,12 +85,21 @@ void LogProgress(const std::string &message) {
 }
 
 bool IsSupportedQuery(int query_num) {
-	for (int supported : kSupportedQueries) {
-		if (supported == query_num) {
+	const auto queries = accelerator_codegen::test_support::CrossAccelAllQueries();
+	return std::find(queries.begin(), queries.end(), query_num) != queries.end();
+}
+
+bool RunInvalidatingWrite(duckdb::Connection &connection, int query_num, const std::string &writer_sql) {
+	if (accelerator_codegen::test_support::DetectCrossAccelBenchmark() == CrossAccelBenchmark::SecEdgar) {
+		try {
+			accelerator_codegen::test_support::ApplyInvalidatingWriterSql(connection, query_num);
 			return true;
+		} catch (const std::exception &) {
+			return false;
 		}
 	}
-	return false;
+	auto result = connection.Query(writer_sql);
+	return result && !result->HasError();
 }
 
 uint64_t ReaderStrideForWritePct(int write_pct) {
@@ -149,6 +163,24 @@ bool RunReaderQuery(duckdb::Connection &connection, int query_num, ReaderKind ki
 }
 
 bool QueryUsedAuxPath(int query_num) {
+	if (accelerator_codegen::test_support::DetectCrossAccelBenchmark() == CrossAccelBenchmark::SecEdgar) {
+		switch (query_num) {
+		case 1:
+			return accelerator_codegen::GetSecEdgarQ1AuxDiagnostics().used_aux_path;
+		case 2:
+			return accelerator_codegen::GetSecEdgarQ2AuxDiagnostics().used_aux_path;
+		case 3:
+			return accelerator_codegen::GetSecEdgarQ3AuxDiagnostics().used_aux_path;
+		case 4:
+			return accelerator_codegen::GetSecEdgarQ4AuxDiagnostics().used_aux_path;
+		case 6:
+			return accelerator_codegen::GetSecEdgarQ6AuxDiagnostics().used_aux_path;
+		case 24:
+			return accelerator_codegen::GetSecEdgarQ24AuxDiagnostics().used_aux_path;
+		default:
+			return false;
+		}
+	}
 	switch (query_num) {
 	case 1:
 		return accelerator_codegen::GetQ1AuxDiagnostics().used_aux_path;
@@ -168,6 +200,31 @@ bool QueryUsedAuxPath(int query_num) {
 }
 
 void ResetAuxDiagnostics(int query_num) {
+	if (accelerator_codegen::test_support::DetectCrossAccelBenchmark() == CrossAccelBenchmark::SecEdgar) {
+		switch (query_num) {
+		case 1:
+			accelerator_codegen::ResetSecEdgarQ1AuxDiagnostics();
+			break;
+		case 2:
+			accelerator_codegen::ResetSecEdgarQ2AuxDiagnostics();
+			break;
+		case 3:
+			accelerator_codegen::ResetSecEdgarQ3AuxDiagnostics();
+			break;
+		case 4:
+			accelerator_codegen::ResetSecEdgarQ4AuxDiagnostics();
+			break;
+		case 6:
+			accelerator_codegen::ResetSecEdgarQ6AuxDiagnostics();
+			break;
+		case 24:
+			accelerator_codegen::ResetSecEdgarQ24AuxDiagnostics();
+			break;
+		default:
+			break;
+		}
+		return;
+	}
 	switch (query_num) {
 	case 1:
 		accelerator_codegen::ResetQ1AuxDiagnostics();
@@ -326,8 +383,7 @@ void RunConcurrentPhase(duckdb::DuckDB &database, int query_num, ReaderKind read
 						continue;
 					}
 					const auto write_start = Clock::now();
-					auto result = connection.Query(writer_sql);
-					const bool wrote = result && !result->HasError();
+					const bool wrote = RunInvalidatingWrite(connection, query_num, writer_sql);
 					writer_total_us.fetch_add(static_cast<uint64_t>(ElapsedUs(write_start, Clock::now())));
 					if (wrote) {
 						writer_commits.fetch_add(1);
@@ -345,8 +401,7 @@ void RunConcurrentPhase(duckdb::DuckDB &database, int query_num, ReaderKind read
 					continue;
 				}
 				const auto write_start = Clock::now();
-				auto result = connection.Query(writer_sql);
-				const bool wrote = result && !result->HasError();
+				const bool wrote = RunInvalidatingWrite(connection, query_num, writer_sql);
 				writer_total_us.fetch_add(static_cast<uint64_t>(ElapsedUs(write_start, Clock::now())));
 				if (wrote) {
 					writer_commits.fetch_add(1);
@@ -391,10 +446,19 @@ int main(int argc, char **argv) {
 		const int query_num = argc > 1 ? std::stoi(argv[1])
 		                               : GetEnvInt("ACCEL_WORKLOAD_QUERY", GetEnvInt("ACCEL_WORKLOAD_MC_QUERY", 0));
 		if (!IsSupportedQuery(query_num)) {
-			throw std::runtime_error("unsupported query; use one of 1,3,6,10,12,14");
+			const auto supported = accelerator_codegen::test_support::CrossAccelAllQueries();
+			std::string supported_list;
+			for (size_t i = 0; i < supported.size(); i++) {
+				if (i > 0) {
+					supported_list += ',';
+				}
+				supported_list += std::to_string(supported[i]);
+			}
+			throw std::runtime_error("unsupported query; use one of " + supported_list);
 		}
 
-		const char *db_path = argc > 2 ? argv[2] : GetEnv("ACCEL_TPCH_DB", "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb").c_str();
+		const char *db_path =
+		    argc > 2 ? argv[2] : accelerator_codegen::test_support::CrossAccelDatabasePath().c_str();
 		const int readers = GetEnvInt("ACCEL_WORKLOAD_READERS", GetEnvInt("ACCEL_WORKLOAD_MC_READERS", 4));
 		const int duration_sec = GetEnvInt("ACCEL_WORKLOAD_DURATION_SEC", GetEnvInt("ACCEL_WORKLOAD_MC_DURATION_SEC", 25));
 		const int write_pct = GetEnvInt("ACCEL_WORKLOAD_WRITE_PCT", GetEnvInt("ACCEL_WORKLOAD_MC_WRITE_PCT", 0));

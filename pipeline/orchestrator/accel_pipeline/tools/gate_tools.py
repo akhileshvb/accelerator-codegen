@@ -19,6 +19,7 @@ def _compact_gate_payload(gate_name: str, data: dict) -> dict:
         "composite_score",
         "composite_workload_speedup",
         "read_only_query_speedup",
+        "read_only_cold_start_workload_speedup",
         "exit_code",
         "reason",
         "notes",

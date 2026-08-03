@@ -102,10 +102,12 @@ def test_log_bench_sweep_results(capsys, tmp_path):
             "composite_score": 20.483,
             "composite_workload_speedup": 1.21,
             "read_only_query_speedup": 192.73,
+            "read_only_cold_start_workload_speedup": 45.5,
             "by_write_frequency_pct": {
                 "0": {
                     "write_frequency_pct": 0,
                     "workload_speedup": 185.47,
+                    "cold_start_workload_speedup": 45.5,
                     "query_only_speedup": 192.73,
                     "accel_hit_rate": 1.0,
                     "writes_executed": 0,
@@ -122,6 +124,7 @@ def test_log_bench_sweep_results(capsys, tmp_path):
     )
     captured = capsys.readouterr()
     assert "aux_bench_sweep status=pass" in captured.err
+    assert "cold_start=45.5x" in captured.err
     assert "composite=20.483" in captured.err
     assert "0% writes" in captured.err
     assert "50% writes" in captured.err

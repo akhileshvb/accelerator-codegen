@@ -18,6 +18,8 @@ public:
 	uint64_t PinVisibleMutationEpoch(const std::string &accelerator_id, uint64_t current_committed_epoch);
 	uint64_t GetPinnedVisibleMutationEpoch(const std::string &accelerator_id) const;
 
+	void QueryEnd(duckdb::ClientContext &context) override;
+
 private:
 	std::unordered_map<std::string, uint64_t> pinned_epochs;
 };

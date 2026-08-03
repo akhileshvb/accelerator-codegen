@@ -9,8 +9,12 @@ if [[ -z "${QUERY}" ]]; then
   exit 1
 fi
 
-OUT="${ROOT}/pipeline/artifacts/q${QUERY}/gates"
-ART="${ROOT}/pipeline/artifacts/q${QUERY}"
+# shellcheck source=aux_gate_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+load_aux_gate_context "${ROOT}" "${QUERY}"
+
+OUT="${GATE_OUT}"
+ART="${GATE_ART}"
 mkdir -p "${OUT}"
 
 # shellcheck source=cmake_ensure_target.sh
@@ -24,6 +28,7 @@ out = pathlib.Path("${OUT}/aux_bench_sweep.json")
 out.write_text(json.dumps({
     "gate": "aux_bench_sweep",
     "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
     "status": "skip",
     "reason": """${reason}""",
 }, indent=2))
@@ -36,7 +41,7 @@ if [[ ! -d "${BUILD}" ]]; then
   exit 0
 fi
 
-BENCH_TARGET="benchmark_tpch_q${QUERY}_aux"
+BENCH_TARGET="${AUX_BENCH_TARGET}"
 BUILD_LOG=""
 if ! ensure_cmake_target "${ROOT}" "${BUILD}" "${BENCH_TARGET}"; then
 	BUILD_LOG="$(cmake --build "${BUILD}" --target "${BENCH_TARGET}" -j"$(nproc)" 2>&1 | tail -40 || true)"
@@ -47,8 +52,12 @@ if [[ ! -x "${BUILD}/${BENCH_TARGET}" ]]; then
 fi
 
 export ACCEL_BUILD_DIR="${BUILD}"
-export ACCEL_AUX_BENCH_WORK_DIR="${BUILD}/q${QUERY}_aux_bench_sf1"
-export ACCEL_AUX_WRITE_FREQUENCIES="${ACCEL_AUX_WRITE_FREQUENCIES:-0,1,10,50}"
+export ACCEL_AUX_BENCH_WORK_DIR="${BUILD}/${AUX_BENCH_WORK_DIR_SUFFIX:-q${QUERY}_aux_bench_sf1}"
+export ACCEL_AUX_WRITE_FREQUENCIES="${ACCEL_AUX_WRITE_FREQUENCIES:-${AUX_WRITE_FREQUENCIES_CTX:-0,1,10,50}}"
+export ACCEL_AUX_BENCH_SUITES="${ACCEL_AUX_BENCH_SUITES:-${AUX_BENCH_SUITES}}"
+export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
+export ACCEL_AUX_BENCH_TARGET="${BENCH_TARGET}"
+export "${DB_ENV_VAR}"="${DATASET_DB}"
 export ACCEL_BENCH_WARMUP="${ACCEL_BENCH_WARMUP:-10}"
 export ACCEL_BENCH_QUERIES="${ACCEL_BENCH_QUERIES:-100}"
 export ACCEL_BENCH_REF_SAMPLES="${ACCEL_BENCH_REF_SAMPLES:-5}"
@@ -102,10 +111,12 @@ elif summary.get("row_count", 0) < expected_rows:
 gate = {
     "gate": "aux_bench_sweep",
     "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
     "status": status,
     "composite_score": summary.get("composite_score", 0.0),
     "composite_workload_speedup": summary.get("composite_workload_speedup", 0.0),
     "read_only_query_speedup": summary.get("read_only_query_speedup", 0.0),
+    "read_only_cold_start_workload_speedup": summary.get("read_only_cold_start_workload_speedup", 0.0),
     "by_write_frequency_pct": summary.get("by_write_frequency_pct", {}),
     "results_csv": str(results_csv),
     "notes": "; ".join(notes) if notes else "sweep complete",

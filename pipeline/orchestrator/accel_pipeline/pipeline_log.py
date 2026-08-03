@@ -126,12 +126,13 @@ def _bench_sweep_detail_lines(by_freq: dict[str, Any]) -> list[str]:
             continue
         freq = row.get("write_frequency_pct", key)
         wl = float(row.get("workload_speedup", 0) or 0)
+        cold = float(row.get("cold_start_workload_speedup", 0) or 0)
         qo = float(row.get("query_only_speedup", 0) or 0)
         hit = float(row.get("accel_hit_rate", 0) or 0)
         writes = row.get("writes_executed", 0)
         lines.append(
             f"{freq}% writes (executed={writes}): workload={wl:.2f}x vs DuckDB, "
-            f"query={qo:.2f}x, hit={hit * 100:.0f}%"
+            f"cold_start={cold:.2f}x, query={qo:.2f}x, hit={hit * 100:.0f}%"
         )
     return lines
 
@@ -303,11 +304,12 @@ def log_bench_sweep_results(
     composite = gate_data.get("composite_score", 0.0)
     wl_min = gate_data.get("composite_workload_speedup", 0.0)
     read_only = gate_data.get("read_only_query_speedup", 0.0)
+    cold_start = gate_data.get("read_only_cold_start_workload_speedup", 0.0)
     notes = str(gate_data.get("notes") or gate_data.get("reason") or "").strip()
 
     header = (
         f"aux_bench_sweep status={gate_status} "
-        f"composite={composite} wl_min={wl_min}x read_only={read_only}x"
+        f"composite={composite} wl_min={wl_min}x read_only={read_only}x cold_start={cold_start}x"
     )
     if notes:
         header += f" ({notes})"
@@ -330,6 +332,7 @@ def log_bench_sweep_results(
             "composite_score": composite,
             "composite_workload_speedup": wl_min,
             "read_only_query_speedup": read_only,
+            "read_only_cold_start_workload_speedup": cold_start,
             "lines": detail_lines,
             "notes": notes or None,
         },

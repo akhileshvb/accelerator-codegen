@@ -5,6 +5,7 @@
 
 #include "accelerator_codegen/tpch_q14_write_policy.hpp"
 #include "accelerator_codegen/tpch_q1_write_policy.hpp"
+#include "accelerator_codegen/sec_edgar_q1_write_policy.hpp"
 
 #include "accelerator_codegen/aux_state/txn_invalidation_buffer.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
@@ -73,6 +74,11 @@ AcceleratorMaintenanceState &AcceleratorStateRegistry::GetMaintenanceState(const
 bool AcceleratorStateRegistry::IsAcceleratorRegistered(const std::string &accelerator_id) const {
 	const auto it = accelerators.find(accelerator_id);
 	return it != accelerators.end() && static_cast<bool>(it->second.interpreter);
+}
+
+bool AcceleratorStateRegistry::HasMaintenanceHook(const std::string &accelerator_id) const {
+	const auto it = accelerators.find(accelerator_id);
+	return it != accelerators.end() && static_cast<bool>(it->second.maintenance_hook);
 }
 
 bool AcceleratorStateRegistry::RegisterAcceleratorIfAbsent(const std::string &accelerator_id,
@@ -153,6 +159,8 @@ void AcceleratorStateRegistry::ApplyPreCommitInvalidation(const InvalidationPlan
 			accelerator_codegen::RecordQ14InvalidationApplied(true, 0);
 		} else if (accelerator_id == "tpch_q1_aux") {
 			accelerator_codegen::RecordQ1InvalidationApplied(true, 0);
+		} else if (accelerator_id == "sec_edgar_q1_aux") {
+			accelerator_codegen::RecordSecEdgarQ1InvalidationApplied(true, 0);
 		}
 		return;
 	}
@@ -165,6 +173,8 @@ void AcceleratorStateRegistry::ApplyPreCommitInvalidation(const InvalidationPlan
 		accelerator_codegen::RecordQ14InvalidationApplied(false, partition_count);
 	} else if (accelerator_id == "tpch_q1_aux" && partition_count > 0) {
 		accelerator_codegen::RecordQ1InvalidationApplied(false, partition_count);
+	} else if (accelerator_id == "sec_edgar_q1_aux" && partition_count > 0) {
+		accelerator_codegen::RecordSecEdgarQ1InvalidationApplied(false, partition_count);
 	}
 }
 
@@ -219,7 +229,9 @@ void AcceleratorStateRegistry::ApplyPreCommitInvalidationAll(const InvalidationP
 		if (context && txn_buffer && entry.second.maintenance_hook) {
 			continue;
 		}
-		ApplyPreCommitInvalidation(plan, entry.first);
+		const auto &accel_plan = txn_buffer->AcceleratorPlan(entry.first);
+		const auto &effective_plan = accel_plan.IsEmpty() ? plan : accel_plan;
+		ApplyPreCommitInvalidation(effective_plan, entry.first);
 	}
 }
 
@@ -272,9 +284,7 @@ bool AcceleratorStateRegistry::TryGetUpdateOldColumns(
 			old_columns.emplace_back(updated);
 		}
 	}
-	const auto *dependency = FindDependency(table.oid);
-	if (!old_columns.empty() && dependency &&
-	    (dependency->table_name == "lineitem" || dependency->table_name == "part")) {
+	if (!old_columns.empty()) {
 		for (const auto &dep : all_dependencies) {
 			if (dep.table_oid != table.oid) {
 				continue;

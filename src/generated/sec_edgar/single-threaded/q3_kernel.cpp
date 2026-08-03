@@ -934,6 +934,50 @@ void SecEdgarQ3Kernel::Finalize() {
 	}
 }
 
+SecEdgarQ3AdshKey ToAuxAdshKey(const AdshKey &key) {
+	SecEdgarQ3AdshKey out;
+	out.size = key.size;
+	out.w0 = key.w0;
+	out.w1 = key.w1;
+	out.w2 = key.w2;
+	out.w3 = 0;
+	return out;
+}
+
+void SecEdgarQ3Kernel::ExportAuxPartitions(SecEdgarQ3Fy2022CohortPartition &cohort,
+                                           SecEdgarQ3CikTotalsPartition &cik_totals,
+                                           SecEdgarQ3OutputPartition &output) {
+	if (!state->finalized) {
+		FinalizeGroups();
+	}
+
+	cohort.adsh_to_filing.clear();
+	cohort.adsh_to_filing.reserve(state->fy2022_adsh_lookup.size());
+	for (const auto &entry : state->fy2022_adsh_lookup) {
+		const auto &info = entry.second;
+		const auto &meta = state->groups[info.group_id];
+		cohort.adsh_to_filing.emplace(ToAuxAdshKey(entry.first),
+		                            SecEdgarQ3FilingInfo {meta.name, meta.cik, info.group_id});
+	}
+
+	cik_totals.cik_totals = state->cik_totals;
+	cik_totals.group_names.clear();
+	cik_totals.group_ciks.clear();
+	cik_totals.group_sums = state->group_sums;
+	cik_totals.group_names.reserve(state->groups.size());
+	cik_totals.group_ciks.reserve(state->groups.size());
+	for (const auto &group : state->groups) {
+		cik_totals.group_names.push_back(group.name);
+		cik_totals.group_ciks.push_back(group.cik);
+	}
+
+	output.output_rows.clear();
+	output.output_rows.reserve(state->ordered_output.size());
+	for (const auto &row : state->ordered_output) {
+		output.output_rows.push_back({row.name, row.cik, row.total_value});
+	}
+}
+
 bool SecEdgarQ3Kernel::ProduceOutput(duckdb::DataChunk &output) {
 	if (!state->finalized || state->output_offset >= state->ordered_output.size()) {
 		return false;

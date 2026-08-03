@@ -119,24 +119,6 @@ ConcurrentStressResult RunConcurrentReadersAndWriters(duckdb::DuckDB &database, 
 	const auto deadline = Clock::now() + std::chrono::seconds(duration_sec);
 	std::mutex latency_mutex;
 
-	std::thread writer([&]() {
-		duckdb::Connection connection(database);
-		RegisterAcceleratorFunctions(connection);
-		ConfigureConnection(connection);
-		std::mt19937 rng(17);
-		std::uniform_int_distribution<size_t> pick(0, all_queries.size() - 1);
-		while (Clock::now() < deadline) {
-			const auto writer_query = all_queries[pick(rng)];
-			try {
-				ApplyInvalidatingWriterSql(connection, writer_query);
-				result.writer_commits++;
-			} catch (...) {
-			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(50));
-		}
-		stop.store(true);
-	});
-
 	const int participants = target_readers + background_readers + 1;
 	StartBarrier start_barrier(participants);
 	std::vector<std::thread> threads;
@@ -177,6 +159,25 @@ ConcurrentStressResult RunConcurrentReadersAndWriters(duckdb::DuckDB &database, 
 	}
 
 	start_barrier.ArriveAndWait();
+
+	std::thread writer([&]() {
+		duckdb::Connection connection(database);
+		RegisterAcceleratorFunctions(connection);
+		ConfigureConnection(connection);
+		std::mt19937 rng(17);
+		std::uniform_int_distribution<size_t> pick(0, all_queries.size() - 1);
+		while (Clock::now() < deadline) {
+			const auto writer_query = all_queries[pick(rng)];
+			try {
+				ApplyMultiConnectionStressWriter(connection, writer_query);
+				result.writer_commits++;
+			} catch (...) {
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+		stop.store(true);
+	});
+
 	for (auto &thread : threads) {
 		thread.join();
 	}
@@ -186,6 +187,19 @@ ConcurrentStressResult RunConcurrentReadersAndWriters(duckdb::DuckDB &database, 
 
 double RebuildTargetPartitionUs(duckdb::Connection &connection, int target_query) {
 	const auto start = Clock::now();
+	if (DetectCrossAccelBenchmark() == CrossAccelBenchmark::SecEdgar) {
+		switch (target_query) {
+		case 1:
+		case 2:
+		case 3:
+			connection.Query("SELECT * FROM accel_sec_edgar_q" + std::to_string(target_query) +
+			                 "_aux_rebuild_partition(0::BIGINT)");
+			break;
+		default:
+			throw std::runtime_error("unsupported SEC EDGAR rebuild for Q" + std::to_string(target_query));
+		}
+		return ElapsedUs(start, Clock::now());
+	}
 	switch (target_query) {
 	case 1:
 		connection.Query("SELECT * FROM accel_q1_aux_rebuild_partition(DATE '1998-12-01')");

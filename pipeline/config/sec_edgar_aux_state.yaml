@@ -1,0 +1,32 @@
+# SEC EDGAR aux-state overrides merged when benchmark_name=sec_edgar and workload_kind=aux_state.
+
+write_paths:
+  - include/accelerator_codegen/sec_edgar_q*_aux*.hpp
+  - include/accelerator_codegen/sec_edgar_q*_incremental.hpp
+  - include/accelerator_codegen/sec_edgar_q*_maintenance*.hpp
+  - include/accelerator_codegen/sec_edgar_q*_rebuild_policy.hpp
+  - include/accelerator_codegen/sec_edgar_q*_write_policy.hpp
+  - include/accelerator_codegen/sec_edgar_q*_diagnostics.hpp
+  - include/accelerator_codegen/sec_edgar_q*_finalize.hpp
+  - src/aux_state/sec_edgar/**
+  - config/sec_edgar_q*_aux_cost_model.json
+  - tests/single-threaded/test_sec_edgar_q*_*.cpp
+  - tests/test_support/sec_edgar_q*_aux_helpers.hpp
+  - benchmarks/sec_edgar/single-threaded/benchmark_q*_aux.cpp
+  - benchmarks/sec_edgar/single-threaded/benchmark_q*_hybrid_eval.cpp
+  - benchmarks/sec_edgar/single-threaded/calibrate_q*_aux_cost_model.cpp
+
+allowed_commands:
+  - "^ctest -R (sec_edgar_q\\d+_|test_sec_edgar_q\\d+_|test_cross_accel|test_aux_multi_connection).*"
+  - "^bash scripts/run_aux_bench_sweep\\.sh \\d+$"
+  - "^bash pipeline/gates/run_aux_cross_accel\\.sh \\d+$"
+  - "^bash pipeline/gates/run_aux_multi_connection\\.sh \\d+$"
+  - "^bash pipeline/gates/run_aux_cost_model_calibrate\\.sh \\d+$"
+
+aux_bench_sweep:
+  write_frequencies: [0, 1, 10, 50]
+  suites: filing_append
+  bench_warmup: 10
+  bench_queries: 100
+  bench_ref_samples: 5
+  bench_base_write_samples: 3

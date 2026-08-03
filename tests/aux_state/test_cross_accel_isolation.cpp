@@ -19,20 +19,22 @@ void RequireAllCorrect(duckdb::Connection &connection, const std::vector<int> &q
 
 int main() {
 	try {
-		duckdb::DuckDB database("/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb");
+		accelerator_codegen::test_support::EnableCrossAccelHybridMaintenance();
+		duckdb::DuckDB database(accelerator_codegen::test_support::CrossAccelMutableDatabasePath());
 		duckdb::Connection connection(database);
 		accelerator_codegen::RegisterAcceleratorFunctions(connection);
 		connection.Query("PRAGMA threads=1");
 
 		const auto queries = accelerator_codegen::test_support::CrossAccelTestQueries();
-		for (int query_num : queries) {
+		const auto all_queries = accelerator_codegen::test_support::CrossAccelAllQueries();
+		for (int query_num : all_queries) {
 			accelerator_codegen::test_support::BuildCrossAccelAux(connection, query_num);
 		}
 		RequireAllCorrect(connection, queries, "baseline");
 
-		for (int writer_query : queries) {
+		for (int writer_query : all_queries) {
 			accelerator_codegen::test_support::ApplyInvalidatingWriterSql(connection, writer_query);
-			for (int reader_query : queries) {
+			for (int reader_query : all_queries) {
 				accelerator_codegen::test_support::RequireCrossAccelQueryCorrectness(
 				    connection, reader_query,
 				    "after_Q" + std::to_string(writer_query) + "_write_check_Q" + std::to_string(reader_query));

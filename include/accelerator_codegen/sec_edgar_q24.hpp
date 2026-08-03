@@ -6,6 +6,7 @@
 #include "accelerator_codegen/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/kernel.hpp"
 #include "accelerator_codegen/query_runtime.hpp"
+#include "accelerator_codegen/sec_edgar_q24_finalize.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 
@@ -69,6 +70,9 @@ public:
 	void ConsumeInput(duckdb::idx_t input_id, duckdb::DataChunk &input) override;
 	void Finalize() override;
 	bool ProduceOutput(duckdb::DataChunk &output) override;
+
+	void ExportAuxPartitions(SecEdgarQ24PreMembershipPartition &pre_membership, SecEdgarQ24TagVersionPartition &tag_versions,
+	                         SecEdgarQ24GroupAggregatesPartition &aggregates, SecEdgarQ24OutputPartition &output);
 
 protected:
 	SecEdgarQ24Parameters params;

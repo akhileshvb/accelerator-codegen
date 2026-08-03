@@ -4,10 +4,42 @@ import json
 from pathlib import Path
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
-from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.paths import pipeline_root, query_artifacts_dir
 from accel_pipeline.pipeline_log import log_analysis_candidates
 from accel_pipeline.stages.base import run_agent_stage
 from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis_file
+
+
+def _legacy_analysis_path(repo_root: Path, query: int) -> Path:
+    return pipeline_root(repo_root) / "artifacts" / f"q{query}" / "analysis.json"
+
+
+def _analysis_is_valid(path: Path, *, allow_poor_fitness: bool) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        validate_aux_analysis_file(path, allow_poor_fitness=allow_poor_fitness)
+    except AuxAnalysisValidationError:
+        return False
+    return True
+
+
+def _maybe_recover_legacy_analysis(
+    repo_root: Path,
+    query: int,
+    analysis_path: Path,
+    *,
+    allow_poor_fitness: bool,
+) -> bool:
+    """Copy valid aux analysis from legacy tpch-style path (pipeline/artifacts/qN/)."""
+    legacy_path = _legacy_analysis_path(repo_root, query)
+    if legacy_path.resolve() == analysis_path.resolve():
+        return False
+    if not _analysis_is_valid(legacy_path, allow_poor_fitness=allow_poor_fitness):
+        return False
+    analysis_path.parent.mkdir(parents=True, exist_ok=True)
+    analysis_path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
+    return True
 
 
 def run(
@@ -42,10 +74,18 @@ def run(
         return result
 
     analysis_path = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload) / "analysis.json"
+    allow_poor = bool(workload.get("allow_poor_fitness", False))
+    if not _analysis_is_valid(analysis_path, allow_poor_fitness=allow_poor):
+        _maybe_recover_legacy_analysis(
+            pipeline_config.repo_root,
+            query,
+            analysis_path,
+            allow_poor_fitness=allow_poor,
+        )
     try:
         validate_aux_analysis_file(
             analysis_path,
-            allow_poor_fitness=bool(workload.get("allow_poor_fitness", False)),
+            allow_poor_fitness=allow_poor,
         )
     except AuxAnalysisValidationError as exc:
         raise RuntimeError(f"aux analysis validation failed: {exc}") from exc

@@ -15,11 +15,12 @@ def build_gate_context(
 ) -> dict[str, Any]:
     paths = resolve_workload_paths(pipeline_config, workload, query)
     benchmark = str(workload.get("benchmark_name", "tpch"))
-    return {
+    ctx: dict[str, Any] = {
         "query_number": query,
         "benchmark_name": benchmark,
         "artifact_namespace": str(workload.get("artifact_namespace", benchmark)),
         "display_name": str(workload.get("display_name", benchmark)),
+        "workload_kind": str(workload.get("workload_kind", "base")),
         "source_subdir": paths["source_subdir"],
         "function_name": paths["function_name"],
         "create_fn": paths["create_fn"],
@@ -36,6 +37,27 @@ def build_gate_context(
         "kernel_path": paths["kernel_path"],
         "package_path": paths["package_path"],
     }
+    if workload.get("workload_kind") == "aux_state":
+        ctx.update(
+            {
+                "aux_function_name": paths["aux_function_name"],
+                "aux_test_target": paths["aux_test_target"],
+                "aux_bench_target": paths["aux_bench_target"],
+                "aux_hybrid_bench_target": paths["aux_hybrid_bench_target"],
+                "aux_calibrate_target": paths["aux_calibrate_target"],
+                "aux_ctest_smoke_regex": paths["aux_ctest_smoke_regex"],
+                "aux_state_subdir": paths["aux_state_subdir"],
+                "cost_model_config": paths["cost_model_config"],
+                "aux_bench_work_dir_suffix": paths["aux_bench_work_dir_suffix"],
+                "aux_bench_suites": paths["aux_bench_suites"],
+            }
+        )
+        bench_sweep = workload.get("aux_bench_sweep", {})
+        if isinstance(bench_sweep, dict):
+            freqs = bench_sweep.get("write_frequencies")
+            if freqs:
+                ctx["aux_write_frequencies"] = ",".join(str(f) for f in freqs)
+    return ctx
 
 
 def write_gate_context(

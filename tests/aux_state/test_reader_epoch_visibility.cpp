@@ -22,7 +22,18 @@ void TestPinEpochPerStatement() {
 	const auto first = GetReaderVisibleMutationEpoch(*connection.context, "tpch_q14_aux", 5);
 	const auto second = GetReaderVisibleMutationEpoch(*connection.context, "tpch_q14_aux", 9);
 	Require(first == 5, "first pin uses statement-start epoch");
-	Require(second == 5, "second call returns pinned epoch");
+	Require(second == 5, "second call within statement returns pinned epoch");
+}
+
+void TestPinEpochResetsBetweenStatements() {
+	duckdb::DuckDB database(":memory:");
+	duckdb::Connection connection(database);
+	auto state = connection.context->registered_state->GetOrCreate<ReaderMutationEpochState>(
+	    ReaderMutationEpochState::STATE_KEY);
+	(void)GetReaderVisibleMutationEpoch(*connection.context, "tpch_q14_aux", 5);
+	state->QueryEnd(*connection.context);
+	const auto after_reset = GetReaderVisibleMutationEpoch(*connection.context, "tpch_q14_aux", 9);
+	Require(after_reset == 9, "new statement observes latest committed epoch");
 }
 
 } // namespace
@@ -30,6 +41,7 @@ void TestPinEpochPerStatement() {
 int main() {
 	try {
 		TestPinEpochPerStatement();
+		TestPinEpochResetsBetweenStatements();
 		std::cout << "test_reader_epoch_visibility passed\n";
 		return EXIT_SUCCESS;
 	} catch (const std::exception &ex) {

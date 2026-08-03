@@ -9,7 +9,11 @@ if [[ -z "${QUERY}" ]]; then
   exit 1
 fi
 
-OUT="${ROOT}/pipeline/artifacts/q${QUERY}/gates"
+# shellcheck source=aux_gate_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+load_aux_gate_context "${ROOT}" "${QUERY}"
+
+OUT="${GATE_OUT}"
 mkdir -p "${OUT}"
 
 # shellcheck source=cmake_ensure_target.sh
@@ -28,13 +32,18 @@ else
   CTEST="ctest"
 fi
 
+export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 export ACCEL_MULTI_CONN_TEST_QUERIES="${QUERY}"
 export ACCEL_MULTI_CONN_TARGET_READERS="${ACCEL_MULTI_CONN_TARGET_READERS:-3}"
 export ACCEL_MULTI_CONN_BACKGROUND_READERS="${ACCEL_MULTI_CONN_BACKGROUND_READERS:-2}"
 export ACCEL_MULTI_CONN_STRESS_SEC="${ACCEL_MULTI_CONN_STRESS_SEC:-5}"
+export ACCEL_BUILD_DIR="${BUILD}"
+WORK_DB="${BUILD}/multi_conn_q${QUERY}.duckdb"
+cp "${DATASET_DB}" "${WORK_DB}"
+export ACCEL_CROSS_ACCEL_WORK_DB="${WORK_DB}"
 
 set +e
-LOG="$(cd "${BUILD}" && "${CTEST}" -R "test_aux_multi_connection_stress" --output-on-failure 2>&1)"
+LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}"="${DATASET_DB}" "${CTEST}" -R "test_aux_multi_connection_stress" --output-on-failure 2>&1)"
 RC=$?
 set -e
 
@@ -49,6 +58,7 @@ path = pathlib.Path("${OUT}/aux_multi_connection.json")
 path.write_text(json.dumps({
     "gate": "aux_multi_connection",
     "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
     "status": "${STATUS}",
     "exit_code": int("${RC}"),
     "test_queries": "${ACCEL_MULTI_CONN_TEST_QUERIES}",

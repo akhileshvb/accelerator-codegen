@@ -9,7 +9,11 @@ if [[ -z "${QUERY}" ]]; then
   exit 1
 fi
 
-OUT="${ROOT}/pipeline/artifacts/q${QUERY}/gates"
+# shellcheck source=aux_gate_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+load_aux_gate_context "${ROOT}" "${QUERY}"
+
+OUT="${GATE_OUT}"
 mkdir -p "${OUT}"
 
 # shellcheck source=cmake_ensure_target.sh
@@ -28,10 +32,15 @@ else
   CTEST="ctest"
 fi
 
+export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 export ACCEL_CROSS_ACCEL_TEST_QUERIES="${QUERY}"
+export ACCEL_BUILD_DIR="${BUILD}"
+WORK_DB="${BUILD}/cross_accel_q${QUERY}.duckdb"
+cp "${DATASET_DB}" "${WORK_DB}"
+export ACCEL_CROSS_ACCEL_WORK_DB="${WORK_DB}"
 
 set +e
-LOG="$(cd "${BUILD}" && "${CTEST}" -R "test_cross_accel" --output-on-failure 2>&1)"
+LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}=${DATASET_DB}" "${CTEST}" -R "test_cross_accel" --output-on-failure 2>&1)"
 RC=$?
 set -e
 
@@ -46,6 +55,7 @@ path = pathlib.Path("${OUT}/aux_cross_accel.json")
 path.write_text(json.dumps({
     "gate": "aux_cross_accel",
     "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
     "status": "${STATUS}",
     "exit_code": int("${RC}"),
     "test_queries": "${ACCEL_CROSS_ACCEL_TEST_QUERIES}",

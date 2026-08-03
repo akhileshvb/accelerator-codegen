@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bar chart of SEC EDGAR SF3 single-threaded accelerator median speedup by query."""
+"""Bar chart of SEC EDGAR SF3 single-threaded speedup by query (accelerator vs GenDB)."""
 
 from __future__ import annotations
 
@@ -16,55 +16,88 @@ OUT_PNG = RESULTS_DIR / "sec_edgar_speedup.png"
 
 QUERIES = ["Q1", "Q2", "Q3", "Q4", "Q6", "Q24"]
 
+ACCEL_COLOR = "#4C72B0"
+GENDDB_COLOR = "#DD8452"
+
 
 def geomean(values: list[float]) -> float:
     return math.exp(sum(math.log(v) for v in values) / len(values))
 
 
-def load_csv(path: Path) -> tuple[list[str], list[float], list[float], list[float]]:
+def load_csv(path: Path) -> tuple[list[str], list[float], list[float]]:
     queries: list[str] = []
     speedups: list[float] = []
-    ref_ms: list[float] = []
-    accel_ms: list[float] = []
+    gendb_speedups: list[float] = []
     with path.open(newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             queries.append(row["query"])
             speedups.append(float(row["speedup_median"]))
-            ref_ms.append(float(row["reference_median_ms"]))
-            accel_ms.append(float(row["accelerator_median_ms"]))
-    return queries, speedups, ref_ms, accel_ms
+            gendb_speedups.append(float(row["gendb_speedup_median"]))
+    return queries, speedups, gendb_speedups
 
 
-def plot(queries: list[str], speedups: list[float], out_path: Path) -> None:
-    geo = geomean(speedups)
+def plot(
+    queries: list[str],
+    speedups: list[float],
+    gendb_speedups: list[float],
+    out_path: Path,
+) -> None:
+    accel_geo = geomean(speedups)
+    gendb_geo = geomean(gendb_speedups)
+
     x = np.arange(len(queries))
-    colors = ["#4C72B0" if s >= 1.0 else "#C44E52" for s in speedups]
+    bar_width = 0.36
+    accel_offsets = x - bar_width / 2
+    gendb_offsets = x + bar_width / 2
 
     fig, ax = plt.subplots(figsize=(9, 5.5), facecolor="white")
-    bars = ax.bar(x, speedups, color=colors, edgecolor="white", linewidth=0.6, width=0.65)
-    ax.axhline(1.0, color="#666666", linestyle="--", linewidth=1.0, zorder=0, label="1× DuckDB")
 
-    for bar, value in zip(bars, speedups):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 0.04,
-            f"{value:.2f}×",
-            ha="center",
-            va="bottom",
-            fontsize=10,
-            fontweight="medium",
-        )
+    accel_bars = ax.bar(
+        accel_offsets,
+        speedups,
+        width=bar_width,
+        color=ACCEL_COLOR,
+        edgecolor="white",
+        linewidth=0.6,
+        label="Accelerator",
+    )
+    gendb_bars = ax.bar(
+        gendb_offsets,
+        gendb_speedups,
+        width=bar_width,
+        color=GENDDB_COLOR,
+        edgecolor="white",
+        linewidth=0.6,
+        label="GenDB",
+    )
+
+    ax.axhline(1.0, color="#666666", linestyle="--", linewidth=1.0, zorder=0)
+
+    for bars in (accel_bars, gendb_bars):
+        for bar in bars:
+            value = bar.get_height()
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.08,
+                f"{value:.1f}×",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                fontweight="medium",
+            )
 
     ax.set_xticks(x)
     ax.set_xticklabels(queries, fontsize=11)
-    ax.set_ylabel("Median speedup (×)")
+    ax.set_ylabel("Median speedup vs DuckDB (×)")
     ax.set_xlabel("Query")
-    ax.set_ylim(0, max(speedups) * 1.18)
+    ymax = max(max(speedups), max(gendb_speedups))
+    ax.set_ylim(0, ymax * 1.22)
     ax.grid(axis="y", linestyle=":", alpha=0.4)
+    ax.legend(loc="upper right", fontsize=10)
     ax.set_title(
-        f"SEC EDGAR accelerator speedup (SF3, single-threaded)\n"
-        f"Geomean {geo:.2f}× · DuckDB reference median / accelerator median",
+        f"SEC EDGAR speedup (SF3, single-threaded, no aux state)\n"
+        f"Geomean — Accelerator {accel_geo:.2f}× · GenDB {gendb_geo:.2f}×",
         fontsize=12,
         pad=12,
     )
@@ -77,8 +110,8 @@ def plot(queries: list[str], speedups: list[float], out_path: Path) -> None:
 def main() -> None:
     if not DEFAULT_CSV.is_file():
         raise SystemExit(f"Missing {DEFAULT_CSV}; run benchmarks first or create the CSV.")
-    queries, speedups, _, _ = load_csv(DEFAULT_CSV)
-    plot(queries, speedups, OUT_PNG)
+    queries, speedups, gendb_speedups = load_csv(DEFAULT_CSV)
+    plot(queries, speedups, gendb_speedups, OUT_PNG)
 
 
 if __name__ == "__main__":

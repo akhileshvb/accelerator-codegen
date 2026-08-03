@@ -8,7 +8,8 @@
 
 int main() {
 	try {
-		duckdb::DuckDB database("/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb");
+		accelerator_codegen::test_support::EnableCrossAccelHybridMaintenance();
+		duckdb::DuckDB database(accelerator_codegen::test_support::CrossAccelMutableDatabasePath());
 		duckdb::Connection connection(database);
 		accelerator_codegen::RegisterAcceleratorFunctions(connection);
 		connection.Query("PRAGMA threads=1");

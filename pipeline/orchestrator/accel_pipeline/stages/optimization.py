@@ -102,7 +102,10 @@ def run(
 
         if is_aux:
             prev_best = float(
-                load_optimization_state(pipeline_config.repo_root, query).get("best_composite_score", 0.0) or 0.0
+                load_optimization_state(pipeline_config.repo_root, query, workload).get(
+                    "best_composite_score", 0.0
+                )
+                or 0.0
             )
         else:
             prev_best = float(load_base_optimization_state(art).get("best_speedup_median", 0.0) or 0.0)
@@ -113,9 +116,13 @@ def run(
                 query,
                 iteration=iteration,
                 change_kind="optimization",
+                workload=workload,
             )
             new_best = float(
-                load_optimization_state(pipeline_config.repo_root, query).get("best_composite_score", 0.0) or 0.0
+                load_optimization_state(pipeline_config.repo_root, query, workload).get(
+                    "best_composite_score", 0.0
+                )
+                or 0.0
             )
             improved = new_best > prev_best
         else:

@@ -15,7 +15,7 @@ Full analysis: `{{full_analysis_path}}`
 1. Verify implementation matches contract (partitioning, mutations, payload, `cross_accelerator_concurrency`).
 2. Confirm `mutation_coverage` behaviors are tested (read `mutation_coverage.md` if needed).
 3. `request_gate`: **aux_speedup_verification** only — capture wall times for `audit_result.json`.
-4. Write `pipeline/artifacts/q{{query_number}}/audit_result.json`:
+4. Write `{{artifacts_path}}/audit_result.json`:
 
 ```json
 {

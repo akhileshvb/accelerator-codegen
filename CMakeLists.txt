@@ -1236,3 +1236,104 @@ accel_add_base_query(
 	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
 	CTEST_RESOURCE_LOCK sec_edgar_db
 )
+
+accel_add_aux_state_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 1
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+accel_add_aux_state_benchmarks(
+	BENCHMARK sec_edgar
+	QUERY_NUM 1
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+if(BUILD_TESTING)
+	accel_add_aux_state_ctests(BENCHMARK sec_edgar QUERY_NUM 1)
+endif()
+
+accel_add_aux_state_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 2
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+accel_add_aux_state_benchmarks(
+	BENCHMARK sec_edgar
+	QUERY_NUM 2
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+if(BUILD_TESTING)
+	accel_add_aux_state_ctests(BENCHMARK sec_edgar QUERY_NUM 2)
+endif()
+
+accel_add_aux_state_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 3
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+accel_add_aux_state_benchmarks(
+	BENCHMARK sec_edgar
+	QUERY_NUM 3
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+if(BUILD_TESTING)
+	accel_add_aux_state_ctests(BENCHMARK sec_edgar QUERY_NUM 3)
+endif()
+
+accel_add_aux_state_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 4
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+accel_add_aux_state_benchmarks(
+	BENCHMARK sec_edgar
+	QUERY_NUM 4
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+if(BUILD_TESTING)
+	accel_add_aux_state_ctests(BENCHMARK sec_edgar QUERY_NUM 4)
+endif()
+
+accel_add_aux_state_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 6
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+accel_add_aux_state_benchmarks(
+	BENCHMARK sec_edgar
+	QUERY_NUM 6
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+if(BUILD_TESTING)
+	accel_add_aux_state_ctests(BENCHMARK sec_edgar QUERY_NUM 6)
+endif()
+
+accel_add_aux_state_query(
+	BENCHMARK sec_edgar
+	QUERY_NUM 24
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+accel_add_aux_state_benchmarks(
+	BENCHMARK sec_edgar
+	QUERY_NUM 24
+	LIBRARY_TARGET accelerator_codegen
+	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+)
+if(BUILD_TESTING)
+	accel_add_aux_state_ctests(BENCHMARK sec_edgar QUERY_NUM 24)
+endif()
+
+add_executable(measure_sec_edgar_aux_memory
+	benchmarks/sec_edgar/single-threaded/measure_aux_memory.cpp
+)
+target_link_libraries(measure_sec_edgar_aux_memory PRIVATE accelerator_codegen duckdb_sibling)

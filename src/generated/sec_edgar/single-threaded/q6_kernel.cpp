@@ -130,6 +130,21 @@ struct TagVersionTable {
 		return false;
 	}
 
+	void PopulateAux(SecEdgarQ6TagVersionPartition &out) const {
+		out.tag_versions.clear();
+		out.tag_versions.reserve(storage_.size());
+		for (const auto &stored : storage_) {
+			out.tag_versions.emplace_back(stored.tag, stored.version);
+		}
+		out.tag_version_lookup.clear();
+		out.tag_version_lookup.reserve(lookup_.size());
+		for (const auto &entry : lookup_) {
+			const auto &stored = storage_[entry.second];
+			out.tag_version_lookup.emplace(
+			    SecEdgarQ6TagVersionKey::FromStored(stored.tag, stored.version), entry.second);
+		}
+	}
+
 private:
 	static bool StoredStringEquals(const std::string &stored, const duckdb::string_t &value) {
 		return stored.size() == value.GetSize() &&
@@ -172,6 +187,13 @@ public:
 		return true;
 	}
 
+	template <typename Fn>
+	void ForEach(Fn &&fn) const {
+		for (const auto &entry : lookup_) {
+			fn(entry.first, entry.second);
+		}
+	}
+
 private:
 	std::unordered_map<AdshKey, uint32_t, AdshKeyHash> lookup_;
 };
@@ -205,6 +227,10 @@ public:
 
 	const std::string &Get(uint32_t id) const {
 		return storage_[id];
+	}
+
+	const std::vector<std::string> &Storage() const {
+		return storage_;
 	}
 
 private:
@@ -1290,6 +1316,81 @@ void SecEdgarQ6Kernel::Finalize() {
 	if (profile) {
 		profile->finalize_us =
 		    std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count();
+	}
+}
+
+SecEdgarQ6AdshKey ToAuxAdshKey(const AdshKey &key) {
+	SecEdgarQ6AdshKey out;
+	out.size = key.size;
+	out.w0 = key.w0;
+	out.w1 = key.w1;
+	out.w2 = key.w2;
+	return out;
+}
+
+SecEdgarQ6ResolvedPre ExportResolvedPre(const PreTvBucket &bucket) {
+	SecEdgarQ6ResolvedPre out;
+	if (bucket.resolved_ready && bucket.resolved.single) {
+		out.single = true;
+		out.single_group_id = bucket.resolved.single_group_id;
+		out.single_multiplicity = bucket.resolved.single_multiplicity;
+		return out;
+	}
+	out.entries.reserve(bucket.entries.size());
+	for (const auto &entry : bucket.entries) {
+		out.entries.push_back(
+		    SecEdgarQ6ResolvedPreEntry {entry.tag_id, entry.plabel_id, entry.multiplicity, entry.group_id});
+	}
+	return out;
+}
+
+void SecEdgarQ6Kernel::ExportAuxPartitions(SecEdgarQ6Fy2023CohortPartition &cohort, SecEdgarQ6PreIsBridgePartition &pre_bridge,
+                                           SecEdgarQ6TagVersionPartition &tag_versions,
+                                           SecEdgarQ6GroupAggregatesPartition &aggregates, SecEdgarQ6OutputPartition &output) {
+	if (!state->finalized) {
+		FinalizeGroups();
+	}
+
+	cohort.adsh_to_name_id.clear();
+	cohort.names = state->name_intern.Storage();
+	state->adsh_intern.ForEach([&](const AdshKey &adsh_key, uint32_t adsh_id) {
+		if (adsh_id < state->adsh_name_id.size()) {
+			cohort.adsh_to_name_id.emplace(ToAuxAdshKey(adsh_key), state->adsh_name_id[adsh_id]);
+		}
+	});
+
+	state->tag_version_table.PopulateAux(tag_versions);
+
+	pre_bridge.pre_by_adsh.clear();
+	state->adsh_intern.ForEach([&](const AdshKey &adsh_key, uint32_t adsh_id) {
+		if (adsh_id >= state->pre_by_adsh.size() || state->pre_by_adsh[adsh_id].empty()) {
+			return;
+		}
+		SecEdgarQ6PreEntriesByTagVersion entries;
+		for (const auto &tv_entry : state->pre_by_adsh[adsh_id]) {
+			entries.emplace(tv_entry.first, ExportResolvedPre(tv_entry.second));
+		}
+		pre_bridge.pre_by_adsh.emplace(ToAuxAdshKey(adsh_key), std::move(entries));
+	});
+
+	aggregates.group_meta.clear();
+	aggregates.groups.clear();
+	aggregates.tags = state->tag_intern.Storage();
+	aggregates.plabels = state->plabel_intern.Storage();
+	aggregates.group_meta.reserve(state->group_meta.size());
+	aggregates.groups.reserve(state->groups.size());
+	for (const auto &meta : state->group_meta) {
+		aggregates.group_meta.push_back(SecEdgarQ6GroupMeta {meta.name_id, meta.tag_id, meta.plabel_id});
+	}
+	for (const auto &group : state->groups) {
+		aggregates.groups.push_back(SecEdgarQ6GroupAggregate {group.sum, group.count, group.count != 0});
+	}
+
+	output.output_rows.clear();
+	output.output_rows.reserve(state->ordered_output.size());
+	for (const auto &row : state->ordered_output) {
+		output.output_rows.push_back(
+		    SecEdgarQ6OutputRow {row.name, row.tag, row.plabel, "IS", row.total_value, row.cnt});
 	}
 }
 

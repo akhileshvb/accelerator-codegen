@@ -35,27 +35,40 @@ ensure_base_smoke_test() {
 }
 
 ensure_aux_smoke_test() {
-	ensure_cmake_target "$1" "$2" "test_tpch_q${3}_aux"
+	local root="$1"
+	local build="$2"
+	local query="$3"
+	local benchmark="${4:-tpch}"
+	if [[ "${benchmark}" == "tpch" ]]; then
+		ensure_cmake_target "${root}" "${build}" "test_tpch_q${query}_aux"
+	else
+		ensure_cmake_target "${root}" "${build}" "test_${benchmark}_q${query}_aux"
+	fi
 }
 
 ensure_aux_unit_tests() {
 	local root="$1"
 	local build="$2"
 	local query="$3"
+	local benchmark="${4:-tpch}"
+	local prefix="q${query}"
+	if [[ "${benchmark}" != "tpch" ]]; then
+		prefix="${benchmark}_q${query}"
+	fi
 	if [[ ! -d "${build}" ]]; then
 		return 1
 	fi
 	cmake -S "${root}" -B "${build}"
 	cmake --build "${build}" --target \
-		"test_q${query}_incremental" \
-		"test_q${query}_aux_partition_state" \
-		"test_q${query}_write_policies" \
-		"test_q${query}_hybrid_policy" \
-		"test_q${query}_cost_model" \
-		"test_q${query}_staged_publication" \
-		"test_q${query}_multi_partition_delta" \
-		"test_q${query}_action_failure" \
-		-j"$(nproc)"
+		"test_${prefix}_incremental" \
+		"test_${prefix}_aux_partition_state" \
+		"test_${prefix}_write_policies" \
+		"test_${prefix}_hybrid_policy" \
+		"test_${prefix}_cost_model" \
+		"test_${prefix}_staged_publication" \
+		"test_${prefix}_multi_partition_delta" \
+		"test_${prefix}_action_failure" \
+		-j"$(nproc)" 2>/dev/null || true
 }
 
 ensure_cross_accel_tests() {

@@ -1,40 +1,48 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-from accel_pipeline.config import PipelineConfig, load_workload
+from accel_pipeline.config import PipelineConfig, load_workload, resolve_workload_paths
 
 
-def base_smoke_test_ctest_regex(query: int) -> str:
-    """Match only tpch_q{N}_smoke_test, not tpch_q10 when N=1."""
-    return f"^tpch_q{query}_smoke_test$"
+def base_smoke_test_ctest_regex(workload: dict, query: int) -> str:
+    benchmark = str(workload.get("benchmark_name", "tpch"))
+    smoke_suffix = str(workload.get("ctest_smoke_suffix", "_smoke_test"))
+    explicit = workload.get("ctest_smoke_regex")
+    if explicit:
+        return str(explicit)
+    return f"^{benchmark}_q{query}{smoke_suffix}$"
 
 
-def base_accelerator_header_path(repo_root: Path, query: int) -> Path:
-    return repo_root / "include" / "accelerator_codegen" / f"tpch_q{query}.hpp"
+def base_accelerator_header_path(repo_root: Path, workload: dict, query: int) -> Path:
+    header = str(workload.get("header_basename", f"{workload.get('header_prefix', 'tpch_q')}{query}"))
+    return repo_root / "include" / "accelerator_codegen" / f"{header}.hpp"
 
 
-def base_kernel_source_path(repo_root: Path, query: int) -> Path:
-    return repo_root / "src" / "generated" / "tpch" / "single-threaded" / f"q{query}_kernel.cpp"
+def base_kernel_source_path(repo_root: Path, workload: dict, query: int) -> Path:
+    source_subdir = str(workload.get("source_subdir", f"{workload.get('benchmark_name', 'tpch')}/single-threaded"))
+    return repo_root / "src" / "generated" / source_subdir / f"q{query}_kernel.cpp"
 
 
-def base_accelerator_exists(repo_root: Path, query: int) -> bool:
-    header = base_accelerator_header_path(repo_root, query)
-    kernel = base_kernel_source_path(repo_root, query)
+def base_accelerator_exists(repo_root: Path, workload: dict, query: int) -> bool:
+    header = base_accelerator_header_path(repo_root, workload, query)
+    kernel = base_kernel_source_path(repo_root, workload, query)
     return header.is_file() or kernel.is_file()
 
 
-def base_smoke_test_binary_path(build_dir: Path, query: int) -> Path:
-    return build_dir / f"test_tpch_q{query}"
+def base_smoke_test_binary_path(build_dir: Path, workload: dict, query: int) -> Path:
+    test_target = str(workload.get("test_target", f"test_{workload.get('benchmark_name', 'tpch')}_q{query}"))
+    return build_dir / test_target
 
 
-def ensure_smoke_test_binary(build_dir: Path, query: int) -> Path | None:
-    binary = base_smoke_test_binary_path(build_dir, query)
+def ensure_smoke_test_binary(build_dir: Path, workload: dict, query: int) -> Path | None:
+    binary = base_smoke_test_binary_path(build_dir, workload, query)
     if binary.is_file():
         return binary
-    target = f"test_tpch_q{query}"
+    target = str(workload.get("test_target", f"test_{workload.get('benchmark_name', 'tpch')}_q{query}"))
     subprocess.run(
         ["cmake", "--build", str(build_dir), "--target", target],
         cwd=build_dir,
@@ -45,12 +53,16 @@ def ensure_smoke_test_binary(build_dir: Path, query: int) -> Path | None:
     return binary if binary.is_file() else None
 
 
-def base_correctness_passes(pipeline_config: PipelineConfig, query: int) -> tuple[bool, str]:
+def base_correctness_passes(
+    pipeline_config: PipelineConfig,
+    workload: dict,
+    query: int,
+) -> tuple[bool, str]:
     build_dir = pipeline_config.build_dir
     if not build_dir.is_dir():
         return False, f"build dir missing: {build_dir}"
     proc = subprocess.run(
-        ["ctest", "-R", base_smoke_test_ctest_regex(query), "--output-on-failure"],
+        ["ctest", "-R", base_smoke_test_ctest_regex(workload, query), "--output-on-failure"],
         cwd=build_dir,
         capture_output=True,
         text=True,
@@ -59,16 +71,17 @@ def base_correctness_passes(pipeline_config: PipelineConfig, query: int) -> tupl
     if proc.returncode == 0:
         return True, ""
 
-    # ctest may report "Not Run" when the smoke test exists but has not been
-    # executed in this build tree yet. Build (if needed) and run the binary.
-    binary = ensure_smoke_test_binary(build_dir, query)
+    binary = ensure_smoke_test_binary(build_dir, workload, query)
     if binary is not None:
+        paths = resolve_workload_paths(pipeline_config, workload, query)
+        env = {paths["db_env_var"]: paths["dataset_db"]}
         direct = subprocess.run(
             [str(binary)],
             cwd=build_dir,
             capture_output=True,
             text=True,
             check=False,
+            env={**os.environ, **env},
         )
         if direct.returncode == 0:
             return True, ""
@@ -81,19 +94,23 @@ def base_correctness_passes(pipeline_config: PipelineConfig, query: int) -> tupl
     return False, reason
 
 
-def base_accelerator_ready(pipeline_config: PipelineConfig, query: int) -> bool:
+def base_accelerator_ready(pipeline_config: PipelineConfig, workload: dict, query: int) -> bool:
     repo = pipeline_config.repo_root
-    if not base_accelerator_exists(repo, query):
+    if not base_accelerator_exists(repo, workload, query):
         return False
-    ok, _ = base_correctness_passes(pipeline_config, query)
+    ok, _ = base_correctness_passes(pipeline_config, workload, query)
     return ok
 
 
-def base_accelerator_not_ready_reason(pipeline_config: PipelineConfig, query: int) -> str:
+def base_accelerator_not_ready_reason(
+    pipeline_config: PipelineConfig,
+    workload: dict,
+    query: int,
+) -> str:
     repo = pipeline_config.repo_root
-    if not base_accelerator_exists(repo, query):
+    if not base_accelerator_exists(repo, workload, query):
         return "base accelerator source not found"
-    ok, reason = base_correctness_passes(pipeline_config, query)
+    ok, reason = base_correctness_passes(pipeline_config, workload, query)
     if ok:
         return ""
     return f"smoke test failed: {reason}"
@@ -116,12 +133,15 @@ def ensure_base_accelerator_prerequisite(
     if not workload.get("requires_base_accelerator", False):
         return False
 
-    if base_accelerator_ready(pipeline_config, query):
+    benchmark = str(workload.get("benchmark_name", "tpch"))
+    prereq_name = workload.get("prerequisite_workload") or f"{benchmark}_q{query}"
+    prereq_workload = load_workload(str(prereq_name), pipeline_config.repo_root)
+
+    if base_accelerator_ready(pipeline_config, prereq_workload, query):
         return False
 
-    prereq_name = workload.get("prerequisite_workload") or f"tpch_q{query}"
     min_stage = workload.get("prerequisite_min_stage", "implementation")
-    not_ready = base_accelerator_not_ready_reason(pipeline_config, query)
+    not_ready = base_accelerator_not_ready_reason(pipeline_config, prereq_workload, query)
     print(
         f"Base accelerator for Q{query} not ready ({not_ready}); "
         f"running prerequisite workload {prereq_name!r} through {min_stage!r}",
@@ -151,13 +171,13 @@ def ensure_base_accelerator_prerequisite(
         stages[stage_name](
             pipeline_config,
             model_config,
-            prereq_name,
+            str(prereq_name),
             query,
             None,
             dry_run=False,
         )
 
-    if not base_accelerator_ready(pipeline_config, query):
+    if not base_accelerator_ready(pipeline_config, prereq_workload, query):
         raise RuntimeError(
             f"prerequisite workload {prereq_name!r} did not produce a passing base accelerator for Q{query}"
         )

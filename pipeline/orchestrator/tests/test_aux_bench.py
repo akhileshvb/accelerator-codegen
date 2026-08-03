@@ -69,6 +69,7 @@ def test_record_optimization_state(tmp_path: Path):
     line = format_bench_experiment_log_line(1, summary, state)
     assert "composite=" in line
     assert "0%→wl=" in line
+    assert "/cold=" in line
 
 
 def parse_sweep_csv_from_text(text: str):

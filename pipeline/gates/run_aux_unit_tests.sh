@@ -9,7 +9,11 @@ if [[ -z "${QUERY}" ]]; then
   exit 1
 fi
 
-OUT="${ROOT}/pipeline/artifacts/q${QUERY}/gates"
+# shellcheck source=aux_gate_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+load_aux_gate_context "${ROOT}" "${QUERY}"
+
+OUT="${GATE_OUT}"
 mkdir -p "${OUT}"
 
 # shellcheck source=cmake_ensure_target.sh
@@ -20,11 +24,16 @@ if [[ ! -d "${BUILD}" ]]; then
   exit 0
 fi
 
-ensure_aux_unit_tests "${ROOT}" "${BUILD}" "${QUERY}" || true
+ensure_aux_unit_tests "${ROOT}" "${BUILD}" "${QUERY}" "${BENCHMARK_NAME}" || true
 
-# Match aux unit tests (q{N}_*) and tpch_q{N}_aux smoke, but not base tpch_q{N}_smoke_test.
-PATTERN="q${QUERY}_"
-EXCLUDE="tpch_q${QUERY}_smoke_test"
+if [[ "${BENCHMARK_NAME}" == "tpch" ]]; then
+  PATTERN="q${QUERY}_"
+  EXCLUDE="tpch_q${QUERY}_smoke_test"
+else
+  PATTERN="sec_edgar_q${QUERY}_"
+  EXCLUDE="${BENCHMARK_NAME}_q${QUERY}_smoke_test"
+fi
+
 if [[ -x "${BUILD}/ctest" ]]; then
   CTEST="${BUILD}/ctest"
 else
@@ -32,7 +41,7 @@ else
 fi
 
 set +e
-LOG="$(cd "${BUILD}" && "${CTEST}" -R "${PATTERN}" -E "${EXCLUDE}" --output-on-failure 2>&1)"
+LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}=${DATASET_DB}" "${CTEST}" -R "${PATTERN}" -E "${EXCLUDE}" --output-on-failure 2>&1)"
 RC=$?
 set -e
 
@@ -47,6 +56,7 @@ path = pathlib.Path("${OUT}/aux_unit.json")
 path.write_text(json.dumps({
     "gate": "aux_unit",
     "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
     "status": "${STATUS}",
     "exit_code": int("${RC}"),
     "pattern": "${PATTERN}",

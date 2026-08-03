@@ -9,9 +9,13 @@ if [[ -z "${QUERY}" ]]; then
   exit 1
 fi
 
-OUT="${ROOT}/pipeline/artifacts/q${QUERY}/gates"
+# shellcheck source=aux_gate_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+load_aux_gate_context "${ROOT}" "${QUERY}"
+
+OUT="${GATE_OUT}"
 mkdir -p "${OUT}"
-CONFIG="${ROOT}/config/q${QUERY}_aux_cost_model.json"
+CONFIG="${ROOT}/${COST_MODEL_CONFIG}"
 
 # shellcheck source=cmake_ensure_target.sh
 source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
@@ -21,7 +25,7 @@ if [[ ! -d "${BUILD}" ]]; then
   exit 0
 fi
 
-TARGET="calibrate_q${QUERY}_aux_cost_model"
+TARGET="${AUX_CALIBRATE_TARGET}"
 BUILD_LOG=""
 if ! ensure_cmake_target "${ROOT}" "${BUILD}" "${TARGET}"; then
 	BUILD_LOG="$(cmake --build "${BUILD}" --target "${TARGET}" -j"$(nproc)" 2>&1 | tail -40 || true)"
@@ -34,6 +38,7 @@ path = pathlib.Path("${OUT}/aux_cost_model_calibrate.json")
 payload = {
     "gate": "aux_cost_model_calibrate",
     "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
     "status": "fail",
     "reason": "calibrate binary missing after cmake configure/build",
     "log_tail": """${BUILD_LOG}"""[-4000:],
@@ -48,8 +53,13 @@ export ACCEL_MULTI_CONN_TEST_QUERIES="${QUERY}"
 export ACCEL_INTERFERENCE_CALIB_SEC="${ACCEL_INTERFERENCE_CALIB_SEC:-4}"
 export ACCEL_INTERFERENCE_ISOLATED_SAMPLES="${ACCEL_INTERFERENCE_ISOLATED_SAMPLES:-20}"
 
+CALIB_WORK_DIR="${BUILD}/q${QUERY}_aux_calibrate_${BENCHMARK_NAME}"
+mkdir -p "${CALIB_WORK_DIR}"
+CALIB_DB="${CALIB_WORK_DIR}/calibrate.duckdb"
+cp "${DATASET_DB}" "${CALIB_DB}"
+
 set +e
-LOG="$("${BUILD}/${TARGET}" "/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb" "${CONFIG}" 2>&1)"
+LOG="$("${BUILD}/${TARGET}" "${CALIB_DB}" "${CONFIG}" 2>&1)"
 RC=$?
 set -e
 
@@ -84,6 +94,7 @@ else:
 payload = {
     "gate": "aux_cost_model_calibrate",
     "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
     "status": status,
     "exit_code": int("${RC}"),
     "config_path": str(config_path),

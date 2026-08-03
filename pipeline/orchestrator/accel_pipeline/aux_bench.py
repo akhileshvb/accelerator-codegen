@@ -7,19 +7,36 @@ import json
 from pathlib import Path
 from typing import Any
 
-
-def bench_summary_path(repo_root: Path, query: int) -> Path:
-    return repo_root / "pipeline" / "artifacts" / f"q{query}" / "aux_bench_summary.json"
+from accel_pipeline.paths import query_artifacts_dir
 
 
-def optimization_state_path(repo_root: Path, query: int) -> Path:
-    return repo_root / "pipeline" / "artifacts" / f"q{query}" / "optimization_state.json"
+def _artifacts_dir(repo_root: Path, query: int, workload: dict[str, Any] | None = None) -> Path:
+    return query_artifacts_dir(repo_root, query, workload=workload)
 
 
-def sweep_results_path(repo_root: Path, query: int, build_dir: Path | None = None) -> Path:
+def bench_summary_path(repo_root: Path, query: int, workload: dict[str, Any] | None = None) -> Path:
+    return _artifacts_dir(repo_root, query, workload) / "aux_bench_summary.json"
+
+
+def optimization_state_path(repo_root: Path, query: int, workload: dict[str, Any] | None = None) -> Path:
+    return _artifacts_dir(repo_root, query, workload) / "optimization_state.json"
+
+
+def sweep_results_path(
+    repo_root: Path,
+    query: int,
+    build_dir: Path | None = None,
+    *,
+    workload: dict[str, Any] | None = None,
+) -> Path:
+    suffix = "q{query}_aux_bench_sf1"
+    if workload:
+        suffix = str(workload.get("aux_bench_work_dir_suffix", suffix.format(query=query)))
+    else:
+        suffix = suffix.format(query=query)
     if build_dir is not None:
-        return build_dir / f"q{query}_aux_bench_sf1" / "results.csv"
-    return repo_root / "build-release" / f"q{query}_aux_bench_sf1" / "results.csv"
+        return build_dir / suffix / "results.csv"
+    return repo_root / "build-release" / suffix / "results.csv"
 
 
 def _is_data_row(row: dict[str, str]) -> bool:
@@ -64,6 +81,7 @@ def parse_sweep_csv(path: Path) -> list[dict[str, Any]]:
                         parsed[key] = value
                 elif key.endswith("_rate") or key in {
                     "workload_speedup",
+                    "cold_start_workload_speedup",
                     "query_only_speedup",
                     "blended_query_speedup",
                     "oracle_regret_pct",
@@ -86,6 +104,7 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "composite_score": 0.0,
             "composite_workload_speedup": 0.0,
             "read_only_query_speedup": 0.0,
+            "read_only_cold_start_workload_speedup": 0.0,
             "by_write_frequency_pct": {},
         }
 
@@ -93,6 +112,7 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     workload_speedups: list[float] = []
     query_speedups: list[float] = []
     read_only_query_speedup = 0.0
+    read_only_cold_start_workload_speedup = 0.0
 
     for row in rows:
         freq = int(row.get("write_frequency_pct", -1))
@@ -101,10 +121,13 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "write_frequency_pct": freq,
             "suite": row.get("suite"),
             "workload_speedup": float(row.get("workload_speedup", 0.0) or 0.0),
+            "cold_start_workload_speedup": float(row.get("cold_start_workload_speedup", 0.0) or 0.0),
             "query_only_speedup": float(row.get("query_only_speedup", 0.0) or 0.0),
             "blended_query_speedup": float(row.get("blended_query_speedup", 0.0) or 0.0),
             "duckdb_workload_us": float(row.get("duckdb_workload_us", 0.0) or 0.0),
             "accel_workload_us": float(row.get("accel_workload_us", 0.0) or 0.0),
+            "cold_start_accel_workload_us": float(row.get("cold_start_accel_workload_us", 0.0) or 0.0),
+            "setup_full_build_ms": float(row.get("setup_full_build_ms", 0.0) or 0.0),
             "accel_hit_rate": float(row.get("accel_hit_rate", 0.0) or 0.0),
             "writes_executed": int(row.get("writes_executed", 0) or 0),
         }
@@ -116,6 +139,10 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             query_speedups.append(qs)
         if freq == 0 and qs > 0:
             read_only_query_speedup = qs
+        if freq == 0:
+            cold = by_freq[key]["cold_start_workload_speedup"]
+            if cold > 0:
+                read_only_cold_start_workload_speedup = cold
 
     composite_workload = min(workload_speedups) if workload_speedups else 0.0
     composite_query = min(query_speedups) if query_speedups else 0.0
@@ -130,6 +157,7 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "composite_workload_speedup": round(composite_workload, 4),
         "composite_query_speedup": round(composite_query, 4),
         "read_only_query_speedup": round(read_only_query_speedup, 4),
+        "read_only_cold_start_workload_speedup": round(read_only_cold_start_workload_speedup, 4),
         "by_write_frequency_pct": by_freq,
     }
 
@@ -140,29 +168,43 @@ def summarize_sweep_csv(path: Path) -> dict[str, Any]:
     return summary
 
 
-def load_bench_summary(repo_root: Path, query: int) -> dict[str, Any]:
-    path = bench_summary_path(repo_root, query)
+def load_bench_summary(
+    repo_root: Path, query: int, workload: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    path = bench_summary_path(repo_root, query, workload)
     if not path.is_file():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def load_optimization_state(repo_root: Path, query: int) -> dict[str, Any]:
-    path = optimization_state_path(repo_root, query)
+def load_optimization_state(
+    repo_root: Path, query: int, workload: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    path = optimization_state_path(repo_root, query, workload)
     if not path.is_file():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def save_optimization_state(repo_root: Path, query: int, state: dict[str, Any]) -> Path:
-    path = optimization_state_path(repo_root, query)
+def save_optimization_state(
+    repo_root: Path,
+    query: int,
+    state: dict[str, Any],
+    workload: dict[str, Any] | None = None,
+) -> Path:
+    path = optimization_state_path(repo_root, query, workload)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     return path
 
 
-def initialize_optimization_state(repo_root: Path, query: int, analysis: dict[str, Any]) -> dict[str, Any]:
-    existing = load_optimization_state(repo_root, query)
+def initialize_optimization_state(
+    repo_root: Path,
+    query: int,
+    analysis: dict[str, Any],
+    workload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    existing = load_optimization_state(repo_root, query, workload)
     if existing:
         return existing
     selected = (
@@ -176,7 +218,7 @@ def initialize_optimization_state(repo_root: Path, query: int, analysis: dict[st
         "best_iteration": 0,
         "history": [],
     }
-    save_optimization_state(repo_root, query, state)
+    save_optimization_state(repo_root, query, state, workload)
     return state
 
 
@@ -188,8 +230,9 @@ def record_sweep_in_optimization_state(
     summary: dict[str, Any],
     change_kind: str = "baseline",
     active_candidate_id: str | None = None,
+    workload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    state = load_optimization_state(repo_root, query) or {
+    state = load_optimization_state(repo_root, query, workload) or {
         "active_candidate_id": "",
         "best_composite_score": 0.0,
         "best_iteration": 0,
@@ -205,6 +248,7 @@ def record_sweep_in_optimization_state(
         "composite_score": score,
         "composite_workload_speedup": summary.get("composite_workload_speedup"),
         "read_only_query_speedup": summary.get("read_only_query_speedup"),
+        "read_only_cold_start_workload_speedup": summary.get("read_only_cold_start_workload_speedup"),
         "by_write_frequency_pct": summary.get("by_write_frequency_pct", {}),
     }
     state.setdefault("history", []).append(entry)
@@ -212,7 +256,7 @@ def record_sweep_in_optimization_state(
         state["best_composite_score"] = score
         state["best_iteration"] = iteration
         state["best_summary"] = summary
-    save_optimization_state(repo_root, query, state)
+    save_optimization_state(repo_root, query, state, workload)
     return state
 
 
@@ -226,7 +270,9 @@ def format_bench_experiment_log_line(
     for key in sorted(by_freq.keys(), key=lambda x: int(x)):
         row = by_freq[key]
         freq_bits.append(
-            f"{key}%→wl={row.get('workload_speedup', 0):.2f}x/q={row.get('query_only_speedup', 0):.2f}x"
+            f"{key}%→wl={row.get('workload_speedup', 0):.2f}x"
+            f"/cold={row.get('cold_start_workload_speedup', 0):.2f}x"
+            f"/q={row.get('query_only_speedup', 0):.2f}x"
         )
     improved = ""
     if state.get("best_iteration") == iteration:
@@ -234,7 +280,8 @@ def format_bench_experiment_log_line(
     return (
         f"- iter {iteration}: bench_sweep composite={summary.get('composite_score', 0):.3f} "
         f"(wl_min={summary.get('composite_workload_speedup', 0):.2f}x, "
-        f"read={summary.get('read_only_query_speedup', 0):.2f}x) "
+        f"read={summary.get('read_only_query_speedup', 0):.2f}x, "
+        f"cold_start={summary.get('read_only_cold_start_workload_speedup', 0):.2f}x) "
         f"candidate={state.get('active_candidate_id', '?')}{improved}; "
         f"{' | '.join(freq_bits)}"
     )
@@ -257,9 +304,10 @@ def process_aux_bench_after_gates(
     iteration: int,
     change_kind: str,
     active_candidate_id: str | None = None,
+    workload: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Read aux_bench_summary.json written by aux_bench_sweep gate and update optimization state."""
-    summary_path = bench_summary_path(repo_root, query)
+    summary_path = bench_summary_path(repo_root, query, workload)
     if not summary_path.is_file():
         return None
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -270,6 +318,7 @@ def process_aux_bench_after_gates(
         summary=summary,
         change_kind=change_kind,
         active_candidate_id=active_candidate_id,
+        workload=workload,
     )
     from accel_pipeline.playbook import append_experiment_log
 
@@ -277,5 +326,6 @@ def process_aux_bench_after_gates(
         repo_root,
         query,
         format_bench_experiment_log_line(iteration, summary, state),
+        workload=workload,
     )
     return {"summary": summary, "state": state}

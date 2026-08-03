@@ -20,6 +20,11 @@ uint64_t ReaderMutationEpochState::GetPinnedVisibleMutationEpoch(const std::stri
 	return it->second;
 }
 
+void ReaderMutationEpochState::QueryEnd(duckdb::ClientContext &context) {
+	(void)context;
+	pinned_epochs.clear();
+}
+
 uint64_t GetReaderVisibleMutationEpoch(duckdb::ClientContext &context, const std::string &accelerator_id,
                                        uint64_t current_committed_epoch) {
 	auto state = context.registered_state->GetOrCreate<ReaderMutationEpochState>(ReaderMutationEpochState::STATE_KEY);

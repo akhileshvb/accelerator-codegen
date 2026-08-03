@@ -9,7 +9,11 @@ if [[ -z "${QUERY}" ]]; then
   exit 1
 fi
 
-OUT="${ROOT}/pipeline/artifacts/q${QUERY}/gates"
+# shellcheck source=aux_gate_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/aux_gate_common.sh"
+load_aux_gate_context "${ROOT}" "${QUERY}"
+
+OUT="${GATE_OUT}"
 mkdir -p "${OUT}"
 
 # shellcheck source=cmake_ensure_target.sh
@@ -21,19 +25,20 @@ if [[ ! -d "${BUILD}" ]]; then
 fi
 
 BUILD_LOG=""
-if ! ensure_aux_smoke_test "${ROOT}" "${BUILD}" "${QUERY}"; then
-	BUILD_LOG="$(cmake --build "${BUILD}" --target "test_tpch_q${QUERY}_aux" -j"$(nproc)" 2>&1 | tail -40 || true)"
+if ! ensure_cmake_target "${ROOT}" "${BUILD}" "${AUX_TEST_TARGET}"; then
+	BUILD_LOG="$(cmake --build "${BUILD}" --target "${AUX_TEST_TARGET}" -j"$(nproc)" 2>&1 | tail -40 || true)"
 fi
 
-if [[ ! -x "${BUILD}/test_tpch_q${QUERY}_aux" ]]; then
+if [[ ! -x "${BUILD}/${AUX_TEST_TARGET}" ]]; then
 	python3 - <<PY
 import json, pathlib, sys
 path = pathlib.Path("${OUT}/aux_correctness.json")
 payload = {
     "gate": "aux_correctness",
     "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
     "status": "fail",
-    "reason": "test_tpch_q${QUERY}_aux missing after cmake configure/build",
+    "reason": "${AUX_TEST_TARGET} missing after cmake configure/build",
     "log_tail": """${BUILD_LOG}"""[-4000:],
 }
 path.write_text(json.dumps(payload, indent=2))
@@ -49,7 +54,7 @@ else
 fi
 
 set +e
-LOG="$(cd "${BUILD}" && "${CTEST}" -R "tpch_q${QUERY}_aux" --output-on-failure 2>&1)"
+LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}=${DATASET_DB}" "${CTEST}" -R "${AUX_CTEST_SMOKE_REGEX}" --output-on-failure 2>&1)"
 RC=$?
 set -e
 
@@ -64,6 +69,7 @@ path = pathlib.Path("${OUT}/aux_correctness.json")
 path.write_text(json.dumps({
     "gate": "aux_correctness",
     "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
     "status": "${STATUS}",
     "exit_code": int("${RC}"),
     "log_tail": """${LOG}"""[-4000:],

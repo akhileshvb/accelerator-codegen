@@ -7,6 +7,12 @@
 #include "accelerator_codegen/tpch_q12_aux.hpp"
 #include "accelerator_codegen/tpch_q10_aux.hpp"
 #include "accelerator_codegen/tpch_q6_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q1_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q2_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q3_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q4_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q6_aux.hpp"
+#include "accelerator_codegen/sec_edgar_q24_aux.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/on_create_conflict.hpp"
@@ -63,6 +69,24 @@ duckdb::TableFunctionSet CreateSecEdgarQ3FunctionSet();
 duckdb::TableFunctionSet CreateSecEdgarQ4FunctionSet();
 duckdb::TableFunctionSet CreateSecEdgarQ6FunctionSet();
 duckdb::TableFunctionSet CreateSecEdgarQ24FunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ1AuxFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ1AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ1AuxRebuildPartitionFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ2AuxFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ2AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ2AuxRebuildPartitionFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ3AuxFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ3AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ3AuxRebuildPartitionFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ4AuxFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ4AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ4AuxRebuildPartitionFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ6AuxFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ6AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ6AuxRebuildPartitionFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ24AuxFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ24AuxBuildFunctionSet();
+duckdb::TableFunctionSet CreateSecEdgarQ24AuxRebuildPartitionFunctionSet();
 // END_SEC_EDGAR_REGISTRATIONS
 duckdb::TableFunctionSet CreateTpchQ14AuxFunctionSet();
 duckdb::TableFunctionSet CreateQ14AuxBuildFunctionSet();
@@ -134,6 +158,12 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
         RegisterQ12AuxAccelerator(connection);
         RegisterQ10AuxAccelerator(connection);
         RegisterQ6AuxAccelerator(connection);
+        RegisterSecEdgarQ1AuxAccelerator(connection);
+        RegisterSecEdgarQ2AuxAccelerator(connection);
+        RegisterSecEdgarQ3AuxAccelerator(connection);
+        RegisterSecEdgarQ4AuxAccelerator(connection);
+        RegisterSecEdgarQ6AuxAccelerator(connection);
+        RegisterSecEdgarQ24AuxAccelerator(connection);
 
         RegisterTableFunction(catalog, context, CreateTpchQ6FunctionSet());
 
@@ -205,6 +235,24 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
 
         // BEGIN_SEC_EDGAR_REGISTRATIONS
         RegisterTableFunction(catalog, context, CreateSecEdgarQ1FunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ1AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ1AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ1AuxRebuildPartitionFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ2AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ2AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ2AuxRebuildPartitionFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ3AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ3AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ3AuxRebuildPartitionFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ4AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ4AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ4AuxRebuildPartitionFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ6AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ6AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ6AuxRebuildPartitionFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ24AuxFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ24AuxBuildFunctionSet());
+        RegisterTableFunction(catalog, context, CreateSecEdgarQ24AuxRebuildPartitionFunctionSet());
         RegisterTableFunction(catalog, context, CreateSecEdgarQ2FunctionSet());
         RegisterTableFunction(catalog, context, CreateSecEdgarQ3FunctionSet());
         RegisterTableFunction(catalog, context, CreateSecEdgarQ4FunctionSet());

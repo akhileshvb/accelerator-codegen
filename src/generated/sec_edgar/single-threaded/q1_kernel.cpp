@@ -381,6 +381,7 @@ struct AdshKey {
 	uint64_t w0 = 0;
 	uint64_t w1 = 0;
 	uint64_t w2 = 0;
+	uint64_t w3 = 0;
 
 	static AdshKey From(const duckdb::string_t &adsh) {
 		AdshKey key;
@@ -389,24 +390,28 @@ struct AdshKey {
 		if (data == nullptr || key.size == 0) {
 			return key;
 		}
-		std::memcpy(&key.w0, data, std::min<duckdb::idx_t>(key.size, 8));
-		if (key.size > 8) {
-			std::memcpy(&key.w1, data + 8, std::min<duckdb::idx_t>(key.size - 8, 8));
-		}
-		if (key.size > 16) {
-			std::memcpy(&key.w2, data + 16, std::min<duckdb::idx_t>(key.size - 16, 8));
-		}
+		const auto copy_word = [&](duckdb::idx_t offset, uint64_t &word) {
+			if (key.size <= offset) {
+				return;
+			}
+			std::memset(&word, 0, sizeof(word));
+			std::memcpy(&word, data + offset, std::min<duckdb::idx_t>(key.size - offset, sizeof(word)));
+		};
+		copy_word(0, key.w0);
+		copy_word(8, key.w1);
+		copy_word(16, key.w2);
+		copy_word(24, key.w3);
 		return key;
 	}
 
 	bool operator==(const AdshKey &other) const {
-		return size == other.size && w0 == other.w0 && w1 == other.w1 && w2 == other.w2;
+		return size == other.size && w0 == other.w0 && w1 == other.w1 && w2 == other.w2 && w3 == other.w3;
 	}
 };
 
 struct AdshKeyHash {
 	size_t operator()(const AdshKey &key) const noexcept {
-		return key.w0 ^ (key.w1 << 1) ^ (key.w2 << 2) ^ key.size;
+		return key.w0 ^ (key.w1 << 1) ^ (key.w2 << 2) ^ (key.w3 << 3) ^ key.size;
 	}
 };
 

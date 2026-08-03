@@ -6,6 +6,7 @@
 #include "accelerator_codegen/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/kernel.hpp"
 #include "accelerator_codegen/query_runtime.hpp"
+#include "accelerator_codegen/sec_edgar_q6_finalize.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 
@@ -78,6 +79,11 @@ protected:
 
 	bool InputsConsumed() const;
 	void MarkInputsConsumed();
+
+public:
+	void ExportAuxPartitions(SecEdgarQ6Fy2023CohortPartition &cohort, SecEdgarQ6PreIsBridgePartition &pre_bridge,
+	                         SecEdgarQ6TagVersionPartition &tag_versions, SecEdgarQ6GroupAggregatesPartition &aggregates,
+	                         SecEdgarQ6OutputPartition &output);
 };
 
 duckdb::unique_ptr<KernelInstance> CreateSecEdgarQ6Kernel(const SecEdgarQ6Parameters &params);

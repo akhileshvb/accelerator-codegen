@@ -1,6 +1,7 @@
 #include "accelerator_codegen/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/sec_edgar_q24.hpp"
 #include "accelerator_codegen/sec_edgar_q24_fused.hpp"
+#include "accelerator_codegen/sec_edgar_q24_finalize.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -115,6 +116,13 @@ public:
 		return true;
 	}
 
+	template <typename Fn>
+	void ForEach(Fn &&fn) const {
+		for (const auto &entry : lookup_) {
+			fn(entry.first, entry.second);
+		}
+	}
+
 private:
 	std::unordered_map<AdshKey, uint32_t, AdshKeyHash> lookup_;
 };
@@ -192,6 +200,21 @@ struct TagVersionTable {
 		return storage_[id].version;
 	}
 
+	void PopulateAux(SecEdgarQ24TagVersionPartition &out) const {
+		out.tag_versions.clear();
+		out.tag_versions.reserve(storage_.size());
+		for (const auto &stored : storage_) {
+			out.tag_versions.emplace_back(stored.tag, stored.version);
+		}
+		out.tag_version_lookup.clear();
+		out.tag_version_lookup.reserve(lookup_.size());
+		for (const auto &entry : lookup_) {
+			const auto &stored = storage_[entry.second];
+			out.tag_version_lookup.emplace(
+			    SecEdgarQ24TagVersionKey::FromStored(stored.tag, stored.version), entry.second);
+		}
+	}
+
 private:
 	std::vector<StoredPair> storage_;
 	std::unordered_map<TagVersionKey, uint32_t, TagVersionKeyHash> lookup_;
@@ -235,6 +258,10 @@ struct PreByAdshMembership {
 			return false;
 		}
 		return std::binary_search(tvs.begin(), tvs.end(), tv_id);
+	}
+
+	const std::vector<std::vector<uint32_t>> &ByAdsh() const {
+		return by_adsh_;
 	}
 
 private:
@@ -500,6 +527,15 @@ struct ProfileAggregateUs {
 		    std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count();
 	}
 };
+
+SecEdgarQ24AdshKey ToAuxAdshKey(const AdshKey &key) {
+	SecEdgarQ24AdshKey out;
+	out.size = key.size;
+	out.w0 = key.w0;
+	out.w1 = key.w1;
+	out.w2 = key.w2;
+	return out;
+}
 
 } // namespace
 
@@ -1057,6 +1093,38 @@ bool SecEdgarQ24Kernel::ProduceOutput(duckdb::DataChunk &output) {
 	output.SetCardinality(count);
 	state->output_offset += count;
 	return true;
+}
+
+void SecEdgarQ24Kernel::ExportAuxPartitions(SecEdgarQ24PreMembershipPartition &pre_membership,
+                                            SecEdgarQ24TagVersionPartition &tag_versions,
+                                            SecEdgarQ24GroupAggregatesPartition &aggregates, SecEdgarQ24OutputPartition &output) {
+	if (!state->finalized) {
+		FinalizeGroups();
+	}
+
+	state->tag_version_table.PopulateAux(tag_versions);
+
+	pre_membership.pre_by_adsh.clear();
+	state->adsh_intern.ForEach([&](const AdshKey &adsh_key, uint32_t adsh_id) {
+		if (adsh_id >= state->pre_membership.ByAdsh().size() || state->pre_membership.ByAdsh()[adsh_id].empty()) {
+			return;
+		}
+		pre_membership.pre_by_adsh.emplace(ToAuxAdshKey(adsh_key), state->pre_membership.ByAdsh()[adsh_id]);
+	});
+
+	aggregates.groups.clear();
+	aggregates.groups.reserve(state->groups.size());
+	for (const auto &group : state->groups) {
+		aggregates.groups.push_back(SecEdgarQ24GroupAggregate {group.cnt, group.total});
+	}
+
+	output.output_rows.clear();
+	output.output_rows.reserve(state->ordered_output.size());
+	for (const auto &row : state->ordered_output) {
+		output.output_rows.push_back(
+		    SecEdgarQ24OutputRow {state->tag_version_table.Tag(row.tv_id), state->tag_version_table.Version(row.tv_id),
+		                          row.cnt, row.total});
+	}
 }
 
 duckdb::unique_ptr<KernelInstance> CreateSecEdgarQ24Kernel(const SecEdgarQ24Parameters &params) {

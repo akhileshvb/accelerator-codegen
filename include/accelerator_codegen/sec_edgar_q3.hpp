@@ -6,6 +6,7 @@
 #include "accelerator_codegen/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/kernel.hpp"
 #include "accelerator_codegen/query_runtime.hpp"
+#include "accelerator_codegen/sec_edgar_q3_finalize.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 
@@ -71,6 +72,9 @@ public:
 	void ConsumeInput(duckdb::idx_t input_id, duckdb::DataChunk &input) override;
 	void Finalize() override;
 	bool ProduceOutput(duckdb::DataChunk &output) override;
+
+	void ExportAuxPartitions(SecEdgarQ3Fy2022CohortPartition &cohort, SecEdgarQ3CikTotalsPartition &cik_totals,
+	                         SecEdgarQ3OutputPartition &output);
 
 protected:
 	SecEdgarQ3Parameters params;

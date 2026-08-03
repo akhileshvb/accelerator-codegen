@@ -51,7 +51,7 @@ def run(
         analysis_path = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload) / "analysis.json"
         if analysis_path.is_file() and workload.get("workload_kind") == "aux_state":
             analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
-            initialize_optimization_state(pipeline_config.repo_root, query, analysis)
+            initialize_optimization_state(pipeline_config.repo_root, query, analysis, workload)
         impl_gates = workload_post_implementation_gates(workload)
         if workload.get("workload_kind") == "aux_state":
             from accel_pipeline.stages.gate_plan import run_post_stage_gates
@@ -98,5 +98,6 @@ def run(
                 iteration=0,
                 change_kind="baseline",
                 active_candidate_id=selected or None,
+                workload=workload,
             )
     return result

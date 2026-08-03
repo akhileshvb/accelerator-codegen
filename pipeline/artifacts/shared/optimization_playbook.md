@@ -1749,3 +1749,318 @@ Speedup flat at 0.44x; pre_consume_us ~37ms lower vs iter-5 baseline; StringKey/
 - `sel_direct_num_consume`: kept, Δspeedup=+0.000x
 - `pre_triple_key_intern`: discarded, Δspeedup=-0.160x (pre_consume_us=4000000)
 - `compact_string_keys_tag_version`: discarded, Δspeedup=+0.170x (pre_consume_us=-1000000)
+
+## Q1 update (legacy)
+# SEC-EDGAR Q1 optimization iteration 5, episode 1
+
+## Hypothesis
+
+**Target bottlenecks:** `pre_consume_us` = 145,272 µs (dominant), `distinct_inserts` = 379,461, `dict_chunks` = 4,682.
+
+At 2.25× best, consume still spends cycles on `ToStoredString` inside `ActivateFixedSlot` for ~14 fixed groups and scattered `InsertDistinct` call overhead across all-valid dict fast paths.
+
+**Technique:** Lean coordinated bundle — deferred fixed-slot metadata (`TouchFixedSlot` + `DecodeFixedSlotLabel`), `AggregateFixedSlotHot` on all all-valid dict/flat paths. Explicitly excludes chunk-level adsh dict pre-intern sweep (confirmed regression in `ep1_consume_bundle`).
+
+## A/B trial outcomes
+
+| Trial | Hypothesis | speedup_median | pre_consume_us | distinct_inserts | Verdict |
+|-------|------------|----------------|----------------|------------------|---------|
+| `ep1_consume_bundle` | TouchFixedSlot + dict pre-intern + AggregateFixedSlotHot on all paths | **2.19×** | 148,257 | 379,461 | **Discard** — dict pre-intern sweep regressed consume |
+| `ep1_lean_deferred_slots` | TouchFixedSlot + AggregateFixedSlotHot + DecodeFixedSlotLabel at finalize | **2.27×** | 140,889 | 379,461 | **Keep** |
+
+## Before (best snapshot, iter 4)
+
+| Metric | Value |
+|--------|-------|
+| speedup_median | **2.25×** |
+| pre_consume_us | 145,272 |
+| distinct_inserts | 379,461 |
+| dict_chunks | 4,682 |
+| generic_rows | 0 |
+
+## After (kept trial `ep1_lean_deferred_slots`)
+
+| Metric | Value | Δ vs best |
+|--------|-------|-----------|
+| speedup_median | **2.27×** | **+0.02×** |
+| pre_consume_us | 140,889 | **−4,383 µs** |
+| pre_scan_us | 49,881 | ~flat |
+| distinct_inserts | 379,461 | 0 (semantics preserved) |
+| dict_chunks | 4,682 | 0 |
+| generic_rows | 0 | 0 |
+
+## Kept bundle (5 coordinated changes)
+
+1. **`TouchFixedSlot`** — Activate fixed slots without `ToStoredString` on hot path; only set `active`, presize bitmap, push to active list.
+2. **`DecodeFixedSlotLabel`** — Reconstruct `(stmt, rfile)` from dense `slot_index` at finalize only (~14 groups).
+3. **`AggregateFixedSlotHot`** — Open-coded cnt/line_sum/distinct insert on all all-valid fixed-slot loops (DictDictFlatFlat, DictDictDictFlat, DictDictFlatDict, DictDictDictDict, FlatFlatFlatFlat).
+4. **Retained prior wins** — Fingerprint-only intern table, `LookupDictFixedSlot`, lazy per-chunk adsh dict cache, bitmap distinct tracking.
+5. **Anti-pattern avoided** — No chunk-level adsh dict pre-intern sweep (extra O(dict_size) pass per chunk hurt despite fewer row-loop branches).
+
+## Profile counter deltas
+
+| Counter | Before | After | Δ |
+|---------|--------|-------|---|
+| pre_consume_us | 145,272 | 140,889 | **−4,383 µs** |
+| pre_scan_us | ~47,000 | 49,881 | ~flat |
+| distinct_inserts | 379,461 | 379,461 | 0 |
+| dict_chunks | 4,682 | 4,682 | 0 |
+
+## Playbook signals
+
+- **Retain:** Deferred fixed-slot metadata when group count ≪ row count and slot index encodes `(stmt, rfile)`.
+- **Retain:** `AggregateFixedSlotHot` inline helper on 9M+ row all-valid loops.
+- **Avoid:** Chunk-level adsh dict pre-intern sweeps — lazy per-row cache wins on this workload.
+- **Next episode:** `pre_scan_us` (~50 ms) is now ~26% of profile time; fused scan projection ordering may yield further gains.
+
+## Q1 update (legacy)
+# SEC-EDGAR Q1 optimization iteration 5, episode 1
+
+## Hypothesis
+
+**Target bottlenecks:** `pre_consume_us` = 145,272 µs (dominant), `distinct_inserts` = 379,461, `dict_chunks` = 4,682.
+
+At 2.25× best, consume still spends cycles on `ToStoredString` inside `ActivateFixedSlot` for ~14 fixed groups and scattered `InsertDistinct` call overhead across all-valid dict fast paths.
+
+**Technique:** Lean coordinated bundle — deferred fixed-slot metadata (`TouchFixedSlot` + `DecodeFixedSlotLabel`), `AggregateFixedSlotHot` on all all-valid dict/flat paths. Explicitly excludes chunk-level adsh dict pre-intern sweep (confirmed regression in `ep1_consume_bundle`).
+
+## A/B trial outcomes
+
+| Trial | Hypothesis | speedup_median | pre_consume_us | distinct_inserts | Verdict |
+|-------|------------|----------------|----------------|------------------|---------|
+| `ep1_consume_bundle` | TouchFixedSlot + dict pre-intern + AggregateFixedSlotHot on all paths | **2.19×** | 148,257 | 379,461 | **Discard** — dict pre-intern sweep regressed consume |
+| `ep1_lean_deferred_slots` | TouchFixedSlot + AggregateFixedSlotHot + DecodeFixedSlotLabel at finalize | **2.27×** | 140,889 | 379,461 | **Keep** |
+
+## Before (best snapshot, iter 4)
+
+| Metric | Value |
+|--------|-------|
+| speedup_median | **2.25×** |
+| pre_consume_us | 145,272 |
+| distinct_inserts | 379,461 |
+| dict_chunks | 4,682 |
+| generic_rows | 0 |
+
+## After (kept trial `ep1_lean_deferred_slots`)
+
+| Metric | Value | Δ vs best |
+|--------|-------|-----------|
+| speedup_median | **2.27×** | **+0.02×** |
+| pre_consume_us | 140,889 | **−4,383 µs** |
+| pre_scan_us | 49,881 | ~flat |
+| distinct_inserts | 379,461 | 0 (semantics preserved) |
+| dict_chunks | 4,682 | 0 |
+| generic_rows | 0 | 0 |
+
+## Kept bundle (5 coordinated changes)
+
+1. **`TouchFixedSlot`** — Activate fixed slots without `ToStoredString` on hot path; only set `active`, presize bitmap, push to active list.
+2. **`DecodeFixedSlotLabel`** — Reconstruct `(stmt, rfile)` from dense `slot_index` at finalize only (~14 groups).
+3. **`AggregateFixedSlotHot`** — Open-coded cnt/line_sum/distinct insert on all all-valid fixed-slot loops (DictDictFlatFlat, DictDictDictFlat, DictDictFlatDict, DictDictDictDict, FlatFlatFlatFlat).
+4. **Retained prior wins** — Fingerprint-only intern table, `LookupDictFixedSlot`, lazy per-chunk adsh dict cache, bitmap distinct tracking.
+5. **Anti-pattern avoided** — No chunk-level adsh dict pre-intern sweep (extra O(dict_size) pass per chunk hurt despite fewer row-loop branches).
+
+## Profile counter deltas
+
+| Counter | Before | After | Δ |
+|---------|--------|-------|---|
+| pre_consume_us | 145,272 | 140,889 | **−4,383 µs** |
+| pre_scan_us | ~47,000 | 49,881 | ~flat |
+| distinct_inserts | 379,461 | 379,461 | 0 |
+| dict_chunks | 4,682 | 4,682 | 0 |
+
+## Playbook signals
+
+- **Retain:** Deferred fixed-slot metadata when group count ≪ row count and slot index encodes `(stmt, rfile)`.
+- **Retain:** `AggregateFixedSlotHot` inline helper on 9M+ row all-valid loops.
+- **Avoid:** Chunk-level adsh dict pre-intern sweeps — lazy per-row cache wins on this workload.
+- **Next episode:** `pre_scan_us` (~50 ms) is now ~26% of profile time; fused scan projection ordering may yield further gains.
+
+## Q1 update (legacy)
+# SEC-EDGAR Q1 optimization iteration 5, episode 1
+
+## Hypothesis
+
+**Target bottlenecks:** `pre_consume_us` = 145,272 µs (dominant), `distinct_inserts` = 379,461, `dict_chunks` = 4,682.
+
+At 2.25× best, consume still spends cycles on `ToStoredString` inside `ActivateFixedSlot` for ~14 fixed groups and scattered `InsertDistinct` call overhead across all-valid dict fast paths.
+
+**Technique:** Lean coordinated bundle — deferred fixed-slot metadata (`TouchFixedSlot` + `DecodeFixedSlotLabel`), `AggregateFixedSlotHot` on all all-valid dict/flat paths. Explicitly excludes chunk-level adsh dict pre-intern sweep (confirmed regression in `ep1_consume_bundle`).
+
+## A/B trial outcomes
+
+| Trial | Hypothesis | speedup_median | pre_consume_us | distinct_inserts | Verdict |
+|-------|------------|----------------|----------------|------------------|---------|
+| `ep1_consume_bundle` | TouchFixedSlot + dict pre-intern + AggregateFixedSlotHot on all paths | **2.19×** | 148,257 | 379,461 | **Discard** — dict pre-intern sweep regressed consume |
+| `ep1_lean_deferred_slots` | TouchFixedSlot + AggregateFixedSlotHot + DecodeFixedSlotLabel at finalize | **2.27×** | 140,889 | 379,461 | **Keep** |
+
+## Before (best snapshot, iter 4)
+
+| Metric | Value |
+|--------|-------|
+| speedup_median | **2.25×** |
+| pre_consume_us | 145,272 |
+| distinct_inserts | 379,461 |
+| dict_chunks | 4,682 |
+| generic_rows | 0 |
+
+## After (kept trial `ep1_lean_deferred_slots`)
+
+| Metric | Value | Δ vs best |
+|--------|-------|-----------|
+| speedup_median | **2.27×** | **+0.02×** |
+| pre_consume_us | 140,889 | **−4,383 µs** |
+| pre_scan_us | 49,881 | ~flat |
+| distinct_inserts | 379,461 | 0 (semantics preserved) |
+| dict_chunks | 4,682 | 0 |
+| generic_rows | 0 | 0 |
+
+## Kept bundle (5 coordinated changes)
+
+1. **`TouchFixedSlot`** — Activate fixed slots without `ToStoredString` on hot path; only set `active`, presize bitmap, push to active list.
+2. **`DecodeFixedSlotLabel`** — Reconstruct `(stmt, rfile)` from dense `slot_index` at finalize only (~14 groups).
+3. **`AggregateFixedSlotHot`** — Open-coded cnt/line_sum/distinct insert on all all-valid fixed-slot loops (DictDictFlatFlat, DictDictDictFlat, DictDictFlatDict, DictDictDictDict, FlatFlatFlatFlat).
+4. **Retained prior wins** — Fingerprint-only intern table, `LookupDictFixedSlot`, lazy per-chunk adsh dict cache, bitmap distinct tracking.
+5. **Anti-pattern avoided** — No chunk-level adsh dict pre-intern sweep (extra O(dict_size) pass per chunk hurt despite fewer row-loop branches).
+
+## Profile counter deltas
+
+| Counter | Before | After | Δ |
+|---------|--------|-------|---|
+| pre_consume_us | 145,272 | 140,889 | **−4,383 µs** |
+| pre_scan_us | ~47,000 | 49,881 | ~flat |
+| distinct_inserts | 379,461 | 379,461 | 0 |
+| dict_chunks | 4,682 | 4,682 | 0 |
+
+## Playbook signals
+
+- **Retain:** Deferred fixed-slot metadata when group count ≪ row count and slot index encodes `(stmt, rfile)`.
+- **Retain:** `AggregateFixedSlotHot` inline helper on 9M+ row all-valid loops.
+- **Avoid:** Chunk-level adsh dict pre-intern sweeps — lazy per-row cache wins on this workload.
+- **Next episode:** `pre_scan_us` (~50 ms) is now ~26% of profile time; fused scan projection ordering may yield further gains.
+
+## Q1 update (legacy)
+# SEC-EDGAR Q1 optimization iteration 5, episode 1
+
+## Hypothesis
+
+**Target bottlenecks:** `pre_consume_us` = 145,272 µs (dominant), `distinct_inserts` = 379,461, `dict_chunks` = 4,682.
+
+At 2.25× best, consume still spends cycles on `ToStoredString` inside `ActivateFixedSlot` for ~14 fixed groups and scattered `InsertDistinct` call overhead across all-valid dict fast paths.
+
+**Technique:** Lean coordinated bundle — deferred fixed-slot metadata (`TouchFixedSlot` + `DecodeFixedSlotLabel`), `AggregateFixedSlotHot` on all all-valid dict/flat paths. Explicitly excludes chunk-level adsh dict pre-intern sweep (confirmed regression in `ep1_consume_bundle`).
+
+## A/B trial outcomes
+
+| Trial | Hypothesis | speedup_median | pre_consume_us | distinct_inserts | Verdict |
+|-------|------------|----------------|----------------|------------------|---------|
+| `ep1_consume_bundle` | TouchFixedSlot + dict pre-intern + AggregateFixedSlotHot on all paths | **2.19×** | 148,257 | 379,461 | **Discard** — dict pre-intern sweep regressed consume |
+| `ep1_lean_deferred_slots` | TouchFixedSlot + AggregateFixedSlotHot + DecodeFixedSlotLabel at finalize | **2.27×** | 140,889 | 379,461 | **Keep** |
+
+## Before (best snapshot, iter 4)
+
+| Metric | Value |
+|--------|-------|
+| speedup_median | **2.25×** |
+| pre_consume_us | 145,272 |
+| distinct_inserts | 379,461 |
+| dict_chunks | 4,682 |
+| generic_rows | 0 |
+
+## After (kept trial `ep1_lean_deferred_slots`)
+
+| Metric | Value | Δ vs best |
+|--------|-------|-----------|
+| speedup_median | **2.27×** | **+0.02×** |
+| pre_consume_us | 140,889 | **−4,383 µs** |
+| pre_scan_us | 49,881 | ~flat |
+| distinct_inserts | 379,461 | 0 (semantics preserved) |
+| dict_chunks | 4,682 | 0 |
+| generic_rows | 0 | 0 |
+
+## Kept bundle (5 coordinated changes)
+
+1. **`TouchFixedSlot`** — Activate fixed slots without `ToStoredString` on hot path; only set `active`, presize bitmap, push to active list.
+2. **`DecodeFixedSlotLabel`** — Reconstruct `(stmt, rfile)` from dense `slot_index` at finalize only (~14 groups).
+3. **`AggregateFixedSlotHot`** — Open-coded cnt/line_sum/distinct insert on all all-valid fixed-slot loops (DictDictFlatFlat, DictDictDictFlat, DictDictFlatDict, DictDictDictDict, FlatFlatFlatFlat).
+4. **Retained prior wins** — Fingerprint-only intern table, `LookupDictFixedSlot`, lazy per-chunk adsh dict cache, bitmap distinct tracking.
+5. **Anti-pattern avoided** — No chunk-level adsh dict pre-intern sweep (extra O(dict_size) pass per chunk hurt despite fewer row-loop branches).
+
+## Profile counter deltas
+
+| Counter | Before | After | Δ |
+|---------|--------|-------|---|
+| pre_consume_us | 145,272 | 140,889 | **−4,383 µs** |
+| pre_scan_us | ~47,000 | 49,881 | ~flat |
+| distinct_inserts | 379,461 | 379,461 | 0 |
+| dict_chunks | 4,682 | 4,682 | 0 |
+
+## Playbook signals
+
+- **Retain:** Deferred fixed-slot metadata when group count ≪ row count and slot index encodes `(stmt, rfile)`.
+- **Retain:** `AggregateFixedSlotHot` inline helper on 9M+ row all-valid loops.
+- **Avoid:** Chunk-level adsh dict pre-intern sweeps — lazy per-row cache wins on this workload.
+- **Next episode:** `pre_scan_us` (~50 ms) is now ~26% of profile time; fused scan projection ordering may yield further gains.
+
+## Q1 update (legacy)
+# SEC-EDGAR Q1 optimization iteration 5, episode 1
+
+## Hypothesis
+
+**Target bottlenecks:** `pre_consume_us` = 145,272 µs (dominant), `distinct_inserts` = 379,461, `dict_chunks` = 4,682.
+
+At 2.25× best, consume still spends cycles on `ToStoredString` inside `ActivateFixedSlot` for ~14 fixed groups and scattered `InsertDistinct` call overhead across all-valid dict fast paths.
+
+**Technique:** Lean coordinated bundle — deferred fixed-slot metadata (`TouchFixedSlot` + `DecodeFixedSlotLabel`), `AggregateFixedSlotHot` on all all-valid dict/flat paths. Explicitly excludes chunk-level adsh dict pre-intern sweep (confirmed regression in `ep1_consume_bundle`).
+
+## A/B trial outcomes
+
+| Trial | Hypothesis | speedup_median | pre_consume_us | distinct_inserts | Verdict |
+|-------|------------|----------------|----------------|------------------|---------|
+| `ep1_consume_bundle` | TouchFixedSlot + dict pre-intern + AggregateFixedSlotHot on all paths | **2.19×** | 148,257 | 379,461 | **Discard** — dict pre-intern sweep regressed consume |
+| `ep1_lean_deferred_slots` | TouchFixedSlot + AggregateFixedSlotHot + DecodeFixedSlotLabel at finalize | **2.27×** | 140,889 | 379,461 | **Keep** |
+
+## Before (best snapshot, iter 4)
+
+| Metric | Value |
+|--------|-------|
+| speedup_median | **2.25×** |
+| pre_consume_us | 145,272 |
+| distinct_inserts | 379,461 |
+| dict_chunks | 4,682 |
+| generic_rows | 0 |
+
+## After (kept trial `ep1_lean_deferred_slots`)
+
+| Metric | Value | Δ vs best |
+|--------|-------|-----------|
+| speedup_median | **2.27×** | **+0.02×** |
+| pre_consume_us | 140,889 | **−4,383 µs** |
+| pre_scan_us | 49,881 | ~flat |
+| distinct_inserts | 379,461 | 0 (semantics preserved) |
+| dict_chunks | 4,682 | 0 |
+| generic_rows | 0 | 0 |
+
+## Kept bundle (5 coordinated changes)
+
+1. **`TouchFixedSlot`** — Activate fixed slots without `ToStoredString` on hot path; only set `active`, presize bitmap, push to active list.
+2. **`DecodeFixedSlotLabel`** — Reconstruct `(stmt, rfile)` from dense `slot_index` at finalize only (~14 groups).
+3. **`AggregateFixedSlotHot`** — Open-coded cnt/line_sum/distinct insert on all all-valid fixed-slot loops (DictDictFlatFlat, DictDictDictFlat, DictDictFlatDict, DictDictDictDict, FlatFlatFlatFlat).
+4. **Retained prior wins** — Fingerprint-only intern table, `LookupDictFixedSlot`, lazy per-chunk adsh dict cache, bitmap distinct tracking.
+5. **Anti-pattern avoided** — No chunk-level adsh dict pre-intern sweep (extra O(dict_size) pass per chunk hurt despite fewer row-loop branches).
+
+## Profile counter deltas
+
+| Counter | Before | After | Δ |
+|---------|--------|-------|---|
+| pre_consume_us | 145,272 | 140,889 | **−4,383 µs** |
+| pre_scan_us | ~47,000 | 49,881 | ~flat |
+| distinct_inserts | 379,461 | 379,461 | 0 |
+| dict_chunks | 4,682 | 4,682 | 0 |
+
+## Playbook signals
+
+- **Retain:** Deferred fixed-slot metadata when group count ≪ row count and slot index encodes `(stmt, rfile)`.
+- **Retain:** `AggregateFixedSlotHot` inline helper on 9M+ row all-valid loops.
+- **Avoid:** Chunk-level adsh dict pre-intern sweeps — lazy per-row cache wins on this workload.
+- **Next episode:** `pre_scan_us` (~50 ms) is now ~26% of profile time; fused scan projection ordering may yield further gains.

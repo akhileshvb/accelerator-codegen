@@ -200,6 +200,14 @@ def build_prompt_context(
             "- Benchmark/profile use **one scale factor** (SF3); size structures from bind-time `row_estimate`, "
             "not hardcoded row/distinct counts from the current profile."
         )
+        if is_aux:
+            benchmark_notes += (
+                f"\n- SEC EDGAR aux state lives under `src/aux_state/sec_edgar/q{query}/` with headers "
+                f"`sec_edgar_q{query}_*.hpp` (not `tpch_q*` paths).\n"
+                "- Write workload suite is **`filing_append`** (new `pre`/`num` rows), not TPC-H `lineitem` point updates.\n"
+                "- Partition by filing semantics (`stmt`, `adsh`, `cik`+`fy`) — see `pipeline/prompts/sec_edgar/aux_state_notes.md`.\n"
+                "- Register with `accel_add_aux_state_query(BENCHMARK sec_edgar QUERY_NUM N ...)` in CMakeLists.txt."
+            )
         optimization_gate_suffix = " → profile"
         audit_gate_suffix = ""
     else:

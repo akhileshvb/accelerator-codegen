@@ -191,8 +191,11 @@ class TestPrerequisiteRegex:
     def test_q1_regex_does_not_match_q10(self):
         from accel_pipeline.prerequisites import base_smoke_test_ctest_regex
 
-        assert base_smoke_test_ctest_regex(1) == "^tpch_q1_smoke_test$"
-        assert base_smoke_test_ctest_regex(14) == "^tpch_q14_smoke_test$"
+        tpch = {"benchmark_name": "tpch"}
+        assert base_smoke_test_ctest_regex(tpch, 1) == "^tpch_q1_smoke_test$"
+        assert base_smoke_test_ctest_regex(tpch, 14) == "^tpch_q14_smoke_test$"
+        sec = {"benchmark_name": "sec_edgar"}
+        assert base_smoke_test_ctest_regex(sec, 1) == "^sec_edgar_q1_smoke_test$"
 
 
 class TestAuxAnalysisValidation:
@@ -286,6 +289,45 @@ class TestWorkloadConfig:
         assert len(workload["parameters"]) == 3
         tables = {t["name"] for t in workload["dependent_tables"]}
         assert tables == {"orders", "lineitem"}
+
+    def test_sec_edgar_q1_aux_workload_loads(self):
+        from accel_pipeline.config import load_pipeline_config, load_workload, resolve_workload_paths
+
+        workload = load_workload("sec_edgar_q1_aux", REPO_ROOT)
+        assert workload["query_number"] == 1
+        assert workload["workload_kind"] == "aux_state"
+        assert workload["benchmark_name"] == "sec_edgar"
+        assert workload["aux_function_name"] == "accel_sec_edgar_q1_aux"
+        assert workload["prerequisite_workload"] == "sec_edgar_q1"
+        assert workload["aux_bench_sweep"]["suites"] == "filing_append"
+        tables = {t["name"] for t in workload["dependent_tables"]}
+        assert tables == {"pre"}
+
+        paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 1)
+        assert paths["aux_state_subdir"] == "src/aux_state/sec_edgar/q1"
+        assert paths["aux_bench_target"] == "benchmark_sec_edgar_q1_aux"
+        assert paths["cost_model_config"] == "config/sec_edgar_q1_aux_cost_model.json"
+        assert workload.get("post_implementation_gates", [])[0] == "aux_correctness"
+        assert "sec_edgar_q*_aux" in " ".join(workload.get("write_paths", []))
+
+    def test_sec_edgar_q2_aux_workload_loads(self):
+        from accel_pipeline.config import load_pipeline_config, load_workload, resolve_workload_paths
+
+        workload = load_workload("sec_edgar_q2_aux", REPO_ROOT)
+        assert workload["query_number"] == 2
+        assert workload["workload_kind"] == "aux_state"
+        assert workload["benchmark_name"] == "sec_edgar"
+        assert workload["aux_function_name"] == "accel_sec_edgar_q2_aux"
+        assert workload["prerequisite_workload"] == "sec_edgar_q2"
+        assert workload["aux_bench_sweep"]["suites"] == "value_append"
+        tables = {t["name"] for t in workload["dependent_tables"]}
+        assert tables == {"num", "sub"}
+
+        paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 2)
+        assert paths["aux_state_subdir"] == "src/aux_state/sec_edgar/q2"
+        assert paths["aux_bench_target"] == "benchmark_sec_edgar_q2_aux"
+        assert paths["cost_model_config"] == "config/sec_edgar_q2_aux_cost_model.json"
+        assert paths["aux_bench_suites"] == "value_append"
 
 
 class TestPromptRendering:
