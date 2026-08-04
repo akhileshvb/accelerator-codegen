@@ -1030,6 +1030,33 @@ void SecEdgarQ24Kernel::RunNumBufferPass(duckdb::ClientContext &context, const d
 	}
 }
 
+void SecEdgarQ24Kernel::FeedNumChunk(duckdb::DataChunk &chunk) {
+	if (chunk.size() == 0) {
+		return;
+	}
+	state->BufferNumChunkVectors(chunk.size(), chunk.data[SecEdgarQ24NumChunkLayout::ADSH_INDEX],
+	                             chunk.data[SecEdgarQ24NumChunkLayout::TAG_INDEX],
+	                             chunk.data[SecEdgarQ24NumChunkLayout::VERSION_INDEX],
+	                             chunk.data[SecEdgarQ24NumChunkLayout::VALUE_INDEX],
+	                             chunk.data[SecEdgarQ24NumChunkLayout::UOM_INDEX],
+	                             chunk.data[SecEdgarQ24NumChunkLayout::DDATE_INDEX]);
+}
+
+void SecEdgarQ24Kernel::FeedPreChunk(duckdb::DataChunk &chunk) {
+	state->ProcessPreChunk(chunk, profile);
+}
+
+void SecEdgarQ24Kernel::BuildAdshBloomFilterForPrescan(duckdb::ClientContext &context) {
+	state->BuildAdshBloomFilter(context);
+}
+
+void SecEdgarQ24Kernel::FinalizeFusedPrescan(duckdb::ClientContext &context) {
+	(void)context;
+	state->pre_membership.FinalizeForLookup();
+	state->ProcessBufferedNumRows(profile);
+	MarkInputsConsumed();
+}
+
 void SecEdgarQ24Kernel::FinalizeGroups() {
 	if (state->finalized) {
 		return;

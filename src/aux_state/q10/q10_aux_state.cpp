@@ -17,6 +17,13 @@
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/main/client_context.hpp"
 
+#if ACCEL_HAS_POSTGRES_AUX
+#include "accelerator_codegen/aux_state/postgres/postgres_aux_build.hpp"
+#include "accelerator_codegen/aux_state/postgres/postgres_aux_runtime.hpp"
+#include "accelerator_codegen/aux_state/postgres/postgres_pg_stream.hpp"
+#include "libpq-fe.h"
+#endif
+
 namespace accelerator_codegen {
 namespace {
 
@@ -274,6 +281,69 @@ MonthBuildMap BuildOneMonth(duckdb::ClientContext &context, Q10PartitionKey part
 	return months;
 }
 
+#if ACCEL_HAS_POSTGRES_AUX
+void BuildQ10SideStoresFromPostgres(PGconn &conn, duckdb::ClientContext &context) {
+	auto &stores = GetQ10SideStores(context);
+	stores.ClearCustomers();
+	stores.ReserveCustomers();
+	stores.nation_names.fill(std::string());
+
+	aux_state::StreamPostgresQuery(conn,
+	                    "SELECT c_custkey, c_name, c_acctbal, c_nationkey, c_address, c_phone, c_comment FROM customer",
+	                    [&](PGresult *result, int row) {
+		                    const int64_t custkey = std::stoll(PQgetvalue(result, row, 0));
+		                    Q10CustomerDim dim;
+		                    dim.name = PQgetvalue(result, row, 1);
+		                    dim.acctbal_raw = aux_state::ParseDecimalScaled(PQgetvalue(result, row, 2), 2);
+		                    dim.nationkey = std::stoi(PQgetvalue(result, row, 3));
+		                    dim.address = PQgetvalue(result, row, 4);
+		                    dim.phone = PQgetvalue(result, row, 5);
+		                    dim.comment = PQgetvalue(result, row, 6);
+		                    stores.SetCustomer(custkey, std::move(dim));
+	                    });
+
+	aux_state::StreamPostgresQuery(conn, "SELECT n_nationkey, n_name FROM nation", [&](PGresult *result, int row) {
+		const auto nationkey = std::stoi(PQgetvalue(result, row, 0));
+		if (nationkey < 0 || nationkey >= kQ10MaxNationSlots) {
+			return;
+		}
+		stores.nation_names[static_cast<size_t>(nationkey)] = PQgetvalue(result, row, 1);
+	});
+}
+
+MonthBuildMap BuildAllMonthsFromPostgres(PGconn &conn) {
+	std::unordered_map<int64_t, OrderState> orders;
+	MonthBuildMap months;
+
+	aux_state::StreamPostgresQuery(conn, "SELECT o_orderkey, o_custkey, o_orderdate FROM orders", [&](PGresult *result, int row) {
+		OrderState state;
+		const auto orderkey = std::stoll(PQgetvalue(result, row, 0));
+		state.custkey = std::stoll(PQgetvalue(result, row, 1));
+		state.orderdate = duckdb::Date::FromString(PQgetvalue(result, row, 2));
+		orders[orderkey] = std::move(state);
+	});
+
+	aux_state::StreamPostgresQuery(conn,
+	                    "SELECT l_orderkey, l_extendedprice, l_discount, l_returnflag FROM lineitem WHERE l_returnflag = 'R'",
+	                    [&](PGresult *result, int row) {
+		                    const auto orderkey = std::stoll(PQgetvalue(result, row, 0));
+		                    const auto order_it = orders.find(orderkey);
+		                    if (order_it == orders.end()) {
+			                    return;
+		                    }
+		                    const auto orderdate = order_it->second.orderdate;
+		                    const auto partition =
+		                        static_cast<Q10PartitionKey>(duckdb::Date::ExtractYear(orderdate) * 100 +
+		                                                     duckdb::Date::ExtractMonth(orderdate));
+		                    const auto price = aux_state::ParseDecimalScaled(PQgetvalue(result, row, 1), 2);
+		                    const auto discount = aux_state::ParseDecimalScaled(PQgetvalue(result, row, 2), 2);
+		                    auto &revenue = months[partition][order_it->second.custkey];
+		                    Q10AddRevenueRaw(revenue, price, discount, 1);
+	                    });
+	return months;
+}
+#endif
+
 } // namespace
 
 namespace {
@@ -368,6 +438,12 @@ aux_state::ExecutionGateResult CheckQ10WindowExecutionGate(const aux_state::Part
 }
 
 void BuildQ10AuxState(duckdb::ClientContext &context) {
+#if ACCEL_HAS_POSTGRES_AUX
+	if (auto *pg = aux_state::PostgresAuxRuntime::TryGetConnection(context)) {
+		aux_state::BuildQ10AuxStateFromPostgres(*pg, context);
+		return;
+	}
+#endif
 	const auto start = std::chrono::steady_clock::now();
 	BuildQ10SideStores(context);
 	auto months = BuildAllMonths(context);
@@ -460,5 +536,21 @@ std::vector<Q10RawSortKey> ComposeQ10AuxResult(duckdb::ClientContext &context, d
 	}
 	return sort_keys;
 }
+
+#if ACCEL_HAS_POSTGRES_AUX
+namespace aux_state {
+
+void BuildQ10AuxStateFromPostgres(PGconn &conn, duckdb::ClientContext &context) {
+	const auto start = std::chrono::steady_clock::now();
+	BuildQ10SideStoresFromPostgres(conn, context);
+	auto months = BuildAllMonthsFromPostgres(conn);
+	PublishMonths(context, months);
+	RecordQ10Rebuild();
+	g_q10_aux_diagnostics_mut.build_ns =
+	    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+}
+
+} // namespace aux_state
+#endif
 
 } // namespace accelerator_codegen

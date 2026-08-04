@@ -87,8 +87,8 @@ aux_state::InvalidationPlan InterpretPreMutation(const duckdb::TableMutationEven
 	return plan;
 }
 
-aux_state::InvalidationPlan InterpretSecEdgarQ24Mutation(const duckdb::TableMutationEvent &event,
-                                                        const std::vector<aux_state::TableDependency> &dependencies) {
+aux_state::InvalidationPlan InterpretSecEdgarQ24MutationImpl(const duckdb::TableMutationEvent &event,
+                                                            const std::vector<aux_state::TableDependency> &dependencies) {
 	const aux_state::TableDependency *num = nullptr;
 	const aux_state::TableDependency *pre = nullptr;
 	for (const auto &dependency : dependencies) {
@@ -108,6 +108,11 @@ aux_state::InvalidationPlan InterpretSecEdgarQ24Mutation(const duckdb::TableMuta
 }
 
 } // namespace
+
+aux_state::InvalidationPlan InterpretSecEdgarQ24AuxTableMutation(const duckdb::TableMutationEvent &event,
+                                                                 const std::vector<aux_state::TableDependency> &dependencies) {
+	return InterpretSecEdgarQ24MutationImpl(event, dependencies);
+}
 
 bool SecEdgarQ24AuxEnabled() {
 	return ReadBoolEnv("ACCEL_SEC_EDGAR_SecEdgarQ24_AUX_STATE", true);
@@ -129,7 +134,7 @@ void RegisterSecEdgarQ24AuxAccelerator(duckdb::Connection &connection) {
 		    kSecEdgarQ24AuxAcceleratorId,
 		    [](const duckdb::TableMutationEvent &event,
 		       const std::vector<aux_state::TableDependency> &dependencies) -> aux_state::InvalidationPlan {
-			    return InterpretSecEdgarQ24Mutation(event, dependencies);
+			    return InterpretSecEdgarQ24MutationImpl(event, dependencies);
 		    });
 		registry->RegisterIncrementalBufferFactory(kSecEdgarQ24AuxAcceleratorId,
 		                                           []() { return std::make_unique<SecEdgarQ24IncrementalTxnBuffer>(); });

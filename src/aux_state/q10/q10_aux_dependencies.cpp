@@ -138,8 +138,8 @@ aux_state::InvalidationPlan InterpretNationMutation(const duckdb::TableMutationE
 	return plan;
 }
 
-aux_state::InvalidationPlan InterpretQ10Mutation(const duckdb::TableMutationEvent &event,
-                                                 const std::vector<aux_state::TableDependency> &dependencies) {
+aux_state::InvalidationPlan InterpretQ10MutationImpl(const duckdb::TableMutationEvent &event,
+                                                     const std::vector<aux_state::TableDependency> &dependencies) {
 	const aux_state::TableDependency *customer = nullptr;
 	const aux_state::TableDependency *orders = nullptr;
 	const aux_state::TableDependency *lineitem = nullptr;
@@ -172,6 +172,11 @@ aux_state::InvalidationPlan InterpretQ10Mutation(const duckdb::TableMutationEven
 
 } // namespace
 
+aux_state::InvalidationPlan InterpretQ10AuxTableMutation(const duckdb::TableMutationEvent &event,
+                                                         const std::vector<aux_state::TableDependency> &dependencies) {
+	return InterpretQ10MutationImpl(event, dependencies);
+}
+
 bool Q10AuxEnabled() {
 	return ReadBoolEnv("ACCEL_Q10_AUX_STATE", true);
 }
@@ -198,7 +203,7 @@ void RegisterQ10AuxAccelerator(duckdb::Connection &connection) {
 		    kQ10AuxAcceleratorId,
 		    [](const duckdb::TableMutationEvent &event,
 		       const std::vector<aux_state::TableDependency> &dependencies) -> aux_state::InvalidationPlan {
-			    return InterpretQ10Mutation(event, dependencies);
+			    return InterpretQ10MutationImpl(event, dependencies);
 		    });
 		registry->RegisterIncrementalBufferFactory(kQ10AuxAcceleratorId,
 		                                           []() { return std::make_unique<Q10IncrementalTxnBuffer>(); });

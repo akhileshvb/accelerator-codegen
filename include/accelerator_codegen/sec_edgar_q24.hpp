@@ -74,6 +74,11 @@ public:
 	void ExportAuxPartitions(SecEdgarQ24PreMembershipPartition &pre_membership, SecEdgarQ24TagVersionPartition &tag_versions,
 	                         SecEdgarQ24GroupAggregatesPartition &aggregates, SecEdgarQ24OutputPartition &output);
 
+	void FeedNumChunk(duckdb::DataChunk &chunk);
+	void FeedPreChunk(duckdb::DataChunk &chunk);
+	void BuildAdshBloomFilterForPrescan(duckdb::ClientContext &context);
+	void FinalizeFusedPrescan(duckdb::ClientContext &context);
+
 protected:
 	SecEdgarQ24Parameters params;
 	SecEdgarQ24ProfileCounters *profile;

@@ -16,6 +16,12 @@
 #include "accelerator_codegen/tpch_q10_aux.hpp"
 #include "accelerator_codegen/aux_state/maintenance/staged_publication.hpp"
 #include "accelerator_codegen/aux_state/maintenance/partition_publish.hpp"
+
+#if ACCEL_HAS_POSTGRES_AUX
+#include "accelerator_codegen/aux_state/postgres/postgres_aux_runtime.hpp"
+#include "accelerator_codegen/aux_state/postgres/postgres_pg_lookup.hpp"
+#endif
+
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -113,6 +119,18 @@ void NotePartition(aux_state::InvalidationPlan &plan, Q10PartitionKey partition)
 }
 
 std::optional<OrderSnapshot> LookupOrderSnapshot(duckdb::ClientContext &context, int64_t orderkey) {
+#if ACCEL_HAS_POSTGRES_AUX
+	if (auto *pg = aux_state::PostgresAuxRuntime::TryGetConnection(context)) {
+		auto pg_snapshot = aux_state::LookupOrderSnapshotPostgres(*pg, orderkey);
+		if (!pg_snapshot) {
+			return std::nullopt;
+		}
+		OrderSnapshot snapshot;
+		snapshot.custkey = pg_snapshot->custkey;
+		snapshot.orderdate = pg_snapshot->orderdate;
+		return snapshot;
+	}
+#endif
 	NativeScanSpec order_spec;
 	order_spec.table_name = "orders";
 	order_spec.projected_columns = {

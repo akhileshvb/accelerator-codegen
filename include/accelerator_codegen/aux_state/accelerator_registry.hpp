@@ -64,6 +64,9 @@ public:
 	bool HasMaintenanceHook(const std::string &accelerator_id) const;
 	bool RegisterAcceleratorIfAbsent(const std::string &accelerator_id, const std::function<void()> &register_fn);
 	const std::vector<TableDependency> &GetAcceleratorDependencies(const std::string &accelerator_id) const;
+	const std::vector<TableDependency> &GetAllDependencies() const {
+		return all_dependencies;
+	}
 	void ApplyPreCommitInvalidation(const InvalidationPlan &plan, const std::string &accelerator_id);
 
 	bool TryGetWatchedColumns(duckdb::TableCatalogEntry &table,

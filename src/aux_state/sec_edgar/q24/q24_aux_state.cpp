@@ -4,6 +4,11 @@
 
 #include <chrono>
 
+#if ACCEL_HAS_POSTGRES_AUX
+#include "accelerator_codegen/aux_state/postgres/postgres_aux_build.hpp"
+#include "accelerator_codegen/aux_state/postgres/postgres_aux_runtime.hpp"
+#endif
+
 #include "accelerator_codegen/aux_state/accelerator_registry.hpp"
 #include "accelerator_codegen/aux_state/txn_invalidation_buffer.hpp"
 #include "accelerator_codegen/duckdb_scan_adapter.hpp"
@@ -111,6 +116,12 @@ CheckSecEdgarQ24GroupExecutionGate(const aux_state::PartitionedStateStore &store
 }
 
 void BuildSecEdgarQ24AuxState(duckdb::ClientContext &context) {
+#if ACCEL_HAS_POSTGRES_AUX
+	if (auto *pg = aux_state::PostgresAuxRuntime::TryGetConnection(context)) {
+		aux_state::BuildSecEdgarQ24AuxStateFromPostgres(*pg, context);
+		return;
+	}
+#endif
 	const auto start = std::chrono::steady_clock::now();
 	BuildScratch scratch;
 	BuildAllPartitions(context, scratch);

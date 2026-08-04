@@ -71,6 +71,7 @@ add_library(accelerator_codegen SHARED
     src/aux_state/execution_gate.cpp
     src/aux_state/accelerator_registry.cpp
     src/aux_state/txn_invalidation_buffer.cpp
+    src/aux_state/external_mutation.cpp
     src/aux_state/maintenance/maintenance_action.cpp
     src/aux_state/maintenance/online_stats.cpp
     src/aux_state/maintenance/action_selector.cpp
@@ -1331,6 +1332,38 @@ accel_add_aux_state_benchmarks(
 )
 if(BUILD_TESTING)
 	accel_add_aux_state_ctests(BENCHMARK sec_edgar QUERY_NUM 24)
+endif()
+
+find_package(PostgreSQL)
+if(PostgreSQL_FOUND)
+	target_sources(accelerator_codegen PRIVATE
+		src/aux_state/postgres/postgres_aux_session.cpp
+		src/aux_state/postgres/postgres_mutation_decoder.cpp
+		src/aux_state/postgres/postgres_mutation_triggers.cpp
+		src/aux_state/postgres/postgres_aux_registration.cpp
+		src/aux_state/postgres/postgres_aux_runtime.cpp
+		src/aux_state/postgres/postgres_pg_lookup.cpp
+		src/aux_state/postgres/postgres_pg_stream.cpp
+		src/aux_state/postgres/postgres_q24_build.cpp
+		src/aux_state/postgres/postgres_table_import.cpp
+	)
+	target_compile_definitions(accelerator_codegen PUBLIC ACCEL_HAS_POSTGRES_AUX=1)
+	target_include_directories(accelerator_codegen PRIVATE ${PostgreSQL_INCLUDE_DIRS})
+	target_link_libraries(accelerator_codegen PRIVATE PostgreSQL::PostgreSQL)
+
+	add_executable(test_postgres_aux_mutations
+		tests/aux_state/test_postgres_q10_q24_mutations.cpp
+	)
+	target_link_libraries(test_postgres_aux_mutations PRIVATE accelerator_codegen duckdb_sibling PostgreSQL::PostgreSQL)
+	target_include_directories(test_postgres_aux_mutations PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+	add_test(NAME test_postgres_aux_mutations COMMAND test_postgres_aux_mutations)
+
+	add_executable(benchmark_postgres_aux_workload_multi_connection
+		benchmarks/postgres/benchmark_postgres_aux_workload_multi_connection.cpp
+		tests/test_support/cross_accel_helpers.cpp
+	)
+	target_link_libraries(benchmark_postgres_aux_workload_multi_connection PRIVATE accelerator_codegen duckdb_sibling PostgreSQL::PostgreSQL)
+	target_include_directories(benchmark_postgres_aux_workload_multi_connection PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 endif()
 
 add_executable(measure_sec_edgar_aux_memory

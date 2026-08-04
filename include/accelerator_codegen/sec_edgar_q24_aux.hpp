@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "accelerator_codegen/aux_state/execution_gate.hpp"
+#include "accelerator_codegen/aux_state/invalidation_plan.hpp"
 #include "accelerator_codegen/aux_state/partition_key.hpp"
 #include "accelerator_codegen/sec_edgar_q24.hpp"
 #include "accelerator_codegen/sec_edgar_q24_finalize.hpp"
@@ -47,6 +48,9 @@ CheckSecEdgarQ24GroupExecutionGate(const aux_state::PartitionedStateStore &store
 
 bool IsSecEdgarQ24DependentTableMutation(const duckdb::TableMutationEvent &event,
                                         const std::vector<aux_state::TableDependency> &dependencies);
+
+aux_state::InvalidationPlan InterpretSecEdgarQ24AuxTableMutation(const duckdb::TableMutationEvent &event,
+                                                                 const std::vector<aux_state::TableDependency> &dependencies);
 
 void RegisterSecEdgarQ24AuxAccelerator(duckdb::Connection &connection);
 void BuildSecEdgarQ24AuxState(duckdb::ClientContext &context);

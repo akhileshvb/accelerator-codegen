@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "accelerator_codegen/aux_state/execution_gate.hpp"
+#include "accelerator_codegen/aux_state/invalidation_plan.hpp"
 #include "accelerator_codegen/aux_state/partition_key.hpp"
 #include "accelerator_codegen/tpch_q10_finalize.hpp"
 #include "duckdb/accelerator/mutation_recorder.hpp"
@@ -55,6 +56,9 @@ aux_state::ExecutionGateResult CheckQ10WindowExecutionGate(const aux_state::Part
 
 bool IsQ10DependentTableMutation(const duckdb::TableMutationEvent &event,
                                  const std::vector<aux_state::TableDependency> &dependencies);
+
+aux_state::InvalidationPlan InterpretQ10AuxTableMutation(const duckdb::TableMutationEvent &event,
+                                                         const std::vector<aux_state::TableDependency> &dependencies);
 
 void RegisterQ10AuxAccelerator(duckdb::Connection &connection);
 void BuildQ10AuxState(duckdb::ClientContext &context);
