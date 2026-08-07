@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "aux_hit_us": 500.0,
-  "fallback_us": 50000.0,
-  "partition_rebuild_us": 60000.0,
-  "full_rebuild_us": 250000.0,
+  "aux_hit_us": 150000.0,
+  "fallback_us": 150000000.0,
+  "partition_rebuild_us": 150000000.0,
+  "full_rebuild_us": 150000000.0,
   "first_query_blocking_us": 0.0,
   "apply_delta_overhead_us": 100.0,
   "apply_delta_base_us": 0.0,

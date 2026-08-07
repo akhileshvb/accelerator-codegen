@@ -1,0 +1,3 @@
+engine,workload,query,write_interval_sec,mode,reads,writes,rows,read_p50_us,read_sum_us,write_p50_us,write_sum_us,build_us,workload_sum_us,workload_speedup_vs_base,workload_with_build_us,workload_with_build_speedup_vs_base
+duckdb,tpch,14,2,base,8,1,1,113236.05,906394.27,2116.72,2116.72,0.00,908510.99,1.00,908510.99,1.00
+duckdb,tpch,14,2,shared,8,1,1,3.49,35.93,1721.08,1721.08,14980478.28,1757.01,517.08,14982235.29,0.06

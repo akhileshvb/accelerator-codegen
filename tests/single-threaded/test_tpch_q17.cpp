@@ -55,7 +55,7 @@ std::string ReferenceQ17Sql(const std::string &brand, const std::string &contain
 }
 
 std::string AcceleratorQ17Sql(const std::string &brand, const std::string &container) {
-	return "SELECT * FROM accel_tpch_q37('" + brand + "', '" + container + "')";
+	return "SELECT * FROM accel_tpch_q17('" + brand + "', '" + container + "')";
 }
 
 bool DoublesMatch(double expected, double actual) {

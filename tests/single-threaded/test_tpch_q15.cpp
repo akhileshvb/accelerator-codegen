@@ -53,7 +53,7 @@ std::vector<std::string> MaterializeOrderedRows(duckdb::MaterializedQueryResult 
 }
 
 std::string AcceleratorQ15Sql(const std::string &start_date) {
-	return "SELECT * FROM accel_tpch_q35(DATE '" + start_date + "')";
+	return "SELECT * FROM accel_tpch_q15(DATE '" + start_date + "')";
 }
 
 void RequireEqualResults(duckdb::Connection &connection, const std::string &label, const std::string &reference_sql,

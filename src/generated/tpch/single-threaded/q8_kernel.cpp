@@ -1136,12 +1136,10 @@ public:
 				int64_t order_max = 0;
 				const bool has_order_stats =
 				    TryGetRowGroupNumericMinMax(row_group, column_ids[kLineitemOrderkeyScanIndex], order_min, order_max);
-				if (has_order_stats && order_min > qualifying_orders_max) {
-					if (lineitem_profile_enabled) {
-						lineitem_profile.row_groups_stopped_early += 1;
-					}
-					return duckdb::FilteredScanConsumerResult::STOP;
-				}
+				// Row-group ordering is an execution hint, not a semantic
+				// guarantee.  Do not stop the scan solely from min/max stats:
+				// an unsorted physical layout can still contain qualifying order
+				// keys in later groups.
 				if (has_order_stats && !SortedKeysOverlapRange(qualifying_order_keys, order_min, order_max)) {
 						active_row_group_skipped = true;
 					}
@@ -1176,10 +1174,9 @@ public:
 
 private:
 	void PrepareOrderProbeState() {
-		if (!qualifying_orders_probe_ready) {
-			qualifying_orders.EnableUncheckedProbe();
-			qualifying_orders_probe_ready = true;
-		}
+		// Keep bitmap probes bounds-checked.  The runtime may schedule the
+		// lineitem scan before the orders scan has installed its backing words;
+		// unchecked probing is not valid for that pipeline ordering.
 		if (!order_year_slots.ProbeReady()) {
 			order_year_slots.WarmInitialize();
 		}
@@ -1655,7 +1652,7 @@ private:
 } // namespace
 
 bool Q8FusedScansEnabled() {
-	return true;
+	return false;
 }
 
 bool Q8LineitemFusedScanEnabled() {

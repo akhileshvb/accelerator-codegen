@@ -54,7 +54,7 @@ std::vector<std::string> MaterializeOrderedRows(duckdb::MaterializedQueryResult 
 
 std::string AcceleratorQ16Sql(const accelerator_codegen::test_support::Q16ManifestEntry &entry) {
 	std::ostringstream stream;
-	stream << "SELECT * FROM accel_tpch_q36('" << entry.brand << "', '" << entry.type_pattern << "'";
+	stream << "SELECT * FROM accel_tpch_q16('" << entry.brand << "', '" << entry.type_pattern << "'";
 	for (const auto size : entry.sizes) {
 		stream << ", " << size;
 	}
@@ -84,11 +84,14 @@ void RequireEqualResults(duckdb::Connection &connection, const std::string &labe
 
 int main() {
 	try {
-		duckdb::DuckDB file_database(GetTpchDbPath().c_str());
-		duckdb::Connection connection(file_database);
-		accelerator_codegen::RegisterAcceleratorFunctions(connection);
-		connection.Query("PRAGMA threads=1");
 		for (const auto &entry : accelerator_codegen::test_support::kQ36Manifest) {
+			// Reclaim DuckDB's query-local allocations between the large SF1
+			// instances; keeping one connection for all 20 runs can be killed by
+			// the test worker's memory limit even though each query is bounded.
+			duckdb::DuckDB file_database(GetTpchDbPath().c_str());
+			duckdb::Connection connection(file_database);
+			accelerator_codegen::RegisterAcceleratorFunctions(connection);
+			connection.Query("PRAGMA threads=1");
 			RequireEqualResults(connection, entry.label, ReadFile(entry.sql_path), AcceleratorQ16Sql(entry));
 		}
 

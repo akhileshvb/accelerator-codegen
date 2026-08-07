@@ -34,4 +34,6 @@ inline constexpr std::array<Q11ManifestEntry, 20> kQ31Manifest = {{
     {"seed_20_q11", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_20/11.sql", "JAPAN", 0.0001},
 }};
 
+inline constexpr const auto &kQ11Manifest = kQ31Manifest;
+
 } // namespace accelerator_codegen::test_support

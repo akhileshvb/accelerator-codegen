@@ -1309,6 +1309,34 @@ SecEdgarQ4FusedKernel::SecEdgarQ4FusedKernel(const SecEdgarQ4Parameters &params,
     : SecEdgarQ4Kernel(params, profile_p) {
 }
 
+void SecEdgarQ4Kernel::RunPostgresChunkPrescan(const PostgresChunkScanner &scan) {
+	if (InputsConsumed()) {
+		return;
+	}
+	state->tag_abstract_filter_pushed = true;
+	state->sub_sic_filter_pushed = true;
+	state->pre_stmt_filter_pushed = true;
+	state->num_uom_filter_pushed = true;
+	scan(CreateSecEdgarQ4SubScanSpec(), [&](duckdb::DataChunk &chunk) { state->ProcessSubChunk(chunk); });
+	scan(CreateSecEdgarQ4PreScanSpec(), [&](duckdb::DataChunk &chunk) { state->ProcessPreChunk(chunk); });
+	state->CollectNeededTagVersions();
+	if (!state->needed_tag_versions.empty()) {
+		scan(CreateSecEdgarQ4TagScanSpec(), [&](duckdb::DataChunk &chunk) { state->ProcessTagChunk(chunk); });
+	}
+	state->FinalizePreEntries();
+	scan(CreateSecEdgarQ4NumScanSpec(), [&](duckdb::DataChunk &chunk) {
+		if (chunk.size() == 0) {
+			return;
+		}
+		state->ProcessNumChunkVectors(chunk.size(), chunk.data[SecEdgarQ4NumChunkLayout::ADSH_INDEX],
+		                              chunk.data[SecEdgarQ4NumChunkLayout::TAG_INDEX],
+		                              chunk.data[SecEdgarQ4NumChunkLayout::VERSION_INDEX],
+		                              chunk.data[SecEdgarQ4NumChunkLayout::VALUE_INDEX],
+		                              chunk.data[SecEdgarQ4NumChunkLayout::UOM_INDEX], profile);
+	});
+	MarkInputsConsumed();
+}
+
 void SecEdgarQ4FusedKernel::ConsumeInput(duckdb::idx_t, duckdb::DataChunk &) {
 	throw duckdb::InternalException("SEC EDGAR Q4 fused kernel: call RunFusedPreScan instead");
 }

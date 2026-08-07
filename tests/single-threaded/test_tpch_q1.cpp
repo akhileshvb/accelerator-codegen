@@ -73,7 +73,7 @@ std::string ReferenceQ1Sql(int day_offset) {
 }
 
 std::string AcceleratorQ1Sql(int day_offset) {
-    return "SELECT * FROM accel_tpch_q3(" + std::to_string(day_offset) + ")";
+    return "SELECT * FROM accel_tpch_q1(" + std::to_string(day_offset) + ")";
 }
 
 void RequireDoubleClose(double expected, double actual, const std::string &label) {
@@ -253,7 +253,7 @@ int main() {
             accelerator_codegen::RegisterAcceleratorFunctions(connection);
 
             RequireExpectedQ1Schema(connection);
-            for (const auto &entry : accelerator_codegen::test_support::kQ3Manifest) {
+            for (const auto &entry : accelerator_codegen::test_support::kQ1Manifest) {
                 RequireEqualQ1Results(connection, entry.label, ReadFile(entry.sql_path), AcceleratorQ1Sql(entry.day_offset));
             }
         }
@@ -326,10 +326,10 @@ int main() {
             RequireQueryErrorContains(connection, "schema_mismatch", AcceleratorQ1Sql(100), "Unsupported schema");
         }
 
-        std::cout << "tpch_q3_smoke_test passed" << std::endl;
+        std::cout << "tpch_q1_smoke_test passed" << std::endl;
         return EXIT_SUCCESS;
     } catch (const std::exception &ex) {
-        std::cerr << "tpch_q3_smoke_test failed: " << ex.what() << std::endl;
+        std::cerr << "tpch_q1_smoke_test failed: " << ex.what() << std::endl;
         return EXIT_FAILURE;
     }
 }

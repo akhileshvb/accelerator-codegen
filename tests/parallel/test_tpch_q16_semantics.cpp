@@ -100,7 +100,7 @@ std::string ReferenceQ16() {
 }
 
 std::string ParallelQ16() {
-	std::string sql = "SELECT * FROM accel_tpch_q36_parallel('" + Escape(kBrand) + "', '" + Escape(kTypePattern) + "'";
+	std::string sql = "SELECT * FROM accel_tpch_q16_parallel('" + Escape(kBrand) + "', '" + Escape(kTypePattern) + "'";
 	for (const auto size : kSizes) {
 		sql += ", " + std::to_string(size);
 	}

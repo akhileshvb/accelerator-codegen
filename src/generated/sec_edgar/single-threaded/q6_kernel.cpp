@@ -1427,6 +1427,31 @@ SecEdgarQ6FusedKernel::SecEdgarQ6FusedKernel(const SecEdgarQ6Parameters &params,
     : SecEdgarQ6Kernel(params, profile_p) {
 }
 
+void SecEdgarQ6Kernel::RunPostgresChunkPrescan(const PostgresChunkScanner &scan) {
+	if (InputsConsumed()) {
+		return;
+	}
+	state->sub_fy_filter_pushed = true;
+	state->pre_stmt_filter_pushed = true;
+	state->num_uom_filter_pushed = true;
+	scan(CreateSecEdgarQ6SubScanSpec(),
+	     [&](duckdb::DataChunk &chunk) { state->ProcessSubChunk(chunk, profile); });
+	scan(CreateSecEdgarQ6PreScanSpec(),
+	     [&](duckdb::DataChunk &chunk) { state->ProcessPreChunk(chunk, profile); });
+	state->FinalizePreLookup();
+	scan(CreateSecEdgarQ6NumScanSpec(), [&](duckdb::DataChunk &chunk) {
+		if (chunk.size() == 0) {
+			return;
+		}
+		state->ProcessNumChunkVectors(chunk.size(), chunk.data[SecEdgarQ6NumChunkLayout::ADSH_INDEX],
+		                              chunk.data[SecEdgarQ6NumChunkLayout::TAG_INDEX],
+		                              chunk.data[SecEdgarQ6NumChunkLayout::VERSION_INDEX],
+		                              chunk.data[SecEdgarQ6NumChunkLayout::VALUE_INDEX],
+		                              chunk.data[SecEdgarQ6NumChunkLayout::UOM_INDEX], profile);
+	});
+	MarkInputsConsumed();
+}
+
 void SecEdgarQ6FusedKernel::ConsumeInput(duckdb::idx_t, duckdb::DataChunk &) {
 	throw duckdb::InternalException("SEC EDGAR Q6 fused kernel: call RunFusedPreScan instead");
 }

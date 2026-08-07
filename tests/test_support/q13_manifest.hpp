@@ -33,4 +33,6 @@ inline constexpr std::array<Q13ManifestEntry, 20> kQ33Manifest = {{
     {"seed_20_q13", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_20/13.sql", "%pending%accounts%"},
 }};
 
+inline constexpr const auto &kQ13Manifest = kQ33Manifest;
+
 } // namespace accelerator_codegen::test_support

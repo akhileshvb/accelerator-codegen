@@ -86,7 +86,7 @@ std::string ReferenceQ13(const std::string &pattern) {
 }
 
 std::string ParallelQ13(const std::string &pattern) {
-	return "SELECT * FROM accel_tpch_q33_parallel('" + Escape(pattern) + "')";
+	return "SELECT * FROM accel_tpch_q13_parallel('" + Escape(pattern) + "')";
 }
 
 void RunCase(duckdb::Connection &connection, const std::string &label, const std::string &pattern,

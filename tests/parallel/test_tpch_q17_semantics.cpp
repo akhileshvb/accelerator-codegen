@@ -54,11 +54,11 @@ std::string ReferenceQ17Sql() {
 }
 
 std::string AcceleratorQ17Sql() {
-	return std::string("SELECT * FROM accel_tpch_q37('") + kBrand + "', '" + kContainer + "')";
+	return std::string("SELECT * FROM accel_tpch_q17('") + kBrand + "', '" + kContainer + "')";
 }
 
 std::string AcceleratorQ17ParallelSql() {
-	return std::string("SELECT * FROM accel_tpch_q37_parallel('") + kBrand + "', '" + kContainer + "')";
+	return std::string("SELECT * FROM accel_tpch_q17_parallel('") + kBrand + "', '" + kContainer + "')";
 }
 
 void RequireEqualResults(duckdb::Connection &connection, const std::string &label, const std::string &reference_sql,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 #include "accelerator_codegen/duckdb_scan_adapter.hpp"
@@ -56,6 +57,10 @@ NativeScanSpec CreateSecEdgarQ6SubScanSpec();
 NativeScanSpec CreateSecEdgarQ6PreScanSpec();
 NativeScanSpec CreateSecEdgarQ6NumScanSpec();
 
+using PostgresChunkScanner = std::function<void(
+    const NativeScanSpec &scan_spec,
+    const std::function<void(duckdb::DataChunk &chunk)> &consumer)>;
+
 class SecEdgarQ6Kernel : public KernelInstance {
 public:
 	explicit SecEdgarQ6Kernel(SecEdgarQ6Parameters params, SecEdgarQ6ProfileCounters *profile = nullptr);
@@ -64,6 +69,7 @@ public:
 	void ConsumeInput(duckdb::idx_t input_id, duckdb::DataChunk &input) override;
 	void Finalize() override;
 	bool ProduceOutput(duckdb::DataChunk &output) override;
+	void RunPostgresChunkPrescan(const PostgresChunkScanner &scan);
 
 protected:
 	SecEdgarQ6Parameters params;

@@ -1141,6 +1141,34 @@ SecEdgarQ24FusedKernel::SecEdgarQ24FusedKernel(const SecEdgarQ24Parameters &para
     : SecEdgarQ24Kernel(params, profile_p) {
 }
 
+void SecEdgarQ24Kernel::RunPostgresChunkPrescan(const PostgresChunkScanner &scan) {
+	if (InputsConsumed()) {
+		return;
+	}
+	state->num_uom_filter_pushed = true;
+	state->num_ddate_filter_pushed = true;
+	scan(CreateSecEdgarQ24NumFusedScanSpec(), [&](duckdb::DataChunk &chunk) {
+		if (chunk.size() == 0) {
+			return;
+		}
+		state->BufferNumChunkVectors(chunk.size(), chunk.data[SecEdgarQ24NumChunkLayout::ADSH_INDEX],
+		                             chunk.data[SecEdgarQ24NumChunkLayout::TAG_INDEX],
+		                             chunk.data[SecEdgarQ24NumChunkLayout::VERSION_INDEX],
+		                             chunk.data[SecEdgarQ24NumChunkLayout::VALUE_INDEX],
+		                             chunk.data[SecEdgarQ24NumChunkLayout::UOM_INDEX],
+		                             chunk.data[SecEdgarQ24NumChunkLayout::DDATE_INDEX]);
+	});
+	scan(CreateSecEdgarQ24PreScanSpec(), [&](duckdb::DataChunk &chunk) {
+		if (chunk.size() == 0) {
+			return;
+		}
+		state->ProcessPreChunk(chunk, profile);
+	});
+	state->pre_membership.FinalizeForLookup();
+	state->ProcessBufferedNumRows(profile);
+	MarkInputsConsumed();
+}
+
 void SecEdgarQ24FusedKernel::ConsumeInput(duckdb::idx_t, duckdb::DataChunk &) {
 	throw duckdb::InternalException("SEC EDGAR Q24 fused kernel: call RunFusedPreScan instead");
 }

@@ -105,6 +105,9 @@ public:
 			if (orderkey < 0 || orderkey >= order_capacity) {
 				continue;
 			}
+			if (!IsQualifyingOrder(orderkey)) {
+				continue;
+			}
 			const auto &metadata = entry.second;
 			if (metadata.custkey < 0 || static_cast<size_t>(metadata.custkey) >= customer_names.size()) {
 				continue;

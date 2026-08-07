@@ -1,0 +1,4 @@
+=== duckdb tpch Q3 interval=0.5s ===
+engine,workload,query,write_interval_sec,mode,reads,writes,rows,read_p50_us,read_sum_us,write_p50_us,write_sum_us,build_us,workload_sum_us,workload_speedup_vs_base,workload_with_build_us,workload_with_build_speedup_vs_base
+duckdb,tpch,3,0.5,base,8,7,10,93099.13,750554.24,1595.91,11715.72,0.00,762269.96,1.00,762269.96,1.00
+duckdb,tpch,3,0.5,shared,8,7,10,2559.34,19322.26,407208.78,2823044.62,21406176.16,2842366.88,0.27,24248543.04,0.03

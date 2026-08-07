@@ -53,7 +53,7 @@ std::vector<std::string> MaterializeOrderedRows(duckdb::MaterializedQueryResult 
 }
 
 std::string AcceleratorQ13Sql(const accelerator_codegen::test_support::Q13ManifestEntry &entry) {
-	return std::string("SELECT * FROM accel_tpch_q33('") + entry.comment_pattern + "')";
+	return std::string("SELECT * FROM accel_tpch_q13('") + entry.comment_pattern + "')";
 }
 
 void RequireEqualResults(duckdb::Connection &connection, const std::string &label, const std::string &reference_sql,
@@ -117,7 +117,7 @@ int main() {
 			    "GROUP BY c_custkey) AS c_orders(c_custkey, c_count) "
 			    "GROUP BY c_count ORDER BY custdist DESC, c_count DESC";
 			RequireEqualResults(connection, "synthetic_left_join_counts", reference,
-			                    "SELECT * FROM accel_tpch_q33('%usual%account%')");
+			                    "SELECT * FROM accel_tpch_q13('%usual%account%')");
 		}
 
 		std::cout << "test_tpch_q33 passed\n";

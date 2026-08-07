@@ -1,0 +1,5 @@
+engine,workload,query,write_interval_sec,mode,reads,writes,rows,read_p50_us,read_sum_us,write_p50_us,write_sum_us,build_us,workload_sum_us,workload_speedup_vs_base,workload_with_build_us,workload_with_build_speedup_vs_base
+postgres,tpch,6,0.0,base,10,0,1,675596.77,6782404.78,0.00,0.00,0.00,6782404.78,1.0000,6782404.78,1.0000
+postgres,tpch,6,0.0,shared,10,0,1,577.50,6601.05,0.00,0.00,6736332.62,6601.05,1027.4738,6742933.67,1.0059
+postgres,tpch,6,0.5,base,10,9,1,671411.50,6748009.13,397729.45,3595343.40,0.00,10343352.53,1.0000,10343352.53,1.0000
+postgres,tpch,6,0.5,shared,10,9,1,1326.63,13168.49,397445.74,3595422.81,6731507.43,3608591.30,2.8663,10340098.73,1.0003

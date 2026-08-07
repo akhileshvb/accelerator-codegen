@@ -45,7 +45,7 @@ duckdb::Value QuerySingleValue(duckdb::Connection &connection, const std::string
 }
 
 std::string AcceleratorQ19Sql(const accelerator_codegen::test_support::Q19ManifestEntry &entry) {
-	return std::string("SELECT * FROM accel_tpch_q39('") + entry.brand1 + "', " + std::to_string(entry.qty_low1) +
+	return std::string("SELECT * FROM accel_tpch_q19('") + entry.brand1 + "', " + std::to_string(entry.qty_low1) +
 	       ", '" + entry.brand2 + "', " + std::to_string(entry.qty_low2) + ", '" + entry.brand3 + "', " +
 	       std::to_string(entry.qty_low3) + ")";
 }
@@ -182,7 +182,7 @@ int main() {
 			    "'LG PKG') AND l_quantity >= 23 AND l_quantity <= 33 AND p_size BETWEEN 1 AND 15 AND l_shipmode IN "
 			    "('AIR', 'AIR REG') AND l_shipinstruct = 'DELIVER IN PERSON')";
 			RequireEqualRevenue(connection, "synthetic_or_branches", reference,
-			                    "SELECT * FROM accel_tpch_q39('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)");
+			                    "SELECT * FROM accel_tpch_q19('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)");
 		}
 
 		{
@@ -190,7 +190,7 @@ int main() {
 			duckdb::Connection connection(memory_database);
 			SetupTransactionFixture(connection);
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
-			const std::string accel = "SELECT * FROM accel_tpch_q39('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)";
+				const std::string accel = "SELECT * FROM accel_tpch_q19('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)";
 			const std::string reference =
 			    "SELECT SUM(l_extendedprice *(1 - l_discount)) AS revenue FROM lineitem, part WHERE "
 			    "(p_partkey = l_partkey AND p_brand = 'Brand#31' AND p_container IN ('SM CASE', 'SM BOX', 'SM PACK', "
@@ -220,7 +220,7 @@ int main() {
 			CreateQ39Schema(connection, "INTEGER");
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			RequireQueryErrorContains(connection, "schema_mismatch",
-			                          "SELECT * FROM accel_tpch_q39('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)",
+			                          "SELECT * FROM accel_tpch_q19('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)",
 			                          "Unsupported schema");
 		}
 

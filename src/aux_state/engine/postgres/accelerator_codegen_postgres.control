@@ -1,0 +1,4 @@
+comment = 'Shared auxiliary-state backend bridge for accelerator-codegen'
+default_version = '0.1'
+relocatable = true
+module_pathname = '$libdir/accelerator_codegen_postgres'

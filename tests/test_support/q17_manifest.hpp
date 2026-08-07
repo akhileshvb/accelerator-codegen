@@ -11,7 +11,7 @@ struct Q17ManifestEntry {
 	const char *container;
 };
 
-inline constexpr std::array<Q17ManifestEntry, 20> kQ37Manifest = {{
+inline constexpr std::array<Q17ManifestEntry, 20> kQ17Manifest = {{
     {"seed_1_q17", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/17.sql", "Brand#34", "LARGE BRUSHED"},
     {"seed_2_q17", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_2/17.sql", "Brand#24", "LARGE POLISHED"},
     {"seed_3_q17", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_3/17.sql", "Brand#41", "MEDIUM ANODIZED"},
@@ -33,5 +33,8 @@ inline constexpr std::array<Q17ManifestEntry, 20> kQ37Manifest = {{
     {"seed_19_q17", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_19/17.sql", "Brand#44", "PROMO PLATED"},
     {"seed_20_q17", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_20/17.sql", "Brand#33", "SMALL POLISHED"},
 }};
+
+// Compatibility name used by the parallel test matrix.
+inline constexpr const auto &kQ37Manifest = kQ17Manifest;
 
 } // namespace accelerator_codegen::test_support

@@ -1,0 +1,31 @@
+#pragma once
+
+#include <algorithm>
+
+#include "accelerator_codegen/aux_state/core/aux_types.hpp"
+
+namespace accelerator_codegen::aux_state::core {
+
+inline bool MutationTouchesColumn(const MutationBatch &mutation,
+                                  ColumnId column) {
+  if (mutation.kind != MutationKind::Update) {
+    return true;
+  }
+  return std::find(mutation.updated_columns.begin(),
+                   mutation.updated_columns.end(),
+                   column) != mutation.updated_columns.end();
+}
+
+inline std::size_t MutationRowCount(const MutationBatch &mutation) {
+  switch (mutation.kind) {
+  case MutationKind::Insert:
+    return mutation.new_rows.size();
+  case MutationKind::Delete:
+    return mutation.old_rows.size();
+  case MutationKind::Update:
+    return std::max(mutation.old_rows.size(), mutation.new_rows.size());
+  }
+  return 0;
+}
+
+} // namespace accelerator_codegen::aux_state::core

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "aux_hit_us": 158,
-  "fallback_us": 164,
+  "aux_hit_us": 500,
+  "fallback_us": 4000000,
   "partition_rebuild_us": 59031,
   "full_rebuild_us": 239032,
   "first_query_blocking_us": 997,

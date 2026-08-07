@@ -54,7 +54,7 @@ std::vector<std::string> MaterializeOrderedRows(duckdb::MaterializedQueryResult 
 }
 
 std::string AcceleratorQ18Sql(int64_t quantity_threshold) {
-	return "SELECT * FROM accel_tpch_q38(" + std::to_string(quantity_threshold) + ")";
+	return "SELECT * FROM accel_tpch_q18(" + std::to_string(quantity_threshold) + ")";
 }
 
 void RequireEqualResults(duckdb::Connection &connection, const std::string &label, const std::string &reference_sql,
@@ -106,11 +106,11 @@ void SetupSyntheticFixture(duckdb::Connection &connection) {
 int main() {
 	try {
 		{
-			duckdb::DuckDB file_database(GetTpchDbPath().c_str());
-			duckdb::Connection connection(file_database);
-			accelerator_codegen::RegisterAcceleratorFunctions(connection);
-			connection.Query("PRAGMA threads=1");
 			for (const auto &entry : accelerator_codegen::test_support::kQ38Manifest) {
+				duckdb::DuckDB file_database(GetTpchDbPath().c_str());
+				duckdb::Connection connection(file_database);
+				accelerator_codegen::RegisterAcceleratorFunctions(connection);
+				connection.Query("PRAGMA threads=1");
 				RequireEqualResults(connection, entry.label, ReadFile(entry.sql_path),
 				                    AcceleratorQ18Sql(entry.quantity_threshold));
 			}

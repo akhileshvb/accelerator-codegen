@@ -36,4 +36,6 @@ inline constexpr std::array<Q16ManifestEntry, 20> kQ36Manifest = {{
     {"seed_20_q16", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_20/16.sql", "Brand#54", "LARGE ANODIZED%", {14, 17, 48, 19, 23, 6, 25, 9}},
 }};
 
+inline constexpr const auto &kQ16Manifest = kQ36Manifest;
+
 } // namespace accelerator_codegen::test_support

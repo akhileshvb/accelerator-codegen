@@ -34,11 +34,11 @@ std::string ReferenceQ18Sql(int64_t threshold) {
 }
 
 std::string AcceleratorQ18Sql(int64_t threshold) {
-	return "SELECT * FROM accel_tpch_q38(" + std::to_string(threshold) + ")";
+	return "SELECT * FROM accel_tpch_q18(" + std::to_string(threshold) + ")";
 }
 
 std::string AcceleratorQ18ParallelSql(int64_t threshold) {
-	return "SELECT * FROM accel_tpch_q38_parallel(" + std::to_string(threshold) + ")";
+	return "SELECT * FROM accel_tpch_q18_parallel(" + std::to_string(threshold) + ")";
 }
 
 std::vector<std::string> MaterializeRows(duckdb::MaterializedQueryResult &result) {

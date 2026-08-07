@@ -92,7 +92,7 @@ std::string ReferenceQ11(const std::string &nation, double fraction) {
 }
 
 std::string ParallelQ11(const std::string &nation, double fraction) {
-	return "SELECT * FROM accel_tpch_q31_parallel('" + Escape(nation) + "', " + std::to_string(fraction) + ")";
+	return "SELECT * FROM accel_tpch_q11_parallel('" + Escape(nation) + "', " + std::to_string(fraction) + ")";
 }
 
 void RunCase(duckdb::Connection &connection, const std::string &label, const std::string &nation, double fraction,

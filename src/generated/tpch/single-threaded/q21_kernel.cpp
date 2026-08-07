@@ -18,9 +18,11 @@ constexpr duckdb::idx_t kOutputBatchSize = 64;
 constexpr int64_t kDefaultSupplierCapacity = 10001;
 
 struct Q21RuntimeConfig {
-	bool orders_flat_fast = true;
-	bool lineitem_flat_fast = true;
-	bool lineitem_dict_fast = true;
+	// Keep the unified-vector path authoritative until the generated fast path
+	// has equivalent validity/selection handling for all DuckDB scan layouts.
+	bool orders_flat_fast = false;
+	bool lineitem_flat_fast = false;
+	bool lineitem_dict_fast = false;
 };
 
 bool IsFlatAllValid(duckdb::Vector &vector) {
@@ -363,7 +365,10 @@ private:
 			return;
 		}
 		if (!finished_orders_probe_ready) {
-			finished_orders.EnableUncheckedProbe();
+			// Order-filtered scans can arrive before the orders producer has
+			// materialized its bitmap.  Keep the bounds-checked probe here; the
+			// unchecked probe assumes a non-null backing allocation and was not
+			// safe for that valid pipeline ordering.
 			finished_orders_probe_ready = true;
 		}
 		auto &orderkey_vector = input.data[Q21LineitemChunkLayout::ORDERKEY_INDEX];

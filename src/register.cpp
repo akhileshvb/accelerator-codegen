@@ -1,19 +1,6 @@
 #include "accelerator_codegen/register.hpp"
 
-#include "accelerator_codegen/aux_state/accelerator_registry.hpp"
-#include "accelerator_codegen/tpch_q14_aux.hpp"
-#include "accelerator_codegen/tpch_q1_aux.hpp"
-#include "accelerator_codegen/tpch_q3_aux.hpp"
-#include "accelerator_codegen/tpch_q12_aux.hpp"
-#include "accelerator_codegen/tpch_q10_aux.hpp"
-#include "accelerator_codegen/tpch_q6_aux.hpp"
-#include "accelerator_codegen/sec_edgar_q1_aux.hpp"
-#include "accelerator_codegen/sec_edgar_q2_aux.hpp"
-#include "accelerator_codegen/sec_edgar_q3_aux.hpp"
-#include "accelerator_codegen/sec_edgar_q4_aux.hpp"
-#include "accelerator_codegen/sec_edgar_q6_aux.hpp"
-#include "accelerator_codegen/sec_edgar_q24_aux.hpp"
-
+#include "accelerator_codegen/aux_state/engine/shared/shared_query_engine.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/on_create_conflict.hpp"
 #include "duckdb/function/function_set.hpp"
@@ -22,15 +9,9 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
-#include <mutex>
-#include <unordered_set>
-
 namespace accelerator_codegen {
 
 namespace {
-
-std::mutex g_catalog_register_mutex;
-std::unordered_set<duckdb::DatabaseInstance *> g_catalog_registered_databases;
 
 void RegisterTableFunction(duckdb::Catalog &catalog, duckdb::ClientContext &context, duckdb::TableFunctionSet function_set) {
 	duckdb::CreateTableFunctionInfo info(std::move(function_set));
@@ -69,43 +50,7 @@ duckdb::TableFunctionSet CreateSecEdgarQ3FunctionSet();
 duckdb::TableFunctionSet CreateSecEdgarQ4FunctionSet();
 duckdb::TableFunctionSet CreateSecEdgarQ6FunctionSet();
 duckdb::TableFunctionSet CreateSecEdgarQ24FunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ1AuxFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ1AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ1AuxRebuildPartitionFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ2AuxFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ2AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ2AuxRebuildPartitionFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ3AuxFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ3AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ3AuxRebuildPartitionFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ4AuxFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ4AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ4AuxRebuildPartitionFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ6AuxFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ6AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ6AuxRebuildPartitionFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ24AuxFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ24AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ24AuxRebuildPartitionFunctionSet();
 // END_SEC_EDGAR_REGISTRATIONS
-duckdb::TableFunctionSet CreateTpchQ14AuxFunctionSet();
-duckdb::TableFunctionSet CreateQ14AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateQ14AuxRebuildPartitionFunctionSet();
-duckdb::TableFunctionSet CreateTpchQ1AuxFunctionSet();
-duckdb::TableFunctionSet CreateQ1AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateQ1AuxRebuildPartitionFunctionSet();
-duckdb::TableFunctionSet CreateTpchQ3AuxFunctionSet();
-duckdb::TableFunctionSet CreateQ3AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateQ3AuxRebuildPartitionFunctionSet();
-duckdb::TableFunctionSet CreateTpchQ12AuxFunctionSet();
-duckdb::TableFunctionSet CreateQ12AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateQ12AuxRebuildPartitionFunctionSet();
-duckdb::TableFunctionSet CreateTpchQ10AuxFunctionSet();
-duckdb::TableFunctionSet CreateQ10AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateQ10AuxRebuildPartitionFunctionSet();
-duckdb::TableFunctionSet CreateTpchQ6AuxFunctionSet();
-duckdb::TableFunctionSet CreateQ6AuxBuildFunctionSet();
-duckdb::TableFunctionSet CreateQ6AuxRebuildPartitionFunctionSet();
 
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
 duckdb::TableFunctionSet CreateTpchQ6ParallelFunctionSet();
@@ -133,16 +78,6 @@ duckdb::TableFunctionSet CreateTpchQ21ParallelFunctionSet();
 #endif
 
 void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
-    aux_state::InstallAcceleratorSubstrate(connection);
-
-    auto *database = connection.context->db.get();
-    {
-        std::lock_guard<std::mutex> guard(g_catalog_register_mutex);
-        if (!g_catalog_registered_databases.insert(database).second) {
-            return;
-        }
-    }
-
     auto &context = *connection.context;
     auto &catalog = duckdb::Catalog::GetSystemCatalog(context);
     const bool started_transaction = !connection.HasActiveTransaction();
@@ -152,19 +87,6 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
     }
 
     try {
-        RegisterQ14AuxAccelerator(connection);
-        RegisterQ1AuxAccelerator(connection);
-        RegisterQ3AuxAccelerator(connection);
-        RegisterQ12AuxAccelerator(connection);
-        RegisterQ10AuxAccelerator(connection);
-        RegisterQ6AuxAccelerator(connection);
-        RegisterSecEdgarQ1AuxAccelerator(connection);
-        RegisterSecEdgarQ2AuxAccelerator(connection);
-        RegisterSecEdgarQ3AuxAccelerator(connection);
-        RegisterSecEdgarQ4AuxAccelerator(connection);
-        RegisterSecEdgarQ6AuxAccelerator(connection);
-        RegisterSecEdgarQ24AuxAccelerator(connection);
-
         RegisterTableFunction(catalog, context, CreateTpchQ6FunctionSet());
 
         RegisterTableFunction(catalog, context, CreateTpchQ1FunctionSet());
@@ -178,30 +100,6 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
         RegisterTableFunction(catalog, context, CreateTpchQ12FunctionSet());
 
         RegisterTableFunction(catalog, context, CreateTpchQ14FunctionSet());
-
-        RegisterTableFunction(catalog, context, CreateTpchQ14AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ14AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ14AuxRebuildPartitionFunctionSet());
-
-        RegisterTableFunction(catalog, context, CreateTpchQ1AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ1AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ1AuxRebuildPartitionFunctionSet());
-
-        RegisterTableFunction(catalog, context, CreateTpchQ3AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ3AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ3AuxRebuildPartitionFunctionSet());
-
-        RegisterTableFunction(catalog, context, CreateTpchQ12AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ12AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ12AuxRebuildPartitionFunctionSet());
-
-        RegisterTableFunction(catalog, context, CreateTpchQ10AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ10AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ10AuxRebuildPartitionFunctionSet());
-
-        RegisterTableFunction(catalog, context, CreateTpchQ6AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ6AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateQ6AuxRebuildPartitionFunctionSet());
 
         RegisterTableFunction(catalog, context, CreateTpchQ17FunctionSet());
 
@@ -235,30 +133,15 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
 
         // BEGIN_SEC_EDGAR_REGISTRATIONS
         RegisterTableFunction(catalog, context, CreateSecEdgarQ1FunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ1AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ1AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ1AuxRebuildPartitionFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ2AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ2AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ2AuxRebuildPartitionFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ3AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ3AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ3AuxRebuildPartitionFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ4AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ4AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ4AuxRebuildPartitionFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ6AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ6AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ6AuxRebuildPartitionFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ24AuxFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ24AuxBuildFunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ24AuxRebuildPartitionFunctionSet());
         RegisterTableFunction(catalog, context, CreateSecEdgarQ2FunctionSet());
         RegisterTableFunction(catalog, context, CreateSecEdgarQ3FunctionSet());
         RegisterTableFunction(catalog, context, CreateSecEdgarQ4FunctionSet());
         RegisterTableFunction(catalog, context, CreateSecEdgarQ6FunctionSet());
         RegisterTableFunction(catalog, context, CreateSecEdgarQ24FunctionSet());
         // END_SEC_EDGAR_REGISTRATIONS
+
+        accelerator_codegen::aux_state::engine::RegisterDuckdbAuxTableFunctions(
+            connection);
 
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
         RegisterTableFunction(catalog, context, CreateTpchQ6ParallelFunctionSet());
@@ -310,10 +193,6 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
             connection.Commit();
         }
     } catch (...) {
-        {
-            std::lock_guard<std::mutex> guard(g_catalog_register_mutex);
-            g_catalog_registered_databases.erase(database);
-        }
         if (started_transaction && connection.HasActiveTransaction()) {
             connection.Rollback();
         }

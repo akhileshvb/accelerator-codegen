@@ -55,7 +55,7 @@ std::vector<std::string> MaterializeOrderedRows(duckdb::MaterializedQueryResult 
 
 std::string AcceleratorQ11Sql(const accelerator_codegen::test_support::Q11ManifestEntry &entry) {
 	std::ostringstream stream;
-	stream << "SELECT * FROM accel_tpch_q31('" << entry.nation_name << "', " << entry.fraction << ")";
+	stream << "SELECT * FROM accel_tpch_q11('" << entry.nation_name << "', " << entry.fraction << ")";
 	return stream.str();
 }
 
@@ -142,7 +142,7 @@ int main() {
 			    "WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey AND n_name = 'ROMANIA') "
 			    "ORDER BY value DESC";
 			RequireEqualResults(connection, "synthetic_having_threshold", reference,
-			                    "SELECT * FROM accel_tpch_q31('ROMANIA', 0.5)");
+			                    "SELECT * FROM accel_tpch_q11('ROMANIA', 0.5)");
 		}
 
 		std::cout << "test_tpch_q31 passed\n";

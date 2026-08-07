@@ -39,4 +39,6 @@ inline constexpr std::array<Q19ManifestEntry, 20> kQ39Manifest = {{
     {"seed_20_q19", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_20/19.sql", "Brand#32", 5, "Brand#31", 10, "Brand#25", 29},
 }};
 
+inline constexpr const auto &kQ19Manifest = kQ39Manifest;
+
 } // namespace accelerator_codegen::test_support

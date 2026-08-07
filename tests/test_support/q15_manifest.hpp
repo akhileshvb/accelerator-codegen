@@ -33,4 +33,6 @@ inline constexpr std::array<Q15ManifestEntry, 20> kQ35Manifest = {{
     {"seed_20_q15", "/home/akhilvb/tpch-utils/generated/sf1_instances/seed_20/15.sql", "1994-10-01"},
 }};
 
+inline constexpr const auto &kQ15Manifest = kQ35Manifest;
+
 } // namespace accelerator_codegen::test_support
