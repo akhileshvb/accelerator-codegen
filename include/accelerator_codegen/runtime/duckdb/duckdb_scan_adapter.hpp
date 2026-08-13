@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #pragma once
 
 #include <cstdint>
@@ -5,12 +6,9 @@
 #include <string>
 #include <vector>
 
-#include "accelerator_codegen/chunk_source.hpp"
-#include "duckdb/common/enums/expression_type.hpp"
-#include "duckdb/common/types/value.hpp"
-#include "duckdb/common/types.hpp"
+#include "accelerator_codegen/runtime/duckdb/chunk_source.hpp"
+#include "accelerator_codegen/runtime/native_scan.hpp"
 #include "duckdb/common/types/date.hpp"
-#include "duckdb/common/vector.hpp"
 #include "duckdb/storage/storage_index.hpp"
 #include "duckdb/storage/table/filtered_scan_consumer.hpp"
 
@@ -26,27 +24,7 @@ struct RowGroupOrderOptions;
 
 namespace accelerator_codegen {
 
-struct NativeColumnSpec {
-    std::string source_name;
-    std::string kernel_column_id;
-    duckdb::LogicalType expected_logical_type;
-    duckdb::PhysicalType expected_physical_type;
-};
-
-struct NativeFilterSpec {
-    std::string source_name;
-    duckdb::ExpressionType comparison_type;
-    duckdb::Value constant;
-};
-
-struct NativeScanSpec {
-    std::string catalog_name;
-    std::string schema_name;
-    std::string table_name;
-    duckdb::vector<NativeColumnSpec> projected_columns;
-    duckdb::vector<NativeFilterSpec> filters;
-};
-
+// DuckDB backend adapter for the shared NativeScanSpec contract.
 duckdb::unique_ptr<duckdb::FunctionData> BindNativeScan(duckdb::ClientContext &context, const NativeScanSpec &scan_spec);
 void AddNativeTableDependencies(duckdb::LogicalDependencyList &dependencies, const duckdb::FunctionData *bind_data);
 struct NativeScanConsumerOptions {
@@ -75,5 +53,9 @@ struct NativeParallelScanHandle;
 //! Fill a NativeParallelScanHandle from bound native-scan FunctionData (parallel path).
 void InitializeNativeParallelScanHandle(NativeParallelScanHandle &handle, duckdb::ClientContext &context,
                                         const duckdb::FunctionData &bind_data);
+
+//! Shared ScanNativeBaseTable contract — DuckDB implementation (native storage).
+void ScanNativeBaseTable(duckdb::ClientContext &context, const NativeScanSpec &scan_spec,
+                         const NativeScanChunkConsumer &consumer);
 
 } // namespace accelerator_codegen

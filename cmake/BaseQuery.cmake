@@ -21,17 +21,10 @@ function(accel_add_base_query)
 
     set(_q ${BQ_QUERY_NUM})
     set(_bench ${BQ_BENCHMARK})
-    set(_src_dir "src/generated/${_bench}/single-threaded")
-    set(_fused_src "${CMAKE_CURRENT_SOURCE_DIR}/${_src_dir}/q${_q}_fused_scan.cpp")
+    set(_src_dir "src/generated/${_bench}/q${_q}/base/single-threaded")
 
-    target_sources(${BQ_LIBRARY_TARGET} PRIVATE
-        ${_src_dir}/q${_q}_package.cpp
-        ${_src_dir}/q${_q}_kernel.cpp
-    )
-    if(EXISTS "${_fused_src}")
-        target_sources(${BQ_LIBRARY_TARGET} PRIVATE ${_src_dir}/q${_q}_fused_scan.cpp)
-    endif()
-
+    # Base kernel sources are collected via accel_collect_generated_sources() in
+    # cmake/GeneratedSources.cmake. This function only wires tests/benchmarks.
     if(NOT BQ_TEST_ROOT)
         return()
     endif()
