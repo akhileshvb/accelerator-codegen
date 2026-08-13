@@ -33,11 +33,32 @@ struct TpchQ1LineitemInput {
   char linestatus = '\0';
 };
 
+// Pre-aggregated (day, returnflag, linestatus) stats for SQL-pushdown builds.
+struct TpchQ1DayGroupAggregate {
+  int32_t shipdate_days = 0;
+  char returnflag = '\0';
+  char linestatus = '\0';
+  int64_t count = 0;
+  int64_t sum_qty_raw = 0;
+  int64_t sum_base_price_raw = 0;
+  int64_t sum_discount_raw = 0;
+  int64_t sum_disc_price_raw = 0; // scale 4
+  int64_t sum_charge_raw = 0;     // scale 6
+};
+
 class TpchQ1InitialScan {
 public:
   virtual ~TpchQ1InitialScan() = default;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ1LineitemInput &)> &) = 0;
+
+  // Optional: DuckDB GROUP BY day/flag. Return true when the consumer was
+  // invoked for the full aggregate; BuildState then skips the per-row scan.
+  virtual bool ScanDayGroupAggregates(
+      const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer) {
+    (void)consumer;
+    return false;
+  }
 };
 
 struct TpchQ1StateImage {

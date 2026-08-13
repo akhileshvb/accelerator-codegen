@@ -1,8 +1,44 @@
+// SCAFFOLDING
 #include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 
 namespace accelerator_codegen::aux_state::core {
+
+namespace {
+
+bool TryForcedMaintenanceAction(MaintenanceDecision &out) {
+  const char *force = std::getenv("ACCEL_FORCE_MAINTENANCE_ACTION");
+  if (!force || !*force) {
+    return false;
+  }
+  using maintenance::MaintenanceAction;
+  if (std::strcmp(force, "ApplyDelta") == 0) {
+    out = {MaintenanceAction::ApplyDelta, 0.0};
+    return true;
+  }
+  if (std::strcmp(force, "RebuildAll") == 0) {
+    out = {MaintenanceAction::RebuildAll, 0.0};
+    return true;
+  }
+  if (std::strcmp(force, "RebuildPartition") == 0) {
+    out = {MaintenanceAction::RebuildPartition, 0.0};
+    return true;
+  }
+  if (std::strcmp(force, "InvalidateAndFallback") == 0) {
+    out = {MaintenanceAction::InvalidateAndFallback, 0.0};
+    return true;
+  }
+  if (std::strcmp(force, "NoOp") == 0) {
+    out = {MaintenanceAction::NoOp, 0.0};
+    return true;
+  }
+  return false;
+}
+
+} // namespace
 
 MaintenanceDecision SelectAuxMaintenanceAction(
     const MaintenanceRequest &request,
@@ -10,6 +46,11 @@ MaintenanceDecision SelectAuxMaintenanceAction(
   using maintenance::ActionCandidate;
   using maintenance::ActionCostEstimate;
   using maintenance::MaintenanceAction;
+
+  MaintenanceDecision forced;
+  if (TryForcedMaintenanceAction(forced)) {
+    return forced;
+  }
 
   if (request.rows_touched == 0 && !request.whole_state_required) {
     return {MaintenanceAction::NoOp, 0.0};
@@ -24,14 +65,16 @@ MaintenanceDecision SelectAuxMaintenanceAction(
       std::max<uint64_t>(1, request.affected_partition_count);
 
   std::vector<ActionCandidate> candidates;
+  const bool apply_delta_eligible =
+      request.incremental_supported && !request.whole_state_required &&
+      request.rows_touched <= params.apply_delta_max_rows;
+
   ActionCostEstimate apply_delta;
   apply_delta.immediate_us = params.apply_delta_overhead_us +
                              params.apply_delta_base_us +
                              params.apply_delta_per_row_us * rows;
-  candidates.push_back({
-      MaintenanceAction::ApplyDelta, apply_delta,
-      request.incremental_supported && !request.whole_state_required &&
-          request.rows_touched <= params.apply_delta_max_rows});
+  candidates.push_back(
+      {MaintenanceAction::ApplyDelta, apply_delta, apply_delta_eligible});
 
   ActionCostEstimate rebuild_partition;
   rebuild_partition.immediate_us =
@@ -53,8 +96,11 @@ MaintenanceDecision SelectAuxMaintenanceAction(
   invalidate.immediate_us = params.invalidation_overhead_us;
   invalidate.differential_future_query_us =
       expected_queries * future_query_premium;
+  // When ApplyDelta is eligible, do not offer lazy invalidation: large RF
+  // batches with low expected-query counts otherwise prefer Invalidate even
+  // though measured incremental maintenance is cheaper than rebuild.
   candidates.push_back({MaintenanceAction::InvalidateAndFallback, invalidate,
-                        true});
+                        !apply_delta_eligible});
 
   maintenance::SelectionInput input;
   input.candidates = std::move(candidates);

@@ -75,6 +75,12 @@ struct TpchQ12LineitemDelta {
   int8_t sign = 0;
 };
 
+struct TpchQ12OrderDelta {
+  int64_t orderkey = 0;
+  TpchQ12PriorityClass priority = TpchQ12PriorityClass::Absent;
+  int8_t sign = 0; // +1 insert, -1 delete
+};
+
 std::vector<uint8_t> EncodeTpchQ12OrderPriorities(const TpchQ12State &);
 std::vector<uint8_t> EncodeTpchQ12Day(int32_t receipt_day, const TpchQ12State &);
 bool DecodeTpchQ12OrderPriorities(const std::vector<uint8_t> &, TpchQ12State &);
@@ -89,6 +95,10 @@ bool TpchQ12LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days,
 int32_t TpchQ12DaysFromYmd(int32_t year, unsigned month, unsigned day);
 int32_t TpchQ12AddMonths(int32_t days_since_epoch, int32_t months);
 
+void TpchQ12FinalizeAndEmit(const TpchQ12State &state, int32_t start_days,
+                            int32_t end_days, const std::string &shipmode1,
+                            const std::string &shipmode2, core::AuxRowSink &sink);
+
 class TpchQ12TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -96,13 +106,16 @@ public:
 
   bool RequiresRebuild() const;
   const std::vector<TpchQ12LineitemDelta> &Deltas() const;
+  const std::vector<TpchQ12OrderDelta> &OrderDeltas() const;
   void MarkRebuild();
   void AddDelta(TpchQ12LineitemDelta delta);
+  void AddOrderDelta(TpchQ12OrderDelta delta);
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<TpchQ12LineitemDelta> deltas;
+  std::vector<TpchQ12OrderDelta> order_deltas;
 };
 
 class TpchQ12Module final : public core::AuxQueryModule {

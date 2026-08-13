@@ -10,10 +10,10 @@
 #include <utility>
 #include <vector>
 
-#include "accelerator_codegen/aux_state/core/aux_registry.hpp"
-#include "accelerator_codegen/aux_state/core/aux_txn_buffer.hpp"
-#include "accelerator_codegen/aux_state/core/aux_maintenance_policy.hpp"
-#include "accelerator_codegen/aux_state/query/sec_edgar/sec_edgar_q1_common.hpp"
+#include "accelerator_codegen/stateful/core/aux_registry.hpp"
+#include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
+#include "sec_edgar/q1/aux/module.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 using accelerator_codegen::aux_state::query::SecEdgarQ1Config;
@@ -165,14 +165,16 @@ void ExecuteAndRequire(SecEdgarQ1Module &module, Services &services,
 
 int main() {
   {
+    accelerator_codegen::aux_state::maintenance::CostModelParams gated;
+    gated.apply_delta_max_rows = 1024;
     const auto small = SelectAuxMaintenanceAction(
         {1, 1, true, false, true, false, false, MaintenanceAction::NoOp, 10.0},
-        accelerator_codegen::aux_state::maintenance::CostModelParams{});
+        gated);
     assert(small.action == MaintenanceAction::ApplyDelta);
     const auto bulk = SelectAuxMaintenanceAction(
         {1025, 1, true, false, true, false, false, MaintenanceAction::NoOp,
          10.0},
-        accelerator_codegen::aux_state::maintenance::CostModelParams{});
+        gated);
     assert(bulk.action == MaintenanceAction::RebuildAll);
   }
 

@@ -1,8 +1,9 @@
+// SCAFFOLDING
 #pragma once
 
 #include <cstdint>
 
-#include "accelerator_codegen/aux_state/maintenance/action_selector.hpp"
+#include "accelerator_codegen/stateful/maintenance/action_selector.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 

@@ -404,13 +404,9 @@ void TpchQ6Module::ApplyLineitemInput(
   const auto contribution =
       ::accelerator_codegen::Q6RowContributionRaw(extended_raw, discount_raw);
   const auto discount_cent = static_cast<int8_t>(discount_raw);
-  const auto day_partition =
-      core::TpchQ6Layout::DayPartition(input.shipdate_days);
   const auto month_partition = core::TpchQ6Layout::MonthPartition(
       TpchQ6MonthKeyFromDays(input.shipdate_days));
-  matrices[day_partition].AddCell(discount_cent, quantity_raw, contribution, 1);
-  matrices[month_partition].AddCell(discount_cent, quantity_raw, contribution,
-                                    1);
+  matrices[month_partition].AddCell(discount_cent, quantity_raw, contribution, 1);
 }
 
 void TpchQ6Module::Build(core::AuxEngineServices &services,
@@ -520,10 +516,7 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
 
   std::map<core::PartitionId, std::vector<TpchQ6LineitemDelta>> grouped;
   for (const auto &delta : buffer.Deltas()) {
-    grouped[core::TpchQ6Layout::DayPartition(delta.shipdate_days)].push_back(
-        delta);
-    grouped[core::TpchQ6Layout::MonthPartition(delta.month_key)].push_back(
-        delta);
+    grouped[core::TpchQ6Layout::MonthPartition(delta.month_key)].push_back(delta);
   }
 
   const auto decision = services.ChooseMaintenance(
@@ -629,20 +622,17 @@ void TpchQ6Module::CollectQueryPartitions(
 
   int32_t cursor = params.start_days;
   const int32_t end = params.end_days;
-  if (TpchQ6StartOfNextMonthDays(cursor) >= end) {
-    for (int32_t day = cursor; day < end; ++day)
-      add_day(day);
-  } else {
-    const int32_t first_month_end = TpchQ6StartOfNextMonthDays(cursor);
-    for (int32_t day = cursor; day < first_month_end; ++day)
-      add_day(day);
-    cursor = first_month_end;
-    while (TpchQ6StartOfNextMonthDays(cursor) < end) {
-      add_month(cursor);
-      cursor = TpchQ6StartOfNextMonthDays(cursor);
+  while (cursor < end) {
+    if (cursor == TpchQ6StartOfMonthDays(cursor)) {
+      const int32_t month_end = TpchQ6StartOfNextMonthDays(cursor);
+      if (month_end <= end) {
+        add_month(cursor);
+        cursor = month_end;
+        continue;
+      }
     }
-    for (int32_t day = cursor; day < end; ++day)
-      add_day(day);
+    add_day(cursor);
+    ++cursor;
   }
 
   partitions.assign(unique.begin(), unique.end());
@@ -679,23 +669,19 @@ Q6AccT TpchQ6Module::ComposeRevenue(const MatrixLookup &matrices,
 
   int32_t cursor = params.start_days;
   const int32_t end = params.end_days;
-  if (TpchQ6StartOfNextMonthDays(cursor) >= end) {
-    for (int32_t day = cursor; day < end; ++day)
-      add_matrix(core::TpchQ6Layout::DayPartition(day));
-    return revenue;
+  while (cursor < end) {
+    if (cursor == TpchQ6StartOfMonthDays(cursor)) {
+      const int32_t month_end = TpchQ6StartOfNextMonthDays(cursor);
+      if (month_end <= end) {
+        add_matrix(core::TpchQ6Layout::MonthPartition(
+            TpchQ6MonthKeyFromDays(cursor)));
+        cursor = month_end;
+        continue;
+      }
+    }
+    add_matrix(core::TpchQ6Layout::DayPartition(cursor));
+    ++cursor;
   }
-
-  const int32_t first_month_end = TpchQ6StartOfNextMonthDays(cursor);
-  for (int32_t day = cursor; day < first_month_end; ++day)
-    add_matrix(core::TpchQ6Layout::DayPartition(day));
-  cursor = first_month_end;
-  while (TpchQ6StartOfNextMonthDays(cursor) < end) {
-    add_matrix(core::TpchQ6Layout::MonthPartition(
-        TpchQ6MonthKeyFromDays(cursor)));
-    cursor = TpchQ6StartOfNextMonthDays(cursor);
-  }
-  for (int32_t day = cursor; day < end; ++day)
-    add_matrix(core::TpchQ6Layout::DayPartition(day));
   return revenue;
 }
 

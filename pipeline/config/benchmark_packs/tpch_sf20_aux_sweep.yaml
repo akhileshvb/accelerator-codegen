@@ -1,0 +1,43 @@
+# TPC-H SF20 aux-state wall-clock write-interval sweep (manual / out-of-pipeline).
+# Invalidating writes every N seconds while single-threaded readers run.
+#
+# Write modes (ACCEL_AUX_WRITE_MODE):
+#   point (default) — single-row lineitem UPDATE (+0.01); prior SF20 experiments
+#   rf              — alternating mini-chunk RF2/RF1 (orders+lineitem I/D)
+#                     Helper: scripts/run_tpch_aux_sf20_rf_sweep.sh
+#                     ACCEL_TPCH_RF_CHUNK_ORDERS (default 1)
+#
+# Interval cadence still makes sense for both modes. Full 0.1%-of-SF TPC-H refresh
+# sets are intentionally not used in the interval sweep (too heavy / rebuild-dominated).
+benchmark_name: tpch
+dataset_key: tpch_sf20
+db_env_var: ACCEL_TPCH_DB
+work_dir_label: tpch_sf20
+
+# Wall-clock seconds between invalidating writes (0 = read-only).
+write_intervals: [0, 60, 30, 10, 5, 2, 1]
+bench_duration_sec: 120
+bench_min_writes: 30
+suites: lineitem_only
+
+bench_warmup: 10
+bench_ref_samples: 3
+bench_base_write_samples: 3
+skip_duckdb_ref: false
+
+# All TPC-H aux kernels with benchmark_tpch_q{N}_aux targets.
+queries: [1, 3, 6, 9, 10, 11, 12, 14, 17, 18, 21]
+
+preflight:
+  min_disk_gb: 50
+  min_mem_gb: 24
+
+smoke:
+  write_intervals: [0, 10]
+  bench_duration_sec: 30
+  bench_min_writes: 3
+  bench_warmup: 1
+  bench_ref_samples: 0
+  bench_base_write_samples: 0
+  skip_duckdb_ref: true
+  queries: [11]

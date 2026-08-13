@@ -50,6 +50,25 @@ public:
       const std::function<void(const TpchQ3OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ3LineitemInput &)> &) = 0;
+
+  // orders ⨝ customer lookup for RF1 lineitems / orders Insert when the
+  // dense order_segment side does not yet know orderkey.
+  struct OrderContext {
+    core::PartitionId segment = 0;
+    int32_t orderdate_days = 0;
+    int32_t shippriority = 0;
+    int64_t custkey = 0;
+  };
+  virtual bool LookupOrderContext(int64_t orderkey, OrderContext &out) {
+    (void)orderkey;
+    (void)out;
+    return false;
+  }
+};
+
+struct TpchQ3ShipdateBucket {
+  int32_t shipdate = 0;
+  int64_t suffix_revenue = 0;
 };
 
 struct TpchQ3OrderSummary {
@@ -57,8 +76,7 @@ struct TpchQ3OrderSummary {
   int32_t orderdate_days = 0;
   int32_t shippriority = 0;
   int32_t max_shipdate = 0;
-  std::vector<int32_t> sorted_shipdates;
-  std::vector<int64_t> suffix_revenue;
+  std::vector<TpchQ3ShipdateBucket> buckets;
 };
 
 struct TpchQ3SegmentIntervalIndex {
@@ -67,21 +85,25 @@ struct TpchQ3SegmentIntervalIndex {
   std::unordered_map<int64_t, std::size_t> order_positions;
 };
 
+// Published segment-interval images hold only segment_intervals for one segment.
 struct TpchQ3State {
-  std::unordered_map<int64_t, core::PartitionId> customer_segments;
-  std::unordered_map<int64_t, core::PartitionId> order_routes;
   std::map<core::PartitionId, TpchQ3SegmentIntervalIndex> segment_intervals;
 };
 
+// Side partition: dense orderkey → segment id (partition id), 0 = absent.
+struct TpchQ3OrderSegmentSide {
+  std::vector<uint8_t> order_segment;
+};
+
 enum class TpchQ3ImageKind : uint8_t {
-  CustomerSegments,
-  OrderRoutes,
+  OrderSegmentSide,
   SegmentIntervalIndex,
 };
 
 struct TpchQ3StateImage {
-  TpchQ3ImageKind kind = TpchQ3ImageKind::CustomerSegments;
+  TpchQ3ImageKind kind = TpchQ3ImageKind::OrderSegmentSide;
   core::PartitionId segment = 0;
+  std::shared_ptr<const TpchQ3OrderSegmentSide> order_segment_side;
   std::shared_ptr<const TpchQ3State> state;
 };
 
@@ -100,12 +122,20 @@ struct TpchQ3LineitemDelta {
   int8_t sign = 0;
 };
 
-std::vector<uint8_t> EncodeTpchQ3CustomerSegments(const TpchQ3State &);
-std::vector<uint8_t> EncodeTpchQ3OrderRoutes(const TpchQ3State &);
+struct TpchQ3OrderDelta {
+  int64_t orderkey = 0;
+  int32_t orderdate_days = 0;
+  int64_t custkey = 0;
+  int32_t shippriority = 0;
+  int8_t sign = 0; // +1 insert, -1 delete
+};
+
+std::vector<uint8_t> EncodeTpchQ3OrderSegmentSide(
+    const TpchQ3OrderSegmentSide &side);
 std::vector<uint8_t> EncodeTpchQ3SegmentIntervalIndex(
     const TpchQ3SegmentIntervalIndex &);
-bool DecodeTpchQ3CustomerSegments(const std::vector<uint8_t> &, TpchQ3State &);
-bool DecodeTpchQ3OrderRoutes(const std::vector<uint8_t> &, TpchQ3State &);
+bool DecodeTpchQ3OrderSegmentSide(const std::vector<uint8_t> &,
+                                    TpchQ3OrderSegmentSide &);
 bool DecodeTpchQ3SegmentIntervalIndex(const std::vector<uint8_t> &,
                                         core::PartitionId segment,
                                         TpchQ3SegmentIntervalIndex &);
@@ -131,13 +161,16 @@ public:
 
   bool RequiresRebuild() const;
   const std::vector<TpchQ3LineitemDelta> &Deltas() const;
+  const std::vector<TpchQ3OrderDelta> &OrderDeltas() const;
   void MarkRebuild();
   void AddDelta(TpchQ3LineitemDelta delta);
+  void AddOrderDelta(TpchQ3OrderDelta delta);
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<TpchQ3LineitemDelta> deltas;
+  std::vector<TpchQ3OrderDelta> order_deltas;
 };
 
 class TpchQ3Module final : public core::AuxQueryModule {
@@ -168,7 +201,12 @@ public:
                        core::AuxRowSink &) override;
 
 private:
-  TpchQ3State BuildState(core::AuxEngineServices &) const;
+  struct BuildScratch {
+    std::unordered_map<int64_t, core::PartitionId> customer_segments;
+    std::vector<uint8_t> order_segment;
+  };
+
+  TpchQ3State BuildState(core::AuxEngineServices &, BuildScratch &) const;
   bool LoadSegmentIntervalIndex(core::AuxEngineServices &, core::PartitionId,
                                 const TpchQ3SegmentIntervalIndex *&) const;
   void EmitResult(const std::vector<TpchQ3OutputRow> &, core::AuxRowSink &) const;

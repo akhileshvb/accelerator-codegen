@@ -123,6 +123,12 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ12LineitemInput &out) {
   return true;
 }
 
+// Matches ScanOrders: o_orderkey, o_orderpriority
+bool ReadOrder(const core::AuxRow &row, int64_t &orderkey,
+               std::string &orderpriority) {
+  return IntCell(row, 0, orderkey) && StringCell(row, 1, orderpriority);
+}
+
 } // namespace
 
 int32_t TpchQ12DaysFromYmd(int32_t year, unsigned month, unsigned day) {
@@ -267,19 +273,28 @@ void TpchQ12TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
   deltas.clear();
+  order_deltas.clear();
 }
 bool TpchQ12TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
 const std::vector<TpchQ12LineitemDelta> &TpchQ12TxnBuffer::Deltas() const {
   return deltas;
 }
+const std::vector<TpchQ12OrderDelta> &TpchQ12TxnBuffer::OrderDeltas() const {
+  return order_deltas;
+}
 void TpchQ12TxnBuffer::MarkRebuild() {
   pending = true;
   requires_rebuild = true;
   deltas.clear();
+  order_deltas.clear();
 }
 void TpchQ12TxnBuffer::AddDelta(TpchQ12LineitemDelta delta) {
   pending = true;
   deltas.push_back(delta);
+}
+void TpchQ12TxnBuffer::AddOrderDelta(TpchQ12OrderDelta delta) {
+  pending = true;
+  order_deltas.push_back(delta);
 }
 
 core::AcceleratorId TpchQ12Module::Id() const { return kId; }
@@ -309,14 +324,13 @@ void TpchQ12Module::Build(core::AuxEngineServices &services,
 
 core::InvalidationPlan
 TpchQ12Module::InterpretMutation(const core::MutationBatch &mutation) const {
-  if (mutation.table == config.lineitem_table) {
+  if (mutation.table == config.lineitem_table ||
+      mutation.table == config.orders_table) {
     core::InvalidationPlan plan;
     plan.scope =
         ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
     return plan;
   }
-  if (mutation.table == config.orders_table)
-    return All();
   return {};
 }
 
@@ -324,6 +338,39 @@ void TpchQ12Module::AccumulateMutation(const core::MutationBatch &mutation,
                                        core::AuxEngineServices &,
                                        core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ12TxnBuffer &>(base_buffer);
+  if (mutation.table == config.orders_table) {
+    auto add = [&](const core::AuxRow &row, int8_t sign) {
+      int64_t orderkey = 0;
+      std::string priority;
+      if (!ReadOrder(row, orderkey, priority)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      buffer.AddOrderDelta(
+          {orderkey, TpchQ12ClassifyPriority(priority), sign});
+    };
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows)
+        add(row, 1);
+      break;
+    case core::MutationKind::Delete:
+      for (const auto &row : mutation.old_rows)
+        add(row, -1);
+      break;
+    case core::MutationKind::Update:
+      if (mutation.old_rows.size() != mutation.new_rows.size()) {
+        buffer.MarkRebuild();
+        return;
+      }
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        add(mutation.old_rows[i], -1);
+        add(mutation.new_rows[i], 1);
+      }
+      break;
+    }
+    return;
+  }
   if (mutation.table != config.lineitem_table)
     return;
   auto add = [&](const core::AuxRow &row, int8_t sign) {
@@ -382,12 +429,14 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
     outcome.pending_rebuild = outcome.invalidations;
     return outcome;
   }
-  if (buffer.Deltas().empty())
+  if (buffer.Deltas().empty() && buffer.OrderDeltas().empty())
     return outcome;
 
+  const auto total_deltas =
+      buffer.Deltas().size() + buffer.OrderDeltas().size();
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, true, true,
-       false, false, core::MaintenanceAction::NoOp,
+      {static_cast<uint64_t>(total_deltas), 1, true, true, true, false, false,
+       core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
     outcome.action = decision.action;
@@ -399,11 +448,19 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
   const auto visibility = services.CurrentVisibility();
   const auto priority_snapshot = services.StateStore().ReadPartitions(
       visibility, {core::TpchQ12Layout::kOrderPriorities});
-  const TpchQ12State *priority_state = nullptr;
+  std::shared_ptr<TpchQ12State> priority_state;
+  core::Version priority_version = 0;
   for (const auto &image : priority_snapshot.partitions) {
     if (image.partition == core::TpchQ12Layout::kOrderPriorities) {
       const auto *typed = AsQ12Image(image, TpchQ12ImageKind::OrderPriorities);
-      priority_state = typed ? typed->state.get() : nullptr;
+      if (!typed) {
+        outcome.action = core::MaintenanceAction::RebuildAll;
+        outcome.invalidations = All();
+        outcome.pending_rebuild = outcome.invalidations;
+        return outcome;
+      }
+      priority_state = std::make_shared<TpchQ12State>(*typed->state);
+      priority_version = image.version;
       break;
     }
   }
@@ -414,71 +471,99 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  std::set<int32_t> touched_days;
-  for (const auto &delta : buffer.Deltas())
-    touched_days.insert(delta.receipt_day);
-
-  std::vector<core::PartitionId> day_partitions;
-  day_partitions.reserve(touched_days.size());
-  for (const auto day : touched_days)
-    day_partitions.push_back(static_cast<core::PartitionId>(day));
+  bool priorities_changed = false;
+  // RF1/RF2 ordering: apply order inserts before lineitems, deletes after.
+  for (const auto &delta : buffer.OrderDeltas()) {
+    if (delta.sign > 0) {
+      priority_state->order_priorities[delta.orderkey] = delta.priority;
+      priorities_changed = true;
+    }
+  }
 
   TpchQ12State state;
   std::map<int32_t, core::Version> versions;
-  const auto day_snapshot =
-      services.StateStore().ReadPartitions(visibility, day_partitions);
-  for (const auto &image : day_snapshot.partitions) {
-    const auto day = static_cast<int32_t>(image.partition);
-    const auto *typed = AsQ12Image(image, TpchQ12ImageKind::Day);
-    if (!typed || typed->receipt_day != day) {
+  if (!buffer.Deltas().empty()) {
+    std::set<int32_t> touched_days;
+    for (const auto &delta : buffer.Deltas())
+      touched_days.insert(delta.receipt_day);
+
+    std::vector<core::PartitionId> day_partitions;
+    day_partitions.reserve(touched_days.size());
+    for (const auto day : touched_days)
+      day_partitions.push_back(static_cast<core::PartitionId>(day));
+
+    const auto day_snapshot =
+        services.StateStore().ReadPartitions(visibility, day_partitions);
+    for (const auto &image : day_snapshot.partitions) {
+      const auto day = static_cast<int32_t>(image.partition);
+      const auto *typed = AsQ12Image(image, TpchQ12ImageKind::Day);
+      if (!typed || typed->receipt_day != day) {
+        outcome.action = core::MaintenanceAction::RebuildAll;
+        outcome.invalidations = All();
+        outcome.pending_rebuild = outcome.invalidations;
+        return outcome;
+      }
+      const auto day_it = typed->state->day_partitions.find(day);
+      if (day_it != typed->state->day_partitions.end())
+        state.day_partitions[day] = day_it->second;
+      versions[day] = image.version;
+    }
+    if (versions.size() != touched_days.size()) {
       outcome.action = core::MaintenanceAction::RebuildAll;
       outcome.invalidations = All();
       outcome.pending_rebuild = outcome.invalidations;
       return outcome;
     }
-    const auto day_it = typed->state->day_partitions.find(day);
-    if (day_it != typed->state->day_partitions.end())
-      state.day_partitions[day] = day_it->second;
-    versions[day] = image.version;
-  }
-  if (versions.size() != touched_days.size()) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
 
-  for (const auto &delta : buffer.Deltas()) {
-    const auto priority_it =
-        priority_state->order_priorities.find(delta.orderkey);
-    if (priority_it == priority_state->order_priorities.end()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
+    for (const auto &delta : buffer.Deltas()) {
+      const auto priority_it =
+          priority_state->order_priorities.find(delta.orderkey);
+      if (priority_it == priority_state->order_priorities.end()) {
+        outcome.action = core::MaintenanceAction::RebuildAll;
+        outcome.invalidations = All();
+        outcome.pending_rebuild = outcome.invalidations;
+        return outcome;
+      }
+      const auto priority = priority_it->second;
+      if (priority == TpchQ12PriorityClass::Absent ||
+          priority == TpchQ12PriorityClass::Neither)
+        continue;
+      auto &stats = state.day_partitions[delta.receipt_day][delta.shipmode];
+      ApplyContribution(stats, priority, delta.sign);
+      if (stats.high_line_count == 0 && stats.low_line_count == 0)
+        state.day_partitions[delta.receipt_day].erase(delta.shipmode);
     }
-    const auto priority = priority_it->second;
-    if (priority == TpchQ12PriorityClass::Absent ||
-        priority == TpchQ12PriorityClass::Neither)
-      continue;
-    auto &stats = state.day_partitions[delta.receipt_day][delta.shipmode];
-    ApplyContribution(stats, priority, delta.sign);
-    if (stats.high_line_count == 0 && stats.low_line_count == 0)
-      state.day_partitions[delta.receipt_day].erase(delta.shipmode);
+
+    outcome.action = core::MaintenanceAction::ApplyDelta;
+    for (const auto day : touched_days) {
+      const auto partition = static_cast<core::PartitionId>(day);
+      const auto version = versions.count(day) ? versions[day] : 0;
+      TpchQ12State day_state;
+      const auto day_it = state.day_partitions.find(day);
+      if (day_it != state.day_partitions.end())
+        day_state.day_partitions.emplace(day, day_it->second);
+      const auto typed_state = std::make_shared<const TpchQ12State>(day_state);
+      outcome.updates.push_back(core::StateImage::Make(
+          core::TpchQ12Layout::kAccelerator, partition, version,
+          MakeStateImage(TpchQ12ImageKind::Day, day, typed_state)));
+    }
   }
 
-  outcome.action = core::MaintenanceAction::ApplyDelta;
-  for (const auto day : touched_days) {
-    const auto partition = static_cast<core::PartitionId>(day);
-    const auto version = versions.count(day) ? versions[day] : 0;
-    TpchQ12State day_state;
-    const auto day_it = state.day_partitions.find(day);
-    if (day_it != state.day_partitions.end())
-      day_state.day_partitions.emplace(day, day_it->second);
-    const auto typed_state = std::make_shared<const TpchQ12State>(day_state);
+  for (const auto &delta : buffer.OrderDeltas()) {
+    if (delta.sign < 0) {
+      priority_state->order_priorities.erase(delta.orderkey);
+      priorities_changed = true;
+    }
+  }
+
+  if (priorities_changed) {
+    outcome.action = core::MaintenanceAction::ApplyDelta;
+    const auto typed_priorities =
+        std::static_pointer_cast<const TpchQ12State>(std::move(priority_state));
     outcome.updates.push_back(core::StateImage::Make(
-        core::TpchQ12Layout::kAccelerator, partition, version,
-        MakeStateImage(TpchQ12ImageKind::Day, day, typed_state)));
+        core::TpchQ12Layout::kAccelerator, core::TpchQ12Layout::kOrderPriorities,
+        priority_version,
+        MakeStateImage(TpchQ12ImageKind::OrderPriorities, 0, typed_priorities)));
   }
   return outcome;
 }
@@ -596,41 +681,8 @@ void TpchQ12Module::EmitResult(const TpchQ12State &state, int32_t start_days,
                                int32_t end_days, const std::string &shipmode1,
                                const std::string &shipmode2,
                                core::AuxRowSink &sink) const {
-  std::unordered_map<std::string, TpchQ12DayShipmodeStats> merged;
-  for (int32_t day = start_days; day < end_days; ++day) {
-    const auto it = state.day_partitions.find(day);
-    if (it == state.day_partitions.end())
-      continue;
-    for (const auto &entry : it->second) {
-      if (entry.first != shipmode1 && entry.first != shipmode2)
-        continue;
-      auto &stats = merged[entry.first];
-      stats.high_line_count += entry.second.high_line_count;
-      stats.low_line_count += entry.second.low_line_count;
-    }
-  }
-  std::vector<std::string> shipmodes;
-  const bool modes_equal = shipmode1 == shipmode2;
-  if (merged.count(shipmode1) &&
-      (merged[shipmode1].high_line_count != 0 ||
-       merged[shipmode1].low_line_count != 0))
-    shipmodes.push_back(shipmode1);
-  if (!modes_equal && merged.count(shipmode2) &&
-      (merged[shipmode2].high_line_count != 0 ||
-       merged[shipmode2].low_line_count != 0))
-    shipmodes.push_back(shipmode2);
-  std::sort(shipmodes.begin(), shipmodes.end());
-  sink.Begin({{{"l_shipmode", core::AuxType::String, false},
-               {"high_line_count", core::AuxType::Int64, false},
-               {"low_line_count", core::AuxType::Int64, false}}});
-  for (const auto &shipmode : shipmodes) {
-    const auto &stats = merged.at(shipmode);
-    sink.WriteRow(
-        {{core::AuxValue::Of(core::AuxType::String, shipmode),
-          core::AuxValue::Of(core::AuxType::Int64, stats.high_line_count),
-          core::AuxValue::Of(core::AuxType::Int64, stats.low_line_count)}});
-  }
-  sink.End();
+  TpchQ12FinalizeAndEmit(state, start_days, end_days, shipmode1, shipmode2,
+                         sink);
 }
 
 } // namespace accelerator_codegen::aux_state::query

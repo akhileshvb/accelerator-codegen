@@ -1,6 +1,6 @@
 #include "calibrate_aux_cost_model_common.hpp"
 
-#include "accelerator_codegen/register.hpp"
+#include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "test_support/interference_calibration.hpp"
 #include "test_support/cross_accel_helpers.hpp"
 
@@ -27,8 +27,8 @@ void WriteCostModel(const std::string &out_path,
 	    << "  \"apply_delta_overhead_us\": 100.0,\n"
 	    << "  \"apply_delta_base_us\": 0.0,\n"
 	    << "  \"apply_delta_per_row_us\": 0.5,\n"
-	    << "  \"apply_delta_max_rows\": 1024,\n"
-	    << "  \"apply_delta_max_part_fanout\": 16,\n"
+	    << "  \"apply_delta_max_rows\": 1048576,\n"
+	    << "  \"apply_delta_max_part_fanout\": 512,\n"
 	    << "  \"invalidation_overhead_us\": 10.0,\n"
 	    << "  \"decision_margin_us\": 1000.0,\n"
 	    << "  \"min_samples\": 8,\n"
@@ -49,7 +49,10 @@ int CalibrateAndWriteCostModel(int query_num, int argc, char **argv) {
 	const std::string out_path =
 	    argc > 2 ? argv[2] : ("config/q" + std::to_string(query_num) + "_aux_cost_model.json");
 	duckdb::DuckDB database(db_path);
-	auto all_queries = test_support::CrossAccelQueriesIncludingTarget(query_num);
+	auto all_queries = test_support::MultiConnectionTestQueries();
+	if (std::find(all_queries.begin(), all_queries.end(), query_num) == all_queries.end()) {
+		all_queries.push_back(query_num);
+	}
 	const auto interference = test_support::CalibrateInterference(database, query_num, all_queries);
 	WriteCostModel(out_path, interference, 500.0, 50000.0, 60000.0, 250000.0);
 	std::cout << "calibrate_q" << query_num << "_aux_cost_model wrote " << out_path << std::endl;

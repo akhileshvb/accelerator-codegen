@@ -9,10 +9,10 @@
 #include <utility>
 #include <vector>
 
-#include "accelerator_codegen/aux_state/core/aux_registry.hpp"
-#include "accelerator_codegen/aux_state/core/aux_txn_buffer.hpp"
-#include "accelerator_codegen/aux_state/core/aux_maintenance_policy.hpp"
-#include "accelerator_codegen/aux_state/query/tpch/tpch_q10_common.hpp"
+#include "accelerator_codegen/stateful/core/aux_registry.hpp"
+#include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
+#include "tpch/q10/aux/module.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 using accelerator_codegen::aux_state::query::TpchQ10Config;
@@ -179,14 +179,16 @@ void RequireResult(TpchQ10Module &module, Services &services,
 
 int main() {
   {
+    accelerator_codegen::aux_state::maintenance::CostModelParams gated;
+    gated.apply_delta_max_rows = 1024;
     const auto small = SelectAuxMaintenanceAction(
         {1, 1, true, true, true, false, false, MaintenanceAction::NoOp, 10.0},
-        accelerator_codegen::aux_state::maintenance::CostModelParams{});
+        gated);
     assert(small.action == MaintenanceAction::ApplyDelta);
     const auto bulk = SelectAuxMaintenanceAction(
         {1025, 1, true, true, true, false, false, MaintenanceAction::NoOp,
          10.0},
-        accelerator_codegen::aux_state::maintenance::CostModelParams{});
+        gated);
     assert(bulk.action == MaintenanceAction::RebuildPartition);
   }
 

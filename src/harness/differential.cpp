@@ -228,4 +228,32 @@ void RunIncrementalDifferentialCheck(const std::string &db_path,
           restore ? restore->GetError() : "DuckDB probe restore failed");
 }
 
+void RunRfChunkDifferentialCheck(const std::string &db_path,
+                                 const SharedQueryCatalogEntry &entry,
+                                 int num_chunks, int order_count) {
+  Require(entry.workload == aux_engine::SharedWorkloadKind::Tpch,
+          "RF differential is TPC-H only");
+  Require(entry.query_id != 11,
+          "Q11 is unaffected by RF (no orders/lineitem dependency)");
+  Require(num_chunks > 0, "num_chunks must be positive");
+  Require(order_count > 0, "order_count must be positive");
+
+  duckdb::DuckDB database(db_path.c_str());
+  duckdb::Connection connection(database);
+  DuckdbRuntime runtime(connection, entry, 10.0);
+  runtime.Build();
+  RequireSharedMatchesBase(connection, runtime, entry);
+
+  for (int seq = 0; seq < num_chunks; ++seq) {
+    runtime.ApplyRfChunk(seq, order_count);
+    try {
+      RequireSharedMatchesBase(connection, runtime, entry);
+    } catch (const std::exception &ex) {
+      throw std::runtime_error(std::string(ex.what()) + " (after RF chunk seq=" +
+                               std::to_string(seq) + " order_count=" +
+                               std::to_string(order_count) + ")");
+    }
+  }
+}
+
 } // namespace accelerator_codegen::aux_state::harness

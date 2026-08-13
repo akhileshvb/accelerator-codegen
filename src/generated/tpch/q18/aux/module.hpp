@@ -50,6 +50,11 @@ struct TpchQ18CustomerInput {
   std::string name;
 };
 
+struct TpchQ18OrderQuantityAggregate {
+  int64_t orderkey = 0;
+  int64_t quantity_sum_raw = 0;
+};
+
 class TpchQ18InitialScan {
 public:
   virtual ~TpchQ18InitialScan() = default;
@@ -59,9 +64,31 @@ public:
       const std::function<void(const TpchQ18OrderInput &)> &) = 0;
   virtual void ScanCustomers(
       const std::function<void(const TpchQ18CustomerInput &)> &) = 0;
+
+  // Optional: SQL SUM(quantity) GROUP BY orderkey.
+  virtual bool ScanOrderQuantityAggregates(
+      const std::function<void(const TpchQ18OrderQuantityAggregate &)> &consumer) {
+    (void)consumer;
+    return false;
+  }
+
+  // Point-lookup for write maintenance when a lineitem delta crosses the
+  // survivor threshold and order metadata is not yet cached.
+  virtual bool LookupOrder(int64_t orderkey, TpchQ18OrderInput &out) {
+    (void)orderkey;
+    (void)out;
+    return false;
+  }
 };
 
 // ── State structures ────────────────────────────────────────────────────────
+struct TpchQ18SurvivorMeta {
+  int64_t custkey = 0;
+  int32_t orderdate_days = 0;
+  int64_t totalprice_raw = 0;
+  int64_t quantity_sum_raw = 0;
+};
+
 struct TpchQ18State {
   // Chunked dense orderkey-indexed data: chunk c holds keys [c<<16, (c+1)<<16).
   // Grows one 64K-slot chunk at a time (no SF-hardcoded mega-array).
@@ -69,28 +96,34 @@ struct TpchQ18State {
   static constexpr std::size_t kChunkSize = 1u << kChunkShift;
   static constexpr std::size_t kChunkMask = kChunkSize - 1;
 
+  // Persist order metadata only for orders whose quantity sum exceeds this
+  // threshold (300.00 at scale 2).  TPC-H Q18 uses 312.00, so survivors
+  // cover every order that can appear in the default result set.
+  static constexpr int64_t kMinPersistQuantityRaw = 30000;
+
   // Quantity sums — maintained incrementally across lineitem mutations
   std::vector<std::vector<int64_t>> quantity_chunks;
 
-  // Colocated order metadata — set once during BuildState / rebuild;
-  // orders mutations trigger rebuild so these stay consistent.
-  std::vector<std::vector<int64_t>> custkey_chunks;
-  std::vector<std::vector<int32_t>> orderdate_chunks;
-  std::vector<std::vector<int64_t>> totalprice_chunks;
+  // Sparse order metadata for high-quantity orders only.
+  std::unordered_map<int64_t, TpchQ18SurvivorMeta> survivors;
 
-  // Active orderkeys: every orderkey that has both a nonzero quantity sum
-  // AND stored metadata.  Built during BuildState / decode; kept stable
-  // across incremental lineitem-delta maintenance (rebuild on new keys).
+  // Survivor orderkeys — mirrors survivors keys for fast iteration.
   std::vector<int64_t> active_orderkeys;
+
+  // Customer names cached at build time so EmitResult does not rescan
+  // the customer table on every hit (dominant cost at SF20).
+  std::unordered_map<int64_t, std::string> customer_names;
 
   // ── Quantity sum accessors ──────────────────────────────────────────────
   void AddOrderQuantity(int64_t orderkey, int64_t delta);
   void SetOrderQuantitySum(int64_t orderkey, int64_t sum);
   int64_t OrderQuantitySum(int64_t orderkey) const;
 
-  // ── Metadata accessors ──────────────────────────────────────────────────
+  // ── Survivor metadata accessors ─────────────────────────────────────────
   void SetOrderMeta(int64_t orderkey, int64_t custkey, int32_t orderdate_days,
                     int64_t totalprice_raw);
+  void RemoveSurvivor(int64_t orderkey);
+  void SyncSurvivorQuantity(int64_t orderkey);
   bool HasOrderMeta(int64_t orderkey) const;
   int64_t OrderCustkey(int64_t orderkey) const;
   int32_t OrderOrderdate(int64_t orderkey) const;

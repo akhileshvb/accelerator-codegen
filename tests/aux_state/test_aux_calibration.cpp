@@ -3,8 +3,8 @@
 #include <string>
 #include <utility>
 
-#include "accelerator_codegen/aux_state/core/aux_calibration.hpp"
-#include "accelerator_codegen/aux_state/core/aux_maintenance_policy.hpp"
+#include "accelerator_codegen/stateful/core/aux_calibration.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 using accelerator_codegen::aux_state::maintenance::CostModelParams;
@@ -70,5 +70,24 @@ int main() {
   assert(loaded.apply_delta_max_rows == result.params.apply_delta_max_rows);
   assert(loaded.min_samples == result.params.min_samples);
   std::remove(path.c_str());
+
+  // Official RF-scale batches (~0.1% SF20 ≈ 30k orders / ~120k lineitems)
+  // must stay on ApplyDelta for every current TPC-H aux cost model.
+  using accelerator_codegen::aux_state::maintenance::MaintenanceAction;
+  for (const char *model_path :
+       {"config/q1_aux_cost_model.json", "config/q3_aux_cost_model.json",
+        "config/q3_aux_cost_model_sf20.json", "config/q6_aux_cost_model.json",
+        "config/q9_aux_cost_model.json", "config/q10_aux_cost_model.json",
+        "config/q11_aux_cost_model.json", "config/q12_aux_cost_model.json",
+        "config/q14_aux_cost_model.json", "config/q17_aux_cost_model.json",
+        "config/q18_aux_cost_model.json", "config/q21_aux_cost_model.json"}) {
+    const auto params = LoadAuxCostModelJson(model_path, CostModelParams{});
+    assert(params.apply_delta_max_rows >= 120000);
+    const auto rf = SelectAuxMaintenanceAction(
+        {120000, 64, true, true, true, false, false, MaintenanceAction::NoOp,
+         1.0},
+        params);
+    assert(rf.action == MaintenanceAction::ApplyDelta);
+  }
   return 0;
 }

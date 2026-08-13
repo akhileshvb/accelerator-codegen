@@ -536,6 +536,14 @@ void TpchQ21Module::Build(core::AuxEngineServices &services,
   builder.Write(core::StateImage::Make(
       TpchQ21Layout::kAccelerator, TpchQ21Layout::kNationNameIndex, 0,
       MakeStateImage(TpchQ21ImageKind::NationNameIndex, 0, typed_state)));
+  // Persist NationPartition images so StageMaintenance can load/apply deltas
+  // without publishing empty NationNamePartition hits after the first write.
+  for (const auto &[nk, _] : state.nation_numwait) {
+    (void)_;
+    builder.Write(core::StateImage::Make(
+        TpchQ21Layout::kAccelerator, NationPartition(nk), 0,
+        MakeStateImage(TpchQ21ImageKind::Nation, nk, typed_state)));
+  }
   // Materialize the result at the query-parameter grain.  This enables the
   // fast read path: one FNV-1a-hashed partition read directly from the nation
   // name, with collision detection via the stored nation_name.
@@ -806,7 +814,10 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
     affected_orderkeys.insert(delta.orderkey);
     if (delta.old_orderstatus != delta.new_orderstatus) {
       order_status_changes[delta.orderkey] = {delta.old_orderstatus, delta.new_orderstatus};
-      for (const auto &[suppkey, _] : state.order_summaries[delta.orderkey].suppliers) {
+      const auto summary_it = state.order_summaries.find(delta.orderkey);
+      if (summary_it == state.order_summaries.end())
+        continue;
+      for (const auto &[suppkey, _] : summary_it->second.suppliers) {
         const auto nation_it = state.supplier_nations.find(suppkey);
         if (nation_it != state.supplier_nations.end())
           needed_nationkeys.insert(nation_it->second);
@@ -823,8 +834,10 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
 
   // Pre-compute needed nationkeys from all affected orders (before applying deltas)
   for (const auto orderkey : affected_orderkeys) {
-    const auto &summary = state.order_summaries[orderkey];
-    for (const auto &[suppkey, _] : summary.suppliers) {
+    const auto summary_it = state.order_summaries.find(orderkey);
+    if (summary_it == state.order_summaries.end())
+      continue;
+    for (const auto &[suppkey, _] : summary_it->second.suppliers) {
       const auto nation_it = state.supplier_nations.find(suppkey);
       if (nation_it != state.supplier_nations.end())
         needed_nationkeys.insert(nation_it->second);
@@ -846,6 +859,7 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
       nation_partitions.push_back(NationPartition(nk));
     const auto nation_snapshot = services.StateStore().ReadPartitions(
         visibility, nation_partitions);
+    std::set<int32_t> loaded_nations;
     for (const auto &image : nation_snapshot.partitions) {
       if (image.partition < TpchQ21Layout::kNationBase)
         continue;
@@ -859,14 +873,33 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
         return outcome;
       }
       const auto nk_it = typed->state->nation_numwait.find(nk);
-      if (nk_it != typed->state->nation_numwait.end())
+      if (nk_it != typed->state->nation_numwait.end()) {
         state.nation_numwait[nk] = nk_it->second;
+        loaded_nations.insert(nk);
+      }
+    }
+    // Missing nation images would publish empty NationNamePartition hits.
+    for (const auto nk : needed_nationkeys) {
+      if (loaded_nations.find(nk) == loaded_nations.end()) {
+        outcome.action = core::MaintenanceAction::RebuildAll;
+        outcome.invalidations = All();
+        outcome.pending_rebuild = outcome.invalidations;
+        return outcome;
+      }
     }
   }
 
   // For each affected order, recompute contributions
   for (const auto orderkey : affected_orderkeys) {
-    auto &summary = state.order_summaries[orderkey];
+    auto summary_it = state.order_summaries.find(orderkey);
+    if (summary_it == state.order_summaries.end()) {
+      // Unknown order: cannot apply a local delta fairly — rebuild.
+      outcome.action = core::MaintenanceAction::RebuildAll;
+      outcome.invalidations = All();
+      outcome.pending_rebuild = outcome.invalidations;
+      return outcome;
+    }
+    auto &summary = summary_it->second;
 
     // Compute old contributions BEFORE applying any changes
     const auto old_contribs = ComputeOrderContributions(summary);
@@ -952,12 +985,18 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   // Publish updated nation partitions + corresponding NationNamePartition entries
+  // Only republish nations we actually loaded/updated — never invent empty hits.
   std::set<int32_t> published_nations;
   for (const auto nk : needed_nationkeys)
     published_nations.insert(nk);
-  for (const auto &[nk, _] : shared_state->nation_numwait)
-    published_nations.insert(nk);
   for (const auto nk : published_nations) {
+    if (shared_state->nation_numwait.find(nk) ==
+        shared_state->nation_numwait.end()) {
+      outcome.action = core::MaintenanceAction::RebuildAll;
+      outcome.invalidations = All();
+      outcome.pending_rebuild = outcome.invalidations;
+      return outcome;
+    }
     outcome.updates.push_back(core::StateImage::Make(
         TpchQ21Layout::kAccelerator, NationPartition(nk), 0,
         MakeStateImage(TpchQ21ImageKind::Nation, nk, shared_state)));
@@ -1019,17 +1058,23 @@ void TpchQ21Module::Execute(core::AuxEngineServices &services,
       if (!typed) continue;
       // Collision guard: verify the stored nation_name matches the query.
       if (typed->nation_name != nation_name) continue;
-
-      sink.Begin(core::OutputSchema{});
-      for (const auto &row : typed->output_rows) {
-        core::AuxRow out;
-        out.values.reserve(2);
-        out.values.push_back(core::AuxValue::Of(core::AuxType::String, row.name));
-        out.values.push_back(core::AuxValue::Of(core::AuxType::Int64, row.numwait));
-        sink.WriteRow(out);
+      // Empty output_rows on the name partition can be a stale/missing nation
+      // image after maintenance — fall through to the NationPartition path
+      // rather than treating an empty hit as authoritative when the nation
+      // key is known to the index.
+      if (!typed->output_rows.empty()) {
+        sink.Begin(core::OutputSchema{});
+        for (const auto &row : typed->output_rows) {
+          core::AuxRow out;
+          out.values.reserve(2);
+          out.values.push_back(core::AuxValue::Of(core::AuxType::String, row.name));
+          out.values.push_back(core::AuxValue::Of(core::AuxType::Int64, row.numwait));
+          sink.WriteRow(out);
+        }
+        sink.End();
+        return;
       }
-      sink.End();
-      return;
+      break;
     }
   }
 
@@ -1164,6 +1209,16 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
       const auto nation_it = state.supplier_nations.find(suppkey);
       if (nation_it == state.supplier_nations.end()) continue;
       state.nation_numwait[nation_it->second][suppkey] += count;
+    }
+  }
+
+  for (auto it = state.order_summaries.begin();
+       it != state.order_summaries.end();) {
+    if (it->second.orderstatus != 'F' || it->second.suppliers.size() <= 1 ||
+        ComputeOrderContributions(it->second).empty()) {
+      it = state.order_summaries.erase(it);
+    } else {
+      ++it;
     }
   }
 

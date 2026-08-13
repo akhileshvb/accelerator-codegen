@@ -176,21 +176,6 @@ int64_t TpchQ14RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
   return static_cast<int64_t>(std::llround(price * (1.0 - discount) * 10000.0));
 }
 
-double TpchQ14FinalizePromoRevenue(const TpchQ14MonthTotals &totals) {
-  if (!totals.saw_contribution)
-    return std::numeric_limits<double>::quiet_NaN();
-  if (totals.total_revenue_raw == 0) {
-    if (totals.promo_revenue_raw == 0)
-      return std::copysign(std::numeric_limits<double>::quiet_NaN(), -1.0);
-    return std::numeric_limits<double>::infinity();
-  }
-  const double numerator =
-      100.0 * static_cast<double>(totals.promo_revenue_raw) / 10000.0;
-  const double denominator =
-      static_cast<double>(totals.total_revenue_raw) / 10000.0;
-  return numerator / denominator;
-}
-
 std::vector<uint8_t> EncodeTpchQ14PartPromo(const TpchQ14State &state) {
   ByteWriter writer;
   std::vector<int64_t> keys;

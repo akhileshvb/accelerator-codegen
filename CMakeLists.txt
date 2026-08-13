@@ -20,92 +20,22 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FindSiblingDuckDB)
 include(AuxState)
 include(BaseQuery)
+include(GeneratedSources)
+
+accel_collect_runtime_sources(ACCEL_RUNTIME_SOURCES)
+accel_collect_stateful_sources(ACCEL_STATEFUL_SOURCES)
+accel_collect_generated_sources(ACCEL_GENERATED_SOURCES)
 
 add_library(accelerator_codegen SHARED
-    src/duckdb_scan_adapter.cpp
-    src/query_runtime.cpp
-    src/register.cpp
-    src/generated/tpch/single-threaded/q1_package.cpp
-    src/generated/tpch/single-threaded/q1_fused_scan.cpp
-    src/generated/tpch/single-threaded/q3_package.cpp
-    src/generated/tpch/single-threaded/q3_kernel.cpp
-    src/generated/tpch/single-threaded/q4_package.cpp
-    src/generated/tpch/single-threaded/q4_kernel.cpp
-    src/generated/tpch/single-threaded/q6_package.cpp
-    src/generated/tpch/single-threaded/q6_kernel.cpp
-    src/generated/tpch/single-threaded/q9_package.cpp
-    src/generated/tpch/single-threaded/q9_kernel.cpp
-    src/generated/tpch/single-threaded/q12_package.cpp
-    src/generated/tpch/single-threaded/q12_kernel.cpp
-    src/generated/tpch/single-threaded/q14_package.cpp
-    src/generated/tpch/single-threaded/q14_kernel.cpp
-    src/generated/tpch/single-threaded/q17_package.cpp
-    src/generated/tpch/single-threaded/q17_kernel.cpp
-    src/generated/tpch/single-threaded/q19_package.cpp
-    src/generated/tpch/single-threaded/q19_kernel.cpp
-    src/generated/tpch/single-threaded/q5_package.cpp
-    src/generated/tpch/single-threaded/q5_kernel.cpp
-    src/generated/tpch/single-threaded/q7_package.cpp
-    src/generated/tpch/single-threaded/q7_kernel.cpp
-    src/generated/tpch/single-threaded/q10_package.cpp
-    src/generated/tpch/single-threaded/q10_kernel.cpp
-    src/generated/tpch/single-threaded/q11_package.cpp
-    src/generated/tpch/single-threaded/q11_kernel.cpp
-    src/generated/tpch/single-threaded/q13_package.cpp
-    src/generated/tpch/single-threaded/q13_kernel.cpp
-    src/generated/tpch/single-threaded/q16_package.cpp
-    src/generated/tpch/single-threaded/q16_kernel.cpp
-    src/generated/tpch/single-threaded/q18_package.cpp
-    src/generated/tpch/single-threaded/q18_kernel.cpp
-    src/generated/tpch/single-threaded/q22_package.cpp
-    src/generated/tpch/single-threaded/q22_kernel.cpp
-    src/generated/tpch/single-threaded/q15_package.cpp
-    src/generated/tpch/single-threaded/q15_kernel.cpp
-    src/generated/tpch/single-threaded/q21_package.cpp
-    src/generated/tpch/single-threaded/q21_kernel.cpp
-    src/generated/tpch/single-threaded/q20_package.cpp
-    src/generated/tpch/single-threaded/q20_kernel.cpp
-    src/generated/tpch/single-threaded/q8_package.cpp
-    src/generated/tpch/single-threaded/q8_kernel.cpp
-    src/generated/tpch/single-threaded/q2_package.cpp
-    src/generated/tpch/single-threaded/q2_kernel.cpp
-    src/aux_state/invalidation_plan.cpp
-    src/aux_state/core/aux_registry.cpp
-    src/aux_state/core/aux_engine_services.cpp
-    src/aux_state/core/aux_maintenance_policy.cpp
-    src/aux_state/core/aux_calibration.cpp
-    src/aux_state/query/sec_edgar/sec_edgar_q1_common.cpp
-    src/aux_state/query/sec_edgar/sec_edgar_q2_common.cpp
-    src/aux_state/query/sec_edgar/sec_edgar_q3_common.cpp
-    src/aux_state/query/sec_edgar/sec_edgar_q4_common.cpp
-    src/aux_state/query/sec_edgar/sec_edgar_q6_common.cpp
-    src/aux_state/query/sec_edgar/sec_edgar_q24_common.cpp
-    src/aux_state/query/tpch/tpch_q1_common.cpp
-    src/aux_state/query/tpch/tpch_q3_common.cpp
-    src/aux_state/query/tpch/tpch_q6_common.cpp
-    src/aux_state/query/tpch/tpch_q10_common.cpp
-    src/aux_state/query/tpch/tpch_q12_common.cpp
-    src/aux_state/query/tpch/tpch_q14_common.cpp
-    src/aux_state/engine/shared/query_catalog.cpp
-    src/aux_state/engine/shared/shared_query_engine.cpp
-    src/aux_state/harness/differential.cpp
-    src/aux_state/engine/duckdb/duckdb_runtime.cpp
-    src/aux_state/engine/duckdb/duckdb_aux_table_functions.cpp
-    src/aux_state/harness/cost_calibration.cpp
-    src/aux_state/engine/duckdb/duckdb_aux_backend.cpp
-    src/aux_state/engine/duckdb/duckdb_state_store.cpp
-    src/aux_state/engine/postgres/postgres_aux_backend.cpp
-    src/aux_state/engine/postgres/postgres_mutation_capture.cpp
-    src/aux_state/engine/postgres/postgres_state_store.cpp
-    src/aux_state/engine/postgres/postgres_xact_callbacks.cpp
-    src/aux_state/partitioned_state_store.cpp
-    src/aux_state/maintenance/maintenance_action.cpp
-    src/aux_state/maintenance/action_selector.cpp
+    ${ACCEL_RUNTIME_SOURCES}
+    ${ACCEL_STATEFUL_SOURCES}
+    ${ACCEL_GENERATED_SOURCES}
 )
 
 target_include_directories(accelerator_codegen
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
 )
 
 target_link_libraries(accelerator_codegen
@@ -127,37 +57,15 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
 		message(FATAL_ERROR "PostgreSQL server headers were not found; install the PostgreSQL development package")
 	endif()
 
+	accel_collect_postgres_runtime_sources(ACCEL_POSTGRES_RUNTIME_SOURCES)
+	accel_collect_postgres_generated_sources(ACCEL_POSTGRES_GENERATED_SOURCES)
+	accel_collect_postgres_stateful_sources(ACCEL_POSTGRES_STATEFUL_SOURCES)
+
 	add_library(accelerator_codegen_postgres MODULE
-		src/aux_state/invalidation_plan.cpp
-		src/aux_state/core/aux_registry.cpp
-		src/aux_state/core/aux_engine_services.cpp
-		src/aux_state/core/aux_maintenance_policy.cpp
-		src/aux_state/core/aux_calibration.cpp
-		src/aux_state/maintenance/action_selector.cpp
-		src/aux_state/engine/postgres/postgres_aux_backend.cpp
-		src/aux_state/engine/postgres/postgres_mutation_capture.cpp
-		src/aux_state/engine/postgres/postgres_state_store.cpp
-		src/aux_state/engine/postgres/postgres_xact_callbacks.cpp
-		src/aux_state/query/sec_edgar/sec_edgar_q1_common.cpp
-		src/aux_state/query/sec_edgar/sec_edgar_q2_common.cpp
-		src/aux_state/query/sec_edgar/sec_edgar_q3_common.cpp
-		src/aux_state/query/sec_edgar/sec_edgar_q4_common.cpp
-		src/aux_state/query/sec_edgar/sec_edgar_q6_common.cpp
-		src/aux_state/query/sec_edgar/sec_edgar_q24_common.cpp
-		src/aux_state/query/tpch/tpch_q1_common.cpp
-		src/aux_state/query/tpch/tpch_q3_common.cpp
-		src/aux_state/query/tpch/tpch_q6_common.cpp
-		src/aux_state/query/tpch/tpch_q10_common.cpp
-		src/aux_state/query/tpch/tpch_q12_common.cpp
-		src/aux_state/query/tpch/tpch_q14_common.cpp
-		src/aux_state/engine/postgres/postgres_runtime.cpp
-		src/aux_state/engine/postgres/postgres_scan_adapter.cpp
-		src/aux_state/engine/postgres/postgres_bind_helper.cpp
-		src/aux_state/engine/postgres/postgres_kernel_runner.cpp
-		src/aux_state/engine/postgres/postgres_kernel_runner_remaining.cpp
-		src/aux_state/engine/postgres/postgres_kernel_executor.cpp
-		src/aux_state/engine/postgres/postgres_query_functions.cpp
-		src/aux_state/engine/postgres/postgres_extension.cpp
+		${ACCEL_POSTGRES_RUNTIME_SOURCES}
+		${ACCEL_POSTGRES_GENERATED_SOURCES}
+		${ACCEL_POSTGRES_STATEFUL_SOURCES}
+		${ACCEL_GENERATED_SOURCES}
 	)
 	target_include_directories(accelerator_codegen_postgres PRIVATE
 		${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -189,70 +97,24 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
 	endforeach()
 endif()
 
-accel_add_aux_state_query(
-    QUERY_NUM 1
-    LIBRARY_TARGET accelerator_codegen
-    TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+# Link finalize.cpp for every TPC-H aux module that exists on disk.
+accel_register_tpch_aux_finalize_queries(
+    accelerator_codegen
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests
 )
 
-accel_add_aux_state_query(
-    QUERY_NUM 6
-    LIBRARY_TARGET accelerator_codegen
-    TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-)
+# Register test/bench/calibrate targets for every test_tpch_q*_aux.cpp present.
+accel_register_tpch_aux_pipeline_targets()
 
 option(ACCEL_ENABLE_PARALLEL_TPCH "Build multithreaded TPC-H accelerator variants (accel_tpch_q*_parallel)" OFF)
 if(ACCEL_ENABLE_PARALLEL_TPCH)
 	target_compile_definitions(accelerator_codegen PUBLIC ACCEL_ENABLE_PARALLEL_TPCH)
 	# Q3 shared __int128 revenue CAS uses libatomic (__atomic_*_16).
 	target_link_libraries(accelerator_codegen PRIVATE atomic)
+	accel_collect_generated_parallel_sources(ACCEL_GENERATED_PARALLEL_SOURCES)
 	target_sources(accelerator_codegen PRIVATE
-		src/parallel/parallel_runtime.cpp
-		src/generated/tpch/parallel/q1_parallel_aligned_agg.cpp
-		src/generated/tpch/parallel/q1_parallel_kernel.cpp
-		src/generated/tpch/parallel/q1_parallel_package.cpp
-		src/generated/tpch/parallel/q3_parallel_kernel.cpp
-		src/generated/tpch/parallel/q3_parallel_package.cpp
-		src/generated/tpch/parallel/q4_parallel_kernel.cpp
-		src/generated/tpch/parallel/q4_parallel_package.cpp
-		src/generated/tpch/parallel/q6_parallel_kernel.cpp
-		src/generated/tpch/parallel/q6_parallel_package.cpp
-		src/generated/tpch/parallel/q9_parallel_kernel.cpp
-		src/generated/tpch/parallel/q9_parallel_package.cpp
-		src/generated/tpch/parallel/q12_parallel_kernel.cpp
-		src/generated/tpch/parallel/q12_parallel_package.cpp
-		src/generated/tpch/parallel/q14_parallel_kernel.cpp
-		src/generated/tpch/parallel/q14_parallel_package.cpp
-		src/generated/tpch/parallel/q15_parallel_kernel.cpp
-		src/generated/tpch/parallel/q15_parallel_package.cpp
-		src/generated/tpch/parallel/q17_parallel_kernel.cpp
-		src/generated/tpch/parallel/q17_parallel_package.cpp
-		src/generated/tpch/parallel/q19_parallel_kernel.cpp
-		src/generated/tpch/parallel/q19_parallel_package.cpp
-		src/generated/tpch/parallel/q5_parallel_kernel.cpp
-		src/generated/tpch/parallel/q5_parallel_package.cpp
-		src/generated/tpch/parallel/q7_parallel_kernel.cpp
-		src/generated/tpch/parallel/q7_parallel_package.cpp
-		src/generated/tpch/parallel/q22_parallel_kernel.cpp
-		src/generated/tpch/parallel/q22_parallel_package.cpp
-		src/generated/tpch/parallel/q11_parallel_kernel.cpp
-		src/generated/tpch/parallel/q11_parallel_package.cpp
-		src/generated/tpch/parallel/q13_parallel_kernel.cpp
-		src/generated/tpch/parallel/q13_parallel_package.cpp
-		src/generated/tpch/parallel/q16_parallel_kernel.cpp
-		src/generated/tpch/parallel/q16_parallel_package.cpp
-		src/generated/tpch/parallel/q2_parallel_kernel.cpp
-		src/generated/tpch/parallel/q2_parallel_package.cpp
-		src/generated/tpch/parallel/q8_parallel_kernel.cpp
-		src/generated/tpch/parallel/q8_parallel_package.cpp
-		src/generated/tpch/parallel/q10_parallel_kernel.cpp
-		src/generated/tpch/parallel/q10_parallel_package.cpp
-		src/generated/tpch/parallel/q18_parallel_kernel.cpp
-		src/generated/tpch/parallel/q18_parallel_package.cpp
-		src/generated/tpch/parallel/q20_parallel_kernel.cpp
-		src/generated/tpch/parallel/q20_parallel_package.cpp
-		src/generated/tpch/parallel/q21_parallel_kernel.cpp
-		src/generated/tpch/parallel/q21_parallel_package.cpp
+		src/runtime/parallel/parallel_runtime.cpp
+		${ACCEL_GENERATED_PARALLEL_SOURCES}
 	)
 endif()
 
@@ -395,6 +257,30 @@ target_link_libraries(test_shared_incremental_differential
 )
 
 target_include_directories(test_shared_incremental_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(test_tpch_q18_shared_differential
+    tests/aux_state/test_tpch_q18_shared_differential.cpp
+)
+
+target_link_libraries(test_tpch_q18_shared_differential
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_tpch_q18_shared_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(test_shared_tpch_rf_differential
+    tests/aux_state/test_shared_tpch_rf_differential.cpp
+)
+
+target_link_libraries(test_shared_tpch_rf_differential
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_shared_tpch_rf_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_aux_calibration
     tests/aux_state/test_aux_calibration.cpp
@@ -565,6 +451,31 @@ target_link_libraries(test_tpch_q18
 )
 
 target_include_directories(test_tpch_q18 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_cross_accel_correctness.cpp")
+    foreach(_aux_gate_test IN ITEMS test_cross_accel_correctness test_cross_accel_isolation test_aux_multi_connection_stress)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/${_aux_gate_test}.cpp")
+            add_executable(${_aux_gate_test}
+                tests/aux_state/${_aux_gate_test}.cpp
+            )
+            target_link_libraries(${_aux_gate_test}
+                PRIVATE
+                    accelerator_codegen
+                    duckdb_sibling
+            )
+            target_include_directories(${_aux_gate_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+            target_sources(${_aux_gate_test} PRIVATE
+                tests/test_support/cross_accel_helpers.cpp
+            )
+            if("${_aux_gate_test}" STREQUAL "test_aux_multi_connection_stress")
+                target_sources(${_aux_gate_test} PRIVATE
+                    tests/test_support/multi_connection_stress.cpp
+                )
+            endif()
+            add_test(NAME ${_aux_gate_test} COMMAND ${_aux_gate_test})
+        endif()
+    endforeach()
+endif()
 
 add_executable(test_tpch_q22
     tests/single-threaded/test_tpch_q22.cpp
@@ -877,6 +788,24 @@ target_link_libraries(benchmark_tpch_validated
 )
 
 target_include_directories(benchmark_tpch_validated PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(benchmark_tpch_rf_delta_vs_rebuild
+    benchmarks/tpch/single-threaded/benchmark_tpch_rf_delta_vs_rebuild.cpp
+)
+target_link_libraries(benchmark_tpch_rf_delta_vs_rebuild
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+target_include_directories(benchmark_tpch_rf_delta_vs_rebuild
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/single-threaded
+)
+set_target_properties(benchmark_tpch_rf_delta_vs_rebuild PROPERTIES
+    BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
+    INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
+)
 
 set_target_properties(accelerator_codegen test_registration test_tpch_q6 test_tpch_q1 test_tpch_q3 test_tpch_q4 test_tpch_q9 test_tpch_q12 test_tpch_q14 test_tpch_q17 test_tpch_q19 test_tpch_q5 test_tpch_q7 test_tpch_q10 test_tpch_q11 test_tpch_q13 test_tpch_q16 test_tpch_q18 test_tpch_q22 test_tpch_q15 test_tpch_q21 test_tpch_q20 test_tpch_q8 test_tpch_q2 benchmark_tpch_q6 benchmark_tpch_q1 benchmark_tpch_q3 benchmark_tpch_q4 benchmark_tpch_q9 benchmark_tpch_q12 benchmark_tpch_q14 benchmark_tpch_q17 benchmark_tpch_q19 benchmark_tpch_q5 benchmark_tpch_q7 benchmark_tpch_q10 benchmark_tpch_q11 benchmark_tpch_q13 benchmark_tpch_q16 benchmark_tpch_q18 benchmark_tpch_q22 benchmark_tpch_stage_c benchmark_tpch_breakdown benchmark_tpch_validated PROPERTIES
     BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
@@ -1268,6 +1197,7 @@ if(BUILD_TESTING)
     add_test(NAME tpch_q13_smoke_test COMMAND test_tpch_q13)
     add_test(NAME tpch_q16_smoke_test COMMAND test_tpch_q16)
     add_test(NAME tpch_q18_smoke_test COMMAND test_tpch_q18)
+    accel_register_tpch_aux_ctests()
     add_test(NAME tpch_q22_smoke_test COMMAND test_tpch_q22)
     add_test(NAME tpch_q15_smoke_test COMMAND test_tpch_q15)
     add_test(NAME tpch_q21_smoke_test COMMAND test_tpch_q21)
@@ -1295,10 +1225,6 @@ if(BUILD_TESTING)
 		set_tests_properties(tpch_parallel_smoke_test tpch_q20_semantics_test tpch_q21_semantics_test tpch_q22_semantics_test tpch_q10_semantics_test tpch_q17_semantics_test tpch_q18_semantics_test tpch_q3_semantics_test tpch_q2_semantics_test tpch_q5_semantics_test tpch_q7_semantics_test tpch_q8_semantics_test tpch_q11_semantics_test tpch_q13_semantics_test tpch_q1_semantics_test tpch_q16_semantics_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
 	endif()
 endif()
-
-target_sources(accelerator_codegen PRIVATE
-	src/generated/sec_edgar/sec_edgar_query_runtime.cpp
-)
 
 accel_add_base_query(
 	BENCHMARK sec_edgar

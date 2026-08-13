@@ -17,13 +17,13 @@ namespace accelerator_codegen::aux_state::query {
 
 // ── Q17 layout ──────────────────────────────────────────────────────────────
 // Avoid one partition per partkey (O(parts) slots hurts validity scans).
-// Maintenance uses chunked part stats; reads use one parameter-keyed result
-// partition per (brand, container).
+// Maintenance uses chunked part stats; reads use one AttrParts partition per
+// (brand, container) listing per-part contributions (not a pre-summed scalar).
 struct TpchQ17Layout {
   static constexpr const char *kAccelerator = "tpch_q17_aux";
   static constexpr core::PartitionId kPartStatsChunkBase = 0;
-  static constexpr core::PartitionId kAttrResultBase = 2'000'000;
-  static constexpr core::PartitionId kAttrResultSlots = 1'048'576;
+  static constexpr core::PartitionId kAttrPartsBase = 2'000'000;
+  static constexpr core::PartitionId kAttrPartsSlots = 1'048'576;
   static constexpr std::size_t kPartChunkShift = 16;
   static constexpr std::size_t kPartChunkSize = 1u << kPartChunkShift;
 
@@ -60,6 +60,13 @@ struct TpchQ17LineitemInput {
   int64_t extendedprice_raw = 0;  // decimal(15,2) raw (×100)
 };
 
+struct TpchQ17PartQuantityAggregate {
+  int64_t partkey = 0;
+  int64_t quantity_raw = 0;
+  int64_t extendedprice_sum_raw = 0;
+  int64_t row_count = 0;
+};
+
 class TpchQ17InitialScan {
 public:
   virtual ~TpchQ17InitialScan() = default;
@@ -67,6 +74,13 @@ public:
       const std::function<void(const TpchQ17PartInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ17LineitemInput &)> &) = 0;
+
+  // Optional: SQL GROUP BY (partkey, quantity) with summed price.
+  virtual bool ScanPartQuantityAggregates(
+      const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer) {
+    (void)consumer;
+    return false;
+  }
 };
 
 // ── Per-part statistics ─────────────────────────────────────────────────────
@@ -98,6 +112,17 @@ struct TpchQ17PartStatsChunk {
   std::unordered_map<int64_t, TpchQ17PartEntry> parts;
 };
 
+struct TpchQ17AttrContribution {
+  int64_t partkey = 0;
+  int64_t precomputed_contribution_raw = 0;
+};
+
+struct TpchQ17AttrParts {
+  std::string brand;
+  std::string container;
+  std::vector<TpchQ17AttrContribution> contributions;
+};
+
 // In-memory build aggregate (not stored as a single partition).
 struct TpchQ17State {
   std::unordered_map<std::string, std::unordered_set<int64_t>> attribute_index;
@@ -110,15 +135,13 @@ struct TpchQ17State {
                            std::string &container);
 };
 
-enum class TpchQ17ImageKind : uint8_t { PartStatsChunk, AttrResult };
+enum class TpchQ17ImageKind : uint8_t { PartStatsChunk, AttrParts };
 
 struct TpchQ17StateImage {
-  TpchQ17ImageKind kind = TpchQ17ImageKind::AttrResult;
+  TpchQ17ImageKind kind = TpchQ17ImageKind::AttrParts;
   int64_t chunk_index = 0;
-  std::string brand;
-  std::string container;
-  int64_t contribution_raw = 0;
   std::shared_ptr<const TpchQ17PartStatsChunk> chunk;
+  std::shared_ptr<const TpchQ17AttrParts> attr_parts;
 };
 
 // ── Delta ───────────────────────────────────────────────────────────────────
@@ -150,6 +173,8 @@ bool FindTpchQ17PartKeys(
     const std::vector<uint8_t> &bytes, const std::string &brand,
     const std::string &container,
     std::unordered_set<int64_t> &partkeys);
+
+void StripTpchQ17PartStatsForPublish(TpchQ17PartStats &stats);
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ17TxnBuffer final : public core::AuxTxnBuffer {
@@ -202,6 +227,7 @@ public:
 
 private:
   TpchQ17State BuildState(core::AuxEngineServices &) const;
+  TpchQ17PartStats RebuildPartStatsFromScan(int64_t partkey) const;
   void EmitResult(core::AuxEngineServices &, const std::string &brand,
                   const std::string &container, core::AuxRowSink &) const;
 

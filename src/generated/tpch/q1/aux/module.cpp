@@ -35,6 +35,19 @@ constexpr int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
 }
 
 constexpr int32_t kQ1BaseDays = DaysFromCivil(1998, 12, 1);
+// TPC-H lineitem shipdate lower bound (1992-01-02).
+constexpr int32_t kTpchMinLineitemShipdateDays = DaysFromCivil(1992, 1, 2);
+
+void CollectQ1DayPartitions(int32_t cutoff_days,
+                            std::vector<core::PartitionId> &partitions) {
+  partitions.clear();
+  if (cutoff_days < kTpchMinLineitemShipdateDays)
+    return;
+  partitions.reserve(static_cast<std::size_t>(cutoff_days -
+                                              kTpchMinLineitemShipdateDays + 1));
+  for (int32_t day = kTpchMinLineitemShipdateDays; day <= cutoff_days; ++day)
+    partitions.push_back(core::TpchQ1Layout::PartitionFromDays(day));
+}
 
 void WriteQ1Acc(ByteWriter &writer, ::accelerator_codegen::Q1AccT value) {
 #if defined(__SIZEOF_INT128__)
@@ -479,6 +492,24 @@ TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
   std::unordered_map<int32_t, Q1DayPartition> days;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q1 requires a typed initial scan source");
+
+  const bool used_sql = initial_scan->ScanDayGroupAggregates(
+      [&](const TpchQ1DayGroupAggregate &agg) {
+        const auto group_key = ::accelerator_codegen::PackQ1GroupKey(
+            agg.returnflag, agg.linestatus);
+        auto &group = days[agg.shipdate_days].groups[group_key];
+        group.count += agg.count;
+        group.sum_qty += agg.sum_qty_raw;
+        group.sum_base_price += agg.sum_base_price_raw;
+        group.sum_discount += agg.sum_discount_raw;
+        group.sum_disc_price +=
+            static_cast<::accelerator_codegen::Q1AccT>(agg.sum_disc_price_raw);
+        group.sum_charge +=
+            static_cast<::accelerator_codegen::Q1AccT>(agg.sum_charge_raw);
+      });
+  if (used_sql)
+    return days;
+
   initial_scan->ScanLineitems([&](const TpchQ1LineitemInput &input) {
     ApplyLineitemInput(input, days[input.shipdate_days]);
   });
@@ -504,7 +535,12 @@ bool TpchQ1Module::LoadPartitions(
     core::AuxEngineServices &services, int32_t cutoff_days,
     std::unordered_map<int32_t, Q1DayPartition> &days,
     std::map<int32_t, core::Version> *versions) const {
-  const auto snapshot = services.StateStore().Read(services.CurrentVisibility());
+  std::vector<core::PartitionId> partitions;
+  CollectQ1DayPartitions(cutoff_days, partitions);
+  if (partitions.empty())
+    return true;
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), partitions);
   for (const auto &image : snapshot.partitions) {
     const auto day = core::TpchQ1Layout::DaysFromPartition(image.partition);
     if (day > cutoff_days)
