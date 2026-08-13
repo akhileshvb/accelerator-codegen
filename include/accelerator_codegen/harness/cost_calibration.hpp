@@ -3,8 +3,8 @@
 
 #include <string>
 
-#include "accelerator_codegen/aux_state/core/aux_calibration.hpp"
-#include "accelerator_codegen/aux_state/engine/shared/query_catalog.hpp"
+#include "accelerator_codegen/stateful/core/aux_calibration.hpp"
+#include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 
 namespace accelerator_codegen::aux_state::harness {

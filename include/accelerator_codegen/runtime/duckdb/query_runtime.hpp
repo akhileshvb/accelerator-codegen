@@ -1,11 +1,12 @@
+// GENERATED BACKEND
 #pragma once
 
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "accelerator_codegen/duckdb_scan_adapter.hpp"
-#include "accelerator_codegen/kernel.hpp"
+#include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
+#include "accelerator_codegen/runtime/duckdb/kernel.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/function/function.hpp"
 #include "duckdb/function/function_set.hpp"

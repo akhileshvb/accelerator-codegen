@@ -1,10 +1,11 @@
+// SCAFFOLDING
 #pragma once
 
 #include <cstdint>
 #include <vector>
 
-#include "accelerator_codegen/aux_state/maintenance/cost_model.hpp"
-#include "accelerator_codegen/aux_state/maintenance/maintenance_action.hpp"
+#include "accelerator_codegen/stateful/maintenance/cost_model.hpp"
+#include "accelerator_codegen/stateful/maintenance/maintenance_action.hpp"
 
 namespace accelerator_codegen::aux_state::maintenance {
 

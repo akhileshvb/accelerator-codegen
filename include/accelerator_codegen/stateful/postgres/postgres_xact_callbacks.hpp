@@ -1,6 +1,7 @@
+// GENERATED BACKEND
 #pragma once
 
-#include "accelerator_codegen/aux_state/engine/postgres/postgres_aux_backend.hpp"
+#include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 

@@ -1,8 +1,9 @@
+// SCAFFOLDING
 #pragma once
 
 #include <string>
 
-#include "accelerator_codegen/aux_state/engine/shared/query_catalog.hpp"
+#include "catalog/query_catalog.hpp"
 
 namespace duckdb {
 class Connection;
@@ -14,9 +15,11 @@ namespace accelerator_codegen::aux_state::engine {
 //   BaseKernel  - codegen fused-scan kernels reading native backend tables
 //   AuxStateful - AuxQueryModule with incremental state
 //
-// DuckDB base kernels use NativeScanSpec + DuckDB storage scans.
-// Postgres base kernels use NativeScanSpec + SPI scans (postgres_scan_adapter),
-// then run the same KernelInstance implementations over DataChunks.
+// Both engines implement the same NativeScanSpec contract (see
+// runtime/native_scan.hpp): stream projected base-table rows as DataChunks.
+//   DuckDB:   ScanNativeBaseTable via DataTable storage scans
+//   Postgres: ScanNativeBaseTable via table AM seqscan + residual filters
+// Kernels consume those DataChunks through KernelInstance.
 enum class SharedQueryPath {
   BaseKernel,
   AuxStateful,

@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #pragma once
 
 namespace accelerator_codegen {

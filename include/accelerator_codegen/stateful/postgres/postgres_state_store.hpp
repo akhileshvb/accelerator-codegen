@@ -1,10 +1,11 @@
+// GENERATED BACKEND
 #pragma once
 
 #include <functional>
 #include <string>
 #include <vector>
 
-#include "accelerator_codegen/aux_state/core/aux_state_store.hpp"
+#include "accelerator_codegen/stateful/core/aux_state_store.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 

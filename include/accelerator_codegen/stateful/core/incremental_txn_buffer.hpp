@@ -1,6 +1,7 @@
+// SCAFFOLDING
 #pragma once
 
-#include "accelerator_codegen/aux_state/invalidation_plan.hpp"
+#include "accelerator_codegen/stateful/state/invalidation_plan.hpp"
 
 namespace accelerator_codegen::aux_state {
 

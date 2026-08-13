@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #pragma once
 
 #include "duckdb/common/common.hpp"

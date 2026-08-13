@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #pragma once
 
 #include <cstdint>
@@ -6,7 +7,7 @@
 #include <mutex>
 #include <unordered_map>
 
-#include "accelerator_codegen/aux_state/partition_key.hpp"
+#include "accelerator_codegen/stateful/state/partition_key.hpp"
 #include "duckdb/common/typedefs.hpp"
 
 namespace accelerator_codegen::aux_state {

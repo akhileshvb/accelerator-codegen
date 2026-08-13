@@ -1,8 +1,9 @@
+// SCAFFOLDING
 #pragma once
 
 #include <unordered_set>
 
-#include "accelerator_codegen/aux_state/partition_key.hpp"
+#include "accelerator_codegen/stateful/state/partition_key.hpp"
 
 namespace accelerator_codegen::aux_state {
 

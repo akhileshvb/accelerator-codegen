@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #pragma once
 
 #include <atomic>
@@ -8,7 +9,7 @@
 #include <new>
 #include <vector>
 
-#include "accelerator_codegen/duckdb_scan_adapter.hpp"
+#include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parallel/task_executor.hpp"

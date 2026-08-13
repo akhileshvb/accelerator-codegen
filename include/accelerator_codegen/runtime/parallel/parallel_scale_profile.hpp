@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #pragma once
 
 #include <chrono>

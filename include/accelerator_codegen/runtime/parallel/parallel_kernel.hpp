@@ -1,7 +1,8 @@
+// SCAFFOLDING
 #pragma once
 
-#include "accelerator_codegen/kernel.hpp"
-#include "accelerator_codegen/parallel/parallel_runtime.hpp"
+#include "accelerator_codegen/runtime/duckdb/kernel.hpp"
+#include "accelerator_codegen/runtime/parallel/parallel_runtime.hpp"
 #include "duckdb/function/function.hpp"
 #include "duckdb/main/client_context.hpp"
 

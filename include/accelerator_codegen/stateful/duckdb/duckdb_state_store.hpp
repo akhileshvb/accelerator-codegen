@@ -1,11 +1,12 @@
+// GENERATED BACKEND
 #pragma once
 
 #include <functional>
 #include <memory>
 #include <vector>
 
-#include "accelerator_codegen/aux_state/core/aux_state_store.hpp"
-#include "accelerator_codegen/aux_state/partitioned_state_store.hpp"
+#include "accelerator_codegen/stateful/core/aux_state_store.hpp"
+#include "accelerator_codegen/stateful/state/partitioned_state_store.hpp"
 
 namespace accelerator_codegen::aux_state::engine::duckdb {
 

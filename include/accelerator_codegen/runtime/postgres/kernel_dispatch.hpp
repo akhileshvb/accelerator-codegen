@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #pragma once
 
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
@@ -5,7 +6,7 @@
 #include <cstdint>
 #include <string>
 
-#include "accelerator_codegen/aux_state/engine/postgres/postgres_row_writer.hpp"
+#include "accelerator_codegen/runtime/postgres/row_writer.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 

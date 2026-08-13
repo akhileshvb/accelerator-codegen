@@ -1,9 +1,10 @@
+// GENERATED BACKEND
 #pragma once
 
 #include <functional>
 
-#include "accelerator_codegen/aux_state/core/aux_registry.hpp"
-#include "accelerator_codegen/aux_state/engine/duckdb/duckdb_state_store.hpp"
+#include "accelerator_codegen/stateful/core/aux_registry.hpp"
+#include "accelerator_codegen/stateful/duckdb/duckdb_state_store.hpp"
 #include "duckdb/accelerator/mutation_recorder.hpp"
 
 namespace accelerator_codegen::aux_state::engine::duckdb {

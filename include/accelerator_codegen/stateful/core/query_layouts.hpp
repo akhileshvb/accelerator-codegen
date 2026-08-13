@@ -1,9 +1,10 @@
+// SCAFFOLDING
 #pragma once
 
 #include <array>
 #include <cstdint>
 
-#include "accelerator_codegen/aux_state/core/aux_types.hpp"
+#include "accelerator_codegen/stateful/core/aux_types.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 
@@ -102,7 +103,6 @@ struct TpchQ14Layout {
 
 struct TpchQ3Layout {
   static constexpr const char *kAccelerator = "tpch_q3";
-  static constexpr PartitionId kCustomerSegments = 0;
 
   // Per-segment interval indexes are keyed by market-segment id.
   static constexpr PartitionId kSegmentBuilding = 1;
@@ -112,7 +112,8 @@ struct TpchQ3Layout {
   static constexpr PartitionId kSegmentAutomobile = 5;
   static constexpr PartitionId kFirstSegment = kSegmentBuilding;
   static constexpr PartitionId kLastSegment = kSegmentAutomobile;
-  static constexpr PartitionId kOrderRoutes = 6;
+  // Dense orderkey → segment routing table (Side partition).
+  static constexpr PartitionId kOrderSegmentSide = 6;
 
   static constexpr bool IsSegmentPartition(PartitionId partition) {
     return partition >= kFirstSegment && partition <= kLastSegment;

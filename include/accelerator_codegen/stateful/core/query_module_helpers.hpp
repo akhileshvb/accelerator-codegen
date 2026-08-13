@@ -1,8 +1,9 @@
+// SCAFFOLDING
 #pragma once
 
 #include <algorithm>
 
-#include "accelerator_codegen/aux_state/core/aux_types.hpp"
+#include "accelerator_codegen/stateful/core/aux_types.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 

@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #pragma once
 
 #include <cstddef>
@@ -7,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "accelerator_codegen/aux_state/maintenance/cost_model.hpp"
+#include "accelerator_codegen/stateful/maintenance/cost_model.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 

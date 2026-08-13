@@ -1,8 +1,9 @@
+// GENERATED BACKEND
 #pragma once
 
 #include <functional>
 
-#include "accelerator_codegen/aux_state/core/aux_registry.hpp"
+#include "accelerator_codegen/stateful/core/aux_registry.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 

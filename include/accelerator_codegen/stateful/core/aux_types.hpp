@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #pragma once
 
 #include <algorithm>
@@ -9,9 +10,9 @@
 #include <variant>
 #include <vector>
 
-#include "accelerator_codegen/aux_state/invalidation_plan.hpp"
-#include "accelerator_codegen/aux_state/core/aux_maintenance_policy.hpp"
-#include "accelerator_codegen/aux_state/maintenance/maintenance_action.hpp"
+#include "accelerator_codegen/stateful/state/invalidation_plan.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
+#include "accelerator_codegen/stateful/maintenance/maintenance_action.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 
