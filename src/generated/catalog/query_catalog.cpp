@@ -566,7 +566,7 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      "AND o_orderdate < DATE '1993-06-01' + INTERVAL '3' MONTH AND "
      "l_returnflag = 'R' "
      "GROUP BY c_custkey, c_name, c_acctbal, c_phone, n_name, c_address, "
-     "c_comment ORDER BY revenue DESC, c_custkey",
+     "c_comment ORDER BY revenue DESC, c_custkey LIMIT 20",
      "SELECT * FROM accel_tpch_q10_aux(DATE '1993-06-01')",
      "SELECT * FROM accel_tpch_q10(DATE '1993-06-01')",
      "SELECT * FROM accel_tpch_q10_aux(DATE '1993-06-01')",

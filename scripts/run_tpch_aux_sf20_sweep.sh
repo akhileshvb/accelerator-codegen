@@ -107,7 +107,7 @@ fi
 
 preflight() {
   local free_gb mem_gb
-  free_gb=$(df -BG "${DUCKDB_ROOT}" | awk 'NR==2 {gsub(/G/,"",$4); print $4}')
+  free_gb=$(df -BG "$(dirname "${SF20_DB}")" | awk 'NR==2 {gsub(/G/,"",$4); print $4}')
   mem_gb=$(awk '/MemAvailable/ {printf "%d", $2/1024/1024}' /proc/meminfo)
   echo "preflight_free_disk_gb=${free_gb} preflight_mem_available_gb=${mem_gb}"
   if [[ "${free_gb}" -lt "${MIN_DISK_GB}" ]]; then

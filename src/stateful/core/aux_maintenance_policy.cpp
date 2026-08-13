@@ -76,10 +76,12 @@ MaintenanceDecision SelectAuxMaintenanceAction(
   candidates.push_back(
       {MaintenanceAction::ApplyDelta, apply_delta, apply_delta_eligible});
 
+  // Rebuild actions now run Build+Publish on Commit (sync). Charge rebuild cost
+  // as immediate so ApplyDelta still wins when cheaper, and so InvalidateAndFallback
+  // remains preferred only when few future queries are expected.
   ActionCostEstimate rebuild_partition;
   rebuild_partition.immediate_us =
-      params.invalidation_overhead_us * partitions;
-  rebuild_partition.differential_future_query_us =
+      params.invalidation_overhead_us * partitions +
       params.partition_rebuild_us * partitions;
   candidates.push_back({
       MaintenanceAction::RebuildPartition, rebuild_partition,
@@ -87,8 +89,8 @@ MaintenanceDecision SelectAuxMaintenanceAction(
           !request.whole_state_required && request.affected_partition_count > 0});
 
   ActionCostEstimate rebuild_all;
-  rebuild_all.immediate_us = params.invalidation_overhead_us;
-  rebuild_all.differential_future_query_us = params.full_rebuild_us;
+  rebuild_all.immediate_us =
+      params.invalidation_overhead_us + params.full_rebuild_us;
   candidates.push_back({MaintenanceAction::RebuildAll, rebuild_all,
                         request.full_rebuild_supported});
 

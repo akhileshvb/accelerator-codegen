@@ -2,8 +2,38 @@
 
 #include <iterator>
 #include <stdexcept>
+#include <utility>
 
 namespace accelerator_codegen::aux_state::core {
+namespace {
+
+struct CollectingStateBuilder final : StateBuilder {
+  explicit CollectingStateBuilder(StagedMaintenanceOutcome &outcome_p)
+      : outcome(outcome_p) {}
+
+  void Write(StateImage image) override {
+    outcome.updates.push_back(std::move(image));
+  }
+
+  void Finish() override { finished = true; }
+
+  StagedMaintenanceOutcome &outcome;
+  bool finished = false;
+};
+
+bool IsSyncRebuildAction(MaintenanceAction action) {
+  return action == MaintenanceAction::RebuildAll ||
+         action == MaintenanceAction::RebuildPartition;
+}
+
+InvalidationPlan AllPartitionsPlan() {
+  InvalidationPlan plan;
+  plan.scope =
+      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
+  return plan;
+}
+
+} // namespace
 
 void AuxTransactionCoordinator::Register(
     std::shared_ptr<AuxQueryModule> module) {
@@ -134,6 +164,44 @@ void AuxTransactionCoordinator::Commit() {
     if (!entry.staged) {
       continue;
     }
+
+    const auto action = entry.outcome.action;
+    // RebuildAll / RebuildPartition used to invalidate only and rely on
+    // ExecuteFallback, which rebuilds per query without publishing. Materialize
+    // a full Build into updates when the module did not already supply them
+    // (e.g. SecEdgar Q2), then invalidate once and publish so later queries hit.
+    // InvalidateAndFallback stays lazy on purpose.
+    if (IsSyncRebuildAction(action) && entry.outcome.updates.empty()) {
+      CollectingStateBuilder builder(entry.outcome);
+      entry.module->Build(*services, builder);
+      if (!builder.finished) {
+        throw std::logic_error(
+            "auxiliary rebuild Build() did not call Finish(): " +
+            entry.module->Id());
+      }
+      entry.outcome.expected_version = 0;
+      for (auto &image : entry.outcome.updates) {
+        image.version = 0;
+      }
+    }
+
+    if (IsSyncRebuildAction(action)) {
+      InvalidationPlan plan = entry.outcome.invalidations;
+      MergeInvalidationPlan(plan, entry.outcome.pending_rebuild);
+      // Dropping stale partitions is required even when a module already filled
+      // updates without an invalidation plan (partition sets can shrink/change).
+      if (plan.IsEmpty() && !entry.outcome.updates.empty()) {
+        plan = AllPartitionsPlan();
+      }
+      if (!plan.IsEmpty()) {
+        services->StateStore().Invalidate(plan);
+      }
+      if (!entry.outcome.updates.empty()) {
+        services->StateStore().TryPublish(entry.outcome, /*expected_version=*/0);
+      }
+      continue;
+    }
+
     if (!entry.outcome.invalidations.IsEmpty()) {
       services->StateStore().Invalidate(entry.outcome.invalidations);
     }

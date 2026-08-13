@@ -25,7 +25,8 @@ int GetEnvInt(const char *name, int fallback) {
 }
 
 std::vector<int> DefaultQueries() {
-  return {1, 3, 6, 9, 10, 12, 14, 17, 18, 21};
+  // Shared DuckDB catalog RF-capable aux queries (Q9/Q11 not in this catalog).
+  return {1, 3, 6, 10, 12, 14, 17, 18, 21};
 }
 
 std::vector<int> ParseQueries(const char *spec) {
