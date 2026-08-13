@@ -5,6 +5,7 @@
 #include "accelerator_codegen/runtime/duckdb/tpch_rf.hpp"
 #include "aux_benchmark_diagnostics.hpp"
 #include "catalog/query_catalog.hpp"
+#include "tpch_arg_variants.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -213,20 +214,25 @@ double TimeAccelRfWriteCommitUs(DuckdbRuntime &runtime, int write_seq,
   return ElapsedUs(start, Clock::now());
 }
 
-double TimeExecuteUs(DuckdbRuntime &runtime) {
+double TimeExecuteUs(DuckdbRuntime &runtime,
+                     const accelerator_codegen::aux_state::core::QueryArguments
+                         &arguments) {
   const auto start = Clock::now();
-  runtime.Execute();
+  runtime.Execute(arguments);
   return ElapsedUs(start, Clock::now());
 }
 
-double MeasureReaderQps(DuckdbRuntime &runtime, int samples) {
-  if (samples <= 0) {
+double MeasureReaderQps(DuckdbRuntime &runtime,
+                        const std::vector<TpchArgVariant> &arg_pool, int samples) {
+  if (samples <= 0 || arg_pool.empty()) {
     return 1.0;
   }
   std::vector<double> query_samples;
   query_samples.reserve(samples);
   for (int i = 0; i < samples; i++) {
-    query_samples.push_back(TimeExecuteUs(runtime));
+    query_samples.push_back(
+        TimeExecuteUs(runtime, arg_pool[static_cast<std::size_t>(i) % arg_pool.size()]
+                                    .arguments));
   }
   const double median_us = SummarizeSamples(std::move(query_samples)).median_us;
   if (median_us <= 0.0) {
@@ -236,13 +242,18 @@ double MeasureReaderQps(DuckdbRuntime &runtime, int samples) {
 }
 
 double MeasureQueryMedianUs(duckdb::Connection &connection,
-                            const std::string &sql, int samples) {
-  if (samples <= 0) {
+                            const std::vector<TpchArgVariant> &arg_pool,
+                            bool use_kernel_sql, int samples) {
+  if (samples <= 0 || arg_pool.empty()) {
     return 0.0;
   }
   std::vector<double> query_samples;
   query_samples.reserve(samples);
   for (int i = 0; i < samples; i++) {
+    const auto &variant =
+        arg_pool[static_cast<std::size_t>(i) % arg_pool.size()];
+    const std::string &sql =
+        use_kernel_sql ? variant.kernel_sql : variant.base_sql;
     const auto start = Clock::now();
     ExecuteAndConsume(connection, sql);
     query_samples.push_back(ElapsedUs(start, Clock::now()));
@@ -261,10 +272,16 @@ struct WorkloadTimings {
   double total_accel_write_us = 0.0;
 };
 
+const TpchArgVariant &PickArgVariant(const std::vector<TpchArgVariant> &arg_pool,
+                                     std::size_t &arg_seq) {
+  Require(!arg_pool.empty(), "arg pool is empty");
+  return arg_pool[arg_seq++ % arg_pool.size()];
+}
+
 WorkloadTimings RunMeasuredWorkloadWallClock(
     DuckdbRuntime &runtime, double duration_sec, double write_interval_sec,
     std::vector<catalog_ns::SharedProbe> &probes, WriteMode write_mode,
-    int rf_chunk_orders) {
+    int rf_chunk_orders, const std::vector<TpchArgVariant> &arg_pool) {
   WorkloadTimings result;
   if (duration_sec <= 0.0) {
     return result;
@@ -278,6 +295,7 @@ WorkloadTimings RunMeasuredWorkloadWallClock(
       write_interval_sec > 0.0 ? write_interval_sec : 1e30;
 
   int write_seq = 0;
+  std::size_t arg_seq = 0;
   // Cap sample vectors — ultra-fast kernels can execute >1e8 queries/hour.
   constexpr std::size_t kMaxSamples = 200000;
   std::vector<double> hit_samples;
@@ -325,7 +343,8 @@ WorkloadTimings RunMeasuredWorkloadWallClock(
       break;
     }
 
-    const auto sample = TimeExecuteUs(runtime);
+    const auto sample =
+        TimeExecuteUs(runtime, PickArgVariant(arg_pool, arg_seq).arguments);
     result.total_accel_query_us += sample;
     push_hit_sample(sample);
     result.num_queries++;
@@ -344,11 +363,13 @@ WorkloadTimings RunMeasuredWorkloadWallClock(
 WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime, int num_queries,
                                     int write_frequency_pct,
                                     std::vector<catalog_ns::SharedProbe> &probes,
-                                    WriteMode write_mode, int rf_chunk_orders) {
+                                    WriteMode write_mode, int rf_chunk_orders,
+                                    const std::vector<TpchArgVariant> &arg_pool) {
   WorkloadTimings result;
   result.num_queries = num_queries;
 
   int write_seq = 0;
+  std::size_t arg_seq = 0;
   std::vector<double> hit_samples;
   hit_samples.reserve(num_queries);
   std::vector<double> write_samples;
@@ -366,7 +387,8 @@ WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime, int num_queries,
       result.writes_executed++;
     }
 
-    const auto sample = TimeExecuteUs(runtime);
+    const auto sample =
+        TimeExecuteUs(runtime, PickArgVariant(arg_pool, arg_seq).arguments);
     result.total_accel_query_us += sample;
     hit_samples.push_back(sample);
   }
@@ -401,6 +423,7 @@ struct BenchSession {
   duckdb::Connection base_connection;
   duckdb::Connection accel_connection;
   std::vector<catalog_ns::SharedProbe> write_probes;
+  std::vector<TpchArgVariant> arg_pool;
   WriteMode write_mode = WriteMode::Point;
   int rf_chunk_orders = 1;
   double base_write_median_us = 0.0;
@@ -424,12 +447,18 @@ struct BenchSession {
     accelerator_codegen::RegisterAcceleratorFunctions(base_connection);
     accelerator_codegen::RegisterAcceleratorFunctions(accel_connection);
 
+    arg_pool = BuildTpchArgPool(query_num, entry);
+    Require(!arg_pool.empty(), "failed to build TPC-H arg pool");
+
     std::cerr << "tpch_q" << query_num << "_aux_bench: write_mode="
               << WriteModeName(write_mode);
     if (write_mode == WriteMode::Rf) {
       std::cerr << " rf_chunk_orders=" << rf_chunk_orders;
     }
-    std::cerr << '\n' << std::flush;
+    std::cerr << " vary_args=" << (VaryArgsEnabled() ? 1 : 0)
+              << " arg_pool=" << arg_pool.size() << " arg_seed=" << ArgSeed()
+              << '\n'
+              << std::flush;
 
     if (write_mode == WriteMode::Point) {
       write_probes = PrecomputeWriteProbes(base_connection, entry, query_num);
@@ -457,24 +486,26 @@ struct BenchSession {
                 .count());
     aux_state_bytes = bench_diag::CollectAuxStateFootprintBytes(*runtime);
 
-    const std::string reference_sql = entry.base_sql;
-    const std::string base_kernel_sql = entry.postgres_base_kernel_sql;
     for (int i = 0; i < warmup_queries; i++) {
+      const auto &variant =
+          arg_pool[static_cast<std::size_t>(i) % arg_pool.size()];
       if (ref_samples > 0) {
-        ExecuteAndConsume(base_connection, reference_sql);
+        ExecuteAndConsume(base_connection, variant.base_sql);
       }
       if (i < std::min(warmup_queries, 2)) {
-        ExecuteAndConsume(base_connection, base_kernel_sql);
+        ExecuteAndConsume(base_connection, variant.kernel_sql);
       }
-      runtime->Execute();
+      runtime->Execute(variant.arguments);
     }
 
     duckdb_ref_query_median_us =
-        MeasureQueryMedianUs(base_connection, reference_sql, ref_samples);
-    base_kernel_median_us =
-        MeasureQueryMedianUs(base_connection, base_kernel_sql,
-                             ref_samples > 0 ? std::min(ref_samples, 2) : 0);
-    reader_qps = MeasureReaderQps(*runtime, std::max(1, std::min(warmup_queries, 3)));
+        MeasureQueryMedianUs(base_connection, arg_pool, /*use_kernel_sql=*/false,
+                             ref_samples);
+    base_kernel_median_us = MeasureQueryMedianUs(
+        base_connection, arg_pool, /*use_kernel_sql=*/true,
+        ref_samples > 0 ? std::min(ref_samples, 2) : 0);
+    reader_qps = MeasureReaderQps(*runtime, arg_pool,
+                                  std::max(1, std::min(warmup_queries, 3)));
   }
 
   void RunFrequencyPoint(int write_frequency_pct, const std::string &suite,
@@ -489,7 +520,7 @@ struct BenchSession {
                        return RunMeasuredWorkload(
                            *session.runtime, measured_queries, write_frequency_pct,
                            session.write_probes, session.write_mode,
-                           session.rf_chunk_orders);
+                           session.rf_chunk_orders, session.arg_pool);
                      });
   }
 
@@ -512,7 +543,8 @@ struct BenchSession {
           session.runtime->ResetStoreDiagnosticsProfiling();
           return RunMeasuredWorkloadWallClock(
               *session.runtime, duration_sec, write_interval_sec,
-              session.write_probes, session.write_mode, session.rf_chunk_orders);
+              session.write_probes, session.write_mode, session.rf_chunk_orders,
+              session.arg_pool);
         });
   }
 

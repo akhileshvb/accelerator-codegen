@@ -1118,8 +1118,12 @@ std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect(
 }
 
 void DuckdbRuntime::Execute() {
+  Execute(ToCoreArguments(entry_.benchmark_arguments));
+}
+
+void DuckdbRuntime::Execute(const core::QueryArguments &arguments) {
   core::BeginAuxExecuteProfiling();
-  auto rows = ExecuteCollect();
+  auto rows = ExecuteCollect(arguments);
   core::EndAuxExecuteProfiling();
   last_rows = rows.size();
 }

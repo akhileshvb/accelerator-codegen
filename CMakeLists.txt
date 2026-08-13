@@ -282,6 +282,23 @@ target_link_libraries(test_shared_tpch_rf_differential
 
 target_include_directories(test_shared_tpch_rf_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
+add_executable(test_tpch_arg_variants_differential
+    tests/aux_state/test_tpch_arg_variants_differential.cpp
+    benchmarks/tpch/single-threaded/tpch_arg_variants.cpp
+)
+
+target_link_libraries(test_tpch_arg_variants_differential
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_tpch_arg_variants_differential
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/single-threaded
+)
+
 add_executable(test_aux_calibration
     tests/aux_state/test_aux_calibration.cpp
 )

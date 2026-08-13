@@ -188,7 +188,14 @@ void CompareRows(duckdb::MaterializedQueryResult &base,
 void CompareAuxRowsToBase(duckdb::Connection &connection,
                           const SharedQueryCatalogEntry &entry,
                           const std::vector<core::AuxRow> &accelerated) {
-  auto base_result = connection.Query(entry.base_sql);
+  CompareAuxRowsToSql(connection, entry, entry.base_sql, accelerated);
+}
+
+void CompareAuxRowsToSql(duckdb::Connection &connection,
+                         const SharedQueryCatalogEntry &entry,
+                         const std::string &base_sql,
+                         const std::vector<core::AuxRow> &accelerated) {
+  auto base_result = connection.Query(base_sql);
   Require(base_result != nullptr && !base_result->HasError(),
           base_result ? base_result->GetError()
                       : "DuckDB differential query failed");

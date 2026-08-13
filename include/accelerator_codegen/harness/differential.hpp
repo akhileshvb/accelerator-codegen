@@ -17,6 +17,13 @@ void CompareAuxRowsToBase(duckdb::Connection &connection,
                           const aux_engine::SharedQueryCatalogEntry &entry,
                           const std::vector<core::AuxRow> &accelerated);
 
+// Same as CompareAuxRowsToBase, but against an arbitrary DuckDB SQL string
+// (used for TPC-H substitution-parameter sweeps).
+void CompareAuxRowsToSql(duckdb::Connection &connection,
+                         const aux_engine::SharedQueryCatalogEntry &entry,
+                         const std::string &base_sql,
+                         const std::vector<core::AuxRow> &accelerated);
+
 void RequireSharedMatchesBase(duckdb::Connection &connection,
                               aux_engine::duckdb::DuckdbRuntime &runtime,
                               const aux_engine::SharedQueryCatalogEntry &entry);

@@ -36,6 +36,7 @@ public:
 
   void Build();
   void Execute();
+  void Execute(const core::QueryArguments &arguments);
   std::vector<core::AuxRow> ExecuteCollect();
   std::vector<core::AuxRow> ExecuteCollect(const core::QueryArguments &arguments);
   void Apply(SharedProbe &probe);
