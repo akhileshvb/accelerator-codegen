@@ -40,13 +40,17 @@ cp "${DATASET_DB}" "${WORK_DB}"
 export ACCEL_CROSS_ACCEL_WORK_DB="${WORK_DB}"
 
 set +e
-LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}=${DATASET_DB}" "${CTEST}" -R "test_cross_accel" --output-on-failure 2>&1)"
+LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}"="${DATASET_DB}" "${CTEST}" -R "test_cross_accel" --output-on-failure 2>&1)"
 RC=$?
 set -e
 
 STATUS="pass"
 if [[ ${RC} -ne 0 ]]; then
   STATUS="fail"
+fi
+if echo "${LOG}" | grep -q "No tests were found"; then
+  STATUS="fail"
+  RC=1
 fi
 
 python3 - <<PY

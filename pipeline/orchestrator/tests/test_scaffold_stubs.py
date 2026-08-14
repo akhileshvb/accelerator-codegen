@@ -22,7 +22,7 @@ def test_build_stub_values_sec_edgar():
         "create_fn": "CreateSecEdgarQ1FunctionSet",
         "test_target": "test_sec_edgar_q1",
         "bench_target": "benchmark_sec_edgar_q1",
-        "header_path": "include/accelerator_codegen/sec_edgar_q1.hpp",
+        "header_path": "src/generated/sec_edgar/q1/base/query.hpp",
     }
     values = _build_stub_values(workload, paths, 1)
     assert values["type_prefix"] == "SecEdgarQ1"
@@ -56,7 +56,7 @@ def test_materialize_workload_stubs_writes_missing_files(tmp_path):
         "benchmark_name": "sec_edgar",
         "query_number": 1,
         "artifact_namespace": "sec_edgar",
-        "source_subdir": "sec_edgar/single-threaded",
+        "source_subdir": "sec_edgar/q1/base/single-threaded",
         "function_name": "accel_sec_edgar_q1",
         "create_fn": "CreateSecEdgarQ1FunctionSet",
         "header_basename": "sec_edgar_q1",
@@ -75,18 +75,20 @@ def test_materialize_workload_stubs_writes_missing_files(tmp_path):
     )
 
     result = materialize_workload_stubs(pipeline_config, workload, 1)
-    header = repo / "include/accelerator_codegen/sec_edgar_q1.hpp"
+    header = repo / "src/generated/sec_edgar/q1/base/query.hpp"
     assert header.is_file()
     assert "SecEdgarQ1" in header.read_text(encoding="utf-8")
-    assert "sec_edgar_q1.hpp" in result["created"][0]
+    assert "query.hpp" in result["created"][0]
 
 
 def test_log_tool_call(capsys):
-    from accel_pipeline.agent_progress import log_agent_message, log_tool_call
+    from accel_pipeline.agent_progress import begin_agent_turn, log_agent_message, log_tool_call
 
+    begin_agent_turn("implementation", 2)
     log_tool_call("run_command", {"command": "ctest -R smoke"})
     captured = capsys.readouterr()
-    assert "tool_call: run_command" in captured.err
+    assert "tool_call turn=2" in captured.err
+    assert "run_command" in captured.err
     assert "ctest" in captured.err
 
     class Block:

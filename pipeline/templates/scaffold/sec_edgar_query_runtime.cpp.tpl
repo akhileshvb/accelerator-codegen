@@ -1,4 +1,4 @@
-#include "accelerator_codegen/sec_edgar_query_runtime.hpp"
+#include "sec_edgar/runtime.hpp"
 
 namespace accelerator_codegen {
 

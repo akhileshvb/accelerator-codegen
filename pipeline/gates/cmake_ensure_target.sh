@@ -72,10 +72,10 @@ ensure_aux_unit_tests() {
 }
 
 ensure_cross_accel_tests() {
-	ensure_cmake_target "$1" "$2" test_cross_accel_correctness
-	ensure_cmake_target "$1" "$2" test_cross_accel_isolation
+	build_cmake_target "$1" "$2" test_cross_accel_correctness
+	build_cmake_target "$1" "$2" test_cross_accel_isolation
 }
 
 ensure_multi_connection_stress_test() {
-	ensure_cmake_target "$1" "$2" test_aux_multi_connection_stress
+	build_cmake_target "$1" "$2" test_aux_multi_connection_stress
 }

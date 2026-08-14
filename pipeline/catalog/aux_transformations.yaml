@@ -1,0 +1,65 @@
+# Historical precedents from successful aux optimizations (non-prescriptive).
+# Each entry documents problem, transformation, measured effect, and legality constraints.
+
+- id: q21_nation_name_hash_partition
+  source_query: 21
+  problem: "Read path resolved nation name via multi-partition fanout; validity scanned many occupied slots per execute"
+  transformation: "FNV-1a parameter-keyed partition holding pre-materialized output rows; collision guard via stored param; slow-path fallback"
+  measured_effect:
+    read_only_query_speedup_before: 9.0
+    read_only_query_speedup_after: 3000.0
+    valid_partitions_before: 200000
+    valid_partitions_after: 1
+    partitions_read_per_query_after: 1
+    validity_slots_scanned_before: 200000
+    validity_slots_scanned_after: 1
+  legality_constraints:
+    - "Not a prohibited full-result cache: keyed at partition grain with collision detection and fallback"
+    - "Requires incremental update of hash partition on maintenance"
+  excerpt_paths:
+    - src/generated/tpch/q21/aux/module.hpp
+    - src/generated/tpch/q21/aux/module.cpp
+
+- id: q17_parameter_keyed_attr_result
+  source_query: 17
+  problem: "Per-part partition stats forced O(parts) validity scan and multi-partition reads for brand/container bind params"
+  transformation: "Chunked part-stats partitions plus FNV-1a parameter-keyed attr-result partition with incremental maintenance"
+  measured_effect:
+    read_only_query_speedup_before: 9.0
+    read_only_query_speedup_after: 3649.0
+    valid_partitions_before: 198432
+    valid_partitions_after: 2
+    partitions_read_per_query_after: 1
+    validity_slots_scanned_before: 198432
+    validity_slots_scanned_after: 2
+  legality_constraints:
+    - "Keyed result partition stores scalar contribution per (brand, container), not full query result rows"
+    - "Maintenance must update attr-result on lineitem deltas"
+  excerpt_paths:
+    - src/generated/tpch/q17/aux/module.hpp
+    - src/generated/tpch/q17/aux/module.cpp
+
+- id: q14_single_partition_scalar
+  source_query: 14
+  problem: "Small-cardinality date window allowed single-partition validity with no fanout"
+  transformation: "Single global partition keyed to promo revenue window; CheckValidity passes empty partition list"
+  measured_effect:
+    partitions_read_per_query_after: 1
+    validity_slots_scanned_after: 1
+  legality_constraints:
+    - "Applicable when output is a single scalar over a bounded attribute window"
+  excerpt_paths:
+    - src/generated/tpch/q14/aux/module.cpp
+
+- id: q18_dense_partkey_chunks
+  source_query: 18
+  problem: "Large order sets required chunked dense storage to avoid per-entity partition explosion"
+  transformation: "Fixed-size partkey chunks with bitmap/dense arrays inside chunk partitions"
+  measured_effect:
+    valid_partitions_after: 1000
+    partitions_read_per_query_after: 3
+  legality_constraints:
+    - "Chunk size must scale with scale factor; maintenance updates only touched chunks"
+  excerpt_paths:
+    - src/generated/tpch/q18/aux/module.hpp
+    - src/generated/tpch/q18/aux/module.cpp

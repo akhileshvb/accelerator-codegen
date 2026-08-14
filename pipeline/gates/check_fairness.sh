@@ -29,8 +29,7 @@ fairness = ctx.get("fairness", {})
 kernel_templates = fairness.get(
     "kernel_search_paths",
     [
-        f"src/generated/tpch/single-threaded/q{query}_kernel.cpp",
-        f"src/generated/tpch/q{query}_kernel.cpp",
+        f"src/generated/tpch/q{query}/base/single-threaded/kernel.cpp",
     ],
 )
 kernel_candidates = [root / tpl.replace("{N}", query) for tpl in kernel_templates]

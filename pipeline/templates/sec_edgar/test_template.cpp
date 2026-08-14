@@ -1,7 +1,7 @@
 // Template for SEC-EDGAR base accelerator tests.
 // Copy to tests/single-threaded/test_sec_edgar_q{{query_number}}.cpp and customize.
 
-#include "accelerator_codegen/register.hpp"
+#include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "test_support/result_compare.hpp"
 
 #include <iostream>

@@ -4,14 +4,33 @@ from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload, apply_workload_overrides
-from accel_pipeline.models import make_model_id
+from accel_pipeline.models import make_model_id, resolve_agent_model
+from accel_pipeline.agent_progress import begin_agent_run
 from accel_pipeline.pipeline_log import (
     log_stage_complete,
     log_stage_start,
     usage_from_metadata,
 )
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt
-from accel_pipeline.tools.tool_policy import TOOL_USAGE_INSTRUCTIONS
+from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES, tool_usage_instructions
+
+_UNLIMITED_STAGE_TURNS = 10_000
+
+
+def resolve_stage_max_turns(stage_max_turns: dict[str, int], stage: str, default: int = 15) -> int:
+    raw = int(stage_max_turns.get(stage, default))
+    if raw <= 0:
+        return _UNLIMITED_STAGE_TURNS
+    return raw
+
+
+def resolve_optimization_max_turns(pipeline_config: Any, phase: str) -> int:
+    """Resolve optimization sub-stage turns; 0 or unset means unlimited."""
+    key = f"optimization_max_turns_{phase}"
+    raw = int(getattr(pipeline_config, key, 0) or 0)
+    if raw <= 0:
+        return _UNLIMITED_STAGE_TURNS
+    return raw
 
 
 def run_agent_stage(
@@ -68,6 +87,7 @@ def run_agent_stage(
         return {"dry_run": True, "stage": stage, "prompt_chars": len(prompt)}
 
     model_id = make_model_id(stage, pipeline_config, model_config, model_overrides)
+    agent_model = resolve_agent_model(stage, pipeline_config, model_config, model_overrides)
     log_stage_start(
         pipeline_config.repo_root,
         query,
@@ -85,10 +105,17 @@ def run_agent_stage(
         workload_name=workload_name,
         optimization_iter=optimization_iter,
     )
-    max_turns = int(pipeline_config.stage_max_turns.get(stage, 15))
+    max_turns = resolve_stage_max_turns(pipeline_config.stage_max_turns, stage)
     instructions = prompt
     if model_config.provider != "cursor":
-        instructions = f"{prompt.rstrip()}\n\n{TOOL_USAGE_INSTRUCTIONS}"
+        instructions = f"{prompt.rstrip()}\n\n{tool_usage_instructions(stage)}"
+
+    begin_agent_run(
+        stage,
+        max_turns=max_turns,
+        tools=STAGE_TOOL_NAMES.get(stage, []),
+        prompt_chars=len(instructions),
+    )
 
     request = StageRunRequest(
         stage=stage,
@@ -96,6 +123,7 @@ def run_agent_stage(
         user_message=user_message,
         agent_name=f"accel_{stage}",
         model_id=model_id,
+        agent_model=agent_model,
         max_turns=max_turns,
     )
     result = backend.run_stage(request)

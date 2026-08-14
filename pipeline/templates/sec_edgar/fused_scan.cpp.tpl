@@ -1,9 +1,9 @@
 // Optional fused-scan implementation for SEC-EDGAR Q{{query_number}}.
 // When this file exists it is compiled automatically (see cmake/BaseQuery.cmake).
-// Wire runtime hooks in src/generated/sec_edgar/sec_edgar_query_runtime.cpp.
+// Wire runtime hooks in src/generated/sec_edgar/runtime.cpp.
 
-#include "accelerator_codegen/duckdb_scan_adapter.hpp"
-#include "accelerator_codegen/sec_edgar_q{{query_number}}.hpp"
+#include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
+#include "sec_edgar/q{{query_number}}/base/query.hpp"
 
 #include "duckdb/main/client_context.hpp"
 

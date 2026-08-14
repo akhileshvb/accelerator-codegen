@@ -16,7 +16,7 @@ Reference SQL: `{{reference_sql_path}}` · Artifacts: `{{artifacts_path}}/`
 - `{{test_path}}`, `{{benchmark_path}}`
 - Optional fused: `{{fused_scan_path}}`
 
-Do not edit `src/register.cpp` or `CMakeLists.txt`.
+Do not edit `src/runtime/duckdb/register.cpp`. `CMakeLists.txt` may be edited for target registration when scaffold/auto-discovery is insufficient.
 
 {{kernel_inspiration_section}}
 
@@ -30,7 +30,7 @@ Build: `cmake --build build-release --target {{bench_target}} {{test_target}} -j
 
 Gates run automatically: correctness → baseline → profile.
 
-Shared docs (read_file **only if needed**): `pipeline/prompts/shared/constraints.md`, `profiling_conventions.md`, `base_kernel_optimization.md`.
+Shared docs (read_file **only if needed**): `pipeline/prompts/shared/generated_layout.md`, `engine_interfaces.md`, `constraints.md`, `profiling_conventions.md`, `base_kernel_optimization.md`.
 
 {{benchmark_notes}}
 

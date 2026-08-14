@@ -30,7 +30,7 @@ def make_reanalysis_tools(ctx: ToolContext):
         proposed_direction: str,
         current_candidate_id: str,
         alternate_candidate_ids: list[str] | None = None,
-        cost_model_insufficient_reason: str = "",
+        cost_model_insufficient_reason: str | None = "",
     ) -> str:
         """Request a bounded structural re-analysis (max 2 per pipeline run).
 
@@ -40,6 +40,7 @@ def make_reanalysis_tools(ctx: ToolContext):
 
         Do NOT use for coefficient tweaks, EWMA tuning, or minor threshold changes.
         """
+        cost_model_insufficient_reason = str(cost_model_insufficient_reason or "")
         workload = load_workload(ctx.workload_name, ctx.pipeline_config.repo_root)
         state = load_or_create(
             ctx.pipeline_config.repo_root, ctx.query, ctx.workload_name, resume=True
@@ -86,7 +87,7 @@ def make_reanalysis_tools(ctx: ToolContext):
                 current_candidate_id=current_candidate_id,
                 reason=str(exc),
             )
-            return json.dumps({"status": "rejected", "reason": str(exc)})
+            return json.dumps({"status": "rejected", "reason": str(exc), "allowed_bottleneck_types": sorted(BOTTLENECK_TYPES)})
 
         allowed = sorted(BOTTLENECK_TYPES)
         log_structural_reanalysis_request(

@@ -9,12 +9,17 @@ from typing import Any
 
 _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
     "analysis": [
+        ("Scale factors", "../../shared/scale_factor_contract.md"),
         ("Fitness rubric", "aux_state_fitness.md"),
         ("Taxonomy index", "taxonomy_index.md"),
         ("Full taxonomy", "aux_state_taxonomy.md"),
         ("Design families", "aux_state_design.md"),
+        ("Mutation coverage", "mutation_coverage.md"),
     ],
     "implementation": [
+        ("Scale factors", "../../shared/scale_factor_contract.md"),
+        ("Generated layout", "../../shared/generated_layout.md"),
+        ("Engine interfaces", "../../shared/engine_interfaces.md"),
         ("Module layout", "module_layout.md"),
         ("Read-path scaffold", "read_path_scaffold.md"),
         ("Bench sweep contract", "bench_sweep_contract.md"),
@@ -23,6 +28,8 @@ _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
         ("Agent boundary", "agent_boundary.md"),
     ],
     "optimization": [
+        ("Scale factors", "../../shared/scale_factor_contract.md"),
+        ("Generated layout", "../../shared/generated_layout.md"),
         ("Bench sweep contract", "bench_sweep_contract.md"),
         ("Maintenance framework", "maintenance_framework.md"),
         ("Taxonomy index", "taxonomy_index.md"),
@@ -36,10 +43,15 @@ _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
 
 def build_shared_docs_reference(pipeline_root_rel: str = "pipeline", stage: str = "") -> str:
     base = f"{pipeline_root_rel}/prompts/aux_state/shared"
+    shared_base = f"{pipeline_root_rel}/prompts/shared"
     docs = _STAGE_SHARED_DOCS.get(stage, _STAGE_SHARED_DOCS["analysis"])
     lines = ["Read with `read_file` only when needed:", ""]
     for label, path in docs:
-        lines.append(f"- **{label}**: `{base}/{path}`")
+        if path.startswith("../../shared/"):
+            rel = f"{shared_base}/{path.removeprefix('../../shared/')}"
+        else:
+            rel = f"{base}/{path}"
+        lines.append(f"- **{label}**: `{rel}`")
     if stage == "analysis":
         lines.append(f"- **Analysis schema**: `{pipeline_root_rel}/schemas/aux_state_analysis.schema.json`")
     return "\n".join(lines)
@@ -56,15 +68,45 @@ def _truncate_text(text: str, *, max_chars: int) -> str:
     return cleaned[: max_chars - 3] + "..."
 
 
+def _compact_scan_order(scan: Any) -> Any:
+    if scan is None:
+        return []
+    if isinstance(scan, str):
+        return _truncate_text(scan, max_chars=240)
+    if isinstance(scan, list):
+        return scan[:2]
+    if isinstance(scan, dict):
+        return [
+            f"{key}: {_truncate_text(str(value), max_chars=80)}"
+            for key, value in list(scan.items())[:2]
+        ]
+    return _truncate_text(str(scan), max_chars=240)
+
+
+def _compact_string_list(values: Any, *, limit: int) -> list[Any]:
+    if not isinstance(values, list):
+        return []
+    compact: list[Any] = []
+    for item in values[:limit]:
+        if isinstance(item, str):
+            compact.append(_truncate_text(item, max_chars=160))
+        elif isinstance(item, dict):
+            compact.append(
+                {
+                    key: _truncate_text(str(value), max_chars=80)
+                    for key, value in list(item.items())[:4]
+                }
+            )
+        else:
+            compact.append(item)
+    return compact
+
+
 def compact_base_analysis_for_implementation(analysis: dict[str, Any]) -> str:
     if not analysis:
         return "{}"
     logical = analysis.get("logical_plan") if isinstance(analysis.get("logical_plan"), dict) else {}
-    scan = analysis.get("scan_order")
-    if isinstance(scan, str):
-        scan_order = _truncate_text(scan, max_chars=240)
-    else:
-        scan_order = (scan or [])[:2]
+    scan_order = _compact_scan_order(analysis.get("scan_order"))
     files = analysis.get("files_to_create") or []
     file_paths = []
     for item in files[:6]:
@@ -78,8 +120,10 @@ def compact_base_analysis_for_implementation(analysis: dict[str, Any]) -> str:
             str(logical.get("simplest_execution_strategy") or ""), max_chars=280
         ),
         "scan_order": scan_order,
-        "likely_bottlenecks": (analysis.get("likely_bottlenecks") or [])[:2],
-        "optimization_hypotheses": (analysis.get("optimization_hypotheses") or [])[:3],
+        "likely_bottlenecks": _compact_string_list(analysis.get("likely_bottlenecks"), limit=2),
+        "optimization_hypotheses": _compact_string_list(
+            analysis.get("optimization_hypotheses"), limit=3
+        ),
         "files_to_create": file_paths,
     }
     return compact_json(payload)

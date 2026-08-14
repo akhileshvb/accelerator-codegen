@@ -1,7 +1,6 @@
 benchmark_name: sec_edgar
 display_name: SEC-EDGAR
 artifact_namespace: sec_edgar
-source_subdir: sec_edgar/single-threaded
 header_prefix: sec_edgar_q
 function_prefix: accel_sec_edgar_q
 create_fn_prefix: CreateSecEdgarQ
@@ -16,11 +15,9 @@ test_template_path: pipeline/templates/sec_edgar/test_template.cpp
 benchmark_template_path: pipeline/templates/sec_edgar/benchmark_template.cpp
 
 write_paths:
-  - include/accelerator_codegen/sec_edgar_q*
-  - include/accelerator_codegen/sec_edgar_query_runtime.hpp
-  - include/accelerator_codegen/duckdb_scan_adapter.hpp
+  - include/accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp
   - src/generated/sec_edgar/**
-  - src/duckdb_scan_adapter.cpp
+  - src/runtime/duckdb/duckdb_scan_adapter.cpp
   - tests/single-threaded/test_sec_edgar_q*
   - tests/test_support/sec_edgar_q*
   - benchmarks/sec_edgar/**
@@ -46,15 +43,16 @@ post_audit_gates:
   - fairness
 
 snapshot_paths:
-  - include/accelerator_codegen/sec_edgar_q{N}.hpp
-  - include/accelerator_codegen/sec_edgar_q{N}_fused.hpp
-  - src/generated/sec_edgar/single-threaded/q{N}_kernel.cpp
-  - src/generated/sec_edgar/single-threaded/q{N}_package.cpp
-  - src/generated/sec_edgar/single-threaded/q{N}_fused_scan.cpp
-  - src/generated/sec_edgar/sec_edgar_query_runtime.cpp
+  - src/generated/sec_edgar/q{N}/base/query.hpp
+  - src/generated/sec_edgar/q{N}/base/fused.hpp
+  - src/generated/sec_edgar/q{N}/base/single-threaded/kernel.cpp
+  - src/generated/sec_edgar/q{N}/base/single-threaded/package.cpp
+  - src/generated/sec_edgar/q{N}/base/single-threaded/fused_scan.cpp
+  - src/generated/sec_edgar/runtime.hpp
+  - src/generated/sec_edgar/runtime.cpp
 
 fairness:
   cardinality_constants: []
   kernel_search_paths:
-    - src/generated/sec_edgar/single-threaded/q{N}_kernel.cpp
-    - src/generated/sec_edgar/single-threaded/q{N}_fused_scan.cpp
+    - src/generated/sec_edgar/q{N}/base/single-threaded/kernel.cpp
+    - src/generated/sec_edgar/q{N}/base/single-threaded/fused_scan.cpp

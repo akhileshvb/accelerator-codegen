@@ -183,7 +183,7 @@ def _sample_valid_analysis() -> dict:
         "performance_hypotheses": {
             "base_path_cost_decomposition": _base_path_cost_decomposition(),
         },
-        "files_to_create": [{"path": "src/aux_state/q14/q14_aux_kernel.cpp", "role": "aux_kernel"}],
+        "files_to_create": [{"path": "src/generated/tpch/q14/aux/module.cpp", "role": "aux_kernel"}],
     }
 
 
@@ -241,6 +241,17 @@ class TestAuxAnalysisValidation:
         analysis["state_candidate_search"]["fewer_than_three_explanation"] = None
         with pytest.raises(AuxAnalysisValidationError, match="at least 3 viable candidates"):
             validate_aux_analysis(analysis)
+
+    def test_repair_fills_fewer_than_three_explanation(self):
+        from accel_pipeline.validation import repair_aux_analysis
+
+        analysis = _sample_valid_analysis()
+        analysis["state_candidate_search"]["candidates"] = analysis["state_candidate_search"]["candidates"][:2]
+        analysis["state_candidate_search"]["fewer_than_three_explanation"] = None
+        repaired, fixes = repair_aux_analysis(analysis)
+        assert fixes
+        assert repaired["state_candidate_search"]["fewer_than_three_explanation"]
+        validate_aux_analysis(repaired)
 
     def test_rejects_missing_read_path_fields(self):
         analysis = _sample_valid_analysis()
@@ -304,7 +315,7 @@ class TestWorkloadConfig:
         assert tables == {"pre"}
 
         paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 1)
-        assert paths["aux_state_subdir"] == "src/aux_state/sec_edgar/q1"
+        assert paths["aux_state_subdir"] == "src/generated/sec_edgar/q1/aux"
         assert paths["aux_bench_target"] == "benchmark_sec_edgar_q1_aux"
         assert paths["cost_model_config"] == "config/sec_edgar_q1_aux_cost_model.json"
         assert workload.get("post_implementation_gates", [])[0] == "aux_correctness"
@@ -324,7 +335,7 @@ class TestWorkloadConfig:
         assert tables == {"num", "sub"}
 
         paths = resolve_workload_paths(load_pipeline_config(repo_root=REPO_ROOT), workload, 2)
-        assert paths["aux_state_subdir"] == "src/aux_state/sec_edgar/q2"
+        assert paths["aux_state_subdir"] == "src/generated/sec_edgar/q2/aux"
         assert paths["aux_bench_target"] == "benchmark_sec_edgar_q2_aux"
         assert paths["cost_model_config"] == "config/sec_edgar_q2_aux_cost_model.json"
         assert paths["aux_bench_suites"] == "value_append"
@@ -340,7 +351,7 @@ class TestPromptRendering:
         pipeline_config = apply_workload_overrides(pipeline_config, workload)
         prompt = render_prompt(pipeline_config, "01_analysis.md", workload, 14, "analysis")
         lowered = prompt.lower()
-        assert "src/aux_state/q14" not in lowered
+        assert "src/generated/tpch/q14/aux" not in lowered
         assert "mirroring q14" not in lowered
         assert "reference implementation" not in lowered
         assert "{{aux_state_fitness}}" not in prompt

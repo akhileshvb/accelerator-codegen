@@ -6,7 +6,7 @@ The orchestrator scores aux-state work via `aux_bench_sweep` (`scripts/run_aux_b
 ## Required binary
 
 - Target: `benchmark_tpch_q{{query_number}}_aux` (from `benchmarks/tpch/single-threaded/benchmark_q{{query_number}}_aux.cpp`)
-- CMake registers it via `accel_add_aux_state_benchmarks` in `cmake/AuxState.cmake`
+- Declared in the main `CMakeLists.txt` / workload benchmark targets (see `accel_add_aux_state_query` in `cmake/AuxState.cmake`)
 
 ## Sweep protocol
 

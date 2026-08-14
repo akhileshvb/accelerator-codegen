@@ -104,7 +104,7 @@ def materialize_workload_stubs(
         if _write_if_missing(dest, content):
             created.append(str(dest.relative_to(repo)))
 
-    runtime_path = repo / "src/generated/sec_edgar/sec_edgar_query_runtime.cpp"
+    runtime_path = repo / "src/generated/sec_edgar/runtime.cpp"
     runtime_tpl = tpl_root / "sec_edgar_query_runtime.cpp.tpl"
     if benchmark == "sec_edgar" and runtime_tpl.is_file():
         runtime_content = _substitute(runtime_tpl.read_text(encoding="utf-8"), values)

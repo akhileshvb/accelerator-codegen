@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from accel_pipeline.config import apply_workload_overrides, load_model_config, load_pipeline_config, load_workload
+from accel_pipeline.env_loader import load_repo_dotenv
 from accel_pipeline.paths import find_repo_root
 from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
 from accel_pipeline.state import STAGES, advance_stage, load_or_create, state_path
@@ -104,11 +105,22 @@ def _run_stage(
     query: int,
     model_overrides: dict[str, str],
     dry_run: bool,
+    *,
+    skip_gates: bool = False,
+    resume: bool = False,
 ) -> None:
     if stage == "analysis":
         analysis.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
     elif stage == "implementation":
-        implementation.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
+        implementation.run(
+            pipeline_config,
+            model_config,
+            workload_name,
+            query,
+            model_overrides,
+            dry_run,
+            skip_gates=skip_gates,
+        )
     elif stage == "optimization":
         optimization.run(
             pipeline_config,
@@ -118,8 +130,9 @@ def _run_stage(
             pipeline_config.optimization_max_iterations,
             model_overrides,
             dry_run,
+            skip_gates=skip_gates,
+            resume=resume,
         )
-    elif stage == "audit":
         audit.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
     else:
         raise ValueError(f"unknown stage: {stage}")
@@ -132,7 +145,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stage", choices=[*STAGES, "all"], default="all")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Render prompts; skip LLM calls")
+    parser.add_argument(
+        "--skip-gates",
+        action="store_true",
+        help="Skip post-stage gates (agent only; no calibrate/sweep/ctest after the stage).",
+    )
     parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument(
+        "--models-config",
+        type=Path,
+        default=None,
+        help="Path to models.yaml (default: pipeline/config/models.yaml)",
+    )
     parser.add_argument("--model", action="append", dest="models", default=[])
     args = parser.parse_args(argv)
 
@@ -140,10 +164,14 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["ACCEL_PIPELINE_DRY_RUN"] = "1"
 
     repo_root = find_repo_root()
+    dotenv_path = load_repo_dotenv(repo_root)
+    if dotenv_path is not None:
+        print(f"loaded env file: {dotenv_path.relative_to(repo_root)}", file=sys.stderr)
     pipeline_config = load_pipeline_config(args.config, repo_root)
     workload = load_workload(args.workload, repo_root)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
-    model_config = load_model_config(repo_root=repo_root)
+    model_config = load_model_config(args.models_config, repo_root=repo_root)
+    print(f"agent provider: {model_config.provider}", file=sys.stderr)
     query = args.query
     if workload.get("query_number") and int(workload["query_number"]) != query:
         print("warning: --query does not match workload query_number", file=sys.stderr)
@@ -156,12 +184,24 @@ def main(argv: list[str] | None = None) -> int:
             pipeline_config,
             args.workload,
             query,
+            model_config=model_config,
+            model_overrides=model_overrides,
             dry_run=args.dry_run,
         )
 
     if args.stage != "all":
         print(f"=== stage: {args.stage} ===", file=sys.stderr)
-        _run_stage(args.stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run)
+        _run_stage(
+            args.stage,
+            pipeline_config,
+            model_config,
+            args.workload,
+            query,
+            model_overrides,
+            args.dry_run,
+            skip_gates=args.skip_gates,
+            resume=args.resume,
+        )
         state.stage = args.stage
         state.save(state_path(repo_root, query, args.workload))
         print("pipeline complete", file=sys.stderr)
@@ -174,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"=== stage: {stage} ===", file=sys.stderr)
         state.stage = stage
         state.save(state_path(repo_root, query, args.workload))
-        _run_stage(stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run)
+        _run_stage(stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run, skip_gates=args.skip_gates, resume=args.resume)
 
         if stage == "implementation":
             next_idx = _maybe_process_structural_reanalysis(

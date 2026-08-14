@@ -1,0 +1,75 @@
+workload_kind: aux_state
+benchmark_name: tpch
+query_number: 18
+query_id: "18"
+accelerator_id: tpch_q18_aux
+base_function_name: accel_tpch_q18
+aux_function_name: accel_tpch_q18_aux
+
+requires_base_accelerator: true
+prerequisite_workload: tpch_q18
+prerequisite_min_stage: implementation
+reference_accelerators:
+  - src/generated/tpch/q10/aux/module.cpp
+  - src/generated/tpch/q3/aux/module.cpp
+
+allow_poor_fitness: false
+allow_unsuccessful_design: false
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/18.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: quantity_threshold
+    type: BIGINT
+
+dependent_tables:
+  - name: lineitem
+    watched_columns: [l_orderkey, l_quantity]
+  - name: orders
+    watched_columns: [o_orderkey, o_custkey, o_orderdate, o_totalprice]
+  - name: customer
+    watched_columns: [c_custkey, c_name]
+
+partitioning: {}   # analysis stage will propose grain (e.g. orderkey bands, high-qty order sets)
+
+output_schema:
+  - name: c_name
+    type: VARCHAR
+  - name: c_custkey
+    type: BIGINT
+  - name: o_orderkey
+    type: BIGINT
+  - name: o_orderdate
+    type: DATE
+  - name: o_totalprice
+    type: DECIMAL
+  - name: sum_quantity
+    type: DECIMAL
+
+cost_model_config: config/q18_aux_cost_model.json
+
+# Relaxed optimization loop for structural read-path upgrades (compact_join / narrow_qualifying).
+optimization:
+  max_iterations: 5
+  max_attempts_per_iteration: 8
+  consecutive_fail_stop: 0
+  no_improvement_stop: 8
+
+optimization_guidance: |
+  Structural read-path priority (from analysis.json viable alternates):
+  1. **compact_join_orderkey_full** — store order metadata (custkey, orderdate, totalprice) colocated
+     with quantity sums; eliminate `ScanOrders` on aux hit. Try this first (smaller scope than full
+     narrow_qualifying). Customer scan may remain for this hypothesis.
+  2. **narrow_qualifying_only** — maintain a qualifying-order index/vector for orders above threshold;
+     read path iterates O(|qualifying|) only. Requires threshold-stable maintenance on lineitem deltas.
+
+  Previous attempts failed on turn limits or build errors — use `write_file` for coordinated multi-region
+  edits after one full read per file. End with `HYPOTHESIS_PATCH_COMPLETE` as soon as the hypothesis
+  is fully implemented; do not keep patching after the edit is complete.
+
+cmake:
+  query_num: 18
+  aux_state_module: accel_add_aux_state_query
+
+agent_boundary: prompts/aux_state/shared/agent_boundary.md

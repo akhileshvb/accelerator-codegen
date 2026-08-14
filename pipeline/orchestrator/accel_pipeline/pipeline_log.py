@@ -73,49 +73,166 @@ def format_candidate_summary(candidate: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def format_candidate_detail_lines(candidate: dict[str, Any], *, index: int) -> list[str]:
+    """Multi-line terminal detail for one aux-state candidate."""
+    cid = str(candidate.get("id", "?"))
+    viability = str(candidate.get("viability", ""))
+    selected = candidate.get("selected") is True
+    marker = "★ SELECTED" if selected else viability.upper() if viability else "?"
+    lines = [f"[{index}] {cid}  {marker}"]
+
+    if viability == "rejected":
+        family = str(candidate.get("design_family", ""))
+        reason = str(candidate.get("rejection_reason", "")).strip()
+        if family:
+            lines.append(f"    family: {family}")
+        if reason:
+            lines.append(f"    rejected because: {_truncate_text(reason, 120)}")
+        return lines
+
+    family = str(candidate.get("design_family", ""))
+    org = str(candidate.get("physical_organization", ""))
+    grain = str(candidate.get("state_grain", ""))
+    if family:
+        lines.append(f"    family: {family}")
+    if org:
+        lines.append(f"    organization: {_truncate_text(org, 100)}")
+    if grain:
+        lines.append(f"    state grain: {_truncate_text(grain, 90)}")
+
+    eliminated = candidate.get("operators_eliminated")
+    if isinstance(eliminated, list) and eliminated:
+        elim_text = "; ".join(str(x) for x in eliminated[:4])
+        if len(eliminated) > 4:
+            elim_text += f"; +{len(eliminated) - 4} more"
+        lines.append(f"    eliminates: {elim_text}")
+
+    read_complexity = (
+        candidate.get("asymptotic_read_complexity")
+        or candidate.get("practical_read_complexity")
+        or candidate.get("residual_read_algorithm")
+    )
+    if read_complexity:
+        lines.append(f"    read path: {_truncate_text(str(read_complexity), 100)}")
+
+    units = candidate.get("estimated_state_units_read")
+    if isinstance(units, dict):
+        typical = units.get("typical")
+        if typical:
+            lines.append(f"    units read (typical): {_truncate_text(str(typical), 80)}")
+
+    risk = candidate.get("read_path_bottleneck_risk")
+    if risk:
+        lines.append(f"    bottleneck risk: {risk}")
+
+    if not selected:
+        regime = candidate.get("best_regime")
+        if regime:
+            lines.append(f"    best when: {_truncate_text(str(regime), 90)}")
+
+    return lines
+
+
+def _candidate_material_signature(candidate: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(candidate.get("design_family", "")).strip().lower(),
+        str(candidate.get("physical_organization", "")).strip().lower(),
+        str(candidate.get("composition_rule", "")).strip().lower(),
+    )
+
+
 def log_analysis_candidates(
     repo_root: Path,
     query: int,
     analysis: dict[str, Any],
     *,
     revision: bool = False,
+    workload: dict[str, Any] | None = None,
 ) -> None:
-    """Log short per-candidate lines after analysis.json is written."""
+    """Log aux-state candidate search results clearly to the terminal."""
+    fitness = analysis.get("fitness_assessment") or {}
+    recommended = fitness.get("recommended")
     search = analysis.get("state_candidate_search") or {}
     candidates = [c for c in (search.get("candidates") or []) if isinstance(c, dict)]
+
+    label = "ANALYSIS REVISION" if revision else "ANALYSIS"
+    print(f"[pipeline] ═══ {label}: aux-state candidates (Q{query}) ═══", file=sys.stderr)
+
+    if not recommended:
+        rationale = _truncate_text(str(fitness.get("rationale", "")), 160)
+        print(
+            f"[pipeline] fitness: recommended=false confidence={fitness.get('confidence', '-')}",
+            file=sys.stderr,
+        )
+        if rationale:
+            print(f"[pipeline]   rationale: {rationale}", file=sys.stderr)
+        if not candidates:
+            print("[pipeline]   (no state_candidate_search — aux-state not pursued)", file=sys.stderr)
+            return
+
     if not candidates:
+        print("[pipeline]   (no candidates in state_candidate_search)", file=sys.stderr)
         return
 
-    fitness = analysis.get("fitness_assessment") or {}
     selected = next((c for c in candidates if c.get("selected") is True), None)
     selected_id = str(selected.get("id", "")) if selected else ""
+    viable = [c for c in candidates if c.get("viability") == "viable"]
+    signatures = {_candidate_material_signature(c) for c in candidates}
+    distinct_families = {sig[0] for sig in signatures if sig[0]}
+
+    print(
+        f"[pipeline] fitness: recommended={recommended} viable={len(viable)}/{len(candidates)} "
+        f"distinct_families={len(distinct_families)} material_signatures={len(signatures)}",
+        file=sys.stderr,
+    )
+    if selected_id:
+        print(f"[pipeline] SELECTED → {selected_id}", file=sys.stderr)
+
+    explanation = str(search.get("fewer_than_three_explanation") or "").strip()
+    if explanation:
+        print(f"[pipeline] note: {explanation}", file=sys.stderr)
+
     summaries = [format_candidate_summary(c) for c in candidates]
+    for idx, candidate in enumerate(candidates, start=1):
+        for line in format_candidate_detail_lines(candidate, index=idx):
+            print(f"[pipeline] {line}", file=sys.stderr)
 
-    label = "analysis revision candidates" if revision else "analysis candidates"
-    header = (
-        f"{label}: n={len(candidates)} fitness_recommended={fitness.get('recommended')} "
-        f"selected={selected_id or '-'}"
-    )
-    print(f"[pipeline] {header}", file=sys.stderr)
-    for summary in summaries:
-        prefix = "* " if summary.startswith(selected_id) and selected_id else "- "
-        if "[SELECTED]" in summary:
-            prefix = "* "
-        print(f"[pipeline]   {prefix}{summary}", file=sys.stderr)
+    if len(signatures) < min(3, len(candidates)) and not explanation:
+        print(
+            "[pipeline] ⚠ candidates may be too similar — need different design_family, "
+            "physical_organization, or composition_rule",
+            file=sys.stderr,
+        )
+    elif len(distinct_families) < min(3, len(viable)) and len(viable) >= 3:
+        print(
+            "[pipeline] ⚠ viable candidates share design families — prefer taxonomy-diverse alternatives",
+            file=sys.stderr,
+        )
 
-    _append_event(
-        repo_root,
-        query,
-        {
-            "ts": datetime.now(UTC).isoformat(),
-            "event": "analysis_candidates",
-            "revision": revision,
-            "fitness_recommended": fitness.get("recommended"),
-            "selected_id": selected_id or None,
-            "candidate_count": len(candidates),
-            "lines": summaries,
-        },
-    )
+    print(f"[pipeline] ═══ end candidate search (selected={selected_id or '-'}) ═══", file=sys.stderr)
+
+    art = query_artifacts_dir(repo_root, query, workload=workload)
+    event_path = art / "pipeline_events.jsonl"
+    event_path.parent.mkdir(parents=True, exist_ok=True)
+    with event_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "ts": datetime.now(UTC).isoformat(),
+                    "event": "analysis_candidates",
+                    "revision": revision,
+                    "fitness_recommended": recommended,
+                    "selected_id": selected_id or None,
+                    "candidate_count": len(candidates),
+                    "viable_count": len(viable),
+                    "distinct_families": len(distinct_families),
+                    "material_signatures": len(signatures),
+                    "lines": summaries,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
 
 
 def _bench_sweep_detail_lines(by_freq: dict[str, Any]) -> list[str]:
@@ -143,6 +260,90 @@ def _gate_context_label(change_kind: str, iteration: int) -> str:
     if change_kind:
         return change_kind
     return "gate"
+
+
+_GATE_DURATION_HINTS: dict[str, str] = {
+    "aux_bench_sweep": "often 15-45+ min on SF1",
+    "aux_cost_model_calibrate": "~5-10 min when calibrating (skips if config exists)",
+    "aux_cross_accel": "~1-2 min",
+    "aux_multi_connection": "~1 min",
+    "aux_correctness": "usually seconds",
+    "aux_unit": "usually seconds",
+}
+
+
+def _gate_progress_label(index: int, count: int) -> str:
+    if index > 0 and count > 0:
+        return f"[{index}/{count}] "
+    return ""
+
+
+def log_gate_batch_start(
+    query: int,
+    gate_names: list[str],
+    *,
+    change_kind: str = "",
+    iteration: int = 0,
+) -> None:
+    """Log the full gate list before a post-stage gate batch runs."""
+    if not gate_names:
+        return
+    context = _gate_context_label(change_kind, iteration)
+    names = ", ".join(gate_names)
+    print(
+        f"[pipeline] ═══ gates ({context}, Q{query}): {len(gate_names)} to run ═══",
+        file=sys.stderr,
+    )
+    for idx, name in enumerate(gate_names, start=1):
+        hint = _GATE_DURATION_HINTS.get(name)
+        line = f"[pipeline]   {idx}. {name}"
+        if hint:
+            line += f" ({hint})"
+        print(line, file=sys.stderr)
+
+
+def log_gate_start(
+    gate_name: str,
+    query: int,
+    *,
+    change_kind: str = "",
+    iteration: int = 0,
+    index: int = 0,
+    count: int = 0,
+) -> None:
+    """Log when an individual gate subprocess is about to start."""
+    context = _gate_context_label(change_kind, iteration)
+    progress = _gate_progress_label(index, count)
+    hint = _GATE_DURATION_HINTS.get(gate_name)
+    line = f"[pipeline] gate start: {progress}{gate_name} ({context}, Q{query})"
+    if hint:
+        line += f" — {hint}"
+    print(line, file=sys.stderr)
+
+
+def log_gate_complete(
+    gate_name: str,
+    *,
+    status: str,
+    duration_ms: int,
+    change_kind: str = "",
+    iteration: int = 0,
+    index: int = 0,
+    count: int = 0,
+    detail: str = "",
+) -> None:
+    """Log gate subprocess completion with status and elapsed time."""
+    context = _gate_context_label(change_kind, iteration)
+    progress = _gate_progress_label(index, count)
+    line = (
+        f"[pipeline] gate complete: {progress}{gate_name} ({context}) "
+        f"status={status} duration={duration_ms}ms"
+    )
+    if detail:
+        line += f" — {_truncate_text(detail, 120)}"
+    print(line, file=sys.stderr)
+    if status == "fail":
+        print(f"[pipeline] gate FAILED: {gate_name}", file=sys.stderr)
 
 
 def log_base_bench_gate(

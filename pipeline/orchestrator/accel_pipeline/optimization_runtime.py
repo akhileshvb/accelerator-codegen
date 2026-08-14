@@ -11,12 +11,13 @@ from accel_pipeline.base_bench import (
     build_optimization_diagnosis,
     load_base_optimization_state,
 )
-from accel_pipeline.config import PipelineConfig, load_workload, resolve_workload_paths
+from accel_pipeline.config import PipelineConfig, load_workload, resolve_optimization_edit_paths, resolve_workload_paths
 from accel_pipeline.kernel_hot_path_review import (
     analyze_kernel_source,
     format_kernel_review_for_prompt,
 )
-from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.optimization_evidence import extract_bottleneck_evidence
+from accel_pipeline.paths import load_query_analysis, query_artifacts_dir
 
 RUNTIME_MD = "optimization_runtime.md"
 RUNTIME_JSON = "optimization_runtime.json"
@@ -46,10 +47,23 @@ def save_runtime_json(art: Path, state: dict[str, Any]) -> None:
 
 
 def load_ab_trials(art: Path) -> list[dict[str, Any]]:
-    path = art / AB_TRIALS_JSON
-    if not path.is_file():
+    path = art / "attempt_log.jsonl"
+    if path.is_file():
+        rows: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        if rows:
+            return rows
+    legacy = art / AB_TRIALS_JSON
+    if not legacy.is_file():
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(legacy.read_text(encoding="utf-8"))
     return list(data.get("trials") or [])
 
 
@@ -156,10 +170,11 @@ def build_runtime_state(
     opt_state = load_base_optimization_state(art)
     baseline = _read_json(art / "baseline_summary.json")
     profile = _read_json(art / "profile_summary.json")
-    analysis = _read_json(art / "analysis.json")
+    _, analysis = load_query_analysis(pipeline_config.repo_root, query, workload=workload)
 
     paths = resolve_workload_paths(pipeline_config, workload, query)
-    kernel_path = pipeline_config.repo_root / paths["kernel_path"]
+    edit_paths = resolve_optimization_edit_paths(pipeline_config, workload, query)
+    kernel_path = pipeline_config.repo_root / edit_paths["primary_cpp"]
     kernel_review = analyze_kernel_source(kernel_path)
 
     diagnosis = build_optimization_diagnosis(
@@ -168,6 +183,9 @@ def build_runtime_state(
         best_speedup_median=float(opt_state.get("best_speedup_median") or 0.0),
         analysis=analysis or None,
         kernel_review=kernel_review,
+    )
+    evidence = extract_bottleneck_evidence(
+        diagnosis, profile, kernel_review, analysis=analysis or None
     )
     artifact_ns = str(workload.get("artifact_namespace", workload.get("benchmark_name", "tpch")))
 
@@ -188,9 +206,8 @@ def build_runtime_state(
         "profile_guidance": _profile_guidance(profile, diagnosis),
         "profile_signals": diagnosis.get("profile_signals") or [],
         "investigation_questions": diagnosis.get("investigation_questions") or [],
-        "strategy_palette": diagnosis.get("strategy_palette") or [],
-        "suggested_bundle": (diagnosis.get("suggested_bundle") or [])[:6],
-        "suggested_focus": (diagnosis.get("suggested_focus") or [])[:4],
+        "bottleneck_evidence": evidence,
+        "suggested_focus": (diagnosis.get("suggested_focus") or [])[:2],
         "kernel_hot_path_review": kernel_review,
         "kernel_hot_path_guidance": format_kernel_review_for_prompt(kernel_review),
         "lacking": (diagnosis.get("lacking") or [])[:4],
@@ -201,10 +218,12 @@ def build_runtime_state(
         "playbook_techniques": load_playbook_techniques(art, limit=8),
         "optimization_workflow_compact": load_optimization_workflow_compact(pipeline_config.repo_root),
         "kernel_paths": {
-            "header": paths["header_path"],
-            "kernel": paths["kernel_path"],
-            "package": paths["package_path"],
-            "fused_scan": paths.get("fused_scan_path"),
+            "header": edit_paths["header"],
+            "kernel": edit_paths["primary_cpp"],
+            "package": edit_paths["secondary_cpp"],
+            "fused_scan": paths.get("fused_scan_path") if not edit_paths.get("is_aux") else None,
+            "cost_model": paths.get("cost_model_config") if edit_paths.get("is_aux") else None,
+            "base_kernel_readonly": edit_paths.get("base_kernel_path"),
         },
         "bench_target": paths["bench_target"],
         "dataset_db": paths["dataset_db"],
@@ -240,18 +259,19 @@ def format_runtime_markdown(state: dict[str, Any]) -> str:
     if kernel_guidance:
         lines.append("")
         lines.extend(kernel_guidance)
-    palette = state.get("strategy_palette") or []
+    palette = state.get("bottleneck_evidence", {}).get("tiers") or []
     if palette:
         lines.append("")
-        lines.append("## Strategy palette (pick a coordinated bundle)")
-        for i, item in enumerate(palette[:20], 1):
-            lines.append(f"{i}. {item}")
-    bundle = state.get("suggested_bundle") or []
-    if bundle:
-        lines.append("")
-        lines.append("## Suggested bundle (start here)")
-        for item in bundle[:4]:
-            lines.append(f"- {item}")
+        lines.append("## Bottleneck evidence (tier-organized — pick ONE hypothesis)")
+        for tier_block in palette[:7]:
+            tier = tier_block.get("tier", "")
+            lines.append(f"### {tier}")
+            for signal in (tier_block.get("signals") or [])[:4]:
+                lines.append(
+                    f"- {signal.get('metric')}: {signal.get('value')} ({signal.get('context', '')})"
+                )
+            if tier_block.get("upper_bound_pct") is not None:
+                lines.append(f"- upper_bound_pct (Amdahl): {tier_block['upper_bound_pct']}")
     focus = state.get("suggested_focus") or []
     if focus:
         lines.append("")
@@ -259,22 +279,20 @@ def format_runtime_markdown(state: dict[str, Any]) -> str:
         for item in focus[:3]:
             lines.append(f"- {item}")
     lines.append("")
-    lines.append("## A/B trials (this iteration)")
+    lines.append("## Attempt history (this optimization iter)")
     trials = state.get("ab_trials") or []
     if trials:
-        lines.append("| trial | hypothesis | speedup | dominant_us | generic_rows | kept |")
-        lines.append("|-------|------------|---------|-------------|--------------|------|")
+        lines.append("| attempt | hypothesis | improvement | kept |")
+        lines.append("|---------|------------|-------------|------|")
         for row in trials:
-            metrics = row.get("metrics") or {}
             lines.append(
-                f"| {row.get('trial_id', '')} | {_compress_text(str(row.get('hypothesis', '')), max_chars=48)} "
-                f"| {float(metrics.get('speedup_median') or 0):.3f}x "
-                f"| {metrics.get('pre_consume_us', 'n/a')} "
-                f"| {metrics.get('generic_rows', 'n/a')} "
-                f"| {row.get('kept', False)} |"
+                f"| {row.get('attempt', row.get('trial_id', ''))} "
+                f"| {_compress_text(str(row.get('hypothesis', '')), max_chars=48)} "
+                f"| {row.get('improvement_pct', 'n/a')} "
+                f"| {row.get('kept', row.get('accepted', False))} |"
             )
     else:
-        lines.append("- No trials yet. Use `begin_ab_trial` → edit → `run_quick_benchmark` → `end_ab_trial`.")
+        lines.append("- No attempts yet.")
     if state.get("lacking"):
         lines.append("")
         lines.append("## Gaps vs goal")
@@ -403,6 +421,9 @@ def compress_tool_output(art: Path, tool_name: str, raw: str) -> str:
     if tool_name == "grep_context" and len(raw) > 8_000:
         stored = store_tool_artifact(art, "grep_context", raw)
         return raw[:8_000] + f"\n... [truncated; full: {stored}; narrow pattern or reduce context]"
+    if tool_name in {"rip_grep", "ast_grep", "search_repo"} and len(raw) > 10_000:
+        stored = store_tool_artifact(art, tool_name, raw)
+        return raw[:10_000] + f"\n... [truncated; full: {stored}]"
     return raw
 
 

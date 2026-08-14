@@ -43,9 +43,7 @@ fi
 
 BENCH_TARGET="${AUX_BENCH_TARGET}"
 BUILD_LOG=""
-if ! ensure_cmake_target "${ROOT}" "${BUILD}" "${BENCH_TARGET}"; then
-	BUILD_LOG="$(cmake --build "${BUILD}" --target "${BENCH_TARGET}" -j"$(nproc)" 2>&1 | tail -40 || true)"
-fi
+build_cmake_target "${ROOT}" "${BUILD}" "${BENCH_TARGET}" || true
 if [[ ! -x "${BUILD}/${BENCH_TARGET}" ]]; then
 	write_skip "benchmark binary missing after cmake configure/build"
 	exit 0
@@ -58,11 +56,35 @@ export ACCEL_AUX_BENCH_SUITES="${ACCEL_AUX_BENCH_SUITES:-${AUX_BENCH_SUITES}}"
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 export ACCEL_AUX_BENCH_TARGET="${BENCH_TARGET}"
 export "${DB_ENV_VAR}"="${DATASET_DB}"
-export ACCEL_BENCH_WARMUP="${ACCEL_BENCH_WARMUP:-10}"
-export ACCEL_BENCH_QUERIES="${ACCEL_BENCH_QUERIES:-100}"
-export ACCEL_BENCH_REF_SAMPLES="${ACCEL_BENCH_REF_SAMPLES:-5}"
-export ACCEL_BENCH_BASE_WRITE_SAMPLES="${ACCEL_BENCH_BASE_WRITE_SAMPLES:-3}"
+
+CHANGE_KIND="${ACCEL_GATE_CHANGE_KIND:-}"
+if [[ "${CHANGE_KIND}" == "optimization" ]]; then
+  OPT_SWEEPS="$(python3 -c "import json,sys; print(json.dumps(json.loads(sys.argv[1]).get('aux_bench_sweep_optimization') or {}))" "${CTX}")"
+  export ACCEL_BENCH_WARMUP="${ACCEL_BENCH_WARMUP:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_warmup', 5))" "${OPT_SWEEPS}")}"
+  export ACCEL_BENCH_QUERIES="${ACCEL_BENCH_QUERIES:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_queries', 25))" "${OPT_SWEEPS}")}"
+  export ACCEL_BENCH_REF_SAMPLES="${ACCEL_BENCH_REF_SAMPLES:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_ref_samples', 3))" "${OPT_SWEEPS}")}"
+  export ACCEL_BENCH_BASE_WRITE_SAMPLES="${ACCEL_BENCH_BASE_WRITE_SAMPLES:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_base_write_samples', 2))" "${OPT_SWEEPS}")}"
+else
+  IMPL_SWEEPS="$(python3 -c "import json,sys; print(json.dumps(json.loads(sys.argv[1]).get('aux_bench_sweep') or {}))" "${CTX}")"
+  export ACCEL_BENCH_WARMUP="${ACCEL_BENCH_WARMUP:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_warmup', 1))" "${IMPL_SWEEPS}")}"
+  export ACCEL_BENCH_QUERIES="${ACCEL_BENCH_QUERIES:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_queries', 5))" "${IMPL_SWEEPS}")}"
+  export ACCEL_BENCH_REF_SAMPLES="${ACCEL_BENCH_REF_SAMPLES:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_ref_samples', 0))" "${IMPL_SWEEPS}")}"
+  export ACCEL_BENCH_BASE_WRITE_SAMPLES="${ACCEL_BENCH_BASE_WRITE_SAMPLES:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_base_write_samples', 3))" "${IMPL_SWEEPS}")}"
+  if python3 -c "import json,sys; print('1' if json.loads(sys.argv[1]).get('skip_duckdb_ref') else '0')" "${IMPL_SWEEPS}" | grep -q 1; then
+    export ACCEL_BENCH_SKIP_DUCKDB_REF="${ACCEL_BENCH_SKIP_DUCKDB_REF:-1}"
+  else
+    unset ACCEL_BENCH_SKIP_DUCKDB_REF
+  fi
+  scan_limit="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_scan_limit') or '')" "${IMPL_SWEEPS}")"
+  if [[ -n "${scan_limit}" ]]; then
+    export ACCEL_Q21_BENCH_SCAN_LIMIT="${ACCEL_Q21_BENCH_SCAN_LIMIT:-${scan_limit}}"
+  else
+    unset ACCEL_Q21_BENCH_SCAN_LIMIT
+  fi
+fi
 export ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB="${ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB:-1}"
+export ACCEL_REPO_ROOT="${ACCEL_REPO_ROOT:-${ROOT}}"
+export ACCEL_AUX_BENCH_BASELINE_CACHE="${ACCEL_AUX_BENCH_BASELINE_CACHE:-${ROOT}/config/q${QUERY}_aux_benchmark_baseline.json}"
 
 EXPECTED_FREQS="${ACCEL_AUX_WRITE_FREQUENCIES}"
 
@@ -76,11 +98,13 @@ RESULTS_CSV="${ACCEL_AUX_BENCH_WORK_DIR}/results.csv"
 
 python3 - <<PY
 import json
+import os
 import pathlib
 import sys
 
 sys.path.insert(0, "${ROOT}/pipeline/orchestrator")
-from accel_pipeline.aux_bench import summarize_sweep_csv
+from accel_pipeline.aux_bench import record_aux_bench_sweep_outcome, summarize_sweep_csv
+from accel_pipeline.config import load_workload
 
 results_csv = pathlib.Path("${RESULTS_CSV}")
 log_path = pathlib.Path("${SWEEP_LOG}")
@@ -126,6 +150,26 @@ out = pathlib.Path("${OUT}/aux_bench_sweep.json")
 out.write_text(json.dumps(gate, indent=2))
 summary_path = pathlib.Path("${ART}/aux_bench_summary.json")
 summary_path.write_text(json.dumps(summary, indent=2))
+
+if status == "pass":
+    bench = "${BENCHMARK_NAME}"
+    query = int("${QUERY}")
+    workload_name = f"{bench}_q{query}_aux"
+    try:
+        workload = load_workload(workload_name, pathlib.Path("${ROOT}"))
+    except FileNotFoundError:
+        workload = None
+    change_kind = os.environ.get("ACCEL_GATE_CHANGE_KIND", "bench_sweep")
+    iteration = int(os.environ.get("ACCEL_GATE_ITERATION", "0"))
+    record_aux_bench_sweep_outcome(
+        pathlib.Path("${ROOT}"),
+        query,
+        summary,
+        iteration=iteration,
+        change_kind=change_kind,
+        workload=workload,
+    )
+
 print(out.read_text())
 sys.exit(0 if status == "pass" else 1)
 PY

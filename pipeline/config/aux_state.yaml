@@ -1,14 +1,9 @@
 # Shared aux-state pipeline settings merged into PipelineConfig when workload_kind=aux_state.
 
 write_paths:
-  - include/accelerator_codegen/tpch_q*_aux*.hpp
-  - include/accelerator_codegen/tpch_q*_incremental.hpp
-  - include/accelerator_codegen/tpch_q*_maintenance*.hpp
-  - include/accelerator_codegen/tpch_q*_rebuild_policy.hpp
-  - include/accelerator_codegen/tpch_q*_write_policy.hpp
-  - include/accelerator_codegen/tpch_q*_diagnostics.hpp
-  - include/accelerator_codegen/tpch_q*_finalize.hpp
-  - src/aux_state/q*
+  - CMakeLists.txt
+  - cmake/AuxState.cmake
+  - src/generated/tpch/q*/aux/**
   - config/q*_aux_cost_model.json
   - tests/single-threaded/test_q*_*.cpp
   - tests/single-threaded/test_tpch_q*_aux.cpp
@@ -18,7 +13,16 @@ write_paths:
   - benchmarks/tpch/single-threaded/calibrate_q*_aux_cost_model.cpp
 
 allowed_commands:
+  # Build / test (gates and agent loop)
+  - "^cmake -S \\. -B build-release( .*)?$"
+  - "^cmake -S \\. -B build-release && cmake --build build-release( .*)?$"
+  - "^touch CMakeLists\\.txt && cmake -S \\. -B build-release$"
+  - "^touch CMakeLists\\.txt && cmake --build build-release( .*)?$"
+  - "^cmake --build build-release( .*)?$"
   - "^ctest -R (q\\d+_|tpch_q\\d+_aux|test_cross_accel|test_aux_multi_connection).*"
+  - "^ctest --test-dir build-release( .*)?$"
+  - "^ctest -N( .*)?$"
+  - "^build-release/(tests|benchmarks)/.*"
   - "^bash scripts/run_aux_bench_sweep\\.sh \\d+$"
   - "^bash pipeline/gates/run_aux_cross_accel\\.sh \\d+$"
   - "^bash pipeline/gates/run_aux_multi_connection\\.sh \\d+$"
@@ -27,12 +31,45 @@ allowed_commands:
 aux_bench_sweep:
   write_frequencies: [0, 1, 10, 50]
   suites: lineitem_only
-  # Fast defaults for pipeline optimization loops (~5–15 min per sweep on SF1).
-  # Override for audit/deep runs: ACCEL_BENCH_QUERIES=500 ACCEL_BENCH_WARMUP=50
+  # Fair SF1 sweep per bench_sweep_contract.md (measured DuckDB ref + full table scans).
   bench_warmup: 10
   bench_queries: 100
-  bench_ref_samples: 5
+  bench_ref_samples: 3
   bench_base_write_samples: 3
+  skip_duckdb_ref: false
+
+# Fast smoke sweep for development only (not comparable across scale factors).
+aux_bench_sweep_fast:
+  write_frequencies: [0, 10]
+  suites: lineitem_only
+  bench_warmup: 1
+  bench_queries: 5
+  bench_ref_samples: 0
+  bench_base_write_samples: 0
+  skip_duckdb_ref: true
+  bench_scan_limit: 100000
+
+# Per-attempt: build + smoke only. Full validation runs once per optimization iteration.
+aux_bench_sweep_optimization:
+  write_frequencies: [0]
+  optimization_score_metric: read_only_query_speedup
+  bench_warmup: 1
+  bench_queries: 3
+  quick_bench_queries: 3
+  quick_benchmark_samples: 1
+  bench_ref_samples: 1
+  bench_base_write_samples: 0
+  skip_duckdb_ref: false
+
+optimization:
+  max_attempts_per_iteration: 8
+  improvement_threshold_pct: 2.0
+  reject_threshold_pct: 1.0
+  smoke_runs: 2
+  skip_confirmation: true
+  skip_per_attempt_correctness: true
+  two_phase_hypothesis_patch: true
+  experimental_chain_cap: 3
 
 post_implementation_gates:
   - aux_correctness
@@ -42,6 +79,7 @@ post_implementation_gates:
   - aux_cross_accel
   - aux_bench_sweep
 
+# End-of-optimization-iteration gate batch (not run per attempt).
 post_optimization_gates:
   - aux_correctness
   - aux_unit
@@ -58,6 +96,17 @@ post_audit_gates:
   - fairness
 
 prompt_subdir: aux_state
+
+# Aux analysis reads taxonomy + reference modules and writes a large analysis.json;
+# OpenRouter/OpenAI Agents backends need more turns than base parallel queries.
+stage_max_turns:
+  analysis: 24
+  implementation: 0  # 0 = unlimited (resolved in stages/base.py)
+  optimization: 0
+  crash_debug: 16
+  audit: 12
+
+optimization_max_turns_per_episode: 0
 
 # Max times analysis may re-run after implementation/optimization finds a structural bottleneck.
 max_structural_reanalysis: 2

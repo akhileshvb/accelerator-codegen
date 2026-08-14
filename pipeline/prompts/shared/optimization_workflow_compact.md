@@ -1,9 +1,13 @@
 # Optimization workflow (compact)
 
-1. Read profile signals + **strategy palette** in `optimization_runtime.md`.
-2. Hypothesize the hot path (dominant phase + per-row vs per-qualifying-row work).
-3. Pick a **coordinated bundle** (2–4 related changes) from the palette.
-4. Verify with `grep_context`; trace production call chain.
-5. A/B test: `begin_ab_trial` → edit bundle → `run_quick_benchmark(include_profile=true)` → `end_ab_trial`.
+1. Baseline quick bench measured once per iteration (reused across failed attempts).
+2. Agent hypothesizes and patches; orchestrator runs **attempt validation only**:
+   - build (with fix loop on failure)
+   - smoke ctest ×2 (with fix loop on failure)
+   - quick benchmark (0% writes, few queries)
+3. Accept iff quick-bench improvement ≥ accept threshold; else revert and next attempt.
+4. **End of iteration**: full `post_optimization_gates` (correctness, cross_accel, fair bench sweep, etc.).
 
-Size structures from `row_estimate` / table counts — never hardcode profile row counts.
+Per-attempt: smoke + quick bench only. Heavy gates run once per iteration, not per idea.
+
+One hypothesis per attempt — multiple edits allowed only if all are required to test that hypothesis.

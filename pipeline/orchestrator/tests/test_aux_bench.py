@@ -5,6 +5,7 @@ from pathlib import Path
 from accel_pipeline.aux_bench import (
     format_bench_experiment_log_line,
     parse_sweep_csv,
+    record_aux_bench_sweep_outcome,
     record_sweep_in_optimization_state,
     summarize_sweep_rows,
 )
@@ -70,6 +71,38 @@ def test_record_optimization_state(tmp_path: Path):
     assert "composite=" in line
     assert "0%→wl=" in line
     assert "/cold=" in line
+
+
+def test_record_aux_bench_sweep_outcome_writes_experiment_log(tmp_path: Path):
+    repo = tmp_path
+    art = repo / "pipeline" / "artifacts" / "tpch" / "q18"
+    art.mkdir(parents=True)
+    summary = summarize_sweep_rows(parse_sweep_csv_from_text(SAMPLE_CSV))
+    workload = {"artifact_namespace": "tpch", "workload_kind": "aux_state"}
+    state = record_aux_bench_sweep_outcome(
+        repo,
+        18,
+        summary,
+        iteration=0,
+        change_kind="bench_sweep",
+        active_candidate_id="flat_orderkey_quantity_sums",
+        workload=workload,
+    )
+    log_path = art / "experiment_log.md"
+    assert log_path.is_file()
+    text = log_path.read_text(encoding="utf-8")
+    assert "bench_sweep composite=" in text
+    assert state["best_iteration"] == 0
+    # Idempotent second call should not duplicate the log line.
+    record_aux_bench_sweep_outcome(
+        repo,
+        18,
+        summary,
+        iteration=0,
+        change_kind="bench_sweep",
+        workload=workload,
+    )
+    assert log_path.read_text(encoding="utf-8").count("bench_sweep composite=") == 1
 
 
 def parse_sweep_csv_from_text(text: str):

@@ -54,9 +54,14 @@ def build_gate_context(
         )
         bench_sweep = workload.get("aux_bench_sweep", {})
         if isinstance(bench_sweep, dict):
+            if bench_sweep:
+                ctx["aux_bench_sweep"] = bench_sweep
             freqs = bench_sweep.get("write_frequencies")
             if freqs:
                 ctx["aux_write_frequencies"] = ",".join(str(f) for f in freqs)
+        opt_sweep = workload.get("aux_bench_sweep_optimization", {})
+        if isinstance(opt_sweep, dict) and opt_sweep:
+            ctx["aux_bench_sweep_optimization"] = opt_sweep
     return ctx
 
 

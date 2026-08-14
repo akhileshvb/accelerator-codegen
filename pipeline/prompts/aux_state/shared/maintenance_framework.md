@@ -8,37 +8,35 @@
 
 - `immediate_us` — cost paid now (write path / query blocking).
 - `differential_future_query_us` — change in expected future query cost vs leaving state as-is.
-- `interference_us` — additional system-wide latency expected from choosing this action under current execution load.
+- `interference_us` — additional system-wide latency from concurrent readers/writers.
 
 `TotalOverheadUs()` = sum of the three.
 
-## Action-aware interference
+## Interference costing
 
-```cpp
-EstimateInterferenceUs(
-    MaintenanceAction action,
-    const ActionResourceEstimate &resources,
-    const ExecutionLoadSnapshot &load,
-    const CostModelParams &params);
-```
+Set `interference_us` on each `ActionCandidate` using calibrated fields from `CostModelParams`:
 
-`ActionResourceEstimate` may include scan bytes, duration, partitions locked, and expected overlapping queries. Coefficients in `config/q{N}_aux_cost_model.json` (`interference_*`) are **calibrated** by `aux_cost_model_calibrate` (multi-connection readers + writers + rebuild-under-load). Maintenance selection must call `EstimateInterferenceUs` in cost formulas.
+- `interference_rebuild_per_query_us`
+- `interference_rebuild_scan_byte_us`
+- `interference_delta_per_query_us`
+- `interference_invalidate_per_query_us`
+- `interference_query_slowdown_factor`
 
-`ExecutionLoadRegistry` tracks in-flight aux queries, fallback queries, maintenance, and rebuilds. Instrument full table-function lifetime via `ActiveExecutionScope` in query local state.
+Coefficients live in `config/q{N}_aux_cost_model.json` and are **calibrated** by the `aux_cost_model_calibrate` gate (multi-connection readers + writers + rebuild-under-load). Populate `interference_us` in `StageMaintenance` when building candidates passed to `services.ChooseMaintenance`.
 
 ## Action selection
 
-`SelectMinCostAction(SelectionInput)` compares `ActionCandidate` totals. Uses `decision_margin_us` from `CoreSelectorParams` (stable selector thresholds).
+`SelectMinCostAction(SelectionInput)` compares `ActionCandidate` totals. Invoked via `AuxEngineServices::ChooseMaintenance` using `decision_margin_us` from `CostModelParams`.
 
-## Per-accelerator plugins (agent generates)
+## Per-accelerator plugins (agent generates in `aux/module.cpp`)
 
-- `Enumerate*ActionCandidates` — which actions are legal for this mutation batch.
-- Feature structs (`*MutationBatchFeatures`, `*WorkloadFeatures`); populate `active_query_count` from execution load snapshot.
-- Eligibility rules and cost equation functions: `(features, params) → ActionCostEstimate` including `interference_us`.
-- Initial JSON coefficients loaded per accelerator (`config/q{N}_aux_cost_model.json`).
+- Legal actions for each mutation batch (delta vs rebuild vs invalidate)
+- Feature counts passed into `MaintenanceRequest` (rows touched, partitions touched, fanout)
+- Cost estimates using `CostModelParams` loaded from per-query JSON
+- Initial JSON at `config/q{{query_number}}_aux_cost_model.json`
 
 The framework only compares totals; cost equations are per-accelerator.
 
 ## Repair timing
 
-v1: **LazyOnQuery** only. Global pending rebuild merged on maintenance commit; any connection may apply via `EnsurePending*RebuildApplied`.
+v1: **LazyOnQuery** via `StageMaintenance` outcomes. Relevant maintenance commits merge invalidation plans; readers call `CheckValidity` and fall back when state is not ready.

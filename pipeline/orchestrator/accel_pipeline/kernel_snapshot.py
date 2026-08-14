@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import PipelineConfig, resolve_workload_paths
+from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
 from accel_pipeline.paths import query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
 
@@ -36,6 +36,11 @@ def resolve_snapshot_paths(
         return paths
 
     paths = resolve_workload_paths(pipeline_config, workload, query)
+    if workload.get("workload_kind") == "aux_state":
+        edit = resolve_optimization_edit_paths(pipeline_config, workload, query)
+        rels = [p for p in edit["all_paths"] if (repo_root / p).is_file()]
+        return [repo_root / rel for rel in rels]
+
     rels = [paths["header_path"], paths["kernel_path"], paths["package_path"]]
     return [repo_root / rel for rel in rels]
 
@@ -128,7 +133,15 @@ def restore_best_kernel(
 
 def rebuild_workload_targets(pipeline_config: PipelineConfig, workload: dict[str, Any], query: int) -> bool:
     paths = resolve_workload_paths(pipeline_config, workload, query)
-    targets = [paths["test_target"], paths["bench_target"], "accelerator_codegen"]
+    if workload.get("workload_kind") == "aux_state":
+        targets = [
+            paths.get("test_target", ""),
+            paths.get("aux_bench_target", ""),
+            "accelerator_codegen",
+        ]
+    else:
+        targets = [paths["test_target"], paths["bench_target"], "accelerator_codegen"]
+    targets = [t for t in targets if t]
     cmd = ["cmake", "--build", str(pipeline_config.build_dir), "--target", *targets, "-j", "4"]
     result = subprocess.run(
         cmd,

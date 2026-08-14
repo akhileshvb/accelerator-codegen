@@ -91,7 +91,7 @@ def test_format_kernel_inspiration_section_lists_paths():
     from accel_pipeline.paths import find_repo_root
 
     section = format_kernel_inspiration_section(find_repo_root(), stage="implementation")
-    assert "q12_kernel.cpp" in section
+    assert "kernel.cpp" in section
     assert "read_file" in section
 
 

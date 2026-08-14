@@ -20,7 +20,8 @@ def repo_tools(tmp_path: Path):
         tpch_db_sf10=repo / "tpch10.duckdb",
         write_paths=[],
     )
-    read_file, *_rest, grep_context = make_repo_tools(ToolContext(pipeline_config, 1))
+    tools = make_repo_tools(ToolContext(pipeline_config, 1))
+    read_file, grep_context = tools[0], tools[8]
     return repo, read_file, grep_context
 
 

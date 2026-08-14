@@ -119,6 +119,22 @@ TOOL_SCHEMAS: dict[str, dict] = {
         },
         "required": ["path", "pattern"],
     },
+    "read_reference_files": {
+        "type": "object",
+        "properties": {
+            "paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Up to 8 repo-relative file paths to read in one call.",
+            },
+            "limit_per_file": {
+                "type": "integer",
+                "description": "Max lines per file (numbered).",
+                "default": 400,
+            },
+        },
+        "required": ["paths"],
+    },
     "run_command": {
         "type": "object",
         "properties": {
@@ -155,7 +171,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "properties": {
             "include_profile": {
                 "type": "boolean",
-                "description": "Include profile counters in the benchmark run.",
+                "description": "For base kernels: include profile counters. Ignored for aux workloads (aux quick sweep always returns workload metrics).",
                 "default": True,
             },
         },

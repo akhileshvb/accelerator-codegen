@@ -4,12 +4,18 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 
 def find_gate_context(repo_root: Path, query: str) -> dict:
     artifacts = repo_root / "pipeline" / "artifacts"
+    benchmark = os.environ.get("ACCEL_AUX_BENCHMARK", "tpch")
+    preferred = artifacts / benchmark / f"q{query}" / "gates" / "_gate_context.json"
+    if preferred.is_file():
+        return json.loads(preferred.read_text(encoding="utf-8"))
+
     candidates = sorted(artifacts.glob(f"*/q{query}/gates/_gate_context.json"))
     if candidates:
         return json.loads(candidates[-1].read_text(encoding="utf-8"))
@@ -19,11 +25,12 @@ def find_gate_context(repo_root: Path, query: str) -> dict:
         return json.loads(legacy.read_text(encoding="utf-8"))
 
     q = int(query)
+    benchmark = "tpch"
     return {
         "query_number": q,
-        "benchmark_name": "tpch",
-        "artifact_namespace": "tpch",
-        "source_subdir": "tpch/single-threaded",
+        "benchmark_name": benchmark,
+        "artifact_namespace": benchmark,
+        "source_subdir": f"{benchmark}/q{q}/base/single-threaded",
         "function_name": f"accel_tpch_q{q}",
         "create_fn": f"CreateTpchQ{q}FunctionSet",
         "test_target": f"test_tpch_q{q}",
@@ -35,8 +42,7 @@ def find_gate_context(repo_root: Path, query: str) -> dict:
         "fairness": {
             "cardinality_constants": ["150000", "600000", "800000"],
             "kernel_search_paths": [
-                f"src/generated/tpch/single-threaded/q{q}_kernel.cpp",
-                f"src/generated/tpch/q{q}_kernel.cpp",
+                f"src/generated/tpch/q{q}/base/single-threaded/kernel.cpp",
             ],
         },
     }

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from accel_pipeline.config import PipelineConfig
 from accel_pipeline.playbook import append_patch_log
+from accel_pipeline.tools.tool_args import none_default as _none_default
 
 _MAX_READ_BYTES = 512_000
 
@@ -15,6 +16,7 @@ _MAX_READ_BYTES = 512_000
 class ToolContext:
     pipeline_config: PipelineConfig
     query: int
+    stage: str = ""
 
 
 def _resolve_path(ctx: ToolContext, path: str) -> Path:
@@ -50,11 +52,14 @@ def _format_patch_hint(text: str, needle: str) -> str:
 def make_repo_tools(ctx: ToolContext):
     def read_file(
         path: str,
-        offset: int = 0,
-        limit: int = 0,
-        numbered: bool = False,
+        offset: int | None = 0,
+        limit: int | None = 0,
+        numbered: bool | None = False,
     ) -> str:
         """Read a file under the repo. Optional offset/limit are 0-based line numbers."""
+        offset = int(_none_default(offset, 0))
+        limit = int(_none_default(limit, 0))
+        numbered = bool(_none_default(numbered, False))
         target = _resolve_path(ctx, path)
         if not target.is_file():
             raise FileNotFoundError(f"file not found: {path}")
@@ -67,8 +72,11 @@ def make_repo_tools(ctx: ToolContext):
                 "use offset/limit or glob_files to narrow scope"
             )
         lines = raw.decode("utf-8").splitlines()
+        default_limit = 250 if ctx.stage in ("implementation", "optimization", "crash_debug") else 100
+        if ctx.stage in ("optimization_analysis", "optimization_patch", "optimization_unified"):
+            default_limit = 600
         if not offset and not limit:
-            limit = 100
+            limit = default_limit
         if offset or limit:
             end = offset + limit if limit else None
             lines = lines[offset:end]
@@ -148,8 +156,10 @@ def make_repo_tools(ctx: ToolContext):
             target.unlink()
         return f"deleted {path}"
 
-    def list_dir(path: str = ".", glob: str = "*") -> str:
+    def list_dir(path: str | None = ".", glob: str | None = "*") -> str:
         """List files in a directory."""
+        path = str(_none_default(path, "."))
+        glob = str(_none_default(glob, "*"))
         target = _resolve_path(ctx, path)
         if not target.is_dir():
             raise FileNotFoundError(path)
@@ -158,8 +168,10 @@ def make_repo_tools(ctx: ToolContext):
             return f"(empty) {path}"
         return "\n".join(entries)
 
-    def glob_files(pattern: str, path: str = ".", limit: int = 100) -> str:
+    def glob_files(pattern: str, path: str | None = ".", limit: int | None = 100) -> str:
         """Find files under path matching a glob pattern."""
+        path = str(_none_default(path, "."))
+        limit = int(_none_default(limit, 100))
         target = _resolve_path(ctx, path)
         if not target.is_dir():
             raise FileNotFoundError(path)
@@ -190,16 +202,24 @@ def make_repo_tools(ctx: ToolContext):
     def grep_context(
         path: str,
         pattern: str,
-        context: int = 3,
-        max_matches: int = 12,
-        case_insensitive: bool = False,
+        context: int | None = 3,
+        max_matches: int | None = 12,
+        case_insensitive: bool | None = False,
     ) -> str:
         """Search one file; return matching lines with ±context (prefer over read_file on large files)."""
+        context = int(_none_default(context, 3))
+        max_matches = int(_none_default(max_matches, 12))
+        case_insensitive = bool(_none_default(case_insensitive, False))
         if context < 0:
             raise ValueError("context must be >= 0")
         if max_matches < 1:
             raise ValueError("max_matches must be >= 1")
         target = _resolve_path(ctx, path)
+        if target.is_dir():
+            raise ValueError(
+                f"grep_context requires a file path, not a directory: {path}; "
+                "use search_repo or glob_files instead"
+            )
         if not target.is_file():
             raise FileNotFoundError(f"file not found: {path}")
         raw = target.read_bytes()
@@ -250,6 +270,33 @@ def make_repo_tools(ctx: ToolContext):
             parts.append(f"(truncated at {max_matches} matches)")
         return "\n".join(parts)
 
+    def read_reference_files(
+        paths: list[str],
+        limit_per_file: int | None = 400,
+    ) -> str:
+        """Read multiple reference files in one call (prefer over many read_file calls)."""
+        limit_per_file = int(_none_default(limit_per_file, 400))
+        if not paths:
+            return "ERROR: paths must be a non-empty list of repo-relative file paths"
+        if len(paths) > 8:
+            return "ERROR: read at most 8 paths per call; split into multiple calls"
+        chunks: list[str] = []
+        for raw_path in paths:
+            path = str(raw_path).strip()
+            if not path:
+                continue
+            try:
+                target = _resolve_path(ctx, path)
+            except (PermissionError, FileNotFoundError) as exc:
+                chunks.append(f"=== {path} ===\nERROR: {exc}")
+                continue
+            if not target.is_file():
+                chunks.append(f"=== {path} ===\nERROR: not a file")
+                continue
+            body = read_file(path, offset=0, limit=limit_per_file, numbered=True)
+            chunks.append(f"=== {path} ===\n{body}")
+        return "\n\n".join(chunks) if chunks else "ERROR: no readable paths"
+
     return (
         read_file,
         write_file,
@@ -260,4 +307,5 @@ def make_repo_tools(ctx: ToolContext):
         glob_files,
         file_info,
         grep_context,
+        read_reference_files,
     )

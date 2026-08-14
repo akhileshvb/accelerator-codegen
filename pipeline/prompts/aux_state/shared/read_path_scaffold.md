@@ -1,59 +1,65 @@
-# Read-path scaffold (agent-generated `*_aux_package.cpp`)
+# Read-path scaffold (agent-generated `aux/module.cpp`)
 
-Port from `src/aux_state/q14/q14_aux_package.cpp` (single-partition) or `q1`/`q10`/`q12` (window/prefix gates). Every aux table function must follow this shape.
+Port from shipped modules under `src/generated/tpch/q{1,3,10,12,14}/aux/module.cpp`. Every aux query implements the same `AuxQueryModule` surface.
 
-## Global state
+## Module methods (required)
+
+| Method | Responsibility |
+|--------|----------------|
+| `CheckValidity` | `services.StateStore().CheckValidity({Id(), window_partitions}, services.CurrentVisibility())` |
+| `Execute` | Fast path: read only partitions overlapping the query window; emit via `AuxRowSink` |
+| `ExecuteFallback` | Recompute from base tables when state is missing, stale, or txn-blocked |
+| `StageMaintenance` | Build `MaintenanceRequest`, call `services.ChooseMaintenance(...)`, materialize updates |
+
+## Single-partition pattern (Q14)
 
 ```cpp
-struct Q{{query_number}}AuxGlobalState : public duckdb::GlobalTableFunctionState {
-	duckdb::idx_t MaxThreads() const override { return 1; }
-};
+bool TpchQ14Module::CheckValidity(core::AuxEngineServices &services,
+                                  const core::QueryArguments &) const {
+  return services.StateStore()
+      .CheckValidity({Id(), {}}, services.CurrentVisibility())
+      .IsValid();
+}
+
+void TpchQ14Module::Execute(core::AuxEngineServices &services,
+                            const core::QueryArguments &arguments,
+                            core::AuxRowSink &sink) {
+  if (!services.StateStore()
+           .CheckValidity({Id(), {}}, services.CurrentVisibility())
+           .IsValid()) {
+    ExecuteFallback(services, arguments, sink);
+    return;
+  }
+  // Load only the target partition(s), emit result
+}
 ```
-
-Single-threaded per connection — required for multi-connection correctness.
-
-## Local state init (statement start)
-
-At the start of `InitQ{{query_number}}AuxLocalState` (or equivalent):
-
-1. `EnsurePendingQ{{query_number}}RebuildApplied(context)` — apply global lazy rebuild for this accelerator.
-2. `GetOrCreateTxnInvalidationBuffer(context)` — per-connection txn bypass.
-3. `AcceleratorStateRegistry::GetOrCreate(*context.db)` → `GetStore(accelerator_id)` + `GetMaintenanceState(accelerator_id)`.
-4. **Pin reader epoch** (once per statement):
-   ```cpp
-   const auto reader_epoch = aux_state::GetReaderVisibleMutationEpoch(
-       context, kQ{{query_number}}AuxAcceleratorId, maintenance.GetCommittedMutationEpoch());
-   ```
-5. **Execution gate** over only the query window (single partition via `CheckExecutionGate`, or a query-specific `CheckQ{{query_number}}*ExecutionGate`):
-   ```cpp
-   const auto gate = aux_state::CheckExecutionGate(store, *txn_buffer, partition, reader_epoch);
-   // gate.use_aux → fast path when partition Valid; gate.committed_invalid / gate.bypassed_by_txn → fallback
-   ```
-6. **`ActiveExecutionScope`** in local state for the full table-function lifetime (`AuxQuery` or `FallbackQuery`).
 
 ## Window / prefix gates (multi-partition queries)
 
-When the query spans multiple partitions, implement `CheckQ{{query_number}}*ExecutionGate` in `*_aux_state.cpp`:
+When the query spans multiple partitions (Q1 prefix, Q10/Q12 date windows):
 
-- Iterate **only partitions overlapping the query window** (skip `Absent` unless the design requires otherwise).
-- For each present partition: txn bypass → `bypassed_by_txn`; `Invalid` → `committed_invalid`. Relevant mutations must invalidate or republish — do not reject `Valid` partitions solely on `valid_through < reader_epoch`.
-- Do **not** scan all slots in `PartitionedStateStore` — bound work to the window.
-
-## Bounded read iteration
-
-Fast-path reads must merge/scan only in-window partitions (e.g. `VisitReadablePartitionsInRange`, prefix up to cutoff, or a single partition key). Never iterate `TotalPartitionSlots()` on the hot path.
+1. Compute the partition ID set for the query window only.
+2. Pass that set to `CheckValidity` / `ReadPartitions` — never scan all slots.
+3. If any required partition is invalid or absent → `ExecuteFallback` for the window.
+4. Do not reject valid partitions solely because their `valid_through` epoch lags unrelated writes.
 
 ## Maintenance hook (write path)
 
-In `*_mutation_features.cpp` / `*_maintenance_policy.cpp`:
+In `InterpretMutation` / `AccumulateMutation` / `StageMaintenance`:
 
-- Irrelevant mutations → `MaintenanceAction::NoOp`; do not bump `committed_mutation_epoch` without a publish effect.
-- Relevant maintenance → merge into global pending plan; publish with `valid_through_mutation_epoch` at commit.
+- Irrelevant mutations → empty `InvalidationPlan` or `MaintenanceAction::NoOp`
+- Relevant maintenance → `services.ChooseMaintenance` with accurate row/partition counts
+- Populate `interference_us` via calibrated `CostModelParams` fields, not ad-hoc globals
+
+## Postgres byte encoding
+
+Only at the Postgres boundary: implement `Encode*` / `Decode*` using `accelerator_codegen/stateful/core/byte_stream.hpp`. DuckDB paths use typed `StateImage` payloads directly.
 
 ## Reference files
 
 | Pattern | Reference |
 |---------|-----------|
-| Single-partition gate | `q14_aux_package.cpp`, `q3_aux_package.cpp` |
-| Prefix gate | `q1_aux_state.cpp` (`CheckQ1PrefixExecutionGate`) |
-| Date-window gate | `q10_aux_state.cpp`, `q12_aux_state.cpp` |
+| Single-partition | `src/generated/tpch/q14/aux/module.cpp` |
+| Multi-partition window | `src/generated/tpch/q10/aux/module.cpp`, `q12/aux/module.cpp` |
+| Prefix / cumulative | `src/generated/tpch/q1/aux/module.cpp` |
+| SEC EDGAR append workload | `src/generated/sec_edgar/q1/aux/module.cpp` |

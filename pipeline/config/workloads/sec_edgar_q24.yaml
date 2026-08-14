@@ -10,9 +10,9 @@ output_schema:
   - {name: total, type: DOUBLE}
 tables: [num, pre]
 reference_accelerators:
-  - src/generated/sec_edgar/single-threaded/q6_kernel.cpp
-  - include/accelerator_codegen/sec_edgar_q6.hpp
-  - src/generated/sec_edgar/single-threaded/q4_kernel.cpp
-  - include/accelerator_codegen/sec_edgar_q4.hpp
-  - src/generated/sec_edgar/sec_edgar_query_runtime.cpp
+  - src/generated/sec_edgar/q6/base/single-threaded/kernel.cpp
+  - src/generated/sec_edgar/q6/base/query.hpp
+  - src/generated/sec_edgar/q4/base/single-threaded/kernel.cpp
+  - src/generated/sec_edgar/q4/base/query.hpp
+  - src/generated/sec_edgar/runtime.cpp
   - benchmarks/sec_edgar/single-threaded/benchmark_q6.cpp

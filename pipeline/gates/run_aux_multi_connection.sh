@@ -51,6 +51,10 @@ STATUS="pass"
 if [[ ${RC} -ne 0 ]]; then
   STATUS="fail"
 fi
+if echo "${LOG}" | grep -q "No tests were found"; then
+  STATUS="fail"
+  RC=1
+fi
 
 python3 - <<PY
 import json, pathlib

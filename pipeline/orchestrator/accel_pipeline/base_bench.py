@@ -13,7 +13,7 @@ from accel_pipeline.kernel_snapshot import (
     maybe_restore_best_kernel,
     snapshot_best_kernel,
 )
-from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.paths import load_query_analysis, query_artifacts_dir
 from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.profile_investigation import build_profile_investigation
 
@@ -478,10 +478,9 @@ def process_base_bench_after_gates(
     baseline = write_baseline_summary(art)
     profile = write_profile_summary(art)
 
-    analysis: dict[str, Any] | None = None
-    analysis_path = art / "analysis.json"
-    if analysis_path.is_file():
-        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    analysis_path, analysis = load_query_analysis(repo_root, query, workload=workload)
+    if not analysis:
+        analysis = None
 
     speedup = float(baseline.get("speedup_median") or 0.0)
     state = load_base_optimization_state(art)

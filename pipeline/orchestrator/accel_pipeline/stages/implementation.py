@@ -4,13 +4,42 @@ import json
 
 from accel_pipeline.aux_bench import initialize_optimization_state, process_aux_bench_after_gates
 from accel_pipeline.base_bench import process_base_bench_after_gates
-from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
+from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload, resolve_workload_paths
 from accel_pipeline.crash_debug import run_post_stage_gates_with_crash_debug
 from accel_pipeline.gates import run_gate
-from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.paths import analysis_artifact_path, query_artifacts_dir
 from accel_pipeline.stages.gate_plan import workload_post_implementation_gates
 from accel_pipeline.stages.base import run_agent_stage
 from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis_file
+
+
+def _implementation_user_message(
+    pipeline_config: PipelineConfig,
+    workload: dict,
+    query: int,
+) -> str:
+    if workload.get("workload_kind") != "aux_state":
+        return "Implement the accelerator, tests, and benchmark. Build and run correctness tests."
+
+    paths = resolve_workload_paths(pipeline_config, workload, query)
+    aux_module = pipeline_config.repo_root / paths["aux_state_subdir"] / "module.cpp"
+    if not aux_module.is_file():
+        return "Implement the accelerator, tests, and benchmark. Build and run correctness tests."
+
+    test_target = paths["aux_test_target"]
+    bench_target = paths["aux_bench_target"]
+    calibrate_target = paths["aux_calibrate_target"]
+    q = query
+    return (
+        "RESUME partial aux implementation: sources already exist on disk from a prior run. "
+        "Do NOT rewrite module.hpp/module.cpp from scratch or explore AuxState.cmake unless fixing CMake registration.\n"
+        f"Registered CMake targets: {test_target}, {bench_target}, {calibrate_target}.\n"
+        "Use only these allowlisted run_command patterns:\n"
+        f"1. cmake --build build-release --target {test_target} {bench_target} -j$(nproc)\n"
+        f"2. ctest --test-dir build-release -R tpch_q{q}_aux --output-on-failure\n"
+        "   (ctest must use --test-dir build-release; repo-root ctest finds no tests)\n"
+        "Fix compile/test failures with minimal apply_patch on generated aux files only."
+    )
 
 
 def run(
@@ -20,12 +49,14 @@ def run(
     query: int,
     model_overrides: dict[str, str] | None = None,
     dry_run: bool = False,
+    *,
+    skip_gates: bool = False,
 ):
     workload = load_workload(workload_name, pipeline_config.repo_root)
     if workload.get("workload_kind") != "aux_state":
         run_gate(pipeline_config, "scaffold", query, workload=workload)
     else:
-        analysis_path = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload) / "analysis.json"
+        analysis_path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
         if analysis_path.is_file():
             try:
                 validate_aux_analysis_file(
@@ -42,13 +73,13 @@ def run(
         model_config=model_config,
         workload_name=workload_name,
         query=query,
-        user_message="Implement the accelerator, tests, and benchmark. Build and run correctness tests.",
+        user_message=_implementation_user_message(pipeline_config, workload, query),
         model_overrides=model_overrides,
         dry_run=dry_run,
     )
-    if not dry_run:
+    if not dry_run and not skip_gates:
         workload = load_workload(workload_name, pipeline_config.repo_root)
-        analysis_path = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload) / "analysis.json"
+        analysis_path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
         if analysis_path.is_file() and workload.get("workload_kind") == "aux_state":
             analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
             initialize_optimization_state(pipeline_config.repo_root, query, analysis, workload)

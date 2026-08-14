@@ -52,7 +52,7 @@ def save_rendered_prompt(
 ) -> Path:
     prompts_dir = pipeline_config.pipeline_root / "artifacts" / f"q{query}" / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
-    suffix = f"_{optimization_iter}" if stage == "optimization" else ""
+    suffix = f"_{optimization_iter}" if stage.startswith("optimization") else ""
     out = prompts_dir / f"{stage}{suffix}.md"
     out.write_text(content, encoding="utf-8")
     return out

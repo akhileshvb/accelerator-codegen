@@ -139,7 +139,7 @@
             "required": ["table", "mutation", "behavior"],
             "properties": {
               "table": { "type": "string" },
-              "mutation": { "type": "string" },
+              "mutation": { "type": "string", "enum": ["insert", "update", "delete"] },
               "behavior": {
                 "enum": ["supported_delta", "bounded_rebuild", "full_rebuild", "invalidate_safely"]
               },

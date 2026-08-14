@@ -1,6 +1,6 @@
 # Stage 3: Aux-state optimization (iteration {{optimization_iter}})
 
-Tune **performance only** for **Q{{query_number}}**. **One bounded change** per iteration.
+Tune **read-path performance aggressively** for **Q{{query_number}}**. **One hypothesis per attempt** (may require a few coordinated edits).
 
 ## Context
 
@@ -8,28 +8,27 @@ Tune **performance only** for **Q{{query_number}}**. **One bounded change** per 
 
 Full analysis (candidate switches): `{{full_analysis_path}}`
 
-Composite score = min workload speedup (0/1/10/50% writes) + 0.1 × read-only query speedup. Details: `bench_sweep_contract.md`.
+**Optimization score** = `read_only_query_speedup` (0% writes: aux hit vs base kernel query latency). Accept/reject uses this metric only. Post-stage gates still run the full write-frequency sweep (`composite_score`).
 
-## Allowed changes (exactly one)
+## Workflow
 
-**A. Cost-model / maintenance tuning** — coefficients (including `interference_*` in cost model JSON), eligibility thresholds, EWMA, maintenance-path code (preserve mutation semantics). Log `change_kind: cost_model` or `maintenance_code`.
+Orchestrator measures baseline once, then per attempt:
+1. **Unified optimization agent** (`03_optimization_unified.md`): one session — read full implementation once, keep design in working memory, hypothesize, implement coordinated edits (header + module + finalize + tests when needed), `HYPOTHESIS_PATCH_COMPLETE`
+2. **Orchestrator:** build → smoke correctness → read-only quick benchmark → confirmation → accept/revert
 
-**B. Candidate switch** — viable alternate from retrieval brief; read full `analysis.json`; update `correctness_facts.state_design`. Log `change_kind: candidate_switch`.
+Full structural redesign is allowed within a single attempt when evidence supports it.
 
-**C. Structural re-analysis** — last resort; call `request_structural_reanalysis` with `bottleneck_type`, evidence, `proposed_direction`.
+## Allowed change kinds (per hypothesis)
 
-Not allowed without re-analysis: dependent tables, legal delta semantics, mutation_coverage behavior changes.
+**A. Read-path structure** — eliminate residual scans, dense vs map layouts, vectorized decode, operator fusion, pointer-chasing removal. **Preferred.**
 
-## Task
+**B. Cost-model / maintenance tuning** — only when it directly speeds the read hot path without hurting scalable maintenance.
 
-1. One hypothesis tied to `composite_score` or a weak write rate.
-2. One `apply_patch` change.
-3. `run_command`: build + `ctest -R tpch_q{{query_number}}_aux` + `ctest -R q{{query_number}}_`.
-4. Append to `experiment_log.md`: change_kind, hypothesis, expected effect.
+**C. Candidate switch** — viable alternate from retrieval brief; update `correctness_facts.state_design`.
 
-**Official gates run after this stage** (do not call `request_gate`). Results appear in the next iteration's retrieval brief.
+**D. Structural re-analysis** — `request_structural_reanalysis` as last resort.
 
-Stops after **2 iterations** without improving `composite_score`.
+Stops after `consecutive_fail_stop` failed attempts (config) or outer iteration gate stall.
 
 {{shared_docs_reference}}
 

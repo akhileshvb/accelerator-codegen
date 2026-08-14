@@ -3,7 +3,7 @@ from __future__ import annotations
 from accel_pipeline.gates import GateFailure, GateResult, gate_failure_message, run_gate
 
 
-GATES_ALLOW_SKIP = frozenset({"baseline", "sf10", "profile"})
+GATES_ALLOW_SKIP = frozenset({"baseline", "sf10", "profile", "aux_cost_model_calibrate"})
 
 
 def workload_post_implementation_gates(workload: dict) -> list[str]:
@@ -42,8 +42,17 @@ def run_post_stage_gates_collect(
     from accel_pipeline.config import load_workload
 
     workload = load_workload(workload_name, pipeline_config.repo_root)
+    from accel_pipeline.pipeline_log import log_gate_batch_start
+
+    log_gate_batch_start(
+        query,
+        gate_names,
+        change_kind=change_kind,
+        iteration=iteration,
+    )
     results: list[GateResult] = []
-    for gate_name in gate_names:
+    total = len(gate_names)
+    for idx, gate_name in enumerate(gate_names, start=1):
         allow_skip = gate_name in GATES_ALLOW_SKIP
         result = run_gate(
             pipeline_config,
@@ -54,6 +63,8 @@ def run_post_stage_gates_collect(
             allow_skip=allow_skip,
             change_kind=change_kind,
             iteration=iteration,
+            gate_index=idx,
+            gate_count=total,
         )
         results.append(result)
         if result.status == "pass":

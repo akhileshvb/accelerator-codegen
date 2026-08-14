@@ -1,0 +1,33 @@
+benchmark_name: tpch
+query_number: 18
+query_id: "18"
+function_name: accel_tpch_q18
+create_fn: CreateTpchQ18FunctionSet
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/18.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: quantity_threshold
+    type: BIGINT
+
+reference_accelerators: [3, 10]
+
+output_schema:
+  - name: c_name
+    type: VARCHAR
+  - name: c_custkey
+    type: BIGINT
+  - name: o_orderkey
+    type: BIGINT
+  - name: o_orderdate
+    type: DATE
+  - name: o_totalprice
+    type: DECIMAL
+  - name: sum_quantity
+    type: DECIMAL
+
+tables:
+  - customer
+  - orders
+  - lineitem

@@ -76,7 +76,8 @@ def format_kernel_inspiration_section(
         lines.append("")
 
     lines.append(
-        "Also browse `src/generated/**/q*_kernel.cpp`, optional `q*_fused_scan.cpp`, and "
+        "Also browse `src/generated/**/base/single-threaded/kernel.cpp`, optional "
+        "`fused_scan.cpp`, headers `base/query.hpp` / `base/fused.hpp`, and "
         "`benchmarks/**/benchmark_q*.cpp` for harness and hot-path patterns."
     )
     return "\n".join(lines)

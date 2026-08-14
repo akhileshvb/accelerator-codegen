@@ -56,3 +56,30 @@ def test_apply_workload_overrides_merges_write_paths() -> None:
 
     merged = apply_workload_overrides(pipeline_config, workload)
     assert any("sec_edgar" in p for p in merged.write_paths)
+
+
+def test_apply_workload_overrides_merges_aux_stage_max_turns() -> None:
+    from accel_pipeline.config import apply_workload_overrides
+
+    pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
+    workload = load_workload("tpch_q18_aux", REPO_ROOT)
+    merged = apply_workload_overrides(pipeline_config, workload)
+    assert merged.stage_max_turns["analysis"] == 24
+    assert merged.stage_max_turns["implementation"] == 0
+    assert merged.stage_max_turns["optimization"] == 0
+    assert merged.optimization_max_turns_per_episode == 0
+    assert merged.optimization_max_attempts_per_iteration == 8
+    assert merged.optimization_consecutive_fail_stop == 0
+    assert merged.optimization_max_turns_patch == 0
+    assert merged.optimization_max_turns_unified == 0
+    assert merged.optimization_context_max_chars == 80000
+
+
+def test_aux_workload_allows_cmake_edits() -> None:
+    from accel_pipeline.config import apply_workload_overrides
+
+    pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
+    workload = load_workload("tpch_q9_aux", REPO_ROOT)
+    merged = apply_workload_overrides(pipeline_config, workload)
+    assert "CMakeLists.txt" in merged.write_paths
+    assert any("calibrate_q*_aux_cost_model.cpp" in p for p in merged.write_paths)

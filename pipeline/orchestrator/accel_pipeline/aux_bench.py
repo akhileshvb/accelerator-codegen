@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.paths import query_artifacts_dir
+from accel_pipeline.optimization_signals import STORE_DIAGNOSTIC_FIELDS, coerce_diagnostic_field
 
 
 def _artifacts_dir(repo_root: Path, query: int, workload: dict[str, Any] | None = None) -> Path:
@@ -39,7 +40,27 @@ def sweep_results_path(
     return repo_root / "build-release" / suffix / "results.csv"
 
 
+def _normalize_sweep_row_keys(row: dict[str, str]) -> dict[str, str]:
+    """Accept legacy benchmark CSV headers (e.g. write_freq_pct)."""
+    normalized = dict(row)
+    aliases = {
+        "write_freq_pct": "write_frequency_pct",
+        "policy": "write_policy",
+        "queries": "num_queries",
+        "writes": "writes_executed",
+        "query_speedup": "query_only_speedup",
+        "cold_start_speedup": "cold_start_workload_speedup",
+        "blended_speedup": "blended_query_speedup",
+        "cold_start_workload_us": "cold_start_accel_workload_us",
+    }
+    for legacy, canonical in aliases.items():
+        if canonical not in normalized and legacy in normalized:
+            normalized[canonical] = normalized[legacy]
+    return normalized
+
+
 def _is_data_row(row: dict[str, str]) -> bool:
+    row = _normalize_sweep_row_keys(row)
     if not row:
         return False
     first = next(iter(row.keys()), "")
@@ -55,45 +76,71 @@ def _is_data_row(row: dict[str, str]) -> bool:
     return True
 
 
-def parse_sweep_csv(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
-        return []
+def _parse_sweep_reader(reader: csv.DictReader) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    with path.open(encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(line for line in handle if not line.startswith("#"))
-        for row in reader:
-            if not _is_data_row(row):
+    for row in reader:
+        row = _normalize_sweep_row_keys(row)
+        if not _is_data_row(row):
+            continue
+        parsed: dict[str, Any] = {}
+        for key, value in row.items():
+            if value is None or value == "":
                 continue
-            parsed: dict[str, Any] = {}
-            for key, value in row.items():
-                if value is None or value == "":
-                    continue
-                if key in {
-                    "write_frequency_pct",
-                    "num_queries",
-                    "writes_scheduled",
-                    "writes_executed",
-                    "rows_touched_per_write",
-                }:
-                    try:
-                        parsed[key] = int(float(value))
-                    except ValueError:
-                        parsed[key] = value
-                elif key.endswith("_rate") or key in {
-                    "workload_speedup",
-                    "cold_start_workload_speedup",
-                    "query_only_speedup",
-                    "blended_query_speedup",
-                    "oracle_regret_pct",
-                }:
+            if key in {
+                "write_frequency_pct",
+                "num_queries",
+                "writes_scheduled",
+                "writes_executed",
+                "rows_touched_per_write",
+                "aux_state_bytes",
+                "valid_partitions",
+                "total_slots",
+                "state_bytes_read_median",
+                "store_execute_calls",
+            }:
+                try:
+                    parsed[key] = int(float(value))
+                except ValueError:
+                    parsed[key] = value
+            elif key in STORE_DIAGNOSTIC_FIELDS or key.endswith("_rate") or key in {
+                "workload_speedup",
+                "cold_start_workload_speedup",
+                "query_only_speedup",
+                "blended_query_speedup",
+                "oracle_regret_pct",
+                "validity_slots_scanned_median",
+                "validity_scan_us_median",
+                "partitions_read_per_query_median",
+                "accel_hit_median_us",
+            }:
+                coerced = coerce_diagnostic_field(key, value)
+                if coerced is not None:
+                    parsed[key] = coerced
+                else:
                     try:
                         parsed[key] = float(value)
                     except ValueError:
                         parsed[key] = value
-                else:
-                    parsed[key] = value
-            rows.append(parsed)
+            else:
+                parsed[key] = value
+        rows.append(parsed)
     return rows
+
+
+def parse_sweep_csv(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(line for line in handle if not line.startswith("#"))
+        return _parse_sweep_reader(reader)
+
+
+def parse_aux_benchmark_output(text: str) -> list[dict[str, Any]]:
+    """Parse aux benchmark stdout (single-point or sweep CSV)."""
+    reader = csv.DictReader(
+        line for line in text.splitlines() if line.strip() and not line.startswith("#")
+    )
+    return _parse_sweep_reader(reader)
 
 
 def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -113,36 +160,61 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     query_speedups: list[float] = []
     read_only_query_speedup = 0.0
     read_only_cold_start_workload_speedup = 0.0
+    use_interval_key = bool(rows) and any(
+        row.get("write_interval_sec") not in (None, "") for row in rows
+    )
 
     for row in rows:
-        freq = int(row.get("write_frequency_pct", -1))
-        key = str(freq)
-        by_freq[key] = {
-            "write_frequency_pct": freq,
-            "suite": row.get("suite"),
-            "workload_speedup": float(row.get("workload_speedup", 0.0) or 0.0),
-            "cold_start_workload_speedup": float(row.get("cold_start_workload_speedup", 0.0) or 0.0),
-            "query_only_speedup": float(row.get("query_only_speedup", 0.0) or 0.0),
-            "blended_query_speedup": float(row.get("blended_query_speedup", 0.0) or 0.0),
-            "duckdb_workload_us": float(row.get("duckdb_workload_us", 0.0) or 0.0),
-            "accel_workload_us": float(row.get("accel_workload_us", 0.0) or 0.0),
-            "cold_start_accel_workload_us": float(row.get("cold_start_accel_workload_us", 0.0) or 0.0),
-            "setup_full_build_ms": float(row.get("setup_full_build_ms", 0.0) or 0.0),
-            "accel_hit_rate": float(row.get("accel_hit_rate", 0.0) or 0.0),
-            "writes_executed": int(row.get("writes_executed", 0) or 0),
-        }
-        ws = by_freq[key]["workload_speedup"]
-        qs = by_freq[key]["query_only_speedup"]
+        if use_interval_key:
+            interval = float(row.get("write_interval_sec", 0.0) or 0.0)
+            key = f"{interval:g}"
+            point = {
+                "write_interval_sec": interval,
+                "write_frequency_pct": int(float(row.get("write_frequency_pct", 0) or 0)),
+            }
+            read_only = interval <= 0.0
+        else:
+            freq = int(row.get("write_frequency_pct", -1))
+            key = str(freq)
+            point = {"write_frequency_pct": freq}
+            read_only = freq == 0
+        point.update(
+            {
+                "suite": row.get("suite"),
+                "workload_speedup": float(row.get("workload_speedup", 0.0) or 0.0),
+                "cold_start_workload_speedup": float(row.get("cold_start_workload_speedup", 0.0) or 0.0),
+                "query_only_speedup": float(row.get("query_only_speedup", 0.0) or 0.0),
+                "blended_query_speedup": float(row.get("blended_query_speedup", 0.0) or 0.0),
+                "duckdb_workload_us": float(row.get("duckdb_workload_us", 0.0) or 0.0),
+                "accel_workload_us": float(row.get("accel_workload_us", 0.0) or 0.0),
+                "cold_start_accel_workload_us": float(row.get("cold_start_accel_workload_us", 0.0) or 0.0),
+                "setup_full_build_ms": float(row.get("setup_full_build_ms", 0.0) or 0.0),
+                "aux_state_bytes": int(float(row.get("aux_state_bytes", 0) or 0)),
+                "accel_hit_rate": float(row.get("accel_hit_rate", 0.0) or 0.0),
+                "accel_hit_median_us": float(row.get("accel_hit_median_us", 0.0) or 0.0),
+                "writes_executed": int(row.get("writes_executed", 0) or 0),
+            }
+        )
+        if row.get("measured_duration_sec") not in (None, ""):
+            point["measured_duration_sec"] = float(row.get("measured_duration_sec", 0.0) or 0.0)
+        if row.get("reader_qps") not in (None, ""):
+            point["reader_qps"] = float(row.get("reader_qps", 0.0) or 0.0)
+        by_freq[key] = point
+        ws = point["workload_speedup"]
+        qs = point["query_only_speedup"]
         if ws > 0:
             workload_speedups.append(ws)
         if qs > 0:
             query_speedups.append(qs)
-        if freq == 0 and qs > 0:
+        if read_only and qs > 0:
             read_only_query_speedup = qs
-        if freq == 0:
-            cold = by_freq[key]["cold_start_workload_speedup"]
+        if read_only:
+            cold = point["cold_start_workload_speedup"]
             if cold > 0:
                 read_only_cold_start_workload_speedup = cold
+        for diag_key in STORE_DIAGNOSTIC_FIELDS:
+            if diag_key in row and row[diag_key] not in (None, ""):
+                by_freq[key][diag_key] = row[diag_key]
 
     composite_workload = min(workload_speedups) if workload_speedups else 0.0
     composite_query = min(query_speedups) if query_speedups else 0.0
@@ -297,6 +369,86 @@ def list_viable_candidate_ids(analysis: dict[str, Any]) -> list[str]:
     ]
 
 
+def _normalize_bench_change_kind(change_kind: str) -> str:
+    if change_kind == "implementation":
+        return "baseline"
+    return change_kind or "bench_sweep"
+
+
+def _sweep_already_recorded(
+    state: dict[str, Any], iteration: int, change_kind: str, score: float
+) -> bool:
+    history = state.get("history") or []
+    if not history:
+        return False
+    last = history[-1]
+    return (
+        int(last.get("iteration", -1)) == iteration
+        and str(last.get("change_kind", "")) == change_kind
+        and float(last.get("composite_score") or 0.0) == score
+    )
+
+
+def record_aux_bench_sweep_outcome(
+    repo_root: Path,
+    query: int,
+    summary: dict[str, Any],
+    *,
+    iteration: int,
+    change_kind: str,
+    active_candidate_id: str | None = None,
+    workload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update optimization_state and append experiment_log.md after a bench sweep."""
+    from accel_pipeline.playbook import append_experiment_log
+
+    normalized_kind = _normalize_bench_change_kind(change_kind)
+    state = load_optimization_state(repo_root, query, workload) or {
+        "active_candidate_id": "",
+        "best_composite_score": 0.0,
+        "best_iteration": 0,
+        "history": [],
+    }
+    score = float(summary.get("composite_score", 0.0) or 0.0)
+    if not _sweep_already_recorded(state, iteration, normalized_kind, score):
+        state = record_sweep_in_optimization_state(
+            repo_root,
+            query,
+            iteration=iteration,
+            summary=summary,
+            change_kind=normalized_kind,
+            active_candidate_id=active_candidate_id,
+            workload=workload,
+        )
+        append_experiment_log(
+            repo_root,
+            query,
+            format_bench_experiment_log_line(iteration, summary, state),
+            workload=workload,
+        )
+        if workload and normalized_kind in ("implementation", "baseline", "bench_sweep"):
+            from accel_pipeline.config import load_pipeline_config
+            from accel_pipeline.kernel_snapshot import (
+                has_best_kernel_snapshot,
+                snapshot_best_kernel,
+            )
+
+            read_only = float(summary.get("read_only_query_speedup") or 0.0)
+            if read_only > 0:
+                pipeline_config = load_pipeline_config(repo_root=repo_root)
+                art = query_artifacts_dir(repo_root, query, workload=workload)
+                if normalized_kind == "implementation" or not has_best_kernel_snapshot(art):
+                    snapshot_best_kernel(
+                        pipeline_config,
+                        workload,
+                        query,
+                        speedup_median=read_only,
+                        iteration=iteration,
+                        change_kind=normalized_kind,
+                    )
+    return state
+
+
 def process_aux_bench_after_gates(
     repo_root: Path,
     query: int,
@@ -311,21 +463,13 @@ def process_aux_bench_after_gates(
     if not summary_path.is_file():
         return None
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    state = record_sweep_in_optimization_state(
+    state = record_aux_bench_sweep_outcome(
         repo_root,
         query,
+        summary,
         iteration=iteration,
-        summary=summary,
         change_kind=change_kind,
         active_candidate_id=active_candidate_id,
-        workload=workload,
-    )
-    from accel_pipeline.playbook import append_experiment_log
-
-    append_experiment_log(
-        repo_root,
-        query,
-        format_bench_experiment_log_line(iteration, summary, state),
         workload=workload,
     )
     return {"summary": summary, "state": state}

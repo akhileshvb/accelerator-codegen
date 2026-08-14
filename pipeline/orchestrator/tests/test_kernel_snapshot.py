@@ -18,12 +18,13 @@ def test_kernel_snapshot_roundtrip(tmp_path: Path):
         encoding="utf-8",
     )
 
-    header = repo / "include/accelerator_codegen/sec_edgar_q1.hpp"
-    kernel = repo / "src/generated/sec_edgar/single-threaded/q1_kernel.cpp"
-    package = repo / "src/generated/sec_edgar/single-threaded/q1_package.cpp"
-    fused = repo / "src/generated/sec_edgar/single-threaded/q1_fused_scan.cpp"
-    runtime = repo / "src/generated/sec_edgar/sec_edgar_query_runtime.cpp"
-    for path in (header, kernel, package, fused, runtime):
+    header = repo / "src/generated/sec_edgar/q1/base/query.hpp"
+    kernel = repo / "src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp"
+    package = repo / "src/generated/sec_edgar/q1/base/single-threaded/package.cpp"
+    fused = repo / "src/generated/sec_edgar/q1/base/single-threaded/fused_scan.cpp"
+    runtime_hpp = repo / "src/generated/sec_edgar/runtime.hpp"
+    runtime_cpp = repo / "src/generated/sec_edgar/runtime.cpp"
+    for path in (header, kernel, package, fused, runtime_hpp, runtime_cpp):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"content:{path.name}:v1\n", encoding="utf-8")
 
@@ -31,17 +32,18 @@ def test_kernel_snapshot_roundtrip(tmp_path: Path):
         "benchmark_name": "sec_edgar",
         "query_number": 1,
         "header_basename": "sec_edgar_q1",
-        "source_subdir": "sec_edgar/single-threaded",
         "function_name": "accel_sec_edgar_q1",
         "test_target": "test_sec_edgar_q1",
         "bench_target": "benchmark_sec_edgar_q1",
         "artifact_namespace": "sec_edgar",
         "snapshot_paths": [
-            "include/accelerator_codegen/sec_edgar_q{N}.hpp",
-            "src/generated/sec_edgar/single-threaded/q{N}_kernel.cpp",
-            "src/generated/sec_edgar/single-threaded/q{N}_package.cpp",
-            "src/generated/sec_edgar/single-threaded/q{N}_fused_scan.cpp",
-            "src/generated/sec_edgar/sec_edgar_query_runtime.cpp",
+            "src/generated/sec_edgar/q{N}/base/query.hpp",
+            "src/generated/sec_edgar/q{N}/base/fused.hpp",
+            "src/generated/sec_edgar/q{N}/base/single-threaded/kernel.cpp",
+            "src/generated/sec_edgar/q{N}/base/single-threaded/package.cpp",
+            "src/generated/sec_edgar/q{N}/base/single-threaded/fused_scan.cpp",
+            "src/generated/sec_edgar/runtime.hpp",
+            "src/generated/sec_edgar/runtime.cpp",
         ],
     }
     art = repo / "pipeline" / "artifacts" / "sec_edgar" / "q1"
@@ -58,7 +60,7 @@ def test_kernel_snapshot_roundtrip(tmp_path: Path):
 
     snap_paths = resolve_snapshot_paths(pipeline_config, workload, 1)
     assert fused in snap_paths
-    assert runtime in snap_paths
+    assert runtime_hpp in snap_paths
 
     snapshot_best_kernel(
         pipeline_config,
@@ -70,10 +72,10 @@ def test_kernel_snapshot_roundtrip(tmp_path: Path):
     )
     assert has_best_kernel_snapshot(art)
     manifest = (art / "best_kernel_snapshot" / "manifest.json").read_text(encoding="utf-8")
-    assert "q1_fused_scan.cpp" in manifest
-    assert "sec_edgar_query_runtime.cpp" in manifest
+    assert "fused_scan.cpp" in manifest
+    assert "runtime.hpp" in manifest
 
-    kernel.write_text("content:q1_kernel.cpp:v2-broken\n", encoding="utf-8")
+    kernel.write_text("content:kernel.cpp:v2-broken\n", encoding="utf-8")
     manifest = restore_best_kernel(pipeline_config, workload, 1)
     assert manifest is not None
     assert "v1" in kernel.read_text(encoding="utf-8")

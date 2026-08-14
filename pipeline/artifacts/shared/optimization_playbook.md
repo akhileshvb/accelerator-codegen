@@ -36,7 +36,7 @@ The production kernel used `std::unordered_set<std::string>` for COUNT(DISTINCT 
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Replaced `std::unordered_set<std::string>` with `DistinctAdshSet` (FNV-1a bucket chain, rehash at load factor)
 - `AggregateRow` now calls `distinct_adsh.Insert(adsh)` — probe via memcmp, copy only on miss
 
@@ -75,7 +75,7 @@ Profile counters show **4,682 / 4,694 chunks** (99.7%) on the `UnifiedVectorForm
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Added `elif` branch in `ConsumePreChunk` before the all-dict path: dictionary stmt/rfile with flat adsh/line
 - Existing all-dict and generic fallback paths preserved unchanged
 
@@ -121,7 +121,7 @@ Profile counters show **4,682 / 4,694 chunks** (99.7%) on the generic fallback p
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Added `IsFlat()` helper; inserted `elif` branch in `ConsumePreChunk` after existing all-valid flat/dict paths
 - Per-row null checks on stmt (with skip counter), rfile, adsh, line; generic fallback preserved for non-FLAT layouts
 
@@ -167,7 +167,7 @@ Profile counters show **4,682 / 4,694 chunks** (99.7%) on the generic fallback p
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Relaxed the mixed dict+flat branch: removed `IsFlatAllValid` on dictionary children and flat adsh/line; added per-row null checks on stmt/rfile dictionary child indices and flat adsh/line
 - Generic fallback preserved for non-matching layouts
 
@@ -213,7 +213,7 @@ Profile counters show **4,681 / 4,694 chunks** (99.7%) still on generic fallback
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Added consumable-vector helpers and a mixed-layout branch in `ConsumePreChunk` before the generic fallback
 - Existing homogeneous flat/dict branches preserved; generic fallback retained for non-consumable layouts
 
@@ -259,7 +259,7 @@ Profile counters show **9,588,736 / 9,600,799 rows** (99.9%) on the generic fall
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Added `ConsumePreDictStmtRfileFlatPayload` and a new branch in `ConsumePreChunk` before the all-dict path
 - Existing all-flat, all-dict, and generic fallback paths preserved unchanged
 
@@ -303,7 +303,7 @@ Profile counters show **9,586,688 / 9,600,799 rows** (99.9%) on the generic fall
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Added `IsFlat()` helper; inserted branch in `ConsumePreChunk` after the all-valid flat path
 - Added `ConsumePreFlatNullable` with per-row null checks on stmt (with skip counter), rfile, adsh, line
 - Existing all-valid flat, dictionary, and generic fallback paths preserved unchanged
@@ -348,7 +348,7 @@ Profile counters show **4,681 / 4,694 chunks** (99.7%) on generic fallback (`gen
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Added consumable-vector helpers and `ConsumePreConsumable` mixed-layout branch in `ConsumePreChunk` before the generic fallback
 - Existing homogeneous flat/dict branches preserved; generic fallback retained for non-consumable layouts
 - Distinct adsh tracking uses string_t probe (not dictionary index) for cross-chunk correctness
@@ -396,7 +396,7 @@ Profile counters show **4,682 / 4,694 chunks** (99.7%) on the mixed dictionary-o
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Added `AdshInternTable` (kernel-scoped string→index interning)
 - `AggregateFixed` routes all fixed-slot consume paths through `adsh_intern.Intern` + `AggregateRowDictIndex` (unified index space across chunk layouts)
 - `DistinctAdshSet::InsertIndex` tracks `index_count` for O(1) `Size()` at finalize
@@ -444,7 +444,7 @@ The dominant consume paths (`ConsumePreDictDictFlatFlat` for dict stmt/rfile + f
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Added all-valid branches in `ConsumePreDictDictFlatFlat` and `ConsumePreDictDict`
 - Pre-fill stmt/rfile classification caches via `DictionaryVector::DictionarySize` at chunk entry
 - Nullable fallback path preserved unchanged for txn-local / nullable vectors
@@ -493,7 +493,7 @@ Iteration 3 pre-classified stmt/rfile dictionary entries separately but the row 
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Replaced iter-3 all-valid inner loops in `ConsumePreDictDictFlatFlat` and `ConsumePreDictDict` with `slot_pair_cache[STANDARD_VECTOR_SIZE][4]` precomputation
 - Nullable / generic fallback paths unchanged
 
@@ -541,7 +541,7 @@ Iteration 4 replaced per-row stmt/rfile classification with a `slot_pair_cache[S
 
 ## Change (single bounded patch)
 
-- File: `src/generated/sec_edgar/single-threaded/q1_kernel.cpp`
+- File: `src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp`
 - Added `kMaxStmtDictEntries=16`, `kMaxRfileDictEntries=4`
 - Replaced oversized `slot_pair_cache[STANDARD_VECTOR_SIZE][4]` in all-valid paths of `ConsumePreDictDictFlatFlat` and `ConsumePreDictDict` with compact 1D stmt/rfile caches
 - Nullable / generic fallback paths unchanged

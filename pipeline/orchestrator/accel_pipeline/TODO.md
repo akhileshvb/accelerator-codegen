@@ -6,13 +6,13 @@ Tracked inline in source as `# TODO:` as well. Phase 2+ from the agent pipeline 
 
 - [x] Cursor SDK backend (`backends/cursor_sdk.py`, `provider: cursor`)
 - [x] OpenAI Agents backend (`backends/openai_agents.py`, `provider: openai`)
-- [ ] OpenRouter via `LitellmModel` (`models.py`, `pyproject.toml` `[openrouter]` extra)
-- [ ] `provider: openrouter` in `config/models.yaml`
+- [x] OpenRouter via `LitellmModel` (`models.py`, `pyproject.toml` `[openrouter]` extra)
+- [x] `provider: openrouter` in `config/models.openrouter.yaml`
 
 ## Scaffold & build integration
 
 - [x] CMake aux-state scaffolding (`cmake/AuxState.cmake`, `accel_add_aux_state_query`)
-- [ ] Idempotent patch of `src/register.cpp` and `CMakeLists.txt` from scaffold templates
+- [ ] Idempotent patch of `src/runtime/duckdb/register.cpp` and `CMakeLists.txt` from scaffold templates
 - [ ] `manifest.hpp.tpl` + seed directory scan for `tests/test_support/q{N}_manifest.hpp`
 
 ## Gates & artifacts

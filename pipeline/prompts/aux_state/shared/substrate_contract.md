@@ -1,24 +1,25 @@
 # Substrate contract (stable — do not regenerate)
 
-Hand-written APIs in `include/accelerator_codegen/aux_state/`:
+Hand-written APIs in `include/accelerator_codegen/stateful/`:
 
-- **PartitionedStateStore** — partitioned payload storage with `partition_version` and `valid_through_mutation_epoch` per slot; invalidation and staged reads.
-- **AcceleratorStateRegistry** — per-accelerator registration; hooks for interpreter, incremental buffer factory, mutation accumulator, maintenance hook, table dependencies.
-- **AcceleratorMaintenanceState** — per-accelerator `pending_plan` / `pending_generation`, `committed_mutation_epoch`, rebuild and publish mutexes; claimed-snapshot lazy rebuild via `BeginRebuild` / `CompleteRebuild(claim, completed_plan)` with `SubtractInvalidationPlan`.
-- **TxnInvalidationBuffer** — per-connection incremental buffers and txn-local bypass; lazy rebuild scheduling is **global** via maintenance state (not per-connection `SetPendingLazyRebuild` on commit).
-- **ExecutionGate** — txn-safe aux vs fallback per partition: `Valid` + readable payload + no txn bypass. `reader_visible_mutation_epoch` is pinned at statement start (v1); `valid_through_mutation_epoch` records publish coverage. Unaffected partitions may remain `Valid` with older `valid_through` while unrelated mutations advance `committed_mutation_epoch`.
-- **ReaderMutationEpochState** — v1 statement-start committed visibility: pins reader-visible mutation epoch per accelerator per statement.
-- **ExecutionLoadRegistry** — cross-connection in-flight aux/fallback/maintenance/rebuild tracking for interference costing.
-- **MaintenanceHook** — `PlanMaintenance`, `PublishMaintenance`, `DiscardMaintenance` with staged publication under `maintenance_publish_mutex`.
-- **Staged publication** — `StagedPartitionUpdate.expected_partition_version`; `PublishValidatedPartitionUpdates` validates at publish time.
-- **Interference model** — action-aware `EstimateInterferenceUs(action, ActionResourceEstimate, load, params)`; coefficients default to 0.
+- **PartitionedStateStore** (`state/partitioned_state_store.hpp`) — partitioned payload storage with per-slot versions; invalidation and staged reads via `AuxStateStore`.
+- **AuxRegistry** (`core/aux_registry.hpp`) — transaction coordinator registering `AuxQueryModule` instances; routes mutations, txn buffers, and staged maintenance across modules.
+- **AuxTxnBuffer** (`core/aux_txn_buffer.hpp`) — per-connection incremental buffers and txn-local dirty tracking.
+- **AuxEngineServices** (`core/aux_engine_services.hpp`) — visibility token, state store access, cost model, `ChooseMaintenance`, `ExpectedQueriesBeforeNextWrite`.
+- **Maintenance selector** (`maintenance/action_selector.hpp`) — `SelectMinCostAction` compares `ActionCandidate` totals using `CostModelParams` (including `interference_*` coefficients).
+- **Calibration** (`core/aux_calibration.hpp`) — engine-neutral timing runner; adapters supply build/delta/rebuild callbacks.
 
-## Multi-writer / multi-connection invariants
+## Visibility and correctness
 
-1. Uncommitted writes remain isolated via per-connection `txn_local_bypass`.
-2. Maintenance publish is serialized per accelerator; optimistic version check at publish.
-3. Lazy rebuild uses claimed snapshot subtract-on-complete; never Take/Clear global pending.
-4. Correctness epochs are **per-accelerator**; unrelated accelerators do not invalidate each other.
-5. Reader epoch is pinned at statement start (conservative v1); do not assume naked atomic epoch reads match MVCC snapshots.
+1. Uncommitted writes remain isolated via per-connection txn buffers.
+2. Maintenance publish is serialized; optimistic version checks at `TryPublish`.
+3. Correctness epochs are **per-accelerator**; unrelated modules do not invalidate each other.
+4. `CheckValidity` on `StateStore` decides aux vs fallback for the query window — agents implement `AuxQueryModule::CheckValidity` and `Execute`/`ExecuteFallback` accordingly.
+5. Irrelevant mutations must produce empty plans or `MaintenanceAction::NoOp` without side effects.
 
-Generated code registers into this substrate; do not reimplement lifecycle or txn semantics.
+## Engine adapters
+
+- **DuckDB** (`stateful/duckdb/`) — typed in-process state images; no byte serialization on hot path.
+- **Postgres** (`stateful/postgres/`) — shared-memory byte images; deserialize before exposing typed snapshots to modules.
+
+Generated code implements `AuxQueryModule` and registers via `catalog/query_catalog.cpp`; do not reimplement lifecycle, txn semantics, or engine adapters.

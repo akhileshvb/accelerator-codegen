@@ -2,24 +2,38 @@
 
 ## Agent may generate (query-specific)
 
-- State representation (partition payload struct, partition keying)
-- `Interpret*Mutation`, relevance/column watches
-- Incremental accumulators and rebuild implementations
-- `*MutationBatchFeatures` extraction
-- `Enumerate*ActionCandidates` rules
-- Initial cost formulas and calibration workload descriptors
-- Aux kernel/package, diagnostics, and query-specific tests/benchmarks
+- Partition payload structs and partition keying (`query_layouts.hpp` entries)
+- `InterpretMutation` relevance / column watches
+- Incremental accumulators in `CreateTxnBuffer` + `AccumulateMutation`
+- `StageMaintenance` action selection inputs and staged partition updates
+- Initial `CostModelParams` coefficients in `config/q{N}_aux_cost_model.json`
+- `aux/module.{hpp,cpp}`, optional `aux/finalize.{hpp,cpp}`
+- Query-specific tests, benchmarks, and calibration binaries
+- `CMakeLists.txt` / `cmake/AuxState.cmake` when auto-discovered targets are missing (prefer globs; minimal edits only)
 
 ## Hand-written substrate (stable — do not regenerate)
 
-- `PartitionedStateStore` (with epoch metadata), txn buffer lifecycle, execution gate
-- `AcceleratorStateRegistry` and `AcceleratorMaintenanceState` (global lazy rebuild, per-accelerator epochs)
-- `ReaderMutationEpochState`, `ExecutionLoadRegistry`, `ActiveExecutionScope`
-- `CoreSelectorParams`, `ActionCostEstimate`, `SelectMinCostAction`, `OnlineStats`
-- `EstimateInterferenceUs`, `ActionResourceEstimate`, `PublishValidatedPartitionUpdates`
-- Staged publication and commit/rollback hooks
-- Shared maintenance diagnostics
-- CMake scaffolding: `cmake/AuxState.cmake` (`accel_add_aux_state_query`)
+Under `include/accelerator_codegen/stateful/`:
+
+- **`core/`** — `AuxQueryModule`, `AuxEngineServices`, `AuxStateStore`, `AuxRegistry`, `aux_calibration.hpp`, `byte_stream.hpp`
+- **`state/`** — `PartitionedStateStore`, invalidation plans, partition keys
+- **`maintenance/`** — `MaintenanceAction`, `ActionCostEstimate`, `CostModelParams`, `SelectMinCostAction`
+- **`duckdb/`** — `DuckDBAuxBackend`, `DuckDBStateStore` (typed in-process payloads)
+- **`postgres/`** — `PostgresAuxBackend`, `PostgresStateStore` (byte-image serialization boundary)
+
+Shared generated glue (append only):
+
+- `src/generated/catalog/query_catalog.cpp` — module registration / dispatch
+- `src/generated/postgres/kernel_runner.cpp` — Postgres SQL-callable wiring
+
+CMake scaffolding: `cmake/AuxState.cmake` (`accel_add_aux_state_query`)
+
+## Engine-specific notes
+
+- **DuckDB**: no serialize/deserialize on the hot path; typed `StateImage` payloads in-process
+- **Postgres**: encode/decode partition bytes at the shared-memory boundary only (`byte_stream.hpp`); same `AuxQueryModule` logic
+
+See `pipeline/prompts/shared/engine_interfaces.md` and `generated_layout.md`.
 
 ## Registration checklist
 
@@ -27,8 +41,8 @@ See `registration_checklist.md` in this directory.
 
 ## Runtime policy
 
-See `runtime_policy.md` in this directory. Default: hybrid cost-based selector; lazy-on-query repair in v1 with global pending rebuild state.
+See `runtime_policy.md` in this directory. Default: hybrid cost-based selector via `AuxEngineServices::ChooseMaintenance`.
 
 ## Concurrency
 
-See `concurrency_contract.md` in this directory. Agents must implement relevance filtering, bounded read paths, and NoOp maintenance for irrelevant mutations.
+See `concurrency_contract.md` in this directory. Irrelevant mutations → `NoOp`; bounded read paths; correct `ExecuteFallback`.

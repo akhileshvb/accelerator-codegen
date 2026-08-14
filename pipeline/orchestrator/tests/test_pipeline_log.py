@@ -6,12 +6,16 @@ import pytest
 
 from accel_pipeline.pipeline_log import (
     events_path,
+    format_candidate_detail_lines,
     format_candidate_summary,
     format_usage,
     log_analysis_candidates,
     log_base_bench_gate,
     log_bench_sweep_results,
     log_event,
+    log_gate_batch_start,
+    log_gate_complete,
+    log_gate_start,
     log_pipeline_summary,
     log_stage_complete,
     log_structural_reanalysis_request,
@@ -56,6 +60,26 @@ def test_format_candidate_summary():
     assert "too large" in format_candidate_summary(rejected)
 
 
+def test_format_candidate_detail_lines():
+    selected = {
+        "id": "c1",
+        "viability": "viable",
+        "selected": True,
+        "design_family": "compact_join_intermediate",
+        "physical_organization": "hash by segment",
+        "state_grain": "segment × order",
+        "operators_eliminated": ["lineitem scan", "orders join"],
+        "asymptotic_read_complexity": "O(orders_in_segment)",
+        "read_path_bottleneck_risk": "medium",
+    }
+    lines = format_candidate_detail_lines(selected, index=1)
+    text = "\n".join(lines)
+    assert "[1] c1  ★ SELECTED" in text
+    assert "family: compact_join_intermediate" in text
+    assert "eliminates: lineitem scan" in text
+    assert "read path: O(orders_in_segment)" in text
+
+
 def test_log_analysis_candidates(capsys, tmp_path):
     analysis = {
         "fitness_assessment": {"recommended": True},
@@ -66,7 +90,10 @@ def test_log_analysis_candidates(capsys, tmp_path):
                     "viability": "viable",
                     "selected": True,
                     "design_family": "compact_join_intermediate",
+                    "physical_organization": "hash by segment",
                     "state_grain": "segment × order",
+                    "operators_eliminated": ["lineitem scan"],
+                    "asymptotic_read_complexity": "O(output)",
                     "read_path_bottleneck_risk": "medium",
                 },
                 {
@@ -74,6 +101,8 @@ def test_log_analysis_candidates(capsys, tmp_path):
                     "viability": "viable",
                     "selected": False,
                     "design_family": "multilevel_hierarchical_summaries",
+                    "physical_organization": "monthly rollups",
+                    "composition_rule": "sum aggregates",
                     "best_regime": "Early cutoff prunes months",
                 },
             ]
@@ -81,16 +110,59 @@ def test_log_analysis_candidates(capsys, tmp_path):
     }
     log_analysis_candidates(tmp_path, 3, analysis)
     captured = capsys.readouterr()
-    assert "analysis candidates" in captured.err
-    assert "selected=c1" in captured.err
-    assert "* c1 [SELECTED]" in captured.err
-    assert "- c2" in captured.err
+    assert "ANALYSIS: aux-state candidates (Q3)" in captured.err
+    assert "SELECTED → c1" in captured.err
+    assert "★ SELECTED" in captured.err
+    assert "distinct_families=2" in captured.err
+    assert "[2] c2  VIABLE" in captured.err
+    assert "end candidate search (selected=c1)" in captured.err
 
     events = events_path(tmp_path, 3).read_text(encoding="utf-8").strip().splitlines()
     payload = json.loads(events[-1])
     assert payload["event"] == "analysis_candidates"
     assert payload["selected_id"] == "c1"
+    assert payload["viable_count"] == 2
+    assert payload["distinct_families"] == 2
     assert len(payload["lines"]) == 2
+
+
+def test_log_analysis_candidates_not_recommended(capsys, tmp_path):
+    analysis = {
+        "fitness_assessment": {
+            "recommended": False,
+            "confidence": "high",
+            "rationale": "Query is already output-sized; no meaningful aux state.",
+        },
+        "state_candidate_search": {"candidates": []},
+    }
+    log_analysis_candidates(tmp_path, 17, analysis)
+    captured = capsys.readouterr()
+    assert "recommended=false" in captured.err
+    assert "aux-state not pursued" in captured.err
+
+
+def test_log_gate_batch_and_complete(capsys, tmp_path):
+    log_gate_batch_start(
+        17,
+        ["aux_correctness", "aux_bench_sweep"],
+        change_kind="implementation",
+    )
+    log_gate_start("aux_correctness", 17, change_kind="implementation", index=1, count=2)
+    log_gate_complete(
+        "aux_correctness",
+        status="pass",
+        duration_ms=120,
+        change_kind="implementation",
+        index=1,
+        count=2,
+    )
+    captured = capsys.readouterr()
+    assert "gates (implementation, Q17): 2 to run" in captured.err
+    assert "1. aux_correctness" in captured.err
+    assert "aux_bench_sweep" in captured.err
+    assert "gate start: [1/2] aux_correctness" in captured.err
+    assert "gate complete: [1/2] aux_correctness" in captured.err
+    assert "status=pass duration=120ms" in captured.err
 
 
 def test_log_bench_sweep_results(capsys, tmp_path):

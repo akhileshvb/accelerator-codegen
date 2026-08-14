@@ -5,45 +5,45 @@ categories:
   - name: Fused scan (ScanFilteredConsumer)
     summary: Production path for filtered table scans; use SelectProjectedColumn per column.
     paths:
-      - src/generated/tpch/single-threaded/q1_fused_scan.cpp
-      - include/accelerator_codegen/tpch_q1_fused.hpp
-      - src/generated/sec_edgar/sec_edgar_query_runtime.cpp
-      - include/accelerator_codegen/sec_edgar_query_runtime.hpp
+      - src/generated/tpch/q1/base/single-threaded/fused_scan.cpp
+      - src/generated/tpch/q1/base/fused.hpp
+      - src/generated/sec_edgar/runtime.hpp
+      - src/generated/sec_edgar/runtime.cpp
       - benchmarks/tpch/single-threaded/benchmark_tpch_breakdown.cpp
 
   - name: Dictionary / FLAT fast paths
     summary: Chunk-level layout dispatch; avoid generic UnifiedVectorFormat per row.
     paths:
-      - src/generated/tpch/single-threaded/q3_kernel.cpp
-      - src/generated/tpch/single-threaded/q14_kernel.cpp
+      - src/generated/tpch/q3/base/single-threaded/kernel.cpp
+      - src/generated/tpch/q14/base/single-threaded/kernel.cpp
 
   - name: Fixed slots + generic overflow
     summary: Dense O(1) group indexing for bounded keys; hash map for rare groups.
     paths:
-      - src/generated/tpch/single-threaded/q12_kernel.cpp
+      - src/generated/tpch/q12/base/single-threaded/kernel.cpp
 
   - name: Group interning + dense aggregates
     summary: >-
       Intern GROUP BY / dimension keys during build or bind; store uint32_t group_id on
       lookup rows; update vector-indexed sums on consume — never hash std::string per row.
     paths:
-      - src/generated/tpch/single-threaded/q16_kernel.cpp
-      - src/generated/sec_edgar/single-threaded/q1_kernel.cpp
-      - src/generated/sec_edgar/single-threaded/q3_kernel.cpp
+      - src/generated/tpch/q16/base/single-threaded/kernel.cpp
+      - src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp
+      - src/generated/sec_edgar/q3/base/single-threaded/kernel.cpp
 
   - name: Multi-table fused scans
     summary: Optional fused paths behind feature flags in kernel + query_runtime.
     paths:
-      - src/generated/tpch/single-threaded/q2_kernel.cpp
-      - src/generated/tpch/single-threaded/q4_kernel.cpp
-      - src/generated/tpch/single-threaded/q8_kernel.cpp
-      - src/generated/tpch/single-threaded/q10_kernel.cpp
+      - src/generated/tpch/q2/base/single-threaded/kernel.cpp
+      - src/generated/tpch/q4/base/single-threaded/kernel.cpp
+      - src/generated/tpch/q8/base/single-threaded/kernel.cpp
+      - src/generated/tpch/q10/base/single-threaded/kernel.cpp
 
   - name: Scan adapter + native bind
     summary: NativeScanSpec, filter pushdown, row-count helpers.
     paths:
-      - src/duckdb_scan_adapter.cpp
-      - include/accelerator_codegen/duckdb_scan_adapter.hpp
+      - src/runtime/duckdb/duckdb_scan_adapter.cpp
+      - include/accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp
 
   - name: Benchmark harness patterns
     summary: Median timing, profile mode aligned with production path.

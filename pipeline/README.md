@@ -7,9 +7,19 @@ Four-stage pipeline for generating TPC-H query accelerators:
 ## Prerequisites
 
 - Python 3.11+
-- `CURSOR_API_KEY` (default backend) or `OPENAI_API_KEY` (set `provider: openai` in `config/models.yaml`)
+- API keys in environment or repo-root `.env` (copy from `.env.example`)
+- `CURSOR_API_KEY` (default backend) or `OPENROUTER_API_KEY` / `OPENAI_API_KEY` per `config/models.yaml`
 - Release build at `build-release/` (for gate scripts)
 - DuckDB databases in `accelerator-codegen-duckdb`
+
+## Environment file
+
+```bash
+cp .env.example .env
+# edit .env — keys are loaded automatically when you run the pipeline
+```
+
+`.env` is gitignored; `.env.example` is the committed template.
 
 ## Install orchestrator
 
@@ -29,6 +39,15 @@ pip install -e .
 ```bash
 export CURSOR_API_KEY=cursor_...
 python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3
+```
+
+### OpenRouter
+
+```bash
+pip install -e ".[openrouter]"
+export OPENROUTER_API_KEY=sk-or-...
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 \
+  --models-config pipeline/config/models.openrouter.yaml
 ```
 
 ## Run a single stage
@@ -66,9 +85,11 @@ Set `provider` in `config/models.yaml`:
 |----------|-----|---------|
 | `cursor` (default) | `CURSOR_API_KEY` | `pip install -e ".[cursor]"` |
 | `openai` | `OPENAI_API_KEY` | `pip install -e .` |
-| `openrouter` | `OPENROUTER_API_KEY` | not implemented yet |
+| `openrouter` | `OPENROUTER_API_KEY` | `pip install -e ".[openrouter]"` |
 
-Both Cursor and OpenAI paths use the same custom pipeline tools (`read_file`, `apply_patch`, `request_gate`, etc.) for parity.
+Set `provider: openrouter` in `config/models.yaml` (see `config/models.openrouter.yaml` for a starter config). OpenRouter uses the same custom pipeline tools as Cursor (`read_file`, `apply_patch`, `run_command`, A/B benchmark tools, etc.) via the OpenAI Agents SDK + LiteLLM.
+
+Both Cursor and OpenAI/OpenRouter paths use the same custom pipeline tools (`read_file`, `apply_patch`, `request_gate`, etc.) for parity.
 
 ### Cursor SDK timeouts and bridge lifecycle
 
@@ -98,6 +119,20 @@ If you see `NetworkError: Connection refused`, retry with `--resume`. With the d
 
 If you see `Missing value for --tool-callback-auth-token`, that is an intermittent cursor-sdk bridge bug (~1/64 launches) when the generated callback token starts with `-`. The pipeline retries automatically; you can also `--resume` the failed stage or upgrade `cursor-sdk` (`pip install -U 'cursor-sdk>=1.0.26'` in `pipeline/orchestrator`).
 
+## TPC-H scale factors
+
+| Scale | Role |
+|-------|------|
+| **SF1** | Pipeline iteration — correctness, baseline, profile, optimization A/B |
+| **SF10** | Optional `sf10` gate — coarse check that the kernel still runs at ~10× rows |
+| **SF20+** | Production benchmarking target — agents must design for this even though the pipeline does not gate on it by default |
+
+See `pipeline/prompts/shared/scale_factor_contract.md`. Optional manual check:
+
+```bash
+ACCEL_TPCH_DB=/path/to/tpch_sf20.duckdb ./build-release/benchmark_tpch_q3
+```
+
 ## Aux-state workloads
 
 Use workloads with `workload_kind: aux_state` (e.g. `tpch_q14_aux`). Copy from `config/workloads/tpch_q_aux.template.yaml`.
@@ -111,7 +146,7 @@ Aux workloads:
 - Prompts: `pipeline/prompts/aux_state/` (pattern library under `shared/`)
 - Config: `pipeline/config/aux_state.yaml` (write paths, gates, speedup thresholds)
 - Analysis schema: `pipeline/schemas/aux_state_analysis.schema.json`
-- Audit measurements: `pipeline/artifacts/q{N}/audit_result.json` (separate from `analysis.json`)
+- Audit measurements: `pipeline/artifacts/{tpch|sec_edgar}/q{N}/audit_result.json` (separate from `analysis.json`)
 - Gates: `aux_correctness`, `aux_unit`, `aux_mutation_scenarios`, `aux_speedup_verification`, `fairness`
 - Base accelerator prerequisite: functional `ctest -R tpch_q{N}` before aux stages (auto-runs `prerequisite_workload` if missing)
 

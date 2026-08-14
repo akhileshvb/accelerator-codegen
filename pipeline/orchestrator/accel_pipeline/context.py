@@ -24,10 +24,15 @@ from accel_pipeline.base_bench import (
     compact_summary_for_prompt,
     load_base_optimization_state,
 )
-from accel_pipeline.config import PipelineConfig, resolve_workload_paths
+from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
+from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
 from accel_pipeline.kernel_inspiration import format_kernel_inspiration_section
 from accel_pipeline.optimization_runtime import runtime_path_for_prompt
-from accel_pipeline.paths import pipeline_root, query_artifacts_dir
+from accel_pipeline.paths import (
+    load_query_analysis,
+    pipeline_root,
+    query_artifacts_dir,
+)
 
 _AUX_SHARED = Path("prompts") / "aux_state" / "shared"
 
@@ -53,12 +58,13 @@ def build_retrieval_brief(
 ) -> str:
     repo = pipeline_config.repo_root
     art = query_artifacts_dir(repo, query, workload=workload)
-    analysis_path = art / "analysis.json"
-    analysis: dict[str, Any] = {}
-    if analysis_path.is_file():
-        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    analysis_path, analysis = load_query_analysis(repo, query, workload=workload)
 
-    if workload.get("workload_kind") == "aux_state" and stage == "optimization":
+    if workload.get("workload_kind") == "aux_state" and stage in (
+        "optimization",
+        "optimization_analysis",
+        "optimization_unified",
+    ):
         return build_optimization_retrieval_brief(
             query=query,
             analysis=analysis,
@@ -91,7 +97,7 @@ def build_retrieval_brief(
         f"Bottlenecks: {json.dumps(bottlenecks)}",
         f"Hypotheses: {json.dumps(hypotheses[:5])}",
         "",
-        "Full analysis: read `analysis.json` in the query artifacts directory on demand.",
+        f"Full analysis: read `{analysis_path.name}` in the query artifacts directory on demand.",
     ]
     return "\n".join(lines)
 
@@ -136,10 +142,8 @@ def build_prompt_context(
         else pipe / "prompts" / "shared" / "constraints.md"
     )
 
-    analysis: dict[str, Any] = {}
-    analysis_path = art / "analysis.json"
-    if analysis_path.is_file():
-        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    art = query_artifacts_dir(repo, query, workload=workload)
+    analysis_path, analysis = load_query_analysis(repo, query, workload=workload)
 
     shared_docs = build_shared_docs_reference("pipeline", stage) if is_aux else ""
     bench_summary = load_bench_summary(repo, query) if is_aux else {}
@@ -176,8 +180,29 @@ def build_prompt_context(
         workload_reference_section = ""
 
     paths = resolve_workload_paths(pipeline_config, workload, query)
+    edit_paths = resolve_optimization_edit_paths(pipeline_config, workload, query)
+    opt_stages = ("optimization", "optimization_analysis", "optimization_patch", "optimization_unified")
+    prompt_kernel_path = paths["kernel_path"]
+    prompt_header_path = paths["header_path"]
+    prompt_package_path = paths["package_path"]
+    optimization_edit_paths = ""
+    if is_aux and stage in opt_stages:
+        prompt_kernel_path = edit_paths["primary_cpp"]
+        prompt_header_path = edit_paths["header"]
+        prompt_package_path = edit_paths["secondary_cpp"]
+        optimization_edit_paths = "\n".join(f"- `{p}`" for p in edit_paths["all_paths"])
+        if edit_paths.get("base_kernel_path"):
+            optimization_edit_paths += (
+                f"\n- `{edit_paths['base_kernel_path']}` (base kernel — **read-only**, do not edit)"
+            )
+    elif stage in opt_stages:
+        optimization_edit_paths = "\n".join(
+            f"- `{p}`"
+            for p in (prompt_header_path, prompt_kernel_path, prompt_package_path)
+        )
     benchmark = str(workload.get("benchmark_name", "tpch"))
     artifacts_rel = f"pipeline/artifacts/{workload.get('artifact_namespace', benchmark)}/q{query}"
+    analysis_artifact_rel = f"{artifacts_rel}/{analysis_path.name}"
 
     schema_ref = workload.get("schema_reference_path", "")
     if schema_ref and Path(schema_ref).is_file():
@@ -202,20 +227,55 @@ def build_prompt_context(
         )
         if is_aux:
             benchmark_notes += (
-                f"\n- SEC EDGAR aux state lives under `src/aux_state/sec_edgar/q{query}/` with headers "
-                f"`sec_edgar_q{query}_*.hpp` (not `tpch_q*` paths).\n"
-                "- Write workload suite is **`filing_append`** (new `pre`/`num` rows), not TPC-H `lineitem` point updates.\n"
+                f"\n- SEC EDGAR aux state: `src/generated/sec_edgar/q{query}/aux/module.hpp` "
+                f"(base API: `src/generated/sec_edgar/q{query}/base/query.hpp`).\n"
+                "- Write workload suite is **`filing_append`** / **`value_append`**, not TPC-H `lineitem` point updates.\n"
                 "- Partition by filing semantics (`stmt`, `adsh`, `cik`+`fy`) — see `pipeline/prompts/sec_edgar/aux_state_notes.md`.\n"
-                "- Register with `accel_add_aux_state_query(BENCHMARK sec_edgar QUERY_NUM N ...)` in CMakeLists.txt."
+                "- Register with `accel_add_aux_state_query(BENCHMARK sec_edgar QUERY_NUM N ...)` in CMakeLists.txt.\n"
+                "- Scale: SF3 is both iteration and production scale here — still size from `row_estimate`, not profile snapshots."
             )
         optimization_gate_suffix = " → profile"
         audit_gate_suffix = ""
     else:
-        benchmark_notes = ""
-        optimization_gate_suffix = " → sf10 (if state-sizing) → profile"
+        benchmark_notes = (
+            "- **Iteration scale (SF1)**: correctness, baseline, profile, and A/B benchmarks run on "
+            f"`{paths['dataset_db']}` for fast feedback.\n"
+            "- **Scale check (SF10)**: `sf10` gate runs on `scale_db` when configured — catches sizing "
+            "and state blowups at ~10× rows.\n"
+            "- **Production target (SF20+)**: final benchmarking uses much larger scale factors. "
+            "Designs must scale: bind-time `row_estimate` sizing, no SF1-hardcoded capacities, "
+            "bounded aux/read paths. See `pipeline/prompts/shared/scale_factor_contract.md`.\n"
+            "- Do not optimize for SF1 micro-wins that add full-domain scans or cardinality constants "
+            "from the iteration dataset."
+        )
+        optimization_gate_suffix = " → sf10 (scale check) → profile"
         audit_gate_suffix = " and `sf10`"
 
-    lean_stage = stage in ("optimization", "crash_debug", "implementation", "audit")
+    if is_aux and stage in opt_stages:
+        benchmark_notes += (
+            "\n- **Optimization score (accept/reject)**: `read_only_query_speedup` at 0% writes — "
+            "aux hit vs base kernel query latency. Be **aggressive** on the read hot path: eliminate "
+            "residual orders/lineitem scans, replace map/hash chasing with dense arrays, vectorize "
+            "decode/materialization, fuse operators, and short-circuit work on the read path.\n"
+            "- **Not the optimization target**: DuckDB-reference `workload_speedup`, cold "
+            "`setup_full_build_ms`, or post-stage `composite_score` — full write-mix gates run after "
+            "the stage.\n"
+            "- **Maintenance**: incremental correctness must still pass smoke + gates; do not break "
+            "writes for read wins.\n"
+            "- **Scale**: per-query cost must stay O(touched rows) or better; size from bind-time "
+            "`row_estimate` with amortized growth — never SF1-hardcoded capacities or cardinality "
+            "literals from the iteration dataset."
+        )
+
+    lean_stage = stage in (
+        "optimization",
+        "optimization_analysis",
+        "optimization_patch",
+        "optimization_unified",
+        "crash_debug",
+        "implementation",
+        "audit",
+    )
     compact_inspiration = stage in ("optimization", "crash_debug", "implementation", "analysis")
     kernel_inspiration_section = ""
     if stage in ("implementation", "optimization", "crash_debug", "analysis"):
@@ -259,7 +319,10 @@ def build_prompt_context(
             base_kernel_optimization = (
                 "See `pipeline/prompts/shared/base_kernel_optimization.md` (read_file if needed)."
             )
-        constraints_text = "See `pipeline/prompts/shared/constraints.md` (read_file if needed)."
+        constraints_text = (
+            "See `pipeline/prompts/shared/constraints.md`, `generated_layout.md`, "
+            "and `scale_factor_contract.md` (read_file if needed)."
+        )
         profiling_text = "See `pipeline/prompts/shared/profiling_conventions.md` (read_file if needed)."
     else:
         base_kernel_optimization = _read_text(base_kernel_opt_path)
@@ -276,7 +339,7 @@ def build_prompt_context(
         analysis_json = _read_text(analysis_path, "{}") if stage == "analysis" else "{}"
 
     retrieval_brief = ""
-    if stage == "analysis":
+    if stage in ("analysis", "optimization", "optimization_analysis", "optimization_unified"):
         retrieval_brief = build_retrieval_brief(
             pipeline_config, workload, query, stage=stage, optimization_iter=optimization_iter
         )
@@ -292,9 +355,10 @@ def build_prompt_context(
         "function_name": paths["function_name"],
         "create_fn": paths["create_fn"],
         "source_subdir": paths["source_subdir"],
-        "header_path": paths["header_path"],
-        "kernel_path": paths["kernel_path"],
-        "package_path": paths["package_path"],
+        "header_path": prompt_header_path,
+        "kernel_path": prompt_kernel_path,
+        "package_path": prompt_package_path,
+        "optimization_edit_paths": optimization_edit_paths,
         "test_path": paths["test_path"],
         "benchmark_path": paths["benchmark_path"],
         "test_target": paths["test_target"],
@@ -303,6 +367,7 @@ def build_prompt_context(
         "dataset_db": paths["dataset_db"],
         "db_env_var": paths["db_env_var"],
         "artifacts_path": artifacts_rel,
+        "analysis_artifact_path": analysis_artifact_rel,
         "schema_reference_section": schema_reference_section,
         "benchmark_notes": benchmark_notes,
         "kernel_inspiration_section": kernel_inspiration_section,
@@ -379,7 +444,10 @@ def build_prompt_context(
         "base_kernel_optimization": base_kernel_optimization,
         "optimization_max_iterations": str(pipeline_config.optimization_max_iterations),
         "optimization_goal": (
-            "Beat DuckDB (`speedup_median` > 1.0) and keep improving `best_speedup_median` — "
+            "Maximize `read_only_query_speedup` (aux query hit vs base kernel) using scalable "
+            "structures; maintenance correctness is required but read latency is the score."
+            if is_aux and stage in opt_stages
+            else "Beat DuckDB (`speedup_median` > 1.0) and keep improving `best_speedup_median` — "
             "there is no fixed speedup ceiling; stop only when gates stall progress."
         ),
         "audit_result_json": _read_text(art / "audit_result.json", "{}"),
@@ -404,8 +472,13 @@ def build_prompt_context(
         "full_analysis_path": (
             str(analysis_path.relative_to(repo))
             if analysis_path.is_file()
-            else f"{artifacts_rel}/analysis.json"
+            else analysis_artifact_rel
         ),
         "analysis_revision_request": "",
+        "implementation_bootstrap": (
+            build_implementation_bootstrap(repo, workload, query, analysis)
+            if is_aux and stage == "implementation" and analysis
+            else ""
+        ),
     }
     return ctx

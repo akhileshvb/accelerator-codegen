@@ -1,0 +1,30 @@
+benchmark_name: tpch
+query_number: 9
+query_id: "9"
+function_name: accel_tpch_q9
+create_fn: CreateTpchQ9FunctionSet
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/09.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: color
+    type: VARCHAR
+
+reference_accelerators: [10, 18, 21]
+
+output_schema:
+  - name: nation
+    type: VARCHAR
+  - name: o_year
+    type: BIGINT
+  - name: sum_profit
+    type: DECIMAL
+
+tables:
+  - part
+  - supplier
+  - lineitem
+  - partsupp
+  - orders
+  - nation

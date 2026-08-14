@@ -7,6 +7,7 @@ from accel_pipeline.analysis_context import (
     analysis_for_implementation,
     analysis_for_optimization,
     build_shared_docs_reference,
+    compact_base_analysis_for_implementation,
     compact_bench_summary,
     compact_gate_summary,
     compact_optimization_state,
@@ -69,7 +70,7 @@ def _sample_analysis() -> dict:
             "initial_cost_model": {"config_path": "config/q1_aux_cost_model.json"},
             "likely_best_actions": ["ApplyDelta"],
         },
-        "files_to_create": [{"path": "src/aux_state/q1/q1_aux_kernel.cpp", "role": "kernel"}],
+        "files_to_create": [{"path": "src/generated/tpch/q1/aux/module.cpp", "role": "kernel"}],
     }
 
 
@@ -142,3 +143,20 @@ class TestAnalysisContextSlicing:
         assert compact["last_result"]["iteration"] == 2
         assert compact["prior_composite_score"] == 10.0
         assert "history" not in compact
+
+    def test_compact_base_analysis_accepts_dict_scan_order(self):
+        payload = compact_base_analysis_for_implementation(
+            {
+                "query_summary": "Large orders query",
+                "logical_plan": {"simplest_execution_strategy": "scan lineitem first"},
+                "scan_order": {
+                    "1": "lineitem aggregate",
+                    "2": "orders probe",
+                },
+                "likely_bottlenecks": ["lineitem scan"],
+                "optimization_hypotheses": ["dense array for order totals"],
+                "files_to_create": [{"path": "src/generated/tpch/q18/base/single-threaded/kernel.cpp"}],
+            }
+        )
+        assert "lineitem aggregate" in payload
+        assert "slice" not in payload

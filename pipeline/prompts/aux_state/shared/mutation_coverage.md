@@ -1,6 +1,8 @@
 # Mutation coverage
 
-For **every** `correctness_facts.dependent_tables` entry and **every** observable mutation kind (`insert`, `update`, `delete`, column-specific updates), assign exactly one behavior:
+For **every** `correctness_facts.dependent_tables` entry and **every** mutation kind (`insert`, `update`, `delete`), assign exactly one behavior:
+
+**`mutation` must be exactly `insert`, `update`, or `delete`** (lowercase). Put column-specific cases in `notes`, not in `mutation`.
 
 | Behavior | Meaning |
 |----------|---------|

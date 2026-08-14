@@ -17,6 +17,44 @@ OUT="${GATE_OUT}"
 mkdir -p "${OUT}"
 CONFIG="${ROOT}/${COST_MODEL_CONFIG}"
 
+write_skip() {
+  local reason="$1"
+  python3 - <<PY
+import json, pathlib
+path = pathlib.Path("${OUT}/aux_cost_model_calibrate.json")
+payload = {
+    "gate": "aux_cost_model_calibrate",
+    "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
+    "status": "skip",
+    "reason": """${reason}""",
+    "config_path": "${CONFIG}",
+}
+path.write_text(json.dumps(payload, indent=2))
+print(path.read_text())
+PY
+}
+
+if [[ "${ACCEL_SKIP_AUX_CALIBRATE:-0}" == "1" ]]; then
+  write_skip "ACCEL_SKIP_AUX_CALIBRATE=1"
+  exit 0
+fi
+
+if [[ -f "${CONFIG}" ]]; then
+  if python3 - <<PY
+import json, sys
+from pathlib import Path
+data = json.loads(Path("${CONFIG}").read_text(encoding="utf-8"))
+delta = float(data.get("interference_delta_per_query_us") or 0)
+rebuild = float(data.get("interference_rebuild_per_query_us") or 0)
+sys.exit(0 if delta > 0 and rebuild > 0 else 1)
+PY
+  then
+    write_skip "reusing existing cost model at ${CONFIG}"
+    exit 0
+  fi
+fi
+
 # shellcheck source=cmake_ensure_target.sh
 source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
 
@@ -26,6 +64,25 @@ if [[ ! -d "${BUILD}" ]]; then
 fi
 
 TARGET="${AUX_CALIBRATE_TARGET}"
+CALIBRATOR_SOURCE="${ROOT}/benchmarks/${BENCHMARK_NAME}/single-threaded/calibrate_q${QUERY}_aux_cost_model.cpp"
+if [[ -f "${CALIBRATOR_SOURCE}" ]] && ! grep -q 'CalibrateAndWriteCostModel' "${CALIBRATOR_SOURCE}"; then
+  python3 - <<PY
+import json, pathlib, sys
+path = pathlib.Path("${OUT}/aux_cost_model_calibrate.json")
+payload = {
+    "gate": "aux_cost_model_calibrate",
+    "query": int("${QUERY}"),
+    "benchmark": "${BENCHMARK_NAME}",
+    "status": "fail",
+    "reason": "calibrate wrapper must call CalibrateAndWriteCostModel (stub calibrators are rejected)",
+    "config_path": "${CONFIG}",
+}
+path.write_text(json.dumps(payload, indent=2))
+print(path.read_text())
+sys.exit(1)
+PY
+fi
+
 BUILD_LOG=""
 if ! ensure_cmake_target "${ROOT}" "${BUILD}" "${TARGET}"; then
 	BUILD_LOG="$(cmake --build "${BUILD}" --target "${TARGET}" -j"$(nproc)" 2>&1 | tail -40 || true)"
@@ -49,7 +106,7 @@ sys.exit(1)
 PY
 fi
 
-export ACCEL_MULTI_CONN_TEST_QUERIES="${QUERY}"
+export ACCEL_MULTI_CONN_TEST_QUERIES="${ACCEL_MULTI_CONN_TEST_QUERIES:-${QUERY}}"
 export ACCEL_INTERFERENCE_CALIB_SEC="${ACCEL_INTERFERENCE_CALIB_SEC:-4}"
 export ACCEL_INTERFERENCE_ISOLATED_SAMPLES="${ACCEL_INTERFERENCE_ISOLATED_SAMPLES:-20}"
 
@@ -57,6 +114,9 @@ CALIB_WORK_DIR="${BUILD}/q${QUERY}_aux_calibrate_${BENCHMARK_NAME}"
 mkdir -p "${CALIB_WORK_DIR}"
 CALIB_DB="${CALIB_WORK_DIR}/calibrate.duckdb"
 cp "${DATASET_DB}" "${CALIB_DB}"
+
+export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
+export "${DB_ENV_VAR}"="${CALIB_DB}"
 
 set +e
 LOG="$("${BUILD}/${TARGET}" "${CALIB_DB}" "${CONFIG}" 2>&1)"

@@ -1,5 +1,5 @@
-#include "accelerator_codegen/{{header_basename}}.hpp"
-#include "accelerator_codegen/query_runtime.hpp"
+#include "{{benchmark_name}}/q{{query_number}}/base/query.hpp"
+#include "accelerator_codegen/runtime/duckdb/query_runtime.hpp"
 
 #include "duckdb/function/function_set.hpp"
 

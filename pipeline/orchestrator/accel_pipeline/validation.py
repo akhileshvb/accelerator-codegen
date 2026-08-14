@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -114,6 +115,53 @@ def _mutation_pairs_from_tables(
     return pairs
 
 
+def _normalize_mutation_kind(raw: Any) -> str:
+    mutation = str(raw or "").strip().lower()
+    if mutation.startswith("insert"):
+        return "insert"
+    if mutation.startswith("update"):
+        return "update"
+    if mutation.startswith("delete"):
+        return "delete"
+    return mutation
+
+
+def repair_aux_analysis(analysis: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Apply safe, deterministic fixes for common agent omissions before validation."""
+    repaired = copy.deepcopy(analysis)
+    repairs: list[str] = []
+
+    search = repaired.get("state_candidate_search")
+    if isinstance(search, dict):
+        candidates = [c for c in (search.get("candidates") or []) if isinstance(c, dict)]
+        viable = [c for c in candidates if c.get("viability") == "viable"]
+        explanation = str(search.get("fewer_than_three_explanation") or "").strip()
+        if 0 < len(viable) < 3 and not explanation:
+            viable_ids = ", ".join(str(c.get("id", "?")) for c in viable)
+            rejected_ids = ", ".join(
+                str(c.get("id", "?")) for c in candidates if c.get("viability") == "rejected"
+            )
+            tail = f" Rejected: {rejected_ids}." if rejected_ids else ""
+            search["fewer_than_three_explanation"] = (
+                f"Only {len(viable)} materially different viable design(s) identified: {viable_ids}.{tail}"
+            )
+            repairs.append("filled state_candidate_search.fewer_than_three_explanation")
+
+    facts = repaired.get("correctness_facts")
+    if isinstance(facts, dict):
+        coverage = facts.get("mutation_coverage")
+        if isinstance(coverage, list):
+            for entry in coverage:
+                if not isinstance(entry, dict):
+                    continue
+                normalized = _normalize_mutation_kind(entry.get("mutation"))
+                if normalized in MUTATION_KINDS_DEFAULT and normalized != entry.get("mutation"):
+                    entry["mutation"] = normalized
+                    repairs.append(f"normalized mutation_coverage mutation for {entry.get('table')}")
+
+    return repaired, repairs
+
+
 def _validate_mutation_coverage(
     dependent_tables: list[dict[str, Any]],
     mutation_coverage: list[dict[str, Any]],
@@ -121,8 +169,8 @@ def _validate_mutation_coverage(
     required = _mutation_pairs_from_tables(dependent_tables)
     covered: set[tuple[str, str]] = set()
     for entry in mutation_coverage:
-        table = entry.get("table", "")
-        mutation = entry.get("mutation", "")
+        table = str(entry.get("table", "")).strip()
+        mutation = _normalize_mutation_kind(entry.get("mutation"))
         behavior = entry.get("behavior", "")
         if not table or not mutation or not behavior:
             raise AuxAnalysisValidationError("mutation_coverage entries require table, mutation, behavior")

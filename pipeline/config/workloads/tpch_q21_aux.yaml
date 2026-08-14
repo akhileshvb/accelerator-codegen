@@ -1,0 +1,63 @@
+workload_kind: aux_state
+benchmark_name: tpch
+query_number: 21
+query_id: "21"
+accelerator_id: tpch_q21_aux
+base_function_name: accel_tpch_q21
+aux_function_name: accel_tpch_q21_aux
+
+requires_base_accelerator: true
+prerequisite_workload: tpch_q21
+prerequisite_min_stage: implementation
+reference_accelerators:
+  - src/generated/tpch/q18/aux/module.cpp
+  - src/generated/tpch/q10/aux/module.cpp
+
+allow_poor_fitness: false
+allow_unsuccessful_design: false
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/21.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: nation_name
+    type: VARCHAR
+
+dependent_tables:
+  - name: supplier
+    watched_columns: [s_suppkey, s_name, s_nationkey]
+  - name: lineitem
+    watched_columns: [l_orderkey, l_suppkey, l_receiptdate, l_commitdate]
+  - name: orders
+    watched_columns: [o_orderkey, o_orderstatus]
+  - name: nation
+    watched_columns: [n_nationkey, n_name]
+
+partitioning: {}   # analysis stage will propose grain (e.g. orderkey, suppkey bands)
+
+output_schema:
+  - name: s_name
+    type: VARCHAR
+  - name: numwait
+    type: BIGINT
+
+cost_model_config: config/q21_aux_cost_model.json
+
+optimization_guidance: |
+  Q21 is **existence-heavy** (correlated EXISTS / NOT EXISTS over lineitem self-joins).
+  Prefer taxonomy patterns #18 (membership/existence counts) and #19 (semijoin filters).
+
+  Structural read-path priorities:
+  1. Precompute per-(orderkey, suppkey) late-shipment and competitor-existence facts at build time
+     so the read path avoids repeated lineitem self-joins.
+  2. Nation-filtered supplier index — iterate qualifying suppliers only, not full supplier scan + filter.
+  3. Dense per-order competitor counts / flags for NOT EXISTS (no other late competitor).
+
+  Full redesign is allowed (module.hpp + module.cpp + finalize.cpp + tests). Read each file once,
+  then use `write_file` for coordinated edits. End with `HYPOTHESIS_PATCH_COMPLETE` when done.
+
+cmake:
+  query_num: 21
+  aux_state_module: accel_add_aux_state_query
+
+agent_boundary: prompts/aux_state/shared/agent_boundary.md

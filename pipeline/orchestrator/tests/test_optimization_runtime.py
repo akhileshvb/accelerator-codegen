@@ -86,15 +86,21 @@ def test_runtime_markdown_includes_structured_sections(tmp_path: Path):
         "optimization_workflow_compact": "# Workflow\ngrep then A/B.",
         "profile_guidance": ["- scan_amplification=3.3x (pre_rows / qualifying_rows)"],
         "investigation_questions": ["grep_context the kernel for per-row loops"],
-        "strategy_palette": ["early_filter_pushdown: move predicates into NativeScanSpec"],
-        "suggested_bundle": ["early_filter_pushdown: move predicates into NativeScanSpec"],
+        "bottleneck_evidence": {
+            "tiers": [
+                {
+                    "tier": "exploit_selectivity",
+                    "signals": [{"metric": "scan_amplification", "value": 3.3, "context": "pre_rows / qualifying_rows"}],
+                }
+            ]
+        },
         "ab_trials": [],
-        "kernel_paths": {"kernel": "src/generated/sec_edgar/single-threaded/q1_kernel.cpp"},
+        "kernel_paths": {"kernel": "src/generated/sec_edgar/q1/base/single-threaded/kernel.cpp"},
     }
     md = format_runtime_markdown(state)
     assert "Episode history" in md
     assert "dict-index adsh" in md
     assert "Technique memory" in md
     assert "Optimization workflow" in md
-    assert "Strategy palette" in md
+    assert "Bottleneck evidence" in md
     assert "Investigate" in md

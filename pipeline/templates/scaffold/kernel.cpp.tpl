@@ -1,4 +1,4 @@
-#include "accelerator_codegen/{{header_basename}}.hpp"
+#include "{{benchmark_name}}/q{{query_number}}/base/query.hpp"
 
 #include "duckdb/common/exception.hpp"
 

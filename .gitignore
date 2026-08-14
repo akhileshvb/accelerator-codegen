@@ -16,6 +16,10 @@ pipeline/artifacts/**
 !pipeline/artifacts/shared/
 !pipeline/artifacts/shared/optimization_playbook.md
 
+# Local secrets (template: .env.example)
+.env
+.env.local
+
 # Python orchestrator local env / build artifacts
 pipeline/orchestrator/.venv/
 pipeline/orchestrator/.pytest_cache/

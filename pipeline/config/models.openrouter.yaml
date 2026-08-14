@@ -1,0 +1,29 @@
+# OpenRouter backend (OpenAI Agents SDK + LiteLLM).
+# Copy or symlink to models.yaml, or pass --models-config pipeline/config/models.openrouter.yaml
+provider: openrouter
+api_key_env: OPENROUTER_API_KEY
+openrouter_base_url: https://openrouter.ai/api/v1
+
+# Presets use OpenRouter model ids without the openrouter/ prefix (added automatically).
+# See https://openrouter.ai/models
+presets:
+  cheap_code: deepseek/deepseek-v4-flash
+  code: deepseek/deepseek-v4-pro
+  reasoning: openai/gpt-5.6-terra-pro
+  debug: openai/gpt-5.6-terra-pro
+  reviewer: anthropic/claude-sonnet-5
+
+stages:
+  analysis: reasoning
+  implementation: code
+  optimization_unified: code
+  optimization_unified_hypothesis: reasoning
+  optimization_unified_patch: code
+  optimization_worker: code
+  optimization_analysis: reasoning
+  optimization_patch: code
+  crash_debug: debug
+  audit: reviewer
+
+  # legacy/fallback only
+  optimization: reasoning

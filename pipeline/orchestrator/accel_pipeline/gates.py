@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ GATE_SCRIPTS = {
     "aux_cross_accel": "run_aux_cross_accel.sh",
     "aux_multi_connection": "run_aux_multi_connection.sh",
     "aux_cost_model_calibrate": "run_aux_cost_model_calibrate.sh",
+    "aux_optimization_probe": "run_aux_optimization_probe.sh",
 }
 
 
@@ -41,7 +43,7 @@ class GateFailure(RuntimeError):
     """Raised when a required gate does not pass."""
 
 
-GATES_ALLOW_SKIP = frozenset({"baseline", "sf10", "profile"})
+GATES_ALLOW_SKIP = frozenset({"baseline", "sf10", "profile", "aux_cost_model_calibrate"})
 
 
 def gate_failure_message(result: GateResult) -> str:
@@ -91,6 +93,8 @@ def run_gate(
     allow_skip: bool | None = None,
     change_kind: str = "",
     iteration: int = 0,
+    gate_index: int = 0,
+    gate_count: int = 0,
 ) -> GateResult:
     if gate_name not in GATE_SCRIPTS:
         raise ValueError(f"unknown gate: {gate_name}")
@@ -102,13 +106,33 @@ def run_gate(
     if workload:
         write_gate_context(pipeline_config, workload, query)
 
+    import os
+
+    gate_env = os.environ.copy()
+    if change_kind:
+        gate_env["ACCEL_GATE_CHANGE_KIND"] = change_kind
+    gate_env["ACCEL_GATE_ITERATION"] = str(iteration)
+
+    from accel_pipeline.pipeline_log import log_gate_complete, log_gate_start
+
+    log_gate_start(
+        gate_name,
+        query,
+        change_kind=change_kind,
+        iteration=iteration,
+        index=gate_index,
+        count=gate_count,
+    )
+    started = time.monotonic()
     proc = subprocess.run(
         ["bash", str(script), str(query)],
         cwd=pipeline_config.repo_root,
         capture_output=True,
         text=True,
         check=False,
+        env=gate_env,
     )
+    duration_ms = int((time.monotonic() - started) * 1000)
 
     out_json = _gate_output_json(pipeline_config, gate_name, query, workload)
     data: dict[str, Any] = {}
@@ -121,6 +145,19 @@ def run_gate(
             data = {"stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
 
     status = data.get("status", "pass" if proc.returncode == 0 else "fail")
+    detail = str(data.get("reason") or data.get("notes") or "").strip()
+    if not detail and status == "fail" and proc.stderr.strip():
+        detail = proc.stderr.strip()[-200:]
+    log_gate_complete(
+        gate_name,
+        status=status,
+        duration_ms=duration_ms,
+        change_kind=change_kind,
+        iteration=iteration,
+        index=gate_index,
+        count=gate_count,
+        detail=detail,
+    )
     result = GateResult(name=gate_name, status=status, data=data, path=out_json if out_json.is_file() else None)
     if gate_name == "aux_bench_sweep":
         from accel_pipeline.pipeline_log import log_bench_sweep_results

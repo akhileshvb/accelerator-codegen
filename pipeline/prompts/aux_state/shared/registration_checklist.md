@@ -1,17 +1,16 @@
 # Registration checklist
 
-1. Implement `RegisterQ{{query_number}}AuxAccelerator(connection)` in `*_aux_dependencies.cpp`.
-2. Register: mutation interpreter, incremental buffer factory, mutation accumulator, maintenance hook, table dependencies.
-3. Expose `{{aux_function_name}}` table function and build/rebuild helpers.
-4. Add sources via `accel_add_aux_state_query(QUERY_NUM {{query_number}} ...)` in `CMakeLists.txt`.
-5. Wire `RegisterQ{{query_number}}AuxAccelerator` in `src/register.cpp` after `InstallAcceleratorSubstrate`.
+1. Implement `AuxQueryModule` subclass in `src/generated/{benchmark}/q{{query_number}}/aux/module.{hpp,cpp}`.
+2. Export a factory (e.g. `MakeTpchQ{{query_number}}Module`) from `module.hpp`.
+3. Register the factory in `src/generated/catalog/query_catalog.cpp` (append — do not split per query).
+4. For Postgres: append SQL-callable dispatch in `src/generated/postgres/kernel_runner.cpp`.
+5. CMake: `finalize.cpp` is picked up via `accel_register_tpch_aux_finalize_queries()`; test/bench/calibrate via `accel_register_tpch_aux_pipeline_targets()`. Manual `accel_add_aux_state_query(...)` in `CMakeLists.txt` is only needed when those globs are insufficient.
+6. DuckDB table function `{{aux_function_name}}` is wired through the catalog + `src/runtime/duckdb/register.cpp` scaffold (agents do not edit register.cpp directly).
 
-Registry hooks:
+Module contract:
 
-- `RegisterIncrementalBufferFactory(accelerator_id, ...)`
-- `RegisterMutationAccumulator(accelerator_id, ...)`
-- `RegisterMaintenanceHook(accelerator_id, ...)`
-
-Lazy repair: on relevant maintenance commit, merge into **global** `AcceleratorMaintenanceState` pending plan (per-accelerator). Any connection may apply via `EnsurePending*RebuildApplied` — not per-connection `SetPendingLazyRebuild` on commit.
+- `Id()`, `Dependencies()` — accelerator identity and watched tables
+- `CreateTxnBuffer()`, `Build()`, `InterpretMutation()`, `AccumulateMutation()`, `StageMaintenance()`
+- `CheckValidity()`, `Execute()`, `ExecuteFallback()`
 
 Concurrency: read `concurrency_contract.md` — irrelevant mutations NoOp, bounded read path, per-accelerator epochs.

@@ -27,11 +27,15 @@ Analyze **{{display_name}}** query **Q{{query_number}}** before any implementati
 
 Inspect these existing implementations (read on demand): {{reference_accelerators}}
 
+Layout contract: `pipeline/prompts/shared/generated_layout.md`
+
 {{kernel_inspiration_section}}
 
 ## Performance goal
 
 Design for **faster than DuckDB** on the benchmark dataset (single-threaded). The optimizer keeps improving while gates show progress — analysis should front-load optimization opportunities.
+
+**Scale:** TPC-H pipeline iterates on SF1; production benchmarking targets SF20+. Plan structures that scale with bind-time estimates, not SF1 cardinalities (`scale_factor_contract.md`).
 
 {{base_kernel_optimization}}
 
@@ -47,7 +51,7 @@ Design for **faster than DuckDB** on the benchmark dataset (single-threaded). Th
 
 ## Output
 
-Write `{{artifacts_path}}/analysis.json` with:
+Write `{{analysis_artifact_path}}` with:
 
 - `logical_plan`, `scan_order`, `transient_structures`, `likely_bottlenecks`
 - `optimization_hypotheses` (technique → expected bottleneck impact)

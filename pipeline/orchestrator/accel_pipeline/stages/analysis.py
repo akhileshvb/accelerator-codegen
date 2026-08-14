@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
-from accel_pipeline.paths import pipeline_root, query_artifacts_dir
+from accel_pipeline.paths import analysis_artifact_path, pipeline_root, query_artifacts_dir
 from accel_pipeline.pipeline_log import log_analysis_candidates
 from accel_pipeline.stages.base import run_agent_stage
-from accel_pipeline.validation import AuxAnalysisValidationError, validate_aux_analysis_file
+from accel_pipeline.validation import AuxAnalysisValidationError, repair_aux_analysis, validate_aux_analysis_file
 
 
 def _legacy_analysis_path(repo_root: Path, query: int) -> Path:
@@ -61,7 +62,7 @@ def run(
         workload_name=workload_name,
         query=query,
         user_message=user_message
-        or "Analyze the query and write analysis.json to the artifacts directory.",
+        or "Analyze the query and write the analysis artifact to the artifacts directory.",
         model_overrides=model_overrides,
         dry_run=dry_run,
         analysis_revision_request=analysis_revision_request,
@@ -73,7 +74,7 @@ def run(
     if workload.get("workload_kind") != "aux_state":
         return result
 
-    analysis_path = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload) / "analysis.json"
+    analysis_path = analysis_artifact_path(pipeline_config.repo_root, query, workload=workload)
     allow_poor = bool(workload.get("allow_poor_fitness", False))
     if not _analysis_is_valid(analysis_path, allow_poor_fitness=allow_poor):
         _maybe_recover_legacy_analysis(
@@ -83,6 +84,15 @@ def run(
             allow_poor_fitness=allow_poor,
         )
     try:
+        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+        repaired, repairs = repair_aux_analysis(analysis)
+        if repairs:
+            analysis_path.write_text(json.dumps(repaired, indent=2), encoding="utf-8")
+            print(
+                f"[pipeline] repaired analysis.json before validation: {', '.join(repairs)}",
+                file=sys.stderr,
+                flush=True,
+            )
         validate_aux_analysis_file(
             analysis_path,
             allow_poor_fitness=allow_poor,
@@ -96,5 +106,6 @@ def run(
         query,
         analysis,
         revision=bool(analysis_revision_request),
+        workload=workload,
     )
     return result
