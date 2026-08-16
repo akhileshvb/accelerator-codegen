@@ -34,6 +34,12 @@ public:
                 double expected_queries_before_write);
   ~DuckdbRuntime();
 
+  // Active session runtimes for SQL table-function hits. Build() registers;
+  // destructor unregisters. Aux TF looks up by (DatabaseInstance, accelerator_id)
+  // so SELECT * FROM accel_*_aux(...) reuses state instead of rebuilding.
+  static DuckdbRuntime *FindActive(::duckdb::DatabaseInstance &db,
+                                   const std::string &accelerator_id);
+
   void Build();
   void Execute();
   void Execute(const core::QueryArguments &arguments);

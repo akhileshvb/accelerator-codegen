@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -1230,7 +1231,76 @@ CreateBinding(::duckdb::Connection &connection,
   }
 }
 
+struct ActiveRuntimeKey {
+  ::duckdb::DatabaseInstance *db = nullptr;
+  std::string accelerator_id;
+
+  bool operator==(const ActiveRuntimeKey &other) const {
+    return db == other.db && accelerator_id == other.accelerator_id;
+  }
+};
+
+struct ActiveRuntimeKeyHash {
+  std::size_t operator()(const ActiveRuntimeKey &key) const {
+    return std::hash<::duckdb::DatabaseInstance *>()(key.db) ^
+           (std::hash<std::string>()(key.accelerator_id) << 1);
+  }
+};
+
+std::mutex &ActiveRuntimeMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::unordered_map<ActiveRuntimeKey, DuckdbRuntime *, ActiveRuntimeKeyHash> &
+ActiveRuntimes() {
+  static std::unordered_map<ActiveRuntimeKey, DuckdbRuntime *,
+                            ActiveRuntimeKeyHash>
+      runtimes;
+  return runtimes;
+}
+
+void RegisterActiveRuntime(DuckdbRuntime *runtime,
+                           ::duckdb::Connection &connection,
+                           const SharedQueryCatalogEntry &entry) {
+  if (!runtime || !entry.accelerator_id || !connection.context ||
+      !connection.context->db) {
+    return;
+  }
+  ActiveRuntimeKey key{connection.context->db.get(), entry.accelerator_id};
+  std::lock_guard<std::mutex> lock(ActiveRuntimeMutex());
+  ActiveRuntimes()[key] = runtime;
+}
+
+void UnregisterActiveRuntime(DuckdbRuntime *runtime) {
+  if (!runtime) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(ActiveRuntimeMutex());
+  auto &runtimes = ActiveRuntimes();
+  for (auto it = runtimes.begin(); it != runtimes.end();) {
+    if (it->second == runtime) {
+      it = runtimes.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+DuckdbRuntime *FindActiveRuntimeImpl(::duckdb::DatabaseInstance &db,
+                                     const std::string &accelerator_id) {
+  ActiveRuntimeKey key{&db, accelerator_id};
+  std::lock_guard<std::mutex> lock(ActiveRuntimeMutex());
+  const auto it = ActiveRuntimes().find(key);
+  return it == ActiveRuntimes().end() ? nullptr : it->second;
+}
+
 } // namespace
+
+DuckdbRuntime *DuckdbRuntime::FindActive(::duckdb::DatabaseInstance &db,
+                                         const std::string &accelerator_id) {
+  return FindActiveRuntimeImpl(db, accelerator_id);
+}
 
 DuckdbRuntime::DuckdbRuntime(::duckdb::Connection &connection,
                              const SharedQueryCatalogEntry &entry,
@@ -1274,6 +1344,7 @@ void DuckdbRuntime::Build() {
   for (const auto &image : builder.images) {
     legacy_store_.PublishPartition(image.partition, image.payload, 0);
   }
+  RegisterActiveRuntime(this, connection_, entry_);
 }
 
 std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect() {
@@ -1374,6 +1445,6 @@ uint64_t DuckdbRuntime::AuxStateFootprintBytes() const {
                                                 entry_.accelerator_id);
 }
 
-DuckdbRuntime::~DuckdbRuntime() = default;
+DuckdbRuntime::~DuckdbRuntime() { UnregisterActiveRuntime(this); }
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb

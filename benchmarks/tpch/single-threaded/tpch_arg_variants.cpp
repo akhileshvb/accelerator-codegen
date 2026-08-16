@@ -658,6 +658,18 @@ case 3:
   }
 }
 
+std::string FormatTpchAuxSql(int query_id,
+                             const core::QueryArguments &arguments) {
+  std::string sql = FormatTpchKernelSql(query_id, arguments);
+  const auto paren = sql.find('(');
+  if (paren == std::string::npos || paren == 0) {
+    throw std::runtime_error("FormatTpchAuxSql: malformed kernel sql");
+  }
+  // accel_tpch_qN(...) -> accel_tpch_qN_aux(...)
+  sql.insert(paren, "_aux");
+  return sql;
+}
+
 std::vector<TpchArgVariant> BuildTpchArgPool(
     int query_id, const catalog_ns::SharedQueryCatalogEntry &entry) {
   std::vector<TpchArgVariant> pool;
@@ -667,6 +679,7 @@ std::vector<TpchArgVariant> BuildTpchArgPool(
     variant.base_sql = entry.base_sql ? entry.base_sql : "";
     variant.kernel_sql =
         entry.postgres_base_kernel_sql ? entry.postgres_base_kernel_sql : "";
+    variant.aux_sql = entry.duckdb_aux_sql ? entry.duckdb_aux_sql : "";
     pool.push_back(std::move(variant));
     return pool;
   }
@@ -678,6 +691,7 @@ std::vector<TpchArgVariant> BuildTpchArgPool(
     variant.arguments = SampleTpchArgs(query_id, i);
     variant.base_sql = FormatTpchBaseSql(query_id, variant.arguments);
     variant.kernel_sql = FormatTpchKernelSql(query_id, variant.arguments);
+    variant.aux_sql = FormatTpchAuxSql(query_id, variant.arguments);
     pool.push_back(std::move(variant));
   }
   return pool;

@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -185,9 +186,9 @@ double TimeAccelWriteCommitUs(DuckdbRuntime &runtime,
   return ElapsedUs(start, Clock::now());
 }
 
-double TimeExecuteUs(DuckdbRuntime &runtime) {
+double TimeExecuteUs(duckdb::Connection &connection, const std::string &aux_sql) {
   const auto start = Clock::now();
-  runtime.Execute();
+  ExecuteAndConsume(connection, aux_sql);
   return ElapsedUs(start, Clock::now());
 }
 
@@ -196,13 +197,44 @@ double MeasureQueryMedianUs(duckdb::Connection &connection,
   if (samples <= 0) {
     return 0.0;
   }
+  const std::string profile_path =
+      "/tmp/accel_aux_bench_profile_" +
+      std::to_string(static_cast<long long>(::getpid())) + "_single.json";
+  {
+    auto enabled = connection.Query("PRAGMA enable_profiling='json'");
+    Require(enabled != nullptr && !enabled->HasError(),
+            enabled ? enabled->GetError() : "enable_profiling failed");
+  }
+  {
+    auto out = connection.Query("PRAGMA profiling_output='" + profile_path + "'");
+    Require(out != nullptr && !out->HasError(),
+            out ? out->GetError() : "profiling_output failed");
+  }
+
+  auto parse_latency_us = [&]() {
+    std::ifstream in(profile_path);
+    Require(in.good(), "cannot open DuckDB profile json: " + profile_path);
+    std::ostringstream buf;
+    buf << in.rdbuf();
+    const std::string text = buf.str();
+    const auto key_pos = text.find("\"latency\"");
+    Require(key_pos != std::string::npos, "latency missing in profile json");
+    const auto colon_pos = text.find(':', key_pos);
+    Require(colon_pos != std::string::npos, "latency value missing");
+    char *end = nullptr;
+    const double seconds = std::strtod(text.c_str() + colon_pos + 1, &end);
+    Require(end != text.c_str() + colon_pos + 1, "failed to parse latency");
+    return seconds * 1e6;
+  };
+
   std::vector<double> query_samples;
   query_samples.reserve(samples);
   for (int i = 0; i < samples; i++) {
-    const auto start = Clock::now();
     ExecuteAndConsume(connection, sql);
-    query_samples.push_back(ElapsedUs(start, Clock::now()));
+    query_samples.push_back(parse_latency_us());
   }
+  connection.Query("PRAGMA disable_profiling");
+  std::remove(profile_path.c_str());
   return SummarizeSamples(std::move(query_samples)).median_us;
 }
 
@@ -223,7 +255,9 @@ struct WorkloadTimings {
 };
 
 WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime,
-                                    int num_queries, int write_frequency_pct,
+                                    duckdb::Connection &accel_connection,
+                                    const std::string &aux_sql, int num_queries,
+                                    int write_frequency_pct,
                                     std::vector<catalog::SharedProbe> &probes) {
   WorkloadTimings result;
   result.num_queries = num_queries;
@@ -241,7 +275,7 @@ WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime,
       result.writes_executed++;
     }
 
-    const auto sample = TimeExecuteUs(runtime);
+    const auto sample = TimeExecuteUs(accel_connection, aux_sql);
     result.total_accel_query_us += sample;
     hit_samples.push_back(sample);
   }
@@ -308,6 +342,7 @@ void RunBenchmarkPoint(int write_frequency_pct, const std::string &db_path,
 
   const std::string reference_sql = entry.base_sql;
   const std::string base_kernel_sql = entry.postgres_base_kernel_sql;
+  const std::string aux_sql = entry.duckdb_aux_sql;
   auto write_probes = PrecomputeWriteProbes(base_connection, entry, kQueryNum);
 
   double base_write_median_us = 0.0;
@@ -341,7 +376,7 @@ void RunBenchmarkPoint(int write_frequency_pct, const std::string &db_path,
     if (i < std::min(warmup_queries, 2)) {
       ExecuteAndConsume(base_connection, base_kernel_sql);
     }
-    runtime.Execute();
+    ExecuteAndConsume(accel_connection, aux_sql);
   }
 
   const double duckdb_ref_query_median_us =
@@ -351,8 +386,9 @@ void RunBenchmarkPoint(int write_frequency_pct, const std::string &db_path,
                            ref_samples > 0 ? std::min(ref_samples, 2) : 0);
 
   runtime.ResetStoreDiagnosticsProfiling();
-  auto workload = RunMeasuredWorkload(runtime, measured_queries,
-                                      write_frequency_pct, write_probes);
+  auto workload = RunMeasuredWorkload(runtime, accel_connection, aux_sql,
+                                      measured_queries, write_frequency_pct,
+                                      write_probes);
   const auto store_diag = bench_diag::CollectStoreDiagnostics(runtime);
   workload.duckdb_ref_query_median_us = duckdb_ref_query_median_us;
   workload.base_kernel_median_us = base_kernel_median_us;

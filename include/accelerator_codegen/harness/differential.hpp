@@ -35,8 +35,9 @@ void RunIncrementalDifferentialCheck(const std::string &db_path,
                                      const aux_engine::SharedQueryCatalogEntry &entry);
 
 // Apply alternating mini-chunk RF2/RF1 via DuckdbRuntime::ApplyRfChunk, then
-// require Execute matches DuckDB base_sql after each chunk. db_path must be a
-// writable work copy (mutations are permanent).
+// require Execute matches DuckDB base_sql. Escalates chunk size until the DuckDB
+// answer changes so the write is a real invalidation for this query. db_path
+// must be a writable work copy (mutations are permanent).
 void RunRfChunkDifferentialCheck(const std::string &db_path,
                                  const aux_engine::SharedQueryCatalogEntry &entry,
                                  int num_chunks = 4, int order_count = 1);

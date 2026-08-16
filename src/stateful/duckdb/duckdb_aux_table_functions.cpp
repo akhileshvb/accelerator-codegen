@@ -2,7 +2,10 @@
 
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -138,6 +141,26 @@ AuxBind(::duckdb::ClientContext &context, ::duckdb::TableFunctionBindInput &inpu
         ::duckdb::vector<::duckdb::LogicalType> &return_types,
         ::duckdb::vector<::duckdb::string> &names) {
   const auto &entry = input.info->Cast<AuxFunctionInfo>().entry;
+
+  // Cache schema per accelerator so repeated SELECT * FROM accel_*_aux(...)
+  // does not re-run base_sql solely to infer column types.
+  struct SchemaCache {
+    ::duckdb::vector<::duckdb::LogicalType> types;
+    ::duckdb::vector<::duckdb::string> names;
+  };
+  static std::mutex schema_mutex;
+  static std::unordered_map<std::string, SchemaCache> schemas;
+  {
+    std::lock_guard<std::mutex> lock(schema_mutex);
+    const auto it = schemas.find(entry.accelerator_id ? entry.accelerator_id : "");
+    if (it != schemas.end()) {
+      return_types = it->second.types;
+      names = it->second.names;
+      return ::duckdb::make_uniq<AuxBindData>(entry, input.inputs, return_types,
+                                              names);
+    }
+  }
+
   ::duckdb::Connection connection(*context.db);
   auto base_result = connection.Query(entry.base_sql);
   Require(base_result != nullptr && !base_result->HasError(),
@@ -148,6 +171,11 @@ AuxBind(::duckdb::ClientContext &context, ::duckdb::TableFunctionBindInput &inpu
   for (::duckdb::idx_t column = 0; column < base.ColumnCount(); ++column) {
     return_types.push_back(base.types[column]);
     names.push_back(base.names[column]);
+  }
+  {
+    std::lock_guard<std::mutex> lock(schema_mutex);
+    schemas[entry.accelerator_id ? entry.accelerator_id : ""] =
+        SchemaCache{return_types, names};
   }
   return ::duckdb::make_uniq<AuxBindData>(entry, input.inputs, return_types, names);
 }
@@ -162,11 +190,19 @@ AuxInitLocal(::duckdb::ExecutionContext &context, ::duckdb::TableFunctionInitInp
              ::duckdb::GlobalTableFunctionState *) {
   auto &bind_data = input.bind_data->Cast<AuxBindData>();
   auto local_state = ::duckdb::make_uniq<AuxLocalState>();
+  const auto arguments =
+      BuildArguments(bind_data.entry, bind_data.arguments);
+  if (auto *active = duckdb_backend::FindActive(
+          *context.client.db, bind_data.entry.accelerator_id
+                                  ? bind_data.entry.accelerator_id
+                                  : "")) {
+    local_state->rows = active->ExecuteCollect(arguments);
+    return local_state;
+  }
   ::duckdb::Connection connection(*context.client.db);
   duckdb_backend runtime(connection, bind_data.entry, 10.0);
   runtime.Build();
-  local_state->rows =
-      runtime.ExecuteCollect(BuildArguments(bind_data.entry, bind_data.arguments));
+  local_state->rows = runtime.ExecuteCollect(arguments);
   return local_state;
 }
 
@@ -250,9 +286,18 @@ void RegisterWorkloadAuxFunctions(::duckdb::Catalog &catalog,
         RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q6_aux", {});
       }
       break;
+    case 9:
+      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q9_aux",
+                          {::duckdb::LogicalType::VARCHAR});
+      break;
     case 10:
       RegisterAuxFunction(catalog, context, entry, "accel_tpch_q10_aux",
                           {::duckdb::LogicalType::DATE});
+      break;
+    case 11:
+      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q11_aux",
+                          {::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::DOUBLE});
       break;
     case 12:
       RegisterAuxFunction(catalog, context, entry, "accel_tpch_q12_aux",

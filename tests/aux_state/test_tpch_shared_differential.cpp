@@ -17,6 +17,7 @@ void Require(bool condition, const std::string &message) {
 } // namespace
 
 // SF1 parity: DuckDB reference SQL vs aux Execute for one catalog query.
+// Runs read-only build+execute, then a probe apply + re-execute (incremental).
 // usage: test_tpch_shared_differential <tpch_db_path> <query_id>
 int main(int argc, char **argv) {
   try {
@@ -26,10 +27,14 @@ int main(int argc, char **argv) {
     const auto &entry =
         accelerator_codegen::aux_state::engine::LookupSharedQuery("tpch",
                                                                   query_id);
-    std::cerr << "differential: tpch Q" << query_id << '\n';
+    std::cerr << "differential (read-only): tpch Q" << query_id << '\n';
     accelerator_codegen::aux_state::harness::RunDifferentialCheck(argv[1],
                                                                   entry);
-    std::cerr << "PASS tpch Q" << query_id << " shared differential\n";
+    std::cerr << "PASS tpch Q" << query_id << " read-only differential\n";
+    std::cerr << "differential (incremental): tpch Q" << query_id << '\n';
+    accelerator_codegen::aux_state::harness::RunIncrementalDifferentialCheck(
+        argv[1], entry);
+    std::cerr << "PASS tpch Q" << query_id << " incremental differential\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "test_tpch_shared_differential failed: " << error.what()

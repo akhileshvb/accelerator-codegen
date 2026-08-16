@@ -15,6 +15,7 @@ struct TpchArgVariant {
   accelerator_codegen::aux_state::core::QueryArguments arguments;
   std::string base_sql;
   std::string kernel_sql;
+  std::string aux_sql;
 };
 
 // ACCEL_BENCH_VARY_ARGS: default on. Set 0/false/off to pin catalog defaults.
@@ -32,6 +33,9 @@ std::string FormatTpchBaseSql(
     int query_id,
     const accelerator_codegen::aux_state::core::QueryArguments &arguments);
 std::string FormatTpchKernelSql(
+    int query_id,
+    const accelerator_codegen::aux_state::core::QueryArguments &arguments);
+std::string FormatTpchAuxSql(
     int query_id,
     const accelerator_codegen::aux_state::core::QueryArguments &arguments);
 

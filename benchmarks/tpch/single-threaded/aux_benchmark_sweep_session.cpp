@@ -13,11 +13,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include "duckdb.hpp"
@@ -47,6 +49,25 @@ void ExecuteAndConsume(duckdb::Connection &connection, const std::string &sql) {
       (void)materialized.GetValue(col, row);
     }
   }
+}
+
+// Root "latency" from DuckDB JSON profiling output (seconds → µs).
+double ParseJsonProfileLatencyUs(const std::string &path) {
+  std::ifstream in(path);
+  Require(in.good(), "cannot open DuckDB profile json: " + path);
+  std::ostringstream buf;
+  buf << in.rdbuf();
+  const std::string text = buf.str();
+  const auto key_pos = text.find("\"latency\"");
+  Require(key_pos != std::string::npos, "latency missing in profile json");
+  const auto colon_pos = text.find(':', key_pos);
+  Require(colon_pos != std::string::npos, "latency value missing in profile json");
+  char *end = nullptr;
+  const double seconds = std::strtod(text.c_str() + colon_pos + 1, &end);
+  Require(end != text.c_str() + colon_pos + 1 && std::isfinite(seconds) &&
+              seconds >= 0.0,
+          "failed to parse profile latency");
+  return seconds * 1e6;
 }
 
 struct TimingStats {
@@ -214,15 +235,13 @@ double TimeAccelRfWriteCommitUs(DuckdbRuntime &runtime, int write_seq,
   return ElapsedUs(start, Clock::now());
 }
 
-double TimeExecuteUs(DuckdbRuntime &runtime,
-                     const accelerator_codegen::aux_state::core::QueryArguments
-                         &arguments) {
+double TimeExecuteUs(duckdb::Connection &connection, const std::string &aux_sql) {
   const auto start = Clock::now();
-  runtime.Execute(arguments);
+  ExecuteAndConsume(connection, aux_sql);
   return ElapsedUs(start, Clock::now());
 }
 
-double MeasureReaderQps(DuckdbRuntime &runtime,
+double MeasureReaderQps(duckdb::Connection &connection,
                         const std::vector<TpchArgVariant> &arg_pool, int samples) {
   if (samples <= 0 || arg_pool.empty()) {
     return 1.0;
@@ -230,9 +249,9 @@ double MeasureReaderQps(DuckdbRuntime &runtime,
   std::vector<double> query_samples;
   query_samples.reserve(samples);
   for (int i = 0; i < samples; i++) {
-    query_samples.push_back(
-        TimeExecuteUs(runtime, arg_pool[static_cast<std::size_t>(i) % arg_pool.size()]
-                                    .arguments));
+    query_samples.push_back(TimeExecuteUs(
+        connection,
+        arg_pool[static_cast<std::size_t>(i) % arg_pool.size()].aux_sql));
   }
   const double median_us = SummarizeSamples(std::move(query_samples)).median_us;
   if (median_us <= 0.0) {
@@ -247,6 +266,23 @@ double MeasureQueryMedianUs(duckdb::Connection &connection,
   if (samples <= 0 || arg_pool.empty()) {
     return 0.0;
   }
+
+  // DuckDB reference timing uses JSON profiler root "latency" (query execution
+  // time reported by DuckDB), not outer wall-clock around connection.Query.
+  const std::string profile_path = "/tmp/accel_aux_bench_profile_" +
+                                   std::to_string(static_cast<long long>(::getpid())) +
+                                   (use_kernel_sql ? "_kernel" : "_base") + ".json";
+  {
+    auto enabled = connection.Query("PRAGMA enable_profiling='json'");
+    Require(enabled != nullptr && !enabled->HasError(),
+            enabled ? enabled->GetError() : "enable_profiling failed");
+  }
+  {
+    auto out = connection.Query("PRAGMA profiling_output='" + profile_path + "'");
+    Require(out != nullptr && !out->HasError(),
+            out ? out->GetError() : "profiling_output failed");
+  }
+
   std::vector<double> query_samples;
   query_samples.reserve(samples);
   for (int i = 0; i < samples; i++) {
@@ -254,10 +290,11 @@ double MeasureQueryMedianUs(duckdb::Connection &connection,
         arg_pool[static_cast<std::size_t>(i) % arg_pool.size()];
     const std::string &sql =
         use_kernel_sql ? variant.kernel_sql : variant.base_sql;
-    const auto start = Clock::now();
     ExecuteAndConsume(connection, sql);
-    query_samples.push_back(ElapsedUs(start, Clock::now()));
+    query_samples.push_back(ParseJsonProfileLatencyUs(profile_path));
   }
+  connection.Query("PRAGMA disable_profiling");
+  std::remove(profile_path.c_str());
   return SummarizeSamples(std::move(query_samples)).median_us;
 }
 
@@ -279,7 +316,8 @@ const TpchArgVariant &PickArgVariant(const std::vector<TpchArgVariant> &arg_pool
 }
 
 WorkloadTimings RunMeasuredWorkloadWallClock(
-    DuckdbRuntime &runtime, double duration_sec, double write_interval_sec,
+    DuckdbRuntime &runtime, duckdb::Connection &accel_connection,
+    double duration_sec, double write_interval_sec,
     std::vector<catalog_ns::SharedProbe> &probes, WriteMode write_mode,
     int rf_chunk_orders, const std::vector<TpchArgVariant> &arg_pool) {
   WorkloadTimings result;
@@ -360,7 +398,7 @@ WorkloadTimings RunMeasuredWorkloadWallClock(
     }
 
     const auto sample =
-        TimeExecuteUs(runtime, PickArgVariant(arg_pool, arg_seq).arguments);
+        TimeExecuteUs(accel_connection, PickArgVariant(arg_pool, arg_seq).aux_sql);
     result.total_accel_query_us += sample;
     push_hit_sample(sample);
     result.num_queries++;
@@ -376,8 +414,9 @@ WorkloadTimings RunMeasuredWorkloadWallClock(
   return result;
 }
 
-WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime, int num_queries,
-                                    int write_frequency_pct,
+WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime,
+                                    duckdb::Connection &accel_connection,
+                                    int num_queries, int write_frequency_pct,
                                     std::vector<catalog_ns::SharedProbe> &probes,
                                     WriteMode write_mode, int rf_chunk_orders,
                                     const std::vector<TpchArgVariant> &arg_pool) {
@@ -404,7 +443,7 @@ WorkloadTimings RunMeasuredWorkload(DuckdbRuntime &runtime, int num_queries,
     }
 
     const auto sample =
-        TimeExecuteUs(runtime, PickArgVariant(arg_pool, arg_seq).arguments);
+        TimeExecuteUs(accel_connection, PickArgVariant(arg_pool, arg_seq).aux_sql);
     result.total_accel_query_us += sample;
     hit_samples.push_back(sample);
   }
@@ -511,7 +550,8 @@ struct BenchSession {
       if (i < std::min(warmup_queries, 2)) {
         ExecuteAndConsume(base_connection, variant.kernel_sql);
       }
-      runtime->Execute(variant.arguments);
+      // Warm the DuckDB aux TF path (bind/schema + hit) used by measured queries.
+      ExecuteAndConsume(accel_connection, variant.aux_sql);
     }
 
     duckdb_ref_query_median_us =
@@ -520,7 +560,11 @@ struct BenchSession {
     base_kernel_median_us = MeasureQueryMedianUs(
         base_connection, arg_pool, /*use_kernel_sql=*/true,
         ref_samples > 0 ? std::min(ref_samples, 2) : 0);
-    reader_qps = MeasureReaderQps(*runtime, arg_pool,
+    std::cerr << "tpch_q" << query_num
+              << "_aux_bench: duckdb_ref uses JSON profile latency; "
+                 "accel queries use TF SQL path\n"
+              << std::flush;
+    reader_qps = MeasureReaderQps(accel_connection, arg_pool,
                                   std::max(1, std::min(warmup_queries, 3)));
   }
 
@@ -534,7 +578,8 @@ struct BenchSession {
                            ExpectedQueriesBeforeWrite(write_frequency_pct));
                        session.runtime->ResetStoreDiagnosticsProfiling();
                        return RunMeasuredWorkload(
-                           *session.runtime, measured_queries, write_frequency_pct,
+                           *session.runtime, session.accel_connection,
+                           measured_queries, write_frequency_pct,
                            session.write_probes, session.write_mode,
                            session.rf_chunk_orders, session.arg_pool);
                      });
@@ -558,9 +603,9 @@ struct BenchSession {
                                                    session.reader_qps));
           session.runtime->ResetStoreDiagnosticsProfiling();
           return RunMeasuredWorkloadWallClock(
-              *session.runtime, duration_sec, write_interval_sec,
-              session.write_probes, session.write_mode, session.rf_chunk_orders,
-              session.arg_pool);
+              *session.runtime, session.accel_connection, duration_sec,
+              write_interval_sec, session.write_probes, session.write_mode,
+              session.rf_chunk_orders, session.arg_pool);
         });
   }
 

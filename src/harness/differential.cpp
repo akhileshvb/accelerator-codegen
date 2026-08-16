@@ -218,6 +218,70 @@ void RunDifferentialCheck(const std::string &db_path,
   RequireSharedMatchesBase(connection, runtime, entry);
 }
 
+std::string FingerprintBaseSql(::duckdb::Connection &connection,
+                               const SharedQueryCatalogEntry &entry) {
+  auto base_result = connection.Query(entry.base_sql);
+  Require(base_result != nullptr && !base_result->HasError(),
+          base_result ? base_result->GetError()
+                      : "DuckDB fingerprint query failed");
+  auto &base = base_result->Cast<::duckdb::MaterializedQueryResult>();
+  std::ostringstream out;
+  out << "rows=" << base.RowCount() << '\n';
+  for (::duckdb::idx_t row = 0; row < base.RowCount(); ++row) {
+    out << RowKey(base, row) << '\n';
+  }
+  return out.str();
+}
+
+std::string ExpandProbeSelectLimit(const char *probe_select_sql, int limit) {
+  Require(probe_select_sql != nullptr && *probe_select_sql,
+          "missing probe_select_sql");
+  std::string sql(probe_select_sql);
+  const auto pos = sql.rfind("LIMIT");
+  if (pos != std::string::npos) {
+    return sql.substr(0, pos) + "LIMIT " + std::to_string(limit);
+  }
+  return sql + " LIMIT " + std::to_string(limit);
+}
+
+bool ProbeChangesBaseResult(::duckdb::Connection &connection,
+                            const SharedQueryCatalogEntry &entry,
+                            const SharedProbe &probe,
+                            const std::string &before_fp) {
+  connection.BeginTransaction();
+  auto updated = connection.Query(probe.update_sql);
+  if (updated == nullptr || updated->HasError()) {
+    connection.Rollback();
+    return false;
+  }
+  const auto after_fp = FingerprintBaseSql(connection, entry);
+  connection.Rollback();
+  return after_fp != before_fp;
+}
+
+SharedProbe FindInvalidatingSharedProbe(::duckdb::Connection &connection,
+                                        const SharedQueryCatalogEntry &entry) {
+  const auto before_fp = FingerprintBaseSql(connection, entry);
+  const std::string probe_sql =
+      ExpandProbeSelectLimit(entry.probe_select_sql, /*limit=*/256);
+  auto result = connection.Query(probe_sql);
+  Require(result != nullptr && !result->HasError() && result->RowCount() >= 1,
+          result ? ("invalidating probe select failed for Q" +
+                    std::to_string(entry.query_id) + ": " + result->GetError())
+                 : "invalidating probe select returned null");
+  auto &materialized = result->Cast<::duckdb::MaterializedQueryResult>();
+  for (::duckdb::idx_t row = 0; row < materialized.RowCount(); ++row) {
+    auto probe = entry.build_probe(materialized, row);
+    if (ProbeChangesBaseResult(connection, entry, probe, before_fp)) {
+      return probe;
+    }
+  }
+  throw std::runtime_error(
+      "no shared probe candidate changed DuckDB Q" +
+      std::to_string(entry.query_id) +
+      " result (need a write that invalidates this query's aux state)");
+}
+
 void RunIncrementalDifferentialCheck(const std::string &db_path,
                                      const SharedQueryCatalogEntry &entry) {
   duckdb::DuckDB database(db_path.c_str());
@@ -226,8 +290,18 @@ void RunIncrementalDifferentialCheck(const std::string &db_path,
   runtime.Build();
   RequireSharedMatchesBase(connection, runtime, entry);
 
-  auto probe = aux_engine::FindSharedProbe(connection, entry);
+  const auto before_fp = FingerprintBaseSql(connection, entry);
+  auto probe = FindInvalidatingSharedProbe(connection, entry);
+  Require(ProbeChangesBaseResult(connection, entry, probe, before_fp),
+          "selected probe no longer changes DuckDB result for Q" +
+              std::to_string(entry.query_id));
+
   runtime.Apply(probe);
+
+  const auto after_fp = FingerprintBaseSql(connection, entry);
+  Require(after_fp != before_fp,
+          "Apply() did not change DuckDB Q" + std::to_string(entry.query_id) +
+              " result — write did not invalidate observable query state");
   RequireSharedMatchesBase(connection, runtime, entry);
 
   auto restore = connection.Query(probe.restore_sql);
@@ -251,16 +325,54 @@ void RunRfChunkDifferentialCheck(const std::string &db_path,
   runtime.Build();
   RequireSharedMatchesBase(connection, runtime, entry);
 
-  for (int seq = 0; seq < num_chunks; ++seq) {
-    runtime.ApplyRfChunk(seq, order_count);
+  const auto before_fp = FingerprintBaseSql(connection, entry);
+  bool changed = false;
+  int orders = order_count;
+  int seq = 0;
+  // Apply RF chunks (escalating size) until DuckDB's answer moves when possible.
+  constexpr int kMaxAttempts = 8;
+  for (int attempt = 0; attempt < kMaxAttempts && !changed; ++attempt) {
+    runtime.ApplyRfChunk(seq++, orders);
     try {
       RequireSharedMatchesBase(connection, runtime, entry);
     } catch (const std::exception &ex) {
       throw std::runtime_error(std::string(ex.what()) + " (after RF chunk seq=" +
-                               std::to_string(seq) + " order_count=" +
+                               std::to_string(seq - 1) + " order_count=" +
+                               std::to_string(orders) + ")");
+    }
+    if (FingerprintBaseSql(connection, entry) != before_fp) {
+      changed = true;
+      break;
+    }
+    orders = std::min(std::max(orders * 2, orders + 10), 200);
+  }
+
+  if (!changed) {
+    // Standard TPC-H RF date ranges often miss historical predicates (e.g. Q3
+    // TOP-10). Still require a write that invalidates this query: apply a
+    // result-changing shared probe after RF maintenance has run.
+    auto probe = FindInvalidatingSharedProbe(connection, entry);
+    runtime.Apply(probe);
+    const auto after_fp = FingerprintBaseSql(connection, entry);
+    Require(after_fp != before_fp,
+            "RF+probe did not change DuckDB Q" + std::to_string(entry.query_id) +
+                " result — cannot confirm aux invalidation");
+    RequireSharedMatchesBase(connection, runtime, entry);
+    changed = true;
+  }
+
+  // Additional RF chunks (if requested) must stay correct after invalidation.
+  while (seq < num_chunks) {
+    runtime.ApplyRfChunk(seq++, order_count);
+    try {
+      RequireSharedMatchesBase(connection, runtime, entry);
+    } catch (const std::exception &ex) {
+      throw std::runtime_error(std::string(ex.what()) + " (after RF chunk seq=" +
+                               std::to_string(seq - 1) + " order_count=" +
                                std::to_string(order_count) + ")");
     }
   }
+  Require(changed, "internal: RF differential exited without invalidation");
 }
 
 } // namespace accelerator_codegen::aux_state::harness
