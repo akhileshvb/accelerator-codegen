@@ -124,6 +124,9 @@ double RequireDouble(const core::QueryArguments &arguments, std::size_t index) {
 }
 
 // Official TPC-H substitution domains (dists.dss / Clause 2.4).
+constexpr const char *kRegions[] = {"AFRICA", "AMERICA", "ASIA", "EUROPE",
+                                    "MIDDLE EAST"};
+
 constexpr const char *kNations[] = {
     "ALGERIA",        "ARGENTINA", "BRAZIL",  "CANADA",
     "EGYPT",          "ETHIOPIA",  "FRANCE",  "GERMANY",
@@ -163,6 +166,12 @@ constexpr const char *kColors[] = {
 constexpr const char *kContainers[] = {
     "SM CASE",  "SM BOX",  "SM BAG",  "SM JAR",  "MED BAG", "MED BOX",
     "MED PKG",  "MED PACK", "LG CASE", "LG BOX", "LG PACK", "LG PKG"};
+
+// Q16 p_type NOT LIKE '<syllable1> <syllable2>%' (TPC-H 2.4.16).
+constexpr const char *kTypeSyllable1[] = {
+    "STANDARD", "SMALL", "MEDIUM", "LARGE", "ECONOMY", "PROMO"};
+constexpr const char *kTypeSyllable2[] = {
+    "ANODIZED", "BURNISHED", "PLATED", "POLISHED", "BRUSHED"};
 
 double Q11Fraction() {
   // Catalog pins 0.0001; official TPC-H uses 0.0001/SF. Allow override.
@@ -213,12 +222,28 @@ core::QueryArguments SampleTpchArgs(int query_id, uint64_t stream_index) {
         core::AuxValue::Of(core::AuxType::Int64, dist(rng))};
     break;
   }
-  case 3: {
+    case 2: {
+    std::uniform_int_distribution<int> size_dist(1, 50);
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::Int64, static_cast<int64_t>(size_dist(rng))),
+        core::AuxValue::Of(core::AuxType::String, '%' + std::string{Pick(rng, kTypeSyllable1)}),
+        core::AuxValue::Of(core::AuxType::String, std::string{Pick(rng, kRegions)})};
+    break;
+  }
+case 3: {
     std::uniform_int_distribution<int> day_dist(1, 31);
     arguments.values = {
         core::AuxValue::Of(core::AuxType::String, std::string{Pick(rng, kSegments)}),
         core::AuxValue::Of(core::AuxType::Date,
                            MakeDate(1995, 3, day_dist(rng)))};
+    break;
+  }
+  case 5: {
+    std::uniform_int_distribution<int> year_dist(1992, 1997);
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{Pick(rng, kRegions)}),
+        core::AuxValue::Of(core::AuxType::Date,
+                           MakeDate(year_dist(rng), 1, 1))};
     break;
   }
   case 6: {
@@ -278,6 +303,28 @@ core::QueryArguments SampleTpchArgs(int query_id, uint64_t stream_index) {
         core::AuxValue::Of(core::AuxType::Date, MakeDate(year, month, 1))};
     break;
   }
+  case 16: {
+    std::uniform_int_distribution<int> digit_dist(1, 5);
+    std::ostringstream brand;
+    brand << "Brand#" << digit_dist(rng) << digit_dist(rng);
+    std::string type_pattern = std::string{Pick(rng, kTypeSyllable1)} + " " +
+                               Pick(rng, kTypeSyllable2) + "%";
+    std::uniform_int_distribution<int32_t> size_dist(1, 50);
+    std::vector<int32_t> sizes;
+    sizes.reserve(8);
+    while (sizes.size() < 8) {
+      const int32_t size = size_dist(rng);
+      if (std::find(sizes.begin(), sizes.end(), size) == sizes.end())
+        sizes.push_back(size);
+    }
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, brand.str()),
+        core::AuxValue::Of(core::AuxType::String, std::move(type_pattern))};
+    for (const auto size : sizes)
+      arguments.values.push_back(
+          core::AuxValue::Of(core::AuxType::Int64, static_cast<int64_t>(size)));
+    break;
+  }
   case 17: {
     std::uniform_int_distribution<int> digit_dist(1, 5);
     std::ostringstream brand;
@@ -323,6 +370,39 @@ std::string FormatTpchBaseSql(int query_id,
            "' DAY "
            "GROUP BY l_returnflag, l_linestatus "
            "ORDER BY l_returnflag, l_linestatus";
+  }
+  case 2: {
+    const auto size = RequireInt64(arguments, 0);
+    const auto &type_pattern = RequireString(arguments, 1);
+    const auto &region = RequireString(arguments, 2);
+    return "SELECT s_acctbal, s_name, n_name, p_partkey, p_mfgr, s_address, "
+           "s_phone, s_comment "
+           "FROM part, supplier, partsupp, nation, region "
+           "WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND p_size = " +
+           std::to_string(size) + " AND p_type LIKE " + SqlString(type_pattern) +
+           " AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey "
+           "AND r_name = " +
+           SqlString(region) +
+           " AND ps_supplycost = (SELECT MIN(ps_supplycost) FROM partsupp, "
+           "supplier, nation, region "
+           "WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey "
+           "AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey "
+           "AND r_name = " +
+           SqlString(region) +
+           ") ORDER BY s_acctbal DESC, n_name, s_name, p_partkey LIMIT 100";
+  }
+  case 5: {
+    const auto &region = RequireString(arguments, 0);
+    const auto &date = RequireDate(arguments, 1);
+    return "SELECT n_name, SUM(l_extendedprice * (1 - l_discount)) AS revenue "
+           "FROM customer, orders, lineitem, supplier, nation, region "
+           "WHERE c_custkey = o_custkey AND l_orderkey = o_orderkey "
+           "AND l_suppkey = s_suppkey AND c_nationkey = s_nationkey "
+           "AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey "
+           "AND r_name = " + SqlString(region) +
+           " AND o_orderdate >= " + DateLiteral(date) +
+           " AND o_orderdate < " + DateLiteral(date) + " + INTERVAL '1' year "
+           "GROUP BY n_name ORDER BY revenue DESC";
   }
   case 3: {
     const auto &segment = RequireString(arguments, 0);
@@ -447,6 +527,28 @@ std::string FormatTpchBaseSql(int query_id,
            " + "
            "INTERVAL '1' month";
   }
+  case 16: {
+    const auto &brand = RequireString(arguments, 0);
+    const auto &type_pattern = RequireString(arguments, 1);
+    std::ostringstream sql;
+    sql << "SELECT p_brand, p_type, p_size, COUNT(DISTINCT ps_suppkey) AS "
+           "supplier_cnt "
+           "FROM partsupp, part "
+           "WHERE p_partkey = ps_partkey AND p_brand <> "
+        << SqlString(brand) << " AND p_type NOT LIKE "
+        << SqlString(type_pattern) << " AND p_size IN (";
+    for (int i = 0; i < 8; ++i) {
+      if (i != 0)
+        sql << ", ";
+      sql << RequireInt64(arguments, static_cast<std::size_t>(2 + i));
+    }
+    sql << ") AND ps_suppkey NOT IN ("
+           "SELECT s_suppkey FROM supplier WHERE s_comment LIKE "
+           "'%Customer%Complaints%') "
+           "GROUP BY p_brand, p_type, p_size "
+           "ORDER BY supplier_cnt DESC, p_brand, p_type, p_size";
+    return sql.str();
+  }
   case 17: {
     const auto &brand = RequireString(arguments, 0);
     const auto &container = RequireString(arguments, 1);
@@ -499,7 +601,15 @@ std::string FormatTpchKernelSql(int query_id,
   case 1:
     return "SELECT * FROM accel_tpch_q1(" +
            std::to_string(RequireInt64(arguments, 0)) + ")";
-  case 3:
+  case 5:
+    return "SELECT * FROM accel_tpch_q5(" + SqlString(RequireString(arguments, 0)) +
+           ", " + DateLiteral(RequireDate(arguments, 1)) + ")";
+    case 2:
+    return "SELECT * FROM accel_tpch_q2(" +
+           std::to_string(RequireInt64(arguments, 0)) + ", " +
+           SqlString(RequireString(arguments, 1)) + ", " +
+           SqlString(RequireString(arguments, 2)) + ")";
+case 3:
     return "SELECT * FROM accel_tpch_q3(" + SqlString(RequireString(arguments, 0)) +
            ", " + DateLiteral(RequireDate(arguments, 1)) + ")";
   case 6:
@@ -523,6 +633,16 @@ std::string FormatTpchKernelSql(int query_id,
   case 14:
     return "SELECT * FROM accel_tpch_q14(" + DateLiteral(RequireDate(arguments, 0)) +
            ")";
+  case 16: {
+    std::ostringstream sql;
+    sql << "SELECT * FROM accel_tpch_q16("
+        << SqlString(RequireString(arguments, 0)) << ", "
+        << SqlString(RequireString(arguments, 1));
+    for (int i = 0; i < 8; ++i)
+      sql << ", " << RequireInt64(arguments, static_cast<std::size_t>(2 + i));
+    sql << ")";
+    return sql.str();
+  }
   case 17:
     return "SELECT * FROM accel_tpch_q17(" + SqlString(RequireString(arguments, 0)) +
            ", " + SqlString(RequireString(arguments, 1)) + ")";

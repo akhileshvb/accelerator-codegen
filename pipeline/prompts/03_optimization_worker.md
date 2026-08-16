@@ -1,14 +1,43 @@
 # Stage 3: Optimization worker (iter {{optimization_iter}} / {{optimization_max_iterations}})
 
-**{{display_name}} Q{{query_number}}** — Codex-like optimization: inspect, patch, build, test, and benchmark in one session before yielding a candidate.
+**{{display_name}} Q{{query_number}}** — inspect, patch, build, test, and measure in one session before yielding a candidate.
+
+{{hard_guidelines}}
+
+{{codex_tooling}}
 
 ## Mindset
 
-1. **Inspect with tools** — `read_file`, `rip_grep`, `ast_grep` on editable files and reference aux modules.
-2. **Iterate locally** — `run_command` to build and run targeted `ctest`; fix compiler and test failures before signaling ready.
-3. **Exploratory benchmark** — `begin_ab_trial` / `run_quick_benchmark` / `end_ab_trial` for fast feedback (non-binding).
-4. **Yield when ready** — output hypothesis JSON and **`CANDIDATE_READY`** when you have a plausible working candidate.
-5. Orchestrator runs **authoritative** build → smoke → probe → multi-sample benchmark after `CANDIDATE_READY`. Your local results do not replace those gates.
+1. **Measure first on the CURRENT tree** — call MCP `run_profile` (or `get_profile_digest` then `run_profile` if `freshness.stale`) before forming a hypothesis. Do not reuse phase breakdowns from a prior accept/restore.
+2. **Inspect** editable files and digests (`get_profile_digest` / `get_optimization_evidence` / `get_store_diagnostics`). Digests must show real metrics plus a **scoreboard** (`best_valid_score`). If empty or stale, remeasure.
+3. **Be aggressive + scale-safe on both axes** — push **hard** for large read-only speedups **and** cheap incremental maintenance that still look strong at **high SF** (SF20+). Prefer structural layout/encoding/partition/decode **or** delta-maintenance redesigns; tiny micro-shuffles are usually the wrong tier. Absolute numbers are query-dependent (some queries top out lower but still win big at SF20).
+4. **Ceiling → redesign aux structure** — if read gains stall **or** write-mix stays collapsed, change the aux-state layout / maintenance strategy given data shape/cardinality. **Forbidden:** storing precomputed **final query results** as aux. Intermediates (indexes, aggregates, eligibility, membership) are OK.
+5. **Write path is a first-class goal** — optimize bulk refresh/`Rebuild*` **and** point/synthetic **ApplyDelta** paths; prefer local incremental updates over full rebuilds when deltas allow. Quick bench includes **sampled write mixes** (not a fixed 10%). If `write_mix_workload_speedup` ≪ 1× while hit latency is already tiny, **do not** spend the attempt on further read micro-opts — fix maintenance.
+6. **Iterate locally** — allowlisted build/ctest (`run_pipeline_command` or Codex shell). You may write your own shell commands and short scripts to inspect, profile, or debug; fix failures before signaling ready.
+7. **Exploratory A/B is binding for yield decisions** — MCP `begin_ab_trial` → edit → `run_quick_benchmark` → `end_ab_trial`:
+   - Compare against **`scoreboard.best_valid_score` only** (not ephemeral local baselines).
+   - If `ab_signal=regress` / `forced_discard` / `kept=false`: **do not** yield that change; form a new hypothesis.
+   - Only yield `CANDIDATE_READY` after an exploratory keep/improve (or after A/B was impossible and you explain why).
+8. Orchestrator runs **authoritative** gates after `CANDIDATE_READY`.
+9. **Early stop when stuck** — be aggressive first. If you have already pushed both axes hard and further attempts are not moving the dual-axis score (or only trivial micro-noise), end with `OPTIMIZATION_SATURATED`. There is **no target speedup number** — call it when juice is gone for this query, not because a threshold was hit.
+
+**Hard stop rule:** never end the Codex task without `CANDIDATE_READY`, `CANNOT_TEST`, or `OPTIMIZATION_SATURATED`. Cleanup edits after tests still require a marker — missing it fails the attempt.
+
+## Custom profiling (required for fresh phase breakdown)
+
+You are **free to invent whatever profiling you need**: add/change/remove timers, counters, phases, and helper scripts. Prefer temporary instrumentation in editable sources, gated on `getenv("ACCEL_AUX_CUSTOM_PROFILE")` (aux) or `getenv("ACCEL_BENCH_PROFILE")` (base) — **no-op when unset**. Emit split timers **and** work counts:
+
+```
+ACCEL_CUSTOM_PROFILE {"phase":"sort","us":120.5,"emitted_rows":18000,"groups":18000}
+ACCEL_CUSTOM_PROFILE {"phase":"aggregate","us":40.0,"rows":50000,"groups":1200}
+```
+
+Rules:
+- One JSON object per timed region; include `phase` + `us` (or `*_us`) plus counts (`rows`/`groups`/`items`/`bytes`/…).
+- Digests aggregate into `phase_breakdown`, `work_counters_mean`, `dominant_phase`, and `residual_vs_hit_us`.
+- Hypothesis must cite **named phases and counts** from a **non-stale** digest — not guesses.
+- After every accept/restore, profile is stale until `run_profile` runs again.
+- Shell/scripts for ad-hoc measurement are encouraged when MCP digests are too coarse.
 
 ## Editable files
 
@@ -16,19 +45,36 @@
 
 ## Workflow
 
-1. Review seed context and any prior gate feedback in the user message.
-2. Hypothesize from evidence (cite metric names and values).
-3. Implement coordinated edits (`write_file` / `apply_patch`).
-4. Build (`cmake --build ...`), fix errors, run smoke `ctest`, optional quick benchmark.
-5. When confident, output:
+1. Review seed context and prior gate feedback in the user message.
+2. `run_profile` on CURRENT tree → read `scoreboard` + `phase_breakdown` (+ freshness).
+3. Hypothesize from **measured** evidence (cite metric names and values).
+4. Implement coordinated edits aimed at a large, **high-SF-safe** win (read path and/or maintenance). Redesign aux structure if needed — never cache final answers.
+5. Build, smoke test, **required** exploratory A/B when MCP is up.
+6. Output:
 
 ```json
-{"bottleneck": "...", "why": "...", "expected_effect": "..."}
+{"bottleneck": "...", "why": "...", "expected_effect": "...", "ab_signal": "improve|regress|skipped"}
 ```
 
-6. End with **`CANDIDATE_READY`**.
+7. End with **`CANDIDATE_READY`** only if A/B did not regress (required).
 
 If you cannot test the hypothesis, output `CANNOT_TEST` with JSON `{"status": "cannot_test", "reason": "..."}`.
+
+If you have already been aggressive on both axes and further attempts are stuck (no real dual-axis movement left — whatever absolute number that is for this query), stop:
+
+```
+OPTIMIZATION_SATURATED
+```
+
+```json
+{
+  "status": "optimization_saturated",
+  "reason": "stuck: recent attempts not moving dual-axis score; no clear remaining redesign",
+  "remaining_headroom": "low"
+}
+```
+
+Do **not** call this early while write-mix is collapsed (≪1×) or while a clear structural/maintenance redesign is still untried. Absolute speedups are query-dependent.
 
 {{benchmark_notes}}
 

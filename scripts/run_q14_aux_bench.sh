@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${ROOT}/build"
+BUILD_DIR="${ACCEL_BUILD_DIR:-${ROOT}/build-release}"
 BENCH_BIN="${BUILD_DIR}/benchmark_tpch_q14_aux"
 SOURCE_DB="${ACCEL_TPCH_DB:-/home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb}"
 WORK_DIR="${ACCEL_Q14_BENCH_WORK_DIR:-${BUILD_DIR}/q14_aux_bench_work_$$}"

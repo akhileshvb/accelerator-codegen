@@ -164,7 +164,9 @@ run_query_sweep() {
     export ACCEL_BUILD_DIR="${BUILD}"
     export ACCEL_TPCH_DB="${SF20_DB}"
     export ACCEL_AUX_BENCH_DB_LABEL="${DB_LABEL}"
-    export ACCEL_AUX_BENCH_WORK_DIR="${BUILD}/q${query}_aux_bench_${DB_LABEL}"
+    # Work DB copies are large (~SF size). Prefer ACCEL_AUX_BENCH_WORK_ROOT on
+    # a big disk (e.g. /ssd1/akhilvb/aux_bench); default remains under BUILD.
+    export ACCEL_AUX_BENCH_WORK_DIR="${ACCEL_AUX_BENCH_WORK_ROOT:-${BUILD}}/q${query}_aux_bench_${DB_LABEL}"
     export ACCEL_AUX_BENCH_BASELINE_CACHE="${ROOT}/config/q${query}_aux_benchmark_baseline_sf20.json"
     export ACCEL_REPO_ROOT="${ROOT}"
     export ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB=1

@@ -11,8 +11,11 @@ def test_analysis_stage_has_write_file() -> None:
     assert "write_file" in STAGE_TOOL_NAMES["analysis"]
 
 
-def test_optimization_patch_has_write_file() -> None:
-    assert "write_file" in STAGE_TOOL_NAMES["optimization_patch"]
+def test_optimization_worker_has_ab_tools() -> None:
+    tools = STAGE_TOOL_NAMES["optimization_worker"]
+    assert "write_file" in tools
+    assert "begin_ab_trial" in tools
+    assert "run_quick_benchmark" in tools
 
 
 def test_optimization_unified_has_search_and_edit_tools() -> None:

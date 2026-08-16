@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
+
+from accel_pipeline.sql_predicates import format_predicate_bootstrap_section, load_reference_sql
 
 
 def _rel(repo: Path, path: Path) -> str:
@@ -72,22 +73,28 @@ def build_implementation_bootstrap(
         f"benchmarks/tpch/single-threaded/benchmark_q14.cpp",
         f"config/q{query}_aux_cost_model.json",
         "include/accelerator_codegen/stateful/core/query_layouts.hpp",
+        "tests/test_support/cross_accel_helpers.cpp",
         "pipeline/prompts/aux_state/shared/read_path_scaffold.md",
+        "pipeline/prompts/aux_state/shared/unit_test_contract.md",
     ]
     for rel in templates:
         if _existing(repo, rel):
             lines.append(f"- `{rel}`")
 
+    ref_sql_path = str(workload.get("reference_sql_path") or "")
+    ref_sql = load_reference_sql(ref_sql_path)
+    lines.extend(["", format_predicate_bootstrap_section(ref_sql, ref_sql_path)])
+
     lines.extend(
         [
-            "",
             "### Turn discipline",
             "",
             "1. **One** `read_reference_files` call on the reference aux paths above (limit_per_file=500).",
             "2. **Immediately** `write_file` `module.hpp`, then `module.cpp`, then other `files_to_create`.",
-            "3. Do **not** `list_dir` the repo root, re-read analysis.json, or glob for q14/q1 after step 1.",
-            "4. `grep_context` requires a **file** path (not a directory). Use `search_repo` for multi-file search.",
-            "5. Build/test only after all primary sources exist (`run_command` per prompt).",
+            "3. Unit tests: follow `unit_test_contract.md` + the predicate checklist above (not invented polarity).",
+            "4. Do **not** `list_dir` the repo root, re-read analysis.json, or glob for q14/q1 after step 1.",
+            "5. `grep_context` requires a **file** path (not a directory). Use `search_repo` for multi-file search.",
+            "6. Build/test only after all primary sources exist; finish only after `aux_correctness` (smoke + SF1 differential).",
             "",
         ]
     )

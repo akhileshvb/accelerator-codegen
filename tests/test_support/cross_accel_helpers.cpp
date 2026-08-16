@@ -85,6 +85,16 @@ std::string TpchReferenceSql(int query_num) {
 		       "WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '90' DAY "
 		       "GROUP BY l_returnflag, l_linestatus "
 		       "ORDER BY l_returnflag, l_linestatus";
+	case 2:
+		return "SELECT s_acctbal, s_name, n_name, p_partkey, p_mfgr, s_address, s_phone, s_comment "
+		       "FROM part, supplier, partsupp, nation, region "
+		       "WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND p_size = 15 "
+		       "AND p_type LIKE '%BRASS' AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey "
+		       "AND r_name = 'EUROPE' "
+		       "AND ps_supplycost = (SELECT MIN(ps_supplycost) FROM partsupp, supplier, nation, region "
+		       "WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND s_nationkey = n_nationkey "
+		       "AND n_regionkey = r_regionkey AND r_name = 'EUROPE') "
+		       "ORDER BY s_acctbal DESC, n_name, s_name, p_partkey LIMIT 100";
 	case 3:
 		return "SELECT l_orderkey, revenue, o_orderdate, o_shippriority FROM ("
 		       "SELECT l_orderkey, SUM(l_extendedprice * (1 - l_discount)) AS revenue, o_orderdate, o_shippriority "
@@ -93,6 +103,16 @@ std::string TpchReferenceSql(int query_num) {
 		       "AND o_orderdate < DATE '1995-03-15' AND l_shipdate > DATE '1995-03-15' "
 		       "GROUP BY l_orderkey, o_orderdate, o_shippriority "
 		       "ORDER BY revenue DESC, o_orderdate, l_orderkey, o_shippriority LIMIT 10)";
+	case 5:
+		return "SELECT n_name, SUM(l_extendedprice * (1 - l_discount)) AS revenue "
+		       "FROM customer, orders, lineitem, supplier, nation, region "
+		       "WHERE c_custkey = o_custkey AND l_orderkey = o_orderkey "
+		       "AND l_suppkey = s_suppkey AND c_nationkey = s_nationkey "
+		       "AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey "
+		       "AND r_name = 'AMERICA' "
+		       "AND o_orderdate >= DATE '1995-01-01' "
+		       "AND o_orderdate < DATE '1995-01-01' + INTERVAL '1' year "
+		       "GROUP BY n_name ORDER BY revenue DESC";
 	case 10:
 		return "SELECT * FROM accel_tpch_q10(DATE '1993-06-01')";
 	case 11: {
@@ -111,6 +131,16 @@ std::string TpchReferenceSql(int query_num) {
 		       "FROM lineitem, part "
 		       "WHERE l_partkey = p_partkey "
 		       "AND l_shipdate >= DATE '1995-06-01' AND l_shipdate < DATE '1995-06-01' + INTERVAL '1' month";
+	case 16:
+		return "SELECT p_brand, p_type, p_size, COUNT(DISTINCT ps_suppkey) AS supplier_cnt "
+		       "FROM partsupp, part "
+		       "WHERE p_partkey = ps_partkey AND p_brand <> 'Brand#13' "
+		       "AND p_type NOT LIKE 'SMALL BRUSHED%' "
+		       "AND p_size IN (26, 24, 27, 29, 7, 20, 22, 33) "
+		       "AND ps_suppkey NOT IN ("
+		       "SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%') "
+		       "GROUP BY p_brand, p_type, p_size "
+		       "ORDER BY supplier_cnt DESC, p_brand, p_type, p_size";
 	case 9:
 		return "SELECT nation, o_year, SUM(amount) AS sum_profit FROM ("
 		       "SELECT n_name AS nation, EXTRACT(year FROM o_orderdate) AS o_year, "
@@ -164,8 +194,12 @@ std::string TpchAuxSql(int query_num) {
 	switch (query_num) {
 	case 1:
 		return "SELECT * FROM accel_tpch_q1_aux(90)";
+	case 2:
+		return "SELECT * FROM accel_tpch_q2_aux(15, '%BRASS', 'EUROPE')";
 	case 3:
 		return "SELECT * FROM accel_tpch_q3_aux('BUILDING', DATE '1995-03-15')";
+	case 5:
+		return "SELECT * FROM accel_tpch_q5_aux('AMERICA', DATE '1995-01-01')";
 	case 10:
 		return "SELECT * FROM accel_tpch_q10_aux(DATE '1993-06-01')";
 	case 11:
@@ -174,6 +208,8 @@ std::string TpchAuxSql(int query_num) {
 		return "SELECT * FROM accel_tpch_q12_aux('MAIL', 'SHIP', DATE '1995-01-01')";
 	case 14:
 		return "SELECT * FROM accel_tpch_q14_aux(DATE '1995-06-01')";
+	case 16:
+		return "SELECT * FROM accel_tpch_q16_aux('Brand#13', 'SMALL BRUSHED%', 26, 24, 27, 29, 7, 20, 22, 33)";
 	case 6:
 		return "SELECT revenue FROM accel_tpch_q6_aux(DATE '1995-01-01', 0.03, 25)";
 	case 9:
@@ -529,7 +565,7 @@ std::vector<int> CrossAccelAllQueries() {
 	if (DetectCrossAccelBenchmark() == CrossAccelBenchmark::SecEdgar) {
 		return {1, 2, 3, 4, 6, 24};
 	}
-	return {1, 3, 6, 9, 10, 11, 12, 14, 17, 18, 21};
+	return {1, 2, 3, 5, 6, 9, 10, 11, 12, 14, 17, 18, 21};
 }
 
 std::vector<int> CrossAccelTestQueries() {
@@ -578,6 +614,10 @@ std::string InvalidatingWriterSqlForQuery(int query_num, int bulk_row_limit, int
 	}
 
 	switch (query_num) {
+	case 2:
+		return "UPDATE partsupp SET ps_supplycost = ps_supplycost * 1.0000001 "
+		       "WHERE (ps_partkey, ps_suppkey) IN (SELECT ps_partkey, ps_suppkey FROM partsupp "
+		       "ORDER BY ps_partkey, ps_suppkey LIMIT " + std::to_string(bulk_row_limit) + ")";
 	case 1:
 		return PointLineitemUpdateSql("l_shipdate = DATE '1995-06-01'", bulk_row_limit);
 	case 3:
@@ -585,6 +625,12 @@ std::string InvalidatingWriterSqlForQuery(int query_num, int bulk_row_limit, int
 		    "l_orderkey IN (SELECT o_orderkey FROM customer JOIN orders ON c_custkey = o_custkey "
 		    "WHERE c_mktsegment = 'BUILDING' AND o_orderdate < DATE '1995-03-15') "
 		    "AND l_shipdate > DATE '1995-03-15'",
+		    bulk_row_limit);
+	case 5:
+		return PointLineitemUpdateSql(
+		    "l_orderkey IN (SELECT o_orderkey FROM orders "
+		    "WHERE o_orderdate >= DATE '1995-01-01' "
+		    "AND o_orderdate < DATE '1996-01-01')",
 		    bulk_row_limit);
 	case 10:
 		return PointLineitemUpdateSql(
@@ -608,6 +654,14 @@ std::string InvalidatingWriterSqlForQuery(int query_num, int bulk_row_limit, int
 	case 14:
 		return PointLineitemUpdateSql("l_shipdate >= DATE '1995-06-01' AND l_shipdate < DATE '1995-07-01'",
 		                              bulk_row_limit);
+	case 16:
+		// Q16 watches part / partsupp / supplier (no lineitem). Touch a watched
+		// supplier comment so aux must invalidate; trailing space does not
+		// create new '%Customer%Complaints%' matches.
+		return "UPDATE supplier SET s_comment = s_comment || ' ' "
+		       "WHERE s_suppkey IN ("
+		       "SELECT s_suppkey FROM supplier ORDER BY s_suppkey LIMIT " +
+		       std::to_string(bulk_row_limit) + ")";
 	case 6:
 		return PointLineitemUpdateSql("l_shipdate >= DATE '1995-01-01' AND l_shipdate < DATE '1996-01-01'",
 		                              bulk_row_limit);

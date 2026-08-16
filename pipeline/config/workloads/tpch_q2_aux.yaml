@@ -1,0 +1,85 @@
+workload_kind: aux_state
+benchmark_name: tpch
+query_number: 2
+query_id: "2"
+accelerator_id: tpch_q2_aux
+base_function_name: accel_tpch_q2
+aux_function_name: accel_tpch_q2_aux
+
+requires_base_accelerator: true
+prerequisite_workload: tpch_q2
+prerequisite_min_stage: implementation
+reference_accelerators:
+  - src/generated/tpch/q11/aux/module.cpp
+  - src/generated/tpch/q16/aux/module.cpp
+  - src/generated/tpch/q17/aux/module.cpp
+
+allow_poor_fitness: false
+allow_unsuccessful_design: false
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/02.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: part_size
+    type: INTEGER
+  - name: part_type_pattern
+    type: VARCHAR
+  - name: region_name
+    type: VARCHAR
+
+dependent_tables:
+  - name: part
+    watched_columns: [p_partkey, p_mfgr, p_type, p_size]
+  - name: supplier
+    watched_columns: [s_suppkey, s_name, s_address, s_nationkey, s_phone, s_acctbal, s_comment]
+  - name: partsupp
+    watched_columns: [ps_partkey, ps_suppkey, ps_supplycost]
+  - name: nation
+    watched_columns: [n_nationkey, n_name, n_regionkey]
+  - name: region
+    watched_columns: [r_regionkey, r_name]
+
+partitioning: {}   # analysis stage will propose grain (e.g. region / part size bands)
+
+output_schema:
+  - name: s_acctbal
+    type: DECIMAL
+  - name: s_name
+    type: VARCHAR
+  - name: n_name
+    type: VARCHAR
+  - name: p_partkey
+    type: BIGINT
+  - name: p_mfgr
+    type: VARCHAR
+  - name: s_address
+    type: VARCHAR
+  - name: s_phone
+    type: VARCHAR
+  - name: s_comment
+    type: VARCHAR
+
+cost_model_config: config/q2_aux_cost_model.json
+
+optimization_guidance: |
+  Q2 is **minimum-cost supplier selection** (top-100 by acctbal), not a pure aggregate:
+  - Filter parts by `p_size` + `p_type LIKE pattern`, suppliers by region.
+  - Per qualifying part: keep the supplier(s) with **MIN(ps_supplycost)** in-region.
+  - Output: supplier/part attrs ordered by `s_acctbal DESC, n_name, s_name, p_partkey` LIMIT 100.
+
+  Structural priorities:
+  1. Pre-filter / index parts by (size, type) and suppliers by region at build time.
+  2. Materialize per-part min supplycost (or candidate supplier set) — avoid repeating the
+     correlated MIN subquery on every read.
+  3. Keep maintenance local: partsupp cost edits and supplier/region/part filter changes
+     should Prefer ApplyDelta / partition rebuild over full RebuildAll.
+
+  Absolute speedups are query-dependent — be aggressive on both read-only and 10% write-mix;
+  call OPTIMIZATION_SATURATED only when stuck.
+
+cmake:
+  query_num: 2
+  aux_state_module: accel_add_aux_state_query
+
+agent_boundary: prompts/aux_state/shared/agent_boundary.md

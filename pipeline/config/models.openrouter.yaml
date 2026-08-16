@@ -20,10 +20,6 @@ stages:
   optimization_unified_hypothesis: reasoning
   optimization_unified_patch: code
   optimization_worker: code
-  optimization_analysis: reasoning
-  optimization_patch: code
+  optimization_fix: code
   crash_debug: debug
   audit: reviewer
-
-  # legacy/fallback only
-  optimization: reasoning

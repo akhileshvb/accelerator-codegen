@@ -124,6 +124,12 @@ def evaluate_attempt_outcome(
         "candidate": candidate_diag,
         "read_only_query_speedup_baseline": baseline_metrics.get("read_only_query_speedup"),
         "read_only_query_speedup_candidate": candidate_metrics.get("read_only_query_speedup"),
+        "write_mix_workload_speedup_baseline": baseline_metrics.get(
+            "write_mix_workload_speedup"
+        ),
+        "write_mix_workload_speedup_candidate": candidate_metrics.get(
+            "write_mix_workload_speedup"
+        ),
         "accel_hit_median_us_baseline": baseline_metrics.get("accel_hit_median_us"),
         "accel_hit_median_us_candidate": candidate_metrics.get("accel_hit_median_us"),
         "accel_hit_rate_candidate": candidate_metrics.get("accel_hit_rate"),
@@ -158,7 +164,7 @@ def evaluate_attempt_outcome(
             baseline_score=baseline_score,
             candidate_score=candidate_score,
             diagnostic_vector=diagnostic_vector,
-            reason="read_improvement_above_accept_threshold",
+            reason="score_improvement_above_accept_threshold",
         )
 
     if improvement_pct < -severe_regress_threshold_pct:
@@ -168,7 +174,7 @@ def evaluate_attempt_outcome(
             baseline_score=baseline_score,
             candidate_score=candidate_score,
             diagnostic_vector=diagnostic_vector,
-            reason="read_performance_severely_regressed",
+            reason="dual_axis_score_severely_regressed",
         )
 
     structural_pct = _structural_progress_pct(baseline_diag, candidate_diag)
@@ -206,28 +212,80 @@ def is_aux_workload(workload: dict[str, Any]) -> bool:
     return workload.get("workload_kind") == "aux_state"
 
 
+def _write_mix_from_metrics(metrics: dict[str, Any]) -> float:
+    """Write-mix axis: geo-mean of all non-zero write-frequency workload speedups."""
+    from accel_pipeline.aux_write_freqs import aggregate_write_mix_workload_speedup
+
+    value, _pcts = aggregate_write_mix_workload_speedup(metrics)
+    return value
+
+
 def aux_optimization_score(
     metrics: dict[str, Any],
     workload: dict[str, Any] | None = None,
 ) -> float:
-    """Primary aux optimization signal: read-path speedup, or accel hit time when DuckDB ref skipped."""
-    metric = "read_only_query_speedup"
-    if workload:
-        opt = workload.get("aux_bench_sweep_optimization") or {}
-        metric = str(
-            opt.get("optimization_score_metric")
-            or workload.get("optimization_score_metric")
-            or metric
-        )
-    for key in (metric, "read_only_query_speedup", "composite_query_speedup", "composite_score"):
-        raw = metrics.get(key)
-        if raw is not None and float(raw) > 0:
-            return float(raw)
-    hit_us = float(metrics.get("accel_hit_median_us") or 0.0)
-    if hit_us > 0:
-        # Higher score = faster read path when DuckDB reference is skipped in quick sweep.
-        return 1.0e9 / hit_us
-    return float(metrics.get("speedup_median") or 0.0)
+    """Aux accept/reject score: dual-axis blend of read-only and write-mix speedups.
+
+    Default is a weighted geometric mean:
+      score = read_only ** read_w * write_mix ** write_w
+    with read_w=0.75, write_w=0.25 (read weighs more). When write-mix is missing
+    (read-only-only sweep), falls back to read_only alone. Hit-time inverse is
+    used only when no positive read_only is available.
+    """
+    opt = (workload or {}).get("aux_bench_sweep_optimization") or {}
+    metric = str(
+        opt.get("optimization_score_metric")
+        or (workload or {}).get("optimization_score_metric")
+        or "dual_axis_weighted"
+    )
+
+    read_only = 0.0
+    raw_read = metrics.get("read_only_query_speedup")
+    if raw_read is not None:
+        try:
+            read_only = float(raw_read)
+        except (TypeError, ValueError):
+            read_only = 0.0
+
+    if metric == "read_only_query_speedup":
+        if read_only > 0:
+            return read_only
+        for key in ("composite_query_speedup", "composite_score"):
+            raw = metrics.get(key)
+            if raw is not None and float(raw) > 0:
+                return float(raw)
+        hit_us = float(metrics.get("accel_hit_median_us") or 0.0)
+        if hit_us > 0:
+            return 1.0e9 / hit_us
+        return float(metrics.get("speedup_median") or 0.0)
+
+    write_mix = _write_mix_from_metrics(metrics)
+    read_w = float(opt.get("read_score_weight", 0.75))
+    write_w = float(opt.get("write_score_weight", 0.25))
+    weight_sum = read_w + write_w
+    if weight_sum <= 0:
+        read_w, write_w = 0.75, 0.25
+        weight_sum = 1.0
+    read_w /= weight_sum
+    write_w /= weight_sum
+
+    if read_only <= 0:
+        hit_us = float(metrics.get("accel_hit_median_us") or 0.0)
+        if hit_us > 0:
+            read_only = 1.0e9 / hit_us
+        else:
+            read_only = float(metrics.get("speedup_median") or 0.0)
+    if read_only <= 0:
+        return 0.0
+    if write_mix <= 0:
+        # No write-mix point in this measurement — score on read axis only.
+        return read_only
+
+    # Floor tiny write mixes so a near-zero cliff still participates without
+    # hard-zeroing the geometric mean on floating noise.
+    write_floor = float(opt.get("write_score_floor", 1.0e-3))
+    write_mix = max(write_mix, write_floor)
+    return float(read_only**read_w) * float(write_mix**write_w)
 
 
 def score_metrics(
@@ -247,15 +305,26 @@ def improvement_ratio(baseline_score: float, candidate_score: float) -> float:
     return 100.0 * (candidate_score - baseline_score) / baseline_score
 
 
-def _aux_write_frequencies(workload: dict[str, Any]) -> list[int]:
-    sweep = workload.get("aux_bench_sweep", {}) or {}
-    opt_sweep = workload.get("aux_bench_sweep_optimization", {}) or {}
-    raw = opt_sweep.get("write_frequencies") or sweep.get("write_frequencies")
-    if isinstance(raw, list):
-        return [int(x) for x in raw]
-    if isinstance(raw, str) and raw.strip():
-        return [int(part.strip()) for part in raw.split(",") if part.strip()]
-    return [0, 1, 10, 50]
+def _aux_write_frequencies(
+    workload: dict[str, Any],
+    *,
+    art_dir: Path | None = None,
+    optimization_iter: int | None = None,
+    attempt: int | None = None,
+) -> list[int]:
+    from accel_pipeline.aux_write_freqs import (
+        attempt_from_env,
+        optimization_iter_from_env,
+        resolve_optimization_write_frequencies,
+    )
+
+    return resolve_optimization_write_frequencies(
+        workload,
+        art_dir=art_dir,
+        optimization_iter=optimization_iter_from_env(optimization_iter),
+        attempt=attempt_from_env(attempt),
+        persist=art_dir is not None,
+    )
 
 
 def _aux_quick_env(
@@ -263,13 +332,14 @@ def _aux_quick_env(
     *,
     query: int,
     workload: dict[str, Any],
+    freqs: list[int] | None = None,
 ) -> dict[str, str]:
     opt = workload.get("aux_bench_sweep_optimization", {}) or {}
-    freqs = _aux_write_frequencies(workload)
+    resolved = freqs if freqs is not None else _aux_write_frequencies(workload)
     env = {
         paths["db_env_var"]: str(paths["dataset_db"]),
         f"ACCEL_Q{query}_BENCH_SUITE": paths.get("aux_bench_suites", "lineitem_only"),
-        "ACCEL_AUX_WRITE_FREQUENCIES": ",".join(str(f) for f in freqs),
+        "ACCEL_AUX_WRITE_FREQUENCIES": ",".join(str(f) for f in resolved),
         "ACCEL_BENCH_WARMUP": str(int(opt.get("bench_warmup", 1))),
         "ACCEL_BENCH_QUERIES": str(int(opt.get("quick_bench_queries", opt.get("bench_queries", 3)))),
         "ACCEL_BENCH_REF_SAMPLES": str(int(opt.get("bench_ref_samples", 0))),
@@ -329,6 +399,8 @@ def _build_benchmark(
 
 
 def _metrics_from_aux_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    from accel_pipeline.aux_write_freqs import aggregate_write_mix_workload_speedup
+
     summary = summarize_sweep_rows(rows)
     by_freq = summary.get("by_write_frequency_pct") or {}
     zero_row = by_freq.get("0") or (rows[0] if rows else {})
@@ -339,6 +411,10 @@ def _metrics_from_aux_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         zero_row.get("accel_hit_median_us") or rows[0].get("accel_hit_median_us", 0.0) if rows else 0.0
     )
     accel_hit_rate = float(zero_row.get("accel_hit_rate") or 0.0)
+    write_mix_workload_speedup, write_mix_pcts = aggregate_write_mix_workload_speedup(
+        {"by_write_frequency_pct": by_freq}
+    )
+    write_mix_pct = write_mix_pcts[0] if len(write_mix_pcts) == 1 else 0
     metrics = {
         "mode": "aux_quick_sweep",
         "write_frequency_points": len(rows),
@@ -346,17 +422,18 @@ def _metrics_from_aux_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "composite_workload_speedup": composite_wl,
         "composite_query_speedup": float(summary.get("composite_query_speedup") or read_only),
         "read_only_query_speedup": read_only,
-        "speedup_median": read_only if read_only > 0 else (
-            (1.0e9 / accel_hit_median_us) if accel_hit_median_us > 0 else 0.0
-        ),
-        "optimization_score": read_only if read_only > 0 else (
-            (1.0e9 / accel_hit_median_us) if accel_hit_median_us > 0 else 0.0
-        ),
+        "write_mix_pct": write_mix_pct,
+        "write_mix_pcts": write_mix_pcts,
+        "write_mix_workload_speedup": write_mix_workload_speedup,
+        "by_write_frequency_pct": by_freq,
         "accel_hit_median_us": accel_hit_median_us,
         "accel_hit_rate": accel_hit_rate,
         "setup_full_build_ms": float(zero_row.get("setup_full_build_ms") or 0.0),
         "aux_summary": summary,
     }
+    dual = aux_optimization_score(metrics)
+    metrics["optimization_score"] = dual if dual > 0 else read_only
+    metrics["speedup_median"] = metrics["optimization_score"]
     for key in (
         "valid_partitions",
         "total_slots",
@@ -378,10 +455,14 @@ def _run_aux_sweep_once(
     paths: dict[str, str],
     query: int,
     workload: dict[str, Any],
+    art_dir: Path | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     """One benchmark process: multi-frequency sweep via ACCEL_AUX_WRITE_FREQUENCIES."""
-    freqs = _aux_write_frequencies(workload)
-    env = {**os.environ, **_aux_quick_env(paths, query=query, workload=workload)}
+    freqs = _aux_write_frequencies(workload, art_dir=art_dir)
+    env = {
+        **os.environ,
+        **_aux_quick_env(paths, query=query, workload=workload, freqs=freqs),
+    }
     _log_benchmark(
         f"aux quick sweep (1 process): freqs={freqs} "
         f"queries={env.get('ACCEL_BENCH_QUERIES')} warmup={env.get('ACCEL_BENCH_WARMUP')}"
@@ -446,6 +527,8 @@ def run_single_benchmark(
     include_profile: bool = False,
 ) -> tuple[dict[str, Any] | None, str]:
     """Run one benchmark invocation; return (metrics, output_or_error)."""
+    from accel_pipeline.paths import query_artifacts_dir
+
     paths = resolve_workload_paths(pipeline_config, workload, query)
     target = _benchmark_target(paths, workload)
     bin_path = str(pipeline_config.build_dir / target)
@@ -453,12 +536,14 @@ def run_single_benchmark(
     if build_err:
         return None, build_err
     if is_aux_workload(workload):
+        art_dir = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
         return _run_aux_sweep_once(
             bin_path,
             repo=pipeline_config.repo_root,
             paths=paths,
             query=query,
             workload=workload,
+            art_dir=art_dir,
         )
     return _run_base_once(
         bin_path,

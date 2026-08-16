@@ -51,7 +51,13 @@ fi
 
 export ACCEL_BUILD_DIR="${BUILD}"
 export ACCEL_AUX_BENCH_WORK_DIR="${BUILD}/${AUX_BENCH_WORK_DIR_SUFFIX:-q${QUERY}_aux_bench_sf1}"
-export ACCEL_AUX_WRITE_FREQUENCIES="${ACCEL_AUX_WRITE_FREQUENCIES:-${AUX_WRITE_FREQUENCIES_CTX:-0,1,10,50}}"
+# Prefer gate-context write frequencies. Do not inherit ambient optimization
+# quick-sweep env (e.g. ACCEL_AUX_WRITE_FREQUENCIES=0,10) into fair audit/impl sweeps.
+if [[ -n "${AUX_WRITE_FREQUENCIES_CTX:-}" ]]; then
+  export ACCEL_AUX_WRITE_FREQUENCIES="${AUX_WRITE_FREQUENCIES_CTX}"
+else
+  export ACCEL_AUX_WRITE_FREQUENCIES="${ACCEL_AUX_WRITE_FREQUENCIES:-0,1,10,50}"
+fi
 export ACCEL_AUX_BENCH_SUITES="${ACCEL_AUX_BENCH_SUITES:-${AUX_BENCH_SUITES}}"
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 export ACCEL_AUX_BENCH_TARGET="${BENCH_TARGET}"
@@ -66,18 +72,19 @@ if [[ "${CHANGE_KIND}" == "optimization" ]]; then
   export ACCEL_BENCH_BASE_WRITE_SAMPLES="${ACCEL_BENCH_BASE_WRITE_SAMPLES:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_base_write_samples', 2))" "${OPT_SWEEPS}")}"
 else
   IMPL_SWEEPS="$(python3 -c "import json,sys; print(json.dumps(json.loads(sys.argv[1]).get('aux_bench_sweep') or {}))" "${CTX}")"
-  export ACCEL_BENCH_WARMUP="${ACCEL_BENCH_WARMUP:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_warmup', 1))" "${IMPL_SWEEPS}")}"
-  export ACCEL_BENCH_QUERIES="${ACCEL_BENCH_QUERIES:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_queries', 5))" "${IMPL_SWEEPS}")}"
-  export ACCEL_BENCH_REF_SAMPLES="${ACCEL_BENCH_REF_SAMPLES:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_ref_samples', 0))" "${IMPL_SWEEPS}")}"
-  export ACCEL_BENCH_BASE_WRITE_SAMPLES="${ACCEL_BENCH_BASE_WRITE_SAMPLES:-$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_base_write_samples', 3))" "${IMPL_SWEEPS}")}"
+  # Context wins over ambient env left over from optimization quick benches.
+  export ACCEL_BENCH_WARMUP="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_warmup', 10))" "${IMPL_SWEEPS}")"
+  export ACCEL_BENCH_QUERIES="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_queries', 100))" "${IMPL_SWEEPS}")"
+  export ACCEL_BENCH_REF_SAMPLES="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_ref_samples', 3))" "${IMPL_SWEEPS}")"
+  export ACCEL_BENCH_BASE_WRITE_SAMPLES="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_base_write_samples', 3))" "${IMPL_SWEEPS}")"
   if python3 -c "import json,sys; print('1' if json.loads(sys.argv[1]).get('skip_duckdb_ref') else '0')" "${IMPL_SWEEPS}" | grep -q 1; then
-    export ACCEL_BENCH_SKIP_DUCKDB_REF="${ACCEL_BENCH_SKIP_DUCKDB_REF:-1}"
+    export ACCEL_BENCH_SKIP_DUCKDB_REF=1
   else
     unset ACCEL_BENCH_SKIP_DUCKDB_REF
   fi
   scan_limit="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('bench_scan_limit') or '')" "${IMPL_SWEEPS}")"
   if [[ -n "${scan_limit}" ]]; then
-    export ACCEL_Q21_BENCH_SCAN_LIMIT="${ACCEL_Q21_BENCH_SCAN_LIMIT:-${scan_limit}}"
+    export ACCEL_Q21_BENCH_SCAN_LIMIT="${scan_limit}"
   else
     unset ACCEL_Q21_BENCH_SCAN_LIMIT
   fi

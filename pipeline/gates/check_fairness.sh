@@ -35,24 +35,29 @@ kernel_templates = fairness.get(
 kernel_candidates = [root / tpl.replace("{N}", query) for tpl in kernel_templates]
 
 issues = []
-kernel_path = None
-kernel = next((path for path in kernel_candidates if path.is_file()), None)
-if kernel is not None:
-    kernel_path = str(kernel.relative_to(root))
-    text = kernel.read_text()
-    if re.search(r"\bgetenv\s*\(", text):
-        issues.append("getenv in kernel")
-    for constant in fairness.get("cardinality_constants", []):
-        if constant in text:
-            issues.append(f"possible cardinality constant: {constant}")
-else:
+checked_paths: list[str] = []
+existing = [path for path in kernel_candidates if path.is_file()]
+if not existing:
     issues.append("kernel file missing")
+else:
+    for kernel in existing:
+        rel = str(kernel.relative_to(root))
+        checked_paths.append(rel)
+        text = kernel.read_text()
+        if re.search(r"\bgetenv\s*\(", text):
+            issues.append(f"getenv in kernel ({rel})")
+        for constant in fairness.get("cardinality_constants", []):
+            const = str(constant)
+            # Whole-token match only — avoid flagging 6000001 for constant 600000.
+            if re.search(rf"(?<![0-9]){re.escape(const)}(?![0-9])", text):
+                issues.append(f"possible cardinality constant: {const} ({rel})")
 
 result = {
     "gate": "fairness",
     "query": int(query),
     "status": "pass" if not issues else "fail",
-    "kernel_path": kernel_path,
+    "kernel_path": checked_paths[0] if checked_paths else None,
+    "checked_paths": checked_paths,
     "issues": issues,
 }
 path = out / "fairness.json"

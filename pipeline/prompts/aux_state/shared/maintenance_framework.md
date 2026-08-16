@@ -37,6 +37,10 @@ Coefficients live in `config/q{N}_aux_cost_model.json` and are **calibrated** by
 
 The framework only compares totals; cost equations are per-accelerator.
 
+## Rebuild vs invalidate
+
+When the selector chooses `RebuildPartition` or `RebuildAll`, maintenance **must materialize fresh partition images** (resync/rebuild) so later queries can hit aux again. **Invalidate-only / `InvalidateAndFallback` is not a substitute** for a selected rebuild — that leaves cold misses and defeats the cost model.
+
 ## Repair timing
 
 v1: **LazyOnQuery** via `StageMaintenance` outcomes. Relevant maintenance commits merge invalidation plans; readers call `CheckValidity` and fall back when state is not ready.

@@ -4,11 +4,18 @@ write_paths:
   - CMakeLists.txt
   - cmake/AuxState.cmake
   - src/generated/tpch/q*/aux/**
+  - src/generated/catalog/**
+  - src/stateful/duckdb/duckdb_aux_table_functions.cpp
+  - include/accelerator_codegen/stateful/core/query_layouts.hpp
   - config/q*_aux_cost_model.json
   - tests/single-threaded/test_q*_*.cpp
   - tests/single-threaded/test_tpch_q*_aux.cpp
   - tests/test_support/q*_aux_helpers.hpp
+  - tests/test_support/cross_accel_helpers.cpp
+  - tests/test_support/cross_accel_helpers.hpp
   - benchmarks/tpch/single-threaded/benchmark_q*_aux.cpp
+  - benchmarks/tpch/single-threaded/tpch_arg_variants.cpp
+  - benchmarks/tpch/single-threaded/tpch_arg_variants.hpp
   - benchmarks/tpch/single-threaded/benchmark_q*_hybrid_eval.cpp
   - benchmarks/tpch/single-threaded/calibrate_q*_aux_cost_model.cpp
 
@@ -23,6 +30,8 @@ allowed_commands:
   - "^ctest --test-dir build-release( .*)?$"
   - "^ctest -N( .*)?$"
   - "^build-release/(tests|benchmarks)/.*"
+  - "^(\\.\\/)?build-release\\/test_tpch_shared_differential( .*)?$"
+  - "^ACCEL_TPCH_DB=.+ (\\.\\/)?build-release\\/test_tpch_shared_differential( .*)?$"
   - "^bash scripts/run_aux_bench_sweep\\.sh \\d+$"
   - "^bash pipeline/gates/run_aux_cross_accel\\.sh \\d+$"
   - "^bash pipeline/gates/run_aux_multi_connection\\.sh \\d+$"
@@ -49,20 +58,35 @@ aux_bench_sweep_fast:
   skip_duckdb_ref: true
   bench_scan_limit: 100000
 
-# Per-attempt: build + smoke only. Full validation runs once per optimization iteration.
+# Per-attempt quick A/B: always 0% (read axis) plus randomly sampled write mixes
+# re-drawn every attempt so agents cannot hill-climb on a single write %. Within
+# one attempt, frequencies are locked for multi-sample benches. Accept/reject uses
+# dual_axis_weighted = read_only^read_w * write_mix^write_w where write_mix is the
+# geometric mean of all non-zero write-frequency workload_speedups.
 aux_bench_sweep_optimization:
   write_frequencies: [0]
-  optimization_score_metric: read_only_query_speedup
-  bench_warmup: 1
-  bench_queries: 3
-  quick_bench_queries: 3
-  quick_benchmark_samples: 1
-  bench_ref_samples: 1
-  bench_base_write_samples: 0
+  write_mix_sample:
+    enabled: true
+    count: 2
+    choices: [1, 5, 10, 15, 20, 25, 33, 40, 50]
+    # Re-sample every attempt (0% always included). Lock only within an attempt
+    # so multi-sample benches share one load.
+    lock_per_attempt: true
+  optimization_score_metric: dual_axis_weighted
+  read_score_weight: 0.75
+  write_score_weight: 0.25
+  write_score_floor: 0.001
+  bench_warmup: 3
+  bench_queries: 10
+  quick_bench_queries: 10
+  quick_benchmark_samples: 2
+  bench_ref_samples: 2
+  bench_base_write_samples: 1
   skip_duckdb_ref: false
 
 optimization:
-  max_attempts_per_iteration: 8
+  max_iterations: 3
+  max_attempts_per_iteration: 5
   improvement_threshold_pct: 2.0
   reject_threshold_pct: 1.0
   smoke_runs: 2
@@ -70,6 +94,9 @@ optimization:
   skip_per_attempt_correctness: true
   two_phase_hypothesis_patch: true
   experimental_chain_cap: 3
+  # Agent stops with OPTIMIZATION_SATURATED when stuck (no numeric floors).
+  early_stop:
+    enabled: true
 
 post_implementation_gates:
   - aux_correctness
@@ -88,12 +115,21 @@ post_optimization_gates:
   - aux_cross_accel
   - aux_bench_sweep
 
+# End-of-audit hard gates: correctness + fair SF1 sweep.
+# Scale-safety / harness-cheat review is agent analysis in final_audit.md
+# (not brittle substring or parse-fragile speedup gates).
 post_audit_gates:
   - aux_correctness
   - aux_unit
   - aux_mutation_scenarios
-  - aux_speedup_verification
-  - fairness
+  - aux_bench_sweep
+
+# Optional static fairness scan paths (agent may request_gate fairness; not a hard fail gate).
+fairness:
+  kernel_search_paths:
+    - src/generated/tpch/q{N}/aux/module.cpp
+    - src/generated/tpch/q{N}/aux/finalize.cpp
+    - src/generated/tpch/q{N}/base/single-threaded/kernel.cpp
 
 prompt_subdir: aux_state
 

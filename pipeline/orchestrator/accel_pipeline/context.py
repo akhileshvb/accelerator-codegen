@@ -62,8 +62,9 @@ def build_retrieval_brief(
 
     if workload.get("workload_kind") == "aux_state" and stage in (
         "optimization",
-        "optimization_analysis",
         "optimization_unified",
+        "optimization_worker",
+        "optimization_fix",
     ):
         return build_optimization_retrieval_brief(
             query=query,
@@ -149,7 +150,19 @@ def build_prompt_context(
     bench_summary = load_bench_summary(repo, query) if is_aux else {}
     opt_state = load_optimization_state(repo, query) if is_aux else load_base_optimization_state(art)
 
+    paths = resolve_workload_paths(pipeline_config, workload, query)
+
     if is_aux and stage == "analysis":
+        from accel_pipeline.data_shape import build_data_shape_markdown
+
+        if not reference_sql.strip():
+            reference_sql = (
+                f"-- MISSING reference SQL at {reference_sql_path or '(unset)'}\n"
+                "-- Regenerate with: python3 scripts/generate_tpch_sf1_instances.py"
+            )
+        data_shape_section = build_data_shape_markdown(
+            workload, paths.get("dataset_db")
+        )
         workload_reference_section = "\n".join(
             [
                 "## Query",
@@ -169,6 +182,8 @@ def build_prompt_context(
                 "## Partitioning (hints only)",
                 "",
                 yaml.safe_dump(workload.get("partitioning", {})),
+                "",
+                data_shape_section,
             ]
         )
     elif is_aux:
@@ -178,10 +193,17 @@ def build_prompt_context(
         )
     else:
         workload_reference_section = ""
-
-    paths = resolve_workload_paths(pipeline_config, workload, query)
     edit_paths = resolve_optimization_edit_paths(pipeline_config, workload, query)
-    opt_stages = ("optimization", "optimization_analysis", "optimization_patch", "optimization_unified")
+    is_engine = workload.get("workload_kind") == "engine_backend"
+    engine_name = str(workload.get("engine_name", ""))
+    opt_stages = (
+        "optimization",
+        "optimization_unified",
+        "optimization_worker",
+        "optimization_fix",
+        "optimization_unified_hypothesis",
+        "optimization_unified_patch",
+    )
     prompt_kernel_path = paths["kernel_path"]
     prompt_header_path = paths["header_path"]
     prompt_package_path = paths["package_path"]
@@ -201,8 +223,12 @@ def build_prompt_context(
             for p in (prompt_header_path, prompt_kernel_path, prompt_package_path)
         )
     benchmark = str(workload.get("benchmark_name", "tpch"))
-    artifacts_rel = f"pipeline/artifacts/{workload.get('artifact_namespace', benchmark)}/q{query}"
-    analysis_artifact_rel = f"{artifacts_rel}/{analysis_path.name}"
+    if is_engine:
+        artifacts_rel = f"pipeline/artifacts/engines/{engine_name or 'engine'}"
+        analysis_artifact_rel = f"{artifacts_rel}/backend_analysis.json"
+    else:
+        artifacts_rel = f"pipeline/artifacts/{workload.get('artifact_namespace', benchmark)}/q{query}"
+        analysis_artifact_rel = f"{artifacts_rel}/{analysis_path.name}"
 
     schema_ref = workload.get("schema_reference_path", "")
     if schema_ref and Path(schema_ref).is_file():
@@ -253,25 +279,34 @@ def build_prompt_context(
 
     if is_aux and stage in opt_stages:
         benchmark_notes += (
-            "\n- **Optimization score (accept/reject)**: `read_only_query_speedup` at 0% writes — "
-            "aux hit vs base kernel query latency. Be **aggressive** on the read hot path: eliminate "
-            "residual orders/lineitem scans, replace map/hash chasing with dense arrays, vectorize "
-            "decode/materialization, fuse operators, and short-circuit work on the read path.\n"
-            "- **Not the optimization target**: DuckDB-reference `workload_speedup`, cold "
-            "`setup_full_build_ms`, or post-stage `composite_score` — full write-mix gates run after "
-            "the stage.\n"
-            "- **Maintenance**: incremental correctness must still pass smoke + gates; do not break "
-            "writes for read wins.\n"
-            "- **Scale**: per-query cost must stay O(touched rows) or better; size from bind-time "
-            "`row_estimate` with amortized growth — never SF1-hardcoded capacities or cardinality "
-            "literals from the iteration dataset."
+            "\n- **Dual-axis accept/reject score** (orchestrator-owned):\n"
+            "  `optimization_score = read_only_query_speedup^0.75 * write_mix_workload_speedup^0.25` "
+            "(read weighs more; write-mix still gates accepts).\n"
+            "  Quick bench always includes **0% reads** plus **randomly sampled write %s** "
+            "(re-sampled each attempt; locked only within an attempt — see "
+            "`optimization_write_frequencies.json`). "
+            "Write-mix score is the **geometric mean** of non-zero write-frequency "
+            "`workload_speedup`s — do not overfit a single mix.\n"
+            "- **Read axis**: be aggressive on the hit path (eliminate residual scans, dense layouts, "
+            "fuse/decode).\n"
+            "- **Write/maintenance axis**: prefer **ApplyDelta / partition-local** apply; "
+            "**RebuildAll-on-every-point-write is a maintenance cliff**. Raising write-mix "
+            "`workload_speedup` across sampled frequencies raises the accept score even when read is flat.\n"
+            "- When read is already strong and write-mix workload ≪ 1×, **next hypothesis must attack "
+            "incremental maintenance**, not ≤5% read micro-opts.\n"
+            "- Do not trade a big write-mix regression for a small read win. End-of-iteration fair "
+            "sweep still covers 0/1/10/50%.\n"
+            "- **Scale**: per-query and per-write cost must stay O(touched rows/partitions) or better; "
+            "size from bind-time `row_estimate` — never SF1-hardcoded capacities."
         )
 
     lean_stage = stage in (
         "optimization",
-        "optimization_analysis",
-        "optimization_patch",
         "optimization_unified",
+        "optimization_worker",
+        "optimization_fix",
+        "optimization_unified_hypothesis",
+        "optimization_unified_patch",
         "crash_debug",
         "implementation",
         "audit",
@@ -320,8 +355,8 @@ def build_prompt_context(
                 "See `pipeline/prompts/shared/base_kernel_optimization.md` (read_file if needed)."
             )
         constraints_text = (
-            "See `pipeline/prompts/shared/constraints.md`, `generated_layout.md`, "
-            "and `scale_factor_contract.md` (read_file if needed)."
+            "See `pipeline/prompts/shared/hard_guidelines.md`, `constraints.md`, "
+            "`generated_layout.md`, and `scale_factor_contract.md` (read_file if needed)."
         )
         profiling_text = "See `pipeline/prompts/shared/profiling_conventions.md` (read_file if needed)."
     else:
@@ -339,9 +374,47 @@ def build_prompt_context(
         analysis_json = _read_text(analysis_path, "{}") if stage == "analysis" else "{}"
 
     retrieval_brief = ""
-    if stage in ("analysis", "optimization", "optimization_analysis", "optimization_unified"):
+    if stage in (
+        "analysis",
+        "optimization",
+        "optimization_unified",
+        "optimization_worker",
+    ):
         retrieval_brief = build_retrieval_brief(
             pipeline_config, workload, query, stage=stage, optimization_iter=optimization_iter
+        )
+
+    hard_guidelines_path = pipe / "prompts" / "shared" / "hard_guidelines.md"
+    hard_guidelines = (
+        _read_text(hard_guidelines_path)
+        if stage
+        in (
+            "analysis",
+            "implementation",
+            "optimization",
+            "optimization_unified",
+            "optimization_unified_hypothesis",
+            "optimization_unified_patch",
+            "optimization_worker",
+            "optimization_fix",
+            "audit",
+            "validation",
+        )
+        else ""
+    )
+    # Injected for Codex exec stages; empty for other providers unless prompt keeps the placeholder.
+    codex_tooling = ""
+    if stage in (
+        "implementation",
+        "optimization_unified",
+        "optimization_unified_hypothesis",
+        "optimization_unified_patch",
+        "optimization_worker",
+        "optimization_fix",
+    ):
+        codex_tooling = (
+            "When running under Codex exec, follow `pipeline/prompts/shared/codex_tooling.md` "
+            "(native edit/search/shell + MCP profile/gate/A/B tools)."
         )
 
     optimization_runtime_path = ""
@@ -444,12 +517,15 @@ def build_prompt_context(
         "base_kernel_optimization": base_kernel_optimization,
         "optimization_max_iterations": str(pipeline_config.optimization_max_iterations),
         "optimization_goal": (
-            "Maximize `read_only_query_speedup` (aux query hit vs base kernel) using scalable "
-            "structures; maintenance correctness is required but read latency is the score."
+            "Maximize dual-axis score read_only^0.75 * write_mix^0.25: strong hit latency at 0% writes "
+            "AND healthy 10% write-mix workload via cheap incremental maintenance (ApplyDelta / local "
+            "rebuilds). When read is strong and 10% ≪ 1×, prioritize maintenance — it moves the accept gate."
             if is_aux and stage in opt_stages
-            else "Beat DuckDB (`speedup_median` > 1.0) and keep improving `best_speedup_median` — "
-            "there is no fixed speedup ceiling; stop only when gates stall progress."
+            else "Beat the baseline engine path (`speedup_median` > 1.0) and keep improving "
+            "`best_speedup_median` — there is no fixed speedup ceiling; stop only when gates stall progress."
         ),
+        "hard_guidelines": hard_guidelines,
+        "codex_tooling": codex_tooling,
         "audit_result_json": _read_text(art / "audit_result.json", "{}"),
         "retrieval_brief": retrieval_brief,
         "experiment_log_excerpt": _tail_lines(art / "experiment_log.md", 2 if lean_stage else 5),
@@ -478,6 +554,32 @@ def build_prompt_context(
         "implementation_bootstrap": (
             build_implementation_bootstrap(repo, workload, query, analysis)
             if is_aux and stage == "implementation" and analysis
+            else ""
+        ),
+        "engine_name": engine_name,
+        "engine_sdk_hints": (
+            "\n".join(f"- {h}" for h in (workload.get("engine_sdk_hints") or []))
+            if is_engine
+            else ""
+        ),
+        "optional_examples_section": (
+            _read_text(pipe / "prompts" / "engine_backend" / "optional_examples.md")
+            if is_engine
+            else ""
+        ),
+        "engine_generation_mode": (
+            (
+                "update_existing"
+                if (repo / str((workload.get("target_paths") or {}).get("scan_adapter_header", ""))).is_file()
+                and workload.get("allow_update_existing", True)
+                else "generate_from_scratch"
+            )
+            if is_engine
+            else ""
+        ),
+        "engine_target_paths": (
+            "\n".join(f"- `{k}`: `{v}`" for k, v in dict(workload.get("target_paths") or {}).items())
+            if is_engine
             else ""
         ),
     }

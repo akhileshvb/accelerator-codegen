@@ -10,7 +10,7 @@ The pipeline optimizes on **small datasets for fast feedback**. Production bench
 | **Scale check (SF10)** | `scale_db` / `tpch_sf10` | `sf10` gate after optimization + audit | Catches sizing blowups, state that only fits SF1, benchmark crashes at 10× rows |
 | **Production target (SF20+)** | optional `tpch_sf20` (manual / out-of-pipeline) | Final validated benchmarking outside rapid iteration | **Design target** — algorithms and memory must scale here even though the pipeline rarely runs it |
 
-**Rule:** A technique that wins on SF1 but uses SF1-hardcoded capacities, full-domain scans sized for SF1, or structures with superlinear growth in table cardinality is **not acceptable**, even if SF1 gates pass.
+**Rule:** A technique that wins on SF1 but uses SF1-hardcoded capacities, full-domain scans sized for SF1, or structures with superlinear growth in table cardinality is **not acceptable**, even if SF1 gates pass. Agents must design for **high speedups at high SF**, not merely “doesn’t crash.”
 
 ## SEC-EDGAR
 
@@ -22,7 +22,9 @@ SEC workloads use **SF3** as both iteration and production scale in this repo (`
 2. **Sparse / dense tradeoffs** — prefer dense direct indexing only when the key domain is bounded by bind metadata; use hash maps or two-level structures when distinct counts scale with data.
 3. **Avoid full-domain finalization** — do not iterate fixed slots sized for SF1 maxima when qualifying groups are sparse at SF20.
 4. **Aux-state partitions** — partition count and per-partition payload must scale with query window and mutation locality, not total SF1 table size. Read paths must stay bounded to the query window at any scale.
-5. **No production `getenv`** — scale selection comes from bind context and table statistics, not environment variables on the hot path.
+5. **Maintenance locality** — bulk refresh and point writes should scale with touched data / local partitions, not always full rebuilds.
+6. **No production `getenv`** — scale selection comes from bind context and table statistics, not environment variables on the hot path.
+7. **No final-answer aux** — do not store precomputed final query results as aux state; redesign intermediates if needed when hitting a ceiling.
 
 ## What SF1 wins can hide
 
@@ -30,15 +32,17 @@ SEC workloads use **SF3** as both iteration and production scale in this repo (`
 |--------------|----------------------|
 | `std::vector` sized to SF1 max groups | Memory and cache blow up |
 | Per-row `unordered_map<std::string,…>` | Probe cost dominates at scale |
-| Scan all partition slots | Read cost ∝ total partitions, not query window |
+| Scan all partition slots / all groups | Read cost ∝ total state, not query window |
 | Micro-opts on cold paths | Noise at SF1; dominant cost shifts to scan/aggregate at scale |
+| Full rebuild on every point write | Write amplification destroys mixed workloads at scale |
 
 ## Optimization workflow implication
 
 1. Use SF1 profile + gates to choose **structure** (scan order, interning, fused path, aux state family).
-2. Before accepting a bundle, ask: **does this still work if lineitem rows ×20 and distinct keys grow proportionally?**
+2. Before accepting a bundle, ask: **does this still deliver a large speedup if lineitem rows ×20 and distinct keys grow?**
 3. Prefer changes that improve SF1 **and** remove SF1-specific constants or full-domain work.
-4. When the `sf10` gate is available, treat a crash, timeout, or sharp regression as a scaling bug — not an optional check.
+4. If SF1 read-path gains stall, redesign aux structure for cardinality/shape — still without caching final answers.
+5. When the `sf10` gate is available, treat a crash, timeout, or sharp regression as a scaling bug — not an optional check.
 
 ## Manual SF20+ validation (outside pipeline)
 

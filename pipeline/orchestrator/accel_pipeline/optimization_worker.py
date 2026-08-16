@@ -19,6 +19,10 @@ from accel_pipeline.config import ModelConfig, PipelineConfig, apply_workload_ov
 from accel_pipeline.models import make_model_id, resolve_agent_model
 from accel_pipeline.optimization_history import OpenRouterHistoryManager
 from accel_pipeline.optimization_pending import PendingFeedback
+from accel_pipeline.optimization_saturation import (
+    OPTIMIZATION_SATURATED,
+    parse_optimization_saturated,
+)
 from accel_pipeline.optimization_worker_checkpoint import (
     WORKER_SEED_FILE,
     build_semantic_worker_checkpoint,
@@ -38,12 +42,13 @@ _UNLIMITED_TURNS = 10_000
 
 @dataclass
 class CandidateCycleResult:
-    status: str  # ready | cannot_test | failed
+    status: str  # ready | cannot_test | failed | saturated
     hypothesis: dict[str, Any] | None = None
     reason: str = ""
     final_text: str = ""
     tool_calls: int = 0
     wall_clock_ms: int = 0
+    saturation: dict[str, Any] | None = None
 
 
 @dataclass
@@ -133,10 +138,12 @@ class OptimizationWorker:
         model_overrides: dict[str, str] | None = None,
         resume: bool = False,
     ) -> OptimizationWorker:
+        from accel_pipeline.models import resolve_stage_provider
+
         workload = load_workload(workload_name, pipeline_config.repo_root)
         pipeline_config = apply_workload_overrides(pipeline_config, workload)
         art_dir = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
-        provider = model_config.provider
+        provider = resolve_stage_provider(_WORKER_STAGE, model_config)
 
         prompt = render_prompt(
             pipeline_config,
@@ -148,8 +155,12 @@ class OptimizationWorker:
         )
         save_rendered_prompt(pipeline_config, query, _WORKER_STAGE, prompt, optimization_iter=1)
         instructions = prompt
-        if provider != "cursor":
+        if provider not in {"cursor", "codex_exec"}:
             instructions = f"{prompt.rstrip()}\n\n{tool_usage_instructions(_WORKER_STAGE)}"
+        elif provider == "codex_exec":
+            codex_doc = pipeline_config.pipeline_root / "prompts" / "shared" / "codex_tooling.md"
+            if codex_doc.is_file() and "codex_tooling.md" not in instructions:
+                instructions = f"{prompt.rstrip()}\n\n{codex_doc.read_text(encoding='utf-8')}"
 
         backend = create_agent_backend(
             provider=provider,
@@ -316,6 +327,58 @@ class OptimizationWorker:
             else:
                 raise
 
+        # Codex often exits after edits/tests without printing CANDIDATE_READY.
+        # Give one short follow-up attempt so the cycle can still complete.
+        if (
+            result.status == "finished"
+            and CANDIDATE_READY not in (result.final_text or "")
+            and OPTIMIZATION_SATURATED not in (result.final_text or "")
+            and not _parse_cannot_test(result.final_text or "")
+        ):
+            log_event(
+                self.pipeline_config.repo_root,
+                self.query,
+                "optimization_worker_yield_nudge",
+                attempt=self.episode_meta.attempt,
+                workload=self.workload.get("name", self.workload_name),
+            )
+            nudge = StageRunRequest(
+                stage=_WORKER_STAGE,
+                instructions=self.instructions,
+                user_message=(
+                    "Your previous optimization attempt ended without a required yield marker.\n"
+                    "Do not start a new redesign. Based on the current tree state:\n"
+                    "1. Briefly confirm build/smoke already done (or run MCP `run_correctness` / shell ctest if unsure).\n"
+                    "2. Call MCP `get_profile_digest` then `begin_ab_trial`/`run_quick_benchmark`/`end_ab_trial` if you edited.\n"
+                    "   Do not yield after `ab_signal=regress` / `forced_discard`.\n"
+                    "3. Print hypothesis JSON then end with exactly `CANDIDATE_READY`,\n"
+                    "   or `CANNOT_TEST` with JSON reason,\n"
+                    "   or `OPTIMIZATION_SATURATED` with JSON if you already pushed hard and "
+                    "further attempts are stuck (no target speedup number).\n"
+                    "Exiting without that marker fails this attempt."
+                ),
+                agent_name=f"accel_{_WORKER_STAGE}",
+                model_id=model_id,
+                agent_model=agent_model,
+                max_turns=max_turns,
+                previous_response_id=None,
+                auto_previous_response_id=False,
+                run_input=None,
+            )
+            nudge_result = self.backend.run_stage(nudge)
+            if nudge_result.status == "finished" and (
+                CANDIDATE_READY in (nudge_result.final_text or "")
+                or OPTIMIZATION_SATURATED in (nudge_result.final_text or "")
+                or _parse_cannot_test(nudge_result.final_text or "")
+            ):
+                result = nudge_result
+            elif nudge_result.final_text:
+                # Prefer combined text so a marker in either segment counts.
+                combined = f"{result.final_text or ''}\n{nudge_result.final_text}"
+                result.final_text = combined
+                if nudge_result.status == "finished":
+                    result.status = "finished"
+
         wall_ms = int((time.monotonic() - started) * 1000)
         tool_calls = int((result.metadata or {}).get("tool_calls", 0) or 0)
         usage = (result.metadata or {}).get("usage")
@@ -331,6 +394,7 @@ class OptimizationWorker:
         self._last_tool_summary = f"{tool_calls} tool calls"
 
         marker = "failed"
+        saturated = parse_optimization_saturated(final_text)
         if result.status != "finished":
             self.metrics.candidates_failed += 1
             cycle = CandidateCycleResult(
@@ -339,6 +403,18 @@ class OptimizationWorker:
                 final_text=final_text,
                 tool_calls=tool_calls,
                 wall_clock_ms=wall_ms,
+            )
+        elif saturated is not None:
+            # Prefer saturation over CANDIDATE_READY when both appear.
+            marker = "saturated"
+            cycle = CandidateCycleResult(
+                status="saturated",
+                hypothesis=_parse_hypothesis_json(final_text),
+                reason=str(saturated.get("reason") or "optimization_saturated"),
+                final_text=final_text,
+                tool_calls=tool_calls,
+                wall_clock_ms=wall_ms,
+                saturation=saturated,
             )
         elif _parse_cannot_test(final_text):
             self.metrics.candidates_cannot_test += 1
@@ -449,6 +525,9 @@ class OptimizationWorker:
 def worker_enabled(pipeline_config: PipelineConfig, model_config: ModelConfig) -> bool:
     if not getattr(pipeline_config, "optimization_persistent_worker", True):
         return False
-    if model_config.provider == "cursor":
+    from accel_pipeline.models import resolve_stage_provider
+
+    provider = resolve_stage_provider("optimization_worker", model_config)
+    if provider == "cursor":
         return False
-    return model_config.provider in {"openai", "openrouter"}
+    return provider in {"openai", "openrouter", "codex_exec"}

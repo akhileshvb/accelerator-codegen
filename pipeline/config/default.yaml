@@ -13,7 +13,7 @@ datasets:
 optimization:
   max_iterations: 3
   no_improvement_stop: 4
-  max_attempts_per_iteration: 6
+  max_attempts_per_iteration: 5
   improvement_threshold_pct: 3.0
   reject_threshold_pct: 2.0
   aux_score_metric: read_only_query_speedup
@@ -58,6 +58,9 @@ optimization:
   hot_path_digest_max_chars: 25000
   turn_delta_max_chars: 4000
   checkpoint_file: optimization_worker_checkpoint.json
+  # Agent may declare OPTIMIZATION_SATURATED when stuck (no numeric speedup floors).
+  early_stop:
+    enabled: true
   # deprecated aliases
   episodes_per_iteration: 4
   max_turns_per_episode: 8
@@ -84,6 +87,8 @@ write_paths:
   - tests/single-threaded/test_tpch_q*
   - tests/single-threaded/test_sec_edgar_q*
   - tests/test_support/q*
+  - tests/test_support/cross_accel_helpers.cpp
+  - tests/test_support/cross_accel_helpers.hpp
   - benchmarks/tpch/single-threaded/benchmark_q*
   - benchmarks/sec_edgar/single-threaded/benchmark_q*
   - pipeline/artifacts/**

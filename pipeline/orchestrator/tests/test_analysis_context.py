@@ -99,6 +99,7 @@ class TestAnalysisContextSlicing:
         impl_docs = build_shared_docs_reference(stage="implementation")
         assert "taxonomy_index.md" in analysis_docs
         assert "read_path_scaffold.md" in impl_docs
+        assert "unit_test_contract.md" in impl_docs
         assert "aux_state_taxonomy.md" not in impl_docs
 
     def test_compact_bench_summary(self):

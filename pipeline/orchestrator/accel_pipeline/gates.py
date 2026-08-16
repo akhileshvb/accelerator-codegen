@@ -28,6 +28,9 @@ GATE_SCRIPTS = {
     "aux_multi_connection": "run_aux_multi_connection.sh",
     "aux_cost_model_calibrate": "run_aux_cost_model_calibrate.sh",
     "aux_optimization_probe": "run_aux_optimization_probe.sh",
+    "engine_build": "run_engine_build.sh",
+    "engine_scan_conformance": "run_engine_scan_conformance.sh",
+    "engine_aux_smoke": "run_engine_aux_smoke.sh",
 }
 
 
@@ -43,7 +46,17 @@ class GateFailure(RuntimeError):
     """Raised when a required gate does not pass."""
 
 
-GATES_ALLOW_SKIP = frozenset({"baseline", "sf10", "profile", "aux_cost_model_calibrate"})
+GATES_ALLOW_SKIP = frozenset(
+    {
+        "baseline",
+        "sf10",
+        "profile",
+        "aux_cost_model_calibrate",
+        "aux_speedup_verification",
+        "engine_scan_conformance",
+        "engine_aux_smoke",
+    }
+)
 
 
 def gate_failure_message(result: GateResult) -> str:

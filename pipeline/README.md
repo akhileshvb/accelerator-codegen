@@ -79,17 +79,32 @@ python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --dry-run
 
 ## Agent backends
 
-Set `provider` in `config/models.yaml`:
+Set `provider` in `config/models.yaml` (and optional per-stage overrides via `stage_providers`):
 
 | Provider | Key | Install |
 |----------|-----|---------|
 | `cursor` (default) | `CURSOR_API_KEY` | `pip install -e ".[cursor]"` |
 | `openai` | `OPENAI_API_KEY` | `pip install -e .` |
 | `openrouter` | `OPENROUTER_API_KEY` | `pip install -e ".[openrouter]"` |
+| `codex_exec` (via `stage_providers`) | `OPENROUTER_API_KEY` + Codex CLI | `pip install -e ".[codex]"` |
 
-Set `provider: openrouter` in `config/models.yaml` (see `config/models.openrouter.yaml` for a starter config). OpenRouter uses the same custom pipeline tools as Cursor (`read_file`, `apply_patch`, `run_command`, A/B benchmark tools, etc.) via the OpenAI Agents SDK + LiteLLM.
+### Codex exec (implementation + optimization)
 
-Both Cursor and OpenAI/OpenRouter paths use the same custom pipeline tools (`read_file`, `apply_patch`, `request_gate`, etc.) for parity.
+Uses Codex CLI native edit/search/shell plus an MCP server for gates/profile digests/A/B:
+
+```bash
+pip install -e ".[codex]"
+# install Codex CLI separately; ensure `codex` is on PATH
+export OPENROUTER_API_KEY=sk-or-...
+python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 \
+  --models-config pipeline/config/models.codex.yaml
+```
+
+Config: [`config/models.codex.yaml`](config/models.codex.yaml) + [`pipeline/.codex/config.toml`](pipeline/.codex/config.toml) (OpenRouter model provider + `accel_pipeline` MCP). Hard guidelines live in `prompts/shared/hard_guidelines.md`.
+
+Analysis and audit stay on OpenRouter Agents when using `models.codex.yaml`.
+
+Set `provider: openrouter` in `config/models.yaml` (see `config/models.openrouter.yaml` for a starter config). OpenRouter Agents uses the same custom pipeline tools as Cursor (`read_file`, `apply_patch`, `run_command`, A/B benchmark tools, etc.) via the OpenAI Agents SDK + LiteLLM.
 
 ### Cursor SDK timeouts and bridge lifecycle
 
@@ -182,8 +197,21 @@ python -m accel_pipeline.run_pipeline --query 24 --workload sec_edgar_q24 --dry-
 
 Tests: `pytest tests/test_benchmark_pack.py`
 
+## Engine backend onboarding
+
+Separate pipeline (`workload_kind: engine_backend`) generates engine adapters from the **fixed substrate** (`stateful/core|state|maintenance` + `NativeScanSpec`). DuckDB/Postgres trees are optional prompt examples — greenfield engines (and from-scratch DuckDB/Postgres regen) do not require sibling backends on disk.
+
+```bash
+python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql --dry-run
+python -m accel_pipeline.run_pipeline --query 0 --workload engine_duckdb --dry-run
+```
+
+- Workloads: `config/workloads/engine_*.yaml`
+- Prompts/templates: `prompts/engine_backend/`, `templates/engine_backend/`
+- Artifacts: `pipeline/artifacts/engines/{engine}/`
+- Stages: analysis → implementation → validation
+- Gates: `engine_build`, `engine_scan_conformance`, optional `engine_aux_smoke`
+
 ## TODO
 
 See [orchestrator/accel_pipeline/TODO.md](orchestrator/accel_pipeline/TODO.md) and inline `# TODO:` in source.
-
-- OpenRouter provider via LiteLLM (`models.yaml` `provider: openrouter`, `pip install -e ".[openrouter]"`)

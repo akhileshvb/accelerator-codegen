@@ -143,6 +143,34 @@ def parse_aux_benchmark_output(text: str) -> list[dict[str, Any]]:
     return _parse_sweep_reader(reader)
 
 
+def _parse_interval_sec(row: dict[str, Any]) -> float | None:
+    raw = row.get("write_interval_sec")
+    if raw in (None, ""):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _should_key_by_write_interval(rows: list[dict[str, Any]]) -> bool:
+    """Use interval keys only when intervals actually discriminate write rates.
+
+    Many aux benches emit ``write_interval_sec=0`` (or ``0.00``) on every row while
+    still varying ``write_frequency_pct``. Keying on interval then collapses the
+    whole sweep into one bucket and corrupts ``read_only_query_speedup``.
+    """
+    values: set[float] = set()
+    for row in rows:
+        interval = _parse_interval_sec(row)
+        if interval is None:
+            continue
+        values.add(round(interval, 6))
+    if len(values) <= 1:
+        return False
+    return any(v > 0.0 for v in values)
+
+
 def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {
@@ -158,15 +186,13 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_freq: dict[str, dict[str, Any]] = {}
     workload_speedups: list[float] = []
     query_speedups: list[float] = []
-    read_only_query_speedup = 0.0
-    read_only_cold_start_workload_speedup = 0.0
-    use_interval_key = bool(rows) and any(
-        row.get("write_interval_sec") not in (None, "") for row in rows
-    )
+    read_only_query_speedups: list[float] = []
+    read_only_cold_starts: list[float] = []
+    use_interval_key = _should_key_by_write_interval(rows)
 
     for row in rows:
         if use_interval_key:
-            interval = float(row.get("write_interval_sec", 0.0) or 0.0)
+            interval = float(_parse_interval_sec(row) or 0.0)
             key = f"{interval:g}"
             point = {
                 "write_interval_sec": interval,
@@ -174,9 +200,19 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             }
             read_only = interval <= 0.0
         else:
-            freq = int(row.get("write_frequency_pct", -1))
+            raw_freq = row.get("write_frequency_pct", -1)
+            if raw_freq in (None, ""):
+                freq = -1
+            else:
+                try:
+                    freq = int(float(raw_freq))
+                except (TypeError, ValueError):
+                    freq = -1
             key = str(freq)
             point = {"write_frequency_pct": freq}
+            interval = _parse_interval_sec(row)
+            if interval is not None:
+                point["write_interval_sec"] = interval
             read_only = freq == 0
         point.update(
             {
@@ -199,7 +235,46 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             point["measured_duration_sec"] = float(row.get("measured_duration_sec", 0.0) or 0.0)
         if row.get("reader_qps") not in (None, ""):
             point["reader_qps"] = float(row.get("reader_qps", 0.0) or 0.0)
-        by_freq[key] = point
+        for diag_key in STORE_DIAGNOSTIC_FIELDS:
+            if diag_key in row and row[diag_key] not in (None, ""):
+                point[diag_key] = coerce_diagnostic_field(diag_key, row[diag_key])
+
+        # Multiple suite/locality replicates at the same write rate: keep the
+        # worst-case speedups so headlines cannot overclaim.
+        existing = by_freq.get(key)
+        if existing is None:
+            by_freq[key] = point
+        else:
+            merged = dict(existing)
+            for speedup_key in (
+                "workload_speedup",
+                "query_only_speedup",
+                "blended_query_speedup",
+                "cold_start_workload_speedup",
+            ):
+                old = float(existing.get(speedup_key) or 0.0)
+                new = float(point.get(speedup_key) or 0.0)
+                if old > 0 and new > 0:
+                    merged[speedup_key] = min(old, new)
+                elif new > 0:
+                    merged[speedup_key] = new
+            old_hit = float(existing.get("accel_hit_median_us") or 0.0)
+            new_hit = float(point.get("accel_hit_median_us") or 0.0)
+            if old_hit > 0 and new_hit > 0:
+                merged["accel_hit_median_us"] = max(old_hit, new_hit)
+            elif new_hit > 0:
+                merged["accel_hit_median_us"] = new_hit
+            old_rate = float(existing.get("accel_hit_rate") or 0.0)
+            new_rate = float(point.get("accel_hit_rate") or 0.0)
+            if old_rate > 0 and new_rate > 0:
+                merged["accel_hit_rate"] = min(old_rate, new_rate)
+            elif new_rate > 0:
+                merged["accel_hit_rate"] = new_rate
+            for extra_key, value in point.items():
+                if extra_key not in merged or merged[extra_key] in (None, "", 0, 0.0):
+                    merged[extra_key] = value
+            by_freq[key] = merged
+
         ws = point["workload_speedup"]
         qs = point["query_only_speedup"]
         if ws > 0:
@@ -207,15 +282,16 @@ def summarize_sweep_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if qs > 0:
             query_speedups.append(qs)
         if read_only and qs > 0:
-            read_only_query_speedup = qs
+            read_only_query_speedups.append(qs)
         if read_only:
             cold = point["cold_start_workload_speedup"]
             if cold > 0:
-                read_only_cold_start_workload_speedup = cold
-        for diag_key in STORE_DIAGNOSTIC_FIELDS:
-            if diag_key in row and row[diag_key] not in (None, ""):
-                by_freq[key][diag_key] = row[diag_key]
+                read_only_cold_starts.append(cold)
 
+    read_only_query_speedup = min(read_only_query_speedups) if read_only_query_speedups else 0.0
+    read_only_cold_start_workload_speedup = (
+        min(read_only_cold_starts) if read_only_cold_starts else 0.0
+    )
     composite_workload = min(workload_speedups) if workload_speedups else 0.0
     composite_query = min(query_speedups) if query_speedups else 0.0
     # Primary optimization signal: worst-case end-to-end speedup across write rates,

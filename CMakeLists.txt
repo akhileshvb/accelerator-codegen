@@ -270,6 +270,18 @@ target_link_libraries(test_tpch_q18_shared_differential
 
 target_include_directories(test_tpch_q18_shared_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
+add_executable(test_tpch_shared_differential
+    tests/aux_state/test_tpch_shared_differential.cpp
+)
+
+target_link_libraries(test_tpch_shared_differential
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_tpch_shared_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
 add_executable(test_shared_tpch_rf_differential
     tests/aux_state/test_shared_tpch_rf_differential.cpp
 )

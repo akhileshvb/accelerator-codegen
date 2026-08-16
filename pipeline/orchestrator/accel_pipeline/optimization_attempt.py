@@ -6,6 +6,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from accel_pipeline.backends import StageRunRequest, create_agent_backend
@@ -46,6 +47,7 @@ from accel_pipeline.optimization_eval import (
     eval_config_from_pipeline,
     evaluate_attempt_outcome,
     run_multi_sample_benchmark,
+    score_metrics,
 )
 from accel_pipeline.optimization_probe import run_optimization_probe
 from accel_pipeline.optimization_fix import (
@@ -55,12 +57,18 @@ from accel_pipeline.optimization_fix import (
     optimization_fix_limit,
 )
 from accel_pipeline.optimization_runtime import refresh_optimization_runtime
+from accel_pipeline.negative_memory import maybe_record_reject_trap
+from accel_pipeline.optimization_saturation import (
+    evaluate_saturation_claim,
+    parse_optimization_saturated,
+)
 from accel_pipeline.optimization_smoke import SmokeResult, run_build, run_smoke_correctness_repeated
 from accel_pipeline.paths import load_query_analysis, query_artifacts_dir
 from accel_pipeline.optimization_pending import format_gate_delta
 from accel_pipeline.optimization_worker import OptimizationWorker
 from accel_pipeline.optimization_worker_checkpoint import load_worker_checkpoint
 from accel_pipeline.pipeline_log import log_event, log_stage_complete, log_stage_start
+from accel_pipeline.playbook import append_experiment_log
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt
 from accel_pipeline.stages.base import resolve_optimization_max_turns
 from accel_pipeline.tools.tool_policy import tool_usage_instructions
@@ -73,10 +81,74 @@ EXPERIMENTAL_CHAIN_CAP = 3
 
 @dataclass
 class UnifiedAttemptResult:
-    status: str  # "complete" | "cannot_test" | "failed"
+    status: str  # "complete" | "cannot_test" | "failed" | "saturated"
     hypothesis: dict[str, Any] | None = None
     reason: str = ""
     final_text: str = ""
+    saturation: dict[str, Any] | None = None
+
+
+def _try_honor_saturation(
+    *,
+    pipeline_config: PipelineConfig,
+    workload: dict[str, Any],
+    query: int,
+    art: Path,
+    optimization_iter: int,
+    attempt: int,
+    payload: dict[str, Any] | None,
+    worker: OptimizationWorker | None = None,
+) -> tuple[bool, str]:
+    """Return (honored, detail). On reject, push feedback / log failure."""
+    ok, detail, cfg = evaluate_saturation_claim(pipeline_config, workload, art, payload)
+    log_event(
+        pipeline_config.repo_root,
+        query,
+        "optimization_saturation_claim",
+        honored=ok,
+        detail=detail[:500],
+        floors=cfg,
+        payload=payload or {},
+        optimization_iter=optimization_iter,
+        attempt=attempt,
+        workload=workload.get("name"),
+    )
+    if ok:
+        append_experiment_log(
+            pipeline_config.repo_root,
+            query,
+            f"- iter {optimization_iter} a{attempt}: OPTIMIZATION_SATURATED — {detail}",
+            workload=workload,
+        )
+        append_attempt_log(
+            art,
+            {
+                "attempt": attempt,
+                "accepted": False,
+                "kept": True,
+                "verdict": "optimization_saturated",
+                "reason": detail,
+                "saturation": payload or {},
+            },
+        )
+        clear_attempt_checkpoint(art)
+        return True, detail
+
+    reject_msg = (
+        f"OPTIMIZATION_SATURATED not honored: {detail}. Continue optimizing."
+    )
+    if worker is not None:
+        worker.pending.push(reject_msg)
+        worker.compact_between_cycles()
+        worker.save_checkpoint()
+    _record_failure(
+        art,
+        attempt=attempt,
+        hypothesis=None,
+        reason=reject_msg,
+        verdict="saturation_floors_not_met",
+    )
+    return False, detail
 
 
 def _read_json(path) -> dict[str, Any]:
@@ -224,8 +296,11 @@ def _run_agent_substage(
     else:
         max_turns = resolve_optimization_max_turns(pipeline_config, "patch")
 
+    from accel_pipeline.models import resolve_stage_provider
+
+    stage_provider = resolve_stage_provider(stage, model_config)
     backend = create_agent_backend(
-        provider=model_config.provider,
+        provider=stage_provider,
         pipeline_config=pipeline_config,
         query=query,
         stage=stage,
@@ -236,8 +311,12 @@ def _run_agent_substage(
     )
 
     instructions = prompt
-    if model_config.provider != "cursor":
+    if stage_provider not in {"cursor", "codex_exec"}:
         instructions = f"{prompt.rstrip()}\n\n{tool_usage_instructions(stage)}"
+    elif stage_provider == "codex_exec":
+        codex_doc = pipeline_config.pipeline_root / "prompts" / "shared" / "codex_tooling.md"
+        if codex_doc.is_file() and "codex_tooling.md" not in instructions:
+            instructions = f"{prompt.rstrip()}\n\n{codex_doc.read_text(encoding='utf-8')}"
 
     request = StageRunRequest(
         stage=stage,
@@ -256,6 +335,19 @@ def _two_phase_optimization_enabled(workload: dict[str, Any]) -> bool:
     if opt.get("two_phase_hypothesis_patch") is False:
         return False
     return True
+
+
+def _saturation_from_text(final_text: str, hypothesis: dict[str, Any] | None = None) -> UnifiedAttemptResult | None:
+    payload = parse_optimization_saturated(final_text)
+    if payload is None:
+        return None
+    return UnifiedAttemptResult(
+        status="saturated",
+        hypothesis=hypothesis or _parse_hypothesis_json(final_text),
+        reason=str(payload.get("reason") or "optimization_saturated"),
+        final_text=final_text,
+        saturation=payload,
+    )
 
 
 def _run_hypothesis_phase(
@@ -283,6 +375,9 @@ def _run_hypothesis_phase(
     final_text = result.final_text or ""
     if result.status != "finished":
         return UnifiedAttemptResult(status="failed", reason=result.error or result.status, final_text=final_text)
+    saturated = _saturation_from_text(final_text)
+    if saturated is not None:
+        return saturated
     hypothesis = _parse_hypothesis_json(final_text)
     if HYPOTHESIS_COMPLETE not in final_text:
         return UnifiedAttemptResult(
@@ -328,6 +423,9 @@ def _run_patch_phase(
     final_text = result.final_text or ""
     if result.status != "finished":
         return UnifiedAttemptResult(status="failed", reason=result.error or result.status, final_text=final_text)
+    saturated = _saturation_from_text(final_text, hypothesis=hypothesis)
+    if saturated is not None:
+        return saturated
     cannot = _parse_cannot_test(final_text)
     if cannot:
         return UnifiedAttemptResult(status="cannot_test", reason=cannot, final_text=final_text)
@@ -442,6 +540,10 @@ def _run_unified_optimization_attempt(
         )
     if result.status != "finished":
         return UnifiedAttemptResult(status="failed", reason=result.error or result.status, final_text=final_text)
+
+    saturated = _saturation_from_text(final_text)
+    if saturated is not None:
+        return saturated
 
     cannot = _parse_cannot_test(final_text)
     if cannot:
@@ -629,6 +731,10 @@ def _record_failure(
     reason: str,
     improvement_pct: float | None = None,
     candidate_metrics: dict[str, Any] | None = None,
+    repo_root: Path | None = None,
+    query: int | None = None,
+    workload: dict[str, Any] | None = None,
+    verdict: str | None = None,
 ) -> None:
     entry: dict[str, Any] = {
         "attempt": attempt,
@@ -641,7 +747,19 @@ def _record_failure(
     }
     if candidate_metrics:
         entry["candidate_metrics"] = candidate_metrics
+    if verdict:
+        entry["verdict"] = verdict
     append_attempt_log(art, entry)
+    if repo_root is not None and query is not None and verdict:
+        maybe_record_reject_trap(
+            repo_root,
+            query=query,
+            workload=workload,
+            hypothesis=hypothesis,
+            verdict=verdict,
+            reason=reason,
+            improvement_pct=improvement_pct,
+        )
 
 
 def run_optimization_iteration(
@@ -689,8 +807,24 @@ def run_optimization_iteration(
             f"optimization: preflight build failed — fix tree or restore checkpoint:\n{(preflight_out or '')[-2000:]}"
         )
 
+    from accel_pipeline.aux_write_freqs import ensure_attempt_write_frequencies
+
+    locked_freqs = ensure_attempt_write_frequencies(
+        art,
+        workload,
+        optimization_iter=optimization_iter,
+        attempt=0,
+    )
     print(
-        "[pipeline] measuring optimization baseline (aux: read-only quick sweep, score=read_only_query_speedup)",
+        f"[pipeline] optimization write frequencies (baseline attempt 0, iter {optimization_iter}): "
+        f"{locked_freqs}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    print(
+        "[pipeline] measuring optimization baseline (aux: 0% + sampled write mixes, "
+        "score=dual_axis_weighted read^0.75*write_mix^0.25)",
         file=sys.stderr,
         flush=True,
     )
@@ -748,6 +882,18 @@ def run_optimization_iteration(
             )
 
         attempt_id = f"iter{optimization_iter}_a{attempt}"
+        locked_freqs = ensure_attempt_write_frequencies(
+            art,
+            workload,
+            optimization_iter=optimization_iter,
+            attempt=attempt,
+        )
+        print(
+            f"[pipeline] optimization write frequencies (iter {optimization_iter} attempt {attempt}): "
+            f"{locked_freqs}",
+            file=sys.stderr,
+            flush=True,
+        )
         begin_attempt_checkpoint(
             pipeline_config,
             workload,
@@ -770,6 +916,33 @@ def run_optimization_iteration(
             save_attempt_state(art, {"attempt": attempt, "phase": "worker", "status": cycle.status})
             last_result = cycle
             hypothesis = cycle.hypothesis
+
+            if cycle.status == "saturated":
+                honored, detail = _try_honor_saturation(
+                    pipeline_config=pipeline_config,
+                    workload=workload,
+                    query=query,
+                    art=art,
+                    optimization_iter=optimization_iter,
+                    attempt=attempt,
+                    payload=cycle.saturation,
+                    worker=worker,
+                )
+                if honored:
+                    print(
+                        f"[pipeline] OPTIMIZATION_SATURATED honored — {detail}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    break
+                # Rejected claim must not look like iteration-level stop.
+                cycle.status = "failed"
+                cycle.reason = detail
+                last_result = cycle
+                consecutive_fails += 1
+                if consecutive_fails >= consecutive_fail_stop:
+                    break
+                continue
 
             if cycle.status == "cannot_test":
                 _revert_and_rebuild(pipeline_config, workload, query)
@@ -937,6 +1110,10 @@ def run_optimization_iteration(
                     reason=outcome.reason,
                     improvement_pct=outcome.improvement_pct,
                     candidate_metrics=candidate.median_metrics,
+                    repo_root=pipeline_config.repo_root,
+                    query=query,
+                    workload=workload,
+                    verdict=outcome.verdict,
                 )
                 worker.compact_between_cycles()
                 worker.save_checkpoint()
@@ -995,6 +1172,50 @@ def run_optimization_iteration(
                 clear_attempt_checkpoint(art)
                 worker.compact_between_cycles()
                 worker.save_checkpoint()
+                continue
+
+            existing_best = load_best_valid_baseline(art)
+            existing_metrics = dict(existing_best.get("metrics") or {})
+            existing_score = score_metrics(
+                existing_metrics, is_aux=True, workload=workload
+            ) if existing_metrics else float(existing_best.get("score") or 0.0)
+            if existing_score <= 0:
+                existing_score = float(existing_best.get("score") or 0.0)
+            if existing_score > 0 and candidate.median_score + 1e-9 < existing_score:
+                # Local baseline can be noisy; never ratchet best_valid downward.
+                _revert_and_rebuild(pipeline_config, workload, query)
+                consecutive_fails += 1
+                worker.metrics.auth_rejects += 1
+                worker.pending.push(
+                    format_gate_delta(
+                        verdict="reject_regress",
+                        reason=(
+                            f"candidate_score={candidate.median_score:.4f} below "
+                            f"best_valid={existing_score:.4f}"
+                        ),
+                        hypothesis=hypothesis,
+                        improvement_pct=outcome.improvement_pct,
+                    )
+                )
+                append_attempt_log(
+                    art,
+                    {
+                        "attempt": attempt,
+                        "hypothesis": (hypothesis or {}).get("bottleneck", ""),
+                        "hypothesis_json": hypothesis,
+                        "accepted": False,
+                        "kept": False,
+                        "verdict": "reject_regress",
+                        "improvement_pct": outcome.improvement_pct,
+                        "metrics": candidate.median_metrics,
+                        "reason": "below_best_valid_baseline",
+                    },
+                )
+                clear_attempt_checkpoint(art)
+                worker.compact_between_cycles()
+                worker.save_checkpoint()
+                if consecutive_fails >= consecutive_fail_stop:
+                    break
                 continue
 
             advance_best_valid_baseline(
@@ -1081,6 +1302,32 @@ def run_optimization_iteration(
         save_attempt_state(art, {"attempt": attempt, "phase": "unified", "status": unified.status})
         last_result = unified
         hypothesis = unified.hypothesis
+
+        if unified.status == "saturated":
+            honored, detail = _try_honor_saturation(
+                pipeline_config=pipeline_config,
+                workload=workload,
+                query=query,
+                art=art,
+                optimization_iter=optimization_iter,
+                attempt=attempt,
+                payload=unified.saturation,
+                worker=None,
+            )
+            if honored:
+                print(
+                    f"[pipeline] OPTIMIZATION_SATURATED honored — {detail}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                break
+            unified.status = "failed"
+            unified.reason = detail
+            last_result = unified
+            consecutive_fails += 1
+            if consecutive_fails >= consecutive_fail_stop:
+                break
+            continue
 
         if unified.status == "cannot_test":
             _revert_and_rebuild(pipeline_config, workload, query)
@@ -1235,6 +1482,10 @@ def run_optimization_iteration(
                 reason=outcome.reason,
                 improvement_pct=outcome.improvement_pct,
                 candidate_metrics=candidate.median_metrics,
+                repo_root=pipeline_config.repo_root,
+                query=query,
+                workload=workload,
+                verdict=outcome.verdict,
             )
             if consecutive_fails >= consecutive_fail_stop:
                 break

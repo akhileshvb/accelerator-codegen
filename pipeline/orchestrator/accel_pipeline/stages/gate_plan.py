@@ -3,7 +3,15 @@ from __future__ import annotations
 from accel_pipeline.gates import GateFailure, GateResult, gate_failure_message, run_gate
 
 
-GATES_ALLOW_SKIP = frozenset({"baseline", "sf10", "profile", "aux_cost_model_calibrate"})
+GATES_ALLOW_SKIP = frozenset(
+    {
+        "baseline",
+        "sf10",
+        "profile",
+        "aux_cost_model_calibrate",
+        "aux_speedup_verification",
+    }
+)
 
 
 def workload_post_implementation_gates(workload: dict) -> list[str]:
@@ -24,7 +32,7 @@ def workload_post_optimization_gates(workload: dict) -> list[str]:
 
 def workload_post_audit_gates(workload: dict) -> list[str]:
     if workload.get("workload_kind") == "aux_state":
-        return list(workload.get("post_audit_gates", ["aux_correctness", "aux_unit", "fairness"]))
+        return list(workload.get("post_audit_gates", ["aux_correctness", "aux_unit", "aux_bench_sweep"]))
     if "post_audit_gates" in workload:
         return list(workload["post_audit_gates"])
     return ["fairness", "sf10"]

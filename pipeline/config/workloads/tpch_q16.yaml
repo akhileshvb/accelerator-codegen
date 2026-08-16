@@ -1,0 +1,47 @@
+benchmark_name: tpch
+query_number: 16
+query_id: "16"
+function_name: accel_tpch_q16
+create_fn: CreateTpchQ16FunctionSet
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/16.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: brand
+    type: VARCHAR
+  - name: type_pattern
+    type: VARCHAR
+  - name: size1
+    type: INTEGER
+  - name: size2
+    type: INTEGER
+  - name: size3
+    type: INTEGER
+  - name: size4
+    type: INTEGER
+  - name: size5
+    type: INTEGER
+  - name: size6
+    type: INTEGER
+  - name: size7
+    type: INTEGER
+  - name: size8
+    type: INTEGER
+
+reference_accelerators: [11, 14, 17]
+
+output_schema:
+  - name: p_brand
+    type: VARCHAR
+  - name: p_type
+    type: VARCHAR
+  - name: p_size
+    type: INTEGER
+  - name: supplier_cnt
+    type: BIGINT
+
+tables:
+  - part
+  - partsupp
+  - supplier

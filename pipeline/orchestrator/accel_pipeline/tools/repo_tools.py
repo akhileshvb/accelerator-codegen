@@ -73,7 +73,7 @@ def make_repo_tools(ctx: ToolContext):
             )
         lines = raw.decode("utf-8").splitlines()
         default_limit = 250 if ctx.stage in ("implementation", "optimization", "crash_debug") else 100
-        if ctx.stage in ("optimization_analysis", "optimization_patch", "optimization_unified"):
+        if ctx.stage in ("optimization_unified", "optimization_unified_patch", "optimization_worker", "optimization_fix"):
             default_limit = 600
         if not offset and not limit:
             limit = default_limit

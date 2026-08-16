@@ -17,6 +17,11 @@ from accel_pipeline.kernel_hot_path_review import (
     format_kernel_review_for_prompt,
 )
 from accel_pipeline.optimization_evidence import extract_bottleneck_evidence
+from accel_pipeline.negative_memory import (
+    format_negative_memory_markdown,
+    load_negative_memory,
+    load_negative_memory_guidance,
+)
 from accel_pipeline.paths import load_query_analysis, query_artifacts_dir
 
 RUNTIME_MD = "optimization_runtime.md"
@@ -177,6 +182,221 @@ def build_runtime_state(
     kernel_path = pipeline_config.repo_root / edit_paths["primary_cpp"]
     kernel_review = analyze_kernel_source(kernel_path)
 
+    is_aux = workload.get("workload_kind") == "aux_state"
+    if is_aux:
+        from accel_pipeline.aux_bench import load_optimization_state
+        from accel_pipeline.aux_profile import build_aux_profile_digest
+        from accel_pipeline.optimization_checkpoint import load_best_valid_baseline
+
+        aux_digest = build_aux_profile_digest(
+            art,
+            repo_root=pipeline_config.repo_root,
+            editable_rel_paths=[p for p in edit_paths.get("all_paths") or [] if p],
+        )
+        aux_profile = dict(aux_digest.get("profile_summary") or {})
+        scoreboard = dict(aux_digest.get("scoreboard") or {})
+        freshness = dict(aux_digest.get("freshness") or {})
+        best_valid = load_best_valid_baseline(art)
+        aux_opt = load_optimization_state(pipeline_config.repo_root, query, workload) or {}
+        fair = _read_json(art / "aux_bench_summary.json")
+        best_read = float(
+            best_valid.get("score")
+            or (aux_opt.get("best_summary") or {}).get("read_only_query_speedup")
+            or fair.get("read_only_query_speedup")
+            or aux_profile.get("read_only_query_speedup")
+            or 0.0
+        )
+        last_read = float(aux_profile.get("read_only_query_speedup") or best_read or 0.0)
+        diag = dict(aux_profile.get("store_diagnostics") or {})
+        phases = dict(aux_profile.get("profile_phases_us") or {})
+        signals = list(aux_profile.get("profile_signals") or [])
+        if not signals:
+            signals = ["call MCP run_profile / run_quick_benchmark to refresh aux metrics"]
+        best_metrics = dict(best_valid.get("metrics") or {})
+        best_by_freq = dict(best_metrics.get("by_write_frequency_pct") or {})
+        fair_by_freq = dict(fair.get("by_write_frequency_pct") or {})
+        write_row = (
+            best_by_freq.get("10")
+            or fair_by_freq.get("10")
+            or best_by_freq.get("1")
+            or fair_by_freq.get("1")
+            or {}
+        )
+        write_mix = float(
+            best_metrics.get("write_mix_workload_speedup")
+            or write_row.get("workload_speedup")
+            or 0.0
+        )
+        write_mix_pct = int(
+            best_metrics.get("write_mix_pct")
+            or write_row.get("write_frequency_pct")
+            or (10 if write_mix > 0 else 0)
+        )
+        evidence = {
+            "tiers": [
+                {
+                    "tier": "aux_read_path",
+                    "signals": [
+                        {"metric": k, "value": v, "context": "store_diagnostics"}
+                        for k, v in diag.items()
+                    ][:8],
+                    "relevant_phases_us": phases,
+                }
+            ]
+        }
+        if write_mix_pct > 0:
+            evidence["tiers"].insert(
+                0,
+                {
+                    "tier": "aux_write_maintenance",
+                    "signals": [
+                        {
+                            "metric": "write_mix_workload_speedup",
+                            "value": write_mix,
+                            "context": f"{write_mix_pct}% write quick-bench / fair sweep",
+                        },
+                        {
+                            "metric": "guidance",
+                            "value": (
+                                "Prefer ApplyDelta/partition-local maintenance; "
+                                "RebuildAll-per-point-write is a cliff"
+                            ),
+                            "context": "dual_axis",
+                        },
+                    ],
+                },
+            )
+        if aux_profile.get("custom_profile_events"):
+            evidence["tiers"].append(
+                {
+                    "tier": "custom_instrumentation",
+                    "signals": [
+                        {
+                            "metric": "custom_profile_events",
+                            "value": len(aux_profile["custom_profile_events"]),
+                            "context": "ACCEL_CUSTOM_PROFILE lines",
+                        }
+                    ],
+                }
+            )
+        dual_score = float(scoreboard.get("best_valid_score") or 0.0)
+        focus = [
+            f"Accept score = read^0.75 * write_mix^0.25"
+            + (f" (best_valid={dual_score:.3f})" if dual_score > 0 else "")
+            + f"; read_only best={best_read:.3f}x; "
+            f"{write_mix_pct or 10}% write-mix"
+            + (f"={write_mix:.2f}x" if write_mix > 0 else " (measure via quick bench)."),
+            "Cheap incremental maintenance is required — Prefer ApplyDelta / touched partitions "
+            "over RebuildAll on every point write. Raising write-mix raises the accept score.",
+            "Designs must scale with SF (bind-time row estimates; no SF1 hardcoding).",
+            "Measure-first: run_profile on CURRENT tree; cite phase_breakdown + 0% and 10% metrics.",
+        ]
+        if write_mix > 0 and write_mix < 1.0 and best_read >= 5.0:
+            focus.insert(
+                0,
+                f"PRIORITY: write-mix cliff ({write_mix_pct}% workload={write_mix:.2f}x ≪ 1×) while "
+                f"read is already strong ({best_read:.1f}x) — hypothesize maintenance "
+                f"(ApplyDelta / local rebuild), not further hit-path micro-opts.",
+            )
+        if float(diag.get("accel_hit_median_us") or 0) > 0:
+            focus.append(
+                f"Hit path currently {float(diag['accel_hit_median_us']):.0f}µs @ "
+                f"hit_rate={float(diag.get('accel_hit_rate') or 0):.2f}."
+            )
+        if aux_profile.get("dominant_phase"):
+            focus.append(
+                f"Dominant timed phase: {aux_profile.get('dominant_phase')} "
+                f"@ {float(aux_profile.get('dominant_phase_us') or 0):.1f}µs."
+            )
+        lacking = []
+        if freshness.get("stale"):
+            for reason in list(freshness.get("reasons") or [])[:3]:
+                lacking.append(f"STALE PROFILE: {reason}")
+        fair_ro = float(fair.get("read_only_query_speedup") or 0.0)
+        if fair_ro > 0 and last_read + 0.05 < fair_ro:
+            lacking.append(
+                f"Quick/current read_only {last_read:.3f}x is below fair-sweep best "
+                f"{fair_ro:.3f}x — restore best_kernel before chasing micro-opts."
+            )
+        if write_mix > 0 and write_mix < 1.0:
+            lacking.append(
+                f"WRITE-MIX CLIFF: {write_mix_pct}% workload_speedup={write_mix:.2f}x — "
+                "incremental maintenance too expensive (likely full rebuild per write). "
+                "Attack ApplyDelta / partition-local paths before more read micro-opts."
+            )
+        if not (aux_profile.get("phase_breakdown") or []):
+            lacking.append(
+                "No split phase timers yet — add ACCEL_CUSTOM_PROFILE phase+us+counts, "
+                "then run_profile before hypothesizing."
+            )
+        lacking.append(
+            "Expect large gains on BOTH axes when aux is valid; micro-shuffles that move "
+            "<5% on read while leaving a write cliff are the wrong tier."
+        )
+        return {
+            "optimization_iter": optimization_iter,
+            "episode": episode,
+            "artifact_namespace": str(
+                workload.get("artifact_namespace", workload.get("benchmark_name", "tpch"))
+            ),
+            "query": query,
+            "workload_kind": "aux_state",
+            "best_speedup_median": best_read,
+            "last_speedup_median": last_read,
+            "speedup_median": last_read,
+            "read_only_query_speedup": last_read,
+            "beats_duckdb": last_read > 1.0,
+            "regressed_vs_best": best_read > 0 and last_read + 0.01 < best_read,
+            "scoreboard": scoreboard,
+            "freshness": freshness,
+            "phase_breakdown": aux_profile.get("phase_breakdown") or [],
+            "work_counters_mean": aux_profile.get("work_counters_mean") or {},
+            "residual_vs_hit_us": aux_profile.get("residual_vs_hit_us"),
+            "dominant_phase": aux_profile.get("dominant_phase"),
+            "dominant_phase_us": aux_profile.get("dominant_phase_us"),
+            "profile_counters": aux_profile.get("counters") or {},
+            "profile_phases_us": phases,
+            "profile_guidance": [f"- {s}" for s in signals],
+            "profile_signals": signals,
+            "investigation_questions": [
+                "Where does accel_hit_median_us go (decode vs scan vs materialize vs join)?",
+                "Is StageMaintenance RebuildAll-only, or is ApplyDelta / partition-local used for point writes?",
+                "What dominates 10% write-mix time: rebuild, delta apply, or cold build amortized?",
+                "Can partition layout / encoding cut partitions_read or state_bytes_read at SF20+?",
+            ],
+            "bottleneck_evidence": evidence,
+            "suggested_focus": focus[:4],
+            "kernel_hot_path_review": kernel_review,
+            "kernel_hot_path_guidance": format_kernel_review_for_prompt(kernel_review),
+            "lacking": lacking[:5],
+            "findings": [],
+            "recent_iterations": (aux_opt.get("history") or [])[-2:],
+            "ab_trials": load_ab_trials(art)[-5:],
+            "episode_summaries": load_episode_log(art, limit=5),
+            "playbook_techniques": load_playbook_techniques(art, limit=8),
+            "negative_memory": load_negative_memory(pipeline_config.repo_root, limit=8),
+            "negative_memory_guidance": load_negative_memory_guidance(pipeline_config.repo_root),
+            "optimization_workflow_compact": load_optimization_workflow_compact(
+                pipeline_config.repo_root
+            ),
+            "kernel_paths": {
+                "header": edit_paths["header"],
+                "kernel": edit_paths["primary_cpp"],
+                "package": edit_paths["secondary_cpp"],
+                "fused_scan": None,
+                "cost_model": paths.get("cost_model_config"),
+                "base_kernel_readonly": edit_paths.get("base_kernel_path"),
+            },
+            "bench_target": paths.get("aux_bench_target") or paths["bench_target"],
+            "dataset_db": paths["dataset_db"],
+            "db_env_var": paths["db_env_var"],
+            "store_diagnostics": diag,
+            "fair_sweep_read_only": fair_ro,
+            "write_mix_pct": write_mix_pct,
+            "write_mix_workload_speedup": write_mix,
+            "aux_profile_digest": aux_digest,
+        }
+
     diagnosis = build_optimization_diagnosis(
         baseline,
         profile,
@@ -216,6 +436,8 @@ def build_runtime_state(
         "ab_trials": load_ab_trials(art)[-5:],
         "episode_summaries": load_episode_log(art, limit=5),
         "playbook_techniques": load_playbook_techniques(art, limit=8),
+        "negative_memory": load_negative_memory(pipeline_config.repo_root, limit=8),
+        "negative_memory_guidance": load_negative_memory_guidance(pipeline_config.repo_root),
         "optimization_workflow_compact": load_optimization_workflow_compact(pipeline_config.repo_root),
         "kernel_paths": {
             "header": edit_paths["header"],
@@ -232,23 +454,93 @@ def build_runtime_state(
 
 
 def format_runtime_markdown(state: dict[str, Any]) -> str:
+    is_aux = state.get("workload_kind") == "aux_state"
+    score_label = "read_only_query_speedup" if is_aux else "speedup_median"
+    board = state.get("scoreboard") or {}
+    metric_name = str(board.get("score_metric") or (
+        "dual_axis_weighted(read^0.75 * write_mix^0.25)" if is_aux else "speedup_median"
+    ))
     lines = [
         f"# Optimization runtime (iter {state.get('optimization_iter')}, episode {state.get('episode')})",
         "",
-        "## Goals",
-        f"- best_speedup_median: **{float(state.get('best_speedup_median') or 0):.3f}x**",
-        f"- last_speedup_median: **{float(state.get('last_speedup_median') or 0):.3f}x**",
-        f"- last_gate speedup: **{float(state.get('speedup_median') or 0):.3f}x**",
+        "## Scoreboard (stable — A/B compare against best_valid only)",
+        f"- score_metric: `{metric_name}`",
+        f"- best_{score_label}: **{float(state.get('best_speedup_median') or 0):.3f}x**",
+        f"- last_{score_label}: **{float(state.get('last_speedup_median') or 0):.3f}x**",
+        f"- last_gate {score_label}: **{float(state.get('speedup_median') or 0):.3f}x**",
     ]
+    if board.get("best_valid_score") is not None:
+        lines.append(
+            f"- scoreboard.best_valid_score: **{float(board['best_valid_score']):.3f}x** "
+            f"(attempt={board.get('best_valid_attempt_id') or 'n/a'}; "
+            f"hit_us={board.get('best_valid_hit_us')})"
+        )
+    if board.get("improvement_pct_vs_best_valid") is not None:
+        lines.append(
+            f"- last vs best_valid: **{float(board['improvement_pct_vs_best_valid']):+.2f}%**"
+        )
+    if is_aux and state.get("fair_sweep_read_only"):
+        lines.append(
+            f"- fair_sweep_read_only: **{float(state['fair_sweep_read_only']):.3f}x** "
+            "(SF1 fair reference — do not confuse with A/B keep/regress target)"
+        )
+    if is_aux and state.get("write_mix_pct"):
+        wm = float(state.get("write_mix_workload_speedup") or 0.0)
+        lines.append(
+            f"- write_mix ({int(state['write_mix_pct'])}%): **{wm:.3f}x** workload "
+            "(feeds dual-axis accept score as write_mix^0.25)"
+        )
+        if wm > 0 and wm < 1.0:
+            lines.append(
+                "- **WRITE-MIX CLIFF** — prefer ApplyDelta / local rebuilds; do not spend the "
+                "attempt on tiny read micro-opts while this stays ≪1×."
+            )
+    lines.append(
+        "- Early stop: be aggressive first; if stuck with no real dual-axis headroom left "
+        "(query-dependent — no target ×), yield `OPTIMIZATION_SATURATED`."
+    )
     if state.get("regressed_vs_best"):
         lines.append("- **REGRESSION vs best** — workspace should be on restored best snapshot.")
+    freshness = state.get("freshness") or {}
+    if freshness:
+        lines.append("")
+        lines.append("## Profile freshness")
+        lines.append(f"- stale: **{bool(freshness.get('stale'))}**")
+        for reason in list(freshness.get("reasons") or [])[:4]:
+            lines.append(f"- {reason}")
     lines.append("")
     lines.append("## Profile signals")
     guidance = state.get("profile_guidance") or []
     if guidance:
         lines.extend(guidance)
     else:
-        lines.append("- (no profile data yet — run `run_quick_benchmark` with profile after edits)")
+        lines.append("- (no profile data yet — run `run_quick_benchmark` / `run_profile`)")
+    phase_rows = state.get("phase_breakdown") or []
+    if phase_rows:
+        lines.append("")
+        lines.append("## Phase breakdown (custom timers)")
+        lines.append("| phase | mean_us | p50_us | n | counts_mean |")
+        lines.append("|-------|---------|--------|---|-------------|")
+        for row in phase_rows[:12]:
+            counts = row.get("counts_mean") or {}
+            count_s = ",".join(f"{k}={v}" for k, v in list(counts.items())[:4]) or "-"
+            lines.append(
+                f"| {row.get('phase')} | {row.get('mean_us')} | {row.get('p50_us')} "
+                f"| {row.get('n')} | {count_s} |"
+            )
+        if state.get("residual_vs_hit_us") is not None:
+            lines.append(f"- residual_vs_hit_us: {state.get('residual_vs_hit_us')}")
+    work = state.get("work_counters_mean") or {}
+    if work:
+        lines.append("")
+        lines.append("## Work counters (mean)")
+        for key, value in list(work.items())[:10]:
+            lines.append(f"- `{key}={value}`")
+    if is_aux and state.get("store_diagnostics"):
+        lines.append("")
+        lines.append("## Store diagnostics")
+        for key, value in dict(state["store_diagnostics"]).items():
+            lines.append(f"- `{key}={value}`")
     questions = state.get("investigation_questions") or []
     if questions:
         lines.append("")
@@ -298,7 +590,7 @@ def format_runtime_markdown(state: dict[str, Any]) -> str:
         lines.append("## Gaps vs goal")
         for item in state["lacking"]:
             lines.append(f"- {item}")
-    if state.get("recent_iterations"):
+    if state.get("recent_iterations") and not is_aux:
         lines.append("")
         lines.append("## Recent gate iterations")
         for row in state["recent_iterations"]:
@@ -331,6 +623,14 @@ def format_runtime_markdown(state: dict[str, Any]) -> str:
             lines.append(
                 f"- iter {row.get('iteration', '?')} `{technique_id}` ({verdict}{delta_text}{profile_text})"
             )
+    neg_lines = format_negative_memory_markdown(
+        list(state.get("negative_memory") or []),
+        guidance=str(state.get("negative_memory_guidance") or ""),
+        limit=8,
+    )
+    if neg_lines:
+        lines.append("")
+        lines.extend(neg_lines)
     base_kernel = str(state.get("optimization_workflow_compact") or "").strip()
     if base_kernel:
         lines.append("")
@@ -344,6 +644,10 @@ def format_runtime_markdown(state: dict[str, Any]) -> str:
     lines.append(
         "- Size structures from bind-time `row_estimate` / table row counts — not hardcoded profile counters."
     )
+    if is_aux:
+        lines.append(
+            "- Custom profiling: getenv(`ACCEL_AUX_CUSTOM_PROFILE`) + `ACCEL_CUSTOM_PROFILE {json}` lines are allowed; no-op when unset."
+        )
     pre_rows = int((state.get("profile_counters") or {}).get("pre_rows") or 0)
     if pre_rows:
         lines.append(f"- Current `pre_rows` (this run only): {pre_rows} — do not bake this constant into code.")

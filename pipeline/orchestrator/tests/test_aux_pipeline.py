@@ -376,9 +376,10 @@ class TestPromptRendering:
         impl = render_prompt(pipeline_config, "02_implementation.md", workload, 14, "implementation")
         assert "implementation contract" in impl.lower()
         assert "full analysis" in impl.lower()
-        opt = render_prompt(pipeline_config, "03_optimization.md", workload, 14, "optimization", optimization_iter=1)
-        assert "retrieval brief" in opt.lower()
-        assert "full analysis" in opt.lower()
+        opt = render_prompt(
+            pipeline_config, "03_optimization_unified.md", workload, 14, "optimization_unified", optimization_iter=1
+        )
+        assert "hard guidelines" in opt.lower() or "native base" in opt.lower()
         assert "{{analysis_json}}" not in opt
 
     def test_dry_run_all_aux_stages(self):
@@ -392,7 +393,7 @@ class TestPromptRendering:
         for stage, prompt in [
             ("analysis", "01_analysis.md"),
             ("implementation", "02_implementation.md"),
-            ("optimization", "03_optimization.md"),
+            ("optimization_unified", "03_optimization_unified.md"),
             ("audit", "04_audit.md"),
         ]:
             result = run_agent_stage(

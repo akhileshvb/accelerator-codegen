@@ -96,8 +96,11 @@ def run_agent_stage(
         optimization_iter=optimization_iter,
         revision=bool(analysis_revision_request),
     )
+    from accel_pipeline.models import resolve_stage_provider
+
+    stage_provider = resolve_stage_provider(stage, model_config)
     backend = create_agent_backend(
-        provider=model_config.provider,
+        provider=stage_provider,
         pipeline_config=pipeline_config,
         query=query,
         stage=stage,
@@ -107,8 +110,14 @@ def run_agent_stage(
     )
     max_turns = resolve_stage_max_turns(pipeline_config.stage_max_turns, stage)
     instructions = prompt
-    if model_config.provider != "cursor":
+    if stage_provider not in {"cursor", "codex_exec"}:
         instructions = f"{prompt.rstrip()}\n\n{tool_usage_instructions(stage)}"
+    elif stage_provider == "codex_exec":
+        from pathlib import Path
+
+        codex_doc = pipeline_config.pipeline_root / "prompts" / "shared" / "codex_tooling.md"
+        if codex_doc.is_file() and "codex_tooling.md" not in instructions:
+            instructions = f"{prompt.rstrip()}\n\n{codex_doc.read_text(encoding='utf-8')}"
 
     begin_agent_run(
         stage,

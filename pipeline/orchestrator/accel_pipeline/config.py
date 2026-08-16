@@ -16,6 +16,14 @@ class ModelConfig:
     presets: dict[str, str]
     stages: dict[str, str]
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    stage_providers: dict[str, str] = field(default_factory=dict)
+    codex_bin: str = "codex"
+    codex_config_path: str = "pipeline/.codex/config.toml"
+    codex_timeout_sec: int = 7200
+    codex_seed_max_chars: int = 120_000
+    codex_seed_preserve_recent_cycles: int = 2
+    # Headless codex exec cancels MCP tools without this (openai/codex#24135).
+    codex_bypass_approvals_and_sandbox: bool = True
 
 
 @dataclass
@@ -64,6 +72,8 @@ class PipelineConfig:
     optimization_hot_path_digest_max_chars: int = 25_000
     optimization_turn_delta_max_chars: int = 4_000
     optimization_checkpoint_file: str = "optimization_worker_checkpoint.json"
+    # Agent may declare OPTIMIZATION_SATURATED when stuck (no numeric floors).
+    optimization_early_stop: dict[str, Any] = field(default_factory=dict)
     crash_debug_max_rounds: int = 0
     crash_debug_safety_cap: int = 25
     stage_max_turns: dict[str, int] = field(default_factory=dict)
@@ -364,6 +374,7 @@ def load_pipeline_config(
         optimization_hot_path_digest_max_chars=int(opt.get("hot_path_digest_max_chars", 25_000)),
         optimization_turn_delta_max_chars=int(opt.get("turn_delta_max_chars", 4_000)),
         optimization_checkpoint_file=str(opt.get("checkpoint_file", "optimization_worker_checkpoint.json")),
+        optimization_early_stop=dict(opt.get("early_stop") or {}),
         crash_debug_max_rounds=int(crash_debug.get("max_rounds", 0)),
         crash_debug_safety_cap=int(crash_debug.get("safety_cap", 25)),
         stage_max_turns=dict(data.get("stage_max_turns", {})),
@@ -399,6 +410,15 @@ def load_model_config(path: Path | None = None, repo_root: Path | None = None) -
         presets=dict(data.get("presets", {})),
         stages=dict(data.get("stages", {})),
         openrouter_base_url=str(data.get("openrouter_base_url", "https://openrouter.ai/api/v1")),
+        stage_providers={str(k): str(v) for k, v in dict(data.get("stage_providers") or {}).items()},
+        codex_bin=str(data.get("codex_bin", "codex")),
+        codex_config_path=str(data.get("codex_config_path", "pipeline/.codex/config.toml")),
+        codex_timeout_sec=int(data.get("codex_timeout_sec", 7200)),
+        codex_seed_max_chars=int(data.get("codex_seed_max_chars", 120_000)),
+        codex_seed_preserve_recent_cycles=int(data.get("codex_seed_preserve_recent_cycles", 2)),
+        codex_bypass_approvals_and_sandbox=bool(
+            data.get("codex_bypass_approvals_and_sandbox", True)
+        ),
     )
 
 
@@ -432,9 +452,24 @@ def _merge_aux_defaults(workload: dict[str, Any], repo_root: Path) -> None:
         "post_audit_gates",
         "prompt_subdir",
         "max_structural_reanalysis",
+        "fairness",
     ):
         if key in aux_defaults:
-            workload[key] = aux_defaults[key]
+            if key == "fairness":
+                merged_fair = dict(workload.get("fairness") or {})
+                merged_fair.update(dict(aux_defaults["fairness"] or {}))
+                # Prefer aux_state search paths when provided.
+                if aux_defaults["fairness"].get("kernel_search_paths"):
+                    merged_fair["kernel_search_paths"] = list(
+                        aux_defaults["fairness"]["kernel_search_paths"]
+                    )
+                if "cardinality_constants" not in merged_fair and workload.get("fairness"):
+                    merged_fair["cardinality_constants"] = list(
+                        (workload.get("fairness") or {}).get("cardinality_constants") or []
+                    )
+                workload["fairness"] = merged_fair
+            else:
+                workload[key] = aux_defaults[key]
     if "speedup_verification" in aux_defaults:
         workload.setdefault("speedup_verification", dict(aux_defaults["speedup_verification"]))
 
@@ -616,6 +651,11 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
         optimization_checkpoint_file=str(
             opt.get("checkpoint_file", pipeline_config.optimization_checkpoint_file)
         ),
+        optimization_early_stop=(
+            dict(opt["early_stop"])
+            if isinstance(opt.get("early_stop"), dict)
+            else dict(pipeline_config.optimization_early_stop)
+        ),
         crash_debug_max_rounds=pipeline_config.crash_debug_max_rounds,
         crash_debug_safety_cap=pipeline_config.crash_debug_safety_cap,
         stage_max_turns=dict(pipeline_config.stage_max_turns),
@@ -704,6 +744,7 @@ def apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str
         optimization_hot_path_digest_max_chars=pipeline_config.optimization_hot_path_digest_max_chars,
         optimization_turn_delta_max_chars=pipeline_config.optimization_turn_delta_max_chars,
         optimization_checkpoint_file=pipeline_config.optimization_checkpoint_file,
+        optimization_early_stop=dict(pipeline_config.optimization_early_stop),
         crash_debug_max_rounds=pipeline_config.crash_debug_max_rounds,
         crash_debug_safety_cap=pipeline_config.crash_debug_safety_cap,
         stage_max_turns=stage_max_turns,
@@ -722,6 +763,13 @@ def load_workload(name: str, repo_root: Path | None = None) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"workload not found: {path}")
     data = _load_yaml(path)
+
+    if data.get("workload_kind") == "engine_backend":
+        data.setdefault("benchmark_name", "engine")
+        data.setdefault("artifact_namespace", f"engines/{data.get('engine_name', 'engine')}")
+        data.setdefault("display_name", str(data.get("engine_name", "engine")))
+        data.setdefault("prompt_subdir", "engine_backend")
+        return data
 
     benchmark_name = data.get("benchmark_name", "tpch")
     try:

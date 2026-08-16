@@ -9,6 +9,9 @@ Use `{{query_number}}` / `q{{query_number}}` placeholders. Derive exact paths in
 | Finalize payload | `src/generated/tpch/q{{query_number}}/aux/finalize.cpp` |
 | Cost model JSON | `config/q{{query_number}}_aux_cost_model.json` |
 | Tests | `tests/single-threaded/test_tpch_q{{query_number}}_aux.cpp`, `test_q{{query_number}}_*.cpp` |
+
+Unit smoke fixtures must follow `unit_test_contract.md` (SQL polarity). `aux_correctness` also runs SF1 DuckDB differential via `test_tpch_shared_differential`.
+
 | Write-freq benchmark | `benchmarks/tpch/single-threaded/benchmark_q{{query_number}}_aux.cpp` |
 | Cost calibration | `benchmarks/tpch/single-threaded/calibrate_q{{query_number}}_aux_cost_model.cpp` — **thin wrapper only** (see below) |
 | Multi-connection stress | `tests/aux_state/test_aux_multi_connection_stress.cpp` (gate `aux_multi_connection`) |

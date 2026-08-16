@@ -19,6 +19,8 @@ write_paths:
   - src/generated/tpch/**
   - tests/single-threaded/test_tpch_q*
   - tests/test_support/q*_manifest.hpp
+  - tests/test_support/cross_accel_helpers.cpp
+  - tests/test_support/cross_accel_helpers.hpp
   - benchmarks/tpch/**
 
 allowed_commands:

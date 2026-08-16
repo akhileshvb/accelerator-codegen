@@ -83,3 +83,20 @@ def test_aux_workload_allows_cmake_edits() -> None:
     merged = apply_workload_overrides(pipeline_config, workload)
     assert "CMakeLists.txt" in merged.write_paths
     assert any("calibrate_q*_aux_cost_model.cpp" in p for p in merged.write_paths)
+    assert any("cross_accel_helpers.cpp" in p for p in merged.write_paths)
+    assert any(
+        "duckdb_aux_table_functions.cpp" in p for p in merged.write_paths
+    ), "agent must be able to register DuckDB SQL aux table functions"
+
+
+def test_aux_write_paths_allow_duckdb_table_function_registration() -> None:
+    from accel_pipeline.config import apply_workload_overrides
+    from accel_pipeline.tools.repo_tools import ToolContext, _is_writable
+
+    pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
+    workload = load_workload("tpch_q2_aux", REPO_ROOT)
+    merged = apply_workload_overrides(pipeline_config, workload)
+    ctx = ToolContext(pipeline_config=merged, query=2, stage="implementation")
+    target = REPO_ROOT / "src/stateful/duckdb/duckdb_aux_table_functions.cpp"
+    assert target.is_file()
+    assert _is_writable(ctx, target)

@@ -1,0 +1,35 @@
+workload_kind: engine_backend
+engine_name: duckdb
+artifact_namespace: engines/duckdb
+display_name: DuckDB
+prompt_subdir: engine_backend
+query_number: 0
+
+# From-scratch regen test workload: must not require reading sibling engines.
+engine_sdk_hints:
+  - "Sibling DuckDB tree: ../accelerator-codegen-duckdb (when present)"
+  - "include/accelerator_codegen/runtime/native_scan.hpp"
+
+optional_example_backends:
+  - postgres
+
+store_mode_candidates:
+  - typed_in_process
+
+target_paths:
+  scan_adapter_header: include/accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp
+  scan_adapter_source: src/runtime/duckdb/duckdb_scan_adapter.cpp
+  stateful_dir: include/accelerator_codegen/stateful/duckdb
+  stateful_src_dir: src/stateful/duckdb
+
+cmake:
+  collect_fn: accel_collect_stateful_sources
+  build_flag: ""
+
+post_implementation_gates:
+  - engine_build
+post_validation_gates:
+  - engine_build
+  - engine_scan_conformance
+
+allow_update_existing: true

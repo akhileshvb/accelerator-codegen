@@ -54,13 +54,48 @@ else
 fi
 
 set +e
-LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}=${DATASET_DB}" "${CTEST}" -R "${AUX_CTEST_SMOKE_REGEX}" --output-on-failure 2>&1)"
-RC=$?
+SMOKE_LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}=${DATASET_DB}" "${CTEST}" -R "${AUX_CTEST_SMOKE_REGEX}" --output-on-failure 2>&1)"
+SMOKE_RC=$?
 set -e
 
 STATUS="pass"
-if [[ ${RC} -ne 0 ]]; then
+REASON=""
+DIFF_LOG=""
+DIFF_RC=0
+LOG="${SMOKE_LOG}"
+
+if [[ ${SMOKE_RC} -ne 0 ]]; then
   STATUS="fail"
+  REASON="aux smoke unit test failed"
+else
+  # SF1 DuckDB reference SQL vs aux Execute (catalog seed binding).
+  # Catches predicate / eligibility bugs that synthetic fixtures can miss or invent wrongly.
+  if [[ "${BENCHMARK_NAME}" == "tpch" ]]; then
+    if ! ensure_cmake_target "${ROOT}" "${BUILD}" "test_tpch_shared_differential"; then
+      DIFF_LOG="$(cmake --build "${BUILD}" --target test_tpch_shared_differential -j"$(nproc)" 2>&1 | tail -60 || true)"
+    fi
+    if [[ ! -x "${BUILD}/test_tpch_shared_differential" ]]; then
+      STATUS="fail"
+      REASON="test_tpch_shared_differential missing after build"
+      LOG="${SMOKE_LOG}"$'\n'"${DIFF_LOG}"
+      DIFF_RC=1
+    elif [[ ! -f "${DATASET_DB}" ]]; then
+      STATUS="fail"
+      REASON="dataset db missing for SF1 differential: ${DATASET_DB}"
+      DIFF_RC=1
+      LOG="${SMOKE_LOG}"$'\n'"${REASON}"
+    else
+      set +e
+      DIFF_LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}=${DATASET_DB}" ./test_tpch_shared_differential "${DATASET_DB}" "${QUERY}" 2>&1)"
+      DIFF_RC=$?
+      set -e
+      LOG="${SMOKE_LOG}"$'\n'"${DIFF_LOG}"
+      if [[ ${DIFF_RC} -ne 0 ]]; then
+        STATUS="fail"
+        REASON="SF1 SQL-vs-aux differential failed"
+      fi
+    fi
+  fi
 fi
 
 python3 - <<PY
@@ -71,8 +106,11 @@ path.write_text(json.dumps({
     "query": int("${QUERY}"),
     "benchmark": "${BENCHMARK_NAME}",
     "status": "${STATUS}",
-    "exit_code": int("${RC}"),
-    "log_tail": """${LOG}"""[-4000:],
+    "exit_code": int("${SMOKE_RC}") if "${STATUS}" == "pass" or "${REASON}" == "aux smoke unit test failed" else int("${DIFF_RC}"),
+    "smoke_exit_code": int("${SMOKE_RC}"),
+    "differential_exit_code": int("${DIFF_RC}"),
+    "reason": """${REASON}""",
+    "log_tail": """${LOG}"""[-6000:],
 }, indent=2))
 print(path.read_text())
 PY

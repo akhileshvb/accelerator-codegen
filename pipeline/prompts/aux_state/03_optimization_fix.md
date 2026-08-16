@@ -2,6 +2,10 @@
 
 Your hypothesis patch failed **build** or **quick smoke correctness** (`ctest -R …_aux`). The failure report is in the **task message** below.
 
+{{hard_guidelines}}
+
+{{codex_tooling}}
+
 **Stay on the same hypothesis** — debug and fix; do not start a unrelated redesign.
 
 ## Task

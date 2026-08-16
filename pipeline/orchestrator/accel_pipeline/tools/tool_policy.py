@@ -42,33 +42,6 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "run_command",
         "request_structural_reanalysis",
     ],
-    "optimization": [
-        "read_file",
-        "grep_context",
-        "apply_patch",
-        "insert_lines",
-        "run_command",
-        "request_structural_reanalysis",
-    ],
-    "optimization_analysis": [
-        "grep_context",
-        "read_file",
-        "read_reference_files",
-        "file_info",
-        "request_structural_reanalysis",
-    ],
-    "optimization_patch": [
-        "grep_context",
-        "read_file",
-        "read_reference_files",
-        "write_file",
-        "apply_patch",
-        "insert_lines",
-        "run_command",
-        "file_info",
-        "list_dir",
-        "glob_files",
-    ],
     "optimization_unified": [
         "rip_grep",
         "ast_grep",
@@ -120,6 +93,7 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "run_quick_benchmark",
         "end_ab_trial",
         "request_structural_reanalysis",
+        "record_optimization_trap",
     ],
     "crash_debug": [
         "read_file",
@@ -134,22 +108,23 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "run_command",
     ],
     "audit": ["read_file", "grep_context", "search_repo", "list_dir", "glob_files", "file_info", "request_gate"],
+    "validation": ["read_file", "grep_context", "search_repo", "list_dir", "glob_files", "file_info", "request_gate"],
 }
 
 TOOL_USAGE_INSTRUCTIONS = """\
 ## Tooling
 
-Use ONLY the pipeline tools for this stage. Do not use built-in shell/edit tools.
+Use ONLY the pipeline tools for this stage. Do not use built-in shell/edit tools (unless running under Codex — see codex_tooling.md).
 
-- read_file: default first 100 lines; use offset/limit for more. numbered=true for patches. optimization_analysis/patch: default limit=600 for full implementation reads.
+- read_file: default first 100 lines; use offset/limit for more. numbered=true for patches. optimization reads: default limit=600 for full implementation reads.
 - grep_context: search one file with ±context — **prefer over read_file** on kernels/packages (after full read in optimization patch).
 - write_file: rewrite a whole editable file in one call when you have read it fully and the change is coordinated across many lines.
 - apply_patch: old_string must match exactly once — prefer **large hunks** (whole struct/function) over many one-line edits when you have just read the file.
 - insert_lines: for adding new blocks; avoid chaining many tiny insert_lines when write_file is safer.
-- run_command: build during optimization_patch only. After adding new CMake targets (aux test/bench), run `cmake -S . -B build-release` before `cmake --build ...` (compound forms are allowlisted).
-- Benchmarks and accept/reject are orchestrator-owned — do not expect benchmark tools.
-- optimization_analysis: read full implementation, hypothesize; optimization_patch / optimization_unified: read once, implement, then `HYPOTHESIS_PATCH_COMPLETE` for build → smoke → benchmark.
-- request_gate: audit stage only. Other gates run automatically after each stage.
+- run_command: allowlisted cmake/ctest. After adding new CMake targets (aux test/bench), run `cmake -S . -B build-release` before `cmake --build ...` (compound forms are allowlisted).
+- Benchmarks and accept/reject are orchestrator-owned — exploratory A/B tools are non-binding.
+- optimization_unified: hypothesize/implement then `HYPOTHESIS_PATCH_COMPLETE` for build → smoke → benchmark.
+- request_gate / run_correctness: under Codex MCP, implementation **must** call `run_correctness` (or `request_gate` with the workload correctness gate) and pass before finishing. Orchestrator still re-runs post-stage gates.
 """
 
 IMPLEMENTATION_TOOL_USAGE = """\
@@ -162,6 +137,7 @@ IMPLEMENTATION_TOOL_USAGE = """\
 - `grep_context`: **file path only** (not directories). Use `search_repo` / `glob_files` to find paths.
 - Do not `list_dir` repo root or re-glob for q14/q1 after bootstrap paths are listed.
 - After creating new `test_tpch_q*_aux.cpp` / `benchmark_q*_aux.cpp` / `calibrate_q*_aux_cost_model.cpp`, run `cmake -S . -B build-release` before building. Targets are usually auto-discovered; edit `CMakeLists.txt` only if configure still omits them.
+- **Before finishing:** build the aux smoke target + `test_tpch_shared_differential`, then run MCP `run_correctness` (or smoke ctest + SF1 differential) until it **passes**. Do not end on compile-only or smoke-only success.
 """
 
 OPTIMIZATION_PATCH_TOOL_USAGE = """\
@@ -188,11 +164,10 @@ OPTIMIZATION_UNIFIED_TOOL_USAGE = """\
 
 - **Editable sources are bootstrapped** in the user message (full contents, line numbers). Do not try to `read_file` — it is not available.
 - **Explore references with search:** use `rip_grep` (fast text+context) or `ast_grep` (structural C++ patterns) on other `src/generated/tpch/q*/aux/**` modules listed in the reference index.
-- **Ambitious redesigns welcome:** new aux-state layouts, partition strategies, encode/decode versions, maintenance modes — coordinate header + module + finalize + tests + cost model.
+- **Ambitious redesigns welcome:** new aux-state layouts, partition strategies, encode/decode versions, **incremental maintenance modes** (ApplyDelta / local rebuilds — not RebuildAll-per-write) — coordinate header + module + finalize + tests + cost model. Optimize **both** read hit latency and 10% write-mix health every attempt.
 - **Hypothesize → implement → hand off** in few turns (target ≤6 tool calls before `HYPOTHESIS_PATCH_COMPLETE`).
 - **Write big:** `write_file` per file for multi-region changes; large `apply_patch` hunks otherwise.
-- Orchestrator runs **build → quick correctness (ctest) → benchmark → accept/reject** after handoff.
-"""
+- Orchestrator runs **build → quick correctness (ctest) → 0%+sampled-write quick bench → accept/reject** after handoff."""
 
 OPTIMIZATION_WORKER_TOOL_USAGE = """\
 ## Optimization worker (Codex-like dev loop)
@@ -210,7 +185,7 @@ def tool_usage_instructions(stage: str) -> str:
     text = TOOL_USAGE_INSTRUCTIONS
     if stage == "implementation":
         text = f"{text.rstrip()}\n\n{IMPLEMENTATION_TOOL_USAGE}"
-    elif stage in ("optimization_patch", "optimization", "optimization_unified", "optimization_fix"):
+    elif stage in ("optimization_unified", "optimization", "optimization_fix"):
         text = f"{text.rstrip()}\n\n{OPTIMIZATION_PATCH_TOOL_USAGE}"
         if stage == "optimization_unified":
             text = f"{text.rstrip()}\n\n{OPTIMIZATION_UNIFIED_TOOL_USAGE}"
@@ -228,6 +203,12 @@ def tool_usage_instructions(stage: str) -> str:
                 "- `read_file` / `grep_context` allowed — use logs to locate the bug.\n"
                 "- `run_command`: rebuild and re-run the reproduce command until it passes.\n"
             )
+    elif stage == "optimization_worker":
+        text = f"{text.rstrip()}\n\n{OPTIMIZATION_PATCH_TOOL_USAGE}\n\n{OPTIMIZATION_WORKER_TOOL_USAGE}"
+    elif stage == "optimization_unified_hypothesis":
+        text = f"{TOOL_USAGE_INSTRUCTIONS.rstrip()}\n\n{OPTIMIZATION_HYPOTHESIS_TOOL_USAGE}"
+    elif stage == "optimization_unified_patch":
+        text = f"{TOOL_USAGE_INSTRUCTIONS.rstrip()}\n\n{OPTIMIZATION_PATCH_TOOL_USAGE}"
     return text
 
 
@@ -302,14 +283,40 @@ def build_tool_registry(
 
     begin_ab_trial = run_quick_benchmark = end_ab_trial = lambda *args, **kwargs: "ERROR: A/B tools unavailable"
     if stage in ("optimization", "optimization_worker") and workload_name:
+        from accel_pipeline.aux_write_freqs import attempt_from_env
+
         workload = load_workload(workload_name, pipeline_config.repo_root)
         ab_ctx = AbToolContext(
             pipeline_config=pipeline_config,
             query=query,
             workload=workload,
             optimization_iter=optimization_iter,
+            attempt=attempt_from_env(),
         )
         begin_ab_trial, run_quick_benchmark, end_ab_trial = make_ab_tools(ab_ctx)
+
+    def record_optimization_trap(trap: str, when: str = "", evidence: str = "") -> str:
+        from accel_pipeline.negative_memory import append_negative_memory
+        import json
+
+        wl = {}
+        if workload_name:
+            try:
+                wl = load_workload(workload_name, pipeline_config.repo_root)
+            except FileNotFoundError:
+                wl = {}
+        entry = append_negative_memory(
+            pipeline_config.repo_root,
+            trap=trap,
+            when=when,
+            evidence=evidence,
+            query=query,
+            workload_kind=str(wl.get("workload_kind") or "") or None,
+            source="agent",
+        )
+        if entry is None:
+            return json.dumps({"recorded": False, "reason": "duplicate_or_too_short"})
+        return json.dumps({"recorded": True, "entry": entry})
 
     return {
         "read_file": read_file,
@@ -328,6 +335,7 @@ def build_tool_registry(
         "end_ab_trial": end_ab_trial,
         "request_gate": request_gate,
         "request_structural_reanalysis": request_structural_reanalysis,
+        "record_optimization_trap": record_optimization_trap,
         "search_repo": search_repo,
         "rip_grep": rip_grep,
         "ast_grep": ast_grep,

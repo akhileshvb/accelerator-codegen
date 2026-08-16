@@ -33,12 +33,15 @@ def _implementation_user_message(
     return (
         "RESUME partial aux implementation: sources already exist on disk from a prior run. "
         "Do NOT rewrite module.hpp/module.cpp from scratch or explore AuxState.cmake unless fixing CMake registration.\n"
-        f"Registered CMake targets: {test_target}, {bench_target}, {calibrate_target}.\n"
+        f"Registered CMake targets: {test_target}, {bench_target}, {calibrate_target}, test_tpch_shared_differential.\n"
+        "Correctness requires smoke + SF1 SQL differential (see unit_test_contract.md).\n"
         "Use only these allowlisted run_command patterns:\n"
-        f"1. cmake --build build-release --target {test_target} {bench_target} -j$(nproc)\n"
+        f"1. cmake --build build-release --target {test_target} {bench_target} test_tpch_shared_differential -j$(nproc)\n"
         f"2. ctest --test-dir build-release -R tpch_q{q}_aux --output-on-failure\n"
-        "   (ctest must use --test-dir build-release; repo-root ctest finds no tests)\n"
-        "Fix compile/test failures with minimal apply_patch on generated aux files only."
+        f"3. ./build-release/test_tpch_shared_differential \"$ACCEL_TPCH_DB\" {q}\n"
+        "   (or MCP run_correctness / request_gate aux_correctness — preferred)\n"
+        "Fix compile/test failures with minimal apply_patch on generated aux files only. "
+        "Do not weaken unit fixtures to hide kernel bugs."
     )
 
 

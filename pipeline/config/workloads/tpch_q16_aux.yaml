@@ -1,0 +1,71 @@
+workload_kind: aux_state
+benchmark_name: tpch
+query_number: 16
+query_id: "16"
+accelerator_id: tpch_q16_aux
+base_function_name: accel_tpch_q16
+aux_function_name: accel_tpch_q16_aux
+
+requires_base_accelerator: true
+prerequisite_workload: tpch_q16
+prerequisite_min_stage: implementation
+reference_accelerators:
+  - src/generated/tpch/q11/aux/module.cpp
+  - src/generated/tpch/q14/aux/module.cpp
+  - src/generated/tpch/q17/aux/module.cpp
+
+allow_poor_fitness: false
+allow_unsuccessful_design: false
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/16.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: brand
+    type: VARCHAR
+  - name: type_pattern
+    type: VARCHAR
+  - name: size1
+    type: INTEGER
+  - name: size2
+    type: INTEGER
+  - name: size3
+    type: INTEGER
+  - name: size4
+    type: INTEGER
+  - name: size5
+    type: INTEGER
+  - name: size6
+    type: INTEGER
+  - name: size7
+    type: INTEGER
+  - name: size8
+    type: INTEGER
+
+dependent_tables:
+  - name: part
+    watched_columns: [p_partkey, p_brand, p_type, p_size]
+  - name: partsupp
+    watched_columns: [ps_partkey, ps_suppkey]
+  - name: supplier
+    watched_columns: [s_suppkey, s_comment]
+
+partitioning: {}   # analysis stage will propose grain (e.g. brand/type/size bands, partkey)
+
+output_schema:
+  - name: p_brand
+    type: VARCHAR
+  - name: p_type
+    type: VARCHAR
+  - name: p_size
+    type: INTEGER
+  - name: supplier_cnt
+    type: BIGINT
+
+cost_model_config: config/q16_aux_cost_model.json
+
+cmake:
+  query_num: 16
+  aux_state_module: accel_add_aux_state_query
+
+agent_boundary: prompts/aux_state/shared/agent_boundary.md

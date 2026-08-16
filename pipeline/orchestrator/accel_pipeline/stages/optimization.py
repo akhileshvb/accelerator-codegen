@@ -67,8 +67,28 @@ def run(
                         rebuild_workload_targets,
                         restore_best_kernel,
                     )
+                    from accel_pipeline.optimization_checkpoint import load_best_valid_baseline
 
-                    if iteration > 1 and has_best_kernel_snapshot(art):
+                    # Always start from the fair-sweep best_kernel when the working tree /
+                    # best_valid has drifted below that snapshot (noisy quick accepts).
+                    should_restore = False
+                    if has_best_kernel_snapshot(art):
+                        if iteration > 1:
+                            should_restore = True
+                        else:
+                            manifest_path = art / "best_kernel_snapshot" / "manifest.json"
+                            try:
+                                import json
+
+                                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                                fair_best = float(manifest.get("speedup_median") or 0.0)
+                            except (json.JSONDecodeError, OSError, TypeError, ValueError):
+                                fair_best = 0.0
+                            best_valid = load_best_valid_baseline(art)
+                            quick_best = float(best_valid.get("score") or 0.0)
+                            if fair_best > 0 and (quick_best <= 0 or quick_best + 0.05 < fair_best):
+                                should_restore = True
+                    if should_restore and has_best_kernel_snapshot(art):
                         manifest = restore_best_kernel(pipeline_config, workload, query)
                         if manifest is not None:
                             rebuild_workload_targets(pipeline_config, workload, query)
@@ -82,6 +102,10 @@ def run(
                                 workload=workload,
                             )
                             restored = True
+                            # Reset best_valid so the next measure re-seeds from restored tree.
+                            best_valid_path = art / "best_valid_baseline.json"
+                            if best_valid_path.is_file():
+                                best_valid_path.unlink()
 
             last_result = run_optimization_iteration(
                 pipeline_config=pipeline_config,
@@ -96,6 +120,16 @@ def run(
             )
             if dry_run:
                 continue
+
+            saturated = getattr(last_result, "status", None) == "saturated"
+            if saturated and skip_gates:
+                append_experiment_log(
+                    pipeline_config.repo_root,
+                    query,
+                    f"- iter {iteration}: agent declared OPTIMIZATION_SATURATED; skipping remaining iters",
+                    workload=workload,
+                )
+                break
 
             if skip_gates:
                 continue
@@ -159,6 +193,16 @@ def run(
                 no_improve_count += 1
 
             merge_playbook_proposal(pipeline_config.repo_root, query, workload=workload)
+
+            if saturated:
+                append_experiment_log(
+                    pipeline_config.repo_root,
+                    query,
+                    f"- iter {iteration}: OPTIMIZATION_SATURATED — ran end-of-iter gates, "
+                    "skipping remaining iterations",
+                    workload=workload,
+                )
+                break
 
             if no_improve_count >= no_improve_stop:
                 append_experiment_log(

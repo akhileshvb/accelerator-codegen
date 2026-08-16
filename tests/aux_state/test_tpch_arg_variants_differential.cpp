@@ -20,7 +20,7 @@ namespace aux_sweep = accelerator_codegen::benchmarks::aux_sweep;
 using catalog::duckdb::DuckdbRuntime;
 
 constexpr int kDefaultSamples = 8;
-constexpr int kQueries[] = {1, 3, 6, 9, 10, 11, 12, 14, 17, 18, 21};
+constexpr int kQueries[] = {1, 3, 6, 9, 10, 11, 12, 14, 16, 17, 18, 21};
 
 void Require(bool condition, const std::string &message) {
   if (!condition) {

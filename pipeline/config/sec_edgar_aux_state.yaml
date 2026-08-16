@@ -4,9 +4,14 @@ write_paths:
   - CMakeLists.txt
   - cmake/AuxState.cmake
   - src/generated/sec_edgar/q*/aux/**
+  - src/generated/catalog/**
+  - src/stateful/duckdb/duckdb_aux_table_functions.cpp
+  - include/accelerator_codegen/stateful/core/query_layouts.hpp
   - config/sec_edgar_q*_aux_cost_model.json
   - tests/single-threaded/test_sec_edgar_q*_*.cpp
   - tests/test_support/sec_edgar_q*_aux_helpers.hpp
+  - tests/test_support/cross_accel_helpers.cpp
+  - tests/test_support/cross_accel_helpers.hpp
   - benchmarks/sec_edgar/single-threaded/benchmark_q*_aux.cpp
   - benchmarks/sec_edgar/single-threaded/benchmark_q*_hybrid_eval.cpp
   - benchmarks/sec_edgar/single-threaded/calibrate_q*_aux_cost_model.cpp

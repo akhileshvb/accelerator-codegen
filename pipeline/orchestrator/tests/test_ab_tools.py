@@ -20,7 +20,7 @@ def test_parse_aux_benchmark_output_single_row():
     rows = parse_aux_benchmark_output(Q18_AUX_OUTPUT.splitlines()[0] + "\n" + Q18_AUX_OUTPUT.splitlines()[1])
     assert len(rows) == 1
     assert rows[0]["write_frequency_pct"] == 0
-    assert rows[0]["workload_speedup"] == 0.05
+    assert float(rows[0]["workload_speedup"]) == 0.05
 
 
 def test_aux_quick_metrics_uses_min_workload_across_points():
@@ -30,9 +30,13 @@ def test_aux_quick_metrics_uses_min_workload_across_points():
     assert metrics["mode"] == "aux_quick_sweep"
     assert metrics["write_frequency_points"] == 2
     assert metrics["composite_score"] == summary["composite_score"]
-    assert metrics["composite_workload_speedup"] == 0.05
+    assert float(metrics["composite_workload_speedup"]) == 0.05
     assert metrics["read_only_query_speedup"] == 4.7
-    assert metrics["speedup_median"] == 4.7
+    # Write mix uses the non-zero frequency (50%), not a hard-coded 10% key.
+    assert metrics["write_mix_pcts"] == [50]
+    assert abs(float(metrics["write_mix_workload_speedup"]) - 0.05) < 1e-9
+    expected = (4.7**0.75) * (0.05**0.25)
+    assert abs(metrics["speedup_median"] - expected) < 1e-6
     assert metrics["setup_full_build_ms"] == 9000.0
     assert metrics["optimization_signal"] is not None
 
@@ -42,18 +46,57 @@ def test_aux_quick_write_frequencies_reads_workload_sweep():
     assert _aux_quick_write_frequencies(workload) == [0, 10]
 
 
+def test_aux_quick_write_frequencies_samples_locked(tmp_path):
+    workload = {
+        "aux_bench_sweep_optimization": {
+            "write_frequencies": [0],
+            "write_mix_sample": {
+                "enabled": True,
+                "count": 2,
+                "choices": [5, 10, 25, 50],
+                "lock_per_attempt": True,
+                "seed": 7,
+            },
+        }
+    }
+    first = _aux_quick_write_frequencies(
+        workload, art_dir=tmp_path, optimization_iter=1, attempt=1
+    )
+    second = _aux_quick_write_frequencies(
+        workload, art_dir=tmp_path, optimization_iter=1, attempt=1
+    )
+    assert first[0] == 0
+    assert len(first) == 3
+    assert first == second
+    assert all(f in (0, 5, 10, 25, 50) for f in first)
+    third = _aux_quick_write_frequencies(
+        workload, art_dir=tmp_path, optimization_iter=1, attempt=2
+    )
+    # Fresh ensure isn't called here — resolve with new attempt samples+persists.
+    assert third[0] == 0
+    assert len(third) == 3
+
+
 def test_quick_benchmark_env_aux_uses_fast_settings():
     paths = {
         "db_env_var": "TPCH_SF1_DB",
         "dataset_db": "/data/tpch_sf1.duckdb",
         "aux_bench_suites": "lineitem_only",
     }
-    workload = {"workload_kind": "aux_state"}
+    workload = {
+        "workload_kind": "aux_state",
+        "aux_bench_sweep_optimization": {
+            "write_frequencies": [0],
+            "bench_warmup": 3,
+            "quick_bench_queries": 10,
+        },
+    }
     env = _quick_benchmark_env(paths, query=18, workload=workload, include_profile=True)
     assert _is_aux_workload(workload)
-    assert env["ACCEL_AUX_WRITE_FREQUENCIES"] == "0,1,10,50"
-    assert env["ACCEL_BENCH_QUERIES"] == "3"
-    assert env["ACCEL_BENCH_WARMUP"] == "1"
+    assert env["ACCEL_AUX_WRITE_FREQUENCIES"] == "0"
+    assert env["ACCEL_BENCH_QUERIES"] == "10"
+    assert env["ACCEL_BENCH_WARMUP"] == "3"
+    assert env["ACCEL_AUX_CUSTOM_PROFILE"] == "1"
     assert "ACCEL_BENCH_PROFILE" not in env
 
 

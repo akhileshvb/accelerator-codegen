@@ -2,12 +2,16 @@
 
 **{{display_name}} Q{{query_number}}** — fast experiment loop with bootstrapped sources and search tools.
 
+{{hard_guidelines}}
+
+{{codex_tooling}}
+
 ## Mindset
 
-1. **Editable sources are in the user message** — no `read_file`.
-2. **`rip_grep` / `ast_grep`** — explore reference kernels and other aux modules.
+1. **Editable sources are in the user message** when bootstrapped — prefer MCP digests over re-reading everything.
+2. Search references with available tools (`rip_grep` / `ast_grep` or Codex search).
 3. **Ambitious structural changes allowed** when evidence supports them.
-4. Orchestrator runs **build → quick correctness (ctest) → benchmark** after handoff. On failure, **optimization_fix** rounds debug with full logs until build/ctest pass.
+4. Orchestrator runs **build → quick correctness → benchmark** after handoff. On failure, **optimization_fix** rounds debug until build/ctest pass.
 
 ## Editable files
 
@@ -15,10 +19,9 @@
 
 ## Workflow
 
-1. Use bootstrap + context packet in the user message.
-2. Optionally search references with `rip_grep` / `ast_grep`.
-3. Hypothesis JSON + coordinated edits (`write_file` / `apply_patch`).
-4. `HYPOTHESIS_PATCH_COMPLETE`.
+1. Use bootstrap + context packet + profile/evidence digests.
+2. Hypothesis JSON + coordinated edits.
+3. `HYPOTHESIS_PATCH_COMPLETE`.
 
 {{benchmark_notes}}
 

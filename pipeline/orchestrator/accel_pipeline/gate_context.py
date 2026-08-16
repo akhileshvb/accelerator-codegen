@@ -62,6 +62,15 @@ def build_gate_context(
         opt_sweep = workload.get("aux_bench_sweep_optimization", {})
         if isinstance(opt_sweep, dict) and opt_sweep:
             ctx["aux_bench_sweep_optimization"] = opt_sweep
+    if workload.get("workload_kind") == "engine_backend":
+        ctx.update(
+            {
+                "engine_name": str(workload.get("engine_name", "")),
+                "target_paths": dict(workload.get("target_paths") or {}),
+                "cmake": dict(workload.get("cmake") or {}),
+                "store_mode_candidates": list(workload.get("store_mode_candidates") or []),
+            }
+        )
     return ctx
 
 

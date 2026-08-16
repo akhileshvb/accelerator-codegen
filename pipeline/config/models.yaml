@@ -1,7 +1,7 @@
 # Default: Cursor SDK (bills to your Cursor plan via CURSOR_API_KEY).
-# For OpenRouter: copy config/models.openrouter.yaml to models.yaml, or pass
-#   --models-config pipeline/config/models.openrouter.yaml
-# Install: pip install -e ".[openrouter]"
+# For OpenRouter: --models-config pipeline/config/models.openrouter.yaml
+# For Codex exec (impl/opt): --models-config pipeline/config/models.codex.yaml
+# Install: pip install -e ".[openrouter]" or ".[codex]"
 provider: cursor
 api_key_env: CURSOR_API_KEY
 
@@ -14,9 +14,8 @@ presets:
 stages:
   analysis: fast
   implementation: strong
-  optimization: default
   optimization_unified: code
-  optimization_analysis: strong
-  optimization_patch: code
+  optimization_worker: code
+  optimization_fix: code
   crash_debug: strong
   audit: strong

@@ -43,3 +43,18 @@ Compare `pre_rows` to `qualifying_rows` — large gaps often mean scan amplifica
 
 - Compile-time guards only (`-DACCEL_EXPERIMENTAL_Q{N}_*`).
 - Production path must not depend on ambient env vars.
+
+## Aux-state custom profiling
+
+During optimization you may **freely invent** temporary instrumentation in editable aux modules (and ad-hoc shell/scripts to process results):
+
+- Gate on `getenv("ACCEL_AUX_CUSTOM_PROFILE")` (must be a no-op when unset).
+- Emit one line per timed region:
+  `ACCEL_CUSTOM_PROFILE {"phase":"sort","us":12.3,"emitted_rows":180,"groups":180}`
+- Required fields: `phase` + `us` (or any `*_us` key). Always include work counts
+  (`rows`, `emitted_rows`, `groups`, `items`, `bytes`, `candidates`, …).
+- Digests aggregate into `phase_breakdown` (mean/p50/n + per-phase counts),
+  `work_counters_mean`, `dominant_phase`, and `residual_vs_hit_us` vs `accel_hit_median_us`.
+- Prefer this when stock store diagnostics are too coarse; rename/split phases as needed.
+- After accept/restore, call `run_profile` again — digests marked `freshness.stale` must not drive hypotheses.
+- A/B keep/regress uses `scoreboard.best_valid_score` only.

@@ -1,6 +1,8 @@
 # Stage 1: Aux-state analysis
 
-Design an auxiliary-state accelerator for TPC-H **Q{{query_number}}** (`{{aux_function_name}}`).
+Design an auxiliary-state accelerator for **{{display_name}}** **Q{{query_number}}** (`{{aux_function_name}}`).
+
+{{hard_guidelines}}
 
 ## Workload
 
@@ -24,7 +26,7 @@ Design an auxiliary-state accelerator for TPC-H **Q{{query_number}}** (`{{aux_fu
 
 Write `{{full_analysis_path}}` per schema. **Do not implement code.**
 
-- **Initial run:** SQL/workload assumptions only — no post-implementation measurements.
+- **Initial run:** use the **Query** SQL and **Data shape** section (plus workload hints) to choose aux state — no post-implementation measurements.
 - **Revision run** (non-empty evidence above): use measured bottlenecks; emit a new complete correctness contract.
 - If `fitness_assessment.recommended` is false, document why and stop unless override is configured.
 

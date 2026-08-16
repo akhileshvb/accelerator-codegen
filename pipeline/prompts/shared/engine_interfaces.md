@@ -64,16 +64,17 @@ Maintenance selection uses `AuxEngineServices::ChooseMaintenance` backed by `mai
 - Append SQL-callable wiring to `src/generated/postgres/kernel_runner.cpp`
 - Calibration env: `ACCELERATOR_CODEGEN_POSTGRES_Q{N}_COST_MODEL`, `ACCELERATOR_CODEGEN_POSTGRES_EXPECTED_QUERIES_BEFORE_WRITE`
 
-### What agents must not regenerate
+### What query agents must not regenerate
 
-Substrate under `include/accelerator_codegen/stateful/`:
+Fixed substrate under `include/accelerator_codegen/stateful/`:
 
 - `PartitionedStateStore`, `AuxStateStore`, `AuxRegistry` / txn coordinator
 - `aux_calibration.hpp` runner
 - `maintenance/action_selector.hpp`, `cost_model.hpp`
-- Engine backends (`duckdb/`, `postgres/`)
 
-Agents own partition layouts (`query_layouts.hpp` entries), payload structs, mutation interpretation, incremental accumulators, maintenance staging logic, and cost-model JSON coefficients.
+Engine adapters under `stateful/{engine}/` and `runtime/{engine}/` are owned by the **engine_backend** pipeline (may be generated from scratch from the substrate). Query agents do not create or rewrite them mid-query.
+
+Agents own partition layouts (`query_layouts.hpp` entries), payload structs, mutation interpretation, incremental accumulators, maintenance staging logic (including rebuild→resync), and cost-model JSON coefficients.
 
 ## Optimization priorities
 

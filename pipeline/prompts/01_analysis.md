@@ -2,6 +2,8 @@
 
 Analyze **{{display_name}}** query **Q{{query_number}}** before any implementation.
 
+{{hard_guidelines}}
+
 ## Repositories
 
 - {{repo_root}}
@@ -33,16 +35,16 @@ Layout contract: `pipeline/prompts/shared/generated_layout.md`
 
 ## Performance goal
 
-Design for **faster than DuckDB** on the benchmark dataset (single-threaded). The optimizer keeps improving while gates show progress — analysis should front-load optimization opportunities.
+Design for **faster than the baseline engine path** on the benchmark dataset (single-threaded where required). Front-load optimization opportunities for the later profile-guided loop.
 
-**Scale:** TPC-H pipeline iterates on SF1; production benchmarking targets SF20+. Plan structures that scale with bind-time estimates, not SF1 cardinalities (`scale_factor_contract.md`).
+**Scale:** TPC-H iterates on SF1 but production targets SF20+ — plan with bind-time estimates (`scale_factor_contract.md`).
 
 {{base_kernel_optimization}}
 
 ## Task
 
 1. Inspect similar accelerators for scan order, vector layouts, aggregation structures, tests, benchmarks.
-2. Identify logical plan and simplest query-local execution strategy.
+2. Identify logical plan and simplest query-local execution strategy (native base scans via `NativeScanSpec`).
 3. Rank likely bottlenecks (phase-level) and list concrete `optimization_hypotheses`.
 4. For GROUP BY on composite keys (multiple VARCHAR/keys): plan **build-time interning** → dense `group_id` → vector-indexed sums on consume (never `unordered_map<std::string,...>` per row).
 5. List exact files to create (kernel, package, header, tests, benchmark).

@@ -2,6 +2,10 @@
 
 Implement a **fast, correctness-first** accelerator for **{{display_name}}** **Q{{query_number}}**.
 
+{{hard_guidelines}}
+
+{{codex_tooling}}
+
 ## Context (compressed — full analysis on disk)
 
 Full analysis: `{{full_analysis_path}}`
@@ -16,7 +20,7 @@ Reference SQL: `{{reference_sql_path}}` · Artifacts: `{{artifacts_path}}/`
 - `{{test_path}}`, `{{benchmark_path}}`
 - Optional fused: `{{fused_scan_path}}`
 
-Do not edit `src/runtime/duckdb/register.cpp`. `CMakeLists.txt` may be edited for target registration when scaffold/auto-discovery is insufficient.
+Do not edit engine registration hosts that scaffold owns (e.g. DuckDB `src/runtime/duckdb/register.cpp`). `CMakeLists.txt` may be edited for target registration when scaffold/auto-discovery is insufficient.
 
 {{kernel_inspiration_section}}
 
@@ -25,12 +29,13 @@ Do not edit `src/runtime/duckdb/register.cpp`. `CMakeLists.txt` may be edited fo
 - Ordered full-result test: reference SQL vs `{{function_name}}()`
 - `CreateQ{{query_number}}Kernel` + `CreateQ{{query_number}}ProfilingKernel` with phase counters (`num_aggregate_us` on fused paths)
 - Benchmark: median timing, `speedup_median` CSV (templates: `{{test_template_path}}`, `{{benchmark_template_path}}`)
+- Base scans via native adapter (`NativeScanSpec`)
 
 Build: `cmake --build build-release --target {{bench_target}} {{test_target}} -j$(nproc)` then `ctest -R {{ctest_smoke_regex}}`.
 
-Gates run automatically: correctness → baseline → profile.
+**Exit criterion:** under Codex, call MCP `run_correctness` (or `request_gate` / the smoke `ctest` above) and **do not finish until it passes**. Orchestrator still re-runs gates afterward: correctness → baseline → profile.
 
-Shared docs (read_file **only if needed**): `pipeline/prompts/shared/generated_layout.md`, `engine_interfaces.md`, `constraints.md`, `profiling_conventions.md`, `base_kernel_optimization.md`.
+Shared docs (read only if needed): `pipeline/prompts/shared/generated_layout.md`, `engine_interfaces.md`, `constraints.md`, `hard_guidelines.md`, `profiling_conventions.md`, `base_kernel_optimization.md`.
 
 {{benchmark_notes}}
 

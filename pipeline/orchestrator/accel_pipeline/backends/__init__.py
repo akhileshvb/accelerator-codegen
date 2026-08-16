@@ -12,7 +12,7 @@ from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES, build_stage_tool_
 
 def create_agent_backend(
     *,
-    provider: str,
+    provider: str | None = None,
     pipeline_config: PipelineConfig,
     query: int,
     stage: str,
@@ -21,6 +21,9 @@ def create_agent_backend(
     optimization_iter: int = 0,
     budget_tracker: Any | None = None,
 ) -> AgentBackend:
+    from accel_pipeline.models import resolve_stage_provider
+
+    resolved = provider or resolve_stage_provider(stage, model_config)
     registry = build_stage_tool_registry(
         pipeline_config,
         query,
@@ -35,10 +38,9 @@ def create_agent_backend(
     art_dir = None
     compress_outputs = stage in (
         "implementation",
-        "optimization",
-        "optimization_analysis",
-        "optimization_patch",
         "optimization_unified",
+        "optimization_unified_hypothesis",
+        "optimization_unified_patch",
         "optimization_worker",
         "optimization_fix",
         "crash_debug",
@@ -48,7 +50,7 @@ def create_agent_backend(
         workload = load_workload(workload_name, pipeline_config.repo_root)
         art_dir = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
 
-    if provider == "cursor":
+    if resolved == "cursor":
         return CursorSDKBackend(
             repo_root=pipeline_config.repo_root,
             api_key_env=model_config.api_key_env,
@@ -57,16 +59,29 @@ def create_agent_backend(
             compress_outputs=compress_outputs,
         )
 
-    if provider in {"openai", "openrouter"}:
+    if resolved in {"openai", "openrouter"}:
         return build_openai_agents_backend(
-            provider=provider,
+            provider=resolved,
             tool_registry=registry,
             stage_tool_names=STAGE_TOOL_NAMES.get(stage, []),
             art_dir=art_dir,
             compress_outputs=compress_outputs,
         )
 
-    raise ValueError(f"unsupported provider: {provider!r}")
+    if resolved == "codex_exec":
+        from accel_pipeline.backends.codex_exec import CodexExecBackend
+
+        return CodexExecBackend(
+            pipeline_config=pipeline_config,
+            model_config=model_config,
+            query=query,
+            stage=stage,
+            workload_name=workload_name,
+            optimization_iter=optimization_iter,
+            art_dir=art_dir,
+        )
+
+    raise ValueError(f"unsupported provider: {resolved!r}")
 
 
 __all__ = [

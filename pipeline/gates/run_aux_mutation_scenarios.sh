@@ -22,9 +22,9 @@ if [[ ! -d "${BUILD}" ]]; then
 fi
 
 if [[ "${BENCHMARK_NAME}" == "tpch" ]]; then
-  PATTERN="q${QUERY}_(write_policies|hybrid_policy|staged_publication|multi_partition_delta|action_failure)"
+  PATTERN="tpch_q${QUERY}_(write_policies|hybrid_policy|staged_publication|multi_partition_delta|action_failure)"
 else
-  PATTERN="sec_edgar_q${QUERY}_(write_policies|hybrid_policy|staged_publication|multi_partition_delta|action_failure)"
+  PATTERN="${BENCHMARK_NAME}_q${QUERY}_(write_policies|hybrid_policy|staged_publication|multi_partition_delta|action_failure)"
 fi
 
 if [[ -x "${BUILD}/ctest" ]]; then

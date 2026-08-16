@@ -52,6 +52,40 @@ def test_composite_score_uses_min_workload_speedup():
     assert summary["composite_score"] == round(7.23 + 0.1 * 40.61, 4)
 
 
+def test_summarize_ignores_non_discriminative_write_intervals():
+    """All-zero write_interval_sec must not collapse distinct write_frequency_pct rows."""
+    text = """\
+suite,write_policy,locality,write_frequency_pct,write_interval_sec,num_queries,writes_executed,duckdb_workload_us,accel_workload_us,workload_speedup,cold_start_workload_speedup,query_only_speedup,blended_query_speedup,accel_hit_median_us,accel_hit_rate
+lineitem_only,hybrid,global,0,0.00,100,0,1000,250,4.00,0.80,3.48,3.48,12000,1.0
+lineitem_only,hybrid,global,0,0.00,100,0,1000,260,3.85,0.75,3.86,3.86,11000,1.0
+lineitem_only,hybrid,global,1,0.00,100,1,1000,280,3.57,0.70,3.50,3.50,12100,1.0
+lineitem_only,hybrid,global,50,0.00,100,50,1000,310,3.23,0.60,3.47,3.47,12200,1.0
+"""
+    rows = parse_sweep_csv_from_text(text)
+    summary = summarize_sweep_rows(rows)
+    assert set(summary["by_write_frequency_pct"]) == {"0", "1", "50"}
+    assert summary["by_write_frequency_pct"]["0"]["write_frequency_pct"] == 0
+    # Worst-case among 0% replicates.
+    assert summary["read_only_query_speedup"] == 3.48
+    assert summary["by_write_frequency_pct"]["0"]["query_only_speedup"] == 3.48
+    assert summary["by_write_frequency_pct"]["50"]["query_only_speedup"] == 3.47
+    assert summary["composite_workload_speedup"] == 3.23
+
+
+def test_summarize_keys_by_interval_when_discriminative():
+    text = """\
+suite,write_policy,locality,write_frequency_pct,write_interval_sec,num_queries,writes_executed,duckdb_workload_us,accel_workload_us,workload_speedup,cold_start_workload_speedup,query_only_speedup,blended_query_speedup,accel_hit_median_us,accel_hit_rate
+lineitem_only,hybrid,global,0,0,100,0,1000,250,4.00,0.80,5.00,5.00,12000,1.0
+lineitem_only,hybrid,global,10,2.5,100,4,1000,300,3.30,0.70,4.80,4.80,12100,1.0
+"""
+    rows = parse_sweep_csv_from_text(text)
+    summary = summarize_sweep_rows(rows)
+    assert set(summary["by_write_frequency_pct"]) == {"0", "2.5"}
+    assert summary["read_only_query_speedup"] == 5.0
+    assert summary["by_write_frequency_pct"]["0"]["write_frequency_pct"] == 0
+
+
+
 def test_record_optimization_state(tmp_path: Path):
     repo = tmp_path
     art = repo / "pipeline" / "artifacts" / "q1"

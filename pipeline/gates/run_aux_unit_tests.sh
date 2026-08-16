@@ -26,12 +26,14 @@ fi
 
 ensure_aux_unit_tests "${ROOT}" "${BUILD}" "${QUERY}" "${BENCHMARK_NAME}" || true
 
+# Scope by benchmark prefix — bare "q${N}_" also matches sec_edgar_q${N}_* (and vice versa).
 if [[ "${BENCHMARK_NAME}" == "tpch" ]]; then
-  PATTERN="q${QUERY}_"
-  EXCLUDE="tpch_q${QUERY}_smoke_test"
+  PATTERN="tpch_q${QUERY}_"
+  # Keep aux smoke; drop base-kernel smoke for this query.
+  EXCLUDE="^tpch_q${QUERY}_smoke_test$"
 else
-  PATTERN="sec_edgar_q${QUERY}_"
-  EXCLUDE="${BENCHMARK_NAME}_q${QUERY}_smoke_test"
+  PATTERN="${BENCHMARK_NAME}_q${QUERY}_"
+  EXCLUDE="^${BENCHMARK_NAME}_q${QUERY}_smoke_test$"
 fi
 
 if [[ -x "${BUILD}/ctest" ]]; then

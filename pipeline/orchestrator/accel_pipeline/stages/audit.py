@@ -20,7 +20,10 @@ def run(
         model_config=model_config,
         workload_name=workload_name,
         query=query,
-        user_message="Produce final_audit.md after fairness and scale review.",
+        user_message=(
+            "Produce final_audit.md: verify correctness, cite SF1 sweep numbers, "
+            "and review scale-safety + harness fairness (no brittle gate chasing)."
+        ),
         model_overrides=model_overrides,
         dry_run=dry_run,
     )

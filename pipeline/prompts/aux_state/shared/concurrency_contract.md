@@ -20,9 +20,10 @@ Read `substrate_contract.md` and `maintenance_framework.md` for substrate APIs. 
 ## Maintenance under concurrent writes
 
 1. Use **lazy rebuild** (`RebuildPartition` / `RebuildAll`) via `StageMaintenance` — do not eagerly invalidate on every write unless required.
-2. **No-op publish skip**: when maintenance has no publish effect, do not advance versions or publish staged updates.
-3. **Optimistic publish**: partition updates must pass `TryPublish` version checks on `AuxStateStore`.
-4. Prefer **per-accelerator** invalidation scope; never use a global epoch unrelated writers can advance.
+2. When rebuild is selected, **resync/rebuild** partition payloads for later aux hits — do not only mark stale.
+3. **No-op publish skip**: when maintenance has no publish effect, do not advance versions or publish staged updates.
+4. **Optimistic publish**: partition updates must pass `TryPublish` version checks on `AuxStateStore`.
+5. Prefer **per-accelerator** invalidation scope; never use a global epoch unrelated writers can advance.
 
 ## Read path under concurrent writes
 
@@ -58,6 +59,10 @@ In `correctness_facts.cross_accelerator_concurrency`, document:
 - `read_path_bounds` — how iteration is bounded to the query window.
 - `maintenance_on_irrelevant_writes` — expected maintenance action (typically none).
 - `fallback_conditions_under_concurrent_writes` — when aux is skipped under cross-connection interference.
+
+## Harness wiring (required for new queries)
+
+`aux_cross_accel` runs `test_cross_accel_{correctness,isolation}` with `ACCEL_CROSS_ACCEL_TEST_QUERIES={{query_number}}`. Those tests call `InvalidatingWriterSqlForQuery` in `tests/test_support/cross_accel_helpers.cpp`. You **may and must** append a `case {{query_number}}` there (file is on the aux write allowlist). The writer must touch a watched column so aux invalidates; then DuckDB SQL and aux must still agree.
 
 ## Local verification
 

@@ -215,7 +215,14 @@ void RegisterWorkloadAuxFunctions(::duckdb::Catalog &catalog,
       }
       break;
     case 2:
-      RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q2_aux", {});
+      if (workload == SharedWorkloadKind::Tpch) {
+        RegisterAuxFunction(catalog, context, entry, "accel_tpch_q2_aux",
+                            {::duckdb::LogicalType::INTEGER,
+                             ::duckdb::LogicalType::VARCHAR,
+                             ::duckdb::LogicalType::VARCHAR});
+      } else {
+        RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q2_aux", {});
+      }
       break;
     case 3:
       if (workload == SharedWorkloadKind::Tpch) {
@@ -228,6 +235,11 @@ void RegisterWorkloadAuxFunctions(::duckdb::Catalog &catalog,
       break;
     case 4:
       RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q4_aux", {});
+      break;
+    case 5:
+      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q5_aux",
+                          {::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::DATE});
       break;
     case 6:
       if (workload == SharedWorkloadKind::Tpch) {
@@ -251,6 +263,19 @@ void RegisterWorkloadAuxFunctions(::duckdb::Catalog &catalog,
     case 14:
       RegisterAuxFunction(catalog, context, entry, "accel_tpch_q14_aux",
                           {::duckdb::LogicalType::DATE});
+      break;
+    case 16:
+      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q16_aux",
+                          {::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::INTEGER,
+                           ::duckdb::LogicalType::INTEGER,
+                           ::duckdb::LogicalType::INTEGER,
+                           ::duckdb::LogicalType::INTEGER,
+                           ::duckdb::LogicalType::INTEGER,
+                           ::duckdb::LogicalType::INTEGER,
+                           ::duckdb::LogicalType::INTEGER,
+                           ::duckdb::LogicalType::INTEGER});
       break;
     case 17:
       RegisterAuxFunction(catalog, context, entry, "accel_tpch_q17_aux",

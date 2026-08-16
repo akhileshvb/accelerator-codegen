@@ -30,6 +30,12 @@ def query_artifacts_dir(
     workload: dict[str, Any] | None = None,
     benchmark_name: str | None = None,
 ) -> Path:
+    if workload and workload.get("workload_kind") == "engine_backend":
+        engine = str(workload.get("engine_name") or workload.get("artifact_namespace") or "engine")
+        path = pipeline_root(repo_root) / "artifacts" / "engines" / engine
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     bench = benchmark_name or workload_benchmark_name(workload)
     namespaced = pipeline_root(repo_root) / "artifacts" / bench / f"q{query_number}"
     legacy = pipeline_root(repo_root) / "artifacts" / f"q{query_number}"
@@ -40,6 +46,12 @@ def query_artifacts_dir(
 
     namespaced.mkdir(parents=True, exist_ok=True)
     return namespaced
+
+
+def engine_artifacts_dir(repo_root: Path, engine_name: str) -> Path:
+    path = pipeline_root(repo_root) / "artifacts" / "engines" / engine_name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def gates_dir_for_query(artifacts_dir: Path) -> Path:

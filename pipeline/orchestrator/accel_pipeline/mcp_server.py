@@ -1,0 +1,431 @@
+"""stdio MCP server exposing pipeline measurement tools for Codex exec."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any, Callable
+
+
+def _env_int(name: str, default: int = 0) -> int:
+    raw = os.environ.get(name, "")
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+def _build_context(args: argparse.Namespace):
+    from accel_pipeline.config import load_pipeline_config, load_workload, apply_workload_overrides
+    from accel_pipeline.paths import find_repo_root, query_artifacts_dir
+
+    repo_root = Path(args.repo_root or os.environ.get("ACCEL_PIPELINE_REPO_ROOT") or find_repo_root())
+    pipeline_config = load_pipeline_config(repo_root=repo_root)
+    query = int(args.query or _env_int("ACCEL_PIPELINE_QUERY", 0))
+    workload_name = args.workload or os.environ.get("ACCEL_PIPELINE_WORKLOAD") or "tpch_q3"
+    stage = args.stage or os.environ.get("ACCEL_PIPELINE_STAGE") or "optimization_worker"
+    optimization_iter = int(args.optimization_iter or _env_int("ACCEL_PIPELINE_OPT_ITER", 0))
+    workload = load_workload(workload_name, repo_root)
+    pipeline_config = apply_workload_overrides(pipeline_config, workload)
+    art = query_artifacts_dir(repo_root, query, workload=workload)
+    return pipeline_config, workload, workload_name, query, stage, optimization_iter, art
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def build_mcp_tool_callables(
+    pipeline_config,
+    workload: dict[str, Any],
+    workload_name: str,
+    query: int,
+    stage: str,
+    optimization_iter: int,
+    art: Path,
+) -> dict[str, Callable[..., str]]:
+    from accel_pipeline.gates import run_gate
+    from accel_pipeline.tools.ab_tools import AbToolContext, make_ab_tools
+    from accel_pipeline.tools.gate_tools import ToolContext as GateCtx
+    from accel_pipeline.tools.gate_tools import make_gate_tools
+    from accel_pipeline.tools.reanalysis_tools import ToolContext as ReanalysisCtx
+    from accel_pipeline.tools.reanalysis_tools import make_reanalysis_tools
+    from accel_pipeline.tools.shell_tools import ToolContext as ShellCtx
+    from accel_pipeline.tools.shell_tools import make_shell_tools
+    from accel_pipeline.tools.gate_tools import _compact_gate_payload
+
+    request_gate = make_gate_tools(GateCtx(pipeline_config, query))
+    run_command = make_shell_tools(ShellCtx(pipeline_config, query))
+    request_structural_reanalysis = make_reanalysis_tools(
+        ReanalysisCtx(pipeline_config, query, stage, workload_name, optimization_iter)
+    )
+    ab_ctx = AbToolContext(
+        pipeline_config=pipeline_config,
+        query=query,
+        workload=workload,
+        optimization_iter=optimization_iter,
+    )
+    begin_ab_trial, run_quick_benchmark, end_ab_trial = make_ab_tools(ab_ctx)
+
+    def _run_named_gate(gate_name: str) -> str:
+        result = run_gate(
+            pipeline_config,
+            gate_name,
+            query,
+            workload=workload,
+            raise_on_failure=False,
+            allow_skip=True,
+        )
+        return json.dumps(_compact_gate_payload(result.name, result.data), indent=2)
+
+    def run_profile() -> str:
+        """Refresh profile artifacts. Aux: quick instrumented bench (not full fair sweep)."""
+        if workload.get("workload_kind") == "aux_state":
+            # Full aux_bench_sweep is too heavy mid-loop; use the same quick path as A/B.
+            out = run_quick_benchmark(True)
+            digest = get_profile_digest()
+            return json.dumps(
+                {
+                    "mode": "aux_quick_profile",
+                    "quick_benchmark": out[:12_000],
+                    "digest": json.loads(digest) if digest.startswith("{") else {"raw": digest},
+                },
+                indent=2,
+            )[:50_000]
+        return _run_named_gate("profile")
+
+    def run_correctness() -> str:
+        """Run correctness / aux_correctness gate."""
+        name = "aux_correctness" if workload.get("workload_kind") == "aux_state" else "correctness"
+        return _run_named_gate(name)
+
+    def run_baseline() -> str:
+        """Run baseline / aux unit gate used for timing baselines."""
+        name = "aux_unit" if workload.get("workload_kind") == "aux_state" else "baseline"
+        return _run_named_gate(name)
+
+    def run_fairness() -> str:
+        """Run the fairness gate."""
+        return _run_named_gate("fairness")
+
+    def get_profile_digest() -> str:
+        """Compact phase counters / dominant bottleneck from last profile artifacts."""
+        from accel_pipeline.config import resolve_optimization_edit_paths
+        from accel_pipeline.optimization_scoreboard import (
+            build_scoreboard,
+            custom_profiling_contract,
+            profile_freshness,
+            write_scoreboard,
+        )
+
+        edit = resolve_optimization_edit_paths(pipeline_config, workload, query)
+        editable = [p for p in edit.get("all_paths") or [] if p]
+        is_aux = workload.get("workload_kind") == "aux_state"
+
+        if is_aux:
+            from accel_pipeline.aux_profile import build_aux_profile_digest
+
+            payload = build_aux_profile_digest(
+                art,
+                repo_root=pipeline_config.repo_root,
+                editable_rel_paths=editable,
+            )
+            feedback = ""
+            fb_path = art / "optimization_feedback.md"
+            if fb_path.is_file():
+                feedback = fb_path.read_text(encoding="utf-8")[-4000:]
+            payload["optimization_feedback_tail"] = feedback
+            return json.dumps(payload, indent=2)[:50_000]
+
+        profile = _read_json(art / "profile_summary.json")
+        baseline = _read_json(art / "baseline_summary.json")
+        board = build_scoreboard(art, is_aux=False, last_metrics=profile or baseline)
+        write_scoreboard(art, board)
+        freshness = profile_freshness(
+            art,
+            repo_root=pipeline_config.repo_root,
+            editable_rel_paths=editable,
+        )
+        feedback = ""
+        fb_path = art / "optimization_feedback.md"
+        if fb_path.is_file():
+            feedback = fb_path.read_text(encoding="utf-8")[-4000:]
+        payload = {
+            "scoreboard": board,
+            "freshness": freshness,
+            "profile_summary": profile,
+            "baseline_summary": baseline,
+            "custom_profiling": custom_profiling_contract(is_aux=False),
+            "measurement_rules": [
+                "Call run_profile on the CURRENT tree before forming a hypothesis.",
+                "If freshness.stale is true, do not hypothesize from this digest — remeasure.",
+                "A/B keep/regress vs scoreboard.best_valid_score only.",
+            ],
+            "optimization_feedback_tail": feedback,
+        }
+        return json.dumps(payload, indent=2)[:50_000]
+
+    def get_optimization_evidence() -> str:
+        """Bottleneck evidence packet from artifacts when available."""
+        runtime = art / "optimization_runtime.md"
+        evidence = art / "optimization_evidence.json"
+        parts: list[str] = []
+        if evidence.is_file():
+            parts.append(evidence.read_text(encoding="utf-8")[:40_000])
+        if runtime.is_file():
+            parts.append(runtime.read_text(encoding="utf-8")[:40_000])
+        if workload.get("workload_kind") == "aux_state":
+            # Always append a fresh aux digest so empty/mis-shaped runtime still helps.
+            parts.append(get_profile_digest())
+        if not parts:
+            return get_profile_digest()
+        return "\n\n".join(parts)[:80_000]
+
+    def get_store_diagnostics() -> str:
+        """Aux store diagnostics from bench/opt state when present."""
+        if workload.get("workload_kind") == "aux_state":
+            from accel_pipeline.aux_profile import load_aux_store_diagnostics
+
+            diag, source = load_aux_store_diagnostics(art)
+            if diag:
+                return json.dumps({"source": source, "store_diagnostics": diag}, indent=2)
+            return json.dumps(
+                {
+                    "store_diagnostics": {},
+                    "note": "no aux diagnostics yet — call run_profile or run_quick_benchmark",
+                }
+            )
+        for name in ("bench_summary.json", "optimization_state.json", "baseline_summary.json"):
+            data = _read_json(art / name)
+            diag = data.get("store_diagnostics") or data.get("median_metrics", {}).get("store_diagnostics")
+            if diag:
+                return json.dumps({"source": name, "store_diagnostics": diag}, indent=2)
+        return json.dumps({"store_diagnostics": {}, "note": "no diagnostics on disk yet"})
+
+    def record_optimization_trap(trap: str, when: str = "", evidence: str = "") -> str:
+        """Optionally record a short recurring optimization trap (advisory shared memory).
+
+        Prefer current profile/scoreboard over this list. Use sparingly for clear
+        anti-patterns only — not for every failed attempt.
+        """
+        from accel_pipeline.negative_memory import append_negative_memory
+
+        entry = append_negative_memory(
+            pipeline_config.repo_root,
+            trap=trap,
+            when=when,
+            evidence=evidence,
+            query=query,
+            workload_kind=str(workload.get("workload_kind") or "") or None,
+            source="agent",
+        )
+        if entry is None:
+            return json.dumps({"recorded": False, "reason": "duplicate_or_too_short"})
+        return json.dumps({"recorded": True, "entry": entry}, indent=2)
+
+    def run_pipeline_command(command: str) -> str:
+        """Allowlisted cmake/ctest only (same policy as pipeline shell tools)."""
+        return run_command(command)
+
+    return {
+        "request_gate": request_gate,
+        "run_profile": run_profile,
+        "run_correctness": run_correctness,
+        "run_baseline": run_baseline,
+        "run_fairness": run_fairness,
+        "get_profile_digest": get_profile_digest,
+        "get_optimization_evidence": get_optimization_evidence,
+        "get_store_diagnostics": get_store_diagnostics,
+        "begin_ab_trial": begin_ab_trial,
+        "run_quick_benchmark": run_quick_benchmark,
+        "end_ab_trial": end_ab_trial,
+        "request_structural_reanalysis": request_structural_reanalysis,
+        "record_optimization_trap": record_optimization_trap,
+        "run_pipeline_command": run_pipeline_command,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Accelerator pipeline MCP server (stdio)")
+    parser.add_argument("--query", type=int, default=0)
+    parser.add_argument("--workload", type=str, default="")
+    parser.add_argument("--stage", type=str, default="")
+    parser.add_argument("--optimization-iter", type=int, default=0)
+    parser.add_argument("--repo-root", type=str, default="")
+    args = parser.parse_args(argv)
+
+    # Allow initialize / tools/list even if query env is not ready yet.
+    # Tool handlers re-resolve context from env on each call so a late-written
+    # sidecar env file (or inherited ACCEL_* vars) still works.
+    query = int(args.query or _env_int("ACCEL_PIPELINE_QUERY", 0))
+    if query <= 0:
+        print(
+            "accel_pipeline MCP: ACCEL_PIPELINE_QUERY unset at startup; "
+            "tools will resolve context on first call",
+            file=sys.stderr,
+        )
+
+    def _tools():
+        pipeline_config, workload, workload_name, q, stage, optimization_iter, art = _build_context(args)
+        if q <= 0:
+            raise RuntimeError(
+                "ACCEL_PIPELINE_QUERY / --query required for measurement tools "
+                "(CodexExecBackend should write pipeline/.codex/accel_pipeline_mcp.env)"
+            )
+        return build_mcp_tool_callables(
+            pipeline_config, workload, workload_name, q, stage, optimization_iter, art
+        )
+
+    def _call(name: str, *a, **kw) -> str:
+        try:
+            return _tools()[name](*a, **kw)
+        except Exception as exc:  # noqa: BLE001 — surface to MCP client
+            return json.dumps({"error": str(exc), "tool": name})
+
+    # mcp>=2 removed FastMCP; prefer MCPServer. Keep FastMCP fallback for mcp 1.x.
+    mcp = None
+    try:
+        from mcp.server import MCPServer
+
+        mcp = MCPServer("accel_pipeline")
+    except ImportError:
+        try:
+            from mcp.server.fastmcp import FastMCP
+
+            mcp = FastMCP("accel_pipeline")
+        except ImportError:
+            print(
+                "mcp package required for Codex MCP server; "
+                "pip install -e '.[codex]' (need mcp with MCPServer or FastMCP)",
+                file=sys.stderr,
+            )
+            return 2
+
+    # Annotations help Codex `auto`/`approve` skip the interactive app-tool
+    # approval path that cancels under `codex exec` (openai/codex#16632).
+    try:
+        try:
+            from mcp.types import ToolAnnotations
+        except ImportError:
+            from mcp_types import ToolAnnotations  # type: ignore
+
+        _ro = ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        )
+        _rw = ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=False,
+        )
+    except Exception:  # noqa: BLE001
+        _ro = None
+        _rw = None
+
+    def _tool(**kwargs):
+        if _ro is None:
+            kwargs.pop("annotations", None)
+        return mcp.tool(**kwargs)
+
+    @_tool(annotations=_ro)
+    def request_gate(gate_name: str) -> str:
+        """Run an official orchestrator gate by name."""
+        return _call("request_gate", gate_name)
+
+    @_tool(annotations=_ro)
+    def run_profile() -> str:
+        """Run profile (or aux bench) gate."""
+        return _call("run_profile")
+
+    @_tool(annotations=_ro)
+    def run_correctness() -> str:
+        """Run correctness gate."""
+        return _call("run_correctness")
+
+    @_tool(annotations=_ro)
+    def run_baseline() -> str:
+        """Run baseline gate."""
+        return _call("run_baseline")
+
+    @_tool(annotations=_ro)
+    def run_fairness() -> str:
+        """Run fairness gate."""
+        return _call("run_fairness")
+
+    @_tool(annotations=_ro)
+    def get_profile_digest() -> str:
+        """Compact profile/baseline digest from artifacts."""
+        return _call("get_profile_digest")
+
+    @_tool(annotations=_ro)
+    def get_optimization_evidence() -> str:
+        """Optimization evidence / runtime packet."""
+        return _call("get_optimization_evidence")
+
+    @_tool(annotations=_ro)
+    def get_store_diagnostics() -> str:
+        """Aux store diagnostics if present."""
+        return _call("get_store_diagnostics")
+
+    @_tool(annotations=_rw)
+    def begin_ab_trial(trial_id: str, hypothesis: str) -> str:
+        """Begin exploratory A/B trial (non-binding)."""
+        return _call("begin_ab_trial", trial_id, hypothesis)
+
+    @_tool(annotations=_rw)
+    def run_quick_benchmark(include_profile: bool = True) -> str:
+        """Run quick exploratory benchmark for active A/B trial."""
+        return _call("run_quick_benchmark", include_profile)
+
+    @_tool(annotations=_rw)
+    def end_ab_trial(trial_id: str, keep: bool = False) -> str:
+        """End exploratory A/B trial."""
+        return _call("end_ab_trial", trial_id, keep)
+
+    @_tool(annotations=_rw)
+    def request_structural_reanalysis(
+        bottleneck_type: str,
+        evidence: str,
+        proposed_direction: str,
+        current_candidate_id: str,
+        alternate_candidate_ids: list[str] | None = None,
+        cost_model_insufficient_reason: str = "",
+    ) -> str:
+        """Request aux structural re-analysis (escape hatch)."""
+        return _call(
+            "request_structural_reanalysis",
+            bottleneck_type,
+            evidence,
+            proposed_direction,
+            current_candidate_id,
+            alternate_candidate_ids,
+            cost_model_insufficient_reason,
+        )
+
+    @_tool(annotations=_rw)
+    def record_optimization_trap(trap: str, when: str = "", evidence: str = "") -> str:
+        """Optionally record a short recurring optimization trap (advisory; not authority)."""
+        return _call("record_optimization_trap", trap, when, evidence)
+
+    @_tool(annotations=_rw)
+    def run_pipeline_command(command: str) -> str:
+        """Allowlisted cmake/ctest command."""
+        return _call("run_pipeline_command", command)
+
+    mcp.run(transport="stdio")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

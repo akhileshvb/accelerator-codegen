@@ -133,6 +133,7 @@ def _run_stage(
             skip_gates=skip_gates,
             resume=resume,
         )
+    elif stage == "audit":
         audit.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
     else:
         raise ValueError(f"unknown stage: {stage}")
@@ -142,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Accelerator codegen agent pipeline")
     parser.add_argument("--query", type=int, required=True)
     parser.add_argument("--workload", type=str, default="tpch_q3")
-    parser.add_argument("--stage", choices=[*STAGES, "all"], default="all")
+    parser.add_argument("--stage", choices=[*STAGES, "validation", "all"], default="all")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Render prompts; skip LLM calls")
     parser.add_argument(
@@ -173,10 +174,29 @@ def main(argv: list[str] | None = None) -> int:
     model_config = load_model_config(args.models_config, repo_root=repo_root)
     print(f"agent provider: {model_config.provider}", file=sys.stderr)
     query = args.query
-    if workload.get("query_number") and int(workload["query_number"]) != query:
-        print("warning: --query does not match workload query_number", file=sys.stderr)
+    if workload.get("query_number") is not None and int(workload["query_number"]) != query:
+        if workload.get("workload_kind") != "engine_backend":
+            print("warning: --query does not match workload query_number", file=sys.stderr)
 
     model_overrides = _parse_model_overrides(args.models)
+
+    if workload.get("workload_kind") == "engine_backend":
+        from accel_pipeline.stages import engine_backend as engine_backend_stage
+
+        print(f"=== engine_backend workload: {args.workload} ===", file=sys.stderr)
+        engine_backend_stage.run_engine_pipeline(
+            pipeline_config,
+            model_config,
+            args.workload,
+            query,
+            model_overrides,
+            args.dry_run,
+            stage=args.stage if args.stage != "all" else "all",
+            skip_gates=args.skip_gates,
+        )
+        print("pipeline complete", file=sys.stderr)
+        return 0
+
     state = load_or_create(repo_root, query, args.workload, resume=args.resume)
 
     if workload.get("workload_kind") == "aux_state":
