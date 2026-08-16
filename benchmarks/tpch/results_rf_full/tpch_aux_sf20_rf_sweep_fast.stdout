@@ -1,0 +1,34 @@
+=== TPC-H SF20 RF mini-chunk aux sweep ===
+ACCEL_AUX_WRITE_MODE=rf
+ACCEL_TPCH_RF_CHUNK_ORDERS=30000
+QUERIES=10,12,14,17,18,21
+Note: point UPDATE sweeps still work via run_tpch_aux_sf20_sweep.sh (default write_mode=point).
+=== TPC-H SF20 aux write-interval sweep ===
+sf20_db=/home/akhilvb/accelerator-codegen/../accelerator-codegen-duckdb/tpch_sf20.duckdb
+queries=10,12,14,17,18,21
+mode=full
+preflight_free_disk_gb=167 preflight_mem_available_gb=368
+write_intervals_sec=0,300,120,60
+write_frequencies_pct=0
+bench_duration_sec=300
+=== building 6 aux benchmark targets ===
+[ 97%] Built target accelerator_codegen
+[100%] Built target benchmark_tpch_q10_aux
+[ 97%] Built target accelerator_codegen
+[100%] Built target benchmark_tpch_q12_aux
+[ 97%] Built target accelerator_codegen
+[100%] Built target benchmark_tpch_q14_aux
+[ 94%] Built target accelerator_codegen
+[100%] Built target benchmark_tpch_q17_aux
+[ 94%] Built target accelerator_codegen
+[100%] Built target benchmark_tpch_q18_aux
+[ 94%] Built target accelerator_codegen
+[100%] Built target benchmark_tpch_q21_aux
+=== SF20 aux sweep Q10 ===
+# query=10 benchmark=tpch suite=lineitem_only write_frequency_pct=0
+tpch_q10_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q10_aux_build: customers 8295 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 23501 ms
+tpch_q10_aux_build: total_build_state 31797 ms
+Terminated                 env "${env_prefix[@]}" "${BENCH_BIN}"

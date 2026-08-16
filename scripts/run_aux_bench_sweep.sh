@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Sweep write frequency for an aux-state benchmark (0%–50% by default).
+# Run an aux-state benchmark sweep.
+# - With ACCEL_AUX_WRITE_INTERVALS: one pass (interval sweep lives in the binary).
+# - Otherwise: sweep write frequency (0%–50% by default).
 # Usage: run_aux_bench_sweep.sh <query_number>
 # Env: ACCEL_BUILD_DIR, ACCEL_AUX_BENCH_TARGET, ACCEL_AUX_BENCHMARK, ACCEL_SEC_EDGAR_DB / ACCEL_TPCH_DB,
-#      ACCEL_AUX_WRITE_FREQUENCIES, ACCEL_AUX_BENCH_WORK_DIR, ACCEL_AUX_BENCH_SUITES
+#      ACCEL_AUX_WRITE_INTERVALS, ACCEL_AUX_WRITE_FREQUENCIES, ACCEL_AUX_BENCH_WORK_DIR,
+#      ACCEL_AUX_BENCH_SUITES
 
 set -euo pipefail
 
@@ -44,7 +47,13 @@ export ACCEL_BENCH_REF_SAMPLES="${ACCEL_BENCH_REF_SAMPLES:-5}"
 export ACCEL_BENCH_BASE_WRITE_SAMPLES="${ACCEL_BENCH_BASE_WRITE_SAMPLES:-3}"
 export ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB="${ACCEL_BENCH_SKIP_PARTITION_REBUILD_CALIB:-1}"
 
-FREQUENCIES="${ACCEL_AUX_WRITE_FREQUENCIES:-0,1,10,50}"
+# Interval sweeps already vary write cadence in-process. Do not also loop
+# write-frequency % (that re-ran the full interval grid 4x and wasted hours).
+if [[ -n "${ACCEL_AUX_WRITE_INTERVALS:-}" ]]; then
+  FREQUENCIES="${ACCEL_AUX_WRITE_FREQUENCIES:-0}"
+else
+  FREQUENCIES="${ACCEL_AUX_WRITE_FREQUENCIES:-0,1,10,50}"
+fi
 SUITES_VAR="ACCEL_Q${QUERY}_BENCH_SUITES"
 SUITES="${!SUITES_VAR:-${ACCEL_AUX_BENCH_SUITES:-lineitem_only}}"
 

@@ -15,9 +15,11 @@ db_env_var: ACCEL_TPCH_DB
 work_dir_label: tpch_sf20
 
 # Wall-clock seconds between invalidating writes (0 = read-only).
+# Point duration is max(bench_duration_sec, bench_min_writes * interval).
+# Keep min_writes modest so long intervals (e.g. 300s) do not become multi-hour.
 write_intervals: [0, 60, 30, 10, 5, 2, 1]
 bench_duration_sec: 120
-bench_min_writes: 30
+bench_min_writes: 5
 suites: lineitem_only
 
 bench_warmup: 10

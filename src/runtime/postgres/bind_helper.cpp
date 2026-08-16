@@ -75,7 +75,7 @@ private:
 
 int32_t ResolveNationKey(const std::string &nation_name) {
   const std::string sql =
-      "SELECT n_nationkey FROM nation WHERE n_name = " + EscapeSqlLiteral(nation_name);
+      "SELECT DISTINCT n_nationkey FROM nation WHERE n_name = " + EscapeSqlLiteral(nation_name);
   SpiSession session;
   session.Execute(sql);
   if (SPI_processed != 1) {

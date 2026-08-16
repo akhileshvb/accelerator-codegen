@@ -1,0 +1,47 @@
+# query=3 benchmark=tpch suite=lineitem_only write_frequency_pct=0
+tpch_q3_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=0 write_frequency_pct=0 num_queries=32619 writes=0 workload_speedup=247.839
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=300 measured_duration_sec=1500
+tpch_q3_aux_bench: wrote row write_interval_sec=300 write_frequency_pct=0 num_queries=47106 writes=3 workload_speedup=143.166
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=120 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=120 write_frequency_pct=0 num_queries=11214 writes=2 workload_speedup=76.5347
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=60 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=60 write_frequency_pct=0 num_queries=7609 writes=2 workload_speedup=57.8135
+suite,write_mode,write_policy,locality,write_frequency_pct,write_interval_sec,measured_duration_sec,reader_qps,query_num,num_queries,writes_executed,duckdb_ref_query_median_us,base_kernel_median_us,base_write_median_us,accel_write_median_us,accel_hit_median_us,fallback_median_us,accel_hit_rate,fallback_rate,total_duckdb_query_us,total_accel_query_us,total_base_write_us,total_accel_write_us,duckdb_workload_us,accel_workload_us,workload_speedup,cold_start_workload_speedup,query_only_speedup,blended_query_speedup,cold_start_accel_workload_us,setup_full_build_ms,aux_state_bytes,valid_partitions,total_slots,validity_slots_scanned_median,validity_scan_us_median,partitions_read_per_query_median,state_bytes_read_median,store_execute_calls
+lineitem_only,rf,hybrid,global,0,0,600,55.0689,3,32619,0,4558845.21,2429314.84,0.00,0.00,18212.35,0.00,1.00,0.00,148704971970.23,600006415.98,0.00,0.00,148704971970.23,600006415.98,247.84,197.83,133.39,133.39,751669415.98,151663.00,2016367900,6,6,6.00,1.00,1.00,0,32619
+lineitem_only,rf,hybrid,global,0,300.00,1500.00,55.07,3,47106,3,4558845.21,2429314.84,0.00,207882717.83,18522.79,0.00,1.00,0.00,214748962556.47,876354943.60,0.00,623648153.48,214748962556.47,1500003097.08,143.17,130.02,131.15,131.15,1651666097.08,151663.00,2016367900,6,6,6.00,1.00,1.00,0,47106
+lineitem_only,rf,hybrid,global,0,120.00,600.00,55.07,3,11214,2,4558845.21,2429314.84,0.00,229926982.07,18473.33,0.00,1.00,0.00,51122890207.37,208115937.01,0.00,459853964.13,51122890207.37,667969901.14,76.53,62.37,131.50,131.50,819632901.14,151663.00,2016367900,6,6,6.00,1.00,1.00,0,11214
+lineitem_only,rf,hybrid,global,0,60.00,600.00,55.07,3,7609,2,4558845.21,2429314.84,0.00,230458737.27,18194.09,0.00,1.00,0.00,34688253218.11,139084669.76,0.00,460917474.55,34688253218.11,600002144.31,57.81,46.15,133.52,133.52,751665144.31,151663.00,2016367900,6,6,6.00,1.00,1.00,0,7609
+# query=3 benchmark=tpch suite=lineitem_only write_frequency_pct=1
+tpch_q3_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=0 write_frequency_pct=0 num_queries=32947 writes=0 workload_speedup=260.335
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=300 measured_duration_sec=1500
+tpch_q3_aux_bench: wrote row write_interval_sec=300 write_frequency_pct=0 num_queries=47576 writes=3 workload_speedup=150.37
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=120 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=120 write_frequency_pct=0 num_queries=11371 writes=2 workload_speedup=80.9191
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=60 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=60 write_frequency_pct=0 num_queries=7401 writes=2 workload_speedup=58.4783
+# query=3 benchmark=tpch suite=lineitem_only write_frequency_pct=10
+tpch_q3_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=0 write_frequency_pct=0 num_queries=31434 writes=0 workload_speedup=239.391
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=300 measured_duration_sec=1500
+tpch_q3_aux_bench: wrote row write_interval_sec=300 write_frequency_pct=0 num_queries=46188 writes=3 workload_speedup=140.702
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=120 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=120 write_frequency_pct=0 num_queries=11139 writes=2 workload_speedup=76.1414
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=60 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=60 write_frequency_pct=0 num_queries=7283 writes=2 workload_speedup=55.4654
+# query=3 benchmark=tpch suite=lineitem_only write_frequency_pct=50
+tpch_q3_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=0 write_frequency_pct=0 num_queries=32108 writes=0 workload_speedup=243.681
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=300 measured_duration_sec=1500
+tpch_q3_aux_bench: wrote row write_interval_sec=300 write_frequency_pct=0 num_queries=46176 writes=3 workload_speedup=140.179
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=120 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=120 write_frequency_pct=0 num_queries=11266 writes=2 workload_speedup=76.5471
+tpch_q3_aux_bench: starting write_mode=rf write_interval_sec=60 measured_duration_sec=600
+tpch_q3_aux_bench: wrote row write_interval_sec=60 write_frequency_pct=0 num_queries=7374 writes=2 workload_speedup=55.9635
+wrote /home/akhilvb/accelerator-codegen/build-release/q3_aux_bench_tpch_sf20/results.csv
+/home/akhilvb/accelerator-codegen/build-release/q3_aux_bench_tpch_sf20/results.csv

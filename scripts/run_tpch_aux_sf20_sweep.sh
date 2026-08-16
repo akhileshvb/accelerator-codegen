@@ -93,7 +93,7 @@ DEFAULT_INTERVALS="$(read_yaml_list write_intervals)"
 SMOKE_INTERVALS="$(read_yaml_list write_intervals smoke)"
 DEFAULT_DURATION="$(read_yaml_top_scalar bench_duration_sec 120)"
 SMOKE_DURATION="$(read_yaml_scalar smoke bench_duration_sec "${DEFAULT_DURATION}")"
-DEFAULT_MIN_WRITES="$(read_yaml_top_scalar bench_min_writes 30)"
+DEFAULT_MIN_WRITES="$(read_yaml_top_scalar bench_min_writes 5)"
 SMOKE_MIN_WRITES="$(read_yaml_scalar smoke bench_min_writes "${DEFAULT_MIN_WRITES}")"
 MIN_DISK_GB="$(read_yaml_scalar preflight min_disk_gb 50)"
 MIN_MEM_GB="$(read_yaml_scalar preflight min_mem_gb 24)"
@@ -127,7 +127,10 @@ preflight() {
 
 apply_mode_env() {
   local mode="$1"
-  unset ACCEL_BENCH_FAST ACCEL_BENCH_SKIP_DUCKDB_REF ACCEL_Q21_BENCH_SCAN_LIMIT ACCEL_AUX_WRITE_FREQUENCIES || true
+  unset ACCEL_BENCH_FAST ACCEL_BENCH_SKIP_DUCKDB_REF ACCEL_Q21_BENCH_SCAN_LIMIT || true
+  # Interval cadence is the SF20 sweep axis. Pin frequency loop to a single
+  # pass so run_aux_bench_sweep.sh does not re-run the full interval grid.
+  export ACCEL_AUX_WRITE_FREQUENCIES="${ACCEL_AUX_WRITE_FREQUENCIES:-0}"
   if [[ "${mode}" == "smoke" ]]; then
     export ACCEL_BENCH_FAST=1
     export ACCEL_AUX_WRITE_INTERVALS="${ACCEL_AUX_WRITE_INTERVALS:-${SMOKE_INTERVALS:-0,10}}"
@@ -185,6 +188,7 @@ echo "mode=${MODE}" | tee -a "${LOG}"
 preflight
 apply_mode_env "${MODE}"
 echo "write_intervals_sec=${ACCEL_AUX_WRITE_INTERVALS}" | tee -a "${LOG}"
+echo "write_frequencies_pct=${ACCEL_AUX_WRITE_FREQUENCIES}" | tee -a "${LOG}"
 echo "bench_duration_sec=${ACCEL_AUX_BENCH_DURATION_SEC}" | tee -a "${LOG}"
 build_targets
 

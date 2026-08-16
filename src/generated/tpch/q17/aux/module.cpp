@@ -8,6 +8,7 @@
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
@@ -566,6 +567,7 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
   std::map<std::string, TpchQ17AttrParts> local_attr_parts;
   std::map<std::string, core::Version> attr_versions;
   std::map<int64_t, std::vector<int64_t>> parts_by_chunk;
+  std::unordered_set<int64_t> need_pair_rebuild;
   for (const auto partkey : touched_partkeys) {
     parts_by_chunk[static_cast<int64_t>(partkey >>
                                         TpchQ17Layout::kPartChunkShift)]
@@ -608,7 +610,46 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
         touched_attr_keys.insert(attr_key);
 
       if (part_it->second.stats.qty_price_pairs.empty())
-        part_it->second.stats = RebuildPartStatsFromScan(partkey);
+        need_pair_rebuild.insert(partkey);
+    }
+  }
+
+  // Published part stats strip qty_price_pairs to save memory. Reloading them
+  // with one aggregate scan (not one full SF scan per partkey) keeps official
+  // RF-scale chunks (~0.1% SF) tractable.
+  if (!need_pair_rebuild.empty()) {
+    auto rebuilt = RebuildPartStatsBatch(need_pair_rebuild);
+    for (auto &[chunk_index, partkeys] : parts_by_chunk) {
+      auto chunk_it = local_chunks.find(chunk_index);
+      if (chunk_it == local_chunks.end())
+        continue;
+      for (const auto partkey : partkeys) {
+        if (!need_pair_rebuild.count(partkey))
+          continue;
+        auto part_it = chunk_it->second.parts.find(partkey);
+        if (part_it == chunk_it->second.parts.end())
+          continue;
+        auto rebuilt_it = rebuilt.find(partkey);
+        if (rebuilt_it == rebuilt.end()) {
+          outcome.action = core::MaintenanceAction::RebuildAll;
+          outcome.invalidations = All();
+          outcome.pending_rebuild = outcome.invalidations;
+          return outcome;
+        }
+        part_it->second.stats = std::move(rebuilt_it->second);
+      }
+    }
+  }
+
+  for (auto &[chunk_index, partkeys] : parts_by_chunk) {
+    auto chunk_it = local_chunks.find(chunk_index);
+    if (chunk_it == local_chunks.end())
+      continue;
+    auto &chunk = chunk_it->second;
+    for (const auto partkey : partkeys) {
+      auto part_it = chunk.parts.find(partkey);
+      if (part_it == chunk.parts.end())
+        continue;
 
       for (const auto &delta : buffer.LineitemDeltas()) {
         if (delta.partkey != partkey)
@@ -618,7 +659,7 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
 
       if (part_it->second.stats.count <= 0 &&
           part_it->second.stats.qty_price_pairs.empty()) {
-        chunk->parts.erase(part_it);
+        chunk.parts.erase(part_it);
       } else {
         part_it->second.stats.RecomputeContribution();
         StripTpchQ17PartStatsForPublish(part_it->second.stats);
@@ -834,38 +875,55 @@ TpchQ17State TpchQ17Module::BuildState(
 }
 
 TpchQ17PartStats TpchQ17Module::RebuildPartStatsFromScan(int64_t partkey) const {
-  TpchQ17PartStats stats;
-  if (!initial_scan)
-    return stats;
+  auto batch = RebuildPartStatsBatch({partkey});
+  auto it = batch.find(partkey);
+  if (it == batch.end())
+    return {};
+  return std::move(it->second);
+}
 
-  std::unordered_map<int64_t, int64_t> qty_price_by_qty;
+std::unordered_map<int64_t, TpchQ17PartStats> TpchQ17Module::RebuildPartStatsBatch(
+    const std::unordered_set<int64_t> &partkeys) const {
+  std::unordered_map<int64_t, TpchQ17PartStats> out;
+  if (!initial_scan || partkeys.empty())
+    return out;
+
+  std::unordered_map<int64_t, std::unordered_map<int64_t, int64_t>> qty_price_by_part;
   const bool used_sql = initial_scan->ScanPartQuantityAggregates(
       [&](const TpchQ17PartQuantityAggregate &agg) {
-        if (agg.partkey != partkey)
+        if (!partkeys.count(agg.partkey))
           return;
+        auto &stats = out[agg.partkey];
         stats.sum_qty_raw += agg.quantity_raw * agg.row_count;
         stats.count += static_cast<int32_t>(agg.row_count);
-        qty_price_by_qty[agg.quantity_raw] += agg.extendedprice_sum_raw;
+        qty_price_by_part[agg.partkey][agg.quantity_raw] +=
+            agg.extendedprice_sum_raw;
       });
   if (!used_sql) {
     initial_scan->ScanLineitems([&](const TpchQ17LineitemInput &input) {
-      if (input.partkey != partkey)
+      if (!partkeys.count(input.partkey))
         return;
+      auto &stats = out[input.partkey];
       stats.sum_qty_raw += input.quantity_raw;
       stats.count += 1;
-      qty_price_by_qty[input.quantity_raw] += input.extendedprice_raw;
+      qty_price_by_part[input.partkey][input.quantity_raw] +=
+          input.extendedprice_raw;
     });
   }
 
-  stats.qty_price_pairs.reserve(qty_price_by_qty.size());
-  for (const auto &[qty, price] : qty_price_by_qty)
-    stats.qty_price_pairs.push_back(TpchQ17QtyPricePair{qty, price});
-  std::sort(stats.qty_price_pairs.begin(), stats.qty_price_pairs.end(),
-            [](const TpchQ17QtyPricePair &lhs, const TpchQ17QtyPricePair &rhs) {
-              return lhs.quantity_raw < rhs.quantity_raw;
-            });
-  stats.RecomputeContribution();
-  return stats;
+  for (auto &[partkey, qty_map] : qty_price_by_part) {
+    auto &stats = out[partkey];
+    stats.qty_price_pairs.clear();
+    stats.qty_price_pairs.reserve(qty_map.size());
+    for (const auto &[qty, price] : qty_map)
+      stats.qty_price_pairs.push_back(TpchQ17QtyPricePair{qty, price});
+    std::sort(stats.qty_price_pairs.begin(), stats.qty_price_pairs.end(),
+              [](const TpchQ17QtyPricePair &lhs, const TpchQ17QtyPricePair &rhs) {
+                return lhs.quantity_raw < rhs.quantity_raw;
+              });
+    stats.RecomputeContribution();
+  }
+  return out;
 }
 
 void TpchQ17Module::EmitResult(core::AuxEngineServices &services,

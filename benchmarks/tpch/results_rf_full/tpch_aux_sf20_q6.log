@@ -1,0 +1,47 @@
+# query=6 benchmark=tpch suite=lineitem_only write_frequency_pct=0
+tpch_q6_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=0 write_frequency_pct=0 num_queries=8571817 writes=0 workload_speedup=24218.4
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=300 measured_duration_sec=1500
+tpch_q6_aux_bench: wrote row write_interval_sec=300 write_frequency_pct=0 num_queries=17712688 writes=4 workload_speedup=20016.9
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=120 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=120 write_frequency_pct=0 num_queries=6343954 writes=3 workload_speedup=17920.3
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=60 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=60 write_frequency_pct=0 num_queries=3900297 writes=5 workload_speedup=11011.3
+suite,write_mode,write_policy,locality,write_frequency_pct,write_interval_sec,measured_duration_sec,reader_qps,query_num,num_queries,writes_executed,duckdb_ref_query_median_us,base_kernel_median_us,base_write_median_us,accel_write_median_us,accel_hit_median_us,fallback_median_us,accel_hit_rate,fallback_rate,total_duckdb_query_us,total_accel_query_us,total_base_write_us,total_accel_write_us,duckdb_workload_us,accel_workload_us,workload_speedup,cold_start_workload_speedup,query_only_speedup,blended_query_speedup,cold_start_accel_workload_us,setup_full_build_ms,aux_state_bytes,valid_partitions,total_slots,validity_slots_scanned_median,validity_scan_us_median,partitions_read_per_query_median,state_bytes_read_median,store_execute_calls
+lineitem_only,rf,hybrid,global,0,0,600,5243.34,6,8571817,0,1692396.57,1203948.30,0.00,0.00,69.69,0.00,1.00,0.00,14506913663752.24,599004582.70,0.00,0.00,14506913663752.24,599004582.70,24218.37,21427.55,17275.77,17275.77,677021582.70,78017.00,73935792,84,84,84.00,3.00,12.00,0,8571817
+lineitem_only,rf,hybrid,global,0,300.00,1500.00,5243.34,6,17712688,4,1692396.57,1203948.30,0.00,77053126.21,70.30,0.00,1.00,0.00,29976892363542.10,1189364604.95,0.00,308212504.83,29976892363542.10,1497577109.78,20016.93,19025.77,17125.86,17125.86,1575594109.78,78017.00,73935792,84,84,84.00,3.00,12.00,0,17712688
+lineitem_only,rf,hybrid,global,0,120.00,600.00,5243.34,6,6343954,3,1692396.57,1203948.30,0.00,52777892.14,66.28,0.00,1.00,0.00,10736485970805.92,440789418.23,0.00,158333676.41,10736485970805.92,599123094.64,17920.33,15855.63,18164.58,18164.58,677140094.64,78017.00,73935792,84,84,84.00,3.00,12.00,0,6343954
+lineitem_only,rf,hybrid,global,0,60.00,600.00,5243.34,6,3900297,5,1692396.57,1203948.30,0.00,65758616.33,69.58,0.00,1.00,0.00,6600849253080.40,270669732.80,0.00,328793081.66,6600849253080.40,599462814.46,11011.27,9743.24,17304.32,17304.32,677479814.46,78017.00,73935792,84,84,84.00,3.00,12.00,0,3900297
+# query=6 benchmark=tpch suite=lineitem_only write_frequency_pct=1
+tpch_q6_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=0 write_frequency_pct=0 num_queries=8932790 writes=0 workload_speedup=25547.9
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=300 measured_duration_sec=1500
+tpch_q6_aux_bench: wrote row write_interval_sec=300 write_frequency_pct=0 num_queries=17584353 writes=4 workload_speedup=20113.7
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=120 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=120 write_frequency_pct=0 num_queries=6420783 writes=3 workload_speedup=18358.2
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=60 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=60 write_frequency_pct=0 num_queries=4301445 writes=5 workload_speedup=12292.6
+# query=6 benchmark=tpch suite=lineitem_only write_frequency_pct=10
+tpch_q6_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=0 write_frequency_pct=0 num_queries=8544704 writes=0 workload_speedup=24400.6
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=300 measured_duration_sec=1500
+tpch_q6_aux_bench: wrote row write_interval_sec=300 write_frequency_pct=0 num_queries=17758776 writes=4 workload_speedup=20285.5
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=120 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=120 write_frequency_pct=0 num_queries=6851448 writes=3 workload_speedup=19563.5
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=60 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=60 write_frequency_pct=0 num_queries=4376561 writes=5 workload_speedup=12489.7
+# query=6 benchmark=tpch suite=lineitem_only write_frequency_pct=50
+tpch_q6_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=0 write_frequency_pct=0 num_queries=8841981 writes=0 workload_speedup=25049.5
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=300 measured_duration_sec=1500
+tpch_q6_aux_bench: wrote row write_interval_sec=300 write_frequency_pct=0 num_queries=17518448 writes=4 workload_speedup=19850
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=120 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=120 write_frequency_pct=0 num_queries=6783427 writes=3 workload_speedup=19213.6
+tpch_q6_aux_bench: starting write_mode=rf write_interval_sec=60 measured_duration_sec=600
+tpch_q6_aux_bench: wrote row write_interval_sec=60 write_frequency_pct=0 num_queries=4364139 writes=5 workload_speedup=12355.1
+wrote /home/akhilvb/accelerator-codegen/build-release/q6_aux_bench_tpch_sf20/results.csv
+/home/akhilvb/accelerator-codegen/build-release/q6_aux_bench_tpch_sf20/results.csv

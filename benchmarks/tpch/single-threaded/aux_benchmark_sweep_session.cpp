@@ -324,9 +324,25 @@ WorkloadTimings RunMeasuredWorkloadWallClock(
     // (write_latency > write_interval used to livelock Q3 at SF20).
     if (write_interval_sec > 0.0 &&
         elapsed_sec() + 1e-9 >= next_write_elapsed_sec) {
+      // Do not start a write after the budget — RF full-chunk apply can run
+      // for minutes and the deadline is only checked between iterations.
+      if (Clock::now() >= deadline) {
+        break;
+      }
+      const auto write_start = Clock::now();
       if (write_mode == WriteMode::Rf) {
+        std::cerr << "tpch_aux_bench: RF write begin seq=" << write_seq
+                  << " orders=" << rf_chunk_orders
+                  << " elapsed_sec=" << elapsed_sec() << '\n'
+                  << std::flush;
         write_samples.push_back(
             TimeAccelRfWriteCommitUs(runtime, write_seq++, rf_chunk_orders));
+        std::cerr << "tpch_aux_bench: RF write end seq=" << (write_seq - 1)
+                  << " write_sec="
+                  << std::chrono::duration<double>(Clock::now() - write_start)
+                         .count()
+                  << '\n'
+                  << std::flush;
       } else {
         auto probe = PickWriteProbe(probes, write_seq++);
         write_samples.push_back(TimeAccelWriteCommitUs(runtime, probe));

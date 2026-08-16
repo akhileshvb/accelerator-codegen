@@ -29,7 +29,7 @@ Q8Parameters BindQ8Parameters(const duckdb::vector<duckdb::Value> &inputs) {
 int32_t ResolveNationKey(duckdb::ClientContext &context, const std::string &nation_name) {
 	duckdb::Connection connection(*context.db);
 	std::ostringstream sql;
-	sql << "SELECT n_nationkey FROM nation WHERE n_name = '"
+	sql << "SELECT DISTINCT n_nationkey FROM nation WHERE n_name = '"
 	    << duckdb::StringUtil::Replace(nation_name, "'", "''") << "'";
 	auto result = connection.Query(sql.str());
 	if (result->HasError()) {

@@ -1,6 +1,8 @@
 #include "accelerator_codegen/stateful/core/query_layouts.hpp"
 #include "catalog/query_catalog.hpp"
 #include "tpch/q5/aux/module.hpp"
+#include "tpch/q9/aux/module.hpp"
+#include "tpch/q11/aux/module.hpp"
 #include "tpch/q16/aux/module.hpp"
 #include "tpch/q17/aux/module.hpp"
 #include "tpch/q18/aux/module.hpp"
@@ -202,6 +204,36 @@ SharedProbe BuildTpchQ6Probe(::duckdb::MaterializedQueryResult &result,
   return probe;
 }
 
+SharedProbe BuildTpchQ9Probe(::duckdb::MaterializedQueryResult &result,
+                             ::duckdb::idx_t row) {
+  // Aux row layout matches TpchQ9 Dependencies lineitem cols:
+  // partkey, suppkey, orderkey, quantity, extendedprice, discount.
+  const auto orderkey = result.GetValue(0, row).ToString();
+  const auto linenumber = result.GetValue(1, row).ToString();
+  const double price = std::stod(result.GetValue(5, row).ToString());
+  SharedProbe probe;
+  probe.table = 6;
+  probe.kind = core::MutationKind::Update;
+  probe.updated_columns = {4};
+  probe.write_delta = 0.01;
+  probe.current_value = price;
+  probe.old_row = {{Int(result.GetValue(2, row)), Int(result.GetValue(3, row)),
+                    Int(result.GetValue(0, row)),
+                    Decimal(DecimalRaw(result.GetValue(4, row)), 2),
+                    Decimal(DecimalRaw(result.GetValue(5, row)), 2),
+                    Decimal(DecimalRaw(result.GetValue(6, row)), 2)}};
+  probe.new_row = probe.old_row;
+  probe.new_row.values[4] = Decimal(
+      static_cast<int64_t>(DecimalRaw(result.GetValue(5, row)) + 1), 2);
+  probe.update_sql = "UPDATE lineitem SET l_extendedprice = l_extendedprice + 0.01"
+                     " WHERE l_orderkey = " +
+                     orderkey + " AND l_linenumber = " + linenumber;
+  probe.restore_sql = "UPDATE lineitem SET l_extendedprice = " +
+                      std::to_string(price) + " WHERE l_orderkey = " +
+                      orderkey + " AND l_linenumber = " + linenumber;
+  return probe;
+}
+
 SharedProbe BuildTpchQ10Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
   const auto orderkey = result.GetValue(0, row).ToString();
@@ -226,6 +258,33 @@ SharedProbe BuildTpchQ10Probe(::duckdb::MaterializedQueryResult &result,
   probe.restore_sql = "UPDATE lineitem SET l_extendedprice = " +
                       std::to_string(price) + " WHERE l_orderkey = " +
                       orderkey + " AND l_linenumber = " + linenumber;
+  return probe;
+}
+
+SharedProbe BuildTpchQ11Probe(::duckdb::MaterializedQueryResult &result,
+                              ::duckdb::idx_t row) {
+  // Aux row: partkey, suppkey, availqty, supplycost (TpchQ11Config partsupp=1).
+  const auto partkey = result.GetValue(0, row).ToString();
+  const auto suppkey = result.GetValue(1, row).ToString();
+  const double supplycost = std::stod(result.GetValue(3, row).ToString());
+  SharedProbe probe;
+  probe.table = 1;
+  probe.kind = core::MutationKind::Update;
+  probe.updated_columns = {3};
+  probe.write_delta = 0.01;
+  probe.current_value = supplycost;
+  probe.old_row = {{Int(result.GetValue(0, row)), Int(result.GetValue(1, row)),
+                    Int(result.GetValue(2, row)),
+                    Decimal(DecimalRaw(result.GetValue(3, row)), 2)}};
+  probe.new_row = probe.old_row;
+  probe.new_row.values[3] = Decimal(
+      static_cast<int64_t>(DecimalRaw(result.GetValue(3, row)) + 1), 2);
+  probe.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + 0.01"
+                     " WHERE ps_partkey = " +
+                     partkey + " AND ps_suppkey = " + suppkey;
+  probe.restore_sql = "UPDATE partsupp SET ps_supplycost = " +
+                      std::to_string(supplycost) + " WHERE ps_partkey = " +
+                      partkey + " AND ps_suppkey = " + suppkey;
   return probe;
 }
 
@@ -633,6 +692,35 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      1,
      false,
      BuildTpchQ6Probe},
+    {9,
+     SharedWorkloadKind::Tpch,
+     "tpch",
+     query::TpchQ9Layout::kAccelerator,
+     "SELECT nation, o_year, SUM(amount) AS sum_profit FROM ("
+     "SELECT n_name AS nation, EXTRACT(year FROM o_orderdate) AS o_year, "
+     "l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity AS amount "
+     "FROM part, supplier, lineitem, partsupp, orders, nation "
+     "WHERE s_suppkey = l_suppkey "
+     "AND ps_suppkey = l_suppkey "
+     "AND ps_partkey = l_partkey "
+     "AND p_partkey = l_partkey "
+     "AND o_orderkey = l_orderkey "
+     "AND s_nationkey = n_nationkey "
+     "AND p_name LIKE '%green%'"
+     ") AS profit "
+     "GROUP BY nation, o_year "
+     "ORDER BY nation, o_year DESC",
+     "SELECT * FROM accel_tpch_q9_aux('green')",
+     "SELECT * FROM accel_tpch_q9('green')",
+     "SELECT * FROM accel_tpch_q9_aux('green')",
+     "SELECT l_orderkey, l_linenumber, l_partkey, l_suppkey, l_quantity, "
+     "l_extendedprice, l_discount FROM lineitem "
+     "WHERE l_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE '%green%') "
+     "ORDER BY l_orderkey, l_linenumber LIMIT 1",
+     {{core::AuxValue::Of(core::AuxType::String, std::string{"green"})}},
+     6,
+     false,
+     BuildTpchQ9Probe},
     {10,
      SharedWorkloadKind::Tpch,
      "tpch",
@@ -658,6 +746,34 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      4,
      false,
      BuildTpchQ10Probe},
+    {11,
+     SharedWorkloadKind::Tpch,
+     "tpch",
+     query::TpchQ11Layout::kAccelerator,
+     "SELECT ps_partkey, SUM(ps_supplycost * ps_availqty) AS value "
+     "FROM partsupp, supplier, nation "
+     "WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey "
+     "AND n_name = 'ROMANIA' "
+     "GROUP BY ps_partkey "
+     "HAVING SUM(ps_supplycost * ps_availqty) > ("
+     "SELECT SUM(ps_supplycost * ps_availqty) * 0.0001 "
+     "FROM partsupp, supplier, nation "
+     "WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey "
+     "AND n_name = 'ROMANIA') "
+     "ORDER BY value DESC",
+     "SELECT * FROM accel_tpch_q11_aux('ROMANIA', 0.0001)",
+     "SELECT * FROM accel_tpch_q11('ROMANIA', 0.0001)",
+     "SELECT * FROM accel_tpch_q11_aux('ROMANIA', 0.0001)",
+     "SELECT ps_partkey, ps_suppkey, ps_availqty, ps_supplycost "
+     "FROM partsupp ps, supplier s, nation n "
+     "WHERE ps.ps_suppkey = s.s_suppkey AND s.s_nationkey = n.n_nationkey "
+     "AND n.n_name = 'ROMANIA' "
+     "ORDER BY ps_partkey, ps_suppkey LIMIT 1",
+     {{core::AuxValue::Of(core::AuxType::String, std::string{"ROMANIA"}),
+       core::AuxValue::Of(core::AuxType::Double, 0.0001)}},
+     1,
+     false,
+     BuildTpchQ11Probe},
     {12,
      SharedWorkloadKind::Tpch,
      "tpch",
@@ -1073,7 +1189,7 @@ const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_nam
 
 std::vector<int> SharedQueriesForWorkload(SharedWorkloadKind workload) {
   if (workload == SharedWorkloadKind::Tpch) {
-    return {1, 2, 3, 5, 6, 10, 12, 14, 16, 17, 18, 21};
+    return {1, 2, 3, 5, 6, 9, 10, 11, 12, 14, 16, 17, 18, 21};
   }
   return {1, 2, 3, 4, 6, 24};
 }

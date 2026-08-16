@@ -228,6 +228,9 @@ public:
 private:
   TpchQ17State BuildState(core::AuxEngineServices &) const;
   TpchQ17PartStats RebuildPartStatsFromScan(int64_t partkey) const;
+  // One SF20-scale aggregate scan for many partkeys (avoid N full rebuilds).
+  std::unordered_map<int64_t, TpchQ17PartStats>
+  RebuildPartStatsBatch(const std::unordered_set<int64_t> &partkeys) const;
   void EmitResult(core::AuxEngineServices &, const std::string &brand,
                   const std::string &container, core::AuxRowSink &) const;
 
