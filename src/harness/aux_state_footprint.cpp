@@ -2,6 +2,7 @@
 #include "accelerator_codegen/harness/aux_state_footprint.hpp"
 
 #include <cstring>
+#include <unordered_set>
 #include <vector>
 
 #include "accelerator_codegen/stateful/state/partitioned_state_store.hpp"
@@ -12,13 +13,20 @@
 #include "sec_edgar/q6/aux/module.hpp"
 #include "sec_edgar/q24/aux/module.hpp"
 #include "tpch/q1/aux/module.hpp"
+#include "tpch/q7/aux/module.hpp"
+#include "tpch/q8/aux/module.hpp"
 #include "tpch/q10/aux/module.hpp"
 #include "tpch/q11/aux/module.hpp"
 #include "tpch/q12/aux/module.hpp"
+#include "tpch/q13/aux/module.hpp"
 #include "tpch/q14/aux/module.hpp"
+#include "tpch/q15/aux/module.hpp"
 #include "tpch/q17/aux/module.hpp"
 #include "tpch/q18/aux/module.hpp"
+#include "tpch/q19/aux/module.hpp"
+#include "tpch/q20/aux/module.hpp"
 #include "tpch/q21/aux/module.hpp"
+#include "tpch/q22/aux/module.hpp"
 #include "tpch/q3/aux/module.hpp"
 #include "tpch/q6/aux/module.hpp"
 #include "tpch/q9/aux/module.hpp"
@@ -32,6 +40,8 @@ using query::TpchQ1StateImage;
 using query::TpchQ3ImageKind;
 using query::TpchQ3StateImage;
 using query::TpchQ6StateImage;
+using query::TpchQ7StateImage;
+using query::TpchQ8StateImage;
 using query::TpchQ9ImageKind;
 using query::TpchQ9StateImage;
 using query::TpchQ10ImageKind;
@@ -40,15 +50,21 @@ using query::TpchQ11ImageKind;
 using query::TpchQ11StateImage;
 using query::TpchQ12ImageKind;
 using query::TpchQ12StateImage;
+using query::TpchQ13StateImage;
 using query::TpchQ14ImageKind;
 using query::TpchQ14StateImage;
+using query::TpchQ15ImageKind;
+using query::TpchQ15StateImage;
 using query::TpchQ17ImageKind;
 using query::TpchQ17State;
 using query::TpchQ17StateImage;
 using query::TpchQ18ImageKind;
 using query::TpchQ18StateImage;
+using query::TpchQ19StateImage;
+using query::TpchQ20StateImage;
 using query::TpchQ21ImageKind;
 using query::TpchQ21StateImage;
+using query::TpchQ22StateImage;
 using query::SecEdgarQ1ImageKind;
 using query::SecEdgarQ1StateImage;
 using query::SecEdgarQ2ImageKind;
@@ -543,6 +559,168 @@ uint64_t FootprintSecEdgarQ6(const PartitionedStateStore &store) {
   return total;
 }
 
+uint64_t FootprintTpchQ7(const PartitionedStateStore &store) {
+  uint64_t total = 0;
+  store.ForEachSlot([&](PartitionKey, PartitionStatus status,
+                        const std::shared_ptr<const void> &payload,
+                        uint64_t) {
+    if (status != PartitionStatus::Valid || !payload) {
+      return;
+    }
+    const auto *image = static_cast<const TpchQ7StateImage *>(payload.get());
+    if (!image || !image->state) {
+      return;
+    }
+    const auto &s = *image->state;
+    total += 64;
+    total += s.nation_names.size() * 24;
+    total += s.supplier_nations.size() * 16;
+    total += s.customer_nations.size() * 16;
+    total += s.order_custkeys.size() * 16;
+    total += s.revenue_1995.size() * sizeof(int64_t);
+    total += s.revenue_1996.size() * sizeof(int64_t);
+    total += s.lineitem_index.size() * 40;
+  });
+  return total;
+}
+
+uint64_t FootprintTpchQ8(const PartitionedStateStore &store) {
+  uint64_t total = 0;
+  std::unordered_set<const void *> seen_states;
+  store.ForEachSlot([&](PartitionKey, PartitionStatus status,
+                        const std::shared_ptr<const void> &payload,
+                        uint64_t) {
+    if (status != PartitionStatus::Valid || !payload) {
+      return;
+    }
+    const auto *image = static_cast<const TpchQ8StateImage *>(payload.get());
+    if (!image || !image->state) {
+      return;
+    }
+    // Year partitions share one state object; count it once.
+    if (!seen_states.insert(image->state.get()).second) {
+      return;
+    }
+    total += AddEncoded(query::EncodeTpchQ8AnnualCube(*image->state));
+  });
+  return total;
+}
+
+uint64_t FootprintTpchQ13(const PartitionedStateStore &store) {
+  uint64_t total = 0;
+  store.ForEachSlot([&](PartitionKey, PartitionStatus status,
+                        const std::shared_ptr<const void> &payload,
+                        uint64_t) {
+    if (status != PartitionStatus::Valid || !payload) {
+      return;
+    }
+    const auto *image = static_cast<const TpchQ13StateImage *>(payload.get());
+    if (!image || !image->state) {
+      return;
+    }
+    // Encode omits comment side-data used for LIKE; count live footprint too.
+    total += AddEncoded(query::EncodeTpchQ13CustomerCounts(*image->state));
+    const auto &s = *image->state;
+    total += s.comments_blob.size();
+    total += s.order_custkeys.size() * sizeof(int64_t);
+    total += s.order_comment_start.size() * sizeof(uint32_t);
+    total += s.order_comment_len.size() * sizeof(uint32_t);
+    total += s.order_alive.size();
+    total += s.trigram_index_keys.size() * sizeof(uint32_t);
+    total += s.trigram_index_offsets.size() * sizeof(uint64_t);
+    total += s.trigram_index_rows.size() * sizeof(uint32_t);
+    total += s.trigram_index_lookup.size() * 16; // rough node overhead
+  });
+  return total;
+}
+
+uint64_t FootprintTpchQ15(const PartitionedStateStore &store) {
+  uint64_t total = 0;
+  store.ForEachSlot([&](PartitionKey, PartitionStatus status,
+                        const std::shared_ptr<const void> &payload,
+                        uint64_t) {
+    if (status != PartitionStatus::Valid || !payload) {
+      return;
+    }
+    const auto *image = static_cast<const TpchQ15StateImage *>(payload.get());
+    if (!image || !image->state) {
+      return;
+    }
+    switch (image->kind) {
+    case TpchQ15ImageKind::SupplierDirectory:
+      total += AddEncoded(query::EncodeTpchQ15Directory(image->state->directory));
+      break;
+    case TpchQ15ImageKind::MonthWindow: {
+      const auto it = image->state->windows.find(image->month_key);
+      if (it != image->state->windows.end()) {
+        total += AddEncoded(
+            query::EncodeTpchQ15Window(image->month_key, it->second));
+      }
+      break;
+    }
+    }
+  });
+  return total;
+}
+
+uint64_t FootprintTpchQ19(const PartitionedStateStore &store) {
+  uint64_t total = 0;
+  store.ForEachSlot([&](PartitionKey, PartitionStatus status,
+                        const std::shared_ptr<const void> &payload,
+                        uint64_t) {
+    if (status != PartitionStatus::Valid || !payload) {
+      return;
+    }
+    const auto *image = static_cast<const TpchQ19StateImage *>(payload.get());
+    if (!image || !image->state) {
+      return;
+    }
+    total += AddEncoded(query::EncodeTpchQ19Aggregate(*image->state));
+  });
+  return total;
+}
+
+uint64_t FootprintTpchQ20(const PartitionedStateStore &store) {
+  uint64_t total = 0;
+  store.ForEachSlot([&](PartitionKey, PartitionStatus status,
+                        const std::shared_ptr<const void> &payload,
+                        uint64_t) {
+    if (status != PartitionStatus::Valid || !payload) {
+      return;
+    }
+    const auto *image = static_cast<const TpchQ20StateImage *>(payload.get());
+    if (!image || !image->state) {
+      return;
+    }
+    total += AddEncoded(query::EncodeTpchQ20State(*image->state));
+  });
+  return total;
+}
+
+uint64_t FootprintTpchQ22(const PartitionedStateStore &store) {
+  uint64_t total = 0;
+  store.ForEachSlot([&](PartitionKey, PartitionStatus status,
+                        const std::shared_ptr<const void> &payload,
+                        uint64_t) {
+    if (status != PartitionStatus::Valid || !payload) {
+      return;
+    }
+    const auto *image = static_cast<const TpchQ22StateImage *>(payload.get());
+    if (!image || !image->state) {
+      return;
+    }
+    // Encode helper may be incomplete; estimate from live customer map.
+    const auto &s = *image->state;
+    total += 64;
+    total += s.customers.size() * 64;
+    total += s.prefix_positive_sum.size() * 32;
+    total += s.prefix_positive_count.size() * 32;
+    total += s.prefix_aggregates.size() * 128;
+    total += s.orphan_orders.size() * 24;
+  });
+  return total;
+}
+
 uint64_t FootprintSecEdgarQ24(const PartitionedStateStore &store) {
   uint64_t total = 0;
   store.ForEachSlot([&](PartitionKey, PartitionStatus status,
@@ -586,14 +764,21 @@ uint64_t ComputeAuxStateFootprintBytes(const PartitionedStateStore &store,
   DISPATCH(core::TpchQ1Layout::kAccelerator, FootprintTpchQ1);
   DISPATCH(core::TpchQ3Layout::kAccelerator, FootprintTpchQ3);
   DISPATCH(core::TpchQ6Layout::kAccelerator, FootprintTpchQ6);
+  DISPATCH(core::TpchQ7Layout::kAccelerator, FootprintTpchQ7);
+  DISPATCH(query::TpchQ8Layout::kAccelerator, FootprintTpchQ8);
   DISPATCH(query::TpchQ9Layout::kAccelerator, FootprintTpchQ9);
   DISPATCH(core::TpchQ10Layout::kAccelerator, FootprintTpchQ10);
   DISPATCH(query::TpchQ11Layout::kAccelerator, FootprintTpchQ11);
   DISPATCH(core::TpchQ12Layout::kAccelerator, FootprintTpchQ12);
+  DISPATCH(core::TpchQ13Layout::kAccelerator, FootprintTpchQ13);
   DISPATCH(core::TpchQ14Layout::kAccelerator, FootprintTpchQ14);
+  DISPATCH(query::TpchQ15Layout::kAccelerator, FootprintTpchQ15);
   DISPATCH(query::TpchQ17Layout::kAccelerator, FootprintTpchQ17);
   DISPATCH(query::TpchQ18Layout::kAccelerator, FootprintTpchQ18);
+  DISPATCH(query::TpchQ19Layout::kAccelerator, FootprintTpchQ19);
+  DISPATCH(query::TpchQ20Layout::kAccelerator, FootprintTpchQ20);
   DISPATCH(query::TpchQ21Layout::kAccelerator, FootprintTpchQ21);
+  DISPATCH(query::TpchQ22Layout::kAccelerator, FootprintTpchQ22);
   DISPATCH(core::SecEdgarQ1Layout::kAccelerator, FootprintSecEdgarQ1);
   DISPATCH(core::SecEdgarQ2Layout::kAccelerator, FootprintSecEdgarQ2);
   DISPATCH(core::SecEdgarQ3Layout::kAccelerator, FootprintSecEdgarQ3);

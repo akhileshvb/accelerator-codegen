@@ -21,6 +21,9 @@ using aux_engine::duckdb::DuckdbRuntime;
 using aux_engine::SharedQueryCatalogEntry;
 using aux_engine::SharedProbe;
 using aux_engine::FindSharedProbe;
+using aux_engine::FindInvalidatingSharedProbe;
+using aux_engine::FingerprintSharedBaseSql;
+using aux_engine::SharedProbeChangesBaseResult;
 
 void Require(bool condition, const std::string &message) {
   if (!condition) {
@@ -218,70 +221,6 @@ void RunDifferentialCheck(const std::string &db_path,
   RequireSharedMatchesBase(connection, runtime, entry);
 }
 
-std::string FingerprintBaseSql(::duckdb::Connection &connection,
-                               const SharedQueryCatalogEntry &entry) {
-  auto base_result = connection.Query(entry.base_sql);
-  Require(base_result != nullptr && !base_result->HasError(),
-          base_result ? base_result->GetError()
-                      : "DuckDB fingerprint query failed");
-  auto &base = base_result->Cast<::duckdb::MaterializedQueryResult>();
-  std::ostringstream out;
-  out << "rows=" << base.RowCount() << '\n';
-  for (::duckdb::idx_t row = 0; row < base.RowCount(); ++row) {
-    out << RowKey(base, row) << '\n';
-  }
-  return out.str();
-}
-
-std::string ExpandProbeSelectLimit(const char *probe_select_sql, int limit) {
-  Require(probe_select_sql != nullptr && *probe_select_sql,
-          "missing probe_select_sql");
-  std::string sql(probe_select_sql);
-  const auto pos = sql.rfind("LIMIT");
-  if (pos != std::string::npos) {
-    return sql.substr(0, pos) + "LIMIT " + std::to_string(limit);
-  }
-  return sql + " LIMIT " + std::to_string(limit);
-}
-
-bool ProbeChangesBaseResult(::duckdb::Connection &connection,
-                            const SharedQueryCatalogEntry &entry,
-                            const SharedProbe &probe,
-                            const std::string &before_fp) {
-  connection.BeginTransaction();
-  auto updated = connection.Query(probe.update_sql);
-  if (updated == nullptr || updated->HasError()) {
-    connection.Rollback();
-    return false;
-  }
-  const auto after_fp = FingerprintBaseSql(connection, entry);
-  connection.Rollback();
-  return after_fp != before_fp;
-}
-
-SharedProbe FindInvalidatingSharedProbe(::duckdb::Connection &connection,
-                                        const SharedQueryCatalogEntry &entry) {
-  const auto before_fp = FingerprintBaseSql(connection, entry);
-  const std::string probe_sql =
-      ExpandProbeSelectLimit(entry.probe_select_sql, /*limit=*/256);
-  auto result = connection.Query(probe_sql);
-  Require(result != nullptr && !result->HasError() && result->RowCount() >= 1,
-          result ? ("invalidating probe select failed for Q" +
-                    std::to_string(entry.query_id) + ": " + result->GetError())
-                 : "invalidating probe select returned null");
-  auto &materialized = result->Cast<::duckdb::MaterializedQueryResult>();
-  for (::duckdb::idx_t row = 0; row < materialized.RowCount(); ++row) {
-    auto probe = entry.build_probe(materialized, row);
-    if (ProbeChangesBaseResult(connection, entry, probe, before_fp)) {
-      return probe;
-    }
-  }
-  throw std::runtime_error(
-      "no shared probe candidate changed DuckDB Q" +
-      std::to_string(entry.query_id) +
-      " result (need a write that invalidates this query's aux state)");
-}
-
 void RunIncrementalDifferentialCheck(const std::string &db_path,
                                      const SharedQueryCatalogEntry &entry) {
   duckdb::DuckDB database(db_path.c_str());
@@ -290,19 +229,27 @@ void RunIncrementalDifferentialCheck(const std::string &db_path,
   runtime.Build();
   RequireSharedMatchesBase(connection, runtime, entry);
 
-  const auto before_fp = FingerprintBaseSql(connection, entry);
+  const auto before_fp = FingerprintSharedBaseSql(connection, entry);
   auto probe = FindInvalidatingSharedProbe(connection, entry);
-  Require(ProbeChangesBaseResult(connection, entry, probe, before_fp),
+  Require(SharedProbeChangesBaseResult(connection, entry, probe, before_fp),
           "selected probe no longer changes DuckDB result for Q" +
               std::to_string(entry.query_id));
 
-  runtime.Apply(probe);
+  try {
+    runtime.Apply(probe);
 
-  const auto after_fp = FingerprintBaseSql(connection, entry);
-  Require(after_fp != before_fp,
-          "Apply() did not change DuckDB Q" + std::to_string(entry.query_id) +
-              " result — write did not invalidate observable query state");
-  RequireSharedMatchesBase(connection, runtime, entry);
+    const auto after_fp = FingerprintSharedBaseSql(connection, entry);
+    Require(after_fp != before_fp,
+            "Apply() did not change DuckDB Q" + std::to_string(entry.query_id) +
+                " result — write did not invalidate observable query state");
+    RequireSharedMatchesBase(connection, runtime, entry);
+  } catch (...) {
+    auto restore = connection.Query(probe.restore_sql);
+    if (restore == nullptr || restore->HasError()) {
+      // Best-effort; still rethrow the original correctness failure.
+    }
+    throw;
+  }
 
   auto restore = connection.Query(probe.restore_sql);
   Require(restore != nullptr && !restore->HasError(),
@@ -325,7 +272,7 @@ void RunRfChunkDifferentialCheck(const std::string &db_path,
   runtime.Build();
   RequireSharedMatchesBase(connection, runtime, entry);
 
-  const auto before_fp = FingerprintBaseSql(connection, entry);
+  const auto before_fp = FingerprintSharedBaseSql(connection, entry);
   bool changed = false;
   int orders = order_count;
   int seq = 0;
@@ -340,7 +287,7 @@ void RunRfChunkDifferentialCheck(const std::string &db_path,
                                std::to_string(seq - 1) + " order_count=" +
                                std::to_string(orders) + ")");
     }
-    if (FingerprintBaseSql(connection, entry) != before_fp) {
+    if (FingerprintSharedBaseSql(connection, entry) != before_fp) {
       changed = true;
       break;
     }
@@ -353,7 +300,7 @@ void RunRfChunkDifferentialCheck(const std::string &db_path,
     // result-changing shared probe after RF maintenance has run.
     auto probe = FindInvalidatingSharedProbe(connection, entry);
     runtime.Apply(probe);
-    const auto after_fp = FingerprintBaseSql(connection, entry);
+    const auto after_fp = FingerprintSharedBaseSql(connection, entry);
     Require(after_fp != before_fp,
             "RF+probe did not change DuckDB Q" + std::to_string(entry.query_id) +
                 " result — cannot confirm aux invalidation");

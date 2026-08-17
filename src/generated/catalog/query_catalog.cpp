@@ -8,8 +8,19 @@
 #include "tpch/q18/aux/module.hpp"
 #include "tpch/q21/aux/module.hpp"
 #include "tpch/q2/aux/module.hpp"
+#include "tpch/q4/aux/module.hpp"
+#include "tpch/q7/aux/module.hpp"
+#include "tpch/q8/aux/module.hpp"
+#include "tpch/q13/aux/module.hpp"
+#include "tpch/q15/aux/module.hpp"
+#include "tpch/q19/aux/module.hpp"
+#include "tpch/q20/aux/module.hpp"
+#include "tpch/q22/aux/module.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -29,10 +40,15 @@ void Require(bool condition, const std::string &message) {
 }
 
 int64_t DecimalRaw(const ::duckdb::Value &value) {
-  return value.IsNull()
-             ? 0
-             : static_cast<int64_t>(std::llround(std::stod(value.ToString()) *
-                                                  100.0));
+  if (value.IsNull()) {
+    return 0;
+  }
+  try {
+    return static_cast<int64_t>(
+        std::llround(std::stod(value.ToString()) * 100.0));
+  } catch (const std::exception &) {
+    return 0;
+  }
 }
 
 core::AuxValue Text(const ::duckdb::Value &value) {
@@ -46,7 +62,11 @@ int64_t SafeInt64(const ::duckdb::Value &value) {
   if (value.IsNull()) {
     return 0;
   }
-  return static_cast<int64_t>(std::llround(std::stod(value.ToString())));
+  try {
+    return static_cast<int64_t>(std::llround(std::stod(value.ToString())));
+  } catch (const std::exception &) {
+    return 0;
+  }
 }
 
 core::AuxValue Int(const ::duckdb::Value &value) {
@@ -436,18 +456,20 @@ SharedProbe BuildTpchQ2Probe(::duckdb::MaterializedQueryResult &result,
   probe.table = 3; // partsupp
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {2};
-  probe.write_delta = 0.01;
+  probe.write_delta = 1000.0;
   probe.current_value = cost;
   probe.old_row = {{Int(result.GetValue(0, row)),
                     Int(result.GetValue(1, row)),
                     Decimal(DecimalRaw(result.GetValue(2, row)), 2)}};
   probe.new_row = probe.old_row;
   probe.new_row.values[2] = Decimal(
-      static_cast<int64_t>(DecimalRaw(result.GetValue(2, row)) + 1), 2);
-  probe.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + 0.01"
-                     " WHERE ps_partkey = " + partkey + " AND ps_suppkey = " + suppkey;
+      static_cast<int64_t>(DecimalRaw(result.GetValue(2, row)) + 100000), 2);
+  probe.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + 1000.0"
+                     " WHERE ps_partkey = " + partkey + " AND ps_suppkey = " +
+                     suppkey;
   probe.restore_sql = "UPDATE partsupp SET ps_supplycost = " + std::to_string(cost) +
-                      " WHERE ps_partkey = " + partkey + " AND ps_suppkey = " + suppkey;
+                      " WHERE ps_partkey = " + partkey + " AND ps_suppkey = " +
+                      suppkey;
   return probe;
 }
 
@@ -630,6 +652,231 @@ SharedProbe BuildSecEdgarQ24Probe(::duckdb::MaterializedQueryResult &result,
   probe.update_sql = "UPDATE num SET value = value + 0.001 WHERE rowid = " + rowid;
   probe.restore_sql = "UPDATE num SET value = " + std::to_string(value) +
                       " WHERE rowid = " + rowid;
+  return probe;
+}
+
+SharedProbe BuildTpchQ4Probe(::duckdb::MaterializedQueryResult &result,
+                             ::duckdb::idx_t row) {
+  // Clear late-receipt on a sole Q4-qualifying lineitem so EXISTS flips false
+  // for that order (price bumps never change Q4). Row layout matches
+  // TpchQ4Module::ReadLineitem: orderkey, commitdate, receiptdate.
+  // table id must match TpchQ4Config{1, 2}.lineitem_table.
+  const auto orderkey = result.GetValue(0, row).ToString();
+  const auto linenumber = result.GetValue(1, row).ToString();
+  const int32_t commit_days = DateDays(result.GetValue(2, row));
+  const int32_t receipt_days = DateDays(result.GetValue(3, row));
+  SharedProbe probe;
+  probe.table = 2;
+  probe.kind = core::MutationKind::Update;
+  probe.updated_columns = {2};
+  probe.write_delta = 1.0;
+  probe.current_value = static_cast<double>(receipt_days);
+  probe.old_row = {{Int(result.GetValue(0, row)), Date(commit_days),
+                    Date(receipt_days)}};
+  probe.new_row = probe.old_row;
+  probe.new_row.values[2] = Date(commit_days);
+  const auto commit_date =
+      ::duckdb::Date::ToString(::duckdb::date_t{commit_days});
+  const auto receipt_date =
+      ::duckdb::Date::ToString(::duckdb::date_t{receipt_days});
+  probe.update_sql = "UPDATE lineitem SET l_receiptdate = DATE '" + commit_date +
+                     "' WHERE l_orderkey = " + orderkey +
+                     " AND l_linenumber = " + linenumber;
+  probe.restore_sql = "UPDATE lineitem SET l_receiptdate = DATE '" + receipt_date +
+                      "' WHERE l_orderkey = " + orderkey +
+                      " AND l_linenumber = " + linenumber;
+  return probe;
+}
+
+SharedProbe BuildTpchQ19Probe(::duckdb::MaterializedQueryResult &result,
+                              ::duckdb::idx_t row) {
+  // Select columns: orderkey, partkey, linenumber, qty, price, discount,
+  // shipmode, shipinstruct. table=5 matches TpchQ19Config{5,6}.lineitem_table.
+  const auto orderkey = result.GetValue(0, row).ToString();
+  const auto partkey = result.GetValue(1, row).ToString();
+  const auto linenumber = result.GetValue(2, row).ToString();
+  double quantity = 0.0;
+  try {
+    quantity = std::stod(result.GetValue(3, row).ToString());
+  } catch (const std::exception &) {
+    quantity = static_cast<double>(DecimalRaw(result.GetValue(3, row))) / 100.0;
+  }
+  SharedProbe probe;
+  probe.table = 5;
+  probe.kind = core::MutationKind::Update;
+  probe.updated_columns = {1};
+  probe.write_delta = 100.0;
+  probe.current_value = quantity;
+  probe.old_row = {{Int(result.GetValue(1, row)),
+                    Decimal(DecimalRaw(result.GetValue(3, row)), 2),
+                    Decimal(DecimalRaw(result.GetValue(4, row)), 2),
+                    Decimal(DecimalRaw(result.GetValue(5, row)), 2),
+                    Text(result.GetValue(6, row)), Text(result.GetValue(7, row))}};
+  probe.new_row = probe.old_row;
+  probe.new_row.values[1] = Decimal(
+      static_cast<int64_t>(DecimalRaw(result.GetValue(3, row)) + 10000), 2);
+  probe.update_sql = "UPDATE lineitem SET l_quantity = l_quantity + 100"
+                     " WHERE l_orderkey = " + orderkey +
+                     " AND l_partkey = " + partkey +
+                     " AND l_linenumber = " + linenumber;
+  probe.restore_sql = "UPDATE lineitem SET l_quantity = " +
+                      std::to_string(quantity) + " WHERE l_orderkey = " +
+                      orderkey + " AND l_partkey = " + partkey +
+                      " AND l_linenumber = " + linenumber;
+  return probe;
+}
+
+SharedProbe BuildTpchQ7Probe(::duckdb::MaterializedQueryResult &result,
+                             ::duckdb::idx_t row) {
+  const auto orderkey = result.GetValue(0, row).ToString();
+  const auto linenumber = result.GetValue(1, row).ToString();
+  const double price = std::stod(result.GetValue(2, row).ToString());
+  SharedProbe probe;
+  probe.table = 4;
+  probe.kind = core::MutationKind::Update;
+  probe.updated_columns = {2};
+  probe.write_delta = 0.01;
+  probe.current_value = price;
+  probe.old_row = {{Int(result.GetValue(0, row)),
+                    Decimal(DecimalRaw(result.GetValue(2, row)), 2),
+                    Decimal(DecimalRaw(result.GetValue(3, row)), 2)}};
+  probe.new_row = probe.old_row;
+  probe.new_row.values[1] = Decimal(
+      static_cast<int64_t>(DecimalRaw(result.GetValue(2, row)) + 1), 2);
+  probe.update_sql = "UPDATE lineitem SET l_extendedprice = l_extendedprice + 0.01"
+                     " WHERE l_orderkey = " +
+                     orderkey + " AND l_linenumber = " + linenumber;
+  probe.restore_sql = "UPDATE lineitem SET l_extendedprice = " +
+                      std::to_string(price) + " WHERE l_orderkey = " +
+                      orderkey + " AND l_linenumber = " + linenumber;
+  return probe;
+}
+
+SharedProbe BuildTpchQ8Probe(::duckdb::MaterializedQueryResult &result,
+                             ::duckdb::idx_t row) {
+  // AuxRow matches TpchQ8 ReadLineitem: partkey, orderkey, suppkey, price, discount.
+  // table id matches TpchQ8Config{0,1,2,3,4}.lineitem_table = 4.
+  // Large price bump so mkt_share fingerprint changes (tiny +0.01 can round away).
+  constexpr int64_t kPriceBumpRaw = 10000; // +100.00 at scale 2
+  const auto orderkey = result.GetValue(1, row).ToString();
+  const auto linenumber = result.GetValue(5, row).ToString();
+  const double price = std::stod(result.GetValue(3, row).ToString());
+  const int64_t price_raw = DecimalRaw(result.GetValue(3, row));
+  SharedProbe probe;
+  probe.table = 4;
+  probe.kind = core::MutationKind::Update;
+  probe.updated_columns = {3};
+  probe.write_delta = 100.0;
+  probe.current_value = price;
+  probe.old_row = {{Int(result.GetValue(0, row)), Int(result.GetValue(1, row)),
+                    Int(result.GetValue(2, row)), Decimal(price_raw, 2),
+                    Decimal(DecimalRaw(result.GetValue(4, row)), 2)}};
+  probe.new_row = probe.old_row;
+  probe.new_row.values[3] = Decimal(price_raw + kPriceBumpRaw, 2);
+  probe.update_sql = "UPDATE lineitem SET l_extendedprice = l_extendedprice + 100.00"
+                     " WHERE l_orderkey = " + orderkey +
+                     " AND l_linenumber = " + linenumber;
+  probe.restore_sql = "UPDATE lineitem SET l_extendedprice = " +
+                      std::to_string(price) + " WHERE l_orderkey = " +
+                      orderkey + " AND l_linenumber = " + linenumber;
+  return probe;
+}
+
+SharedProbe BuildTpchQ13Probe(::duckdb::MaterializedQueryResult &result,
+                              ::duckdb::idx_t row) {
+  const auto orderkey = result.GetValue(0, row).ToString();
+  const auto comment = result.GetValue(2, row).ToString();
+  SharedProbe probe;
+  probe.table = 1;  // TpchQ13Config{0,1}.orders_table
+  probe.kind = core::MutationKind::Update;
+  probe.updated_columns = {1};
+  probe.write_delta = 1.0;
+  probe.current_value = 0.0;
+  probe.old_row = {{Int(result.GetValue(1, row)), Text(result.GetValue(2, row))}};
+  probe.new_row = probe.old_row;
+  probe.new_row.values[1] =
+      core::AuxValue::Of(core::AuxType::String, comment + " unusual accounts");
+  probe.update_sql =
+      "UPDATE orders SET o_comment = o_comment || ' unusual accounts' "
+      "WHERE o_orderkey = " + orderkey;
+  probe.restore_sql = "UPDATE orders SET o_comment = " + SqlLiteral(comment) +
+                      " WHERE o_orderkey = " + orderkey;
+  return probe;
+}
+
+SharedProbe BuildTpchQ15Probe(::duckdb::MaterializedQueryResult &result,
+                              ::duckdb::idx_t row) {
+  const auto orderkey = result.GetValue(0, row).ToString();
+  const auto linenumber = result.GetValue(1, row).ToString();
+  const double price = std::stod(result.GetValue(2, row).ToString());
+  SharedProbe probe;
+  probe.table = 1;
+  probe.kind = core::MutationKind::Update;
+  probe.updated_columns = {2};
+  probe.write_delta = 0.01;
+  probe.current_value = price;
+  probe.old_row = {{Date(DateDays(result.GetValue(4, row))),
+                    Int(result.GetValue(5, row)),
+                    Decimal(DecimalRaw(result.GetValue(2, row)), 2),
+                    Decimal(DecimalRaw(result.GetValue(3, row)), 2)}};
+  probe.new_row = probe.old_row;
+  probe.new_row.values[2] = Decimal(
+      static_cast<int64_t>(DecimalRaw(result.GetValue(2, row)) + 1), 2);
+  probe.update_sql = "UPDATE lineitem SET l_extendedprice = l_extendedprice + 0.01"
+                     " WHERE l_orderkey = " +
+                     orderkey + " AND l_linenumber = " + linenumber;
+  probe.restore_sql = "UPDATE lineitem SET l_extendedprice = " +
+                      std::to_string(price) + " WHERE l_orderkey = " +
+                      orderkey + " AND l_linenumber = " + linenumber;
+  return probe;
+}
+
+SharedProbe BuildTpchQ20Probe(::duckdb::MaterializedQueryResult &result,
+                              ::duckdb::idx_t row) {
+  const auto orderkey = result.GetValue(0, row).ToString();
+  const auto linenumber = result.GetValue(1, row).ToString();
+  const double quantity = std::stod(result.GetValue(2, row).ToString());
+  SharedProbe probe;
+  probe.table = 1;  // TpchQ20Config lineitem_table
+  probe.kind = core::MutationKind::Update;
+  probe.updated_columns = {3};
+  probe.write_delta = 100000.0;
+  probe.current_value = quantity;
+  probe.old_row = {{Date(DateDays(result.GetValue(3, row))),
+                    Int(result.GetValue(4, row)), Int(result.GetValue(5, row)),
+                    Decimal(DecimalRaw(result.GetValue(2, row)), 2)}};
+  probe.new_row = probe.old_row;
+  probe.new_row.values[3] = Decimal(
+      static_cast<int64_t>(DecimalRaw(result.GetValue(2, row)) + 10000000), 2);
+  probe.update_sql = "UPDATE lineitem SET l_quantity = l_quantity + 100000"
+                     " WHERE l_orderkey = " +
+                     orderkey + " AND l_linenumber = " + linenumber;
+  probe.restore_sql = "UPDATE lineitem SET l_quantity = " +
+                      std::to_string(quantity) + " WHERE l_orderkey = " +
+                      orderkey + " AND l_linenumber = " + linenumber;
+  return probe;
+}
+
+SharedProbe BuildTpchQ22Probe(::duckdb::MaterializedQueryResult &result,
+                              ::duckdb::idx_t row) {
+  const auto custkey = result.GetValue(0, row).ToString();
+  const double acctbal = std::stod(result.GetValue(1, row).ToString());
+  SharedProbe probe;
+  probe.table = 9;
+  probe.kind = core::MutationKind::Update;
+  probe.updated_columns = {2};
+  probe.write_delta = 0.01;
+  probe.current_value = acctbal;
+  probe.old_row = {{Int(result.GetValue(0, row)),
+                    Decimal(DecimalRaw(result.GetValue(1, row)), 2)}};
+  probe.new_row = probe.old_row;
+  probe.new_row.values[1] = Decimal(
+      static_cast<int64_t>(DecimalRaw(result.GetValue(1, row)) + 1), 2);
+  probe.update_sql =
+      "UPDATE customer SET c_acctbal = c_acctbal + 0.01 WHERE c_custkey = " +
+      custkey;
+  probe.restore_sql = "UPDATE customer SET c_acctbal = " + std::to_string(acctbal) +
+                      " WHERE c_custkey = " + custkey;
   return probe;
 }
 
@@ -889,8 +1136,17 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      "SELECT * FROM accel_tpch_q5_aux('AMERICA', DATE '1995-01-01')",
      "SELECT * FROM accel_tpch_q5('AMERICA', DATE '1995-01-01')",
      "SELECT * FROM accel_tpch_q5_aux('AMERICA', DATE '1995-01-01')",
-     "SELECT l_orderkey, l_linenumber, l_extendedprice, l_discount FROM lineitem "
-     "ORDER BY l_orderkey, l_linenumber LIMIT 1",
+     "SELECT l.l_orderkey, l.l_linenumber, l.l_extendedprice, l.l_discount "
+     "FROM lineitem l "
+     "JOIN orders o ON o.o_orderkey = l.l_orderkey "
+     "JOIN customer c ON c.c_custkey = o.o_custkey "
+     "JOIN supplier s ON s.s_suppkey = l.l_suppkey AND s.s_nationkey = c.c_nationkey "
+     "JOIN nation n ON n.n_nationkey = s.s_nationkey "
+     "JOIN region r ON r.r_regionkey = n.n_regionkey "
+     "WHERE r.r_name = 'AMERICA' "
+     "AND o.o_orderdate >= DATE '1995-01-01' "
+     "AND o.o_orderdate < DATE '1995-01-01' + INTERVAL '1' year "
+     "ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1",
      {{core::AuxValue::Of(core::AuxType::String, std::string{"AMERICA"}),
        core::AuxValue::Of(core::AuxType::Date,
                           core::AuxDate{::duckdb::Date::EpochDays(
@@ -999,8 +1255,17 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      "SELECT * FROM accel_tpch_q2_aux(15, '%BRASS', 'EUROPE')",
      "SELECT * FROM accel_tpch_q2(15, '%BRASS', 'EUROPE')",
      "SELECT * FROM accel_tpch_q2_aux(15, '%BRASS', 'EUROPE')",
-     "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp "
-     "ORDER BY ps_partkey, ps_suppkey LIMIT 1",
+     "SELECT ps.ps_partkey, ps.ps_suppkey, ps.ps_supplycost "
+     "FROM part p, supplier s, partsupp ps, nation n, region r "
+     "WHERE p.p_partkey = ps.ps_partkey AND s.s_suppkey = ps.ps_suppkey "
+     "AND p.p_size = 15 AND p.p_type LIKE '%BRASS' "
+     "AND s.s_nationkey = n.n_nationkey AND n.n_regionkey = r.r_regionkey "
+     "AND r.r_name = 'EUROPE' "
+     "AND ps.ps_supplycost = (SELECT MIN(ps_supplycost) FROM partsupp, supplier, "
+     "nation, region WHERE p.p_partkey = ps_partkey AND s_suppkey = ps_suppkey "
+     "AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey "
+     "AND r_name = 'EUROPE') "
+     "ORDER BY s.s_acctbal DESC, n.n_name, s.s_name, p.p_partkey LIMIT 1",
      {{core::AuxValue::Of(core::AuxType::Int64, static_cast<int64_t>(15)),
        core::AuxValue::Of(core::AuxType::String, std::string{"%BRASS"}),
        core::AuxValue::Of(core::AuxType::String, std::string{"EUROPE"})}},
@@ -1037,6 +1302,276 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      3,
      false,
      BuildTpchQ21Probe},
+    {4,
+     SharedWorkloadKind::Tpch,
+     "tpch",
+     query::TpchQ4Layout::kAccelerator,
+     "SELECT o_orderpriority, COUNT(o_orderkey) AS order_count "
+     "FROM orders "
+     "WHERE o_orderdate >= DATE '1993-07-01' "
+     "AND o_orderdate < DATE '1993-07-01' + INTERVAL '3' month "
+     "AND EXISTS ("
+     "SELECT * FROM lineitem WHERE l_orderkey = o_orderkey "
+     "AND l_commitdate < l_receiptdate) "
+     "GROUP BY o_orderpriority ORDER BY o_orderpriority",
+     "SELECT * FROM accel_tpch_q4_aux(DATE '1993-07-01')",
+     "SELECT * FROM accel_tpch_q4(DATE '1993-07-01')",
+     "SELECT * FROM accel_tpch_q4_aux(DATE '1993-07-01')",
+     // Sole late-receipt lineitem on an in-window order so clearing receipt
+     // drops the order from EXISTS / order_count.
+     "SELECT l.l_orderkey, l.l_linenumber, l.l_commitdate, l.l_receiptdate "
+     "FROM lineitem l "
+     "JOIN orders o ON o.o_orderkey = l.l_orderkey "
+     "WHERE o.o_orderdate >= DATE '1993-07-01' "
+     "AND o.o_orderdate < DATE '1993-07-01' + INTERVAL '3' month "
+     "AND l.l_commitdate < l.l_receiptdate "
+     "AND (SELECT COUNT(*) FROM lineitem l2 "
+     "WHERE l2.l_orderkey = l.l_orderkey "
+     "AND l2.l_commitdate < l2.l_receiptdate) = 1 "
+     "ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1",
+     {{core::AuxValue::Of(core::AuxType::Date,
+                          core::AuxDate{::duckdb::Date::EpochDays(
+                              ::duckdb::Date::FromString("1993-07-01"))})}},
+     2,
+     false,
+     BuildTpchQ4Probe},
+    {7,
+     SharedWorkloadKind::Tpch,
+     "tpch",
+     core::TpchQ7Layout::kAccelerator,
+     "SELECT supp_nation, cust_nation, l_year, SUM(volume) AS revenue FROM ("
+     "SELECT n1.n_name AS supp_nation, n2.n_name AS cust_nation, "
+     "EXTRACT(year FROM l_shipdate) AS l_year, "
+     "l_extendedprice * (1 - l_discount) AS volume "
+     "FROM supplier, lineitem, orders, customer, nation n1, nation n2 "
+     "WHERE s_suppkey = l_suppkey AND o_orderkey = l_orderkey "
+     "AND c_custkey = o_custkey AND s_nationkey = n1.n_nationkey "
+     "AND c_nationkey = n2.n_nationkey "
+     "AND ((n1.n_name = 'UNITED KINGDOM' AND n2.n_name = 'BRAZIL') "
+     "OR (n1.n_name = 'BRAZIL' AND n2.n_name = 'UNITED KINGDOM')) "
+     "AND l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31') AS shipping "
+     "GROUP BY supp_nation, cust_nation, l_year "
+     "ORDER BY supp_nation, cust_nation, l_year",
+     "SELECT * FROM accel_tpch_q7_aux('UNITED KINGDOM', 'BRAZIL')",
+     "SELECT * FROM accel_tpch_q7('UNITED KINGDOM', 'BRAZIL')",
+     "SELECT * FROM accel_tpch_q7_aux('UNITED KINGDOM', 'BRAZIL')",
+     "SELECT l_orderkey, l_linenumber, l_extendedprice, l_discount FROM lineitem "
+     "WHERE l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
+     "ORDER BY l_orderkey, l_linenumber LIMIT 1",
+     {{core::AuxValue::Of(core::AuxType::String, std::string{"UNITED KINGDOM"}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"BRAZIL"})}},
+     4,
+     false,
+     BuildTpchQ7Probe},
+    {8,
+     SharedWorkloadKind::Tpch,
+     "tpch",
+     query::TpchQ8Layout::kAccelerator,
+     "SELECT o_year, SUM(CASE WHEN nation = 'INDIA' THEN volume ELSE 0 END) / "
+     "SUM(volume) AS mkt_share FROM ("
+     "SELECT EXTRACT(year FROM o_orderdate) AS o_year, "
+     "l_extendedprice * (1 - l_discount) AS volume, n2.n_name AS nation "
+     "FROM part, supplier, lineitem, orders, customer, nation n1, nation n2, region "
+     "WHERE p_partkey = l_partkey AND s_suppkey = l_suppkey "
+     "AND l_orderkey = o_orderkey AND o_custkey = c_custkey "
+     "AND c_nationkey = n1.n_nationkey AND n1.n_regionkey = r_regionkey "
+     "AND r_name = 'ASIA' AND s_nationkey = n2.n_nationkey "
+     "AND o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
+     "AND p_type = 'PROMO BRUSHED BRASS') AS all_nations "
+     "GROUP BY o_year ORDER BY o_year",
+     "SELECT * FROM accel_tpch_q8_aux('INDIA', 'ASIA', 'PROMO BRUSHED BRASS')",
+     "SELECT * FROM accel_tpch_q8('INDIA', 'ASIA', 'PROMO BRUSHED BRASS')",
+     "SELECT * FROM accel_tpch_q8_aux('INDIA', 'ASIA', 'PROMO BRUSHED BRASS')",
+     // Must join the full Q8 path (ASIA customer region) so +price changes mkt_share.
+     "SELECT l.l_partkey, l.l_orderkey, l.l_suppkey, l.l_extendedprice, "
+     "l.l_discount, l.l_linenumber FROM lineitem l "
+     "JOIN part p ON p.p_partkey = l.l_partkey AND p.p_type = 'PROMO BRUSHED BRASS' "
+     "JOIN orders o ON o.o_orderkey = l.l_orderkey "
+     "JOIN customer c ON c.c_custkey = o.o_custkey "
+     "JOIN nation n1 ON n1.n_nationkey = c.c_nationkey "
+     "JOIN region r ON r.r_regionkey = n1.n_regionkey AND r.r_name = 'ASIA' "
+     "WHERE o.o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
+     "ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1",
+     {{core::AuxValue::Of(core::AuxType::String, std::string{"INDIA"}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"ASIA"}),
+       core::AuxValue::Of(core::AuxType::String,
+                          std::string{"PROMO BRUSHED BRASS"})}},
+     4,
+     false,
+     BuildTpchQ8Probe},
+    {13,
+     SharedWorkloadKind::Tpch,
+     "tpch",
+     core::TpchQ13Layout::kAccelerator,
+     "SELECT c_count, COUNT(*) AS custdist FROM ("
+     "SELECT c_custkey, COUNT(o_orderkey) AS c_count FROM customer "
+     "LEFT OUTER JOIN orders ON c_custkey = o_custkey AND o_comment NOT LIKE "
+     "'%unusual%accounts%' GROUP BY c_custkey) AS c_orders "
+     "GROUP BY c_count ORDER BY custdist DESC, c_count DESC",
+     "SELECT * FROM accel_tpch_q13_aux('%unusual%accounts%')",
+     "SELECT * FROM accel_tpch_q13('%unusual%accounts%')",
+     "SELECT * FROM accel_tpch_q13_aux('%unusual%accounts%')",
+     "SELECT o_orderkey, o_custkey, o_comment FROM orders "
+     "WHERE o_comment NOT LIKE '%unusual%accounts%' "
+     "ORDER BY o_orderkey LIMIT 1",
+     {{core::AuxValue::Of(core::AuxType::String,
+                          std::string{"%unusual%accounts%"})}},
+     1,
+     false,
+     BuildTpchQ13Probe},
+    {15,
+     SharedWorkloadKind::Tpch,
+     "tpch",
+     query::TpchQ15Layout::kAccelerator,
+     "SELECT s_suppkey, s_name, s_address, s_phone, total_revenue "
+     "FROM supplier, ("
+     "SELECT l_suppkey AS supplier_no, "
+     "SUM(l_extendedprice * (1 - l_discount)) AS total_revenue "
+     "FROM lineitem WHERE l_shipdate >= DATE '1994-11-01' "
+     "AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH "
+     "GROUP BY l_suppkey) revenue0 "
+     "WHERE s_suppkey = supplier_no "
+     "AND total_revenue = (SELECT MAX(total_revenue) FROM ("
+     "SELECT l_suppkey AS supplier_no, "
+     "SUM(l_extendedprice * (1 - l_discount)) AS total_revenue "
+     "FROM lineitem WHERE l_shipdate >= DATE '1994-11-01' "
+     "AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH "
+     "GROUP BY l_suppkey) revenue1) ORDER BY s_suppkey",
+     "SELECT * FROM accel_tpch_q15_aux(DATE '1994-11-01')",
+     "SELECT * FROM accel_tpch_q15(DATE '1994-11-01')",
+     "SELECT * FROM accel_tpch_q15_aux(DATE '1994-11-01')",
+     "SELECT l_orderkey, l_linenumber, l_extendedprice, l_discount, l_shipdate, "
+     "l_suppkey FROM lineitem "
+     "WHERE l_shipdate >= DATE '1994-11-01' "
+     "AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH "
+     "AND l_suppkey = (SELECT l_suppkey FROM lineitem "
+     "WHERE l_shipdate >= DATE '1994-11-01' "
+     "AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH "
+     "GROUP BY l_suppkey "
+     "ORDER BY SUM(l_extendedprice * (1 - l_discount)) DESC LIMIT 1) "
+     "ORDER BY l_orderkey, l_linenumber LIMIT 1",
+     {{core::AuxValue::Of(core::AuxType::Date,
+                          core::AuxDate{::duckdb::Date::EpochDays(
+                              ::duckdb::Date::FromString("1994-11-01"))})}},
+     1,
+     false,
+     BuildTpchQ15Probe},
+    {19,
+     SharedWorkloadKind::Tpch,
+     "tpch",
+     query::TpchQ19Layout::kAccelerator,
+     "SELECT SUM(l_extendedprice * (1 - l_discount)) AS revenue "
+     "FROM lineitem, part "
+     "WHERE (p_partkey = l_partkey "
+     "AND p_brand = 'Brand#31' "
+     "AND p_container IN ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG') "
+     "AND l_quantity >= 4 AND l_quantity <= 4 + 10 "
+     "AND p_size BETWEEN 1 AND 5 "
+     "AND l_shipmode IN ('AIR', 'AIR REG') "
+     "AND l_shipinstruct = 'DELIVER IN PERSON') "
+     "OR (p_partkey = l_partkey "
+     "AND p_brand = 'Brand#12' "
+     "AND p_container IN ('MED BAG', 'MED BOX', 'MED PKG', 'MED PACK') "
+     "AND l_quantity >= 15 AND l_quantity <= 15 + 10 "
+     "AND p_size BETWEEN 1 AND 10 "
+     "AND l_shipmode IN ('AIR', 'AIR REG') "
+     "AND l_shipinstruct = 'DELIVER IN PERSON') "
+     "OR (p_partkey = l_partkey "
+     "AND p_brand = 'Brand#51' "
+     "AND p_container IN ('LG CASE', 'LG BOX', 'LG PACK', 'LG PKG') "
+     "AND l_quantity >= 23 AND l_quantity <= 23 + 10 "
+     "AND p_size BETWEEN 1 AND 15 "
+     "AND l_shipmode IN ('AIR', 'AIR REG') "
+     "AND l_shipinstruct = 'DELIVER IN PERSON')",
+     "SELECT * FROM accel_tpch_q19_aux('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)",
+     "SELECT * FROM accel_tpch_q19('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)",
+     "SELECT * FROM accel_tpch_q19_aux('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)",
+     "SELECT l.l_orderkey, l.l_partkey, l.l_linenumber, l.l_quantity, "
+     "l.l_extendedprice, l.l_discount, l.l_shipmode, l.l_shipinstruct "
+     "FROM lineitem l, part p "
+     "WHERE p.p_partkey = l.l_partkey AND p.p_brand = 'Brand#31' "
+     "AND p.p_container IN ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG') "
+     "AND l.l_quantity >= 4 AND l.l_quantity <= 14 "
+     "AND p.p_size BETWEEN 1 AND 5 "
+     "AND l.l_shipmode IN ('AIR', 'AIR REG') "
+     "AND l.l_shipinstruct = 'DELIVER IN PERSON' "
+     "ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1",
+     {{core::AuxValue::Of(core::AuxType::String, std::string{"Brand#31"}),
+       core::AuxValue::Of(core::AuxType::Int64, int64_t{4}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"Brand#12"}),
+       core::AuxValue::Of(core::AuxType::Int64, int64_t{15}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"Brand#51"}),
+       core::AuxValue::Of(core::AuxType::Int64, int64_t{23})}},
+     5,
+     false,
+     BuildTpchQ19Probe},
+    {20,
+     SharedWorkloadKind::Tpch,
+     "tpch",
+     query::TpchQ20Layout::kAccelerator,
+     "SELECT s_name, s_address "
+     "FROM supplier, nation "
+     "WHERE s_suppkey IN ("
+     "SELECT ps_suppkey FROM partsupp, ("
+     "SELECT l_partkey agg_partkey, l_suppkey agg_suppkey, 0.5 * SUM(l_quantity) AS agg_quantity "
+     "FROM lineitem WHERE l_shipdate >= DATE '1997-01-01' "
+     "AND l_shipdate < DATE '1997-01-01' + INTERVAL '1' year "
+     "GROUP BY l_partkey, l_suppkey) agg_lineitem "
+     "WHERE agg_partkey = ps_partkey AND agg_suppkey = ps_suppkey "
+     "AND ps_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE 'gainsboro%') "
+     "AND ps_availqty > agg_quantity) "
+     "AND s_nationkey = n_nationkey AND n_name = 'RUSSIA' "
+     "ORDER BY s_name",
+     "SELECT * FROM accel_tpch_q20_aux(DATE '1997-01-01', 'gainsboro%', 'RUSSIA')",
+     "SELECT * FROM accel_tpch_q20(DATE '1997-01-01', 'gainsboro%', 'RUSSIA')",
+     "SELECT * FROM accel_tpch_q20_aux(DATE '1997-01-01', 'gainsboro%', 'RUSSIA')",
+     "SELECT l.l_orderkey, l.l_linenumber, l.l_quantity, l.l_shipdate, "
+     "l.l_partkey, l.l_suppkey FROM lineitem l "
+     "JOIN part p ON p.p_partkey = l.l_partkey AND p.p_name LIKE 'gainsboro%' "
+     "JOIN partsupp ps ON ps.ps_partkey = l.l_partkey AND ps.ps_suppkey = l.l_suppkey "
+     "JOIN supplier s ON s.s_suppkey = l.l_suppkey "
+     "JOIN nation n ON n.n_nationkey = s.s_nationkey AND n.n_name = 'RUSSIA' "
+     "WHERE l.l_shipdate >= DATE '1997-01-01' "
+     "AND l.l_shipdate < DATE '1998-01-01' "
+     "ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1",
+     {{core::AuxValue::Of(core::AuxType::Date,
+                          core::AuxDate{::duckdb::Date::EpochDays(
+                              ::duckdb::Date::FromString("1997-01-01"))}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"gainsboro%"}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"RUSSIA"})}},
+     1,
+     false,
+     BuildTpchQ20Probe},
+    {22,
+     SharedWorkloadKind::Tpch,
+     "tpch",
+     query::TpchQ22Layout::kAccelerator,
+     "WITH custsale AS ("
+     "SELECT SUBSTRING(c_phone FROM 1 FOR 2) AS cntrycode, c_acctbal "
+     "FROM customer "
+     "WHERE SUBSTRING(c_phone FROM 1 FOR 2) IN ('30', '19', '14', '28', '11', '22', '32') "
+     "AND c_acctbal > (SELECT AVG(c_acctbal) FROM customer WHERE c_acctbal > 0.00 "
+     "AND SUBSTRING(c_phone FROM 1 FOR 2) IN ('30', '19', '14', '28', '11', '22', '32')) "
+     "AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey)) "
+     "SELECT cntrycode, COUNT(*) AS numcust, SUM(c_acctbal) AS totacctbal "
+     "FROM custsale GROUP BY cntrycode ORDER BY cntrycode",
+     "SELECT * FROM accel_tpch_q22_aux('30', '19', '14', '28', '11', '22', '32')",
+     "SELECT * FROM accel_tpch_q22('30', '19', '14', '28', '11', '22', '32')",
+     "SELECT * FROM accel_tpch_q22_aux('30', '19', '14', '28', '11', '22', '32')",
+     "SELECT c_custkey, c_acctbal FROM customer "
+     "WHERE SUBSTRING(c_phone FROM 1 FOR 2) IN "
+     "('30', '19', '14', '28', '11', '22', '32') "
+     "ORDER BY c_custkey LIMIT 1",
+     {{core::AuxValue::Of(core::AuxType::String, std::string{"30"}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"19"}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"14"}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"28"}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"11"}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"22"}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"32"})}},
+     9,
+     false,
+     BuildTpchQ22Probe},
 };
 
 const SharedQueryCatalogEntry kSecEdgarCatalog[] = {
@@ -1248,10 +1783,17 @@ const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_nam
 }
 
 std::vector<int> SharedQueriesForWorkload(SharedWorkloadKind workload) {
+  std::vector<int> out;
   if (workload == SharedWorkloadKind::Tpch) {
-    return {1, 2, 3, 5, 6, 9, 10, 11, 12, 14, 16, 17, 18, 21};
+    for (const auto &entry : kTpchCatalog) {
+      out.push_back(entry.query_id);
+    }
+    return out;
   }
-  return {1, 2, 3, 4, 6, 24};
+  for (const auto &entry : kSecEdgarCatalog) {
+    out.push_back(entry.query_id);
+  }
+  return out;
 }
 
 std::vector<int> SharedQueriesForWorkload(const std::string &workload_name) {
@@ -1267,6 +1809,124 @@ SharedProbe FindSharedProbe(::duckdb::Connection &connection,
                  : "shared probe returned null");
   auto &materialized = result->Cast<::duckdb::MaterializedQueryResult>();
   return entry.build_probe(materialized, 0);
+}
+
+std::string ExpandProbeSelectLimit(const char *probe_select_sql, int limit) {
+  Require(probe_select_sql != nullptr && *probe_select_sql,
+          "missing probe_select_sql");
+  std::string sql(probe_select_sql);
+  const auto pos = sql.rfind("LIMIT");
+  if (pos != std::string::npos) {
+    return sql.substr(0, pos) + "LIMIT " + std::to_string(limit);
+  }
+  return sql + " LIMIT " + std::to_string(limit);
+}
+
+std::string NormalizeFingerprintValue(const ::duckdb::Value &value) {
+  if (value.IsNull()) {
+    return "NULL";
+  }
+  if (value.type().id() == ::duckdb::LogicalTypeId::DATE) {
+    const auto date = value.GetValue<::duckdb::date_t>();
+    return ::duckdb::Date::ToString(date);
+  }
+  try {
+    const auto source = value.ToString();
+    std::size_t parsed = 0;
+    const auto numeric = std::stold(source, &parsed);
+    if (parsed != source.size()) {
+      return source;
+    }
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(6) << numeric;
+    return text.str();
+  } catch (...) {
+    return value.ToString();
+  }
+}
+
+std::string FingerprintSharedBaseSql(::duckdb::Connection &connection,
+                                     const SharedQueryCatalogEntry &entry) {
+  Require(entry.base_sql != nullptr && *entry.base_sql,
+          "missing base_sql for shared fingerprint");
+  auto base_result = connection.Query(entry.base_sql);
+  Require(base_result != nullptr && !base_result->HasError(),
+          base_result ? base_result->GetError()
+                      : "DuckDB fingerprint query failed");
+  auto &base = base_result->Cast<::duckdb::MaterializedQueryResult>();
+  std::ostringstream out;
+  out << "rows=" << base.RowCount() << '\n';
+  for (::duckdb::idx_t row = 0; row < base.RowCount(); ++row) {
+    for (::duckdb::idx_t col = 0; col < base.ColumnCount(); ++col) {
+      if (col > 0) {
+        out << '\t';
+      }
+      out << NormalizeFingerprintValue(base.GetValue(col, row));
+    }
+    out << '\n';
+  }
+  return out.str();
+}
+
+bool SharedProbeChangesBaseResult(::duckdb::Connection &connection,
+                                  const SharedQueryCatalogEntry &entry,
+                                  const SharedProbe &probe,
+                                  const std::string &before_fp) {
+  connection.BeginTransaction();
+  auto updated = connection.Query(probe.update_sql);
+  if (updated == nullptr || updated->HasError()) {
+    connection.Rollback();
+    return false;
+  }
+  const auto after_fp = FingerprintSharedBaseSql(connection, entry);
+  connection.Rollback();
+  return after_fp != before_fp;
+}
+
+std::vector<SharedProbe> CollectInvalidatingSharedProbes(
+    ::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+    int candidate_limit, int max_keep) {
+  Require(static_cast<bool>(entry.build_probe),
+          "missing build_probe for Q" + std::to_string(entry.query_id));
+  Require(candidate_limit > 0 && max_keep > 0,
+          "invalidating probe limits must be positive");
+  const auto before_fp = FingerprintSharedBaseSql(connection, entry);
+  const std::string probe_sql =
+      ExpandProbeSelectLimit(entry.probe_select_sql, candidate_limit);
+  auto result = connection.Query(probe_sql);
+  Require(result != nullptr && !result->HasError() && result->RowCount() >= 1,
+          result ? ("invalidating probe select failed for Q" +
+                    std::to_string(entry.query_id) + ": " + result->GetError())
+                 : "invalidating probe select returned null");
+  auto &materialized = result->Cast<::duckdb::MaterializedQueryResult>();
+  std::vector<SharedProbe> probes;
+  probes.reserve(static_cast<std::size_t>(
+      std::min<int>(max_keep, static_cast<int>(materialized.RowCount()))));
+  for (::duckdb::idx_t row = 0; row < materialized.RowCount(); ++row) {
+    auto probe = entry.build_probe(materialized, row);
+    if (!SharedProbeChangesBaseResult(connection, entry, probe, before_fp)) {
+      continue;
+    }
+    probes.push_back(std::move(probe));
+    if (static_cast<int>(probes.size()) >= max_keep) {
+      break;
+    }
+  }
+  Require(!probes.empty(),
+          "no shared probe candidate changed DuckDB Q" +
+              std::to_string(entry.query_id) +
+              " result (catalog probe_select/build_probe must invalidate this "
+              "query so write-frequency benches exercise maintenance; if "
+              "base_sql is empty, fix catalog seed bindings first)");
+  return probes;
+}
+
+SharedProbe FindInvalidatingSharedProbe(::duckdb::Connection &connection,
+                                        const SharedQueryCatalogEntry &entry) {
+  auto probes = CollectInvalidatingSharedProbes(connection, entry,
+                                                /*candidate_limit=*/256,
+                                                /*max_keep=*/1);
+  return probes.front();
 }
 
 core::MutationBatch BuildSharedMutation(const SharedQueryCatalogEntry &entry,

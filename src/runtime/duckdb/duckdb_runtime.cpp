@@ -18,7 +18,12 @@
 #include "sec_edgar/q6/aux/module.hpp"
 #include "sec_edgar/q24/aux/module.hpp"
 #include "tpch/q1/aux/module.hpp"
+#include "tpch/q4/aux/module.hpp"
 #include "tpch/q5/aux/module.hpp"
+#include "tpch/q13/aux/module.hpp"
+#include "tpch/q8/aux/module.hpp"
+#include "tpch/q7/aux/module.hpp"
+#include "tpch/q22/aux/module.hpp"
 #include "tpch/q3/aux/module.hpp"
 #include "tpch/q6/aux/module.hpp"
 #include "tpch/q10/aux/module.hpp"
@@ -26,9 +31,12 @@
 #include "tpch/q12/aux/module.hpp"
 #include "tpch/q14/aux/module.hpp"
 #include "tpch/q16/aux/module.hpp"
+#include "tpch/q15/aux/module.hpp"
 #include "tpch/q17/aux/module.hpp"
 #include "tpch/q18/aux/module.hpp"
+#include "tpch/q19/aux/module.hpp"
 #include "tpch/q2/aux/module.hpp"
+#include "tpch/q20/aux/module.hpp"
 #include "tpch/q21/aux/module.hpp"
 #include "tpch/q9/aux/module.hpp"
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
@@ -484,6 +492,55 @@ struct TpchQ12Scan : TpchQ12InitialScan {
   ::duckdb::Connection &connection;
 };
 
+struct TpchQ4Scan : TpchQ4InitialScan {
+  explicit TpchQ4Scan(::duckdb::Connection &connection) : connection(connection) {}
+  void ScanOrders(
+      const std::function<void(const TpchQ4OrderInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT o_orderkey, o_orderdate, o_orderpriority FROM orders",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    DateDays(ChunkValue(chunk, 1, row)),
+                    ChunkValue(chunk, 2, row).ToString()});
+        });
+  }
+  void ScanLineitems(
+      const std::function<void(const TpchQ4LineitemInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_orderkey, l_commitdate, l_receiptdate FROM lineitem",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    DateDays(ChunkValue(chunk, 1, row)),
+                    DateDays(ChunkValue(chunk, 2, row))});
+        });
+  }
+  ::duckdb::Connection &connection;
+};
+
+struct TpchQ22Scan : TpchQ22InitialScan {
+  explicit TpchQ22Scan(::duckdb::Connection &connection) : connection(connection) {}
+  void ScanCustomers(
+      const std::function<void(const TpchQ22CustomerInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT c_custkey, c_phone, c_acctbal FROM customer",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString(),
+                    DecimalRaw(ChunkValue(chunk, 2, row)), 2});
+        });
+  }
+  void ScanOrders(
+      const std::function<void(const TpchQ22OrderInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT o_custkey FROM orders",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row))});
+        });
+  }
+  ::duckdb::Connection &connection;
+};
+
 struct TpchQ14Scan : TpchQ14InitialScan {
   explicit TpchQ14Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanParts(
@@ -570,6 +627,160 @@ struct TpchQ5Scan : TpchQ5InitialScan {
                     SafeInt64(ChunkValue(chunk, 1, row)),
                     DecimalRaw(ChunkValue(chunk, 2, row)), 2,
                     DecimalRaw(ChunkValue(chunk, 3, row)), 2});
+        });
+  }
+  ::duckdb::Connection &connection;
+};
+
+
+struct TpchQ7Scan : TpchQ7InitialScan {
+  explicit TpchQ7Scan(::duckdb::Connection &connection) : connection(connection) {}
+  void ScanNations(
+      const std::function<void(const TpchQ7NationInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT n_nationkey, n_name FROM nation",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt32(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString()});
+        });
+  }
+  void ScanSuppliers(
+      const std::function<void(const TpchQ7SupplierInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT s_suppkey, s_nationkey FROM supplier",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt32(ChunkValue(chunk, 1, row))});
+        });
+  }
+  void ScanCustomers(
+      const std::function<void(const TpchQ7CustomerInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT c_custkey, c_nationkey FROM customer",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt32(ChunkValue(chunk, 1, row))});
+        });
+  }
+  void ScanOrders(
+      const std::function<void(const TpchQ7OrderInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT o_orderkey, o_custkey FROM orders",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row))});
+        });
+  }
+  void ScanLineitems(
+      const std::function<void(const TpchQ7LineitemInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount, l_shipdate "
+        "FROM lineitem",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
+                    DecimalRaw(ChunkValue(chunk, 3, row)), 2,
+                    DateDays(ChunkValue(chunk, 4, row))});
+        });
+  }
+  ::duckdb::Connection &connection;
+};
+
+struct TpchQ8Scan : TpchQ8InitialScan {
+  explicit TpchQ8Scan(::duckdb::Connection &connection) : connection(connection) {}
+  void ScanParts(
+      const std::function<void(const TpchQ8PartInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT p_partkey, p_type FROM part",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString()});
+        });
+  }
+  void ScanSuppliers(
+      const std::function<void(const TpchQ8SupplierInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT s_suppkey, s_nationkey FROM supplier",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt32(ChunkValue(chunk, 1, row))});
+        });
+  }
+  void ScanCustomers(
+      const std::function<void(const TpchQ8CustomerInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT c_custkey, c_nationkey FROM customer",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt32(ChunkValue(chunk, 1, row))});
+        });
+  }
+  void ScanOrders(
+      const std::function<void(const TpchQ8OrdersInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT o_orderkey, o_custkey, o_orderdate FROM orders",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    DateDays(ChunkValue(chunk, 2, row))});
+        });
+  }
+  void ScanLineitems(
+      const std::function<void(const TpchQ8LineitemInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_partkey, l_orderkey, l_suppkey, l_extendedprice, l_discount "
+        "FROM lineitem",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    SafeInt64(ChunkValue(chunk, 2, row)),
+                    DecimalRaw(ChunkValue(chunk, 3, row)),
+                    DecimalRaw(ChunkValue(chunk, 4, row))});
+        });
+  }
+  void ScanNations(
+      const std::function<void(const TpchQ8NationInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT n_nationkey, n_name, n_regionkey FROM nation",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt32(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString(),
+                    SafeInt32(ChunkValue(chunk, 2, row))});
+        });
+  }
+  void ScanRegions(
+      const std::function<void(const TpchQ8RegionInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT r_regionkey, r_name FROM region",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt32(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString()});
+        });
+  }
+  ::duckdb::Connection &connection;
+};
+
+struct TpchQ13Scan : TpchQ13InitialScan {
+  explicit TpchQ13Scan(::duckdb::Connection &connection) : connection(connection) {}
+  void ScanCustomers(
+      const std::function<void(const TpchQ13CustomerInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT c_custkey FROM customer",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row))});
+        });
+  }
+  void ScanOrders(
+      const std::function<void(const TpchQ13OrderInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT o_custkey, o_comment FROM orders",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString()});
         });
   }
   ::duckdb::Connection &connection;
@@ -695,6 +906,36 @@ struct TpchQ11Scan : TpchQ11InitialScan {
                 consumer({SafeInt32(result.GetValue(0, row)),
                           result.GetValue(1, row).ToString()});
               });
+  }
+  ::duckdb::Connection &connection;
+};
+
+struct TpchQ15Scan : TpchQ15InitialScan {
+  explicit TpchQ15Scan(::duckdb::Connection &connection) : connection(connection) {}
+  void ScanSuppliers(
+      const std::function<void(const TpchQ15SupplierInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT s_suppkey, s_name, s_address, s_phone FROM supplier",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString(),
+                    ChunkValue(chunk, 2, row).ToString(),
+                    ChunkValue(chunk, 3, row).ToString()});
+        });
+  }
+  void ScanLineitems(
+      const std::function<void(const TpchQ15LineitemInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({DateDays(ChunkValue(chunk, 3, row)),
+                    SafeInt64(ChunkValue(chunk, 0, row)),
+                    DecimalRaw(ChunkValue(chunk, 1, row)),
+                    2,
+                    DecimalRaw(ChunkValue(chunk, 2, row)),
+                    2});
+        });
   }
   ::duckdb::Connection &connection;
 };
@@ -903,6 +1144,63 @@ struct TpchQ2Scan : TpchQ2InitialScan {
                 consumer({SafeInt32(result.GetValue(0, row)),
                           result.GetValue(1, row).ToString()});
               });
+  }
+  ::duckdb::Connection &connection;
+};
+
+
+struct TpchQ20Scan : TpchQ20InitialScan {
+  explicit TpchQ20Scan(::duckdb::Connection &connection) : connection(connection) {}
+  void ScanLineitems(
+      const std::function<void(const TpchQ20LineitemInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_shipdate, l_partkey, l_suppkey, l_quantity FROM lineitem",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({DateDays(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    SafeInt64(ChunkValue(chunk, 2, row)),
+                    DecimalRaw(ChunkValue(chunk, 3, row))});
+        });
+  }
+  void ScanParts(
+      const std::function<void(const TpchQ20PartInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT p_partkey, p_name FROM part",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString()});
+        });
+  }
+  void ScanPartsupps(
+      const std::function<void(const TpchQ20PartsuppInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    SafeInt64(ChunkValue(chunk, 2, row))});
+        });
+  }
+  void ScanSuppliers(
+      const std::function<void(const TpchQ20SupplierInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT s_suppkey, s_name, s_address, s_nationkey FROM supplier",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString(),
+                    ChunkValue(chunk, 2, row).ToString(),
+                    SafeInt32(ChunkValue(chunk, 3, row))});
+        });
+  }
+  void ScanNations(
+      const std::function<void(const TpchQ20NationInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT n_nationkey, n_name FROM nation",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt32(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString()});
+        });
   }
   ::duckdb::Connection &connection;
 };
@@ -1158,6 +1456,48 @@ MakeBinding(::duckdb::Connection &connection, ConfigArgs &&...config_args) {
                                         std::forward<ConfigArgs>(config_args)...));
 }
 
+struct TpchQ19Scan : TpchQ19InitialScan {
+  explicit TpchQ19Scan(::duckdb::Connection &connection) : connection(connection) {}
+  void ScanParts(
+      const std::function<void(const TpchQ19PartInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection, "SELECT p_partkey, p_brand, p_container, p_size FROM part",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString(),
+                    ChunkValue(chunk, 2, row).ToString(),
+                    static_cast<int32_t>(SafeInt64(ChunkValue(chunk, 3, row)))});
+        });
+  }
+  void ScanLineitems(
+      const std::function<void(const TpchQ19LineitemInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_partkey, l_quantity, l_extendedprice, l_discount, l_shipmode, l_shipinstruct FROM lineitem",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    DecimalRaw(ChunkValue(chunk, 1, row)),
+                    DecimalRaw(ChunkValue(chunk, 2, row)),
+                    DecimalRaw(ChunkValue(chunk, 3, row)),
+                    ChunkValue(chunk, 4, row).ToString(),
+                    ChunkValue(chunk, 5, row).ToString()});
+        });
+  }
+  bool LookupPart(int64_t partkey, TpchQ19PartInput &out) override {
+    auto result = connection.Query(
+        "SELECT p_brand, p_container, p_size FROM part WHERE p_partkey = " +
+        std::to_string(partkey));
+    if (!result || result->HasError() || result->RowCount() == 0)
+      return false;
+    out.key = partkey;
+    out.brand = result->GetValue(0, 0).ToString();
+    out.container = result->GetValue(1, 0).ToString();
+    out.size = static_cast<int32_t>(SafeInt64(result->GetValue(2, 0)));
+    return true;
+  }
+  ::duckdb::Connection &connection;
+};
+
 std::unique_ptr<DuckdbRuntime::Binding>
 CreateBinding(::duckdb::Connection &connection,
               const SharedQueryCatalogEntry &entry) {
@@ -1183,6 +1523,10 @@ CreateBinding(::duckdb::Connection &connection,
     return MakeBinding<SecEdgarQ3Scan, SecEdgarQ3Module>(
         connection, SecEdgarQ3Config{1, 2});
   case 4:
+    if (entry.workload == SharedWorkloadKind::Tpch) {
+      return MakeBinding<TpchQ4Scan, TpchQ4Module>(connection,
+                                                  TpchQ4Config{1, 2});
+    }
     return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4Module>(
         connection, SecEdgarQ4Config{1, 2, 3, 4});
   case 5:
@@ -1194,6 +1538,12 @@ CreateBinding(::duckdb::Connection &connection,
     }
     return MakeBinding<SecEdgarQ6Scan, SecEdgarQ6Module>(
         connection, SecEdgarQ6Config{1, 2, 3});
+  case 7:
+    return MakeBinding<TpchQ7Scan, TpchQ7Module>(
+        connection, TpchQ7Config{0, 1, 2, 3, 4});
+  case 8:
+    return MakeBinding<TpchQ8Scan, TpchQ8Module>(
+        connection, TpchQ8Config{0, 1, 2, 3, 4});
   case 9:
     return MakeBinding<TpchQ9Scan, TpchQ9Module>(connection,
                                                 TpchQ9Config{1, 2, 3, 4, 5, 6});
@@ -1206,23 +1556,38 @@ CreateBinding(::duckdb::Connection &connection,
   case 12:
     return MakeBinding<TpchQ12Scan, TpchQ12Module>(connection,
                                                     TpchQ12Config{1, 2});
+  case 13:
+    return MakeBinding<TpchQ13Scan, TpchQ13Module>(connection,
+                                                   TpchQ13Config{0, 1});
   case 14:
     return MakeBinding<TpchQ14Scan, TpchQ14Module>(connection,
                                                    TpchQ14Config{1, 2});
+  case 15:
+    return MakeBinding<TpchQ15Scan, TpchQ15Module>(connection,
+                                                   TpchQ15Config{1, 2});
   case 16:
     return MakeBinding<TpchQ16Scan, TpchQ16Module>(connection,
                                                    TpchQ16Config{1, 2, 3});
   case 17:
     return MakeBinding<TpchQ17Scan, TpchQ17Module>(connection,
                                                    TpchQ17Config{1, 2});
+  case 19:
+    return MakeBinding<TpchQ19Scan, TpchQ19Module>(
+        connection, TpchQ19Config{5, 6});
   case 18:
     // Catalog probe.table=0 is lineitem; orders/customer must be distinct so
     // lineitem writes take the incremental path instead of MarkRebuild.
     return MakeBinding<TpchQ18Scan, TpchQ18Module>(connection,
                                                    TpchQ18Config{0, 1, 2});
+  case 20:
+    return MakeBinding<TpchQ20Scan, TpchQ20Module>(
+        connection, TpchQ20Config{1, 2, 3, 4, 5});
   case 21:
     return MakeBinding<TpchQ21Scan, TpchQ21Module>(connection,
                                                    TpchQ21Config{1, 2, 3, 4});
+  case 22:
+    return MakeBinding<TpchQ22Scan, TpchQ22Module>(connection,
+                                                   TpchQ22Config{1, 2});
   case 24:
     return MakeBinding<SecEdgarQ24Scan, SecEdgarQ24Module>(
         connection, SecEdgarQ24Config{101, 102});

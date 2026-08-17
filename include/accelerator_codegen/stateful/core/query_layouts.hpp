@@ -158,6 +158,12 @@ struct TpchQ5Layout {
   static constexpr PartitionId kSide = 0;
   static constexpr PartitionId kTreeBase = 1000000;
 };
+struct TpchQ7Layout {
+  static constexpr const char *kAccelerator = "tpch_q7";
+  static constexpr PartitionId kSidePartition = 0;
+  static constexpr PartitionId kFirstMonth = 1000000;
+};
+
 
 struct TpchQ2Layout {
   static constexpr const char *kAccelerator = "tpch_q2";
@@ -165,6 +171,16 @@ struct TpchQ2Layout {
 
   static constexpr std::array<PartitionId, 1> Partitions() {
     return {kFull};
+  }
+};
+
+struct TpchQ13Layout {
+  static constexpr const char *kAccelerator = "tpch_q13_aux";
+  static constexpr PartitionId kCustomerCounts = 0;
+  static constexpr PartitionId kMain = kCustomerCounts;
+
+  static constexpr std::array<PartitionId, 1> Partitions() {
+    return {kCustomerCounts};
   }
 };
 

@@ -57,6 +57,30 @@ std::vector<int> SharedQueriesForWorkload(const std::string &workload_name);
 SharedProbe FindSharedProbe(::duckdb::Connection &connection,
                             const SharedQueryCatalogEntry &entry);
 
+// Expand/replace the trailing LIMIT on probe_select_sql (bench + differential).
+std::string ExpandProbeSelectLimit(const char *probe_select_sql, int limit);
+
+// Fingerprint of entry.base_sql (stable enough to detect result-changing writes).
+std::string FingerprintSharedBaseSql(::duckdb::Connection &connection,
+                                     const SharedQueryCatalogEntry &entry);
+
+// True iff probe.update_sql changes FingerprintSharedBaseSql (txn rolled back).
+bool SharedProbeChangesBaseResult(::duckdb::Connection &connection,
+                                  const SharedQueryCatalogEntry &entry,
+                                  const SharedProbe &probe,
+                                  const std::string &before_fp);
+
+// Catalog probe_select candidates whose update_sql invalidates this query's
+// DuckDB answer. Used by write-frequency benches so maintenance is exercised.
+// Throws if zero invalidating probes are found.
+std::vector<SharedProbe> CollectInvalidatingSharedProbes(
+    ::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+    int candidate_limit = 256, int max_keep = 64);
+
+// First invalidating probe (same filter as CollectInvalidatingSharedProbes).
+SharedProbe FindInvalidatingSharedProbe(::duckdb::Connection &connection,
+                                        const SharedQueryCatalogEntry &entry);
+
 core::MutationBatch BuildSharedMutation(const SharedQueryCatalogEntry &entry,
                                         const SharedProbe &probe);
 
