@@ -13,6 +13,7 @@ presets:
 
 stages:
   analysis: fast
+  adversarial_tests: fast
   implementation: strong
   optimization_unified: code
   optimization_worker: code

@@ -27,6 +27,15 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "glob_files",
         "file_info",
     ],
+    "adversarial_tests": [
+        "read_file",
+        "grep_context",
+        "write_file",
+        "search_repo",
+        "list_dir",
+        "glob_files",
+        "file_info",
+    ],
     "implementation": [
         "read_file",
         "read_reference_files",
@@ -40,7 +49,10 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "glob_files",
         "file_info",
         "run_command",
+        "request_gate",
         "request_structural_reanalysis",
+        "acquire_shared_lease",
+        "release_shared_lease",
     ],
     "optimization_unified": [
         "rip_grep",
@@ -94,6 +106,8 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "end_ab_trial",
         "request_structural_reanalysis",
         "record_optimization_trap",
+        "acquire_shared_lease",
+        "release_shared_lease",
     ],
     "crash_debug": [
         "read_file",
@@ -121,10 +135,10 @@ Use ONLY the pipeline tools for this stage. Do not use built-in shell/edit tools
 - write_file: rewrite a whole editable file in one call when you have read it fully and the change is coordinated across many lines.
 - apply_patch: old_string must match exactly once — prefer **large hunks** (whole struct/function) over many one-line edits when you have just read the file.
 - insert_lines: for adding new blocks; avoid chaining many tiny insert_lines when write_file is safer.
-- run_command: allowlisted cmake/ctest. After adding new CMake targets (aux test/bench), run `cmake -S . -B build-release` before `cmake --build ...` (compound forms are allowlisted).
+- run_command: allowlisted cmake/ctest. After adding new CMake targets (aux test/bench), run `cmake -S . -B <worker_build_dir>` before `cmake --build ...` (compound forms are allowlisted). Under pack isolation, bare `build-release` is rewritten to this worker's build dir — never target the shared tree.
 - Benchmarks and accept/reject are orchestrator-owned — exploratory A/B tools are non-binding.
 - optimization_unified: hypothesize/implement then `HYPOTHESIS_PATCH_COMPLETE` for build → smoke → benchmark.
-- request_gate / run_correctness: under Codex MCP, implementation **must** call `run_correctness` (or `request_gate` with the workload correctness gate) and pass before finishing. Orchestrator still re-runs post-stage gates.
+- request_gate / run_correctness / run_multi_connection: under Codex MCP, implementation **must** call `run_correctness` (and for aux-state also `run_multi_connection`, or `request_gate` with those gate names) and **keep iterating until they pass** before finishing. Orchestrator still re-runs post-stage gates.
 """
 
 IMPLEMENTATION_TOOL_USAGE = """\
@@ -136,8 +150,10 @@ IMPLEMENTATION_TOOL_USAGE = """\
 - `read_file`: default 250 lines in implementation; use `limit=500` for a full reference module if needed.
 - `grep_context`: **file path only** (not directories). Use `search_repo` / `glob_files` to find paths.
 - Do not `list_dir` repo root or re-glob for q14/q1 after bootstrap paths are listed.
-- After creating new `test_tpch_q*_aux.cpp` / `benchmark_q*_aux.cpp` / `calibrate_q*_aux_cost_model.cpp`, run `cmake -S . -B build-release` before building. Targets are usually auto-discovered; edit `CMakeLists.txt` only if configure still omits them.
-- **Before finishing:** build the aux smoke target + `test_tpch_shared_differential`, then run MCP `run_correctness` (or smoke ctest + SF1 differential) until it **passes**. Do not end on compile-only or smoke-only success.
+- After creating new `test_tpch_q*_aux.cpp` / `benchmark_q*_aux.cpp` / `calibrate_q*_aux_cost_model.cpp`, run `cmake -S . -B <build_dir>` before building (use this worker's build dir; `build-release` is rewritten automatically). Targets are usually auto-discovered; edit `CMakeLists.txt` only if configure still omits them.
+- **Register everywhere:** this query must be wired into **every** shared registration / allowlist / SQL-helper surface that neighboring aux queries use (catalog entry, shared-query participation lists, DuckDB aux table-function registration, cross-accel / multi-conn helpers, bench arg variants, CMake targets). Discover those sites by searching how a peer query is registered — do not invent a partial wiring. Missing any surface → `unsupported shared query` or `Table Function … does not exist`.
+- **Shared-tree concurrency:** edits to shared registration / catalog / CMake / helper wiring auto-take a **shared-file lease**. Call `release_shared_lease` after you finish those edits + rebuild. Query-local `q{{N}}/aux/**` does not need the lease.
+- **Before finishing (hard):** build smoke + differential targets, then loop MCP `run_correctness` **and** `run_multi_connection` (or `request_gate` with `aux_correctness` / `aux_multi_connection`) until both report `status=pass`. Do not end on compile-only or smoke-only success.
 """
 
 OPTIMIZATION_PATCH_TOOL_USAGE = """\
@@ -175,6 +191,7 @@ OPTIMIZATION_WORKER_TOOL_USAGE = """\
 - **Inspect** with `read_file`, `rip_grep`, `ast_grep` on editable files and reference aux modules.
 - **Patch** with `write_file` / `apply_patch` — write big, coordinated hunks.
 - **Build and test locally** with `run_command` (cmake build, targeted ctest) — fix compiler/smoke failures before signaling ready.
+- **Shared-tree concurrency:** shared registration / catalog / CMake / helper edits auto-take a shared-file lease; call `release_shared_lease` after those edits + rebuild. Query-local sources do not need it.
 - **Exploratory benchmark:** `begin_ab_trial` → `run_quick_benchmark` → `end_ab_trial` (results are non-binding).
 - When you have a plausible candidate, output hypothesis JSON and **`CANDIDATE_READY`**.
 - Orchestrator runs authoritative gates after `CANDIDATE_READY`; do not skip local build/test.
@@ -259,6 +276,15 @@ def build_tool_registry(
     repo_ctx = RepoCtx(pipeline_config, query, stage=stage)
     shell_ctx = ShellCtx(pipeline_config, query)
     gate_ctx = GateCtx(pipeline_config, query)
+    if workload_name:
+        try:
+            gate_ctx = GateCtx(
+                pipeline_config,
+                query,
+                workload=load_workload(workload_name, pipeline_config.repo_root),
+            )
+        except FileNotFoundError:
+            pass
     reanalysis_ctx = ReanalysisCtx(
         pipeline_config, query, stage, workload_name, optimization_iter
     )
@@ -318,6 +344,43 @@ def build_tool_registry(
             return json.dumps({"recorded": False, "reason": "duplicate_or_too_short"})
         return json.dumps({"recorded": True, "entry": entry})
 
+    def acquire_shared_lease(reason: str = "", timeout_sec: float | None = 600.0) -> str:
+        """Hold the shared-file lease before editing catalog/CMake/shared registration files."""
+        import json
+
+        from accel_pipeline.shared_file_lease import (
+            ensure_sticky_lease_for_write,
+            worker_id_from_env,
+        )
+
+        timeout_sec = float(_none_default(timeout_sec, 600.0))
+        holder = pipeline_config.worker_id or worker_id_from_env(f"q{query}")
+        info = ensure_sticky_lease_for_write(
+            pipeline_config.repo_root,
+            holder=holder,
+            path=None,
+            timeout_sec=timeout_sec,
+        )
+        return json.dumps(
+            {
+                "acquired": True,
+                "holder": holder,
+                "reason": reason,
+                "lease": info.to_dict() if info else {},
+            },
+            indent=2,
+        )
+
+    def release_shared_lease() -> str:
+        """Release the sticky shared-file lease after shared edits + rebuild."""
+        import json
+
+        from accel_pipeline.shared_file_lease import release_sticky_lease, worker_id_from_env
+
+        holder = pipeline_config.worker_id or worker_id_from_env(f"q{query}")
+        ok = release_sticky_lease(pipeline_config.repo_root, holder=holder)
+        return json.dumps({"released": ok, "holder": holder})
+
     return {
         "read_file": read_file,
         "grep_context": grep_context,
@@ -336,6 +399,8 @@ def build_tool_registry(
         "request_gate": request_gate,
         "request_structural_reanalysis": request_structural_reanalysis,
         "record_optimization_trap": record_optimization_trap,
+        "acquire_shared_lease": acquire_shared_lease,
+        "release_shared_lease": release_shared_lease,
         "search_repo": search_repo,
         "rip_grep": rip_grep,
         "ast_grep": ast_grep,

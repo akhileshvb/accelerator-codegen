@@ -276,7 +276,7 @@ def build_scoreboard(
     if best_valid.get("score") is not None:
         best_metrics.setdefault("optimization_score", best_valid["score"])
 
-    measured = last_metrics or profile or baseline or {}
+    measured = dict(last_metrics or profile or baseline or {})
     # Always recompute from metrics so dual-axis weight changes apply to stored
     # best_valid baselines (do not trust a stale absolute score alone).
     best_score = primary_score_from_metrics(best_metrics, is_aux=is_aux)
@@ -292,6 +292,19 @@ def build_scoreboard(
         best_score = primary_score_from_metrics(
             {"speedup_median": opt_state.get("best_speedup_median")}, is_aux=False
         )
+
+    # Avoid dual-vs-read unit mismatch: baseline/profile often omit write_mix while
+    # best_valid is dual-axis. Inherit best write-mix for scoring only so
+    # improvement_pct compares like units (otherwise digests show bogus +100%+).
+    if is_aux and measured and best_metrics:
+        from accel_pipeline.optimization_eval import _write_mix_from_metrics
+
+        if _write_mix_from_metrics(measured) <= 0 and _write_mix_from_metrics(best_metrics) > 0:
+            measured["write_mix_workload_speedup"] = best_metrics.get(
+                "write_mix_workload_speedup"
+            )
+            if best_metrics.get("write_mix_pct") is not None:
+                measured.setdefault("write_mix_pct", best_metrics.get("write_mix_pct"))
 
     measured_score = primary_score_from_metrics(measured, is_aux=is_aux)
     fair_score = (

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from accel_pipeline.paths import find_repo_root, pipeline_root
+from accel_pipeline.shared_file_lease import DEFAULT_SHARED_PATH_GLOBS
 
 
 @dataclass
@@ -80,6 +82,10 @@ class PipelineConfig:
     write_paths: list[str] = field(default_factory=list)
     allowed_commands: list[str] = field(default_factory=list)
     gates_dir: Path = field(default_factory=Path)
+    # Concurrent pack workers (shared tree + separate builds).
+    worker_id: str = ""
+    codex_home: Path | None = None
+    shared_paths: list[str] = field(default_factory=list)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -319,7 +325,11 @@ def load_pipeline_config(
     datasets.setdefault("tpch_sf1", Path(data["tpch_db_sf1"]))
     datasets.setdefault("tpch_sf10", Path(data["tpch_db_sf10"]))
 
-    return PipelineConfig(
+    shared_paths = [str(x) for x in list(data.get("shared_paths") or [])]
+    if not shared_paths:
+        shared_paths = list(DEFAULT_SHARED_PATH_GLOBS)
+
+    cfg = PipelineConfig(
         repo_root=root,
         pipeline_root=pipe,
         build_dir=root / build_rel,
@@ -381,7 +391,29 @@ def load_pipeline_config(
         write_paths=list(data.get("write_paths", [])),
         allowed_commands=list(data.get("allowed_commands", [])),
         gates_dir=root / gates_rel,
+        worker_id=str(os.environ.get("ACCEL_PIPELINE_WORKER_ID") or ""),
+        shared_paths=shared_paths,
     )
+
+    env_build = os.environ.get("ACCEL_PIPELINE_BUILD_DIR")
+    if env_build:
+        bdir = Path(env_build)
+        if not bdir.is_absolute():
+            bdir = root / bdir
+        from accel_pipeline.worker_isolation import _rewrite_build_dir_patterns
+
+        cfg = replace(
+            cfg,
+            build_dir=bdir,
+            allowed_commands=_rewrite_build_dir_patterns(list(cfg.allowed_commands), bdir.name),
+        )
+    env_codex = os.environ.get("ACCEL_PIPELINE_CODEX_HOME")
+    if env_codex:
+        chome = Path(env_codex)
+        if not chome.is_absolute():
+            chome = root / chome
+        cfg = replace(cfg, codex_home=chome)
+    return cfg
 
 
 def _resolve_config_path(repo_root: Path, path: Path) -> Path:
@@ -662,6 +694,9 @@ def _apply_optimization_block(pipeline_config: PipelineConfig, opt: dict[str, An
         write_paths=list(pipeline_config.write_paths),
         allowed_commands=list(pipeline_config.allowed_commands),
         gates_dir=pipeline_config.gates_dir,
+        worker_id=pipeline_config.worker_id,
+        codex_home=pipeline_config.codex_home,
+        shared_paths=list(pipeline_config.shared_paths or []),
     )
 
 
@@ -751,6 +786,9 @@ def apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str
         write_paths=list(pipeline_config.write_paths) + extra_write_paths,
         allowed_commands=list(pipeline_config.allowed_commands) + extra_allowed,
         gates_dir=pipeline_config.gates_dir,
+        worker_id=pipeline_config.worker_id,
+        codex_home=pipeline_config.codex_home,
+        shared_paths=list(pipeline_config.shared_paths or []),
     )
     if has_opt:
         return _apply_optimization_block(merged, opt_block)
@@ -758,10 +796,19 @@ def apply_workload_overrides(pipeline_config: PipelineConfig, workload: dict[str
 
 
 def load_workload(name: str, repo_root: Path | None = None) -> dict[str, Any]:
-    root = repo_root or find_repo_root()
+    # Pack worktrees may not contain untracked workload YAMLs; prefer primary.
+    primary = os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
+    root = Path(primary).resolve() if primary else (repo_root or find_repo_root())
     path = pipeline_root(root) / "config" / "workloads" / f"{name}.yaml"
     if not path.is_file():
-        raise FileNotFoundError(f"workload not found: {path}")
+        # Fall back to the caller's repo_root (non-pack / single-worker).
+        alt_root = repo_root or find_repo_root()
+        alt = pipeline_root(alt_root) / "config" / "workloads" / f"{name}.yaml"
+        if alt.is_file():
+            root = Path(alt_root)
+            path = alt
+        else:
+            raise FileNotFoundError(f"workload not found: {path}")
     data = _load_yaml(path)
 
     if data.get("workload_kind") == "engine_backend":

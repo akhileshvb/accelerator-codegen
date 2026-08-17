@@ -467,14 +467,31 @@ def _run_aux_sweep_once(
         f"aux quick sweep (1 process): freqs={freqs} "
         f"queries={env.get('ACCEL_BENCH_QUERIES')} warmup={env.get('ACCEL_BENCH_WARMUP')}"
     )
-    proc = subprocess.run(
-        [bin_path],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
+    # Pathological write mixes (or DuckDB lock contention under pack fan-out) can
+    # otherwise stall an optimization worker forever — no Codex until baseline ends.
+    timeout_sec = int(
+        ((workload or {}).get("aux_bench_sweep_optimization") or {}).get("bench_timeout_sec")
+        or os.environ.get("ACCEL_BENCH_TIMEOUT_SEC")
+        or 300
     )
+    try:
+        proc = subprocess.run(
+            [bin_path],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired as exc:
+        out = ((exc.stdout or "") if isinstance(exc.stdout, str) else "") + (
+            (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+        )
+        return None, (
+            f"benchmark timed out after {timeout_sec}s "
+            f"(freqs={freqs}); refuse to block the optimization worker\n{out[-2000:]}"
+        )
     output = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
         rc = proc.returncode
@@ -528,8 +545,16 @@ def run_single_benchmark(
 ) -> tuple[dict[str, Any] | None, str]:
     """Run one benchmark invocation; return (metrics, output_or_error)."""
     from accel_pipeline.paths import query_artifacts_dir
+    from accel_pipeline.worker_isolation import ensure_private_dataset_db
 
     paths = resolve_workload_paths(pipeline_config, workload, query)
+    try:
+        private_db = ensure_private_dataset_db(
+            pipeline_config, paths["dataset_db"], query=query
+        )
+        paths = {**paths, "dataset_db": str(private_db)}
+    except Exception as exc:  # noqa: BLE001
+        return None, f"private dataset db setup failed: {exc}"
     target = _benchmark_target(paths, workload)
     bin_path = str(pipeline_config.build_dir / target)
     build_err = _build_benchmark(pipeline_config, workload, query)

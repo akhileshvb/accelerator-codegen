@@ -6,7 +6,7 @@ Read `substrate_contract.md` and `maintenance_framework.md` for substrate APIs. 
 
 ## Scope
 
-- **Per-query module** (`{{aux_function_name}}`) registered in `catalog/query_catalog.cpp`.
+- **Per-query module** (`{{aux_function_name}}`) registered on every shared catalog / allowlist / TF surface that peer queries use (see `registration_checklist.md`).
 - **No cross-query state sharing** — but unrelated accelerators may be active concurrently.
 - **Single-threaded per connection** (`PRAGMA threads=1` in tests/benchmarks).
 
@@ -62,11 +62,14 @@ In `correctness_facts.cross_accelerator_concurrency`, document:
 
 ## Harness wiring (required for new queries)
 
-`aux_cross_accel` runs `test_cross_accel_{correctness,isolation}` with `ACCEL_CROSS_ACCEL_TEST_QUERIES={{query_number}}`. Those tests call `InvalidatingWriterSqlForQuery` in `tests/test_support/cross_accel_helpers.cpp`. You **may and must** append a `case {{query_number}}` there (file is on the aux write allowlist). The writer must touch a watched column so aux invalidates; then DuckDB SQL and aux must still agree.
+`aux_cross_accel` / `aux_multi_connection` need this query present on **every** shared registration and helper surface that peer aux queries use (SQL helpers, invalidating writer cases, DuckDB TF registration, shared-query allowlists). Discover current files by searching a neighboring query id; append matching cases. Missing wiring fails with `unsupported …` / `Table Function … does not exist`.
 
 ## Local verification
 
 ```bash
+# Prefer MCP during implementation:
+#   run_correctness
+#   run_multi_connection
 ACCEL_CROSS_ACCEL_TEST_QUERIES={{query_number}} ctest -R test_cross_accel --output-on-failure
 bash scripts/run_aux_bench_sweep.sh {{query_number}}
 ```

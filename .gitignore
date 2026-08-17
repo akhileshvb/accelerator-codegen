@@ -11,6 +11,12 @@ docs/
 # CTest in-source spill (if cmake runs from repo root)
 Testing/
 
+# Concurrent pack: per-worker builds, Codex homes, shared-file lease
+pipeline/.locks/
+pipeline/.codex/workers/
+pipeline/worktrees/
+pipeline/artifacts/packs/
+
 # Pipeline run outputs (per-query state, gate JSON, rendered prompts, audits)
 pipeline/artifacts/**
 !pipeline/artifacts/shared/

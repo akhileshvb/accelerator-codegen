@@ -42,4 +42,13 @@ void RunRfChunkDifferentialCheck(const std::string &db_path,
                                  const aux_engine::SharedQueryCatalogEntry &entry,
                                  int num_chunks = 4, int order_count = 1);
 
+// Rigorous post-analysis write audit: RO, then several distinct invalidating
+// point probes applied sequentially (restore after each), then optional RF bulk
+// chunks. db_path must be a writable work copy (RF mutations are permanent).
+// Env (optional): ACCEL_ADV_MAX_PROBES, ACCEL_ADV_MIN_PROBES,
+// ACCEL_ADV_MIN_CHUNKS, ACCEL_ADV_REQUIRE_BULK.
+void RunAdversarialWriteDifferentialCheck(
+    const std::string &db_path, const aux_engine::SharedQueryCatalogEntry &entry,
+    int max_probes = 5, int min_chunks = 1, bool require_bulk = false);
+
 } // namespace accelerator_codegen::aux_state::harness

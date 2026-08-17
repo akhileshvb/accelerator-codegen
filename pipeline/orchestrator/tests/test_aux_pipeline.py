@@ -392,6 +392,7 @@ class TestPromptRendering:
         model_config = load_model_config(repo_root=REPO_ROOT)
         for stage, prompt in [
             ("analysis", "01_analysis.md"),
+            ("adversarial_tests", "01b_adversarial_tests.md"),
             ("implementation", "02_implementation.md"),
             ("optimization_unified", "03_optimization_unified.md"),
             ("audit", "04_audit.md"),

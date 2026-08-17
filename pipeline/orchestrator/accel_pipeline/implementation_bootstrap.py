@@ -94,7 +94,7 @@ def build_implementation_bootstrap(
             "3. Unit tests: follow `unit_test_contract.md` + the predicate checklist above (not invented polarity).",
             "4. Do **not** `list_dir` the repo root, re-read analysis.json, or glob for q14/q1 after step 1.",
             "5. `grep_context` requires a **file** path (not a directory). Use `search_repo` for multi-file search.",
-            "6. Build/test only after all primary sources exist; finish only after `aux_correctness` (smoke + SF1 differential).",
+            "6. Build/test only after all primary sources exist; **register everywhere** (mirror peer-query wiring); finish only after MCP `run_correctness` **and** `run_multi_connection` both pass.",
             "",
         ]
     )

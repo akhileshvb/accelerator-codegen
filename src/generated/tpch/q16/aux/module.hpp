@@ -16,21 +16,15 @@
 namespace accelerator_codegen::aux_state::query {
 
 // ── Q16 layout ──────────────────────────────────────────────────────────────
-// Partition 0: eligibility + intern + domain-bounded intermediate sorted group
-// counts (Execute filters brand/type — not final answers). Group cardinality is
-// TPC-H domain-bounded, so the read scan stays SF20-safe.
-// Partitions 1..50: size membership + eligible_count (SF-scaled supplier blocks).
-// Partition 51: supplier→group reverse index for point maintenance that only
-// COW-copies touched sizes (avoids deep-copying all size images at SF20).
+// Sparse p_size partitions. Partition 0 holds supplier eligibility. Partitions
+// 1..50 hold size-keyed group/supplier-block membership. This keeps reads
+// bounded to the query's p_size set without scanning all supplier or part data.
 struct TpchQ16Layout {
   static constexpr const char *kAccelerator = "tpch_q16_aux";
   static constexpr core::PartitionId kSupplierEligibility = 0;
   static constexpr core::PartitionId kSizeBase = 1;
   static constexpr int32_t kMinSize = 1;
   static constexpr int32_t kMaxSize = 50;
-  // Separate from eligibility so the hot read image stays compact at SF20.
-  static constexpr core::PartitionId kSupplierGroupRefs =
-      kSizeBase + static_cast<core::PartitionId>(kMaxSize) + 1;
 
   static constexpr core::PartitionId SizePartition(int32_t p_size) {
     return kSizeBase + static_cast<core::PartitionId>(p_size);
@@ -94,9 +88,6 @@ struct TpchQ16GroupMembership {
   std::string type;
   uint16_t brand_id = 0;
   uint16_t type_id = 0;
-  // Cached distinct eligible suppliers (intermediate). Enables O(groups)
-  // supplier point maintenance without rescanning supplier blocks (SF-safe).
-  int64_t eligible_count = 0;
   std::unordered_map<int64_t, TpchQ16SupplierBlock> blocks;
 };
 
@@ -104,9 +95,8 @@ struct TpchQ16SizePartition {
   std::vector<TpchQ16GroupMembership> groups;
 };
 
-// Intermediate per-(brand,type,size) eligible counts — NOT the final query
-// answer (brand/type filters apply at Execute). Domain-bounded cardinality
-// (TPC-H brand×type×size), so the read scan stays SF20-safe.
+// Pre-computed result row with already-counted eligible supplier count,
+// stored pre-sorted by the query's invariant ORDER BY (count DESC, brand, type, size).
 struct Q16PrecomputedRow {
   uint16_t brand_id = 0;
   uint16_t type_id = 0;
@@ -115,22 +105,16 @@ struct Q16PrecomputedRow {
 };
 
 struct TpchQ16State {
-  // Hot read fields first (Execute touches these only).
   std::vector<uint8_t> supplier_eligible;
-  std::vector<std::string> brand_intern;
-  std::vector<std::string> type_intern;
-  std::vector<Q16PrecomputedRow> precomputed_rows;
-  // Point-maintenance reverse index: packed (size << 32) | group_index.
-  // Cold on the read path; lets supplier flips touch O(groups_for_supplier)
-  // partitions instead of deep-copying all size images (SF-critical).
-  std::unordered_map<int64_t, std::vector<uint64_t>> supplier_group_refs;
-
-  // Build-only catalogs — stripped before publishing the eligibility image.
   std::unordered_map<int64_t, std::string> part_brand;
   std::unordered_map<int64_t, std::string> part_type;
   std::unordered_map<int64_t, int32_t> part_size;
+  // ps_partkey -> ps_suppkey (TpchQ16Partsupp rows are unique on part/supp)
   std::unordered_map<int64_t, std::vector<int64_t>> reverse_postings;
   std::unordered_map<int32_t, TpchQ16SizePartition> membership;
+  std::vector<std::string> brand_intern;
+  std::vector<std::string> type_intern;
+  std::vector<Q16PrecomputedRow> precomputed_rows;
 
   static constexpr int64_t kBlockWidth = 4096;
 
@@ -138,17 +122,6 @@ struct TpchQ16State {
     if (suppkey < 0)
       suppkey = -suppkey;
     return suppkey / kBlockWidth;
-  }
-
-  static uint64_t PackGroupRef(int32_t size, uint32_t group_index) {
-    return (static_cast<uint64_t>(static_cast<uint32_t>(size)) << 32) |
-           static_cast<uint64_t>(group_index);
-  }
-  static int32_t UnpackSize(uint64_t ref) {
-    return static_cast<int32_t>(ref >> 32);
-  }
-  static uint32_t UnpackGroupIndex(uint64_t ref) {
-    return static_cast<uint32_t>(ref & 0xffffffffu);
   }
 
   static std::string MakeGroupKey(const std::string &brand,
@@ -178,19 +151,13 @@ struct TpchQ16State {
   }
 };
 
-enum class TpchQ16ImageKind : uint8_t {
-  Eligibility,
-  SizeMembership,
-  SupplierGroupRefs
-};
+enum class TpchQ16ImageKind : uint8_t { Eligibility, SizeMembership };
 
 struct TpchQ16StateImage {
   TpchQ16ImageKind kind = TpchQ16ImageKind::Eligibility;
   int32_t size = 0;
   std::shared_ptr<const TpchQ16State> state;
   std::shared_ptr<const TpchQ16SizePartition> size_membership;
-  std::shared_ptr<const std::unordered_map<int64_t, std::vector<uint64_t>>>
-      supplier_group_refs;
 };
 
 struct Q16ResultRow {

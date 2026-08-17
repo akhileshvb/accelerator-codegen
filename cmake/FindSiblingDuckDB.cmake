@@ -4,7 +4,15 @@ if(DEFINED ENV{ACCEL_DUCKDB_ROOT} AND NOT "$ENV{ACCEL_DUCKDB_ROOT}" STREQUAL "")
     list(APPEND _duckdb_root_candidates "$ENV{ACCEL_DUCKDB_ROOT}")
 endif()
 
+# Pack worktrees nest under pipeline/worktrees/<id>; sibling lookup from that
+# depth fails. Prefer the primary checkout when the pipeline sets it.
+if(DEFINED ENV{ACCEL_PIPELINE_PRIMARY_REPO} AND NOT "$ENV{ACCEL_PIPELINE_PRIMARY_REPO}" STREQUAL "")
+    list(APPEND _duckdb_root_candidates "$ENV{ACCEL_PIPELINE_PRIMARY_REPO}/../accelerator-codegen-duckdb")
+endif()
+
 list(APPEND _duckdb_root_candidates "${CMAKE_CURRENT_LIST_DIR}/../../accelerator-codegen-duckdb")
+# Worktree depth: .../pipeline/worktrees/<worker>/cmake → four levels up to siblings.
+list(APPEND _duckdb_root_candidates "${CMAKE_CURRENT_LIST_DIR}/../../../../accelerator-codegen-duckdb")
 
 set(DUCKDB_ROOT "")
 foreach(candidate IN LISTS _duckdb_root_candidates)

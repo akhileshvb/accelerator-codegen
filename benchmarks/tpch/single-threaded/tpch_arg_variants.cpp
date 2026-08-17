@@ -136,6 +136,11 @@ constexpr const char *kNations[] = {
     "SAUDI ARABIA",   "VIETNAM",   "RUSSIA",  "UNITED KINGDOM",
     "UNITED STATES"};
 
+constexpr const char *kCountryCodes[] = {
+    "10", "11", "12", "13", "14", "15", "16", "17", "18", "19",
+    "20", "21", "22", "23", "24", "25", "26", "27", "28", "29",
+    "30", "31", "32", "33", "34"};
+
 constexpr const char *kSegments[] = {"AUTOMOBILE", "BUILDING", "FURNITURE",
                                      "HOUSEHOLD", "MACHINERY"};
 
@@ -167,11 +172,18 @@ constexpr const char *kContainers[] = {
     "SM CASE",  "SM BOX",  "SM BAG",  "SM JAR",  "MED BAG", "MED BOX",
     "MED PKG",  "MED PACK", "LG CASE", "LG BOX", "LG PACK", "LG PKG"};
 
+constexpr const char *kBrands[] = {"Brand#1", "Brand#2", "Brand#3", "Brand#4", "Brand#5"};
+
 // Q16 p_type NOT LIKE '<syllable1> <syllable2>%' (TPC-H 2.4.16).
 constexpr const char *kTypeSyllable1[] = {
     "STANDARD", "SMALL", "MEDIUM", "LARGE", "ECONOMY", "PROMO"};
 constexpr const char *kTypeSyllable2[] = {
     "ANODIZED", "BURNISHED", "PLATED", "POLISHED", "BRUSHED"};
+constexpr const char *kTypeSyllable3[] = {
+    "TIN", "NICKEL", "BRASS", "STEEL", "COPPER"};
+constexpr const char *kQ13CommentPatterns[] = {
+    "%unusual%accounts%", "%special%requests%", "%pending%deposits%",
+    "%express%packages%", "%careful%requests%"};
 
 double Q11Fraction() {
   // Catalog pins 0.0001; official TPC-H uses 0.0001/SF. Allow override.
@@ -238,12 +250,41 @@ case 3: {
                            MakeDate(1995, 3, day_dist(rng)))};
     break;
   }
+  case 4: {
+    // TPC-H Q4 date windows: 1993-01-01 through 1997-10-01.
+    std::uniform_int_distribution<int> month_offset_dist(0, 57);
+    const int offset = month_offset_dist(rng);
+    const int year = 1993 + offset / 12;
+    const int month = offset % 12 + 1;
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(year, month, 1))};
+    break;
+  }
   case 5: {
     std::uniform_int_distribution<int> year_dist(1992, 1997);
     arguments.values = {
         core::AuxValue::Of(core::AuxType::String, std::string{Pick(rng, kRegions)}),
         core::AuxValue::Of(core::AuxType::Date,
                            MakeDate(year_dist(rng), 1, 1))};
+    break;
+  }
+  case 7: {
+    std::string nation1 = Pick(rng, kNations);
+    std::string nation2 = Pick(rng, kNations);
+    while (nation2 == nation1) {
+      nation2 = Pick(rng, kNations);
+    }
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::move(nation1)),
+        core::AuxValue::Of(core::AuxType::String, std::move(nation2))};
+    break;
+  }
+  case 8: {
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{Pick(rng, kNations)}),
+        core::AuxValue::Of(core::AuxType::String, std::string{Pick(rng, kRegions)}),
+        core::AuxValue::Of(core::AuxType::String,
+                           std::string{Pick(rng, kTypeSyllable3)})};
     break;
   }
   case 6: {
@@ -294,9 +335,32 @@ case 3: {
                            MakeDate(year_dist(rng), 1, 1))};
     break;
   }
+  case 13: {
+    arguments.values = {core::AuxValue::Of(
+        core::AuxType::String, std::string{Pick(rng, kQ13CommentPatterns)})};
+    break;
+  }
+  case 20: {
+    std::uniform_int_distribution<int> year_dist(1993, 1997);
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(year_dist(rng), 1, 1)),
+        core::AuxValue::Of(core::AuxType::String,
+                           std::string{Pick(rng, kColors)} + "%"),
+        core::AuxValue::Of(core::AuxType::String, std::string{Pick(rng, kNations)})};
+    break;
+  }
   case 14: {
     std::uniform_int_distribution<int> month_offset_dist(0, 59);
     const int offset = month_offset_dist(rng);
+    const int year = 1993 + offset / 12;
+    const int month = offset % 12 + 1;
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(year, month, 1))};
+    break;
+  }
+  case 15: {
+    std::uniform_int_distribution<int> offset_dist(0, 26);
+    const int offset = offset_dist(rng);
     const int year = 1993 + offset / 12;
     const int month = offset % 12 + 1;
     arguments.values = {
@@ -341,9 +405,34 @@ case 3: {
         core::AuxValue::Of(core::AuxType::Int64, dist(rng))};
     break;
   }
+  case 19: {
+    std::uniform_int_distribution<int> digit_dist(1, 5);
+    std::uniform_int_distribution<int> qty_dist(1, 30);
+    auto make_brand = [&]() {
+      std::ostringstream brand;
+      brand << "Brand#" << digit_dist(rng) << digit_dist(rng);
+      return brand.str();
+    };
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, make_brand()),
+        core::AuxValue::Of(core::AuxType::Int64, static_cast<int64_t>(qty_dist(rng))),
+        core::AuxValue::Of(core::AuxType::String, make_brand()),
+        core::AuxValue::Of(core::AuxType::Int64, static_cast<int64_t>(qty_dist(rng))),
+        core::AuxValue::Of(core::AuxType::String, make_brand()),
+        core::AuxValue::Of(core::AuxType::Int64, static_cast<int64_t>(qty_dist(rng)))};
+    break;
+  }
   case 21: {
     arguments.values = {core::AuxValue::Of(
         core::AuxType::String, std::string{Pick(rng, kNations)})};
+    break;
+  }
+  case 22: {
+    arguments.values.clear();
+    for (int i = 0; i < 7; ++i)
+      arguments.values.push_back(core::AuxValue::Of(
+          core::AuxType::String,
+          std::string{Pick(rng, kCountryCodes)}));
     break;
   }
   default:
@@ -391,6 +480,16 @@ std::string FormatTpchBaseSql(int query_id,
            SqlString(region) +
            ") ORDER BY s_acctbal DESC, n_name, s_name, p_partkey LIMIT 100";
   }
+  case 4: {
+    const auto &date = RequireDate(arguments, 0);
+    const auto date_sql = DateLiteral(date);
+    return "SELECT o_orderpriority, COUNT(o_orderkey) AS order_count "
+           "FROM orders WHERE o_orderdate >= " + date_sql +
+           " AND o_orderdate < " + date_sql +
+           " + INTERVAL '3' MONTH AND EXISTS (SELECT * FROM lineitem "
+           "WHERE l_orderkey = o_orderkey AND l_commitdate < l_receiptdate) "
+           "GROUP BY o_orderpriority ORDER BY o_orderpriority";
+  }
   case 5: {
     const auto &region = RequireString(arguments, 0);
     const auto &date = RequireDate(arguments, 1);
@@ -403,6 +502,47 @@ std::string FormatTpchBaseSql(int query_id,
            " AND o_orderdate >= " + DateLiteral(date) +
            " AND o_orderdate < " + DateLiteral(date) + " + INTERVAL '1' year "
            "GROUP BY n_name ORDER BY revenue DESC";
+  }
+  case 7: {
+    const auto &nation1 = RequireString(arguments, 0);
+    const auto &nation2 = RequireString(arguments, 1);
+    return "SELECT supp_nation, cust_nation, l_year, SUM(volume) AS revenue FROM ("
+           "SELECT n1.n_name AS supp_nation, n2.n_name AS cust_nation, "
+           "EXTRACT(year FROM l_shipdate) AS l_year, "
+           "l_extendedprice * (1 - l_discount) AS volume "
+           "FROM supplier, lineitem, orders, customer, nation n1, nation n2 "
+           "WHERE s_suppkey = l_suppkey AND o_orderkey = l_orderkey "
+           "AND c_custkey = o_custkey AND s_nationkey = n1.n_nationkey "
+           "AND c_nationkey = n2.n_nationkey "
+           "AND ((n1.n_name = " +
+           SqlString(nation1) + " AND n2.n_name = " + SqlString(nation2) +
+           ") OR (n1.n_name = " + SqlString(nation2) + " AND n2.n_name = " +
+           SqlString(nation1) +
+           ")) "
+           "AND l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31') AS shipping "
+           "GROUP BY supp_nation, cust_nation, l_year "
+           "ORDER BY supp_nation, cust_nation, l_year";
+  }
+  case 8: {
+    const auto &nation = RequireString(arguments, 0);
+    const auto &region = RequireString(arguments, 1);
+    const auto &part_type = RequireString(arguments, 2);
+    return "SELECT o_year, SUM(CASE WHEN nation = " + SqlString(nation) +
+           " THEN volume ELSE 0 END) / SUM(volume) AS mkt_share FROM ("
+           "SELECT EXTRACT(year FROM o_orderdate) AS o_year, "
+           "l_extendedprice * (1 - l_discount) AS volume, n2.n_name AS nation "
+           "FROM part, supplier, lineitem, orders, customer, nation n1, nation n2, region "
+           "WHERE p_partkey = l_partkey AND s_suppkey = l_suppkey "
+           "AND l_orderkey = o_orderkey AND o_custkey = c_custkey "
+           "AND c_nationkey = n1.n_nationkey AND n1.n_regionkey = r_regionkey "
+           "AND r_name = " +
+           SqlString(region) +
+           " AND s_nationkey = n2.n_nationkey "
+           "AND o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
+           "AND p_type = " +
+           SqlString(part_type) +
+           ") AS all_nations "
+           "GROUP BY o_year ORDER BY o_year";
   }
   case 3: {
     const auto &segment = RequireString(arguments, 0);
@@ -514,6 +654,36 @@ std::string FormatTpchBaseSql(int query_id,
            " + INTERVAL '1' year "
            "GROUP BY l_shipmode ORDER BY l_shipmode";
   }
+  case 13: {
+    const auto &pattern = RequireString(arguments, 0);
+    return "SELECT c_count, COUNT(*) AS custdist FROM ("
+           "SELECT c_custkey, COUNT(o_orderkey) AS c_count FROM customer "
+           "LEFT OUTER JOIN orders ON c_custkey = o_custkey AND o_comment NOT LIKE " +
+           SqlString(pattern) +
+           " GROUP BY c_custkey) AS c_orders "
+           "GROUP BY c_count ORDER BY custdist DESC, c_count DESC";
+  }
+  case 20: {
+    const auto &date = RequireDate(arguments, 0);
+    const auto &pattern = RequireString(arguments, 1);
+    const auto &nation = RequireString(arguments, 2);
+    const auto date_sql = DateLiteral(date);
+    return "SELECT s_name, s_address "
+           "FROM supplier, nation "
+           "WHERE s_suppkey IN ("
+           "SELECT ps_suppkey FROM partsupp, ("
+           "SELECT l_partkey agg_partkey, l_suppkey agg_suppkey, 0.5 * SUM(l_quantity) AS agg_quantity "
+           "FROM lineitem WHERE l_shipdate >= " +
+           date_sql + " AND l_shipdate < " + date_sql +
+           " + INTERVAL '1' year "
+           "GROUP BY l_partkey, l_suppkey) agg_lineitem "
+           "WHERE agg_partkey = ps_partkey AND agg_suppkey = ps_suppkey "
+           "AND ps_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE " +
+           SqlString(pattern) +
+           ") AND ps_availqty > agg_quantity) "
+           "AND s_nationkey = n_nationkey AND n_name = " +
+           SqlString(nation) + " ORDER BY s_name";
+  }
   case 14: {
     const auto &date = RequireDate(arguments, 0);
     const auto date_sql = DateLiteral(date);
@@ -526,6 +696,22 @@ std::string FormatTpchBaseSql(int query_id,
            date_sql + " AND l_shipdate < " + date_sql +
            " + "
            "INTERVAL '1' month";
+  }
+  case 15: {
+    const auto &date = RequireDate(arguments, 0);
+    const auto date_sql = DateLiteral(date);
+    return "SELECT s_suppkey, s_name, s_address, s_phone, total_revenue "
+           "FROM supplier JOIN (SELECT l_suppkey AS supplier_no, "
+           "SUM(l_extendedprice * (1 - l_discount)) AS total_revenue "
+           "FROM lineitem WHERE l_shipdate >= " + date_sql +
+           " AND l_shipdate < " + date_sql + " + INTERVAL '3' MONTH "
+           "GROUP BY l_suppkey) revenue ON s_suppkey = supplier_no "
+           "WHERE total_revenue = (SELECT MAX(total_revenue) FROM ("
+           "SELECT l_suppkey AS supplier_no, "
+           "SUM(l_extendedprice * (1 - l_discount)) AS total_revenue "
+           "FROM lineitem WHERE l_shipdate >= " + date_sql +
+           " AND l_shipdate < " + date_sql + " + INTERVAL '3' MONTH "
+           "GROUP BY l_suppkey) revenue_max) ORDER BY s_suppkey";
   }
   case 16: {
     const auto &brand = RequireString(arguments, 0);
@@ -589,6 +775,55 @@ std::string FormatTpchBaseSql(int query_id,
            SqlString(nation) +
            " GROUP BY s_name ORDER BY numwait DESC, s_name";
   }
+  case 22: {
+    std::ostringstream sql;
+    sql << "SELECT cntrycode, COUNT(*) AS numcust, SUM(c_acctbal) AS totacctbal "
+           "FROM (SELECT SUBSTRING(c_phone FROM 1 FOR 2) AS cntrycode, c_acctbal "
+           "FROM customer "
+           "WHERE SUBSTRING(c_phone FROM 1 FOR 2) IN (";
+    for (int i = 0; i < 7; ++i) {
+      if (i > 0) sql << ", ";
+      sql << SqlString(RequireString(arguments, i));
+    }
+    sql << ") AND c_acctbal > (SELECT AVG(c_acctbal) FROM customer "
+           "WHERE c_acctbal > 0.00 AND SUBSTRING(c_phone FROM 1 FOR 2) IN (";
+    for (int i = 0; i < 7; ++i) {
+      if (i > 0) sql << ", ";
+      sql << SqlString(RequireString(arguments, i));
+    }
+    sql << ")) AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey)) "
+           "AS custsale GROUP BY cntrycode ORDER BY cntrycode";
+    return sql.str();
+  }
+case 19: {
+    const auto &b1 = RequireString(arguments, 0);
+    const auto &b2 = RequireString(arguments, 2);
+    const auto &b3 = RequireString(arguments, 4);
+    const int64_t q1 = RequireInt64(arguments, 1);
+    const int64_t q2 = RequireInt64(arguments, 3);
+    const int64_t q3 = RequireInt64(arguments, 5);
+    return "SELECT SUM(l_extendedprice * (1 - l_discount)) AS revenue "
+           "FROM lineitem, part WHERE (p_partkey = l_partkey AND p_brand = " +
+           SqlString(b1) +
+           " AND p_container IN ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG') "
+           "AND l_quantity >= " + std::to_string(q1) +
+           " AND l_quantity <= " + std::to_string(q1 + 10) +
+           " AND p_size BETWEEN 1 AND 5 AND l_shipmode IN ('AIR', 'AIR REG') "
+           "AND l_shipinstruct = 'DELIVER IN PERSON') "
+           "OR (p_partkey = l_partkey AND p_brand = " + SqlString(b2) +
+           " AND p_container IN ('MED BAG', 'MED BOX', 'MED PKG', 'MED PACK') "
+           "AND l_quantity >= " + std::to_string(q2) +
+           " AND l_quantity <= " + std::to_string(q2 + 10) +
+           " AND p_size BETWEEN 1 AND 10 AND l_shipmode IN ('AIR', 'AIR REG') "
+           "AND l_shipinstruct = 'DELIVER IN PERSON') "
+           "OR (p_partkey = l_partkey AND p_brand = " + SqlString(b3) +
+           " AND p_container IN ('LG CASE', 'LG BOX', 'LG PACK', 'LG PKG') "
+           "AND l_quantity >= " + std::to_string(q3) +
+           " AND l_quantity <= " + std::to_string(q3 + 10) +
+           " AND p_size BETWEEN 1 AND 15 AND l_shipmode IN ('AIR', 'AIR REG') "
+           "AND l_shipinstruct = 'DELIVER IN PERSON')";
+  }
+
   default:
     throw std::runtime_error("FormatTpchBaseSql: unsupported query_id " +
                              std::to_string(query_id));
@@ -601,6 +836,8 @@ std::string FormatTpchKernelSql(int query_id,
   case 1:
     return "SELECT * FROM accel_tpch_q1(" +
            std::to_string(RequireInt64(arguments, 0)) + ")";
+  case 4:
+    return "SELECT * FROM accel_tpch_q4(" + DateLiteral(RequireDate(arguments, 0)) + ")";
   case 5:
     return "SELECT * FROM accel_tpch_q5(" + SqlString(RequireString(arguments, 0)) +
            ", " + DateLiteral(RequireDate(arguments, 1)) + ")";
@@ -617,6 +854,13 @@ case 3:
            DateLiteral(RequireDate(arguments, 0)) + ", " +
            FormatDouble(RequireDouble(arguments, 1)) + ", " +
            FormatDouble(RequireDouble(arguments, 2)) + ")";
+  case 7:
+    return "SELECT * FROM accel_tpch_q7(" + SqlString(RequireString(arguments, 0)) +
+           ", " + SqlString(RequireString(arguments, 1)) + ")";
+  case 8:
+    return "SELECT * FROM accel_tpch_q8(" + SqlString(RequireString(arguments, 0)) +
+           ", " + SqlString(RequireString(arguments, 1)) + ", " +
+           SqlString(RequireString(arguments, 2)) + ")";
   case 9:
     return "SELECT * FROM accel_tpch_q9(" + SqlString(RequireString(arguments, 0)) +
            ")";
@@ -630,9 +874,14 @@ case 3:
     return "SELECT * FROM accel_tpch_q12(" + SqlString(RequireString(arguments, 0)) +
            ", " + SqlString(RequireString(arguments, 1)) + ", " +
            DateLiteral(RequireDate(arguments, 2)) + ")";
+  case 13:
+    return "SELECT * FROM accel_tpch_q13(" + SqlString(RequireString(arguments, 0)) +
+           ")";
   case 14:
     return "SELECT * FROM accel_tpch_q14(" + DateLiteral(RequireDate(arguments, 0)) +
            ")";
+  case 15:
+    return "SELECT * FROM accel_tpch_q15(" + DateLiteral(RequireDate(arguments, 0)) + ")";
   case 16: {
     std::ostringstream sql;
     sql << "SELECT * FROM accel_tpch_q16("
@@ -649,9 +898,31 @@ case 3:
   case 18:
     return "SELECT * FROM accel_tpch_q18(" +
            std::to_string(RequireInt64(arguments, 0)) + ")";
+  case 22: {
+    std::ostringstream sql;
+    sql << "SELECT * FROM accel_tpch_q22(";
+    for (int i = 0; i < 7; ++i) {
+      if (i > 0) sql << ", ";
+      sql << SqlString(RequireString(arguments, i));
+    }
+    sql << ")";
+    return sql.str();
+  }
   case 21:
     return "SELECT * FROM accel_tpch_q21(" + SqlString(RequireString(arguments, 0)) +
            ")";
+  case 19:
+    return "SELECT * FROM accel_tpch_q19(" +
+           SqlString(RequireString(arguments, 0)) + ", " +
+           std::to_string(RequireInt64(arguments, 1)) + ", " +
+           SqlString(RequireString(arguments, 2)) + ", " +
+           std::to_string(RequireInt64(arguments, 3)) + ", " +
+           SqlString(RequireString(arguments, 4)) + ", " +
+           std::to_string(RequireInt64(arguments, 5)) + ")";
+  case 20:
+    return "SELECT * FROM accel_tpch_q20(" + DateLiteral(RequireDate(arguments, 0)) +
+           ", " + SqlString(RequireString(arguments, 1)) + ", " +
+           SqlString(RequireString(arguments, 2)) + ")";
   default:
     throw std::runtime_error("FormatTpchKernelSql: unsupported query_id " +
                              std::to_string(query_id));

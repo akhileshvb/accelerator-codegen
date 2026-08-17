@@ -9,12 +9,21 @@ ensure_cmake_target() {
 	if [[ -x "${build}/${target}" ]]; then
 		return 0
 	fi
-	if [[ ! -d "${build}" ]]; then
-		return 1
-	fi
+	mkdir -p "${build}"
 	cmake -S "${root}" -B "${build}"
 	cmake --build "${build}" --target "${target}" -j"$(nproc)"
 	[[ -x "${build}/${target}" ]]
+}
+
+# Create + cmake-configure a (possibly missing) build directory.
+ensure_build_tree() {
+	local root="$1"
+	local build="$2"
+	mkdir -p "${build}"
+	if [[ ! -f "${build}/CMakeCache.txt" ]]; then
+		cmake -S "${root}" -B "${build}"
+	fi
+	[[ -d "${build}" && -f "${build}/CMakeCache.txt" ]]
 }
 
 # Rebuild even when the binary already exists (agent may have changed sources).
@@ -22,9 +31,7 @@ build_cmake_target() {
 	local root="$1"
 	local build="$2"
 	local target="$3"
-	if [[ ! -d "${build}" ]]; then
-		return 1
-	fi
+	mkdir -p "${build}"
 	cmake -S "${root}" -B "${build}"
 	cmake --build "${build}" --target "${target}" -j"$(nproc)"
 	[[ -x "${build}/${target}" ]]
@@ -55,9 +62,7 @@ ensure_aux_unit_tests() {
 	if [[ "${benchmark}" != "tpch" ]]; then
 		prefix="${benchmark}_q${query}"
 	fi
-	if [[ ! -d "${build}" ]]; then
-		return 1
-	fi
+	mkdir -p "${build}"
 	cmake -S "${root}" -B "${build}"
 	cmake --build "${build}" --target \
 		"test_${prefix}_incremental" \

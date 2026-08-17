@@ -270,7 +270,12 @@ void RegisterWorkloadAuxFunctions(::duckdb::Catalog &catalog,
       }
       break;
     case 4:
-      RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q4_aux", {});
+      if (workload == SharedWorkloadKind::Tpch) {
+        RegisterAuxFunction(catalog, context, entry, "accel_tpch_q4_aux",
+                            {::duckdb::LogicalType::DATE});
+      } else {
+        RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q4_aux", {});
+      }
       break;
     case 5:
       RegisterAuxFunction(catalog, context, entry, "accel_tpch_q5_aux",
@@ -285,6 +290,17 @@ void RegisterWorkloadAuxFunctions(::duckdb::Catalog &catalog,
       } else {
         RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q6_aux", {});
       }
+      break;
+    case 7:
+      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q7_aux",
+                          {::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::VARCHAR});
+      break;
+    case 8:
+      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q8_aux",
+                          {::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::VARCHAR});
       break;
     case 9:
       RegisterAuxFunction(catalog, context, entry, "accel_tpch_q9_aux",
@@ -305,8 +321,16 @@ void RegisterWorkloadAuxFunctions(::duckdb::Catalog &catalog,
                            ::duckdb::LogicalType::VARCHAR,
                            ::duckdb::LogicalType::DATE});
       break;
+    case 13:
+      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q13_aux",
+                          {::duckdb::LogicalType::VARCHAR});
+      break;
     case 14:
       RegisterAuxFunction(catalog, context, entry, "accel_tpch_q14_aux",
+                          {::duckdb::LogicalType::DATE});
+      break;
+    case 15:
+      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q15_aux",
                           {::duckdb::LogicalType::DATE});
       break;
     case 16:
@@ -331,9 +355,34 @@ void RegisterWorkloadAuxFunctions(::duckdb::Catalog &catalog,
       RegisterAuxFunction(catalog, context, entry, "accel_tpch_q18_aux",
                           {::duckdb::LogicalType::BIGINT});
       break;
+    case 19:
+      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q19_aux",
+                          {::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::BIGINT,
+                           ::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::BIGINT,
+                           ::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::BIGINT});
+      break;
+    case 20:
+      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q20_aux",
+                          {::duckdb::LogicalType::DATE,
+                           ::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::VARCHAR});
+      break;
     case 21:
       RegisterAuxFunction(catalog, context, entry, "accel_tpch_q21_aux",
                           {::duckdb::LogicalType::VARCHAR});
+      break;
+    case 22:
+      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q22_aux",
+                          {::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::VARCHAR,
+                           ::duckdb::LogicalType::VARCHAR});
       break;
     case 24:
       RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q24_aux", {});

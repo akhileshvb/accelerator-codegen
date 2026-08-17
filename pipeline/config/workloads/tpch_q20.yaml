@@ -1,0 +1,31 @@
+benchmark_name: tpch
+query_number: 20
+query_id: "20"
+function_name: accel_tpch_q20
+create_fn: CreateTpchQ20FunctionSet
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/20.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: start_date
+    type: DATE
+  - name: part_name_pattern
+    type: VARCHAR
+  - name: nation_name
+    type: VARCHAR
+
+reference_accelerators: [2, 11]
+
+output_schema:
+  - name: s_name
+    type: VARCHAR
+  - name: s_address
+    type: VARCHAR
+
+tables:
+  - supplier
+  - nation
+  - partsupp
+  - part
+  - lineitem

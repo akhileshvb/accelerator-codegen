@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 QUERY="${1:-}"
-BUILD="${ROOT}/build-release"
+BUILD="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${ROOT}/build-release}}"
 if [[ -z "${QUERY}" ]]; then
   echo "usage: run_sf10.sh <query_number>" >&2
   exit 1

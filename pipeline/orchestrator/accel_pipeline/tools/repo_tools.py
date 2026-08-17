@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fnmatch
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,12 +29,41 @@ def _resolve_path(ctx: ToolContext, path: str) -> Path:
     return resolved
 
 
+def _benchmark_for_path(path: Path | str) -> str:
+    text = str(path).replace("\\", "/")
+    if "/sec_edgar/" in text or text.startswith("sec_edgar/"):
+        return "sec_edgar"
+    return "tpch"
+
+
 def _is_writable(ctx: ToolContext, path: Path) -> bool:
-    rel = str(path.relative_to(ctx.pipeline_config.repo_root))
-    for pattern in ctx.pipeline_config.write_paths:
-        if fnmatch.fnmatch(rel, pattern):
-            return True
-    return False
+    from accel_pipeline.write_ownership import write_allowed
+
+    ok, _reason = write_allowed(
+        ctx.pipeline_config.repo_root,
+        path,
+        query=int(ctx.query),
+        stage=str(ctx.stage or ""),
+        write_paths=list(ctx.pipeline_config.write_paths or []),
+        pipeline_config=ctx.pipeline_config,
+        benchmark=_benchmark_for_path(path),
+    )
+    return ok
+
+
+def _write_denied_message(ctx: ToolContext, path: Path | str) -> str:
+    from accel_pipeline.write_ownership import write_allowed
+
+    _ok, reason = write_allowed(
+        ctx.pipeline_config.repo_root,
+        path,
+        query=int(ctx.query),
+        stage=str(ctx.stage or ""),
+        write_paths=list(ctx.pipeline_config.write_paths or []),
+        pipeline_config=ctx.pipeline_config,
+        benchmark=_benchmark_for_path(path),
+    )
+    return reason or f"write not allowed: {path}"
 
 
 def _format_patch_hint(text: str, needle: str) -> str:
@@ -89,7 +117,19 @@ def make_repo_tools(ctx: ToolContext):
         """Create or overwrite a file in allowlisted paths."""
         target = _resolve_path(ctx, path)
         if not _is_writable(ctx, target):
-            raise PermissionError(f"write not allowed: {path}")
+            raise PermissionError(_write_denied_message(ctx, target))
+        from accel_pipeline.shared_file_lease import (
+            ensure_sticky_lease_for_write,
+            shared_path_globs,
+            worker_id_from_env,
+        )
+
+        ensure_sticky_lease_for_write(
+            ctx.pipeline_config.repo_root,
+            holder=ctx.pipeline_config.worker_id or worker_id_from_env(f"q{ctx.query}"),
+            path=target,
+            globs=shared_path_globs(ctx.pipeline_config),
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return f"wrote {len(content)} bytes to {path}"
@@ -98,7 +138,19 @@ def make_repo_tools(ctx: ToolContext):
         """Replace exactly one occurrence of old_string with new_string."""
         target = _resolve_path(ctx, path)
         if not _is_writable(ctx, target):
-            raise PermissionError(f"write not allowed: {path}")
+            raise PermissionError(_write_denied_message(ctx, target))
+        from accel_pipeline.shared_file_lease import (
+            ensure_sticky_lease_for_write,
+            shared_path_globs,
+            worker_id_from_env,
+        )
+
+        ensure_sticky_lease_for_write(
+            ctx.pipeline_config.repo_root,
+            holder=ctx.pipeline_config.worker_id or worker_id_from_env(f"q{ctx.query}"),
+            path=target,
+            globs=shared_path_globs(ctx.pipeline_config),
+        )
         if not target.is_file():
             raise FileNotFoundError(f"file not found: {path}")
         text = target.read_text(encoding="utf-8")
@@ -122,7 +174,19 @@ def make_repo_tools(ctx: ToolContext):
         """Insert content after a 1-based line number. Use after_line=0 for file start."""
         target = _resolve_path(ctx, path)
         if not _is_writable(ctx, target):
-            raise PermissionError(f"write not allowed: {path}")
+            raise PermissionError(_write_denied_message(ctx, target))
+        from accel_pipeline.shared_file_lease import (
+            ensure_sticky_lease_for_write,
+            shared_path_globs,
+            worker_id_from_env,
+        )
+
+        ensure_sticky_lease_for_write(
+            ctx.pipeline_config.repo_root,
+            holder=ctx.pipeline_config.worker_id or worker_id_from_env(f"q{ctx.query}"),
+            path=target,
+            globs=shared_path_globs(ctx.pipeline_config),
+        )
         if after_line < 0:
             raise ValueError("after_line must be >= 0")
         if target.is_file():
@@ -151,7 +215,19 @@ def make_repo_tools(ctx: ToolContext):
         """Delete a file in allowlisted paths."""
         target = _resolve_path(ctx, path)
         if not _is_writable(ctx, target):
-            raise PermissionError(f"delete not allowed: {path}")
+            raise PermissionError(_write_denied_message(ctx, target))
+        from accel_pipeline.shared_file_lease import (
+            ensure_sticky_lease_for_write,
+            shared_path_globs,
+            worker_id_from_env,
+        )
+
+        ensure_sticky_lease_for_write(
+            ctx.pipeline_config.repo_root,
+            holder=ctx.pipeline_config.worker_id or worker_id_from_env(f"q{ctx.query}"),
+            path=target,
+            globs=shared_path_globs(ctx.pipeline_config),
+        )
         if target.is_file():
             target.unlink()
         return f"deleted {path}"

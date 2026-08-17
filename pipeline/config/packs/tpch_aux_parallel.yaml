@@ -1,0 +1,27 @@
+# Concurrent aux-state pack on a shared git tree.
+# Isolation: separate build dirs + per-worker CODEX_HOME + shared-file lease.
+# No stage barriers — queries progress independently.
+
+pack_id: tpch_aux_parallel
+display_name: TPC-H aux concurrent pack
+concurrency: 3
+stage: all
+resume: true
+models_config: pipeline/config/models.codex.yaml
+
+# Optional template if an entry is just a query number.
+workload_template: "tpch_q{q}_aux"
+
+queries:
+  - { query: 2, workload: tpch_q2_aux }
+  - { query: 5, workload: tpch_q5_aux }
+  - { query: 16, workload: tpch_q16_aux }
+
+# Shared-file lease globs are defined in pipeline/config/default.yaml (shared_paths)
+# and enforced automatically on write_file/apply_patch/cmake.
+isolation:
+  mode: shared_tree_separate_builds
+  build_dir_template: "build-release-{worker_id}"
+  codex_home_template: "pipeline/.codex/workers/{worker_id}"
+  shared_file_lease: true
+  stage_barriers: false

@@ -1,0 +1,61 @@
+workload_kind: aux_state
+benchmark_name: tpch
+query_number: 20
+query_id: "20"
+accelerator_id: tpch_q20_aux
+base_function_name: accel_tpch_q20
+aux_function_name: accel_tpch_q20_aux
+
+requires_base_accelerator: true
+prerequisite_workload: tpch_q20
+prerequisite_min_stage: implementation
+reference_accelerators:
+  - src/generated/tpch/q2/aux/module.cpp
+  - src/generated/tpch/q11/aux/module.cpp
+
+allow_poor_fitness: false
+allow_unsuccessful_design: false
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/20.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: start_date
+    type: DATE
+  - name: part_name_pattern
+    type: VARCHAR
+  - name: nation_name
+    type: VARCHAR
+
+dependent_tables:
+  - name: supplier
+    watched_columns: [s_suppkey, s_name, s_address, s_nationkey]
+  - name: nation
+    watched_columns: [n_nationkey, n_name]
+  - name: partsupp
+    watched_columns: [ps_partkey, ps_suppkey, ps_availqty]
+  - name: part
+    watched_columns: [p_partkey, p_name]
+  - name: lineitem
+    watched_columns: [l_partkey, l_suppkey, l_shipdate, l_quantity]
+
+partitioning: {}
+
+output_schema:
+  - name: s_name
+    type: VARCHAR
+  - name: s_address
+    type: VARCHAR
+
+cost_model_config: config/q20_aux_cost_model.json
+
+optimization_guidance: |
+  Q20 lists in-nation suppliers with excess availqty vs yearly shipped qty for
+  parts matching a name pattern. Materialize part-name filter sets and
+  (part,supp) shipped aggregates; keep partsupp availability checks local.
+
+cmake:
+  query_num: 20
+  aux_state_module: accel_add_aux_state_query
+
+agent_boundary: prompts/aux_state/shared/agent_boundary.md

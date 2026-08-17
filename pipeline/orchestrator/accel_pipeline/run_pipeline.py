@@ -10,7 +10,7 @@ from accel_pipeline.env_loader import load_repo_dotenv
 from accel_pipeline.paths import find_repo_root
 from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
 from accel_pipeline.state import STAGES, advance_stage, load_or_create, state_path
-from accel_pipeline.stages import analysis, audit, implementation, optimization
+from accel_pipeline.stages import analysis, adversarial_tests, audit, implementation, optimization
 from accel_pipeline.structural_reanalysis import process_after_stage
 from accel_pipeline.pipeline_log import log_event, log_pipeline_summary
 
@@ -53,6 +53,11 @@ def _maybe_process_structural_reanalysis(
             analysis_revision_request=kwargs.get("analysis_revision_request", ""),
         )
 
+    def run_adv():
+        adversarial_tests.run(
+            pipeline_config, model_config, workload_name, query, model_overrides, dry_run
+        )
+
     def run_impl():
         implementation.run(
             pipeline_config, model_config, workload_name, query, model_overrides, dry_run
@@ -76,6 +81,7 @@ def _maybe_process_structural_reanalysis(
         triggered_after=triggered_after,
         structural_reanalysis_count=state.structural_reanalysis_count,
         run_analysis=run_analysis,
+        run_adversarial_tests=run_adv,
         run_implementation=run_impl,
         run_optimization=run_opt,
         dry_run=dry_run,
@@ -111,6 +117,10 @@ def _run_stage(
 ) -> None:
     if stage == "analysis":
         analysis.run(pipeline_config, model_config, workload_name, query, model_overrides, dry_run)
+    elif stage == "adversarial_tests":
+        adversarial_tests.run(
+            pipeline_config, model_config, workload_name, query, model_overrides, dry_run
+        )
     elif stage == "implementation":
         implementation.run(
             pipeline_config,
@@ -164,14 +174,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         os.environ["ACCEL_PIPELINE_DRY_RUN"] = "1"
 
-    repo_root = find_repo_root()
-    dotenv_path = load_repo_dotenv(repo_root)
+    # Pack worktree isolation: prefer explicit ACCEL_PIPELINE_REPO_ROOT.
+    env_repo = os.environ.get("ACCEL_PIPELINE_REPO_ROOT")
+    primary_env = os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
+    repo_root = Path(env_repo).resolve() if env_repo else find_repo_root()
+    primary_root = Path(primary_env).resolve() if primary_env else find_repo_root()
+    dotenv_path = load_repo_dotenv(primary_root)
     if dotenv_path is not None:
-        print(f"loaded env file: {dotenv_path.relative_to(repo_root)}", file=sys.stderr)
+        try:
+            print(f"loaded env file: {dotenv_path.relative_to(primary_root)}", file=sys.stderr)
+        except ValueError:
+            print(f"loaded env file: {dotenv_path}", file=sys.stderr)
     pipeline_config = load_pipeline_config(args.config, repo_root)
-    workload = load_workload(args.workload, repo_root)
+    workload = load_workload(args.workload, primary_root)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
-    model_config = load_model_config(args.models_config, repo_root=repo_root)
+    # Concurrent pack workers: separate build dir + CODEX_HOME (+ optional worktree).
+    if os.environ.get("ACCEL_PIPELINE_WORKER_ID") or os.environ.get("ACCEL_PIPELINE_BUILD_DIR"):
+        from accel_pipeline.worker_isolation import apply_worker_isolation, isolation_summary
+
+        pipeline_config = apply_worker_isolation(
+            pipeline_config,
+            query=args.query,
+            workload_name=args.workload,
+            set_environ=True,
+        )
+        print(f"worker isolation: {isolation_summary(pipeline_config)}", file=sys.stderr)
+    repo_root = Path(pipeline_config.repo_root)
+    model_config = load_model_config(args.models_config, repo_root=primary_root)
     print(f"agent provider: {model_config.provider}", file=sys.stderr)
     query = args.query
     if workload.get("query_number") is not None and int(workload["query_number"]) != query:
@@ -228,12 +257,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     start_idx = STAGES.index(state.stage) if args.resume else 0
+    initial_stage = state.stage
     idx = start_idx
     while idx < len(STAGES):
         stage = STAGES[idx]
         print(f"=== stage: {stage} ===", file=sys.stderr)
-        state.stage = stage
-        state.save(state_path(repo_root, query, args.workload))
+        if not args.dry_run:
+            state.stage = stage
+            state.save(state_path(repo_root, query, args.workload))
         _run_stage(stage, pipeline_config, model_config, args.workload, query, model_overrides, args.dry_run, skip_gates=args.skip_gates, resume=args.resume)
 
         if stage == "implementation":
@@ -268,9 +299,16 @@ def main(argv: list[str] | None = None) -> int:
                 idx = next_idx
                 continue
 
-        if stage != STAGES[-1]:
+        if stage != STAGES[-1] and not args.dry_run:
             advance_stage(state, repo_root)
         idx += 1
+
+    if args.dry_run:
+        # Dry-run must not poison --resume (e.g. leave stage=audit with no sources).
+        state.stage = initial_stage
+        state.save(state_path(repo_root, query, args.workload))
+        print("pipeline dry-run complete (state unchanged)", file=sys.stderr)
+        return 0
 
     state.stage = STAGES[-1]
     state.save(state_path(repo_root, query, args.workload))

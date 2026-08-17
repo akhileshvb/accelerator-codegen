@@ -103,6 +103,14 @@ std::string TpchReferenceSql(int query_num) {
 		       "AND o_orderdate < DATE '1995-03-15' AND l_shipdate > DATE '1995-03-15' "
 		       "GROUP BY l_orderkey, o_orderdate, o_shippriority "
 		       "ORDER BY revenue DESC, o_orderdate, l_orderkey, o_shippriority LIMIT 10)";
+	case 4:
+		return "SELECT o_orderpriority, COUNT(o_orderkey) AS order_count "
+		       "FROM orders "
+		       "WHERE o_orderdate >= DATE '1996-11-01' "
+		       "AND o_orderdate < DATE '1996-11-01' + INTERVAL '3' MONTH "
+		       "AND EXISTS (SELECT * FROM lineitem WHERE l_orderkey = o_orderkey "
+		       "AND l_commitdate < l_receiptdate) "
+		       "GROUP BY o_orderpriority ORDER BY o_orderpriority";
 	case 5:
 		return "SELECT n_name, SUM(l_extendedprice * (1 - l_discount)) AS revenue "
 		       "FROM customer, orders, lineitem, supplier, nation, region "
@@ -113,6 +121,33 @@ std::string TpchReferenceSql(int query_num) {
 		       "AND o_orderdate >= DATE '1995-01-01' "
 		       "AND o_orderdate < DATE '1995-01-01' + INTERVAL '1' year "
 		       "GROUP BY n_name ORDER BY revenue DESC";
+	case 7:
+		return "SELECT supp_nation, cust_nation, l_year, SUM(volume) AS revenue FROM ("
+		       "SELECT n1.n_name AS supp_nation, n2.n_name AS cust_nation, "
+		       "EXTRACT(year FROM l_shipdate) AS l_year, "
+		       "l_extendedprice * (1 - l_discount) AS volume "
+		       "FROM supplier, lineitem, orders, customer, nation n1, nation n2 "
+		       "WHERE s_suppkey = l_suppkey AND o_orderkey = l_orderkey "
+		       "AND c_custkey = o_custkey AND s_nationkey = n1.n_nationkey "
+		       "AND c_nationkey = n2.n_nationkey "
+		       "AND ((n1.n_name = 'UNITED KINGDOM' AND n2.n_name = 'BRAZIL') "
+		       "OR (n1.n_name = 'BRAZIL' AND n2.n_name = 'UNITED KINGDOM')) "
+		       "AND l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31') AS shipping "
+		       "GROUP BY supp_nation, cust_nation, l_year "
+		       "ORDER BY supp_nation, cust_nation, l_year";
+	case 8:
+		return "SELECT o_year, SUM(CASE WHEN nation = 'INDIA' THEN volume ELSE 0 END) / "
+		       "SUM(volume) AS mkt_share FROM ("
+		       "SELECT EXTRACT(year FROM o_orderdate) AS o_year, "
+		       "l_extendedprice * (1 - l_discount) AS volume, n2.n_name AS nation "
+		       "FROM part, supplier, lineitem, orders, customer, nation n1, nation n2, region "
+		       "WHERE p_partkey = l_partkey AND s_suppkey = l_suppkey "
+		       "AND l_orderkey = o_orderkey AND o_custkey = c_custkey "
+		       "AND c_nationkey = n1.n_nationkey AND n1.n_regionkey = r_regionkey "
+		       "AND r_name = 'ASIA' AND s_nationkey = n2.n_nationkey "
+		       "AND o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
+		       "AND p_type = 'PROMO BRUSHED BRASS') AS all_nations "
+		       "GROUP BY o_year ORDER BY o_year";
 	case 10:
 		return "SELECT * FROM accel_tpch_q10(DATE '1993-06-01')";
 	case 11: {
@@ -125,6 +160,62 @@ std::string TpchReferenceSql(int query_num) {
 	}
 	case 12:
 		return "SELECT * FROM accel_tpch_q12('MAIL', 'SHIP', DATE '1995-01-01')";
+	case 13:
+		return "SELECT c_count, COUNT(*) AS custdist FROM ("
+		       "SELECT c_custkey, COUNT(o_orderkey) AS c_count FROM customer "
+		       "LEFT OUTER JOIN orders ON c_custkey = o_custkey AND o_comment NOT LIKE "
+		       "'%unusual%accounts%' GROUP BY c_custkey) AS c_orders "
+		       "GROUP BY c_count ORDER BY custdist DESC, c_count DESC";
+	case 15:
+		return "SELECT s_suppkey, s_name, s_address, s_phone, total_revenue "
+		       "FROM supplier, ("
+		       "SELECT l_suppkey AS supplier_no, "
+		       "SUM(l_extendedprice * (1 - l_discount)) AS total_revenue "
+		       "FROM lineitem WHERE l_shipdate >= DATE '1994-11-01' "
+		       "AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH "
+		       "GROUP BY l_suppkey) revenue0 "
+		       "WHERE s_suppkey = supplier_no "
+		       "AND total_revenue = (SELECT MAX(total_revenue) FROM ("
+		       "SELECT l_suppkey AS supplier_no, "
+		       "SUM(l_extendedprice * (1 - l_discount)) AS total_revenue "
+		       "FROM lineitem WHERE l_shipdate >= DATE '1994-11-01' "
+		       "AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH "
+		       "GROUP BY l_suppkey) revenue1) ORDER BY s_suppkey";
+	case 19:
+		return "SELECT SUM(l_extendedprice * (1 - l_discount)) AS revenue "
+		       "FROM lineitem, part "
+		       "WHERE (p_partkey = l_partkey AND p_brand = 'Brand#31' "
+		       "AND p_container IN ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG') "
+		       "AND l_quantity >= 4 AND l_quantity <= 4 + 10 "
+		       "AND p_size BETWEEN 1 AND 5 "
+		       "AND l_shipmode IN ('AIR', 'AIR REG') "
+		       "AND l_shipinstruct = 'DELIVER IN PERSON') "
+		       "OR (p_partkey = l_partkey AND p_brand = 'Brand#12' "
+		       "AND p_container IN ('MED BAG', 'MED BOX', 'MED PKG', 'MED PACK') "
+		       "AND l_quantity >= 15 AND l_quantity <= 15 + 10 "
+		       "AND p_size BETWEEN 1 AND 10 "
+		       "AND l_shipmode IN ('AIR', 'AIR REG') "
+		       "AND l_shipinstruct = 'DELIVER IN PERSON') "
+		       "OR (p_partkey = l_partkey AND p_brand = 'Brand#51' "
+		       "AND p_container IN ('LG CASE', 'LG BOX', 'LG PACK', 'LG PKG') "
+		       "AND l_quantity >= 23 AND l_quantity <= 23 + 10 "
+		       "AND p_size BETWEEN 1 AND 15 "
+		       "AND l_shipmode IN ('AIR', 'AIR REG') "
+		       "AND l_shipinstruct = 'DELIVER IN PERSON')";
+	case 20:
+		return "SELECT s_name, s_address "
+		       "FROM supplier, nation "
+		       "WHERE s_suppkey IN ("
+		       "SELECT ps_suppkey FROM partsupp, ("
+		       "SELECT l_partkey agg_partkey, l_suppkey agg_suppkey, 0.5 * SUM(l_quantity) AS agg_quantity "
+		       "FROM lineitem WHERE l_shipdate >= DATE '1997-01-01' "
+		       "AND l_shipdate < DATE '1997-01-01' + INTERVAL '1' year "
+		       "GROUP BY l_partkey, l_suppkey) agg_lineitem "
+		       "WHERE agg_partkey = ps_partkey AND agg_suppkey = ps_suppkey "
+		       "AND ps_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE 'gainsboro%') "
+		       "AND ps_availqty > agg_quantity) "
+		       "AND s_nationkey = n_nationkey AND n_name = 'RUSSIA' "
+		       "ORDER BY s_name";
 	case 14:
 		return "SELECT 100.00 * SUM(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * (1 - l_discount) ELSE 0 END) / "
 		       "SUM(l_extendedprice * (1 - l_discount)) AS promo_revenue "
@@ -176,6 +267,17 @@ std::string TpchReferenceSql(int query_num) {
 		       "AND c_custkey = o_custkey AND o_orderkey = l_orderkey "
 		       "GROUP BY c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice "
 		       "ORDER BY o_totalprice DESC, o_orderdate ASC";
+	case 22:
+		return "SELECT cntrycode, COUNT(*) AS numcust, SUM(c_acctbal) AS totacctbal "
+		       "FROM (SELECT SUBSTRING(c_phone FROM 1 FOR 2) AS cntrycode, c_acctbal "
+		       "FROM customer "
+		       "WHERE SUBSTRING(c_phone FROM 1 FOR 2) IN "
+		       "('13', '30', '99', '98', '97', '96', '95') "
+		       "AND c_acctbal > (SELECT AVG(c_acctbal) FROM customer "
+		       "WHERE c_acctbal > 0.00 AND SUBSTRING(c_phone FROM 1 FOR 2) IN "
+		       "('13', '30', '99', '98', '97', '96', '95')) "
+		       "AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey)) AS custsale "
+		       "GROUP BY cntrycode ORDER BY cntrycode";
 	case 21:
 		return "SELECT s_name, COUNT(*) AS numwait FROM supplier, lineitem l1, orders, "
 		       "nation WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey AND "
@@ -198,14 +300,28 @@ std::string TpchAuxSql(int query_num) {
 		return "SELECT * FROM accel_tpch_q2_aux(15, '%BRASS', 'EUROPE')";
 	case 3:
 		return "SELECT * FROM accel_tpch_q3_aux('BUILDING', DATE '1995-03-15')";
+	case 4:
+		return "SELECT * FROM accel_tpch_q4_aux(DATE '1996-11-01')";
 	case 5:
 		return "SELECT * FROM accel_tpch_q5_aux('AMERICA', DATE '1995-01-01')";
+	case 7:
+		return "SELECT * FROM accel_tpch_q7_aux('UNITED KINGDOM', 'BRAZIL')";
+	case 8:
+		return "SELECT * FROM accel_tpch_q8_aux('INDIA', 'ASIA', 'PROMO BRUSHED BRASS')";
 	case 10:
 		return "SELECT * FROM accel_tpch_q10_aux(DATE '1993-06-01')";
 	case 11:
 		return "SELECT * FROM accel_tpch_q11_aux('ROMANIA', 0.0001)";
 	case 12:
 		return "SELECT * FROM accel_tpch_q12_aux('MAIL', 'SHIP', DATE '1995-01-01')";
+	case 13:
+		return "SELECT * FROM accel_tpch_q13_aux('%unusual%accounts%')";
+	case 15:
+		return "SELECT * FROM accel_tpch_q15_aux(DATE '1994-11-01')";
+	case 19:
+		return "SELECT * FROM accel_tpch_q19_aux('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)";
+	case 20:
+		return "SELECT * FROM accel_tpch_q20_aux(DATE '1997-01-01', 'gainsboro%', 'RUSSIA')";
 	case 14:
 		return "SELECT * FROM accel_tpch_q14_aux(DATE '1995-06-01')";
 	case 16:
@@ -218,6 +334,8 @@ std::string TpchAuxSql(int query_num) {
 		return "SELECT * FROM accel_tpch_q18_aux(312)";
 	case 17:
 		return "SELECT * FROM accel_tpch_q17_aux('Brand#34', 'LARGE BRUSHED')";
+	case 22:
+		return "SELECT * FROM accel_tpch_q22_aux('13', '30', '99', '98', '97', '96', '95')";
 	case 21:
 		return "SELECT * FROM accel_tpch_q21_aux('SAUDI ARABIA')";
 	default:
@@ -565,7 +683,7 @@ std::vector<int> CrossAccelAllQueries() {
 	if (DetectCrossAccelBenchmark() == CrossAccelBenchmark::SecEdgar) {
 		return {1, 2, 3, 4, 6, 24};
 	}
-	return {1, 2, 3, 5, 6, 9, 10, 11, 12, 14, 17, 18, 21};
+	return {1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 14, 17, 18, 21};
 }
 
 std::vector<int> CrossAccelTestQueries() {
@@ -626,11 +744,26 @@ std::string InvalidatingWriterSqlForQuery(int query_num, int bulk_row_limit, int
 		    "WHERE c_mktsegment = 'BUILDING' AND o_orderdate < DATE '1995-03-15') "
 		    "AND l_shipdate > DATE '1995-03-15'",
 		    bulk_row_limit);
+	case 4:
+		return PointLineitemUpdateSql(
+		    "l_orderkey IN (SELECT o_orderkey FROM orders "
+		    "WHERE o_orderdate >= DATE '1996-11-01' AND o_orderdate < DATE '1997-02-01') "
+		    "AND l_commitdate < l_receiptdate",
+		    bulk_row_limit);
 	case 5:
 		return PointLineitemUpdateSql(
 		    "l_orderkey IN (SELECT o_orderkey FROM orders "
 		    "WHERE o_orderdate >= DATE '1995-01-01' "
 		    "AND o_orderdate < DATE '1996-01-01')",
+		    bulk_row_limit);
+	case 7:
+		return PointLineitemUpdateSql(
+		    "l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'",
+		    bulk_row_limit);
+	case 8:
+		return PointLineitemUpdateSql(
+		    "l_orderkey IN (SELECT o_orderkey FROM orders "
+		    "WHERE o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31')",
 		    bulk_row_limit);
 	case 10:
 		return PointLineitemUpdateSql(
@@ -650,6 +783,22 @@ std::string InvalidatingWriterSqlForQuery(int query_num, int bulk_row_limit, int
 		return PointLineitemUpdateSql(
 		    "l_receiptdate >= DATE '1995-01-01' AND l_receiptdate < DATE '1995-02-01' "
 		    "AND l_shipmode IN ('MAIL', 'SHIP')",
+		    bulk_row_limit);
+	case 13:
+		return "UPDATE orders SET o_comment = o_comment || ' ' WHERE o_orderkey IN ("
+		       "SELECT o_orderkey FROM orders ORDER BY o_orderkey LIMIT " +
+		       std::to_string(bulk_row_limit) + ")";
+	case 15:
+		return PointLineitemUpdateSql(
+		    "l_shipdate >= DATE '1994-11-01' AND l_shipdate < DATE '1995-02-01'",
+		    bulk_row_limit);
+	case 19:
+		return PointLineitemUpdateSql(
+		    "l_shipmode IN ('AIR', 'AIR REG') AND l_shipinstruct = 'DELIVER IN PERSON'",
+		    bulk_row_limit);
+	case 20:
+		return PointLineitemUpdateSql(
+		    "l_shipdate >= DATE '1997-01-01' AND l_shipdate < DATE '1998-01-01'",
 		    bulk_row_limit);
 	case 14:
 		return PointLineitemUpdateSql("l_shipdate >= DATE '1995-06-01' AND l_shipdate < DATE '1995-07-01'",
@@ -679,6 +828,10 @@ std::string InvalidatingWriterSqlForQuery(int query_num, int bulk_row_limit, int
 		    "l_partkey IN (SELECT p_partkey FROM part WHERE p_brand = 'Brand#34' "
 		    "AND p_container = 'LARGE BRUSHED')",
 		    bulk_row_limit);
+	case 22:
+		return "UPDATE orders SET o_custkey = o_custkey + 1 WHERE o_orderkey "
+		       "IN (SELECT o_orderkey FROM orders ORDER BY o_orderkey "
+		       "LIMIT " + std::to_string(bulk_row_limit) + ")";
 	case 21:
 		return PointLineitemUpdateSql(
 		    "l_orderkey IN (SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F') "

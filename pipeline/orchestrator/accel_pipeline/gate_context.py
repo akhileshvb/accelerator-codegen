@@ -32,6 +32,7 @@ def build_gate_context(
         "scale_db": str(paths.get("scale_db", "")),
         "db_env_var": paths["db_env_var"],
         "ctest_resource_lock": str(workload.get("ctest_resource_lock", f"{benchmark}_db")),
+        "build_dir": str(pipeline_config.build_dir),
         "fairness": dict(workload.get("fairness", {})),
         "header_path": paths["header_path"],
         "kernel_path": paths["kernel_path"],

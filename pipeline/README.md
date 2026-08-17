@@ -104,6 +104,23 @@ Config: [`config/models.codex.yaml`](config/models.codex.yaml) + [`pipeline/.cod
 
 Analysis and audit stay on OpenRouter Agents when using `models.codex.yaml`.
 
+### Concurrent pack (shared tree, no stage barriers)
+
+Run several query pipelines in parallel on one checkout. Isolation is **separate build dirs** + **per-worker `CODEX_HOME`** + a **shared-file lease** for catalog/CMake/registration edits (query-local `qN/aux/**` does not need the lease). Workers do not wait on each other's stages.
+
+```bash
+cd pipeline/orchestrator && source .venv/bin/activate
+accel-pipeline-pack --pack tpch_aux_parallel \
+  --models-config pipeline/config/models.codex.yaml
+# or: python -m accel_pipeline.run_pack --pack tpch_aux_parallel ...
+```
+
+Pack YAML examples:
+- [`config/packs/tpch_aux_parallel.yaml`](config/packs/tpch_aux_parallel.yaml) — Q2/Q5/Q16
+- [`config/packs/tpch_aux_remaining.yaml`](config/packs/tpch_aux_remaining.yaml) — Q4/Q7/Q8/Q13/Q15/Q19/Q20/Q22
+
+Shared path globs: `shared_paths` in [`config/default.yaml`](config/default.yaml). Logs/summary under `pipeline/artifacts/packs/`.
+
 Set `provider: openrouter` in `config/models.yaml` (see `config/models.openrouter.yaml` for a starter config). OpenRouter Agents uses the same custom pipeline tools as Cursor (`read_file`, `apply_patch`, `run_command`, A/B benchmark tools, etc.) via the OpenAI Agents SDK + LiteLLM.
 
 ### Cursor SDK timeouts and bridge lifecycle

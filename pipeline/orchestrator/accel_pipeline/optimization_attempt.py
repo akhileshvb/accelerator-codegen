@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -200,6 +201,35 @@ def _effective_consecutive_fail_stop(pipeline_config: PipelineConfig, max_attemp
     return raw
 
 
+def _is_transient_provider_failure(reason: str | None) -> bool:
+    """True when the agent never ran (network/provider flake), not a real hyp fail."""
+    text = (reason or "").lower()
+    if not text:
+        return False
+    needles = (
+        "stream disconnected",
+        "error sending request",
+        "connection refused",
+        "cannot connect to host",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "503",
+        "502",
+        "429",
+        "rate limit",
+        "reconnecting...",
+    )
+    return any(n in text for n in needles)
+
+
+def _short_failure_reason(reason: str | None, *, max_chars: int = 240) -> str:
+    text = " ".join((reason or "unknown").split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3] + "..."
+
+
 def _measure_baseline(
     pipeline_config: PipelineConfig,
     workload: dict[str, Any],
@@ -224,11 +254,55 @@ def _revert_and_rebuild(
     revert_attempt_checkpoint(pipeline_config, workload, query)
     built, build_out = run_build(pipeline_config, workload, query)
     if not built:
+        infra = _fail_fast_infra_if_needed(
+            pipeline_config, workload, query, text=build_out or ""
+        )
+        if infra:
+            return
         print(
             f"[pipeline] warning: rebuild after revert failed: {(build_out or '')[-400:]}",
             file=sys.stderr,
             flush=True,
         )
+
+
+def _fail_fast_infra_if_needed(
+    pipeline_config: PipelineConfig,
+    workload: dict[str, Any],
+    query: int,
+    *,
+    text: str,
+    pack_queries: list[int] | None = None,
+) -> dict[str, Any] | None:
+    """On shared-tree infra failures, repair + release lease and stop burning agent turns."""
+    from accel_pipeline.infra_fail_fast import handle_infra_failure
+
+    info = handle_infra_failure(
+        pipeline_config,
+        workload,
+        query,
+        text=text or "",
+        pack_queries=pack_queries,
+    )
+    if not info:
+        return None
+    print(
+        f"[pipeline] fail-fast infra ({info.get('infra_reason')}): "
+        f"lease_released={info.get('lease_released')} "
+        f"restored={list((info.get('repair') or {}).get('restored') or {})}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return info
+
+
+class InfraFailFastError(RuntimeError):
+    """Raised to abort fix loops without launching more agent turns."""
+
+    def __init__(self, info: dict[str, Any], *, detail: str = ""):
+        self.info = info
+        reason = info.get("infra_reason") or "infra_failure"
+        super().__init__(f"infra_fail_fast:{reason}: {detail}"[:2000])
 
 
 def _build_evidence(
@@ -572,8 +646,8 @@ def _build_reproduce_cmd(pipeline_config: PipelineConfig, workload: dict[str, An
     return f"cmake --build {pipeline_config.build_dir.name} --target {target_str} -j4"
 
 
-def _smoke_reproduce_cmd(smoke: SmokeResult) -> str:
-    return f"ctest --test-dir build-release -R {smoke.regex} --output-on-failure"
+def _smoke_reproduce_cmd(smoke: SmokeResult, *, build_dir_name: str = "build-release") -> str:
+    return f"ctest --test-dir {build_dir_name} -R {smoke.regex} --output-on-failure"
 
 
 def _run_optimization_fix_agent(
@@ -626,6 +700,11 @@ def _run_build_with_fix_loop(
                     flush=True,
                 )
             return True, build_out
+        infra = _fail_fast_infra_if_needed(
+            pipeline_config, workload, query, text=build_out or ""
+        )
+        if infra:
+            raise InfraFailFastError(infra, detail=(build_out or "")[-1500:])
         fix_round += 1
         optimization_fix_limit(pipeline_config, fix_round, kind="build")
         diagnosis = format_build_failure_diagnosis(
@@ -689,9 +768,16 @@ def _run_smoke_with_fix_loop(
                     flush=True,
                 )
             return smoke
+        infra = _fail_fast_infra_if_needed(
+            pipeline_config, workload, query, text=smoke.output or ""
+        )
+        if infra:
+            raise InfraFailFastError(infra, detail=(smoke.output or "")[-1500:])
         fix_round += 1
         optimization_fix_limit(pipeline_config, fix_round, kind="correctness")
-        reproduce = _smoke_reproduce_cmd(smoke)
+        reproduce = _smoke_reproduce_cmd(
+            smoke, build_dir_name=pipeline_config.build_dir.name
+        )
         diagnosis = format_smoke_failure_diagnosis(
             smoke,
             optimization_iter=optimization_iter,
@@ -803,6 +889,14 @@ def run_optimization_iteration(
     )
     preflight_ok, preflight_out = run_build(pipeline_config, workload, query)
     if not preflight_ok:
+        infra = _fail_fast_infra_if_needed(
+            pipeline_config, workload, query, text=preflight_out or ""
+        )
+        if infra:
+            raise RuntimeError(
+                f"optimization: preflight infra fail-fast ({infra.get('infra_reason')}): "
+                f"{(preflight_out or '')[-2000:]}"
+            )
         raise RuntimeError(
             f"optimization: preflight build failed — fix tree or restore checkpoint:\n{(preflight_out or '')[-2000:]}"
         )
@@ -912,10 +1006,35 @@ def run_optimization_iteration(
                     getattr(pipeline_config, "optimization_turn_delta_max_chars", 4000) or 4000
                 ),
             )
-            cycle = worker.run_candidate_cycle(user_msg)
-            save_attempt_state(art, {"attempt": attempt, "phase": "worker", "status": cycle.status})
-            last_result = cycle
-            hypothesis = cycle.hypothesis
+            # Soft-retry provider flakes on the same attempt slot so network
+            # disconnects do not burn the whole attempt budget without any work.
+            provider_retries = 0
+            max_provider_retries = 3
+            while True:
+                cycle = worker.run_candidate_cycle(user_msg)
+                save_attempt_state(
+                    art, {"attempt": attempt, "phase": "worker", "status": cycle.status}
+                )
+                last_result = cycle
+                hypothesis = cycle.hypothesis
+                if (
+                    cycle.status != "ready"
+                    and cycle.status != "saturated"
+                    and cycle.status != "cannot_test"
+                    and _is_transient_provider_failure(cycle.reason)
+                    and provider_retries < max_provider_retries
+                ):
+                    provider_retries += 1
+                    short = _short_failure_reason(cycle.reason)
+                    print(
+                        f"[pipeline] transient provider failure on attempt {attempt} "
+                        f"(retry {provider_retries}/{max_provider_retries}): {short}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    time.sleep(min(30, 5 * provider_retries))
+                    continue
+                break
 
             if cycle.status == "saturated":
                 honored, detail = _try_honor_saturation(
@@ -960,6 +1079,12 @@ def run_optimization_iteration(
                 continue
 
             if cycle.status != "ready":
+                short = _short_failure_reason(cycle.reason or "worker_candidate_failed")
+                print(
+                    f"[pipeline] candidate failed (no CANDIDATE_READY): {short}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 _revert_and_rebuild(pipeline_config, workload, query)
                 consecutive_fails += 1
                 _record_failure(
@@ -982,11 +1107,19 @@ def run_optimization_iteration(
             )
             built, build_out = run_build(pipeline_config, workload, query)
             if not built:
+                infra = _fail_fast_infra_if_needed(
+                    pipeline_config, workload, query, text=build_out or ""
+                )
                 _revert_and_rebuild(pipeline_config, workload, query)
                 consecutive_fails += 1
+                reason = (
+                    f"infra_fail_fast:{infra.get('infra_reason')}"
+                    if infra
+                    else "auth_build_failed"
+                )
                 worker.pending.push(
                     format_gate_delta(
-                        verdict="auth_build_failed",
+                        verdict=reason,
                         reason=(build_out or "")[-2000:],
                         hypothesis=hypothesis,
                         reverted=True,
@@ -994,8 +1127,8 @@ def run_optimization_iteration(
                 )
                 worker.compact_between_cycles()
                 worker.save_checkpoint()
-                _record_failure(art, attempt=attempt, hypothesis=hypothesis, reason="auth_build_failed")
-                if consecutive_fails >= consecutive_fail_stop:
+                _record_failure(art, attempt=attempt, hypothesis=hypothesis, reason=reason)
+                if infra or consecutive_fails >= consecutive_fail_stop:
                     break
                 continue
 
@@ -1003,11 +1136,19 @@ def run_optimization_iteration(
                 pipeline_config, workload, query, runs=_smoke_runs(pipeline_config)
             )
             if not smoke.passed:
+                infra = _fail_fast_infra_if_needed(
+                    pipeline_config, workload, query, text=smoke.output or ""
+                )
                 _revert_and_rebuild(pipeline_config, workload, query)
                 consecutive_fails += 1
+                reason = (
+                    f"infra_fail_fast:{infra.get('infra_reason')}"
+                    if infra
+                    else f"auth_smoke_failed: {(smoke.output or '')[-500:]}"
+                )
                 worker.pending.push(
                     format_gate_delta(
-                        verdict="auth_smoke_failed",
+                        verdict="auth_smoke_failed" if not infra else reason,
                         reason=(smoke.output or "")[-2000:],
                         hypothesis=hypothesis,
                         reverted=True,
@@ -1019,19 +1160,27 @@ def run_optimization_iteration(
                     art,
                     attempt=attempt,
                     hypothesis=hypothesis,
-                    reason=f"auth_smoke_failed: {(smoke.output or '')[-500:]}",
+                    reason=reason,
                 )
-                if consecutive_fails >= consecutive_fail_stop:
+                if infra or consecutive_fails >= consecutive_fail_stop:
                     break
                 continue
 
             probe = run_optimization_probe(pipeline_config, workload, query)
             if not probe.passed:
+                probe_text = f"{probe.diff_summary or ''}\n{probe.output or ''}"
+                infra = _fail_fast_infra_if_needed(
+                    pipeline_config, workload, query, text=probe_text
+                )
                 _revert_and_rebuild(pipeline_config, workload, query)
                 consecutive_fails += 1
                 worker.pending.push(
                     format_gate_delta(
-                        verdict="auth_probe_failed",
+                        verdict=(
+                            f"infra_fail_fast:{infra.get('infra_reason')}"
+                            if infra
+                            else "auth_probe_failed"
+                        ),
                         reason=probe.diff_summary or (probe.output or "")[-2000:],
                         hypothesis=hypothesis,
                         reverted=True,
@@ -1043,9 +1192,13 @@ def run_optimization_iteration(
                     art,
                     attempt=attempt,
                     hypothesis=hypothesis,
-                    reason=f"auth_probe_failed: {probe.diff_summary or ''}",
+                    reason=(
+                        f"infra_fail_fast:{infra.get('infra_reason')}"
+                        if infra
+                        else f"auth_probe_failed: {probe.diff_summary or ''}"
+                    ),
                 )
-                if consecutive_fails >= consecutive_fail_stop:
+                if infra or consecutive_fails >= consecutive_fail_stop:
                     break
                 continue
 
@@ -1373,6 +1526,16 @@ def run_optimization_iteration(
                 attempt=attempt,
                 model_overrides=model_overrides,
             )
+        except InfraFailFastError as exc:
+            _revert_and_rebuild(pipeline_config, workload, query)
+            consecutive_fails += 1
+            _record_failure(
+                art,
+                attempt=attempt,
+                hypothesis=hypothesis,
+                reason=str(exc),
+            )
+            break
         except RuntimeError as exc:
             _revert_and_rebuild(pipeline_config, workload, query)
             consecutive_fails += 1
@@ -1386,15 +1549,22 @@ def run_optimization_iteration(
                 break
             continue
         if not built:
+            infra = _fail_fast_infra_if_needed(
+                pipeline_config, workload, query, text=build_out or ""
+            )
             _revert_and_rebuild(pipeline_config, workload, query)
             consecutive_fails += 1
             _record_failure(
                 art,
                 attempt=attempt,
                 hypothesis=hypothesis,
-                reason=f"build_failed: {build_out[-2000:]}",
+                reason=(
+                    f"infra_fail_fast:{infra.get('infra_reason')}"
+                    if infra
+                    else f"build_failed: {build_out[-2000:]}"
+                ),
             )
-            if consecutive_fails >= consecutive_fail_stop:
+            if infra or consecutive_fails >= consecutive_fail_stop:
                 break
             continue
 
@@ -1409,6 +1579,16 @@ def run_optimization_iteration(
                 attempt=attempt,
                 model_overrides=model_overrides,
             )
+        except InfraFailFastError as exc:
+            _revert_and_rebuild(pipeline_config, workload, query)
+            consecutive_fails += 1
+            _record_failure(
+                art,
+                attempt=attempt,
+                hypothesis=hypothesis,
+                reason=str(exc),
+            )
+            break
         except RuntimeError as exc:
             _revert_and_rebuild(pipeline_config, workload, query)
             consecutive_fails += 1
@@ -1422,29 +1602,44 @@ def run_optimization_iteration(
                 break
             continue
         if not smoke.passed:
+            infra = _fail_fast_infra_if_needed(
+                pipeline_config, workload, query, text=smoke.output or ""
+            )
             _revert_and_rebuild(pipeline_config, workload, query)
             consecutive_fails += 1
             _record_failure(
                 art,
                 attempt=attempt,
                 hypothesis=hypothesis,
-                reason=f"quick_correctness_failed (ctest -R {smoke.regex}): {(smoke.output or '')[-2000:]}",
+                reason=(
+                    f"infra_fail_fast:{infra.get('infra_reason')}"
+                    if infra
+                    else f"quick_correctness_failed (ctest -R {smoke.regex}): {(smoke.output or '')[-2000:]}"
+                ),
             )
-            if consecutive_fails >= consecutive_fail_stop:
+            if infra or consecutive_fails >= consecutive_fail_stop:
                 break
             continue
 
         probe = run_optimization_probe(pipeline_config, workload, query)
         if not probe.passed:
+            probe_text = f"{probe.diff_summary or ''}\n{probe.output or ''}"
+            infra = _fail_fast_infra_if_needed(
+                pipeline_config, workload, query, text=probe_text
+            )
             _revert_and_rebuild(pipeline_config, workload, query)
             consecutive_fails += 1
             _record_failure(
                 art,
                 attempt=attempt,
                 hypothesis=hypothesis,
-                reason=f"correctness_probe_failed: {probe.diff_summary or probe.output[-2000:]}",
+                reason=(
+                    f"infra_fail_fast:{infra.get('infra_reason')}"
+                    if infra
+                    else f"correctness_probe_failed: {probe.diff_summary or probe.output[-2000:]}"
+                ),
             )
-            if consecutive_fails >= consecutive_fail_stop:
+            if infra or consecutive_fails >= consecutive_fail_stop:
                 break
             continue
 

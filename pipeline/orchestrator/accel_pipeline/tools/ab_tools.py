@@ -447,6 +447,15 @@ def make_ab_tools(ctx: AbToolContext):
         """Run a fast benchmark aligned with gate scoring and return compact metrics."""
         include_profile = bool(_none_default(include_profile, True))
         paths = resolve_workload_paths(ctx.pipeline_config, ctx.workload, ctx.query)
+        from accel_pipeline.worker_isolation import ensure_private_dataset_db
+
+        try:
+            private_db = ensure_private_dataset_db(
+                ctx.pipeline_config, paths["dataset_db"], query=ctx.query
+            )
+            paths = {**paths, "dataset_db": str(private_db)}
+        except Exception as exc:  # noqa: BLE001
+            return f"ERROR: private dataset db setup failed: {exc}"
         aux = _is_aux_workload(ctx.workload)
         bench_target = _benchmark_build_target(paths, ctx.workload)
         build_dir = ctx.pipeline_config.build_dir

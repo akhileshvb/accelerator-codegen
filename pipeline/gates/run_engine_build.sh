@@ -2,7 +2,7 @@
 # Build engine adapter targets (or default release lib when no engine flag).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BUILD_DIR="${ACCEL_BUILD_DIR:-$ROOT/build-release}"
+BUILD_DIR="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-$ROOT/build-release}}"
 CTX="${ACCEL_GATE_CONTEXT:-}"
 ENGINE=""
 BUILD_FLAG=""

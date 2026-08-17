@@ -48,6 +48,17 @@ class CodexExecBackend:
         )
 
     def _config_path(self) -> Path:
+        # Prefer per-worker CODEX_HOME when pack isolation is active.
+        worker_home = getattr(self._pipeline_config, "codex_home", None)
+        env_home = os.environ.get("ACCEL_PIPELINE_CODEX_HOME")
+        if worker_home:
+            path = Path(worker_home) / "config.toml"
+            if path.is_file():
+                return path
+        if env_home:
+            path = Path(env_home) / "config.toml"
+            if path.is_file():
+                return path
         raw = getattr(self._model_config, "codex_config_path", "pipeline/.codex/config.toml")
         path = Path(raw)
         if not path.is_absolute():
@@ -62,9 +73,27 @@ class CodexExecBackend:
             f"ACCEL_PIPELINE_WORKLOAD={self._workload_name}",
             f"ACCEL_PIPELINE_OPT_ITER={self._optimization_iter}",
             f"ACCEL_PIPELINE_REPO_ROOT={self._pipeline_config.repo_root}",
+            f"ACCEL_PIPELINE_WORKER_ID={getattr(self._pipeline_config, 'worker_id', '') or self._query}",
+            f"ACCEL_PIPELINE_BUILD_DIR={self._pipeline_config.build_dir}",
         ]
         if self._art_dir is not None:
             lines.append(f"ACCEL_PIPELINE_ART_DIR={self._art_dir}")
+        if getattr(self._pipeline_config, "codex_home", None):
+            lines.append(f"ACCEL_PIPELINE_CODEX_HOME={self._pipeline_config.codex_home}")
+        if os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO"):
+            lines.append(
+                f"ACCEL_PIPELINE_PRIMARY_REPO={os.environ['ACCEL_PIPELINE_PRIMARY_REPO']}"
+            )
+        if os.environ.get("ACCEL_PIPELINE_PACK_QUERIES"):
+            lines.append(
+                f"ACCEL_PIPELINE_PACK_QUERIES={os.environ['ACCEL_PIPELINE_PACK_QUERIES']}"
+            )
+        if os.environ.get("ACCEL_PIPELINE_ISOLATION_MODE"):
+            lines.append(
+                f"ACCEL_PIPELINE_ISOLATION_MODE={os.environ['ACCEL_PIPELINE_ISOLATION_MODE']}"
+            )
+        if os.environ.get("ACCEL_DUCKDB_ROOT"):
+            lines.append(f"ACCEL_DUCKDB_ROOT={os.environ['ACCEL_DUCKDB_ROOT']}")
         path = codex_home / "accel_pipeline_mcp.env"
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
@@ -87,6 +116,20 @@ class CodexExecBackend:
         env["ACCEL_PIPELINE_WORKLOAD"] = self._workload_name
         env["ACCEL_PIPELINE_OPT_ITER"] = str(self._optimization_iter)
         env["ACCEL_PIPELINE_REPO_ROOT"] = str(self._pipeline_config.repo_root)
+        env["ACCEL_PIPELINE_BUILD_DIR"] = str(self._pipeline_config.build_dir)
+        env["ACCEL_PIPELINE_WORKER_ID"] = str(
+            getattr(self._pipeline_config, "worker_id", "") or self._query
+        )
+        if getattr(self._pipeline_config, "codex_home", None):
+            env["ACCEL_PIPELINE_CODEX_HOME"] = str(self._pipeline_config.codex_home)
+        if os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO"):
+            env["ACCEL_PIPELINE_PRIMARY_REPO"] = os.environ["ACCEL_PIPELINE_PRIMARY_REPO"]
+        if os.environ.get("ACCEL_PIPELINE_ISOLATION_MODE"):
+            env["ACCEL_PIPELINE_ISOLATION_MODE"] = os.environ["ACCEL_PIPELINE_ISOLATION_MODE"]
+        if os.environ.get("ACCEL_PIPELINE_PACK_QUERIES"):
+            env["ACCEL_PIPELINE_PACK_QUERIES"] = os.environ["ACCEL_PIPELINE_PACK_QUERIES"]
+        if os.environ.get("ACCEL_DUCKDB_ROOT"):
+            env["ACCEL_DUCKDB_ROOT"] = os.environ["ACCEL_DUCKDB_ROOT"]
         if self._art_dir is not None:
             env["ACCEL_PIPELINE_ART_DIR"] = str(self._art_dir)
 
@@ -102,20 +145,36 @@ class CodexExecBackend:
             task_path = Path(tmp) / "task.md"
             task_path.write_text(task, encoding="utf-8")
             # Force MCP env into Codex's mcp_servers config as well (belt + suspenders).
-            mcp_env_toml = (
-                "{"
-                f'ACCEL_PIPELINE_QUERY="{self._query}", '
-                f'ACCEL_PIPELINE_STAGE="{self._stage}", '
-                f'ACCEL_PIPELINE_WORKLOAD="{self._workload_name}", '
-                f'ACCEL_PIPELINE_OPT_ITER="{self._optimization_iter}", '
-                f'ACCEL_PIPELINE_REPO_ROOT="{self._pipeline_config.repo_root}"'
-                + (
-                    f', ACCEL_PIPELINE_ART_DIR="{self._art_dir}"'
-                    if self._art_dir is not None
-                    else ""
+            # Include BUILD_DIR / WORKER_ID / CODEX_HOME — without these MCP falls
+            # back to shared build-release and crosstalk returns.
+            mcp_env_parts = [
+                f'ACCEL_PIPELINE_QUERY="{self._query}"',
+                f'ACCEL_PIPELINE_STAGE="{self._stage}"',
+                f'ACCEL_PIPELINE_WORKLOAD="{self._workload_name}"',
+                f'ACCEL_PIPELINE_OPT_ITER="{self._optimization_iter}"',
+                f'ACCEL_PIPELINE_REPO_ROOT="{self._pipeline_config.repo_root}"',
+                f'ACCEL_PIPELINE_BUILD_DIR="{self._pipeline_config.build_dir}"',
+                f'ACCEL_PIPELINE_WORKER_ID="{getattr(self._pipeline_config, "worker_id", "") or self._query}"',
+            ]
+            if self._art_dir is not None:
+                mcp_env_parts.append(f'ACCEL_PIPELINE_ART_DIR="{self._art_dir}"')
+            if getattr(self._pipeline_config, "codex_home", None):
+                mcp_env_parts.append(
+                    f'ACCEL_PIPELINE_CODEX_HOME="{self._pipeline_config.codex_home}"'
                 )
-                + "}"
-            )
+            if os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO"):
+                mcp_env_parts.append(
+                    f'ACCEL_PIPELINE_PRIMARY_REPO="{os.environ["ACCEL_PIPELINE_PRIMARY_REPO"]}"'
+                )
+            if os.environ.get("ACCEL_PIPELINE_PACK_QUERIES"):
+                mcp_env_parts.append(
+                    f'ACCEL_PIPELINE_PACK_QUERIES="{os.environ["ACCEL_PIPELINE_PACK_QUERIES"]}"'
+                )
+            if os.environ.get("ACCEL_DUCKDB_ROOT"):
+                mcp_env_parts.append(
+                    f'ACCEL_DUCKDB_ROOT="{os.environ["ACCEL_DUCKDB_ROOT"]}"'
+                )
+            mcp_env_toml = "{" + ", ".join(mcp_env_parts) + "}"
             cmd = [
                 codex_bin,
                 "exec",

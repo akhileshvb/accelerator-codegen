@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 QUERY="${1:-}"
-BUILD="${ROOT}/build-release"
+BUILD="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${ROOT}/build-release}}"
 if [[ -z "${QUERY}" ]]; then
   echo "usage: run_aux_correctness.sh <query_number>" >&2
   exit 1
@@ -19,9 +19,9 @@ mkdir -p "${OUT}"
 # shellcheck source=cmake_ensure_target.sh
 source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
 
-if [[ ! -d "${BUILD}" ]]; then
-  echo "{\"gate\":\"aux_correctness\",\"query\":${QUERY},\"status\":\"skip\",\"reason\":\"build dir missing\"}" > "${OUT}/aux_correctness.json"
-  exit 0
+if ! ensure_build_tree "${ROOT}" "${BUILD}"; then
+  echo "{\"gate\":\"aux_correctness\",\"query\":${QUERY},\"status\":\"fail\",\"reason\":\"cmake configure failed for ${BUILD}\"}" > "${OUT}/aux_correctness.json"
+  exit 1
 fi
 
 BUILD_LOG=""
@@ -86,7 +86,18 @@ else
       LOG="${SMOKE_LOG}"$'\n'"${REASON}"
     else
       set +e
-      DIFF_LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}=${DATASET_DB}" ./test_tpch_shared_differential "${DATASET_DB}" "${QUERY}" 2>&1)"
+      # Optional adversarial scenario contract from post-analysis stage.
+      SCENARIOS="${GATE_ART}/adversarial_write_scenarios.json"
+      unset ACCEL_ADV_MAX_PROBES ACCEL_ADV_MIN_CHUNKS ACCEL_ADV_REQUIRE_BULK || true
+      if [[ -f "${SCENARIOS}" ]]; then
+        ACCEL_ADV_MAX_PROBES="$(python3 -c "import json,pathlib;d=json.loads(pathlib.Path('${SCENARIOS}').read_text());p=d.get('point_writes') or {};print(int(p.get('max_probes') or p.get('min_count') or 5))")"
+        ACCEL_ADV_MIN_PROBES="$(python3 -c "import json,pathlib;d=json.loads(pathlib.Path('${SCENARIOS}').read_text());p=d.get('point_writes') or {};print(int(p.get('min_count') or 2))")"
+        ACCEL_ADV_MIN_CHUNKS="$(python3 -c "import json,pathlib;d=json.loads(pathlib.Path('${SCENARIOS}').read_text());b=d.get('bulk_writes') or {};print(int(b.get('min_chunks') or 0))")"
+        ACCEL_ADV_REQUIRE_BULK="$(python3 -c "import json,pathlib;d=json.loads(pathlib.Path('${SCENARIOS}').read_text());b=d.get('bulk_writes') or {};print(1 if b.get('required') else 0)")"
+        export ACCEL_ADV_MAX_PROBES ACCEL_ADV_MIN_PROBES ACCEL_ADV_MIN_CHUNKS ACCEL_ADV_REQUIRE_BULK
+      fi
+      DIFF_LOG="$(cd "${BUILD}" && env "${DB_ENV_VAR}=${DATASET_DB}" \
+        ./test_tpch_shared_differential "${DATASET_DB}" "${QUERY}" 2>&1)"
       DIFF_RC=$?
       set -e
       LOG="${SMOKE_LOG}"$'\n'"${DIFF_LOG}"

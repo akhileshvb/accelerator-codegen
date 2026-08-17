@@ -162,6 +162,40 @@ def advance_best_valid_baseline(
         checkpoint_files=copied,
     )
     clear_experimental_branch(art)
+    # Worktree isolation: mirror accepted owned sources back to the primary tree
+    # so the main checkout stays current for non-pack use / next pack reset.
+    try:
+        from accel_pipeline.worker_worktree import (
+            primary_repo_root,
+            sync_owned_to_primary,
+            using_worktree_isolation,
+        )
+
+        if using_worktree_isolation():
+            primary = primary_repo_root(pipeline_config.repo_root)
+            bench = str(
+                workload.get("artifact_namespace")
+                or workload.get("benchmark_name")
+                or "tpch"
+            )
+            synced = sync_owned_to_primary(
+                primary=primary,
+                worktree=Path(pipeline_config.repo_root),
+                query=query,
+                benchmark=bench,
+            )
+            if synced:
+                import sys
+
+                print(
+                    f"[pipeline] synced {len(synced)} owned files to primary after accept",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    except Exception as exc:  # noqa: BLE001 — never fail accept on sync
+        import sys
+
+        print(f"[pipeline] primary sync after accept failed: {exc}", file=sys.stderr)
     return copied
 
 

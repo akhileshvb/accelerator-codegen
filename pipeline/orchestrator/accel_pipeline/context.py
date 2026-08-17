@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -309,6 +310,7 @@ def build_prompt_context(
         "optimization_unified_patch",
         "crash_debug",
         "implementation",
+        "adversarial_tests",
         "audit",
     )
     compact_inspiration = stage in ("optimization", "crash_debug", "implementation", "analysis")
@@ -406,6 +408,7 @@ def build_prompt_context(
     codex_tooling = ""
     if stage in (
         "implementation",
+        "adversarial_tests",
         "optimization_unified",
         "optimization_unified_hypothesis",
         "optimization_unified_patch",
@@ -451,7 +454,19 @@ def build_prompt_context(
         "test_template_path": str(workload.get("test_template_path", "")),
         "benchmark_template_path": str(workload.get("benchmark_template_path", "")),
         "repo_root": str(repo),
-        "duckdb_root": str(pipeline_config.repo_root.parent / "accelerator-codegen-duckdb"),
+        "build_dir": pipeline_config.build_dir.name,
+        "duckdb_root": str(
+            Path(
+                os.environ.get("ACCEL_DUCKDB_ROOT")
+                or (
+                    Path(
+                        os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO")
+                        or pipeline_config.repo_root
+                    ).resolve().parent
+                    / "accelerator-codegen-duckdb"
+                )
+            ).resolve()
+        ),
         "reference_sql": reference_sql,
         "reference_sql_path": reference_sql_path,
         "workload_reference_section": workload_reference_section,

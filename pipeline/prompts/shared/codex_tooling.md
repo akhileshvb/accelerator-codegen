@@ -2,14 +2,23 @@
 
 You run under **Codex** with native edit/search/shell tools **plus** accelerator-pipeline MCP tools (`accel_pipeline`).
 
+## Pack isolation (non-negotiable)
+
+Concurrent pack workers use **per-query git worktrees** and private build dirs.
+
+- **Edit only this query's owned files** (listed in the task). Never create/modify/delete another `qN` aux/module/test/cost-model — not even to "fix" a peer compile error.
+- Peer compile noise is not your bug under worktree isolation. Do **not** `git restore` / `cp` / Python-rewrite foreign `src/generated/tpch/q*/**`.
+- Always build/test against **this worker's build dir** (`build-release-<worker_id>` / `$ACCEL_PIPELINE_BUILD_DIR`). Never use shared `build-release/`.
+- Read-only inspection of **workload `reference_accelerators`** is OK. Broad grepping/editing of other pack queries is not.
+
 ## Use Codex native tools for
 
 - Reading and searching code
-- Editing sources (prefer shell/`sed`/`python` edits when more reliable than `apply_patch`)
-- **Own shell commands and throwaway scripts** — you are free to write/run bash, Python, awk, one-off helpers under `/tmp` or the repo to inspect dumps, parse bench output, compare A/B CSVs, bisect hot paths, etc.
-- Ad-hoc local debug / rebuild / ctest when MCP is insufficient
+- Editing **owned** sources (prefer shell/`sed`/`python` edits when more reliable than `apply_patch`)
+- **Own shell commands and throwaway scripts** under `/tmp` or owned paths — inspect dumps, parse bench output, compare A/B CSVs, bisect hot paths, etc.
+- Ad-hoc local debug / rebuild / ctest when MCP is insufficient (**worker build dir only**)
 
-Do not wait for a perfect MCP tool if a short script answers the measurement question faster. Prefer MCP for official digests / A/B / gates when available, but **shell autonomy is expected**.
+Do not wait for a perfect MCP tool if a short script answers the measurement question faster. Prefer MCP for official digests / A/B / gates when available, but **shell autonomy is expected** within ownership rules above.
 
 ## Use MCP (`accel_pipeline`) for measurement — mandatory for opt/impl feedback
 
@@ -21,7 +30,7 @@ Call these **by tool name** on server `accel_pipeline`. Do **not** use `list_mcp
 | `get_optimization_evidence` | Bottleneck evidence + runtime markdown |
 | `get_store_diagnostics` | Aux store diagnostics (`partitions_read`, `accel_hit_*`, …) |
 | `run_profile` | Remeasure CURRENT tree (aux: quick instrumented bench). Clears stale digests |
-| `run_correctness` / `run_baseline` / `run_fairness` / `request_gate` | Mid-loop gates |
+| `run_correctness` / `run_multi_connection` / `run_baseline` / `run_fairness` / `request_gate` | Mid-loop gates (impl: correctness + multi-conn) |
 | `begin_ab_trial` / `run_quick_benchmark` / `end_ab_trial` | Exploratory A/B vs **best_valid_score** — **honor the signal** |
 | `request_structural_reanalysis` | Aux structural redesign escape hatch |
 | `record_optimization_trap` | Optional: add a short recurring anti-pattern to shared negative memory (advisory only) |
@@ -68,15 +77,17 @@ Before ending the Codex task you **must** print exactly one of:
 
 Exiting after edits/tests without that marker **fails the attempt** and discards the work. Finish with the marker even if exploratory bench was skipped — but skipping A/B after a measurable edit is discouraged.
 
-## Implementation stage (mandatory correctness)
+## Implementation stage (mandatory mid-loop gates)
 
-For **implementation**, do not finish until the correctness gate passes:
+For **implementation**, do **not** finish until these pass (keep iterating — a failed gate is a fix signal, not a stop):
 
 1. Build the smoke / unit target for this query (and `test_tpch_shared_differential` for TPC-H aux).
-2. Call MCP **`run_correctness`** (maps to `aux_correctness` for aux-state workloads, else `correctness`).
-3. On fail: read the failure summary, fix code, rebuild, re-run `run_correctness`.
-4. Only after `status=pass` end the stage.
+2. Call MCP **`run_correctness`** (maps to `aux_correctness` for aux-state; else `correctness`).
+3. On fail: read `failure_summary`, fix implementation / registration, rebuild, re-run until `status=pass`.
+4. For **aux-state**, also call MCP **`run_multi_connection`** (or `request_gate` with `aux_multi_connection`). On fail (often missing TF / shared allowlist wiring), **register the query everywhere** peer queries are registered, rebuild, retry until pass.
+5. Only after both required gates report `status=pass` end the stage.
 
 `aux_correctness` includes **smoke fixtures + SF1 SQL-vs-aux differential**. Compile-only or smoke-only handoff is not acceptable. Orchestrator post-stage gates still re-check.
 
 Follow `pipeline/prompts/aux_state/shared/unit_test_contract.md` when writing synthetic unit fixtures.
+Register everywhere: see `pipeline/prompts/aux_state/shared/registration_checklist.md`.

@@ -15,6 +15,7 @@ presets:
 
 stages:
   analysis: reasoning
+  adversarial_tests: code
   implementation: code
   optimization_unified: code
   optimization_unified_hypothesis: reasoning

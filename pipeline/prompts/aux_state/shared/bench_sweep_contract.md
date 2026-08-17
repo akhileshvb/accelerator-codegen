@@ -8,6 +8,15 @@ The orchestrator scores aux-state work via `aux_bench_sweep` (`scripts/run_aux_b
 - Target: `benchmark_tpch_q{{query_number}}_aux` (from `benchmarks/tpch/single-threaded/benchmark_q{{query_number}}_aux.cpp`)
 - Declared in the main `CMakeLists.txt` / workload benchmark targets (see `accel_add_aux_state_query` in `cmake/AuxState.cmake`)
 
+## Invalidating writes (required)
+
+Write-frequency / write-interval points must exercise **query-specific maintenance**:
+
+1. Catalog `probe_select_sql` + `build_probe` must produce updates that **change DuckDB `base_sql`** for this query (same bar as incremental differential).
+2. The shared sweep (`aux_benchmark_sweep_session.cpp` / `RunConfiguredMultiSweep`) builds the write pool via `CollectInvalidatingSharedProbes` — candidates whose `update_sql` does not change the answer are dropped; **zero survivors fails the bench**.
+3. Do **not** hardcode a non-catalog SELECT of arbitrary rows, or bump columns this query ignores (e.g. `l_extendedprice` on Q4). Prefer `CollectInvalidatingSharedProbes(connection, entry)` for any local `PrecomputeWriteProbes`.
+4. Multi-connection “invalidating writer” SQL in helpers is a separate stress path; the **bench write pool** is the catalog probe path above.
+
 ## Sweep protocol
 
 The sweep script runs **four** points: write frequency **0%, 1%, 10%, 50%** (`lineitem_only` suite by default).
@@ -48,7 +57,7 @@ Optional `speedup_gate ...` lines may follow the CSV row (for audit gates); the 
 3. Measured loop: `ACCEL_BENCH_QUERIES` timed aux iterations with optional writes. DuckDB reference and base kernel use the same warmup + measured counts on separate connections.
 4. Write scheduling: 1% → every 100th query; 10% → every 10th; 50% → every 2nd.
 
-**Performance:** precompute a small pool of write targets at startup (do not run expensive correlated subqueries per write). Keep write SQL cheap so the sweep finishes in minutes, not hours.
+**Performance:** precompute a small pool of **invalidating** write targets at startup via `CollectInvalidatingSharedProbes` (do not run expensive correlated subqueries per write). Keep write SQL cheap so the sweep finishes in minutes, not hours.
 
 ## Composite score (optimization)
 
@@ -71,3 +80,4 @@ bash scripts/run_aux_bench_sweep.sh 3
 ```
 
 Expect **4 data rows** in `build-release/q3_aux_bench_sf1/results.csv`. Gate `aux_bench_sweep` fails if fewer rows are parsed.
+At startup the bench should log `invalidating_write_probes=N` with `N >= 1`.

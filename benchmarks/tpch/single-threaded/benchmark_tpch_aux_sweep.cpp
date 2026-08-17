@@ -129,32 +129,15 @@ bool ShouldWriteAtQueryIndex(int query_index, int write_frequency_pct) {
   return stride > 0 && (query_index % stride) == 0;
 }
 
-std::string ProbeSelectSql(const catalog::SharedQueryCatalogEntry &entry) {
-  std::string sql = entry.probe_select_sql;
-  const std::string old_limit = " LIMIT 1";
-  if (sql.size() >= old_limit.size() &&
-      sql.compare(sql.size() - old_limit.size(), old_limit.size(), old_limit) == 0) {
-    sql.replace(sql.size() - old_limit.size(), old_limit.size(), " LIMIT 256");
-  } else {
-    sql += " LIMIT 256";
-  }
-  return sql;
-}
-
 std::vector<catalog::SharedProbe>
 PrecomputeWriteProbes(duckdb::Connection &connection,
                       const catalog::SharedQueryCatalogEntry &entry,
                       int query_num) {
-  auto result = connection.Query(ProbeSelectSql(entry));
-  Require(result != nullptr && !result->HasError(), result->GetError());
-  auto &materialized = result->Cast<duckdb::MaterializedQueryResult>();
-  Require(materialized.RowCount() > 0,
-          "failed to precompute Q" + std::to_string(query_num) + " write probes");
-  std::vector<catalog::SharedProbe> probes;
-  probes.reserve(materialized.RowCount());
-  for (duckdb::idx_t row = 0; row < materialized.RowCount(); row++) {
-    probes.push_back(entry.build_probe(materialized, row));
-  }
+  auto probes = catalog::CollectInvalidatingSharedProbes(
+      connection, entry, /*candidate_limit=*/256, /*max_keep=*/64);
+  Require(!probes.empty(),
+          "failed to precompute invalidating Q" + std::to_string(query_num) +
+              " write probes");
   return probes;
 }
 

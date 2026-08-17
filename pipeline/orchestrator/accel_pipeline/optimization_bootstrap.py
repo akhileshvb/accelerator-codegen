@@ -127,15 +127,14 @@ def build_optimization_bootstrap(
         or BOOTSTRAP_MAX_CHARS_DEFAULT
     )
     sources = load_editable_sources(repo_root, edit_paths, max_lines_per_file=max_lines)
-    benchmark = str(workload.get("benchmark_name", "tpch"))
-    q = int(workload.get("query_number", query))
-    reference_index = format_reference_aux_index(
-        repo_root, benchmark=benchmark, exclude_query=q
-    )
+    from accel_pipeline.repo_context_pack import format_seed_pointer
+
+    # Prefer shared pack pointer over re-inlining the full peer aux index every attempt.
+    pack_pointer = format_seed_pointer(repo_root, max_preview_lines=24)
     markdown = (
         format_bootstrap_markdown(sources, max_chars=max_chars)
         + "\n\n"
-        + reference_index
+        + pack_pointer
     )
     return markdown, sources
 

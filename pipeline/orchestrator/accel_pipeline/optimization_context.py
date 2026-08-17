@@ -439,7 +439,10 @@ def build_initial_worker_seed(
     max_chars = int(getattr(pipeline_config, "optimization_context_max_chars", CONTEXT_MAX_CHARS))
     context_md = format_context_markdown(packet, max_lines=max_lines, max_chars=max_chars)
     digest = build_hot_path_digest(pipeline_config, workload, query)
-    return f"{digest}\n\n---\n\n{context_md}"
+    from accel_pipeline.repo_context_pack import format_seed_pointer
+
+    pack_pointer = format_seed_pointer(pipeline_config.repo_root, max_preview_lines=24)
+    return f"{pack_pointer}\n---\n\n{digest}\n\n---\n\n{context_md}"
 
 
 def reconstruct_seed_from_artifacts(

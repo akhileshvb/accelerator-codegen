@@ -40,6 +40,11 @@ def render_prompt(
         return ctx.get(key, match.group(0))
 
     rendered = re.sub(r"\{\{(\w+)\}\}", repl, template)
+    # Concurrent pack workers: rewrite legacy build-release tokens so Codex native
+    # shell (which bypasses run_command rewrites) uses this worker's build dir.
+    build_name = pipeline_config.build_dir.name
+    if build_name and build_name != "build-release" and "build-release" in rendered:
+        rendered = rendered.replace("build-release", build_name)
     return rendered
 
 

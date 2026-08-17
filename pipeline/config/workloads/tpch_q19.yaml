@@ -1,0 +1,32 @@
+benchmark_name: tpch
+query_number: 19
+query_id: "19"
+function_name: accel_tpch_q19
+create_fn: CreateTpchQ19FunctionSet
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/19.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: brand1
+    type: VARCHAR
+  - name: quantity1
+    type: BIGINT
+  - name: brand2
+    type: VARCHAR
+  - name: quantity2
+    type: BIGINT
+  - name: brand3
+    type: VARCHAR
+  - name: quantity3
+    type: BIGINT
+
+reference_accelerators: [6, 14]
+
+output_schema:
+  - name: revenue
+    type: DECIMAL
+
+tables:
+  - lineitem
+  - part

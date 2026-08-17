@@ -16,6 +16,12 @@ _STAGE_SHARED_DOCS: dict[str, list[tuple[str, str]]] = {
         ("Design families", "aux_state_design.md"),
         ("Mutation coverage", "mutation_coverage.md"),
     ],
+    "adversarial_tests": [
+        ("Unit-test contract", "unit_test_contract.md"),
+        ("Mutation coverage", "mutation_coverage.md"),
+        ("Bench sweep contract", "bench_sweep_contract.md"),
+        ("Registration", "registration_checklist.md"),
+    ],
     "implementation": [
         ("Scale factors", "../../shared/scale_factor_contract.md"),
         ("Generated layout", "../../shared/generated_layout.md"),
@@ -300,6 +306,22 @@ def analysis_for_optimization(analysis: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def analysis_for_adversarial(analysis: dict[str, Any]) -> dict[str, Any]:
+    facts = analysis.get("correctness_facts") or {}
+    return {
+        "accelerator_id": analysis.get("accelerator_id"),
+        "aux_function_name": analysis.get("aux_function_name"),
+        "dependent_tables": copy.deepcopy(facts.get("dependent_tables", [])),
+        "partitioning": copy.deepcopy(facts.get("partitioning", {})),
+        "mutation_coverage": copy.deepcopy(facts.get("mutation_coverage", {})),
+        "legal_deltas": copy.deepcopy(facts.get("legal_deltas", [])),
+        "fallback_conditions": copy.deepcopy(facts.get("fallback_conditions", [])),
+        "selected_candidate_id": (facts.get("state_design") or {}).get(
+            "selected_candidate_id"
+        ),
+    }
+
+
 def analysis_for_audit(analysis: dict[str, Any]) -> dict[str, Any]:
     fitness = analysis.get("fitness_assessment") or {}
     facts = analysis.get("correctness_facts") or {}
@@ -337,6 +359,8 @@ def stage_analysis_json(analysis: dict[str, Any], stage: str) -> str:
         return "{}"
     if stage == "implementation":
         payload = analysis_for_implementation(analysis)
+    elif stage == "adversarial_tests":
+        payload = analysis_for_adversarial(analysis)
     elif stage == "optimization":
         payload = analysis_for_optimization(analysis)
     elif stage == "audit":

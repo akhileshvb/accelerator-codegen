@@ -39,6 +39,7 @@ all = [
 
 [project.scripts]
 accel-pipeline = "accel_pipeline.run_pipeline:main"
+accel-pipeline-pack = "accel_pipeline.run_pack:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

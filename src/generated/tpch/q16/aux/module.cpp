@@ -7,10 +7,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <set>
 #include <stdexcept>
-#include <unordered_map>
 #include <utility>
-#include <vector>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -18,7 +17,7 @@ namespace {
 using core::ByteReader;
 using core::ByteWriter;
 
-constexpr uint32_t kVersion = 3; // + supplier_group_refs; slim eligibility
+constexpr uint32_t kVersion = 1;
 constexpr uint32_t kEligibilityMagic = 0x45313651;  // Q16E
 constexpr uint32_t kSizeMagic = 0x53313651;          // Q16S
 constexpr int32_t kMaxSize = TpchQ16Layout::kMaxSize;
@@ -109,15 +108,6 @@ MakeSizeImage(int32_t size,
   image->kind = TpchQ16ImageKind::SizeMembership;
   image->size = size;
   image->size_membership = membership;
-  return image;
-}
-
-std::shared_ptr<const TpchQ16StateImage> MakeRefIndexImage(
-    std::shared_ptr<const std::unordered_map<int64_t, std::vector<uint64_t>>>
-        refs) {
-  auto image = std::make_shared<TpchQ16StateImage>();
-  image->kind = TpchQ16ImageKind::SupplierGroupRefs;
-  image->supplier_group_refs = std::move(refs);
   return image;
 }
 
@@ -247,13 +237,6 @@ EncodeTpchQ16Eligibility(const TpchQ16State &state) {
     writer.I32(row.size);
     writer.I64(row.count);
   }
-  writer.U64(static_cast<uint64_t>(state.supplier_group_refs.size()));
-  for (const auto &[suppkey, refs] : state.supplier_group_refs) {
-    writer.I64(suppkey);
-    writer.U64(static_cast<uint64_t>(refs.size()));
-    for (const auto ref : refs)
-      writer.U64(ref);
-  }
   return std::move(writer.bytes);
 }
 
@@ -267,9 +250,6 @@ std::vector<uint8_t> EncodeTpchQ16SizeMembership(
   for (const auto &group : membership.groups) {
     writer.String(group.brand);
     writer.String(group.type);
-    writer.U16(group.brand_id);
-    writer.U16(group.type_id);
-    writer.I64(group.eligible_count);
     writer.U64(static_cast<uint64_t>(group.blocks.size()));
     for (const auto &[block_index, block] : group.blocks) {
       writer.I64(block_index);
@@ -321,21 +301,6 @@ bool DecodeTpchQ16Eligibility(const std::vector<uint8_t> &bytes,
         !reader.I32(row.size) || !reader.I64(row.count))
       return false;
   }
-  uint64_t ref_suppliers = 0;
-  if (!reader.U64(ref_suppliers))
-    return false;
-  state.supplier_group_refs.clear();
-  for (uint64_t s = 0; s < ref_suppliers; ++s) {
-    int64_t suppkey = 0;
-    uint64_t nrefs = 0;
-    if (!reader.I64(suppkey) || !reader.U64(nrefs))
-      return false;
-    auto &refs = state.supplier_group_refs[suppkey];
-    refs.resize(static_cast<std::size_t>(nrefs));
-    for (auto &ref : refs)
-      if (!reader.U64(ref))
-        return false;
-  }
   return reader.offset == bytes.size();
 }
 
@@ -353,9 +318,6 @@ bool DecodeTpchQ16SizeMembership(const std::vector<uint8_t> &bytes,
   membership.groups.resize(static_cast<std::size_t>(group_count));
   for (auto &group : membership.groups) {
     if (!reader.String(group.brand) || !reader.String(group.type))
-      return false;
-    if (!reader.U16(group.brand_id) || !reader.U16(group.type_id) ||
-        !reader.I64(group.eligible_count))
       return false;
     uint64_t block_count = 0;
     if (!reader.U64(block_count))
@@ -384,66 +346,6 @@ bool DecodeTpchQ16SizeMembership(const std::vector<uint8_t> &bytes,
   }
   return true;
 }
-
-namespace {
-
-uint64_t PrecomputedKey(uint16_t brand_id, uint16_t type_id, int32_t size) {
-  return (static_cast<uint64_t>(brand_id) << 48) |
-         (static_cast<uint64_t>(type_id) << 32) |
-         static_cast<uint64_t>(static_cast<uint32_t>(size));
-}
-
-void SortPrecomputedRows(std::vector<Q16PrecomputedRow> &rows) {
-  std::sort(rows.begin(), rows.end(),
-            [](const Q16PrecomputedRow &lhs, const Q16PrecomputedRow &rhs) {
-              if (lhs.count != rhs.count)
-                return lhs.count > rhs.count;
-              if (lhs.brand_id != rhs.brand_id)
-                return lhs.brand_id < rhs.brand_id;
-              if (lhs.type_id != rhs.type_id)
-                return lhs.type_id < rhs.type_id;
-              return lhs.size < rhs.size;
-            });
-}
-
-void ApplyPrecomputedPatches(
-    std::vector<Q16PrecomputedRow> &rows,
-    const std::vector<Q16PrecomputedRow> &patches) {
-  if (patches.empty())
-    return;
-  std::unordered_map<uint64_t, std::size_t> index;
-  index.reserve(rows.size() * 2);
-  for (std::size_t i = 0; i < rows.size(); ++i)
-    index.emplace(PrecomputedKey(rows[i].brand_id, rows[i].type_id, rows[i].size),
-                  i);
-  for (const auto &patch : patches) {
-    const auto key =
-        PrecomputedKey(patch.brand_id, patch.type_id, patch.size);
-    auto it = index.find(key);
-    if (patch.count <= 0) {
-      if (it == index.end())
-        continue;
-      const auto pos = it->second;
-      index.erase(it);
-      if (pos + 1 != rows.size()) {
-        rows[pos] = rows.back();
-        index[PrecomputedKey(rows[pos].brand_id, rows[pos].type_id,
-                             rows[pos].size)] = pos;
-      }
-      rows.pop_back();
-      continue;
-    }
-    if (it != index.end()) {
-      rows[it->second].count = patch.count;
-    } else {
-      index.emplace(key, rows.size());
-      rows.push_back(patch);
-    }
-  }
-  SortPrecomputedRows(rows);
-}
-
-} // namespace
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ16TxnBuffer::HasPendingChanges() const { return pending; }
@@ -493,31 +395,24 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ16Module::CreateTxnBuffer() const {
 // ── Build ───────────────────────────────────────────────────────────────────
 void TpchQ16Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  auto state = BuildState(services);
+  const auto state = BuildState(services);
 
+  // Publish supplier eligibility partition.
+  auto shared_state = std::make_shared<const TpchQ16State>(state);
+  builder.Write(core::StateImage::Make(
+      Id(), TpchQ16Layout::kSupplierEligibility, 0,
+      MakeEligibilityImage(shared_state)));
+
+  // Publish one sparse size partition per observed size (bounded).
   for (const auto &[size, partition] : state.membership) {
     if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
       continue;
+    auto shared_partition =
+        std::make_shared<const TpchQ16SizePartition>(partition);
     builder.Write(core::StateImage::Make(
         Id(), TpchQ16Layout::SizePartition(size), 0,
-        MakeSizeImage(size,
-                      std::make_shared<const TpchQ16SizePartition>(partition))));
+        MakeSizeImage(size, shared_partition)));
   }
-
-  // Reverse index on a dedicated partition for SF20-safe point maintenance
-  // (touch only the supplier's sizes; no full-domain size-image deep copies).
-  auto refs = std::make_shared<std::unordered_map<int64_t, std::vector<uint64_t>>>(
-      state.supplier_group_refs);
-  builder.Write(core::StateImage::Make(
-      Id(), TpchQ16Layout::kSupplierGroupRefs, 0, MakeRefIndexImage(refs)));
-
-  // Eligibility keeps the full build state for the hot read path (empirically
-  // required for ~15× filter+emit). Domain-bounded precomputed_rows are what
-  // Execute scans; membership here is not SF-scaled in cardinality.
-  builder.Write(core::StateImage::Make(
-      Id(), TpchQ16Layout::kSupplierEligibility, 0,
-      MakeEligibilityImage(
-          std::make_shared<const TpchQ16State>(std::move(state)))));
   builder.Finish();
 }
 
@@ -634,30 +529,32 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
   }
 
   if (full_rebuild || !deltas.empty()) {
+    // Rebuild full state from initial scan for correctness.
     auto state = BuildState(services);
+    auto shared_state = std::make_shared<const TpchQ16State>(state);
+
+    // Publish eligibility partition.
+    outcome.updates.push_back(core::StateImage::Make(
+        Id(), TpchQ16Layout::kSupplierEligibility, 0,
+        MakeEligibilityImage(shared_state)));
+
+    // Publish every observed size partition.
     for (const auto &[size, partition] : state.membership) {
       if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
         continue;
+      auto shared_partition =
+          std::make_shared<const TpchQ16SizePartition>(partition);
       outcome.updates.push_back(core::StateImage::Make(
           Id(), TpchQ16Layout::SizePartition(size), 0,
-          MakeSizeImage(size,
-                        std::make_shared<const TpchQ16SizePartition>(
-                            partition))));
+          MakeSizeImage(size, shared_partition)));
     }
-    auto refs = std::make_shared<
-        std::unordered_map<int64_t, std::vector<uint64_t>>>(
-        state.supplier_group_refs);
-    outcome.updates.push_back(core::StateImage::Make(
-        Id(), TpchQ16Layout::kSupplierGroupRefs, 0, MakeRefIndexImage(refs)));
-    outcome.updates.insert(
-        outcome.updates.begin(),
-        core::StateImage::Make(
-            Id(), TpchQ16Layout::kSupplierEligibility, 0,
-            MakeEligibilityImage(
-                std::make_shared<const TpchQ16State>(std::move(state)))));
+
     outcome.action = core::MaintenanceAction::RebuildAll;
   } else if (!supplier_deltas.empty()) {
-    // Point / synthetic supplier flips via reverse index partition.
+    // Supplier-only eligibility change: apply deltas to the current eligibility
+    // state, then recompute the precomputed pre-sorted rows from the existing
+    // size-membership partitions. Do not rebuild from base scan because the
+    // base-scan source may not yet reflect the committed mutation.
     TpchQ16State state;
     bool have_eligibility = false;
     {
@@ -672,115 +569,56 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
         break;
       }
     }
-    std::shared_ptr<const std::unordered_map<int64_t, std::vector<uint64_t>>>
-        ref_index;
-    {
-      const auto snapshot = services.StateStore().ReadPartitions(
-          services.CurrentVisibility(), {TpchQ16Layout::kSupplierGroupRefs});
-      for (const auto &image : snapshot.partitions) {
-        const auto *typed =
-            AsQ16Image(image, TpchQ16ImageKind::SupplierGroupRefs);
-        if (!typed || !typed->supplier_group_refs)
-          continue;
-        ref_index = typed->supplier_group_refs;
-        break;
-      }
-    }
-    if (!have_eligibility || !ref_index) {
+    if (!have_eligibility) {
       state = BuildState(services);
-      for (const auto &[size, partition] : state.membership) {
-        if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
-          continue;
-        outcome.updates.push_back(core::StateImage::Make(
-            Id(), TpchQ16Layout::SizePartition(size), 0,
-            MakeSizeImage(size,
-                          std::make_shared<const TpchQ16SizePartition>(
-                              partition))));
-      }
-      auto refs = std::make_shared<
-          std::unordered_map<int64_t, std::vector<uint64_t>>>(
-          state.supplier_group_refs);
-      outcome.updates.push_back(core::StateImage::Make(
-          Id(), TpchQ16Layout::kSupplierGroupRefs, 0, MakeRefIndexImage(refs)));
-      outcome.updates.insert(
-          outcome.updates.begin(),
-          core::StateImage::Make(
-              Id(), TpchQ16Layout::kSupplierEligibility, 0,
-              MakeEligibilityImage(
-                  std::make_shared<const TpchQ16State>(std::move(state)))));
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      return outcome;
+    } else {
+      for (const auto &delta : supplier_deltas)
+        state.SetSupplierEligible(delta.suppkey, delta.new_eligible);
     }
 
-    for (const auto &delta : supplier_deltas)
-      state.SetSupplierEligible(delta.suppkey, delta.new_eligible);
-
-    std::unordered_map<int32_t, std::vector<std::pair<uint32_t, int8_t>>>
-        touches;
-    for (const auto &delta : supplier_deltas) {
-      if (delta.old_eligible == delta.new_eligible)
-        continue;
-      const int8_t sign = delta.new_eligible ? 1 : -1;
-      const auto rit = ref_index->find(delta.suppkey);
-      if (rit == ref_index->end())
-        continue;
-      for (const auto packed : rit->second) {
-        touches[TpchQ16State::UnpackSize(packed)].emplace_back(
-            TpchQ16State::UnpackGroupIndex(packed), sign);
-      }
-    }
-
-    if (touches.empty()) {
-      outcome.updates.push_back(core::StateImage::Make(
-          Id(), TpchQ16Layout::kSupplierEligibility, 0,
-          MakeEligibilityImage(
-              std::make_shared<const TpchQ16State>(std::move(state)))));
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      return outcome;
-    }
-
+    // Load all size partitions and recompute counts against updated eligibility.
     std::vector<core::PartitionId> size_window;
-    size_window.reserve(touches.size());
-    for (const auto &[size, _] : touches)
+    size_window.reserve(TpchQ16Layout::kMaxSize);
+    for (int32_t size = TpchQ16Layout::kMinSize; size <= TpchQ16Layout::kMaxSize;
+         ++size)
       size_window.push_back(TpchQ16Layout::SizePartition(size));
     const auto snapshot = services.StateStore().ReadPartitions(
         services.CurrentVisibility(), size_window);
 
-    std::vector<Q16PrecomputedRow> patches;
-    patches.reserve(64);
+    state.precomputed_rows.clear();
     for (const auto &image : snapshot.partitions) {
       const auto *typed = AsQ16Image(image, TpchQ16ImageKind::SizeMembership);
       if (!typed || !typed->size_membership)
         continue;
-      auto tit = touches.find(typed->size);
-      if (tit == touches.end())
-        continue;
-      auto partition = *typed->size_membership;
-      for (const auto &[gidx, sign] : tit->second) {
-        if (gidx >= partition.groups.size())
-          continue;
-        auto &group = partition.groups[gidx];
-        if (sign > 0)
-          ++group.eligible_count;
-        else if (group.eligible_count > 0)
-          --group.eligible_count;
-        patches.push_back({group.brand_id, group.type_id, typed->size,
-                           group.eligible_count});
+      const auto size = typed->size;
+      for (const auto &group : typed->size_membership->groups) {
+        int64_t distinct = 0;
+        for (const auto &[block_index, block] : group.blocks) {
+          for (const auto suppkey : block.suppkeys) {
+            if (state.IsSupplierEligible(suppkey))
+              ++distinct;
+          }
+        }
+        if (distinct > 0)
+          state.precomputed_rows.push_back(
+              {group.brand_id, group.type_id, size, distinct});
       }
-      outcome.updates.push_back(core::StateImage::Make(
-          Id(), TpchQ16Layout::SizePartition(typed->size), 0,
-          MakeSizeImage(typed->size,
-                        std::make_shared<const TpchQ16SizePartition>(
-                            std::move(partition)))));
     }
+    std::sort(state.precomputed_rows.begin(), state.precomputed_rows.end(),
+              [](const Q16PrecomputedRow &lhs, const Q16PrecomputedRow &rhs) {
+                if (lhs.count != rhs.count)
+                  return lhs.count > rhs.count;
+                if (lhs.brand_id != rhs.brand_id)
+                  return lhs.brand_id < rhs.brand_id;
+                if (lhs.type_id != rhs.type_id)
+                  return lhs.type_id < rhs.type_id;
+                return lhs.size < rhs.size;
+              });
 
-    ApplyPrecomputedPatches(state.precomputed_rows, patches);
-    outcome.updates.insert(
-        outcome.updates.begin(),
-        core::StateImage::Make(
-            Id(), TpchQ16Layout::kSupplierEligibility, 0,
-            MakeEligibilityImage(
-                std::make_shared<const TpchQ16State>(std::move(state)))));
+    auto shared_state = std::make_shared<const TpchQ16State>(std::move(state));
+    outcome.updates.push_back(core::StateImage::Make(
+        Id(), TpchQ16Layout::kSupplierEligibility, 0,
+        MakeEligibilityImage(shared_state)));
     outcome.action = core::MaintenanceAction::RebuildAll;
   }
 
@@ -1036,10 +874,6 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
       state.membership[input.size];  // Ensure sparse partition exists.
   });
 
-  // brand\x1ftype -> group index within each size (build-only).
-  std::unordered_map<int32_t, std::unordered_map<std::string, std::size_t>>
-      group_index;
-
   initial_scan->ScanPartsupp([&](const TpchQ16PartsuppInput &input) {
     auto part_it = state.part_brand.find(input.partkey);
     if (part_it == state.part_brand.end())
@@ -1050,27 +884,22 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
     state.reverse_postings[input.partkey].push_back(input.suppkey);
 
     auto &partition = state.membership[size];
-    const std::string key =
-        TpchQ16State::MakeGroupKey(part_it->second,
-                                   state.part_type[input.partkey]);
-    auto &index_map = group_index[size];
-    auto idx_it = index_map.find(key);
-    TpchQ16GroupMembership *group = nullptr;
-    std::size_t gidx = 0;
-    if (idx_it == index_map.end()) {
-      gidx = partition.groups.size();
-      index_map.emplace(key, gidx);
+    auto *group = static_cast<TpchQ16GroupMembership *>(nullptr);
+    for (auto &candidate : partition.groups) {
+      if (candidate.brand == part_it->second &&
+          candidate.type == state.part_type[input.partkey]) {
+        group = &candidate;
+        break;
+      }
+    }
+    if (!group) {
       partition.groups.emplace_back();
       group = &partition.groups.back();
       group->brand = part_it->second;
       group->type = state.part_type[input.partkey];
       InternBrand(state, group->brand);
       InternType(state, group->type);
-    } else {
-      gidx = idx_it->second;
-      group = &partition.groups[gidx];
     }
-
     const auto block_index = TpchQ16State::BlockIndex(input.suppkey);
     auto &block = group->blocks[block_index];
     auto supp_it =
@@ -1082,9 +911,6 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
       block.ref_counts.insert(block.ref_counts.begin() +
                                   static_cast<std::ptrdiff_t>(offset),
                               1);
-      // First membership of this supplier in this group → reverse index.
-      state.supplier_group_refs[input.suppkey].push_back(
-          TpchQ16State::PackGroupRef(size, static_cast<uint32_t>(gidx)));
     } else {
       auto offset = static_cast<std::size_t>(supp_it - block.suppkeys.begin());
       block.ref_counts[offset]++;
@@ -1112,20 +938,17 @@ TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const 
 
   // Pre-compute eligible supplier counts per group and pre-sort by the
   // query's invariant ORDER BY (count DESC, brand_id, type_id, size).
-  // These are intermediates (no brand/type predicate); Execute applies filters.
   CustomTimer t_precompute(CustomProfilingEnabled());
   state.precomputed_rows.clear();
   for (auto &[size, partition] : state.membership) {
     for (auto &group : partition.groups) {
       int64_t distinct = 0;
       for (auto &[block_index, block] : group.blocks) {
-        (void)block_index;
         for (const auto suppkey : block.suppkeys) {
           if (state.IsSupplierEligible(suppkey))
             ++distinct;
         }
       }
-      group.eligible_count = distinct;
       if (distinct > 0) {
         state.precomputed_rows.push_back(
             {group.brand_id, group.type_id, size, distinct});

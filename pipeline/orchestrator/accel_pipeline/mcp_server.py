@@ -62,7 +62,7 @@ def build_mcp_tool_callables(
     from accel_pipeline.tools.shell_tools import make_shell_tools
     from accel_pipeline.tools.gate_tools import _compact_gate_payload
 
-    request_gate = make_gate_tools(GateCtx(pipeline_config, query))
+    request_gate = make_gate_tools(GateCtx(pipeline_config, query, workload=workload))
     run_command = make_shell_tools(ShellCtx(pipeline_config, query))
     request_structural_reanalysis = make_reanalysis_tools(
         ReanalysisCtx(pipeline_config, query, stage, workload_name, optimization_iter)
@@ -103,9 +103,22 @@ def build_mcp_tool_callables(
         return _run_named_gate("profile")
 
     def run_correctness() -> str:
-        """Run correctness / aux_correctness gate."""
+        """Run correctness / aux_correctness gate (smoke + SF1 differential for aux)."""
         name = "aux_correctness" if workload.get("workload_kind") == "aux_state" else "correctness"
         return _run_named_gate(name)
+
+    def run_multi_connection() -> str:
+        """Run aux_multi_connection gate (DuckDB TF + multi-conn stress). Aux-state only."""
+        if workload.get("workload_kind") != "aux_state":
+            return json.dumps(
+                {
+                    "gate": "aux_multi_connection",
+                    "status": "skip",
+                    "reason": "not an aux_state workload",
+                },
+                indent=2,
+            )
+        return _run_named_gate("aux_multi_connection")
 
     def run_baseline() -> str:
         """Run baseline / aux unit gate used for timing baselines."""
@@ -235,10 +248,43 @@ def build_mcp_tool_callables(
         """Allowlisted cmake/ctest only (same policy as pipeline shell tools)."""
         return run_command(command)
 
+    def acquire_shared_lease(reason: str = "", timeout_sec: float = 600.0) -> str:
+        """Hold shared-file lease before editing catalog/CMake/shared registration files."""
+        from accel_pipeline.shared_file_lease import (
+            ensure_sticky_lease_for_write,
+            worker_id_from_env,
+        )
+
+        holder = pipeline_config.worker_id or worker_id_from_env(f"q{query}")
+        info = ensure_sticky_lease_for_write(
+            pipeline_config.repo_root,
+            holder=holder,
+            path=None,
+            timeout_sec=float(timeout_sec),
+        )
+        return json.dumps(
+            {
+                "acquired": True,
+                "holder": holder,
+                "reason": reason,
+                "lease": info.to_dict() if info else {},
+            },
+            indent=2,
+        )
+
+    def release_shared_lease() -> str:
+        """Release sticky shared-file lease after shared edits + rebuild."""
+        from accel_pipeline.shared_file_lease import release_sticky_lease, worker_id_from_env
+
+        holder = pipeline_config.worker_id or worker_id_from_env(f"q{query}")
+        ok = release_sticky_lease(pipeline_config.repo_root, holder=holder)
+        return json.dumps({"released": ok, "holder": holder})
+
     return {
         "request_gate": request_gate,
         "run_profile": run_profile,
         "run_correctness": run_correctness,
+        "run_multi_connection": run_multi_connection,
         "run_baseline": run_baseline,
         "run_fairness": run_fairness,
         "get_profile_digest": get_profile_digest,
@@ -250,6 +296,8 @@ def build_mcp_tool_callables(
         "request_structural_reanalysis": request_structural_reanalysis,
         "record_optimization_trap": record_optimization_trap,
         "run_pipeline_command": run_pipeline_command,
+        "acquire_shared_lease": acquire_shared_lease,
+        "release_shared_lease": release_shared_lease,
     }
 
 
@@ -350,8 +398,13 @@ def main(argv: list[str] | None = None) -> int:
 
     @_tool(annotations=_ro)
     def run_correctness() -> str:
-        """Run correctness gate."""
+        """Run correctness / aux_correctness gate (smoke + SF1 differential)."""
         return _call("run_correctness")
+
+    @_tool(annotations=_ro)
+    def run_multi_connection() -> str:
+        """Run aux_multi_connection gate (DuckDB TF registration + multi-conn stress)."""
+        return _call("run_multi_connection")
 
     @_tool(annotations=_ro)
     def run_baseline() -> str:
@@ -422,6 +475,16 @@ def main(argv: list[str] | None = None) -> int:
     def run_pipeline_command(command: str) -> str:
         """Allowlisted cmake/ctest command."""
         return _call("run_pipeline_command", command)
+
+    @_tool(annotations=_rw)
+    def acquire_shared_lease(reason: str = "", timeout_sec: float = 600.0) -> str:
+        """Hold shared-file lease before editing catalog/CMake/shared registration files."""
+        return _call("acquire_shared_lease", reason, timeout_sec)
+
+    @_tool(annotations=_rw)
+    def release_shared_lease() -> str:
+        """Release sticky shared-file lease after shared edits + rebuild."""
+        return _call("release_shared_lease")
 
     mcp.run(transport="stdio")
     return 0

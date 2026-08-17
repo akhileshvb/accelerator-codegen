@@ -1,27 +1,41 @@
-# Registration checklist
+# Registration checklist — register everywhere
 
-1. Implement `AuxQueryModule` subclass in `src/generated/{benchmark}/q{{query_number}}/aux/module.{hpp,cpp}`.
-2. Export a factory (e.g. `MakeTpchQ{{query_number}}Module`) from `module.hpp`.
-3. Register the factory in `src/generated/catalog/query_catalog.cpp` (append — do not split per query).
-4. For Postgres: append SQL-callable dispatch in `src/generated/postgres/kernel_runner.cpp`.
-5. CMake: `finalize.cpp` is picked up via `accel_register_tpch_aux_finalize_queries()`; test/bench/calibrate via `accel_register_tpch_aux_pipeline_targets()`. Manual `accel_add_aux_state_query(...)` in `CMakeLists.txt` is only needed when those globs are insufficient.
-6. **DuckDB SQL table function (required, not automatic):** append `case {{query_number}}` in
-   `src/stateful/duckdb/duckdb_aux_table_functions.cpp` (`RegisterWorkloadAuxFunctions`) that calls
-   `RegisterAuxFunction(..., "{{aux_function_name}}", {LogicalType...})` with argument types matching
-   the catalog / workload SQL (e.g. Q5: `VARCHAR, DATE`). Catalog entry + in-process
-   `DuckdbRuntime` binding are **not** enough — calibrate / multi-conn / cross-accel / SQL benches
-   call `SELECT * FROM {{aux_function_name}}(...)`. Missing this case fails with
-   `Table Function with name {{aux_function_name}} does not exist`. Do **not** edit
-   `src/runtime/duckdb/register.cpp` (it only invokes `RegisterDuckdbAuxTableFunctions`).
-7. **Cross-accel / multi-connection:** append this query to `tests/test_support/cross_accel_helpers.cpp`:
-   - `TpchAuxSql` / `TpchReferenceSql` (or SEC equivalents)
-   - `InvalidatingWriterSqlForQuery` — a small `UPDATE` on a **watched** table/column (Q16 has no lineitem; use `part` / `partsupp` / `supplier`). Missing `case {{query_number}}` fails `aux_cross_accel` with `unsupported … invalidating writer SQL`.
-8. **Bench arg variants:** append `case {{query_number}}` to `SampleTpchArgs` / `FormatTpchBaseSql` / `FormatTpchKernelSql` in `benchmarks/tpch/single-threaded/tpch_arg_variants.cpp`. The sweep sets `ACCEL_AUX_WRITE_FREQUENCIES` and samples args; a missing case fails `aux_bench_sweep` immediately (`SampleTpchArgs: unsupported query_id`).
+New aux queries must be wired into **every** shared registration / allowlist / helper surface that existing aux queries use. Do **not** stop after creating `module.{hpp,cpp}` or a single catalog case.
 
-Module contract:
+## How to discover (preferred)
+
+1. Pick a neighboring query that already passes gates (e.g. a reference accelerator from the workload).
+2. `search_repo` / `grep` for that query id / `accel_*_q{N}_aux` / factory name across the tree.
+3. For **each** hit that looks like shared registration, allowlisting, SQL helper dispatch, or CMake target wiring, append the same kind of entry for **this** query (append-only; do not rewrite whole files).
+4. Rebuild, then verify with MCP `run_correctness` and `run_multi_connection` until both pass.
+
+## Surfaces you must cover (outcomes, not a closed file list)
+
+Treat these as **classes of wiring** — find the current files by searching peer queries:
+
+| Outcome | What “done” looks like | Typical failure if missing |
+|---------|------------------------|----------------------------|
+| Module + factory | `AuxQueryModule` + exported `Make…Module` for this query | link / compile errors |
+| Shared catalog entry | Query participates in shared catalog lookup used by differential / DuckDB bindings; **`probe_select` + `build_probe` must invalidate `base_sql`** (write benches call `CollectInvalidatingSharedProbes`) | `unsupported shared query` / bench: no invalidating probes |
+| Shared-query allowlist / participation list | Query id appears wherever the repo lists which TPC-H (or SEC) queries are in the shared set | TF never registered; differential / multi-conn skip or fail |
+| DuckDB SQL table function | `SELECT * FROM {{aux_function_name}}(...)` works after rebuild | `Table Function … does not exist` |
+| Cross-accel / multi-conn helpers | Aux SQL, reference SQL, and an invalidating writer for this query id | `unsupported … invalidating writer SQL` / multi-conn warmup fail |
+| Bench arg / SQL formatters | Sweep can sample args and format base/kernel SQL for this query | `SampleTpchArgs: unsupported query_id` (or equiv.) |
+| CMake targets | Smoke test, bench, calibrator targets build (auto-discovery usually enough) | missing `test_tpch_q*_aux` / bench targets |
+
+Catalog entry alone is **not** enough. Participation lists / allowlists that drive registration loops must include this query too, or DuckDB never registers `{{aux_function_name}}`.
+
+## Module contract (once sources exist)
 
 - `Id()`, `Dependencies()` — accelerator identity and watched tables
 - `CreateTxnBuffer()`, `Build()`, `InterpretMutation()`, `AccumulateMutation()`, `StageMaintenance()`
 - `CheckValidity()`, `Execute()`, `ExecuteFallback()`
 
 Concurrency: read `concurrency_contract.md` — irrelevant mutations NoOp, bounded read path, per-accelerator epochs.
+
+## Verification loop (implementation stage)
+
+1. Build smoke + shared differential targets for this query (use this worker’s build dir).
+2. MCP **`run_correctness`** → fix until `status=pass` (smoke fixtures + SF1 SQL-vs-aux).
+3. MCP **`run_multi_connection`** → fix registration / TF / concurrency until `status=pass`.
+4. Only then end the stage. Orchestrator still re-runs post-stage gates.

@@ -1,0 +1,59 @@
+workload_kind: aux_state
+benchmark_name: tpch
+query_number: 19
+query_id: "19"
+accelerator_id: tpch_q19_aux
+base_function_name: accel_tpch_q19
+aux_function_name: accel_tpch_q19_aux
+
+requires_base_accelerator: true
+prerequisite_workload: tpch_q19
+prerequisite_min_stage: implementation
+reference_accelerators:
+  - src/generated/tpch/q6/aux/module.cpp
+  - src/generated/tpch/q14/aux/module.cpp
+
+allow_poor_fitness: false
+allow_unsuccessful_design: false
+
+reference_sql_path: /home/akhilvb/tpch-utils/generated/sf1_instances/seed_1/19.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: brand1
+    type: VARCHAR
+  - name: quantity1
+    type: BIGINT
+  - name: brand2
+    type: VARCHAR
+  - name: quantity2
+    type: BIGINT
+  - name: brand3
+    type: VARCHAR
+  - name: quantity3
+    type: BIGINT
+
+dependent_tables:
+  - name: lineitem
+    watched_columns: [l_partkey, l_quantity, l_extendedprice, l_discount, l_shipmode, l_shipinstruct]
+  - name: part
+    watched_columns: [p_partkey, p_brand, p_container, p_size]
+
+partitioning: {}
+
+output_schema:
+  - name: revenue
+    type: DECIMAL
+
+cost_model_config: config/q19_aux_cost_model.json
+
+optimization_guidance: |
+  Q19 is a scalar discounted revenue over three brand/container/qty/size OR branches
+  with shipmode/shipinstruct filters. Index parts by brand/container/size bands and
+  maintain matching lineitem revenue; Prefer ApplyDelta on part/lineitem edits.
+
+cmake:
+  query_num: 19
+  aux_state_module: accel_add_aux_state_query
+
+agent_boundary: prompts/aux_state/shared/agent_boundary.md

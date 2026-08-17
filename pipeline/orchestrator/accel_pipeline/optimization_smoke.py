@@ -108,6 +108,14 @@ def run_build(
     workload: dict,
     query: int,
 ) -> tuple[bool, str]:
+    from accel_pipeline.worker_isolation import ensure_worker_build_dir
+
+    # Pack workers use build-release-{worker_id}; dirs may be missing after disk cleanup.
+    try:
+        ensure_worker_build_dir(pipeline_config, configure=True)
+    except Exception as exc:  # noqa: BLE001 — surface as preflight failure
+        return False, str(exc)
+
     paths = resolve_workload_paths(pipeline_config, workload, query)
     if workload.get("workload_kind") == "aux_state":
         targets = [paths.get("aux_bench_target", ""), paths.get("test_target", "")]

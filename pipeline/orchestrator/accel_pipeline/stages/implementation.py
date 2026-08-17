@@ -30,17 +30,21 @@ def _implementation_user_message(
     bench_target = paths["aux_bench_target"]
     calibrate_target = paths["aux_calibrate_target"]
     q = query
+    build = pipeline_config.build_dir.name
     return (
         "RESUME partial aux implementation: sources already exist on disk from a prior run. "
         "Do NOT rewrite module.hpp/module.cpp from scratch or explore AuxState.cmake unless fixing CMake registration.\n"
         f"Registered CMake targets: {test_target}, {bench_target}, {calibrate_target}, test_tpch_shared_differential.\n"
         "Correctness requires smoke + SF1 SQL differential (see unit_test_contract.md).\n"
+        "Register this query on every shared surface peer queries use (catalog / allowlists / DuckDB TF / helpers) — search a neighbor query to find sites.\n"
         "Use only these allowlisted run_command patterns:\n"
-        f"1. cmake --build build-release --target {test_target} {bench_target} test_tpch_shared_differential -j$(nproc)\n"
-        f"2. ctest --test-dir build-release -R tpch_q{q}_aux --output-on-failure\n"
-        f"3. ./build-release/test_tpch_shared_differential \"$ACCEL_TPCH_DB\" {q}\n"
+        f"1. cmake --build {build} --target {test_target} {bench_target} test_tpch_shared_differential -j$(nproc)\n"
+        f"2. ctest --test-dir {build} -R tpch_q{q}_aux --output-on-failure\n"
+        f"3. ./{build}/test_tpch_shared_differential \"$ACCEL_TPCH_DB\" {q}\n"
         "   (or MCP run_correctness / request_gate aux_correctness — preferred)\n"
-        "Fix compile/test failures with minimal apply_patch on generated aux files only. "
+        "4. MCP run_multi_connection (or request_gate aux_multi_connection) until status=pass\n"
+        "Keep fixing and re-running steps 3–4 until both pass. "
+        "Fix compile/test failures with minimal apply_patch on generated aux + shared registration appends. "
         "Do not weaken unit fixtures to hide kernel bugs."
     )
 

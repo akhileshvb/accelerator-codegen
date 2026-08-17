@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -453,6 +454,16 @@ class OptimizationWorker:
         if self.provider == "openrouter" and self.history is not None:
             self.history.record_cycle(user_message, final_text, self._last_tool_summary)
 
+        fail_snip = ""
+        if marker == "failed":
+            raw_reason = (cycle.reason or result.error or "")[:500]
+            fail_snip = " ".join(raw_reason.split())[:240]
+            if fail_snip:
+                print(
+                    f"[pipeline] optimization_worker_candidate_failed: {fail_snip}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         log_event(
             self.pipeline_config.repo_root,
             self.query,
@@ -464,6 +475,7 @@ class OptimizationWorker:
             output_tokens=(usage or {}).get("output_tokens") if usage else None,
             cache_read_tokens=(usage or {}).get("cache_read_tokens") if usage else None,
             marker=marker,
+            failure_snip=fail_snip or None,
             workload=self.workload.get("name", self.workload_name),
         )
         return cycle

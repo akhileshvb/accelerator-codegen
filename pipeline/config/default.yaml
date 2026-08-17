@@ -4,6 +4,18 @@ build_dir: build-release
 tpch_db_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
 tpch_db_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb
 
+# Paths that require the shared-file lease under concurrent pack workers.
+shared_paths:
+  - CMakeLists.txt
+  - cmake/**
+  - src/generated/catalog/**
+  - src/stateful/duckdb/duckdb_aux_table_functions.cpp
+  - include/accelerator_codegen/stateful/core/query_layouts.hpp
+  - tests/test_support/cross_accel_helpers.cpp
+  - tests/test_support/cross_accel_helpers.hpp
+  - benchmarks/tpch/single-threaded/tpch_arg_variants.cpp
+  - benchmarks/tpch/single-threaded/tpch_arg_variants.hpp
+
 datasets:
   tpch_sf1: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb
   tpch_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb

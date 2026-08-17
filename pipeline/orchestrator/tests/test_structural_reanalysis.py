@@ -103,6 +103,7 @@ class TestStructuralReanalysisFlow:
             current_candidate_id="c1",
         )
         run_analysis = MagicMock()
+        run_adv = MagicMock()
         run_impl = MagicMock()
         run_opt = MagicMock()
         workload = {"max_structural_reanalysis": 2}
@@ -114,13 +115,15 @@ class TestStructuralReanalysisFlow:
             triggered_after="implementation",
             structural_reanalysis_count=0,
             run_analysis=run_analysis,
+            run_adversarial_tests=run_adv,
             run_implementation=run_impl,
             run_optimization=run_opt,
             dry_run=False,
         )
 
-        assert result == (1, 2)  # optimization index
+        assert result == (1, 3)  # optimization index
         run_analysis.assert_called_once()
+        run_adv.assert_called_once()
         run_impl.assert_called_once()
         run_opt.assert_not_called()
         assert load_pending_request(tmp_path, 99) is None
@@ -137,6 +140,7 @@ class TestStructuralReanalysisFlow:
             current_candidate_id="c1",
         )
         run_analysis = MagicMock()
+        run_adv = MagicMock()
         run_impl = MagicMock()
         run_opt = MagicMock()
         workload = {}
@@ -148,13 +152,15 @@ class TestStructuralReanalysisFlow:
             triggered_after="optimization",
             structural_reanalysis_count=0,
             run_analysis=run_analysis,
+            run_adversarial_tests=run_adv,
             run_implementation=run_impl,
             run_optimization=run_opt,
             dry_run=False,
         )
 
-        assert result == (1, 3)  # audit index
+        assert result == (1, 4)  # audit index
         run_analysis.assert_called_once()
+        run_adv.assert_called_once()
         run_impl.assert_called_once()
         run_opt.assert_called_once()
 
@@ -236,8 +242,11 @@ class TestReanalysisToolPolicy:
         from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES
 
         assert "request_structural_reanalysis" in STAGE_TOOL_NAMES["implementation"]
-        assert "request_structural_reanalysis" in STAGE_TOOL_NAMES["optimization"]
+        assert "request_gate" in STAGE_TOOL_NAMES["implementation"]
+        assert "request_structural_reanalysis" in STAGE_TOOL_NAMES["optimization_worker"]
+        assert "request_structural_reanalysis" in STAGE_TOOL_NAMES["optimization_unified"]
         assert "request_structural_reanalysis" not in STAGE_TOOL_NAMES["analysis"]
+        assert "request_structural_reanalysis" not in STAGE_TOOL_NAMES["adversarial_tests"]
 
     def test_request_tool_rejects_exhausted_budget(self, tmp_path, monkeypatch):
         from accel_pipeline.config import load_pipeline_config

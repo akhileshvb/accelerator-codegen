@@ -19,10 +19,11 @@ def test_resolve_stage_provider_codex_overrides():
     cfg = load_model_config(REPO_ROOT / "pipeline" / "config" / "models.codex.yaml", repo_root=REPO_ROOT)
     assert cfg.provider == "openrouter"
     assert resolve_stage_provider("analysis", cfg) == "openrouter"
-    assert resolve_stage_provider("audit", cfg) == "openrouter"
+    assert resolve_stage_provider("audit", cfg) == "codex_exec"
     assert resolve_stage_provider("implementation", cfg) == "codex_exec"
     assert resolve_stage_provider("optimization_worker", cfg) == "codex_exec"
     assert resolve_stage_provider("optimization_unified_hypothesis", cfg) == "codex_exec"
+    assert resolve_stage_provider("crash_debug", cfg) == "codex_exec"
 
 
 def test_worker_enabled_for_codex_exec():
@@ -105,8 +106,29 @@ def test_mcp_tool_callables_include_profile_digest(tmp_path):
     )
     assert "get_profile_digest" in tools
     assert "run_fairness" in tools
+    assert "run_correctness" in tools
+    assert "run_multi_connection" in tools
     digest = tools["get_profile_digest"]()
     assert "dominant_phase" in digest or "agg" in digest
+
+
+def test_mcp_aux_tools_include_multi_connection(tmp_path):
+    from accel_pipeline.mcp_server import build_mcp_tool_callables
+    from accel_pipeline.config import load_pipeline_config, load_workload, apply_workload_overrides
+    from accel_pipeline.paths import query_artifacts_dir
+
+    pipeline_config = load_pipeline_config(repo_root=REPO_ROOT)
+    workload = load_workload("tpch_q14_aux", REPO_ROOT)
+    pipeline_config = apply_workload_overrides(pipeline_config, workload)
+    art = query_artifacts_dir(REPO_ROOT, 14, workload=workload)
+    art.mkdir(parents=True, exist_ok=True)
+    tools = build_mcp_tool_callables(
+        pipeline_config, workload, "tpch_q14_aux", 14, "implementation", 0, art
+    )
+    assert "run_multi_connection" in tools
+    # Non-aux skip path is covered by tpch_q3 callables; aux must map to named gate helper.
+    assert callable(tools["run_correctness"])
+    assert callable(tools["run_multi_connection"])
 
 
 def test_codex_exec_sets_codex_home(monkeypatch, tmp_path):

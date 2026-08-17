@@ -125,6 +125,17 @@ def run_gate(
     if change_kind:
         gate_env["ACCEL_GATE_CHANGE_KIND"] = change_kind
     gate_env["ACCEL_GATE_ITERATION"] = str(iteration)
+    # Per-worker build dir for concurrent packs (shared tree + separate builds).
+    build_dir = str(pipeline_config.build_dir)
+    gate_env["ACCEL_PIPELINE_BUILD_DIR"] = build_dir
+    gate_env["ACCEL_BUILD_DIR"] = build_dir
+    if pipeline_config.worker_id:
+        gate_env["ACCEL_PIPELINE_WORKER_ID"] = pipeline_config.worker_id
+
+    # Codex may never create the worker build dir; configure it before gates.
+    from accel_pipeline.worker_isolation import ensure_worker_build_dir
+
+    ensure_worker_build_dir(pipeline_config, configure=True)
 
     from accel_pipeline.pipeline_log import log_gate_complete, log_gate_start
 

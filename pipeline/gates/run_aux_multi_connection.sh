@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 QUERY="${1:-}"
-BUILD="${ROOT}/build-release"
+BUILD="${ACCEL_PIPELINE_BUILD_DIR:-${ACCEL_BUILD_DIR:-${ROOT}/build-release}}"
 if [[ -z "${QUERY}" ]]; then
   echo "usage: run_aux_multi_connection.sh <query_number>" >&2
   exit 1
@@ -19,9 +19,9 @@ mkdir -p "${OUT}"
 # shellcheck source=cmake_ensure_target.sh
 source "$(dirname "${BASH_SOURCE[0]}")/cmake_ensure_target.sh"
 
-if [[ ! -d "${BUILD}" ]]; then
-  echo "{\"gate\":\"aux_multi_connection\",\"query\":${QUERY},\"status\":\"skip\",\"reason\":\"build dir missing\"}" > "${OUT}/aux_multi_connection.json"
-  exit 0
+if ! ensure_build_tree "${ROOT}" "${BUILD}"; then
+  echo "{\"gate\":\"aux_multi_connection\",\"query\":${QUERY},\"status\":\"fail\",\"reason\":\"cmake configure failed for ${BUILD}\"}" > "${OUT}/aux_multi_connection.json"
+  exit 1
 fi
 
 ensure_multi_connection_stress_test "${ROOT}" "${BUILD}" || true
