@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <climits>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -12,6 +14,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/dense_id_array.hpp"
 #include "accelerator_codegen/stateful/core/query_layouts.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -136,16 +139,29 @@ struct Q9CellKeyHash {
   }
 };
 
-// ── Profit cell (compact per-part storage) ───────────────────────────────────
+// ── Profit cell (packed: nation + year offset + profit, no padding) ─────────
+#pragma pack(push, 1)
 struct Q9ProfitCell {
-  int32_t nationkey = 0;
-  int32_t year = 0;
+  uint8_t nationkey = 0;
+  uint8_t year_off = 0; // year - 1992
   int64_t profit = 0;
+
+  int32_t Nation() const { return static_cast<int32_t>(nationkey); }
+  int32_t Year() const { return 1992 + static_cast<int32_t>(year_off); }
+
+  static Q9ProfitCell Make(int32_t nation, int32_t year, int64_t profit_raw) {
+    Q9ProfitCell cell;
+    cell.nationkey = nation < 0 ? 0 : static_cast<uint8_t>(nation);
+    const int32_t off = year - 1992;
+    cell.year_off = off < 0 ? 0 : (off > 255 ? 255 : static_cast<uint8_t>(off));
+    cell.profit = profit_raw;
+    return cell;
+  }
 };
+#pragma pack(pop)
 
 struct Q9PartRecord {
   std::string normalized_name;
-  std::string original_name;
   std::vector<Q9ProfitCell> cells;
 };
 
@@ -159,26 +175,34 @@ struct TpchQ9State {
   core::PartitionId profit_slot_count = TpchQ9Layout::kMinProfitSlots;
   std::vector<PartProfitPartition> profit_partitions;
 
-  // Name index: word token -> sorted unique part keys (read-optimized)
-  std::unordered_map<std::string, std::vector<int64_t>> name_postings;
+  // Name index: word token -> sorted unique part keys (uint32; TPC-H partkeys
+  // fit). Execute intersects these lists; keep them dense and decode-free.
+  std::unordered_map<std::string, std::vector<int32_t>> name_postings;
 
   // Nations sorted by name for ORDER BY nation ASC without per-query sort.
   std::vector<std::pair<std::string, int32_t>> nation_emit_order;
 
-  // ── Side state ──────────────────────────────────────────────────────────
-  // n_nationkey -> n_name
+  // ── Side state (maintenance only; Execute never reads these) ────────────
   std::unordered_map<int32_t, std::string> nation_names;
 
-  // Supplier -> nation mapping for join resolution
-  std::unordered_map<int64_t, int32_t> supplier_nations;
+  static constexpr uint8_t kAbsentNationCode = 255;
+  static constexpr uint8_t kAbsentYearCode = 0;
+  static constexpr int32_t kPackedYearBias = 1991; // stored = year - 1991
 
-  // Order -> year mapping
-  std::unordered_map<int64_t, int32_t> order_years;
+  core::DenseIdArray<uint8_t> supplier_nations;
+  core::DenseIdArray<uint8_t> order_years;
+  std::unordered_map<int64_t, int32_t> order_year_overflow;
 
-  // Partsupp (partkey, suppkey) -> supplycost
+  struct PackedPartsuppRow {
+    static constexpr int kSlots = 4;
+    int32_t suppkeys[kSlots]{};
+    int32_t costs[kSlots]{};
+  };
+  core::DenseIdArray<PackedPartsuppRow> partsupp_rows;
+
   struct PartsuppKey {
-    int64_t partkey;
-    int64_t suppkey;
+    int64_t partkey = 0;
+    int64_t suppkey = 0;
     bool operator==(const PartsuppKey &o) const {
       return partkey == o.partkey && suppkey == o.suppkey;
     }
@@ -189,7 +213,96 @@ struct TpchQ9State {
              (std::hash<int64_t>()(k.suppkey) << 1);
     }
   };
-  std::unordered_map<PartsuppKey, int64_t, PartsuppKeyHash> partsupp_costs;
+  std::unordered_map<PartsuppKey, int64_t, PartsuppKeyHash> partsupp_overflow;
+
+  bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) const {
+    const auto code = supplier_nations.Get(suppkey, kAbsentNationCode);
+    if (code == kAbsentNationCode)
+      return false;
+    nationkey = static_cast<int32_t>(code);
+    return true;
+  }
+  void SetSupplierNation(int64_t suppkey, int32_t nationkey) {
+    const auto code =
+        (nationkey < 0 || nationkey >= static_cast<int32_t>(kAbsentNationCode))
+            ? kAbsentNationCode
+            : static_cast<uint8_t>(nationkey);
+    supplier_nations.Set(suppkey, code, kAbsentNationCode);
+  }
+
+  bool LookupOrderYear(int64_t orderkey, int32_t &year) const {
+    const auto ov = order_year_overflow.find(orderkey);
+    if (ov != order_year_overflow.end()) {
+      year = ov->second;
+      return true;
+    }
+    const auto code = order_years.Get(orderkey, kAbsentYearCode);
+    if (code == kAbsentYearCode)
+      return false;
+    year = kPackedYearBias + static_cast<int32_t>(code);
+    return true;
+  }
+  void SetOrderYear(int64_t orderkey, int32_t year) {
+    if (year > kPackedYearBias &&
+        year <= kPackedYearBias + 254) {
+      order_year_overflow.erase(orderkey);
+      order_years.Set(orderkey, static_cast<uint8_t>(year - kPackedYearBias));
+      return;
+    }
+    order_years.Set(orderkey, kAbsentYearCode);
+    order_year_overflow[orderkey] = year;
+  }
+  void EraseOrderYear(int64_t orderkey) {
+    order_years.Set(orderkey, kAbsentYearCode);
+    order_year_overflow.erase(orderkey);
+  }
+
+  bool LookupPartsuppCost(int64_t partkey, int64_t suppkey,
+                          int64_t &cost) const {
+    const auto ov = partsupp_overflow.find(PartsuppKey{partkey, suppkey});
+    if (ov != partsupp_overflow.end()) {
+      cost = ov->second;
+      return true;
+    }
+    if (suppkey < 1 || suppkey > static_cast<int64_t>(INT32_MAX))
+      return false;
+    const auto row = partsupp_rows.Get(partkey);
+    const auto sk = static_cast<int32_t>(suppkey);
+    for (int i = 0; i < PackedPartsuppRow::kSlots; ++i) {
+      if (row.suppkeys[i] == sk) {
+        cost = row.costs[i];
+        return true;
+      }
+    }
+    return false;
+  }
+  void SetPartsuppCost(int64_t partkey, int64_t suppkey, int64_t cost) {
+    if (suppkey < 1 || suppkey > static_cast<int64_t>(INT32_MAX) ||
+        cost < static_cast<int64_t>(INT32_MIN) ||
+        cost > static_cast<int64_t>(INT32_MAX)) {
+      partsupp_overflow[PartsuppKey{partkey, suppkey}] = cost;
+      return;
+    }
+    auto row = partsupp_rows.Get(partkey);
+    const auto sk = static_cast<int32_t>(suppkey);
+    int empty = -1;
+    for (int i = 0; i < PackedPartsuppRow::kSlots; ++i) {
+      if (row.suppkeys[i] == sk) {
+        row.costs[i] = static_cast<int32_t>(cost);
+        partsupp_rows.Set(partkey, row);
+        return;
+      }
+      if (empty < 0 && row.suppkeys[i] == 0)
+        empty = i;
+    }
+    if (empty >= 0) {
+      row.suppkeys[empty] = sk;
+      row.costs[empty] = static_cast<int32_t>(cost);
+      partsupp_rows.Set(partkey, row);
+      return;
+    }
+    partsupp_overflow[PartsuppKey{partkey, suppkey}] = cost;
+  }
 
   // ── Initialization ─────────────────────────────────────────────────────
   static core::PartitionId ChooseProfitSlots(std::size_t part_count);
@@ -229,7 +342,7 @@ struct TpchQ9State {
   static Q9ProfitCell *FindCell(std::vector<Q9ProfitCell> &cells,
                                 int32_t nationkey, int32_t year) {
     for (auto &cell : cells) {
-      if (cell.nationkey == nationkey && cell.year == year)
+      if (cell.Nation() == nationkey && cell.Year() == year)
         return &cell;
     }
     return nullptr;
@@ -246,7 +359,7 @@ struct TpchQ9State {
     if (auto *cell = FindCell(cells, nationkey, year))
       cell->profit += profit_raw;
     else
-      cells.push_back(Q9ProfitCell{nationkey, year, profit_raw});
+      cells.push_back(Q9ProfitCell::Make(nationkey, year, profit_raw));
   }
 
   void RemoveContribution(int64_t partkey, int32_t nationkey, int32_t year,
@@ -256,7 +369,7 @@ struct TpchQ9State {
     if (it == GetPartition(partkey).parts.end()) return;
     auto &cells = it->second.cells;
     for (auto cell_it = cells.begin(); cell_it != cells.end(); ++cell_it) {
-      if (cell_it->nationkey != nationkey || cell_it->year != year) continue;
+      if (cell_it->Nation() != nationkey || cell_it->Year() != year) continue;
       cell_it->profit -= profit_raw;
       if (cell_it->profit == 0)
         cells.erase(cell_it);

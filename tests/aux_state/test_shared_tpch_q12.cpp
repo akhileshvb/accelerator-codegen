@@ -6,9 +6,9 @@
 #include <utility>
 #include <vector>
 
-#include "accelerator_codegen/aux_state/core/aux_registry.hpp"
-#include "accelerator_codegen/aux_state/core/aux_txn_buffer.hpp"
-#include "accelerator_codegen/aux_state/query/tpch/tpch_q12_common.hpp"
+#include "accelerator_codegen/stateful/core/aux_registry.hpp"
+#include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
+#include "tpch/q12/aux/module.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 using accelerator_codegen::aux_state::query::TpchQ12Config;

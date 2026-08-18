@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #include "accelerator_codegen/runtime/catalog/shared_query_engine.hpp"
 
 #include <cmath>
@@ -393,6 +394,18 @@ void RegisterWorkloadAuxFunctions(::duckdb::Catalog &catalog,
   }
 }
 
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+void RegisterParallelSecEdgarAuxFunctions(::duckdb::Catalog &catalog,
+                                          ::duckdb::ClientContext &context) {
+  for (const int query_id : SharedQueriesForWorkload(SharedWorkloadKind::SecEdgar)) {
+    const auto &entry =
+        LookupSharedQueryParallel(SharedWorkloadKind::SecEdgar, query_id);
+    const std::string name = std::string("accel_") + entry.accelerator_id;
+    RegisterAuxFunction(catalog, context, entry, name.c_str(), {});
+  }
+}
+#endif
+
 } // namespace
 
 void RegisterDuckdbAuxTableFunctions(::duckdb::Connection &connection) {
@@ -404,9 +417,18 @@ void RegisterDuckdbAuxTableFunctions(::duckdb::Connection &connection) {
   }
   RegisterWorkloadAuxFunctions(catalog, context, SharedWorkloadKind::Tpch);
   RegisterWorkloadAuxFunctions(catalog, context, SharedWorkloadKind::SecEdgar);
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+  RegisterParallelSecEdgarAuxFunctions(catalog, context);
+#endif
   if (started_transaction) {
     connection.Commit();
   }
 }
+
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+void RegisterDuckdbAuxParallelTableFunctions(::duckdb::Connection &connection) {
+  RegisterDuckdbAuxTableFunctions(connection);
+}
+#endif
 
 } // namespace accelerator_codegen::aux_state::engine

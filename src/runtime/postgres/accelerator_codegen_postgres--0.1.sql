@@ -346,6 +346,48 @@ RETURNS SETOF accel_tpch_q14_row
 AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ14'
 LANGUAGE C;
 
+CREATE FUNCTION accel_tpch_q9_aux(text)
+RETURNS TABLE (
+  nation text,
+  o_year bigint,
+  sum_profit numeric
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ9'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q11_aux(text, double precision)
+RETURNS TABLE (
+  ps_partkey bigint,
+  value numeric
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ11'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q17_aux(text, text)
+RETURNS SETOF accel_tpch_q17_row
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ17'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q18_aux(bigint)
+RETURNS TABLE (
+  c_name text,
+  c_custkey bigint,
+  o_orderkey bigint,
+  o_orderdate date,
+  o_totalprice numeric,
+  "sum(l_quantity)" numeric
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ18'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q21_aux(text)
+RETURNS TABLE (
+  s_name text,
+  numwait bigint
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ21'
+LANGUAGE C;
+
 CREATE FUNCTION accel_sec_edgar_q1_aux()
 RETURNS TABLE (
   stmt text,
@@ -407,4 +449,67 @@ RETURNS TABLE (
   total double precision
 )
 AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxSecEdgarQ24'
+LANGUAGE C;
+
+CREATE FUNCTION accel_sec_edgar_q1_aux_parallel()
+RETURNS TABLE (
+  stmt text,
+  rfile text,
+  cnt bigint,
+  num_filings bigint,
+  avg_line_num double precision
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxSecEdgarQ1Parallel'
+LANGUAGE C;
+
+CREATE FUNCTION accel_sec_edgar_q2_aux_parallel()
+RETURNS TABLE (
+  name text,
+  tag text,
+  value double precision
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxSecEdgarQ2Parallel'
+LANGUAGE C;
+
+CREATE FUNCTION accel_sec_edgar_q3_aux_parallel()
+RETURNS TABLE (
+  name text,
+  cik bigint,
+  total_value double precision
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxSecEdgarQ3Parallel'
+LANGUAGE C;
+
+CREATE FUNCTION accel_sec_edgar_q4_aux_parallel()
+RETURNS TABLE (
+  sic bigint,
+  tlabel text,
+  stmt text,
+  num_companies bigint,
+  total_value double precision,
+  avg_value double precision
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxSecEdgarQ4Parallel'
+LANGUAGE C;
+
+CREATE FUNCTION accel_sec_edgar_q6_aux_parallel()
+RETURNS TABLE (
+  name text,
+  stmt text,
+  tag text,
+  plabel text,
+  total_value double precision,
+  cnt bigint
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxSecEdgarQ6Parallel'
+LANGUAGE C;
+
+CREATE FUNCTION accel_sec_edgar_q24_aux_parallel()
+RETURNS TABLE (
+  tag text,
+  version text,
+  cnt bigint,
+  total double precision
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxSecEdgarQ24Parallel'
 LANGUAGE C;

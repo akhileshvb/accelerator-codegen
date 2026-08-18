@@ -1,6 +1,7 @@
 // SCAFFOLDING
 #include "accelerator_codegen/harness/aux_state_footprint.hpp"
 
+#include <cstdint>
 #include <cstring>
 #include <unordered_set>
 #include <vector>
@@ -131,9 +132,9 @@ uint64_t FootprintTpchQ3(const PartitionedStateStore &store) {
       const auto it = image->state->segment_intervals.find(image->segment);
       if (it != image->state->segment_intervals.end()) {
         uint64_t bytes = 32;
-        for (const auto &order : it->second.orders) {
-          bytes += 8 + 4 + 4 + 4 + order.buckets.size() * 12;
-        }
+        bytes += it->second.bucket_pool.size() * sizeof(query::TpchQ3ShipdateBucket);
+        bytes += it->second.orders.size() * sizeof(query::TpchQ3OrderSummary);
+        bytes += it->second.order_positions.size() * (8 + 8);
         total += bytes;
       }
       break;
@@ -180,7 +181,7 @@ uint64_t FootprintTpchQ9(const PartitionedStateStore &store) {
       uint64_t bytes = 64;
       bytes += s.nation_names.size() * 32;
       for (const auto &entry : s.name_postings) {
-        bytes += entry.first.size() + 8 + entry.second.size() * 8;
+        bytes += entry.first.size() + 8 + entry.second.size() * 4;
       }
       bytes += s.nation_emit_order.size() * 32;
       total += bytes;
@@ -189,9 +190,11 @@ uint64_t FootprintTpchQ9(const PartitionedStateStore &store) {
     case TpchQ9ImageKind::MaintenanceSide: {
       const auto &s = *image->state;
       uint64_t bytes = 64;
-      bytes += s.supplier_nations.size() * 16;
-      bytes += s.order_years.size() * 12;
-      bytes += s.partsupp_costs.size() * 24;
+      bytes += s.supplier_nations.SlotCount();
+      bytes += s.order_years.SlotCount();
+      bytes += s.order_year_overflow.size() * 16;
+      bytes += s.partsupp_rows.SlotCount() * sizeof(query::TpchQ9State::PackedPartsuppRow);
+      bytes += s.partsupp_overflow.size() * 24;
       total += bytes;
       break;
     }
@@ -202,7 +205,7 @@ uint64_t FootprintTpchQ9(const PartitionedStateStore &store) {
         uint64_t bytes = 32;
         for (const auto &entry : partitions[slot].parts) {
           bytes += 8 + entry.second.normalized_name.size() +
-                   entry.second.cells.size() * 16;
+                   entry.second.cells.size() * 10;
         }
         total += bytes;
       }
@@ -230,11 +233,8 @@ uint64_t FootprintTpchQ10(const PartitionedStateStore &store) {
       // Estimate — full EncodeTpchQ10Side sorts + copies all customer strings
       // and dominates SF20 init wall time without changing stored state.
       uint64_t bytes = 16;
-      for (const auto &entry : image->state->customers) {
-        const auto &c = entry.second;
-        bytes += 8 + 8 + 4 + 4 + c.name.size() + c.address.size() + c.phone.size() +
-                 c.comment.size() + 16;
-      }
+      bytes += image->state->customer_ranks.SlotCount() *
+               sizeof(query::TpchQ10CustomerRank);
       for (const auto &entry : image->state->nations) {
         bytes += 4 + 4 + entry.second.size();
       }
@@ -299,7 +299,7 @@ uint64_t FootprintTpchQ12(const PartitionedStateStore &store) {
     switch (image->kind) {
     case TpchQ12ImageKind::OrderPriorities:
       // Estimate — avoid encoding ~30M order priorities at SF20 init.
-      total += 16 + image->state->order_priorities.size() * (8 + 16);
+      total += 16 + image->state->order_priorities.SlotCount();
       break;
     case TpchQ12ImageKind::Day:
       total += AddEncoded(
@@ -312,6 +312,7 @@ uint64_t FootprintTpchQ12(const PartitionedStateStore &store) {
 
 uint64_t FootprintTpchQ14(const PartitionedStateStore &store) {
   uint64_t total = 0;
+  std::unordered_set<const query::TpchQ14State *> seen;
   store.ForEachSlot([&](PartitionKey, PartitionStatus status,
                         const std::shared_ptr<const void> &payload,
                         uint64_t) {
@@ -322,15 +323,12 @@ uint64_t FootprintTpchQ14(const PartitionedStateStore &store) {
     if (!image || !image->state) {
       return;
     }
-    switch (image->kind) {
-    case TpchQ14ImageKind::PartPromo:
-      total += AddEncoded(query::EncodeTpchQ14PartPromo(*image->state));
-      break;
-    case TpchQ14ImageKind::Month:
-      total += AddEncoded(
-          query::EncodeTpchQ14Month(image->month, *image->state));
-      break;
-    }
+    // Month partitions share one live state with PartPromo. Count it once.
+    if (!seen.insert(image->state.get()).second)
+      return;
+    total += 16 + image->state->part_promo.size();
+    total += image->state->promo_overflow.size() * 16;
+    total += image->state->month_totals.size() * 32;
   });
   return total;
 }
@@ -386,8 +384,9 @@ uint64_t FootprintTpchQ18(const PartitionedStateStore &store) {
     // Estimate sparse survivors + dense quantity chunks.
     const auto &s = *image->state;
     uint64_t bytes = 64 + s.active_orderkeys.size() * 8;
-    for (const auto &chunk : s.quantity_chunks)
-      bytes += chunk.size() * 8;
+    for (const auto &chunk : s.quantity_chunks.chunks)
+      bytes += chunk.size() * sizeof(uint16_t);
+    bytes += s.quantity_overflow.size() * (8 + 8);
     bytes += s.survivors.size() * (8 + 8 + 4 + 8 + 8);
     for (const auto &entry : s.customer_names)
       bytes += 8 + entry.second.size() + 16;

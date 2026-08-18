@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #pragma once
 
 #include <cstdint>
@@ -50,6 +51,12 @@ const SharedQueryCatalogEntry &LookupSharedQuery(SharedWorkloadKind workload,
                                                int query_id);
 const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_name,
                                                int query_id);
+
+bool IsParallelAuxAccelerator(const char *accelerator_id);
+const SharedQueryCatalogEntry &LookupSharedQueryParallel(SharedWorkloadKind workload,
+                                                       int query_id);
+const SharedQueryCatalogEntry &LookupSharedQueryParallel(const std::string &workload_name,
+                                                       int query_id);
 
 std::vector<int> SharedQueriesForWorkload(SharedWorkloadKind workload);
 std::vector<int> SharedQueriesForWorkload(const std::string &workload_name);

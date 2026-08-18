@@ -1,0 +1,10 @@
+plot,series,metric,value,unit,notes
+non_aux_sf10,accelerator_st,median_speedup,1.885,x,22 TPC-H queries; tpch_speedup_all_queries.csv sf10_speedup
+non_aux_sf10,accelerator_mt8,median_speedup,1.737,x,22 TPC-H queries; sf10_parallel_speedup_22q.csv t=8
+non_aux_sf10,gendb_mt_no_index,median_speedup,2.04,x,external baseline
+aux_readonly,accelerator_st,median_speedup,2304.8,x,"TPC-H SF20 aux Q1,3,6,9,10,11,12,14,17,18,21; cold_start_workload_speedup at interval=0"
+aux_readonly,gendb_mt_index,median_speedup,2.15,x,external baseline
+aux_readonly,bespoke_st,median_speedup,16.4,x,external baseline
+memory_sf20,accelerator_total,workload_footprint,12.1,gb,base DuckDB SF20 + all 11 aux states
+memory_sf20,gendb_total,workload_footprint,10.11,gb,"measured on-disk files used by Q1,3,6,9,10,11,12,14,17,18,21"
+memory_sf20,bespoke_total,workload_footprint,6.8,gb,"encoded columns used by Q1,3,6,9,10,11,12,14,17,18,21"

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
@@ -275,8 +276,19 @@ public:
   // retained for callers that do not yet expose workload telemetry.
   virtual double ExpectedQueriesBeforeNextWrite() const;
 
+  // RebuildAll/RebuildPartition Commit path may call module Build() to
+  // materialize a fresh image. PostgreSQL xact Commit has no ActiveSnapshot,
+  // so SPI table scans there SIGSEGV — Postgres overrides this to false and
+  // invalidates only (next query rebuilds).
+  virtual bool AllowsSynchronousRebuildOnCommit() const;
+
   virtual MaintenanceDecision ChooseMaintenance(
       const MaintenanceRequest &request) const;
+
+  // Intra-query worker count for parallel aux rebuild/execute. Default is 1
+  // (or ACCEL_AUX_THREADS when set). DuckDB follows PRAGMA threads; Postgres
+  // follows accel.aux_worker_count / max_parallel_workers_per_gather.
+  virtual std::size_t WorkerCount() const;
 };
 
 class AuxQueryModule {

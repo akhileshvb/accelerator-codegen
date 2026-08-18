@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #include "accelerator_codegen/runtime/duckdb/query_runtime.hpp"
 
 #include <stdexcept>

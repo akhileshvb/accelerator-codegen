@@ -640,8 +640,13 @@ SecEdgarQ6State SecEdgarQ6Module::BuildState(core::AuxEngineServices &services) 
       state.adsh_to_name.emplace(input.adsh, input.name);
     }
   });
+  // Restrict the IS bridge to the fy2023 cohort. Non-cohort adshs never
+  // contribute to aggregates (ApplyNumContribution checks adsh_to_name).
   initial_scan->ScanPre([&](const SecEdgarQ6PreInput &input) {
     if (input.stmt != "IS") {
+      return;
+    }
+    if (state.adsh_to_name.find(input.adsh) == state.adsh_to_name.end()) {
       return;
     }
     state.pre_plabels[{input.adsh, input.tag, input.version}].push_back(

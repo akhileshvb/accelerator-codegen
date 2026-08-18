@@ -2,13 +2,13 @@
 #include <memory>
 #include <string>
 
-#include "accelerator_codegen/aux_state/core/aux_registry.hpp"
-#include "accelerator_codegen/aux_state/core/aux_txn_buffer.hpp"
-#include "accelerator_codegen/aux_state/engine/duckdb/duckdb_state_store.hpp"
-#include "accelerator_codegen/aux_state/engine/duckdb/duckdb_aux_backend.hpp"
-#include "accelerator_codegen/aux_state/engine/postgres/postgres_aux_backend.hpp"
-#include "accelerator_codegen/aux_state/engine/postgres/postgres_mutation_capture.hpp"
-#include "accelerator_codegen/aux_state/engine/postgres/postgres_state_store.hpp"
+#include "accelerator_codegen/stateful/core/aux_registry.hpp"
+#include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
+#include "accelerator_codegen/stateful/duckdb/duckdb_state_store.hpp"
+#include "accelerator_codegen/stateful/duckdb/duckdb_aux_backend.hpp"
+#include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
+#include "accelerator_codegen/stateful/postgres/postgres_mutation_capture.hpp"
+#include "accelerator_codegen/stateful/postgres/postgres_state_store.hpp"
 #include "duckdb/accelerator/mutation_recorder.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"

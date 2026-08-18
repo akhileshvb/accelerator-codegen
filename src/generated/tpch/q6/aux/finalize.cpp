@@ -47,7 +47,8 @@ bool Q6DiscountInRange(int64_t discount_cent) {
 }
 
 bool Q6QuantityInRange(int64_t quantity_scaled) {
-	return quantity_scaled >= 0 && quantity_scaled < kQ6QuantityBuckets;
+	const auto bucket = Q6RevenueMatrix::QuantityBucket(quantity_scaled);
+	return bucket >= 0 && bucket <= kQ6MaxQuantityBucket;
 }
 
 } // namespace
@@ -79,18 +80,21 @@ Q6AccT SumQ6MatrixRange(const Q6RevenueMatrix &matrix, int64_t discount_lower_ra
 	if (quantity_upper_raw <= 0) {
 		return static_cast<Q6AccT>(0);
 	}
-	const auto quantity_limit =
-	    std::min<int64_t>(quantity_upper_raw - 1, kQ6MaxQuantityScaled);
+	const auto quantity_limit = std::min<int32_t>(
+	    Q6RevenueMatrix::QuantityBucket(quantity_upper_raw - 1), kQ6MaxQuantityBucket);
 	const auto discount_lower = std::max<int64_t>(discount_lower_raw, 0);
 	const auto discount_upper = std::min<int64_t>(discount_upper_raw, kQ6MaxDiscountCent);
-	if (discount_lower > discount_upper) {
+	if (discount_lower > discount_upper || quantity_limit < 0) {
 		return static_cast<Q6AccT>(0);
 	}
 
 	Q6AccT total = static_cast<Q6AccT>(0);
 	for (int64_t discount_cent = discount_lower; discount_cent <= discount_upper; ++discount_cent) {
-		for (int64_t quantity_scaled = 0; quantity_scaled <= quantity_limit; ++quantity_scaled) {
-			AddInPlace(total, matrix.At(static_cast<int8_t>(discount_cent), quantity_scaled), 1);
+		for (int32_t bucket = 0; bucket <= quantity_limit; ++bucket) {
+			AddInPlace(total,
+			           matrix.At(static_cast<int8_t>(discount_cent),
+			                     static_cast<int64_t>(bucket) * kQ6QuantityScale),
+			           1);
 		}
 	}
 	return total;

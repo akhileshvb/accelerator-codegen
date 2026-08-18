@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "query": 21,
+  "cache_key": "tpch_sf1.duckdb|SAUDI ARABIA",
+  "duckdb_ref_query_median_us": 406531,
+  "base_kernel_median_us": 198437
+}

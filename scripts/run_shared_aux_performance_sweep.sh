@@ -21,6 +21,10 @@ fi
 OUT="${OUT:-${ROOT}/benchmarks/aux_state/results/shared_aux_performance_sweep.csv}"
 SUMMARY="${SUMMARY:-${ROOT}/benchmarks/aux_state/results/shared_aux_performance_summary.csv}"
 LOG_DIR="${LOG_DIR:-${ROOT}/benchmarks/aux_state/results/shared_aux_performance_logs}"
+# Benchmarks cd into benchmarks/postgres; keep paths absolute so relative OUT/LOG_DIR still work.
+[[ "$OUT" = /* ]] || OUT="${ROOT}/${OUT}"
+[[ "$SUMMARY" = /* ]] || SUMMARY="${ROOT}/${SUMMARY}"
+[[ "$LOG_DIR" = /* ]] || LOG_DIR="${ROOT}/${LOG_DIR}"
 
 TPCH_DUCKDB="${TPCH_DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf1.duckdb}"
 SEC_DUCKDB="${SEC_EDGAR_DB:-${ROOT}/../accelerator-codegen-duckdb/sec_edgar_sf3.duckdb}"
@@ -33,7 +37,7 @@ if [[ "$SKIP_TPCH_QUERIES" == "1" ]]; then
 elif [[ -n "${TPCH_QUERIES:-}" ]]; then
   :
 else
-  TPCH_QUERIES="1 3 6 10 12 14"
+  TPCH_QUERIES="1 3 6 9 10 11 12 14 17 18 21"
 fi
 if [[ "$SKIP_SEC_QUERIES" == "1" ]]; then
   SEC_QUERIES=""
@@ -65,6 +69,11 @@ export ACCEL_SHARED_SWEEP_READS="$READS"
 export ACCEL_SHARED_SWEEP_READER_QPS="$READER_QPS"
 export ACCEL_SHARED_SWEEP_WARMUP="$WARMUP"
 export ACCELERATOR_CODEGEN_CONFIG_DIR="${ACCELERATOR_CODEGEN_CONFIG_DIR:-${ROOT}/config}"
+if [[ -n "${ACCEL_BENCH_THREADS:-}" ]]; then
+  export ACCEL_BENCH_THREADS
+  export ACCEL_AUX_THREADS="${ACCEL_AUX_THREADS:-$ACCEL_BENCH_THREADS}"
+  export ACCEL_PG_MAX_PARALLEL_WORKERS_PER_GATHER="${ACCEL_PG_MAX_PARALLEL_WORKERS_PER_GATHER:-$ACCEL_BENCH_THREADS}"
+fi
 
 mkdir -p "$(dirname "$OUT")" "$LOG_DIR"
 

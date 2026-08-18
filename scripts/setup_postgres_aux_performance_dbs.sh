@@ -9,7 +9,7 @@ PG_TPCH_DB="${PG_TPCH_DB:-accel_aux_bench_q10}"
 PG_SEC_DB="${PG_SEC_DB:-accel_sec_edgar_sf3}"
 SEC_DUCKDB="${SEC_EDGAR_DB:-${ROOT}/../accelerator-codegen-duckdb/sec_edgar_sf3.duckdb}"
 EXTENSION_SO="${ACCEL_POSTGRES_SO:-/usr/lib/postgresql/17/lib/accelerator_codegen_postgres.so}"
-EXTENSION_SQL="${ROOT}/src/aux_state/engine/postgres/accelerator_codegen_postgres--0.1.sql"
+EXTENSION_SQL="${ROOT}/src/runtime/postgres/accelerator_codegen_postgres--0.1.sql"
 FORCE_SEC_RELOAD="${FORCE_SEC_RELOAD:-0}"
 
 export PGHOST="$PG_HOST"
@@ -110,11 +110,13 @@ SQL
 
 echo "=== syncing extension source into docker and rebuilding ==="
 if docker ps --format '{{.Names}}' | grep -qx 'accel_pg_test'; then
-  docker cp "${ROOT}/src/aux_state/." accel_pg_test:/tmp/accel-codegen-src/src/aux_state/
-  docker cp "${ROOT}/include/accelerator_codegen/aux_state/." \
-    accel_pg_test:/tmp/accel-codegen-src/include/accelerator_codegen/aux_state/
-  docker cp "${ROOT}/include/accelerator_codegen/tpch_q6_finalize.hpp" \
-    accel_pg_test:/tmp/accel-codegen-src/include/accelerator_codegen/tpch_q6_finalize.hpp
+  docker cp "${ROOT}/src/generated/." accel_pg_test:/tmp/accel-codegen-src/src/generated/
+  docker cp "${ROOT}/src/runtime/postgres/." \
+    accel_pg_test:/tmp/accel-codegen-src/src/runtime/postgres/
+  docker cp "${ROOT}/src/stateful/postgres/." \
+    accel_pg_test:/tmp/accel-codegen-src/src/stateful/postgres/
+  docker cp "${ROOT}/include/accelerator_codegen/." \
+    accel_pg_test:/tmp/accel-codegen-src/include/accelerator_codegen/
   docker cp "${ROOT}/config/." accel_pg_test:/tmp/accel-codegen-src/config/
   docker exec accel_pg_test bash -c '
     set -e
@@ -148,7 +150,7 @@ fi
 
 echo "=== smoke checks ==="
 psql_cmd -d "$PG_TPCH_DB" -c "SELECT 'tpch lineitem' AS what, COUNT(*) FROM lineitem;"
-psql_cmd -d "$PG_TPCH_DB" -c "SELECT proname FROM pg_proc WHERE proname IN ('accel_tpch_q1_aux','accel_tpch_q6_aux') ORDER BY 1;"
+psql_cmd -d "$PG_TPCH_DB" -c "SELECT proname FROM pg_proc WHERE proname LIKE 'accel_tpch_q%_aux' ORDER BY 1;"
 psql_cmd -d "$PG_SEC_DB" -c "SELECT 'sec num' AS what, COUNT(*) FROM num;"
 psql_cmd -d "$PG_SEC_DB" -c "SELECT proname FROM pg_proc WHERE proname LIKE 'accel_sec_edgar%_aux' ORDER BY 1;"
 psql_cmd -d "$PG_TPCH_DB" -tAc "SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal;"

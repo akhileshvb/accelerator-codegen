@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/runtime/parallel/parallel_runtime.hpp"
 
@@ -455,6 +456,32 @@ void InitializeNativeParallelScanHandle(NativeParallelScanHandle &handle, duckdb
     // InitializeParallelScan's column_indexes argument is unused by storage; pass empty.
     duckdb::vector<duckdb::ColumnIndex> column_indexes;
     storage.InitializeParallelScan(context, handle.parallel_state, column_indexes);
+}
+
+void ScanNativeBaseTable(duckdb::ClientContext &context, const NativeScanSpec &scan_spec,
+                         const NativeScanChunkConsumer &consumer) {
+	auto bind_data = BindNativeScan(context, scan_spec);
+	auto source = CreateNativeChunkSource(context, *bind_data);
+
+	// Shared contract emits projected columns only (filter-only columns stay
+	// internal to the DuckDB storage scan, matching Postgres ScanNativeBaseTable).
+	duckdb::vector<duckdb::LogicalType> projected_types;
+	projected_types.reserve(scan_spec.projected_columns.size());
+	for (const auto &column : scan_spec.projected_columns) {
+		projected_types.push_back(column.expected_logical_type);
+	}
+	duckdb::DataChunk projected;
+	projected.Initialize(context, projected_types);
+
+	while (source->Next()) {
+		auto &full = source->Chunk();
+		projected.Reset();
+		projected.SetCardinality(full.size());
+		for (duckdb::idx_t column = 0; column < projected_types.size(); column++) {
+			projected.data[column].Reference(full.data[column]);
+		}
+		consumer(projected);
+	}
 }
 
 } // namespace accelerator_codegen

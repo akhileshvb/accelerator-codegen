@@ -56,8 +56,34 @@ struct TpchQ14MonthTotals {
 };
 
 struct TpchQ14State {
-  std::unordered_map<int64_t, TpchQ14PromoClass> part_promo;
+  static constexpr int64_t kMaxDensePartkey = 1 << 24; // 16M; SF20 is 4M
+  std::vector<uint8_t> part_promo;
+  std::unordered_map<int64_t, uint8_t> promo_overflow;
   std::map<int32_t, TpchQ14MonthTotals> month_totals;
+
+  TpchQ14PromoClass PromoOf(int64_t partkey) const {
+    if (partkey < 0)
+      return TpchQ14PromoClass::Absent;
+    const auto ov = promo_overflow.find(partkey);
+    if (ov != promo_overflow.end())
+      return static_cast<TpchQ14PromoClass>(ov->second);
+    const auto id = static_cast<std::size_t>(partkey);
+    if (id >= part_promo.size())
+      return TpchQ14PromoClass::Absent;
+    return static_cast<TpchQ14PromoClass>(part_promo[id]);
+  }
+  void SetPromo(int64_t partkey, TpchQ14PromoClass promo) {
+    if (partkey < 0)
+      return;
+    if (partkey >= kMaxDensePartkey) {
+      promo_overflow[partkey] = static_cast<uint8_t>(promo);
+      return;
+    }
+    const auto id = static_cast<std::size_t>(partkey);
+    if (part_promo.size() <= id)
+      part_promo.resize(id + 1, 0);
+    part_promo[id] = static_cast<uint8_t>(promo);
+  }
 };
 
 enum class TpchQ14ImageKind : uint8_t { PartPromo, Month };

@@ -1,4 +1,4 @@
-// SCAFFOLDING
+// GENERATED BACKEND
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
 extern "C" {
@@ -47,6 +47,12 @@ Datum AcceleratorCodegenAuxTpchQ6(PG_FUNCTION_ARGS) {
   PG_RETURN_NULL();
 }
 
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ9);
+Datum AcceleratorCodegenAuxTpchQ9(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ9(fcinfo);
+  PG_RETURN_NULL();
+}
+
 PG_FUNCTION_INFO_V1(AcceleratorCodegenBaseTpchQ10);
 Datum AcceleratorCodegenBaseTpchQ10(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresBaseTpchQ10(fcinfo);
@@ -56,6 +62,12 @@ Datum AcceleratorCodegenBaseTpchQ10(PG_FUNCTION_ARGS) {
 PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ10);
 Datum AcceleratorCodegenAuxTpchQ10(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ10(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ11);
+Datum AcceleratorCodegenAuxTpchQ11(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ11(fcinfo);
   PG_RETURN_NULL();
 }
 
@@ -179,6 +191,24 @@ Datum AcceleratorCodegenAuxTpchQ14(PG_FUNCTION_ARGS) {
   PG_RETURN_NULL();
 }
 
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ17);
+Datum AcceleratorCodegenAuxTpchQ17(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ17(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ18);
+Datum AcceleratorCodegenAuxTpchQ18(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ18(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ21);
+Datum AcceleratorCodegenAuxTpchQ21(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ21(fcinfo);
+  PG_RETURN_NULL();
+}
+
 PG_FUNCTION_INFO_V1(AcceleratorCodegenBaseSecEdgarQ1);
 Datum AcceleratorCodegenBaseSecEdgarQ1(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresBaseSecEdgarQ1(fcinfo);
@@ -250,6 +280,44 @@ Datum AcceleratorCodegenAuxSecEdgarQ24(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresSecEdgarQ24(fcinfo);
   PG_RETURN_NULL();
 }
+
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxSecEdgarQ1Parallel);
+Datum AcceleratorCodegenAuxSecEdgarQ1Parallel(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresSecEdgarQ1Parallel(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxSecEdgarQ2Parallel);
+Datum AcceleratorCodegenAuxSecEdgarQ2Parallel(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresSecEdgarQ2Parallel(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxSecEdgarQ3Parallel);
+Datum AcceleratorCodegenAuxSecEdgarQ3Parallel(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresSecEdgarQ3Parallel(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxSecEdgarQ4Parallel);
+Datum AcceleratorCodegenAuxSecEdgarQ4Parallel(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresSecEdgarQ4Parallel(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxSecEdgarQ6Parallel);
+Datum AcceleratorCodegenAuxSecEdgarQ6Parallel(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresSecEdgarQ6Parallel(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxSecEdgarQ24Parallel);
+Datum AcceleratorCodegenAuxSecEdgarQ24Parallel(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresSecEdgarQ24Parallel(fcinfo);
+  PG_RETURN_NULL();
+}
+#endif
 
 } // extern "C"
 

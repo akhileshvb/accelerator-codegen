@@ -1,6 +1,7 @@
 // SCAFFOLDING
 #include "accelerator_codegen/harness/cost_calibration.hpp"
 
+#include <filesystem>
 #include <stdexcept>
 #include <utility>
 
@@ -47,7 +48,16 @@ core::MutationBatch ScaleMutation(const SharedQueryCatalogEntry &entry,
 } // namespace
 
 std::string SharedCostModelConfigPath(SharedWorkloadKind workload, int query_id) {
+  const char *db_label = std::getenv("ACCEL_AUX_BENCH_DB_LABEL");
+  const bool sf20 = db_label && std::string(db_label) == "tpch_sf20";
   if (workload == SharedWorkloadKind::Tpch) {
+    if (sf20) {
+      const auto sf20_path =
+          "config/q" + std::to_string(query_id) + "_aux_cost_model_sf20.json";
+      if (std::filesystem::exists(sf20_path)) {
+        return sf20_path;
+      }
+    }
     return "config/q" + std::to_string(query_id) + "_aux_cost_model.json";
   }
   return "config/sec_edgar_q" + std::to_string(query_id) + "_aux_cost_model.json";

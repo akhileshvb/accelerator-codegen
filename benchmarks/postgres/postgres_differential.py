@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Tuple
 
 import psycopg2
@@ -23,10 +24,69 @@ def normalized(rows):
     return [tuple(None if v is None else str(v) for v in row) for row in rows]
 
 
+def expand_probe_select_limit(sql: str, limit: int) -> str:
+    stripped = sql.strip()
+    match = re.search(r"LIMIT\s+\d+\s*$", stripped, flags=re.IGNORECASE)
+    if match:
+        return stripped[: match.start()] + f"LIMIT {limit}"
+    return stripped + f" LIMIT {limit}"
+
+
+def fingerprint_base(cur, entry: SharedQueryEntry):
+    return normalized(run_query(cur, entry.base_sql))
+
+
+def probe_changes_base(conn, cur, entry: SharedQueryEntry, probe: dict, before) -> bool:
+    cur.execute("BEGIN")
+    try:
+        cur.execute(probe["update"])
+        after = fingerprint_base(cur, entry)
+    finally:
+        conn.rollback()
+    return after != before
+
+
+def collect_invalidating_probe(conn, cur, entry: SharedQueryEntry, candidate_limit: int = 256):
+    """Return a catalog probe whose UPDATE changes this query's base_sql result."""
+    if entry.build_probe is None:
+        raise RuntimeError(
+            f"missing probe builder for {entry.workload} Q{entry.query_id}"
+        )
+    before = fingerprint_base(cur, entry)
+    conn.commit()
+    rows = run_query(cur, expand_probe_select_limit(entry.probe_select_sql, candidate_limit))
+    conn.commit()
+    for row in rows:
+        probe = entry.build_probe(row)
+        if probe_changes_base(conn, cur, entry, probe, before):
+            return probe
+    raise RuntimeError(
+        f"no invalidating catalog probe for {entry.workload} Q{entry.query_id} "
+        f"(candidates={len(rows)})"
+    )
+
+
 def connect(db):
     host = os.environ.get("PG_HOST", "127.0.0.1")
     port = int(os.environ.get("PG_PORT", "5434"))
-    return psycopg2.connect(host=host, port=port, user="postgres", dbname=db)
+    # Fail fast if the server dies mid-sweep (prior Q21 hang had no timeout).
+    connect_timeout = int(os.environ.get("ACCEL_PG_CONNECT_TIMEOUT_SEC", "30"))
+    statement_timeout_ms = int(
+        os.environ.get("ACCEL_PG_STATEMENT_TIMEOUT_MS", str(30 * 60 * 1000))
+    )
+    conn = psycopg2.connect(
+        host=host,
+        port=port,
+        user="postgres",
+        dbname=db,
+        connect_timeout=connect_timeout,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+        options=f"-c statement_timeout={statement_timeout_ms}",
+    )
+    return conn
 
 
 def approx_equal(expected: str, actual: str) -> bool:

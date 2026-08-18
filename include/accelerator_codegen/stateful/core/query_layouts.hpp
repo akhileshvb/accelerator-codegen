@@ -14,6 +14,7 @@ namespace accelerator_codegen::aux_state::core {
 // meanings.
 struct SecEdgarQ2Layout {
   static constexpr const char *kAccelerator = "sec_edgar_q2";
+  static constexpr const char *kParallelAccelerator = "sec_edgar_q2_aux_parallel";
   static constexpr PartitionId kMaxPureMap = 0;
   static constexpr PartitionId kFy2022Cohort = 1;
   static constexpr PartitionId kCandidates = 2;
@@ -25,6 +26,7 @@ struct SecEdgarQ2Layout {
 
 struct SecEdgarQ3Layout {
   static constexpr const char *kAccelerator = "sec_edgar_q3";
+  static constexpr const char *kParallelAccelerator = "sec_edgar_q3_aux_parallel";
   static constexpr PartitionId kFy2022Cohort = 0;
   static constexpr PartitionId kCikTotals = 1;
 
@@ -35,6 +37,7 @@ struct SecEdgarQ3Layout {
 
 struct SecEdgarQ6Layout {
   static constexpr const char *kAccelerator = "sec_edgar_q6";
+  static constexpr const char *kParallelAccelerator = "sec_edgar_q6_aux_parallel";
   static constexpr PartitionId kFy2023Cohort = 0;
   static constexpr PartitionId kPreIsBridge = 1;
   static constexpr PartitionId kGroupAggregates = 2;
@@ -46,6 +49,7 @@ struct SecEdgarQ6Layout {
 
 struct SecEdgarQ1Layout {
   static constexpr const char *kAccelerator = "sec_edgar_q1";
+  static constexpr const char *kParallelAccelerator = "sec_edgar_q1_aux_parallel";
   static constexpr PartitionId kGroupKeys = 0;
   static constexpr PartitionId kGroupAggregates = 1;
 
@@ -56,6 +60,7 @@ struct SecEdgarQ1Layout {
 
 struct SecEdgarQ4Layout {
   static constexpr const char *kAccelerator = "sec_edgar_q4";
+  static constexpr const char *kParallelAccelerator = "sec_edgar_q4_aux_parallel";
   static constexpr PartitionId kSicCohort = 0;
   static constexpr PartitionId kPreEqBridge = 1;
   static constexpr PartitionId kTagTlabel = 2;
@@ -68,6 +73,7 @@ struct SecEdgarQ4Layout {
 
 struct SecEdgarQ24Layout {
   static constexpr const char *kAccelerator = "sec_edgar_q24";
+  static constexpr const char *kParallelAccelerator = "sec_edgar_q24_aux_parallel";
   static constexpr PartitionId kPreMembership = 0;
   static constexpr PartitionId kTagVersions = 1;
   static constexpr PartitionId kGroupAggregates = 2;

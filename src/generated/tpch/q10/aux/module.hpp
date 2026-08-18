@@ -7,9 +7,11 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/dense_id_array.hpp"
 #include "accelerator_codegen/stateful/core/query_layouts.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -75,6 +77,12 @@ struct TpchQ10Order {
   int32_t orderdate_days = 0;
 };
 
+struct TpchQ10CustomerRank {
+  int64_t acctbal_raw = 0;
+  int32_t nationkey = 0;
+  uint8_t present = 0;
+};
+
 class TpchQ10InitialScan {
 public:
   virtual ~TpchQ10InitialScan() = default;
@@ -87,20 +95,12 @@ public:
   virtual void ScanLineitems(
       const std::function<void(const TpchQ10LineitemInput &)> &) = 0;
 
-  // Optional fast path: DuckDB (or other engines) can push the
-  // returned-lineitem ⨝ orders aggregation into SQL. Return true when the
-  // consumer was invoked for the full aggregate; BuildState then skips the
-  // C++ orders×lineitem join. Default is unsupported.
   virtual bool ScanReturnedCustomerRevenue(
       const std::function<void(const TpchQ10ReturnedRevenueInput &)> &consumer) {
     (void)consumer;
     return false;
   }
 
-  // Point-lookup for write maintenance when the Orders partition was skipped
-  // at build time. Fills out[orderkey] for each requested key that exists.
-  // Return true if the lookup was performed (missing keys simply absent from
-  // out). Default is unsupported.
   virtual bool LookupOrders(
       const std::vector<int64_t> &orderkeys,
       std::unordered_map<int64_t, TpchQ10Order> &out) {
@@ -108,13 +108,37 @@ public:
     (void)out;
     return false;
   }
+
+  // Fetch display strings for the Q10 top-k winners. Rank uses stored
+  // acctbal/nationkey only; Execute must not rescan all customers.
+  virtual bool LookupCustomers(
+      const std::vector<int64_t> &custkeys,
+      std::unordered_map<int64_t, TpchQ10Customer> &out) {
+    (void)custkeys;
+    (void)out;
+    return false;
+  }
 };
 
 struct TpchQ10State {
-  std::unordered_map<int64_t, TpchQ10Customer> customers;
+  core::DenseIdArray<TpchQ10CustomerRank> customer_ranks;
   std::unordered_map<int32_t, std::string> nations;
   std::unordered_map<int64_t, TpchQ10Order> orders;
   std::map<int32_t, std::unordered_map<int64_t, int64_t>> month_revenue;
+
+  void SetCustomerRank(int64_t custkey, int64_t acctbal_raw, int32_t nationkey) {
+    TpchQ10CustomerRank rank;
+    rank.acctbal_raw = acctbal_raw;
+    rank.nationkey = nationkey;
+    rank.present = 1;
+    customer_ranks.Set(custkey, rank);
+  }
+  bool HasCustomer(int64_t custkey) const {
+    return customer_ranks.Get(custkey).present != 0;
+  }
+  TpchQ10CustomerRank RankOf(int64_t custkey) const {
+    return customer_ranks.Get(custkey);
+  }
 };
 
 enum class TpchQ10ImageKind : uint8_t { Side, Orders, Month };
@@ -158,16 +182,23 @@ int64_t TpchQ10RevenueRaw(double extended_price, double discount);
 // TPC-H Q10 returns the top 20 customers by revenue.
 constexpr std::size_t kTpchQ10ResultLimit = 20;
 
+std::vector<std::pair<int64_t, int64_t>> TpchQ10SelectTopK(
+    const core::DenseIdArray<TpchQ10CustomerRank> &ranks,
+    const std::vector<const std::unordered_map<int64_t, int64_t> *>
+        &month_revenues,
+    std::size_t limit = kTpchQ10ResultLimit);
+
 void TpchQ10FinalizeAndEmit(const TpchQ10State &state, int32_t start_days,
                             core::AuxRowSink &sink);
 
-// Hit-path finalize: aggregate month maps in place (no Side/month deep copy)
-// and emit only the top-k rows.
+// Hit-path finalize: rank from month maps + stored acctbal/nationkey, then
+// emit top-k using caller-fetched customer strings (typically 20 rows).
 void TpchQ10FinalizeAndEmit(
-    const std::unordered_map<int64_t, TpchQ10Customer> &customers,
+    const core::DenseIdArray<TpchQ10CustomerRank> &ranks,
     const std::unordered_map<int32_t, std::string> &nations,
     const std::vector<const std::unordered_map<int64_t, int64_t> *>
         &month_revenues,
+    const std::unordered_map<int64_t, TpchQ10Customer> &customer_strings,
     int32_t start_days, core::AuxRowSink &sink,
     std::size_t limit = kTpchQ10ResultLimit);
 

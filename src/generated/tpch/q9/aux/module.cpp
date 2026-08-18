@@ -166,8 +166,80 @@ bool CopyMaintenanceSideFromImage(const TpchQ9StateImage *image,
     return false;
   state.supplier_nations = image->state->supplier_nations;
   state.order_years = image->state->order_years;
-  state.partsupp_costs = image->state->partsupp_costs;
+  state.order_year_overflow = image->state->order_year_overflow;
+  state.partsupp_rows = image->state->partsupp_rows;
+  state.partsupp_overflow = image->state->partsupp_overflow;
   return true;
+}
+
+void CollectSupplierNations(const TpchQ9State &state,
+                            std::vector<int64_t> &keys) {
+  keys.clear();
+  for (std::size_t chunk_idx = 0; chunk_idx < state.supplier_nations.chunks.size();
+       ++chunk_idx) {
+    const auto &chunk = state.supplier_nations.chunks[chunk_idx];
+    const int64_t base =
+        static_cast<int64_t>(chunk_idx << core::DenseIdArray<uint8_t>::kShift);
+    for (std::size_t slot = 0; slot < chunk.size(); ++slot) {
+      if (chunk[slot] == TpchQ9State::kAbsentNationCode)
+        continue;
+      keys.push_back(base + static_cast<int64_t>(slot));
+    }
+  }
+  std::sort(keys.begin(), keys.end());
+}
+
+void CollectOrderYears(const TpchQ9State &state, std::vector<int64_t> &keys) {
+  keys.clear();
+  for (std::size_t chunk_idx = 0; chunk_idx < state.order_years.chunks.size();
+       ++chunk_idx) {
+    const auto &chunk = state.order_years.chunks[chunk_idx];
+    const int64_t base =
+        static_cast<int64_t>(chunk_idx << core::DenseIdArray<uint8_t>::kShift);
+    for (std::size_t slot = 0; slot < chunk.size(); ++slot) {
+      if (chunk[slot] == TpchQ9State::kAbsentYearCode)
+        continue;
+      keys.push_back(base + static_cast<int64_t>(slot));
+    }
+  }
+  for (const auto &entry : state.order_year_overflow)
+    keys.push_back(entry.first);
+  std::sort(keys.begin(), keys.end());
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+}
+
+struct PartsuppTriple {
+  int64_t partkey = 0;
+  int64_t suppkey = 0;
+  int64_t cost = 0;
+};
+
+void CollectPartsupp(const TpchQ9State &state,
+                     std::vector<PartsuppTriple> &rows) {
+  rows.clear();
+  for (std::size_t chunk_idx = 0; chunk_idx < state.partsupp_rows.chunks.size();
+       ++chunk_idx) {
+    const auto &chunk = state.partsupp_rows.chunks[chunk_idx];
+    const int64_t base = static_cast<int64_t>(
+        chunk_idx << core::DenseIdArray<TpchQ9State::PackedPartsuppRow>::kShift);
+    for (std::size_t slot = 0; slot < chunk.size(); ++slot) {
+      const auto &row = chunk[slot];
+      const int64_t partkey = base + static_cast<int64_t>(slot);
+      for (int i = 0; i < TpchQ9State::PackedPartsuppRow::kSlots; ++i) {
+        if (row.suppkeys[i] == 0)
+          continue;
+        rows.push_back({partkey, row.suppkeys[i], row.costs[i]});
+      }
+    }
+  }
+  for (const auto &entry : state.partsupp_overflow)
+    rows.push_back({entry.first.partkey, entry.first.suppkey, entry.second});
+  std::sort(rows.begin(), rows.end(),
+            [](const PartsuppTriple &a, const PartsuppTriple &b) {
+              if (a.partkey != b.partkey)
+                return a.partkey < b.partkey;
+              return a.suppkey < b.suppkey;
+            });
 }
 
 bool LoadMaintenanceSide(core::AuxEngineServices &services,
@@ -237,18 +309,26 @@ bool ContainsSubstring(std::string_view haystack, std::string_view needle) {
 
 namespace {
 
-bool PostingContains(const std::vector<int64_t> &posting, int64_t partkey) {
-  return std::binary_search(posting.begin(), posting.end(), partkey);
+bool PostingContains(const std::vector<int32_t> &posting, int64_t partkey) {
+  if (partkey < std::numeric_limits<int32_t>::min() ||
+      partkey > std::numeric_limits<int32_t>::max())
+    return false;
+  return std::binary_search(posting.begin(), posting.end(),
+                            static_cast<int32_t>(partkey));
 }
 
-void PostingInsert(std::vector<int64_t> &posting, int64_t partkey) {
+void PostingInsert(std::vector<int32_t> &posting, int64_t partkey) {
   if (PostingContains(posting, partkey)) return;
-  posting.push_back(partkey);
+  posting.push_back(static_cast<int32_t>(partkey));
 }
 
-void PostingRemove(std::vector<int64_t> &posting, int64_t partkey) {
-  auto it = std::lower_bound(posting.begin(), posting.end(), partkey);
-  if (it != posting.end() && *it == partkey)
+void PostingRemove(std::vector<int32_t> &posting, int64_t partkey) {
+  if (partkey < std::numeric_limits<int32_t>::min() ||
+      partkey > std::numeric_limits<int32_t>::max())
+    return;
+  const auto key = static_cast<int32_t>(partkey);
+  auto it = std::lower_bound(posting.begin(), posting.end(), key);
+  if (it != posting.end() && *it == key)
     posting.erase(it);
 }
 
@@ -339,23 +419,15 @@ bool ResolveProfit(const TpchQ9State &state, int64_t partkey, int64_t suppkey,
                    int64_t orderkey, int64_t quantity_raw,
                    int64_t extendedprice_raw, int64_t discount_raw,
                    int64_t &profit_raw, int32_t &nationkey, int32_t &year) {
-  // Look up supplier nation
-  auto supp_it = state.supplier_nations.find(suppkey);
-  if (supp_it == state.supplier_nations.end()) return false;
-  nationkey = supp_it->second;
-
-  // Look up order year
-  auto ord_it = state.order_years.find(orderkey);
-  if (ord_it == state.order_years.end()) return false;
-  year = ord_it->second;
-
-  // Look up partsupp cost
-  TpchQ9State::PartsuppKey ps_key{partkey, suppkey};
-  auto ps_it = state.partsupp_costs.find(ps_key);
-  if (ps_it == state.partsupp_costs.end()) return false;
-
+  if (!state.LookupSupplierNation(suppkey, nationkey))
+    return false;
+  if (!state.LookupOrderYear(orderkey, year))
+    return false;
+  int64_t supplycost_raw = 0;
+  if (!state.LookupPartsuppCost(partkey, suppkey, supplycost_raw))
+    return false;
   profit_raw = ComputeProfitRaw(extendedprice_raw, discount_raw,
-                                 ps_it->second, quantity_raw);
+                                 supplycost_raw, quantity_raw);
   return true;
 }
 
@@ -412,7 +484,6 @@ void TpchQ9State::AddNamePostings(int64_t partkey,
   std::string normalized = NormalizeForIndex(raw_name);
   auto &record = PartRecord(partkey);
   record.normalized_name = std::move(normalized);
-  record.original_name.clear();
   for (const auto &token : NameTokens(record.normalized_name))
     PostingInsert(name_postings[token], partkey);
 }
@@ -453,8 +524,8 @@ std::vector<uint8_t> EncodeTpchQ9CompleteState(const TpchQ9State &state) {
     writer.String(std::string{});
     writer.U32(static_cast<uint32_t>(record->cells.size()));
     for (const auto &cell : record->cells) {
-      writer.I32(cell.nationkey);
-      writer.I32(cell.year);
+      writer.I32(cell.Nation());
+      writer.I32(cell.Year());
       writer.I64(cell.profit);
     }
   }
@@ -492,42 +563,35 @@ std::vector<uint8_t> EncodeTpchQ9CompleteState(const TpchQ9State &state) {
   }
 
   // ── Supplier nations ────────────────────────────────────────────────────
-  writer.U32(static_cast<uint32_t>(state.supplier_nations.size()));
   std::vector<int64_t> supp_keys;
-  for (const auto &entry : state.supplier_nations)
-    supp_keys.push_back(entry.first);
-  std::sort(supp_keys.begin(), supp_keys.end());
+  CollectSupplierNations(state, supp_keys);
+  writer.U32(static_cast<uint32_t>(supp_keys.size()));
   for (const auto key : supp_keys) {
+    int32_t nationkey = 0;
+    state.LookupSupplierNation(key, nationkey);
     writer.I64(key);
-    writer.I32(state.supplier_nations.at(key));
+    writer.I32(nationkey);
   }
 
   // ── Order years ─────────────────────────────────────────────────────────
-  writer.U32(static_cast<uint32_t>(state.order_years.size()));
   std::vector<int64_t> order_keys;
-  for (const auto &entry : state.order_years)
-    order_keys.push_back(entry.first);
-  std::sort(order_keys.begin(), order_keys.end());
+  CollectOrderYears(state, order_keys);
+  writer.U32(static_cast<uint32_t>(order_keys.size()));
   for (const auto key : order_keys) {
+    int32_t year = 0;
+    state.LookupOrderYear(key, year);
     writer.I64(key);
-    writer.I32(state.order_years.at(key));
+    writer.I32(year);
   }
 
   // ── Partsupp costs ──────────────────────────────────────────────────────
-  writer.U32(static_cast<uint32_t>(state.partsupp_costs.size()));
-  std::vector<TpchQ9State::PartsuppKey> ps_keys;
-  for (const auto &entry : state.partsupp_costs)
-    ps_keys.push_back(entry.first);
-  std::sort(ps_keys.begin(), ps_keys.end(),
-            [](const TpchQ9State::PartsuppKey &a,
-               const TpchQ9State::PartsuppKey &b) {
-              if (a.partkey != b.partkey) return a.partkey < b.partkey;
-              return a.suppkey < b.suppkey;
-            });
-  for (const auto &key : ps_keys) {
-    writer.I64(key.partkey);
-    writer.I64(key.suppkey);
-    writer.I64(state.partsupp_costs.at(key));
+  std::vector<PartsuppTriple> ps_rows;
+  CollectPartsupp(state, ps_rows);
+  writer.U32(static_cast<uint32_t>(ps_rows.size()));
+  for (const auto &row : ps_rows) {
+    writer.I64(row.partkey);
+    writer.I64(row.suppkey);
+    writer.I64(row.cost);
   }
 
   return std::move(writer.bytes);
@@ -566,40 +630,33 @@ void WriteTpchQ9MetadataBody(ByteWriter &writer, const TpchQ9State &state) {
 
 void WriteTpchQ9MaintenanceSideBody(ByteWriter &writer,
                                     const TpchQ9State &state) {
-  writer.U32(static_cast<uint32_t>(state.supplier_nations.size()));
   std::vector<int64_t> supp_keys;
-  for (const auto &entry : state.supplier_nations)
-    supp_keys.push_back(entry.first);
-  std::sort(supp_keys.begin(), supp_keys.end());
+  CollectSupplierNations(state, supp_keys);
+  writer.U32(static_cast<uint32_t>(supp_keys.size()));
   for (const auto key : supp_keys) {
+    int32_t nationkey = 0;
+    state.LookupSupplierNation(key, nationkey);
     writer.I64(key);
-    writer.I32(state.supplier_nations.at(key));
+    writer.I32(nationkey);
   }
 
-  writer.U32(static_cast<uint32_t>(state.order_years.size()));
   std::vector<int64_t> order_keys;
-  for (const auto &entry : state.order_years)
-    order_keys.push_back(entry.first);
-  std::sort(order_keys.begin(), order_keys.end());
+  CollectOrderYears(state, order_keys);
+  writer.U32(static_cast<uint32_t>(order_keys.size()));
   for (const auto key : order_keys) {
+    int32_t year = 0;
+    state.LookupOrderYear(key, year);
     writer.I64(key);
-    writer.I32(state.order_years.at(key));
+    writer.I32(year);
   }
 
-  writer.U32(static_cast<uint32_t>(state.partsupp_costs.size()));
-  std::vector<TpchQ9State::PartsuppKey> ps_keys;
-  for (const auto &entry : state.partsupp_costs)
-    ps_keys.push_back(entry.first);
-  std::sort(ps_keys.begin(), ps_keys.end(),
-            [](const TpchQ9State::PartsuppKey &a,
-               const TpchQ9State::PartsuppKey &b) {
-              if (a.partkey != b.partkey) return a.partkey < b.partkey;
-              return a.suppkey < b.suppkey;
-            });
-  for (const auto &key : ps_keys) {
-    writer.I64(key.partkey);
-    writer.I64(key.suppkey);
-    writer.I64(state.partsupp_costs.at(key));
+  std::vector<PartsuppTriple> ps_rows;
+  CollectPartsupp(state, ps_rows);
+  writer.U32(static_cast<uint32_t>(ps_rows.size()));
+  for (const auto &row : ps_rows) {
+    writer.I64(row.partkey);
+    writer.I64(row.suppkey);
+    writer.I64(row.cost);
   }
 }
 
@@ -624,7 +681,7 @@ bool ReadTpchQ9MetadataBody(ByteReader &reader, TpchQ9State &state) {
       int64_t partkey = 0;
       if (!reader.I64(partkey))
         return false;
-      partkeys.push_back(partkey);
+      partkeys.push_back(static_cast<int32_t>(partkey));
     }
   }
 
@@ -657,35 +714,36 @@ bool ReadTpchQ9MaintenanceSideBody(ByteReader &reader, TpchQ9State &state) {
   uint32_t count = 0;
   if (!reader.U32(count))
     return false;
-  state.supplier_nations.clear();
+  state.supplier_nations.Clear();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0;
     int32_t nationkey = 0;
     if (!reader.I64(key) || !reader.I32(nationkey))
       return false;
-    state.supplier_nations.emplace(key, nationkey);
+    state.SetSupplierNation(key, nationkey);
   }
 
   if (!reader.U32(count))
     return false;
-  state.order_years.clear();
+  state.order_years.Clear();
+  state.order_year_overflow.clear();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0;
     int32_t year = 0;
     if (!reader.I64(key) || !reader.I32(year))
       return false;
-    state.order_years.emplace(key, year);
+    state.SetOrderYear(key, year);
   }
 
   if (!reader.U32(count))
     return false;
-  state.partsupp_costs.clear();
+  state.partsupp_rows.Clear();
+  state.partsupp_overflow.clear();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t partkey = 0, suppkey = 0, cost = 0;
     if (!reader.I64(partkey) || !reader.I64(suppkey) || !reader.I64(cost))
       return false;
-    state.partsupp_costs.emplace(TpchQ9State::PartsuppKey{partkey, suppkey},
-                                 cost);
+    state.SetPartsuppCost(partkey, suppkey, cost);
   }
   return true;
 }
@@ -711,8 +769,8 @@ void WriteTpchQ9ProfitParts(ByteWriter &writer,
     writer.String(std::string{});
     writer.U32(static_cast<uint32_t>(record.cells.size()));
     for (const auto &cell : record.cells) {
-      writer.I32(cell.nationkey);
-      writer.I32(cell.year);
+      writer.I32(cell.Nation());
+      writer.I32(cell.Year());
       writer.I64(cell.profit);
     }
   }
@@ -733,14 +791,13 @@ bool ReadTpchQ9ProfitParts(ByteReader &reader,
       return false;
     auto &record = partition.parts[partkey];
     record.normalized_name = std::move(normalized_name);
-    record.original_name.clear();
     record.cells.reserve(cell_count);
     for (uint32_t j = 0; j < cell_count; ++j) {
-      Q9ProfitCell cell;
-      if (!reader.I32(cell.nationkey) || !reader.I32(cell.year) ||
-          !reader.I64(cell.profit))
+      int32_t nationkey = 0, year = 0;
+      int64_t profit = 0;
+      if (!reader.I32(nationkey) || !reader.I32(year) || !reader.I64(profit))
         return false;
-      record.cells.push_back(cell);
+      record.cells.push_back(Q9ProfitCell::Make(nationkey, year, profit));
     }
   }
   return true;
@@ -822,19 +879,19 @@ bool DecodeTpchQ9CompleteState(const std::vector<uint8_t> &bytes,
   for (uint32_t i = 0; i < count; ++i) {
     int64_t partkey = 0;
     Q9PartRecord record;
+    std::string original_name;
     uint32_t cell_count = 0;
     if (!reader.I64(partkey) || !reader.String(record.normalized_name) ||
-        !reader.String(record.original_name) || !reader.U32(cell_count))
+        !reader.String(original_name) || !reader.U32(cell_count))
       return false;
-    record.original_name.clear();
     record.cells.reserve(cell_count);
     for (uint32_t j = 0; j < cell_count; ++j) {
-      Q9ProfitCell cell;
-      if (!reader.I32(cell.nationkey) || !reader.I32(cell.year) ||
-          !reader.I64(cell.profit))
+      int32_t nationkey = 0, year = 0;
+      int64_t profit = 0;
+      if (!reader.I32(nationkey) || !reader.I32(year) || !reader.I64(profit))
         return false;
-      if (cell.profit != 0)
-        record.cells.push_back(cell);
+      if (profit != 0)
+        record.cells.push_back(Q9ProfitCell::Make(nationkey, year, profit));
     }
     state.GetPartition(partkey).parts.emplace(partkey, std::move(record));
   }
@@ -852,7 +909,7 @@ bool DecodeTpchQ9CompleteState(const std::vector<uint8_t> &bytes,
     for (uint32_t j = 0; j < pk_count; ++j) {
       int64_t pk = 0;
       if (!reader.I64(pk)) return false;
-      pk_vec.push_back(pk);
+      pk_vec.push_back(static_cast<int32_t>(pk));
     }
   }
 
@@ -881,33 +938,34 @@ bool DecodeTpchQ9CompleteState(const std::vector<uint8_t> &bytes,
 
   // ── Supplier nations ────────────────────────────────────────────────────
   if (!reader.U32(count)) return false;
-  state.supplier_nations.clear();
+  state.supplier_nations.Clear();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0;
     int32_t nk = 0;
     if (!reader.I64(key) || !reader.I32(nk)) return false;
-    state.supplier_nations.emplace(key, nk);
+    state.SetSupplierNation(key, nk);
   }
 
   // ── Order years ─────────────────────────────────────────────────────────
   if (!reader.U32(count)) return false;
-  state.order_years.clear();
+  state.order_years.Clear();
+  state.order_year_overflow.clear();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0;
     int32_t year = 0;
     if (!reader.I64(key) || !reader.I32(year)) return false;
-    state.order_years.emplace(key, year);
+    state.SetOrderYear(key, year);
   }
 
   // ── Partsupp costs ──────────────────────────────────────────────────────
   if (!reader.U32(count)) return false;
-  state.partsupp_costs.clear();
+  state.partsupp_rows.Clear();
+  state.partsupp_overflow.clear();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t partkey = 0, suppkey = 0, cost = 0;
     if (!reader.I64(partkey) || !reader.I64(suppkey) || !reader.I64(cost))
       return false;
-    state.partsupp_costs.emplace(
-        TpchQ9State::PartsuppKey{partkey, suppkey}, cost);
+    state.SetPartsuppCost(partkey, suppkey, cost);
   }
 
   if (state.nation_emit_order.empty())
@@ -986,7 +1044,7 @@ void TpchQ9Module::BuildStateInto(TpchQ9State &state) const {
 
   // Scan suppliers for nation mapping
   initial_scan->ScanSuppliers([&](const TpchQ9SupplierInput &input) {
-    state.supplier_nations.emplace(input.suppkey, input.nationkey);
+    state.SetSupplierNation(input.suppkey, input.nationkey);
   });
 
   // Scan parts for name index, then size internal profit shards from cardinality.
@@ -1012,33 +1070,26 @@ void TpchQ9Module::BuildStateInto(TpchQ9State &state) const {
   // Side maps are required for write-side join resolution.
   initial_scan->ScanOrders([&](const TpchQ9OrdersInput &input) {
     int32_t year = TpchQ9ExtractYear(input.orderdate_days);
-    state.order_years.emplace(input.orderkey, year);
+    state.SetOrderYear(input.orderkey, year);
   });
   initial_scan->ScanPartsupps([&](const TpchQ9PartsuppInput &input) {
-    state.partsupp_costs.emplace(
-        TpchQ9State::PartsuppKey{input.partkey, input.suppkey},
-        input.supplycost_raw);
+    state.SetPartsuppCost(input.partkey, input.suppkey, input.supplycost_raw);
   });
 
   if (!used_sql) {
     initial_scan->ScanLineitems([&](const TpchQ9LineitemInput &input) {
-      auto supp_it = state.supplier_nations.find(input.suppkey);
-      if (supp_it == state.supplier_nations.end())
+      int32_t nationkey = 0;
+      if (!state.LookupSupplierNation(input.suppkey, nationkey))
         return;
-      const int32_t nationkey = supp_it->second;
-
-      auto ord_it = state.order_years.find(input.orderkey);
-      if (ord_it == state.order_years.end())
+      int32_t year = 0;
+      if (!state.LookupOrderYear(input.orderkey, year))
         return;
-      const int32_t year = ord_it->second;
-
-      TpchQ9State::PartsuppKey ps_key{input.partkey, input.suppkey};
-      auto ps_it = state.partsupp_costs.find(ps_key);
-      if (ps_it == state.partsupp_costs.end())
+      int64_t supplycost_raw = 0;
+      if (!state.LookupPartsuppCost(input.partkey, input.suppkey, supplycost_raw))
         return;
 
       const int64_t profit_raw = ComputeProfitRaw(
-          input.extendedprice_raw, input.discount_raw, ps_it->second,
+          input.extendedprice_raw, input.discount_raw, supplycost_raw,
           input.quantity_raw);
       if (profit_raw == 0)
         return;
@@ -1071,7 +1122,9 @@ void TpchQ9Module::Build(core::AuxEngineServices &services,
   auto maintenance_side = std::make_shared<TpchQ9State>();
   maintenance_side->supplier_nations = typed_state->supplier_nations;
   maintenance_side->order_years = typed_state->order_years;
-  maintenance_side->partsupp_costs = typed_state->partsupp_costs;
+  maintenance_side->order_year_overflow = typed_state->order_year_overflow;
+  maintenance_side->partsupp_rows = typed_state->partsupp_rows;
+  maintenance_side->partsupp_overflow = typed_state->partsupp_overflow;
   builder.Write(core::StateImage::Make(
       TpchQ9Layout::kAccelerator, TpchQ9Layout::kMaintenanceSide, 0,
       MakeMaintenanceSideImage(maintenance_side)));
@@ -1403,7 +1456,9 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     if (touch_names) {
       new_state->supplier_nations = maintenance_side.supplier_nations;
       new_state->order_years = maintenance_side.order_years;
-      new_state->partsupp_costs = maintenance_side.partsupp_costs;
+      new_state->order_year_overflow = maintenance_side.order_year_overflow;
+      new_state->partsupp_rows = maintenance_side.partsupp_rows;
+      new_state->partsupp_overflow = maintenance_side.partsupp_overflow;
     }
   }
 
@@ -1412,7 +1467,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   auto apply_order_inserts = [&](TpchQ9State &side) {
     for (const auto &delta : buffer.OrderDeltas()) {
       if (delta.sign > 0) {
-        side.order_years[delta.orderkey] = delta.order_year;
+        side.SetOrderYear(delta.orderkey, delta.order_year);
         order_years_changed = true;
       }
     }
@@ -1420,7 +1475,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   auto apply_order_deletes = [&](TpchQ9State &side) {
     for (const auto &delta : buffer.OrderDeltas()) {
       if (delta.sign < 0) {
-        side.order_years.erase(delta.orderkey);
+        side.EraseOrderYear(delta.orderkey);
         order_years_changed = true;
       }
     }
@@ -1511,7 +1566,9 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     auto side_state = std::make_shared<TpchQ9State>();
     side_state->supplier_nations = maintenance_side.supplier_nations;
     side_state->order_years = maintenance_side.order_years;
-    side_state->partsupp_costs = maintenance_side.partsupp_costs;
+    side_state->order_year_overflow = maintenance_side.order_year_overflow;
+    side_state->partsupp_rows = maintenance_side.partsupp_rows;
+    side_state->partsupp_overflow = maintenance_side.partsupp_overflow;
     outcome.updates.push_back(core::StateImage::Make(
         TpchQ9Layout::kAccelerator, TpchQ9Layout::kMaintenanceSide, 0,
         MakeMaintenanceSideImage(side_state)));
@@ -1564,20 +1621,14 @@ void TpchQ9Module::RebuildPartkeys(
     int32_t nationkey = 0, year = 0;
     int64_t profit_raw = 0;
 
-    auto supp_it = state.supplier_nations.find(input.suppkey);
-    if (supp_it == state.supplier_nations.end()) return;
-    nationkey = supp_it->second;
-
-    auto ord_it = state.order_years.find(input.orderkey);
-    if (ord_it == state.order_years.end()) return;
-    year = ord_it->second;
-
-    TpchQ9State::PartsuppKey ps_key{input.partkey, input.suppkey};
-    auto ps_it = state.partsupp_costs.find(ps_key);
-    if (ps_it == state.partsupp_costs.end()) return;
+    if (!state.LookupSupplierNation(input.suppkey, nationkey)) return;
+    if (!state.LookupOrderYear(input.orderkey, year)) return;
+    int64_t supplycost_raw = 0;
+    if (!state.LookupPartsuppCost(input.partkey, input.suppkey, supplycost_raw))
+      return;
 
     profit_raw = ComputeProfitRaw(input.extendedprice_raw, input.discount_raw,
-                                   ps_it->second, input.quantity_raw);
+                                   supplycost_raw, input.quantity_raw);
     if (profit_raw == 0) return;
 
     state.AddContribution(input.partkey, nationkey, year, profit_raw);
@@ -1701,7 +1752,7 @@ bool TpchQ9Module::LoadState(
     }
     if (!best_token.empty()) {
       const auto &best_postings = assembled->name_postings.at(best_token);
-      std::vector<const std::vector<int64_t> *> other_postings;
+      std::vector<const std::vector<int32_t> *> other_postings;
       other_postings.reserve(tokens.size());
       for (const auto &token : tokens) {
         const auto &posting = assembled->name_postings.at(token);
@@ -1774,9 +1825,9 @@ void TpchQ9Module::EmitResult(const TpchQ9State &state,
     return;
   }
 
-  const std::vector<int64_t> *best_postings = nullptr;
+  const std::vector<int32_t> *best_postings = nullptr;
   std::size_t best_size = ~std::size_t{0};
-  std::vector<const std::vector<int64_t> *> other_postings;
+  std::vector<const std::vector<int32_t> *> other_postings;
   other_postings.reserve(tokens.size());
 
   for (const auto &token : tokens) {
@@ -1827,14 +1878,14 @@ void TpchQ9Module::EmitResult(const TpchQ9State &state,
     if (!ContainsSubstring(record->normalized_name, needle_view)) continue;
 
     for (const auto &cell : record->cells) {
-      const int32_t year_idx = cell.year - kYearBase;
-      if (cell.nationkey >= 0 && cell.nationkey < kDenseNations &&
+      const int32_t year_idx = cell.Year() - kYearBase;
+      if (cell.Nation() >= 0 && cell.Nation() < kDenseNations &&
           year_idx >= 0 && year_idx < kDenseYears) {
-        dense_profit[cell.nationkey][year_idx] += cell.profit;
-        dense_valid[cell.nationkey][year_idx] = true;
-        nation_seen[cell.nationkey] = true;
+        dense_profit[cell.Nation()][year_idx] += cell.profit;
+        dense_valid[cell.Nation()][year_idx] = true;
+        nation_seen[cell.Nation()] = true;
       } else {
-        Q9CellKey key{cell.nationkey, cell.year};
+        Q9CellKey key{cell.Nation(), cell.Year()};
         sparse[key] += cell.profit;
       }
     }

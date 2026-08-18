@@ -18,18 +18,27 @@ constexpr uint8_t kQ6RevenueDecimalWidth = 38;
 constexpr uint8_t kQ6RevenueDecimalScale = 4;
 
 // Discount and quantity are stored at cent precision (scale 2). TPC-H bounds are
-// discount in [0.00, 0.10] and quantity in [0, 50.00].
+// discount in [0.00, 0.10] and integer quantity in [0, 50]. Cells are indexed by
+// integer quantity (quantity_raw / 100), not the 0.01 grid.
 constexpr int32_t kQ6DiscountBuckets = 11;
-constexpr int32_t kQ6QuantityBuckets = 5001;
+constexpr int32_t kQ6QuantityScale = 100;
+constexpr int32_t kQ6QuantityBuckets = 51;
 constexpr int32_t kQ6MaxDiscountCent = kQ6DiscountBuckets - 1;
-constexpr int32_t kQ6MaxQuantityScaled = kQ6QuantityBuckets - 1;
+constexpr int32_t kQ6MaxQuantityBucket = kQ6QuantityBuckets - 1;
 
 struct Q6RevenueMatrix {
 	std::array<Q6AccT, static_cast<std::size_t>(kQ6DiscountBuckets * kQ6QuantityBuckets)> cells{};
 
+	static constexpr int32_t QuantityBucket(int64_t quantity_scaled) {
+		if (quantity_scaled < 0)
+			return -1;
+		return static_cast<int32_t>(quantity_scaled / kQ6QuantityScale);
+	}
+
 	static constexpr std::size_t CellIndex(int8_t discount_cent, int64_t quantity_scaled) {
-		return static_cast<std::size_t>(discount_cent) * static_cast<std::size_t>(kQ6QuantityBuckets) +
-		       static_cast<std::size_t>(quantity_scaled);
+		return static_cast<std::size_t>(discount_cent) *
+		           static_cast<std::size_t>(kQ6QuantityBuckets) +
+		       static_cast<std::size_t>(QuantityBucket(quantity_scaled));
 	}
 
 	Q6AccT &At(int8_t discount_cent, int64_t quantity_scaled) {

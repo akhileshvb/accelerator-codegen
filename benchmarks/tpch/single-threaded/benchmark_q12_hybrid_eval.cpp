@@ -1,5 +1,5 @@
 #include "accelerator_codegen/tpch_q12_maintenance.hpp"
-#include "accelerator_codegen/aux_state/maintenance/maintenance_action.hpp"
+#include "accelerator_codegen/stateful/maintenance/maintenance_action.hpp"
 
 #include <iostream>
 

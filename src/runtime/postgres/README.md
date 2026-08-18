@@ -9,11 +9,15 @@ The C++ core receives engine-neutral `MutationBatch` and `VisibilityToken`
 values plus typed in-process state images. `PostgresStateStore` is the
 serialization boundary for the LWLock-protected shared-memory image
 directory: PostgreSQL stores byte images, while query modules see typed state
-after the adapter deserializes them. The optional C extension contains the
-statement-trigger decoder: it registers transition tables with SPI, converts
-typed PostgreSQL Datums into query-specific initial-scan inputs or
-`MutationBatch` values, and dispatches transition batches to the backend-local
-`PostgresMutationCapture`.
+after the adapter deserializes them.
+
+Base-table scans use the shared `NativeScanSpec` contract
+(`runtime/native_scan.hpp`): `ScanNativeBaseTable` opens the relation via the
+table AM (`table_beginscan` / `table_scan_getnextslot`), applies residual
+filters in-process, and streams projected columns as DuckDB `DataChunk`s for
+the same `KernelInstance` path DuckDB uses. The optional C extension still
+uses SPI only for statement-trigger transition-table decoding into
+`MutationBatch` values for `PostgresMutationCapture`.
 
 ## Calibrating the shared policy
 

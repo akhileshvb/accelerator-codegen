@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
 extern "C" {
@@ -14,18 +15,26 @@ extern "C" {
 #include "utils/builtins.h"
 #include "utils/elog.h"
 #include "utils/lsyscache.h"
+#include "utils/snapmgr.h"
+#include "utils/guc.h"
 }
 
 #include <cctype>
 #include <cerrno>
 #include <algorithm>
 #include <cstdlib>
+#include <exception>
 #include <limits>
 #include <string>
 #include <vector>
 
 #include "accelerator_codegen/stateful/postgres/postgres_mutation_capture.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
+
+namespace accelerator_codegen::aux_state::engine::postgres {
+void EnterPostgresXactCallback();
+void LeavePostgresXactCallback();
+}
 
 extern "C" {
 PG_MODULE_MAGIC;
@@ -181,8 +190,8 @@ std::vector<int> MutationProjection(TableId table, int natts) {
     return {0, 1, 2};
   case 103: // num: full table row (adsh..footnote)
     return {0, 1, 2, 3, 4, 5, 6, 7, 8};
-  case 1001: // TPCH Q1: shipdate,returnflag,linestatus,quantity,price,discount,tax
-    return {10, 8, 9, 4, 5, 6, 7};
+  case 1001: // TPCH Q1: shipdate,quantity,price,discount,tax,returnflag,linestatus
+    return {10, 4, 5, 6, 7, 8, 9};
   case 1002: // TPCH Q3 orders
     return {0, 1, 4, 7};
   case 1003: // TPCH Q3 customer
@@ -199,6 +208,42 @@ std::vector<int> MutationProjection(TableId table, int natts) {
     return {1, 5, 6, 10};
   case 1015: // TPCH Q14 part
     return {0, 3};
+  case 1091: // TPCH Q9 part
+    return {0, 1};
+  case 1092: // TPCH Q9 supplier
+    return {0, 3};
+  case 1093: // TPCH Q9 nation
+    return {0, 1};
+  case 1094: // TPCH Q9 orders
+    return {0, 4};
+  case 1095: // TPCH Q9 partsupp
+    return {0, 1, 3};
+  case 1096: // TPCH Q9 lineitem: partkey,suppkey,orderkey,qty,price,discount
+    return {1, 2, 0, 4, 5, 6};
+  case 1111: // TPCH Q11 partsupp
+    return {0, 1, 2, 3};
+  case 1112: // TPCH Q11 supplier
+    return {0, 3};
+  case 1113: // TPCH Q11 nation
+    return {0, 1};
+  case 1171: // TPCH Q17 part
+    return {0, 3, 6};
+  case 1172: // TPCH Q17 lineitem: partkey,quantity,extendedprice
+    return {1, 4, 5};
+  case 1180: // TPCH Q18 lineitem: orderkey,quantity
+    return {0, 4};
+  case 1181: // TPCH Q18 orders: orderkey,custkey,orderdate,totalprice
+    return {0, 1, 4, 3};
+  case 1182: // TPCH Q18 customer
+    return {0, 1};
+  case 1211: // TPCH Q21 supplier
+    return {0, 1, 3};
+  case 1212: // TPCH Q21 orders: orderkey,orderstatus
+    return {0, 2};
+  case 1213: // TPCH Q21 lineitem: orderkey,suppkey,commit,receipt
+    return {0, 2, 11, 12};
+  case 1214: // TPCH Q21 nation
+    return {0, 1};
   case 2001: // SEC Q1 pre: stmt,rfile,adsh,line
     return {3, 5, 0, 2};
   case 2002: // SEC Q2 sub: adsh,name,cik,fy
@@ -381,14 +426,40 @@ void AcceleratorXactCallback(XactEvent event, void *) {
       HandleTransactionEvent;
   using accelerator_codegen::aux_state::engine::postgres::TransactionEvent;
   switch (event) {
-  case XACT_EVENT_PRE_COMMIT:
-    HandleTransactionEvent(TransactionEvent::PreCommit);
+  case XACT_EVENT_PRE_COMMIT: {
+    // Statement portals have already popped their snapshot; SPI scans in
+    // StageMaintenance / PreCommit rebuild need an active one.
+    PushActiveSnapshot(GetTransactionSnapshot());
+    accelerator_codegen::aux_state::engine::postgres::EnterPostgresXactCallback();
+    PG_TRY();
+    {
+      try {
+        HandleTransactionEvent(TransactionEvent::PreCommit);
+      } catch (const std::exception &ex) {
+        ereport(ERROR,
+                (errmsg("accelerator pre-commit failed: %s", ex.what())));
+      }
+    }
+    PG_CATCH();
+    {
+      accelerator_codegen::aux_state::engine::postgres::LeavePostgresXactCallback();
+      PopActiveSnapshot();
+      PG_RE_THROW();
+    }
+    PG_END_TRY();
+    accelerator_codegen::aux_state::engine::postgres::LeavePostgresXactCallback();
+    PopActiveSnapshot();
     break;
+  }
   case XACT_EVENT_COMMIT:
+    accelerator_codegen::aux_state::engine::postgres::EnterPostgresXactCallback();
     HandleTransactionEvent(TransactionEvent::Commit);
+    accelerator_codegen::aux_state::engine::postgres::LeavePostgresXactCallback();
     break;
   case XACT_EVENT_ABORT:
+    accelerator_codegen::aux_state::engine::postgres::EnterPostgresXactCallback();
     HandleTransactionEvent(TransactionEvent::Abort);
+    accelerator_codegen::aux_state::engine::postgres::LeavePostgresXactCallback();
     break;
   default:
     break;
@@ -417,6 +488,10 @@ void AcceleratorSubXactCallback(SubXactEvent event, SubTransactionId,
 
 } // namespace
 
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+int accel_aux_worker_count = 0;
+#endif
+
 extern "C" void _PG_init(void) {
   // The SQL-callable prototype is loaded with LOAD/CREATE EXTENSION, where
   // PostgreSQL has already completed its shared-memory request phase. The
@@ -425,6 +500,13 @@ extern "C" void _PG_init(void) {
   // read-only prototype.
   RegisterXactCallback(AcceleratorXactCallback, nullptr);
   RegisterSubXactCallback(AcceleratorSubXactCallback, nullptr);
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+  DefineCustomIntVariable(
+      "accel.aux_worker_count",
+      "Worker count for multithreaded SEC EDGAR aux kernels (0 = max_parallel_workers_per_gather or 1).",
+      NULL, &accel_aux_worker_count, 0, 0, 1024, PGC_USERSET, 0, NULL, NULL,
+      NULL);
+#endif
 }
 
 extern "C" void _PG_fini(void) {

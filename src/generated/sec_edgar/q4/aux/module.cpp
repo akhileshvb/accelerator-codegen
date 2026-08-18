@@ -199,8 +199,23 @@ void BuildSubLookup(SecEdgarQ4State &state,
 
 void BuildTagLookup(SecEdgarQ4State &state,
                     const SecEdgarQ4InitialScan *initial_scan) {
+  // Only keep tag/tlabel entries that can appear in the SIC+EQ bridge.
+  // Storing the full abstract=0 tag table (~1M rows on SF3) dominates aux RSS.
+  std::set<SecEdgarQ4TagVersionKey> needed;
+  initial_scan->ScanPre([&](const SecEdgarQ4PreInput &input) {
+    if (input.stmt != "EQ") {
+      return;
+    }
+    if (state.sub_lookup.find(input.adsh) == state.sub_lookup.end()) {
+      return;
+    }
+    needed.insert({input.tag, input.version});
+  });
   initial_scan->ScanTag([&](const SecEdgarQ4TagInput &input) {
     if (input.abstract_flag != 0) {
+      return;
+    }
+    if (needed.find({input.tag, input.version}) == needed.end()) {
       return;
     }
     const uint32_t tlabel_id = InternTlabel(state, input.tlabel);
@@ -643,7 +658,8 @@ SecEdgarQ4Module::InterpretMutation(const core::MutationBatch &mutation) const {
       !mutation.updated_columns.empty()) {
     bool relevant = false;
     for (const auto column : mutation.updated_columns) {
-      if (column <= 4) {
+      // Physical num.value is column 7; key/filter cols are 0..4.
+      if (column == 7 || column <= 4) {
         relevant = true;
         break;
       }

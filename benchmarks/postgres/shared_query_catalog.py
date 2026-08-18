@@ -51,11 +51,65 @@ def _lineitem_price_probe(row):
     }
 
 
-def _sec_num_probe(row):
-    adsh, tag, version, original, *_ = row
+def _lineitem_quantity_probe(row):
+    orderkey, linenumber, quantity = row[0], row[1], row[2]
     return {
         "update": (
-            "UPDATE num SET value = value + 0.001 "
+            "UPDATE lineitem SET l_quantity = l_quantity + 0.01 "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore": (
+            "UPDATE lineitem SET l_quantity = %s "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore_args": (quantity,),
+    }
+
+
+def _lineitem_receipt_probe(row):
+    orderkey, linenumber, receipt = row[0], row[1], row[4]
+    return {
+        "update": (
+            "UPDATE lineitem SET l_receiptdate = l_receiptdate + INTERVAL '1' day "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore": (
+            "UPDATE lineitem SET l_receiptdate = %s "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore_args": (receipt,),
+    }
+
+
+def _partsupp_cost_probe(row):
+    partkey, suppkey, _availqty, supplycost = row[0], row[1], row[2], row[3]
+    return {
+        "update": (
+            "UPDATE partsupp SET ps_supplycost = ps_supplycost + 0.01 "
+            f"WHERE ps_partkey = {partkey} AND ps_suppkey = {suppkey}"
+        ),
+        "restore": (
+            "UPDATE partsupp SET ps_supplycost = %s "
+            f"WHERE ps_partkey = {partkey} AND ps_suppkey = {suppkey}"
+        ),
+        "restore_args": (supplycost,),
+    }
+
+
+def _sec_num_delta(value) -> float:
+    magnitude = abs(float(value))
+    return max(1.0, magnitude * 0.01)
+
+
+def _sec_num_probe(row):
+    adsh, tag, version, original, *_ = row[0], row[1], row[2], row[3], *row[4:]
+    # Support both legacy compact rows and full num layouts ending in value.
+    if len(row) >= 9:
+        adsh, tag, version, original = row[1], row[2], row[3], row[8]
+    delta = _sec_num_delta(original)
+    return {
+        "update": (
+            f"UPDATE num SET value = value + {delta} "
             f"WHERE adsh = '{adsh}' AND tag = '{tag}' AND version = '{version}'"
         ),
         "restore": (
@@ -78,10 +132,14 @@ def _sec_q1_probe(row):
 
 
 def _sec_q2_probe(row):
-    adsh, tag, original, _uom = row
+    if len(row) >= 9:
+        adsh, tag, original = row[1], row[2], row[8]
+    else:
+        adsh, tag, original = row[0], row[1], row[2]
+    delta = _sec_num_delta(original)
     return {
         "update": (
-            "UPDATE num SET value = value + 0.001 "
+            f"UPDATE num SET value = value + {delta} "
             f"WHERE adsh = '{adsh}' AND tag = '{tag}' AND uom = 'pure'"
         ),
         "restore": (
@@ -93,10 +151,14 @@ def _sec_q2_probe(row):
 
 
 def _sec_q3_probe(row):
-    adsh, original, _uom = row
+    if len(row) >= 9:
+        adsh, original = row[1], row[8]
+    else:
+        adsh, original = row[0], row[1]
+    delta = _sec_num_delta(original)
     return {
         "update": (
-            "UPDATE num SET value = value + 0.001 "
+            f"UPDATE num SET value = value + {delta} "
             f"WHERE adsh = '{adsh}' AND uom = 'USD'"
         ),
         "restore": (
@@ -108,12 +170,23 @@ def _sec_q3_probe(row):
 
 
 def _sec_q24_probe(row):
-    rowid, adsh, tag, version, _uom, original, _ddate = row
+    if len(row) >= 9:
+        # DuckDB-style: rowid + full num layout
+        adsh, tag, version, original = row[1], row[2], row[3], row[8]
+    else:
+        # Postgres: ctid, adsh, tag, version, uom, value, ddate
+        adsh, tag, version, original = row[1], row[2], row[3], row[5]
+    delta = _sec_num_delta(original)
     return {
-        "update": f"UPDATE num SET value = value + 0.001 WHERE rowid = {rowid}",
-        "restore": f"UPDATE num SET value = %s WHERE rowid = {rowid}",
+        "update": (
+            f"UPDATE num SET value = value + {delta} "
+            f"WHERE adsh = '{adsh}' AND tag = '{tag}' AND version = '{version}'"
+        ),
+        "restore": (
+            "UPDATE num SET value = %s "
+            f"WHERE adsh = '{adsh}' AND tag = '{tag}' AND version = '{version}'"
+        ),
         "restore_args": (original,),
-        "key_sql": None,
     }
 
 
@@ -148,7 +221,7 @@ _TPCH_BASE_KERNEL_SQL: Dict[int, str] = {
     14: "SELECT * FROM accel_tpch_q14(DATE '1995-06-01')",
     15: "SELECT * FROM accel_tpch_q15(DATE '1994-11-01')",
     16: "SELECT * FROM accel_tpch_q16('Brand#13', 'SMALL BRUSHED%', 26, 24, 27, 29, 7, 20, 22, 33)",
-    17: "SELECT * FROM accel_tpch_q17('Brand#34', 'LARGE BRUSHED')",
+    17: "SELECT * FROM accel_tpch_q17('Brand#34', 'LG CASE')",
     18: "SELECT * FROM accel_tpch_q18(312)",
     19: "SELECT * FROM accel_tpch_q19('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)",
     20: "SELECT * FROM accel_tpch_q20(DATE '1997-01-01', 'gainsboro%', 'RUSSIA')",
@@ -336,6 +409,137 @@ ORDER BY l_orderkey, l_linenumber LIMIT 1
         2,
         build_probe=_lineitem_price_probe,
     ),
+    9: SharedQueryEntry(
+        9,
+        "tpch",
+        """
+SELECT nation, o_year, SUM(amount) AS sum_profit FROM (
+SELECT n_name AS nation, EXTRACT(year FROM o_orderdate)::bigint AS o_year,
+       l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity AS amount
+FROM part, supplier, lineitem, partsupp, orders, nation
+WHERE s_suppkey = l_suppkey AND ps_suppkey = l_suppkey AND ps_partkey = l_partkey
+  AND p_partkey = l_partkey AND o_orderkey = l_orderkey AND s_nationkey = n_nationkey
+  AND p_name LIKE '%green%'
+) AS profit
+GROUP BY nation, o_year
+ORDER BY nation, o_year DESC
+""",
+        "SELECT * FROM accel_tpch_q9_aux('green')",
+        "SELECT * FROM accel_tpch_q9('green')",
+        """
+SELECT l_partkey, l_suppkey, l_orderkey, l_linenumber, l_quantity, l_extendedprice,
+       l_discount
+FROM lineitem
+WHERE l_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE '%green%')
+ORDER BY l_orderkey, l_linenumber LIMIT 1
+""",
+        6,
+        build_probe=lambda row: _lineitem_quantity_probe(
+            (row[2], row[3], row[4])
+        ),
+    ),
+    11: SharedQueryEntry(
+        11,
+        "tpch",
+        """
+SELECT ps_partkey, SUM(ps_supplycost * ps_availqty) AS value
+FROM partsupp, supplier, nation
+WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey AND n_name = 'ROMANIA'
+GROUP BY ps_partkey
+HAVING SUM(ps_supplycost * ps_availqty) > (
+  SELECT SUM(ps_supplycost * ps_availqty) * 0.0001
+  FROM partsupp, supplier, nation
+  WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey AND n_name = 'ROMANIA')
+ORDER BY value DESC
+""",
+        "SELECT * FROM accel_tpch_q11_aux('ROMANIA', 0.0001)",
+        "SELECT * FROM accel_tpch_q11('ROMANIA', 0.0001)",
+        """
+SELECT ps.ps_partkey, ps.ps_suppkey, ps.ps_availqty, ps.ps_supplycost
+FROM partsupp ps, supplier s, nation n
+WHERE ps.ps_suppkey = s.s_suppkey AND s.s_nationkey = n.n_nationkey
+  AND n.n_name = 'ROMANIA'
+ORDER BY ps.ps_partkey, ps.ps_suppkey LIMIT 1
+""",
+        1,
+        build_probe=_partsupp_cost_probe,
+    ),
+    17: SharedQueryEntry(
+        17,
+        "tpch",
+        """
+SELECT SUM(l_extendedprice) / 7.0 AS avg_yearly
+FROM lineitem, part,
+(SELECT l_partkey AS agg_partkey, 0.2 * AVG(l_quantity) AS avg_quantity
+ FROM lineitem GROUP BY l_partkey) part_agg
+WHERE p_partkey = l_partkey AND agg_partkey = l_partkey
+  AND p_brand = 'Brand#34' AND p_container = 'LG CASE'
+  AND l_quantity < avg_quantity
+""",
+        "SELECT * FROM accel_tpch_q17_aux('Brand#34', 'LG CASE')",
+        "SELECT * FROM accel_tpch_q17('Brand#34', 'LG CASE')",
+        """
+SELECT l_orderkey, l_linenumber, l_partkey, l_quantity, l_extendedprice
+FROM lineitem, part
+WHERE l_partkey = p_partkey AND p_brand = 'Brand#34' AND p_container = 'LG CASE'
+ORDER BY l_orderkey, l_linenumber LIMIT 1
+""",
+        2,
+        build_probe=lambda row: _lineitem_quantity_probe(
+            (row[0], row[1], row[3])
+        ),
+    ),
+    18: SharedQueryEntry(
+        18,
+        "tpch",
+        """
+SELECT c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice,
+       SUM(l_quantity) AS sum_qty
+FROM customer, orders, lineitem
+WHERE o_orderkey IN (
+  SELECT l_orderkey FROM lineitem GROUP BY l_orderkey HAVING SUM(l_quantity) > 312)
+  AND c_custkey = o_custkey AND o_orderkey = l_orderkey
+GROUP BY c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice
+ORDER BY o_totalprice DESC, o_orderdate ASC
+""",
+        "SELECT * FROM accel_tpch_q18_aux(312)",
+        "SELECT * FROM accel_tpch_q18(312)",
+        """
+SELECT l_orderkey, l_linenumber, l_quantity FROM lineitem
+ORDER BY l_orderkey, l_linenumber LIMIT 1
+""",
+        0,
+        build_probe=_lineitem_quantity_probe,
+    ),
+    21: SharedQueryEntry(
+        21,
+        "tpch",
+        """
+SELECT s_name, COUNT(*) AS numwait
+FROM supplier, lineitem l1, orders, nation
+WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey
+  AND o_orderstatus = 'F' AND l1.l_receiptdate > l1.l_commitdate
+  AND EXISTS (
+    SELECT * FROM lineitem l2
+    WHERE l2.l_orderkey = l1.l_orderkey AND l2.l_suppkey <> l1.l_suppkey)
+  AND NOT EXISTS (
+    SELECT * FROM lineitem l3
+    WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey
+      AND l3.l_receiptdate > l3.l_commitdate)
+  AND s_nationkey = n_nationkey AND n_name = 'SAUDI ARABIA'
+GROUP BY s_name
+ORDER BY numwait DESC, s_name
+""",
+        "SELECT * FROM accel_tpch_q21_aux('SAUDI ARABIA')",
+        "SELECT * FROM accel_tpch_q21('SAUDI ARABIA')",
+        """
+SELECT l_orderkey, l_linenumber, l_suppkey, l_commitdate, l_receiptdate
+FROM lineitem WHERE l_receiptdate > l_commitdate
+ORDER BY l_orderkey, l_linenumber LIMIT 1
+""",
+        3,
+        build_probe=_lineitem_receipt_probe,
+    ),
 }
 
 SEC_EDGAR_QUERIES: Dict[int, SharedQueryEntry] = {
@@ -377,8 +581,14 @@ LIMIT 100
         """
 SELECT n.adsh, n.tag, n.value, n.uom FROM num n
 JOIN sub s ON n.adsh = s.adsh
+JOIN (
+    SELECT adsh, tag, MAX(value) AS max_value
+    FROM num
+    WHERE uom = 'pure' AND value IS NOT NULL
+    GROUP BY adsh, tag
+) m ON n.adsh = m.adsh AND n.tag = m.tag AND n.value = m.max_value
 WHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL
-ORDER BY n.adsh, n.tag, n.value DESC LIMIT 1
+ORDER BY n.value DESC, s.name, n.tag LIMIT 1
 """,
         1,
         build_probe=_sec_q2_probe,
@@ -409,6 +619,22 @@ LIMIT 100
         """
 SELECT n.adsh, n.value, n.uom FROM num n
 JOIN sub s ON n.adsh = s.adsh
+JOIN (
+    SELECT s2.cik FROM num n2
+    JOIN sub s2 ON n2.adsh = s2.adsh
+    WHERE n2.uom = 'USD' AND s2.fy = 2022 AND n2.value IS NOT NULL
+    GROUP BY s2.name, s2.cik
+    HAVING SUM(n2.value) > (
+        SELECT AVG(sub_total) FROM (
+            SELECT SUM(n3.value) AS sub_total
+            FROM num n3 JOIN sub s3 ON n3.adsh = s3.adsh
+            WHERE n3.uom = 'USD' AND s3.fy = 2022 AND n3.value IS NOT NULL
+            GROUP BY s3.cik
+        ) avg_sub
+    )
+    ORDER BY SUM(n2.value) DESC
+    LIMIT 100
+) top ON s.cik = top.cik
 WHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL
 ORDER BY n.adsh LIMIT 1
 """,
@@ -442,6 +668,18 @@ SELECT n.adsh, n.tag, n.version, n.value, n.uom FROM num n
 JOIN sub s ON n.adsh = s.adsh
 JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version
 JOIN tag t ON n.tag = t.tag AND n.version = t.version
+JOIN (
+    SELECT s2.sic, t2.tlabel, p2.stmt FROM num n2
+    JOIN sub s2 ON n2.adsh = s2.adsh
+    JOIN tag t2 ON n2.tag = t2.tag AND n2.version = t2.version
+    JOIN pre p2 ON n2.adsh = p2.adsh AND n2.tag = p2.tag AND n2.version = p2.version
+    WHERE n2.uom = 'USD' AND p2.stmt = 'EQ' AND s2.sic BETWEEN 4000 AND 4999
+      AND n2.value IS NOT NULL AND t2.abstract = 0
+    GROUP BY s2.sic, t2.tlabel, p2.stmt
+    HAVING COUNT(DISTINCT s2.cik) >= 2
+    ORDER BY SUM(n2.value) DESC
+    LIMIT 500
+) top ON s.sic = top.sic AND t.tlabel = top.tlabel AND p.stmt = top.stmt
 WHERE n.uom = 'USD' AND p.stmt = 'EQ' AND s.sic BETWEEN 4000 AND 4999
   AND n.value IS NOT NULL AND t.abstract = 0
 ORDER BY n.adsh, n.tag, n.version LIMIT 1
@@ -470,6 +708,17 @@ LIMIT 200
 SELECT n.adsh, n.tag, n.version, n.value, n.uom FROM num n
 JOIN sub s ON n.adsh = s.adsh
 JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version
+JOIN (
+    SELECT s2.name, p2.stmt, n2.tag, p2.plabel FROM num n2
+    JOIN sub s2 ON n2.adsh = s2.adsh
+    JOIN pre p2 ON n2.adsh = p2.adsh AND n2.tag = p2.tag AND n2.version = p2.version
+    WHERE n2.uom = 'USD' AND p2.stmt = 'IS' AND s2.fy = 2023
+      AND n2.value IS NOT NULL
+    GROUP BY s2.name, p2.stmt, n2.tag, p2.plabel
+    ORDER BY SUM(n2.value) DESC, s2.name, n2.tag, p2.plabel
+    LIMIT 200
+) top ON s.name = top.name AND p.stmt = top.stmt AND n.tag = top.tag
+   AND p.plabel IS NOT DISTINCT FROM top.plabel
 WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023
   AND n.value IS NOT NULL
 ORDER BY n.adsh, n.tag, n.version LIMIT 1
@@ -497,21 +746,21 @@ FROM num n LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version
   AND n.adsh = p.adsh
 WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 AND 20231231
   AND n.value IS NOT NULL AND p.adsh IS NULL
-ORDER BY n.adsh, n.tag, n.version LIMIT 1
+  AND (n.tag, n.version) IN (
+    SELECT n2.tag, n2.version FROM num n2
+    LEFT JOIN pre p2 ON n2.tag = p2.tag AND n2.version = p2.version
+      AND n2.adsh = p2.adsh
+    WHERE n2.uom = 'USD' AND n2.ddate BETWEEN 20230101 AND 20231231
+      AND n2.value IS NOT NULL AND p2.adsh IS NULL
+    GROUP BY n2.tag, n2.version HAVING COUNT(*) > 10
+    ORDER BY COUNT(*) DESC
+    LIMIT 100
+  )
+ORDER BY n.value DESC LIMIT 1
 """,
         101,
         True,
-        build_probe=lambda row: {
-            "update": (
-                "UPDATE num SET value = value + 0.001 "
-                f"WHERE adsh = '{row[1]}' AND tag = '{row[2]}' AND version = '{row[3]}'"
-            ),
-            "restore": (
-                "UPDATE num SET value = %s "
-                f"WHERE adsh = '{row[1]}' AND tag = '{row[2]}' AND version = '{row[3]}'"
-            ),
-            "restore_args": (row[5],),
-        },
+        build_probe=_sec_q24_probe,
     ),
 }
 
@@ -540,6 +789,23 @@ def lookup_base_kernel_query(workload: str, query_id: int) -> SharedQueryEntry:
 
 def lookup_query(workload: str, query_id: int) -> SharedQueryEntry:
     return lookup_aux_query(workload, query_id)
+
+
+def lookup_parallel_query(workload: str, query_id: int) -> SharedQueryEntry:
+    if workload != "sec_edgar":
+        raise KeyError("parallel aux catalog is only implemented for sec_edgar")
+    entry = lookup_aux_query(workload, query_id)
+    return SharedQueryEntry(
+        query_id=entry.query_id,
+        workload=entry.workload,
+        base_sql=entry.base_sql,
+        aux_sql=f"SELECT * FROM accel_sec_edgar_q{query_id}_aux_parallel()",
+        kernel_sql=entry.kernel_sql,
+        probe_select_sql=entry.probe_select_sql,
+        mutation_table=entry.mutation_table,
+        compare_unordered=entry.compare_unordered,
+        build_probe=entry.build_probe,
+    )
 
 
 def queries_for_workload(workload: str) -> List[int]:

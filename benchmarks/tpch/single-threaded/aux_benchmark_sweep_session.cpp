@@ -487,6 +487,16 @@ struct BenchSession {
     Require(suiteSupported(), "unsupported bench suite for multi-frequency sweep");
     Require(base_connection.Query("PRAGMA threads=1") != nullptr, "pragma failed");
     Require(accel_connection.Query("PRAGMA threads=1") != nullptr, "pragma failed");
+    // DuckDB defaults to ~80% of RAM. On a busy box that reservation OOMs
+    // Q18's GROUP BY during Build (SIGKILL, ~60 GiB peak). Cap the pool.
+    {
+      const char *limit = std::getenv("ACCEL_DUCKDB_MEMORY_LIMIT");
+      const std::string pragma =
+          std::string("PRAGMA memory_limit='") +
+          ((limit && *limit) ? limit : "16GB") + "'";
+      Require(base_connection.Query(pragma) != nullptr, "memory_limit failed");
+      Require(accel_connection.Query(pragma) != nullptr, "memory_limit failed");
+    }
     accelerator_codegen::RegisterAcceleratorFunctions(base_connection);
     accelerator_codegen::RegisterAcceleratorFunctions(accel_connection);
 
@@ -535,7 +545,10 @@ struct BenchSession {
       if (ref_samples > 0) {
         ExecuteAndConsume(base_connection, variant.base_sql);
       }
-      if (i < std::min(warmup_queries, 2)) {
+      // The generated base kernel densely resizes by max(orderkey). DuckDB
+      // TPC-H can emit sparse keys like 9e9; one EnsureOrderCapacity then
+      // SIGKILLs the process. Skip kernel warmup unless we measure it.
+      if (ref_samples > 0 && i < std::min(warmup_queries, 2)) {
         ExecuteAndConsume(base_connection, variant.kernel_sql);
       }
       // Warm the DuckDB aux TF path (bind/schema + hit) used by measured queries.

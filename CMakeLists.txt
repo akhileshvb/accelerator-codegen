@@ -118,6 +118,33 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 endif()
 
+option(ACCEL_ENABLE_PARALLEL_AUX "Build multithreaded SEC EDGAR aux kernels (accel_sec_edgar_q*_aux_parallel)" OFF)
+if(ACCEL_ENABLE_PARALLEL_AUX)
+	target_compile_definitions(accelerator_codegen PUBLIC ACCEL_ENABLE_PARALLEL_AUX)
+	accel_collect_generated_parallel_aux_sources(ACCEL_GENERATED_PARALLEL_AUX_SOURCES)
+	target_sources(accelerator_codegen PRIVATE
+		src/runtime/parallel/aux_parallel_scan.cpp
+		${ACCEL_GENERATED_PARALLEL_AUX_SOURCES}
+	)
+	if(NOT ACCEL_ENABLE_PARALLEL_TPCH)
+		target_sources(accelerator_codegen PRIVATE
+			src/runtime/parallel/parallel_runtime.cpp
+		)
+	endif()
+	if(TARGET accelerator_codegen_postgres)
+		target_compile_definitions(accelerator_codegen_postgres PUBLIC ACCEL_ENABLE_PARALLEL_AUX)
+		target_sources(accelerator_codegen_postgres PRIVATE
+			src/runtime/parallel/aux_parallel_scan.cpp
+			${ACCEL_GENERATED_PARALLEL_AUX_SOURCES}
+		)
+		if(NOT ACCEL_ENABLE_PARALLEL_TPCH)
+			target_sources(accelerator_codegen_postgres PRIVATE
+				src/runtime/parallel/parallel_runtime.cpp
+			)
+		endif()
+	endif()
+endif()
+
 add_executable(test_registration
     tests/single-threaded/test_registration.cpp
 )
@@ -327,6 +354,16 @@ add_executable(benchmark_shared_duckdb_write_interval
 )
 
 target_link_libraries(benchmark_shared_duckdb_write_interval
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+add_executable(measure_shared_sec_edgar_aux_memory
+    benchmarks/aux_state/measure_shared_sec_edgar_aux_memory.cpp
+)
+
+target_link_libraries(measure_shared_sec_edgar_aux_memory
     PRIVATE
         accelerator_codegen
         duckdb_sibling
@@ -1193,6 +1230,36 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 	)
 endif()
 
+if(ACCEL_ENABLE_PARALLEL_AUX)
+	add_executable(test_sec_edgar_aux_parallel
+		tests/parallel/test_sec_edgar_aux_parallel.cpp
+	)
+	target_link_libraries(test_sec_edgar_aux_parallel PRIVATE accelerator_codegen duckdb_sibling)
+	target_include_directories(test_sec_edgar_aux_parallel PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/tests
+		${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+	)
+	target_compile_definitions(test_sec_edgar_aux_parallel PRIVATE ACCEL_ENABLE_PARALLEL_AUX)
+	set_target_properties(test_sec_edgar_aux_parallel PROPERTIES
+		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
+		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
+	)
+
+	add_executable(benchmark_shared_duckdb_write_interval_parallel
+		benchmarks/aux_state/benchmark_shared_duckdb_write_interval_parallel.cpp
+	)
+	target_link_libraries(benchmark_shared_duckdb_write_interval_parallel
+		PRIVATE accelerator_codegen duckdb_sibling)
+	target_include_directories(benchmark_shared_duckdb_write_interval_parallel PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+	)
+	target_compile_definitions(benchmark_shared_duckdb_write_interval_parallel PRIVATE ACCEL_ENABLE_PARALLEL_AUX)
+	set_target_properties(benchmark_shared_duckdb_write_interval_parallel PROPERTIES
+		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
+		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
+	)
+endif()
+
 if(BUILD_TESTING)
     add_test(NAME registration_smoke_test COMMAND test_registration)
     add_test(NAME tpch_q6_smoke_test COMMAND test_tpch_q6)
@@ -1252,6 +1319,9 @@ if(BUILD_TESTING)
 		add_test(NAME tpch_q1_semantics_test COMMAND test_tpch_q1_semantics)
 		add_test(NAME tpch_q16_semantics_test COMMAND test_tpch_q16_semantics)
 		set_tests_properties(tpch_parallel_smoke_test tpch_q20_semantics_test tpch_q21_semantics_test tpch_q22_semantics_test tpch_q10_semantics_test tpch_q17_semantics_test tpch_q18_semantics_test tpch_q3_semantics_test tpch_q2_semantics_test tpch_q5_semantics_test tpch_q7_semantics_test tpch_q8_semantics_test tpch_q11_semantics_test tpch_q13_semantics_test tpch_q1_semantics_test tpch_q16_semantics_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
+	endif()
+	if(ACCEL_ENABLE_PARALLEL_AUX)
+		add_test(NAME sec_edgar_aux_parallel_test COMMAND test_sec_edgar_aux_parallel)
 	endif()
 endif()
 

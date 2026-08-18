@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 
 #include <iterator>
@@ -31,6 +32,20 @@ InvalidationPlan AllPartitionsPlan() {
   plan.scope =
       ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
   return plan;
+}
+
+void MaterializeSyncRebuild(AuxEngineServices &services, AuxQueryModule &module,
+                            StagedMaintenanceOutcome &outcome) {
+  CollectingStateBuilder builder(outcome);
+  module.Build(services, builder);
+  if (!builder.finished) {
+    throw std::logic_error(
+        "auxiliary rebuild Build() did not call Finish(): " + module.Id());
+  }
+  outcome.expected_version = 0;
+  for (auto &image : outcome.updates) {
+    image.version = 0;
+  }
 }
 
 } // namespace
@@ -151,6 +166,13 @@ void AuxTransactionCoordinator::PreCommit() {
     entry.outcome =
         entry.module->StageMaintenance(*services, entry.plan, *entry.buffer);
     entry.staged = true;
+    // PostgreSQL cannot Build during Commit (no ActiveSnapshot / wrong xact
+    // state). Materialize sync rebuilds here while SPI is still safe.
+    if (!services->AllowsSynchronousRebuildOnCommit() &&
+        IsSyncRebuildAction(entry.outcome.action) &&
+        entry.outcome.updates.empty()) {
+      MaterializeSyncRebuild(*services, *entry.module, entry.outcome);
+    }
   }
 }
 
@@ -171,17 +193,13 @@ void AuxTransactionCoordinator::Commit() {
     // a full Build into updates when the module did not already supply them
     // (e.g. SecEdgar Q2), then invalidate once and publish so later queries hit.
     // InvalidateAndFallback stays lazy on purpose.
+    // Engines that cannot scan during Commit (PostgreSQL) already materialized
+    // in PreCommit via AllowsSynchronousRebuildOnCommit() == false.
     if (IsSyncRebuildAction(action) && entry.outcome.updates.empty()) {
-      CollectingStateBuilder builder(entry.outcome);
-      entry.module->Build(*services, builder);
-      if (!builder.finished) {
-        throw std::logic_error(
-            "auxiliary rebuild Build() did not call Finish(): " +
-            entry.module->Id());
-      }
-      entry.outcome.expected_version = 0;
-      for (auto &image : entry.outcome.updates) {
-        image.version = 0;
+      if (services->AllowsSynchronousRebuildOnCommit()) {
+        MaterializeSyncRebuild(*services, *entry.module, entry.outcome);
+      } else if (entry.outcome.invalidations.IsEmpty()) {
+        entry.outcome.invalidations = AllPartitionsPlan();
       }
     }
 

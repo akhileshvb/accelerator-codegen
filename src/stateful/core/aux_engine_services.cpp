@@ -1,4 +1,7 @@
+// SCAFFOLDING
 #include "accelerator_codegen/stateful/core/aux_engine_services.hpp"
+
+#include <cstdlib>
 
 namespace accelerator_codegen::aux_state::core {
 
@@ -12,9 +15,24 @@ double AuxEngineServices::ExpectedQueriesBeforeNextWrite() const {
   return 10.0;
 }
 
+bool AuxEngineServices::AllowsSynchronousRebuildOnCommit() const {
+  return true;
+}
+
 MaintenanceDecision AuxEngineServices::ChooseMaintenance(
     const MaintenanceRequest &request) const {
   return SelectAuxMaintenanceAction(request, MaintenanceCostModel());
+}
+
+std::size_t AuxEngineServices::WorkerCount() const {
+  const char *value = std::getenv("ACCEL_AUX_THREADS");
+  if (value && *value) {
+    const long parsed = std::strtol(value, nullptr, 10);
+    if (parsed > 0) {
+      return static_cast<std::size_t>(parsed);
+    }
+  }
+  return 1;
 }
 
 } // namespace accelerator_codegen::aux_state::core

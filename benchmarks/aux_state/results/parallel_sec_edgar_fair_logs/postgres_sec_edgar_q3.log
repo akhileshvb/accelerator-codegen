@@ -1,0 +1,106 @@
+[progress] q3 interval=0.0 mode=base: warmup 1/1
+[progress] q3 interval=0.0 mode=base: read 1/8
+[progress] q3 interval=0.0 mode=base: read 2/8
+[progress] q3 interval=0.0 mode=base: read 3/8
+[progress] q3 interval=0.0 mode=base: read 4/8
+[progress] q3 interval=0.0 mode=base: read 5/8
+[progress] q3 interval=0.0 mode=base: read 6/8
+[progress] q3 interval=0.0 mode=base: read 7/8
+[progress] q3 interval=0.0 mode=base: read 8/8
+[progress] q3 interval=0.0 mode=shared: cold build starting
+[progress] q3 interval=0.0 mode=shared: cold build done (14.4s)
+[progress] q3 interval=0.0 mode=shared: warmup 1/1
+[progress] q3 interval=0.0 mode=shared: read 1/8
+[progress] q3 interval=0.0 mode=shared: read 2/8
+[progress] q3 interval=0.0 mode=shared: read 3/8
+[progress] q3 interval=0.0 mode=shared: read 4/8
+[progress] q3 interval=0.0 mode=shared: read 5/8
+[progress] q3 interval=0.0 mode=shared: read 6/8
+[progress] q3 interval=0.0 mode=shared: read 7/8
+[progress] q3 interval=0.0 mode=shared: read 8/8
+postgres,sec_edgar,3,0.0,base,8,0,100,6092377.62,48716139.99,0.00,0.00,0.00,48716139.99,1.0000,48716139.99,1.0000
+postgres,sec_edgar,3,0.0,aux_parallel,8,0,100,6293.11,50564.27,0.00,0.00,14389975.41,50564.27,963.4498,14440539.68,3.3736
+[progress] q3 interval=0.5 mode=base: warmup 1/1
+[progress] q3 interval=0.5 mode=base: select invalidating probe
+invalidating_write_probes=1 query=3
+[progress] q3 interval=0.5 mode=base: read 1/8
+[progress] q3 interval=0.5 mode=base: read 2/8
+[progress] q3 interval=0.5 mode=base: read 3/8
+[progress] q3 interval=0.5 mode=base: read 4/8
+[progress] q3 interval=0.5 mode=base: read 5/8
+[progress] q3 interval=0.5 mode=base: read 6/8
+[progress] q3 interval=0.5 mode=base: read 7/8
+[progress] q3 interval=0.5 mode=base: read 8/8
+[progress] q3 interval=0.5 mode=base: restore probe row
+[progress] q3 interval=0.5 mode=shared: cold build starting
+[progress] q3 interval=0.5 mode=shared: cold build done (14.5s)
+[progress] q3 interval=0.5 mode=shared: warmup 1/1
+[progress] q3 interval=0.5 mode=shared: select invalidating probe
+invalidating_write_probes=1 query=3
+[progress] q3 interval=0.5 mode=shared: read 1/8
+[progress] q3 interval=0.5 mode=shared: read 2/8
+[progress] q3 interval=0.5 mode=shared: read 3/8
+[progress] q3 interval=0.5 mode=shared: read 4/8
+[progress] q3 interval=0.5 mode=shared: read 5/8
+[progress] q3 interval=0.5 mode=shared: read 6/8
+[progress] q3 interval=0.5 mode=shared: read 7/8
+[progress] q3 interval=0.5 mode=shared: read 8/8
+[progress] q3 interval=0.5 mode=shared: restore probe row
+postgres,sec_edgar,3,0.5,base,8,7,100,6089915.03,48744804.46,3442563.73,24095571.98,0.00,72840376.43,1.0000,72840376.43,1.0000
+postgres,sec_edgar,3,0.5,aux_parallel,8,7,100,14410179.13,101197110.44,3358104.49,23397710.14,14500355.23,124594820.58,0.5846,139095175.81,0.5237
+[progress] q3 interval=1.0 mode=base: warmup 1/1
+[progress] q3 interval=1.0 mode=base: select invalidating probe
+invalidating_write_probes=1 query=3
+[progress] q3 interval=1.0 mode=base: read 1/8
+[progress] q3 interval=1.0 mode=base: read 2/8
+[progress] q3 interval=1.0 mode=base: read 3/8
+[progress] q3 interval=1.0 mode=base: read 4/8
+[progress] q3 interval=1.0 mode=base: read 5/8
+[progress] q3 interval=1.0 mode=base: read 6/8
+[progress] q3 interval=1.0 mode=base: read 7/8
+[progress] q3 interval=1.0 mode=base: read 8/8
+[progress] q3 interval=1.0 mode=base: restore probe row
+[progress] q3 interval=1.0 mode=shared: cold build starting
+[progress] q3 interval=1.0 mode=shared: cold build done (14.5s)
+[progress] q3 interval=1.0 mode=shared: warmup 1/1
+[progress] q3 interval=1.0 mode=shared: select invalidating probe
+invalidating_write_probes=1 query=3
+[progress] q3 interval=1.0 mode=shared: read 1/8
+[progress] q3 interval=1.0 mode=shared: read 2/8
+[progress] q3 interval=1.0 mode=shared: read 3/8
+[progress] q3 interval=1.0 mode=shared: read 4/8
+[progress] q3 interval=1.0 mode=shared: read 5/8
+[progress] q3 interval=1.0 mode=shared: read 6/8
+[progress] q3 interval=1.0 mode=shared: read 7/8
+[progress] q3 interval=1.0 mode=shared: read 8/8
+[progress] q3 interval=1.0 mode=shared: restore probe row
+postgres,sec_edgar,3,1.0,base,8,3,100,6103525.54,48839444.77,3334408.93,10012546.61,0.00,58851991.38,1.0000,58851991.38,1.0000
+postgres,sec_edgar,3,1.0,aux_parallel,8,3,100,7978.49,43276319.29,3372955.13,10106490.85,14471801.24,53382810.14,1.1025,67854611.38,0.8673
+[progress] q3 interval=2.0 mode=base: warmup 1/1
+[progress] q3 interval=2.0 mode=base: select invalidating probe
+invalidating_write_probes=1 query=3
+[progress] q3 interval=2.0 mode=base: read 1/8
+[progress] q3 interval=2.0 mode=base: read 2/8
+[progress] q3 interval=2.0 mode=base: read 3/8
+[progress] q3 interval=2.0 mode=base: read 4/8
+[progress] q3 interval=2.0 mode=base: read 5/8
+[progress] q3 interval=2.0 mode=base: read 6/8
+[progress] q3 interval=2.0 mode=base: read 7/8
+[progress] q3 interval=2.0 mode=base: read 8/8
+[progress] q3 interval=2.0 mode=base: restore probe row
+[progress] q3 interval=2.0 mode=shared: cold build starting
+[progress] q3 interval=2.0 mode=shared: cold build done (14.4s)
+[progress] q3 interval=2.0 mode=shared: warmup 1/1
+[progress] q3 interval=2.0 mode=shared: select invalidating probe
+invalidating_write_probes=1 query=3
+[progress] q3 interval=2.0 mode=shared: read 1/8
+[progress] q3 interval=2.0 mode=shared: read 2/8
+[progress] q3 interval=2.0 mode=shared: read 3/8
+[progress] q3 interval=2.0 mode=shared: read 4/8
+[progress] q3 interval=2.0 mode=shared: read 5/8
+[progress] q3 interval=2.0 mode=shared: read 6/8
+[progress] q3 interval=2.0 mode=shared: read 7/8
+[progress] q3 interval=2.0 mode=shared: read 8/8
+[progress] q3 interval=2.0 mode=shared: restore probe row
+postgres,sec_edgar,3,2.0,base,8,1,100,6121292.91,48990125.21,3370916.09,3370916.09,0.00,52361041.30,1.0000,52361041.30,1.0000
+postgres,sec_edgar,3,2.0,aux_parallel,8,1,100,6926.84,14529481.46,3347671.07,3347671.07,14428718.61,17877152.53,2.9289,32305871.14,1.6208

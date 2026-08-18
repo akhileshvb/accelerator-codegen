@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #include "accelerator_codegen/stateful/core/query_layouts.hpp"
 #include "catalog/query_catalog.hpp"
 #include "tpch/q5/aux/module.hpp"
@@ -286,25 +287,24 @@ SharedProbe BuildTpchQ11Probe(::duckdb::MaterializedQueryResult &result,
   // Aux row: partkey, suppkey, availqty, supplycost (TpchQ11Config partsupp=1).
   const auto partkey = result.GetValue(0, row).ToString();
   const auto suppkey = result.GetValue(1, row).ToString();
-  const double supplycost = std::stod(result.GetValue(3, row).ToString());
+  const int64_t supplycost_raw = DecimalRaw(result.GetValue(3, row));
   SharedProbe probe;
   probe.table = 1;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {3};
   probe.write_delta = 0.01;
-  probe.current_value = supplycost;
+  probe.current_value = static_cast<double>(supplycost_raw) / 100.0;
   probe.old_row = {{Int(result.GetValue(0, row)), Int(result.GetValue(1, row)),
-                    Int(result.GetValue(2, row)),
-                    Decimal(DecimalRaw(result.GetValue(3, row)), 2)}};
+                    Int(result.GetValue(2, row)), Decimal(supplycost_raw, 2)}};
   probe.new_row = probe.old_row;
-  probe.new_row.values[3] = Decimal(
-      static_cast<int64_t>(DecimalRaw(result.GetValue(3, row)) + 1), 2);
+  probe.new_row.values[3] = Decimal(supplycost_raw + 1, 2);
   probe.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + 0.01"
                      " WHERE ps_partkey = " +
                      partkey + " AND ps_suppkey = " + suppkey;
   probe.restore_sql = "UPDATE partsupp SET ps_supplycost = " +
-                      std::to_string(supplycost) + " WHERE ps_partkey = " +
-                      partkey + " AND ps_suppkey = " + suppkey;
+                      std::to_string(static_cast<double>(supplycost_raw) / 100.0) +
+                      " WHERE ps_partkey = " + partkey +
+                      " AND ps_suppkey = " + suppkey;
   return probe;
 }
 
@@ -533,126 +533,77 @@ SharedProbe BuildSecEdgarQ1Probe(::duckdb::MaterializedQueryResult &result,
   return probe;
 }
 
+// Physical DuckDB `num` layout used by SecEdgarQ{2,3,4,6,24}::ReadNumRow:
+//   0 adsh, 1 tag, 2 version, 3 ddate, 4 qtrs, 5 uom, 6 coreg, 7 value
+// Compact probe AuxRows previously caused MarkRebuild on every write.
+core::AuxRow MakeNumTableAuxRow(const ::duckdb::Value &adsh,
+                                const ::duckdb::Value &tag,
+                                const ::duckdb::Value &version,
+                                const ::duckdb::Value &ddate,
+                                const ::duckdb::Value &qtrs,
+                                const ::duckdb::Value &uom,
+                                const ::duckdb::Value &coreg,
+                                const ::duckdb::Value &value) {
+  return {{Text(adsh), Text(tag), Text(version), Int(ddate), Int(qtrs), Text(uom),
+           Text(coreg), Number(value)}};
+}
+
+// +0.001 is lost in double ULP for large USD facts and is far too small to
+// enter a LIMIT-N result when the probe row is not already in that result.
+double VisibleSecNumDelta(double value) {
+  return std::max(1.0, std::abs(value) * 0.01);
+}
+
+SharedProbe BuildSecNumRowidProbe(::duckdb::MaterializedQueryResult &result,
+                                  ::duckdb::idx_t row, int table) {
+  // probe_select: rowid, adsh, tag, version, ddate, qtrs, uom, coreg, value
+  const auto rowid = result.GetValue(0, row).ToString();
+  const double value = std::stod(result.GetValue(8, row).ToString());
+  const double delta = VisibleSecNumDelta(value);
+  SharedProbe probe;
+  probe.table = table;
+  probe.kind = core::MutationKind::Update;
+  probe.updated_columns = {7}; // num.value
+  probe.write_delta = delta;
+  probe.current_value = value;
+  probe.old_row =
+      MakeNumTableAuxRow(result.GetValue(1, row), result.GetValue(2, row),
+                         result.GetValue(3, row), result.GetValue(4, row),
+                         result.GetValue(5, row), result.GetValue(6, row),
+                         result.GetValue(7, row), result.GetValue(8, row));
+  probe.new_row = probe.old_row;
+  probe.new_row.values[7] =
+      core::AuxValue::Of(core::AuxType::Double, value + delta);
+  probe.update_sql = "UPDATE num SET value = value + " + std::to_string(delta) +
+                     " WHERE rowid = " + rowid;
+  probe.restore_sql = "UPDATE num SET value = " + std::to_string(value) +
+                      " WHERE rowid = " + rowid;
+  return probe;
+}
+
 SharedProbe BuildSecEdgarQ2Probe(::duckdb::MaterializedQueryResult &result,
                                  ::duckdb::idx_t row) {
-  const auto adsh = result.GetValue(0, row).ToString();
-  const auto tag = result.GetValue(1, row).ToString();
-  const double value = std::stod(result.GetValue(2, row).ToString());
-  SharedProbe probe;
-  probe.table = 1;
-  probe.kind = core::MutationKind::Update;
-  probe.updated_columns = {4};
-  probe.write_delta = 0.001;
-  probe.current_value = value;
-  probe.old_row = {{Text(result.GetValue(0, row)), Text(result.GetValue(1, row)),
-                    Text(result.GetValue(3, row)), Number(result.GetValue(2, row))}};
-  probe.new_row = probe.old_row;
-  probe.new_row.values[3] =
-      core::AuxValue::Of(core::AuxType::Double, value + 0.001);
-  probe.update_sql = "UPDATE num SET value = value + 0.001 WHERE adsh = '" +
-                     adsh + "' AND tag = '" + tag + "' AND uom = 'pure'";
-  probe.restore_sql = "UPDATE num SET value = " + std::to_string(value) +
-                      " WHERE adsh = '" + adsh + "' AND tag = '" + tag +
-                      "' AND uom = 'pure'";
-  return probe;
+  return BuildSecNumRowidProbe(result, row, 1);
 }
 
 SharedProbe BuildSecEdgarQ3Probe(::duckdb::MaterializedQueryResult &result,
                                  ::duckdb::idx_t row) {
-  const auto adsh = result.GetValue(0, row).ToString();
-  const double value = std::stod(result.GetValue(1, row).ToString());
-  SharedProbe probe;
-  probe.table = 1;
-  probe.kind = core::MutationKind::Update;
-  probe.updated_columns = {4};
-  probe.write_delta = 0.001;
-  probe.current_value = value;
-  probe.old_row = {{Text(result.GetValue(0, row)), Text(result.GetValue(2, row)),
-                    Number(result.GetValue(1, row))}};
-  probe.new_row = probe.old_row;
-  probe.new_row.values[2] =
-      core::AuxValue::Of(core::AuxType::Double, value + 0.001);
-  probe.update_sql = "UPDATE num SET value = value + 0.001 WHERE adsh = '" +
-                     adsh + "' AND uom = 'USD'";
-  probe.restore_sql = "UPDATE num SET value = " + std::to_string(value) +
-                      " WHERE adsh = '" + adsh + "' AND uom = 'USD'";
-  return probe;
+  return BuildSecNumRowidProbe(result, row, 1);
 }
 
 SharedProbe BuildSecEdgarQ4Probe(::duckdb::MaterializedQueryResult &result,
                                  ::duckdb::idx_t row) {
-  const auto adsh = result.GetValue(0, row).ToString();
-  const auto tag = result.GetValue(1, row).ToString();
-  const auto version = result.GetValue(2, row).ToString();
-  const double value = std::stod(result.GetValue(3, row).ToString());
-  SharedProbe probe;
-  probe.table = 1;
-  probe.kind = core::MutationKind::Update;
-  probe.updated_columns = {4};
-  probe.write_delta = 0.001;
-  probe.current_value = value;
-  probe.old_row = {{Text(result.GetValue(0, row)), Text(result.GetValue(1, row)),
-                    Text(result.GetValue(2, row)), Text(result.GetValue(4, row)),
-                    Number(result.GetValue(3, row))}};
-  probe.new_row = probe.old_row;
-  probe.new_row.values[4] =
-      core::AuxValue::Of(core::AuxType::Double, value + 0.001);
-  probe.update_sql = "UPDATE num SET value = value + 0.001 WHERE adsh = '" +
-                     adsh + "' AND tag = '" + tag + "' AND version = '" +
-                     version + "'";
-  probe.restore_sql = "UPDATE num SET value = " + std::to_string(value) +
-                      " WHERE adsh = '" + adsh + "' AND tag = '" + tag +
-                      "' AND version = '" + version + "'";
-  return probe;
+  return BuildSecNumRowidProbe(result, row, 1);
 }
 
 SharedProbe BuildSecEdgarQ6Probe(::duckdb::MaterializedQueryResult &result,
                                  ::duckdb::idx_t row) {
-  const auto adsh = result.GetValue(0, row).ToString();
-  const auto tag = result.GetValue(1, row).ToString();
-  const auto version = result.GetValue(2, row).ToString();
-  const double value = std::stod(result.GetValue(3, row).ToString());
-  SharedProbe probe;
-  probe.table = 1;
-  probe.kind = core::MutationKind::Update;
-  probe.updated_columns = {4};
-  probe.write_delta = 0.001;
-  probe.current_value = value;
-  probe.old_row = {{Text(result.GetValue(0, row)), Text(result.GetValue(1, row)),
-                    Text(result.GetValue(2, row)), Text(result.GetValue(4, row)),
-                    Number(result.GetValue(3, row))}};
-  probe.new_row = probe.old_row;
-  probe.new_row.values[4] =
-      core::AuxValue::Of(core::AuxType::Double, value + 0.001);
-  probe.update_sql = "UPDATE num SET value = value + 0.001 WHERE adsh = '" +
-                     adsh + "' AND tag = '" + tag + "' AND version = '" +
-                     version + "'";
-  probe.restore_sql = "UPDATE num SET value = " + std::to_string(value) +
-                      " WHERE adsh = '" + adsh + "' AND tag = '" + tag +
-                      "' AND version = '" + version + "'";
-  return probe;
+  return BuildSecNumRowidProbe(result, row, 1);
 }
 
 SharedProbe BuildSecEdgarQ24Probe(::duckdb::MaterializedQueryResult &result,
                                   ::duckdb::idx_t row) {
-  const auto rowid = result.GetValue(0, row).ToString();
-  const double value = std::stod(result.GetValue(5, row).ToString());
-  SharedProbe probe;
-  probe.table = 101;
-  probe.kind = core::MutationKind::Update;
-  probe.updated_columns = {4};
-  probe.write_delta = 0.001;
-  probe.current_value = value;
-  probe.old_row = {{Text(result.GetValue(1, row)), Text(result.GetValue(2, row)),
-                    Text(result.GetValue(3, row)), Text(result.GetValue(4, row)),
-                    Number(result.GetValue(5, row)), Int(result.GetValue(6, row))}};
-  probe.new_row = probe.old_row;
-  probe.new_row.values[4] =
-      core::AuxValue::Of(core::AuxType::Double, value + 0.001);
-  probe.update_sql = "UPDATE num SET value = value + 0.001 WHERE rowid = " + rowid;
-  probe.restore_sql = "UPDATE num SET value = " + std::to_string(value) +
-                      " WHERE rowid = " + rowid;
-  return probe;
+  return BuildSecNumRowidProbe(result, row, 101);
 }
 
 SharedProbe BuildTpchQ4Probe(::duckdb::MaterializedQueryResult &result,
@@ -1216,26 +1167,28 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      SharedWorkloadKind::Tpch,
      "tpch",
      query::TpchQ17Layout::kAccelerator,
+     // DuckDB TPC-H uses abbreviated containers (LG CASE), not official
+     // syllable pairs (LARGE BRUSHED). Defaults must match the loaded DB.
      "SELECT SUM(l_extendedprice) / 7.0 AS avg_yearly "
      "FROM lineitem, part, "
      "(SELECT l_partkey AS agg_partkey, 0.2 * AVG(l_quantity) AS avg_quantity "
      "FROM lineitem GROUP BY l_partkey) part_agg "
      "WHERE p_partkey = l_partkey AND agg_partkey = l_partkey "
-     "AND p_brand = 'Brand#54' AND p_container = 'MED PACK' "
+     "AND p_brand = 'Brand#34' AND p_container = 'LG CASE' "
      "AND l_quantity < avg_quantity",
-     "SELECT * FROM accel_tpch_q17_aux('Brand#54', 'MED PACK')",
-     "SELECT * FROM accel_tpch_q17('Brand#54', 'MED PACK')",
-     "SELECT * FROM accel_tpch_q17_aux('Brand#54', 'MED PACK')",
+     "SELECT * FROM accel_tpch_q17_aux('Brand#34', 'LG CASE')",
+     "SELECT * FROM accel_tpch_q17('Brand#34', 'LG CASE')",
+     "SELECT * FROM accel_tpch_q17_aux('Brand#34', 'LG CASE')",
      "SELECT l_orderkey, l_linenumber, l_partkey, l_quantity, l_extendedprice "
      "FROM lineitem, part, "
      "(SELECT l_partkey AS agg_partkey, 0.2 * AVG(l_quantity) AS avg_quantity "
      "FROM lineitem GROUP BY l_partkey) part_agg "
      "WHERE p_partkey = l_partkey AND agg_partkey = l_partkey "
-     "AND p_brand = 'Brand#54' AND p_container = 'MED PACK' "
+     "AND p_brand = 'Brand#34' AND p_container = 'LG CASE' "
      "AND l_quantity < avg_quantity "
      "ORDER BY l_orderkey, l_linenumber LIMIT 1",
-     {{core::AuxValue::Of(core::AuxType::String, std::string{"Brand#54"}),
-       core::AuxValue::Of(core::AuxType::String, std::string{"MED PACK"})}},
+     {{core::AuxValue::Of(core::AuxType::String, std::string{"Brand#34"}),
+       core::AuxValue::Of(core::AuxType::String, std::string{"LG CASE"})}},
      2,
      false,
      BuildTpchQ17Probe},
@@ -1610,10 +1563,17 @@ const SharedQueryCatalogEntry kSecEdgarCatalog[] = {
      "SELECT * FROM accel_sec_edgar_q2_aux()",
      "SELECT * FROM accel_sec_edgar_q2()",
      "SELECT * FROM accel_sec_edgar_q2_aux()",
-     "SELECT n.adsh, n.tag, n.value, n.uom FROM num n "
+     "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
+     "n.value FROM num n "
      "JOIN sub s ON n.adsh = s.adsh "
+     "JOIN ("
+     "    SELECT adsh, tag, MAX(value) AS max_value "
+     "    FROM num "
+     "    WHERE uom = 'pure' AND value IS NOT NULL "
+     "    GROUP BY adsh, tag"
+     ") m ON n.adsh = m.adsh AND n.tag = m.tag AND n.value = m.max_value "
      "WHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL "
-     "ORDER BY n.adsh, n.tag, n.value DESC LIMIT 1",
+     "ORDER BY n.value DESC, s.name, n.tag LIMIT 1",
      {},
      1,
      false,
@@ -1641,8 +1601,25 @@ const SharedQueryCatalogEntry kSecEdgarCatalog[] = {
      "SELECT * FROM accel_sec_edgar_q3_aux()",
      "SELECT * FROM accel_sec_edgar_q3()",
      "SELECT * FROM accel_sec_edgar_q3_aux()",
-     "SELECT n.adsh, n.value, n.uom FROM num n "
+     "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
+     "n.value FROM num n "
      "JOIN sub s ON n.adsh = s.adsh "
+     "JOIN ("
+     "    SELECT s2.cik FROM num n2 "
+     "    JOIN sub s2 ON n2.adsh = s2.adsh "
+     "    WHERE n2.uom = 'USD' AND s2.fy = 2022 AND n2.value IS NOT NULL "
+     "    GROUP BY s2.name, s2.cik "
+     "    HAVING SUM(n2.value) > ("
+     "        SELECT AVG(sub_total) FROM ("
+     "            SELECT SUM(n3.value) AS sub_total "
+     "            FROM num n3 JOIN sub s3 ON n3.adsh = s3.adsh "
+     "            WHERE n3.uom = 'USD' AND s3.fy = 2022 AND n3.value IS NOT NULL "
+     "            GROUP BY s3.cik"
+     "        ) avg_sub"
+     "    ) "
+     "    ORDER BY SUM(n2.value) DESC "
+     "    LIMIT 100"
+     ") top ON s.cik = top.cik "
      "WHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL "
      "ORDER BY n.adsh LIMIT 1",
      {},
@@ -1671,10 +1648,24 @@ const SharedQueryCatalogEntry kSecEdgarCatalog[] = {
      "SELECT * FROM accel_sec_edgar_q4_aux()",
      "SELECT * FROM accel_sec_edgar_q4()",
      "SELECT * FROM accel_sec_edgar_q4_aux()",
-     "SELECT n.adsh, n.tag, n.version, n.value, n.uom FROM num n "
+     "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
+     "n.value FROM num n "
      "JOIN sub s ON n.adsh = s.adsh "
      "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
      "JOIN tag t ON n.tag = t.tag AND n.version = t.version "
+     "JOIN ("
+     "    SELECT s2.sic, t2.tlabel, p2.stmt FROM num n2 "
+     "    JOIN sub s2 ON n2.adsh = s2.adsh "
+     "    JOIN tag t2 ON n2.tag = t2.tag AND n2.version = t2.version "
+     "    JOIN pre p2 ON n2.adsh = p2.adsh AND n2.tag = p2.tag AND "
+     "    n2.version = p2.version "
+     "    WHERE n2.uom = 'USD' AND p2.stmt = 'EQ' AND s2.sic BETWEEN 4000 AND 4999 "
+     "    AND n2.value IS NOT NULL AND t2.abstract = 0 "
+     "    GROUP BY s2.sic, t2.tlabel, p2.stmt "
+     "    HAVING COUNT(DISTINCT s2.cik) >= 2 "
+     "    ORDER BY SUM(n2.value) DESC "
+     "    LIMIT 500"
+     ") top ON s.sic = top.sic AND t.tlabel = top.tlabel AND p.stmt = top.stmt "
      "WHERE n.uom = 'USD' AND p.stmt = 'EQ' AND s.sic BETWEEN 4000 AND 4999 "
      "AND n.value IS NOT NULL AND t.abstract = 0 "
      "ORDER BY n.adsh, n.tag, n.version LIMIT 1",
@@ -1699,9 +1690,22 @@ const SharedQueryCatalogEntry kSecEdgarCatalog[] = {
      "SELECT * FROM accel_sec_edgar_q6_aux()",
      "SELECT * FROM accel_sec_edgar_q6()",
      "SELECT * FROM accel_sec_edgar_q6_aux()",
-     "SELECT n.adsh, n.tag, n.version, n.value, n.uom FROM num n "
+     "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
+     "n.value FROM num n "
      "JOIN sub s ON n.adsh = s.adsh "
      "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
+     "JOIN ("
+     "    SELECT s2.name, p2.stmt, n2.tag, p2.plabel FROM num n2 "
+     "    JOIN sub s2 ON n2.adsh = s2.adsh "
+     "    JOIN pre p2 ON n2.adsh = p2.adsh AND n2.tag = p2.tag AND "
+     "    n2.version = p2.version "
+     "    WHERE n2.uom = 'USD' AND p2.stmt = 'IS' AND s2.fy = 2023 "
+     "    AND n2.value IS NOT NULL "
+     "    GROUP BY s2.name, p2.stmt, n2.tag, p2.plabel "
+     "    ORDER BY SUM(n2.value) DESC, s2.name, n2.tag, p2.plabel "
+     "    LIMIT 200"
+     ") top ON s.name = top.name AND p.stmt = top.stmt AND n.tag = top.tag "
+     "AND p.plabel IS NOT DISTINCT FROM top.plabel "
      "WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 "
      "AND n.value IS NOT NULL "
      "ORDER BY n.adsh, n.tag, n.version LIMIT 1",
@@ -1726,10 +1730,20 @@ const SharedQueryCatalogEntry kSecEdgarCatalog[] = {
      "SELECT * FROM accel_sec_edgar_q24_aux()",
      "SELECT * FROM accel_sec_edgar_q24()",
      "SELECT * FROM accel_sec_edgar_q24_aux()",
-     "SELECT n.rowid, n.adsh, n.tag, n.version, n.uom, n.value, n.ddate FROM num n "
+     "SELECT n.rowid, n.adsh, n.tag, n.version, n.ddate, n.qtrs, n.uom, n.coreg, "
+     "n.value FROM num n "
      "LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND "
      "n.adsh = p.adsh WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 "
-     "AND 20231231 AND n.value IS NOT NULL AND p.adsh IS NULL LIMIT 1",
+     "AND 20231231 AND n.value IS NOT NULL AND p.adsh IS NULL "
+     "AND (n.tag, n.version) IN ("
+     "  SELECT n2.tag, n2.version FROM num n2 "
+     "  LEFT JOIN pre p2 ON n2.tag = p2.tag AND n2.version = p2.version AND "
+     "  n2.adsh = p2.adsh WHERE n2.uom = 'USD' AND n2.ddate BETWEEN 20230101 "
+     "  AND 20231231 AND n2.value IS NOT NULL AND p2.adsh IS NULL "
+     "  GROUP BY n2.tag, n2.version HAVING COUNT(*) > 10 "
+     "  ORDER BY COUNT(*) DESC "
+     "  LIMIT 100"
+     ") ORDER BY n.value DESC LIMIT 1",
      {},
      101,
      true,
@@ -1780,6 +1794,61 @@ const SharedQueryCatalogEntry &LookupSharedQuery(SharedWorkloadKind workload,
 const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_name,
                                                int query_id) {
   return LookupSharedQuery(ParseWorkload(workload_name), query_id);
+}
+
+bool IsParallelAuxAccelerator(const char *accelerator_id) {
+  if (!accelerator_id) {
+    return false;
+  }
+  const std::string id(accelerator_id);
+  return id.size() >= 13 && id.compare(id.size() - 13, 13, "_aux_parallel") == 0;
+}
+
+namespace {
+
+struct ParallelCatalogHolder {
+  std::vector<std::string> accelerator_ids;
+  std::vector<std::string> aux_sqls;
+  std::vector<SharedQueryCatalogEntry> entries;
+};
+
+const ParallelCatalogHolder &SecEdgarParallelCatalog() {
+  static const ParallelCatalogHolder holder = [] {
+    ParallelCatalogHolder out;
+    for (const auto &entry : kSecEdgarCatalog) {
+      SharedQueryCatalogEntry parallel = entry;
+      out.accelerator_ids.push_back(std::string(entry.accelerator_id) +
+                                    "_aux_parallel");
+      out.aux_sqls.push_back("SELECT * FROM accel_" +
+                             std::string(entry.accelerator_id) +
+                             "_aux_parallel()");
+      parallel.accelerator_id = out.accelerator_ids.back().c_str();
+      parallel.duckdb_aux_sql = out.aux_sqls.back().c_str();
+      parallel.postgres_aux_sql = out.aux_sqls.back().c_str();
+      out.entries.push_back(parallel);
+    }
+    return out;
+  }();
+  return holder;
+}
+
+} // namespace
+
+const SharedQueryCatalogEntry &LookupSharedQueryParallel(SharedWorkloadKind workload,
+                                                       int query_id) {
+  Require(workload == SharedWorkloadKind::SecEdgar,
+          "parallel aux catalog is only implemented for sec_edgar");
+  for (const auto &entry : SecEdgarParallelCatalog().entries) {
+    if (entry.query_id == query_id) {
+      return entry;
+    }
+  }
+  throw std::runtime_error("unsupported parallel shared query");
+}
+
+const SharedQueryCatalogEntry &LookupSharedQueryParallel(const std::string &workload_name,
+                                                       int query_id) {
+  return LookupSharedQueryParallel(ParseWorkload(workload_name), query_id);
 }
 
 std::vector<int> SharedQueriesForWorkload(SharedWorkloadKind workload) {

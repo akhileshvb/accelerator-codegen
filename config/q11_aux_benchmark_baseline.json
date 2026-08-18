@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "query": 11,
+  "cache_key": "tpch_sf1|ROMANIA",
+  "duckdb_ref_query_median_us": 13948,
+  "base_kernel_median_us": 27047.5
+}

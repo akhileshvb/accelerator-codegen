@@ -84,8 +84,33 @@ SELECT create_accel_mutation_triggers('customer', '1', 'accel_codegen_tpch');
 SELECT create_accel_mutation_triggers('nation', '2', 'accel_codegen_tpch');
 SELECT create_accel_mutation_triggers('orders', '3', 'accel_codegen_tpch');
 SELECT create_accel_mutation_triggers('lineitem', '4', 'accel_codegen_tpch');
+SELECT create_accel_mutation_triggers('lineitem', '1001', 'accel_codegen_tpch_q1');
 SELECT create_accel_mutation_triggers('lineitem', '1004', 'accel_codegen_tpch_q3');
 SELECT create_accel_mutation_triggers('lineitem', '1006', 'accel_codegen_tpch_q6');
 SELECT create_accel_mutation_triggers('lineitem', '1013', 'accel_codegen_tpch_q12');
 SELECT create_accel_mutation_triggers('lineitem', '1014', 'accel_codegen_tpch_q14');
 SELECT create_accel_mutation_triggers('part', '5', 'accel_codegen_tpch');
+
+-- Per-query projections for remaining TPC-H aux kernels.
+SELECT create_accel_mutation_triggers('part', '1091', 'accel_codegen_tpch_q9');
+SELECT create_accel_mutation_triggers('supplier', '1092', 'accel_codegen_tpch_q9');
+SELECT create_accel_mutation_triggers('nation', '1093', 'accel_codegen_tpch_q9');
+SELECT create_accel_mutation_triggers('orders', '1094', 'accel_codegen_tpch_q9');
+SELECT create_accel_mutation_triggers('partsupp', '1095', 'accel_codegen_tpch_q9');
+SELECT create_accel_mutation_triggers('lineitem', '1096', 'accel_codegen_tpch_q9');
+
+SELECT create_accel_mutation_triggers('partsupp', '1111', 'accel_codegen_tpch_q11');
+SELECT create_accel_mutation_triggers('supplier', '1112', 'accel_codegen_tpch_q11');
+SELECT create_accel_mutation_triggers('nation', '1113', 'accel_codegen_tpch_q11');
+
+SELECT create_accel_mutation_triggers('part', '1171', 'accel_codegen_tpch_q17');
+SELECT create_accel_mutation_triggers('lineitem', '1172', 'accel_codegen_tpch_q17');
+
+SELECT create_accel_mutation_triggers('lineitem', '1180', 'accel_codegen_tpch_q18');
+SELECT create_accel_mutation_triggers('orders', '1181', 'accel_codegen_tpch_q18');
+SELECT create_accel_mutation_triggers('customer', '1182', 'accel_codegen_tpch_q18');
+
+SELECT create_accel_mutation_triggers('supplier', '1211', 'accel_codegen_tpch_q21');
+SELECT create_accel_mutation_triggers('orders', '1212', 'accel_codegen_tpch_q21');
+SELECT create_accel_mutation_triggers('lineitem', '1213', 'accel_codegen_tpch_q21');
+SELECT create_accel_mutation_triggers('nation', '1214', 'accel_codegen_tpch_q21');

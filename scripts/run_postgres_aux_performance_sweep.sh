@@ -4,8 +4,9 @@
 # Prerequisites (run once):
 #   bash scripts/setup_postgres_aux_performance_dbs.sh
 #
-# Run a subset of queries, e.g. TPC-H Q6 only:
-#   TPCH_QUERIES=6 SKIP_SEC_QUERIES=1 bash scripts/run_postgres_aux_performance_sweep.sh
+# Run remaining TPC-H aux queries (point-write intervals), e.g.:
+#   TPCH_QUERIES="1 9 11 17 18 21" SKIP_SEC_QUERIES=1 \
+#     bash scripts/run_postgres_aux_performance_sweep.sh
 #
 # SEC EDGAR only (e.g. Q2–Q4, Q6, Q24 after fixes):
 #   SKIP_TPCH_QUERIES=1 SEC_QUERIES="2 3 4 6 24" bash scripts/run_postgres_aux_performance_sweep.sh

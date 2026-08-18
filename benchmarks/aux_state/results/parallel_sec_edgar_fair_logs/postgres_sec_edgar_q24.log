@@ -1,0 +1,106 @@
+[progress] q24 interval=0.0 mode=base: warmup 1/1
+[progress] q24 interval=0.0 mode=base: read 1/8
+[progress] q24 interval=0.0 mode=base: read 2/8
+[progress] q24 interval=0.0 mode=base: read 3/8
+[progress] q24 interval=0.0 mode=base: read 4/8
+[progress] q24 interval=0.0 mode=base: read 5/8
+[progress] q24 interval=0.0 mode=base: read 6/8
+[progress] q24 interval=0.0 mode=base: read 7/8
+[progress] q24 interval=0.0 mode=base: read 8/8
+[progress] q24 interval=0.0 mode=shared: cold build starting
+[progress] q24 interval=0.0 mode=shared: cold build done (138.2s)
+[progress] q24 interval=0.0 mode=shared: warmup 1/1
+[progress] q24 interval=0.0 mode=shared: read 1/8
+[progress] q24 interval=0.0 mode=shared: read 2/8
+[progress] q24 interval=0.0 mode=shared: read 3/8
+[progress] q24 interval=0.0 mode=shared: read 4/8
+[progress] q24 interval=0.0 mode=shared: read 5/8
+[progress] q24 interval=0.0 mode=shared: read 6/8
+[progress] q24 interval=0.0 mode=shared: read 7/8
+[progress] q24 interval=0.0 mode=shared: read 8/8
+postgres,sec_edgar,24,0.0,base,8,0,3,2483319.58,19877077.58,0.00,0.00,0.00,19877077.58,1.0000,19877077.58,1.0000
+postgres,sec_edgar,24,0.0,aux_parallel,8,0,3,68529.85,549639.78,0.00,0.00,138243458.33,549639.78,36.1638,138793098.11,0.1432
+[progress] q24 interval=0.5 mode=base: warmup 1/1
+[progress] q24 interval=0.5 mode=base: select invalidating probe
+invalidating_write_probes=1 query=24
+[progress] q24 interval=0.5 mode=base: read 1/8
+[progress] q24 interval=0.5 mode=base: read 2/8
+[progress] q24 interval=0.5 mode=base: read 3/8
+[progress] q24 interval=0.5 mode=base: read 4/8
+[progress] q24 interval=0.5 mode=base: read 5/8
+[progress] q24 interval=0.5 mode=base: read 6/8
+[progress] q24 interval=0.5 mode=base: read 7/8
+[progress] q24 interval=0.5 mode=base: read 8/8
+[progress] q24 interval=0.5 mode=base: restore probe row
+[progress] q24 interval=0.5 mode=shared: cold build starting
+[progress] q24 interval=0.5 mode=shared: cold build done (138.3s)
+[progress] q24 interval=0.5 mode=shared: warmup 1/1
+[progress] q24 interval=0.5 mode=shared: select invalidating probe
+invalidating_write_probes=1 query=24
+[progress] q24 interval=0.5 mode=shared: read 1/8
+[progress] q24 interval=0.5 mode=shared: read 2/8
+[progress] q24 interval=0.5 mode=shared: read 3/8
+[progress] q24 interval=0.5 mode=shared: read 4/8
+[progress] q24 interval=0.5 mode=shared: read 5/8
+[progress] q24 interval=0.5 mode=shared: read 6/8
+[progress] q24 interval=0.5 mode=shared: read 7/8
+[progress] q24 interval=0.5 mode=shared: read 8/8
+[progress] q24 interval=0.5 mode=shared: restore probe row
+postgres,sec_edgar,24,0.5,base,8,7,3,2491815.74,19929543.76,2803684.26,19625821.43,0.00,39555365.19,1.0000,39555365.19,1.0000
+postgres,sec_edgar,24,0.5,aux_parallel,8,7,3,138829284.90,972638530.28,3561083.50,24993423.65,138272454.13,997631953.94,0.0396,1135904408.07,0.0348
+[progress] q24 interval=1.0 mode=base: warmup 1/1
+[progress] q24 interval=1.0 mode=base: select invalidating probe
+invalidating_write_probes=1 query=24
+[progress] q24 interval=1.0 mode=base: read 1/8
+[progress] q24 interval=1.0 mode=base: read 2/8
+[progress] q24 interval=1.0 mode=base: read 3/8
+[progress] q24 interval=1.0 mode=base: read 4/8
+[progress] q24 interval=1.0 mode=base: read 5/8
+[progress] q24 interval=1.0 mode=base: read 6/8
+[progress] q24 interval=1.0 mode=base: read 7/8
+[progress] q24 interval=1.0 mode=base: read 8/8
+[progress] q24 interval=1.0 mode=base: restore probe row
+[progress] q24 interval=1.0 mode=shared: cold build starting
+[progress] q24 interval=1.0 mode=shared: cold build done (138.3s)
+[progress] q24 interval=1.0 mode=shared: warmup 1/1
+[progress] q24 interval=1.0 mode=shared: select invalidating probe
+invalidating_write_probes=1 query=24
+[progress] q24 interval=1.0 mode=shared: read 1/8
+[progress] q24 interval=1.0 mode=shared: read 2/8
+[progress] q24 interval=1.0 mode=shared: read 3/8
+[progress] q24 interval=1.0 mode=shared: read 4/8
+[progress] q24 interval=1.0 mode=shared: read 5/8
+[progress] q24 interval=1.0 mode=shared: read 6/8
+[progress] q24 interval=1.0 mode=shared: read 7/8
+[progress] q24 interval=1.0 mode=shared: read 8/8
+[progress] q24 interval=1.0 mode=shared: restore probe row
+postgres,sec_edgar,24,1.0,base,8,3,3,2490180.88,19903349.65,2821714.02,8454055.95,0.00,28357405.60,1.0000,28357405.60,1.0000
+postgres,sec_edgar,24,1.0,aux_parallel,8,3,3,71279.03,415387836.94,3629435.50,10913836.91,138302580.55,426301673.85,0.0665,564604254.39,0.0502
+[progress] q24 interval=2.0 mode=base: warmup 1/1
+[progress] q24 interval=2.0 mode=base: select invalidating probe
+invalidating_write_probes=1 query=24
+[progress] q24 interval=2.0 mode=base: read 1/8
+[progress] q24 interval=2.0 mode=base: read 2/8
+[progress] q24 interval=2.0 mode=base: read 3/8
+[progress] q24 interval=2.0 mode=base: read 4/8
+[progress] q24 interval=2.0 mode=base: read 5/8
+[progress] q24 interval=2.0 mode=base: read 6/8
+[progress] q24 interval=2.0 mode=base: read 7/8
+[progress] q24 interval=2.0 mode=base: read 8/8
+[progress] q24 interval=2.0 mode=base: restore probe row
+[progress] q24 interval=2.0 mode=shared: cold build starting
+[progress] q24 interval=2.0 mode=shared: cold build done (138.1s)
+[progress] q24 interval=2.0 mode=shared: warmup 1/1
+[progress] q24 interval=2.0 mode=shared: select invalidating probe
+invalidating_write_probes=1 query=24
+[progress] q24 interval=2.0 mode=shared: read 1/8
+[progress] q24 interval=2.0 mode=shared: read 2/8
+[progress] q24 interval=2.0 mode=shared: read 3/8
+[progress] q24 interval=2.0 mode=shared: read 4/8
+[progress] q24 interval=2.0 mode=shared: read 5/8
+[progress] q24 interval=2.0 mode=shared: read 6/8
+[progress] q24 interval=2.0 mode=shared: read 7/8
+[progress] q24 interval=2.0 mode=shared: read 8/8
+[progress] q24 interval=2.0 mode=shared: restore probe row
+postgres,sec_edgar,24,2.0,base,8,1,3,2485708.61,19894044.02,2860265.76,2860265.76,0.00,22754309.78,1.0000,22754309.78,1.0000
+postgres,sec_edgar,24,2.0,aux_parallel,8,1,3,69453.23,139932547.58,3617321.09,3617321.09,138085039.76,143549868.67,0.1585,281634908.44,0.0808

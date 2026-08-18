@@ -1,4 +1,4 @@
-#include "accelerator_codegen/register.hpp"
+#include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "test_support/q13_manifest.hpp"
 
 #include <cstdlib>

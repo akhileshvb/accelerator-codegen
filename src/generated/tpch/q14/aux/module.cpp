@@ -179,13 +179,19 @@ int64_t TpchQ14RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
 std::vector<uint8_t> EncodeTpchQ14PartPromo(const TpchQ14State &state) {
   ByteWriter writer;
   std::vector<int64_t> keys;
-  for (const auto &entry : state.part_promo)
-    keys.push_back(entry.first);
-  std::sort(keys.begin(), keys.end());
+  for (std::size_t i = 0; i < state.part_promo.size(); ++i) {
+    if (state.part_promo[i] == 0)
+      continue;
+    keys.push_back(static_cast<int64_t>(i));
+  }
+  for (const auto &[key, promo] : state.promo_overflow) {
+    if (promo != 0)
+      keys.push_back(key);
+  }
   core::WriteImageHeader(writer, kPartMagic, kVersion, static_cast<uint32_t>(keys.size()));
   for (const auto key : keys) {
     writer.I64(key);
-    writer.U8(static_cast<uint8_t>(state.part_promo.at(key)));
+    writer.U8(static_cast<uint8_t>(state.PromoOf(key)));
   }
   return std::move(writer.bytes);
 }
@@ -217,7 +223,7 @@ bool DecodeTpchQ14PartPromo(const std::vector<uint8_t> &bytes,
     uint8_t promo = 0;
     if (!reader.I64(key) || !reader.U8(promo))
       return false;
-    state.part_promo.emplace(key, static_cast<TpchQ14PromoClass>(promo));
+    state.SetPromo(key, static_cast<TpchQ14PromoClass>(promo));
   }
   return reader.offset == bytes.size();
 }
@@ -465,14 +471,8 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   for (const auto &delta : buffer.Deltas()) {
-    const auto part_it = part_state->part_promo.find(delta.partkey);
-    if (part_it == part_state->part_promo.end()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    if (part_it->second == TpchQ14PromoClass::Absent) {
+    const auto promo = part_state->PromoOf(delta.partkey);
+    if (promo == TpchQ14PromoClass::Absent) {
       outcome.action = core::MaintenanceAction::RebuildAll;
       outcome.invalidations = All();
       outcome.pending_rebuild = outcome.invalidations;
@@ -484,7 +484,7 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
     totals.total_revenue_raw += signed_revenue;
     totals.row_count += delta.sign;
     totals.saw_contribution = totals.row_count > 0;
-    if (part_it->second == TpchQ14PromoClass::Promo)
+    if (promo == TpchQ14PromoClass::Promo)
       totals.promo_revenue_raw += signed_revenue;
   }
 
@@ -558,13 +558,13 @@ TpchQ14State TpchQ14Module::BuildState(core::AuxEngineServices &services) const 
   if (!initial_scan)
     throw std::logic_error("TPC-H Q14 requires a typed initial scan source");
   initial_scan->ScanParts([&](const TpchQ14PartInput &input) {
-    state.part_promo[input.key] =
-        TpchQ14IsPromoType(input.type) ? TpchQ14PromoClass::Promo
-                                       : TpchQ14PromoClass::NonPromo;
+    state.SetPromo(input.key,
+                   TpchQ14IsPromoType(input.type) ? TpchQ14PromoClass::Promo
+                                                  : TpchQ14PromoClass::NonPromo);
   });
   initial_scan->ScanLineitems([&](const TpchQ14LineitemInput &input) {
-    const auto part_it = state.part_promo.find(input.partkey);
-    if (part_it == state.part_promo.end())
+    const auto promo = state.PromoOf(input.partkey);
+    if (promo == TpchQ14PromoClass::Absent)
       return;
     const auto revenue =
         TpchQ14RevenueRaw(input.extended_price_raw, input.extended_price_scale,
@@ -574,7 +574,7 @@ TpchQ14State TpchQ14Module::BuildState(core::AuxEngineServices &services) const 
     totals.total_revenue_raw += revenue;
     totals.row_count++;
     totals.saw_contribution = true;
-    if (part_it->second == TpchQ14PromoClass::Promo)
+    if (promo == TpchQ14PromoClass::Promo)
       totals.promo_revenue_raw += revenue;
   });
   return state;

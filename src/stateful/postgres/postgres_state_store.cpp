@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #include "accelerator_codegen/stateful/postgres/postgres_state_store.hpp"
 
 #include <stdexcept>

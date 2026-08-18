@@ -8,12 +8,14 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
-#include "accelerator_codegen/aux_state/harness/differential.hpp"
-#include "accelerator_codegen/aux_state/engine/shared/query_catalog.hpp"
-#include "accelerator_codegen/aux_state/engine/duckdb/duckdb_runtime.hpp"
+#include "accelerator_codegen/harness/differential.hpp"
+#include "catalog/query_catalog.hpp"
+#include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
+#include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "duckdb.hpp"
 
 namespace {
@@ -52,11 +54,15 @@ double GetEnvDouble(const char *name, double fallback) {
   return value && *value ? std::stod(value) : fallback;
 }
 
-uint64_t ExecuteBase(duckdb::Connection &connection,
-                     const catalog::SharedQueryCatalogEntry &entry) {
-  auto result = connection.Query(entry.base_sql);
+int BenchThreads() {
+  const int fallback = 1;
+  return std::max(1, GetEnvInt("ACCEL_BENCH_THREADS", fallback));
+}
+
+uint64_t ExecuteSql(duckdb::Connection &connection, const char *sql) {
+  auto result = connection.Query(sql);
   Require(result != nullptr && !result->HasError(),
-          result ? result->GetError() : "DuckDB base query failed");
+          result ? result->GetError() : "DuckDB query failed");
   uint64_t rows = result->RowCount();
   for (duckdb::idx_t row = 0; row < result->RowCount(); ++row) {
     for (duckdb::idx_t column = 0; column < result->ColumnCount(); ++column) {
@@ -64,6 +70,18 @@ uint64_t ExecuteBase(duckdb::Connection &connection,
     }
   }
   return rows;
+}
+
+uint64_t ExecuteBase(duckdb::Connection &connection,
+                     const catalog::SharedQueryCatalogEntry &entry) {
+  return ExecuteSql(connection, entry.base_sql);
+}
+
+uint64_t ExecuteAuxSql(duckdb::Connection &connection,
+                       const catalog::SharedQueryCatalogEntry &entry) {
+  Require(entry.duckdb_aux_sql != nullptr && *entry.duckdb_aux_sql,
+          "missing duckdb_aux_sql");
+  return ExecuteSql(connection, entry.duckdb_aux_sql);
 }
 
 struct TimingSummary {
@@ -103,8 +121,11 @@ ModeSummary RunMode(const std::string &db_path,
                     double interval, bool shared) {
   duckdb::DuckDB database(db_path.c_str());
   duckdb::Connection connection(database);
-  auto pragma = connection.Query("PRAGMA threads=1");
+  accelerator_codegen::RegisterAcceleratorFunctions(connection);
+  const int threads = BenchThreads();
+  auto pragma = connection.Query("PRAGMA threads=" + std::to_string(threads));
   Require(pragma != nullptr && !pragma->HasError(), "failed to set threads");
+  setenv("ACCEL_AUX_THREADS", std::to_string(threads).c_str(), 1);
 
   std::unique_ptr<DuckdbRuntime> runtime;
   const double target_qps =
@@ -120,23 +141,28 @@ ModeSummary RunMode(const std::string &db_path,
     const auto build_start = Clock::now();
     runtime->Build();
     build_us = ElapsedUs(build_start);
-    runtime->Execute();
+    (void)ExecuteAuxSql(connection, entry);
   }
   for (int i = 0; i < GetEnvInt("ACCEL_SHARED_SWEEP_WARMUP", 1); ++i) {
     if (shared) {
-      runtime->Execute();
+      (void)ExecuteAuxSql(connection, entry);
     } else {
       (void)ExecuteBase(connection, entry);
     }
   }
-  auto probe = catalog::FindSharedProbe(connection, entry);
-  double next_write = interval > 0.0 ? interval : 1e30;
+  catalog::SharedProbe probe;
+  const bool do_writes = interval > 0.0;
+  if (do_writes) {
+    probe = catalog::FindInvalidatingSharedProbe(connection, entry);
+    std::cerr << "invalidating_write_probes=1 query=" << entry.query_id << '\n';
+  }
+  double next_write = do_writes ? interval : 1e30;
   std::vector<double> read_samples;
   std::vector<double> write_samples;
   uint64_t reads = 0, writes = 0, rows = 0;
   for (int read_index = 0; read_index < read_operations; ++read_index) {
     const double virtual_time = static_cast<double>(read_index) / target_qps;
-    while (interval > 0.0 && virtual_time + 1e-12 >= next_write) {
+    while (do_writes && virtual_time + 1e-12 >= next_write) {
       const auto start = Clock::now();
       if (shared) {
         runtime->Apply(probe);
@@ -152,8 +178,11 @@ ModeSummary RunMode(const std::string &db_path,
       next_write += interval;
     }
     const auto start = Clock::now();
-    rows = shared ? (runtime->Execute(), runtime->last_rows)
+    rows = shared ? ExecuteAuxSql(connection, entry)
                   : ExecuteBase(connection, entry);
+    if (shared) {
+      runtime->last_rows = rows;
+    }
     read_samples.push_back(ElapsedUs(start));
     ++reads;
   }
@@ -162,9 +191,11 @@ ModeSummary RunMode(const std::string &db_path,
   if (shared) {
     harness::RequireSharedMatchesBase(connection, *runtime, entry);
   }
-  auto restore = connection.Query(probe.restore_sql);
-  Require(restore != nullptr && !restore->HasError(),
-          restore ? restore->GetError() : "DuckDB probe restore failed");
+  if (do_writes) {
+    auto restore = connection.Query(probe.restore_sql);
+    Require(restore != nullptr && !restore->HasError(),
+            restore ? restore->GetError() : "DuckDB probe restore failed");
+  }
   return {reads, writes, rows, build_us, read_stats, write_stats};
 }
 
@@ -229,6 +260,7 @@ int main(int argc, char **argv) {
            "workload_sum_us,workload_speedup_vs_base,workload_with_build_us,"
            "workload_with_build_speedup_vs_base");
     }
+    std::cerr << "ACCEL_BENCH_THREADS=" << BenchThreads() << '\n';
     const auto base = RunMode(db_path, entry, interval, false);
     const auto shared = RunMode(db_path, entry, interval, true);
     const double base_workload_us = base.read.sum_us + base.write.sum_us;

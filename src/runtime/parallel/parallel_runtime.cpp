@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #include "accelerator_codegen/runtime/parallel/parallel_runtime.hpp"
 
 #include <exception>

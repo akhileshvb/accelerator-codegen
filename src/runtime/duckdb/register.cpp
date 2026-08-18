@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
 
 #include "accelerator_codegen/runtime/catalog/shared_query_engine.hpp"

@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #include "accelerator_codegen/stateful/core/aux_store_diagnostics.hpp"
 #include "accelerator_codegen/stateful/duckdb/duckdb_state_store.hpp"
 

@@ -81,6 +81,15 @@ public:
     (void)consumer;
     return false;
   }
+
+  // Optional: same aggregate for a single partkey (incremental pair rebuild).
+  virtual bool ScanPartQuantityAggregatesForPart(
+      int64_t partkey,
+      const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer) {
+    (void)partkey;
+    (void)consumer;
+    return false;
+  }
 };
 
 // ── Per-part statistics ─────────────────────────────────────────────────────

@@ -154,27 +154,33 @@ bool ReadOrder(const core::AuxRow &row, int64_t &orderkey,
 }
 
 std::map<int32_t, int64_t>
-DayRevenueFromSummary(const TpchQ3OrderSummary &order) {
+DayRevenueFromSummary(const TpchQ3SegmentIntervalIndex &index,
+                      const TpchQ3OrderSummary &order) {
   std::map<int32_t, int64_t> day_revenue;
-  for (std::size_t i = 0; i < order.buckets.size(); ++i) {
-    const int64_t next_suffix = (i + 1 < order.buckets.size())
-                                    ? order.buckets[i + 1].suffix_revenue
+  const auto begin = static_cast<std::size_t>(order.bucket_begin);
+  for (std::size_t i = 0; i < order.bucket_count; ++i) {
+    const auto &bucket = index.bucket_pool[begin + i];
+    const int64_t next_suffix = (i + 1 < order.bucket_count)
+                                    ? index.bucket_pool[begin + i + 1].suffix_revenue
                                     : 0;
-    const int64_t revenue = order.buckets[i].suffix_revenue - next_suffix;
+    const int64_t revenue = bucket.suffix_revenue - next_suffix;
     if (revenue != 0)
-      day_revenue.emplace(order.buckets[i].shipdate, revenue);
+      day_revenue.emplace(static_cast<int32_t>(bucket.shipdate), revenue);
   }
   return day_revenue;
 }
 
-void ApplyLineitemDelta(TpchQ3OrderSummary &summary,
+void ApplyLineitemDelta(TpchQ3SegmentIntervalIndex &index,
+                        TpchQ3OrderSummary &summary,
                         const TpchQ3LineitemDelta &delta) {
-  auto day_revenue = DayRevenueFromSummary(summary);
+  auto day_revenue = DayRevenueFromSummary(index, summary);
   day_revenue[delta.shipdate_day] +=
       static_cast<int64_t>(delta.sign) * delta.revenue_raw;
   if (day_revenue[delta.shipdate_day] == 0)
     day_revenue.erase(delta.shipdate_day);
-  FinalizeTpchQ3OrderSummary(summary, day_revenue);
+  std::vector<TpchQ3ShipdateBucket> buckets;
+  FinalizeTpchQ3OrderSummary(buckets, day_revenue);
+  index.AssignBuckets(summary, std::move(buckets));
 }
 
 void EnsureOrderSegmentSlot(std::vector<uint8_t> &order_segment,
@@ -245,25 +251,26 @@ std::string TpchQ3MktsegmentFromPartition(core::PartitionId partition) {
 
 void SortTpchQ3SegmentIntervalIndex(TpchQ3SegmentIntervalIndex &index) {
   std::sort(index.orders.begin(), index.orders.end(),
-            [](const TpchQ3OrderSummary &lhs, const TpchQ3OrderSummary &rhs) {
-              if (lhs.max_shipdate != rhs.max_shipdate)
-                return lhs.max_shipdate < rhs.max_shipdate;
+            [&index](const TpchQ3OrderSummary &lhs, const TpchQ3OrderSummary &rhs) {
+              const auto lhs_max = index.MaxShipdate(lhs);
+              const auto rhs_max = index.MaxShipdate(rhs);
+              if (lhs_max != rhs_max)
+                return lhs_max < rhs_max;
               return lhs.orderkey < rhs.orderkey;
             });
-  index.order_positions.clear();
+  index.ClearPositions();
   for (std::size_t i = 0; i < index.orders.size(); ++i)
-    index.order_positions.emplace(index.orders[i].orderkey, i);
+    index.SetPosition(static_cast<int64_t>(index.orders[i].orderkey), i);
 }
 
 void RemoveOrderFromIndex(TpchQ3SegmentIntervalIndex &index, int64_t orderkey) {
-  const auto position_it = index.order_positions.find(orderkey);
-  if (position_it == index.order_positions.end())
+  std::size_t pos = 0;
+  if (!index.FindPosition(orderkey, pos))
     return;
-  index.orders.erase(index.orders.begin() +
-                     static_cast<std::ptrdiff_t>(position_it->second));
-  index.order_positions.clear();
-  for (std::size_t i = 0; i < index.orders.size(); ++i)
-    index.order_positions.emplace(index.orders[i].orderkey, i);
+  index.orders.erase(index.orders.begin() + static_cast<std::ptrdiff_t>(pos));
+  index.ErasePosition(orderkey);
+  for (std::size_t i = pos; i < index.orders.size(); ++i)
+    index.SetPosition(static_cast<int64_t>(index.orders[i].orderkey), i);
 }
 
 std::vector<uint8_t>
@@ -285,9 +292,11 @@ std::vector<uint8_t> EncodeTpchQ3SegmentIntervalIndex(
     writer.I64(order.orderkey);
     writer.I32(order.orderdate_days);
     writer.I32(order.shippriority);
-    writer.I32(order.max_shipdate);
-    writer.U32(static_cast<uint32_t>(order.buckets.size()));
-    for (const auto &bucket : order.buckets) {
+    writer.I32(index.MaxShipdate(order));
+    writer.U32(order.bucket_count);
+    const auto begin = static_cast<std::size_t>(order.bucket_begin);
+    for (uint32_t b = 0; b < order.bucket_count; ++b) {
+      const auto &bucket = index.bucket_pool[begin + b];
       writer.I32(bucket.shipdate);
       writer.I64(bucket.suffix_revenue);
     }
@@ -321,25 +330,36 @@ bool DecodeTpchQ3SegmentIntervalIndex(const std::vector<uint8_t> &bytes,
     return false;
   index.segment = segment;
   index.orders.clear();
-  index.order_positions.clear();
+  index.bucket_pool.clear();
+  index.ClearPositions();
   index.orders.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
     TpchQ3OrderSummary order;
     uint32_t bucket_count = 0;
-    if (!reader.I64(order.orderkey) || !reader.I32(order.orderdate_days) ||
-        !reader.I32(order.shippriority) || !reader.I32(order.max_shipdate) ||
+    int64_t orderkey = 0;
+    int32_t orderdate_days = 0;
+    int32_t shippriority = 0;
+    int32_t max_shipdate = 0;
+    if (!reader.I64(orderkey) || !reader.I32(orderdate_days) ||
+        !reader.I32(shippriority) || !reader.I32(max_shipdate) ||
         !reader.U32(bucket_count))
       return false;
-    order.buckets.reserve(bucket_count);
+    (void)max_shipdate;
+    order.orderkey = PackTpchQ3Orderkey(orderkey);
+    order.orderdate_days = PackTpchQ3Date(orderdate_days);
+    order.shippriority = PackTpchQ3Shippriority(shippriority);
+    std::vector<TpchQ3ShipdateBucket> buckets;
+    buckets.reserve(bucket_count);
     for (uint32_t b = 0; b < bucket_count; ++b) {
+      int32_t shipdate = 0;
       TpchQ3ShipdateBucket bucket;
-      if (!reader.I32(bucket.shipdate) || !reader.I64(bucket.suffix_revenue))
+      if (!reader.I32(shipdate) || !reader.I64(bucket.suffix_revenue))
         return false;
-      order.buckets.push_back(bucket);
+      bucket.shipdate = PackTpchQ3Date(shipdate);
+      buckets.push_back(bucket);
     }
-    if (!order.buckets.empty())
-      order.max_shipdate = order.buckets.back().shipdate;
-    index.orders.push_back(std::move(order));
+    index.AssignBuckets(order, std::move(buckets));
+    index.orders.push_back(order);
   }
   SortTpchQ3SegmentIntervalIndex(index);
   return reader.offset == bytes.size();
@@ -711,8 +731,8 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
 
     for (const auto &order_deltas : by_order) {
       const auto orderkey = order_deltas.first;
-      auto position_it = index.order_positions.find(orderkey);
-      if (position_it == index.order_positions.end()) {
+      std::size_t position = 0;
+      if (!index.FindPosition(orderkey, position)) {
         OrderMeta meta;
         const auto meta_it = order_meta.find(orderkey);
         if (meta_it != order_meta.end()) {
@@ -724,29 +744,29 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
           meta = OrderMeta{ctx.orderdate_days, ctx.shippriority};
         }
         TpchQ3OrderSummary summary;
-        summary.orderkey = orderkey;
-        summary.orderdate_days = meta.orderdate_days;
-        summary.shippriority = meta.shippriority;
+        summary.orderkey = PackTpchQ3Orderkey(orderkey);
+        summary.orderdate_days = PackTpchQ3Date(meta.orderdate_days);
+        summary.shippriority = PackTpchQ3Shippriority(meta.shippriority);
         for (const auto &delta : order_deltas.second)
-          ApplyLineitemDelta(summary, delta);
-        if (summary.buckets.empty())
+          ApplyLineitemDelta(index, summary, delta);
+        if (summary.bucket_count == 0)
           continue;
-        index.orders.push_back(std::move(summary));
+        index.orders.push_back(summary);
         needs_resort = true;
         changed = true;
         continue;
       }
-      auto &summary = index.orders[position_it->second];
-      const auto old_max = summary.max_shipdate;
+      auto &summary = index.orders[position];
+      const auto old_max = index.MaxShipdate(summary);
       for (const auto &delta : order_deltas.second)
-        ApplyLineitemDelta(summary, delta);
-      if (summary.buckets.empty()) {
+        ApplyLineitemDelta(index, summary, delta);
+      if (summary.bucket_count == 0) {
         RemoveOrderFromIndex(index, orderkey);
         needs_resort = true;
         changed = true;
         continue;
       }
-      if (summary.max_shipdate != old_max)
+      if (index.MaxShipdate(summary) != old_max)
         needs_resort = true;
       changed = true;
     }
@@ -916,13 +936,17 @@ TpchQ3State TpchQ3Module::BuildState(core::AuxEngineServices &services,
     if (entry.second.shipdate_revenue.empty())
       continue;
     TpchQ3OrderSummary summary;
-    summary.orderkey = entry.first;
-    summary.orderdate_days = entry.second.orderdate_days;
-    summary.shippriority = entry.second.shippriority;
-    FinalizeTpchQ3OrderSummary(summary, entry.second.shipdate_revenue);
+    summary.orderkey = PackTpchQ3Orderkey(entry.first);
+    summary.orderdate_days = PackTpchQ3Date(entry.second.orderdate_days);
+    summary.shippriority = PackTpchQ3Shippriority(entry.second.shippriority);
+    std::vector<TpchQ3ShipdateBucket> buckets;
+    FinalizeTpchQ3OrderSummary(buckets, entry.second.shipdate_revenue);
     auto &index = state.segment_intervals[entry.second.segment];
     index.segment = entry.second.segment;
-    index.orders.push_back(std::move(summary));
+    index.AssignBuckets(summary, std::move(buckets));
+    if (summary.bucket_count == 0)
+      continue;
+    index.orders.push_back(summary);
   }
   for (auto &entry : state.segment_intervals)
     SortTpchQ3SegmentIntervalIndex(entry.second);

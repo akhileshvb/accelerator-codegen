@@ -1421,6 +1421,11 @@ public:
 		const auto sort_t0 = clock::now();
 		ParallelSortCandidateIndices(sort_order, candidates, worker_count);
 		profile.output_sort_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - sort_t0).count();
+		// TPC-H Q10 returns the top 20 customers by revenue.
+		constexpr std::size_t kTpchQ10ResultLimit = 20;
+		if (sort_order.size() > kTpchQ10ResultLimit) {
+			sort_order.resize(kTpchQ10ResultLimit);
+		}
 
 		const auto materialize_t0 = clock::now();
 		output_rows.clear();

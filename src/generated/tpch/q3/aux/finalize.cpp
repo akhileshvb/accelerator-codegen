@@ -27,42 +27,45 @@ struct TopKLess {
 
 } // namespace
 
-void FinalizeTpchQ3OrderSummary(TpchQ3OrderSummary &summary,
+void FinalizeTpchQ3OrderSummary(std::vector<TpchQ3ShipdateBucket> &buckets,
                                 const std::map<int32_t, int64_t> &day_revenue) {
-  summary.buckets.clear();
+  buckets.clear();
   for (const auto &entry : day_revenue) {
     if (entry.second != 0)
-      summary.buckets.push_back({entry.first, 0});
+      buckets.push_back({PackTpchQ3Date(entry.first), 0});
   }
-  if (summary.buckets.empty()) {
-    summary.max_shipdate = 0;
-    summary.buckets.shrink_to_fit();
+  if (buckets.empty()) {
+    buckets.shrink_to_fit();
     return;
   }
-  std::sort(summary.buckets.begin(), summary.buckets.end(),
+  std::sort(buckets.begin(), buckets.end(),
             [](const TpchQ3ShipdateBucket &lhs, const TpchQ3ShipdateBucket &rhs) {
               return lhs.shipdate < rhs.shipdate;
             });
-  summary.max_shipdate = summary.buckets.back().shipdate;
   int64_t running = 0;
-  for (int index = static_cast<int>(summary.buckets.size()) - 1; index >= 0;
-       --index) {
-    running += day_revenue.at(summary.buckets[static_cast<std::size_t>(index)].shipdate);
-    summary.buckets[static_cast<std::size_t>(index)].suffix_revenue = running;
+  for (int index = static_cast<int>(buckets.size()) - 1; index >= 0; --index) {
+    running += day_revenue.at(buckets[static_cast<std::size_t>(index)].shipdate);
+    buckets[static_cast<std::size_t>(index)].suffix_revenue = running;
   }
-  summary.buckets.shrink_to_fit();
+  buckets.shrink_to_fit();
 }
 
 int64_t TpchQ3RevenueAboveCutoff(const TpchQ3OrderSummary &order,
+                                 const std::vector<TpchQ3ShipdateBucket> &pool,
                                  int32_t cutoff_days) {
-  if (order.orderdate_days >= cutoff_days || order.max_shipdate <= cutoff_days)
+  if (order.orderdate_days >= cutoff_days || order.bucket_count == 0)
+    return 0;
+  const auto begin = pool.begin() + static_cast<std::ptrdiff_t>(order.bucket_begin);
+  const auto end =
+      begin + static_cast<std::ptrdiff_t>(order.bucket_count);
+  if (static_cast<int32_t>((end - 1)->shipdate) <= cutoff_days)
     return 0;
   const auto it = std::upper_bound(
-      order.buckets.begin(), order.buckets.end(), cutoff_days,
+      begin, end, cutoff_days,
       [](int32_t cutoff, const TpchQ3ShipdateBucket &bucket) {
-        return cutoff < bucket.shipdate;
+        return cutoff < static_cast<int32_t>(bucket.shipdate);
       });
-  if (it == order.buckets.end())
+  if (it == end)
     return 0;
   return it->suffix_revenue;
 }
@@ -72,15 +75,16 @@ ComposeTpchQ3TopK(const TpchQ3SegmentIntervalIndex &index,
                   int32_t cutoff_days) {
   const auto begin = std::lower_bound(
       index.orders.begin(), index.orders.end(), cutoff_days,
-      [](const TpchQ3OrderSummary &order, int32_t cutoff) {
-        return order.max_shipdate <= cutoff;
+      [&index](const TpchQ3OrderSummary &order, int32_t cutoff) {
+        return index.MaxShipdate(order) <= cutoff;
       });
   std::priority_queue<TpchQ3OutputRow, std::vector<TpchQ3OutputRow>, TopKLess>
       heap;
   for (auto it = begin; it != index.orders.end(); ++it) {
     if (it->orderdate_days >= cutoff_days)
       continue;
-    const auto revenue_raw = TpchQ3RevenueAboveCutoff(*it, cutoff_days);
+    const auto revenue_raw =
+        TpchQ3RevenueAboveCutoff(*it, index.bucket_pool, cutoff_days);
     if (revenue_raw == 0)
       continue;
     TpchQ3OutputRow row;

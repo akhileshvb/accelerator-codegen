@@ -14,7 +14,7 @@ PG_USER="${PG_USER:-postgres}"
 DB="${SEC_PG_DB:-accel_sec_edgar_sf3}"
 DUCKDB="${SEC_EDGAR_DB:-${ROOT}/../accelerator-codegen-duckdb/sec_edgar_sf3.duckdb}"
 EXTENSION_SO="${ACCEL_POSTGRES_SO:-/usr/lib/postgresql/17/lib/accelerator_codegen_postgres.so}"
-EXTENSION_SQL="${ROOT}/src/aux_state/engine/postgres/accelerator_codegen_postgres--0.1.sql"
+EXTENSION_SQL="${ROOT}/src/runtime/postgres/accelerator_codegen_postgres--0.1.sql"
 
 export PGHOST="$PG_HOST"
 export PGPORT="$PG_PORT"

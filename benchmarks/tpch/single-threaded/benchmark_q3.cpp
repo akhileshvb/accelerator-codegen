@@ -1,6 +1,6 @@
-#include "accelerator_codegen/duckdb_scan_adapter.hpp"
-#include "accelerator_codegen/register.hpp"
-#include "accelerator_codegen/tpch_q3.hpp"
+#include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
+#include "accelerator_codegen/runtime/duckdb/register.hpp"
+#include "tpch/q3/base/query.hpp"
 #include "test_support/q3_manifest.hpp"
 
 #include <algorithm>

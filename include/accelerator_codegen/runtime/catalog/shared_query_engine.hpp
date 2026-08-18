@@ -36,4 +36,8 @@ public:
 
 void RegisterDuckdbAuxTableFunctions(::duckdb::Connection &connection);
 
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+void RegisterDuckdbAuxParallelTableFunctions(::duckdb::Connection &connection);
+#endif
+
 } // namespace accelerator_codegen::aux_state::engine

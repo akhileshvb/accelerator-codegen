@@ -6,7 +6,7 @@ import os
 import statistics
 import time
 
-from postgres_differential import connect, differential, run_query
+from postgres_differential import connect, differential, run_query, collect_invalidating_probe
 from shared_query_catalog import lookup_query, queries_for_workload
 
 CSV_HEADER = (
@@ -18,38 +18,82 @@ CSV_HEADER = (
 
 
 def measure_mode(db, entry, interval, shared, read_operations, reader_qps, warmup):
+    mode = "shared" if shared else "base"
     conn = connect(db)
     conn.autocommit = False
     cur = conn.cursor()
     build_us = 0.0
     try:
-        cur.execute("SET max_parallel_workers_per_gather = 0")
+        workers = int(
+            os.environ.get(
+                "ACCEL_BENCH_THREADS",
+                os.environ.get("ACCEL_PG_MAX_PARALLEL_WORKERS_PER_GATHER", "0"),
+            )
+        )
+
+        def apply_worker_gucs():
+            # Same worker cap for Postgres SQL (gather) and aux (GUC / env).
+            try:
+                cur.execute("SET max_parallel_workers = %s", (workers,))
+            except Exception:
+                conn.rollback()
+            cur.execute("SET max_parallel_workers_per_gather = %s", (workers,))
+            if workers > 0:
+                try:
+                    cur.execute("SET accel.aux_worker_count = %s", (workers,))
+                except Exception:
+                    conn.rollback()
+                    try:
+                        cur.execute("SET max_parallel_workers = %s", (workers,))
+                    except Exception:
+                        conn.rollback()
+                    cur.execute(
+                        "SET max_parallel_workers_per_gather = %s", (workers,)
+                    )
+
+        apply_worker_gucs()
         if not shared:
             cur.execute("SET session_replication_role = replica")
         statement = entry.aux_sql if shared else entry.base_sql
 
+        def progress(msg):
+            print(
+                f"[progress] q{entry.query_id} interval={interval} mode={mode}: {msg}",
+                flush=True,
+            )
+
         if shared:
+            progress("cold build starting")
             build_start = time.perf_counter_ns()
             run_query(cur, statement)
             conn.commit()
             build_us = (time.perf_counter_ns() - build_start) / 1000.0
+            progress(f"cold build done ({build_us / 1e6:.1f}s)")
 
-        for _ in range(warmup):
+        for warm_i in range(warmup):
+            progress(f"warmup {warm_i + 1}/{warmup}")
             run_query(cur, statement)
             conn.commit()
 
-        probe_row = run_query(cur, entry.probe_select_sql)[0]
-        probe = entry.build_probe(probe_row)
-        update = probe["update"]
-        restore = probe["restore"]
-        restore_args = probe["restore_args"]
+        do_writes = interval > 0
+        probe = None
+        if do_writes:
+            progress("select invalidating probe")
+            probe = collect_invalidating_probe(conn, cur, entry)
+            print(
+                f"invalidating_write_probes=1 query={entry.query_id}",
+                flush=True,
+            )
+        update = probe["update"] if probe else None
+        restore = probe["restore"] if probe else None
+        restore_args = probe["restore_args"] if probe else None
 
-        next_write = interval if interval > 0 else float("inf")
+        next_write = interval if do_writes else float("inf")
         reads, writes, rows = 0, 0, 0
         read_samples, write_samples = [], []
         for read_index in range(read_operations):
             virtual_time = read_index / reader_qps
-            while interval > 0 and virtual_time + 1e-12 >= next_write:
+            while do_writes and virtual_time + 1e-12 >= next_write:
                 start = time.perf_counter_ns()
                 cur.execute("BEGIN")
                 cur.execute(update)
@@ -57,14 +101,17 @@ def measure_mode(db, entry, interval, shared, read_operations, reader_qps, warmu
                 write_samples.append((time.perf_counter_ns() - start) / 1000.0)
                 writes += 1
                 next_write += interval
+            progress(f"read {read_index + 1}/{read_operations}")
             start = time.perf_counter_ns()
             result = run_query(cur, statement)
             rows = len(result)
             read_samples.append((time.perf_counter_ns() - start) / 1000.0)
             reads += 1
 
-        cur.execute(restore, restore_args)
-        conn.commit()
+        if writes > 0:
+            progress("restore probe row")
+            cur.execute(restore, restore_args)
+            conn.commit()
         p50_read = statistics.median(read_samples) if read_samples else 0.0
         p50_write = statistics.median(write_samples) if write_samples else 0.0
         return (

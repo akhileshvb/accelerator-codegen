@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #include "accelerator_codegen/stateful/state/invalidation_plan.hpp"
 
 namespace accelerator_codegen::aux_state {

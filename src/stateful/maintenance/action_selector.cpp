@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #include "accelerator_codegen/stateful/maintenance/action_selector.hpp"
 
 #include <algorithm>

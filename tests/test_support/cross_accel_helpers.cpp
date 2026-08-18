@@ -253,7 +253,7 @@ std::string TpchReferenceSql(int query_num) {
 		       "(SELECT l_partkey AS agg_partkey, 0.2 * AVG(l_quantity) AS avg_quantity "
 		       "FROM lineitem GROUP BY l_partkey) part_agg "
 		       "WHERE p_partkey = l_partkey AND agg_partkey = l_partkey "
-		       "AND p_brand = 'Brand#34' AND p_container = 'LARGE BRUSHED' "
+		       "AND p_brand = 'Brand#34' AND p_container = 'LG CASE' "
 		       "AND l_quantity < avg_quantity";
 	case 6:
 		return "SELECT revenue FROM accel_tpch_q6(DATE '1995-01-01', 0.03, 25)";
@@ -333,7 +333,7 @@ std::string TpchAuxSql(int query_num) {
 	case 18:
 		return "SELECT * FROM accel_tpch_q18_aux(312)";
 	case 17:
-		return "SELECT * FROM accel_tpch_q17_aux('Brand#34', 'LARGE BRUSHED')";
+		return "SELECT * FROM accel_tpch_q17_aux('Brand#34', 'LG CASE')";
 	case 22:
 		return "SELECT * FROM accel_tpch_q22_aux('13', '30', '99', '98', '97', '96', '95')";
 	case 21:
@@ -826,7 +826,7 @@ std::string InvalidatingWriterSqlForQuery(int query_num, int bulk_row_limit, int
 	case 17:
 		return PointLineitemUpdateSql(
 		    "l_partkey IN (SELECT p_partkey FROM part WHERE p_brand = 'Brand#34' "
-		    "AND p_container = 'LARGE BRUSHED')",
+		    "AND p_container = 'LG CASE')",
 		    bulk_row_limit);
 	case 22:
 		return "UPDATE orders SET o_custkey = o_custkey + 1 WHERE o_orderkey "

@@ -1,8 +1,8 @@
-#include "accelerator_codegen/duckdb_scan_adapter.hpp"
-#include "accelerator_codegen/register.hpp"
-#include "accelerator_codegen/tpch_q1.hpp"
-#include "accelerator_codegen/tpch_q1_fused.hpp"
-#include "accelerator_codegen/tpch_q6.hpp"
+#include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
+#include "accelerator_codegen/runtime/duckdb/register.hpp"
+#include "tpch/q1/base/query.hpp"
+#include "tpch/q1/base/fused.hpp"
+#include "tpch/q6/base/query.hpp"
 #include "test_support/q1_manifest.hpp"
 #include "test_support/q6_manifest.hpp"
 

@@ -9,6 +9,7 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
@@ -200,24 +201,48 @@ uint32_t MonthPartition(int32_t month) {
                                static_cast<uint64_t>(month));
 }
 
+void CollectCustomerRankKeys(const TpchQ10State &state,
+                             std::vector<int64_t> &keys) {
+  keys.clear();
+  for (std::size_t chunk_idx = 0;
+       chunk_idx < state.customer_ranks.chunks.size(); ++chunk_idx) {
+    const auto &chunk = state.customer_ranks.chunks[chunk_idx];
+    const int64_t base = static_cast<int64_t>(
+        chunk_idx << core::DenseIdArray<TpchQ10CustomerRank>::kShift);
+    for (std::size_t slot = 0; slot < chunk.size(); ++slot) {
+      if (chunk[slot].present == 0)
+        continue;
+      keys.push_back(base + static_cast<int64_t>(slot));
+    }
+  }
+  std::sort(keys.begin(), keys.end());
+}
+
+bool FetchCustomerStrings(TpchQ10InitialScan *scan,
+                          const std::vector<int64_t> &custkeys,
+                          std::unordered_map<int64_t, TpchQ10Customer> &out) {
+  out.clear();
+  if (custkeys.empty())
+    return true;
+  return scan && scan->LookupCustomers(custkeys, out);
+}
+
 } // namespace
 
 std::vector<uint8_t> EncodeTpchQ10Side(const TpchQ10State &state) {
   ByteWriter writer;
-  core::WriteImageHeader(writer, kSideMagic, kVersion, static_cast<uint32_t>(state.customers.size()));
   std::vector<int64_t> keys;
-  for (const auto &entry : state.customers)
-    keys.push_back(entry.first);
-  std::sort(keys.begin(), keys.end());
+  CollectCustomerRankKeys(state, keys);
+  core::WriteImageHeader(writer, kSideMagic, kVersion, static_cast<uint32_t>(keys.size()));
   for (const auto key : keys) {
-    const auto &customer = state.customers.at(key);
+    const auto rank = state.RankOf(key);
     writer.I64(key);
-    writer.String(customer.name);
-    writer.I64(customer.acctbal_raw);
-    writer.I32(customer.nationkey);
-    writer.String(customer.address);
-    writer.String(customer.phone);
-    writer.String(customer.comment);
+    writer.String(std::string{});
+    writer.I64(rank.acctbal_raw);
+    writer.I32(rank.nationkey);
+    writer.String(std::string{});
+    writer.String(std::string{});
+    writer.String(std::string{});
   }
   writer.U32(static_cast<uint32_t>(state.nations.size()));
   std::vector<int32_t> nations;
@@ -270,7 +295,7 @@ bool DecodeTpchQ10Side(const std::vector<uint8_t> &bytes, TpchQ10State &state) {
   uint32_t count = 0;
   if (!core::ReadImageHeader(reader, kSideMagic, kVersion, count))
     return false;
-  state.customers.clear();
+  state.customer_ranks.Clear();
   state.nations.clear();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0;
@@ -280,7 +305,7 @@ bool DecodeTpchQ10Side(const std::vector<uint8_t> &bytes, TpchQ10State &state) {
         !reader.String(customer.address) || !reader.String(customer.phone) ||
         !reader.String(customer.comment))
       return false;
-    state.customers.emplace(key, std::move(customer));
+    state.SetCustomerRank(key, customer.acctbal_raw, customer.nationkey);
   }
   if (!reader.U32(count))
     return false;
@@ -445,7 +470,7 @@ void TpchQ10Module::Build(core::AuxEngineServices &services,
   // Publish lean per-kind images so Side/Month payloads do not retain the
   // full orders map (orders are write-maintenance only).
   auto side_state = std::make_shared<TpchQ10State>();
-  side_state->customers = std::move(state.customers);
+  side_state->customer_ranks = std::move(state.customer_ranks);
   side_state->nations = std::move(state.nations);
   builder.Write(core::StateImage::Make(
       core::TpchQ10Layout::kAccelerator,
@@ -850,8 +875,20 @@ void TpchQ10Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  TpchQ10FinalizeAndEmit(side->customers, side->nations, month_revenues, start,
-                         sink, kTpchQ10ResultLimit);
+  const auto ranked =
+      TpchQ10SelectTopK(side->customer_ranks, month_revenues, kTpchQ10ResultLimit);
+  std::vector<int64_t> custkeys;
+  custkeys.reserve(ranked.size());
+  for (const auto &entry : ranked)
+    custkeys.push_back(entry.first);
+  std::unordered_map<int64_t, TpchQ10Customer> customer_strings;
+  if (!FetchCustomerStrings(initial_scan, custkeys, customer_strings) &&
+      !custkeys.empty()) {
+    ExecuteFallback(services, arguments, sink);
+    return;
+  }
+  TpchQ10FinalizeAndEmit(side->customer_ranks, side->nations, month_revenues,
+                         customer_strings, start, sink, kTpchQ10ResultLimit);
 }
 void TpchQ10Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
@@ -882,9 +919,7 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
 
   auto t = std::chrono::steady_clock::now();
   initial_scan->ScanCustomers([&](const TpchQ10CustomerInput &input) {
-    state.customers[input.key] = {input.name, input.acctbal_raw,
-                                  input.nationkey, input.address, input.phone,
-                                  input.comment};
+    state.SetCustomerRank(input.key, input.acctbal_raw, input.nationkey);
   });
   log_phase("customers", t);
 
@@ -963,7 +998,7 @@ bool TpchQ10Module::LoadState(
     if (image.partition == core::TpchQ10Layout::kCustomerDimensions) {
       const auto *typed = AsQ10Image(image, TpchQ10ImageKind::Side);
       if (typed) {
-        state.customers = typed->state->customers;
+        state.customer_ranks = typed->state->customer_ranks;
         state.nations = typed->state->nations;
         side = true;
       }
@@ -986,7 +1021,28 @@ bool TpchQ10Module::LoadState(
 
 void TpchQ10Module::EmitResult(const TpchQ10State &state, int32_t start_days,
                                core::AuxRowSink &sink) const {
-  TpchQ10FinalizeAndEmit(state, start_days, sink);
+  const auto end_days = TpchQ10AddMonths(start_days, 3);
+  std::vector<const std::unordered_map<int64_t, int64_t> *> month_revenues;
+  for (int32_t cursor = start_days; cursor < end_days;) {
+    const auto month = TpchQ10MonthKeyFromDays(cursor);
+    const auto it = state.month_revenue.find(month);
+    if (it != state.month_revenue.end())
+      month_revenues.push_back(&it->second);
+    const auto next = TpchQ10AddMonths(TpchQ10MonthStartDays(month), 1);
+    if (next <= cursor)
+      break;
+    cursor = next;
+  }
+  const auto ranked =
+      TpchQ10SelectTopK(state.customer_ranks, month_revenues, kTpchQ10ResultLimit);
+  std::vector<int64_t> custkeys;
+  custkeys.reserve(ranked.size());
+  for (const auto &entry : ranked)
+    custkeys.push_back(entry.first);
+  std::unordered_map<int64_t, TpchQ10Customer> customer_strings;
+  FetchCustomerStrings(initial_scan, custkeys, customer_strings);
+  TpchQ10FinalizeAndEmit(state.customer_ranks, state.nations, month_revenues,
+                         customer_strings, start_days, sink, kTpchQ10ResultLimit);
 }
 
 } // namespace accelerator_codegen::aux_state::query

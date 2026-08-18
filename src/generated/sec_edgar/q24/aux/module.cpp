@@ -6,6 +6,7 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 
@@ -15,7 +16,7 @@ namespace {
 using core::ByteReader;
 using core::ByteWriter;
 
-constexpr uint32_t kFormatVersion = 1;
+constexpr uint32_t kFormatVersion = 2;
 constexpr uint32_t kPreMagic = 0x50323451;        // Q24P
 constexpr uint32_t kTagVersionMagic = 0x54323451; // Q24T
 constexpr uint32_t kAggregateMagic = 0x41323451;  // Q24A
@@ -185,35 +186,125 @@ core::InvalidationPlan AggregatePartitions() {
 
 } // namespace
 
-std::size_t SecEdgarQ24MembershipKeyHash::operator()(
-    const SecEdgarQ24MembershipKey &key) const noexcept {
-  return std::hash<std::string>{}(key.adsh) ^
-         (std::hash<std::string>{}(key.tag) << 1) ^
-         (std::hash<std::string>{}(key.version) << 2);
-}
-
 std::size_t SecEdgarQ24TagVersionKeyHash::operator()(
     const SecEdgarQ24TagVersionKey &key) const noexcept {
   return std::hash<std::string>{}(key.tag) ^
          (std::hash<std::string>{}(key.version) << 1);
 }
 
+void SecEdgarQ24PreMembership::Clear() {
+  adsh_index.clear();
+  adshs.clear();
+  tv_index.clear();
+  tvs.clear();
+  by_adsh.clear();
+}
+
+uint32_t SecEdgarQ24PreMembership::InternAdsh(const std::string &adsh) {
+  const auto it = adsh_index.find(adsh);
+  if (it != adsh_index.end()) {
+    return it->second;
+  }
+  const uint32_t id = static_cast<uint32_t>(adshs.size());
+  adshs.push_back(adsh);
+  adsh_index.emplace(adshs.back(), id);
+  by_adsh.emplace_back();
+  return id;
+}
+
+uint32_t
+SecEdgarQ24PreMembership::InternTagVersion(const SecEdgarQ24TagVersionKey &key) {
+  const auto it = tv_index.find(key);
+  if (it != tv_index.end()) {
+    return it->second;
+  }
+  const uint32_t id = static_cast<uint32_t>(tvs.size());
+  tvs.push_back(key);
+  tv_index.emplace(tvs.back(), id);
+  return id;
+}
+
+void SecEdgarQ24PreMembership::Insert(const std::string &adsh,
+                                      const std::string &tag,
+                                      const std::string &version) {
+  const uint32_t adsh_id = InternAdsh(adsh);
+  const uint32_t tv_id = InternTagVersion({tag, version});
+  by_adsh[adsh_id].push_back(tv_id);
+}
+
+void SecEdgarQ24PreMembership::Finalize() {
+  for (auto &tvs_for_adsh : by_adsh) {
+    if (tvs_for_adsh.size() <= 1) {
+      continue;
+    }
+    std::sort(tvs_for_adsh.begin(), tvs_for_adsh.end());
+    tvs_for_adsh.erase(std::unique(tvs_for_adsh.begin(), tvs_for_adsh.end()),
+                       tvs_for_adsh.end());
+  }
+}
+
+bool SecEdgarQ24PreMembership::Contains(const std::string &adsh,
+                                        const std::string &tag,
+                                        const std::string &version) const {
+  const auto adsh_it = adsh_index.find(adsh);
+  if (adsh_it == adsh_index.end()) {
+    return false;
+  }
+  const auto tv_it = tv_index.find({tag, version});
+  if (tv_it == tv_index.end()) {
+    return false;
+  }
+  const auto adsh_id = adsh_it->second;
+  if (adsh_id >= by_adsh.size()) {
+    return false;
+  }
+  const auto &tvs_for_adsh = by_adsh[adsh_id];
+  const auto tv_id = tv_it->second;
+  if (tvs_for_adsh.size() <= 4) {
+    for (const auto candidate : tvs_for_adsh) {
+      if (candidate == tv_id) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return std::binary_search(tvs_for_adsh.begin(), tvs_for_adsh.end(), tv_id);
+}
+
+bool SecEdgarQ24PreMembership::Contains(
+    const SecEdgarQ24MembershipKey &key) const {
+  return Contains(key.adsh, key.tag, key.version);
+}
+
+std::size_t SecEdgarQ24PreMembership::size() const {
+  std::size_t total = 0;
+  for (const auto &tvs_for_adsh : by_adsh) {
+    total += tvs_for_adsh.size();
+  }
+  return total;
+}
+
 std::vector<uint8_t>
 EncodeSecEdgarQ24PreMembership(const SecEdgarQ24State &state) {
-  std::vector<SecEdgarQ24MembershipKey> keys(state.pre_membership.begin(),
-                                             state.pre_membership.end());
-  std::sort(keys.begin(), keys.end(), [](const auto &lhs, const auto &rhs) {
-    return lhs.adsh < rhs.adsh ||
-           (lhs.adsh == rhs.adsh &&
-            (lhs.tag < rhs.tag ||
-             (lhs.tag == rhs.tag && lhs.version < rhs.version)));
-  });
+  const auto &membership = state.pre_membership;
   ByteWriter writer;
-  core::WriteImageHeader(writer, kPreMagic, kFormatVersion, static_cast<uint32_t>(keys.size()));
-  for (const auto &key : keys) {
-    writer.String(key.adsh);
-    writer.String(key.tag);
-    writer.String(key.version);
+  core::WriteImageHeader(writer, kPreMagic, kFormatVersion,
+                         static_cast<uint32_t>(membership.size()));
+  writer.U32(static_cast<uint32_t>(membership.adshs.size()));
+  for (const auto &adsh : membership.adshs) {
+    writer.String(adsh);
+  }
+  writer.U32(static_cast<uint32_t>(membership.tvs.size()));
+  for (const auto &tv : membership.tvs) {
+    writer.String(tv.tag);
+    writer.String(tv.version);
+  }
+  writer.U32(static_cast<uint32_t>(membership.by_adsh.size()));
+  for (const auto &tvs_for_adsh : membership.by_adsh) {
+    writer.U32(static_cast<uint32_t>(tvs_for_adsh.size()));
+    for (const auto tv_id : tvs_for_adsh) {
+      writer.U32(tv_id);
+    }
   }
   return std::move(writer.bytes);
 }
@@ -243,20 +334,60 @@ EncodeSecEdgarQ24Aggregates(const SecEdgarQ24State &state) {
 bool DecodeSecEdgarQ24PreMembership(const std::vector<uint8_t> &bytes,
                                     SecEdgarQ24State &state) {
   ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kPreMagic, kFormatVersion, count)) {
+  uint32_t triple_count = 0;
+  if (!core::ReadImageHeader(reader, kPreMagic, kFormatVersion, triple_count)) {
     return false;
   }
-  state.pre_membership.clear();
-  for (uint32_t i = 0; i < count; ++i) {
-    SecEdgarQ24MembershipKey key;
-    if (!reader.String(key.adsh) || !reader.String(key.tag) ||
-        !reader.String(key.version)) {
+  state.pre_membership.Clear();
+  uint32_t adsh_count = 0;
+  if (!reader.U32(adsh_count)) {
+    return false;
+  }
+  state.pre_membership.adshs.reserve(adsh_count);
+  state.pre_membership.by_adsh.reserve(adsh_count);
+  for (uint32_t i = 0; i < adsh_count; ++i) {
+    std::string adsh;
+    if (!reader.String(adsh)) {
       return false;
     }
-    state.pre_membership.insert(std::move(key));
+    state.pre_membership.adsh_index.emplace(adsh, i);
+    state.pre_membership.adshs.push_back(std::move(adsh));
   }
-  return reader.offset == bytes.size();
+  uint32_t tv_count = 0;
+  if (!reader.U32(tv_count)) {
+    return false;
+  }
+  state.pre_membership.tvs.reserve(tv_count);
+  for (uint32_t i = 0; i < tv_count; ++i) {
+    SecEdgarQ24TagVersionKey key;
+    if (!reader.String(key.tag) || !reader.String(key.version)) {
+      return false;
+    }
+    state.pre_membership.tv_index.emplace(key, i);
+    state.pre_membership.tvs.push_back(std::move(key));
+  }
+  uint32_t by_adsh_count = 0;
+  if (!reader.U32(by_adsh_count) || by_adsh_count != adsh_count) {
+    return false;
+  }
+  state.pre_membership.by_adsh.resize(by_adsh_count);
+  std::size_t seen = 0;
+  for (uint32_t i = 0; i < by_adsh_count; ++i) {
+    uint32_t n = 0;
+    if (!reader.U32(n)) {
+      return false;
+    }
+    auto &tvs_for_adsh = state.pre_membership.by_adsh[i];
+    tvs_for_adsh.resize(n);
+    for (uint32_t j = 0; j < n; ++j) {
+      if (!reader.U32(tvs_for_adsh[j]) ||
+          tvs_for_adsh[j] >= tv_count) {
+        return false;
+      }
+    }
+    seen += n;
+  }
+  return reader.offset == bytes.size() && seen == triple_count;
 }
 
 bool DecodeSecEdgarQ24TagVersions(const std::vector<uint8_t> &bytes,
@@ -363,7 +494,7 @@ void SecEdgarQ24TxnBuffer::AddDelta(NumDelta delta) {
 core::AcceleratorId SecEdgarQ24Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> SecEdgarQ24Module::Dependencies() const {
-  return {{config.num_table, {0, 1, 2, 3, 4, 5}},
+  return {{config.num_table, {0, 1, 2, 3, 4, 5, 7}},
           {config.pre_table, {0, 1, 2}}};
 }
 
@@ -388,7 +519,8 @@ core::InvalidationPlan SecEdgarQ24Module::InterpretMutation(
       !mutation.updated_columns.empty()) {
     bool relevant = false;
     for (const auto column : mutation.updated_columns) {
-      if (column <= 5) {
+      // Physical num.value is column 7; ddate/uom/etc. are <=5.
+      if (column == 7 || column <= 5) {
         relevant = true;
         break;
       }
@@ -417,19 +549,12 @@ void SecEdgarQ24Module::AccumulateMutation(
       buffer.MarkRebuild();
       return;
     }
+    // Defer pre-membership exclusion to StageMaintenance (uses published
+    // kPreMembership). Scanning pre here on every delta was O(|pre|).
     const bool relevant = IsRelevant(parsed);
-    bool excluded_by_pre = false;
-    if (relevant && initial_scan) {
-      initial_scan->ScanPre([&](const SecEdgarQ24PreInput &pre_row) {
-        if (pre_row.adsh == parsed.membership.adsh &&
-            pre_row.tag == parsed.membership.tag &&
-            pre_row.version == parsed.membership.version)
-          excluded_by_pre = true;
-      });
-    }
     buffer.AddDelta({std::move(parsed.membership),
                      std::move(parsed.tag_version), parsed.value, sign,
-                     relevant, excluded_by_pre});
+                     relevant, /*excluded_by_pre=*/false});
   };
   switch (mutation.kind) {
   case core::MutationKind::Insert:
@@ -490,14 +615,22 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
 
   const auto visibility = services.CurrentVisibility();
   const auto snapshot = services.StateStore().ReadPartitions(
-      visibility, {core::SecEdgarQ24Layout::kTagVersions,
+      visibility, {core::SecEdgarQ24Layout::kPreMembership,
+                   core::SecEdgarQ24Layout::kTagVersions,
                    core::SecEdgarQ24Layout::kGroupAggregates});
   SecEdgarQ24State state;
   core::Version aggregate_version = 0;
+  bool have_pre = false;
   bool have_tags = false;
   bool have_aggregates = false;
   for (const auto &image : snapshot.partitions) {
-    if (image.partition == core::SecEdgarQ24Layout::kTagVersions) {
+    if (image.partition == core::SecEdgarQ24Layout::kPreMembership) {
+      const auto *typed = AsQ24Image(image, SecEdgarQ24ImageKind::PreMembership);
+      if (typed) {
+        state.pre_membership = typed->state->pre_membership;
+        have_pre = true;
+      }
+    } else if (image.partition == core::SecEdgarQ24Layout::kTagVersions) {
       const auto *typed = AsQ24Image(image, SecEdgarQ24ImageKind::TagVersions);
       if (typed) {
         state.tag_versions = typed->state->tag_versions;
@@ -512,7 +645,7 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
       aggregate_version = image.version;
     }
   }
-  if (!have_tags || !have_aggregates ||
+  if (!have_pre || !have_tags || !have_aggregates ||
       state.aggregates.size() != state.tag_versions.size()) {
     outcome.action = core::MaintenanceAction::RebuildAll;
     outcome.invalidations = AllPartitions();
@@ -520,15 +653,15 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
   for (const auto &delta : buffer.Deltas()) {
-    if (delta.excluded_by_pre) {
+    if (delta.excluded_by_pre ||
+        state.pre_membership.Contains(delta.membership)) {
       continue;
     }
     const auto group = FindGroup(state.tag_versions, delta.tag_version);
     if (group == std::numeric_limits<uint32_t>::max()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = AllPartitions();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
+      // Tag/version is not in the published HAVING set (count was ≤10 at
+      // build). A point value tweak cannot create a new output group here.
+      continue;
     }
     state.aggregates[group].count += delta.sign;
     state.aggregates[group].total +=
@@ -596,10 +729,9 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error(
         "SEC EDGAR Q24 requires a typed initial scan source");
-  initial_scan->ScanPre([&](const SecEdgarQ24PreInput &input) {
-    state.pre_membership.insert(
-        {input.adsh, input.tag, input.version});
-  });
+  // Collect HAVING groups first, then only keep pre membership for those
+  // (tag,version) pairs. Full pre (~8.6M string triples) is unnecessary for
+  // RO and for ApplyDelta (unknown groups are skipped).
   std::set<SecEdgarQ24TagVersionKey> groups;
   initial_scan->ScanNum([&](const SecEdgarQ24NumInput &input) {
     if (input.uom == "USD" && !input.value_is_null &&
@@ -608,17 +740,30 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &services) const {
   });
   state.tag_versions.assign(groups.begin(), groups.end());
   state.aggregates.resize(state.tag_versions.size());
+  std::unordered_map<SecEdgarQ24TagVersionKey, uint32_t,
+                     SecEdgarQ24TagVersionKeyHash>
+      group_index;
+  group_index.reserve(state.tag_versions.size() * 2);
+  for (uint32_t i = 0; i < state.tag_versions.size(); ++i) {
+    group_index.emplace(state.tag_versions[i], i);
+  }
+  initial_scan->ScanPre([&](const SecEdgarQ24PreInput &input) {
+    if (group_index.find({input.tag, input.version}) == group_index.end()) {
+      return;
+    }
+    state.pre_membership.Insert(input.adsh, input.tag, input.version);
+  });
+  state.pre_membership.Finalize();
   initial_scan->ScanNum([&](const SecEdgarQ24NumInput &input) {
     if (input.uom != "USD" || input.value_is_null || input.ddate < kFirstDate ||
         input.ddate > kLastDate)
       return;
-    if (state.pre_membership.find(
-            {input.adsh, input.tag, input.version}) != state.pre_membership.end())
+    if (state.pre_membership.Contains(input.adsh, input.tag, input.version))
       return;
-    const auto group = FindGroup(state.tag_versions, {input.tag, input.version});
-    if (group != std::numeric_limits<uint32_t>::max()) {
-      state.aggregates[group].count++;
-      state.aggregates[group].total += input.value;
+    const auto group_it = group_index.find({input.tag, input.version});
+    if (group_it != group_index.end()) {
+      state.aggregates[group_it->second].count++;
+      state.aggregates[group_it->second].total += input.value;
     }
   });
   return state;

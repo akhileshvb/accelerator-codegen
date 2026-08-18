@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
 #include "accelerator_codegen/runtime/postgres/bind_helper.hpp"

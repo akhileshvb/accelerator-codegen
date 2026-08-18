@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
 
 #include <algorithm>
@@ -7,7 +8,7 @@ namespace accelerator_codegen::aux_state::engine::postgres {
 
 namespace {
 std::vector<PostgresAuxBackend *> backends;
-}
+} // namespace
 
 void RegisterTransactionBackend(PostgresAuxBackend *backend_p) {
   if (std::find(backends.begin(), backends.end(), backend_p) == backends.end()) {

@@ -1,3 +1,4 @@
+// GENERATED BACKEND
 #include "accelerator_codegen/stateful/postgres/postgres_mutation_capture.hpp"
 
 #include <algorithm>

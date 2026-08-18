@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #include "accelerator_codegen/stateful/state/partitioned_state_store.hpp"
 
 namespace accelerator_codegen::aux_state {

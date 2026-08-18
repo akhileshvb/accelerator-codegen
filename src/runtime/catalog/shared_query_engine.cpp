@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #include "accelerator_codegen/runtime/catalog/shared_query_engine.hpp"
 
 #include <stdexcept>

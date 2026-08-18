@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/dense_id_array.hpp"
 #include "accelerator_codegen/stateful/core/query_layouts.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -54,9 +55,16 @@ struct TpchQ12DayShipmodeStats {
 };
 
 struct TpchQ12State {
-  std::unordered_map<int64_t, TpchQ12PriorityClass> order_priorities;
+  core::DenseIdArray<uint8_t> order_priorities;
   std::map<int32_t, std::unordered_map<std::string, TpchQ12DayShipmodeStats>>
       day_partitions;
+
+  TpchQ12PriorityClass PriorityOf(int64_t orderkey) const {
+    return static_cast<TpchQ12PriorityClass>(order_priorities.Get(orderkey));
+  }
+  void SetPriority(int64_t orderkey, TpchQ12PriorityClass priority) {
+    order_priorities.Set(orderkey, static_cast<uint8_t>(priority));
+  }
 };
 
 enum class TpchQ12ImageKind : uint8_t { OrderPriorities, Day };

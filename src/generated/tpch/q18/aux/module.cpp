@@ -108,34 +108,27 @@ bool BetterOutputRow(const TpchQ18OutputRow &lhs, const TpchQ18OutputRow &rhs) {
   return lhs.orderdate_days < rhs.orderdate_days;
 }
 
-void EnsureChunkSlots(TpchQ18State &state, int64_t orderkey) {
-  if (orderkey < 0)
-    return;
-  const auto key = static_cast<std::size_t>(orderkey);
-  const auto chunk_idx = key >> TpchQ18State::kChunkShift;
-  const auto slot = key & TpchQ18State::kChunkMask;
-  const auto need_chunks = chunk_idx + 1;
-  if (state.quantity_chunks.size() < need_chunks)
-    state.quantity_chunks.resize(need_chunks);
-  auto &chunk = state.quantity_chunks[chunk_idx];
-  if (slot >= chunk.size())
-    chunk.resize(slot + 1, int64_t{0});
-}
-
 void CollectSparseQuantities(
     const TpchQ18State &state,
     std::vector<std::pair<int64_t, int64_t>> &entries) {
   entries.clear();
-  for (std::size_t chunk_idx = 0; chunk_idx < state.quantity_chunks.size();
+  for (std::size_t chunk_idx = 0; chunk_idx < state.quantity_chunks.chunks.size();
        ++chunk_idx) {
-    const auto &qchunk = state.quantity_chunks[chunk_idx];
+    const auto &qchunk = state.quantity_chunks.chunks[chunk_idx];
     const int64_t base =
         static_cast<int64_t>(chunk_idx << TpchQ18State::kChunkShift);
     for (std::size_t slot = 0; slot < qchunk.size(); ++slot) {
       if (qchunk[slot] == 0)
         continue;
-      entries.emplace_back(base + static_cast<int64_t>(slot), qchunk[slot]);
+      const int64_t orderkey = base + static_cast<int64_t>(slot);
+      if (state.quantity_overflow.count(orderkey))
+        continue;
+      entries.emplace_back(orderkey, static_cast<int64_t>(qchunk[slot]));
     }
+  }
+  for (const auto &entry : state.quantity_overflow) {
+    if (entry.second != 0)
+      entries.emplace_back(entry.first, entry.second);
   }
   std::sort(entries.begin(), entries.end());
 }
@@ -298,31 +291,32 @@ void AppendNonSurvivorRows(const TpchQ18State &state, int64_t threshold_raw,
 void TpchQ18State::AddOrderQuantity(int64_t orderkey, int64_t delta) {
   if (orderkey < 0 || delta == 0)
     return;
-  EnsureChunkSlots(*this, orderkey);
-  const auto key = static_cast<std::size_t>(orderkey);
-  quantity_chunks[key >> kChunkShift][key & kChunkMask] += delta;
+  SetOrderQuantitySum(orderkey, OrderQuantitySum(orderkey) + delta);
 }
 
 void TpchQ18State::SetOrderQuantitySum(int64_t orderkey, int64_t sum) {
   if (orderkey < 0)
     return;
-  EnsureChunkSlots(*this, orderkey);
-  const auto key = static_cast<std::size_t>(orderkey);
-  quantity_chunks[key >> kChunkShift][key & kChunkMask] = sum;
+  if (sum <= 0) {
+    quantity_overflow.erase(orderkey);
+    quantity_chunks.Set(orderkey, 0);
+    return;
+  }
+  if (sum > 65535 || !quantity_chunks.Fits(orderkey)) {
+    if (quantity_chunks.Fits(orderkey))
+      quantity_chunks.Set(orderkey, 0);
+    quantity_overflow[orderkey] = sum;
+    return;
+  }
+  quantity_overflow.erase(orderkey);
+  quantity_chunks.Set(orderkey, static_cast<uint16_t>(sum));
 }
 
 int64_t TpchQ18State::OrderQuantitySum(int64_t orderkey) const {
-  if (orderkey < 0)
-    return 0;
-  const auto key = static_cast<std::size_t>(orderkey);
-  const auto chunk_idx = key >> kChunkShift;
-  if (chunk_idx >= quantity_chunks.size())
-    return 0;
-  const auto &chunk = quantity_chunks[chunk_idx];
-  const auto slot = key & kChunkMask;
-  if (slot >= chunk.size())
-    return 0;
-  return chunk[slot];
+  const auto ov = quantity_overflow.find(orderkey);
+  if (ov != quantity_overflow.end())
+    return ov->second;
+  return static_cast<int64_t>(quantity_chunks.Get(orderkey));
 }
 
 void TpchQ18State::SetOrderMeta(int64_t orderkey, int64_t custkey,
@@ -406,7 +400,8 @@ std::vector<uint8_t> EncodeTpchQ18OrderQuantitySums(const TpchQ18State &state) {
 bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
                                     TpchQ18State &state) {
   auto decode_v3 = [&](ByteReader &reader, uint32_t survivor_count) -> bool {
-    state.quantity_chunks.clear();
+    state.quantity_chunks.Clear();
+    state.quantity_overflow.clear();
     state.survivors.clear();
     state.active_orderkeys.clear();
     state.customer_names.clear();
@@ -454,7 +449,8 @@ bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
   };
 
   auto decode_v2 = [&](ByteReader &reader, uint32_t count) -> bool {
-    state.quantity_chunks.clear();
+    state.quantity_chunks.Clear();
+    state.quantity_overflow.clear();
     state.survivors.clear();
     state.active_orderkeys.clear();
     state.customer_names.clear();
@@ -476,7 +472,8 @@ bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
   };
 
   auto decode_v1 = [&](ByteReader &reader, uint32_t count) -> bool {
-    state.quantity_chunks.clear();
+    state.quantity_chunks.Clear();
+    state.quantity_overflow.clear();
     state.survivors.clear();
     state.active_orderkeys.clear();
     state.customer_names.clear();

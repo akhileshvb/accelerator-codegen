@@ -10,9 +10,9 @@
 #include <utility>
 #include <vector>
 
-#include "accelerator_codegen/aux_state/core/aux_registry.hpp"
-#include "accelerator_codegen/aux_state/core/aux_txn_buffer.hpp"
-#include "accelerator_codegen/aux_state/query/sec_edgar/sec_edgar_q6_common.hpp"
+#include "accelerator_codegen/stateful/core/aux_registry.hpp"
+#include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
+#include "sec_edgar/q6/aux/module.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 using accelerator_codegen::aux_state::query::SecEdgarQ6Config;

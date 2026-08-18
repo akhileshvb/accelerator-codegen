@@ -1,6 +1,6 @@
 //! DuckDB (matched threads) vs accel_tpch_q{10,18,20,21}_parallel for Wave 5 queries.
 
-#include "accelerator_codegen/register.hpp"
+#include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "test_support/benchmark_paired_timing.hpp"
 #include "test_support/q10_manifest.hpp"
 #include "test_support/q18_manifest.hpp"

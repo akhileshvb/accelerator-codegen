@@ -1,0 +1,26 @@
+threads=8 db=/tmp/accel_parallel_aux_bench.duckdb
+=== Q1 interval=0 threads=8 ===
+engine,workload,query,write_interval_sec,mode,reads,writes,rows,read_p50_us,read_sum_us,write_p50_us,write_sum_us,build_us,workload_sum_us,workload_speedup_vs_base,workload_with_build_us,workload_with_build_speedup_vs_base
+duckdb,sec_edgar,1,0,base,8,0,3,38818.69,259831.16,0.00,0.00,0.00,259831.16,1.00,259831.16,1.00
+duckdb,sec_edgar,1,0,aux_parallel,8,0,3,881.90,6897.10,0.00,0.00,176163.30,6897.10,37.67,183060.41,1.42
+=== Q2 interval=0 threads=8 ===
+duckdb,sec_edgar,2,0,base,8,0,100,20748.86,154400.29,0.00,0.00,0.00,154400.29,1.00,154400.29,1.00
+duckdb,sec_edgar,2,0,aux_parallel,8,0,100,958.79,7654.30,0.00,0.00,157035.43,7654.30,20.17,164689.73,0.94
+=== Q3 interval=0 threads=8 ===
+duckdb,sec_edgar,3,0,base,8,0,17,17959.49,140146.97,0.00,0.00,0.00,140146.97,1.00,140146.97,1.00
+duckdb,sec_edgar,3,0,aux_parallel,8,0,17,143.85,1143.60,0.00,0.00,109128.92,1143.60,122.55,110272.52,1.27
+=== Q4 interval=0 threads=8 ===
+duckdb,sec_edgar,4,0,base,8,0,8,225973.60,1800021.98,0.00,0.00,0.00,1800021.98,1.00,1800021.98,1.00
+duckdb,sec_edgar,4,0,aux_parallel,8,0,8,2.56,36.76,0.00,0.00,279737.82,36.76,48966.87,279774.58,6.43
+=== Q6 interval=0 threads=8 ===
+duckdb,sec_edgar,6,0,base,8,0,25,81148.07,603611.62,0.00,0.00,0.00,603611.62,1.00,603611.62,1.00
+duckdb,sec_edgar,6,0,aux_parallel,8,0,25,918.21,7808.19,0.00,0.00,302813.45,7808.19,77.30,310621.65,1.94
+=== Q24 interval=0 threads=8 ===
+duckdb,sec_edgar,24,0,base,8,0,1,58295.97,467594.95,0.00,0.00,0.00,467594.95,1.00,467594.95,1.00
+duckdb,sec_edgar,24,0,aux_parallel,8,0,1,0.75,16.82,0.00,0.00,445365.66,16.82,27794.98,445382.49,1.05
+=== Q1 interval=1 threads=8 ===
+duckdb,sec_edgar,1,1,base,8,3,3,23454.36,181368.79,1400.48,4163.03,0.00,185531.82,1.00,185531.82,1.00
+duckdb,sec_edgar,1,1,aux_parallel,8,3,3,730.37,6053.59,117445.10,410895.39,115644.88,416948.97,0.44,532593.86,0.35
+=== Q4 interval=1 threads=8 ===
+duckdb,sec_edgar,4,1,base,8,3,8,221750.10,1779085.73,968.45,3057.53,0.00,1782143.26,1.00,1782143.26,1.00
+duckdb,sec_edgar,4,1,aux_parallel,8,3,8,10.03,63.17,266577.67,803844.34,269385.65,803907.51,2.22,1073293.15,1.66

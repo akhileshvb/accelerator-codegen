@@ -5,16 +5,17 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 WORKLOAD_DATASETS = {
-    "tpch": "tpch_sf1",
-    "sec_edgar": "sec_edgar_sf3",
+    "tpch": os.environ.get("ACCEL_SWEEP_DATASET", "tpch_sf1"),
+    "sec_edgar": os.environ.get("ACCEL_SEC_SWEEP_DATASET", "sec_edgar_sf3"),
 }
 
-TPCH_QUERIES = {1, 3, 6, 10, 12, 14}
+TPCH_QUERIES = {1, 3, 6, 9, 10, 11, 12, 14, 17, 18, 21}
 
 
 def fmt_speedup(value: float) -> str:

@@ -889,16 +889,32 @@ std::unordered_map<int64_t, TpchQ17PartStats> TpchQ17Module::RebuildPartStatsBat
     return out;
 
   std::unordered_map<int64_t, std::unordered_map<int64_t, int64_t>> qty_price_by_part;
-  const bool used_sql = initial_scan->ScanPartQuantityAggregates(
-      [&](const TpchQ17PartQuantityAggregate &agg) {
-        if (!partkeys.count(agg.partkey))
-          return;
-        auto &stats = out[agg.partkey];
-        stats.sum_qty_raw += agg.quantity_raw * agg.row_count;
-        stats.count += static_cast<int32_t>(agg.row_count);
-        qty_price_by_part[agg.partkey][agg.quantity_raw] +=
-            agg.extendedprice_sum_raw;
-      });
+  bool used_sql = false;
+  if (partkeys.size() == 1) {
+    const int64_t partkey = *partkeys.begin();
+    used_sql = initial_scan->ScanPartQuantityAggregatesForPart(
+        partkey, [&](const TpchQ17PartQuantityAggregate &agg) {
+          if (agg.partkey != partkey)
+            return;
+          auto &stats = out[agg.partkey];
+          stats.sum_qty_raw += agg.quantity_raw * agg.row_count;
+          stats.count += static_cast<int32_t>(agg.row_count);
+          qty_price_by_part[agg.partkey][agg.quantity_raw] +=
+              agg.extendedprice_sum_raw;
+        });
+  }
+  if (!used_sql) {
+    used_sql = initial_scan->ScanPartQuantityAggregates(
+        [&](const TpchQ17PartQuantityAggregate &agg) {
+          if (!partkeys.count(agg.partkey))
+            return;
+          auto &stats = out[agg.partkey];
+          stats.sum_qty_raw += agg.quantity_raw * agg.row_count;
+          stats.count += static_cast<int32_t>(agg.row_count);
+          qty_price_by_part[agg.partkey][agg.quantity_raw] +=
+              agg.extendedprice_sum_raw;
+        });
+  }
   if (!used_sql) {
     initial_scan->ScanLineitems([&](const TpchQ17LineitemInput &input) {
       if (!partkeys.count(input.partkey))

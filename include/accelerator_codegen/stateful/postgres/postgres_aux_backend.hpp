@@ -37,6 +37,8 @@ public:
   core::AuxStateStore &StateStore() override;
   const maintenance::CostModelParams &MaintenanceCostModel() const override;
   double ExpectedQueriesBeforeNextWrite() const override;
+  bool AllowsSynchronousRebuildOnCommit() const override;
+  std::size_t WorkerCount() const override;
 
 private:
   core::AuxTransactionCoordinator &coordinator;

@@ -4,7 +4,7 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -53,10 +53,6 @@ struct SecEdgarQ24MembershipKey {
   }
 };
 
-struct SecEdgarQ24MembershipKeyHash {
-  std::size_t operator()(const SecEdgarQ24MembershipKey &key) const noexcept;
-};
-
 struct SecEdgarQ24TagVersionKey {
   std::string tag;
   std::string version;
@@ -73,6 +69,29 @@ struct SecEdgarQ24TagVersionKeyHash {
   std::size_t operator()(const SecEdgarQ24TagVersionKey &key) const noexcept;
 };
 
+// Dense anti-join probe: interned adsh / (tag,version) ids plus sorted
+// per-adsh tv id lists. Avoids storing millions of duplicated strings.
+struct SecEdgarQ24PreMembership {
+  std::unordered_map<std::string, uint32_t> adsh_index;
+  std::vector<std::string> adshs;
+  std::unordered_map<SecEdgarQ24TagVersionKey, uint32_t,
+                     SecEdgarQ24TagVersionKeyHash>
+      tv_index;
+  std::vector<SecEdgarQ24TagVersionKey> tvs;
+  std::vector<std::vector<uint32_t>> by_adsh;
+
+  void Clear();
+  uint32_t InternAdsh(const std::string &adsh);
+  uint32_t InternTagVersion(const SecEdgarQ24TagVersionKey &key);
+  void Insert(const std::string &adsh, const std::string &tag,
+              const std::string &version);
+  void Finalize();
+  bool Contains(const SecEdgarQ24MembershipKey &key) const;
+  bool Contains(const std::string &adsh, const std::string &tag,
+                const std::string &version) const;
+  std::size_t size() const;
+};
+
 struct SecEdgarQ24Aggregate {
   int64_t count = 0;
   double total = 0.0;
@@ -86,8 +105,7 @@ struct SecEdgarQ24OutputRow {
 };
 
 struct SecEdgarQ24State {
-  std::unordered_set<SecEdgarQ24MembershipKey, SecEdgarQ24MembershipKeyHash>
-      pre_membership;
+  SecEdgarQ24PreMembership pre_membership;
   std::vector<SecEdgarQ24TagVersionKey> tag_versions;
   std::vector<SecEdgarQ24Aggregate> aggregates;
 };

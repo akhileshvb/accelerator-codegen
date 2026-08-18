@@ -159,13 +159,22 @@ bool TpchQ12LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days,
 std::vector<uint8_t> EncodeTpchQ12OrderPriorities(const TpchQ12State &state) {
   ByteWriter writer;
   std::vector<int64_t> keys;
-  for (const auto &entry : state.order_priorities)
-    keys.push_back(entry.first);
+  for (std::size_t chunk_idx = 0; chunk_idx < state.order_priorities.chunks.size();
+       ++chunk_idx) {
+    const auto &chunk = state.order_priorities.chunks[chunk_idx];
+    const int64_t base =
+        static_cast<int64_t>(chunk_idx << core::DenseIdArray<uint8_t>::kShift);
+    for (std::size_t slot = 0; slot < chunk.size(); ++slot) {
+      if (chunk[slot] == 0)
+        continue;
+      keys.push_back(base + static_cast<int64_t>(slot));
+    }
+  }
   std::sort(keys.begin(), keys.end());
   core::WriteImageHeader(writer, kPriorityMagic, kVersion, static_cast<uint32_t>(keys.size()));
   for (const auto key : keys) {
     writer.I64(key);
-    writer.U8(static_cast<uint8_t>(state.order_priorities.at(key)));
+    writer.U8(static_cast<uint8_t>(state.PriorityOf(key)));
   }
   return std::move(writer.bytes);
 }
@@ -198,14 +207,13 @@ bool DecodeTpchQ12OrderPriorities(const std::vector<uint8_t> &bytes,
   uint32_t count = 0;
   if (!core::ReadImageHeader(reader, kPriorityMagic, kVersion, count))
     return false;
-  state.order_priorities.clear();
+  state.order_priorities.Clear();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0;
     uint8_t priority = 0;
     if (!reader.I64(key) || !reader.U8(priority))
       return false;
-    state.order_priorities.emplace(key,
-                                   static_cast<TpchQ12PriorityClass>(priority));
+    state.SetPriority(key, static_cast<TpchQ12PriorityClass>(priority));
   }
   return reader.offset == bytes.size();
 }
@@ -475,7 +483,7 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
   // RF1/RF2 ordering: apply order inserts before lineitems, deletes after.
   for (const auto &delta : buffer.OrderDeltas()) {
     if (delta.sign > 0) {
-      priority_state->order_priorities[delta.orderkey] = delta.priority;
+      priority_state->SetPriority(delta.orderkey, delta.priority);
       priorities_changed = true;
     }
   }
@@ -516,17 +524,14 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
     }
 
     for (const auto &delta : buffer.Deltas()) {
-      const auto priority_it =
-          priority_state->order_priorities.find(delta.orderkey);
-      if (priority_it == priority_state->order_priorities.end()) {
+      const auto priority = priority_state->PriorityOf(delta.orderkey);
+      if (priority == TpchQ12PriorityClass::Absent) {
         outcome.action = core::MaintenanceAction::RebuildAll;
         outcome.invalidations = All();
         outcome.pending_rebuild = outcome.invalidations;
         return outcome;
       }
-      const auto priority = priority_it->second;
-      if (priority == TpchQ12PriorityClass::Absent ||
-          priority == TpchQ12PriorityClass::Neither)
+      if (priority == TpchQ12PriorityClass::Neither)
         continue;
       auto &stats = state.day_partitions[delta.receipt_day][delta.shipmode];
       ApplyContribution(stats, priority, delta.sign);
@@ -551,7 +556,7 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
 
   for (const auto &delta : buffer.OrderDeltas()) {
     if (delta.sign < 0) {
-      priority_state->order_priorities.erase(delta.orderkey);
+      priority_state->SetPriority(delta.orderkey, TpchQ12PriorityClass::Absent);
       priorities_changed = true;
     }
   }
@@ -635,14 +640,12 @@ TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const 
   if (!initial_scan)
     throw std::logic_error("TPC-H Q12 requires a typed initial scan source");
   initial_scan->ScanOrders([&](const TpchQ12OrderInput &input) {
-    state.order_priorities[input.key] =
-        TpchQ12ClassifyPriority(input.orderpriority);
+    state.SetPriority(input.key, TpchQ12ClassifyPriority(input.orderpriority));
   });
   initial_scan->ScanLineitems([&](const TpchQ12LineitemInput &input) {
-    const auto priority_it = state.order_priorities.find(input.orderkey);
-    if (priority_it == state.order_priorities.end())
+    const auto priority = state.PriorityOf(input.orderkey);
+    if (priority == TpchQ12PriorityClass::Absent)
       return;
-    const auto priority = priority_it->second;
     if (priority == TpchQ12PriorityClass::Neither)
       return;
     if (!TpchQ12LineitemQualifies(input.commitdate_days, input.receiptdate_days,

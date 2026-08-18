@@ -452,8 +452,13 @@ void SecEdgarQ2Module::AccumulateMutation(const core::MutationBatch &mutation,
     }
     break;
   case core::MutationKind::Update:
-    for (const auto &row : mutation.new_rows) {
-      add(row, 1);
+    if (mutation.old_rows.size() != mutation.new_rows.size()) {
+      buffer.MarkRebuild();
+      return;
+    }
+    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+      add(mutation.old_rows[i], -1);
+      add(mutation.new_rows[i], 1);
     }
     break;
   }
@@ -466,19 +471,29 @@ SecEdgarQ2Module::StageMaintenance(core::AuxEngineServices &services,
   auto &buffer = dynamic_cast<SecEdgarQ2TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
   if (buffer.RequiresRebuild()) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    class RebuildCollector final : public core::StateBuilder {
-    public:
-      explicit RebuildCollector(core::StagedMaintenanceOutcome &outcome_p)
-          : outcome(outcome_p) {}
-      void Write(core::StateImage image) override {
-        outcome.updates.push_back(std::move(image));
-      }
-      void Finish() override {}
-      core::StagedMaintenanceOutcome &outcome;
-    } collector(outcome);
-    EmitStateImages(BuildState(services), collector);
-    outcome.expected_version = 0;
+    const auto decision = services.ChooseMaintenance(
+        {0, 0, false, false, true, true, false,
+         core::MaintenanceAction::NoOp,
+         services.ExpectedQueriesBeforeNextWrite()});
+    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
+                         ? core::MaintenanceAction::RebuildAll
+                         : decision.action;
+    outcome.invalidations = AllPartitions();
+    outcome.pending_rebuild = outcome.invalidations;
+    if (outcome.action == core::MaintenanceAction::RebuildAll) {
+      class RebuildCollector final : public core::StateBuilder {
+      public:
+        explicit RebuildCollector(core::StagedMaintenanceOutcome &outcome_p)
+            : outcome(outcome_p) {}
+        void Write(core::StateImage image) override {
+          outcome.updates.push_back(std::move(image));
+        }
+        void Finish() override {}
+        core::StagedMaintenanceOutcome &outcome;
+      } collector(outcome);
+      EmitStateImages(BuildState(services), collector);
+      outcome.expected_version = 0;
+    }
     return outcome;
   }
   if (buffer.Deltas().empty()) {
@@ -536,19 +551,54 @@ SecEdgarQ2Module::StageMaintenance(core::AuxEngineServices &services,
     outcome.pending_rebuild = outcome.invalidations;
     return outcome;
   }
+  // Process inserts/raises before deletes so value+ε updates on the current
+  // max ( -old, +new ) raise the max first and avoid a full candidate refresh.
+  std::vector<const SecEdgarQ2TxnBuffer::NumDelta *> positives;
+  std::vector<const SecEdgarQ2TxnBuffer::NumDelta *> negatives;
+  positives.reserve(buffer.Deltas().size());
+  negatives.reserve(buffer.Deltas().size());
   for (const auto &delta : buffer.Deltas()) {
-    if (delta.sign <= 0) {
+    if (delta.sign > 0) {
+      positives.push_back(&delta);
+    } else {
+      negatives.push_back(&delta);
+    }
+  }
+  bool needs_candidate_refresh = false;
+  for (const auto *delta : positives) {
+    if (!ApplyPureNumInsert(state, delta->adsh, delta->tag, delta->value)) {
       outcome.action = core::MaintenanceAction::RebuildAll;
       outcome.invalidations = AllPartitions();
       outcome.pending_rebuild = outcome.invalidations;
       return outcome;
     }
-    if (!ApplyPureNumInsert(state, delta.adsh, delta.tag, delta.value)) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = AllPartitions();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
+  }
+  for (const auto *delta : negatives) {
+    const auto cohort_it = state.adsh_to_name.find(delta->adsh);
+    if (cohort_it == state.adsh_to_name.end() || !delta->relevant) {
+      continue;
     }
+    const SecEdgarQ2AdshTagKey group_key{delta->adsh, delta->tag};
+    const auto max_it = state.max_by_adsh_tag.find(group_key);
+    if (max_it != state.max_by_adsh_tag.end() &&
+        max_it->second == delta->value) {
+      needs_candidate_refresh = true;
+      break;
+    }
+    auto &rows = state.candidates;
+    rows.erase(std::remove_if(rows.begin(), rows.end(),
+                              [&](const SecEdgarQ2CandidateRow &row) {
+                                return row.name == cohort_it->second &&
+                                       row.tag == delta->tag &&
+                                       row.value == delta->value;
+                              }),
+               rows.end());
+  }
+  if (needs_candidate_refresh) {
+    outcome.action = core::MaintenanceAction::RebuildAll;
+    outcome.invalidations = AllPartitions();
+    outcome.pending_rebuild = outcome.invalidations;
+    return outcome;
   }
   outcome.action = core::MaintenanceAction::ApplyDelta;
   const auto typed_state = std::make_shared<const SecEdgarQ2State>(state);

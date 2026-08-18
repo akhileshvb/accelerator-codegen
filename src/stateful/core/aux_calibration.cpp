@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
 
 #include <algorithm>

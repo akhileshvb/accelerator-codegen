@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/dense_id_array.hpp"
 #include "accelerator_codegen/stateful/core/query_layouts.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -92,17 +93,19 @@ struct TpchQ18SurvivorMeta {
 struct TpchQ18State {
   // Chunked dense orderkey-indexed data: chunk c holds keys [c<<16, (c+1)<<16).
   // Grows one 64K-slot chunk at a time (no SF-hardcoded mega-array).
-  static constexpr std::size_t kChunkShift = 16;
-  static constexpr std::size_t kChunkSize = 1u << kChunkShift;
-  static constexpr std::size_t kChunkMask = kChunkSize - 1;
+  static constexpr std::size_t kChunkShift = core::DenseIdArray<uint16_t>::kShift;
+  static constexpr std::size_t kChunkSize = core::DenseIdArray<uint16_t>::kSize;
+  static constexpr std::size_t kChunkMask = core::DenseIdArray<uint16_t>::kMask;
 
   // Persist order metadata only for orders whose quantity sum exceeds this
   // threshold (300.00 at scale 2).  TPC-H Q18 uses 312.00, so survivors
   // cover every order that can appear in the default result set.
   static constexpr int64_t kMinPersistQuantityRaw = 30000;
 
-  // Quantity sums — maintained incrementally across lineitem mutations
-  std::vector<std::vector<int64_t>> quantity_chunks;
+  // Quantity sums as uint16 (TPC-H qty 1–50, ≤7 lines/order, raw scale 2
+  // so max ~35000). Values above 65535 go in quantity_overflow (unit tests).
+  core::DenseIdArray<uint16_t> quantity_chunks;
+  std::unordered_map<int64_t, int64_t> quantity_overflow;
 
   // Sparse order metadata for high-quantity orders only.
   std::unordered_map<int64_t, TpchQ18SurvivorMeta> survivors;

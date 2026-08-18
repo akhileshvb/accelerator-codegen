@@ -1,8 +1,10 @@
+// GENERATED BACKEND
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -13,6 +15,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -24,12 +27,25 @@
 #include "sec_edgar/q4/aux/module.hpp"
 #include "sec_edgar/q6/aux/module.hpp"
 #include "sec_edgar/q24/aux/module.hpp"
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+#include "sec_edgar/q1/aux/parallel/module.hpp"
+#include "sec_edgar/q2/aux/parallel/module.hpp"
+#include "sec_edgar/q3/aux/parallel/module.hpp"
+#include "sec_edgar/q4/aux/parallel/module.hpp"
+#include "sec_edgar/q6/aux/parallel/module.hpp"
+#include "sec_edgar/q24/aux/parallel/module.hpp"
+#endif
 #include "tpch/q1/aux/module.hpp"
 #include "tpch/q3/aux/module.hpp"
 #include "tpch/q6/aux/module.hpp"
+#include "tpch/q9/aux/module.hpp"
 #include "tpch/q10/aux/module.hpp"
+#include "tpch/q11/aux/module.hpp"
 #include "tpch/q12/aux/module.hpp"
 #include "tpch/q14/aux/module.hpp"
+#include "tpch/q17/aux/module.hpp"
+#include "tpch/q18/aux/module.hpp"
+#include "tpch/q21/aux/module.hpp"
 
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
@@ -49,9 +65,15 @@ extern "C" {
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "utils/snapmgr.h"
+#include "utils/guc.h"
 }
 
 #include "postgres/runtime.hpp"
+
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+extern int accel_aux_worker_count;
+extern "C" int max_parallel_workers_per_gather;
+#endif
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
@@ -346,6 +368,24 @@ public:
   const maintenance::CostModelParams &MaintenanceCostModel() const override {
     return cost_model;
   }
+  std::size_t WorkerCount() const override {
+    const char *env = std::getenv("ACCEL_AUX_THREADS");
+    if (env && *env) {
+      const long parsed = std::strtol(env, nullptr, 10);
+      if (parsed > 0) {
+        return static_cast<std::size_t>(parsed);
+      }
+    }
+#if defined(ACCEL_ENABLE_PARALLEL_AUX)
+    if (::accel_aux_worker_count > 0) {
+      return static_cast<std::size_t>(::accel_aux_worker_count);
+    }
+    if (::max_parallel_workers_per_gather > 0) {
+      return static_cast<std::size_t>(::max_parallel_workers_per_gather);
+    }
+#endif
+    return 1;
+  }
 
 private:
   LocalStateStore &store;
@@ -432,6 +472,33 @@ void ScanTpchQ10Customers(
       });
 }
 
+void LookupTpchQ10Customers(
+    const std::vector<int64_t> &custkeys,
+    std::unordered_map<int64_t, query::TpchQ10Customer> &out) {
+  out.clear();
+  if (custkeys.empty())
+    return;
+  std::ostringstream sql;
+  sql << "SELECT c_custkey, c_name, c_acctbal, c_nationkey, c_address, "
+         "c_phone, c_comment FROM customer WHERE c_custkey IN (";
+  for (std::size_t i = 0; i < custkeys.size(); ++i) {
+    if (i > 0)
+      sql << ',';
+    sql << custkeys[i];
+  }
+  sql << ')';
+  ScanTypedTuples(sql.str(), [&](HeapTuple tuple, TupleDesc tuple_desc) {
+    const auto key = TypedInt(tuple, tuple_desc, 0);
+    out.emplace(key, query::TpchQ10Customer{
+                         TypedText(tuple, tuple_desc, 1),
+                         TypedDecimalRaw(tuple, tuple_desc, 2),
+                         static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3)),
+                         TypedText(tuple, tuple_desc, 4),
+                         TypedText(tuple, tuple_desc, 5),
+                         TypedText(tuple, tuple_desc, 6)});
+  });
+}
+
 void ScanTpchQ10Nations(
     const std::function<void(const query::TpchQ10NationInput &)> &consumer) {
   ScanTypedTuples(
@@ -508,6 +575,243 @@ void ScanTpchQ14Lineitems(
         consumer({TypedInt(tuple, tuple_desc, 0),
                   TypedDecimalRaw(tuple, tuple_desc, 1), 2,
                   TypedDecimalRaw(tuple, tuple_desc, 2), 2,
+                  TypedDate(tuple, tuple_desc, 3)});
+      });
+}
+
+void ScanTpchQ9Parts(
+    const std::function<void(const query::TpchQ9PartInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT p_partkey, p_name FROM part",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedText(tuple, tuple_desc, 1)});
+      });
+}
+
+void ScanTpchQ9Suppliers(
+    const std::function<void(const query::TpchQ9SupplierInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT s_suppkey, s_nationkey FROM supplier",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1))});
+      });
+}
+
+void ScanTpchQ9Nations(
+    const std::function<void(const query::TpchQ9NationInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT n_nationkey, n_name FROM nation",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({static_cast<int32_t>(TypedInt(tuple, tuple_desc, 0)),
+                  TypedText(tuple, tuple_desc, 1)});
+      });
+}
+
+void ScanTpchQ9Orders(
+    const std::function<void(const query::TpchQ9OrdersInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT o_orderkey, o_orderdate FROM orders",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedDate(tuple, tuple_desc, 1)});
+      });
+}
+
+void ScanTpchQ9Partsupps(
+    const std::function<void(const query::TpchQ9PartsuppInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedInt(tuple, tuple_desc, 1),
+                  TypedDecimalRaw(tuple, tuple_desc, 2)});
+      });
+}
+
+void ScanTpchQ9Lineitems(
+    const std::function<void(const query::TpchQ9LineitemInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT l_partkey, l_suppkey, l_orderkey, l_quantity, l_extendedprice, "
+      "l_discount FROM lineitem",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedInt(tuple, tuple_desc, 1),
+                  TypedInt(tuple, tuple_desc, 2),
+                  TypedDecimalRaw(tuple, tuple_desc, 3),
+                  TypedDecimalRaw(tuple, tuple_desc, 4),
+                  TypedDecimalRaw(tuple, tuple_desc, 5)});
+      });
+}
+
+void ScanTpchQ11Partsupp(
+    const std::function<void(const query::TpchQ11PartsuppInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT ps_partkey, ps_suppkey, ps_availqty, ps_supplycost FROM partsupp",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedInt(tuple, tuple_desc, 1),
+                  TypedInt(tuple, tuple_desc, 2),
+                  TypedDecimalRaw(tuple, tuple_desc, 3), 2});
+      });
+}
+
+void ScanTpchQ11Suppliers(
+    const std::function<void(const query::TpchQ11SupplierInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT s_suppkey, s_nationkey FROM supplier",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1))});
+      });
+}
+
+void ScanTpchQ11Nations(
+    const std::function<void(const query::TpchQ11NationInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT n_nationkey, n_name FROM nation",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({static_cast<int32_t>(TypedInt(tuple, tuple_desc, 0)),
+                  TypedText(tuple, tuple_desc, 1)});
+      });
+}
+
+void ScanTpchQ17Parts(
+    const std::function<void(const query::TpchQ17PartInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT p_partkey, p_brand, p_container FROM part",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedText(tuple, tuple_desc, 1),
+                  TypedText(tuple, tuple_desc, 2)});
+      });
+}
+
+void ScanTpchQ17Lineitems(
+    const std::function<void(const query::TpchQ17LineitemInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT l_partkey, l_quantity, l_extendedprice FROM lineitem",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedDecimalRaw(tuple, tuple_desc, 1),
+                  TypedDecimalRaw(tuple, tuple_desc, 2)});
+      });
+}
+
+void ScanTpchQ17PartQuantityAggregatesForPart(
+    int64_t partkey,
+    const std::function<void(const query::TpchQ17PartQuantityAggregate &)>
+        &consumer) {
+  const std::string sql =
+      "SELECT CAST(round(l_quantity * 100) AS BIGINT), "
+      "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
+      "COUNT(*)::BIGINT "
+      "FROM lineitem WHERE l_partkey = " +
+      std::to_string(partkey) + " GROUP BY 1";
+  ScanTypedTuples(sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
+    consumer({partkey, TypedInt(tuple, tuple_desc, 0),
+              TypedInt(tuple, tuple_desc, 1), TypedInt(tuple, tuple_desc, 2)});
+  });
+}
+
+void ScanTpchQ18Lineitems(
+    const std::function<void(const query::TpchQ18LineitemInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT l_orderkey, l_quantity FROM lineitem",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedDecimalRaw(tuple, tuple_desc, 1)});
+      });
+}
+
+void ScanTpchQ18Orders(
+    const std::function<void(const query::TpchQ18OrderInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice FROM orders",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedInt(tuple, tuple_desc, 1),
+                  TypedDate(tuple, tuple_desc, 2),
+                  TypedDecimalRaw(tuple, tuple_desc, 3)});
+      });
+}
+
+void ScanTpchQ18Customers(
+    const std::function<void(const query::TpchQ18CustomerInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT c_custkey, c_name FROM customer",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedText(tuple, tuple_desc, 1)});
+      });
+}
+
+bool LookupTpchQ18Order(int64_t orderkey, query::TpchQ18OrderInput &out) {
+  if (SPI_connect() != SPI_OK_CONNECT) {
+    return false;
+  }
+  char sql[256];
+  snprintf(sql, sizeof(sql),
+                "SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice "
+                "FROM orders WHERE o_orderkey = %lld",
+                static_cast<long long>(orderkey));
+  const int status = SPI_execute(sql, true, 1);
+  bool found = false;
+  if (status == SPI_OK_SELECT && SPI_processed > 0 && SPI_tuptable) {
+    HeapTuple tuple = SPI_tuptable->vals[0];
+    TupleDesc tuple_desc = SPI_tuptable->tupdesc;
+    out = {TypedInt(tuple, tuple_desc, 0), TypedInt(tuple, tuple_desc, 1),
+           TypedDate(tuple, tuple_desc, 2),
+           TypedDecimalRaw(tuple, tuple_desc, 3)};
+    found = out.key == orderkey;
+  }
+  SPI_finish();
+  return found;
+}
+
+void ScanTpchQ21Suppliers(
+    const std::function<void(const query::TpchQ21SupplierInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT s_suppkey, s_name, s_nationkey FROM supplier",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedText(tuple, tuple_desc, 1),
+                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 2))});
+      });
+}
+
+void ScanTpchQ21Nations(
+    const std::function<void(const query::TpchQ21NationInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT n_nationkey, n_name FROM nation",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({static_cast<int32_t>(TypedInt(tuple, tuple_desc, 0)),
+                  TypedText(tuple, tuple_desc, 1)});
+      });
+}
+
+void ScanTpchQ21Orders(
+    const std::function<void(const query::TpchQ21OrderInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderstatus = 'F'",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedChar(tuple, tuple_desc, 1)});
+      });
+}
+
+void ScanTpchQ21Lineitems(
+    const std::function<void(const query::TpchQ21LineitemInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT l.l_orderkey, l.l_suppkey, l.l_commitdate, l.l_receiptdate "
+      "FROM lineitem l "
+      "INNER JOIN orders o ON l.l_orderkey = o.o_orderkey AND "
+      "o.o_orderstatus = 'F'",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedInt(tuple, tuple_desc, 1),
+                  TypedDate(tuple, tuple_desc, 2),
                   TypedDate(tuple, tuple_desc, 3)});
       });
 }
@@ -770,6 +1074,12 @@ public:
       override {
     scans::ScanTpchQ10Lineitems(consumer);
   }
+  bool LookupCustomers(
+      const std::vector<int64_t> &custkeys,
+      std::unordered_map<int64_t, query::TpchQ10Customer> &out) override {
+    scans::LookupTpchQ10Customers(custkeys, out);
+    return true;
+  }
 };
 
 class TpchQ12Services final : public ServicesBase,
@@ -801,6 +1111,141 @@ public:
       const std::function<void(const query::TpchQ14LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ14Lineitems(consumer);
+  }
+};
+
+class TpchQ9Services final : public ServicesBase,
+                             public query::TpchQ9InitialScan {
+public:
+  using ServicesBase::ServicesBase;
+  void ScanParts(
+      const std::function<void(const query::TpchQ9PartInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Parts(consumer);
+  }
+  void ScanSuppliers(
+      const std::function<void(const query::TpchQ9SupplierInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Suppliers(consumer);
+  }
+  void ScanNations(
+      const std::function<void(const query::TpchQ9NationInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Nations(consumer);
+  }
+  void ScanOrders(
+      const std::function<void(const query::TpchQ9OrdersInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Orders(consumer);
+  }
+  void ScanPartsupps(
+      const std::function<void(const query::TpchQ9PartsuppInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Partsupps(consumer);
+  }
+  void ScanLineitems(
+      const std::function<void(const query::TpchQ9LineitemInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Lineitems(consumer);
+  }
+};
+
+class TpchQ11Services final : public ServicesBase,
+                              public query::TpchQ11InitialScan {
+public:
+  using ServicesBase::ServicesBase;
+  void ScanPartsupp(
+      const std::function<void(const query::TpchQ11PartsuppInput &)> &consumer)
+      override {
+    scans::ScanTpchQ11Partsupp(consumer);
+  }
+  void ScanSuppliers(
+      const std::function<void(const query::TpchQ11SupplierInput &)> &consumer)
+      override {
+    scans::ScanTpchQ11Suppliers(consumer);
+  }
+  void ScanNations(
+      const std::function<void(const query::TpchQ11NationInput &)> &consumer)
+      override {
+    scans::ScanTpchQ11Nations(consumer);
+  }
+};
+
+class TpchQ17Services final : public ServicesBase,
+                              public query::TpchQ17InitialScan {
+public:
+  using ServicesBase::ServicesBase;
+  void ScanParts(
+      const std::function<void(const query::TpchQ17PartInput &)> &consumer)
+      override {
+    scans::ScanTpchQ17Parts(consumer);
+  }
+  void ScanLineitems(
+      const std::function<void(const query::TpchQ17LineitemInput &)> &consumer)
+      override {
+    scans::ScanTpchQ17Lineitems(consumer);
+  }
+  bool ScanPartQuantityAggregatesForPart(
+      int64_t partkey,
+      const std::function<void(const query::TpchQ17PartQuantityAggregate &)>
+          &consumer) override {
+    scans::ScanTpchQ17PartQuantityAggregatesForPart(partkey, consumer);
+    return true;
+  }
+};
+
+class TpchQ18Services final : public ServicesBase,
+                              public query::TpchQ18InitialScan {
+public:
+  using ServicesBase::ServicesBase;
+  void ScanLineitems(
+      const std::function<void(const query::TpchQ18LineitemInput &)> &consumer)
+      override {
+    scans::ScanTpchQ18Lineitems(consumer);
+  }
+  void ScanOrders(
+      const std::function<void(const query::TpchQ18OrderInput &)> &consumer)
+      override {
+    scans::ScanTpchQ18Orders(consumer);
+  }
+  void ScanCustomers(
+      const std::function<void(const query::TpchQ18CustomerInput &)> &consumer)
+      override {
+    scans::ScanTpchQ18Customers(consumer);
+  }
+  bool LookupOrder(int64_t orderkey,
+                   query::TpchQ18OrderInput &out) override {
+    // SPI is unsafe inside PostgreSQL xact callbacks (PreCommit maintenance).
+    // Returning false makes StageMaintenance fall back to RebuildAll.
+    (void)orderkey;
+    (void)out;
+    return false;
+  }
+};
+
+class TpchQ21Services final : public ServicesBase,
+                              public query::TpchQ21InitialScan {
+public:
+  using ServicesBase::ServicesBase;
+  void ScanSuppliers(
+      const std::function<void(const query::TpchQ21SupplierInput &)> &consumer)
+      override {
+    scans::ScanTpchQ21Suppliers(consumer);
+  }
+  void ScanNations(
+      const std::function<void(const query::TpchQ21NationInput &)> &consumer)
+      override {
+    scans::ScanTpchQ21Nations(consumer);
+  }
+  void ScanOrders(
+      const std::function<void(const query::TpchQ21OrderInput &)> &consumer)
+      override {
+    scans::ScanTpchQ21Orders(consumer);
+  }
+  void ScanLineitems(
+      const std::function<void(const query::TpchQ21LineitemInput &)> &consumer)
+      override {
+    scans::ScanTpchQ21Lineitems(consumer);
   }
 };
 
@@ -1036,6 +1481,10 @@ public:
     auto *return_set_info =
         reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
     EnsureBuilt();
+    if (!store.CheckValidity({accelerator, {}}, {}).IsValid()) {
+      built = false;
+      EnsureBuilt();
+    }
     PgSink sink(return_set_info->setResult, return_set_info->setDesc);
     module.Execute(services, arguments, sink);
   }
@@ -1068,7 +1517,7 @@ Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Services> &Q1Runtime() {
   static Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Services>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q1_COST_MODEL",
               "config/q1_aux_cost_model.json",
-              core::TpchQ1Layout::kAccelerator, query::TpchQ1Config{4});
+              core::TpchQ1Layout::kAccelerator, query::TpchQ1Config{1001});
   return runtime;
 }
 
@@ -1114,6 +1563,55 @@ Q14Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q14_COST_MODEL",
               "config/q14_aux_cost_model.json",
               core::TpchQ14Layout::kAccelerator, query::TpchQ14Config{1015, 1014});
+  return runtime;
+}
+
+Runtime<query::TpchQ9Module, query::TpchQ9Config, TpchQ9Services> &Q9Runtime() {
+  static Runtime<query::TpchQ9Module, query::TpchQ9Config, TpchQ9Services>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_Q9_COST_MODEL",
+              "config/q9_aux_cost_model.json",
+              query::TpchQ9Layout::kAccelerator,
+              query::TpchQ9Config{1091, 1092, 1093, 1094, 1095, 1096});
+  return runtime;
+}
+
+Runtime<query::TpchQ11Module, query::TpchQ11Config, TpchQ11Services> &
+Q11Runtime() {
+  static Runtime<query::TpchQ11Module, query::TpchQ11Config, TpchQ11Services>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_Q11_COST_MODEL",
+              "config/q11_aux_cost_model.json",
+              query::TpchQ11Layout::kAccelerator,
+              query::TpchQ11Config{1111, 1112, 1113});
+  return runtime;
+}
+
+Runtime<query::TpchQ17Module, query::TpchQ17Config, TpchQ17Services> &
+Q17Runtime() {
+  static Runtime<query::TpchQ17Module, query::TpchQ17Config, TpchQ17Services>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_Q17_COST_MODEL",
+              "config/q17_aux_cost_model.json",
+              query::TpchQ17Layout::kAccelerator,
+              query::TpchQ17Config{1171, 1172});
+  return runtime;
+}
+
+Runtime<query::TpchQ18Module, query::TpchQ18Config, TpchQ18Services> &
+Q18Runtime() {
+  static Runtime<query::TpchQ18Module, query::TpchQ18Config, TpchQ18Services>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_Q18_COST_MODEL",
+              "config/q18_aux_cost_model.json",
+              query::TpchQ18Layout::kAccelerator,
+              query::TpchQ18Config{1180, 1181, 1182});
+  return runtime;
+}
+
+Runtime<query::TpchQ21Module, query::TpchQ21Config, TpchQ21Services> &
+Q21Runtime() {
+  static Runtime<query::TpchQ21Module, query::TpchQ21Config, TpchQ21Services>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_Q21_COST_MODEL",
+              "config/q21_aux_cost_model.json",
+              query::TpchQ21Layout::kAccelerator,
+              query::TpchQ21Config{1211, 1212, 1213, 1214});
   return runtime;
 }
 
@@ -1183,6 +1681,69 @@ Q24Runtime() {
   return runtime;
 }
 
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+Runtime<query::SecEdgarQ1ParallelModule, query::SecEdgarQ1Config, SecEdgarQ1Services> &
+SecQ1ParallelRuntime() {
+  static Runtime<query::SecEdgarQ1ParallelModule, query::SecEdgarQ1Config,
+                 SecEdgarQ1Services>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q1_COST_MODEL",
+              "config/sec_edgar_q1_aux_cost_model.json",
+              core::SecEdgarQ1Layout::kParallelAccelerator,
+              query::SecEdgarQ1Config{102});
+  return runtime;
+}
+Runtime<query::SecEdgarQ2ParallelModule, query::SecEdgarQ2Config, SecEdgarQ2Services> &
+SecQ2ParallelRuntime() {
+  static Runtime<query::SecEdgarQ2ParallelModule, query::SecEdgarQ2Config,
+                 SecEdgarQ2Services>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q2_COST_MODEL",
+              "config/sec_edgar_q2_aux_cost_model.json",
+              core::SecEdgarQ2Layout::kParallelAccelerator,
+              query::SecEdgarQ2Config{103, 101});
+  return runtime;
+}
+Runtime<query::SecEdgarQ3ParallelModule, query::SecEdgarQ3Config, SecEdgarQ3Services> &
+SecQ3ParallelRuntime() {
+  static Runtime<query::SecEdgarQ3ParallelModule, query::SecEdgarQ3Config,
+                 SecEdgarQ3Services>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q3_COST_MODEL",
+              "config/sec_edgar_q3_aux_cost_model.json",
+              core::SecEdgarQ3Layout::kParallelAccelerator,
+              query::SecEdgarQ3Config{103, 101});
+  return runtime;
+}
+Runtime<query::SecEdgarQ4ParallelModule, query::SecEdgarQ4Config, SecEdgarQ4Services> &
+SecQ4ParallelRuntime() {
+  static Runtime<query::SecEdgarQ4ParallelModule, query::SecEdgarQ4Config,
+                 SecEdgarQ4Services>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q4_COST_MODEL",
+              "config/sec_edgar_q4_aux_cost_model.json",
+              core::SecEdgarQ4Layout::kParallelAccelerator,
+              query::SecEdgarQ4Config{103, 101, 104, 102});
+  return runtime;
+}
+Runtime<query::SecEdgarQ6ParallelModule, query::SecEdgarQ6Config, SecEdgarQ6Services> &
+SecQ6ParallelRuntime() {
+  static Runtime<query::SecEdgarQ6ParallelModule, query::SecEdgarQ6Config,
+                 SecEdgarQ6Services>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q6_COST_MODEL",
+              "config/sec_edgar_q6_aux_cost_model.json",
+              core::SecEdgarQ6Layout::kParallelAccelerator,
+              query::SecEdgarQ6Config{103, 101, 102});
+  return runtime;
+}
+Runtime<query::SecEdgarQ24ParallelModule, query::SecEdgarQ24Config, SecEdgarQ24Services> &
+SecQ24ParallelRuntime() {
+  static Runtime<query::SecEdgarQ24ParallelModule, query::SecEdgarQ24Config,
+                 SecEdgarQ24Services>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_Q24_COST_MODEL",
+              "config/sec_edgar_q24_aux_cost_model.json",
+              core::SecEdgarQ24Layout::kParallelAccelerator,
+              query::SecEdgarQ24Config{103, 102});
+  return runtime;
+}
+#endif
+
 } // namespace detail
 
 namespace core = accelerator_codegen::aux_state::core;
@@ -1245,6 +1806,48 @@ void ExecutePostgresTpchQ14(FunctionCallInfo fcinfo) {
       fcinfo);
 }
 
+void ExecutePostgresTpchQ9(FunctionCallInfo fcinfo) {
+  detail::Q9Runtime().Execute(
+      core::QueryArguments{{core::AuxValue::Of(
+          core::AuxType::String, detail::TextDatum(PG_GETARG_DATUM(0)))}},
+      fcinfo);
+}
+
+void ExecutePostgresTpchQ11(FunctionCallInfo fcinfo) {
+  detail::Q11Runtime().Execute(
+      core::QueryArguments{{core::AuxValue::Of(
+                                core::AuxType::String,
+                                detail::TextDatum(PG_GETARG_DATUM(0))),
+                            core::AuxValue::Of(core::AuxType::Double,
+                                               PG_GETARG_FLOAT8(1))}},
+      fcinfo);
+}
+
+void ExecutePostgresTpchQ17(FunctionCallInfo fcinfo) {
+  detail::Q17Runtime().Execute(
+      core::QueryArguments{{core::AuxValue::Of(
+                                core::AuxType::String,
+                                detail::TextDatum(PG_GETARG_DATUM(0))),
+                            core::AuxValue::Of(
+                                core::AuxType::String,
+                                detail::TextDatum(PG_GETARG_DATUM(1)))}},
+      fcinfo);
+}
+
+void ExecutePostgresTpchQ18(FunctionCallInfo fcinfo) {
+  detail::Q18Runtime().Execute(
+      core::QueryArguments{{core::AuxValue::Of(
+          core::AuxType::Int64, static_cast<int64_t>(PG_GETARG_INT64(0)))}},
+      fcinfo);
+}
+
+void ExecutePostgresTpchQ21(FunctionCallInfo fcinfo) {
+  detail::Q21Runtime().Execute(
+      core::QueryArguments{{core::AuxValue::Of(
+          core::AuxType::String, detail::TextDatum(PG_GETARG_DATUM(0)))}},
+      fcinfo);
+}
+
 void ExecutePostgresSecEdgarQ1(FunctionCallInfo fcinfo) {
   detail::SecQ1Runtime().Execute({}, fcinfo);
 }
@@ -1268,6 +1871,27 @@ void ExecutePostgresSecEdgarQ6(FunctionCallInfo fcinfo) {
 void ExecutePostgresSecEdgarQ24(FunctionCallInfo fcinfo) {
   detail::Q24Runtime().Execute({}, fcinfo);
 }
+
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+void ExecutePostgresSecEdgarQ1Parallel(FunctionCallInfo fcinfo) {
+  detail::SecQ1ParallelRuntime().Execute({}, fcinfo);
+}
+void ExecutePostgresSecEdgarQ2Parallel(FunctionCallInfo fcinfo) {
+  detail::SecQ2ParallelRuntime().Execute({}, fcinfo);
+}
+void ExecutePostgresSecEdgarQ3Parallel(FunctionCallInfo fcinfo) {
+  detail::SecQ3ParallelRuntime().Execute({}, fcinfo);
+}
+void ExecutePostgresSecEdgarQ4Parallel(FunctionCallInfo fcinfo) {
+  detail::SecQ4ParallelRuntime().Execute({}, fcinfo);
+}
+void ExecutePostgresSecEdgarQ6Parallel(FunctionCallInfo fcinfo) {
+  detail::SecQ6ParallelRuntime().Execute({}, fcinfo);
+}
+void ExecutePostgresSecEdgarQ24Parallel(FunctionCallInfo fcinfo) {
+  detail::SecQ24ParallelRuntime().Execute({}, fcinfo);
+}
+#endif
 
 } // namespace accelerator_codegen::aux_state::engine::postgres
 

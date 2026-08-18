@@ -17,6 +17,14 @@
 #include "sec_edgar/q4/aux/module.hpp"
 #include "sec_edgar/q6/aux/module.hpp"
 #include "sec_edgar/q24/aux/module.hpp"
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+#include "sec_edgar/q1/aux/parallel/module.hpp"
+#include "sec_edgar/q2/aux/parallel/module.hpp"
+#include "sec_edgar/q3/aux/parallel/module.hpp"
+#include "sec_edgar/q4/aux/parallel/module.hpp"
+#include "sec_edgar/q6/aux/parallel/module.hpp"
+#include "sec_edgar/q24/aux/parallel/module.hpp"
+#endif
 #include "tpch/q1/aux/module.hpp"
 #include "tpch/q4/aux/module.hpp"
 #include "tpch/q5/aux/module.hpp"
@@ -459,6 +467,37 @@ struct TpchQ10Scan : TpchQ10InitialScan {
                                          SafeInt64(ChunkValue(chunk, 1, row)),
                                          DateDays(ChunkValue(chunk, 2, row))});
                        });
+    return true;
+  }
+  bool LookupCustomers(
+      const std::vector<int64_t> &custkeys,
+      std::unordered_map<int64_t, TpchQ10Customer> &out) override {
+    out.clear();
+    if (custkeys.empty()) {
+      return true;
+    }
+    std::ostringstream sql;
+    sql << "SELECT c_custkey, c_name, c_acctbal, c_nationkey, c_address, "
+           "c_phone, c_comment FROM customer WHERE c_custkey IN (";
+    for (std::size_t i = 0; i < custkeys.size(); ++i) {
+      if (i > 0) {
+        sql << ',';
+      }
+      sql << custkeys[i];
+    }
+    sql << ')';
+    ScanQueryStreaming(
+        connection, sql.str(),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          out.emplace(SafeInt64(ChunkValue(chunk, 0, row)),
+                      TpchQ10Customer{
+                          ChunkValue(chunk, 1, row).ToString(),
+                          DecimalRaw(ChunkValue(chunk, 2, row)),
+                          SafeInt32(ChunkValue(chunk, 3, row)),
+                          ChunkValue(chunk, 4, row).ToString(),
+                          ChunkValue(chunk, 5, row).ToString(),
+                          ChunkValue(chunk, 6, row).ToString()});
+        });
     return true;
   }
   ::duckdb::Connection &connection;
@@ -1021,6 +1060,30 @@ struct TpchQ17Scan : TpchQ17InitialScan {
         });
     return true;
   }
+  bool ScanPartQuantityAggregatesForPart(
+      int64_t partkey,
+      const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer)
+      override {
+    if (std::getenv("ACCEL_Q17_BENCH_SCAN_LIMIT")) {
+      return false;
+    }
+    ScanQueryStreaming(
+        connection,
+        "SELECT " + std::to_string(partkey) +
+            "::BIGINT, "
+            "CAST(round(l_quantity * 100) AS BIGINT), "
+            "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
+            "COUNT(*)::BIGINT "
+            "FROM lineitem WHERE l_partkey = " +
+            std::to_string(partkey) + " GROUP BY 2",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    SafeInt64(ChunkValue(chunk, 2, row)),
+                    SafeInt64(ChunkValue(chunk, 3, row))});
+        });
+    return true;
+  }
   ::duckdb::Connection &connection;
 };
 
@@ -1501,11 +1564,23 @@ struct TpchQ19Scan : TpchQ19InitialScan {
 std::unique_ptr<DuckdbRuntime::Binding>
 CreateBinding(::duckdb::Connection &connection,
               const SharedQueryCatalogEntry &entry) {
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+  const bool parallel_aux = IsParallelAuxAccelerator(entry.accelerator_id);
+#else
+  constexpr bool parallel_aux = false;
+  (void)parallel_aux;
+#endif
   switch (entry.query_id) {
   case 1:
     if (entry.workload == SharedWorkloadKind::Tpch) {
       return MakeBinding<TpchQ1Scan, TpchQ1Module>(connection, TpchQ1Config{1});
     }
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+    if (parallel_aux) {
+      return MakeBinding<SecEdgarQ1Scan, SecEdgarQ1ParallelModule>(
+          connection, SecEdgarQ1Config{1});
+    }
+#endif
     return MakeBinding<SecEdgarQ1Scan, SecEdgarQ1Module>(connection,
                                                          SecEdgarQ1Config{1});
   case 2:
@@ -1513,6 +1588,12 @@ CreateBinding(::duckdb::Connection &connection,
       return MakeBinding<TpchQ2Scan, TpchQ2Module>(
           connection, TpchQ2Config{1, 2, 3, 4, 5});
     }
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+    if (parallel_aux) {
+      return MakeBinding<SecEdgarQ2Scan, SecEdgarQ2ParallelModule>(
+          connection, SecEdgarQ2Config{1, 2});
+    }
+#endif
     return MakeBinding<SecEdgarQ2Scan, SecEdgarQ2Module>(
         connection, SecEdgarQ2Config{1, 2});
   case 3:
@@ -1520,6 +1601,12 @@ CreateBinding(::duckdb::Connection &connection,
       return MakeBinding<TpchQ3Scan, TpchQ3Module>(connection,
                                                   TpchQ3Config{1, 2, 3});
     }
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+    if (parallel_aux) {
+      return MakeBinding<SecEdgarQ3Scan, SecEdgarQ3ParallelModule>(
+          connection, SecEdgarQ3Config{1, 2});
+    }
+#endif
     return MakeBinding<SecEdgarQ3Scan, SecEdgarQ3Module>(
         connection, SecEdgarQ3Config{1, 2});
   case 4:
@@ -1527,6 +1614,12 @@ CreateBinding(::duckdb::Connection &connection,
       return MakeBinding<TpchQ4Scan, TpchQ4Module>(connection,
                                                   TpchQ4Config{1, 2});
     }
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+    if (parallel_aux) {
+      return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4ParallelModule>(
+          connection, SecEdgarQ4Config{1, 2, 3, 4});
+    }
+#endif
     return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4Module>(
         connection, SecEdgarQ4Config{1, 2, 3, 4});
   case 5:
@@ -1536,6 +1629,12 @@ CreateBinding(::duckdb::Connection &connection,
     if (entry.workload == SharedWorkloadKind::Tpch) {
       return MakeBinding<TpchQ6Scan, TpchQ6Module>(connection, TpchQ6Config{1});
     }
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+    if (parallel_aux) {
+      return MakeBinding<SecEdgarQ6Scan, SecEdgarQ6ParallelModule>(
+          connection, SecEdgarQ6Config{1, 2, 3});
+    }
+#endif
     return MakeBinding<SecEdgarQ6Scan, SecEdgarQ6Module>(
         connection, SecEdgarQ6Config{1, 2, 3});
   case 7:
@@ -1589,6 +1688,12 @@ CreateBinding(::duckdb::Connection &connection,
     return MakeBinding<TpchQ22Scan, TpchQ22Module>(connection,
                                                    TpchQ22Config{1, 2});
   case 24:
+#ifdef ACCEL_ENABLE_PARALLEL_AUX
+    if (parallel_aux) {
+      return MakeBinding<SecEdgarQ24Scan, SecEdgarQ24ParallelModule>(
+          connection, SecEdgarQ24Config{101, 102});
+    }
+#endif
     return MakeBinding<SecEdgarQ24Scan, SecEdgarQ24Module>(
         connection, SecEdgarQ24Config{101, 102});
   default:
@@ -1690,6 +1795,7 @@ DuckdbRuntime::DuckdbRuntime(::duckdb::Connection &connection,
       binding_(CreateBinding(connection, entry)) {
   coordinator_.Register(std::shared_ptr<core::AuxQueryModule>(
       &binding_->Module(), [](core::AuxQueryModule *) {}));
+  backend_.SetExecutionContext(connection.context.get());
 }
 
 void DuckdbRuntime::SetExpectedQueriesBeforeNextWrite(

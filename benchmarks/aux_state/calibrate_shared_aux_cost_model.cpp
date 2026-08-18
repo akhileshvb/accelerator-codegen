@@ -1,4 +1,4 @@
-#include "accelerator_codegen/aux_state/harness/cost_calibration.hpp"
+#include "accelerator_codegen/harness/cost_calibration.hpp"
 
 #include <cstdlib>
 #include <iostream>

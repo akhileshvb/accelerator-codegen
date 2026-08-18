@@ -13,7 +13,7 @@ PG_USER="${PG_USER:-postgres}"
 DB="${TPCH_PG_DB:-accel_tpch_test}"
 DUCKDB="${TPCH_TEST_DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_test.duckdb}"
 EXTENSION_SO="${ACCEL_POSTGRES_SO:-/usr/lib/postgresql/17/lib/accelerator_codegen_postgres.so}"
-EXTENSION_SQL="${ROOT}/src/aux_state/engine/postgres/accelerator_codegen_postgres--0.1.sql"
+EXTENSION_SQL="${ROOT}/src/runtime/postgres/accelerator_codegen_postgres--0.1.sql"
 
 export PGHOST="$PG_HOST"
 export PGPORT="$PG_PORT"

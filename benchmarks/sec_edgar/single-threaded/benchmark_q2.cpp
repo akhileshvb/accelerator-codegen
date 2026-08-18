@@ -1,7 +1,7 @@
-#include "accelerator_codegen/duckdb_scan_adapter.hpp"
-#include "accelerator_codegen/register.hpp"
-#include "accelerator_codegen/sec_edgar_q2.hpp"
-#include "accelerator_codegen/sec_edgar_q2_fused.hpp"
+#include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
+#include "accelerator_codegen/runtime/duckdb/register.hpp"
+#include "sec_edgar/q2/base/query.hpp"
+#include "sec_edgar/q2/base/fused.hpp"
 #include "test_support/result_compare.hpp"
 
 #include <algorithm>

@@ -3,8 +3,8 @@
 #include <stdexcept>
 #include <string>
 
-#include "accelerator_codegen/aux_state/harness/differential.hpp"
-#include "accelerator_codegen/aux_state/engine/shared/query_catalog.hpp"
+#include "accelerator_codegen/harness/differential.hpp"
+#include "catalog/query_catalog.hpp"
 
 namespace {
 

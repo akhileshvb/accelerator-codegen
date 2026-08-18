@@ -40,6 +40,10 @@ public:
   core::AuxStateStore &StateStore() override;
   const maintenance::CostModelParams &MaintenanceCostModel() const override;
   double ExpectedQueriesBeforeNextWrite() const override;
+  std::size_t WorkerCount() const override;
+
+  void SetExecutionContext(::duckdb::ClientContext *context);
+  ::duckdb::ClientContext *ExecutionContext() const;
 
 private:
   core::AuxTransactionCoordinator &coordinator;
@@ -48,6 +52,7 @@ private:
   VisibilityCallback visibility;
   maintenance::CostModelParams cost_model;
   WorkloadCallback workload;
+  ::duckdb::ClientContext *execution_context = nullptr;
 };
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb

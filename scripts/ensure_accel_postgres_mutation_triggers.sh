@@ -17,10 +17,15 @@ psql_cmd() {
 
 # Per-query lineitem triggers use query-specific table IDs and projections.
 REQUIRED_LINEITEM_TRIGGER_PREFIXES=(
+  accel_codegen_tpch_q1_lineitem_
   accel_codegen_tpch_q3_lineitem_
   accel_codegen_tpch_q6_lineitem_
+  accel_codegen_tpch_q9_lineitem_
   accel_codegen_tpch_q12_lineitem_
   accel_codegen_tpch_q14_lineitem_
+  accel_codegen_tpch_q17_lineitem_
+  accel_codegen_tpch_q18_lineitem_
+  accel_codegen_tpch_q21_lineitem_
 )
 
 missing_per_query_triggers() {

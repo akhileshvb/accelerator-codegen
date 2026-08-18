@@ -1,6 +1,6 @@
 //! DuckDB (matched threads) vs accel_tpch_q3_parallel across manifest seeds.
 
-#include "accelerator_codegen/register.hpp"
+#include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "test_support/benchmark_paired_timing.hpp"
 #include "test_support/q3_manifest.hpp"
 

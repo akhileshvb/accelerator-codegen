@@ -23,6 +23,8 @@ namespace {
 constexpr uint8_t kRevenueDecimalWidth = 38;
 constexpr uint8_t kRevenueDecimalScale = 4;
 constexpr duckdb::idx_t kOutputBatchSize = 64;
+// TPC-H Q10 returns the top 20 customers by revenue.
+constexpr std::size_t kTpchQ10ResultLimit = 20;
 constexpr int64_t kAbsentOrderCustomer = 0;
 constexpr int64_t kDefaultCustomerCapacity = 150001;
 constexpr int64_t kDefaultOrderCapacity = 6000001;
@@ -100,16 +102,6 @@ struct Q10OutputRow {
 	std::string phone;
 	std::string comment;
 };
-
-bool BetterOutputRow(const Q10OutputRow &lhs, const Q10OutputRow &rhs) {
-	if (duckdb::Hugeint::GreaterThan(lhs.revenue, rhs.revenue)) {
-		return true;
-	}
-	if (duckdb::Hugeint::GreaterThan(rhs.revenue, lhs.revenue)) {
-		return false;
-	}
-	return lhs.custkey < rhs.custkey;
-}
 
 class ActiveOrderStore {
 public:
@@ -262,8 +254,12 @@ public:
 	}
 
 	void Finalize() override {
-		output_rows.clear();
-		output_rows.reserve(revenue_by_customer.ActiveKeys().size());
+		struct Ranked {
+			int64_t custkey = 0;
+			duckdb::hugeint_t revenue {};
+		};
+		std::vector<Ranked> ranked;
+		ranked.reserve(revenue_by_customer.ActiveKeys().size());
 		for (const auto custkey : revenue_by_customer.ActiveKeys()) {
 			if (custkey < 0 || custkey >= customer_capacity) {
 				continue;
@@ -276,22 +272,42 @@ public:
 			if (nationkey < 0 || nationkey >= kMaxNationSlots) {
 				continue;
 			}
-			const auto &nation_name = nation_names[static_cast<size_t>(nationkey)];
-			if (nation_name.empty()) {
+			if (nation_names[static_cast<size_t>(nationkey)].empty()) {
 				continue;
 			}
+			ranked.push_back(Ranked{custkey, FromAccumulator(revenue_by_customer.Load(custkey))});
+		}
+		const auto better = [](const Ranked &lhs, const Ranked &rhs) {
+			if (lhs.revenue != rhs.revenue) {
+				return lhs.revenue > rhs.revenue;
+			}
+			return lhs.custkey < rhs.custkey;
+		};
+		if (ranked.size() > kTpchQ10ResultLimit) {
+			std::partial_sort(ranked.begin(),
+			                  ranked.begin() + static_cast<std::ptrdiff_t>(kTpchQ10ResultLimit),
+			                  ranked.end(), better);
+			ranked.resize(kTpchQ10ResultLimit);
+		} else {
+			std::sort(ranked.begin(), ranked.end(), better);
+		}
+
+		output_rows.clear();
+		output_rows.reserve(ranked.size());
+		for (const auto &entry : ranked) {
+			const auto index = static_cast<size_t>(entry.custkey);
+			const auto nationkey = customer_nationkeys[index];
 			Q10OutputRow row;
-			row.custkey = custkey;
+			row.custkey = entry.custkey;
 			row.name = customer_names[index];
-			row.revenue = FromAccumulator(revenue_by_customer.Load(custkey));
+			row.revenue = entry.revenue;
 			row.acctbal = duckdb::hugeint_t(customer_acctbal_raw[index]);
-			row.nation_name = nation_name;
+			row.nation_name = nation_names[static_cast<size_t>(nationkey)];
 			row.address = customer_addresses[index];
 			row.phone = customer_phones[index];
 			row.comment = customer_comments[index];
 			output_rows.push_back(std::move(row));
 		}
-		std::sort(output_rows.begin(), output_rows.end(), BetterOutputRow);
 		output_offset = 0;
 		finalized = true;
 	}

@@ -6,6 +6,8 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -16,6 +18,7 @@
 
 using namespace accelerator_codegen::aux_state::core;
 using accelerator_codegen::aux_state::query::TpchQ10Config;
+using accelerator_codegen::aux_state::query::TpchQ10Customer;
 using accelerator_codegen::aux_state::query::TpchQ10CustomerInput;
 using accelerator_codegen::aux_state::query::TpchQ10InitialScan;
 using accelerator_codegen::aux_state::query::TpchQ10LineitemInput;
@@ -131,6 +134,26 @@ public:
                 price.scale, discount.value, discount.scale,
                 std::get<std::string>(row.values[3].payload) == "R"});
     }
+  }
+  bool LookupCustomers(
+      const std::vector<int64_t> &custkeys,
+      std::unordered_map<int64_t, TpchQ10Customer> &out) override {
+    out.clear();
+    std::unordered_set<int64_t> wanted(custkeys.begin(), custkeys.end());
+    for (const auto &row : customers) {
+      const auto key = std::get<int64_t>(row.values[0].payload);
+      if (wanted.find(key) == wanted.end())
+        continue;
+      const auto &balance = std::get<ScaledDecimal>(row.values[2].payload);
+      out.emplace(key, TpchQ10Customer{
+                           std::get<std::string>(row.values[1].payload),
+                           balance.value,
+                           static_cast<int32_t>(std::get<int64_t>(row.values[3].payload)),
+                           std::get<std::string>(row.values[4].payload),
+                           std::get<std::string>(row.values[5].payload),
+                           std::get<std::string>(row.values[6].payload)});
+    }
+    return true;
   }
   VisibilityToken CurrentVisibility() const override { return {}; }
   AuxStateStore &StateStore() override { return store; }

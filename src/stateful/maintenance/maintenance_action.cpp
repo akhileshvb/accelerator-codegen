@@ -1,3 +1,4 @@
+// SCAFFOLDING
 #include "accelerator_codegen/stateful/maintenance/maintenance_action.hpp"
 
 namespace accelerator_codegen::aux_state::maintenance {

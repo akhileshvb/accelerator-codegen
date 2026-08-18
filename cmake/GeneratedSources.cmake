@@ -25,6 +25,13 @@ function(accel_collect_generated_parallel_sources OUT_VAR)
     set(${OUT_VAR} ${_matches} PARENT_SCOPE)
 endfunction()
 
+function(accel_collect_generated_parallel_aux_sources OUT_VAR)
+    file(GLOB _matches CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/sec_edgar/q*/aux/parallel/*.cpp")
+    list(SORT _matches)
+    set(${OUT_VAR} ${_matches} PARENT_SCOPE)
+endfunction()
+
 function(accel_collect_runtime_sources OUT_VAR)
     set(_sources
         src/runtime/duckdb/duckdb_scan_adapter.cpp

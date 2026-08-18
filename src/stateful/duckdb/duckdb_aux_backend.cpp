@@ -1,10 +1,13 @@
+// GENERATED BACKEND
 #include "accelerator_codegen/stateful/duckdb/duckdb_aux_backend.hpp"
 
 #include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
 
+#include "accelerator_codegen/runtime/parallel/parallel_runtime.hpp"
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
+#include "duckdb/main/client_context.hpp"
 
 namespace accelerator_codegen::aux_state::engine::duckdb {
 
@@ -73,6 +76,29 @@ double DuckDBAuxBackend::ExpectedQueriesBeforeNextWrite() const {
   const char *value =
       std::getenv("ACCELERATOR_CODEGEN_DUCKDB_EXPECTED_QUERIES_BEFORE_WRITE");
   return value && *value ? std::max(0.0, std::stod(value)) : 10.0;
+}
+
+std::size_t DuckDBAuxBackend::WorkerCount() const {
+  const char *value = std::getenv("ACCEL_AUX_THREADS");
+  if (value && *value) {
+    const long parsed = std::strtol(value, nullptr, 10);
+    if (parsed > 0) {
+      return static_cast<std::size_t>(parsed);
+    }
+  }
+  if (execution_context) {
+    return static_cast<std::size_t>(
+        ::accelerator_codegen::ParallelWorkerCount(*execution_context));
+  }
+  return 1;
+}
+
+void DuckDBAuxBackend::SetExecutionContext(::duckdb::ClientContext *context) {
+  execution_context = context;
+}
+
+::duckdb::ClientContext *DuckDBAuxBackend::ExecutionContext() const {
+  return execution_context;
 }
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb
