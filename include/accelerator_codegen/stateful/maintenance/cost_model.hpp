@@ -32,7 +32,7 @@ struct CostModelParams {
 	double apply_delta_base_us = 0.0;
 	double apply_delta_per_row_us = 0.5;
 	double apply_delta_part_lineitem_scan_us = 27000.0;
-	uint64_t apply_delta_max_rows = 1024;
+	uint64_t apply_delta_max_rows = 1048576;
 	uint64_t apply_delta_max_part_fanout = 16;
 	double invalidation_overhead_us = 10.0;
 	double decision_margin_us = 1000.0;

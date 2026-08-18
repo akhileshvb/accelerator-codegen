@@ -77,7 +77,8 @@ def connect(db):
     conn = psycopg2.connect(
         host=host,
         port=port,
-        user="postgres",
+        user=os.environ.get("PGUSER", "postgres"),
+        password=os.environ.get("PGPASSWORD", "postgres"),
         dbname=db,
         connect_timeout=connect_timeout,
         keepalives=1,

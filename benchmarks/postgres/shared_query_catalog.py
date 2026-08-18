@@ -193,6 +193,8 @@ def _sec_q24_probe(row):
 def _tpch_seed_sql(query_id: int) -> str:
     root = Path(os.environ.get("TPCH_UTILS_ROOT", "/home/akhilvb/tpch-utils"))
     sql_path = root / "generated/sf1_instances/seed_1" / f"{query_id:02d}.sql"
+    if not sql_path.is_file():
+        raise FileNotFoundError(str(sql_path))
     sql = sql_path.read_text().strip()
     if query_id == 11:
         sql = sql.replace("* 1", "* 0.0001")
@@ -765,8 +767,17 @@ ORDER BY n.value DESC LIMIT 1
 }
 
 
+def _safe_tpch_base_entry(query_id: int) -> Optional[SharedQueryEntry]:
+    try:
+        return _build_tpch_base_query_entry(query_id)
+    except FileNotFoundError:
+        return None
+
+
 TPCH_BASE_KERNEL_QUERIES: Dict[int, SharedQueryEntry] = {
-    query_id: _build_tpch_base_query_entry(query_id) for query_id in _TPCH_BASE_KERNEL_SQL
+    query_id: entry
+    for query_id in _TPCH_BASE_KERNEL_SQL
+    if (entry := _safe_tpch_base_entry(query_id)) is not None
 }
 
 

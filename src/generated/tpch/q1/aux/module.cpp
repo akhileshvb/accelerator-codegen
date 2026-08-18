@@ -375,9 +375,14 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
   if (buffer.Deltas().empty())
     return outcome;
 
+  std::set<int32_t> touched_days;
+  for (const auto &delta : buffer.Deltas())
+    touched_days.insert(delta.shipdate_days);
+
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, true, true,
-       false, false, core::MaintenanceAction::NoOp,
+      {static_cast<uint64_t>(buffer.Deltas().size()),
+       static_cast<uint64_t>(std::max<std::size_t>(1, touched_days.size())),
+       true, true, true, false, false, core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
     outcome.action = decision.action;
@@ -385,10 +390,6 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
     outcome.pending_rebuild = outcome.invalidations;
     return outcome;
   }
-
-  std::set<int32_t> touched_days;
-  for (const auto &delta : buffer.Deltas())
-    touched_days.insert(delta.shipdate_days);
 
   std::vector<core::PartitionId> partitions;
   partitions.reserve(touched_days.size());
@@ -404,19 +405,10 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
     const auto day = core::TpchQ1Layout::DaysFromPartition(image.partition);
     const auto *typed = AsQ1Image(image);
     if (!typed || !typed->partition || typed->shipdate_days != day) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
+      continue;
     }
     state[day] = *typed->partition;
     versions[day] = image.version;
-  }
-  if (versions.size() != touched_days.size()) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
   }
 
   for (const auto &delta : buffer.Deltas()) {

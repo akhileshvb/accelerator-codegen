@@ -111,6 +111,8 @@ std::string ResolveCostModelPath(const char *env_name,
     candidates.push_back(std::string(config_dir) + "/" + basename);
   }
   candidates.emplace_back(default_relative_path);
+  candidates.push_back(std::string("/accel-src/") + default_relative_path);
+  candidates.push_back(std::string("/accel-src/config/") + basename);
   candidates.push_back(std::string("/tmp/accel-codegen-src/") +
                        default_relative_path);
   for (const auto &candidate : candidates) {

@@ -19,9 +19,11 @@ psql_cmd() {
 REQUIRED_LINEITEM_TRIGGER_PREFIXES=(
   accel_codegen_tpch_q1_lineitem_
   accel_codegen_tpch_q3_lineitem_
+  accel_codegen_tpch_q3_orders_orders_
   accel_codegen_tpch_q6_lineitem_
   accel_codegen_tpch_q9_lineitem_
   accel_codegen_tpch_q12_lineitem_
+  accel_codegen_tpch_q12_orders_orders_
   accel_codegen_tpch_q14_lineitem_
   accel_codegen_tpch_q17_lineitem_
   accel_codegen_tpch_q18_lineitem_

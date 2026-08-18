@@ -192,8 +192,8 @@ std::vector<int> MutationProjection(TableId table, int natts) {
     return {0, 1, 2, 3, 4, 5, 6, 7, 8};
   case 1001: // TPCH Q1: shipdate,quantity,price,discount,tax,returnflag,linestatus
     return {10, 4, 5, 6, 7, 8, 9};
-  case 1002: // TPCH Q3 orders
-    return {0, 1, 4, 7};
+  case 1002: // TPCH Q3 orders: o_orderkey,o_orderdate,o_custkey,o_shippriority
+    return {0, 4, 1, 7};
   case 1003: // TPCH Q3 customer
     return {6, 0};
   case 1004: // TPCH Q3 lineitem
