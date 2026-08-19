@@ -46,6 +46,14 @@ public:
   virtual ~TpchQ15InitialScan() = default;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ15LineitemInput &)> &) = 0;
+  virtual void ScanLineitemsForShipdateRange(
+      int32_t start_days, int32_t end_days,
+      const std::function<void(const TpchQ15LineitemInput &)> &consumer) {
+    ScanLineitems([&](const TpchQ15LineitemInput &input) {
+      if (input.shipdate_days >= start_days && input.shipdate_days < end_days)
+        consumer(input);
+    });
+  }
   virtual void ScanSuppliers(
       const std::function<void(const TpchQ15SupplierInput &)> &) = 0;
 };

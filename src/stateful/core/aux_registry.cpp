@@ -27,13 +27,6 @@ bool IsSyncRebuildAction(MaintenanceAction action) {
          action == MaintenanceAction::RebuildPartition;
 }
 
-InvalidationPlan AllPartitionsPlan() {
-  InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
 void MaterializeSyncRebuild(AuxEngineServices &services, AuxQueryModule &module,
                             StagedMaintenanceOutcome &outcome) {
   CollectingStateBuilder builder(outcome);
@@ -171,6 +164,9 @@ void AuxTransactionCoordinator::PreCommit() {
     if (!services->AllowsSynchronousRebuildOnCommit() &&
         IsSyncRebuildAction(entry.outcome.action) &&
         entry.outcome.updates.empty()) {
+      if (entry.outcome.action == MaintenanceAction::RebuildPartition) {
+        entry.outcome.action = MaintenanceAction::RebuildAll;
+      }
       MaterializeSyncRebuild(*services, *entry.module, entry.outcome);
     }
   }
@@ -187,15 +183,25 @@ void AuxTransactionCoordinator::Commit() {
       continue;
     }
 
-    const auto action = entry.outcome.action;
-    // RebuildAll / RebuildPartition used to invalidate only and rely on
-    // ExecuteFallback, which rebuilds per query without publishing. Materialize
-    // a full Build into updates when the module did not already supply them
-    // (e.g. SecEdgar Q2), then invalidate once and publish so later queries hit.
+    auto action = entry.outcome.action;
+    // RebuildAll used to invalidate only and rely on ExecuteFallback, which
+    // rebuilds per query without publishing. Materialize a full Build into
+    // updates when the module did not already supply them (e.g. SecEdgar Q2),
+    // then invalidate once and publish so later queries hit.
+    // RebuildPartition must not take this path: a full Build would rescan
+    // every partition and Invalidate(All) would drop the untouched slots.
+    // Modules that cannot rebuild locally leave updates empty; treat that as
+    // RebuildAll so correctness is preserved.
     // InvalidateAndFallback stays lazy on purpose.
     // Engines that cannot scan during Commit (PostgreSQL) already materialized
     // in PreCommit via AllowsSynchronousRebuildOnCommit() == false.
-    if (IsSyncRebuildAction(action) && entry.outcome.updates.empty()) {
+    if (action == MaintenanceAction::RebuildPartition &&
+        entry.outcome.updates.empty()) {
+      action = MaintenanceAction::RebuildAll;
+      entry.outcome.action = action;
+    }
+    if (action == MaintenanceAction::RebuildAll &&
+        entry.outcome.updates.empty()) {
       if (services->AllowsSynchronousRebuildOnCommit()) {
         MaterializeSyncRebuild(*services, *entry.module, entry.outcome);
       } else if (entry.outcome.invalidations.IsEmpty()) {
@@ -206,10 +212,21 @@ void AuxTransactionCoordinator::Commit() {
     if (IsSyncRebuildAction(action)) {
       InvalidationPlan plan = entry.outcome.invalidations;
       MergeInvalidationPlan(plan, entry.outcome.pending_rebuild);
-      // Dropping stale partitions is required even when a module already filled
-      // updates without an invalidation plan (partition sets can shrink/change).
-      if (plan.IsEmpty() && !entry.outcome.updates.empty()) {
-        plan = AllPartitionsPlan();
+      if (action == MaintenanceAction::RebuildAll) {
+        // Dropping stale partitions is required even when a module already
+        // filled updates without an invalidation plan (sets can shrink).
+        if (plan.IsEmpty() && !entry.outcome.updates.empty()) {
+          plan = AllPartitionsPlan();
+        }
+      } else if (action == MaintenanceAction::RebuildPartition) {
+        // Never escalate to AllPartitions: other slots must stay Valid.
+        if (plan.IsEmpty() && !entry.outcome.updates.empty()) {
+          plan = PartitionSetPlanFromImages(entry.outcome.updates);
+        }
+        if (plan.scope ==
+            ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions) {
+          plan = PartitionSetPlanFromImages(entry.outcome.updates);
+        }
       }
       if (!plan.IsEmpty()) {
         services->StateStore().Invalidate(plan);

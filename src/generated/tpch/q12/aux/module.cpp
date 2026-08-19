@@ -442,16 +442,6 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
 
   const auto total_deltas =
       buffer.Deltas().size() + buffer.OrderDeltas().size();
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(total_deltas), 1, true, true, true, false, false,
-       core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
 
   const auto visibility = services.CurrentVisibility();
   const auto priority_snapshot = services.StateStore().ReadPartitions(
@@ -480,12 +470,82 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   bool priorities_changed = false;
-  // RF1/RF2 ordering: apply order inserts before lineitems, deletes after.
   for (const auto &delta : buffer.OrderDeltas()) {
     if (delta.sign > 0) {
       priority_state->SetPriority(delta.orderkey, delta.priority);
       priorities_changed = true;
     }
+  }
+
+  std::set<int32_t> touched_days;
+  for (const auto &delta : buffer.Deltas())
+    touched_days.insert(delta.receipt_day);
+
+  const bool can_rebuild_days = !touched_days.empty() && initial_scan;
+  const auto decision = services.ChooseMaintenance(
+      {static_cast<uint64_t>(total_deltas),
+       static_cast<uint64_t>(std::max<std::size_t>(
+           1, touched_days.size() + (priorities_changed ? 1 : 0))),
+       true, can_rebuild_days, true, false, false,
+       core::MaintenanceAction::NoOp,
+       services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    if (!can_rebuild_days) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+    TpchQ12State rebuilt;
+    initial_scan->ScanLineitemsForReceiptDays(
+        touched_days, [&](const TpchQ12LineitemInput &input) {
+          const auto priority = priority_state->PriorityOf(input.orderkey);
+          if (priority == TpchQ12PriorityClass::Absent ||
+              priority == TpchQ12PriorityClass::Neither)
+            return;
+          if (!TpchQ12LineitemQualifies(input.commitdate_days,
+                                        input.receiptdate_days,
+                                        input.shipdate_days))
+            return;
+          auto &stats =
+              rebuilt.day_partitions[input.receiptdate_days][input.shipmode];
+          ApplyContribution(stats, priority, 1);
+        });
+    for (const auto day : touched_days) {
+      TpchQ12State day_state;
+      const auto day_it = rebuilt.day_partitions.find(day);
+      if (day_it != rebuilt.day_partitions.end())
+        day_state.day_partitions.emplace(day, day_it->second);
+      const auto typed_state =
+          std::make_shared<const TpchQ12State>(std::move(day_state));
+      outcome.updates.push_back(core::StateImage::Make(
+          core::TpchQ12Layout::kAccelerator,
+          static_cast<core::PartitionId>(day), 0,
+          MakeStateImage(TpchQ12ImageKind::Day, day, typed_state)));
+    }
+    for (const auto &delta : buffer.OrderDeltas()) {
+      if (delta.sign < 0) {
+        priority_state->SetPriority(delta.orderkey,
+                                    TpchQ12PriorityClass::Absent);
+        priorities_changed = true;
+      }
+    }
+    if (priorities_changed) {
+      const auto typed_priorities =
+          std::static_pointer_cast<const TpchQ12State>(
+              std::move(priority_state));
+      outcome.updates.push_back(core::StateImage::Make(
+          core::TpchQ12Layout::kAccelerator,
+          core::TpchQ12Layout::kOrderPriorities, 0,
+          MakeStateImage(TpchQ12ImageKind::OrderPriorities, 0,
+                         typed_priorities)));
+    }
+    core::FinishRebuildPartition(outcome);
+    return outcome;
+  }
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    outcome.action = decision.action;
+    outcome.invalidations = All();
+    outcome.pending_rebuild = outcome.invalidations;
+    return outcome;
   }
 
   TpchQ12State state;

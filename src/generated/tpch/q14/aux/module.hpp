@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -33,6 +34,8 @@ struct TpchQ14LineitemInput {
   int32_t shipdate_days = 0;
 };
 
+int32_t TpchQ14MonthKeyFromDays(int32_t days_since_epoch);
+
 class TpchQ14InitialScan {
 public:
   virtual ~TpchQ14InitialScan() = default;
@@ -40,6 +43,14 @@ public:
       const std::function<void(const TpchQ14PartInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ14LineitemInput &)> &) = 0;
+  virtual void ScanLineitemsForMonths(
+      const std::set<int32_t> &months,
+      const std::function<void(const TpchQ14LineitemInput &)> &consumer) {
+    ScanLineitems([&](const TpchQ14LineitemInput &input) {
+      if (months.count(TpchQ14MonthKeyFromDays(input.shipdate_days)))
+        consumer(input);
+    });
+  }
 };
 
 enum class TpchQ14PromoClass : uint8_t {

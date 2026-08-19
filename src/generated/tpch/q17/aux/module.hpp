@@ -90,6 +90,17 @@ public:
     (void)consumer;
     return false;
   }
+
+  virtual bool ScanPartQuantityAggregatesForParts(
+      const std::unordered_set<int64_t> &partkeys,
+      const std::function<void(const TpchQ17PartQuantityAggregate &)>
+          &consumer) {
+    if (partkeys.size() == 1)
+      return ScanPartQuantityAggregatesForPart(*partkeys.begin(), consumer);
+    (void)partkeys;
+    (void)consumer;
+    return false;
+  }
 };
 
 // ── Per-part statistics ─────────────────────────────────────────────────────

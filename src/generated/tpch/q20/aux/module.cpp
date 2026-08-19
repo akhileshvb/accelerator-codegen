@@ -228,12 +228,11 @@ bool ReadNation(const core::AuxRow &row, int32_t &nationkey,
 // ── TpchQ20State accessors ──────────────────────────────────────────────────
 void TpchQ20State::AddPairEntry(uint64_t pair_key, int32_t shipdate_days,
                                 int64_t quantity_raw) {
-  // Copy parent entries to local if not already present (delta overlay).
+  // Copy the full ancestor series (not just immediate parent) so stacked
+  // overlay publishes still see base lineitem history.
   if (pair_series.find(pair_key) == pair_series.end() && parent_state) {
-    const auto &p = parent_state->pair_series;
-    auto it = p.find(pair_key);
-    if (it != p.end())
-      pair_series[pair_key] = it->second;
+    if (const auto *src = parent_state->FindPairSeries(pair_key))
+      pair_series[pair_key] = *src;
   }
   auto &series = pair_series[pair_key];
   series.entries.push_back({shipdate_days, quantity_raw});
@@ -243,12 +242,9 @@ void TpchQ20State::AddPairEntry(uint64_t pair_key, int32_t shipdate_days,
 
 void TpchQ20State::RemovePairEntry(uint64_t pair_key, int32_t shipdate_days,
                                    int64_t quantity_raw) {
-  // Copy parent entries to local if not already present (delta overlay).
   if (pair_series.find(pair_key) == pair_series.end() && parent_state) {
-    const auto &p = parent_state->pair_series;
-    auto it = p.find(pair_key);
-    if (it != p.end())
-      pair_series[pair_key] = it->second;
+    if (const auto *src = parent_state->FindPairSeries(pair_key))
+      pair_series[pair_key] = *src;
   }
   auto it = pair_series.find(pair_key);
   if (it == pair_series.end())
@@ -402,9 +398,8 @@ TpchQ20State::FindPartKeysByPrefix(const std::string &prefix) const {
       }
     }
   };
-  collect(*this);
-  if (parent_state)
-    collect(*parent_state);
+  for (const TpchQ20State *s = this; s; s = s->parent_state.get())
+    collect(*s);
   return result;
 }
 
@@ -855,9 +850,13 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
       buffer.LineitemDeltas().size() + buffer.PartsuppDeltas().size() +
       buffer.PartNameDeltas().size();
   const auto decision = services.ChooseMaintenance(
-      {delta_count, 1, true, true, true, false, false,
+      {delta_count, 1, true, false, true, false, false,
        core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
     outcome.action = decision.action;
     outcome.invalidations = All();

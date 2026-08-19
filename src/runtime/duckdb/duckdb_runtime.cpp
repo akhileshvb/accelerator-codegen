@@ -3,12 +3,15 @@
 #include "accelerator_codegen/runtime/duckdb/tpch_rf.hpp"
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "sec_edgar/q1/aux/module.hpp"
@@ -64,6 +67,84 @@ void Require(bool condition, const std::string &message) {
   if (!condition) {
     throw std::runtime_error(message);
   }
+}
+
+void CivilFromDays(int32_t z, int32_t &year, unsigned &month, unsigned &day) {
+  z += 719468;
+  const int32_t era = (z >= 0 ? z : z - 146096) / 146097;
+  const unsigned doe = static_cast<unsigned>(z - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  year = static_cast<int32_t>(yoe) + era * 400;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  day = doy - (153 * mp + 2) / 5 + 1;
+  month = mp + (mp < 10 ? 3 : -9);
+  year += (month <= 2);
+}
+
+std::string SqlDateLiteral(int32_t days) {
+  int32_t year = 0;
+  unsigned month = 0, day = 0;
+  CivilFromDays(days, year, month, day);
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "DATE '%04d-%02u-%02u'", year, month, day);
+  return buf;
+}
+
+std::string SqlDateInPredicate(const char *column, const std::set<int32_t> &days) {
+  if (days.empty())
+    return "FALSE";
+  const auto lo = *days.begin();
+  const auto hi = *days.rbegin();
+  const auto span = static_cast<int64_t>(hi) - lo + 1;
+  if (days.size() > 64 || span <= static_cast<int64_t>(days.size()) * 4) {
+    return std::string(column) + " BETWEEN " + SqlDateLiteral(lo) + " AND " +
+           SqlDateLiteral(hi);
+  }
+  std::ostringstream sql;
+  sql << column << " IN (";
+  bool first = true;
+  for (const auto day : days) {
+    if (!first)
+      sql << ", ";
+    first = false;
+    sql << SqlDateLiteral(day);
+  }
+  sql << ")";
+  return sql.str();
+}
+
+std::string SqlIntInPredicate(const char *column, const std::set<int32_t> &values) {
+  if (values.empty())
+    return "FALSE";
+  std::ostringstream sql;
+  sql << column << " IN (";
+  bool first = true;
+  for (const auto value : values) {
+    if (!first)
+      sql << ", ";
+    first = false;
+    sql << value;
+  }
+  sql << ")";
+  return sql.str();
+}
+
+std::string SqlInt64InPredicate(const char *column,
+                                const std::unordered_set<int64_t> &values) {
+  if (values.empty())
+    return "FALSE";
+  std::ostringstream sql;
+  sql << column << " IN (";
+  bool first = true;
+  for (const auto value : values) {
+    if (!first)
+      sql << ", ";
+    first = false;
+    sql << value;
+  }
+  sql << ")";
+  return sql.str();
 }
 
 int64_t DecimalRaw(const ::duckdb::Value &value) {
@@ -293,6 +374,38 @@ struct TpchQ1Scan : TpchQ1InitialScan {
         });
     return true;
   }
+  bool ScanDayGroupAggregatesForDays(
+      const std::set<int32_t> &days,
+      const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer)
+      override {
+    if (days.empty())
+      return true;
+    const std::string sql =
+        "SELECT l_shipdate, l_returnflag, l_linestatus, "
+        "COUNT(*)::BIGINT, "
+        "SUM(CAST(round(l_quantity * 100) AS BIGINT)), "
+        "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
+        "SUM(CAST(round(l_discount * 100) AS BIGINT)), "
+        "SUM(CAST(round(l_extendedprice * (1 - l_discount) * 10000) AS BIGINT)), "
+        "SUM(CAST(round(l_extendedprice * (1 - l_discount) * (1 + l_tax) * "
+        "1000000) AS BIGINT)) "
+        "FROM lineitem WHERE " +
+        SqlDateInPredicate("l_shipdate", days) + " GROUP BY 1, 2, 3";
+    ScanQueryStreaming(
+        connection, sql,
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({DateDays(ChunkValue(chunk, 0, row)),
+                    FirstChar(ChunkValue(chunk, 1, row)),
+                    FirstChar(ChunkValue(chunk, 2, row)),
+                    SafeInt64(ChunkValue(chunk, 3, row)),
+                    SafeInt64(ChunkValue(chunk, 4, row)),
+                    SafeInt64(ChunkValue(chunk, 5, row)),
+                    SafeInt64(ChunkValue(chunk, 6, row)),
+                    SafeInt64(ChunkValue(chunk, 7, row)),
+                    SafeInt64(ChunkValue(chunk, 8, row))});
+        });
+    return true;
+  }
   ::duckdb::Connection &connection;
 };
 
@@ -351,6 +464,34 @@ struct TpchQ3Scan : TpchQ3InitialScan {
                     DateDays(ChunkValue(chunk, 3, row))});
         });
   }
+  bool ScanSegmentJoin(
+      const std::string &mktsegment,
+      const std::function<void(const TpchQ3OrderInput &,
+                               const TpchQ3LineitemInput &)> &consumer) override {
+    if (mktsegment.empty())
+      return true;
+    std::ostringstream sql;
+    sql << "SELECT o.o_orderkey, o.o_orderdate, o.o_custkey, o.o_shippriority, "
+           "l.l_extendedprice, l.l_discount, l.l_shipdate "
+           "FROM lineitem l "
+           "JOIN orders o ON l.l_orderkey = o.o_orderkey "
+           "JOIN customer c ON o.o_custkey = c.c_custkey "
+           "WHERE c.c_mktsegment = '"
+        << mktsegment << "'";
+    ScanQueryStreaming(
+        connection, sql.str(),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    DateDays(ChunkValue(chunk, 1, row)),
+                    SafeInt64(ChunkValue(chunk, 2, row)),
+                    SafeInt32(ChunkValue(chunk, 3, row))},
+                   {SafeInt64(ChunkValue(chunk, 0, row)),
+                    DecimalRaw(ChunkValue(chunk, 4, row)), 2,
+                    DecimalRaw(ChunkValue(chunk, 5, row)), 2,
+                    DateDays(ChunkValue(chunk, 6, row))});
+        });
+    return true;
+  }
   ::duckdb::Connection &connection;
 };
 
@@ -361,6 +502,32 @@ struct TpchQ6Scan : TpchQ6InitialScan {
     ScanQueryStreaming(
         connection,
         "SELECT l_shipdate, l_discount, l_quantity, l_extendedprice FROM lineitem",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({DateDays(ChunkValue(chunk, 0, row)),
+                    DecimalRaw(ChunkValue(chunk, 1, row)), 2,
+                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
+                    DecimalRaw(ChunkValue(chunk, 3, row)), 2});
+        });
+  }
+  void ScanLineitemsForMonths(
+      const std::set<int32_t> &month_keys,
+      const std::function<void(const TpchQ6LineitemInput &)> &consumer) override {
+    if (month_keys.empty())
+      return;
+    std::ostringstream sql;
+    sql << "SELECT l_shipdate, l_discount, l_quantity, l_extendedprice "
+           "FROM lineitem WHERE (EXTRACT(year FROM l_shipdate)::INT * 12 + "
+           "EXTRACT(month FROM l_shipdate)::INT - 1) IN (";
+    bool first = true;
+    for (const auto key : month_keys) {
+      if (!first)
+        sql << ", ";
+      first = false;
+      sql << key;
+    }
+    sql << ")";
+    ScanQueryStreaming(
+        connection, sql.str(),
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           consumer({DateDays(ChunkValue(chunk, 0, row)),
                     DecimalRaw(ChunkValue(chunk, 1, row)), 2,
@@ -435,6 +602,30 @@ struct TpchQ10Scan : TpchQ10InitialScan {
         "JOIN orders ON l_orderkey = o_orderkey "
         "WHERE l_returnflag = 'R' "
         "GROUP BY 1, 2",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt32(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    SafeInt64(ChunkValue(chunk, 2, row))});
+        });
+    return true;
+  }
+  bool ScanReturnedCustomerRevenueForMonths(
+      const std::set<int32_t> &months,
+      const std::function<void(const TpchQ10ReturnedRevenueInput &)> &consumer)
+      override {
+    if (months.empty())
+      return true;
+    ScanQueryStreaming(
+        connection,
+        "SELECT CAST(year(o_orderdate) * 100 + month(o_orderdate) AS INTEGER), "
+        "o_custkey, "
+        "sum(CAST(round(l_extendedprice * (1 - l_discount) * 10000) AS BIGINT)) "
+        "FROM lineitem "
+        "JOIN orders ON l_orderkey = o_orderkey "
+        "WHERE l_returnflag = 'R' AND " +
+            SqlIntInPredicate(
+                "(year(o_orderdate) * 100 + month(o_orderdate))", months) +
+            " GROUP BY 1, 2",
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           consumer({SafeInt32(ChunkValue(chunk, 0, row)),
                     SafeInt64(ChunkValue(chunk, 1, row)),
@@ -528,6 +719,25 @@ struct TpchQ12Scan : TpchQ12InitialScan {
                     DateDays(ChunkValue(chunk, 4, row))});
         });
   }
+  void ScanLineitemsForReceiptDays(
+      const std::set<int32_t> &receipt_days,
+      const std::function<void(const TpchQ12LineitemInput &)> &consumer)
+      override {
+    if (receipt_days.empty())
+      return;
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_orderkey, l_shipmode, l_commitdate, l_receiptdate, "
+        "l_shipdate FROM lineitem WHERE " +
+            SqlDateInPredicate("l_receiptdate", receipt_days),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    ChunkValue(chunk, 1, row).ToString(),
+                    DateDays(ChunkValue(chunk, 2, row)),
+                    DateDays(ChunkValue(chunk, 3, row)),
+                    DateDays(ChunkValue(chunk, 4, row))});
+        });
+  }
   ::duckdb::Connection &connection;
 };
 
@@ -596,6 +806,33 @@ struct TpchQ14Scan : TpchQ14InitialScan {
     ScanQueryStreaming(
         connection,
         "SELECT l_partkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    DecimalRaw(ChunkValue(chunk, 1, row)), 2,
+                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
+                    DateDays(ChunkValue(chunk, 3, row))});
+        });
+  }
+  void ScanLineitemsForMonths(
+      const std::set<int32_t> &months,
+      const std::function<void(const TpchQ14LineitemInput &)> &consumer)
+      override {
+    if (months.empty())
+      return;
+    std::ostringstream sql;
+    sql << "SELECT l_partkey, l_extendedprice, l_discount, l_shipdate "
+           "FROM lineitem WHERE (EXTRACT(year FROM l_shipdate)::INT * 100 + "
+           "EXTRACT(month FROM l_shipdate)::INT) IN (";
+    bool first = true;
+    for (const auto month : months) {
+      if (!first)
+        sql << ", ";
+      first = false;
+      sql << month;
+    }
+    sql << ")";
+    ScanQueryStreaming(
+        connection, sql.str(),
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           consumer({SafeInt64(ChunkValue(chunk, 0, row)),
                     DecimalRaw(ChunkValue(chunk, 1, row)), 2,
@@ -912,6 +1149,44 @@ struct TpchQ9Scan : TpchQ9InitialScan {
         });
     return true;
   }
+  bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) override {
+    bool found = false;
+    ScanQueryStreaming(
+        connection,
+        "SELECT s_nationkey FROM supplier WHERE s_suppkey = " +
+            std::to_string(suppkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          nationkey = SafeInt32(ChunkValue(chunk, 0, row));
+          found = true;
+        });
+    return found;
+  }
+  bool LookupOrderYear(int64_t orderkey, int32_t &year) override {
+    bool found = false;
+    ScanQueryStreaming(
+        connection,
+        "SELECT year(o_orderdate) FROM orders WHERE o_orderkey = " +
+            std::to_string(orderkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          year = SafeInt32(ChunkValue(chunk, 0, row));
+          found = true;
+        });
+    return found;
+  }
+  bool LookupPartsuppCost(int64_t partkey, int64_t suppkey,
+                          int64_t &supplycost_raw) override {
+    bool found = false;
+    ScanQueryStreaming(
+        connection,
+        "SELECT ps_supplycost FROM partsupp WHERE ps_partkey = " +
+            std::to_string(partkey) + " AND ps_suppkey = " +
+            std::to_string(suppkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          supplycost_raw = DecimalRaw(ChunkValue(chunk, 0, row));
+          found = true;
+        });
+    return found;
+  }
   ::duckdb::Connection &connection;
 };
 
@@ -967,6 +1242,27 @@ struct TpchQ15Scan : TpchQ15InitialScan {
     ScanQueryStreaming(
         connection,
         "SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({DateDays(ChunkValue(chunk, 3, row)),
+                    SafeInt64(ChunkValue(chunk, 0, row)),
+                    DecimalRaw(ChunkValue(chunk, 1, row)),
+                    2,
+                    DecimalRaw(ChunkValue(chunk, 2, row)),
+                    2});
+        });
+  }
+  void ScanLineitemsForShipdateRange(
+      int32_t start_days, int32_t end_days,
+      const std::function<void(const TpchQ15LineitemInput &)> &consumer)
+      override {
+    if (end_days <= start_days)
+      return;
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_suppkey, l_extendedprice, l_discount, l_shipdate FROM lineitem "
+        "WHERE l_shipdate >= " +
+            SqlDateLiteral(start_days) + " AND l_shipdate < " +
+            SqlDateLiteral(end_days),
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           consumer({DateDays(ChunkValue(chunk, 3, row)),
                     SafeInt64(ChunkValue(chunk, 0, row)),
@@ -1084,6 +1380,31 @@ struct TpchQ17Scan : TpchQ17InitialScan {
         });
     return true;
   }
+  bool ScanPartQuantityAggregatesForParts(
+      const std::unordered_set<int64_t> &partkeys,
+      const std::function<void(const TpchQ17PartQuantityAggregate &)> &consumer)
+      override {
+    if (partkeys.empty() || std::getenv("ACCEL_Q17_BENCH_SCAN_LIMIT"))
+      return false;
+    if (partkeys.size() == 1)
+      return ScanPartQuantityAggregatesForPart(*partkeys.begin(), consumer);
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_partkey, "
+        "CAST(round(l_quantity * 100) AS BIGINT), "
+        "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
+        "COUNT(*)::BIGINT "
+        "FROM lineitem WHERE " +
+            SqlInt64InPredicate("l_partkey", partkeys) +
+            " GROUP BY 1, 2",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    SafeInt64(ChunkValue(chunk, 2, row)),
+                    SafeInt64(ChunkValue(chunk, 3, row))});
+        });
+    return true;
+  }
   ::duckdb::Connection &connection;
 };
 
@@ -1101,13 +1422,40 @@ struct TpchQ18Scan : TpchQ18InitialScan {
   bool ScanOrderQuantityAggregates(
       const std::function<void(const TpchQ18OrderQuantityAggregate &)> &consumer)
       override {
+    const std::string min_qty =
+        std::to_string(query::TpchQ18State::kMinPersistQuantityRaw);
     ScanQueryStreaming(
         connection,
-        "SELECT l_orderkey, SUM(CAST(round(l_quantity * 100) AS BIGINT)) "
-        "FROM lineitem GROUP BY 1",
+        "SELECT l_orderkey, "
+        "CAST(SUM(CAST(round(l_quantity * 100) AS BIGINT)) AS BIGINT) "
+        "FROM lineitem GROUP BY 1 HAVING "
+        "CAST(SUM(CAST(round(l_quantity * 100) AS BIGINT)) AS BIGINT) > " +
+            min_qty,
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           consumer({SafeInt64(ChunkValue(chunk, 0, row)),
                     SafeInt64(ChunkValue(chunk, 1, row))});
+        });
+    return true;
+  }
+  bool ScanSurvivorOrders(
+      int64_t min_quantity_raw,
+      const std::function<void(const TpchQ18SurvivorAggregate &)> &consumer)
+      override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l.l_orderkey, "
+        "CAST(SUM(CAST(round(l.l_quantity * 100) AS BIGINT)) AS BIGINT), "
+        "o.o_custkey, o.o_orderdate, o.o_totalprice "
+        "FROM lineitem l JOIN orders o ON l.l_orderkey = o.o_orderkey "
+        "GROUP BY 1, 3, 4, 5 HAVING "
+        "CAST(SUM(CAST(round(l.l_quantity * 100) AS BIGINT)) AS BIGINT) > " +
+            std::to_string(min_quantity_raw),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    SafeInt64(ChunkValue(chunk, 2, row)),
+                    DateDays(ChunkValue(chunk, 3, row)),
+                    DecimalRaw(ChunkValue(chunk, 4, row))});
         });
     return true;
   }
@@ -1136,6 +1484,20 @@ struct TpchQ18Scan : TpchQ18InitialScan {
                  SafeInt64(ChunkValue(chunk, 1, row)),
                  DateDays(ChunkValue(chunk, 2, row)),
                  DecimalRaw(ChunkValue(chunk, 3, row))};
+          found = true;
+        });
+    return found;
+  }
+  bool LookupOrderQuantitySum(int64_t orderkey, int64_t &sum_raw) override {
+    sum_raw = 0;
+    bool found = false;
+    ScanQueryStreaming(
+        connection,
+        "SELECT COALESCE(SUM(CAST(round(l_quantity * 100) AS BIGINT)), 0) "
+        "FROM lineitem WHERE l_orderkey = " +
+            std::to_string(orderkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          sum_raw = SafeInt64(ChunkValue(chunk, 0, row));
           found = true;
         });
     return found;

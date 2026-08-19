@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/dense_id_array.hpp"
 #include "accelerator_codegen/stateful/core/query_layouts.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -56,6 +55,14 @@ struct TpchQ18OrderQuantityAggregate {
   int64_t quantity_sum_raw = 0;
 };
 
+struct TpchQ18SurvivorAggregate {
+  int64_t orderkey = 0;
+  int64_t quantity_sum_raw = 0;
+  int64_t custkey = 0;
+  int32_t orderdate_days = 0;
+  int64_t totalprice_raw = 0;
+};
+
 class TpchQ18InitialScan {
 public:
   virtual ~TpchQ18InitialScan() = default;
@@ -73,11 +80,28 @@ public:
     return false;
   }
 
+  // Optional: orders whose SUM(quantity) already exceeds min_quantity_raw,
+  // with order metadata joined in. Avoids an O(orders) C++ hash map at SF20.
+  virtual bool ScanSurvivorOrders(
+      int64_t min_quantity_raw,
+      const std::function<void(const TpchQ18SurvivorAggregate &)> &consumer) {
+    (void)min_quantity_raw;
+    (void)consumer;
+    return false;
+  }
+
   // Point-lookup for write maintenance when a lineitem delta crosses the
   // survivor threshold and order metadata is not yet cached.
   virtual bool LookupOrder(int64_t orderkey, TpchQ18OrderInput &out) {
     (void)orderkey;
     (void)out;
+    return false;
+  }
+
+  // Current SUM(l_quantity) for one order, including the open transaction.
+  virtual bool LookupOrderQuantitySum(int64_t orderkey, int64_t &sum_raw) {
+    (void)orderkey;
+    (void)sum_raw;
     return false;
   }
 };
@@ -91,20 +115,14 @@ struct TpchQ18SurvivorMeta {
 };
 
 struct TpchQ18State {
-  // Chunked dense orderkey-indexed data: chunk c holds keys [c<<16, (c+1)<<16).
-  // Grows one 64K-slot chunk at a time (no SF-hardcoded mega-array).
-  static constexpr std::size_t kChunkShift = core::DenseIdArray<uint16_t>::kShift;
-  static constexpr std::size_t kChunkSize = core::DenseIdArray<uint16_t>::kSize;
-  static constexpr std::size_t kChunkMask = core::DenseIdArray<uint16_t>::kMask;
-
   // Persist order metadata only for orders whose quantity sum exceeds this
   // threshold (300.00 at scale 2).  TPC-H Q18 uses 312.00, so survivors
   // cover every order that can appear in the default result set.
   static constexpr int64_t kMinPersistQuantityRaw = 30000;
 
-  // Quantity sums as uint16 (TPC-H qty 1–50, ≤7 lines/order, raw scale 2
-  // so max ~35000). Values above 65535 go in quantity_overflow (unit tests).
-  core::DenseIdArray<uint16_t> quantity_chunks;
+  // Sparse quantity sums for survivor orders only. Non-survivors are resolved
+  // with a point SQL lookup on write so Execute memory stays O(survivors)
+  // at SF20 (dense max(orderkey) arrays do not).
   std::unordered_map<int64_t, int64_t> quantity_overflow;
 
   // Sparse order metadata for high-quantity orders only.

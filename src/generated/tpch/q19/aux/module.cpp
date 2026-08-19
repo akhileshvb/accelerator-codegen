@@ -606,6 +606,19 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
   bool can_delta = !deltas.empty();
 
   if (can_delta) {
+    const auto decision = services.ChooseMaintenance(
+        {static_cast<uint64_t>(deltas.size()), 1, true, false, true, false,
+         false, core::MaintenanceAction::NoOp,
+         services.ExpectedQueriesBeforeNextWrite()});
+    if (decision.action != core::MaintenanceAction::ApplyDelta) {
+      active_state_.reset();
+      outcome.action =
+          decision.action == core::MaintenanceAction::RebuildPartition
+              ? core::MaintenanceAction::RebuildAll
+              : decision.action;
+      EmitCustomProfile("stage_maintenance_rebuild_selected", t_sm.us());
+      return outcome;
+    }
     // Ensure active state is loaded (lazy init, zero-copy from now on)
     if (!active_state_) {
       std::shared_ptr<const TpchQ19State> current_state;

@@ -194,6 +194,44 @@ struct StagedMaintenanceOutcome {
   Version expected_version = 0;
 };
 
+inline InvalidationPlan AllPartitionsPlan() {
+  InvalidationPlan plan;
+  plan.scope = InvalidationScope::AllPartitions;
+  return plan;
+}
+
+inline InvalidationPlan
+PartitionSetPlanFromImages(const std::vector<StateImage> &images) {
+  InvalidationPlan plan;
+  plan.scope = InvalidationScope::PartitionSet;
+  for (const auto &image : images) {
+    plan.partitions.insert(
+        static_cast<::accelerator_codegen::aux_state::PartitionKey>(
+            image.partition));
+  }
+  return plan;
+}
+
+// RebuildPartition publishes replacement images for only the touched slots.
+// Do not set pending_rebuild to AllPartitions — that would drop every other
+// partition when the coordinator merges invalidation plans.
+inline void FinishRebuildPartition(StagedMaintenanceOutcome &outcome) {
+  outcome.action = MaintenanceAction::RebuildPartition;
+  outcome.pending_rebuild = InvalidationPlan{};
+  outcome.expected_version = 0;
+  for (auto &image : outcome.updates) {
+    image.version = 0;
+  }
+  outcome.invalidations = PartitionSetPlanFromImages(outcome.updates);
+}
+
+inline void FinishRebuildAll(StagedMaintenanceOutcome &outcome) {
+  outcome.action = MaintenanceAction::RebuildAll;
+  outcome.invalidations = AllPartitionsPlan();
+  outcome.pending_rebuild = outcome.invalidations;
+  outcome.updates.clear();
+}
+
 class AuxRowSink {
 public:
   virtual ~AuxRowSink() = default;
@@ -276,10 +314,11 @@ public:
   // retained for callers that do not yet expose workload telemetry.
   virtual double ExpectedQueriesBeforeNextWrite() const;
 
-  // RebuildAll/RebuildPartition Commit path may call module Build() to
-  // materialize a fresh image. PostgreSQL xact Commit has no ActiveSnapshot,
-  // so SPI table scans there SIGSEGV — Postgres overrides this to false and
-  // invalidates only (next query rebuilds).
+  // RebuildAll Commit path may call module Build() to materialize a fresh
+  // image. RebuildPartition must be filled by StageMaintenance (touched
+  // partitions only). PostgreSQL xact Commit has no ActiveSnapshot, so SPI
+  // table scans there SIGSEGV — Postgres overrides this to false and
+  // invalidates only (next query rebuilds) when updates are empty.
   virtual bool AllowsSynchronousRebuildOnCommit() const;
 
   virtual MaintenanceDecision ChooseMaintenance(

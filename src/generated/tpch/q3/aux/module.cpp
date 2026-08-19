@@ -539,16 +539,6 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
 
   const auto total_deltas =
       buffer.Deltas().size() + buffer.OrderDeltas().size();
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(total_deltas), 1, true, true, true, false, false,
-       core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
 
   const auto visibility = services.CurrentVisibility();
   std::shared_ptr<TpchQ3OrderSegmentSide> order_side;
@@ -685,6 +675,40 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
         order_side->order_segment[static_cast<std::size_t>(delta.orderkey)]);
     if (segment != 0)
       touched_segments.insert(segment);
+  }
+
+  const auto decision = services.ChooseMaintenance(
+      {static_cast<uint64_t>(total_deltas),
+       static_cast<uint64_t>(std::max<std::size_t>(1, touched_segments.size())),
+       true, true, true, false, false, core::MaintenanceAction::NoOp,
+       services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    for (const auto segment : touched_segments) {
+      if (!core::TpchQ3Layout::IsSegmentPartition(segment))
+        continue;
+      auto index = BuildSegment(services, segment);
+      outcome.updates.push_back(core::StateImage::Make(
+          core::TpchQ3Layout::kAccelerator, segment, 0,
+          MakeSegmentIntervalImage(segment,
+                                   MakeSegmentIntervalState(index))));
+    }
+    if (side_changed) {
+      const auto typed_side =
+          std::static_pointer_cast<const TpchQ3OrderSegmentSide>(
+              std::move(order_side));
+      outcome.updates.push_back(core::StateImage::Make(
+          core::TpchQ3Layout::kAccelerator,
+          core::TpchQ3Layout::kOrderSegmentSide, 0,
+          MakeOrderSegmentSideImage(typed_side)));
+    }
+    core::FinishRebuildPartition(outcome);
+    return outcome;
+  }
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    outcome.action = decision.action;
+    outcome.invalidations = All();
+    outcome.pending_rebuild = outcome.invalidations;
+    return outcome;
   }
 
   std::map<core::PartitionId, TpchQ3SegmentIntervalIndex> indexes;
@@ -952,6 +976,57 @@ TpchQ3State TpchQ3Module::BuildState(core::AuxEngineServices &services,
     SortTpchQ3SegmentIntervalIndex(entry.second);
   scratch.order_segment.shrink_to_fit();
   return state;
+}
+
+TpchQ3SegmentIntervalIndex
+TpchQ3Module::BuildSegment(core::AuxEngineServices &services,
+                           core::PartitionId segment) const {
+  (void)services;
+  TpchQ3SegmentIntervalIndex index{segment, {}, {}};
+  if (!initial_scan)
+    throw std::logic_error("TPC-H Q3 requires a typed initial scan source");
+  const auto mktsegment = TpchQ3MktsegmentFromPartition(segment);
+  if (mktsegment.empty())
+    return index;
+
+  std::unordered_map<int64_t, OrderBuilder> builders;
+  auto consume_join = [&](const TpchQ3OrderInput &order,
+                          const TpchQ3LineitemInput &line) {
+    auto &builder = builders[order.key];
+    builder.orderdate_days = order.orderdate_days;
+    builder.shippriority = order.shippriority;
+    builder.segment = segment;
+    const auto revenue =
+        TpchQ3RevenueRaw(line.extended_price_raw, line.extended_price_scale,
+                         line.discount_raw, line.discount_scale);
+    builder.shipdate_revenue[line.shipdate_days] += revenue;
+  };
+
+  if (!initial_scan->ScanSegmentJoin(mktsegment, consume_join)) {
+    BuildScratch scratch;
+    const auto state = BuildState(services, scratch);
+    const auto it = state.segment_intervals.find(segment);
+    if (it != state.segment_intervals.end())
+      return it->second;
+    return index;
+  }
+
+  for (auto &entry : builders) {
+    if (entry.second.shipdate_revenue.empty())
+      continue;
+    TpchQ3OrderSummary summary;
+    summary.orderkey = PackTpchQ3Orderkey(entry.first);
+    summary.orderdate_days = PackTpchQ3Date(entry.second.orderdate_days);
+    summary.shippriority = PackTpchQ3Shippriority(entry.second.shippriority);
+    std::vector<TpchQ3ShipdateBucket> buckets;
+    FinalizeTpchQ3OrderSummary(buckets, entry.second.shipdate_revenue);
+    index.AssignBuckets(summary, std::move(buckets));
+    if (summary.bucket_count == 0)
+      continue;
+    index.orders.push_back(summary);
+  }
+  SortTpchQ3SegmentIntervalIndex(index);
+  return index;
 }
 
 bool TpchQ3Module::LoadSegmentIntervalIndex(

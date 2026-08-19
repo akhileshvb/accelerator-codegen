@@ -733,9 +733,13 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
   const auto total_deltas = lineitem_deltas.size() + order_deltas.size() +
                             supplier_deltas.size() + nation_deltas.size();
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(total_deltas), 1, true, true, true,
+      {static_cast<uint64_t>(total_deltas), 1, true, false, true,
        false, false, core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
     outcome.action = decision.action;
     outcome.invalidations = All();

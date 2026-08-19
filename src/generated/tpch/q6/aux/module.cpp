@@ -9,6 +9,7 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -523,6 +524,40 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
       {static_cast<uint64_t>(buffer.Deltas().size()),
        static_cast<uint64_t>(grouped.size()), true, true, true, false, false,
        core::MaintenanceAction::NoOp, services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    std::set<int32_t> month_keys;
+    for (const auto &entry : grouped) {
+      if (core::TpchQ6Layout::IsMonthPartition(entry.first))
+        month_keys.insert(
+            core::TpchQ6Layout::MonthKeyFromPartition(entry.first));
+    }
+    std::unordered_map<core::PartitionId, Q6RevenueMatrix> rebuilt;
+    if (initial_scan) {
+      initial_scan->ScanLineitemsForMonths(
+          month_keys, [&](const TpchQ6LineitemInput &input) {
+            ApplyLineitemInput(input, rebuilt);
+          });
+    }
+    for (const auto &entry : grouped) {
+      Q6RevenueMatrix matrix;
+      const auto it = rebuilt.find(entry.first);
+      if (it != rebuilt.end())
+        matrix = it->second;
+      const auto kind = core::TpchQ6Layout::IsMonthPartition(entry.first)
+                            ? TpchQ6PartitionKind::Month
+                            : TpchQ6PartitionKind::Day;
+      const auto key =
+          kind == TpchQ6PartitionKind::Month
+              ? core::TpchQ6Layout::MonthKeyFromPartition(entry.first)
+              : core::TpchQ6Layout::DaysFromPartition(entry.first);
+      const auto typed = std::make_shared<const Q6RevenueMatrix>(matrix);
+      outcome.updates.push_back(core::StateImage::Make(
+          core::TpchQ6Layout::kAccelerator, entry.first, 0,
+          MakeStateImage(kind, key, typed)));
+    }
+    core::FinishRebuildPartition(outcome);
+    return outcome;
+  }
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
     outcome.action = decision.action;
     outcome.invalidations = All();

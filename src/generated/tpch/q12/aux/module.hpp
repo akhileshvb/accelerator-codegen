@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -40,6 +41,16 @@ public:
       const std::function<void(const TpchQ12OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ12LineitemInput &)> &) = 0;
+  virtual void ScanLineitemsForReceiptDays(
+      const std::set<int32_t> &receipt_days,
+      const std::function<void(const TpchQ12LineitemInput &)> &consumer) {
+    if (receipt_days.empty())
+      return;
+    ScanLineitems([&](const TpchQ12LineitemInput &input) {
+      if (receipt_days.count(input.receiptdate_days))
+        consumer(input);
+    });
+  }
 };
 
 enum class TpchQ12PriorityClass : uint8_t {

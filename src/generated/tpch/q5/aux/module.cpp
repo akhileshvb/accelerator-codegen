@@ -152,13 +152,9 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ5LineitemInput &out) {
   if (!IntCell(row, 0, orderkey))
     return false;
 
-  // The mutation path projects (l_orderkey, l_linenumber,
-  // l_extendedprice, l_discount), while the initial-scan path carries
-  // (l_orderkey, l_suppkey, l_extendedprice, l_discount). The second column is
-  // never needed for incremental resolution (supplier nation is recovered from
-  // the order's nation), so just skip parsing it.
+  // Scan and catalog probes project (orderkey, suppkey, price, discount).
   if (!IntCell(row, 1, suppkey))
-    suppkey = 0;
+    return false;
   if (row.values.size() > 2 && !row.values[2].is_null) {
     if (std::holds_alternative<core::ScaledDecimal>(row.values[2].payload)) {
       const auto d = std::get<core::ScaledDecimal>(row.values[2].payload);
@@ -390,6 +386,8 @@ TpchQ5Module::StageMaintenance(core::AuxEngineServices &services,
       inc_outcome.invalidations = plan;
       return inc_outcome;
     }
+    // Incremental resolved the write as not touching the same-nation tree.
+    return outcome;
   }
 
   // Nothing to do if plan is NoOp and no rebuild pending
@@ -422,54 +420,84 @@ TpchQ5Module::StageIncrementalMaintenance(
   core::StagedMaintenanceOutcome outcome;
   outcome.action = core::MaintenanceAction::NoOp;
 
-  // Load current side state with orderkey/suppkey maps
-  TpchQ5State side;
-  if (!LoadSide(services, side))
+  const auto side_snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {core::TpchQ5Layout::kSide});
+  const TpchQ5State *side_ptr = nullptr;
+  for (const auto &image : side_snapshot.partitions) {
+    if (image.partition != core::TpchQ5Layout::kSide)
+      continue;
+    const auto *typed = AsQ5Image(image);
+    if (typed && typed->is_side && typed->state) {
+      side_ptr = typed->state.get();
+      break;
+    }
+  }
+  if (!side_ptr) {
+    outcome.action = core::MaintenanceAction::RebuildAll;
     return outcome;
+  }
+  const auto &side = *side_ptr;
+  if (side.orderkey_to_nationkey.empty() || side.suppkey_to_nationkey.empty() ||
+      side.orderkey_to_ordinal.empty()) {
+    outcome.action = core::MaintenanceAction::RebuildAll;
+    return outcome;
+  }
 
-  // Compute per-leaf revenue deltas from stored lineitem mutations.
-  // The mutation rows carry (orderkey, linenumber, extprice, discount) from
-  // the harness; suppkey is not in the projection.  Nation is derived solely
-  // from orderkey_to_nationkey (customer-side), which is sufficient because
-  // price/discount mutations never change the same-nation join condition.
+  // Per-leaf revenue deltas. Credit a nation only when supplier nation equals
+  // customer nation (same filter as BuildState / the Q5 join).
   std::unordered_map<uint32_t, std::unordered_map<int32_t, int64_t>> leaf_deltas;
+  bool unresolved = false;
+
+  auto apply_row = [&](const TpchQ5LineitemInput &row, int64_t sign) {
+    auto ord_it = side.orderkey_to_ordinal.find(row.orderkey);
+    auto nat_it = side.orderkey_to_nationkey.find(row.orderkey);
+    if (ord_it == side.orderkey_to_ordinal.end() ||
+        nat_it == side.orderkey_to_nationkey.end()) {
+      unresolved = true;
+      return;
+    }
+    auto supp_it = side.suppkey_to_nationkey.find(row.suppkey);
+    if (supp_it == side.suppkey_to_nationkey.end()) {
+      unresolved = true;
+      return;
+    }
+    if (supp_it->second != nat_it->second)
+      return;
+    const int32_t ord = ord_it->second;
+    if (ord < 0 || ord >= static_cast<int32_t>(side.tree_size)) {
+      unresolved = true;
+      return;
+    }
+    const int64_t rev =
+        ComputeRevenueRaw(row.extended_price_raw, row.discount_raw);
+    const uint32_t leaf = TpchQ5LeafNode(side.tree_size, ord);
+    leaf_deltas[leaf][nat_it->second] += sign * rev;
+  };
 
   for (const auto &m : buffer.LineitemMutations()) {
-    // Resolve old row contribution (subtract)
-    if (!m.is_insert) {
-      auto ord_it = side.orderkey_to_ordinal.find(m.old_row.orderkey);
-      auto nat_it = side.orderkey_to_nationkey.find(m.old_row.orderkey);
-      if (ord_it != side.orderkey_to_ordinal.end() &&
-          nat_it != side.orderkey_to_nationkey.end()) {
-        int64_t old_rev = ComputeRevenueRaw(m.old_row.extended_price_raw,
-                                             m.old_row.discount_raw);
-        int32_t ord = ord_it->second;
-        if (ord >= 0 && ord < static_cast<int32_t>(side.tree_size)) {
-          uint32_t leaf = TpchQ5LeafNode(side.tree_size, ord);
-          leaf_deltas[leaf][nat_it->second] -= old_rev;
-        }
-      }
-    }
+    if (!m.is_insert)
+      apply_row(m.old_row, -1);
+    if (!m.is_delete)
+      apply_row(m.new_row, 1);
+  }
 
-    // Resolve new row contribution (add)
-    if (!m.is_delete) {
-      auto ord_it = side.orderkey_to_ordinal.find(m.new_row.orderkey);
-      auto nat_it = side.orderkey_to_nationkey.find(m.new_row.orderkey);
-      if (ord_it != side.orderkey_to_ordinal.end() &&
-          nat_it != side.orderkey_to_nationkey.end()) {
-        int64_t new_rev = ComputeRevenueRaw(m.new_row.extended_price_raw,
-                                             m.new_row.discount_raw);
-        int32_t ord = ord_it->second;
-        if (ord >= 0 && ord < static_cast<int32_t>(side.tree_size)) {
-          uint32_t leaf = TpchQ5LeafNode(side.tree_size, ord);
-          leaf_deltas[leaf][nat_it->second] += new_rev;
-        }
-      }
-    }
+  if (unresolved) {
+    outcome.action = core::MaintenanceAction::RebuildAll;
+    return outcome;
   }
 
   if (leaf_deltas.empty()) {
-    // No actual revenue changes — nothing to do
+    return outcome;
+  }
+
+  const auto decision = services.ChooseMaintenance(
+      {static_cast<uint64_t>(buffer.LineitemMutations().size()), 2, true, false,
+       true, false, false, core::MaintenanceAction::NoOp,
+       services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    outcome.action = decision.action == core::MaintenanceAction::RebuildPartition
+                         ? core::MaintenanceAction::RebuildAll
+                         : decision.action;
     return outcome;
   }
 

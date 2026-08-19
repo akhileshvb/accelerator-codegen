@@ -591,6 +591,19 @@ TpchQ7Module::StageMaintenance(core::AuxEngineServices &services,
   if (!buffer.HasPendingChanges())
     return outcome;
 
+  const auto decision = services.ChooseMaintenance(
+      {static_cast<uint64_t>(std::max<std::size_t>(1, buffer.Deltas().size())),
+       1, true, false, true, false, false, core::MaintenanceAction::NoOp,
+       services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    outcome.action = decision.action == core::MaintenanceAction::RebuildPartition
+                         ? core::MaintenanceAction::RebuildAll
+                         : decision.action;
+    outcome.invalidations = All();
+    outcome.pending_rebuild = outcome.invalidations;
+    return outcome;
+  }
+
   const auto visibility = services.CurrentVisibility();
   const auto snapshot = services.StateStore().ReadPartitions(
       visibility,

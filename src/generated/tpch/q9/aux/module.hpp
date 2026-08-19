@@ -115,6 +115,24 @@ public:
     (void)consumer;
     return false;
   }
+
+  virtual bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) {
+    (void)suppkey;
+    (void)nationkey;
+    return false;
+  }
+  virtual bool LookupOrderYear(int64_t orderkey, int32_t &year) {
+    (void)orderkey;
+    (void)year;
+    return false;
+  }
+  virtual bool LookupPartsuppCost(int64_t partkey, int64_t suppkey,
+                                  int64_t &supplycost_raw) {
+    (void)partkey;
+    (void)suppkey;
+    (void)supplycost_raw;
+    return false;
+  }
 };
 
 // ── Profit cell key ─────────────────────────────────────────────────────────

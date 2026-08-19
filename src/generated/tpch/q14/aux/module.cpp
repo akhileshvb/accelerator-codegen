@@ -415,6 +415,54 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
        static_cast<uint64_t>(touched_months.size()), true, true, true, false,
        false, core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    const auto visibility = services.CurrentVisibility();
+    const auto part_snapshot = services.StateStore().ReadPartitions(
+        visibility, {core::TpchQ14Layout::kPartPromo});
+    const TpchQ14State *part_state = nullptr;
+    for (const auto &image : part_snapshot.partitions) {
+      if (image.partition == core::TpchQ14Layout::kPartPromo) {
+        const auto *typed = AsQ14Image(image, TpchQ14ImageKind::PartPromo);
+        part_state = typed ? typed->state.get() : nullptr;
+        break;
+      }
+    }
+    if (!part_state || !initial_scan) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+    TpchQ14State rebuilt;
+    initial_scan->ScanLineitemsForMonths(
+        touched_months, [&](const TpchQ14LineitemInput &input) {
+          const auto promo = part_state->PromoOf(input.partkey);
+          if (promo == TpchQ14PromoClass::Absent)
+            return;
+          const auto revenue = TpchQ14RevenueRaw(
+              input.extended_price_raw, input.extended_price_scale,
+              input.discount_raw, input.discount_scale);
+          const auto month = TpchQ14MonthKeyFromDays(input.shipdate_days);
+          auto &totals = rebuilt.month_totals[month];
+          totals.total_revenue_raw += revenue;
+          totals.row_count++;
+          totals.saw_contribution = true;
+          if (promo == TpchQ14PromoClass::Promo)
+            totals.promo_revenue_raw += revenue;
+        });
+    for (const auto month : touched_months) {
+      TpchQ14State month_state;
+      const auto it = rebuilt.month_totals.find(month);
+      if (it != rebuilt.month_totals.end())
+        month_state.month_totals.emplace(month, it->second);
+      const auto typed_state =
+          std::make_shared<const TpchQ14State>(std::move(month_state));
+      outcome.updates.push_back(core::StateImage::Make(
+          core::TpchQ14Layout::kAccelerator,
+          static_cast<core::PartitionId>(month), 0,
+          MakeStateImage(TpchQ14ImageKind::Month, month, typed_state)));
+    }
+    core::FinishRebuildPartition(outcome);
+    return outcome;
+  }
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
     outcome.action = decision.action;
     outcome.invalidations = All();

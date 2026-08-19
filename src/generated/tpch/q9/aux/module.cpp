@@ -415,16 +415,20 @@ bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, int64_t &suppkey,
 }
 
 // Resolve profit for a single fully-joined lineitem
-bool ResolveProfit(const TpchQ9State &state, int64_t partkey, int64_t suppkey,
-                   int64_t orderkey, int64_t quantity_raw,
-                   int64_t extendedprice_raw, int64_t discount_raw,
-                   int64_t &profit_raw, int32_t &nationkey, int32_t &year) {
-  if (!state.LookupSupplierNation(suppkey, nationkey))
+bool ResolveProfit(const TpchQ9State &state, TpchQ9InitialScan *scan,
+                   int64_t partkey, int64_t suppkey, int64_t orderkey,
+                   int64_t quantity_raw, int64_t extendedprice_raw,
+                   int64_t discount_raw, int64_t &profit_raw,
+                   int32_t &nationkey, int32_t &year) {
+  if (!state.LookupSupplierNation(suppkey, nationkey) &&
+      !(scan && scan->LookupSupplierNation(suppkey, nationkey)))
     return false;
-  if (!state.LookupOrderYear(orderkey, year))
+  if (!state.LookupOrderYear(orderkey, year) &&
+      !(scan && scan->LookupOrderYear(orderkey, year)))
     return false;
   int64_t supplycost_raw = 0;
-  if (!state.LookupPartsuppCost(partkey, suppkey, supplycost_raw))
+  if (!state.LookupPartsuppCost(partkey, suppkey, supplycost_raw) &&
+      !(scan && scan->LookupPartsuppCost(partkey, suppkey, supplycost_raw)))
     return false;
   profit_raw = ComputeProfitRaw(extendedprice_raw, discount_raw,
                                  supplycost_raw, quantity_raw);
@@ -1042,11 +1046,6 @@ void TpchQ9Module::BuildStateInto(TpchQ9State &state) const {
     state.nation_names.emplace(input.nationkey, input.name);
   });
 
-  // Scan suppliers for nation mapping
-  initial_scan->ScanSuppliers([&](const TpchQ9SupplierInput &input) {
-    state.SetSupplierNation(input.suppkey, input.nationkey);
-  });
-
   // Scan parts for name index, then size internal profit shards from cardinality.
   std::vector<std::pair<int64_t, std::string>> parts;
   parts.reserve(4096);
@@ -1057,8 +1056,6 @@ void TpchQ9Module::BuildStateInto(TpchQ9State &state) const {
   for (const auto &[partkey, name] : parts)
     state.AddNamePostings(partkey, name);
 
-  // Prefer SQL profit aggregation first so DuckDB can release hash-agg memory
-  // before we load the large order_years / partsupp side maps.
   const bool used_sql = initial_scan->ScanProfitContributions(
       [&](const TpchQ9ProfitContribution &input) {
         if (input.profit_raw == 0)
@@ -1067,16 +1064,17 @@ void TpchQ9Module::BuildStateInto(TpchQ9State &state) const {
                               input.profit_raw);
       });
 
-  // Side maps are required for write-side join resolution.
-  initial_scan->ScanOrders([&](const TpchQ9OrdersInput &input) {
-    int32_t year = TpchQ9ExtractYear(input.orderdate_days);
-    state.SetOrderYear(input.orderkey, year);
-  });
-  initial_scan->ScanPartsupps([&](const TpchQ9PartsuppInput &input) {
-    state.SetPartsuppCost(input.partkey, input.suppkey, input.supplycost_raw);
-  });
-
   if (!used_sql) {
+    initial_scan->ScanSuppliers([&](const TpchQ9SupplierInput &input) {
+      state.SetSupplierNation(input.suppkey, input.nationkey);
+    });
+    initial_scan->ScanOrders([&](const TpchQ9OrdersInput &input) {
+      int32_t year = TpchQ9ExtractYear(input.orderdate_days);
+      state.SetOrderYear(input.orderkey, year);
+    });
+    initial_scan->ScanPartsupps([&](const TpchQ9PartsuppInput &input) {
+      state.SetPartsuppCost(input.partkey, input.suppkey, input.supplycost_raw);
+    });
     initial_scan->ScanLineitems([&](const TpchQ9LineitemInput &input) {
       int32_t nationkey = 0;
       if (!state.LookupSupplierNation(input.suppkey, nationkey))
@@ -1119,15 +1117,9 @@ void TpchQ9Module::Build(core::AuxEngineServices &services,
       TpchQ9Layout::kAccelerator, TpchQ9Layout::kCompleteState, 0,
       MakeMetadataImage(metadata_state)));
 
-  auto maintenance_side = std::make_shared<TpchQ9State>();
-  maintenance_side->supplier_nations = typed_state->supplier_nations;
-  maintenance_side->order_years = typed_state->order_years;
-  maintenance_side->order_year_overflow = typed_state->order_year_overflow;
-  maintenance_side->partsupp_rows = typed_state->partsupp_rows;
-  maintenance_side->partsupp_overflow = typed_state->partsupp_overflow;
-  builder.Write(core::StateImage::Make(
-      TpchQ9Layout::kAccelerator, TpchQ9Layout::kMaintenanceSide, 0,
-      MakeMaintenanceSideImage(maintenance_side)));
+  // Do not publish dense order_years / partsupp / supplier maps. Execute
+  // never reads them; writes resolve those joins with point SQL so SF20
+  // aux state stays O(name postings + profit cells).
 
   for (core::PartitionId slot = 0; slot < typed_state->profit_slot_count;
        ++slot) {
@@ -1344,9 +1336,13 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   const auto decision = services.ChooseMaintenance(
-      {total_changes, 1, true, true, true, false, false,
+      {total_changes, 1, true, false, true, false, false,
        core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
     outcome.action = decision.action;
     outcome.invalidations = All();
@@ -1437,56 +1433,25 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
 
   const bool touch_names =
       !buffer.PartNameDeltas().empty() || buffer.HasRebuildSet();
-  const bool touch_orders = !buffer.OrderDeltas().empty();
-  const bool needs_side_maps =
-      !buffer.Deltas().empty() || touch_names || buffer.HasRebuildSet() ||
-      touch_orders;
 
-  TpchQ9State maintenance_side;
-  bool side_loaded = false;
-  if (needs_side_maps &&
-      metadata_image->kind != TpchQ9ImageKind::CompleteState) {
-    if (!LoadMaintenanceSide(services, visibility, maintenance_side)) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    side_loaded = true;
-    if (touch_names) {
-      new_state->supplier_nations = maintenance_side.supplier_nations;
-      new_state->order_years = maintenance_side.order_years;
-      new_state->order_year_overflow = maintenance_side.order_year_overflow;
-      new_state->partsupp_rows = maintenance_side.partsupp_rows;
-      new_state->partsupp_overflow = maintenance_side.partsupp_overflow;
-    }
-  }
-
-  // Apply order-year inserts before lineitem resolve (RF1 same-txn ordering).
-  bool order_years_changed = false;
+  // Apply order-year inserts into CompleteState images only. Sharded
+  // metadata has no side maps; lineitem resolve uses point SQL, which
+  // already sees same-txn RF1 order inserts.
   auto apply_order_inserts = [&](TpchQ9State &side) {
     for (const auto &delta : buffer.OrderDeltas()) {
-      if (delta.sign > 0) {
+      if (delta.sign > 0)
         side.SetOrderYear(delta.orderkey, delta.order_year);
-        order_years_changed = true;
-      }
     }
   };
   auto apply_order_deletes = [&](TpchQ9State &side) {
     for (const auto &delta : buffer.OrderDeltas()) {
-      if (delta.sign < 0) {
+      if (delta.sign < 0)
         side.EraseOrderYear(delta.orderkey);
-        order_years_changed = true;
-      }
     }
   };
 
   if (metadata_image->kind == TpchQ9ImageKind::CompleteState) {
     apply_order_inserts(*new_state);
-  } else if (side_loaded) {
-    apply_order_inserts(maintenance_side);
-    if (touch_names)
-      apply_order_inserts(*new_state);
   }
 
   // Apply part name deltas
@@ -1504,20 +1469,16 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     RebuildPartkeys(*new_state, buffer.RebuildPartkeys());
   }
 
-  // Apply lineitem deltas — join against maintenance side maps when sharded.
-  const TpchQ9State &join_state =
-      metadata_image->kind == TpchQ9ImageKind::CompleteState
-          ? *new_state
-          : (touch_names ? *new_state : maintenance_side);
+  // Apply lineitem deltas. Join keys come from published maps when present
+  // (CompleteState tests) and otherwise from point SQL on the open txn.
   for (const auto &delta : buffer.Deltas()) {
     int64_t profit_raw = 0;
     int32_t nationkey = 0, year = 0;
 
-    if (!ResolveProfit(join_state, delta.partkey, delta.suppkey,
-                        delta.orderkey, delta.quantity_raw,
-                        delta.extendedprice_raw, delta.discount_raw,
-                        profit_raw, nationkey, year)) {
-      // Can't resolve — need full rebuild
+    if (!ResolveProfit(*new_state, initial_scan, delta.partkey, delta.suppkey,
+                       delta.orderkey, delta.quantity_raw,
+                       delta.extendedprice_raw, delta.discount_raw, profit_raw,
+                       nationkey, year)) {
       outcome.action = core::MaintenanceAction::RebuildAll;
       outcome.invalidations = All();
       outcome.pending_rebuild = outcome.invalidations;
@@ -1535,10 +1496,6 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
 
   if (metadata_image->kind == TpchQ9ImageKind::CompleteState) {
     apply_order_deletes(*new_state);
-  } else if (side_loaded) {
-    apply_order_deletes(maintenance_side);
-    if (touch_names)
-      apply_order_deletes(*new_state);
   }
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
@@ -1559,19 +1516,6 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     outcome.updates.push_back(core::StateImage::Make(
         TpchQ9Layout::kAccelerator, TpchQ9Layout::kCompleteState,
         metadata_version, MakeMetadataImage(mutable_meta)));
-  }
-
-  if (order_years_changed && side_loaded &&
-      metadata_image->kind != TpchQ9ImageKind::CompleteState) {
-    auto side_state = std::make_shared<TpchQ9State>();
-    side_state->supplier_nations = maintenance_side.supplier_nations;
-    side_state->order_years = maintenance_side.order_years;
-    side_state->order_year_overflow = maintenance_side.order_year_overflow;
-    side_state->partsupp_rows = maintenance_side.partsupp_rows;
-    side_state->partsupp_overflow = maintenance_side.partsupp_overflow;
-    outcome.updates.push_back(core::StateImage::Make(
-        TpchQ9Layout::kAccelerator, TpchQ9Layout::kMaintenanceSide, 0,
-        MakeMaintenanceSideImage(side_state)));
   }
 
   std::set<core::PartitionId> published_slots;
@@ -1620,15 +1564,11 @@ void TpchQ9Module::RebuildPartkeys(
 
     int32_t nationkey = 0, year = 0;
     int64_t profit_raw = 0;
-
-    if (!state.LookupSupplierNation(input.suppkey, nationkey)) return;
-    if (!state.LookupOrderYear(input.orderkey, year)) return;
-    int64_t supplycost_raw = 0;
-    if (!state.LookupPartsuppCost(input.partkey, input.suppkey, supplycost_raw))
+    if (!ResolveProfit(state, initial_scan, input.partkey, input.suppkey,
+                       input.orderkey, input.quantity_raw,
+                       input.extendedprice_raw, input.discount_raw, profit_raw,
+                       nationkey, year))
       return;
-
-    profit_raw = ComputeProfitRaw(input.extendedprice_raw, input.discount_raw,
-                                   supplycost_raw, input.quantity_raw);
     if (profit_raw == 0) return;
 
     state.AddContribution(input.partkey, nationkey, year, profit_raw);

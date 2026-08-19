@@ -593,9 +593,13 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
 
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, true, true,
+      {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, false, true,
        false, false, core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
     outcome.action = decision.action;
     outcome.invalidations = All();

@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -56,6 +57,16 @@ public:
   // invoked for the full aggregate; BuildState then skips the per-row scan.
   virtual bool ScanDayGroupAggregates(
       const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer) {
+    (void)consumer;
+    return false;
+  }
+
+  // Optional: same aggregates restricted to the given shipdate days. Used by
+  // RebuildPartition so a local rescan does not read the rest of lineitem.
+  virtual bool ScanDayGroupAggregatesForDays(
+      const std::set<int32_t> &days,
+      const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer) {
+    (void)days;
     (void)consumer;
     return false;
   }
@@ -128,6 +139,9 @@ public:
 private:
   std::unordered_map<int32_t, ::accelerator_codegen::Q1DayPartition>
   BuildState(core::AuxEngineServices &) const;
+  std::unordered_map<int32_t, ::accelerator_codegen::Q1DayPartition>
+  BuildStateForDays(core::AuxEngineServices &,
+                    const std::set<int32_t> &days) const;
   std::vector<::accelerator_codegen::Q1OutputRow>
   ComposeOutput(const std::unordered_map<int32_t, ::accelerator_codegen::Q1DayPartition> &,
                 int32_t cutoff_days) const;

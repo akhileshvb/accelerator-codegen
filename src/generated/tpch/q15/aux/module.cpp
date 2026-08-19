@@ -572,10 +572,88 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
 
   const auto visibility = services.CurrentVisibility();
 
-  // Collect touched months
   std::set<int32_t> touched_months;
   for (const auto &delta : buffer.LineitemDeltas())
     touched_months.insert(delta.month_key);
+
+  const bool has_supplier_deltas = !buffer.SupplierDeltas().empty();
+  const bool can_rebuild_windows =
+      !touched_months.empty() && !has_supplier_deltas && initial_scan;
+
+  const auto decision = services.ChooseMaintenance(
+      {static_cast<uint64_t>(buffer.LineitemDeltas().size() +
+                             buffer.SupplierDeltas().size()),
+       static_cast<uint64_t>(std::max<std::size_t>(1, touched_months.size())),
+       true, can_rebuild_windows, true, has_supplier_deltas, false,
+       core::MaintenanceAction::NoOp,
+       services.ExpectedQueriesBeforeNextWrite()});
+
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    if (!can_rebuild_windows) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+    core::StateSnapshot dir_snapshot = services.StateStore().ReadPartitions(
+        visibility, {TpchQ15Layout::kSupplierDirectory});
+    const TpchQ15SupplierDirectory *dir_ptr = nullptr;
+    for (const auto &image : dir_snapshot.partitions) {
+      if (image.partition != TpchQ15Layout::kSupplierDirectory)
+        continue;
+      const auto *typed = AsQ15Image(image, TpchQ15ImageKind::SupplierDirectory);
+      if (typed)
+        dir_ptr = &typed->state->directory;
+      break;
+    }
+    if (!dir_ptr) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+    int32_t scan_lo = std::numeric_limits<int32_t>::max();
+    int32_t scan_hi = std::numeric_limits<int32_t>::min();
+    for (const auto month_key : touched_months) {
+      const int32_t year = month_key / 100;
+      const unsigned month = static_cast<unsigned>(month_key % 100);
+      const int32_t start = DaysFromCivil(year, month, 1);
+      const int32_t end = AddMonthsDays(start, 3);
+      scan_lo = std::min(scan_lo, start);
+      scan_hi = std::max(scan_hi, end);
+    }
+    std::map<int32_t, TpchQ15WindowState> rebuilt;
+    initial_scan->ScanLineitemsForShipdateRange(
+        scan_lo, scan_hi, [&](const TpchQ15LineitemInput &input) {
+          const auto revenue = TpchQ15RevenueRaw(
+              input.extended_price_raw, input.extended_price_scale,
+              input.discount_raw, input.discount_scale);
+          for (const auto month_key :
+               CoveringWindowMonths(input.shipdate_days)) {
+            if (!touched_months.count(month_key))
+              continue;
+            auto &ws = rebuilt[month_key];
+            ws.revenue_by_supplier[input.suppkey] += revenue;
+            ws.empty = false;
+          }
+        });
+    for (const auto month : touched_months) {
+      TpchQ15WindowState ws;
+      const auto it = rebuilt.find(month);
+      if (it != rebuilt.end())
+        ws = std::move(it->second);
+      ComputeWinners(ws, *dir_ptr);
+      auto win_state = std::make_shared<const TpchQ15State>(
+          TpchQ15State{TpchQ15SupplierDirectory{}, {{month, std::move(ws)}}});
+      outcome.updates.push_back(core::StateImage::Make(
+          TpchQ15Layout::kAccelerator, static_cast<core::PartitionId>(month), 0,
+          MakeWindowImage(month, win_state)));
+    }
+    core::FinishRebuildPartition(outcome);
+    return outcome;
+  }
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    outcome.action = decision.action;
+    outcome.invalidations = All();
+    outcome.pending_rebuild = outcome.invalidations;
+    return outcome;
+  }
 
   // Load affected windows
   std::map<int32_t, TpchQ15WindowState> windows;
@@ -589,23 +667,6 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
     }
     windows[month] = std::move(ws);
   }
-
-
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.LineitemDeltas().size() +
-                             buffer.SupplierDeltas().size()),
-       static_cast<uint64_t>(touched_months.size() + 1), true, true, true, false,
-       false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  const bool has_supplier_deltas = !buffer.SupplierDeltas().empty();
 
   // Load directory: copy only when supplier deltas exist (to mutate it);
   // otherwise borrow via shared_ptr to avoid 10K-entry string copy (~3500us).

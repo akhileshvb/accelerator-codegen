@@ -315,10 +315,14 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
 
   const auto decision = services.ChooseMaintenance(
       {static_cast<uint64_t>(total_rows_touched),
-       static_cast<uint64_t>(touched_prefixes.size()), true, true, true,
+       static_cast<uint64_t>(touched_prefixes.size()), true, false, true,
        false, false, core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
 
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  }
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
     outcome.action = decision.action;
     outcome.invalidations = All();

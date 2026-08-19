@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "aux_hit_us": 6000.0,
+  "fallback_us": 2400000.0,
+  "partition_rebuild_us": 245357.0,
+  "full_rebuild_us": 13740000.0,
+  "first_query_blocking_us": 0.0,
+  "apply_delta_overhead_us": 5000.0,
+  "apply_delta_base_us": 0.0,
+  "apply_delta_per_row_us": 20.0,
+  "apply_delta_part_lineitem_scan_us": 15000.0,
+  "apply_delta_max_rows": 1048576,
+  "apply_delta_max_part_fanout": 512,
+  "invalidation_overhead_us": 1000.0,
+  "decision_margin_us": 50000.0,
+  "min_samples": 8,
+  "incremental_failure_prob": 0.01,
+  "month_partition_merge_us": 80.0,
+  "order_fanout_us_per_returned_lineitem": 1.5,
+  "output_sort_us_per_customer": 0.4
+}

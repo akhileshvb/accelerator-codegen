@@ -576,6 +576,7 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
     if (profiling) {
       apply_timer = std::make_unique<CustomTimer>(true);
     }
+    bool lost_unique_min = false;
     for (const auto &delta : deltas) {
       const auto *supplier = new_state->FindSupplier(delta.suppkey);
       if (!supplier)
@@ -606,6 +607,12 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
         auto &list = cell.tied_suppkeys;
         list.erase(std::remove(list.begin(), list.end(), delta.suppkey),
                    list.end());
+        if (list.empty()) {
+          // Unique-min delete: the next-best supplycost is not stored on the
+          // cell. Rebuild rather than publishing an empty tombstone or the
+          // same supplier at a higher cost.
+          lost_unique_min = true;
+        }
       }
       if (delta.sign > 0) {
         if (cell.tied_suppkeys.empty()) {
@@ -644,6 +651,7 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
                                       : 0));
       EmitCustomProfile("write_apply", apply_dt, (int64_t)deltas.size(), 0, 0);
     }
+    if (!lost_unique_min) {
     auto image = std::make_shared<TpchQ2StateImage>();
     image->kind = TpchQ2ImageKind::Full;
     image->state = std::move(new_state);
@@ -654,6 +662,7 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
         old_version, const_image));
     buffer.Clear();
     return outcome;
+    }
   }
 
   // Full rebuild path for supplier/part/nation/region mutations

@@ -67,6 +67,16 @@ public:
     (void)out;
     return false;
   }
+
+  // Optional: DuckDB join filtered to one market segment for RebuildPartition.
+  virtual bool ScanSegmentJoin(
+      const std::string &mktsegment,
+      const std::function<void(const TpchQ3OrderInput &,
+                               const TpchQ3LineitemInput &)> &consumer) {
+    (void)mktsegment;
+    (void)consumer;
+    return false;
+  }
 };
 
 // Packed live records. Encode still writes the original I32/I64 wire format.
@@ -284,6 +294,8 @@ private:
   };
 
   TpchQ3State BuildState(core::AuxEngineServices &, BuildScratch &) const;
+  TpchQ3SegmentIntervalIndex
+  BuildSegment(core::AuxEngineServices &, core::PartitionId segment) const;
   bool LoadSegmentIntervalIndex(core::AuxEngineServices &, core::PartitionId,
                                 const TpchQ3SegmentIntervalIndex *&) const;
   void EmitResult(const std::vector<TpchQ3OutputRow> &, core::AuxRowSink &) const;

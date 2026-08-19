@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -14,6 +15,8 @@
 #include "tpch/q6/aux/finalize.hpp"
 
 namespace accelerator_codegen::aux_state::query {
+
+int32_t TpchQ6MonthKeyFromDays(int32_t days_since_epoch);
 
 struct TpchQ6Config {
   core::TableId lineitem_table = 0;
@@ -34,6 +37,14 @@ public:
   virtual ~TpchQ6InitialScan() = default;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ6LineitemInput &)> &) = 0;
+  virtual void ScanLineitemsForMonths(
+      const std::set<int32_t> &month_keys,
+      const std::function<void(const TpchQ6LineitemInput &)> &consumer) {
+    ScanLineitems([&](const TpchQ6LineitemInput &input) {
+      if (month_keys.count(TpchQ6MonthKeyFromDays(input.shipdate_days)))
+        consumer(input);
+    });
+  }
 };
 
 enum class TpchQ6PartitionKind : uint8_t { Day, Month };

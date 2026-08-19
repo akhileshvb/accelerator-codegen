@@ -4,9 +4,9 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <utility>
 #include <vector>
 
@@ -99,6 +99,18 @@ public:
       const std::function<void(const TpchQ10ReturnedRevenueInput &)> &consumer) {
     (void)consumer;
     return false;
+  }
+
+  virtual bool ScanReturnedCustomerRevenueForMonths(
+      const std::set<int32_t> &months,
+      const std::function<void(const TpchQ10ReturnedRevenueInput &)> &consumer) {
+    if (months.empty())
+      return true;
+    return ScanReturnedCustomerRevenue(
+        [&](const TpchQ10ReturnedRevenueInput &input) {
+          if (months.count(input.month_key))
+            consumer(input);
+        });
   }
 
   virtual bool LookupOrders(

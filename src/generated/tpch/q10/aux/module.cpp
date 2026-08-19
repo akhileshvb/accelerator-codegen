@@ -614,16 +614,6 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
 
   const auto total_deltas =
       buffer.Deltas().size() + buffer.OrderDeltas().size();
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(total_deltas), 1, true, true, true, false, false,
-       core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
 
   TpchQ10State state;
   const auto visibility = services.CurrentVisibility();
@@ -695,6 +685,80 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
     for (const auto &[key, order] : looked_up_orders)
       overlay_orders.emplace(key, order);
     orders_by_key = &overlay_orders;
+  }
+
+  std::set<int32_t> rebuild_months;
+  auto add_month_from_days = [&](int32_t days) {
+    rebuild_months.insert(TpchQ10MonthKeyFromDays(days));
+  };
+  for (const auto &delta : buffer.OrderDeltas())
+    add_month_from_days(delta.orderdate_days);
+  if (!buffer.Deltas().empty()) {
+    if (!orders_by_key) {
+      outcome.action = core::MaintenanceAction::RebuildAll;
+      outcome.invalidations = All();
+      outcome.pending_rebuild = outcome.invalidations;
+      return outcome;
+    }
+    for (const auto &delta : buffer.Deltas()) {
+      const auto order_it = orders_by_key->find(delta.orderkey);
+      if (order_it == orders_by_key->end()) {
+        outcome.action = core::MaintenanceAction::RebuildAll;
+        outcome.invalidations = All();
+        outcome.pending_rebuild = outcome.invalidations;
+        return outcome;
+      }
+      add_month_from_days(order_it->second.orderdate_days);
+    }
+  }
+
+  const auto decision = services.ChooseMaintenance(
+      {static_cast<uint64_t>(total_deltas),
+       static_cast<uint64_t>(std::max<std::size_t>(1, rebuild_months.size())),
+       true, true, true, false, false, core::MaintenanceAction::NoOp,
+       services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    if (!initial_scan || rebuild_months.empty() ||
+        !initial_scan->ScanReturnedCustomerRevenueForMonths(
+            rebuild_months, [&](const TpchQ10ReturnedRevenueInput &input) {
+              if (input.revenue_raw == 0)
+                return;
+              state.month_revenue[input.month_key][input.custkey] +=
+                  input.revenue_raw;
+            })) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+    for (const auto month : rebuild_months) {
+      TpchQ10State month_state;
+      const auto month_it = state.month_revenue.find(month);
+      if (month_it != state.month_revenue.end())
+        month_state.month_revenue.emplace(month, month_it->second);
+      const auto typed_state =
+          std::make_shared<const TpchQ10State>(std::move(month_state));
+      outcome.updates.push_back(core::StateImage::Make(
+          core::TpchQ10Layout::kAccelerator, MonthPartition(month), 0,
+          MakeStateImage(TpchQ10ImageKind::Month, month, typed_state)));
+    }
+    if (orders_changed && order_metadata) {
+      for (const auto &delta : buffer.OrderDeltas()) {
+        if (delta.sign < 0)
+          order_metadata->orders.erase(delta.orderkey);
+      }
+      const auto typed_orders =
+          std::static_pointer_cast<const TpchQ10State>(std::move(order_metadata));
+      outcome.updates.push_back(core::StateImage::Make(
+          core::TpchQ10Layout::kAccelerator, core::TpchQ10Layout::kOrderMetadata,
+          0, MakeStateImage(TpchQ10ImageKind::Orders, 0, typed_orders)));
+    }
+    core::FinishRebuildPartition(outcome);
+    return outcome;
+  }
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    outcome.action = decision.action;
+    outcome.invalidations = All();
+    outcome.pending_rebuild = outcome.invalidations;
+    return outcome;
   }
 
   if (!buffer.Deltas().empty()) {

@@ -384,6 +384,22 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
        static_cast<uint64_t>(std::max<std::size_t>(1, touched_days.size())),
        true, true, true, false, false, core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action == core::MaintenanceAction::RebuildPartition) {
+    const auto rebuilt = BuildStateForDays(services, touched_days);
+    for (const auto day : touched_days) {
+      Q1DayPartition part;
+      const auto it = rebuilt.find(day);
+      if (it != rebuilt.end())
+        part = it->second;
+      const auto typed = std::make_shared<const Q1DayPartition>(std::move(part));
+      outcome.updates.push_back(core::StateImage::Make(
+          core::TpchQ1Layout::kAccelerator,
+          core::TpchQ1Layout::PartitionFromDays(day), 0,
+          MakeStateImage(day, typed)));
+    }
+    core::FinishRebuildPartition(outcome);
+    return outcome;
+  }
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
     outcome.action = decision.action;
     outcome.invalidations = All();
@@ -480,32 +496,44 @@ void TpchQ1Module::ExecuteFallback(core::AuxEngineServices &services,
 
 std::unordered_map<int32_t, Q1DayPartition>
 TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
+  return BuildStateForDays(services, {});
+}
+
+std::unordered_map<int32_t, Q1DayPartition>
+TpchQ1Module::BuildStateForDays(core::AuxEngineServices &services,
+                                const std::set<int32_t> &days) const {
   (void)services;
-  std::unordered_map<int32_t, Q1DayPartition> days;
+  std::unordered_map<int32_t, Q1DayPartition> state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q1 requires a typed initial scan source");
 
-  const bool used_sql = initial_scan->ScanDayGroupAggregates(
-      [&](const TpchQ1DayGroupAggregate &agg) {
-        const auto group_key = ::accelerator_codegen::PackQ1GroupKey(
-            agg.returnflag, agg.linestatus);
-        auto &group = days[agg.shipdate_days].groups[group_key];
-        group.count += agg.count;
-        group.sum_qty += agg.sum_qty_raw;
-        group.sum_base_price += agg.sum_base_price_raw;
-        group.sum_discount += agg.sum_discount_raw;
-        group.sum_disc_price +=
-            static_cast<::accelerator_codegen::Q1AccT>(agg.sum_disc_price_raw);
-        group.sum_charge +=
-            static_cast<::accelerator_codegen::Q1AccT>(agg.sum_charge_raw);
-      });
-  if (used_sql)
-    return days;
+  auto consume = [&](const TpchQ1DayGroupAggregate &agg) {
+    if (!days.empty() && days.find(agg.shipdate_days) == days.end())
+      return;
+    const auto group_key = ::accelerator_codegen::PackQ1GroupKey(
+        agg.returnflag, agg.linestatus);
+    auto &group = state[agg.shipdate_days].groups[group_key];
+    group.count += agg.count;
+    group.sum_qty += agg.sum_qty_raw;
+    group.sum_base_price += agg.sum_base_price_raw;
+    group.sum_discount += agg.sum_discount_raw;
+    group.sum_disc_price +=
+        static_cast<::accelerator_codegen::Q1AccT>(agg.sum_disc_price_raw);
+    group.sum_charge +=
+        static_cast<::accelerator_codegen::Q1AccT>(agg.sum_charge_raw);
+  };
+
+  if (!days.empty() && initial_scan->ScanDayGroupAggregatesForDays(days, consume))
+    return state;
+  if (initial_scan->ScanDayGroupAggregates(consume))
+    return state;
 
   initial_scan->ScanLineitems([&](const TpchQ1LineitemInput &input) {
-    ApplyLineitemInput(input, days[input.shipdate_days]);
+    if (!days.empty() && days.find(input.shipdate_days) == days.end())
+      return;
+    ApplyLineitemInput(input, state[input.shipdate_days]);
   });
-  return days;
+  return state;
 }
 
 std::vector<::accelerator_codegen::Q1OutputRow> TpchQ1Module::ComposeOutput(
