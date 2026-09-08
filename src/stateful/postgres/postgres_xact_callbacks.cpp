@@ -22,8 +22,13 @@ void UnregisterTransactionBackend(PostgresAuxBackend *backend_p) {
 }
 
 void HandleTransactionEvent(TransactionEvent event) {
-  if (backends.empty()) return;
+  if (backends.empty()) {
+    return;
+  }
   for (auto *backend : backends) {
+    if (event != TransactionEvent::Abort && !backend->HasPendingWork()) {
+      continue;
+    }
     switch (event) {
     case TransactionEvent::PreCommit:
       backend->OnPreCommit();

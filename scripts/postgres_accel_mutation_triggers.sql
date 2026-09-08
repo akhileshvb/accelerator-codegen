@@ -116,3 +116,53 @@ SELECT create_accel_mutation_triggers('supplier', '1211', 'accel_codegen_tpch_q2
 SELECT create_accel_mutation_triggers('orders', '1212', 'accel_codegen_tpch_q21');
 SELECT create_accel_mutation_triggers('lineitem', '1213', 'accel_codegen_tpch_q21');
 SELECT create_accel_mutation_triggers('nation', '1214', 'accel_codegen_tpch_q21');
+
+SELECT create_accel_mutation_triggers('orders', '1221', 'accel_codegen_tpch_q22');
+SELECT create_accel_mutation_triggers('customer', '1222', 'accel_codegen_tpch_q22');
+
+SELECT create_accel_mutation_triggers('part', '1021', 'accel_codegen_tpch_q2');
+SELECT create_accel_mutation_triggers('supplier', '1022', 'accel_codegen_tpch_q2');
+SELECT create_accel_mutation_triggers('partsupp', '1023', 'accel_codegen_tpch_q2');
+SELECT create_accel_mutation_triggers('nation', '1024', 'accel_codegen_tpch_q2');
+SELECT create_accel_mutation_triggers('region', '1025', 'accel_codegen_tpch_q2');
+
+SELECT create_accel_mutation_triggers('orders', '1041', 'accel_codegen_tpch_q4');
+SELECT create_accel_mutation_triggers('lineitem', '1042', 'accel_codegen_tpch_q4');
+
+SELECT create_accel_mutation_triggers('region', '1051', 'accel_codegen_tpch_q5');
+SELECT create_accel_mutation_triggers('nation', '1052', 'accel_codegen_tpch_q5');
+SELECT create_accel_mutation_triggers('customer', '1053', 'accel_codegen_tpch_q5');
+SELECT create_accel_mutation_triggers('supplier', '1054', 'accel_codegen_tpch_q5');
+SELECT create_accel_mutation_triggers('orders', '1055', 'accel_codegen_tpch_q5');
+SELECT create_accel_mutation_triggers('lineitem', '1056', 'accel_codegen_tpch_q5');
+
+SELECT create_accel_mutation_triggers('nation', '1071', 'accel_codegen_tpch_q7');
+SELECT create_accel_mutation_triggers('supplier', '1072', 'accel_codegen_tpch_q7');
+SELECT create_accel_mutation_triggers('customer', '1073', 'accel_codegen_tpch_q7');
+SELECT create_accel_mutation_triggers('orders', '1074', 'accel_codegen_tpch_q7');
+SELECT create_accel_mutation_triggers('lineitem', '1075', 'accel_codegen_tpch_q7');
+
+SELECT create_accel_mutation_triggers('part', '1081', 'accel_codegen_tpch_q8');
+SELECT create_accel_mutation_triggers('supplier', '1082', 'accel_codegen_tpch_q8');
+SELECT create_accel_mutation_triggers('customer', '1083', 'accel_codegen_tpch_q8');
+SELECT create_accel_mutation_triggers('orders', '1084', 'accel_codegen_tpch_q8');
+SELECT create_accel_mutation_triggers('lineitem', '1085', 'accel_codegen_tpch_q8');
+
+SELECT create_accel_mutation_triggers('customer', '1131', 'accel_codegen_tpch_q13');
+SELECT create_accel_mutation_triggers('orders', '1132', 'accel_codegen_tpch_q13');
+
+SELECT create_accel_mutation_triggers('lineitem', '1151', 'accel_codegen_tpch_q15');
+SELECT create_accel_mutation_triggers('supplier', '1152', 'accel_codegen_tpch_q15');
+
+SELECT create_accel_mutation_triggers('part', '1161', 'accel_codegen_tpch_q16');
+SELECT create_accel_mutation_triggers('partsupp', '1162', 'accel_codegen_tpch_q16');
+SELECT create_accel_mutation_triggers('supplier', '1163', 'accel_codegen_tpch_q16');
+
+SELECT create_accel_mutation_triggers('lineitem', '1191', 'accel_codegen_tpch_q19');
+SELECT create_accel_mutation_triggers('part', '1192', 'accel_codegen_tpch_q19');
+
+SELECT create_accel_mutation_triggers('lineitem', '1201', 'accel_codegen_tpch_q20');
+SELECT create_accel_mutation_triggers('part', '1202', 'accel_codegen_tpch_q20');
+SELECT create_accel_mutation_triggers('partsupp', '1203', 'accel_codegen_tpch_q20');
+SELECT create_accel_mutation_triggers('supplier', '1204', 'accel_codegen_tpch_q20');
+SELECT create_accel_mutation_triggers('nation', '1205', 'accel_codegen_tpch_q20');

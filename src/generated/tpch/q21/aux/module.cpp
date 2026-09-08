@@ -287,18 +287,25 @@ std::vector<uint8_t> EncodeTpchQ21SupplierMetadata(const TpchQ21State &state) {
 
 std::vector<uint8_t> EncodeTpchQ21OrderSummaries(const TpchQ21State &state) {
   ByteWriter writer;
-  core::WriteImageHeader(writer, kOrdersMagic, kVersion,
-                         static_cast<uint32_t>(state.order_summaries.size()));
   std::vector<int64_t> keys;
-  for (const auto &entry : state.order_summaries)
+  if (state.order_summaries) {
+    for (const auto &entry : *state.order_summaries)
+      keys.push_back(entry.first);
+  }
+  for (const auto &entry : state.order_overlay)
     keys.push_back(entry.first);
   std::sort(keys.begin(), keys.end());
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+  core::WriteImageHeader(writer, kOrdersMagic, kVersion,
+                         static_cast<uint32_t>(keys.size()));
   for (const auto key : keys) {
-    const auto &summary = state.order_summaries.at(key);
+    const auto *summary = state.FindOrder(key);
+    if (!summary)
+      continue;
     writer.I64(key);
-    writer.U8(static_cast<uint8_t>(summary.orderstatus));
-    writer.U32(static_cast<uint32_t>(summary.suppliers.size()));
-    for (const auto &[suppkey, info] : summary.suppliers) {
+    writer.U8(static_cast<uint8_t>(summary->orderstatus));
+    writer.U32(static_cast<uint32_t>(summary->suppliers.size()));
+    for (const auto &[suppkey, info] : summary->suppliers) {
       writer.I64(suppkey);
       writer.I64(info.total_count);
       writer.I64(info.late_count);
@@ -395,7 +402,8 @@ bool DecodeTpchQ21OrderSummaries(const std::vector<uint8_t> &bytes,
   uint32_t count = 0;
   if (!core::ReadImageHeader(reader, kOrdersMagic, kVersion, count))
     return false;
-  state.order_summaries.clear();
+  state.order_summaries = std::make_shared<TpchQ21State::OrderSummaryMap>();
+  state.order_overlay.clear();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0;
     uint8_t status = 0;
@@ -410,7 +418,7 @@ bool DecodeTpchQ21OrderSummaries(const std::vector<uint8_t> &bytes,
         return false;
       summary.suppliers[suppkey] = {total, late};
     }
-    state.order_summaries.emplace(key, std::move(summary));
+    state.order_summaries->emplace(key, std::move(summary));
   }
   return reader.offset == bytes.size();
 }
@@ -778,6 +786,7 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
         return outcome;
       }
       state.order_summaries = typed->state->order_summaries;
+      state.order_overlay = typed->state->order_overlay;
       have_orders = true;
     }
     if (image.partition == TpchQ21Layout::kNationNameIndex) {
@@ -818,10 +827,10 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
     affected_orderkeys.insert(delta.orderkey);
     if (delta.old_orderstatus != delta.new_orderstatus) {
       order_status_changes[delta.orderkey] = {delta.old_orderstatus, delta.new_orderstatus};
-      const auto summary_it = state.order_summaries.find(delta.orderkey);
-      if (summary_it == state.order_summaries.end())
+      const auto *summary = state.FindOrder(delta.orderkey);
+      if (!summary)
         continue;
-      for (const auto &[suppkey, _] : summary_it->second.suppliers) {
+      for (const auto &[suppkey, _] : summary->suppliers) {
         const auto nation_it = state.supplier_nations.find(suppkey);
         if (nation_it != state.supplier_nations.end())
           needed_nationkeys.insert(nation_it->second);
@@ -838,10 +847,10 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
 
   // Pre-compute needed nationkeys from all affected orders (before applying deltas)
   for (const auto orderkey : affected_orderkeys) {
-    const auto summary_it = state.order_summaries.find(orderkey);
-    if (summary_it == state.order_summaries.end())
+    const auto *summary = state.FindOrder(orderkey);
+    if (!summary)
       continue;
-    for (const auto &[suppkey, _] : summary_it->second.suppliers) {
+    for (const auto &[suppkey, _] : summary->suppliers) {
       const auto nation_it = state.supplier_nations.find(suppkey);
       if (nation_it != state.supplier_nations.end())
         needed_nationkeys.insert(nation_it->second);
@@ -895,15 +904,17 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
 
   // For each affected order, recompute contributions
   for (const auto orderkey : affected_orderkeys) {
-    auto summary_it = state.order_summaries.find(orderkey);
-    if (summary_it == state.order_summaries.end()) {
-      // Unknown order: cannot apply a local delta fairly — rebuild.
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
+    const auto *existing = state.FindOrder(orderkey);
+    if (!existing) {
+      // RF1 insert of a new order: start an overlay summary instead of
+      // rebuilding the SF-scale order table.
+      auto &created = state.MutableOrder(orderkey);
+      const auto status_it = order_status_changes.find(orderkey);
+      created.orderstatus =
+          status_it != order_status_changes.end() ? status_it->second.second
+                                                  : 'F';
     }
-    auto &summary = summary_it->second;
+    auto &summary = state.MutableOrder(orderkey);
 
     // Compute old contributions BEFORE applying any changes
     const auto old_contribs = ComputeOrderContributions(summary);
@@ -1188,13 +1199,14 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
 
   // Scan orders
   initial_scan->ScanOrders([&](const TpchQ21OrderInput &input) {
-    state.order_summaries[input.orderkey].orderstatus = input.orderstatus;
+    state.order_summaries->operator[](input.orderkey).orderstatus =
+        input.orderstatus;
   });
 
   // Scan lineitems and build order summaries
   initial_scan->ScanLineitems([&](const TpchQ21LineitemInput &input) {
-    auto it = state.order_summaries.find(input.orderkey);
-    if (it == state.order_summaries.end() || it->second.orderstatus != 'F')
+    auto it = state.order_summaries->find(input.orderkey);
+    if (it == state.order_summaries->end() || it->second.orderstatus != 'F')
       return;
     auto &summary = it->second;
     auto &info = summary.suppliers[input.suppkey];
@@ -1204,7 +1216,7 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
   });
 
   // Compute contributions for fulfilled orders only.
-  for (auto &[orderkey, summary] : state.order_summaries) {
+  for (auto &[orderkey, summary] : *state.order_summaries) {
     if (summary.orderstatus != 'F')
       continue;
     const auto contribs = ComputeOrderContributions(summary);
@@ -1216,11 +1228,11 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
     }
   }
 
-  for (auto it = state.order_summaries.begin();
-       it != state.order_summaries.end();) {
+  for (auto it = state.order_summaries->begin();
+       it != state.order_summaries->end();) {
     if (it->second.orderstatus != 'F' || it->second.suppliers.size() <= 1 ||
         ComputeOrderContributions(it->second).empty()) {
-      it = state.order_summaries.erase(it);
+      it = state.order_summaries->erase(it);
     } else {
       ++it;
     }

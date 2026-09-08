@@ -1,6 +1,8 @@
 // SCAFFOLDING
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 
+#include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
+
 #include <iterator>
 #include <stdexcept>
 #include <utility>
@@ -159,6 +161,7 @@ void AuxTransactionCoordinator::PreCommit() {
     entry.outcome =
         entry.module->StageMaintenance(*services, entry.plan, *entry.buffer);
     entry.staged = true;
+    RecordStagedMaintenanceAction(entry.outcome.action);
     // PostgreSQL cannot Build during Commit (no ActiveSnapshot / wrong xact
     // state). Materialize sync rebuilds here while SPI is still safe.
     if (!services->AllowsSynchronousRebuildOnCommit() &&
@@ -269,6 +272,25 @@ bool AuxTransactionCoordinator::HasRegisteredModule(
 std::size_t AuxTransactionCoordinator::ModuleCount() const {
   std::lock_guard<std::mutex> guard(mutex);
   return entries.size();
+}
+
+bool AuxTransactionCoordinator::HasPendingWork() const {
+  std::lock_guard<std::mutex> guard(mutex);
+  if (!subtransaction_frames.empty()) {
+    return true;
+  }
+  for (const auto &entry : entries) {
+    if (entry.buffer && entry.buffer->HasPendingChanges()) {
+      return true;
+    }
+    if (!entry.plan.IsEmpty()) {
+      return true;
+    }
+    if (entry.staged) {
+      return true;
+    }
+  }
+  return false;
 }
 
 AuxTransactionCoordinator::Entry &

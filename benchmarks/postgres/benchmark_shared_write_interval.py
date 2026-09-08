@@ -14,13 +14,20 @@ import os
 import statistics
 import time
 
-from postgres_differential import connect, differential, run_query, collect_invalidating_probe
+from postgres_differential import (
+    connect,
+    differential,
+    run_query,
+    collect_invalidating_probe,
+    measure_sql_execution_us,
+)
 from shared_query_catalog import lookup_query
 from tpch_rf import apply_rf_chunk
 
 CSV_HEADER = (
     "engine,workload,query,write_mode,write_interval_sec,mode,reads,writes,rows,"
-    "read_p50_us,read_sum_us,write_p50_us,write_sum_us,build_us,"
+    "read_p50_us,read_sum_us,read_wall_p50_us,read_wall_sum_us,"
+    "write_p50_us,write_sum_us,build_us,"
     "workload_sum_us,workload_speedup_vs_base,workload_with_build_us,"
     "workload_with_build_speedup_vs_base,measured_duration_sec,rf_chunk_orders"
 )
@@ -51,6 +58,8 @@ def measure_mode(
                 os.environ.get("ACCEL_PG_MAX_PARALLEL_WORKERS_PER_GATHER", "0"),
             )
         )
+        # Single-threaded by default (GenDB comparison is ST here). Parallel
+        # gather is opt-in via ACCEL_BENCH_THREADS / ACCEL_PG_MAX_PARALLEL_WORKERS_PER_GATHER.
 
         def apply_worker_gucs():
             # Same worker cap for Postgres SQL (gather) and aux (GUC / env).
@@ -75,7 +84,24 @@ def measure_mode(
         apply_worker_gucs()
         cur.execute("SET work_mem = '512MB'")
         cur.execute("SET jit = off")
-        if not shared:
+        if shared:
+            try:
+                cur.execute("LOAD 'accelerator_codegen_postgres'")
+            except Exception:
+                conn.rollback()
+            cur.execute("SET accel.single_active_aux = on")
+            if interval > 0:
+                expected_queries = max(1.0, reader_qps * interval)
+                cur.execute(
+                    "SET accel.expected_queries_before_write = %s",
+                    (expected_queries,),
+                )
+            else:
+                cur.execute("SET accel.expected_queries_before_write = 1000")
+        else:
+            cur.execute("SET accel.single_active_aux = off")
+            cur.execute("SET accel.expected_queries_before_write = 0")
+        if not shared and interval <= 0:
             cur.execute("SET session_replication_role = replica")
         statement = entry.aux_sql if shared else entry.base_sql
 
@@ -110,7 +136,7 @@ def measure_mode(
 
         next_write = interval if do_writes else float("inf")
         reads, writes, rows = 0, 0, 0
-        read_samples, write_samples = [], []
+        read_samples, read_wall_samples, write_samples = [], [], []
         write_seq = 0
         wall_start = time.perf_counter()
         use_wall = duration_sec > 0
@@ -149,10 +175,16 @@ def measure_mode(
 
             if not use_wall:
                 progress(f"read {read_index + 1}/{read_operations}")
-            start = time.perf_counter_ns()
-            result = run_query(cur, statement)
-            rows = len(result)
-            read_samples.append((time.perf_counter_ns() - start) / 1000.0)
+            # GenDB times compute and subtracts output I/O. Postgres analog is
+            # EXPLAIN ANALYZE "Execution Time" (server executor), not client
+            # fetchall wall-clock. Keep wall-clock as a sidecar column.
+            wall_start_ns = time.perf_counter_ns()
+            exec_us, actual_rows = measure_sql_execution_us(cur, statement)
+            wall_us = (time.perf_counter_ns() - wall_start_ns) / 1000.0
+            conn.commit()
+            rows = actual_rows
+            read_samples.append(exec_us)
+            read_wall_samples.append(wall_us)
             reads += 1
             read_index += 1
 
@@ -163,6 +195,9 @@ def measure_mode(
 
         measured = time.perf_counter() - wall_start if use_wall else 0.0
         p50_read = statistics.median(read_samples) if read_samples else 0.0
+        p50_read_wall = (
+            statistics.median(read_wall_samples) if read_wall_samples else 0.0
+        )
         p50_write = statistics.median(write_samples) if write_samples else 0.0
         return (
             reads,
@@ -170,6 +205,8 @@ def measure_mode(
             rows,
             p50_read,
             sum(read_samples),
+            p50_read_wall,
+            sum(read_wall_samples),
             p50_write,
             sum(write_samples),
             build_us,
@@ -197,6 +234,8 @@ def emit_mode_line(
         rows,
         p50_read,
         read_sum,
+        p50_read_wall,
+        read_wall_sum,
         p50_write,
         write_sum,
         build_us,
@@ -205,7 +244,7 @@ def emit_mode_line(
     workload_sum = read_sum + write_sum
     workload_with_build = build_us + workload_sum
     emit(
-        "postgres,%s,%d,%s,%s,%s,%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.4f,%.2f,%.4f,%.3f,%d"
+        "postgres,%s,%d,%s,%s,%s,%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.4f,%.2f,%.4f,%.3f,%d"
         % (
             workload,
             entry.query_id,
@@ -217,6 +256,8 @@ def emit_mode_line(
             rows,
             p50_read,
             read_sum,
+            p50_read_wall,
+            read_wall_sum,
             p50_write,
             write_sum,
             build_us,
@@ -260,6 +301,8 @@ def main():
 
     if args.write_mode == "rf" and args.workload != "tpch":
         raise SystemExit("RF write mode is only supported for tpch")
+    if args.write_mode == "rf" and args.query == 11:
+        raise SystemExit("Q11 is unaffected by RF (no orders/lineitem dependency)")
 
     entry = lookup_query(args.workload, args.query)
     rows = None
@@ -309,10 +352,10 @@ def main():
                 rf_chunk_orders=args.rf_chunk_orders,
                 duration_sec=run_duration,
             )
-            base_workload = base[4] + base[6]
-            shared_workload = shared[4] + shared[6]
-            base_with_build = base[7] + base_workload
-            shared_with_build = shared[7] + shared_workload
+            base_workload = base[4] + base[8]
+            shared_workload = shared[4] + shared[8]
+            base_with_build = base[9] + base_workload
+            shared_with_build = shared[9] + shared_workload
             emit_mode_line(
                 emit,
                 args.workload,

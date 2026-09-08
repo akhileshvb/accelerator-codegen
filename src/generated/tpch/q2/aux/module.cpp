@@ -119,6 +119,14 @@ void EnsureFlatSize(std::vector<T> &vector, std::size_t required) {
     vector.resize(required);
 }
 
+// Q2 indexes parts/suppliers by TPC-H key in a dense vector. RF leftover rows
+// with 9e9-style keys would otherwise try to allocate billions of slots.
+constexpr std::size_t kTpchQ2MaxDenseKey = 32'000'000;
+
+bool AcceptDenseKey(int64_t key) {
+  return key >= 0 && static_cast<uint64_t>(key) < kTpchQ2MaxDenseKey;
+}
+
 } // namespace
 
 std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &state) {
@@ -263,7 +271,7 @@ bool DecodeTpchQ2State(const std::vector<uint8_t> &bytes, TpchQ2State &state) {
         !reader.String(supplier.phone) || !reader.I64(supplier.acctbal_raw) ||
         !reader.String(supplier.comment))
       return false;
-    if (key < 0)
+    if (key < 0 || !AcceptDenseKey(key))
       return false;
     EnsureFlatSize(*suppliers, static_cast<std::size_t>(key) + 1);
     EnsureFlatSize(*supplier_valid, static_cast<std::size_t>(key) + 1);
@@ -281,7 +289,7 @@ bool DecodeTpchQ2State(const std::vector<uint8_t> &bytes, TpchQ2State &state) {
     if (!reader.I64(key) || !reader.String(part.mfgr) ||
         !reader.String(part.type) || !reader.I32(size))
       return false;
-    if (key < 0)
+    if (key < 0 || !AcceptDenseKey(key))
       return false;
     EnsureFlatSize(*parts, static_cast<std::size_t>(key) + 1);
     EnsureFlatSize(*part_valid, static_cast<std::size_t>(key) + 1);
@@ -788,13 +796,13 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   auto part_valid = std::make_shared<std::vector<uint8_t>>();
 
   initial_scan->ScanRegions([&](const TpchQ2RegionInput &input) {
-    if (input.key < 0)
+    if (!AcceptDenseKey(input.key))
       return;
     EnsureFlatSize(*regions, static_cast<std::size_t>(input.key) + 1);
     (*regions)[static_cast<std::size_t>(input.key)] = input.name;
   });
   initial_scan->ScanNations([&](const TpchQ2NationInput &input) {
-    if (input.key < 0)
+    if (!AcceptDenseKey(input.key) || input.regionkey < 0)
       return;
     EnsureFlatSize(*nations, static_cast<std::size_t>(input.key) + 1);
     EnsureFlatSize(*nation_regions, static_cast<std::size_t>(input.key) + 1);
@@ -802,7 +810,7 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
     (*nation_regions)[static_cast<std::size_t>(input.key)] = input.regionkey;
   });
   initial_scan->ScanParts([&](const TpchQ2PartInput &input) {
-    if (input.key < 0)
+    if (!AcceptDenseKey(input.key))
       return;
     EnsureFlatSize(*parts, static_cast<std::size_t>(input.key) + 1);
     EnsureFlatSize(*part_valid, static_cast<std::size_t>(input.key) + 1);
@@ -812,7 +820,7 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
     state.parts_by_size[input.size].push_back(input.key);
   });
   initial_scan->ScanSuppliers([&](const TpchQ2SupplierInput &input) {
-    if (input.key < 0)
+    if (!AcceptDenseKey(input.key))
       return;
     EnsureFlatSize(*suppliers, static_cast<std::size_t>(input.key) + 1);
     EnsureFlatSize(*supplier_valid, static_cast<std::size_t>(input.key) + 1);

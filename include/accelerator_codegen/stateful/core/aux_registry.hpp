@@ -23,6 +23,7 @@ public:
   void Commit();
   void Abort();
 
+  bool HasPendingWork() const;
   bool HasRegisteredModule(const AcceleratorId &id) const;
   std::size_t ModuleCount() const;
 

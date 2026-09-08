@@ -92,6 +92,7 @@ struct TpchQ5State {
   std::unordered_map<int64_t, int32_t> orderkey_to_nationkey;
   std::unordered_map<int64_t, int32_t> orderkey_to_ordinal;
   std::unordered_map<int64_t, int32_t> suppkey_to_nationkey;
+  std::unordered_map<int64_t, int32_t> custkey_to_nationkey;
 };
 
 struct TpchQ5StateImage {
@@ -118,10 +119,20 @@ public:
   const std::vector<LineitemDelta> &LineitemMutations() const;
   bool HasLineitemMutations() const;
 
+  struct OrderDelta {
+    int64_t orderkey = 0;
+    int64_t custkey = 0;
+    int32_t orderdate_days = 0;
+    int8_t sign = 0;
+  };
+  void AddOrderMutation(const OrderDelta &d);
+  const std::vector<OrderDelta> &OrderMutations() const;
+
 private:
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<LineitemDelta> lineitem_mutations;
+  std::vector<OrderDelta> order_mutations;
 };
 
 int32_t TpchQ5DaysFromYmd(int32_t year, unsigned month, unsigned day);

@@ -20,6 +20,7 @@ extern "C" {
 }
 
 #include <cctype>
+#include <cmath>
 #include <cerrno>
 #include <algorithm>
 #include <cstdlib>
@@ -29,6 +30,7 @@ extern "C" {
 #include <vector>
 
 #include "accelerator_codegen/stateful/postgres/postgres_mutation_capture.hpp"
+#include "accelerator_codegen/stateful/postgres/postgres_session_gucs.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
@@ -244,6 +246,84 @@ std::vector<int> MutationProjection(TableId table, int natts) {
     return {0, 2, 11, 12};
   case 1214: // TPCH Q21 nation
     return {0, 1};
+  case 1221: // TPCH Q22 orders: o_custkey
+    return {1};
+  case 1222: // TPCH Q22 customer: c_custkey,c_phone,c_acctbal
+    return {0, 4, 5};
+  case 1021: // TPCH Q2 part: partkey,mfgr,type,size
+    return {0, 2, 4, 5};
+  case 1022: // TPCH Q2 supplier: key,name,address,nationkey,phone,acctbal,comment
+    return {0, 1, 2, 3, 4, 5, 6};
+  case 1023: // TPCH Q2 partsupp: partkey,suppkey,supplycost
+    return {0, 1, 3};
+  case 1024: // TPCH Q2 nation: nationkey,name,regionkey
+    return {0, 1, 2};
+  case 1025: // TPCH Q2 region: regionkey,name
+    return {0, 1};
+  case 1041: // TPCH Q4 orders: orderkey,orderdate,priority
+    return {0, 4, 5};
+  case 1042: // TPCH Q4 lineitem: orderkey,commitdate,receiptdate
+    return {0, 11, 12};
+  case 1051: // TPCH Q5 region: regionkey,name
+    return {0, 1};
+  case 1052: // TPCH Q5 nation: nationkey,name,regionkey
+    return {0, 1, 2};
+  case 1053: // TPCH Q5 customer: custkey,nationkey
+    return {0, 3};
+  case 1054: // TPCH Q5 supplier: suppkey,nationkey
+    return {0, 3};
+  case 1055: // TPCH Q5 orders: orderkey,custkey,orderdate
+    return {0, 1, 4};
+  case 1056: // TPCH Q5 lineitem: orderkey,suppkey,price,discount
+    return {0, 2, 5, 6};
+  case 1071: // TPCH Q7 nation: nationkey,name
+    return {0, 1};
+  case 1072: // TPCH Q7 supplier: suppkey,nationkey
+    return {0, 3};
+  case 1073: // TPCH Q7 customer: custkey,nationkey
+    return {0, 3};
+  case 1074: // TPCH Q7 orders: orderkey,custkey
+    return {0, 1};
+  case 1075: // TPCH Q7 lineitem: orderkey,suppkey,price,discount,shipdate
+    return {0, 2, 5, 6, 10};
+  case 1081: // TPCH Q8 part: partkey,type
+    return {0, 4};
+  case 1082: // TPCH Q8 supplier: suppkey,nationkey
+    return {0, 3};
+  case 1083: // TPCH Q8 customer: custkey,nationkey
+    return {0, 3};
+  case 1084: // TPCH Q8 orders: orderkey,custkey,orderdate
+    return {0, 1, 4};
+  case 1085: // TPCH Q8 lineitem: partkey,orderkey,suppkey,price,discount
+    return {1, 0, 2, 5, 6};
+  case 1131: // TPCH Q13 customer: custkey
+    return {0};
+  case 1132: // TPCH Q13 orders: custkey,comment
+    return {1, 8};
+  case 1151: // TPCH Q15 lineitem: shipdate,suppkey,price,discount
+    return {10, 2, 5, 6};
+  case 1152: // TPCH Q15 supplier: suppkey,name,address,phone
+    return {0, 1, 2, 4};
+  case 1161: // TPCH Q16 part: partkey,brand,type,size
+    return {0, 3, 4, 5};
+  case 1162: // TPCH Q16 partsupp: partkey,suppkey
+    return {0, 1};
+  case 1163: // TPCH Q16 supplier: suppkey,comment
+    return {0, 6};
+  case 1191: // TPCH Q19 lineitem: partkey,qty,price,discount,shipmode,shipinstruct
+    return {1, 4, 5, 6, 14, 13};
+  case 1192: // TPCH Q19 part: partkey,brand,container,size
+    return {0, 3, 6, 5};
+  case 1201: // TPCH Q20 lineitem: shipdate,partkey,suppkey,quantity
+    return {10, 1, 2, 4};
+  case 1202: // TPCH Q20 part: partkey,name
+    return {0, 1};
+  case 1203: // TPCH Q20 partsupp: partkey,suppkey,availqty
+    return {0, 1, 2};
+  case 1204: // TPCH Q20 supplier: suppkey,name,address,nationkey
+    return {0, 1, 2, 3};
+  case 1205: // TPCH Q20 nation: nationkey,name
+    return {0, 1};
   case 2001: // SEC Q1 pre: stmt,rfile,adsh,line
     return {3, 5, 0, 2};
   case 2002: // SEC Q2 sub: adsh,name,cik,fy
@@ -372,6 +452,11 @@ Datum AcceleratorCodegenCaptureTransition(PG_FUNCTION_ARGS) {
     ereport(ERROR, (errmsg("accelerator transition capture requires an AFTER "
                            "STATEMENT trigger")));
   }
+  const TableId table = MutationTableId(trigger_data);
+  if (!accelerator_codegen::aux_state::engine::postgres::
+          HasRegisteredCaptureForTable(table)) {
+    PG_RETURN_POINTER(nullptr);
+  }
   if (SPI_connect() != SPI_OK_CONNECT) {
     ereport(ERROR, (errmsg("could not connect to PostgreSQL SPI")));
   }
@@ -383,7 +468,7 @@ Datum AcceleratorCodegenCaptureTransition(PG_FUNCTION_ARGS) {
   }
 
   MutationBatch mutation;
-  mutation.table = MutationTableId(trigger_data);
+  mutation.table = table;
   if (TRIGGER_FIRED_BY_INSERT(trigger_data->tg_event)) {
     mutation.kind = MutationKind::Insert;
     mutation.new_rows =
@@ -492,6 +577,23 @@ void AcceleratorSubXactCallback(SubXactEvent event, SubTransactionId,
 int accel_aux_worker_count = 0;
 #endif
 
+static double accel_expected_queries_before_write = 0.0;
+static bool accel_single_active_aux = false;
+
+static void AssignExpectedQueriesBeforeWrite(double newvalue, void *extra) {
+  (void)extra;
+  accel_expected_queries_before_write = newvalue;
+  accelerator_codegen::aux_state::engine::postgres::
+      SetSessionExpectedQueriesBeforeWrite(newvalue > 0.0 ? newvalue : NAN);
+}
+
+static void AssignSingleActiveAux(bool newvalue, void *extra) {
+  (void)extra;
+  accel_single_active_aux = newvalue;
+  accelerator_codegen::aux_state::engine::postgres::SetSessionSingleActiveAuxEnabled(
+      newvalue);
+}
+
 extern "C" void _PG_init(void) {
   // The SQL-callable prototype is loaded with LOAD/CREATE EXTENSION, where
   // PostgreSQL has already completed its shared-memory request phase. The
@@ -500,6 +602,18 @@ extern "C" void _PG_init(void) {
   // read-only prototype.
   RegisterXactCallback(AcceleratorXactCallback, nullptr);
   RegisterSubXactCallback(AcceleratorSubXactCallback, nullptr);
+  DefineCustomRealVariable(
+      "accel.expected_queries_before_write",
+      "Expected read queries before the next write for aux maintenance costing "
+      "(0 = unset).",
+      NULL, &accel_expected_queries_before_write, 0.0, 0.0, 1e9, PGC_USERSET, 0,
+      NULL, AssignExpectedQueriesBeforeWrite, NULL);
+  DefineCustomBoolVariable(
+      "accel.single_active_aux",
+      "When on, registering an auxiliary runtime unregisters other captures in "
+      "this backend.",
+      NULL, &accel_single_active_aux, false, PGC_USERSET, 0, NULL,
+      AssignSingleActiveAux, NULL);
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
   DefineCustomIntVariable(
       "accel.aux_worker_count",

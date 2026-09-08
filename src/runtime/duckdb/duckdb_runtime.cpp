@@ -3,6 +3,7 @@
 #include "accelerator_codegen/runtime/duckdb/tpch_rf.hpp"
 
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -51,6 +52,7 @@
 #include "tpch/q21/aux/module.hpp"
 #include "tpch/q9/aux/module.hpp"
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 #include "accelerator_codegen/harness/aux_state_footprint.hpp"
 #include "accelerator_codegen/harness/cost_calibration.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
@@ -2204,6 +2206,8 @@ void DuckdbRuntime::Execute(const core::QueryArguments &arguments) {
 }
 
 void DuckdbRuntime::Apply(SharedProbe &probe) {
+  core::ClearMaintenanceDecisionLog();
+  const auto start = std::chrono::steady_clock::now();
   connection_.BeginTransaction();
   auto result = connection_.Query(probe.update_sql);
   Require(result != nullptr && !result->HasError(),
@@ -2213,6 +2217,31 @@ void DuckdbRuntime::Apply(SharedProbe &probe) {
   connection_.Commit();
   coordinator_.Commit();
   probe.current_value += probe.write_delta;
+  const auto end = std::chrono::steady_clock::now();
+  core::RecordMaintenanceActualCostUs(static_cast<double>(
+      std::chrono::duration_cast<std::chrono::microseconds>(end - start)
+          .count()));
+}
+
+void DuckdbRuntime::ApplyBatch(std::vector<SharedProbe> &probes) {
+  Require(!probes.empty(), "ApplyBatch requires at least one probe");
+  core::ClearMaintenanceDecisionLog();
+  const auto start = std::chrono::steady_clock::now();
+  connection_.BeginTransaction();
+  for (auto &probe : probes) {
+    auto result = connection_.Query(probe.update_sql);
+    Require(result != nullptr && !result->HasError(),
+            result ? result->GetError() : "DuckDB batch write failed");
+    backend_.CaptureMutation(BuildSharedMutation(entry_, probe));
+    probe.current_value += probe.write_delta;
+  }
+  coordinator_.PreCommit();
+  connection_.Commit();
+  coordinator_.Commit();
+  const auto end = std::chrono::steady_clock::now();
+  core::RecordMaintenanceActualCostUs(static_cast<double>(
+      std::chrono::duration_cast<std::chrono::microseconds>(end - start)
+          .count()));
 }
 
 void DuckdbRuntime::ApplyRfChunk(int write_seq, int order_count) {

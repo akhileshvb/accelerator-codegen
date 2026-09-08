@@ -81,6 +81,155 @@ def _lineitem_receipt_probe(row):
     }
 
 
+def _customer_acctbal_probe(row):
+    custkey, acctbal = row[0], row[1]
+    return {
+        "update": (
+            f"UPDATE customer SET c_acctbal = c_acctbal + 0.01 "
+            f"WHERE c_custkey = {custkey}"
+        ),
+        "restore": (
+            f"UPDATE customer SET c_acctbal = %s WHERE c_custkey = {custkey}"
+        ),
+        "restore_args": (acctbal,),
+    }
+
+
+def _q4_unlate_probe(row):
+    orderkey, linenumber, _commit, receipt = row[0], row[1], row[2], row[3]
+    return {
+        "update": (
+            "UPDATE lineitem SET l_receiptdate = l_commitdate "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore": (
+            "UPDATE lineitem SET l_receiptdate = %s "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore_args": (receipt,),
+    }
+
+
+def _orders_comment_probe(row):
+    orderkey, comment = row[0], row[2]
+    return {
+        "update": (
+            "UPDATE orders SET o_comment = o_comment || ' unusual accounts' "
+            f"WHERE o_orderkey = {orderkey}"
+        ),
+        "restore": (
+            f"UPDATE orders SET o_comment = %s WHERE o_orderkey = {orderkey}"
+        ),
+        "restore_args": (comment,),
+    }
+
+
+def _partsupp_cost_large_probe(row):
+    partkey, suppkey, cost = row[0], row[1], row[2]
+    return {
+        "update": (
+            "UPDATE partsupp SET ps_supplycost = ps_supplycost + 1000.0 "
+            f"WHERE ps_partkey = {partkey} AND ps_suppkey = {suppkey}"
+        ),
+        "restore": (
+            "UPDATE partsupp SET ps_supplycost = %s "
+            f"WHERE ps_partkey = {partkey} AND ps_suppkey = {suppkey}"
+        ),
+        "restore_args": (cost,),
+    }
+
+
+def _partsupp_suppkey_probe(row):
+    partkey, suppkey = row[0], row[1]
+    return {
+        "update": (
+            "UPDATE partsupp SET ps_suppkey = ps_suppkey + 1 "
+            f"WHERE ps_partkey = {partkey} AND ps_suppkey = {suppkey}"
+        ),
+        "restore": (
+            "UPDATE partsupp SET ps_suppkey = %s "
+            f"WHERE ps_partkey = {partkey} AND ps_suppkey = {int(suppkey) + 1}"
+        ),
+        "restore_args": (suppkey,),
+    }
+
+
+def _part_brand_new_group_probe(row):
+    partkey, brand = row[0], row[1]
+    return {
+        "update": (
+            "UPDATE part SET p_brand = 'Brand#00' "
+            f"WHERE p_partkey = {partkey}"
+        ),
+        "restore": (
+            "UPDATE part SET p_brand = %s "
+            f"WHERE p_partkey = {partkey}"
+        ),
+        "restore_args": (brand,),
+    }
+
+
+def _lineitem_price_large_probe(row):
+    orderkey, linenumber, price = row[1], row[5], row[3]
+    return {
+        "update": (
+            "UPDATE lineitem SET l_extendedprice = l_extendedprice + 100.00 "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore": (
+            "UPDATE lineitem SET l_extendedprice = %s "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore_args": (price,),
+    }
+
+
+def _lineitem_quantity_large_probe(row):
+    orderkey, linenumber, quantity = row[0], row[2], row[3]
+    return {
+        "update": (
+            "UPDATE lineitem SET l_quantity = l_quantity + 100 "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore": (
+            "UPDATE lineitem SET l_quantity = %s "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore_args": (quantity,),
+    }
+
+
+def _lineitem_quantity_huge_probe(row):
+    orderkey, linenumber, quantity = row[0], row[1], row[2]
+    return {
+        "update": (
+            "UPDATE lineitem SET l_quantity = l_quantity + 100000 "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore": (
+            "UPDATE lineitem SET l_quantity = %s "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore_args": (quantity,),
+    }
+
+
+def _lineitem_unlate_probe(row):
+    """Flip a late lineitem to on-time so Q21-style waiting counts change."""
+    orderkey, linenumber, _suppkey, _commit, receipt = row[0], row[1], row[2], row[3], row[4]
+    return {
+        "update": (
+            "UPDATE lineitem SET l_receiptdate = l_commitdate "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore": (
+            "UPDATE lineitem SET l_receiptdate = %s "
+            f"WHERE l_orderkey = {orderkey} AND l_linenumber = {linenumber}"
+        ),
+        "restore_args": (receipt,),
+    }
+
+
 def _partsupp_cost_probe(row):
     partkey, suppkey, _availqty, supplycost = row[0], row[1], row[2], row[3]
     return {
@@ -345,14 +494,28 @@ WHERE o_orderdate >= DATE '1993-06-01'
   AND o_orderdate < DATE '1993-06-01' + INTERVAL '3' MONTH
   AND l_returnflag = 'R'
 GROUP BY c_custkey, c_name, c_acctbal, c_phone, n_name, c_address, c_comment
-ORDER BY revenue DESC, c_custkey
+ORDER BY revenue DESC, c_custkey LIMIT 20
 """,
         "SELECT * FROM accel_tpch_q10_aux(DATE '1993-06-01')",
         "SELECT * FROM accel_tpch_q10(DATE '1993-06-01')",
         """
-SELECT l_orderkey, l_linenumber, l_extendedprice, l_discount, l_returnflag
-FROM lineitem WHERE l_returnflag = 'R'
-ORDER BY l_orderkey, l_linenumber LIMIT 1
+SELECT l.l_orderkey, l.l_linenumber, l.l_extendedprice, l.l_discount, l.l_returnflag
+FROM lineitem l
+JOIN orders o ON l.l_orderkey = o.o_orderkey
+JOIN customer c ON c.c_custkey = o.o_custkey
+WHERE l.l_returnflag = 'R'
+  AND o.o_orderdate >= DATE '1993-06-01'
+  AND o.o_orderdate < DATE '1993-06-01' + INTERVAL '3' MONTH
+  AND c.c_custkey IN (
+    SELECT c_custkey FROM (
+      SELECT c_custkey, SUM(l_extendedprice * (1 - l_discount)) AS revenue
+      FROM customer JOIN orders ON c_custkey = o_custkey
+      JOIN lineitem ON l_orderkey = o_orderkey
+      WHERE o_orderdate >= DATE '1993-06-01'
+        AND o_orderdate < DATE '1993-06-01' + INTERVAL '3' MONTH
+        AND l_returnflag = 'R'
+      GROUP BY c_custkey ORDER BY revenue DESC, c_custkey LIMIT 20))
+ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1
 """,
         4,
         build_probe=_lineitem_price_probe,
@@ -385,7 +548,7 @@ WHERE l_shipmode IN ('MAIL', 'SHIP')
 ORDER BY l_orderkey, l_linenumber LIMIT 1
 """,
         2,
-        build_probe=_lineitem_price_probe,
+        build_probe=_lineitem_receipt_probe,
     ),
     14: SharedQueryEntry(
         14,
@@ -481,15 +644,17 @@ WHERE p_partkey = l_partkey AND agg_partkey = l_partkey
         "SELECT * FROM accel_tpch_q17_aux('Brand#34', 'LG CASE')",
         "SELECT * FROM accel_tpch_q17('Brand#34', 'LG CASE')",
         """
-SELECT l_orderkey, l_linenumber, l_partkey, l_quantity, l_extendedprice
-FROM lineitem, part
-WHERE l_partkey = p_partkey AND p_brand = 'Brand#34' AND p_container = 'LG CASE'
-ORDER BY l_orderkey, l_linenumber LIMIT 1
+SELECT l.l_orderkey, l.l_linenumber, l.l_extendedprice
+FROM lineitem l, part p,
+(SELECT l_partkey AS agg_partkey, 0.2 * AVG(l_quantity) AS avg_quantity
+ FROM lineitem GROUP BY l_partkey) part_agg
+WHERE p.p_partkey = l.l_partkey AND part_agg.agg_partkey = l.l_partkey
+  AND p.p_brand = 'Brand#34' AND p.p_container = 'LG CASE'
+  AND l.l_quantity < part_agg.avg_quantity
+ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1
 """,
         2,
-        build_probe=lambda row: _lineitem_quantity_probe(
-            (row[0], row[1], row[3])
-        ),
+        build_probe=_lineitem_price_probe,
     ),
     18: SharedQueryEntry(
         18,
@@ -507,8 +672,11 @@ ORDER BY o_totalprice DESC, o_orderdate ASC
         "SELECT * FROM accel_tpch_q18_aux(312)",
         "SELECT * FROM accel_tpch_q18(312)",
         """
-SELECT l_orderkey, l_linenumber, l_quantity FROM lineitem
-ORDER BY l_orderkey, l_linenumber LIMIT 1
+SELECT l.l_orderkey, l.l_linenumber, l.l_quantity
+FROM lineitem l
+WHERE l.l_orderkey IN (
+  SELECT l_orderkey FROM lineitem GROUP BY l_orderkey HAVING SUM(l_quantity) > 312)
+ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1
 """,
         0,
         build_probe=_lineitem_quantity_probe,
@@ -516,31 +684,415 @@ ORDER BY l_orderkey, l_linenumber LIMIT 1
     21: SharedQueryEntry(
         21,
         "tpch",
+        # Official Q21 is correlated EXISTS/NOT EXISTS over lineitem; Postgres
+        # nested-loops that for minutes on SF1. This CTE is equivalent:
+        # multi-supplier F-orders whose late receipts come from exactly one
+        # supplier, counted per SAUDI ARABIA supplier line.
         """
-SELECT s_name, COUNT(*) AS numwait
-FROM supplier, lineitem l1, orders, nation
-WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey
-  AND o_orderstatus = 'F' AND l1.l_receiptdate > l1.l_commitdate
-  AND EXISTS (
-    SELECT * FROM lineitem l2
-    WHERE l2.l_orderkey = l1.l_orderkey AND l2.l_suppkey <> l1.l_suppkey)
-  AND NOT EXISTS (
-    SELECT * FROM lineitem l3
-    WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey
-      AND l3.l_receiptdate > l3.l_commitdate)
-  AND s_nationkey = n_nationkey AND n_name = 'SAUDI ARABIA'
-GROUP BY s_name
-ORDER BY numwait DESC, s_name
+WITH order_supp AS (
+  SELECT l_orderkey,
+         COUNT(DISTINCT l_suppkey) AS nsupp,
+         COUNT(DISTINCT l_suppkey) FILTER (WHERE l_receiptdate > l_commitdate) AS nlate
+  FROM lineitem
+  GROUP BY l_orderkey
+)
+SELECT s.s_name, COUNT(*) AS numwait
+FROM lineitem l1
+JOIN orders o ON o.o_orderkey = l1.l_orderkey AND o.o_orderstatus = 'F'
+JOIN order_supp os ON os.l_orderkey = l1.l_orderkey AND os.nsupp > 1 AND os.nlate = 1
+JOIN supplier s ON s.s_suppkey = l1.l_suppkey
+JOIN nation n ON n.n_nationkey = s.s_nationkey AND n.n_name = 'SAUDI ARABIA'
+WHERE l1.l_receiptdate > l1.l_commitdate
+GROUP BY s.s_name
+ORDER BY numwait DESC, s.s_name
 """,
         "SELECT * FROM accel_tpch_q21_aux('SAUDI ARABIA')",
         "SELECT * FROM accel_tpch_q21('SAUDI ARABIA')",
         """
-SELECT l_orderkey, l_linenumber, l_suppkey, l_commitdate, l_receiptdate
-FROM lineitem WHERE l_receiptdate > l_commitdate
-ORDER BY l_orderkey, l_linenumber LIMIT 1
+WITH order_supp AS (
+  SELECT l_orderkey,
+         COUNT(DISTINCT l_suppkey) AS nsupp,
+         COUNT(DISTINCT l_suppkey) FILTER (WHERE l_receiptdate > l_commitdate) AS nlate
+  FROM lineitem
+  GROUP BY l_orderkey
+)
+SELECT l1.l_orderkey, l1.l_linenumber, l1.l_suppkey, l1.l_commitdate, l1.l_receiptdate
+FROM lineitem l1
+JOIN orders o ON o.o_orderkey = l1.l_orderkey AND o.o_orderstatus = 'F'
+JOIN order_supp os ON os.l_orderkey = l1.l_orderkey AND os.nsupp > 1 AND os.nlate = 1
+JOIN supplier s ON s.s_suppkey = l1.l_suppkey
+JOIN nation n ON n.n_nationkey = s.s_nationkey AND n.n_name = 'SAUDI ARABIA'
+WHERE l1.l_receiptdate > l1.l_commitdate
+ORDER BY l1.l_orderkey, l1.l_linenumber LIMIT 1
 """,
         3,
-        build_probe=_lineitem_receipt_probe,
+        build_probe=_lineitem_unlate_probe,
+    ),
+    22: SharedQueryEntry(
+        22,
+        "tpch",
+        """
+WITH custsale AS (
+  SELECT SUBSTRING(c_phone FROM 1 FOR 2) AS cntrycode, c_acctbal
+  FROM customer
+  WHERE SUBSTRING(c_phone FROM 1 FOR 2) IN ('30', '19', '14', '28', '11', '22', '32')
+    AND c_acctbal > (
+      SELECT AVG(c_acctbal) FROM customer
+      WHERE c_acctbal > 0.00
+        AND SUBSTRING(c_phone FROM 1 FOR 2) IN ('30', '19', '14', '28', '11', '22', '32'))
+    AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey)
+)
+SELECT cntrycode, COUNT(*) AS numcust, SUM(c_acctbal) AS totacctbal
+FROM custsale GROUP BY cntrycode ORDER BY cntrycode
+""",
+        "SELECT * FROM accel_tpch_q22_aux('30', '19', '14', '28', '11', '22', '32')",
+        "SELECT * FROM accel_tpch_q22('30', '19', '14', '28', '11', '22', '32')",
+        """
+SELECT c_custkey, c_acctbal
+FROM customer
+WHERE SUBSTRING(c_phone FROM 1 FOR 2) IN ('30', '19', '14', '28', '11', '22', '32')
+  AND c_acctbal > (
+    SELECT AVG(c_acctbal) FROM customer
+    WHERE c_acctbal > 0.00
+      AND SUBSTRING(c_phone FROM 1 FOR 2) IN ('30', '19', '14', '28', '11', '22', '32'))
+  AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = customer.c_custkey)
+ORDER BY c_custkey LIMIT 1
+""",
+        9,
+        build_probe=_customer_acctbal_probe,
+    ),
+    2: SharedQueryEntry(
+        2,
+        "tpch",
+        """
+SELECT s_acctbal, s_name, n_name, p_partkey, p_mfgr, s_address, s_phone, s_comment
+FROM part, supplier, partsupp, nation, region
+WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND p_size = 15
+  AND p_type LIKE '%BRASS' AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey
+  AND r_name = 'EUROPE'
+  AND ps_supplycost = (SELECT MIN(ps_supplycost) FROM partsupp, supplier, nation, region
+    WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND s_nationkey = n_nationkey
+      AND n_regionkey = r_regionkey AND r_name = 'EUROPE')
+ORDER BY s_acctbal DESC, n_name, s_name, p_partkey LIMIT 100
+""",
+        "SELECT * FROM accel_tpch_q2_aux(15, '%BRASS', 'EUROPE')",
+        "SELECT * FROM accel_tpch_q2(15, '%BRASS', 'EUROPE')",
+        """
+SELECT ps.ps_partkey, ps.ps_suppkey, ps.ps_supplycost
+FROM part p, supplier s, partsupp ps, nation n, region r
+WHERE p.p_partkey = ps.ps_partkey AND s.s_suppkey = ps.ps_suppkey
+  AND p.p_size = 15 AND p.p_type LIKE '%BRASS'
+  AND s.s_nationkey = n.n_nationkey AND n.n_regionkey = r.r_regionkey
+  AND r.r_name = 'EUROPE'
+  AND ps.ps_supplycost = (SELECT MIN(ps_supplycost) FROM partsupp, supplier,
+    nation, region WHERE p.p_partkey = ps_partkey AND s_suppkey = ps_suppkey
+    AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey
+    AND r_name = 'EUROPE')
+  AND EXISTS (
+    SELECT 1 FROM partsupp ps2, supplier s2, nation n2, region r2
+    WHERE ps2.ps_partkey = p.p_partkey AND ps2.ps_suppkey <> ps.ps_suppkey
+      AND s2.s_suppkey = ps2.ps_suppkey AND s2.s_nationkey = n2.n_nationkey
+      AND n2.n_regionkey = r2.r_regionkey AND r2.r_name = 'EUROPE')
+ORDER BY s.s_acctbal DESC, n.n_name, s.s_name, p.p_partkey LIMIT 1
+""",
+        3,
+        build_probe=_partsupp_cost_large_probe,
+    ),
+    4: SharedQueryEntry(
+        4,
+        "tpch",
+        """
+SELECT o_orderpriority, COUNT(o_orderkey) AS order_count
+FROM orders
+WHERE o_orderdate >= DATE '1993-07-01'
+  AND o_orderdate < DATE '1993-07-01' + INTERVAL '3' month
+  AND EXISTS (
+    SELECT * FROM lineitem WHERE l_orderkey = o_orderkey
+      AND l_commitdate < l_receiptdate)
+GROUP BY o_orderpriority ORDER BY o_orderpriority
+""",
+        "SELECT * FROM accel_tpch_q4_aux(DATE '1993-07-01')",
+        "SELECT * FROM accel_tpch_q4(DATE '1993-07-01')",
+        """
+SELECT l.l_orderkey, l.l_linenumber, l.l_commitdate, l.l_receiptdate
+FROM lineitem l
+JOIN orders o ON o.o_orderkey = l.l_orderkey
+JOIN (
+  SELECT l_orderkey FROM lineitem
+  WHERE l_commitdate < l_receiptdate
+  GROUP BY l_orderkey HAVING COUNT(*) = 1
+) solo ON solo.l_orderkey = l.l_orderkey
+WHERE o.o_orderdate >= DATE '1993-07-01'
+  AND o.o_orderdate < DATE '1993-07-01' + INTERVAL '3' month
+  AND l.l_commitdate < l.l_receiptdate
+ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1
+""",
+        2,
+        build_probe=_q4_unlate_probe,
+    ),
+    5: SharedQueryEntry(
+        5,
+        "tpch",
+        """
+SELECT n_name, SUM(l_extendedprice * (1 - l_discount)) AS revenue
+FROM customer, orders, lineitem, supplier, nation, region
+WHERE c_custkey = o_custkey AND l_orderkey = o_orderkey
+  AND l_suppkey = s_suppkey AND c_nationkey = s_nationkey
+  AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey
+  AND r_name = 'AMERICA'
+  AND o_orderdate >= DATE '1995-01-01'
+  AND o_orderdate < DATE '1995-01-01' + INTERVAL '1' year
+GROUP BY n_name ORDER BY revenue DESC
+""",
+        "SELECT * FROM accel_tpch_q5_aux('AMERICA', DATE '1995-01-01')",
+        "SELECT * FROM accel_tpch_q5('AMERICA', DATE '1995-01-01')",
+        """
+SELECT l.l_orderkey, l.l_linenumber, l.l_extendedprice, l.l_discount
+FROM lineitem l
+JOIN orders o ON o.o_orderkey = l.l_orderkey
+JOIN customer c ON c.c_custkey = o.o_custkey
+JOIN supplier s ON s.s_suppkey = l.l_suppkey AND s.s_nationkey = c.c_nationkey
+JOIN nation n ON n.n_nationkey = s.s_nationkey
+JOIN region r ON r.r_regionkey = n.n_regionkey
+WHERE r.r_name = 'AMERICA'
+  AND o.o_orderdate >= DATE '1995-01-01'
+  AND o.o_orderdate < DATE '1995-01-01' + INTERVAL '1' year
+ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1
+""",
+        6,
+        build_probe=_lineitem_price_probe,
+    ),
+    7: SharedQueryEntry(
+        7,
+        "tpch",
+        """
+SELECT supp_nation, cust_nation, l_year, SUM(volume) AS revenue FROM (
+SELECT n1.n_name AS supp_nation, n2.n_name AS cust_nation,
+       EXTRACT(year FROM l_shipdate)::bigint AS l_year,
+       l_extendedprice * (1 - l_discount) AS volume
+FROM supplier, lineitem, orders, customer, nation n1, nation n2
+WHERE s_suppkey = l_suppkey AND o_orderkey = l_orderkey
+  AND c_custkey = o_custkey AND s_nationkey = n1.n_nationkey
+  AND c_nationkey = n2.n_nationkey
+  AND ((n1.n_name = 'UNITED KINGDOM' AND n2.n_name = 'BRAZIL')
+    OR (n1.n_name = 'BRAZIL' AND n2.n_name = 'UNITED KINGDOM'))
+  AND l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31') AS shipping
+GROUP BY supp_nation, cust_nation, l_year
+ORDER BY supp_nation, cust_nation, l_year
+""",
+        "SELECT * FROM accel_tpch_q7_aux('UNITED KINGDOM', 'BRAZIL')",
+        "SELECT * FROM accel_tpch_q7('UNITED KINGDOM', 'BRAZIL')",
+        """
+SELECT l.l_orderkey, l.l_linenumber, l.l_extendedprice, l.l_discount
+FROM lineitem l
+JOIN orders o ON o.o_orderkey = l.l_orderkey
+JOIN customer c ON c.c_custkey = o.o_custkey
+JOIN supplier s ON s.s_suppkey = l.l_suppkey
+JOIN nation n1 ON n1.n_nationkey = s.s_nationkey
+JOIN nation n2 ON n2.n_nationkey = c.c_nationkey
+WHERE ((n1.n_name = 'UNITED KINGDOM' AND n2.n_name = 'BRAZIL')
+    OR (n1.n_name = 'BRAZIL' AND n2.n_name = 'UNITED KINGDOM'))
+  AND l.l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'
+ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1
+""",
+        4,
+        build_probe=_lineitem_price_probe,
+    ),
+    8: SharedQueryEntry(
+        8,
+        "tpch",
+        """
+SELECT o_year, SUM(CASE WHEN nation = 'INDIA' THEN volume ELSE 0 END) /
+       SUM(volume) AS mkt_share FROM (
+SELECT EXTRACT(year FROM o_orderdate)::bigint AS o_year,
+       l_extendedprice * (1 - l_discount) AS volume, n2.n_name AS nation
+FROM part, supplier, lineitem, orders, customer, nation n1, nation n2, region
+WHERE p_partkey = l_partkey AND s_suppkey = l_suppkey
+  AND l_orderkey = o_orderkey AND o_custkey = c_custkey
+  AND c_nationkey = n1.n_nationkey AND n1.n_regionkey = r_regionkey
+  AND r_name = 'ASIA' AND s_nationkey = n2.n_nationkey
+  AND o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'
+  AND p_type = 'PROMO BRUSHED BRASS') AS all_nations
+GROUP BY o_year ORDER BY o_year
+""",
+        "SELECT * FROM accel_tpch_q8_aux('INDIA', 'ASIA', 'PROMO BRUSHED BRASS')",
+        "SELECT * FROM accel_tpch_q8('INDIA', 'ASIA', 'PROMO BRUSHED BRASS')",
+        """
+SELECT l.l_partkey, l.l_orderkey, l.l_suppkey, l.l_extendedprice,
+       l.l_discount, l.l_linenumber
+FROM lineitem l
+JOIN part p ON p.p_partkey = l.l_partkey AND p.p_type = 'PROMO BRUSHED BRASS'
+JOIN orders o ON o.o_orderkey = l.l_orderkey
+JOIN customer c ON c.c_custkey = o.o_custkey
+JOIN nation n1 ON n1.n_nationkey = c.c_nationkey
+JOIN region r ON r.r_regionkey = n1.n_regionkey AND r.r_name = 'ASIA'
+WHERE o.o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'
+ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1
+""",
+        4,
+        build_probe=_lineitem_price_large_probe,
+    ),
+    13: SharedQueryEntry(
+        13,
+        "tpch",
+        """
+SELECT c_count, COUNT(*) AS custdist FROM (
+SELECT c_custkey, COUNT(o_orderkey) AS c_count FROM customer
+LEFT OUTER JOIN orders ON c_custkey = o_custkey AND o_comment NOT LIKE
+  '%unusual%accounts%' GROUP BY c_custkey) AS c_orders
+GROUP BY c_count ORDER BY custdist DESC, c_count DESC
+""",
+        "SELECT * FROM accel_tpch_q13_aux('%unusual%accounts%')",
+        "SELECT * FROM accel_tpch_q13('%unusual%accounts%')",
+        """
+SELECT o_orderkey, o_custkey, o_comment FROM orders
+WHERE o_comment NOT LIKE '%unusual%accounts%'
+ORDER BY o_orderkey LIMIT 1
+""",
+        1,
+        build_probe=_orders_comment_probe,
+    ),
+    15: SharedQueryEntry(
+        15,
+        "tpch",
+        """
+SELECT s_suppkey, s_name, s_address, s_phone, total_revenue
+FROM supplier, (
+  SELECT l_suppkey AS supplier_no,
+         SUM(l_extendedprice * (1 - l_discount)) AS total_revenue
+  FROM lineitem WHERE l_shipdate >= DATE '1994-11-01'
+    AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH
+  GROUP BY l_suppkey) revenue0
+WHERE s_suppkey = supplier_no
+  AND total_revenue = (SELECT MAX(total_revenue) FROM (
+    SELECT l_suppkey AS supplier_no,
+           SUM(l_extendedprice * (1 - l_discount)) AS total_revenue
+    FROM lineitem WHERE l_shipdate >= DATE '1994-11-01'
+      AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH
+    GROUP BY l_suppkey) revenue1)
+ORDER BY s_suppkey
+""",
+        "SELECT * FROM accel_tpch_q15_aux(DATE '1994-11-01')",
+        "SELECT * FROM accel_tpch_q15(DATE '1994-11-01')",
+        """
+SELECT l_orderkey, l_linenumber, l_extendedprice, l_discount, l_shipdate, l_suppkey
+FROM lineitem
+WHERE l_shipdate >= DATE '1994-11-01'
+  AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH
+  AND l_suppkey = (SELECT l_suppkey FROM lineitem
+    WHERE l_shipdate >= DATE '1994-11-01'
+      AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH
+    GROUP BY l_suppkey
+    ORDER BY SUM(l_extendedprice * (1 - l_discount)) DESC LIMIT 1)
+ORDER BY l_orderkey, l_linenumber LIMIT 1
+""",
+        1,
+        build_probe=_lineitem_price_probe,
+    ),
+    16: SharedQueryEntry(
+        16,
+        "tpch",
+        """
+SELECT p_brand, p_type, p_size, COUNT(DISTINCT ps_suppkey) AS supplier_cnt
+FROM partsupp, part
+WHERE p_partkey = ps_partkey AND p_brand <> 'Brand#13'
+  AND p_type NOT LIKE 'SMALL BRUSHED%'
+  AND p_size IN (26, 24, 27, 29, 7, 20, 22, 33)
+  AND ps_suppkey NOT IN (
+    SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%')
+GROUP BY p_brand, p_type, p_size
+ORDER BY supplier_cnt DESC, p_brand, p_type, p_size
+""",
+        "SELECT * FROM accel_tpch_q16_aux('Brand#13', 'SMALL BRUSHED%', 26, 24, 27, 29, 7, 20, 22, 33)",
+        "SELECT * FROM accel_tpch_q16('Brand#13', 'SMALL BRUSHED%', 26, 24, 27, 29, 7, 20, 22, 33)",
+        """
+SELECT p_partkey, p_brand FROM part
+WHERE p_size IN (26, 24, 27, 29, 7, 20, 22, 33)
+  AND p_brand <> 'Brand#13' AND p_brand <> 'Brand#00'
+  AND p_type NOT LIKE 'SMALL BRUSHED%'
+ORDER BY p_partkey LIMIT 1
+""",
+        3,
+        build_probe=_part_brand_new_group_probe,
+    ),
+    19: SharedQueryEntry(
+        19,
+        "tpch",
+        """
+SELECT SUM(l_extendedprice * (1 - l_discount)) AS revenue
+FROM lineitem, part
+WHERE (p_partkey = l_partkey
+  AND p_brand = 'Brand#31'
+  AND p_container IN ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG')
+  AND l_quantity >= 4 AND l_quantity <= 4 + 10
+  AND p_size BETWEEN 1 AND 5
+  AND l_shipmode IN ('AIR', 'AIR REG')
+  AND l_shipinstruct = 'DELIVER IN PERSON')
+OR (p_partkey = l_partkey
+  AND p_brand = 'Brand#12'
+  AND p_container IN ('MED BAG', 'MED BOX', 'MED PKG', 'MED PACK')
+  AND l_quantity >= 15 AND l_quantity <= 15 + 10
+  AND p_size BETWEEN 1 AND 10
+  AND l_shipmode IN ('AIR', 'AIR REG')
+  AND l_shipinstruct = 'DELIVER IN PERSON')
+OR (p_partkey = l_partkey
+  AND p_brand = 'Brand#51'
+  AND p_container IN ('LG CASE', 'LG BOX', 'LG PACK', 'LG PKG')
+  AND l_quantity >= 23 AND l_quantity <= 23 + 10
+  AND p_size BETWEEN 1 AND 15
+  AND l_shipmode IN ('AIR', 'AIR REG')
+  AND l_shipinstruct = 'DELIVER IN PERSON')
+""",
+        "SELECT * FROM accel_tpch_q19_aux('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)",
+        "SELECT * FROM accel_tpch_q19('Brand#31', 4, 'Brand#12', 15, 'Brand#51', 23)",
+        """
+SELECT l.l_orderkey, l.l_partkey, l.l_linenumber, l.l_quantity,
+       l.l_extendedprice, l.l_discount, l.l_shipmode, l.l_shipinstruct
+FROM lineitem l, part p
+WHERE p.p_partkey = l.l_partkey AND p.p_brand = 'Brand#31'
+  AND p.p_container IN ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG')
+  AND l.l_quantity >= 4 AND l.l_quantity <= 14
+  AND p.p_size BETWEEN 1 AND 5
+  AND l.l_shipmode IN ('AIR', 'AIR REG')
+  AND l.l_shipinstruct = 'DELIVER IN PERSON'
+ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1
+""",
+        5,
+        build_probe=_lineitem_quantity_large_probe,
+    ),
+    20: SharedQueryEntry(
+        20,
+        "tpch",
+        """
+SELECT s_name, s_address
+FROM supplier, nation
+WHERE s_suppkey IN (
+  SELECT ps_suppkey FROM partsupp, (
+    SELECT l_partkey agg_partkey, l_suppkey agg_suppkey, 0.5 * SUM(l_quantity) AS agg_quantity
+    FROM lineitem WHERE l_shipdate >= DATE '1997-01-01'
+      AND l_shipdate < DATE '1997-01-01' + INTERVAL '1' year
+    GROUP BY l_partkey, l_suppkey) agg_lineitem
+  WHERE agg_partkey = ps_partkey AND agg_suppkey = ps_suppkey
+    AND ps_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE 'gainsboro%')
+    AND ps_availqty > agg_quantity)
+  AND s_nationkey = n_nationkey AND n_name = 'RUSSIA'
+ORDER BY s_name
+""",
+        "SELECT * FROM accel_tpch_q20_aux(DATE '1997-01-01', 'gainsboro%', 'RUSSIA')",
+        "SELECT * FROM accel_tpch_q20(DATE '1997-01-01', 'gainsboro%', 'RUSSIA')",
+        """
+SELECT l.l_orderkey, l.l_linenumber, l.l_quantity, l.l_shipdate,
+       l.l_partkey, l.l_suppkey FROM lineitem l
+JOIN part p ON p.p_partkey = l.l_partkey AND p.p_name LIKE 'gainsboro%'
+JOIN partsupp ps ON ps.ps_partkey = l.l_partkey AND ps.ps_suppkey = l.l_suppkey
+JOIN supplier s ON s.s_suppkey = l.l_suppkey
+JOIN nation n ON n.n_nationkey = s.s_nationkey AND n.n_name = 'RUSSIA'
+WHERE l.l_shipdate >= DATE '1997-01-01'
+  AND l.l_shipdate < DATE '1998-01-01'
+ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1
+""",
+        1,
+        build_probe=_lineitem_quantity_huge_probe,
     ),
 }
 
@@ -821,10 +1373,15 @@ def lookup_parallel_query(workload: str, query_id: int) -> SharedQueryEntry:
 
 def queries_for_workload(workload: str) -> List[int]:
     if workload == "tpch":
-        return [1, 3, 6, 10, 12, 14]
+        return sorted(TPCH_QUERIES.keys())
     if workload == "sec_edgar":
-        return [1, 2, 3, 4, 6, 24]
+        return sorted(SEC_EDGAR_QUERIES.keys())
     raise KeyError(workload)
+
+
+def tpch_rf_query_ids() -> List[int]:
+    # Q11 is partsupp/supplier/nation only; RF1/RF2 never invalidate it.
+    return [query_id for query_id in queries_for_workload("tpch") if query_id != 11]
 
 
 def base_kernel_queries_for_workload(workload: str) -> List[int]:

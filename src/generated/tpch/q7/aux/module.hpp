@@ -130,11 +130,14 @@ public:
   const std::vector<TpchQ7LineitemDelta> &Deltas() const;
   void MarkRebuild();
   void AddDelta(TpchQ7LineitemDelta delta);
+  void AddOrderCustkey(int64_t orderkey, int64_t custkey);
+  const std::unordered_map<int64_t, int64_t> &OrderCustkeys() const;
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<TpchQ7LineitemDelta> deltas;
+  std::unordered_map<int64_t, int64_t> order_custkeys;
 };
 
 class TpchQ7Module final : public core::AuxQueryModule {

@@ -64,17 +64,22 @@ SQL
   cat >"$aux_sql" <<'SQL'
 DROP TYPE IF EXISTS accel_tpch_q6_row CASCADE;
 DROP TYPE IF EXISTS accel_tpch_q14_row CASCADE;
+DROP TYPE IF EXISTS accel_tpch_q17_row CASCADE;
 SQL
   sed "s|MODULE_PATHNAME|${EXTENSION_SO}|g" "$EXTENSION_SQL" | python3 -c '
 import re, sys
 text = sys.stdin.read()
-for pattern in (
-    r"CREATE TYPE accel_tpch_q6_row AS \([^;]+\);",
-    r"CREATE TYPE accel_tpch_q14_row AS \([^;]+\);",
+for match in re.finditer(
+    r"CREATE TYPE accel_tpch_q\d+_row AS \([^;]+\);",
+    text,
+    flags=re.S,
 ):
-    for match in re.finditer(pattern, text, flags=re.S):
-        print(match.group(0))
-        print()
+    stmt = match.group(0).rstrip(";")
+    print("DO $$ BEGIN")
+    print("  " + stmt + ";")
+    print("EXCEPTION WHEN duplicate_object THEN NULL;")
+    print("END $$;")
+    print()
 for match in re.finditer(
     r"CREATE FUNCTION accel_\w+_aux\([^)]*\)\s+RETURNS.*?^LANGUAGE C;",
     text,
@@ -109,12 +114,10 @@ SQL
 }
 
 echo "=== syncing extension source into docker and rebuilding ==="
-if docker ps --format '{{.Names}}' | grep -qx 'accel_pg_test'; then
-  docker cp "${ROOT}/src/generated/." accel_pg_test:/tmp/accel-codegen-src/src/generated/
-  docker cp "${ROOT}/src/runtime/postgres/." \
-    accel_pg_test:/tmp/accel-codegen-src/src/runtime/postgres/
-  docker cp "${ROOT}/src/stateful/postgres/." \
-    accel_pg_test:/tmp/accel-codegen-src/src/stateful/postgres/
+if [[ "${SKIP_EXTENSION_REBUILD:-0}" == "1" ]]; then
+  echo "SKIP_EXTENSION_REBUILD=1: using existing ${EXTENSION_SO}"
+elif docker ps --format '{{.Names}}' | grep -qx 'accel_pg_test'; then
+  docker cp "${ROOT}/src/." accel_pg_test:/tmp/accel-codegen-src/src/
   docker cp "${ROOT}/include/accelerator_codegen/." \
     accel_pg_test:/tmp/accel-codegen-src/include/accelerator_codegen/
   docker cp "${ROOT}/config/." accel_pg_test:/tmp/accel-codegen-src/config/
@@ -138,6 +141,9 @@ echo "=== TPC-H performance database: ${PG_TPCH_DB} ==="
 reinstall_aux_functions "$PG_TPCH_DB"
 bash "${ROOT}/scripts/ensure_accel_postgres_mutation_triggers.sh" "$PG_TPCH_DB"
 
+if [[ "${SKIP_SEC:-0}" == "1" ]]; then
+  echo "=== skipping SEC EDGAR SF3 (SKIP_SEC=1) ==="
+else
 echo "=== SEC EDGAR SF3 performance database: ${PG_SEC_DB} ==="
 if [[ "$FORCE_SEC_RELOAD" == "1" ]] || ! psql_cmd -d postgres -tAc \
     "SELECT 1 FROM pg_database WHERE datname = '${PG_SEC_DB}'" | grep -q 1; then
@@ -147,13 +153,16 @@ else
   reinstall_aux_functions "$PG_SEC_DB"
   bash "${ROOT}/scripts/ensure_accel_postgres_mutation_triggers.sh" "$PG_SEC_DB"
 fi
+fi
 
 echo "=== smoke checks ==="
 psql_cmd -d "$PG_TPCH_DB" -c "SELECT 'tpch lineitem' AS what, COUNT(*) FROM lineitem;"
 psql_cmd -d "$PG_TPCH_DB" -c "SELECT proname FROM pg_proc WHERE proname LIKE 'accel_tpch_q%_aux' ORDER BY 1;"
-psql_cmd -d "$PG_SEC_DB" -c "SELECT 'sec num' AS what, COUNT(*) FROM num;"
-psql_cmd -d "$PG_SEC_DB" -c "SELECT proname FROM pg_proc WHERE proname LIKE 'accel_sec_edgar%_aux' ORDER BY 1;"
 psql_cmd -d "$PG_TPCH_DB" -tAc "SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal;"
-psql_cmd -d "$PG_SEC_DB" -tAc "SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal;"
+if [[ "${SKIP_SEC:-0}" != "1" ]]; then
+  psql_cmd -d "$PG_SEC_DB" -c "SELECT 'sec num' AS what, COUNT(*) FROM num;"
+  psql_cmd -d "$PG_SEC_DB" -c "SELECT proname FROM pg_proc WHERE proname LIKE 'accel_sec_edgar%_aux' ORDER BY 1;"
+  psql_cmd -d "$PG_SEC_DB" -tAc "SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal;"
+fi
 
 echo "=== Postgres aux performance databases ready ==="

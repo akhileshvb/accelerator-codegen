@@ -419,13 +419,24 @@ bool ResolveProfit(const TpchQ9State &state, TpchQ9InitialScan *scan,
                    int64_t partkey, int64_t suppkey, int64_t orderkey,
                    int64_t quantity_raw, int64_t extendedprice_raw,
                    int64_t discount_raw, int64_t &profit_raw,
-                   int32_t &nationkey, int32_t &year) {
+                   int32_t &nationkey, int32_t &year,
+                   const std::unordered_map<int64_t, int32_t> *year_overlay =
+                       nullptr) {
   if (!state.LookupSupplierNation(suppkey, nationkey) &&
       !(scan && scan->LookupSupplierNation(suppkey, nationkey)))
     return false;
-  if (!state.LookupOrderYear(orderkey, year) &&
-      !(scan && scan->LookupOrderYear(orderkey, year)))
+  if (year_overlay) {
+    const auto overlay = year_overlay->find(orderkey);
+    if (overlay != year_overlay->end()) {
+      year = overlay->second;
+    } else if (!state.LookupOrderYear(orderkey, year) &&
+               !(scan && scan->LookupOrderYear(orderkey, year))) {
+      return false;
+    }
+  } else if (!state.LookupOrderYear(orderkey, year) &&
+             !(scan && scan->LookupOrderYear(orderkey, year))) {
     return false;
+  }
   int64_t supplycost_raw = 0;
   if (!state.LookupPartsuppCost(partkey, suppkey, supplycost_raw) &&
       !(scan && scan->LookupPartsuppCost(partkey, suppkey, supplycost_raw)))
@@ -1117,9 +1128,12 @@ void TpchQ9Module::Build(core::AuxEngineServices &services,
       TpchQ9Layout::kAccelerator, TpchQ9Layout::kCompleteState, 0,
       MakeMetadataImage(metadata_state)));
 
-  // Do not publish dense order_years / partsupp / supplier maps. Execute
-  // never reads them; writes resolve those joins with point SQL so SF20
-  // aux state stays O(name postings + profit cells).
+  builder.Write(core::StateImage::Make(
+      TpchQ9Layout::kAccelerator, TpchQ9Layout::kMaintenanceSide, 0,
+      MakeMaintenanceSideImage(typed_state)));
+
+  // Dense join maps live on kMaintenanceSide so Postgres RF can resolve
+  // without SPI. Execute never reads that partition.
 
   for (core::PartitionId slot = 0; slot < typed_state->profit_slot_count;
        ++slot) {
@@ -1379,12 +1393,24 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
+  const TpchQ9State *join_side = nullptr;
   if (metadata_image->kind == TpchQ9ImageKind::CompleteState) {
     new_state = std::make_shared<TpchQ9State>(*metadata_image->state);
+    join_side = new_state.get();
   } else {
     new_state = std::make_shared<TpchQ9State>();
     new_state->profit_slot_count = metadata_image->state->profit_slot_count;
     new_state->InitPartitions(new_state->profit_slot_count);
+
+    const auto side_snapshot = services.StateStore().ReadPartitions(
+        visibility, {TpchQ9Layout::kMaintenanceSide});
+    for (const auto &image : side_snapshot.partitions) {
+      if (image.partition != TpchQ9Layout::kMaintenanceSide)
+        continue;
+      const auto *typed = AsQ9Image(image);
+      if (typed && typed->kind == TpchQ9ImageKind::MaintenanceSide)
+        join_side = typed->state.get();
+    }
 
     const bool touch_names =
         !buffer.PartNameDeltas().empty() || buffer.HasRebuildSet();
@@ -1469,16 +1495,25 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     RebuildPartkeys(*new_state, buffer.RebuildPartkeys());
   }
 
+  std::unordered_map<int64_t, int32_t> year_overlay;
+  for (const auto &delta : buffer.OrderDeltas()) {
+    if (delta.sign > 0)
+      year_overlay[delta.orderkey] = delta.order_year;
+  }
+
   // Apply lineitem deltas. Join keys come from published maps when present
-  // (CompleteState tests) and otherwise from point SQL on the open txn.
+  // (CompleteState tests) and otherwise from the maintenance-side image
+  // (Postgres) or point SQL.
   for (const auto &delta : buffer.Deltas()) {
     int64_t profit_raw = 0;
     int32_t nationkey = 0, year = 0;
+    const TpchQ9State &lookup =
+        join_side ? *join_side : *new_state;
 
-    if (!ResolveProfit(*new_state, initial_scan, delta.partkey, delta.suppkey,
+    if (!ResolveProfit(lookup, initial_scan, delta.partkey, delta.suppkey,
                        delta.orderkey, delta.quantity_raw,
                        delta.extendedprice_raw, delta.discount_raw, profit_raw,
-                       nationkey, year)) {
+                       nationkey, year, &year_overlay)) {
       outcome.action = core::MaintenanceAction::RebuildAll;
       outcome.invalidations = All();
       outcome.pending_rebuild = outcome.invalidations;

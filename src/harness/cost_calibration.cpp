@@ -1,8 +1,10 @@
 // SCAFFOLDING
 #include "accelerator_codegen/harness/cost_calibration.hpp"
 
+#include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
@@ -48,6 +50,11 @@ core::MutationBatch ScaleMutation(const SharedQueryCatalogEntry &entry,
 } // namespace
 
 std::string SharedCostModelConfigPath(SharedWorkloadKind workload, int query_id) {
+  const char *override_path =
+      std::getenv("ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL");
+  if (override_path && *override_path) {
+    return override_path;
+  }
   const char *db_label = std::getenv("ACCEL_AUX_BENCH_DB_LABEL");
   const bool sf20 = db_label && std::string(db_label) == "tpch_sf20";
   if (workload == SharedWorkloadKind::Tpch) {

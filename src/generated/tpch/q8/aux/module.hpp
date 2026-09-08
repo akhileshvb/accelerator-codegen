@@ -222,11 +222,15 @@ public:
   const std::vector<TpchQ8LineitemDelta> &Deltas() const;
   void MarkRebuild();
   void AddDelta(TpchQ8LineitemDelta delta);
+  void AddOrderInfo(int64_t orderkey, int64_t custkey, int32_t orderdate_days);
+  const std::unordered_map<int64_t, TpchQ8Dimensions::OrderInfo> &
+  OrderInfoOverlay() const;
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<TpchQ8LineitemDelta> deltas;
+  std::unordered_map<int64_t, TpchQ8Dimensions::OrderInfo> order_info_overlay;
 };
 
 // ── Module ──────────────────────────────────────────────────────────────────

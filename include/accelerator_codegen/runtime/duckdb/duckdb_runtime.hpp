@@ -47,6 +47,10 @@ public:
   std::vector<core::AuxRow> ExecuteCollect(const core::QueryArguments &arguments);
   void Apply(SharedProbe &probe);
 
+  // Apply multiple point probes in one transaction so StageMaintenance sees
+  // bulk row fanout (used by phased cost-model experiments).
+  void ApplyBatch(std::vector<SharedProbe> &probes);
+
   // Mini-chunk TPC-H RF1/RF2 (orders+lineitem insert/delete). Alternating
   // chunks keep DBs from unbounded growth while exercising I/D maintenance.
   // Point-update Apply(SharedProbe) remains the default sweep write path.

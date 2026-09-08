@@ -248,18 +248,45 @@ double MeasureReaderQps(duckdb::Connection &connection,
   return 1e6 / median_us;
 }
 
+enum class TimedQueryKind { Base, Kernel, Aux };
+
+const std::string &SqlForKind(const TpchArgVariant &variant, TimedQueryKind kind) {
+  switch (kind) {
+  case TimedQueryKind::Base:
+    return variant.base_sql;
+  case TimedQueryKind::Kernel:
+    return variant.kernel_sql;
+  case TimedQueryKind::Aux:
+    return variant.aux_sql;
+  }
+  throw std::logic_error("unknown TimedQueryKind");
+}
+
+const char *ProfileSuffix(TimedQueryKind kind) {
+  switch (kind) {
+  case TimedQueryKind::Base:
+    return "_base";
+  case TimedQueryKind::Kernel:
+    return "_kernel";
+  case TimedQueryKind::Aux:
+    return "_aux";
+  }
+  return "";
+}
+
 double MeasureQueryMedianUs(duckdb::Connection &connection,
                             const std::vector<TpchArgVariant> &arg_pool,
-                            bool use_kernel_sql, int samples) {
+                            TimedQueryKind kind, int samples) {
   if (samples <= 0 || arg_pool.empty()) {
     return 0.0;
   }
 
-  // DuckDB reference timing uses JSON profiler root "latency" (query execution
-  // time reported by DuckDB), not outer wall-clock around connection.Query.
+  // DuckDB JSON profiler root "latency" (query execution time reported by
+  // DuckDB), not outer wall-clock around connection.Query. Used for base
+  // DuckDB SQL, the generated kernel SQL, and the aux table-function path.
   const std::string profile_path = "/tmp/accel_aux_bench_profile_" +
                                    std::to_string(static_cast<long long>(::getpid())) +
-                                   (use_kernel_sql ? "_kernel" : "_base") + ".json";
+                                   ProfileSuffix(kind) + ".json";
   {
     auto enabled = connection.Query("PRAGMA enable_profiling='json'");
     Require(enabled != nullptr && !enabled->HasError(),
@@ -276,9 +303,7 @@ double MeasureQueryMedianUs(duckdb::Connection &connection,
   for (int i = 0; i < samples; i++) {
     const auto &variant =
         arg_pool[static_cast<std::size_t>(i) % arg_pool.size()];
-    const std::string &sql =
-        use_kernel_sql ? variant.kernel_sql : variant.base_sql;
-    ExecuteAndConsume(connection, sql);
+    ExecuteAndConsume(connection, SqlForKind(variant, kind));
     query_samples.push_back(ParseJsonProfileLatencyUs(profile_path));
   }
   connection.Query("PRAGMA disable_profiling");
@@ -451,11 +476,13 @@ void PrintCsvHeader(std::ostream &out) {
          "measured_duration_sec,reader_qps,query_num,"
          "num_queries,writes_executed,duckdb_ref_query_median_us,"
          "base_kernel_median_us,base_write_median_us,accel_write_median_us,"
-         "accel_hit_median_us,fallback_median_us,accel_hit_rate,fallback_rate,"
+         "accel_hit_median_us,accel_profiler_query_median_us,fallback_median_us,"
+         "accel_hit_rate,fallback_rate,"
          "total_duckdb_query_us,total_accel_query_us,total_base_write_us,"
          "total_accel_write_us,duckdb_workload_us,accel_workload_us,"
          "workload_speedup,cold_start_workload_speedup,query_only_speedup,"
-         "blended_query_speedup,cold_start_accel_workload_us,setup_full_build_ms,"
+         "query_only_speedup_profiler,blended_query_speedup,"
+         "cold_start_accel_workload_us,setup_full_build_ms,"
       << bench_diag::kAuxStoreDiagnosticsCsvHeader << "\n";
 }
 
@@ -472,6 +499,7 @@ struct BenchSession {
   double base_write_median_us = 0.0;
   double duckdb_ref_query_median_us = 0.0;
   double base_kernel_median_us = 0.0;
+  double accel_profiler_query_median_us = 0.0;
   double setup_full_build_ms = 0.0;
   uint64_t aux_state_bytes = 0;
   double reader_qps = 1.0;
@@ -556,14 +584,16 @@ struct BenchSession {
     }
 
     duckdb_ref_query_median_us =
-        MeasureQueryMedianUs(base_connection, arg_pool, /*use_kernel_sql=*/false,
+        MeasureQueryMedianUs(base_connection, arg_pool, TimedQueryKind::Base,
                              ref_samples);
     base_kernel_median_us = MeasureQueryMedianUs(
-        base_connection, arg_pool, /*use_kernel_sql=*/true,
+        base_connection, arg_pool, TimedQueryKind::Kernel,
         ref_samples > 0 ? std::min(ref_samples, 2) : 0);
+    accel_profiler_query_median_us = MeasureQueryMedianUs(
+        accel_connection, arg_pool, TimedQueryKind::Aux, ref_samples);
     std::cerr << "tpch_q" << query_num
-              << "_aux_bench: duckdb_ref uses JSON profile latency; "
-                 "accel queries use TF SQL path\n"
+              << "_aux_bench: duckdb_ref and accel_profiler use JSON profile "
+                 "latency; accel_hit_median_us remains wall-clock TF SQL\n"
               << std::flush;
     reader_qps = MeasureReaderQps(accel_connection, arg_pool,
                                   std::max(1, std::min(warmup_queries, 3)));
@@ -643,6 +673,10 @@ private:
         workload.accel_hit_median_us > 0.0
             ? base_kernel_median_us / workload.accel_hit_median_us
             : 0.0;
+    const double query_only_speedup_profiler =
+        accel_profiler_query_median_us > 0.0
+            ? duckdb_ref_query_median_us / accel_profiler_query_median_us
+            : 0.0;
     const double blended_query_us =
         workload.accel_hit_rate * workload.accel_hit_median_us +
         workload.fallback_rate *
@@ -675,13 +709,15 @@ private:
               << std::setprecision(2) << duckdb_ref_query_median_us << ','
               << base_kernel_median_us << ',' << base_write_median_us << ','
               << accel_write_median_us << ',' << workload.accel_hit_median_us
-              << ',' << workload.fallback_median_us << ','
+              << ',' << accel_profiler_query_median_us << ','
+              << workload.fallback_median_us << ','
               << workload.accel_hit_rate << ',' << workload.fallback_rate << ','
               << total_duckdb_query_us << ',' << workload.total_accel_query_us
               << ',' << total_base_write_us << ',' << workload.total_accel_write_us
               << ',' << duckdb_workload_us << ',' << accel_workload_us << ','
               << workload_speedup << ',' << cold_start_workload_speedup << ','
-              << query_only_speedup << ',' << blended_query_speedup << ','
+              << query_only_speedup << ',' << query_only_speedup_profiler << ','
+              << blended_query_speedup << ','
               << cold_start_accel_workload_us << ',' << setup_full_build_ms << ',';
     bench_diag::AppendStoreDiagnosticsCsv(std::cout, aux_state_bytes, store_diag);
     std::cout << '\n' << std::flush;

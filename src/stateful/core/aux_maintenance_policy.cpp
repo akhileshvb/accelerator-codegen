@@ -1,6 +1,8 @@
 // SCAFFOLDING
 #include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
 
+#include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -112,6 +114,36 @@ MaintenanceDecision SelectAuxMaintenanceAction(
   input.last_action = request.last_action;
   input.decision_margin_us = params.decision_margin_us;
   const auto selection = maintenance::SelectMinCostAction(input);
+
+  MaintenanceDecisionLogEntry log_entry;
+  log_entry.selected = selection.action;
+  log_entry.staged_action = selection.action;
+  log_entry.selected_predicted_cost_us = selection.selected_cost_us;
+  log_entry.rows_touched = request.rows_touched;
+  log_entry.affected_partition_count = request.affected_partition_count;
+  log_entry.expected_queries_before_next_write =
+      request.expected_queries_before_next_write;
+  for (const auto &candidate : input.candidates) {
+    const double total = candidate.estimate.TotalOverheadUs();
+    switch (candidate.action) {
+    case MaintenanceAction::ApplyDelta:
+      log_entry.predicted_apply_delta_us = total;
+      break;
+    case MaintenanceAction::RebuildPartition:
+      log_entry.predicted_rebuild_partition_us = total;
+      break;
+    case MaintenanceAction::RebuildAll:
+      log_entry.predicted_rebuild_all_us = total;
+      break;
+    case MaintenanceAction::InvalidateAndFallback:
+      log_entry.predicted_invalidate_us = total;
+      break;
+    case MaintenanceAction::NoOp:
+      break;
+    }
+  }
+  RecordMaintenanceSelectorDecision(log_entry);
+
   return {selection.action, selection.selected_cost_us};
 }
 

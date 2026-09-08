@@ -182,6 +182,14 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ5LineitemInput &out) {
   return true;
 }
 
+bool ReadOrder(const core::AuxRow &row, int64_t &orderkey, int64_t &custkey,
+               int32_t &orderdate_days) {
+  if (!IntCell(row, 0, orderkey) || !IntCell(row, 1, custkey) ||
+      !DateCell(row, 2, orderdate_days))
+    return false;
+  return true;
+}
+
 } // namespace
 
 // TxnBuffer
@@ -191,6 +199,7 @@ void TpchQ5TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
   lineitem_mutations.clear();
+  order_mutations.clear();
 }
 bool TpchQ5TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
 void TpchQ5TxnBuffer::MarkRebuild() {
@@ -208,6 +217,16 @@ TpchQ5TxnBuffer::LineitemMutations() const {
 void TpchQ5TxnBuffer::AddLineitemMutation(const LineitemDelta &d) {
   pending = true;
   lineitem_mutations.push_back(d);
+}
+
+void TpchQ5TxnBuffer::AddOrderMutation(const OrderDelta &d) {
+  pending = true;
+  order_mutations.push_back(d);
+}
+
+const std::vector<TpchQ5TxnBuffer::OrderDelta> &
+TpchQ5TxnBuffer::OrderMutations() const {
+  return order_mutations;
 }
 
 
@@ -331,19 +350,50 @@ void TpchQ5Module::AccumulateMutation(const core::MutationBatch &mutation,
                                       core::AuxTxnBuffer &buf) {
   auto &buffer = dynamic_cast<TpchQ5TxnBuffer &>(buf);
 
-  // Only support incremental for lineitem-only mutations (price or discount columns)
-  if (mutation.table != config.lineitem_table) {
+  if (mutation.table == config.customer_table ||
+      mutation.table == config.supplier_table ||
+      mutation.table == config.nation_table ||
+      mutation.table == config.region_table) {
     buffer.MarkRebuild();
     return;
   }
-  for (const auto col : mutation.updated_columns) {
-    // Price/discount-only mutations are incrementally maintainable. The
-    // harness projects those columns into projection positions 2/3 (and
-    // some catalog entries report source ids 5/6).
-    if (col != 2 && col != 3 && col != 5 && col != 6) {
-      buffer.MarkRebuild();
-      return;
+
+  if (mutation.table == config.orders_table) {
+    auto add = [&](const core::AuxRow &row, int8_t sign) {
+      TpchQ5TxnBuffer::OrderDelta delta;
+      if (!ReadOrder(row, delta.orderkey, delta.custkey, delta.orderdate_days)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      delta.sign = sign;
+      buffer.AddOrderMutation(delta);
+    };
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows)
+        add(row, 1);
+      break;
+    case core::MutationKind::Delete:
+      for (const auto &row : mutation.old_rows)
+        add(row, -1);
+      break;
+    case core::MutationKind::Update:
+      if (mutation.old_rows.size() != mutation.new_rows.size()) {
+        buffer.MarkRebuild();
+        return;
+      }
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        add(mutation.old_rows[i], -1);
+        add(mutation.new_rows[i], 1);
+      }
+      break;
     }
+    return;
+  }
+
+  if (mutation.table != config.lineitem_table) {
+    buffer.MarkRebuild();
+    return;
   }
 
   // Store raw lineitem mutations for later resolution in StageMaintenance
@@ -378,9 +428,9 @@ TpchQ5Module::StageMaintenance(core::AuxEngineServices &services,
 
   auto &buffer = dynamic_cast<TpchQ5TxnBuffer &>(buf);
 
-  // Try incremental maintenance for lineitem-only mutations regardless of
-  // plan scope — price/discount mutations no longer invalidate the store.
-  if (buffer.HasLineitemMutations() && !buffer.RequiresRebuild()) {
+  // Try incremental maintenance for lineitem/order RF and price updates.
+  if (!buffer.RequiresRebuild() &&
+      (buffer.HasLineitemMutations() || !buffer.OrderMutations().empty())) {
     auto inc_outcome = StageIncrementalMaintenance(services, plan, buffer);
     if (inc_outcome.action != core::MaintenanceAction::NoOp) {
       inc_outcome.invalidations = plan;
@@ -437,11 +487,47 @@ TpchQ5Module::StageIncrementalMaintenance(
     return outcome;
   }
   const auto &side = *side_ptr;
-  if (side.orderkey_to_nationkey.empty() || side.suppkey_to_nationkey.empty() ||
-      side.orderkey_to_ordinal.empty()) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    return outcome;
+
+  std::unordered_map<int64_t, int32_t> order_nation_overlay;
+  std::unordered_map<int64_t, int32_t> order_ordinal_overlay;
+  for (const auto &order : buffer.OrderMutations()) {
+    if (order.sign < 0)
+      continue;
+    auto cust_it = side.custkey_to_nationkey.find(order.custkey);
+    if (cust_it == side.custkey_to_nationkey.end())
+      continue;
+    const int32_t ord =
+        TpchQ5DateOrdinal(order.orderdate_days, side.min_orderdate_days);
+    if (ord < 0 || ord >= static_cast<int32_t>(side.tree_size))
+      continue;
+    order_nation_overlay[order.orderkey] = cust_it->second;
+    order_ordinal_overlay[order.orderkey] = ord;
   }
+
+  auto lookup_ordinal = [&](int64_t orderkey, int32_t &ord) -> bool {
+    const auto overlay = order_ordinal_overlay.find(orderkey);
+    if (overlay != order_ordinal_overlay.end()) {
+      ord = overlay->second;
+      return true;
+    }
+    const auto it = side.orderkey_to_ordinal.find(orderkey);
+    if (it == side.orderkey_to_ordinal.end())
+      return false;
+    ord = it->second;
+    return true;
+  };
+  auto lookup_nation = [&](int64_t orderkey, int32_t &nk) -> bool {
+    const auto overlay = order_nation_overlay.find(orderkey);
+    if (overlay != order_nation_overlay.end()) {
+      nk = overlay->second;
+      return true;
+    }
+    const auto it = side.orderkey_to_nationkey.find(orderkey);
+    if (it == side.orderkey_to_nationkey.end())
+      return false;
+    nk = it->second;
+    return true;
+  };
 
   // Per-leaf revenue deltas. Credit a nation only when supplier nation equals
   // customer nation (same filter as BuildState / the Q5 join).
@@ -449,10 +535,9 @@ TpchQ5Module::StageIncrementalMaintenance(
   bool unresolved = false;
 
   auto apply_row = [&](const TpchQ5LineitemInput &row, int64_t sign) {
-    auto ord_it = side.orderkey_to_ordinal.find(row.orderkey);
-    auto nat_it = side.orderkey_to_nationkey.find(row.orderkey);
-    if (ord_it == side.orderkey_to_ordinal.end() ||
-        nat_it == side.orderkey_to_nationkey.end()) {
+    int32_t ord = 0;
+    int32_t nation = 0;
+    if (!lookup_ordinal(row.orderkey, ord) || !lookup_nation(row.orderkey, nation)) {
       unresolved = true;
       return;
     }
@@ -461,9 +546,8 @@ TpchQ5Module::StageIncrementalMaintenance(
       unresolved = true;
       return;
     }
-    if (supp_it->second != nat_it->second)
+    if (supp_it->second != nation)
       return;
-    const int32_t ord = ord_it->second;
     if (ord < 0 || ord >= static_cast<int32_t>(side.tree_size)) {
       unresolved = true;
       return;
@@ -471,7 +555,7 @@ TpchQ5Module::StageIncrementalMaintenance(
     const int64_t rev =
         ComputeRevenueRaw(row.extended_price_raw, row.discount_raw);
     const uint32_t leaf = TpchQ5LeafNode(side.tree_size, ord);
-    leaf_deltas[leaf][nat_it->second] += sign * rev;
+    leaf_deltas[leaf][nation] += sign * rev;
   };
 
   for (const auto &m : buffer.LineitemMutations()) {
@@ -529,9 +613,6 @@ TpchQ5Module::StageIncrementalMaintenance(
   new_state->nation_region = side.nation_region;
   new_state->region_name_to_key = side.region_name_to_key;
   new_state->region_nations = side.region_nations;
-  new_state->orderkey_to_nationkey = side.orderkey_to_nationkey;
-  new_state->orderkey_to_ordinal = side.orderkey_to_ordinal;
-  new_state->suppkey_to_nationkey = side.suppkey_to_nationkey;
 
   // Shared tree skeleton. Mutated nodes are detached before writing.
   new_state->tree = tree_state->tree;
@@ -583,9 +664,6 @@ TpchQ5Module::StageIncrementalMaintenance(
   }
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
-
-  outcome.updates.push_back(core::StateImage::Make(
-      kId, core::TpchQ5Layout::kSide, 0, MakeSideImage(new_state)));
 
   outcome.updates.push_back(core::StateImage::Make(
       kId, core::TpchQ5Layout::kTreeBase, 0,
@@ -734,6 +812,7 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   initial_scan->ScanCustomers([&](const TpchQ5CustomerInput &input) {
     customer_nations[input.custkey] = input.nationkey;
   });
+  state.custkey_to_nationkey = customer_nations;
 
   std::unordered_map<int64_t, int32_t> supplier_nations;
   initial_scan->ScanSuppliers([&](const TpchQ5SupplierInput &input) {

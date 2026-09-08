@@ -458,6 +458,7 @@ void TpchQ8TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
   deltas.clear();
+  order_info_overlay.clear();
 }
 bool TpchQ8TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
 const std::vector<TpchQ8LineitemDelta> &TpchQ8TxnBuffer::Deltas() const {
@@ -472,6 +473,16 @@ void TpchQ8TxnBuffer::AddDelta(TpchQ8LineitemDelta delta) {
   pending = true;
   if (delta.volume_raw != 0)
     deltas.push_back(delta);
+}
+void TpchQ8TxnBuffer::AddOrderInfo(int64_t orderkey, int64_t custkey,
+                                  int32_t orderdate_days) {
+  pending = true;
+  order_info_overlay[orderkey] = TpchQ8Dimensions::OrderInfo{custkey,
+                                                            orderdate_days};
+}
+const std::unordered_map<int64_t, TpchQ8Dimensions::OrderInfo> &
+TpchQ8TxnBuffer::OrderInfoOverlay() const {
+  return order_info_overlay;
 }
 
 // ── Module identity ─────────────────────────────────────────────────────────
@@ -526,9 +537,34 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
   // Dimension-table mutations (part, supplier, customer) → full rebuild
   if (mutation.table == config.part_table ||
       mutation.table == config.supplier_table ||
-      mutation.table == config.customer_table ||
-      mutation.table == config.orders_table) {
+      mutation.table == config.customer_table) {
     buffer.MarkRebuild();
+    return;
+  }
+
+  if (mutation.table == config.orders_table) {
+    auto add = [&](const core::AuxRow &row) {
+      int64_t orderkey = 0, custkey = 0;
+      int32_t orderdate_days = 0;
+      if (!ReadOrders(row, orderkey, custkey, orderdate_days)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      buffer.AddOrderInfo(orderkey, custkey, orderdate_days);
+    };
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows)
+        add(row);
+      break;
+    case core::MutationKind::Delete:
+    case core::MutationKind::Update:
+      for (const auto &row : mutation.old_rows)
+        add(row);
+      for (const auto &row : mutation.new_rows)
+        add(row);
+      break;
+    }
     return;
   }
 
@@ -700,10 +736,18 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
     const int32_t supplier_nationkey = sk_it->second;
 
     // Resolve order → customer → nation
-    auto oi_it = dims->order_info.find(delta.orderkey);
+    const TpchQ8Dimensions::OrderInfo *order_info = nullptr;
+    const auto overlay_it = buffer.OrderInfoOverlay().find(delta.orderkey);
+    if (overlay_it != buffer.OrderInfoOverlay().end()) {
+      order_info = &overlay_it->second;
+    } else {
+      auto oi_it = dims->order_info.find(delta.orderkey);
+      if (oi_it != dims->order_info.end())
+        order_info = &oi_it->second;
+    }
     int32_t customer_nationkey = -1;
-    if (oi_it != dims->order_info.end()) {
-      auto ck_it = dims->custkey_to_nation.find(oi_it->second.custkey);
+    if (order_info) {
+      auto ck_it = dims->custkey_to_nation.find(order_info->custkey);
       if (ck_it != dims->custkey_to_nation.end())
         customer_nationkey = ck_it->second;
     }
@@ -737,10 +781,10 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
         ck_it = mutable_dims->custkey_to_nation.find(order.custkey);
       }
       customer_nationkey = ck_it->second;
-      oi_it = mutable_dims->order_info.find(delta.orderkey);
+      order_info = &mutable_dims->order_info[delta.orderkey];
     }
 
-    const int32_t year = OrderDateToYear(oi_it->second.orderdate_days);
+    const int32_t year = OrderDateToYear(order_info->orderdate_days);
     if (year != 1995 && year != 1996)
       continue;
 
@@ -959,17 +1003,9 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   }
   SortCube(state.cube);
 
-  // Reverse maps are only needed while building the cube. StageMaintenance
-  // resolves missing keys via InitialScan lookups, so drop SF-scale maps from
-  // the published image (order_info alone is ~tens of MB at SF1).
-  dims.order_info.clear();
-  dims.order_info.rehash(0);
-  dims.part_key_to_type.clear();
-  dims.part_key_to_type.rehash(0);
-  dims.custkey_to_nation.clear();
-  dims.custkey_to_nation.rehash(0);
-  dims.suppkey_to_nation.clear();
-  dims.suppkey_to_nation.rehash(0);
+  // Keep reverse maps published. PostgreSQL PreCommit cannot safely run SPI
+  // InitialScan lookups, and RF inserts/deletes need order/part/supplier
+  // resolution without falling back to RebuildAll.
 
   state.dims = std::make_shared<const TpchQ8Dimensions>(std::move(dims));
   return state;

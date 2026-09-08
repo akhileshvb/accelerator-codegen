@@ -410,6 +410,14 @@ void TpchQ3Module::Build(core::AuxEngineServices &services,
   const auto state = BuildState(services, scratch);
   auto side = std::make_shared<TpchQ3OrderSegmentSide>();
   side->order_segment = std::move(scratch.order_segment);
+  for (const auto &[custkey, segment] : scratch.customer_segments) {
+    if (custkey < 0)
+      continue;
+    const auto index = static_cast<std::size_t>(custkey);
+    if (index >= side->customer_segment.size())
+      side->customer_segment.resize(index + 1, 0);
+    side->customer_segment[index] = static_cast<uint8_t>(segment);
+  }
   builder.Write(core::StateImage::Make(
       core::TpchQ3Layout::kAccelerator, core::TpchQ3Layout::kOrderSegmentSide, 0,
       MakeOrderSegmentSideImage(side)));
@@ -597,13 +605,20 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
           TpchQ3InitialScan::OrderContext &ctx) -> bool {
     if (resolve_context(delta.orderkey, ctx))
       return true;
-    if (!initial_scan || delta.custkey <= 0)
+    if (delta.custkey <= 0)
       return false;
     core::PartitionId segment = 0;
-    initial_scan->ScanCustomers([&](const TpchQ3CustomerInput &input) {
-      if (input.key == delta.custkey)
-        segment = TpchQ3PartitionFromMktsegment(input.mktsegment);
-    });
+    if (static_cast<std::size_t>(delta.custkey) <
+        order_side->customer_segment.size()) {
+      segment = static_cast<core::PartitionId>(
+          order_side->customer_segment[static_cast<std::size_t>(delta.custkey)]);
+    }
+    if (segment == 0 && initial_scan) {
+      initial_scan->ScanCustomers([&](const TpchQ3CustomerInput &input) {
+        if (input.key == delta.custkey)
+          segment = TpchQ3PartitionFromMktsegment(input.mktsegment);
+      });
+    }
     if (segment == 0)
       return false;
     ctx = {segment, delta.orderdate_days, delta.shippriority, delta.custkey};

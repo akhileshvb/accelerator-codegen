@@ -95,9 +95,21 @@ Datum AcceleratorCodegenBaseTpchQ2(PG_FUNCTION_ARGS) {
   PG_RETURN_NULL();
 }
 
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ2);
+Datum AcceleratorCodegenAuxTpchQ2(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ2(fcinfo);
+  PG_RETURN_NULL();
+}
+
 PG_FUNCTION_INFO_V1(AcceleratorCodegenBaseTpchQ4);
 Datum AcceleratorCodegenBaseTpchQ4(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresBaseTpchQ4(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ4);
+Datum AcceleratorCodegenAuxTpchQ4(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ4(fcinfo);
   PG_RETURN_NULL();
 }
 
@@ -107,15 +119,33 @@ Datum AcceleratorCodegenBaseTpchQ5(PG_FUNCTION_ARGS) {
   PG_RETURN_NULL();
 }
 
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ5);
+Datum AcceleratorCodegenAuxTpchQ5(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ5(fcinfo);
+  PG_RETURN_NULL();
+}
+
 PG_FUNCTION_INFO_V1(AcceleratorCodegenBaseTpchQ7);
 Datum AcceleratorCodegenBaseTpchQ7(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresBaseTpchQ7(fcinfo);
   PG_RETURN_NULL();
 }
 
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ7);
+Datum AcceleratorCodegenAuxTpchQ7(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ7(fcinfo);
+  PG_RETURN_NULL();
+}
+
 PG_FUNCTION_INFO_V1(AcceleratorCodegenBaseTpchQ8);
 Datum AcceleratorCodegenBaseTpchQ8(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresBaseTpchQ8(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ8);
+Datum AcceleratorCodegenAuxTpchQ8(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ8(fcinfo);
   PG_RETURN_NULL();
 }
 
@@ -137,15 +167,33 @@ Datum AcceleratorCodegenBaseTpchQ13(PG_FUNCTION_ARGS) {
   PG_RETURN_NULL();
 }
 
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ13);
+Datum AcceleratorCodegenAuxTpchQ13(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ13(fcinfo);
+  PG_RETURN_NULL();
+}
+
 PG_FUNCTION_INFO_V1(AcceleratorCodegenBaseTpchQ15);
 Datum AcceleratorCodegenBaseTpchQ15(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresBaseTpchQ15(fcinfo);
   PG_RETURN_NULL();
 }
 
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ15);
+Datum AcceleratorCodegenAuxTpchQ15(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ15(fcinfo);
+  PG_RETURN_NULL();
+}
+
 PG_FUNCTION_INFO_V1(AcceleratorCodegenBaseTpchQ16);
 Datum AcceleratorCodegenBaseTpchQ16(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresBaseTpchQ16(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ16);
+Datum AcceleratorCodegenAuxTpchQ16(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ16(fcinfo);
   PG_RETURN_NULL();
 }
 
@@ -167,9 +215,21 @@ Datum AcceleratorCodegenBaseTpchQ19(PG_FUNCTION_ARGS) {
   PG_RETURN_NULL();
 }
 
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ19);
+Datum AcceleratorCodegenAuxTpchQ19(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ19(fcinfo);
+  PG_RETURN_NULL();
+}
+
 PG_FUNCTION_INFO_V1(AcceleratorCodegenBaseTpchQ20);
 Datum AcceleratorCodegenBaseTpchQ20(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresBaseTpchQ20(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ20);
+Datum AcceleratorCodegenAuxTpchQ20(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ20(fcinfo);
   PG_RETURN_NULL();
 }
 
@@ -206,6 +266,12 @@ Datum AcceleratorCodegenAuxTpchQ18(PG_FUNCTION_ARGS) {
 PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ21);
 Datum AcceleratorCodegenAuxTpchQ21(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ21(fcinfo);
+  PG_RETURN_NULL();
+}
+
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ22);
+Datum AcceleratorCodegenAuxTpchQ22(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ22(fcinfo);
   PG_RETURN_NULL();
 }
 

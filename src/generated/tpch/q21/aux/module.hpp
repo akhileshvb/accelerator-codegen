@@ -97,8 +97,35 @@ struct TpchQ21State {
   // Nation name to nationkey mapping
   std::unordered_map<std::string, std::vector<int32_t>> nation_name_to_keys;
 
-  // Per-order summaries for maintenance
-  std::unordered_map<int64_t, OrderSummary> order_summaries;
+  // Per-order summaries for maintenance. The base map is shared across
+  // published images; RF/point writes land in `order_overlay` so ApplyDelta
+  // does not copy the SF-scale table.
+  using OrderSummaryMap = std::unordered_map<int64_t, OrderSummary>;
+  std::shared_ptr<OrderSummaryMap> order_summaries =
+      std::make_shared<OrderSummaryMap>();
+  OrderSummaryMap order_overlay;
+
+  const OrderSummary *FindOrder(int64_t orderkey) const {
+    const auto overlay_it = order_overlay.find(orderkey);
+    if (overlay_it != order_overlay.end())
+      return &overlay_it->second;
+    if (!order_summaries)
+      return nullptr;
+    const auto it = order_summaries->find(orderkey);
+    return it == order_summaries->end() ? nullptr : &it->second;
+  }
+
+  OrderSummary &MutableOrder(int64_t orderkey) {
+    const auto overlay_it = order_overlay.find(orderkey);
+    if (overlay_it != order_overlay.end())
+      return overlay_it->second;
+    if (order_summaries) {
+      const auto it = order_summaries->find(orderkey);
+      if (it != order_summaries->end())
+        return order_overlay[orderkey] = it->second;
+    }
+    return order_overlay[orderkey];
+  }
 
   // Per-nation supplier numwait: nationkey -> (suppkey -> numwait)
   std::unordered_map<int32_t, std::unordered_map<int64_t, int64_t>> nation_numwait;

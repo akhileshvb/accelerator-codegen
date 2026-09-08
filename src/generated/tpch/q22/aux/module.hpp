@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -64,8 +65,42 @@ struct TpchQ22State {
   std::unordered_map<std::string, int64_t> prefix_positive_sum;
   std::unordered_map<std::string, int64_t> prefix_positive_count;
 
-  // custkey → customer record
-  std::unordered_map<int64_t, CustomerRecord> customers;
+  // custkey → customer record. Shared base + overlay so order-only RF
+  // deltas do not copy the SF-scale customer table.
+  using CustomerTable = std::unordered_map<int64_t, CustomerRecord>;
+  std::shared_ptr<CustomerTable> customers = std::make_shared<CustomerTable>();
+  CustomerTable customer_overlay;
+  std::unordered_set<int64_t> customer_erased;
+
+  const CustomerRecord *FindCustomer(int64_t custkey) const {
+    if (customer_erased.find(custkey) != customer_erased.end())
+      return nullptr;
+    const auto overlay_it = customer_overlay.find(custkey);
+    if (overlay_it != customer_overlay.end())
+      return &overlay_it->second;
+    if (!customers)
+      return nullptr;
+    const auto it = customers->find(custkey);
+    return it == customers->end() ? nullptr : &it->second;
+  }
+
+  CustomerRecord &MutableCustomer(int64_t custkey) {
+    customer_erased.erase(custkey);
+    const auto overlay_it = customer_overlay.find(custkey);
+    if (overlay_it != customer_overlay.end())
+      return overlay_it->second;
+    if (customers) {
+      const auto it = customers->find(custkey);
+      if (it != customers->end())
+        return customer_overlay[custkey] = it->second;
+    }
+    return customer_overlay[custkey];
+  }
+
+  void EraseCustomer(int64_t custkey) {
+    customer_overlay.erase(custkey);
+    customer_erased.insert(custkey);
+  }
 
   // Per-prefix distribution of zero-order positive-balance customers
   struct PrefixAggregate {

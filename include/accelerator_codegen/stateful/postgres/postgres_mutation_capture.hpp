@@ -1,6 +1,8 @@
 // GENERATED BACKEND
 #pragma once
 
+#include <vector>
+
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
@@ -13,7 +15,7 @@ public:
   explicit PostgresMutationCapture(PostgresAuxBackend &backend);
   ~PostgresMutationCapture();
 
-  void Register();
+  void Register(const std::vector<core::TableId> &dependency_tables = {});
   void Unregister();
 
   void Capture(const core::MutationBatch &mutation);
@@ -33,5 +35,6 @@ private:
 void RegisterPostgresMutationCapture(PostgresMutationCapture *capture);
 void UnregisterPostgresMutationCapture(PostgresMutationCapture *capture);
 bool DispatchPostgresMutation(const core::MutationBatch &mutation);
+bool HasRegisteredCaptureForTable(core::TableId table);
 
 } // namespace accelerator_codegen::aux_state::engine::postgres

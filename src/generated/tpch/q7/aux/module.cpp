@@ -153,6 +153,10 @@ core::InvalidationPlan All() {
 
 constexpr core::PartitionId kRevenuePartition = 1;
 
+bool ReadOrder(const core::AuxRow &row, int64_t &orderkey, int64_t &custkey) {
+  return IntCell(row, 0, orderkey) && IntCell(row, 1, custkey);
+}
+
 bool ReadLineitem(const core::AuxRow &row, int64_t &orderkey,
                   int64_t &suppkey, int32_t &shipdate_days,
                   int64_t &extended_raw, int32_t &extended_scale,
@@ -362,6 +366,7 @@ void TpchQ7TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
   deltas.clear();
+  order_custkeys.clear();
 }
 bool TpchQ7TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
 const std::vector<TpchQ7LineitemDelta> &TpchQ7TxnBuffer::Deltas() const { return deltas; }
@@ -370,8 +375,16 @@ void TpchQ7TxnBuffer::MarkRebuild() {
   pending = true;
 }
 void TpchQ7TxnBuffer::AddDelta(TpchQ7LineitemDelta delta) {
-  deltas.push_back(delta);
   pending = true;
+  deltas.push_back(delta);
+}
+void TpchQ7TxnBuffer::AddOrderCustkey(int64_t orderkey, int64_t custkey) {
+  pending = true;
+  order_custkeys[orderkey] = custkey;
+}
+const std::unordered_map<int64_t, int64_t> &
+TpchQ7TxnBuffer::OrderCustkeys() const {
+  return order_custkeys;
 }
 
 core::AcceleratorId TpchQ7Module::Id() const { return kId; }
@@ -458,9 +471,32 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
   auto &buffer = dynamic_cast<TpchQ7TxnBuffer &>(base_buffer);
   if (mutation.table == config.nation_table ||
       mutation.table == config.supplier_table ||
-      mutation.table == config.customer_table ||
-      mutation.table == config.orders_table) {
+      mutation.table == config.customer_table) {
     buffer.MarkRebuild();
+    return;
+  }
+  if (mutation.table == config.orders_table) {
+    auto add = [&](const core::AuxRow &row) {
+      int64_t orderkey = 0, custkey = 0;
+      if (!ReadOrder(row, orderkey, custkey)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      buffer.AddOrderCustkey(orderkey, custkey);
+    };
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows)
+        add(row);
+      break;
+    case core::MutationKind::Delete:
+    case core::MutationKind::Update:
+      for (const auto &row : mutation.old_rows)
+        add(row);
+      for (const auto &row : mutation.new_rows)
+        add(row);
+      break;
+    }
     return;
   }
   if (mutation.table != config.lineitem_table)
@@ -538,9 +574,14 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
       custkey = idx->second.custkey;
     } else {
       const auto order_it = side_state.order_custkeys.find(orderkey);
-      if (order_it == side_state.order_custkeys.end())
-        return;
-      custkey = order_it->second;
+      if (order_it != side_state.order_custkeys.end()) {
+        custkey = order_it->second;
+      } else {
+        const auto overlay = buffer.OrderCustkeys().find(orderkey);
+        if (overlay == buffer.OrderCustkeys().end())
+          return;
+        custkey = overlay->second;
+      }
     }
     const auto cust_it = side_state.customer_nations.find(custkey);
     if (cust_it != side_state.customer_nations.end())

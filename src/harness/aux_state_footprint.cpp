@@ -384,8 +384,6 @@ uint64_t FootprintTpchQ18(const PartitionedStateStore &store) {
     // Estimate sparse survivors + dense quantity chunks.
     const auto &s = *image->state;
     uint64_t bytes = 64 + s.active_orderkeys.size() * 8;
-    for (const auto &chunk : s.quantity_chunks.chunks)
-      bytes += chunk.size() * sizeof(uint16_t);
     bytes += s.quantity_overflow.size() * (8 + 8);
     bytes += s.survivors.size() * (8 + 8 + 4 + 8 + 8);
     for (const auto &entry : s.customer_names)
@@ -711,7 +709,8 @@ uint64_t FootprintTpchQ22(const PartitionedStateStore &store) {
     // Encode helper may be incomplete; estimate from live customer map.
     const auto &s = *image->state;
     total += 64;
-    total += s.customers.size() * 64;
+    total += (s.customers ? s.customers->size() : 0) * 64;
+    total += s.customer_overlay.size() * 64;
     total += s.prefix_positive_sum.size() * 32;
     total += s.prefix_positive_count.size() * 32;
     total += s.prefix_aggregates.size() * 128;

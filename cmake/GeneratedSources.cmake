@@ -54,6 +54,7 @@ function(accel_collect_stateful_sources OUT_VAR)
         src/stateful/core/aux_registry.cpp
         src/stateful/core/aux_engine_services.cpp
         src/stateful/core/aux_maintenance_policy.cpp
+        src/stateful/core/aux_maintenance_decision_log.cpp
         src/stateful/core/aux_calibration.cpp
         src/stateful/core/aux_store_diagnostics.cpp
         src/stateful/maintenance/maintenance_action.cpp
@@ -63,6 +64,7 @@ function(accel_collect_stateful_sources OUT_VAR)
         src/stateful/duckdb/duckdb_state_store.cpp
         src/stateful/postgres/postgres_aux_backend.cpp
         src/stateful/postgres/postgres_mutation_capture.cpp
+        src/stateful/postgres/postgres_session_gucs.cpp
         src/stateful/postgres/postgres_state_store.cpp
         src/stateful/postgres/postgres_xact_callbacks.cpp
     )
@@ -100,10 +102,12 @@ function(accel_collect_postgres_stateful_sources OUT_VAR)
         src/stateful/core/aux_registry.cpp
         src/stateful/core/aux_engine_services.cpp
         src/stateful/core/aux_maintenance_policy.cpp
+        src/stateful/core/aux_maintenance_decision_log.cpp
         src/stateful/core/aux_calibration.cpp
         src/stateful/maintenance/action_selector.cpp
         src/stateful/postgres/postgres_aux_backend.cpp
         src/stateful/postgres/postgres_mutation_capture.cpp
+        src/stateful/postgres/postgres_session_gucs.cpp
         src/stateful/postgres/postgres_state_store.cpp
         src/stateful/postgres/postgres_xact_callbacks.cpp
     )

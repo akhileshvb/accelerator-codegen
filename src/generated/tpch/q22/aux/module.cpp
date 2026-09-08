@@ -346,7 +346,14 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
         outcome.pending_rebuild = outcome.invalidations;
         return outcome;
       }
-      new_state = std::make_shared<TpchQ22State>(*typed->state);
+      new_state = std::make_shared<TpchQ22State>();
+      new_state->prefix_positive_sum = typed->state->prefix_positive_sum;
+      new_state->prefix_positive_count = typed->state->prefix_positive_count;
+      new_state->prefix_aggregates = typed->state->prefix_aggregates;
+      new_state->orphan_orders = typed->state->orphan_orders;
+      new_state->customers = typed->state->customers;
+      new_state->customer_overlay = typed->state->customer_overlay;
+      new_state->customer_erased = typed->state->customer_erased;
       existing_version = image.version;
       break;
     }
@@ -375,7 +382,7 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
         new_state->orphan_orders.erase(orphan_it);
       }
 
-      new_state->customers[delta.custkey] = rec;
+      new_state->MutableCustomer(delta.custkey) = rec;
 
       // Update positive aggregates
       if (rec.balance_raw > 0 && !rec.prefix.empty()) {
@@ -390,8 +397,8 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
       }
     } else if (delta.sign == -1) {
       // Delete
-      auto it = new_state->customers.find(delta.custkey);
-      if (it == new_state->customers.end()) {
+      const auto *found = new_state->FindCustomer(delta.custkey);
+      if (!found) {
         // Not found — need rebuild
         outcome.action = core::MaintenanceAction::RebuildAll;
         outcome.invalidations = All();
@@ -399,7 +406,7 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
         return outcome;
       }
 
-      auto &rec = it->second;
+      auto rec = *found;
 
       // Remove from positive aggregates
       if (rec.balance_raw > 0 && !rec.prefix.empty()) {
@@ -420,18 +427,17 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
         }
       }
 
-      new_state->customers.erase(it);
+      new_state->EraseCustomer(delta.custkey);
     } else {
       // Update
-      auto it = new_state->customers.find(delta.custkey);
-      if (it == new_state->customers.end()) {
+      if (!new_state->FindCustomer(delta.custkey)) {
         outcome.action = core::MaintenanceAction::RebuildAll;
         outcome.invalidations = All();
         outcome.pending_rebuild = outcome.invalidations;
         return outcome;
       }
 
-      auto &rec = it->second;
+      auto &rec = new_state->MutableCustomer(delta.custkey);
 
       // Handle prefix change
       if (rec.prefix != delta.new_prefix) {
@@ -517,12 +523,14 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
     int64_t new_count = 0;
     std::string prefix;
 
-    auto customer_it = new_state->customers.find(delta.custkey);
-    if (customer_it != new_state->customers.end()) {
-      old_count = customer_it->second.order_count;
+    auto *customer = new_state->FindCustomer(delta.custkey)
+                         ? &new_state->MutableCustomer(delta.custkey)
+                         : nullptr;
+    if (customer) {
+      old_count = customer->order_count;
       new_count = old_count + delta.sign;
-      prefix = customer_it->second.prefix;
-      customer_it->second.order_count = new_count;
+      prefix = customer->prefix;
+      customer->order_count = new_count;
 
       // If order count crossed zero boundary, update prefix aggregate
       bool was_zero_order = (old_count == 0);
@@ -531,18 +539,17 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
       if (was_zero_order != is_zero_order) {
         if (!is_zero_order) {
           // Was zero-order, now has orders → remove from distribution
-          if (customer_it->second.balance_raw > 0 && !prefix.empty()) {
+          if (customer->balance_raw > 0 && !prefix.empty()) {
             auto agg_it = new_state->prefix_aggregates.find(prefix);
             if (agg_it != new_state->prefix_aggregates.end()) {
-              agg_it->second.RemoveBalance(
-                  customer_it->second.balance_raw);
+              agg_it->second.RemoveBalance(customer->balance_raw);
             }
           }
         } else {
           // Now zero-order → add to distribution
-          if (customer_it->second.balance_raw > 0 && !prefix.empty()) {
+          if (customer->balance_raw > 0 && !prefix.empty()) {
             auto &agg = new_state->prefix_aggregates[prefix];
-            agg.AddBalance(customer_it->second.balance_raw);
+            agg.AddBalance(customer->balance_raw);
           }
         }
       }
@@ -667,7 +674,7 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
     auto order_it = order_counts.find(input.custkey);
     rec.order_count = (order_it != order_counts.end()) ? order_it->second : 0;
 
-    state.customers[input.custkey] = rec;
+    (*state.customers)[input.custkey] = rec;
 
     // Positive balance aggregate
     if (rec.balance_raw > 0 && !prefix.empty()) {
@@ -684,7 +691,7 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
 
   // Handle orphan orders (custkeys in orders but not in customers)
   for (const auto &[custkey, count] : order_counts) {
-    if (state.customers.find(custkey) == state.customers.end()) {
+    if (state.customers->find(custkey) == state.customers->end()) {
       state.orphan_orders[custkey] = count;
     }
   }

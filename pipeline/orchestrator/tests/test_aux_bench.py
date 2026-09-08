@@ -85,6 +85,18 @@ lineitem_only,hybrid,global,10,2.5,100,4,1000,300,3.30,0.70,4.80,4.80,12100,1.0
     assert summary["by_write_frequency_pct"]["0"]["write_frequency_pct"] == 0
 
 
+def test_parse_keeps_duckdb_profiler_accel_columns():
+    text = """\
+suite,write_policy,locality,write_frequency_pct,write_interval_sec,num_queries,writes_executed,duckdb_workload_us,accel_workload_us,workload_speedup,cold_start_workload_speedup,query_only_speedup,query_only_speedup_profiler,blended_query_speedup,accel_hit_median_us,accel_profiler_query_median_us,accel_hit_rate
+lineitem_only,hybrid,global,0,0,100,0,1000,250,4.00,0.80,5.00,12.50,5.00,12000,800,1.0
+"""
+    rows = parse_sweep_csv_from_text(text)
+    summary = summarize_sweep_rows(rows)
+    point = summary["by_write_frequency_pct"]["0"]
+    assert point["accel_hit_median_us"] == 12000.0
+    assert point["accel_profiler_query_median_us"] == 800.0
+    assert point["query_only_speedup_profiler"] == 12.5
+
 
 def test_record_optimization_state(tmp_path: Path):
     repo = tmp_path

@@ -33,6 +33,8 @@ public:
   void OnCommit();
   void OnAbort();
 
+  bool HasPendingWork() const;
+
   core::VisibilityToken CurrentVisibility() const override;
   core::AuxStateStore &StateStore() override;
   const maintenance::CostModelParams &MaintenanceCostModel() const override;

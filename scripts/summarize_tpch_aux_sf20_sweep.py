@@ -81,7 +81,9 @@ def main() -> int:
                     "status": summary.get("status", "missing"),
                     "workload_speedup": "",
                     "query_only_speedup": "",
+                    "query_only_speedup_profiler": "",
                     "accel_hit_median_us": "",
+                    "accel_profiler_query_median_us": "",
                     "duckdb_workload_us": "",
                     "accel_workload_us": "",
                     "composite_score": summary.get("composite_score", 0.0),
@@ -100,7 +102,13 @@ def main() -> int:
                     "status": "ok",
                     "workload_speedup": row.get("workload_speedup"),
                     "query_only_speedup": row.get("query_only_speedup"),
+                    "query_only_speedup_profiler": row.get(
+                        "query_only_speedup_profiler"
+                    ),
                     "accel_hit_median_us": row.get("accel_hit_median_us"),
+                    "accel_profiler_query_median_us": row.get(
+                        "accel_profiler_query_median_us"
+                    ),
                     "duckdb_workload_us": row.get("duckdb_workload_us"),
                     "accel_workload_us": row.get("accel_workload_us"),
                     "composite_score": summary.get("composite_score", 0.0),
@@ -114,7 +122,9 @@ def main() -> int:
         "status",
         "workload_speedup",
         "query_only_speedup",
+        "query_only_speedup_profiler",
         "accel_hit_median_us",
+        "accel_profiler_query_median_us",
         "duckdb_workload_us",
         "accel_workload_us",
         "composite_score",
@@ -130,18 +140,25 @@ def main() -> int:
     print(f"wrote {out_path}")
     print(f"wrote {detail_path}")
     print()
-    print(f"{'Q':>3}  {'interval':>8}  {'workload':>10}  {'query':>10}  {'accel_us':>10}")
+    print(
+        f"{'Q':>3}  {'interval':>8}  {'workload':>10}  {'query':>10}  "
+        f"{'q_prof':>10}  {'accel_us':>10}  {'accel_prof':>10}"
+    )
     for row in rows_out:
         if row["status"] != "ok":
             print(f"{row['query']:>3}  {'—':>8}  {row['status']}")
             continue
         interval = row.get("write_interval_sec", "")
         interval_label = "read-only" if interval in ("", "0", "0.0") else f"{float(interval):g}s"
+        profiler_speedup = row.get("query_only_speedup_profiler") or 0.0
+        profiler_us = row.get("accel_profiler_query_median_us") or 0.0
         print(
             f"{row['query']:>3}  {interval_label:>8}  "
             f"{float(row['workload_speedup']):>10.2f}  "
             f"{float(row['query_only_speedup']):>10.2f}  "
-            f"{float(row['accel_hit_median_us']):>10.1f}"
+            f"{float(profiler_speedup):>10.2f}  "
+            f"{float(row['accel_hit_median_us']):>10.1f}  "
+            f"{float(profiler_us):>10.1f}"
         )
     return 0
 

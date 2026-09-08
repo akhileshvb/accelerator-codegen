@@ -178,6 +178,7 @@ struct TpchQ3State {
 // Side partition: dense orderkey → segment id (partition id), 0 = absent.
 struct TpchQ3OrderSegmentSide {
   std::vector<uint8_t> order_segment;
+  std::vector<uint8_t> customer_segment;
 };
 
 enum class TpchQ3ImageKind : uint8_t {

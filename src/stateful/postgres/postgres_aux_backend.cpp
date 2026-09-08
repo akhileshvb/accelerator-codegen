@@ -1,7 +1,10 @@
 // GENERATED BACKEND
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 
+#include "accelerator_codegen/stateful/postgres/postgres_session_gucs.hpp"
+
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -73,9 +76,17 @@ double PostgresAuxBackend::ExpectedQueriesBeforeNextWrite() const {
   if (workload) {
     return std::max(0.0, workload());
   }
+  const double session_override = SessionExpectedQueriesBeforeWrite();
+  if (!std::isnan(session_override)) {
+    return std::max(0.0, session_override);
+  }
   const char *value = std::getenv(
       "ACCELERATOR_CODEGEN_POSTGRES_EXPECTED_QUERIES_BEFORE_WRITE");
   return value && *value ? std::max(0.0, std::stod(value)) : 10.0;
+}
+
+bool PostgresAuxBackend::HasPendingWork() const {
+  return coordinator.HasPendingWork();
 }
 
 bool PostgresAuxBackend::AllowsSynchronousRebuildOnCommit() const {

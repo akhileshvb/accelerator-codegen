@@ -388,6 +388,105 @@ RETURNS TABLE (
 AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ21'
 LANGUAGE C;
 
+CREATE FUNCTION accel_tpch_q22_aux(text, text, text, text, text, text, text)
+RETURNS TABLE (
+  cntrycode text,
+  numcust bigint,
+  totacctbal numeric
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ22'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q2_aux(integer, text, text)
+RETURNS TABLE (
+  s_acctbal numeric,
+  s_name text,
+  n_name text,
+  p_partkey bigint,
+  p_mfgr text,
+  s_address text,
+  s_phone text,
+  s_comment text
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ2'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q4_aux(date)
+RETURNS TABLE (
+  o_orderpriority text,
+  order_count bigint
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ4'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q5_aux(text, date)
+RETURNS TABLE (
+  n_name text,
+  revenue numeric
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ5'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q7_aux(text, text)
+RETURNS TABLE (
+  supp_nation text,
+  cust_nation text,
+  l_year bigint,
+  revenue numeric
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ7'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q8_aux(text, text, text)
+RETURNS TABLE (
+  o_year bigint,
+  mkt_share double precision
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ8'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q13_aux(text)
+RETURNS TABLE (
+  c_count bigint,
+  custdist bigint
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ13'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q15_aux(date)
+RETURNS TABLE (
+  s_suppkey bigint,
+  s_name text,
+  s_address text,
+  s_phone text,
+  total_revenue numeric
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ15'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q16_aux(text, text, integer, integer, integer, integer, integer, integer, integer, integer)
+RETURNS TABLE (
+  p_brand text,
+  p_type text,
+  p_size integer,
+  supplier_cnt bigint
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ16'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q19_aux(text, bigint, text, bigint, text, bigint)
+RETURNS SETOF accel_tpch_q19_row
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ19'
+LANGUAGE C;
+
+CREATE FUNCTION accel_tpch_q20_aux(date, text, text)
+RETURNS TABLE (
+  s_name text,
+  s_address text
+)
+AS 'MODULE_PATHNAME', 'AcceleratorCodegenAuxTpchQ20'
+LANGUAGE C;
+
 CREATE FUNCTION accel_sec_edgar_q1_aux()
 RETURNS TABLE (
   stmt text,

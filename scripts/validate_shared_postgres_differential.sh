@@ -77,4 +77,4 @@ if [[ "$failures" -ne 0 ]]; then
   exit 1
 fi
 
-echo "all 24 postgres differential checks passed (12 cold + 12 incremental)"
+echo "all postgres TPC-H and SEC-EDGAR cold and incremental differential suites passed"

@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# TPC-H SF20 aux-state wall-clock write-interval sweep for all benchmarked aux kernels.
+# TPC-H SF20 aux-state wall-clock write-interval sweep for all 22 TPC-H aux kernels.
 #
+# Default write_mode=point (catalog invalidating UPDATE every N seconds).
 # Measures workload_speedup and query_only_speedup at write intervals (seconds).
 # Results land under build-release/q{N}_aux_bench_sf20/results.csv per query.
 #
 # Usage:
 #   bash scripts/setup_tpch_sf20_db.sh          # once, if DB missing (~50 GB disk)
-#   bash scripts/run_tpch_aux_sf20_sweep.sh     # full sweep (slow; hours)
+#   bash scripts/run_tpch_aux_sf20_sweep.sh     # full 22-query sweep (slow; hours)
 #   bash scripts/run_tpch_aux_sf20_sweep.sh smoke   # fast sanity check (Q11 by default)
-#   QUERIES=11 bash scripts/run_tpch_aux_sf20_sweep.sh
+#   QUERIES=1,6,14 bash scripts/run_tpch_aux_sf20_sweep.sh
+#   ACCEL_AUX_WRITE_MODE=point QUERIES=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22 \
+#     bash scripts/run_tpch_aux_sf20_sweep.sh
 #
 # Outputs:
 #   build-release/q{N}_aux_bench_sf20/results.csv
@@ -140,7 +143,7 @@ apply_mode_env() {
     export ACCEL_BENCH_REF_SAMPLES="${ACCEL_BENCH_REF_SAMPLES:-0}"
     export ACCEL_BENCH_BASE_WRITE_SAMPLES="${ACCEL_BENCH_BASE_WRITE_SAMPLES:-0}"
   else
-    export ACCEL_AUX_WRITE_INTERVALS="${ACCEL_AUX_WRITE_INTERVALS:-${DEFAULT_INTERVALS:-0,60,30,10,5,2,1}}"
+    export ACCEL_AUX_WRITE_INTERVALS="${ACCEL_AUX_WRITE_INTERVALS:-${DEFAULT_INTERVALS:-0,60,30,10,5,2,1,0.5}}"
     export ACCEL_AUX_BENCH_DURATION_SEC="${ACCEL_AUX_BENCH_DURATION_SEC:-${DEFAULT_DURATION}}"
     export ACCEL_AUX_BENCH_MIN_WRITES="${ACCEL_AUX_BENCH_MIN_WRITES:-${DEFAULT_MIN_WRITES}}"
     export ACCEL_BENCH_WARMUP="${ACCEL_BENCH_WARMUP:-10}"

@@ -28,6 +28,18 @@ REQUIRED_LINEITEM_TRIGGER_PREFIXES=(
   accel_codegen_tpch_q17_lineitem_
   accel_codegen_tpch_q18_lineitem_
   accel_codegen_tpch_q21_lineitem_
+  accel_codegen_tpch_q22_orders_
+  accel_codegen_tpch_q22_customer_
+  accel_codegen_tpch_q2_partsupp_
+  accel_codegen_tpch_q4_lineitem_
+  accel_codegen_tpch_q5_lineitem_
+  accel_codegen_tpch_q7_lineitem_
+  accel_codegen_tpch_q8_lineitem_
+  accel_codegen_tpch_q13_orders_
+  accel_codegen_tpch_q15_lineitem_
+  accel_codegen_tpch_q16_partsupp_
+  accel_codegen_tpch_q19_lineitem_
+  accel_codegen_tpch_q20_lineitem_
 )
 
 missing_per_query_triggers() {
