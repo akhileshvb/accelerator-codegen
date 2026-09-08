@@ -122,7 +122,16 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "run_command",
     ],
     "audit": ["read_file", "grep_context", "search_repo", "list_dir", "glob_files", "file_info", "request_gate"],
-    "validation": ["read_file", "grep_context", "search_repo", "list_dir", "glob_files", "file_info", "request_gate"],
+    "validation": [
+        "read_file",
+        "grep_context",
+        "write_file",
+        "search_repo",
+        "list_dir",
+        "glob_files",
+        "file_info",
+        "request_gate",
+    ],
 }
 
 TOOL_USAGE_INSTRUCTIONS = """\

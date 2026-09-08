@@ -462,6 +462,98 @@ def load_aux_state_defaults(repo_root: Path | None = None) -> dict[str, Any]:
     return _load_yaml(path)
 
 
+def load_engine_backend_defaults(repo_root: Path | None = None) -> dict[str, Any]:
+    root = repo_root or find_repo_root()
+    path = pipeline_root(root) / "config" / "engine_backend.yaml"
+    if not path.is_file():
+        return {}
+    return _load_yaml(path)
+
+
+def sanitize_engine_name(name: str) -> str:
+    """Normalize engine_name to a filesystem / C++ identifier fragment."""
+    cleaned = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in str(name).strip().lower())
+    cleaned = "_".join(part for part in cleaned.split("_") if part)
+    if not cleaned or not cleaned[0].isalpha():
+        raise ValueError(f"invalid engine_name: {name!r} (need a letter-leading identifier)")
+    return cleaned
+
+
+def engine_pascal_name(engine_name: str) -> str:
+    return "".join(part[:1].upper() + part[1:] for part in sanitize_engine_name(engine_name).split("_") if part)
+
+
+def _expand_engine_placeholders(value: str, engine: str) -> str:
+    return (
+        str(value)
+        .replace("{engine}", engine)
+        .replace("{ENGINE}", engine.upper())
+        .replace("{Engine}", engine_pascal_name(engine))
+    )
+
+
+def _dedupe_preserve(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _normalize_engine_backend_workload(data: dict[str, Any], repo_root: Path) -> dict[str, Any]:
+    """Fill conventional paths/write allowlists for any engine_name."""
+    defaults = load_engine_backend_defaults(repo_root)
+    engine = sanitize_engine_name(str(data.get("engine_name") or ""))
+    data["engine_name"] = engine
+    data.setdefault("benchmark_name", "engine")
+    data.setdefault("artifact_namespace", f"engines/{engine}")
+    data.setdefault("display_name", engine_pascal_name(engine))
+    data.setdefault("prompt_subdir", str(defaults.get("prompt_subdir") or "engine_backend"))
+    data.setdefault("query_number", 0)
+    data.setdefault(
+        "allow_update_existing",
+        bool(defaults.get("allow_update_existing", True)),
+    )
+    if "store_mode_candidates" not in data and defaults.get("store_mode_candidates"):
+        data["store_mode_candidates"] = list(defaults["store_mode_candidates"])
+
+    for key in ("post_implementation_gates", "post_validation_gates", "stage_max_turns"):
+        if key not in data and key in defaults:
+            data[key] = defaults[key]
+
+    default_targets = {
+        str(k): _expand_engine_placeholders(str(v), engine)
+        for k, v in dict(defaults.get("default_target_paths") or {}).items()
+    }
+    targets = dict(default_targets)
+    targets.update({str(k): str(v) for k, v in dict(data.get("target_paths") or {}).items()})
+    data["target_paths"] = targets
+
+    default_cmake = {
+        str(k): _expand_engine_placeholders(str(v), engine)
+        for k, v in dict(defaults.get("default_cmake") or {}).items()
+    }
+    cmake = dict(default_cmake)
+    cmake.update({str(k): str(v) for k, v in dict(data.get("cmake") or {}).items()})
+    data["cmake"] = cmake
+
+    expanded_writes = [
+        _expand_engine_placeholders(str(p), engine)
+        for p in list(defaults.get("write_paths") or []) + list(data.get("write_paths") or [])
+    ]
+    data["write_paths"] = _dedupe_preserve(expanded_writes)
+
+    expanded_cmds = [
+        _expand_engine_placeholders(str(c), engine)
+        for c in list(defaults.get("allowed_commands") or []) + list(data.get("allowed_commands") or [])
+    ]
+    data["allowed_commands"] = _dedupe_preserve(expanded_cmds)
+    return data
+
+
 def load_benchmark_aux_state_defaults(
     benchmark_name: str,
     repo_root: Path | None = None,
@@ -812,11 +904,7 @@ def load_workload(name: str, repo_root: Path | None = None) -> dict[str, Any]:
     data = _load_yaml(path)
 
     if data.get("workload_kind") == "engine_backend":
-        data.setdefault("benchmark_name", "engine")
-        data.setdefault("artifact_namespace", f"engines/{data.get('engine_name', 'engine')}")
-        data.setdefault("display_name", str(data.get("engine_name", "engine")))
-        data.setdefault("prompt_subdir", "engine_backend")
-        return data
+        return _normalize_engine_backend_workload(data, root)
 
     benchmark_name = data.get("benchmark_name", "tpch")
     try:

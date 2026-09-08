@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://accelerator-codegen.local/schemas/backend_analysis.schema.json",
+  "title": "EngineBackendAnalysis",
+  "type": "object",
+  "required": [
+    "engine_name",
+    "store_mode",
+    "native_scan_plan",
+    "mutation_capture_plan",
+    "txn_lifecycle_plan",
+    "visibility_plan",
+    "files_to_create",
+    "fitness_assessment"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "engine_name": { "type": "string", "minLength": 1 },
+    "store_mode": {
+      "enum": ["typed_in_process", "serialized_boundary"]
+    },
+    "native_scan_plan": { "type": "object" },
+    "mutation_capture_plan": { "type": "object" },
+    "txn_lifecycle_plan": { "type": "object" },
+    "visibility_plan": { "type": "object" },
+    "udf_or_extension_host_plan": { "type": "object" },
+    "files_to_create": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "files_to_update": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "fitness_assessment": {
+      "type": "object",
+      "required": ["recommended"],
+      "properties": {
+        "recommended": { "type": "boolean" },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "rationale": { "type": "string" }
+      }
+    }
+  }
+}

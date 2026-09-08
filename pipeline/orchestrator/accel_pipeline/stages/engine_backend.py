@@ -29,7 +29,8 @@ def _user_message(pipeline_config: PipelineConfig, workload: dict, stage: str) -
     return (
         f"Engine backend stage={stage} engine={engine} mode={mode}. "
         "Primary context is the fixed substrate (core/state/maintenance + NativeScanSpec). "
-        "Optional example backends in the prompt are few-shot only — do not require them on disk."
+        "Treat this as an engine-agnostic onboarding: implement only this engine's native APIs "
+        "onto the substrate. Sibling backends are optional few-shot only — never required on disk."
     )
 
 

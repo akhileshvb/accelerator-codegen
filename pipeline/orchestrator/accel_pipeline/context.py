@@ -572,13 +572,25 @@ def build_prompt_context(
             else ""
         ),
         "engine_name": engine_name,
+        "EngineName": (
+            "".join(p[:1].upper() + p[1:] for p in engine_name.split("_") if p)
+            if is_engine and engine_name
+            else ""
+        ),
         "engine_sdk_hints": (
             "\n".join(f"- {h}" for h in (workload.get("engine_sdk_hints") or []))
+            or "- (none provided — use engine-native storage docs externally)"
             if is_engine
             else ""
         ),
         "optional_examples_section": (
             _read_text(pipe / "prompts" / "engine_backend" / "optional_examples.md")
+            + (
+                "\n\nWorkload `store_mode_candidates`:\n"
+                + "\n".join(f"- `{m}`" for m in (workload.get("store_mode_candidates") or []))
+                if workload.get("store_mode_candidates")
+                else ""
+            )
             if is_engine
             else ""
         ),
@@ -594,6 +606,21 @@ def build_prompt_context(
         ),
         "engine_target_paths": (
             "\n".join(f"- `{k}`: `{v}`" for k, v in dict(workload.get("target_paths") or {}).items())
+            if is_engine
+            else ""
+        ),
+        "engine_write_paths": (
+            "\n".join(f"- `{p}`" for p in (workload.get("write_paths") or []))
+            if is_engine
+            else ""
+        ),
+        "engine_cmake_collect_fn": (
+            str((workload.get("cmake") or {}).get("collect_fn") or "")
+            if is_engine
+            else ""
+        ),
+        "engine_cmake_build_flag": (
+            str((workload.get("cmake") or {}).get("build_flag") or "(none)")
             if is_engine
             else ""
         ),

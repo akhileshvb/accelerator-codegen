@@ -12,7 +12,7 @@ ScanNativeBaseTable(spec, consumer) -> repeatedly invoke consumer with DataChunk
 2. Project columns listed in `projected_columns` (order stable).
 3. Apply filters when the native API supports pushdown; otherwise residual-filter into chunks.
 4. Use the engine **native storage / table AM / handler API** — not a client SQL round-trip on the hot path.
-5. Emit DuckDB `DataChunk` as the portable IR so generated kernels stay engine-neutral.
+5. Emit DuckDB `DataChunk` as the **portable IR** so generated kernels stay engine-neutral (adapters own conversion from native rows).
 
 ## Aux storage
 

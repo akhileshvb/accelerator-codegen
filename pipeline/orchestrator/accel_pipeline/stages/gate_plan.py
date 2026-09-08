@@ -10,6 +10,8 @@ GATES_ALLOW_SKIP = frozenset(
         "profile",
         "aux_cost_model_calibrate",
         "aux_speedup_verification",
+        "engine_scan_conformance",
+        "engine_aux_smoke",
     }
 )
 

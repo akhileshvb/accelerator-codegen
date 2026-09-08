@@ -1,17 +1,19 @@
-# Optional example backends (few-shot)
+# Store-mode patterns (engine-agnostic)
 
-These are **illustrative** shapes. The pipeline must succeed if these directories are empty.
+These describe **how** an adapter can hold aux state. They are not requirements to clone any particular existing engine.
 
-## Typed in-process (DuckDB-style)
+## `typed_in_process`
 
-- `*AuxBackend` implements `AuxEngineServices` + engine mutation/txn hooks
+- `*AuxBackend` implements `AuxEngineServices` and forwards engine mutation/txn hooks to the coordinator
 - `*StateStore` wraps `PartitionedStateStore` with typed `StateImage` payloads
-- Scan: bind native table + filtered consumer → `DataChunk`
+- No serialize/deserialize on the hot path
+- Scan: bind native table + filtered consumer → portable `DataChunk`
 
-## Serialized boundary (Postgres-style)
+## `serialized_boundary`
 
-- Same module contract; encode/decode only at the process/SHM boundary via `byte_stream.hpp`
-- Mutation capture from triggers / transition tables → `MutationBatch`
-- Txn callbacks forward to coordinator PreCommit/Commit/Abort
+- Same module contracts (`AuxEngineServices` / `AuxStateStore` / `MutationBatch`)
+- Encode/decode only at a process or shared-memory boundary (`byte_stream.hpp`)
+- Mutation capture from native hooks / triggers / WAL → `MutationBatch`
+- Txn callbacks forward to coordinator PreCommit / Commit / Abort
 
-When citing examples, prefer short excerpts over copying entire files.
+Choose from the workload `store_mode_candidates`. Prefer the mode that matches this engine's process model; document the choice in `backend_analysis.json`.

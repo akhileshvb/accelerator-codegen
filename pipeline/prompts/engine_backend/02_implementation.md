@@ -10,8 +10,8 @@ Implement or update the **{{display_name}}** (`{{engine_name}}`) adapter.
 
 {{engine_generation_mode}}
 
-- **generate_from_scratch**: emit adapters from templates + substrate.
-- **update_existing**: scaffold/CMake/registration/contract drift only — do not wipe a working backend unless analysis requires it.
+- **generate_from_scratch**: emit adapters from templates + substrate under the target layout.
+- **update_existing**: scaffold / CMake / registration / contract drift only — do not wipe a working backend unless analysis requires it.
 
 ## Analysis
 
@@ -21,19 +21,25 @@ Full analysis: `{{artifacts_path}}/backend_analysis.json`
 
 {{engine_target_paths}}
 
+## Writable paths
+
+{{engine_write_paths}}
+
 ## Templates
 
-Copy/adapt from `pipeline/templates/engine_backend/` (scan adapter, aux backend, state store, mutation capture, cmake collect).
+Copy/adapt from `pipeline/templates/engine_backend/` (headers + `.cpp` stubs + cmake collect). Substitute template placeholders with this engine's id (`{{engine_name}}` / `{{EngineName}}`).
 
-## Contracts
+## Contracts (engine-agnostic)
 
-- Base tables: **native storage APIs only** (`NativeScanSpec` → `DataChunk`)
-- Aux state: **custom storage OK / preferred**
-- Implement `AuxEngineServices`, `AuxStateStore`, mutation → `MutationBatch`, txn lifecycle → coordinator
-- Do **not** modify fixed substrate (`core` / `state` / `maintenance`)
+1. Base tables: **native storage APIs only** (`NativeScanSpec` → portable `DataChunk` IR).
+2. Aux state: **custom storage OK / preferred** behind `AuxStateStore`.
+3. Implement `AuxEngineServices`, `AuxStateStore`, mutation → `MutationBatch`, txn lifecycle → coordinator.
+4. Wire CMake via `{{engine_cmake_collect_fn}}` and optional `{{engine_cmake_build_flag}}`.
+5. Do **not** modify fixed substrate (`core` / `state` / `maintenance`).
+6. Do **not** copy another engine's tree wholesale — map native APIs of **this** engine onto the substrate.
 
-## Optional examples
+## Store-mode patterns
 
 {{optional_examples_section}}
 
-Build with engine CMake flag when applicable; gates run after this stage.
+Build with the engine CMake flag when applicable; gates run after this stage.
