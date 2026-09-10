@@ -37,11 +37,9 @@ def main() -> None:
         add_rewrite(f"accelerator_codegen/generated/{rel.as_posix()}", rel.as_posix())
         move_file(path, dst)
 
-    # catalog + postgres headers
+    # catalog headers
     for rel in (
         "catalog/query_catalog.hpp",
-        "postgres/kernel_runner.hpp",
-        "postgres/runtime.hpp",
     ):
         src = INCLUDE_GEN / "generated" / rel
         dst = SRC_GEN / rel

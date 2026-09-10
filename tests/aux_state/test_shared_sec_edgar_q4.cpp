@@ -13,7 +13,7 @@
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
 #include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
-#include "sec_edgar/q4/aux/module.hpp"
+#include "sec_edgar/q4/duckdb/aux/module.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 using accelerator_codegen::aux_state::query::SecEdgarQ4Config;

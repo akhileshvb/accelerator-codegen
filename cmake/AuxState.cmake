@@ -7,7 +7,12 @@ function(accel_aux_benchmark_slug BENCHMARK OUT_VAR)
 endfunction()
 
 function(accel_aux_state_dir BENCHMARK QUERY_NUM OUT_VAR)
-    set(${OUT_VAR} "src/generated/${BENCHMARK}/q${QUERY_NUM}/aux" PARENT_SCOPE)
+    accel_codegen_engine_name(_engine)
+    if(_engine STREQUAL "")
+        set(${OUT_VAR} "" PARENT_SCOPE)
+        return()
+    endif()
+    set(${OUT_VAR} "src/generated/${BENCHMARK}/q${QUERY_NUM}/${_engine}/aux" PARENT_SCOPE)
 endfunction()
 
 function(_accel_aux_existing_sources OUT_VAR)
@@ -189,10 +194,17 @@ function(accel_add_tpch_aux_pipeline_targets QUERY_NUM)
 endfunction()
 
 function(accel_register_tpch_aux_finalize_queries LIBRARY_TARGET TEST_ROOT)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/duckdb/duckdb_scan_adapter.cpp")
+        return()
+    endif()
+    accel_codegen_engine_name(_engine)
+    if(_engine STREQUAL "")
+        return()
+    endif()
     file(GLOB _tpch_aux_finalize CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/tpch/q*/aux/finalize.cpp")
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/tpch/q*/${_engine}/aux/finalize.cpp")
     foreach(_finalize IN LISTS _tpch_aux_finalize)
-        if(_finalize MATCHES "/tpch/q([0-9]+)/aux/finalize\\.cpp$")
+        if(_finalize MATCHES "/tpch/q([0-9]+)/[^/]+/aux/finalize\\.cpp$")
             set(_q "${CMAKE_MATCH_1}")
             accel_add_aux_state_query(
                 QUERY_NUM ${_q}
@@ -204,6 +216,9 @@ function(accel_register_tpch_aux_finalize_queries LIBRARY_TARGET TEST_ROOT)
 endfunction()
 
 function(accel_register_tpch_aux_pipeline_targets)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/duckdb/duckdb_scan_adapter.cpp")
+        return()
+    endif()
     file(GLOB _tpch_aux_tests CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/single-threaded/test_tpch_q*_aux.cpp")
     foreach(_test_src IN LISTS _tpch_aux_tests)

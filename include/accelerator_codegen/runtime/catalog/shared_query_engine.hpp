@@ -12,14 +12,15 @@ class Connection;
 namespace accelerator_codegen::aux_state::engine {
 
 // Shared-interface queries support two execution paths on every backend:
-//   BaseKernel  - codegen fused-scan kernels reading native backend tables
-//   AuxStateful - AuxQueryModule with incremental state
+//   BaseKernel  - per-engine codegen kernels reading that host's native tables
+//   AuxStateful - AuxQueryModule with incremental state (shared MutationBatch /
+//                 store contracts under stateful/core)
 //
-// Both engines implement the same NativeScanSpec contract (see
-// runtime/native_scan.hpp): stream projected base-table rows as DataChunks.
-//   DuckDB:   ScanNativeBaseTable via DataTable storage scans
-//   Postgres: ScanNativeBaseTable via table AM seqscan + residual filters
-// Kernels consume those DataChunks through KernelInstance.
+// There is no portable DataChunk IR. Base consume is engine-local:
+//   DuckDB:  runtime/duckdb/native_scan.hpp (host-private DataChunk helpers)
+//   Others:  runtime/{engine}/ helpers from engine_backend + accelerators
+// Aux modules stay engine-agnostic; kernels under
+// src/generated/{bench}/q{N}/{engine}/ do not.
 enum class SharedQueryPath {
   BaseKernel,
   AuxStateful,

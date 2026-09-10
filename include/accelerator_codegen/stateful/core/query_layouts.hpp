@@ -120,6 +120,8 @@ struct TpchQ3Layout {
   static constexpr PartitionId kLastSegment = kSegmentAutomobile;
   // Dense orderkey → segment routing table (Side partition).
   static constexpr PartitionId kOrderSegmentSide = 6;
+  static constexpr PartitionId kCustomerSegments = 7;
+  static constexpr PartitionId kOrderRoutes = 8;
 
   static constexpr bool IsSegmentPartition(PartitionId partition) {
     return partition >= kFirstSegment && partition <= kLastSegment;

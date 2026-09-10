@@ -8,7 +8,6 @@
 #include <unordered_map>
 
 #include "accelerator_codegen/stateful/state/partition_key.hpp"
-#include "duckdb/common/typedefs.hpp"
 
 namespace accelerator_codegen::aux_state {
 
@@ -36,8 +35,8 @@ public:
 
 	void InvalidatePartition(PartitionKey key);
 	void InvalidateAll();
-	duckdb::idx_t ValidPartitionCount() const;
-	duckdb::idx_t TotalPartitionSlots() const;
+	std::size_t ValidPartitionCount() const;
+	std::size_t TotalPartitionSlots() const;
 	void ForEachSlot(const std::function<void(PartitionKey key, PartitionStatus status,
 	                                          const std::shared_ptr<const void> &payload,
 	                                          uint64_t valid_through_mutation_epoch)> &visitor) const;
@@ -48,7 +47,7 @@ public:
 private:
 	mutable std::mutex mutex;
 	std::unordered_map<PartitionKey, PartitionSlot> slots;
-	duckdb::idx_t valid_partition_count = 0;
+	std::size_t valid_partition_count = 0;
 
 	static PartitionStatus ToLegacyStatus(PartitionSlot::Status status);
 	void AdjustValidCount(PartitionSlot::Status before, PartitionSlot::Status after);

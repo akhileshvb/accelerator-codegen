@@ -1,14 +1,16 @@
 # Shared auxiliary-state calibration
 
-The shared core carries immutable, query-owned state images as typed in-process
-payloads. DuckDB publishes those payloads directly, so its read and
-maintenance paths never serialize or deserialize state. PostgreSQL's shared
-memory adapter is the serialization boundary: it stores byte images and
-deserializes them before exposing the same typed `StateSnapshot` to a module.
+The shared core carries immutable, query-owned state images as typed payloads.
+Engine adapters decide store mode:
 
-`aux_calibration.hpp` contains the engine-neutral calibration runner used by
-the DuckDB and PostgreSQL adapters. A backend supplies callbacks that perform
-the real operation against its own base tables and state store:
+- **typed_in_process** — publish typed `StateImage` payloads directly (no
+  serialize/deserialize on the hot path).
+- **serialized_boundary** — store bytes at a process/SHM boundary and decode
+  before exposing the same typed `StateSnapshot` to a module (`byte_stream.hpp`).
+
+`aux_calibration.hpp` contains the engine-neutral calibration runner. A backend
+supplies callbacks that perform the real operation against its own base tables
+and state store:
 
 - build the initial image;
 - execute the auxiliary and fallback paths;
@@ -30,15 +32,10 @@ configuration so thresholds and confidence parameters survive calibration.
 Only the measured timing fields are replaced. This keeps calibration from
 silently changing the query module's correctness or safety limits.
 
-`DuckDBAuxBackend` accepts a `CostModelCallback`; when omitted it reads
-`ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL`. The PostgreSQL SQL-callable
-runtime reads `ACCELERATOR_CODEGEN_POSTGRES_Q10_COST_MODEL` or
-`ACCELERATOR_CODEGEN_POSTGRES_Q24_COST_MODEL` when it constructs the backend.
+Adapters typically accept a `CostModelCallback` and/or an env var such as
+`ACCELERATOR_CODEGEN_{ENGINE}_AUX_COST_MODEL` (see the active host adapter).
 Missing files intentionally fall back to default parameters.
 
 The maintenance selector also consumes the adapter's estimate of queries
-before the next write. DuckDB's shared benchmark supplies this value from its
-configured reader rate and write interval; standalone adapters can provide a
-`WorkloadCallback`, or use
-`ACCELERATOR_CODEGEN_DUCKDB_EXPECTED_QUERIES_BEFORE_WRITE` and
-`ACCELERATOR_CODEGEN_POSTGRES_EXPECTED_QUERIES_BEFORE_WRITE` respectively.
+before the next write (`WorkloadCallback` or an engine-specific expected-queries
+env/GUC).

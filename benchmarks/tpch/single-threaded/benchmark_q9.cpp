@@ -1,6 +1,6 @@
 #include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
-#include "tpch/q9/base/query.hpp"
+#include "tpch/q9/duckdb/base/query.hpp"
 #include "test_support/q9_manifest.hpp"
 
 #include <algorithm>

@@ -12,7 +12,7 @@
 
 function(accel_add_base_query)
     set(options "")
-    set(oneValueArgs BENCHMARK QUERY_NUM LIBRARY_TARGET TEST_ROOT CTEST_RESOURCE_LOCK)
+    set(oneValueArgs BENCHMARK QUERY_NUM LIBRARY_TARGET TEST_ROOT CTEST_RESOURCE_LOCK ENGINE)
     cmake_parse_arguments(BQ "${options}" "${oneValueArgs}" "" ${ARGN})
 
     if(NOT BQ_BENCHMARK OR NOT BQ_QUERY_NUM OR NOT BQ_LIBRARY_TARGET)
@@ -21,10 +21,22 @@ function(accel_add_base_query)
 
     set(_q ${BQ_QUERY_NUM})
     set(_bench ${BQ_BENCHMARK})
-    set(_src_dir "src/generated/${_bench}/q${_q}/base/single-threaded")
+    if(BQ_ENGINE)
+        set(_engine "${BQ_ENGINE}")
+    else()
+        accel_codegen_engine_name(_engine)
+    endif()
+    if(_engine STREQUAL "")
+        message(STATUS "accel_add_base_query: skip ${_bench} q${_q} (ACCEL_CODEGEN_ENGINE unset)")
+        return()
+    endif()
 
-    # Base kernel sources are collected via accel_collect_generated_sources() in
-    # cmake/GeneratedSources.cmake. This function only wires tests/benchmarks.
+    set(_src_dir "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/${_bench}/q${_q}/${_engine}/base/single-threaded")
+    if(NOT EXISTS "${_src_dir}")
+        message(STATUS "accel_add_base_query: skip ${_bench} q${_q}/${_engine} (no kernel dir)")
+        return()
+    endif()
+
     if(NOT BQ_TEST_ROOT)
         return()
     endif()
@@ -32,14 +44,23 @@ function(accel_add_base_query)
     set(_test_target "test_${_bench}_q${_q}")
     set(_bench_target "benchmark_${_bench}_q${_q}")
     set(_ctest_name "${_bench}_q${_q}_smoke_test")
+    set(_test_src "tests/single-threaded/${_test_target}.cpp")
+    set(_bench_src "benchmarks/${_bench}/single-threaded/benchmark_q${_q}.cpp")
 
-    add_executable(${_test_target} tests/single-threaded/${_test_target}.cpp)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_test_src}")
+        message(STATUS "accel_add_base_query: skip ${_test_target} (missing test source)")
+        return()
+    endif()
+
+    add_executable(${_test_target} ${_test_src})
     target_link_libraries(${_test_target} PRIVATE ${BQ_LIBRARY_TARGET} duckdb_sibling)
     target_include_directories(${_test_target} PRIVATE ${BQ_TEST_ROOT})
 
-    add_executable(${_bench_target} benchmarks/${_bench}/single-threaded/benchmark_q${_q}.cpp)
-    target_link_libraries(${_bench_target} PRIVATE ${BQ_LIBRARY_TARGET} duckdb_sibling)
-    target_include_directories(${_bench_target} PRIVATE ${BQ_TEST_ROOT})
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_bench_src}")
+        add_executable(${_bench_target} ${_bench_src})
+        target_link_libraries(${_bench_target} PRIVATE ${BQ_LIBRARY_TARGET} duckdb_sibling)
+        target_include_directories(${_bench_target} PRIVATE ${BQ_TEST_ROOT})
+    endif()
 
     add_test(NAME ${_ctest_name} COMMAND ${_test_target})
     set_tests_properties(${_ctest_name} PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

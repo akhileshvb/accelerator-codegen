@@ -1,59 +1,54 @@
-// GENERATED BACKEND
+// GENERATED BACKEND - PostgreSQL transaction callbacks
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
+#include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 
-#include <algorithm>
-#include <vector>
+extern "C" {
+#include <postgres.h>
+#include <access/xact.h>
+}
 
 namespace accelerator_codegen::aux_state::engine::postgres {
-
 namespace {
-std::vector<PostgresAuxBackend *> backends;
-} // namespace
 
-void RegisterTransactionBackend(PostgresAuxBackend *backend_p) {
-  if (std::find(backends.begin(), backends.end(), backend_p) == backends.end()) {
-    backends.push_back(backend_p);
+static PostgresAuxBackend *g_active_backend = nullptr;
+static bool g_callbacks_registered = false;
+
+void XactCallbackBridge(XactEvent event, void *arg) {
+  (void)arg;
+  if (!g_active_backend) return;
+  switch (event) {
+    case XACT_EVENT_PRE_COMMIT:
+      g_active_backend->OnPreCommit();
+      break;
+    case XACT_EVENT_COMMIT:
+      g_active_backend->OnCommit();
+      break;
+    case XACT_EVENT_ABORT:
+      g_active_backend->OnAbort();
+      break;
+    default:
+      break;
   }
 }
 
-void UnregisterTransactionBackend(PostgresAuxBackend *backend_p) {
-  backends.erase(std::remove(backends.begin(), backends.end(), backend_p),
-                 backends.end());
+} // anonymous namespace
+
+void RegisterPostgresXactCallbacks() {
+  if (g_callbacks_registered) return;
+  RegisterXactCallback(XactCallbackBridge, nullptr);
+  g_callbacks_registered = true;
 }
 
-void HandleTransactionEvent(TransactionEvent event) {
-  if (backends.empty()) {
-    return;
+bool RegisterPostgresBackendForMutations() {
+  bool first = !g_callbacks_registered;
+  if (first) {
+    RegisterPostgresXactCallbacks();
   }
-  for (auto *backend : backends) {
-    if (event != TransactionEvent::Abort && !backend->HasPendingWork()) {
-      continue;
-    }
-    switch (event) {
-    case TransactionEvent::PreCommit:
-      backend->OnPreCommit();
-      break;
-    case TransactionEvent::Commit:
-      backend->OnCommit();
-      break;
-    case TransactionEvent::Abort:
-      backend->OnAbort();
-      break;
-    case TransactionEvent::SubtransactionStart:
-      backend->OnSubtransactionStart();
-      break;
-    case TransactionEvent::SubtransactionCommit:
-      backend->OnSubtransactionCommit();
-      break;
-    case TransactionEvent::SubtransactionAbort:
-      backend->OnSubtransactionAbort();
-      break;
-    }
-  }
+  return first;
 }
 
-#if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
-extern "C" void accelerator_codegen_postgres_xact_callbacks_link_anchor() {}
-#endif
+void SetPostgresActiveBackend(PostgresAuxBackend *backend) {
+  g_active_backend = backend;
+}
 
 } // namespace accelerator_codegen::aux_state::engine::postgres

@@ -119,12 +119,12 @@ void PartitionedStateStore::InvalidateAll() {
 	}
 }
 
-duckdb::idx_t PartitionedStateStore::ValidPartitionCount() const {
+std::size_t PartitionedStateStore::ValidPartitionCount() const {
 	std::lock_guard<std::mutex> guard(mutex);
 	return valid_partition_count;
 }
 
-duckdb::idx_t PartitionedStateStore::TotalPartitionSlots() const {
+std::size_t PartitionedStateStore::TotalPartitionSlots() const {
 	std::lock_guard<std::mutex> guard(mutex);
 	return slots.size();
 }

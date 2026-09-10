@@ -10,37 +10,27 @@ namespace accelerator_codegen::aux_state::engine::postgres {
 class PostgresAuxBackend final : public core::AuxEngineServices {
 public:
   using VisibilityCallback = std::function<core::VisibilityToken()>;
-  using CostModelCallback =
-      std::function<maintenance::CostModelParams()>;
+  using CostModelCallback = std::function<maintenance::CostModelParams()>;
   using WorkloadCallback = std::function<double()>;
 
   PostgresAuxBackend(core::AuxTransactionCoordinator &coordinator,
-                     core::AuxStateStore &state_store,
-                     VisibilityCallback visibility,
-                     CostModelCallback cost_model = {},
-                     WorkloadCallback workload = {});
+                           core::AuxStateStore &state_store,
+                           VisibilityCallback visibility,
+                           CostModelCallback cost_model = {},
+                           WorkloadCallback workload = {});
 
-  // Called by a statement-level trigger decoder after it has materialized a
-  // transition table into engine-neutral rows.
-  void CaptureStatement(const core::MutationBatch &);
-
-  // These methods are called by the extension's XactCallback/SubXactCallback
-  // bridge. They contain no PostgreSQL ABI types.
-  void OnSubtransactionStart();
-  void OnSubtransactionCommit();
-  void OnSubtransactionAbort();
+  void CaptureMutation(const core::MutationBatch &mutation);
   void OnPreCommit();
   void OnCommit();
   void OnAbort();
-
-  bool HasPendingWork() const;
 
   core::VisibilityToken CurrentVisibility() const override;
   core::AuxStateStore &StateStore() override;
   const maintenance::CostModelParams &MaintenanceCostModel() const override;
   double ExpectedQueriesBeforeNextWrite() const override;
+
+  // PostgreSQL commit hooks cannot run table scans.
   bool AllowsSynchronousRebuildOnCommit() const override;
-  std::size_t WorkerCount() const override;
 
 private:
   core::AuxTransactionCoordinator &coordinator;

@@ -316,17 +316,17 @@ public:
 
   // RebuildAll Commit path may call module Build() to materialize a fresh
   // image. RebuildPartition must be filled by StageMaintenance (touched
-  // partitions only). PostgreSQL xact Commit has no ActiveSnapshot, so SPI
-  // table scans there SIGSEGV — Postgres overrides this to false and
-  // invalidates only (next query rebuilds) when updates are empty.
+  // partitions only). Engines whose commit hook cannot safely run table scans
+  // should override to false and invalidate only (next query rebuilds) when
+  // updates are empty.
   virtual bool AllowsSynchronousRebuildOnCommit() const;
 
   virtual MaintenanceDecision ChooseMaintenance(
       const MaintenanceRequest &request) const;
 
   // Intra-query worker count for parallel aux rebuild/execute. Default is 1
-  // (or ACCEL_AUX_THREADS when set). DuckDB follows PRAGMA threads; Postgres
-  // follows accel.aux_worker_count / max_parallel_workers_per_gather.
+  // (or ACCEL_AUX_THREADS when set). Engine adapters may map this to host
+  // thread/worker settings.
   virtual std::size_t WorkerCount() const;
 };
 

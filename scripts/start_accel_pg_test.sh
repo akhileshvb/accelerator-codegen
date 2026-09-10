@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # Start/recreate accel_pg_test (Postgres 17) with source mounts for extension builds.
+# Defaults: portable cache under $HOME/.cache/accel_pg (override with ACCEL_PG_DATA / ACCEL_PG_BUILD).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DUCKDB_ROOT="${DUCKDB_ROOT:-${ROOT}/../accelerator-codegen-duckdb}"
-DATA_DIR="${ACCEL_PG_DATA:-/disk3/akhilvb/accel_pg_test_data}"
-BUILD_DIR="${ACCEL_PG_BUILD:-/disk3/akhilvb/accel_pg_build}"
+DUCKDB_ROOT="${DUCKDB_ROOT:-${ACCEL_DUCKDB_ROOT:-${ROOT}/../accelerator-codegen-duckdb}}"
+CACHE_ROOT="${ACCEL_PG_CACHE:-${HOME}/.cache/accel_pg}"
+DATA_DIR="${ACCEL_PG_DATA:-${CACHE_ROOT}/data}"
+BUILD_DIR="${ACCEL_PG_BUILD:-${CACHE_ROOT}/build}"
 NAME="${ACCEL_PG_CONTAINER:-accel_pg_test}"
-PORT="${PG_PORT:-5434}"
+PORT="${PG_PORT:-${PGPORT:-5434}}"
+IMAGE="${ACCEL_PG_IMAGE:-postgres:17}"
+
+if [[ ! -d "${DUCKDB_ROOT}" ]]; then
+  echo "DuckDB sibling missing: ${DUCKDB_ROOT}" >&2
+  echo "Set DUCKDB_ROOT / ACCEL_DUCKDB_ROOT" >&2
+  exit 1
+fi
 
 mkdir -p "$DATA_DIR" "$BUILD_DIR"
 
@@ -16,9 +25,9 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
   docker rm -f "$NAME" >/dev/null
 fi
 
-echo "=== starting ${NAME} on 127.0.0.1:${PORT} ==="
+echo "=== starting ${NAME} (${IMAGE}) on 127.0.0.1:${PORT} ==="
 docker run -d --name "$NAME" \
-  --shm-size=8g \
+  --shm-size="${ACCEL_PG_SHM_SIZE:-2g}" \
   -e POSTGRES_PASSWORD="${PGPASSWORD:-postgres}" \
   -e ACCELERATOR_CODEGEN_CONFIG_DIR=/accel-src/config \
   -p "127.0.0.1:${PORT}:5432" \
@@ -26,25 +35,21 @@ docker run -d --name "$NAME" \
   -v "${ROOT}:/accel-src" \
   -v "${DUCKDB_ROOT}:/accel-duckdb:ro" \
   -v "${BUILD_DIR}:/accel-build" \
-  postgres:17 \
-  -c shared_buffers=32GB \
-  -c effective_cache_size=256GB \
-  -c work_mem=256MB \
-  -c maintenance_work_mem=4GB \
-  -c wal_buffers=64MB \
-  -c max_wal_size=16GB \
-  -c checkpoint_completion_target=0.9 \
-  -c random_page_cost=1.1 \
-  -c effective_io_concurrency=200 \
+  "${IMAGE}" \
+  -c shared_buffers="${ACCEL_PG_SHARED_BUFFERS:-256MB}" \
+  -c work_mem=64MB \
+  -c maintenance_work_mem=256MB \
+  -c max_wal_size=2GB \
   -c autovacuum=off \
   >/dev/null
 
-for _ in $(seq 1 60); do
+for _ in $(seq 1 90); do
   if PGPASSWORD="${PGPASSWORD:-postgres}" psql -h 127.0.0.1 -p "$PORT" -U postgres -d postgres -tAc 'select 1' >/dev/null 2>&1; then
-    echo "PostgreSQL ready on 127.0.0.1:${PORT}"
+    echo "PostgreSQL ready on 127.0.0.1:${PORT} (container=${NAME})"
     exit 0
   fi
   sleep 1
 done
 echo "timed out waiting for ${NAME}" >&2
+docker logs "$NAME" 2>&1 | tail -40 >&2 || true
 exit 1

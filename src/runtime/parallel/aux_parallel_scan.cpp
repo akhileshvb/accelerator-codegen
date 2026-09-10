@@ -7,10 +7,6 @@
 #include "accelerator_codegen/stateful/duckdb/duckdb_aux_backend.hpp"
 #include "duckdb/main/client_context.hpp"
 
-#if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
-#include "accelerator_codegen/runtime/postgres/scan_adapter.hpp"
-#endif
-
 namespace accelerator_codegen {
 
 ::duckdb::ClientContext *
@@ -52,15 +48,10 @@ bool ScanSecEdgarParallel(
 		RunParallelNativeScan(*context, spec, worker_count, consume);
 		return true;
 	}
-#if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
-	aux_state::engine::postgres::RunParallelNativeScan(spec, worker_count, consume);
-	return true;
-#else
 	(void)spec;
 	(void)consume;
 	(void)worker_count;
 	return false;
-#endif
 }
 
 } // namespace accelerator_codegen

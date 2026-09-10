@@ -32,12 +32,6 @@ void ExecutePostgresBaseTpchQ19(FunctionCallInfo fcinfo);
 void ExecutePostgresBaseTpchQ20(FunctionCallInfo fcinfo);
 void ExecutePostgresBaseTpchQ21(FunctionCallInfo fcinfo);
 void ExecutePostgresBaseTpchQ22(FunctionCallInfo fcinfo);
-void ExecutePostgresBaseSecEdgarQ1(FunctionCallInfo fcinfo);
-void ExecutePostgresBaseSecEdgarQ2(FunctionCallInfo fcinfo);
-void ExecutePostgresBaseSecEdgarQ3(FunctionCallInfo fcinfo);
-void ExecutePostgresBaseSecEdgarQ4(FunctionCallInfo fcinfo);
-void ExecutePostgresBaseSecEdgarQ6(FunctionCallInfo fcinfo);
-void ExecutePostgresBaseSecEdgarQ24(FunctionCallInfo fcinfo);
 
 } // namespace accelerator_codegen::aux_state::engine::postgres
 

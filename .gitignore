@@ -16,6 +16,8 @@ pipeline/.locks/
 pipeline/.codex/workers/
 pipeline/worktrees/
 pipeline/artifacts/packs/
+# Foreign engine trees moved out of workspace during engine_backend from-scratch runs
+pipeline/.quarantine/
 
 # Pipeline run outputs (per-query state, gate JSON, rendered prompts, audits)
 pipeline/artifacts/**

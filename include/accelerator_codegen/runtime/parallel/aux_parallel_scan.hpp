@@ -8,7 +8,6 @@
 #include "accelerator_codegen/runtime/native_scan.hpp"
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/maintenance/maintenance_action.hpp"
-#include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 #include "accelerator_codegen/stateful/state/invalidation_plan.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 
@@ -162,18 +161,7 @@ inline aux_state::core::StagedMaintenanceOutcome AdoptParallelMaintenance(
 	for (auto &image : outcome.updates) {
 		image.accelerator = accelerator_id;
 	}
-	// PostgreSQL xact callbacks SIGSEGV if we table-scan / Build() on COMMIT
-	// (even on the main backend thread). Defer the parallel rebuild to the
-	// next aux Execute, which runs in a normal query.
-	if (dynamic_cast<aux_state::engine::postgres::PostgresAuxBackend *>(
-	        &services) != nullptr) {
-		outcome.action = MaintenanceAction::InvalidateAndFallback;
-		outcome.updates.clear();
-		if (outcome.invalidations.IsEmpty()) {
-			outcome.invalidations.scope =
-			    aux_state::InvalidationScope::AllPartitions;
-		}
-	}
+	(void)services;
 	return outcome;
 }
 

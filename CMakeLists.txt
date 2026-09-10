@@ -6,8 +6,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(ACCELERATOR_CODEGEN_BUILD_POSTGRES
-       "Build the optional PostgreSQL extension bridge (requires PostgreSQL server headers)" OFF)
 option(ACCEL_AUX_CALIBRATION
        "Build auxiliary cost-model calibration benchmarks" OFF)
 option(ACCEL_CALIBRATE_AT_BUILD
@@ -21,6 +19,36 @@ include(FindSiblingDuckDB)
 include(AuxState)
 include(BaseQuery)
 include(GeneratedSources)
+
+# Optional Postgres engine adapter. Discovery rejects client-only pg_config.
+option(ACCELERATOR_CODEGEN_BUILD_POSTGRES
+       "Build the optional PostgreSQL engine adapter (requires server SDK)" OFF)
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
+	include(FindAccelPostgreSQL)
+	if(NOT ACCEL_PG_FOUND)
+		# Host cmake in Docker pipeline mode must not FATAL — PG MODULE builds
+		# inside accel_pg_test. In-container configures always pass PG_CONFIG.
+		if(DEFINED ENV{ACCEL_PG_DOCKER} AND "$ENV{ACCEL_PG_DOCKER}" STREQUAL "1")
+			message(STATUS
+				"accel: BUILD_POSTGRES ON but no host SDK (ACCEL_PG_DOCKER=1); "
+				"skipping host MODULE — build inside Docker instead")
+		else()
+			message(FATAL_ERROR
+				"ACCELERATOR_CODEGEN_BUILD_POSTGRES=ON but no orchestrator-resolved "
+				"PostgreSQL server SDK was provided. For the Docker pipeline use "
+				"scripts/ensure_accel_pg_test.sh (in-container build). "
+				"Or export PG_CONFIG to a complete install (postgres.h + initdb).")
+		endif()
+	endif()
+	if(ACCEL_PG_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/PostgresAdapter.cmake")
+		include(PostgresAdapter)
+		accel_build_postgres_extension()
+	elseif(ACCEL_PG_FOUND)
+		message(STATUS
+			"accel: BUILD_POSTGRES ON; cmake/PostgresAdapter.cmake not present yet "
+			"(implementation stage). Server SDK OK: ${ACCEL_PG_CONFIG}")
+	endif()
+endif()
 
 accel_collect_runtime_sources(ACCEL_RUNTIME_SOURCES)
 accel_collect_stateful_sources(ACCEL_STATEFUL_SOURCES)
@@ -37,6 +65,37 @@ target_include_directories(accelerator_codegen
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
 )
+# Expose per-engine catalog as "catalog/query_catalog.hpp" via a build-tree prefix.
+accel_codegen_engine_name(_ACCEL_CATALOG_ENGINE)
+if(_ACCEL_CATALOG_ENGINE STREQUAL "")
+	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/catalog/duckdb/query_catalog.hpp")
+		set(_ACCEL_CATALOG_ENGINE "duckdb")
+	endif()
+endif()
+if(NOT _ACCEL_CATALOG_ENGINE STREQUAL "")
+	set(_ACCEL_CATALOG_INCLUDE_ROOT "${CMAKE_CURRENT_BINARY_DIR}/generated_includes")
+	file(MAKE_DIRECTORY "${_ACCEL_CATALOG_INCLUDE_ROOT}")
+	set(_ACCEL_CATALOG_LINK "${_ACCEL_CATALOG_INCLUDE_ROOT}/catalog")
+	set(_ACCEL_CATALOG_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/catalog/${_ACCEL_CATALOG_ENGINE}")
+	if(EXISTS "${_ACCEL_CATALOG_SRC}/query_catalog.hpp")
+		if(NOT EXISTS "${_ACCEL_CATALOG_LINK}")
+			execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
+				"${_ACCEL_CATALOG_SRC}" "${_ACCEL_CATALOG_LINK}")
+		endif()
+		target_include_directories(accelerator_codegen
+			PUBLIC
+				${_ACCEL_CATALOG_INCLUDE_ROOT}
+		)
+	endif()
+endif()
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
+    target_include_directories(accelerator_codegen
+        PRIVATE
+            ${ACCEL_PG_INCLUDEDIR}
+            ${ACCEL_PG_INCLUDEDIR_SERVER}
+    )
+endif()
+
 
 target_link_libraries(accelerator_codegen
     PUBLIC
@@ -44,58 +103,6 @@ target_link_libraries(accelerator_codegen
 )
 
 target_compile_features(accelerator_codegen PUBLIC cxx_std_17)
-
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
-	find_program(ACCELERATOR_CODEGEN_PG_CONFIG pg_config REQUIRED)
-	execute_process(COMMAND ${ACCELERATOR_CODEGEN_PG_CONFIG} --includedir-server
-	                OUTPUT_VARIABLE ACCELERATOR_CODEGEN_PG_SERVER_INCLUDE_DIR
-	                OUTPUT_STRIP_TRAILING_WHITESPACE)
-	execute_process(COMMAND ${ACCELERATOR_CODEGEN_PG_CONFIG} --includedir
-	                OUTPUT_VARIABLE ACCELERATOR_CODEGEN_PG_INCLUDE_DIR
-	                OUTPUT_STRIP_TRAILING_WHITESPACE)
-	if(NOT EXISTS "${ACCELERATOR_CODEGEN_PG_SERVER_INCLUDE_DIR}/postgres.h")
-		message(FATAL_ERROR "PostgreSQL server headers were not found; install the PostgreSQL development package")
-	endif()
-
-	accel_collect_postgres_runtime_sources(ACCEL_POSTGRES_RUNTIME_SOURCES)
-	accel_collect_postgres_generated_sources(ACCEL_POSTGRES_GENERATED_SOURCES)
-	accel_collect_postgres_stateful_sources(ACCEL_POSTGRES_STATEFUL_SOURCES)
-
-	add_library(accelerator_codegen_postgres MODULE
-		${ACCEL_POSTGRES_RUNTIME_SOURCES}
-		${ACCEL_POSTGRES_GENERATED_SOURCES}
-		${ACCEL_POSTGRES_STATEFUL_SOURCES}
-		${ACCEL_GENERATED_SOURCES}
-	)
-	target_include_directories(accelerator_codegen_postgres PRIVATE
-		${CMAKE_CURRENT_SOURCE_DIR}/include
-		${DUCKDB_INCLUDE_DIR}
-		${ACCELERATOR_CODEGEN_PG_SERVER_INCLUDE_DIR}
-		${ACCELERATOR_CODEGEN_PG_INCLUDE_DIR}
-	)
-	target_compile_definitions(accelerator_codegen_postgres PRIVATE ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
-	target_link_libraries(accelerator_codegen_postgres PRIVATE accelerator_codegen duckdb_sibling)
-	set_target_properties(accelerator_codegen_postgres PROPERTIES
-		PREFIX "" SUFFIX ".so"
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}")
-
-	foreach(_q IN ITEMS 1 6)
-		accel_add_aux_state_query(
-			QUERY_NUM ${_q}
-			LIBRARY_TARGET accelerator_codegen_postgres
-			TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-		)
-	endforeach()
-	foreach(_q IN ITEMS 3 4 6 24)
-		accel_add_aux_state_query(
-			BENCHMARK sec_edgar
-			QUERY_NUM ${_q}
-			LIBRARY_TARGET accelerator_codegen_postgres
-			TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-		)
-	endforeach()
-endif()
 
 # Link finalize.cpp for every TPC-H aux module that exists on disk.
 accel_register_tpch_aux_finalize_queries(
@@ -106,39 +113,42 @@ accel_register_tpch_aux_finalize_queries(
 # Register test/bench/calibrate targets for every test_tpch_q*_aux.cpp present.
 accel_register_tpch_aux_pipeline_targets()
 
+# Parallel kernels depend on the DuckDB host adapter headers. When that host is
+# quarantined (engine_backend from-scratch), skip even if cache has these ON.
+set(_ACCEL_DUCKDB_HOST_PRESENT FALSE)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/duckdb/duckdb_scan_adapter.cpp")
+	set(_ACCEL_DUCKDB_HOST_PRESENT TRUE)
+endif()
+
 option(ACCEL_ENABLE_PARALLEL_TPCH "Build multithreaded TPC-H accelerator variants (accel_tpch_q*_parallel)" OFF)
 if(ACCEL_ENABLE_PARALLEL_TPCH)
-	target_compile_definitions(accelerator_codegen PUBLIC ACCEL_ENABLE_PARALLEL_TPCH)
-	# Q3 shared __int128 revenue CAS uses libatomic (__atomic_*_16).
-	target_link_libraries(accelerator_codegen PRIVATE atomic)
-	accel_collect_generated_parallel_sources(ACCEL_GENERATED_PARALLEL_SOURCES)
-	target_sources(accelerator_codegen PRIVATE
-		src/runtime/parallel/parallel_runtime.cpp
-		${ACCEL_GENERATED_PARALLEL_SOURCES}
-	)
+	if(NOT _ACCEL_DUCKDB_HOST_PRESENT)
+		message(STATUS "accel: DuckDB host absent — skipping ACCEL_ENABLE_PARALLEL_TPCH sources")
+	else()
+		target_compile_definitions(accelerator_codegen PUBLIC ACCEL_ENABLE_PARALLEL_TPCH)
+		# Q3 shared __int128 revenue CAS uses libatomic (__atomic_*_16).
+		target_link_libraries(accelerator_codegen PRIVATE atomic)
+		accel_collect_generated_parallel_sources(ACCEL_GENERATED_PARALLEL_SOURCES)
+		target_sources(accelerator_codegen PRIVATE
+			src/runtime/parallel/parallel_runtime.cpp
+			${ACCEL_GENERATED_PARALLEL_SOURCES}
+		)
+	endif()
 endif()
 
 option(ACCEL_ENABLE_PARALLEL_AUX "Build multithreaded SEC EDGAR aux kernels (accel_sec_edgar_q*_aux_parallel)" OFF)
 if(ACCEL_ENABLE_PARALLEL_AUX)
-	target_compile_definitions(accelerator_codegen PUBLIC ACCEL_ENABLE_PARALLEL_AUX)
-	accel_collect_generated_parallel_aux_sources(ACCEL_GENERATED_PARALLEL_AUX_SOURCES)
-	target_sources(accelerator_codegen PRIVATE
-		src/runtime/parallel/aux_parallel_scan.cpp
-		${ACCEL_GENERATED_PARALLEL_AUX_SOURCES}
-	)
-	if(NOT ACCEL_ENABLE_PARALLEL_TPCH)
+	if(NOT _ACCEL_DUCKDB_HOST_PRESENT)
+		message(STATUS "accel: DuckDB host absent — skipping ACCEL_ENABLE_PARALLEL_AUX sources")
+	else()
+		target_compile_definitions(accelerator_codegen PUBLIC ACCEL_ENABLE_PARALLEL_AUX)
+		accel_collect_generated_parallel_aux_sources(ACCEL_GENERATED_PARALLEL_AUX_SOURCES)
 		target_sources(accelerator_codegen PRIVATE
-			src/runtime/parallel/parallel_runtime.cpp
-		)
-	endif()
-	if(TARGET accelerator_codegen_postgres)
-		target_compile_definitions(accelerator_codegen_postgres PUBLIC ACCEL_ENABLE_PARALLEL_AUX)
-		target_sources(accelerator_codegen_postgres PRIVATE
 			src/runtime/parallel/aux_parallel_scan.cpp
 			${ACCEL_GENERATED_PARALLEL_AUX_SOURCES}
 		)
 		if(NOT ACCEL_ENABLE_PARALLEL_TPCH)
-			target_sources(accelerator_codegen_postgres PRIVATE
+			target_sources(accelerator_codegen PRIVATE
 				src/runtime/parallel/parallel_runtime.cpp
 			)
 		endif()
@@ -873,6 +883,24 @@ set_target_properties(benchmark_tpch_rf_delta_vs_rebuild PROPERTIES
     INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 )
 
+add_executable(benchmark_tpch_q20_phased_eval
+    benchmarks/tpch/single-threaded/benchmark_q20_phased_eval.cpp
+)
+target_link_libraries(benchmark_tpch_q20_phased_eval
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+target_include_directories(benchmark_tpch_q20_phased_eval
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/single-threaded
+)
+set_target_properties(benchmark_tpch_q20_phased_eval PROPERTIES
+    BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
+    INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
+)
+
 set_target_properties(accelerator_codegen test_registration test_tpch_q6 test_tpch_q1 test_tpch_q3 test_tpch_q4 test_tpch_q9 test_tpch_q12 test_tpch_q14 test_tpch_q17 test_tpch_q19 test_tpch_q5 test_tpch_q7 test_tpch_q10 test_tpch_q11 test_tpch_q13 test_tpch_q16 test_tpch_q18 test_tpch_q22 test_tpch_q15 test_tpch_q21 test_tpch_q20 test_tpch_q8 test_tpch_q2 benchmark_tpch_q6 benchmark_tpch_q1 benchmark_tpch_q3 benchmark_tpch_q4 benchmark_tpch_q9 benchmark_tpch_q12 benchmark_tpch_q14 benchmark_tpch_q17 benchmark_tpch_q19 benchmark_tpch_q5 benchmark_tpch_q7 benchmark_tpch_q10 benchmark_tpch_q11 benchmark_tpch_q13 benchmark_tpch_q16 benchmark_tpch_q18 benchmark_tpch_q22 benchmark_tpch_stage_c benchmark_tpch_breakdown benchmark_tpch_validated PROPERTIES
     BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
     INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
@@ -1397,3 +1425,165 @@ accel_add_aux_state_query(
 	LIBRARY_TARGET accelerator_codegen
 	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
 )
+
+# ---------------------------------------------------------------------------
+# PostgreSQL engine contract test
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_contract.cpp")
+    add_executable(test_postgres_contract
+        tests/engine_backend/test_postgres_contract.cpp
+    )
+    target_link_libraries(test_postgres_contract
+        PRIVATE
+            accelerator_codegen
+            duckdb_sibling
+    )
+    target_include_directories(test_postgres_contract
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${ACCEL_PG_INCLUDEDIR}
+            ${ACCEL_PG_INCLUDEDIR_SERVER}
+    )
+    # Contract harness LOADs accelerator_codegen_pg.so from the build dir.
+    if(TARGET accelerator_codegen_pg)
+        add_dependencies(test_postgres_contract accelerator_codegen_pg)
+    endif()
+    if(BUILD_TESTING)
+        add_test(NAME engine_postgres_contract COMMAND test_postgres_contract)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# PostgreSQL engine adversarial test (validation-owned)
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_adversarial.cpp")
+    add_executable(test_postgres_adversarial
+        tests/engine_backend/test_postgres_adversarial.cpp
+    )
+    target_link_libraries(test_postgres_adversarial
+        PRIVATE
+            accelerator_codegen
+            duckdb_sibling
+    )
+    target_include_directories(test_postgres_adversarial
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${ACCEL_PG_INCLUDEDIR}
+            ${ACCEL_PG_INCLUDEDIR_SERVER}
+    )
+    if(TARGET accelerator_codegen_pg)
+        add_dependencies(test_postgres_adversarial accelerator_codegen_pg)
+    endif()
+    if(BUILD_TESTING)
+        add_test(NAME engine_postgres_adversarial COMMAND test_postgres_adversarial)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# PostgreSQL TPC-H differential harness
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_postgres_tpch_differential.cpp")
+    add_executable(test_postgres_tpch_differential
+        tests/aux_state/test_postgres_tpch_differential.cpp
+    )
+    target_link_libraries(test_postgres_tpch_differential
+        PRIVATE
+            accelerator_codegen
+            duckdb_sibling
+    )
+    target_include_directories(test_postgres_tpch_differential
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${ACCEL_PG_INCLUDEDIR}
+            ${ACCEL_PG_INCLUDEDIR_SERVER}
+    )
+    if(TARGET accelerator_codegen_pg)
+        add_dependencies(test_postgres_tpch_differential accelerator_codegen_pg)
+    endif()
+    if(BUILD_TESTING)
+        add_test(NAME postgres_tpch_differential COMMAND test_postgres_tpch_differential)
+    endif()
+
+    # Shared PG SQL-vs-accel bench used by baseline / speedup / profile digests.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/postgres/benchmark_postgres_tpch_aux.cpp")
+        add_executable(benchmark_postgres_tpch_aux
+            benchmarks/postgres/benchmark_postgres_tpch_aux.cpp
+        )
+        target_link_libraries(benchmark_postgres_tpch_aux
+            PRIVATE accelerator_codegen duckdb_sibling)
+        target_include_directories(benchmark_postgres_tpch_aux
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${ACCEL_PG_INCLUDEDIR}
+                ${ACCEL_PG_INCLUDEDIR_SERVER}
+        )
+        if(TARGET accelerator_codegen_pg)
+            add_dependencies(benchmark_postgres_tpch_aux accelerator_codegen_pg)
+        endif()
+        # Per-query aliases expected by run_baseline.sh (benchmark_postgres_tpch_qN).
+        foreach(q RANGE 1 22)
+            add_custom_target(benchmark_postgres_tpch_q${q}
+                DEPENDS benchmark_postgres_tpch_aux
+                COMMAND ${CMAKE_COMMAND} -E create_symlink
+                    $<TARGET_FILE:benchmark_postgres_tpch_aux>
+                    ${CMAKE_BINARY_DIR}/benchmark_postgres_tpch_q${q}
+            )
+        endforeach()
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# PostgreSQL aux gate harnesses (multi-connection, cross-accel)
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
+    # test_postgres_aux_multi_connection_stress
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_postgres_aux_multi_connection_stress.cpp")
+        add_executable(test_postgres_aux_multi_connection_stress
+            tests/aux_state/test_postgres_aux_multi_connection_stress.cpp
+        )
+        target_link_libraries(test_postgres_aux_multi_connection_stress
+            PRIVATE
+                accelerator_codegen
+                duckdb_sibling
+        )
+        target_include_directories(test_postgres_aux_multi_connection_stress
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${ACCEL_PG_INCLUDEDIR}
+                ${ACCEL_PG_INCLUDEDIR_SERVER}
+        )
+        if(TARGET accelerator_codegen_pg)
+            add_dependencies(test_postgres_aux_multi_connection_stress accelerator_codegen_pg)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME postgres_aux_multi_connection_stress COMMAND test_postgres_aux_multi_connection_stress)
+        endif()
+    endif()
+
+    # test_postgres_cross_accel
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_postgres_cross_accel.cpp")
+        add_executable(test_postgres_cross_accel
+            tests/aux_state/test_postgres_cross_accel.cpp
+        )
+        target_link_libraries(test_postgres_cross_accel
+            PRIVATE
+                accelerator_codegen
+                duckdb_sibling
+        )
+        target_include_directories(test_postgres_cross_accel
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${ACCEL_PG_INCLUDEDIR}
+                ${ACCEL_PG_INCLUDEDIR_SERVER}
+        )
+        if(TARGET accelerator_codegen_pg)
+            add_dependencies(test_postgres_cross_accel accelerator_codegen_pg)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME postgres_cross_accel COMMAND test_postgres_cross_accel)
+        endif()
+    endif()
+endif()

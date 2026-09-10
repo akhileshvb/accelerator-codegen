@@ -1,23 +1,31 @@
-# PostgreSQL auxiliary-state prototype
+# PostgreSQL engine adapter
 
-This directory is the isolated PostgreSQL backend boundary. The default
-`accelerator_codegen` target does not include PostgreSQL headers. Enable
-`ACCELERATOR_CODEGEN_BUILD_POSTGRES=ON` with a PostgreSQL server development
-installation to build the optional extension bridge.
+This directory is the PostgreSQL host boundary. The default
+`accelerator_codegen` target does not include PostgreSQL server headers.
+Enable `ACCELERATOR_CODEGEN_BUILD_POSTGRES=ON` with a PostgreSQL 17 server
+SDK to build the optional `accelerator_codegen_pg` MODULE.
 
-The C++ core receives engine-neutral `MutationBatch` and `VisibilityToken`
-values plus typed in-process state images. `PostgresStateStore` is the
-serialization boundary for the LWLock-protected shared-memory image
-directory: PostgreSQL stores byte images, while query modules see typed state
-after the adapter deserializes them.
+## Live path (per-engine, no DataChunk IR)
 
-Base-table scans use the shared `NativeScanSpec` contract
-(`runtime/native_scan.hpp`): `ScanNativeBaseTable` opens the relation via the
-table AM (`table_beginscan` / `table_scan_getnextslot`), applies residual
-filters in-process, and streams projected columns as DuckDB `DataChunk`s for
-the same `KernelInstance` path DuckDB uses. The optional C extension still
-uses SPI only for statement-trigger transition-table decoding into
-`MutationBatch` values for `PostgresMutationCapture`.
+- **Base tables** stay in native Postgres heap. Aux `Build` / rebuild uses
+  SPI typed InitialScans in `src/generated/postgres/runtime.cpp` and the
+  table-AM helper `ScanPostgresTableForRebuild` in `scan_adapter.cpp`.
+- **Base SRFs** (`accel_tpch_qN`) alias aux Execute via `kernel_executor.cpp`.
+- **Mutations** go through AFTER ROW triggers →
+  `accel_postgres_capture_mutation_trigger` → `postgres_bridge.cpp`
+  (`BridgeState` observer + `PostgresAuxBackend::CaptureMutation`).
+  Txn lifecycle is via extension xact hooks (`AccelXactCB`) and
+  `postgres_xact_callbacks`.
+- **Aux state** is published through `PostgresStateStore` (serialized
+  boundary / bytea images as configured).
+
+Docker (`accel_pg_test`) only changes how harnesses connect (TCP). The
+in-process `BridgeState` singleton inside the MODULE remains the live
+observer / toy / scan contract surface — it is not host-cluster scaffolding.
+
+There is no portable DuckDB `DataChunk` scan IR on this host. Do not reintroduce
+`kernel_runner`, `NativeScanSpec`→chunk conversion, or `postgres/base`
+DataChunk kernels.
 
 ## Calibrating the shared policy
 
@@ -29,18 +37,11 @@ can be selected independently for each SQL-callable module with:
 
 ```sh
 export ACCELERATOR_CODEGEN_POSTGRES_Q10_COST_MODEL=/path/q10-postgres.json
-export ACCELERATOR_CODEGEN_POSTGRES_Q24_COST_MODEL=/path/q24-postgres.json
 ```
 
 The extension reads these variables when each runtime is first constructed.
-Each runtime also falls back to `config/q<query>_aux_cost_model.json` (TPC-H) or
-`config/sec_edgar_q<query>_aux_cost_model.json` (SEC) when the env var is unset.
-Search order:
+Each runtime also falls back to `config/q<query>_aux_cost_model.json` when the
+env var is unset. Search order:
 
 1. per-query env var (for example `ACCELERATOR_CODEGEN_POSTGRES_Q6_COST_MODEL`)
-2. `$ACCELERATOR_CODEGEN_CONFIG_DIR/<file>.json`
-3. `config/<file>.json` relative to the server working directory
-4. `/tmp/accel-codegen-src/config/<file>.json` (docker build tree)
-
-Run `bash scripts/calibrate_postgres_aux_cost_models.sh` to refresh the JSON
-coefficients before a performance sweep.
+2. repo-relative `config/` JSON for that query

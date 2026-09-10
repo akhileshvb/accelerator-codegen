@@ -44,14 +44,6 @@ duckdb::TableFunctionSet CreateTpchQ21FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ20FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ8FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ2FunctionSet();
-// BEGIN_SEC_EDGAR_REGISTRATIONS
-duckdb::TableFunctionSet CreateSecEdgarQ1FunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ2FunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ3FunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ4FunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ6FunctionSet();
-duckdb::TableFunctionSet CreateSecEdgarQ24FunctionSet();
-// END_SEC_EDGAR_REGISTRATIONS
 
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
 duckdb::TableFunctionSet CreateTpchQ6ParallelFunctionSet();
@@ -132,15 +124,7 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
 
         RegisterTableFunction(catalog, context, CreateTpchQ2FunctionSet());
 
-        // BEGIN_SEC_EDGAR_REGISTRATIONS
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ1FunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ2FunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ3FunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ4FunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ6FunctionSet());
-        RegisterTableFunction(catalog, context, CreateSecEdgarQ24FunctionSet());
-        // END_SEC_EDGAR_REGISTRATIONS
-
+        
         accelerator_codegen::aux_state::engine::RegisterDuckdbAuxTableFunctions(
             connection);
 

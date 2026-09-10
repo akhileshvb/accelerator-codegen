@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "accelerator_codegen/runtime/duckdb/chunk_source.hpp"
-#include "accelerator_codegen/runtime/native_scan.hpp"
+#include "accelerator_codegen/runtime/duckdb/native_scan.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/storage/storage_index.hpp"
 #include "duckdb/storage/table/filtered_scan_consumer.hpp"

@@ -6,9 +6,6 @@
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
 #include "accelerator_codegen/stateful/duckdb/duckdb_state_store.hpp"
 #include "accelerator_codegen/stateful/duckdb/duckdb_aux_backend.hpp"
-#include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
-#include "accelerator_codegen/stateful/postgres/postgres_mutation_capture.hpp"
-#include "accelerator_codegen/stateful/postgres/postgres_state_store.hpp"
 #include "duckdb/accelerator/mutation_recorder.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
@@ -203,59 +200,5 @@ int main() {
   duckdb_backend.TransactionCommit(duckdb_meta_txn, *connection.context);
   assert(duckdb_aux_store.publishes == 1);
 
-  // The PostgreSQL adapter sees only transition-table-shaped MutationBatch
-  // values. Its store callbacks are the seam where a real LWLock-protected
-  // shared-memory image directory is installed.
-  int postgres_publishes = 0;
-  ::accelerator_codegen::aux_state::engine::postgres::PostgresStateStore
-      postgres_store(
-          [](const VisibilityToken &visibility) {
-            ::accelerator_codegen::aux_state::engine::postgres::PostgresStateStore::SerializedStateSnapshot snapshot;
-            snapshot.accelerator = "test";
-            snapshot.visibility = visibility;
-            return snapshot;
-          },
-          [](const ::accelerator_codegen::aux_state::engine::postgres::PostgresStateStore::SerializedStateImage &image) {
-            StateImage typed;
-            typed.accelerator = image.accelerator;
-            typed.partition = image.partition;
-            typed.version = image.version;
-            typed.payload = std::make_shared<const std::vector<uint8_t>>(image.bytes);
-            return typed;
-          },
-          [](const StateImage &image) {
-            ::accelerator_codegen::aux_state::engine::postgres::PostgresStateStore::SerializedStateImage serialized;
-            serialized.accelerator = image.accelerator;
-            serialized.partition = image.partition;
-            serialized.version = image.version;
-            const auto *bytes = image.As<std::vector<uint8_t>>();
-            if (bytes)
-              serialized.bytes = *bytes;
-            return serialized;
-          },
-          [](const QueryKey &, const VisibilityToken &) {
-            return ValidityResult{ValidityCode::Missing, 0};
-          },
-          [](const InvalidationPlan &) {},
-          [&postgres_publishes](const std::vector<::accelerator_codegen::aux_state::engine::postgres::PostgresStateStore::SerializedStateImage> &, Version) {
-            ++postgres_publishes;
-            return true;
-          });
-  AuxTransactionCoordinator postgres_coordinator;
-  postgres_coordinator.Register(std::make_shared<TestModule>());
-  ::accelerator_codegen::aux_state::engine::postgres::PostgresAuxBackend
-      postgres_backend(
-          postgres_coordinator, postgres_store,
-          []() { return VisibilityToken{}; });
-  ::accelerator_codegen::aux_state::engine::postgres::PostgresMutationCapture
-      capture(postgres_backend);
-  capture.CaptureInsert(7, {});
-  postgres_backend.OnPreCommit();
-  postgres_backend.OnAbort();
-  assert(postgres_publishes == 0);
-  capture.CaptureUpdate(7, {}, {}, {1});
-  postgres_backend.OnPreCommit();
-  postgres_backend.OnCommit();
-  assert(postgres_publishes == 1);
   return 0;
 }

@@ -8,9 +8,9 @@
 
 namespace accelerator_codegen::aux_state::core {
 
-// Little-endian helpers for query-owned aux-state partition blobs (Postgres
-// shared-memory boundary and round-trip tests). Wire layout is per query;
-// only the primitives are shared here.
+// Little-endian helpers for query-owned aux-state partition blobs at a
+// serialized process/SHM boundary (and round-trip tests). Wire layout is per
+// query; only the primitives are shared here.
 class ByteWriter {
 public:
 	std::vector<uint8_t> bytes;

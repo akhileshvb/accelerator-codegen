@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Create accel_tpch_test with small TPC-H data and accelerator extension.
+# Create accel_tpch_test with small TPC-H data in Docker Postgres (native tables).
+# Extension is LOADed via absolute .so path (no CREATE EXTENSION control file required).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,12 +9,11 @@ if [[ ! -x "$PYTHON" ]]; then
   PYTHON=python3
 fi
 PG_HOST="${PG_HOST:-127.0.0.1}"
-PG_PORT="${PG_PORT:-5434}"
+PG_PORT="${PG_PORT:-${PGPORT:-5434}}"
 PG_USER="${PG_USER:-postgres}"
 DB="${TPCH_PG_DB:-accel_tpch_test}"
 DUCKDB="${TPCH_TEST_DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_test.duckdb}"
-EXTENSION_SO="${ACCEL_POSTGRES_SO:-/usr/lib/postgresql/17/lib/accelerator_codegen_postgres.so}"
-EXTENSION_SQL="${ROOT}/src/runtime/postgres/accelerator_codegen_postgres--0.1.sql"
+EXTENSION_SO="${ACCEL_POSTGRES_SO:-/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so}"
 
 export PGHOST="$PG_HOST"
 export PGPORT="$PG_PORT"
@@ -22,6 +22,11 @@ export PGUSER="$PG_USER"
 psql_cmd() {
   PGPASSWORD="${PGPASSWORD:-postgres}" psql -v ON_ERROR_STOP=1 "$@"
 }
+
+if ! psql_cmd -d postgres -tAc 'select 1' >/dev/null 2>&1; then
+  echo "Postgres not reachable at ${PG_HOST}:${PG_PORT}; run scripts/ensure_accel_pg_test.sh" >&2
+  exit 1
+fi
 
 echo "=== building small TPC-H DuckDB test data ==="
 "${PYTHON}" "${ROOT}/scripts/create_tpch_test_db.py" --dest "$DUCKDB" --force
@@ -34,14 +39,23 @@ psql_cmd -d postgres -c "CREATE DATABASE \"${DB}\";"
 echo "=== creating TPC-H schema ==="
 psql_cmd -d "$DB" -f "${ROOT}/scripts/postgres_tpch_schema.sql"
 
-echo "=== loading TPC-H test data from DuckDB ==="
+echo "=== loading TPC-H test data from DuckDB into Postgres ==="
 "${PYTHON}" "${ROOT}/scripts/load_tpch_test_postgres.py" --duckdb "$DUCKDB" --db "$DB"
 
-echo "=== installing accelerator_codegen_postgres extension SQL ==="
-sed "s|MODULE_PATHNAME|${EXTENSION_SO}|g" "$EXTENSION_SQL" | psql_cmd -d "$DB" -f -
+echo "=== registering accelerator LOAD helpers (so=${EXTENSION_SO}) ==="
+psql_cmd -d "$DB" -c "LOAD '${EXTENSION_SO}';" || {
+  echo "LOAD failed — rebuild with scripts/build_accel_postgres_extension.sh" >&2
+  exit 1
+}
 
-echo "=== creating mutation capture triggers ==="
-psql_cmd -d "$DB" -f "${ROOT}/scripts/postgres_accel_mutation_triggers.sql"
+echo "=== registering TPC-H accelerator SQL functions ==="
+psql_cmd -d "$DB" -f "${ROOT}/scripts/postgres_register_tpch_all.sql"
 
-echo "=== TPC-H PostgreSQL test database ready: $DB ==="
-psql_cmd -d "$DB" -c "SELECT 'lineitem' AS table, COUNT(*) FROM lineitem UNION ALL SELECT 'orders', COUNT(*) FROM orders UNION ALL SELECT 'supplier', COUNT(*) FROM supplier UNION ALL SELECT 'partsupp', COUNT(*) FROM partsupp;"
+if [[ -f "${ROOT}/scripts/postgres_accel_mutation_triggers.sql" ]]; then
+  echo "=== creating mutation capture triggers ==="
+  # Trigger SQL may reference functions; ignore if not yet registered for this host.
+  psql_cmd -d "$DB" -f "${ROOT}/scripts/postgres_accel_mutation_triggers.sql" || true
+fi
+
+echo "=== TPC-H PostgreSQL test database ready: $DB (native storage) ==="
+psql_cmd -d "$DB" -c "SELECT 'lineitem' AS table, COUNT(*) FROM lineitem UNION ALL SELECT 'orders', COUNT(*) FROM orders;"

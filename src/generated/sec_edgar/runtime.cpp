@@ -1,18 +1,18 @@
 // GENERATED BACKEND
 #include "sec_edgar/runtime.hpp"
 
-#include "sec_edgar/q1/base/query.hpp"
-#include "sec_edgar/q1/base/fused.hpp"
-#include "sec_edgar/q2/base/query.hpp"
-#include "sec_edgar/q2/base/fused.hpp"
-#include "sec_edgar/q3/base/query.hpp"
-#include "sec_edgar/q3/base/fused.hpp"
-#include "sec_edgar/q4/base/query.hpp"
-#include "sec_edgar/q4/base/fused.hpp"
-#include "sec_edgar/q6/base/query.hpp"
-#include "sec_edgar/q6/base/fused.hpp"
-#include "sec_edgar/q24/base/query.hpp"
-#include "sec_edgar/q24/base/fused.hpp"
+#include "sec_edgar/q1/duckdb/base/query.hpp"
+#include "sec_edgar/q1/duckdb/base/fused.hpp"
+#include "sec_edgar/q2/duckdb/base/query.hpp"
+#include "sec_edgar/q2/duckdb/base/fused.hpp"
+#include "sec_edgar/q3/duckdb/base/query.hpp"
+#include "sec_edgar/q3/duckdb/base/fused.hpp"
+#include "sec_edgar/q4/duckdb/base/query.hpp"
+#include "sec_edgar/q4/duckdb/base/fused.hpp"
+#include "sec_edgar/q6/duckdb/base/query.hpp"
+#include "sec_edgar/q6/duckdb/base/fused.hpp"
+#include "sec_edgar/q24/duckdb/base/query.hpp"
+#include "sec_edgar/q24/duckdb/base/fused.hpp"
 
 namespace accelerator_codegen {
 

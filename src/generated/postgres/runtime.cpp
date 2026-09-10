@@ -21,48 +21,39 @@
 
 // Finalize headers pull in DuckDB types; include them before PostgreSQL
 // headers to avoid timestamp.h macro collisions.
-#include "sec_edgar/q1/aux/module.hpp"
-#include "sec_edgar/q2/aux/module.hpp"
-#include "sec_edgar/q3/aux/module.hpp"
-#include "sec_edgar/q4/aux/module.hpp"
-#include "sec_edgar/q6/aux/module.hpp"
-#include "sec_edgar/q24/aux/module.hpp"
-#ifdef ACCEL_ENABLE_PARALLEL_AUX
-#include "sec_edgar/q1/aux/parallel/module.hpp"
-#include "sec_edgar/q2/aux/parallel/module.hpp"
-#include "sec_edgar/q3/aux/parallel/module.hpp"
-#include "sec_edgar/q4/aux/parallel/module.hpp"
-#include "sec_edgar/q6/aux/parallel/module.hpp"
-#include "sec_edgar/q24/aux/parallel/module.hpp"
-#endif
-#include "tpch/q1/aux/module.hpp"
-#include "tpch/q2/aux/module.hpp"
-#include "tpch/q3/aux/module.hpp"
-#include "tpch/q4/aux/module.hpp"
-#include "tpch/q5/aux/module.hpp"
-#include "tpch/q6/aux/module.hpp"
-#include "tpch/q7/aux/module.hpp"
-#include "tpch/q8/aux/module.hpp"
-#include "tpch/q9/aux/module.hpp"
-#include "tpch/q10/aux/module.hpp"
-#include "tpch/q11/aux/module.hpp"
-#include "tpch/q12/aux/module.hpp"
-#include "tpch/q13/aux/module.hpp"
-#include "tpch/q14/aux/module.hpp"
-#include "tpch/q15/aux/module.hpp"
-#include "tpch/q16/aux/module.hpp"
-#include "tpch/q17/aux/module.hpp"
-#include "tpch/q18/aux/module.hpp"
-#include "tpch/q19/aux/module.hpp"
-#include "tpch/q20/aux/module.hpp"
-#include "tpch/q21/aux/module.hpp"
-#include "tpch/q22/aux/module.hpp"
+#include "tpch/q1/postgres/aux/module.hpp"
+#include "tpch/q2/postgres/aux/module.hpp"
+#include "tpch/q3/postgres/aux/module.hpp"
+#include "tpch/q4/postgres/aux/module.hpp"
+#include "tpch/q5/postgres/aux/module.hpp"
+#include "tpch/q6/postgres/aux/module.hpp"
+#include "tpch/q7/postgres/aux/module.hpp"
+#include "tpch/q8/postgres/aux/module.hpp"
+#include "tpch/q9/postgres/aux/module.hpp"
+#include "tpch/q10/postgres/aux/module.hpp"
+#include "tpch/q11/postgres/aux/module.hpp"
+#include "tpch/q12/postgres/aux/module.hpp"
+#include "tpch/q13/postgres/aux/module.hpp"
+#include "tpch/q14/postgres/aux/module.hpp"
+#include "tpch/q15/postgres/aux/module.hpp"
+#include "tpch/q16/postgres/aux/module.hpp"
+#include "tpch/q17/postgres/aux/module.hpp"
+#include "tpch/q18/postgres/aux/module.hpp"
+#include "tpch/q19/postgres/aux/module.hpp"
+#include "tpch/q20/postgres/aux/module.hpp"
+#include "tpch/q21/postgres/aux/module.hpp"
+#include "tpch/q22/postgres/aux/module.hpp"
 
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
-#include "accelerator_codegen/stateful/postgres/postgres_mutation_capture.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
+
+// Declared in postgres_bridge.cpp (MODULE).
+extern "C" int accel_pg_get_observer_mutation_count();
+
+// xact + mutation registration uses the current substrate APIs
+// (SetPostgresActiveBackend / RegisterPostgresXactCallbacks).
 
 extern "C" {
 #include "postgres.h"
@@ -1323,195 +1314,6 @@ void ScanTpchQ20Nations(
       });
 }
 
-void ScanSecEdgarQ1Pre(
-    const std::function<void(const query::SecEdgarQ1PreInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT stmt, rfile, adsh, line FROM pre WHERE stmt IS NOT NULL",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        bool stmt_is_null = false;
-        bool rfile_is_null = false;
-        SPI_getbinval(tuple, tuple_desc, 1, &stmt_is_null);
-        SPI_getbinval(tuple, tuple_desc, 2, &rfile_is_null);
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  rfile_is_null,
-                  stmt_is_null,
-                  TypedText(tuple, tuple_desc, 2),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3))});
-      });
-}
-
-void ScanSecEdgarQ2Num(
-    const std::function<void(const query::SecEdgarQ2NumInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, tag, uom, value FROM num",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        bool value_is_null = false;
-        (void)TypedDouble(tuple, tuple_desc, 3, value_is_null);
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  TypedDouble(tuple, tuple_desc, 3, value_is_null),
-                  value_is_null});
-      });
-}
-
-void ScanSecEdgarQ2Sub(
-    const std::function<void(const query::SecEdgarQ2SubInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, name, fy FROM sub",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 2))});
-      });
-}
-
-void ScanSecEdgarQ3Num(
-    const std::function<void(const query::SecEdgarQ3NumInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, uom, value FROM num",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        bool value_is_null = false;
-        (void)TypedDouble(tuple, tuple_desc, 2, value_is_null);
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedDouble(tuple, tuple_desc, 2, value_is_null),
-                  value_is_null});
-      });
-}
-
-void ScanSecEdgarQ3Sub(
-    const std::function<void(const query::SecEdgarQ3SubInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, name, cik, fy FROM sub",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 2)),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3))});
-      });
-}
-
-void ScanSecEdgarQ4Sub(
-    const std::function<void(const query::SecEdgarQ4SubInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, cik, sic FROM sub",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1)),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 2))});
-      });
-}
-
-void ScanSecEdgarQ4Tag(
-    const std::function<void(const query::SecEdgarQ4TagInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT tag, version, abstract, tlabel FROM tag",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 2)),
-                  TypedText(tuple, tuple_desc, 3)});
-      });
-}
-
-void ScanSecEdgarQ4Pre(
-    const std::function<void(const query::SecEdgarQ4PreInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, tag, version, stmt FROM pre",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  TypedText(tuple, tuple_desc, 3)});
-      });
-}
-
-void ScanSecEdgarQ4Num(
-    const std::function<void(const query::SecEdgarQ4NumInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, tag, version, uom, value FROM num",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        bool value_is_null = false;
-        (void)TypedDouble(tuple, tuple_desc, 4, value_is_null);
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  TypedText(tuple, tuple_desc, 3),
-                  TypedDouble(tuple, tuple_desc, 4, value_is_null),
-                  value_is_null});
-      });
-}
-
-void ScanSecEdgarQ6Num(
-    const std::function<void(const query::SecEdgarQ6NumInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, tag, version, uom, value FROM num",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        bool value_is_null = false;
-        (void)TypedDouble(tuple, tuple_desc, 4, value_is_null);
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  TypedText(tuple, tuple_desc, 3),
-                  TypedDouble(tuple, tuple_desc, 4, value_is_null),
-                  value_is_null});
-      });
-}
-
-void ScanSecEdgarQ6Sub(
-    const std::function<void(const query::SecEdgarQ6SubInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, name, fy FROM sub",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 2))});
-      });
-}
-
-void ScanSecEdgarQ6Pre(
-    const std::function<void(const query::SecEdgarQ6PreInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, tag, version, stmt, plabel FROM pre",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  TypedText(tuple, tuple_desc, 3),
-                  TypedText(tuple, tuple_desc, 4)});
-      });
-}
-
-void ScanSecEdgarQ24Num(
-    const std::function<void(const query::SecEdgarQ24NumInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, tag, version, uom, value, ddate FROM num",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        bool value_is_null = false;
-        (void)TypedDouble(tuple, tuple_desc, 4, value_is_null);
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2),
-                  TypedText(tuple, tuple_desc, 3),
-                  TypedDouble(tuple, tuple_desc, 4, value_is_null),
-                  value_is_null,
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 5))});
-      });
-}
-
-void ScanSecEdgarQ24Pre(
-    const std::function<void(const query::SecEdgarQ24PreInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT adsh, tag, version FROM pre",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedText(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1),
-                  TypedText(tuple, tuple_desc, 2)});
-      });
-}
-
 } // namespace scans
 
 class TpchQ1Services final : public ServicesBase,
@@ -2036,112 +1838,6 @@ public:
   }
 };
 
-class SecEdgarQ1Services final : public ServicesBase,
-                                 public query::SecEdgarQ1InitialScan {
-public:
-  using ServicesBase::ServicesBase;
-  void ScanPre(
-      const std::function<void(const query::SecEdgarQ1PreInput &)> &consumer)
-      const override {
-    scans::ScanSecEdgarQ1Pre(consumer);
-  }
-};
-
-class SecEdgarQ2Services final : public ServicesBase,
-                               public query::SecEdgarQ2InitialScan {
-public:
-  using ServicesBase::ServicesBase;
-  void ScanNum(
-      const std::function<void(const query::SecEdgarQ2NumInput &)> &consumer)
-      override {
-    scans::ScanSecEdgarQ2Num(consumer);
-  }
-  void ScanSub(
-      const std::function<void(const query::SecEdgarQ2SubInput &)> &consumer)
-      override {
-    scans::ScanSecEdgarQ2Sub(consumer);
-  }
-};
-
-class SecEdgarQ3Services final : public ServicesBase,
-                                 public query::SecEdgarQ3InitialScan {
-public:
-  using ServicesBase::ServicesBase;
-  void ScanNum(
-      const std::function<void(const query::SecEdgarQ3NumInput &)> &consumer)
-      override {
-    scans::ScanSecEdgarQ3Num(consumer);
-  }
-  void ScanSub(
-      const std::function<void(const query::SecEdgarQ3SubInput &)> &consumer)
-      override {
-    scans::ScanSecEdgarQ3Sub(consumer);
-  }
-};
-
-class SecEdgarQ4Services final : public ServicesBase,
-                                 public query::SecEdgarQ4InitialScan {
-public:
-  using ServicesBase::ServicesBase;
-  void ScanSub(
-      const std::function<void(const query::SecEdgarQ4SubInput &)> &consumer)
-      const override {
-    scans::ScanSecEdgarQ4Sub(consumer);
-  }
-  void ScanTag(
-      const std::function<void(const query::SecEdgarQ4TagInput &)> &consumer)
-      const override {
-    scans::ScanSecEdgarQ4Tag(consumer);
-  }
-  void ScanPre(
-      const std::function<void(const query::SecEdgarQ4PreInput &)> &consumer)
-      const override {
-    scans::ScanSecEdgarQ4Pre(consumer);
-  }
-  void ScanNum(
-      const std::function<void(const query::SecEdgarQ4NumInput &)> &consumer)
-      const override {
-    scans::ScanSecEdgarQ4Num(consumer);
-  }
-};
-
-class SecEdgarQ6Services final : public ServicesBase,
-                                 public query::SecEdgarQ6InitialScan {
-public:
-  using ServicesBase::ServicesBase;
-  void ScanNum(
-      const std::function<void(const query::SecEdgarQ6NumInput &)> &consumer)
-      override {
-    scans::ScanSecEdgarQ6Num(consumer);
-  }
-  void ScanSub(
-      const std::function<void(const query::SecEdgarQ6SubInput &)> &consumer)
-      override {
-    scans::ScanSecEdgarQ6Sub(consumer);
-  }
-  void ScanPre(
-      const std::function<void(const query::SecEdgarQ6PreInput &)> &consumer)
-      override {
-    scans::ScanSecEdgarQ6Pre(consumer);
-  }
-};
-
-class SecEdgarQ24Services final : public ServicesBase,
-                                  public query::SecEdgarQ24InitialScan {
-public:
-  using ServicesBase::ServicesBase;
-  void ScanNum(
-      const std::function<void(const query::SecEdgarQ24NumInput &)> &consumer)
-      override {
-    scans::ScanSecEdgarQ24Num(consumer);
-  }
-  void ScanPre(
-      const std::function<void(const query::SecEdgarQ24PreInput &)> &consumer)
-      override {
-    scans::ScanSecEdgarQ24Pre(consumer);
-  }
-};
-
 class Builder final : public core::StateBuilder {
 public:
   void Write(core::StateImage image) override {
@@ -2249,11 +1945,14 @@ public:
             coordinator, store,
             [this] { return services.CurrentVisibility(); },
             [this] { return services.MaintenanceCostModel(); }),
-        capture(backend), accelerator(std::move(accelerator)) {
+        accelerator(std::move(accelerator)) {
     auto module_view = std::shared_ptr<Module>(&module, [](Module *) {});
     coordinator.Register(std::move(module_view));
+    coordinator.AttachServices(backend);
+    accelerator_codegen::aux_state::engine::postgres::SetPostgresActiveBackend(
+        &backend);
     accelerator_codegen::aux_state::engine::postgres::
-        RegisterTransactionBackend(&backend);
+        RegisterPostgresXactCallbacks();
   }
 
   void EnsureBuilt() {
@@ -2266,24 +1965,30 @@ public:
       throw std::runtime_error("auxiliary build did not finish");
     }
     store.Install(std::move(builder.images), accelerator);
+    store.ClearTransactionDirty();
     built = true;
-    std::vector<core::TableId> dependency_tables;
-    dependency_tables.reserve(module.Dependencies().size());
-    for (const auto &dependency : module.Dependencies()) {
-      dependency_tables.push_back(dependency.table);
-    }
-    capture.Register(dependency_tables);
+    // ROW triggers → bridge observer; xact callbacks already registered in ctor.
+    accelerator_codegen::aux_state::engine::postgres::
+        RegisterPostgresBackendForMutations();
   }
 
   void Execute(const core::QueryArguments &arguments, FunctionCallInfo fcinfo) {
     RequireMaterialize(fcinfo);
-    auto *return_set_info =
-        reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
+    // ROW triggers capture into the extension bridge observer. When base tables
+    // change, force aux rebuild from native PG SPI scans.
+    const int mutations = accel_pg_get_observer_mutation_count();
+    if (mutations != observed_mutations) {
+      built = false;
+      store.MarkTransactionDirty();
+      observed_mutations = mutations;
+    }
     EnsureBuilt();
     if (!store.CheckValidity({accelerator, {}}, {}).IsValid()) {
       built = false;
       EnsureBuilt();
     }
+    auto *return_set_info =
+        reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
     PgSink sink(return_set_info->setResult, return_set_info->setDesc);
     module.Execute(services, arguments, sink);
   }
@@ -2306,10 +2011,9 @@ private:
 
   core::AuxTransactionCoordinator coordinator;
   accelerator_codegen::aux_state::engine::postgres::PostgresAuxBackend backend;
-  accelerator_codegen::aux_state::engine::postgres::PostgresMutationCapture
-      capture;
   std::string accelerator;
   bool built = false;
+  int observed_mutations = 0;
 };
 
 Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Services> &Q1Runtime() {
@@ -2512,135 +2216,6 @@ Q20Runtime() {
               query::TpchQ20Config{1201, 1202, 1203, 1204, 1205});
   return runtime;
 }
-
-Runtime<query::SecEdgarQ1Module, query::SecEdgarQ1Config, SecEdgarQ1Services> &
-SecQ1Runtime() {
-  static Runtime<query::SecEdgarQ1Module, query::SecEdgarQ1Config,
-                 SecEdgarQ1Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q1_COST_MODEL",
-              "config/sec_edgar_q1_aux_cost_model.json",
-              core::SecEdgarQ1Layout::kAccelerator,
-              query::SecEdgarQ1Config{102});
-  return runtime;
-}
-
-Runtime<query::SecEdgarQ2Module, query::SecEdgarQ2Config, SecEdgarQ2Services> &
-SecQ2Runtime() {
-  static Runtime<query::SecEdgarQ2Module, query::SecEdgarQ2Config,
-                 SecEdgarQ2Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q2_COST_MODEL",
-              "config/sec_edgar_q2_aux_cost_model.json",
-              core::SecEdgarQ2Layout::kAccelerator,
-              query::SecEdgarQ2Config{103, 101});
-  return runtime;
-}
-
-Runtime<query::SecEdgarQ3Module, query::SecEdgarQ3Config, SecEdgarQ3Services> &
-SecQ3Runtime() {
-  static Runtime<query::SecEdgarQ3Module, query::SecEdgarQ3Config,
-                 SecEdgarQ3Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q3_COST_MODEL",
-              "config/sec_edgar_q3_aux_cost_model.json",
-              core::SecEdgarQ3Layout::kAccelerator,
-              query::SecEdgarQ3Config{103, 101});
-  return runtime;
-}
-
-Runtime<query::SecEdgarQ4Module, query::SecEdgarQ4Config, SecEdgarQ4Services> &
-SecQ4Runtime() {
-  static Runtime<query::SecEdgarQ4Module, query::SecEdgarQ4Config,
-                 SecEdgarQ4Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q4_COST_MODEL",
-              "config/sec_edgar_q4_aux_cost_model.json",
-              core::SecEdgarQ4Layout::kAccelerator,
-              query::SecEdgarQ4Config{103, 101, 104, 102});
-  return runtime;
-}
-
-Runtime<query::SecEdgarQ6Module, query::SecEdgarQ6Config, SecEdgarQ6Services> &
-SecQ6Runtime() {
-  static Runtime<query::SecEdgarQ6Module, query::SecEdgarQ6Config,
-                 SecEdgarQ6Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q6_COST_MODEL",
-              "config/sec_edgar_q6_aux_cost_model.json",
-              core::SecEdgarQ6Layout::kAccelerator,
-              query::SecEdgarQ6Config{103, 101, 102});
-  return runtime;
-}
-
-Runtime<query::SecEdgarQ24Module, query::SecEdgarQ24Config, SecEdgarQ24Services> &
-Q24Runtime() {
-  static Runtime<query::SecEdgarQ24Module, query::SecEdgarQ24Config,
-                 SecEdgarQ24Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_Q24_COST_MODEL",
-              "config/sec_edgar_q24_aux_cost_model.json",
-              core::SecEdgarQ24Layout::kAccelerator,
-              query::SecEdgarQ24Config{103, 102});
-  return runtime;
-}
-
-#ifdef ACCEL_ENABLE_PARALLEL_AUX
-Runtime<query::SecEdgarQ1ParallelModule, query::SecEdgarQ1Config, SecEdgarQ1Services> &
-SecQ1ParallelRuntime() {
-  static Runtime<query::SecEdgarQ1ParallelModule, query::SecEdgarQ1Config,
-                 SecEdgarQ1Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q1_COST_MODEL",
-              "config/sec_edgar_q1_aux_cost_model.json",
-              core::SecEdgarQ1Layout::kParallelAccelerator,
-              query::SecEdgarQ1Config{102});
-  return runtime;
-}
-Runtime<query::SecEdgarQ2ParallelModule, query::SecEdgarQ2Config, SecEdgarQ2Services> &
-SecQ2ParallelRuntime() {
-  static Runtime<query::SecEdgarQ2ParallelModule, query::SecEdgarQ2Config,
-                 SecEdgarQ2Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q2_COST_MODEL",
-              "config/sec_edgar_q2_aux_cost_model.json",
-              core::SecEdgarQ2Layout::kParallelAccelerator,
-              query::SecEdgarQ2Config{103, 101});
-  return runtime;
-}
-Runtime<query::SecEdgarQ3ParallelModule, query::SecEdgarQ3Config, SecEdgarQ3Services> &
-SecQ3ParallelRuntime() {
-  static Runtime<query::SecEdgarQ3ParallelModule, query::SecEdgarQ3Config,
-                 SecEdgarQ3Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q3_COST_MODEL",
-              "config/sec_edgar_q3_aux_cost_model.json",
-              core::SecEdgarQ3Layout::kParallelAccelerator,
-              query::SecEdgarQ3Config{103, 101});
-  return runtime;
-}
-Runtime<query::SecEdgarQ4ParallelModule, query::SecEdgarQ4Config, SecEdgarQ4Services> &
-SecQ4ParallelRuntime() {
-  static Runtime<query::SecEdgarQ4ParallelModule, query::SecEdgarQ4Config,
-                 SecEdgarQ4Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q4_COST_MODEL",
-              "config/sec_edgar_q4_aux_cost_model.json",
-              core::SecEdgarQ4Layout::kParallelAccelerator,
-              query::SecEdgarQ4Config{103, 101, 104, 102});
-  return runtime;
-}
-Runtime<query::SecEdgarQ6ParallelModule, query::SecEdgarQ6Config, SecEdgarQ6Services> &
-SecQ6ParallelRuntime() {
-  static Runtime<query::SecEdgarQ6ParallelModule, query::SecEdgarQ6Config,
-                 SecEdgarQ6Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_Q6_COST_MODEL",
-              "config/sec_edgar_q6_aux_cost_model.json",
-              core::SecEdgarQ6Layout::kParallelAccelerator,
-              query::SecEdgarQ6Config{103, 101, 102});
-  return runtime;
-}
-Runtime<query::SecEdgarQ24ParallelModule, query::SecEdgarQ24Config, SecEdgarQ24Services> &
-SecQ24ParallelRuntime() {
-  static Runtime<query::SecEdgarQ24ParallelModule, query::SecEdgarQ24Config,
-                 SecEdgarQ24Services>
-      runtime("ACCELERATOR_CODEGEN_POSTGRES_Q24_COST_MODEL",
-              "config/sec_edgar_q24_aux_cost_model.json",
-              core::SecEdgarQ24Layout::kParallelAccelerator,
-              query::SecEdgarQ24Config{103, 102});
-  return runtime;
-}
-#endif
 
 } // namespace detail
 
@@ -2912,50 +2487,6 @@ void ExecutePostgresTpchQ20(FunctionCallInfo fcinfo) {
       fcinfo);
 }
 
-void ExecutePostgresSecEdgarQ1(FunctionCallInfo fcinfo) {
-  detail::SecQ1Runtime().Execute({}, fcinfo);
-}
-
-void ExecutePostgresSecEdgarQ2(FunctionCallInfo fcinfo) {
-  detail::SecQ2Runtime().Execute({}, fcinfo);
-}
-
-void ExecutePostgresSecEdgarQ3(FunctionCallInfo fcinfo) {
-  detail::SecQ3Runtime().Execute({}, fcinfo);
-}
-
-void ExecutePostgresSecEdgarQ4(FunctionCallInfo fcinfo) {
-  detail::SecQ4Runtime().Execute({}, fcinfo);
-}
-
-void ExecutePostgresSecEdgarQ6(FunctionCallInfo fcinfo) {
-  detail::SecQ6Runtime().Execute({}, fcinfo);
-}
-
-void ExecutePostgresSecEdgarQ24(FunctionCallInfo fcinfo) {
-  detail::Q24Runtime().Execute({}, fcinfo);
-}
-
-#ifdef ACCEL_ENABLE_PARALLEL_AUX
-void ExecutePostgresSecEdgarQ1Parallel(FunctionCallInfo fcinfo) {
-  detail::SecQ1ParallelRuntime().Execute({}, fcinfo);
-}
-void ExecutePostgresSecEdgarQ2Parallel(FunctionCallInfo fcinfo) {
-  detail::SecQ2ParallelRuntime().Execute({}, fcinfo);
-}
-void ExecutePostgresSecEdgarQ3Parallel(FunctionCallInfo fcinfo) {
-  detail::SecQ3ParallelRuntime().Execute({}, fcinfo);
-}
-void ExecutePostgresSecEdgarQ4Parallel(FunctionCallInfo fcinfo) {
-  detail::SecQ4ParallelRuntime().Execute({}, fcinfo);
-}
-void ExecutePostgresSecEdgarQ6Parallel(FunctionCallInfo fcinfo) {
-  detail::SecQ6ParallelRuntime().Execute({}, fcinfo);
-}
-void ExecutePostgresSecEdgarQ24Parallel(FunctionCallInfo fcinfo) {
-  detail::SecQ24ParallelRuntime().Execute({}, fcinfo);
-}
-#endif
 
 } // namespace accelerator_codegen::aux_state::engine::postgres
 

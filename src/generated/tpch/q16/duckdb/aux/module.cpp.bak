@@ -1,0 +1,1030 @@
+#include "tpch/q16/duckdb/aux/module.hpp"
+#include "accelerator_codegen/stateful/core/byte_stream.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <set>
+#include <stdexcept>
+#include <utility>
+
+namespace accelerator_codegen::aux_state::query {
+namespace {
+
+using core::ByteReader;
+using core::ByteWriter;
+
+constexpr uint32_t kVersion = 1;
+constexpr uint32_t kEligibilityMagic = 0x45313651;  // Q16E
+constexpr uint32_t kSizeMagic = 0x53313651;          // Q16S
+constexpr int32_t kMaxSize = TpchQ16Layout::kMaxSize;
+constexpr int64_t kBlockWidth = TpchQ16State::kBlockWidth;
+
+
+// ── Custom profiling (no-op unless ACCEL_AUX_CUSTOM_PROFILE is set) ─────────
+struct CustomTimer {
+  using Clock = std::chrono::high_resolution_clock;
+  Clock::time_point start;
+  bool active;
+  explicit CustomTimer(bool enabled) : start(Clock::now()), active(enabled) {}
+  double us() const {
+    return static_cast<double>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count()) / 1000.0;
+  }
+};
+
+static bool CustomProfilingEnabled() {
+  static const bool enabled = []() {
+    const char *v = std::getenv("ACCEL_AUX_CUSTOM_PROFILE");
+    return v && v[0] != '\0';
+  }();
+  return enabled;
+}
+
+static void EmitCustomProfile(const char *phase, double us_val,
+                              int64_t groups, int64_t rows, int64_t suppkeys) {
+  if (!CustomProfilingEnabled())
+    return;
+  fprintf(stderr,
+          "ACCEL_CUSTOM_PROFILE {"
+          "\"phase\":\"%s\","
+          "\"us\":%.3f,"
+          "\"groups\":%ld,"
+          "\"rows\":%ld,"
+          "\"suppkeys\":%ld"
+          "}\n",
+          phase, us_val, (long)groups, (long)rows, (long)suppkeys);
+}
+
+// ── Cell helpers ────────────────────────────────────────────────────────────
+bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
+  if (index >= row.values.size() || row.values[index].is_null ||
+      !std::holds_alternative<std::string>(row.values[index].payload))
+    return false;
+  out = std::get<std::string>(row.values[index].payload);
+  return true;
+}
+
+bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
+  if (index >= row.values.size() || row.values[index].is_null)
+    return false;
+  const auto &cell = row.values[index];
+  if (std::holds_alternative<int64_t>(cell.payload)) {
+    out = std::get<int64_t>(cell.payload);
+    return true;
+  }
+  if (std::holds_alternative<uint64_t>(cell.payload)) {
+    const auto value = std::get<uint64_t>(cell.payload);
+    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+      return false;
+    out = static_cast<int64_t>(value);
+    return true;
+  }
+  return false;
+}
+
+core::InvalidationPlan All() {
+  core::InvalidationPlan plan;
+  plan.scope =
+      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
+  return plan;
+}
+
+std::shared_ptr<const TpchQ16StateImage>
+MakeEligibilityImage(const std::shared_ptr<const TpchQ16State> &state) {
+  auto image = std::make_shared<TpchQ16StateImage>();
+  image->kind = TpchQ16ImageKind::Eligibility;
+  image->state = state;
+  return image;
+}
+
+std::shared_ptr<const TpchQ16StateImage>
+MakeSizeImage(int32_t size,
+              const std::shared_ptr<const TpchQ16SizePartition> &membership) {
+  auto image = std::make_shared<TpchQ16StateImage>();
+  image->kind = TpchQ16ImageKind::SizeMembership;
+  image->size = size;
+  image->size_membership = membership;
+  return image;
+}
+
+const TpchQ16StateImage *AsQ16Image(const core::StateImage &image,
+                                    TpchQ16ImageKind kind) {
+  const auto *payload = image.As<TpchQ16StateImage>();
+  return payload && payload->kind == kind ? payload : nullptr;
+}
+
+bool IsComplaintComment(const std::string &comment) {
+  return comment.find("Customer") != std::string::npos &&
+         comment.find("Complaints") != std::string::npos;
+}
+
+// ── Row readers ─────────────────────────────────────────────────────────────
+bool ReadSupplier(const core::AuxRow &row, TpchQ16SupplierInput &out) {
+  int64_t suppkey = 0;
+  if (!IntCell(row, 0, suppkey) || !StringCell(row, 1, out.comment))
+    return false;
+  out.suppkey = suppkey;
+  return true;
+}
+
+bool ReadPart(const core::AuxRow &row, TpchQ16PartInput &out) {
+  int64_t partkey = 0;
+  if (!IntCell(row, 0, partkey) || !StringCell(row, 1, out.brand) ||
+      !StringCell(row, 2, out.type))
+    return false;
+  int64_t size = 0;
+  if (!IntCell(row, 3, size))
+    return false;
+  out.partkey = partkey;
+  out.size = static_cast<int32_t>(size);
+  return true;
+}
+
+bool ReadPartsupp(const core::AuxRow &row, TpchQ16PartsuppInput &out) {
+  int64_t partkey = 0;
+  int64_t suppkey = 0;
+  if (!IntCell(row, 0, partkey) || !IntCell(row, 1, suppkey))
+    return false;
+  out.partkey = partkey;
+  out.suppkey = suppkey;
+  return true;
+}
+
+// ── SQL LIKE helper ────────────────────────────────────────────────────────
+bool SqlLikeAt(const char *text, std::size_t text_len, const char *pattern,
+               std::size_t pattern_len, std::size_t text_pos,
+               std::size_t pattern_pos) {
+  while (pattern_pos < pattern_len) {
+    const char pattern_ch = pattern[pattern_pos];
+    if (pattern_ch == '%') {
+      if (pattern_pos + 1 == pattern_len)
+        return true;
+      for (std::size_t start = text_pos; start <= text_len; ++start) {
+        if (SqlLikeAt(text, text_len, pattern, pattern_len, start,
+                      pattern_pos + 1))
+          return true;
+      }
+      return false;
+    }
+    if (pattern_ch == '_') {
+      if (text_pos >= text_len)
+        return false;
+      ++text_pos;
+      ++pattern_pos;
+      continue;
+    }
+    if (text_pos >= text_len || text[text_pos] != pattern_ch)
+      return false;
+    ++text_pos;
+    ++pattern_pos;
+  }
+  return text_pos == text_len;
+}
+
+bool SqlLike(const std::string &text, const std::string &pattern) {
+  return SqlLikeAt(text.data(), text.size(), pattern.data(), pattern.size(), 0,
+                   0);
+}
+
+uint16_t InternBrand(TpchQ16State &state, const std::string &brand) {
+  for (uint16_t i = 0; i < state.brand_intern.size(); ++i)
+    if (state.brand_intern[i] == brand) return i;
+  state.brand_intern.push_back(brand);
+  return static_cast<uint16_t>(state.brand_intern.size() - 1);
+}
+
+uint16_t InternType(TpchQ16State &state, const std::string &type) {
+  for (uint16_t i = 0; i < state.type_intern.size(); ++i)
+    if (state.type_intern[i] == type) return i;
+  state.type_intern.push_back(type);
+  return static_cast<uint16_t>(state.type_intern.size() - 1);
+}
+
+} // namespace
+
+// ── Public predicate helpers ────────────────────────────────────────────────
+bool TpchQ16IsComplaintSupplier(const std::string &comment) {
+  return IsComplaintComment(comment);
+}
+
+bool TpchQ16TypeNotLike(const std::string &type, const std::string &pattern) {
+  return !SqlLike(type, pattern);
+}
+
+// ── Encode / Decode ─────────────────────────────────────────────────────────
+std::vector<uint8_t>
+EncodeTpchQ16Eligibility(const TpchQ16State &state) {
+  ByteWriter writer;
+  core::WriteImageHeader(writer, kEligibilityMagic, kVersion,
+                         static_cast<uint32_t>(state.supplier_eligible.size()));
+  writer.bytes.insert(writer.bytes.end(), state.supplier_eligible.begin(),
+                      state.supplier_eligible.end());
+  // Append brand/type interning vectors + precomputed pre-sorted rows.
+  writer.U32(static_cast<uint32_t>(state.brand_intern.size()));
+  for (const auto &s : state.brand_intern)
+    writer.String(s);
+  writer.U32(static_cast<uint32_t>(state.type_intern.size()));
+  for (const auto &s : state.type_intern)
+    writer.String(s);
+  writer.U64(static_cast<uint64_t>(state.precomputed_rows.size()));
+  for (const auto &row : state.precomputed_rows) {
+    writer.U16(row.brand_id);
+    writer.U16(row.type_id);
+    writer.I32(row.size);
+    writer.I64(row.count);
+  }
+  return std::move(writer.bytes);
+}
+
+std::vector<uint8_t> EncodeTpchQ16SizeMembership(
+    int32_t size, const TpchQ16SizePartition &membership) {
+  ByteWriter writer;
+  writer.U32(kSizeMagic);
+  writer.U32(kVersion);
+  writer.I32(size);
+  writer.U64(static_cast<uint64_t>(membership.groups.size()));
+  for (const auto &group : membership.groups) {
+    writer.String(group.brand);
+    writer.String(group.type);
+    writer.U64(static_cast<uint64_t>(group.blocks.size()));
+    for (const auto &[block_index, block] : group.blocks) {
+      writer.I64(block_index);
+      writer.U64(static_cast<uint64_t>(block.suppkeys.size()));
+      for (const auto suppkey : block.suppkeys)
+        writer.I64(suppkey);
+      writer.U64(static_cast<uint64_t>(block.ref_counts.size()));
+      for (const auto count : block.ref_counts)
+        writer.I32(count);
+    }
+  }
+  return std::move(writer.bytes);
+}
+
+bool DecodeTpchQ16Eligibility(const std::vector<uint8_t> &bytes,
+                              TpchQ16State &state) {
+  ByteReader reader{bytes};
+  uint32_t count = 0;
+  if (!core::ReadImageHeader(reader, kEligibilityMagic, kVersion, count))
+    return false;
+  state.supplier_eligible.resize(static_cast<std::size_t>(count));
+  for (uint32_t i = 0; i < count; ++i) {
+    uint8_t value = 0;
+    if (!reader.U8(value))
+      return false;
+    state.supplier_eligible[i] = value;
+  }
+  // Read brand/type interning vectors + precomputed pre-sorted rows.
+  uint32_t brand_count = 0;
+  if (!reader.U32(brand_count))
+    return false;
+  state.brand_intern.resize(static_cast<std::size_t>(brand_count));
+  for (auto &s : state.brand_intern)
+    if (!reader.String(s))
+      return false;
+  uint32_t type_count = 0;
+  if (!reader.U32(type_count))
+    return false;
+  state.type_intern.resize(static_cast<std::size_t>(type_count));
+  for (auto &s : state.type_intern)
+    if (!reader.String(s))
+      return false;
+  uint64_t row_count = 0;
+  if (!reader.U64(row_count))
+    return false;
+  state.precomputed_rows.resize(static_cast<std::size_t>(row_count));
+  for (auto &row : state.precomputed_rows) {
+    if (!reader.U16(row.brand_id) || !reader.U16(row.type_id) ||
+        !reader.I32(row.size) || !reader.I64(row.count))
+      return false;
+  }
+  return reader.offset == bytes.size();
+}
+
+bool DecodeTpchQ16SizeMembership(const std::vector<uint8_t> &bytes,
+                                 int32_t size, TpchQ16SizePartition &membership) {
+  ByteReader reader{bytes};
+  uint32_t magic = 0;
+  uint32_t version = 0;
+  int32_t stored_size = 0;
+  uint64_t group_count = 0;
+  if (!reader.U32(magic) || magic != kSizeMagic || !reader.U32(version) ||
+      !reader.I32(stored_size) || stored_size != size ||
+      !reader.U64(group_count))
+    return false;
+  membership.groups.resize(static_cast<std::size_t>(group_count));
+  for (auto &group : membership.groups) {
+    if (!reader.String(group.brand) || !reader.String(group.type))
+      return false;
+    uint64_t block_count = 0;
+    if (!reader.U64(block_count))
+      return false;
+    for (uint64_t b = 0; b < block_count; ++b) {
+      int64_t block_index = 0;
+      if (!reader.I64(block_index))
+        return false;
+      TpchQ16SupplierBlock block;
+      uint64_t suppkey_count = 0;
+      if (!reader.U64(suppkey_count))
+        return false;
+      block.suppkeys.resize(static_cast<std::size_t>(suppkey_count));
+      for (auto &suppkey : block.suppkeys)
+        if (!reader.I64(suppkey))
+          return false;
+      uint64_t count_size = 0;
+      if (!reader.U64(count_size))
+        return false;
+      block.ref_counts.resize(static_cast<std::size_t>(count_size));
+      for (auto &count : block.ref_counts)
+        if (!reader.I32(count))
+          return false;
+      group.blocks[block_index] = std::move(block);
+    }
+  }
+  return true;
+}
+
+// ── TxnBuffer ───────────────────────────────────────────────────────────────
+bool TpchQ16TxnBuffer::HasPendingChanges() const { return pending; }
+void TpchQ16TxnBuffer::Clear() {
+  pending = false;
+  requires_rebuild = false;
+  partsupp_deltas.clear();
+  supplier_deltas.clear();
+}
+bool TpchQ16TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
+const std::vector<TpchQ16PartsuppDelta> &
+TpchQ16TxnBuffer::PartsuppDeltas() const {
+  return partsupp_deltas;
+}
+const std::vector<TpchQ16SupplierDelta> &
+TpchQ16TxnBuffer::SupplierDeltas() const {
+  return supplier_deltas;
+}
+void TpchQ16TxnBuffer::MarkRebuild() {
+  pending = true;
+  requires_rebuild = true;
+}
+void TpchQ16TxnBuffer::AddPartsuppDelta(TpchQ16PartsuppDelta delta) {
+  pending = true;
+  partsupp_deltas.push_back(std::move(delta));
+}
+void TpchQ16TxnBuffer::AddSupplierDelta(TpchQ16SupplierDelta delta) {
+  pending = true;
+  supplier_deltas.push_back(std::move(delta));
+}
+
+// ── Module identity / dependencies ─────────────────────────────────────────
+core::AcceleratorId TpchQ16Module::Id() const { return kId; }
+
+std::vector<core::TableDependency> TpchQ16Module::Dependencies() const {
+  std::vector<core::TableDependency> deps;
+  deps.push_back({config.part_table, {0, 1, 2, 3}});
+  deps.push_back({config.partsupp_table, {0, 1}});
+  deps.push_back({config.supplier_table, {0, 1}});
+  return deps;
+}
+
+std::unique_ptr<core::AuxTxnBuffer> TpchQ16Module::CreateTxnBuffer() const {
+  return std::make_unique<TpchQ16TxnBuffer>();
+}
+
+// ── Build ───────────────────────────────────────────────────────────────────
+void TpchQ16Module::Build(core::AuxEngineServices &services,
+                          core::StateBuilder &builder) {
+  const auto state = BuildState(services);
+
+  // Publish supplier eligibility partition.
+  auto shared_state = std::make_shared<const TpchQ16State>(state);
+  builder.Write(core::StateImage::Make(
+      Id(), TpchQ16Layout::kSupplierEligibility, 0,
+      MakeEligibilityImage(shared_state)));
+
+  // Publish one sparse size partition per observed size (bounded).
+  for (const auto &[size, partition] : state.membership) {
+    if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
+      continue;
+    auto shared_partition =
+        std::make_shared<const TpchQ16SizePartition>(partition);
+    builder.Write(core::StateImage::Make(
+        Id(), TpchQ16Layout::SizePartition(size), 0,
+        MakeSizeImage(size, shared_partition)));
+  }
+  builder.Finish();
+}
+
+// ── Mutation interpretation ────────────────────────────────────────────────
+core::InvalidationPlan TpchQ16Module::InterpretMutation(
+    const core::MutationBatch &mutation) const {
+  const bool partsupp = mutation.table == config.partsupp_table;
+  const bool part = mutation.table == config.part_table;
+  const bool supplier = mutation.table == config.supplier_table;
+
+  if (!partsupp && !part && !supplier)
+    return {};
+
+  core::InvalidationPlan plan;
+  plan.scope =
+      ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
+
+  // Supplier comment change only affects the eligibility partition.
+  if (supplier) {
+    for (const auto &col : mutation.updated_columns)
+      if (col == 1)
+        return plan;
+    return {};
+  }
+
+  // Part key/attribute change may affect multiple size partitions.
+  if (part) {
+    return plan;
+  }
+
+  // Partsupp changes affect one size partition after catalog resolution.
+  return plan;
+}
+
+void TpchQ16Module::AccumulateMutation(const core::MutationBatch &mutation,
+                                       core::AuxEngineServices &services,
+                                       core::AuxTxnBuffer &txn_buffer) {
+  (void)services;
+  auto &buffer = dynamic_cast<TpchQ16TxnBuffer &>(txn_buffer);
+
+  if (mutation.table == config.supplier_table) {
+    // Check whether any watched column changed.
+    bool watched_change = false;
+    for (const auto &col : mutation.updated_columns)
+      if (col == 1)
+        watched_change = true;
+    if (!watched_change)
+      return;
+
+    for (std::size_t i = 0; i < mutation.new_rows.size(); ++i) {
+      TpchQ16SupplierInput new_input;
+      if (!ReadSupplier(mutation.new_rows[i], new_input))
+        continue;
+      TpchQ16SupplierInput old_input;
+      bool have_old = false;
+      if (mutation.kind == core::MutationKind::Update &&
+          i < mutation.old_rows.size() &&
+          ReadSupplier(mutation.old_rows[i], old_input))
+        have_old = true;
+
+      TpchQ16SupplierDelta delta;
+      delta.suppkey = new_input.suppkey;
+      delta.new_eligible = !TpchQ16IsComplaintSupplier(new_input.comment);
+      if (mutation.kind == core::MutationKind::Update && have_old) {
+        delta.old_eligible = !TpchQ16IsComplaintSupplier(old_input.comment);
+      } else if (mutation.kind == core::MutationKind::Insert) {
+        delta.old_eligible = false;
+      } else if (mutation.kind == core::MutationKind::Delete) {
+        delta.old_eligible = delta.new_eligible;
+        delta.new_eligible = false;
+      }
+      buffer.AddSupplierDelta(delta);
+    }
+    return;
+  }
+
+  if (mutation.table == config.part_table) {
+    // Partsupp membership may move across groups/sizes.
+    buffer.MarkRebuild();
+    return;
+  }
+
+  if (mutation.table == config.partsupp_table) {
+    bool watched_change = false;
+    for (const auto &col : mutation.updated_columns)
+      if (col == 0 || col == 1)
+        watched_change = true;
+    if (!watched_change)
+      return;
+    buffer.MarkRebuild();
+    return;
+  }
+}
+
+// ── Maintenance staging ────────────────────────────────────────────────────
+core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
+    core::AuxEngineServices &services, const core::InvalidationPlan &plan,
+    core::AuxTxnBuffer &txn_buffer) {
+  auto &buffer = dynamic_cast<TpchQ16TxnBuffer &>(txn_buffer);
+  core::StagedMaintenanceOutcome outcome;
+
+  if (!buffer.HasPendingChanges()) {
+    outcome.action = core::MaintenanceAction::NoOp;
+    return outcome;
+  }
+
+  const bool full_rebuild = buffer.RequiresRebuild();
+  const auto deltas = buffer.PartsuppDeltas();
+  const auto supplier_deltas = buffer.SupplierDeltas();
+
+  if (!full_rebuild && deltas.empty() && supplier_deltas.empty()) {
+    outcome.action = core::MaintenanceAction::NoOp;
+    return outcome;
+  }
+
+  if (full_rebuild || !deltas.empty()) {
+    // Rebuild full state from initial scan for correctness.
+    auto state = BuildState(services);
+    auto shared_state = std::make_shared<const TpchQ16State>(state);
+
+    // Publish eligibility partition.
+    outcome.updates.push_back(core::StateImage::Make(
+        Id(), TpchQ16Layout::kSupplierEligibility, 0,
+        MakeEligibilityImage(shared_state)));
+
+    // Publish every observed size partition.
+    for (const auto &[size, partition] : state.membership) {
+      if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
+        continue;
+      auto shared_partition =
+          std::make_shared<const TpchQ16SizePartition>(partition);
+      outcome.updates.push_back(core::StateImage::Make(
+          Id(), TpchQ16Layout::SizePartition(size), 0,
+          MakeSizeImage(size, shared_partition)));
+    }
+
+    outcome.action = core::MaintenanceAction::RebuildAll;
+  } else if (!supplier_deltas.empty()) {
+    // Supplier-only eligibility change: apply deltas to the current eligibility
+    // state, then recompute the precomputed pre-sorted rows from the existing
+    // size-membership partitions. Do not rebuild from base scan because the
+    // base-scan source may not yet reflect the committed mutation.
+    TpchQ16State state;
+    bool have_eligibility = false;
+    {
+      const auto snapshot = services.StateStore().ReadPartitions(
+          services.CurrentVisibility(), {TpchQ16Layout::kSupplierEligibility});
+      for (const auto &image : snapshot.partitions) {
+        const auto *typed = AsQ16Image(image, TpchQ16ImageKind::Eligibility);
+        if (!typed || !typed->state)
+          continue;
+        state = *typed->state;
+        have_eligibility = true;
+        break;
+      }
+    }
+    if (!have_eligibility) {
+      state = BuildState(services);
+    } else {
+      for (const auto &delta : supplier_deltas)
+        state.SetSupplierEligible(delta.suppkey, delta.new_eligible);
+    }
+
+    // Load all size partitions and recompute counts against updated eligibility.
+    std::vector<core::PartitionId> size_window;
+    size_window.reserve(TpchQ16Layout::kMaxSize);
+    for (int32_t size = TpchQ16Layout::kMinSize; size <= TpchQ16Layout::kMaxSize;
+         ++size)
+      size_window.push_back(TpchQ16Layout::SizePartition(size));
+    const auto snapshot = services.StateStore().ReadPartitions(
+        services.CurrentVisibility(), size_window);
+
+    state.precomputed_rows.clear();
+    for (const auto &image : snapshot.partitions) {
+      const auto *typed = AsQ16Image(image, TpchQ16ImageKind::SizeMembership);
+      if (!typed || !typed->size_membership)
+        continue;
+      const auto size = typed->size;
+      for (const auto &group : typed->size_membership->groups) {
+        int64_t distinct = 0;
+        for (const auto &[block_index, block] : group.blocks) {
+          for (const auto suppkey : block.suppkeys) {
+            if (state.IsSupplierEligible(suppkey))
+              ++distinct;
+          }
+        }
+        if (distinct > 0)
+          state.precomputed_rows.push_back(
+              {group.brand_id, group.type_id, size, distinct});
+      }
+    }
+    std::sort(state.precomputed_rows.begin(), state.precomputed_rows.end(),
+              [](const Q16PrecomputedRow &lhs, const Q16PrecomputedRow &rhs) {
+                if (lhs.count != rhs.count)
+                  return lhs.count > rhs.count;
+                if (lhs.brand_id != rhs.brand_id)
+                  return lhs.brand_id < rhs.brand_id;
+                if (lhs.type_id != rhs.type_id)
+                  return lhs.type_id < rhs.type_id;
+                return lhs.size < rhs.size;
+              });
+
+    auto shared_state = std::make_shared<const TpchQ16State>(std::move(state));
+    outcome.updates.push_back(core::StateImage::Make(
+        Id(), TpchQ16Layout::kSupplierEligibility, 0,
+        MakeEligibilityImage(shared_state)));
+    outcome.action = core::MaintenanceAction::RebuildAll;
+  }
+
+  return outcome;
+}
+
+// ── Validity / read path ───────────────────────────────────────────────────
+bool TpchQ16Module::CheckValidity(core::AuxEngineServices &services,
+                                  const core::QueryArguments &) const {
+  return services.StateStore()
+      .CheckValidity({Id(), {}}, services.CurrentVisibility())
+      .IsValid();
+}
+
+void TpchQ16Module::Execute(core::AuxEngineServices &services,
+                            const core::QueryArguments &arguments,
+                            core::AuxRowSink &sink) {
+  if (arguments.values.size() < 3) {
+    ExecuteFallback(services, arguments, sink);
+    return;
+  }
+
+  // Parse the p_size set from arguments (indices 2..9).
+  bool size_wanted[TpchQ16Layout::kMaxSize + 1] = {};
+  for (std::size_t i = 2; i < arguments.values.size() && i < 10; ++i) {
+    const auto &value = arguments.values[i];
+    if (value.is_null)
+      continue;
+    int64_t size = 0;
+    if (std::holds_alternative<int64_t>(value.payload)) {
+      size = std::get<int64_t>(value.payload);
+    } else if (std::holds_alternative<uint64_t>(value.payload)) {
+      size = static_cast<int64_t>(std::get<uint64_t>(value.payload));
+    } else {
+      continue;
+    }
+    if (size >= TpchQ16Layout::kMinSize && size <= TpchQ16Layout::kMaxSize)
+      size_wanted[static_cast<std::size_t>(size)] = true;
+  }
+
+  std::string exclude_brand;
+  std::string type_pattern;
+  if (!arguments.values[0].is_null &&
+      std::holds_alternative<std::string>(arguments.values[0].payload))
+    exclude_brand = std::get<std::string>(arguments.values[0].payload);
+  if (!arguments.values[1].is_null &&
+      std::holds_alternative<std::string>(arguments.values[1].payload))
+    type_pattern = std::get<std::string>(arguments.values[1].payload);
+
+  if (!CheckValidity(services, arguments)) {
+    ExecuteFallback(services, arguments, sink);
+    return;
+  }
+
+  // Load eligibility partition which now also carries brand/type interning
+  // vectors and precomputed pre-sorted result rows.
+  CustomTimer t_load(CustomProfilingEnabled());
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {TpchQ16Layout::kSupplierEligibility});
+  const TpchQ16State *loaded_state = nullptr;
+  for (const auto &image : snapshot.partitions) {
+    const auto *typed = AsQ16Image(image, TpchQ16ImageKind::Eligibility);
+    if (!typed || !typed->state)
+      continue;
+    loaded_state = typed->state.get();
+    break;
+  }
+  if (!loaded_state) {
+    ExecuteFallback(services, arguments, sink);
+    return;
+  }
+  EmitCustomProfile("load_partitions", t_load.us(),
+                    static_cast<int64_t>(loaded_state->precomputed_rows.size()),
+                    0, 0);
+
+  // Resolve exclude_brand to brand_id via binary search in intern vectors.
+  int32_t exclude_brand_id = -1;
+  if (!exclude_brand.empty()) {
+    auto it = std::lower_bound(loaded_state->brand_intern.begin(),
+                               loaded_state->brand_intern.end(), exclude_brand);
+    if (it != loaded_state->brand_intern.end() && *it == exclude_brand)
+      exclude_brand_id = static_cast<int32_t>(
+          it - loaded_state->brand_intern.begin());
+  }
+
+
+  // Precompute NOT LIKE predicate results per unique type_id to avoid
+  // redundant SqlLike evaluations inside the per-row loop below.
+  std::vector<bool> type_matches(type_matches.size(), true);
+    if (!type_pattern.empty()) {
+      if (pr.type_id >= type_matches.size())
+        continue;
+      if (!type_matches[pr.type_id])
+        continue;
+    }
+  int64_t emitted_rows = 0;
+  sink.Begin({{{"p_brand", core::AuxType::String, false},
+               {"p_type", core::AuxType::String, false},
+               {"p_size", core::AuxType::Int64, false},
+               {"supplier_cnt", core::AuxType::Int64, false}}});
+  core::AuxRow row;
+  row.values.resize(4);
+
+  // Hoist static field assignments out of the per-row loop.
+  row.values[0].type = core::AuxType::String;
+  row.values[0].is_null = false;
+  row.values[1].type = core::AuxType::String;
+  row.values[1].is_null = false;
+  row.values[2].type = core::AuxType::Int64;
+  row.values[2].is_null = false;
+  row.values[3].type = core::AuxType::Int64;
+  row.values[3].is_null = false;
+  // Fuse filtering and emission into a single pass over the pre-sorted rows.
+  for (const auto &pr : loaded_state->precomputed_rows) {
+    if (!size_wanted[static_cast<std::size_t>(pr.size)])
+      continue;
+    if (exclude_brand_id >= 0 &&
+        pr.brand_id == static_cast<uint16_t>(exclude_brand_id))
+      continue;
+    if (!type_pattern.empty()) {
+      if (pr.type_id >= type_matches.size())
+        continue;
+      if (!type_matches[pr.type_id])
+        continue;
+    }
+    ++filter_groups;
+    row.values[0].payload = loaded_state->brand_intern[pr.brand_id];
+    row.values[1].payload = loaded_state->type_intern[pr.type_id];
+    row.values[2].payload = static_cast<int64_t>(pr.size);
+    row.values[3].payload = pr.count;
+    sink.WriteRow(row);
+    ++emitted_rows;
+  }
+  EmitCustomProfile("filter_emit", t_filter.us(), filter_groups, emitted_rows, 0);
+  sink.End();
+}
+
+void TpchQ16Module::ExecuteFallback(core::AuxEngineServices &services,
+                                    const core::QueryArguments &arguments,
+                                    core::AuxRowSink &sink) {
+  std::string brand;
+  std::string type_pattern;
+  std::vector<int32_t> sizes;
+  if (arguments.values.size() >= 3) {
+    if (!arguments.values[0].is_null &&
+        std::holds_alternative<std::string>(arguments.values[0].payload))
+      brand = std::get<std::string>(arguments.values[0].payload);
+    if (!arguments.values[1].is_null &&
+        std::holds_alternative<std::string>(arguments.values[1].payload))
+      type_pattern = std::get<std::string>(arguments.values[1].payload);
+    for (std::size_t i = 2; i < arguments.values.size() && i < 10; ++i) {
+      const auto &value = arguments.values[i];
+      if (value.is_null)
+        continue;
+      int64_t size = 0;
+      if (std::holds_alternative<int64_t>(value.payload))
+        size = std::get<int64_t>(value.payload);
+      else if (std::holds_alternative<uint64_t>(value.payload))
+        size = static_cast<int64_t>(std::get<uint64_t>(value.payload));
+      if (size >= TpchQ16Layout::kMinSize && size <= TpchQ16Layout::kMaxSize) {
+        const int32_t typed_size = static_cast<int32_t>(size);
+        if (std::find(sizes.begin(), sizes.end(), typed_size) == sizes.end())
+          sizes.push_back(typed_size);
+      }
+    }
+  }
+
+  const auto state = BuildState(services);
+  std::unordered_map<std::string, int64_t> distinct_by_group;
+  for (const auto size : sizes) {
+    auto it = state.membership.find(size);
+    if (it == state.membership.end())
+      continue;
+    for (const auto &group : it->second.groups) {
+      if (!brand.empty() && group.brand == brand)
+        continue;
+      if (!type_pattern.empty() &&
+          !TpchQ16TypeNotLike(group.type, type_pattern))
+        continue;
+      int64_t distinct = 0;
+      for (const auto &[block_index, block] : group.blocks) {
+        for (const auto suppkey : block.suppkeys) {
+          if (state.IsSupplierEligible(suppkey))
+            ++distinct;
+        }
+      }
+      if (distinct > 0)
+        distinct_by_group[TpchQ16State::MakeGroupKey(group.brand, group.type)] =
+            distinct;
+    }
+  }
+
+  std::vector<Q16ResultRow> rows;
+  for (const auto size : sizes) {
+    auto it = state.membership.find(size);
+    if (it == state.membership.end())
+      continue;
+    for (const auto &group : it->second.groups) {
+      if (!brand.empty() && group.brand == brand)
+        continue;
+      if (!type_pattern.empty() &&
+          !TpchQ16TypeNotLike(group.type, type_pattern))
+        continue;
+      int64_t distinct = 0;
+      for (const auto &[block_index, block] : group.blocks)
+        for (const auto suppkey : block.suppkeys)
+          if (state.IsSupplierEligible(suppkey))
+            ++distinct;
+      if (distinct > 0)
+        rows.push_back({group.brand, group.type, group.brand_id, group.type_id,
+                        size, distinct});
+    }
+  }
+
+  CustomTimer t_sort(CustomProfilingEnabled());
+  std::sort(rows.begin(), rows.end(),
+            [](const auto &lhs, const auto &rhs) {
+              if (lhs.count != rhs.count)
+                return lhs.count > rhs.count;
+              if (lhs.brand_id != rhs.brand_id)
+                return lhs.brand_id < rhs.brand_id;
+              if (lhs.type_id != rhs.type_id)
+                return lhs.type_id < rhs.type_id;
+              return lhs.size < rhs.size;
+            });
+  EmitCustomProfile("sort", t_sort.us(), 0, static_cast<int64_t>(rows.size()), 0);
+  CustomTimer t_emit(CustomProfilingEnabled());
+  EmitResult(rows, sink);
+  EmitCustomProfile("emit", t_emit.us(), 0, static_cast<int64_t>(rows.size()), 0);
+}
+
+// ── State build ────────────────────────────────────────────────────────────
+TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const {
+  (void)services;
+  TpchQ16State state;
+  if (!initial_scan)
+    throw std::logic_error("TPC-H Q16 requires a typed initial scan source");
+
+  initial_scan->ScanSuppliers([&](const TpchQ16SupplierInput &input) {
+    state.EnsureSupplierCapacity(input.suppkey);
+    state.SetSupplierEligible(input.suppkey,
+                              !TpchQ16IsComplaintSupplier(input.comment));
+  });
+
+  initial_scan->ScanParts([&](const TpchQ16PartInput &input) {
+    state.part_brand[input.partkey] = input.brand;
+    state.part_type[input.partkey] = input.type;
+    state.part_size[input.partkey] = input.size;
+    if (input.size >= TpchQ16Layout::kMinSize &&
+        input.size <= TpchQ16Layout::kMaxSize)
+      state.membership[input.size];  // Ensure sparse partition exists.
+  });
+
+  initial_scan->ScanPartsupp([&](const TpchQ16PartsuppInput &input) {
+    auto part_it = state.part_brand.find(input.partkey);
+    if (part_it == state.part_brand.end())
+      return;
+    const auto size = state.part_size[input.partkey];
+    if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
+      return;
+    state.reverse_postings[input.partkey].push_back(input.suppkey);
+
+    auto &partition = state.membership[size];
+    auto *group = static_cast<TpchQ16GroupMembership *>(nullptr);
+    for (auto &candidate : partition.groups) {
+      if (candidate.brand == part_it->second &&
+          candidate.type == state.part_type[input.partkey]) {
+        group = &candidate;
+        break;
+      }
+    }
+    if (!group) {
+      partition.groups.emplace_back();
+      group = &partition.groups.back();
+      group->brand = part_it->second;
+      group->type = state.part_type[input.partkey];
+      InternBrand(state, group->brand);
+      InternType(state, group->type);
+    }
+    const auto block_index = TpchQ16State::BlockIndex(input.suppkey);
+    auto &block = group->blocks[block_index];
+    auto supp_it =
+        std::lower_bound(block.suppkeys.begin(), block.suppkeys.end(),
+                         input.suppkey);
+    if (supp_it == block.suppkeys.end() || *supp_it != input.suppkey) {
+      auto offset = static_cast<std::size_t>(supp_it - block.suppkeys.begin());
+      block.suppkeys.insert(supp_it, input.suppkey);
+      block.ref_counts.insert(block.ref_counts.begin() +
+                                  static_cast<std::ptrdiff_t>(offset),
+                              1);
+    } else {
+      auto offset = static_cast<std::size_t>(supp_it - block.suppkeys.begin());
+      block.ref_counts[offset]++;
+    }
+  });
+
+  // Reassign interning IDs from sorted intern vectors so uint16 IDs have the
+  // same total order as the original lexicographic string comparison.
+  std::sort(state.brand_intern.begin(), state.brand_intern.end());
+  std::sort(state.type_intern.begin(), state.type_intern.end());
+  for (auto &[size, partition] : state.membership) {
+    for (auto &group : partition.groups) {
+      const auto brand_pos =
+          std::lower_bound(state.brand_intern.begin(), state.brand_intern.end(),
+                           group.brand) -
+          state.brand_intern.begin();
+      const auto type_pos =
+          std::lower_bound(state.type_intern.begin(), state.type_intern.end(),
+                           group.type) -
+          state.type_intern.begin();
+      group.brand_id = static_cast<uint16_t>(brand_pos);
+      group.type_id = static_cast<uint16_t>(type_pos);
+    }
+  }
+
+  // Pre-compute eligible supplier counts per group and pre-sort by the
+  // query's invariant ORDER BY (count DESC, brand_id, type_id, size).
+  CustomTimer t_precompute(CustomProfilingEnabled());
+  state.precomputed_rows.clear();
+  for (auto &[size, partition] : state.membership) {
+    for (auto &group : partition.groups) {
+      int64_t distinct = 0;
+      for (auto &[block_index, block] : group.blocks) {
+        for (const auto suppkey : block.suppkeys) {
+          if (state.IsSupplierEligible(suppkey))
+            ++distinct;
+        }
+      }
+      if (distinct > 0) {
+        state.precomputed_rows.push_back(
+            {group.brand_id, group.type_id, size, distinct});
+      }
+    }
+  }
+  std::sort(state.precomputed_rows.begin(), state.precomputed_rows.end(),
+            [](const Q16PrecomputedRow &lhs, const Q16PrecomputedRow &rhs) {
+              if (lhs.count != rhs.count)
+                return lhs.count > rhs.count;
+              if (lhs.brand_id != rhs.brand_id)
+                return lhs.brand_id < rhs.brand_id;
+              if (lhs.type_id != rhs.type_id)
+                return lhs.type_id < rhs.type_id;
+              return lhs.size < rhs.size;
+            });
+  EmitCustomProfile("precompute", t_precompute.us(),
+                    static_cast<int64_t>(state.precomputed_rows.size()), 0, 0);
+
+  return state;
+}
+
+// ── Load helpers ───────────────────────────────────────────────────────────
+bool TpchQ16Module::LoadEligibility(core::AuxEngineServices &services,
+                                    std::vector<uint8_t> &eligible) const {
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {TpchQ16Layout::kSupplierEligibility});
+  for (const auto &image : snapshot.partitions) {
+    const auto *typed = AsQ16Image(image, TpchQ16ImageKind::Eligibility);
+    if (!typed || !typed->state)
+      return false;
+    eligible = typed->state->supplier_eligible;
+    return true;
+  }
+  return false;
+}
+
+bool TpchQ16Module::LoadSizePartition(core::AuxEngineServices &services,
+                                      int32_t size,
+                                      TpchQ16SizePartition &out) const {
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {TpchQ16Layout::SizePartition(size)});
+  for (const auto &image : snapshot.partitions) {
+    const auto *typed = AsQ16Image(image, TpchQ16ImageKind::SizeMembership);
+    if (!typed || !typed->size_membership || typed->size != size)
+      return false;
+    out = *typed->size_membership;
+    return true;
+  }
+  return false;
+}
+
+// ── Emit ────────────────────────────────────────────────────────────────────
+void TpchQ16Module::EmitResult(
+    const std::vector<Q16ResultRow> &rows,
+    core::AuxRowSink &sink) const {
+  sink.Begin({{{"p_brand", core::AuxType::String, false},
+               {"p_type", core::AuxType::String, false},
+               {"p_size", core::AuxType::Int64, false},
+               {"supplier_cnt", core::AuxType::Int64, false}}});
+  core::AuxRow row;
+  row.values.resize(4);
+  for (const auto &entry : rows) {
+    row.values[0].type = core::AuxType::String;
+    row.values[0].is_null = false;
+    row.values[0].payload = entry.brand;
+    row.values[1].type = core::AuxType::String;
+    row.values[1].is_null = false;
+    row.values[1].payload = entry.type;
+    row.values[2].type = core::AuxType::Int64;
+    row.values[2].is_null = false;
+    row.values[2].payload = static_cast<int64_t>(entry.size);
+    row.values[3].type = core::AuxType::Int64;
+    row.values[3].is_null = false;
+    row.values[3].payload = entry.count;
+    sink.WriteRow(row);
+  }
+  sink.End();
+}
+
+} // namespace accelerator_codegen::aux_state::query

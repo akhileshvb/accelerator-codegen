@@ -5,12 +5,12 @@
 #include <utility>
 
 #include "sec_edgar/runtime.hpp"
-#include "tpch/q1/base/query.hpp"
-#include "tpch/q1/base/fused.hpp"
-#include "tpch/q4/base/query.hpp"
-#include "tpch/q2/base/query.hpp"
-#include "tpch/q8/base/query.hpp"
-#include "tpch/q10/base/query.hpp"
+#include "tpch/q1/duckdb/base/query.hpp"
+#include "tpch/q1/duckdb/base/fused.hpp"
+#include "tpch/q4/duckdb/base/query.hpp"
+#include "tpch/q2/duckdb/base/query.hpp"
+#include "tpch/q8/duckdb/base/query.hpp"
+#include "tpch/q10/duckdb/base/query.hpp"
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #endif

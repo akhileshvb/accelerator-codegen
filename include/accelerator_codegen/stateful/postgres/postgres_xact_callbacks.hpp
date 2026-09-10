@@ -1,24 +1,18 @@
-// GENERATED BACKEND
+// GENERATED BACKEND - PostgreSQL transaction callbacks
 #pragma once
-
-#include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 
-enum class TransactionEvent : uint8_t {
-  PreCommit,
-  Commit,
-  Abort,
-  SubtransactionStart,
-  SubtransactionCommit,
-  SubtransactionAbort,
-};
+class PostgresAuxBackend;
 
-// The PostgreSQL ABI bridge registers the backend-local coordinator once during
-// backend initialization, then forwards xact.c notifications here. A backend
-// process owns this pointer; it is never stored in shared memory.
-void RegisterTransactionBackend(PostgresAuxBackend *backend);
-void UnregisterTransactionBackend(PostgresAuxBackend *backend);
-void HandleTransactionEvent(TransactionEvent event);
+// Register PostgreSQL transaction (XACT_EVENT) callbacks that bridge
+// PostgresAuxBackend PreCommit/Commit/Abort into the PG transaction system.
+void RegisterPostgresXactCallbacks();
+
+// Register a backend for mutation capture.
+bool RegisterPostgresBackendForMutations();
+
+// Set the active backend pointer for callback dispatch.
+void SetPostgresActiveBackend(PostgresAuxBackend *backend);
 
 } // namespace accelerator_codegen::aux_state::engine::postgres
