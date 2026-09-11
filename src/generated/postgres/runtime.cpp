@@ -9,7 +9,6 @@
 #include <cstdlib>
 #include <functional>
 #include <fstream>
-#include <map>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -48,6 +47,8 @@
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
+#include "accelerator_codegen/stateful/postgres/postgres_state_store.hpp"
+#include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
 
 // Declared in postgres_bridge.cpp (MODULE).
 extern "C" int accel_pg_get_observer_mutation_count();
@@ -67,21 +68,14 @@ extern "C" {
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "utils/snapmgr.h"
-#include "utils/guc.h"
 }
 
 #include "postgres/runtime.hpp"
-
-#ifdef ACCEL_ENABLE_PARALLEL_AUX
-extern int accel_aux_worker_count;
-extern "C" int max_parallel_workers_per_gather;
-#endif
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
 
 namespace core = accelerator_codegen::aux_state::core;
-namespace maintenance = accelerator_codegen::aux_state::maintenance;
 namespace query = accelerator_codegen::aux_state::query;
 
 bool FileReadable(const std::string &path) {
@@ -98,6 +92,16 @@ std::string Basename(const char *path) {
   return slash == std::string::npos ? text : text.substr(slash + 1);
 }
 
+std::string PostgresCostModelBasename(const std::string &basename) {
+  // q1_aux_cost_model.json -> q1_aux_cost_model_postgres.json
+  static constexpr char kSuffix[] = "_aux_cost_model.json";
+  const auto pos = basename.rfind(kSuffix);
+  if (pos == std::string::npos || pos + sizeof(kSuffix) - 1 != basename.size()) {
+    return "";
+  }
+  return basename.substr(0, pos) + "_aux_cost_model_postgres.json";
+}
+
 std::string ResolveCostModelPath(const char *env_name,
                                  const char *default_relative_path) {
   if (const char *path = std::getenv(env_name); path && *path) {
@@ -108,15 +112,34 @@ std::string ResolveCostModelPath(const char *env_name,
   }
   std::vector<std::string> candidates;
   const std::string basename = Basename(default_relative_path);
+  const std::string pg_basename = PostgresCostModelBasename(basename);
+  auto PushPair = [&](const std::string &dir_prefix, const std::string &rel) {
+    if (!pg_basename.empty()) {
+      // Prefer engine-specific calibration when present.
+      if (!dir_prefix.empty()) {
+        candidates.push_back(dir_prefix + pg_basename);
+      } else if (rel.size() >= basename.size()) {
+        candidates.push_back(rel.substr(0, rel.size() - basename.size()) +
+                             pg_basename);
+      }
+    }
+    if (!dir_prefix.empty()) {
+      candidates.push_back(dir_prefix + basename);
+    } else {
+      candidates.push_back(rel);
+    }
+  };
   if (const char *config_dir = std::getenv("ACCELERATOR_CODEGEN_CONFIG_DIR");
       config_dir && *config_dir) {
-    candidates.push_back(std::string(config_dir) + "/" + basename);
+    const std::string prefix = std::string(config_dir) + "/";
+    PushPair(prefix, prefix + basename);
   }
-  candidates.emplace_back(default_relative_path);
-  candidates.push_back(std::string("/accel-src/") + default_relative_path);
-  candidates.push_back(std::string("/accel-src/config/") + basename);
-  candidates.push_back(std::string("/tmp/accel-codegen-src/") +
-                       default_relative_path);
+  PushPair("", default_relative_path);
+  PushPair("/accel-src/", std::string("/accel-src/") + default_relative_path);
+  PushPair("/accel-src/config/",
+           std::string("/accel-src/config/") + basename);
+  PushPair("/tmp/accel-codegen-src/",
+           std::string("/tmp/accel-codegen-src/") + default_relative_path);
   for (const auto &candidate : candidates) {
     if (FileReadable(candidate)) {
       return candidate;
@@ -266,135 +289,6 @@ char TypedChar(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
   const auto text = TypedText(tuple, tuple_desc, attribute);
   return text.empty() ? '\0' : text[0];
 }
-
-class LocalStateStore final : public core::AuxStateStore {
-public:
-  core::StateSnapshot Read(const core::VisibilityToken &visibility) const override {
-    core::StateSnapshot snapshot;
-    snapshot.accelerator = accelerator;
-    snapshot.visibility = visibility;
-    if (!valid || transaction_dirty) {
-      return snapshot;
-    }
-    for (const auto &entry : images) {
-      snapshot.partitions.push_back(entry.second);
-    }
-    snapshot.available = !images.empty();
-    return snapshot;
-  }
-
-  core::StateSnapshot ReadPartitions(
-      const core::VisibilityToken &visibility,
-      const std::vector<core::PartitionId> &partitions) const override {
-    core::StateSnapshot snapshot;
-    snapshot.accelerator = accelerator;
-    snapshot.visibility = visibility;
-    if (!valid) {
-      return snapshot;
-    }
-    for (const auto partition : partitions) {
-      const auto it = images.find(partition);
-      if (it != images.end()) {
-        snapshot.partitions.push_back(it->second);
-      }
-    }
-    snapshot.available = !snapshot.partitions.empty();
-    return snapshot;
-  }
-
-  core::ValidityResult CheckValidity(
-      const core::QueryKey &key,
-      const core::VisibilityToken &) const override {
-    if (key.accelerator != accelerator) {
-      return {core::ValidityCode::Missing, 0};
-    }
-    if (transaction_dirty) {
-      return {core::ValidityCode::NotVisible, 0};
-    }
-    return {valid ? core::ValidityCode::Valid : core::ValidityCode::Missing,
-            valid ? version : 0};
-  }
-
-  void Invalidate(const core::InvalidationPlan &) override {
-    valid = false;
-  }
-
-  void MarkTransactionDirty() override { transaction_dirty = true; }
-  void ClearTransactionDirty() override { transaction_dirty = false; }
-
-  bool TryPublish(const core::StagedMaintenanceOutcome &outcome,
-                  core::Version expected_version) override {
-    if (expected_version != 0 && expected_version != version) {
-      valid = false;
-      return false;
-    }
-    for (const auto &image : outcome.updates) {
-      auto published = image;
-      published.version = ++version;
-      images[published.partition] = std::move(published);
-    }
-    valid = !images.empty();
-    return true;
-  }
-
-  void Install(std::vector<core::StateImage> built,
-               std::string accelerator_id) {
-    images.clear();
-    accelerator = std::move(accelerator_id);
-    ++version;
-    for (auto &image : built) {
-      image.version = version;
-      images.emplace(image.partition, std::move(image));
-    }
-    valid = !images.empty();
-  }
-
-private:
-  std::string accelerator;
-  std::map<core::PartitionId, core::StateImage> images;
-  core::Version version = 0;
-  bool valid = false;
-  bool transaction_dirty = false;
-};
-
-class ServicesBase : public core::AuxEngineServices {
-public:
-  ServicesBase(LocalStateStore &store_p, const char *cost_model_env,
-               const char *default_config_path)
-      : store(store_p),
-        cost_model(core::LoadAuxCostModelJson(
-            ResolveCostModelPath(cost_model_env, default_config_path))) {}
-
-  core::VisibilityToken CurrentVisibility() const override {
-    return {};
-  }
-  core::AuxStateStore &StateStore() override { return store; }
-  const maintenance::CostModelParams &MaintenanceCostModel() const override {
-    return cost_model;
-  }
-  std::size_t WorkerCount() const override {
-    const char *env = std::getenv("ACCEL_AUX_THREADS");
-    if (env && *env) {
-      const long parsed = std::strtol(env, nullptr, 10);
-      if (parsed > 0) {
-        return static_cast<std::size_t>(parsed);
-      }
-    }
-#if defined(ACCEL_ENABLE_PARALLEL_AUX)
-    if (::accel_aux_worker_count > 0) {
-      return static_cast<std::size_t>(::accel_aux_worker_count);
-    }
-    if (::max_parallel_workers_per_gather > 0) {
-      return static_cast<std::size_t>(::max_parallel_workers_per_gather);
-    }
-#endif
-    return 1;
-  }
-
-private:
-  LocalStateStore &store;
-  maintenance::CostModelParams cost_model;
-};
 
 namespace scans {
 
@@ -1316,10 +1210,8 @@ void ScanTpchQ20Nations(
 
 } // namespace scans
 
-class TpchQ1Services final : public ServicesBase,
-                             public query::TpchQ1InitialScan {
+class TpchQ1Scan final : public query::TpchQ1InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanLineitems(
       const std::function<void(const query::TpchQ1LineitemInput &)> &consumer)
       override {
@@ -1327,10 +1219,8 @@ public:
   }
 };
 
-class TpchQ3Services final : public ServicesBase,
-                             public query::TpchQ3InitialScan {
+class TpchQ3Scan final : public query::TpchQ3InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanCustomers(
       const std::function<void(const query::TpchQ3CustomerInput &)> &consumer)
       override {
@@ -1348,10 +1238,8 @@ public:
   }
 };
 
-class TpchQ6Services final : public ServicesBase,
-                             public query::TpchQ6InitialScan {
+class TpchQ6Scan final : public query::TpchQ6InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanLineitems(
       const std::function<void(const query::TpchQ6LineitemInput &)> &consumer)
       override {
@@ -1359,10 +1247,8 @@ public:
   }
 };
 
-class TpchQ10Services final : public ServicesBase,
-                              public query::TpchQ10InitialScan {
+class TpchQ10Scan final : public query::TpchQ10InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanCustomers(
       const std::function<void(const query::TpchQ10CustomerInput &)> &consumer)
       override {
@@ -1391,10 +1277,8 @@ public:
   }
 };
 
-class TpchQ12Services final : public ServicesBase,
-                              public query::TpchQ12InitialScan {
+class TpchQ12Scan final : public query::TpchQ12InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanOrders(
       const std::function<void(const query::TpchQ12OrderInput &)> &consumer)
       override {
@@ -1407,10 +1291,8 @@ public:
   }
 };
 
-class TpchQ14Services final : public ServicesBase,
-                              public query::TpchQ14InitialScan {
+class TpchQ14Scan final : public query::TpchQ14InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanParts(
       const std::function<void(const query::TpchQ14PartInput &)> &consumer)
       override {
@@ -1423,10 +1305,8 @@ public:
   }
 };
 
-class TpchQ9Services final : public ServicesBase,
-                             public query::TpchQ9InitialScan {
+class TpchQ9Scan final : public query::TpchQ9InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanParts(
       const std::function<void(const query::TpchQ9PartInput &)> &consumer)
       override {
@@ -1459,10 +1339,8 @@ public:
   }
 };
 
-class TpchQ11Services final : public ServicesBase,
-                              public query::TpchQ11InitialScan {
+class TpchQ11Scan final : public query::TpchQ11InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanPartsupp(
       const std::function<void(const query::TpchQ11PartsuppInput &)> &consumer)
       override {
@@ -1480,10 +1358,8 @@ public:
   }
 };
 
-class TpchQ17Services final : public ServicesBase,
-                              public query::TpchQ17InitialScan {
+class TpchQ17Scan final : public query::TpchQ17InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanParts(
       const std::function<void(const query::TpchQ17PartInput &)> &consumer)
       override {
@@ -1503,10 +1379,8 @@ public:
   }
 };
 
-class TpchQ18Services final : public ServicesBase,
-                              public query::TpchQ18InitialScan {
+class TpchQ18Scan final : public query::TpchQ18InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanLineitems(
       const std::function<void(const query::TpchQ18LineitemInput &)> &consumer)
       override {
@@ -1532,10 +1406,8 @@ public:
   }
 };
 
-class TpchQ21Services final : public ServicesBase,
-                              public query::TpchQ21InitialScan {
+class TpchQ21Scan final : public query::TpchQ21InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanSuppliers(
       const std::function<void(const query::TpchQ21SupplierInput &)> &consumer)
       override {
@@ -1558,10 +1430,8 @@ public:
   }
 };
 
-class TpchQ22Services final : public ServicesBase,
-                              public query::TpchQ22InitialScan {
+class TpchQ22Scan final : public query::TpchQ22InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanCustomers(
       const std::function<void(const query::TpchQ22CustomerInput &)> &consumer)
       override {
@@ -1574,10 +1444,8 @@ public:
   }
 };
 
-class TpchQ2Services final : public ServicesBase,
-                             public query::TpchQ2InitialScan {
+class TpchQ2Scan final : public query::TpchQ2InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanParts(
       const std::function<void(const query::TpchQ2PartInput &)> &consumer)
       override {
@@ -1605,10 +1473,8 @@ public:
   }
 };
 
-class TpchQ4Services final : public ServicesBase,
-                             public query::TpchQ4InitialScan {
+class TpchQ4Scan final : public query::TpchQ4InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanOrders(
       const std::function<void(const query::TpchQ4OrderInput &)> &consumer)
       override {
@@ -1621,10 +1487,8 @@ public:
   }
 };
 
-class TpchQ5Services final : public ServicesBase,
-                             public query::TpchQ5InitialScan {
+class TpchQ5Scan final : public query::TpchQ5InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanRegions(
       const std::function<void(const query::TpchQ5RegionInput &)> &consumer)
       override {
@@ -1657,10 +1521,8 @@ public:
   }
 };
 
-class TpchQ7Services final : public ServicesBase,
-                             public query::TpchQ7InitialScan {
+class TpchQ7Scan final : public query::TpchQ7InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanNations(
       const std::function<void(const query::TpchQ7NationInput &)> &consumer)
       override {
@@ -1688,10 +1550,8 @@ public:
   }
 };
 
-class TpchQ8Services final : public ServicesBase,
-                             public query::TpchQ8InitialScan {
+class TpchQ8Scan final : public query::TpchQ8InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanParts(
       const std::function<void(const query::TpchQ8PartInput &)> &consumer)
       override {
@@ -1729,10 +1589,8 @@ public:
   }
 };
 
-class TpchQ13Services final : public ServicesBase,
-                              public query::TpchQ13InitialScan {
+class TpchQ13Scan final : public query::TpchQ13InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanCustomers(
       const std::function<void(const query::TpchQ13CustomerInput &)> &consumer)
       override {
@@ -1745,10 +1603,8 @@ public:
   }
 };
 
-class TpchQ15Services final : public ServicesBase,
-                              public query::TpchQ15InitialScan {
+class TpchQ15Scan final : public query::TpchQ15InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanLineitems(
       const std::function<void(const query::TpchQ15LineitemInput &)> &consumer)
       override {
@@ -1767,10 +1623,8 @@ public:
   }
 };
 
-class TpchQ16Services final : public ServicesBase,
-                              public query::TpchQ16InitialScan {
+class TpchQ16Scan final : public query::TpchQ16InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanSuppliers(
       const std::function<void(const query::TpchQ16SupplierInput &)> &consumer)
       override {
@@ -1788,10 +1642,8 @@ public:
   }
 };
 
-class TpchQ19Services final : public ServicesBase,
-                              public query::TpchQ19InitialScan {
+class TpchQ19Scan final : public query::TpchQ19InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanParts(
       const std::function<void(const query::TpchQ19PartInput &)> &consumer)
       override {
@@ -1807,10 +1659,8 @@ public:
   }
 };
 
-class TpchQ20Services final : public ServicesBase,
-                              public query::TpchQ20InitialScan {
+class TpchQ20Scan final : public query::TpchQ20InitialScan {
 public:
-  using ServicesBase::ServicesBase;
   void ScanLineitems(
       const std::function<void(const query::TpchQ20LineitemInput &)> &consumer)
       override {
@@ -1934,23 +1784,24 @@ private:
   TupleDesc tuple_desc;
 };
 
-template <typename Module, typename Config, typename ServicesT>
+template <typename Module, typename Config, typename ScanT>
 class Runtime final {
 public:
   Runtime(const char *cost_model_env, const char *default_config_path,
           core::AcceleratorId accelerator, Config config)
-      : store(), services(store, cost_model_env, default_config_path),
-        module(config, &services), coordinator(),
+      : store(), coordinator(),
         backend(
             coordinator, store,
-            [this] { return services.CurrentVisibility(); },
-            [this] { return services.MaintenanceCostModel(); }),
-        accelerator(std::move(accelerator)) {
+            [] { return core::VisibilityToken{}; },
+            [cost_model_env, default_config_path] {
+              return core::LoadAuxCostModelJson(
+                  ResolveCostModelPath(cost_model_env, default_config_path));
+            }),
+        scan(), module(config, &scan), accelerator(std::move(accelerator)) {
     auto module_view = std::shared_ptr<Module>(&module, [](Module *) {});
     coordinator.Register(std::move(module_view));
-    coordinator.AttachServices(backend);
-    accelerator_codegen::aux_state::engine::postgres::SetPostgresActiveBackend(
-        &backend);
+    accelerator_codegen::aux_state::engine::postgres::
+        RegisterPostgresMutationBackend(&backend);
     accelerator_codegen::aux_state::engine::postgres::
         RegisterPostgresXactCallbacks();
   }
@@ -1960,42 +1811,37 @@ public:
       return;
     }
     Builder builder;
-    module.Build(services, builder);
+    module.Build(backend, builder);
     if (!builder.finished) {
       throw std::runtime_error("auxiliary build did not finish");
     }
     store.Install(std::move(builder.images), accelerator);
     store.ClearTransactionDirty();
     built = true;
-    // ROW triggers → bridge observer; xact callbacks already registered in ctor.
     accelerator_codegen::aux_state::engine::postgres::
         RegisterPostgresBackendForMutations();
   }
 
   void Execute(const core::QueryArguments &arguments, FunctionCallInfo fcinfo) {
     RequireMaterialize(fcinfo);
-    // ROW triggers capture into the extension bridge observer. When base tables
-    // change, force aux rebuild from native PG SPI scans.
-    const int mutations = accel_pg_get_observer_mutation_count();
-    if (mutations != observed_mutations) {
-      built = false;
-      store.MarkTransactionDirty();
-      observed_mutations = mutations;
-    }
+    // Prefer this Runtime for subsequent trigger captures in this session.
+    accelerator_codegen::aux_state::engine::postgres::
+        RegisterPostgresMutationBackend(&backend);
+
     EnsureBuilt();
+    // Mutations are applied on UPDATE commit via CaptureMutation →
+    // StageMaintenance (ApplyDelta / Rebuild*) → TryPublish. Only rebuild
+    // here if the store is still invalid after that path.
     if (!store.CheckValidity({accelerator, {}}, {}).IsValid()) {
       built = false;
       EnsureBuilt();
     }
+    observed_mutations = accel_pg_get_observer_mutation_count();
     auto *return_set_info =
         reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
     PgSink sink(return_set_info->setResult, return_set_info->setDesc);
-    module.Execute(services, arguments, sink);
+    module.Execute(backend, arguments, sink);
   }
-
-  LocalStateStore store;
-  ServicesT services;
-  Module module;
 
 private:
   void RequireMaterialize(FunctionCallInfo fcinfo) {
@@ -2009,211 +1855,217 @@ private:
     InitMaterializedSRF(fcinfo, 0);
   }
 
+  PostgresStateStore store;
   core::AuxTransactionCoordinator coordinator;
   accelerator_codegen::aux_state::engine::postgres::PostgresAuxBackend backend;
+  ScanT scan;
+  Module module;
   std::string accelerator;
   bool built = false;
   int observed_mutations = 0;
 };
 
-Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Services> &Q1Runtime() {
-  static Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Services>
+
+namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables;
+
+Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Scan> &Q1Runtime() {
+  static Runtime<query::TpchQ1Module, query::TpchQ1Config, TpchQ1Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q1_COST_MODEL",
               "config/q1_aux_cost_model.json",
-              core::TpchQ1Layout::kAccelerator, query::TpchQ1Config{1001});
+              core::TpchQ1Layout::kAccelerator, query::TpchQ1Config{pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ3Module, query::TpchQ3Config, TpchQ3Services> &Q3Runtime() {
-  static Runtime<query::TpchQ3Module, query::TpchQ3Config, TpchQ3Services>
+Runtime<query::TpchQ3Module, query::TpchQ3Config, TpchQ3Scan> &Q3Runtime() {
+  static Runtime<query::TpchQ3Module, query::TpchQ3Config, TpchQ3Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q3_COST_MODEL",
               "config/q3_aux_cost_model.json",
               core::TpchQ3Layout::kAccelerator,
-              query::TpchQ3Config{1003, 1002, 1004});
+              query::TpchQ3Config{pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Services> &Q6Runtime() {
-  static Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Services>
+Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Scan> &Q6Runtime() {
+  static Runtime<query::TpchQ6Module, query::TpchQ6Config, TpchQ6Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q6_COST_MODEL",
               "config/q6_aux_cost_model.json",
-              core::TpchQ6Layout::kAccelerator, query::TpchQ6Config{1006});
+              core::TpchQ6Layout::kAccelerator, query::TpchQ6Config{pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ10Module, query::TpchQ10Config, TpchQ10Services> &
+Runtime<query::TpchQ10Module, query::TpchQ10Config, TpchQ10Scan> &
 Q10Runtime() {
-  static Runtime<query::TpchQ10Module, query::TpchQ10Config, TpchQ10Services>
+  static Runtime<query::TpchQ10Module, query::TpchQ10Config, TpchQ10Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q10_COST_MODEL",
               "config/q10_aux_cost_model.json",
               core::TpchQ10Layout::kAccelerator,
-              query::TpchQ10Config{1, 2, 3, 4});
+              query::TpchQ10Config{pg_tbl::kCustomer, pg_tbl::kNation, pg_tbl::kOrders, pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ12Module, query::TpchQ12Config, TpchQ12Services> &
+Runtime<query::TpchQ12Module, query::TpchQ12Config, TpchQ12Scan> &
 Q12Runtime() {
-  static Runtime<query::TpchQ12Module, query::TpchQ12Config, TpchQ12Services>
+  static Runtime<query::TpchQ12Module, query::TpchQ12Config, TpchQ12Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q12_COST_MODEL",
               "config/q12_aux_cost_model.json",
-              core::TpchQ12Layout::kAccelerator, query::TpchQ12Config{1012, 1013});
+              core::TpchQ12Layout::kAccelerator, query::TpchQ12Config{pg_tbl::kOrders, pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ14Module, query::TpchQ14Config, TpchQ14Services> &
+Runtime<query::TpchQ14Module, query::TpchQ14Config, TpchQ14Scan> &
 Q14Runtime() {
-  static Runtime<query::TpchQ14Module, query::TpchQ14Config, TpchQ14Services>
+  static Runtime<query::TpchQ14Module, query::TpchQ14Config, TpchQ14Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q14_COST_MODEL",
               "config/q14_aux_cost_model.json",
-              core::TpchQ14Layout::kAccelerator, query::TpchQ14Config{1015, 1014});
+              core::TpchQ14Layout::kAccelerator, query::TpchQ14Config{pg_tbl::kPart, pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ9Module, query::TpchQ9Config, TpchQ9Services> &Q9Runtime() {
-  static Runtime<query::TpchQ9Module, query::TpchQ9Config, TpchQ9Services>
+Runtime<query::TpchQ9Module, query::TpchQ9Config, TpchQ9Scan> &Q9Runtime() {
+  static Runtime<query::TpchQ9Module, query::TpchQ9Config, TpchQ9Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q9_COST_MODEL",
               "config/q9_aux_cost_model.json",
               query::TpchQ9Layout::kAccelerator,
-              query::TpchQ9Config{1091, 1092, 1093, 1094, 1095, 1096});
+              query::TpchQ9Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kNation, pg_tbl::kOrders, pg_tbl::kPartsupp, pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ11Module, query::TpchQ11Config, TpchQ11Services> &
+Runtime<query::TpchQ11Module, query::TpchQ11Config, TpchQ11Scan> &
 Q11Runtime() {
-  static Runtime<query::TpchQ11Module, query::TpchQ11Config, TpchQ11Services>
+  static Runtime<query::TpchQ11Module, query::TpchQ11Config, TpchQ11Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q11_COST_MODEL",
               "config/q11_aux_cost_model.json",
               query::TpchQ11Layout::kAccelerator,
-              query::TpchQ11Config{1111, 1112, 1113});
+              query::TpchQ11Config{pg_tbl::kPartsupp, pg_tbl::kSupplier, pg_tbl::kNation});
   return runtime;
 }
 
-Runtime<query::TpchQ17Module, query::TpchQ17Config, TpchQ17Services> &
+Runtime<query::TpchQ17Module, query::TpchQ17Config, TpchQ17Scan> &
 Q17Runtime() {
-  static Runtime<query::TpchQ17Module, query::TpchQ17Config, TpchQ17Services>
+  static Runtime<query::TpchQ17Module, query::TpchQ17Config, TpchQ17Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q17_COST_MODEL",
               "config/q17_aux_cost_model.json",
               query::TpchQ17Layout::kAccelerator,
-              query::TpchQ17Config{1171, 1172});
+              query::TpchQ17Config{pg_tbl::kPart, pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ18Module, query::TpchQ18Config, TpchQ18Services> &
+Runtime<query::TpchQ18Module, query::TpchQ18Config, TpchQ18Scan> &
 Q18Runtime() {
-  static Runtime<query::TpchQ18Module, query::TpchQ18Config, TpchQ18Services>
+  static Runtime<query::TpchQ18Module, query::TpchQ18Config, TpchQ18Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q18_COST_MODEL",
               "config/q18_aux_cost_model.json",
               query::TpchQ18Layout::kAccelerator,
-              query::TpchQ18Config{1180, 1181, 1182});
+              query::TpchQ18Config{pg_tbl::kLineitem, pg_tbl::kOrders, pg_tbl::kCustomer});
   return runtime;
 }
 
-Runtime<query::TpchQ21Module, query::TpchQ21Config, TpchQ21Services> &
+Runtime<query::TpchQ21Module, query::TpchQ21Config, TpchQ21Scan> &
 Q21Runtime() {
-  static Runtime<query::TpchQ21Module, query::TpchQ21Config, TpchQ21Services>
+  static Runtime<query::TpchQ21Module, query::TpchQ21Config, TpchQ21Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q21_COST_MODEL",
               "config/q21_aux_cost_model.json",
               query::TpchQ21Layout::kAccelerator,
-              query::TpchQ21Config{1211, 1212, 1213, 1214});
+              query::TpchQ21Config{pg_tbl::kSupplier, pg_tbl::kOrders, pg_tbl::kLineitem, pg_tbl::kNation});
   return runtime;
 }
 
-Runtime<query::TpchQ22Module, query::TpchQ22Config, TpchQ22Services> &
+Runtime<query::TpchQ22Module, query::TpchQ22Config, TpchQ22Scan> &
 Q22Runtime() {
-  static Runtime<query::TpchQ22Module, query::TpchQ22Config, TpchQ22Services>
+  static Runtime<query::TpchQ22Module, query::TpchQ22Config, TpchQ22Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q22_COST_MODEL",
               "config/q22_aux_cost_model.json",
               query::TpchQ22Layout::kAccelerator,
-              query::TpchQ22Config{1221, 1222});
+              query::TpchQ22Config{pg_tbl::kOrders, pg_tbl::kCustomer});
   return runtime;
 }
 
-Runtime<query::TpchQ2Module, query::TpchQ2Config, TpchQ2Services> &Q2Runtime() {
-  static Runtime<query::TpchQ2Module, query::TpchQ2Config, TpchQ2Services>
+Runtime<query::TpchQ2Module, query::TpchQ2Config, TpchQ2Scan> &Q2Runtime() {
+  static Runtime<query::TpchQ2Module, query::TpchQ2Config, TpchQ2Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q2_COST_MODEL",
               "config/q2_aux_cost_model.json", core::TpchQ2Layout::kAccelerator,
-              query::TpchQ2Config{1021, 1022, 1023, 1024, 1025});
+              query::TpchQ2Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kPartsupp, pg_tbl::kNation, pg_tbl::kRegion});
   return runtime;
 }
 
-Runtime<query::TpchQ4Module, query::TpchQ4Config, TpchQ4Services> &Q4Runtime() {
-  static Runtime<query::TpchQ4Module, query::TpchQ4Config, TpchQ4Services>
+Runtime<query::TpchQ4Module, query::TpchQ4Config, TpchQ4Scan> &Q4Runtime() {
+  static Runtime<query::TpchQ4Module, query::TpchQ4Config, TpchQ4Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q4_COST_MODEL",
               "config/q4_aux_cost_model.json", query::TpchQ4Layout::kAccelerator,
-              query::TpchQ4Config{1041, 1042});
+              query::TpchQ4Config{pg_tbl::kOrders, pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ5Module, query::TpchQ5Config, TpchQ5Services> &Q5Runtime() {
-  static Runtime<query::TpchQ5Module, query::TpchQ5Config, TpchQ5Services>
+Runtime<query::TpchQ5Module, query::TpchQ5Config, TpchQ5Scan> &Q5Runtime() {
+  static Runtime<query::TpchQ5Module, query::TpchQ5Config, TpchQ5Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q5_COST_MODEL",
               "config/q5_aux_cost_model.json", core::TpchQ5Layout::kAccelerator,
-              query::TpchQ5Config{1051, 1052, 1053, 1054, 1055, 1056});
+              query::TpchQ5Config{pg_tbl::kRegion, pg_tbl::kNation, pg_tbl::kCustomer, pg_tbl::kSupplier, pg_tbl::kOrders, pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ7Module, query::TpchQ7Config, TpchQ7Services> &Q7Runtime() {
-  static Runtime<query::TpchQ7Module, query::TpchQ7Config, TpchQ7Services>
+Runtime<query::TpchQ7Module, query::TpchQ7Config, TpchQ7Scan> &Q7Runtime() {
+  static Runtime<query::TpchQ7Module, query::TpchQ7Config, TpchQ7Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q7_COST_MODEL",
               "config/q7_aux_cost_model.json", core::TpchQ7Layout::kAccelerator,
-              query::TpchQ7Config{1071, 1072, 1073, 1074, 1075});
+              query::TpchQ7Config{pg_tbl::kNation, pg_tbl::kSupplier, pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ8Module, query::TpchQ8Config, TpchQ8Services> &Q8Runtime() {
-  static Runtime<query::TpchQ8Module, query::TpchQ8Config, TpchQ8Services>
+Runtime<query::TpchQ8Module, query::TpchQ8Config, TpchQ8Scan> &Q8Runtime() {
+  static Runtime<query::TpchQ8Module, query::TpchQ8Config, TpchQ8Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q8_COST_MODEL",
               "config/q8_aux_cost_model.json", query::TpchQ8Layout::kAccelerator,
-              query::TpchQ8Config{1081, 1082, 1083, 1084, 1085});
+              query::TpchQ8Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem});
   return runtime;
 }
 
-Runtime<query::TpchQ13Module, query::TpchQ13Config, TpchQ13Services> &
+Runtime<query::TpchQ13Module, query::TpchQ13Config, TpchQ13Scan> &
 Q13Runtime() {
-  static Runtime<query::TpchQ13Module, query::TpchQ13Config, TpchQ13Services>
+  static Runtime<query::TpchQ13Module, query::TpchQ13Config, TpchQ13Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q13_COST_MODEL",
               "config/q13_aux_cost_model.json",
-              core::TpchQ13Layout::kAccelerator, query::TpchQ13Config{1131, 1132});
+              core::TpchQ13Layout::kAccelerator, query::TpchQ13Config{pg_tbl::kCustomer, pg_tbl::kOrders});
   return runtime;
 }
 
-Runtime<query::TpchQ15Module, query::TpchQ15Config, TpchQ15Services> &
+Runtime<query::TpchQ15Module, query::TpchQ15Config, TpchQ15Scan> &
 Q15Runtime() {
-  static Runtime<query::TpchQ15Module, query::TpchQ15Config, TpchQ15Services>
+  static Runtime<query::TpchQ15Module, query::TpchQ15Config, TpchQ15Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q15_COST_MODEL",
               "config/q15_aux_cost_model.json",
               query::TpchQ15Layout::kAccelerator,
-              query::TpchQ15Config{1151, 1152});
+              query::TpchQ15Config{pg_tbl::kLineitem, pg_tbl::kSupplier});
   return runtime;
 }
 
-Runtime<query::TpchQ16Module, query::TpchQ16Config, TpchQ16Services> &
+Runtime<query::TpchQ16Module, query::TpchQ16Config, TpchQ16Scan> &
 Q16Runtime() {
-  static Runtime<query::TpchQ16Module, query::TpchQ16Config, TpchQ16Services>
+  static Runtime<query::TpchQ16Module, query::TpchQ16Config, TpchQ16Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q16_COST_MODEL",
               "config/q16_aux_cost_model.json",
               query::TpchQ16Layout::kAccelerator,
-              query::TpchQ16Config{1161, 1162, 1163});
+              query::TpchQ16Config{pg_tbl::kPart, pg_tbl::kPartsupp, pg_tbl::kSupplier});
   return runtime;
 }
 
-Runtime<query::TpchQ19Module, query::TpchQ19Config, TpchQ19Services> &
+Runtime<query::TpchQ19Module, query::TpchQ19Config, TpchQ19Scan> &
 Q19Runtime() {
-  static Runtime<query::TpchQ19Module, query::TpchQ19Config, TpchQ19Services>
+  static Runtime<query::TpchQ19Module, query::TpchQ19Config, TpchQ19Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q19_COST_MODEL",
               "config/q19_aux_cost_model.json",
               query::TpchQ19Layout::kAccelerator,
-              query::TpchQ19Config{1191, 1192});
+              query::TpchQ19Config{pg_tbl::kLineitem, pg_tbl::kPart});
   return runtime;
 }
 
-Runtime<query::TpchQ20Module, query::TpchQ20Config, TpchQ20Services> &
+Runtime<query::TpchQ20Module, query::TpchQ20Config, TpchQ20Scan> &
 Q20Runtime() {
-  static Runtime<query::TpchQ20Module, query::TpchQ20Config, TpchQ20Services>
+  static Runtime<query::TpchQ20Module, query::TpchQ20Config, TpchQ20Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q20_COST_MODEL",
               "config/q20_aux_cost_model.json",
               query::TpchQ20Layout::kAccelerator,
-              query::TpchQ20Config{1201, 1202, 1203, 1204, 1205});
+              query::TpchQ20Config{pg_tbl::kLineitem, pg_tbl::kPart, pg_tbl::kPartsupp, pg_tbl::kSupplier, pg_tbl::kNation});
   return runtime;
 }
 

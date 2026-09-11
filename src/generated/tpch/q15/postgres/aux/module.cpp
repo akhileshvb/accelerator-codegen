@@ -410,8 +410,8 @@ void TpchQ15TxnBuffer::AddSupplierDelta(TpchQ15SupplierDelta delta) {
 core::AcceleratorId TpchQ15Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ15Module::Dependencies() const {
-  return {{config.lineitem_table, {0, 1, 2, 3}},
-          {config.supplier_table, {0, 1, 2, 3}}};
+  return {{config.lineitem_table, {0, 1, 2, 3}, {10, 2, 5, 6}},
+          {config.supplier_table, {0, 1, 2, 3}, {0, 1, 2, 4}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ15Module::CreateTxnBuffer() const {

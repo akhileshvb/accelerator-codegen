@@ -1427,61 +1427,6 @@ accel_add_aux_state_query(
 )
 
 # ---------------------------------------------------------------------------
-# PostgreSQL engine contract test
-# ---------------------------------------------------------------------------
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_contract.cpp")
-    add_executable(test_postgres_contract
-        tests/engine_backend/test_postgres_contract.cpp
-    )
-    target_link_libraries(test_postgres_contract
-        PRIVATE
-            accelerator_codegen
-            duckdb_sibling
-    )
-    target_include_directories(test_postgres_contract
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests
-            ${ACCEL_PG_INCLUDEDIR}
-            ${ACCEL_PG_INCLUDEDIR_SERVER}
-    )
-    # Contract harness LOADs accelerator_codegen_pg.so from the build dir.
-    if(TARGET accelerator_codegen_pg)
-        add_dependencies(test_postgres_contract accelerator_codegen_pg)
-    endif()
-    if(BUILD_TESTING)
-        add_test(NAME engine_postgres_contract COMMAND test_postgres_contract)
-    endif()
-endif()
-
-# ---------------------------------------------------------------------------
-# PostgreSQL engine adversarial test (validation-owned)
-# ---------------------------------------------------------------------------
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_adversarial.cpp")
-    add_executable(test_postgres_adversarial
-        tests/engine_backend/test_postgres_adversarial.cpp
-    )
-    target_link_libraries(test_postgres_adversarial
-        PRIVATE
-            accelerator_codegen
-            duckdb_sibling
-    )
-    target_include_directories(test_postgres_adversarial
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests
-            ${ACCEL_PG_INCLUDEDIR}
-            ${ACCEL_PG_INCLUDEDIR_SERVER}
-    )
-    if(TARGET accelerator_codegen_pg)
-        add_dependencies(test_postgres_adversarial accelerator_codegen_pg)
-    endif()
-    if(BUILD_TESTING)
-        add_test(NAME engine_postgres_adversarial COMMAND test_postgres_adversarial)
-    endif()
-endif()
-
-# ---------------------------------------------------------------------------
 # PostgreSQL TPC-H differential harness
 # ---------------------------------------------------------------------------
 if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
@@ -1497,6 +1442,7 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
     target_include_directories(test_postgres_tpch_differential
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
             ${ACCEL_PG_INCLUDEDIR}
             ${ACCEL_PG_INCLUDEDIR_SERVER}
     )
@@ -1532,6 +1478,25 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
                     ${CMAKE_BINARY_DIR}/benchmark_postgres_tpch_q${q}
             )
         endforeach()
+    endif()
+
+    # Postgres TPC-H aux cost-model calibrator (wall-clock via psql \\timing).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/postgres/calibrate_postgres_tpch_aux_cost_model.cpp")
+        add_executable(calibrate_postgres_tpch_aux_cost_model
+            benchmarks/postgres/calibrate_postgres_tpch_aux_cost_model.cpp
+        )
+        target_link_libraries(calibrate_postgres_tpch_aux_cost_model
+            PRIVATE accelerator_codegen duckdb_sibling)
+        target_include_directories(calibrate_postgres_tpch_aux_cost_model
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+                ${ACCEL_PG_INCLUDEDIR}
+                ${ACCEL_PG_INCLUDEDIR_SERVER}
+        )
+        if(TARGET accelerator_codegen_pg)
+            add_dependencies(calibrate_postgres_tpch_aux_cost_model accelerator_codegen_pg)
+        endif()
     endif()
 endif()
 

@@ -390,11 +390,11 @@ TpchQ7TxnBuffer::OrderCustkeys() const {
 core::AcceleratorId TpchQ7Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ7Module::Dependencies() const {
-  return {{config.nation_table, {0, 1}},
-          {config.supplier_table, {0, 1}},
-          {config.customer_table, {0, 1}},
-          {config.orders_table, {0, 1}},
-          {config.lineitem_table, {0, 1, 2, 3, 4}}};
+  return {{config.nation_table, {0, 1}, {0, 1}},
+          {config.supplier_table, {0, 1}, {0, 3}},
+          {config.customer_table, {0, 1}, {0, 3}},
+          {config.orders_table, {0, 1}, {0, 1}},
+          {config.lineitem_table, {0, 1, 2, 3, 4}, {0, 2, 5, 6, 10}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ7Module::CreateTxnBuffer() const {

@@ -12,10 +12,10 @@ LOAD_TPCH="${ACCEL_PG_ENSURE_TPCH:-0}"
 SO_PATH="/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so"
 
 REQUIRED_SOURCES=(
-  "src/runtime/postgres/scan_adapter.cpp"
   "src/generated/postgres/postgres_extension.cpp"
+  "src/generated/postgres/runtime.cpp"
+  "src/generated/postgres/transition_capture.cpp"
   "src/stateful/postgres/postgres_aux_backend.cpp"
-  "src/stateful/postgres/postgres_state_store.cpp"
   "src/stateful/postgres/postgres_bridge.cpp"
 )
 
@@ -45,7 +45,7 @@ if [[ "${BUILD}" == "1" ]] && ! adapter_sources_present; then
   echo "[ensure] adapter sources missing — refusing to treat a stale ${SO_PATH} as success." >&2
   echo "[ensure] Required under ${ROOT}:" >&2
   printf '  - %s\n' "${REQUIRED_SOURCES[@]}" >&2
-  echo "[ensure] Generate the postgres adapter (engine_backend implementation), then re-run." >&2
+  echo "[ensure] Live postgres host sources are missing; restore them, then re-run." >&2
   exit 1
 fi
 

@@ -279,12 +279,12 @@ core::AcceleratorId TpchQ5Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ5Module::Dependencies() const {
   return {
-      {config.region_table,  {0, 1}},
-      {config.nation_table,  {0, 1, 2}},
-      {config.customer_table,{0, 1}},
-      {config.supplier_table,{0, 1}},
-      {config.orders_table,  {0, 1, 2}},
-      {config.lineitem_table,{0, 1, 2, 3}},
+      {config.region_table, {0, 1}, {0, 1}},
+      {config.nation_table, {0, 1, 2}, {0, 1, 2}},
+      {config.customer_table, {0, 1}, {0, 3}},
+      {config.supplier_table, {0, 1}, {0, 3}},
+      {config.orders_table, {0, 1, 2}, {0, 1, 4}},
+      {config.lineitem_table, {0, 1, 2, 3}, {0, 2, 5, 6}},
   };
 }
 

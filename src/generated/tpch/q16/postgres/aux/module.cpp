@@ -382,9 +382,9 @@ core::AcceleratorId TpchQ16Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ16Module::Dependencies() const {
   std::vector<core::TableDependency> deps;
-  deps.push_back({config.part_table, {0, 1, 2, 3}});
-  deps.push_back({config.partsupp_table, {0, 1}});
-  deps.push_back({config.supplier_table, {0, 1}});
+  deps.push_back({config.part_table, {0, 1, 2, 3}, {0, 3, 4, 5}});
+  deps.push_back({config.partsupp_table, {0, 1}, {0, 1}});
+  deps.push_back({config.supplier_table, {0, 1}, {0, 6}});
   return deps;
 }
 
@@ -529,16 +529,14 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
   }
 
   if (full_rebuild || !deltas.empty()) {
-    // Rebuild full state from initial scan for correctness.
+    // Part / partsupp membership changes require a full rebuild for correctness.
     auto state = BuildState(services);
     auto shared_state = std::make_shared<const TpchQ16State>(state);
 
-    // Publish eligibility partition.
     outcome.updates.push_back(core::StateImage::Make(
         Id(), TpchQ16Layout::kSupplierEligibility, 0,
         MakeEligibilityImage(shared_state)));
 
-    // Publish every observed size partition.
     for (const auto &[size, partition] : state.membership) {
       if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
         continue;
@@ -551,10 +549,36 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
 
     outcome.action = core::MaintenanceAction::RebuildAll;
   } else if (!supplier_deltas.empty()) {
-    // Supplier-only eligibility change: apply deltas to the current eligibility
-    // state, then recompute the precomputed pre-sorted rows from the existing
-    // size-membership partitions. Do not rebuild from base scan because the
-    // base-scan source may not yet reflect the committed mutation.
+    // Supplier-only eligibility change: incremental ApplyDelta when selected.
+    const auto decision = services.ChooseMaintenance(
+        {static_cast<uint64_t>(supplier_deltas.size()), 1, true, false, true,
+         false, false, core::MaintenanceAction::NoOp,
+         services.ExpectedQueriesBeforeNextWrite()});
+    if (decision.action != core::MaintenanceAction::ApplyDelta) {
+      auto state = BuildState(services);
+      auto shared_state = std::make_shared<const TpchQ16State>(state);
+      outcome.updates.push_back(core::StateImage::Make(
+          Id(), TpchQ16Layout::kSupplierEligibility, 0,
+          MakeEligibilityImage(shared_state)));
+      for (const auto &[size, partition] : state.membership) {
+        if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
+          continue;
+        auto shared_partition =
+            std::make_shared<const TpchQ16SizePartition>(partition);
+        outcome.updates.push_back(core::StateImage::Make(
+            Id(), TpchQ16Layout::SizePartition(size), 0,
+            MakeSizeImage(size, shared_partition)));
+      }
+      outcome.action = decision.action == core::MaintenanceAction::RebuildPartition
+                           ? core::MaintenanceAction::RebuildAll
+                           : decision.action;
+      if (outcome.action != core::MaintenanceAction::RebuildAll &&
+          outcome.action != core::MaintenanceAction::RebuildPartition) {
+        outcome.action = core::MaintenanceAction::RebuildAll;
+      }
+      return outcome;
+    }
+
     TpchQ16State state;
     bool have_eligibility = false;
     {
@@ -576,7 +600,6 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
         state.SetSupplierEligible(delta.suppkey, delta.new_eligible);
     }
 
-    // Load all size partitions and recompute counts against updated eligibility.
     std::vector<core::PartitionId> size_window;
     size_window.reserve(TpchQ16Layout::kMaxSize);
     for (int32_t size = TpchQ16Layout::kMinSize; size <= TpchQ16Layout::kMaxSize;
@@ -619,7 +642,7 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
     outcome.updates.push_back(core::StateImage::Make(
         Id(), TpchQ16Layout::kSupplierEligibility, 0,
         MakeEligibilityImage(shared_state)));
-    outcome.action = core::MaintenanceAction::RebuildAll;
+    outcome.action = core::MaintenanceAction::ApplyDelta;
   }
 
   return outcome;

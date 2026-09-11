@@ -665,11 +665,11 @@ void TpchQ20TxnBuffer::AddPartNameDelta(TpchQ20PartNameDelta delta) {
 core::AcceleratorId TpchQ20Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ20Module::Dependencies() const {
-  return {{config.lineitem_table, {0, 1, 2, 3}},
-          {config.part_table, {0, 1}},
-          {config.partsupp_table, {0, 1, 2}},
-          {config.supplier_table, {0, 1, 2, 3}},
-          {config.nation_table, {0, 1}}};
+  return {{config.lineitem_table, {0, 1, 2, 3}, {10, 1, 2, 4}},
+          {config.part_table, {0, 1}, {0, 1}},
+          {config.partsupp_table, {0, 1, 2}, {0, 1, 2}},
+          {config.supplier_table, {0, 1, 2, 3}, {0, 1, 2, 3}},
+          {config.nation_table, {0, 1}, {0, 1}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ20Module::CreateTxnBuffer() const {

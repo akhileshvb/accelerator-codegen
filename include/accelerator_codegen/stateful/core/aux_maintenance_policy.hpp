@@ -2,6 +2,8 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <string_view>
 
 #include "accelerator_codegen/stateful/maintenance/action_selector.hpp"
 
@@ -23,6 +25,11 @@ struct MaintenanceDecision {
   maintenance::MaintenanceAction action = maintenance::MaintenanceAction::NoOp;
   double selected_cost_us = 0.0;
 };
+
+// Process-local override for ChooseMaintenance (Postgres SQL can set this).
+// Empty / unknown name clears the override. Also honors getenv when unset.
+void SetForcedMaintenanceActionName(std::string_view action_name);
+std::optional<maintenance::MaintenanceAction> ForcedMaintenanceAction();
 
 MaintenanceDecision SelectAuxMaintenanceAction(
     const MaintenanceRequest &, const maintenance::CostModelParams &);

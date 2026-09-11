@@ -7,10 +7,10 @@ function(accel_collect_postgres_pg_sources OUT_VAR)
     set(_sources)
     foreach(_f
         src/generated/postgres/postgres_extension.cpp
+        src/generated/postgres/transition_capture.cpp
         src/generated/postgres/runtime.cpp
         src/stateful/postgres/postgres_bridge.cpp
         src/stateful/postgres/postgres_xact_callbacks.cpp
-        src/runtime/postgres/scan_adapter.cpp
         src/runtime/postgres/query_functions.cpp
         src/runtime/postgres/kernel_executor.cpp
     )
@@ -27,8 +27,7 @@ function(accel_build_postgres_extension)
         message(FATAL_ERROR
             "ACCELERATOR_CODEGEN_BUILD_POSTGRES=ON but postgres extension sources "
             "are missing (src/generated/postgres/postgres_extension.cpp, "
-            "src/runtime/postgres/scan_adapter.cpp). Generate the adapter first; "
-            "do not install a stale accelerator_codegen_pg.so.")
+            "src/generated/postgres/runtime.cpp).")
     endif()
     add_library(accelerator_codegen_pg MODULE ${PG_EXT_SOURCES})
     target_include_directories(accelerator_codegen_pg

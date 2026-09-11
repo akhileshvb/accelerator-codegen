@@ -2,8 +2,11 @@
 #pragma once
 
 #include <functional>
+#include <optional>
+#include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
+#include "accelerator_codegen/stateful/postgres/postgres_state_store.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 
@@ -24,10 +27,16 @@ public:
   void OnCommit();
   void OnAbort();
 
+  // nullopt = this backend does not depend on table; empty = full row;
+  // otherwise physical attnums in AuxRow order.
+  std::optional<std::vector<int32_t>>
+  MutationCaptureAttnums(core::TableId table) const;
+
   core::VisibilityToken CurrentVisibility() const override;
   core::AuxStateStore &StateStore() override;
   const maintenance::CostModelParams &MaintenanceCostModel() const override;
   double ExpectedQueriesBeforeNextWrite() const override;
+  std::size_t WorkerCount() const override;
 
   // PostgreSQL commit hooks cannot run table scans.
   bool AllowsSynchronousRebuildOnCommit() const override;

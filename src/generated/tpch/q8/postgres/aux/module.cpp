@@ -489,11 +489,11 @@ TpchQ8TxnBuffer::OrderInfoOverlay() const {
 core::AcceleratorId TpchQ8Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ8Module::Dependencies() const {
-  return {{config.part_table, {0, 1}},
-          {config.supplier_table, {0, 1}},
-          {config.customer_table, {0, 1}},
-          {config.orders_table, {0, 1, 2}},
-          {config.lineitem_table, {0, 1, 2, 3, 4}}};
+  return {{config.part_table, {0, 1}, {0, 4}},
+          {config.supplier_table, {0, 1}, {0, 3}},
+          {config.customer_table, {0, 1}, {0, 3}},
+          {config.orders_table, {0, 1, 2}, {0, 1, 4}},
+          {config.lineitem_table, {0, 1, 2, 3, 4}, {1, 0, 2, 5, 6}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ8Module::CreateTxnBuffer() const {

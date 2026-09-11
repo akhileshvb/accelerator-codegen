@@ -3,7 +3,9 @@
 
 #include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 
+#include <algorithm>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -141,6 +143,12 @@ void AuxTransactionCoordinator::ApplyMutationLocked(
     MergeInvalidationPlan(entry.plan,
                           entry.module->InterpretMutation(mutation));
     entry.module->AccumulateMutation(mutation, *services, *entry.buffer);
+    // Untyped CSV capture often fails module parsers, which then neither buffer
+    // deltas nor mark rebuild. Force an invalidation plan so PreCommit cannot
+    // no-op and leave a Valid-but-stale store after Commit.
+    if (entry.plan.IsEmpty() && !entry.buffer->HasPendingChanges()) {
+      MergeInvalidationPlan(entry.plan, AllPartitionsPlan());
+    }
   }
 }
 
@@ -161,17 +169,36 @@ void AuxTransactionCoordinator::PreCommit() {
     entry.outcome =
         entry.module->StageMaintenance(*services, entry.plan, *entry.buffer);
     entry.staged = true;
-    RecordStagedMaintenanceAction(entry.outcome.action);
-    // PostgreSQL cannot Build during Commit (no ActiveSnapshot / wrong xact
-    // state). Materialize sync rebuilds here while SPI is still safe.
-    if (!services->AllowsSynchronousRebuildOnCommit() &&
-        IsSyncRebuildAction(entry.outcome.action) &&
-        entry.outcome.updates.empty()) {
-      if (entry.outcome.action == MaintenanceAction::RebuildPartition) {
-        entry.outcome.action = MaintenanceAction::RebuildAll;
+    if (IsSyncRebuildAction(entry.outcome.action)) {
+      if (!services->AllowsSynchronousRebuildOnCommit()) {
+        // Postgres: discard any PRE_COMMIT SPI rebuild images (they can miss
+        // this xact's writes). Invalidate and let the next Execute EnsureBuilt
+        // rescan after commit. ApplyDelta updates are not sync-rebuild.
+        if (entry.outcome.action == MaintenanceAction::RebuildPartition) {
+          if (entry.outcome.invalidations.IsEmpty() &&
+              !entry.outcome.updates.empty()) {
+            entry.outcome.invalidations =
+                PartitionSetPlanFromImages(entry.outcome.updates);
+          }
+          if (entry.outcome.invalidations.IsEmpty()) {
+            entry.outcome.action = MaintenanceAction::RebuildAll;
+            entry.outcome.invalidations = AllPartitionsPlan();
+          }
+        } else if (entry.outcome.invalidations.IsEmpty()) {
+          entry.outcome.invalidations = AllPartitionsPlan();
+        }
+        entry.outcome.updates.clear();
+        entry.outcome.pending_rebuild = entry.outcome.invalidations;
+      } else if (entry.outcome.updates.empty()) {
+        // DuckDB (and similar): materialize sync rebuild when module left
+        // updates empty.
+        if (entry.outcome.action == MaintenanceAction::RebuildPartition) {
+          entry.outcome.action = MaintenanceAction::RebuildAll;
+        }
+        MaterializeSyncRebuild(*services, *entry.module, entry.outcome);
       }
-      MaterializeSyncRebuild(*services, *entry.module, entry.outcome);
     }
+    RecordStagedMaintenanceAction(entry.outcome.action);
   }
 }
 
@@ -196,8 +223,9 @@ void AuxTransactionCoordinator::Commit() {
     // Modules that cannot rebuild locally leave updates empty; treat that as
     // RebuildAll so correctness is preserved.
     // InvalidateAndFallback stays lazy on purpose.
-    // Engines that cannot scan during Commit (PostgreSQL) already materialized
-    // in PreCommit via AllowsSynchronousRebuildOnCommit() == false.
+    // PostgreSQL (AllowsSynchronousRebuildOnCommit==false) stages Rebuild* in
+    // PreCommit without SPI Build; empty updates → Invalidate here, then the
+    // next Execute CheckValidity→EnsureBuilt. DuckDB may Materialize above.
     if (action == MaintenanceAction::RebuildPartition &&
         entry.outcome.updates.empty()) {
       action = MaintenanceAction::RebuildAll;
@@ -272,6 +300,26 @@ bool AuxTransactionCoordinator::HasRegisteredModule(
 std::size_t AuxTransactionCoordinator::ModuleCount() const {
   std::lock_guard<std::mutex> guard(mutex);
   return entries.size();
+}
+
+std::optional<std::vector<int32_t>>
+AuxTransactionCoordinator::MutationCaptureAttnums(TableId table) const {
+  // Return the first registered module's projection for `table`. Postgres
+  // capture fans out per Runtime backend, so each coordinator typically owns
+  // one module — preserve that module's attnum order for dense Read*.
+  std::lock_guard<std::mutex> guard(mutex);
+  for (const auto &entry : entries) {
+    if (!entry.module) {
+      continue;
+    }
+    for (const auto &dep : entry.module->Dependencies()) {
+      if (dep.table != table) {
+        continue;
+      }
+      return dep.mutation_attnums;
+    }
+  }
+  return std::nullopt;
 }
 
 bool AuxTransactionCoordinator::HasPendingWork() const {

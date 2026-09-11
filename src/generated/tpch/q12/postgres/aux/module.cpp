@@ -307,8 +307,8 @@ void TpchQ12TxnBuffer::AddOrderDelta(TpchQ12OrderDelta delta) {
 
 core::AcceleratorId TpchQ12Module::Id() const { return kId; }
 std::vector<core::TableDependency> TpchQ12Module::Dependencies() const {
-  return {{config.orders_table, {0, 1}},
-          {config.lineitem_table, {0, 1, 2, 3, 4}}};
+  return {{config.orders_table, {0, 1}, {0, 5}},
+          {config.lineitem_table, {0, 1, 2, 3, 4}, {0, 14, 11, 12, 10}}};
 }
 std::unique_ptr<core::AuxTxnBuffer> TpchQ12Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ12TxnBuffer>();

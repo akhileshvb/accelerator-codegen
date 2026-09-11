@@ -129,8 +129,8 @@ void TpchQ22TxnBuffer::MarkRebuild() {
 core::AcceleratorId TpchQ22Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ22Module::Dependencies() const {
-  return {{config.customer_table, {0, 1, 2}},
-          {config.orders_table, {0}}};
+  return {{config.customer_table, {0, 1, 2}, {0, 4, 5}},
+          {config.orders_table, {0}, {1}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ22Module::CreateTxnBuffer() const {

@@ -6,41 +6,77 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
 
 namespace accelerator_codegen::aux_state::core {
 
 namespace {
 
-bool TryForcedMaintenanceAction(MaintenanceDecision &out) {
-  const char *force = std::getenv("ACCEL_FORCE_MAINTENANCE_ACTION");
-  if (!force || !*force) {
-    return false;
-  }
+std::mutex &ForceMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::optional<maintenance::MaintenanceAction> &ForceSlot() {
+  static std::optional<maintenance::MaintenanceAction> slot;
+  return slot;
+}
+
+std::optional<maintenance::MaintenanceAction>
+ParseMaintenanceActionName(std::string_view name) {
   using maintenance::MaintenanceAction;
-  if (std::strcmp(force, "ApplyDelta") == 0) {
-    out = {MaintenanceAction::ApplyDelta, 0.0};
-    return true;
+  if (name.empty()) {
+    return std::nullopt;
   }
-  if (std::strcmp(force, "RebuildAll") == 0) {
-    out = {MaintenanceAction::RebuildAll, 0.0};
-    return true;
+  if (name == "ApplyDelta") {
+    return MaintenanceAction::ApplyDelta;
   }
-  if (std::strcmp(force, "RebuildPartition") == 0) {
-    out = {MaintenanceAction::RebuildPartition, 0.0};
-    return true;
+  if (name == "RebuildAll") {
+    return MaintenanceAction::RebuildAll;
   }
-  if (std::strcmp(force, "InvalidateAndFallback") == 0) {
-    out = {MaintenanceAction::InvalidateAndFallback, 0.0};
-    return true;
+  if (name == "RebuildPartition") {
+    return MaintenanceAction::RebuildPartition;
   }
-  if (std::strcmp(force, "NoOp") == 0) {
-    out = {MaintenanceAction::NoOp, 0.0};
+  if (name == "InvalidateAndFallback") {
+    return MaintenanceAction::InvalidateAndFallback;
+  }
+  if (name == "NoOp") {
+    return MaintenanceAction::NoOp;
+  }
+  return std::nullopt;
+}
+
+bool TryForcedMaintenanceAction(MaintenanceDecision &out) {
+  if (auto forced = ForcedMaintenanceAction()) {
+    out = {*forced, 0.0};
     return true;
   }
   return false;
 }
 
 } // namespace
+
+void SetForcedMaintenanceActionName(std::string_view action_name) {
+  std::lock_guard<std::mutex> guard(ForceMutex());
+  ForceSlot() = ParseMaintenanceActionName(action_name);
+}
+
+std::optional<maintenance::MaintenanceAction> ForcedMaintenanceAction() {
+  {
+    std::lock_guard<std::mutex> guard(ForceMutex());
+    if (ForceSlot().has_value()) {
+      return ForceSlot();
+    }
+  }
+  const char *force = std::getenv("ACCEL_FORCE_MAINTENANCE_ACTION");
+  if (!force || !*force) {
+    return std::nullopt;
+  }
+  return ParseMaintenanceActionName(force);
+}
 
 MaintenanceDecision SelectAuxMaintenanceAction(
     const MaintenanceRequest &request,

@@ -1,6 +1,9 @@
 // GENERATED BACKEND
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 
+#include <algorithm>
+#include <cstdlib>
+
 namespace accelerator_codegen::aux_state::engine::postgres {
 
 PostgresAuxBackend::PostgresAuxBackend(
@@ -10,10 +13,17 @@ PostgresAuxBackend::PostgresAuxBackend(
     : coordinator(coordinator_p), state_store(state_store_p),
       visibility(std::move(visibility_p)),
       cost_model(cost_model_p ? cost_model_p() : maintenance::CostModelParams{}),
-      workload(std::move(workload_p)) {}
+      workload(std::move(workload_p)) {
+  coordinator.AttachServices(*this);
+}
 
 void PostgresAuxBackend::CaptureMutation(const core::MutationBatch &mutation) {
   coordinator.OnMutation(mutation);
+}
+
+std::optional<std::vector<int32_t>>
+PostgresAuxBackend::MutationCaptureAttnums(core::TableId table) const {
+  return coordinator.MutationCaptureAttnums(table);
 }
 
 void PostgresAuxBackend::OnPreCommit() { coordinator.PreCommit(); }
@@ -35,6 +45,17 @@ PostgresAuxBackend::MaintenanceCostModel() const {
 
 double PostgresAuxBackend::ExpectedQueriesBeforeNextWrite() const {
   return workload ? std::max(0.0, workload()) : 10.0;
+}
+
+std::size_t PostgresAuxBackend::WorkerCount() const {
+  const char *value = std::getenv("ACCEL_AUX_THREADS");
+  if (value && *value) {
+    const long parsed = std::strtol(value, nullptr, 10);
+    if (parsed > 0) {
+      return static_cast<std::size_t>(parsed);
+    }
+  }
+  return 1;
 }
 
 bool PostgresAuxBackend::AllowsSynchronousRebuildOnCommit() const {

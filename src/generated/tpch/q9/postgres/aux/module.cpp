@@ -1036,12 +1036,12 @@ void TpchQ9TxnBuffer::AddRebuildPartkey(int64_t partkey) {
 core::AcceleratorId TpchQ9Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ9Module::Dependencies() const {
-  return {{config.part_table, {0, 1}},
-          {config.supplier_table, {0, 1}},
-          {config.nation_table, {0, 1}},
-          {config.orders_table, {0, 1}},
-          {config.partsupp_table, {0, 1, 2}},
-          {config.lineitem_table, {0, 1, 2, 3, 4, 5}}};
+  return {{config.part_table, {0, 1}, {0, 1}},
+          {config.supplier_table, {0, 1}, {0, 3}},
+          {config.nation_table, {0, 1}, {0, 1}},
+          {config.orders_table, {0, 1}, {0, 4}},
+          {config.partsupp_table, {0, 1, 2}, {0, 1, 3}},
+          {config.lineitem_table, {0, 1, 2, 3, 4, 5}, {1, 2, 0, 4, 5, 6}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ9Module::CreateTxnBuffer() const {

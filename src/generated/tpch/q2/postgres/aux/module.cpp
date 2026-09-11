@@ -435,11 +435,11 @@ void TpchQ2TxnBuffer::AddPartsuppDelta(TpchQ2PartsuppDelta delta) {
 core::AcceleratorId TpchQ2Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ2Module::Dependencies() const {
-  return {{config.part_table, {0, 1, 2, 3}},
-          {config.supplier_table, {0, 1, 2, 3, 4, 5, 6}},
-          {config.partsupp_table, {0, 1, 2}},
-          {config.nation_table, {0, 1, 2}},
-          {config.region_table, {0, 1}}};
+  return {{config.part_table, {0, 1, 2, 3}, {0, 2, 4, 5}},
+          {config.supplier_table, {0, 1, 2, 3, 4, 5, 6}, {0, 1, 2, 3, 4, 5, 6}},
+          {config.partsupp_table, {0, 1, 2}, {0, 1, 3}},
+          {config.nation_table, {0, 1, 2}, {0, 1, 2}},
+          {config.region_table, {0, 1}, {0, 1}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ2Module::CreateTxnBuffer() const {
@@ -568,6 +568,8 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
     new_state->part_valid = old_state->part_valid;
     new_state->parts_by_size = old_state->parts_by_size;
     new_state->regional_minima_base = old_state->regional_minima_base;
+    // Preserve prior ApplyDelta overlay so stacked writes compose correctly.
+    new_state->regional_minima_overlay = old_state->regional_minima_overlay;
     if (!new_state->regional_minima_base) {
       new_state->regional_minima_base =
           std::make_shared<const std::unordered_map<int64_t, TpchQ2RegionalMinCell>>(
@@ -660,20 +662,30 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
       EmitCustomProfile("write_apply", apply_dt, (int64_t)deltas.size(), 0, 0);
     }
     if (!lost_unique_min) {
-    auto image = std::make_shared<TpchQ2StateImage>();
-    image->kind = TpchQ2ImageKind::Full;
-    image->state = std::move(new_state);
-    const std::shared_ptr<const TpchQ2StateImage> const_image = std::move(image);
-    outcome.action = core::MaintenanceAction::ApplyDelta;
-    outcome.updates.push_back(core::StateImage::Make(
-        core::TpchQ2Layout::kAccelerator, core::TpchQ2Layout::kFull,
-        old_version, const_image));
-    buffer.Clear();
-    return outcome;
+      const auto decision = services.ChooseMaintenance(
+          {static_cast<uint64_t>(deltas.size()), 1, true, false, true, false,
+           false, core::MaintenanceAction::NoOp,
+           services.ExpectedQueriesBeforeNextWrite()});
+      if (decision.action == core::MaintenanceAction::ApplyDelta) {
+        auto image = std::make_shared<TpchQ2StateImage>();
+        image->kind = TpchQ2ImageKind::Full;
+        image->state = std::move(new_state);
+        const std::shared_ptr<const TpchQ2StateImage> const_image =
+            std::move(image);
+        outcome.action = core::MaintenanceAction::ApplyDelta;
+        outcome.updates.push_back(core::StateImage::Make(
+            core::TpchQ2Layout::kAccelerator, core::TpchQ2Layout::kFull,
+            old_version, const_image));
+        buffer.Clear();
+        return outcome;
+      }
+      // Forced / cost-model rebuild: fall through with empty updates so
+      // PreCommit MaterializeSyncRebuild can run under an active snapshot.
     }
   }
 
-  // Full rebuild path for supplier/part/nation/region mutations
+  // Full rebuild path for supplier/part/nation/region mutations, unique-min
+  // loss, or forced Rebuild*.
   const auto decision = services.ChooseMaintenance(
       {0, 0, false, false, true, true, false,
        core::MaintenanceAction::NoOp,
@@ -681,6 +693,9 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
   outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
                        ? core::MaintenanceAction::RebuildAll
                        : decision.action;
+  if (outcome.action == core::MaintenanceAction::RebuildPartition) {
+    outcome.action = core::MaintenanceAction::RebuildAll;
+  }
   outcome.invalidations = All();
   outcome.pending_rebuild = outcome.invalidations;
   buffer.Clear();

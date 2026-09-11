@@ -14,6 +14,26 @@ RETURNS trigger
 AS 'MODULE_PATHNAME', 'AcceleratorCodegenCaptureTransition'
 LANGUAGE C;
 
+CREATE FUNCTION accel_postgres_get_observer_mutation_count()
+RETURNS bigint
+AS 'MODULE_PATHNAME', 'accel_postgres_get_observer_mutation_count'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION accel_postgres_reset_observer()
+RETURNS void
+AS 'MODULE_PATHNAME', 'accel_postgres_reset_observer'
+LANGUAGE C;
+
+CREATE FUNCTION accel_postgres_set_force_maintenance_action(text)
+RETURNS void
+AS 'MODULE_PATHNAME', 'accel_postgres_set_force_maintenance_action'
+LANGUAGE C;
+
+CREATE FUNCTION accel_postgres_get_last_maintenance_action()
+RETURNS text
+AS 'MODULE_PATHNAME', 'accel_postgres_get_last_maintenance_action'
+LANGUAGE C STRICT;
+
 -- Base codegen kernels (stateless native SPI scans)
 CREATE FUNCTION accel_tpch_q1(integer)
 RETURNS TABLE (

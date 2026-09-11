@@ -409,9 +409,9 @@ core::AcceleratorId TpchQ19Module::Id() const { return kId; }
 std::vector<core::TableDependency> TpchQ19Module::Dependencies() const {
   std::vector<core::TableDependency> deps;
   deps.push_back({config.lineitem_table,
-                  {0, 1, 2, 3, 4, 5}}); // partkey, qty, extprice, disc, mode, instruct
-  deps.push_back(
-      {config.part_table, {0, 1, 2, 3}}); // partkey, brand, container, size
+                   {0, 1, 2, 3, 4, 5},
+                   {1, 4, 5, 6, 14, 13}});
+  deps.push_back({config.part_table, {0, 1, 2, 3}, {0, 3, 6, 5}});
   return deps;
 }
 

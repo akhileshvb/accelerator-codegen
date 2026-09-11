@@ -449,8 +449,8 @@ core::AcceleratorId TpchQ13Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ13Module::Dependencies() const {
   return {
-      {config.customer_table, {0}},   // c_custkey is col 0
-      {config.orders_table, {0, 1}},  // o_custkey, o_comment
+      {config.customer_table, {0}, {0}},
+      {config.orders_table, {0, 1}, {1, 8}},
   };
 }
 

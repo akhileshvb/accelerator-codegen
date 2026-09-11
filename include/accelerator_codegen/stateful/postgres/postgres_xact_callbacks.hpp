@@ -1,6 +1,10 @@
 // GENERATED BACKEND - PostgreSQL transaction callbacks
 #pragma once
 
+#include <vector>
+
+#include "accelerator_codegen/stateful/core/aux_types.hpp"
+
 namespace accelerator_codegen::aux_state::engine::postgres {
 
 class PostgresAuxBackend;
@@ -14,5 +18,20 @@ bool RegisterPostgresBackendForMutations();
 
 // Set the active backend pointer for callback dispatch.
 void SetPostgresActiveBackend(PostgresAuxBackend *backend);
+PostgresAuxBackend *GetPostgresActiveBackend();
+
+// Fan-out registry: Runtime instances register so trigger captures reach the
+// coordinator that owns their AuxQueryModule (not the empty BridgeState one).
+void RegisterPostgresMutationBackend(PostgresAuxBackend *backend);
+void UnregisterPostgresMutationBackend(PostgresAuxBackend *backend);
+bool HasRegisteredPostgresMutationBackend();
+
+// Remap TPC-H relname → canonical table id (when relname non-null) and
+// CaptureMutation on all registered Runtime backends.
+void DispatchPostgresMutation(const char *relname,
+                              const core::MutationBatch &mutation);
+
+// Snapshot of backends currently registered for mutation fan-out.
+std::vector<PostgresAuxBackend *> RegisteredPostgresMutationBackends();
 
 } // namespace accelerator_codegen::aux_state::engine::postgres

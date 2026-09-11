@@ -20,6 +20,7 @@ for q in $QUERIES; do
     -e ACCEL_PG_DIFF_KIND="${KIND}" \
     -e ACCEL_PG_DIFF_MODE="${MODE}" \
     -e ACCEL_PG_DIFF_SKIP_WRITE_MAINT="${SKIP_WM}" \
+    -e ACCEL_FORCE_MAINTENANCE_ACTION="${ACCEL_FORCE_MAINTENANCE_ACTION:-}" \
     -e LD_LIBRARY_PATH=/accel-build/accel:/accel-build/duckdb/src:/usr/lib/postgresql/17/lib \
     "${CONTAINER}" \
     /accel-build/accel/test_postgres_tpch_differential "${q}" 2>&1)

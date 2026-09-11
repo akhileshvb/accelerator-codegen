@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -26,6 +27,12 @@ public:
   bool HasPendingWork() const;
   bool HasRegisteredModule(const AcceleratorId &id) const;
   std::size_t ModuleCount() const;
+
+  // Projection for mutation capture on `table`: nullopt if no module depends
+  // on it; empty vector means full-row capture; otherwise physical attnums in
+  // AuxRow order.
+  std::optional<std::vector<int32_t>>
+  MutationCaptureAttnums(TableId table) const;
 
 private:
   struct Entry {

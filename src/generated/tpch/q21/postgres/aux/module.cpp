@@ -520,10 +520,10 @@ void TpchQ21TxnBuffer::AddNationDelta(TpchQ21NationDelta delta) {
 core::AcceleratorId TpchQ21Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ21Module::Dependencies() const {
-  return {{config.supplier_table, {0, 1, 2}},
-          {config.orders_table, {0, 1}},
-          {config.lineitem_table, {0, 1, 2, 3}},
-          {config.nation_table, {0, 1}}};
+  return {{config.supplier_table, {0, 1, 2}, {0, 1, 3}},
+          {config.orders_table, {0, 1}, {0, 2}},
+          {config.lineitem_table, {0, 1, 2, 3}, {0, 2, 11, 12}},
+          {config.nation_table, {0, 1}, {0, 1}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ21Module::CreateTxnBuffer() const {
@@ -872,7 +872,6 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
       nation_partitions.push_back(NationPartition(nk));
     const auto nation_snapshot = services.StateStore().ReadPartitions(
         visibility, nation_partitions);
-    std::set<int32_t> loaded_nations;
     for (const auto &image : nation_snapshot.partitions) {
       if (image.partition < TpchQ21Layout::kNationBase)
         continue;
@@ -885,21 +884,14 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
         outcome.pending_rebuild = outcome.invalidations;
         return outcome;
       }
+      // Empty / absent nation_numwait means zero waiters — still a valid image.
       const auto nk_it = typed->state->nation_numwait.find(nk);
       if (nk_it != typed->state->nation_numwait.end()) {
         state.nation_numwait[nk] = nk_it->second;
-        loaded_nations.insert(nk);
       }
     }
-    // Missing nation images would publish empty NationNamePartition hits.
-    for (const auto nk : needed_nationkeys) {
-      if (loaded_nations.find(nk) == loaded_nations.end()) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-    }
+    // Nations that were never materialized (no waiters at Build time) are
+    // treated as empty rather than escalating to RebuildAll.
   }
 
   // For each affected order, recompute contributions
@@ -999,19 +991,13 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
     }
   }
 
-  // Publish updated nation partitions + corresponding NationNamePartition entries
-  // Only republish nations we actually loaded/updated — never invent empty hits.
+  // Republish affected nation partitions. Zero waiters → empty output_rows
+  // (MakeStateImage handles missing nation_numwait entries); still publish so
+  // later ApplyDeltas find the slot instead of treating it as missing.
   std::set<int32_t> published_nations;
   for (const auto nk : needed_nationkeys)
     published_nations.insert(nk);
   for (const auto nk : published_nations) {
-    if (shared_state->nation_numwait.find(nk) ==
-        shared_state->nation_numwait.end()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
     outcome.updates.push_back(core::StateImage::Make(
         TpchQ21Layout::kAccelerator, NationPartition(nk), 0,
         MakeStateImage(TpchQ21ImageKind::Nation, nk, shared_state)));

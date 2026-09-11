@@ -179,7 +179,13 @@ struct QueryKey {
 
 struct TableDependency {
   TableId table = 0;
+  // Column ids in the *projected* mutation AuxRow (0..n-1 after capture
+  // projection), used by InterpretMutation for watched-column filters.
   std::vector<ColumnId> watched_columns;
+  // 0-based physical attribute numbers from the base table, in the order the
+  // module's AccumulateMutation/Read* helpers expect. Empty means capture the
+  // full row (all non-dropped attributes).
+  std::vector<int32_t> mutation_attnums;
 };
 
 using InvalidationPlan = ::accelerator_codegen::aux_state::InvalidationPlan;

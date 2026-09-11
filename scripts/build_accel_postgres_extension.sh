@@ -11,8 +11,9 @@ fi
 
 # Require adapter sources on the host mount (fail closed — no stale-.so soft pass).
 for rel in \
-  src/runtime/postgres/scan_adapter.cpp \
   src/generated/postgres/postgres_extension.cpp \
+  src/generated/postgres/runtime.cpp \
+  src/generated/postgres/transition_capture.cpp \
   src/stateful/postgres/postgres_aux_backend.cpp \
   src/stateful/postgres/postgres_state_store.cpp \
   src/stateful/postgres/postgres_bridge.cpp
@@ -90,7 +91,7 @@ ninja accelerator_codegen accelerator_codegen_pg -j"$(nproc)"
 
 # Prefer `ninja -t query` over `ninja -t targets`: the default targets listing
 # only includes a small top-level subset (~phony / default), so executables like
-# test_postgres_contract are omitted and gates falsely report "missing".
+# test_postgres_tpch_differential are omitted and gates falsely report "missing".
 for t in ${ACCEL_PG_NINJA_TARGETS:-}; do
   if ninja -t query "${t}" >/dev/null 2>&1; then
     ninja "${t}" -j"$(nproc)"

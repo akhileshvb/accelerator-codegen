@@ -408,9 +408,9 @@ void TpchQ11TxnBuffer::AddNationDelta(TpchQ11NationDelta delta) {
 core::AcceleratorId TpchQ11Module::Id() const { return TpchQ11Layout::kAccelerator; }
 
 std::vector<core::TableDependency> TpchQ11Module::Dependencies() const {
-  return {{config.partsupp_table, {0, 1, 2, 3}},
-          {config.supplier_table, {0, 1}},
-          {config.nation_table, {0, 1}}};
+  return {{config.partsupp_table, {0, 1, 2, 3}, {0, 1, 2, 3}},
+          {config.supplier_table, {0, 1}, {0, 3}},
+          {config.nation_table, {0, 1}, {0, 1}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ11Module::CreateTxnBuffer() const {

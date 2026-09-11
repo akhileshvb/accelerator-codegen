@@ -274,7 +274,8 @@ void TpchQ1TxnBuffer::AddDelta(TpchQ1LineitemDelta delta) {
 core::AcceleratorId TpchQ1Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ1Module::Dependencies() const {
-  return {{config.lineitem_table, {0, 1, 2, 3, 4, 5, 6}}};
+  return {{config.lineitem_table, {0, 1, 2, 3, 4, 5, 6},
+           {10, 4, 5, 6, 7, 8, 9}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ1Module::CreateTxnBuffer() const {

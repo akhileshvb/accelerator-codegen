@@ -15,6 +15,30 @@ RETURNS trigger
 AS 'accelerator_codegen_pg', 'AcceleratorCodegenCaptureTransition'
 LANGUAGE C;
 
+DROP FUNCTION IF EXISTS accel_postgres_get_observer_mutation_count() CASCADE;
+CREATE FUNCTION accel_postgres_get_observer_mutation_count()
+RETURNS bigint
+AS 'accelerator_codegen_pg', 'accel_postgres_get_observer_mutation_count'
+LANGUAGE C STRICT;
+
+DROP FUNCTION IF EXISTS accel_postgres_reset_observer() CASCADE;
+CREATE FUNCTION accel_postgres_reset_observer()
+RETURNS void
+AS 'accelerator_codegen_pg', 'accel_postgres_reset_observer'
+LANGUAGE C;
+
+DROP FUNCTION IF EXISTS accel_postgres_set_force_maintenance_action(text) CASCADE;
+CREATE FUNCTION accel_postgres_set_force_maintenance_action(text)
+RETURNS void
+AS 'accelerator_codegen_pg', 'accel_postgres_set_force_maintenance_action'
+LANGUAGE C;
+
+DROP FUNCTION IF EXISTS accel_postgres_get_last_maintenance_action() CASCADE;
+CREATE FUNCTION accel_postgres_get_last_maintenance_action()
+RETURNS text
+AS 'accelerator_codegen_pg', 'accel_postgres_get_last_maintenance_action'
+LANGUAGE C STRICT;
+
 -- Base codegen kernels (stateless native SPI scans)
 DROP FUNCTION IF EXISTS accel_tpch_q1 CASCADE;
 CREATE FUNCTION accel_tpch_q1(integer)

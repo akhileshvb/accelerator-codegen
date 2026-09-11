@@ -394,8 +394,8 @@ void TpchQ17TxnBuffer::AddPartDelta(TpchQ17PartDelta delta) {
 core::AcceleratorId TpchQ17Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ17Module::Dependencies() const {
-  return {{config.part_table, {0, 1, 2}},
-          {config.lineitem_table, {0, 1, 2}}};
+  return {{config.part_table, {0, 1, 2}, {0, 3, 6}},
+          {config.lineitem_table, {0, 1, 2}, {1, 4, 5}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ17Module::CreateTxnBuffer() const {
