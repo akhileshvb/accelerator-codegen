@@ -173,8 +173,11 @@ SharedProbe BuildTpchQ3Probe(::duckdb::MaterializedQueryResult &result,
 
 SharedProbe BuildTpchQ5Probe(::duckdb::MaterializedQueryResult &result,
                              ::duckdb::idx_t row) {
+  // Projection: orderkey, suppkey, price, discount, linenumber.
+  // ReadLineitem expects (orderkey, suppkey, price, discount); linenumber is
+  // only for the UPDATE WHERE clause.
   const auto orderkey = result.GetValue(0, row).ToString();
-  const auto linenumber = result.GetValue(1, row).ToString();
+  const auto linenumber = result.GetValue(4, row).ToString();
   const double price = std::stod(result.GetValue(2, row).ToString());
   SharedProbe probe;
   probe.table = 6;
@@ -395,28 +398,33 @@ SharedProbe BuildTpchQ18Probe(::duckdb::MaterializedQueryResult &result,
 
 SharedProbe BuildTpchQ16Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
-  const auto partkey = result.GetValue(0, row).ToString();
-  const auto suppkey = result.GetValue(1, row).ToString();
+  // Flip supplier eligibility (Customer Complaints) so ApplyDelta can run.
+  // partsupp membership changes still MarkRebuild; this path exercises AD.
+  const auto suppkey = result.GetValue(0, row).ToString();
+  const auto comment = result.GetValue(1, row).ToString();
   SharedProbe probe;
-  // Must match TpchQ16Config{1, 2, 3}.partsupp_table (not supplier_table=3).
-  probe.table = 2;
+  // TpchQ16Config{1, 2, 3} → supplier_table = 3.
+  probe.table = 3;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {1};
   probe.write_delta = 1.0;
   probe.current_value = 0.0;
-  probe.old_row = {{Int(result.GetValue(0, row)),
-                    Int(result.GetValue(1, row))}};
+  probe.old_row = {{Int(result.GetValue(0, row)), Text(result.GetValue(1, row))}};
   probe.new_row = probe.old_row;
   probe.new_row.values[1] =
-      core::AuxValue::Of(core::AuxType::Int64,
-                         static_cast<int64_t>(
-                             std::get<int64_t>(probe.old_row.values[1].payload) +
-                             1));
-  probe.update_sql = "UPDATE partsupp SET ps_suppkey = ps_suppkey + 1 WHERE ps_partkey = " +
-                     partkey + " AND ps_suppkey = " + suppkey;
-  probe.restore_sql = "UPDATE partsupp SET ps_suppkey = " + suppkey +
-                      " WHERE ps_partkey = " + partkey +
-                      " AND ps_suppkey = " + std::to_string(std::stoll(suppkey) + 1);
+      Text(comment + " Customer Complaints");
+  // Escape single quotes for SQL literal.
+  std::string escaped = comment;
+  for (std::size_t pos = 0; (pos = escaped.find('\'', pos)) != std::string::npos;
+       pos += 2) {
+    escaped.insert(pos, "'");
+  }
+  probe.update_sql =
+      "UPDATE supplier SET s_comment = s_comment || ' Customer Complaints' "
+      "WHERE s_suppkey = " +
+      suppkey;
+  probe.restore_sql = "UPDATE supplier SET s_comment = '" + escaped +
+                      "' WHERE s_suppkey = " + suppkey;
   return probe;
 }
 
@@ -450,23 +458,30 @@ SharedProbe BuildTpchQ17Probe(::duckdb::MaterializedQueryResult &result,
 
 SharedProbe BuildTpchQ2Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
+  // Lower a *non*-winning EUROPE BRASS partsupp below the regional min so
+  // ApplyDelta can install a new min. Raising the unique min forces
+  // lost_unique_min → RebuildAll (next-best cost is not stored on the cell).
   const auto partkey = result.GetValue(0, row).ToString();
   const auto suppkey = result.GetValue(1, row).ToString();
   const double cost = std::stod(result.GetValue(2, row).ToString());
+  const int64_t cost_raw = DecimalRaw(result.GetValue(2, row));
+  const int64_t min_raw = DecimalRaw(result.GetValue(3, row));
+  const int64_t new_raw = min_raw - 1;
+  const double new_cost = static_cast<double>(new_raw) / 100.0;
   SharedProbe probe;
   probe.table = 3; // partsupp
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {2};
-  probe.write_delta = 1000.0;
+  probe.write_delta = new_cost - cost;
   probe.current_value = cost;
   probe.old_row = {{Int(result.GetValue(0, row)),
                     Int(result.GetValue(1, row)),
-                    Decimal(DecimalRaw(result.GetValue(2, row)), 2)}};
+                    Decimal(cost_raw, 2)}};
   probe.new_row = probe.old_row;
-  probe.new_row.values[2] = Decimal(
-      static_cast<int64_t>(DecimalRaw(result.GetValue(2, row)) + 100000), 2);
-  probe.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + 1000.0"
-                     " WHERE ps_partkey = " + partkey + " AND ps_suppkey = " +
+  probe.new_row.values[2] = Decimal(new_raw, 2);
+  probe.update_sql = "UPDATE partsupp SET ps_supplycost = " +
+                     std::to_string(new_cost) + " WHERE ps_partkey = " +
+                     partkey + " AND ps_suppkey = " +
                      suppkey;
   probe.restore_sql = "UPDATE partsupp SET ps_supplycost = " + std::to_string(cost) +
                       " WHERE ps_partkey = " + partkey + " AND ps_suppkey = " +
@@ -820,21 +835,23 @@ SharedProbe BuildTpchQ20Probe(::duckdb::MaterializedQueryResult &result,
 
 SharedProbe BuildTpchQ22Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
+  // Projection: custkey, phone, acctbal. ReadCustomer expects all three.
+  // TpchQ22Config{1, 2} → orders_table=1, customer_table=2.
   const auto custkey = result.GetValue(0, row).ToString();
-  const double acctbal = std::stod(result.GetValue(1, row).ToString());
+  const double acctbal = std::stod(result.GetValue(2, row).ToString());
+  const int64_t bal_raw = DecimalRaw(result.GetValue(2, row));
   SharedProbe probe;
-  probe.table = 9;
+  probe.table = 2;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {2};
-  probe.write_delta = 0.01;
+  probe.write_delta = 100.0;
   probe.current_value = acctbal;
-  probe.old_row = {{Int(result.GetValue(0, row)),
-                    Decimal(DecimalRaw(result.GetValue(1, row)), 2)}};
+  probe.old_row = {{Int(result.GetValue(0, row)), Text(result.GetValue(1, row)),
+                    Decimal(bal_raw, 2)}};
   probe.new_row = probe.old_row;
-  probe.new_row.values[1] = Decimal(
-      static_cast<int64_t>(DecimalRaw(result.GetValue(1, row)) + 1), 2);
+  probe.new_row.values[2] = Decimal(bal_raw + 10000, 2); // +100.00
   probe.update_sql =
-      "UPDATE customer SET c_acctbal = c_acctbal + 0.01 WHERE c_custkey = " +
+      "UPDATE customer SET c_acctbal = c_acctbal + 100 WHERE c_custkey = " +
       custkey;
   probe.restore_sql = "UPDATE customer SET c_acctbal = " + std::to_string(acctbal) +
                       " WHERE c_custkey = " + custkey;
@@ -1097,7 +1114,8 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      "SELECT * FROM accel_tpch_q5_aux('AMERICA', DATE '1995-01-01')",
      "SELECT * FROM accel_tpch_q5('AMERICA', DATE '1995-01-01')",
      "SELECT * FROM accel_tpch_q5_aux('AMERICA', DATE '1995-01-01')",
-     "SELECT l.l_orderkey, l.l_linenumber, l.l_extendedprice, l.l_discount "
+     "SELECT l.l_orderkey, l.l_suppkey, l.l_extendedprice, l.l_discount, "
+     "l.l_linenumber "
      "FROM lineitem l "
      "JOIN orders o ON o.o_orderkey = l.l_orderkey "
      "JOIN customer c ON c.c_custkey = o.o_custkey "
@@ -1156,14 +1174,14 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      "SELECT * FROM accel_tpch_q16_aux('Brand#13', 'SMALL BRUSHED%', 26, 24, 27, 29, 7, 20, 22, 33)",
      "SELECT * FROM accel_tpch_q16('Brand#13', 'SMALL BRUSHED%', 26, 24, 27, 29, 7, 20, 22, 33)",
      "SELECT * FROM accel_tpch_q16_aux('Brand#13', 'SMALL BRUSHED%', 26, 24, 27, 29, 7, 20, 22, 33)",
-     // Rows that contribute to COUNT(DISTINCT) under the catalog seed filters.
-     "SELECT ps.ps_partkey, ps.ps_suppkey FROM partsupp ps, part p "
-     "WHERE p.p_partkey = ps.ps_partkey AND p.p_brand <> 'Brand#13' "
-     "AND p.p_type NOT LIKE 'SMALL BRUSHED%' "
-     "AND p.p_size IN (26, 24, 27, 29, 7, 20, 22, 33) "
-     "AND ps.ps_suppkey NOT IN ("
-     "SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%') "
-     "ORDER BY ps.ps_partkey, ps.ps_suppkey LIMIT 1",
+     // Flip eligibility on a supplier that contributes under catalog filters.
+     "SELECT s.s_suppkey, s.s_comment FROM supplier s "
+     "WHERE s.s_comment NOT LIKE '%Customer%Complaints%' "
+     "AND EXISTS (SELECT 1 FROM partsupp ps, part p "
+     "WHERE ps.ps_suppkey = s.s_suppkey AND p.p_partkey = ps.ps_partkey "
+     "AND p.p_brand <> 'Brand#13' AND p.p_type NOT LIKE 'SMALL BRUSHED%' "
+     "AND p.p_size IN (26, 24, 27, 29, 7, 20, 22, 33)) "
+     "ORDER BY s.s_suppkey LIMIT 1",
      {{core::AuxValue::Of(core::AuxType::String, std::string{"Brand#13"}),
        core::AuxValue::Of(core::AuxType::String, std::string{"SMALL BRUSHED%"}),
        core::AuxValue::Of(core::AuxType::Int64, int64_t{26}),
@@ -1174,7 +1192,7 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
        core::AuxValue::Of(core::AuxType::Int64, int64_t{20}),
        core::AuxValue::Of(core::AuxType::Int64, int64_t{22}),
        core::AuxValue::Of(core::AuxType::Int64, int64_t{33})}},
-     2,
+     3,
      false,
      BuildTpchQ16Probe},
     {17,
@@ -1222,17 +1240,23 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      "SELECT * FROM accel_tpch_q2_aux(15, '%BRASS', 'EUROPE')",
      "SELECT * FROM accel_tpch_q2(15, '%BRASS', 'EUROPE')",
      "SELECT * FROM accel_tpch_q2_aux(15, '%BRASS', 'EUROPE')",
-     "SELECT ps.ps_partkey, ps.ps_suppkey, ps.ps_supplycost "
-     "FROM part p, supplier s, partsupp ps, nation n, region r "
-     "WHERE p.p_partkey = ps.ps_partkey AND s.s_suppkey = ps.ps_suppkey "
-     "AND p.p_size = 15 AND p.p_type LIKE '%BRASS' "
-     "AND s.s_nationkey = n.n_nationkey AND n.n_regionkey = r.r_regionkey "
-     "AND r.r_name = 'EUROPE' "
-     "AND ps.ps_supplycost = (SELECT MIN(ps_supplycost) FROM partsupp, supplier, "
-     "nation, region WHERE p.p_partkey = ps_partkey AND s_suppkey = ps_suppkey "
-     "AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey "
-     "AND r_name = 'EUROPE') "
-     "ORDER BY s.s_acctbal DESC, n.n_name, s.s_name, p.p_partkey LIMIT 1",
+     "SELECT ps.ps_partkey, ps.ps_suppkey, ps.ps_supplycost, mins.min_cost "
+     "FROM partsupp ps "
+     "JOIN supplier s ON s.s_suppkey = ps.ps_suppkey "
+     "JOIN nation n ON n.n_nationkey = s.s_nationkey "
+     "JOIN region r ON r.r_regionkey = n.n_regionkey "
+     "JOIN part p ON p.p_partkey = ps.ps_partkey "
+     "JOIN LATERAL ("
+     "  SELECT MIN(ps2.ps_supplycost) AS min_cost "
+     "  FROM partsupp ps2 "
+     "  JOIN supplier s2 ON s2.s_suppkey = ps2.ps_suppkey "
+     "  JOIN nation n2 ON n2.n_nationkey = s2.s_nationkey "
+     "  JOIN region r2 ON r2.r_regionkey = n2.n_regionkey "
+     "  WHERE ps2.ps_partkey = ps.ps_partkey AND r2.r_name = r.r_name"
+     ") mins ON true "
+     "WHERE r.r_name = 'EUROPE' AND p.p_size = 15 AND p.p_type LIKE '%BRASS' "
+     "AND ps.ps_supplycost > mins.min_cost "
+     "ORDER BY ps.ps_partkey, ps.ps_suppkey LIMIT 1",
      {{core::AuxValue::Of(core::AuxType::Int64, static_cast<int64_t>(15)),
        core::AuxValue::Of(core::AuxType::String, std::string{"%BRASS"}),
        core::AuxValue::Of(core::AuxType::String, std::string{"EUROPE"})}},
@@ -1534,9 +1558,13 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      "SELECT * FROM accel_tpch_q22_aux('30', '19', '14', '28', '11', '22', '32')",
      "SELECT * FROM accel_tpch_q22('30', '19', '14', '28', '11', '22', '32')",
      "SELECT * FROM accel_tpch_q22_aux('30', '19', '14', '28', '11', '22', '32')",
-     "SELECT c_custkey, c_acctbal FROM customer "
+     "SELECT c_custkey, c_phone, c_acctbal FROM customer "
      "WHERE SUBSTRING(c_phone FROM 1 FOR 2) IN "
      "('30', '19', '14', '28', '11', '22', '32') "
+     "AND c_acctbal > (SELECT AVG(c_acctbal) FROM customer WHERE c_acctbal > 0.00 "
+     "AND SUBSTRING(c_phone FROM 1 FOR 2) IN "
+     "('30', '19', '14', '28', '11', '22', '32')) "
+     "AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey) "
      "ORDER BY c_custkey LIMIT 1",
      {{core::AuxValue::Of(core::AuxType::String, std::string{"30"}),
        core::AuxValue::Of(core::AuxType::String, std::string{"19"}),
@@ -1545,7 +1573,7 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
        core::AuxValue::Of(core::AuxType::String, std::string{"11"}),
        core::AuxValue::Of(core::AuxType::String, std::string{"22"}),
        core::AuxValue::Of(core::AuxType::String, std::string{"32"})}},
-     9,
+     2,
      false,
      BuildTpchQ22Probe},
 };

@@ -3,6 +3,7 @@
 workload_kind: aux_state
 benchmark_name: tpch
 query_number: 0          # set to query number
+engine_name: postgres
 query_id: "0"
 accelerator_id: tpch_q0_aux
 base_function_name: accel_tpch_q0

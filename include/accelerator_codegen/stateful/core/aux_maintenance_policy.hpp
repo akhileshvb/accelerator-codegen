@@ -31,6 +31,11 @@ struct MaintenanceDecision {
 void SetForcedMaintenanceActionName(std::string_view action_name);
 std::optional<maintenance::MaintenanceAction> ForcedMaintenanceAction();
 
+// Process-local override for expected queries before the next write.
+// Negative expected_queries clears the override. Also honors getenv when unset.
+void SetExpectedQueriesOverride(double expected_queries);
+double ExpectedQueriesOverride();
+
 MaintenanceDecision SelectAuxMaintenanceAction(
     const MaintenanceRequest &, const maintenance::CostModelParams &);
 

@@ -17,6 +17,8 @@ def test_require_gate_pass_rejects_fail():
     )
     with pytest.raises(GateFailure, match="aux_bench_sweep fail"):
         require_gate_pass(result)
+    with pytest.raises(GateFailure, match="sweep status=empty"):
+        require_gate_pass(result)
 
 
 def test_require_gate_pass_rejects_skip_by_default():

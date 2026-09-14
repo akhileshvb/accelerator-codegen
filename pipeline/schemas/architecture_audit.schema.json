@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "architecture_audit.schema.json",
+  "title": "Engine backend architecture audit",
+  "type": "object",
+  "required": ["engine_name", "status", "violations", "feedback_for_implementation"],
+  "additionalProperties": true,
+  "properties": {
+    "engine_name": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["pass", "fail"] },
+    "summary": { "type": "string" },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule", "evidence"],
+        "additionalProperties": true,
+        "properties": {
+          "rule": {
+            "type": "string",
+            "description": "Fixed id from acceptance_checklist.md"
+          },
+          "layer": {
+            "type": "string",
+            "description": "Owning implementation layer id from layers.md"
+          },
+          "evidence": { "type": "string" },
+          "paths": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "feedback_for_implementation": {
+      "type": "string",
+      "description": "Empty on pass; actionable fix list on fail"
+    },
+    "round": { "type": "integer", "minimum": 0 }
+  }
+}

@@ -154,7 +154,7 @@ def print_report(summary: list[dict[str, str | float]]) -> None:
         "Postgres cold first accel read) to the shared timed workload."
     )
     print()
-    for engine in ("duckdb", "postgres"):
+    for engine in ("duckdb", "postgres", "mysql"):
         engine_rows = [row for row in summary if row["engine"] == engine]
         if not engine_rows:
             continue

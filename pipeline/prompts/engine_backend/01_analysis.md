@@ -1,57 +1,83 @@
 # Engine backend analysis
 
-Design a **native storage** engine adapter for **{{display_name}}** (`{{engine_name}}`) from the **fixed shared substrate**.
-
-This pipeline is **engine-agnostic**: implement only against the substrate contracts below plus this engine's native APIs. Do **not** require sibling engine trees on disk.
+Design a **native storage** adapter for **{{display_name}}** (`{{engine_name}}`)
+on the **fixed substrate** (aux/txn/store). From-scratch: substrate + this
+engine's SDK hints + `pipeline/templates/engine_backend/`. Do **not** read or
+copy any other `runtime|stateful/{engine}` tree. Do not implement code here.
 
 {{hard_guidelines}}
 
-## Primary inputs (required)
+## What implementation will do after you
 
-Read these substrate contracts (do not regenerate them):
+One Codex agent per layer in `layers.md`, in order. Each layer **must** mid-loop
+MCP `request_gate` `engine_build` then that layer's gate until both pass.
+Your analysis is the **roadmap those agents follow** — concise, concrete, no essays.
 
-- `include/accelerator_codegen/stateful/core/aux_types.hpp` — `AuxEngineServices`, `AuxStateStore`, `AuxQueryModule`, `MutationBatch`, `VisibilityToken`
-- `include/accelerator_codegen/stateful/core/aux_registry.hpp` — txn coordinator
+{{engine_layers_spec}}
+
+## Sketch each layer (concrete, short)
+
+For **every** layer id (`store`, `aux_backend`, `txn`, `mutations`, `scan`,
+`runtime`, `visibility`, `host`) write one object. If `host` is not required,
+set `skipped: true` and leave files empty.
+
+Each object:
+
+| Field | What to put |
+|-------|-------------|
+| `id` / `gate` / `cmake_target` | Exact ids (`engine_store`, `test_{{engine_name}}_store`, …) |
+| `native_apis` | 2–6 **exact** SDK/substrate symbols this layer will call |
+| `files` | Exact repo-relative paths **this** layer creates (headers, .cpp, harness, CMake) |
+| `harness_plan` | **Golden asserts** (values, keys, NULL, abort vs commit). Not “test the store” |
+| `gate_loop` | `request_gate engine_build` then `request_gate <gate>` after each increment |
+| `skipped` | bool |
+
+Also fill `store_mode`, `native_scan_plan.symbol`, `mutation_capture_plan.hook`,
+`txn_lifecycle_plan.api`, `visibility_plan`, `udf_or_extension_host_plan` (or skip),
+`contract_tests_plan.by_layer`, `files_to_create`. Keep strings to one or two lines.
+
+## Required reads
+
+- `include/accelerator_codegen/stateful/core/aux_types.hpp`
+- `include/accelerator_codegen/stateful/core/aux_registry.hpp`
 - `include/accelerator_codegen/stateful/state/partitioned_state_store.hpp`
-- `include/accelerator_codegen/stateful/maintenance/` — cost model + selector
-- `include/accelerator_codegen/runtime/native_scan.hpp` — `NativeScanSpec` → portable `DataChunk` IR
-- `pipeline/prompts/engine_backend/native_scan_contract.md`
-- `pipeline/prompts/engine_backend/agent_boundary.md`
+- `pipeline/prompts/engine_backend/layers.md`
+- `pipeline/prompts/engine_backend/acceptance_checklist.md`
+- `pipeline/prompts/engine_backend/layer_contracts.md`
 - `pipeline/schemas/backend_analysis.schema.json`
 
-## Engine SDK hints
+`harness_plan` **must** include the value asserts in `layer_contracts.md` for
+that layer (store: CAS + token filter + key-from-publish, no `RegisterQueryKey`;
+aux_backend: `AttachServices` + commit via coordinator, not harness
+`TryPublish`; txn: engine txn API, not C++ `OnCommit` as the proof).
+
+## Engine SDK / host
 
 {{engine_sdk_hints}}
 
-## Store-mode patterns (conceptual — not tied to a specific engine)
+{{engine_host_discovery}}
 
-{{optional_examples_section}}
+If `host_runtime.kind` is `docker`, say so in every `gate_loop`: gates build
+**inside the container** (ensure + ninja + `docker exec` of the harness). Do not
+plan host-side `cmake -B build-release` as the bar.
 
-If no prior adapters exist in the repo, proceed from substrate + `pipeline/templates/engine_backend/` alone.
-
-## Mode
+## Mode / layout
 
 {{engine_generation_mode}}
 
-## Writable paths for this workload
-
-{{engine_write_paths}}
-
-## Target layout
+CMake collect `{{engine_cmake_collect_fn}}`, flag `{{engine_cmake_build_flag}}`.
 
 {{engine_target_paths}}
 
-CMake: collect `{{engine_cmake_collect_fn}}`, flag `{{engine_cmake_build_flag}}` (empty flag = always-on / default lib).
+{{engine_write_paths}}
+
+## Store-mode (pick one)
+
+{{optional_examples_section}}
 
 ## Output
 
-Write `{{artifacts_path}}/backend_analysis.json` conforming to `pipeline/schemas/backend_analysis.schema.json`:
+Write `{{artifacts_path}}/backend_analysis.json` (schema
+`pipeline/schemas/backend_analysis.schema.json`).
 
-- `engine_name`, `store_mode` (`typed_in_process` | `serialized_boundary`)
-- `native_scan_plan` — native APIs used to stream base tables into `DataChunk`
-- `mutation_capture_plan`, `txn_lifecycle_plan`, `visibility_plan`
-- `udf_or_extension_host_plan`
-- `files_to_create` / `files_to_update` (under the writable paths above)
-- `risks`, `fitness_assessment.recommended`
-
-Do not implement code in this stage.
+Do not author `test_{{engine_name}}_adversarial.cpp`.

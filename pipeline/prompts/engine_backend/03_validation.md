@@ -1,17 +1,42 @@
-# Engine backend validation
+# Engine backend validation (unseen adversarial agent)
 
-Validate the **{{display_name}}** (`{{engine_name}}`) adapter.
+You are a **separate** validation agent for **{{display_name}}** (`{{engine_name}}`).
+Implementation already shipped sequential layer harnesses. Your job is to
+**attack** that adapter with **new** tests it has not seen, then fix any real
+bugs until those tests pass.
 
 {{hard_guidelines}}
 
-## Checks
+{{codex_tooling}}
 
-1. Target paths exist:
+{{engine_host_discovery}}
+
+## Inputs
+
+- Adapter sources under target paths:
 {{engine_target_paths}}
-2. Native base-table scans only (`ScanNativeBaseTable` / equivalent); aux may use custom storage.
-3. Mutation/txn bridges forward to `AuxTransactionCoordinator`.
-4. Rebuild/resync semantics respected for aux maintenance.
-5. CMake collector `{{engine_cmake_collect_fn}}` is referenced when a build flag is used.
-6. Run gates: `engine_build`, `engine_scan_conformance` (and `engine_aux_smoke` if configured).
+- Known layer harnesses: `tests/engine_backend/test_{{engine_name}}_*.cpp`
+  (see `layers.md`)
+- Spec: `pipeline/prompts/engine_backend/adversarial_tests.md`
+- Analysis (context only): `{{artifacts_path}}/backend_analysis.json`
 
-Write `{{artifacts_path}}/validation_report.md` summarizing fitness and remaining gaps.
+## Mandates
+
+1. **Do not** weaken, delete, or dilute existing layer harnesses.
+2. **Do** author `tests/engine_backend/test_{{engine_name}}_adversarial.cpp` with
+   ≥4 **new** cases after reading the implementation.
+3. Register CMake so `test_{{engine_name}}_adversarial` builds with the **same**
+   enabled native/SDK path as the layer suite.
+4. Mid-loop until green:
+   - `request_gate` → each layer gate already in `post_validation_gates` (regression)
+   - `request_gate` → **`engine_adversarial`**
+   - On fail: fix the **adapter** (preferred) or correct a wrong test; never soft-assert away.
+5. Confirm scan uses **native** storage APIs; mutation uses real hooks; no generated
+   query-accelerator dependency.
+6. Write `{{artifacts_path}}/validation_report.md`.
+
+## Gates the orchestrator will re-run
+
+`engine_build`, every layer gate in `layers.md`, **`engine_adversarial`**.
+
+Missing adversarial source/target or TODO stubs → **fail**.

@@ -128,8 +128,9 @@ struct TpchQ3SegmentIntervalIndex {
   std::vector<TpchQ3OrderSummary> orders;
   std::vector<TpchQ3ShipdateBucket> bucket_pool;
   // RF maintenance only; Execute scans `orders`. Hashmap is one entry per
-  // order in this segment (not a dense array up to max orderkey).
-  std::unordered_map<int64_t, std::size_t> order_positions;
+  // order in this segment (not a dense array up to max orderkey). Mutable so
+  // ApplyDelta can rebuild it when a published image has orders but no map.
+  mutable std::unordered_map<int64_t, std::size_t> order_positions;
 
   int32_t BucketShipdate(std::size_t pool_index) const {
     return static_cast<int32_t>(bucket_pool[pool_index].shipdate);
@@ -161,12 +162,29 @@ struct TpchQ3SegmentIntervalIndex {
 
   void ErasePosition(int64_t orderkey) { order_positions.erase(orderkey); }
 
+  void RebuildPositions() const {
+    order_positions.clear();
+    for (std::size_t i = 0; i < orders.size(); ++i)
+      order_positions[static_cast<int64_t>(orders[i].orderkey)] = i;
+  }
+
   bool FindPosition(int64_t orderkey, std::size_t &index) const {
+    if (order_positions.size() != orders.size())
+      RebuildPositions();
     const auto it = order_positions.find(orderkey);
-    if (it == order_positions.end())
-      return false;
-    index = it->second;
-    return true;
+    if (it != order_positions.end() && it->second < orders.size() &&
+        static_cast<int64_t>(orders[it->second].orderkey) == orderkey) {
+      index = it->second;
+      return true;
+    }
+    for (std::size_t i = 0; i < orders.size(); ++i) {
+      if (static_cast<int64_t>(orders[i].orderkey) == orderkey) {
+        index = i;
+        order_positions[orderkey] = i;
+        return true;
+      }
+    }
+    return false;
   }
 };
 

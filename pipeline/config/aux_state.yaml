@@ -144,6 +144,13 @@ stage_max_turns:
   optimization: 0
   crash_debug: 16
   audit: 12
+  host_bootstrap: 0
+  layer_critique: 20
+
+# Post-stage host_bootstrap gate: on fail, re-invoke the agent with notes/log_tail.
+host_bootstrap_gate_max_rounds: 3
+# Cheap critic after a green bootstrap gate; 0 disables.
+host_bootstrap_critique_max_rounds: 2
 
 optimization_max_turns_per_episode: 0
 

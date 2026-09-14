@@ -529,7 +529,11 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
   }
 
   if (full_rebuild || !deltas.empty()) {
-    // Rebuild full state from initial scan for correctness.
+    // Part / partsupp membership changes require a full rebuild for correctness.
+    const auto decision = services.ChooseMaintenance(
+        {0, 0, false, false, true, true, false,
+         core::MaintenanceAction::NoOp,
+         services.ExpectedQueriesBeforeNextWrite()});
     auto state = BuildState(services);
     auto shared_state = std::make_shared<const TpchQ16State>(state);
 
@@ -549,8 +553,43 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
           MakeSizeImage(size, shared_partition)));
     }
 
-    outcome.action = core::MaintenanceAction::RebuildAll;
+    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
+                         ? core::MaintenanceAction::RebuildAll
+                         : decision.action;
+    if (outcome.action == core::MaintenanceAction::RebuildPartition) {
+      outcome.action = core::MaintenanceAction::RebuildAll;
+    }
   } else if (!supplier_deltas.empty()) {
+    // Supplier-only eligibility change: incremental ApplyDelta when selected.
+    const auto decision = services.ChooseMaintenance(
+        {static_cast<uint64_t>(supplier_deltas.size()), 1, true, false, true,
+         false, false, core::MaintenanceAction::NoOp,
+         services.ExpectedQueriesBeforeNextWrite()});
+    if (decision.action != core::MaintenanceAction::ApplyDelta) {
+      auto state = BuildState(services);
+      auto shared_state = std::make_shared<const TpchQ16State>(state);
+      outcome.updates.push_back(core::StateImage::Make(
+          Id(), TpchQ16Layout::kSupplierEligibility, 0,
+          MakeEligibilityImage(shared_state)));
+      for (const auto &[size, partition] : state.membership) {
+        if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
+          continue;
+        auto shared_partition =
+            std::make_shared<const TpchQ16SizePartition>(partition);
+        outcome.updates.push_back(core::StateImage::Make(
+            Id(), TpchQ16Layout::SizePartition(size), 0,
+            MakeSizeImage(size, shared_partition)));
+      }
+      outcome.action = decision.action == core::MaintenanceAction::RebuildPartition
+                           ? core::MaintenanceAction::RebuildAll
+                           : decision.action;
+      if (outcome.action != core::MaintenanceAction::RebuildAll &&
+          outcome.action != core::MaintenanceAction::RebuildPartition) {
+        outcome.action = core::MaintenanceAction::RebuildAll;
+      }
+      return outcome;
+    }
+
     // Supplier-only eligibility change: apply deltas to the current eligibility
     // state, then recompute the precomputed pre-sorted rows from the existing
     // size-membership partitions. Do not rebuild from base scan because the
@@ -619,7 +658,7 @@ core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
     outcome.updates.push_back(core::StateImage::Make(
         Id(), TpchQ16Layout::kSupplierEligibility, 0,
         MakeEligibilityImage(shared_state)));
-    outcome.action = core::MaintenanceAction::RebuildAll;
+    outcome.action = core::MaintenanceAction::ApplyDelta;
   }
 
   return outcome;

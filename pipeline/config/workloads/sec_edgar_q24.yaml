@@ -1,5 +1,6 @@
 benchmark_name: sec_edgar
 query_number: 24
+engine_name: duckdb
 query_id: "24"
 reference_sql_path: benchmarks/sec_edgar/queries/q24.sql
 parameters: []

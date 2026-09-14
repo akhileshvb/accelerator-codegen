@@ -25,6 +25,16 @@ std::optional<maintenance::MaintenanceAction> &ForceSlot() {
   return slot;
 }
 
+std::mutex &ExpectedQueriesMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+double &ExpectedQueriesSlot() {
+  static double slot = -1.0;
+  return slot;
+}
+
 std::optional<maintenance::MaintenanceAction>
 ParseMaintenanceActionName(std::string_view name) {
   using maintenance::MaintenanceAction;
@@ -76,6 +86,25 @@ std::optional<maintenance::MaintenanceAction> ForcedMaintenanceAction() {
     return std::nullopt;
   }
   return ParseMaintenanceActionName(force);
+}
+
+void SetExpectedQueriesOverride(double expected_queries) {
+  std::lock_guard<std::mutex> guard(ExpectedQueriesMutex());
+  ExpectedQueriesSlot() = expected_queries;
+}
+
+double ExpectedQueriesOverride() {
+  {
+    std::lock_guard<std::mutex> guard(ExpectedQueriesMutex());
+    if (ExpectedQueriesSlot() >= 0.0) {
+      return ExpectedQueriesSlot();
+    }
+  }
+  const char *env = std::getenv("ACCEL_EXPECTED_QUERIES_BEFORE_WRITE");
+  if (env && *env) {
+    return std::max(0.0, std::atof(env));
+  }
+  return -1.0;
 }
 
 MaintenanceDecision SelectAuxMaintenanceAction(

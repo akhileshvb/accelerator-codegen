@@ -1,6 +1,9 @@
 // GENERATED BACKEND
 #include "accelerator_codegen/stateful/{{engine_name}}/{{engine_name}}_aux_backend.hpp"
 
+#include <algorithm>
+#include <utility>
+
 namespace accelerator_codegen::aux_state::engine::{{engine_name}} {
 
 {{EngineName}}AuxBackend::{{EngineName}}AuxBackend(
@@ -10,17 +13,19 @@ namespace accelerator_codegen::aux_state::engine::{{engine_name}} {
     : coordinator(coordinator_p), state_store(state_store_p),
       visibility(std::move(visibility_p)),
       cost_model(cost_model_p ? cost_model_p() : maintenance::CostModelParams{}),
-      workload(std::move(workload_p)) {}
-
-void {{EngineName}}AuxBackend::CaptureMutation(const core::MutationBatch &mutation) {
-  coordinator.CaptureMutation(mutation);
+      workload(std::move(workload_p)) {
+  coordinator.AttachServices(*this);
 }
 
-void {{EngineName}}AuxBackend::OnPreCommit() { coordinator.OnPreCommit(*this); }
+void {{EngineName}}AuxBackend::CaptureMutation(const core::MutationBatch &mutation) {
+  coordinator.OnMutation(mutation);
+}
 
-void {{EngineName}}AuxBackend::OnCommit() { coordinator.OnCommit(*this); }
+void {{EngineName}}AuxBackend::OnPreCommit() { coordinator.PreCommit(); }
 
-void {{EngineName}}AuxBackend::OnAbort() { coordinator.OnAbort(); }
+void {{EngineName}}AuxBackend::OnCommit() { coordinator.Commit(); }
+
+void {{EngineName}}AuxBackend::OnAbort() { coordinator.Abort(); }
 
 core::VisibilityToken {{EngineName}}AuxBackend::CurrentVisibility() const {
   return visibility ? visibility() : core::VisibilityToken{};

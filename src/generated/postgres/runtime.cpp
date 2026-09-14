@@ -1830,9 +1830,10 @@ public:
 
     EnsureBuilt();
     // Mutations are applied on UPDATE commit via CaptureMutation →
-    // StageMaintenance (ApplyDelta / Rebuild*) → TryPublish. Only rebuild
-    // here if the store is still invalid after that path.
-    if (!store.CheckValidity({accelerator, {}}, {}).IsValid()) {
+    // StageMaintenance (ApplyDelta / Rebuild*) → TryPublish. Empty QueryKey
+    // means partition 0 in PostgresStateStore (layer contract), so use Read()
+    // to detect a fully invalidated image and rebuild after commit.
+    if (store.NeedsRebuild()) {
       built = false;
       EnsureBuilt();
     }

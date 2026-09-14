@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -12,6 +13,11 @@ from typing import Any
 
 from accel_pipeline.backends.base import StageRunRequest, StageRunResult
 from accel_pipeline.config import ModelConfig, PipelineConfig
+
+
+def sidecar_env_line(key: str, value: Any) -> str:
+    """KEY=value line safe to `source` from bash (spaces, colons, etc.)."""
+    return f"{key}={shlex.quote(str(value))}"
 
 
 class CodexExecBackend:
@@ -68,35 +74,55 @@ class CodexExecBackend:
     def _write_mcp_env_sidecar(self, codex_home: Path) -> Path:
         """Write ACCEL_* for the MCP launcher — Codex often sanitizes child env."""
         lines = [
-            f"ACCEL_PIPELINE_QUERY={self._query}",
-            f"ACCEL_PIPELINE_STAGE={self._stage}",
-            f"ACCEL_PIPELINE_WORKLOAD={self._workload_name}",
-            f"ACCEL_PIPELINE_OPT_ITER={self._optimization_iter}",
-            f"ACCEL_PIPELINE_REPO_ROOT={self._pipeline_config.repo_root}",
-            f"ACCEL_PIPELINE_WORKER_ID={getattr(self._pipeline_config, 'worker_id', '') or self._query}",
-            f"ACCEL_PIPELINE_BUILD_DIR={self._pipeline_config.build_dir}",
+            sidecar_env_line("ACCEL_PIPELINE_QUERY", self._query),
+            sidecar_env_line("ACCEL_PIPELINE_STAGE", self._stage),
+            sidecar_env_line("ACCEL_PIPELINE_WORKLOAD", self._workload_name),
+            sidecar_env_line("ACCEL_PIPELINE_OPT_ITER", self._optimization_iter),
+            sidecar_env_line("ACCEL_PIPELINE_REPO_ROOT", self._pipeline_config.repo_root),
+            sidecar_env_line(
+                "ACCEL_PIPELINE_WORKER_ID",
+                getattr(self._pipeline_config, "worker_id", "") or self._query,
+            ),
+            sidecar_env_line("ACCEL_PIPELINE_BUILD_DIR", self._pipeline_config.build_dir),
         ]
         if self._art_dir is not None:
-            lines.append(f"ACCEL_PIPELINE_ART_DIR={self._art_dir}")
+            lines.append(sidecar_env_line("ACCEL_PIPELINE_ART_DIR", self._art_dir))
         if getattr(self._pipeline_config, "codex_home", None):
-            lines.append(f"ACCEL_PIPELINE_CODEX_HOME={self._pipeline_config.codex_home}")
-        if os.environ.get("ACCEL_PIPELINE_PRIMARY_REPO"):
             lines.append(
-                f"ACCEL_PIPELINE_PRIMARY_REPO={os.environ['ACCEL_PIPELINE_PRIMARY_REPO']}"
+                sidecar_env_line("ACCEL_PIPELINE_CODEX_HOME", self._pipeline_config.codex_home)
             )
-        if os.environ.get("ACCEL_PIPELINE_PACK_QUERIES"):
-            lines.append(
-                f"ACCEL_PIPELINE_PACK_QUERIES={os.environ['ACCEL_PIPELINE_PACK_QUERIES']}"
-            )
-        if os.environ.get("ACCEL_PIPELINE_ISOLATION_MODE"):
-            lines.append(
-                f"ACCEL_PIPELINE_ISOLATION_MODE={os.environ['ACCEL_PIPELINE_ISOLATION_MODE']}"
-            )
-        if os.environ.get("ACCEL_DUCKDB_ROOT"):
-            lines.append(f"ACCEL_DUCKDB_ROOT={os.environ['ACCEL_DUCKDB_ROOT']}")
+        for key in (
+            "ACCEL_PIPELINE_PRIMARY_REPO",
+            "ACCEL_PIPELINE_PACK_QUERIES",
+            "ACCEL_PIPELINE_ISOLATION_MODE",
+            "ACCEL_DUCKDB_ROOT",
+            "PG_CONFIG",
+            "ACCEL_PG_CONFIG",
+            "ACCEL_PG_BINDIR",
+            "ACCEL_PG_ROOT",
+            "ACCEL_PG_INCLUDEDIR_SERVER",
+            "ACCEL_PG_LIBDIR",
+            "ACCEL_PG_DISCOVERY",
+        ):
+            if os.environ.get(key):
+                lines.append(sidecar_env_line(key, os.environ[key]))
         path = codex_home / "accel_pipeline_mcp.env"
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
+
+    @staticmethod
+    def _engine_impl_mcp_tools(stage: str) -> list[str] | None:
+        """Allow-list MCP tools Codex actually sees for engine_backend impl_*."""
+        if not str(stage or "").startswith("impl_"):
+            return None
+        return [
+            "request_gate",
+            "run_engine_build",
+            "run_layer_gate",
+            "discover_host_sdk",
+            "acquire_shared_lease",
+            "release_shared_lease",
+        ]
 
     def run_stage(self, request: StageRunRequest) -> StageRunResult:
         started = time.monotonic()
@@ -174,6 +200,16 @@ class CodexExecBackend:
                 mcp_env_parts.append(
                     f'ACCEL_DUCKDB_ROOT="{os.environ["ACCEL_DUCKDB_ROOT"]}"'
                 )
+            for key in (
+                "PG_CONFIG",
+                "ACCEL_PG_CONFIG",
+                "ACCEL_PG_BINDIR",
+                "ACCEL_PG_ROOT",
+                "ACCEL_PG_INCLUDEDIR_SERVER",
+                "ACCEL_PG_LIBDIR",
+            ):
+                if os.environ.get(key):
+                    mcp_env_parts.append(f'{key}="{os.environ[key]}"')
             mcp_env_toml = "{" + ", ".join(mcp_env_parts) + "}"
             cmd = [
                 codex_bin,
@@ -190,6 +226,12 @@ class CodexExecBackend:
                 "-c",
                 'mcp_servers.accel_pipeline.default_tools_approval_mode="approve"',
             ]
+            enabled = self._engine_impl_mcp_tools(self._stage)
+            if enabled:
+                listed = ", ".join(f'"{n}"' for n in enabled)
+                cmd.extend(
+                    ["-c", f"mcp_servers.accel_pipeline.enabled_tools=[{listed}]"]
+                )
             # codex exec auto-cancels MCP tools when stdin can't approve
             # (openai/codex#16685). Bypass is required for first-party MCP in CI/pipeline.
             if bool(getattr(self._model_config, "codex_bypass_approvals_and_sandbox", True)):

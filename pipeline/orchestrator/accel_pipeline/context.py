@@ -28,6 +28,7 @@ from accel_pipeline.base_bench import (
 from accel_pipeline.config import PipelineConfig, resolve_optimization_edit_paths, resolve_workload_paths
 from accel_pipeline.implementation_bootstrap import build_implementation_bootstrap
 from accel_pipeline.kernel_inspiration import format_kernel_inspiration_section
+from accel_pipeline.models import is_critique_stage, is_implementation_stage
 from accel_pipeline.optimization_runtime import runtime_path_for_prompt
 from accel_pipeline.paths import (
     load_query_analysis,
@@ -102,6 +103,89 @@ def build_retrieval_brief(
         f"Full analysis: read `{analysis_path.name}` in the query artifacts directory on demand.",
     ]
     return "\n".join(lines)
+
+
+def _accelerator_engine_host_block(workload: dict[str, Any]) -> str:
+    """Host registration / differential conventions for query-accelerator workloads."""
+    from accel_pipeline.config import engine_host_conventions, sanitize_engine_name
+
+    raw = workload.get("engine_name")
+    engine = sanitize_engine_name(str(raw) if raw else "")
+    host = dict(workload.get("engine_host") or engine_host_conventions(engine))
+    lines = [
+        "### Engine host (query accelerator)",
+        "",
+        f"- **engine_name:** `{engine}`",
+        f"- **Registration / SQL surface:** {host.get('sql_entrypoint_convention', '')}",
+        f"- **Register path (convention):** `{host.get('register_path', '')}`",
+    ]
+    aux_reg = str(host.get("aux_register_path") or "").strip()
+    if aux_reg:
+        lines.append(f"- **Aux register path:** `{aux_reg}`")
+    lines.extend(
+        [
+            f"- **Dataset env:** `{host.get('dataset_env', 'ACCEL_TPCH_DB')}`",
+            f"- **Differential:** `{host.get('differential_binary', '')}` — "
+            f"{host.get('differential_command', '')}",
+        ]
+    )
+    hint = str(host.get("query_host_ready_hint") or "").strip()
+    if hint:
+        lines.extend(["", f"**Host readiness:** {hint}"])
+    if host.get("agent_builds_query_host"):
+        lines.extend(
+            [
+                "",
+                "**Agent-buildable query host:** if SQL entrypoints or the differential binary "
+                "are missing, create/extend them during implementation "
+                "(`pipeline/prompts/shared/query_host_bootstrap.md`). "
+                f"Expected differential source: `{host.get('differential_source', '')}`.",
+            ]
+        )
+    if engine == "postgres":
+        from accel_pipeline.postgres_docker import (
+            docker_host_from_env,
+            format_agent_discovery_block,
+        )
+
+        lines.extend(["", format_agent_discovery_block(docker_host_from_env())])
+    elif engine == "mysql":
+        from accel_pipeline.mysql_docker import (
+            docker_host_from_env as mysql_host_from_env,
+            format_agent_discovery_block as format_mysql_discovery_block,
+        )
+
+        lines.extend(["", format_mysql_discovery_block(mysql_host_from_env())])
+    return "\n".join(lines)
+
+
+def _engine_host_discovery_block(workload: dict[str, Any]) -> str:
+    """Resolved host SDK paths for engines that need an external install."""
+    host = dict(workload.get("host_runtime") or {})
+    discovery = str(host.get("discovery") or "")
+    if discovery == "postgres_docker":
+        from accel_pipeline.postgres_docker import (
+            docker_host_from_env,
+            format_agent_discovery_block,
+        )
+
+        return format_agent_discovery_block(docker_host_from_env())
+    if discovery == "mysql_docker":
+        from accel_pipeline.mysql_docker import (
+            docker_host_from_env,
+            format_agent_discovery_block,
+        )
+
+        return format_agent_discovery_block(docker_host_from_env())
+    hints = workload.get("engine_sdk_hints") or []
+    hint_lines = "\n".join(f"- {h}" for h in hints) if hints else "- (none)"
+    return (
+        "### Host SDK discovery\n\n"
+        "No auto-discovery plugin is configured for this engine "
+        f"(host_runtime.kind=`{host.get('kind') or 'host_cmake'}`). "
+        "Follow `engine_sdk_hints`:\n\n"
+        f"{hint_lines}"
+    )
 
 
 def build_prompt_context(
@@ -196,7 +280,22 @@ def build_prompt_context(
         workload_reference_section = ""
     edit_paths = resolve_optimization_edit_paths(pipeline_config, workload, query)
     is_engine = workload.get("workload_kind") == "engine_backend"
-    engine_name = str(workload.get("engine_name", ""))
+    from accel_pipeline.config import (
+        engine_host_conventions,
+        engine_pascal_name,
+        sanitize_engine_name,
+    )
+
+    raw_engine = workload.get("engine_name")
+    if is_engine:
+        engine_name = str(raw_engine or "")
+    else:
+        engine_name = sanitize_engine_name(str(raw_engine) if raw_engine else "")
+    engine_pascal = engine_pascal_name(engine_name) if engine_name else ""
+    engine_host = dict(
+        workload.get("engine_host")
+        or (engine_host_conventions(engine_name) if engine_name else {})
+    )
     opt_stages = (
         "optimization",
         "optimization_unified",
@@ -389,10 +488,11 @@ def build_prompt_context(
     hard_guidelines_path = pipe / "prompts" / "shared" / "hard_guidelines.md"
     hard_guidelines = (
         _read_text(hard_guidelines_path)
-        if stage
+        if is_implementation_stage(stage)
+        or is_critique_stage(stage)
+        or stage
         in (
             "analysis",
-            "implementation",
             "optimization",
             "optimization_unified",
             "optimization_unified_hypothesis",
@@ -400,15 +500,17 @@ def build_prompt_context(
             "optimization_worker",
             "optimization_fix",
             "audit",
+            "architecture_audit",
             "validation",
         )
         else ""
     )
     # Injected for Codex exec stages; empty for other providers unless prompt keeps the placeholder.
     codex_tooling = ""
-    if stage in (
-        "implementation",
+    if is_implementation_stage(stage) or is_critique_stage(stage) or stage in (
+        "validation",
         "adversarial_tests",
+        "architecture_audit",
         "optimization_unified",
         "optimization_unified_hypothesis",
         "optimization_unified_patch",
@@ -443,6 +545,9 @@ def build_prompt_context(
         "dataset_db": paths["dataset_db"],
         "db_env_var": paths["db_env_var"],
         "artifacts_path": artifacts_rel,
+        "bootstrap_artifacts_path": f"pipeline/artifacts/engines/{engine_name}/host_bootstrap"
+        if engine_name
+        else "pipeline/artifacts/engines/host_bootstrap",
         "analysis_artifact_path": analysis_artifact_rel,
         "schema_reference_section": schema_reference_section,
         "benchmark_notes": benchmark_notes,
@@ -572,17 +677,29 @@ def build_prompt_context(
             else ""
         ),
         "engine_name": engine_name,
-        "EngineName": (
-            "".join(p[:1].upper() + p[1:] for p in engine_name.split("_") if p)
-            if is_engine and engine_name
-            else ""
+        "EngineName": engine_pascal,
+        "register_path": str(engine_host.get("register_path") or ""),
+        "aux_register_path": str(
+            engine_host.get("aux_register_path") or engine_host.get("register_path") or ""
         ),
+        "differential_binary": str(engine_host.get("differential_binary") or ""),
+        "differential_source": str(engine_host.get("differential_source") or ""),
+        "differential_command": str(engine_host.get("differential_command") or ""),
+        "multi_conn_ctest_regex": str(engine_host.get("multi_conn_ctest_regex") or ""),
+        "cross_accel_ctest_regex": str(engine_host.get("cross_accel_ctest_regex") or ""),
+        "dataset_env": str(engine_host.get("dataset_env") or "ACCEL_TPCH_DB"),
         "engine_sdk_hints": (
             "\n".join(f"- {h}" for h in (workload.get("engine_sdk_hints") or []))
             or "- (none provided — use engine-native storage docs externally)"
             if is_engine
             else ""
         ),
+        "engine_host_discovery": (
+            _engine_host_discovery_block(workload)
+            if is_engine
+            else _accelerator_engine_host_block(workload)
+        ),
+
         "optional_examples_section": (
             _read_text(pipe / "prompts" / "engine_backend" / "optional_examples.md")
             + (
@@ -597,7 +714,8 @@ def build_prompt_context(
         "engine_generation_mode": (
             (
                 "update_existing"
-                if (repo / str((workload.get("target_paths") or {}).get("scan_adapter_header", ""))).is_file()
+                if (repo / str((workload.get("target_paths") or {}).get("state_store_header")
+                               or (workload.get("target_paths") or {}).get("scan_adapter_header", ""))).is_file()
                 and workload.get("allow_update_existing", True)
                 else "generate_from_scratch"
             )
@@ -621,6 +739,38 @@ def build_prompt_context(
         ),
         "engine_cmake_build_flag": (
             str((workload.get("cmake") or {}).get("build_flag") or "(none)")
+            if is_engine
+            else ""
+        ),
+        "engine_layers_spec": (
+            _read_text(pipe / "prompts" / "engine_backend" / "layers.md")
+            if is_engine
+            else ""
+        ),
+        "layer_contracts": (
+            _read_text(pipe / "prompts" / "engine_backend" / "layer_contracts.md")
+            if is_engine
+            else ""
+        ),
+        "layer_id": "",
+        "layer_title": "",
+        "layer_gate": "",
+        "layer_harness": "",
+        "layer_cmake_target": "",
+        "layer_rules": "",
+        "prior_layers": "",
+        "host_runtime_kind": (
+            str((workload.get("host_runtime") or {}).get("kind") or "host_cmake")
+            if is_engine
+            else ""
+        ),
+        "host_ensure_script": (
+            str((workload.get("host_runtime") or {}).get("ensure_script") or "")
+            if is_engine
+            else ""
+        ),
+        "host_build_script": (
+            str((workload.get("host_runtime") or {}).get("build_script") or "")
             if is_engine
             else ""
         ),

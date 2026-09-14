@@ -12,13 +12,20 @@ from accel_pipeline.pipeline_log import (
     usage_from_metadata,
 )
 from accel_pipeline.prompts import render_prompt, save_rendered_prompt
-from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES, tool_usage_instructions
+from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES, stage_tool_names, tool_usage_instructions
 
 _UNLIMITED_STAGE_TURNS = 10_000
 
 
 def resolve_stage_max_turns(stage_max_turns: dict[str, int], stage: str, default: int = 15) -> int:
-    raw = int(stage_max_turns.get(stage, default))
+    if stage not in stage_max_turns and stage.startswith("impl_"):
+        raw = int(stage_max_turns.get("implementation", default))
+    elif stage not in stage_max_turns and (
+        stage == "layer_critique" or stage.startswith("critique_")
+    ):
+        raw = int(stage_max_turns.get("layer_critique", default))
+    else:
+        raw = int(stage_max_turns.get(stage, default))
     if raw <= 0:
         return _UNLIMITED_STAGE_TURNS
     return raw
@@ -46,14 +53,13 @@ def run_agent_stage(
     optimization_iter: int = 0,
     dry_run: bool = False,
     analysis_revision_request: str = "",
+    extra_context: dict[str, str] | None = None,
 ) -> Any:
     workload = load_workload(workload_name, pipeline_config.repo_root)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
-    extra_context = (
-        {"analysis_revision_request": analysis_revision_request}
-        if analysis_revision_request
-        else None
-    )
+    merged_extra = dict(extra_context or {})
+    if analysis_revision_request:
+        merged_extra["analysis_revision_request"] = analysis_revision_request
     prompt = render_prompt(
         pipeline_config,
         prompt_file,
@@ -61,7 +67,7 @@ def run_agent_stage(
         query,
         stage,
         optimization_iter=optimization_iter,
-        extra_context=extra_context or None,
+        extra_context=merged_extra or None,
     )
     save_rendered_prompt(
         pipeline_config,
@@ -122,7 +128,7 @@ def run_agent_stage(
     begin_agent_run(
         stage,
         max_turns=max_turns,
-        tools=STAGE_TOOL_NAMES.get(stage, []),
+        tools=stage_tool_names(stage),
         prompt_chars=len(instructions),
     )
 

@@ -112,14 +112,24 @@ export ACCEL_INTERFERENCE_ISOLATED_SAMPLES="${ACCEL_INTERFERENCE_ISOLATED_SAMPLE
 
 CALIB_WORK_DIR="${BUILD}/q${QUERY}_aux_calibrate_${BENCHMARK_NAME}"
 mkdir -p "${CALIB_WORK_DIR}"
-CALIB_DB="${CALIB_WORK_DIR}/calibrate.duckdb"
-cp "${DATASET_DB}" "${CALIB_DB}"
+export ACCEL_ENGINE_NAME="${ENGINE_NAME}"
+if [[ "${ENGINE_NAME}" == "duckdb" ]]; then
+  CALIB_DB="${CALIB_WORK_DIR}/calibrate.duckdb"
+  cp "${DATASET_DB}" "${CALIB_DB}"
+else
+  CALIB_DB="${CALIB_WORK_DIR}/calibrate_${ENGINE_NAME}_work"
+  mkdir -p "${CALIB_DB}"
+  if [[ -n "${DATASET_DB}" && -e "${DATASET_DB}" ]]; then
+    ln -sfn "${DATASET_DB}" "${CALIB_DB}/dataset_source" || true
+  fi
+fi
 
 export ACCEL_AUX_BENCHMARK="${BENCHMARK_NAME}"
 export "${DB_ENV_VAR}"="${CALIB_DB}"
+export ACCEL_ENGINE_WORK_DB="${CALIB_DB}"
 
 set +e
-LOG="$("${BUILD}/${TARGET}" "${CALIB_DB}" "${CONFIG}" 2>&1)"
+LOG="$(env ACCEL_ENGINE_NAME="${ENGINE_NAME}" "${BUILD}/${TARGET}" "${CALIB_DB}" "${CONFIG}" 2>&1)"
 RC=$?
 set -e
 

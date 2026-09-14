@@ -24,3 +24,5 @@ stages:
   optimization_fix: code
   crash_debug: debug
   audit: reviewer
+  architecture_audit: reviewer
+  layer_critique: cheap_code

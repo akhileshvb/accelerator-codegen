@@ -6,7 +6,7 @@
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
 #include "catalog/query_catalog.hpp"
-#include "sec_edgar/q1/aux/parallel/module.hpp"
+#include "sec_edgar/q1/duckdb/aux/parallel/module.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/main/materialized_query_result.hpp"

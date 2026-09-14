@@ -7,7 +7,7 @@ from accel_pipeline.backends.cursor_sdk import CursorSDKBackend
 from accel_pipeline.backends.openai_agents import build_openai_agents_backend
 from accel_pipeline.config import ModelConfig, PipelineConfig, load_workload
 from accel_pipeline.paths import query_artifacts_dir
-from accel_pipeline.tools.tool_policy import STAGE_TOOL_NAMES, build_stage_tool_registry
+from accel_pipeline.tools.tool_policy import build_stage_tool_registry, stage_tool_names
 
 
 def create_agent_backend(
@@ -63,7 +63,7 @@ def create_agent_backend(
         return build_openai_agents_backend(
             provider=resolved,
             tool_registry=registry,
-            stage_tool_names=STAGE_TOOL_NAMES.get(stage, []),
+            stage_tool_names=stage_tool_names(stage),
             art_dir=art_dir,
             compress_outputs=compress_outputs,
         )

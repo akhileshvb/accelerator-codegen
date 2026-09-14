@@ -1,15 +1,64 @@
+# From-scratch MySQL adapter onboarding.
+# Conventional paths/write_paths/cmake names come from pipeline/config/engine_backend.yaml.
+# Engine-specific SDK detail lives HERE only; shared prompts/gates stay engine-agnostic.
+#
+# Do not describe a prior in-repo adapter. The agent implements against the
+# substrate + MySQL 8.4 server plugin headers + these connection hints.
+
 workload_kind: engine_backend
 engine_name: mysql
 display_name: MySQL
+allow_update_existing: false
+
+hide_foreign_engines: true
+agent_hidden_trees:
+  - include/accelerator_codegen/runtime/duckdb
+  - src/runtime/duckdb
+  - include/accelerator_codegen/stateful/duckdb
+  - src/stateful/duckdb
+  - src/generated/catalog/duckdb
+  - include/accelerator_codegen/runtime/postgres
+  - src/runtime/postgres
+  - include/accelerator_codegen/stateful/postgres
+  - src/stateful/postgres
+  - src/generated/postgres
+  - src/generated/catalog/postgres
+  - src/generated/tpch
+  - src/generated/sec_edgar
+
+# Server plugin packaging: host layer is required (UDF / daemon / component plugin).
+requires_in_process_host: true
+
+host_runtime:
+  kind: docker
+  discovery: mysql_docker
+  ensure_script: scripts/ensure_accel_mysql_test.sh
+  build_script: scripts/build_accel_mysql_plugin.sh
+  ninja_targets_env: ACCEL_MYSQL_NINJA_TARGETS
+  container_env: ACCEL_MYSQL_CONTAINER
+  default_container: accel_mysql_test
+  binary_dir: /accel-build/accel
+  env:
+    ACCEL_MYSQL_DOCKER: "1"
+    # From-scratch: start the container only. Layer gates build via build_script;
+    # do not fail closed on missing live adapter sources / a stale plugin .so.
+    ACCEL_MYSQL_ENSURE_BUILD: "0"
 
 engine_sdk_hints:
-  - "Supply MySQL server source / handler API docs externally when available."
-
-# Conventional target_paths / cmake / write_paths come from pipeline/config/engine_backend.yaml.
-# Override only if this engine cannot use runtime|stateful/mysql/*.
+  - "MySQL for this pipeline is Docker container `accel_mysql_test` (mysql:8.4). Start with `ACCEL_MYSQL_ENSURE_BUILD=0 bash scripts/ensure_accel_mysql_test.sh` (container only until the host plugin exists). Do not install a host pacman/$HOME/opt server SDK."
+  - "Edit sources on the host (mounted in the container at `/accel-src`). Rebuild with `bash scripts/build_accel_mysql_plugin.sh` (cmake/ninja inside the container)."
+  - "Connect from host: MYSQL_HOST=127.0.0.1 MYSQL_TCP_PORT=3307 (user root, password mysql). Inside the container / docker exec: MYSQL_HOST=127.0.0.1 MYSQL_TCP_PORT=3306. Env: ACCEL_MYSQL_DOCKER=1."
+  - "In-process plugin target name: `accelerator_codegen_mysql`. Installed .so path in the container: `/usr/lib/mysql/plugin/accelerator_codegen_mysql.so` (Oracle images may use `/usr/lib64/mysql/plugin`)."
+  - "Use MySQL 8.4 server plugin / UDF / component headers (`mysql/plugin.h`, `mysql/udf_registration.h`, component services). Server-only symbols belong only in the plugin — never in a host shared library that standalone harnesses link. Client libmysql (`mysql_real_query` over the protocol) is not a native scan."
+  - "Native scan must use in-process table/handler/plugin services (not a client SQL round-trip). Mutation capture should hook the engine (triggers that call a plugin UDF, audit/table APIs) so INSERT/UPDATE/DELETE produce MutationBatch."
+  - "Shared substrate (do not regenerate): include/accelerator_codegen/stateful/{core,state,maintenance}/ — MutationBatch, AuxStateStore, AuxEngineServices, coordinator."
+  - "Do not read or copy another engine's runtime|stateful tree. Do not depend on generated TPC-H/SEC query modules."
 
 store_mode_candidates:
   - typed_in_process
   - serialized_boundary
 
-allow_update_existing: true
+allowed_commands:
+  - "^bash scripts/ensure_accel_mysql_test\\.sh( .*)?$"
+  - "^bash scripts/start_accel_mysql_test\\.sh( .*)?$"
+  - "^bash scripts/build_accel_mysql_plugin\\.sh( .*)?$"

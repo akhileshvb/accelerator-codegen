@@ -32,6 +32,6 @@ Read the workload `reference_sql_path` (tar placeholders / materialized seeds) *
 ## What `aux_correctness` checks
 
 1. **Smoke** — in-process `*_aux_smoke_test` (this contract).
-2. **SF1 differential** — DuckDB reference SQL vs aux execute for the catalog seed binding (`test_tpch_shared_differential`).
+2. **SF1 differential** — base-engine reference SQL vs aux execute for the catalog seed binding. DuckDB default: `test_tpch_shared_differential`. Other `engine_name` values: agent-buildable `test_{engine}_tpch_differential` (see `query_host_bootstrap.md`).
 
 Both must pass. Smoke-only success is not enough.

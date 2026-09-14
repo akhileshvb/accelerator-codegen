@@ -18,13 +18,20 @@ def _env_int(name: str, default: int = 0) -> int:
         return default
 
 
+def _resolve_query(args: argparse.Namespace) -> int:
+    raw = os.environ.get("ACCEL_PIPELINE_QUERY")
+    if raw is not None and str(raw).strip() != "":
+        return int(raw)
+    return int(args.query or 0)
+
+
 def _build_context(args: argparse.Namespace):
     from accel_pipeline.config import load_pipeline_config, load_workload, apply_workload_overrides
     from accel_pipeline.paths import find_repo_root, query_artifacts_dir
 
     repo_root = Path(args.repo_root or os.environ.get("ACCEL_PIPELINE_REPO_ROOT") or find_repo_root())
     pipeline_config = load_pipeline_config(repo_root=repo_root)
-    query = int(args.query or _env_int("ACCEL_PIPELINE_QUERY", 0))
+    query = _resolve_query(args)
     workload_name = args.workload or os.environ.get("ACCEL_PIPELINE_WORKLOAD") or "tpch_q3"
     stage = args.stage or os.environ.get("ACCEL_PIPELINE_STAGE") or "optimization_worker"
     optimization_iter = int(args.optimization_iter or _env_int("ACCEL_PIPELINE_OPT_ITER", 0))
@@ -62,7 +69,9 @@ def build_mcp_tool_callables(
     from accel_pipeline.tools.shell_tools import make_shell_tools
     from accel_pipeline.tools.gate_tools import _compact_gate_payload
 
-    request_gate = make_gate_tools(GateCtx(pipeline_config, query, workload=workload))
+    request_gate, run_engine_build, run_layer_gate = make_gate_tools(
+        GateCtx(pipeline_config, query, workload=workload, stage=stage)
+    )
     run_command = make_shell_tools(ShellCtx(pipeline_config, query))
     request_structural_reanalysis = make_reanalysis_tools(
         ReanalysisCtx(pipeline_config, query, stage, workload_name, optimization_iter)
@@ -280,8 +289,16 @@ def build_mcp_tool_callables(
         ok = release_sticky_lease(pipeline_config.repo_root, holder=holder)
         return json.dumps({"released": ok, "holder": holder})
 
+    def discover_host_sdk() -> str:
+        """Locate this engine's host from workload host_runtime (not engine_name)."""
+        from accel_pipeline.host_runtime import discover_host_sdk_json
+
+        return discover_host_sdk_json(workload)
+
     return {
         "request_gate": request_gate,
+        "run_engine_build": run_engine_build,
+        "run_layer_gate": run_layer_gate,
         "run_profile": run_profile,
         "run_correctness": run_correctness,
         "run_multi_connection": run_multi_connection,
@@ -298,6 +315,7 @@ def build_mcp_tool_callables(
         "run_pipeline_command": run_pipeline_command,
         "acquire_shared_lease": acquire_shared_lease,
         "release_shared_lease": release_shared_lease,
+        "discover_host_sdk": discover_host_sdk,
     }
 
 
@@ -313,8 +331,8 @@ def main(argv: list[str] | None = None) -> int:
     # Allow initialize / tools/list even if query env is not ready yet.
     # Tool handlers re-resolve context from env on each call so a late-written
     # sidecar env file (or inherited ACCEL_* vars) still works.
-    query = int(args.query or _env_int("ACCEL_PIPELINE_QUERY", 0))
-    if query <= 0:
+    query = _resolve_query(args)
+    if os.environ.get("ACCEL_PIPELINE_QUERY") is None and args.query == 0:
         print(
             "accel_pipeline MCP: ACCEL_PIPELINE_QUERY unset at startup; "
             "tools will resolve context on first call",
@@ -323,7 +341,8 @@ def main(argv: list[str] | None = None) -> int:
 
     def _tools():
         pipeline_config, workload, workload_name, q, stage, optimization_iter, art = _build_context(args)
-        if q <= 0:
+        # Query 0 is valid (engine_backend). Only fail when neither CLI nor env set a query.
+        if os.environ.get("ACCEL_PIPELINE_QUERY") is None and args.query == 0:
             raise RuntimeError(
                 "ACCEL_PIPELINE_QUERY / --query required for measurement tools "
                 "(CodexExecBackend should write pipeline/.codex/accel_pipeline_mcp.env)"
@@ -386,10 +405,36 @@ def main(argv: list[str] | None = None) -> int:
             kwargs.pop("annotations", None)
         return mcp.tool(**kwargs)
 
-    @_tool(annotations=_ro)
+    @_tool(annotations=_rw)
     def request_gate(gate_name: str) -> str:
-        """Run an official orchestrator gate by name."""
+        """MCP TOOL (not a resource — do not list_mcp_resources).
+
+        Run an official orchestrator gate by name. Returns JSON with status,
+        notes, and on fail failure_summary. Engine backend: pass engine_build
+        then this layer's gate (engine_store, engine_aux_backend, engine_txn,
+        engine_mutations, engine_scan, engine_runtime, engine_visibility,
+        engine_host). Prefer run_engine_build / run_layer_gate when listed.
+        Keep calling until status=pass. Do not substitute host cmake or docker
+        exec of the harness for this tool.
+        """
         return _call("request_gate", gate_name)
+
+    @_tool(annotations=_rw)
+    def run_engine_build() -> str:
+        """MCP TOOL. Official engine_build gate (docker ensure+build or host cmake).
+
+        Call this after CMake/adapter changes. On fail, read failure_summary, fix, retry.
+        """
+        return _call("run_engine_build")
+
+    @_tool(annotations=_rw)
+    def run_layer_gate() -> str:
+        """MCP TOOL. Official harness gate for this impl_* layer.
+
+        Maps impl_store→engine_store, impl_txn→engine_txn, etc. Call after
+        run_engine_build. On fail, read failure_summary, fix, retry until pass.
+        """
+        return _call("run_layer_gate")
 
     @_tool(annotations=_ro)
     def run_profile() -> str:
@@ -485,6 +530,11 @@ def main(argv: list[str] | None = None) -> int:
     def release_shared_lease() -> str:
         """Release sticky shared-file lease after shared edits + rebuild."""
         return _call("release_shared_lease")
+
+    @_tool(annotations=_ro)
+    def discover_host_sdk() -> str:
+        """Locate this engine's external server SDK (Postgres: pacman/apt/home-prefix)."""
+        return _call("discover_host_sdk")
 
     mcp.run(transport="stdio")
     return 0

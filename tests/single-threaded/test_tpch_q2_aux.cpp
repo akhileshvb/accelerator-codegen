@@ -14,7 +14,7 @@
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
 #include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
-#include "tpch/q2/aux/module.hpp"
+#include "tpch/q2/duckdb/aux/module.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 using accelerator_codegen::aux_state::query::TpchQ2Config;

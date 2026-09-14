@@ -88,7 +88,7 @@ Set `provider` in `config/models.yaml` (and optional per-stage overrides via `st
 | `openrouter` | `OPENROUTER_API_KEY` | `pip install -e ".[openrouter]"` |
 | `codex_exec` (via `stage_providers`) | `OPENROUTER_API_KEY` + Codex CLI | `pip install -e ".[codex]"` |
 
-### Codex exec (implementation + optimization)
+### Codex exec (analysis + implementation + optimization)
 
 Uses Codex CLI native edit/search/shell plus an MCP server for gates/profile digests/A/B:
 
@@ -216,18 +216,36 @@ Tests: `pytest tests/test_benchmark_pack.py`
 
 ## Engine backend onboarding
 
-Separate pipeline (`workload_kind: engine_backend`) generates engine adapters from the **fixed substrate** (`stateful/core|state|maintenance` + `NativeScanSpec`). DuckDB/Postgres trees are optional prompt examples — greenfield engines (and from-scratch DuckDB/Postgres regen) do not require sibling backends on disk.
+Separate pipeline (`workload_kind: engine_backend`) generates engine adapters from the
+**fixed substrate** (`stateful/core|state|maintenance`). It is **engine-agnostic
+and from-scratch**: conventional paths come from `config/engine_backend.yaml`.
+Agents must **not** read or copy other engine trees.
 
 ```bash
-python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql --dry-run
-python -m accel_pipeline.run_pipeline --query 0 --workload engine_duckdb --dry-run
+python -m accel_pipeline.run_pipeline --query 0 --workload engine_postgres \
+  --models-config pipeline/config/models.codex.yaml
+
+python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
+  --models-config pipeline/config/models.codex.yaml
+
+# Single layer (dry-run)
+python -m accel_pipeline.run_pipeline --query 0 --workload engine_mysql \
+  --stage impl_store --dry-run
 ```
 
+- Stages: analysis (sketches every layer) → `impl_store` → `impl_aux_backend` →
+  `impl_txn` → `impl_mutations` → `impl_scan` → `impl_runtime` → `impl_visibility` →
+  `impl_host` (skipped unless `requires_in_process_host`) → architecture_audit →
+  validation (adversarial)
+- Layer spec: `prompts/engine_backend/layers.md`
+- Each impl layer loops `engine_build` + that layer’s gate until pass
+- Architecture audit is read-only; on fail it re-runs **only the named failing
+  layers** (small impl fix-up) then re-audits (up to `architecture_audit_max_rounds`)
+- Gates: `engine_store`, `engine_aux_backend`, `engine_txn`, `engine_mutations`,
+  `engine_scan`, `engine_runtime`, `engine_visibility`, `engine_host`,
+  `engine_adversarial`
+- Host connection is workload `host_runtime` (not hardcoded in shared gates)
 - Workloads: `config/workloads/engine_*.yaml`
-- Prompts/templates: `prompts/engine_backend/`, `templates/engine_backend/`
-- Artifacts: `pipeline/artifacts/engines/{engine}/`
-- Stages: analysis → implementation → validation
-- Gates: `engine_build`, `engine_scan_conformance`, optional `engine_aux_smoke`
 
 ## TODO
 

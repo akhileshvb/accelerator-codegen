@@ -50,6 +50,30 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
 	endif()
 endif()
 
+# Optional MySQL engine adapter. Plugin headers are discovered in-container.
+option(ACCELERATOR_CODEGEN_BUILD_MYSQL
+       "Build the optional MySQL engine adapter (requires plugin SDK)" OFF)
+if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
+	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindAccelMySQL.cmake")
+		include(FindAccelMySQL)
+	endif()
+	if(NOT ACCEL_MYSQL_FOUND)
+		if(DEFINED ENV{ACCEL_MYSQL_DOCKER} AND "$ENV{ACCEL_MYSQL_DOCKER}" STREQUAL "1")
+			message(STATUS
+				"accel: BUILD_MYSQL ON but no plugin headers yet (ACCEL_MYSQL_DOCKER=1); "
+				"store/aux layers may still build; plugin TUs wait for mysql/plugin.h")
+		else()
+			message(STATUS
+				"accel: BUILD_MYSQL ON without mysql/plugin.h — "
+				"standalone harnesses can still link accelerator_codegen")
+		endif()
+	endif()
+	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MySQLAdapter.cmake")
+		include(MySQLAdapter)
+		accel_build_mysql_plugin()
+	endif()
+endif()
+
 accel_collect_runtime_sources(ACCEL_RUNTIME_SOURCES)
 accel_collect_stateful_sources(ACCEL_STATEFUL_SOURCES)
 accel_collect_generated_sources(ACCEL_GENERATED_SOURCES)
@@ -1434,15 +1458,19 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
     add_executable(test_postgres_tpch_differential
         tests/aux_state/test_postgres_tpch_differential.cpp
     )
+    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
     target_link_libraries(test_postgres_tpch_differential
         PRIVATE
             accelerator_codegen
             duckdb_sibling
+            ${LIBPQ_LIB}
     )
     target_include_directories(test_postgres_tpch_differential
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/tests
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
             ${ACCEL_PG_INCLUDEDIR}
             ${ACCEL_PG_INCLUDEDIR_SERVER}
     )
@@ -1517,14 +1545,19 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
         target_include_directories(test_postgres_aux_multi_connection_stress
             PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
                 ${ACCEL_PG_INCLUDEDIR}
                 ${ACCEL_PG_INCLUDEDIR_SERVER}
         )
         if(TARGET accelerator_codegen_pg)
             add_dependencies(test_postgres_aux_multi_connection_stress accelerator_codegen_pg)
         endif()
+        find_package(Threads REQUIRED)
+        target_link_libraries(test_postgres_aux_multi_connection_stress PRIVATE Threads::Threads)
         if(BUILD_TESTING)
-            add_test(NAME postgres_aux_multi_connection_stress COMMAND test_postgres_aux_multi_connection_stress)
+            add_test(NAME test_postgres_aux_multi_connection_stress COMMAND test_postgres_aux_multi_connection_stress)
         endif()
     endif()
 
@@ -1541,6 +1574,9 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
         target_include_directories(test_postgres_cross_accel
             PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
                 ${ACCEL_PG_INCLUDEDIR}
                 ${ACCEL_PG_INCLUDEDIR_SERVER}
         )
@@ -1548,7 +1584,335 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
             add_dependencies(test_postgres_cross_accel accelerator_codegen_pg)
         endif()
         if(BUILD_TESTING)
-            add_test(NAME postgres_cross_accel COMMAND test_postgres_cross_accel)
+            add_test(NAME test_postgres_cross_accel COMMAND test_postgres_cross_accel)
+        endif()
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Engine backend layer harnesses (store layer: no PG server headers needed)
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_store.cpp")
+        add_executable(test_postgres_store
+            tests/engine_backend/test_postgres_store.cpp
+        )
+        target_link_libraries(test_postgres_store
+            PRIVATE
+                accelerator_codegen
+                duckdb_sibling
+        )
+        target_include_directories(test_postgres_store
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        )
+        if(BUILD_TESTING)
+            add_test(NAME engine_postgres_store COMMAND test_postgres_store)
+        endif()
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Engine backend layer harnesses (aux_backend layer: PG server headers needed)
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_aux_backend.cpp")
+        add_executable(test_postgres_aux_backend
+            tests/engine_backend/test_postgres_aux_backend.cpp
+        )
+        target_link_libraries(test_postgres_aux_backend
+            PRIVATE
+                accelerator_codegen
+                duckdb_sibling
+        )
+        target_include_directories(test_postgres_aux_backend
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        )
+        if(BUILD_TESTING)
+            add_test(NAME engine_postgres_aux_backend COMMAND test_postgres_aux_backend)
+        endif()
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Engine backend layer harnesses (txn layer: libpq test)
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
+    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_txn.cpp")
+        add_executable(test_postgres_txn
+            tests/engine_backend/test_postgres_txn.cpp
+        )
+        target_include_directories(test_postgres_txn
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${ACCEL_PG_INCLUDEDIR}
+        )
+        target_link_libraries(test_postgres_txn
+            PRIVATE
+                ${LIBPQ_LIB}
+        )
+        if(TARGET accelerator_codegen_pg)
+            add_dependencies(test_postgres_txn accelerator_codegen_pg)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME engine_postgres_txn COMMAND test_postgres_txn)
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_mutations.cpp")
+        add_executable(test_postgres_mutations
+            tests/engine_backend/test_postgres_mutations.cpp
+        )
+        target_include_directories(test_postgres_mutations
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${ACCEL_PG_INCLUDEDIR}
+        )
+        target_link_libraries(test_postgres_mutations
+            PRIVATE
+                ${LIBPQ_LIB}
+        )
+        if(TARGET accelerator_codegen_pg)
+            add_dependencies(test_postgres_mutations accelerator_codegen_pg)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME engine_postgres_mutations COMMAND test_postgres_mutations)
+        endif()
+    endif()
+endif()
+# ---------------------------------------------------------------------------
+# Engine backend layer harnesses (scan layer: libpq test)
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
+    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_scan.cpp")
+        add_executable(test_postgres_scan
+            tests/engine_backend/test_postgres_scan.cpp
+        )
+        target_include_directories(test_postgres_scan
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${ACCEL_PG_INCLUDEDIR}
+        )
+        target_link_libraries(test_postgres_scan
+            PRIVATE
+                ${LIBPQ_LIB}
+        )
+        if(TARGET accelerator_codegen_pg)
+            add_dependencies(test_postgres_scan accelerator_codegen_pg)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME engine_postgres_scan COMMAND test_postgres_scan)
+        endif()
+    endif()
+endif()
+# ---------------------------------------------------------------------------
+# Engine backend layer harnesses (runtime layer: libpq test)
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
+    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_runtime.cpp")
+        add_executable(test_postgres_runtime
+            tests/engine_backend/test_postgres_runtime.cpp
+        )
+        target_include_directories(test_postgres_runtime
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${ACCEL_PG_INCLUDEDIR}
+        )
+        target_link_libraries(test_postgres_runtime
+            PRIVATE
+                ${LIBPQ_LIB}
+        )
+        if(TARGET accelerator_codegen_pg)
+            add_dependencies(test_postgres_runtime accelerator_codegen_pg)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME engine_postgres_runtime COMMAND test_postgres_runtime)
+        endif()
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_visibility.cpp")
+        add_executable(test_postgres_visibility
+            tests/engine_backend/test_postgres_visibility.cpp
+        )
+        target_include_directories(test_postgres_visibility
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${ACCEL_PG_INCLUDEDIR}
+        )
+        target_link_libraries(test_postgres_visibility
+            PRIVATE
+                ${LIBPQ_LIB}
+        )
+        if(TARGET accelerator_codegen_pg)
+            add_dependencies(test_postgres_visibility accelerator_codegen_pg)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME engine_postgres_visibility COMMAND test_postgres_visibility)
+        endif()
+    endif()
+endif()
+# ---------------------------------------------------------------------------
+# Engine backend layer harnesses (host layer: libpq test)
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
+    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_host.cpp")
+        add_executable(test_postgres_host
+            tests/engine_backend/test_postgres_host.cpp
+        )
+        target_include_directories(test_postgres_host
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${ACCEL_PG_INCLUDEDIR}
+        )
+        target_link_libraries(test_postgres_host
+            PRIVATE
+                ${LIBPQ_LIB}
+        )
+        if(TARGET accelerator_codegen_pg)
+            add_dependencies(test_postgres_host accelerator_codegen_pg)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME engine_postgres_host COMMAND test_postgres_host)
+        endif()
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Engine backend layer harnesses (MySQL). Early layers link accelerator_codegen
+# only; later layers may add mysqlclient / plugin deps in MySQLAdapter.cmake.
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
+    set(_accel_mysql_layers store aux_backend txn mutations scan runtime visibility host adversarial)
+    foreach(_layer IN LISTS _accel_mysql_layers)
+        set(_tgt "test_mysql_${_layer}")
+        set(_src "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/${_tgt}.cpp")
+        if(EXISTS "${_src}")
+            add_executable(${_tgt} tests/engine_backend/${_tgt}.cpp)
+            target_link_libraries(${_tgt}
+                PRIVATE
+                    accelerator_codegen
+                    duckdb_sibling
+            )
+            target_include_directories(${_tgt}
+                PRIVATE
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            )
+            if(ACCEL_MYSQL_FOUND AND ACCEL_MYSQL_INCLUDEDIR)
+                target_include_directories(${_tgt} PRIVATE ${ACCEL_MYSQL_INCLUDEDIR})
+            endif()
+            # txn and later layers use the mysql CLI for real SQL connection harnesses
+            # (no libmysqlclient linking needed; the CLI is already in the container)
+            if(TARGET accelerator_codegen_mysql)
+                add_dependencies(${_tgt} accelerator_codegen_mysql)
+            endif()
+            if(BUILD_TESTING)
+                add_test(NAME engine_mysql_${_layer} COMMAND ${_tgt})
+            endif()
+        endif()
+    endforeach()
+
+    # MySQL TPC-H aux differential / isolation / calibration harnesses
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_mysql_tpch_differential.cpp")
+        add_executable(test_mysql_tpch_differential
+            tests/aux_state/test_mysql_tpch_differential.cpp
+        )
+        target_link_libraries(test_mysql_tpch_differential
+            PRIVATE accelerator_codegen duckdb_sibling)
+        target_include_directories(test_mysql_tpch_differential
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+        )
+        if(TARGET accelerator_codegen_mysql)
+            add_dependencies(test_mysql_tpch_differential accelerator_codegen_mysql)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME mysql_tpch_differential COMMAND test_mysql_tpch_differential)
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_mysql_cross_accel.cpp")
+        add_executable(test_mysql_cross_accel
+            tests/aux_state/test_mysql_cross_accel.cpp
+        )
+        target_link_libraries(test_mysql_cross_accel
+            PRIVATE accelerator_codegen duckdb_sibling)
+        target_include_directories(test_mysql_cross_accel
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+        )
+        if(TARGET accelerator_codegen_mysql)
+            add_dependencies(test_mysql_cross_accel accelerator_codegen_mysql)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME test_mysql_cross_accel COMMAND test_mysql_cross_accel)
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_mysql_aux_multi_connection_stress.cpp")
+        add_executable(test_mysql_aux_multi_connection_stress
+            tests/aux_state/test_mysql_aux_multi_connection_stress.cpp
+        )
+        find_package(Threads REQUIRED)
+        target_link_libraries(test_mysql_aux_multi_connection_stress
+            PRIVATE accelerator_codegen duckdb_sibling Threads::Threads)
+        target_include_directories(test_mysql_aux_multi_connection_stress
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+        )
+        if(TARGET accelerator_codegen_mysql)
+            add_dependencies(test_mysql_aux_multi_connection_stress accelerator_codegen_mysql)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME test_mysql_aux_multi_connection_stress COMMAND test_mysql_aux_multi_connection_stress)
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/mysql/benchmark_mysql_tpch_aux.cpp")
+        add_executable(benchmark_mysql_tpch_aux
+            benchmarks/mysql/benchmark_mysql_tpch_aux.cpp
+        )
+        target_link_libraries(benchmark_mysql_tpch_aux
+            PRIVATE accelerator_codegen duckdb_sibling)
+        target_include_directories(benchmark_mysql_tpch_aux
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+        )
+        if(TARGET accelerator_codegen_mysql)
+            add_dependencies(benchmark_mysql_tpch_aux accelerator_codegen_mysql)
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/mysql/calibrate_mysql_tpch_aux_cost_model.cpp")
+        add_executable(calibrate_mysql_tpch_aux_cost_model
+            benchmarks/mysql/calibrate_mysql_tpch_aux_cost_model.cpp
+        )
+        target_link_libraries(calibrate_mysql_tpch_aux_cost_model
+            PRIVATE accelerator_codegen duckdb_sibling)
+        target_include_directories(calibrate_mysql_tpch_aux_cost_model
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+        )
+        if(TARGET accelerator_codegen_mysql)
+            add_dependencies(calibrate_mysql_tpch_aux_cost_model accelerator_codegen_mysql)
         endif()
     endif()
 endif()

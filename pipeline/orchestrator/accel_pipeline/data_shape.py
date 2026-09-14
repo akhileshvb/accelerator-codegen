@@ -134,5 +134,8 @@ def build_data_shape_markdown(workload: dict[str, Any], dataset_db: str | Path |
     lines.append("```")
     if benchmark == "tpch":
         lines.append("")
-        lines.append("Schema reference: `scripts/postgres_tpch_schema.sql` (column names/types).")
+        lines.append(
+            "Schema reference: TPC-H column names/types from the workload "
+            "SQL and peer query modules (no engine-specific schema script)."
+        )
     return "\n".join(lines)

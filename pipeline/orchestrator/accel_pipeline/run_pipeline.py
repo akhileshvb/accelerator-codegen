@@ -153,7 +153,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Accelerator codegen agent pipeline")
     parser.add_argument("--query", type=int, required=True)
     parser.add_argument("--workload", type=str, default="tpch_q3")
-    parser.add_argument("--stage", choices=[*STAGES, "validation", "all"], default="all")
+    parser.add_argument(
+        "--stage",
+        choices=[
+            *STAGES,
+            "host_bootstrap",
+            "validation",
+            "architecture_audit",
+            "impl_store",
+            "impl_aux_backend",
+            "impl_txn",
+            "impl_mutations",
+            "impl_scan",
+            "impl_runtime",
+            "impl_visibility",
+            "impl_host",
+            "all",
+        ],
+        default="all",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Render prompts; skip LLM calls")
     parser.add_argument(
@@ -225,6 +243,24 @@ def main(argv: list[str] | None = None) -> int:
         )
         print("pipeline complete", file=sys.stderr)
         return 0
+
+    # One-shot query-host bootstrap (non-duckdb) before per-query stages.
+    if args.stage in {"all", "host_bootstrap"}:
+        from accel_pipeline.host_bootstrap import ensure_host_bootstrap_for_workload
+
+        hb = ensure_host_bootstrap_for_workload(
+            pipeline_config,
+            model_config,
+            args.workload,
+            model_overrides=model_overrides,
+            dry_run=args.dry_run,
+            skip_gates=args.skip_gates,
+        )
+        if hb is not None:
+            print(f"=== host_bootstrap: {hb} ===", file=sys.stderr)
+        if args.stage == "host_bootstrap":
+            print("pipeline complete", file=sys.stderr)
+            return 0
 
     state = load_or_create(repo_root, query, args.workload, resume=args.resume)
 

@@ -4,7 +4,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from accel_pipeline.config import PipelineConfig, resolve_workload_paths
+from accel_pipeline.config import (
+    PipelineConfig,
+    engine_host_conventions,
+    resolve_workload_paths,
+    sanitize_engine_name,
+)
 from accel_pipeline.paths import gates_dir_for_query, query_artifacts_dir
 
 
@@ -15,12 +20,22 @@ def build_gate_context(
 ) -> dict[str, Any]:
     paths = resolve_workload_paths(pipeline_config, workload, query)
     benchmark = str(workload.get("benchmark_name", "tpch"))
+    kind = str(workload.get("workload_kind", "base"))
+    # Accelerators default to duckdb; engine_backend always sets engine_name.
+    raw_engine = workload.get("engine_name")
+    if kind == "engine_backend":
+        engine = sanitize_engine_name(str(raw_engine or ""))
+    else:
+        engine = sanitize_engine_name(str(raw_engine) if raw_engine else "")
+    host = dict(workload.get("engine_host") or engine_host_conventions(engine))
     ctx: dict[str, Any] = {
         "query_number": query,
         "benchmark_name": benchmark,
         "artifact_namespace": str(workload.get("artifact_namespace", benchmark)),
         "display_name": str(workload.get("display_name", benchmark)),
-        "workload_kind": str(workload.get("workload_kind", "base")),
+        "workload_kind": kind,
+        "engine_name": engine,
+        "engine_host": host,
         "source_subdir": paths["source_subdir"],
         "function_name": paths["function_name"],
         "create_fn": paths["create_fn"],
@@ -63,15 +78,25 @@ def build_gate_context(
         opt_sweep = workload.get("aux_bench_sweep_optimization", {})
         if isinstance(opt_sweep, dict) and opt_sweep:
             ctx["aux_bench_sweep_optimization"] = opt_sweep
-    if workload.get("workload_kind") == "engine_backend":
+    if kind == "engine_backend":
         ctx.update(
             {
-                "engine_name": str(workload.get("engine_name", "")),
                 "target_paths": dict(workload.get("target_paths") or {}),
                 "cmake": dict(workload.get("cmake") or {}),
                 "store_mode_candidates": list(workload.get("store_mode_candidates") or []),
+                "requires_in_process_host": bool(workload.get("requires_in_process_host", False)),
+                "implementation_layers": list(workload.get("implementation_layers") or []),
+                "host_runtime": dict(workload.get("host_runtime") or {}),
             }
         )
+        host_rt = dict(workload.get("host_runtime") or {})
+        if host_rt:
+            ctx["host_sdk"] = {
+                "engine": engine,
+                "mode": str(host_rt.get("kind") or "host_cmake"),
+                "found": True,
+                "summary": str(host_rt.get("kind") or "host_cmake"),
+            }
     return ctx
 
 

@@ -12,7 +12,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
-#include "tpch/q22/aux/module.hpp"
+#include "tpch/q22/duckdb/aux/module.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 using accelerator_codegen::aux_state::query::TpchQ22Config;

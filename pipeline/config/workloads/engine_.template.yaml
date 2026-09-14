@@ -1,27 +1,30 @@
 # Copy to engine_<name>.yaml and set engine_name (plus optional SDK hints).
-# target_paths / cmake / write_paths are filled from pipeline/config/engine_backend.yaml
-# using conventional {engine} layout unless overridden below.
+# target_paths / cmake / write_paths / implementation_layers are filled from
+# pipeline/config/engine_backend.yaml unless overridden.
+#
+# From-scratch: do not assume any other engine adapter exists. Substrate +
+# templates + these SDK hints only.
+#
+# Outcome: sequential layers in prompts/engine_backend/layers.md, each with
+# tests/engine_backend/test_<engine>_<layer>.cpp. Validation adds unseen
+# adversarial tests.
 
 workload_kind: engine_backend
 engine_name: REPLACE_ME
-# display_name: Optional Title Case Name
-# artifact_namespace: engines/REPLACE_ME
 
 engine_sdk_hints:
   - "Paths or docs for this engine's native storage / table / handler APIs"
 
-# Optional: override only when the engine cannot use the conventional layout.
-# target_paths:
-#   scan_adapter_header: include/accelerator_codegen/runtime/REPLACE_ME/scan_adapter.hpp
-#   scan_adapter_source: src/runtime/REPLACE_ME/scan_adapter.cpp
-#   stateful_dir: include/accelerator_codegen/stateful/REPLACE_ME
-#   stateful_src_dir: src/stateful/REPLACE_ME
-# cmake:
-#   collect_fn: accel_collect_REPLACE_ME_sources
-#   build_flag: ACCELERATOR_CODEGEN_BUILD_REPLACE_ME
+# Optional docker/in-process host. Omit for embedded engines that build on the host.
+# host_runtime:
+#   kind: docker          # or host_cmake
+#   discovery:            # optional plugin name (postgres_docker, mysql_docker)
+#   ensure_script: scripts/ensure_<engine>_host.sh
+#   build_script: scripts/build_<engine>_extension.sh
+#   ninja_targets_env: ACCEL_NINJA_TARGETS
+#   default_container: accel_<engine>_test
+#   binary_dir: /accel-build/accel
 
-# store_mode_candidates:
-#   - typed_in_process
-#   - serialized_boundary
+# requires_in_process_host: true
 
-allow_update_existing: true
+allow_update_existing: false

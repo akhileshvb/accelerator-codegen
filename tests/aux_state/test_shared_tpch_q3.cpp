@@ -12,6 +12,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
+#include "accelerator_codegen/stateful/core/query_layouts.hpp"
 #include "tpch/q3/duckdb/aux/module.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
@@ -209,5 +210,36 @@ int main() {
                  QueryArguments{{String("BUILDING"), Date(cutoff)}}, sink2);
   assert(sink2.ended);
   assert(RevenueRaw(sink2) == 800000);
+
+  // Published images can lose the orderkey hashmap while keeping `orders`.
+  // ApplyDelta must still find the row (and must not report success on a no-op).
+  {
+    using accelerator_codegen::aux_state::query::TpchQ3StateImage;
+    auto &image =
+        services.store.images[accelerator_codegen::aux_state::core::TpchQ3Layout::
+                                  kSegmentBuilding];
+    const auto *typed = image.As<TpchQ3StateImage>();
+    assert(typed && typed->state);
+    auto &index = const_cast<accelerator_codegen::aux_state::query::
+                                 TpchQ3SegmentIntervalIndex &>(
+        typed->state->segment_intervals.at(
+            accelerator_codegen::aux_state::core::TpchQ3Layout::kSegmentBuilding));
+    index.ClearPositions();
+  }
+  MutationBatch bump;
+  bump.table = 3;
+  bump.kind = MutationKind::Update;
+  bump.updated_columns = {1};
+  bump.old_rows = {services.lineitems.front()};
+  services.lineitems[0] = Lineitem(1, 20000, 20, shipdate);
+  bump.new_rows = {services.lineitems.front()};
+  coordinator.OnMutation(bump);
+  coordinator.PreCommit();
+  coordinator.Commit();
+  Sink sink3;
+  module.Execute(services,
+                 QueryArguments{{String("BUILDING"), Date(cutoff)}}, sink3);
+  assert(sink3.ended);
+  assert(RevenueRaw(sink3) == 1600000);
   return 0;
 }

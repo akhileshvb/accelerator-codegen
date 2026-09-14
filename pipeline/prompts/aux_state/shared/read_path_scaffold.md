@@ -51,9 +51,12 @@ In `InterpretMutation` / `AccumulateMutation` / `StageMaintenance`:
 - Relevant maintenance → `services.ChooseMaintenance` with accurate row/partition counts
 - Populate `interference_us` via calibrated `CostModelParams` fields, not ad-hoc globals
 
-## Postgres byte encoding
+## Serialized-boundary encoding
 
-Only at the Postgres boundary: implement `Encode*` / `Decode*` using `accelerator_codegen/stateful/core/byte_stream.hpp`. DuckDB paths use typed `StateImage` payloads directly.
+Only when an engine adapter uses `serialized_boundary` store mode: implement
+`Encode*` / `Decode*` with `accelerator_codegen/stateful/core/byte_stream.hpp`
+at the process/SHM boundary. Typed in-process adapters keep `StateImage`
+payloads without byte round-trips on the hot path.
 
 ## Reference files
 

@@ -80,8 +80,15 @@ void AuxTransactionCoordinator::OnMutation(const MutationBatch &mutation) {
     throw std::logic_error(
         "auxiliary transaction coordinator has no engine services");
   }
+  fprintf(stderr, "DBG_OnMutation: table=%lu entries=%zu dep_tables[0]=%lu\n",
+          (unsigned long)mutation.table, entries.size(),
+          (unsigned long)(entries.empty() ? 0 : entries[0].module->Dependencies().empty() ? 0 : entries[0].module->Dependencies()[0].table));
+  fflush(stderr);
   for (const auto &entry : entries) {
     for (const auto &dependency : entry.module->Dependencies()) {
+      fprintf(stderr, "DBG_OnMutation: check dep.table=%lu vs mut.table=%lu\n",
+              (unsigned long)dependency.table, (unsigned long)mutation.table);
+      fflush(stderr);
       if (dependency.table == mutation.table) {
         services->StateStore().MarkTransactionDirty();
         goto marked_dirty;

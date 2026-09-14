@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Idempotent: ensure accel_pg_test is running; optionally build/install the extension.
-# Gates that need a real adapter set ACCEL_PG_ENSURE_BUILD=1 (default) and fail closed
-# if adapter sources are missing (no stale-.so soft pass).
+# ACCEL_PG_ENSURE_BUILD=1 (default): build/install the MODULE and fail closed if
+# live adapter sources are missing (no stale-.so soft pass).
+# engine_backend from-scratch sets ACCEL_PG_ENSURE_BUILD=0 (container only).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,6 +47,7 @@ if [[ "${BUILD}" == "1" ]] && ! adapter_sources_present; then
   echo "[ensure] Required under ${ROOT}:" >&2
   printf '  - %s\n' "${REQUIRED_SOURCES[@]}" >&2
   echo "[ensure] Live postgres host sources are missing; restore them, then re-run." >&2
+  echo "[ensure] For from-scratch engine_backend, set ACCEL_PG_ENSURE_BUILD=0 (container only)." >&2
   exit 1
 fi
 

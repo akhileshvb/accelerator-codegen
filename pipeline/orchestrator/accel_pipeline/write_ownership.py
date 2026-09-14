@@ -124,6 +124,17 @@ def write_allowed(
     if rel is None:
         return False, "path outside repo"
 
+    # Architecture audit / per-layer critique: read-only on adapters; artifacts only.
+    if stage == "architecture_audit" or stage == "layer_critique" or stage.startswith(
+        "critique_"
+    ):
+        if fnmatch.fnmatch(rel, "pipeline/artifacts/**"):
+            return True, "critique-artifacts"
+        return (
+            False,
+            f"{stage} may only write under pipeline/artifacts/** (got {rel})",
+        )
+
     if is_cross_query_path(repo_root, path, query=query):
         other = query_id_from_rel(rel)
         return False, f"cross-query write denied: {rel} belongs to Q{other}, worker owns Q{query}"

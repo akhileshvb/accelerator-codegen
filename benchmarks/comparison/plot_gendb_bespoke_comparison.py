@@ -24,10 +24,12 @@ SF20_AUX_HEADER = (
     "suite,write_mode,write_policy,locality,write_frequency_pct,write_interval_sec,"
     "measured_duration_sec,reader_qps,query_num,num_queries,writes_executed,"
     "duckdb_ref_query_median_us,base_kernel_median_us,base_write_median_us,"
-    "accel_write_median_us,accel_hit_median_us,fallback_median_us,accel_hit_rate,"
+    "accel_write_median_us,accel_hit_median_us,accel_profiler_query_median_us,"
+    "fallback_median_us,accel_hit_rate,"
     "fallback_rate,total_duckdb_query_us,total_accel_query_us,total_base_write_us,"
     "total_accel_write_us,duckdb_workload_us,accel_workload_us,workload_speedup,"
-    "cold_start_workload_speedup,query_only_speedup,blended_query_speedup,"
+    "cold_start_workload_speedup,query_only_speedup,query_only_speedup_profiler,"
+    "blended_query_speedup,"
     "cold_start_accel_workload_us,setup_full_build_ms,aux_state_bytes,valid_partitions,"
     "total_slots"
 ).split(",")
@@ -161,8 +163,12 @@ def packed_aux_state_bytes(query: int) -> int | None:
         if not line.startswith("lineitem_only,"):
             continue
         parts = line.split(",")
-        if len(parts) > 31 and parts[4] == "0" and parts[5] == "0":
-            return int(float(parts[31]))
+        if parts[4] == "0" and parts[5] == "0":
+            # Current header: aux_state_bytes at index 33. Older logs used 31.
+            if len(parts) > 33:
+                return int(float(parts[33]))
+            if len(parts) > 31:
+                return int(float(parts[31]))
     return None
 
 

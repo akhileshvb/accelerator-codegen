@@ -38,11 +38,9 @@ extern "C" {
 
 void accel_pg_init_backend(const char * /*backing_dir*/) {
   std::lock_guard<std::mutex> lock(g_mutex);
-  if (g_bridge) {
-    delete g_bridge;
-    g_bridge = nullptr;
+  if (!g_bridge) {
+    g_bridge = new BridgeState();
   }
-  g_bridge = new BridgeState();
 }
 
 void accel_pg_observer_note_mutation(void) {

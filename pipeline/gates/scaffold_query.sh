@@ -16,8 +16,10 @@ SOURCE_SUBDIR="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['sou
 TEST_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['test_target'])" "${CTX}")"
 BENCH_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['bench_target'])" "${CTX}")"
 BENCHMARK_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['benchmark_name'])" "${CTX}")"
+ENGINE_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('engine_name') or 'duckdb')" "${CTX}")"
+REGISTER_PATH="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('register_path') or '')" "${CTX}")"
 
-python3 - "${ROOT}" "${QUERY}" "${ART_NS}" "${CREATE_FN}" "${FUNCTION_NAME}" "${SOURCE_SUBDIR}" "${TEST_TARGET}" "${BENCH_TARGET}" "${BENCHMARK_NAME}" <<'PY'
+python3 - "${ROOT}" "${QUERY}" "${ART_NS}" "${CREATE_FN}" "${FUNCTION_NAME}" "${SOURCE_SUBDIR}" "${TEST_TARGET}" "${BENCH_TARGET}" "${BENCHMARK_NAME}" "${ENGINE_NAME}" <<'PY'
 import json
 import pathlib
 import sys
@@ -31,6 +33,7 @@ source_subdir = sys.argv[6]
 test_target = sys.argv[7]
 bench_target = sys.argv[8]
 benchmark_name = sys.argv[9]
+engine_name = sys.argv[10]
 
 pipeline = root / "pipeline"
 out = pipeline / "artifacts" / art_ns / f"q{query}" / "scaffold"
@@ -47,6 +50,7 @@ subs = {
     "test_target": test_target,
     "bench_target": bench_target,
     "benchmark_name": benchmark_name,
+    "engine_name": engine_name,
 }
 for k, v in subs.items():
     reg_tpl = reg_tpl.replace("{{" + k + "}}", v)
@@ -54,11 +58,16 @@ for k, v in subs.items():
 
 (out / "register_snippet.cpp").write_text(reg_tpl)
 (out / "cmake_snippet.cmake").write_text(cmake_tpl)
-print(json.dumps({"gate": "scaffold", "query": int(query), "status": "pass", "out": str(out)}))
+print(json.dumps({"gate": "scaffold", "query": int(query), "status": "pass", "out": str(out), "engine_name": engine_name}))
 PY
 
 if [[ "${BENCHMARK_NAME}" == "sec_edgar" ]]; then
-  python3 "$(dirname "${BASH_SOURCE[0]}")/apply_register_snippet.py" "${ROOT}" "${CREATE_FN}" "SEC_EDGAR"
+  NOTE="${ROOT}/pipeline/artifacts/${ART_NS}/q${QUERY}/scaffold/register_host_note.cpp"
+  python3 "$(dirname "${BASH_SOURCE[0]}")/apply_register_snippet.py" \
+    "${ROOT}" "${CREATE_FN}" "SEC_EDGAR" \
+    --engine-name "${ENGINE_NAME}" \
+    --register-path "${REGISTER_PATH}" \
+    --note-path "${NOTE}"
 fi
 
 python3 - "${ROOT}" "${QUERY}" <<'PY'

@@ -760,6 +760,8 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     }
   }
 
+  bool any_changed = false;
+  std::size_t applied_lineitem_orders = 0;
   for (auto &group : grouped) {
     auto &index = indexes[group.first];
     bool needs_resort = false;
@@ -793,6 +795,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
         index.orders.push_back(summary);
         needs_resort = true;
         changed = true;
+        ++applied_lineitem_orders;
         continue;
       }
       auto &summary = index.orders[position];
@@ -803,16 +806,20 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
         RemoveOrderFromIndex(index, orderkey);
         needs_resort = true;
         changed = true;
+        ++applied_lineitem_orders;
         continue;
       }
       if (index.MaxShipdate(summary) != old_max)
         needs_resort = true;
       changed = true;
+      ++applied_lineitem_orders;
     }
     if (changed && needs_resort)
       SortTpchQ3SegmentIntervalIndex(index);
-    if (changed)
+    if (changed) {
+      any_changed = true;
       outcome.action = core::MaintenanceAction::ApplyDelta;
+    }
   }
 
   // RF2: clear segment slots and remove from interval indexes after lineitems.
@@ -835,11 +842,25 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     if (index_it == indexes.end())
       continue;
     RemoveOrderFromIndex(index_it->second, delta.orderkey);
+    any_changed = true;
     outcome.action = core::MaintenanceAction::ApplyDelta;
+  }
+
+  // A lineitem UPDATE that does not land on a published order used to still
+  // report ApplyDelta and republish the unchanged top-k (SF=1 Q3 probe).
+  if (!buffer.Deltas().empty() && applied_lineitem_orders == 0 &&
+      !any_changed && !side_changed) {
+    outcome.action = core::MaintenanceAction::RebuildAll;
+    outcome.updates.clear();
+    outcome.invalidations = All();
+    outcome.pending_rebuild = outcome.invalidations;
+    return outcome;
   }
 
   for (const auto &[segment, index] : indexes) {
     if (touched_segments.find(segment) == touched_segments.end())
+      continue;
+    if (!any_changed && !side_changed)
       continue;
     const auto version = versions.count(segment) ? versions[segment] : 0;
     outcome.action = core::MaintenanceAction::ApplyDelta;

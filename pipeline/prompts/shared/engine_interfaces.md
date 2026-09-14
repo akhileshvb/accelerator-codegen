@@ -1,43 +1,52 @@
-# Engine interfaces: DuckDB vs Postgres
+# Engine interfaces (query modules vs adapters)
 
-The query module (`AuxQueryModule` for aux, `KernelInstance` + `QueryPackage` for base) is **engine-neutral**. Engine adapters own storage, visibility, and registration.
+**Base kernels are per `engine_name`.** There is no shared portable scan IR (`DataChunk` / `ScanNativeBaseTable` → chunk consumer). Each accelerator owns that engine’s native base consume path under `src/generated/{benchmark}/q{N}/{engine}/`.
 
-## Base kernels
+**Shared substrate is aux/txn only:** `MutationBatch`, `AuxRow`, `AuxQueryModule`, coordinator, `AuxStateStore`, maintenance, calibration. Aux modules speak those contracts on every engine; base kernels do not.
 
-### DuckDB (primary pipeline target)
+**`engine_name` is required** (CLI / `ACCEL_WORKLOAD_ENGINE_NAME` / workload YAML). There is no silent default to `duckdb` or `postgres`. Stage prompts inject an **Engine host** block for the selected engine only.
 
-Minimal surface per query:
+DuckDB’s `DataChunk`-shaped helpers are **host-private** under `runtime/duckdb/native_scan.hpp` (and duckdb-targeted kernels). Other engines define their own typed scan/consume helpers under `runtime/{engine}/` — never a cross-engine chunk IR.
 
-1. **`base/query.hpp`** — `*Parameters`, profile counters, `Create*Kernel`, `Create*FunctionSet`
-2. **`base/single-threaded/kernel.cpp`** — hot-path aggregation
-3. **`base/single-threaded/package.cpp`** — bind + `CreateRuntimeBackedFunctionSet`
+For non-duckdb hosts, accelerator implementation may **bootstrap** missing query SQL entrypoints + differential on the existing `engine_backend` surface (`pipeline/prompts/shared/query_host_bootstrap.md`) — never a second adapter tree.
 
-Optional: `fused.hpp` + `fused_scan.cpp` for SEC-EDGAR or TPC-H fused paths.
+## Base kernels (query-owned, per engine)
 
-Registration: table functions are registered from `src/runtime/duckdb/register.cpp` (hand-written). Agents do not edit it; scaffold emits a snippet.
+Minimal surface per query **and** `engine_name`:
 
-Scan adapter (extend when needed): `src/runtime/duckdb/duckdb_scan_adapter.cpp`.
+1. **`base/query.hpp`** — `*Parameters`, profile counters, `Create*Kernel`, host registration helpers
+2. **`base/single-threaded/kernel.cpp`** — hot-path aggregation consuming **this engine’s** native batches / rows
+3. **`base/single-threaded/package.cpp`** — bind + package registration for the **selected engine host**
 
-### Postgres
+Paths:
 
-Same generated `kernel.cpp` / `query.hpp` sources are reused. Glue is **shared and monolithic**:
+```
+src/generated/{benchmark}/q{N}/{engine}/base/...
+src/generated/{benchmark}/q{N}/{engine}/aux/...
+```
 
-- Append dispatch cases to `src/generated/postgres/kernel_runner.cpp`
-- Append catalog entries to `src/generated/catalog/query_catalog.cpp`
+Optional: `fused.hpp` + `fused_scan.cpp` for SEC-EDGAR or TPC-H fused paths when **this** host supports them. Fused / DuckDB-specific micro-APIs are **optional duckdb host paths**, not required for every engine.
 
-Do not create per-query Postgres runner files.
+Host registration lives in that engine’s host glue:
+
+- **duckdb:** `src/runtime/duckdb/register.cpp` (scaffold snippet); aux TFs in `src/stateful/duckdb/duckdb_aux_table_functions.cpp`
+- **other engines:** `engine_backend`-owned extension/SQL surfaces under `src/generated/{engine}/` or `runtime|stateful/{engine}/` — do not invent a parallel adapter tree
+
+Scan contract: kernels consume **engine-local** native storage / batch types for `{{engine_name}}`. Do **not** require `NativeScanSpec` → portable `DataChunk`. DuckDB may use its private `NativeScanSpec` + `DataChunk` types; other engines use their own helpers (slots, tuples, typed rebuild callbacks).
+
+Catalog registration is per engine: `src/generated/catalog/{engine}/query_catalog.{hpp,cpp}`.
 
 ## Aux-state
 
 ### Shared module contract (`AuxQueryModule`)
 
-Implement in `aux/module.{hpp,cpp}`:
+Implement in `aux/module.{hpp,cpp}` (still under the per-engine query tree):
 
 | Method | Role |
 |--------|------|
 | `Id`, `Dependencies` | Accelerator identity + watched tables |
 | `CreateTxnBuffer` | Per-txn incremental buffer |
-| `Build` | Initial state image from typed scan callbacks |
+| `Build` | Initial state image from **engine-local** typed scan callbacks |
 | `InterpretMutation` | Relevance → `InvalidationPlan` |
 | `AccumulateMutation` | Apply deltas into txn buffer |
 | `StageMaintenance` | Call `services.ChooseMaintenance(...)`, materialize `StagedMaintenanceOutcome` |
@@ -45,24 +54,19 @@ Implement in `aux/module.{hpp,cpp}`:
 | `Execute` | Fast path from partition images |
 | `ExecuteFallback` | Correct recompute from base tables |
 
-Maintenance selection uses `AuxEngineServices::ChooseMaintenance` backed by `maintenance::SelectMinCostAction` and `CostModelParams` from JSON (`interference_*` fields — no separate `EstimateInterferenceUs` helper).
+Maintenance selection uses `AuxEngineServices::ChooseMaintenance` backed by `maintenance::SelectMinCostAction` and `CostModelParams` from JSON (`interference_*` fields — no separate `EstimateInterferenceCost` helper).
 
-### DuckDB adapter
+### Adapter responsibilities (any engine)
 
-- **Typed in-process payloads** — no serialize/deserialize on the hot path
-- State store: `include/accelerator_codegen/stateful/duckdb/duckdb_state_store.hpp`
-- Backend: `duckdb_aux_backend.hpp`
-- Registration: module factory wired through `catalog/query_catalog.cpp` + DuckDB table function `accel_{benchmark}_q{N}_aux`
-- Calibration env: `ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL`, `ACCELERATOR_CODEGEN_DUCKDB_EXPECTED_QUERIES_BEFORE_WRITE`
+Engine adapters (`engine_backend`) implement substrate contracts only:
 
-### Postgres adapter
+- `AuxEngineServices` / `AuxStateStore`
+- Mutation → `MutationBatch`, txn lifecycle → coordinator
+- Store mode: `typed_in_process` **or** `serialized_boundary` (encode/decode via `byte_stream.hpp` only at a process/SHM boundary when serialized)
+- Host registration (table functions, extension entrypoints, …) for that engine
+- Optional **engine-local** typed scan helpers for aux rebuild (callbacks / slots / tuples) — **not** `ScanNativeBaseTable` → portable `DataChunk`
 
-- **Serialization boundary** at shared memory: byte images ↔ typed `StateSnapshot`
-- Use `include/accelerator_codegen/stateful/core/byte_stream.hpp` (`ByteWriter` / `ByteReader`) **only** for encode/decode at the Postgres boundary
-- State store: `include/accelerator_codegen/stateful/postgres/postgres_state_store.hpp`
-- Backend: `postgres_aux_backend.hpp`
-- Append SQL-callable wiring to `src/generated/postgres/kernel_runner.cpp`
-- Calibration env: `ACCELERATOR_CODEGEN_POSTGRES_Q{N}_COST_MODEL`, `ACCELERATOR_CODEGEN_POSTGRES_EXPECTED_QUERIES_BEFORE_WRITE`
+Do **not** hard-code a second engine's file layout into query modules. When an engine adapter is absent, leave optional catalog SQL slots empty rather than inventing adapter trees mid-query.
 
 ### What query agents must not regenerate
 
@@ -72,7 +76,7 @@ Fixed substrate under `include/accelerator_codegen/stateful/`:
 - `aux_calibration.hpp` runner
 - `maintenance/action_selector.hpp`, `cost_model.hpp`
 
-Engine adapters under `stateful/{engine}/` and `runtime/{engine}/` are owned by the **engine_backend** pipeline (may be generated from scratch from the substrate). Query agents do not create or rewrite them mid-query.
+Engine adapters under `stateful/{engine}/` and `runtime/{engine}/` are owned by the **engine_backend** pipeline.
 
 Agents own partition layouts (`query_layouts.hpp` entries), payload structs, mutation interpretation, incremental accumulators, maintenance staging logic (including rebuild→resync), and cost-model JSON coefficients.
 
@@ -80,9 +84,9 @@ Agents own partition layouts (`query_layouts.hpp` entries), payload structs, mut
 
 ### Base kernels
 
-1. Match production path (fused scan for SEC; chunk or fused for TPC-H)
-2. Filter pushdown, scan order, vector fast paths, bind-time sizing
-3. Coordinated bundles — not one-line micro-opts when far from DuckDB
+1. Match production path for **this** host (fused scan for SEC; native batch / fused for TPC-H where the host supports it)
+2. Filter pushdown, scan order, vector/batch fast paths, bind-time sizing
+3. Coordinated bundles — not one-line micro-opts when far from the reference engine
 
 ### Aux-state
 

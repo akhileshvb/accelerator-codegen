@@ -6,10 +6,12 @@
   "required": [
     "engine_name",
     "store_mode",
+    "layers",
     "native_scan_plan",
     "mutation_capture_plan",
     "txn_lifecycle_plan",
     "visibility_plan",
+    "contract_tests_plan",
     "files_to_create",
     "fitness_assessment"
   ],
@@ -19,11 +21,79 @@
     "store_mode": {
       "enum": ["typed_in_process", "serialized_boundary"]
     },
+    "layers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "gate", "native_apis", "files", "harness_plan"],
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": [
+              "store",
+              "aux_backend",
+              "txn",
+              "mutations",
+              "scan",
+              "runtime",
+              "visibility",
+              "host"
+            ]
+          },
+          "gate": { "type": "string", "minLength": 1 },
+          "cmake_target": { "type": "string" },
+          "native_apis": {
+            "type": "string",
+            "description": "2–6 exact SDK/substrate symbols this layer calls"
+          },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "harness_plan": {
+            "type": "string",
+            "description": "Golden value asserts, not a slogan"
+          },
+          "gate_loop": {
+            "type": "string",
+            "description": "request_gate engine_build then this layer gate; docker vs host_cmake"
+          },
+          "skipped": { "type": "boolean" }
+        }
+      }
+    },
     "native_scan_plan": { "type": "object" },
     "mutation_capture_plan": { "type": "object" },
     "txn_lifecycle_plan": { "type": "object" },
     "visibility_plan": { "type": "object" },
     "udf_or_extension_host_plan": { "type": "object" },
+    "contract_tests_plan": {
+      "type": "object",
+      "description": "Map checklist rules to layer harness paths (not a single giant contract file)",
+      "additionalProperties": true,
+      "properties": {
+        "by_layer": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "harness_path": { "type": "string" },
+              "covers": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        },
+        "covers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "notes": { "type": "string" }
+      }
+    },
     "files_to_create": {
       "type": "array",
       "items": { "type": "string" }

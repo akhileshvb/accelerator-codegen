@@ -21,29 +21,27 @@ def base_smoke_test_ctest_regex(workload: dict, query: int) -> str:
 
 def base_accelerator_header_path(repo_root: Path, workload: dict, query: int) -> Path:
     benchmark = str(workload.get("benchmark_name", "tpch"))
-    return (
-        repo_root
-        / "src"
-        / "generated"
-        / benchmark
-        / f"q{query}"
-        / "base"
-        / "query.hpp"
-    )
+    engine = str(workload.get("engine_name") or "").strip().lower()
+    base = repo_root / "src" / "generated" / benchmark / f"q{query}"
+    if engine and engine != "duckdb":
+        return base / engine / "base" / "query.hpp"
+    # Prefer per-engine layout when present, else legacy flat path.
+    engine_path = base / "duckdb" / "base" / "query.hpp"
+    if engine_path.is_file():
+        return engine_path
+    return base / "base" / "query.hpp"
 
 
 def base_kernel_source_path(repo_root: Path, workload: dict, query: int) -> Path:
     benchmark = str(workload.get("benchmark_name", "tpch"))
-    return (
-        repo_root
-        / "src"
-        / "generated"
-        / benchmark
-        / f"q{query}"
-        / "base"
-        / "single-threaded"
-        / "kernel.cpp"
-    )
+    engine = str(workload.get("engine_name") or "").strip().lower()
+    base = repo_root / "src" / "generated" / benchmark / f"q{query}"
+    if engine and engine != "duckdb":
+        return base / engine / "base" / "single-threaded" / "kernel.cpp"
+    engine_path = base / "duckdb" / "base" / "single-threaded" / "kernel.cpp"
+    if engine_path.is_file():
+        return engine_path
+    return base / "base" / "single-threaded" / "kernel.cpp"
 
 
 def base_accelerator_exists(repo_root: Path, workload: dict, query: int) -> bool:

@@ -36,7 +36,10 @@ Full analysis: `{{full_analysis_path}}` · Workload SQL: `{{reference_sql_path}}
 - Implement `files_to_create`; selected candidate = `correctness_facts.state_design.selected_candidate_id`.
 - **`correctness_facts` is the semantic contract** — every field choice, mutation rule, and read-path behavior must match it. When unsure, re-read analysis/bootstrap and reference modules; do not guess.
 - Implement the **full** aux-state surface: state layout, encode/decode/finalize, maintenance, read path, tests, benchmark, and calibrator wrapper. A fast but incomplete or semantically wrong implementation is a failure.
-- **Register everywhere:** wire this query into **every** shared registration / allowlist / SQL-helper / CMake surface that neighboring aux queries use. Discover sites by searching how a peer query is registered (see `registration_checklist.md`). Do not hand off with only module sources — missing catalog participation, shared-query allowlists, DuckDB TF registration, or helpers causes `unsupported shared query` / `Table Function … does not exist`.
+- **Register everywhere:** wire this query into **every** shared registration / allowlist / SQL-helper / CMake surface that neighboring aux queries use for host **`{{engine_name}}`**. Discover sites by searching how a peer query is registered (see `registration_checklist.md`). Do not hand off with only module sources — missing catalog participation, shared-query allowlists, host TF/UDF registration, or helpers causes `unsupported shared query` / missing SQL entrypoint.
+
+{{engine_host_discovery}}
+
 - Use `read_reference_files` once on bootstrap reference paths, then **write** — do not re-explore the repo for layout.
 - After the structure is correct and mid-stage gates pass, tighten hot paths (encoding, lookups, maintenance scheduling) without changing observable behavior.
 
@@ -55,30 +58,29 @@ Populate `interference_us` in `StageMaintenance` using calibrated `CostModelPara
 
 ## Exit criterion (hard) — do not finish until mid-stage gates pass
 
-Compiling is not enough. **Ending this stage without passing `aux_correctness` and `aux_multi_connection` is a failure.** Keep fixing and re-running until both pass.
+Compiling is not enough. **Ending this stage without passing `aux_correctness` and `aux_multi_connection` is a failure** (same for every `engine_name`). Keep fixing and re-running until required gates pass.
 
 Follow `pipeline/prompts/aux_state/shared/unit_test_contract.md` and the **Reference SQL predicate contract** in the bootstrap. Synthetic fixtures must preserve SQL polarity (`NOT LIKE`, `<>`, anti-joins). Do not invent patterns that contradict `reference_sql_path`.
 
-`aux_correctness` runs **two** checks:
+When `engine_name` ≠ `duckdb`, also follow `pipeline/prompts/shared/query_host_bootstrap.md`: bootstrap SQL entrypoints + differential **and replicate** multi-conn / cross-accel / bench harnesses for this host.
 
-1. Smoke: `ctest -R '^tpch_q{{query_number}}_aux_smoke_test$'`
-2. SF1 differential: DuckDB reference SQL vs aux execute (`test_tpch_shared_differential <db> {{query_number}}`)
+`aux_correctness` on the **engine-selected** host (`{{engine_name}}`):
 
-Both must pass. `aux_multi_connection` exercises DuckDB table-function registration + multi-connection stress for this query.
+1. **duckdb:** smoke `ctest -R '^tpch_q{{query_number}}_aux_smoke_test$'` **and** `test_tpch_shared_differential <db> {{query_number}}`
+2. **other engines:** `test_{{engine_name}}_tpch_differential {{query_number}}` (create harness + host SQL entrypoints if absent); optional smoke fixtures once the host pattern exists.
+
+`aux_multi_connection` / `aux_cross_accel` / other post-stage gates run for **every** engine. Non-duckdb uses `test_{{engine_name}}_…` ctest names and `ACCEL_ENGINE_NAME` — replicate the duckdb harness; do not skip.
 
 Required loop before you stop:
 
-1. After creating **new** `test_tpch_q{{query_number}}_aux.cpp` / `benchmark_q{{query_number}}_aux.cpp` / `calibrate_q{{query_number}}_aux_cost_model.cpp`, run **`cmake -S . -B <worker_build_dir>`** once (CMake adds targets on configure). Auto-discovery usually suffices; edit `CMakeLists.txt` only if targets are still missing.
-2. Build: `cmake --build <worker_build_dir> --target test_tpch_q{{query_number}}_aux test_tpch_shared_differential -j$(nproc)` (and the bench/calibrator targets once they exist).
-3. **Correctness gate (required):**
-   - **Codex / MCP:** call `run_correctness` (preferred) or `request_gate` with `aux_correctness`.
-   - **Else:** run the smoke ctest **and** `./<worker_build_dir>/test_tpch_shared_differential "$ACCEL_TPCH_DB" {{query_number}}`.
-4. If status is fail / non-zero: fix the **implementation** (prefer fixing the kernel over weakening fixtures). Rebuild and re-run step 3 until pass.
-5. **Multi-connection gate (required):** MCP `run_multi_connection` (or `request_gate` with `aux_multi_connection`). On fail (often missing TF registration / shared allowlist), finish **register everywhere**, rebuild, retry until pass.
-6. Also run broader unit coverage when available: `ctest -R 'q{{query_number}}_'` (exclude unrelated failures outside this query).
-7. Build `benchmark_tpch_q{{query_number}}_aux`.
+1. After creating **new** module/test/bench/calibrator sources, run **`cmake -S . -B <worker_build_dir>`** once when targets are new.
+2. Build the **engine-selected** differential binary and host gate harnesses.
+3. **Correctness gate (required):** MCP `run_correctness` / `request_gate` `aux_correctness` until pass.
+4. If fail: fix implementation (prefer kernel/host registration over weakening fixtures); rebuild; retry.
+5. **Multi-connection (required):** MCP `run_multi_connection` until pass (engine-specific ctest when not duckdb).
+6. Broader unit coverage / bench targets when listed in post-stage gates.
 
-Only after steps 3 **and** 5 report **pass** may you end the stage. The orchestrator will re-run these gates afterward; treat a mid-stage fail as blocking, not advisory.
+Only after required mid-stage gates report **pass** may you end the stage.
 
 ## Before finishing
 
@@ -86,10 +88,10 @@ Correctness checklist (must pass before you consider the stage done):
 
 1. Selected candidate from analysis is fully implemented — not a stub or simplified variant.
 2. Mid-stage `run_correctness` / `aux_correctness` has **passed** (not merely attempted).
-3. Mid-stage `run_multi_connection` / `aux_multi_connection` has **passed**.
-4. Query is registered on **every** shared surface peer queries use (search to confirm; do not assume module-only is enough).
+3. Mid-stage `run_multi_connection` / `aux_multi_connection` has **passed** (engine-native harness when not duckdb).
+4. Query is registered on **every** shared surface peer queries use for this host (search to confirm).
 5. Concurrency contract satisfied (epochs, reader pin, irrelevant mutations → NoOp, bounded window reads).
-6. Benchmark and calibrator targets build; calibrator is the 5-line wrapper only.
+6. Benchmark and calibrator targets build when listed in post-stage gates; calibrator is the 5-line wrapper only when using the shared calibrator path.
 7. Hot-path `Execute` applies the same query predicates as fallback / SQL (do not filter only in fallback).
 
 ## Structural re-analysis (rare)

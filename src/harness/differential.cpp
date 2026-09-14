@@ -4,13 +4,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <iostream>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <vector>
 
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
+#include "accelerator_codegen/stateful/maintenance/maintenance_action.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
 
@@ -32,6 +37,34 @@ void Require(bool condition, const std::string &message) {
   if (!condition) {
     throw std::runtime_error(message);
   }
+}
+
+void RequireForcedMaintenanceAction() {
+  const char *force = std::getenv("ACCEL_FORCE_MAINTENANCE_ACTION");
+  const std::string force_s = force ? force : "";
+  if (force_s.empty()) {
+    return;
+  }
+  core::SetForcedMaintenanceActionName(force_s);
+  const auto entry = core::LastMaintenanceDecision();
+  Require(entry && entry->valid,
+          "expected staged maintenance decision after Apply (force=" + force_s +
+              ")");
+  const std::string action =
+      maintenance::MaintenanceActionName(entry->staged_action);
+  if (force_s == "ApplyDelta") {
+    Require(action == "ApplyDelta",
+            "expected ApplyDelta maintenance but got action=[" + action +
+                "] force=" + force_s);
+  } else if (force_s == "RebuildPartition") {
+    Require(action == "RebuildPartition" || action == "RebuildAll",
+            "forced RebuildPartition produced unexpected action=[" + action +
+                "]");
+  } else if (force_s == "RebuildAll") {
+    Require(action == "RebuildAll",
+            "forced RebuildAll produced unexpected action=[" + action + "]");
+  }
+  std::cerr << "maintenance_action=" << action << " force=" << force_s << '\n';
 }
 
 std::string AuxValueText(const core::AuxValue &value) {
@@ -240,6 +273,7 @@ void RunIncrementalDifferentialCheck(const std::string &db_path,
 
   try {
     runtime.Apply(probe);
+    RequireForcedMaintenanceAction();
 
     const auto after_fp = FingerprintSharedBaseSql(connection, entry);
     Require(after_fp != before_fp,
@@ -373,6 +407,7 @@ void RunAdversarialWriteDifferentialCheck(const std::string &db_path,
                   std::to_string(entry.query_id));
       try {
         runtime.Apply(probe);
+        RequireForcedMaintenanceAction();
         const auto after_fp = FingerprintSharedBaseSql(connection, entry);
         Require(after_fp != before_fp,
                 "adversarial Apply() did not invalidate DuckDB Q" +

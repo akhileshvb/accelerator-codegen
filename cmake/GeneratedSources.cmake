@@ -27,13 +27,9 @@ function(accel_collect_generated_sources OUT_VAR)
     set(_patterns
         "src/generated/*/q*/${_engine}/aux/*.cpp"
     )
-    # Postgres: base tables are native heap; no DataChunk base kernels under
-    # src/generated/*/q*/postgres/base (removed). Base SRFs alias aux Execute.
-    # Other engines keep base single-threaded kernels.
-    if(NOT _engine STREQUAL "postgres")
-        list(APPEND _patterns
-            "src/generated/*/q*/${_engine}/base/single-threaded/*.cpp")
-    endif()
+    # Base kernels are optional; collect them when present for this engine.
+    list(APPEND _patterns
+        "src/generated/*/q*/${_engine}/base/single-threaded/*.cpp")
     # Catalog for this engine (duckdb catalog also linked via runtime when present).
     if(NOT _engine STREQUAL "duckdb")
         list(APPEND _patterns "src/generated/catalog/${_engine}/*.cpp")
@@ -96,7 +92,10 @@ function(accel_collect_runtime_sources OUT_VAR)
         endif()
     else()
         # Non-duckdb engines: omit DuckDB harness (references DuckdbRuntime).
-        # Postgres differentials use tests/aux_state/test_postgres_tpch_differential.
+        if(ACCELERATOR_CODEGEN_BUILD_MYSQL AND EXISTS
+           "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/mysql/scan_helper.cpp")
+            list(APPEND _sources src/runtime/mysql/scan_helper.cpp)
+        endif()
     endif()
     set(${OUT_VAR} "${_sources}" PARENT_SCOPE)
 endfunction()
@@ -123,11 +122,33 @@ function(accel_collect_stateful_sources OUT_VAR)
             src/stateful/duckdb/duckdb_state_store.cpp
         )
     endif()
-    if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/postgres/postgres_aux_backend.cpp")
-        list(APPEND _sources
-            src/stateful/postgres/postgres_aux_backend.cpp
-            src/stateful/postgres/postgres_state_store.cpp
-        )
+    if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/postgres/postgres_aux_backend.cpp")
+            list(APPEND _sources
+                src/stateful/postgres/postgres_aux_backend.cpp
+            )
+        endif()
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/postgres/postgres_state_store.cpp")
+            list(APPEND _sources
+                src/stateful/postgres/postgres_state_store.cpp
+            )
+        endif()
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/postgres/postgres_mutation_capture.cpp")
+            list(APPEND _sources
+                src/stateful/postgres/postgres_mutation_capture.cpp
+            )
+        endif()
+    endif()
+    if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/mysql/mysql_aux_backend.cpp")
+            list(APPEND _sources src/stateful/mysql/mysql_aux_backend.cpp)
+        endif()
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/mysql/mysql_state_store.cpp")
+            list(APPEND _sources src/stateful/mysql/mysql_state_store.cpp)
+        endif()
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/mysql/mysql_mutation_capture.cpp")
+            list(APPEND _sources src/stateful/mysql/mysql_mutation_capture.cpp)
+        endif()
     endif()
     set(${OUT_VAR} "${_sources}" PARENT_SCOPE)
 endfunction()

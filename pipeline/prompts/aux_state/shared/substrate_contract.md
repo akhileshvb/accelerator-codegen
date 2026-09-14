@@ -19,7 +19,9 @@ Hand-written APIs in `include/accelerator_codegen/stateful/`:
 
 ## Engine adapters
 
-- **DuckDB** (`stateful/duckdb/`) — typed in-process state images; no byte serialization on hot path.
-- **Postgres** (`stateful/postgres/`) — shared-memory byte images; deserialize before exposing typed snapshots to modules.
+Owned by `workload_kind: engine_backend` under `stateful/{engine}/` and `runtime/{engine}/`.
 
-Generated code implements `AuxQueryModule` and registers via `catalog/query_catalog.cpp`; do not reimplement lifecycle, txn semantics, or engine adapters.
+- **typed_in_process** — typed `StateImage` payloads; no byte serialization on the hot path.
+- **serialized_boundary** — encode/decode only at a process / shared-memory boundary (`byte_stream.hpp`); modules still see typed snapshots after decode.
+
+Generated query code implements `AuxQueryModule` and registers via `catalog/query_catalog.cpp`; do not reimplement lifecycle, txn semantics, or engine adapters.

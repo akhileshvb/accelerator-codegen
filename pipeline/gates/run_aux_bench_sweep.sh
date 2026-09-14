@@ -29,12 +29,92 @@ out.write_text(json.dumps({
     "gate": "aux_bench_sweep",
     "query": int("${QUERY}"),
     "benchmark": "${BENCHMARK_NAME}",
+    "engine_name": "${ENGINE_NAME}",
     "status": "skip",
     "reason": """${reason}""",
 }, indent=2))
 print(out.read_text())
 PY
 }
+
+export ACCEL_ENGINE_NAME="${ENGINE_NAME}"
+
+# Postgres: profile digests via benchmark_postgres_tpch_aux (native PG SQL reference).
+if [[ "${ENGINE_NAME}" == "postgres" ]]; then
+  CONTAINER="${ACCEL_PG_CONTAINER:-accel_pg_test}"
+  SHARED_BENCH="benchmark_postgres_tpch_aux"
+  set +e
+  ENSURE_LOG="$(bash "${ROOT}/scripts/ensure_accel_pg_test.sh" 2>&1)"
+  ENSURE_RC=$?
+  set -e
+  if [[ ${ENSURE_RC} -ne 0 ]]; then
+    python3 - <<PY
+import json, pathlib
+pathlib.Path("${OUT}/aux_bench_sweep.json").write_text(json.dumps({
+    "gate": "aux_bench_sweep", "query": int("${QUERY}"), "engine_name": "postgres",
+    "status": "fail", "reason": "docker ensure failed",
+    "log_tail": """${ENSURE_LOG}"""[-4000:],
+}, indent=2))
+print(pathlib.Path("${OUT}/aux_bench_sweep.json").read_text())
+PY
+    exit 1
+  fi
+  export ACCEL_PG_NINJA_TARGETS="${SHARED_BENCH}"
+  set +e
+  BUILD_LOG="$(bash "${ROOT}/scripts/build_accel_postgres_extension.sh" 2>&1)"
+  BUILD_RC=$?
+  set -e
+  if [[ ${BUILD_RC} -ne 0 ]] || ! docker exec "${CONTAINER}" test -x "/accel-build/accel/${SHARED_BENCH}"; then
+    python3 - <<PY
+import json, pathlib
+pathlib.Path("${OUT}/aux_bench_sweep.json").write_text(json.dumps({
+    "gate": "aux_bench_sweep", "query": int("${QUERY}"), "engine_name": "postgres",
+    "status": "fail", "reason": "missing ${SHARED_BENCH} (fail-closed)",
+    "log_tail": """${BUILD_LOG}"""[-6000:],
+}, indent=2))
+print(pathlib.Path("${OUT}/aux_bench_sweep.json").read_text())
+PY
+    exit 1
+  fi
+  set +e
+  LOG=""
+  for pct in 0 10; do
+    PART="$(docker exec -e ACCEL_PG_DOCKER=1 -e PGHOST=127.0.0.1 -e PGPORT=5432 \
+      -e PGUSER="${PGUSER:-postgres}" -e PGPASSWORD="${PGPASSWORD:-postgres}" \
+      -e ACCEL_ENGINE_NAME=postgres -e ACCEL_WORKLOAD_KIND=aux_state \
+      -e TPCH_PG_DB=accel_tpch_test \
+      "${CONTAINER}" "/accel-build/accel/${SHARED_BENCH}" "${QUERY}" "${pct}" 2>&1)"
+    PRC=$?
+    LOG="${LOG}"$'\n'"${PART}"
+    [[ ${PRC} -eq 0 ]] || { STATUS=fail; break; }
+  done
+  set -e
+  STATUS="${STATUS:-pass}"
+  python3 - <<PY
+import json, pathlib, re
+log = """${LOG}"""
+ro = wm = None
+for line in log.splitlines():
+    if line.startswith("read_only_query_speedup,"):
+        ro = float(line.split(",")[1])
+    if line.startswith("write_mix_workload_speedup,"):
+        wm = float(line.split(",")[1])
+status = "${STATUS}"
+pathlib.Path("${OUT}/aux_bench_sweep.json").write_text(json.dumps({
+    "gate": "aux_bench_sweep",
+    "query": int("${QUERY}"),
+    "engine_name": "postgres",
+    "status": status,
+    "read_only_query_speedup": ro,
+    "write_mix_workload_speedup": wm,
+    "composite_workload_speedup": min([x for x in (ro, wm) if x is not None] or [0.0]),
+    "profile_digest": log[-4000:],
+    "log_tail": log[-6000:],
+}, indent=2))
+print(pathlib.Path("${OUT}/aux_bench_sweep.json").read_text())
+raise SystemExit(0 if status == "pass" else 1)
+PY
+fi
 
 if ! ensure_build_tree "${ROOT}" "${BUILD}"; then
   write_skip "cmake configure failed for ${BUILD}"

@@ -1,5 +1,5 @@
-# Codex exec for implementation + optimization + audit; OpenRouter Agents for analysis.
-# Requires: Codex CLI on PATH, OPENROUTER_API_KEY (analysis), pip install -e ".[codex]"
+# Codex exec for analysis + implementation + validation + optimization + audit + per-layer critique.
+# Requires: Codex CLI on PATH, OPENROUTER_API_KEY, pip install -e ".[codex]"
 #
 #   python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 \
 #     --models-config pipeline/config/models.codex.yaml
@@ -16,8 +16,11 @@ codex_seed_preserve_recent_cycles: 2
 codex_bypass_approvals_and_sandbox: true
 
 stage_providers:
+  analysis: codex_exec
   adversarial_tests: codex_exec
+  host_bootstrap: codex_exec
   implementation: codex_exec
+  validation: codex_exec
   optimization: codex_exec
   optimization_unified: codex_exec
   optimization_unified_hypothesis: codex_exec
@@ -26,6 +29,9 @@ stage_providers:
   optimization_fix: codex_exec
   crash_debug: codex_exec
   audit: codex_exec
+  architecture_audit: codex_exec
+  # Cheap per-layer critic (deepseek-v4-flash via Codex exec + OpenRouter).
+  layer_critique: codex_exec
 
 presets:
   cheap_code: deepseek/deepseek-v4-flash
@@ -38,7 +44,9 @@ presets:
 stages:
   analysis: reasoning
   adversarial_tests: code
+  host_bootstrap: code
   implementation: code
+  validation: code
   # Parent stage name used by run_pipeline / make_model_id("optimization", ...)
   optimization: code
   optimization_unified: code
@@ -48,3 +56,5 @@ stages:
   optimization_fix: code
   crash_debug: debug
   audit: code
+  architecture_audit: reviewer
+  layer_critique: cheap_code

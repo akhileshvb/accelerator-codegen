@@ -1,5 +1,5 @@
 # Shared engine_backend pipeline settings merged when workload_kind=engine_backend.
-# Paths may use {engine} (sanitized engine_name, e.g. mysql, duckdb, postgres).
+# Paths may use {engine} (sanitized engine_name). Do not hardcode a host engine here.
 
 write_paths:
   - CMakeLists.txt
@@ -10,6 +10,7 @@ write_paths:
   - include/accelerator_codegen/stateful/{engine}/**
   - src/stateful/{engine}/**
   - src/generated/{engine}/**
+  - tests/engine_backend/**
   - pipeline/artifacts/engines/{engine}/**
   - pipeline/artifacts/engines/**
 
@@ -18,25 +19,101 @@ allowed_commands:
   - "^cmake -S \\. -B build-release && cmake --build build-release( .*)?$"
   - "^cmake --build build-release( .*)?$"
   - "^ctest --test-dir build-release( .*)?$"
+  - "^(\\.\\/)?build-release\\/test_[a-z0-9_]+( .*)?$"
   - "^bash pipeline/gates/run_engine_build\\.sh$"
+  - "^bash pipeline/gates/run_engine_layer\\.sh$"
   - "^bash pipeline/gates/run_engine_scan_conformance\\.sh$"
+  - "^bash pipeline/gates/run_engine_contract\\.sh$"
+  - "^bash pipeline/gates/run_engine_adversarial\\.sh$"
   - "^bash pipeline/gates/run_engine_aux_smoke\\.sh$"
 
+# Sequential implementation layers. Orchestrator runs one agent stage per layer
+# and iterates until that layer's gate passes. Analysis sketches every layer.
+implementation_layers:
+  - id: store
+    title: State store
+    gate: engine_store
+    harness: tests/engine_backend/test_{engine}_store.cpp
+    cmake_target: test_{engine}_store
+    rules: [store_roundtrip]
+  - id: aux_backend
+    title: Aux backend
+    gate: engine_aux_backend
+    harness: tests/engine_backend/test_{engine}_aux_backend.cpp
+    cmake_target: test_{engine}_aux_backend
+    rules: [aux_services]
+  - id: txn
+    title: Txn bridge
+    gate: engine_txn
+    harness: tests/engine_backend/test_{engine}_txn.cpp
+    cmake_target: test_{engine}_txn
+    rules: [txn_lifecycle]
+  - id: mutations
+    title: Mutation capture
+    gate: engine_mutations
+    harness: tests/engine_backend/test_{engine}_mutations.cpp
+    cmake_target: test_{engine}_mutations
+    rules: [mutation_hooks]
+  - id: scan
+    title: Engine-local scan helper
+    gate: engine_scan
+    harness: tests/engine_backend/test_{engine}_scan.cpp
+    cmake_target: test_{engine}_scan
+    rules: [native_scan, value_checked_scan]
+  - id: runtime
+    title: Toy Runtime
+    gate: engine_runtime
+    harness: tests/engine_backend/test_{engine}_runtime.cpp
+    cmake_target: test_{engine}_runtime
+    rules: [toy_runtime]
+  - id: visibility
+    title: Visibility
+    gate: engine_visibility
+    harness: tests/engine_backend/test_{engine}_visibility.cpp
+    cmake_target: test_{engine}_visibility
+    rules: [visibility]
+  - id: host
+    title: Host packaging
+    gate: engine_host
+    harness: tests/engine_backend/test_{engine}_host.cpp
+    cmake_target: test_{engine}_host
+    rules: [host_glue]
+    skip_unless: requires_in_process_host
+
+# Default post-layer gates (engine_build + this layer). Overridden per stage.
 post_implementation_gates:
   - engine_build
 
 post_validation_gates:
   - engine_build
-  - engine_scan_conformance
+  - engine_store
+  - engine_aux_backend
+  - engine_txn
+  - engine_mutations
+  - engine_scan
+  - engine_runtime
+  - engine_visibility
+  - engine_host
+  - engine_adversarial
 
 prompt_subdir: engine_backend
 
 # Conventional layout used when workload omits target_paths / cmake.
 default_target_paths:
-  scan_adapter_header: include/accelerator_codegen/runtime/{engine}/scan_adapter.hpp
-  scan_adapter_source: src/runtime/{engine}/scan_adapter.cpp
+  state_store_header: include/accelerator_codegen/stateful/{engine}/{engine}_state_store.hpp
+  state_store_source: src/stateful/{engine}/{engine}_state_store.cpp
+  aux_backend_header: include/accelerator_codegen/stateful/{engine}/{engine}_aux_backend.hpp
+  aux_backend_source: src/stateful/{engine}/{engine}_aux_backend.cpp
+  scan_helper_header: include/accelerator_codegen/runtime/{engine}/scan_helper.hpp
+  scan_helper_source: src/runtime/{engine}/scan_helper.cpp
+  scan_adapter_header: include/accelerator_codegen/runtime/{engine}/scan_helper.hpp
+  scan_adapter_source: src/runtime/{engine}/scan_helper.cpp
   stateful_dir: include/accelerator_codegen/stateful/{engine}
   stateful_src_dir: src/stateful/{engine}
+  contract_test: tests/engine_backend/test_{engine}_runtime.cpp
+  contract_test_target: test_{engine}_runtime
+  adversarial_test: tests/engine_backend/test_{engine}_adversarial.cpp
+  adversarial_test_target: test_{engine}_adversarial
 
 default_cmake:
   collect_fn: accel_collect_{engine}_sources
@@ -49,6 +126,22 @@ store_mode_candidates:
 stage_max_turns:
   analysis: 20
   implementation: 0
-  validation: 12
+  architecture_audit: 30
+  layer_critique: 20
+  validation: 0
 
 allow_update_existing: true
+
+# From-scratch fairness: physically move foreign host adapters out of the workspace.
+hide_foreign_engines: true
+
+# When true, the host layer is required (in-process MODULE/extension).
+requires_in_process_host: false
+
+architecture_audit_max_rounds: 3
+# Post-stage engine_build + layer gate: on fail, re-invoke that impl layer with
+# notes/log_tail. Count is implementation attempts (including the first). 0 = one
+# attempt then fail (no retry). Applies to every impl_* stage.
+layer_gate_max_rounds: 3
+# Per-layer cheap critic after gates; 0 disables. On fail, re-run that impl layer.
+layer_critique_max_rounds: 2

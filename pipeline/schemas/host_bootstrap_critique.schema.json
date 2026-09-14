@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "host_bootstrap_critique.schema.json",
+  "title": "Query host bootstrap critique",
+  "type": "object",
+  "required": ["engine_name", "status", "violations", "feedback_for_implementation"],
+  "additionalProperties": true,
+  "properties": {
+    "engine_name": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["pass", "fail"] },
+    "summary": { "type": "string" },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule", "evidence"],
+        "additionalProperties": true,
+        "properties": {
+          "rule": {
+            "type": "string",
+            "description": "sql_entrypoints | differential | cmake_target | host_reuse | independence | contract"
+          },
+          "evidence": { "type": "string" },
+          "paths": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "feedback_for_implementation": {
+      "type": "string",
+      "description": "Empty on pass; concrete fixes on fail"
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "round": { "type": "integer", "minimum": 0 }
+  }
+}

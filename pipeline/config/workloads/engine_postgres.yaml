@@ -1,32 +1,51 @@
-# From-scratch Postgres adapter onboarding (no in-repo adapter to copy).
+# From-scratch Postgres adapter onboarding.
 # Conventional paths/write_paths/cmake names come from pipeline/config/engine_backend.yaml.
 # Engine-specific SDK detail lives HERE only; shared prompts/gates stay engine-agnostic.
+#
+# Do not describe a prior in-repo adapter. The agent implements against the
+# substrate + PostgreSQL 17 server headers + these connection hints.
 
 workload_kind: engine_backend
 engine_name: postgres
 display_name: Postgres
-# true: continue/fix existing adapter trees (use after a partial impl run).
-# false: clean-slate from-scratch (wipe target trees first if leftovers remain).
-allow_update_existing: true
+allow_update_existing: false
 
-# Fairness: quarantine in-repo foreign host trees for this run.
 hide_foreign_engines: true
+agent_hidden_trees:
+  - include/accelerator_codegen/runtime/duckdb
+  - src/runtime/duckdb
+  - include/accelerator_codegen/stateful/duckdb
+  - src/stateful/duckdb
+  - src/generated/catalog/duckdb
+  - src/generated/tpch
+  - src/generated/sec_edgar
 
-# Server-extension packaging: gates require real in-process host glue (not a placeholder).
+# Server-extension packaging: host layer is required.
 requires_in_process_host: true
 
+host_runtime:
+  kind: docker
+  discovery: postgres_docker
+  ensure_script: scripts/ensure_accel_pg_test.sh
+  build_script: scripts/build_accel_postgres_extension.sh
+  ninja_targets_env: ACCEL_PG_NINJA_TARGETS
+  container_env: ACCEL_PG_CONTAINER
+  default_container: accel_pg_test
+  binary_dir: /accel-build/accel
+  env:
+    ACCEL_PG_DOCKER: "1"
+    # From-scratch: start the container only. Layer gates build via build_script;
+    # do not fail closed on missing live adapter sources / a stale MODULE .so.
+    ACCEL_PG_ENSURE_BUILD: "0"
+
 engine_sdk_hints:
-  - "Postgres host is Docker `accel_pg_test` (postgres:17). Run `bash scripts/ensure_accel_pg_test.sh` — do NOT install host pacman/$HOME/opt server SDK for this pipeline."
-  - "Edit sources on the host (mounted at `/accel-src`). Rebuild with `bash scripts/build_accel_postgres_extension.sh` (cmake/ninja inside the container)."
-  - "Connect from host: PGHOST=127.0.0.1 PGPORT=5434. Inside container / harness docker exec: PGHOST=127.0.0.1 PGPORT=5432. Env: ACCEL_PG_DOCKER=1."
-  - "Extension .so in container: `/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so` (LOAD path). Target name: `accelerator_codegen_pg`."
-  - "CMake pitfall: PG server symbols (`RegisterXactCallback`, triggers, `_PG_init`) belong only in MODULE `accelerator_codegen_pg` (Docker build). Do NOT compile `postgres_xact_callbacks.cpp` / extension init into host `libaccelerator_codegen.so`. Host lib = substrate + `postgres_aux_backend`; server callbacks live in the MODULE."
-  - "MODULE sources = extension + bridge + xact + runtime/query_functions/kernel_executor/transition_capture. Do not also compile `postgres_aux_backend` into the MODULE when it is already in `libaccelerator_codegen` (ODR / dual-singleton)."
-  - "Live host: SPI typed InitialScans in `src/generated/postgres/runtime.cpp`; statement-level `accel_aux_capture_transition` → `PostgresAuxBackend`; in-process `PostgresStateStore` per Runtime. No serialized_boundary file store, no table-AM contract scan helper."
-  - "Harness: `#include \"accelerator_codegen/engine_backend/postgres_tooling.hpp\"` → DiscoverTools() with ACCEL_PG_DOCKER (attach or in-container SDK)."
-  - "Shared substrate (aux/txn only): include/accelerator_codegen/stateful/{core,state,maintenance}/ — MutationBatch, AuxStateStore, coordinator. No portable DataChunk IR."
-  - "TPC-H for differentials: Postgres-native tables (DB accel_tpch_test via scripts/setup_accel_postgres_tpch_test_db.sh) — not *.duckdb as scan storage."
-  - "Accelerator kernels for this host live under src/generated/{bench}/q{N}/postgres/ after accelerator pipeline runs."
+  - "Postgres for this pipeline is Docker container `accel_pg_test` (postgres:17). Start with `ACCEL_PG_ENSURE_BUILD=0 bash scripts/ensure_accel_pg_test.sh` (container only until the host MODULE exists). Do not install a host pacman/$HOME/opt server SDK."
+  - "Edit sources on the host (mounted in the container at `/accel-src`). Rebuild with `bash scripts/build_accel_postgres_extension.sh` (cmake/ninja inside the container)."
+  - "Connect from host: PGHOST=127.0.0.1 PGPORT=5434. Inside the container / docker exec: PGHOST=127.0.0.1 PGPORT=5432. Env: ACCEL_PG_DOCKER=1."
+  - "In-process MODULE target name: `accelerator_codegen_pg`. Installed .so path in the container: `/usr/lib/postgresql/17/lib/accelerator_codegen_pg.so`."
+  - "Use PostgreSQL 17 server headers (SPI, table/heap AM, triggers, xact callbacks, `_PG_init`) from the in-container SDK. Server-only symbols belong only in the MODULE — never in a host shared library that standalone harnesses link."
+  - "Shared substrate (do not regenerate): include/accelerator_codegen/stateful/{core,state,maintenance}/ — MutationBatch, AuxStateStore, AuxEngineServices, coordinator."
+  - "Do not read or copy another engine's runtime|stateful tree. Do not depend on generated TPC-H/SEC query modules."
 
 store_mode_candidates:
   - typed_in_process

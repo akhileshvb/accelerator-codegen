@@ -568,6 +568,8 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
     new_state->part_valid = old_state->part_valid;
     new_state->parts_by_size = old_state->parts_by_size;
     new_state->regional_minima_base = old_state->regional_minima_base;
+    // Preserve prior ApplyDelta overlay so stacked writes compose correctly.
+    new_state->regional_minima_overlay = old_state->regional_minima_overlay;
     if (!new_state->regional_minima_base) {
       new_state->regional_minima_base =
           std::make_shared<const std::unordered_map<int64_t, TpchQ2RegionalMinCell>>(
@@ -660,16 +662,25 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
       EmitCustomProfile("write_apply", apply_dt, (int64_t)deltas.size(), 0, 0);
     }
     if (!lost_unique_min) {
-    auto image = std::make_shared<TpchQ2StateImage>();
-    image->kind = TpchQ2ImageKind::Full;
-    image->state = std::move(new_state);
-    const std::shared_ptr<const TpchQ2StateImage> const_image = std::move(image);
-    outcome.action = core::MaintenanceAction::ApplyDelta;
-    outcome.updates.push_back(core::StateImage::Make(
-        core::TpchQ2Layout::kAccelerator, core::TpchQ2Layout::kFull,
-        old_version, const_image));
-    buffer.Clear();
-    return outcome;
+      const auto decision = services.ChooseMaintenance(
+          {static_cast<uint64_t>(deltas.size()), 1, true, false, true, false,
+           false, core::MaintenanceAction::NoOp,
+           services.ExpectedQueriesBeforeNextWrite()});
+      if (decision.action == core::MaintenanceAction::ApplyDelta) {
+        auto image = std::make_shared<TpchQ2StateImage>();
+        image->kind = TpchQ2ImageKind::Full;
+        image->state = std::move(new_state);
+        const std::shared_ptr<const TpchQ2StateImage> const_image =
+            std::move(image);
+        outcome.action = core::MaintenanceAction::ApplyDelta;
+        outcome.updates.push_back(core::StateImage::Make(
+            core::TpchQ2Layout::kAccelerator, core::TpchQ2Layout::kFull,
+            old_version, const_image));
+        buffer.Clear();
+        return outcome;
+      }
+      // Forced / cost-model rebuild: fall through with empty updates so
+      // PreCommit MaterializeSyncRebuild can run under an active snapshot.
     }
   }
 
@@ -681,6 +692,9 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
   outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
                        ? core::MaintenanceAction::RebuildAll
                        : decision.action;
+  if (outcome.action == core::MaintenanceAction::RebuildPartition) {
+    outcome.action = core::MaintenanceAction::RebuildAll;
+  }
   outcome.invalidations = All();
   outcome.pending_rebuild = outcome.invalidations;
   buffer.Clear();

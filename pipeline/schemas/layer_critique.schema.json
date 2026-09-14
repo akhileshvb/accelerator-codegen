@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "layer_critique.schema.json",
+  "title": "Engine backend per-layer critique",
+  "type": "object",
+  "required": ["engine_name", "layer", "status", "violations", "feedback_for_implementation"],
+  "additionalProperties": true,
+  "properties": {
+    "engine_name": { "type": "string", "minLength": 1 },
+    "layer": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["pass", "fail"] },
+    "summary": { "type": "string" },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule", "evidence"],
+        "additionalProperties": true,
+        "properties": {
+          "rule": {
+            "type": "string",
+            "description": "Checklist id for this layer, or contract / harness_gap / substrate_api"
+          },
+          "evidence": { "type": "string" },
+          "paths": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "feedback_for_implementation": {
+      "type": "string",
+      "description": "Empty on pass; concrete fixes on fail"
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Non-blocking nits (style, leftover debug files). Must not be used for later-layer breakage."
+    },
+    "round": { "type": "integer", "minimum": 0 }
+  }
+}

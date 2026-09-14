@@ -105,6 +105,7 @@ def run_pack_query(
     extra_args: list[str] | None = None,
     isolation_mode: str = "worktree",
     pack_queries: list[int] | None = None,
+    pack_engine_name: str | None = None,
 ) -> dict[str, Any]:
     from accel_pipeline.worker_worktree import ensure_worker_worktree
 
@@ -134,6 +135,8 @@ def run_pack_query(
     env["ACCEL_PIPELINE_REPO_ROOT"] = str(worker_repo)
     env["ACCEL_PIPELINE_PRIMARY_REPO"] = str(primary)
     env["ACCEL_PIPELINE_ISOLATION_MODE"] = isolation_mode
+    if pack_engine_name:
+        env["ACCEL_WORKLOAD_ENGINE_NAME"] = str(pack_engine_name)
     env.setdefault(
         "ACCEL_DUCKDB_ROOT",
         str(primary.parent / "accelerator-codegen-duckdb"),
@@ -243,6 +246,40 @@ def run_pack(
         flush=True,
     )
 
+    # One-shot host bootstrap per engine BEFORE parallel query workers.
+    from accel_pipeline.config import load_model_config, load_pipeline_config
+    from accel_pipeline.host_bootstrap import ensure_host_bootstrap_for_pack
+
+    pipeline_cfg_path = pipeline_config_path or pack.get("pipeline_config")
+    models_cfg_path = models_config or pack.get("models_config")
+    pipeline_config = load_pipeline_config(
+        Path(pipeline_cfg_path) if pipeline_cfg_path else None,
+        repo_root=repo_root,
+    )
+    model_config = load_model_config(
+        Path(models_cfg_path) if models_cfg_path else None,
+        repo_root=repo_root,
+    )
+    pack_engine = str(pack.get("engine_name") or "").strip() or None
+    if pack_engine:
+        # So engines_needing_bootstrap sees the pack override via env during load_workload.
+        os.environ["ACCEL_WORKLOAD_ENGINE_NAME"] = pack_engine
+
+    hb_results = ensure_host_bootstrap_for_pack(
+        pack,
+        repo_root=repo_root,
+        pipeline_config=pipeline_config,
+        model_config=model_config,
+        queries=queries,
+        dry_run=dry_run,
+        skip_gates=skip_gates,
+    )
+    if hb_results:
+        print(f"[pack] host_bootstrap: {hb_results}", flush=True)
+        failed = [r for r in hb_results if r.get("status") != "pass"]
+        if failed and not dry_run:
+            raise RuntimeError(f"host_bootstrap failed before pack fan-out: {failed}")
+
     results: list[dict[str, Any]] = []
     isolation = dict(pack.get("isolation") or {})
     isolation_mode = str(
@@ -273,6 +310,7 @@ def run_pack(
                 extra_args=extra_args,
                 isolation_mode=isolation_mode,
                 pack_queries=pack_query_ids,
+                pack_engine_name=pack_engine,
             ): entry
             for entry in queries
         }

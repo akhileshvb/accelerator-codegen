@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Optional aux smoke once a query module + UDF host exist for the engine.
+# Optional higher-level aux smoke once a real query module + UDF host exist.
+# Backend correctness without accelerators is owned by engine_contract.
 set -euo pipefail
 OUT_JSON="${ACCEL_GATE_OUT:-/tmp/engine_aux_smoke.json}"
 python3 - <<PY
@@ -8,7 +9,10 @@ out = os.environ.get("ACCEL_GATE_OUT") or "/tmp/engine_aux_smoke.json"
 payload = {
   "gate": "engine_aux_smoke",
   "status": "skip",
-  "notes": "aux smoke not configured for this engine yet",
+  "notes": (
+      "optional; use engine_contract for substrate↔engine correctness without "
+      "query accelerators"
+  ),
 }
 open(out, "w", encoding="utf-8").write(json.dumps(payload, indent=2))
 raise SystemExit(0)

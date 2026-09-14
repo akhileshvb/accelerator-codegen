@@ -1,5 +1,6 @@
 benchmark_name: tpch
 query_number: 10
+engine_name: postgres
 query_id: "10"
 function_name: accel_tpch_q10
 create_fn: CreateTpchQ10FunctionSet

@@ -4,7 +4,11 @@ Non-negotiable for analysis (planning), implementation, optimization, and audit.
 
 ## 1. Native base-table storage
 
-Accelerators read **base tables** through the engine’s native storage/scan APIs (`NativeScanSpec` → engine adapter). Do not bypass with SQL-over-client “scans” on the hot path when a native adapter exists.
+Accelerators read **base tables** through **this engine’s** (`{{engine_name}}`) native storage/scan APIs. Consume engine-local batches, slots, or typed rebuild callbacks — **not** a shared portable chunk IR.
+
+- Do **not** bypass with SQL-over-client “scans” on the hot path when a native adapter exists.
+- Do **not** require `ScanNativeBaseTable` → portable `DataChunk` as a cross-engine contract.
+- DuckDB may use host-private helpers under `runtime/duckdb/native_scan.hpp`; other engines define theirs under `runtime/{engine}/`.
 
 **Auxiliary state** may and should use **custom storage** (typed in-process images, engine-local aux tables, shared-memory blobs, etc.).
 

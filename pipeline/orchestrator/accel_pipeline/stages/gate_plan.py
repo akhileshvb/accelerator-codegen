@@ -12,6 +12,7 @@ GATES_ALLOW_SKIP = frozenset(
         "aux_speedup_verification",
         "engine_scan_conformance",
         "engine_aux_smoke",
+        "engine_host",
     }
 )
 

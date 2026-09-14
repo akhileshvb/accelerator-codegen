@@ -2,13 +2,15 @@
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 
 #include <algorithm>
-#include <cstdlib>
+#include <utility>
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 
 PostgresAuxBackend::PostgresAuxBackend(
-    core::AuxTransactionCoordinator &coordinator_p, core::AuxStateStore &state_store_p,
-    VisibilityCallback visibility_p, CostModelCallback cost_model_p,
+    core::AuxTransactionCoordinator &coordinator_p,
+    core::AuxStateStore &state_store_p,
+    VisibilityCallback visibility_p,
+    CostModelCallback cost_model_p,
     WorkloadCallback workload_p)
     : coordinator(coordinator_p), state_store(state_store_p),
       visibility(std::move(visibility_p)),
@@ -17,13 +19,9 @@ PostgresAuxBackend::PostgresAuxBackend(
   coordinator.AttachServices(*this);
 }
 
-void PostgresAuxBackend::CaptureMutation(const core::MutationBatch &mutation) {
+void PostgresAuxBackend::CaptureMutation(
+    const core::MutationBatch &mutation) {
   coordinator.OnMutation(mutation);
-}
-
-std::optional<std::vector<int32_t>>
-PostgresAuxBackend::MutationCaptureAttnums(core::TableId table) const {
-  return coordinator.MutationCaptureAttnums(table);
 }
 
 void PostgresAuxBackend::OnPreCommit() { coordinator.PreCommit(); }
@@ -47,20 +45,13 @@ double PostgresAuxBackend::ExpectedQueriesBeforeNextWrite() const {
   return workload ? std::max(0.0, workload()) : 10.0;
 }
 
-std::size_t PostgresAuxBackend::WorkerCount() const {
-  const char *value = std::getenv("ACCEL_AUX_THREADS");
-  if (value && *value) {
-    const long parsed = std::strtol(value, nullptr, 10);
-    if (parsed > 0) {
-      return static_cast<std::size_t>(parsed);
-    }
-  }
-  return 1;
-}
-
 bool PostgresAuxBackend::AllowsSynchronousRebuildOnCommit() const {
   return false;
 }
 
+std::optional<std::vector<int32_t>>
+PostgresAuxBackend::MutationCaptureAttnums(core::TableId table) const {
+  return coordinator.MutationCaptureAttnums(table);
+}
 
 } // namespace accelerator_codegen::aux_state::engine::postgres

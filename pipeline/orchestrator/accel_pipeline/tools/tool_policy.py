@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 from typing import Any, Callable
 
@@ -18,6 +20,22 @@ from accel_pipeline.tools.search_tools import make_search_tools
 from accel_pipeline.tools.tool_args import none_default as _none_default
 
 STAGE_TOOL_NAMES: dict[str, list[str]] = {
+    "host_bootstrap": [
+        "read_file",
+        "grep_context",
+        "write_file",
+        "apply_patch",
+        "insert_lines",
+        "search_repo",
+        "list_dir",
+        "glob_files",
+        "file_info",
+        "run_command",
+        "request_gate",
+        "discover_host_sdk",
+        "acquire_shared_lease",
+        "release_shared_lease",
+    ],
     "analysis": [
         "read_file",
         "grep_context",
@@ -26,6 +44,7 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "list_dir",
         "glob_files",
         "file_info",
+        "discover_host_sdk",
     ],
     "adversarial_tests": [
         "read_file",
@@ -35,6 +54,7 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "list_dir",
         "glob_files",
         "file_info",
+        "discover_host_sdk",
     ],
     "implementation": [
         "read_file",
@@ -53,6 +73,7 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "request_structural_reanalysis",
         "acquire_shared_lease",
         "release_shared_lease",
+        "discover_host_sdk",
     ],
     "optimization_unified": [
         "rip_grep",
@@ -122,17 +143,53 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "run_command",
     ],
     "audit": ["read_file", "grep_context", "search_repo", "list_dir", "glob_files", "file_info", "request_gate"],
-    "validation": [
+    "architecture_audit": [
         "read_file",
         "grep_context",
-        "write_file",
         "search_repo",
         "list_dir",
         "glob_files",
         "file_info",
+        "write_file",
+        "discover_host_sdk",
+    ],
+    "layer_critique": [
+        "read_file",
+        "grep_context",
+        "search_repo",
+        "list_dir",
+        "glob_files",
+        "file_info",
+        "write_file",
+        "discover_host_sdk",
+    ],
+    "validation": [
+        "read_file",
+        "grep_context",
+        "write_file",
+        "apply_patch",
+        "insert_lines",
+        "search_repo",
+        "list_dir",
+        "glob_files",
+        "file_info",
+        "run_command",
         "request_gate",
+        "discover_host_sdk",
     ],
 }
+
+
+def stage_tool_names(stage: str) -> list[str]:
+    if stage.startswith("impl_"):
+        names = list(STAGE_TOOL_NAMES.get("implementation") or [])
+        for extra in ("run_engine_build", "run_layer_gate"):
+            if extra not in names:
+                names.append(extra)
+        return names
+    if stage == "layer_critique" or stage.startswith("critique_"):
+        return list(STAGE_TOOL_NAMES.get("layer_critique") or [])
+    return list(STAGE_TOOL_NAMES.get(stage) or [])
 
 TOOL_USAGE_INSTRUCTIONS = """\
 ## Tooling
@@ -147,7 +204,7 @@ Use ONLY the pipeline tools for this stage. Do not use built-in shell/edit tools
 - run_command: allowlisted cmake/ctest. After adding new CMake targets (aux test/bench), run `cmake -S . -B <worker_build_dir>` before `cmake --build ...` (compound forms are allowlisted). Under pack isolation, bare `build-release` is rewritten to this worker's build dir — never target the shared tree.
 - Benchmarks and accept/reject are orchestrator-owned — exploratory A/B tools are non-binding.
 - optimization_unified: hypothesize/implement then `HYPOTHESIS_PATCH_COMPLETE` for build → smoke → benchmark.
-- request_gate / run_correctness / run_multi_connection: under Codex MCP, implementation **must** call `run_correctness` (and for aux-state also `run_multi_connection`, or `request_gate` with those gate names) and **keep iterating until they pass** before finishing. Orchestrator still re-runs post-stage gates.
+- request_gate / run_correctness / run_multi_connection: under Codex MCP, implementation **must** call `run_correctness` (and for aux-state also `run_multi_connection`, or `request_gate` with those gate names) and **keep iterating until they pass** before finishing. Orchestrator still re-runs post-stage gates. For **host_bootstrap**, call `request_gate` with `host_bootstrap` until pass (postgres: Docker ninja, never host `cmake --build build-release`). If that post-stage gate still fails, the orchestrator re-invokes this stage with `notes`/`log_tail`. For **engine_backend** implementation layers, call `request_gate` with `engine_build` then that layer's gate (`engine_store`, `engine_aux_backend`, `engine_txn`, `engine_mutations`, `engine_scan`, `engine_runtime`, `engine_visibility`, `engine_host`) until pass. For **engine_backend** validation, also loop **`engine_adversarial`** after authoring unseen tests. After all layers, a separate **architecture_audit** agent judges hard constraints and may re-invoke implementation layers with feedback.
 """
 
 IMPLEMENTATION_TOOL_USAGE = """\
@@ -207,9 +264,67 @@ OPTIMIZATION_WORKER_TOOL_USAGE = """\
 """
 
 
+ENGINE_BACKEND_IMPL_TOOL_USAGE = """\
+## Engine backend layer workflow
+
+- **First:** read `pipeline/prompts/engine_backend/layer_contracts.md` for this
+  layer, then the substrate headers listed in the prompt
+  (`aux_types.hpp`, `partitioned_state_store.hpp`, `aux_registry.hpp` as needed).
+- Fill `pipeline/templates/engine_backend/` stubs. Adapter types stay in
+  `aux_state::engine::{engine}` — never `core::`.
+- If `backend_analysis.json` contradicts `layer_contracts.md` or
+  `acceptance_checklist.md`, follow the contracts (including CAS publish,
+  token-filtered Read, key-from-publish, `AttachServices` in the aux ctor).
+- Mid-loop MCP tools on server `accel_pipeline` (tools, not resources — do
+  **not** `list_mcp_resources`): `run_engine_build()`, `run_layer_gate()`,
+  or `request_gate` with `engine_build` then this layer's gate. A green
+  exit that skipped contract asserts is not done — add the asserts.
+  Do **not** treat host cmake / `docker exec` of the harness as the pass bar.
+- Prior layers: reuse. If a real bug/design flaw in a prior layer blocks this
+  contract, make the smallest patch, keep that prior harness honest, and
+  `request_gate` the prior layer's gate before continuing. No rewrites for
+  style; do not start later layers.
+"""
+
+
+LAYER_CRITIQUE_TOOL_USAGE = """\
+## Layer critique workflow
+
+- Read-only on adapter sources. Write only `pipeline/artifacts/**`
+  (`layer_critique_{layer}.json` + `.md`).
+- **Last action must be writing those files** (Codex: `cat > …json <<'EOF'`).
+  Stopping without the JSON fails the stage. Do not explore later layers.
+- Under Codex: do **not** use native edit/shell on adapter / harness / CMake.
+- Read this layer's `layer_contracts.md` section, checklist rules, adapter,
+  harness, and gate JSON. Fail on contract holes a green gate missed.
+- If this layer is blocked by a prior-layer bug/design flaw, fail and tell
+  impl to make the smallest prior-layer patch (keep that prior harness green).
+- Do not start later layers or weaken the harness.
+"""
+
+
+HOST_BOOTSTRAP_CRITIQUE_TOOL_USAGE = """\
+## Host bootstrap critique workflow
+
+- Read-only on adapter / harness / CMake. Write only `pipeline/artifacts/**`
+  (`host_bootstrap_critique.json` + `.md` under the engine host_bootstrap dir).
+- **Last action must be writing those files** (Codex: `cat > …json <<'EOF'`).
+  Stopping without the JSON fails the stage.
+- Under Codex: do **not** use native edit/shell on adapter / harness / CMake.
+- Fail on a stub differential, wrong CMake target name, or a second adapter
+  tree. Do not fail Phase 2 multi-conn/cross-accel still missing.
+"""
+
+
 def tool_usage_instructions(stage: str) -> str:
     text = TOOL_USAGE_INSTRUCTIONS
-    if stage == "implementation":
+    if stage == "critique_host_bootstrap":
+        text = f"{text.rstrip()}\n\n{HOST_BOOTSTRAP_CRITIQUE_TOOL_USAGE}"
+    elif stage == "layer_critique" or stage.startswith("critique_"):
+        text = f"{text.rstrip()}\n\n{LAYER_CRITIQUE_TOOL_USAGE}"
+    elif stage.startswith("impl_"):
+        text = f"{text.rstrip()}\n\n{ENGINE_BACKEND_IMPL_TOOL_USAGE}"
+    elif stage == "implementation":
         text = f"{text.rstrip()}\n\n{IMPLEMENTATION_TOOL_USAGE}"
     elif stage in ("optimization_unified", "optimization", "optimization_fix"):
         text = f"{text.rstrip()}\n\n{OPTIMIZATION_PATCH_TOOL_USAGE}"
@@ -284,13 +399,14 @@ def build_tool_registry(
 ) -> dict[str, Callable[..., Any]]:
     repo_ctx = RepoCtx(pipeline_config, query, stage=stage)
     shell_ctx = ShellCtx(pipeline_config, query)
-    gate_ctx = GateCtx(pipeline_config, query)
+    gate_ctx = GateCtx(pipeline_config, query, stage=stage)
     if workload_name:
         try:
             gate_ctx = GateCtx(
                 pipeline_config,
                 query,
                 workload=load_workload(workload_name, pipeline_config.repo_root),
+                stage=stage,
             )
         except FileNotFoundError:
             pass
@@ -311,7 +427,7 @@ def build_tool_registry(
         read_reference_files,
     ) = make_repo_tools(repo_ctx)
     run_command = make_shell_tools(shell_ctx)
-    request_gate = make_gate_tools(gate_ctx)
+    request_gate, run_engine_build, run_layer_gate = make_gate_tools(gate_ctx)
     request_structural_reanalysis = make_reanalysis_tools(reanalysis_ctx)
     search_repo = make_search_repo(pipeline_config)
     rip_grep, ast_grep = make_search_tools(pipeline_config)
@@ -390,6 +506,12 @@ def build_tool_registry(
         ok = release_sticky_lease(pipeline_config.repo_root, holder=holder)
         return json.dumps({"released": ok, "holder": holder})
 
+    def discover_host_sdk() -> str:
+        """Locate this engine's host from workload host_runtime (not engine_name)."""
+        from accel_pipeline.host_runtime import discover_host_sdk_json
+
+        return discover_host_sdk_json(workload)
+
     return {
         "read_file": read_file,
         "grep_context": grep_context,
@@ -406,6 +528,8 @@ def build_tool_registry(
         "run_quick_benchmark": run_quick_benchmark,
         "end_ab_trial": end_ab_trial,
         "request_gate": request_gate,
+        "run_engine_build": run_engine_build,
+        "run_layer_gate": run_layer_gate,
         "request_structural_reanalysis": request_structural_reanalysis,
         "record_optimization_trap": record_optimization_trap,
         "acquire_shared_lease": acquire_shared_lease,
@@ -413,6 +537,7 @@ def build_tool_registry(
         "search_repo": search_repo,
         "rip_grep": rip_grep,
         "ast_grep": ast_grep,
+        "discover_host_sdk": discover_host_sdk,
     }
 
 
@@ -431,7 +556,7 @@ def build_tools(
         workload_name=workload_name,
         optimization_iter=optimization_iter,
     )
-    names = STAGE_TOOL_NAMES.get(stage, [])
+    names = stage_tool_names(stage)
     return [registry[n] for n in names if n in registry]
 
 
@@ -450,5 +575,5 @@ def build_stage_tool_registry(
         workload_name=workload_name,
         optimization_iter=optimization_iter,
     )
-    names = STAGE_TOOL_NAMES.get(stage, [])
+    names = stage_tool_names(stage)
     return {name: registry[name] for name in names if name in registry}

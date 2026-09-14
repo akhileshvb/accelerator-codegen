@@ -1,0 +1,43 @@
+# All 22 TPC-H aux-state queries on Postgres (per-engine).
+# Drive with scripts/run_tpch_pg_aux_all22_until_done.sh until 22/22 pass.
+
+pack_id: tpch_pg_aux_all22
+display_name: TPC-H Postgres aux all-22
+engine_name: postgres
+concurrency: 3
+stage: all
+resume: true
+models_config: pipeline/config/models.codex.yaml
+
+workload_template: "tpch_q{q}_aux"
+
+queries:
+  - { query: 1, workload: tpch_q1_aux }
+  - { query: 2, workload: tpch_q2_aux }
+  - { query: 3, workload: tpch_q3_aux }
+  - { query: 4, workload: tpch_q4_aux }
+  - { query: 5, workload: tpch_q5_aux }
+  - { query: 6, workload: tpch_q6_aux }
+  - { query: 7, workload: tpch_q7_aux }
+  - { query: 8, workload: tpch_q8_aux }
+  - { query: 9, workload: tpch_q9_aux }
+  - { query: 10, workload: tpch_q10_aux }
+  - { query: 11, workload: tpch_q11_aux }
+  - { query: 12, workload: tpch_q12_aux }
+  - { query: 13, workload: tpch_q13_aux }
+  - { query: 14, workload: tpch_q14_aux }
+  - { query: 15, workload: tpch_q15_aux }
+  - { query: 16, workload: tpch_q16_aux }
+  - { query: 17, workload: tpch_q17_aux }
+  - { query: 18, workload: tpch_q18_aux }
+  - { query: 19, workload: tpch_q19_aux }
+  - { query: 20, workload: tpch_q20_aux }
+  - { query: 21, workload: tpch_q21_aux }
+  - { query: 22, workload: tpch_q22_aux }
+
+isolation:
+  mode: shared_tree_separate_builds
+  build_dir_template: "build-release-pg-{worker_id}"
+  codex_home_template: "pipeline/.codex/workers/pg-{worker_id}"
+  shared_file_lease: true
+  stage_barriers: false

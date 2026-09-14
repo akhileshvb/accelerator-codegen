@@ -24,11 +24,27 @@ _STAGE_PROVIDER_PARENTS = {
 }
 
 
+def is_implementation_stage(stage: str) -> bool:
+    return stage == "implementation" or stage.startswith("impl_")
+
+
+def is_critique_stage(stage: str) -> bool:
+    return stage == "layer_critique" or stage.startswith("critique_")
+
+
+def _implementation_family(stage: str) -> bool:
+    return is_implementation_stage(stage)
+
+
 def resolve_stage_provider(stage: str, model_config: ModelConfig) -> str:
     """Per-stage provider override, then parent fallback, then global provider."""
     providers = model_config.stage_providers or {}
     if stage in providers:
         return providers[stage]
+    if is_critique_stage(stage) and "layer_critique" in providers:
+        return providers["layer_critique"]
+    if _implementation_family(stage) and "implementation" in providers:
+        return providers["implementation"]
     parent = _STAGE_PROVIDER_PARENTS.get(stage)
     if parent and parent in providers:
         return providers[parent]
@@ -39,7 +55,19 @@ def resolve_stage_provider(stage: str, model_config: ModelConfig) -> str:
 
 def resolve_preset(stage: str, model_config: ModelConfig, overrides: dict[str, str] | None = None) -> str:
     overrides = overrides or {}
-    preset_name = overrides.get(stage) or model_config.stages.get(stage)
+    preset_name = overrides.get(stage)
+    if not preset_name and _implementation_family(stage):
+        preset_name = overrides.get("implementation")
+    if not preset_name and is_critique_stage(stage):
+        preset_name = overrides.get("layer_critique")
+    if not preset_name:
+        preset_name = model_config.stages.get(stage)
+    if not preset_name and is_critique_stage(stage):
+        preset_name = model_config.stages.get("layer_critique")
+        if not preset_name and "cheap_code" in model_config.presets:
+            preset_name = "cheap_code"
+    if not preset_name and _implementation_family(stage):
+        preset_name = model_config.stages.get("implementation")
     if not preset_name and stage in _OPTIMIZATION_STAGE_FALLBACKS:
         preset_name = (
             model_config.stages.get("optimization_unified")

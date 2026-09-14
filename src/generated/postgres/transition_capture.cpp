@@ -239,6 +239,13 @@ std::vector<ColumnId> UpdatedColumnsForProjection(
 }
 
 TableId TableIdFromTrigger(const TriggerData *trigger_data) {
+  const char *relname = RelationGetRelationName(trigger_data->tg_relation);
+  const auto canonical =
+      accelerator_codegen::aux_state::engine::postgres::tpch_tables::
+          IdFromRelname(relname ? relname : "");
+  if (canonical != 0) {
+    return canonical;
+  }
   const auto *trigger = trigger_data->tg_trigger;
   if (trigger && trigger->tgnargs > 0 && trigger->tgargs &&
       trigger->tgargs[0] && trigger->tgargs[0][0] != '\0') {
@@ -248,12 +255,6 @@ TableId TableIdFromTrigger(const TriggerData *trigger_data) {
     if (errno == 0 && end != trigger->tgargs[0] && *end == '\0' && value != 0) {
       return static_cast<TableId>(value);
     }
-  }
-  const char *relname = RelationGetRelationName(trigger_data->tg_relation);
-  const auto id = accelerator_codegen::aux_state::engine::postgres::tpch_tables::
-      IdFromRelname(relname ? relname : "");
-  if (id != 0) {
-    return id;
   }
   return static_cast<TableId>(RelationGetRelid(trigger_data->tg_relation));
 }

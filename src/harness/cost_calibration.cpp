@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
 
 namespace accelerator_codegen::aux_state::harness {
 
@@ -77,32 +78,38 @@ core::AuxCalibrationResult CalibrateSharedQueryCostModel(
   DuckdbRuntime runtime(connection, entry, 10.0);
 
   core::AuxCalibrationHooks hooks;
-  hooks.reset = [&] { runtime.ResetCalibrationState(); };
+  // Measure() calls reset before every sample. Keep it a no-op so aux_hit
+  // samples stay on a warm published image; destructive hooks reset themselves.
+  hooks.reset = [&] {};
   hooks.build_initial_state = [&] {
     runtime.ResetCalibrationState();
     runtime.Build();
   };
   hooks.execute_auxiliary = [&] {
-    runtime.ResetCalibrationState();
-    runtime.Build();
+    // Hit path only — build_initial_state already published state.
     runtime.Execute();
   };
   hooks.execute_fallback = [&] { runtime.ExecuteBaseQuery(); };
   hooks.apply_delta = [&](std::size_t row_count) {
+    core::SetForcedMaintenanceActionName("ApplyDelta");
     runtime.ResetCalibrationState();
     runtime.Build();
     runtime.ApplyMutationBatch(ScaleMutation(entry, probe, row_count));
+    core::SetForcedMaintenanceActionName("");
   };
   hooks.rebuild_partition = [&] {
+    core::SetForcedMaintenanceActionName("RebuildPartition");
     runtime.ResetCalibrationState();
     runtime.Build();
     runtime.ApplyMutationBatch(ScaleMutation(entry, probe, 1));
+    core::SetForcedMaintenanceActionName("");
   };
   hooks.rebuild_all = [&] {
+    core::SetForcedMaintenanceActionName("RebuildAll");
     runtime.ResetCalibrationState();
     runtime.Build();
-    runtime.InvalidateAll();
-    runtime.Build();
+    runtime.ApplyMutationBatch(ScaleMutation(entry, probe, 1));
+    core::SetForcedMaintenanceActionName("");
   };
   hooks.invalidate = [&] {
     runtime.ResetCalibrationState();

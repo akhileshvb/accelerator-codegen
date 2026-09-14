@@ -26,24 +26,54 @@ def _implementation_user_message(
     if not aux_module.is_file():
         return "Implement the accelerator, tests, and benchmark. Build and run correctness tests."
 
+    from accel_pipeline.config import engine_host_conventions, sanitize_engine_name
+
     test_target = paths["aux_test_target"]
     bench_target = paths["aux_bench_target"]
     calibrate_target = paths["aux_calibrate_target"]
     q = query
     build = pipeline_config.build_dir.name
+    engine = sanitize_engine_name(str(workload.get("engine_name") or ""))
+    host = dict(workload.get("engine_host") or engine_host_conventions(engine))
+    diff_bin = str(host.get("differential_binary") or "test_tpch_shared_differential")
+    diff_cmd = str(
+        host.get("differential_command")
+        or f'./{build}/{diff_bin} "$ACCEL_TPCH_DB" {q}'
+    )
+    if engine == "duckdb":
+        diff_step = f'3. ./{build}/{diff_bin} "$ACCEL_TPCH_DB" {q}\n'
+        trailing = (
+            "4. MCP run_multi_connection (or request_gate aux_multi_connection) until status=pass\n"
+            "Keep fixing and re-running steps 3–4 until both pass. "
+        )
+    else:
+        diff_src = str(host.get("differential_source") or f"tests/aux_state/{diff_bin}.cpp")
+        multi = str(host.get("multi_conn_ctest_regex") or f"test_{engine}_aux_multi_connection_stress")
+        diff_step = (
+            f"3. Bootstrap/extend {engine} query host if needed "
+            f"(see query_host_bootstrap.md), then ./{build}/{diff_bin} {q}\n"
+            f"   (create {diff_src} + CMake target if missing; {diff_cmd})\n"
+        )
+        trailing = (
+            f"4. MCP run_multi_connection until pass (ctest {multi}; "
+            f"replicate duckdb multi-conn/cross-accel/bench harnesses for {engine})\n"
+            "Keep fixing and re-running steps 3–4 until both pass. "
+        )
     return (
         "RESUME partial aux implementation: sources already exist on disk from a prior run. "
         "Do NOT rewrite module.hpp/module.cpp from scratch or explore AuxState.cmake unless fixing CMake registration.\n"
-        f"Registered CMake targets: {test_target}, {bench_target}, {calibrate_target}, test_tpch_shared_differential.\n"
-        "Correctness requires smoke + SF1 SQL differential (see unit_test_contract.md).\n"
-        "Register this query on every shared surface peer queries use (catalog / allowlists / DuckDB TF / helpers) — search a neighbor query to find sites.\n"
+        f"Host engine: {engine}. Registered CMake targets: {test_target}, {bench_target}, "
+        f"{calibrate_target}, {diff_bin}.\n"
+        "Correctness requires SF1 SQL differential on the engine-selected host "
+        "(see unit_test_contract.md / query_host_bootstrap.md / engine_host in gate context).\n"
+        f"Register this query on every shared surface peer queries use (catalog / allowlists / "
+        f"{engine} SQL entrypoint / helpers) — search a neighbor query to find sites.\n"
         "Use only these allowlisted run_command patterns:\n"
-        f"1. cmake --build {build} --target {test_target} {bench_target} test_tpch_shared_differential -j$(nproc)\n"
+        f"1. cmake --build {build} --target {test_target} {bench_target} {diff_bin} -j$(nproc)\n"
         f"2. ctest --test-dir {build} -R tpch_q{q}_aux --output-on-failure\n"
-        f"3. ./{build}/test_tpch_shared_differential \"$ACCEL_TPCH_DB\" {q}\n"
+        f"{diff_step}"
         "   (or MCP run_correctness / request_gate aux_correctness — preferred)\n"
-        "4. MCP run_multi_connection (or request_gate aux_multi_connection) until status=pass\n"
-        "Keep fixing and re-running steps 3–4 until both pass. "
+        f"{trailing}"
         "Fix compile/test failures with minimal apply_patch on generated aux + shared registration appends. "
         "Do not weaken unit fixtures to hide kernel bugs."
     )
