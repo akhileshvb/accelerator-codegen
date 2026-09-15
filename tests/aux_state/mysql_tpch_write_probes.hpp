@@ -61,6 +61,8 @@ inline WriteProbe ResolveWriteProbe(const Tools &tools, int query_num,
               "ORDER BY l_orderkey, l_linenumber " + lim),
         "100");
   case 2: {
+    // Touch s_acctbal on a top Q2 result row. Attribute-only supplier updates
+    // use ApplyDelta (nationkey unchanged); order-by change invalidates results.
     auto f = Fetch(
         "SELECT s.s_suppkey, s.s_acctbal "
         "FROM part p, supplier s, partsupp ps2, nation n, region r "
@@ -194,14 +196,21 @@ inline WriteProbe ResolveWriteProbe(const Tools &tools, int query_num,
               "ORDER BY l.l_orderkey, l.l_linenumber " + lim),
         "100");
   case 11: {
+    // Prefer the highest-contribution Romania partsupp so a cost bump crosses
+    // the HAVING threshold (critical at SF10 where fraction must be 0.0001/SF).
     auto f = Fetch(
-        "SELECT ps.ps_partkey, ps.ps_suppkey, ps.ps_supplycost "
+        "SELECT ps.ps_partkey, ps.ps_suppkey, ps.ps_supplycost, ps.ps_availqty "
         "FROM partsupp ps, supplier s, nation n "
         "WHERE ps.ps_suppkey = s.s_suppkey AND s.s_nationkey = n.n_nationkey "
-        "AND n.n_name = 'ROMANIA' ORDER BY ps.ps_partkey, ps.ps_suppkey " + lim);
-    Require(f.size() >= 3, "Q11 probe fields");
+        "AND n.n_name = 'ROMANIA' "
+        "ORDER BY (ps.ps_supplycost * ps.ps_availqty) DESC, "
+        "ps.ps_partkey, ps.ps_suppkey " +
+        lim);
+    Require(f.size() >= 4, "Q11 probe fields");
+    // Large multiplicative bump so value clearly exceeds total*fraction even
+    // when the catalog fraction is still the SF1 default.
     WriteProbe p;
-    p.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + 100 "
+    p.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost * 1000 "
                    "WHERE ps_partkey = " +
                    f[0] + " AND ps_suppkey = " + f[1];
     p.restore_sql = "UPDATE partsupp SET ps_supplycost = " + f[2] +
@@ -263,26 +272,26 @@ inline WriteProbe ResolveWriteProbe(const Tools &tools, int query_num,
               "ORDER BY l_orderkey, l_linenumber " + lim),
         "100");
   case 16: {
+    // Flip an eligible supplier into the Customer Complaints set via comment.
+    // Supplier eligibility is ApplyDelta; rewriting ps_suppkey forces RebuildAll.
     auto f = Fetch(
-        "SELECT ps.ps_partkey, ps.ps_suppkey, "
-        "(SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%' "
-        "ORDER BY s_suppkey LIMIT 1) "
-        "FROM partsupp ps, part p "
-        "WHERE p.p_partkey = ps.ps_partkey AND p.p_brand <> 'Brand#13' "
-        "AND p.p_type NOT LIKE 'SMALL BRUSHED%' "
-        "AND p.p_size IN (26, 24, 27, 29, 7, 20, 22, 33) "
-        "AND ps.ps_suppkey NOT IN ("
-        "SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%') "
-        "AND NOT EXISTS (SELECT 1 FROM partsupp ps2 WHERE ps2.ps_partkey = ps.ps_partkey "
-        "AND ps2.ps_suppkey = (SELECT s_suppkey FROM supplier "
-        "WHERE s_comment LIKE '%Customer%Complaints%' ORDER BY s_suppkey LIMIT 1)) "
-        "ORDER BY ps.ps_partkey, ps.ps_suppkey " + lim);
-    Require(f.size() >= 3, "Q16 probe fields");
+        "SELECT s.s_suppkey, s.s_comment FROM supplier s "
+        "WHERE s.s_comment NOT LIKE '%Customer%Complaints%' "
+        "AND EXISTS ("
+        "  SELECT 1 FROM partsupp ps, part p "
+        "  WHERE ps.ps_suppkey = s.s_suppkey AND p.p_partkey = ps.ps_partkey "
+        "  AND p.p_brand <> 'Brand#13' AND p.p_type NOT LIKE 'SMALL BRUSHED%' "
+        "  AND p.p_size IN (26, 24, 27, 29, 7, 20, 22, 33)"
+        ") "
+        "ORDER BY s.s_suppkey " +
+        lim);
+    Require(f.size() >= 2, "Q16 probe fields");
     WriteProbe p;
-    p.update_sql = "UPDATE partsupp SET ps_suppkey = " + f[2] +
-                   " WHERE ps_partkey = " + f[0] + " AND ps_suppkey = " + f[1];
-    p.restore_sql = "UPDATE partsupp SET ps_suppkey = " + f[1] +
-                    " WHERE ps_partkey = " + f[0] + " AND ps_suppkey = " + f[2];
+    p.update_sql = "UPDATE supplier SET s_comment = CONCAT(s_comment, "
+                   "' Customer Complaints') WHERE s_suppkey = " +
+                   f[0];
+    p.restore_sql = "UPDATE supplier SET s_comment = " + SqlLiteral(f[1]) +
+                    " WHERE s_suppkey = " + f[0];
     p.candidate = candidate_offset;
     return p;
   }

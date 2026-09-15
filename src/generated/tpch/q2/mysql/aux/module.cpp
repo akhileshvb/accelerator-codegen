@@ -67,6 +67,12 @@ bool StringValue(const core::AuxValue &value, std::string &out) {
   return true;
 }
 
+bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
+  if (index >= row.values.size())
+    return false;
+  return StringValue(row.values[index], out);
+}
+
 bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
   if (index >= row.values.size() || row.values[index].is_null)
     return false;
@@ -417,11 +423,16 @@ void TpchQ2TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
   partsupp_deltas.clear();
+  supplier_attr_deltas.clear();
 }
 bool TpchQ2TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
 const std::vector<TpchQ2PartsuppDelta> &
 TpchQ2TxnBuffer::PartsuppDeltas() const {
   return partsupp_deltas;
+}
+const std::vector<TpchQ2SupplierAttrDelta> &
+TpchQ2TxnBuffer::SupplierAttrDeltas() const {
+  return supplier_attr_deltas;
 }
 void TpchQ2TxnBuffer::MarkRebuild() {
   pending = true;
@@ -430,6 +441,10 @@ void TpchQ2TxnBuffer::MarkRebuild() {
 void TpchQ2TxnBuffer::AddPartsuppDelta(TpchQ2PartsuppDelta delta) {
   pending = true;
   partsupp_deltas.push_back(std::move(delta));
+}
+void TpchQ2TxnBuffer::AddSupplierAttrDelta(TpchQ2SupplierAttrDelta delta) {
+  pending = true;
+  supplier_attr_deltas.push_back(std::move(delta));
 }
 
 core::AcceleratorId TpchQ2Module::Id() const { return kId; }
@@ -460,14 +475,26 @@ void TpchQ2Module::Build(core::AuxEngineServices &services,
 
 core::InvalidationPlan
 TpchQ2Module::InterpretMutation(const core::MutationBatch &mutation) const {
-  // Partsupp changes can be applied incrementally without full invalidation.
-  // Supplier/part/nation/region changes require rebuild since they affect
-  // multi-table join semantics that cannot be incrementally patched.
+  // Partsupp cost changes and attribute-only supplier updates apply
+  // incrementally. Nationkey / part / nation / region changes need rebuild.
   if (mutation.table == config.partsupp_table) {
     return {};  // incremental — no invalidation needed
   }
-  if (mutation.table == config.supplier_table ||
-      mutation.table == config.part_table ||
+  if (mutation.table == config.supplier_table) {
+    bool nationkey_touched = false;
+    for (const auto col : mutation.updated_columns) {
+      if (col == 3) {
+        nationkey_touched = true;
+        break;
+      }
+    }
+    // Inserts/deletes always rebuild; updates without nationkey are incremental.
+    if (mutation.kind == core::MutationKind::Update && !nationkey_touched) {
+      return {};
+    }
+    return All();
+  }
+  if (mutation.table == config.part_table ||
       mutation.table == config.nation_table ||
       mutation.table == config.region_table) {
     return All();
@@ -509,8 +536,45 @@ void TpchQ2Module::AccumulateMutation(const core::MutationBatch &mutation,
     }
     return;
   }
-  if (mutation.table == config.supplier_table ||
-      mutation.table == config.part_table ||
+  if (mutation.table == config.supplier_table) {
+    if (mutation.kind != core::MutationKind::Update) {
+      buffer.MarkRebuild();
+      return;
+    }
+    for (std::size_t i = 0;
+         i < mutation.new_rows.size() && i < mutation.old_rows.size(); ++i) {
+      int64_t suppkey = 0;
+      int64_t old_nation = 0;
+      int64_t new_nation = 0;
+      if (!IntCell(mutation.new_rows[i], 0, suppkey) ||
+          !IntCell(mutation.old_rows[i], 3, old_nation) ||
+          !IntCell(mutation.new_rows[i], 3, new_nation)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (old_nation != new_nation) {
+        buffer.MarkRebuild();
+        return;
+      }
+      TpchQ2SupplierAttrDelta delta;
+      delta.suppkey = suppkey;
+      int64_t acctbal = 0;
+      int32_t scale = 0;
+      if (!StringCell(mutation.new_rows[i], 1, delta.info.name) ||
+          !StringCell(mutation.new_rows[i], 2, delta.info.address) ||
+          !StringCell(mutation.new_rows[i], 4, delta.info.phone) ||
+          !RawDecimalCell(mutation.new_rows[i], 5, acctbal, scale) ||
+          !StringCell(mutation.new_rows[i], 6, delta.info.comment)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      delta.info.nationkey = static_cast<int32_t>(new_nation);
+      delta.info.acctbal_raw = acctbal;
+      buffer.AddSupplierAttrDelta(std::move(delta));
+    }
+    return;
+  }
+  if (mutation.table == config.part_table ||
       mutation.table == config.nation_table ||
       mutation.table == config.region_table) {
     buffer.MarkRebuild();
@@ -527,12 +591,13 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
   if (!buffer.RequiresRebuild()) {
-    // Incremental maintenance: apply partsupp deltas to the regional minima.
+    const auto &supplier_attrs = buffer.SupplierAttrDeltas();
     const auto &deltas = buffer.PartsuppDeltas();
-    if (deltas.empty()) {
+    if (supplier_attrs.empty() && deltas.empty()) {
       buffer.Clear();
       return outcome;
     }
+
     const auto visibility = services.CurrentVisibility();
     const auto snapshot = services.StateStore().ReadPartitions(
         visibility, {core::TpchQ2Layout::kFull});
@@ -555,6 +620,60 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
       return outcome;
     }
 
+    // Attribute-only supplier updates: CoW the suppliers vector and publish.
+    if (!supplier_attrs.empty() && deltas.empty()) {
+      auto new_state = std::make_shared<TpchQ2State>();
+      new_state->region_names = old_state->region_names;
+      new_state->nation_names = old_state->nation_names;
+      new_state->nation_region = old_state->nation_region;
+      new_state->supplier_valid = old_state->supplier_valid;
+      new_state->parts = old_state->parts;
+      new_state->part_valid = old_state->part_valid;
+      new_state->parts_by_size = old_state->parts_by_size;
+      new_state->regional_minima_base = old_state->regional_minima_base;
+      new_state->regional_minima_overlay = old_state->regional_minima_overlay;
+      if (!new_state->regional_minima_base) {
+        new_state->regional_minima_base =
+            std::make_shared<const std::unordered_map<int64_t, TpchQ2RegionalMinCell>>(
+                old_state->regional_minima);
+      }
+      auto suppliers =
+          old_state->suppliers
+              ? std::make_shared<std::vector<TpchQ2SupplierInfo>>(*old_state->suppliers)
+              : std::make_shared<std::vector<TpchQ2SupplierInfo>>();
+      for (const auto &delta : supplier_attrs) {
+        if (delta.suppkey < 0 ||
+            static_cast<std::size_t>(delta.suppkey) >= suppliers->size()) {
+          buffer.MarkRebuild();
+          break;
+        }
+        (*suppliers)[static_cast<std::size_t>(delta.suppkey)] = delta.info;
+      }
+      if (!buffer.RequiresRebuild()) {
+        new_state->suppliers = std::move(suppliers);
+        const auto decision = services.ChooseMaintenance(
+            {static_cast<uint64_t>(supplier_attrs.size()), 1, true, false, true,
+             false, false, core::MaintenanceAction::NoOp,
+             services.ExpectedQueriesBeforeNextWrite()});
+        if (decision.action == core::MaintenanceAction::ApplyDelta) {
+          auto image = std::make_shared<TpchQ2StateImage>();
+          image->kind = TpchQ2ImageKind::Full;
+          image->state = std::move(new_state);
+          const std::shared_ptr<const TpchQ2StateImage> const_image =
+              std::move(image);
+          outcome.action = core::MaintenanceAction::ApplyDelta;
+          outcome.updates.push_back(core::StateImage::Make(
+              core::TpchQ2Layout::kAccelerator, core::TpchQ2Layout::kFull,
+              old_version, const_image));
+          buffer.Clear();
+          return outcome;
+        }
+      }
+      // Forced rebuild / failed attr apply: fall through.
+    }
+
+    // Incremental maintenance: apply partsupp deltas to the regional minima.
+    if (!deltas.empty() && !buffer.RequiresRebuild()) {
     // Copy-on-write state: share immutable dimension maps and the immutable
     // regional_minima_base.  Only regional_minima_overlay is mutated, so the
     // per-write clone is O(overlay), not O(all 590K minima cells).
@@ -682,6 +801,7 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
       // Forced / cost-model rebuild: fall through with empty updates so
       // PreCommit MaterializeSyncRebuild can run under an active snapshot.
     }
+    }  // !deltas.empty()
   }
 
   // Full rebuild path for supplier/part/nation/region mutations, unique-min

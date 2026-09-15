@@ -1,1 +1,76 @@
-=== Q1 write_pct=0 2026-09-14T14:09:49-04:00 ===
+=== Q2 write_pct=0 2026-09-15T09:35:17-04:00 ===
+mysql,tpch,2,0,base,8,0,100,926507.44,7412059.55,0.00,0.00,0.00,7412059.55,1.0000,7412059.55,1.0000
+mysql,tpch,2,0,shared,8,0,100,8748.56,69988.48,0.00,0.00,20912978.45,69988.48,105.9040,20982966.93,0.3532
+Q2 write_pct=0 elapsed=38s rc=0
+=== Q2 write_pct=10 2026-09-15T09:35:55-04:00 ===
+mysql,tpch,2,2,base,10,1,100,991117.61,10442158.08,69009.34,69009.34,0.00,10511167.41,1.0000,10511167.41,1.0000
+mysql,tpch,2,2,shared,10,1,100,39659.48,428511.88,24368.75,24368.75,41804.97,452880.63,23.2096,494685.60,21.2482
+Q2 write_pct=10 elapsed=18s rc=0
+=== Q11 write_pct=0 2026-09-15T09:36:13-04:00 ===
+mysql,tpch,11,0,base,8,0,8991,23617370.08,188938960.64,0.00,0.00,0.00,188938960.64,1.0000,188938960.64,1.0000
+mysql,tpch,11,0,shared,8,0,8991,7045.81,56366.50,0.00,0.00,18515867.13,56366.50,3351.9724,18572233.63,10.1732
+Q11 write_pct=0 elapsed=235s rc=0
+=== Q11 write_pct=10 2026-09-15T09:40:08-04:00 ===
+mysql,tpch,11,2,base,10,1,8284,23643270.16,236950036.37,27522.81,27522.81,0.00,236977559.18,1.0000,236977559.18,1.0000
+mysql,tpch,11,2,shared,10,1,8284,31884.89,324913.56,27018.43,27018.43,31455.80,351931.98,673.3618,383387.78,618.1145
+Q11 write_pct=10 elapsed=301s rc=0
+=== Q16 write_pct=0 2026-09-15T09:45:09-04:00 ===
+mysql,tpch,16,0,base,8,0,27840,2673031.02,21384248.12,0.00,0.00,0.00,21384248.12,1.0000,21384248.12,1.0000
+mysql,tpch,16,0,shared,8,0,27840,25167.20,201337.58,0.00,0.00,80251884.50,201337.58,106.2109,80453222.08,0.2658
+Q16 write_pct=0 elapsed=108s rc=0
+=== Q16 write_pct=10 2026-09-15T09:46:57-04:00 ===
+mysql,tpch,16,2,base,10,1,27840,2839615.35,28194891.12,2075539.69,2075539.69,0.00,30270430.81,1.0000,30270430.81,1.0000
+mysql,tpch,16,2,shared,10,1,27840,58945.27,2759060.39,28141.80,28141.80,49408.79,2787202.19,10.8605,2836610.98,10.6713
+Q16 write_pct=10 elapsed=50s rc=0
+=== summarizing /home/akhilvb/accelerator-codegen/benchmarks/aux_state/results/mysql_tpch_sf10_aux_sweep.csv ===
+wrote summary to /home/akhilvb/accelerator-codegen/benchmarks/aux_state/results/mysql_tpch_sf10_aux_sweep_summary.csv
+=== Shared aux performance summary ===
+Steady-state workload_speedup excludes shared build cost. workload_with_build_speedup adds shared build_us (DuckDB Build(); Postgres cold first accel read) to the shared timed workload.
+
+[mysql]
+  tpch (tpch_sf10)
+    Q1 read-only: read 21793x, workload 21793x, with_build 10.8x (build 92.89s)
+    Q2 read-only: read 106x, workload 106x, with_build 0.35x (build 20.91s)
+    Q3 read-only: read 2058x, workload 2058x, with_build 1.86x (build 106.37s)
+    Q4 read-only: read 1828x, workload 1828x, with_build 0.65x (build 65.54s)
+    Q5 read-only: read 4444x, workload 4444x, with_build 1.41x (build 85.40s)
+    Q6 read-only: read 4547x, workload 4547x, with_build 2371x (build 0.03s)
+    Q7 read-only: read 22237x, workload 22237x, with_build 5.78x (build 85.40s)
+    Q8 read-only: read 3747x, workload 3747x, with_build 2.53x (build 115.53s)
+    Q9 read-only: read 2.60x, workload 2.60x, with_build 2.07x (build 243.88s)
+    Q10 read-only: read 56.9x, workload 56.9x, with_build 1.49x (build 75.51s)
+    Q11 read-only: read 3352x, workload 3352x, with_build 10.2x (build 18.52s)
+    Q12 read-only: read 4399x, workload 4399x, with_build 2.61x (build 74.51s)
+    Q13 read-only: read 86.6x, workload 86.6x, with_build 23.9x (build 13.25s)
+    Q14 read-only: read 5584x, workload 5584x, with_build 2.21x (build 66.48s)
+    Q15 read-only: read 12186x, workload 12186x, with_build 2.84x (build 109.57s)
+    Q16 read-only: read 106x, workload 106x, with_build 0.27x (build 80.25s)
+    Q17 read-only: read 89590x, workload 89590x, with_build 24.0x (build 118.92s)
+    Q18 read-only: read 4800x, workload 4800x, with_build 3.15x (build 52.87s)
+    Q19 read-only: read 9653x, workload 9653x, with_build 3.51x (build 85.89s)
+    Q20 read-only: read 1116x, workload 1116x, with_build 5.83x (build 90.46s)
+    Q21 read-only: read 9841x, workload 9841x, with_build 7.54x (build 61.93s)
+    Q22 read-only: read 7651x, workload 7651x, with_build 18.5x (build 10.37s)
+    Q1 interval=2s: read 4172x, workload 3881x, with_build 3511x (build 0.03s)
+    Q2 interval=2s: read 25.0x, workload 23.2x, with_build 21.2x (build 0.04s)
+    Q3 interval=2s: read 506x, workload 208x, with_build 200x (build 0.05s)
+    Q4 interval=2s: read 218x, workload 32.7x, with_build 32.1x (build 0.03s)
+    Q5 interval=2s: read 567x, workload 130x, with_build 127x (build 0.03s)
+    Q6 interval=2s: read 626x, workload 139x, with_build 136x (build 0.03s)
+    Q7 interval=2s: read 1998x, workload 244x, with_build 242x (build 0.02s)
+    Q8 interval=2s: read 1252x, workload 3.12x, with_build 3.12x (build 0.03s)
+    Q9 interval=2s: read 2.59x, workload 2.56x, with_build 2.33x (build 120.51s)
+    Q10 interval=2s: read 44.0x, workload 30.0x, with_build 28.0x (build 0.35s)
+    Q11 interval=2s: read 742x, workload 673x, with_build 618x (build 0.03s)
+    Q12 interval=2s: read 792x, workload 113x, with_build 111x (build 0.03s)
+    Q13 interval=2s: read 81.8x, workload 59.1x, with_build 53.8x (build 0.92s)
+    Q14 interval=2s: read 693x, workload 84.3x, with_build 83.3x (build 0.03s)
+    Q15 interval=2s: read 1286x, workload 107x, with_build 106x (build 0.03s)
+    Q16 interval=2s: read 48.2x, workload 10.9x, with_build 10.7x (build 0.05s)
+    Q17 interval=2s: read 11977x, workload 17.2x, with_build 17.2x (build 0.03s)
+    Q18 interval=2s: read 824x, workload 4.09x, with_build 4.09x (build 0.02s)
+    Q19 interval=2s: read 1261x, workload 3.50x, with_build 3.50x (build 0.02s)
+    Q20 interval=2s: read 632x, workload 7.78x, with_build 7.77x (build 0.12s)
+    Q21 interval=2s: read 2027x, workload 9.60x, with_build 9.60x (build 0.03s)
+    Q22 interval=2s: read 912x, workload 74.9x, with_build 74.3x (build 0.03s)
+

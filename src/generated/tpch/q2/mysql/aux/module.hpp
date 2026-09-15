@@ -174,6 +174,13 @@ struct TpchQ2PartsuppDelta {
   int8_t sign = 0;
 };
 
+// Attribute-only supplier update (nationkey unchanged). Display fields
+// affect ORDER BY / projection without touching regional minima.
+struct TpchQ2SupplierAttrDelta {
+  int64_t suppkey = 0;
+  TpchQ2SupplierInfo info;
+};
+
 std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &);
 bool DecodeTpchQ2State(const std::vector<uint8_t> &, TpchQ2State &);
 
@@ -193,13 +200,16 @@ public:
 
   bool RequiresRebuild() const;
   const std::vector<TpchQ2PartsuppDelta> &PartsuppDeltas() const;
+  const std::vector<TpchQ2SupplierAttrDelta> &SupplierAttrDeltas() const;
   void MarkRebuild();
   void AddPartsuppDelta(TpchQ2PartsuppDelta delta);
+  void AddSupplierAttrDelta(TpchQ2SupplierAttrDelta delta);
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<TpchQ2PartsuppDelta> partsupp_deltas;
+  std::vector<TpchQ2SupplierAttrDelta> supplier_attr_deltas;
 };
 
 class TpchQ2Module final : public core::AuxQueryModule {

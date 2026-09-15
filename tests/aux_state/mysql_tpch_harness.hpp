@@ -245,22 +245,64 @@ inline void RequireOrderedMatch(const std::string &ref, const std::string &accel
   }
 }
 
+inline std::string TpchQ11FractionLiteral() {
+  // TPC-H Q11: FRACTION = 0.0001 / SF. Override with ACCEL_TPCH_Q11_FRACTION.
+  if (const char *env = std::getenv("ACCEL_TPCH_Q11_FRACTION"); env && *env)
+    return env;
+  if (const char *scale = std::getenv("ACCEL_MYSQL_SWEEP_SCALE"); scale && *scale) {
+    const std::string s(scale);
+    if (s == "sf10" || s == "10")
+      return "0.00001";
+    if (s == "sf20" || s == "20")
+      return "0.000005";
+    if (s == "sf1" || s == "1")
+      return "0.0001";
+  }
+  if (const char *sf = std::getenv("ACCEL_TPCH_SCALE_FACTOR"); sf && *sf) {
+    try {
+      const double scale = std::stod(sf);
+      if (scale > 0.0) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.8g", 0.0001 / scale);
+        return buf;
+      }
+    } catch (...) {
+    }
+  }
+  return "0.0001";
+}
+
+inline std::string RewriteQ11Fraction(std::string sql) {
+  const std::string frac = TpchQ11FractionLiteral();
+  const std::string from = "0.0001";
+  std::size_t pos = 0;
+  while ((pos = sql.find(from, pos)) != std::string::npos) {
+    sql.replace(pos, from.size(), frac);
+    pos += frac.size();
+  }
+  return sql;
+}
+
 inline std::string ConcreteBaseSql(int query_num,
                                    const MysqlSharedQueryCatalogEntry &entry) {
-  (void)query_num;
-  return entry.base_sql ? entry.base_sql : "";
+  std::string sql = entry.base_sql ? entry.base_sql : "";
+  if (query_num == 11)
+    sql = RewriteQ11Fraction(std::move(sql));
+  return sql;
 }
 
 inline std::string ConcreteAccelSql(int query_num,
                                     const MysqlSharedQueryCatalogEntry &entry,
                                     bool prefer_aux) {
-  (void)query_num;
   const char *tmpl =
       prefer_aux && entry.aux_sql && *entry.aux_sql ? entry.aux_sql
                                                     : entry.accelerator_sql;
   Require(tmpl && *tmpl,
           "catalog missing accelerator/aux SQL for Q" + std::to_string(query_num));
-  return tmpl;
+  std::string sql = tmpl;
+  if (query_num == 11)
+    sql = RewriteQ11Fraction(std::move(sql));
+  return sql;
 }
 
 inline bool PreferAux(int /*query_num*/) {
