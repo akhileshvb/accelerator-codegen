@@ -8,6 +8,9 @@ benchmarks/sec_edgar/duckdb/
 **/__pycache__/
 docs/
 
+# Local Dafny toolchain drop (see scripts/run_dafny_q1_induction.sh)
+tools/dafny/
+
 # CTest in-source spill (if cmake runs from repo root)
 Testing/
 

@@ -3,6 +3,10 @@
 
 #include "duckdb/common/types/hugeint.hpp"
 
+#if defined(ACCEL_VERIFICATION_CBMC)
+#include "accel_cbmc_bounds.hpp"
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -41,12 +45,21 @@ constexpr int32_t kTpchMinLineitemShipdateDays = DaysFromCivil(1992, 1, 2);
 void CollectQ1DayPartitions(int32_t cutoff_days,
                             std::vector<core::PartitionId> &partitions) {
   partitions.clear();
+#if defined(ACCEL_VERIFICATION_CBMC)
+  // Bounded verification: only days registered by the CBMC harness.
+  for (unsigned i = 0; i < accel_cbmc::q1_active_day_count; ++i) {
+    const int32_t day = accel_cbmc::q1_active_days[i];
+    if (day <= cutoff_days)
+      partitions.push_back(core::TpchQ1Layout::PartitionFromDays(day));
+  }
+#else
   if (cutoff_days < kTpchMinLineitemShipdateDays)
     return;
   partitions.reserve(static_cast<std::size_t>(cutoff_days -
                                               kTpchMinLineitemShipdateDays + 1));
   for (int32_t day = kTpchMinLineitemShipdateDays; day <= cutoff_days; ++day)
     partitions.push_back(core::TpchQ1Layout::PartitionFromDays(day));
+#endif
 }
 
 void WriteQ1Acc(ByteWriter &writer, ::accelerator_codegen::Q1AccT value) {

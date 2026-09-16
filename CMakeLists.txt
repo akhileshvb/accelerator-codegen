@@ -19,6 +19,7 @@ include(FindSiblingDuckDB)
 include(AuxState)
 include(BaseQuery)
 include(GeneratedSources)
+include(VerificationCBMC)
 
 # Optional Postgres engine adapter. Discovery rejects client-only pg_config.
 option(ACCELERATOR_CODEGEN_BUILD_POSTGRES
