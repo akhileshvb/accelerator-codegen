@@ -1,10 +1,16 @@
-// Structural twin of src/generated/tpch/q1/postgres/aux/module.cpp
+// Compiled structural twin of src/generated/tpch/q1/postgres/aux/module.cpp
+// (ordinary functions, not ghost specs). Lemmas remain ghost.
 //
-// SOURCE MAP (do not edit without updating C++ or conformance):
+// DayPart/DayStore keep a key-order seq as the compilable witness for C++
+// unordered_map iteration (`:|` / set pick is not compilable). Finalize sorts
+// by group_key, Encode sorts keys — same observable order as C++.
+//
+// SOURCE MAP (do not edit without updating C++ or the extract-diff grid):
 //   ScaleToRaw                 module.cpp:~143
 //   ApplyLineitemInput         module.cpp:~204
 //   EncodeTpchQ1Day            module.cpp:~222  (payload entries; header opaque)
 //   DecodeTpchQ1Day            module.cpp:~244
+//   DaysFromCivil              module.cpp:~32
 //   TpchQ1CutoffDays           module.cpp:~263
 //   TpchQ1TxnBuffer::*         module.cpp:~267
 //   InterpretMutation          module.cpp:~312
@@ -25,13 +31,13 @@ module Q1ModuleTwin {
 
   // ----- ScaleToRaw (module.cpp:~143) -----
 
-  ghost function Pow10Nat(n: nat): int
+  function Pow10Nat(n: nat): int
     ensures Pow10Nat(n) > 0
   {
     if n == 0 then 1 else 10 * Pow10Nat(n - 1)
   }
 
-  ghost function ScaleToRaw(raw: int, scale: int, target_scale: int): int
+  function ScaleToRaw(raw: int, scale: int, target_scale: int): int
     requires scale >= 0 && target_scale >= 0
   {
     if scale == target_scale then
@@ -53,12 +59,55 @@ module Q1ModuleTwin {
   {
   }
 
-  // ----- Day partition / store maps -----
+  // ----- Day partition / store (groups + insertion-order keys) -----
 
-  type DayPart = map<int, Stats>           // gkey -> stats
-  type DayStore = map<int, DayPart>        // shipdate_days -> partition
+  datatype DayPart = DayPart(groups: map<int, Stats>, keys: seq<int>)
+  datatype DayStore = DayStore(parts: map<int, DayPart>, order: seq<int>)
 
-  ghost function EmptyPart(): DayPart { map[] }
+  function EmptyPart(): DayPart {
+    DayPart(map[], [])
+  }
+
+  function EmptyStore(): DayStore {
+    DayStore(map[], [])
+  }
+
+  function GetGroup(part: DayPart, gkey: int): Stats {
+    if gkey in part.groups then part.groups[gkey] else EmptyStats()
+  }
+
+  function PutGroup(part: DayPart, gkey: int, stats: Stats): DayPart {
+    if gkey in part.groups then
+      DayPart(part.groups[gkey := stats], part.keys)
+    else
+      DayPart(part.groups[gkey := stats], part.keys + [gkey])
+  }
+
+  function FilterKey(keys: seq<int>, gkey: int): seq<int>
+    decreases |keys|
+  {
+    if |keys| == 0 then
+      []
+    else if keys[0] == gkey then
+      FilterKey(keys[1..], gkey)
+    else
+      [keys[0]] + FilterKey(keys[1..], gkey)
+  }
+
+  function EraseGroup(part: DayPart, gkey: int): DayPart {
+    DayPart(part.groups - {gkey}, FilterKey(part.keys, gkey))
+  }
+
+  function GetPart(state: DayStore, day: int): DayPart {
+    if day in state.parts then state.parts[day] else EmptyPart()
+  }
+
+  function PutPart(state: DayStore, day: int, part: DayPart): DayStore {
+    if day in state.parts then
+      DayStore(state.parts[day := part], state.order)
+    else
+      DayStore(state.parts[day := part], state.order + [day])
+  }
 
   // ----- ApplyLineitemInput (module.cpp:~204) -----
 
@@ -76,13 +125,13 @@ module Q1ModuleTwin {
     linestatus: int
   )
 
-  ghost function ApplyLineitemInput(input: LineitemInput, day: DayPart): DayPart
+  function ApplyLineitemInput(input: LineitemInput, day: DayPart): DayPart
     requires 0 <= input.returnflag < 256 && 0 <= input.linestatus < 256
     requires input.quantity_scale >= 0 && input.extended_price_scale >= 0
     requires input.discount_scale >= 0 && input.tax_scale >= 0
   {
     var group_key := PackQ1GroupKey(input.returnflag, input.linestatus);
-    var group := if group_key in day then day[group_key] else EmptyStats();
+    var group := GetGroup(day, group_key);
     var group2 := ApplyQ1RowContribution(
       group,
       ScaleToRaw(input.quantity_raw, input.quantity_scale, 2),
@@ -90,7 +139,7 @@ module Q1ModuleTwin {
       ScaleToRaw(input.discount_raw, input.discount_scale, 2),
       ScaleToRaw(input.tax_raw, input.tax_scale, 2),
       1);
-    day[group_key := group2]
+    PutGroup(day, group_key, group2)
   }
 
   // ----- Typed delta (AccumulateMutation → StageMaintenance) -----
@@ -106,19 +155,19 @@ module Q1ModuleTwin {
   )
 
   // Apply one delta to DayStore with erase-on-zero (module.cpp:~444–450).
-  ghost function ApplyDeltaToStore(state: DayStore, d: LineitemDelta): DayStore {
+  function ApplyDeltaToStore(state: DayStore, d: LineitemDelta): DayStore {
     var day := d.shipdate_days;
-    var part := if day in state then state[day] else EmptyPart();
-    var group := if d.group_key in part then part[d.group_key] else EmptyStats();
+    var part := GetPart(state, day);
+    var group := GetGroup(part, d.group_key);
     var group2 := ApplyQ1RowContribution(
       group, d.quantity_raw, d.extended_price_raw, d.discount_raw, d.tax_raw, d.sign);
     if group2.count == 0 then
-      state[day := part - {d.group_key}]
+      PutPart(state, day, EraseGroup(part, d.group_key))
     else
-      state[day := part[d.group_key := group2]]
+      PutPart(state, day, PutGroup(part, d.group_key, group2))
   }
 
-  ghost function ApplyDeltaSeq(state: DayStore, ds: seq<LineitemDelta>): DayStore
+  function ApplyDeltaSeq(state: DayStore, ds: seq<LineitemDelta>): DayStore
     decreases |ds|
   {
     if |ds| == 0 then state
@@ -149,34 +198,60 @@ module Q1ModuleTwin {
 
   lemma ApplyDeltaToStoreInsertKeepsNonZero(state: DayStore, d: LineitemDelta)
     requires d.sign == 1
-    requires var day := d.shipdate_days;
-             var part := if day in state then state[day] else EmptyPart();
-             var g := if d.group_key in part then part[d.group_key] else EmptyStats();
+    requires var part := GetPart(state, d.shipdate_days);
+             var g := GetGroup(part, d.group_key);
              g.count + 1 != 0
     ensures var state1 := ApplyDeltaToStore(state, d);
-            d.shipdate_days in state1 &&
-            d.group_key in state1[d.shipdate_days] &&
-            state1[d.shipdate_days][d.group_key].count != 0
+            d.shipdate_days in state1.parts &&
+            d.group_key in state1.parts[d.shipdate_days].groups &&
+            state1.parts[d.shipdate_days].groups[d.group_key].count != 0
   {
     var day := d.shipdate_days;
-    var part := if day in state then state[day] else EmptyPart();
-    var g := if d.group_key in part then part[d.group_key] else EmptyStats();
+    var part := GetPart(state, day);
+    var g := GetGroup(part, d.group_key);
     var g1 := ApplyQ1RowContribution(g, d.quantity_raw, d.extended_price_raw,
                                      d.discount_raw, d.tax_raw, 1);
     assert g1.count == g.count + 1;
     assert g1.count != 0;
   }
 
-  // ----- TpchQ1CutoffDays (module.cpp:~263) -----
-  // kQ1BaseDays = DaysFromCivil(1998,12,1). Twin keeps base symbolic.
+  // ----- DaysFromCivil / TpchQ1CutoffDays (module.cpp:~32 / ~263) -----
+  // C++ kQ1BaseDays = DaysFromCivil(1998,12,1). Two-arg form keeps base symbolic
+  // for lemmas; FromOffset is the exact generated kernel.
 
-  ghost function TpchQ1CutoffDays(base_days: int, day_offset: int): int {
+  function DaysFromCivil(year: int, month: int, day: int): int
+    requires year >= 1
+    requires 1 <= month <= 12
+    requires 1 <= day <= 31
+  {
+    var y := year - (if month <= 2 then 1 else 0);
+    var era := if y >= 0 then y / 400 else (y - 399) / 400;
+    var yoe := y - era * 400;
+    var doy := (153 * (month + (if month > 2 then -3 else 9)) + 2) / 5 + day - 1;
+    var doe := yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+  }
+
+  const kQ1BaseDays: int := DaysFromCivil(1998, 12, 1)
+  const kTpchMinLineitemShipdateDays: int := DaysFromCivil(1992, 1, 2)
+
+  function TpchQ1CutoffDays(base_days: int, day_offset: int): int {
     base_days - day_offset
+  }
+
+  function TpchQ1CutoffDaysFromOffset(day_offset: int): int {
+    kQ1BaseDays - day_offset
   }
 
   lemma CutoffMonotone(base: int, o1: int, o2: int)
     requires o1 <= o2
     ensures TpchQ1CutoffDays(base, o2) <= TpchQ1CutoffDays(base, o1)
+  {
+  }
+
+  lemma CutoffFromOffsetMatchesBase(day_offset: int)
+    ensures TpchQ1CutoffDaysFromOffset(day_offset)
+         == TpchQ1CutoffDays(kQ1BaseDays, day_offset)
   {
   }
 
@@ -188,19 +263,19 @@ module Q1ModuleTwin {
     deltas: seq<LineitemDelta>
   )
 
-  ghost function EmptyTxnBuffer(): TxnBuffer {
+  function EmptyTxnBuffer(): TxnBuffer {
     TxnBuffer(false, false, [])
   }
 
-  ghost function TxnClear(buf: TxnBuffer): TxnBuffer {
+  function TxnClear(buf: TxnBuffer): TxnBuffer {
     EmptyTxnBuffer()
   }
 
-  ghost function TxnMarkRebuild(b: TxnBuffer): TxnBuffer {
+  function TxnMarkRebuild(b: TxnBuffer): TxnBuffer {
     TxnBuffer(true, true, [])
   }
 
-  ghost function TxnAddDelta(b: TxnBuffer, d: LineitemDelta): TxnBuffer {
+  function TxnAddDelta(b: TxnBuffer, d: LineitemDelta): TxnBuffer {
     TxnBuffer(true, b.requires_rebuild, b.deltas + [d])
   }
 
@@ -214,7 +289,7 @@ module Q1ModuleTwin {
 
   datatype InvalidationScope = ScopeNone | ScopePartitionSet | ScopeAll
 
-  ghost function InterpretMutation(lineitem_table: int, mutation_table: int): InvalidationScope {
+  function InterpretMutation(lineitem_table: int, mutation_table: int): InvalidationScope {
     if mutation_table == lineitem_table then ScopePartitionSet else ScopeNone
   }
 
@@ -231,7 +306,7 @@ module Q1ModuleTwin {
   datatype ParsedRow = ParsedRow(ok: bool, delta: LineitemDelta)
 
   // Oracle: ReadLineitem success/failure + produced delta.
-  ghost function AccumulateMutation(
+  function AccumulateMutation(
     lineitem_table: int,
     mutation_table: int,
     kind: MutationKind,
@@ -255,7 +330,7 @@ module Q1ModuleTwin {
             AccumulateUpdates(old_parsed, new_parsed, buf)
   }
 
-  ghost function AccumulateInserts(rows: seq<ParsedRow>, buf: TxnBuffer): TxnBuffer
+  function AccumulateInserts(rows: seq<ParsedRow>, buf: TxnBuffer): TxnBuffer
     decreases |rows|
   {
     if |rows| == 0 then
@@ -266,7 +341,7 @@ module Q1ModuleTwin {
       AccumulateInserts(rows[1..], TxnAddDelta(buf, rows[0].delta))
   }
 
-  ghost function AccumulateDeletes(rows: seq<ParsedRow>, buf: TxnBuffer): TxnBuffer
+  function AccumulateDeletes(rows: seq<ParsedRow>, buf: TxnBuffer): TxnBuffer
     decreases |rows|
   {
     if |rows| == 0 then
@@ -277,7 +352,7 @@ module Q1ModuleTwin {
       AccumulateDeletes(rows[1..], TxnAddDelta(buf, rows[0].delta))
   }
 
-  ghost function AccumulateUpdates(old_rows: seq<ParsedRow>, new_rows: seq<ParsedRow>, buf: TxnBuffer): TxnBuffer
+  function AccumulateUpdates(old_rows: seq<ParsedRow>, new_rows: seq<ParsedRow>, buf: TxnBuffer): TxnBuffer
     requires |old_rows| == |new_rows|
     decreases |old_rows|
   {
@@ -310,7 +385,7 @@ module Q1ModuleTwin {
   )
 
   // Structural case split matching StageMaintenance.
-  ghost function StageMaintenance(
+  function StageMaintenance(
     buf: TxnBuffer,
     decision: MaintenanceAction,
     // oracle: current store snapshot for touched days
@@ -335,8 +410,18 @@ module Q1ModuleTwin {
         StageOutcome(ApplyDelta, ApplyDeltaSeq(snapshot, buf.deltas), touched)
   }
 
-  ghost function TouchedDays(ds: seq<LineitemDelta>): set<int> {
-    set i | 0 <= i < |ds| :: ds[i].shipdate_days
+  function TouchedDays(ds: seq<LineitemDelta>): set<int> {
+    TouchedDaysFrom(ds, 0)
+  }
+
+  function TouchedDaysFrom(ds: seq<LineitemDelta>, i: nat): set<int>
+    requires i <= |ds|
+    decreases |ds| - i
+  {
+    if i == |ds| then
+      {}
+    else
+      {ds[i].shipdate_days} + TouchedDaysFrom(ds, i + 1)
   }
 
   lemma StageMaintenanceApplyDelta(buf: TxnBuffer, snapshot: DayStore, rebuilt: DayStore)
@@ -419,15 +504,15 @@ module Q1ModuleTwin {
     sum_charge_raw: int
   )
 
-  ghost function ConsumeAggregate(state: DayStore, agg: DayGroupAggregate, days_filter: set<int>): DayStore
+  function ConsumeAggregate(state: DayStore, agg: DayGroupAggregate, days_filter: set<int>): DayStore
     requires 0 <= agg.returnflag < 256 && 0 <= agg.linestatus < 256
   {
     if days_filter != {} && agg.shipdate_days !in days_filter then
       state
     else
       var group_key := PackQ1GroupKey(agg.returnflag, agg.linestatus);
-      var part := if agg.shipdate_days in state then state[agg.shipdate_days] else EmptyPart();
-      var group := if group_key in part then part[group_key] else EmptyStats();
+      var part := GetPart(state, agg.shipdate_days);
+      var group := GetGroup(part, group_key);
       var group2 := Stats(
         group.count + agg.count,
         group.sum_qty + agg.sum_qty_raw,
@@ -435,10 +520,10 @@ module Q1ModuleTwin {
         group.sum_disc_price + agg.sum_disc_price_raw,
         group.sum_charge + agg.sum_charge_raw,
         group.sum_discount + agg.sum_discount_raw);
-      state[agg.shipdate_days := part[group_key := group2]]
+      PutPart(state, agg.shipdate_days, PutGroup(part, group_key, group2))
   }
 
-  ghost function ConsumeAggregates(state: DayStore, aggs: seq<DayGroupAggregate>, days_filter: set<int>): DayStore
+  function ConsumeAggregates(state: DayStore, aggs: seq<DayGroupAggregate>, days_filter: set<int>): DayStore
     requires forall i :: 0 <= i < |aggs| ==>
               0 <= aggs[i].returnflag < 256 && 0 <= aggs[i].linestatus < 256
     decreases |aggs|
@@ -447,7 +532,7 @@ module Q1ModuleTwin {
     else ConsumeAggregates(ConsumeAggregate(state, aggs[0], days_filter), aggs[1..], days_filter)
   }
 
-  ghost function ConsumeLineitems(state: DayStore, inputs: seq<LineitemInput>, days_filter: set<int>): DayStore
+  function ConsumeLineitems(state: DayStore, inputs: seq<LineitemInput>, days_filter: set<int>): DayStore
     requires forall i :: 0 <= i < |inputs| ==>
               0 <= inputs[i].returnflag < 256 && 0 <= inputs[i].linestatus < 256 &&
               inputs[i].quantity_scale >= 0 && inputs[i].extended_price_scale >= 0 &&
@@ -460,12 +545,12 @@ module Q1ModuleTwin {
       ConsumeLineitems(state, inputs[1..], days_filter)
     else
       var day := inputs[0].shipdate_days;
-      var part := if day in state then state[day] else EmptyPart();
-      ConsumeLineitems(state[day := ApplyLineitemInput(inputs[0], part)], inputs[1..], days_filter)
+      var part := GetPart(state, day);
+      ConsumeLineitems(PutPart(state, day, ApplyLineitemInput(inputs[0], part)), inputs[1..], days_filter)
   }
 
   // Structural BuildStateForDays: try aggregates-for-days, else aggregates-all, else lineitems.
-  ghost function BuildStateForDays(
+  function BuildStateForDays(
     days_filter: set<int>,
     aggs_for_days: seq<DayGroupAggregate>,
     used_aggs_for_days: bool,
@@ -483,11 +568,11 @@ module Q1ModuleTwin {
               lineitems[i].discount_scale >= 0 && lineitems[i].tax_scale >= 0
   {
     if days_filter != {} && used_aggs_for_days then
-      ConsumeAggregates(map[], aggs_for_days, days_filter)
+      ConsumeAggregates(EmptyStore(), aggs_for_days, days_filter)
     else if used_aggs_all then
-      ConsumeAggregates(map[], aggs_all, days_filter)
+      ConsumeAggregates(EmptyStore(), aggs_all, days_filter)
     else
-      ConsumeLineitems(map[], lineitems, days_filter)
+      ConsumeLineitems(EmptyStore(), lineitems, days_filter)
   }
 
   lemma BuildStateLineitemFold(inputs: seq<LineitemInput>)
@@ -496,54 +581,66 @@ module Q1ModuleTwin {
               inputs[i].quantity_scale >= 0 && inputs[i].extended_price_scale >= 0 &&
               inputs[i].discount_scale >= 0 && inputs[i].tax_scale >= 0
     ensures BuildStateForDays({}, [], false, [], false, inputs)
-         == ConsumeLineitems(map[], inputs, {})
+         == ConsumeLineitems(EmptyStore(), inputs, {})
   {
   }
 
   // ----- ComposeOutput (module.cpp:~553) -----
 
-  ghost function MergeDayInto(merged: map<int, Stats>, part: DayPart): map<int, Stats>
-    decreases |part.Keys|
-  {
-    if part.Keys == {} then
-      merged
-    else
-      var k :| k in part.Keys;
-      var s := part[k];
-      var m0 := if k in merged then merged[k] else EmptyStats();
-      MergeDayInto(merged[k := MergeQ1DayGroupStats(m0, s)], part - {k})
+  function MergeDayInto(merged: DayPart, part: DayPart): DayPart {
+    MergeDayIntoFrom(merged, part, 0)
   }
 
-  ghost function ComposeMergeDays(days: DayStore, cutoff: int, remaining: set<int>,
-                                  merged: map<int, Stats>): map<int, Stats>
-    decreases |remaining|
+  function MergeDayIntoFrom(merged: DayPart, part: DayPart, i: nat): DayPart
+    requires i <= |part.keys|
+    decreases |part.keys| - i
   {
-    if remaining == {} then
+    if i == |part.keys| then
+      merged
+    else if part.keys[i] !in part.groups then
+      MergeDayIntoFrom(merged, part, i + 1)
+    else
+      var k := part.keys[i];
+      var s := part.groups[k];
+      var m0 := GetGroup(merged, k);
+      MergeDayIntoFrom(PutGroup(merged, k, MergeQ1DayGroupStats(m0, s)), part, i + 1)
+  }
+
+  function ComposeMergeDays(days: DayStore, cutoff: int, i: nat, merged: DayPart): DayPart
+    requires i <= |days.order|
+    decreases |days.order| - i
+  {
+    if i == |days.order| then
       merged
     else
-      var day :| day in remaining;
+      var day := days.order[i];
       if day > cutoff then
-        ComposeMergeDays(days, cutoff, remaining - {day}, merged)
+        ComposeMergeDays(days, cutoff, i + 1, merged)
       else
-        var part := if day in days then days[day] else EmptyPart();
-        ComposeMergeDays(days, cutoff, remaining - {day}, MergeDayInto(merged, part))
+        ComposeMergeDays(days, cutoff, i + 1, MergeDayInto(merged, GetPart(days, day)))
   }
 
-  ghost function ComposeOutput(days: DayStore, cutoff: int): seq<OutRow> {
-    var merged := ComposeMergeDays(days, cutoff, days.Keys, map[]);
-    // Convert map to entry seq for Finalize (order of Keys nondeterministic;
-    // FinalizeFromEntries sorts — matches C++ unordered_map iterate + sort).
+  function ComposeOutput(days: DayStore, cutoff: int): seq<OutRow> {
+    var merged := ComposeMergeDays(days, cutoff, 0, EmptyPart());
+    // Convert groups to entry seq for Finalize (order of keys is insertion
+    // order; FinalizeFromEntries sorts — matches C++ unordered_map iterate + sort).
     FinalizeFromEntries(MapToEntries(merged))
   }
 
-  ghost function MapToEntries(m: map<int, Stats>): seq<(int, Stats)>
-    decreases |m.Keys|
+  function MapToEntries(m: DayPart): seq<(int, Stats)> {
+    MapToEntriesFrom(m, 0)
+  }
+
+  function MapToEntriesFrom(m: DayPart, i: nat): seq<(int, Stats)>
+    requires i <= |m.keys|
+    decreases |m.keys| - i
   {
-    if m.Keys == {} then
+    if i == |m.keys| then
       []
+    else if m.keys[i] !in m.groups then
+      MapToEntriesFrom(m, i + 1)
     else
-      var k :| k in m.Keys;
-      [(k, m[k])] + MapToEntries(m - {k})
+      [(m.keys[i], m.groups[m.keys[i]])] + MapToEntriesFrom(m, i + 1)
   }
 
   // ----- LoadPartitions (module.cpp:~568) -----
@@ -551,13 +648,13 @@ module Q1ModuleTwin {
 
   datatype PartImage = PartImage(ok: bool, shipdate_days: int, part: DayPart)
 
-  ghost function LoadPartitionsTwin(cutoff: int, images: seq<PartImage>): (bool, DayStore)
+  function LoadPartitionsTwin(cutoff: int, images: seq<PartImage>): (bool, DayStore)
     decreases |images|
   {
-    LoadPartitionsTwinRec(cutoff, images, map[])
+    LoadPartitionsTwinRec(cutoff, images, EmptyStore())
   }
 
-  ghost function LoadPartitionsTwinRec(cutoff: int, images: seq<PartImage>, days: DayStore): (bool, DayStore)
+  function LoadPartitionsTwinRec(cutoff: int, images: seq<PartImage>, days: DayStore): (bool, DayStore)
     decreases |images|
   {
     if |images| == 0 then
@@ -569,14 +666,14 @@ module Q1ModuleTwin {
       else if !img.ok then
         (false, days)
       else
-        LoadPartitionsTwinRec(cutoff, images[1..], days[img.shipdate_days := img.part])
+        LoadPartitionsTwinRec(cutoff, images[1..], PutPart(days, img.shipdate_days, img.part))
   }
 
   // ----- Execute / ExecuteFallback (module.cpp:~472 / ~498) -----
 
   datatype QueryArgs = QueryArgs(has_offset: bool, day_offset: int)
 
-  ghost function Execute(
+  function Execute(
     args: QueryArgs,
     base_days: int,
     valid: bool,
@@ -597,7 +694,7 @@ module Q1ModuleTwin {
         ComposeOutput(store_days, cutoff)
   }
 
-  ghost function ExecuteFallback(args: QueryArgs, base_days: int, built: DayStore): seq<OutRow> {
+  function ExecuteFallback(args: QueryArgs, base_days: int, built: DayStore): seq<OutRow> {
     if !args.has_offset then
       []
     else
@@ -648,7 +745,7 @@ module Q1ModuleTwin {
     count_order: int
   )
 
-  ghost function EmitOne(row: OutRow): EmittedRow
+  function EmitOne(row: OutRow): EmittedRow
     requires 0 <= row.group_key < 65536
   {
     EmittedRow(
@@ -665,7 +762,7 @@ module Q1ModuleTwin {
     )
   }
 
-  ghost function EmitResult(rows: seq<OutRow>): seq<EmittedRow>
+  function EmitResult(rows: seq<OutRow>): seq<EmittedRow>
     requires forall i :: 0 <= i < |rows| ==> 0 <= rows[i].group_key < 65536
     decreases |rows|
   {
@@ -687,24 +784,25 @@ module Q1ModuleTwin {
 
   datatype PartEntry = PartEntry(gkey: int, stats: Stats)
 
-  ghost function EncodeEntries(part: DayPart): seq<PartEntry>
-    decreases |part.Keys|
-  {
-    EncodeEntriesFromKeys(part, part.Keys)
+  function EncodeEntries(part: DayPart): seq<PartEntry> {
+    EncodeEntriesFrom(part, 0)
   }
 
-  ghost function EncodeEntriesFromKeys(part: DayPart, keys: set<int>): seq<PartEntry>
-    requires keys <= part.Keys
-    decreases |keys|
+  function EncodeEntriesFrom(part: DayPart, i: nat): seq<PartEntry>
+    requires i <= |part.keys|
+    decreases |part.keys| - i
   {
-    if keys == {} then
+    if i == |part.keys| then
       []
+    else if part.keys[i] !in part.groups then
+      EncodeEntriesFrom(part, i + 1)
     else
-      var k :| k in keys;
-      InsertEntrySorted(EncodeEntriesFromKeys(part, keys - {k}), PartEntry(k, part[k]))
+      InsertEntrySorted(
+        EncodeEntriesFrom(part, i + 1),
+        PartEntry(part.keys[i], part.groups[part.keys[i]]))
   }
 
-  ghost function InsertEntrySorted(es: seq<PartEntry>, e: PartEntry): seq<PartEntry>
+  function InsertEntrySorted(es: seq<PartEntry>, e: PartEntry): seq<PartEntry>
     decreases |es|
   {
     if |es| == 0 then
@@ -715,17 +813,17 @@ module Q1ModuleTwin {
       [es[0]] + InsertEntrySorted(es[1..], e)
   }
 
-  ghost function DecodeEntries(es: seq<PartEntry>): DayPart
+  function DecodeEntries(es: seq<PartEntry>): DayPart
     decreases |es|
   {
     if |es| == 0 then
-      map[]
+      EmptyPart()
     else
-      DecodeEntries(es[1..])[es[0].gkey := es[0].stats]
+      PutGroup(DecodeEntries(es[1..]), es[0].gkey, es[0].stats)
   }
 
   lemma DecodeEncodeSingleton(gkey: int, stats: Stats)
-    ensures DecodeEntries([PartEntry(gkey, stats)]) == map[gkey := stats]
+    ensures DecodeEntries([PartEntry(gkey, stats)]) == DayPart(map[gkey := stats], [gkey])
   {
   }
 }

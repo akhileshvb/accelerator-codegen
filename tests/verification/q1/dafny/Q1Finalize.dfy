@@ -1,6 +1,7 @@
-// Structural twin of src/generated/tpch/q1/postgres/aux/finalize.cpp
+// Compiled structural twin of src/generated/tpch/q1/postgres/aux/finalize.cpp
+// (ordinary functions, not ghost specs). Lemmas remain ghost.
 //
-// SOURCE MAP (do not edit without updating C++ or conformance):
+// SOURCE MAP (do not edit without updating C++ or the extract-diff grid):
 //   PackQ1GroupKey          finalize.cpp:~51
 //   UnpackQ1Returnflag      finalize.cpp:~56
 //   UnpackQ1Linestatus      finalize.cpp:~60
@@ -10,7 +11,8 @@
 //   FinalizeQ1MergedGroups  finalize.cpp:~86
 //
 // Induction uses Dafny `real` for avg_* (same divide-by-10 loop as C++).
-// IEEE double / Hugeint::Cast is bound by conformance bit-pattern checks.
+// Extract-diff binds this twin to generated C++ on grid D (integer columns
+// exact; avgs as rational vs IEEE double — not bit-identity).
 
 module Q1Finalize {
 
@@ -23,25 +25,25 @@ module Q1Finalize {
     sum_discount: int
   )
 
-  ghost function EmptyStats(): Stats {
+  function EmptyStats(): Stats {
     Stats(0, 0, 0, 0, 0, 0)
   }
 
   // ----- PackQ1GroupKey / Unpack* (finalize.cpp) -----
 
-  ghost function PackQ1GroupKey(returnflag: int, linestatus: int): int
+  function PackQ1GroupKey(returnflag: int, linestatus: int): int
     requires 0 <= returnflag < 256 && 0 <= linestatus < 256
   {
     returnflag * 256 + linestatus
   }
 
-  ghost function UnpackQ1Returnflag(key: int): int
+  function UnpackQ1Returnflag(key: int): int
     requires 0 <= key < 65536
   {
     key / 256
   }
 
-  ghost function UnpackQ1Linestatus(key: int): int
+  function UnpackQ1Linestatus(key: int): int
     requires 0 <= key < 65536
   {
     key % 256
@@ -57,7 +59,7 @@ module Q1Finalize {
   // ----- ApplyQ1RowContribution (finalize.cpp) -----
   // Structural: same field updates and disc_price / charge formula.
 
-  ghost function ApplyQ1RowContribution(
+  function ApplyQ1RowContribution(
     s: Stats,
     quantity_raw: int,
     extendedprice_raw: int,
@@ -101,7 +103,7 @@ module Q1Finalize {
 
   // ----- MergeQ1DayGroupStats (finalize.cpp) -----
 
-  ghost function MergeQ1DayGroupStats(merged: Stats, day_stats: Stats): Stats {
+  function MergeQ1DayGroupStats(merged: Stats, day_stats: Stats): Stats {
     Stats(
       merged.count + day_stats.count,
       merged.sum_qty + day_stats.sum_qty,
@@ -126,14 +128,14 @@ module Q1Finalize {
   // ----- HugeintScaleToDouble (finalize.cpp:~35) -----
   // Structural while-scale loop as recursive ScaleDiv; then / count.
 
-  ghost function Pow10(n: nat): int
+  function Pow10(n: nat): int
     ensures Pow10(n) > 0
   {
     if n == 0 then 1 else 10 * Pow10(n - 1)
   }
 
   // Loop body: while scale > 0 { scaled /= 10; scale--; }
-  ghost function ScaleDiv(numeric: real, scale: nat): real
+  function ScaleDiv(numeric: real, scale: nat): real
     decreases scale
   {
     if scale == 0 then
@@ -142,7 +144,7 @@ module Q1Finalize {
       ScaleDiv(numeric / 10.0, scale - 1)
   }
 
-  ghost function HugeintScaleToDouble(value: int, scale: nat, count: nat): real {
+  function HugeintScaleToDouble(value: int, scale: nat, count: nat): real {
     if count == 0 then
       0.0
     else
@@ -190,7 +192,7 @@ module Q1Finalize {
   const kDecimalScale2: nat := 2
 
   // One map entry → optional row (skip if count <= 0), matching the for-loop body.
-  ghost function FinalizeOneEntry(gkey: int, stats: Stats): seq<OutRow> {
+  function FinalizeOneEntry(gkey: int, stats: Stats): seq<OutRow> {
     if stats.count <= 0 then
       []
     else
@@ -231,7 +233,7 @@ module Q1Finalize {
   // SortByKey is the structural twin of std::sort by group_key; sortedness of
   // the comparator is checked by conformance (order of rows), not re-proved here.
 
-  ghost function CollectFinalize(entries: seq<(int, Stats)>): seq<OutRow>
+  function CollectFinalize(entries: seq<(int, Stats)>): seq<OutRow>
     decreases |entries|
   {
     if |entries| == 0 then
@@ -240,7 +242,7 @@ module Q1Finalize {
       FinalizeOneEntry(entries[0].0, entries[0].1) + CollectFinalize(entries[1..])
   }
 
-  ghost function InsertSorted(rows: seq<OutRow>, row: OutRow): seq<OutRow>
+  function InsertSorted(rows: seq<OutRow>, row: OutRow): seq<OutRow>
     decreases |rows|
   {
     if |rows| == 0 then
@@ -251,7 +253,7 @@ module Q1Finalize {
       [rows[0]] + InsertSorted(rows[1..], row)
   }
 
-  ghost function SortByKey(rows: seq<OutRow>): seq<OutRow>
+  function SortByKey(rows: seq<OutRow>): seq<OutRow>
     decreases |rows|
   {
     if |rows| == 0 then
@@ -260,7 +262,7 @@ module Q1Finalize {
       InsertSorted(SortByKey(rows[1..]), rows[0])
   }
 
-  ghost function FinalizeFromEntries(entries: seq<(int, Stats)>): seq<OutRow> {
+  function FinalizeFromEntries(entries: seq<(int, Stats)>): seq<OutRow> {
     SortByKey(CollectFinalize(entries))
   }
 

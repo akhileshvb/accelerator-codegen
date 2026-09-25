@@ -6,12 +6,14 @@
 //         module.cpp StageMaintenance install of updates / invalidations
 
 include "Q1Maintenance.dfy"
+include "Q1ModuleTwin.dfy"
 include "../../substrate/dafny/Store.dfy"
 include "../../substrate/dafny/MaintenancePolicy.dfy"
 
 module Q1MaintenanceEdges {
   import opened Q1Aux
   import opened Q1Maintenance
+  import Twin = Q1ModuleTwin
   import SubstrateStore
   import SubstrateMaintenance
 
@@ -141,49 +143,181 @@ module Q1MaintenanceEdges {
     }
   }
 
-  ghost function MapPolicyToMaint(a: SubstrateMaintenance.MaintenanceAction): MaintAction
+  // Unpack packed group_key from StageMaintenance LineitemDelta into Q1Aux.Row.
+  ghost function DeltaToRow(d: Twin.LineitemDelta): Row
+    requires 0 <= d.group_key < 65536
+  {
+    Row(d.shipdate_days, d.quantity_raw, d.extended_price_raw,
+        d.discount_raw, d.tax_raw,
+        d.group_key / 256, d.group_key % 256)
+  }
+
+  ghost function DeltasToRows(ds: seq<Twin.LineitemDelta>): seq<Row>
+    requires forall i :: 0 <= i < |ds| ==> 0 <= ds[i].group_key < 65536
+    ensures |DeltasToRows(ds)| == |ds|
+    ensures forall i :: 0 <= i < |DeltasToRows(ds)| ==>
+              0 <= DeltasToRows(ds)[i].rf < 256 && 0 <= DeltasToRows(ds)[i].ls < 256
+    decreases |ds|
+  {
+    if |ds| == 0 then []
+    else [DeltaToRow(ds[0])] + DeltasToRows(ds[1..])
+  }
+
+  ghost function InsertDeltas(ds: seq<Twin.LineitemDelta>): seq<Twin.LineitemDelta>
+    requires forall i :: 0 <= i < |ds| ==> 0 <= ds[i].group_key < 65536
+    ensures forall i :: 0 <= i < |InsertDeltas(ds)| ==>
+              0 <= InsertDeltas(ds)[i].group_key < 65536
+    ensures forall i :: 0 <= i < |InsertDeltas(ds)| ==> InsertDeltas(ds)[i].sign == 1
+    decreases |ds|
+  {
+    if |ds| == 0 then []
+    else if ds[0].sign == 1 then [ds[0]] + InsertDeltas(ds[1..])
+    else InsertDeltas(ds[1..])
+  }
+
+  ghost function DeleteDeltas(ds: seq<Twin.LineitemDelta>): seq<Twin.LineitemDelta>
+    requires forall i :: 0 <= i < |ds| ==> 0 <= ds[i].group_key < 65536
+    ensures forall i :: 0 <= i < |DeleteDeltas(ds)| ==>
+              0 <= DeleteDeltas(ds)[i].group_key < 65536
+    ensures forall i :: 0 <= i < |DeleteDeltas(ds)| ==> DeleteDeltas(ds)[i].sign == -1
+    decreases |ds|
+  {
+    if |ds| == 0 then []
+    else if ds[0].sign == -1 then [ds[0]] + DeleteDeltas(ds[1..])
+    else DeleteDeltas(ds[1..])
+  }
+
+  // Map policy action + StageMaintenance delta payload into Inv MaintAction.
+  // ApplyDelta with insert-signed deltas → ApplyInsertSeq(rows).
+  // ApplyDelta with delete-signed suffix → ApplyDeleteSuffix(rows).
+  // Mixed / empty → NoOp when no rows; inserts preferred when both present
+  // (updates are modeled as delete+insert via MaintUpdate* separately).
+  ghost function MapPolicyToMaint(
+      a: SubstrateMaintenance.MaintenanceAction,
+      deltas: seq<Twin.LineitemDelta>): MaintAction
+    requires forall i :: 0 <= i < |deltas| ==> 0 <= deltas[i].group_key < 65536
   {
     match a
       case NoOp => NoOp
-      case ApplyDelta => ApplyInsertSeq([])
+      case ApplyDelta =>
+        var ins := InsertDeltas(deltas);
+        var del := DeleteDeltas(deltas);
+        if |ins| > 0 then
+          ApplyInsertSeq(DeltasToRows(ins))
+        else if |del| > 0 then
+          ApplyDeleteSuffix(DeltasToRows(del))
+        else
+          ApplyInsertSeq([])
       case RebuildPartition => RebuildPartition
       case RebuildAll => RebuildAll
       case InvalidateAndFallback => InvalidateAndFallback
   }
 
-  lemma MapPolicyActionOk(s: AuxState, a: SubstrateMaintenance.MaintenanceAction)
+  lemma MapPolicyActionOk(
+      s: AuxState,
+      a: SubstrateMaintenance.MaintenanceAction,
+      deltas: seq<Twin.LineitemDelta>)
     requires StateOk(s) && PolicyActionIsSafe(a)
-    ensures ActionOk(s, MapPolicyToMaint(a))
+    requires forall i :: 0 <= i < |deltas| ==> 0 <= deltas[i].group_key < 65536
+    requires a != SubstrateMaintenance.ApplyDelta ||
+             |DeleteDeltas(deltas)| == 0 ||
+             (|InsertDeltas(deltas)| == 0 &&
+              |s.table| >= |DeleteDeltas(deltas)| &&
+              s.table[|s.table| - |DeleteDeltas(deltas)|..]
+                == DeltasToRows(DeleteDeltas(deltas)))
+    ensures ActionOk(s, MapPolicyToMaint(a, deltas))
   {
   }
 
-  lemma ChosenPolicyPreservesInv(s: AuxState, a: SubstrateMaintenance.MaintenanceAction)
+  lemma ChosenPolicyPreservesInv(
+      s: AuxState,
+      a: SubstrateMaintenance.MaintenanceAction,
+      deltas: seq<Twin.LineitemDelta>)
     requires StateInv(s) && PolicyActionIsSafe(a)
-    ensures var m := MapPolicyToMaint(a);
+    requires forall i :: 0 <= i < |deltas| ==> 0 <= deltas[i].group_key < 65536
+    requires a != SubstrateMaintenance.ApplyDelta ||
+             |DeleteDeltas(deltas)| == 0 ||
+             (|InsertDeltas(deltas)| == 0 &&
+              |s.table| >= |DeleteDeltas(deltas)| &&
+              s.table[|s.table| - |DeleteDeltas(deltas)|..]
+                == DeltasToRows(DeleteDeltas(deltas)))
+    ensures var m := MapPolicyToMaint(a, deltas);
             ActionOk(s, m) &&
             (var s2 := ApplyMaint(s, m);
              Inv(s2.store, s2.table))
   {
-    MapPolicyActionOk(s, a);
-    MaintenancePreservesInv(s, MapPolicyToMaint(a));
+    MapPolicyActionOk(s, a, deltas);
+    MaintenancePreservesInv(s, MapPolicyToMaint(a, deltas));
+  }
+
+  lemma ApplyDeltaInsertsPreserveInv(
+      s: AuxState, deltas: seq<Twin.LineitemDelta>)
+    requires StateInv(s)
+    requires forall i :: 0 <= i < |deltas| ==> 0 <= deltas[i].group_key < 65536
+    requires forall i :: 0 <= i < |deltas| ==> deltas[i].sign == 1
+    ensures var m := MapPolicyToMaint(SubstrateMaintenance.ApplyDelta, deltas);
+            m == ApplyInsertSeq(DeltasToRows(deltas)) &&
+            ActionOk(s, m) &&
+            StateInv(ApplyMaint(s, m))
+  {
+    assert InsertDeltas(deltas) == deltas by {
+      InsertDeltas_all_plus(deltas);
+    }
+    assert DeleteDeltas(deltas) == [] by {
+      DeleteDeltas_none_when_all_plus(deltas);
+    }
+    MapPolicyActionOk(s, SubstrateMaintenance.ApplyDelta, deltas);
+    MaintInsertSeq(s, DeltasToRows(deltas));
+  }
+
+  lemma InsertDeltas_all_plus(ds: seq<Twin.LineitemDelta>)
+    requires forall i :: 0 <= i < |ds| ==> 0 <= ds[i].group_key < 65536
+    requires forall i :: 0 <= i < |ds| ==> ds[i].sign == 1
+    ensures InsertDeltas(ds) == ds
+    decreases |ds|
+  {
+    if |ds| == 0 {
+    } else {
+      InsertDeltas_all_plus(ds[1..]);
+    }
+  }
+
+  lemma DeleteDeltas_none_when_all_plus(ds: seq<Twin.LineitemDelta>)
+    requires forall i :: 0 <= i < |ds| ==> 0 <= ds[i].group_key < 65536
+    requires forall i :: 0 <= i < |ds| ==> ds[i].sign == 1
+    ensures DeleteDeltas(ds) == []
+    decreases |ds|
+  {
+    if |ds| == 0 {
+    } else {
+      DeleteDeltas_none_when_all_plus(ds[1..]);
+    }
   }
 
   lemma ForcedOrEarlyThenMaintPreservesInv(
       s: AuxState,
       forced: SubstrateMaintenance.Option<SubstrateMaintenance.MaintenanceAction>,
-      request: SubstrateMaintenance.MaintenanceRequest)
+      request: SubstrateMaintenance.MaintenanceRequest,
+      deltas: seq<Twin.LineitemDelta>)
     requires StateInv(s)
     requires forced.None? || PolicyActionIsSafe(forced.value)
+    requires forall i :: 0 <= i < |deltas| ==> 0 <= deltas[i].group_key < 65536
+    // Early-selected ApplyDelta must satisfy ActionOk delete-suffix hyps when used.
+    requires |DeleteDeltas(deltas)| == 0 ||
+             (|InsertDeltas(deltas)| == 0 &&
+              |s.table| >= |DeleteDeltas(deltas)| &&
+              s.table[|s.table| - |DeleteDeltas(deltas)|..]
+                == DeltasToRows(DeleteDeltas(deltas)))
     ensures var early := SubstrateMaintenance.SelectAuxMaintenanceActionEarly(forced, request);
             early.None? ||
             (PolicyActionIsSafe(early.value) &&
-             (var m := MapPolicyToMaint(early.value);
+             (var m := MapPolicyToMaint(early.value, deltas);
               ActionOk(s, m) && Inv(ApplyMaint(s, m).store, ApplyMaint(s, m).table)))
   {
     EarlySelectIsSafe(forced, request);
     var early := SubstrateMaintenance.SelectAuxMaintenanceActionEarly(forced, request);
     if early.Some? {
-      ChosenPolicyPreservesInv(s, early.value);
+      ChosenPolicyPreservesInv(s, early.value, deltas);
     }
   }
 
@@ -191,9 +325,28 @@ module Q1MaintenanceEdges {
     requires StateInv(s)
     ensures ApplyMaint(s, ApplyInsertSeq([])) == s
     ensures StateInv(ApplyMaint(s, ApplyInsertSeq([])))
+    ensures MapPolicyToMaint(SubstrateMaintenance.ApplyDelta, []) == ApplyInsertSeq([])
   {
     assert ApplyDeltaSeq(s.store, [], 1) == s.store;
     assert s.table + [] == s.table;
     MaintInsertSeq(s, []);
+  }
+
+  // StageMaintenance ApplyDelta path: insert-signed buffer deltas preserve Inv.
+  lemma StageMaintApplyDeltaPreservesInv(
+      s: AuxState, buf: Twin.TxnBuffer, snapshot_unused: Twin.DayStore,
+      rebuilt_unused: Twin.DayStore)
+    requires StateInv(s)
+    requires !buf.requires_rebuild
+    requires |buf.deltas| > 0
+    requires forall i :: 0 <= i < |buf.deltas| ==> 0 <= buf.deltas[i].group_key < 65536
+    requires forall i :: 0 <= i < |buf.deltas| ==> buf.deltas[i].sign == 1
+    ensures Twin.StageMaintenance(buf, Twin.ApplyDelta, snapshot_unused, rebuilt_unused).action
+         == Twin.ApplyDelta
+    ensures var m := MapPolicyToMaint(SubstrateMaintenance.ApplyDelta, buf.deltas);
+            StateInv(ApplyMaint(s, m))
+  {
+    Twin.StageMaintenanceApplyDelta(buf, snapshot_unused, rebuilt_unused);
+    ApplyDeltaInsertsPreserveInv(s, buf.deltas);
   }
 }

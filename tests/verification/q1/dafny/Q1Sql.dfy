@@ -1,4 +1,8 @@
-// Formal MathSem for TPC-H Q1 catalog base_sql (integer/decimal embedding).
+// DEPRECATED AS SQL AUTHORITY — FormalSQL (Logos-lowered Cat(Q1)) is the SQL TCB.
+// MathSem / AuxCompose remain algebraic helpers for twin/Compose lemmas only.
+// Do not treat MathSem as catalog SQL meaning; see formalsql/q1/Q1FormalSQLProof.v.
+//
+// Algebraic model for TPC-H Q1 aggregates (integer/decimal embedding).
 //
 // SOURCE: src/generated/catalog/postgres/query_catalog.cpp  tpch_q1 base_sql
 //   WHERE l_shipdate <= cutoff

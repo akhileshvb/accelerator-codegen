@@ -35,3 +35,19 @@ pipeline/artifacts/**
 pipeline/orchestrator/.venv/
 pipeline/orchestrator/.pytest_cache/
 *.egg-info/
+third_party/Logos/target/
+third_party/Logos/.cache/
+third_party/Logos/.opam-rocq/
+third_party/Logos/bin/
+
+# Rocq build products (FormalSQL proofs)
+tests/verification/formalsql/**/*.vo
+tests/verification/formalsql/**/*.vok
+tests/verification/formalsql/**/*.vos
+tests/verification/formalsql/**/*.glob
+tests/verification/formalsql/**/.*.aux
+tests/verification/formalsql/**/.lia.cache
+tests/verification/formalsql/**/logos_log/
+tests/verification/formalsql/**/.logos-runtime-classpath.txt
+tests/verification/formalsql/**/logos_lower.err
+tests/verification/formalsql/**/logos_lower_report.json

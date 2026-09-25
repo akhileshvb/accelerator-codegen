@@ -1,4 +1,8 @@
-// Q1 aggregate algebra — derived Fold/Inv/Compose lemmas.
+// Q1 aggregate algebra — FoldTwin / Inv / View lemmas.
+//
+// FoldTwin iterates twin primitives (ApplyDelta from Q1Finalize twins).
+// FoldSpec / AuxAnswerSpec live in generated/Q1AuxSpec.dfy; prove
+// TwinOp ≡ SpecOp then FoldTwin = FoldSpec (see Q1TwinSpecBridge.dfy).
 //
 // Apply/Merge equations match Q1Finalize structural twins and
 // src/generated/tpch/q1/postgres/aux/finalize.cpp.
@@ -6,7 +10,7 @@
 // inductive Fold/Inv/Compose development used by early POC lemmas.
 //
 // Model uses unbounded Dafny `int`. C++ __int128 overflow is outside this
-// model; conformance uses TPC-H-ish bounds so observed C++ matches.
+// model; extract-diff uses TPC-H-ish grid D so observed C++ matches.
 
 module Q1Aux {
 
@@ -123,10 +127,17 @@ module Q1Aux {
       ApplyDelta(Fold(t[..|t| - 1]), t[|t| - 1], 1)
   }
 
+  // FoldTwin: Inv/maintenance fold is iteration of twin ApplyDelta (= Fold).
+  ghost function FoldTwin(t: seq<Row>): Store
+    requires forall i :: 0 <= i < |t| ==> 0 <= t[i].rf < 256 && 0 <= t[i].ls < 256
+  {
+    Fold(t)
+  }
+
   ghost predicate Inv(store: Store, t: seq<Row>)
     requires forall i :: 0 <= i < |t| ==> 0 <= t[i].rf < 256 && 0 <= t[i].ls < 256
   {
-    store == Fold(t)
+    store == FoldTwin(t)
   }
 
   // ----- Group-key fold after cutoff filter (Compose / Execute residual) -----

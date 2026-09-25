@@ -1,5 +1,9 @@
 // Inv-under-maintenance spine for TPC-H Q1 aux.
 //
+// PATTERN recipe (do not abstract yet): Maint* wrappers → MaintenancePreservesInv
+// → MaintTwoStepPreservesInv / InvalidateThenRebuild. See
+//   tests/verification/patterns/PartitionedGroupAggregate.md
+//
 // SOURCE (control flow): StageMaintenance / AccumulateMutation in
 //   src/generated/tpch/q1/postgres/aux/module.cpp
 // Algebra: Q1Aux Fold/Inv with erase-on-zero ApplyDelta (matches ApplyDelta loop).
@@ -209,6 +213,19 @@ module Q1Maintenance {
         MaintRebuildAll(s);
       case InvalidateAndFallback =>
         MaintInvalidate(s);
+  }
+
+  // Reachability: Inv composes for finite sequences (2-step form; n-step by induction).
+  lemma MaintTwoStepPreservesInv(s: AuxState, a1: MaintAction, a2: MaintAction)
+    requires StateInv(s)
+    requires ActionOk(s, a1)
+    requires ActionOk(ApplyMaint(s, a1), a2)
+    ensures StateInv(ApplyMaint(ApplyMaint(s, a1), a2))
+  {
+    MaintenancePreservesInv(s, a1);
+    var s1 := ApplyMaint(s, a1);
+    assert StateInv(s1);
+    MaintenancePreservesInv(s1, a2);
   }
 
   // When Inv holds, query residual Compose(table) is the accelerator answer
