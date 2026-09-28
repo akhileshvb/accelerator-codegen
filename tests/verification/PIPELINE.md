@@ -7,7 +7,7 @@ TwinOp ≡ SpecOp and `FoldTwin = FoldSpec`, then maintenance / substrate
 `RuntimeAuxCorrect`. Generated C++ is **RepPhys + finite extract-diff**, not a
 proved edge.
 
-Implemented migration targets: **TPC-H Q1** and **TPC-H Q21**.
+Implemented migration target: **TPC-H Q1**.
 
 Operational how-to: [`README.md`](README.md). Pin: [`formalsql/PIN.md`](formalsql/PIN.md).
 
@@ -89,7 +89,6 @@ Rocq:
 
 Dafny:
   TwinApply ≡ SpecApply, TwinView ≡ SpecView, TwinFinalize ≡ SpecFinalize
-  (Q21: BuildOrderSummaryTwin ≡ BuildOrderSummarySpec, …)
   FoldTwin = iterate TwinOps
   FoldTwin = FoldSpec
   AuxAnswerTwin = AuxAnswerSpec
@@ -115,11 +114,14 @@ Twins remain 1:1 models of generated C++. Fold for Inv/maintenance is
 
 ## 5. TCB / trust boundary
 
+**Q1 canonical listing:** [`q1/CURRENT_THEOREM_TCB.md`](q1/CURRENT_THEOREM_TCB.md).
+
 ### Formal / checked
 
-- FormalSQL Rocq proofs (`FormalSQLAuxCorrect`, `FormalSQLNoError`) when green
-- Dafny Fold/View/Finalize, Twin≡Spec, Inv, maintenance, PairInv, SnapshotHitSafe,
-  ReadHit, LocalWriteSafe model, AffectsNoOp, CAS, backend composition
+- FormalSQL Rocq proofs (`FormalSQLAuxCorrect`, `FormalSQLNoError`, NormalizeSound) when green
+- Dafny Fold/View/Finalize, Twin≡Spec, Inv, maintenance, Twin↔Aux closed package,
+  PairInv, SnapshotHitSafe, ReadHit, LocalWriteSafe model, AffectsNoOp, CAS,
+  backend composition
 
 ### TCB / assumed / finite
 
@@ -127,27 +129,23 @@ Twins remain 1:1 models of generated C++. Fold for Inv/maintenance is
 - Rocq kernel / Logos pin SHAs
 - Logos lowering (fail closed if unsupported)
 - EmbedDB / EmbedResult / EmbedParams value mapping
-- **Q1NumericSafe packaging:** supported TPC-H domain ⇒ no FormalSQL overflow
-  on `q̂_Q1` (`formalsql/q1/STATUS.md` TCB section); value equalities are Qed
-  obligations, not TCB
+- **`Q1NumericSafe` packaging:** supported TPC-H domain ⇒ no FormalSQL overflow
+  on `q̂_Q1` (canonical §4); value equalities are Qed obligations, not TCB
+- **`NumericEmbedFaithful`** (representation hyp)
 - PostgreSQL executor for supported fragment
 - SPI/heap → abstract DB; snapshot S → DB(S)
 - RepPhys; AuxSpec generator (hash-checked dual emission)
-- Twin ↔ C++ beyond extract-diff grid D
+- Twin ↔ C++ beyond extract-diff (`cpp_model`)
+- Twin SPI: `AggsFaithful`; free Stage/load `RebuildOracleCorrect`
 - Unsupported FormalSQL/PG behavior fails closed — never approximated
 
 ---
 
-## 6. Deprecated (no longer authoritative SQL meaning)
+## 6. Removed: hand-written Dafny SQL (MathSem)
 
-Do **not** deepen or cite as SQL authority:
-
-- `Q1SqlSem.dfy` / `Q21SqlSem.dfy` hand Parse/Sem
-- `MathSem` in `Q1Sql.dfy` / `Q21Sql.dfy` as SQL definition
-- `RawSqlSemEqualsMathSem` / `RawSqlSemEqualsAux` as the SQL bridge
-
-Algebraic helpers may remain until moved into Aux/twin proofs. SQL meaning is
-**FormalSQL only**.
+Former `Q1Sql.dfy` / `Q1SqlSem.dfy` / MathSem conformance checks are **deleted**.
+SQL meaning is **FormalSQL only** (Logos lower of catalog SQL). Do not revive a
+Dafny MathSem path as Spec authority.
 
 ---
 
@@ -157,6 +155,5 @@ Algebraic helpers may remain until moved into Aux/twin proofs. SQL meaning is
 scripts/run_formalsql_smoke.sh
 scripts/logos_lower_catalog.sh q1   # fail closed if Logos cannot lower
 scripts/run_verification_q1.sh
-scripts/run_verification_q21.sh
 scripts/run_verification_all.sh
 ```

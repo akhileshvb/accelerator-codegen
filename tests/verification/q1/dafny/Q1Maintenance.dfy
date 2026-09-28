@@ -229,7 +229,7 @@ module Q1Maintenance {
   }
 
   // When Inv holds, query residual Compose(table) is the accelerator answer
-  // (MathSem bridge is Q1Sql on the same Compose/Finalize chain).
+  // Compose/Finalize chain; SQL meaning is FormalSQL (Logos), not a Dafny MathSem.
   lemma InvImpliesComposeStable(s: AuxState, cutoff: int)
     requires StateInv(s)
     ensures Compose(s.table, cutoff) == FoldByGroup(FilterCutoff(s.table, cutoff))

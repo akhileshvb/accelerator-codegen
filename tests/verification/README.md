@@ -3,28 +3,26 @@
 How the stages fit together (**FormalSQL → AuxAnswerSpec → FoldTwin → runtime**;
 C++ = RepPhys + finite extract-diff): **[`PIPELINE.md`](PIPELINE.md)**.
 Logos+FormalSQL pin: [`formalsql/PIN.md`](formalsql/PIN.md).
+**Q1 current theorem / TCB:** [`q1/CURRENT_THEOREM_TCB.md`](q1/CURRENT_THEOREM_TCB.md).
 
 This README is the operational map (files, runners, guarantee tables).
 
 **Authoritative SQL meaning is FormalSQL** (via Logos lower of exact catalog
-SQL). Hand-written `Q*SqlSem` / `MathSem` are **deprecated as SQL authority**
-(see PIPELINE §6); algebraic helpers may remain until moved into Aux/twin proofs.
+SQL). Hand-written Dafny MathSem / Q1Sql / Q1SqlSem paths have been **removed**.
 
 Top-level runners:
 
 ```bash
 scripts/run_verification_q1.sh
-scripts/run_verification_q21.sh
 scripts/run_verification_all.sh
 ```
 
-Two layers for Q1, plus the same stack for Q21:
+Two layers for Q1:
 
 1. **Q1 structural inductive proof (Dafny)** — 1:1 twins of postgres
    `finalize.cpp` / `module.cpp`.
 2. **Dafny extract ≡ generated C++** on a bounded grid D (`dafny build --target:cs`
    then dump-and-diff against the artifact).
-3. **Q21** — same chain for the EXISTS/NOT EXISTS accelerator (see below).
 
 Differential testing ([`tests/aux_state/test_postgres_tpch_differential.cpp`](../aux_state/test_postgres_tpch_differential.cpp))
 remains the oracle that pins aux behavior to engine SQL.
@@ -54,13 +52,10 @@ remains the oracle that pins aux behavior to engine SQL.
 | [`q1/dafny/Q1MaintenanceEdges.dfy`](q1/dafny/Q1MaintenanceEdges.dfy) | Delete-any, Install/CAS, policy map | **Maintenance edges** |
 | [`q1/dafny/generated/Q1AuxSpec.dfy`](q1/dafny/generated/Q1AuxSpec.dfy) | Shared AuxSpecOps / FoldSpec | Spec side of Twin≡Spec |
 | [`q1/dafny/Q1TwinSpecBridge.dfy`](q1/dafny/Q1TwinSpecBridge.dfy) | TwinOp ≡ SpecOp | FoldTwin = FoldSpec bridge |
-| [`q1/dafny/Q1Sql.dfy`](q1/dafny/Q1Sql.dfy) | **DEPRECATED as SQL authority** — algebraic helpers only | Use FormalSQL + AuxSpec |
-| [`q1/dafny/Q1SqlSem.dfy`](q1/dafny/Q1SqlSem.dfy) | **DEPRECATED as SQL authority** — do not deepen | Logos → FormalSQL |
 | [`formalsql/q1/`](formalsql/q1/) | Q1 FormalSQL Box 1 — see [`STATUS.md`](formalsql/q1/STATUS.md) | Obligations + spine facade |
 | [`formalsql/lib/QuerySpineFacade.v`](formalsql/lib/QuerySpineFacade.v) | Generic TFGOP EQuery composition | Reusable FormalSQL spine |
 | [`substrate/dafny/`](substrate/dafny/) | PairInv / SnapshotPinning / ReadHandle | Runtime substrate |
 | [`q1/extract/`](q1/extract/) | Dafny C# extract ‖ generated C++ | **Agree on grid D** (not ∀) |
-| [`q1/conformance/test_q1_sql_sem_conformance.cpp`](q1/conformance/test_q1_sql_sem_conformance.cpp) | MathSem filter/fold vs Finalize | SQL MathSem check on samples |
 
 ### Inv under maintenance
 
@@ -86,27 +81,7 @@ Structural twin case-split: `Q1ModuleTwin.StageMaintenanceCaseSplit`.
   `ChosenPolicyPreservesInv` maps them to Inv-preserving `MaintAction`.
 
 **Not claimed:** cost optimality of ChooseMaintenance; multi-partition Install
-atomicity beyond per-key Publish/CAS; Postgres executor ≡ formal SQL Interpret.
-
-### SQL ≡ MathSem ≡ aux (formal)
-
-Machine-checked (Dafny), starting from catalog raw SQL:
-
-```text
-Sem(Parse(TpchQ1BaseSql, cutoff), T) = MathSem(T, cutoff)
-                                     = Finalize(... AuxCompose(T, cutoff) ...)
-```
-
-- **`Q1SqlSem`:** `TpchQ1BaseSql` is the catalog `base_sql` text.
-  `ParseTpchQ1BaseSql` builds a clause AST whose SELECT items are the expression
-  trees from that SQL (`sum(l_extendedprice*(1-l_discount))`, etc.).
-  `Sem` evaluates WHERE → GROUP BY → those SELECT exprs → ORDER BY (scale-2).
-  Top lemma: `RawSqlSemEqualsMathSem`.
-- **`Q1Sql`:** MathSem ≡ aux Compose/Finalize.
-
-**TCB:** Postgres on `base_sql` ≡ `Sem(Parse(base_sql), ·)` (assumed).
-Live engine ↔ aux still via differentials. Cutoff in the string is abstracted
-(`DATE…-INTERVAL…` → `ShipdateLe(cutoff)`).
+atomicity beyond per-key Publish/CAS; Postgres executor ≡ FormalSQL (TCB).
 
 ### Avg note
 
@@ -156,50 +131,14 @@ mkdir -p tools && unzip dafny-*-x64-ubuntu-*.zip -d tools/
 ./scripts/run_dafny_q1_induction.sh
 ```
 
-**Claim after a green Q1 run:** accelerator twins + **formal SQL≡MathSem≡aux**
-(`Q1SqlSem` + `Q1Sql`) + **Inv under maintenance** (incl. delete-any, Install/CAS,
-policy→Inv map); Dafny extract ≡ generated kernels on grid D; SQL MathSem sample
-check remains.
+**Claim after a green Q1 run:** accelerator twins + **Inv under maintenance**
+(incl. delete-any, Install/CAS, policy→Inv map); FormalSQL/LogicalSpec path
+(see [`PIPELINE.md`](PIPELINE.md) / [`q1/CURRENT_THEOREM_TCB.md`](q1/CURRENT_THEOREM_TCB.md));
+Dafny extract ≡ generated kernels on grid D.
 
-**Not claimed:** Postgres executor ≡ formal `Interpret` (TCB); `__int128` overflow
+**Not claimed:** Postgres executor ≡ FormalSQL Interpret (TCB); `__int128` overflow
 outside domains; pipeline/LLM codegen; ChooseMaintenance cost optimality;
 unbounded ∀ agreement; Dafny `real` ≡ IEEE bit-identity.
-
----
-
-## Q21 structural inductive proof (artifact-tied)
-
-Same methodology as Q1 on postgres
-[`tpch/q21/.../module.cpp`](../../src/generated/tpch/q21/postgres/aux/module.cpp) /
-[`finalize.cpp`](../../src/generated/tpch/q21/postgres/aux/finalize.cpp). Hard
-case: correlated `EXISTS` / `NOT EXISTS` reduced by `ComputeOrderContributions`
-(sole-late supplier).
-
-| Layer | What | Guarantee |
-|-------|------|-----------|
-| [`q21/dafny/Q21Finalize.dfy`](q21/dafny/Q21Finalize.dfy) | finalize sort/emit | BetterOutputRow + FinalizeFromEntries |
-| [`q21/dafny/Q21ModuleTwin.dfy`](q21/dafny/Q21ModuleTwin.dfy) | module orchestration | Contrib reduction, txn, StageMaintenance, Execute |
-| [`q21/dafny/Q21Aux.dfy`](q21/dafny/Q21Aux.dfy) | Fold/Inv/Compose | Multi-table Fold; repair via RecomputeOrder |
-| [`q21/dafny/Q21Maintenance.dfy`](q21/dafny/Q21Maintenance.dfy) | StageMaintenance-class | **Inv under rebuild/invalidate** |
-| [`q21/dafny/Q21MaintenanceEdges.dfy`](q21/dafny/Q21MaintenanceEdges.dfy) | Install/CAS, policy | **Maintenance edges** |
-| [`q21/dafny/Q21Sql.dfy`](q21/dafny/Q21Sql.dfy) | Relational MathSem + sole-late bridge | **MathSem ≡ Finalize(entries)** |
-| [`q21/dafny/Q21SqlSem.dfy`](q21/dafny/Q21SqlSem.dfy) | Parse catalog `base_sql` (EXISTS AST) | **`Sem(Parse)=MathSem`** |
-| [`q21/extract/`](q21/extract/) | Dafny C# extract ‖ generated C++ | **Agree on grid D21** (not ∀) |
-| [`postgres/dafny/Q21BackendProofs.dfy`](postgres/dafny/Q21BackendProofs.dfy) | SPI TCB composition | Execute≡Fallback; MathSem bridge; Install |
-
-```bash
-./scripts/run_dafny_q21_induction.sh
-./scripts/run_dafny_q21_extract_diff.sh
-```
-
-**Claim after a green Q21 run:** twins + `Sem(Parse(base_sql))=MathSem` + Inv under
-maintenance (rebuild/invalidate + Install/CAS) + extract ≡ C++ on D21; SPI/store/
-`ChooseMaintenance`/parsers = TCB. Sole-late bag induction beyond structural
-branches is discharged on D21 by construction; full ∀ lineitem-bag equivalence
-of `SqlContribCount` ↔ `late_count` remains the documented bridge obligation.
-
-**Not claimed:** Postgres executor ≡ Interpret; DuckDB/MySQL aux clones; nation-name
-hash slots; ∀ extract agreement.
 
 ---
 
@@ -208,7 +147,7 @@ hash slots; ∀ extract agreement.
 Same methodology (structural Dafny twin + C++ binding checks). **TCB:** PostgreSQL
 SPI/xact/heap and shared substrate Store/Coordinator/policy are assumed correct.
 Proved: generated Runtime + PostgresAuxBackend routing composed with Q1 module
-twins (cold Build/Execute, mutation commit, MathSem bridge on SPI tables).
+twins (cold Build/Execute, mutation commit).
 
 ### Run
 
@@ -226,8 +165,7 @@ twins (cold Build/Execute, mutation commit, MathSem bridge on SPI tables).
 | Tier B | [`postgres/dafny/PostgresBackend.dfy`](postgres/dafny/PostgresBackend.dfy) | CaptureMutation/PreCommit/Commit/Abort routing; no sync rebuild |
 | Tier C | [`postgres/dafny/RuntimeScan.dfy`](postgres/dafny/RuntimeScan.dfy) | Q1 lineitem projection scales=2; EnsureBuilt/Execute glue |
 | Tier D | [`postgres/dafny/BackendCompose.dfy`](postgres/dafny/BackendCompose.dfy) | Compose store Inv with Q1ModuleTwin Execute≡Fallback |
-| **Q1 backend** | [`postgres/dafny/Q1BackendProofs.dfy`](postgres/dafny/Q1BackendProofs.dfy) | **SPI→Build→Execute ≡ Compose**; mutation commit; MathSem on SPI table; EnsureBuilt |
-| **Q21 backend** | [`postgres/dafny/Q21BackendProofs.dfy`](postgres/dafny/Q21BackendProofs.dfy) | **Execute≡Fallback**; MathSem bridge; Install after maint |
+| **Q1 backend** | [`postgres/dafny/Q1BackendProofs.dfy`](postgres/dafny/Q1BackendProofs.dfy) | **SPI→Build→Execute ≡ Compose**; mutation commit; EnsureBuilt |
 | Conformance | `substrate/conformance`, `postgres/conformance` | Real PartitionedStateStore, SelectAuxMaintenanceAction, PostgresAuxBackend, projection twin |
 
 ### Generated-backend claim (`Q1BackendProofs`)
@@ -237,14 +175,12 @@ Under SPI+substrate TCB:
 - `BuildFromScan(spi_rows)` → `Execute` with Inv ≡ `ComposeOutput` / Fallback
 - `EnsureBuilt` / `ExecuteGlue` install readable payloads; rebuild reinstalls
 - Capture→PreCommit→Commit publishes ApplyDelta; Abort clears mutations
-- `SpiTableMathSemEqualsAux`: MathSem of SPI-derived table ≡ AuxCompose finalize
-- Empty scan ⇒ empty result (= MathSem [])
+- Empty scan ⇒ empty result
 - Maint Install after Inv-preserving action keeps readable payload
 
 **Still not claimed:** PostgreSQL SPI correctness; substrate internals (TCB here);
-full DayStore≡MathSem bit-equality for arbitrary tables (ComposeOutput vs
-SqlFold path — empty + MathSem bridge proved; inductive DayStore merge open);
-formal SQL beyond the Q1 fragment AST in `Q1SqlSem`.
+unbounded DayStore fold/merge bit-equality for arbitrary tables beyond the
+proved cold-path / empty-scan lemmas; FormalSQL beyond the Logos-supported fragment.
 ### Anti-looseness
 
 SOURCE maps in each `.dfy` header. Do not edit twins without updating C++ or
@@ -257,18 +193,12 @@ the extract-diff grid.
 ```
 tests/verification/
   common/          # InMemoryStore / CollectingSink for extract-diff
-  q1/dafny/        # accelerator twins (Finalize / ModuleTwin / Aux)
-  q1/extract/      # Dafny C# Main + C++ dump + avg comparator
-  q1/conformance/  # SQL MathSem sample check
-  q21/dafny/       # Q21 twins + MathSem/EXISTS + maintenance
-  q21/extract/     # Dafny C# Main + C++ dump (grid D21)
-  q21/conformance/ # sole-late / finalize sample check
+  q1/              # twins, extract-diff, theorem/TCB docs
+  formalsql/       # Logos pin, Q1 Rocq, LogicalSpec, facades
   substrate/       # Store, MaintenancePolicy, Coordinator
-  postgres/        # Backend adapters, RuntimeScan, BackendCompose, Q1/Q21 proofs
+  postgres/        # Backend adapters, RuntimeScan, Q1BackendProofs
   README.md
 scripts/run_dafny_q1_induction.sh
 scripts/run_dafny_q1_extract_diff.sh
-scripts/run_dafny_q21_induction.sh
-scripts/run_dafny_q21_extract_diff.sh
 scripts/run_dafny_backend_induction.sh
 ```

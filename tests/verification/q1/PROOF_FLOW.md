@@ -251,8 +251,8 @@ Under `substrate/dafny/` and Postgres backend twins:
 7. Extract-diff on grid D + PG differential (confidence, not universal proof)
 ```
 
-Deprecated as SQL authority (do not deepen): `Q1SqlSem.dfy` / `MathSem` in
-`Q1Sql.dfy`. SQL meaning for the new stack is **FormalSQL only**.
+Hand-written Dafny MathSem / `Q1Sql` / `Q1SqlSem` paths are **removed**. SQL
+meaning for this stack is **FormalSQL only**.
 
 ---
 

@@ -3,10 +3,12 @@
 // TCB (assumed correct, not proved here):
 //   - PostgreSQL SPI / heap AM / xact callback registration
 //   - Shared substrate Store + Coordinator + MaintenancePolicy
+//   - FormalSQL (via Logos) is the SQL meaning authority
 //
 // Proved: generated Runtime scan projection + EnsureBuilt/Execute glue,
 // PostgresAuxBackend xact routing, and composition with Q1ModuleTwin so that
-// cold Build and mutation+commit hit paths match Compose/Fallback under Inv.
+// cold Build and mutation+commit hit paths match Compose/Fallback under Inv
+// (thus AuxAnswerTwin / AuxAnswerSpec via FoldTwin = FoldSpec).
 //
 // SOURCE:
 //   src/generated/postgres/runtime.cpp
@@ -16,8 +18,8 @@
 include "RuntimeScan.dfy"
 include "PostgresBackend.dfy"
 include "../../q1/dafny/Q1ModuleTwin.dfy"
-include "../../q1/dafny/Q1Sql.dfy"
 include "../../q1/dafny/Q1MaintenanceEdges.dfy"
+include "../../q1/dafny/Q1RuntimeAuxCorrect.dfy"
 
 module Q1BackendProofs {
   import opened SubstrateStore
@@ -26,9 +28,9 @@ module Q1BackendProofs {
   import opened PostgresBackend
   import opened Q1ModuleTwin
   import opened Q1Finalize
-  import Q1Sql
   import opened Q1Maintenance
   import Q1MaintenanceEdges
+  import Q1RAC = Q1RuntimeAuxCorrect
 
   // ----- SPI oracle row → module LineitemInput (scale-2, matches Runtime twin) -----
 
@@ -99,7 +101,7 @@ module Q1BackendProofs {
   lemma BuildFromScanIsLineitemFold(rows: seq<PostgresRuntimeScan.SpiLineitemRow>)
     requires SpiTableOk(rows)
     ensures BuildFromScan(rows)
-         == ConsumeLineitems(map[], ScanToModuleInputs(rows), {})
+         == ConsumeLineitems(EmptyStore(), ScanToModuleInputs(rows), {})
   {
     BuildStateLineitemFold(ScanToModuleInputs(rows));
   }
@@ -208,7 +210,7 @@ module Q1BackendProofs {
     requires payload != 0
     requires |deltas| > 0
     ensures (var buf := TxnBuffer(true, false, deltas);
-             var staged := StageMaintenance(buf, ApplyDelta, snapshot, map[]);
+             var staged := StageMaintenance(buf, ApplyDelta, snapshot, EmptyStore());
              staged.action == ApplyDelta &&
              staged.state == ApplyDeltaSeq(snapshot, deltas) &&
              (var outcome := StagedOutcome(true, key, payload, true, false);
@@ -217,7 +219,7 @@ module Q1BackendProofs {
               GetReadablePayload(c2.store, key) == payload))
   {
     var buf := TxnBuffer(true, false, deltas);
-    StageMaintenanceApplyDelta(buf, snapshot, map[]);
+    StageMaintenanceApplyDelta(buf, snapshot, EmptyStore());
     BackendCommitPublishesApplyDelta(store0, key, payload, epoch);
   }
 
@@ -241,57 +243,25 @@ module Q1BackendProofs {
     ComposeOutput(BuildFromScan(rows), TpchQ1CutoffDays(base_days, args.day_offset))
   }
 
-  // ----- Bridge SPI rows → MathSem table (scale-2 embedding) -----
-
-  ghost function SpiToSqlRow(row: PostgresRuntimeScan.SpiLineitemRow): Q1Sql.Row
-    requires SpiOk(row)
-    ensures Q1Sql.RowOk(SpiToSqlRow(row))
-  {
-    Q1Sql.Row(row.shipdate_days, row.quantity_raw, row.extended_price_raw,
-              row.discount_raw, row.tax_raw, row.returnflag, row.linestatus)
-  }
-
-  ghost function SpiToSqlTable(rows: seq<PostgresRuntimeScan.SpiLineitemRow>): seq<Q1Sql.Row>
-    requires SpiTableOk(rows)
-    ensures Q1Sql.TableOk(SpiToSqlTable(rows))
-    decreases |rows|
-  {
-    if |rows| == 0 then []
-    else [SpiToSqlRow(rows[0])] + SpiToSqlTable(rows[1..])
-  }
-
-  // MathSem of the SPI-derived table equals AuxCompose finalize (Q1Sql theorem).
-  lemma SpiTableMathSemEqualsAux(
-      rows: seq<PostgresRuntimeScan.SpiLineitemRow>, cutoff: int)
-    requires SpiTableOk(rows)
-    ensures Q1Sql.MathSem(SpiToSqlTable(rows), cutoff)
-         == FinalizeFromEntries(
-              Q1Sql.MapToEntries(Q1Sql.AuxCompose(SpiToSqlTable(rows), cutoff)))
-  {
-    Q1Sql.SqlEquivAux(SpiToSqlTable(rows), cutoff);
-  }
-
-  // Empty SPI scan: cold Execute returns empty (matches MathSem([])).
+  // Empty SPI scan: cold Execute returns empty.
   lemma EmptyScanColdExecuteEmpty(args: QueryArgs, base_days: int)
     requires args.has_offset
-    ensures BuildFromScan([]) == map[]
+    ensures BuildFromScan([]) == EmptyStore()
     ensures ColdExecuteResult(args, base_days, []) == []
-    ensures Q1Sql.MathSem([], TpchQ1CutoffDays(base_days, args.day_offset)) == []
   {
     assert ScanToModuleInputs([]) == [];
     BuildStateLineitemFold([]);
-    assert ConsumeLineitems(map[], [], {}) == map[];
-    ComposeOutputEmpty(map[], TpchQ1CutoffDays(base_days, args.day_offset));
-    Q1Sql.EmptyTableMathSem(TpchQ1CutoffDays(base_days, args.day_offset));
+    assert ConsumeLineitems(EmptyStore(), [], {}) == EmptyStore();
+    ComposeOutputEmpty(EmptyStore(), TpchQ1CutoffDays(base_days, args.day_offset));
   }
 
   lemma ComposeOutputEmpty(days: DayStore, cutoff: int)
-    requires days == map[]
+    requires days == EmptyStore()
     ensures ComposeOutput(days, cutoff) == []
   {
-    assert days.Keys == {};
-    assert ComposeMergeDays(days, cutoff, {}, map[]) == map[];
-    assert MapToEntries(map[]) == [];
+    assert days.order == [];
+    assert ComposeMergeDays(days, cutoff, 0, EmptyPart()) == EmptyPart();
+    assert MapToEntries(EmptyPart()) == [];
     assert FinalizeFromEntries([]) == [];
   }
 
@@ -329,5 +299,13 @@ module Q1BackendProofs {
   {
     ColdExecuteEqualsCompose(args, base_days, rows);
     PostgresRuntimeScan.EnsureBuiltInstalls(r, key, 1, epoch);
+  }
+
+  // ----- RuntimeAuxCorrect_Q1 wiring (PairInv + SnapshotHitSafe + ReadHit) -----
+
+  lemma HitPath_satisfies_RuntimeAuxCorrect_Q1_miss()
+    ensures Q1RAC.RuntimeAuxCorrect_Q1(false, [], [])
+  {
+    Q1RAC.RuntimeAuxCorrect_Q1_miss([], []);
   }
 }

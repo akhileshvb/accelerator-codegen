@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# Q1 structural inductive POC: dafny verify (Finalize + ModuleTwin + Aux) + conformance
+# Q1 structural inductive POC: dafny verify + Dafny-extract ≡ C++ on grid D.
+# SQL meaning is FormalSQL (Logos); no MathSem / Q1Sql path.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 DFY_DIR="$ROOT/tests/verification/q1/dafny"
-CONF_SRC="$ROOT/tests/verification/q1/conformance/test_q1_kernel_conformance.cpp"
-FINALIZE="$ROOT/src/generated/tpch/q1/postgres/aux/finalize.cpp"
-MODULE="$ROOT/src/generated/tpch/q1/postgres/aux/module.cpp"
 
 find_dafny() {
   if command -v dafny >/dev/null 2>&1; then
@@ -49,68 +47,7 @@ echo "==> dafny verify Q1Maintenance (Inv under all maint actions)"
 echo "==> dafny verify Q1MaintenanceEdges (delete-any, Install/CAS, policy)"
 "$DAFNY_BIN" verify "$DFY_DIR/Q1MaintenanceEdges.dfy"
 
-echo "==> dafny verify Q1Sql (MathSem SQL ≡ aux)"
-"$DAFNY_BIN" verify "$DFY_DIR/Q1Sql.dfy"
+echo "==> Dafny extract ≡ generated C++ (grid D)"
+"$ROOT/scripts/run_dafny_q1_extract_diff.sh"
 
-DUCKDB_ROOT="${ACCEL_DUCKDB_ROOT:-$ROOT/../accelerator-codegen-duckdb}"
-if [[ ! -f "$DUCKDB_ROOT/src/include/duckdb.hpp" ]]; then
-  echo "DuckDB sibling not found at $DUCKDB_ROOT (set ACCEL_DUCKDB_ROOT)" >&2
-  exit 1
-fi
-
-DUCKDB_LIB=""
-if [[ -f "$DUCKDB_ROOT/build/release/src/libduckdb.so" ]]; then
-  DUCKDB_LIB="$DUCKDB_ROOT/build/release/src/libduckdb.so"
-elif [[ -f "$DUCKDB_ROOT/build/release/src/libduckdb_static.a" ]]; then
-  DUCKDB_LIB="$DUCKDB_ROOT/build/release/src/libduckdb_static.a"
-else
-  echo "DuckDB library not built under $DUCKDB_ROOT/build/release/src" >&2
-  exit 1
-fi
-
-OUT_DIR="${ACCEL_CBMC_OUT:-$ROOT/build-verification}"
-mkdir -p "$OUT_DIR"
-OUT="$OUT_DIR/q1_kernel_conformance.bin"
-LIBDIR="$(dirname "$DUCKDB_LIB")"
-
-SUBSTRATE=(
-  "$ROOT/src/stateful/core/aux_registry.cpp"
-  "$ROOT/src/stateful/core/aux_engine_services.cpp"
-  "$ROOT/src/stateful/core/aux_maintenance_policy.cpp"
-  "$ROOT/src/stateful/core/aux_maintenance_decision_log.cpp"
-  "$ROOT/src/stateful/state/partitioned_state_store.cpp"
-  "$ROOT/src/stateful/state/invalidation_plan.cpp"
-  "$ROOT/src/stateful/maintenance/maintenance_action.cpp"
-  "$ROOT/src/stateful/maintenance/action_selector.cpp"
-)
-
-echo "==> conformance (g++ vs postgres finalize.cpp + module.cpp)"
-g++ -std=c++17 -O1 \
-  -I"$ROOT/include" \
-  -I"$ROOT/src/generated" \
-  -I"$ROOT/tests/verification/common" \
-  -I"$DUCKDB_ROOT/src/include" \
-  -o "$OUT" \
-  "$CONF_SRC" \
-  "$FINALIZE" \
-  "$MODULE" \
-  "${SUBSTRATE[@]}" \
-  "$DUCKDB_LIB" -lpthread -ldl \
-  -Wl,-rpath,"$LIBDIR"
-
-"$OUT"
-echo "PASS q1 kernel conformance"
-
-echo "==> SQL MathSem conformance"
-SQL_OUT="$OUT_DIR/q1_sql_sem_conformance.bin"
-g++ -std=c++17 -O1 \
-  -I"$ROOT/include" \
-  -I"$ROOT/src/generated" \
-  -I"$DUCKDB_ROOT/src/include" \
-  -o "$SQL_OUT" \
-  "$ROOT/tests/verification/q1/conformance/test_q1_sql_sem_conformance.cpp" \
-  "$FINALIZE" \
-  "$DUCKDB_LIB" -lpthread -ldl \
-  -Wl,-rpath,"$LIBDIR"
-"$SQL_OUT"
-echo "PASS q1 inductive POC (Finalize + ModuleTwin + Aux + Maintenance + Edges + Q1Sql + conformance)"
+echo "PASS q1 inductive POC (Finalize + ModuleTwin + Aux + Maintenance + Edges + extract-diff)"
