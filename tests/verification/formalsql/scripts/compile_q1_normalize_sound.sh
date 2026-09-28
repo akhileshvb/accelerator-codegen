@@ -25,6 +25,7 @@ FLAGS=(
   -Q "$LOGOS/vendor/FormalSQL/src" SQLFS
   -Q "$LOGOS/theories" Logos
   -Q "$FSQL/lib" FormalSQLLib
+  -Q "$FSQL/logical" FormalSQLLogical
   -Q "$FSQL/resultspec" FormalSQLResultSpec
   -Q "$FSQL/q1/generated" LogosGenerated
   -Q "$FSQL/generated" JetStreamFS
@@ -38,10 +39,29 @@ compile_one() {
 
 cd "$FSQL"
 compile_one resultspec/QueryResultSpec.v
+compile_one resultspec/LogicalSpec.v
+compile_one resultspec/LogicalSpecSerialize.v
 compile_one resultspec/NormalizeQuery.v
+compile_one resultspec/NormalizeCompositional.v
 compile_one resultspec/EvalSpec.v
+compile_one resultspec/EvalLogicalSpec.v
+compile_one resultspec/NormalizeSoundGeneric.v
+# RelNode IR (semantic authority for public Eval_Spec)
+compile_one logical/SqlTypes.v
+compile_one logical/Schema.v
+compile_one logical/Expr.v
+compile_one logical/Agg.v
+compile_one logical/RelNode.v
+compile_one logical/Typing.v
+compile_one logical/Eval.v
 cd "$FSQL/q1"
 compile_one Q1ResultSpecNormalize.v
+compile_one Q1LogicalNormalize.v
+compile_one Q1EvalMigration.v
+compile_one Q1Schema.v
+compile_one Q1LogicalSpecTree.v
+compile_one Q1Adapt.v
+compile_one Q1RelNodeBridge.v
 compile_one Q1NormalizeSound.v
 
 echo "compile_q1_normalize_sound OK (NORMALIZE_SOUND_OK)"

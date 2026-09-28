@@ -47,6 +47,7 @@ tests/verification/formalsql/**/*.vos
 tests/verification/formalsql/**/*.glob
 tests/verification/formalsql/**/.*.aux
 tests/verification/formalsql/**/.lia.cache
+tests/verification/formalsql/**/.nia.cache
 tests/verification/formalsql/**/logos_log/
 tests/verification/formalsql/**/.logos-runtime-classpath.txt
 tests/verification/formalsql/**/logos_lower.err

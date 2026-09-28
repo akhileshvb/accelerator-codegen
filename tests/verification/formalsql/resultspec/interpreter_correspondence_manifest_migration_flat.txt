@@ -1,0 +1,30 @@
+# MIGRATION / REFERENCE scaffolding — flat expression-IR interpreter duals.
+#
+# NOT the canonical SpecExportCorrect (B) surface. Canonical RelNode:
+#   interpreter_correspondence_manifest.txt
+#   formalsql/logical/*  ↔  tests/verification/logical/dafny/*
+#
+# Flat duals live in resultspec/EvalLogicalSpec.{v} ↔ q1/dafny/EvalLogicalSpec.dfy.
+# Retained while RelNode↔flat observational proofs / flat DATA export still depend
+# on them. Presence is NOT semantic equivalence.
+#
+# FORBIDDEN as Spec authority (must not appear in this manifest):
+#   SpecApply SpecFinalizeOne SortByKey FinalizeKeys EvalResultSpec EvalSpec_Q1
+
+# Flat migration interpreter duals
+eval_expr       EvalExpr
+eval_pred       EvalPred
+eval_preds      EvalPreds
+filter_rows     FilterRows
+eval_exprs      EvalExprs
+agg_contrib     AggContrib
+aggs_contrib    AggsContrib
+acc_add_one     AccAddOne
+acc_add_row     AccAddRow
+store_add_row   StoreAddRow
+fold_groups     FoldGroups
+result_row_sort ResultRowSort
+Eval_Spec       Eval_Spec
+
+# Query-specific representation bridge (not generic interpreter)
+Q1Adapt         Q1Adapt

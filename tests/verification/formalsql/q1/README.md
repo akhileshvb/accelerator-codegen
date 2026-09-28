@@ -1,12 +1,13 @@
 # Q1 FormalSQL proofs
 
-Single status doc: **[STATUS.md](STATUS.md)**.
+Single status doc: **[STATUS.md](STATUS.md)** (points to
+[`../../q1/CURRENT_THEOREM_TCB.md`](../../q1/CURRENT_THEOREM_TCB.md) for TCB).
 
 ## Layout
 
 ```text
 q1/
-  STATUS.md                     # templatized delta, Qed, open leaves, TCB
+  STATUS.md                     # Qed table; TCB → q1/CURRENT_THEOREM_TCB.md
   catalog_base_sql.sql          # Cat(Q1) SQL instance (delta=90 filled)
   Q1Catalog.v                   # catalog hash pin
   generated/                    # Logos-lowered Schema/Queries/Witness

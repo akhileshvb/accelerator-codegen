@@ -1,7 +1,7 @@
 # Q1 FormalSQL status
 
-Full stack proof flow (SQL↔FormalSQL↔AuxAnswerSpec↔Dafny↔C++), TCB, and
-proving-time pain points: [`../../q1/PROOF_FLOW.md`](../../q1/PROOF_FLOW.md).
+**Canonical theorem / TCB:** [`../../q1/CURRENT_THEOREM_TCB.md`](../../q1/CURRENT_THEOREM_TCB.md).  
+Narrative proof flow: [`../../q1/PROOF_FLOW.md`](../../q1/PROOF_FLOW.md).
 
 ```text
 templatized Cat(Q1)[delta] --Logos shape--> qhat_Q1(delta)
@@ -77,12 +77,14 @@ Claim is **∀ `DeltaOk_Q1 delta`**, not only 90.
 | `FormalSQLAuxCorrect_Q1` | **Qed** under Pre + `Q1NumericSafe` + `NumericEmbedFaithful` |
 | `Q1_GroupsCorrespond_holds` | **Qed** from Pre + Faithful (`Q1_GroupBagsPerm` discharged) |
 
-## Open (∀ delta)
+## Residuals (∀ delta)
 
 | Item | Status | Remaining |
 |------|--------|-----------|
 | `Q1_GroupBagsPerm` | **Qed** (`Q1_GroupBagsPerm_holds`) | via SortedGroupResultFacade |
 | `NumericEmbedFaithful` | **TCB hyp** | Z folds ↔ FormalSQL NUMERIC SUM/AVG cells (representation only) |
+
+Full TCB taxonomy: [`../../q1/CURRENT_THEOREM_TCB.md`](../../q1/CURRENT_THEOREM_TCB.md).
 
 ### SpecView / value gap (do not fake)
 
@@ -105,6 +107,8 @@ Claim is **∀ `DeltaOk_Q1 delta`**, not only 90.
 1. Prefer `embed_avg_from_sum_scale2` ↔ `interp_avg_numeric_fixed` inside NumericEmbed.
 
 ## TCB
+
+Canonical: [`../../q1/CURRENT_THEOREM_TCB.md`](../../q1/CURRENT_THEOREM_TCB.md) §4–§5.
 
 > **A (overflow Safe):** `q1_group_bucket_safe_of_pre` — **Qed from Pre** (COUNT + SUM×4 + AVG×3). **Not TCB.**  
 > **`Q1NumericSafe DB`:** TPC-H domain + cardinality ⇒ no SqlError (overflow packaging; never values). `DeltaOk_Q1` is Rocq Pre.  

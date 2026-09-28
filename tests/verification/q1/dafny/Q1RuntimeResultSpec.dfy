@@ -1,7 +1,7 @@
-// Q1RuntimeResultSpec — Hit → Inv → ExecSeq ≈ EvalResultSpec (ResultSpec path).
+// Q1RuntimeResultSpec — Hit → Inv → ExecSeq ≈ RelNode Eval_Spec OutRows_rel.
 //
 // Retargets existing PairInv / SnapshotHitSafe / LocalWriteSafe substrate
-// (from Q1RuntimeAuxCorrect) to the new ResultSpec ExecCorrectOrdered endpoint.
+// (from Q1RuntimeAuxCorrect) to the RelNode ExecCorrectOrdered endpoint.
 // Does NOT redesign transaction semantics.
 //
 // Gates: SUBSTRATE_PROVED (SnapshotInv) + RUNTIME_EXEC_PROVED (Q1RuntimeCorrect).
@@ -19,6 +19,7 @@ module Q1RuntimeResultSpec {
   import F = Q1Finalize
   import Bridge = Q1ResultSpecBridge
   import Spec = Q1ResultSpec
+  import RelSpec = Q1RelNodeSpec
   import RT = Q1RuntimeAuxCorrect
   import SP = SnapshotPinning
   import RH = ReadHandle
@@ -49,7 +50,7 @@ module Q1RuntimeResultSpec {
     assert fold_pub == FoldTwin(db_S);
   }
 
-  // ----- Hit ⇒ sequence-level ≈_Q1 EvalResultSpec(DB(S), p) -----
+  // ----- Hit ⇒ sequence-level ≈_Q1 RelNode Eval_Spec_Q1_OutRows_rel(DB(S)) -----
 
   lemma Hit_implies_ExecApproxResultSpec(
     fold_pub: Store,
@@ -69,13 +70,15 @@ module Q1RuntimeResultSpec {
     requires RT.SnapshotHitSafe_Q1(true, S, t, db_t, db_S)
     ensures Bridge.ApproxQ1(
               Bridge.ExecSeqM(db_S, Spec.Cutoff(delta)),
-              Spec.EvalResultSpec(Bridge.AuxRowsToSpec(db_S), Spec.Cutoff(delta)))
+              RelSpec.Eval_Spec_Q1_OutRows_rel(
+                Spec.Cutoff(delta),
+                Bridge.AuxRowsToSpec(db_S)))
   {
     SnapshotInv(fold_pub, db_t, db_S, pending, local_writes, S, t, read_hit_complete);
     Bridge.Q1ExecCorrectOrdered(fold_pub, db_S, delta);
   }
 
-  // Q1RuntimeCorrect (model endpoint): Hit ⇒ ExecSeq ≈_Q1 EvalResultSpec(DB(S)).
+  // Q1RuntimeCorrect (model endpoint): Hit ⇒ ExecSeq ≈_Q1 RelNode OutRows_rel(DB(S)).
   // Cross-language composition with NormalizeSound_Q1 (Rocq) yields
   //   Hit ⇒ Exec ≈ Eval_FS(qhat, DB(S))
   // under SpecExportCorrect [TCB] + Corresponds_Q1 [TCB].
@@ -106,7 +109,9 @@ module Q1RuntimeResultSpec {
     ensures Q1RuntimeCorrect(
               true,
               Bridge.ExecSeqM(db_S, Spec.Cutoff(delta)),
-              Spec.EvalResultSpec(Bridge.AuxRowsToSpec(db_S), Spec.Cutoff(delta)))
+              RelSpec.Eval_Spec_Q1_OutRows_rel(
+                Spec.Cutoff(delta),
+                Bridge.AuxRowsToSpec(db_S)))
   {
     Hit_implies_ExecApproxResultSpec(
       fold_pub, db_t, db_S, pending, local_writes, S, t, delta, read_hit_complete);

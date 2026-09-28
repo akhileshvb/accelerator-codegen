@@ -1,0 +1,445 @@
+{
+  "authority": "rocq_serialize_LogicalSpec_Q1_rel_json",
+  "query": "q1",
+  "export": {
+    "version": "logical_spec_relnode_v1",
+    "table_lineitem": "lineitem",
+    "pred_shipdate": {
+      "kind": "binary",
+      "op": "le",
+      "left": {
+        "kind": "input_ref",
+        "slot": 0
+      },
+      "right": {
+        "kind": "param",
+        "id": "cutoff",
+        "ty": {
+          "kind": "date"
+        }
+      }
+    },
+    "group_exprs": [
+      {
+        "kind": "input_ref",
+        "slot": 5
+      },
+      {
+        "kind": "input_ref",
+        "slot": 6
+      }
+    ],
+    "aggs": [
+      {
+        "kind": "sum",
+        "expr": {
+          "kind": "input_ref",
+          "slot": 1
+        }
+      },
+      {
+        "kind": "sum",
+        "expr": {
+          "kind": "input_ref",
+          "slot": 2
+        }
+      },
+      {
+        "kind": "sum",
+        "expr": {
+          "kind": "binary",
+          "op": "mul",
+          "left": {
+            "kind": "input_ref",
+            "slot": 2
+          },
+          "right": {
+            "kind": "binary",
+            "op": "sub",
+            "left": {
+              "kind": "const",
+              "value": {
+                "kind": "int",
+                "value": 100
+              },
+              "ty": {
+                "kind": "numeric",
+                "scale": 2
+              }
+            },
+            "right": {
+              "kind": "input_ref",
+              "slot": 3
+            }
+          }
+        }
+      },
+      {
+        "kind": "sum",
+        "expr": {
+          "kind": "binary",
+          "op": "mul",
+          "left": {
+            "kind": "binary",
+            "op": "mul",
+            "left": {
+              "kind": "input_ref",
+              "slot": 2
+            },
+            "right": {
+              "kind": "binary",
+              "op": "sub",
+              "left": {
+                "kind": "const",
+                "value": {
+                  "kind": "int",
+                  "value": 100
+                },
+                "ty": {
+                  "kind": "numeric",
+                  "scale": 2
+                }
+              },
+              "right": {
+                "kind": "input_ref",
+                "slot": 3
+              }
+            }
+          },
+          "right": {
+            "kind": "binary",
+            "op": "add",
+            "left": {
+              "kind": "const",
+              "value": {
+                "kind": "int",
+                "value": 100
+              },
+              "ty": {
+                "kind": "numeric",
+                "scale": 2
+              }
+            },
+            "right": {
+              "kind": "input_ref",
+              "slot": 4
+            }
+          }
+        }
+      },
+      {
+        "kind": "avg",
+        "expr": {
+          "kind": "input_ref",
+          "slot": 1
+        }
+      },
+      {
+        "kind": "avg",
+        "expr": {
+          "kind": "input_ref",
+          "slot": 2
+        }
+      },
+      {
+        "kind": "avg",
+        "expr": {
+          "kind": "input_ref",
+          "slot": 3
+        }
+      },
+      {
+        "kind": "count_star"
+      }
+    ],
+    "project_exprs": [
+      {
+        "kind": "group_ref",
+        "i": 0
+      },
+      {
+        "kind": "group_ref",
+        "i": 1
+      },
+      {
+        "kind": "agg_ref",
+        "i": 0
+      },
+      {
+        "kind": "agg_ref",
+        "i": 1
+      },
+      {
+        "kind": "agg_ref",
+        "i": 2
+      },
+      {
+        "kind": "agg_ref",
+        "i": 3
+      },
+      {
+        "kind": "agg_ref",
+        "i": 4
+      },
+      {
+        "kind": "agg_ref",
+        "i": 5
+      },
+      {
+        "kind": "agg_ref",
+        "i": 6
+      },
+      {
+        "kind": "agg_ref",
+        "i": 7
+      }
+    ],
+    "order_keys": [
+      {
+        "expr": {
+          "kind": "input_ref",
+          "slot": 0
+        },
+        "dir": "asc",
+        "nulls": "last"
+      },
+      {
+        "expr": {
+          "kind": "input_ref",
+          "slot": 1
+        },
+        "dir": "asc",
+        "nulls": "last"
+      }
+    ],
+    "tree": {
+      "kind": "sort",
+      "input": {
+        "kind": "project",
+        "input": {
+          "kind": "aggregate",
+          "input": {
+            "kind": "filter",
+            "input": {
+              "kind": "scan",
+              "table": "lineitem"
+            },
+            "pred": {
+              "kind": "binary",
+              "op": "le",
+              "left": {
+                "kind": "input_ref",
+                "slot": 0
+              },
+              "right": {
+                "kind": "param",
+                "id": "cutoff",
+                "ty": {
+                  "kind": "date"
+                }
+              }
+            }
+          },
+          "group_exprs": [
+            {
+              "kind": "input_ref",
+              "slot": 5
+            },
+            {
+              "kind": "input_ref",
+              "slot": 6
+            }
+          ],
+          "aggs": [
+            {
+              "kind": "sum",
+              "expr": {
+                "kind": "input_ref",
+                "slot": 1
+              }
+            },
+            {
+              "kind": "sum",
+              "expr": {
+                "kind": "input_ref",
+                "slot": 2
+              }
+            },
+            {
+              "kind": "sum",
+              "expr": {
+                "kind": "binary",
+                "op": "mul",
+                "left": {
+                  "kind": "input_ref",
+                  "slot": 2
+                },
+                "right": {
+                  "kind": "binary",
+                  "op": "sub",
+                  "left": {
+                    "kind": "const",
+                    "value": {
+                      "kind": "int",
+                      "value": 100
+                    },
+                    "ty": {
+                      "kind": "numeric",
+                      "scale": 2
+                    }
+                  },
+                  "right": {
+                    "kind": "input_ref",
+                    "slot": 3
+                  }
+                }
+              }
+            },
+            {
+              "kind": "sum",
+              "expr": {
+                "kind": "binary",
+                "op": "mul",
+                "left": {
+                  "kind": "binary",
+                  "op": "mul",
+                  "left": {
+                    "kind": "input_ref",
+                    "slot": 2
+                  },
+                  "right": {
+                    "kind": "binary",
+                    "op": "sub",
+                    "left": {
+                      "kind": "const",
+                      "value": {
+                        "kind": "int",
+                        "value": 100
+                      },
+                      "ty": {
+                        "kind": "numeric",
+                        "scale": 2
+                      }
+                    },
+                    "right": {
+                      "kind": "input_ref",
+                      "slot": 3
+                    }
+                  }
+                },
+                "right": {
+                  "kind": "binary",
+                  "op": "add",
+                  "left": {
+                    "kind": "const",
+                    "value": {
+                      "kind": "int",
+                      "value": 100
+                    },
+                    "ty": {
+                      "kind": "numeric",
+                      "scale": 2
+                    }
+                  },
+                  "right": {
+                    "kind": "input_ref",
+                    "slot": 4
+                  }
+                }
+              }
+            },
+            {
+              "kind": "avg",
+              "expr": {
+                "kind": "input_ref",
+                "slot": 1
+              }
+            },
+            {
+              "kind": "avg",
+              "expr": {
+                "kind": "input_ref",
+                "slot": 2
+              }
+            },
+            {
+              "kind": "avg",
+              "expr": {
+                "kind": "input_ref",
+                "slot": 3
+              }
+            },
+            {
+              "kind": "count_star"
+            }
+          ]
+        },
+        "exprs": [
+          {
+            "kind": "group_ref",
+            "i": 0
+          },
+          {
+            "kind": "group_ref",
+            "i": 1
+          },
+          {
+            "kind": "agg_ref",
+            "i": 0
+          },
+          {
+            "kind": "agg_ref",
+            "i": 1
+          },
+          {
+            "kind": "agg_ref",
+            "i": 2
+          },
+          {
+            "kind": "agg_ref",
+            "i": 3
+          },
+          {
+            "kind": "agg_ref",
+            "i": 4
+          },
+          {
+            "kind": "agg_ref",
+            "i": 5
+          },
+          {
+            "kind": "agg_ref",
+            "i": 6
+          },
+          {
+            "kind": "agg_ref",
+            "i": 7
+          }
+        ]
+      },
+      "order_keys": [
+        {
+          "expr": {
+            "kind": "input_ref",
+            "slot": 0
+          },
+          "dir": "asc",
+          "nulls": "last"
+        },
+        {
+          "expr": {
+            "kind": "input_ref",
+            "slot": 1
+          },
+          "dir": "asc",
+          "nulls": "last"
+        }
+      ]
+    },
+    "catalog_params": {
+      "cutoff": 10471,
+      "base_date": 10561
+    },
+    "catalog_delta": 90
+  }
+}

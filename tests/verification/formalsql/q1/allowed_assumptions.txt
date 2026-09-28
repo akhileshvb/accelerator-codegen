@@ -1,0 +1,14 @@
+# Axioms and admitted constants that Print Assumptions may report for
+# FormalSQLSpecCorrect_Q1, NormalizeSound_generic, and NormalizeSound_Q1.
+# One qualified name per line. Empty (comments only) means closed under
+# the global context.
+# Theorem premises (Preconditions_Q1, Q1NumericSafe, NumericEmbedFaithful)
+# are not axioms and must not be listed here.
+#
+# Stdlib classical / reals infrastructure pulled by FormalSQL/Logos stack
+# (not query-specific residuals):
+ClassicalDedekindReals.sig_not_dec
+ClassicalDedekindReals.sig_forall_dec
+ProofIrrelevance.proof_irrelevance
+FunctionalExtensionality.functional_extensionality_dep
+Classical_Prop.classic

@@ -1,13 +1,10 @@
-// GENERATED companion for Rocq QueryResultSpec / NormalizeQuery — Q1 PoC.
-// SpecExportCorrect(S_Q1, this module) is TCB (hash-checked dual of Rocq Spec).
+// GENERATED companion for Rocq QueryResultSpec / NormalizeQuery — Q1.
+// MIGRATION / REFERENCE SCAFFOLDING ONLY — not Spec authority (Phase 4).
+// Canonical cross-language Spec is Rocq LogicalSpec DATA + generic Eval_Spec
+// (see LogicalSpecData.dfy / EvalLogicalSpec.dfy and SpecExportCorrect gate).
+// This module may still be used by migration lemmas (Eval_Spec ↔ EvalResultSpec).
 // source: formalsql/resultspec/QueryResultSpec.v + NormalizeQuery.v
 // source_sha256=q1-resultspec-poc-v1
-//
-// Trusted surface (shrunk):
-//   Q1ResultSpecData.dfy  — AST / constants only (dual of Rocq QueryResultSpec.v)
-//   this file             — evaluator over that AST (filter/group/agg/order)
-// Pin still checks both; semantic TCB is now "data transcription + that this
-// evaluator matches Rocq EvalSpec_Q1", not an opaque monolithic dual.
 
 include "Q1ResultSpecData.dfy"
 

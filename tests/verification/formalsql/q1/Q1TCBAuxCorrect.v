@@ -276,6 +276,9 @@ Qed.
 
 (** * Restated AuxCorrect under the TCB boundary *)
 
+(** Internal AuxAnswerSpec correctness (migration/reference). Public SQL-path
+    name [FormalSQLSpecCorrect_Q1] is the Phase-3 Eval_Spec retarget in
+    [Q1NormalizeSound.v]. *)
 Theorem FormalSQLAuxCorrect_Q1 :
   forall db delta,
     Preconditions_Q1 db delta ->

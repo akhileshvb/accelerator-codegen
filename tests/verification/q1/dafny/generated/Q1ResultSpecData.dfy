@@ -1,6 +1,6 @@
 // GENERATED data-only dual of Rocq QueryResultSpec.v (Q1).
-// SpecExportCorrect shrink: this module is the trusted AST transcription;
-// evaluation lives in Q1ResultSpec.dfy (generic-ish fold/finalize over this data).
+// MIGRATION / REFERENCE SCAFFOLDING ONLY — not Spec authority (Phase 4).
+// Canonical query Spec DATA is LogicalSpecData.dfy (Rocq-exported expression-IR).
 // source: formalsql/resultspec/QueryResultSpec.v
 // source_sha256=q1-resultspec-poc-v1
 //

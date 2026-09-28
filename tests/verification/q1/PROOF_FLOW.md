@@ -9,10 +9,18 @@ Companion docs:
 
 | Doc | Role |
 |-----|------|
+| [`CURRENT_THEOREM_TCB.md`](CURRENT_THEOREM_TCB.md) | **Canonical** current theorem / TCB summary |
 | [`../PIPELINE.md`](../PIPELINE.md) | Cross-query architecture claim |
 | [`../README.md`](../README.md) | Operational file / runner map |
-| [`../formalsql/q1/STATUS.md`](../formalsql/q1/STATUS.md) | Live Rocq Qed / open residuals |
+| [`../formalsql/q1/STATUS.md`](../formalsql/q1/STATUS.md) | Live Rocq Qed table (points here for TCB) |
 | [`../formalsql/PIN.md`](../formalsql/PIN.md) | Logos / FormalSQL pin |
+| [`TWIN_AUX_HARD_BRANCHES.md`](TWIN_AUX_HARD_BRANCHES.md) | Twin HB loci only |
+| [`SOURCE_MAP.md`](SOURCE_MAP.md) | CorrespondsCppTwin pin |
+
+Historical campaign notes ([`ASSURANCE_STRENGTHEN_REPORT.md`](ASSURANCE_STRENGTHEN_REPORT.md),
+[`ASSURANCE_TCB_REDUCE_REPORT.md`](ASSURANCE_TCB_REDUCE_REPORT.md),
+[`RESULTSPEC_POC_STATUS.md`](RESULTSPEC_POC_STATUS.md)) must not override
+[`CURRENT_THEOREM_TCB.md`](CURRENT_THEOREM_TCB.md).
 
 ---
 
@@ -149,13 +157,14 @@ FormalSQLAuxCorrect_Q1 :
   Preconditions_Q1 db delta →
   Q1NumericSafe db →
   NumericEmbedFaithful →          (* TCB: numeric representation *)
-  Q1_GroupBagsPerm db delta →     (* residual: SpecView↔groups bag order *)
   FormalSQL_exec (EmbedDB db) delta
     (EmbedResult (AuxAnswerSpec db (EmbedParams delta)))
 ```
 
-`FormalSQLNoError_Q1` is separately Qed under Pre + `Q1NumericSafe` (overflow
-packaging only).
+`Q1_GroupBagsPerm` is **Qed** (`Q1_GroupBagsPerm_holds`) and is not a hyp of the
+final theorem. `FormalSQLNoError_Q1` is separately Qed under Pre + `Q1NumericSafe`.
+
+Canonical residuals: [`CURRENT_THEOREM_TCB.md`](CURRENT_THEOREM_TCB.md).
 
 ### 1.6 Downward proof flow (chronological / dependency)
 
@@ -168,12 +177,12 @@ packaging only).
 6. Discharge bucket Safe from Pre (digit budget + AVG finalize)
 7. Bag↔key: FormalSQL groups ↔ Aux RowKey buckets (Qed)
 8. Per-bucket select_values = OutRow embeds under NumericEmbedFaithful (Qed)
-9. Sort / outer bridges (Qed); GroupsCorrespond_holds under GroupBagsPerm
-10. Assert FormalSQLAuxCorrect_Q1 under Faithful + GroupBagsPerm
+9. Sort / outer bridges (Qed); `Q1_GroupsCorrespond_holds` (GroupBagsPerm discharged)
+10. `FormalSQLAuxCorrect_Q1` under Pre + Safe + `NumericEmbedFaithful`
 ```
 
-Open downward residuals: **`NumericEmbedFaithful`**, **`Q1_GroupBagsPerm`**
-(see STATUS.md).
+Open downward residual: **`NumericEmbedFaithful`** only
+(see [`CURRENT_THEOREM_TCB.md`](CURRENT_THEOREM_TCB.md); `Q1_GroupBagsPerm` Qed).
 
 ---
 
@@ -251,17 +260,22 @@ Deprecated as SQL authority (do not deepen): `Q1SqlSem.dfy` / `MathSem` in
 
 ```text
 JetStreamFormalSQLCorrect (composed, not one cross-prover theorem):
-  Rocq FormalSQLAuxCorrect_Q1   (under Pre + Safe + Faithful + GroupBagsPerm)
-    ⊕ Dafny RuntimeAuxCorrect   (hit ⇒ AuxAnswerTwin(VisibleDB))
+  Rocq FormalSQLAuxCorrect_Q1   (under Pre + Safe + NumericEmbedFaithful)
+    ⊕ Dafny Twin↔Aux closed package + RuntimeAuxCorrect
     ⊕ AuxSpec hash / dual-emission bridge
-    ⊕ finite extract-diff + PG differential on C++
+    ⊕ SpecExportCorrect + finite extract-diff / cpp_model
 ```
 
 Proved edges **stop** at the Dafny/runtime model. C++ is RepPhys + finite check.
+Full listing: [`CURRENT_THEOREM_TCB.md`](CURRENT_THEOREM_TCB.md).
 
 ---
 
 ## 4. Trusted Computing Base (TCB)
+
+**Canonical current list:** [`CURRENT_THEOREM_TCB.md`](CURRENT_THEOREM_TCB.md).
+Historical subsections below are retained for narrative; if they conflict, the
+canonical file wins.
 
 ### 4.1 Assumed / not proved by this stack
 
@@ -275,10 +289,10 @@ Proved edges **stop** at the Dafny/runtime model. C++ is RepPhys + finite check.
 | **`NumericEmbedFaithful`** | Z aggregate coefficients ↔ FormalSQL NUMERIC SUM/AVG cells (representation only; **does not** choose group membership) |
 | PostgreSQL executor for supported fragment | Engine ≡ FormalSQL assumed for live runs |
 | SPI/heap → abstract DB; snapshot S → DB(S) | Substrate abstraction |
-| Twin ↔ C++ beyond extract-diff grid D | Universal compiler correctness not claimed |
+| Twin ↔ C++ beyond extract-diff grid D | Universal compiler correctness not claimed (`cpp_model`) |
 | AuxSpec generator (hash-checked dual emission) | Shared Spec text faithfulness |
 | Unsupported FormalSQL/PG features | Fail closed — never approximated |
-
+| Twin SPI: `AggsFaithful`; free `RebuildOracleCorrect` | Intentional; see canonical §2 |
 ### 4.2 Explicitly **not** TCB (proved or intended proved)
 
 | Item | Status |
@@ -288,9 +302,10 @@ Proved edges **stop** at the Dafny/runtime model. C++ is RepPhys + finite check.
 | SpecView Z-field sum/count bridges | Qed |
 | Bag↔key FormalSQL groups ↔ Aux RowKey | Qed |
 | Per-bucket select_values = OutRow embeds (under Faithful) | Qed |
-| Sort / outer finalize bridges (under bag residual) | Qed |
+| Sort / outer finalize bridges | Qed (`Q1_GroupBagsPerm` discharged) |
 | TwinOp ≡ SpecOp, FoldTwin = FoldSpec | Dafny Qed |
 | Inv + MaintenancePreservesInv + edges | Dafny Qed |
+| Twin↔Aux closed package (ComposeOutput, BuiltInv, HB1–HB4) | Dafny Qed — [`CURRENT_THEOREM_TCB.md`](CURRENT_THEOREM_TCB.md) |
 | RuntimeAuxCorrect model lemmas | Dafny Qed |
 
 ### 4.3 Narrow open residuals (honest)
@@ -298,7 +313,11 @@ Proved edges **stop** at the Dafny/runtime model. C++ is RepPhys + finite check.
 | Residual | Kind | What it must **not** smuggle |
 |----------|------|------------------------------|
 | `NumericEmbedFaithful` | TCB hyp | Group membership / which rows contribute |
-| `Q1_GroupBagsPerm` | Proof residual | SpecView↔`query_make_groups` **assembly order** of already-matched bags (not cell values) |
+| `AggsFaithful` | Twin SPI | Unfinished Twin bookkeeping (it is intentional agg-scan morphism) |
+| `RebuildOracleCorrect` (free oracle/load) | Twin SPI | Lineitem BuildState already discharges it |
+| `cpp_model` / SpecExportCorrect / AvgObservation | Substrate / export / float8 | See canonical §3–§5 |
+
+`Q1_GroupBagsPerm` is **Qed** — do not list it as open.
 
 Do **not** TCB `q1_final_rows_of = EmbedResult(AuxAnswerSpec)` wholesale — that
 would assume AuxCorrect.
@@ -426,14 +445,15 @@ scripts/run_verification_q1.sh          # Dafny + extract stack
 | Direction | Claim | Tool |
 |-----------|-------|------|
 | SQL → FormalSQL | Catalog lowers to `q̂_Q1(δ)` | Logos (TCB lowering) |
-| FormalSQL → AuxAnswerSpec | Successful eval = EmbedResult(AuxAnswerSpec) | Rocq (under Faithful + GroupBagsPerm) |
-| C++ → Twin | Structural twins + extract-diff grid D | Dafny / C# |
-| Twin → AuxAnswerSpec | TwinOp ≡ SpecOp; FoldTwin = FoldSpec | Dafny |
-| State under maintenance | `Inv(store,t) ⇔ store = FoldTwin(t)`; preserved by StageMaintenance | `Q1Aux` + `Q1Maintenance` |
+| FormalSQL → AuxAnswerSpec | Successful eval = EmbedResult(AuxAnswerSpec) | Rocq (under Pre + Safe + `NumericEmbedFaithful`) |
+| C++ → Twin | Structural twins + extract-diff grid D | Dafny / C# (`cpp_model`) |
+| Twin → AuxAnswerSpec | TwinOp ≡ SpecOp; FoldTwin = FoldSpec; ComposeOutput≡ExecSeqM | Dafny (closed package) |
+| State under maintenance | `Inv(store,t) ⇔ store = FoldTwin(t)`; preserved by StageMaintenance | `Q1Aux` + `Q1Maintenance` + Twin close |
 | Runtime hit | Execute(h) = AuxAnswerTwin(VisibleDB) | `Q1RuntimeAuxCorrect` + substrate |
 
 **Most proving time:** Rocq FormalSQL↔AuxSpec numeric/group-obs handshake and
 reusable leaf facades — not Dafny Inv/maintenance.
 
-**Largest remaining Rocq debt:** discharge or keep-as-TCB
-`NumericEmbedFaithful`; discharge `Q1_GroupBagsPerm` (bag assembly order).
+**Current residuals:** [`CURRENT_THEOREM_TCB.md`](CURRENT_THEOREM_TCB.md)
+(`NumericEmbedFaithful`, Twin SPI, `cpp_model`, SpecExport / AvgObservation).
+`Q1_GroupBagsPerm` is Qed.

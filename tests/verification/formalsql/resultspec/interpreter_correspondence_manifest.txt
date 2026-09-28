@@ -1,0 +1,39 @@
+# SpecExportCorrect (B) — CANONICAL RelNode Rocq↔Dafny interpreter correspondence.
+#
+# Primary cross-prover surface:
+#   formalsql/logical/*  ↔  tests/verification/logical/dafny/*
+#
+# Format (one pair per line):  <rocq_name>  <dafny_name>
+#
+# This gate verifies that each named dual EXISTS in logical/Eval.v and
+# logical/dafny/EvalLogicalSpec.dfy. Presence is NOT semantic equivalence.
+# Cross-prover agreement of these implementations is residual TCB
+# (see GENERIC_INTERPRETER_TCB.md).
+#
+# Growing this list is an explicit TCB expansion — never a catch-all.
+#
+# FORBIDDEN as Spec authority (must not appear in this manifest):
+#   SpecApply SpecFinalizeOne SortByKey FinalizeKeys EvalResultSpec EvalSpec_Q1
+#
+# Query-specific adapters (Q1Adapt ↔ Q1AdaptRel) are checked separately —
+# not listed here.
+#
+# Flat expression-IR duals: interpreter_correspondence_manifest_migration_flat.txt
+
+# Canonical RelNode interpreter duals (fixed residual TCB)
+eval_expr        EvalExpr
+eval_pred_keep   EvalPredKeep
+filter_rows      FilterRows
+eval_exprs       EvalExprs
+project_rows     ProjectRows
+project_agg_rows ProjectAggRows
+aggs_contrib     AggsContrib
+acc_add_one      AccAddOne
+acc_add_row      AccAddRow
+store_add_row    StoreAddRow
+fold_groups      FoldGroups
+finalize_acc     FinalizeAcc
+run_aggregate    RunAggregate
+result_row_sort  ResultRowSort
+eval_rel         EvalRel
+Eval_Spec        Eval_Spec

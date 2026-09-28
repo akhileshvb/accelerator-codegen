@@ -5,13 +5,14 @@
 // Pattern-generic induction lives here as Filter/Fold/Compose eqs;
 // reusable ordering algebra: SortedUniqueMap.SameMapSameSortedSeq.
 // PGA recipe + shared Rocq facades: tests/verification/patterns/PartitionedGroupAggregate.md
-//   and tests/verification/REUSE_LIBRARY_REPORT.md.
 //
 // Does NOT use AuxAnswerSpec / Q1TwinSpecBridge / FormalSQLAuxCorrect.
 
 include "generated/Q1ResultSpec.dfy"
 include "Q1Aux.dfy"
 include "Q1Finalize.dfy"
+include "EvalLogicalSpec.dfy"
+include "Q1RelNodeBridge.dfy"
 include "../../patterns/dafny/SortedUniqueMap.dfy"
 
 module Q1ResultSpecBridge {
@@ -20,6 +21,10 @@ module Q1ResultSpecBridge {
   import opened Q1Aux
   import F = Q1Finalize
   import SU = SortedUniqueMap
+  import ELS = EvalLogicalSpec
+  import LSD = LogicalSpecData
+  import RelSpec = Q1RelNodeSpec
+  import RelBridge = Q1RelNodeBridge
 
   // ----- Q1-SPECIFIC morphisms Aux ↔ Spec -----
 
@@ -667,49 +672,58 @@ module Q1ResultSpecBridge {
   }
 
   // Full sequence-level theorem (ORDERING_PROVED gate).
+  // Public target: RelNode Eval_Spec ∘ Q1Adapt (Eval_Spec_Q1_OutRows_rel).
+  // Flat Eval_Spec_Q1_OutRows / EvalResultSpec appear only as migration rewrites.
   lemma Q1ExecCorrectOrdered(store: Store, db: seq<Row>, delta: int)
     requires forall i :: 0 <= i < |db| ==> 0 <= db[i].rf < 256 && 0 <= db[i].ls < 256
     requires Inv(store, db)
     ensures ApproxQ1(
               ExecSeqM(db, Spec.Cutoff(delta)),
-              Spec.EvalResultSpec(AuxRowsToSpec(db), Spec.Cutoff(delta)))
+              RelSpec.Eval_Spec_Q1_OutRows_rel(
+                Spec.Cutoff(delta),
+                AuxRowsToSpec(db)))
   {
     var cutoff := Spec.Cutoff(delta);
     var accel := ExecSeqM(db, cutoff);
-    var specr := Spec.EvalResultSpec(AuxRowsToSpec(db), cutoff);
+    var spec_db := AuxRowsToSpec(db);
+    var legacy := Spec.EvalResultSpec(spec_db, cutoff);
+    var ir := RelSpec.Eval_Spec_Q1_OutRows_rel(cutoff, spec_db);
 
     Q1ExecCorrect(store, db, delta);
     Compose_eq_SpecView(db, cutoff);
     Compose_keys_ok(db, cutoff);
-    Spec.SpecView_keys_ok(AuxRowsToSpec(db), cutoff);
+    Spec.SpecView_keys_ok(spec_db, cutoff);
 
     // Same ascending Pack-key lists on both sides
     AuxKeysFrom_domain_eq(0, 65536, Compose(db, cutoff),
-                          Spec.SpecView(AuxRowsToSpec(db), cutoff));
+                          Spec.SpecView(spec_db, cutoff));
 
     ExecSeqM_strict_sorted(db, cutoff);
-    Spec.EvalResultSpec_sorted(AuxRowsToSpec(db), cutoff);
+    Spec.EvalResultSpec_sorted(spec_db, cutoff);
 
     forall k
-      ensures HasOutKey(accel, k) <==> HasSpecKey(specr, k)
+      ensures HasOutKey(accel, k) <==> HasSpecKey(legacy, k)
     {
       ExecSeqM_HasKey(db, cutoff, k);
-      Spec.EvalResultSpec_HasKey(AuxRowsToSpec(db), cutoff, k);
+      Spec.EvalResultSpec_HasKey(spec_db, cutoff, k);
     }
 
-    forall i, j | 0 <= i < |accel| && 0 <= j < |specr| &&
-                  accel[i].group_key == specr[j].group_key
-      ensures ApproxQ1Row(accel[i], specr[j])
+    forall i, j | 0 <= i < |accel| && 0 <= j < |legacy| &&
+                  accel[i].group_key == legacy[j].group_key
+      ensures ApproxQ1Row(accel[i], legacy[j])
     {
       var g := accel[i].group_key;
       ExecSeqM_row_at_key(db, cutoff, i);
       SpecEval_row_at_key(db, cutoff, j);
       assert ApproxQ1Row(ExecM_group(db, cutoff, g), EvalSpec_group(db, cutoff, g));
       assert accel[i] == ExecM_group(db, cutoff, g);
-      assert specr[j] == EvalSpec_group(db, cutoff, g);
+      assert legacy[j] == EvalSpec_group(db, cutoff, g);
     }
 
-    ApproxQ1_of_strict_sorted_same_keys(accel, specr);
+    ApproxQ1_of_strict_sorted_same_keys(accel, legacy);
+    // RelNode OutRows_rel == EvalResultSpec (via Q1RelNodeBridge)
+    RelBridge.Eval_Spec_Q1_OutRows_rel_eq_EvalResultSpec(cutoff, spec_db);
+    assert ir == legacy;
   }
 }
 
