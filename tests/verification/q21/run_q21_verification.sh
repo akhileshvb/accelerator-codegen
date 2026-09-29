@@ -30,6 +30,16 @@ run() {  # run <name> <cmd...>
   fi
 }
 
+# [0] Build the Rocq prerequisites from source so the gate is self-contained
+#     on a fresh checkout (the Stage 2 chain, the RelNode export and the
+#     interpreter-pin dump import these .vo files; nothing prebuilt is reused).
+prereqs() {
+  bash "$FSQL/scripts/compile_logical_ir.sh" &&
+  bash "$FSQL/scripts/compile_q1_proof.sh" &&
+  bash "$FSQL/scripts/compile_q1_normalize_sound.sh"
+}
+run rocq_prereqs prereqs
+
 # [1] Catalog / Logos pin: catalog base_sql hash == pinned hash == Rocq constant.
 catalog_pin() {
   python3 - "$ROOT" <<'PY'

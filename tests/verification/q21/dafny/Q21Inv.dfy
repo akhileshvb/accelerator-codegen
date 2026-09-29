@@ -434,7 +434,7 @@ module Q21Inv {
     Rows_eq_SQL(EmitResult(st, ei), T, nn);
   }
 
-  lemma SlowSingle_ok(T: TDB, nn: string, snap: map<int, TImage>)
+  lemma {:isolate_assertions} SlowSingle_ok(T: TDB, nn: string, snap: map<int, TImage>)
     requires KeysOk(T) && DomOk(T) && StoreInv(snap, T)
     requires kNationNameIndex in snap
     requires var idx := snap[kNationNameIndex].state.nation_name_to_keys;
