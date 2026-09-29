@@ -200,10 +200,6 @@ void ApplyLineitemInput(const TpchQ1LineitemInput &input,
       ScaleToRaw(input.tax_raw, input.tax_scale, 2), 1);
 }
 
-int64_t HugeintLower(const duckdb::hugeint_t &value) {
-  return static_cast<int64_t>(value.lower);
-}
-
 } // namespace
 
 std::vector<uint8_t> EncodeTpchQ1Day(const Q1DayPartition &partition) {
@@ -613,16 +609,22 @@ bool TpchQ1Module::LoadPartitions(
 void TpchQ1Module::EmitResult(
     const std::vector<::accelerator_codegen::Q1OutputRow> &rows,
     core::AuxRowSink &sink) const {
+  // Numeric columns are emitted as PostgreSQL numeric text (exact, any
+  // width); PgSink converts text to numeric for NUMERIC result columns.
   sink.Begin({{{"l_returnflag", core::AuxType::String, false},
                {"l_linestatus", core::AuxType::String, false},
-               {"sum_qty", core::AuxType::ScaledDecimal, false},
-               {"sum_base_price", core::AuxType::ScaledDecimal, false},
-               {"sum_disc_price", core::AuxType::ScaledDecimal, false},
-               {"sum_charge", core::AuxType::ScaledDecimal, false},
-               {"avg_qty", core::AuxType::Double, false},
-               {"avg_price", core::AuxType::Double, false},
-               {"avg_disc", core::AuxType::Double, false},
+               {"sum_qty", core::AuxType::String, false},
+               {"sum_base_price", core::AuxType::String, false},
+               {"sum_disc_price", core::AuxType::String, false},
+               {"sum_charge", core::AuxType::String, false},
+               {"avg_qty", core::AuxType::String, false},
+               {"avg_price", core::AuxType::String, false},
+               {"avg_disc", core::AuxType::String, false},
                {"count_order", core::AuxType::Int64, false}}});
+  namespace pgn = ::accelerator_codegen::pg_numeric;
+  const auto numeric = [](std::string text) {
+    return core::AuxValue::Of(core::AuxType::String, std::move(text));
+  };
   for (const auto &row : rows) {
     sink.WriteRow(
         {{core::AuxValue::Of(
@@ -631,20 +633,13 @@ void TpchQ1Module::EmitResult(
           core::AuxValue::Of(
               core::AuxType::String,
               ::accelerator_codegen::UnpackQ1Linestatus(row.group_key)),
-          core::AuxValue::Of(core::AuxType::ScaledDecimal,
-                             core::ScaledDecimal{HugeintLower(row.sum_qty), 2}),
-          core::AuxValue::Of(
-              core::AuxType::ScaledDecimal,
-              core::ScaledDecimal{HugeintLower(row.sum_base_price), 2}),
-          core::AuxValue::Of(
-              core::AuxType::ScaledDecimal,
-              core::ScaledDecimal{HugeintLower(row.sum_disc_price), 4}),
-          core::AuxValue::Of(
-              core::AuxType::ScaledDecimal,
-              core::ScaledDecimal{HugeintLower(row.sum_charge), 6}),
-          core::AuxValue::Of(core::AuxType::Double, row.avg_qty),
-          core::AuxValue::Of(core::AuxType::Double, row.avg_price),
-          core::AuxValue::Of(core::AuxType::Double, row.avg_disc),
+          numeric(pgn::ToText(row.sum_qty, 2)),
+          numeric(pgn::ToText(row.sum_base_price, 2)),
+          numeric(pgn::ToText(row.sum_disc_price, 4)),
+          numeric(pgn::ToText(row.sum_charge, 6)),
+          numeric(pgn::ToText(row.avg_qty)),
+          numeric(pgn::ToText(row.avg_price)),
+          numeric(pgn::ToText(row.avg_disc)),
           core::AuxValue::Of(core::AuxType::Int64, row.count_order)}});
   }
   sink.End();

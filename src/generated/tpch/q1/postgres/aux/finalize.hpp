@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "accelerator_codegen/stateful/core/pg_numeric.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 
 namespace accelerator_codegen {
@@ -39,15 +40,18 @@ struct Q1MergedGroupStats {
 	Q1AccT sum_discount = 0;
 };
 
+// Exact PostgreSQL NUMERIC results: sums are integer coefficients at scales
+// 2 / 2 / 4 / 6; averages are avg(numeric) of the scale-2 sums
+// (pg_numeric::AvgOfScaledSum: PostgreSQL result scale, half away from zero).
 struct Q1OutputRow {
 	Q1GroupKey group_key = 0;
-	duckdb::hugeint_t sum_qty {};
-	duckdb::hugeint_t sum_base_price {};
-	duckdb::hugeint_t sum_disc_price {};
-	duckdb::hugeint_t sum_charge {};
-	double avg_qty = 0.0;
-	double avg_price = 0.0;
-	double avg_disc = 0.0;
+	Q1AccT sum_qty = 0;
+	Q1AccT sum_base_price = 0;
+	Q1AccT sum_disc_price = 0;
+	Q1AccT sum_charge = 0;
+	pg_numeric::Decimal avg_qty {};
+	pg_numeric::Decimal avg_price {};
+	pg_numeric::Decimal avg_disc {};
 	int64_t count_order = 0;
 };
 

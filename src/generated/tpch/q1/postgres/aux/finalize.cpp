@@ -11,18 +11,7 @@
 namespace accelerator_codegen {
 namespace {
 
-constexpr uint8_t kDecimalScale2 = 2;
-constexpr uint8_t kDecimalScale4 = 4;
-constexpr uint8_t kDecimalScale6 = 6;
-constexpr uint8_t kDecimalWidth38 = 38;
-
-duckdb::hugeint_t AccToHugeint(Q1AccT value) {
-#if defined(__SIZEOF_INT128__)
-	return duckdb::hugeint_t(static_cast<int64_t>(value >> 64), static_cast<uint64_t>(value));
-#else
-	return duckdb::hugeint_t(value);
-#endif
-}
+constexpr int kDecimalScale2 = 2;
 
 inline void AddAcc(Q1AccT &accumulator, Q1AccT value) {
 	accumulator += value;
@@ -30,20 +19,6 @@ inline void AddAcc(Q1AccT &accumulator, Q1AccT value) {
 
 inline void AddAcc(Q1AccT &accumulator, int64_t value) {
 	accumulator += static_cast<Q1AccT>(value);
-}
-
-double HugeintScaleToDouble(Q1AccT value, uint8_t scale, uint64_t count) {
-	if (count == 0) {
-		return 0.0;
-	}
-	auto as_hugeint = AccToHugeint(value);
-	auto numeric = duckdb::Hugeint::Cast<double>(as_hugeint);
-	double scaled = numeric;
-	while (scale > 0) {
-		scaled /= 10.0;
-		scale--;
-	}
-	return scaled / static_cast<double>(count);
 }
 
 } // namespace
@@ -93,14 +68,13 @@ std::vector<Q1OutputRow> FinalizeQ1MergedGroups(const std::unordered_map<Q1Group
 		}
 		Q1OutputRow row;
 		row.group_key = entry.first;
-		row.sum_qty = AccToHugeint(stats.sum_qty);
-		row.sum_base_price = AccToHugeint(stats.sum_base_price);
-		row.sum_disc_price = AccToHugeint(stats.sum_disc_price);
-		row.sum_charge = AccToHugeint(stats.sum_charge);
-		const auto count = static_cast<uint64_t>(stats.count);
-		row.avg_qty = HugeintScaleToDouble(stats.sum_qty, kDecimalScale2, count);
-		row.avg_price = HugeintScaleToDouble(stats.sum_base_price, kDecimalScale2, count);
-		row.avg_disc = HugeintScaleToDouble(stats.sum_discount, kDecimalScale2, count);
+		row.sum_qty = stats.sum_qty;
+		row.sum_base_price = stats.sum_base_price;
+		row.sum_disc_price = stats.sum_disc_price;
+		row.sum_charge = stats.sum_charge;
+		row.avg_qty = pg_numeric::AvgOfScaledSum(stats.sum_qty, kDecimalScale2, stats.count);
+		row.avg_price = pg_numeric::AvgOfScaledSum(stats.sum_base_price, kDecimalScale2, stats.count);
+		row.avg_disc = pg_numeric::AvgOfScaledSum(stats.sum_discount, kDecimalScale2, stats.count);
 		row.count_order = stats.count;
 		rows.push_back(row);
 	}

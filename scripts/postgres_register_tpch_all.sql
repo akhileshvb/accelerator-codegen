@@ -290,9 +290,9 @@ RETURNS TABLE (
   sum_base_price numeric,
   sum_disc_price numeric,
   sum_charge numeric,
-  avg_qty double precision,
-  avg_price double precision,
-  avg_disc double precision,
+  avg_qty numeric,
+  avg_price numeric,
+  avg_disc numeric,
   count_order bigint
 )
 AS 'accelerator_codegen_pg', 'AcceleratorCodegenAuxTpchQ1'

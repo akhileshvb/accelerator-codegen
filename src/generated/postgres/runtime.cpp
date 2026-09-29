@@ -1782,8 +1782,14 @@ private:
                                  .days_since_epoch - kPostgresDateEpochOffset);
     }
     if (std::holds_alternative<std::string>(value.payload)) {
-      return CStringGetTextDatum(
-          std::get<std::string>(value.payload).c_str());
+      const auto &text = std::get<std::string>(value.payload);
+      // Exact numeric results are emitted as numeric text (pg_numeric).
+      if (type_oid == NUMERICOID) {
+        return DirectFunctionCall3(
+            numeric_in, CStringGetDatum(text.c_str()),
+            ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+      }
+      return CStringGetTextDatum(text.c_str());
     }
     return (Datum)0;
   }
