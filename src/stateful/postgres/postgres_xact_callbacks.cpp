@@ -1,7 +1,9 @@
 // GENERATED BACKEND - PostgreSQL transaction callbacks + mutation fan-out
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
+#include "accelerator_codegen/stateful/postgres/aux_sync.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
+#include "accelerator_codegen/stateful/postgres/snapshot_token.hpp"
 
 #include <algorithm>
 #include <exception>
@@ -32,40 +34,125 @@ void XactCallbackBridge(XactEvent event, void *arg) {
   if (backends.empty() && g_active_backend) {
     backends.push_back(g_active_backend);
   }
-  for (auto *backend : backends) {
-    if (!backend)
-      continue;
-    switch (event) {
-    case XACT_EVENT_PRE_COMMIT: {
-      // Statement portals have already popped their snapshot; SPI scans in
-      // StageMaintenance / PreCommit rebuild need an active one (interface-v1).
-      PushActiveSnapshot(GetTransactionSnapshot());
-      PG_TRY();
-      {
-        try {
-          backend->OnPreCommit();
-        } catch (const std::exception &ex) {
-          ereport(ERROR,
-                  (errmsg("accelerator pre-commit failed: %s", ex.what())));
+  switch (event) {
+  case XACT_EVENT_PRE_PREPARE:
+    aux_sync::CheckPrepareAllowed();
+    break;
+  case XACT_EVENT_PRE_COMMIT: {
+    aux_sync::NoteTopXid();
+    // Statement portals have already popped their snapshot; SPI scans in
+    // StageMaintenance need an active one.  Use the latest snapshot (not the
+    // transaction snapshot, which is stale under REPEATABLE READ): the
+    // participants' counter check below is taken after it, so every
+    // transaction it sees is known to the synchronised store.
+    PushActiveSnapshot(GetLatestSnapshot());
+    PG_TRY();
+    {
+      try {
+        for (auto *participant : aux_sync::Participants()) {
+          participant->BeforePreCommit();
         }
+        for (auto *backend : backends) {
+          if (backend) {
+            backend->OnPreCommit();
+          }
+        }
+      } catch (const std::exception &ex) {
+        ereport(ERROR,
+                (errmsg("accelerator pre-commit failed: %s", ex.what())));
       }
-      PG_CATCH();
-      {
-        PopActiveSnapshot();
-        PG_RE_THROW();
-      }
-      PG_END_TRY();
-      PopActiveSnapshot();
-      break;
     }
-    case XACT_EVENT_COMMIT:
-      backend->OnCommit();
-      break;
-    case XACT_EVENT_ABORT:
-      backend->OnAbort();
-      break;
-    default:
-      break;
+    PG_CATCH();
+    {
+      PopActiveSnapshot();
+      PG_RE_THROW();
+    }
+    PG_END_TRY();
+    PopActiveSnapshot();
+    break;
+  }
+  case XACT_EVENT_COMMIT: {
+    // Past the point of no return: nothing here may raise an error.
+    const aux_sync::CommitInfo &published = aux_sync::PublishCommit();
+    aux_sync::CommitInfo info = published;
+    for (auto *backend : backends) {
+      if (!backend) {
+        continue;
+      }
+      try {
+        backend->OnCommit();
+      } catch (...) {
+        info.maintenance_failed = true;
+      }
+    }
+    for (auto *participant : aux_sync::Participants()) {
+      try {
+        participant->AfterCommit(info);
+      } catch (...) {
+      }
+    }
+    aux_sync::ResetTransaction();
+    // Drop statement pins so a later xact does not inherit frozen epochs
+    // keyed by a reused snapshot encoding from this xact.
+    ClearSnapshotPins();
+    break;
+  }
+  case XACT_EVENT_ABORT:
+    for (auto *backend : backends) {
+      if (!backend) {
+        continue;
+      }
+      try {
+        backend->OnAbort();
+      } catch (...) {
+      }
+    }
+    aux_sync::ReleaseAbort();
+    ClearSnapshotPins();
+    break;
+  default:
+    break;
+  }
+}
+
+void SubXactCallbackBridge(SubXactEvent event, SubTransactionId my_subid,
+                           SubTransactionId parent_subid, void *arg) {
+  (void)my_subid;
+  (void)parent_subid;
+  (void)arg;
+  if (event != SUBXACT_EVENT_COMMIT_SUB && event != SUBXACT_EVENT_ABORT_SUB) {
+    return;
+  }
+  // Called while the ending subtransaction is still current.
+  const int level = GetCurrentTransactionNestLevel();
+  if (level < 2) {
+    return;
+  }
+  const auto depth = static_cast<std::size_t>(level - 1);
+  std::vector<PostgresAuxBackend *> backends;
+  {
+    std::lock_guard<std::mutex> lock(g_backends_mu);
+    backends = g_mutation_backends;
+  }
+  if (backends.empty() && g_active_backend) {
+    backends.push_back(g_active_backend);
+  }
+  for (auto *backend : backends) {
+    if (!backend) {
+      continue;
+    }
+    if (event == SUBXACT_EVENT_COMMIT_SUB) {
+      try {
+        backend->OnSubCommit(depth);
+      } catch (const std::exception &ex) {
+        ereport(ERROR, (errmsg("accelerator subtransaction commit failed: %s",
+                               ex.what())));
+      }
+    } else {
+      try {
+        backend->OnSubAbort(depth);
+      } catch (...) {
+      }
     }
   }
 }
@@ -76,6 +163,9 @@ void RegisterPostgresXactCallbacks() {
   if (g_callbacks_registered)
     return;
   RegisterXactCallback(XactCallbackBridge, nullptr);
+  RegisterSubXactCallback(SubXactCallbackBridge, nullptr);
+  // TokenForSnapshot: pin at ExecutorStart under the statement snapshot.
+  RegisterSnapshotPinExecutorHook();
   g_callbacks_registered = true;
 }
 
@@ -139,9 +229,11 @@ void DispatchPostgresMutation(const char *relname,
   if (backends.empty() && g_active_backend) {
     backends.push_back(g_active_backend);
   }
+  const int level = GetCurrentTransactionNestLevel();
+  const auto depth = static_cast<std::size_t>(level > 0 ? level - 1 : 0);
   for (auto *backend : backends) {
     if (backend) {
-      backend->CaptureMutation(batch);
+      backend->CaptureMutationAtDepth(batch, depth);
     }
   }
 }

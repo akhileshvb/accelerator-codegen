@@ -33,6 +33,7 @@ PG_MODULE_MAGIC;
 
 #include "accelerator_codegen/runtime/postgres/postgres_extension_bridge.hpp"
 #include "accelerator_codegen/runtime/postgres/scan_helper.hpp"
+#include "accelerator_codegen/stateful/postgres/snapshot_token.hpp"
 
 namespace accel = accelerator_codegen::aux_state;
 namespace core = accel::core;
@@ -211,8 +212,9 @@ void InitTxnBridge() {
   if (g_state_store) { return; }
   g_state_store = std::make_unique<PgStore>();
   auto visibility_cb = []() -> core::VisibilityToken {
+    auto tok = accelerator_codegen::aux_state::engine::postgres::
+        MakeTokenForActiveSnapshot();
     std::lock_guard<std::mutex> lock(g_mutex);
-    core::VisibilityToken tok;
     tok.mutation_epoch = g_current_epoch;
     return tok;
   };
@@ -285,8 +287,9 @@ void InitVisibilityBridge() {
   if (g_state_store) { return; }
   g_state_store = std::make_unique<PgStore>();
   auto visibility_cb = []() -> core::VisibilityToken {
+    auto tok = accelerator_codegen::aux_state::engine::postgres::
+        MakeTokenForActiveSnapshot();
     std::lock_guard<std::mutex> lock(g_mutex);
-    core::VisibilityToken tok;
     tok.mutation_epoch = g_current_epoch;
     return tok;
   };
@@ -631,8 +634,9 @@ void InitRuntimeBridge(const std::string &table_name) {
     return g_rt_epoch;
   });
   auto visibility_cb = []() -> core::VisibilityToken {
+    auto tok = accelerator_codegen::aux_state::engine::postgres::
+        MakeTokenForActiveSnapshot();
     std::lock_guard<std::mutex> lock(g_rt_mutex);
-    core::VisibilityToken tok;
     tok.mutation_epoch = g_rt_epoch;
     return tok;
   };

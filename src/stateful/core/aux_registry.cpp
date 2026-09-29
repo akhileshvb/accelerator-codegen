@@ -74,33 +74,84 @@ void AuxTransactionCoordinator::AttachServices(AuxEngineServices &services_p) {
   services = &services_p;
 }
 
+void AuxTransactionCoordinator::MarkDirtyIfDependentLocked(
+    const MutationBatch &mutation) {
+  for (const auto &entry : entries) {
+    for (const auto &dependency : entry.module->Dependencies()) {
+      if (dependency.table == mutation.table) {
+        services->StateStore().MarkTransactionDirty();
+        return;
+      }
+    }
+  }
+}
+
 void AuxTransactionCoordinator::OnMutation(const MutationBatch &mutation) {
   std::lock_guard<std::mutex> guard(mutex);
   if (!services) {
     throw std::logic_error(
         "auxiliary transaction coordinator has no engine services");
   }
-  fprintf(stderr, "DBG_OnMutation: table=%lu entries=%zu dep_tables[0]=%lu\n",
-          (unsigned long)mutation.table, entries.size(),
-          (unsigned long)(entries.empty() ? 0 : entries[0].module->Dependencies().empty() ? 0 : entries[0].module->Dependencies()[0].table));
-  fflush(stderr);
-  for (const auto &entry : entries) {
-    for (const auto &dependency : entry.module->Dependencies()) {
-      fprintf(stderr, "DBG_OnMutation: check dep.table=%lu vs mut.table=%lu\n",
-              (unsigned long)dependency.table, (unsigned long)mutation.table);
-      fflush(stderr);
-      if (dependency.table == mutation.table) {
-        services->StateStore().MarkTransactionDirty();
-        goto marked_dirty;
-      }
-    }
-  }
-marked_dirty:
+  MarkDirtyIfDependentLocked(mutation);
   if (!subtransaction_frames.empty()) {
     subtransaction_frames.back().push_back(mutation);
     return;
   }
   ApplyMutationLocked(mutation);
+}
+
+void AuxTransactionCoordinator::OnMutationAtDepth(const MutationBatch &mutation,
+                                                  std::size_t depth) {
+  std::lock_guard<std::mutex> guard(mutex);
+  if (!services) {
+    throw std::logic_error(
+        "auxiliary transaction coordinator has no engine services");
+  }
+  // The dirty flag is transaction-wide and survives a subtransaction abort
+  // (conservative: the transaction keeps using the fallback path).
+  MarkDirtyIfDependentLocked(mutation);
+  if (subtransaction_frames.size() > depth) {
+    // A deeper subtransaction ended without its engine callback.
+    throw std::logic_error("auxiliary subtransaction frames out of sync");
+  }
+  while (subtransaction_frames.size() < depth) {
+    subtransaction_frames.emplace_back();
+  }
+  if (depth == 0) {
+    ApplyMutationLocked(mutation);
+    return;
+  }
+  subtransaction_frames.back().push_back(mutation);
+}
+
+void AuxTransactionCoordinator::CommitSubtransactionAtDepth(std::size_t depth) {
+  std::lock_guard<std::mutex> guard(mutex);
+  if (depth == 0 || subtransaction_frames.size() < depth) {
+    return; // nothing was captured at this depth
+  }
+  if (subtransaction_frames.size() > depth) {
+    throw std::logic_error("auxiliary subtransaction frames out of sync");
+  }
+  auto frame = std::move(subtransaction_frames.back());
+  subtransaction_frames.pop_back();
+  if (depth > 1) {
+    auto &parent = subtransaction_frames.back();
+    parent.insert(parent.end(), std::make_move_iterator(frame.begin()),
+                  std::make_move_iterator(frame.end()));
+    return;
+  }
+  for (const auto &mutation : frame) {
+    ApplyMutationLocked(mutation);
+  }
+}
+
+void AuxTransactionCoordinator::AbortSubtransactionAtDepth(std::size_t depth) {
+  std::lock_guard<std::mutex> guard(mutex);
+  if (depth == 0 || subtransaction_frames.size() < depth) {
+    return;
+  }
+  // Drop the aborted frame (and any deeper frame left behind by the abort).
+  subtransaction_frames.resize(depth - 1);
 }
 
 void AuxTransactionCoordinator::BeginSubtransaction() {
@@ -206,6 +257,25 @@ void AuxTransactionCoordinator::PreCommit() {
       }
     }
     RecordStagedMaintenanceAction(entry.outcome.action);
+
+    // PRE_COMMIT invalidate when Affects_Q: readers must not observe
+    // (DB_new, Aux_old Valid) after heap visibility. Prepared updates publish
+    // on Commit with expected_version=0 (post-invalidate unconditional CAS).
+    {
+      InvalidationPlan early = entry.outcome.invalidations;
+      MergeInvalidationPlan(early, entry.outcome.pending_rebuild);
+      if (early.IsEmpty() && !entry.outcome.updates.empty()) {
+        early = PartitionSetPlanFromImages(entry.outcome.updates);
+      }
+      if (!early.IsEmpty()) {
+        services->StateStore().Invalidate(early);
+        entry.outcome.invalidations = InvalidationPlan{};
+        entry.outcome.pending_rebuild = InvalidationPlan{};
+        if (!entry.outcome.updates.empty()) {
+          entry.outcome.expected_version = 0;
+        }
+      }
+    }
   }
 }
 

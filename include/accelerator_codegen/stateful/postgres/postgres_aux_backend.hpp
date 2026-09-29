@@ -1,6 +1,7 @@
 // GENERATED BACKEND
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <vector>
@@ -22,6 +23,11 @@ public:
                      WorkloadCallback workload = {});
 
   void CaptureMutation(const core::MutationBatch &mutation);
+  // `depth` = PostgreSQL transaction nest level - 1 (0 = top level).
+  void CaptureMutationAtDepth(const core::MutationBatch &mutation,
+                              std::size_t depth);
+  void OnSubCommit(std::size_t depth);
+  void OnSubAbort(std::size_t depth);
   void OnPreCommit();
   void OnCommit();
   void OnAbort();

@@ -288,12 +288,33 @@ public:
     return snapshot;
   }
 
+  // Linearized ReadHit: validity + immutable handles for every required
+  // partition under one observation. Default: CheckValidity then
+  // ReadPartitions with completeness check (engines should override).
+  virtual StateSnapshot
+  ReadHitPartitions(const VisibilityToken &visibility,
+                    const QueryKey &accel_key,
+                    const std::vector<PartitionId> &partitions) const {
+    StateSnapshot miss;
+    miss.visibility = visibility;
+    miss.available = false;
+    if (!CheckValidity(accel_key, visibility).IsValid()) {
+      return miss;
+    }
+    auto snapshot = ReadPartitions(visibility, partitions);
+    if (snapshot.partitions.size() != partitions.size()) {
+      miss.partitions.clear();
+      return miss;
+    }
+    snapshot.available = true;
+    return snapshot;
+  }
+
   virtual ValidityResult CheckValidity(const QueryKey &,
                                        const VisibilityToken &) const = 0;
 
-  // Invalidation is applied only by the coordinator's Commit path.
-  // Implementations must not expose an invalidation as a mutation-visible side
-  // effect of staging.
+  // Invalidation for Affects_Q must run in PRE_COMMIT before PostgreSQL heap
+  // visibility. Commit only TryPublish of prepared state (or leave Invalid).
   virtual void Invalidate(const InvalidationPlan &) = 0;
 
   // The implementation must publish an already materialized image atomically
@@ -304,6 +325,8 @@ public:
 
   virtual void MarkTransactionDirty() {}
   virtual void ClearTransactionDirty() {}
+  // Same-transaction relevant writes: Execute must fallback while dirty.
+  virtual bool IsTransactionDirty() const { return false; }
 };
 
 class AuxEngineServices {

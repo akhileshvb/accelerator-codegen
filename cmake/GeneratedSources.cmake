@@ -138,6 +138,21 @@ function(accel_collect_stateful_sources OUT_VAR)
                 src/stateful/postgres/postgres_mutation_capture.cpp
             )
         endif()
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/postgres/snapshot_token.cpp")
+            list(APPEND _sources
+                src/stateful/postgres/snapshot_token.cpp
+            )
+        endif()
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/postgres/aux_mutation_epoch.cpp")
+            list(APPEND _sources
+                src/stateful/postgres/aux_mutation_epoch.cpp
+            )
+        endif()
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/postgres/aux_mutation_epoch.cpp")
+            list(APPEND _sources
+                src/stateful/postgres/aux_mutation_epoch.cpp
+            )
+        endif()
     endif()
     if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/mysql/mysql_aux_backend.cpp")

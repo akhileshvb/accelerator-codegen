@@ -30,6 +30,7 @@ extern "C" {
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
+#include "accelerator_codegen/stateful/postgres/aux_sync.hpp"
 
 extern "C" {
 void accel_pg_observer_note_mutation(void);
@@ -294,12 +295,29 @@ Datum CaptureTransitionImpl(FunctionCallInfo fcinfo) {
                            "STATEMENT trigger")));
   }
 
+  const TableId table = TableIdFromTrigger(trigger_data);
+  if (TRIGGER_FIRED_BY_TRUNCATE(trigger_data->tg_event)) {
+    // No transition tables: announce the write and make this backend's own
+    // stores resync at commit (and use the fallback until then).
+    accelerator_codegen::aux_state::engine::postgres::
+        RegisterPostgresXactCallbacks();
+    accelerator_codegen::aux_state::engine::postgres::aux_sync::
+        RegisterTruncate(table);
+    PG_RETURN_POINTER(nullptr);
+  }
+  // Cross-backend sync: every write to a tracked table is announced (in
+  // flight until this transaction ends), whether or not this backend runs an
+  // accelerator itself.  Other backends' stores stop hitting until they resync.
+  accelerator_codegen::aux_state::engine::postgres::
+      RegisterPostgresXactCallbacks();
+  accelerator_codegen::aux_state::engine::postgres::aux_sync::RegisterWrite(
+      table);
+
   auto backends = RegisteredPostgresMutationBackends();
   if (backends.empty()) {
     PG_RETURN_POINTER(nullptr);
   }
 
-  const TableId table = TableIdFromTrigger(trigger_data);
   TupleDesc tuple_desc = RelationGetDescr(trigger_data->tg_relation);
 
   struct Target {
@@ -389,7 +407,8 @@ Datum CaptureTransitionImpl(FunctionCallInfo fcinfo) {
     mutation.old_rows = std::move(old_by_target[i]);
     mutation.new_rows = std::move(new_by_target[i]);
     mutation.updated_columns = std::move(upd_by_target[i]);
-    targets[i].backend->CaptureMutation(mutation);
+    targets[i].backend->CaptureMutationAtDepth(
+        mutation, static_cast<std::size_t>(GetCurrentTransactionNestLevel() - 1));
     dispatched = true;
   }
   if (dispatched) {

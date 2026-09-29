@@ -1,6 +1,9 @@
 // GENERATED BACKEND
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 
+#include "accelerator_codegen/stateful/postgres/aux_mutation_epoch.hpp"
+#include "accelerator_codegen/stateful/postgres/snapshot_token.hpp"
+
 #include <algorithm>
 #include <utility>
 
@@ -24,14 +27,44 @@ void PostgresAuxBackend::CaptureMutation(
   coordinator.OnMutation(mutation);
 }
 
-void PostgresAuxBackend::OnPreCommit() { coordinator.PreCommit(); }
+void PostgresAuxBackend::CaptureMutationAtDepth(
+    const core::MutationBatch &mutation, std::size_t depth) {
+  coordinator.OnMutationAtDepth(mutation, depth);
+}
 
-void PostgresAuxBackend::OnCommit() { coordinator.Commit(); }
+void PostgresAuxBackend::OnSubCommit(std::size_t depth) {
+  coordinator.CommitSubtransactionAtDepth(depth);
+}
+
+void PostgresAuxBackend::OnSubAbort(std::size_t depth) {
+  coordinator.AbortSubtransactionAtDepth(depth);
+}
+
+void PostgresAuxBackend::OnPreCommit() {
+  // Bump before Invalidate so mid-PRE_COMMIT readers pinned to the old epoch
+  // see NotVisible/Invalid rather than a still-Valid stale image, and so any
+  // reader that has not pinned yet and pins after this bump takes the new
+  // epoch (cannot Hit Aux that will publish at a still-newer Commit epoch).
+  BumpAuxMutationEpoch();
+  coordinator.PreCommit();
+}
+
+void PostgresAuxBackend::OnCommit() {
+  // TokenForSnapshot: bump epoch before TryPublish so readers pinned to an
+  // older epoch cannot observe Aux published in this commit under old S.
+  BumpAuxMutationEpoch();
+  coordinator.Commit();
+}
 
 void PostgresAuxBackend::OnAbort() { coordinator.Abort(); }
 
 core::VisibilityToken PostgresAuxBackend::CurrentVisibility() const {
-  return visibility ? visibility() : core::VisibilityToken{};
+  // Also pin here: any observation of active visibility freezes TokenForSnapshot
+  // (covers paths that call CurrentVisibility without going through Runtime::Execute).
+  if (visibility) {
+    return visibility();
+  }
+  return EnsureSnapshotPin();
 }
 
 core::AuxStateStore &PostgresAuxBackend::StateStore() { return state_store; }

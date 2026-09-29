@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <charconv>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -221,9 +222,20 @@ bool PostgresStateStore::TryPublish(
   return true;
 }
 
-void PostgresStateStore::MarkTransactionDirty() {}
+void PostgresStateStore::MarkTransactionDirty() {
+  std::lock_guard<std::mutex> guard(accel_mutex);
+  transaction_dirty_ = true;
+}
 
-void PostgresStateStore::ClearTransactionDirty() {}
+void PostgresStateStore::ClearTransactionDirty() {
+  std::lock_guard<std::mutex> guard(accel_mutex);
+  transaction_dirty_ = false;
+}
+
+bool PostgresStateStore::IsTransactionDirty() const {
+  std::lock_guard<std::mutex> guard(accel_mutex);
+  return transaction_dirty_;
+}
 
 void PostgresStateStore::Install(std::vector<core::StateImage> built,
                                  std::string accelerator_id) {
@@ -240,6 +252,71 @@ void PostgresStateStore::Install(std::vector<core::StateImage> built,
     store.TryPublishPartition(key, image.payload, epoch, 0);
     accel_index[key] = image.accelerator;
   }
+}
+
+// Linearized ReadHit: under one accel lock + one store ForEachSlot pass,
+// validate accelerator-wide then collect every required partition.
+// Missing/Invalid/NotVisible ⇒ available=false (caller must fallback).
+core::StateSnapshot PostgresStateStore::ReadHitPartitions(
+    const core::VisibilityToken &visibility,
+    const core::QueryKey &accel_key,
+    const std::vector<core::PartitionId> &partitions) const {
+  core::StateSnapshot snapshot;
+  snapshot.visibility = visibility;
+  snapshot.available = false;
+
+  std::lock_guard<std::mutex> guard(accel_mutex);
+
+  bool saw_this = false;
+  bool saw_invalid = false;
+  bool saw_not_visible = false;
+  std::unordered_map<PartitionKey, core::StateImage> found;
+
+  store.ForEachSlot(
+      [&](PartitionKey pk, PartitionStatus status,
+          const std::shared_ptr<const void> &payload, uint64_t epoch) {
+        auto it = accel_index.find(pk);
+        if (it == accel_index.end() || it->second != accel_key.accelerator) {
+          return;
+        }
+        saw_this = true;
+        if (status != PartitionStatus::Valid || !payload) {
+          saw_invalid = true;
+          return;
+        }
+        if (visibility.mutation_epoch > 0 &&
+            epoch > visibility.mutation_epoch) {
+          saw_not_visible = true;
+          return;
+        }
+        core::StateImage image;
+        image.accelerator = it->second;
+        image.partition = static_cast<core::PartitionId>(pk);
+        image.version = 0; // version unused by Execute; avoid nested store lock
+        image.payload = payload;
+        found[pk] = std::move(image);
+      });
+
+  if (!saw_this || saw_invalid || saw_not_visible) {
+    return snapshot;
+  }
+
+  for (auto partition_id : partitions) {
+    PartitionKey key = static_cast<PartitionKey>(partition_id);
+    auto it = found.find(key);
+    if (it == found.end()) {
+      snapshot.partitions.clear();
+      snapshot.available = false;
+      return snapshot;
+    }
+    snapshot.partitions.push_back(it->second);
+  }
+
+  snapshot.available = snapshot.partitions.size() == partitions.size();
+  if (!snapshot.available) {
+    snapshot.partitions.clear();
+  }
+  return snapshot;
 }
 
 bool PostgresStateStore::NeedsRebuild() const {

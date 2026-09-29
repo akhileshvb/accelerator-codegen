@@ -20,6 +20,12 @@ public:
   void BeginSubtransaction();
   void CommitSubtransaction();
   void AbortSubtransaction();
+  // Engine-driven subtransactions (PostgreSQL SAVEPOINT / exception blocks):
+  // `depth` is the engine nesting depth (0 = top level). Frames are opened
+  // lazily, so a coordinator first used inside a subtransaction stays aligned.
+  void OnMutationAtDepth(const MutationBatch &mutation, std::size_t depth);
+  void CommitSubtransactionAtDepth(std::size_t depth);
+  void AbortSubtransactionAtDepth(std::size_t depth);
   void PreCommit();
   void Commit();
   void Abort();
@@ -47,6 +53,7 @@ private:
   const Entry &FindEntry(const AcceleratorId &id) const;
   void ClearTransactionState();
   void ApplyMutationLocked(const MutationBatch &mutation);
+  void MarkDirtyIfDependentLocked(const MutationBatch &mutation);
 
   AuxEngineServices *services = nullptr;
   std::vector<Entry> entries;

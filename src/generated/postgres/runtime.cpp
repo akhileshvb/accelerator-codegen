@@ -48,6 +48,8 @@
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_state_store.hpp"
+#include "accelerator_codegen/stateful/postgres/snapshot_token.hpp"
+#include "accelerator_codegen/stateful/postgres/aux_mutation_epoch.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
 
 // Declared in postgres_bridge.cpp (MODULE).
@@ -68,8 +70,14 @@ extern "C" {
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "utils/snapmgr.h"
+#include "access/xact.h"
+#include "access/xlog.h"
+#include "catalog/namespace.h"
+// From utils/pg_locale.h, which is not included because it pulls in ICU headers.
+extern bool lc_collate_is_c(Oid collation);
 }
 
+#include "accelerator_codegen/stateful/postgres/aux_sync.hpp"
 #include "postgres/runtime.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
@@ -1784,15 +1792,52 @@ private:
   TupleDesc tuple_desc;
 };
 
+namespace auxsync = accelerator_codegen::aux_state::engine::postgres::aux_sync;
+
+// Per-backend Runtime.  The Aux store is process-local; aux_sync decides when
+// it may serve a hit for the statement snapshot (cross-backend protocol, see
+// aux_sync.hpp and tests/verification/q21/dafny/Q21Runtime.dfy):
+//
+//   Sync marker  (base, own_commits, seq): the store equals the Aux of the
+//                database whose dependency-table writers are exactly those
+//                committed-visible in `base` plus `own_commits`, and `seq[i]`
+//                counts exactly those writers for dependency slot i.
+//   Hit(S)       marker synced, store fully valid, this transaction has no
+//                captured dependency writes, S covers `base`, S sees every
+//                own commit, and (read after S) inflight == 0 and
+//                seq == marker.seq on every dependency slot.
+//   Rebuild      only in a transaction without an xid (so the build snapshot
+//                contains no uncommitted writes of this backend), from a
+//                fresh snapshot taken between two counter reads.
+//   Own commit   the locally maintained store stays synced iff no other
+//                writer was in flight or committed on a dependency slot
+//                between PRE_COMMIT (after the maintenance snapshot) and this
+//                commit's counter increment.
 template <typename Module, typename Config, typename ScanT>
-class Runtime final {
+class Runtime final : public accelerator_codegen::aux_state::engine::postgres::
+                          aux_sync::Participant {
 public:
+  // A table/column whose text ordering the verified result depends on.
+  struct CollationKey {
+    const char *relation;
+    const char *column;
+  };
+
   Runtime(const char *cost_model_env, const char *default_config_path,
-          core::AcceleratorId accelerator, Config config)
-      : store(), coordinator(),
+          core::AcceleratorId accelerator, Config config,
+          std::vector<CollationKey> c_collation_keys_p = {})
+      : c_collation_keys(std::move(c_collation_keys_p)),
+        store([]() {
+          return accelerator_codegen::aux_state::engine::postgres::
+              AuxMutationEpoch();
+        }),
+        coordinator(),
         backend(
             coordinator, store,
-            [] { return core::VisibilityToken{}; },
+            [] {
+              return accelerator_codegen::aux_state::engine::postgres::
+                  PinTokenForActiveSnapshot();
+            },
             [cost_model_env, default_config_path] {
               return core::LoadAuxCostModelJson(
                   ResolveCostModelPath(cost_model_env, default_config_path));
@@ -1800,51 +1845,203 @@ public:
         scan(), module(config, &scan), accelerator(std::move(accelerator)) {
     auto module_view = std::shared_ptr<Module>(&module, [](Module *) {});
     coordinator.Register(std::move(module_view));
+    std::vector<core::TableId> tables;
+    for (const auto &dependency : module.Dependencies()) {
+      tables.push_back(dependency.table);
+    }
+    dep_slots = auxsync::SlotsOf(tables);
     accelerator_codegen::aux_state::engine::postgres::
         RegisterPostgresMutationBackend(&backend);
     accelerator_codegen::aux_state::engine::postgres::
         RegisterPostgresXactCallbacks();
-  }
-
-  void EnsureBuilt() {
-    if (built) {
-      return;
-    }
-    Builder builder;
-    module.Build(backend, builder);
-    if (!builder.finished) {
-      throw std::runtime_error("auxiliary build did not finish");
-    }
-    store.Install(std::move(builder.images), accelerator);
-    store.ClearTransactionDirty();
-    built = true;
-    accelerator_codegen::aux_state::engine::postgres::
-        RegisterPostgresBackendForMutations();
+    auxsync::RegisterParticipant(this);
   }
 
   void Execute(const core::QueryArguments &arguments, FunctionCallInfo fcinfo) {
+    // TokenForSnapshot: freeze (S, epoch) at the earliest UDF entry.
+    accelerator_codegen::aux_state::engine::postgres::ForcePinActiveSnapshot();
+
+    RequireCCollation();
     RequireMaterialize(fcinfo);
     // Prefer this Runtime for subsequent trigger captures in this session.
     accelerator_codegen::aux_state::engine::postgres::
         RegisterPostgresMutationBackend(&backend);
 
-    EnsureBuilt();
-    // Mutations are applied on UPDATE commit via CaptureMutation →
-    // StageMaintenance (ApplyDelta / Rebuild*) → TryPublish. Empty QueryKey
-    // means partition 0 in PostgresStateStore (layer contract), so use Read()
-    // to detect a fully invalidated image and rebuild after commit.
-    if (store.NeedsRebuild()) {
-      built = false;
-      EnsureBuilt();
+    Snapshot statement = GetActiveSnapshot();
+    bool hit = HitAllowed(statement);
+    if (!hit && NeedsSync() && CanRebuildNow()) {
+      Rebuild();
+      hit = HitAllowed(statement);
     }
     observed_mutations = accel_pg_get_observer_mutation_count();
     auto *return_set_info =
         reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
     PgSink sink(return_set_info->setResult, return_set_info->setDesc);
-    module.Execute(backend, arguments, sink);
+    elog(DEBUG1, "accelerator %s: %s", accelerator.c_str(),
+         hit ? "aux hit" : "fallback");
+    if (hit) {
+      module.Execute(backend, arguments, sink);
+    } else {
+      module.ExecuteFallback(backend, arguments, sink);
+    }
+  }
+
+  void BeforePreCommit() override {
+    precommit_ok = false;
+    if (!auxsync::OwnRegisteredAnyOf(dep_slots) || !marker.synced) {
+      return;
+    }
+    std::vector<uint64_t> seq;
+    precommit_ok = auxsync::ReadCounters(dep_slots, /*allow_own=*/true, seq) &&
+                   seq == marker.seq;
+  }
+
+  void AfterCommit(const auxsync::CommitInfo &info) override {
+    if (info.maintenance_failed) {
+      marker.synced = false;
+    }
+    if (auxsync::OwnRegisteredAnyOf(dep_slots) &&
+        TransactionIdIsValid(info.xid)) {
+      bool ok = marker.synced && precommit_ok;
+      for (std::size_t i = 0; ok && i < dep_slots.size(); ++i) {
+        const auto slot = dep_slots[i];
+        if (!info.wrote[slot]) {
+          continue;
+        }
+        if (info.old_seq[slot] != marker.seq[i]) {
+          ok = false;
+        } else {
+          marker.seq[i] += 1;
+        }
+      }
+      if (ok) {
+        if (marker.own_commits.size() >= kMaxOwnCommits) {
+          ok = false;
+        } else {
+          marker.own_commits.push_back(info.xid);
+        }
+      }
+      marker.synced = ok;
+    }
+    if (store.NeedsRebuild() || auxsync::OwnTruncatedAnyOf(dep_slots)) {
+      marker.synced = false;
+    }
+    precommit_ok = false;
   }
 
 private:
+  static constexpr std::size_t kMaxOwnCommits = 1024;
+  struct SyncMarker {
+    bool synced = false;
+    auxsync::SnapMark base;
+    std::vector<TransactionId> own_commits;
+    std::vector<uint64_t> seq;
+  };
+
+  bool CountersMatch() const {
+    std::vector<uint64_t> seq;
+    return auxsync::ReadCounters(dep_slots, /*allow_own=*/false, seq) &&
+           seq == marker.seq;
+  }
+
+  bool NeedsSync() const {
+    return !built || !marker.synced || store.NeedsRebuild() || !CountersMatch();
+  }
+
+  bool HitAllowed(Snapshot statement) const {
+    if (!built || !marker.synced || store.NeedsRebuild() ||
+        store.IsTransactionDirty() || auxsync::OwnRegisteredAnyOf(dep_slots)) {
+      return false;
+    }
+    if (!auxsync::Covers(statement, marker.base)) {
+      return false;
+    }
+    for (auto xid : marker.own_commits) {
+      if (!auxsync::Sees(statement, xid)) {
+        return false;
+      }
+    }
+    // Read after the statement snapshot was taken.
+    return CountersMatch();
+  }
+
+  bool CanRebuildNow() const {
+    return !TransactionIdIsValid(GetTopTransactionIdIfAny()) &&
+           !auxsync::OwnRegisteredAny() && !store.IsTransactionDirty() &&
+           !IsInParallelMode() && !RecoveryInProgress();
+  }
+
+  void Rebuild() {
+    marker = SyncMarker{};
+    std::vector<uint64_t> before;
+    if (!auxsync::ReadCounters(dep_slots, /*allow_own=*/false, before)) {
+      return; // a writer is in flight: the result could not be certified
+    }
+    Snapshot fresh = GetLatestSnapshot();
+    auxsync::SnapMark base = auxsync::MarkOf(fresh);
+    PushActiveSnapshot(fresh);
+    Builder builder;
+    try {
+      module.Build(backend, builder);
+    } catch (...) {
+      PopActiveSnapshot();
+      throw;
+    }
+    PopActiveSnapshot();
+    if (!builder.finished) {
+      throw std::runtime_error("auxiliary build did not finish");
+    }
+    store.Install(std::move(builder.images), accelerator);
+    built = true;
+    std::vector<uint64_t> after;
+    if (base.ok && auxsync::ReadCounters(dep_slots, /*allow_own=*/false, after) &&
+        after == before) {
+      marker.synced = true;
+      marker.base = std::move(base);
+      marker.seq = std::move(before);
+    }
+    elog(DEBUG1, "accelerator %s: rebuild (%s)", accelerator.c_str(),
+         marker.synced ? "synced" : "unsynced");
+    accelerator_codegen::aux_state::engine::postgres::
+        RegisterPostgresBackendForMutations();
+  }
+
+  // Verified domain: the reference semantics orders text byte-wise
+  // (TextCLeb), and so do Execute and ExecuteFallback.  PostgreSQL compares
+  // text with memcmp exactly when lc_collate_is_c(collation) holds, so every
+  // configured ORDER BY key column must have such a collation; otherwise fail
+  // closed rather than return an ordering that may differ from PostgreSQL.
+  void RequireCCollation() const {
+    for (const auto &key : c_collation_keys) {
+      const Oid relid = RelnameGetRelid(key.relation);
+      if (!OidIsValid(relid)) {
+        ereport(ERROR, (errmsg("accelerator %s: relation \"%s\" not found",
+                               accelerator.c_str(), key.relation)));
+      }
+      const AttrNumber attnum = get_attnum(relid, key.column);
+      if (attnum == InvalidAttrNumber) {
+        ereport(ERROR, (errmsg("accelerator %s: column %s.%s not found",
+                               accelerator.c_str(), key.relation, key.column)));
+      }
+      Oid type_oid = InvalidOid;
+      int32 typmod = -1;
+      Oid collation = InvalidOid;
+      get_atttypetypmodcoll(relid, attnum, &type_oid, &typmod, &collation);
+      if (!OidIsValid(collation) || !lc_collate_is_c(collation)) {
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("accelerator %s requires C collation on %s.%s",
+                        accelerator.c_str(), key.relation, key.column),
+                 errdetail("Its verified result orders text byte-wise; under "
+                           "this column's collation PostgreSQL may order "
+                           "differently."),
+                 errhint("ALTER TABLE %s ALTER COLUMN %s TYPE character "
+                         "varying COLLATE \"C\"",
+                         key.relation, key.column)));
+      }
+    }
+  }
+
   void RequireMaterialize(FunctionCallInfo fcinfo) {
     auto *return_set_info =
         reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
@@ -1856,13 +2053,17 @@ private:
     InitMaterializedSRF(fcinfo, 0);
   }
 
+  std::vector<CollationKey> c_collation_keys;
   PostgresStateStore store;
   core::AuxTransactionCoordinator coordinator;
   accelerator_codegen::aux_state::engine::postgres::PostgresAuxBackend backend;
   ScanT scan;
   Module module;
   std::string accelerator;
+  std::vector<std::size_t> dep_slots;
+  SyncMarker marker;
   bool built = false;
+  bool precommit_ok = false;
   int observed_mutations = 0;
 };
 
@@ -1967,7 +2168,8 @@ Q21Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q21_COST_MODEL",
               "config/q21_aux_cost_model.json",
               query::TpchQ21Layout::kAccelerator,
-              query::TpchQ21Config{pg_tbl::kSupplier, pg_tbl::kOrders, pg_tbl::kLineitem, pg_tbl::kNation});
+              query::TpchQ21Config{pg_tbl::kSupplier, pg_tbl::kOrders, pg_tbl::kLineitem, pg_tbl::kNation},
+              {{"supplier", "s_name"}});
   return runtime;
 }
 

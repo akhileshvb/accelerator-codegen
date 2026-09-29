@@ -28,6 +28,10 @@ BEGIN
         'DROP TRIGGER IF EXISTS %I ON %I',
         trigger_prefix || '_u', table_name
     );
+    EXECUTE format(
+        'DROP TRIGGER IF EXISTS %I ON %I',
+        trigger_prefix || '_t', table_name
+    );
 
     EXECUTE format(
         'CREATE TRIGGER %I AFTER INSERT ON %I '
@@ -49,6 +53,14 @@ BEGIN
         'FOR EACH STATEMENT '
         'EXECUTE FUNCTION accel_aux_capture_transition(%L)',
         trigger_prefix || '_u', table_name, table_id
+    );
+    -- TRUNCATE has no transition tables; the capture function only announces
+    -- the write (cross-backend sync) and forces a resync of this backend.
+    EXECUTE format(
+        'CREATE TRIGGER %I AFTER TRUNCATE ON %I '
+        'FOR EACH STATEMENT '
+        'EXECUTE FUNCTION accel_aux_capture_transition(%L)',
+        trigger_prefix || '_t', table_name, table_id
     );
 END;
 $$;

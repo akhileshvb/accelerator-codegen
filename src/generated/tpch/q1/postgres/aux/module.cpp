@@ -3,10 +3,6 @@
 
 #include "duckdb/common/types/hugeint.hpp"
 
-#if defined(ACCEL_VERIFICATION_CBMC)
-#include "accel_cbmc_bounds.hpp"
-#endif
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -45,21 +41,12 @@ constexpr int32_t kTpchMinLineitemShipdateDays = DaysFromCivil(1992, 1, 2);
 void CollectQ1DayPartitions(int32_t cutoff_days,
                             std::vector<core::PartitionId> &partitions) {
   partitions.clear();
-#if defined(ACCEL_VERIFICATION_CBMC)
-  // Bounded verification: only days registered by the CBMC harness.
-  for (unsigned i = 0; i < accel_cbmc::q1_active_day_count; ++i) {
-    const int32_t day = accel_cbmc::q1_active_days[i];
-    if (day <= cutoff_days)
-      partitions.push_back(core::TpchQ1Layout::PartitionFromDays(day));
-  }
-#else
   if (cutoff_days < kTpchMinLineitemShipdateDays)
     return;
   partitions.reserve(static_cast<std::size_t>(cutoff_days -
                                               kTpchMinLineitemShipdateDays + 1));
   for (int32_t day = kTpchMinLineitemShipdateDays; day <= cutoff_days; ++day)
     partitions.push_back(core::TpchQ1Layout::PartitionFromDays(day));
-#endif
 }
 
 void WriteQ1Acc(ByteWriter &writer, ::accelerator_codegen::Q1AccT value) {
@@ -481,16 +468,50 @@ void TpchQ1Module::Execute(core::AuxEngineServices &services,
   else
     return;
   const auto cutoff_days = TpchQ1CutoffDays(day_offset);
-  if (!services.StateStore()
-           .CheckValidity({Id(), {}}, services.CurrentVisibility())
-           .IsValid()) {
+
+  // LocalWriteSafe: same-transaction relevant writes ⇒ fallback.
+  if (services.StateStore().IsTransactionDirty()) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
+
+  // ReadHit: pin TokenForSnapshot once (Runtime::Execute already ForcePin'd at
+  // entry; CurrentVisibility reuses the frozen (S, epoch)); linearized
+  // validity + immutable handles for every required day partition
+  // (complete cut or fallback).
+  const auto visibility = services.CurrentVisibility();
+  std::vector<core::PartitionId> partitions;
+  CollectQ1DayPartitions(cutoff_days, partitions);
   std::unordered_map<int32_t, Q1DayPartition> days;
-  if (!LoadPartitions(services, cutoff_days, days)) {
-    ExecuteFallback(services, arguments, sink);
-    return;
+  if (!partitions.empty()) {
+    const auto snapshot = services.StateStore().ReadHitPartitions(
+        visibility, {Id(), {}}, partitions);
+    if (!snapshot.available ||
+        snapshot.partitions.size() != partitions.size()) {
+      ExecuteFallback(services, arguments, sink);
+      return;
+    }
+    for (const auto &image : snapshot.partitions) {
+      const auto day = core::TpchQ1Layout::DaysFromPartition(image.partition);
+      if (day > cutoff_days) {
+        ExecuteFallback(services, arguments, sink);
+        return;
+      }
+      const auto *typed = AsQ1Image(image);
+      if (!typed || !typed->partition || typed->shipdate_days != day) {
+        ExecuteFallback(services, arguments, sink);
+        return;
+      }
+      days.emplace(day, *typed->partition);
+    }
+  } else {
+    // No day partitions in range: still require accelerator Valid under t.
+    if (!services.StateStore()
+             .CheckValidity({Id(), {}}, visibility)
+             .IsValid()) {
+      ExecuteFallback(services, arguments, sink);
+      return;
+    }
   }
   EmitResult(ComposeOutput(days, cutoff_days), sink);
 }

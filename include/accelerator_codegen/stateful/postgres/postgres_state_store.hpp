@@ -21,6 +21,11 @@ public:
   core::StateSnapshot
   ReadPartitions(const core::VisibilityToken &visibility,
                  const std::vector<core::PartitionId> &partitions) const override;
+  core::StateSnapshot
+  ReadHitPartitions(const core::VisibilityToken &visibility,
+                    const core::QueryKey &accel_key,
+                    const std::vector<core::PartitionId> &partitions)
+      const override;
   core::ValidityResult CheckValidity(const core::QueryKey &,
                                      const core::VisibilityToken &) const override;
   // Empty QueryKey.value is accelerator-wide validity, not partition 0.
@@ -30,6 +35,7 @@ public:
 
   void MarkTransactionDirty() override;
   void ClearTransactionDirty() override;
+  bool IsTransactionDirty() const override;
 
   // Initial Build path used by TPC-H Runtime::EnsureBuilt.
   void Install(std::vector<core::StateImage> built,
@@ -46,6 +52,7 @@ private:
 
   mutable std::mutex accel_mutex;
   std::unordered_map<PartitionKey, core::AcceleratorId> accel_index;
+  bool transaction_dirty_ = false;
 };
 
 } // namespace accelerator_codegen::aux_state::engine::postgres
