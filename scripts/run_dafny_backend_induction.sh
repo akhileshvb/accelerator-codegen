@@ -46,7 +46,7 @@ else
   exit 1
 fi
 LIBDIR="$(dirname "$DUCKDB_LIB")"
-OUT_DIR="${ACCEL_CBMC_OUT:-$ROOT/build-verification}"
+OUT_DIR="${ACCEL_EXTRACT_OUT:-$ROOT/build-verification}"
 mkdir -p "$OUT_DIR"
 
 COMMON_INC=(

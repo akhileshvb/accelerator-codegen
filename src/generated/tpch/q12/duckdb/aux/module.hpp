@@ -65,10 +65,17 @@ struct TpchQ12DayShipmodeStats {
   int64_t low_line_count = 0;
 };
 
+// Qualifying lineitems by orderkey: orderkey → receipt_day → shipmode → count.
+// Lets order-priority ApplyDelta reclassify day_partitions without a full rebuild.
+using TpchQ12OrderLineIndex =
+    std::unordered_map<int64_t,
+                       std::map<int32_t, std::unordered_map<std::string, int64_t>>>;
+
 struct TpchQ12State {
   core::DenseIdArray<uint8_t> order_priorities;
   std::map<int32_t, std::unordered_map<std::string, TpchQ12DayShipmodeStats>>
       day_partitions;
+  TpchQ12OrderLineIndex order_line_index;
 
   TpchQ12PriorityClass PriorityOf(int64_t orderkey) const {
     return static_cast<TpchQ12PriorityClass>(order_priorities.Get(orderkey));

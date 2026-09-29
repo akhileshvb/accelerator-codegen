@@ -528,7 +528,12 @@ struct BenchSession {
     accelerator_codegen::RegisterAcceleratorFunctions(base_connection);
     accelerator_codegen::RegisterAcceleratorFunctions(accel_connection);
 
-    arg_pool = BuildTpchArgPool(query_num, entry);
+    aux_sweep::TpchArgCatalogSeed seed;
+    seed.arguments = catalog_ns::ToCoreArguments(entry.benchmark_arguments);
+    seed.base_sql = entry.base_sql;
+    seed.kernel_sql = entry.postgres_base_kernel_sql;
+    seed.aux_sql = entry.duckdb_aux_sql;
+    arg_pool = BuildTpchArgPool(query_num, seed);
     Require(!arg_pool.empty(), "failed to build TPC-H arg pool");
 
     std::cerr << "tpch_q" << query_num << "_aux_bench: write_mode="

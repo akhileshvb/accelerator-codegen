@@ -248,23 +248,18 @@ void RequireSharedMatchesBase(duckdb::Connection &connection,
   CompareAuxRowsToBase(connection, entry, runtime.ExecuteCollect());
 }
 
-void RunDifferentialCheck(const std::string &db_path,
-                          const SharedQueryCatalogEntry &entry) {
-  duckdb::DuckDB database(db_path.c_str());
-  duckdb::Connection connection(database);
-  DuckdbRuntime runtime(connection, entry, 10.0);
-  runtime.Build();
-  RequireSharedMatchesBase(connection, runtime, entry);
+void RequireSharedMatchesSql(duckdb::Connection &connection,
+                             DuckdbRuntime &runtime,
+                             const SharedQueryCatalogEntry &entry,
+                             const core::QueryArguments &arguments,
+                             const std::string &base_sql) {
+  CompareAuxRowsToSql(connection, entry, base_sql,
+                      runtime.ExecuteCollect(arguments));
 }
 
-void RunIncrementalDifferentialCheck(const std::string &db_path,
-                                     const SharedQueryCatalogEntry &entry) {
-  duckdb::DuckDB database(db_path.c_str());
-  duckdb::Connection connection(database);
-  DuckdbRuntime runtime(connection, entry, 10.0);
-  runtime.Build();
-  RequireSharedMatchesBase(connection, runtime, entry);
-
+void ApplyInvalidatingProbeAndRematch(duckdb::Connection &connection,
+                                      DuckdbRuntime &runtime,
+                                      const SharedQueryCatalogEntry &entry) {
   const auto before_fp = FingerprintSharedBaseSql(connection, entry);
   auto probe = FindInvalidatingSharedProbe(connection, entry);
   Require(SharedProbeChangesBaseResult(connection, entry, probe, before_fp),
@@ -291,6 +286,25 @@ void RunIncrementalDifferentialCheck(const std::string &db_path,
   auto restore = connection.Query(probe.restore_sql);
   Require(restore != nullptr && !restore->HasError(),
           restore ? restore->GetError() : "DuckDB probe restore failed");
+}
+
+void RunDifferentialCheck(const std::string &db_path,
+                          const SharedQueryCatalogEntry &entry) {
+  duckdb::DuckDB database(db_path.c_str());
+  duckdb::Connection connection(database);
+  DuckdbRuntime runtime(connection, entry, 10.0);
+  runtime.Build();
+  RequireSharedMatchesBase(connection, runtime, entry);
+}
+
+void RunIncrementalDifferentialCheck(const std::string &db_path,
+                                     const SharedQueryCatalogEntry &entry) {
+  duckdb::DuckDB database(db_path.c_str());
+  duckdb::Connection connection(database);
+  DuckdbRuntime runtime(connection, entry, 10.0);
+  runtime.Build();
+  RequireSharedMatchesBase(connection, runtime, entry);
+  ApplyInvalidatingProbeAndRematch(connection, runtime, entry);
 }
 
 void RunRfChunkDifferentialCheck(const std::string &db_path,

@@ -21,17 +21,30 @@ Read `substrate_contract.md` and `maintenance_framework.md` for substrate APIs. 
 
 1. Use **lazy rebuild** (`RebuildPartition` / `RebuildAll`) via `StageMaintenance` — do not eagerly invalidate on every write unless required.
 2. When rebuild is selected, **resync/rebuild** partition payloads for later aux hits — do not only mark stale.
-3. **No-op publish skip**: when maintenance has no publish effect, do not advance versions or publish staged updates.
-4. **Optimistic publish**: partition updates must pass `TryPublish` version checks on `AuxStateStore`.
-5. Prefer **per-accelerator** invalidation scope; never use a global epoch unrelated writers can advance.
+3. **PRE_COMMIT invalidate**: when Affects_Q, Invalidate readable aux in
+   PRE_COMMIT **before** PostgreSQL heap visibility; Commit TryPublish of
+   prepared state (stale CAS must fail after version bump).
+4. **No-op publish skip**: when maintenance has no publish effect, do not advance versions or publish staged updates.
+5. **Optimistic publish**: partition updates must pass `TryPublish` version checks on `AuxStateStore`.
+6. Prefer **per-accelerator** invalidation scope; never use a global epoch unrelated writers can advance.
 
 ## Read path under concurrent writes
 
-1. **`CheckValidity`** at statement start — use `StateStore().CheckValidity` with only window partitions.
-2. Serve aux when validity passes and txn rules allow; fall back otherwise.
-3. **Bounded iteration**: read only partitions overlapping the query window — not all slots.
-4. **Absent partitions**: skip or fall back; do not treat `Absent` as a hard error when the window excludes that partition.
-5. **`ExecuteFallback`** must remain correct when state is stale, missing, txn-blocked, or under repair.
+1. **LocalWriteSafe**: if `StateStore().IsTransactionDirty()`, Execute must
+   fallback (same-transaction relevant writes are not in published aux).
+2. **TokenForSnapshot**: pin `CurrentVisibility()` to the exact active PG
+   snapshot for the statement (not one token per transaction under READ
+   COMMITTED).
+3. **ReadHit**: pin that token once; `CheckValidity` + `ReadPartitions` must
+   linearize (immutable handles from the checked cut). Do not
+   CheckValidity then later reload mutable store with a different token.
+4. **ConsistentObservation**: required partitions must all represent the same
+   logical `DB_t` or fallback — do not use equal generation counters as the
+   semantic criterion.
+5. Serve aux when validity passes and txn rules allow; fall back otherwise.
+6. **Bounded iteration**: read only partitions overlapping the query window.
+7. **`ExecuteFallback`** must remain correct when state is stale, missing,
+   dirty, txn-blocked, or under repair.
 
 ## Cross-accelerator invariants (agent-generated code)
 

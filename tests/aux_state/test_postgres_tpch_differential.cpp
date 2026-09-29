@@ -7,6 +7,7 @@
 // Env: TPCH_PG_DB, ACCEL_PG_DIFF_KIND=base|aux, ACCEL_WORKLOAD_KIND
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <initializer_list>
@@ -14,28 +15,41 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "aux_state/postgres_tpch_harness.hpp"
+#include "tpch_arg_variants.hpp"
 
 namespace {
 
 using accel::postgres::Tools;
 using namespace accel::postgres::tpch_harness;
 using accelerator_codegen::aux_state::engine::postgres::LookupPostgresQuery;
-using accelerator_codegen::aux_state::engine::postgres::PostgresSharedQueryCatalogEntry;
+namespace core = accelerator_codegen::aux_state::core;
+namespace aux_sweep = accelerator_codegen::benchmarks::aux_sweep;
 
-void RunReadDifferential(const Tools &tools, int query_num, bool prefer_aux) {
-  const auto &entry = LookupPostgresQuery("tpch", query_num);
-  const std::string ref_sql = ConcreteBaseSql(query_num, entry);
-  const std::string accel_sql = ConcreteAccelSql(query_num, entry, prefer_aux);
+void RequireSqlMatch(const Tools &tools, const std::string &ref_sql,
+                     const std::string &accel_sql, const std::string &label) {
+  auto ref = QuerySQL(tools, ref_sql);
+  Require(ref.first, label + ": reference SQL failed:\n" + ref_sql + "\n" +
+                         ref.second);
+  auto accel = QuerySQL(tools, accel_sql);
+  Require(accel.first, label + ": accel SQL failed:\n" + accel_sql + "\n" +
+                           accel.second);
+  RequireOrderedMatch(ref.second, accel.second, label);
+}
+
+void RunReadDifferential(const Tools &tools, int query_num, bool prefer_aux,
+                         const aux_sweep::TpchArgVariant &variant) {
+  const std::string ref_sql = variant.base_sql;
+  const std::string accel_sql =
+      prefer_aux ? variant.aux_sql : variant.kernel_sql;
 
   std::cerr << "differential(read): tpch Q" << query_num
-            << (prefer_aux ? " aux" : " base") << '\n';
-  std::cerr << "  reference: " << ref_sql << '\n';
-  std::cerr << "  accel: " << accel_sql << '\n';
+            << (prefer_aux ? " aux" : " base") << " sql=" << accel_sql << '\n';
 
-  RequireQueryMatch(tools, query_num, prefer_aux, "read");
+  RequireSqlMatch(tools, ref_sql, accel_sql, "read Q" + std::to_string(query_num));
   std::cerr << "PASS read differential Q" << query_num << '\n';
 }
 
@@ -61,7 +75,36 @@ std::vector<std::string> SplitFields(const std::string &line) {
   return cells;
 }
 
-WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_offset) {
+WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_offset,
+                             const core::QueryArguments &arguments) {
+  auto S = [&](std::size_t i) {
+    Require(arguments.values.size() > i &&
+                std::holds_alternative<std::string>(arguments.values[i].payload),
+            "expected string arg");
+    return aux_sweep::FormatTpchSqlString(
+        std::get<std::string>(arguments.values[i].payload));
+  };
+  auto D = [&](std::size_t i) {
+    Require(arguments.values.size() > i &&
+                std::holds_alternative<core::AuxDate>(arguments.values[i].payload),
+            "expected date arg");
+    return aux_sweep::FormatTpchDateLiteral(
+        std::get<core::AuxDate>(arguments.values[i].payload));
+  };
+  auto I64 = [&](std::size_t i) {
+    Require(arguments.values.size() > i &&
+                std::holds_alternative<int64_t>(arguments.values[i].payload),
+            "expected int arg");
+    return std::get<int64_t>(arguments.values[i].payload);
+  };
+  auto Dbl = [&](std::size_t i) {
+    Require(arguments.values.size() > i, "expected numeric arg");
+    if (std::holds_alternative<double>(arguments.values[i].payload))
+      return std::get<double>(arguments.values[i].payload);
+    if (std::holds_alternative<int64_t>(arguments.values[i].payload))
+      return static_cast<double>(std::get<int64_t>(arguments.values[i].payload));
+    throw std::runtime_error("expected numeric arg");
+  };
   auto Fetch = [&](const std::string &sql) {
     auto r = QuerySQL(tools, sql);
     Require(r.first, "probe select failed for Q" + std::to_string(query_num) +
@@ -89,30 +132,41 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
   case 1:
     return LinePriceBump(
         Fetch("SELECT l_orderkey, l_linenumber, l_extendedprice::text FROM lineitem "
-              "WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '90' DAY "
+              "WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '" +
+              std::to_string(I64(0)) + "' DAY "
               "ORDER BY l_orderkey, l_linenumber " + off + "LIMIT 1"),
         "100");
   case 2: {
+    // Lower a non-winning regional partsupp below the current min so ApplyDelta
+    // can install a new min (raising the unique min forces RebuildAll).
     auto f = Fetch(
-        "SELECT ps.ps_partkey, ps.ps_suppkey, ps.ps_supplycost::text "
-        "FROM partsupp ps WHERE (ps.ps_partkey, ps.ps_suppkey) = ("
-        "SELECT p.p_partkey, s.s_suppkey FROM part p, supplier s, partsupp ps2, "
-        "nation n, region r "
-        "WHERE p.p_partkey = ps2.ps_partkey AND s.s_suppkey = ps2.ps_suppkey "
-        "AND p.p_size = 15 AND p.p_type LIKE '%BRASS' "
-        "AND s.s_nationkey = n.n_nationkey AND n.n_regionkey = r.r_regionkey "
-        "AND r.r_name = 'EUROPE' "
-        "AND ps2.ps_supplycost = (SELECT MIN(ps_supplycost) FROM partsupp, supplier, "
-        "nation, region WHERE p.p_partkey = ps_partkey AND s_suppkey = ps_suppkey "
-        "AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey "
-        "AND r_name = 'EUROPE') "
-        "ORDER BY s.s_acctbal DESC, n.n_name, s.s_name, p.p_partkey " + off +
-        "LIMIT 1)");
-    Require(f.size() >= 3, "Q2 probe fields");
+        "SELECT ps.ps_partkey::text, ps.ps_suppkey::text, ps.ps_supplycost::text, "
+        "mins.min_cost::text "
+        "FROM partsupp ps "
+        "JOIN supplier s ON s.s_suppkey = ps.ps_suppkey "
+        "JOIN nation n ON n.n_nationkey = s.s_nationkey "
+        "JOIN region r ON r.r_regionkey = n.n_regionkey "
+        "JOIN part p ON p.p_partkey = ps.ps_partkey "
+        "JOIN LATERAL ("
+        "  SELECT MIN(ps2.ps_supplycost) AS min_cost "
+        "  FROM partsupp ps2 "
+        "  JOIN supplier s2 ON s2.s_suppkey = ps2.ps_suppkey "
+        "  JOIN nation n2 ON n2.n_nationkey = s2.s_nationkey "
+        "  JOIN region r2 ON r2.r_regionkey = n2.n_regionkey "
+        "  WHERE ps2.ps_partkey = ps.ps_partkey AND r2.r_name = r.r_name"
+        ") mins ON true "
+        "WHERE r.r_name = " +
+        S(2) + " AND p.p_size = " + std::to_string(I64(0)) +
+        " AND p.p_type LIKE " + S(1) +
+        " AND ps.ps_supplycost > mins.min_cost "
+        "ORDER BY ps.ps_partkey, ps.ps_suppkey " + off + "LIMIT 1");
+    Require(f.size() >= 4, "Q2 probe fields");
+    const double min_cost = std::stod(f[3]);
+    const double new_cost = (static_cast<int64_t>(std::llround(min_cost * 100.0)) - 1) /
+                            100.0;
     WriteProbe p;
-    p.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + 1000 "
-                   "WHERE ps_partkey = " +
-                   f[0] + " AND ps_suppkey = " + f[1];
+    p.update_sql = "UPDATE partsupp SET ps_supplycost = " + std::to_string(new_cost) +
+                   " WHERE ps_partkey = " + f[0] + " AND ps_suppkey = " + f[1];
     p.restore_sql = "UPDATE partsupp SET ps_supplycost = " + f[2] +
                     " WHERE ps_partkey = " + f[0] + " AND ps_suppkey = " + f[1];
     return p;
@@ -125,12 +179,12 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
               "SELECT l_orderkey, SUM(l_extendedprice * (1 - l_discount)) AS revenue, "
               "o_orderdate, o_shippriority "
               "FROM customer, orders, lineitem "
-              "WHERE c_mktsegment = 'BUILDING' AND c_custkey = o_custkey "
-              "AND l_orderkey = o_orderkey AND o_orderdate < DATE '1995-03-15' "
-              "AND l_shipdate > DATE '1995-03-15' "
+              "WHERE c_mktsegment = " + S(0) + " AND c_custkey = o_custkey "
+              "AND l_orderkey = o_orderkey AND o_orderdate < " + D(1) + " "
+              "AND l_shipdate > " + D(1) + " "
               "GROUP BY l_orderkey, o_orderdate, o_shippriority "
               "ORDER BY revenue DESC, o_orderdate, l_orderkey, o_shippriority LIMIT 10)"
-              ") AND l.l_shipdate > DATE '1995-03-15' "
+              ") AND l.l_shipdate > " + D(1) + " "
               "ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1"),
         "100");
   case 4: {
@@ -141,8 +195,8 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
         "l.l_receiptdate::text FROM lineitem l "
         "WHERE l.l_commitdate < l.l_receiptdate AND l.l_orderkey = ("
         "SELECT o.o_orderkey FROM orders o "
-        "WHERE o.o_orderdate >= DATE '1993-07-01' "
-        "AND o.o_orderdate < DATE '1993-07-01' + INTERVAL '3' month "
+        "WHERE o.o_orderdate >= " + D(0) + " "
+        "AND o.o_orderdate < " + D(0) + " + INTERVAL '3' month "
         "AND (SELECT COUNT(*) FROM lineitem lx "
         "WHERE lx.l_orderkey = o.o_orderkey AND lx.l_commitdate < lx.l_receiptdate) = 1 "
         "ORDER BY o.o_orderkey LIMIT 1) "
@@ -162,15 +216,18 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
               "WHERE l.l_orderkey = o.o_orderkey AND c.c_custkey = o.o_custkey "
               "AND l.l_suppkey = s.s_suppkey AND c.c_nationkey = s.s_nationkey "
               "AND s.s_nationkey = n.n_nationkey AND n.n_regionkey = r.r_regionkey "
-              "AND r.r_name = 'AMERICA' AND o.o_orderdate >= DATE '1995-01-01' "
-              "AND o.o_orderdate < DATE '1995-01-01' + INTERVAL '1' year "
+              "AND r.r_name = " + S(0) + " AND o.o_orderdate >= " + D(1) + " "
+              "AND o.o_orderdate < " + D(1) + " + INTERVAL '1' year "
               "ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1"),
         "100");
   case 6:
     return LinePriceBump(
         Fetch("SELECT l_orderkey, l_linenumber, l_extendedprice::text FROM lineitem "
-              "WHERE l_shipdate >= DATE '1995-01-01' AND l_shipdate < DATE '1996-01-01' "
-              "AND l_discount BETWEEN 0.02 AND 0.04 AND l_quantity < 25 "
+              "WHERE l_shipdate >= " + D(0) + " AND l_shipdate < " + D(0) +
+              " + INTERVAL '1' year "
+              "AND l_discount BETWEEN " + std::to_string(Dbl(1) - 0.01) +
+              " AND " + std::to_string(Dbl(1) + 0.01) +
+              " AND l_quantity < " + std::to_string(Dbl(2)) + " "
               "ORDER BY l_orderkey, l_linenumber " + off + "LIMIT 1"),
         "100");
   case 7:
@@ -180,8 +237,8 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
               "WHERE s.s_suppkey = l.l_suppkey AND o.o_orderkey = l.l_orderkey "
               "AND c.c_custkey = o.o_custkey AND s.s_nationkey = n1.n_nationkey "
               "AND c.c_nationkey = n2.n_nationkey "
-              "AND ((n1.n_name = 'UNITED KINGDOM' AND n2.n_name = 'BRAZIL') "
-              "OR (n1.n_name = 'BRAZIL' AND n2.n_name = 'UNITED KINGDOM')) "
+              "AND ((n1.n_name = " + S(0) + " AND n2.n_name = " + S(1) + ") "
+              "OR (n1.n_name = " + S(1) + " AND n2.n_name = " + S(0) + ")) "
               "AND l.l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
               "ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1"),
         "100");
@@ -193,17 +250,18 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
               "WHERE p.p_partkey = l.l_partkey AND s.s_suppkey = l.l_suppkey "
               "AND l.l_orderkey = o.o_orderkey AND o.o_custkey = c.c_custkey "
               "AND c.c_nationkey = n1.n_nationkey AND n1.n_regionkey = r.r_regionkey "
-              "AND r.r_name = 'ASIA' AND s.s_nationkey = n2.n_nationkey "
+              "AND r.r_name = " + S(1) + " AND s.s_nationkey = n2.n_nationkey "
               "AND o.o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
-              "AND p.p_type = 'PROMO BRUSHED BRASS' "
+              "AND p.p_type = " + S(2) + " "
               "ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1"),
         "100");
   case 9:
     return LinePriceBump(
         Fetch("SELECT l.l_orderkey, l.l_linenumber, l.l_extendedprice::text "
               "FROM part p, lineitem l WHERE p.p_partkey = l.l_partkey "
-              "AND p.p_name LIKE '%green%' "
-              "ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1"),
+              "AND p.p_name LIKE " + aux_sweep::FormatTpchSqlString(
+                  "%" + std::get<std::string>(arguments.values[0].payload) + "%") +
+              " ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1"),
         "100");
   case 10:
     // Must hit a TOP-20 customer so LIMIT 20 fingerprint moves (DuckDB Q10).
@@ -211,15 +269,15 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
         Fetch("SELECT l.l_orderkey, l.l_linenumber, l.l_extendedprice::text "
               "FROM lineitem l, orders o "
               "WHERE l.l_orderkey = o.o_orderkey AND l.l_returnflag = 'R' "
-              "AND o.o_orderdate >= DATE '1993-06-01' "
-              "AND o.o_orderdate < DATE '1993-06-01' + INTERVAL '3' MONTH "
+              "AND o.o_orderdate >= " + D(0) + " "
+              "AND o.o_orderdate < " + D(0) + " + INTERVAL '3' MONTH "
               "AND o.o_custkey IN ("
               "SELECT c_custkey FROM ("
               "SELECT c_custkey, SUM(l_extendedprice * (1 - l_discount)) AS revenue "
               "FROM customer JOIN orders ON c_custkey = o_custkey "
               "JOIN lineitem ON l_orderkey = o_orderkey "
-              "WHERE o_orderdate >= DATE '1993-06-01' "
-              "AND o_orderdate < DATE '1993-06-01' + INTERVAL '3' MONTH "
+              "WHERE o_orderdate >= " + D(0) + " "
+              "AND o_orderdate < " + D(0) + " + INTERVAL '3' MONTH "
               "AND l_returnflag = 'R' "
               "GROUP BY c_custkey ORDER BY revenue DESC, c_custkey LIMIT 20) top20) "
               "ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1"),
@@ -229,7 +287,7 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
         "SELECT ps.ps_partkey, ps.ps_suppkey, ps.ps_supplycost::text "
         "FROM partsupp ps, supplier s, nation n "
         "WHERE ps.ps_suppkey = s.s_suppkey AND s.s_nationkey = n.n_nationkey "
-        "AND n.n_name = 'ROMANIA' ORDER BY ps.ps_partkey, ps.ps_suppkey " + off + "LIMIT 1");
+        "AND n.n_name = " + S(0) + " ORDER BY ps.ps_partkey, ps.ps_suppkey " + off + "LIMIT 1");
     Require(f.size() >= 3, "Q11 probe fields");
     WriteProbe p;
     p.update_sql = "UPDATE partsupp SET ps_supplycost = ps_supplycost + 100 "
@@ -240,33 +298,39 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
     return p;
   }
   case 12: {
-    // Counts by shipmode — flip MAIL out of {'MAIL','SHIP'} (DuckDB Q12 probe).
+    // Priority reclassify — order-side ApplyDelta must update day counts via
+    // the reverse index (not only lineitem shipmode flips).
     auto f = Fetch(
-        "SELECT l.l_orderkey, l.l_linenumber, l.l_shipmode FROM orders o, lineitem l "
-        "WHERE o.o_orderkey = l.l_orderkey AND l.l_shipmode IN ('MAIL', 'SHIP') "
+        "SELECT o.o_orderkey, o.o_orderpriority, l.l_shipmode "
+        "FROM orders o, lineitem l "
+        "WHERE o.o_orderkey = l.l_orderkey AND l.l_shipmode IN (" + S(0) + ", " + S(1) + ") "
         "AND l.l_commitdate < l.l_receiptdate AND l.l_shipdate < l.l_commitdate "
-        "AND l.l_receiptdate >= DATE '1995-01-01' "
-        "AND l.l_receiptdate < DATE '1995-01-01' + INTERVAL '1' year "
-        "ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1");
+        "AND l.l_receiptdate >= " + D(2) + " "
+        "AND l.l_receiptdate < " + D(2) + " + INTERVAL '1' year "
+        "AND (o.o_orderpriority = '1-URGENT' OR o.o_orderpriority = '2-HIGH') "
+        "ORDER BY o.o_orderkey, l.l_linenumber " + off + "LIMIT 1");
     Require(f.size() >= 3, "Q12 probe fields");
-    const std::string neu = (f[2] == "MAIL") ? "AIR" : "MAIL";
     WriteProbe p;
-    p.update_sql = "UPDATE lineitem SET l_shipmode = " + SqlLiteral(neu) +
-                   " WHERE l_orderkey = " + f[0] + " AND l_linenumber = " + f[1];
-    p.restore_sql = "UPDATE lineitem SET l_shipmode = " + SqlLiteral(f[2]) +
-                    " WHERE l_orderkey = " + f[0] + " AND l_linenumber = " + f[1];
+    p.update_sql = "UPDATE orders SET o_orderpriority = '3-MEDIUM' "
+                   "WHERE o_orderkey = " + f[0];
+    p.restore_sql = "UPDATE orders SET o_orderpriority = " + SqlLiteral(f[1]) +
+                    " WHERE o_orderkey = " + f[0];
     return p;
   }
   case 13: {
     auto f = Fetch(
         "SELECT o_orderkey, o_comment FROM orders "
-        "WHERE o_comment NOT LIKE '%unusual%accounts%' "
+        "WHERE o_comment NOT LIKE " + S(0) + " "
         "ORDER BY o_orderkey " + off + "LIMIT 1");
     Require(f.size() >= 2, "Q13 probe fields");
+    std::string append = std::get<std::string>(arguments.values[0].payload);
+    for (char &c : append) {
+      if (c == '%')
+        c = ' ';
+    }
     WriteProbe p;
-    p.update_sql = "UPDATE orders SET o_comment = o_comment || ' unusual accounts' "
-                   "WHERE o_orderkey = " +
-                   f[0];
+    p.update_sql = "UPDATE orders SET o_comment = o_comment || " + SqlLiteral(append) +
+                   " WHERE o_orderkey = " + f[0];
     p.restore_sql = "UPDATE orders SET o_comment = " + SqlLiteral(f[1]) +
                     " WHERE o_orderkey = " + f[0];
     return p;
@@ -276,33 +340,39 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
     return LinePriceBump(
         Fetch("SELECT l.l_orderkey, l.l_linenumber, l.l_extendedprice::text "
               "FROM lineitem l, part p WHERE l.l_partkey = p.p_partkey "
-              "AND l.l_shipdate >= DATE '1995-06-01' "
-              "AND l.l_shipdate < DATE '1995-06-01' + INTERVAL '1' month "
+              "AND l.l_shipdate >= " + D(0) + " "
+              "AND l.l_shipdate < " + D(0) + " + INTERVAL '1' month "
               "ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1"),
         "10000000");
   case 15:
     // Bump a line belonging to the current max-revenue supplier (DuckDB Q15).
     return LinePriceBump(
         Fetch("SELECT l_orderkey, l_linenumber, l_extendedprice::text FROM lineitem "
-              "WHERE l_shipdate >= DATE '1994-11-01' "
-              "AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH "
+              "WHERE l_shipdate >= " + D(0) + " "
+              "AND l_shipdate < " + D(0) + " + INTERVAL '3' MONTH "
               "AND l_suppkey = (SELECT l_suppkey FROM lineitem "
-              "WHERE l_shipdate >= DATE '1994-11-01' "
-              "AND l_shipdate < DATE '1994-11-01' + INTERVAL '3' MONTH "
+              "WHERE l_shipdate >= " + D(0) + " "
+              "AND l_shipdate < " + D(0) + " + INTERVAL '3' MONTH "
               "GROUP BY l_suppkey "
               "ORDER BY SUM(l_extendedprice * (1 - l_discount)) DESC LIMIT 1) "
               "ORDER BY l_orderkey, l_linenumber " + off + "LIMIT 1"),
         "100");
   case 16: {
     // Move the row onto a complaints supplier so COUNT(DISTINCT) drops.
+    std::string sizes;
+    for (int i = 0; i < 8; ++i) {
+      if (i)
+        sizes += ", ";
+      sizes += std::to_string(I64(static_cast<std::size_t>(2 + i)));
+    }
     auto f = Fetch(
         "SELECT ps.ps_partkey, ps.ps_suppkey, "
         "(SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%' "
         "ORDER BY s_suppkey LIMIT 1)::text "
         "FROM partsupp ps, part p "
-        "WHERE p.p_partkey = ps.ps_partkey AND p.p_brand <> 'Brand#13' "
-        "AND p.p_type NOT LIKE 'SMALL BRUSHED%' "
-        "AND p.p_size IN (26, 24, 27, 29, 7, 20, 22, 33) "
+        "WHERE p.p_partkey = ps.ps_partkey AND p.p_brand <> " + S(0) + " "
+        "AND p.p_type NOT LIKE " + S(1) + " "
+        "AND p.p_size IN (" + sizes + ") "
         "AND ps.ps_suppkey NOT IN ("
         "SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%') "
         "AND NOT EXISTS (SELECT 1 FROM partsupp ps2 WHERE ps2.ps_partkey = ps.ps_partkey "
@@ -321,7 +391,7 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
     return LinePriceBump(
         Fetch("SELECT l.l_orderkey, l.l_linenumber, l.l_extendedprice::text "
               "FROM lineitem l, part p WHERE p.p_partkey = l.l_partkey "
-              "AND p.p_brand = 'Brand#34' AND p.p_container = 'LG CASE' "
+              "AND p.p_brand = " + S(0) + " AND p.p_container = " + S(1) + " "
               "ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1"),
         "100");
   case 18: {
@@ -329,7 +399,7 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
         "SELECT l.l_orderkey, l.l_linenumber, l.l_quantity::text FROM lineitem l "
         "WHERE l.l_orderkey IN ("
         "SELECT l_orderkey FROM lineitem GROUP BY l_orderkey "
-        "HAVING SUM(l_quantity) > 312) "
+        "HAVING SUM(l_quantity) > " + std::to_string(I64(0)) + ") "
         "ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1");
     Require(f.size() >= 3, "Q18 probe fields");
     WriteProbe p;
@@ -345,9 +415,10 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
     auto f = Fetch(
         "SELECT l.l_orderkey, l.l_partkey, l.l_linenumber, l.l_quantity::text "
         "FROM lineitem l, part p WHERE p.p_partkey = l.l_partkey "
-        "AND p.p_brand = 'Brand#31' AND p.p_container IN "
+        "AND p.p_brand = " + S(0) + " AND p.p_container IN "
         "('SM CASE','SM BOX','SM PACK','SM PKG') "
-        "AND l.l_quantity >= 4 AND l.l_quantity <= 14 "
+        "AND l.l_quantity >= " + std::to_string(I64(1)) +
+        " AND l.l_quantity <= " + std::to_string(I64(1) + 10) + " "
         "AND p.p_size BETWEEN 1 AND 5 "
         "AND l.l_shipmode IN ('AIR','AIR REG') "
         "AND l.l_shipinstruct = 'DELIVER IN PERSON' "
@@ -364,16 +435,15 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
     return p;
   }
   case 20: {
-    // Target a RUSSIA / gainsboro line that feeds Q20 availability (DuckDB probe).
     auto f = Fetch(
         "SELECT l.l_orderkey, l.l_linenumber, l.l_quantity::text "
         "FROM lineitem l "
-        "JOIN part p ON p.p_partkey = l.l_partkey AND p.p_name LIKE 'gainsboro%' "
+        "JOIN part p ON p.p_partkey = l.l_partkey AND p.p_name LIKE " + S(1) + " "
         "JOIN partsupp ps ON ps.ps_partkey = l.l_partkey AND ps.ps_suppkey = l.l_suppkey "
         "JOIN supplier s ON s.s_suppkey = l.l_suppkey "
-        "JOIN nation n ON n.n_nationkey = s.s_nationkey AND n.n_name = 'RUSSIA' "
-        "WHERE l.l_shipdate >= DATE '1997-01-01' "
-        "AND l.l_shipdate < DATE '1998-01-01' "
+        "JOIN nation n ON n.n_nationkey = s.s_nationkey AND n.n_name = " + S(2) + " "
+        "WHERE l.l_shipdate >= " + D(0) + " "
+        "AND l.l_shipdate < " + D(0) + " + INTERVAL '1' year "
         "ORDER BY l.l_orderkey, l.l_linenumber " + off + "LIMIT 1");
     Require(f.size() >= 3, "Q20 probe fields");
     WriteProbe p;
@@ -397,7 +467,7 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
         "AND NOT EXISTS (SELECT * FROM lineitem l3 WHERE l3.l_orderkey = l1.l_orderkey "
         "AND l3.l_suppkey = l1.l_suppkey AND l3.l_receiptdate > l3.l_commitdate "
         "AND l3.l_linenumber <> l1.l_linenumber) "
-        "AND s.s_nationkey = n.n_nationkey AND n.n_name = 'SAUDI ARABIA' "
+        "AND s.s_nationkey = n.n_nationkey AND n.n_name = " + S(0) + " "
         "ORDER BY l1.l_orderkey, l1.l_linenumber " + off + "LIMIT 1");
     Require(f.size() >= 4, "Q21 probe fields");
     WriteProbe p;
@@ -408,13 +478,17 @@ WriteProbe ResolveWriteProbe(const Tools &tools, int query_num, int candidate_of
     return p;
   }
   case 22: {
+    std::string codes;
+    for (int i = 0; i < 7; ++i) {
+      if (i)
+        codes += ", ";
+      codes += S(static_cast<std::size_t>(i));
+    }
     auto f = Fetch(
         "SELECT c_custkey, c_acctbal::text FROM customer "
-        "WHERE substring(c_phone from 1 for 2) IN "
-        "('30','19','14','28','11','22','32') "
+        "WHERE substring(c_phone from 1 for 2) IN (" + codes + ") "
         "AND c_acctbal > (SELECT AVG(c_acctbal) FROM customer WHERE c_acctbal > 0.00 "
-        "AND substring(c_phone from 1 for 2) IN "
-        "('30','19','14','28','11','22','32')) "
+        "AND substring(c_phone from 1 for 2) IN (" + codes + ")) "
         "AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey) "
         "ORDER BY c_custkey " + off + "LIMIT 1");
     Require(f.size() >= 2, "Q22 probe fields");
@@ -462,20 +536,20 @@ bool ProbeChangesBaseFingerprint(const Tools &tools, const std::string &base_sql
 }
 
 void RunWriteMaintDifferential(const Tools &tools, int query_num, bool prefer_aux,
-                               const std::string &force_action) {
+                               const std::string &force_action,
+                               const aux_sweep::TpchArgVariant &variant) {
   Require(prefer_aux, "write_maint requires aux (ACCEL_PG_DIFF_KIND=aux)");
-  RunReadDifferential(tools, query_num, prefer_aux);
+  RunReadDifferential(tools, query_num, prefer_aux, variant);
   EnsureMutationTriggers(tools);
 
-  const auto &entry = LookupPostgresQuery("tpch", query_num);
-  const std::string ref_sql = ConcreteBaseSql(query_num, entry);
-  const std::string accel_sql = ConcreteAccelSql(query_num, entry, /*prefer_aux=*/true);
+  const std::string ref_sql = variant.base_sql;
+  const std::string accel_sql = variant.aux_sql;
 
   WriteProbe probe;
   bool found = false;
   for (int cand = 0; cand < 64; ++cand) {
     try {
-      probe = ResolveWriteProbe(tools, query_num, cand);
+      probe = ResolveWriteProbe(tools, query_num, cand, variant.arguments);
     } catch (const std::exception &) {
       break;
     }
@@ -485,7 +559,7 @@ void RunWriteMaintDifferential(const Tools &tools, int query_num, bool prefer_au
     }
   }
   Require(found, "invalidating probe did not change base SQL fingerprint for Q" +
-                     std::to_string(query_num) +
+                     std::to_string(query_num) + " sql=" + variant.kernel_sql +
                      " — write must impact this query's observable result");
 
   std::ostringstream script;
@@ -568,6 +642,7 @@ void RunWriteMaintDifferential(const Tools &tools, int query_num, bool prefer_au
                                            : ("write_maint_" + force_action));
   std::cerr << "PASS write_maint differential Q" << query_num
             << (force_action.empty() ? "" : (" force=" + force_action))
+            << " sql=" << variant.kernel_sql
             << " (invalidating write + mutation_count " << before_n << "->" << after_n
             << " + aux rematch action=[" << action << "])\n";
 }
@@ -590,16 +665,24 @@ std::vector<std::string> MaintenanceStrats() {
   return out;
 }
 
-void RunWriteMixAndStrats(const Tools &tools, int query_id, bool prefer_aux) {
-  RunWriteMaintDifferential(tools, query_id, prefer_aux, "");
+void RunWriteMixAndStrats(const Tools &tools, int query_id, bool prefer_aux,
+                          const aux_sweep::TpchArgVariant &variant) {
+  RunWriteMaintDifferential(tools, query_id, prefer_aux, "", variant);
   const char *force_env = std::getenv("ACCEL_FORCE_MAINTENANCE_ACTION");
   if (force_env && *force_env) {
-    RunWriteMaintDifferential(tools, query_id, prefer_aux, force_env);
+    RunWriteMaintDifferential(tools, query_id, prefer_aux, force_env, variant);
     return;
   }
   for (const auto &strat : MaintenanceStrats()) {
-    RunWriteMaintDifferential(tools, query_id, prefer_aux, strat);
+    RunWriteMaintDifferential(tools, query_id, prefer_aux, strat, variant);
   }
+}
+
+int ArgSampleCount(const char *name, int fallback) {
+  const char *raw = std::getenv(name);
+  if (!raw || !*raw)
+    return fallback;
+  return std::max(1, std::stoi(raw));
 }
 
 } // namespace
@@ -618,15 +701,38 @@ int main(int argc, char **argv) {
     const bool prefer_aux = PreferAux(query_id);
     const char *mode = std::getenv("ACCEL_PG_DIFF_MODE");
     const std::string mode_s = mode ? mode : "read";
+    const int read_samples = ArgSampleCount("ACCEL_PG_DIFF_ARG_SAMPLES", 4);
+    const int maint_samples = ArgSampleCount("ACCEL_PG_DIFF_MAINT_SAMPLES", 2);
+
+    setenv("ACCEL_BENCH_VARY_ARGS", "1", 0);
+    setenv("ACCEL_BENCH_ARG_SEED", "42", 0);
+
+    const auto &pg = LookupPostgresQuery("tpch", query_id);
+    aux_sweep::TpchArgCatalogSeed seed;
+    seed.arguments = aux_sweep::CatalogDefaultTpchArgs(query_id);
+    seed.base_sql = pg.base_sql;
+    seed.kernel_sql = pg.accelerator_sql;
+    seed.aux_sql = pg.aux_sql;
+    auto pool = aux_sweep::BuildTpchDifferentialArgPool(
+        query_id, static_cast<std::size_t>(read_samples), &seed);
+    Require(!pool.empty(), "empty arg pool for Q" + std::to_string(query_id));
+    std::cerr << "arg pool Q" << query_id << " size=" << pool.size() << '\n';
 
     if (mode_s == "write_maint") {
-      RunWriteMixAndStrats(tools, query_id, prefer_aux);
+      const std::size_t n =
+          std::min(pool.size(), static_cast<std::size_t>(maint_samples));
+      for (std::size_t i = 0; i < n; ++i)
+        RunWriteMixAndStrats(tools, query_id, prefer_aux, pool[i]);
     } else {
-      RunReadDifferential(tools, query_id, prefer_aux);
+      for (const auto &variant : pool)
+        RunReadDifferential(tools, query_id, prefer_aux, variant);
       if (prefer_aux && (!mode || mode_s == "read")) {
         const char *skip = std::getenv("ACCEL_PG_DIFF_SKIP_WRITE_MAINT");
         if (!(skip && std::string(skip) == "1")) {
-          RunWriteMixAndStrats(tools, query_id, prefer_aux);
+          const std::size_t n =
+              std::min(pool.size(), static_cast<std::size_t>(maint_samples));
+          for (std::size_t i = 0; i < n; ++i)
+            RunWriteMixAndStrats(tools, query_id, prefer_aux, pool[i]);
         }
       }
     }

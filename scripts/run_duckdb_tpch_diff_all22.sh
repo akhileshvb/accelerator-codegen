@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Run DuckDB TPC-H aux differentials (read + incremental + adversarial) for Q1..Q22.
+# Run DuckDB TPC-H aux differentials (read + incremental + adversarial) for Q1..Q22,
+# then parameterized substitution variants (read + all maintenance actions).
 # Optional: ACCEL_FORCE_MAINTENANCE_ACTION=ApplyDelta|RebuildPartition|RebuildAll
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${BUILD:-/tmp/accel_duckdb_build}"
 BIN="${BIN:-${BUILD}/test_tpch_shared_differential}"
+ARG_BIN="${ARG_BIN:-${BUILD}/test_tpch_arg_variants_differential}"
 TPCH_DB="${ACCEL_TPCH_DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf1.duckdb}"
 FORCE="${ACCEL_FORCE_MAINTENANCE_ACTION:-}"
 if [[ -n "${FORCE}" ]]; then
@@ -74,4 +76,19 @@ print(json.dumps(summary, indent=2))
 PY
 
 echo "summary pass=${pass} fail=${fail} force=${FORCE:-none} out=${OUT_DIR}"
-exit "${fail}"
+
+if [[ ${fail} -ne 0 ]]; then
+  exit "${fail}"
+fi
+
+if [[ ! -x "${ARG_BIN}" ]]; then
+  echo "missing arg-variant binary: ${ARG_BIN}" >&2
+  exit 1
+fi
+echo "=== duckdb parameterized arg-variant differentials ==="
+ACCEL_DUCKDB_DIFF_QUERIES="${QUERIES}" \
+  ACCEL_ARG_SAMPLES="${ACCEL_ARG_SAMPLES:-4}" \
+  ACCEL_ARG_MAINT_SAMPLES="${ACCEL_ARG_MAINT_SAMPLES:-2}" \
+  "${ARG_BIN}" "${TPCH_DB}"
+echo "PASS parameterized arg-variant differentials"
+exit 0

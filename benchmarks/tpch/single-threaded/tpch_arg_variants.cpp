@@ -14,7 +14,6 @@ namespace accelerator_codegen::benchmarks::aux_sweep {
 namespace {
 
 namespace core = accelerator_codegen::aux_state::core;
-namespace catalog_ns = accelerator_codegen::aux_state::engine;
 
 bool EnvFlagTrue(const char *value, bool default_value) {
   if (!value || !*value) {
@@ -238,7 +237,8 @@ core::QueryArguments SampleTpchArgs(int query_id, uint64_t stream_index) {
     std::uniform_int_distribution<int> size_dist(1, 50);
     arguments.values = {
         core::AuxValue::Of(core::AuxType::Int64, static_cast<int64_t>(size_dist(rng))),
-        core::AuxValue::Of(core::AuxType::String, '%' + std::string{Pick(rng, kTypeSyllable1)}),
+        core::AuxValue::Of(core::AuxType::String,
+                           '%' + std::string{Pick(rng, kTypeSyllable3)}),
         core::AuxValue::Of(core::AuxType::String, std::string{Pick(rng, kRegions)})};
     break;
   }
@@ -280,11 +280,13 @@ case 3: {
     break;
   }
   case 8: {
+    const std::string part_type = std::string{Pick(rng, kTypeSyllable1)} + " " +
+                                  Pick(rng, kTypeSyllable2) + " " +
+                                  Pick(rng, kTypeSyllable3);
     arguments.values = {
         core::AuxValue::Of(core::AuxType::String, std::string{Pick(rng, kNations)}),
         core::AuxValue::Of(core::AuxType::String, std::string{Pick(rng, kRegions)}),
-        core::AuxValue::Of(core::AuxType::String,
-                           std::string{Pick(rng, kTypeSyllable3)})};
+        core::AuxValue::Of(core::AuxType::String, part_type)};
     break;
   }
   case 6: {
@@ -429,14 +431,152 @@ case 3: {
   }
   case 22: {
     arguments.values.clear();
-    for (int i = 0; i < 7; ++i)
-      arguments.values.push_back(core::AuxValue::Of(
-          core::AuxType::String,
-          std::string{Pick(rng, kCountryCodes)}));
+    std::vector<std::string> codes;
+    codes.reserve(7);
+    while (codes.size() < 7) {
+      std::string code = Pick(rng, kCountryCodes);
+      if (std::find(codes.begin(), codes.end(), code) == codes.end())
+        codes.push_back(std::move(code));
+    }
+    for (auto &code : codes)
+      arguments.values.push_back(
+          core::AuxValue::Of(core::AuxType::String, std::move(code)));
     break;
   }
   default:
     throw std::runtime_error("SampleTpchArgs: unsupported query_id " +
+                             std::to_string(query_id));
+  }
+  return arguments;
+}
+
+core::QueryArguments CatalogDefaultTpchArgs(int query_id) {
+  core::QueryArguments arguments;
+  switch (query_id) {
+  case 1:
+    arguments.values = {core::AuxValue::Of(core::AuxType::Int64, int64_t{90})};
+    break;
+  case 2:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{15}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"%BRASS"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"EUROPE"})};
+    break;
+  case 3:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{"BUILDING"}),
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(1995, 3, 15))};
+    break;
+  case 4:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(1993, 7, 1))};
+    break;
+  case 5:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{"AMERICA"}),
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(1995, 1, 1))};
+    break;
+  case 6:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(1995, 1, 1)),
+        core::AuxValue::Of(core::AuxType::Double, 0.03),
+        core::AuxValue::Of(core::AuxType::Double, 25.0)};
+    break;
+  case 7:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{"UNITED KINGDOM"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"BRAZIL"})};
+    break;
+  case 8:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{"INDIA"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"ASIA"}),
+        core::AuxValue::Of(core::AuxType::String,
+                           std::string{"PROMO BRUSHED BRASS"})};
+    break;
+  case 9:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{"green"})};
+    break;
+  case 10:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(1993, 6, 1))};
+    break;
+  case 11:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{"ROMANIA"}),
+        core::AuxValue::Of(core::AuxType::Double, 0.0001)};
+    break;
+  case 12:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{"MAIL"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"SHIP"}),
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(1995, 1, 1))};
+    break;
+  case 13:
+    arguments.values = {core::AuxValue::Of(
+        core::AuxType::String, std::string{"%unusual%accounts%"})};
+    break;
+  case 14:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(1995, 6, 1))};
+    break;
+  case 15:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(1994, 11, 1))};
+    break;
+  case 16:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{"Brand#13"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"SMALL BRUSHED%"}),
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{26}),
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{24}),
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{27}),
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{29}),
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{7}),
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{20}),
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{22}),
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{33})};
+    break;
+  case 17:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{"Brand#34"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"LG CASE"})};
+    break;
+  case 18:
+    arguments.values = {core::AuxValue::Of(core::AuxType::Int64, int64_t{312})};
+    break;
+  case 19:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{"Brand#31"}),
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{4}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"Brand#12"}),
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{15}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"Brand#51"}),
+        core::AuxValue::Of(core::AuxType::Int64, int64_t{23})};
+    break;
+  case 20:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::Date, MakeDate(1997, 1, 1)),
+        core::AuxValue::Of(core::AuxType::String, std::string{"gainsboro%"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"RUSSIA"})};
+    break;
+  case 21:
+    arguments.values = {core::AuxValue::Of(
+        core::AuxType::String, std::string{"SAUDI ARABIA"})};
+    break;
+  case 22:
+    arguments.values = {
+        core::AuxValue::Of(core::AuxType::String, std::string{"30"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"19"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"14"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"28"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"11"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"22"}),
+        core::AuxValue::Of(core::AuxType::String, std::string{"32"})};
+    break;
+  default:
+    throw std::runtime_error("CatalogDefaultTpchArgs: unsupported query_id " +
                              std::to_string(query_id));
   }
   return arguments;
@@ -941,29 +1081,386 @@ std::string FormatTpchAuxSql(int query_id,
   return sql;
 }
 
-std::vector<TpchArgVariant> BuildTpchArgPool(
-    int query_id, const catalog_ns::SharedQueryCatalogEntry &entry) {
+std::string FormatTpchSqlString(const std::string &text) { return SqlString(text); }
+
+std::string FormatTpchDateLiteral(const core::AuxDate &date) {
+  return DateLiteral(date);
+}
+
+namespace {
+
+std::string SqlStringList(const core::QueryArguments &arguments, std::size_t start,
+                          std::size_t count) {
+  std::ostringstream out;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (i != 0)
+      out << ", ";
+    out << SqlString(RequireString(arguments, start + i));
+  }
+  return out.str();
+}
+
+std::string IntList(const core::QueryArguments &arguments, std::size_t start,
+                    std::size_t count) {
+  std::ostringstream out;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (i != 0)
+      out << ", ";
+    out << RequireInt64(arguments, start + i);
+  }
+  return out.str();
+}
+
+} // namespace
+
+std::string FormatTpchProbeSelectSql(int query_id,
+                                     const core::QueryArguments &arguments) {
+  switch (query_id) {
+  case 1: {
+    const auto delta = RequireInt64(arguments, 0);
+    return "SELECT l_orderkey, l_linenumber, l_shipdate, l_quantity, "
+           "l_extendedprice, l_discount, l_tax, l_returnflag, l_linestatus "
+           "FROM lineitem WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '" +
+           std::to_string(delta) +
+           "' DAY ORDER BY l_orderkey, l_linenumber LIMIT 1";
+  }
+  case 2: {
+    const auto size = RequireInt64(arguments, 0);
+    const auto &type_pattern = RequireString(arguments, 1);
+    const auto &region = RequireString(arguments, 2);
+    return "SELECT ps.ps_partkey, ps.ps_suppkey, ps.ps_supplycost, mins.min_cost "
+           "FROM partsupp ps "
+           "JOIN supplier s ON s.s_suppkey = ps.ps_suppkey "
+           "JOIN nation n ON n.n_nationkey = s.s_nationkey "
+           "JOIN region r ON r.r_regionkey = n.n_regionkey "
+           "JOIN part p ON p.p_partkey = ps.ps_partkey "
+           "JOIN LATERAL ("
+           "  SELECT MIN(ps2.ps_supplycost) AS min_cost "
+           "  FROM partsupp ps2 "
+           "  JOIN supplier s2 ON s2.s_suppkey = ps2.ps_suppkey "
+           "  JOIN nation n2 ON n2.n_nationkey = s2.s_nationkey "
+           "  JOIN region r2 ON r2.r_regionkey = n2.n_regionkey "
+           "  WHERE ps2.ps_partkey = ps.ps_partkey AND r2.r_name = r.r_name"
+           ") mins ON true "
+           "WHERE r.r_name = " +
+           SqlString(region) + " AND p.p_size = " + std::to_string(size) +
+           " AND p.p_type LIKE " + SqlString(type_pattern) +
+           " AND ps.ps_supplycost > mins.min_cost "
+           "ORDER BY ps.ps_partkey, ps.ps_suppkey LIMIT 1";
+  }
+  case 3: {
+    const auto &segment = RequireString(arguments, 0);
+    const auto date_sql = DateLiteral(RequireDate(arguments, 1));
+    return "SELECT l_orderkey, l_linenumber, l_extendedprice, l_discount, "
+           "l_shipdate FROM lineitem WHERE l_orderkey IN ("
+           "SELECT l_orderkey FROM ("
+           "SELECT l_orderkey, SUM(l_extendedprice * (1 - l_discount)) AS revenue, "
+           "o_orderdate, o_shippriority FROM customer, orders, lineitem "
+           "WHERE c_mktsegment = " +
+           SqlString(segment) +
+           " AND c_custkey = o_custkey AND l_orderkey = o_orderkey "
+           "AND o_orderdate < " +
+           date_sql + " AND l_shipdate > " + date_sql +
+           " GROUP BY l_orderkey, o_orderdate, o_shippriority "
+           "ORDER BY revenue DESC, o_orderdate, l_orderkey, o_shippriority LIMIT 10))"
+           "AND l_shipdate > " +
+           date_sql + " ORDER BY l_orderkey, l_linenumber LIMIT 1";
+  }
+  case 4: {
+    const auto date_sql = DateLiteral(RequireDate(arguments, 0));
+    return "SELECT l.l_orderkey, l.l_linenumber, l.l_commitdate, l.l_receiptdate "
+           "FROM lineitem l JOIN orders o ON o.o_orderkey = l.l_orderkey "
+           "WHERE o.o_orderdate >= " +
+           date_sql + " AND o.o_orderdate < " + date_sql +
+           " + INTERVAL '3' month AND l.l_commitdate < l.l_receiptdate "
+           "AND (SELECT COUNT(*) FROM lineitem l2 WHERE l2.l_orderkey = l.l_orderkey "
+           "AND l2.l_commitdate < l2.l_receiptdate) = 1 "
+           "ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1";
+  }
+  case 5: {
+    const auto &region = RequireString(arguments, 0);
+    const auto date_sql = DateLiteral(RequireDate(arguments, 1));
+    return "SELECT l.l_orderkey, l.l_suppkey, l.l_extendedprice, l.l_discount, "
+           "l.l_linenumber FROM lineitem l "
+           "JOIN orders o ON o.o_orderkey = l.l_orderkey "
+           "JOIN customer c ON c.c_custkey = o.o_custkey "
+           "JOIN supplier s ON s.s_suppkey = l.l_suppkey AND s.s_nationkey = c.c_nationkey "
+           "JOIN nation n ON n.n_nationkey = s.s_nationkey "
+           "JOIN region r ON r.r_regionkey = n.n_regionkey "
+           "WHERE r.r_name = " +
+           SqlString(region) + " AND o.o_orderdate >= " + date_sql +
+           " AND o.o_orderdate < " + date_sql +
+           " + INTERVAL '1' year ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1";
+  }
+  case 6: {
+    const auto date_sql = DateLiteral(RequireDate(arguments, 0));
+    const double discount = RequireDouble(arguments, 1);
+    const double quantity = RequireDouble(arguments, 2);
+    return "SELECT l_orderkey, l_linenumber, l_extendedprice, l_discount, "
+           "l_quantity, l_shipdate FROM lineitem WHERE l_shipdate >= " +
+           date_sql + " AND l_shipdate < " + date_sql +
+           " + INTERVAL '1' year AND l_discount BETWEEN " +
+           FormatDouble(discount - 0.01) + " AND " + FormatDouble(discount + 0.01) +
+           " AND l_quantity < " + FormatDouble(quantity) +
+           " ORDER BY l_orderkey, l_linenumber LIMIT 1";
+  }
+  case 7: {
+    const auto n1 = SqlString(RequireString(arguments, 0));
+    const auto n2 = SqlString(RequireString(arguments, 1));
+    return "SELECT l.l_orderkey, l.l_linenumber, l.l_suppkey, l.l_extendedprice, "
+           "l.l_discount, l.l_shipdate FROM lineitem l, supplier s, orders o, "
+           "customer c, nation n1, nation n2 "
+           "WHERE s.s_suppkey = l.l_suppkey AND o.o_orderkey = l.l_orderkey "
+           "AND c.c_custkey = o.o_custkey AND s.s_nationkey = n1.n_nationkey "
+           "AND c.c_nationkey = n2.n_nationkey AND ((n1.n_name = " +
+           n1 + " AND n2.n_name = " + n2 + ") OR (n1.n_name = " + n2 +
+           " AND n2.n_name = " + n1 +
+           ")) AND l.l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
+           "ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1";
+  }
+  case 8: {
+    const auto &region = RequireString(arguments, 1);
+    const auto &part_type = RequireString(arguments, 2);
+    return "SELECT l.l_partkey, l.l_orderkey, l.l_suppkey, l.l_extendedprice, "
+           "l.l_discount, l.l_linenumber FROM lineitem l "
+           "JOIN part p ON p.p_partkey = l.l_partkey AND p.p_type = " +
+           SqlString(part_type) +
+           " JOIN orders o ON o.o_orderkey = l.l_orderkey "
+           "JOIN customer c ON c.c_custkey = o.o_custkey "
+           "JOIN nation n1 ON n1.n_nationkey = c.c_nationkey "
+           "JOIN region r ON r.r_regionkey = n1.n_regionkey AND r.r_name = " +
+           SqlString(region) +
+           " WHERE o.o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
+           "ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1";
+  }
+  case 9: {
+    const auto pattern = SqlString("%" + RequireString(arguments, 0) + "%");
+    return "SELECT l_orderkey, l_linenumber, l_partkey, l_suppkey, l_quantity, "
+           "l_extendedprice, l_discount FROM lineitem "
+           "WHERE l_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE " +
+           pattern + ") ORDER BY l_orderkey, l_linenumber LIMIT 1";
+  }
+  case 10: {
+    const auto date_sql = DateLiteral(RequireDate(arguments, 0));
+    return "SELECT l.l_orderkey, l.l_linenumber, l.l_extendedprice, l.l_discount, "
+           "l.l_returnflag FROM lineitem l "
+           "JOIN orders o ON l.l_orderkey = o.o_orderkey "
+           "JOIN customer c ON c.c_custkey = o.o_custkey "
+           "WHERE l.l_returnflag = 'R' AND o.o_orderdate >= " +
+           date_sql + " AND o.o_orderdate < " + date_sql +
+           " + INTERVAL '3' MONTH AND c.c_custkey IN ("
+           "SELECT c_custkey FROM ("
+           "SELECT c_custkey, SUM(l_extendedprice * (1 - l_discount)) AS revenue "
+           "FROM customer JOIN orders ON c_custkey = o_custkey "
+           "JOIN lineitem ON l_orderkey = o_orderkey "
+           "WHERE o_orderdate >= " +
+           date_sql + " AND o_orderdate < " + date_sql +
+           " + INTERVAL '3' MONTH AND l_returnflag = 'R' "
+           "GROUP BY c_custkey ORDER BY revenue DESC, c_custkey LIMIT 20)) "
+           "ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1";
+  }
+  case 11: {
+    return "SELECT ps_partkey, ps_suppkey, ps_availqty, ps_supplycost "
+           "FROM partsupp ps, supplier s, nation n "
+           "WHERE ps.ps_suppkey = s.s_suppkey AND s.s_nationkey = n.n_nationkey "
+           "AND n.n_name = " +
+           SqlString(RequireString(arguments, 0)) +
+           " ORDER BY ps_partkey, ps_suppkey LIMIT 1";
+  }
+  case 12: {
+    const auto date_sql = DateLiteral(RequireDate(arguments, 2));
+    return "SELECT l_orderkey, l_linenumber, l_extendedprice, l_commitdate, "
+           "l_receiptdate, l_shipdate, l_shipmode FROM lineitem "
+           "WHERE l_shipmode IN (" +
+           SqlString(RequireString(arguments, 0)) + ", " +
+           SqlString(RequireString(arguments, 1)) + ") AND l_receiptdate >= " +
+           date_sql + " AND l_receiptdate < " + date_sql +
+           " + INTERVAL '1' year ORDER BY l_orderkey, l_linenumber LIMIT 1";
+  }
+  case 13: {
+    const auto &pattern = RequireString(arguments, 0);
+    const auto pattern_sql = SqlString(pattern);
+    return "SELECT o_orderkey, o_custkey, o_comment, " + pattern_sql +
+           " AS pattern FROM orders WHERE o_comment NOT LIKE " + pattern_sql +
+           " ORDER BY o_orderkey LIMIT 1";
+  }
+  case 14: {
+    const auto date_sql = DateLiteral(RequireDate(arguments, 0));
+    return "SELECT l_orderkey, l_linenumber, l_extendedprice, l_discount, "
+           "l_shipdate, l_partkey FROM lineitem WHERE l_shipdate >= " +
+           date_sql + " AND l_shipdate < " + date_sql +
+           " + INTERVAL '1' month ORDER BY l_orderkey, l_linenumber LIMIT 1";
+  }
+  case 15: {
+    const auto date_sql = DateLiteral(RequireDate(arguments, 0));
+    return "SELECT l_orderkey, l_linenumber, l_extendedprice, l_discount, "
+           "l_shipdate, l_suppkey FROM lineitem WHERE l_shipdate >= " +
+           date_sql + " AND l_shipdate < " + date_sql +
+           " + INTERVAL '3' MONTH AND l_suppkey = (SELECT l_suppkey FROM lineitem "
+           "WHERE l_shipdate >= " +
+           date_sql + " AND l_shipdate < " + date_sql +
+           " + INTERVAL '3' MONTH GROUP BY l_suppkey "
+           "ORDER BY SUM(l_extendedprice * (1 - l_discount)) DESC LIMIT 1) "
+           "ORDER BY l_orderkey, l_linenumber LIMIT 1";
+  }
+  case 16: {
+    const auto sizes = IntList(arguments, 2, 8);
+    return "SELECT s.s_suppkey, s.s_comment FROM supplier s "
+           "WHERE s.s_comment NOT LIKE '%Customer%Complaints%' "
+           "AND EXISTS (SELECT 1 FROM partsupp ps, part p "
+           "WHERE ps.ps_suppkey = s.s_suppkey AND p.p_partkey = ps.ps_partkey "
+           "AND p.p_brand <> " +
+           SqlString(RequireString(arguments, 0)) + " AND p.p_type NOT LIKE " +
+           SqlString(RequireString(arguments, 1)) + " AND p.p_size IN (" + sizes +
+           ")) ORDER BY s.s_suppkey LIMIT 1";
+  }
+  case 17:
+    return "SELECT l_orderkey, l_linenumber, l_partkey, l_quantity, "
+           "l_extendedprice FROM lineitem, part, "
+           "(SELECT l_partkey AS agg_partkey, 0.2 * AVG(l_quantity) AS avg_quantity "
+           "FROM lineitem GROUP BY l_partkey) part_agg "
+           "WHERE p_partkey = l_partkey AND agg_partkey = l_partkey AND p_brand = " +
+           SqlString(RequireString(arguments, 0)) + " AND p_container = " +
+           SqlString(RequireString(arguments, 1)) +
+           " AND l_quantity < avg_quantity "
+           "ORDER BY l_orderkey, l_linenumber LIMIT 1";
+  case 18: {
+    const auto threshold = RequireInt64(arguments, 0);
+    return "SELECT l_orderkey, l_linenumber, l_quantity FROM lineitem "
+           "WHERE l_orderkey IN (SELECT l_orderkey FROM lineitem GROUP BY l_orderkey "
+           "HAVING SUM(l_quantity) > " +
+           std::to_string(threshold) +
+           ") ORDER BY l_orderkey, l_linenumber LIMIT 1";
+  }
+  case 19: {
+    const auto q1 = RequireInt64(arguments, 1);
+    return "SELECT l.l_orderkey, l.l_partkey, l.l_linenumber, l.l_quantity, "
+           "l.l_extendedprice, l.l_discount, l.l_shipmode, l.l_shipinstruct "
+           "FROM lineitem l, part p WHERE p.p_partkey = l.l_partkey AND p.p_brand = " +
+           SqlString(RequireString(arguments, 0)) +
+           " AND p.p_container IN ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG') "
+           "AND l.l_quantity >= " +
+           std::to_string(q1) + " AND l.l_quantity <= " + std::to_string(q1 + 10) +
+           " AND p.p_size BETWEEN 1 AND 5 AND l.l_shipmode IN ('AIR', 'AIR REG') "
+           "AND l.l_shipinstruct = 'DELIVER IN PERSON' "
+           "ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1";
+  }
+  case 20: {
+    const auto date_sql = DateLiteral(RequireDate(arguments, 0));
+    return "SELECT l.l_orderkey, l.l_linenumber, l.l_quantity, l.l_shipdate, "
+           "l.l_partkey, l.l_suppkey FROM lineitem l "
+           "JOIN part p ON p.p_partkey = l.l_partkey AND p.p_name LIKE " +
+           SqlString(RequireString(arguments, 1)) +
+           " JOIN partsupp ps ON ps.ps_partkey = l.l_partkey AND ps.ps_suppkey = l.l_suppkey "
+           "JOIN supplier s ON s.s_suppkey = l.l_suppkey "
+           "JOIN nation n ON n.n_nationkey = s.s_nationkey AND n.n_name = " +
+           SqlString(RequireString(arguments, 2)) + " WHERE l.l_shipdate >= " +
+           date_sql + " AND l.l_shipdate < " + date_sql +
+           " + INTERVAL '1' year ORDER BY l.l_orderkey, l.l_linenumber LIMIT 1";
+  }
+  case 21:
+    return "SELECT l1.l_orderkey, l1.l_linenumber, l1.l_suppkey, l1.l_commitdate, "
+           "l1.l_receiptdate FROM supplier, lineitem l1, orders, nation "
+           "WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey AND "
+           "o_orderstatus = 'F' AND l1.l_receiptdate > l1.l_commitdate AND EXISTS ("
+           "SELECT * FROM lineitem l2 WHERE l2.l_orderkey = l1.l_orderkey AND "
+           "l2.l_suppkey <> l1.l_suppkey) AND NOT EXISTS (SELECT * FROM lineitem l3 "
+           "WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND "
+           "l3.l_receiptdate > l3.l_commitdate) AND s_nationkey = n_nationkey AND "
+           "n_name = " +
+           SqlString(RequireString(arguments, 0)) +
+           " ORDER BY l1.l_orderkey, l1.l_linenumber LIMIT 1";
+  case 22: {
+    const auto codes = SqlStringList(arguments, 0, 7);
+    return "SELECT c_custkey, c_phone, c_acctbal FROM customer "
+           "WHERE SUBSTRING(c_phone FROM 1 FOR 2) IN (" +
+           codes +
+           ") AND c_acctbal > (SELECT AVG(c_acctbal) FROM customer "
+           "WHERE c_acctbal > 0.00 AND SUBSTRING(c_phone FROM 1 FOR 2) IN (" +
+           codes +
+           ")) AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey) "
+           "ORDER BY c_custkey LIMIT 1";
+  }
+  default:
+    throw std::runtime_error("FormatTpchProbeSelectSql: unsupported query_id " +
+                             std::to_string(query_id));
+  }
+}
+
+TpchArgVariant MakeFormattedVariant(
+    int query_id, core::QueryArguments arguments) {
+  TpchArgVariant variant;
+  variant.arguments = std::move(arguments);
+  variant.base_sql = FormatTpchBaseSql(query_id, variant.arguments);
+  variant.kernel_sql = FormatTpchKernelSql(query_id, variant.arguments);
+  variant.aux_sql = FormatTpchAuxSql(query_id, variant.arguments);
+  return variant;
+}
+
+TpchArgVariant MakeSeedVariant(int query_id, const TpchArgCatalogSeed &seed) {
+  TpchArgVariant variant;
+  variant.arguments = seed.arguments.values.empty() ? CatalogDefaultTpchArgs(query_id)
+                                                    : seed.arguments;
+  variant.base_sql =
+      seed.base_sql && *seed.base_sql ? seed.base_sql
+                                      : FormatTpchBaseSql(query_id, variant.arguments);
+  variant.kernel_sql = seed.kernel_sql && *seed.kernel_sql
+                           ? seed.kernel_sql
+                           : FormatTpchKernelSql(query_id, variant.arguments);
+  variant.aux_sql = seed.aux_sql && *seed.aux_sql
+                        ? seed.aux_sql
+                        : FormatTpchAuxSql(query_id, variant.arguments);
+  return variant;
+}
+
+std::vector<TpchArgVariant> BuildTpchDifferentialArgPool(
+    int query_id, std::size_t samples, const TpchArgCatalogSeed *seed) {
+  samples = std::max<std::size_t>(1, samples);
+  std::vector<TpchArgVariant> pool;
+  TpchArgCatalogSeed implicit;
+  if (!seed) {
+    implicit.arguments = CatalogDefaultTpchArgs(query_id);
+    seed = &implicit;
+  }
+  pool.push_back(MakeSeedVariant(query_id, *seed));
+  if (samples == 1) {
+    return pool;
+  }
+
+  const std::string default_fmt =
+      FormatTpchBaseSql(query_id, pool.front().arguments);
+  for (std::size_t i = 0; pool.size() < samples && i < samples * 8; ++i) {
+    auto variant = MakeFormattedVariant(query_id, SampleTpchArgs(query_id, i));
+    if (variant.base_sql == default_fmt) {
+      continue;
+    }
+    bool duplicate = false;
+    for (const auto &existing : pool) {
+      if (existing.base_sql == variant.base_sql) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) {
+      continue;
+    }
+    pool.push_back(std::move(variant));
+  }
+  return pool;
+}
+
+std::vector<TpchArgVariant> BuildTpchArgPool(int query_id,
+                                             const TpchArgCatalogSeed &seed) {
   std::vector<TpchArgVariant> pool;
   if (!VaryArgsEnabled()) {
-    TpchArgVariant variant;
-    variant.arguments = catalog_ns::ToCoreArguments(entry.benchmark_arguments);
-    variant.base_sql = entry.base_sql ? entry.base_sql : "";
-    variant.kernel_sql =
-        entry.postgres_base_kernel_sql ? entry.postgres_base_kernel_sql : "";
-    variant.aux_sql = entry.duckdb_aux_sql ? entry.duckdb_aux_sql : "";
-    pool.push_back(std::move(variant));
+    pool.push_back(MakeSeedVariant(query_id, seed));
     return pool;
   }
 
   const std::size_t count = ArgPoolSize();
   pool.reserve(count);
   for (std::size_t i = 0; i < count; ++i) {
-    TpchArgVariant variant;
-    variant.arguments = SampleTpchArgs(query_id, i);
-    variant.base_sql = FormatTpchBaseSql(query_id, variant.arguments);
-    variant.kernel_sql = FormatTpchKernelSql(query_id, variant.arguments);
-    variant.aux_sql = FormatTpchAuxSql(query_id, variant.arguments);
-    pool.push_back(std::move(variant));
+    pool.push_back(MakeFormattedVariant(query_id, SampleTpchArgs(query_id, i)));
   }
   return pool;
 }

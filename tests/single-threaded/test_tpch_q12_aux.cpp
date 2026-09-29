@@ -2,6 +2,7 @@
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <cstdlib>
 #include <string>
 #include <utility>
 #include <vector>
@@ -179,5 +180,46 @@ int main() {
                  sink2);
   assert(sink2.ended);
   assert(std::get<int64_t>(sink2.rows[0].values[1].payload) == 2);
+
+  // Order priority High → Low under ApplyDelta must reclassify via reverse index.
+  setenv("ACCEL_FORCE_MAINTENANCE_ACTION", "ApplyDelta", 1);
+  MutationBatch order_upd;
+  order_upd.table = 1;
+  order_upd.kind = MutationKind::Update;
+  order_upd.old_rows = {Order(10, "1-URGENT")};
+  order_upd.new_rows = {Order(10, "3-MEDIUM")};
+  services.orders[0] = order_upd.new_rows.front();
+  coordinator.OnMutation(order_upd);
+  coordinator.PreCommit();
+  coordinator.Commit();
+  unsetenv("ACCEL_FORCE_MAINTENANCE_ACTION");
+
+  Sink sink3;
+  module.Execute(services,
+                 QueryArguments{{String("MAIL"), String("SHIP"), Date(start)}},
+                 sink3);
+  assert(sink3.ended);
+  assert(sink3.rows.size() == 1);
+  assert(std::get<int64_t>(sink3.rows[0].values[1].payload) == 0); // high
+  assert(std::get<int64_t>(sink3.rows[0].values[2].payload) == 2); // low
+
+  // Order delete under ApplyDelta must drop the join contributions.
+  setenv("ACCEL_FORCE_MAINTENANCE_ACTION", "ApplyDelta", 1);
+  MutationBatch order_del;
+  order_del.table = 1;
+  order_del.kind = MutationKind::Delete;
+  order_del.old_rows = {Order(10, "3-MEDIUM")};
+  services.orders.clear();
+  coordinator.OnMutation(order_del);
+  coordinator.PreCommit();
+  coordinator.Commit();
+  unsetenv("ACCEL_FORCE_MAINTENANCE_ACTION");
+
+  Sink sink4;
+  module.Execute(services,
+                 QueryArguments{{String("MAIL"), String("SHIP"), Date(start)}},
+                 sink4);
+  assert(sink4.ended);
+  assert(sink4.rows.empty());
   return 0;
 }

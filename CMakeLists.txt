@@ -1457,6 +1457,7 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_postgres_tpch_differential.cpp")
     add_executable(test_postgres_tpch_differential
         tests/aux_state/test_postgres_tpch_differential.cpp
+        benchmarks/tpch/single-threaded/tpch_arg_variants.cpp
     )
     find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
     target_link_libraries(test_postgres_tpch_differential
@@ -1471,6 +1472,7 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
             ${CMAKE_CURRENT_SOURCE_DIR}/include
             ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+            ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/single-threaded
             ${ACCEL_PG_INCLUDEDIR}
             ${ACCEL_PG_INCLUDEDIR_SERVER}
     )

@@ -77,6 +77,30 @@ core::AuxValue Int(const ::duckdb::Value &value) {
   return core::AuxValue::Of(core::AuxType::Int64, SafeInt64(value));
 }
 
+// TPC-H Q13 LIKE '%word1%word2%' → append " word1 word2" so the order is excluded.
+std::string Q13CommentAppendFromPattern(const std::string &pattern) {
+  std::string words;
+  words.reserve(pattern.size());
+  bool in_word = false;
+  for (char ch : pattern) {
+    if (ch == '%') {
+      in_word = false;
+      continue;
+    }
+    if (!in_word) {
+      if (!words.empty()) {
+        words.push_back(' ');
+      }
+      in_word = true;
+    }
+    words.push_back(ch);
+  }
+  if (words.empty()) {
+    return " unusual accounts";
+  }
+  return " " + words;
+}
+
 std::string SqlLiteral(const std::string &value) {
   std::string quoted = "'";
   for (const char ch : value) {
@@ -762,6 +786,10 @@ SharedProbe BuildTpchQ13Probe(::duckdb::MaterializedQueryResult &result,
                               ::duckdb::idx_t row) {
   const auto orderkey = result.GetValue(0, row).ToString();
   const auto comment = result.GetValue(2, row).ToString();
+  const std::string append = result.ColumnCount() > 3
+                                 ? Q13CommentAppendFromPattern(
+                                       result.GetValue(3, row).ToString())
+                                 : " unusual accounts";
   SharedProbe probe;
   probe.table = 1;  // TpchQ13Config{0,1}.orders_table
   probe.kind = core::MutationKind::Update;
@@ -771,10 +799,10 @@ SharedProbe BuildTpchQ13Probe(::duckdb::MaterializedQueryResult &result,
   probe.old_row = {{Int(result.GetValue(1, row)), Text(result.GetValue(2, row))}};
   probe.new_row = probe.old_row;
   probe.new_row.values[1] =
-      core::AuxValue::Of(core::AuxType::String, comment + " unusual accounts");
+      core::AuxValue::Of(core::AuxType::String, comment + append);
   probe.update_sql =
-      "UPDATE orders SET o_comment = o_comment || ' unusual accounts' "
-      "WHERE o_orderkey = " + orderkey;
+      "UPDATE orders SET o_comment = o_comment || " + SqlLiteral(append) +
+      " WHERE o_orderkey = " + orderkey;
   probe.restore_sql = "UPDATE orders SET o_comment = " + SqlLiteral(comment) +
                       " WHERE o_orderkey = " + orderkey;
   return probe;
@@ -1411,7 +1439,8 @@ const SharedQueryCatalogEntry kTpchCatalog[] = {
      "SELECT * FROM accel_tpch_q13_aux('%unusual%accounts%')",
      "SELECT * FROM accel_tpch_q13('%unusual%accounts%')",
      "SELECT * FROM accel_tpch_q13_aux('%unusual%accounts%')",
-     "SELECT o_orderkey, o_custkey, o_comment FROM orders "
+     "SELECT o_orderkey, o_custkey, o_comment, '%unusual%accounts%' AS pattern "
+     "FROM orders "
      "WHERE o_comment NOT LIKE '%unusual%accounts%' "
      "ORDER BY o_orderkey LIMIT 1",
      {{core::AuxValue::Of(core::AuxType::String,

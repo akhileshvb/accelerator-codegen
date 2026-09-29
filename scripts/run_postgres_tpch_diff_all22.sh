@@ -7,6 +7,13 @@ SKIP_WM="${ACCEL_PG_DIFF_SKIP_WRITE_MAINT:-1}"
 SKIP_STRATS="${ACCEL_PG_DIFF_SKIP_MAINT_STRATS:-}"
 CONTAINER="${ACCEL_PG_CONTAINER:-accel_pg_test}"
 QUERIES="${ACCEL_PG_DIFF_QUERIES:-$(seq 1 22)}"
+PG_LIB="${ACCEL_PG_LIBDIR:-/usr/lib/postgresql/17/lib}"
+BUILD_SO="${ACCEL_PG_BUILD_SO:-/accel-build/accel/accelerator_codegen_pg.so}"
+
+# CMake leaves the module in the build tree; LOAD uses the Postgres libdir copy.
+if docker exec "${CONTAINER}" test -f "${BUILD_SO}"; then
+  docker exec "${CONTAINER}" cp -f "${BUILD_SO}" "${PG_LIB}/accelerator_codegen_pg.so"
+fi
 
 fail=0
 pass=0
@@ -26,6 +33,8 @@ for q in $QUERIES; do
     -e ACCEL_PG_DIFF_SKIP_WRITE_MAINT="${SKIP_WM}" \
     -e ACCEL_PG_DIFF_SKIP_MAINT_STRATS="${SKIP_STRATS}" \
     -e ACCEL_PG_DIFF_MAINT_STRATS="${ACCEL_PG_DIFF_MAINT_STRATS:-}" \
+    -e ACCEL_PG_DIFF_ARG_SAMPLES="${ACCEL_PG_DIFF_ARG_SAMPLES:-4}" \
+    -e ACCEL_PG_DIFF_MAINT_SAMPLES="${ACCEL_PG_DIFF_MAINT_SAMPLES:-2}" \
     -e ACCEL_FORCE_MAINTENANCE_ACTION="${ACCEL_FORCE_MAINTENANCE_ACTION:-}" \
     -e LD_LIBRARY_PATH=/accel-build/accel:/accel-build/duckdb/src:/usr/lib/postgresql/17/lib \
     "${CONTAINER}" \

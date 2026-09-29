@@ -1,0 +1,89 @@
+{
+  "query": "q1",
+  "catalog_sql": "/home/akhilvb/accelerator-codegen/tests/verification/formalsql/q1/catalog_base_sql.sql",
+  "catalog_sha256": "25c5f92b4fb8cc4d63dbf09505868cf8c25a6dc9b6bf8638668f5c51af48340d",
+  "formalsql": {
+    "queries": "/home/akhilvb/accelerator-codegen/tests/verification/formalsql/q1/generated/Queries.v",
+    "schema": "/home/akhilvb/accelerator-codegen/tests/verification/formalsql/q1/generated/Schema.v",
+    "witness": "/home/akhilvb/accelerator-codegen/tests/verification/formalsql/q1/generated/Witness.v"
+  },
+  "canonical_spec": "/home/akhilvb/accelerator-codegen/tests/verification/specs/q1/canonical_spec.json",
+  "spec_artifacts": [
+    "tests/verification/formalsql/resultspec/QueryResultSpec.v",
+    "tests/verification/formalsql/resultspec/EvalSpec.v",
+    "tests/verification/q1/dafny/generated/Q1ResultSpec.dfy",
+    "tests/verification/q1/dafny/generated/Q1ResultSpecData.dfy"
+  ],
+  "accelerator": "/home/akhilvb/accelerator-codegen/src/generated/tpch/q1/postgres/aux",
+  "sessions": {
+    "canonical_spec": "skipped_green",
+    "sql_spec": "skipped_green",
+    "accel_verify": "skipped_green"
+  },
+  "gates": {
+    "LOGOS_OK": "pass",
+    "CANONICAL_SPEC_OK": "pass",
+    "SQL_SPEC_PROVED": "pass",
+    "NO_QUERY_SEMANTIC_RESIDUAL": "pass",
+    "NO_ADMITTED": "pass",
+    "PRINT_ASSUMPTIONS": "pass",
+    "SPEC_EXPORT_CHECKED": "pass",
+    "CRITIQUE_SQL": "skipped",
+    "ACCEL_MODEL_PROVED": "pass",
+    "MAINTENANCE_PROVED": "pass",
+    "SNAPSHOT_HIT_PROVED": "pass",
+    "CPP_MODEL_CORRESPONDENCE": "finite_test",
+    "CRITIQUE_ACCEL": "skipped",
+    "PATTERN_LIBRARY_UPDATED": "pass"
+  },
+  "preconditions": [
+    "Preconditions_Q1 db delta",
+    "Q1NumericSafe db"
+  ],
+  "tcb": [
+    {
+      "name": "Logos lowering",
+      "kind": "sql_lowering"
+    },
+    {
+      "name": "FormalSQL reference semantics",
+      "kind": "sql_lowering"
+    },
+    {
+      "name": "NumericEmbedFaithful",
+      "kind": "numeric_representation"
+    },
+    {
+      "name": "AvgObservationFaithful",
+      "kind": "numeric_representation"
+    },
+    {
+      "name": "SpecExportCorrect",
+      "kind": "rocq_dafny_spec"
+    },
+    {
+      "name": "Corresponds_Q1 finite extract-diff",
+      "kind": "cpp_model"
+    },
+    {
+      "name": "AggsFaithful",
+      "kind": "twin_spi"
+    },
+    {
+      "name": "RebuildOracleCorrect (free Stage/load oracle)",
+      "kind": "twin_spi"
+    },
+    {
+      "name": "snapshot/SPI abstraction",
+      "kind": "runtime_spi"
+    },
+    {
+      "name": "Rocq/Dafny/Logos toolchain pins",
+      "kind": "toolchain"
+    }
+  ],
+  "semantic_residuals": [],
+  "pattern_library_additions": [],
+  "semantic_path_closed": true,
+  "composed_claim": "Canonical status: tests/verification/q1/CURRENT_THEOREM_TCB.md. Under Preconditions_Q1 and Q1NumericSafe, and assuming NumericEmbedFaithful, FormalSQL_exec(EmbedDB_Q1(db), delta) observes EmbedResult(Eval_Spec_Q1_outs(cutoff(delta), db)) (= Q1Adapt \u2218 Eval_Spec(LogicalSpec_Q1, \u2026); Q1ByteKeys discharged from Pre). Q1_GroupBagsPerm is Qed. Dafny proves Inv \u21d2 Exec \u2248_Q1 Eval_Spec_Q1_OutRows (via Eval_Spec_Q1_eq_EvalResultSpec), maintenance preserves Inv, Hit \u21d2 Aux execution, and the Twin\u2194Aux closed package (ComposeOutput\u2261ExecSeqM, BuiltInv from BuildState, HB1\u2013HB4 bookkeeping). Intentional Twin SPI: AggsFaithful (agg BuildState only) and RebuildOracleCorrect on free Stage/load oracles (lineitem BuildState discharges RebuildOracleCorrect). C++ correspondence is cpp_model (finite extract-diff). Q1ExecCorrect alone does not cover ModuleTwin/C++."
+}

@@ -13,6 +13,9 @@
 #include <unordered_set>
 #include <utility>
 
+#include "duckdb/common/types/date.hpp"
+#include "duckdb/common/types/interval.hpp"
+
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
@@ -21,7 +24,14 @@ using core::ByteWriter;
 
 constexpr uint32_t kStateMagic = 0x51323053; // Q20S
 constexpr uint32_t kVersion = 1;
-constexpr int32_t kOneYearDays = 365;
+
+int32_t ExclusiveEndDaysOneYear(int32_t start_days) {
+  duckdb::date_t start{};
+  start.days = start_days;
+  duckdb::interval_t one_year{};
+  one_year.months = 12;
+  return duckdb::Date::EpochDays(duckdb::Interval::Add(start, one_year));
+}
 static bool CustomProfileEnabled() {
   static const bool enabled = [] {
     const char *v = std::getenv("ACCEL_AUX_CUSTOM_PROFILE");
@@ -1053,7 +1063,7 @@ void TpchQ20Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  const int32_t end_date_days = start_date_days + kOneYearDays;
+  const int32_t end_date_days = ExclusiveEndDaysOneYear(start_date_days);
 
   {
     auto t0 = std::chrono::steady_clock::now();
@@ -1115,7 +1125,7 @@ void TpchQ20Module::ExecuteFallback(core::AuxEngineServices &services,
     }
   }
 
-  const int32_t end_date_days = start_date_days + kOneYearDays;
+  const int32_t end_date_days = ExclusiveEndDaysOneYear(start_date_days);
   const auto state = BuildState(services);
   EmitResult(state, start_date_days, end_date_days, part_name_pattern,
              nation_name, services, sink);

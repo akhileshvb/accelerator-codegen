@@ -21,7 +21,37 @@ using core::ByteWriter;
 
 constexpr uint32_t kStateMagic = 0x51323053; // Q20S
 constexpr uint32_t kVersion = 1;
-constexpr int32_t kOneYearDays = 365;
+constexpr int32_t kEpoch = 719468;
+
+int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
+  year -= month <= 2;
+  const int32_t era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(year - era * 400);
+  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + static_cast<int32_t>(doe) - kEpoch;
+}
+
+void CivilFromDays(int32_t days, int32_t &year, unsigned &month, unsigned &day) {
+  int32_t z = days + kEpoch;
+  const int32_t era = (z >= 0 ? z : z - 146096) / 146097;
+  const unsigned doe = static_cast<unsigned>(z - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  year = static_cast<int32_t>(yoe) + era * 400;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  day = doy - (153 * mp + 2) / 5 + 1;
+  month = mp + (mp < 10 ? 3 : -9);
+  year += month <= 2;
+}
+
+int32_t ExclusiveEndDaysOneYear(int32_t start_days) {
+  int32_t year = 0;
+  unsigned month = 0;
+  unsigned day = 0;
+  CivilFromDays(start_days, year, month, day);
+  return DaysFromCivil(year + 1, month, day);
+}
 static bool CustomProfileEnabled() {
   static const bool enabled = [] {
     const char *v = std::getenv("ACCEL_AUX_CUSTOM_PROFILE");
@@ -1053,7 +1083,7 @@ void TpchQ20Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  const int32_t end_date_days = start_date_days + kOneYearDays;
+  const int32_t end_date_days = ExclusiveEndDaysOneYear(start_date_days);
 
   {
     auto t0 = std::chrono::steady_clock::now();
@@ -1115,7 +1145,7 @@ void TpchQ20Module::ExecuteFallback(core::AuxEngineServices &services,
     }
   }
 
-  const int32_t end_date_days = start_date_days + kOneYearDays;
+  const int32_t end_date_days = ExclusiveEndDaysOneYear(start_date_days);
   const auto state = BuildState(services);
   EmitResult(state, start_date_days, end_date_days, part_name_pattern,
              nation_name, services, sink);

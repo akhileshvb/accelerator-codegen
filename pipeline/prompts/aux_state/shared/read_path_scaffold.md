@@ -6,10 +6,40 @@ Port from shipped modules under `src/generated/tpch/q{1,3,10,12,14}/aux/module.c
 
 | Method | Responsibility |
 |--------|----------------|
-| `CheckValidity` | `services.StateStore().CheckValidity({Id(), window_partitions}, services.CurrentVisibility())` |
-| `Execute` | Fast path: read only partitions overlapping the query window; emit via `AuxRowSink` |
-| `ExecuteFallback` | Recompute from base tables when state is missing, stale, or txn-blocked |
+| `CheckValidity` | Validity under a **pinned** `VisibilityToken` (`TokenForSnapshot`) |
+| `Execute` | LocalWriteSafe + ReadHit: dirty ⇒ fallback; pin token once; linearized read of immutable handles; emit via `AuxRowSink` |
+| `ExecuteFallback` | Recompute from base tables when state is missing, stale, dirty, or txn-blocked |
 | `StageMaintenance` | Build `MaintenanceRequest`, call `services.ChooseMaintenance(...)`, materialize updates |
+
+## LocalWriteSafe + ReadHit (required)
+
+```cpp
+void TpchQxModule::Execute(core::AuxEngineServices &services,
+                           const core::QueryArguments &arguments,
+                           core::AuxRowSink &sink) {
+  // LocalWriteSafe: same-transaction relevant writes ⇒ fallback.
+  if (services.StateStore().IsTransactionDirty()) {
+    ExecuteFallback(services, arguments, sink);
+    return;
+  }
+  // ReadHit: pin TokenForSnapshot once for check + ReadPartitions.
+  const auto visibility = services.CurrentVisibility();
+  if (!services.StateStore()
+           .CheckValidity({Id(), {}}, visibility)
+           .IsValid()) {
+    ExecuteFallback(services, arguments, sink);
+    return;
+  }
+  const auto snapshot =
+      services.StateStore().ReadPartitions(visibility, required_partitions);
+  // Consume snapshot handles only — do not reload the mutable store afterward.
+  // ConsistentObservation: missing/mismatched required partition ⇒ fallback.
+}
+```
+
+`CurrentVisibility()` must implement `TokenForSnapshot` (exact active PG
+snapshot), not a fresh meaningless token per call and not one token per
+transaction under READ COMMITTED.
 
 ## Single-partition pattern (Q14)
 
@@ -24,13 +54,18 @@ bool TpchQ14Module::CheckValidity(core::AuxEngineServices &services,
 void TpchQ14Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
+  if (services.StateStore().IsTransactionDirty()) {
+    ExecuteFallback(services, arguments, sink);
+    return;
+  }
+  const auto visibility = services.CurrentVisibility();
   if (!services.StateStore()
-           .CheckValidity({Id(), {}}, services.CurrentVisibility())
+           .CheckValidity({Id(), {}}, visibility)
            .IsValid()) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  // Load only the target partition(s), emit result
+  // ReadPartitions(visibility, …) — consume returned handles only
 }
 ```
 

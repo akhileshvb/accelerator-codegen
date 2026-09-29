@@ -219,20 +219,23 @@ inline WriteProbe ResolveWriteProbe(const Tools &tools, int query_num,
     return p;
   }
   case 12: {
+    // Priority reclassify — order-side ApplyDelta must update day counts via
+    // the reverse index (not only lineitem shipmode flips).
     auto f = Fetch(
-        "SELECT l.l_orderkey, l.l_linenumber, l.l_shipmode FROM orders o, lineitem l "
+        "SELECT o.o_orderkey, o.o_orderpriority, l.l_shipmode "
+        "FROM orders o, lineitem l "
         "WHERE o.o_orderkey = l.l_orderkey AND l.l_shipmode IN ('MAIL', 'SHIP') "
         "AND l.l_commitdate < l.l_receiptdate AND l.l_shipdate < l.l_commitdate "
         "AND l.l_receiptdate >= DATE '1995-01-01' "
         "AND l.l_receiptdate < DATE_ADD(DATE '1995-01-01', INTERVAL 1 YEAR) "
-        "ORDER BY l.l_orderkey, l.l_linenumber " + lim);
+        "AND (o.o_orderpriority = '1-URGENT' OR o.o_orderpriority = '2-HIGH') "
+        "ORDER BY o.o_orderkey, l.l_linenumber " + lim);
     Require(f.size() >= 3, "Q12 probe fields");
-    const std::string neu = (f[2] == "MAIL") ? "AIR" : "MAIL";
     WriteProbe p;
-    p.update_sql = "UPDATE lineitem SET l_shipmode = " + SqlLiteral(neu) +
-                   " WHERE l_orderkey = " + f[0] + " AND l_linenumber = " + f[1];
-    p.restore_sql = "UPDATE lineitem SET l_shipmode = " + SqlLiteral(f[2]) +
-                    " WHERE l_orderkey = " + f[0] + " AND l_linenumber = " + f[1];
+    p.update_sql = "UPDATE orders SET o_orderpriority = '3-MEDIUM' "
+                   "WHERE o_orderkey = " + f[0];
+    p.restore_sql = "UPDATE orders SET o_orderpriority = " + SqlLiteral(f[1]) +
+                    " WHERE o_orderkey = " + f[0];
     p.candidate = candidate_offset;
     return p;
   }

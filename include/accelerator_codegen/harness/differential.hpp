@@ -28,8 +28,20 @@ void RequireSharedMatchesBase(duckdb::Connection &connection,
                               aux_engine::duckdb::DuckdbRuntime &runtime,
                               const aux_engine::SharedQueryCatalogEntry &entry);
 
+void RequireSharedMatchesSql(duckdb::Connection &connection,
+                             aux_engine::duckdb::DuckdbRuntime &runtime,
+                             const aux_engine::SharedQueryCatalogEntry &entry,
+                             const core::QueryArguments &arguments,
+                             const std::string &base_sql);
+
 void RunDifferentialCheck(const std::string &db_path,
                           const aux_engine::SharedQueryCatalogEntry &entry);
+
+// Apply one invalidating catalog probe on an already-built runtime, rematch,
+// then restore. Used by parameterized substitution sweeps so Build() is once.
+void ApplyInvalidatingProbeAndRematch(
+    duckdb::Connection &connection, aux_engine::duckdb::DuckdbRuntime &runtime,
+    const aux_engine::SharedQueryCatalogEntry &entry);
 
 void RunIncrementalDifferentialCheck(const std::string &db_path,
                                      const aux_engine::SharedQueryCatalogEntry &entry);

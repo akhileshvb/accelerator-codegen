@@ -5,14 +5,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOGOS="${LOGOS_ROOT:-$ROOT/third_party/Logos}"
-QUERY="${1:?usage: $0 q1|q21|q12}"
+QUERY="${1:?usage: $0 q1|q12|q14|q21}"
 
 die() { echo "logos_lower FAIL ($QUERY): $*" >&2; exit 1; }
 
 case "$QUERY" in
   q1) OUT_DIR="$ROOT/tests/verification/formalsql/q1"; QID=tpch_q1 ;;
-  q21) OUT_DIR="$ROOT/tests/verification/formalsql/q21"; QID=tpch_q21 ;;
   q12) OUT_DIR="$ROOT/tests/verification/formalsql/q12"; QID=tpch_q12 ;;
+  q14) OUT_DIR="$ROOT/tests/verification/formalsql/q14"; QID=tpch_q14 ;;
+  q21) OUT_DIR="$ROOT/tests/verification/formalsql/q21"; QID=tpch_q21 ;;
   *) die "unknown query" ;;
 esac
 
@@ -41,7 +42,40 @@ SOURCE="$OUT_DIR/catalog_base_sql.sql"
 SCHEMA="$OUT_DIR/schema.sql"
 ARTIFACT="$OUT_DIR/logos_lower_report.json"
 
-if [[ "$QUERY" == "q1" ]]; then
+if [[ "$QUERY" == "q14" ]]; then
+  # Q14 joins lineitem to part. DECIMAL(15,2) avoids unconstrained NUMERIC.
+  cat > "$SCHEMA" <<'EOF'
+CREATE TABLE part (
+  p_partkey INTEGER NOT NULL,
+  p_name VARCHAR(55) NOT NULL,
+  p_mfgr CHAR(25) NOT NULL,
+  p_brand CHAR(10) NOT NULL,
+  p_type VARCHAR(25) NOT NULL,
+  p_size INTEGER NOT NULL,
+  p_container CHAR(10) NOT NULL,
+  p_retailprice DECIMAL(15,2) NOT NULL,
+  p_comment VARCHAR(23) NOT NULL
+);
+CREATE TABLE lineitem (
+  l_orderkey BIGINT NOT NULL,
+  l_partkey BIGINT NOT NULL,
+  l_suppkey BIGINT NOT NULL,
+  l_linenumber INTEGER NOT NULL,
+  l_quantity DECIMAL(15,2) NOT NULL,
+  l_extendedprice DECIMAL(15,2) NOT NULL,
+  l_discount DECIMAL(15,2) NOT NULL,
+  l_tax DECIMAL(15,2) NOT NULL,
+  l_returnflag CHAR(1) NOT NULL,
+  l_linestatus CHAR(1) NOT NULL,
+  l_shipdate DATE NOT NULL,
+  l_commitdate DATE NOT NULL,
+  l_receiptdate DATE NOT NULL,
+  l_shipinstruct CHAR(25) NOT NULL,
+  l_shipmode CHAR(10) NOT NULL,
+  l_comment VARCHAR(44) NOT NULL
+);
+EOF
+elif [[ "$QUERY" == "q1" ]]; then
   # FormalSQL rejects unconstrained NUMERIC (inf/NaN/display-scale carriers).
   # Use TPC-H DECIMAL(p,s) so Logos can emit query terms.
   cat > "$SCHEMA" <<'EOF'
