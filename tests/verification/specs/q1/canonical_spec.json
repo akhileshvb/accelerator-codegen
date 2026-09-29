@@ -1,0 +1,58 @@
+{
+  "query": "q1",
+  "inputs": [
+    {
+      "table": "lineitem",
+      "columns": [
+        "l_returnflag",
+        "l_linestatus",
+        "l_quantity",
+        "l_extendedprice",
+        "l_discount",
+        "l_tax",
+        "l_shipdate"
+      ]
+    }
+  ],
+  "parameters": {
+    "delta_days": 90,
+    "base_date": "1998-12-01",
+    "base_date_days": 10561,
+    "cutoff_days": "base_date_days - delta_days"
+  },
+  "join": null,
+  "filter": "l_shipdate <= DATE '1998-12-01' - INTERVAL delta DAY",
+  "group_key": ["l_returnflag", "l_linestatus"],
+  "contributions": {
+    "qty": "l_quantity",
+    "base_price": "l_extendedprice",
+    "disc_price": "l_extendedprice * (1 - l_discount)",
+    "charge": "l_extendedprice * (1 - l_discount) * (1 + l_tax)"
+  },
+  "aggregates": [
+    {"name": "sum_qty", "op": "sum", "of": "qty"},
+    {"name": "sum_base_price", "op": "sum", "of": "base_price"},
+    {"name": "sum_disc_price", "op": "sum", "of": "disc_price"},
+    {"name": "sum_charge", "op": "sum", "of": "charge"},
+    {"name": "avg_qty", "op": "avg", "of": "qty"},
+    {"name": "avg_price", "op": "avg", "of": "base_price"},
+    {"name": "avg_disc", "op": "avg", "of": "l_discount"},
+    {"name": "count_order", "op": "count_star"}
+  ],
+  "final_projection": [
+    "l_returnflag",
+    "l_linestatus",
+    "sum_qty",
+    "sum_base_price",
+    "sum_disc_price",
+    "sum_charge",
+    "avg_qty",
+    "avg_price",
+    "avg_disc",
+    "count_order"
+  ],
+  "ordering": [
+    {"column": "l_returnflag", "direction": "asc"},
+    {"column": "l_linestatus", "direction": "asc"}
+  ]
+}

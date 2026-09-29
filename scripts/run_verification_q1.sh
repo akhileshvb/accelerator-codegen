@@ -40,6 +40,8 @@ DAFNY_BIN="$(find_dafny)" || { echo "dafny not found"; exit 1; }
 "$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1Finalize.dfy"
 "$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1ModuleTwin.dfy"
 "$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1Aux.dfy"
+"$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1TwinAuxRefinement.dfy"
+"$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1TwinAuxClose.dfy"
 "$DAFNY_BIN" verify "$ROOT/tests/verification/substrate/dafny/VersionedPairing.dfy"
 "$DAFNY_BIN" verify "$ROOT/tests/verification/substrate/dafny/SnapshotPinning.dfy"
 "$DAFNY_BIN" verify "$ROOT/tests/verification/substrate/dafny/ReadHandle.dfy"

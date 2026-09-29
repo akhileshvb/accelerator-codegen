@@ -127,6 +127,11 @@ Theorem FormalSQLAuxCorrect_Q1 :
     FormalSQL_exec ... (EmbedResult_Q1 (AuxAnswerSpec ...)).
 ```
 
+**Strengthened (forall outcomes):** `NormalizeSound_Q1_all_outcomes` in
+[`Q1AllOutcomes.v`](Q1AllOutcomes.v) proves that EVERY possible FormalSQL outcome of q̂ equals
+`SqlSuccess outs`, under the same premises (no new premise, no new axiom).
+See [`../ALL_OUTCOMES.md`](../ALL_OUTCOMES.md).
+
 ## Gates
 
 `compile_q1_proof.sh` · `compile_q1_normalize_sound.sh` · `check_q1_rocq_no_admitted.sh`
