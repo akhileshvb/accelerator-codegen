@@ -52,3 +52,7 @@ tests/verification/formalsql/**/logos_log/
 tests/verification/formalsql/**/.logos-runtime-classpath.txt
 tests/verification/formalsql/**/logos_lower.err
 tests/verification/formalsql/**/logos_lower_report.json
+
+# Rocq lia/nia tactic caches (regenerated on compile)
+.lia.cache
+.nia.cache
