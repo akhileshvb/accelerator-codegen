@@ -1,3 +1,8 @@
+> **Current public theorem:** `Q1FinalTheorem.NormalizeSound_Q1_rel_all_outcomes`
+> (FormalSQL outcome = Embed of the RelNode `Eval_Spec` rows; no numeric
+> premise). The AuxAnswerSpec statements below are proof-internal steps.
+> Canonical summary: `../../q1/CURRENT_THEOREM_TCB.md`.
+
 # Q1 FormalSQL status
 
 **Canonical theorem / TCB:** [`../../q1/CURRENT_THEOREM_TCB.md`](../../q1/CURRENT_THEOREM_TCB.md).  

@@ -15,10 +15,12 @@ die() { echo "PRINT_ASSUMPTIONS FAIL ($QUERY): $*" >&2; exit 1; }
 case "$QUERY" in
   q1)
     cd "$FSQL/q1"
-    REQUIRE="Require Import Q1NormalizeSound Q1AllOutcomes."
-    THEOREMS=(NormalizeSound_Q1_all_outcomes NormalizeSound_Q1_catalog_all_outcomes
-      Q1_qhat_outcomes_unique FormalSQLSpecCorrect_Q1 NormalizeSound_generic
-      NormalizeSound_Q1)
+    REQUIRE="Require Import Q1NumericEmbed Q1FinalTheorem."
+    # Public Q1 Stage 2 theorems (Q21 shape: FormalSQL outcome = Embed of the
+    # RelNode Eval_Spec rows; no numeric premise) and the discharged numeric
+    # embedding.
+    THEOREMS=(NormalizeSound_Q1_rel_all_outcomes NormalizeSound_Q1_rel_catalog_all_outcomes
+      Eval_Spec_Q1_rel_shape NumericEmbedFaithful_holds NumericEmbedFaithful_unrestricted_false)
     FLAGS=(
       -Q "$LOGOS/vendor/FormalSQL/src" SQLFS
       -Q "$LOGOS/theories" Logos

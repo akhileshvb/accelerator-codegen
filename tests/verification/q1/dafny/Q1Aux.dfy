@@ -7,8 +7,8 @@
 // need not import ModuleTwin). TwinAuxRel is representation-only (Flatten);
 // Inv(store,D) := store == FoldTwin(D) stays separate.
 //
-// FoldSpec / AuxAnswerSpec live in generated/Q1AuxSpec.dfy; prove
-// TwinOp ≡ SpecOp then FoldTwin = FoldSpec (see Q1TwinSpecBridge.dfy).
+// The specification is the RelNode Eval_Spec (Q1ExecExact.dfy); this file is
+// the Aux algebra the twin is proved against (Q1TwinAuxRefinement/Close).
 //
 // Apply/Merge equations match Q1Finalize structural twins and
 // src/generated/tpch/q1/postgres/aux/finalize.cpp.

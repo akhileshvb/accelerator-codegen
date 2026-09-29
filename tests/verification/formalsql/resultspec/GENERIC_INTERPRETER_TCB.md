@@ -21,7 +21,7 @@ Rocq public meeting point (proved):
 ```text
 Rocq RelNode LogicalSpec_Q1_rel ──► Eval_Spec ──► Q1Adapt (q1/Q1Adapt.v)
         │
-        └── Q1RelNodeBridge.v Qed ──► flat Eval_Spec ∘ Q1Adapt ──► AuxAnswerSpec
+        └── Q1RelNodeBridge.v Qed ──► flat Eval_Spec (proof-internal); public statement: Q1FinalTheorem.v (Embed of Eval_Spec rows)
 ```
 
 Dafny status:
@@ -36,7 +36,7 @@ Dafny RelNode↔flat bridge: Q1RelNodeBridge.dfy Qed
 ```
 
 **Query-specific logical-query semantics** live in RelNode LogicalSpec DATA
-(`LogicalSpec_Q1_rel` export). `Q1Adapt` / `AvgObservationFaithful` are
+(`LogicalSpec_Q1_rel` export). `Q1Adapt` (proof-internal; the Dafny side no longer mirrors it) is
 representation / observation bridges — not LogicalSpec DATA.
 
 ## SpecExportCorrect (B) — RelNode primary

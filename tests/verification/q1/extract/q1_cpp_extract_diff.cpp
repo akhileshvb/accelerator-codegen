@@ -76,8 +76,30 @@ int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
 
 int AsInt(char c) { return static_cast<int>(static_cast<unsigned char>(c)); }
 
-int64_t HugeLower(const duckdb::hugeint_t &value) {
-  return static_cast<int64_t>(value.lower);
+namespace pgn = accelerator_codegen::pg_numeric;
+
+std::string I128(pgn::Int128 v) { return pgn::ToText(v, 0); }
+
+// Numeric text "d.ddd" -> "<coeff> <scale>" (exact, for the dump).
+std::string CoeffScaleOfText(const std::string &text) {
+  std::string digits;
+  int scale = 0;
+  bool frac = false;
+  for (char c : text) {
+    if (c == '.') {
+      frac = true;
+    } else {
+      digits.push_back(c);
+      if (frac) ++scale;
+    }
+  }
+  pgn::Int128 v = 0;
+  bool neg = false;
+  for (char c : digits) {
+    if (c == '-') neg = true;
+    else v = v * 10 + (c - '0');
+  }
+  return I128(neg ? -v : v) + " " + std::to_string(scale);
 }
 
 const char *ScopeName(InvalidationScope scope) {
@@ -118,15 +140,19 @@ void DumpMerged(const char *tag, const Q1MergedGroupStats &s) {
             << " disc=" << static_cast<int64_t>(s.sum_discount) << "\n";
 }
 
-void DumpAvg(const std::string &tag, double value) {
-  std::cout << "AVG " << tag << " " << std::setprecision(17) << value << "\n";
+void DumpAvg(const std::string &tag, const pgn::Decimal &d) {
+  std::cout << "avgdec " << tag << " " << I128(d.coeff) << " " << d.scale << "\n";
+}
+
+void DumpAvgText(const std::string &tag, const std::string &text) {
+  std::cout << "avgdec " << tag << " " << CoeffScaleOfText(text) << "\n";
 }
 
 void DumpOutRow(const char *tag, const Q1OutputRow &r) {
-  std::cout << tag << " gkey=" << r.group_key << " qty=" << HugeLower(r.sum_qty)
-            << " base=" << HugeLower(r.sum_base_price)
-            << " discp=" << HugeLower(r.sum_disc_price)
-            << " charge=" << HugeLower(r.sum_charge)
+  std::cout << tag << " gkey=" << r.group_key << " qty=" << I128(r.sum_qty)
+            << " base=" << I128(r.sum_base_price)
+            << " discp=" << I128(r.sum_disc_price)
+            << " charge=" << I128(r.sum_charge)
             << " count=" << r.count_order << "\n";
   DumpAvg(std::string(tag) + "_qty", r.avg_qty);
   DumpAvg(std::string(tag) + "_price", r.avg_price);
@@ -210,21 +236,19 @@ void DumpSink(const char *tag, const accel_verify::CollectingSink &sink) {
   for (const auto &row : sink.rows) {
     const auto rf = std::get<std::string>(row.values[0].payload);
     const auto ls = std::get<std::string>(row.values[1].payload);
-    const auto qty = std::get<ScaledDecimal>(row.values[2].payload);
-    const auto base = std::get<ScaledDecimal>(row.values[3].payload);
-    const auto discp = std::get<ScaledDecimal>(row.values[4].payload);
-    const auto charge = std::get<ScaledDecimal>(row.values[5].payload);
-    const auto avg_qty = std::get<double>(row.values[6].payload);
-    const auto avg_price = std::get<double>(row.values[7].payload);
-    const auto avg_disc = std::get<double>(row.values[8].payload);
+    // Numeric columns are exact numeric text (pg_numeric); dump coefficients.
+    const auto num = [&](int i) {
+      const auto cs = CoeffScaleOfText(std::get<std::string>(row.values[i].payload));
+      return cs.substr(0, cs.find(' '));
+    };
     const auto count = std::get<int64_t>(row.values[9].payload);
     std::cout << tag << " rf=" << AsInt(rf.empty() ? 0 : rf[0])
-              << " ls=" << AsInt(ls.empty() ? 0 : ls[0]) << " qty=" << qty.value
-              << " base=" << base.value << " discp=" << discp.value
-              << " charge=" << charge.value << " count=" << count << "\n";
-    DumpAvg(std::string(tag) + "_qty", avg_qty);
-    DumpAvg(std::string(tag) + "_price", avg_price);
-    DumpAvg(std::string(tag) + "_disc", avg_disc);
+              << " ls=" << AsInt(ls.empty() ? 0 : ls[0]) << " qty=" << num(2)
+              << " base=" << num(3) << " discp=" << num(4)
+              << " charge=" << num(5) << " count=" << count << "\n";
+    DumpAvgText(std::string(tag) + "_qty", std::get<std::string>(row.values[6].payload));
+    DumpAvgText(std::string(tag) + "_price", std::get<std::string>(row.values[7].payload));
+    DumpAvgText(std::string(tag) + "_disc", std::get<std::string>(row.values[8].payload));
   }
 }
 

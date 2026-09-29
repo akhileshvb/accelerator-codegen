@@ -1,22 +1,19 @@
-# Runtime gaps (FormalSQL stack Phases 4–5) — Q1
+# Runtime (Postgres) — status for Q1 and Q21
 
-## Phase 4 — C++
+The runtime correctness argument is the cross-backend sync protocol
+(`src/stateful/postgres/aux_sync.cpp`, `src/generated/postgres/runtime.cpp`),
+proved once in [`../substrate/dafny/AuxSyncProtocol.dfy`](../substrate/dafny/AuxSyncProtocol.dfy)
+and instantiated per query:
 
-| Claim | Status |
-|-------|--------|
-| LocalWriteSafe | **IMPLEMENTED** — dirty mark + Execute fallback + clear on commit/abort |
-| PRE_COMMIT invalidate | **IMPLEMENTED** — Invalidate before heap visibility |
-| TokenForSnapshot | **IMPROVED** — `ForcePinActiveSnapshot` at `Runtime::Execute` first line; `PinTokenForActiveSnapshot` / `EnsureSnapshotPin` freeze `(S_encoding, epoch)` on first see of S; `CurrentVisibility` pins via callback or `EnsureSnapshotPin`; `BumpAuxMutationEpoch` at **OnPreCommit** (before Invalidate) **and** OnCommit (before TryPublish). Documented: PG statement snapshot S is established before set-returning UDF body; residual race is only concurrent Commit bump *before* first pin — filtered by pin-epoch vs publish-epoch (`TokenForSnapshot_stable_under_concurrent_publish`) |
-| ReadHit / linearization | **IMPROVED** — `PostgresStateStore::ReadHitPartitions` + Q1 `Execute` uses it (complete cut or fallback; no silent omission) |
-| ConsistentObservation | **IMPROVED** — required partition set must all be present |
-| InvalidateBreaksStaleCAS | **IMPLEMENTED** |
+| Query | Runtime theorem | Store invariant steps |
+|-------|-----------------|-----------------------|
+| Q1  | [`../q1/dafny/Q1Runtime.dfy`](../q1/dafny/Q1Runtime.dfy) `Hit_correct_Q1`, `Fallback_correct_Q1` | `Build_step_Q1`, `Commit_step_Q1` |
+| Q21 | [`../q21/dafny/Q21Runtime.dfy`](../q21/dafny/Q21Runtime.dfy) `Runtime_hit_correct`, `Runtime_fallback_correct` | `Build_step`, `Commit_step` |
 
-## Phase 5 — Dafny substrate
-
-| Claim | Status |
-|-------|--------|
-| TokenForSnapshot / SnapshotHitSafe | Shape + `MakeToken_establishes_TokenForSnapshot` + `TokenForSnapshot_stable_under_concurrent_publish` + `PinEpoch_frozen_across_bump` |
-| PairInv → RuntimeAuxCorrect | `PairInv_Hit_implies_RuntimeAuxCorrect` (no free `payload==fold` requires) |
-| RuntimeAuxCorrect_Q1 | **PROVED** — `tests/verification/q1/dafny/Q1RuntimeAuxCorrect.dfy`: `RuntimeAuxCorrect_Q1_from_PairInv` derives `Execute_Q1 = AuxAnswerTwin(VisibleDB, θ)` from `PairInv_Q1` + `SnapshotHitSafe_Q1` + `ReadHit_Q1` + `LocalWriteSafe` (VisibleDB collapses when clean). Wired into `Q1BackendProofs.dfy` |
-
-C++ remains **RepPhys + finite extract-diff**, not a proved edge from `RuntimeAuxCorrect`.
+Live evidence: `../q21/runtime/` (multi-backend / savepoint / dirty-build /
+TRUNCATE / collation repros and concurrent stress).  The superseded
+epoch/snapshot-pin models (SnapshotPinning, ReadHandle, VersionedPairing,
+Q1RuntimeAuxCorrect) were removed; they did not describe the multi-backend
+runtime.  Trusted runtime facts: `pg_mvcc`, `pg_callbacks`, `pg_atomics`,
+`runtime_capture`, `runtime_scan` (see `../q1/RESIDUALS.txt`,
+`../q21/RESIDUALS.txt`).

@@ -19,7 +19,6 @@ include "RuntimeScan.dfy"
 include "PostgresBackend.dfy"
 include "../../q1/dafny/Q1ModuleTwin.dfy"
 include "../../q1/dafny/Q1MaintenanceEdges.dfy"
-include "../../q1/dafny/Q1RuntimeAuxCorrect.dfy"
 
 module Q1BackendProofs {
   import opened SubstrateStore
@@ -30,7 +29,6 @@ module Q1BackendProofs {
   import opened Q1Finalize
   import opened Q1Maintenance
   import Q1MaintenanceEdges
-  import Q1RAC = Q1RuntimeAuxCorrect
 
   // ----- SPI oracle row → module LineitemInput (scale-2, matches Runtime twin) -----
 
@@ -301,11 +299,6 @@ module Q1BackendProofs {
     PostgresRuntimeScan.EnsureBuiltInstalls(r, key, 1, epoch);
   }
 
-  // ----- RuntimeAuxCorrect_Q1 wiring (PairInv + SnapshotHitSafe + ReadHit) -----
-
-  lemma HitPath_satisfies_RuntimeAuxCorrect_Q1_miss()
-    ensures Q1RAC.RuntimeAuxCorrect_Q1(false, [], [])
-  {
-    Q1RAC.RuntimeAuxCorrect_Q1_miss([], []);
-  }
+  // Runtime hit correctness: q1/dafny/Q1Runtime.dfy (cross-backend sync
+  // protocol, substrate/dafny/AuxSyncProtocol.dfy).
 }

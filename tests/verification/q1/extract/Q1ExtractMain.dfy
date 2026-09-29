@@ -1,4 +1,6 @@
-// Compiled dump of Q1Finalize / Q1ModuleTwin over grid D.
+// Compiled dump of Q1Finalize / Q1ModuleTwin over grid D. Every line,
+// including the exact avg(numeric) coefficient/scale lines, must match the
+// C++ dump exactly.
 // Keep literals in sync with q1_cpp_extract_diff.cpp.
 //
 // Grid D:
@@ -28,13 +30,9 @@ method DumpStats(tag: string, s: Stats)
         " discp=", s.sum_disc_price, " charge=", s.sum_charge, " disc=", s.sum_discount, "\n";
 }
 
-method DumpAvg(tag: string, value: int, scale: nat, count: int)
+method DumpAvg(tag: string, d: PgNumeric.Decimal)
 {
-  if count <= 0 {
-    print "AVG ", tag, " 0/1\n";
-  } else {
-    print "AVG ", tag, " ", value, "/", (Pow10(scale) * count), "\n";
-  }
+  print "avgdec ", tag, " ", d.coeff, " ", d.scale, "\n";
 }
 
 method StatsFor(gkey: int, entries: seq<(int, Stats)>) returns (s: Stats)
@@ -54,9 +52,9 @@ method DumpOutRow(tag: string, r: OutRow, discount: int)
 {
   print tag, " gkey=", r.group_key, " qty=", r.sum_qty, " base=", r.sum_base_price,
         " discp=", r.sum_disc_price, " charge=", r.sum_charge, " count=", r.count_order, "\n";
-  DumpAvg(tag + "_qty", r.sum_qty, 2, r.count_order);
-  DumpAvg(tag + "_price", r.sum_base_price, 2, r.count_order);
-  DumpAvg(tag + "_disc", discount, 2, r.count_order);
+  DumpAvg(tag + "_qty", r.avg_qty);
+  DumpAvg(tag + "_price", r.avg_price);
+  DumpAvg(tag + "_disc", r.avg_disc);
 }
 
 method DumpFinalized(tag: string, entries: seq<(int, Stats)>)
@@ -152,9 +150,9 @@ method DumpComposeFrom(tag: string, rows: seq<OutRow>, entries: seq<(int, Stats)
           " qty=", r.sum_qty, " base=", r.sum_base_price,
           " discp=", r.sum_disc_price, " charge=", r.sum_charge,
           " count=", r.count_order, "\n";
-    DumpAvg(tag + "_qty", r.sum_qty, 2, r.count_order);
-    DumpAvg(tag + "_price", r.sum_base_price, 2, r.count_order);
-    DumpAvg(tag + "_disc", s.sum_discount, 2, r.count_order);
+    DumpAvg(tag + "_qty", r.avg_qty);
+    DumpAvg(tag + "_price", r.avg_price);
+    DumpAvg(tag + "_disc", r.avg_disc);
     DumpComposeFrom(tag, rows[1..], entries);
   }
 }

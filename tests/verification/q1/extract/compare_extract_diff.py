@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Compare Dafny-extract dump vs C++ dump.
 
-Integer lines must match exactly. Lines starting with 'AVG ' compare a
-Dafny rational n/d to a C++ IEEE double (not bit-identity).
+Every line must match exactly (AVG values are exact PostgreSQL avg(numeric)
+coefficient/scale pairs, 'avgdec <tag> <coeff> <scale>'). Legacy 'AVG ' lines
+(rational vs IEEE double) are no longer produced; any such line fails.
 """
 from __future__ import annotations
 
@@ -43,6 +44,10 @@ def main() -> int:
     dafny_ints, dafny_avgs = load(sys.argv[1])
     cpp_ints, cpp_avgs = load(sys.argv[2])
     ok = True
+    if dafny_avgs or cpp_avgs:
+        ok = False
+        print("legacy tolerance-compared 'AVG ' lines present; AVG must be exact 'avgdec'",
+              file=sys.stderr)
     if dafny_ints != cpp_ints:
         ok = False
         print("integer-line mismatch", file=sys.stderr)

@@ -49,12 +49,28 @@
       "generalizes": "partitioned grouped-aggregate invariant, fold, and maintenance recipe"
     },
     {
-      "name": "SnapshotPinning",
+      "name": "AuxSyncProtocol",
       "kind": "reusable",
-      "path": "tests/verification/substrate/dafny/SnapshotPinning.dfy",
+      "path": "tests/verification/substrate/dafny/AuxSyncProtocol.dfy",
+      "prover": "dafny",
+      "source_query": "q21",
+      "generalizes": "cross-backend sync protocol for process-local Aux stores: build / own-commit / hit soundness over every interleaving of every backend's writers; instantiated by q21/dafny/Q21Runtime.dfy and q1/dafny/Q1Runtime.dfy"
+    },
+    {
+      "name": "PgNumeric",
+      "kind": "reusable",
+      "path": "tests/verification/logical/dafny/PgNumeric.dfy",
       "prover": "dafny",
       "source_query": "q1",
-      "generalizes": "snapshot token implies the accelerator sees the pinned database"
+      "generalizes": "PostgreSQL avg(numeric) result scale (select_div_scale) and half-away rounding as an integer closed form; C++ twin stateful/core/pg_numeric.hpp"
+    },
+    {
+      "name": "NumericAggExact",
+      "kind": "reusable",
+      "path": "tests/verification/formalsql/lib/NumericAggExact.v",
+      "prover": "rocq",
+      "source_query": "q1",
+      "generalizes": "FormalSQL SUM / fixed-typmod AVG over scaled decimals equal the integer sum / count; numeric_div_at_scales of an avg equals the PgNumeric closed form (pg_avg_exact); axiom-free"
     }
   ]
 }

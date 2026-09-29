@@ -6,7 +6,7 @@
 // reusable ordering algebra: SortedUniqueMap.SameMapSameSortedSeq.
 // PGA recipe + shared Rocq facades: tests/verification/patterns/PartitionedGroupAggregate.md
 //
-// Does NOT use AuxAnswerSpec / Q1TwinSpecBridge / FormalSQLAuxCorrect.
+// Does NOT use AuxAnswerSpec / FormalSQLAuxCorrect.
 
 include "generated/Q1ResultSpec.dfy"
 include "Q1Aux.dfy"
@@ -20,6 +20,7 @@ module Q1ResultSpecBridge {
   import Spec = Q1ResultSpec
   import opened Q1Aux
   import F = Q1Finalize
+  import PgNumeric
   import SU = SortedUniqueMap
   import ELS = EvalLogicalSpec
   import LSD = LogicalSpecData
@@ -151,10 +152,13 @@ module Q1ResultSpecBridge {
     F.FinalizeOneEntry(gkey, AuxStatsToFinalize(s))[0]
   }
 
-  // REPRESENTATION-SPECIFIC TCB: Spec (sum,count) → accelerator real AVG.
-  ghost predicate AvgObservationFaithful(obs: real, sum_coeff: int, count: int) {
+  // Exact: the accelerator's AVG is PostgreSQL avg(numeric) of the exact
+  // scale-2 sum and count (no observation TCB; PgNumeric.AvgOfScaledSum is
+  // the proved closed form of FormalSQL's numeric_div_at_scales, Rocq
+  // NumericAggExact.pg_avg_exact).
+  ghost predicate AvgExactObs(obs: PgNumeric.Decimal, sum_coeff: int, count: int) {
     count > 0 &&
-    obs == F.HugeintScaleToDouble(sum_coeff, F.kDecimalScale2, count as nat)
+    obs == PgNumeric.AvgOfScaledSum(sum_coeff, F.kDecimalScale2, count)
   }
 
   ghost predicate ExactColsMatch(accel: F.OutRow, spec: Spec.SpecOutRow) {
@@ -166,18 +170,18 @@ module Q1ResultSpecBridge {
     accel.count_order == spec.count
   }
 
-  ghost predicate ApproxQ1Row(accel: F.OutRow, spec: Spec.SpecOutRow) {
+  ghost predicate ExactQ1Row(accel: F.OutRow, spec: Spec.SpecOutRow) {
     ExactColsMatch(accel, spec) &&
-    AvgObservationFaithful(accel.avg_qty, spec.sum_qty, spec.count) &&
-    AvgObservationFaithful(accel.avg_price, spec.sum_base_price, spec.count) &&
-    AvgObservationFaithful(accel.avg_disc, spec.sum_discount, spec.count)
+    AvgExactObs(accel.avg_qty, spec.sum_qty, spec.count) &&
+    AvgExactObs(accel.avg_price, spec.sum_base_price, spec.count) &&
+    AvgExactObs(accel.avg_disc, spec.sum_discount, spec.count)
   }
 
-  lemma FinalizeOne_Approx(gkey: int, s: Q1Aux.Stats)
+  lemma FinalizeOne_Exact(gkey: int, s: Q1Aux.Stats)
     requires s.count > 0
     ensures |F.FinalizeOneEntry(gkey, AuxStatsToFinalize(s))| == 1
     ensures |Spec.SpecFinalizeOne(gkey, AuxStatsToSpec(s))| == 1
-    ensures ApproxQ1Row(
+    ensures ExactQ1Row(
               F.FinalizeOneEntry(gkey, AuxStatsToFinalize(s))[0],
               Spec.SpecFinalizeOne(gkey, AuxStatsToSpec(s))[0])
   {
@@ -295,9 +299,9 @@ module Q1ResultSpecBridge {
     }
   }
 
-  ghost predicate ApproxQ1(accel: seq<F.OutRow>, spec: seq<Spec.SpecOutRow>) {
+  ghost predicate ExactQ1(accel: seq<F.OutRow>, spec: seq<Spec.SpecOutRow>) {
     |accel| == |spec| &&
-    (forall i :: 0 <= i < |accel| ==> ApproxQ1Row(accel[i], spec[i]))
+    (forall i :: 0 <= i < |accel| ==> ExactQ1Row(accel[i], spec[i]))
   }
 
   ghost predicate SortedOut(rows: seq<F.OutRow>) {
@@ -317,7 +321,7 @@ module Q1ResultSpecBridge {
               g in Spec.SpecView(AuxRowsToSpec(db), Spec.Cutoff(delta)) &&
               Compose(db, Spec.Cutoff(delta))[g].count > 0 &&
               Spec.SpecView(AuxRowsToSpec(db), Spec.Cutoff(delta))[g].count > 0 &&
-              ApproxQ1Row(
+              ExactQ1Row(
                 ExecM_group(db, Spec.Cutoff(delta), g),
                 EvalSpec_group(db, Spec.Cutoff(delta), g))
   {
@@ -328,11 +332,11 @@ module Q1ResultSpecBridge {
       ensures g in Spec.SpecView(AuxRowsToSpec(db), cutoff) &&
               Compose(db, cutoff)[g].count > 0 &&
               Spec.SpecView(AuxRowsToSpec(db), cutoff)[g].count > 0 &&
-              ApproxQ1Row(ExecM_group(db, cutoff, g), EvalSpec_group(db, cutoff, g))
+              ExactQ1Row(ExecM_group(db, cutoff, g), EvalSpec_group(db, cutoff, g))
     {
       assert AuxStatsToSpec(Compose(db, cutoff)[g])
           == Spec.SpecView(AuxRowsToSpec(db), cutoff)[g];
-      FinalizeOne_Approx(g, Compose(db, cutoff)[g]);
+      FinalizeOne_Exact(g, Compose(db, cutoff)[g]);
     }
   }
 
@@ -347,9 +351,9 @@ module Q1ResultSpecBridge {
   }
 
   // ORDERING_SEQ: given any two result sequences that are strictly sorted by
-  // group_key, carry the same keys, and ApproxQ1Row-match per key, they are
+  // group_key, carry the same keys, and ExactQ1Row-match per key, they are
   // position-wise ≈_Q1. Uses GENERIC SortedUniqueMap.SameMapSameSortedSeq on
-  // exact projections; AVGs follow from ApproxQ1Row per key.
+  // exact projections; AVGs follow from ExactQ1Row per key.
   ghost predicate HasOutKey(rows: seq<F.OutRow>, k: int) {
     exists i :: 0 <= i < |rows| && rows[i].group_key == k
   }
@@ -358,7 +362,7 @@ module Q1ResultSpecBridge {
     exists i :: 0 <= i < |rows| && rows[i].group_key == k
   }
 
-  lemma ApproxQ1_of_strict_sorted_same_keys(
+  lemma ExactQ1_of_strict_sorted_same_keys(
     accel: seq<F.OutRow>,
     spec: seq<Spec.SpecOutRow>
   )
@@ -369,8 +373,8 @@ module Q1ResultSpecBridge {
     requires forall i, j ::
                (0 <= i < |accel| && 0 <= j < |spec| &&
                 accel[i].group_key == spec[j].group_key)
-               ==> ApproxQ1Row(accel[i], spec[j])
-    ensures ApproxQ1(accel, spec)
+               ==> ExactQ1Row(accel[i], spec[j])
+    ensures ExactQ1(accel, spec)
   {
     var ae := ExactEntries(accel);
     var se := SpecExactEntries(spec);
@@ -402,17 +406,17 @@ module Q1ResultSpecBridge {
     forall i, j | 0 <= i < |ae| && 0 <= j < |se| && ae[i].key == se[j].key
       ensures ae[i].val == se[j].val
     {
-      assert ApproxQ1Row(accel[i], spec[j]);
+      assert ExactQ1Row(accel[i], spec[j]);
       assert ExactColsMatch(accel[i], spec[j]);
     }
     SU.SameMapSameSortedSeq(ae, se);
     assert |accel| == |spec|;
     forall i | 0 <= i < |accel|
-      ensures ApproxQ1Row(accel[i], spec[i])
+      ensures ExactQ1Row(accel[i], spec[i])
     {
       assert ae[i].key == se[i].key;
       assert accel[i].group_key == spec[i].group_key;
-      assert ApproxQ1Row(accel[i], spec[i]);
+      assert ExactQ1Row(accel[i], spec[i]);
     }
   }
 
@@ -677,7 +681,7 @@ module Q1ResultSpecBridge {
   lemma Q1ExecCorrectOrdered(store: Store, db: seq<Row>, delta: int)
     requires forall i :: 0 <= i < |db| ==> 0 <= db[i].rf < 256 && 0 <= db[i].ls < 256
     requires Inv(store, db)
-    ensures ApproxQ1(
+    ensures ExactQ1(
               ExecSeqM(db, Spec.Cutoff(delta)),
               RelSpec.Eval_Spec_Q1_OutRows_rel(
                 Spec.Cutoff(delta),
@@ -710,17 +714,17 @@ module Q1ResultSpecBridge {
 
     forall i, j | 0 <= i < |accel| && 0 <= j < |legacy| &&
                   accel[i].group_key == legacy[j].group_key
-      ensures ApproxQ1Row(accel[i], legacy[j])
+      ensures ExactQ1Row(accel[i], legacy[j])
     {
       var g := accel[i].group_key;
       ExecSeqM_row_at_key(db, cutoff, i);
       SpecEval_row_at_key(db, cutoff, j);
-      assert ApproxQ1Row(ExecM_group(db, cutoff, g), EvalSpec_group(db, cutoff, g));
+      assert ExactQ1Row(ExecM_group(db, cutoff, g), EvalSpec_group(db, cutoff, g));
       assert accel[i] == ExecM_group(db, cutoff, g);
       assert legacy[j] == EvalSpec_group(db, cutoff, g);
     }
 
-    ApproxQ1_of_strict_sorted_same_keys(accel, legacy);
+    ExactQ1_of_strict_sorted_same_keys(accel, legacy);
     // RelNode OutRows_rel == EvalResultSpec (via Q1RelNodeBridge)
     RelBridge.Eval_Spec_Q1_OutRows_rel_eq_EvalResultSpec(cutoff, spec_db);
     assert ir == legacy;

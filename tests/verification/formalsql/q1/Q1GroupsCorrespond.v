@@ -797,7 +797,9 @@ Proof.
   { unfold rs; apply Forall_aux_bucket_RowKey. }
   assert (Hne' : rs <> nil) by (unfold rs; exact Hne).
   destruct (q1_rev_inner_key_dots rs gkey Hok Hkeys Hne') as [Hrf Hls].
-  destruct (Hnum (rev rs)) as [Hsum_qty [Hsum_price [Hsum_f4 [Hsum_f5
+  assert (Hrne : rev rs <> nil)
+    by (intro E; apply Hne'; rewrite <- (rev_involutive rs), E; reflexivity).
+  destruct (Hnum (rev rs) Hrne (Forall_rev Hok)) as [Hsum_qty [Hsum_price [Hsum_f4 [Hsum_f5
     [Havg_qty [Havg_price Havg_disc]]]]]].
   assert (Hqty :
     fold_right Z.add 0 (map Q1AuxSpec.qty rs) = Q1AuxSpec.sum_qty s).

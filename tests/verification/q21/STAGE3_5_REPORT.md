@@ -136,7 +136,7 @@ Multiplicity is preserved exactly.
 | `src/stateful/core/aux_registry.cpp` | `OnMutationAtDepth` / `{Commit,Abort}SubtransactionAtDepth`: frames keyed by PG nest level, opened lazily. Debug `fprintf`s removed. |
 | `src/generated/postgres/transition_capture.cpp`, `scripts/postgres_accel_mutation_triggers.sql` | Registers every captured statement; passes the nest depth; new `AFTER TRUNCATE` trigger. |
 
-### 5.3 Proof (`dafny/Q21Runtime.dfy`, 203 obligations, 0 errors / warnings)
+### 5.3 Proof (`../substrate/dafny/AuxSyncProtocol.dfy`, query-generic and shared with Q1; instantiated by `dafny/Q21Runtime.dfy`)
 
 The model contains every writer in every backend, each with per-slot register / visible / count / release times. `History` states only the orderings that the code and PG callback order guarantee. Snapshots are modelled by content; `SnapAt` is PG's MVCC contract (TCB `pg_mvcc`). Counter reads are per slot: inflight first, seq later.
 

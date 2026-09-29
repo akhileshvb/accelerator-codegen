@@ -97,5 +97,5 @@ Prefer FormalSQLLib facades and `logical/proof/Morphisms.v` patterns; leave Pack
 
 - Pack / integer group keys
 - Q1 Stats / SpecApply / FinalizeKeys
-- AvgObservationFaithful / float8
+- AVG over scaled decimals: exact PostgreSQL avg(numeric) — `lib/NumericAggExact.v` (`interp_avg_numeric_fixed_scaled`, `pg_avg_exact`); SUM: `interp_sum_numeric_scaled`
 - ModuleTwin SOURCE MAP / extract-diff (`cpp_model`)

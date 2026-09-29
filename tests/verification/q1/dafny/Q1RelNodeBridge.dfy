@@ -1815,4 +1815,66 @@ module Q1RelNodeBridge {
     Eval_Spec_Q1_OutRows_rel_eq_EvalResultSpec(c, db);
     FlatEval.Eval_Spec_Q1_eq_EvalResultSpec(c, db);
   }
+
+  // =====================================================================
+  // F. Shape of the RelNode rows (every AVG cell is VAvgExact(sum, count)
+  //    of its own group; Rocq dual: Q1FinalTheorem.Eval_Spec_Q1_rel_shape)
+  // =====================================================================
+
+  ghost predicate RelRowShape(r: Row)
+  {
+    |r| == 10 &&
+    r[0].VInt? && r[1].VInt? && r[2].VInt? && r[3].VInt? && r[4].VInt? && r[5].VInt? &&
+    r[6].VAvgExact? && r[7].VAvgExact? && r[8].VAvgExact? && r[9].VInt? &&
+    0 <= r[0].z < 256 && 0 <= r[1].z < 256 && r[9].z > 0 &&
+    r[6] == VAvgExact(r[2].z, r[9].z) &&
+    r[7] == VAvgExact(r[3].z, r[9].z) &&
+    r[8].count == r[9].z
+  }
+
+  lemma {:isolate_assertions} Eval_Spec_Q1_rel_rows_shape(c: int, db: seq<R.Row>)
+    requires forall i :: 0 <= i < |db| ==> 0 <= db[i].rf < 256 && 0 <= db[i].ls < 256
+    ensures var ev := RelEval.Eval_Spec(LogicalSpec_Q1_rel(), ParamCutoff(c), DbOfAux(db));
+            ev.SomeRows? && forall i :: 0 <= i < |ev.rs| ==> RelRowShape(ev.rs[i])
+  {
+    FilterCutoff_byte_keys(db, c);
+    var filtered := R.FilterCutoff(db, c);
+    FoldGroups_from_empty_ListStoreRel(c, filtered);
+    var stOpt := RelEval.FoldGroups(
+      Q1AggsRel(), Q1GroupExprs(), ParamCutoff(c), RowsOfAux(filtered), []);
+    var st := stOpt.st;
+    var m := R.FoldByGroup(filtered);
+    assert ListStoreRel(st, m);
+    R.FoldByGroup_positive_counts(filtered);
+    R.FoldByGroup_keys_in_pack_range(filtered);
+    assert forall g :: g in m ==> m[g].count > 0 && 0 <= g < 65536;
+    ListStoreRel_to_ProjectedPre(st, m);
+    var rows := ProjectedRowsOfStore(st, m);
+    ProjectedRowsOfStore_ok(st, m);
+    Projected_Pack_nodup(st, m);
+    ProjectedRowsOk_implies_PackKeysPre(rows);
+    PackKeysOfProjected_len(rows);
+    forall i, j | 0 <= i < j < |rows|
+      ensures R.Pack(rows[i][0].z, rows[i][1].z)
+           != R.Pack(rows[j][0].z, rows[j][1].z)
+    {
+      PackKeys_index(rows, i);
+      PackKeys_index(rows, j);
+      Projected_Pack_index_in_m(st, m, i);
+      Projected_Pack_index_in_m(st, m, j);
+      assert PackKeysOfProjected(rows)[i] != PackKeysOfProjected(rows)[j];
+    }
+    ResultRowSort_Q1(c, rows);
+    var sorted := RelEval.ResultRowSort(ParamCutoff(c), Q1OrderKeysRel(), rows).rs;
+    Eval_Spec_Q1_rel_unfold_to_sorted(c, db, st, m, sorted);
+    forall i | 0 <= i < |sorted| ensures RelRowShape(sorted[i])
+    {
+      assert sorted[i] in multiset(rows);
+      var j :| 0 <= j < |rows| && rows[j] == sorted[i];
+      Projected_row_at(st, m, j);
+      Projected_Pack_index_in_m(st, m, j);
+      var g := R.Pack(st[j].k[0].z, st[j].k[1].z);
+      assert g in m && m[g].count > 0;
+    }
+  }
 }

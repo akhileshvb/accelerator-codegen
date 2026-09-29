@@ -22,7 +22,7 @@ patterns/dafny/
 
 patterns/PartitionedGroupAggregate.md   # recipe + obligations
 
-substrate/dafny/SnapshotPinning.dfy     # Hit → Inv skeleton
+substrate/dafny/AuxSyncProtocol.dfy     # cross-backend sync: hit ⇒ store matches snapshot
 ```
 
 See also: [`../q1/CURRENT_THEOREM_TCB.md`](../q1/CURRENT_THEOREM_TCB.md).

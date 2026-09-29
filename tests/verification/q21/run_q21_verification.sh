@@ -80,9 +80,16 @@ for f in "${Q21_DFY[@]}"; do
 done
 
 # [5] No assumptions / axioms / disabled verification in the Q21 Dafny proof.
+# Shared, query-generic modules (included by Q21Runtime / Q1Runtime; `dafny
+# verify` only checks the files it is given, so verify them explicitly).
+for f in substrate/dafny/AuxSyncProtocol logical/dafny/PgNumeric; do
+  run "dafny_$(basename "$f")" "$DAFNY" verify "$V/$f.dfy"
+done
+run pg_numeric_crossprover bash "$V/logical/pgnumeric/check_pg_numeric_crossprover.sh"
+
 forbidden_scan() {
   ! grep -nE '(^|[^A-Za-z_])assume([^A-Za-z_]|$)|\{:axiom\}|\{:verify false\}|\{:extern|\bexpect\b' \
-      "$V"/q21/dafny/*.dfy
+      "$V"/q21/dafny/*.dfy "$V"/substrate/dafny/AuxSyncProtocol.dfy "$V"/logical/dafny/PgNumeric.dfy
 }
 run dafny_no_assume forbidden_scan
 
@@ -126,10 +133,15 @@ if [[ "$SKIP_Q1" -eq 0 ]]; then
   run q1_compile_proof bash "$FSQL/scripts/compile_q1_proof.sh"
   run q1_compile_normalize_sound bash "$FSQL/scripts/compile_q1_normalize_sound.sh"
   run q1_print_assumptions bash "$FSQL/scripts/check_print_assumptions.sh" q1
-  for f in generated/Q1AuxSpec Q1TwinSpecBridge Q1Finalize Q1ModuleTwin Q1Aux Q1TwinAuxRefinement \
-           Q1TwinAuxClose Q1RuntimeAuxCorrect; do
-    run "q1_dafny_$(basename "$f")" "$DAFNY" verify "$V/q1/dafny/$f.dfy"
+  for f in Q1Finalize Q1ModuleTwin Q1Aux Q1Maintenance Q1TwinAuxRefinement Q1TwinAuxClose \
+           Q1RelNodeSpec Q1RelNodeBridge Q1ResultSpecBridge Q1ExecExact Q1Runtime; do
+    run "q1_dafny_$f" "$DAFNY" verify "$V/q1/dafny/$f.dfy"
   done
+  q1_forbidden_scan() {
+    ! grep -nE '(^|[^A-Za-z_])assume([^A-Za-z_]|$)|\{:axiom\}|\{:verify false\}|\{:extern|\bexpect\b' \
+        "$V"/q1/dafny/*.dfy
+  }
+  run q1_dafny_no_assume q1_forbidden_scan
 fi
 
 echo

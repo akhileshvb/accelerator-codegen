@@ -28,6 +28,7 @@ include "Q1Finalize.dfy"
 
 module Q1ModuleTwin {
   import opened Q1Finalize
+  import PgNumeric
 
   // ----- ScaleToRaw (module.cpp:~143) -----
 
@@ -739,9 +740,9 @@ module Q1ModuleTwin {
     sum_base_price: int,
     sum_disc_price: int,
     sum_charge: int,
-    avg_qty: real,
-    avg_price: real,
-    avg_disc: real,
+    avg_qty: PgNumeric.Decimal,
+    avg_price: PgNumeric.Decimal,
+    avg_disc: PgNumeric.Decimal,
     count_order: int
   )
 

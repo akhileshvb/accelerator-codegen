@@ -16,8 +16,11 @@ formalsql/
 Lowering: `scripts/logos_lower_catalog.sh q1` writes
 `q1/generated/{Schema,Queries,Witness}.v`. Failure means Q1 is not FormalSQL-verified.
 
-AuxSpec dual emission: `tests/verification/auxspec/gen_auxspec.py` writes
-`generated/Q1AuxSpec.v` and `q1/dafny/generated/Q1AuxSpec.dfy` with one SHA-256.
+Public Q1 theorem: `q1/Q1FinalTheorem.v` (`NormalizeSound_Q1_rel_all_outcomes`:
+FormalSQL outcome = Embed of the RelNode `Eval_Spec` rows; no numeric premise,
+`Q1NumericEmbed.NumericEmbedFaithful_holds`). `generated/Q1AuxSpec.v` is a
+Rocq-private group model used inside the proof (no longer dual-emitted).
+Generic numeric lemmas: `lib/NumericAggExact.v`.
 
 ## Q21
 

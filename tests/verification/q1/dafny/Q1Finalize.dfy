@@ -7,14 +7,17 @@
 //   UnpackQ1Linestatus      finalize.cpp:~60
 //   ApplyQ1RowContribution  finalize.cpp:~64
 //   MergeQ1DayGroupStats    finalize.cpp:~77
-//   HugeintScaleToDouble    finalize.cpp:~35
-//   FinalizeQ1MergedGroups  finalize.cpp:~86
+//   FinalizeQ1MergedGroups  finalize.cpp:~70
+//   (avg_*: pg_numeric::AvgOfScaledSum  <->  PgNumeric.AvgOfScaledSum)
 //
-// Induction uses Dafny `real` for avg_* (same divide-by-10 loop as C++).
-// Extract-diff binds this twin to generated C++ on grid D (integer columns
-// exact; avgs as rational vs IEEE double — not bit-identity).
+// avg_* are exact PostgreSQL avg(numeric) results (coefficient, display
+// scale). Extract-diff binds this twin to generated C++ on grid D with exact
+// equality on every column.
+
+include "../../logical/dafny/PgNumeric.dfy"
 
 module Q1Finalize {
+  import PgNumeric
 
   datatype Stats = Stats(
     count: int,
@@ -125,54 +128,10 @@ module Q1Finalize {
   {
   }
 
-  // ----- HugeintScaleToDouble (finalize.cpp:~35) -----
-  // Structural while-scale loop as recursive ScaleDiv; then / count.
-
   function Pow10(n: nat): int
     ensures Pow10(n) > 0
   {
     if n == 0 then 1 else 10 * Pow10(n - 1)
-  }
-
-  // Loop body: while scale > 0 { scaled /= 10; scale--; }
-  function ScaleDiv(numeric: real, scale: nat): real
-    decreases scale
-  {
-    if scale == 0 then
-      numeric
-    else
-      ScaleDiv(numeric / 10.0, scale - 1)
-  }
-
-  function HugeintScaleToDouble(value: int, scale: nat, count: nat): real {
-    if count == 0 then
-      0.0
-    else
-      ScaleDiv(value as real, scale) / (count as real)
-  }
-
-  lemma ScaleDivPow10(numeric: real, scale: nat)
-    ensures ScaleDiv(numeric, scale) == numeric / (Pow10(scale) as real)
-    decreases scale
-  {
-    if scale == 0 {
-    } else {
-      ScaleDivPow10(numeric / 10.0, scale - 1);
-      assert Pow10(scale) == 10 * Pow10(scale - 1);
-    }
-  }
-
-  lemma HugeintScaleToDoubleClosedForm(value: int, scale: nat, count: nat)
-    requires count > 0
-    ensures HugeintScaleToDouble(value, scale, count)
-         == (value as real) / (Pow10(scale) as real) / (count as real)
-  {
-    ScaleDivPow10(value as real, scale);
-  }
-
-  lemma HugeintScaleToDoubleZeroCount(value: int, scale: nat)
-    ensures HugeintScaleToDouble(value, scale, 0) == 0.0
-  {
   }
 
   // ----- FinalizeQ1MergedGroups (finalize.cpp:~86) -----
@@ -183,9 +142,9 @@ module Q1Finalize {
     sum_base_price: int,
     sum_disc_price: int,
     sum_charge: int,
-    avg_qty: real,
-    avg_price: real,
-    avg_disc: real,
+    avg_qty: PgNumeric.Decimal,
+    avg_price: PgNumeric.Decimal,
+    avg_disc: PgNumeric.Decimal,
     count_order: int
   )
 
@@ -196,16 +155,15 @@ module Q1Finalize {
     if stats.count <= 0 then
       []
     else
-      var count := stats.count as nat;
       [OutRow(
         gkey,
         stats.sum_qty,
         stats.sum_base_price,
         stats.sum_disc_price,
         stats.sum_charge,
-        HugeintScaleToDouble(stats.sum_qty, kDecimalScale2, count),
-        HugeintScaleToDouble(stats.sum_base_price, kDecimalScale2, count),
-        HugeintScaleToDouble(stats.sum_discount, kDecimalScale2, count),
+        PgNumeric.AvgOfScaledSum(stats.sum_qty, kDecimalScale2, stats.count),
+        PgNumeric.AvgOfScaledSum(stats.sum_base_price, kDecimalScale2, stats.count),
+        PgNumeric.AvgOfScaledSum(stats.sum_discount, kDecimalScale2, stats.count),
         stats.count
       )]
   }
@@ -214,11 +172,11 @@ module Q1Finalize {
     requires stats.count > 0
     ensures |FinalizeOneEntry(gkey, stats)| == 1
     ensures FinalizeOneEntry(gkey, stats)[0].avg_qty
-         == HugeintScaleToDouble(stats.sum_qty, 2, stats.count as nat)
+         == PgNumeric.AvgOfScaledSum(stats.sum_qty, 2, stats.count)
     ensures FinalizeOneEntry(gkey, stats)[0].avg_price
-         == HugeintScaleToDouble(stats.sum_base_price, 2, stats.count as nat)
+         == PgNumeric.AvgOfScaledSum(stats.sum_base_price, 2, stats.count)
     ensures FinalizeOneEntry(gkey, stats)[0].avg_disc
-         == HugeintScaleToDouble(stats.sum_discount, 2, stats.count as nat)
+         == PgNumeric.AvgOfScaledSum(stats.sum_discount, 2, stats.count)
     ensures FinalizeOneEntry(gkey, stats)[0].count_order == stats.count
   {
   }
@@ -264,21 +222,5 @@ module Q1Finalize {
 
   function FinalizeFromEntries(entries: seq<(int, Stats)>): seq<OutRow> {
     SortByKey(CollectFinalize(entries))
-  }
-
-  lemma CollectPreservesAvgs(entries: seq<(int, Stats)>, i: nat)
-    requires i < |entries|
-    requires entries[i].1.count > 0
-    ensures FinalizeOneEntry(entries[i].0, entries[i].1)[0].avg_qty
-         == HugeintScaleToDouble(entries[i].1.sum_qty, 2, entries[i].1.count as nat)
-  {
-  }
-
-  lemma FinalizeAvgsMatchScale(gkey: int, stats: Stats)
-    requires stats.count > 0
-    ensures var row := FinalizeOneEntry(gkey, stats)[0];
-            row.avg_qty == (stats.sum_qty as real) / (Pow10(2) as real) / (stats.count as real)
-  {
-    HugeintScaleToDoubleClosedForm(stats.sum_qty, 2, stats.count as nat);
   }
 }

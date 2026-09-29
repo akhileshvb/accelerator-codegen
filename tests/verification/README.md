@@ -1,7 +1,10 @@
 # Verification (Postgres aux kernels)
 
-How the stages fit together (**FormalSQL → AuxAnswerSpec → FoldTwin → runtime**;
-C++ = RepPhys + finite extract-diff): **[`PIPELINE.md`](PIPELINE.md)**.
+How the stages fit together (**catalog SQL → FormalSQL → RelNode `Eval_Spec`
+(Rocq) → Twin/Aux → runtime sync protocol (Dafny)**; C++ = structural twin +
+finite extract-diff), the same recipe for Q1 and Q21:
+**[`PIPELINE.md`](PIPELINE.md)**, [`q1/CURRENT_THEOREM_TCB.md`](q1/CURRENT_THEOREM_TCB.md),
+[`q21/STAGE3_5_REPORT.md`](q21/STAGE3_5_REPORT.md).
 Logos+FormalSQL pin: [`formalsql/PIN.md`](formalsql/PIN.md).
 **Q1 current theorem / TCB:** [`q1/CURRENT_THEOREM_TCB.md`](q1/CURRENT_THEOREM_TCB.md).
 
@@ -45,16 +48,17 @@ remains the oracle that pins aux behavior to engine SQL.
 
 | Layer | What | Guarantee |
 |-------|------|-----------|
-| [`q1/dafny/Q1Finalize.dfy`](q1/dafny/Q1Finalize.dfy) | finalize.cpp twins + avgs | Unbounded algebra + avg closed form |
+| [`q1/dafny/Q1Finalize.dfy`](q1/dafny/Q1Finalize.dfy) | finalize.cpp twins + avgs | Unbounded algebra; exact avg(numeric) |
 | [`q1/dafny/Q1ModuleTwin.dfy`](q1/dafny/Q1ModuleTwin.dfy) | module.cpp orchestration | Unbounded lemmas over oracles |
 | [`q1/dafny/Q1Aux.dfy`](q1/dafny/Q1Aux.dfy) | Fold/Inv/Compose | Homomorphism / Inv |
 | [`q1/dafny/Q1Maintenance.dfy`](q1/dafny/Q1Maintenance.dfy) | StageMaintenance-class actions | **Inv under maintenance** |
 | [`q1/dafny/Q1MaintenanceEdges.dfy`](q1/dafny/Q1MaintenanceEdges.dfy) | Delete-any, Install/CAS, policy map | **Maintenance edges** |
-| [`q1/dafny/generated/Q1AuxSpec.dfy`](q1/dafny/generated/Q1AuxSpec.dfy) | Shared AuxSpecOps / FoldSpec | Spec side of Twin≡Spec |
-| [`q1/dafny/Q1TwinSpecBridge.dfy`](q1/dafny/Q1TwinSpecBridge.dfy) | TwinOp ≡ SpecOp | FoldTwin = FoldSpec bridge |
+| [`q1/dafny/Q1ExecExact.dfy`](q1/dafny/Q1ExecExact.dfy) | Execute vs RelNode `Eval_Spec` | **Exact** (incl. avg(numeric)) |
+| [`q1/dafny/Q1Runtime.dfy`](q1/dafny/Q1Runtime.dfy) | Runtime hit / fallback, Build / own commit | **Hit ⇒ SQL** under the sync protocol |
+| [`logical/dafny/PgNumeric.dfy`](logical/dafny/PgNumeric.dfy) | PostgreSQL avg(numeric) closed form | Rocq-proved (`NumericAggExact.pg_avg_exact`), cross-tested |
 | [`formalsql/q1/`](formalsql/q1/) | Q1 FormalSQL Box 1 — see [`STATUS.md`](formalsql/q1/STATUS.md) | Obligations + spine facade |
 | [`formalsql/lib/QuerySpineFacade.v`](formalsql/lib/QuerySpineFacade.v) | Generic TFGOP EQuery composition | Reusable FormalSQL spine |
-| [`substrate/dafny/`](substrate/dafny/) | PairInv / SnapshotPinning / ReadHandle | Runtime substrate |
+| [`substrate/dafny/AuxSyncProtocol.dfy`](substrate/dafny/AuxSyncProtocol.dfy) | Cross-backend sync protocol (generic) | Build / own-commit / hit soundness |
 | [`q1/extract/`](q1/extract/) | Dafny C# extract ‖ generated C++ | **Agree on grid D** (not ∀) |
 
 ### Inv under maintenance

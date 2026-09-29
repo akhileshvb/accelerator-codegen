@@ -31,7 +31,7 @@ Instantiate shared lemmas; do **not** copy Q1 inductions wholesale.
 2. Prove normalize recognition (fail-closed).
 3. For each operator in the tree, apply the matching morphism from `PROOF_LIBRARY_INDEX.md`.
 4. Prove only the leaf correspondences (pred/key/contrib/adapt).
-5. Compose to `Eval_Spec(LogicalSpec_QN) ∘ Adapt = AuxAnswerSpec` (or twin target).
+5. State the public theorem Q21-style: FormalSQL outcome = Embed(`Eval_Spec(LogicalSpec_QN)` rows) (see `q1/Q1FinalTheorem.v`, `q21/Q21AllOutcomes.v`); any intermediate group model stays proof-internal.
 6. Lift through maintenance/runtime using shared skeletons.
 7. Update SpecExportCorrect manifest (generic duals) + query bridge pin; never claim presence = equivalence.
 

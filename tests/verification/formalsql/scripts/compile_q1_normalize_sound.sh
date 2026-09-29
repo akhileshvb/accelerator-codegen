@@ -66,8 +66,9 @@ compile_one Q1RelNodeBridge.v
 compile_one Q1NormalizeSound.v
 # Forall-outcomes strengthening (every FormalSQL outcome of q-hat is the same).
 compile_one Q1AllOutcomes.v
+compile_one Q1FinalTheorem.v
 PATTERN='Admitted|(^|[^[:alnum:]_])admit([^[:alnum:]_]|$)|(^|[^[:alnum:]_])give_up([^[:alnum:]_]|$)|(^|[[:space:]])Axiom([[:space:]]|$)'
-if grep -nE "$PATTERN" "$FSQL/lib/PossibleOutcomeDeterminism.v" "$FSQL/q1/Q1AllOutcomes.v"; then
+if grep -nE "$PATTERN" "$FSQL/lib/PossibleOutcomeDeterminism.v" "$FSQL/lib/NumericAggExact.v" "$FSQL/q1/Q1NumericEmbed.v" "$FSQL/q1/Q1AllOutcomes.v" "$FSQL/q1/Q1FinalTheorem.v"; then
   die "unproved obligation marker found"
 fi
 

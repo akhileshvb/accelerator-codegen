@@ -4,7 +4,7 @@
 // Bookkeeping (FinalizeSortFaithful, PartsWellFormed, OrderUnique, BuiltInv from BuildState)
 // is proved — not free TCB. Canonical status:
 //   tests/verification/q1/CURRENT_THEOREM_TCB.md
-// No assume{:axiom}. No C++ change.
+// No assumption statements or axiom attributes. No C++ change.
 
 include "Q1TwinAuxRefinement.dfy"
 include "Q1Maintenance.dfy"

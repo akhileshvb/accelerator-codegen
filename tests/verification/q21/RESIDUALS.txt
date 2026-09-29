@@ -7,13 +7,13 @@
 #
 # See q21/STAGE3_5_REPORT.md for statements, evidence and fixes.
 
-FIXED runtime-E1 multi-backend staleness: shared per-database DSM counters (inflight / seq per table slot, aux_sync.cpp); a store hits only if the statement snapshot covers its build snapshot, sees its own maintained commits, and no dependency writer is in flight or committed since sync. Proof: Q21Runtime.Hit_sound / Build_sound / OwnCommit_sound. Live: runtime/q21_runtime_repro.py E1, E1b.
+FIXED runtime-E1 multi-backend staleness: shared per-database DSM counters (inflight / seq per table slot, aux_sync.cpp); a store hits only if the statement snapshot covers its build snapshot, sees its own maintained commits, and no dependency writer is in flight or committed since sync. Proof: substrate/dafny/AuxSyncProtocol.dfy Hit_sound / Build_sound / OwnCommit_sound (shared with Q1), instantiated by Q21Runtime. Live: runtime/q21_runtime_repro.py E1, E1b.
 FIXED runtime-E2 savepoints: RegisterSubXactCallback -> coordinator {Commit,Abort}SubtransactionAtDepth; mutations are framed by PostgreSQL nest level. Live: repro E2.
 FIXED runtime-E3 build-inside-dirty-txn: Rebuild only in a transaction without an xid and without captured writes, from a fresh snapshot pushed for the whole Build; the dirty flag is no longer cleared by a build; hits are gated by the sync marker (Abort never leaves a certified stale store). Live: repro E3.
 FIXED runtime-E4 TRUNCATE was not captured: AFTER TRUNCATE statement trigger announces the write (cross-backend) and forces the writer's own store to resync. Live: repro E4.
 
 TCB cpp_model: C++ module <-> Dafny Q21ModuleTwin correspondence is structural (SOURCE_MAP in Q21ModuleTwin.dfy) + finite extract-diff (q21_twin_trace / q21_twin_replay) + finite SQL differential; not a universal proof.
-TCB cpp_runtime_model: runtime.cpp Runtime::{Execute,HitAllowed,Rebuild,BeforePreCommit,AfterCommit}, aux_sync.cpp and postgres_xact_callbacks.cpp implement the Q21Runtime.dfy protocol model (reviewed correspondence + live repros/stress incl. two mutants each killed; not a universal proof).
+TCB cpp_runtime_model: runtime.cpp Runtime::{Execute,HitAllowed,Rebuild,BeforePreCommit,AfterCommit}, aux_sync.cpp and postgres_xact_callbacks.cpp implement the AuxSyncProtocol.dfy protocol model (reviewed correspondence + live repros/stress incl. two mutants each killed; not a universal proof).
 TCB cpp_substrate: std::sort with BetterOutputRow sorts correctly; std::map / unordered_map / std::set behave as mathematical maps / sets; int64 counts do not overflow (|lineitem| < 2^63); partition ids are distinct (DomOk: nation keys in [0, 1998999]).
 TCB spec_export_B: Rocq formalsql/logical/Eval.v <-> Dafny logical/dafny/EvalLogicalSpec.dfy interpreter correspondence (pinned, presence-checked; shared with Q1).
 TCB db_embedding: the typed database T the accelerator scans (TpchQ21InitialScan / mutation capture) and the RelNode DB of the Rocq theorems are the same data: ToRel(T); o_orderstatus is a single non-NUL char; strings are byte strings (Dafny chars = bytes, C++ std::string).

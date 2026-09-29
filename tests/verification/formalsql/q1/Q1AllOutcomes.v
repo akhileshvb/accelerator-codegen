@@ -707,6 +707,22 @@ Proof.
     exists (r :: rs); reflexivity.
 Qed.
 
+(** [q1_group_as_aux] plus well-formedness of the chosen rows. *)
+Lemma q1_group_as_aux_ok :
+  forall db delta g,
+    Preconditions_Q1 db delta ->
+    (forall row, In row g -> In row (q1_inner_proj_of db delta)) ->
+    exists rs, g = q1_inner_of_aux rs /\ Forall RowOk_Q1 rs.
+Proof.
+  intros db delta g Hpre; induction g as [|row g IH]; intros Hsub.
+  - exists nil; split; [reflexivity|constructor].
+  - destruct (q1_inner_proj_in_inv db delta row (Hsub row (or_introl eq_refl)))
+      as [r [Hr ->]].
+    destruct IH as [rs [-> Hok]]; [intros; apply Hsub; right; assumption|].
+    exists (r :: rs); split; [reflexivity|].
+    constructor; [exact (q1_filtered_aux_RowOk db delta r Hpre Hr)|exact Hok].
+Qed.
+
 Section Q1GroupOutcomes.
 Variable db : list Q1AuxSpec.Row.
 Variable delta : Z.
@@ -757,9 +773,12 @@ Lemma q1_group_values_respect :
 Proof.
   intros g g' Hg Hgg.
   destruct (q1_rep_group_factor g g' Hg Hgg) as [g'' [HP [HF [Hsub HL]]]].
-  destruct (q1_group_as_aux db delta g
-              (fun row Hrow => query_make_groups_member_in _ _ _ _ _ Hg Hrow)) as [rs Hrs].
+  assert (Hgne : g <> nil)
+    by (eapply query_make_groups_member_nonempty; [exact q1_group_terms_nonempty|exact Hg]).
+  destruct (q1_group_as_aux_ok db delta g Hpre
+              (fun row Hrow => query_make_groups_member_in _ _ _ _ _ Hg Hrow)) as [rs [Hrs Hrs_ok]].
   subst g.
+  assert (Hrs_ne : rs <> nil) by (intro E; apply Hgne; subst rs; reflexivity).
   unfold q1_inner_of_aux in HP.
   destruct (Permutation_map_inv _ _ (Permutation_sym HP)) as [rs'' [Hg'' Hrs]].
   subst g''.
@@ -777,8 +796,12 @@ Proof.
   rewrite !q1_inner_dots_qty_map, !q1_inner_dots_price_map, !q1_inner_dots_f4_map,
     !q1_inner_dots_f5_map, !q1_inner_dots_disc_map.
   unfold q1_inner_of_aux; rewrite !length_map.
-  destruct (Hnum rs) as [A1 [A2 [A3 [A4 [A5 [A6 A7]]]]]].
-  destruct (Hnum rs'') as [B1 [B2 [B3 [B4 [B5 [B6 B7]]]]]].
+  assert (Hrs''_ne : rs'' <> nil)
+    by (intro E; rewrite E in Hrs; apply Hrs_ne; apply Permutation_nil;
+        apply Permutation_sym; exact Hrs).
+  assert (Hrs''_ok : Forall RowOk_Q1 rs'') by exact (Permutation_Forall Hrs Hrs_ok).
+  destruct (Hnum rs Hrs_ne Hrs_ok) as [A1 [A2 [A3 [A4 [A5 [A6 A7]]]]]].
+  destruct (Hnum rs'' Hrs''_ne Hrs''_ok) as [B1 [B2 [B3 [B4 [B5 [B6 B7]]]]]].
   rewrite A1, A2, A3, A4, A5, A6, A7, B1, B2, B3, B4, B5, B6, B7.
   rewrite <- (Permutation_length Hrs).
   rewrite (q1_fold_add_perm _ _ (Permutation_map Q1AuxSpec.qty Hrs)),

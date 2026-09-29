@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full Q1 verification gate (fail closed on Logos / FormalSQL / AuxSpec / Dafny).
+# Full Q1 verification gate (fail closed on Logos / FormalSQL / Rocq / Dafny).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -27,28 +27,30 @@ if ! bash "$ROOT/scripts/logos_lower_catalog.sh" q1; then
   exit 1
 fi
 
-echo "==> [2b] Rocq FormalSQLAuxCorrect / Embed compile"
+echo "==> [2b] Rocq: Q1 group proof, NormalizeSound, Q21-shaped final theorem"
+bash "$ROOT/tests/verification/formalsql/scripts/compile_logical_ir.sh"
 bash "$ROOT/tests/verification/formalsql/scripts/compile_q1_proof.sh"
+bash "$ROOT/tests/verification/formalsql/scripts/compile_q1_normalize_sound.sh"
+bash "$ROOT/tests/verification/formalsql/scripts/check_print_assumptions.sh" q1
 
-echo "==> [3] AuxSpec freshness"
-python3 "$ROOT/tests/verification/auxspec/gen_auxspec.py" --check
+echo "==> [3] PostgreSQL avg(numeric) closed form: Rocq pg_avg_* == Dafny PgNumeric"
+bash "$ROOT/tests/verification/logical/pgnumeric/check_pg_numeric_crossprover.sh"
 
-echo "==> [4] Dafny Twin≡Spec + twins + substrate"
+echo "==> [4] Dafny: twins, Aux, exact Execute vs RelNode Eval_Spec, runtime protocol"
 DAFNY_BIN="$(find_dafny)" || { echo "dafny not found"; exit 1; }
-"$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/generated/Q1AuxSpec.dfy"
-"$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1TwinSpecBridge.dfy"
-"$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1Finalize.dfy"
-"$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1ModuleTwin.dfy"
-"$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1Aux.dfy"
-"$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1TwinAuxRefinement.dfy"
-"$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1TwinAuxClose.dfy"
-"$DAFNY_BIN" verify "$ROOT/tests/verification/substrate/dafny/VersionedPairing.dfy"
-"$DAFNY_BIN" verify "$ROOT/tests/verification/substrate/dafny/SnapshotPinning.dfy"
-"$DAFNY_BIN" verify "$ROOT/tests/verification/substrate/dafny/ReadHandle.dfy"
-"$DAFNY_BIN" verify "$ROOT/tests/verification/q1/dafny/Q1RuntimeAuxCorrect.dfy"
+# `dafny verify` checks only the files named, so every file on the chain is listed.
+for f in logical/dafny/LogicalSpec logical/dafny/EvalLogicalSpec logical/dafny/PgNumeric \
+         substrate/dafny/AuxSyncProtocol \
+         q1/dafny/Q1Finalize q1/dafny/Q1ModuleTwin q1/dafny/Q1Aux q1/dafny/Q1Maintenance \
+         q1/dafny/Q1TwinAuxRefinement q1/dafny/Q1TwinAuxClose q1/dafny/Q1RelNodeSpec \
+         q1/dafny/Q1RelNodeBridge q1/dafny/Q1ResultSpecBridge q1/dafny/Q1ExecExact \
+         q1/dafny/Q1Runtime; do
+  "$DAFNY_BIN" verify "$ROOT/tests/verification/$f.dfy"
+done
 
-echo "==> [5] Existing Q1 induction / extract-diff"
+echo "==> [5] Q1 induction / maintenance edges / exact extract-diff (Dafny twin == C++)"
 bash "$ROOT/scripts/run_dafny_q1_induction.sh"
 
-echo "run_verification_q1: stages that ran completed."
-echo "Composed assurance claim JetStreamFormalSQLCorrect requires Rocq FormalSQLAuxCorrect + Dafny RuntimeAuxCorrect (see PIPELINE.md)."
+echo "run_verification_q1: all stages passed."
+echo "Claim (composed): Rocq NormalizeSound_Q1_rel_all_outcomes (FormalSQL = Embed(Eval_Spec rows))"
+echo "  + Dafny Q1Runtime.Hit_correct_Q1 / Fallback_correct_Q1 (accelerator = Q1Rows(Eval_Spec rows))."

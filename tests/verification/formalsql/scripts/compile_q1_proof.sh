@@ -48,6 +48,7 @@ compile_one lib/AggregateLeafExactFacade.v
 compile_one lib/TemporalPredAcceptanceFacade.v
 compile_one lib/NumericScaledFits.v
 compile_one lib/NumericPackagingFacade.v
+compile_one lib/NumericAggExact.v
 compile_one lib/NumericCallExactFacade.v
 compile_one lib/KeyedSortFacade.v
 compile_one lib/SortedGroupResultFacade.v

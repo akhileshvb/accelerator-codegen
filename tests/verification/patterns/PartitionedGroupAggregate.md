@@ -52,7 +52,7 @@ Inv       = day×key cells = FoldTwin(db)
 | `formalsql/lib/NumericScaledFits.v` | of_scaled / digit-budget | typmod bounds for NUMERIC cells |
 | `formalsql/lib/FilterAcceptanceFacade.v` + `TemporalPredAcceptanceFacade.v` | DATE≤CAST+INTERVAL filter | predicate AST match |
 | `formalsql/resultspec/*` | ResultSpec Data/Eval operators | query Data + Eval instance |
-| `substrate/dafny/SnapshotPinning.dfy` | Hit → Inv snapshot skeleton | query Inv + pin policy |
+| `substrate/dafny/AuxSyncProtocol.dfy` | Cross-backend sync protocol (Build / own commit / hit) | query store invariant + dbof |
 
 ## Maintenance reachability (recipe, not abstracted)
 
