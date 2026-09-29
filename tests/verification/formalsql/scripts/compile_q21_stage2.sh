@@ -59,6 +59,10 @@ compile_one() {
 cd "$FSQL"
 for f in "${PROOF_LIB[@]}"; do compile_one "logical/proof/$f.v"; done
 for f in "${FSQL_LIB[@]}"; do compile_one "lib/$f.v"; done
+# Logos-generated schema / query terms (tracked sources; build them here so
+# the chain never depends on stale or missing .vo files).
+cd "$FSQL/q21/generated"
+for f in Schema Queries; do compile_one "$f.v"; done
 cd "$FSQL/q21"
 for f in "${Q21_CHAIN[@]}"; do compile_one "$f.v"; done
 echo "compile_q21_stage2 OK"
