@@ -2,6 +2,7 @@
 
 Shared proof components extracted from Q1 for reuse on the next accelerator.
 Prefer the existing layout over inventing a parallel tree.
+`CATALOG.json` in this directory is the index the verification driver updates when a proof session finds a lemma later queries can use.
 
 ```text
 formalsql/lib/                 # Rocq GENERIC / FormalSQL leaf facades
@@ -24,5 +25,4 @@ patterns/PartitionedGroupAggregate.md   # recipe + obligations
 substrate/dafny/SnapshotPinning.dfy     # Hit → Inv skeleton
 ```
 
-See also: `../REUSE_LIBRARY_REPORT.md` (inventory, metrics, next-query pick);
-`../q12/Q12_REUSE_REPORT.md` (Q12 reuse measurement).
+See also: [`../q1/CURRENT_THEOREM_TCB.md`](../q1/CURRENT_THEOREM_TCB.md).
