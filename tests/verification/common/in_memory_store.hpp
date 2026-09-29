@@ -8,11 +8,11 @@
 
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
 
-namespace accel_cbmc {
+namespace accel_verify {
 
 using namespace accelerator_codegen::aux_state::core;
 
-// Minimal AuxStateStore for headless CBMC harnesses. ReadPartitions only returns
+// Minimal AuxStateStore for headless extract-diff. ReadPartitions only returns
 // published images (intersection with the request), avoiding work proportional
 // to a full TPC-H day span when the request list is large.
 class InMemoryStore final : public AuxStateStore {
@@ -105,4 +105,4 @@ public:
   bool finished = false;
 };
 
-} // namespace accel_cbmc
+} // namespace accel_verify

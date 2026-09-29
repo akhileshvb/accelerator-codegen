@@ -8,7 +8,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
 
-namespace accel_cbmc {
+namespace accel_verify {
 
 using accelerator_codegen::aux_state::core::AuxRow;
 using accelerator_codegen::aux_state::core::AuxRowSink;
@@ -81,4 +81,4 @@ inline bool IntegerColumnsEqual(const CollectingSink &a,
   return ka == kb;
 }
 
-} // namespace accel_cbmc
+} // namespace accel_verify
