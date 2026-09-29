@@ -26,14 +26,25 @@
 # Rocq Eval.GroupStore (list (keys * Acc)). Physical maps remain for Twin/accel.
 # Module renamed RelEvalLogicalSpec to avoid colliding with q1 flat EvalLogicalSpec.
 #
+# TCB note (text ORDER BY): value_le / ValueLe VText uses byte-lex ≤ under
+# FormalSQL/Logos C collation — see logical/COLLATION_TCB.md.
+#
+# Review 2026-09-29 (Q21 Stage 2/5, re-pin of Eval.v approved by the user):
+#   join_against (lifted from join_inner's local fix; same semantics) <-> JoinAgainst
+#   join_exists_right <-> JoinExistsRight; join_semi_rows <-> JoinSemiRows;
+#   join_anti_rows <-> JoinAntiRows; eval_rel RelSemiJoin/RelAntiJoin <-> EvalRel
+#   (None/NoRows propagation and at-most-once semi-join multiplicity agree);
+#   text_c_leb (ascii byte order) <-> TextCLeb; value_le VText <-> ValueLe VText.
+#   Other pinned sources unchanged.
+#
 # Flat migration pins: interpreter_source_migration_flat.pin
 
 SqlTypes.v=8173ffd7934390fdf28f142513d57728d9a67ebb61b59f8e1c04f4b78d94359d
 Schema.v=f09b8bf9e1db2a09ec9cee7e7a73623b74f605a0301a326fc352add6c681e6de
 Expr.v=6b243db1ed8decc64cec3a9ee4e4969b7080e137807ba67351be1a852d1f8560
 Agg.v=fcc1ec414e34e4944de5a97685d8bbc9bf2b815b676c0ea9ee09efbd5ef37624
-RelNode.v=29ee094e8f802c4c611b0ec1814c1ef78453fc615dcef7d4504d5906826cc0be
-Typing.v=9dfb55180b259f191fc13c07d70494721d6382fa928eb6276cc29f9e96365c71
-Eval.v=f48577d042335874fafec18b54839b54bdf7974179e2f2cd954098fb050fb5d7
-LogicalSpec.dfy=3a7eaa865a6e480616c33d2706ba92275d7089b5a308fde0e55e9e90684d053c
-EvalLogicalSpec.dfy=b117158e9bab06323aae95ea198b6d786f0b680349068f06d816dd59697e0395
+RelNode.v=0af42c55da37a6853edb78dc52f7800398b50e7d057f56b4e38dc051599d6f1e
+Typing.v=23ad1ae59eba077ddd609b862b2a9efa68d1aed55f0f0be63344d5d12df9a3f6
+Eval.v=f89a5c194e7b718fccffd64e3f7cb28135f13f5d78812be462292164f152cf4f
+LogicalSpec.dfy=b0815864531143182c2812f754e4b0552f8e4791f9b99fb0b664367ce61f8b9f
+EvalLogicalSpec.dfy=734a99a3a10089835adf50c8e6538e40730f65f30737cb6cf15d65a8df346e60

@@ -209,24 +209,67 @@ Fixpoint project_agg_rows (es : list Expr) (p : Params)
 
 (** * Join (inner only fully; others fail-closed for now if used) *)
 
+(** Nested-loop against one left row (Dafny dual: [JoinAgainst]). *)
+Fixpoint join_against (cond : Pred) (p : Params)
+    (lrow : Row) (right : list Row) : option (list Row) :=
+  match right with
+  | [] => Some []
+  | rrow :: rs' =>
+      let combined := List.app lrow rrow in
+      match eval_pred_keep cond p combined, join_against cond p lrow rs' with
+      | Some true, Some rest => Some (combined :: rest)
+      | Some false, Some rest => Some rest
+      | _, _ => None
+      end
+  end.
+
 Fixpoint join_inner (cond : Pred) (p : Params)
     (left : list Row) (right : list Row) : option (list Row) :=
   match left with
   | [] => Some []
   | lrow :: ls =>
-      let fix against (rs : list Row) : option (list Row) :=
-        match rs with
-        | [] => Some []
-        | rrow :: rs' =>
-            let combined := List.app lrow rrow in
-            match eval_pred_keep cond p combined, against rs' with
-            | Some true, Some rest => Some (combined :: rest)
-            | Some false, Some rest => Some rest
-            | _, _ => None
-            end
-        end in
-      match against right, join_inner cond p ls right with
+      match join_against cond p lrow right, join_inner cond p ls right with
       | Some here, Some later => Some (List.app here later)
+      | _, _ => None
+      end
+  end.
+
+(** Exists probe: does any right row satisfy [cond] with [lrow]? *)
+Fixpoint join_exists_right (cond : Pred) (p : Params)
+    (lrow : Row) (right : list Row) : option bool :=
+  match right with
+  | [] => Some false
+  | rrow :: rs =>
+      let combined := List.app lrow rrow in
+      match eval_pred_keep cond p combined with
+      | Some true => Some true
+      | Some false => join_exists_right cond p lrow rs
+      | None => None
+      end
+  end.
+
+(** Semi-join: emit each left row at most once (SQL EXISTS multiplicity). *)
+Fixpoint join_semi_rows (cond : Pred) (p : Params)
+    (left : list Row) (right : list Row) : option (list Row) :=
+  match left with
+  | [] => Some []
+  | lrow :: ls =>
+      match join_exists_right cond p lrow right, join_semi_rows cond p ls right with
+      | Some true, Some rest => Some (lrow :: rest)
+      | Some false, Some rest => Some rest
+      | _, _ => None
+      end
+  end.
+
+(** Anti-join: keep left rows with no matching right (SQL NOT EXISTS). *)
+Fixpoint join_anti_rows (cond : Pred) (p : Params)
+    (left : list Row) (right : list Row) : option (list Row) :=
+  match left with
+  | [] => Some []
+  | lrow :: ls =>
+      match join_exists_right cond p lrow right, join_anti_rows cond p ls right with
+      | Some false, Some rest => Some (lrow :: rest)
+      | Some true, Some rest => Some rest
       | _, _ => None
       end
   end.
@@ -420,6 +463,22 @@ Definition agg_bags_to_rows
 
 (** * Sort *)
 
+(** Text ≤ under PostgreSQL UTF8/C collation: lexicographic byte order.
+    Dual of FormalSQL [string_compare] on Rocq byte strings
+    (Values.v: "text comparison is the lexicographic comparison of the
+    encoded bytes"). Documented residual correspondence:
+    formalsql/logical/COLLATION_TCB.md *)
+Fixpoint text_c_leb (a b : string) : bool :=
+  match a, b with
+  | EmptyString, _ => true
+  | String _ _, EmptyString => false
+  | String ca as', String cb bs' =>
+      let na := nat_of_ascii ca in
+      let nb := nat_of_ascii cb in
+      if Nat.eqb na nb then text_c_leb as' bs'
+      else Nat.ltb na nb
+  end.
+
 Definition value_le (nulls : NullOrder) (a b : SqlValue) : option bool :=
   match a, b with
   | VNull, VNull => Some true
@@ -428,6 +487,7 @@ Definition value_le (nulls : NullOrder) (a b : SqlValue) : option bool :=
   | _, VNull =>
       match nulls with NullsFirst => Some false | NullsLast => Some true end
   | VInt x, VInt y => Some (Z.leb x y)
+  | VText x, VText y => Some (text_c_leb x y)
   | _, _ => None
   end.
 
@@ -574,6 +634,24 @@ Fixpoint eval_rel (n : RelNode) (p : Params) (db : DB) : option RelVal :=
           | _, _ => None
           end
       | _ => None  (* outer joins: fail-closed until proved *)
+      end
+  | RelSemiJoin lft rgt cond =>
+      match eval_rel lft p db, eval_rel rgt p db with
+      | Some (RVRows ls), Some (RVRows rs) =>
+          match join_semi_rows cond p ls rs with
+          | Some out => Some (RVRows out)
+          | None => None
+          end
+      | _, _ => None
+      end
+  | RelAntiJoin lft rgt cond =>
+      match eval_rel lft p db, eval_rel rgt p db with
+      | Some (RVRows ls), Some (RVRows rs) =>
+          match join_anti_rows cond p ls rs with
+          | Some out => Some (RVRows out)
+          | None => None
+          end
+      | _, _ => None
       end
   | RelAggregate input gkeys aggs =>
       match eval_rel input p db with

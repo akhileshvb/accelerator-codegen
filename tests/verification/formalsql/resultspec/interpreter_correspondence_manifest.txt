@@ -27,6 +27,10 @@ filter_rows      FilterRows
 eval_exprs       EvalExprs
 project_rows     ProjectRows
 project_agg_rows ProjectAggRows
+join_inner       JoinInnerRows
+join_exists_right JoinExistsRight
+join_semi_rows   JoinSemiRows
+join_anti_rows   JoinAntiRows
 aggs_contrib     AggsContrib
 acc_add_one      AccAddOne
 acc_add_row      AccAddRow
@@ -34,6 +38,7 @@ store_add_row    StoreAddRow
 fold_groups      FoldGroups
 finalize_acc     FinalizeAcc
 run_aggregate    RunAggregate
+text_c_leb       TextCLeb
 result_row_sort  ResultRowSort
 eval_rel         EvalRel
 Eval_Spec        Eval_Spec

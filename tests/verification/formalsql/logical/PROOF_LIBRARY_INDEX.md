@@ -13,6 +13,18 @@ Prefer FormalSQLLib facades and `logical/proof/Morphisms.v` patterns; leave Pack
 |------|----------|----------|--------|------|
 | ListNoDupFacade | unique keys / order | list props | NoDup preservation | `formalsql/lib/ListNoDupFacade.v` |
 | Permutation bags | reorder-invariant claims | Permutation | bag equality | Stdlib + query leaves |
+| BagRel (Forall2) | RelNode↔RelNode ordered bag | row relation R | exact multiplicity + order | `logical/proof/SlotMap.v` (re-export Morphisms) |
+| bag_correspond (Forall2) | ordered FormalSQL↔RelNode bags | row_correspond | exact multiplicity + order | `logical/proof/SlotMap.v` |
+| bag_correspond_unordered | pre-ORDER-BY FormalSQL↔RelNode bags | Permutation + Forall2 row_correspond | exact multiplicity; order not semantic | `logical/proof/SlotMap.v` |
+
+## FormalSQL → RelNode translation (verified fragment)
+
+| Name | USE WHEN | REQUIRES | PROVES | FILE |
+|------|----------|----------|--------|------|
+| value_correspond | scalar FormalSQL↔SqlValue | supported ty only | value eq | `logical/proof/ValueCorrespond.v` |
+| SlotMap_wf / row_correspond | schema-directed slots | name+type WF | slot i ↔ formal attr | `logical/proof/SlotMap.v` |
+| bag_correspond | table bags | Forall2 row_correspond | exact multiplicity | `logical/proof/SlotMap.v` |
+| FormalSQL_RelNode_ScanCorrespond | table scan bridge | SlotMap_wf + embed + sort | RelScan ≡ FormalSQL Table bag | `logical/proof/ScanCorrespond.v` |
 
 ## Filter
 
@@ -33,6 +45,8 @@ Prefer FormalSQLLib facades and `logical/proof/Morphisms.v` patterns; leave Pack
 | Name | USE WHEN | REQUIRES | PROVES | FILE |
 |------|----------|----------|--------|------|
 | JoinMorphism | join bags correspond | RelL/RelR + cond | BagRel(join,join) | `logical/proof/Morphisms.v` |
+| SemiJoinMorphism | EXISTS / semi bags | outer+right cond | BagRel(semi,semi) once-per-outer | `logical/proof/Morphisms.v` |
+| AntiJoinMorphism | NOT EXISTS / anti | outer+right cond | BagRel(anti,anti) | `logical/proof/Morphisms.v` |
 | (Q1) | Q1 has no join | — | — | — |
 
 ## Aggregate / group-by / fold

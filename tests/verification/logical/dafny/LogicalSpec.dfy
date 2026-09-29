@@ -55,6 +55,10 @@ module LogicalSpec {
     | RelFilter(input: RelNode, pred: Pred)
     | RelProject(input: RelNode, exprs: seq<Expr>)
     | RelJoin(kind: JoinKind, lft: RelNode, rgt: RelNode, cond: Pred)
+    // Semi/Anti: EXISTS / NOT EXISTS fragment. Output = left schema.
+    // cond typed over left++right slots; Semi keeps each left row at most once.
+    | RelSemiJoin(lft: RelNode, rgt: RelNode, cond: Pred)
+    | RelAntiJoin(lft: RelNode, rgt: RelNode, cond: Pred)
     | RelAggregate(input: RelNode, groupExprs: seq<Expr>, aggs: seq<AggSpec>)
     | RelSort(input: RelNode, orderKeys: seq<OrderKey>)
     | RelDistinct(input: RelNode)

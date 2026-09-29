@@ -55,6 +55,11 @@ Inductive RelNode : Type :=
 | RelFilter (input : RelNode) (pred : Pred)
 | RelProject (input : RelNode) (exprs : list Expr)
 | RelJoin (kind : JoinKind) (lft rgt : RelNode) (cond : Pred)
+(** Semi/Anti: EXISTS / NOT EXISTS fragment.
+    Output schema = left schema. [cond] is typed over left++right slots.
+    Semi emits each left row at most once (SQL EXISTS multiplicity). *)
+| RelSemiJoin (lft rgt : RelNode) (cond : Pred)
+| RelAntiJoin (lft rgt : RelNode) (cond : Pred)
 | RelAggregate (input : RelNode) (group_exprs : list Expr) (aggs : list AggSpec)
 | RelSort (input : RelNode) (order_keys : list OrderKey)
 | RelDistinct (input : RelNode)
@@ -81,6 +86,9 @@ Fixpoint rel_eqb (a b : RelNode) : bool :=
       andb (join_kind_eqb k1 k2)
       (andb (rel_eqb l1 l2)
       (andb (rel_eqb r1 r2) (pred_eqb c1 c2)))
+  | RelSemiJoin l1 r1 c1, RelSemiJoin l2 r2 c2
+  | RelAntiJoin l1 r1 c1, RelAntiJoin l2 r2 c2 =>
+      andb (rel_eqb l1 l2) (andb (rel_eqb r1 r2) (pred_eqb c1 c2))
   | RelAggregate i1 g1 a1, RelAggregate i2 g2 a2 =>
       andb (rel_eqb i1 i2)
       (andb (list_eqb expr_eqb g1 g2) (list_eqb agg_eqb a1 a2))

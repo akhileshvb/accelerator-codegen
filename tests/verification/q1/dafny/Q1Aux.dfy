@@ -1,13 +1,19 @@
 // Q1 aggregate algebra — FoldTwin / Inv / View lemmas.
 //
-// FoldTwin iterates twin primitives (ApplyDelta from Q1Finalize twins).
+// FoldTwin / Inv justification (Phase 0b): Twin-derived meaning is
+//   FoldTwinFromTwin(t) := Flatten(Twin.ApplyDeltaSeq(Empty, RowsToInsertDeltas(t)))
+// proved equal to FoldTwin in Q1TwinAuxRefinement.dfy when that module verifies.
+// Apply/Stats here are field-isomorphic to Q1Finalize (kept local so Aux proofs
+// need not import ModuleTwin). TwinAuxRel is representation-only (Flatten);
+// Inv(store,D) := store == FoldTwin(D) stays separate.
+//
 // FoldSpec / AuxAnswerSpec live in generated/Q1AuxSpec.dfy; prove
 // TwinOp ≡ SpecOp then FoldTwin = FoldSpec (see Q1TwinSpecBridge.dfy).
 //
 // Apply/Merge equations match Q1Finalize structural twins and
 // src/generated/tpch/q1/postgres/aux/finalize.cpp.
 // Prefer Q1Finalize.dfy as the artifact-facing twin; this module keeps the
-// inductive Fold/Inv/Compose development used by early POC lemmas.
+// inductive Fold/Inv/Compose development used by ExecCorrect.
 //
 // Model uses unbounded Dafny `int`. C++ __int128 overflow is outside this
 // model; extract-diff uses TPC-H-ish grid D so observed C++ matches.
@@ -666,6 +672,81 @@ module Q1Aux {
   lemma ComposeEmpty(cutoff: int)
     ensures Compose([], cutoff) == map[]
   {
+  }
+
+  // ----- Per-group filtered contribution (= Compose cell) -----
+
+  ghost function FilteredContrib(t: seq<Row>, cutoff: int, g: int): Stats
+    requires RowsOk(t)
+    decreases |t|
+  {
+    if |t| == 0 then
+      EmptyStats()
+    else
+      var prev := FilteredContrib(t[..|t| - 1], cutoff, g);
+      var r := t[|t| - 1];
+      if r.shipdate <= cutoff && RowKey(r) == g then
+        ApplyRow(prev, r, 1)
+      else
+        prev
+  }
+
+  lemma FilteredContrib_step(t: seq<Row>, r: Row, cutoff: int, g: int)
+    requires RowsOk(t)
+    requires 0 <= r.rf < 256 && 0 <= r.ls < 256
+    ensures (r.shipdate <= cutoff && RowKey(r) == g) ==>
+              (FilteredContrib(t + [r], cutoff, g)
+               == ApplyRow(FilteredContrib(t, cutoff, g), r, 1))
+    ensures !(r.shipdate <= cutoff && RowKey(r) == g) ==>
+              (FilteredContrib(t + [r], cutoff, g)
+               == FilteredContrib(t, cutoff, g))
+  {
+    assert (t + [r])[..|t|] == t;
+    assert (t + [r])[|t|] == r;
+  }
+
+  lemma FilteredContrib_count_nonneg(t: seq<Row>, cutoff: int, g: int)
+    requires RowsOk(t)
+    ensures FilteredContrib(t, cutoff, g).count >= 0
+    decreases |t|
+  {
+    if |t| == 0 {
+    } else {
+      FilteredContrib_count_nonneg(t[..|t| - 1], cutoff, g);
+    }
+  }
+
+  // Compose KeyStore cells are exactly FilteredContrib (Qed).
+  // Remaining to ComposeOutput ≡ Finalize∘Compose: merge Flatten cells across
+  // days into FilteredContrib, and Twin ComposeMergeDays ≡ that merge (a).
+  lemma Compose_GetKey_eq_FilteredContrib(t: seq<Row>, cutoff: int, g: int)
+    requires RowsOk(t)
+    ensures GetKey(Compose(t, cutoff), g) == FilteredContrib(t, cutoff, g)
+    ensures g in Compose(t, cutoff) <==> FilteredContrib(t, cutoff, g).count > 0
+    decreases |t|
+  {
+    if |t| == 0 {
+    } else {
+      var pref := t[..|t| - 1];
+      var r := t[|t| - 1];
+      assert t == pref + [r];
+      Compose_GetKey_eq_FilteredContrib(pref, cutoff, g);
+      ComposeStep(pref, r, cutoff);
+      FilteredContrib_step(pref, r, cutoff, g);
+      FilteredContrib_count_nonneg(pref, cutoff, g);
+      if r.shipdate <= cutoff {
+        var m0 := Compose(pref, cutoff);
+        assert Compose(t, cutoff) == ApplyDeltaKey(m0, r, 1);
+        if RowKey(r) == g {
+          assert GetKey(Compose(t, cutoff), g)
+              == ApplyRow(GetKey(m0, g), r, 1);
+        } else {
+          assert GetKey(Compose(t, cutoff), g) == GetKey(m0, g);
+        }
+      } else {
+        assert Compose(t, cutoff) == Compose(pref, cutoff);
+      }
+    }
   }
 
 }

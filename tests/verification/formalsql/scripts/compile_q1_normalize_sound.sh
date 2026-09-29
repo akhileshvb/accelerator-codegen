@@ -54,6 +54,7 @@ compile_one logical/Agg.v
 compile_one logical/RelNode.v
 compile_one logical/Typing.v
 compile_one logical/Eval.v
+compile_one lib/PossibleOutcomeDeterminism.v
 cd "$FSQL/q1"
 compile_one Q1ResultSpecNormalize.v
 compile_one Q1LogicalNormalize.v
@@ -63,5 +64,11 @@ compile_one Q1LogicalSpecTree.v
 compile_one Q1Adapt.v
 compile_one Q1RelNodeBridge.v
 compile_one Q1NormalizeSound.v
+# Forall-outcomes strengthening (every FormalSQL outcome of q-hat is the same).
+compile_one Q1AllOutcomes.v
+PATTERN='Admitted|(^|[^[:alnum:]_])admit([^[:alnum:]_]|$)|(^|[^[:alnum:]_])give_up([^[:alnum:]_]|$)|(^|[[:space:]])Axiom([[:space:]]|$)'
+if grep -nE "$PATTERN" "$FSQL/lib/PossibleOutcomeDeterminism.v" "$FSQL/q1/Q1AllOutcomes.v"; then
+  die "unproved obligation marker found"
+fi
 
 echo "compile_q1_normalize_sound OK (NORMALIZE_SOUND_OK)"

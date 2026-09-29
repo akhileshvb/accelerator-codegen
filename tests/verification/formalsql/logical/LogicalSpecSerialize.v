@@ -162,6 +162,14 @@ Fixpoint rel_to_json (n : RelNode) : string :=
       ++ ",""left"":" ++ rel_to_json l
       ++ ",""right"":" ++ rel_to_json r
       ++ ",""cond"":" ++ expr_to_json c ++ "}"
+  | RelSemiJoin l r c =>
+      "{""kind"":""semi_join"",""left"":" ++ rel_to_json l
+      ++ ",""right"":" ++ rel_to_json r
+      ++ ",""cond"":" ++ expr_to_json c ++ "}"
+  | RelAntiJoin l r c =>
+      "{""kind"":""anti_join"",""left"":" ++ rel_to_json l
+      ++ ",""right"":" ++ rel_to_json r
+      ++ ",""cond"":" ++ expr_to_json c ++ "}"
   | RelAggregate inn gs as_ =>
       "{""kind"":""aggregate"",""input"":" ++ rel_to_json inn
       ++ ",""group_exprs"":" ++ list_to_json expr_to_json gs

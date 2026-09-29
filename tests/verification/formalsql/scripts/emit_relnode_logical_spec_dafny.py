@@ -183,7 +183,30 @@ def emit_rel(n: dict) -> str:
             f"{int(n['offset'])}, {int(n['count'])})"
         )
     if kind == "join":
-        die("RelJoin not required for Q1 RelNode DATA this pass")
+        jk = n.get("join_kind", "inner")
+        kind_map = {
+            "inner": "JoinInner",
+            "left": "JoinLeft",
+            "right": "JoinRight",
+            "full": "JoinFull",
+            "cross": "JoinCross",
+        }
+        if jk not in kind_map:
+            die(f"unsupported join_kind {jk!r}")
+        return (
+            f"RelJoin({kind_map[jk]}, {emit_rel(n['left'])}, "
+            f"{emit_rel(n['right'])}, {emit_expr(n['cond'])})"
+        )
+    if kind == "semi_join":
+        return (
+            f"RelSemiJoin({emit_rel(n['left'])}, {emit_rel(n['right'])}, "
+            f"{emit_expr(n['cond'])})"
+        )
+    if kind == "anti_join":
+        return (
+            f"RelAntiJoin({emit_rel(n['left'])}, {emit_rel(n['right'])}, "
+            f"{emit_expr(n['cond'])})"
+        )
     die(f"unsupported rel kind {kind!r}")
 
 

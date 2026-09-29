@@ -42,6 +42,9 @@ compile_one logical/RelNode.v
 compile_one logical/LogicalSpecSerialize.v
 compile_one logical/Typing.v
 compile_one logical/Eval.v
+compile_one logical/proof/ValueCorrespond.v
+compile_one logical/proof/SlotMap.v
+compile_one logical/proof/ScanCorrespond.v
 compile_one logical/proof/Morphisms.v
 compile_one generated/Q1AuxSpec.v
 # QueryResultSpec provides cutoff_Q1 / q1_base_date for RelNode DATA export.

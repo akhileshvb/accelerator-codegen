@@ -1,0 +1,60 @@
+{
+  "entries": [
+    {
+      "name": "ListNoDupFacade",
+      "kind": "reusable",
+      "path": "tests/verification/formalsql/lib/ListNoDupFacade.v",
+      "prover": "rocq",
+      "source_query": "q1",
+      "generalizes": "list uniqueness and filter facts used by group-bag proofs"
+    },
+    {
+      "name": "KeyedSortFacade",
+      "kind": "reusable",
+      "path": "tests/verification/formalsql/lib/KeyedSortFacade.v",
+      "prover": "rocq",
+      "source_query": "q1",
+      "generalizes": "equal bags that are sorted under a local order are equal"
+    },
+    {
+      "name": "SortedGroupResultFacade",
+      "kind": "reusable",
+      "path": "tests/verification/formalsql/lib/SortedGroupResultFacade.v",
+      "prover": "rocq",
+      "source_query": "q1",
+      "generalizes": "permutation plus local order yields a unique sorted group observation"
+    },
+    {
+      "name": "AggregateLeafExactFacade",
+      "kind": "reusable",
+      "path": "tests/verification/formalsql/lib/AggregateLeafExactFacade.v",
+      "prover": "rocq",
+      "source_query": "q1",
+      "generalizes": "COUNT, SUM, and fixed AVG leaf exactness"
+    },
+    {
+      "name": "SortedUniqueMap",
+      "kind": "reusable",
+      "path": "tests/verification/patterns/dafny/SortedUniqueMap.dfy",
+      "prover": "dafny",
+      "source_query": "q1",
+      "generalizes": "same map yields the same sorted key sequence"
+    },
+    {
+      "name": "PartitionedGroupAggregate",
+      "kind": "reusable",
+      "path": "tests/verification/patterns/PartitionedGroupAggregate.md",
+      "prover": "dafny",
+      "source_query": "q1",
+      "generalizes": "partitioned grouped-aggregate invariant, fold, and maintenance recipe"
+    },
+    {
+      "name": "SnapshotPinning",
+      "kind": "reusable",
+      "path": "tests/verification/substrate/dafny/SnapshotPinning.dfy",
+      "prover": "dafny",
+      "source_query": "q1",
+      "generalizes": "snapshot token implies the accelerator sees the pinned database"
+    }
+  ]
+}

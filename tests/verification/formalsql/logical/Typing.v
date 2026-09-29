@@ -163,6 +163,14 @@ Fixpoint infer_schema (cat : Catalog) (n : RelNode) : option Schema :=
           if type_pred (TyRow s) cond then Some s else None
       | _, _ => None
       end
+  | RelSemiJoin lft rgt cond | RelAntiJoin lft rgt cond =>
+      (* Output = left schema; cond sees left++right slots. *)
+      match infer_schema cat lft, infer_schema cat rgt with
+      | Some sl, Some sr =>
+          let s := List.app sl sr in
+          if type_pred (TyRow s) cond then Some sl else None
+      | _, _ => None
+      end
   | RelAggregate input g ags =>
       match infer_schema cat input with
       | None => None

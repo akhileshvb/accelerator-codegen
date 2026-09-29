@@ -282,6 +282,45 @@ module RelEvalLogicalSpec {
       else SomeRows(here.rs + later.rs)
   }
 
+  // Exists probe: any right row satisfying cond with lrow?
+  ghost function JoinExistsRight(cond: Pred, p: Params, lrow: Row, right: seq<Row>): OptBool
+    decreases |right|
+  {
+    if |right| == 0 then SomeBool(false)
+    else
+      var combined := lrow + right[0];
+      var keep := EvalPredKeep(cond, p, combined);
+      if keep.NoBool? then NoBool
+      else if keep.b then SomeBool(true)
+      else JoinExistsRight(cond, p, lrow, right[1..])
+  }
+
+  // Semi-join: each left row at most once (SQL EXISTS multiplicity).
+  ghost function JoinSemiRows(cond: Pred, p: Params, left: seq<Row>, right: seq<Row>): OptRows
+    decreases |left|
+  {
+    if |left| == 0 then SomeRows([])
+    else
+      var hit := JoinExistsRight(cond, p, left[0], right);
+      var later := JoinSemiRows(cond, p, left[1..], right);
+      if hit.NoBool? || later.NoRows? then NoRows
+      else if hit.b then SomeRows([left[0]] + later.rs)
+      else SomeRows(later.rs)
+  }
+
+  // Anti-join: keep left rows with no matching right (SQL NOT EXISTS).
+  ghost function JoinAntiRows(cond: Pred, p: Params, left: seq<Row>, right: seq<Row>): OptRows
+    decreases |left|
+  {
+    if |left| == 0 then SomeRows([])
+    else
+      var hit := JoinExistsRight(cond, p, left[0], right);
+      var later := JoinAntiRows(cond, p, left[1..], right);
+      if hit.NoBool? || later.NoRows? then NoRows
+      else if hit.b then SomeRows(later.rs)
+      else SomeRows([left[0]] + later.rs)
+  }
+
   ghost function EmptyAcc(n: nat): AggAcc
     decreases n
   {
@@ -653,12 +692,24 @@ module RelEvalLogicalSpec {
     FoldGroups_preserves_unique(aggs, gkeys, p, rs, []);
   }
 
+  // Byte-lexicographic ≤ — dual of Rocq text_c_leb / FormalSQL string_compare
+  // under PostgreSQL UTF8/C collation (see formalsql/logical/COLLATION_TCB.md).
+  ghost function TextCLeb(a: string, b: string): bool
+    decreases |a| + |b|
+  {
+    if |a| == 0 then true
+    else if |b| == 0 then false
+    else if a[0] == b[0] then TextCLeb(a[1..], b[1..])
+    else a[0] as int < b[0] as int
+  }
+
   ghost function ValueLe(nulls: NullOrder, a: SqlValue, b: SqlValue): OptBool
   {
     if a.VNull? && b.VNull? then SomeBool(true)
     else if a.VNull? then SomeBool(nulls == NullsFirst)
     else if b.VNull? then SomeBool(nulls == NullsLast)
     else if a.VInt? && b.VInt? then SomeBool(a.z <= b.z)
+    else if a.VText? && b.VText? then SomeBool(TextCLeb(a.s, b.s))
     else NoBool
   }
 
@@ -768,6 +819,20 @@ module RelEvalLogicalSpec {
           var j := JoinInnerRows(cond, p, L.v.rs, R.v.rs);
           if j.SomeRows? then SomeRel(RVRows(j.rs)) else NoRel
       else NoRel
+    else if n.RelSemiJoin? then
+      var L := EvalRel(n.lft, p, db);
+      var R := EvalRel(n.rgt, p, db);
+      if !(L.SomeRel? && L.v.RVRows? && R.SomeRel? && R.v.RVRows?) then NoRel
+      else
+        var j := JoinSemiRows(n.cond, p, L.v.rs, R.v.rs);
+        if j.SomeRows? then SomeRel(RVRows(j.rs)) else NoRel
+    else if n.RelAntiJoin? then
+      var L := EvalRel(n.lft, p, db);
+      var R := EvalRel(n.rgt, p, db);
+      if !(L.SomeRel? && L.v.RVRows? && R.SomeRel? && R.v.RVRows?) then NoRel
+      else
+        var j := JoinAntiRows(n.cond, p, L.v.rs, R.v.rs);
+        if j.SomeRows? then SomeRel(RVRows(j.rs)) else NoRel
     else if n.RelAggregate? then
       var inn := EvalRel(n.input, p, db);
       if !(inn.SomeRel? && inn.v.RVRows?) then NoRel

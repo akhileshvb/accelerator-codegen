@@ -1,0 +1,318 @@
+{
+  "authority": "rocq_serialize_LogicalSpec_Q21_rel_json",
+  "query": "q21",
+  "export": {
+    "version": "logical_spec_relnode_v1",
+    "query": "q21",
+    "param_nation_name": "nation_name",
+    "catalog_nation_name": "SAUDI ARABIA",
+    "outer_width": 11,
+    "slot_map": {
+      "s_suppkey": 0,
+      "s_name": 1,
+      "s_nationkey": 2,
+      "l1_orderkey": 3,
+      "l1_suppkey": 4,
+      "l1_commitdate": 5,
+      "l1_receiptdate": 6,
+      "o_orderkey": 7,
+      "o_orderstatus": 8,
+      "n_nationkey": 9,
+      "n_name": 10,
+      "r_orderkey": 11,
+      "r_suppkey": 12
+    },
+    "group_exprs": [
+      {
+        "kind": "input_ref",
+        "slot": 1
+      }
+    ],
+    "aggs": [
+      {
+        "kind": "count_star"
+      }
+    ],
+    "project_exprs": [
+      {
+        "kind": "group_ref",
+        "i": 0
+      },
+      {
+        "kind": "agg_ref",
+        "i": 0
+      }
+    ],
+    "order_keys": [
+      {
+        "expr": {
+          "kind": "input_ref",
+          "slot": 1
+        },
+        "dir": "desc",
+        "nulls": "first"
+      },
+      {
+        "expr": {
+          "kind": "input_ref",
+          "slot": 0
+        },
+        "dir": "asc",
+        "nulls": "last"
+      }
+    ],
+    "tree": {
+      "kind": "sort",
+      "input": {
+        "kind": "project",
+        "input": {
+          "kind": "aggregate",
+          "input": {
+            "kind": "anti_join",
+            "left": {
+              "kind": "semi_join",
+              "left": {
+                "kind": "filter",
+                "input": {
+                  "kind": "join",
+                  "join_kind": "inner",
+                  "left": {
+                    "kind": "join",
+                    "join_kind": "inner",
+                    "left": {
+                      "kind": "join",
+                      "join_kind": "inner",
+                      "left": {
+                        "kind": "scan",
+                        "table": "supplier"
+                      },
+                      "right": {
+                        "kind": "scan",
+                        "table": "lineitem"
+                      },
+                      "cond": {
+                        "kind": "binary",
+                        "op": "eq",
+                        "left": {
+                          "kind": "input_ref",
+                          "slot": 0
+                        },
+                        "right": {
+                          "kind": "input_ref",
+                          "slot": 4
+                        }
+                      }
+                    },
+                    "right": {
+                      "kind": "scan",
+                      "table": "orders"
+                    },
+                    "cond": {
+                      "kind": "binary",
+                      "op": "eq",
+                      "left": {
+                        "kind": "input_ref",
+                        "slot": 3
+                      },
+                      "right": {
+                        "kind": "input_ref",
+                        "slot": 7
+                      }
+                    }
+                  },
+                  "right": {
+                    "kind": "scan",
+                    "table": "nation"
+                  },
+                  "cond": {
+                    "kind": "binary",
+                    "op": "eq",
+                    "left": {
+                      "kind": "input_ref",
+                      "slot": 2
+                    },
+                    "right": {
+                      "kind": "input_ref",
+                      "slot": 9
+                    }
+                  }
+                },
+                "pred": {
+                  "kind": "binary",
+                  "op": "and",
+                  "left": {
+                    "kind": "binary",
+                    "op": "eq",
+                    "left": {
+                      "kind": "input_ref",
+                      "slot": 8
+                    },
+                    "right": {
+                      "kind": "const",
+                      "value": {
+                        "kind": "text",
+                        "value": "F"
+                      },
+                      "ty": {
+                        "kind": "text"
+                      }
+                    }
+                  },
+                  "right": {
+                    "kind": "binary",
+                    "op": "and",
+                    "left": {
+                      "kind": "binary",
+                      "op": "gt",
+                      "left": {
+                        "kind": "input_ref",
+                        "slot": 6
+                      },
+                      "right": {
+                        "kind": "input_ref",
+                        "slot": 5
+                      }
+                    },
+                    "right": {
+                      "kind": "binary",
+                      "op": "eq",
+                      "left": {
+                        "kind": "input_ref",
+                        "slot": 10
+                      },
+                      "right": {
+                        "kind": "param",
+                        "id": "nation_name",
+                        "ty": {
+                          "kind": "text"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "right": {
+                "kind": "scan",
+                "table": "lineitem"
+              },
+              "cond": {
+                "kind": "binary",
+                "op": "and",
+                "left": {
+                  "kind": "binary",
+                  "op": "eq",
+                  "left": {
+                    "kind": "input_ref",
+                    "slot": 3
+                  },
+                  "right": {
+                    "kind": "input_ref",
+                    "slot": 11
+                  }
+                },
+                "right": {
+                  "kind": "binary",
+                  "op": "ne",
+                  "left": {
+                    "kind": "input_ref",
+                    "slot": 4
+                  },
+                  "right": {
+                    "kind": "input_ref",
+                    "slot": 12
+                  }
+                }
+              }
+            },
+            "right": {
+              "kind": "filter",
+              "input": {
+                "kind": "scan",
+                "table": "lineitem"
+              },
+              "pred": {
+                "kind": "binary",
+                "op": "gt",
+                "left": {
+                  "kind": "input_ref",
+                  "slot": 3
+                },
+                "right": {
+                  "kind": "input_ref",
+                  "slot": 2
+                }
+              }
+            },
+            "cond": {
+              "kind": "binary",
+              "op": "and",
+              "left": {
+                "kind": "binary",
+                "op": "eq",
+                "left": {
+                  "kind": "input_ref",
+                  "slot": 3
+                },
+                "right": {
+                  "kind": "input_ref",
+                  "slot": 11
+                }
+              },
+              "right": {
+                "kind": "binary",
+                "op": "ne",
+                "left": {
+                  "kind": "input_ref",
+                  "slot": 4
+                },
+                "right": {
+                  "kind": "input_ref",
+                  "slot": 12
+                }
+              }
+            }
+          },
+          "group_exprs": [
+            {
+              "kind": "input_ref",
+              "slot": 1
+            }
+          ],
+          "aggs": [
+            {
+              "kind": "count_star"
+            }
+          ]
+        },
+        "exprs": [
+          {
+            "kind": "group_ref",
+            "i": 0
+          },
+          {
+            "kind": "agg_ref",
+            "i": 0
+          }
+        ]
+      },
+      "order_keys": [
+        {
+          "expr": {
+            "kind": "input_ref",
+            "slot": 1
+          },
+          "dir": "desc",
+          "nulls": "first"
+        },
+        {
+          "expr": {
+            "kind": "input_ref",
+            "slot": 0
+          },
+          "dir": "asc",
+          "nulls": "last"
+        }
+      ]
+    }
+  }
+}

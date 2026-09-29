@@ -86,6 +86,8 @@ RelScan
 RelFilter
 RelProject
 RelJoin
+RelSemiJoin
+RelAntiJoin
 RelAggregate
 RelSort
 RelDistinct
