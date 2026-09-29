@@ -56,3 +56,8 @@ tests/verification/formalsql/**/logos_lower_report.json
 # Rocq lia/nia tactic caches (regenerated on compile)
 .lia.cache
 .nia.cache
+
+# Local toolchain drop (Logos + Rocq opam switch), Codex homes, scratch output
+third_party/
+pipeline/.codex/
+tmp/
