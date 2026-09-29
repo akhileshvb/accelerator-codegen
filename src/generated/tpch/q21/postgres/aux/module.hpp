@@ -201,6 +201,10 @@ bool DecodeTpchQ21NationNameIndex(const std::vector<uint8_t> &bytes,
 bool DecodeTpchQ21Nation(const std::vector<uint8_t> &bytes, int32_t nationkey,
                           TpchQ21State &state);
 
+// Exposed for extract-diff / verification (used by module.cpp build/repair).
+std::unordered_map<int64_t, int64_t>
+TpchQ21ComputeOrderContributions(const OrderSummary &order);
+
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ21TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -257,7 +261,9 @@ public:
 
 private:
   TpchQ21State BuildState(core::AuxEngineServices &services) const;
+  // ReadHit: caller must pass the same VisibilityToken pinned in Execute.
   bool LoadStateForNations(core::AuxEngineServices &services,
+                            const core::VisibilityToken &visibility,
                             const std::vector<int32_t> &nationkeys,
                             TpchQ21State &state) const;
   void EmitResult(const TpchQ21State &state,

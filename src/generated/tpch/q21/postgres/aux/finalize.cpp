@@ -1,6 +1,8 @@
 #include "tpch/q21/postgres/aux/module.hpp"
 
 #include <algorithm>
+#include <map>
+#include <string>
 #include <vector>
 
 namespace accelerator_codegen::aux_state::query {
@@ -30,6 +32,13 @@ void TpchQ21FinalizeAndEmit(const TpchQ21State &state,
     }
   }
 
+  // GROUP BY s_name: suppliers sharing a name form one group.
+  std::map<std::string, int64_t> by_name;
+  for (const auto &row : output_rows)
+    by_name[row.name] += row.numwait;
+  output_rows.clear();
+  for (auto &[name, numwait] : by_name)
+    output_rows.push_back({name, numwait});
   std::sort(output_rows.begin(), output_rows.end(), TpchQ21BetterOutputRow);
 
   sink.Begin(core::OutputSchema{});
