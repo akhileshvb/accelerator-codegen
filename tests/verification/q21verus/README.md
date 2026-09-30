@@ -9,7 +9,8 @@ It uses Verus only: no Logos/FormalSQL, Rocq, or Dafny.
 |---|---|---|
 | q_ref (the SQL's meaning) | [`src/verus/q21/src/spec.rs`](../../../src/verus/q21/src/spec.rs) + `bytes_lt` in `common/src/bytes.rs` | **Trusted**: reviewed against the SQL |
 | Shared library (bag sums, merge sort, C-collation order incl. `bytes_lt`, bag edits of small tables) | [`src/verus/common/`](../../../src/verus/common/src/) | Verified (59 items), exported as `verus_common` |
-| Kernel + Q21 proofs | `src/verus/q21/src/*.rs` (except `spec.rs`, `ffi.rs`) | Verified (134 items) |
+| Kernel + Q21 proofs | `src/verus/q21/src/*.rs` (except `spec.rs`, `ffi.rs`) | Verified (149 items) |
+| Spec facts: `q21_result` has exactly one solution (the first 100 rows of `q21_answer`) | [`src/verus/q21/src/spec_facts.rs`](../../../src/verus/q21/src/spec_facts.rs) | Verified (included above) |
 | C ABI shims | [`src/verus/q21/src/ffi.rs`](../../../src/verus/q21/src/ffi.rs) | Trusted glue (pointer → slice) |
 | Host adapter | [`src/generated/tpch/q21/verus/module.cpp`](../../../src/generated/tpch/q21/verus/module.cpp), `TpchQ21VerusScanImpl` in `src/generated/postgres/runtime.cpp` | Trusted (scans, capture, sink) |
 
@@ -22,9 +23,10 @@ are:
 - **Build** (`build.rs`). If the scans satisfy `build_contract(db)`, the result
   is a state for `db`, or `None` on i64 overflow, and the host then uses SQL.
 - **Execute** (`execute.rs`). For every state `s` and nation `p`, the output
-  satisfies `q21_result(s.db(), p, out)`: rows in `ORDER BY numwait DESC, s_name`
-  order, one row per group with its `COUNT(*)`, and every group present. It can
-  also return `None` on overflow.
+  satisfies `q21_result(s.db(), p, out)`: the first 100 rows (`LIMIT 100`) of
+  the full answer `q21_full_result`, whose rows are in
+  `ORDER BY numwait DESC, s_name` order, one row per group with its `COUNT(*)`,
+  and every group present. It can also return `None` on overflow.
 - **ApplyDelta** (`maint.rs`). If `db2 = db + deltas` for all four tables
   (`db_step` for orders / lineitem, `dims_step` for supplier / nation, stated
   as bag equality) and the targeted scan satisfies `scan_contract(db2)`, the
@@ -57,6 +59,12 @@ assumptions are therefore not needed.
   text/int8 sink.
 - **tools**: Verus, Z3, the vstd specs of `HashMap`/`Vec`/`Arc`, rustc/LLVM.
 - **collation**: `s_name` has a C collation (enforced by the runtime).
+- **CHAR(25)**: `s_name` / `n_name` reach the kernel (scans, capture) in the
+  form the engine compares them, and `:nation` as the engine compares it
+  against: PostgreSQL `bpchar` values without their trailing-space padding
+  (its `bpchar -> text` cast; `TypedCharText`, `NormalizeCapturedName`),
+  MySQL `CHAR` as retrieved (padding already removed), DuckDB unchanged (its
+  `CHAR` is `VARCHAR`). `:nation` is passed unchanged.
 
 Compared with the Rocq+Dafny stack for C++ Q21, this removes `cpp_model` (the
 C++ ↔ twin link via extract-diff) and `spec_export_B` (the Rocq ↔ Dafny
@@ -93,6 +101,9 @@ scripts/build_q21_verus.sh                    # verify common + q21, build build
 scripts/build_accel_postgres_extension.sh     # links it when present
 psql -d <db> -c "LOAD 'accelerator_codegen_pg'" -f scripts/postgres_register_tpch_q21_verus.sql
 python3 tests/verification/q21verus/q21_verus_stress.py 60 4 1   # differential vs SQL (accel_q21_rt)
+# Q21_FORCE=ApplyDelta|RebuildPartition|RebuildAll|InvalidateAndFallback pins the maintenance
+# action in the Postgres / MySQL stress tests (RebuildPartition runs as RebuildAll: no partitions);
+# the DuckDB fuzz takes it as its last argument (policy = the cost model).
 python3 benchmarks/postgres/q21_verus_bench.py                     # SF1 benchmark
 # DuckDB: build-verus-duckdb (ACCEL_CODEGEN_ENGINE=duckdb), target q21_verus_bench_duckdb
 ./build-verus-duckdb/q21_verus_bench_duckdb <copy-of-tpch_sf1.duckdb> 20 30 3
@@ -100,3 +111,16 @@ python3 benchmarks/postgres/q21_verus_bench.py                     # SF1 benchma
 python3 tests/verification/q21verus/q21_verus_mysql_stress.py 1500 1        # accel_mysql_test (3307)
 python3 benchmarks/mysql/q21_verus_bench.py                                  # accel_mysql_sf1 (3308)
 ```
+
+## Update coverage of the differential tests
+
+All three tests (Postgres stress, MySQL stress, DuckDB fuzz) update every column
+Q21 reads on all four tables, alone and several at once, key changes included:
+`l_orderkey`, `l_suppkey`, `l_commitdate`, `l_receiptdate`; `o_orderkey`,
+`o_orderstatus`; `s_suppkey`, `s_name`, `s_nationkey`; `n_nationkey`, `n_name`
+(plus `l_comment`, a column Q21 does not read). The Postgres and MySQL tests also
+update all rows of an order in one statement and many orders in one statement.
+The MySQL test respects the primary keys (`UPDATE IGNORE`, moving lineitems to
+other orders with a fresh line number) and prints, per set of updated columns,
+how many statements changed a row. Each test reports the maintenance action that
+ran and fails if a forced action did not run.

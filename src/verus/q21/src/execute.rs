@@ -14,10 +14,13 @@ use std::collections::HashMap;
 
 verus! {
 
+// Interprets the result rows as (supplier name, numwait) pairs, i.e. the
+// logical output table that must match the query answer.
 pub open spec fn out_view(o: Seq<(Vec<u8>, i64)>) -> Seq<(Seq<u8>, int)> {
     o.map_values(|r: (Vec<u8>, i64)| (r.0@, r.1 as int))
 }
 
+// The name of the supplier stored at a given row position.
 pub open spec fn sname(sups: Seq<SupE>, i: usize) -> Seq<u8> {
     sups[i as int].name@
 }
@@ -32,10 +35,14 @@ pub open spec fn outer_term(st: Static, db: Db, p: Seq<u8>, g: Seq<u8>) -> spec_
     |jj: int| if st.nats@[jj].name@ == p { sum(st.nat_sups@[jj]@, hg(st.sups@, db, g)) } else { 0 }
 }
 
+// The list 0,1,...,n-1 of row positions; a correct sort of n rows must return exactly
+// these positions, each once (a permutation).
 pub open spec fn idxs(n: int) -> Seq<usize> {
     Seq::new(n as nat, |i: int| i as usize)
 }
 
+// Summing over row positions 0..n-1 as a list is the same as the plain range sum,
+// so per-row sums can be switched to index-list sums.
 proof fn lemma_sum_idxs(n: int, f: spec_fn(usize) -> int)
     requires
         0 <= n <= usize::MAX,
@@ -46,6 +53,8 @@ proof fn lemma_sum_idxs(n: int, f: spec_fn(usize) -> int)
     lemma_sum_map(rng(n), |i: int| i as usize, f, |i: int| f(i as usize));
 }
 
+// Term for a (nation row, supplier row) pair: the supplier's count if the nation has the
+// requested name and the supplier belongs to it, else 0; a nation-supplier join.
 pub open spec fn tj(st: Static, db: Db, p: Seq<u8>, g: Seq<u8>) -> spec_fn(int, int) -> int {
     |jj: int, i: int|
         if st.nats@[jj].name@ == p && st.sups@[i].nk == st.nats@[jj].nk {
@@ -74,7 +83,9 @@ proof fn lemma_gather_total(st: Static, orders: OrderMap, wm: Map<i64, i64>, db:
         let nk = nats[jj].nk;
         let pred = |i: usize| sups[i as int].nk == nk;
         let hf = |i: usize| if pred(i) { h(i) } else { 0 };
-        assert(st.nat_sups@[jj]@ == nat_filter(sups, nk, ns));
+        // the stored list is a reordering of nat_filter, so its sums are the same
+        assert(nat_list_ok(sups, nk, st.nat_sups@[jj]@));
+        assert(sum(st.nat_sups@[jj]@, h) == sum(nat_filter(sups, nk, ns), h));
         lemma_sum_filter(idxs(ns), pred, h, hf);
         lemma_sum_idxs(ns, hf);
         if nats[jj].name@ == p {
@@ -133,6 +144,8 @@ proof fn lemma_gather_total(st: Static, orders: OrderMap, wm: Map<i64, i64>, db:
     lemma_numwait_by_supplier(db, p, g);
 }
 
+// 1 for a specific row position and 0 otherwise; summing it over a list counts
+// how many times that position appears.
 pub open spec fn uind(v: usize) -> spec_fn(usize) -> int {
     |x: usize| ind(x == v)
 }
@@ -153,6 +166,8 @@ proof fn lemma_perm_once(order: Seq<usize>, n: int, v: usize)
     lemma_sum_single_match(rng(n), f, v as int);
 }
 
+// If a position appears exactly once in a list, no other slot holds it,
+// so a sorted list containing each position once has no duplicates.
 proof fn lemma_once_distinct(order: Seq<usize>, i: int, j: int)
     requires
         0 <= i < j < order.len(),
@@ -172,49 +187,26 @@ proof fn lemma_once_distinct(order: Seq<usize>, i: int, j: int)
 }
 
 // ── ordering helpers ───────────────────────────────────────────────────────
-pub open spec fn name_le(sups: Seq<SupE>) -> spec_fn(usize, usize) -> bool {
-    |a: usize, b: usize| !bytes_lt(sups[b as int].name@, sups[a as int].name@)
-}
+// (name_le, valid_sup and lemma_name_le_preorder are in state.rs.)
 
-pub open spec fn valid_sup(sups: Seq<SupE>) -> spec_fn(usize) -> bool {
-    |i: usize| (i as int) < sups.len()
-}
-
-proof fn lemma_name_le_preorder(sups: Seq<SupE>)
-    ensures
-        preorder_on(name_le(sups), valid_sup(sups)),
-{
-    let le = name_le(sups);
-    assert forall|a: usize, b: usize| #![trigger le(a, b)] valid_sup(sups)(a) && valid_sup(sups)(b) implies le(a, b) || le(b, a) by {
-        lemma_bytes_lt_asym(sups[a as int].name@, sups[b as int].name@);
-    }
-    assert forall|a: usize, b: usize, c: usize|
-        valid_sup(sups)(a) && valid_sup(sups)(b) && valid_sup(sups)(c) && #[trigger] le(a, b) && #[trigger] le(b, c) implies le(a, c) by {
-        let na = sups[a as int].name@;
-        let nb = sups[b as int].name@;
-        let nc = sups[c as int].name@;
-        if bytes_lt(nc, na) {
-            if na == nb {
-            } else {
-                lemma_bytes_lt_total(na, nb);
-                lemma_bytes_lt_trans(nc, na, nb);
-            }
-        }
-    }
-}
-
+// The logical output row (supplier name, numwait) for a grouped result row.
 pub open spec fn rowv(sups: Seq<SupE>, rows: Seq<(usize, i64)>, r: usize) -> (Seq<u8>, int) {
     (sups[rows[r as int].0 as int].name@, rows[r as int].1 as int)
 }
 
+// Final ORDER BY: more waiting first (numwait DESC), ties broken by name ascending;
+// a comes no later than b unless b must strictly precede a.
 pub open spec fn row_le(sups: Seq<SupE>, rows: Seq<(usize, i64)>) -> spec_fn(usize, usize) -> bool {
     |a: usize, b: usize| !row_before(rowv(sups, rows, b), rowv(sups, rows, a))
 }
 
+// A result-row position is legal when it lies within the grouped rows.
 pub open spec fn valid_row(rows: Seq<(usize, i64)>) -> spec_fn(usize) -> bool {
     |i: usize| (i as int) < rows.len()
 }
 
+// Two output rows cannot each strictly precede the other in the ORDER BY,
+// ensuring the ordering is consistent.
 proof fn lemma_row_before_asym(x: (Seq<u8>, int), y: (Seq<u8>, int))
     ensures
         !(row_before(x, y) && row_before(y, x)),
@@ -222,6 +214,8 @@ proof fn lemma_row_before_asym(x: (Seq<u8>, int), y: (Seq<u8>, int))
     lemma_bytes_lt_asym(x.0, y.0);
 }
 
+// Two rows with different names are always ordered one way or the other,
+// so the ORDER BY leaves no ties among distinct groups.
 proof fn lemma_row_before_total(x: (Seq<u8>, int), y: (Seq<u8>, int))
     requires
         x.0 != y.0,
@@ -231,6 +225,8 @@ proof fn lemma_row_before_total(x: (Seq<u8>, int), y: (Seq<u8>, int))
     lemma_bytes_lt_total(x.0, y.0);
 }
 
+// The final ORDER BY is a proper sort order (any two rows comparable, transitive),
+// as needed for the sort to be correct.
 proof fn lemma_row_le_preorder(sups: Seq<SupE>, rows: Seq<(usize, i64)>)
     ensures
         preorder_on(row_le(sups, rows), valid_row(rows)),
@@ -259,17 +255,24 @@ proof fn lemma_row_le_preorder(sups: Seq<SupE>, rows: Seq<(usize, i64)>)
 }
 
 // ── gather ─────────────────────────────────────────────────────────────────
-fn gather(st: &Static, wm: &HashMap<i64, i64>, p: &[u8], Ghost(db): Ghost<Db>, Ghost(orders): Ghost<OrderMap>) -> (gv: Vec<usize>)
+// Finds, for the requested nation, all suppliers with a positive count (numwait > 0);
+// their counts per name add up to that name's true numwait.  When exactly one nation
+// row has the requested name (`sorted`), the result is a subsequence of that nation's
+// name-sorted supplier list, hence already in name order.
+fn gather(st: &Static, wm: &HashMap<i64, i64>, p: &[u8], Ghost(db): Ghost<Db>, Ghost(orders): Ghost<OrderMap>) -> (r: (Vec<usize>, bool))
     requires
         state_ok(*st, orders, wm@, db),
     ensures
-        all_valid(gv@, valid_sup(st.sups@)),
-        forall|i: int| 0 <= i < gv@.len() ==> w(db, st.sups@[gv@[i] as int].sk as int) > 0,
-        forall|g: Seq<u8>| #[trigger] sum(gv@, hg(st.sups@, db, g)) == numwait(db, p@, g),
+        all_valid(r.0@, valid_sup(st.sups@)),
+        forall|i: int| 0 <= i < r.0@.len() ==> w(db, st.sups@[r.0@[i] as int].sk as int) > 0,
+        forall|g: Seq<u8>| #[trigger] sum(r.0@, hg(st.sups@, db, g)) == numwait(db, p@, g),
+        r.1 ==> sorted_le(r.0@, name_le(st.sups@)),
 {
     let sups = &st.sups;
     let nats = &st.nats;
     let mut gv: Vec<usize> = Vec::new();
+    // nation rows named p seen so far, counted up to 2
+    let mut matched: usize = 0;
     let nn = nats.len();
     let mut j: usize = 0;
     while j < nn
@@ -281,6 +284,9 @@ fn gather(st: &Static, wm: &HashMap<i64, i64>, p: &[u8], Ghost(db): Ghost<Db>, G
             all_valid(gv@, valid_sup(st.sups@)),
             forall|i: int| 0 <= i < gv@.len() ==> w(db, st.sups@[gv@[i] as int].sk as int) > 0,
             forall|g: Seq<u8>| #[trigger] sum(gv@, hg(st.sups@, db, g)) == sum(rng(j as int), outer_term(*st, db, p@, g)),
+            matched <= 2,
+            matched == 0 ==> gv@.len() == 0,
+            matched <= 1 ==> sorted_le(gv@, name_le(st.sups@)),
         decreases nn - j,
     {
         let ghost g0 = gv@;
@@ -289,8 +295,9 @@ fn gather(st: &Static, wm: &HashMap<i64, i64>, p: &[u8], Ghost(db): Ghost<Db>, G
         }
         if bytes_eq_exec(nats[j].name.as_slice(), p) {
             let list = &st.nat_sups[j];
+            let ghost first = matched == 0;
             proof {
-                assert(st.nat_sups@[j as int]@ == nat_filter(st.sups@, st.nats@[j as int].nk, st.sups@.len() as int));
+                assert(nat_list_ok(st.sups@, st.nats@[j as int].nk, st.nat_sups@[j as int]@));
             }
             let m = list.len();
             let mut t: usize = 0;
@@ -298,27 +305,19 @@ fn gather(st: &Static, wm: &HashMap<i64, i64>, p: &[u8], Ghost(db): Ghost<Db>, G
                 invariant
                     0 <= t <= m == list@.len(),
                     j < nn == nats@.len(),
-                    list@ == nat_filter(st.sups@, st.nats@[j as int].nk, st.sups@.len() as int),
+                    nat_list_ok(st.sups@, st.nats@[j as int].nk, list@),
                     *sups == st.sups,
                     state_ok(*st, orders, wm@, db),
                     all_valid(gv@, valid_sup(st.sups@)),
                     forall|i: int| 0 <= i < gv@.len() ==> w(db, st.sups@[gv@[i] as int].sk as int) > 0,
                     forall|g: Seq<u8>| #[trigger] sum(gv@, hg(st.sups@, db, g)) == sum(g0, hg(st.sups@, db, g)) + sum(list@.take(t as int), hg(st.sups@, db, g)),
+                    first ==> sorted_le(gv@, name_le(st.sups@)),
+                    first ==> forall|k: int, u: int| 0 <= k < gv@.len() && t <= u < m ==> name_le(st.sups@)(#[trigger] gv@[k], #[trigger] list@[u]),
                 decreases m - t,
             {
                 let i = list[t];
                 proof {
-                    // list entries are supplier indices
-                    broadcast use vstd::seq_lib::group_filter_ensures;
-                    let full = idxs(st.sups@.len() as int);
-                    let pr = |x: usize| st.sups@[x as int].nk == st.nats@[j as int].nk;
-                    assert(list@ == full.filter(pr));
-                    assert(list@.contains(i)) by { assert(list@[t as int] == i); }
-                    full.lemma_filter_contains_rev(pr, i);
-                    assert(full.contains(i));
-                    let k = choose|k: int| 0 <= k < full.len() && full[k] == i;
-                    assert(full[k] == k as usize);
-                    assert((i as int) < st.sups@.len());
+                    assert(valid_sup(st.sups@)(list@[t as int]));
                     assert(list@.take(t as int + 1) =~= list@.take(t as int).push(i));
                     lemma_w_nonneg(db, st.sups@[i as int].sk as int);
                 }
@@ -331,6 +330,26 @@ fn gather(st: &Static, wm: &HashMap<i64, i64>, p: &[u8], Ghost(db): Ghost<Db>, G
                             lemma_sum_push(gb, i, hg(st.sups@, db, g));
                             lemma_sum_push(list@.take(t as int), i, hg(st.sups@, db, g));
                         }
+                        if first {
+                            // i = list[t] is no smaller than everything gathered so far, and no
+                            // larger than the rest of the (sorted) list
+                            assert(sorted_le(gv@, name_le(st.sups@))) by {
+                                assert forall|a: int, b: int| 0 <= a < b < gv@.len() implies name_le(st.sups@)(#[trigger] gv@[a], #[trigger] gv@[b]) by {
+                                    if b < gb.len() {
+                                        assert(gv@[a] == gb[a] && gv@[b] == gb[b]);
+                                    } else {
+                                        assert(gv@[a] == gb[a] && gv@[b] == list@[t as int]);
+                                    }
+                                }
+                            }
+                            assert forall|k: int, u: int| 0 <= k < gv@.len() && t + 1 <= u < m implies name_le(st.sups@)(#[trigger] gv@[k], #[trigger] list@[u]) by {
+                                if k < gb.len() {
+                                    assert(gv@[k] == gb[k]);
+                                } else {
+                                    assert(gv@[k] == list@[t as int]);
+                                }
+                            }
+                        }
                     }
                 } else {
                     proof {
@@ -340,6 +359,9 @@ fn gather(st: &Static, wm: &HashMap<i64, i64>, p: &[u8], Ghost(db): Ghost<Db>, G
                     }
                 }
                 t += 1;
+            }
+            if matched < 2 {
+                matched += 1;
             }
             proof {
                 assert(list@.take(m as int) =~= list@);
@@ -363,20 +385,26 @@ fn gather(st: &Static, wm: &HashMap<i64, i64>, p: &[u8], Ghost(db): Ghost<Db>, G
             lemma_gather_total(*st, orders, wm@, db, p@, g);
         }
     }
-    gv
+    (gv, matched <= 1)
 }
 
 // ── group by name ──────────────────────────────────────────────────────────
+// A grouped row's contribution to name g: its numwait if the supplier's name is g,
+// else 0; summing gives a group-by-name total.
 pub open spec fn row_w(sups: Seq<SupE>, g: Seq<u8>) -> spec_fn((usize, i64)) -> int {
     |r: (usize, i64)| if sups[r.0 as int].name@ == g { r.1 as int } else { 0 }
 }
 
+// Grouped rows are legal, have positive counts, and are in strictly ascending name order,
+// hence one row per name (a correct GROUP BY s_name output).
 pub open spec fn rows_ok(sups: Seq<SupE>, rows: Seq<(usize, i64)>) -> bool {
     &&& forall|a: int| 0 <= a < rows.len() ==> ((#[trigger] rows[a]).0 as int) < sups.len() && rows[a].1 > 0
     &&& forall|a: int, b: int|
         0 <= a < b < rows.len() ==> bytes_lt(sups[(#[trigger] rows[a]).0 as int].name@, sups[(#[trigger] rows[b]).0 as int].name@)
 }
 
+// Because each name occurs in only one row, that name's total is just its row's numwait,
+// so each output row equals the query's numwait for that name.
 proof fn lemma_row_w_single(sups: Seq<SupE>, rows: Seq<(usize, i64)>, a: int)
     requires
         rows_ok(sups, rows),
@@ -397,6 +425,8 @@ proof fn lemma_row_w_single(sups: Seq<SupE>, rows: Seq<(usize, i64)>, a: int)
     lemma_sum_single_match(rows, row_w(sups, g), a);
 }
 
+// GROUP BY s_name over a name-sorted list: adjacent suppliers with the same name are
+// merged into one row with summed counts; None on overflow or non-positive count.
 fn group_by_name(st: &Static, wm: &HashMap<i64, i64>, gs: &Vec<usize>, Ghost(db): Ghost<Db>) -> (r: Option<Vec<(usize, i64)>>)
     requires
         w_ok(wm@, db),
@@ -506,28 +536,66 @@ fn group_by_name(st: &Static, wm: &HashMap<i64, i64>, gs: &Vec<usize>, Ghost(db)
     Some(rows)
 }
 
+// Among grouped rows (strictly ascending names, rows_ok), name order is row order:
+// row b's name is smaller than row a's exactly when b comes before a.  So the ORDER BY
+// tie-break on s_name can compare row positions instead of names.
+proof fn lemma_rows_name_order(sups: Seq<SupE>, rows: Seq<(usize, i64)>, a: int, b: int)
+    requires
+        rows_ok(sups, rows),
+        0 <= a < rows.len(),
+        0 <= b < rows.len(),
+    ensures
+        bytes_lt(sups[rows[b].0 as int].name@, sups[rows[a].0 as int].name@) <==> b < a,
+{
+    let na = sups[rows[a].0 as int].name@;
+    let nb = sups[rows[b].0 as int].name@;
+    if b < a {
+        assert(bytes_lt(nb, na));
+    } else if a < b {
+        assert(bytes_lt(na, nb));
+        lemma_bytes_lt_asym(na, nb);
+    } else {
+        lemma_bytes_lt_irrefl(na);
+    }
+}
+
 // ── Execute ────────────────────────────────────────────────────────────────
+// Answers the query: pick the nation's suppliers with waiting orders, sort (unless
+// already in order) and group by name, sort by numwait DESC then name, and output the
+// first 100 rows (LIMIT).
+// Weve shown that the execution equals the result func in the spec. (public spec fn)
 pub fn execute(s: &State, p: &[u8]) -> (r: Option<Vec<(Vec<u8>, i64)>>)
     ensures
         r matches Some(out) ==> q21_result(s.db(), p@, out_view(out@)),
 {
     let (st, orders, wm) = s.parts();
     let ghost db = s.db();
-    let gv = gather(st, wm, p, Ghost(db), Ghost(*orders));
+    let (gv, gv_sorted) = gather(st, wm, p, Ghost(db), Ghost(*orders));
+    let ghost gv0 = gv@;
     let sups = &st.sups;
     let ns = sups.len();
-    // 2. sort by name
-    let name_cmp = |a: usize, b: usize| -> (r: bool)
-        requires
-            a < ns && b < ns,
-        ensures
-            r == name_le(sups@)(a, b),
-        { !bytes_lt_exec(sups[b].name.as_slice(), sups[a].name.as_slice()) };
+    // 2. sort by name, unless gather's result is already in name order (one nation
+    //    row named p: a subsequence of its name-sorted supplier list)
+    let gs = if gv_sorted {
+        gv
+    } else {
+        let name_cmp = |a: usize, b: usize| -> (r: bool)
+            requires
+                a < ns && b < ns,
+            ensures
+                r == name_le(sups@)(a, b),
+            { !bytes_lt_exec(sups[b].name.as_slice(), sups[a].name.as_slice()) };
+        proof {
+            lemma_name_le_preorder(sups@);
+            assert(cmp_ok(&name_cmp, name_le(sups@), valid_sup(sups@)));
+        }
+        sort_idx(&gv, &name_cmp, Ghost(name_le(sups@)), Ghost(valid_sup(sups@)))
+    };
     proof {
-        lemma_name_le_preorder(sups@);
-        assert(cmp_ok(&name_cmp, name_le(sups@), valid_sup(sups@)));
+        assert(all_valid(gs@, valid_sup(sups@)));
+        assert(sorted_le(gs@, name_le(sups@)));
+        assert(same_bag(gs@, gv0));
     }
-    let gs = sort_idx(&gv, &name_cmp, Ghost(name_le(sups@)), Ghost(valid_sup(sups@)));
     // 3. group
     let rows = match group_by_name(st, wm, &gs, Ghost(db)) {
         Some(r) => r,
@@ -537,12 +605,13 @@ pub fn execute(s: &State, p: &[u8]) -> (r: Option<Vec<(Vec<u8>, i64)>>)
     };
     proof {
         assert forall|g: Seq<u8>| #[trigger] sum(rows@, row_w(sups@, g)) == numwait(db, p@, g) by {
-            assert(sum(gs@, hg(sups@, db, g)) == sum(gv@, hg(sups@, db, g)));
+            assert(sum(gs@, hg(sups@, db, g)) == sum(gv0, hg(sups@, db, g)));
         }
     }
-    // 4. order groups
+    // 4. order groups: numwait DESC, then s_name, which among the grouped rows is row
+    //    order (lemma_rows_name_order), so the comparison is on integers only
     let nr = rows.len();
-    let mut perm: Vec<usize> = Vec::new();
+    let mut perm: Vec<usize> = Vec::with_capacity(nr);
     let mut k: usize = 0;
     while k < nr
         invariant
@@ -559,19 +628,22 @@ pub fn execute(s: &State, p: &[u8]) -> (r: Option<Vec<(Vec<u8>, i64)>>)
     let rws = &rows;
     let row_cmp = |a: usize, b: usize| -> (r: bool)
         requires
-            a < nr && b < nr && rws@.len() == nr && forall|x: int| 0 <= x < nr ==> ((#[trigger] rws@[x]).0 as int) < ns,
+            a < nr && b < nr && rws@.len() == nr && rows_ok(sups@, rws@),
         ensures
             r == row_le(sups@, rws@)(a, b),
         {
-            let ra = rws[a];
-            let rb = rws[b];
+            proof {
+                lemma_rows_name_order(sups@, rws@, a as int, b as int);
+            }
+            let ca = rws[a].1;
+            let cb = rws[b].1;
             // not (b before a)
-            if rb.1 > ra.1 {
+            if cb > ca {
                 false
-            } else if rb.1 < ra.1 {
+            } else if cb < ca {
                 true
             } else {
-                !bytes_lt_exec(sups[rb.0].name.as_slice(), sups[ra.0].name.as_slice())
+                a <= b
             }
         };
     proof {
@@ -580,18 +652,24 @@ pub fn execute(s: &State, p: &[u8]) -> (r: Option<Vec<(Vec<u8>, i64)>>)
         assert(all_valid(perm@, valid_row(rows@)));
     }
     let order = sort_idx(&perm, &row_cmp, Ghost(row_le(sups@, rows@)), Ghost(valid_row(rows@)));
-    // 5. emit
-    let mut out: Vec<(Vec<u8>, i64)> = Vec::new();
+    // 5. emit the first min(100, n) rows (LIMIT 100); fv is the full ordered answer
     let no = order.len();
+    let ghost fv = Seq::new(no as nat, |a: int| rowv(sups@, rows@, order@[a]));
+    let lim: usize = if no < 100 {
+        no
+    } else {
+        100
+    };
+    let mut out: Vec<(Vec<u8>, i64)> = Vec::with_capacity(lim);
     let mut q: usize = 0;
-    while q < no
+    while q < lim
         invariant
-            0 <= q <= no == order@.len(),
+            0 <= q <= lim <= no == order@.len(),
             all_valid(order@, valid_row(rows@)),
             rows_ok(sups@, rows@),
             out@.len() == q,
             forall|a: int| 0 <= a < q ==> out_view(out@)[a] == rowv(sups@, rows@, #[trigger] order@[a]),
-        decreases no - q,
+        decreases lim - q,
     {
         let ri = order[q];
         proof {
@@ -615,7 +693,6 @@ pub fn execute(s: &State, p: &[u8]) -> (r: Option<Vec<(Vec<u8>, i64)>>)
         q += 1;
     }
     proof {
-        let ov = out_view(out@);
         // order is a permutation of 0..nr: each index occurs exactly once
         assert forall|i: int, j: int| 0 <= i < j < order@.len() implies order@[i] != order@[j] by {
             assert(valid_row(rows@)(order@[i]));
@@ -623,7 +700,7 @@ pub fn execute(s: &State, p: &[u8]) -> (r: Option<Vec<(Vec<u8>, i64)>>)
             lemma_once_distinct(order@, i, j);
         }
         // strict order
-        assert forall|i: int, j: int| 0 <= i < j < ov.len() implies row_before(#[trigger] ov[i], #[trigger] ov[j]) by {
+        assert forall|i: int, j: int| 0 <= i < j < fv.len() implies row_before(#[trigger] fv[i], #[trigger] fv[j]) by {
             let a = order@[i];
             let b = order@[j];
             assert(row_le(sups@, rows@)(a, b));
@@ -639,20 +716,24 @@ pub fn execute(s: &State, p: &[u8]) -> (r: Option<Vec<(Vec<u8>, i64)>>)
             lemma_row_before_total(rowv(sups@, rows@, a), rowv(sups@, rows@, b));
         }
         // each row is its group
-        assert forall|i: int| 0 <= i < ov.len() implies (#[trigger] ov[i]).1 == numwait(db, p@, ov[i].0) && ov[i].1 > 0 by {
+        assert forall|i: int| 0 <= i < fv.len() implies (#[trigger] fv[i]).1 == numwait(db, p@, fv[i].0) && fv[i].1 > 0 by {
             let a = order@[i];
             assert(valid_row(rows@)(a));
             lemma_row_w_single(sups@, rows@, a as int);
         }
         // every group appears
-        assert forall|g: Seq<u8>| #[trigger] numwait(db, p@, g) > 0 implies exists|i: int| 0 <= i < ov.len() && (#[trigger] ov[i]).0 == g by {
+        assert forall|g: Seq<u8>| #[trigger] numwait(db, p@, g) > 0 implies exists|i: int| 0 <= i < fv.len() && (#[trigger] fv[i]).0 == g by {
             let a = lemma_sum_nonzero_witness(rows@, row_w(sups@, g));
             let v = a as usize;
             lemma_perm_once(order@, nr as int, v);
             let i = lemma_sum_nonzero_witness(order@, uind(v));
             assert(order@[i] == v);
-            assert(ov[i].0 == g);
+            assert(fv[i].0 == g);
         }
+        assert(q21_full_result(db, p@, fv));
+        // 6. the output is the first min(100, n) rows of fv: LIMIT 100
+        assert(out_view(out@) =~= limit_rows(fv, q21_limit()));
+        assert(q21_result(db, p@, out_view(out@)));
     }
     Some(out)
 }

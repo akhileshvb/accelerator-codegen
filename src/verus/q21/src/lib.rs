@@ -3,6 +3,7 @@
 #![allow(unused_imports)]
 
 pub mod spec;
+pub mod spec_facts;
 pub mod bridge;
 pub mod orderspec;
 pub mod ents;

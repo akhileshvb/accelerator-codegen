@@ -12,6 +12,7 @@ use std::sync::Arc;
 use verus_common::sums::*;
 use verus_common::bag::*;
 use verus_common::bytes::*;
+use verus_common::sort::*;
 use crate::spec::*;
 use crate::bridge::*;
 use crate::orderspec::*;
@@ -31,6 +32,8 @@ pub struct LiRow {
     pub receiptdate: i32,
 }
 
+// Reads a raw input lineitem row as a logical lineitem, widening its fixed-width numbers to unbounded integers.
+// This is how host-supplied rows are related to the abstract query definition.
 pub open spec fn li_view(r: LiRow) -> Lineitem {
     Lineitem {
         orderkey: r.orderkey as int,
@@ -40,10 +43,14 @@ pub open spec fn li_view(r: LiRow) -> Lineitem {
     }
 }
 
+// Reads a batch of raw lineitem rows as the logical lineitem table, i.e. the input data a scan or build is specified against.
+// The contracts of build and maintenance are stated in terms of it.
 pub open spec fn lis_view(s: Seq<LiRow>) -> Seq<Lineitem> {
     s.map_values(|r: LiRow| li_view(r))
 }
 
+// Decides whether a lineitem was received after its commit date (late), and is proved to agree with the logical definition of late.
+// Lateness is the basis for deciding which suppliers kept orders waiting.
 pub fn is_late(r: &LiRow) -> (b: bool)
     ensures
         b == late(li_view(*r)),
@@ -68,10 +75,12 @@ pub struct OrdDelta {
     pub sign: i64,
 }
 
+// Reads a batch of lineitem changes as (row, +1/-1) pairs (+1 inserts a copy, -1 deletes one): the logical form of an update batch.
 pub open spec fn ld_view(s: Seq<LiDelta>) -> Seq<(Lineitem, int)> {
     s.map_values(|d: LiDelta| (li_view(d.row), d.sign as int))
 }
 
+// Reads a batch of order changes as (order, +1/-1) pairs, treating a nonzero status byte as 'F' (finished).
 pub open spec fn od_view(s: Seq<OrdDelta>) -> Seq<(Order, int)> {
     s.map_values(
         |d: OrdDelta| (Order { orderkey: d.orderkey as int, status_is_f: d.status_is_f != 0 }, d.sign as int),
@@ -89,22 +98,27 @@ pub struct NatE {
     pub name: Vec<u8>,
 }
 
+// Reads a stored supplier entry as a logical supplier row (with its name as a byte string).
 pub open spec fn sup_view(s: SupE) -> Supplier {
     Supplier { suppkey: s.sk as int, name: s.name@, nationkey: s.nk as int }
 }
 
+// Reads a stored nation entry as a logical nation row.
 pub open spec fn nat_view(n: NatE) -> Nation {
     Nation { nationkey: n.nk as int, name: n.name@ }
 }
 
+// Reads a list of stored supplier entries as a logical supplier table; the state is required to hold the same bag of rows as the database.
 pub open spec fn sups_view(s: Seq<SupE>) -> Seq<Supplier> {
     s.map_values(|x: SupE| sup_view(x))
 }
 
+// Reads a list of stored nation entries as a logical nation table; the state is required to hold the same bag of rows as the database.
 pub open spec fn nats_view(s: Seq<NatE>) -> Seq<Nation> {
     s.map_values(|x: NatE| nat_view(x))
 }
 
+// Lets shared multiset-of-rows machinery (insert/delete/compare) work on supplier entries, using their logical row as the meaning.
 impl BagRow for SupE {
     type V = Supplier;
 
@@ -125,6 +139,7 @@ impl BagRow for SupE {
     }
 }
 
+// Lets shared multiset-of-rows machinery (insert/delete/compare) work on nation entries, using their logical row as the meaning.
 impl BagRow for NatE {
     type V = Nation;
 
@@ -145,6 +160,7 @@ impl BagRow for NatE {
     }
 }
 
+// The generic bag-view of a supplier entry list is the same as the supplier-table view, so bag-level facts apply to supplier updates.
 pub proof fn lemma_rows_v_sups(s: Seq<SupE>)
     ensures
         rows_v(s) == sups_view(s),
@@ -152,6 +168,7 @@ pub proof fn lemma_rows_v_sups(s: Seq<SupE>)
     assert(rows_v(s) =~= sups_view(s));
 }
 
+// The generic bag-view of a nation entry list is the same as the nation-table view, so bag-level facts apply to nation updates.
 pub proof fn lemma_rows_v_nats(s: Seq<NatE>)
     ensures
         rows_v(s) == nats_view(s),
@@ -165,6 +182,7 @@ pub struct OrdE {
     pub ents: Vec<Ent>,
 }
 
+// Copying an order record preserves its meaning (same F count and per-supplier counts); the built-in clone does not promise this.
 impl Clone for OrdE {
     fn clone(&self) -> (r: Self)
         ensures
@@ -179,6 +197,8 @@ impl Clone for OrdE {
     }
 }
 
+// A stored per-order record is correct: it has at least one 'F' row, its F count equals the true count for that order,
+// and its per-supplier line counts match the lineitems in the database. This is the fact incremental maintenance preserves.
 pub open spec fn ord_ok(o: OrdE, db: Db, ok: int) -> bool {
     &&& o.fm > 0
     &&& o.fm as int == fm(db, ok)
@@ -197,6 +217,51 @@ pub open spec fn nat_filter(sups: Seq<SupE>, nk: i32, n: int) -> Seq<usize> {
     Seq::new(n as nat, |i: int| i as usize).filter(|i: usize| sups[i as int].nk == nk)
 }
 
+// Ordering of suppliers by name (ORDER BY s_name ascending):
+// a comes no later than b if b's name is not smaller.
+pub open spec fn name_le(sups: Seq<SupE>) -> spec_fn(usize, usize) -> bool {
+    |a: usize, b: usize| !bytes_lt(sups[b as int].name@, sups[a as int].name@)
+}
+
+// A supplier position is legal when it lies within the supplier table.
+pub open spec fn valid_sup(sups: Seq<SupE>) -> spec_fn(usize) -> bool {
+    |i: usize| (i as int) < sups.len()
+}
+
+// Name ordering is a proper sort order (any two are comparable, and it is
+// transitive), which a sort routine requires to be correct.
+pub proof fn lemma_name_le_preorder(sups: Seq<SupE>)
+    ensures
+        preorder_on(name_le(sups), valid_sup(sups)),
+{
+    let le = name_le(sups);
+    assert forall|a: usize, b: usize| #![trigger le(a, b)] valid_sup(sups)(a) && valid_sup(sups)(b) implies le(a, b) || le(b, a) by {
+        lemma_bytes_lt_asym(sups[a as int].name@, sups[b as int].name@);
+    }
+    assert forall|a: usize, b: usize, c: usize|
+        valid_sup(sups)(a) && valid_sup(sups)(b) && valid_sup(sups)(c) && #[trigger] le(a, b) && #[trigger] le(b, c) implies le(a, c) by {
+        let na = sups[a as int].name@;
+        let nb = sups[b as int].name@;
+        let nc = sups[c as int].name@;
+        if bytes_lt(nc, na) {
+            if na == nb {
+            } else {
+                lemma_bytes_lt_total(na, nb);
+                lemma_bytes_lt_trans(nc, na, nb);
+            }
+        }
+    }
+}
+
+/// A nation's supplier list: the suppliers with nationkey nk (the same bag
+/// as nat_filter), sorted by name so that a nation's suppliers come out of
+/// gather already in GROUP BY s_name order.
+pub open spec fn nat_list_ok(sups: Seq<SupE>, nk: i32, l: Seq<usize>) -> bool {
+    &&& same_bag(l, nat_filter(sups, nk, sups.len() as int))
+    &&& all_valid(l, valid_sup(sups))
+    &&& sorted_le(l, name_le(sups))
+}
+
 /// Supplier / nation rows are the tables as bags (row order is irrelevant).
 pub open spec fn static_ok(st: Static, db: Db) -> bool {
     &&& sups_view(st.sups@).to_multiset() == db.supplier.to_multiset()
@@ -204,11 +269,7 @@ pub open spec fn static_ok(st: Static, db: Db) -> bool {
     &&& st.sups@.len() < usize::MAX
     &&& st.nat_sups@.len() == st.nats@.len()
     &&& forall|j: int|
-        0 <= j < st.nats@.len() ==> (#[trigger] st.nat_sups@[j])@ == nat_filter(
-            st.sups@,
-            st.nats@[j].nk,
-            st.sups@.len() as int,
-        )
+        0 <= j < st.nats@.len() ==> nat_list_ok(st.sups@, st.nats@[j].nk, (#[trigger] st.nat_sups@[j])@)
 }
 
 // ── Order map: persistent base shared across versions + small overlay ──────
@@ -218,6 +279,7 @@ pub struct OrderMap {
     pub okeys: Vec<i64>,
 }
 
+// Finds the current record for an order: pending changes take precedence (a recorded deletion means none), then the base table, else absent.
 pub open spec fn om_get(m: OrderMap, ok: i64) -> Option<OrdE> {
     if m.overlay@.contains_key(ok) {
         m.overlay@[ok]
@@ -228,6 +290,8 @@ pub open spec fn om_get(m: OrderMap, ok: i64) -> Option<OrdE> {
     }
 }
 
+// Every order is either stored with a correct record or has no 'F' rows and is absent; stored counts fit in 64 bits,
+// and every pending change is tracked in the key list. Ensures the order table faithfully describes the database.
 pub open spec fn orders_inv(m: OrderMap, db: Db) -> bool {
     &&& forall|ok: i64|
         match #[trigger] om_get(m, ok) {
@@ -238,6 +302,7 @@ pub open spec fn orders_inv(m: OrderMap, db: Db) -> bool {
     &&& forall|k: i64| #[trigger] m.overlay@.contains_key(k) ==> m.okeys@.contains(k)
 }
 
+// Executable lookup of an order's record, guaranteed to return exactly what the logical lookup says.
 pub fn om_get_exec(m: &OrderMap, ok: i64) -> (r: Option<&OrdE>)
     ensures
         r.is_some() == om_get(*m, ok).is_some(),
@@ -254,6 +319,7 @@ pub fn om_get_exec(m: &OrderMap, ok: i64) -> (r: Option<&OrdE>)
 }
 
 /// W per suppkey (absent = 0).  W depends only on lineitem and orders.
+// Reads a supplier-total table as a function, treating a missing supplier as total 0 (no waiting orders).
 pub open spec fn wget(m: Map<i64, i64>, sk: i64) -> int {
     if m.contains_key(sk) {
         m[sk] as int
@@ -262,10 +328,12 @@ pub open spec fn wget(m: Map<i64, i64>, sk: i64) -> int {
     }
 }
 
+// The supplier-total table is correct: each supplier's entry equals its true waiting-order total, so answers need no rescan.
 pub open spec fn w_ok(m: Map<i64, i64>, db: Db) -> bool {
     forall|sk: i64| #[trigger] wget(m, sk) == w(db, sk as int)
 }
 
+// Executable lookup of a supplier's waiting-order total, defaulting to 0 when absent, matching the logical lookup.
 pub fn wget_exec(m: &HashMap<i64, i64>, sk: i64) -> (r: i64)
     ensures
         r as int == wget(m@, sk),
@@ -285,6 +353,7 @@ pub struct State {
     db: Ghost<Db>,
 }
 
+// The maintained state is correct as a whole: supplier/nation tables, per-order records and supplier totals all match the current database.
 pub open spec fn state_ok(st: Static, orders: OrderMap, wm: Map<i64, i64>, db: Db) -> bool {
     &&& static_ok(st, db)
     &&& orders_inv(orders, db)
@@ -314,6 +383,7 @@ impl State {
         self.wm@
     }
 
+    // Builds a state from correct parts; the invariant is what makes the resulting state usable and maintainable.
     pub fn new(st: Arc<Static>, orders: OrderMap, wm: HashMap<i64, i64>, Ghost(db): Ghost<Db>) -> (r: State)
         requires
             state_ok(*st, orders, wm@, db),
@@ -326,6 +396,7 @@ impl State {
         State { st, orders, wm, db: Ghost(db) }
     }
 
+    // Exposes the state's pieces to read from while retaining the guarantee that they jointly describe the current database.
     pub fn parts(&self) -> (r: (&Static, &OrderMap, &HashMap<i64, i64>))
         ensures
             *r.0 == self.st(),
@@ -339,6 +410,7 @@ impl State {
         (&*self.st, &self.orders, &self.wm)
     }
 
+    // Cheaply shares the supplier/nation tables, which never change under updates, so a new state can reuse them without copying.
     pub fn static_arc(&self) -> (r: Arc<Static>)
         ensures
             *r == self.st(),

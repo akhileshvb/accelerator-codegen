@@ -20,6 +20,8 @@ pub open spec fn bytes_lt(a: Seq<u8>, b: Seq<u8>) -> bool
 }
 
 
+// No string is strictly less than itself; with asymmetry, transitivity and totality this makes
+// byte-wise (C collation) string order a strict total order, so ORDER BY on names is well defined.
 pub proof fn lemma_bytes_lt_irrefl(a: Seq<u8>)
     ensures
         !bytes_lt(a, a),
@@ -30,6 +32,8 @@ pub proof fn lemma_bytes_lt_irrefl(a: Seq<u8>)
     }
 }
 
+// Two strings cannot each be less than the other, so the ordering never contradicts itself;
+// needed to show that sorting by name (ties broken by other keys) is consistent.
 pub proof fn lemma_bytes_lt_asym(a: Seq<u8>, b: Seq<u8>)
     ensures
         !(bytes_lt(a, b) && bytes_lt(b, a)),
@@ -40,6 +44,8 @@ pub proof fn lemma_bytes_lt_asym(a: Seq<u8>, b: Seq<u8>)
     }
 }
 
+// If a < b and b < c then a < c; needed to show the sort comparison is a preorder,
+// which the merge sort relies on to produce a correctly ordered result.
 pub proof fn lemma_bytes_lt_trans(a: Seq<u8>, b: Seq<u8>, c: Seq<u8>)
     requires
         bytes_lt(a, b),
@@ -53,6 +59,8 @@ pub proof fn lemma_bytes_lt_trans(a: Seq<u8>, b: Seq<u8>, c: Seq<u8>)
     }
 }
 
+// Any two different strings are ordered one way or the other, so no pair is incomparable;
+// gives the sort's comparison the totality that merge sort needs.
 pub proof fn lemma_bytes_lt_total(a: Seq<u8>, b: Seq<u8>)
     requires
         a != b,
@@ -77,6 +85,8 @@ pub proof fn lemma_bytes_lt_total(a: Seq<u8>, b: Seq<u8>)
     }
 }
 
+// If two strings begin with the same first i bytes, then which is smaller is decided entirely by
+// what follows those bytes; lets the comparison loop skip an equal prefix and continue.
 proof fn lemma_bytes_lt_skip(a: Seq<u8>, b: Seq<u8>, i: int)
     requires
         0 <= i <= a.len(),
@@ -100,6 +110,8 @@ proof fn lemma_bytes_lt_skip(a: Seq<u8>, b: Seq<u8>, i: int)
     }
 }
 
+// Fast string comparison in code: skip equal bytes, decide at the first differing byte, else the
+// shorter string is smaller. It is proven to give the same answer as the mathematical ordering.
 pub fn bytes_lt_exec(a: &[u8], b: &[u8]) -> (r: bool)
     ensures
         r == bytes_lt(a@, b@),
@@ -120,6 +132,8 @@ pub fn bytes_lt_exec(a: &[u8], b: &[u8]) -> (r: bool)
         decreases n - i,
     {
         if a[i] != b[i] {
+            // Found the first byte where they differ: because everything before it is equal, the whole
+            // comparison is just that one byte pair (a[i] < b[i]).
             proof {
                 lemma_bytes_lt_skip(a@, b@, i as int);
                 assert(a@.skip(i as int)[0] == a@[i as int]);
@@ -127,18 +141,23 @@ pub fn bytes_lt_exec(a: &[u8], b: &[u8]) -> (r: bool)
             }
             return a[i] < b[i];
         }
+        // Advance the loop: since byte i matched, the two strings now agree on their first i+1 bytes.
         proof {
             assert(a@.take(i as int + 1) =~= a@.take(i as int).push(a@[i as int]));
             assert(b@.take(i as int + 1) =~= b@.take(i as int).push(b@[i as int]));
         }
         i += 1;
     }
+    // No byte differed within the shorter length, so the shared prefix is the shorter string;
+    // the ordering then reduces to 'the shorter string is smaller' (compare lengths).
     proof {
         lemma_bytes_lt_skip(a@, b@, n as int);
     }
     a.len() < b.len()
 }
 
+// Fast string equality in code: lengths match and every byte matches; proven to give the same
+// answer as equality of the mathematical byte sequences.
 pub fn bytes_eq_exec(a: &[u8], b: &[u8]) -> (r: bool)
     ensures
         r == (a@ == b@),
@@ -161,6 +180,7 @@ pub fn bytes_eq_exec(a: &[u8], b: &[u8]) -> (r: bool)
         }
         i += 1;
     }
+    // Same length and every position agrees, so the two byte sequences are equal as values.
     proof {
         assert(a@ =~= b@);
     }

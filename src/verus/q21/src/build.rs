@@ -3,6 +3,8 @@ use vstd::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use verus_common::sums::*;
+use verus_common::bytes::*;
+use verus_common::sort::*;
 use crate::spec::*;
 use crate::bridge::*;
 use crate::orderspec::*;
@@ -41,26 +43,38 @@ pub open spec fn build_contract(
         )
 }
 
+// Widens the scanned order keys to unbounded integers, so they can be fed to the sum/count
+// machinery that reasons over mathematical ints.
 pub open spec fn ikeys(ks: Seq<i64>) -> Seq<int> {
     ks.map_values(|k: i64| k as int)
 }
 
+// 0/1 indicator of 'this key equals ok'; summing it over the scanned keys counts how many
+// times that order appears, i.e. a COUNT(*) ... WHERE key = ok.
 pub open spec fn key_is(ok: int) -> spec_fn(int) -> int {
     |k: int| ind(k == ok)
 }
 
+// How many times an order key appears among the scanned finished-order keys; this is the
+// order's multiplicity, which later scales its contribution to each supplier's total.
 pub open spec fn fcount(fkeys: Seq<i64>, ok: int) -> int {
     sum(ikeys(fkeys), key_is(ok))
 }
 
+// Per-order, per-supplier lineitem count (GROUP BY orderkey, suppkey) taken from the scanned rows
+// instead of the abstract table; it is the running quantity while building and updating.
 pub open spec fn cnt_rows(lis: Seq<LiRow>, ok: int, sk: int) -> int {
     sum(lis_view(lis), |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk))
 }
 
+// Same per-order, per-supplier count as above, but only over late lineitems
+// (receipt date after commit date).
 pub open spec fn lcnt_rows(lis: Seq<LiRow>, ok: int, sk: int) -> int {
     sum(lis_view(lis), |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk && late(l)))
 }
 
+// Appending one key to a scanned prefix appends the same key to its integer version;
+// this is the one-row step when counting order-key occurrences incrementally.
 pub proof fn lemma_ikeys_take(ks: Seq<i64>, t: int)
     requires
         0 <= t < ks.len(),
@@ -70,6 +84,8 @@ pub proof fn lemma_ikeys_take(ks: Seq<i64>, t: int)
     assert(ikeys(ks.take(t + 1)) =~= ikeys(ks.take(t)).push(ks[t] as int));
 }
 
+// Appending one lineitem row to a prefix appends its logical row to the abstract table;
+// this is the one-row step when maintaining the per-supplier counts incrementally.
 pub proof fn lemma_lis_take(lis: Seq<LiRow>, t: int)
     requires
         0 <= t < lis.len(),
@@ -79,6 +95,8 @@ pub proof fn lemma_lis_take(lis: Seq<LiRow>, t: int)
     assert(lis_view(lis.take(t + 1)) =~= lis_view(lis.take(t)).push(li_view(lis[t])));
 }
 
+// If the scanned distinct order keys have no repeats as machine numbers, they have none as
+// integers either, so summing per distinct order is a valid group-by over orders.
 pub proof fn lemma_count_distinct_keys(ks: Seq<i64>)
     requires
         forall|i: int, j: int| 0 <= i < ks.len() && 0 <= j < ks.len() && i != j ==> ks[i] != ks[j],
@@ -93,6 +111,8 @@ pub proof fn lemma_count_distinct_keys(ks: Seq<i64>)
 }
 
 // ── per-nation supplier lists ──────────────────────────────────────────────
+// Scanning suppliers one at a time: adding supplier t to the prefix keeps it in the nation's
+// list exactly when its nation matches (one step of a WHERE nationkey = nk filter).
 pub proof fn lemma_nat_filter_step(sups: Seq<SupE>, nk: i32, t: int)
     requires
         0 <= t < usize::MAX,
@@ -110,28 +130,38 @@ pub proof fn lemma_nat_filter_step(sups: Seq<SupE>, nk: i32, t: int)
     reveal_with_fuel(Seq::filter, 1);
 }
 
+// Builds a nation-to-suppliers index (like a hash-join build side) so a nation's suppliers
+// can be found without rescanning all suppliers.  Each list is sorted by s_name, so a
+// nation's suppliers are already in GROUP BY order when execute reads them.
 pub fn build_nat_sups(sups: &Vec<SupE>, nats: &Vec<NatE>) -> (r: Vec<Vec<usize>>)
     requires
         sups@.len() < usize::MAX,
     ensures
         r@.len() == nats@.len(),
-        forall|j: int|
-            0 <= j < nats@.len() ==> (#[trigger] r@[j])@ == nat_filter(
-                sups@,
-                nats@[j].nk,
-                sups@.len() as int,
-            ),
+        forall|j: int| 0 <= j < nats@.len() ==> nat_list_ok(sups@, nats@[j].nk, (#[trigger] r@[j])@),
 {
     let mut r: Vec<Vec<usize>> = Vec::new();
     let nn = nats.len();
     let ns = sups.len();
+    let name_cmp = |a: usize, b: usize| -> (res: bool)
+        requires
+            a < ns && b < ns && ns == sups@.len(),
+        ensures
+            res == name_le(sups@)(a, b),
+        { !bytes_lt_exec(sups[b].name.as_slice(), sups[a].name.as_slice()) };
+    proof {
+        lemma_name_le_preorder(sups@);
+        assert(cmp_ok(&name_cmp, name_le(sups@), valid_sup(sups@)));
+    }
     let mut j: usize = 0;
     while j < nn
         invariant
             0 <= j <= nn == nats@.len(),
             ns == sups@.len() < usize::MAX,
             r@.len() == j,
-            forall|jj: int| 0 <= jj < j ==> (#[trigger] r@[jj])@ == nat_filter(sups@, nats@[jj].nk, ns as int),
+            cmp_ok(&name_cmp, name_le(sups@), valid_sup(sups@)),
+            preorder_on(name_le(sups@), valid_sup(sups@)),
+            forall|jj: int| 0 <= jj < j ==> nat_list_ok(sups@, nats@[jj].nk, (#[trigger] r@[jj])@),
         decreases nn - j,
     {
         let nk = nats[j].nk;
@@ -146,6 +176,7 @@ pub fn build_nat_sups(sups: &Vec<SupE>, nats: &Vec<NatE>) -> (r: Vec<Vec<usize>>
             invariant
                 0 <= i <= ns == sups@.len() < usize::MAX,
                 v@ == nat_filter(sups@, nk, i as int),
+                all_valid(v@, valid_sup(sups@)),
             decreases ns - i,
         {
             proof {
@@ -156,7 +187,17 @@ pub fn build_nat_sups(sups: &Vec<SupE>, nats: &Vec<NatE>) -> (r: Vec<Vec<usize>>
             }
             i += 1;
         }
-        r.push(v);
+        let sv = sort_idx(&v, &name_cmp, Ghost(name_le(sups@)), Ghost(valid_sup(sups@)));
+        let ghost r0 = r@;
+        r.push(sv);
+        proof {
+            assert(r@[j as int]@ == sv@);
+            assert forall|jj: int| 0 <= jj < j + 1 implies nat_list_ok(sups@, nats@[jj].nk, (#[trigger] r@[jj])@) by {
+                if jj < j {
+                    assert(r@[jj] == r0[jj]);
+                }
+            }
+        }
         j += 1;
     }
     r
@@ -169,6 +210,8 @@ pub open spec fn fmap_ok(m: Map<i64, OrdE>, ks: Seq<i64>, fkeys: Seq<i64>) -> bo
     &&& forall|i: int, j: int| 0 <= i < ks.len() && 0 <= j < ks.len() && i != j ==> ks[i] != ks[j]
 }
 
+// Groups the finished ('F') orders by key into a lookup table with each key's multiplicity
+// and no lineitem info yet, plus the distinct keys; None if a counter would overflow.
 pub fn build_fmap(fkeys: &[i64]) -> (r: Option<(HashMap<i64, OrdE>, Vec<i64>)>)
     ensures
         r matches Some(p) ==> {
@@ -272,6 +315,8 @@ pub fn build_fmap(fkeys: &[i64]) -> (r: Option<(HashMap<i64, OrdE>, Vec<i64>)>)
 }
 
 // ── accumulate lineitems into the per-order entries ─────────────────────────
+// Each order's per-supplier (total, late) counts are well formed (one entry per supplier)
+// and equal the counts over the scanned lineitem rows; holds throughout the accumulation loop.
 pub open spec fn acc_ok(m: Map<i64, OrdE>, lis: Seq<LiRow>) -> bool {
     forall|ok: i64| #[trigger]
         m.contains_key(ok) ==> {
@@ -282,6 +327,8 @@ pub open spec fn acc_ok(m: Map<i64, OrdE>, lis: Seq<LiRow>) -> bool {
         }
 }
 
+// Scans lineitems and, for each, bumps its supplier's total (and late) count within its
+// finished order (a GROUP BY orderkey, suppkey); orders themselves are unchanged. False on overflow.
 pub fn build_accumulate(m: &mut HashMap<i64, OrdE>, lis: &[LiRow]) -> (ok: bool)
     requires
         acc_ok(old(m)@, lis@.take(0)),
@@ -383,6 +430,8 @@ pub fn build_accumulate(m: &mut HashMap<i64, OrdE>, lis: &[LiRow]) -> (ok: bool)
 }
 
 // ── Build ──────────────────────────────────────────────────────────────────
+// Given the scan inputs really come from the database, counting an order key among the
+// scanned finished-order keys gives the order's true multiplicity in the orders table.
 pub proof fn lemma_fcount_is_fm(fkeys: Seq<i64>, lis: Seq<LiRow>, sups: Seq<SupE>, nats: Seq<NatE>, db: Db, ok: int)
     requires
         build_contract(sups, nats, fkeys, lis, db),
@@ -399,6 +448,8 @@ pub proof fn lemma_fcount_is_fm(fkeys: Seq<i64>, lis: Seq<LiRow>, sups: Seq<SupE
     assert(fm(db, ok) == sum(db.orders, h));
 }
 
+// For an order that is a finished order, counts from the scanned lineitem rows agree
+// with the true per-supplier counts in the database (filtering to 'F' orders loses nothing).
 pub proof fn lemma_rows_are_counts(fkeys: Seq<i64>, lis: Seq<LiRow>, sups: Seq<SupE>, nats: Seq<NatE>, db: Db, ok: int, sk: int)
     requires
         build_contract(sups, nats, fkeys, lis, db),
@@ -433,6 +484,8 @@ pub open spec fn po(db: Db, sk: int) -> spec_fn(int) -> int {
     |ok: int| per_order(db, ok, sk)
 }
 
+// Computes each supplier's final count (numwait) by visiting every distinct finished order,
+// adding the order's multiplicity times its qualifying-late-line count to the one supplier who qualifies.
 pub fn compute_w(
     m: &HashMap<i64, OrdE>,
     ks: &Vec<i64>,
@@ -516,6 +569,8 @@ pub fn compute_w(
     Some(wm)
 }
 
+// Builds the full incremental state (indexes, per-order counts, per-supplier totals) from
+// the base-table scans and proves it represents the database; None on overflow.
 pub fn build(
     sups: Vec<SupE>,
     nats: Vec<NatE>,

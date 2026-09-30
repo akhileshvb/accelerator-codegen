@@ -22,6 +22,12 @@ function(accel_build_mysql_plugin)
     return()
   endif()
 
+  # Verus-verified stateless Q1 (scripts/build_q1_verus.sh builds the archive).
+  set(_mysql_q1_verus_lib "${CMAKE_CURRENT_SOURCE_DIR}/build-verus/libq1_verus.a")
+  if(EXISTS "${_mysql_q1_verus_lib}")
+    list(APPEND _mysql_plugin_sources src/generated/tpch/q1/mysql/verus/entry.cpp)
+  endif()
+
   add_library(accelerator_codegen_mysql MODULE ${_mysql_plugin_sources})
   set_target_properties(accelerator_codegen_mysql PROPERTIES
     PREFIX ""
@@ -32,6 +38,9 @@ function(accel_build_mysql_plugin)
       accelerator_codegen
       duckdb_sibling
   )
+  if(EXISTS "${_mysql_q1_verus_lib}")
+    target_link_libraries(accelerator_codegen_mysql PRIVATE ${_mysql_q1_verus_lib} pthread dl m)
+  endif()
   target_include_directories(accelerator_codegen_mysql
     PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include

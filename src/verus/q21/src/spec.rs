@@ -21,6 +21,7 @@
 //     AND n_name = :nation
 //   GROUP BY s_name
 //   ORDER BY numwait DESC, s_name
+//   LIMIT 100
 //
 // Semantic decisions (each is part of what a reviewer signs off on):
 //  * Tables are bags: a table is a sequence of rows and duplicate rows count
@@ -31,14 +32,24 @@
 //  * Only the columns Q21 reads are modelled.  `o_orderstatus = 'F'` is kept
 //    as the boolean `status_is_f` (exact string equality with "F").
 //  * Dates are day numbers; `>` on dates is `>` on day numbers.
-//  * Text is a byte string (varchar, UTF-8 bytes).  Equality is byte
-//    equality.  ORDER BY s_name uses the C collation: byte-wise
-//    lexicographic, a proper prefix sorts first (the runtime refuses to run
-//    unless s_name has a C collation).
+//  * Text is a byte string (UTF-8 bytes).  Equality is byte equality.
+//    ORDER BY s_name uses the C collation: byte-wise lexicographic, a proper
+//    prefix sorts first (the runtime refuses to run unless s_name has a C
+//    collation).
+//  * s_name and n_name are CHAR(25).  A CHAR value is modelled as the bytes
+//    the engine compares, and :nation as the bytes it is compared against.
+//    HOST CONTRACT: the scans deliver s_name / n_name, and the host passes
+//    :nation, in that form, so that byte equality and bytes_lt agree with the
+//    engine's CHAR comparison.  An engine that pads CHAR with spaces but
+//    ignores trailing spaces when comparing (PostgreSQL bpchar, MySQL CHAR)
+//    is given the values with trailing spaces removed, which is its CHAR ->
+//    text cast; :nation is passed unchanged.  DuckDB's CHAR is VARCHAR and is
+//    passed unchanged.  Output names are in the same form.
 //  * COUNT(*) of a group is the number of FROM-clause tuples satisfying WHERE
 //    with that s_name; a group is present iff that number is positive.
 //  * The result order is total: groups have distinct names, so (numwait DESC,
-//    s_name) never ties and the output sequence is unique.
+//    s_name) never ties and the output sequence is unique.  LIMIT 100 is
+//    therefore the first 100 rows of that sequence (all rows if fewer).
 use vstd::prelude::*;
 pub use verus_common::bytes::bytes_lt;
 use verus_common::sums::*;
@@ -118,7 +129,7 @@ pub open spec fn where_clause(
 }
 
 /// COUNT(*) for the group s_name = g: the number of tuples of
-/// supplier × lineitem × orders × nation (bag product) satisfying WHERE whose
+/// supplier × lineitem × orders × nation (bag product) satisfyingg WHERE whose
 /// s_name is g.
 pub open spec fn numwait(db: Db, nation_param: Seq<u8>, g: Seq<u8>) -> int {
     sum(
@@ -142,13 +153,14 @@ pub open spec fn numwait(db: Db, nation_param: Seq<u8>, g: Seq<u8>) -> int {
 
 // bytes_lt (byte-wise lexicographic order = C collation, a proper prefix
 // sorts first) is defined in verus_common::bytes and is part of this spec.
-/// ORDER BY numwait DESC, s_name: row a sorts strictly before row b.
+/// ORDER BY num wait DESC, s_name: row a sorts strictly before row b.
 pub open spec fn row_before(a: (Seq<u8>, int), b: (Seq<u8>, int)) -> bool {
     a.1 > b.1 || (a.1 == b.1 && bytes_lt(a.0, b.0))
 }
 
-/// `out` is the answer to Q21 on `db` for :nation = nation_param.
-pub open spec fn q21_result(db: Db, nation_param: Seq<u8>, out: Seq<(Seq<u8>, int)>) -> bool {
+/// out =  the answer to Q21 without its LIMIT: every group, in ORDER BY
+/// order.
+pub open spec fn q21_full_result(db: Db, nation_param: Seq<u8>, out: Seq<(Seq<u8>, int)>) -> bool {
     // ORDER BY numwait DESC, s_name (strict: one row per group)
     &&& forall|i: int, j: int|
         0 <= i < j < out.len() ==> row_before(#[trigger] out[i], #[trigger] out[j])
@@ -160,6 +172,26 @@ pub open spec fn q21_result(db: Db, nation_param: Seq<u8>, out: Seq<(Seq<u8>, in
     &&& forall|g: Seq<u8>|
         #[trigger] numwait(db, nation_param, g) > 0 ==> exists|i: int|
             0 <= i < out.len() && (#[trigger] out[i]).0 == g
+}
+
+/// LIMIT 100
+pub open spec fn q21_limit() -> int {
+    100
+}
+
+/// LIMIT n: the first n rows, or all rows if there are fewer.
+pub open spec fn limit_rows(rows: Seq<(Seq<u8>, int)>, n: int) -> Seq<(Seq<u8>, int)> {
+    if rows.len() <= n {
+        rows
+    } else {
+        rows.take(n)
+    }
+}
+
+/// `out` is the answer to Q21 on `db` for :nation = nation_param.
+pub open spec fn q21_result(db: Db, nation_param: Seq<u8>, out: Seq<(Seq<u8>, int)>) -> bool {
+    exists|full: Seq<(Seq<u8>, int)>|
+        #[trigger] q21_full_result(db, nation_param, full) && out == limit_rows(full, q21_limit())
 }
 
 } // verus!

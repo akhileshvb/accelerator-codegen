@@ -47,7 +47,7 @@ const char *kBaseSql =
     "l2.l_suppkey <> l1.l_suppkey) AND NOT EXISTS (SELECT * FROM lineitem l3 WHERE "
     "l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND "
     "l3.l_receiptdate > l3.l_commitdate) AND s_nationkey = n_nationkey AND "
-    "n_name = '%s' GROUP BY s_name ORDER BY numwait DESC, s_name";
+    "n_name = '%s' GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100";
 constexpr int64_t kNewKeyBase = 900000000;
 
 void Require(bool ok, const std::string &msg) {
@@ -227,6 +227,15 @@ std::string FnFor(const std::string &system) {
   return system == "verus" ? "accel_tpch_q21_verus" : "accel_tpch_q21_aux";
 }
 
+// The accelerator's answer.  The C++ accelerator has no LIMIT; LIMIT 100 is
+// its first 100 rows.
+Rows AccelRows(duckdb::Connection &c, const std::string &system, const std::string &n) {
+  auto rows = Fetch(c, AccelSql(FnFor(system), n));
+  if (system != "verus" && rows.size() > 100)
+    rows.resize(100);
+  return rows;
+}
+
 void Restore(duckdb::DuckDB &db, const std::vector<std::pair<int64_t, int32_t>> &points) {
   duckdb::Connection c(db);
   Q(c, "DELETE FROM lineitem WHERE l_orderkey >= " + std::to_string(kNewKeyBase));
@@ -288,7 +297,7 @@ RunResult WriteRun(duckdb::DuckDB &db, const std::string &system, const std::str
   if (rt) {
     for (int i = 0; i < 4; ++i) {
       const auto &n = nations[(i * 7) % nations.size()];
-      if (Fetch(qc, AccelSql(FnFor(system), n)) != Fetch(qc, BaseSql(n)))
+      if (AccelRows(qc, system, n) != Fetch(qc, BaseSql(n)))
         out.matches = false;
     }
   }
@@ -352,7 +361,7 @@ int main(int argc, char **argv) {
       int bad = 0, rows = 0;
       std::vector<double> med;
       for (const auto &n : nations) {
-        const auto a = Fetch(c, AccelSql(FnFor(system), n));
+        const auto a = AccelRows(c, system, n);
         const auto b = Fetch(c, BaseSql(n));
         rows += b.size();
         if (a != b) {

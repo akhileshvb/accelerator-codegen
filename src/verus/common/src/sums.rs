@@ -31,6 +31,7 @@ pub open spec fn rng(n: int) -> Seq<int> {
     Seq::new(n as nat, |i: int| i)
 }
 
+// An empty list sums to 0; the base case that other sum facts build on.
 pub proof fn lemma_sum_empty<A>(s: Seq<A>, f: spec_fn(A) -> int)
     requires
         s.len() == 0,
@@ -39,6 +40,8 @@ pub proof fn lemma_sum_empty<A>(s: Seq<A>, f: spec_fn(A) -> int)
 {
 }
 
+// Adding one item at the end raises the sum by that item's value: the step used when a loop
+// builds a list row by row and keeps a running total (as in group-by/aggregate loops).
 pub proof fn lemma_sum_push<A>(s: Seq<A>, x: A, f: spec_fn(A) -> int)
     ensures
         sum(s.push(x), f) == sum(s, f) + f(x),
@@ -46,6 +49,8 @@ pub proof fn lemma_sum_push<A>(s: Seq<A>, x: A, f: spec_fn(A) -> int)
     assert(s.push(x).drop_last() =~= s);
 }
 
+// The sum of the first i+1 items is the sum of the first i items plus item i: the running-total
+// step for loops that scan a table one row at a time.
 pub proof fn lemma_sum_take<A>(s: Seq<A>, i: int, f: spec_fn(A) -> int)
     requires
         0 <= i < s.len(),
@@ -55,6 +60,7 @@ pub proof fn lemma_sum_take<A>(s: Seq<A>, i: int, f: spec_fn(A) -> int)
     assert(s.take(i + 1).drop_last() =~= s.take(i));
 }
 
+// The prefix covering the whole list is the list itself, so its sum is the full sum.
 pub proof fn lemma_sum_take_full<A>(s: Seq<A>, f: spec_fn(A) -> int)
     ensures
         sum(s.take(s.len() as int), f) == sum(s, f),
@@ -62,6 +68,7 @@ pub proof fn lemma_sum_take_full<A>(s: Seq<A>, f: spec_fn(A) -> int)
     assert(s.take(s.len() as int) =~= s);
 }
 
+// A one-item list sums to that item's value.
 pub proof fn lemma_sum_singleton<A>(x: A, f: spec_fn(A) -> int)
     ensures
         sum(seq![x], f) == f(x),
@@ -71,6 +78,8 @@ pub proof fn lemma_sum_singleton<A>(x: A, f: spec_fn(A) -> int)
     assert(seq![x].last() == x);
 }
 
+// A sum over two lists concatenated is the sum over the first plus the sum over the second;
+// lets aggregates over a table be computed piecewise (e.g. per half in merge sort, or old + new rows).
 pub proof fn lemma_sum_concat<A>(a: Seq<A>, b: Seq<A>, f: spec_fn(A) -> int)
     ensures
         sum(a + b, f) == sum(a, f) + sum(b, f),
@@ -84,6 +93,7 @@ pub proof fn lemma_sum_concat<A>(a: Seq<A>, b: Seq<A>, f: spec_fn(A) -> int)
     }
 }
 
+// Putting one item at the front raises the sum by that item's value.
 pub proof fn lemma_sum_prepend<A>(x: A, s: Seq<A>, f: spec_fn(A) -> int)
     ensures
         sum(seq![x] + s, f) == f(x) + sum(s, f),
@@ -92,6 +102,7 @@ pub proof fn lemma_sum_prepend<A>(x: A, s: Seq<A>, f: spec_fn(A) -> int)
     lemma_sum_singleton(x, f);
 }
 
+// A non-empty list's sum is its first item's value plus the sum of the rest.
 pub proof fn lemma_sum_drop_first<A>(s: Seq<A>, f: spec_fn(A) -> int)
     requires
         s.len() > 0,
@@ -129,6 +140,8 @@ pub proof fn lemma_sum_ext_all<A>(s: Seq<A>, f: spec_fn(A) -> int, g: spec_fn(A)
     lemma_sum_ext(s, f, g);
 }
 
+// If every item contributes 0 the total is 0 (e.g. no row matches a filter, so a count is 0);
+// used to show empty or non-matching groups produce no output.
 pub proof fn lemma_sum_zero<A>(s: Seq<A>, f: spec_fn(A) -> int)
     requires
         forall|i: int| 0 <= i < s.len() ==> f(#[trigger] s[i]) == 0,
@@ -145,6 +158,8 @@ pub proof fn lemma_sum_zero<A>(s: Seq<A>, f: spec_fn(A) -> int)
     }
 }
 
+// If every item contributes a value that is at least 0, so does the total; e.g. counts and
+// multiplicities never go negative, which is needed to reason about aggregate results.
 pub proof fn lemma_sum_nonneg<A>(s: Seq<A>, f: spec_fn(A) -> int)
     requires
         forall|i: int| 0 <= i < s.len() ==> f(#[trigger] s[i]) >= 0,
@@ -560,10 +575,14 @@ pub open spec fn unit_signs<A>(d: Seq<(A, int)>) -> bool {
     forall|i: int| 0 <= i < d.len() ==> (#[trigger] d[i]).1 == 1 || d[i].1 == -1
 }
 
+// The 'is it this value?' weight: 1 for rows equal to v and 0 otherwise. Summing it over a list
+// counts how many times v occurs, tying multiset counts to sums.
 pub open spec fn eqv<A>(v: A) -> spec_fn(A) -> int {
     |x: A| ind(x == v)
 }
 
+// How many times v occurs in a list (its multiset count) equals the sum of the is-it-v weight over
+// the list; proved by adding one row at a time. It turns sum equations into per-value counts.
 pub proof fn lemma_count_as_sum<A>(s: Seq<A>, v: A)
     ensures
         s.to_multiset().count(v) == sum(s, eqv(v)),
@@ -580,6 +599,8 @@ pub proof fn lemma_count_as_sum<A>(s: Seq<A>, v: A)
     }
 }
 
+// Turning a list into a multiset commutes with concatenation: the multiset of a joined list is the
+// union (sum) of the two multisets; used to state update results as multiset equations.
 pub proof fn lemma_to_multiset_concat<A>(a: Seq<A>, b: Seq<A>)
     ensures
         (a + b).to_multiset() =~= a.to_multiset().add(b.to_multiset()),

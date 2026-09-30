@@ -44,6 +44,13 @@ duckdb::TableFunctionSet CreateTpchQ21FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ20FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ8FunctionSet();
 duckdb::TableFunctionSet CreateTpchQ2FunctionSet();
+#ifdef ACCEL_HAVE_Q1_VERUS_DUCKDB
+duckdb::TableFunctionSet CreateTpchQ1VerusFunctionSet();
+duckdb::TableFunctionSet CreateTpchQ1VerusSimpleFunctionSet();
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+duckdb::TableFunctionSet CreateTpchQ1VerusParallelFunctionSet();
+#endif
+#endif
 
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
 duckdb::TableFunctionSet CreateTpchQ6ParallelFunctionSet();
@@ -83,6 +90,13 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
         RegisterTableFunction(catalog, context, CreateTpchQ6FunctionSet());
 
         RegisterTableFunction(catalog, context, CreateTpchQ1FunctionSet());
+#ifdef ACCEL_HAVE_Q1_VERUS_DUCKDB
+        RegisterTableFunction(catalog, context, CreateTpchQ1VerusFunctionSet());
+        RegisterTableFunction(catalog, context, CreateTpchQ1VerusSimpleFunctionSet());
+#ifdef ACCEL_ENABLE_PARALLEL_TPCH
+        RegisterTableFunction(catalog, context, CreateTpchQ1VerusParallelFunctionSet());
+#endif
+#endif
 
         RegisterTableFunction(catalog, context, CreateTpchQ3FunctionSet());
 

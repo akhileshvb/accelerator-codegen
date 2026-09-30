@@ -29,6 +29,11 @@ struct TpchQ21VerusConfig {
 
 // Engine scans.  Each must implement the SQL named in its comment exactly;
 // these are the trusted inputs of the kernel's proofs.
+//
+// s_name / n_name (CHAR(25)) are delivered in the form the engine compares
+// them (spec.rs, host contract): a space-padded CHAR whose trailing spaces
+// the engine ignores (PostgreSQL bpchar) comes without them, as its
+// CHAR -> text cast gives it; anything else comes unchanged.
 class TpchQ21VerusScan {
 public:
   virtual ~TpchQ21VerusScan() = default;
@@ -38,6 +43,12 @@ public:
   // SELECT n_nationkey, n_name FROM nation
   virtual void
   ScanNations(const std::function<void(int32_t, const std::string &)> &) = 0;
+  // Put a captured s_name (supplier) or n_name value, in the engine's text
+  // form, into the form the scans above deliver.
+  virtual void NormalizeCapturedName(bool supplier, std::string &name) const {
+    (void)supplier;
+    (void)name;
+  }
   // SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F'
   virtual void ScanFOrderKeys(const std::function<void(int64_t)> &) = 0;
   // SELECT l_orderkey, l_suppkey, l_commitdate, l_receiptdate FROM lineitem l
@@ -48,7 +59,8 @@ public:
   // this transaction's own writes.
   virtual void ScanLineitemsForKeys(const std::vector<int64_t> &keys,
                                     const std::function<void(const q21v_li_row &)> &) = 0;
-  // The catalog SQL itself (fallback path), rows in ORDER BY order.
+  // The catalog SQL itself (fallback path), rows in ORDER BY order, at most
+  // 100 (LIMIT 100); s_name in the same form as ScanSuppliers.
   virtual void RunReference(const std::string &nation,
                             const std::function<void(const std::string &, int64_t)> &) = 0;
 };

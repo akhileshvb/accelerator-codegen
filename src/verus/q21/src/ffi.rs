@@ -16,6 +16,7 @@ use crate::execute::execute;
 use crate::maint::{apply, needs_scan};
 use crate::state::{LiDelta, LiRow, NatE, OrdDelta, State, SupE};
 
+// Safely view a C pointer plus length as a Rust slice, mapping a null pointer or zero length to an empty slice.
 unsafe fn slice<'a, T>(p: *const T, n: usize) -> &'a [T] {
     if n == 0 || p.is_null() {
         &[]
@@ -24,6 +25,7 @@ unsafe fn slice<'a, T>(p: *const T, n: usize) -> &'a [T] {
     }
 }
 
+// Decode a packed list of strings (one byte buffer plus n+1 boundary offsets) into one owned byte vector per row.
 unsafe fn names<'a>(bytes: *const u8, off: *const usize, n: usize) -> Vec<Vec<u8>> {
     let off = slice(off, n + 1);
     let total = if n == 0 { 0 } else { off[n] };
@@ -71,6 +73,7 @@ pub unsafe extern "C" fn q21v_build(
 }
 
 #[no_mangle]
+// Free the maintained query state that the host got from build or apply; the host must not use it afterwards.
 pub unsafe extern "C" fn q21v_free(s: *mut State) {
     if !s.is_null() {
         drop(Box::from_raw(s));
@@ -159,6 +162,7 @@ pub unsafe extern "C" fn q21v_apply(
     }
 }
 
+// Query answer handed to the host: owned (supplier name, numwait) rows, read back through the accessor functions below.
 pub struct Q21Result {
     rows: Vec<(Vec<u8>, i64)>,
 }
@@ -173,12 +177,14 @@ pub unsafe extern "C" fn q21v_execute(s: *const State, p: *const u8, plen: usize
 }
 
 #[no_mangle]
+// How many answer rows (suppliers) the result holds.
 pub unsafe extern "C" fn q21v_result_len(r: *const Q21Result) -> usize {
     let rows = &(*r).rows;
     rows.len()
 }
 
 #[no_mangle]
+// Supplier name of answer row i as raw bytes (valid until the result is freed); its length goes into *len.
 pub unsafe extern "C" fn q21v_result_name(r: *const Q21Result, i: usize, len: *mut usize) -> *const u8 {
     let rows = &(*r).rows;
     let name = &rows[i].0;
@@ -187,12 +193,14 @@ pub unsafe extern "C" fn q21v_result_name(r: *const Q21Result, i: usize, len: *m
 }
 
 #[no_mangle]
+// numwait of answer row i: how many orders that supplier kept waiting.
 pub unsafe extern "C" fn q21v_result_count(r: *const Q21Result, i: usize) -> i64 {
     let rows = &(*r).rows;
     rows[i].1
 }
 
 #[no_mangle]
+// Free an answer returned by execute; its name pointers become invalid.
 pub unsafe extern "C" fn q21v_result_free(r: *mut Q21Result) {
     if !r.is_null() {
         drop(Box::from_raw(r));

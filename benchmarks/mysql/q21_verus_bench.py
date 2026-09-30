@@ -31,7 +31,7 @@ WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey AND o_orderstatus 
 AND l1.l_receiptdate > l1.l_commitdate
 AND EXISTS (SELECT * FROM lineitem l2 WHERE l2.l_orderkey = l1.l_orderkey AND l2.l_suppkey <> l1.l_suppkey)
 AND NOT EXISTS (SELECT * FROM lineitem l3 WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND l3.l_receiptdate > l3.l_commitdate)
-AND s_nationkey = n_nationkey AND n_name = %s GROUP BY s_name ORDER BY numwait DESC, s_name"""
+AND s_nationkey = n_nationkey AND n_name = %s GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100"""
 FUNCS = {"verus": "mysql_accel_tpch_q21_verus", "cpp": "mysql_accel_tpch_q21_aux"}
 TABLES = ["lineitem", "orders", "supplier", "nation"]
 NEW_KEY_BASE = 900_000_000
@@ -57,6 +57,8 @@ def query(cur, system, nation):
             if line:
                 name, n = line.rsplit("|", 1)
                 rows.append((name, int(n)))
+        if system == "cpp":
+            rows = rows[:100]  # the C++ accelerator has no LIMIT; LIMIT 100 is its first 100 rows
     return (time.perf_counter() - t) * 1e3, rows
 
 

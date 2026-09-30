@@ -1758,9 +1758,11 @@ struct TpchQ21VerusDuckScan : TpchQ21VerusScan {
         "l2.l_suppkey <> l1.l_suppkey) AND NOT EXISTS (SELECT * FROM lineitem l3 "
         "WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND "
         "l3.l_receiptdate > l3.l_commitdate) AND s_nationkey = n_nationkey AND "
-        "n_name = $1 GROUP BY s_name ORDER BY numwait DESC, s_name");
+        "n_name = $1 GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100");
     Require(stmt && !stmt->HasError(), stmt ? stmt->GetError() : "Q21 prepare failed");
-    auto result = stmt->Execute(::duckdb::Value(nation));
+    // Execute(args...) streams by default; the cast below needs a materialized result.
+    ::duckdb::vector<::duckdb::Value> params{::duckdb::Value(nation)};
+    auto result = stmt->Execute(params, /*allow_stream_result=*/false);
     Require(result && !result->HasError(), result ? result->GetError() : "Q21 failed");
     auto &materialized = dynamic_cast<::duckdb::MaterializedQueryResult &>(*result);
     for (::duckdb::idx_t row = 0; row < materialized.RowCount(); ++row)

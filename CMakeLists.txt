@@ -139,6 +139,21 @@ if(EXISTS "${ACCEL_Q21_VERUS_LIB}")
     target_link_libraries(accelerator_codegen PRIVATE ${ACCEL_Q21_VERUS_LIB} pthread dl m)
 endif()
 
+# Verus-verified stateless Q1 kernel (scripts/build_q1_verus.sh builds the
+# archive).  Each engine adds only its scan glue and entry point.
+set(ACCEL_Q1_VERUS_LIB "${CMAKE_CURRENT_SOURCE_DIR}/build-verus/libq1_verus.a"
+    CACHE FILEPATH "Verus Q1 kernel static library")
+if(EXISTS "${ACCEL_Q1_VERUS_LIB}")
+    message(STATUS "Q1 Verus kernel: ${ACCEL_Q1_VERUS_LIB}")
+    accel_codegen_engine_name(_ACCEL_Q1V_ENGINE)
+    target_compile_definitions(accelerator_codegen PUBLIC ACCEL_HAVE_Q1_VERUS)
+    if(_ACCEL_Q1V_ENGINE STREQUAL "duckdb")
+        target_sources(accelerator_codegen PRIVATE src/generated/tpch/q1/duckdb/verus/package.cpp)
+        target_compile_definitions(accelerator_codegen PUBLIC ACCEL_HAVE_Q1_VERUS_DUCKDB)
+    endif()
+    target_link_libraries(accelerator_codegen PRIVATE ${ACCEL_Q1_VERUS_LIB} pthread dl m)
+endif()
+
 target_compile_features(accelerator_codegen PUBLIC cxx_std_17)
 
 # Link finalize.cpp for every TPC-H aux module that exists on disk.
@@ -344,6 +359,10 @@ target_link_libraries(test_tpch_q18_shared_differential
 
 target_include_directories(test_tpch_q18_shared_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
+if(EXISTS "${ACCEL_Q1_VERUS_LIB}" AND NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQL)
+    add_executable(q1_verus_bench_duckdb benchmarks/duckdb/q1_verus_bench.cpp)
+    target_link_libraries(q1_verus_bench_duckdb PRIVATE accelerator_codegen duckdb_sibling)
+endif()
 if(EXISTS "${ACCEL_Q21_VERUS_LIB}" AND NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQL)
     add_executable(q21_verus_bench_duckdb benchmarks/duckdb/q21_verus_bench.cpp)
     target_link_libraries(q21_verus_bench_duckdb PRIVATE accelerator_codegen duckdb_sibling)
@@ -1028,6 +1047,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 	)
 
+	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel/test_tpch_q3_semantics.cpp")
 	add_executable(test_tpch_q3_semantics
 		tests/parallel/test_tpch_q3_semantics.cpp
 	)
@@ -1038,6 +1058,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
 		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 	)
+	endif()
 
 	add_executable(test_tpch_q5_semantics
 		tests/parallel/test_tpch_q5_semantics.cpp
@@ -1215,6 +1236,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 	)
 
+	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/parallel/benchmark_q3_parallel.cpp")
 	add_executable(benchmark_tpch_q3_parallel
 		benchmarks/tpch/parallel/benchmark_q3_parallel.cpp
 	)
@@ -1225,6 +1247,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
 		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 	)
+	endif()
 
 	add_executable(benchmark_tpch_q18_parallel
 		benchmarks/tpch/parallel/benchmark_q18_parallel.cpp

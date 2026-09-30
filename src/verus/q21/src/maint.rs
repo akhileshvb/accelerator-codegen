@@ -29,22 +29,32 @@ pub open spec fn scan_contract(db2: Db, keys: Seq<i64>, rows: Seq<LiRow>) -> boo
         )
 }
 
+// Effect of one order change on the count of 'F' rows for order ok: +1/-1 if it is an 'F' order with that key, else 0.
+// Summing over the batch gives how many 'F' rows the batch adds or removes for ok.
 pub open spec fn od_w(ok: int) -> spec_fn((Order, int)) -> int {
     |d: (Order, int)| d.1 * ind(d.0.orderkey == ok && d.0.status_is_f)
 }
 
+// Effect of one lineitem change on the count of supplier sk's lines in order ok: its +1/-1 sign if both keys match, else 0.
+// Summing over the batch gives the batch's net change in that line count.
 pub open spec fn ld_t(ok: int, sk: int) -> spec_fn((Lineitem, int)) -> int {
     |d: (Lineitem, int)| d.1 * ind(d.0.orderkey == ok && d.0.suppkey == sk)
 }
 
+// Same as the all-lines version but only for late lines (received after commit date), so the sum is the net change in late-line count.
+// Together the two counts decide whether a supplier is the only late one in an order.
 pub open spec fn ld_l(ok: int, sk: int) -> spec_fn((Lineitem, int)) -> int {
     |d: (Lineitem, int)| d.1 * ind(d.0.orderkey == ok && d.0.suppkey == sk && late(d.0))
 }
 
+// How much order ok's share of supplier sk's waiting-order total moves when the database goes from db to db2.
+// Summed over the affected orders it gives the change in sk's total, which is what the incremental update needs.
 pub open spec fn dpo(db: Db, db2: Db, sk: int) -> spec_fn(int) -> int {
     |ok: int| per_order(db2, ok, sk) - per_order(db, ok, sk)
 }
 
+// After a transaction, each count (F rows, supplier lines, late supplier lines) for an order equals its old value
+// plus the net weight of the batch's changes that touch it, so counts can be updated by deltas instead of recounted.
 proof fn lemma_step_counts(
     db: Db,
     db2: Db,
@@ -78,6 +88,8 @@ proof fn lemma_step_counts(
     );
 }
 
+// An order not touched by any change in the batch has the same F count and supplier line counts afterward,
+// so its stored per-order record stays valid and need not be recomputed.
 proof fn lemma_unchanged_order(
     db: Db,
     db2: Db,
@@ -113,12 +125,16 @@ proof fn lemma_unchanged_order(
 }
 
 // ── affected orderkeys ─────────────────────────────────────────────────────
+// Well-formedness of the list of affected orders and its lookup table: no duplicates, table keys are exactly the list,
+// and each key maps to its position. This lets us update per-order slots by key without double counting.
 pub open spec fn keys_ok(a: Seq<i64>, pos: Map<i64, usize>) -> bool {
     &&& forall|i: int, j: int| 0 <= i < a.len() && 0 <= j < a.len() && i != j ==> a[i] != a[j]
     &&& forall|k: i64| #[trigger] pos.contains_key(k) <==> a.contains(k)
     &&& forall|k: i64| #[trigger] pos.contains_key(k) ==> (pos[k] as int) < a.len() && a[pos[k] as int] == k
 }
 
+// Add an order key to the affected-orders list unless already present, keeping it duplicate-free and the lookup table
+// consistent, so every key seen so far stays findable.
 fn add_key(a: &mut Vec<i64>, pos: &mut HashMap<i64, usize>, k: i64)
     requires
         keys_ok(old(a)@, old(pos)@),
@@ -169,6 +185,8 @@ fn add_key(a: &mut Vec<i64>, pos: &mut HashMap<i64, usize>, k: i64)
     }
 }
 
+// Gather the distinct orders that the batch could affect: orders with an 'F' status change and orders with lineitem changes.
+// Only these orders need their per-order records refreshed; all others are provably unaffected.
 fn collect_keys(od: &[OrdDelta], ld: &[LiDelta]) -> (r: (Vec<i64>, HashMap<i64, usize>))
     ensures
         keys_ok(r.0@, r.1@),
@@ -206,6 +224,8 @@ fn collect_keys(od: &[OrdDelta], ld: &[LiDelta]) -> (r: (Vec<i64>, HashMap<i64, 
     (a, pos)
 }
 
+// Shows the gathered key list really covers every order mentioned in the batch, which is the premise for treating all
+// other orders as unchanged.
 proof fn lemma_within(a: Seq<i64>, od: Seq<OrdDelta>, ld: Seq<LiDelta>)
     requires
         forall|i: int| 0 <= i < od.len() && (#[trigger] od[i]).status_is_f != 0 ==> a.contains(od[i].orderkey),
@@ -225,6 +245,8 @@ proof fn lemma_within(a: Seq<i64>, od: Seq<OrdDelta>, ld: Seq<LiDelta>)
 }
 
 // ── 'F' multiplicity deltas per affected key ───────────────────────────────
+// For each affected order, total up the batch's +1/-1 changes to its number of 'F' order rows; give up (None) if the sum overflows.
+// This is the net change to how many times the order counts toward the answer.
 fn fm_deltas(od: &[OrdDelta], a: &Vec<i64>, pos: &HashMap<i64, usize>) -> (r: Option<Vec<i64>>)
     requires
         keys_ok(a@, pos@),
@@ -303,6 +325,8 @@ fn fm_deltas(od: &[OrdDelta], a: &Vec<i64>, pos: &HashMap<i64, usize>) -> (r: Op
 }
 
 // ── lineitem deltas into the working entries ───────────────────────────────
+// Fold each lineitem change into the per-order, per-supplier line counts (total and late) of its order;
+// returns false if a counter would overflow. After this, the counts reflect the batch's inserts and deletes.
 fn apply_ld(work: &mut Vec<Vec<Ent>>, ld: &[LiDelta], a: &Vec<i64>, pos: &HashMap<i64, usize>) -> (ok: bool)
     requires
         keys_ok(a@, pos@),
@@ -379,6 +403,8 @@ fn apply_ld(work: &mut Vec<Vec<Ent>>, ld: &[LiDelta], a: &Vec<i64>, pos: &HashMa
 }
 
 // ── targeted scan into fresh entries ───────────────────────────────────────
+// For orders that just became 'F', recount lines per supplier (total and late) from the rows the host scanned for them;
+// None on overflow. Needed because these orders have no stored counts to update incrementally.
 fn scan_accumulate(srows: &[LiRow], a: &Vec<i64>, pos: &HashMap<i64, usize>) -> (r: Option<Vec<Vec<Ent>>>)
     requires
         keys_ok(a@, pos@),
@@ -488,6 +514,8 @@ fn scan_accumulate(srows: &[LiRow], a: &Vec<i64>, pos: &HashMap<i64, usize>) -> 
     Some(sw)
 }
 
+// The host-scanned rows give correct per-supplier line counts for the scanned order in the new database,
+// so records built from them describe the post-transaction data.
 proof fn lemma_scan_counts(db2: Db, skeys: Seq<i64>, srows: Seq<LiRow>, ok: int, sk: int)
     requires
         scan_contract(db2, skeys, srows),
@@ -505,6 +533,8 @@ proof fn lemma_scan_counts(db2: Db, skeys: Seq<i64>, srows: Seq<LiRow>, ok: int,
 }
 
 // ── old records of the affected orders ─────────────────────────────────────
+// Fetch each affected order's pre-transaction data: its F count, per-supplier line counts, and whether it was stored.
+// These are the starting values that the batch's deltas are added to.
 fn load_old(orders: &OrderMap, a: &Vec<i64>) -> (r: (Vec<i64>, Vec<Vec<Ent>>, Vec<bool>))
     ensures
         r.0@.len() == a@.len(),
@@ -549,6 +579,7 @@ fn load_old(orders: &OrderMap, a: &Vec<i64>) -> (r: (Vec<i64>, Vec<Vec<Ent>>, Ve
     (fo, eo, tr)
 }
 
+// Copy a list of per-supplier count entries, guaranteeing the copy has identical contents; used so updates work on a copy.
 fn clone_ents(e: &Vec<Ent>) -> (r: Vec<Ent>)
     ensures
         r@ == e@,
@@ -560,6 +591,7 @@ fn clone_ents(e: &Vec<Ent>) -> (r: Vec<Ent>)
     r
 }
 
+// Look up an order key in the immutable base table, returning nothing if absent.
 pub open spec fn base_get(base: Map<i64, OrdE>, k: i64) -> Option<OrdE> {
     if base.contains_key(k) {
         Some(base[k])
@@ -693,6 +725,7 @@ pub open spec fn ord_eq(x: Option<OrdE>, y: Option<OrdE>) -> bool {
     }
 }
 
+// Copying an optional order record yields an equivalent record, so cloned records remain valid stand-ins for the originals.
 proof fn lemma_cloned_ord_eq(x: Option<OrdE>, y: Option<OrdE>)
     requires
         cloned::<Option<OrdE>>(x, y),
@@ -704,6 +737,8 @@ proof fn lemma_cloned_ord_eq(x: Option<OrdE>, y: Option<OrdE>)
     }
 }
 
+// Progress invariant while rewriting the order table for the first j affected orders: untouched orders keep their records,
+// rewritten ones match the new database (or are absent with zero F rows), and the table's bookkeeping stays consistent.
 pub open spec fn om_step_ok(m2: OrderMap, m: OrderMap, a: Seq<i64>, j: int, db: Db, db2: Db) -> bool {
     &&& forall|k: i64|
         !a.take(j).contains(k) ==> ord_eq(#[trigger] om_get(m2, k), om_get(m, k))

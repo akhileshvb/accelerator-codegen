@@ -58,8 +58,17 @@ function(accel_build_postgres_extension)
     list(APPEND _pg_ext_sources src/runtime/postgres/kernel_executor.cpp)
   endif()
 
+  # Verus-verified stateless Q1 (scripts/build_q1_verus.sh builds the archive).
+  set(_pg_q1_verus_lib "${CMAKE_CURRENT_SOURCE_DIR}/build-verus/libq1_verus.a")
+  if(EXISTS "${_pg_q1_verus_lib}")
+    list(APPEND _pg_ext_sources src/generated/tpch/q1/postgres/verus/entry.cpp)
+  endif()
+
   if(_pg_ext_sources)
     add_library(accelerator_codegen_pg MODULE ${_pg_ext_sources})
+    if(EXISTS "${_pg_q1_verus_lib}")
+      target_link_libraries(accelerator_codegen_pg PRIVATE ${_pg_q1_verus_lib} pthread dl m)
+    endif()
     set_target_properties(accelerator_codegen_pg PROPERTIES
       PREFIX ""
       SUFFIX ".so"

@@ -1,7 +1,26 @@
 #!/usr/bin/env python3
 """TPC-H Q21 on PostgreSQL: base SQL vs the Verus-verified accelerator
 (accel_tpch_q21_verus), with the existing C++ accelerator (accel_tpch_q21_aux)
-as a reference point.
+and materialized views as reference points.
+
+Materialized views (plain PostgreSQL).  pg_ivm (IMMV) cannot maintain Q21: it
+rejects NOT EXISTS, and EXISTS needs the subquery's correlated columns in the
+view's target list.  So the views are plain MATERIALIZED VIEWs, recomputed by
+REFRESH.  Two layouts:
+  mv         one view: Q21 without its :nation filter, grouped by
+             (n_name, s_name), index (n_name, numwait DESC, s_name); a query
+             is an ordered index scan of one nation's groups.
+  mv_nation  one view per nation (Q21 with that :nation, no LIMIT), index
+             (numwait DESC, s_name); a refresh recomputes one nation only.
+Under writes every write marks every view stale, and a query refreshes the
+view it reads if stale, inside the timed query (the cheapest refresh policy
+that keeps every answer current).  Views run without the capture triggers.
+
+Plain-PostgreSQL sessions (base and the views) run with enable_nestloop = off
+and max_parallel_workers_per_gather = 8: the fastest settings measured on this
+database for both the per-nation query and the refresh query (after ANALYZE;
+JIT made no difference).  With the defaults the planner estimates the
+NOT EXISTS anti join at one row and picks nested loops.
 
 Read-only: every nation parameter; base = median of --base-reps warm runs,
 accelerators = median of --acc-reps warm runs (the one-time build is reported
@@ -36,25 +55,77 @@ WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey AND o_orderstatus 
 AND l1.l_receiptdate > l1.l_commitdate
 AND EXISTS (SELECT * FROM lineitem l2 WHERE l2.l_orderkey = l1.l_orderkey AND l2.l_suppkey <> l1.l_suppkey)
 AND NOT EXISTS (SELECT * FROM lineitem l3 WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND l3.l_receiptdate > l3.l_commitdate)
-AND s_nationkey = n_nationkey AND n_name = %s GROUP BY s_name ORDER BY numwait DESC, s_name"""
+AND s_nationkey = n_nationkey AND n_name = %s GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100"""
 FUNCS = {"verus": "accel_tpch_q21_verus", "cpp": "accel_tpch_q21_aux"}
+MV = "q21_bench_mv"
+MV_DEF = f"""CREATE MATERIALIZED VIEW {MV} AS
+SELECT n_name, s_name, COUNT(*) AS numwait FROM supplier, lineitem l1, orders, nation
+WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey AND o_orderstatus = 'F'
+AND l1.l_receiptdate > l1.l_commitdate
+AND EXISTS (SELECT * FROM lineitem l2 WHERE l2.l_orderkey = l1.l_orderkey AND l2.l_suppkey <> l1.l_suppkey)
+AND NOT EXISTS (SELECT * FROM lineitem l3 WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND l3.l_receiptdate > l3.l_commitdate)
+AND s_nationkey = n_nationkey GROUP BY n_name, s_name"""
+MV_QUERY = f"SELECT s_name, numwait FROM {MV} WHERE n_name = %s ORDER BY numwait DESC, s_name LIMIT 100"
+MV_QUERY_NATION = "SELECT s_name, numwait FROM {} ORDER BY numwait DESC, s_name LIMIT 100"
+VIEWS = ("mv", "mv_nation")
+PLAIN = ("base",) + VIEWS  # systems that run as plain PostgreSQL (capture triggers disabled)
+PLAIN_SETTINGS = ["SET enable_nestloop = off", "SET max_parallel_workers_per_gather = 8"]
+NATION_VIEW = {}  # nation -> its mv_nation view
+STALE = set()     # views that a write has made stale
 TABLES = ["supplier", "orders", "lineitem", "nation"]
 NEW_KEY_BASE = 900_000_000
 
 
-def connect(args):
+def connect(args, system=None):
     c = psycopg2.connect(args.dsn)
     c.autocommit = True
+    if system in PLAIN:
+        cur = c.cursor()
+        for stmt in PLAIN_SETTINGS:
+            cur.execute(stmt)
     return c
+
+
+def views_of(system):
+    return [MV] if system == "mv" else list(NATION_VIEW.values())
+
+
+def create_views(cur, system):
+    if system == "mv":
+        cur.execute(MV_DEF)
+        cur.execute(f"CREATE INDEX ON {MV} (n_name, numwait DESC, s_name)")
+    else:
+        per_nation = SQL.replace(" ORDER BY numwait DESC, s_name LIMIT 100", "")
+        for nation, view in NATION_VIEW.items():
+            cur.execute(f"CREATE MATERIALIZED VIEW {view} AS " + cur.mogrify(per_nation, (nation,)).decode())
+            cur.execute(f"CREATE INDEX ON {view} (numwait DESC, s_name)")
+    for view in views_of(system):
+        cur.execute(f"ANALYZE {view}")
+
+
+def drop_views(cur):
+    for view in [MV] + list(NATION_VIEW.values()):
+        cur.execute(f"DROP MATERIALIZED VIEW IF EXISTS {view}")
 
 
 def query(cur, system, nation):
     t = time.perf_counter()
     if system == "base":
         cur.execute(SQL, (nation,))
+    elif system in VIEWS:
+        view = MV if system == "mv" else NATION_VIEW[nation]
+        if view in STALE:
+            cur.execute(f"REFRESH MATERIALIZED VIEW {view}")
+            STALE.discard(view)
+        if system == "mv":
+            cur.execute(MV_QUERY, (nation,))
+        else:
+            cur.execute(MV_QUERY_NATION.format(view))
     else:
         cur.execute(f"SELECT s_name, numwait FROM {FUNCS[system]}(%s)", (nation,))
     rows = cur.fetchall()
+    if system == "cpp":
+        rows = rows[:100]  # the C++ accelerator has no LIMIT; LIMIT 100 is its first 100 rows
     return (time.perf_counter() - t) * 1e3, rows
 
 
@@ -78,10 +149,14 @@ def set_triggers(args, enabled):
 def read_only(args, nations):
     res = {}
     for system in ["base"] + args.accels:
-        c = connect(args)
+        c = connect(args, system)
         cur = c.cursor()
         entry = {"per_nation_ms": {}}
-        if system != "base":
+        if system in VIEWS:
+            t = time.perf_counter()
+            create_views(cur, system)
+            entry["cold_build_ms"] = (time.perf_counter() - t) * 1e3
+        elif system != "base":
             rss0 = backend_rss_anon_kb(cur, args.container)
             ms, _ = query(cur, system, nations[0])
             entry["cold_build_and_query_ms"] = ms
@@ -160,9 +235,13 @@ def restore(args, points):
 def write_run(args, system, mix, k, nations, f_orders, n_supp, points):
     gen = WriteGen(args.seed * 100 + k, f_orders, n_supp)
     qrng = random.Random(args.seed * 7 + k)
-    c = connect(args)
+    c = connect(args, system)
     cur = c.cursor()
-    if system != "base":
+    if system in VIEWS:
+        for view in views_of(system):  # current, outside the timed region
+            cur.execute(f"REFRESH MATERIALIZED VIEW {view}")
+        STALE.clear()
+    elif system != "base":
         query(cur, system, nations[0])  # build outside the timed region
     wr_ms, q_ms = [], []
     t0 = time.perf_counter()
@@ -175,6 +254,8 @@ def write_run(args, system, mix, k, nations, f_orders, n_supp, points):
             c.commit()
             c.autocommit = True
             wr_ms.append((time.perf_counter() - t) * 1e3)
+            if system in VIEWS:
+                STALE.update(views_of(system))
         ms, _ = query(cur, system, qrng.choice(nations))
         q_ms.append(ms)
     total = (time.perf_counter() - t0) * 1e3
@@ -198,7 +279,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dsn", default="host=127.0.0.1 port=5434 user=postgres password=postgres dbname=accel_q21_bench")
     ap.add_argument("--container", default="accel_pg_test")
-    ap.add_argument("--accels", default="verus,cpp")
+    ap.add_argument("--accels", default="verus,cpp,mv,mv_nation")
     ap.add_argument("--base-reps", type=int, default=3)
     ap.add_argument("--acc-reps", type=int, default=30)
     ap.add_argument("--rounds", type=int, default=20)
@@ -214,6 +295,9 @@ def main():
     cur = c.cursor()
     cur.execute("SELECT n_name FROM nation ORDER BY n_nationkey")
     nations = [r[0] for r in cur.fetchall()]
+    NATION_VIEW.update({n: f"{MV}_n{i}" for i, n in enumerate(nations)})
+    drop_views(cur)
+    cur.execute("ANALYZE " + ", ".join(TABLES))  # planner statistics (autovacuum may be off)
     cur.execute("SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F' ORDER BY o_orderkey")
     all_f = [r[0] for r in cur.fetchall()]
     f_orders = random.Random(args.seed).sample(all_f, 5000)
@@ -231,26 +315,37 @@ def main():
     c.close()
     restore(args, [])
 
-    out = {"postgres": version, "settings": settings, "lineitem_rows": n_li, "nations": nations}
+    out = {"postgres": version, "settings": settings, "plain_session_settings": PLAIN_SETTINGS,
+           "lineitem_rows": n_li, "nations": nations}
     if not args.skip_read_only:
         out["read_only"] = read_only(args, nations)
+    for system in [a for a in args.accels if a in VIEWS]:
+        c = connect(args, system)
+        cur = c.cursor()
+        cur.execute("SELECT to_regclass(%s)", (views_of(system)[0],))
+        if cur.fetchone()[0] is None:
+            create_views(cur, system)
+        c.close()
     out["writes"] = {}
     for mix in args.mixes.split(","):
         for k in [int(x) for x in args.ratios.split(",")]:
             key = f"{mix}/k={k}"
             out["writes"][key] = {}
             for system in ["base"] + args.accels:
-                if system == "base":
+                if system in PLAIN:
                     set_triggers(args, False)
                 try:
                     r = write_run(args, system, mix, k, nations, f_orders, n_supp, points)
                 finally:
-                    if system == "base":
+                    if system in PLAIN:
                         set_triggers(args, True)
                 out["writes"][key][system] = r
                 print(f"writes {key} {system}: total {r['total_ms']:.0f} ms, "
                       f"query mean {r['query_ms_mean']:.3f} ms, write mean {r['write_ms_mean']:.3f} ms, "
                       f"matches_sql={r['matches_sql']}", flush=True)
+    c = connect(args)
+    drop_views(c.cursor())
+    c.close()
     with open(args.out, "w") as f:
         json.dump(out, f, indent=1)
     print("wrote", args.out)

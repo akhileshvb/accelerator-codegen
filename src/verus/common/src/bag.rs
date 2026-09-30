@@ -24,10 +24,14 @@ pub trait BagRow: Sized {
     ;
 }
 
+// Table as seen by the spec: each stored row replaced by its abstract value, so a table becomes
+// a list of plain values. This is how the update function's contract talks about tables.
 pub open spec fn rows_v<T: BagRow>(s: Seq<T>) -> Seq<T::V> {
     s.map_values(|x: T| x.rv())
 }
 
+// A change list (row, +1/-1) viewed abstractly: rows become plain values and signs become
+// integers, so it can be reasoned about with the generic sum/inserted-rows/deleted-rows tools.
 pub open spec fn dview<T: BagRow>(d: Seq<(T, i64)>) -> Seq<(T::V, int)> {
     d.map_values(|x: (T, i64)| (x.0.rv(), x.1 as int))
 }
@@ -46,6 +50,8 @@ pub proof fn lemma_multiset_cancel<V>(a: Multiset<V>, b: Multiset<V>, c: Multise
     }
 }
 
+// Extending the change list by one more entry extends the inserted-rows (or deleted-rows)
+// list by that entry exactly when its sign matches; the per-step fact behind both update loops.
 proof fn lemma_dview_take<T: BagRow>(d: Seq<(T, i64)>, t: int)
     requires
         0 <= t < d.len(),
@@ -149,6 +155,7 @@ pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T
         }
         t += 1;
     }
+    // Every sign in the change list was checked to be +1 or -1, so the abstract list has unit signs.
     proof {
         assert forall|i: int| 0 <= i < dview(d@).len() implies (#[trigger] dview(d@)[i]).1 == 1
             || dview(d@)[i].1 == -1 by {
@@ -167,6 +174,7 @@ pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T
         let ghost r0 = r@;
         let y = old[i].dup();
         r.push(y);
+        // Copying one more old row grows the result's abstract view by that row, matching the old prefix.
         proof {
             assert(r@ =~= r0.push(y));
             assert(rows_v(r@) =~= rows_v(r0).push(y.rv()));
@@ -175,6 +183,7 @@ pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T
         }
         i += 1;
     }
+    // The whole old table is copied; also set up the empty-prefix facts for the insertion loop.
     proof {
         assert(old@.take(old@.len() as int) =~= old@);
         assert(dview(d@.take(0)).len() == 0);
@@ -187,6 +196,7 @@ pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T
             rows_v(r@) =~= rows_v(old@) + plus_rows(dview(d@.take(t as int))),
         decreases n - t,
     {
+        // Insertion step: the result gains this entry's row only if it is an insert (+1).
         proof {
             lemma_dview_take(d@, t as int);
         }
@@ -201,6 +211,8 @@ pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T
         }
         t += 1;
     }
+    // After all inserts, result = old table + inserted rows, which as a multiset is the sum of both;
+    // also set up the deleted-rows bookkeeping for the deletion loop.
     proof {
         assert(d@.take(n as int) =~= d@);
         lemma_to_multiset_concat(rows_v(old@), plus_rows(dview(d@)));
@@ -216,6 +228,7 @@ pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T
             rows_v(r@).to_multiset().add(minus_rows(dview(d@.take(t as int))).to_multiset()) =~= total,
         decreases n - t,
     {
+        // Deletion step: the deleted-rows list grows by this entry's row only if it is a delete (-1).
         proof {
             lemma_dview_take(d@, t as int);
         }
@@ -244,6 +257,8 @@ pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T
             let ghost r0 = r@;
             let ghost x = d@[t as int].0.rv();
             r.remove(k);
+            // Removing the matched row drops exactly one occurrence of that value from the result's multiset,
+            // the same as adding it to the deleted-rows multiset, so the loop invariant is preserved.
             proof {
                 assert(r0[k as int].rv() == x);
                 assert(rows_v(r@) =~= rows_v(r0).remove(k as int));
@@ -260,6 +275,7 @@ pub fn apply_bag<T: BagRow>(old: &Vec<T>, d: &Vec<(T, i64)>) -> (r: Option<Vec<T
         }
         t += 1;
     }
+    // All entries processed: the invariant is the final guarantee, new + deleted rows = old + inserted rows.
     proof {
         assert(d@.take(n as int) =~= d@);
     }

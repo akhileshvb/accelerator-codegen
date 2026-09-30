@@ -29,6 +29,7 @@ pub open spec fn qual(db: Db, l: Lineitem) -> bool {
     late(l) && exists_l2(db, l) && !exists_l3(db, l)
 }
 
+// A single lineitem's share of a supplier's waiting-order total: the number of matching 'F' orders if it is that supplier's qualifying late line, else 0.
 pub open spec fn w_term(db: Db, sk: int, l: Lineitem) -> int {
     if l.suppkey == sk && qual(db, l) {
         fm(db, l.orderkey)
@@ -43,6 +44,8 @@ pub open spec fn w(db: Db, sk: int) -> int {
     sum(db.lineitem, |l: Lineitem| w_term(db, sk, l))
 }
 
+// One supplier's share of the answer for a given nation-named group: (matching nations) x (its waiting-order total), or 0 if its name differs.
+// Summing these over all suppliers gives numwait; the executor computes the same per-supplier product.
 pub open spec fn sup_term(db: Db, p: Seq<u8>, g: Seq<u8>, s: Supplier) -> int {
     if s.name == g {
         nm(db, s.nationkey, p) * w(db, s.suppkey)
@@ -52,18 +55,22 @@ pub open spec fn sup_term(db: Db, p: Seq<u8>, g: Seq<u8>, s: Supplier) -> int {
 }
 
 // Named levels of the numwait nest.
+// Innermost layer of the query's nested sum (over nations): reduces to a 0/1 match on the supplier's nation and name.
 pub open spec fn nat_level(db: Db, p: Seq<u8>, g: Seq<u8>, s: Supplier, l1: Lineitem, o: Order) -> int {
     sum(db.nation, |n: Nation| ind(where_clause(db, p, s, l1, o, n) && s.name == g))
 }
 
+// Next layer out (over orders): pairs the lineitem with each order row and folds in the nation layer.
 pub open spec fn ord_level(db: Db, p: Seq<u8>, g: Seq<u8>, s: Supplier, l1: Lineitem) -> int {
     sum(db.orders, |o: Order| nat_level(db, p, g, s, l1, o))
 }
 
+// Third layer (over lineitems for one supplier): the lineitem-level part of the join, before the supplier layer.
 pub open spec fn li_level(db: Db, p: Seq<u8>, g: Seq<u8>, s: Supplier) -> int {
     sum(db.lineitem, |l1: Lineitem| ord_level(db, p, g, s, l1))
 }
 
+// Sum over nation rows collapses to the count of nations with the supplier's key and the target name, provided the lineitem conditions hold (else 0).
 pub proof fn lemma_nat_level(db: Db, p: Seq<u8>, g: Seq<u8>, s: Supplier, l1: Lineitem, o: Order)
     ensures
         nat_level(db, p, g, s, l1, o) == if s.suppkey == l1.suppkey && o.orderkey == l1.orderkey
@@ -87,6 +94,7 @@ pub proof fn lemma_nat_level(db: Db, p: Seq<u8>, g: Seq<u8>, s: Supplier, l1: Li
     }
 }
 
+// Sum over orders collapses to (nation matches) x (number of 'F' rows for the lineitem's order) when the lineitem qualifies for this supplier, else 0.
 pub proof fn lemma_ord_level(db: Db, p: Seq<u8>, g: Seq<u8>, s: Supplier, l1: Lineitem)
     ensures
         ord_level(db, p, g, s, l1) == if s.suppkey == l1.suppkey && qual(db, l1) && s.name == g {
@@ -113,6 +121,7 @@ pub proof fn lemma_ord_level(db: Db, p: Seq<u8>, g: Seq<u8>, s: Supplier, l1: Li
     }
 }
 
+// Sum over lineitems collapses to the supplier's whole contribution: nation matches times the supplier's waiting-order total.
 pub proof fn lemma_li_level(db: Db, p: Seq<u8>, g: Seq<u8>, s: Supplier)
     ensures
         li_level(db, p, g, s) == sup_term(db, p, g, s),
@@ -174,6 +183,7 @@ pub proof fn lemma_numwait_by_supplier(db: Db, p: Seq<u8>, g: Seq<u8>)
     lemma_sum_ext_all(db.supplier, lam_s, |s: Supplier| sup_term(db, p, g, s));
 }
 
+// The number of 'F' order rows for a key is a count, so it is never negative; needed for bounds and no-overflow arguments.
 pub proof fn lemma_fm_nonneg(db: Db, ok: int)
     ensures
         fm(db, ok) >= 0,
@@ -181,6 +191,7 @@ pub proof fn lemma_fm_nonneg(db: Db, ok: int)
     lemma_sum_nonneg(db.orders, |o: Order| ind(o.orderkey == ok && o.status_is_f));
 }
 
+// The number of nation rows with a given key and name is a count, so never negative.
 pub proof fn lemma_nm_nonneg(db: Db, nk: int, p: Seq<u8>)
     ensures
         nm(db, nk, p) >= 0,
@@ -188,6 +199,7 @@ pub proof fn lemma_nm_nonneg(db: Db, nk: int, p: Seq<u8>)
     lemma_sum_nonneg(db.nation, |n: Nation| ind(n.nationkey == nk && n.name == p));
 }
 
+// A supplier's waiting-order total adds up nonnegative terms, so it is never negative; this bounds the final numwait counts.
 pub proof fn lemma_w_nonneg(db: Db, sk: int)
     ensures
         w(db, sk) >= 0,

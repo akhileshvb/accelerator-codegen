@@ -15,18 +15,26 @@ pub struct Ent {
     pub late: i64,
 }
 
+// Number of lineitems on this order from supplier sk, summed over its per-supplier
+// entries (COUNT(*) grouped by supplier); should match the true count.
 pub open spec fn etot(e: Seq<Ent>, sk: int) -> int {
     sum(e, |x: Ent| if x.sk == sk { x.total as int } else { 0 })
 }
 
+// Number of late lineitems on this order from supplier sk, summed over its per-supplier
+// entries; should match the true late count.
 pub open spec fn elate(e: Seq<Ent>, sk: int) -> int {
     sum(e, |x: Ent| if x.sk == sk { x.late as int } else { 0 })
 }
 
+// Lineitems on this order from suppliers other than sk; being positive is the
+// EXISTS (another supplier on the same order) test.
 pub open spec fn eother_tot(e: Seq<Ent>, sk: int) -> int {
     sum(e, |x: Ent| if x.sk != sk { x.total as int } else { 0 })
 }
 
+// Late lineitems on this order from suppliers other than sk; being zero is the
+// NOT EXISTS (another supplier who was also late) test.
 pub open spec fn eother_late(e: Seq<Ent>, sk: int) -> int {
     sum(e, |x: Ent| if x.sk != sk { x.late as int } else { 0 })
 }
@@ -40,10 +48,14 @@ pub open spec fn econtrib(e: Seq<Ent>, sk: int) -> int {
     }
 }
 
+// Each supplier appears in at most one entry, like a GROUP BY suppkey result,
+// so an entry's counts are the supplier's whole counts.
 pub open spec fn edistinct(e: Seq<Ent>) -> bool {
     forall|i: int, j: int| 0 <= i < e.len() && 0 <= j < e.len() && i != j ==> e[i].sk != e[j].sk
 }
 
+// No empty entries: every listed supplier has at least one lineitem on the order
+// and a non-negative late count.
 pub open spec fn epos(e: Seq<Ent>) -> bool {
     forall|i: int| 0 <= i < e.len() ==> (#[trigger] e[i]).total > 0 && e[i].late >= 0
 }
@@ -56,6 +68,8 @@ pub open spec fn ents_ok(e: Seq<Ent>, db: Db, ok: int) -> bool {
     &&& forall|sk: int| #[trigger] elate(e, sk) == lcnt(db, ok, sk)
 }
 
+// Reads the (supplier, late count) answer for an order as a per-supplier number:
+// the late count for that supplier, 0 for everyone else (no answer = 0).
 pub open spec fn opt_val(r: Option<(i64, i64)>, sk: int) -> int {
     match r {
         Some(p) => if p.0 as int == sk {
@@ -67,6 +81,8 @@ pub open spec fn opt_val(r: Option<(i64, i64)>, sk: int) -> int {
     }
 }
 
+// With one entry per supplier, the totals for an entry's supplier are exactly that
+// entry's own fields, nothing hidden in other entries.
 pub proof fn lemma_etot_entry(e: Seq<Ent>, i: int)
     requires
         edistinct(e),
@@ -84,6 +100,8 @@ pub proof fn lemma_etot_entry(e: Seq<Ent>, i: int)
     lemma_sum_single_match(e, fl, i);
 }
 
+// A supplier with no entry on the order has zero total and zero late lineitems;
+// so any supplier with lineitems there must have an entry.
 pub proof fn lemma_etot_absent(e: Seq<Ent>, sk: int)
     requires
         forall|i: int| 0 <= i < e.len() ==> (#[trigger] e[i]).sk != sk,
@@ -95,6 +113,8 @@ pub proof fn lemma_etot_absent(e: Seq<Ent>, sk: int)
     lemma_sum_zero(e, |x: Ent| if x.sk == sk { x.late as int } else { 0 });
 }
 
+// Restricted to one supplier k's lineitems on the order, 'other than sk' counts all of
+// them if k differs from sk and none if k is sk; the per-group step of a group-by regrouping.
 pub proof fn lemma_per_sk_tot(db: Db, ok: int, sk: int, k: int)
     ensures
         sum(
@@ -122,6 +142,8 @@ pub proof fn lemma_per_sk_tot(db: Db, ok: int, sk: int, k: int)
     }
 }
 
+// Same as the total-count case but for late lineitems: supplier k's late lines count
+// fully toward 'others than sk' unless k is sk.
 pub proof fn lemma_per_sk_late(db: Db, ok: int, sk: int, k: int)
     ensures
         sum(
@@ -186,6 +208,8 @@ pub proof fn lemma_ents_cover(e: Seq<Ent>, db: Db, ok: int, i: int) -> (j: int)
     choose|j: int| 0 <= j < e.len() && (#[trigger] e[j]).sk == s2
 }
 
+// One entry per supplier means the list of supplier keys has no duplicates,
+// which lets us regroup the order's lineitems by supplier without double counting.
 pub proof fn lemma_ents_keys_distinct(e: Seq<Ent>)
     requires
         edistinct(e),
@@ -199,6 +223,8 @@ pub proof fn lemma_ents_keys_distinct(e: Seq<Ent>)
     }
 }
 
+// The number of lineitems from other suppliers, counted directly over the order's rows,
+// equals the sum of the other suppliers' entry totals (regrouping by supplier).
 pub proof fn lemma_other_tot(e: Seq<Ent>, db: Db, ok: int, sk: int)
     requires
         ents_ok(e, db, ok),
@@ -246,6 +272,8 @@ pub proof fn lemma_other_tot(e: Seq<Ent>, db: Db, ok: int, sk: int)
     lemma_sum_ext(e, h, |x: Ent| if x.sk != sk { x.total as int } else { 0 });
 }
 
+// Likewise, late lineitems from other suppliers counted over the rows equal
+// the sum of the other suppliers' entry late counts.
 pub proof fn lemma_other_late(e: Seq<Ent>, db: Db, ok: int, sk: int)
     requires
         ents_ok(e, db, ok),

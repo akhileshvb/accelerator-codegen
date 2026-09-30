@@ -199,6 +199,8 @@ void TpchQ21VerusModule::AccumulateMutation(const core::MutationBatch &mutation,
       TpchQ21VerusDimDelta d;
       if (!(is_supplier ? ReadSupplier(row, d) : ReadNation(row, d)))
         return false;
+      if (scan)
+        scan->NormalizeCapturedName(is_supplier, d.name);
       d.sign = sign;
       (is_supplier ? buffer.sd : buffer.nd).push_back(std::move(d));
     } else if (is_orders) {

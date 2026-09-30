@@ -6,10 +6,14 @@ use crate::sums::*;
 
 verus! {
 
+// A list of items is sorted if, for every pair where one comes earlier, the earlier item is
+// 'less-or-equal' to the later one under the given comparison; the correctness goal of sorting.
 pub open spec fn sorted_le(s: Seq<usize>, le: spec_fn(usize, usize) -> bool) -> bool {
     forall|i: int, j: int| 0 <= i < j < s.len() ==> le(#[trigger] s[i], #[trigger] s[j])
 }
 
+// Every item in the list is a legitimate one, i.e. within the set on which the comparison is
+// well behaved (total and transitive); sorting only promises anything for such items.
 pub open spec fn all_valid(s: Seq<usize>, valid: spec_fn(usize) -> bool) -> bool {
     forall|i: int| 0 <= i < s.len() ==> valid(#[trigger] s[i])
 }
@@ -21,6 +25,8 @@ pub open spec fn preorder_on(le: spec_fn(usize, usize) -> bool, valid: spec_fn(u
         valid(a) && valid(b) && valid(c) && #[trigger] le(a, b) && #[trigger] le(b, c) ==> le(a, c)
 }
 
+// The real comparison function is safe to call on legitimate items and its answer always
+// agrees with the abstract less-or-equal relation; links running code to the sort proof.
 pub open spec fn cmp_ok<F: Fn(usize, usize) -> bool>(
     cmp: &F,
     le: spec_fn(usize, usize) -> bool,
@@ -30,10 +36,14 @@ pub open spec fn cmp_ok<F: Fn(usize, usize) -> bool>(
     &&& forall|a: usize, b: usize, r: bool| #[trigger] cmp.ensures((a, b), r) ==> r == le(a, b)
 }
 
+// Two lists contain the same items with the same multiplicities (one is a reordering of the other),
+// shown by every weighted sum over them agreeing; guarantees sorting neither loses nor invents rows.
 pub open spec fn same_bag(a: Seq<usize>, b: Seq<usize>) -> bool {
     forall|f: spec_fn(usize) -> int| #[trigger] sum(a, f) == sum(b, f)
 }
 
+// Merge two already-sorted lists into one sorted list by repeatedly taking the smaller head.
+// It also tracks that the output plus what remains has the same items as the inputs.
 fn merge<F: Fn(usize, usize) -> bool>(
     l: &Vec<usize>,
     r: &Vec<usize>,
@@ -53,7 +63,13 @@ fn merge<F: Fn(usize, usize) -> bool>(
         sorted_le(out@, le),
         forall|f: spec_fn(usize) -> int| #[trigger] sum(out@, f) == sum(l@, f) + sum(r@, f),
 {
-    let mut out: Vec<usize> = Vec::new();
+    // Room for both inputs up front (capacity is only an allocation hint).
+    let cap = if l.len() <= usize::MAX - r.len() {
+        l.len() + r.len()
+    } else {
+        l.len()
+    };
+    let mut out: Vec<usize> = Vec::with_capacity(cap);
     let mut i: usize = 0;
     let mut j: usize = 0;
     while i < l.len() || j < r.len()
@@ -83,6 +99,8 @@ fn merge<F: Fn(usize, usize) -> bool>(
         if take_left {
             let x = l[i];
             out.push(x);
+            // Took the head of the left list: the output's sums grow by that item, it stays sorted, and it
+            // is still below both remaining heads, since the left head was less-or-equal to the right one.
             proof {
                 assert forall|f: spec_fn(usize) -> int| #[trigger] sum(out@, f) == sum(
                     l@.take(i as int + 1),
@@ -131,6 +149,8 @@ fn merge<F: Fn(usize, usize) -> bool>(
         } else {
             let x = r[j];
             out.push(x);
+            // Took the head of the right list because the left head was not less-or-equal to it; by totality
+            // the right item is then below the left head, so the output stays sorted and item-preserving.
             proof {
                 assert forall|f: spec_fn(usize) -> int| #[trigger] sum(out@, f) == sum(
                     l@.take(i as int),
@@ -179,6 +199,7 @@ fn merge<F: Fn(usize, usize) -> bool>(
             j += 1;
         }
     }
+    // Both lists are fully consumed, so the loop's running item-count facts become the final guarantee.
     proof {
         assert(l@.take(l@.len() as int) =~= l@);
         assert(r@.take(r@.len() as int) =~= r@);
@@ -211,10 +232,12 @@ pub fn msort<F: Fn(usize, usize) -> bool>(
         let mut out: Vec<usize> = Vec::new();
         if hi > lo {
             out.push(v[lo]);
+            // Range of length 1: the single output item is exactly the one-element slice.
             proof {
                 assert(out@ =~= v@.subrange(lo as int, hi as int));
             }
         } else {
+            // Empty range: the empty output is exactly the empty slice.
             proof {
                 assert(out@ =~= v@.subrange(lo as int, hi as int));
             }
@@ -225,6 +248,8 @@ pub fn msort<F: Fn(usize, usize) -> bool>(
     let l = msort(v, lo, mid, cmp, Ghost(le), Ghost(valid));
     let r = msort(v, mid, hi, cmp, Ghost(le), Ghost(valid));
     let out = merge(&l, &r, cmp, Ghost(le), Ghost(valid));
+    // Merge sort combine step: the slice is the left half followed by the right half, and sums add over
+    // concatenation, so the merged result contains exactly the same items as the slice.
     proof {
         assert forall|f: spec_fn(usize) -> int| #[trigger] sum(out@, f) == sum(
             v@.subrange(lo as int, hi as int),
@@ -242,6 +267,8 @@ pub fn msort<F: Fn(usize, usize) -> bool>(
     out
 }
 
+// Sort a list of row indices by the given comparison: the result is sorted, contains only legitimate
+// items and is a reordering of the input. Used to ORDER BY the query result.
 pub fn sort_idx<F: Fn(usize, usize) -> bool>(
     v: &Vec<usize>,
     cmp: &F,
@@ -258,6 +285,7 @@ pub fn sort_idx<F: Fn(usize, usize) -> bool>(
         same_bag(out@, v@),
 {
     let out = msort(v, 0, v.len(), cmp, Ghost(le), Ghost(valid));
+    // The slice covering the whole list is the list itself, so the result is a reordering of the input.
     proof {
         assert(v@.subrange(0, v@.len() as int) =~= v@);
     }

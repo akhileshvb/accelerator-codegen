@@ -13,7 +13,8 @@
 // batch) is applied through DuckdbRuntime::ApplyBatch with the exact captured
 // row deltas: every changed row is addressed by rowid and read just before
 // the transaction.  Operations cover every column Q21 reads on all four
-// tables (inserts, deletes, updates, including key changes).  After each
+// tables (inserts, deletes, updates, including key changes and updates of
+// several columns at once, l_commitdate included).  After each
 // transaction the accelerator is compared with the SQL (ordered rows) for two
 // random parameters (all parameters every 25 transactions), including '' ,
 // a non-matching name, and NULL.  The staged maintenance action of every
@@ -88,7 +89,7 @@ std::string BaseSql(const std::optional<std::string> &p) {
          "l2.l_suppkey <> l1.l_suppkey) AND NOT EXISTS (SELECT * FROM lineitem l3 WHERE "
          "l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND "
          "l3.l_receiptdate > l3.l_commitdate) AND s_nationkey = n_nationkey AND n_name = " +
-         (p ? Lit(*p) : std::string("NULL")) + " GROUP BY s_name ORDER BY numwait DESC, s_name";
+         (p ? Lit(*p) : std::string("NULL")) + " GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100";
 }
 std::string AccelSql(const std::optional<std::string> &p) {
   return "SELECT * FROM accel_tpch_q21_verus(" + (p ? Lit(*p) : std::string("NULL")) + ")";
@@ -211,30 +212,42 @@ struct Fuzz {
         p.old_row = Li((*r)[1].GetValue<int64_t>(), (*r)[2].GetValue<int64_t>(), Days((*r)[3]), Days((*r)[4]));
         out.push_back(p);
       }
-    } else if (kind < 44) {  // lineitem update: receipt date / supplier / order key
+    } else if (kind < 44) {  // lineitem update: any Q21 column, alone or several at once
       if (auto r = PickLineitem()) {
         int64_t ok = (*r)[1].GetValue<int64_t>(), sk = (*r)[2].GetValue<int64_t>();
         int32_t c0 = Days((*r)[3]), r0 = Days((*r)[4]);
         int64_t ok2 = ok, sk2 = sk;
-        int32_t r2 = r0;
-        std::string set;
-        const int which = static_cast<int>(R(3));
-        if (which == 0) {
-          r2 = c0 + (P(0.5) ? 1 + R(4) : -1 - R(4));
-          set = "l_receiptdate = " + Date(r2);
-        } else if (which == 1) {
-          sk2 = SuppKey();
-          set = "l_suppkey = " + std::to_string(sk2);
-        } else {
+        int32_t c2 = c0, r2 = r0;
+        std::vector<std::string> sets;
+        // lateness flips either way relative to the other date
+        auto Around = [&](int32_t ref) { return ref + (P(0.5) ? 1 + R(4) : -1 - R(4)); };
+        auto SetRd = [&] { r2 = Around(c2); sets.push_back("l_receiptdate = " + Date(r2)); };
+        auto SetCd = [&] { c2 = Around(r2); sets.push_back("l_commitdate = " + Date(c2)); };
+        auto SetSk = [&] { sk2 = SuppKey(); sets.push_back("l_suppkey = " + std::to_string(sk2)); };
+        auto SetOk = [&] {
           ok2 = P(0.9) ? PickKey() : next_key++;
-          set = "l_orderkey = " + std::to_string(ok2);
+          sets.push_back("l_orderkey = " + std::to_string(ok2));
           if (std::find(keys.begin(), keys.end(), ok2) == keys.end())
             keys.push_back(ok2);
+        };
+        switch (static_cast<int>(R(9))) {
+        case 0: SetRd(); break;
+        case 1: SetSk(); break;
+        case 2: SetOk(); break;
+        case 3: SetCd(); break;
+        case 4: SetCd(); SetRd(); break;
+        case 5: SetSk(); SetRd(); break;
+        case 6: SetOk(); SetSk(); break;
+        case 7: SetOk(); SetSk(); SetCd(); SetRd(); break;
+        default: SetSk(); SetCd(); break;
         }
+        std::string set;
+        for (const auto &x : sets)
+          set += (set.empty() ? "" : ", ") + x;
         auto p = Probe(kLineitem, core::MutationKind::Update,
                        "UPDATE lineitem SET " + set + " WHERE rowid = " + (*r)[0].ToString());
         p.old_row = Li(ok, sk, c0, r0);
-        p.new_row = Li(ok2, sk2, c0, r2);
+        p.new_row = Li(ok2, sk2, c2, r2);
         out.push_back(p);
       }
     } else if (kind < 54) {  // orders insert (new or duplicate key)
@@ -260,12 +273,17 @@ struct Fuzz {
         const std::string st = (*r)[2].ToString();
         int64_t ok2 = ok;
         std::string st2 = st, set;
-        if (P(0.8)) {
+        const double w = static_cast<double>(R(100)) / 100;
+        if (w < 0.6) {
           st2 = std::string(1, "FFOP"[R(4)]);
           set = "o_orderstatus = " + Lit(st2);
-        } else {
+        } else if (w < 0.8) {
           ok2 = PickKey();
           set = "o_orderkey = " + std::to_string(ok2);
+        } else {
+          ok2 = PickKey();
+          st2 = std::string(1, "FFOP"[R(4)]);
+          set = "o_orderkey = " + std::to_string(ok2) + ", o_orderstatus = " + Lit(st2);
         }
         auto p = Probe(kOrders, core::MutationKind::Update,
                        "UPDATE orders SET " + set + " WHERE rowid = " + (*r)[0].ToString());
@@ -274,7 +292,7 @@ struct Fuzz {
         out.push_back(p);
       }
     } else if (kind < 86) {  // supplier insert / delete / update (nation, name, key)
-      const int sub = static_cast<int>(R(5));
+      const int sub = static_cast<int>(R(8));
       if (sub == 0) {
         const int64_t sk = SuppKey();
         const std::string name = kSupplierNames[R(kSupplierNames.size())];
@@ -295,16 +313,28 @@ struct Fuzz {
         } else {
           int64_t sk2 = sk, nk2 = nk;
           std::string name2 = name, set;
-          if (sub == 2) {
-            nk2 = NationKey();
-            set = "s_nationkey = " + std::to_string(nk2);
-          } else if (sub == 3) {
+          std::vector<std::string> sets;
+          auto SetNk = [&] { nk2 = NationKey(); sets.push_back("s_nationkey = " + std::to_string(nk2)); };
+          auto SetName = [&] {
             name2 = kSupplierNames[R(kSupplierNames.size())];
-            set = "s_name = " + Lit(name2);
+            sets.push_back("s_name = " + Lit(name2));
+          };
+          auto SetSk = [&] { sk2 = SuppKey(); sets.push_back("s_suppkey = " + std::to_string(sk2)); };
+          if (sub == 2) {
+            SetNk();
+          } else if (sub == 3) {
+            SetName();
+          } else if (sub == 4) {
+            SetSk();
+          } else if (sub == 5) {
+            SetNk(); SetName();
+          } else if (sub == 6) {
+            SetSk(); SetNk();
           } else {
-            sk2 = SuppKey();
-            set = "s_suppkey = " + std::to_string(sk2);
+            SetSk(); SetName(); SetNk();
           }
+          for (const auto &x : sets)
+            set += (set.empty() ? "" : ", ") + x;
           auto p = Probe(kSupplier, core::MutationKind::Update,
                          "UPDATE supplier SET " + set + " WHERE rowid = " + (*r)[0].ToString());
           p.old_row = Sup(sk, name, nk);
@@ -313,7 +343,7 @@ struct Fuzz {
         }
       }
     } else if (kind < 96) {  // nation insert / delete / rename / rekey
-      const int sub = static_cast<int>(R(4));
+      const int sub = static_cast<int>(R(5));
       if (sub == 0) {
         const int64_t nk = NationKey();
         const std::string name = kNationNames[R(kNationNames.size())];
@@ -336,9 +366,13 @@ struct Fuzz {
           if (sub == 2) {
             name2 = kNationNames[R(kNationNames.size())];
             set = "n_name = " + Lit(name2);
-          } else {
+          } else if (sub == 3) {
             nk2 = NationKey();
             set = "n_nationkey = " + std::to_string(nk2);
+          } else {
+            name2 = kNationNames[R(kNationNames.size())];
+            nk2 = NationKey();
+            set = "n_name = " + Lit(name2) + ", n_nationkey = " + std::to_string(nk2);
           }
           auto p = Probe(kNation, core::MutationKind::Update,
                          "UPDATE nation SET " + set + " WHERE rowid = " + (*r)[0].ToString());

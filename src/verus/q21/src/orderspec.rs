@@ -43,10 +43,13 @@ pub open spec fn contrib(db: Db, ok: int, sk: int) -> int {
     }
 }
 
+// What one order adds to a supplier's total: the order's multiplicity times its qualifying
+// late-line count (0 if it fails EXISTS/NOT EXISTS); a supplier's total is the sum over orders.
 pub open spec fn per_order(db: Db, ok: int, sk: int) -> int {
     fm(db, ok) * contrib(db, ok, sk)
 }
 
+// A COUNT of rows satisfying any condition is never negative.
 pub proof fn lemma_ind_sum_nonneg(s: Seq<Lineitem>, p: spec_fn(Lineitem) -> bool)
     ensures
         sum(s, |l: Lineitem| ind(p(l))) >= 0,
@@ -54,6 +57,8 @@ pub proof fn lemma_ind_sum_nonneg(s: Seq<Lineitem>, p: spec_fn(Lineitem) -> bool
     lemma_sum_nonneg(s, |l: Lineitem| ind(p(l)));
 }
 
+// All per-order, per-supplier counts are non-negative and late rows never exceed
+// all rows, basic sanity facts the arithmetic elsewhere depends on.
 pub proof fn lemma_cnt_nonneg(db: Db, ok: int, sk: int)
     ensures
         cnt(db, ok, sk) >= 0,
@@ -290,6 +295,8 @@ pub proof fn lemma_li_count_unchanged(
     lemma_delta_zero(ld, f);
 }
 
+// An update that touches no rows of order ok leaves that order's finished-order
+// multiplicity untouched, so unaffected orders need no recomputation.
 pub proof fn lemma_fm_unchanged(
     db: Db,
     db2: Db,
@@ -361,6 +368,8 @@ pub proof fn lemma_w_term_unchanged(
     lemma_qual_key(db2, l);
 }
 
+// A lineitem's contribution to the total, kept only if its order is in the given
+// set of orders, else 0 (a filter on orderkey IN a).
 pub open spec fn in_term(db: Db, a: Seq<int>, sk: int, l: Lineitem) -> int {
     if a.contains(l.orderkey) {
         w_term(db, sk, l)
@@ -369,6 +378,8 @@ pub open spec fn in_term(db: Db, a: Seq<int>, sk: int, l: Lineitem) -> int {
     }
 }
 
+// A lineitem's contribution to the total, kept only if its order is not in the given
+// set of orders; together with the in-set part it splits the total (orderkey NOT IN a).
 pub open spec fn out_term(db: Db, a: Seq<int>, sk: int, l: Lineitem) -> int {
     if a.contains(l.orderkey) {
         0
@@ -377,6 +388,8 @@ pub open spec fn out_term(db: Db, a: Seq<int>, sk: int, l: Lineitem) -> int {
     }
 }
 
+// For one order k in the set, its lineitems' contributions add up to that order's
+// per-order total; a per-group step in regrouping the total by order.
 pub proof fn lemma_in_part_key(db: Db, a: Seq<int>, sk: int, k: int)
     requires
         a.contains(k),

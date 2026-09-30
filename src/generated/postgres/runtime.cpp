@@ -231,6 +231,20 @@ std::string TypedText(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
                    DatumText(datum, TupleDescAttr(tuple_desc, attribute)->atttypid);
 }
 
+// bpchar -> text, as PostgreSQL's cast does it: trailing spaces removed.
+void StripCharPadding(std::string &text) {
+  text.erase(text.find_last_not_of(' ') + 1);
+}
+
+// TypedText, except that a bpchar value loses its padding (bpchar comparisons
+// ignore trailing spaces, so this is the form they compare).
+std::string TypedCharText(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
+  std::string text = TypedText(tuple, tuple_desc, attribute);
+  if (TupleDescAttr(tuple_desc, attribute)->atttypid == BPCHAROID)
+    StripCharPadding(text);
+  return text;
+}
+
 int64_t TypedInt(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
   bool is_null = false;
   const Datum datum =
@@ -1451,7 +1465,7 @@ public:
       override {
     ScanTypedTuples("SELECT s_suppkey, s_name, s_nationkey FROM supplier",
                     [&](HeapTuple tuple, TupleDesc desc) {
-                      consumer(TypedInt(tuple, desc, 0), TypedText(tuple, desc, 1),
+                      consumer(TypedInt(tuple, desc, 0), TypedCharText(tuple, desc, 1),
                                static_cast<int32_t>(TypedInt(tuple, desc, 2)));
                     });
   }
@@ -1460,8 +1474,17 @@ public:
     ScanTypedTuples("SELECT n_nationkey, n_name FROM nation",
                     [&](HeapTuple tuple, TupleDesc desc) {
                       consumer(static_cast<int32_t>(TypedInt(tuple, desc, 0)),
-                               TypedText(tuple, desc, 1));
+                               TypedCharText(tuple, desc, 1));
                     });
+  }
+  // Capture renders bpchar padded; strip it when the column is bpchar.
+  void NormalizeCapturedName(bool supplier, std::string &name) const override {
+    const Oid relid = RelnameGetRelid(supplier ? "supplier" : "nation");
+    if (!OidIsValid(relid))
+      return;
+    const AttrNumber attnum = get_attnum(relid, supplier ? "s_name" : "n_name");
+    if (attnum != InvalidAttrNumber && get_atttype(relid, attnum) == BPCHAROID)
+      StripCharPadding(name);
   }
   void ScanFOrderKeys(const std::function<void(int64_t)> &consumer) override {
     ScanTypedTuples("SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F'",
@@ -1517,7 +1540,7 @@ public:
         "l2.l_suppkey <> l1.l_suppkey) AND NOT EXISTS (SELECT * FROM lineitem l3 "
         "WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND "
         "l3.l_receiptdate > l3.l_commitdate) AND s_nationkey = n_nationkey AND "
-        "n_name = $1 GROUP BY s_name ORDER BY numwait DESC, s_name";
+        "n_name = $1 GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100";
     if (SPI_connect() != SPI_OK_CONNECT)
       throw std::runtime_error("SPI_connect failed");
     Oid argtypes[1] = {TEXTOID};
@@ -1531,7 +1554,7 @@ public:
     for (uint64 i = 0; i < SPI_processed; ++i) {
       HeapTuple tuple = SPI_tuptable->vals[i];
       TupleDesc desc = SPI_tuptable->tupdesc;
-      rows.emplace_back(TypedText(tuple, desc, 0), TypedInt(tuple, desc, 1));
+      rows.emplace_back(TypedCharText(tuple, desc, 0), TypedInt(tuple, desc, 1));
     }
     SPI_finish();
     for (const auto &[name, numwait] : rows)
