@@ -173,6 +173,37 @@ TPCH_AUX_UDF(22, "sssssss", 7)
 
 #undef TPCH_AUX_UDF
 
+#if defined(ACCEL_HAVE_Q21_VERUS)
+// Q21 served by the Verus-verified kernel.
+__attribute__((visibility("default"))) bool
+mysql_accel_tpch_q21_verus_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
+  if (InitStringUdf(initid, args, 1)) {
+    std::snprintf(message, MYSQL_ERRMSG_SIZE, "mysql_accel_tpch_q21_verus argument count");
+    return true;
+  }
+  return false;
+}
+__attribute__((visibility("default"))) void
+mysql_accel_tpch_q21_verus_deinit(UDF_INIT *initid) {
+  DeinitStringUdf(initid);
+}
+__attribute__((visibility("default"))) char *
+mysql_accel_tpch_q21_verus(UDF_INIT *initid, UDF_ARGS *args, char *,
+                           unsigned long *length, unsigned char *, unsigned char *error) {
+  try {
+    // n_name = NULL matches no row (ParseTypedArgs would turn NULL into '').
+    if (args->arg_count < 1 || args->args[0] == nullptr)
+      return CopyResult(initid, std::string(), length, error);
+    auto parsed = ParseTypedArgs(args, "s");
+    return CopyResult(initid, mysql_rt::ExecuteMysqlTpchQ21Verus(parsed), length, error);
+  } catch (...) {
+    *error = 1;
+    *length = 0;
+    return initid->ptr;
+  }
+}
+#endif
+
 __attribute__((visibility("default")))
 bool mysql_accel_observer_mutation_count_init(UDF_INIT *initid, UDF_ARGS *args,
                                               char *message) {

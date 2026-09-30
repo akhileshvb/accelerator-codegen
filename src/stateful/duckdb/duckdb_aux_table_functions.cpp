@@ -374,6 +374,10 @@ void RegisterWorkloadAuxFunctions(::duckdb::Catalog &catalog,
     case 21:
       RegisterAuxFunction(catalog, context, entry, "accel_tpch_q21_aux",
                           {::duckdb::LogicalType::VARCHAR});
+#if defined(ACCEL_HAVE_Q21_VERUS)
+      RegisterAuxFunction(catalog, context, TpchQ21VerusCatalogEntry(),
+                          "accel_tpch_q21_verus", {::duckdb::LogicalType::VARCHAR});
+#endif
       break;
     case 22:
       RegisterAuxFunction(catalog, context, entry, "accel_tpch_q22_aux",

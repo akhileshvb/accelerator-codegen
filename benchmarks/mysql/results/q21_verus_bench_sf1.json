@@ -1,0 +1,282 @@
+{
+ "mysql": "8.4.11",
+ "lineitem_rows": 5865365,
+ "nations": [
+  "ALGERIA",
+  "ARGENTINA",
+  "BRAZIL",
+  "CANADA",
+  "EGYPT",
+  "ETHIOPIA",
+  "FRANCE",
+  "GERMANY",
+  "INDIA",
+  "INDONESIA",
+  "IRAN",
+  "IRAQ",
+  "JAPAN",
+  "JORDAN",
+  "KENYA",
+  "MOROCCO",
+  "MOZAMBIQUE",
+  "PERU",
+  "CHINA",
+  "ROMANIA",
+  "SAUDI ARABIA",
+  "VIETNAM",
+  "RUSSIA",
+  "UNITED KINGDOM",
+  "UNITED STATES"
+ ],
+ "read_only": {
+  "base": {
+   "per_nation_ms": {
+    "ALGERIA": 5062.364247976802,
+    "ARGENTINA": 5032.980699557811,
+    "BRAZIL": 5018.449328490533,
+    "CANADA": 5042.260593385436,
+    "EGYPT": 5053.001304506324,
+    "ETHIOPIA": 5027.707528905012,
+    "FRANCE": 5041.98581748642,
+    "GERMANY": 5026.47755946964,
+    "INDIA": 5204.435746418312,
+    "INDONESIA": 5125.634988071397,
+    "IRAN": 5036.709321429953,
+    "IRAQ": 5062.219967949204,
+    "JAPAN": 5027.330781915225,
+    "JORDAN": 5004.660330945626,
+    "KENYA": 5002.588080475107,
+    "MOROCCO": 4955.446069478057,
+    "MOZAMBIQUE": 5192.655016086064,
+    "PERU": 5020.424522575922,
+    "CHINA": 5117.319431970827,
+    "ROMANIA": 4982.245128019713,
+    "SAUDI ARABIA": 5004.697807598859,
+    "VIETNAM": 4976.569437072612,
+    "RUSSIA": 4986.481499508955,
+    "UNITED KINGDOM": 4975.527906557545,
+    "UNITED STATES": 4974.348375457339
+   }
+  },
+  "verus": {
+   "per_nation_ms": {
+    "ALGERIA": 1.0261910501867533,
+    "ARGENTINA": 1.004004036076367,
+    "BRAZIL": 0.9825954912230372,
+    "CANADA": 1.0043935617431998,
+    "EGYPT": 1.0074864840134978,
+    "ETHIOPIA": 0.9438605047762394,
+    "FRANCE": 0.9790180483832955,
+    "GERMANY": 0.9695865446701646,
+    "INDIA": 1.005796017125249,
+    "INDONESIA": 0.9889175416901708,
+    "IRAN": 0.966689083725214,
+    "IRAQ": 1.0497299954295158,
+    "JAPAN": 1.3959904899820685,
+    "JORDAN": 1.5277171041816473,
+    "KENYA": 1.7280150204896927,
+    "MOROCCO": 2.365356544032693,
+    "MOZAMBIQUE": 2.3976516677066684,
+    "PERU": 2.7331566670909524,
+    "CHINA": 2.693264395929873,
+    "ROMANIA": 2.4176123552024364,
+    "SAUDI ARABIA": 2.648325404152274,
+    "VIETNAM": 2.40939948707819,
+    "RUSSIA": 2.429425483569503,
+    "UNITED KINGDOM": 2.3789630504325032,
+    "UNITED STATES": 2.38272943533957
+   },
+   "cold_build_and_query_ms": 6721.96666803211,
+   "mismatching_nations": 0
+  },
+  "cpp": {
+   "per_nation_ms": {
+    "ALGERIA": 0.833924044854939,
+    "ARGENTINA": 0.8534099906682968,
+    "BRAZIL": 0.8971625939011574,
+    "CANADA": 0.9870129870250821,
+    "EGYPT": 1.1025135172531009,
+    "ETHIOPIA": 1.0522580705583096,
+    "FRANCE": 1.1031649773940444,
+    "GERMANY": 1.082328031770885,
+    "INDIA": 1.1110756313428283,
+    "INDONESIA": 1.096344436518848,
+    "IRAN": 1.0846658842638135,
+    "IRAQ": 0.7306799525395036,
+    "JAPAN": 0.6638000486418605,
+    "JORDAN": 0.6445149192586541,
+    "KENYA": 0.654564006254077,
+    "MOROCCO": 0.5300064804032445,
+    "MOZAMBIQUE": 0.5499579710885882,
+    "PERU": 0.567231560125947,
+    "CHINA": 0.5629794904962182,
+    "ROMANIA": 0.5684025818482041,
+    "SAUDI ARABIA": 0.5886193830519915,
+    "VIETNAM": 0.5938048707321286,
+    "RUSSIA": 0.5952250212430954,
+    "UNITED KINGDOM": 0.6866315379738808,
+    "UNITED STATES": 0.7619060343131423
+   },
+   "cold_build_and_query_ms": 6990.595045965165,
+   "mismatching_nations": 0
+  }
+ },
+ "writes": {
+  "point/k=1": {
+   "base": {
+    "total_ms": 50278.811018913984,
+    "query_ms_mean": 5026.444958499633,
+    "write_ms_mean": 1.389593188650906,
+    "writes": 10,
+    "queries": 10,
+    "matches_sql": null
+   },
+   "verus": {
+    "total_ms": 46.579983085393906,
+    "query_ms_mean": 2.4889566469937563,
+    "write_ms_mean": 2.105573588050902,
+    "writes": 10,
+    "queries": 10,
+    "matches_sql": true
+   },
+   "cpp": {
+    "total_ms": 62245.69505103864,
+    "query_ms_mean": 6223.081654612906,
+    "write_ms_mean": 1.4249318977817893,
+    "writes": 10,
+    "queries": 10,
+    "matches_sql": true
+   }
+  },
+  "point/k=10": {
+   "base": {
+    "total_ms": 50589.35874700546,
+    "query_ms_mean": 5052.993629453704,
+    "write_ms_mean": 0.5830458551645279,
+    "writes": 100,
+    "queries": 10,
+    "matches_sql": null
+   },
+   "verus": {
+    "total_ms": 63.02147498354316,
+    "query_ms_mean": 1.0921768145635724,
+    "write_ms_mean": 0.5086775124073029,
+    "writes": 100,
+    "queries": 10,
+    "matches_sql": true
+   },
+   "cpp": {
+    "total_ms": 61130.6207110174,
+    "query_ms_mean": 6027.256410312839,
+    "write_ms_mean": 8.56505220523104,
+    "writes": 100,
+    "queries": 10,
+    "matches_sql": true
+   }
+  },
+  "rf/k=1": {
+   "base": {
+    "total_ms": 51272.97035395168,
+    "query_ms_mean": 5124.654563074,
+    "write_ms_mean": 2.6141541078686714,
+    "writes": 10,
+    "queries": 10,
+    "matches_sql": null
+   },
+   "verus": {
+    "total_ms": 172.32646699994802,
+    "query_ms_mean": 1.1584616033360362,
+    "write_ms_mean": 16.006055986508727,
+    "writes": 10,
+    "queries": 10,
+    "matches_sql": true
+   },
+   "cpp": {
+    "total_ms": 60876.91419199109,
+    "query_ms_mean": 6004.3038143077865,
+    "write_ms_mean": 83.30506654456258,
+    "writes": 10,
+    "queries": 10,
+    "matches_sql": true
+   }
+  },
+  "rf/k=10": {
+   "base": {
+    "total_ms": 51458.23043095879,
+    "query_ms_mean": 5130.0294829765335,
+    "write_ms_mean": 1.5579973324202,
+    "writes": 100,
+    "queries": 10,
+    "matches_sql": null
+   },
+   "verus": {
+    "total_ms": 1882.6082770247012,
+    "query_ms_mean": 1.7206119606271386,
+    "write_ms_mean": 18.62582108937204,
+    "writes": 100,
+    "queries": 10,
+    "matches_sql": true
+   },
+   "cpp": {
+    "total_ms": 62236.19897896424,
+    "query_ms_mean": 6119.035885250196,
+    "write_ms_mean": 10.441342843696475,
+    "writes": 100,
+    "queries": 10,
+    "matches_sql": true
+   }
+  },
+  "mixed/k=1": {
+   "base": {
+    "total_ms": 50552.13148705661,
+    "query_ms_mean": 5053.2510593067855,
+    "write_ms_mean": 1.9135100999847054,
+    "writes": 10,
+    "queries": 10,
+    "matches_sql": null
+   },
+   "verus": {
+    "total_ms": 53.16975410096347,
+    "query_ms_mean": 1.3079306343570352,
+    "write_ms_mean": 3.946714987978339,
+    "writes": 10,
+    "queries": 10,
+    "matches_sql": true
+   },
+   "cpp": {
+    "total_ms": 61432.92376282625,
+    "query_ms_mean": 6133.372215041891,
+    "write_ms_mean": 9.847637102939188,
+    "writes": 10,
+    "queries": 10,
+    "matches_sql": true
+   }
+  },
+  "mixed/k=10": {
+   "base": {
+    "total_ms": 50284.40237301402,
+    "query_ms_mean": 5019.555476028472,
+    "write_ms_mean": 0.8709129667840898,
+    "writes": 100,
+    "queries": 10,
+    "matches_sql": null
+   },
+   "verus": {
+    "total_ms": 597.36034180969,
+    "query_ms_mean": 1.4797046082094312,
+    "write_ms_mean": 5.80606562551111,
+    "writes": 100,
+    "queries": 10,
+    "matches_sql": true
+   },
+   "cpp": {
+    "total_ms": 61315.0328239426,
+    "query_ms_mean": 6042.354907561094,
+    "write_ms_mean": 8.893185667693615,
+    "writes": 100,
+    "queries": 10,
+    "matches_sql": true
+   }
+  }
+ }
+}

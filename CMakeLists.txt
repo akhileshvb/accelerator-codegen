@@ -126,6 +126,19 @@ target_link_libraries(accelerator_codegen
         duckdb_sibling
 )
 
+# Verus-verified Q21 kernel (scripts/build_q21_verus.sh builds the archive).
+# The engine-neutral module and the kernel live in accelerator_codegen so that
+# every engine adapter (DuckDB runtime, Postgres extension, MySQL plugin)
+# links exactly one copy.
+set(ACCEL_Q21_VERUS_LIB "${CMAKE_CURRENT_SOURCE_DIR}/build-verus/libq21_verus.a"
+    CACHE FILEPATH "Verus Q21 kernel static library")
+if(EXISTS "${ACCEL_Q21_VERUS_LIB}")
+    message(STATUS "Q21 Verus kernel: ${ACCEL_Q21_VERUS_LIB}")
+    target_sources(accelerator_codegen PRIVATE src/generated/tpch/q21/verus/module.cpp)
+    target_compile_definitions(accelerator_codegen PUBLIC ACCEL_HAVE_Q21_VERUS)
+    target_link_libraries(accelerator_codegen PRIVATE ${ACCEL_Q21_VERUS_LIB} pthread dl m)
+endif()
+
 target_compile_features(accelerator_codegen PUBLIC cxx_std_17)
 
 # Link finalize.cpp for every TPC-H aux module that exists on disk.
@@ -330,6 +343,13 @@ target_link_libraries(test_tpch_q18_shared_differential
 )
 
 target_include_directories(test_tpch_q18_shared_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+if(EXISTS "${ACCEL_Q21_VERUS_LIB}" AND NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQL)
+    add_executable(q21_verus_bench_duckdb benchmarks/duckdb/q21_verus_bench.cpp)
+    target_link_libraries(q21_verus_bench_duckdb PRIVATE accelerator_codegen duckdb_sibling)
+    add_executable(q21_verus_duckdb_fuzz tests/verification/q21verus/q21_verus_duckdb_fuzz.cpp)
+    target_link_libraries(q21_verus_duckdb_fuzz PRIVATE accelerator_codegen duckdb_sibling)
+endif()
 
 add_executable(test_tpch_shared_differential
     tests/aux_state/test_tpch_shared_differential.cpp

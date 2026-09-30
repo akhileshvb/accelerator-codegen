@@ -269,6 +269,14 @@ Datum AcceleratorCodegenAuxTpchQ21(PG_FUNCTION_ARGS) {
   PG_RETURN_NULL();
 }
 
+#if defined(ACCEL_HAVE_Q21_VERUS)
+PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ21Verus);
+Datum AcceleratorCodegenAuxTpchQ21Verus(PG_FUNCTION_ARGS) {
+  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ21Verus(fcinfo);
+  PG_RETURN_NULL();
+}
+#endif
+
 PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ22);
 Datum AcceleratorCodegenAuxTpchQ22(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresTpchQ22(fcinfo);

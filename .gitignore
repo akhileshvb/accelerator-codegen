@@ -61,3 +61,6 @@ tests/verification/formalsql/**/logos_lower_report.json
 third_party/
 pipeline/.codex/
 tmp/
+
+# Local Verus toolchain drop
+tools/verus/

@@ -1842,6 +1842,16 @@ const SharedQueryCatalogEntry &LookupSharedQuery(SharedWorkloadKind workload,
   return *entry;
 }
 
+const SharedQueryCatalogEntry &TpchQ21VerusCatalogEntry() {
+  static const SharedQueryCatalogEntry entry = [] {
+    SharedQueryCatalogEntry e = LookupSharedQuery(SharedWorkloadKind::Tpch, 21);
+    e.accelerator_id = "tpch_q21_verus";
+    e.duckdb_aux_sql = "SELECT * FROM accel_tpch_q21_verus('SAUDI ARABIA')";
+    return e;
+  }();
+  return entry;
+}
+
 const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_name,
                                                int query_id) {
   return LookupSharedQuery(ParseWorkload(workload_name), query_id);

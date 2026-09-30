@@ -1,0 +1,22 @@
+read-only base: median over nations 5027.331 ms
+writes point/k=1 base: {'total_ms': 50278.811018913984, 'query_ms_mean': 5026.444958499633, 'write_ms_mean': 1.389593188650906, 'writes': 10, 'queries': 10, 'matches_sql': None}
+writes point/k=10 base: {'total_ms': 50589.35874700546, 'query_ms_mean': 5052.993629453704, 'write_ms_mean': 0.5830458551645279, 'writes': 100, 'queries': 10, 'matches_sql': None}
+writes rf/k=1 base: {'total_ms': 51272.97035395168, 'query_ms_mean': 5124.654563074, 'write_ms_mean': 2.6141541078686714, 'writes': 10, 'queries': 10, 'matches_sql': None}
+writes rf/k=10 base: {'total_ms': 51458.23043095879, 'query_ms_mean': 5130.0294829765335, 'write_ms_mean': 1.5579973324202, 'writes': 100, 'queries': 10, 'matches_sql': None}
+writes mixed/k=1 base: {'total_ms': 50552.13148705661, 'query_ms_mean': 5053.2510593067855, 'write_ms_mean': 1.9135100999847054, 'writes': 10, 'queries': 10, 'matches_sql': None}
+writes mixed/k=10 base: {'total_ms': 50284.40237301402, 'query_ms_mean': 5019.555476028472, 'write_ms_mean': 0.8709129667840898, 'writes': 100, 'queries': 10, 'matches_sql': None}
+read-only verus: median over nations 1.396 ms, mismatching nations 0
+writes point/k=1 verus: {'total_ms': 46.579983085393906, 'query_ms_mean': 2.4889566469937563, 'write_ms_mean': 2.105573588050902, 'writes': 10, 'queries': 10, 'matches_sql': True}
+writes point/k=10 verus: {'total_ms': 63.02147498354316, 'query_ms_mean': 1.0921768145635724, 'write_ms_mean': 0.5086775124073029, 'writes': 100, 'queries': 10, 'matches_sql': True}
+writes rf/k=1 verus: {'total_ms': 172.32646699994802, 'query_ms_mean': 1.1584616033360362, 'write_ms_mean': 16.006055986508727, 'writes': 10, 'queries': 10, 'matches_sql': True}
+writes rf/k=10 verus: {'total_ms': 1882.6082770247012, 'query_ms_mean': 1.7206119606271386, 'write_ms_mean': 18.62582108937204, 'writes': 100, 'queries': 10, 'matches_sql': True}
+writes mixed/k=1 verus: {'total_ms': 53.16975410096347, 'query_ms_mean': 1.3079306343570352, 'write_ms_mean': 3.946714987978339, 'writes': 10, 'queries': 10, 'matches_sql': True}
+writes mixed/k=10 verus: {'total_ms': 597.36034180969, 'query_ms_mean': 1.4797046082094312, 'write_ms_mean': 5.80606562551111, 'writes': 100, 'queries': 10, 'matches_sql': True}
+read-only cpp: median over nations 0.731 ms, mismatching nations 0
+writes point/k=1 cpp: {'total_ms': 62245.69505103864, 'query_ms_mean': 6223.081654612906, 'write_ms_mean': 1.4249318977817893, 'writes': 10, 'queries': 10, 'matches_sql': True}
+writes point/k=10 cpp: {'total_ms': 61130.6207110174, 'query_ms_mean': 6027.256410312839, 'write_ms_mean': 8.56505220523104, 'writes': 100, 'queries': 10, 'matches_sql': True}
+writes rf/k=1 cpp: {'total_ms': 60876.91419199109, 'query_ms_mean': 6004.3038143077865, 'write_ms_mean': 83.30506654456258, 'writes': 10, 'queries': 10, 'matches_sql': True}
+writes rf/k=10 cpp: {'total_ms': 62236.19897896424, 'query_ms_mean': 6119.035885250196, 'write_ms_mean': 10.441342843696475, 'writes': 100, 'queries': 10, 'matches_sql': True}
+writes mixed/k=1 cpp: {'total_ms': 61432.92376282625, 'query_ms_mean': 6133.372215041891, 'write_ms_mean': 9.847637102939188, 'writes': 10, 'queries': 10, 'matches_sql': True}
+writes mixed/k=10 cpp: {'total_ms': 61315.0328239426, 'query_ms_mean': 6042.354907561094, 'write_ms_mean': 8.893185667693615, 'writes': 100, 'queries': 10, 'matches_sql': True}
+wrote benchmarks/mysql/results/q21_verus_bench_sf1.json

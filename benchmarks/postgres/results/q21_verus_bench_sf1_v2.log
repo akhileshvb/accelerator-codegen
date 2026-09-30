@@ -1,0 +1,22 @@
+read-only base: median over nations 859.176 ms
+read-only verus: median over nations 1.832 ms
+read-only cpp: median over nations 0.590 ms
+writes point/k=1 base: total 17189 ms, query mean 858.540 ms, write mean 0.845 ms, matches_sql=None
+writes point/k=1 verus: total 28 ms, query mean 0.727 ms, write mean 0.601 ms, matches_sql=True
+writes point/k=1 cpp: total 63986 ms, query mean 3125.100 ms, write mean 74.118 ms, matches_sql=True
+writes point/k=10 base: total 17204 ms, query mean 855.354 ms, write mean 0.469 ms, matches_sql=None
+writes point/k=10 verus: total 130 ms, query mean 0.763 ms, write mean 0.560 ms, matches_sql=True
+writes point/k=10 cpp: total 67551 ms, query mean 3295.412 ms, write mean 8.198 ms, matches_sql=True
+writes rf/k=1 base: total 17175 ms, query mean 857.372 ms, write mean 1.304 ms, matches_sql=None
+writes rf/k=1 verus: total 38 ms, query mean 0.722 ms, write mean 1.119 ms, matches_sql=True
+writes rf/k=1 cpp: total 107 ms, query mean 0.809 ms, write mean 4.461 ms, matches_sql=True
+writes rf/k=10 base: total 17415 ms, query mean 860.524 ms, write mean 0.995 ms, matches_sql=None
+writes rf/k=10 verus: total 300 ms, query mean 0.990 ms, write mean 1.380 ms, matches_sql=True
+writes rf/k=10 cpp: total 1200 ms, query mean 0.964 ms, write mean 5.865 ms, matches_sql=True
+writes mixed/k=1 base: total 17160 ms, query mean 857.017 ms, write mean 0.913 ms, matches_sql=None
+writes mixed/k=1 verus: total 30 ms, query mean 0.730 ms, write mean 0.730 ms, matches_sql=True
+writes mixed/k=1 cpp: total 54281 ms, query mean 2650.877 ms, write mean 63.057 ms, matches_sql=True
+writes mixed/k=10 base: total 17208 ms, query mean 853.579 ms, write mean 0.663 ms, matches_sql=None
+writes mixed/k=10 verus: total 187 ms, query mean 0.810 ms, write mean 0.839 ms, matches_sql=True
+writes mixed/k=10 cpp: total 67432 ms, query mean 3286.018 ms, write mean 8.532 ms, matches_sql=True
+wrote benchmarks/postgres/results/q21_verus_bench_sf1_v2.json

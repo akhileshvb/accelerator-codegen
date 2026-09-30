@@ -49,6 +49,10 @@ struct SharedQueryCatalogEntry {
 
 const SharedQueryCatalogEntry &LookupSharedQuery(SharedWorkloadKind workload,
                                                int query_id);
+// TPC-H Q21 served by the Verus-verified kernel (accelerator "tpch_q21_verus",
+// table function accel_tpch_q21_verus).  Same SQL / probes as Q21.
+const SharedQueryCatalogEntry &TpchQ21VerusCatalogEntry();
+
 const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_name,
                                                int query_id);
 

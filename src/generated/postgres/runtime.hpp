@@ -32,6 +32,9 @@ void ExecutePostgresTpchQ19(FunctionCallInfo fcinfo);
 void ExecutePostgresTpchQ20(FunctionCallInfo fcinfo);
 void ExecutePostgresTpchQ21(FunctionCallInfo fcinfo);
 void ExecutePostgresTpchQ22(FunctionCallInfo fcinfo);
+#if defined(ACCEL_HAVE_Q21_VERUS)
+void ExecutePostgresTpchQ21Verus(FunctionCallInfo fcinfo);
+#endif
 
 } // namespace accelerator_codegen::aux_state::engine::postgres
 

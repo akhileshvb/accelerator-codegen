@@ -42,6 +42,9 @@
 #include "tpch/q20/mysql/aux/module.hpp"
 #include "tpch/q21/mysql/aux/module.hpp"
 #include "tpch/q22/mysql/aux/module.hpp"
+#if defined(ACCEL_HAVE_Q21_VERUS)
+#include "tpch/q21/verus/module.hpp"
+#endif
 
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
@@ -1400,6 +1403,103 @@ public:
   }
 };
 
+#if defined(ACCEL_HAVE_Q21_VERUS)
+// Scans for the Verus Q21 kernel.  Each implements the SQL its interface
+// comment names (the kernel's trusted inputs).  They run on a separate CLI
+// connection, so they see committed data only: the capture contract then
+// holds for autocommit writes (maintenance runs after each statement).
+std::string Q21VerusHex(const std::string &s) {
+  static const char *kHex = "0123456789ABCDEF";
+  std::string out;
+  for (unsigned char c : s) {
+    out.push_back(kHex[c >> 4]);
+    out.push_back(kHex[c & 15]);
+  }
+  return out;
+}
+
+class TpchQ21VerusScanImpl final : public query::TpchQ21VerusScan {
+public:
+  static q21v_li_row Row(const std::vector<std::string> &cols) {
+    return q21v_li_row{TypedInt(cols, 0), TypedInt(cols, 1), TypedDate(cols, 2),
+                       TypedDate(cols, 3)};
+  }
+  void ScanSuppliers(
+      const std::function<void(int64_t, const std::string &, int32_t)> &consumer)
+      override {
+    ScanTypedTuples("SELECT s_suppkey, s_name, s_nationkey FROM supplier",
+                    [&](const std::vector<std::string> &cols) {
+                      consumer(TypedInt(cols, 0), TypedText(cols, 1),
+                               static_cast<int32_t>(TypedInt(cols, 2)));
+                    });
+  }
+  void ScanNations(
+      const std::function<void(int32_t, const std::string &)> &consumer) override {
+    ScanTypedTuples("SELECT n_nationkey, n_name FROM nation",
+                    [&](const std::vector<std::string> &cols) {
+                      consumer(static_cast<int32_t>(TypedInt(cols, 0)),
+                               TypedText(cols, 1));
+                    });
+  }
+  void ScanFOrderKeys(const std::function<void(int64_t)> &consumer) override {
+    ScanTypedTuples("SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F'",
+                    [&](const std::vector<std::string> &cols) {
+                      consumer(TypedInt(cols, 0));
+                    });
+  }
+  void ScanFLineitems(const std::function<void(const q21v_li_row &)> &consumer) override {
+    ScanTypedTuples("SELECT l.l_orderkey, l.l_suppkey, l.l_commitdate, l.l_receiptdate "
+                    "FROM lineitem l WHERE EXISTS (SELECT 1 FROM orders o "
+                    "WHERE o.o_orderkey = l.l_orderkey AND o.o_orderstatus = 'F')",
+                    [&](const std::vector<std::string> &cols) { consumer(Row(cols)); });
+  }
+  void ScanLineitemsForKeys(const std::vector<int64_t> &keys,
+                            const std::function<void(const q21v_li_row &)> &consumer)
+      override {
+    std::string sql = "SELECT l_orderkey, l_suppkey, l_commitdate, l_receiptdate "
+                      "FROM lineitem WHERE l_orderkey IN (";
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+      if (i)
+        sql += ',';
+      sql += std::to_string(keys[i]);
+    }
+    sql += ")";
+    ScanTypedTuples(sql, [&](const std::vector<std::string> &cols) { consumer(Row(cols)); });
+  }
+  void RunReference(const std::string &nation,
+                    const std::function<void(const std::string &, int64_t)> &consumer)
+      override {
+    const std::string sql =
+        "SELECT s_name, COUNT(*) AS numwait FROM supplier, lineitem l1, orders, "
+        "nation WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey AND "
+        "o_orderstatus = 'F' AND l1.l_receiptdate > l1.l_commitdate AND EXISTS ("
+        "SELECT * FROM lineitem l2 WHERE l2.l_orderkey = l1.l_orderkey AND "
+        "l2.l_suppkey <> l1.l_suppkey) AND NOT EXISTS (SELECT * FROM lineitem l3 "
+        "WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND "
+        "l3.l_receiptdate > l3.l_commitdate) AND s_nationkey = n_nationkey AND "
+        "n_name = CONVERT(X'" + Q21VerusHex(nation) + "' USING utf8mb4) "
+        "GROUP BY s_name ORDER BY numwait DESC, s_name";
+    ScanTypedTuples(sql, [&](const std::vector<std::string> &cols) {
+      consumer(TypedText(cols, 0), TypedInt(cols, 1));
+    });
+  }
+};
+
+// The kernel's reference specification orders and compares text byte-wise.
+// MySQL does exactly that only under utf8mb4_0900_bin (NO PAD, memcmp), so
+// the kernel is used only when the three text columns Q21 reads have it.
+bool Q21VerusBinaryCollation() {
+  int64_t n = 0;
+  ScanTypedTuples(
+      "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() "
+      "AND collation_name = 'utf8mb4_0900_bin' AND ((table_name = 'supplier' AND "
+      "column_name = 's_name') OR (table_name = 'nation' AND column_name = 'n_name') "
+      "OR (table_name = 'orders' AND column_name = 'o_orderstatus'))",
+      [&](const std::vector<std::string> &cols) { n = TypedInt(cols, 0); });
+  return n == 3;
+}
+#endif
+
 class TpchQ22Scan final : public query::TpchQ22InitialScan {
 public:
   void ScanCustomers(
@@ -1937,6 +2037,20 @@ Q21Runtime() {
   return runtime;
 }
 
+#if defined(ACCEL_HAVE_Q21_VERUS)
+Runtime<query::TpchQ21VerusModule, query::TpchQ21VerusConfig, TpchQ21VerusScanImpl> &
+Q21VerusRuntime() {
+  static Runtime<query::TpchQ21VerusModule, query::TpchQ21VerusConfig,
+                 TpchQ21VerusScanImpl>
+      runtime("ACCELERATOR_CODEGEN_MYSQL_Q21_COST_MODEL",
+              "config/q21_aux_cost_model.json",
+              query::TpchQ21VerusLayout::kAccelerator,
+              query::TpchQ21VerusConfig{mysql_tbl::kSupplier, mysql_tbl::kOrders,
+                                        mysql_tbl::kLineitem, mysql_tbl::kNation});
+  return runtime;
+}
+#endif
+
 Runtime<query::TpchQ22Module, query::TpchQ22Config, TpchQ22Scan> &
 Q22Runtime() {
   static Runtime<query::TpchQ22Module, query::TpchQ22Config, TpchQ22Scan>
@@ -2169,6 +2283,31 @@ std::string ExecuteMysqlTpchQ21(const core::QueryArguments &arguments) {
   detail::Q21Runtime().Execute(arguments, out);
   return out;
 }
+
+#if defined(ACCEL_HAVE_Q21_VERUS)
+std::string ExecuteMysqlTpchQ21Verus(const core::QueryArguments &arguments) {
+  static const bool binary = detail::Q21VerusBinaryCollation();
+  std::string out;
+  if (!binary) {
+    // Outside the kernel's verified domain: answer with the SQL itself.
+    std::string nation;
+    if (!arguments.values.empty() && !arguments.values[0].is_null &&
+        std::holds_alternative<std::string>(arguments.values[0].payload))
+      nation = std::get<std::string>(arguments.values[0].payload);
+    detail::TsvSink sink(out);
+    detail::TpchQ21VerusScanImpl scan;
+    core::AuxRow row;
+    scan.RunReference(nation, [&](const std::string &name, int64_t numwait) {
+      row.values = {core::AuxValue::Of(core::AuxType::String, name),
+                    core::AuxValue::Of(core::AuxType::Int64, numwait)};
+      sink.WriteRow(row);
+    });
+    return out;
+  }
+  detail::Q21VerusRuntime().Execute(arguments, out);
+  return out;
+}
+#endif
 
 std::string ExecuteMysqlTpchQ22(const core::QueryArguments &arguments) {
   std::string out;

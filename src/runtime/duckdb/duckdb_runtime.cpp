@@ -30,6 +30,9 @@
 #include "sec_edgar/q24/duckdb/aux/parallel/module.hpp"
 #endif
 #include "tpch/q1/duckdb/aux/module.hpp"
+#if defined(ACCEL_HAVE_Q21_VERUS)
+#include "tpch/q21/verus/module.hpp"
+#endif
 #include "tpch/q4/duckdb/aux/module.hpp"
 #include "tpch/q5/duckdb/aux/module.hpp"
 #include "tpch/q13/duckdb/aux/module.hpp"
@@ -1681,6 +1684,93 @@ struct TpchQ21Scan : TpchQ21InitialScan {
   ::duckdb::Connection &connection;
 };
 
+#if defined(ACCEL_HAVE_Q21_VERUS)
+// Scans for the Verus Q21 kernel.  Each implements the SQL its interface
+// comment names (the kernel's trusted inputs).  All run on the runtime's
+// connection, so inside a write transaction they see its own writes.
+struct TpchQ21VerusDuckScan : TpchQ21VerusScan {
+  explicit TpchQ21VerusDuckScan(::duckdb::Connection &connection)
+      : connection(connection) {}
+  static q21v_li_row Row(const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+    return q21v_li_row{SafeInt64(ChunkValue(chunk, 0, row)),
+                       SafeInt64(ChunkValue(chunk, 1, row)),
+                       DateDays(ChunkValue(chunk, 2, row)),
+                       DateDays(ChunkValue(chunk, 3, row))};
+  }
+  void ScanSuppliers(const std::function<void(int64_t, const std::string &, int32_t)>
+                         &consumer) override {
+    ScanQueryStreaming(connection, "SELECT s_suppkey, s_name, s_nationkey FROM supplier",
+                       [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+                         consumer(SafeInt64(ChunkValue(chunk, 0, row)),
+                                  ChunkValue(chunk, 1, row).ToString(),
+                                  SafeInt32(ChunkValue(chunk, 2, row)));
+                       });
+  }
+  void ScanNations(
+      const std::function<void(int32_t, const std::string &)> &consumer) override {
+    ScanQueryStreaming(connection, "SELECT n_nationkey, n_name FROM nation",
+                       [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+                         consumer(SafeInt32(ChunkValue(chunk, 0, row)),
+                                  ChunkValue(chunk, 1, row).ToString());
+                       });
+  }
+  void ScanFOrderKeys(const std::function<void(int64_t)> &consumer) override {
+    ScanQueryStreaming(connection,
+                       "SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F'",
+                       [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+                         consumer(SafeInt64(ChunkValue(chunk, 0, row)));
+                       });
+  }
+  void ScanFLineitems(const std::function<void(const q21v_li_row &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l.l_orderkey, l.l_suppkey, l.l_commitdate, l.l_receiptdate "
+        "FROM lineitem l WHERE EXISTS (SELECT 1 FROM orders o "
+        "WHERE o.o_orderkey = l.l_orderkey AND o.o_orderstatus = 'F')",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer(Row(chunk, row));
+        });
+  }
+  void ScanLineitemsForKeys(const std::vector<int64_t> &keys,
+                            const std::function<void(const q21v_li_row &)> &consumer)
+      override {
+    std::string sql = "SELECT l_orderkey, l_suppkey, l_commitdate, l_receiptdate "
+                      "FROM lineitem WHERE l_orderkey IN (";
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+      if (i)
+        sql += ',';
+      sql += std::to_string(keys[i]);
+    }
+    sql += ")";
+    ScanQueryStreaming(connection, sql,
+                       [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+                         consumer(Row(chunk, row));
+                       });
+  }
+  void RunReference(const std::string &nation,
+                    const std::function<void(const std::string &, int64_t)> &consumer)
+      override {
+    auto stmt = connection.Prepare(
+        "SELECT s_name, COUNT(*) AS numwait FROM supplier, lineitem l1, orders, "
+        "nation WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey AND "
+        "o_orderstatus = 'F' AND l1.l_receiptdate > l1.l_commitdate AND EXISTS ("
+        "SELECT * FROM lineitem l2 WHERE l2.l_orderkey = l1.l_orderkey AND "
+        "l2.l_suppkey <> l1.l_suppkey) AND NOT EXISTS (SELECT * FROM lineitem l3 "
+        "WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND "
+        "l3.l_receiptdate > l3.l_commitdate) AND s_nationkey = n_nationkey AND "
+        "n_name = $1 GROUP BY s_name ORDER BY numwait DESC, s_name");
+    Require(stmt && !stmt->HasError(), stmt ? stmt->GetError() : "Q21 prepare failed");
+    auto result = stmt->Execute(::duckdb::Value(nation));
+    Require(result && !result->HasError(), result ? result->GetError() : "Q21 failed");
+    auto &materialized = dynamic_cast<::duckdb::MaterializedQueryResult &>(*result);
+    for (::duckdb::idx_t row = 0; row < materialized.RowCount(); ++row)
+      consumer(materialized.GetValue(0, row).ToString(),
+               SafeInt64(materialized.GetValue(1, row)));
+  }
+  ::duckdb::Connection &connection;
+};
+#endif
+
 struct SecEdgarQ1Scan : SecEdgarQ1InitialScan {
   explicit SecEdgarQ1Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanPre(
@@ -2046,6 +2136,11 @@ CreateBinding(::duckdb::Connection &connection,
     return MakeBinding<TpchQ20Scan, TpchQ20Module>(
         connection, TpchQ20Config{1, 2, 3, 4, 5});
   case 21:
+#if defined(ACCEL_HAVE_Q21_VERUS)
+    if (std::string(entry.accelerator_id) == TpchQ21VerusLayout::kAccelerator)
+      return MakeBinding<TpchQ21VerusDuckScan, TpchQ21VerusModule>(
+          connection, TpchQ21VerusConfig{1, 2, 3, 4});
+#endif
     return MakeBinding<TpchQ21Scan, TpchQ21Module>(connection,
                                                    TpchQ21Config{1, 2, 3, 4});
   case 22:

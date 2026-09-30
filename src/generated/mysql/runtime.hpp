@@ -30,6 +30,9 @@ std::string ExecuteMysqlTpchQ18(const core::QueryArguments &arguments);
 std::string ExecuteMysqlTpchQ19(const core::QueryArguments &arguments);
 std::string ExecuteMysqlTpchQ20(const core::QueryArguments &arguments);
 std::string ExecuteMysqlTpchQ21(const core::QueryArguments &arguments);
+#if defined(ACCEL_HAVE_Q21_VERUS)
+std::string ExecuteMysqlTpchQ21Verus(const core::QueryArguments &arguments);
+#endif
 std::string ExecuteMysqlTpchQ22(const core::QueryArguments &arguments);
 
 } // namespace accelerator_codegen::aux_state::engine::mysql
