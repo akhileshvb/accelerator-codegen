@@ -18,7 +18,6 @@
 // S covers the build snapshot, S sees every transaction whose writes the
 // store maintained locally, and -- read after S was taken -- inflight[k] == 0
 // and seq[k] still equals the recorded value for every dependency slot.
-// tests/verification/q21/dafny/Q21Runtime.dfy proves this protocol sound.
 #pragma once
 
 #include <array>

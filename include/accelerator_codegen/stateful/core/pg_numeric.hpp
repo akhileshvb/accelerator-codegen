@@ -1,9 +1,7 @@
 // PostgreSQL NUMERIC arithmetic needed to emit exact aggregate results.
 //
-// Mirrors (step for step) FormalSQL's model of PostgreSQL numeric division
-// (ValueNumeric.v: numeric_pg_weight, numeric_pg_first_digit,
-// numeric_pg_div_scale, numeric_round_to_scale) and its Dafny twin
-// tests/verification/logical/dafny/PgNumeric.dfy:
+// Follows PostgreSQL's numeric division (numeric.c: the weight and first
+// digit of each operand, select_div_scale, rounding to the result scale):
 //
 //   avg(numeric) over values of display scale s with integer coefficient sum
 //   `sum` and count `n` is sum/10^s / n rounded half away from zero at
@@ -49,7 +47,7 @@ inline int DigitCount(UInt128 a) {
   return digits;
 }
 
-// Floor division for a positive divisor (FormalSQL uses Z.div).
+// Floor division for a positive divisor.
 inline int FloorDiv(int a, int b) {
   int q = a / b;
   if ((a % b != 0) && (a < 0)) {
@@ -79,7 +77,7 @@ inline int64_t FirstDigit(Int128 coeff, int scale) {
     }
   } else {
     for (int i = 0; i < -exponent; ++i) {
-      a *= 10; // exponent >= -3 (see PgNumeric.dfy FirstDigit), cannot overflow
+      a *= 10; // exponent >= -3 (the first digit of the quotient), cannot overflow
     }
   }
   return static_cast<int64_t>(a);

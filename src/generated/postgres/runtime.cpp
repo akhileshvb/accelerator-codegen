@@ -1927,7 +1927,7 @@ namespace auxsync = accelerator_codegen::aux_state::engine::postgres::aux_sync;
 
 // Per-backend Runtime.  The Aux store is process-local; aux_sync decides when
 // it may serve a hit for the statement snapshot (cross-backend protocol, see
-// aux_sync.hpp and tests/verification/q21/dafny/Q21Runtime.dfy):
+// aux_sync.hpp):
 //
 //   Sync marker  (base, own_commits, seq): the store equals the Aux of the
 //                database whose dependency-table writers are exactly those
