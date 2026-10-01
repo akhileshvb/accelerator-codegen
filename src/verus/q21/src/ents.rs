@@ -2,7 +2,7 @@
 // lineitems) for every supplier with at least one lineitem on the order.
 use vstd::prelude::*;
 use verus_common::sums::*;
-use crate::spec::*;
+use crate::gen_spec::*;
 use crate::bridge::*;
 use crate::orderspec::*;
 
@@ -119,7 +119,7 @@ pub proof fn lemma_per_sk_tot(db: Db, ok: int, sk: int, k: int)
     ensures
         sum(
             db.lineitem,
-            |x: Lineitem| if x.suppkey == k { ind(x.orderkey == ok && x.suppkey != sk) } else { 0 },
+            |x: LineitemRow| if x.l_suppkey == k { ind(x.l_orderkey == ok && x.l_suppkey != sk) } else { 0 },
         ) == if k != sk {
             cnt(db, ok, k)
         } else {
@@ -129,16 +129,16 @@ pub proof fn lemma_per_sk_tot(db: Db, ok: int, sk: int, k: int)
     if k != sk {
         lemma_sum_ext_all(
             db.lineitem,
-            |x: Lineitem| if x.suppkey == k { ind(x.orderkey == ok && x.suppkey != sk) } else { 0 },
-            |x: Lineitem| ind(x.orderkey == ok && x.suppkey == k),
+            |x: LineitemRow| if x.l_suppkey == k { ind(x.l_orderkey == ok && x.l_suppkey != sk) } else { 0 },
+            |x: LineitemRow| ind(x.l_orderkey == ok && x.l_suppkey == k),
         );
     } else {
         lemma_sum_ext_all(
             db.lineitem,
-            |x: Lineitem| if x.suppkey == k { ind(x.orderkey == ok && x.suppkey != sk) } else { 0 },
-            |x: Lineitem| 0int,
+            |x: LineitemRow| if x.l_suppkey == k { ind(x.l_orderkey == ok && x.l_suppkey != sk) } else { 0 },
+            |x: LineitemRow| 0int,
         );
-        lemma_sum_zero(db.lineitem, |x: Lineitem| 0int);
+        lemma_sum_zero(db.lineitem, |x: LineitemRow| 0int);
     }
 }
 
@@ -148,9 +148,9 @@ pub proof fn lemma_per_sk_late(db: Db, ok: int, sk: int, k: int)
     ensures
         sum(
             db.lineitem,
-            |x: Lineitem|
-                if x.suppkey == k {
-                    ind(x.orderkey == ok && x.suppkey != sk && late(x))
+            |x: LineitemRow|
+                if x.l_suppkey == k {
+                    ind(x.l_orderkey == ok && x.l_suppkey != sk && late(x))
                 } else {
                     0
                 },
@@ -163,26 +163,26 @@ pub proof fn lemma_per_sk_late(db: Db, ok: int, sk: int, k: int)
     if k != sk {
         lemma_sum_ext_all(
             db.lineitem,
-            |x: Lineitem|
-                if x.suppkey == k {
-                    ind(x.orderkey == ok && x.suppkey != sk && late(x))
+            |x: LineitemRow|
+                if x.l_suppkey == k {
+                    ind(x.l_orderkey == ok && x.l_suppkey != sk && late(x))
                 } else {
                     0
                 },
-            |x: Lineitem| ind(x.orderkey == ok && x.suppkey == k && late(x)),
+            |x: LineitemRow| ind(x.l_orderkey == ok && x.l_suppkey == k && late(x)),
         );
     } else {
         lemma_sum_ext_all(
             db.lineitem,
-            |x: Lineitem|
-                if x.suppkey == k {
-                    ind(x.orderkey == ok && x.suppkey != sk && late(x))
+            |x: LineitemRow|
+                if x.l_suppkey == k {
+                    ind(x.l_orderkey == ok && x.l_suppkey != sk && late(x))
                 } else {
                     0
                 },
-            |x: Lineitem| 0int,
+            |x: LineitemRow| 0int,
         );
-        lemma_sum_zero(db.lineitem, |x: Lineitem| 0int);
+        lemma_sum_zero(db.lineitem, |x: LineitemRow| 0int);
     }
 }
 
@@ -191,13 +191,13 @@ pub proof fn lemma_ents_cover(e: Seq<Ent>, db: Db, ok: int, i: int) -> (j: int)
     requires
         ents_ok(e, db, ok),
         0 <= i < db.lineitem.len(),
-        db.lineitem[i].orderkey == ok,
+        db.lineitem[i].l_orderkey == ok,
     ensures
         0 <= j < e.len(),
-        e[j].sk == db.lineitem[i].suppkey,
+        e[j].sk == db.lineitem[i].l_suppkey,
 {
-    let s2 = db.lineitem[i].suppkey;
-    let g = |x: Lineitem| ind(x.orderkey == ok && x.suppkey == s2);
+    let s2 = db.lineitem[i].l_suppkey;
+    let g = |x: LineitemRow| ind(x.l_orderkey == ok && x.l_suppkey == s2);
     lemma_sum_nonneg(db.lineitem, g);
     lemma_sum_pos(db.lineitem, g, i);
     assert(cnt(db, ok, s2) > 0);
@@ -233,28 +233,28 @@ pub proof fn lemma_other_tot(e: Seq<Ent>, db: Db, ok: int, sk: int)
 {
     let ks = e.map_values(|x: Ent| x.sk as int);
     lemma_ents_keys_distinct(e);
-    let key = |l: Lineitem| l.suppkey;
-    let f = |l: Lineitem| ind(l.orderkey == ok && l.suppkey != sk);
+    let key = |l: LineitemRow| l.l_suppkey;
+    let f = |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey != sk);
     let per = |k: int|
         sum(
             db.lineitem,
-            |x: Lineitem| if x.suppkey == k { ind(x.orderkey == ok && x.suppkey != sk) } else { 0 },
+            |x: LineitemRow| if x.l_suppkey == k { ind(x.l_orderkey == ok && x.l_suppkey != sk) } else { 0 },
         );
     assert forall|i: int|
         0 <= i < db.lineitem.len() && f(db.lineitem[i]) != 0 implies ks.contains(
         key(#[trigger] db.lineitem[i]),
     ) by {
         let j = lemma_ents_cover(e, db, ok, i);
-        assert(ks[j] == db.lineitem[i].suppkey);
+        assert(ks[j] == db.lineitem[i].l_suppkey);
     }
     assert forall|k: int| #[trigger] per(k) == sum(
         db.lineitem,
-        |x: Lineitem| if key(x) == k { f(x) } else { 0 },
+        |x: LineitemRow| if key(x) == k { f(x) } else { 0 },
     ) by {
         lemma_sum_ext_all(
             db.lineitem,
-            |x: Lineitem| if key(x) == k { f(x) } else { 0 },
-            |x: Lineitem| if x.suppkey == k { ind(x.orderkey == ok && x.suppkey != sk) } else { 0 },
+            |x: LineitemRow| if key(x) == k { f(x) } else { 0 },
+            |x: LineitemRow| if x.l_suppkey == k { ind(x.l_orderkey == ok && x.l_suppkey != sk) } else { 0 },
         );
     }
     lemma_sum_group(db.lineitem, ks, key, f, per);
@@ -282,14 +282,14 @@ pub proof fn lemma_other_late(e: Seq<Ent>, db: Db, ok: int, sk: int)
 {
     let ks = e.map_values(|x: Ent| x.sk as int);
     lemma_ents_keys_distinct(e);
-    let key = |l: Lineitem| l.suppkey;
-    let f = |l: Lineitem| ind(l.orderkey == ok && l.suppkey != sk && late(l));
+    let key = |l: LineitemRow| l.l_suppkey;
+    let f = |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey != sk && late(l));
     let per = |k: int|
         sum(
             db.lineitem,
-            |x: Lineitem|
-                if x.suppkey == k {
-                    ind(x.orderkey == ok && x.suppkey != sk && late(x))
+            |x: LineitemRow|
+                if x.l_suppkey == k {
+                    ind(x.l_orderkey == ok && x.l_suppkey != sk && late(x))
                 } else {
                     0
                 },
@@ -299,18 +299,18 @@ pub proof fn lemma_other_late(e: Seq<Ent>, db: Db, ok: int, sk: int)
         key(#[trigger] db.lineitem[i]),
     ) by {
         let j = lemma_ents_cover(e, db, ok, i);
-        assert(ks[j] == db.lineitem[i].suppkey);
+        assert(ks[j] == db.lineitem[i].l_suppkey);
     }
     assert forall|k: int| #[trigger] per(k) == sum(
         db.lineitem,
-        |x: Lineitem| if key(x) == k { f(x) } else { 0 },
+        |x: LineitemRow| if key(x) == k { f(x) } else { 0 },
     ) by {
         lemma_sum_ext_all(
             db.lineitem,
-            |x: Lineitem| if key(x) == k { f(x) } else { 0 },
-            |x: Lineitem|
-                if x.suppkey == k {
-                    ind(x.orderkey == ok && x.suppkey != sk && late(x))
+            |x: LineitemRow| if key(x) == k { f(x) } else { 0 },
+            |x: LineitemRow|
+                if x.l_suppkey == k {
+                    ind(x.l_orderkey == ok && x.l_suppkey != sk && late(x))
                 } else {
                     0
                 },

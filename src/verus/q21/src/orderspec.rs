@@ -4,29 +4,29 @@
 // orderkeys changes W only through those orders.
 use vstd::prelude::*;
 use verus_common::sums::*;
-use crate::spec::*;
+use crate::gen_spec::*;
 use crate::bridge::*;
 
 verus! {
 
 /// Lineitem rows of order ok and supplier sk.
 pub open spec fn cnt(db: Db, ok: int, sk: int) -> int {
-    sum(db.lineitem, |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk))
+    sum(db.lineitem, |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk))
 }
 
 /// Late lineitem rows of order ok and supplier sk.
 pub open spec fn lcnt(db: Db, ok: int, sk: int) -> int {
-    sum(db.lineitem, |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk && late(l)))
+    sum(db.lineitem, |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk && late(l)))
 }
 
 /// Lineitem rows of order ok with a supplier other than sk.
 pub open spec fn other_cnt(db: Db, ok: int, sk: int) -> int {
-    sum(db.lineitem, |l: Lineitem| ind(l.orderkey == ok && l.suppkey != sk))
+    sum(db.lineitem, |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey != sk))
 }
 
 /// Late lineitem rows of order ok with a supplier other than sk.
 pub open spec fn other_late_cnt(db: Db, ok: int, sk: int) -> int {
-    sum(db.lineitem, |l: Lineitem| ind(l.orderkey == ok && l.suppkey != sk && late(l)))
+    sum(db.lineitem, |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey != sk && late(l)))
 }
 
 /// l1 with (ok, sk) passes EXISTS / NOT EXISTS.
@@ -50,11 +50,11 @@ pub open spec fn per_order(db: Db, ok: int, sk: int) -> int {
 }
 
 // A COUNT of rows satisfying any condition is never negative.
-pub proof fn lemma_ind_sum_nonneg(s: Seq<Lineitem>, p: spec_fn(Lineitem) -> bool)
+pub proof fn lemma_ind_sum_nonneg(s: Seq<LineitemRow>, p: spec_fn(LineitemRow) -> bool)
     ensures
-        sum(s, |l: Lineitem| ind(p(l))) >= 0,
+        sum(s, |l: LineitemRow| ind(p(l))) >= 0,
 {
-    lemma_sum_nonneg(s, |l: Lineitem| ind(p(l)));
+    lemma_sum_nonneg(s, |l: LineitemRow| ind(p(l)));
 }
 
 // All per-order, per-supplier counts are non-negative and late rows never exceed
@@ -67,31 +67,31 @@ pub proof fn lemma_cnt_nonneg(db: Db, ok: int, sk: int)
         other_cnt(db, ok, sk) >= 0,
         other_late_cnt(db, ok, sk) >= 0,
 {
-    lemma_sum_nonneg(db.lineitem, |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk));
+    lemma_sum_nonneg(db.lineitem, |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk));
     lemma_sum_nonneg(
         db.lineitem,
-        |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk && late(l)),
+        |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk && late(l)),
     );
     lemma_sum_le(
         db.lineitem,
-        |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk && late(l)),
-        |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk),
+        |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk && late(l)),
+        |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk),
     );
-    lemma_sum_nonneg(db.lineitem, |l: Lineitem| ind(l.orderkey == ok && l.suppkey != sk));
+    lemma_sum_nonneg(db.lineitem, |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey != sk));
     lemma_sum_nonneg(
         db.lineitem,
-        |l: Lineitem| ind(l.orderkey == ok && l.suppkey != sk && late(l)),
+        |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey != sk && late(l)),
     );
 }
 
 /// An indicator count is positive iff a witness row exists.
-pub proof fn lemma_ind_count_pos(s: Seq<Lineitem>, p: spec_fn(Lineitem) -> bool)
+pub proof fn lemma_ind_count_pos(s: Seq<LineitemRow>, p: spec_fn(LineitemRow) -> bool)
     ensures
-        sum(s, |l: Lineitem| ind(p(l))) > 0 <==> exists|j: int| 0 <= j < s.len() && p(
+        sum(s, |l: LineitemRow| ind(p(l))) > 0 <==> exists|j: int| 0 <= j < s.len() && p(
             #[trigger] s[j],
         ),
 {
-    let f = |l: Lineitem| ind(p(l));
+    let f = |l: LineitemRow| ind(p(l));
     lemma_sum_nonneg(s, f);
     if exists|j: int| 0 <= j < s.len() && p(#[trigger] s[j]) {
         let j = choose|j: int| 0 <= j < s.len() && p(#[trigger] s[j]);
@@ -104,87 +104,87 @@ pub proof fn lemma_ind_count_pos(s: Seq<Lineitem>, p: spec_fn(Lineitem) -> bool)
 }
 
 /// EXISTS l2 as a count.
-pub proof fn lemma_exists_l2_count(db: Db, l: Lineitem)
+pub proof fn lemma_exists_l2_count(db: Db, l: LineitemRow)
     ensures
-        exists_l2(db, l) == (other_cnt(db, l.orderkey, l.suppkey) > 0),
+        exists_1(db, l) == (other_cnt(db, l.l_orderkey, l.l_suppkey) > 0),
 {
-    let ok = l.orderkey;
-    let sk = l.suppkey;
-    let p = |x: Lineitem| x.orderkey == ok && x.suppkey != sk;
+    let ok = l.l_orderkey;
+    let sk = l.l_suppkey;
+    let p = |x: LineitemRow| x.l_orderkey == ok && x.l_suppkey != sk;
     lemma_ind_count_pos(db.lineitem, p);
     lemma_sum_ext_all(
         db.lineitem,
-        |x: Lineitem| ind(p(x)),
-        |x: Lineitem| ind(x.orderkey == ok && x.suppkey != sk),
+        |x: LineitemRow| ind(p(x)),
+        |x: LineitemRow| ind(x.l_orderkey == ok && x.l_suppkey != sk),
     );
-    if exists_l2(db, l) {
+    if exists_1(db, l) {
         let j = choose|j: int|
-            0 <= j < db.lineitem.len() && (#[trigger] db.lineitem[j]).orderkey == l.orderkey
-                && db.lineitem[j].suppkey != l.suppkey;
+            0 <= j < db.lineitem.len() && (#[trigger] db.lineitem[j]).l_orderkey == l.l_orderkey
+                && db.lineitem[j].l_suppkey != l.l_suppkey;
         assert(p(db.lineitem[j]));
     }
     if other_cnt(db, ok, sk) > 0 {
         let j = choose|j: int| 0 <= j < db.lineitem.len() && p(#[trigger] db.lineitem[j]);
-        assert(db.lineitem[j].orderkey == l.orderkey && db.lineitem[j].suppkey != l.suppkey);
+        assert(db.lineitem[j].l_orderkey == l.l_orderkey && db.lineitem[j].l_suppkey != l.l_suppkey);
     }
 }
 
 /// EXISTS l3 as a count.
-pub proof fn lemma_exists_l3_count(db: Db, l: Lineitem)
+pub proof fn lemma_exists_l3_count(db: Db, l: LineitemRow)
     ensures
-        exists_l3(db, l) == (other_late_cnt(db, l.orderkey, l.suppkey) > 0),
+        exists_2(db, l) == (other_late_cnt(db, l.l_orderkey, l.l_suppkey) > 0),
 {
-    let ok = l.orderkey;
-    let sk = l.suppkey;
-    let p = |x: Lineitem| x.orderkey == ok && x.suppkey != sk && late(x);
+    let ok = l.l_orderkey;
+    let sk = l.l_suppkey;
+    let p = |x: LineitemRow| x.l_orderkey == ok && x.l_suppkey != sk && late(x);
     lemma_ind_count_pos(db.lineitem, p);
     lemma_sum_ext_all(
         db.lineitem,
-        |x: Lineitem| ind(p(x)),
-        |x: Lineitem| ind(x.orderkey == ok && x.suppkey != sk && late(x)),
+        |x: LineitemRow| ind(p(x)),
+        |x: LineitemRow| ind(x.l_orderkey == ok && x.l_suppkey != sk && late(x)),
     );
-    if exists_l3(db, l) {
+    if exists_2(db, l) {
         let j = choose|j: int|
-            0 <= j < db.lineitem.len() && (#[trigger] db.lineitem[j]).orderkey == l.orderkey
-                && db.lineitem[j].suppkey != l.suppkey && late(db.lineitem[j]);
+            0 <= j < db.lineitem.len() && (#[trigger] db.lineitem[j]).l_orderkey == l.l_orderkey
+                && db.lineitem[j].l_suppkey != l.l_suppkey && late(db.lineitem[j]);
         assert(p(db.lineitem[j]));
     }
     if other_late_cnt(db, ok, sk) > 0 {
         let j = choose|j: int| 0 <= j < db.lineitem.len() && p(#[trigger] db.lineitem[j]);
-        assert(db.lineitem[j].orderkey == l.orderkey && db.lineitem[j].suppkey != l.suppkey);
+        assert(db.lineitem[j].l_orderkey == l.l_orderkey && db.lineitem[j].l_suppkey != l.l_suppkey);
     }
 }
 
 /// EXISTS / NOT EXISTS of the query as per-(ok, sk) counts.
-pub proof fn lemma_qual_key(db: Db, l: Lineitem)
+pub proof fn lemma_qual_key(db: Db, l: LineitemRow)
     ensures
-        qual(db, l) == (late(l) && qk(db, l.orderkey, l.suppkey)),
+        qual(db, l) == (late(l) && qk(db, l.l_orderkey, l.l_suppkey)),
 {
     lemma_exists_l2_count(db, l);
     lemma_exists_l3_count(db, l);
-    lemma_cnt_nonneg(db, l.orderkey, l.suppkey);
+    lemma_cnt_nonneg(db, l.l_orderkey, l.l_suppkey);
 }
 
 /// The lineitems of one order contribute fm(ok) · contrib(ok, sk) to W(sk).
 pub proof fn lemma_per_order(db: Db, ok: int, sk: int)
     ensures
-        sum(db.lineitem, |l: Lineitem| if l.orderkey == ok { w_term(db, sk, l) } else { 0 })
+        sum(db.lineitem, |l: LineitemRow| if l.l_orderkey == ok { w_term(db, sk, l) } else { 0 })
             == per_order(db, ok, sk),
 {
-    let f = |l: Lineitem| if l.orderkey == ok { w_term(db, sk, l) } else { 0 };
+    let f = |l: LineitemRow| if l.l_orderkey == ok { w_term(db, sk, l) } else { 0 };
     let c = fm(db, ok);
     if qk(db, ok, sk) {
-        let g = |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk && late(l));
-        assert forall|l: Lineitem| #[trigger] f(l) == c * g(l) by {
+        let g = |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk && late(l));
+        assert forall|l: LineitemRow| #[trigger] f(l) == c * g(l) by {
             lemma_qual_key(db, l);
         }
         lemma_sum_scale(db.lineitem, g, f, c);
     } else {
-        assert forall|l: Lineitem| #[trigger] f(l) == 0int by {
+        assert forall|l: LineitemRow| #[trigger] f(l) == 0int by {
             lemma_qual_key(db, l);
         }
-        lemma_sum_ext_all(db.lineitem, f, |l: Lineitem| 0int);
-        lemma_sum_zero(db.lineitem, |l: Lineitem| 0int);
+        lemma_sum_ext_all(db.lineitem, f, |l: LineitemRow| 0int);
+        lemma_sum_zero(db.lineitem, |l: LineitemRow| 0int);
         assert(c * 0 == 0) by (nonlinear_arith);
     }
 }
@@ -197,24 +197,24 @@ pub proof fn lemma_w_by_orders(db: Db, sk: int, ks: Seq<int>)
     ensures
         w(db, sk) == sum(ks, |ok: int| per_order(db, ok, sk)),
 {
-    let f = |l: Lineitem| w_term(db, sk, l);
-    let key = |l: Lineitem| l.orderkey;
-    let per = |k: int| sum(db.lineitem, |x: Lineitem| if key(x) == k { f(x) } else { 0 });
+    let f = |l: LineitemRow| w_term(db, sk, l);
+    let key = |l: LineitemRow| l.l_orderkey;
+    let per = |k: int| sum(db.lineitem, |x: LineitemRow| if key(x) == k { f(x) } else { 0 });
     assert forall|i: int| 0 <= i < db.lineitem.len() && f(db.lineitem[i]) != 0 implies ks.contains(
         key(#[trigger] db.lineitem[i]),
     ) by {
-        lemma_fm_nonneg(db, db.lineitem[i].orderkey);
+        lemma_fm_nonneg(db, db.lineitem[i].l_orderkey);
     }
     assert forall|k: int| #[trigger] per(k) == sum(
         db.lineitem,
-        |x: Lineitem| if key(x) == k { f(x) } else { 0 },
+        |x: LineitemRow| if key(x) == k { f(x) } else { 0 },
     ) by {}
     lemma_sum_group(db.lineitem, ks, key, f, per);
     assert forall|k: int| #[trigger] per(k) == per_order(db, k, sk) by {
         lemma_sum_ext_all(
             db.lineitem,
-            |x: Lineitem| if key(x) == k { f(x) } else { 0 },
-            |l: Lineitem| if l.orderkey == k { w_term(db, sk, l) } else { 0 },
+            |x: LineitemRow| if key(x) == k { f(x) } else { 0 },
+            |l: LineitemRow| if l.l_orderkey == k { w_term(db, sk, l) } else { 0 },
         );
         lemma_per_order(db, k, sk);
     }
@@ -227,8 +227,8 @@ pub proof fn lemma_w_by_orders(db: Db, sk: int, ks: Seq<int>)
 pub open spec fn db_step(
     db: Db,
     db2: Db,
-    od: Seq<(Order, int)>,
-    ld: Seq<(Lineitem, int)>,
+    od: Seq<(OrdersRow, int)>,
+    ld: Seq<(LineitemRow, int)>,
 ) -> bool {
     &&& bag_step(db.orders, db2.orders, od)
     &&& bag_step(db.lineitem, db2.lineitem, ld)
@@ -238,8 +238,8 @@ pub open spec fn db_step(
 pub open spec fn dims_step(
     db: Db,
     db2: Db,
-    sd: Seq<(Supplier, int)>,
-    nd: Seq<(Nation, int)>,
+    sd: Seq<(SupplierRow, int)>,
+    nd: Seq<(NationRow, int)>,
 ) -> bool {
     &&& bag_step(db.supplier, db2.supplier, sd)
     &&& bag_step(db.nation, db2.nation, nd)
@@ -247,9 +247,9 @@ pub open spec fn dims_step(
 
 /// Every lineitem delta, and every 'F' orders delta, has its orderkey in `a`.
 /// (A delta of a non-'F' orders row cannot change any 'F' count.)
-pub open spec fn deltas_within(a: Seq<int>, od: Seq<(Order, int)>, ld: Seq<(Lineitem, int)>) -> bool {
-    &&& forall|i: int| 0 <= i < od.len() && (#[trigger] od[i]).0.status_is_f ==> a.contains(od[i].0.orderkey)
-    &&& forall|i: int| 0 <= i < ld.len() ==> a.contains((#[trigger] ld[i]).0.orderkey)
+pub open spec fn deltas_within(a: Seq<int>, od: Seq<(OrdersRow, int)>, ld: Seq<(LineitemRow, int)>) -> bool {
+    &&& forall|i: int| 0 <= i < od.len() && is_f((#[trigger] od[i]).0) ==> a.contains(od[i].0.o_orderkey)
+    &&& forall|i: int| 0 <= i < ld.len() ==> a.contains((#[trigger] ld[i]).0.l_orderkey)
 }
 
 /// Σ over deltas of sign·f(row) is 0 when f vanishes on every delta row.
@@ -271,26 +271,26 @@ pub proof fn lemma_delta_zero<A>(ds: Seq<(A, int)>, f: spec_fn(A) -> int)
 pub proof fn lemma_li_count_unchanged(
     db: Db,
     db2: Db,
-    od: Seq<(Order, int)>,
-    ld: Seq<(Lineitem, int)>,
+    od: Seq<(OrdersRow, int)>,
+    ld: Seq<(LineitemRow, int)>,
     a: Seq<int>,
     ok: int,
-    p: spec_fn(Lineitem) -> bool,
+    p: spec_fn(LineitemRow) -> bool,
 )
     requires
         db_step(db, db2, od, ld),
         deltas_within(a, od, ld),
         !a.contains(ok),
     ensures
-        sum(db2.lineitem, |l: Lineitem| ind(l.orderkey == ok && p(l))) == sum(
+        sum(db2.lineitem, |l: LineitemRow| ind(l.l_orderkey == ok && p(l))) == sum(
             db.lineitem,
-            |l: Lineitem| ind(l.orderkey == ok && p(l)),
+            |l: LineitemRow| ind(l.l_orderkey == ok && p(l)),
         ),
 {
-    let f = |l: Lineitem| ind(l.orderkey == ok && p(l));
-    assert(sum(db2.lineitem, f) == sum(db.lineitem, f) + sum(ld, |d: (Lineitem, int)| d.1 * f(d.0)));
+    let f = |l: LineitemRow| ind(l.l_orderkey == ok && p(l));
+    assert(sum(db2.lineitem, f) == sum(db.lineitem, f) + sum(ld, |d: (LineitemRow, int)| d.1 * f(d.0)));
     assert forall|i: int| 0 <= i < ld.len() implies f((#[trigger] ld[i]).0) == 0 by {
-        assert(a.contains(ld[i].0.orderkey));
+        assert(a.contains(ld[i].0.l_orderkey));
     }
     lemma_delta_zero(ld, f);
 }
@@ -300,8 +300,8 @@ pub proof fn lemma_li_count_unchanged(
 pub proof fn lemma_fm_unchanged(
     db: Db,
     db2: Db,
-    od: Seq<(Order, int)>,
-    ld: Seq<(Lineitem, int)>,
+    od: Seq<(OrdersRow, int)>,
+    ld: Seq<(LineitemRow, int)>,
     a: Seq<int>,
     ok: int,
 )
@@ -312,11 +312,11 @@ pub proof fn lemma_fm_unchanged(
     ensures
         fm(db2, ok) == fm(db, ok),
 {
-    let f = |o: Order| ind(o.orderkey == ok && o.status_is_f);
-    assert(sum(db2.orders, f) == sum(db.orders, f) + sum(od, |d: (Order, int)| d.1 * f(d.0)));
+    let f = |o: OrdersRow| ind(o.o_orderkey == ok && is_f(o));
+    assert(sum(db2.orders, f) == sum(db.orders, f) + sum(od, |d: (OrdersRow, int)| d.1 * f(d.0)));
     assert forall|i: int| 0 <= i < od.len() implies f((#[trigger] od[i]).0) == 0 by {
-        if od[i].0.status_is_f {
-            assert(a.contains(od[i].0.orderkey));
+        if is_f(od[i].0) {
+            assert(a.contains(od[i].0.o_orderkey));
         }
     }
     lemma_delta_zero(od, f);
@@ -326,43 +326,43 @@ pub proof fn lemma_fm_unchanged(
 pub proof fn lemma_w_term_unchanged(
     db: Db,
     db2: Db,
-    od: Seq<(Order, int)>,
-    ld: Seq<(Lineitem, int)>,
+    od: Seq<(OrdersRow, int)>,
+    ld: Seq<(LineitemRow, int)>,
     a: Seq<int>,
     sk: int,
-    l: Lineitem,
+    l: LineitemRow,
 )
     requires
         db_step(db, db2, od, ld),
         deltas_within(a, od, ld),
-        !a.contains(l.orderkey),
+        !a.contains(l.l_orderkey),
     ensures
         w_term(db2, sk, l) == w_term(db, sk, l),
 {
-    let ok = l.orderkey;
-    let s = l.suppkey;
+    let ok = l.l_orderkey;
+    let s = l.l_suppkey;
     lemma_fm_unchanged(db, db2, od, ld, a, ok);
-    lemma_li_count_unchanged(db, db2, od, ld, a, ok, |x: Lineitem| x.suppkey != s);
-    lemma_li_count_unchanged(db, db2, od, ld, a, ok, |x: Lineitem| x.suppkey != s && late(x));
+    lemma_li_count_unchanged(db, db2, od, ld, a, ok, |x: LineitemRow| x.l_suppkey != s);
+    lemma_li_count_unchanged(db, db2, od, ld, a, ok, |x: LineitemRow| x.l_suppkey != s && late(x));
     lemma_sum_ext_all(
         db.lineitem,
-        |x: Lineitem| ind(x.orderkey == ok && x.suppkey != s),
-        |x: Lineitem| ind(x.orderkey == ok && (|y: Lineitem| y.suppkey != s)(x)),
+        |x: LineitemRow| ind(x.l_orderkey == ok && x.l_suppkey != s),
+        |x: LineitemRow| ind(x.l_orderkey == ok && (|y: LineitemRow| y.l_suppkey != s)(x)),
     );
     lemma_sum_ext_all(
         db2.lineitem,
-        |x: Lineitem| ind(x.orderkey == ok && x.suppkey != s),
-        |x: Lineitem| ind(x.orderkey == ok && (|y: Lineitem| y.suppkey != s)(x)),
+        |x: LineitemRow| ind(x.l_orderkey == ok && x.l_suppkey != s),
+        |x: LineitemRow| ind(x.l_orderkey == ok && (|y: LineitemRow| y.l_suppkey != s)(x)),
     );
     lemma_sum_ext_all(
         db.lineitem,
-        |x: Lineitem| ind(x.orderkey == ok && x.suppkey != s && late(x)),
-        |x: Lineitem| ind(x.orderkey == ok && (|y: Lineitem| y.suppkey != s && late(y))(x)),
+        |x: LineitemRow| ind(x.l_orderkey == ok && x.l_suppkey != s && late(x)),
+        |x: LineitemRow| ind(x.l_orderkey == ok && (|y: LineitemRow| y.l_suppkey != s && late(y))(x)),
     );
     lemma_sum_ext_all(
         db2.lineitem,
-        |x: Lineitem| ind(x.orderkey == ok && x.suppkey != s && late(x)),
-        |x: Lineitem| ind(x.orderkey == ok && (|y: Lineitem| y.suppkey != s && late(y))(x)),
+        |x: LineitemRow| ind(x.l_orderkey == ok && x.l_suppkey != s && late(x)),
+        |x: LineitemRow| ind(x.l_orderkey == ok && (|y: LineitemRow| y.l_suppkey != s && late(y))(x)),
     );
     lemma_qual_key(db, l);
     lemma_qual_key(db2, l);
@@ -370,8 +370,8 @@ pub proof fn lemma_w_term_unchanged(
 
 // A lineitem's contribution to the total, kept only if its order is in the given
 // set of orders, else 0 (a filter on orderkey IN a).
-pub open spec fn in_term(db: Db, a: Seq<int>, sk: int, l: Lineitem) -> int {
-    if a.contains(l.orderkey) {
+pub open spec fn in_term(db: Db, a: Seq<int>, sk: int, l: LineitemRow) -> int {
+    if a.contains(l.l_orderkey) {
         w_term(db, sk, l)
     } else {
         0
@@ -380,8 +380,8 @@ pub open spec fn in_term(db: Db, a: Seq<int>, sk: int, l: Lineitem) -> int {
 
 // A lineitem's contribution to the total, kept only if its order is not in the given
 // set of orders; together with the in-set part it splits the total (orderkey NOT IN a).
-pub open spec fn out_term(db: Db, a: Seq<int>, sk: int, l: Lineitem) -> int {
-    if a.contains(l.orderkey) {
+pub open spec fn out_term(db: Db, a: Seq<int>, sk: int, l: LineitemRow) -> int {
+    if a.contains(l.l_orderkey) {
         0
     } else {
         w_term(db, sk, l)
@@ -396,13 +396,13 @@ pub proof fn lemma_in_part_key(db: Db, a: Seq<int>, sk: int, k: int)
     ensures
         sum(
             db.lineitem,
-            |x: Lineitem| if x.orderkey == k { in_term(db, a, sk, x) } else { 0 },
+            |x: LineitemRow| if x.l_orderkey == k { in_term(db, a, sk, x) } else { 0 },
         ) == per_order(db, k, sk),
 {
     lemma_sum_ext_all(
         db.lineitem,
-        |x: Lineitem| if x.orderkey == k { in_term(db, a, sk, x) } else { 0 },
-        |l: Lineitem| if l.orderkey == k { w_term(db, sk, l) } else { 0 },
+        |x: LineitemRow| if x.l_orderkey == k { in_term(db, a, sk, x) } else { 0 },
+        |l: LineitemRow| if l.l_orderkey == k { w_term(db, sk, l) } else { 0 },
     );
     lemma_per_order(db, k, sk);
 }
@@ -412,23 +412,23 @@ pub proof fn lemma_in_part(db: Db, a: Seq<int>, sk: int)
     requires
         distinct(a),
     ensures
-        sum(db.lineitem, |l: Lineitem| in_term(db, a, sk, l)) == sum(
+        sum(db.lineitem, |l: LineitemRow| in_term(db, a, sk, l)) == sum(
             a,
             |ok: int| per_order(db, ok, sk),
         ),
 {
-    let f = |l: Lineitem| in_term(db, a, sk, l);
-    let key = |l: Lineitem| l.orderkey;
+    let f = |l: LineitemRow| in_term(db, a, sk, l);
+    let key = |l: LineitemRow| l.l_orderkey;
     let per = |k: int|
-        sum(db.lineitem, |x: Lineitem| if x.orderkey == k { in_term(db, a, sk, x) } else { 0 });
+        sum(db.lineitem, |x: LineitemRow| if x.l_orderkey == k { in_term(db, a, sk, x) } else { 0 });
     assert forall|k: int| #[trigger] per(k) == sum(
         db.lineitem,
-        |x: Lineitem| if key(x) == k { f(x) } else { 0 },
+        |x: LineitemRow| if key(x) == k { f(x) } else { 0 },
     ) by {
         lemma_sum_ext_all(
             db.lineitem,
-            |x: Lineitem| if key(x) == k { f(x) } else { 0 },
-            |x: Lineitem| if x.orderkey == k { in_term(db, a, sk, x) } else { 0 },
+            |x: LineitemRow| if key(x) == k { f(x) } else { 0 },
+            |x: LineitemRow| if x.l_orderkey == k { in_term(db, a, sk, x) } else { 0 },
         );
     }
     lemma_sum_group(db.lineitem, a, key, f, per);
@@ -448,16 +448,16 @@ pub proof fn lemma_w_split(db: Db, a: Seq<int>, sk: int)
     requires
         distinct(a),
     ensures
-        w(db, sk) == sum(db.lineitem, |l: Lineitem| out_term(db, a, sk, l)) + sum(
+        w(db, sk) == sum(db.lineitem, |l: LineitemRow| out_term(db, a, sk, l)) + sum(
             a,
             |ok: int| per_order(db, ok, sk),
         ),
 {
     lemma_sum_add(
         db.lineitem,
-        |l: Lineitem| out_term(db, a, sk, l),
-        |l: Lineitem| in_term(db, a, sk, l),
-        |l: Lineitem| w_term(db, sk, l),
+        |l: LineitemRow| out_term(db, a, sk, l),
+        |l: LineitemRow| in_term(db, a, sk, l),
+        |l: LineitemRow| w_term(db, sk, l),
     );
     lemma_in_part(db, a, sk);
 }
@@ -467,8 +467,8 @@ pub proof fn lemma_w_split(db: Db, a: Seq<int>, sk: int)
 pub proof fn lemma_w_step(
     db: Db,
     db2: Db,
-    od: Seq<(Order, int)>,
-    ld: Seq<(Lineitem, int)>,
+    od: Seq<(OrdersRow, int)>,
+    ld: Seq<(LineitemRow, int)>,
     a: Seq<int>,
     sk: int,
 )
@@ -485,20 +485,20 @@ pub proof fn lemma_w_step(
     lemma_w_split(db, a, sk);
     lemma_w_split(db2, a, sk);
     // Σ_{db2} out(db2) = Σ_{db2} out(db) = Σ_{db} out(db) + Σ_ld sign·out(db) = Σ_{db} out(db).
-    let o1 = |l: Lineitem| out_term(db, a, sk, l);
-    let o2 = |l: Lineitem| out_term(db2, a, sk, l);
-    assert forall|l: Lineitem| #[trigger] o2(l) == o1(l) by {
-        if !a.contains(l.orderkey) {
+    let o1 = |l: LineitemRow| out_term(db, a, sk, l);
+    let o2 = |l: LineitemRow| out_term(db2, a, sk, l);
+    assert forall|l: LineitemRow| #[trigger] o2(l) == o1(l) by {
+        if !a.contains(l.l_orderkey) {
             lemma_w_term_unchanged(db, db2, od, ld, a, sk, l);
         }
     }
     lemma_sum_ext_all(db2.lineitem, o2, o1);
     assert(sum(db2.lineitem, o1) == sum(db.lineitem, o1) + sum(
         ld,
-        |d: (Lineitem, int)| d.1 * o1(d.0),
+        |d: (LineitemRow, int)| d.1 * o1(d.0),
     ));
     assert forall|i: int| 0 <= i < ld.len() implies o1((#[trigger] ld[i]).0) == 0 by {
-        assert(a.contains(ld[i].0.orderkey));
+        assert(a.contains(ld[i].0.l_orderkey));
     }
     lemma_delta_zero(ld, o1);
     lemma_sum_sub(
@@ -513,8 +513,8 @@ pub proof fn lemma_w_step(
 pub proof fn lemma_counts_step(
     db: Db,
     db2: Db,
-    od: Seq<(Order, int)>,
-    ld: Seq<(Lineitem, int)>,
+    od: Seq<(OrdersRow, int)>,
+    ld: Seq<(LineitemRow, int)>,
     ok: int,
     sk: int,
 )
@@ -523,43 +523,43 @@ pub proof fn lemma_counts_step(
     ensures
         fm(db2, ok) == fm(db, ok) + sum(
             od,
-            |d: (Order, int)| d.1 * ind(d.0.orderkey == ok && d.0.status_is_f),
+            |d: (OrdersRow, int)| d.1 * ind(d.0.o_orderkey == ok && is_f(d.0)),
         ),
         cnt(db2, ok, sk) == cnt(db, ok, sk) + sum(
             ld,
-            |d: (Lineitem, int)| d.1 * ind(d.0.orderkey == ok && d.0.suppkey == sk),
+            |d: (LineitemRow, int)| d.1 * ind(d.0.l_orderkey == ok && d.0.l_suppkey == sk),
         ),
         lcnt(db2, ok, sk) == lcnt(db, ok, sk) + sum(
             ld,
-            |d: (Lineitem, int)| d.1 * ind(d.0.orderkey == ok && d.0.suppkey == sk && late(d.0)),
+            |d: (LineitemRow, int)| d.1 * ind(d.0.l_orderkey == ok && d.0.l_suppkey == sk && late(d.0)),
         ),
 {
-    let fo = |o: Order| ind(o.orderkey == ok && o.status_is_f);
-    let fc = |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk);
-    let fl = |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk && late(l));
-    assert(sum(db2.orders, fo) == sum(db.orders, fo) + sum(od, |d: (Order, int)| d.1 * fo(d.0)));
+    let fo = |o: OrdersRow| ind(o.o_orderkey == ok && is_f(o));
+    let fc = |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk);
+    let fl = |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk && late(l));
+    assert(sum(db2.orders, fo) == sum(db.orders, fo) + sum(od, |d: (OrdersRow, int)| d.1 * fo(d.0)));
     assert(sum(db2.lineitem, fc) == sum(db.lineitem, fc) + sum(
         ld,
-        |d: (Lineitem, int)| d.1 * fc(d.0),
+        |d: (LineitemRow, int)| d.1 * fc(d.0),
     ));
     assert(sum(db2.lineitem, fl) == sum(db.lineitem, fl) + sum(
         ld,
-        |d: (Lineitem, int)| d.1 * fl(d.0),
+        |d: (LineitemRow, int)| d.1 * fl(d.0),
     ));
     lemma_sum_ext_all(
         od,
-        |d: (Order, int)| d.1 * fo(d.0),
-        |d: (Order, int)| d.1 * ind(d.0.orderkey == ok && d.0.status_is_f),
+        |d: (OrdersRow, int)| d.1 * fo(d.0),
+        |d: (OrdersRow, int)| d.1 * ind(d.0.o_orderkey == ok && is_f(d.0)),
     );
     lemma_sum_ext_all(
         ld,
-        |d: (Lineitem, int)| d.1 * fc(d.0),
-        |d: (Lineitem, int)| d.1 * ind(d.0.orderkey == ok && d.0.suppkey == sk),
+        |d: (LineitemRow, int)| d.1 * fc(d.0),
+        |d: (LineitemRow, int)| d.1 * ind(d.0.l_orderkey == ok && d.0.l_suppkey == sk),
     );
     lemma_sum_ext_all(
         ld,
-        |d: (Lineitem, int)| d.1 * fl(d.0),
-        |d: (Lineitem, int)| d.1 * ind(d.0.orderkey == ok && d.0.suppkey == sk && late(d.0)),
+        |d: (LineitemRow, int)| d.1 * fl(d.0),
+        |d: (LineitemRow, int)| d.1 * ind(d.0.l_orderkey == ok && d.0.l_suppkey == sk && late(d.0)),
     );
 }
 

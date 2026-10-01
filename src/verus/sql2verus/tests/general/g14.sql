@@ -1,0 +1,1 @@
+SELECT k, COUNT(*) AS c FROM big GROUP BY k ORDER BY k

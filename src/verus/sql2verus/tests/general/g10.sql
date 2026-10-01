@@ -1,0 +1,1 @@
+SELECT k FROM t ORDER BY a + b

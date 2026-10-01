@@ -1,0 +1,1 @@
+SELECT DISTINCT kind FROM events ORDER BY kind

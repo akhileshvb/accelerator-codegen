@@ -1,0 +1,1 @@
+SELECT t.k, (SELECT COALESCE(MAX(c), 0) FROM u WHERE u.k = t.k) AS mc FROM t ORDER BY t.k

@@ -1,7 +1,7 @@
 # Stateless Q1 with a Verus-verified kernel
 
 TPC-H Q1 on DuckDB, PostgreSQL and MySQL, answered by a kernel written in Rust
-and verified with Verus against a hand-written reference specification of the
+and verified with Verus against a reference specification generated from the
 catalog SQL. There is no aux state: every query scans lineitem and aggregates.
 The kernel avoids low-level optimizations that it cannot prove. It has no SIMD
 intrinsics, no `unsafe`, no unchecked indexing and no type punning. It uses
@@ -9,8 +9,9 @@ Verus only.
 
 | Piece | Where | Status |
 |---|---|---|
-| q_ref (the SQL's meaning) | [`src/verus/q1/src/spec.rs`](../../../src/verus/q1/src/spec.rs) + `bytes_lt` in `common/src/bytes.rs` | **Trusted**: reviewed against the SQL |
-| Kernel and proofs | [`src/verus/q1/src/kernel.rs`](../../../src/verus/q1/src/kernel.rs) | Verified (45 items with `spec.rs`) |
+| q_ref (the SQL's meaning) | [`src/verus/q1/src/gen_spec.rs`](../../../src/verus/q1/src/gen_spec.rs), generated from [`queries/q1.sql`](../../../src/verus/sql2verus/queries/q1.sql) by [`sql2verus`](../../../src/verus/sql2verus/src/main.rs), + `bytes_lt`, `sum`, `Rat` in `common/` | **Trusted**: the translator's rules, applied mechanically; `scripts/gen_verus_specs.sh --check` fails if the file is stale |
+| Proof vocabulary | [`bridge.rs`](../../../src/verus/q1/src/bridge.rs): the accumulator sums `gsum` and `lemma_gsum_eq` (`gsum` = the generated `group_sum`, in any day encoding) | Verified, not trusted |
+| Kernel and proofs | [`src/verus/q1/src/kernel.rs`](../../../src/verus/q1/src/kernel.rs), plus the generated facts (`lemma_query_result_iff`: exactly one answer) | Verified (53 items) |
 | C ABI shims | [`src/verus/q1/src/ffi.rs`](../../../src/verus/q1/src/ffi.rs), [`include/accelerator_codegen/verus/q1_verus.h`](../../../include/accelerator_codegen/verus/q1_verus.h) | Trusted glue (pointer → slice) |
 | DuckDB entry points | [`src/generated/tpch/q1/duckdb/verus/package.cpp`](../../../src/generated/tpch/q1/duckdb/verus/package.cpp) | Trusted (chunk decoding, output formatting, threads) |
 | PostgreSQL entry point | [`src/generated/tpch/q1/postgres/verus/entry.cpp`](../../../src/generated/tpch/q1/postgres/verus/entry.cpp) | Trusted (heap scan, NUMERIC decoding, output formatting, SQL fallback) |
@@ -33,9 +34,12 @@ All sums are exact `i128`s.
   row. It is kept for comparison.
 - **`merge(other)`**: `rows := rows ++ other.rows`. Per-thread states are
   combined with it.
-- **`finish()`**: the output satisfies `q1_result(rows, cutoff, out)`:
-  - every row is a correct group (every sum, and `COUNT(*) > 0`);
-  - the rows are in strictly increasing `ORDER BY` order;
+- **`finish()`**: the output satisfies the generated
+  `query_result(db_at(rows, e), {p1: d}, out)` for every day encoding `e`
+  and `$1 = d` with `cutoff + e = 10561 - d`:
+  - every row is a correct group (every sum, `AVG` as the exact pair
+    (SUM, COUNT), and `COUNT(*) > 0`);
+  - the rows are in `ORDER BY` order, one per group;
   - every non-empty group is present.
 
 The kernel refuses (returns false) instead of overflowing. The host then
@@ -58,8 +62,11 @@ the engine's AVG result type is host formatting.
 
 ## Trusted edges
 
-- **spec**: `spec.rs` is the meaning of the SQL. Its semantic decisions are
-  listed at the top of that file.
+- **spec**: `gen_spec.rs` is the meaning of the SQL, as produced by
+  `sql2verus` (DataFusion 55.1.0, pinned) under the rules at the top of
+  `sql2verus/src/main.rs`. The host passes `cutoff = 1998-12-01 - $1` in its
+  own day encoding (DateADT on PostgreSQL, `TO_DAYS` on MySQL), i.e.
+  `cutoff + e = 10561 - $1`; `finish`'s contract covers every such `e`.
 - **scans**: the batches handed to the kernel are lineitem's rows: every row
   with `l_shipdate <= cutoff` exactly once, plus any rows with a later
   shipdate. The columns must be decoded exactly.

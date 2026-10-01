@@ -1,16 +1,17 @@
 # Q21 with a Verus-verified kernel (pilot)
 
 The Q21 accelerator kernel is written in Rust and verified with Verus against a
-hand-written reference specification of the catalog SQL. It is linked into the
+reference specification generated from the catalog SQL by `sql2verus`. It is linked into the
 Postgres extension as a static library and serves `accel_tpch_q21_verus(text)`.
-It uses Verus only: no Logos/FormalSQL, Rocq, or Dafny.
+It uses Verus only.
 
 | Piece | Where | Status |
 |---|---|---|
-| q_ref (the SQL's meaning) | [`src/verus/q21/src/spec.rs`](../../../src/verus/q21/src/spec.rs) + `bytes_lt` in `common/src/bytes.rs` | **Trusted**: reviewed against the SQL |
-| Shared library (bag sums, merge sort, C-collation order incl. `bytes_lt`, bag edits of small tables) | [`src/verus/common/`](../../../src/verus/common/src/) | Verified (59 items), exported as `verus_common` |
-| Kernel + Q21 proofs | `src/verus/q21/src/*.rs` (except `spec.rs`, `ffi.rs`) | Verified (149 items) |
-| Spec facts: `q21_result` has exactly one solution (the first 100 rows of `q21_answer`) | [`src/verus/q21/src/spec_facts.rs`](../../../src/verus/q21/src/spec_facts.rs) | Verified (included above) |
+| q_ref (the SQL's meaning) | [`src/verus/q21/src/gen_spec.rs`](../../../src/verus/q21/src/gen_spec.rs), generated from [`queries/q21.sql`](../../../src/verus/sql2verus/queries/q21.sql) by [`sql2verus`](../../../src/verus/sql2verus/src/main.rs), + `bytes_lt`, `sum` in `common/` | **Trusted**: the translator's rules, applied mechanically; `scripts/gen_verus_specs.sh --check` fails if the file is stale |
+| Proof vocabulary | [`bridge.rs`](../../../src/verus/q21/src/bridge.rs): `numwait` (= the generated `group_count`), `strict_full` (proved to imply the generated `full_result`), `late`, `is_f`, … | Verified, not trusted |
+| Shared library (bag sums, merge sort, C-collation order incl. `bytes_lt`, bag edits of small tables, `Rat` for AVG, sorted-sequence uniqueness/existence) | [`src/verus/common/`](../../../src/verus/common/src/) | Verified (66 items), exported as `verus_common` |
+| Kernel + Q21 proofs | `src/verus/q21/src/*.rs` (except `ffi.rs`) | Verified (144 items, incl. the generated facts) |
+| Spec facts: `query_result` has exactly one solution, the first 100 rows of `answer` (`lemma_query_result_iff`) | Generated with the spec, in the "Facts" section of `gen_spec.rs` | Verified (included above), not trusted |
 | C ABI shims | [`src/verus/q21/src/ffi.rs`](../../../src/verus/q21/src/ffi.rs) | Trusted glue (pointer → slice) |
 | Host adapter | [`src/generated/tpch/q21/verus/module.cpp`](../../../src/generated/tpch/q21/verus/module.cpp), `TpchQ21VerusScanImpl` in `src/generated/postgres/runtime.cpp` | Trusted (scans, capture, sink) |
 
@@ -23,8 +24,8 @@ are:
 - **Build** (`build.rs`). If the scans satisfy `build_contract(db)`, the result
   is a state for `db`, or `None` on i64 overflow, and the host then uses SQL.
 - **Execute** (`execute.rs`). For every state `s` and nation `p`, the output
-  satisfies `q21_result(s.db(), p, out)`: the first 100 rows (`LIMIT 100`) of
-  the full answer `q21_full_result`, whose rows are in
+  satisfies the generated `query_result(s.db(), {p1: p}, out)`: the first 100
+  rows (`LIMIT 100`) of the full answer `full_result`, whose rows are in
   `ORDER BY numwait DESC, s_name` order, one row per group with its `COUNT(*)`,
   and every group present. It can also return `None` on overflow.
 - **ApplyDelta** (`maint.rs`). If `db2 = db + deltas` for all four tables
@@ -45,16 +46,23 @@ assumptions are therefore not needed.
 
 ## Trusted edges
 
-- **spec**: `spec.rs` is the meaning of the catalog SQL. Semantic decisions are
-  listed at the top of that file.
+- **spec**: `gen_spec.rs` is the meaning of the catalog SQL, as produced by
+  `sql2verus` (DataFusion 55.1.0, pinned) under the rules at the top of
+  `sql2verus/src/main.rs`. Every proof, and every host contract below
+  (`build_contract`, `db_step`, `scan_contract`), is stated over
+  `gen_spec::Db`. Dates are days since 1970-01-01, which is what all three
+  hosts deliver (PostgreSQL adds 10957 to DateADT in its scans and capture).
 - **scans**: the four Build scans and the PRE_COMMIT targeted lineitem scan
   return the rows their SQL names. The targeted scan runs after
   `CommandCounterIncrement()` under `GetLatestSnapshot()`.
 - **capture**: the transition-table triggers plus `AccumulateMutation` produce
   exactly the transaction's signed row changes for all four tables.
-  `status_is_f` is computed as `o_orderstatus == "F"`.
+  An orders delta carries only the flag `status_is_f`; the spec's `Order`
+  has the real `o_orderstatus` bytes, which `apply` receives as a ghost
+  argument. Its precondition `od_status_ok` (`state.rs`) states the trusted
+  fact that the flag is set exactly when those bytes equal `"F"`.
 - **runtime protocol**: the store serves a state only for snapshots that see its
-  database (`aux_sync`, modelled in `substrate/dafny/AuxSyncProtocol.dfy`).
+  database (`aux_sync`; trusted, not modelled).
 - **glue**: `ffi.rs` (11 `unsafe` pointer conversions), and the adapter's
   text/int8 sink.
 - **tools**: Verus, Z3, the vstd specs of `HashMap`/`Vec`/`Arc`, rustc/LLVM.
@@ -65,11 +73,6 @@ assumptions are therefore not needed.
   (its `bpchar -> text` cast; `TypedCharText`, `NormalizeCapturedName`),
   MySQL `CHAR` as retrieved (padding already removed), DuckDB unchanged (its
   `CHAR` is `VARCHAR`). `:nation` is passed unchanged.
-
-Compared with the Rocq+Dafny stack for C++ Q21, this removes `cpp_model` (the
-C++ ↔ twin link via extract-diff) and `spec_export_B` (the Rocq ↔ Dafny
-interpreter correspondence). In exchange, the SQL meaning is a reviewed spec,
-not FormalSQL.
 
 ## Engines
 

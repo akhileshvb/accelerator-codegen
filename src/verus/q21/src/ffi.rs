@@ -146,6 +146,7 @@ pub unsafe extern "C" fn q21v_apply(
         slice(skeys, n_sk),
         slice(srows, n_sr),
         Ghost::assume_new(),
+        Ghost::assume_new(),
     ) {
         Ok(s2) => {
             if !err.is_null() {

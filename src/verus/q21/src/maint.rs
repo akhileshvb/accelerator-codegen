@@ -7,7 +7,7 @@ use vstd::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use verus_common::sums::*;
-use crate::spec::*;
+use crate::gen_spec::*;
 use crate::bridge::*;
 use crate::orderspec::*;
 use crate::ents::*;
@@ -22,29 +22,29 @@ broadcast use vstd::std_specs::hash::group_hash_axioms;
 /// SELECT l_orderkey, l_suppkey, l_commitdate, l_receiptdate FROM lineitem
 ///  WHERE l_orderkey = ANY(keys)          -- evaluated on db2 (trusted)
 pub open spec fn scan_contract(db2: Db, keys: Seq<i64>, rows: Seq<LiRow>) -> bool {
-    forall|f: spec_fn(Lineitem) -> int| #[trigger]
+    forall|f: spec_fn(LineitemRow) -> int| #[trigger]
         sum(lis_view(rows), f) == sum(
             db2.lineitem,
-            |l: Lineitem| if ikeys(keys).contains(l.orderkey) { f(l) } else { 0 },
+            |l: LineitemRow| if ikeys(keys).contains(l.l_orderkey) { f(l) } else { 0 },
         )
 }
 
 // Effect of one order change on the count of 'F' rows for order ok: +1/-1 if it is an 'F' order with that key, else 0.
 // Summing over the batch gives how many 'F' rows the batch adds or removes for ok.
-pub open spec fn od_w(ok: int) -> spec_fn((Order, int)) -> int {
-    |d: (Order, int)| d.1 * ind(d.0.orderkey == ok && d.0.status_is_f)
+pub open spec fn od_w(ok: int) -> spec_fn((OrdersRow, int)) -> int {
+    |d: (OrdersRow, int)| d.1 * ind(d.0.o_orderkey == ok && is_f(d.0))
 }
 
 // Effect of one lineitem change on the count of supplier sk's lines in order ok: its +1/-1 sign if both keys match, else 0.
 // Summing over the batch gives the batch's net change in that line count.
-pub open spec fn ld_t(ok: int, sk: int) -> spec_fn((Lineitem, int)) -> int {
-    |d: (Lineitem, int)| d.1 * ind(d.0.orderkey == ok && d.0.suppkey == sk)
+pub open spec fn ld_t(ok: int, sk: int) -> spec_fn((LineitemRow, int)) -> int {
+    |d: (LineitemRow, int)| d.1 * ind(d.0.l_orderkey == ok && d.0.l_suppkey == sk)
 }
 
 // Same as the all-lines version but only for late lines (received after commit date), so the sum is the net change in late-line count.
 // Together the two counts decide whether a supplier is the only late one in an order.
-pub open spec fn ld_l(ok: int, sk: int) -> spec_fn((Lineitem, int)) -> int {
-    |d: (Lineitem, int)| d.1 * ind(d.0.orderkey == ok && d.0.suppkey == sk && late(d.0))
+pub open spec fn ld_l(ok: int, sk: int) -> spec_fn((LineitemRow, int)) -> int {
+    |d: (LineitemRow, int)| d.1 * ind(d.0.l_orderkey == ok && d.0.l_suppkey == sk && late(d.0))
 }
 
 // How much order ok's share of supplier sk's waiting-order total moves when the database goes from db to db2.
@@ -58,8 +58,8 @@ pub open spec fn dpo(db: Db, db2: Db, sk: int) -> spec_fn(int) -> int {
 proof fn lemma_step_counts(
     db: Db,
     db2: Db,
-    od: Seq<(Order, int)>,
-    ld: Seq<(Lineitem, int)>,
+    od: Seq<(OrdersRow, int)>,
+    ld: Seq<(LineitemRow, int)>,
     ok: int,
     sk: int,
 )
@@ -73,17 +73,17 @@ proof fn lemma_step_counts(
     lemma_counts_step(db, db2, od, ld, ok, sk);
     lemma_sum_ext_all(
         od,
-        |d: (Order, int)| d.1 * ind(d.0.orderkey == ok && d.0.status_is_f),
+        |d: (OrdersRow, int)| d.1 * ind(d.0.o_orderkey == ok && is_f(d.0)),
         od_w(ok),
     );
     lemma_sum_ext_all(
         ld,
-        |d: (Lineitem, int)| d.1 * ind(d.0.orderkey == ok && d.0.suppkey == sk),
+        |d: (LineitemRow, int)| d.1 * ind(d.0.l_orderkey == ok && d.0.l_suppkey == sk),
         ld_t(ok, sk),
     );
     lemma_sum_ext_all(
         ld,
-        |d: (Lineitem, int)| d.1 * ind(d.0.orderkey == ok && d.0.suppkey == sk && late(d.0)),
+        |d: (LineitemRow, int)| d.1 * ind(d.0.l_orderkey == ok && d.0.l_suppkey == sk && late(d.0)),
         ld_l(ok, sk),
     );
 }
@@ -93,8 +93,8 @@ proof fn lemma_step_counts(
 proof fn lemma_unchanged_order(
     db: Db,
     db2: Db,
-    od: Seq<(Order, int)>,
-    ld: Seq<(Lineitem, int)>,
+    od: Seq<(OrdersRow, int)>,
+    ld: Seq<(LineitemRow, int)>,
     a: Seq<int>,
     ok: int,
 )
@@ -111,14 +111,14 @@ proof fn lemma_unchanged_order(
     assert forall|sk: int| #[trigger] cnt(db2, ok, sk) == cnt(db, ok, sk) by {
         lemma_step_counts(db, db2, od, ld, ok, sk);
         assert forall|i: int| 0 <= i < ld.len() implies ld_t(ok, sk)(#[trigger] ld[i]) == 0 by {
-            assert(a.contains(ld[i].0.orderkey));
+            assert(a.contains(ld[i].0.l_orderkey));
         }
         lemma_sum_zero(ld, ld_t(ok, sk));
     }
     assert forall|sk: int| #[trigger] lcnt(db2, ok, sk) == lcnt(db, ok, sk) by {
         lemma_step_counts(db, db2, od, ld, ok, sk);
         assert forall|i: int| 0 <= i < ld.len() implies ld_l(ok, sk)(#[trigger] ld[i]) == 0 by {
-            assert(a.contains(ld[i].0.orderkey));
+            assert(a.contains(ld[i].0.l_orderkey));
         }
         lemma_sum_zero(ld, ld_l(ok, sk));
     }
@@ -226,19 +226,20 @@ fn collect_keys(od: &[OrdDelta], ld: &[LiDelta]) -> (r: (Vec<i64>, HashMap<i64, 
 
 // Shows the gathered key list really covers every order mentioned in the batch, which is the premise for treating all
 // other orders as unchanged.
-proof fn lemma_within(a: Seq<i64>, od: Seq<OrdDelta>, ld: Seq<LiDelta>)
+proof fn lemma_within(a: Seq<i64>, od: Seq<OrdDelta>, st: Seq<Seq<u8>>, ld: Seq<LiDelta>)
     requires
+        od_status_ok(od, st),
         forall|i: int| 0 <= i < od.len() && (#[trigger] od[i]).status_is_f != 0 ==> a.contains(od[i].orderkey),
         forall|i: int| 0 <= i < ld.len() ==> a.contains((#[trigger] ld[i]).row.orderkey),
     ensures
-        deltas_within(ikeys(a), od_view(od), ld_view(ld)),
+        deltas_within(ikeys(a), od_view(od, st), ld_view(ld)),
 {
-    assert forall|i: int| 0 <= i < od_view(od).len() && (#[trigger] od_view(od)[i]).0.status_is_f implies ikeys(a).contains(od_view(od)[i].0.orderkey) by {
+    assert forall|i: int| 0 <= i < od_view(od, st).len() && is_f((#[trigger] od_view(od, st)[i]).0) implies ikeys(a).contains(od_view(od, st)[i].0.o_orderkey) by {
         assert(od[i].status_is_f != 0);
         let j = choose|j: int| 0 <= j < a.len() && a[j] == od[i].orderkey;
         assert(ikeys(a)[j] == od[i].orderkey as int);
     }
-    assert forall|i: int| 0 <= i < ld_view(ld).len() implies ikeys(a).contains((#[trigger] ld_view(ld)[i]).0.orderkey) by {
+    assert forall|i: int| 0 <= i < ld_view(ld).len() implies ikeys(a).contains((#[trigger] ld_view(ld)[i]).0.l_orderkey) by {
         let j = choose|j: int| 0 <= j < a.len() && a[j] == ld[i].row.orderkey;
         assert(ikeys(a)[j] == ld[i].row.orderkey as int);
     }
@@ -247,13 +248,14 @@ proof fn lemma_within(a: Seq<i64>, od: Seq<OrdDelta>, ld: Seq<LiDelta>)
 // ── 'F' multiplicity deltas per affected key ───────────────────────────────
 // For each affected order, total up the batch's +1/-1 changes to its number of 'F' order rows; give up (None) if the sum overflows.
 // This is the net change to how many times the order counts toward the answer.
-fn fm_deltas(od: &[OrdDelta], a: &Vec<i64>, pos: &HashMap<i64, usize>) -> (r: Option<Vec<i64>>)
+fn fm_deltas(od: &[OrdDelta], Ghost(st): Ghost<Seq<Seq<u8>>>, a: &Vec<i64>, pos: &HashMap<i64, usize>) -> (r: Option<Vec<i64>>)
     requires
+        od_status_ok(od@, st),
         keys_ok(a@, pos@),
         forall|i: int| 0 <= i < od@.len() && (#[trigger] od@[i]).status_is_f != 0 ==> a@.contains(od@[i].orderkey),
     ensures
         r matches Some(v) ==> v@.len() == a@.len() && forall|j: int|
-            0 <= j < a@.len() ==> (#[trigger] v@[j]) as int == sum(od_view(od@), od_w(a@[j] as int)),
+            0 <= j < a@.len() ==> (#[trigger] v@[j]) as int == sum(od_view(od@, st), od_w(a@[j] as int)),
 {
     assert(vstd::std_specs::hash::obeys_key_model::<i64>());
     let na = a.len();
@@ -276,17 +278,18 @@ fn fm_deltas(od: &[OrdDelta], a: &Vec<i64>, pos: &HashMap<i64, usize>) -> (r: Op
             na == a@.len(),
             keys_ok(a@, pos@),
             vstd::std_specs::hash::obeys_key_model::<i64>(),
+            od_status_ok(od@, st),
             forall|i: int| 0 <= i < od@.len() && (#[trigger] od@[i]).status_is_f != 0 ==> a@.contains(od@[i].orderkey),
             v@.len() == na,
-            forall|x: int| 0 <= x < na ==> (#[trigger] v@[x]) as int == sum(od_view(od@.take(t as int)), od_w(a@[x] as int)),
+            forall|x: int| 0 <= x < na ==> (#[trigger] v@[x]) as int == sum(od_view(od@, st).take(t as int), od_w(a@[x] as int)),
         decreases od@.len() - t,
     {
         let d = od[t];
         let ghost v0 = v@;
         proof {
-            assert(od_view(od@.take(t as int + 1)) =~= od_view(od@.take(t as int)).push(od_view(od@)[t as int]));
-            assert forall|x: int| 0 <= x < na implies sum(od_view(od@.take(t as int + 1)), od_w(a@[x] as int)) == sum(od_view(od@.take(t as int)), od_w(a@[x] as int)) + od_w(a@[x] as int)(od_view(od@)[t as int]) by {
-                lemma_sum_push(od_view(od@.take(t as int)), od_view(od@)[t as int], od_w(a@[x] as int));
+            assert(od_view(od@, st).take(t as int + 1) =~= od_view(od@, st).take(t as int).push(od_view(od@, st)[t as int]));
+            assert forall|x: int| 0 <= x < na implies sum(od_view(od@, st).take(t as int + 1), od_w(a@[x] as int)) == sum(od_view(od@, st).take(t as int), od_w(a@[x] as int)) + od_w(a@[x] as int)(od_view(od@, st)[t as int]) by {
+                lemma_sum_push(od_view(od@, st).take(t as int), od_view(od@, st)[t as int], od_w(a@[x] as int));
             }
         }
         if d.status_is_f != 0 {
@@ -305,7 +308,7 @@ fn fm_deltas(od: &[OrdDelta], a: &Vec<i64>, pos: &HashMap<i64, usize>) -> (r: Op
             };
             v.set(jj, nv);
             proof {
-                assert forall|x: int| 0 <= x < na implies (#[trigger] v@[x]) as int == sum(od_view(od@.take(t as int + 1)), od_w(a@[x] as int)) by {
+                assert forall|x: int| 0 <= x < na implies (#[trigger] v@[x]) as int == sum(od_view(od@, st).take(t as int + 1), od_w(a@[x] as int)) by {
                     if x != jj as int {
                         assert(a@[x] != a@[jj as int]);
                     }
@@ -313,13 +316,13 @@ fn fm_deltas(od: &[OrdDelta], a: &Vec<i64>, pos: &HashMap<i64, usize>) -> (r: Op
             }
         } else {
             proof {
-                assert forall|x: int| 0 <= x < na implies (#[trigger] v@[x]) as int == sum(od_view(od@.take(t as int + 1)), od_w(a@[x] as int)) by {}
+                assert forall|x: int| 0 <= x < na implies (#[trigger] v@[x]) as int == sum(od_view(od@, st).take(t as int + 1), od_w(a@[x] as int)) by {}
             }
         }
         t += 1;
     }
     proof {
-        assert(od@.take(od@.len() as int) =~= od@);
+        assert(od_view(od@, st).take(od@.len() as int) =~= od_view(od@, st));
     }
     Some(v)
 }
@@ -472,14 +475,14 @@ fn scan_accumulate(srows: &[LiRow], a: &Vec<i64>, pos: &HashMap<i64, usize>) -> 
                 }
                 proof {
                     assert forall|x: int, sk: int| 0 <= x < na implies #[trigger] etot(sw@[x]@, sk) == cnt_rows(srows@.take(t as int + 1), a@[x] as int, sk) by {
-                        lemma_sum_push(lis_view(pre), li_view(r), |l: Lineitem| ind(l.orderkey == a@[x] as int && l.suppkey == sk));
+                        lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == a@[x] as int && l.l_suppkey == sk));
                         if x != jj as int {
                             assert(a@[x] != a@[jj as int]);
                             assert(sw@[x] == w0[x]);
                         }
                     }
                     assert forall|x: int, sk: int| 0 <= x < na implies #[trigger] elate(sw@[x]@, sk) == lcnt_rows(srows@.take(t as int + 1), a@[x] as int, sk) by {
-                        lemma_sum_push(lis_view(pre), li_view(r), |l: Lineitem| ind(l.orderkey == a@[x] as int && l.suppkey == sk && late(l)));
+                        lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == a@[x] as int && l.l_suppkey == sk && late(l)));
                         if x != jj as int {
                             assert(a@[x] != a@[jj as int]);
                             assert(sw@[x] == w0[x]);
@@ -496,11 +499,11 @@ fn scan_accumulate(srows: &[LiRow], a: &Vec<i64>, pos: &HashMap<i64, usize>) -> 
                 proof {
                     assert(!a@.contains(r.orderkey));
                     assert forall|x: int, sk: int| 0 <= x < na implies #[trigger] etot(sw@[x]@, sk) == cnt_rows(srows@.take(t as int + 1), a@[x] as int, sk) by {
-                        lemma_sum_push(lis_view(pre), li_view(r), |l: Lineitem| ind(l.orderkey == a@[x] as int && l.suppkey == sk));
+                        lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == a@[x] as int && l.l_suppkey == sk));
                         assert(a@[x] != r.orderkey);
                     }
                     assert forall|x: int, sk: int| 0 <= x < na implies #[trigger] elate(sw@[x]@, sk) == lcnt_rows(srows@.take(t as int + 1), a@[x] as int, sk) by {
-                        lemma_sum_push(lis_view(pre), li_view(r), |l: Lineitem| ind(l.orderkey == a@[x] as int && l.suppkey == sk && late(l)));
+                        lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == a@[x] as int && l.l_suppkey == sk && late(l)));
                         assert(a@[x] != r.orderkey);
                     }
                 }
@@ -524,12 +527,12 @@ proof fn lemma_scan_counts(db2: Db, skeys: Seq<i64>, srows: Seq<LiRow>, ok: int,
         cnt_rows(srows, ok, sk) == cnt(db2, ok, sk),
         lcnt_rows(srows, ok, sk) == lcnt(db2, ok, sk),
 {
-    let fc = |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk);
-    let fl = |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk && late(l));
-    assert(sum(lis_view(srows), fc) == sum(db2.lineitem, |l: Lineitem| if ikeys(skeys).contains(l.orderkey) { fc(l) } else { 0 }));
-    assert(sum(lis_view(srows), fl) == sum(db2.lineitem, |l: Lineitem| if ikeys(skeys).contains(l.orderkey) { fl(l) } else { 0 }));
-    lemma_sum_ext_all(db2.lineitem, |l: Lineitem| if ikeys(skeys).contains(l.orderkey) { fc(l) } else { 0 }, fc);
-    lemma_sum_ext_all(db2.lineitem, |l: Lineitem| if ikeys(skeys).contains(l.orderkey) { fl(l) } else { 0 }, fl);
+    let fc = |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk);
+    let fl = |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk && late(l));
+    assert(sum(lis_view(srows), fc) == sum(db2.lineitem, |l: LineitemRow| if ikeys(skeys).contains(l.l_orderkey) { fc(l) } else { 0 }));
+    assert(sum(lis_view(srows), fl) == sum(db2.lineitem, |l: LineitemRow| if ikeys(skeys).contains(l.l_orderkey) { fl(l) } else { 0 }));
+    lemma_sum_ext_all(db2.lineitem, |l: LineitemRow| if ikeys(skeys).contains(l.l_orderkey) { fc(l) } else { 0 }, fc);
+    lemma_sum_ext_all(db2.lineitem, |l: LineitemRow| if ikeys(skeys).contains(l.l_orderkey) { fl(l) } else { 0 }, fl);
 }
 
 // ── old records of the affected orders ─────────────────────────────────────
@@ -761,10 +764,12 @@ pub fn apply(
     nd: &Vec<(NatE, i64)>,
     skeys: &[i64],
     srows: &[LiRow],
+    Ghost(ost): Ghost<Seq<Seq<u8>>>,
     Ghost(db2): Ghost<Db>,
 ) -> (r: Result<State, u32>)
     requires
-        db_step(s.db(), db2, od_view(od@), ld_view(ld@)),
+        od_status_ok(od@, ost),
+        db_step(s.db(), db2, od_view(od@, ost), ld_view(ld@)),
         dims_step(s.db(), db2, dview(sd@), dview(nd@)),
         scan_contract(db2, skeys@, srows@),
     ensures
@@ -773,15 +778,15 @@ pub fn apply(
     assert(vstd::std_specs::hash::obeys_key_model::<i64>());
     let ghost db = s.db();
     let (st, orders, wm) = s.parts();
-    let ghost odv = od_view(od@);
+    let ghost odv = od_view(od@, ost);
     let ghost ldv = ld_view(ld@);
     // affected keys
     let (a, pos) = collect_keys(od, ld);
     proof {
-        lemma_within(a@, od@, ld@);
+        lemma_within(a@, od@, ost, ld@);
         lemma_count_distinct_keys(a@);
     }
-    let fmd = match fm_deltas(od, &a, &pos) {
+    let fmd = match fm_deltas(od, Ghost(ost), &a, &pos) {
         Some(v) => v,
         None => {
             return Err(2);
@@ -871,7 +876,7 @@ pub fn apply(
             keys_ok(a@, pos@),
             state_ok(*st, *orders, wm@, db),
             db_step(db, db2, odv, ldv),
-            odv == od_view(od@),
+            odv == od_view(od@, ost),
             ldv == ld_view(ld@),
             scan_contract(db2, skeys@, srows@),
             deltas_within(ikeys(a@), odv, ldv),
@@ -1165,7 +1170,7 @@ pub fn apply(
                 lemma_fm_nonneg(db, ok);
                 lemma_step_counts(db, db2, odv, ldv, ok, 0);
                 assert forall|q: int| 0 <= q < odv.len() implies od_w(ok)(#[trigger] odv[q]) == 0 by {
-                    assert(odv[q].0.orderkey == od@[q].orderkey as int);
+                    assert(odv[q].0.o_orderkey == od@[q].orderkey as int);
                 }
                 lemma_sum_zero(odv, od_w(ok));
             }

@@ -5,7 +5,7 @@
 //   3. sort groups by (numwait DESC, s_name)   (ORDER BY)
 use vstd::prelude::*;
 use verus_common::sums::*;
-use crate::spec::*;
+use crate::gen_spec::*;
 use crate::bridge::*;
 use verus_common::bytes::*;
 use verus_common::sort::*;
@@ -14,10 +14,15 @@ use std::collections::HashMap;
 
 verus! {
 
-// Interprets the result rows as (supplier name, numwait) pairs, i.e. the
-// logical output table that must match the query answer.
-pub open spec fn out_view(o: Seq<(Vec<u8>, i64)>) -> Seq<(Seq<u8>, int)> {
+// Interprets the result rows as (supplier name, numwait) pairs.
+pub open spec fn pair_view(o: Seq<(Vec<u8>, i64)>) -> Seq<(Seq<u8>, int)> {
     o.map_values(|r: (Vec<u8>, i64)| (r.0@, r.1 as int))
+}
+
+// The result rows as the generated spec's output rows: the logical output
+// table that must be the query's answer.
+pub open spec fn out_view(o: Seq<(Vec<u8>, i64)>) -> Seq<OutRow> {
+    out_rows(pair_view(o))
 }
 
 // The name of the supplier stored at a given row position.
@@ -110,7 +115,7 @@ proof fn lemma_gather_total(st: Static, orders: OrderMap, wm: Map<i64, i64>, db:
     assert forall|i: int| 0 <= i < ns implies #[trigger] cb(i) == st_i(i) by {
         let s = sups_view(sups)[i];
         assert(s == sup_view(sups[i]));
-        let ind_n = |n: Nation| ind(n.nationkey == s.nationkey && n.name == p);
+        let ind_n = |n: NationRow| ind(n.n_nationkey == s.s_nationkey && n.n_name == p);
         let ind_j = |jj: int| ind_n(nats_view(nats)[jj]);
         lemma_sum_index(nats_view(nats), ind_n, ind_j);
         lemma_sum_perm(nats_view(nats), db.nation, ind_n);
@@ -123,10 +128,10 @@ proof fn lemma_gather_total(st: Static, orders: OrderMap, wm: Map<i64, i64>, db:
         let cj = |jj: int| c * ind_j(jj);
         lemma_sum_ext(rng(nn), tjs, cj);
         lemma_sum_scale(rng(nn), ind_j, cj, c);
-        lemma_w_nonneg(db, s.suppkey);
+        lemma_w_nonneg(db, s.s_suppkey);
         if sups[i].name@ == g {
-            let x = nm(db, s.nationkey, p);
-            let y = w(db, s.suppkey);
+            let x = nm(db, s.s_nationkey, p);
+            let y = w(db, s.s_suppkey);
             assert(c == y);
             assert(c * x == x * y) by (nonlinear_arith)
                 requires
@@ -134,13 +139,13 @@ proof fn lemma_gather_total(st: Static, orders: OrderMap, wm: Map<i64, i64>, db:
             ;
         } else {
             assert(c == 0);
-            assert(0 * nm(db, s.nationkey, p) == 0) by (nonlinear_arith);
+            assert(0 * nm(db, s.s_nationkey, p) == 0) by (nonlinear_arith);
         }
     }
     lemma_sum_ext(rng(ns), cb, st_i);
     // (d) Σ_i over supplier rows = numwait (bridge)
-    lemma_sum_index(sups_view(sups), |s: Supplier| sup_term(db, p, g, s), st_i);
-    lemma_sum_perm(sups_view(sups), db.supplier, |s: Supplier| sup_term(db, p, g, s));
+    lemma_sum_index(sups_view(sups), |s: SupplierRow| sup_term(db, p, g, s), st_i);
+    lemma_sum_perm(sups_view(sups), db.supplier, |s: SupplierRow| sup_term(db, p, g, s));
     lemma_numwait_by_supplier(db, p, g);
 }
 
@@ -563,10 +568,10 @@ proof fn lemma_rows_name_order(sups: Seq<SupE>, rows: Seq<(usize, i64)>, a: int,
 // Answers the query: pick the nation's suppliers with waiting orders, sort (unless
 // already in order) and group by name, sort by numwait DESC then name, and output the
 // first 100 rows (LIMIT).
-// Weve shown that the execution equals the result func in the spec. (public spec fn)
+// The output is the answer the generated spec (gen_spec::query_result) requires.
 pub fn execute(s: &State, p: &[u8]) -> (r: Option<Vec<(Vec<u8>, i64)>>)
     ensures
-        r matches Some(out) ==> q21_result(s.db(), p@, out_view(out@)),
+        r matches Some(out) ==> query_result(s.db(), params(p@), out_view(out@)),
 {
     let (st, orders, wm) = s.parts();
     let ghost db = s.db();
@@ -668,7 +673,7 @@ pub fn execute(s: &State, p: &[u8]) -> (r: Option<Vec<(Vec<u8>, i64)>>)
             all_valid(order@, valid_row(rows@)),
             rows_ok(sups@, rows@),
             out@.len() == q,
-            forall|a: int| 0 <= a < q ==> out_view(out@)[a] == rowv(sups@, rows@, #[trigger] order@[a]),
+            forall|a: int| 0 <= a < q ==> pair_view(out@)[a] == rowv(sups@, rows@, #[trigger] order@[a]),
         decreases lim - q,
     {
         let ri = order[q];
@@ -683,10 +688,10 @@ pub fn execute(s: &State, p: &[u8]) -> (r: Option<Vec<(Vec<u8>, i64)>>)
         let ghost o0 = out@;
         out.push((nm, rr.1));
         proof {
-            assert forall|a: int| 0 <= a < q + 1 implies out_view(out@)[a] == rowv(sups@, rows@, #[trigger] order@[a]) by {
+            assert forall|a: int| 0 <= a < q + 1 implies pair_view(out@)[a] == rowv(sups@, rows@, #[trigger] order@[a]) by {
                 if a < q {
                     assert(out@[a] == o0[a]);
-                    assert(out_view(o0)[a] == rowv(sups@, rows@, order@[a]));
+                    assert(pair_view(o0)[a] == rowv(sups@, rows@, order@[a]));
                 }
             }
         }
@@ -730,10 +735,13 @@ pub fn execute(s: &State, p: &[u8]) -> (r: Option<Vec<(Vec<u8>, i64)>>)
             assert(order@[i] == v);
             assert(fv[i].0 == g);
         }
-        assert(q21_full_result(db, p@, fv));
+        assert(strict_full(db, p@, fv));
+        lemma_strict_full_is_full(db, p@, fv);
         // 6. the output is the first min(100, n) rows of fv: LIMIT 100
-        assert(out_view(out@) =~= limit_rows(fv, q21_limit()));
-        assert(q21_result(db, p@, out_view(out@)));
+        let lim = if fv.len() <= 100 { fv } else { fv.take(100) };
+        assert(pair_view(out@) =~= lim);
+        assert(out_view(out@) =~= limit_rows(out_rows(fv), 100));
+        assert(query_result(db, params(p@), out_view(out@)));
     }
     Some(out)
 }

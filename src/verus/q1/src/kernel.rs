@@ -15,11 +15,13 @@
 //   consume_simple(batch)  same contract, i128 slots updated per row
 //       (wider domain: 2^46 / 2^16)
 //   merge(other)           rows := rows ++ other.rows   (or refuse)
-//   finish()               q1_result(rows, cutoff, out)
+//   finish()               gen_spec::query_result for the consumed rows
 use vstd::prelude::*;
 use verus_common::bytes::*;
 use verus_common::sums::*;
-use crate::spec::*;
+use verus_common::rat::*;
+use crate::gen_spec::*;
+use crate::bridge::*;
 
 verus! {
 
@@ -98,20 +100,24 @@ pub struct OutGroup {
     pub ls: u8,
 }
 
-pub open spec fn group_view(o: OutGroup) -> Group {
-    Group {
-        rf: seq![o.rf],
-        ls: seq![o.ls],
+/// An output group as the generated spec's output row: AVG columns are the
+/// exact rationals sum / count (the host formats them).
+pub open spec fn group_view(o: OutGroup) -> OutRow {
+    OutRow {
+        l_returnflag: seq![o.rf],
+        l_linestatus: seq![o.ls],
         sum_qty: o.sum_qty as int,
         sum_base_price: o.sum_base_price as int,
         sum_disc_price: o.sum_disc_price as int,
         sum_charge: o.sum_charge as int,
-        sum_disc: o.sum_disc as int,
-        count: o.count as int,
+        avg_qty: Rat { num: o.sum_qty as int, den: o.count as int * 100 },
+        avg_price: Rat { num: o.sum_base_price as int, den: o.count as int * 100 },
+        avg_disc: Rat { num: o.sum_disc as int, den: o.count as int * 100 },
+        count_order: o.count as int,
     }
 }
 
-pub open spec fn out_view(s: Seq<OutGroup>) -> Seq<Group> {
+pub open spec fn out_view(s: Seq<OutGroup>) -> Seq<OutRow> {
     s.map_values(|o: OutGroup| group_view(o))
 }
 
@@ -126,15 +132,15 @@ pub open spec fn row_at(
     rf: Seq<u8>,
     ls: Seq<u8>,
     i: int,
-) -> Lineitem {
-    Lineitem {
-        shipdate: sd[i] as int,
-        quantity: q[i] as int,
-        extendedprice: p[i] as int,
-        discount: d[i] as int,
-        tax: t[i] as int,
-        returnflag: seq![rf[i]],
-        linestatus: seq![ls[i]],
+) -> LineitemRow {
+    LineitemRow {
+        l_shipdate: sd[i] as int,
+        l_quantity: q[i] as int,
+        l_extendedprice: p[i] as int,
+        l_discount: d[i] as int,
+        l_tax: t[i] as int,
+        l_returnflag: seq![rf[i]],
+        l_linestatus: seq![ls[i]],
     }
 }
 
@@ -147,7 +153,7 @@ pub open spec fn batch_view(
     t: Seq<i64>,
     rf: Seq<u8>,
     ls: Seq<u8>,
-) -> Seq<Lineitem> {
+) -> Seq<LineitemRow> {
     Seq::new(sd.len(), |i: int| row_at(sd, q, p, d, t, rf, ls, i))
 }
 
@@ -166,25 +172,25 @@ pub open spec fn is_letter(b: u8) -> bool {
 }
 
 /// The slot of a row with single-letter flags.
-pub open spec fn key_of(l: Lineitem) -> int {
-    (l.returnflag[0] as int - 65) * 26 + (l.linestatus[0] as int - 65)
+pub open spec fn key_of(l: LineitemRow) -> int {
+    (l.l_returnflag[0] as int - 65) * 26 + (l.l_linestatus[0] as int - 65)
 }
 
 /// Every row has single-byte flags, and every row that passes the filter has
 /// upper-case letter flags (the kernel refuses otherwise).
-pub open spec fn row_keys_ok(l: Lineitem, c: int) -> bool {
-    &&& l.returnflag.len() == 1
-    &&& l.linestatus.len() == 1
-    &&& qualifies(l, c) ==> is_letter(l.returnflag[0]) && is_letter(l.linestatus[0])
+pub open spec fn row_keys_ok(l: LineitemRow, c: int) -> bool {
+    &&& l.l_returnflag.len() == 1
+    &&& l.l_linestatus.len() == 1
+    &&& qualifies(l, c) ==> is_letter(l.l_returnflag[0]) && is_letter(l.l_linestatus[0])
 }
 
-pub open spec fn keys_ok(rows: Seq<Lineitem>, c: int) -> bool {
+pub open spec fn keys_ok(rows: Seq<LineitemRow>, c: int) -> bool {
     forall|i: int| 0 <= i < rows.len() ==> row_keys_ok(#[trigger] rows[i], c)
 }
 
 /// Slot k's accumulator is group (slot_rf(k), slot_ls(k)) over `rows`, and
 /// its sums are bounded by n times the per-row bounds.
-pub open spec fn slot_ok(rows: Seq<Lineitem>, c: int, k: int, a: Acc, n: int) -> bool {
+pub open spec fn slot_ok(rows: Seq<LineitemRow>, c: int, k: int, a: Acc, n: int) -> bool {
     &&& a.count as int == gsum(rows, c, slot_rf(k), slot_ls(k), f_one())
     &&& a.qty as int == gsum(rows, c, slot_rf(k), slot_ls(k), f_qty())
     &&& a.base as int == gsum(rows, c, slot_rf(k), slot_ls(k), f_base())
@@ -201,7 +207,7 @@ pub open spec fn slot_ok(rows: Seq<Lineitem>, c: int, k: int, a: Acc, n: int) ->
 
 /// Block-local slot k is group (slot_rf(k), slot_ls(k)) over the block's
 /// rows `blk` (m of them), with the narrow per-row bounds.
-pub open spec fn loc_ok(blk: Seq<Lineitem>, c: int, k: int, a: Loc, m: int) -> bool {
+pub open spec fn loc_ok(blk: Seq<LineitemRow>, c: int, k: int, a: Loc, m: int) -> bool {
     &&& a.count as int == gsum(blk, c, slot_rf(k), slot_ls(k), f_one())
     &&& a.qty as int == gsum(blk, c, slot_rf(k), slot_ls(k), f_qty())
     &&& a.base as int == gsum(blk, c, slot_rf(k), slot_ls(k), f_base())
@@ -225,37 +231,39 @@ pub open spec fn distinct_slots(ts: Seq<usize>) -> bool {
     &&& forall|i: int, j: int| 0 <= i < j < ts.len() ==> #[trigger] ts[i] != #[trigger] ts[j]
 }
 
-pub open spec fn slot_group(k: int, a: Acc) -> Group {
-    Group {
-        rf: slot_rf(k),
-        ls: slot_ls(k),
+pub open spec fn slot_group(k: int, a: Acc) -> OutRow {
+    OutRow {
+        l_returnflag: slot_rf(k),
+        l_linestatus: slot_ls(k),
         sum_qty: a.qty as int,
         sum_base_price: a.base as int,
         sum_disc_price: a.disc_price as int,
         sum_charge: a.charge as int,
-        sum_disc: a.disc as int,
-        count: a.count as int,
+        avg_qty: Rat { num: a.qty as int, den: a.count as int * 100 },
+        avg_price: Rat { num: a.base as int, den: a.count as int * 100 },
+        avg_disc: Rat { num: a.disc as int, den: a.count as int * 100 },
+        count_order: a.count as int,
     }
 }
 
 // ── Lemmas ──────────────────────────────────────────────────────────────────
 
-pub proof fn lemma_gsum_empty(db: Seq<Lineitem>, c: int, rf: Seq<u8>, ls: Seq<u8>, f: spec_fn(Lineitem) -> int)
+pub proof fn lemma_gsum_empty(db: Seq<LineitemRow>, c: int, rf: Seq<u8>, ls: Seq<u8>, f: spec_fn(LineitemRow) -> int)
     requires
         db.len() == 0,
     ensures
         gsum(db, c, rf, ls, f) == 0,
 {
-    lemma_sum_empty(db, |l: Lineitem| if in_group(l, c, rf, ls) { f(l) } else { 0 });
+    lemma_sum_empty(db, |l: LineitemRow| if in_group(l, c, rf, ls) { f(l) } else { 0 });
 }
 
 pub proof fn lemma_gsum_push(
-    db: Seq<Lineitem>,
-    x: Lineitem,
+    db: Seq<LineitemRow>,
+    x: LineitemRow,
     c: int,
     rf: Seq<u8>,
     ls: Seq<u8>,
-    f: spec_fn(Lineitem) -> int,
+    f: spec_fn(LineitemRow) -> int,
 )
     ensures
         gsum(db.push(x), c, rf, ls, f) == gsum(db, c, rf, ls, f) + (if in_group(x, c, rf, ls) {
@@ -264,25 +272,25 @@ pub proof fn lemma_gsum_push(
             0
         }),
 {
-    lemma_sum_push(db, x, |l: Lineitem| if in_group(l, c, rf, ls) { f(l) } else { 0 });
+    lemma_sum_push(db, x, |l: LineitemRow| if in_group(l, c, rf, ls) { f(l) } else { 0 });
 }
 
 pub proof fn lemma_gsum_concat(
-    a: Seq<Lineitem>,
-    b: Seq<Lineitem>,
+    a: Seq<LineitemRow>,
+    b: Seq<LineitemRow>,
     c: int,
     rf: Seq<u8>,
     ls: Seq<u8>,
-    f: spec_fn(Lineitem) -> int,
+    f: spec_fn(LineitemRow) -> int,
 )
     ensures
         gsum(a + b, c, rf, ls, f) == gsum(a, c, rf, ls, f) + gsum(b, c, rf, ls, f),
 {
-    lemma_sum_concat(a, b, |l: Lineitem| if in_group(l, c, rf, ls) { f(l) } else { 0 });
+    lemma_sum_concat(a, b, |l: LineitemRow| if in_group(l, c, rf, ls) { f(l) } else { 0 });
 }
 
 /// A row is in slot k's group iff it passes the filter and k is its slot.
-pub proof fn lemma_slot_match(l: Lineitem, c: int, k: int)
+pub proof fn lemma_slot_match(l: LineitemRow, c: int, k: int)
     requires
         0 <= k < NSLOTS,
         row_keys_ok(l, c),
@@ -290,10 +298,10 @@ pub proof fn lemma_slot_match(l: Lineitem, c: int, k: int)
         in_group(l, c, slot_rf(k), slot_ls(k)) == (qualifies(l, c) && k == key_of(l)),
 {
     if qualifies(l, c) {
-        let x = l.returnflag[0];
-        let y = l.linestatus[0];
-        assert(l.returnflag =~= seq![x]);
-        assert(l.linestatus =~= seq![y]);
+        let x = l.l_returnflag[0];
+        let y = l.l_linestatus[0];
+        assert(l.l_returnflag =~= seq![x]);
+        assert(l.l_linestatus =~= seq![y]);
         let kk = key_of(l);
         assert(0 <= k / 26 < 26);
         assert(0 <= k % 26 < 26);
@@ -304,7 +312,7 @@ pub proof fn lemma_slot_match(l: Lineitem, c: int, k: int)
             assert(slot_rf(k) =~= seq![x]);
             assert(slot_ls(k) =~= seq![y]);
         } else {
-            if slot_rf(k) == l.returnflag && slot_ls(k) == l.linestatus {
+            if slot_rf(k) == l.l_returnflag && slot_ls(k) == l.l_linestatus {
                 assert(slot_rf(k)[0] == x);
                 assert(slot_ls(k)[0] == y);
             }
@@ -361,7 +369,7 @@ pub proof fn lemma_slot_order(k1: int, k2: int, a1: Acc, a2: Acc)
     requires
         0 <= k1 < k2 < NSLOTS,
     ensures
-        key_lt(slot_group(k1, a1), slot_group(k2, a2)),
+        row_lt(slot_group(k1, a1), slot_group(k2, a2)),
 {
     let x1 = (k1 / 26 + 65) as u8;
     let x2 = (k2 / 26 + 65) as u8;
@@ -379,7 +387,7 @@ pub proof fn lemma_slot_order(k1: int, k2: int, a1: Acc, a2: Acc)
 
 /// Pushing row l keeps every slot other than its own unchanged, and adds its
 /// summands to its own slot (when it passes the filter).
-pub proof fn lemma_push_slot(rows: Seq<Lineitem>, l: Lineitem, c: int, k: int)
+pub proof fn lemma_push_slot(rows: Seq<LineitemRow>, l: LineitemRow, c: int, k: int)
     requires
         0 <= k < NSLOTS,
         row_keys_ok(l, c),
@@ -390,11 +398,11 @@ pub proof fn lemma_push_slot(rows: Seq<Lineitem>, l: Lineitem, c: int, k: int)
             let rf = slot_rf(k);
             let ls = slot_ls(k);
             &&& gsum(r2, c, rf, ls, f_one()) == gsum(rows, c, rf, ls, f_one()) + (if hit { 1int } else { 0 })
-            &&& gsum(r2, c, rf, ls, f_qty()) == gsum(rows, c, rf, ls, f_qty()) + (if hit { l.quantity } else { 0 })
-            &&& gsum(r2, c, rf, ls, f_base()) == gsum(rows, c, rf, ls, f_base()) + (if hit { l.extendedprice } else { 0 })
+            &&& gsum(r2, c, rf, ls, f_qty()) == gsum(rows, c, rf, ls, f_qty()) + (if hit { l.l_quantity } else { 0 })
+            &&& gsum(r2, c, rf, ls, f_base()) == gsum(rows, c, rf, ls, f_base()) + (if hit { l.l_extendedprice } else { 0 })
             &&& gsum(r2, c, rf, ls, f_disc_price()) == gsum(rows, c, rf, ls, f_disc_price()) + (if hit { disc_price(l) } else { 0 })
             &&& gsum(r2, c, rf, ls, f_charge()) == gsum(rows, c, rf, ls, f_charge()) + (if hit { charge(l) } else { 0 })
-            &&& gsum(r2, c, rf, ls, f_disc()) == gsum(rows, c, rf, ls, f_disc()) + (if hit { l.discount } else { 0 })
+            &&& gsum(r2, c, rf, ls, f_disc()) == gsum(rows, c, rf, ls, f_disc()) + (if hit { l.l_discount } else { 0 })
         }),
 {
     lemma_slot_match(l, c, k);
@@ -416,7 +424,7 @@ pub struct Q1State {
     pub loc: Vec<Loc>,
     pub touched: Vec<usize>,
     pub n: u64,
-    pub rows: Ghost<Seq<Lineitem>>,
+    pub rows: Ghost<Seq<LineitemRow>>,
 }
 
 impl Q1State {
@@ -436,7 +444,7 @@ impl Q1State {
         ensures
             s.inv(),
             s.cutoff == cutoff,
-            s.rows@ == Seq::<Lineitem>::empty(),
+            s.rows@ == Seq::<LineitemRow>::empty(),
     {
         let zero = Acc { qty: 0, base: 0, disc_price: 0, charge: 0, disc: 0, count: 0 };
         let mut slots: Vec<Acc> = Vec::with_capacity(NSLOTS);
@@ -575,10 +583,10 @@ impl Q1State {
                 self.slots.set(k, na);
             }
             proof {
-                assert(l.returnflag.len() == 1);
-                assert(l.linestatus.len() == 1);
-                assert(l.returnflag[0] == rf@[i as int]);
-                assert(l.linestatus[0] == ls@[i as int]);
+                assert(l.l_returnflag.len() == 1);
+                assert(l.l_linestatus.len() == 1);
+                assert(l.l_returnflag[0] == rf@[i as int]);
+                assert(l.l_linestatus[0] == ls@[i as int]);
                 assert(qualifies(l, cutoff as int) == hit);
                 assert(row_keys_ok(l, cutoff as int));
                 assert(hit ==> key_of(l) == kk);
@@ -590,8 +598,8 @@ impl Q1State {
                     if !(hit && k == kk) {
                         assert(self.slots@[k] == s0[k]);
                     } else {
-                        assert(disc_price(l) == l.extendedprice * (100 - l.discount));
-                        assert(charge(l) == disc_price(l) * (100 + l.tax));
+                        assert(disc_price(l) == l.l_extendedprice * (100 - l.l_discount));
+                        assert(charge(l) == disc_price(l) * (100 + l.l_tax));
                     }
                 }
                 assert forall|j: int| 0 <= j < r1.len() implies row_keys_ok(#[trigger] r1[j], cutoff as int) by {
@@ -685,7 +693,7 @@ impl Q1State {
 
     /// Phase-1 postcondition: block-local slots hold the block's group sums;
     /// the touched list names exactly the non-zero local slots.
-    pub open spec fn block_summed(&self, blk: Seq<Lineitem>, m: int) -> bool {
+    pub open spec fn block_summed(&self, blk: Seq<LineitemRow>, m: int) -> bool {
         &&& self.loc@.len() == NSLOTS
         &&& self.slots@.len() == NSLOTS
         &&& distinct_slots(self.touched@)
@@ -716,7 +724,7 @@ impl Q1State {
         ls: &[u8],
         start: usize,
         end: usize,
-        batch: Ghost<Seq<Lineitem>>,
+        batch: Ghost<Seq<LineitemRow>>,
     ) -> (ok: bool)
         requires
             old(self).inv(),
@@ -755,7 +763,7 @@ impl Q1State {
         ls: &[u8],
         start: usize,
         end: usize,
-        batch: Ghost<Seq<Lineitem>>,
+        batch: Ghost<Seq<LineitemRow>>,
     ) -> (ok: bool)
         requires
             old(self).inv(),
@@ -874,10 +882,10 @@ impl Q1State {
                 self.loc.set(k, na);
             }
             proof {
-                assert(l.returnflag.len() == 1);
-                assert(l.linestatus.len() == 1);
-                assert(l.returnflag[0] == rf@[i as int]);
-                assert(l.linestatus[0] == ls@[i as int]);
+                assert(l.l_returnflag.len() == 1);
+                assert(l.l_linestatus.len() == 1);
+                assert(l.l_returnflag[0] == rf@[i as int]);
+                assert(l.l_linestatus[0] == ls@[i as int]);
                 assert(qualifies(l, c) == hit);
                 assert(row_keys_ok(l, c));
                 assert(hit ==> key_of(l) == kk);
@@ -894,8 +902,8 @@ impl Q1State {
                     if !(hit && k == kk) {
                         assert(self.loc@[k] == lo[k]);
                     } else {
-                        assert(disc_price(l) == l.extendedprice * (100 - l.discount));
-                        assert(charge(l) == disc_price(l) * (100 + l.tax));
+                        assert(disc_price(l) == l.l_extendedprice * (100 - l.l_discount));
+                        assert(charge(l) == disc_price(l) * (100 + l.l_tax));
                     }
                 }
                 let t1 = self.touched@;
@@ -927,7 +935,7 @@ impl Q1State {
     }
 
     /// Phase 2: fold the touched block-local slots into the i128 slots.
-    fn block_fold(&mut self, blk: Ghost<Seq<Lineitem>>, m: usize)
+    fn block_fold(&mut self, blk: Ghost<Seq<LineitemRow>>, m: usize)
         requires
             old(self).global_ok(),
             old(self).block_summed(blk@, m as int),
@@ -1191,7 +1199,10 @@ impl Q1State {
         requires
             self.inv(),
         ensures
-            q1_result(self.rows@, self.cutoff as int, out_view(out@)),
+            // the answer of the generated spec, for the rows in any day
+            // encoding e and $1 = d that give this cutoff (bridge.rs)
+            forall|e: int, d: int| self.cutoff + e == 10561 - d ==>
+                #[trigger] query_result(db_at(self.rows@, e), params_of(d), out_view(out@)),
     {
         let ghost rows = self.rows@;
         let ghost c = self.cutoff as int;
@@ -1233,8 +1244,8 @@ impl Q1State {
                     let i0 = idx.len() as int;
                     let idx0 = idx;
                     idx = idx.push(k as int);
-                    assert(group_view(g).rf =~= slot_rf(k as int));
-                    assert(group_view(g).ls =~= slot_ls(k as int));
+                    assert(group_view(g).l_returnflag =~= slot_rf(k as int));
+                    assert(group_view(g).l_linestatus =~= slot_ls(k as int));
                     assert(idx[i0] == k as int);
                     assert(group_view(out@[i0]) == slot_group(k as int, self.slots@[k as int]));
                     assert forall|j: int| 0 <= j < k + 1 && (#[trigger] self.slots@[j]).count > 0 implies exists|i: int|
@@ -1253,32 +1264,50 @@ impl Q1State {
         }
         proof {
             let ov = out_view(out@);
-            assert forall|i: int| 0 <= i < ov.len() implies group_ok(rows, c, #[trigger] ov[i]) by {
-                assert(ov[i] == group_view(out@[i]));
-                assert(slot_ok(rows, c, idx[i], self.slots@[idx[i]], self.n as int));
-            }
-            assert forall|i: int, j: int| 0 <= i < j < ov.len() implies key_lt(#[trigger] ov[i], #[trigger] ov[j]) by {
-                assert(ov[i] == group_view(out@[i]));
-                assert(ov[j] == group_view(out@[j]));
-                assert(idx[i] < idx[j]);
-                lemma_slot_order(idx[i], idx[j], self.slots@[idx[i]], self.slots@[idx[j]]);
-            }
-            assert forall|rf: Seq<u8>, ls: Seq<u8>| #[trigger] gsum(rows, c, rf, ls, f_one()) > 0 implies exists|i: int|
-                0 <= i < ov.len() && (#[trigger] ov[i]).rf == rf && ov[i].ls == ls by {
-                let f = |l: Lineitem| if in_group(l, c, rf, ls) { f_one()(l) } else { 0 };
-                let w = lemma_sum_nonzero_witness(rows, f);
-                let l = rows[w];
-                assert(in_group(l, c, rf, ls));
-                assert(row_keys_ok(l, c));
-                let kk = key_of(l);
-                assert(0 <= kk < NSLOTS);
-                lemma_slot_match(l, c, kk);
-                assert(slot_rf(kk) =~= rf);
-                assert(slot_ls(kk) =~= ls);
-                assert(slot_ok(rows, c, kk, self.slots@[kk], self.n as int));
-                assert(self.slots@[kk].count > 0);
-                let i = choose|i: int| 0 <= i < idx.len() && idx[i] == kk;
-                assert(ov[i] == group_view(out@[i]));
+            assert forall|e: int, d: int| self.cutoff + e == 10561 - d implies
+                #[trigger] query_result(db_at(rows, e), params_of(d), ov) by {
+                let gd = db_at(rows, e);
+                let pp = params_of(d);
+                assert forall|i: int| 0 <= i < ov.len() implies row_ok(gd, pp, #[trigger] ov[i]) by {
+                    assert(ov[i] == group_view(out@[i]));
+                    assert(slot_ok(rows, c, idx[i], self.slots@[idx[i]], self.n as int));
+                    let (rf, ls) = (ov[i].l_returnflag, ov[i].l_linestatus);
+                    lemma_gcount_eq(rows, e, c, d, rf, ls);
+                    lemma_gsum_eq(rows, e, c, d, rf, ls, f_qty(), |t: Tuple| t.lineitem.l_quantity);
+                    lemma_gsum_eq(rows, e, c, d, rf, ls, f_base(), |t: Tuple| t.lineitem.l_extendedprice);
+                    lemma_gsum_eq(rows, e, c, d, rf, ls, f_disc_price(), |t: Tuple| t.lineitem.l_extendedprice * (100 - t.lineitem.l_discount));
+                    lemma_gsum_eq(rows, e, c, d, rf, ls, f_charge(), |t: Tuple| t.lineitem.l_extendedprice * (100 - t.lineitem.l_discount) * (100 + t.lineitem.l_tax));
+                    lemma_gsum_eq(rows, e, c, d, rf, ls, f_disc(), |t: Tuple| t.lineitem.l_discount);
+                }
+                assert forall|i: int, j: int| 0 <= i < j < ov.len() implies
+                    !same_group(#[trigger] ov[i], #[trigger] ov[j]) && !row_lt(ov[j], ov[i]) by {
+                    assert(ov[i] == group_view(out@[i]));
+                    assert(ov[j] == group_view(out@[j]));
+                    assert(idx[i] < idx[j]);
+                    lemma_slot_order(idx[i], idx[j], self.slots@[idx[i]], self.slots@[idx[j]]);
+                    lemma_bytes_lt_irrefl(ov[i].l_returnflag);
+                    lemma_bytes_lt_irrefl(ov[i].l_linestatus);
+                    lemma_bytes_lt_asym(ov[i].l_returnflag, ov[j].l_returnflag);
+                    lemma_bytes_lt_asym(ov[i].l_linestatus, ov[j].l_linestatus);
+                }
+                assert forall|rf: Seq<u8>, ls: Seq<u8>| #[trigger] group_count(gd, pp, rf, ls) > 0 implies exists|i: int|
+                    0 <= i < ov.len() && (#[trigger] ov[i]).l_returnflag == rf && ov[i].l_linestatus == ls by {
+                    lemma_gcount_eq(rows, e, c, d, rf, ls);
+                    let f = |l: LineitemRow| if in_group(l, c, rf, ls) { f_one()(l) } else { 0 };
+                    let w = lemma_sum_nonzero_witness(rows, f);
+                    let l = rows[w];
+                    assert(in_group(l, c, rf, ls));
+                    assert(row_keys_ok(l, c));
+                    let kk = key_of(l);
+                    assert(0 <= kk < NSLOTS);
+                    lemma_slot_match(l, c, kk);
+                    assert(slot_rf(kk) =~= rf);
+                    assert(slot_ls(kk) =~= ls);
+                    assert(slot_ok(rows, c, kk, self.slots@[kk], self.n as int));
+                    assert(self.slots@[kk].count > 0);
+                    let i = choose|i: int| 0 <= i < idx.len() && idx[i] == kk;
+                    assert(ov[i] == group_view(out@[i]));
+                }
             }
         }
         out

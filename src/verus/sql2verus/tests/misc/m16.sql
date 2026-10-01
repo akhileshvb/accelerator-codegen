@@ -1,0 +1,1 @@
+SELECT CASE WHEN premium THEN 'P' ELSE 'F' END AS tier, COUNT(*) AS c FROM users GROUP BY CASE WHEN premium THEN 'P' ELSE 'F' END ORDER BY tier

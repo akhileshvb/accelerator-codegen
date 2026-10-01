@@ -1,0 +1,3 @@
+# <query> ok | <query> refused <text the refusal must contain>
+g01 ok
+g02 ok

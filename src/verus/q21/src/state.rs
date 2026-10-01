@@ -13,7 +13,7 @@ use verus_common::sums::*;
 use verus_common::bag::*;
 use verus_common::bytes::*;
 use verus_common::sort::*;
-use crate::spec::*;
+use crate::gen_spec::*;
 use crate::bridge::*;
 use crate::orderspec::*;
 use crate::ents::*;
@@ -34,18 +34,18 @@ pub struct LiRow {
 
 // Reads a raw input lineitem row as a logical lineitem, widening its fixed-width numbers to unbounded integers.
 // This is how host-supplied rows are related to the abstract query definition.
-pub open spec fn li_view(r: LiRow) -> Lineitem {
-    Lineitem {
-        orderkey: r.orderkey as int,
-        suppkey: r.suppkey as int,
-        commitdate: r.commitdate as int,
-        receiptdate: r.receiptdate as int,
+pub open spec fn li_view(r: LiRow) -> LineitemRow {
+    LineitemRow {
+        l_orderkey: r.orderkey as int,
+        l_suppkey: r.suppkey as int,
+        l_commitdate: r.commitdate as int,
+        l_receiptdate: r.receiptdate as int,
     }
 }
 
 // Reads a batch of raw lineitem rows as the logical lineitem table, i.e. the input data a scan or build is specified against.
 // The contracts of build and maintenance are stated in terms of it.
-pub open spec fn lis_view(s: Seq<LiRow>) -> Seq<Lineitem> {
+pub open spec fn lis_view(s: Seq<LiRow>) -> Seq<LineitemRow> {
     s.map_values(|r: LiRow| li_view(r))
 }
 
@@ -76,15 +76,21 @@ pub struct OrdDelta {
 }
 
 // Reads a batch of lineitem changes as (row, +1/-1) pairs (+1 inserts a copy, -1 deletes one): the logical form of an update batch.
-pub open spec fn ld_view(s: Seq<LiDelta>) -> Seq<(Lineitem, int)> {
+pub open spec fn ld_view(s: Seq<LiDelta>) -> Seq<(LineitemRow, int)> {
     s.map_values(|d: LiDelta| (li_view(d.row), d.sign as int))
 }
 
-// Reads a batch of order changes as (order, +1/-1) pairs, treating a nonzero status byte as 'F' (finished).
-pub open spec fn od_view(s: Seq<OrdDelta>) -> Seq<(Order, int)> {
-    s.map_values(
-        |d: OrdDelta| (Order { orderkey: d.orderkey as int, status_is_f: d.status_is_f != 0 }, d.sign as int),
-    )
+// Reads a batch of order changes as (order, +1/-1) pairs.  The executable delta carries only the
+// flag (o_orderstatus = 'F'); `st` holds each changed row's actual o_orderstatus bytes (ghost).
+pub open spec fn od_view(s: Seq<OrdDelta>, st: Seq<Seq<u8>>) -> Seq<(OrdersRow, int)> {
+    Seq::new(s.len(), |i: int| (OrdersRow { o_orderkey: s[i].orderkey as int, o_orderstatus: st[i] }, s[i].sign as int))
+}
+
+/// Capture contract for the status flag: one status per delta, and the host's
+/// flag is nonzero exactly when that status is "F".
+pub open spec fn od_status_ok(s: Seq<OrdDelta>, st: Seq<Seq<u8>>) -> bool {
+    &&& st.len() == s.len()
+    &&& forall|i: int| 0 <= i < s.len() ==> ((#[trigger] s[i]).status_is_f != 0) == (st[i] == seq![b'F'])
 }
 
 pub struct SupE {
@@ -99,30 +105,30 @@ pub struct NatE {
 }
 
 // Reads a stored supplier entry as a logical supplier row (with its name as a byte string).
-pub open spec fn sup_view(s: SupE) -> Supplier {
-    Supplier { suppkey: s.sk as int, name: s.name@, nationkey: s.nk as int }
+pub open spec fn sup_view(s: SupE) -> SupplierRow {
+    SupplierRow { s_suppkey: s.sk as int, s_name: s.name@, s_nationkey: s.nk as int }
 }
 
 // Reads a stored nation entry as a logical nation row.
-pub open spec fn nat_view(n: NatE) -> Nation {
-    Nation { nationkey: n.nk as int, name: n.name@ }
+pub open spec fn nat_view(n: NatE) -> NationRow {
+    NationRow { n_nationkey: n.nk as int, n_name: n.name@ }
 }
 
 // Reads a list of stored supplier entries as a logical supplier table; the state is required to hold the same bag of rows as the database.
-pub open spec fn sups_view(s: Seq<SupE>) -> Seq<Supplier> {
+pub open spec fn sups_view(s: Seq<SupE>) -> Seq<SupplierRow> {
     s.map_values(|x: SupE| sup_view(x))
 }
 
 // Reads a list of stored nation entries as a logical nation table; the state is required to hold the same bag of rows as the database.
-pub open spec fn nats_view(s: Seq<NatE>) -> Seq<Nation> {
+pub open spec fn nats_view(s: Seq<NatE>) -> Seq<NationRow> {
     s.map_values(|x: NatE| nat_view(x))
 }
 
 // Lets shared multiset-of-rows machinery (insert/delete/compare) work on supplier entries, using their logical row as the meaning.
 impl BagRow for SupE {
-    type V = Supplier;
+    type V = SupplierRow;
 
-    open spec fn rv(&self) -> Supplier {
+    open spec fn rv(&self) -> SupplierRow {
         sup_view(*self)
     }
 
@@ -141,9 +147,9 @@ impl BagRow for SupE {
 
 // Lets shared multiset-of-rows machinery (insert/delete/compare) work on nation entries, using their logical row as the meaning.
 impl BagRow for NatE {
-    type V = Nation;
+    type V = NationRow;
 
-    open spec fn rv(&self) -> Nation {
+    open spec fn rv(&self) -> NationRow {
         nat_view(*self)
     }
 

@@ -1,0 +1,1 @@
+SELECT k FROM t WHERE a > ALL (SELECT c FROM u) AND a = ANY (SELECT c FROM u WHERE u.k = t.k)

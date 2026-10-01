@@ -1,0 +1,1 @@
+SELECT name FROM users WHERE name < 'M' AND signup BETWEEN DATE '2020-01-01' AND DATE '2020-12-31' AND name LIKE 'A_%' ORDER BY name

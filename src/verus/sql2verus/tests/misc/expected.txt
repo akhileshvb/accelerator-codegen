@@ -1,0 +1,43 @@
+# <query> ok | <query> refused <text the refusal must contain>
+m01 ok
+m02 ok
+m03 ok
+m04 ok
+m05 ok
+m06 ok
+m07 ok
+m08 ok
+m09 refused column events.note is nullable; only NOT
+m10 ok
+m11 ok
+m12 ok
+m13 ok
+m14 ok
+m15 ok
+m16 ok
+m17 ok
+m18 ok
+m19 ok
+m20 refused derived table t
+m21 ok
+m22 ok
+m23 refused window functions
+m24 ok
+m25 ok
+m26 ok
+m27 refused comparison of a computed float
+m28 ok
+m29 refused Full join
+m30 ok
+m31 ok
+m32 ok
+m41 ok
+m42 ok
+m43 ok
+m44 refused NULL-able value
+m45 ok
+m46 ok
+m47 ok
+m48 ok
+m49 ok
+m50 refused UNION column

@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERUS="${VERUS_BIN:-$ROOT/tools/verus/verus-x86-linux/verus}"
 OUT="$ROOT/build-verus"
 RUSTFLAGS_V=(-C opt-level=3 -C panic=abort -C codegen-units=1)
-if [ ! -f "$OUT/verus_common.vir" ]; then
+if [ ! -f "$OUT/verus_common.vir" ] || [ -n "$(find "$ROOT/src/verus/common/src" -newer "$OUT/verus_common.vir")" ]; then
   "$VERUS" "$ROOT/src/verus/common/src/lib.rs" --crate-type=lib --crate-name=verus_common \
     --export "$OUT/verus_common.vir" --compile "${RUSTFLAGS_V[@]}" \
     -o "$OUT/libverus_common.rlib"

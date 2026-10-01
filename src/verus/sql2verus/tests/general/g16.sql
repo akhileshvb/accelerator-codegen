@@ -1,0 +1,1 @@
+SELECT k, SUM(a) * 1.0 / COUNT(*) AS av FROM t GROUP BY k HAVING SUM(b) > 0 ORDER BY k

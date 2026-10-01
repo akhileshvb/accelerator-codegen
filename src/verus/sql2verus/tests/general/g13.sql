@@ -1,0 +1,1 @@
+SELECT k, MAX(s) AS m, MIN(s) AS lo FROM t GROUP BY k ORDER BY k

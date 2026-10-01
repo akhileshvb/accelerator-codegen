@@ -1,0 +1,1 @@
+SELECT COALESCE(a, b) AS x FROM t

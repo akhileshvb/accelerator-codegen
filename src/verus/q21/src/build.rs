@@ -5,7 +5,7 @@ use std::sync::Arc;
 use verus_common::sums::*;
 use verus_common::bytes::*;
 use verus_common::sort::*;
-use crate::spec::*;
+use crate::gen_spec::*;
 use crate::bridge::*;
 use crate::orderspec::*;
 use crate::ents::*;
@@ -31,15 +31,15 @@ pub open spec fn build_contract(
     &&& forall|f: spec_fn(int) -> int| #[trigger]
         sum(ikeys(fkeys), f) == sum(
             db.orders,
-            |o: Order| if o.status_is_f { f(o.orderkey) } else { 0 },
+            |o: OrdersRow| if is_f(o) { f(o.o_orderkey) } else { 0 },
         )
     // SELECT l_orderkey, l_suppkey, l_commitdate, l_receiptdate FROM lineitem l
     //  WHERE EXISTS (SELECT 1 FROM orders o
     //                WHERE o.o_orderkey = l.l_orderkey AND o.o_orderstatus = 'F')
-    &&& forall|f: spec_fn(Lineitem) -> int| #[trigger]
+    &&& forall|f: spec_fn(LineitemRow) -> int| #[trigger]
         sum(lis_view(lis), f) == sum(
             db.lineitem,
-            |l: Lineitem| if fm(db, l.orderkey) > 0 { f(l) } else { 0 },
+            |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { f(l) } else { 0 },
         )
 }
 
@@ -64,13 +64,13 @@ pub open spec fn fcount(fkeys: Seq<i64>, ok: int) -> int {
 // Per-order, per-supplier lineitem count (GROUP BY orderkey, suppkey) taken from the scanned rows
 // instead of the abstract table; it is the running quantity while building and updating.
 pub open spec fn cnt_rows(lis: Seq<LiRow>, ok: int, sk: int) -> int {
-    sum(lis_view(lis), |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk))
+    sum(lis_view(lis), |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk))
 }
 
 // Same per-order, per-supplier count as above, but only over late lineitems
 // (receipt date after commit date).
 pub open spec fn lcnt_rows(lis: Seq<LiRow>, ok: int, sk: int) -> int {
-    sum(lis_view(lis), |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk && late(l)))
+    sum(lis_view(lis), |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk && late(l)))
 }
 
 // Appending one key to a scanned prefix appends the same key to its integer version;
@@ -382,12 +382,12 @@ pub fn build_accumulate(m: &mut HashMap<i64, OrdE>, lis: &[LiRow]) -> (ok: bool)
                         assert forall|sk: int| #[trigger]
                             cnt_rows(lis@.take(t as int + 1), ok as int, sk) == cnt_rows(pre, ok as int, sk)
                                 + ind(r.orderkey as int == ok as int && r.suppkey as int == sk) by {
-                            lemma_sum_push(lis_view(pre), li_view(r), |l: Lineitem| ind(l.orderkey == ok as int && l.suppkey == sk));
+                            lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk));
                         }
                         assert forall|sk: int| #[trigger]
                             lcnt_rows(lis@.take(t as int + 1), ok as int, sk) == lcnt_rows(pre, ok as int, sk)
                                 + ind(r.orderkey as int == ok as int && r.suppkey as int == sk && late(li_view(r))) by {
-                            lemma_sum_push(lis_view(pre), li_view(r), |l: Lineitem| ind(l.orderkey == ok as int && l.suppkey == sk && late(l)));
+                            lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk && late(l)));
                         }
                         if ok == r.orderkey {
                             assert(m0.contains_key(ok));
@@ -411,11 +411,11 @@ pub fn build_accumulate(m: &mut HashMap<i64, OrdE>, lis: &[LiRow]) -> (ok: bool)
                         assert(ok != r.orderkey);
                         assert forall|sk: int| #[trigger]
                             cnt_rows(lis@.take(t as int + 1), ok as int, sk) == cnt_rows(pre, ok as int, sk) by {
-                            lemma_sum_push(lis_view(pre), li_view(r), |l: Lineitem| ind(l.orderkey == ok as int && l.suppkey == sk));
+                            lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk));
                         }
                         assert forall|sk: int| #[trigger]
                             lcnt_rows(lis@.take(t as int + 1), ok as int, sk) == lcnt_rows(pre, ok as int, sk) by {
-                            lemma_sum_push(lis_view(pre), li_view(r), |l: Lineitem| ind(l.orderkey == ok as int && l.suppkey == sk && late(l)));
+                            lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk && late(l)));
                         }
                     }
                 }
@@ -439,11 +439,11 @@ pub proof fn lemma_fcount_is_fm(fkeys: Seq<i64>, lis: Seq<LiRow>, sups: Seq<SupE
         fcount(fkeys, ok) == fm(db, ok),
 {
     let f = key_is(ok);
-    let g = |o: Order| if o.status_is_f { f(o.orderkey) } else { 0 };
+    let g = |o: OrdersRow| if is_f(o) { f(o.o_orderkey) } else { 0 };
     assert(sum(ikeys(fkeys), f) == sum(db.orders, g));
     assert(fcount(fkeys, ok) == sum(ikeys(fkeys), f));
-    let h = |o: Order| ind(o.orderkey == ok && o.status_is_f);
-    assert forall|o: Order| #[trigger] g(o) == h(o) by {}
+    let h = |o: OrdersRow| ind(o.o_orderkey == ok && is_f(o));
+    assert forall|o: OrdersRow| #[trigger] g(o) == h(o) by {}
     lemma_sum_ext_all(db.orders, g, h);
     assert(fm(db, ok) == sum(db.orders, h));
 }
@@ -458,12 +458,12 @@ pub proof fn lemma_rows_are_counts(fkeys: Seq<i64>, lis: Seq<LiRow>, sups: Seq<S
         cnt_rows(lis, ok, sk) == cnt(db, ok, sk),
         lcnt_rows(lis, ok, sk) == lcnt(db, ok, sk),
 {
-    let fc = |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk);
-    let fl = |l: Lineitem| ind(l.orderkey == ok && l.suppkey == sk && late(l));
-    assert(sum(lis_view(lis), fc) == sum(db.lineitem, |l: Lineitem| if fm(db, l.orderkey) > 0 { fc(l) } else { 0 }));
-    assert(sum(lis_view(lis), fl) == sum(db.lineitem, |l: Lineitem| if fm(db, l.orderkey) > 0 { fl(l) } else { 0 }));
-    lemma_sum_ext_all(db.lineitem, |l: Lineitem| if fm(db, l.orderkey) > 0 { fc(l) } else { 0 }, fc);
-    lemma_sum_ext_all(db.lineitem, |l: Lineitem| if fm(db, l.orderkey) > 0 { fl(l) } else { 0 }, fl);
+    let fc = |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk);
+    let fl = |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk && late(l));
+    assert(sum(lis_view(lis), fc) == sum(db.lineitem, |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { fc(l) } else { 0 }));
+    assert(sum(lis_view(lis), fl) == sum(db.lineitem, |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { fl(l) } else { 0 }));
+    lemma_sum_ext_all(db.lineitem, |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { fc(l) } else { 0 }, fc);
+    lemma_sum_ext_all(db.lineitem, |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { fl(l) } else { 0 }, fl);
 }
 
 /// fm > 0 only for orderkeys that occur among the scanned 'F' keys.
