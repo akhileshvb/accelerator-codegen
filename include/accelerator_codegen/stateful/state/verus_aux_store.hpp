@@ -20,6 +20,8 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
@@ -50,9 +52,21 @@ public:
 // Whether ACCEL_AUX_STORE asks for the Verus store.
 bool VerusAuxStoreRequested();
 
-// The Verus store of `accelerator`, or null if it has none.
+// The Verus store of `accelerator`, or null if it has none: a Verus kit
+// accelerator's, or one a query registered below.
 std::unique_ptr<VerusAuxStore> MakeVerusAuxStore(const core::AcceleratorId &accelerator,
                                                  VerusAuxStore::EpochProvider epoch,
                                                  VerusAuxStore::FloorProvider floor);
+
+// A hand-written Verus accelerator's store, registered from the query's
+// directory with a static VerusAuxStoreRegistrar.
+using VerusAuxStoreFactory = std::unique_ptr<VerusAuxStore> (*)(VerusAuxStore::EpochProvider epoch,
+                                                                VerusAuxStore::FloorProvider floor);
+void RegisterVerusAuxStore(std::string accelerator, VerusAuxStoreFactory factory);
+struct VerusAuxStoreRegistrar {
+  VerusAuxStoreRegistrar(std::string accelerator, VerusAuxStoreFactory factory) {
+    RegisterVerusAuxStore(std::move(accelerator), factory);
+  }
+};
 
 } // namespace accelerator_codegen::aux_state

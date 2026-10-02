@@ -20,7 +20,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
 #include "postgres_tpch_harness.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "accelerator_codegen/stateful/core/aux_calibration.hpp"
 
 namespace {
 
@@ -29,7 +29,6 @@ using namespace accel::postgres::tpch_harness;
 using accelerator_codegen::aux_state::engine::postgres::LookupPostgresQuery;
 namespace core = accelerator_codegen::aux_state::core;
 namespace mnt = accelerator_codegen::aux_state::maintenance;
-namespace query = accelerator_codegen::aux_state::query;
 using Clock = std::chrono::steady_clock;
 
 class Conn {
@@ -164,7 +163,7 @@ int main(int argc, char **argv) {
       seed.fallback_us = MedianUs(conn, base_sql, 3);
       result.params = seed;
 
-      const auto writes = query::TpchCalibrationWrites(q);
+      const auto writes = core::CalibrationWritesFor("tpch", q);
       if (writes.empty()) {
         std::cerr << "Q" << q << ": the module has no calibration writes; maintenance costs kept\n";
       } else {

@@ -132,24 +132,54 @@ target_link_libraries(accelerator_codegen
 # links exactly one copy.
 set(ACCEL_Q21_VERUS_LIB "${CMAKE_CURRENT_SOURCE_DIR}/build-verus/libq21_verus.a"
     CACHE FILEPATH "Verus Q21 kernel static library")
-if(EXISTS "${ACCEL_Q21_VERUS_LIB}")
+if(EXISTS "${ACCEL_Q21_VERUS_LIB}" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/tpch/q21/verus/module.cpp")
     message(STATUS "Q21 Verus kernel: ${ACCEL_Q21_VERUS_LIB}")
     target_sources(accelerator_codegen PRIVATE src/generated/tpch/q21/verus/module.cpp
                                               src/generated/tpch/q21/verus/store.cpp)
+    accel_codegen_engine_name(_ACCEL_Q21V_ENGINE)
+    if(_ACCEL_Q21V_ENGINE STREQUAL "duckdb")
+        # Registers accel_tpch_q21_verus (catalog variant + DuckDB binding).
+        target_sources(accelerator_codegen PRIVATE src/generated/tpch/q21/verus/duckdb_register.cpp)
+    endif()
     target_compile_definitions(accelerator_codegen PUBLIC ACCEL_HAVE_Q21_VERUS)
     target_link_libraries(accelerator_codegen PRIVATE ${ACCEL_Q21_VERUS_LIB} pthread dl m)
 endif()
+
+# Verus accelerators through the host kit (include/accelerator_codegen/verus/
+# verus_kit.hpp): each src/generated/<bench>/q<N>/verus_kit/<crate>/ holds the query's host
+# glue (*.cpp: the pipeline's glue.cpp, or sql2verus's gen_glue.cpp) and the
+# kernel's C header; the kernel is
+# ${ACCEL_VERUS_LIB_DIR}/lib<crate>_verus.a (scripts/build_verus_crate.sh).
+# A glue registers itself, so nothing shared names the query.
+set(ACCEL_VERUS_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build-verus"
+    CACHE PATH "Directory of Verus kernel static libraries (lib<crate>_verus.a)")
+file(GLOB _verus_kit_dirs LIST_DIRECTORIES true CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/*/q*/verus_kit/*")
+foreach(_dir IN LISTS _verus_kit_dirs)
+    file(GLOB _verus_kit_srcs CONFIGURE_DEPENDS "${_dir}/*.cpp")
+    if(IS_DIRECTORY "${_dir}" AND _verus_kit_srcs)
+        get_filename_component(_crate "${_dir}" NAME)
+        set(_lib "${ACCEL_VERUS_LIB_DIR}/lib${_crate}_verus.a")
+        if(EXISTS "${_lib}")
+            message(STATUS "Verus kit accelerator: ${_crate}")
+            target_sources(accelerator_codegen PRIVATE ${_verus_kit_srcs})
+            set_source_files_properties(${_verus_kit_srcs} PROPERTIES INCLUDE_DIRECTORIES "${_dir}")
+            target_link_libraries(accelerator_codegen PRIVATE "${_lib}" pthread dl m)
+        endif()
+    endif()
+endforeach()
 
 # Verus-verified stateless Q1 kernel (scripts/build_q1_verus.sh builds the
 # archive).  Each engine adds only its scan glue and entry point.
 set(ACCEL_Q1_VERUS_LIB "${CMAKE_CURRENT_SOURCE_DIR}/build-verus/libq1_verus.a"
     CACHE FILEPATH "Verus Q1 kernel static library")
-if(EXISTS "${ACCEL_Q1_VERUS_LIB}")
+if(EXISTS "${ACCEL_Q1_VERUS_LIB}" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/tpch/q1")
     message(STATUS "Q1 Verus kernel: ${ACCEL_Q1_VERUS_LIB}")
     accel_codegen_engine_name(_ACCEL_Q1V_ENGINE)
     target_compile_definitions(accelerator_codegen PUBLIC ACCEL_HAVE_Q1_VERUS)
     if(_ACCEL_Q1V_ENGINE STREQUAL "duckdb")
-        target_sources(accelerator_codegen PRIVATE src/generated/tpch/q1/duckdb/verus/package.cpp)
+        target_sources(accelerator_codegen PRIVATE src/generated/tpch/q1/duckdb/verus/package.cpp
+                                                  src/generated/tpch/q1/duckdb/verus/register.cpp)
         target_compile_definitions(accelerator_codegen PUBLIC ACCEL_HAVE_Q1_VERUS_DUCKDB)
     endif()
     target_link_libraries(accelerator_codegen PRIVATE ${ACCEL_Q1_VERUS_LIB} pthread dl m)
@@ -372,17 +402,20 @@ target_link_libraries(test_tpch_q18_shared_differential
 
 target_include_directories(test_tpch_q18_shared_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
-if(EXISTS "${ACCEL_Q1_VERUS_LIB}" AND NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQL)
+if(EXISTS "${ACCEL_Q1_VERUS_LIB}" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/tpch/q1" AND NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQL)
     add_executable(q1_verus_bench_duckdb benchmarks/duckdb/q1_verus_bench.cpp)
     target_link_libraries(q1_verus_bench_duckdb PRIVATE accelerator_codegen duckdb_sibling)
 endif()
-if(EXISTS "${ACCEL_Q21_VERUS_LIB}" AND NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQL)
+if(EXISTS "${ACCEL_Q21_VERUS_LIB}" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/tpch/q21/verus/module.cpp" AND NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQL)
     add_executable(q21_verus_bench_duckdb benchmarks/duckdb/q21_verus_bench.cpp)
     target_link_libraries(q21_verus_bench_duckdb PRIVATE accelerator_codegen duckdb_sibling)
     add_executable(q21_verus_duckdb_fuzz tests/verification/q21verus/q21_verus_duckdb_fuzz.cpp)
     target_link_libraries(q21_verus_duckdb_fuzz PRIVATE accelerator_codegen duckdb_sibling)
     add_executable(q21_verus_duckdb_snapshots tests/verification/q21verus/q21_verus_duckdb_snapshots.cpp)
     target_link_libraries(q21_verus_duckdb_snapshots PRIVATE accelerator_codegen duckdb_sibling)
+    # Generic test / bench runner for Verus accelerators of the host kit.
+    add_executable(verus_kit_runner tests/verification/verus_kit/verus_kit_runner.cpp)
+    target_link_libraries(verus_kit_runner PRIVATE accelerator_codegen duckdb_sibling)
 endif()
 
 add_executable(test_tpch_shared_differential

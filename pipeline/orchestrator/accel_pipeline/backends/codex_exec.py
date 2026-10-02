@@ -106,13 +106,20 @@ class CodexExecBackend:
         ):
             if os.environ.get(key):
                 lines.append(sidecar_env_line(key, os.environ[key]))
+        for key, value in os.environ.items():
+            if key.startswith("ACCEL_VERUS_") or key == "ACCEL_PIPELINE_MODE":
+                lines.append(sidecar_env_line(key, value))
         path = codex_home / "accel_pipeline_mcp.env"
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
     @staticmethod
     def _engine_impl_mcp_tools(stage: str) -> list[str] | None:
-        """Allow-list MCP tools Codex actually sees for engine_backend impl_*."""
+        """Allow-list MCP tools Codex actually sees for engine_backend impl_* and Verus steps."""
+        if str(stage or "").startswith("verus_"):
+            from accel_pipeline.verus.tools import stage_tools
+
+            return stage_tools(stage)
         if not str(stage or "").startswith("impl_"):
             return None
         return [
@@ -210,6 +217,9 @@ class CodexExecBackend:
             ):
                 if os.environ.get(key):
                     mcp_env_parts.append(f'{key}="{os.environ[key]}"')
+            for key, value in os.environ.items():
+                if key.startswith("ACCEL_VERUS_") or key == "ACCEL_PIPELINE_MODE":
+                    mcp_env_parts.append(f'{key}="{value}"')
             mcp_env_toml = "{" + ", ".join(mcp_env_parts) + "}"
             cmd = [
                 codex_bin,

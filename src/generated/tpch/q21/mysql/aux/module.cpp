@@ -1,5 +1,5 @@
 #include "tpch/q21/mysql/aux/module.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "tpch/q21/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -1262,7 +1262,7 @@ void TpchQ21Module::EmitResult(const TpchQ21State &state,
 }
 
 std::vector<core::CalibrationWrite> TpchQ21Module::CalibrationWrites() const {
-  return TpchCalibrationWrites(21);
+  return TpchQ21CalibrationWrites();
 }
 
 } // namespace accelerator_codegen::aux_state::query

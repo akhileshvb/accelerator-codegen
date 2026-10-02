@@ -153,6 +153,16 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
   for _ in $(seq 1 90); do
     if docker exec "$NAME" mysqladmin ping -h 127.0.0.1 -uroot -p"${PASSWORD}" --silent >/dev/null 2>&1; then
       echo "mysqld reloaded with plugin .so"
+      # (Re)register the UDFs: base + per-query fragments
+      # (src/generated/<bench>/q<N>/mysql/plugin/functions.sql). Idempotent
+      # (DROP FUNCTION IF EXISTS + CREATE FUNCTION); INSTALL PLUGIN fails when the
+      # plugin is already loaded, so it is skipped. Disable: ACCEL_MYSQL_REGISTER_UDFS=0.
+      if [[ "${ACCEL_MYSQL_REGISTER_UDFS:-1}" == "1" ]]; then
+        DB="${TPCH_MYSQL_DB:-accel_mysql_test}"
+        "$ROOT/scripts/mysql_register_functions.sh" | grep -v '^INSTALL' | \
+          docker exec -i "$NAME" mysql -h 127.0.0.1 -P 3306 -uroot -p"${PASSWORD}" "${DB}" \
+          || echo "warning: UDF registration reported errors (continuing)" >&2
+      fi
       exit 0
     fi
     sleep 1

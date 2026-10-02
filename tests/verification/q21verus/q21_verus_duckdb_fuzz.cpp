@@ -487,7 +487,7 @@ int main(int argc, char **argv) {
       Q(rc, "CREATE TABLE tmpl_n AS SELECT * FROM nation LIMIT 1");
     }
     accelerator_codegen::RegisterAcceleratorFunctions(qc);
-    DuckdbRuntime rt(rc, catalog::TpchQ21VerusCatalogEntry(), 10.0);
+    DuckdbRuntime rt(rc, *catalog::FindSharedQueryByAccelerator("tpch_q21_verus"), 10.0);
     rt.Build();
 
     Fuzz fz(rc, seed, synthetic);

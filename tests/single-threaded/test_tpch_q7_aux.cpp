@@ -15,6 +15,7 @@
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
 #include "accelerator_codegen/stateful/state/invalidation_plan.hpp"
 #include "tpch/q7/duckdb/aux/module.hpp"
+#include "tpch/q7/layout.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 using accelerator_codegen::aux_state::query::TpchQ7Config;

@@ -536,6 +536,70 @@ def main(argv: list[str] | None = None) -> int:
         """Locate this engine's external server SDK (Postgres: pacman/apt/home-prefix)."""
         return _call("discover_host_sdk")
 
+    # ---- Verus pipeline (--mode verus); context from ACCEL_VERUS_CONTEXT ----
+    def _verus(name: str, *a, **kw) -> str:
+        try:
+            from accel_pipeline.verus.tools import TOOLS as VERUS_TOOLS
+
+            return VERUS_TOOLS[name](*a, **kw)
+        except Exception as exc:  # noqa: BLE001 — surface to MCP client
+            return json.dumps({"error": str(exc), "tool": name})
+
+    @_tool(annotations=_rw)
+    def verus_check_inputs() -> str:
+        """Check inputs/q.inputs with sql2verus: accepted (and its obligations) or the refusal."""
+        return _verus("verus_check_inputs")
+
+    @_tool(annotations=_ro)
+    def verus_sql(query: str, max_rows: int = 50) -> str:
+        """Read-only SQL on the test database (DuckDB), to explore the data."""
+        return _verus("verus_sql", query, max_rows)
+
+    @_tool(annotations=_rw)
+    def verus_validate_tests() -> str:
+        """Check tests/: setup runs, every params tuple runs the query, every txn applies (rolled back)."""
+        return _verus("verus_validate_tests")
+
+    @_tool(annotations=_rw)
+    def verus_glue_check() -> str:
+        """Build with glue/ and check what the glue delivers against the declared inputs (record mode)."""
+        return _verus("verus_glue_check")
+
+    @_tool(annotations=_rw)
+    def verus_verify() -> str:
+        """Verify the kernel crate with Verus (errors on failure) plus the trusted-base check."""
+        return _verus("verus_verify")
+
+    @_tool(annotations=_rw)
+    def verus_test(snapshots: bool = False) -> str:
+        """Build the accelerator; run the frozen tests on the Verus store (differential; snapshots if asked)."""
+        return _verus("verus_test", snapshots)
+
+    @_tool(annotations=_rw)
+    def verus_bench(write_mixes: str = "0.01,0.05") -> str:
+        """Build and benchmark on SF1 (Verus store): read speedups, write mixes, score."""
+        return _verus("verus_bench", write_mixes)
+
+    @_tool(annotations=_rw)
+    def verus_profile() -> str:
+        """perf profile of a short SF1 bench: hotspots by symbol and area."""
+        return _verus("verus_profile")
+
+    @_tool(annotations=_rw)
+    def prooflib_publish(note: str) -> str:
+        """Publish prooflib/src/lib.rs (additions only; dependents re-verified first)."""
+        return _verus("prooflib_publish", note)
+
+    @_tool(annotations=_rw)
+    def playbook_append(section: str, title: str, body: str, evidence: str) -> str:
+        """Add an evidence-backed lesson to the playbook (section: performance | proofs)."""
+        return _verus("playbook_append", section, title, body, evidence)
+
+    @_tool(annotations=_rw)
+    def backend_addition_record(engine: str, helper: str, reason: str) -> str:
+        """Record a generic engine-level helper the accelerator needs from the runtime backend."""
+        return _verus("backend_addition_record", engine, helper, reason)
+
     mcp.run(transport="stdio")
     return 0
 

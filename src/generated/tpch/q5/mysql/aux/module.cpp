@@ -1,5 +1,5 @@
 #include "tpch/q5/mysql/aux/module.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "tpch/q5/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -11,6 +11,7 @@
 #include <set>
 #include <stdexcept>
 #include <utility>
+#include "tpch/q5/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -980,7 +981,7 @@ void TpchQ5Module::EmitResult(
 }
 
 std::vector<core::CalibrationWrite> TpchQ5Module::CalibrationWrites() const {
-  return TpchCalibrationWrites(5);
+  return TpchQ5CalibrationWrites();
 }
 
 } // namespace accelerator_codegen::aux_state::query

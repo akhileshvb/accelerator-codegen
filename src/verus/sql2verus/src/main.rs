@@ -2,7 +2,8 @@
 //
 //   sql2verus --schema <ddl.sql> --query <query.sql> --out <spec.rs>
 //             [--obligations <gen_obligations.rs> [--inputs <q.inputs>] [--kernel-stub <kernel.rs>]
-//              [--world <gen_world.rs>] [--ffi <gen_ffi.rs> --ffi-header <q.h> --ffi-prefix <p>]]
+//              [--world <gen_world.rs>] [--ffi <gen_ffi.rs> --ffi-header <q.h> --ffi-prefix <p>
+//               [--host-glue <gen_glue.cpp> --accel-id <id> --workload <name> --query-id <n>]]]
 //   (kernel obligations: see obligations.rs; the store adapter and C ABI
 //   derived from them: see glue.rs)
 //
@@ -3135,7 +3136,7 @@ async fn run() -> Res<()> {
             None => None,
         };
         let inputs = inputs.as_ref().map(|(n, t)| (n.as_str(), t.clone()));
-        let (ob, stub, model) = obligations::obligations(&mut tr, &top, &ctx, &text, inputs, &src_name).await.map_err(|e| format!("obligations: {e}"))?;
+        let (ob, stub, model) = obligations::obligations(&mut tr, &top, &ctx, &text, inputs, &src_name, &sql).await.map_err(|e| format!("obligations: {e}"))?;
         std::fs::write(&ob_path, ob).map_err(|e| format!("{ob_path}: {e}"))?;
         if let Some(sp) = opt("--kernel-stub") {
             std::fs::write(&sp, stub).map_err(|e| format!("{sp}: {e}"))?;
@@ -3150,6 +3151,11 @@ async fn run() -> Res<()> {
             let (rs, h) = glue::ffi(&model, &prefix, &hname).map_err(|e| format!("ffi: {e}"))?;
             std::fs::write(&fp, rs).map_err(|e| format!("{fp}: {e}"))?;
             std::fs::write(&hp, h).map_err(|e| format!("{hp}: {e}"))?;
+            if let Some(gp) = opt("--host-glue") {
+                let qid: u32 = get("--query-id")?.parse().map_err(|_| "--query-id: a number".to_string())?;
+                let cpp = glue::kit(&model, &prefix, &hname, &get("--accel-id")?, &get("--workload")?, qid).map_err(|e| format!("host glue: {e}"))?;
+                std::fs::write(&gp, cpp).map_err(|e| format!("{gp}: {e}"))?;
+            }
         }
     }
     Ok(())

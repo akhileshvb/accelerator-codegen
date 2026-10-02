@@ -105,3 +105,34 @@ Sync barrier (locks / notify), not `sleep`.
 
 Loadable MODULE/extension. Server-only symbols only in the MODULE. One SQL/UDF
 calls the toy Runtime; same golden as `runtime`.
+
+### Query registries (every engine)
+
+The backend is generated once and must serve any number of queries without
+being edited: it **names no query**.  Query pipelines add each query under
+`src/generated/<bench>/q<N>/<engine>/` and plug it in with static registrars,
+so the backend exposes registries plus generic dispatch over them:
+
+- **catalog** (`src/generated/catalog/<engine>/query_catalog.{hpp,cpp}`):
+  `Register…(Entry)` + a `…Registrar` struct; lookups and query lists iterate
+  the registry (sorted by query id).
+- **SQL entry points**: one generic implementation the host calls with the
+  query's registered entry.  Where the host resolves functions by symbol name
+  (UDFs, `PG_FUNCTION_INFO_V1`), the per-name symbol is a one-line shim in the
+  query's directory that forwards to the generic implementation.  The SQL that
+  creates the functions (extension script, `CREATE FUNCTION` list) is assembled
+  from per-query fragments at build/install time, never hand-listed.
+- **runtime bindings / scans**: a registry from accelerator id to the query's
+  module + scan factory; the backend's scan helpers are exported in a header
+  for the queries' scan code.
+- Registries are plain functions in a backend `.cpp` with function-local
+  static storage and stable entry addresses (not header-only template
+  singletons, which can duplicate across the host library and the MODULE).
+  Per-query MODULE-side code (scans using server APIs, symbol shims) is
+  globbed into the MODULE from the query directories.
+
+The build must succeed with **every** `src/generated/<bench>/q<N>/` removed
+(zero registered queries), and `scripts/check_backend_query_free.py --engine
+<engine>` must pass (the `engine_build` gate runs it).  Engine-level helpers a
+query needs (e.g. a key-list predicate, a collation-safe literal) belong in the
+backend, generic and documented; per-query code never does.

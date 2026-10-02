@@ -154,20 +154,12 @@ def test_duckdb_correctness_gate_context_db_env():
     assert ctx["engine_host"]["smoke_ready"] is True
 
 
-def test_apply_register_snippet_non_duckdb_placeholder(tmp_path):
-    gates = REPO_ROOT / "pipeline" / "gates" / "apply_register_snippet.py"
-    spec = importlib.util.spec_from_file_location("apply_register_snippet", gates)
-    mod = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(mod)
-    note = tmp_path / "note.cpp"
-    result = mod.apply_snippet(
-        REPO_ROOT,
-        "CreateTpchQ3FunctionSet",
-        "TPCH",
-        engine_name="postgres",
-        note_path=note,
-    )
-    assert result["applied"] is False
-    assert note.is_file()
-    assert "postgres" in note.read_text()
+def test_registration_is_per_query():
+    """Queries register from their own directory; the backend names no query."""
+    from accel_pipeline.config import engine_host_conventions
+
+    for engine in ("duckdb", "postgres", "mysql"):
+        host = engine_host_conventions(engine, "tpch", 7)
+        for key in ("register_path", "aux_register_path"):
+            assert host[key].startswith(f"src/generated/tpch/q7/{engine}/"), (engine, key, host[key])
+        assert host["registry"]

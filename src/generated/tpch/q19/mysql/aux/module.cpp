@@ -1,5 +1,5 @@
 #include "tpch/q19/mysql/aux/module.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "tpch/q19/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -878,7 +878,7 @@ void TpchQ19Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 std::vector<core::CalibrationWrite> TpchQ19Module::CalibrationWrites() const {
-  return TpchCalibrationWrites(19);
+  return TpchQ19CalibrationWrites();
 }
 
 } // namespace accelerator_codegen::aux_state::query

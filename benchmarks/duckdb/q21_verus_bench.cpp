@@ -220,7 +220,7 @@ struct RunResult {
 };
 
 const catalog::SharedQueryCatalogEntry &EntryFor(const std::string &system) {
-  return system == "verus" ? catalog::TpchQ21VerusCatalogEntry()
+  return system == "verus" ? *catalog::FindSharedQueryByAccelerator("tpch_q21_verus")
                            : catalog::LookupSharedQuery(catalog::SharedWorkloadKind::Tpch, 21);
 }
 std::string FnFor(const std::string &system) {

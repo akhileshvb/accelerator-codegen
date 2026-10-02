@@ -10,10 +10,15 @@ tpch_db_sf10: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf10.duckdb
 shared_paths:
   - CMakeLists.txt
   - cmake/**
+  # Engine backends: generic only (queries register from their own
+  # directories), so these change only for engine-level additions.
   - src/generated/catalog/**
   - src/generated/postgres/**
-  - src/stateful/duckdb/duckdb_aux_table_functions.cpp
-  - include/accelerator_codegen/stateful/core/query_layouts.hpp
+  - src/generated/mysql/**
+  - src/runtime/**
+  - src/stateful/duckdb/**
+  - src/stateful/postgres/**
+  - src/stateful/mysql/**
   - tests/test_support/cross_accel_helpers.cpp
   - tests/test_support/cross_accel_helpers.hpp
   - benchmarks/tpch/single-threaded/tpch_arg_variants.cpp
@@ -27,7 +32,13 @@ datasets:
 
 optimization:
   max_iterations: 3
-  no_improvement_stop: 4
+  # Stop after this many consecutive iterations (each up to max_attempts_per_iteration
+  # profile-guided attempts) without a fair-sweep improvement.  Must be <= max_iterations
+  # to ever fire.
+  no_improvement_stop: 2
+  # Wall-clock budget of the whole optimization stage (seconds; 0: none): no new
+  # iteration or attempt starts after it, so the run always reaches the audit.
+  stage_budget_sec: 7200
   max_attempts_per_iteration: 5
   improvement_threshold_pct: 3.0
   reject_threshold_pct: 2.0

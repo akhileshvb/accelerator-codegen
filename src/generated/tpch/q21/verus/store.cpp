@@ -221,3 +221,16 @@ std::size_t TpchQ21VerusStore::TotalPartitionCount() const { return 1; }
 std::size_t TpchQ21VerusStore::TotalVersionCount() const { return q21vs_version_count(store); }
 
 } // namespace accelerator_codegen::aux_state::query
+
+namespace accelerator_codegen::aux_state::query {
+namespace {
+
+std::unique_ptr<VerusAuxStore> MakeTpchQ21VerusStore(VerusAuxStore::EpochProvider epoch,
+                                                     VerusAuxStore::FloorProvider floor) {
+  return std::make_unique<TpchQ21VerusStore>(std::move(epoch), std::move(floor));
+}
+
+const VerusAuxStoreRegistrar kStore{TpchQ21VerusLayout::kAccelerator, &MakeTpchQ21VerusStore};
+
+} // namespace
+} // namespace accelerator_codegen::aux_state::query

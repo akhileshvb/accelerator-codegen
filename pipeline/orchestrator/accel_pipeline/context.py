@@ -122,6 +122,13 @@ def _accelerator_engine_host_block(workload: dict[str, Any]) -> str:
     aux_reg = str(host.get("aux_register_path") or "").strip()
     if aux_reg:
         lines.append(f"- **Aux register path:** `{aux_reg}`")
+    registry = str(host.get("registry") or "").strip()
+    if registry:
+        lines.append(
+            f"- **Registration:** this query registers itself from its own directory: {registry}. "
+            "The engine backend (src/runtime/<engine>, src/generated/<engine>, src/generated/catalog, "
+            "src/stateful/<engine>) names no query; never add per-query code or lists there."
+        )
     lines.extend(
         [
             f"- **Dataset env:** `{host.get('dataset_env', 'ACCEL_TPCH_DB')}`",

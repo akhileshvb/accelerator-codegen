@@ -190,6 +190,7 @@ struct Sel {
     var: String,
     conds: Vec<String>,
     outs: Vec<(String, Option<String>, Val)>, // (SELECT name, column if plain, value)
+    exprs: Vec<Expr>,                          // the SELECT expressions, aliases stripped
     doc: String,
 }
 
@@ -247,7 +248,37 @@ pub(crate) struct ObFn {
 pub(crate) struct CStruct {
     pub(crate) name: String,
     pub(crate) fields: Vec<(String, Elem)>,
+    /// The SQL type of each primitive field (a struct field: unused).
+    pub(crate) tys: Vec<Ty>,
     pub(crate) copy: bool,
+}
+
+/// A declared scan or rescan, as the host glue runs it.
+pub(crate) struct ScanDecl {
+    pub(crate) name: String,
+    pub(crate) sql: String,
+    pub(crate) el: Elem,
+    /// A primitive row's SQL type.
+    pub(crate) ty: Ty,
+    /// Rescan: the SELECT name of the KEYS column.
+    pub(crate) key_out: Option<String>,
+}
+
+/// Where a delta field's value comes from, on a captured row of its table.
+pub(crate) enum FieldSrc {
+    /// A captured column (index into `DeltaDecl::cols`).
+    Col(usize),
+    /// A computed (lossy) field: its SQL expression over the captured columns.
+    Expr(Expr),
+}
+
+/// One table's delta: the captured columns and how each delta field reads them.
+pub(crate) struct DeltaDecl {
+    pub(crate) table: String,
+    /// Captured columns (SQL names, as the schema names them) and their types.
+    pub(crate) cols: Vec<(String, Ty)>,
+    /// The fields of the delta's row (or lossy struct), in declaration order.
+    pub(crate) fields: Vec<(String, FieldSrc, Ty)>,
 }
 
 /// The generated obligations, as the glue (glue.rs) needs them.
@@ -255,8 +286,14 @@ pub(crate) struct Model {
     pub(crate) fns: Vec<ObFn>,
     /// Definition order: a struct's struct fields come before it.
     pub(crate) structs: Vec<CStruct>,
-    /// Result columns: runtime type and nullable.
-    pub(crate) outs: Vec<(&'static str, bool)>,
+    /// Result columns: runtime type, nullable, SQL type.
+    pub(crate) outs: Vec<(&'static str, bool, Ty)>,
+    /// Query parameters ($n) and their SQL types.
+    pub(crate) params: Vec<(u32, Ty)>,
+    pub(crate) scans: Vec<ScanDecl>,
+    pub(crate) deltas: Vec<DeltaDecl>,
+    /// The query's SQL (comments stripped), for the host's fallback.
+    pub(crate) query_sql: String,
     pub(crate) src_name: String,
     pub(crate) inputs_name: String,
 }
@@ -350,7 +387,8 @@ impl<'t, 'a> Ob<'t, 'a> {
                 }
                 outs.push((sql_name, col, v));
             }
-            Ok(Sel { table, var: bs[0].var.clone(), conds, outs, doc: sql.split_whitespace().collect::<Vec<_>>().join(" ") })
+            let exprs = pr.expr.iter().map(|e| strip_alias(e).clone()).collect();
+            Ok(Sel { table, var: bs[0].var.clone(), conds, outs, exprs, doc: sql.split_whitespace().collect::<Vec<_>>().join(" ") })
         })();
         let f = self.tr.frames.pop().unwrap();
         let sel = r?;
@@ -500,7 +538,9 @@ pub(crate) async fn obligations(
     spec_text: &str,
     inputs: Option<(&str, String)>,
     src_name: &str,
+    query_sql: &str,
 ) -> Res<(String, String, Model)> {
+    let query_sql = query_sql.to_string();
     let (inputs_name, inputs_text) = match inputs {
         Some((n, t)) => (n.to_string(), t),
         None => ("(default)".to_string(), default_inputs(tr)?),
@@ -520,6 +560,7 @@ pub(crate) async fn obligations(
         key_rt: Option<&'static str>,
     }
     let mut scans: Vec<ScanOut> = vec![];
+    let mut scan_decls: Vec<ScanDecl> = vec![];
     let mut seen_names: BTreeSet<String> = BTreeSet::new();
     for d in decls.iter().filter(|d| d.kind != Kind::Delta) {
         let rescan = d.kind == Kind::Rescan;
@@ -597,6 +638,17 @@ pub(crate) async fn obligations(
         writeln!(w, "}}\n").unwrap();
         ob.items.push(w);
         let el = if d.ty.is_some() { Elem::Struct(elem.clone()) } else { Elem::Prim(rt_ty(sel.outs[0].2.ty)?) };
+        let key_out = match &d.keys {
+            Some(k) => Some(
+                sel.outs
+                    .iter()
+                    .find(|o| o.1.as_deref() == Some(k.as_str()))
+                    .map(|o| o.0.clone())
+                    .ok_or_else(|| format!("{what}: the KEYS column {k} must be one of the SELECT columns"))?,
+            ),
+            None => None,
+        };
+        scan_decls.push(ScanDecl { name: nm.clone(), sql: d.sql.clone(), el: el.clone(), ty: sel.outs[0].2.ty, key_out });
         scans.push(ScanOut { name: nm, rescan, contract: fname, elem, el, copy, key_rt });
     }
     ob.tr.pfx.clear();
@@ -612,6 +664,7 @@ pub(crate) async fn obligations(
     }
     let mut deltas: BTreeMap<String, DeltaOut> = BTreeMap::new();
     let mut delta_structs: Vec<CStruct> = vec![];
+    let mut delta_decls: BTreeMap<String, DeltaDecl> = BTreeMap::new();
     for d in decls.iter().filter(|d| d.kind == Kind::Delta) {
         let what = format!("delta {}", d.name);
         if !ob.tr.used.contains_key(&d.name) {
@@ -656,6 +709,7 @@ pub(crate) async fn obligations(
                     delta_structs.push(CStruct {
                         name: dt.clone(),
                         fields: vec![("row".into(), Elem::Struct(r.clone())), ("sign".into(), Elem::Prim("i64"))],
+                        tys: vec![Ty::Int, Ty::Int],
                         copy,
                     });
                     (dt.clone(), sv)
@@ -672,6 +726,15 @@ pub(crate) async fn obligations(
                 }
             };
             let el = if d.ty.is_some() { Elem::Struct(elem.clone()) } else { Elem::Pair(r.clone()) };
+            let rs = &ob.structs[&r];
+            delta_decls.insert(
+                d.name.clone(),
+                DeltaDecl {
+                    table: d.name.clone(),
+                    cols: rs.fields.iter().map(|f| (f.col.clone(), f.ty)).collect(),
+                    fields: rs.fields.iter().enumerate().map(|(i, f)| (f.name.clone(), FieldSrc::Col(i), f.ty)).collect(),
+                },
+            );
             deltas.insert(d.name.clone(), DeltaOut { table: d.name.clone(), elem, copy, lossy: false, view, el });
         } else {
             if d.of.is_some() {
@@ -719,7 +782,35 @@ pub(crate) async fn obligations(
             ob.items.push(w);
             let mut cf: Vec<(String, Elem)> = fields.iter().map(|(f, rt)| (f.clone(), Elem::Prim(*rt))).collect();
             cf.push(("sign".into(), Elem::Prim("i64")));
-            delta_structs.push(CStruct { name: dt.clone(), fields: cf, copy });
+            let mut tys: Vec<Ty> = sel.outs.iter().map(|o| o.2.ty).collect();
+            tys.push(Ty::Int);
+            delta_structs.push(CStruct { name: dt.clone(), fields: cf, tys, copy });
+            // the captured columns: every column the fields read, by name
+            let mut cols: Vec<String> = vec![];
+            for e in &sel.exprs {
+                let mut refs: Vec<String> = e.column_refs().into_iter().map(|c| c.name.clone()).collect();
+                refs.sort();
+                for c in refs {
+                    if !cols.contains(&c) {
+                        cols.push(c);
+                    }
+                }
+            }
+            let mut ctys = vec![];
+            for c in &cols {
+                let ty = ob.tr.sch.col_ty.get(&(d.name.clone(), c.clone())).and_then(|x| x.0).ok_or_else(|| format!("{what}: column {c} has no type"))?;
+                ctys.push((c.clone(), ty));
+            }
+            let dfields = fields
+                .iter()
+                .zip(&sel.exprs)
+                .zip(&sel.outs)
+                .map(|(((f, _), e), o)| match strip_alias(e) {
+                    Expr::Column(c) => (f.clone(), FieldSrc::Col(cols.iter().position(|x| *x == c.name).unwrap()), o.2.ty),
+                    other => (f.clone(), FieldSrc::Expr(other.clone()), o.2.ty),
+                })
+                .collect();
+            delta_decls.insert(d.name.clone(), DeltaDecl { table: d.name.clone(), cols: ctys, fields: dfields });
             deltas.insert(d.name.clone(), DeltaOut { table: d.name.clone(), elem: dt.clone(), copy, lossy: true, view: String::new(), el: Elem::Struct(dt) });
         }
     }
@@ -798,7 +889,7 @@ pub(crate) async fn obligations(
     }
     let mut out_tys = vec![];
     let mut out_views = vec![];
-    let mut outs_rt: Vec<(&'static str, bool)> = vec![];
+    let mut outs_rt: Vec<(&'static str, bool, Ty)> = vec![];
     for (k, c) in b.outs.iter().enumerate() {
         if c.val.approx.is_some() {
             bail!("result column {}: a rounded float has no exact runtime value", c.sql);
@@ -812,7 +903,7 @@ pub(crate) async fn obligations(
             Ty::Int | Ty::Ts => ("i64", Box::new(|x: &str| format!("{x} as int"))),
             other => bail!("result column {}: {other:?}", c.sql),
         };
-        outs_rt.push((rt, c.nullable));
+        outs_rt.push((rt, c.nullable, c.val.ty));
         let acc = if b.outs.len() == 1 { "r".to_string() } else { format!("r.{k}") };
         if c.nullable {
             out_tys.push(format!("Option<{rt}>"));
@@ -966,9 +1057,21 @@ pub(crate) async fn obligations(
     for n in &ob.order {
         let s = &ob.structs[n];
         let fields = s.fields.iter().map(|f| Ok((f.name.clone(), Elem::Prim(rt_ty(f.ty)?)))).collect::<Res<Vec<_>>>()?;
-        structs.push(CStruct { name: n.clone(), fields, copy: copyable(&s.fields) });
+        let tys = s.fields.iter().map(|f| f.ty).collect();
+        structs.push(CStruct { name: n.clone(), fields, tys, copy: copyable(&s.fields) });
     }
     structs.extend(delta_structs);
-    let model = Model { fns, structs, outs: outs_rt, src_name: src_name.to_string(), inputs_name };
+    let params = ob.tr.params.iter().map(|(n, (t, _, _))| (*n, *t)).collect();
+    let model = Model {
+        fns,
+        structs,
+        outs: outs_rt,
+        params,
+        scans: scan_decls,
+        deltas: delta_decls.into_values().collect(),
+        query_sql,
+        src_name: src_name.to_string(),
+        inputs_name,
+    };
     Ok((w, stub, model))
 }

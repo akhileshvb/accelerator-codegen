@@ -98,7 +98,7 @@ def _seed_generated_sources(primary: Path, dest: Path) -> None:
     """Copy primary working-tree sources the worktree needs to compile.
 
     ``git worktree add`` only materializes HEAD. Aux modules are often untracked,
-    and shared headers (e.g. ``query_layouts.hpp``) are frequently dirty on the
+    and shared headers (e.g. engine backend files) are frequently dirty on the
     primary checkout — both must be overlaid or every worker fails preflight.
 
     Uses ``shutil.copy`` (not ``copy2``) so destination mtimes are "now". Pack

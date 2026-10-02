@@ -2,6 +2,7 @@
 #include "tpch/q10/duckdb/base/query.hpp"
 
 #include <memory>
+#include <stdexcept>
 
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -123,6 +124,38 @@ NativeScanSpec CreateQ10LineitemScanSpec(const Q10Parameters &) {
 	return scan_spec;
 }
 
+namespace {
+
+void DrainInto(duckdb::ClientContext &context, KernelInstance &kernel, const duckdb::FunctionData &input,
+               duckdb::idx_t input_id) {
+	auto source = CreateNativeChunkSource(context, input);
+	while (source->Next()) {
+		kernel.ConsumeInput(input_id, source->Chunk());
+	}
+}
+
+duckdb::unique_ptr<KernelInstance> CreateQ10FusedKernelInstance(const QueryParameters &parameters,
+                                                                const QueryKernelFactoryData *) {
+	if (!Q10FusedScansEnabled()) {
+		return nullptr;
+	}
+	return CreateQ10Kernel(dynamic_cast<const Q10Parameters &>(parameters));
+}
+
+// Inputs 0..2 drained as chunks, then the fused customer scan.
+void RunQ10FusedScan(duckdb::ClientContext &context, KernelInstance &kernel,
+                     const duckdb::vector<duckdb::unique_ptr<duckdb::FunctionData>> &bound_inputs) {
+	if (bound_inputs.size() != 4) {
+		throw std::runtime_error("Q10 fused customer scan expects four bound inputs");
+	}
+	for (duckdb::idx_t input_id = 0; input_id < 3; input_id++) {
+		DrainInto(context, kernel, *bound_inputs[input_id], input_id);
+	}
+	Q10RunFusedCustomerScan(context, kernel, *bound_inputs[3]);
+}
+
+} // namespace
+
 duckdb::TableFunctionSet CreateTpchQ10FunctionSet() {
 	QueryPackage package;
 	package.function_name = "accel_tpch_q10";
@@ -131,6 +164,8 @@ duckdb::TableFunctionSet CreateTpchQ10FunctionSet() {
 	};
 	package.bind_query = BindQ10Package;
 	package.create_kernel = CreateQ10KernelInstance;
+	package.create_fused_kernel = CreateQ10FusedKernelInstance;
+	package.fused_scan = RunQ10FusedScan;
 	return CreateRuntimeBackedFunctionSet(package);
 }
 

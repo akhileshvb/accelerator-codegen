@@ -98,7 +98,7 @@ _TECHNIQUE_CATALOG: dict[str, str] = {
     ),
     # Production path / measurement
     "fused_production_path": (
-        "Wire fused kernel through sec_edgar_query_runtime so benchmark and gates use the same path"
+        "Wire fused kernel through the package's create_fused_kernel / fused_scan hooks so benchmark and gates use the same path"
     ),
     "coordinated_bundle": (
         "Ship 2–4 related techniques per A/B trial — not isolated one-liners"

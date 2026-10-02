@@ -32,6 +32,18 @@ stage_providers:
   architecture_audit: codex_exec
   # Cheap per-layer critic (deepseek-v4-flash via Codex exec + OpenRouter).
   layer_critique: codex_exec
+  # Verus accelerator pipeline (--mode verus): every agent step on codex exec.
+  verus_spec_audit: codex_exec
+  verus_analysis: codex_exec
+  verus_critic: codex_exec
+  verus_obligations_audit: codex_exec
+  verus_tests: codex_exec
+  verus_glue: codex_exec
+  verus_glue_audit: codex_exec
+  verus_kernel: codex_exec
+  verus_kernel_fix: codex_exec
+  verus_opt_worker: codex_exec
+  verus_audit: codex_exec
 
 presets:
   cheap_code: deepseek/deepseek-v4-flash
@@ -42,6 +54,18 @@ presets:
   default: deepseek/deepseek-v4-pro
 
 stages:
+  # Verus pipeline steps
+  verus_spec_audit: reviewer
+  verus_analysis: reasoning
+  verus_critic: reviewer
+  verus_obligations_audit: reviewer
+  verus_tests: code
+  verus_glue: code
+  verus_glue_audit: reviewer
+  verus_kernel: reasoning
+  verus_kernel_fix: code
+  verus_opt_worker: code
+  verus_audit: reviewer
   analysis: reasoning
   adversarial_tests: code
   host_bootstrap: code

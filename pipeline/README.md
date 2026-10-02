@@ -73,9 +73,22 @@ python -m accel_pipeline.run_pipeline --query 3 --workload tpch_q3 --dry-run
 - `config/` — orchestrator and model settings, workload YAML
 - `prompts/` — stage prompts and shared constraints
 - `gates/` — deterministic gate scripts (ctest, benchmarks, fairness)
-- `templates/scaffold/` — register/CMake snippet templates
+- `templates/scaffold/` — per-query stubs (kernel, package, the query's `register.cpp`) and CMake snippet
 - `artifacts/` — per-query pipeline state and reports
 - `orchestrator/` — Python package (`accel_pipeline`)
+
+### Where a query lives (engine backends name no query)
+
+Everything query-specific is under `src/generated/<bench>/q<N>/`: `layout.hpp`,
+and per engine `<engine>/{base,aux}/…` including the query's **registrars**
+(catalog entry, SQL entry points, runtime binding), plus `verus_kit/<crate>/`
+for Verus accelerators. The engine backends (`src/runtime/<engine>`,
+`src/stateful/<engine>`, `src/generated/<engine>`, `src/generated/catalog/<engine>`)
+hold registries and generic dispatch only, so adding a query edits no shared
+file and the backends build with every `q<N>/` removed.
+`scripts/check_backend_query_free.py` enforces it (run by the `aux_correctness`
+and `engine_build` gates); `scripts/run_duckdb_registry_checks.sh` runs the
+DuckDB accelerators end to end.
 
 ## Agent backends
 
@@ -106,7 +119,7 @@ Analysis and audit stay on OpenRouter Agents when using `models.codex.yaml`.
 
 ### Concurrent pack (shared tree, no stage barriers)
 
-Run several query pipelines in parallel on one checkout. Isolation is **separate build dirs** + **per-worker `CODEX_HOME`** + a **shared-file lease** for catalog/CMake/registration edits (query-local `qN/aux/**` does not need the lease). Workers do not wait on each other's stages.
+Run several query pipelines in parallel on one checkout. Isolation is **separate build dirs** + **per-worker `CODEX_HOME`** + a **shared-file lease** for CMake and engine-backend edits (queries register from their own `src/generated/<bench>/qN/**`, which needs no lease). Workers do not wait on each other's stages.
 
 ```bash
 cd pipeline/orchestrator && source .venv/bin/activate
@@ -164,6 +177,40 @@ See `pipeline/prompts/shared/scale_factor_contract.md`. Optional manual check:
 ```bash
 ACCEL_TPCH_DB=/path/to/tpch_sf20.duckdb ./build-release/benchmark_tpch_q3
 ```
+
+## Verus accelerators (`--mode verus`)
+
+Same front end and workload YAML, a different stage pipeline: the accelerator
+is a Verus-verified kernel against a spec generated from the SQL (sql2verus),
+built from the query alone (no C++ accelerator or other Verus kernel is
+visible to the agents). Every agent step runs on codex exec.
+
+```bash
+python -m accel_pipeline.run_pipeline --query 21 --workload tpch_q21_aux --mode verus \
+  --models-config pipeline/config/models.codex.yaml
+accel-pipeline-pack --pack tpch_aux_parallel --mode verus --models-config pipeline/config/models.codex.yaml
+```
+
+Stages (`accel_pipeline/verus/stages.py`): preflight → spec (frozen from the
+SQL; faithfulness audit) → analysis (aux state + declared kernel inputs; critic)
+→ freeze (obligations, store adapter, C ABI: generated; obligations faithfulness
+audit) → tests (adversarial, frozen) → glue (written by an agent; trusted: build,
+record-mode contract check against the declared inputs, glue audit; frozen) →
+kernel (+ proofs) → integration (frozen tests on
+the Verus store; fault self-check of the tests) → optimization (A/B on the Verus
+store; stopping in `verus/stopping.py`) → audit (trusted base, leak tripwire,
+C++-store compatibility). Settings: `config/verus.yaml`, overridden by a
+workload's `verus:` section. Agents work in `pipeline/verus_runs/<workload>/workspace`
+(an allowlisted clean room) and build/test only through the `verus_*` MCP tools.
+Prompts and contracts: `prompts/verus/`. Shared, growing state: the proof
+library (`src/verus/prooflib`) and the playbook (`pipeline/verus/playbook`).
+Host side: the generic kit (`include/accelerator_codegen/verus/verus_kit.hpp`)
+and runner (`tests/verification/verus_kit/verus_kit_runner.cpp`); DuckDB only for now.
+A run's output lives in the query's directory: `src/generated/<bench>/q<N>/verus_kit/<crate>/`
+(glue + C header; the kernel crate in `crate/`), registered through the kit's registry.
+
+Smoke test without an LLM: `ACCEL_VERUS_REPLAY=<dir>` replays agent steps from
+files (`verus/agent.py`); `config/workloads/tpch_q21_verus_smoke.yaml` is a short run.
 
 ## Aux-state workloads
 

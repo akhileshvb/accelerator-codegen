@@ -1,5 +1,5 @@
 #include "tpch/q22/mysql/aux/module.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "tpch/q22/calibration_writes.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -817,7 +817,7 @@ void TpchQ22Module::EmitResult(
 }
 
 std::vector<core::CalibrationWrite> TpchQ22Module::CalibrationWrites() const {
-  return TpchCalibrationWrites(22);
+  return TpchQ22CalibrationWrites();
 }
 
 } // namespace accelerator_codegen::aux_state::query

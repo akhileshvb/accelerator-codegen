@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/function/function_set.hpp"
@@ -91,6 +92,24 @@ duckdb::unique_ptr<KernelInstance> CreateQ1KernelInstance(const QueryParameters 
 
 } // namespace
 
+namespace {
+
+duckdb::unique_ptr<KernelInstance> CreateQ1FusedKernelInstance(const QueryParameters &parameters,
+                                                               const QueryKernelFactoryData *) {
+	// Q1 always uses the fused ScanFilteredConsumer kernel.
+	return duckdb::make_uniq<Q1FusedKernel>(dynamic_cast<const Q1Parameters &>(parameters));
+}
+
+void RunQ1FusedScan(duckdb::ClientContext &context, KernelInstance &kernel,
+                    const duckdb::vector<duckdb::unique_ptr<duckdb::FunctionData>> &bound_inputs) {
+	if (bound_inputs.size() != 1) {
+		throw std::runtime_error("Q1 fused scan expects exactly one bound input");
+	}
+	dynamic_cast<Q1FusedKernel &>(kernel).RunFusedScan(context, *bound_inputs[0]);
+}
+
+} // namespace
+
 duckdb::TableFunctionSet CreateTpchQ1FunctionSet() {
     QueryPackage package;
     package.function_name = "accel_tpch_q1";
@@ -100,6 +119,8 @@ duckdb::TableFunctionSet CreateTpchQ1FunctionSet() {
     };
     package.bind_query = BindQ1Package;
     package.create_kernel = CreateQ1KernelInstance;
+    package.create_fused_kernel = CreateQ1FusedKernelInstance;
+    package.fused_scan = RunQ1FusedScan;
     return CreateRuntimeBackedFunctionSet(package);
 }
 

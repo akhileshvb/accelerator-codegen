@@ -3,10 +3,9 @@
 write_paths:
   - CMakeLists.txt
   - cmake/AuxState.cmake
-  - src/generated/tpch/q*/aux/**
+  # the query's own tree: module, layout, registrars (engine backends name no query)
+  - src/generated/tpch/q*/**
   - src/generated/catalog/**
-  - src/stateful/duckdb/duckdb_aux_table_functions.cpp
-  - include/accelerator_codegen/stateful/core/query_layouts.hpp
   - config/q*_aux_cost_model.json
   - tests/single-threaded/test_q*_*.cpp
   - tests/single-threaded/test_tpch_q*_aux.cpp

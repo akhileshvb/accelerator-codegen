@@ -12,6 +12,8 @@
 
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
+#include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
+#include "accelerator_codegen/verus/verus_kit.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/on_create_conflict.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -241,178 +243,48 @@ void RegisterAuxFunction(::duckdb::Catalog &catalog, ::duckdb::ClientContext &co
   catalog.CreateTableFunction(context, info);
 }
 
-void RegisterWorkloadAuxFunctions(::duckdb::Catalog &catalog,
-                                  ::duckdb::ClientContext &context,
-                                  SharedWorkloadKind workload) {
-  for (const int query_id : SharedQueriesForWorkload(workload)) {
-    const auto &entry = LookupSharedQuery(workload, query_id);
-    switch (query_id) {
-    case 1:
-      if (workload == SharedWorkloadKind::Tpch) {
-        RegisterAuxFunction(catalog, context, entry, "accel_tpch_q1_aux",
-                            {::duckdb::LogicalType::INTEGER});
-      } else {
-        RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q1_aux", {});
-      }
-      break;
-    case 2:
-      if (workload == SharedWorkloadKind::Tpch) {
-        RegisterAuxFunction(catalog, context, entry, "accel_tpch_q2_aux",
-                            {::duckdb::LogicalType::INTEGER,
-                             ::duckdb::LogicalType::VARCHAR,
-                             ::duckdb::LogicalType::VARCHAR});
-      } else {
-        RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q2_aux", {});
-      }
-      break;
-    case 3:
-      if (workload == SharedWorkloadKind::Tpch) {
-        RegisterAuxFunction(catalog, context, entry, "accel_tpch_q3_aux",
-                            {::duckdb::LogicalType::VARCHAR,
-                             ::duckdb::LogicalType::DATE});
-      } else {
-        RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q3_aux", {});
-      }
-      break;
-    case 4:
-      if (workload == SharedWorkloadKind::Tpch) {
-        RegisterAuxFunction(catalog, context, entry, "accel_tpch_q4_aux",
-                            {::duckdb::LogicalType::DATE});
-      } else {
-        RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q4_aux", {});
-      }
-      break;
-    case 5:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q5_aux",
-                          {::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::DATE});
-      break;
-    case 6:
-      if (workload == SharedWorkloadKind::Tpch) {
-        RegisterAuxFunction(catalog, context, entry, "accel_tpch_q6_aux",
-                            {::duckdb::LogicalType::DATE, ::duckdb::LogicalType::DOUBLE,
-                             ::duckdb::LogicalType::DOUBLE});
-      } else {
-        RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q6_aux", {});
-      }
-      break;
-    case 7:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q7_aux",
-                          {::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR});
-      break;
-    case 8:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q8_aux",
-                          {::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR});
-      break;
-    case 9:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q9_aux",
-                          {::duckdb::LogicalType::VARCHAR});
-      break;
-    case 10:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q10_aux",
-                          {::duckdb::LogicalType::DATE});
-      break;
-    case 11:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q11_aux",
-                          {::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::DOUBLE});
-      break;
-    case 12:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q12_aux",
-                          {::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::DATE});
-      break;
-    case 13:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q13_aux",
-                          {::duckdb::LogicalType::VARCHAR});
-      break;
-    case 14:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q14_aux",
-                          {::duckdb::LogicalType::DATE});
-      break;
-    case 15:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q15_aux",
-                          {::duckdb::LogicalType::DATE});
-      break;
-    case 16:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q16_aux",
-                          {::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::INTEGER,
-                           ::duckdb::LogicalType::INTEGER,
-                           ::duckdb::LogicalType::INTEGER,
-                           ::duckdb::LogicalType::INTEGER,
-                           ::duckdb::LogicalType::INTEGER,
-                           ::duckdb::LogicalType::INTEGER,
-                           ::duckdb::LogicalType::INTEGER,
-                           ::duckdb::LogicalType::INTEGER});
-      break;
-    case 17:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q17_aux",
-                          {::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR});
-      break;
-    case 18:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q18_aux",
-                          {::duckdb::LogicalType::BIGINT});
-      break;
-    case 19:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q19_aux",
-                          {::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::BIGINT,
-                           ::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::BIGINT,
-                           ::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::BIGINT});
-      break;
-    case 20:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q20_aux",
-                          {::duckdb::LogicalType::DATE,
-                           ::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR});
-      break;
-    case 21:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q21_aux",
-                          {::duckdb::LogicalType::VARCHAR});
-#if defined(ACCEL_HAVE_Q21_VERUS)
-      RegisterAuxFunction(catalog, context, TpchQ21VerusCatalogEntry(),
-                          "accel_tpch_q21_verus", {::duckdb::LogicalType::VARCHAR});
-#endif
-      break;
-    case 22:
-      RegisterAuxFunction(catalog, context, entry, "accel_tpch_q22_aux",
-                          {::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR,
-                           ::duckdb::LogicalType::VARCHAR});
-      break;
-    case 24:
-      RegisterAuxFunction(catalog, context, entry, "accel_sec_edgar_q24_aux", {});
-      break;
-    default:
-      break;
+// Every registered aux query (aux_query_registry.hpp), then the Verus
+// accelerators registered through the host kit (generated glue).
+void RegisterRegisteredAuxFunctions(::duckdb::Catalog &catalog,
+                                    ::duckdb::ClientContext &context) {
+  for (const auto *query : duckdb::AuxQueries()) {
+    const auto *entry = FindSharedQueryByAccelerator(query->accelerator_id);
+    Require(entry != nullptr, "aux query " + query->accelerator_id + " has no catalog entry");
+    ::duckdb::vector<::duckdb::LogicalType> types(query->argument_types.begin(),
+                                                 query->argument_types.end());
+    RegisterAuxFunction(catalog, context, *entry, query->table_function.c_str(), std::move(types));
+  }
+  // Verus accelerators registered through the host kit (generated glue).
+  for (const auto *glue : verus_kit::All()) {
+    const auto *kit_entry = VerusKitCatalogEntry(glue->id);
+    if (!kit_entry) {
+      continue;
     }
+    ::duckdb::vector<::duckdb::LogicalType> types;
+    for (const auto kind : glue->params) {
+      switch (kind) {
+      case verus_kit::Kind::Text:
+        types.push_back(::duckdb::LogicalType::VARCHAR);
+        break;
+      case verus_kit::Kind::Date:
+        types.push_back(::duckdb::LogicalType::DATE);
+        break;
+      case verus_kit::Kind::Dec:
+        types.push_back(::duckdb::LogicalType::DOUBLE);
+        break;
+      case verus_kit::Kind::Bool:
+        types.push_back(::duckdb::LogicalType::BOOLEAN);
+        break;
+      case verus_kit::Kind::Int:
+        types.push_back(::duckdb::LogicalType::BIGINT);
+        break;
+      }
+    }
+    const std::string name = std::string("accel_") + glue->id;
+    RegisterAuxFunction(catalog, context, *kit_entry, name.c_str(), std::move(types));
   }
 }
 
-#ifdef ACCEL_ENABLE_PARALLEL_AUX
-void RegisterParallelSecEdgarAuxFunctions(::duckdb::Catalog &catalog,
-                                          ::duckdb::ClientContext &context) {
-  for (const int query_id : SharedQueriesForWorkload(SharedWorkloadKind::SecEdgar)) {
-    const auto &entry =
-        LookupSharedQueryParallel(SharedWorkloadKind::SecEdgar, query_id);
-    const std::string name = std::string("accel_") + entry.accelerator_id;
-    RegisterAuxFunction(catalog, context, entry, name.c_str(), {});
-  }
-}
-#endif
 
 } // namespace
 
@@ -423,11 +295,7 @@ void RegisterDuckdbAuxTableFunctions(::duckdb::Connection &connection) {
   if (started_transaction) {
     connection.BeginTransaction();
   }
-  RegisterWorkloadAuxFunctions(catalog, context, SharedWorkloadKind::Tpch);
-  RegisterWorkloadAuxFunctions(catalog, context, SharedWorkloadKind::SecEdgar);
-#ifdef ACCEL_ENABLE_PARALLEL_AUX
-  RegisterParallelSecEdgarAuxFunctions(catalog, context);
-#endif
+  RegisterRegisteredAuxFunctions(catalog, context);
   if (started_transaction) {
     connection.Commit();
   }

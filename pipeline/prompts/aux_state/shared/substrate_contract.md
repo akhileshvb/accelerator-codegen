@@ -24,4 +24,4 @@ Owned by `workload_kind: engine_backend` under `stateful/{engine}/` and `runtime
 - **typed_in_process** — typed `StateImage` payloads; no byte serialization on the hot path.
 - **serialized_boundary** — encode/decode only at a process / shared-memory boundary (`byte_stream.hpp`); modules still see typed snapshots after decode.
 
-Generated query code implements `AuxQueryModule` and registers via `catalog/query_catalog.cpp`; do not reimplement lifecycle, txn semantics, or engine adapters.
+Generated query code implements `AuxQueryModule` and registers from its own directory (catalog entry + engine registrars; see `shared/generated_layout.md`); do not reimplement lifecycle, txn semantics, or engine adapters.

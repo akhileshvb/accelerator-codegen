@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
+#include "sec_edgar/q24/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 using accelerator_codegen::ChunkDouble;

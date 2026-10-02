@@ -2,6 +2,7 @@
 #include "tpch/q4/duckdb/base/query.hpp"
 
 #include <memory>
+#include <stdexcept>
 
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/value.hpp"
@@ -79,6 +80,37 @@ NativeScanSpec CreateQ4OrdersScanSpec(const Q4Parameters &parameters) {
 	return scan_spec;
 }
 
+namespace {
+
+void DrainInto(duckdb::ClientContext &context, KernelInstance &kernel, const duckdb::FunctionData &input,
+               duckdb::idx_t input_id) {
+	auto source = CreateNativeChunkSource(context, input);
+	while (source->Next()) {
+		kernel.ConsumeInput(input_id, source->Chunk());
+	}
+}
+
+duckdb::unique_ptr<KernelInstance> CreateQ4FusedKernelInstance(const QueryParameters &parameters,
+                                                               const QueryKernelFactoryData *) {
+	// Experimental fused lineitem scan (default off).
+	if (!Q4LineitemFusedScanEnabled()) {
+		return nullptr;
+	}
+	return CreateQ4KernelTyped(dynamic_cast<const Q4Parameters &>(parameters));
+}
+
+// The fused lineitem scan, then orders drained as chunks.
+void RunQ4FusedScan(duckdb::ClientContext &context, KernelInstance &kernel,
+                    const duckdb::vector<duckdb::unique_ptr<duckdb::FunctionData>> &bound_inputs) {
+	if (bound_inputs.size() != 2) {
+		throw std::runtime_error("Q4 fused lineitem scan expects lineitem and orders bound inputs");
+	}
+	dynamic_cast<Q4Kernel &>(kernel).RunFusedLineitemScan(context, *bound_inputs[0]);
+	DrainInto(context, kernel, *bound_inputs[1], static_cast<duckdb::idx_t>(Q4InputId::ORDERS));
+}
+
+} // namespace
+
 duckdb::TableFunctionSet CreateTpchQ4FunctionSet() {
 	QueryPackage package;
 	package.function_name = "accel_tpch_q4";
@@ -87,6 +119,8 @@ duckdb::TableFunctionSet CreateTpchQ4FunctionSet() {
 	};
 	package.bind_query = BindQ4Package;
 	package.create_kernel = CreateQ4KernelInstance;
+	package.create_fused_kernel = CreateQ4FusedKernelInstance;
+	package.fused_scan = RunQ4FusedScan;
 	return CreateRuntimeBackedFunctionSet(package);
 }
 

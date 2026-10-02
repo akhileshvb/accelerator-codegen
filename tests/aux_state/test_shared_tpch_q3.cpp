@@ -12,7 +12,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
-#include "accelerator_codegen/stateful/core/query_layouts.hpp"
+#include "tpch/q3/layout.hpp"
 #include "tpch/q3/duckdb/aux/module.hpp"
 
 using namespace accelerator_codegen::aux_state::core;

@@ -27,14 +27,20 @@ src/generated/{benchmark}/q{N}/{engine}/aux/...
 
 Optional: `fused.hpp` + `fused_scan.cpp` for SEC-EDGAR or TPC-H fused paths when **this** host supports them. Fused / DuckDB-specific micro-APIs are **optional duckdb host paths**, not required for every engine.
 
-Host registration lives in that engine’s host glue:
+Host registration: **the query registers itself from its own directory** with static
+registrars against the backend's registries (see `generated_layout.md`, "Registration").
+Backends name no query; never add a query to a backend file, catalog array, switch or list.
 
-- **duckdb:** `src/runtime/duckdb/register.cpp` (scaffold snippet); aux TFs in `src/stateful/duckdb/duckdb_aux_table_functions.cpp`
-- **other engines:** `engine_backend`-owned extension/SQL surfaces under `src/generated/{engine}/` or `runtime|stateful/{engine}/` — do not invent a parallel adapter tree
+- **duckdb:** `q{N}/duckdb/base/single-threaded/register.cpp` (`BaseFunctionSetRegistrar`);
+  `q{N}/duckdb/aux/register.cpp` (`SharedQueryRegistrar` catalog entry + `AuxQueryRegistrar`:
+  table function, argument types, `MakeBinding<Scan, Module>` with the query's InitialScan)
+- **other engines:** the backend's registries (`engine_backend`-owned, under `src/generated/{engine}/`
+  or `runtime|stateful/{engine}/`), called from `src/generated/{bench}/q{N}/{engine}/` — do not invent
+  a parallel adapter tree
 
 Scan contract: kernels consume **engine-local** native storage / batch types for `{{engine_name}}`. Do **not** require `NativeScanSpec` → portable `DataChunk`. DuckDB may use its private `NativeScanSpec` + `DataChunk` types; other engines use their own helpers (slots, tuples, typed rebuild callbacks).
 
-Catalog registration is per engine: `src/generated/catalog/{engine}/query_catalog.{hpp,cpp}`.
+Catalog registration is per engine: the registry is `src/generated/catalog/{engine}/query_catalog.{hpp,cpp}`; the entry is registered from the query's directory.
 
 ## Aux-state
 
@@ -78,7 +84,7 @@ Fixed substrate under `include/accelerator_codegen/stateful/`:
 
 Engine adapters under `stateful/{engine}/` and `runtime/{engine}/` are owned by the **engine_backend** pipeline.
 
-Agents own partition layouts (`query_layouts.hpp` entries), payload structs, mutation interpretation, incremental accumulators, maintenance staging logic (including rebuild→resync), and cost-model JSON coefficients.
+Agents own partition layouts (`src/generated/{bench}/q{N}/layout.hpp`), payload structs, mutation interpretation, incremental accumulators, maintenance staging logic (including rebuild→resync), and cost-model JSON coefficients.
 
 ## Optimization priorities
 

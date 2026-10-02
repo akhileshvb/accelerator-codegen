@@ -1,4 +1,5 @@
-// TPC-H aux UDFs + observer/maintenance helpers for the MySQL plugin.
+// Generic query-UDF implementation + observer/maintenance UDFs for the MySQL plugin.
+// Query UDF symbols live in each query's dir (see udf_shim.hpp).
 #include "accelerator_codegen/mysql/plugin_minimal.h"
 #include "mysql/runtime.hpp"
 
@@ -8,6 +9,7 @@
 #include "accelerator_codegen/stateful/mysql/mysql_xact_callbacks.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -119,92 +121,44 @@ char *CopyResult(UDF_INIT *initid, const std::string &text, unsigned long *lengt
 
 } // namespace
 
-extern "C" {
+namespace accelerator_codegen::aux_state::engine::mysql {
 
-#define TPCH_AUX_UDF(N, TYPES, NARGS)                                          \
-  __attribute__((visibility("default"))) bool                                  \
-      mysql_accel_tpch_q##N##_aux_init(UDF_INIT *initid, UDF_ARGS *args,       \
-                                       char *message) {                        \
-    if (InitStringUdf(initid, args, NARGS)) {                                  \
-      std::snprintf(message, MYSQL_ERRMSG_SIZE,                                \
-                    "mysql_accel_tpch_q" #N "_aux argument count");            \
-      return true;                                                             \
-    }                                                                          \
-    return false;                                                              \
-  }                                                                            \
-  __attribute__((visibility("default"))) void                                  \
-      mysql_accel_tpch_q##N##_aux_deinit(UDF_INIT *initid) {                   \
-    DeinitStringUdf(initid);                                                   \
-  }                                                                            \
-  __attribute__((visibility("default"))) char *mysql_accel_tpch_q##N##_aux(    \
-      UDF_INIT *initid, UDF_ARGS *args, char *, unsigned long *length,         \
-      unsigned char *, unsigned char *error) {                                 \
-    try {                                                                      \
-      auto parsed = ParseTypedArgs(args, TYPES);                               \
-      return CopyResult(initid, mysql_rt::ExecuteMysqlTpchQ##N(parsed),        \
-                        length, error);                                        \
-    } catch (...) {                                                            \
-      *error = 1;                                                              \
-      *length = 0;                                                             \
-      return initid->ptr;                                                      \
-    }                                                                          \
-  }
-
-TPCH_AUX_UDF(1, "i", 1)
-TPCH_AUX_UDF(2, "iss", 3)
-TPCH_AUX_UDF(3, "sd", 2)
-TPCH_AUX_UDF(4, "d", 1)
-TPCH_AUX_UDF(5, "sd", 2)
-TPCH_AUX_UDF(6, "dff", 3)
-TPCH_AUX_UDF(7, "ss", 2)
-TPCH_AUX_UDF(8, "sss", 3)
-TPCH_AUX_UDF(9, "s", 1)
-TPCH_AUX_UDF(10, "d", 1)
-TPCH_AUX_UDF(11, "sf", 2)
-TPCH_AUX_UDF(12, "ssd", 3)
-TPCH_AUX_UDF(13, "s", 1)
-TPCH_AUX_UDF(14, "d", 1)
-TPCH_AUX_UDF(15, "d", 1)
-TPCH_AUX_UDF(16, "ssiiiiiiii", 10)
-TPCH_AUX_UDF(17, "ss", 2)
-TPCH_AUX_UDF(18, "i", 1)
-TPCH_AUX_UDF(19, "sisisi", 6)
-TPCH_AUX_UDF(20, "dss", 3)
-TPCH_AUX_UDF(21, "s", 1)
-TPCH_AUX_UDF(22, "sssssss", 7)
-
-#undef TPCH_AUX_UDF
-
-#if defined(ACCEL_HAVE_Q21_VERUS)
-// Q21 served by the Verus-verified kernel.
-__attribute__((visibility("default"))) bool
-mysql_accel_tpch_q21_verus_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
-  if (InitStringUdf(initid, args, 1)) {
-    std::snprintf(message, MYSQL_ERRMSG_SIZE, "mysql_accel_tpch_q21_verus argument count");
+// Generic query UDF implementation; the per-query extern "C" symbols
+// (q<N>/mysql/plugin/udf.cpp, ACCEL_MYSQL_QUERY_UDF) call these.
+bool MysqlUdfInit(UDF_INIT *initid, UDF_ARGS *args, char *message, const char *name) {
+  const MysqlUdfEntry *entry = FindMysqlUdf(name);
+  if (!entry || InitStringUdf(initid, args, static_cast<unsigned>(entry->arg_types.size()))) {
+    std::snprintf(message, MYSQL_ERRMSG_SIZE, "%s argument count", name);
     return true;
   }
   return false;
 }
-__attribute__((visibility("default"))) void
-mysql_accel_tpch_q21_verus_deinit(UDF_INIT *initid) {
-  DeinitStringUdf(initid);
-}
-__attribute__((visibility("default"))) char *
-mysql_accel_tpch_q21_verus(UDF_INIT *initid, UDF_ARGS *args, char *,
-                           unsigned long *length, unsigned char *, unsigned char *error) {
+
+void MysqlUdfDeinit(UDF_INIT *initid) { DeinitStringUdf(initid); }
+
+char *MysqlUdfCall(UDF_INIT *initid, UDF_ARGS *args, unsigned long *length,
+                   unsigned char *error, const char *name) {
   try {
-    // n_name = NULL matches no row (ParseTypedArgs would turn NULL into '').
-    if (args->arg_count < 1 || args->args[0] == nullptr)
+    const MysqlUdfEntry *entry = FindMysqlUdf(name);
+    if (!entry) {
+      throw std::runtime_error("no MySQL UDF registered");
+    }
+    if (entry->null_first_arg_yields_empty &&
+        (args->arg_count < 1 || args->args[0] == nullptr)) {
       return CopyResult(initid, std::string(), length, error);
-    auto parsed = ParseTypedArgs(args, "s");
-    return CopyResult(initid, mysql_rt::ExecuteMysqlTpchQ21Verus(parsed), length, error);
+    }
+    auto parsed = ParseTypedArgs(args, entry->arg_types.c_str());
+    return CopyResult(initid, entry->execute(parsed), length, error);
   } catch (...) {
     *error = 1;
     *length = 0;
     return initid->ptr;
   }
 }
-#endif
+
+} // namespace accelerator_codegen::aux_state::engine::mysql
+
+extern "C" {
 
 __attribute__((visibility("default")))
 bool mysql_accel_observer_mutation_count_init(UDF_INIT *initid, UDF_ARGS *args,

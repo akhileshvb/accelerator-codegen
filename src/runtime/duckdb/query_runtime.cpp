@@ -4,13 +4,6 @@
 #include <stdexcept>
 #include <utility>
 
-#include "sec_edgar/runtime.hpp"
-#include "tpch/q1/duckdb/base/query.hpp"
-#include "tpch/q1/duckdb/base/fused.hpp"
-#include "tpch/q4/duckdb/base/query.hpp"
-#include "tpch/q2/duckdb/base/query.hpp"
-#include "tpch/q8/duckdb/base/query.hpp"
-#include "tpch/q10/duckdb/base/query.hpp"
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #endif
@@ -62,6 +55,8 @@ struct BoundQueryData : public duckdb::FunctionData {
         auto &other = other_p.Cast<BoundQueryData>();
         if (package.function_name != other.package.function_name || package.bind_query != other.package.bind_query ||
             package.create_kernel != other.package.create_kernel ||
+            package.create_fused_kernel != other.package.create_fused_kernel ||
+            package.fused_scan != other.package.fused_scan ||
             !OverloadsEqual(package.overloads, other.package.overloads)) {
             return false;
         }
@@ -114,41 +109,14 @@ struct RuntimeQueryGlobalState : public duckdb::GlobalTableFunctionState {
 struct RuntimeQueryLocalState : public duckdb::LocalTableFunctionState {
     duckdb::vector<duckdb::unique_ptr<ChunkSource>> inputs;
     duckdb::unique_ptr<KernelInstance> kernel;
-    Q1FusedKernel *fused_kernel = nullptr;
-    Q4Kernel *q4_kernel = nullptr;
-    bool use_fused_q10_customer = false;
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
     ParallelKernelInstance *parallel_kernel = nullptr;
 #endif
-    bool use_fused_q1 = false;
-    bool use_fused_sec_edgar_q1 = false;
-    bool use_fused_q4_lineitem = false;
-    bool use_fused_q8_scans = false;
-    bool use_fused_q2_scans = false;
+    bool use_fused_scan = false;
     bool inputs_consumed = false;
     bool finalized = false;
     bool output_exhausted = false;
 };
-
-bool IsQ1Package(const QueryPackage &package) {
-    return package.function_name == "accel_tpch_q1";
-}
-
-bool IsQ10Package(const QueryPackage &package) {
-    return package.function_name == "accel_tpch_q10";
-}
-
-bool IsQ4Package(const QueryPackage &package) {
-    return package.function_name == "accel_tpch_q4";
-}
-
-bool IsQ8Package(const QueryPackage &package) {
-    return package.function_name == "accel_tpch_q8";
-}
-
-bool IsQ2Package(const QueryPackage &package) {
-    return package.function_name == "accel_tpch_q2";
-}
 
 #ifdef ACCEL_ENABLE_PARALLEL_TPCH
 bool IsParallelPackage(const QueryPackage &package) {
@@ -228,88 +196,18 @@ duckdb::unique_ptr<duckdb::LocalTableFunctionState> RuntimeLocalInit(duckdb::Exe
     }
 #endif
 
-    // Q1 always uses the fused ScanFilteredConsumer kernel (chunk DataChunk path removed).
-    if (IsQ1Package(bound_query.package)) {
-        if (bound_query.bound_inputs.size() != 1) {
-            throw std::runtime_error("Q1 fused scan expects exactly one bound input");
-        }
-        auto &q1_params = dynamic_cast<const Q1Parameters &>(*bound_query.query_parameters);
-        auto fused = duckdb::make_uniq<Q1FusedKernel>(q1_params);
-        local_state->fused_kernel = fused.get();
-        local_state->kernel = std::move(fused);
-        local_state->use_fused_q1 = true;
-        return local_state;
-    }
-
-    if (IsSecEdgarFusedQuery(bound_query.package)) {
-        if (bound_query.bound_inputs.size() != 1) {
-            throw std::runtime_error("SEC EDGAR fused scan expects exactly one bound input");
-        }
-        if (TryInitSecEdgarFusedKernel(bound_query.package, *bound_query.query_parameters,
-                                       bound_query.kernel_factory_data.get(), local_state->kernel)) {
-            local_state->use_fused_sec_edgar_q1 = true;
+    // A query-owned scan path (QueryPackage::create_fused_kernel / fused_scan).
+    if (bound_query.package.create_fused_kernel) {
+        auto fused = bound_query.package.create_fused_kernel(*bound_query.query_parameters,
+                                                             bound_query.kernel_factory_data.get());
+        if (fused) {
+            if (!bound_query.package.fused_scan) {
+                throw std::runtime_error("query package has a fused kernel but no fused scan");
+            }
+            local_state->kernel = std::move(fused);
+            local_state->use_fused_scan = true;
             return local_state;
         }
-    }
-
-    const bool try_fused_q10_customer = IsQ10Package(bound_query.package) && Q10FusedScansEnabled();
-    if (try_fused_q10_customer) {
-        if (bound_query.bound_inputs.size() != 4) {
-            throw std::runtime_error("Q10 fused customer scan expects four bound inputs");
-        }
-        auto &q10_params = dynamic_cast<const Q10Parameters &>(*bound_query.query_parameters);
-        local_state->kernel = CreateQ10Kernel(q10_params);
-        local_state->use_fused_q10_customer = true;
-        local_state->inputs.reserve(3);
-        for (duckdb::idx_t input_id = 0; input_id < 3; input_id++) {
-            local_state->inputs.push_back(CreateNativeChunkSource(context.client, *bound_query.bound_inputs[input_id]));
-        }
-        return local_state;
-    }
-
-    // Experimental Q4 fused lineitem (default off). Orders still drained as chunks.
-    const bool try_fused_q4_lineitem = IsQ4Package(bound_query.package) && Q4LineitemFusedScanEnabled();
-    if (try_fused_q4_lineitem) {
-        if (bound_query.bound_inputs.size() != 2) {
-            throw std::runtime_error("Q4 fused lineitem scan expects lineitem and orders bound inputs");
-        }
-        auto &q4_params = dynamic_cast<const Q4Parameters &>(*bound_query.query_parameters);
-        auto q4_kernel = CreateQ4KernelTyped(q4_params);
-        local_state->q4_kernel = q4_kernel.get();
-        local_state->kernel = std::move(q4_kernel);
-        local_state->use_fused_q4_lineitem = true;
-        local_state->inputs.push_back(CreateNativeChunkSource(context.client, *bound_query.bound_inputs[1]));
-        return local_state;
-    }
-
-    const bool try_fused_q8_scans = IsQ8Package(bound_query.package) && Q8FusedScansEnabled();
-    if (try_fused_q8_scans) {
-        if (bound_query.bound_inputs.size() != 5) {
-            throw std::runtime_error("Q8 fused scans expect five bound inputs");
-        }
-        auto &q8_params = dynamic_cast<const Q8Parameters &>(*bound_query.query_parameters);
-        local_state->kernel = CreateQ8Kernel(q8_params);
-        local_state->use_fused_q8_scans = true;
-        local_state->inputs.reserve(2);
-        for (duckdb::idx_t input_id = 0; input_id < 2; input_id++) {
-            local_state->inputs.push_back(CreateNativeChunkSource(context.client, *bound_query.bound_inputs[input_id]));
-        }
-        return local_state;
-    }
-
-    const bool try_fused_q2_scans = IsQ2Package(bound_query.package) && Q2FusedScansEnabled();
-    if (try_fused_q2_scans) {
-        if (bound_query.bound_inputs.size() != 4) {
-            throw std::runtime_error("Q2 fused scans expect four bound inputs");
-        }
-        auto &q2_params = dynamic_cast<const Q2Parameters &>(*bound_query.query_parameters);
-        local_state->kernel = CreateQ2Kernel(q2_params);
-        local_state->use_fused_q2_scans = true;
-        local_state->inputs.reserve(2);
-        for (duckdb::idx_t input_id = 0; input_id < 2; input_id++) {
-            local_state->inputs.push_back(CreateNativeChunkSource(context.client, *bound_query.bound_inputs[input_id]));
-        }
-        return local_state;
     }
 
     local_state->inputs.reserve(bound_query.bound_inputs.size());
@@ -346,80 +244,8 @@ void RuntimeExec(duckdb::ClientContext &context,
             local_state.parallel_kernel->RunParallel(context, bound_query.bound_inputs);
         } else
 #endif
-        if (local_state.use_fused_q1) {
-            if (!local_state.fused_kernel) {
-                throw std::runtime_error("Q1 fused kernel missing");
-            }
-            local_state.fused_kernel->RunFusedScan(context, *bound_query.bound_inputs[0]);
-        } else if (local_state.use_fused_sec_edgar_q1) {
-            if (!local_state.kernel) {
-                throw std::runtime_error("SEC EDGAR Q1 fused kernel missing");
-            }
-            ExecSecEdgarFusedPreScan(*local_state.kernel, context, *bound_query.bound_inputs[0]);
-        } else if (local_state.use_fused_q10_customer) {
-            if (!local_state.kernel) {
-                throw std::runtime_error("Q10 fused customer kernel missing");
-            }
-            if (bound_query.bound_inputs.size() != 4) {
-                throw std::runtime_error("Q10 fused customer path expects four bound inputs");
-            }
-            for (duckdb::idx_t input_id = 0; input_id < 3; input_id++) {
-                auto &source = local_state.inputs[input_id];
-                while (source->Next()) {
-                    local_state.kernel->ConsumeInput(input_id, source->Chunk());
-                }
-            }
-            Q10RunFusedCustomerScan(context, *local_state.kernel, *bound_query.bound_inputs[3]);
-        } else if (local_state.use_fused_q4_lineitem) {
-            if (!local_state.q4_kernel) {
-                throw std::runtime_error("Q4 fused kernel missing");
-            }
-            local_state.q4_kernel->RunFusedLineitemScan(context, *bound_query.bound_inputs[0]);
-            if (local_state.inputs.size() != 1) {
-                throw std::runtime_error("Q4 fused lineitem path expects a single orders chunk source");
-            }
-            auto &orders_source = local_state.inputs[0];
-            while (orders_source->Next()) {
-                local_state.kernel->ConsumeInput(static_cast<duckdb::idx_t>(Q4InputId::ORDERS),
-                                                 orders_source->Chunk());
-            }
-        } else if (local_state.use_fused_q8_scans) {
-            if (!local_state.kernel) {
-                throw std::runtime_error("Q8 fused scan kernel missing");
-            }
-            if (bound_query.bound_inputs.size() != 5) {
-                throw std::runtime_error("Q8 fused scan path expects five bound inputs");
-            }
-            for (duckdb::idx_t input_id = 0; input_id < local_state.inputs.size(); input_id++) {
-                auto &source = local_state.inputs[input_id];
-                while (source->Next()) {
-                    local_state.kernel->ConsumeInput(input_id, source->Chunk());
-                }
-            }
-            Q8RunFusedCustomerScan(context, *local_state.kernel, *bound_query.bound_inputs[2]);
-            {
-                auto orders_source = CreateNativeChunkSource(context, *bound_query.bound_inputs[3]);
-                while (orders_source->Next()) {
-                    local_state.kernel->ConsumeInput(static_cast<duckdb::idx_t>(Q8InputId::ORDERS),
-                                                     orders_source->Chunk());
-                }
-            }
-            Q8RunFusedLineitemScan(context, *local_state.kernel, *bound_query.bound_inputs[4]);
-        } else if (local_state.use_fused_q2_scans) {
-            if (!local_state.kernel) {
-                throw std::runtime_error("Q2 fused scan kernel missing");
-            }
-            if (bound_query.bound_inputs.size() != 4) {
-                throw std::runtime_error("Q2 fused scan path expects four bound inputs");
-            }
-            for (duckdb::idx_t input_id = 0; input_id < local_state.inputs.size(); input_id++) {
-                auto &source = local_state.inputs[input_id];
-                while (source->Next()) {
-                    local_state.kernel->ConsumeInput(input_id, source->Chunk());
-                }
-            }
-            Q2RunFusedPartsuppScan(context, *local_state.kernel, *bound_query.bound_inputs[2]);
-            Q2RunFusedSupplierVarcharScan(context, *local_state.kernel, *bound_query.bound_inputs[3]);
+        if (local_state.use_fused_scan) {
+            bound_query.package.fused_scan(context, *local_state.kernel, bound_query.bound_inputs);
         } else {
             for (duckdb::idx_t input_id = 0; input_id < local_state.inputs.size(); input_id++) {
                 auto &source = local_state.inputs[input_id];

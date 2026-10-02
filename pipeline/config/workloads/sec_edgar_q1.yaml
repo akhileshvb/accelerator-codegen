@@ -17,5 +17,5 @@ reference_accelerators:
   - src/generated/tpch/q3/base/single-threaded/kernel.cpp
   - src/generated/tpch/q12/base/single-threaded/kernel.cpp
   - src/generated/tpch/q14/base/single-threaded/kernel.cpp
-  - src/generated/sec_edgar/runtime.cpp
+  - src/generated/sec_edgar/q1/duckdb/base/single-threaded/package.cpp
   - benchmarks/tpch/single-threaded/benchmark_q3.cpp

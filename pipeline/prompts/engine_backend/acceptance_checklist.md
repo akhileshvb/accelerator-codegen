@@ -153,6 +153,15 @@ on these `rule` ids. Each rule is owned by one implementation layer.
   without server symbols.
 - If false: N/A — auditor must not invent a host requirement.
 
+### `query_registries`
+
+- The backend names no query: `scripts/check_backend_query_free.py --engine {engine}`
+  passes (no `TpchQ<N>` / `tpch_q<N>` / `tpch/q<N>/` outside comments).
+- Catalog, SQL entry points and runtime bindings are registries that queries
+  fill from their own directories with static registrars; the SQL that creates
+  functions is assembled from per-query fragments.
+- The backend builds and loads with zero registered queries.
+
 ### `independence`
 
 - No reading/copying another engine’s `runtime|stateful/{other}/` tree.

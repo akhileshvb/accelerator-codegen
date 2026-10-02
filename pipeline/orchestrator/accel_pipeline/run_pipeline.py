@@ -10,6 +10,7 @@ from accel_pipeline.env_loader import load_repo_dotenv
 from accel_pipeline.paths import find_repo_root
 from accel_pipeline.prerequisites import ensure_base_accelerator_prerequisite
 from accel_pipeline.state import STAGES, advance_stage, load_or_create, state_path
+from accel_pipeline.verus.stages import STAGES as VERUS_STAGES
 from accel_pipeline.stages import analysis, adversarial_tests, audit, implementation, optimization
 from accel_pipeline.structural_reanalysis import process_after_stage
 from accel_pipeline.pipeline_log import log_event, log_pipeline_summary
@@ -157,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         "--stage",
         choices=[
             *STAGES,
+            *VERUS_STAGES,
             "host_bootstrap",
             "validation",
             "architecture_audit",
@@ -171,6 +173,13 @@ def main(argv: list[str] | None = None) -> int:
             "all",
         ],
         default="all",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["cpp", "verus"],
+        default=None,
+        help="cpp: C++ accelerator pipeline (default); verus: the Verus accelerator pipeline "
+        "(accel_pipeline/verus; same front end, its own stages). Default: the workload's `mode`.",
     )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Render prompts; skip LLM calls")
@@ -243,6 +252,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         print("pipeline complete", file=sys.stderr)
         return 0
+
+    # Verus mode: same front end, then the Verus pipeline's own stages.  It
+    # runs on DuckDB (in-process; no host bootstrap) and skips the C++
+    # base-accelerator prerequisite: it must not see C++ accelerators.
+    mode = args.mode or str(workload.get("mode") or "cpp")
+    if mode == "verus":
+        from accel_pipeline.verus.run import run_verus_pipeline
+
+        print(f"=== verus mode: {args.workload} ===", file=sys.stderr)
+        return run_verus_pipeline(
+            pipeline_config,
+            model_config,
+            workload,
+            args.workload,
+            query,
+            stage=args.stage,
+            resume=args.resume,
+            dry_run=args.dry_run,
+            model_overrides=model_overrides,
+        )
+    if args.stage in VERUS_STAGES and args.stage not in STAGES:
+        print(f"stage {args.stage!r} belongs to --mode verus", file=sys.stderr)
+        return 2
 
     # One-shot query-host bootstrap (non-duckdb) before per-query stages.
     if args.stage in {"all", "host_bootstrap"}:

@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/query_layouts.hpp"
+#include "tpch/q5/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 

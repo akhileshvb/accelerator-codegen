@@ -12,7 +12,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/dense_id_array.hpp"
-#include "accelerator_codegen/stateful/core/query_layouts.hpp"
+#include "tpch/q10/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 

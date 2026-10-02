@@ -1,0 +1,50 @@
+# Verus accelerator pipeline (--mode verus) defaults.  A workload's `verus:`
+# section overrides any key.  Every agent step runs on codex exec
+# (stage_providers verus_* in models.codex.yaml).
+
+# Names (defaults derived from the benchmark and query):
+#   crate: tpch_q21_vgen          kernel crate src/generated/<bench>/q<N>/verus_kit/<crate>/crate, C ABI <crate>_verus.h
+#   accelerator_id: tpch_q21_vgen table function accel_<id>
+#   ffi_prefix: tpchq21vgen       C names <prefix>_* / <prefix>s_*
+#   query_sql: src/verus/sql2verus/queries/q<N>.sql   the query with $n parameters
+#   schema_sql: src/verus/sql2verus/queries/<bench>_schema.sql
+test_db: /home/akhilvb/accelerator-codegen-duckdb/tpch_test.duckdb   # correctness gates (copied per run)
+bench_db: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb   # optimization A/B (copied per run)
+# build_dir: build-release      # CMake build dir with the DuckDB engine (default: the pipeline's)
+# lib_dir: build-verus          # kernel static libraries
+
+stages:
+  spec_audit_rounds: 1          # faithfulness audit of the generated spec
+  analysis_revisions: 2         # critic -> analysis revision rounds
+  adversarial_revisions: 2      # strengthen rounds when the fault self-check misses a bug
+  kernel_fix_rounds: 4          # kernel fix rounds after failed gates
+  glue_fix_rounds: 3            # glue fix rounds (build, contract check, glue audit)
+
+gates:
+  max_fallback_rate: 0.25       # answered with SQL / all accelerator queries (integration)
+  snapshot_writes: 200
+  snapshot_readers: 4
+  differential_every: 10        # all parameter tuples every N transactions
+
+# Optimization loop (Verus store).  Hard ceilings always reach the audit;
+# the progress stop is the usual exit; it may fire only after a minimum of
+# profile-guided exploration.
+optimization:
+  stage_budget_sec: 7200        # whole loop (2 h); then the best kernel goes to the audit
+  attempt_timeout_sec: 2700     # one attempt's agent run
+  attempt_gate_fix_rounds: 2    # verify / test fix rounds inside an attempt
+  patience: 4                   # consecutive attempts without an accepted improvement
+  diminishing_window: 3         # the last M accepts ...
+  diminishing_min_gain_pct: 5.0 # ... must gain at least X% together
+  min_attempts: 3
+  hotspot_share: 0.10           # profile hotspots at or above this share need an attempt
+  max_structural_moves: 2       # aux-state family changes (inputs re-freeze)
+  min_improvement_pct: 2.0      # accept threshold (raised to 2x measured noise)
+  proof_cost_weight: 0.0        # score penalty per doubling of verification time
+  bench:
+    reps: 5
+    ops: 200
+    write_mix_choices: [0.01, 0.05, 0.1]
+    write_mix_count: 2
+    read_score_weight: 0.75
+    write_score_weight: 0.25

@@ -21,6 +21,8 @@ pipeline/.quarantine/
 
 # Pipeline run outputs (per-query state, gate JSON, rendered prompts, audits)
 pipeline/artifacts/**
+# Verus pipeline run workspaces and locks (--mode verus)
+pipeline/verus_runs/
 !pipeline/artifacts/shared/
 !pipeline/artifacts/shared/optimization_playbook.md
 

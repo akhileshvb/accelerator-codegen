@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 
 from accel_pipeline.aux_bench import load_optimization_state, process_aux_bench_after_gates
 from accel_pipeline.kernel_snapshot import maybe_restore_best_kernel
@@ -34,6 +35,8 @@ def run(
     workload = load_workload(workload_name, pipeline_config.repo_root)
     opt_gates = workload_post_optimization_gates(workload)
     no_improve_stop = pipeline_config.optimization_no_improvement_stop
+    budget = float(getattr(pipeline_config, "optimization_stage_budget_sec", 0) or 0)
+    deadline = time.time() + budget if budget > 0 else None
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
 
     worker: OptimizationWorker | None = None
@@ -49,6 +52,14 @@ def run(
 
     try:
         for iteration in range(1, max_iterations + 1):
+            if deadline is not None and time.time() >= deadline and not dry_run:
+                append_experiment_log(
+                    pipeline_config.repo_root,
+                    query,
+                    f"- iter {iteration}: optimization stage budget ({budget:.0f}s) spent; going to audit",
+                    workload=workload,
+                )
+                break
             restored = False
             if not dry_run:
                 if workload.get("workload_kind") != "aux_state":
@@ -117,6 +128,7 @@ def run(
                 dry_run=dry_run,
                 restored=restored,
                 worker=worker,
+                deadline=deadline,
             )
             if dry_run:
                 continue

@@ -1,5 +1,5 @@
 #include "tpch/q13/mysql/aux/module.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "tpch/q13/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -20,6 +20,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include "tpch/q13/layout.hpp"
 
 // ── Custom profiling (no-op unless ACCEL_AUX_CUSTOM_PROFILE is set) ─────────
 struct CustomTimer {
@@ -1023,7 +1024,7 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
 }
 
 std::vector<core::CalibrationWrite> TpchQ13Module::CalibrationWrites() const {
-  return TpchCalibrationWrites(13);
+  return TpchQ13CalibrationWrites();
 }
 
 } // namespace accelerator_codegen::aux_state::query

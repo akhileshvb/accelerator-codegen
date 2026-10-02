@@ -43,13 +43,16 @@ ACCEL_MYSQL_DOCKER=1 ACCEL_MYSQL_CONTAINER="$NAME" MYSQL_PWD="$PASSWORD" \
   "${PYTHON}" "${ROOT}/scripts/load_tpch_test_mysql.py" --duckdb "$DUCKDB" --db "$DB"
 
 echo "=== registering TPC-H accelerator UDFs ==="
-mysql_exec "$DB" < "${ROOT}/scripts/mysql_register_tpch_all.sql" || true
+REGISTER_SQL="$(mktemp)"
+"${ROOT}/scripts/mysql_register_functions.sh" > "${REGISTER_SQL}"
+mysql_exec "$DB" < "${REGISTER_SQL}" || true
 # INSTALL PLUGIN fails if already present; functions still need (re)creating.
 while IFS= read -r line; do
   [[ "$line" == INSTALL* ]] && continue
   [[ -z "$line" || "$line" == --* ]] && continue
   mysql_exec "$DB" -e "$line" || true
-done < "${ROOT}/scripts/mysql_register_tpch_all.sql"
+done < "${REGISTER_SQL}"
+rm -f "${REGISTER_SQL}"
 
 echo "=== creating mutation capture triggers ==="
 mysql_exec "$DB" < "${ROOT}/scripts/mysql_accel_mutation_triggers.sql"

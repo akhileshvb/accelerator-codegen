@@ -1,5 +1,5 @@
 #include "tpch/q6/duckdb/aux/module.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "tpch/q6/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include "duckdb/common/types/hugeint.hpp"
@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include "tpch/q6/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -781,7 +782,7 @@ void TpchQ6Module::EmitResult(Q6AccT revenue, core::AuxRowSink &sink) const {
 }
 
 std::vector<core::CalibrationWrite> TpchQ6Module::CalibrationWrites() const {
-  return TpchCalibrationWrites(6);
+  return TpchQ6CalibrationWrites();
 }
 
 } // namespace accelerator_codegen::aux_state::query

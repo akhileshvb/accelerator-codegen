@@ -21,9 +21,15 @@ DEFAULT_SHARED_PATH_GLOBS = (
     "CMakeLists.txt",
     "cmake/**",
     "cmake/*.cmake",
+    # The engine backends (generic only: queries register from their own
+    # directories, so these change only for engine-level additions).
     "src/generated/catalog/**",
-    "src/stateful/duckdb/duckdb_aux_table_functions.cpp",
-    "include/accelerator_codegen/stateful/core/query_layouts.hpp",
+    "src/generated/postgres/**",
+    "src/generated/mysql/**",
+    "src/runtime/**",
+    "src/stateful/duckdb/**",
+    "src/stateful/postgres/**",
+    "src/stateful/mysql/**",
     "tests/test_support/cross_accel_helpers.cpp",
     "tests/test_support/cross_accel_helpers.hpp",
     "benchmarks/tpch/single-threaded/tpch_arg_variants.cpp",

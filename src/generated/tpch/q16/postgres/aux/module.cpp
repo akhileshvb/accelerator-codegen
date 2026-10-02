@@ -1,5 +1,5 @@
 #include "tpch/q16/postgres/aux/module.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "tpch/q16/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -1057,7 +1057,7 @@ void TpchQ16Module::EmitResult(
 }
 
 std::vector<core::CalibrationWrite> TpchQ16Module::CalibrationWrites() const {
-  return TpchCalibrationWrites(16);
+  return TpchQ16CalibrationWrites();
 }
 
 } // namespace accelerator_codegen::aux_state::query

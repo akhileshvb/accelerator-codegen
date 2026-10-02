@@ -859,7 +859,9 @@ def run_optimization_iteration(
     dry_run: bool = False,
     restored: bool = False,
     worker: OptimizationWorker | None = None,
+    deadline: float | None = None,
 ) -> Any:
+    """One optimization iteration; no new attempt starts after `deadline` (time.time())."""
     workload = load_workload(workload_name, pipeline_config.repo_root)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
     art = query_artifacts_dir(pipeline_config.repo_root, query, workload=workload)
@@ -964,6 +966,8 @@ def run_optimization_iteration(
 
     for attempt in range(1, max_attempts + 1):
         if consecutive_fails >= consecutive_fail_stop:
+            break
+        if deadline is not None and time.time() >= deadline:
             break
 
         experimental = load_experimental_branch(art)

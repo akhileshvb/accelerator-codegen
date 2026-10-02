@@ -1,5 +1,5 @@
 #include "tpch/q10/postgres/aux/module.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "tpch/q10/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
+#include "tpch/q10/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -1103,7 +1104,7 @@ void TpchQ10Module::EmitResult(const TpchQ10State &state, int32_t start_days,
 }
 
 std::vector<core::CalibrationWrite> TpchQ10Module::CalibrationWrites() const {
-  return TpchCalibrationWrites(10);
+  return TpchQ10CalibrationWrites();
 }
 
 } // namespace accelerator_codegen::aux_state::query

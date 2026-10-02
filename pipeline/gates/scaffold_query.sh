@@ -17,7 +17,6 @@ TEST_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['test_
 BENCH_TARGET="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['bench_target'])" "${CTX}")"
 BENCHMARK_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['benchmark_name'])" "${CTX}")"
 ENGINE_NAME="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('engine_name') or 'duckdb')" "${CTX}")"
-REGISTER_PATH="$(python3 -c "import json,sys; h=json.loads(sys.argv[1]).get('engine_host') or {}; print(h.get('register_path') or '')" "${CTX}")"
 
 python3 - "${ROOT}" "${QUERY}" "${ART_NS}" "${CREATE_FN}" "${FUNCTION_NAME}" "${SOURCE_SUBDIR}" "${TEST_TARGET}" "${BENCH_TARGET}" "${BENCHMARK_NAME}" "${ENGINE_NAME}" <<'PY'
 import json
@@ -39,7 +38,7 @@ pipeline = root / "pipeline"
 out = pipeline / "artifacts" / art_ns / f"q{query}" / "scaffold"
 out.mkdir(parents=True, exist_ok=True)
 
-reg_tpl = (pipeline / "templates/scaffold/register_snippet.cpp.tpl").read_text()
+reg_tpl = (pipeline / "templates/scaffold/register.cpp.tpl").read_text()
 cmake_tpl = (pipeline / "templates/scaffold/cmake_snippet.cmake.tpl").read_text()
 
 subs = {
@@ -56,19 +55,11 @@ for k, v in subs.items():
     reg_tpl = reg_tpl.replace("{{" + k + "}}", v)
     cmake_tpl = cmake_tpl.replace("{{" + k + "}}", v)
 
-(out / "register_snippet.cpp").write_text(reg_tpl)
+(out / "register.cpp").write_text(reg_tpl)  # reference copy; scaffold_stubs writes the query's own
 (out / "cmake_snippet.cmake").write_text(cmake_tpl)
 print(json.dumps({"gate": "scaffold", "query": int(query), "status": "pass", "out": str(out), "engine_name": engine_name}))
 PY
 
-if [[ "${BENCHMARK_NAME}" == "sec_edgar" ]]; then
-  NOTE="${ROOT}/pipeline/artifacts/${ART_NS}/q${QUERY}/scaffold/register_host_note.cpp"
-  python3 "$(dirname "${BASH_SOURCE[0]}")/apply_register_snippet.py" \
-    "${ROOT}" "${CREATE_FN}" "SEC_EDGAR" \
-    --engine-name "${ENGINE_NAME}" \
-    --register-path "${REGISTER_PATH}" \
-    --note-path "${NOTE}"
-fi
 
 python3 - "${ROOT}" "${QUERY}" <<'PY'
 import json

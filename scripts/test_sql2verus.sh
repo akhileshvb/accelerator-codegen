@@ -36,10 +36,11 @@ one() { # suite query expectation...
   local out
   if ! out=$("$BIN" --schema "$schema" --query "$dir/$q.sql" --out "$d/gen_spec.rs" "${inp[@]}" \
                --obligations "$d/gen_obligations.rs" --kernel-stub "$d/kernel.rs" --world "$d/gen_world.rs" \
-               --ffi "$d/gen_ffi.rs" --ffi-header "$d/q.h" --ffi-prefix tq 2>&1); then
+               --ffi "$d/gen_ffi.rs" --ffi-header "$d/q.h" --ffi-prefix tq \
+               --host-glue "$d/gen_glue.cpp" --accel-id "t_$q" --workload tpch --query-id 1 2>&1); then
     if [[ "$out" == *"refused: obligations: "* ]]; then
       if [[ "$want" == ok-spec* ]] && [[ "$out" == *"${want#ok-spec }"* ]]; then
-        rm -f "$d/gen_obligations.rs" "$d/kernel.rs" "$d/gen_world.rs" "$d/gen_ffi.rs" "$d/q.h"
+        rm -f "$d/gen_obligations.rs" "$d/kernel.rs" "$d/gen_world.rs" "$d/gen_ffi.rs" "$d/q.h" "$d/gen_glue.cpp"
       else echo "FAIL $suite/$q: $out"; return; fi
     elif [[ "$want" == refused* ]] && [[ "$out" == *"${want#refused }"* ]]; then echo "PASS $suite/$q (refused)"; return
     else echo "FAIL $suite/$q: $out"; return; fi
@@ -67,9 +68,10 @@ one() { # suite query expectation...
   fi
   echo "PASS $suite/$q ($(echo "$res" | grep -o '[0-9]* verified' | tail -1)$([ $glue = 1 ] && echo ', glue' || echo ', spec only'))"
 }
-# The C side of the generated glue: the header compiles as C and C++, and a
-# program referencing every declared function links against the crate and
-# drives the store through the ABI (no kernel call: the kernel is a stub).
+# The C side of the generated glue: the header compiles as C and C++, the
+# host glue (gen_glue.cpp) compiles against the kit, and a program
+# referencing every declared function links against the crate and drives
+# the store through the ABI (no kernel call: the kernel is a stub).
 glue_check() {
   local d=$1
   python3 - "$d" <<'PY'
@@ -97,9 +99,11 @@ int main(void) {
 open(d + '/hdr.cc', 'w').write('#include "q.h"\nint main() { return 0; }\n')
 PY
   gcc -std=c99 -Wall -Wextra -Werror -I"$d" "$d/link.c" "$d/libq.a" -lpthread -ldl -lm -o "$d/link" &&
-    g++ -std=c++17 -Wall -Wextra -Werror -I"$d" -fsyntax-only "$d/hdr.cc" && "$d/link"
+    g++ -std=c++17 -Wall -Wextra -Werror -I"$d" -fsyntax-only "$d/hdr.cc" &&
+    g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -I"$d" -I"$ROOT/include" -fsyntax-only "$d/gen_glue.cpp" &&
+    "$d/link"
 }
-export -f one glue_check; export BIN T VERUS WORK
+export -f one glue_check; export BIN T VERUS WORK ROOT
 for s in "${SUITES[@]}"; do
   if [ "$s" = queries ]; then
     for f in "$T"/queries/*.inputs; do echo "queries $(basename "$f" .inputs) ok"; done

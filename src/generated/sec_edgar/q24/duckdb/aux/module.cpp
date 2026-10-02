@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
+#include "sec_edgar/q24/layout.hpp"
 
 
 namespace accelerator_codegen::aux_state::query {

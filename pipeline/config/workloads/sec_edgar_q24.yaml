@@ -15,5 +15,5 @@ reference_accelerators:
   - src/generated/sec_edgar/q6/base/query.hpp
   - src/generated/sec_edgar/q4/base/single-threaded/kernel.cpp
   - src/generated/sec_edgar/q4/base/query.hpp
-  - src/generated/sec_edgar/runtime.cpp
+  - src/generated/sec_edgar/q1/duckdb/base/single-threaded/package.cpp
   - benchmarks/sec_edgar/single-threaded/benchmark_q6.cpp

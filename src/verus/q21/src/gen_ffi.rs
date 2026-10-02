@@ -29,6 +29,47 @@ unsafe fn text(b: *const u8, off: *const usize, i: usize) -> Vec<u8> {
     slice(b.wrapping_add(s), e - s).to_vec()
 }
 
+// Record mode (glue contract checks): with ACCEL_VERUS_RECORD_DIR set, every
+// entry point appends the rows it was given to <dir>/records.jsonl and returns
+// without calling the kernel (rescan keys come from ACCEL_VERUS_RECORD_KEYS).
+fn rec_on() -> bool {
+    std::env::var_os("ACCEL_VERUS_RECORD_DIR").is_some()
+}
+
+fn rec_text(b: &[u8], o: &mut String) {
+    o.push('"');
+    for x in b {
+        o.push_str(&format!("{:02x}", x));
+    }
+    o.push('"');
+}
+
+fn rec_rows<T>(f: &str, param: &str, fields: &[&str], rows: &[T], w: fn(&T, &mut String)) {
+    use std::io::Write;
+    let Some(d) = std::env::var_os("ACCEL_VERUS_RECORD_DIR") else { return };
+    let mut o = format!("{{\"fn\":\"{f}\",\"param\":\"{param}\",\"fields\":[");
+    o.push_str(&fields.iter().map(|x| format!("\"{x}\"")).collect::<Vec<_>>().join(","));
+    o.push_str("],\"rows\":[");
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 {
+            o.push(',');
+        }
+        o.push('[');
+        w(row, &mut o);
+        o.push(']');
+    }
+    o.push_str("]}\n");
+    let path = std::path::Path::new(&d).join("records.jsonl");
+    if let Ok(mut fh) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = fh.write_all(o.as_bytes());
+    }
+}
+
+fn rec_keys() -> Vec<i64> {
+    let Some(p) = std::env::var_os("ACCEL_VERUS_RECORD_KEYS") else { return vec![] };
+    std::fs::read_to_string(p).unwrap_or_default().split(|c: char| c == ',' || c.is_whitespace()).filter_map(|x| x.trim().parse().ok()).collect()
+}
+
 /// An answer handed to the host (read through the result accessors).
 pub struct FfiResult {
     rows: Vec<(Vec<u8>, i64)>,
@@ -39,6 +80,27 @@ pub struct FfiResult {
 pub unsafe extern "C" fn q21v_build(supplier__n: usize, supplier__sk: *const i64, supplier__name: *const u8, supplier__name__off: *const usize, supplier__nk: *const i64, nation__n: usize, nation__nk: *const i64, nation__name: *const u8, nation__name__off: *const usize, forders__n: usize, forders: *const i64, flineitem__n: usize, flineitem: *const LiRow) -> *mut State {
     let supplier__v: Vec<SupE> = (0..supplier__n).map(|i| SupE { sk: *supplier__sk.add(i), name: text(supplier__name, supplier__name__off, i), nk: *supplier__nk.add(i) }).collect();
     let nation__v: Vec<NatE> = (0..nation__n).map(|i| NatE { nk: *nation__nk.add(i), name: text(nation__name, nation__name__off, i) }).collect();
+    if rec_on() {
+        rec_rows("build", "supplier", &["sk:int", "name:text", "nk:int"], &supplier__v, |r: &SupE, o: &mut String| {
+            o.push_str(&(r.sk).to_string()); o.push(',');
+            rec_text(&r.name, o); o.push(',');
+            o.push_str(&(r.nk).to_string());
+        });
+        rec_rows("build", "nation", &["nk:int", "name:text"], &nation__v, |r: &NatE, o: &mut String| {
+            o.push_str(&(r.nk).to_string()); o.push(',');
+            rec_text(&r.name, o);
+        });
+        rec_rows("build", "forders", &["value:int"], slice(forders, forders__n), |r: &i64, o: &mut String| {
+            o.push_str(&(*r).to_string());
+        });
+        rec_rows("build", "flineitem", &["orderkey:int", "suppkey:int", "commitdate:date", "receiptdate:date"], slice(flineitem, flineitem__n), |r: &LiRow, o: &mut String| {
+            o.push_str(&(r.orderkey).to_string()); o.push(',');
+            o.push_str(&(r.suppkey).to_string()); o.push(',');
+            o.push_str(&(r.commitdate).to_string()); o.push(',');
+            o.push_str(&(r.receiptdate).to_string());
+        });
+        return ptr::null_mut();
+    }
     match ob_build(supplier__v, nation__v, slice(forders, forders__n), slice(flineitem, flineitem__n), Ghost::assume_new()) {
         Some(s) => Box::into_raw(Box::new(s)),
         None => ptr::null_mut(),
@@ -59,6 +121,38 @@ pub unsafe extern "C" fn q21v_free(s: *mut State) {
 pub unsafe extern "C" fn q21v_rescan_lineitem_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LiDelta, nation_delta__n: usize, nation_delta__row__nk: *const i64, nation_delta__row__name: *const u8, nation_delta__row__name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrdDelta, supplier_delta__n: usize, supplier_delta__row__sk: *const i64, supplier_delta__row__name: *const u8, supplier_delta__row__name__off: *const usize, supplier_delta__row__nk: *const i64, supplier_delta__sign: *const i64, out: *mut i64, cap: usize) -> usize {
     let nation_delta__v: Vec<(NatE, i64)> = (0..nation_delta__n).map(|i| (NatE { nk: *nation_delta__row__nk.add(i), name: text(nation_delta__row__name, nation_delta__row__name__off, i) }, *nation_delta__sign.add(i))).collect();
     let supplier_delta__v: Vec<(SupE, i64)> = (0..supplier_delta__n).map(|i| (SupE { sk: *supplier_delta__row__sk.add(i), name: text(supplier_delta__row__name, supplier_delta__row__name__off, i), nk: *supplier_delta__row__nk.add(i) }, *supplier_delta__sign.add(i))).collect();
+    if rec_on() {
+        rec_rows("rescan_keys", "lineitem_delta", &["row.orderkey:int", "row.suppkey:int", "row.commitdate:date", "row.receiptdate:date", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LiDelta, o: &mut String| {
+            o.push_str(&(r.row.orderkey).to_string()); o.push(',');
+            o.push_str(&(r.row.suppkey).to_string()); o.push(',');
+            o.push_str(&(r.row.commitdate).to_string()); o.push(',');
+            o.push_str(&(r.row.receiptdate).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("rescan_keys", "nation_delta", &["row.nk:int", "row.name:text", "sign:int"], &nation_delta__v, |r: &(NatE, i64), o: &mut String| {
+            o.push_str(&(r.0.nk).to_string()); o.push(',');
+            rec_text(&r.0.name, o); o.push(',');
+            o.push_str(&(r.1).to_string());
+        });
+        rec_rows("rescan_keys", "orders_delta", &["orderkey:int", "status_is_f:bool", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrdDelta, o: &mut String| {
+            o.push_str(&(r.orderkey).to_string()); o.push(',');
+            o.push_str(&(r.status_is_f).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("rescan_keys", "supplier_delta", &["row.sk:int", "row.name:text", "row.nk:int", "sign:int"], &supplier_delta__v, |r: &(SupE, i64), o: &mut String| {
+            o.push_str(&(r.0.sk).to_string()); o.push(',');
+            rec_text(&r.0.name, o); o.push(',');
+            o.push_str(&(r.0.nk).to_string()); o.push(',');
+            o.push_str(&(r.1).to_string());
+        });
+        return {
+            let ks = rec_keys();
+            for (i, k) in ks.iter().take(cap).enumerate() {
+                *out.add(i) = *k as i64;
+            }
+            ks.len()
+        };
+    }
     let keys = ob_rescan_lineitem_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), &supplier_delta__v);
     for (i, k) in keys.iter().take(cap).enumerate() {
         *out.add(i) = *k;
@@ -72,6 +166,46 @@ pub unsafe extern "C" fn q21v_rescan_lineitem_keys(s: *const State, lineitem_del
 pub unsafe extern "C" fn q21v_apply(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LiDelta, nation_delta__n: usize, nation_delta__row__nk: *const i64, nation_delta__row__name: *const u8, nation_delta__row__name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrdDelta, supplier_delta__n: usize, supplier_delta__row__sk: *const i64, supplier_delta__row__name: *const u8, supplier_delta__row__name__off: *const usize, supplier_delta__row__nk: *const i64, supplier_delta__sign: *const i64, lineitem_keys__n: usize, lineitem_keys: *const i64, lineitem_rows__n: usize, lineitem_rows: *const LiRow, err: *mut i32) -> *mut State {
     let nation_delta__v: Vec<(NatE, i64)> = (0..nation_delta__n).map(|i| (NatE { nk: *nation_delta__row__nk.add(i), name: text(nation_delta__row__name, nation_delta__row__name__off, i) }, *nation_delta__sign.add(i))).collect();
     let supplier_delta__v: Vec<(SupE, i64)> = (0..supplier_delta__n).map(|i| (SupE { sk: *supplier_delta__row__sk.add(i), name: text(supplier_delta__row__name, supplier_delta__row__name__off, i), nk: *supplier_delta__row__nk.add(i) }, *supplier_delta__sign.add(i))).collect();
+    if rec_on() {
+        rec_rows("apply", "lineitem_delta", &["row.orderkey:int", "row.suppkey:int", "row.commitdate:date", "row.receiptdate:date", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LiDelta, o: &mut String| {
+            o.push_str(&(r.row.orderkey).to_string()); o.push(',');
+            o.push_str(&(r.row.suppkey).to_string()); o.push(',');
+            o.push_str(&(r.row.commitdate).to_string()); o.push(',');
+            o.push_str(&(r.row.receiptdate).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("apply", "nation_delta", &["row.nk:int", "row.name:text", "sign:int"], &nation_delta__v, |r: &(NatE, i64), o: &mut String| {
+            o.push_str(&(r.0.nk).to_string()); o.push(',');
+            rec_text(&r.0.name, o); o.push(',');
+            o.push_str(&(r.1).to_string());
+        });
+        rec_rows("apply", "orders_delta", &["orderkey:int", "status_is_f:bool", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrdDelta, o: &mut String| {
+            o.push_str(&(r.orderkey).to_string()); o.push(',');
+            o.push_str(&(r.status_is_f).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("apply", "supplier_delta", &["row.sk:int", "row.name:text", "row.nk:int", "sign:int"], &supplier_delta__v, |r: &(SupE, i64), o: &mut String| {
+            o.push_str(&(r.0.sk).to_string()); o.push(',');
+            rec_text(&r.0.name, o); o.push(',');
+            o.push_str(&(r.0.nk).to_string()); o.push(',');
+            o.push_str(&(r.1).to_string());
+        });
+        rec_rows("apply", "lineitem_keys", &["value:int"], slice(lineitem_keys, lineitem_keys__n), |r: &i64, o: &mut String| {
+            o.push_str(&(*r).to_string());
+        });
+        rec_rows("apply", "lineitem_rows", &["orderkey:int", "suppkey:int", "commitdate:date", "receiptdate:date"], slice(lineitem_rows, lineitem_rows__n), |r: &LiRow, o: &mut String| {
+            o.push_str(&(r.orderkey).to_string()); o.push(',');
+            o.push_str(&(r.suppkey).to_string()); o.push(',');
+            o.push_str(&(r.commitdate).to_string()); o.push(',');
+            o.push_str(&(r.receiptdate).to_string());
+        });
+        return {
+            if !err.is_null() {
+                *err = 99;
+            }
+            ptr::null_mut()
+        };
+    }
     match ob_apply(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), &supplier_delta__v, slice(lineitem_keys, lineitem_keys__n), slice(lineitem_rows, lineitem_rows__n), Ghost::assume_new(), Ghost::assume_new()) {
         Ok(s2) => {
             if !err.is_null() {
@@ -179,6 +313,46 @@ pub unsafe extern "C" fn q21vs_base_free(b: *mut QBase) {
 pub unsafe extern "C" fn q21vs_prepare_apply(st: *const QStore, b: *const QBase, lineitem_delta__n: usize, lineitem_delta: *const LiDelta, nation_delta__n: usize, nation_delta__row__nk: *const i64, nation_delta__row__name: *const u8, nation_delta__row__name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrdDelta, supplier_delta__n: usize, supplier_delta__row__sk: *const i64, supplier_delta__row__name: *const u8, supplier_delta__row__name__off: *const usize, supplier_delta__row__nk: *const i64, supplier_delta__sign: *const i64, lineitem_keys__n: usize, lineitem_keys: *const i64, lineitem_rows__n: usize, lineitem_rows: *const LiRow, err: *mut i32) -> *mut QPrepared {
     let nation_delta__v: Vec<(NatE, i64)> = (0..nation_delta__n).map(|i| (NatE { nk: *nation_delta__row__nk.add(i), name: text(nation_delta__row__name, nation_delta__row__name__off, i) }, *nation_delta__sign.add(i))).collect();
     let supplier_delta__v: Vec<(SupE, i64)> = (0..supplier_delta__n).map(|i| (SupE { sk: *supplier_delta__row__sk.add(i), name: text(supplier_delta__row__name, supplier_delta__row__name__off, i), nk: *supplier_delta__row__nk.add(i) }, *supplier_delta__sign.add(i))).collect();
+    if rec_on() {
+        rec_rows("apply", "lineitem_delta", &["row.orderkey:int", "row.suppkey:int", "row.commitdate:date", "row.receiptdate:date", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LiDelta, o: &mut String| {
+            o.push_str(&(r.row.orderkey).to_string()); o.push(',');
+            o.push_str(&(r.row.suppkey).to_string()); o.push(',');
+            o.push_str(&(r.row.commitdate).to_string()); o.push(',');
+            o.push_str(&(r.row.receiptdate).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("apply", "nation_delta", &["row.nk:int", "row.name:text", "sign:int"], &nation_delta__v, |r: &(NatE, i64), o: &mut String| {
+            o.push_str(&(r.0.nk).to_string()); o.push(',');
+            rec_text(&r.0.name, o); o.push(',');
+            o.push_str(&(r.1).to_string());
+        });
+        rec_rows("apply", "orders_delta", &["orderkey:int", "status_is_f:bool", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrdDelta, o: &mut String| {
+            o.push_str(&(r.orderkey).to_string()); o.push(',');
+            o.push_str(&(r.status_is_f).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("apply", "supplier_delta", &["row.sk:int", "row.name:text", "row.nk:int", "sign:int"], &supplier_delta__v, |r: &(SupE, i64), o: &mut String| {
+            o.push_str(&(r.0.sk).to_string()); o.push(',');
+            rec_text(&r.0.name, o); o.push(',');
+            o.push_str(&(r.0.nk).to_string()); o.push(',');
+            o.push_str(&(r.1).to_string());
+        });
+        rec_rows("apply", "lineitem_keys", &["value:int"], slice(lineitem_keys, lineitem_keys__n), |r: &i64, o: &mut String| {
+            o.push_str(&(*r).to_string());
+        });
+        rec_rows("apply", "lineitem_rows", &["orderkey:int", "suppkey:int", "commitdate:date", "receiptdate:date"], slice(lineitem_rows, lineitem_rows__n), |r: &LiRow, o: &mut String| {
+            o.push_str(&(r.orderkey).to_string()); o.push(',');
+            o.push_str(&(r.suppkey).to_string()); o.push(',');
+            o.push_str(&(r.commitdate).to_string()); o.push(',');
+            o.push_str(&(r.receiptdate).to_string());
+        });
+        return {
+            if !err.is_null() {
+                *err = 99;
+            }
+            ptr::null_mut()
+        };
+    }
     match prepare_apply(&*st, &*b, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), &supplier_delta__v, slice(lineitem_keys, lineitem_keys__n), slice(lineitem_rows, lineitem_rows__n), Ghost::assume_new()) {
         Ok(p) => {
             if !err.is_null() {
@@ -206,6 +380,27 @@ pub unsafe extern "C" fn q21vs_prepare_build(st: *const QStore, supplier__n: usi
     }
     let supplier__v: Vec<SupE> = (0..supplier__n).map(|i| SupE { sk: *supplier__sk.add(i), name: text(supplier__name, supplier__name__off, i), nk: *supplier__nk.add(i) }).collect();
     let nation__v: Vec<NatE> = (0..nation__n).map(|i| NatE { nk: *nation__nk.add(i), name: text(nation__name, nation__name__off, i) }).collect();
+    if rec_on() {
+        rec_rows("build", "supplier", &["sk:int", "name:text", "nk:int"], &supplier__v, |r: &SupE, o: &mut String| {
+            o.push_str(&(r.sk).to_string()); o.push(',');
+            rec_text(&r.name, o); o.push(',');
+            o.push_str(&(r.nk).to_string());
+        });
+        rec_rows("build", "nation", &["nk:int", "name:text"], &nation__v, |r: &NatE, o: &mut String| {
+            o.push_str(&(r.nk).to_string()); o.push(',');
+            rec_text(&r.name, o);
+        });
+        rec_rows("build", "forders", &["value:int"], slice(forders, forders__n), |r: &i64, o: &mut String| {
+            o.push_str(&(*r).to_string());
+        });
+        rec_rows("build", "flineitem", &["orderkey:int", "suppkey:int", "commitdate:date", "receiptdate:date"], slice(flineitem, flineitem__n), |r: &LiRow, o: &mut String| {
+            o.push_str(&(r.orderkey).to_string()); o.push(',');
+            o.push_str(&(r.suppkey).to_string()); o.push(',');
+            o.push_str(&(r.commitdate).to_string()); o.push(',');
+            o.push_str(&(r.receiptdate).to_string());
+        });
+        return ptr::null_mut();
+    }
     Box::into_raw(Box::new(prepare_build(&*st, e, supplier__v, nation__v, slice(forders, forders__n), slice(flineitem, flineitem__n))))
 }
 

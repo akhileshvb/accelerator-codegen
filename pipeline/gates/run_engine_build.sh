@@ -92,6 +92,14 @@ elif status == "pass":
                 "target=accelerator_codegen"
             )
 
+# The backend names no query: queries register from src/generated/<bench>/q<N>/.
+if status == "pass" and engine in ("duckdb", "postgres", "mysql"):
+    check = run([sys.executable, str(repo / "scripts" / "check_backend_query_free.py"), "--engine", engine])
+    if check.returncode != 0:
+        status = "fail"
+        notes.append("per-query code in the backend (registries + generic dispatch only): "
+                     + (check.stdout or "")[-1500:])
+
 payload = {
     "gate": "engine_build",
     "status": status,

@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/query_layouts.hpp"
+#include "tpch/q6/layout.hpp"
 #include "tpch/q6/postgres/aux/finalize.hpp"
 
 namespace accelerator_codegen::aux_state::query {

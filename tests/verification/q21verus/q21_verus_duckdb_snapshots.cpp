@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
     }
     Require(!nations.empty() && !keys.empty(), "no Q21 data to write on");
 
-    DuckdbRuntime rt(wc, catalog::TpchQ21VerusCatalogEntry(), 10.0);
+    DuckdbRuntime rt(wc, *catalog::FindSharedQueryByAccelerator("tpch_q21_verus"), 10.0);
     rt.EnableMutationCapture();
     rt.Build();
 

@@ -2,6 +2,7 @@
 #include "tpch/q8/duckdb/base/query.hpp"
 
 #include <memory>
+#include <stdexcept>
 #include <sstream>
 
 #include "duckdb/common/string_util.hpp"
@@ -179,6 +180,40 @@ NativeScanSpec CreateQ8CustomerScanSpec(const Q8Parameters &) {
 	return scan_spec;
 }
 
+namespace {
+
+void DrainInto(duckdb::ClientContext &context, KernelInstance &kernel, const duckdb::FunctionData &input,
+               duckdb::idx_t input_id) {
+	auto source = CreateNativeChunkSource(context, input);
+	while (source->Next()) {
+		kernel.ConsumeInput(input_id, source->Chunk());
+	}
+}
+
+duckdb::unique_ptr<KernelInstance> CreateQ8FusedKernelInstance(const QueryParameters &parameters,
+                                                               const QueryKernelFactoryData *) {
+	if (!Q8FusedScansEnabled()) {
+		return nullptr;
+	}
+	return CreateQ8Kernel(dynamic_cast<const Q8Parameters &>(parameters));
+}
+
+// Inputs 0..1 drained, fused customer scan, orders drained, fused lineitem scan.
+void RunQ8FusedScan(duckdb::ClientContext &context, KernelInstance &kernel,
+                    const duckdb::vector<duckdb::unique_ptr<duckdb::FunctionData>> &bound_inputs) {
+	if (bound_inputs.size() != 5) {
+		throw std::runtime_error("Q8 fused scans expect five bound inputs");
+	}
+	for (duckdb::idx_t input_id = 0; input_id < 2; input_id++) {
+		DrainInto(context, kernel, *bound_inputs[input_id], input_id);
+	}
+	Q8RunFusedCustomerScan(context, kernel, *bound_inputs[2]);
+	DrainInto(context, kernel, *bound_inputs[3], static_cast<duckdb::idx_t>(Q8InputId::ORDERS));
+	Q8RunFusedLineitemScan(context, kernel, *bound_inputs[4]);
+}
+
+} // namespace
+
 duckdb::TableFunctionSet CreateTpchQ8FunctionSet() {
 	QueryPackage package;
 	package.function_name = "accel_tpch_q8";
@@ -187,6 +222,8 @@ duckdb::TableFunctionSet CreateTpchQ8FunctionSet() {
 	};
 	package.bind_query = BindQ8Package;
 	package.create_kernel = CreateQ8KernelInstance;
+	package.create_fused_kernel = CreateQ8FusedKernelInstance;
+	package.fused_scan = RunQ8FusedScan;
 	return CreateRuntimeBackedFunctionSet(package);
 }
 

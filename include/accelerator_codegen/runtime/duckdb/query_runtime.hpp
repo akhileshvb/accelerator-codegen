@@ -46,11 +46,23 @@ using QueryBindCallback = QueryBindResult (*)(duckdb::ClientContext &context, du
 using CreateKernelCallback = duckdb::unique_ptr<KernelInstance> (*)(const QueryParameters &parameters,
                                                                     const QueryKernelFactoryData *factory_data);
 
+// Optional query-owned scan path (fused scans).  When `create_fused_kernel`
+// returns a kernel, the runtime calls `fused_scan` once with the bound inputs
+// instead of draining each into ConsumeInput (the scan may still drain some
+// inputs itself with CreateNativeChunkSource).  A null kernel means the
+// default path: `create_kernel` and every bound input drained in order.
+using CreateFusedKernelCallback = duckdb::unique_ptr<KernelInstance> (*)(const QueryParameters &parameters,
+                                                                         const QueryKernelFactoryData *factory_data);
+using FusedScanCallback = void (*)(duckdb::ClientContext &context, KernelInstance &kernel,
+                                   const duckdb::vector<duckdb::unique_ptr<duckdb::FunctionData>> &bound_inputs);
+
 struct QueryPackage {
     std::string function_name;
     duckdb::vector<QueryFunctionOverload> overloads;
     QueryBindCallback bind_query = nullptr;
     CreateKernelCallback create_kernel = nullptr;
+    CreateFusedKernelCallback create_fused_kernel = nullptr;
+    FusedScanCallback fused_scan = nullptr;
 };
 
 duckdb::TableFunctionSet CreateRuntimeBackedFunctionSet(const QueryPackage &package);

@@ -24,7 +24,7 @@ You are bootstrapping the **query-facing host** for **`{{engine_name}}`** so lat
 | Build dir | `{{build_dir}}` |
 | Dataset / SDK env | `{{dataset_env}}` |
 | Query tree | `src/generated/{bench}/q*/{{engine_name}}/` |
-| Catalog | `src/generated/catalog/{{engine_name}}/query_catalog.{hpp,cpp}` |
+| Catalog registry | `src/generated/catalog/{{engine_name}}/query_catalog.{hpp,cpp}` (entries registered from each query's directory) |
 
 Prefer these conventions. If an engine already uses a slightly different file under `src/generated/{{engine_name}}/` or `runtime|stateful/{{engine_name}}/`, extend that file instead of creating a parallel tree.
 
@@ -41,8 +41,8 @@ Prefer these conventions. If an engine already uses a slightly different file un
    - Reuse this engine’s `engine_backend` adapters for **mutation / txn / store / tooling** and any **engine-local** rebuild scan helper. Do **not** invent `runtime/{{engine_name}}2`. Do **not** require `ScanNativeBaseTable` → DataChunk.
 
 2. **SQL entrypoints (shared, append-only)**
-   - On `{{register_path}}` (or the real extension/register file you found), add shared helpers so later queries can register base + aux call paths via **this host’s** native APIs + `AuxQueryModule`.
-   - You do **not** need a full TPC-H Q{{query_number}} kernel here — stubs / catalog-driven dispatch / peer-query patterns that **link and load** are enough for bootstrap.
+   - In the backend (`src/generated/{{engine_name}}/`, `runtime|stateful/{{engine_name}}/`), add generic **registries** + dispatch so each later query registers its base + aux call paths from its own directory (`{{register_path}}`) via static registrars, through **this host’s** native APIs + `AuxQueryModule`. The backend must name no query and must still build with every `src/generated/<bench>/q<N>/` removed.
+   - You do **not** need a full TPC-H Q{{query_number}} kernel here — registries + generic dispatch that **link and load** (with zero or one registered query) are enough for bootstrap.
    - Never wire this host through DuckDB `RegisterAcceleratorFunctions` or `*.duckdb` as the execution host when `{{engine_name}}≠duckdb`.
 
 3. **Differential harness**

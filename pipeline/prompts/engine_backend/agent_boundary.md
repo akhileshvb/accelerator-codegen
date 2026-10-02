@@ -5,6 +5,7 @@
 - `include|src/.../runtime/{engine}/` — engine-local scan helper, toy Runtime
 - `include|src/.../stateful/{engine}/` — AuxBackend, StateStore, mutation/txn bridges
 - Optional `src/generated/{engine}/` — extension / UDF host glue (host layer)
+- Query **registries** + generic dispatch (`layer_contracts.md`, "Query registries"): the backend names no query; queries register from `src/generated/{benchmark}/q{N}/{engine}/`
 - **`tests/engine_backend/test_{engine}_{layer}.cpp`** — one harness per layer in
   `layers.md` (implementation-owned)
 - **`tests/engine_backend/test_{engine}_adversarial.cpp`** — validation-owned only
@@ -16,7 +17,7 @@
 ## Must not modify
 
 - `stateful/core|state|maintenance` (fixed substrate)
-- Per-query `src/generated/{benchmark}/q{N}/**` — layer tests must **not** depend on these
+- Per-query `src/generated/{benchmark}/q{N}/**` — layer tests must **not** depend on these, and backend files must not name a query (no per-query arrays, switches, function lists, includes)
 - **Any other engine’s tree** (`runtime|stateful|{other}/`). From-scratch: substrate
   + templates + this engine’s SDK hints only.
 

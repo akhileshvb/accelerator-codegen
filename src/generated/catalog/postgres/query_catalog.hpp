@@ -1,5 +1,6 @@
-// GENERATED BACKEND — PostgreSQL query catalog.
-// Empty until accelerator kernels are generated under src/generated/{bench}/q{N}/postgres/.
+// GENERATED BACKEND — PostgreSQL query catalog registry.
+// Names no query: each query registers its entry from
+// src/generated/{bench}/q{N}/postgres/aux/catalog.cpp (PostgresQueryCatalogRegistrar).
 #pragma once
 
 #include <cstdint>
@@ -22,6 +23,16 @@ struct PostgresSharedQueryCatalogEntry {
   const char *base_sql = nullptr;
   const char *accelerator_sql = nullptr;
   const char *aux_sql = nullptr;
+};
+
+// Plain function (defined in query_catalog.cpp, function-local storage); safe
+// to call from static initialisers of any translation unit.
+void RegisterPostgresQuery(const PostgresSharedQueryCatalogEntry &entry);
+
+struct PostgresQueryCatalogRegistrar {
+  explicit PostgresQueryCatalogRegistrar(const PostgresSharedQueryCatalogEntry &entry) {
+    RegisterPostgresQuery(entry);
+  }
 };
 
 const PostgresSharedQueryCatalogEntry &LookupPostgresQuery(const std::string &workload_name,

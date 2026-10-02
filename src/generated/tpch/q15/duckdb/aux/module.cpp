@@ -1,5 +1,5 @@
 #include "tpch/q15/duckdb/aux/module.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "tpch/q15/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -992,7 +992,7 @@ bool TpchQ15Module::LoadDirectory(core::AuxEngineServices &services,
 }
 
 std::vector<core::CalibrationWrite> TpchQ15Module::CalibrationWrites() const {
-  return TpchCalibrationWrites(15);
+  return TpchQ15CalibrationWrites();
 }
 
 } // namespace accelerator_codegen::aux_state::query

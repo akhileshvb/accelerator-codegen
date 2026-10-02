@@ -44,7 +44,7 @@ Env: `ACCEL_SEC_EDGAR_DB` (not `ACCEL_TPCH_DB`).
 
 ## Read path
 
-- Base fallback: fused scan via `src/generated/sec_edgar/runtime.cpp` / `RunSecEdgarQ{N}FusedPreScan`
+- Base fallback: fused scan via the package's `fused_scan` hook / `RunSecEdgarQ{N}FusedPreScan`
 - Aux: `AuxQueryModule::CheckValidity` + `Execute` / `ExecuteFallback` via `accel_sec_edgar_q{N}_aux`
 - Correctness: **full ordered multi-row** result match (not scalar)
 

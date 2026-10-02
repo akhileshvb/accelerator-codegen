@@ -2,6 +2,7 @@
 #include "tpch/q2/duckdb/base/query.hpp"
 
 #include <memory>
+#include <stdexcept>
 #include <sstream>
 
 #include "duckdb/common/string_util.hpp"
@@ -135,6 +136,39 @@ NativeScanSpec CreateQ2PartsuppScanSpec(const Q2Parameters &) {
 	return scan_spec;
 }
 
+namespace {
+
+void DrainInto(duckdb::ClientContext &context, KernelInstance &kernel, const duckdb::FunctionData &input,
+               duckdb::idx_t input_id) {
+	auto source = CreateNativeChunkSource(context, input);
+	while (source->Next()) {
+		kernel.ConsumeInput(input_id, source->Chunk());
+	}
+}
+
+duckdb::unique_ptr<KernelInstance> CreateQ2FusedKernelInstance(const QueryParameters &parameters,
+                                                               const QueryKernelFactoryData *) {
+	if (!Q2FusedScansEnabled()) {
+		return nullptr;
+	}
+	return CreateQ2Kernel(dynamic_cast<const Q2Parameters &>(parameters));
+}
+
+// Inputs 0..1 drained, then the fused partsupp and supplier scans.
+void RunQ2FusedScan(duckdb::ClientContext &context, KernelInstance &kernel,
+                    const duckdb::vector<duckdb::unique_ptr<duckdb::FunctionData>> &bound_inputs) {
+	if (bound_inputs.size() != 4) {
+		throw std::runtime_error("Q2 fused scans expect four bound inputs");
+	}
+	for (duckdb::idx_t input_id = 0; input_id < 2; input_id++) {
+		DrainInto(context, kernel, *bound_inputs[input_id], input_id);
+	}
+	Q2RunFusedPartsuppScan(context, kernel, *bound_inputs[2]);
+	Q2RunFusedSupplierVarcharScan(context, kernel, *bound_inputs[3]);
+}
+
+} // namespace
+
 duckdb::TableFunctionSet CreateTpchQ2FunctionSet() {
 	QueryPackage package;
 	package.function_name = "accel_tpch_q2";
@@ -143,6 +177,8 @@ duckdb::TableFunctionSet CreateTpchQ2FunctionSet() {
 	};
 	package.bind_query = BindQ2Package;
 	package.create_kernel = CreateQ2KernelInstance;
+	package.create_fused_kernel = CreateQ2FusedKernelInstance;
+	package.fused_scan = RunQ2FusedScan;
 	return CreateRuntimeBackedFunctionSet(package);
 }
 

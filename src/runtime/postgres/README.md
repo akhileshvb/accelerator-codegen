@@ -8,8 +8,19 @@ SDK to build the optional `accelerator_codegen_pg` MODULE.
 ## Live path (per-engine, no DataChunk IR)
 
 - **Base tables** stay in native Postgres heap. Aux `Build` / rebuild uses
-  SPI typed InitialScans in `src/generated/postgres/runtime.cpp`.
-- **Base SRFs** (`accel_tpch_qN`) alias aux Execute via `kernel_executor.cpp`.
+  SPI typed InitialScans in each query's `postgres/extension/scan.cpp`.
+- **Base SRFs** (`accel_tpch_qN`) alias aux Execute via each query's
+  `postgres/base/base.cpp`.
+- **Backend vs. query code.** The backend (`src/generated/postgres/`:
+  `runtime.{hpp,cpp}` registry + dispatch, `engine_helpers.hpp`,
+  `engine_runtime.hpp`) names no query. Per-query code lives in
+  `src/generated/<bench>/q<N>/postgres/{aux/catalog.cpp,
+  extension/scan.cpp, extension/functions.cpp, base/base.cpp}` and registers
+  through static registrars; `cmake/PostgresAdapter.cmake` globs
+  `extension/*.cpp` and `base/*.cpp` into the MODULE. SQL functions are
+  created by `SELECT accel_postgres_register_queries();` from the
+  registered per-query `CREATE FUNCTION` text (see
+  `scripts/postgres_register_tpch_all.sql`).
 - **Mutations** go through statement-level transition triggers →
   `AcceleratorCodegenCaptureTransition` (`transition_capture.cpp`) →
   registered `PostgresAuxBackend` coordinators.

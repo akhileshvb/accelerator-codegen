@@ -1,7 +1,10 @@
 // GENERATED BACKEND
 #pragma once
 
+#include <cmath>
 #include <cstdint>
+#include <stdexcept>
+#include <utility>
 #include <functional>
 #include <string>
 #include <vector>
@@ -61,11 +64,36 @@ struct SharedQueryCatalogEntry {
   ProbeBuilder build_probe;
 };
 
+// ---- the registry: each query's directory registers its entries ----
+//
+// src/generated/<bench>/q<N>/duckdb/aux/register.cpp holds
+//   const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{...}};
+// next to its DuckDB AuxQueryRegistrar (runtime/duckdb/aux_query_registry.hpp).
+void RegisterSharedQuery(SharedQueryCatalogEntry entry);
+struct SharedQueryRegistrar {
+  explicit SharedQueryRegistrar(SharedQueryCatalogEntry entry) { RegisterSharedQuery(std::move(entry)); }
+};
+// Another accelerator serving a registered query (same SQL, probes and
+// arguments) under its own id and aux SQL, e.g. a Verus kernel for it.
+void RegisterSharedQueryVariant(std::string accelerator_id, SharedWorkloadKind workload, int query_id,
+                                std::string duckdb_aux_sql);
+struct SharedQueryVariantRegistrar {
+  SharedQueryVariantRegistrar(std::string accelerator_id, SharedWorkloadKind workload, int query_id,
+                              std::string duckdb_aux_sql) {
+    RegisterSharedQueryVariant(std::move(accelerator_id), workload, query_id, std::move(duckdb_aux_sql));
+  }
+};
+// The entry an accelerator id serves: a registered entry, a variant,
+// `<id>_aux_parallel` of a registered entry, or a Verus kit accelerator.
+// Null if none.
+const SharedQueryCatalogEntry *FindSharedQueryByAccelerator(const std::string &accelerator_id);
+
 const SharedQueryCatalogEntry &LookupSharedQuery(SharedWorkloadKind workload,
                                                int query_id);
-// TPC-H Q21 served by the Verus-verified kernel (accelerator "tpch_q21_verus",
-// table function accel_tpch_q21_verus).  Same SQL / probes as Q21.
-const SharedQueryCatalogEntry &TpchQ21VerusCatalogEntry();
+// A Verus accelerator registered through the host kit (verus_kit.hpp): its
+// catalog query's entry under the accelerator's id (table function
+// accel_<id>).  Null if no glue with that id is registered.
+const SharedQueryCatalogEntry *VerusKitCatalogEntry(const std::string &accelerator_id);
 
 const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_name,
                                                int query_id);
@@ -110,5 +138,91 @@ core::MutationBatch BuildSharedMutation(const SharedQueryCatalogEntry &entry,
                                         const SharedProbe &probe);
 
 core::QueryArguments ToCoreArguments(const SharedQueryArguments &arguments);
+
+// ---- value helpers for the queries' probe builders ----
+namespace catalog_values {
+
+inline void Require(bool condition, const std::string &message) {
+  if (!condition) {
+    throw std::runtime_error(message);
+  }
+}
+
+inline int64_t DecimalRaw(const ::duckdb::Value &value) {
+  if (value.IsNull()) {
+    return 0;
+  }
+  try {
+    return static_cast<int64_t>(
+        std::llround(std::stod(value.ToString()) * 100.0));
+  } catch (const std::exception &) {
+    return 0;
+  }
+}
+
+inline core::AuxValue Text(const ::duckdb::Value &value) {
+  if (value.IsNull()) {
+    return core::AuxValue::Null(core::AuxType::String);
+  }
+  return core::AuxValue::Of(core::AuxType::String, value.ToString());
+}
+
+inline int64_t SafeInt64(const ::duckdb::Value &value) {
+  if (value.IsNull()) {
+    return 0;
+  }
+  try {
+    return static_cast<int64_t>(std::llround(std::stod(value.ToString())));
+  } catch (const std::exception &) {
+    return 0;
+  }
+}
+
+inline core::AuxValue Int(const ::duckdb::Value &value) {
+  if (value.IsNull()) {
+    return core::AuxValue::Null(core::AuxType::Int64);
+  }
+  return core::AuxValue::Of(core::AuxType::Int64, SafeInt64(value));
+}
+
+inline std::string SqlLiteral(const std::string &value) {
+  std::string quoted = "'";
+  for (const char ch : value) {
+    if (ch == '\'') {
+      quoted += "''";
+    } else {
+      quoted += ch;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
+inline core::AuxValue Number(const ::duckdb::Value &value) {
+  if (value.IsNull()) {
+    return core::AuxValue::Null(core::AuxType::Double);
+  }
+  return core::AuxValue::Of(core::AuxType::Double,
+                            std::stod(value.ToString()));
+}
+
+inline core::AuxValue Date(int32_t days) {
+  return core::AuxValue::Of(core::AuxType::Date, core::AuxDate{days});
+}
+
+inline core::AuxValue Decimal(int64_t raw, int32_t scale) {
+  return core::AuxValue::Of(core::AuxType::ScaledDecimal,
+                            core::ScaledDecimal{raw, scale});
+}
+
+inline int32_t DateDays(const ::duckdb::Value &value) {
+  if (value.IsNull()) {
+    return 0;
+  }
+  const auto date = value.GetValue<::duckdb::date_t>();
+  return ::duckdb::Date::EpochDays(date);
+}
+
+} // namespace catalog_values
 
 } // namespace accelerator_codegen::aux_state::engine

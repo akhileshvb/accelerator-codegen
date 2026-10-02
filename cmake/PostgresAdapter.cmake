@@ -50,18 +50,21 @@ function(accel_build_postgres_extension)
     list(APPEND _pg_ext_sources src/stateful/postgres/aux_mutation_epoch.cpp)
   endif()
 
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/postgres/query_functions.cpp")
-    list(APPEND _pg_ext_sources src/runtime/postgres/query_functions.cpp)
-  endif()
-
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/postgres/kernel_executor.cpp")
-    list(APPEND _pg_ext_sources src/runtime/postgres/kernel_executor.cpp)
-  endif()
+  # Per-query module code (SPI scans, PG_FUNCTION shims, base kernels). Each
+  # query registers itself through static registrars (postgres/runtime.hpp);
+  # no query is named here, and a tree without any q<N> directory still builds.
+  file(GLOB _pg_query_sources CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/*/q*/postgres/extension/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/*/q*/postgres/base/*.cpp")
+  list(SORT _pg_query_sources)
+  list(APPEND _pg_ext_sources ${_pg_query_sources})
 
   # Verus-verified stateless Q1 (scripts/build_q1_verus.sh builds the archive).
   set(_pg_q1_verus_lib "${CMAKE_CURRENT_SOURCE_DIR}/build-verus/libq1_verus.a")
   if(EXISTS "${_pg_q1_verus_lib}")
-    list(APPEND _pg_ext_sources src/generated/tpch/q1/postgres/verus/entry.cpp)
+    file(GLOB _pg_verus_entries CONFIGURE_DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/*/q*/postgres/verus/entry.cpp")
+    list(APPEND _pg_ext_sources ${_pg_verus_entries})
   endif()
 
   if(_pg_ext_sources)

@@ -195,6 +195,26 @@ fn flat(m: &Model, el: &Elem) -> bool {
     }
 }
 
+/// One C argument of a rows parameter, in ABI order (shared by the C ABI and
+/// the C++ host glue, so the two cannot disagree on positions).
+#[derive(Clone, Debug)]
+enum SlotKind {
+    Count,
+    Prim(&'static str),
+    TextBytes,
+    TextOff,
+    CopyStruct(String),
+    Sign,
+}
+
+#[derive(Clone, Debug)]
+struct Slot {
+    name: String,
+    kind: SlotKind,
+    /// Field path from the parameter's row to this argument's value.
+    path: Vec<String>,
+}
+
 struct Ffi<'m> {
     m: &'m Model,
     p: String,
@@ -214,24 +234,29 @@ impl<'m> Ffi<'m> {
     }
 
     /// Column parameters of element `el` under name `pre` (n rows), and the
-    /// Rust expression for row `i`.
-    fn columns(&self, el: &Elem, pre: &str, rp: &mut Vec<String>, cp: &mut Vec<String>) -> String {
+    /// Rust expression for row `i`; `slots` records them in ABI order.
+    fn columns(&self, el: &Elem, pre: &str, path: &[String], rp: &mut Vec<String>, cp: &mut Vec<String>, slots: &mut Vec<Slot>) -> String {
+        let slot = |slots: &mut Vec<Slot>, name: String, kind: SlotKind| slots.push(Slot { name, kind, path: path.to_vec() });
         match el {
             Elem::Prim("Vec<u8>") => {
                 rp.push(format!("{pre}: *const u8"));
                 rp.push(format!("{pre}__off: *const usize"));
                 cp.push(format!("const uint8_t *{}", c_ident(pre)));
                 cp.push(format!("const size_t *{pre}__off"));
+                slot(slots, pre.to_string(), SlotKind::TextBytes);
+                slot(slots, format!("{pre}__off"), SlotKind::TextOff);
                 format!("text({pre}, {pre}__off, i)")
             }
             Elem::Prim(rt) => {
                 rp.push(format!("{pre}: *const {rt}"));
                 cp.push(format!("const {} *{}", c_prim(rt), c_ident(pre)));
+                slot(slots, pre.to_string(), SlotKind::Prim(rt));
                 format!("*{pre}.add(i)")
             }
             Elem::Struct(n) if strukt(self.m, n).copy => {
                 rp.push(format!("{pre}: *const {n}"));
                 cp.push(format!("const {} *{}", self.c_struct(n), c_ident(pre)));
+                slot(slots, pre.to_string(), SlotKind::CopyStruct(n.clone()));
                 format!("*{pre}.add(i)")
             }
             Elem::Struct(n) => {
@@ -239,17 +264,35 @@ impl<'m> Ffi<'m> {
                 let fs: Vec<String> = s
                     .fields
                     .iter()
-                    .map(|(f, fe)| format!("{f}: {}", self.columns(fe, &format!("{pre}__{f}"), rp, cp)))
+                    .map(|(f, fe)| {
+                        let mut p2 = path.to_vec();
+                        p2.push(f.clone());
+                        format!("{f}: {}", self.columns(fe, &format!("{pre}__{f}"), &p2, rp, cp, slots))
+                    })
                     .collect();
                 format!("{n} {{ {} }}", fs.join(", "))
             }
             Elem::Pair(n) => {
-                let row = self.columns(&Elem::Struct(n.clone()), &format!("{pre}__row"), rp, cp);
+                let mut prow = path.to_vec();
+                prow.push("row".into());
+                let row = self.columns(&Elem::Struct(n.clone()), &format!("{pre}__row"), &prow, rp, cp, slots);
                 rp.push(format!("{pre}__sign: *const i64"));
                 cp.push(format!("const int64_t *{pre}__sign"));
+                let mut ps = path.to_vec();
+                ps.push("sign".into());
+                slots.push(Slot { name: format!("{pre}__sign"), kind: SlotKind::Sign, path: ps });
                 format!("({row}, *{pre}__sign.add(i))")
             }
         }
+    }
+
+    /// The ABI slots of a rows parameter (count first).
+    fn rows_slots(&self, p: &P) -> Vec<Slot> {
+        let Arg::Rows(el) = &p.arg else { return vec![] };
+        let (mut rp, mut cp, mut slots) = (vec![], vec![], vec![]);
+        slots.push(Slot { name: format!("{}__n", p.name), kind: SlotKind::Count, path: vec![] });
+        self.columns(el, &p.name, &[], &mut rp, &mut cp, &mut slots);
+        slots
     }
 
     /// The C parameters of obligation parameters `ps` (ghosts erased), the
@@ -281,11 +324,12 @@ impl<'m> Ffi<'m> {
                 Arg::Rows(el) => {
                     rp.push(format!("{x}__n: usize"));
                     cp.push(format!("size_t {x}__n"));
+                    let mut slots = vec![];
                     if flat(self.m, el) && p.ty.starts_with("&[") {
-                        self.columns(el, x, rp, cp);
+                        self.columns(el, x, &[], rp, cp, &mut slots);
                         args.push(format!("slice({x}, {x}__n)"));
                     } else {
-                        let row = self.columns(el, x, rp, cp);
+                        let row = self.columns(el, x, &[], rp, cp, &mut slots);
                         writeln!(pre, "    let {x}__v: Vec<{}> = (0..{x}__n).map(|i| {row}).collect();", self.elem_rust(el)).unwrap();
                         args.push(if p.ty.starts_with('&') { format!("&{x}__v") } else { format!("{x}__v") });
                     }
@@ -295,9 +339,67 @@ impl<'m> Ffi<'m> {
         (pre, args)
     }
 
+    /// A field's record tag: its SQL type (dec<s> for decimals).
+    fn rec_tag(t: Ty) -> String {
+        match t {
+            Ty::Dec(s) => format!("dec{s}"),
+            Ty::Date => "date".into(),
+            Ty::Ts => "ts".into(),
+            Ty::Bool => "bool".into(),
+            Ty::Text => "text".into(),
+            _ => "int".into(),
+        }
+    }
+
+    /// Record-mode description of a row element: field `name:tag`s and the
+    /// Rust statements writing row `r`'s values (flattened) as JSON.
+    fn rec_row(&self, el: &Elem, prim: Ty, r: &str, prefix: &str, fields: &mut Vec<String>, stmts: &mut Vec<String>) {
+        let val = |ty: Ty, rt: &str, expr: String, fields: &mut Vec<String>, stmts: &mut Vec<String>, name: String| {
+            fields.push(format!("{name}:{}", Self::rec_tag(ty)));
+            stmts.push(if rt == "Vec<u8>" { format!("rec_text(&{expr}, o);") } else { format!("o.push_str(&({expr}).to_string());") });
+        };
+        match el {
+            Elem::Prim(rt) => val(prim, rt, format!("*{r}"), fields, stmts, if prefix.is_empty() { "value".into() } else { prefix.trim_end_matches('.').into() }),
+            Elem::Struct(n) => {
+                let st = strukt(self.m, n);
+                for (i, (f, fe)) in st.fields.iter().enumerate() {
+                    match fe {
+                        Elem::Struct(_) => self.rec_row(fe, Ty::Int, &format!("{r}.{f}"), &format!("{prefix}{f}."), fields, stmts),
+                        Elem::Prim(rt) => val(st.tys[i], rt, format!("{r}.{f}"), fields, stmts, format!("{prefix}{f}")),
+                        Elem::Pair(_) => unreachable!(),
+                    }
+                }
+            }
+            Elem::Pair(n) => {
+                self.rec_row(&Elem::Struct(n.clone()), Ty::Int, &format!("{r}.0"), &format!("{prefix}row."), fields, stmts);
+                val(Ty::Int, "i64", format!("{r}.1"), fields, stmts, format!("{prefix}sign"));
+            }
+        }
+    }
+
+    /// The record-mode block of an entry point: log every rows argument, then
+    /// return `ret` without calling the kernel.
+    fn rec_block(&self, ps: &[&P], label: &str, ret: &str) -> String {
+        let mut w = String::from("    if rec_on() {\n");
+        for p in ps {
+            let Arg::Rows(el) = &p.arg else { continue };
+            let x = &p.name;
+            let rows = if flat(self.m, el) && p.ty.starts_with("&[") { format!("slice({x}, {x}__n)") } else { format!("&{x}__v") };
+            let prim = self.m.scans.iter().find(|s| *x == s.name || *x == format!("{}_rows", s.name)).map(|s| s.ty).unwrap_or(Ty::Int);
+            let (mut fields, mut stmts) = (vec![], vec![]);
+            self.rec_row(el, prim, "r", "", &mut fields, &mut stmts);
+            let fl = fields.iter().map(|f| format!("\"{f}\"")).collect::<Vec<_>>().join(", ");
+            let body = stmts.join(" o.push(',');\n            ");
+            let ty = self.elem_rust(el);
+            w.push_str(&format!("        rec_rows(\"{label}\", \"{x}\", &[{fl}], {rows}, |r: &{ty}, o: &mut String| {{\n            {body}\n        }});\n"));
+        }
+        w.push_str(&format!("        return {ret};\n    }}\n"));
+        w
+    }
+
     fn out_ty(&self) -> String {
         let cols: Vec<String> =
-            self.m.outs.iter().map(|(rt, null)| if *null { format!("Option<{rt}>") } else { rt.to_string() }).collect();
+            self.m.outs.iter().map(|(rt, null, _)| if *null { format!("Option<{rt}>") } else { rt.to_string() }).collect();
         if cols.len() == 1 { cols[0].clone() } else { format!("({})", cols.join(", ")) }
     }
 
@@ -322,7 +424,9 @@ impl<'m> Ffi<'m> {
         // ── the kernel's states, owned by the host ──
         {
             let (mut rp, mut cp) = (vec![], vec![]);
-            let (pre, args) = self.marshal(&build.params.iter().collect::<Vec<_>>(), &mut rp, &mut cp);
+            let ps: Vec<&P> = build.params.iter().collect();
+            let (pre, args) = self.marshal(&ps, &mut rp, &mut cp);
+            let pre = pre + &self.rec_block(&ps, "build", "ptr::null_mut()");
             out.push(f(
                 &["Build from the scans: a state, or NULL (the host then answers with SQL)."],
                 format!("{p}_build"),
@@ -342,8 +446,10 @@ impl<'m> Ffi<'m> {
         ));
         for r in self.m.fns.iter().filter(|x| x.name.starts_with("rescan_")) {
             let (mut rp, mut cp) = (vec![], vec![]);
-            let (pre, args) = self.marshal(&r.params.iter().collect::<Vec<_>>(), &mut rp, &mut cp);
+            let ps: Vec<&P> = r.params.iter().collect();
+            let (pre, args) = self.marshal(&ps, &mut rp, &mut cp);
             let key = r.ret.trim_start_matches("(r: Vec<").trim_end_matches(">)").to_string();
+            let pre = pre + &self.rec_block(&ps, "rescan_keys", &format!("{{\n            let ks = rec_keys();\n            for (i, k) in ks.iter().take(cap).enumerate() {{\n                *out.add(i) = *k as {key};\n            }}\n            ks.len()\n        }}"));
             rp.push(format!("out: *mut {key}"));
             rp.push("cap: usize".into());
             cp.push(format!("{} *out", c_prim(&key)));
@@ -359,7 +465,9 @@ impl<'m> Ffi<'m> {
         }
         {
             let (mut rp, mut cp) = (vec![], vec![]);
-            let (pre, args) = self.marshal(&apply.params.iter().collect::<Vec<_>>(), &mut rp, &mut cp);
+            let ps: Vec<&P> = apply.params.iter().collect();
+            let (pre, args) = self.marshal(&ps, &mut rp, &mut cp);
+            let pre = pre + &self.rec_block(&ps, "apply", "{\n            if !err.is_null() {\n                *err = 99;\n            }\n            ptr::null_mut()\n        }");
             rp.push("err: *mut i32".into());
             cp.push("int32_t *err".into());
             out.push(f(
@@ -392,7 +500,7 @@ impl<'m> Ffi<'m> {
             "    let rows = &(*r).rows;\n    rows.len()\n".into(),
         ));
         let multi = self.m.outs.len() > 1;
-        for (k, (rt, null)) in self.m.outs.iter().enumerate() {
+        for (k, (rt, null, _)) in self.m.outs.iter().enumerate() {
             let (mut rp, mut cp) = (vec!["r: *const FfiResult".to_string(), "i: usize".into()], vec![format!("const {p}_result *r"), "size_t i".into()]);
             let set = match *rt {
                 "Vec<u8>" => {
@@ -468,6 +576,7 @@ impl<'m> Ffi<'m> {
             let mut cp = vec![stc("st"), format!("const {ps}_base *b")];
             let ps_: Vec<&P> = apply.params.iter().filter(|x| !matches!(x.arg, Arg::State) && x.name != "db2").collect();
             let (pre, args) = self.marshal(&ps_, &mut rp, &mut cp);
+            let pre = pre + &self.rec_block(&ps_, "apply", "{\n            if !err.is_null() {\n                *err = 99;\n            }\n            ptr::null_mut()\n        }");
             rp.push("err: *mut i32".into());
             cp.push("int32_t *err".into());
             out.push(f(&["The next version from the base and one commit's inputs (as for apply);", "NULL with *err set if the kernel cannot apply them (the host rebuilds)."],
@@ -479,6 +588,7 @@ impl<'m> Ffi<'m> {
             let mut cp = vec![stc("st")];
             let ps_: Vec<&P> = build.params.iter().filter(|x| x.name != "db").collect();
             let (pre, args) = self.marshal(&ps_, &mut rp, &mut cp);
+            let pre = pre + &self.rec_block(&ps_, "build", "ptr::null_mut()");
             out.push(f(&["The next version built from scans (as for build) of the database as of", "that version; its state is invalid if the kernel cannot build it.  NULL", "only if no version can follow the newest."],
                 format!("{ps}_prepare_build"), rp, cp, ("*mut QPrepared", format!("{ps}_prepared *")),
                 format!("    let e = (*st).newest();\n    if e == u64::MAX {{\n        return ptr::null_mut();\n    }}\n{pre}    Box::into_raw(Box::new(prepare_build(&*st, e, {})))\n", args.join(", "))));
@@ -587,6 +697,23 @@ pub(crate) fn ffi(m: &Model, prefix: &str, header_name: &str) -> Res<(String, St
     writeln!(r, "unsafe fn slice<'a, T>(p: *const T, n: usize) -> &'a [T] {{\n    if n == 0 || p.is_null() {{\n        &[]\n    }} else {{\n        std::slice::from_raw_parts(p, n)\n    }}\n}}\n").unwrap();
     writeln!(r, "// Text i of a text column: bytes [off[i], off[i + 1]).").unwrap();
     writeln!(r, "unsafe fn text(b: *const u8, off: *const usize, i: usize) -> Vec<u8> {{\n    let (s, e) = (*off.add(i), *off.add(i + 1));\n    slice(b.wrapping_add(s), e - s).to_vec()\n}}\n").unwrap();
+    writeln!(r, "// Record mode (glue contract checks): with ACCEL_VERUS_RECORD_DIR set, every").unwrap();
+    writeln!(r, "// entry point appends the rows it was given to <dir>/records.jsonl and returns").unwrap();
+    writeln!(r, "// without calling the kernel (rescan keys come from ACCEL_VERUS_RECORD_KEYS).").unwrap();
+    writeln!(r, "fn rec_on() -> bool {{\n    std::env::var_os(\"ACCEL_VERUS_RECORD_DIR\").is_some()\n}}\n").unwrap();
+    writeln!(r, "fn rec_text(b: &[u8], o: &mut String) {{\n    o.push('\"');\n    for x in b {{\n        o.push_str(&format!(\"{{:02x}}\", x));\n    }}\n    o.push('\"');\n}}\n").unwrap();
+    writeln!(r, "fn rec_rows<T>(f: &str, param: &str, fields: &[&str], rows: &[T], w: fn(&T, &mut String)) {{").unwrap();
+    writeln!(r, "    use std::io::Write;\n    let Some(d) = std::env::var_os(\"ACCEL_VERUS_RECORD_DIR\") else {{ return }};").unwrap();
+    writeln!(r, "    let mut o = format!(\"{{{{\\\"fn\\\":\\\"{{f}}\\\",\\\"param\\\":\\\"{{param}}\\\",\\\"fields\\\":[\");").unwrap();
+    writeln!(r, "    o.push_str(&fields.iter().map(|x| format!(\"\\\"{{x}}\\\"\")).collect::<Vec<_>>().join(\",\"));").unwrap();
+    writeln!(r, "    o.push_str(\"],\\\"rows\\\":[\");").unwrap();
+    writeln!(r, "    for (i, row) in rows.iter().enumerate() {{\n        if i > 0 {{\n            o.push(',');\n        }}\n        o.push('[');\n        w(row, &mut o);\n        o.push(']');\n    }}").unwrap();
+    writeln!(r, "    o.push_str(\"]}}\\n\");").unwrap();
+    writeln!(r, "    let path = std::path::Path::new(&d).join(\"records.jsonl\");").unwrap();
+    writeln!(r, "    if let Ok(mut fh) = std::fs::OpenOptions::new().create(true).append(true).open(path) {{\n        let _ = fh.write_all(o.as_bytes());\n    }}\n}}\n").unwrap();
+    writeln!(r, "fn rec_keys() -> Vec<i64> {{").unwrap();
+    writeln!(r, "    let Some(p) = std::env::var_os(\"ACCEL_VERUS_RECORD_KEYS\") else {{ return vec![] }};").unwrap();
+    writeln!(r, "    std::fs::read_to_string(p).unwrap_or_default().split(|c: char| c == ',' || c.is_whitespace()).filter_map(|x| x.trim().parse().ok()).collect()\n}}\n").unwrap();
     writeln!(r, "/// An answer handed to the host (read through the result accessors).").unwrap();
     writeln!(r, "pub struct FfiResult {{\n    rows: Vec<{out_ty}>,\n}}\n").unwrap();
     for f in &fns {
@@ -632,4 +759,482 @@ pub(crate) fn ffi(m: &Model, prefix: &str, header_name: &str) -> Res<(String, St
     }
     writeln!(h, "#ifdef __cplusplus\n}}\n#endif").unwrap();
     Ok((r, h))
+}
+
+// ───────────────────────────── host glue (C++) ─────────────────────────────
+//
+// gen_glue.cpp (TRUSTED GLUE): the query's side of the generic host kit.
+// Not used by the Verus pipeline (its glue is written by an agent and held to
+// the declared inputs by the record-mode contract check); kept as the
+// reference glue for the kit's regression tests (src/generated/tpch/q21/verus_kit/q21)
+// and the corpus compile check (scripts/test_sql2verus.sh)
+// (include/accelerator_codegen/verus/verus_kit.hpp).  It runs each declared
+// scan / rescan SQL through the engine's kit::Host, reads captured delta rows,
+// fills the C ABI's arrays in the slot order above, and registers the query
+// (kit::Glue) for the engine runtimes.  Rules (fixed):
+//   * a scan or rescan runs its declared SQL as written; a rescan wraps it:
+//     SELECT * FROM (<sql>) WHERE <KEYS output> IN (<keys>), in chunks;
+//   * a delta row is the captured row of its table's captured columns (by
+//     name; the engine resolves them); a lossy field is computed from it
+//     only for comparisons of columns and literals (anything else: refused);
+//   * cells convert exactly (decimals rescaled without loss, dates as days);
+//     a NULL or mismatched cell declines (the module then rebuilds or answers
+//     with SQL);
+//   * results: text, integers, dates and booleans as such, decimals as exact
+//     text, fractions as doubles.
+
+/// A Rust/SQL type's kit cell reader on row `row`, column `i`.
+fn kit_conv(ty: Ty, row: &str, i: usize) -> Res<String> {
+    Ok(match ty {
+        Ty::Int => format!("kit::I64({row}, {i}, 0)"),
+        Ty::Ts => format!("kit::Ts({row}, {i})"),
+        Ty::Dec(s) => format!("kit::I64({row}, {i}, {s})"),
+        Ty::Date => format!("kit::Date({row}, {i})"),
+        Ty::Bool => format!("kit::Bool({row}, {i})"),
+        Ty::Text => format!("kit::Text({row}, {i})"),
+        other => bail!("host glue: no kit reader for {other:?} columns"),
+    })
+}
+
+/// A C++ string literal of exact bytes.
+fn cpp_bytes(s: &str) -> String {
+    let mut o = String::from("std::string(\"");
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b == b' ' || b == b'_' {
+            o.push(b as char);
+        } else {
+            o.push_str(&format!("\\{:03o}", b));
+        }
+    }
+    o.push_str(&format!("\", {})", s.len()));
+    o
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum CK {
+    Int,
+    Text,
+    Date,
+    Bool,
+}
+
+/// A lossy delta field's expression in C++ over captured row `row`.
+fn kit_expr(e: &Expr, cols: &[(String, Ty)], row: &str) -> Res<(String, CK)> {
+    let bad = || format!("host glue: lossy delta expression `{e}`: only comparisons of columns and literals (AND / OR / NOT) are computed by the glue");
+    Ok(match e {
+        Expr::Column(c) => {
+            let i = cols.iter().position(|x| x.0 == c.name).ok_or_else(bad)?;
+            match cols[i].1 {
+                Ty::Int => (format!("kit::I64({row}, {i}, 0)"), CK::Int),
+                Ty::Text => (format!("kit::Text({row}, {i})"), CK::Text),
+                Ty::Date => (format!("kit::Date({row}, {i})"), CK::Date),
+                Ty::Bool => (format!("(kit::Bool({row}, {i}) != 0)"), CK::Bool),
+                _ => return Err(bad()),
+            }
+        }
+        Expr::Literal(v, _) => match v {
+            ScalarValue::Utf8(Some(s)) | ScalarValue::Utf8View(Some(s)) | ScalarValue::LargeUtf8(Some(s)) => (cpp_bytes(s), CK::Text),
+            ScalarValue::Int64(Some(x)) => (format!("int64_t{{{x}}}"), CK::Int),
+            ScalarValue::Int32(Some(x)) => (format!("int64_t{{{x}}}"), CK::Int),
+            ScalarValue::Int16(Some(x)) => (format!("int64_t{{{x}}}"), CK::Int),
+            ScalarValue::Int8(Some(x)) => (format!("int64_t{{{x}}}"), CK::Int),
+            ScalarValue::Boolean(Some(b)) => (format!("{b}"), CK::Bool),
+            ScalarValue::Date32(Some(d)) => (format!("int32_t{{{d}}}"), CK::Date),
+            _ => return Err(bad()),
+        },
+        Expr::Cast(c) => {
+            let (code, k) = kit_expr(&c.expr, cols, row)?;
+            match (&*c.expr, c.field.data_type()) {
+                (Expr::Literal(ScalarValue::Utf8(Some(s)) | ScalarValue::Utf8View(Some(s)), _), DataType::Date32) => {
+                    (format!("int32_t{{{}}}", parse_date(s)?), CK::Date)
+                }
+                (_, DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8) if k == CK::Text => (code, k),
+                (_, DataType::Int64 | DataType::Int32 | DataType::Int16 | DataType::Int8) if k == CK::Int => (code, k),
+                (_, DataType::Date32) if k == CK::Date => (code, k),
+                (_, DataType::Boolean) if k == CK::Bool => (code, k),
+                _ => return Err(bad()),
+            }
+        }
+        Expr::Not(x) => {
+            let (code, k) = kit_expr(x, cols, row)?;
+            if k != CK::Bool {
+                return Err(bad());
+            }
+            (format!("!{code}"), CK::Bool)
+        }
+        Expr::BinaryExpr(b) => {
+            let (l, lk) = kit_expr(&b.left, cols, row)?;
+            let (r, rk) = kit_expr(&b.right, cols, row)?;
+            let op = match b.op {
+                Operator::Eq => "==",
+                Operator::NotEq => "!=",
+                Operator::Lt => "<",
+                Operator::LtEq => "<=",
+                Operator::Gt => ">",
+                Operator::GtEq => ">=",
+                Operator::And => "&&",
+                Operator::Or => "||",
+                _ => return Err(bad()),
+            };
+            let logic = matches!(b.op, Operator::And | Operator::Or);
+            if lk != rk || (logic && lk != CK::Bool) {
+                return Err(bad());
+            }
+            (format!("({l} {op} {r})"), CK::Bool)
+        }
+        _ => return Err(bad()),
+    })
+}
+
+impl<'m> Ffi<'m> {
+    /// The C++ value of the field at `path` of a struct `n` row (initializer
+    /// for a struct field), given a leaf resolver.
+    fn kit_init(&self, n: &str, path: &[String], leaf: &dyn Fn(&[String]) -> Res<String>) -> Res<String> {
+        let s = strukt(self.m, n);
+        let mut vs = vec![];
+        for (f, fe) in &s.fields {
+            let mut p2 = path.to_vec();
+            p2.push(f.clone());
+            vs.push(match fe {
+                Elem::Struct(m) => self.kit_init(m, &p2, leaf)?,
+                _ => leaf(&p2)?,
+            });
+        }
+        Ok(format!("{}{{{}}}", self.c_struct(n), vs.join(", ")))
+    }
+
+    /// Members holding a rows parameter's arrays, and the statements adding
+    /// one row (leaf: the C++ value at a field path).
+    fn kit_rows(&self, slots: &[Slot], leaf: &dyn Fn(&[String]) -> Res<String>) -> Res<(Vec<String>, Vec<String>)> {
+        let (mut mem, mut push) = (vec![], vec![]);
+        for sl in slots {
+            let n = &sl.name;
+            match &sl.kind {
+                SlotKind::Count => {
+                    mem.push(format!("size_t {n} = 0;"));
+                    push.push(format!("++{n};"));
+                }
+                SlotKind::Prim(rt) => {
+                    mem.push(format!("std::vector<{}> {n};", c_prim(rt)));
+                    push.push(format!("{n}.push_back({});", leaf(&sl.path)?));
+                }
+                SlotKind::TextBytes => {
+                    mem.push(format!("kit::TextColumn {n};"));
+                    push.push(format!("{n}.Push({});", leaf(&sl.path)?));
+                }
+                SlotKind::TextOff => {}
+                SlotKind::CopyStruct(s) => {
+                    mem.push(format!("std::vector<{}> {n};", self.c_struct(s)));
+                    push.push(format!("{n}.push_back({});", self.kit_init(s, &sl.path, leaf)?));
+                }
+                SlotKind::Sign => {
+                    mem.push(format!("std::vector<int64_t> {n};"));
+                    push.push(format!("{n}.push_back({});", leaf(&sl.path)?));
+                }
+            }
+        }
+        Ok((mem, push))
+    }
+
+    /// The C++ arguments of a rows parameter held in object `obj`.
+    fn kit_args(slots: &[Slot], obj: &str) -> Vec<String> {
+        slots
+            .iter()
+            .map(|sl| match &sl.kind {
+                SlotKind::Count => format!("{obj}.{}", sl.name),
+                SlotKind::TextBytes => format!("{obj}.{}.bytes.data()", sl.name),
+                SlotKind::TextOff => format!("{obj}.{}.off.data()", sl.name.trim_end_matches("__off")),
+                _ => format!("{obj}.{}.data()", sl.name),
+            })
+            .collect()
+    }
+
+    /// Leaf resolver for a scan / rescan row `r` of element `el`.
+    fn scan_leaf<'a>(&'a self, sd: &'a ScanDecl) -> impl Fn(&[String]) -> Res<String> + 'a {
+        move |path: &[String]| match (&sd.el, path) {
+            (Elem::Prim(_), []) => kit_conv(sd.ty, "r", 0),
+            (Elem::Struct(n), [f]) => {
+                let s = strukt(self.m, n);
+                let i = s.fields.iter().position(|x| &x.0 == f).ok_or_else(|| format!("host glue: {n} has no field {f}"))?;
+                kit_conv(s.tys[i], "r", i)
+            }
+            _ => bail!("host glue: scan {}: unexpected field path {path:?}", sd.name),
+        }
+    }
+
+    /// Leaf resolver for a captured change `c` of delta `dd`.
+    fn delta_leaf<'a>(&'a self, dd: &'a DeltaDecl) -> impl Fn(&[String]) -> Res<String> + 'a {
+        move |path: &[String]| {
+            let p: Vec<&String> = path.iter().filter(|x| x.as_str() != "row").collect();
+            match p.as_slice() {
+                [f] if f.as_str() == "sign" => Ok("c.sign".to_string()),
+                [f] => {
+                    let (_, src, ty) = dd.fields.iter().find(|x| &x.0 == *f).ok_or_else(|| format!("host glue: delta {}: no field {f}", dd.table))?;
+                    match src {
+                        FieldSrc::Col(i) => kit_conv(*ty, "c.row", *i),
+                        FieldSrc::Expr(e) => {
+                            let (code, k) = kit_expr(e, &dd.cols, "c.row")?;
+                            match (ty, k) {
+                                (Ty::Bool, CK::Bool) => Ok(format!("static_cast<uint8_t>({code})")),
+                                (Ty::Int, CK::Int) => Ok(code),
+                                _ => bail!("host glue: delta {} field {f}: expression type {k:?} for a {ty:?} field", dd.table),
+                            }
+                        }
+                    }
+                }
+                _ => bail!("host glue: delta {}: unexpected field path {path:?}", dd.table),
+            }
+        }
+    }
+}
+
+fn raw_sql(sql: &str) -> Res<String> {
+    if sql.contains(")vsql\"") {
+        bail!("host glue: SQL contains the raw-string delimiter");
+    }
+    Ok(format!("R\"vsql({sql})vsql\""))
+}
+
+/// gen_glue.cpp: the query's host glue for the generic kit.
+pub(crate) fn kit(m: &Model, prefix: &str, header: &str, accel_id: &str, workload: &str, query_id: u32) -> Res<String> {
+    let g = Ffi { m, p: prefix.to_string() };
+    let p = prefix;
+    let ps = format!("{p}s");
+    let (build, apply, exec) = (ob(m, "build"), ob(m, "apply"), ob(m, "execute"));
+    let mut w = String::new();
+    writeln!(w, "// GENERATED by {VERSION} from {} and inputs {}.  DO NOT EDIT: regenerate.", m.src_name, m.inputs_name).unwrap();
+    writeln!(w, "//").unwrap();
+    writeln!(w, "// Host glue of accelerator {accel_id} (TRUSTED GLUE): runs the declared scans,").unwrap();
+    writeln!(w, "// reads captured deltas, and calls the kernel's C ABI ({header}) through the").unwrap();
+    writeln!(w, "// generic kit (accelerator_codegen/verus/verus_kit.hpp).  Rules: sql2verus/src/glue.rs.").unwrap();
+    writeln!(w, "#include <cstdint>\n#include <string>\n#include <vector>\n").unwrap();
+    writeln!(w, "#include \"accelerator_codegen/verus/verus_kit.hpp\"\n#include \"{header}\"\n").unwrap();
+    writeln!(w, "namespace {{\n\nnamespace kit = accelerator_codegen::verus_kit;\nnamespace core = accelerator_codegen::aux_state::core;\n").unwrap();
+
+    // ── SQL texts ──
+    for sd in &m.scans {
+        writeln!(w, "// {} {}", if sd.key_out.is_some() { "rescan" } else { "scan" }, sd.name).unwrap();
+        writeln!(w, "const char *const k{}Sql_{} = {};\n", if sd.key_out.is_some() { "Rescan" } else { "Scan" }, sd.name, raw_sql(&sd.sql)?).unwrap();
+    }
+    writeln!(w, "// the query itself (fallback)\nconst char *const kQuerySql = {};\n", raw_sql(&m.query_sql)?).unwrap();
+
+    // ── build inputs ──
+    let scan_of = |name: &str, rescan: bool| m.scans.iter().find(|s| s.name == name && s.key_out.is_some() == rescan);
+    let build_rows: Vec<&P> = build.params.iter().filter(|x| matches!(x.arg, Arg::Rows(_))).collect();
+    writeln!(w, "// The build's scans, in the C ABI's arrays.\nstruct BuildIn {{").unwrap();
+    let mut fill = String::new();
+    for prm in &build_rows {
+        let sd = scan_of(&prm.name, false).ok_or_else(|| format!("host glue: no scan {}", prm.name))?;
+        let slots = g.rows_slots(prm);
+        let (mem, push) = g.kit_rows(&slots, &g.scan_leaf(sd))?;
+        for x in mem {
+            writeln!(w, "  {x}").unwrap();
+        }
+        writeln!(fill, "    h.Query(kScanSql_{}, [&](const core::AuxRow &r) {{", sd.name).unwrap();
+        for x in push {
+            writeln!(fill, "      {x}").unwrap();
+        }
+        writeln!(fill, "    }});").unwrap();
+    }
+    writeln!(w, "  void Fill(kit::Host &h) {{\n{fill}  }}\n}};\n").unwrap();
+    let build_args = |obj: &str| -> Vec<String> { build_rows.iter().flat_map(|prm| Ffi::kit_args(&g.rows_slots(prm), obj)).collect() };
+
+    // ── deltas ──
+    let delta_rows: Vec<&P> = apply.params.iter().filter(|x| matches!(x.arg, Arg::Rows(_)) && x.name.ends_with("_delta")).collect();
+    writeln!(w, "// One transaction's captured changes, in the C ABI's arrays.\nstruct DeltaIn {{").unwrap();
+    let mut fill = String::new();
+    for prm in &delta_rows {
+        let ti = m.deltas.iter().position(|d| format!("{}_delta", table_field(&d.table)) == prm.name).ok_or_else(|| format!("host glue: no delta for {}", prm.name))?;
+        let dd = &m.deltas[ti];
+        let slots = g.rows_slots(prm);
+        let (mem, push) = g.kit_rows(&slots, &g.delta_leaf(dd))?;
+        for x in mem {
+            writeln!(w, "  {x}").unwrap();
+        }
+        writeln!(fill, "    for (const auto &c : ch[{ti}]) {{").unwrap();
+        for x in push {
+            writeln!(fill, "      {x}").unwrap();
+        }
+        writeln!(fill, "    }}").unwrap();
+    }
+    writeln!(w, "  void Fill(const kit::Changes &ch) {{\n{fill}  }}\n}};\n").unwrap();
+    let delta_args = |obj: &str| -> Vec<String> { delta_rows.iter().flat_map(|prm| Ffi::kit_args(&g.rows_slots(prm), obj)).collect() };
+
+    // ── rescans ──
+    let rescans: Vec<&ObFn> = m.fns.iter().filter(|f| f.name.starts_with("rescan_")).collect();
+    let mut apply_pre = String::new();
+    let mut rescan_args: Vec<String> = vec![];
+    for rf in &rescans {
+        let n = rf.name.trim_start_matches("rescan_").trim_end_matches("_keys").to_string();
+        let sd = scan_of(&n, true).ok_or_else(|| format!("host glue: no rescan {n}"))?;
+        let key = rf.ret.trim_start_matches("(r: Vec<").trim_end_matches(">)").to_string();
+        let kc = c_prim(&key);
+        let rows_p = apply.params.iter().find(|x| x.name == format!("{n}_rows")).ok_or_else(|| format!("host glue: apply has no {n}_rows"))?;
+        let slots = g.rows_slots(rows_p);
+        let (mem, push) = g.kit_rows(&slots, &g.scan_leaf(sd))?;
+        writeln!(w, "// Rescan {n}: the rows of the given keys, on the database after the transaction.\nstruct Rescan_{n} {{\n  std::vector<{kc}> keys;").unwrap();
+        for x in mem {
+            writeln!(w, "  {x}").unwrap();
+        }
+        writeln!(w, "  void Fill(kit::Host &h) {{").unwrap();
+        writeln!(w, "    std::vector<int64_t> ks(keys.begin(), keys.end());").unwrap();
+        writeln!(w, "    kit::QueryKeys(h, kRescanSql_{n}, \"{}\", ks, [&](const core::AuxRow &r) {{", sd.key_out.as_ref().unwrap()).unwrap();
+        for x in push {
+            writeln!(w, "      {x}").unwrap();
+        }
+        writeln!(w, "    }});\n  }}\n}};\n").unwrap();
+        // the keys from the kernel, then the rows from the host
+        let kargs = {
+            let mut a = vec!["state".to_string()];
+            a.extend(delta_args("d"));
+            a.join(", ")
+        };
+        writeln!(apply_pre, "  Rescan_{n} r_{n};").unwrap();
+        writeln!(apply_pre, "  r_{n}.keys.resize(1024);").unwrap();
+        writeln!(apply_pre, "  {{\n    const size_t k = {p}_{}({kargs}, r_{n}.keys.data(), r_{n}.keys.size());", rf.name).unwrap();
+        writeln!(apply_pre, "    if (k > r_{n}.keys.size()) {{\n      r_{n}.keys.resize(k);\n      {p}_{}({kargs}, r_{n}.keys.data(), r_{n}.keys.size());\n    }}", rf.name).unwrap();
+        writeln!(apply_pre, "    r_{n}.keys.resize(k);\n  }}\n  r_{n}.Fill(h);").unwrap();
+        rescan_args.push(format!("r_{n}.keys.size()"));
+        rescan_args.push(format!("r_{n}.keys.data()"));
+        rescan_args.extend(Ffi::kit_args(&slots, &format!("r_{n}")));
+    }
+    // apply's arguments in order: state, deltas, then per rescan (keys, rows)
+    let apply_args = |state: &str| -> Res<Vec<String>> {
+        let mut a = vec![];
+        let mut ri = 0;
+        for prm in &apply.params {
+            match &prm.arg {
+                Arg::State => a.push(state.to_string()),
+                Arg::Ghost => {}
+                Arg::Rows(_) if prm.name.ends_with("_delta") => a.extend(Ffi::kit_args(&g.rows_slots(prm), "d")),
+                Arg::Rows(_) if prm.name.ends_with("_keys") => {
+                    a.push(rescan_args[ri].clone());
+                    a.push(rescan_args[ri + 1].clone());
+                    ri += 2;
+                }
+                Arg::Rows(_) => {
+                    let k = g.rows_slots(prm).len();
+                    a.extend(rescan_args[ri..ri + k].iter().cloned());
+                    ri += k;
+                }
+                _ => bail!("host glue: apply parameter {}", prm.name),
+            }
+        }
+        Ok(a)
+    };
+
+    // ── kernel entry points ──
+    let state_t = format!("{p}_state");
+    writeln!(w, "void *Build(kit::Host &h) {{\n  BuildIn in;\n  in.Fill(h);\n  return {p}_build({});\n}}\n", build_args("in").join(", ")).unwrap();
+    writeln!(w, "void FreeState(void *s) {{ {p}_free(static_cast<{state_t} *>(s)); }}\n").unwrap();
+    let a_host = apply_args("state")?;
+    let mut a_store = vec!["static_cast<const {ps}_store *>(st)".replace("{ps}", &ps), format!("static_cast<const {ps}_base *>(b)")];
+    a_store.extend(a_host.iter().filter(|x| x.as_str() != "state").cloned());
+    writeln!(w, "void *Apply(const void *s, const kit::Changes &ch, kit::Host &h, int32_t *err) {{").unwrap();
+    writeln!(w, "  const auto *state = static_cast<const {state_t} *>(s);\n  DeltaIn d;\n  d.Fill(ch);\n{apply_pre}  return {p}_apply({}, err);\n}}\n", a_host.join(", ")).unwrap();
+    writeln!(w, "void *PrepareApply(const void *st, const void *b, const kit::Changes &ch, kit::Host &h, int32_t *err) {{").unwrap();
+    writeln!(w, "  [[maybe_unused]] const auto *state = {ps}_base_state(static_cast<const {ps}_base *>(b));\n  DeltaIn d;\n  d.Fill(ch);\n{apply_pre}  return {ps}_prepare_apply({}, err);\n}}\n", a_store.join(", ")).unwrap();
+    let mut pb = vec![format!("static_cast<const {ps}_store *>(st)")];
+    pb.extend(build_args("in"));
+    writeln!(w, "void *PrepareBuild(const void *st, kit::Host &h) {{\n  BuildIn in;\n  in.Fill(h);\n  return {ps}_prepare_build({});\n}}\n", pb.join(", ")).unwrap();
+
+    // execute
+    writeln!(w, "bool Execute(const void *s, const core::QueryArguments &a, std::vector<core::AuxRow> &out) {{").unwrap();
+    let mut eargs = vec![format!("static_cast<const {state_t} *>(s)")];
+    for prm in &exec.params {
+        let n: u32 = match prm.name.strip_prefix('p').and_then(|x| x.parse().ok()) {
+            Some(n) => n,
+            None => continue,
+        };
+        let ty = m.params.iter().find(|x| x.0 == n).map(|x| x.1).ok_or_else(|| format!("host glue: parameter ${n} has no type"))?;
+        let k = n - 1;
+        match (&prm.arg, ty) {
+            (Arg::Text, _) => {
+                writeln!(w, "  std::string p{n};\n  if (!kit::ArgText(a, {k}, p{n}))\n    return false;").unwrap();
+                eargs.push(format!("reinterpret_cast<const uint8_t *>(p{n}.data())"));
+                eargs.push(format!("p{n}.size()"));
+            }
+            (Arg::Scalar("i32"), Ty::Date) => {
+                writeln!(w, "  int32_t p{n} = 0;\n  if (!kit::ArgDate(a, {k}, p{n}))\n    return false;").unwrap();
+                eargs.push(format!("p{n}"));
+            }
+            (Arg::Scalar("i64"), t) => {
+                let sc = if let Ty::Dec(s) = t { s } else { 0 };
+                if t == Ty::Ts {
+                    bail!("host glue: TIMESTAMP parameter ${n}");
+                }
+                writeln!(w, "  int64_t p{n} = 0;\n  if (!kit::ArgI64(a, {k}, {sc}, p{n}))\n    return false;").unwrap();
+                eargs.push(format!("p{n}"));
+            }
+            _ => bail!("host glue: parameter ${n} of type {ty:?}"),
+        }
+    }
+    writeln!(w, "  {p}_result *r = {p}_execute({});\n  if (!r)\n    return false;", eargs.join(", ")).unwrap();
+    writeln!(w, "  const size_t n = {p}_result_len(r);\n  out.reserve(out.size() + n);\n  for (size_t i = 0; i < n; ++i) {{\n    core::AuxRow row;").unwrap();
+    for (k, (rt, _, ty)) in m.outs.iter().enumerate() {
+        let acc = format!("{p}_result_c{k}");
+        let line = match *rt {
+            "Vec<u8>" => format!("const uint8_t *b{k} = nullptr;\n      size_t l{k} = 0;\n      row.values.push_back({acc}(r, i, &b{k}, &l{k}) ? kit::OutText(b{k}, l{k}) : kit::OutNull(core::AuxType::String));"),
+            "i64" if *ty == Ty::Ts => format!("int64_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutTs(v{k}) : kit::OutNull(core::AuxType::String));"),
+            "i64" => format!("int64_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutI64(v{k}) : kit::OutNull(core::AuxType::Int64));"),
+            "i32" => format!("int32_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutDate(v{k}) : kit::OutNull(core::AuxType::Date));"),
+            "bool" => format!("uint8_t v{k} = 0;\n      row.values.push_back({acc}(r, i, &v{k}) ? kit::OutBool(v{k}) : kit::OutNull(core::AuxType::Boolean));"),
+            "i128" => {
+                let sc = if let Ty::Dec(s) = ty { *s } else { 0 };
+                format!("int64_t h{k} = 0;\n      uint64_t l{k} = 0;\n      row.values.push_back({acc}(r, i, &h{k}, &l{k}) ? kit::OutDec(h{k}, l{k}, {sc}) : kit::OutNull(core::AuxType::String));")
+            }
+            "(i128, i128)" => format!("int64_t nh{k} = 0, dh{k} = 0;\n      uint64_t nl{k} = 0, dl{k} = 0;\n      row.values.push_back({acc}(r, i, &nh{k}, &nl{k}, &dh{k}, &dl{k}) ? kit::OutRat(nh{k}, nl{k}, dh{k}, dl{k}) : kit::OutNull(core::AuxType::Double));"),
+            other => bail!("host glue: result type {other}"),
+        };
+        writeln!(w, "    {{\n      {line}\n    }}").unwrap();
+    }
+    writeln!(w, "    out.push_back(std::move(row));\n  }}\n  {p}_result_free(r);\n  return true;\n}}\n").unwrap();
+
+    // ── registration ──
+    let kind = |t: Ty| -> Res<&'static str> {
+        Ok(match t {
+            Ty::Text => "kit::Kind::Text",
+            Ty::Date => "kit::Kind::Date",
+            Ty::Int => "kit::Kind::Int",
+            Ty::Dec(_) => "kit::Kind::Dec",
+            Ty::Bool => "kit::Kind::Bool",
+            other => bail!("host glue: parameter type {other:?}"),
+        })
+    };
+    let tables: Vec<String> = m
+        .deltas
+        .iter()
+        .map(|d| format!("{{{}, {{{}}}}}", cpp_str(&d.table), d.cols.iter().map(|c| cpp_str(&c.0)).collect::<Vec<_>>().join(", ")))
+        .collect();
+    let params: Vec<String> = m.params.iter().map(|(_, t)| kind(*t).map(|s| s.to_string())).collect::<Res<_>>()?;
+    writeln!(w, "const kit::Glue kGlue = {{").unwrap();
+    writeln!(w, "    {}, {}, {query_id}, kQuerySql,", cpp_str(accel_id), cpp_str(workload)).unwrap();
+    writeln!(w, "    {{{}}},", tables.join(", ")).unwrap();
+    writeln!(w, "    {{{}}},", params.join(", ")).unwrap();
+    writeln!(w, "    Build, FreeState, Apply, Execute, PrepareApply, PrepareBuild,").unwrap();
+    writeln!(w, "    kit::StoreOps{{").unwrap();
+    for (name, lam) in [
+        ("new", format!("[]() -> void * {{ return {ps}_new(); }}")),
+        ("free", format!("[](void *st) {{ {ps}_free(static_cast<{ps}_store *>(st)); }}")),
+        ("newest_base", format!("[](const void *st) -> void * {{ return {ps}_newest_base(static_cast<const {ps}_store *>(st)); }}")),
+        ("base_state", format!("[](const void *b) -> const void * {{ return {ps}_base_state(static_cast<const {ps}_base *>(b)); }}")),
+        ("base_free", format!("[](void *b) {{ {ps}_base_free(static_cast<{ps}_base *>(b)); }}")),
+        ("prepare_invalid", format!("[](const void *st) -> void * {{ return {ps}_prepare_invalid(static_cast<const {ps}_store *>(st)); }}")),
+        ("prepared_free", format!("[](void *pr) {{ {ps}_prepared_free(static_cast<{ps}_prepared *>(pr)); }}")),
+        ("begin", format!("[](const void *st, uint64_t from) -> int32_t {{ return {ps}_begin(static_cast<const {ps}_store *>(st), from); }}")),
+        ("abort", format!("[](const void *st) {{ {ps}_abort(static_cast<const {ps}_store *>(st)); }}")),
+        ("install", format!("[](const void *st, void *pr, uint64_t from, uint64_t floor, int32_t end) -> int32_t {{ return {ps}_install(static_cast<const {ps}_store *>(st), static_cast<{ps}_prepared *>(pr), from, floor, end); }}")),
+        ("read", format!("[](const void *st, uint64_t at, uint64_t tries, int32_t *status) -> const void * {{ return {ps}_read(static_cast<const {ps}_store *>(st), at, tries, status); }}")),
+        ("state_release", format!("[](const void *s) {{ {ps}_state_release(static_cast<const {state_t} *>(s)); }}")),
+        ("invalidate_all", format!("[](const void *st) {{ {ps}_invalidate_all(static_cast<const {ps}_store *>(st)); }}")),
+        ("version_count", format!("[](const void *st) -> size_t {{ return {ps}_version_count(static_cast<const {ps}_store *>(st)); }}")),
+    ] {
+        writeln!(w, "        /* {name} */ {lam},").unwrap();
+    }
+    writeln!(w, "    }},\n}};\n\nconst kit::Registrar kRegistrar(&kGlue);\n\n}} // namespace").unwrap();
+    Ok(w)
+}
+
+fn cpp_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }

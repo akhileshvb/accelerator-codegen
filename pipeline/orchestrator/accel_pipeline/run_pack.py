@@ -31,6 +31,7 @@ class PackQuery:
     query: int
     stage: str = "all"
     resume: bool = True
+    mode: str = ""  # "" (workload default / cpp) or "verus"
 
 
 def load_pack(name_or_path: str, repo_root: Path | None = None) -> dict[str, Any]:
@@ -61,6 +62,7 @@ def parse_pack_queries(pack: dict[str, Any]) -> list[PackQuery]:
     out: list[PackQuery] = []
     default_stage = str(pack.get("stage") or "all")
     default_resume = bool(pack.get("resume", True))
+    default_mode = str(pack.get("mode") or "")
     for item in items:
         if isinstance(item, (int, str)) and str(item).isdigit():
             q = int(item)
@@ -70,6 +72,7 @@ def parse_pack_queries(pack: dict[str, Any]) -> list[PackQuery]:
                     query=q,
                     stage=default_stage,
                     resume=default_resume,
+                    mode=default_mode,
                 )
             )
             continue
@@ -83,6 +86,7 @@ def parse_pack_queries(pack: dict[str, Any]) -> list[PackQuery]:
                 query=q,
                 stage=str(item.get("stage") or default_stage),
                 resume=bool(item.get("resume", default_resume)),
+                mode=str(item.get("mode") or default_mode),
             )
         )
     return out
@@ -158,6 +162,8 @@ def run_pack_query(
     ]
     if entry.resume:
         cmd.append("--resume")
+    if entry.mode:
+        cmd.extend(["--mode", entry.mode])
     if dry_run:
         cmd.append("--dry-run")
     if skip_gates:
@@ -350,11 +356,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="Pipeline config YAML")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-gates", action="store_true")
+    parser.add_argument("--mode", choices=["cpp", "verus"], default=None,
+                        help="Pipeline mode for every query of the pack (overrides the pack's `mode`)")
     args = parser.parse_args(argv)
 
     repo_root = find_repo_root()
     load_repo_dotenv(repo_root)
     pack = load_pack(args.pack, repo_root)
+    if args.mode:
+        pack["mode"] = args.mode
+        for item in pack.get("queries") or []:
+            if isinstance(item, dict):
+                item["mode"] = args.mode
     summary = run_pack(
         pack,
         repo_root=repo_root,

@@ -3,10 +3,9 @@
 write_paths:
   - CMakeLists.txt
   - cmake/AuxState.cmake
-  - src/generated/sec_edgar/q*/aux/**
+  # the query's own tree: module, layout, registrars (engine backends name no query)
+  - src/generated/sec_edgar/q*/**
   - src/generated/catalog/**
-  - src/stateful/duckdb/duckdb_aux_table_functions.cpp
-  - include/accelerator_codegen/stateful/core/query_layouts.hpp
   - config/sec_edgar_q*_aux_cost_model.json
   - tests/single-threaded/test_sec_edgar_q*_*.cpp
   - tests/test_support/sec_edgar_q*_aux_helpers.hpp

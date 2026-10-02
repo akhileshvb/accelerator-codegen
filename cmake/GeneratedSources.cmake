@@ -80,7 +80,6 @@ function(accel_collect_runtime_sources OUT_VAR)
                 src/runtime/duckdb/register.cpp
                 src/runtime/duckdb/duckdb_runtime.cpp
                 src/runtime/duckdb/tpch_rf.cpp
-                src/generated/sec_edgar/runtime.cpp
                 src/runtime/catalog/shared_query_engine.cpp
                 src/harness/differential.cpp
                 src/harness/cost_calibration.cpp
@@ -106,6 +105,7 @@ function(accel_collect_stateful_sources OUT_VAR)
         src/stateful/state/invalidation_plan.cpp
         src/stateful/state/versioned_aux_store.cpp
         src/stateful/state/verus_aux_store.cpp
+        src/verus_kit/verus_kit.cpp
         src/stateful/core/aux_registry.cpp
         src/stateful/core/aux_engine_services.cpp
         src/stateful/core/aux_maintenance_policy.cpp
@@ -113,7 +113,6 @@ function(accel_collect_stateful_sources OUT_VAR)
         src/stateful/core/aux_calibration.cpp
         src/stateful/core/aux_store_diagnostics.cpp
         src/stateful/core/aux_execute_stats.cpp
-        src/generated/tpch/calibration_writes.cpp
         src/stateful/maintenance/maintenance_action.cpp
         src/stateful/maintenance/action_selector.cpp
     )

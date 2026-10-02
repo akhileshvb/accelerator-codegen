@@ -92,6 +92,9 @@ def materialize_workload_stubs(
         (tpl_root / "kernel.cpp.tpl", repo / paths["kernel_path"]),
         (tpl_root / "package.cpp.tpl", repo / paths["package_path"]),
     ]
+    if str(workload.get("engine_name") or "") == "duckdb":
+        # The query registers its table function from its own directory.
+        stub_specs.append((tpl_root / "register.cpp.tpl", (repo / paths["package_path"]).parent / "register.cpp"))
     if (bench_tpl_root / "test_template.cpp").is_file():
         stub_specs.append((bench_tpl_root / "test_template.cpp", repo / paths["test_path"]))
     if (bench_tpl_root / "benchmark_template.cpp").is_file():
@@ -103,13 +106,6 @@ def materialize_workload_stubs(
         content = _substitute(tpl_path.read_text(encoding="utf-8"), values)
         if _write_if_missing(dest, content):
             created.append(str(dest.relative_to(repo)))
-
-    runtime_path = repo / "src/generated/sec_edgar/runtime.cpp"
-    runtime_tpl = tpl_root / "sec_edgar_query_runtime.cpp.tpl"
-    if benchmark == "sec_edgar" and runtime_tpl.is_file():
-        runtime_content = _substitute(runtime_tpl.read_text(encoding="utf-8"), values)
-        if _write_if_missing(runtime_path, runtime_content):
-            created.append(str(runtime_path.relative_to(repo)))
 
     return {
         "created": created,

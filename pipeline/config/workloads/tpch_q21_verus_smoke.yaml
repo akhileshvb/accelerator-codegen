@@ -1,0 +1,34 @@
+# Smoke workload of the Verus pipeline (--mode verus is its default) on TPC-H
+# Q21: small benches and a short optimization loop, for checking the pipeline
+# itself (e.g. with ACCEL_VERUS_REPLAY).  Real runs use tpch_q21_aux --mode verus.
+workload_kind: aux_state
+benchmark_name: tpch
+query_number: 21
+query_id: "21"
+engine_name: duckdb
+mode: verus
+parameters:
+  - name: nation_name
+    type: VARCHAR
+dependent_tables:
+  - name: supplier
+  - name: lineitem
+  - name: orders
+  - name: nation
+output_schema:
+  - name: s_name
+    type: VARCHAR
+  - name: numwait
+    type: BIGINT
+verus:
+  build_dir: build-verus-duckdb
+  optimization:
+    stage_budget_sec: 3600
+    patience: 2
+    min_attempts: 2
+    hotspot_share: 0.5
+    bench:
+      reps: 3
+      ops: 40
+  gates:
+    snapshot_writes: 100

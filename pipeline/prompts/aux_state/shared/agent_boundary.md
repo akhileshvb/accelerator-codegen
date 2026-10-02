@@ -2,7 +2,7 @@
 
 ## Agent may generate (query-specific)
 
-- Partition payload structs and partition keying (`query_layouts.hpp` entries)
+- Partition payload structs and partition keying (`src/generated/{bench}/q{N}/layout.hpp`)
 - `InterpretMutation` relevance / column watches
 - Incremental accumulators in `CreateTxnBuffer` + `AccumulateMutation`
 - `StageMaintenance` action selection inputs and staged partition updates (rebuild must **resync**, not invalidate-only)

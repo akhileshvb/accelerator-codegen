@@ -1,5 +1,5 @@
 #include "tpch/q2/postgres/aux/module.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "tpch/q2/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+#include "tpch/q2/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -935,7 +936,7 @@ void TpchQ2Module::EmitResult(const TpchQ2State &state, int32_t part_size,
 }
 
 std::vector<core::CalibrationWrite> TpchQ2Module::CalibrationWrites() const {
-  return TpchCalibrationWrites(2);
+  return TpchQ2CalibrationWrites();
 }
 
 } // namespace accelerator_codegen::aux_state::query

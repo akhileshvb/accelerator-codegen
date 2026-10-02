@@ -1,0 +1,150 @@
+// GENERATED BACKEND — PostgreSQL scans + runtime for TPC-H Q9 (module only).
+#if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
+
+// Finalize headers pull in DuckDB types; include them before PostgreSQL
+// headers to avoid timestamp.h macro collisions.
+#include "tpch/q9/postgres/aux/module.hpp"
+
+
+#include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
+#include "postgres/engine_runtime.hpp"
+#include "postgres/runtime.hpp"
+
+namespace accelerator_codegen::aux_state::engine::postgres {
+namespace detail {
+namespace {
+
+namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables;
+
+namespace scans {
+
+void ScanTpchQ9Parts(
+    const std::function<void(const query::TpchQ9PartInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT p_partkey, p_name FROM part",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedText(tuple, tuple_desc, 1)});
+      });
+}
+
+void ScanTpchQ9Suppliers(
+    const std::function<void(const query::TpchQ9SupplierInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT s_suppkey, s_nationkey FROM supplier",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1))});
+      });
+}
+
+void ScanTpchQ9Nations(
+    const std::function<void(const query::TpchQ9NationInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT n_nationkey, n_name FROM nation",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({static_cast<int32_t>(TypedInt(tuple, tuple_desc, 0)),
+                  TypedText(tuple, tuple_desc, 1)});
+      });
+}
+
+void ScanTpchQ9Orders(
+    const std::function<void(const query::TpchQ9OrdersInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT o_orderkey, o_orderdate FROM orders",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedDate(tuple, tuple_desc, 1)});
+      });
+}
+
+void ScanTpchQ9Partsupps(
+    const std::function<void(const query::TpchQ9PartsuppInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedInt(tuple, tuple_desc, 1),
+                  TypedDecimalRaw(tuple, tuple_desc, 2)});
+      });
+}
+
+void ScanTpchQ9Lineitems(
+    const std::function<void(const query::TpchQ9LineitemInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT l_partkey, l_suppkey, l_orderkey, l_quantity, l_extendedprice, "
+      "l_discount FROM lineitem",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedInt(tuple, tuple_desc, 1),
+                  TypedInt(tuple, tuple_desc, 2),
+                  TypedDecimalRaw(tuple, tuple_desc, 3),
+                  TypedDecimalRaw(tuple, tuple_desc, 4),
+                  TypedDecimalRaw(tuple, tuple_desc, 5)});
+      });
+}
+
+} // namespace scans
+
+class TpchQ9Scan final : public query::TpchQ9InitialScan {
+public:
+  void ScanParts(
+      const std::function<void(const query::TpchQ9PartInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Parts(consumer);
+  }
+  void ScanSuppliers(
+      const std::function<void(const query::TpchQ9SupplierInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Suppliers(consumer);
+  }
+  void ScanNations(
+      const std::function<void(const query::TpchQ9NationInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Nations(consumer);
+  }
+  void ScanOrders(
+      const std::function<void(const query::TpchQ9OrdersInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Orders(consumer);
+  }
+  void ScanPartsupps(
+      const std::function<void(const query::TpchQ9PartsuppInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Partsupps(consumer);
+  }
+  void ScanLineitems(
+      const std::function<void(const query::TpchQ9LineitemInput &)> &consumer)
+      override {
+    scans::ScanTpchQ9Lineitems(consumer);
+  }
+};
+Runtime<query::TpchQ9Module, query::TpchQ9Config, TpchQ9Scan> &Q9Runtime() {
+  static Runtime<query::TpchQ9Module, query::TpchQ9Config, TpchQ9Scan>
+      runtime("ACCELERATOR_CODEGEN_POSTGRES_Q9_COST_MODEL",
+              "config/q9_aux_cost_model.json",
+              query::TpchQ9Layout::kAccelerator,
+              query::TpchQ9Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kNation, pg_tbl::kOrders, pg_tbl::kPartsupp, pg_tbl::kLineitem});
+  return runtime;
+}
+} // namespace
+} // namespace detail
+
+namespace core = accelerator_codegen::aux_state::core;
+
+namespace {
+
+void ExecutePostgresTpchQ9(FunctionCallInfo fcinfo) {
+  detail::Q9Runtime().Execute(
+      core::QueryArguments{{core::AuxValue::Of(
+          core::AuxType::String, detail::TextDatum(PG_GETARG_DATUM(0)))}},
+      fcinfo);
+}
+
+const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
+    "tpch", 9, kPostgresVariantAux, &ExecutePostgresTpchQ9});
+
+} // namespace
+} // namespace accelerator_codegen::aux_state::engine::postgres
+
+#endif

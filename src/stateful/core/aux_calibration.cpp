@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
@@ -388,6 +390,39 @@ maintenance::CostModelParams LoadAuxCostModelJson(
       content, "interference_query_slowdown_factor",
       params.interference_query_slowdown_factor);
   return params;
+}
+
+namespace {
+
+struct CalibrationWritesRegistry {
+  std::mutex mutex;
+  std::map<std::pair<std::string, int>, CalibrationWritesFn> writes;
+};
+
+CalibrationWritesRegistry &TheCalibrationWrites() {
+  static CalibrationWritesRegistry registry;
+  return registry;
+}
+
+} // namespace
+
+void RegisterCalibrationWrites(const std::string &workload, int query, CalibrationWritesFn writes) {
+  auto &registry = TheCalibrationWrites();
+  std::lock_guard<std::mutex> lock(registry.mutex);
+  registry.writes[{workload, query}] = writes;
+}
+
+std::vector<CalibrationWrite> CalibrationWritesFor(const std::string &workload, int query) {
+  auto &registry = TheCalibrationWrites();
+  CalibrationWritesFn writes = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    const auto it = registry.writes.find({workload, query});
+    if (it != registry.writes.end()) {
+      writes = it->second;
+    }
+  }
+  return writes ? writes() : std::vector<CalibrationWrite>{};
 }
 
 } // namespace accelerator_codegen::aux_state::core

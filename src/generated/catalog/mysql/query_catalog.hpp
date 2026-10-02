@@ -1,5 +1,7 @@
 // GENERATED BACKEND — MySQL query catalog.
-// Empty until accelerator kernels are generated under src/generated/{bench}/q{N}/postgres/.
+// MySQL query catalog.  The backend names no query: each query registers its own
+// entry from src/generated/{bench}/q{N}/mysql/aux/catalog.cpp through a static
+// MysqlQueryCatalogRegistrar.  Lookups iterate the registry, sorted by query id.
 #pragma once
 
 #include <cstdint>
@@ -22,6 +24,16 @@ struct MysqlSharedQueryCatalogEntry {
   const char *base_sql = nullptr;
   const char *accelerator_sql = nullptr;
   const char *aux_sql = nullptr;
+};
+
+// Registers (replacing an entry with the same workload and id).  Entries are
+// held stably; the strings must outlive the process (string literals).
+void RegisterMysqlQuery(const MysqlSharedQueryCatalogEntry &entry);
+
+struct MysqlQueryCatalogRegistrar {
+  explicit MysqlQueryCatalogRegistrar(const MysqlSharedQueryCatalogEntry &entry) {
+    RegisterMysqlQuery(entry);
+  }
 };
 
 const MysqlSharedQueryCatalogEntry &LookupMysqlQuery(const std::string &workload_name,

@@ -7,8 +7,7 @@ categories:
     paths:
       - src/generated/tpch/q1/base/single-threaded/fused_scan.cpp
       - src/generated/tpch/q1/base/fused.hpp
-      - src/generated/sec_edgar/runtime.hpp
-      - src/generated/sec_edgar/runtime.cpp
+      - src/generated/sec_edgar/q1/duckdb/base/single-threaded/package.cpp
       - benchmarks/tpch/single-threaded/benchmark_tpch_breakdown.cpp
 
   - name: Dictionary / FLAT fast paths

@@ -6,6 +6,7 @@
 #include <limits>
 #include <stdexcept>
 #include <utility>
+#include "sec_edgar/q3/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {

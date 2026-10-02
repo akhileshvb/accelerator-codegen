@@ -61,12 +61,31 @@ NativeScanSpec CreateSecEdgarQ3NumScanSpec() {
 	return scan_spec;
 }
 
+namespace {
+
+duckdb::unique_ptr<KernelInstance> CreateSecEdgarQ3FusedKernelInstance(const QueryParameters &parameters,
+                                                                       const QueryKernelFactoryData *) {
+	return CreateSecEdgarQ3FusedKernel(dynamic_cast<const SecEdgarQ3Parameters &>(parameters));
+}
+
+void RunSecEdgarQ3FusedScan(duckdb::ClientContext &context, KernelInstance &kernel,
+                            const duckdb::vector<duckdb::unique_ptr<duckdb::FunctionData>> &bound_inputs) {
+	if (bound_inputs.size() != 1) {
+		throw std::runtime_error("SEC EDGAR fused scan expects exactly one bound input");
+	}
+	RunSecEdgarQ3FusedPreScan(kernel, context, *bound_inputs[0]);
+}
+
+} // namespace
+
 duckdb::TableFunctionSet CreateSecEdgarQ3FunctionSet() {
 	QueryPackage package;
 	package.function_name = "accel_sec_edgar_q3";
 	package.overloads = {{}};
 	package.bind_query = BindSecEdgarQ3Package;
 	package.create_kernel = CreateSecEdgarQ3KernelInstance;
+	package.create_fused_kernel = CreateSecEdgarQ3FusedKernelInstance;
+	package.fused_scan = RunSecEdgarQ3FusedScan;
 	return CreateRuntimeBackedFunctionSet(package);
 }
 

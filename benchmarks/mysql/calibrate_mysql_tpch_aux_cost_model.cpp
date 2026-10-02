@@ -20,14 +20,13 @@
 
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
 #include "aux_state/mysql_tpch_harness.hpp"
-#include "tpch/calibration_writes.hpp"
+#include "accelerator_codegen/stateful/core/aux_calibration.hpp"
 
 namespace {
 
 using namespace accel::mysql::tpch_harness;
 namespace core = accelerator_codegen::aux_state::core;
 namespace mnt = accelerator_codegen::aux_state::maintenance;
-namespace query = accelerator_codegen::aux_state::query;
 using Clock = std::chrono::steady_clock;
 
 double TimeUs(const Tools &tools, const std::string &sql, int warmup, int iters) {
@@ -108,7 +107,7 @@ int main(int argc, char **argv) {
     const double busy = TimeUs(tools, aux, 0, 5);
     params.interference_query_slowdown_factor = std::max(0.0, (busy - solo) / std::max(solo, 1.0));
 
-    const auto writes = query::TpchCalibrationWrites(query_id);
+    const auto writes = core::CalibrationWritesFor("tpch", query_id);
     if (writes.empty()) {
       std::cerr << "Q" << query_id << ": the module has no calibration writes; maintenance costs kept\n";
     } else {

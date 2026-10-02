@@ -97,6 +97,20 @@ public:
                               std::optional<maintenance::MaintenanceAction> forced) = 0;
 };
 
+// A query's calibration writes (what AuxQueryModule::CalibrationWrites
+// returns), registered from the query's own directory so engine tools that
+// have no module instance (e.g. a server engine's calibrate binary) can find
+// them by (workload, query id).
+using CalibrationWritesFn = std::vector<CalibrationWrite> (*)();
+void RegisterCalibrationWrites(const std::string &workload, int query, CalibrationWritesFn writes);
+// Empty if the query registered none.
+std::vector<CalibrationWrite> CalibrationWritesFor(const std::string &workload, int query);
+struct CalibrationWritesRegistrar {
+  CalibrationWritesRegistrar(const std::string &workload, int query, CalibrationWritesFn writes) {
+    RegisterCalibrationWrites(workload, query, writes);
+  }
+};
+
 struct WriteCalibrationSample {
   std::string name;
   uint64_t rows = 0;       // as the module reported them to the cost model
