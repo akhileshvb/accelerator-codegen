@@ -140,11 +140,55 @@ const SharedQueryCatalogEntry *VerusKitCatalogEntry(const std::string &accelerat
   if (!glue) {
     return nullptr;
   }
-  const auto *base = FindEntry(ParseWorkload(glue->workload), glue->query_id);
-  if (!base) {
-    return nullptr;
+  const auto workload = ParseWorkload(glue->workload);
+  if (const auto *base = FindEntry(workload, glue->query_id)) {
+    return &Derived(accelerator_id, *base, std::string("SELECT * FROM accel_") + glue->id + "()", false);
   }
-  return &Derived(accelerator_id, *base, std::string("SELECT * FROM accel_") + glue->id + "()", false);
+  // No other accelerator registered the query: the entry from the glue alone
+  // (its parameterized SQL; arguments typed by its parameter kinds; no probes).
+  struct Own {
+    std::string id, workload_name, sql, aux_sql;
+    SharedQueryCatalogEntry entry;
+  };
+  static std::mutex mutex;
+  static std::map<std::string, std::unique_ptr<Own>> own;
+  std::lock_guard<std::mutex> lock(mutex);
+  auto &slot = own[accelerator_id];
+  if (!slot) {
+    slot = std::make_unique<Own>();
+    slot->id = glue->id;
+    slot->workload_name = glue->workload;
+    slot->sql = glue->query_sql ? glue->query_sql : "";
+    slot->aux_sql = std::string("SELECT * FROM accel_") + glue->id + "()";
+    auto &e = slot->entry;
+    e.query_id = glue->query_id;
+    e.workload = workload;
+    e.workload_name = slot->workload_name.c_str();
+    e.accelerator_id = slot->id.c_str();
+    e.base_sql = slot->sql.c_str();
+    e.duckdb_aux_sql = slot->aux_sql.c_str();
+    for (const auto kind : glue->params) {
+      core::AuxType type = core::AuxType::String;
+      switch (kind) {
+      case verus_kit::Kind::Int:
+        type = core::AuxType::Int64;
+        break;
+      case verus_kit::Kind::Dec:
+        type = core::AuxType::Double;
+        break;
+      case verus_kit::Kind::Date:
+        type = core::AuxType::Date;
+        break;
+      case verus_kit::Kind::Bool:
+        type = core::AuxType::Boolean;
+        break;
+      case verus_kit::Kind::Text:
+        break;
+      }
+      e.benchmark_arguments.values.push_back(core::AuxValue::Null(type));
+    }
+  }
+  return &slot->entry;
 }
 
 const SharedQueryCatalogEntry &LookupSharedQuery(const std::string &workload_name,

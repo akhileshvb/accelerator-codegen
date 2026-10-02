@@ -413,7 +413,10 @@ if(EXISTS "${ACCEL_Q21_VERUS_LIB}" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/g
     target_link_libraries(q21_verus_duckdb_fuzz PRIVATE accelerator_codegen duckdb_sibling)
     add_executable(q21_verus_duckdb_snapshots tests/verification/q21verus/q21_verus_duckdb_snapshots.cpp)
     target_link_libraries(q21_verus_duckdb_snapshots PRIVATE accelerator_codegen duckdb_sibling)
-    # Generic test / bench runner for Verus accelerators of the host kit.
+endif()
+# Generic test / bench runner for Verus accelerators of the host kit (needs no
+# particular accelerator: the Verus pipeline builds it in a tree with none).
+if(NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQL)
     add_executable(verus_kit_runner tests/verification/verus_kit/verus_kit_runner.cpp)
     target_link_libraries(verus_kit_runner PRIVATE accelerator_codegen duckdb_sibling)
 endif()

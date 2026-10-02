@@ -165,15 +165,25 @@ AuxBind(::duckdb::ClientContext &context, ::duckdb::TableFunctionBindInput &inpu
   }
 
   ::duckdb::Connection connection(*context.db);
-  auto base_result = connection.Query(entry.base_sql);
-  Require(base_result != nullptr && !base_result->HasError(),
-          base_result ? base_result->GetError() : "failed to infer aux schema");
-  auto &base = base_result->Cast<::duckdb::MaterializedQueryResult>();
-  return_types.reserve(base.ColumnCount());
-  names.reserve(base.ColumnCount());
-  for (::duckdb::idx_t column = 0; column < base.ColumnCount(); ++column) {
-    return_types.push_back(base.types[column]);
-    names.push_back(base.names[column]);
+  if (std::string(entry.base_sql).find('$') != std::string::npos) {
+    // Parameterized SQL (an entry built from a Verus kit glue): the schema
+    // from preparing it, without running it.
+    auto prepared = connection.Prepare(entry.base_sql);
+    Require(prepared != nullptr && !prepared->HasError(),
+            prepared ? prepared->GetError() : "failed to infer aux schema");
+    return_types = prepared->GetTypes();
+    names = prepared->GetNames();
+  } else {
+    auto base_result = connection.Query(entry.base_sql);
+    Require(base_result != nullptr && !base_result->HasError(),
+            base_result ? base_result->GetError() : "failed to infer aux schema");
+    auto &base = base_result->Cast<::duckdb::MaterializedQueryResult>();
+    return_types.reserve(base.ColumnCount());
+    names.reserve(base.ColumnCount());
+    for (::duckdb::idx_t column = 0; column < base.ColumnCount(); ++column) {
+      return_types.push_back(base.types[column]);
+      names.push_back(base.names[column]);
+    }
   }
   {
     std::lock_guard<std::mutex> lock(schema_mutex);
