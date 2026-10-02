@@ -259,13 +259,17 @@ class CodexExecBackend:
                 cmd.extend(["-s", "workspace-write", "--approve-for-me"])
             if resume:
                 cmd.append(str(resume))
-            cmd.append(str(task_path))
+            # prompt_via_stdin: the task text itself is the prompt (read from stdin), so the agent
+            # does not have to read it back through a shell (whose output codex truncates).
+            via_stdin = bool(getattr(self, "prompt_via_stdin", False))
+            cmd.append("-" if via_stdin else str(task_path))
             # An OS sandbox to run codex (and its MCP server) in, e.g. bwrap.
             cmd = list(getattr(self, "command_prefix", None) or []) + cmd
             try:
                 proc = subprocess.run(
                     cmd,
                     cwd=str(self._pipeline_config.repo_root),
+                    input=task if via_stdin else None,
                     capture_output=True,
                     text=True,
                     timeout=timeout,

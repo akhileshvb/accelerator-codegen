@@ -149,6 +149,7 @@ def run_agent(
         backend.task_dir = Path(ctx.run_dir) / "tmp"
     if resume:
         backend.resume_session_id = resume
+    backend.prompt_via_stdin = True
     t0 = time.monotonic()
     result = backend.run_stage(StageRunRequest(stage=stage, instructions=text, user_message=task,
                                                agent_name=f"accel_{stage}", model_id=model_id,
