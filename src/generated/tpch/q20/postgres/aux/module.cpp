@@ -1,4 +1,5 @@
 #include "tpch/q20/postgres/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -1323,6 +1324,12 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
   // Avoid a hash set containment lookup per candidate: fetch target key once.
   const int32_t target_nationkey =
       target_nationkeys.empty() ? -1 : *target_nationkeys.begin();
+  if (target_nationkeys.empty()) {
+    // No nation has this name (e.g. renamed): no supplier qualifies.
+    sink.Begin(core::OutputSchema{});
+    sink.End();
+    return;
+  }
 
   std::vector<TpchQ20OutputRow> output_rows;
   output_rows.reserve(qualifying_suppkeys.size());
@@ -1356,6 +1363,10 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
     sink.WriteRow(out);
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ20Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(20);
 }
 
 } // namespace accelerator_codegen::aux_state::query

@@ -1,4 +1,5 @@
 #include "tpch/q13/postgres/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -1019,6 +1020,10 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
     sink.WriteRow({{core::AuxValue::Of(core::AuxType::Int64, r.c_count),
                     core::AuxValue::Of(core::AuxType::Int64, r.custdist)}});
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ13Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(13);
 }
 
 } // namespace accelerator_codegen::aux_state::query

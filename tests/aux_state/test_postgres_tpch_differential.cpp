@@ -549,14 +549,14 @@ void RunWriteMaintDifferential(const Tools &tools, int query_num, bool prefer_au
   // has no ApplyDelta path, or when Postgres defers Rebuild* to EnsureBuilt.
   if (force_action == "ApplyDelta") {
     Require(ActionOk(action, {"ApplyDelta", "RebuildPartition", "RebuildAll",
-                              "InvalidateAndFallback"}),
+                              "InvalidateAndRebuildOnRead"}),
             "forced ApplyDelta produced unexpected action=[" + action + "]");
   } else if (force_action == "RebuildPartition") {
     Require(ActionOk(action, {"RebuildPartition", "RebuildAll",
-                              "InvalidateAndFallback"}),
+                              "InvalidateAndRebuildOnRead"}),
             "forced RebuildPartition produced unexpected action=[" + action + "]");
   } else if (force_action == "RebuildAll") {
-    Require(ActionOk(action, {"RebuildAll", "InvalidateAndFallback"}),
+    Require(ActionOk(action, {"RebuildAll", "InvalidateAndRebuildOnRead"}),
             "forced RebuildAll produced unexpected action=[" + action + "]");
   } else {
     Require(!action.empty() && action != "None",

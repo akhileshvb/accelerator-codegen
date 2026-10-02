@@ -246,9 +246,20 @@ inline std::string SubstituteParams(int query_num, const std::string &sql_templa
   return out;
 }
 
+// Q11 orders by value only: tied parts may come in any order. The
+// accelerator breaks ties by partkey; make the reference do the same.
+inline std::string TotalOrderQ11(std::string sql) {
+  const std::string from = "ORDER BY value DESC";
+  const auto pos = sql.rfind(from);
+  if (pos != std::string::npos && sql.find("ps_partkey", pos) == std::string::npos)
+    sql.insert(pos + from.size(), ", ps_partkey");
+  return sql;
+}
+
 inline std::string ConcreteBaseSql(int query_num,
                                    const PostgresSharedQueryCatalogEntry &entry) {
-  return SubstituteParams(query_num, entry.base_sql ? entry.base_sql : "");
+  auto sql = SubstituteParams(query_num, entry.base_sql ? entry.base_sql : "");
+  return query_num == 11 ? TotalOrderQ11(std::move(sql)) : sql;
 }
 
 inline std::string ConcreteAccelSql(int query_num,
@@ -325,6 +336,18 @@ inline void EnsureMutationTriggers(const Tools &tools) {
                      SqlLiteral(so) +
                      ", 'accel_postgres_set_force_maintenance_action' LANGUAGE C"),
           "install force-maintenance helper failed");
+  Require(RunSQL(tools,
+                 "CREATE OR REPLACE FUNCTION accel_postgres_get_last_maintenance_decision() "
+                 "RETURNS text AS " +
+                     SqlLiteral(so) +
+                     ", 'accel_postgres_get_last_maintenance_decision' LANGUAGE C"),
+          "install last-decision helper failed");
+  Require(RunSQL(tools,
+                 "CREATE OR REPLACE FUNCTION accel_postgres_get_execute_counts() "
+                 "RETURNS text AS " +
+                     SqlLiteral(so) +
+                     ", 'accel_postgres_get_execute_counts' LANGUAGE C STRICT"),
+          "install execute-counts helper failed");
   Require(RunSQL(tools,
                  "CREATE OR REPLACE FUNCTION accel_postgres_get_last_maintenance_action() "
                  "RETURNS text AS " +

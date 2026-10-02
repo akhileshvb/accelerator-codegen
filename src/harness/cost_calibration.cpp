@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -74,8 +75,40 @@ std::string SharedCostModelConfigPath(SharedWorkloadKind workload, int query_id)
 core::AuxCalibrationResult CalibrateSharedQueryCostModel(
     duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
     const core::AuxCalibrationConfig &config) {
-  const auto probe = FindSharedProbe(connection, entry);
   DuckdbRuntime runtime(connection, entry, 10.0);
+  const auto writes = runtime.CalibrationWrites();
+  if (!writes.empty()) {
+    // Read side measured directly; maintenance from real captured writes
+    // (core::CalibrateFromWrites).
+    core::AuxCalibrationResult result;
+    result.params = core::LoadAuxCostModelJson(SharedCostModelConfigPath(entry.workload, entry.query_id));
+    const auto warmups = config.warmup_samples, samples = config.measurement_samples;
+    result.params.first_query_blocking_us = core::MedianTimeUs(
+        [&] { runtime.Build(); }, warmups, samples, [&] { runtime.ResetCalibrationState(); });
+    runtime.Build();
+    result.params.aux_hit_us = core::MedianTimeUs([&] { runtime.Execute(); }, warmups, samples);
+    result.params.fallback_us = core::MedianTimeUs([&] { runtime.ExecuteBaseQuery(); }, warmups, samples);
+    result.params.invalidation_overhead_us = core::MedianTimeUs(
+        [&] { runtime.InvalidateAll(); }, warmups, samples, [&] { runtime.Build(); });
+    runtime.Build();
+    runtime.EnableMutationCapture();
+    aux_engine::duckdb::DuckdbCalibrationEngine engine(runtime);
+    const auto fitted = core::CalibrateFromWrites(writes, engine, result.params);
+    result.params = fitted.params;
+    for (const auto &name : fitted.unfitted) {
+      std::cerr << "  not calibrated (no write measured it; kept): " << name << "\n";
+    }
+    for (const auto &sample : fitted.samples) {
+      std::cerr << "  write " << sample.name << ": rows=" << sample.rows
+                << " partitions=" << sample.partitions << " delta=" << sample.apply_delta_us
+                << "us partition=" << sample.rebuild_partition_us << "us all=" << sample.rebuild_all_us
+                << "us\n";
+    }
+    return result;
+  }
+
+  // No calibration writes: synthetic mutations from the query's probe.
+  const auto probe = FindSharedProbe(connection, entry);
 
   core::AuxCalibrationHooks hooks;
   // Measure() calls reset before every sample. Keep it a no-op so aux_hit
@@ -90,33 +123,27 @@ core::AuxCalibrationResult CalibrateSharedQueryCostModel(
     runtime.Execute();
   };
   hooks.execute_fallback = [&] { runtime.ExecuteBaseQuery(); };
-  hooks.apply_delta = [&](std::size_t row_count) {
-    core::SetForcedMaintenanceActionName("ApplyDelta");
+  // A fresh published state before each maintenance sample (untimed).
+  hooks.prepare_maintenance = [&] {
     runtime.ResetCalibrationState();
     runtime.Build();
+  };
+  hooks.apply_delta = [&](std::size_t row_count) {
+    core::SetForcedMaintenanceActionName("ApplyDelta");
     runtime.ApplyMutationBatch(ScaleMutation(entry, probe, row_count));
     core::SetForcedMaintenanceActionName("");
   };
   hooks.rebuild_partition = [&] {
     core::SetForcedMaintenanceActionName("RebuildPartition");
-    runtime.ResetCalibrationState();
-    runtime.Build();
     runtime.ApplyMutationBatch(ScaleMutation(entry, probe, 1));
     core::SetForcedMaintenanceActionName("");
   };
   hooks.rebuild_all = [&] {
     core::SetForcedMaintenanceActionName("RebuildAll");
-    runtime.ResetCalibrationState();
-    runtime.Build();
     runtime.ApplyMutationBatch(ScaleMutation(entry, probe, 1));
     core::SetForcedMaintenanceActionName("");
   };
-  hooks.invalidate = [&] {
-    runtime.ResetCalibrationState();
-    runtime.Build();
-    runtime.InvalidateAll();
-  };
-
+  hooks.invalidate = [&] { runtime.InvalidateAll(); };
   return core::CalibrateAuxCostModel(hooks, {}, config);
 }
 

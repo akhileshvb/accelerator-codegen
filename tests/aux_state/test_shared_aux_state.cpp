@@ -155,14 +155,15 @@ int main() {
   assert(module->stage_count == 3);
   coordinator.Abort();
 
-  // The DuckDB compatibility store must not re-enter PartitionedStateStore's
-  // mutex from a ForEachSlot callback while serializing or checking versions.
-  ::accelerator_codegen::aux_state::PartitionedStateStore legacy_store;
-  auto payload = std::make_shared<int>(42);
-  legacy_store.PublishPartition(3, std::shared_ptr<const void>(payload), 0);
+  // The DuckDB store: one accelerator per store, an installed build reads
+  // back for every snapshot.
   ::accelerator_codegen::aux_state::engine::duckdb::DuckDBStateStore
-      duckdb_store(
-          "test", legacy_store);
+      duckdb_store("test");
+  auto payload = std::make_shared<int>(42);
+  StateImage built;
+  built.partition = 3;
+  built.payload = std::shared_ptr<const void>(payload);
+  duckdb_store.Install({built}, "test");
   const auto snapshot = duckdb_store.Read({0, 0, {}});
   assert(snapshot.available);
   assert(snapshot.partitions.size() == 1);

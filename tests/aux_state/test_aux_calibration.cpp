@@ -59,7 +59,7 @@ int main() {
                                                       policy);
   assert(read_light.action ==
          accelerator_codegen::aux_state::maintenance::MaintenanceAction::
-             InvalidateAndFallback);
+             InvalidateAndRebuildOnRead);
   assert(read_heavy.action ==
          accelerator_codegen::aux_state::maintenance::MaintenanceAction::
              RebuildAll);

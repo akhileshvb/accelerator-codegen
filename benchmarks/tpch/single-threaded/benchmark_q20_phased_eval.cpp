@@ -175,7 +175,7 @@ int ActionToCode(maintenance::MaintenanceAction action) {
     return 2;
   case maintenance::MaintenanceAction::RebuildAll:
     return 3;
-  case maintenance::MaintenanceAction::InvalidateAndFallback:
+  case maintenance::MaintenanceAction::InvalidateAndRebuildOnRead:
     return 4;
   }
   return -1;

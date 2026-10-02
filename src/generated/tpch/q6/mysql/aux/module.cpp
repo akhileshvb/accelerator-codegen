@@ -1,4 +1,5 @@
 #include "tpch/q6/mysql/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include "duckdb/common/types/hugeint.hpp"
@@ -777,6 +778,10 @@ void TpchQ6Module::EmitResult(Q6AccT revenue, core::AuxRowSink &sink) const {
       {{core::AuxValue::Of(core::AuxType::ScaledDecimal,
                            TpchQ6RevenueOutputValue(revenue))}});
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ6Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(6);
 }
 
 } // namespace accelerator_codegen::aux_state::query

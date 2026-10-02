@@ -134,7 +134,8 @@ set(ACCEL_Q21_VERUS_LIB "${CMAKE_CURRENT_SOURCE_DIR}/build-verus/libq21_verus.a"
     CACHE FILEPATH "Verus Q21 kernel static library")
 if(EXISTS "${ACCEL_Q21_VERUS_LIB}")
     message(STATUS "Q21 Verus kernel: ${ACCEL_Q21_VERUS_LIB}")
-    target_sources(accelerator_codegen PRIVATE src/generated/tpch/q21/verus/module.cpp)
+    target_sources(accelerator_codegen PRIVATE src/generated/tpch/q21/verus/module.cpp
+                                              src/generated/tpch/q21/verus/store.cpp)
     target_compile_definitions(accelerator_codegen PUBLIC ACCEL_HAVE_Q21_VERUS)
     target_link_libraries(accelerator_codegen PRIVATE ${ACCEL_Q21_VERUS_LIB} pthread dl m)
 endif()
@@ -313,6 +314,18 @@ target_link_libraries(test_shared_aux_state
 
 target_include_directories(test_shared_aux_state PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
+add_executable(test_versioned_aux_state
+    tests/aux_state/test_versioned_aux_state.cpp
+)
+target_link_libraries(test_versioned_aux_state
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+if(BUILD_TESTING)
+    add_test(NAME versioned_aux_state_unit_test COMMAND test_versioned_aux_state)
+endif()
+
 function(accel_add_shared_interface_test target_name test_source)
     add_executable(${target_name} ${test_source})
     target_link_libraries(${target_name} PRIVATE accelerator_codegen duckdb_sibling)
@@ -368,6 +381,8 @@ if(EXISTS "${ACCEL_Q21_VERUS_LIB}" AND NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AN
     target_link_libraries(q21_verus_bench_duckdb PRIVATE accelerator_codegen duckdb_sibling)
     add_executable(q21_verus_duckdb_fuzz tests/verification/q21verus/q21_verus_duckdb_fuzz.cpp)
     target_link_libraries(q21_verus_duckdb_fuzz PRIVATE accelerator_codegen duckdb_sibling)
+    add_executable(q21_verus_duckdb_snapshots tests/verification/q21verus/q21_verus_duckdb_snapshots.cpp)
+    target_link_libraries(q21_verus_duckdb_snapshots PRIVATE accelerator_codegen duckdb_sibling)
 endif()
 
 add_executable(test_tpch_shared_differential
@@ -615,6 +630,24 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_cross_accel_correctn
         endif()
     endforeach()
 endif()
+
+# Randomized differential fuzz of the TPC-H aux accelerators with engine
+# capture (tests/aux_state/test_tpch_aux_fuzz.cpp; run by hand, needs a DB).
+# Cost-model choice vs measured action costs under different writes
+# (tests/aux_state/maintenance_choice_demo.cpp; run by hand on a TPC-H DB).
+add_executable(maintenance_choice_demo
+    tests/aux_state/maintenance_choice_demo.cpp
+    tests/test_support/cross_accel_helpers.cpp
+)
+target_link_libraries(maintenance_choice_demo PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(maintenance_choice_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
+add_executable(test_tpch_aux_fuzz
+    tests/aux_state/test_tpch_aux_fuzz.cpp
+    tests/test_support/cross_accel_helpers.cpp
+)
+target_link_libraries(test_tpch_aux_fuzz PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(test_tpch_aux_fuzz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 add_executable(test_tpch_q22
     tests/single-threaded/test_tpch_q22.cpp
@@ -1498,8 +1531,29 @@ accel_add_aux_state_query(
 # ---------------------------------------------------------------------------
 if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_postgres_tpch_differential.cpp")
+    # postgres_server_stubs.cpp: server-only symbols the library references.
+    add_executable(test_postgres_tpch_fuzz
+        tests/aux_state/test_postgres_tpch_fuzz.cpp
+        tests/aux_state/postgres_server_stubs.cpp
+    )
+    find_library(LIBPQ_FUZZ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+    target_link_libraries(test_postgres_tpch_fuzz
+        PRIVATE
+            accelerator_codegen
+            duckdb_sibling
+            ${LIBPQ_FUZZ_LIB}
+    )
+    target_include_directories(test_postgres_tpch_fuzz
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+            ${ACCEL_PG_INCLUDEDIR}
+    )
     add_executable(test_postgres_tpch_differential
         tests/aux_state/test_postgres_tpch_differential.cpp
+        tests/aux_state/postgres_server_stubs.cpp
     )
     find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
     target_link_libraries(test_postgres_tpch_differential
@@ -1555,15 +1609,18 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/postgres/calibrate_postgres_tpch_aux_cost_model.cpp")
         add_executable(calibrate_postgres_tpch_aux_cost_model
             benchmarks/postgres/calibrate_postgres_tpch_aux_cost_model.cpp
+            tests/aux_state/postgres_server_stubs.cpp
         )
+        find_library(LIBPQ_CALIB_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
         target_link_libraries(calibrate_postgres_tpch_aux_cost_model
-            PRIVATE accelerator_codegen duckdb_sibling)
+            PRIVATE accelerator_codegen duckdb_sibling ${LIBPQ_CALIB_LIB})
         target_include_directories(calibrate_postgres_tpch_aux_cost_model
             PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
                 ${ACCEL_PG_INCLUDEDIR}
-                ${ACCEL_PG_INCLUDEDIR_SERVER}
         )
         if(TARGET accelerator_codegen_pg)
             add_dependencies(calibrate_postgres_tpch_aux_cost_model accelerator_codegen_pg)
@@ -1861,6 +1918,18 @@ if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
 
     # MySQL TPC-H aux differential / isolation / calibration harnesses
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_mysql_tpch_differential.cpp")
+        add_executable(test_mysql_tpch_fuzz
+            tests/aux_state/test_mysql_tpch_fuzz.cpp
+        )
+        target_link_libraries(test_mysql_tpch_fuzz
+            PRIVATE accelerator_codegen duckdb_sibling)
+        target_include_directories(test_mysql_tpch_fuzz
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+        )
         add_executable(test_mysql_tpch_differential
             tests/aux_state/test_mysql_tpch_differential.cpp
         )

@@ -135,6 +135,7 @@ public:
                core::AuxRowSink &) override;
   void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
                        core::AuxRowSink &) override;
+  std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
   std::unordered_map<int32_t, ::accelerator_codegen::Q1DayPartition>

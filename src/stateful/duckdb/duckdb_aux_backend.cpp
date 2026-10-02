@@ -7,9 +7,35 @@
 
 #include "accelerator_codegen/runtime/parallel/parallel_runtime.hpp"
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/database_manager.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 
 namespace accelerator_codegen::aux_state::engine::duckdb {
+
+AuxCommitClock::AuxCommitClock(
+    ::duckdb::shared_ptr<::duckdb::AttachedDatabase> db_p)
+    : db(std::move(db_p)) {}
+
+void AuxCommitClock::OnCommit(::duckdb::AttachedDatabase &committed,
+                              ::duckdb::transaction_t commit_id) {
+  if (db && &committed == db.get()) {
+    // Visible to snapshots with start time > commit id.
+    epoch = commit_id + 1;
+  }
+}
+
+::duckdb::shared_ptr<::duckdb::AttachedDatabase>
+AuxCommitClock::DefaultDatabase(::duckdb::ClientContext &context) {
+  try {
+    return ::duckdb::DatabaseManager::Get(context).GetDatabase(
+        ::duckdb::DatabaseManager::GetDefaultDatabase(context));
+  } catch (...) {
+    return nullptr;
+  }
+}
 
 DuckDBAuxBackend::DuckDBAuxBackend(
     core::AuxTransactionCoordinator &coordinator_p,
@@ -97,8 +123,47 @@ void DuckDBAuxBackend::SetExecutionContext(::duckdb::ClientContext *context) {
   execution_context = context;
 }
 
+namespace {
+thread_local ::duckdb::ClientContext *t_reader = nullptr;
+} // namespace
+
 ::duckdb::ClientContext *DuckDBAuxBackend::ExecutionContext() const {
-  return execution_context;
+  return t_reader ? t_reader : execution_context;
+}
+
+DuckDBAuxBackend::ReaderScope::ReaderScope(::duckdb::ClientContext &context)
+    : previous(t_reader) {
+  t_reader = &context;
+}
+
+DuckDBAuxBackend::ReaderScope::~ReaderScope() { t_reader = previous; }
+
+::duckdb::ClientContext *DuckDBAuxBackend::CurrentReader() { return t_reader; }
+
+core::VisibilityToken DuckDBAuxBackend::ReaderVisibility() {
+  core::VisibilityToken token;
+  if (t_reader) {
+    token.mutation_epoch = SnapshotEpoch(*t_reader);
+  }
+  return token;
+}
+
+core::Version DuckDBAuxBackend::SnapshotEpoch(::duckdb::ClientContext &context) {
+  try {
+    auto &meta = ::duckdb::MetaTransaction::Get(context);
+    auto db = ::duckdb::DatabaseManager::Get(context).GetDatabase(
+        context, ::duckdb::DatabaseManager::GetDefaultDatabase(context));
+    if (!db) {
+      return 0;
+    }
+    auto &transaction = meta.GetTransaction(*db);
+    if (!transaction.IsDuckTransaction()) {
+      return 0;
+    }
+    return transaction.Cast<::duckdb::DuckTransaction>().start_time;
+  } catch (...) {
+    return 0; // no active transaction: the newest state
+  }
 }
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb

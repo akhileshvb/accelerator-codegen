@@ -178,7 +178,7 @@ def _sample_valid_analysis() -> dict:
                 {"table": "part", "mutation": "delete", "behavior": "invalidate_safely"},
             ],
             "fallback_conditions": ["partition_missing", "txn_blocked"],
-            "maintenance_actions_used": ["NoOp", "ApplyDelta", "RebuildPartition", "InvalidateAndFallback"],
+            "maintenance_actions_used": ["NoOp", "ApplyDelta", "RebuildPartition", "InvalidateAndRebuildOnRead"],
         },
         "performance_hypotheses": {
             "base_path_cost_decomposition": _base_path_cost_decomposition(),

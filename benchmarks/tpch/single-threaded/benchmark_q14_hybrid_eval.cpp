@@ -201,7 +201,7 @@ int ActionToCode(accelerator_codegen::aux_state::maintenance::MaintenanceAction 
 		return 2;
 	case MaintenanceAction::RebuildAll:
 		return 3;
-	case MaintenanceAction::InvalidateAndFallback:
+	case MaintenanceAction::InvalidateAndRebuildOnRead:
 		return 4;
 	}
 	return -1;
@@ -330,7 +330,7 @@ int RunPhasedMode() {
 			predicted_rebuild_all =
 			    CandidateCost(*decision, accelerator_codegen::aux_state::maintenance::MaintenanceAction::RebuildAll);
 			predicted_invalidate = CandidateCost(
-			    *decision, accelerator_codegen::aux_state::maintenance::MaintenanceAction::InvalidateAndFallback);
+			    *decision, accelerator_codegen::aux_state::maintenance::MaintenanceAction::InvalidateAndRebuildOnRead);
 			predicted_selected = decision->selected_predicted_cost_us;
 			actual_maintenance = decision->actual_cost_us;
 			prediction_error = decision->prediction_error_us;

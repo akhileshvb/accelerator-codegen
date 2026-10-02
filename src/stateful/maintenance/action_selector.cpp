@@ -16,7 +16,7 @@ int ActionPriority(MaintenanceAction action) {
 		return 1;
 	case MaintenanceAction::RebuildAll:
 		return 2;
-	case MaintenanceAction::InvalidateAndFallback:
+	case MaintenanceAction::InvalidateAndRebuildOnRead:
 		return 3;
 	case MaintenanceAction::NoOp:
 		return 4;
@@ -25,7 +25,7 @@ int ActionPriority(MaintenanceAction action) {
 }
 
 bool IsConservativeAction(MaintenanceAction action) {
-	return action == MaintenanceAction::InvalidateAndFallback || action == MaintenanceAction::RebuildPartition ||
+	return action == MaintenanceAction::InvalidateAndRebuildOnRead || action == MaintenanceAction::RebuildPartition ||
 	       action == MaintenanceAction::RebuildAll;
 }
 
@@ -42,7 +42,7 @@ SelectionResult SelectMinCostAction(const SelectionInput &input) {
 		}
 	}
 	if (supported.empty()) {
-		result.action = MaintenanceAction::InvalidateAndFallback;
+		result.action = MaintenanceAction::InvalidateAndRebuildOnRead;
 		return result;
 	}
 

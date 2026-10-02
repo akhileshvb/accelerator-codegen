@@ -1,4 +1,5 @@
 #include "tpch/q21/duckdb/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -531,10 +532,10 @@ void TpchQ21TxnBuffer::AddNationDelta(TpchQ21NationDelta delta) {
 core::AcceleratorId TpchQ21Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ21Module::Dependencies() const {
-  return {{config.supplier_table, {0, 1, 2}},
-          {config.orders_table, {0, 1}},
-          {config.lineitem_table, {0, 1, 2, 3}},
-          {config.nation_table, {0, 1}}};
+  return {{config.supplier_table, {0, 1, 2}, {0, 1, 3}},
+          {config.orders_table, {0, 1}, {0, 2}},
+          {config.lineitem_table, {0, 1, 2, 3}, {0, 2, 11, 12}},
+          {config.nation_table, {0, 1}, {0, 1}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ21Module::CreateTxnBuffer() const {
@@ -1288,6 +1289,10 @@ void TpchQ21Module::EmitResult(const TpchQ21State &state,
     sink.WriteRow(out);
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ21Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(21);
 }
 
 } // namespace accelerator_codegen::aux_state::query

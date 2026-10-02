@@ -3,6 +3,9 @@
 // TPC-H Q21 aux module backed by the Verus-verified kernel (src/verus/q21).
 // The host store keeps the kernel's immutable state as the payload of one
 // partition; this module only moves rows between the engine and the kernel.
+// When the services' store is the verified Verus store (store.hpp), the
+// module prepares each next version through it instead (q21vs_prepare_*),
+// so that the version a state is built from is the store's, not the host's.
 
 #include <cstdint>
 #include <functional>
@@ -65,13 +68,23 @@ public:
                             const std::function<void(const std::string &, int64_t)> &) = 0;
 };
 
-// One kernel state, owned by the host store's shared_ptr payload.
+// One kernel state, owned by the host store's shared_ptr payload, or shared
+// with the Verus store (a q21vs_read reference, released when done).
 struct TpchQ21VerusImage {
+  struct Shared {};
   explicit TpchQ21VerusImage(q21v_state *s) : state(s) {}
-  ~TpchQ21VerusImage() { q21v_free(state); }
+  TpchQ21VerusImage(Shared, const q21v_state *s)
+      : state(const_cast<q21v_state *>(s)), shared(true) {}
+  ~TpchQ21VerusImage() {
+    if (shared)
+      q21vs_state_release(state);
+    else
+      q21v_free(state);
+  }
   TpchQ21VerusImage(const TpchQ21VerusImage &) = delete;
   TpchQ21VerusImage &operator=(const TpchQ21VerusImage &) = delete;
   q21v_state *state = nullptr; // null: outside the kernel's domain
+  bool shared = false;
 };
 
 // A captured supplier / nation row change (sign +1 insert, -1 delete).
@@ -136,6 +149,8 @@ public:
                        core::AuxRowSink &) override;
 
 private:
+  struct Scans;
+  Scans RunScans() const;
   q21v_state *BuildKernelState() const;
 
   TpchQ21VerusConfig config;

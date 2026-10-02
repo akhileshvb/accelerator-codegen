@@ -1,4 +1,5 @@
 #include "tpch/q12/duckdb/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -307,8 +308,8 @@ void TpchQ12TxnBuffer::AddOrderDelta(TpchQ12OrderDelta delta) {
 
 core::AcceleratorId TpchQ12Module::Id() const { return kId; }
 std::vector<core::TableDependency> TpchQ12Module::Dependencies() const {
-  return {{config.orders_table, {0, 1}},
-          {config.lineitem_table, {0, 1, 2, 3, 4}}};
+  return {{config.orders_table, {0, 1}, {0, 5}},
+          {config.lineitem_table, {0, 1, 2, 3, 4}, {0, 14, 11, 12, 10}}};
 }
 std::unique_ptr<core::AuxTxnBuffer> TpchQ12Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ12TxnBuffer>();
@@ -439,6 +440,15 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
   }
   if (buffer.Deltas().empty() && buffer.OrderDeltas().empty())
     return outcome;
+
+  // A removed (deleted or updated) order may have lineitems counted under
+  // its old priority, which the deltas cannot move: rebuild.
+  for (const auto &delta : buffer.OrderDeltas()) {
+    if (delta.sign < 0) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+  }
 
   const auto total_deltas =
       buffer.Deltas().size() + buffer.OrderDeltas().size();
@@ -746,6 +756,10 @@ void TpchQ12Module::EmitResult(const TpchQ12State &state, int32_t start_days,
                                core::AuxRowSink &sink) const {
   TpchQ12FinalizeAndEmit(state, start_days, end_days, shipmode1, shipmode2,
                          sink);
+}
+
+std::vector<core::CalibrationWrite> TpchQ12Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(12);
 }
 
 } // namespace accelerator_codegen::aux_state::query

@@ -50,8 +50,10 @@ ParseMaintenanceActionName(std::string_view name) {
   if (name == "RebuildPartition") {
     return MaintenanceAction::RebuildPartition;
   }
-  if (name == "InvalidateAndFallback") {
-    return MaintenanceAction::InvalidateAndFallback;
+  if (name == "InvalidateAndRebuildOnRead" ||
+      name == "InvalidateAndFallback") { // the old name
+
+    return MaintenanceAction::InvalidateAndRebuildOnRead;
   }
   if (name == "NoOp") {
     return MaintenanceAction::NoOp;
@@ -116,6 +118,13 @@ MaintenanceDecision SelectAuxMaintenanceAction(
 
   MaintenanceDecision forced;
   if (TryForcedMaintenanceAction(forced)) {
+    MaintenanceDecisionLogEntry log_entry;
+    log_entry.selected = forced.action;
+    log_entry.staged_action = forced.action;
+    log_entry.rows_touched = request.rows_touched;
+    log_entry.affected_partition_count = request.affected_partition_count;
+    log_entry.expected_queries_before_next_write = request.expected_queries_before_next_write;
+    RecordMaintenanceSelectorDecision(log_entry);
     return forced;
   }
 
@@ -123,14 +132,16 @@ MaintenanceDecision SelectAuxMaintenanceAction(
     return {MaintenanceAction::NoOp, 0.0};
   }
 
+  // Reads expected before the next write (may be below 1: write-heavy).
   const double expected_queries =
-      std::max(1.0, request.expected_queries_before_next_write);
-  const double future_query_premium =
-      std::max(0.0, params.fallback_us - params.aux_hit_us);
+      std::max(0.0, request.expected_queries_before_next_write);
   const auto rows = std::max<uint64_t>(1, request.rows_touched);
   const auto partitions =
       std::max<uint64_t>(1, request.affected_partition_count);
 
+  // Every accelerator offers the same actions. Each is priced by what it
+  // costs this accelerator; a module without finer partitions rebuilds its
+  // whole state for RebuildPartition.
   std::vector<ActionCandidate> candidates;
   const bool apply_delta_eligible =
       request.incremental_supported && !request.whole_state_required &&
@@ -143,33 +154,38 @@ MaintenanceDecision SelectAuxMaintenanceAction(
   candidates.push_back(
       {MaintenanceAction::ApplyDelta, apply_delta, apply_delta_eligible});
 
-  // Rebuild actions now run Build+Publish on Commit (sync). Charge rebuild cost
-  // as immediate so ApplyDelta still wins when cheaper, and so InvalidateAndFallback
-  // remains preferred only when few future queries are expected.
-  ActionCostEstimate rebuild_partition;
-  rebuild_partition.immediate_us =
-      params.invalidation_overhead_us * partitions +
-      params.partition_rebuild_us * partitions;
-  candidates.push_back({
-      MaintenanceAction::RebuildPartition, rebuild_partition,
-      request.partition_rebuild_supported &&
-          !request.whole_state_required && request.affected_partition_count > 0});
-
   ActionCostEstimate rebuild_all;
   rebuild_all.immediate_us =
       params.invalidation_overhead_us + params.full_rebuild_us;
   candidates.push_back({MaintenanceAction::RebuildAll, rebuild_all,
                         request.full_rebuild_supported});
 
-  ActionCostEstimate invalidate;
-  invalidate.immediate_us = params.invalidation_overhead_us;
-  invalidate.differential_future_query_us =
-      expected_queries * future_query_premium;
-  // When ApplyDelta is eligible, do not offer lazy invalidation: large RF
-  // batches with low expected-query counts otherwise prefer Invalidate even
-  // though measured incremental maintenance is cheaper than rebuild.
-  candidates.push_back({MaintenanceAction::InvalidateAndFallback, invalidate,
-                        !apply_delta_eligible});
+  // Rebuild actions run Build+Publish at commit: their cost is immediate.
+  // Without finer partitions RebuildPartition is a full rebuild, priced just
+  // above RebuildAll so a tie goes to RebuildAll (it is chosen only where
+  // RebuildAll is not available).
+  const bool finer_partitions = request.partition_rebuild_supported;
+  ActionCostEstimate rebuild_partition;
+  rebuild_partition.immediate_us =
+      finer_partitions
+          ? params.invalidation_overhead_us + params.partition_rebuild_base_us +
+                params.partition_rebuild_us * partitions
+          : rebuild_all.immediate_us + params.decision_margin_us + 1.0;
+  candidates.push_back({MaintenanceAction::RebuildPartition, rebuild_partition,
+                        !request.whole_state_required});
+
+  // InvalidateAndRebuildOnRead: invalidate now; the next reader rebuilds and
+  // answers from the state (no SQL fallback). One full rebuild, paid only if
+  // a read comes before the next write: it saves work only when writes
+  // outnumber reads (at one read per write or more it ties RebuildAll, which
+  // wins the tie).
+  ActionCostEstimate deferred;
+  deferred.immediate_us = params.invalidation_overhead_us;
+  deferred.differential_future_query_us =
+      std::min(1.0, expected_queries) * params.full_rebuild_us;
+  candidates.push_back({MaintenanceAction::InvalidateAndRebuildOnRead, deferred,
+                        request.deferred_rebuild_supported &&
+                            request.full_rebuild_supported});
 
   maintenance::SelectionInput input;
   input.candidates = std::move(candidates);
@@ -200,7 +216,7 @@ MaintenanceDecision SelectAuxMaintenanceAction(
     case MaintenanceAction::RebuildAll:
       log_entry.predicted_rebuild_all_us = total;
       break;
-    case MaintenanceAction::InvalidateAndFallback:
+    case MaintenanceAction::InvalidateAndRebuildOnRead:
       log_entry.predicted_invalidate_us = total;
       break;
     case MaintenanceAction::NoOp:

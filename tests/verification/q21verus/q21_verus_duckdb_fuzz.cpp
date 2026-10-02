@@ -537,8 +537,13 @@ int main(int argc, char **argv) {
     for (const auto &[k, v] : actions)
       std::cout << " " << k << ":" << v;
     std::cout << " } (1=ApplyDelta, 3=RebuildAll)\n";
-    std::cout << "q21 verus duckdb fuzz: " << (mismatches == 0 ? "PASS" : "FAIL") << std::endl;
-    return mismatches == 0 ? 0 : 1;
+    // ACCEL_AUX_STORE=verus: the state lives in the verified Verus store.
+    const bool ok = mismatches == 0 && rt.StaleInstallCount() == 0;
+    std::cout << "q21 verus duckdb fuzz: store " << (rt.UsesVerusStore() ? "verus" : "cpp")
+              << " versions " << rt.StateVersionCount() << " stale_installs "
+              << rt.StaleInstallCount() << "\n";
+    std::cout << "q21 verus duckdb fuzz: " << (ok ? "PASS" : "FAIL") << std::endl;
+    return ok ? 0 : 1;
   } catch (const std::exception &e) {
     std::cerr << "q21_verus_duckdb_fuzz failed: " << e.what() << "\n";
     return 2;

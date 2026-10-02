@@ -1,12 +1,26 @@
 // GENERATED BACKEND
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
 #include "accelerator_codegen/runtime/duckdb/tpch_rf.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include <map>
+#include "duckdb/accelerator/mutation_recorder.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/storage/object_cache.hpp"
+#include "duckdb/main/database.hpp"
+#include "duckdb/main/client_context_state.hpp"
+#include "duckdb/main/database_manager.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
+#include "duckdb/transaction/duck_transaction_manager.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 
 #include <cmath>
+#include <limits>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -55,6 +69,8 @@
 #include "tpch/q21/duckdb/aux/module.hpp"
 #include "tpch/q9/duckdb/aux/module.hpp"
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
+#include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
 #include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 #include "accelerator_codegen/harness/aux_state_footprint.hpp"
 #include "accelerator_codegen/harness/cost_calibration.hpp"
@@ -255,9 +271,45 @@ std::string OptionalBenchScanLimitSuffix(const char *env_name) {
   return std::string(" LIMIT ") + value;
 }
 
+// Scans normally run on the runtime's (writer's) connection. A reader thread
+// (ReaderScope from another connection) must not touch it: a ScanRedirect
+// sends its scans to a private connection, opened on first use.
+struct ScanRedirect {
+  ScanRedirect(::duckdb::DatabaseInstance &db_p, std::atomic<uint64_t> &opened_p)
+      : db(db_p), opened(opened_p), previous(current) {
+    current = this;
+  }
+  ~ScanRedirect() { current = previous; }
+  ::duckdb::Connection &Connection() {
+    if (!connection) {
+      connection = std::make_unique<::duckdb::Connection>(db);
+      opened++;
+    }
+    return *connection;
+  }
+  static thread_local ScanRedirect *current;
+
+private:
+  ::duckdb::DatabaseInstance &db;
+  std::atomic<uint64_t> &opened;
+  ScanRedirect *previous;
+  std::unique_ptr<::duckdb::Connection> connection;
+};
+thread_local ScanRedirect *ScanRedirect::current = nullptr;
+
+// SQL this thread ran against the tables (a read that runs any answered from
+// SQL, not from the state).
+thread_local uint64_t t_table_scans = 0;
+
+::duckdb::Connection &ScanConnection(::duckdb::Connection &connection) {
+  ++t_table_scans;
+  return ScanRedirect::current ? ScanRedirect::current->Connection() : connection;
+}
+
 template <typename Callback>
-void ScanQuery(::duckdb::Connection &connection, const std::string &sql,
+void ScanQuery(::duckdb::Connection &connection_p, const std::string &sql,
                Callback &&callback) {
+  auto &connection = ScanConnection(connection_p);
   auto result = connection.Query(sql);
   Require(result != nullptr && !result->HasError(),
           result ? result->GetError() : "DuckDB scan returned null");
@@ -269,8 +321,9 @@ void ScanQuery(::duckdb::Connection &connection, const std::string &sql,
 
 // Streaming scan for large SF builds: avoids materializing the full result.
 template <typename Callback>
-void ScanQueryStreaming(::duckdb::Connection &connection, const std::string &sql,
+void ScanQueryStreaming(::duckdb::Connection &connection_p, const std::string &sql,
                         Callback &&callback) {
+  auto &connection = ScanConnection(connection_p);
   auto result = connection.SendQuery(sql);
   Require(result != nullptr && !result->HasError(),
           result ? result->GetError() : "DuckDB scan returned null");
@@ -663,37 +716,6 @@ struct TpchQ10Scan : TpchQ10InitialScan {
                                          SafeInt64(ChunkValue(chunk, 1, row)),
                                          DateDays(ChunkValue(chunk, 2, row))});
                        });
-    return true;
-  }
-  bool LookupCustomers(
-      const std::vector<int64_t> &custkeys,
-      std::unordered_map<int64_t, TpchQ10Customer> &out) override {
-    out.clear();
-    if (custkeys.empty()) {
-      return true;
-    }
-    std::ostringstream sql;
-    sql << "SELECT c_custkey, c_name, c_acctbal, c_nationkey, c_address, "
-           "c_phone, c_comment FROM customer WHERE c_custkey IN (";
-    for (std::size_t i = 0; i < custkeys.size(); ++i) {
-      if (i > 0) {
-        sql << ',';
-      }
-      sql << custkeys[i];
-    }
-    sql << ')';
-    ScanQueryStreaming(
-        connection, sql.str(),
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          out.emplace(SafeInt64(ChunkValue(chunk, 0, row)),
-                      TpchQ10Customer{
-                          ChunkValue(chunk, 1, row).ToString(),
-                          DecimalRaw(ChunkValue(chunk, 2, row)),
-                          SafeInt32(ChunkValue(chunk, 3, row)),
-                          ChunkValue(chunk, 4, row).ToString(),
-                          ChunkValue(chunk, 5, row).ToString(),
-                          ChunkValue(chunk, 6, row).ToString()});
-        });
     return true;
   }
   ::duckdb::Connection &connection;
@@ -1750,7 +1772,7 @@ struct TpchQ21VerusDuckScan : TpchQ21VerusScan {
   void RunReference(const std::string &nation,
                     const std::function<void(const std::string &, int64_t)> &consumer)
       override {
-    auto stmt = connection.Prepare(
+    auto stmt = ScanConnection(connection).Prepare(
         "SELECT s_name, COUNT(*) AS numwait FROM supplier, lineitem l1, orders, "
         "nation WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey AND "
         "o_orderstatus = 'F' AND l1.l_receiptdate > l1.l_commitdate AND EXISTS ("
@@ -1958,13 +1980,94 @@ struct SecEdgarQ24Scan : SecEdgarQ24InitialScan {
   ::duckdb::Connection &connection;
 };
 
+// Engine capture: the DuckDB table name of each table a TPC-H module's
+// config names (fields `<table>_table`). Generated from the config structs.
+template <typename... Config>
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const Config &...) {
+  return {};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ1Config &c) {
+  return {{"lineitem", c.lineitem_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ2Config &c) {
+  return {{"part", c.part_table}, {"supplier", c.supplier_table}, {"partsupp", c.partsupp_table}, {"nation", c.nation_table}, {"region", c.region_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ3Config &c) {
+  return {{"customer", c.customer_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ4Config &c) {
+  return {{"orders", c.orders_table}, {"lineitem", c.lineitem_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ5Config &c) {
+  return {{"region", c.region_table}, {"nation", c.nation_table}, {"customer", c.customer_table}, {"supplier", c.supplier_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ6Config &c) {
+  return {{"lineitem", c.lineitem_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ7Config &c) {
+  return {{"nation", c.nation_table}, {"supplier", c.supplier_table}, {"customer", c.customer_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ8Config &c) {
+  return {{"part", c.part_table}, {"supplier", c.supplier_table}, {"customer", c.customer_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}, {"nation", c.nation_table}, {"region", c.region_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ9Config &c) {
+  return {{"part", c.part_table}, {"supplier", c.supplier_table}, {"nation", c.nation_table}, {"orders", c.orders_table}, {"partsupp", c.partsupp_table}, {"lineitem", c.lineitem_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ10Config &c) {
+  return {{"customer", c.customer_table}, {"nation", c.nation_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ11Config &c) {
+  return {{"partsupp", c.partsupp_table}, {"supplier", c.supplier_table}, {"nation", c.nation_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ12Config &c) {
+  return {{"orders", c.orders_table}, {"lineitem", c.lineitem_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ13Config &c) {
+  return {{"customer", c.customer_table}, {"orders", c.orders_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ14Config &c) {
+  return {{"part", c.part_table}, {"lineitem", c.lineitem_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ15Config &c) {
+  return {{"lineitem", c.lineitem_table}, {"supplier", c.supplier_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ16Config &c) {
+  return {{"part", c.part_table}, {"partsupp", c.partsupp_table}, {"supplier", c.supplier_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ17Config &c) {
+  return {{"part", c.part_table}, {"lineitem", c.lineitem_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ18Config &c) {
+  return {{"lineitem", c.lineitem_table}, {"orders", c.orders_table}, {"customer", c.customer_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ19Config &c) {
+  return {{"lineitem", c.lineitem_table}, {"part", c.part_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ20Config &c) {
+  return {{"lineitem", c.lineitem_table}, {"part", c.part_table}, {"partsupp", c.partsupp_table}, {"supplier", c.supplier_table}, {"nation", c.nation_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ21Config &c) {
+  return {{"supplier", c.supplier_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}, {"nation", c.nation_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ22Config &c) {
+  return {{"orders", c.orders_table}, {"customer", c.customer_table}};
+}
+std::vector<std::pair<std::string, core::TableId>> CaptureTablesOf(const TpchQ21VerusConfig &c) {
+  return {{"supplier", c.supplier_table}, {"orders", c.orders_table}, {"lineitem", c.lineitem_table}, {"nation", c.nation_table}};
+}
+
 template <typename Scan, typename QueryModule>
 struct QueryBound : Scan, ModuleBinding<QueryModule> {
   template <typename... Args>
   QueryBound(::duckdb::Connection &connection, Args &&...args)
       : Scan(connection),
         ModuleBinding<QueryModule>(std::forward<Args>(args)...,
-                                   static_cast<Scan *>(this)) {}
+                                   static_cast<Scan *>(this)),
+        tables(CaptureTablesOf(args...)) {} // configs are plain TableIds
+  std::vector<std::pair<std::string, core::TableId>> CaptureTables() const override {
+    return tables;
+  }
+  std::vector<std::pair<std::string, core::TableId>> tables;
 };
 
 template <typename Scan, typename QueryModule, typename... ConfigArgs>
@@ -2003,7 +2106,7 @@ struct TpchQ19Scan : TpchQ19InitialScan {
         });
   }
   bool LookupPart(int64_t partkey, TpchQ19PartInput &out) override {
-    auto result = connection.Query(
+    auto result = ScanConnection(connection).Query(
         "SELECT p_brand, p_container, p_size FROM part WHERE p_partkey = " +
         std::to_string(partkey));
     if (!result || result->HasError() || result->RowCount() == 0)
@@ -2098,7 +2201,7 @@ CreateBinding(::duckdb::Connection &connection,
         connection, TpchQ7Config{0, 1, 2, 3, 4});
   case 8:
     return MakeBinding<TpchQ8Scan, TpchQ8Module>(
-        connection, TpchQ8Config{0, 1, 2, 3, 4});
+        connection, TpchQ8Config{0, 1, 2, 3, 4, 5, 6});
   case 9:
     return MakeBinding<TpchQ9Scan, TpchQ9Module>(connection,
                                                 TpchQ9Config{1, 2, 3, 4, 5, 6});
@@ -2233,18 +2336,374 @@ DuckdbRuntime *DuckdbRuntime::FindActive(::duckdb::DatabaseInstance &db,
   return FindActiveRuntimeImpl(db, accelerator_id);
 }
 
+namespace {
+
+// The oldest start time of an open transaction: aux versions older than the
+// one it selects can be pruned.
+DuckDBStateStore::FloorProvider OldestSnapshotFloor(::duckdb::ClientContext &context) {
+  auto db = AuxCommitClock::DefaultDatabase(context);
+  if (!db) {
+    return {};
+  }
+  return [db]() -> core::Version {
+    auto &manager = db->GetTransactionManager();
+    if (!manager.IsDuckTransactionManager()) {
+      return std::numeric_limits<core::Version>::max();
+    }
+    return manager.Cast<::duckdb::DuckTransactionManager>().LowestActiveStart();
+  };
+}
+
+// The snapshot epoch from which a state built now is current: the start
+// time of a transaction begun now (every commit so far is in it; no captured
+// commit runs during the build, since commits go through this connection).
+// GetLastCommit() is not on the start-time scale for a database opened from a
+// file, so it cannot be used here.
+core::Version BuildEpoch(::duckdb::Connection &connection) {
+  if (connection.HasActiveTransaction()) {
+    return DuckDBAuxBackend::SnapshotEpoch(*connection.context);
+  }
+  connection.BeginTransaction();
+  const auto epoch = DuckDBAuxBackend::SnapshotEpoch(*connection.context);
+  connection.Rollback();
+  return epoch;
+}
+
+} // namespace
+
+namespace {
+
+// ---- Engine capture of writes ----
+//
+// The DuckDB fork's MutationRecorder reports each insert / update / delete a
+// connection makes, with the columns the database's watch provider asks for,
+// to every MutationConsumer registered on that connection.
+
+// The watch provider: per table, the columns some runtime's module projects
+// (union over runtimes, reference-counted). Registered in the database's
+// object cache under the key MutationWatchProvider::TryGet looks up.
+class AuxWatchedColumns final : public ::duckdb::MutationWatchProvider {
+public:
+  static constexpr const char *kKey = "accel_state_registry";
+  static ::duckdb::string ObjectType() { return "MutationWatchProvider"; }
+
+  void Add(const std::string &table, const std::vector<int32_t> &columns) {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (auto c : columns) {
+      watched[table][c]++;
+    }
+  }
+  void Remove(const std::string &table, const std::vector<int32_t> &columns) {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = watched.find(table);
+    if (it == watched.end()) {
+      return;
+    }
+    for (auto c : columns) {
+      auto col = it->second.find(c);
+      if (col != it->second.end() && --col->second == 0) {
+        it->second.erase(col);
+      }
+    }
+    if (it->second.empty()) {
+      watched.erase(it);
+    }
+  }
+  bool TryGetWatchedColumns(::duckdb::TableCatalogEntry &table,
+                            ::duckdb::vector<::duckdb::PhysicalIndex> &columns) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = watched.find(table.name);
+    if (it == watched.end()) {
+      return false;
+    }
+    columns.clear();
+    for (const auto &c : it->second) {
+      columns.emplace_back(static_cast<::duckdb::idx_t>(c.first));
+    }
+    return !columns.empty();
+  }
+  // Updates report the updated columns' new values plus the old values of
+  // every watched column, so a capture can rebuild the old and new rows.
+  bool TryGetUpdateOldColumns(::duckdb::TableCatalogEntry &table,
+                              const ::duckdb::vector<::duckdb::PhysicalIndex> &updated,
+                              ::duckdb::vector<::duckdb::PhysicalIndex> &old_columns) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = watched.find(table.name);
+    if (it == watched.end()) {
+      return false;
+    }
+    bool relevant = false;
+    for (const auto &u : updated) {
+      relevant = relevant || it->second.count(static_cast<int32_t>(u.index)) > 0;
+    }
+    if (!relevant) {
+      return false;
+    }
+    old_columns.clear();
+    for (const auto &c : it->second) {
+      old_columns.emplace_back(static_cast<::duckdb::idx_t>(c.first));
+    }
+    return true;
+  }
+
+private:
+  std::mutex mutex;
+  std::unordered_map<std::string, std::map<int32_t, int>> watched;
+};
+
+AuxWatchedColumns &WatchedColumns(::duckdb::ClientContext &context) {
+  auto &cache = ::duckdb::DatabaseInstance::GetDatabase(context).GetObjectCache();
+  auto entry = cache.GetOrCreate<AuxWatchedColumns>(AuxWatchedColumns::kKey);
+  return *entry;
+}
+
+// Forwards the connection's mutation events to one runtime.
+class AuxCaptureConsumer final : public ::duckdb::MutationConsumer {
+public:
+  explicit AuxCaptureConsumer(DuckdbRuntime *runtime_p) : runtime(runtime_p) {}
+  void OnTableMutation(::duckdb::ClientContext &,
+                       const ::duckdb::TableMutationEvent &event) override {
+    runtime->OnCapturedMutation(event);
+  }
+
+private:
+  DuckdbRuntime *runtime;
+};
+
+// A captured DuckDB value as the modules read it (the same mapping as the
+// PostgreSQL capture: integers Int64, dates AuxDate, decimals ScaledDecimal,
+// doubles Double, everything else its text).
+core::AuxValue CapturedValue(const ::duckdb::Value &value) {
+  using ::duckdb::LogicalTypeId;
+  const auto id = value.type().id();
+  switch (id) {
+  case LogicalTypeId::BOOLEAN:
+    return value.IsNull() ? core::AuxValue::Null(core::AuxType::Boolean)
+                          : core::AuxValue::Of(core::AuxType::Boolean, value.GetValue<bool>());
+  case LogicalTypeId::TINYINT:
+  case LogicalTypeId::SMALLINT:
+  case LogicalTypeId::INTEGER:
+  case LogicalTypeId::BIGINT:
+    return value.IsNull() ? core::AuxValue::Null(core::AuxType::Int64)
+                          : core::AuxValue::Of(core::AuxType::Int64, value.GetValue<int64_t>());
+  case LogicalTypeId::DATE:
+    return value.IsNull() ? core::AuxValue::Null(core::AuxType::Date)
+                          : core::AuxValue::Of(core::AuxType::Date, core::AuxDate {DateDays(value)});
+  case LogicalTypeId::FLOAT:
+  case LogicalTypeId::DOUBLE:
+    return value.IsNull() ? core::AuxValue::Null(core::AuxType::Double)
+                          : core::AuxValue::Of(core::AuxType::Double, value.GetValue<double>());
+  case LogicalTypeId::DECIMAL: {
+    if (value.IsNull()) {
+      return core::AuxValue::Null(core::AuxType::ScaledDecimal);
+    }
+    core::ScaledDecimal decimal;
+    decimal.value = DecimalRaw(value);
+    decimal.scale = static_cast<int32_t>(::duckdb::DecimalType::GetScale(value.type()));
+    return core::AuxValue::Of(core::AuxType::ScaledDecimal, decimal);
+  }
+  default:
+    return value.IsNull() ? core::AuxValue::Null(core::AuxType::String)
+                          : core::AuxValue::Of(core::AuxType::String, value.ToString());
+  }
+}
+
+} // namespace
+
+void DuckdbRuntime::EnableMutationCapture() {
+  if (capture_enabled_) {
+    return;
+  }
+  auto &watched = WatchedColumns(*connection_.context);
+  const auto tables = binding_->CaptureTables();
+  for (const auto &dep : binding_->Module().Dependencies()) {
+    for (const auto &table : tables) {
+      if (table.second == dep.table) {
+        watched.Add(table.first, dep.mutation_attnums);
+      }
+    }
+  }
+  connection_.context->registered_state->GetOrCreate<AuxCaptureConsumer>(
+      std::string("accel_aux_capture:") + entry_.accelerator_id, this);
+  capture_enabled_ = true;
+}
+
+void DuckdbRuntime::DisableMutationCapture() {
+  if (!capture_enabled_) {
+    return;
+  }
+  connection_.context->registered_state->Remove(std::string("accel_aux_capture:") +
+                                                entry_.accelerator_id);
+  auto &watched = WatchedColumns(*connection_.context);
+  const auto tables = binding_->CaptureTables();
+  for (const auto &dep : binding_->Module().Dependencies()) {
+    for (const auto &table : tables) {
+      if (table.second == dep.table) {
+        watched.Remove(table.first, dep.mutation_attnums);
+      }
+    }
+  }
+  capture_enabled_ = false;
+}
+
+void DuckdbRuntime::OnCapturedMutation(const ::duckdb::TableMutationEvent &event) {
+  core::TableId table_id = 0;
+  bool known = false;
+  for (const auto &table : binding_->CaptureTables()) {
+    if (table.first == event.table_name) {
+      table_id = table.second;
+      known = true;
+    }
+  }
+  if (!known) {
+    return;
+  }
+  for (const auto &dep : binding_->Module().Dependencies()) {
+    if (dep.table != table_id || dep.mutation_attnums.empty()) {
+      continue;
+    }
+    core::MutationBatch batch;
+    batch.table = table_id;
+    batch.kind = event.kind == ::duckdb::TableMutationKind::INSERT   ? core::MutationKind::Insert
+                 : event.kind == ::duckdb::TableMutationKind::DELETE ? core::MutationKind::Delete
+                                                                     : core::MutationKind::Update;
+    if (batch.kind == core::MutationKind::Update) {
+      bool relevant = false;
+      for (std::size_t j = 0; j < dep.mutation_attnums.size(); ++j) {
+        for (const auto &u : event.updated_columns) {
+          if (static_cast<int32_t>(u.index) == dep.mutation_attnums[j]) {
+            batch.updated_columns.push_back(static_cast<core::ColumnId>(j));
+            relevant = true;
+          }
+        }
+      }
+      if (!relevant) {
+        continue;
+      }
+    }
+    for (const auto &row : event.rows) {
+      // Old values first (watched columns), then the updated columns' new
+      // values: the new row is the old one with those replaced.
+      std::unordered_map<int32_t, const ::duckdb::Value *> old_values, new_values;
+      const std::size_t updated = event.updated_columns.size();
+      const std::size_t olds = row.values.size() - (batch.kind == core::MutationKind::Update ? updated : 0);
+      for (std::size_t i = 0; i < row.values.size(); ++i) {
+        const auto column = static_cast<int32_t>(row.values[i].column_index.index);
+        if (batch.kind == core::MutationKind::Update && i >= olds) {
+          new_values[column] = &row.values[i].value;
+        } else {
+          old_values[column] = &row.values[i].value;
+        }
+      }
+      auto project = [&](bool use_new) {
+        core::AuxRow out;
+        out.values.reserve(dep.mutation_attnums.size());
+        for (auto attnum : dep.mutation_attnums) {
+          const ::duckdb::Value *v = nullptr;
+          if (use_new) {
+            auto it = new_values.find(attnum);
+            if (it != new_values.end()) {
+              v = it->second;
+            }
+          }
+          if (!v) {
+            auto it = old_values.find(attnum);
+            if (it != old_values.end()) {
+              v = it->second;
+            }
+          }
+          out.values.push_back(v ? CapturedValue(*v) : core::AuxValue::Null(core::AuxType::String));
+        }
+        return out;
+      };
+      switch (batch.kind) {
+      case core::MutationKind::Insert:
+        batch.new_rows.push_back(project(false));
+        break;
+      case core::MutationKind::Delete:
+        batch.old_rows.push_back(project(false));
+        break;
+      case core::MutationKind::Update:
+        batch.old_rows.push_back(project(false));
+        batch.new_rows.push_back(project(true));
+        break;
+      }
+    }
+    if (!batch.old_rows.empty() || !batch.new_rows.empty()) {
+      backend_.CaptureMutation(batch);
+    }
+  }
+}
+
+void DuckdbRuntime::BeginWrite() { connection_.BeginTransaction(); }
+
+void DuckdbRuntime::ApplyWrite(const std::string &sql) {
+  BeginWrite();
+  auto result = connection_.Query(sql);
+  if (!result || result->HasError()) {
+    RollbackWrite();
+    throw std::runtime_error(sql + ": " + (result ? result->GetError() : "null result"));
+  }
+  CommitWrite();
+}
+
+std::vector<core::CalibrationWrite> DuckdbRuntime::CalibrationWrites() const {
+  return binding_->Module().CalibrationWrites();
+}
+
+core::CalibrationEngine::Timed
+DuckdbCalibrationEngine::WriteThenRead(const std::string &sql,
+                                       std::optional<maintenance::MaintenanceAction> forced) {
+  core::SetForcedMaintenanceActionName(forced ? maintenance::MaintenanceActionName(*forced) : "");
+  core::ClearMaintenanceDecisionLog();
+  Timed timed;
+  const auto start = std::chrono::steady_clock::now();
+  try {
+    runtime.ApplyWrite(sql);
+    const auto read_start = std::chrono::steady_clock::now();
+    runtime.Execute();
+    timed.read_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() -
+                                                              read_start)
+                        .count();
+  } catch (...) {
+    core::SetForcedMaintenanceActionName("");
+    throw;
+  }
+  timed.us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+  core::SetForcedMaintenanceActionName("");
+  timed.decision = core::LastMaintenanceDecision();
+  return timed;
+}
+
+void DuckdbRuntime::RollbackWrite() {
+  connection_.Rollback();
+  coordinator_.Abort();
+}
+
 DuckdbRuntime::DuckdbRuntime(::duckdb::Connection &connection,
                              const SharedQueryCatalogEntry &entry,
                              double expected_queries_before_write)
     : connection_(connection), entry_(entry),
-      state_store_(entry.accelerator_id, legacy_store_), coordinator_(),
+      clock_(connection.context->registered_state->GetOrCreate<AuxCommitClock>(
+          "accel_aux_commit_clock", AuxCommitClock::DefaultDatabase(*connection.context))),
+      state_store_(entry.accelerator_id,
+                   [clock = clock_] { return clock->epoch.load(); },
+                   OldestSnapshotFloor(*connection.context)),
+      // Same epochs and floor as state_store_: the two stores differ only
+      // in their protocol's implementation.
+      verus_store_(VerusAuxStoreRequested()
+                       ? MakeVerusAuxStore(entry.accelerator_id,
+                                           [clock = clock_] { return clock->epoch.load(); },
+                                           OldestSnapshotFloor(*connection.context))
+                       : nullptr),
+      coordinator_(),
       expected_queries_before_write_(
           std::make_shared<double>(expected_queries_before_write)),
-      backend_(coordinator_, state_store_,
+      backend_(coordinator_, ActiveStore(),
                [](const ::duckdb::TableMutationEvent &) {
                  return core::MutationBatch{};
                },
-               [] { return core::VisibilityToken{}; },
+               [] { return DuckDBAuxBackend::ReaderVisibility(); },
                [entry] {
                  return core::LoadAuxCostModelJson(
                      harness::SharedCostModelConfigPath(entry.workload,
@@ -2259,6 +2718,21 @@ DuckdbRuntime::DuckdbRuntime(::duckdb::Connection &connection,
   backend_.SetExecutionContext(connection.context.get());
 }
 
+void DuckdbRuntime::CommitWrite() {
+  // Readers whose transaction starts after this writer's may see the
+  // commit: they wait for its publish. (The commit hook then moves the
+  // epoch to the commit id + 1 for the publish.)
+  clock_->epoch = DuckDBAuxBackend::SnapshotEpoch(*connection_.context) + 1;
+  try {
+    coordinator_.PreCommit();
+    connection_.Commit();
+  } catch (...) {
+    coordinator_.Abort();
+    throw;
+  }
+  coordinator_.Commit();
+}
+
 void DuckdbRuntime::SetExpectedQueriesBeforeNextWrite(
     double expected_queries_before_write) {
   *expected_queries_before_write_ = expected_queries_before_write;
@@ -2268,15 +2742,23 @@ double DuckdbRuntime::ExpectedQueriesBeforeNextWrite() const {
   return *expected_queries_before_write_;
 }
 
-void DuckdbRuntime::Build() {
+void DuckdbRuntime::Build(bool register_active) {
+  const auto build_epoch = BuildEpoch(connection_);
   Builder builder;
   binding_->Build(backend_, builder);
   Require(builder.finished, "shared DuckDB build did not finish");
-  legacy_store_.InvalidateAll();
-  for (const auto &image : builder.images) {
-    legacy_store_.PublishPartition(image.partition, image.payload, 0);
+  // Current from the snapshot the build read (no captured commit can run
+  // meanwhile: commits go through this runtime's connection).
+  if (verus_store_) {
+    verus_store_->Install(std::move(builder.images), entry_.accelerator_id,
+                          build_epoch);
+  } else {
+    state_store_.Install(std::move(builder.images), entry_.accelerator_id,
+                         build_epoch);
   }
-  RegisterActiveRuntime(this, connection_, entry_);
+  if (register_active) {
+    RegisterActiveRuntime(this, connection_, entry_);
+  }
 }
 
 std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect() {
@@ -2285,8 +2767,18 @@ std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect() {
 
 std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect(
     const core::QueryArguments &arguments) {
+  AuxReadScope one_version; // every read in this query: one state version
+  // Normally unused: commits publish valid state (ReadersCanBuildState).
+  std::optional<ScanRedirect> redirect;
+  auto *reader = DuckDBAuxBackend::CurrentReader();
+  if (reader && reader != connection_.context.get()) {
+    redirect.emplace(*connection_.context->db, reader_fallbacks);
+  }
   MaterializeSink sink;
+  t_table_scans = 0;
   binding_->Execute(backend_, arguments, sink);
+  core::RecordAuxExecute(t_table_scans > 0 ? core::AuxExecutePath::Fallback
+                                           : core::AuxExecutePath::Hit);
   last_rows = sink.rows.size();
   return std::move(sink.rows);
 }
@@ -2306,14 +2798,12 @@ void DuckdbRuntime::Apply(SharedProbe &probe) {
   core::ClearMaintenanceDecisionLog();
   const auto start = std::chrono::steady_clock::now();
   connection_.BeginTransaction();
-  auto result = connection_.Query(probe.update_sql);
+  auto result = connection_.Query(ProbeWriteSql(probe));
   Require(result != nullptr && !result->HasError(),
           result ? result->GetError() : "DuckDB write failed");
   backend_.CaptureMutation(BuildSharedMutation(entry_, probe));
-  coordinator_.PreCommit();
-  connection_.Commit();
-  coordinator_.Commit();
-  probe.current_value += probe.write_delta;
+  CommitWrite();
+  AdvanceProbe(probe);
   const auto end = std::chrono::steady_clock::now();
   core::RecordMaintenanceActualCostUs(static_cast<double>(
       std::chrono::duration_cast<std::chrono::microseconds>(end - start)
@@ -2326,15 +2816,13 @@ void DuckdbRuntime::ApplyBatch(std::vector<SharedProbe> &probes) {
   const auto start = std::chrono::steady_clock::now();
   connection_.BeginTransaction();
   for (auto &probe : probes) {
-    auto result = connection_.Query(probe.update_sql);
+    auto result = connection_.Query(ProbeWriteSql(probe));
     Require(result != nullptr && !result->HasError(),
             result ? result->GetError() : "DuckDB batch write failed");
     backend_.CaptureMutation(BuildSharedMutation(entry_, probe));
-    probe.current_value += probe.write_delta;
+    AdvanceProbe(probe);
   }
-  coordinator_.PreCommit();
-  connection_.Commit();
-  coordinator_.Commit();
+  CommitWrite();
   const auto end = std::chrono::steady_clock::now();
   core::RecordMaintenanceActualCostUs(static_cast<double>(
       std::chrono::duration_cast<std::chrono::microseconds>(end - start)
@@ -2360,19 +2848,37 @@ void DuckdbRuntime::ApplyRfChunk(int write_seq, int order_count) {
       backend_.CaptureMutation(mutation);
     }
   }
-  coordinator_.PreCommit();
-  connection_.Commit();
-  coordinator_.Commit();
+  CommitWrite();
 }
 
 void DuckdbRuntime::ResetCalibrationState() {
-  legacy_store_.InvalidateAll();
+  ActiveStore().Invalidate(core::AllPartitionsPlan());
   coordinator_.Abort();
 }
 
-void DuckdbRuntime::InvalidateAll() { legacy_store_.InvalidateAll(); }
+void DuckdbRuntime::InvalidateAll() {
+  ActiveStore().Invalidate(core::AllPartitionsPlan());
+}
+
+core::AuxStateStore &DuckdbRuntime::ActiveStore() {
+  if (verus_store_) {
+    return *verus_store_;
+  }
+  return state_store_;
+}
+
+std::size_t DuckdbRuntime::StateVersionCount() const {
+  return verus_store_ ? verus_store_->TotalVersionCount()
+                      : state_store_.TotalVersionCount();
+}
+
+std::size_t DuckdbRuntime::StaleInstallCount() const {
+  return verus_store_ ? verus_store_->StaleInstalls() : 0;
+}
 
 void DuckdbRuntime::ApplyMutationBatch(const core::MutationBatch &mutation) {
+  // No engine transaction: publish for every snapshot (epoch 0).
+  clock_->epoch = 0;
   backend_.CaptureMutation(mutation);
   coordinator_.PreCommit();
   coordinator_.Commit();
@@ -2390,9 +2896,14 @@ void DuckdbRuntime::ExecuteBaseQuery() {
 }
 
 core::AuxStoreDiagnosticsSnapshot DuckdbRuntime::StoreDiagnosticsSnapshot() const {
+  if (verus_store_) {
+    return core::AuxStoreDiagnosticsCollector::ThreadLocal().Snapshot(
+        static_cast<uint64_t>(verus_store_->ValidPartitionCount()),
+        static_cast<uint64_t>(verus_store_->TotalPartitionCount()));
+  }
   return core::AuxStoreDiagnosticsCollector::ThreadLocal().Snapshot(
-      static_cast<uint64_t>(legacy_store_.ValidPartitionCount()),
-      static_cast<uint64_t>(legacy_store_.TotalPartitionSlots()));
+      static_cast<uint64_t>(state_store_.ValidPartitionCount()),
+      static_cast<uint64_t>(state_store_.TotalPartitionCount()));
 }
 
 void DuckdbRuntime::ResetStoreDiagnosticsProfiling() {
@@ -2400,10 +2911,16 @@ void DuckdbRuntime::ResetStoreDiagnosticsProfiling() {
 }
 
 uint64_t DuckdbRuntime::AuxStateFootprintBytes() const {
-  return harness::ComputeAuxStateFootprintBytes(legacy_store_,
+  if (verus_store_) {
+    return 0; // the Verus store's states are not measured
+  }
+  return harness::ComputeAuxStateFootprintBytes(state_store_,
                                                 entry_.accelerator_id);
 }
 
-DuckdbRuntime::~DuckdbRuntime() { UnregisterActiveRuntime(this); }
+DuckdbRuntime::~DuckdbRuntime() {
+  UnregisterActiveRuntime(this);
+  DisableMutationCapture();
+}
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb

@@ -3,6 +3,8 @@
 #include "mysql/runtime.hpp"
 
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
+#include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 #include "accelerator_codegen/stateful/mysql/mysql_xact_callbacks.hpp"
 
 #include <algorithm>
@@ -271,6 +273,63 @@ char *mysql_accel_set_force_maintenance_action(UDF_INIT *, UDF_ARGS *args,
   mysql_rt::MysqlSetForceMaintenanceAction(ArgString(args, 0).c_str());
   std::strcpy(result, "ok");
   *length = 2;
+  return result;
+}
+
+__attribute__((visibility("default")))
+bool mysql_accel_get_last_maintenance_decision_init(UDF_INIT *initid, UDF_ARGS *args,
+                                                    char *message) {
+  if (args->arg_count != 0) {
+    std::snprintf(message, MYSQL_ERRMSG_SIZE,
+                  "mysql_accel_get_last_maintenance_decision takes no arguments");
+    return true;
+  }
+  initid->maybe_null = 1;
+  initid->max_length = 128;
+  return false;
+}
+
+// The last maintenance decision ("action=A rows=N partitions=M"), for
+// calibration; NULL if none.
+__attribute__((visibility("default")))
+char *mysql_accel_get_last_maintenance_decision(UDF_INIT *, UDF_ARGS *, char *result,
+                                                unsigned long *length, unsigned char *is_null,
+                                                unsigned char *) {
+  const auto text = accelerator_codegen::aux_state::core::FormatLastMaintenanceDecision();
+  if (text.empty()) {
+    *is_null = 1;
+    *length = 0;
+    return result;
+  }
+  const auto n = std::min<std::size_t>(text.size(), 255);
+  std::memcpy(result, text.data(), n);
+  *length = n;
+  return result;
+}
+
+__attribute__((visibility("default")))
+bool mysql_accel_get_execute_counts_init(UDF_INIT *initid, UDF_ARGS *args,
+                                         char *message) {
+  if (args->arg_count != 0) {
+    std::snprintf(message, MYSQL_ERRMSG_SIZE,
+                  "mysql_accel_get_execute_counts takes no arguments");
+    return true;
+  }
+  initid->maybe_null = 0;
+  initid->max_length = 128;
+  return false;
+}
+
+// How accelerator queries were answered (hit / rebuilt_on_read / fallback).
+__attribute__((visibility("default")))
+char *mysql_accel_get_execute_counts(UDF_INIT *, UDF_ARGS *, char *result,
+                                     unsigned long *length, unsigned char *,
+                                     unsigned char *) {
+  const auto text = accelerator_codegen::aux_state::core::FormatAuxExecuteCounts(
+      accelerator_codegen::aux_state::core::ReadAuxExecuteCounts());
+  const auto n = std::min<std::size_t>(text.size(), 255);
+  std::memcpy(result, text.data(), n);
+  *length = n;
   return result;
 }
 

@@ -104,13 +104,16 @@ function(accel_collect_stateful_sources OUT_VAR)
     accel_codegen_engine_name(_engine)
     set(_sources
         src/stateful/state/invalidation_plan.cpp
-        src/stateful/state/partitioned_state_store.cpp
+        src/stateful/state/versioned_aux_store.cpp
+        src/stateful/state/verus_aux_store.cpp
         src/stateful/core/aux_registry.cpp
         src/stateful/core/aux_engine_services.cpp
         src/stateful/core/aux_maintenance_policy.cpp
         src/stateful/core/aux_maintenance_decision_log.cpp
         src/stateful/core/aux_calibration.cpp
         src/stateful/core/aux_store_diagnostics.cpp
+        src/stateful/core/aux_execute_stats.cpp
+        src/generated/tpch/calibration_writes.cpp
         src/stateful/maintenance/maintenance_action.cpp
         src/stateful/maintenance/action_selector.cpp
     )

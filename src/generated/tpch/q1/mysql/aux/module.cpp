@@ -1,4 +1,5 @@
 #include "tpch/q1/mysql/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include "duckdb/common/types/hugeint.hpp"
@@ -614,6 +615,10 @@ void TpchQ1Module::EmitResult(
           core::AuxValue::Of(core::AuxType::Int64, row.count_order)}});
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ1Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(1);
 }
 
 } // namespace accelerator_codegen::aux_state::query

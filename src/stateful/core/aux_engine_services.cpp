@@ -19,9 +19,14 @@ bool AuxEngineServices::AllowsSynchronousRebuildOnCommit() const {
   return true;
 }
 
+bool AuxEngineServices::ReadersCanBuildState() const { return true; }
+
 MaintenanceDecision AuxEngineServices::ChooseMaintenance(
     const MaintenanceRequest &request) const {
-  return SelectAuxMaintenanceAction(request, MaintenanceCostModel());
+  MaintenanceRequest with_engine = request;
+  with_engine.deferred_rebuild_supported =
+      request.deferred_rebuild_supported && ReadersCanBuildState();
+  return SelectAuxMaintenanceAction(with_engine, MaintenanceCostModel());
 }
 
 std::size_t AuxEngineServices::WorkerCount() const {

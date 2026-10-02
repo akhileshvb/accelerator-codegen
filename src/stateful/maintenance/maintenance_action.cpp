@@ -13,8 +13,8 @@ const char *MaintenanceActionName(MaintenanceAction action) {
 		return "RebuildPartition";
 	case MaintenanceAction::RebuildAll:
 		return "RebuildAll";
-	case MaintenanceAction::InvalidateAndFallback:
-		return "InvalidateAndFallback";
+	case MaintenanceAction::InvalidateAndRebuildOnRead:
+		return "InvalidateAndRebuildOnRead";
 	}
 	return "Unknown";
 }

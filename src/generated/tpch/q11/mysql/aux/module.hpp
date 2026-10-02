@@ -196,6 +196,7 @@ public:
                core::AuxRowSink &) override;
   void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
                        core::AuxRowSink &) override;
+  std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
   TpchQ11State BuildState(core::AuxEngineServices &services) const;

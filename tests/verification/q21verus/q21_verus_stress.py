@@ -42,7 +42,7 @@ FN = os.environ.get("Q21_FN", "accel_tpch_q21_verus")
 NATIONS = ["SAUDI ARABIA", "PERU", "KENYA", "ATLANTIS"]
 SUPPLIERS = list(range(1, 9))
 DATES = ["1995-01-01", "1995-01-02", "1995-01-05", "1995-01-09"]
-# Q21_FORCE=ApplyDelta|RebuildPartition|RebuildAll|InvalidateAndFallback|NoOp forces the
+# Q21_FORCE=ApplyDelta|RebuildPartition|RebuildAll|InvalidateAndRebuildOnRead|NoOp forces the
 # substrate maintenance action in every session (empty: the cost-model policy).
 FORCE = os.environ.get("Q21_FORCE", "")
 Q21 = """SELECT s_name, COUNT(*) AS numwait FROM supplier, lineitem l1, orders, nation

@@ -1,4 +1,5 @@
 #include "tpch/q13/duckdb/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -449,8 +450,8 @@ core::AcceleratorId TpchQ13Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ13Module::Dependencies() const {
   return {
-      {config.customer_table, {0}},   // c_custkey is col 0
-      {config.orders_table, {0, 1}},  // o_custkey, o_comment
+      {config.customer_table, {0}, {0}},
+      {config.orders_table, {0, 1}, {1, 8}},
   };
 }
 
@@ -1019,6 +1020,10 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
     sink.WriteRow({{core::AuxValue::Of(core::AuxType::Int64, r.c_count),
                     core::AuxValue::Of(core::AuxType::Int64, r.custdist)}});
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ13Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(13);
 }
 
 } // namespace accelerator_codegen::aux_state::query

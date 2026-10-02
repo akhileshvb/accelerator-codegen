@@ -1,4 +1,5 @@
 #include "tpch/q5/mysql/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -488,6 +489,16 @@ TpchQ5Module::StageIncrementalMaintenance(
   }
   const auto &side = *side_ptr;
 
+  // An updated or deleted order moves (or drops) the revenue of all its
+  // existing lineitems, and the side maps would go stale: rebuild. (New
+  // orders are resolved through the overlay below.)
+  for (const auto &order : buffer.OrderMutations()) {
+    if (order.sign < 0) {
+      outcome.action = core::MaintenanceAction::RebuildAll;
+      return outcome;
+    }
+  }
+
   std::unordered_map<int64_t, int32_t> order_nation_overlay;
   std::unordered_map<int64_t, int32_t> order_ordinal_overlay;
   for (const auto &order : buffer.OrderMutations()) {
@@ -712,24 +723,29 @@ void TpchQ5Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
+  // The state holds every order (maintenance rebuilds rather than drop one),
+  // so a region with no nations or a date range past the tree's has no
+  // revenue: answer from the state, not SQL.
   std::vector<int32_t> eligible_nations;
   int32_t target_regionkey = ResolveRegion(region_name, side, eligible_nations);
   if (target_regionkey < 0 || eligible_nations.empty()) {
-    ExecuteFallback(services, arguments, sink);
+    EmitResult(services, side, target_regionkey, {}, sink);
     return;
   }
 
-  int32_t start_ord = TpchQ5DateOrdinal(start_days, side.min_orderdate_days);
-  int32_t end_ord = TpchQ5DateOrdinal(end_days, side.min_orderdate_days);
-
-  if (start_ord < 0 || end_ord > static_cast<int32_t>(side.tree_size)) {
-    ExecuteFallback(services, arguments, sink);
+  const int32_t start_ord = std::max<int32_t>(
+      0, TpchQ5DateOrdinal(start_days, side.min_orderdate_days));
+  const int32_t end_ord =
+      std::min<int32_t>(static_cast<int32_t>(side.tree_size),
+                        TpchQ5DateOrdinal(end_days, side.min_orderdate_days));
+  if (start_ord >= end_ord) {
+    EmitResult(services, side, target_regionkey, {}, sink);
     return;
   }
 
   auto nodes = TpchQ5TreeCover(side.tree_size, start_ord, end_ord);
   if (nodes.empty()) {
-    ExecuteFallback(services, arguments, sink);
+    EmitResult(services, side, target_regionkey, {}, sink);
     return;
   }
 
@@ -961,6 +977,10 @@ void TpchQ5Module::EmitResult(
     core::AuxRowSink &sink) const {
   TpchQ5FinalizeAndEmit(state.nation_name, state.nation_region,
                         target_regionkey, revenue_by_nation, sink);
+}
+
+std::vector<core::CalibrationWrite> TpchQ5Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(5);
 }
 
 } // namespace accelerator_codegen::aux_state::query

@@ -1,4 +1,5 @@
 #include "tpch/q1/postgres/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include "duckdb/common/types/hugeint.hpp"
@@ -479,14 +480,14 @@ void TpchQ1Module::Execute(core::AuxEngineServices &services,
   std::vector<core::PartitionId> partitions;
   CollectQ1DayPartitions(cutoff_days, partitions);
   std::unordered_map<int32_t, Q1DayPartition> days;
+  // The whole state must be valid; a day with no partition has no rows.
+  if (!services.StateStore().CheckValidity({Id(), {}}, visibility).IsValid()) {
+    ExecuteFallback(services, arguments, sink);
+    return;
+  }
   if (!partitions.empty()) {
-    const auto snapshot = services.StateStore().ReadHitPartitions(
-        visibility, {Id(), {}}, partitions);
-    if (!snapshot.available ||
-        snapshot.partitions.size() != partitions.size()) {
-      ExecuteFallback(services, arguments, sink);
-      return;
-    }
+    const auto snapshot =
+        services.StateStore().ReadPartitions(visibility, partitions);
     for (const auto &image : snapshot.partitions) {
       const auto day = core::TpchQ1Layout::DaysFromPartition(image.partition);
       if (day > cutoff_days) {
@@ -643,6 +644,10 @@ void TpchQ1Module::EmitResult(
           core::AuxValue::Of(core::AuxType::Int64, row.count_order)}});
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ1Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(1);
 }
 
 } // namespace accelerator_codegen::aux_state::query

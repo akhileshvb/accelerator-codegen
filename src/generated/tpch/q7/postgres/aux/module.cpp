@@ -1,4 +1,5 @@
 #include "tpch/q7/postgres/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -578,8 +579,13 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
         custkey = order_it->second;
       } else {
         const auto overlay = buffer.OrderCustkeys().find(orderkey);
-        if (overlay == buffer.OrderCustkeys().end())
+        if (overlay == buffer.OrderCustkeys().end()) {
+          // An order the side state does not index (no lineitem in the
+          // window at build): its customer is unknown here, rebuild rather
+          // than drop the lineitem.
+          buffer.MarkRebuild();
           return;
+        }
         custkey = overlay->second;
       }
     }
@@ -1058,6 +1064,10 @@ void TpchQ7Module::EmitResult(
   }
 
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ7Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(7);
 }
 
 } // namespace accelerator_codegen::aux_state::query

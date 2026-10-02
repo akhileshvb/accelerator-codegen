@@ -313,8 +313,8 @@ public:
   virtual ValidityResult CheckValidity(const QueryKey &,
                                        const VisibilityToken &) const = 0;
 
-  // Invalidation for Affects_Q must run in PRE_COMMIT before PostgreSQL heap
-  // visibility. Commit only TryPublish of prepared state (or leave Invalid).
+  // Invalid for every snapshot. (Commits go through BeginCommit /
+  // FinishCommit below.)
   virtual void Invalidate(const InvalidationPlan &) = 0;
 
   // The implementation must publish an already materialized image atomically
@@ -322,6 +322,36 @@ public:
   // race.
   virtual bool TryPublish(const StagedMaintenanceOutcome &,
                           Version expected_version) = 0;
+
+  // Commit protocol, driven by the coordinator, per accelerator.
+  // VersionedAuxStore (every engine's store) implements versions; the
+  // defaults are for stores without them, which keep their current state
+  // until COMMIT (they cannot hold a commit back from readers in between).
+  //
+  // PRE_COMMIT: the accelerator's state is about to change (`plan`: the
+  // partitions the commit touches). Readers whose snapshot may include the
+  // commit wait for FinishCommit; older snapshots keep reading theirs.
+  virtual void BeginCommit(const AcceleratorId &, const InvalidationPlan &) {}
+  // COMMIT: one new state, current from this commit on: `invalidate`
+  // applied, then `updates` published, together. `expected_version` is the
+  // module's (StagedMaintenanceOutcome::expected_version; 0: none) for stores
+  // that check it on publish.
+  virtual void FinishCommit(const AcceleratorId &,
+                            const InvalidationPlan &invalidate,
+                            const std::vector<StateImage> &updates,
+                            Version expected_version = 0) {
+    if (!invalidate.IsEmpty()) {
+      Invalidate(invalidate);
+    }
+    if (!updates.empty()) {
+      StagedMaintenanceOutcome outcome;
+      outcome.updates = updates;
+      outcome.expected_version = expected_version;
+      TryPublish(outcome, expected_version);
+    }
+  }
+  // ABORT after BeginCommit: nothing changes.
+  virtual void AbortCommit(const AcceleratorId &) {}
 
   virtual void MarkTransactionDirty() {}
   virtual void ClearTransactionDirty() {}
@@ -350,6 +380,15 @@ public:
   // updates are empty.
   virtual bool AllowsSynchronousRebuildOnCommit() const;
 
+  // Whether a reader can build the state from the tables at its own snapshot
+  // (PostgreSQL: SPI in the reader's transaction; MySQL: the latest data,
+  // its reader contract). False for DuckDB: a table function cannot run SQL
+  // on its own context. When false, InvalidateAndRebuildOnRead is not offered
+  // and the coordinator never publishes an invalid state (any invalidation
+  // without its rebuild becomes a RebuildAll at commit). Readers use SQL
+  // (ExecuteFallback) only as a last resort, when no state can be built.
+  virtual bool ReadersCanBuildState() const;
+
   virtual MaintenanceDecision ChooseMaintenance(
       const MaintenanceRequest &request) const;
 
@@ -357,6 +396,20 @@ public:
   // (or ACCEL_AUX_THREADS when set). Engine adapters may map this to host
   // thread/worker settings.
   virtual std::size_t WorkerCount() const;
+};
+
+// One write shape for calibrating an accelerator's maintenance costs
+// (AuxQueryModule::CalibrationWrites). ANSI SQL, run by each engine's
+// calibration hook. `apply` changes rows on columns the accelerator depends
+// on and `revert` restores them (same rows, same shape); `control` and
+// `control_revert` write the same rows on a column it does not depend on, so
+// their cost is what every action shares (the engine's own write).
+struct CalibrationWrite {
+  std::string name;
+  std::string apply;
+  std::string revert;
+  std::string control;
+  std::string control_revert;
 };
 
 class AuxQueryModule {
@@ -382,6 +435,11 @@ public:
                        AuxRowSink &) = 0;
   virtual void ExecuteFallback(AuxEngineServices &, const QueryArguments &,
                                AuxRowSink &) = 0;
+
+  // Writes of increasing size and spread over this accelerator's partitions,
+  // for core::CalibrateFromWrites (empty: none; the accelerator keeps its
+  // configured cost model).
+  virtual std::vector<CalibrationWrite> CalibrationWrites() const { return {}; }
 };
 
 } // namespace accelerator_codegen::aux_state::core

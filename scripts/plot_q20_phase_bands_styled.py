@@ -292,7 +292,7 @@ def main() -> None:
         "ApplyDelta": ("Point Writes", "C0"),
         "RebuildPartition": ("Bulk Writes", "#2ca02c"),
         "RebuildAll": ("Bulk Writes", "#2ca02c"),
-        "InvalidateAndFallback": ("Bulk Writes", "#2ca02c"),
+        "InvalidateAndRebuildOnRead": ("Bulk Writes", "#2ca02c"),
     }
 
     phases = sorted({r["phase_id"] for r in rows})

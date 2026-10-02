@@ -47,6 +47,7 @@
 #endif
 
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
+#include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
@@ -189,8 +190,13 @@ core::AuxDate PostgresDateArg(int32_t arg_index, FunctionCallInfo fcinfo) {
   return core::AuxDate{PG_GETARG_DATEADT(arg_index) + kPostgresDateEpochOffset};
 }
 
+// SQL this backend ran against the tables (a query that runs any answered
+// from SQL, not from the state).
+thread_local uint64_t t_table_scans = 0;
+
 template <typename Callback>
 void ScanTypedTuples(const std::string &sql, Callback &&callback) {
+  ++t_table_scans;
   if (SPI_connect() != SPI_OK_CONNECT) {
     throw std::runtime_error("SPI_connect failed");
   }
@@ -393,33 +399,6 @@ void ScanTpchQ10Customers(
                   TypedText(tuple, tuple_desc, 5),
                   TypedText(tuple, tuple_desc, 6)});
       });
-}
-
-void LookupTpchQ10Customers(
-    const std::vector<int64_t> &custkeys,
-    std::unordered_map<int64_t, query::TpchQ10Customer> &out) {
-  out.clear();
-  if (custkeys.empty())
-    return;
-  std::ostringstream sql;
-  sql << "SELECT c_custkey, c_name, c_acctbal, c_nationkey, c_address, "
-         "c_phone, c_comment FROM customer WHERE c_custkey IN (";
-  for (std::size_t i = 0; i < custkeys.size(); ++i) {
-    if (i > 0)
-      sql << ',';
-    sql << custkeys[i];
-  }
-  sql << ')';
-  ScanTypedTuples(sql.str(), [&](HeapTuple tuple, TupleDesc tuple_desc) {
-    const auto key = TypedInt(tuple, tuple_desc, 0);
-    out.emplace(key, query::TpchQ10Customer{
-                         TypedText(tuple, tuple_desc, 1),
-                         TypedDecimalRaw(tuple, tuple_desc, 2),
-                         static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3)),
-                         TypedText(tuple, tuple_desc, 4),
-                         TypedText(tuple, tuple_desc, 5),
-                         TypedText(tuple, tuple_desc, 6)});
-  });
 }
 
 void ScanTpchQ10Nations(
@@ -679,6 +658,7 @@ bool LookupTpchQ18Order(int64_t orderkey, query::TpchQ18OrderInput &out) {
                 "SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice "
                 "FROM orders WHERE o_orderkey = %lld",
                 static_cast<long long>(orderkey));
+  ++t_table_scans;
   const int status = SPI_execute(sql, true, 1);
   bool found = false;
   if (status == SPI_OK_SELECT && SPI_processed > 0 && SPI_tuptable) {
@@ -1164,6 +1144,7 @@ bool LookupTpchQ19Part(int64_t partkey, query::TpchQ19PartInput &out) {
   snprintf(sql, sizeof(sql),
            "SELECT p_brand, p_container, p_size FROM part WHERE p_partkey = %lld",
            static_cast<long long>(partkey));
+  ++t_table_scans;
   const int status = SPI_execute(sql, true, 1);
   bool found = false;
   if (status == SPI_OK_SELECT && SPI_processed > 0 && SPI_tuptable) {
@@ -1293,12 +1274,6 @@ public:
       const std::function<void(const query::TpchQ10LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ10Lineitems(consumer);
-  }
-  bool LookupCustomers(
-      const std::vector<int64_t> &custkeys,
-      std::unordered_map<int64_t, query::TpchQ10Customer> &out) override {
-    scans::LookupTpchQ10Customers(custkeys, out);
-    return true;
   }
 };
 
@@ -1545,6 +1520,7 @@ public:
       throw std::runtime_error("SPI_connect failed");
     Oid argtypes[1] = {TEXTOID};
     Datum values[1] = {CStringGetTextDatum(nation.c_str())};
+    ++t_table_scans;
     if (SPI_execute_with_args(kSql, 1, argtypes, values, nullptr, true, 0) !=
         SPI_OK_SELECT) {
       SPI_finish();
@@ -1989,6 +1965,8 @@ public:
   }
 
   void Execute(const core::QueryArguments &arguments, FunctionCallInfo fcinfo) {
+    // Every read in this statement: one aux state version.
+    accelerator_codegen::aux_state::AuxReadScope one_version;
     // TokenForSnapshot: freeze (S, epoch) at the earliest UDF entry.
     accelerator_codegen::aux_state::engine::postgres::ForcePinActiveSnapshot();
 
@@ -2000,9 +1978,11 @@ public:
 
     Snapshot statement = GetActiveSnapshot();
     bool hit = HitAllowed(statement);
+    bool rebuilt = false;
     if (!hit && NeedsSync() && CanRebuildNow()) {
       Rebuild();
       hit = HitAllowed(statement);
+      rebuilt = hit;
     }
     observed_mutations = accel_pg_get_observer_mutation_count();
     auto *return_set_info =
@@ -2010,11 +1990,16 @@ public:
     PgSink sink(return_set_info->setResult, return_set_info->setDesc);
     elog(DEBUG1, "accelerator %s: %s", accelerator.c_str(),
          hit ? "aux hit" : "fallback");
+    t_table_scans = 0;
     if (hit) {
       module.Execute(backend, arguments, sink);
     } else {
       module.ExecuteFallback(backend, arguments, sink);
     }
+    core::RecordAuxExecute(!hit || t_table_scans > 0
+                               ? core::AuxExecutePath::Fallback
+                           : rebuilt ? core::AuxExecutePath::RebuiltOnRead
+                                     : core::AuxExecutePath::Hit);
   }
 
   void BeforePreCommit() override {
@@ -2365,7 +2350,7 @@ Runtime<query::TpchQ8Module, query::TpchQ8Config, TpchQ8Scan> &Q8Runtime() {
   static Runtime<query::TpchQ8Module, query::TpchQ8Config, TpchQ8Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q8_COST_MODEL",
               "config/q8_aux_cost_model.json", query::TpchQ8Layout::kAccelerator,
-              query::TpchQ8Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem});
+              query::TpchQ8Config{pg_tbl::kPart, pg_tbl::kSupplier, pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem, pg_tbl::kNation, pg_tbl::kRegion});
   return runtime;
 }
 

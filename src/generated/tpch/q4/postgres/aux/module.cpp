@@ -1,4 +1,5 @@
 #include "tpch/q4/postgres/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -460,85 +461,74 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
   ensure_vectors(side);
   ensure_vectors(tree_state);
 
-  // Coalesce deltas per order key. Net eligibility-count changes should be
-  // applied after all deltas for the order have been seen, so crossing is
-  // evaluated exactly once.
+  // Per order key: remove the order's old contribution (if it counted), then
+  // replay its order-row changes in sequence (delete, then insert for an
+  // update) keeping its count of qualifying lineitems, add the lineitem
+  // delta, and add the new contribution (if it counts now).
   std::map<int64_t, int64_t> eligibility_delta;
   for (const auto &delta : buffer.Deltas())
     eligibility_delta[delta.orderkey] += delta.sign;
+  std::map<int64_t, std::vector<const TpchQ4OrderDelta *>> order_changes;
+  for (const auto &delta : buffer.OrderDeltas())
+    order_changes[delta.orderkey].push_back(&delta);
+  std::set<int64_t> touched_orders;
+  for (const auto &entry : eligibility_delta)
+    touched_orders.insert(entry.first);
+  for (const auto &entry : order_changes)
+    touched_orders.insert(entry.first);
 
   // Tree adjustments grouped by leaf (a leaf may be touched via multiple
   // orders or an order that changes date/priority as well as lineitems).
   std::map<uint32_t, std::vector<int64_t>> leaf_adjustments;
   std::set<uint32_t> touched_leaf_ordinals;
-
-  auto apply_eligibility_change = [&](int64_t orderkey, int64_t delta_count) {
-    if (delta_count == 0)
-      return;
-    auto it = side.order_eligibility.find(orderkey);
-    if (it == side.order_eligibility.end())
-      return;
-    auto &info = it->second;
-    const bool was_eligible = info.qualifying_count > 0;
-    info.qualifying_count += delta_count;
-    if (info.qualifying_count < 0)
-      info.qualifying_count = 0;
-    const bool is_eligible = info.qualifying_count > 0;
-
-    if (was_eligible == is_eligible)
-      return;
-
-    int32_t ord = info.orderdate_days - side.min_orderdate_days;
+  auto adjust = [&](const TpchQ4OrderInfo &info, int64_t by) {
+    const int32_t ord = info.orderdate_days - side.min_orderdate_days;
     if (ord < 0 || ord >= static_cast<int32_t>(side.tree_size))
       return;
-    uint32_t leaf = LeafNode(side.tree_size, ord);
+    const uint32_t leaf = LeafNode(side.tree_size, ord);
     touched_leaf_ordinals.insert(leaf);
     auto &adj = leaf_adjustments[leaf];
     if (adj.size() < side.priority_names.size())
       adj.resize(side.priority_names.size(), 0);
-    if (info.priority_idx < static_cast<int32_t>(adj.size()))
-      adj[info.priority_idx] += is_eligible ? 1 : -1;
+    if (info.priority_idx >= 0 && info.priority_idx < static_cast<int32_t>(adj.size()))
+      adj[info.priority_idx] += by;
   };
 
-  for (const auto &[orderkey, delta_count] : eligibility_delta)
-    apply_eligibility_change(orderkey, delta_count);
-
-  // Order mutations change membership (date/priority). Apply inserts first
-  // and deletes last (RF-style) so lineitem deltas for the same order in the
-  // same batch resolve against the new order row for inserts.
-  for (const auto &delta : buffer.OrderDeltas()) {
-    if (delta.sign <= 0)
-      continue;
-    int32_t pidx = TpchQ4PriorityIndex(delta.orderpriority, side.priority_names,
-                                       side.priority_map);
-    auto &info = side.order_eligibility[delta.orderkey];
-    info.orderdate_days = delta.orderdate_days;
-    info.priority_idx = pidx;
-    info.qualifying_count = 0;
-  }
-
-  // Apply order updates/deletes: subtract any prior membership.
-  for (const auto &delta : buffer.OrderDeltas()) {
-    if (delta.sign >= 0)
-      continue;
-    auto it = side.order_eligibility.find(delta.orderkey);
-    if (it == side.order_eligibility.end())
-      continue;
-    auto &info = it->second;
-    const bool was_eligible = info.qualifying_count > 0;
-    if (was_eligible) {
-      int32_t ord = info.orderdate_days - side.min_orderdate_days;
-      if (ord >= 0 && ord < static_cast<int32_t>(side.tree_size)) {
-        uint32_t leaf = LeafNode(side.tree_size, ord);
-        touched_leaf_ordinals.insert(leaf);
-        auto &adj = leaf_adjustments[leaf];
-        if (adj.size() < side.priority_names.size())
-          adj.resize(side.priority_names.size(), 0);
-        if (info.priority_idx < static_cast<int32_t>(adj.size()))
-          adj[info.priority_idx] -= 1;
+  for (const auto orderkey : touched_orders) {
+    auto it = side.order_eligibility.find(orderkey);
+    bool exists = it != side.order_eligibility.end();
+    TpchQ4OrderInfo info;
+    if (exists) {
+      info = it->second;
+      if (info.qualifying_count > 0)
+        adjust(info, -1);
+    }
+    auto changes = order_changes.find(orderkey);
+    if (changes != order_changes.end()) {
+      for (const auto *delta : changes->second) {
+        if (delta->sign < 0) {
+          exists = false;
+        } else if (delta->sign > 0) {
+          info.orderdate_days = delta->orderdate_days;
+          info.priority_idx = TpchQ4PriorityIndex(delta->orderpriority, side.priority_names,
+                                                  side.priority_map);
+          exists = true;
+        }
       }
     }
-    side.order_eligibility.erase(it);
+    auto lines = eligibility_delta.find(orderkey);
+    if (lines != eligibility_delta.end())
+      info.qualifying_count += lines->second;
+    if (info.qualifying_count < 0)
+      info.qualifying_count = 0;
+    if (!exists) {
+      if (it != side.order_eligibility.end())
+        side.order_eligibility.erase(it);
+      continue;
+    }
+    side.order_eligibility[orderkey] = info;
+    if (info.qualifying_count > 0)
+      adjust(info, +1);
   }
 
   // Apply leaf adjustments to tree
@@ -955,6 +945,10 @@ void TpchQ4Module::EmitResult(const TpchQ4State &state,
                               const std::vector<int64_t> &counts,
                               core::AuxRowSink &sink) const {
   FinalizeTpchQ4(counts, state.priority_names, sink);
+}
+
+std::vector<core::CalibrationWrite> TpchQ4Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(4);
 }
 
 }  // namespace accelerator_codegen::aux_state::query

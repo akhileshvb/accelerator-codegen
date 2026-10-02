@@ -29,6 +29,16 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'accel_postgres_set_force_maintenance_action'
 LANGUAGE C;
 
+CREATE FUNCTION accel_postgres_get_last_maintenance_decision()
+RETURNS text
+AS 'MODULE_PATHNAME', 'accel_postgres_get_last_maintenance_decision'
+LANGUAGE C;
+
+CREATE FUNCTION accel_postgres_get_execute_counts()
+RETURNS text
+AS 'MODULE_PATHNAME', 'accel_postgres_get_execute_counts'
+LANGUAGE C STRICT;
+
 CREATE FUNCTION accel_postgres_get_last_maintenance_action()
 RETURNS text
 AS 'MODULE_PATHNAME', 'accel_postgres_get_last_maintenance_action'

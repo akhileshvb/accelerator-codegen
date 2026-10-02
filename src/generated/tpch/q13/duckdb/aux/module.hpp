@@ -144,6 +144,7 @@ public:
                core::AuxRowSink &) override;
   void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
                        core::AuxRowSink &) override;
+  std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 private:
   void EnsureCustomerCapacity(TpchQ13State &state, int64_t custkey) const;
   TpchQ13State BuildState(core::AuxEngineServices &services) const;

@@ -1,4 +1,5 @@
 #include "tpch/q18/duckdb/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -142,9 +143,35 @@ void UpdateActiveOrderkey(TpchQ18State &state, int64_t orderkey) {
   }
 }
 
+// Per-order quantity sums from the tables. The state holds only orders above
+// kMinPersistQuantityRaw, so a lower threshold needs these.
+std::unordered_map<int64_t, int64_t>
+ScanOrderQuantitySums(TpchQ18InitialScan *initial_scan) {
+  std::unordered_map<int64_t, int64_t> sums;
+  if (!initial_scan->ScanOrderQuantityAggregates(
+          [&](const TpchQ18OrderQuantityAggregate &agg) {
+            sums[agg.orderkey] += agg.quantity_sum_raw;
+          })) {
+    initial_scan->ScanLineitems([&](const TpchQ18LineitemInput &input) {
+      sums[input.orderkey] += input.quantity_raw;
+    });
+  }
+  return sums;
+}
+
 void EmitResultScanOrders(const TpchQ18State &state, int64_t threshold_raw,
                           TpchQ18InitialScan *initial_scan,
                           core::AuxRowSink &sink) {
+  const auto table_sums =
+      threshold_raw < TpchQ18State::kMinPersistQuantityRaw
+          ? ScanOrderQuantitySums(initial_scan)
+          : std::unordered_map<int64_t, int64_t>{};
+  const auto sum_of = [&](int64_t orderkey) -> int64_t {
+    if (threshold_raw >= TpchQ18State::kMinPersistQuantityRaw)
+      return state.OrderQuantitySum(orderkey);
+    const auto it = table_sums.find(orderkey);
+    return it == table_sums.end() ? 0 : it->second;
+  };
   struct OrderMeta {
     int64_t custkey;
     int32_t orderdate_days;
@@ -156,7 +183,7 @@ void EmitResultScanOrders(const TpchQ18State &state, int64_t threshold_raw,
   initial_scan->ScanOrders([&](const TpchQ18OrderInput &input) {
     if (input.key < 0)
       return;
-    const int64_t sum = state.OrderQuantitySum(input.key);
+    const int64_t sum = sum_of(input.key);
     if (sum <= threshold_raw)
       return;
     orders.emplace(input.key,
@@ -190,7 +217,7 @@ void EmitResultScanOrders(const TpchQ18State &state, int64_t threshold_raw,
     row.orderkey = orderkey;
     row.orderdate_days = meta.orderdate_days;
     row.totalprice_raw = meta.totalprice_raw;
-    row.quantity_sum_raw = state.OrderQuantitySum(orderkey);
+    row.quantity_sum_raw = sum_of(orderkey);
     output_rows.push_back(std::move(row));
   }
 
@@ -222,6 +249,16 @@ void AppendNonSurvivorRows(const TpchQ18State &state, int64_t threshold_raw,
                            std::vector<TpchQ18OutputRow> &output_rows) {
   if (threshold_raw >= TpchQ18State::kMinPersistQuantityRaw)
     return;
+  const auto table_sums =
+      threshold_raw < TpchQ18State::kMinPersistQuantityRaw
+          ? ScanOrderQuantitySums(initial_scan)
+          : std::unordered_map<int64_t, int64_t>{};
+  const auto sum_of = [&](int64_t orderkey) -> int64_t {
+    if (threshold_raw >= TpchQ18State::kMinPersistQuantityRaw)
+      return state.OrderQuantitySum(orderkey);
+    const auto it = table_sums.find(orderkey);
+    return it == table_sums.end() ? 0 : it->second;
+  };
 
   struct OrderMeta {
     int64_t custkey;
@@ -234,7 +271,7 @@ void AppendNonSurvivorRows(const TpchQ18State &state, int64_t threshold_raw,
   initial_scan->ScanOrders([&](const TpchQ18OrderInput &input) {
     if (input.key < 0 || skip_orderkeys.find(input.key) != skip_orderkeys.end())
       return;
-    const int64_t sum = state.OrderQuantitySum(input.key);
+    const int64_t sum = sum_of(input.key);
     if (sum <= threshold_raw || sum > TpchQ18State::kMinPersistQuantityRaw)
       return;
     orders.emplace(input.key,
@@ -268,7 +305,7 @@ void AppendNonSurvivorRows(const TpchQ18State &state, int64_t threshold_raw,
     row.orderkey = orderkey;
     row.orderdate_days = meta.orderdate_days;
     row.totalprice_raw = meta.totalprice_raw;
-    row.quantity_sum_raw = state.OrderQuantitySum(orderkey);
+    row.quantity_sum_raw = sum_of(orderkey);
     output_rows.push_back(std::move(row));
   }
 }
@@ -505,9 +542,9 @@ void TpchQ18TxnBuffer::AddDelta(TpchQ18LineitemDelta delta) {
 core::AcceleratorId TpchQ18Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ18Module::Dependencies() const {
-  return {{config.lineitem_table, {0, 1}},
-          {config.orders_table, {0, 1, 2, 3}},
-          {config.customer_table, {0, 1}}};
+  return {{config.lineitem_table, {0, 1}, {0, 4}},
+          {config.orders_table, {0, 1, 2, 3}, {0, 1, 4, 3}},
+          {config.customer_table, {0, 1}, {0, 1}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ18Module::CreateTxnBuffer() const {
@@ -664,8 +701,13 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
     int64_t after = 0;
     if (initial_scan && initial_scan->LookupOrderQuantitySum(orderkey, after)) {
       // Scan includes this transaction — do not add `net` again.
-    } else {
+    } else if (new_state->HasOrderMeta(orderkey)) {
       after = new_state->OrderQuantitySum(orderkey) + net;
+    } else {
+      // The state holds survivors only: this order's previous sum is
+      // unknown here, so rebuild rather than guess it from 0.
+      core::FinishRebuildAll(outcome);
+      return outcome;
     }
     const int64_t before = after - net;
     const bool was_survivor = before > TpchQ18State::kMinPersistQuantityRaw;
@@ -865,6 +907,14 @@ void TpchQ18Module::EmitResult(const TpchQ18State &state,
   if (!initial_scan)
     throw std::logic_error("TPC-H Q18 aux requires a typed initial scan source");
 
+  // The state holds every order above kMinPersistQuantityRaw: with no
+  // survivors there is no qualifying order (no SQL at query time).
+  if (state.survivors.empty() &&
+      threshold_raw >= TpchQ18State::kMinPersistQuantityRaw) {
+    sink.Begin(core::OutputSchema{});
+    sink.End();
+    return;
+  }
   if (state.survivors.empty()) {
     EmitResultScanOrders(state, threshold_raw, initial_scan, sink);
     return;
@@ -971,6 +1021,10 @@ void TpchQ18Module::EmitResult(const TpchQ18State &state,
     sink.WriteRow(out);
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ18Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(18);
 }
 
 } // namespace accelerator_codegen::aux_state::query

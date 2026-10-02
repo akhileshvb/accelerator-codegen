@@ -1,4 +1,5 @@
 #include "tpch/q14/postgres/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -306,7 +307,7 @@ void TpchQ14TxnBuffer::AddDelta(TpchQ14LineitemDelta delta) {
 
 core::AcceleratorId TpchQ14Module::Id() const { return kId; }
 std::vector<core::TableDependency> TpchQ14Module::Dependencies() const {
-  return {{config.part_table, {0, 1}, {0, 3}},
+  return {{config.part_table, {0, 1}, {0, 4}},
           {config.lineitem_table, {0, 1, 2, 3}, {1, 5, 6, 10}}};
 }
 std::unique_ptr<core::AuxTxnBuffer> TpchQ14Module::CreateTxnBuffer() const {
@@ -346,6 +347,11 @@ void TpchQ14Module::AccumulateMutation(const core::MutationBatch &mutation,
                                        core::AuxEngineServices &,
                                        core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ14TxnBuffer &>(base_buffer);
+  if (mutation.table == config.part_table) {
+    // A part's type decides whether its revenue counts as promo: rebuild.
+    buffer.MarkRebuild();
+    return;
+  }
   if (mutation.table != config.lineitem_table)
     return;
   auto add = [&](const core::AuxRow &row, int8_t sign) {
@@ -656,6 +662,10 @@ void TpchQ14Module::EmitResult(const TpchQ14MonthTotals &totals,
   else
     sink.WriteRow({{core::AuxValue::Of(core::AuxType::Double, value)}});
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ14Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(14);
 }
 
 } // namespace accelerator_codegen::aux_state::query

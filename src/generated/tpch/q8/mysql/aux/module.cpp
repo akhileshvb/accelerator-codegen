@@ -1,4 +1,5 @@
 #include "tpch/q8/mysql/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -493,7 +494,9 @@ std::vector<core::TableDependency> TpchQ8Module::Dependencies() const {
           {config.supplier_table, {0, 1}, {0, 3}},
           {config.customer_table, {0, 1}, {0, 3}},
           {config.orders_table, {0, 1, 2}, {0, 1, 4}},
-          {config.lineitem_table, {0, 1, 2, 3, 4}, {1, 0, 2, 5, 6}}};
+          {config.lineitem_table, {0, 1, 2, 3, 4}, {1, 0, 2, 5, 6}},
+          {config.nation_table, {0, 1, 2}, {0, 1, 2}},
+          {config.region_table, {0, 1}, {0, 1}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ8Module::CreateTxnBuffer() const {
@@ -522,7 +525,9 @@ TpchQ8Module::InterpretMutation(const core::MutationBatch &mutation) const {
       mutation.table == config.orders_table ||
       mutation.table == config.part_table ||
       mutation.table == config.supplier_table ||
-      mutation.table == config.customer_table) {
+      mutation.table == config.customer_table ||
+      mutation.table == config.nation_table ||
+      mutation.table == config.region_table) {
     return All();
   }
   return {};
@@ -534,10 +539,13 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
                                       core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ8TxnBuffer &>(base_buffer);
 
-  // Dimension-table mutations (part, supplier, customer) → full rebuild
+  // Dimension-table mutations (part, supplier, customer, nation, region:
+  // the state caches nation names and regions) → full rebuild
   if (mutation.table == config.part_table ||
       mutation.table == config.supplier_table ||
-      mutation.table == config.customer_table) {
+      mutation.table == config.customer_table ||
+      mutation.table == config.nation_table ||
+      mutation.table == config.region_table) {
     buffer.MarkRebuild();
     return;
   }
@@ -1120,6 +1128,10 @@ void TpchQ8Module::EmitResult(const TpchQ8State &state,
     sink.WriteRow(out);
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ8Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(8);
 }
 
 } // namespace accelerator_codegen::aux_state::query

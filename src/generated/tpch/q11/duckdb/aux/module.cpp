@@ -1,4 +1,5 @@
 #include "tpch/q11/duckdb/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -408,9 +409,9 @@ void TpchQ11TxnBuffer::AddNationDelta(TpchQ11NationDelta delta) {
 core::AcceleratorId TpchQ11Module::Id() const { return TpchQ11Layout::kAccelerator; }
 
 std::vector<core::TableDependency> TpchQ11Module::Dependencies() const {
-  return {{config.partsupp_table, {0, 1, 2, 3}},
-          {config.supplier_table, {0, 1}},
-          {config.nation_table, {0, 1}}};
+  return {{config.partsupp_table, {0, 1, 2, 3}, {0, 1, 2, 3}},
+          {config.supplier_table, {0, 1}, {0, 3}},
+          {config.nation_table, {0, 1}, {0, 1}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ11Module::CreateTxnBuffer() const {
@@ -817,6 +818,14 @@ void TpchQ11Module::Execute(core::AuxEngineServices &services,
   {
     const auto fast_snapshot = services.StateStore().ReadPartitions(
         visibility, {NationNamePartition(nation_name)});
+    if (fast_snapshot.partitions.empty() &&
+        services.StateStore().CheckValidity({Id(), {}}, visibility).IsValid()) {
+      // The state has a partition for every nation: none for this name
+      // means no such nation (e.g. renamed), so no rows.
+      sink.Begin(core::OutputSchema{});
+      sink.End();
+      return;
+    }
     for (const auto &image : fast_snapshot.partitions) {
       const auto *typed = AsQ11Image(image, TpchQ11ImageKind::NationPreAggregated);
       if (!typed) continue;
@@ -1001,6 +1010,10 @@ void TpchQ11Module::EmitResult(const std::vector<TpchQ11OutputRow> &rows,
     sink.WriteRow(aux_row);
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ11Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(11);
 }
 
 } // namespace accelerator_codegen::aux_state::query

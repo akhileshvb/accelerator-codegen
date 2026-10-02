@@ -156,7 +156,7 @@ std::string TpchReferenceSql(int query_num) {
 		    "s_nationkey = n_nationkey AND n_name = 'ROMANIA'";
 		return "SELECT ps_partkey, SUM(ps_supplycost * ps_availqty) AS value " + from_clause +
 		       " GROUP BY ps_partkey HAVING SUM(ps_supplycost * ps_availqty) > (SELECT "
-		       "SUM(ps_supplycost * ps_availqty) * 0.0001 " + from_clause + ") ORDER BY value DESC";
+		       "SUM(ps_supplycost * ps_availqty) * 0.0001 " + from_clause + ") ORDER BY value DESC, ps_partkey";
 	}
 	case 12:
 		return "SELECT * FROM accel_tpch_q12('MAIL', 'SHIP', DATE '1995-01-01')";

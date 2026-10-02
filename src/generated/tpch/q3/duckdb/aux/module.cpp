@@ -1,4 +1,5 @@
 #include "tpch/q3/duckdb/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -6,6 +7,7 @@
 #include <cstring>
 #include <limits>
 #include <set>
+#include <unordered_set>
 #include <stdexcept>
 #include <utility>
 
@@ -396,9 +398,9 @@ void TpchQ3TxnBuffer::AddOrderDelta(TpchQ3OrderDelta delta) {
 
 core::AcceleratorId TpchQ3Module::Id() const { return kId; }
 std::vector<core::TableDependency> TpchQ3Module::Dependencies() const {
-  return {{config.customer_table, {0, 1}},
-          {config.orders_table, {0, 1, 2, 3}},
-          {config.lineitem_table, {0, 1, 2, 3}}};
+  return {{config.customer_table, {0, 1}, {6, 0}},
+          {config.orders_table, {0, 1, 2, 3}, {0, 4, 1, 7}},
+          {config.lineitem_table, {0, 1, 2, 3}, {0, 5, 6, 10}}};
 }
 std::unique_ptr<core::AuxTxnBuffer> TpchQ3Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ3TxnBuffer>();
@@ -626,6 +628,26 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     return true;
   };
 
+  // An UPDATE of an order arrives as its old row (-1) and new row (+1): the
+  // order and its lineitems stay; only its date / priority change in place
+  // (a move to another segment rebuilds). Deleted orders go in RF2 below.
+  std::unordered_set<int64_t> removed_orders, updated_orders;
+  for (const auto &delta : buffer.OrderDeltas())
+    if (delta.sign < 0)
+      removed_orders.insert(delta.orderkey);
+  for (const auto &delta : buffer.OrderDeltas())
+    if (delta.sign > 0 && removed_orders.count(delta.orderkey))
+      updated_orders.insert(delta.orderkey);
+  std::unordered_map<int64_t, core::PartitionId> updated_old_segment;
+  for (const auto orderkey : updated_orders) {
+    core::PartitionId segment = 0;
+    if (orderkey >= 0 &&
+        static_cast<std::size_t>(orderkey) < order_side->order_segment.size())
+      segment = static_cast<core::PartitionId>(
+          order_side->order_segment[static_cast<std::size_t>(orderkey)]);
+    updated_old_segment[orderkey] = segment;
+  }
+
   // RF1: install order_segment (+ meta) before lineitem deltas.
   for (const auto &delta : buffer.OrderDeltas()) {
     if (delta.sign <= 0)
@@ -636,6 +658,13 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
       outcome.invalidations = All();
       outcome.pending_rebuild = outcome.invalidations;
       return outcome;
+    }
+    if (updated_orders.count(delta.orderkey)) {
+      const auto old_segment = updated_old_segment[delta.orderkey];
+      if (old_segment != 0 && old_segment != ctx.segment) {
+        core::FinishRebuildAll(outcome);
+        return outcome;
+      }
     }
     EnsureOrderSegmentSlot(order_side->order_segment, delta.orderkey);
     order_side->order_segment[static_cast<std::size_t>(delta.orderkey)] =
@@ -762,6 +791,21 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
 
   bool any_changed = false;
   std::size_t applied_lineitem_orders = 0;
+  for (const auto orderkey : updated_orders) {
+    const auto segment = updated_old_segment[orderkey];
+    const auto meta_it = order_meta.find(orderkey);
+    auto index_it = indexes.find(segment);
+    if (segment == 0 || meta_it == order_meta.end() || index_it == indexes.end())
+      continue;
+    std::size_t position = 0;
+    if (!index_it->second.FindPosition(orderkey, position))
+      continue;
+    auto &summary = index_it->second.orders[position];
+    summary.orderdate_days = PackTpchQ3Date(meta_it->second.orderdate_days);
+    summary.shippriority = PackTpchQ3Shippriority(meta_it->second.shippriority);
+    any_changed = true;
+    outcome.action = core::MaintenanceAction::ApplyDelta;
+  }
   for (auto &group : grouped) {
     auto &index = indexes[group.first];
     bool needs_resort = false;
@@ -826,7 +870,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
   for (const auto &delta : buffer.OrderDeltas()) {
     if (delta.sign >= 0)
       continue;
-    if (delta.orderkey < 0)
+    if (delta.orderkey < 0 || updated_orders.count(delta.orderkey))
       continue;
     core::PartitionId segment = 0;
     if (static_cast<std::size_t>(delta.orderkey) <
@@ -1103,6 +1147,10 @@ void TpchQ3Module::EmitResult(const std::vector<TpchQ3OutputRow> &rows,
           core::AuxValue::Of(core::AuxType::Int64, row.shippriority)}});
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ3Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(3);
 }
 
 } // namespace accelerator_codegen::aux_state::query

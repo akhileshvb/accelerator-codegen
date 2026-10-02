@@ -2,6 +2,10 @@
 #if defined(ACCELERATOR_CODEGEN_MYSQL_PLUGIN)
 
 #include <algorithm>
+#include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -10,6 +14,7 @@
 #include <functional>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -207,8 +212,12 @@ std::vector<std::string> SplitTsv(const std::string &line) {
   return cols;
 }
 
+// Table scans this thread ran (a query that scans answered from SQL).
+thread_local uint64_t t_table_scans = 0;
+
 template <typename Callback>
 void ScanTypedTuples(const std::string &sql, Callback &&callback) {
+  ++t_table_scans;
   const std::string cmd = MysqlCliPrefix() + ShellEscape(sql) + " 2>/dev/null";
   FILE *pipe = popen(cmd.c_str(), "r");
   if (!pipe) {
@@ -359,33 +368,6 @@ void ScanTpchQ10Customers(
                   TypedText(cols, 5),
                   TypedText(cols, 6)});
       });
-}
-
-void LookupTpchQ10Customers(
-    const std::vector<int64_t> &custkeys,
-    std::unordered_map<int64_t, query::TpchQ10Customer> &out) {
-  out.clear();
-  if (custkeys.empty())
-    return;
-  std::ostringstream sql;
-  sql << "SELECT c_custkey, c_name, c_acctbal, c_nationkey, c_address, "
-         "c_phone, c_comment FROM customer WHERE c_custkey IN (";
-  for (std::size_t i = 0; i < custkeys.size(); ++i) {
-    if (i > 0)
-      sql << ',';
-    sql << custkeys[i];
-  }
-  sql << ')';
-  ScanTypedTuples(sql.str(), [&](const std::vector<std::string> &cols) {
-    const auto key = TypedInt(cols, 0);
-    out.emplace(key, query::TpchQ10Customer{
-                         TypedText(cols, 1),
-                         TypedDecimalRaw(cols, 2),
-                         static_cast<int32_t>(TypedInt(cols, 3)),
-                         TypedText(cols, 4),
-                         TypedText(cols, 5),
-                         TypedText(cols, 6)});
-  });
 }
 
 void ScanTpchQ10Nations(
@@ -1242,12 +1224,6 @@ public:
       override {
     scans::ScanTpchQ10Lineitems(consumer);
   }
-  bool LookupCustomers(
-      const std::vector<int64_t> &custkeys,
-      std::unordered_map<int64_t, query::TpchQ10Customer> &out) override {
-    scans::LookupTpchQ10Customers(custkeys, out);
-    return true;
-  }
 };
 
 class TpchQ12Scan final : public query::TpchQ12InitialScan {
@@ -1779,9 +1755,8 @@ public:
       if (column > 0) {
         out.push_back('|');
       }
-      if (!row.values[column].is_null) {
-        out += CellText(row.values[column]);
-      }
+      // NULL as the mysql client prints it (an all-NULL row stays a row).
+      out += row.values[column].is_null ? std::string("NULL") : CellText(row.values[column]);
     }
     out.push_back('\n');
   }
@@ -1876,49 +1851,82 @@ public:
         RegisterMysqlXactCallbacks();
   }
 
-  void EnsureBuilt() {
-    if (built) {
-      return;
+  void WaitForCapturedWrites() {
+    static const auto limit = std::chrono::microseconds([] {
+      const char *value = std::getenv("ACCEL_AUX_PENDING_WAIT_US");
+      return value && *value ? std::strtoll(value, nullptr, 10) : 500000LL;
+    }());
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (coordinator.HasPendingWork() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
-    Builder builder;
-    module.Build(backend, builder);
-    if (!builder.finished) {
-      throw std::runtime_error("auxiliary build did not finish");
+  }
+
+  // Build the state from the tables when there is none or it is invalid.
+  // One Runtime serves every session, and MySQL commits the aux state after
+  // the write is visible (audit event), so a build may race a write: it is
+  // installed only if no write was in flight during it and nothing was
+  // published meanwhile (else it would lose that write, or count it twice).
+  // A declined build leaves the state as it was: the query reads it if it is
+  // valid, else answers from SQL (ExecuteFallback), and a later query
+  // rebuilds.
+  // Returns whether this call built the state. A write in flight is waited
+  // out and a build that raced a write is retried; only when the state still
+  // cannot be installed after kMaxBuildAttempts does the query answer from
+  // SQL (the last resort).
+  bool RebuildIfNeeded() {
+    if (built.load() && !store.NeedsRebuild()) {
+      return false;
     }
-    store.Install(std::move(builder.images), accelerator);
-    store.ClearTransactionDirty();
-    built = true;
-    accelerator_codegen::aux_state::engine::mysql::
-        RegisterMysqlBackendForMutations();
+    std::lock_guard<std::mutex> lock(rebuild_mutex);
+    for (int attempt = 0; attempt < kMaxBuildAttempts; ++attempt) {
+      if (built.load() && !store.NeedsRebuild()) {
+        return false; // another session rebuilt it
+      }
+      while (coordinator.HasPendingWork()) {
+        // A write is between capture and its commit: wait for it.
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+      }
+      const auto before = store.ChangeCount();
+      Builder builder;
+      module.Build(backend, builder);
+      if (!builder.finished) {
+        throw std::runtime_error("auxiliary build did not finish");
+      }
+      if (coordinator.HasPendingWork() ||
+          !store.InstallIfUnchanged(std::move(builder.images), accelerator, before)) {
+        continue; // a write landed during the build: build again
+      }
+      store.ClearTransactionDirty();
+      built = true;
+      accelerator_codegen::aux_state::engine::mysql::
+          RegisterMysqlBackendForMutations();
+      return true;
+    }
+    return false;
   }
 
   void Execute(const core::QueryArguments &arguments, std::string &out) {
+    // Every read in this statement: one aux state version.
+    accelerator_codegen::aux_state::AuxReadScope one_version;
     // Prefer this Runtime for subsequent trigger captures in this session.
     accelerator_codegen::aux_state::engine::mysql::
         RegisterMysqlMutationBackend(&backend);
 
-    // If audit-driven commit was skipped (another accelerator threw), apply
-    // this module's pending mutations now — after the DML statement has
-    // become visible to a scan connection.
-    if (coordinator.HasPendingWork()) {
-      backend.OnPreCommit();
-      backend.OnCommit();
-      accelerator_codegen::aux_state::engine::mysql::
-          NoteMysqlBackendLastAction(&backend);
-    }
-
-    EnsureBuilt();
-    // Mutations are applied on UPDATE commit via CaptureMutation →
-    // StageMaintenance (ApplyDelta / Rebuild*) → TryPublish. Empty QueryKey
-    // means partition 0 in MysqlStateStore (layer contract), so use Read()
-    // to detect a fully invalidated image and rebuild after commit.
-    if (store.NeedsRebuild()) {
-      built = false;
-      EnsureBuilt();
-    }
+    // Captured writes are committed to the aux state by the writing
+    // session's audit event, after the write is already visible (never
+    // here: this may be another session, and the write may not be committed
+    // yet). Until then this accelerator's commit is pending: wait for it, as
+    // a reader waits for a pending commit (bounded like the store's wait).
+    WaitForCapturedWrites();
+    const bool rebuilt = RebuildIfNeeded();
     observed_mutations = mysql_accel_get_observer_mutation_count();
     TsvSink sink(out);
+    t_table_scans = 0;
     module.Execute(backend, arguments, sink);
+    core::RecordAuxExecute(t_table_scans > 0 ? core::AuxExecutePath::Fallback
+                           : rebuilt         ? core::AuxExecutePath::RebuiltOnRead
+                                             : core::AuxExecutePath::Hit);
   }
 
 private:
@@ -1928,8 +1936,10 @@ private:
   ScanT scan;
   Module module;
   std::string accelerator;
-  bool built = false;
-  int observed_mutations = 0;
+  static constexpr int kMaxBuildAttempts = 64;
+  std::mutex rebuild_mutex;
+  std::atomic<bool> built{false};
+  std::atomic<int> observed_mutations{0};
 };
 
 
@@ -2097,7 +2107,7 @@ Runtime<query::TpchQ8Module, query::TpchQ8Config, TpchQ8Scan> &Q8Runtime() {
   static Runtime<query::TpchQ8Module, query::TpchQ8Config, TpchQ8Scan>
       runtime("ACCELERATOR_CODEGEN_MYSQL_Q8_COST_MODEL",
               "config/q8_aux_cost_model.json", query::TpchQ8Layout::kAccelerator,
-              query::TpchQ8Config{mysql_tbl::kPart, mysql_tbl::kSupplier, mysql_tbl::kCustomer, mysql_tbl::kOrders, mysql_tbl::kLineitem});
+              query::TpchQ8Config{mysql_tbl::kPart, mysql_tbl::kSupplier, mysql_tbl::kCustomer, mysql_tbl::kOrders, mysql_tbl::kLineitem, mysql_tbl::kNation, mysql_tbl::kRegion});
   return runtime;
 }
 

@@ -4,13 +4,13 @@
 #include <cstdint>
 
 namespace accelerator_codegen::aux_state {
-class PartitionedStateStore;
+class VersionedAuxStore;
 }
 
 namespace accelerator_codegen::aux_state::harness {
 
-// Sum serialized partition payloads for all valid slots in the store.
-uint64_t ComputeAuxStateFootprintBytes(const PartitionedStateStore &store,
+// Estimated bytes of the store's newest valid partitions.
+uint64_t ComputeAuxStateFootprintBytes(const VersionedAuxStore &store,
                                        const char *accelerator_id);
 
 } // namespace accelerator_codegen::aux_state::harness

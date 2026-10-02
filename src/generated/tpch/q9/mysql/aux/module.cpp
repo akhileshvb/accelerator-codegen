@@ -1,4 +1,5 @@
 #include "tpch/q9/mysql/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -1338,6 +1339,24 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
+  // An order whose year changes moves the profit of its existing lineitems
+  // between years, which the deltas cannot do: rebuild.
+  {
+    std::unordered_map<int64_t, int32_t> removed_year;
+    for (const auto &delta : buffer.OrderDeltas())
+      if (delta.sign < 0)
+        removed_year[delta.orderkey] = delta.order_year;
+    for (const auto &delta : buffer.OrderDeltas()) {
+      if (delta.sign <= 0)
+        continue;
+      const auto it = removed_year.find(delta.orderkey);
+      if (it != removed_year.end() && it->second != delta.order_year) {
+        core::FinishRebuildAll(outcome);
+        return outcome;
+      }
+    }
+  }
+
   // Try incremental apply for lineitem deltas + part name deltas + order years.
   // RF1: orders Insert must be buffered before lineitems in the same txn so
   // order_years is updated before ResolveProfit.
@@ -1616,7 +1635,7 @@ bool TpchQ9Module::CheckValidity(core::AuxEngineServices &services,
     return false;
   // Validate only the single complete-state partition (was: empty list → 130-slot scan)
   return services.StateStore()
-      .CheckValidity({Id(), {TpchQ9Layout::kCompleteState}},
+      .CheckValidity({Id(), std::to_string(TpchQ9Layout::kCompleteState)},
                      services.CurrentVisibility())
       .IsValid();
 }
@@ -1643,7 +1662,7 @@ void TpchQ9Module::Execute(core::AuxEngineServices &services,
   }
 
   if (!services.StateStore()
-           .CheckValidity({Id(), {TpchQ9Layout::kCompleteState}},
+           .CheckValidity({Id(), std::to_string(TpchQ9Layout::kCompleteState)},
                           services.CurrentVisibility())
            .IsValid()) {
     ExecuteFallback(services, arguments, sink);
@@ -1950,6 +1969,10 @@ void TpchQ9Module::EmitResult(const TpchQ9State &state,
     }
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ9Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(9);
 }
 
 } // namespace accelerator_codegen::aux_state::query

@@ -19,6 +19,10 @@ struct MaintenanceRequest {
   bool low_confidence = false;
   maintenance::MaintenanceAction last_action = maintenance::MaintenanceAction::NoOp;
   double expected_queries_before_next_write = 10.0;
+  // (Last: modules initialize the fields above positionally.)
+  // InvalidateAndRebuildOnRead: the next reader rebuilds (set from
+  // AuxEngineServices::ReadersCanBuildState by ChooseMaintenance).
+  bool deferred_rebuild_supported = true;
 };
 
 struct MaintenanceDecision {

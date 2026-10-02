@@ -294,7 +294,7 @@ int main() {
     // volume = 10000 * (100-5) = 950000 (scale 4 → 95.0000)
     services.lineitems.push_back(Lineitem(1, 1, 1, 10000, 5));
 
-    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5}, &services);
+    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services);
     Builder builder;
     module.Build(services, builder);
     assert(builder.finished);
@@ -326,7 +326,7 @@ int main() {
     services.lineitems.push_back(Lineitem(1, 1, 1, 10000, 5));
     services.lineitems.push_back(Lineitem(1, 1, 2, 10000, 5));
 
-    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5}, &services);
+    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services);
     Builder builder;
     module.Build(services, builder);
     assert(builder.finished);
@@ -355,7 +355,7 @@ int main() {
     services.orders.push_back(Orders(1, 1, kYear1995Day));
     services.lineitems.push_back(Lineitem(1, 1, 1, 10000, 5));
 
-    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5}, &services);
+    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services);
     Builder builder;
     module.Build(services, builder);
     assert(builder.finished);
@@ -379,7 +379,7 @@ int main() {
     services.orders.push_back(Orders(1, 1, kYear1995Day));
     services.lineitems.push_back(Lineitem(1, 1, 1, 10000, 5));
 
-    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5}, &services);
+    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services);
     Builder builder;
     module.Build(services, builder);
     assert(builder.finished);
@@ -403,7 +403,7 @@ int main() {
     services.orders.push_back(Orders(1, 1, kYear1995Day));
     services.lineitems.push_back(Lineitem(1, 1, 1, 10000, 5));
 
-    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5}, &services);
+    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services);
     // Don't build — state missing. Execute should fallback to building from
     // scan and computing directly.
 
@@ -428,7 +428,7 @@ int main() {
     services.orders.push_back(Orders(1, 1, kYear1995Day));
     services.lineitems.push_back(Lineitem(1, 1, 1, 10000, 5));
 
-    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5}, &services);
+    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services);
     Builder builder;
     module.Build(services, builder);
     assert(builder.finished);
@@ -436,7 +436,7 @@ int main() {
 
     AuxTransactionCoordinator coordinator;
     coordinator.Register(
-        std::make_shared<TpchQ8Module>(TpchQ8Config{1, 2, 3, 4, 5}, &services));
+        std::make_shared<TpchQ8Module>(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services));
     coordinator.AttachServices(services);
 
     // Insert a second lineitem from CHINA supplier
@@ -470,7 +470,7 @@ int main() {
     services.lineitems.push_back(Lineitem(1, 1, 1, 10000, 5));
     services.lineitems.push_back(Lineitem(1, 2, 1, 20000, 10));
 
-    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5}, &services);
+    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services);
     Builder builder;
     module.Build(services, builder);
     assert(builder.finished);
@@ -497,7 +497,7 @@ int main() {
     services.orders.push_back(Orders(1, 1, kYear1995Day));
     services.lineitems.push_back(Lineitem(1, 1, 1, 10000, 5));
 
-    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5}, &services);
+    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services);
     Builder builder;
     module.Build(services, builder);
     assert(builder.finished);
@@ -505,7 +505,7 @@ int main() {
 
     AuxTransactionCoordinator coordinator;
     coordinator.Register(
-        std::make_shared<TpchQ8Module>(TpchQ8Config{1, 2, 3, 4, 5}, &services));
+        std::make_shared<TpchQ8Module>(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services));
     coordinator.AttachServices(services);
 
     // Part mutation → rebuild
@@ -534,7 +534,7 @@ int main() {
     services.regions.push_back(Region(1, "ASIA"));
     services.parts.push_back(Part(1, "BRASS"));
 
-    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5}, &services);
+    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services);
     Builder builder;
     module.Build(services, builder);
     assert(builder.finished);
@@ -557,7 +557,7 @@ int main() {
     services.orders.push_back(Orders(1, 1, kYear1995Day));
     services.lineitems.push_back(Lineitem(1, 1, 1, 10000, 5));
 
-    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5}, &services);
+    TpchQ8Module module(TpchQ8Config{1, 2, 3, 4, 5, 6, 7}, &services);
     Builder builder;
     module.Build(services, builder);
     assert(builder.finished);

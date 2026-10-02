@@ -283,11 +283,21 @@ inline std::string RewriteQ11Fraction(std::string sql) {
   return sql;
 }
 
+// Q11 orders by value only: tied parts may come in any order. The
+// accelerator breaks ties by partkey; make the reference do the same.
+inline std::string TotalOrderQ11(std::string sql) {
+  const std::string from = "ORDER BY value DESC";
+  const auto pos = sql.rfind(from);
+  if (pos != std::string::npos && sql.find("ps_partkey", pos) == std::string::npos)
+    sql.insert(pos + from.size(), ", ps_partkey");
+  return sql;
+}
+
 inline std::string ConcreteBaseSql(int query_num,
                                    const MysqlSharedQueryCatalogEntry &entry) {
   std::string sql = entry.base_sql ? entry.base_sql : "";
   if (query_num == 11)
-    sql = RewriteQ11Fraction(std::move(sql));
+    sql = TotalOrderQ11(RewriteQ11Fraction(std::move(sql)));
   return sql;
 }
 
@@ -342,6 +352,8 @@ inline void EnsureExtension(const Tools &tools) {
   EnsureUdf(tools, "mysql_accel_observer_mutation_count", "INTEGER");
   EnsureUdf(tools, "mysql_accel_reset_observer", "STRING");
   EnsureUdf(tools, "mysql_accel_set_force_maintenance_action", "STRING");
+  EnsureUdf(tools, "mysql_accel_get_execute_counts", "STRING");
+  EnsureUdf(tools, "mysql_accel_get_last_maintenance_decision", "STRING");
   // Optional: SF=1's copied plugin may predate this UDF. Cost routing still
   // honors ACCEL_EXPECTED_QUERIES_BEFORE_WRITE / the default of 10.
   {

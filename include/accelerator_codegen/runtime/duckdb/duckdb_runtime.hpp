@@ -1,17 +1,21 @@
 // GENERATED BACKEND
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "accelerator_codegen/stateful/core/aux_calibration.hpp"
 #include "accelerator_codegen/stateful/core/aux_store_diagnostics.hpp"
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
 #include "accelerator_codegen/stateful/duckdb/duckdb_aux_backend.hpp"
 #include "accelerator_codegen/stateful/duckdb/duckdb_state_store.hpp"
-#include "accelerator_codegen/stateful/state/partitioned_state_store.hpp"
+#include "accelerator_codegen/stateful/state/verus_aux_store.hpp"
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 
@@ -27,6 +31,11 @@ public:
     virtual void Execute(DuckDBAuxBackend &backend,
                          const core::QueryArguments &arguments,
                          core::AuxRowSink &sink) = 0;
+    // (DuckDB table name, the module's TableId for it), for engine capture.
+    virtual std::vector<std::pair<std::string, core::TableId>>
+    CaptureTables() const {
+      return {};
+    }
   };
 
   DuckdbRuntime(::duckdb::Connection &connection,
@@ -40,7 +49,11 @@ public:
   static DuckdbRuntime *FindActive(::duckdb::DatabaseInstance &db,
                                    const std::string &accelerator_id);
 
-  void Build();
+  // Build the state. `register_active`: make this runtime the one other
+  // connections' aux queries use (FindActive). A short-lived runtime must
+  // not register: readers in other connections would use it after it is
+  // destroyed.
+  void Build(bool register_active = true);
   void Execute();
   void Execute(const core::QueryArguments &arguments);
   std::vector<core::AuxRow> ExecuteCollect();
@@ -65,21 +78,74 @@ public:
   void ApplyMutationBatch(const core::MutationBatch &mutation);
   void ExecuteBaseQuery();
 
+  // Whether the accelerator's state lives in its Verus store.
+  bool UsesVerusStore() const { return verus_store_ != nullptr; }
+  // Versions kept by the active store, and (Verus store) stale installs.
+  std::size_t StateVersionCount() const;
+  std::size_t StaleInstallCount() const;
+
   core::AuxStoreDiagnosticsSnapshot StoreDiagnosticsSnapshot() const;
   void ResetStoreDiagnosticsProfiling();
   uint64_t AuxStateFootprintBytes() const;
 
-  uint64_t last_rows = 0;
+  // Written by concurrent readers (aux table functions in other connections).
+  std::atomic<uint64_t> last_rows{0};
+  // Reader queries (other connections) that ran SQL instead of reading the
+  // state. Should stay 0: commits publish valid state (ReadersCanBuildState),
+  // and such a fallback reads the newest data, not the reader's snapshot.
+  std::atomic<uint64_t> reader_fallbacks{0};
+
+  // ---- Writes captured by the engine (SQL on this runtime's connection) ----
+  // Capture every insert / update / delete this runtime's connection makes on
+  // the tables the module depends on (the DuckDB fork's MutationRecorder),
+  // projected as the module's dependencies declare. Use with BeginWrite /
+  // CommitWrite / RollbackWrite.
+  void EnableMutationCapture();
+  void BeginWrite();
+  // PRE_COMMIT, the engine commit, then COMMIT of the coordinator, with the
+  // aux epochs of DuckDB's snapshot order: pending from the writer's start
+  // time + 1, published at the commit id + 1. Aborts the aux commit if the
+  // engine commit fails.
+  void CommitWrite();
+  void RollbackWrite();
+  // One captured write transaction running `sql` (rolled back on error).
+  void ApplyWrite(const std::string &sql);
+  // The module's calibration writes (core::CalibrationWrite).
+  std::vector<core::CalibrationWrite> CalibrationWrites() const;
+  // A mutation event from the capture hook (called during the statement).
+  void OnCapturedMutation(const ::duckdb::TableMutationEvent &event);
 
 private:
+  void DisableMutationCapture();
+  // The store the backend uses: verus_store_ if set, else state_store_.
+  core::AuxStateStore &ActiveStore();
+
   ::duckdb::Connection &connection_;
   const SharedQueryCatalogEntry &entry_;
-  accelerator_codegen::aux_state::PartitionedStateStore legacy_store_;
+  ::duckdb::shared_ptr<AuxCommitClock> clock_;
   DuckDBStateStore state_store_;
+  // The accelerator's verified Verus store, if ACCEL_AUX_STORE=verus and it
+  // has one (stateful/state/verus_aux_store.hpp); then the backend uses it
+  // instead of state_store_.
+  std::unique_ptr<VerusAuxStore> verus_store_;
   core::AuxTransactionCoordinator coordinator_;
   std::shared_ptr<double> expected_queries_before_write_;
   DuckDBAuxBackend backend_;
   std::unique_ptr<Binding> binding_;
+  bool capture_enabled_ = false;
+};
+
+// The DuckDB side of core::CalibrateFromWrites: a captured write on the
+// runtime's connection (mutation capture enabled), maintenance forced or
+// chosen, then one accelerator query, timed together.
+class DuckdbCalibrationEngine final : public core::CalibrationEngine {
+public:
+  explicit DuckdbCalibrationEngine(DuckdbRuntime &runtime_p) : runtime(runtime_p) {}
+  Timed WriteThenRead(const std::string &sql,
+                      std::optional<maintenance::MaintenanceAction> forced) override;
+
+private:
+  DuckdbRuntime &runtime;
 };
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb

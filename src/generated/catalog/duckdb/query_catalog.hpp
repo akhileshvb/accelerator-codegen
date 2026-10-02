@@ -27,7 +27,21 @@ struct SharedProbe {
   std::vector<core::ColumnId> updated_columns;
   double current_value = 0.0;
   double write_delta = 0.0;
+  // An idempotent write (SET col = constant): repeating it changes nothing,
+  // so the probe alternates update / restore (old/new rows swapped) to keep
+  // each reported mutation equal to what the write did.
+  bool toggles = false;
+  bool flipped = false; // the next write is the restore
+  // An idempotent write whose repeated mutation leaves the module's state as
+  // it is (e.g. a new minimum set again): the same write every time.
+  // Otherwise (neither flag) the write is additive (x = x + c) and each
+  // write's reported rows advance by the same step.
+  bool repeats = false;
 };
+
+// The SQL of the probe's next write, and the step after it is applied.
+const std::string &ProbeWriteSql(const SharedProbe &probe);
+void AdvanceProbe(SharedProbe &probe);
 
 struct SharedQueryCatalogEntry {
   int query_id = 0;

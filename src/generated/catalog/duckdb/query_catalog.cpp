@@ -338,6 +338,7 @@ SharedProbe BuildTpchQ12Probe(::duckdb::MaterializedQueryResult &result,
   probe.restore_sql = "UPDATE lineitem SET l_shipmode = '" + shipmode +
                       "' WHERE l_orderkey = " + orderkey +
                       " AND l_linenumber = " + linenumber;
+  probe.toggles = true;
   return probe;
 }
 
@@ -486,6 +487,7 @@ SharedProbe BuildTpchQ2Probe(::duckdb::MaterializedQueryResult &result,
   probe.restore_sql = "UPDATE partsupp SET ps_supplycost = " + std::to_string(cost) +
                       " WHERE ps_partkey = " + partkey + " AND ps_suppkey = " +
                       suppkey;
+  probe.repeats = true;
   return probe;
 }
 
@@ -516,6 +518,7 @@ SharedProbe BuildTpchQ21Probe(::duckdb::MaterializedQueryResult &result,
   probe.restore_sql = "UPDATE lineitem SET l_receiptdate = DATE '" + receipt_date +
                       "' WHERE l_orderkey = " + orderkey +
                       " AND l_linenumber = " + linenumber;
+  probe.toggles = true;
   return probe;
 }
 
@@ -652,6 +655,7 @@ SharedProbe BuildTpchQ4Probe(::duckdb::MaterializedQueryResult &result,
   probe.restore_sql = "UPDATE lineitem SET l_receiptdate = DATE '" + receipt_date +
                       "' WHERE l_orderkey = " + orderkey +
                       " AND l_linenumber = " + linenumber;
+  probe.toggles = true;
   return probe;
 }
 
@@ -2067,8 +2071,80 @@ core::MutationBatch BuildSharedMutation(const SharedQueryCatalogEntry &entry,
   mutation.updated_columns = probe.updated_columns;
   mutation.old_rows = {probe.old_row};
   mutation.new_rows = {probe.new_row};
+  if (probe.toggles && probe.flipped)
+    std::swap(mutation.old_rows, mutation.new_rows);
   (void)entry;
   return mutation;
+}
+
+const std::string &ProbeWriteSql(const SharedProbe &probe) {
+  return probe.toggles && probe.flipped ? probe.restore_sql : probe.update_sql;
+}
+
+namespace {
+// `next` = `now` + (`now` - `before`), for the numeric value kinds probes add to.
+bool StepValue(const core::AuxValue &before, const core::AuxValue &now,
+               core::AuxValue &next) {
+  if (before.is_null || now.is_null)
+    return false;
+  if (const auto *b = std::get_if<core::ScaledDecimal>(&before.payload)) {
+    const auto *n = std::get_if<core::ScaledDecimal>(&now.payload);
+    if (!n || n->scale != b->scale)
+      return false;
+    next = core::AuxValue::Of(core::AuxType::ScaledDecimal,
+                              core::ScaledDecimal{2 * n->value - b->value, n->scale});
+    return true;
+  }
+  if (const auto *b = std::get_if<int64_t>(&before.payload)) {
+    const auto *n = std::get_if<int64_t>(&now.payload);
+    if (!n)
+      return false;
+    next = core::AuxValue::Of(core::AuxType::Int64, 2 * *n - *b);
+    return true;
+  }
+  if (const auto *b = std::get_if<double>(&before.payload)) {
+    const auto *n = std::get_if<double>(&now.payload);
+    if (!n)
+      return false;
+    next = core::AuxValue::Of(core::AuxType::Double, 2 * *n - *b);
+    return true;
+  }
+  return false;
+}
+} // namespace
+
+void AdvanceProbe(SharedProbe &probe) {
+  probe.current_value += probe.write_delta;
+  if (probe.repeats)
+    return;
+  if (probe.toggles) {
+    probe.flipped = !probe.flipped;
+    return;
+  }
+  // An additive write (x = x + c): the next write starts from this one's new
+  // row and adds the same step, so its reported rows match the table.
+  // Every numeric column steps by its own difference (unchanged ones stay);
+  // any other column must be unchanged.
+  if (probe.old_row.values.size() != probe.new_row.values.size())
+    return;
+  auto next = probe.new_row;
+  for (std::size_t c = 0; c < probe.new_row.values.size(); ++c) {
+    const auto &before = probe.old_row.values[c];
+    const auto &now = probe.new_row.values[c];
+    if (StepValue(before, now, next.values[c]))
+      continue;
+    const auto *bs = std::get_if<std::string>(&before.payload);
+    const auto *ns = std::get_if<std::string>(&now.payload);
+    const auto *bd = std::get_if<core::AuxDate>(&before.payload);
+    const auto *nd = std::get_if<core::AuxDate>(&now.payload);
+    const bool unchanged = (before.is_null && now.is_null) ||
+                           (bs && ns && *bs == *ns) ||
+                           (bd && nd && bd->days_since_epoch == nd->days_since_epoch);
+    if (!unchanged)
+      return; // not an additive write: keep the rows as they are
+  }
+  probe.old_row = probe.new_row;
+  probe.new_row = std::move(next);
 }
 
 } // namespace accelerator_codegen::aux_state::engine

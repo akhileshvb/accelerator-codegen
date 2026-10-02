@@ -1,4 +1,5 @@
 #include "tpch/q11/postgres/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -817,6 +818,14 @@ void TpchQ11Module::Execute(core::AuxEngineServices &services,
   {
     const auto fast_snapshot = services.StateStore().ReadPartitions(
         visibility, {NationNamePartition(nation_name)});
+    if (fast_snapshot.partitions.empty() &&
+        services.StateStore().CheckValidity({Id(), {}}, visibility).IsValid()) {
+      // The state has a partition for every nation: none for this name
+      // means no such nation (e.g. renamed), so no rows.
+      sink.Begin(core::OutputSchema{});
+      sink.End();
+      return;
+    }
     for (const auto &image : fast_snapshot.partitions) {
       const auto *typed = AsQ11Image(image, TpchQ11ImageKind::NationPreAggregated);
       if (!typed) continue;
@@ -1001,6 +1010,10 @@ void TpchQ11Module::EmitResult(const std::vector<TpchQ11OutputRow> &rows,
     sink.WriteRow(aux_row);
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ11Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(11);
 }
 
 } // namespace accelerator_codegen::aux_state::query

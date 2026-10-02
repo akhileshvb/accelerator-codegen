@@ -25,6 +25,9 @@ struct ActionCostEstimate {
 struct CostModelParams {
 	double aux_hit_us = 500.0;
 	double fallback_us = 50000.0;
+	// RebuildPartition: base + per-partition cost (one rebuild covers all the
+	// touched partitions, e.g. one scan).
+	double partition_rebuild_base_us = 0.0;
 	double partition_rebuild_us = 60000.0;
 	double full_rebuild_us = 261000.0;
 	double first_query_blocking_us = 0.0;

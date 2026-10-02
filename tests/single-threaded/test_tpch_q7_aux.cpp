@@ -390,6 +390,9 @@ int main() {
     ins.table = 5;  // lineitem
     ins.kind = MutationKind::Insert;
     ins.new_rows = {li_row};
+    // The write is in the table too (a rebuild reads it): order 1001 had no
+    // lineitem at build, so maintenance cannot resolve its customer locally.
+    services.lineitems.push_back({1001, 200, 30000, 2, 10, 2, Ymd(1995, 8, 1)});
     coordinator.OnMutation(ins);
     coordinator.PreCommit();
     coordinator.Commit();

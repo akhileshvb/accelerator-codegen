@@ -1,4 +1,5 @@
 #include "tpch/q20/duckdb/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -665,11 +666,11 @@ void TpchQ20TxnBuffer::AddPartNameDelta(TpchQ20PartNameDelta delta) {
 core::AcceleratorId TpchQ20Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ20Module::Dependencies() const {
-  return {{config.lineitem_table, {0, 1, 2, 3}},
-          {config.part_table, {0, 1}},
-          {config.partsupp_table, {0, 1, 2}},
-          {config.supplier_table, {0, 1, 2, 3}},
-          {config.nation_table, {0, 1}}};
+  return {{config.lineitem_table, {0, 1, 2, 3}, {10, 1, 2, 4}},
+          {config.part_table, {0, 1}, {0, 1}},
+          {config.partsupp_table, {0, 1, 2}, {0, 1, 2}},
+          {config.supplier_table, {0, 1, 2, 3}, {0, 1, 2, 3}},
+          {config.nation_table, {0, 1}, {0, 1}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ20Module::CreateTxnBuffer() const {
@@ -1323,6 +1324,12 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
   // Avoid a hash set containment lookup per candidate: fetch target key once.
   const int32_t target_nationkey =
       target_nationkeys.empty() ? -1 : *target_nationkeys.begin();
+  if (target_nationkeys.empty()) {
+    // No nation has this name (e.g. renamed): no supplier qualifies.
+    sink.Begin(core::OutputSchema{});
+    sink.End();
+    return;
+  }
 
   std::vector<TpchQ20OutputRow> output_rows;
   output_rows.reserve(qualifying_suppkeys.size());
@@ -1356,6 +1363,10 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
     sink.WriteRow(out);
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ20Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(20);
 }
 
 } // namespace accelerator_codegen::aux_state::query

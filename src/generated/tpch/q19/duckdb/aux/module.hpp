@@ -87,6 +87,7 @@ struct TpchQ19State {
   struct QtyRev {
     int64_t qty = 0;
     int64_t rev = 0;
+    int64_t count = 0; // qualifying rows (SUM over none is NULL)
 
     bool operator<(const QtyRev &o) const { return qty < o.qty; }
     bool operator<(int64_t q) const { return qty < q; }
@@ -105,6 +106,8 @@ struct TpchQ19State {
   int64_t RangeSum(const std::string &brand, TpchQ19Family family,
                    int32_t size_low, int32_t size_high, int64_t qty_low,
                    int64_t qty_high) const;
+  int64_t RangeCount(const std::string &brand, TpchQ19Family family,
+                     int64_t qty_low, int64_t qty_high) const;
   void RemoveContribution(const std::string &brand, TpchQ19Family family,
                           int32_t size, int64_t quantity_coord,
                           int64_t delta);
@@ -189,6 +192,7 @@ public:
                core::AuxRowSink &) override;
   void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
                        core::AuxRowSink &) override;
+  std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
   TpchQ19State BuildState(core::AuxEngineServices &services) const;

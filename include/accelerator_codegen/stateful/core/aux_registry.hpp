@@ -47,11 +47,16 @@ private:
     InvalidationPlan plan;
     StagedMaintenanceOutcome outcome;
     bool staged = false;
+    // BeginCommit was called at PRE_COMMIT (resolved at COMMIT / ABORT), for
+    // these partitions.
+    InvalidationPlan began_plan;
+    bool began = false;
   };
 
   Entry &FindEntry(const AcceleratorId &id);
   const Entry &FindEntry(const AcceleratorId &id) const;
   void ClearTransactionState();
+  void CommitLocked();
   void ApplyMutationLocked(const MutationBatch &mutation);
   void MarkDirtyIfDependentLocked(const MutationBatch &mutation);
 
@@ -59,6 +64,9 @@ private:
   std::vector<Entry> entries;
   std::unordered_map<AcceleratorId, std::size_t> entry_by_id;
   std::vector<std::vector<MutationBatch>> subtransaction_frames;
+  // Time spent maintaining state in this transaction's PreCommit + Commit
+  // (recorded in the maintenance decision log at COMMIT).
+  double maintenance_us = 0.0;
   mutable std::mutex mutex;
 };
 

@@ -1,4 +1,5 @@
 #include "tpch/q2/duckdb/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -435,11 +436,11 @@ void TpchQ2TxnBuffer::AddPartsuppDelta(TpchQ2PartsuppDelta delta) {
 core::AcceleratorId TpchQ2Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ2Module::Dependencies() const {
-  return {{config.part_table, {0, 1, 2, 3}},
-          {config.supplier_table, {0, 1, 2, 3, 4, 5, 6}},
-          {config.partsupp_table, {0, 1, 2}},
-          {config.nation_table, {0, 1, 2}},
-          {config.region_table, {0, 1}}};
+  return {{config.part_table, {0, 1, 2, 3}, {0, 2, 4, 5}},
+          {config.supplier_table, {0, 1, 2, 3, 4, 5, 6}, {0, 1, 2, 3, 4, 5, 6}},
+          {config.partsupp_table, {0, 1, 2}, {0, 1, 3}},
+          {config.nation_table, {0, 1, 2}, {0, 1, 2}},
+          {config.region_table, {0, 1}, {0, 1}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ2Module::CreateTxnBuffer() const {
@@ -930,6 +931,10 @@ void TpchQ2Module::EmitResult(const TpchQ2State &state, int32_t part_size,
                               const std::string &region_name,
                               core::AuxRowSink &sink) const {
   TpchQ2FinalizeAndEmit(state, part_size, part_type_pattern, region_name, sink);
+}
+
+std::vector<core::CalibrationWrite> TpchQ2Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(2);
 }
 
 } // namespace accelerator_codegen::aux_state::query

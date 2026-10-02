@@ -1,4 +1,5 @@
 #include "tpch/q15/mysql/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -988,6 +989,10 @@ bool TpchQ15Module::LoadDirectory(core::AuxEngineServices &services,
     return true;
   }
   return false;
+}
+
+std::vector<core::CalibrationWrite> TpchQ15Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(15);
 }
 
 } // namespace accelerator_codegen::aux_state::query

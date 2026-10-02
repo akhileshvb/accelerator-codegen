@@ -161,17 +161,16 @@ struct Q9CellKeyHash {
 #pragma pack(push, 1)
 struct Q9ProfitCell {
   uint8_t nationkey = 0;
-  uint8_t year_off = 0; // year - 1992
+  int16_t year = 0; // any year (orders may move outside 1992-1998)
   int64_t profit = 0;
 
   int32_t Nation() const { return static_cast<int32_t>(nationkey); }
-  int32_t Year() const { return 1992 + static_cast<int32_t>(year_off); }
+  int32_t Year() const { return static_cast<int32_t>(year); }
 
   static Q9ProfitCell Make(int32_t nation, int32_t year, int64_t profit_raw) {
     Q9ProfitCell cell;
     cell.nationkey = nation < 0 ? 0 : static_cast<uint8_t>(nation);
-    const int32_t off = year - 1992;
-    cell.year_off = off < 0 ? 0 : (off > 255 ? 255 : static_cast<uint8_t>(off));
+    cell.year = static_cast<int16_t>(year);
     cell.profit = profit_raw;
     return cell;
   }
@@ -532,6 +531,7 @@ public:
                core::AuxRowSink &) override;
   void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
                        core::AuxRowSink &) override;
+  std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
   // Read-path helpers

@@ -14,6 +14,8 @@
 
 #include "accelerator_codegen/runtime/postgres/postgres_extension_bridge.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
+#include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
 
@@ -336,6 +338,25 @@ Datum accel_postgres_set_force_maintenance_action(PG_FUNCTION_ARGS) {
     pfree(cstr);
   }
   PG_RETURN_VOID();
+}
+
+// How this backend's accelerator queries were answered
+// ("hit=H rebuilt_on_read=R fallback=F").
+PG_FUNCTION_INFO_V1(accel_postgres_get_execute_counts);
+Datum accel_postgres_get_execute_counts(PG_FUNCTION_ARGS) {
+  const auto text = accelerator_codegen::aux_state::core::FormatAuxExecuteCounts(
+      accelerator_codegen::aux_state::core::ReadAuxExecuteCounts());
+  PG_RETURN_TEXT_P(cstring_to_text(text.c_str()));
+}
+
+// The last maintenance decision in this backend
+// ("action=A rows=N partitions=M"; NULL if none), for calibration.
+PG_FUNCTION_INFO_V1(accel_postgres_get_last_maintenance_decision);
+Datum accel_postgres_get_last_maintenance_decision(PG_FUNCTION_ARGS) {
+  const auto text = accelerator_codegen::aux_state::core::FormatLastMaintenanceDecision();
+  if (text.empty())
+    PG_RETURN_NULL();
+  PG_RETURN_TEXT_P(cstring_to_text(text.c_str()));
 }
 
 PG_FUNCTION_INFO_V1(accel_postgres_get_last_maintenance_action);

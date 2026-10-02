@@ -1,4 +1,5 @@
 #include "tpch/q22/postgres/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -813,6 +814,10 @@ void TpchQ22Module::EmitResult(
   }
 
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ22Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(22);
 }
 
 } // namespace accelerator_codegen::aux_state::query

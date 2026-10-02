@@ -1,6 +1,9 @@
 // SCAFFOLDING
 #include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 
+#include <cstdio>
+#include <string>
+
 #include <mutex>
 
 namespace accelerator_codegen::aux_state::core {
@@ -17,6 +20,11 @@ MaintenanceDecisionLogEntry &LogSlot() {
 }
 
 } // namespace
+
+void RecordCoordinatorMaintenanceUs(double us) {
+  std::lock_guard<std::mutex> guard(LogMutex());
+  LogSlot().maintenance_us = us;
+}
 
 void RecordMaintenanceSelectorDecision(const MaintenanceDecisionLogEntry &entry) {
   std::lock_guard<std::mutex> guard(LogMutex());
@@ -54,6 +62,41 @@ std::optional<MaintenanceDecisionLogEntry> LastMaintenanceDecision() {
 void ClearMaintenanceDecisionLog() {
   std::lock_guard<std::mutex> guard(LogMutex());
   LogSlot() = MaintenanceDecisionLogEntry{};
+}
+
+std::string FormatLastMaintenanceDecision() {
+  const auto entry = LastMaintenanceDecision();
+  if (!entry || !entry->valid) {
+    return "";
+  }
+  return std::string("action=") + maintenance::MaintenanceActionName(entry->selected) +
+         " rows=" + std::to_string(entry->rows_touched) +
+         " partitions=" + std::to_string(entry->affected_partition_count) +
+         " maintenance_us=" + std::to_string(entry->maintenance_us);
+}
+
+std::optional<MaintenanceDecisionLogEntry> ParseMaintenanceDecision(const std::string &text) {
+  char action[64] = {0};
+  unsigned long long rows = 0, partitions = 0;
+  double maintenance = 0.0;
+  if (std::sscanf(text.c_str(), "action=%63s rows=%llu partitions=%llu maintenance_us=%lf", action,
+                  &rows, &partitions, &maintenance) < 3) {
+    return std::nullopt;
+  }
+  MaintenanceDecisionLogEntry entry;
+  entry.maintenance_us = maintenance;
+  entry.valid = true;
+  entry.rows_touched = rows;
+  entry.affected_partition_count = partitions;
+  for (const auto a : {maintenance::MaintenanceAction::NoOp, maintenance::MaintenanceAction::ApplyDelta,
+                       maintenance::MaintenanceAction::RebuildPartition,
+                       maintenance::MaintenanceAction::RebuildAll,
+                       maintenance::MaintenanceAction::InvalidateAndRebuildOnRead}) {
+    if (std::string(maintenance::MaintenanceActionName(a)) == action) {
+      entry.selected = a;
+    }
+  }
+  return entry;
 }
 
 } // namespace accelerator_codegen::aux_state::core

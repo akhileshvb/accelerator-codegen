@@ -477,6 +477,9 @@ int main() {
       assert(sink.rows.size() == 2);
     }
 
+    // The deletes are in the tables too (maintenance reads them back).
+    services.lineitems.pop_back();
+    services.orders.pop_back();
     MutationBatch li_del;
     li_del.table = 1;
     li_del.kind = MutationKind::Delete;

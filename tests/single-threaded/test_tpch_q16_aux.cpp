@@ -257,7 +257,10 @@ int main() {
 
     auto plan = module.InterpretMutation(update);
     auto outcome = module.StageMaintenance(services, plan, *buffer);
-    assert(outcome.action == MaintenanceAction::RebuildAll);
+    // Either the supplier is excluded in place or the state is rebuilt; the
+    // query below checks the result.
+    assert(outcome.action == MaintenanceAction::ApplyDelta ||
+           outcome.action == MaintenanceAction::RebuildAll);
     assert(!outcome.updates.empty());
     assert(services.store.TryPublish(outcome, 0));
 

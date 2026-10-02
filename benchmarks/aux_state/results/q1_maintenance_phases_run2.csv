@@ -1,0 +1,31 @@
+phase,rows,days,strategy,write_ms,read_ms,chosen
+point (1 row),1,1,base,1.686,23.446,
+1 day,2534,1,base,32.208,22.754,
+1 week,17574,7,base,36.298,23.146,
+1 month,75292,30,base,36.563,22.899,
+1 year,914963,365,base,37.987,22.794,
+all rows,6001215,2526,base,44.915,23.330,
+point (1 row),1,1,selected,1.925,1.583,ApplyDelta
+1 day,2534,1,selected,42.489,1.808,ApplyDelta
+1 week,17574,7,selected,59.770,1.975,ApplyDelta
+1 month,75292,30,selected,106.011,1.630,ApplyDelta
+1 year,914963,365,selected,689.233,1.843,RebuildPartition
+all rows,6001215,2526,selected,4748.586,1.735,RebuildAll
+point (1 row),1,1,ApplyDelta,2.353,1.527,ApplyDelta
+1 day,2534,1,ApplyDelta,40.863,1.841,ApplyDelta
+1 week,17574,7,ApplyDelta,62.992,1.871,ApplyDelta
+1 month,75292,30,ApplyDelta,122.233,2.510,ApplyDelta
+1 year,914963,365,ApplyDelta,741.662,1.685,ApplyDelta
+all rows,6001215,2526,ApplyDelta,5064.892,1.575,ApplyDelta
+point (1 row),1,1,RebuildPartition,14.764,1.432,RebuildPartition
+1 day,2534,1,RebuildPartition,60.194,1.966,RebuildPartition
+1 week,17574,7,RebuildPartition,91.048,2.741,RebuildPartition
+1 month,75292,30,RebuildPartition,132.198,2.144,RebuildPartition
+1 year,914963,365,RebuildPartition,699.736,1.611,RebuildPartition
+all rows,6001215,2526,RebuildPartition,4724.094,1.787,RebuildPartition
+point (1 row),1,1,RebuildAll,102.952,2.028,RebuildAll
+1 day,2534,1,RebuildAll,134.471,1.864,RebuildAll
+1 week,17574,7,RebuildAll,147.309,1.676,RebuildAll
+1 month,75292,30,RebuildAll,189.558,1.691,RebuildAll
+1 year,914963,365,RebuildAll,801.598,1.703,RebuildAll
+all rows,6001215,2526,RebuildAll,4661.355,1.788,RebuildAll

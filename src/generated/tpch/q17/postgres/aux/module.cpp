@@ -1,4 +1,5 @@
 #include "tpch/q17/postgres/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -986,7 +987,10 @@ void TpchQ17Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  EmitResult(services, brand, container, sink);
+  // A valid state without this brand/container's partition: no such part.
+  sink.Begin({{{"avg_yearly", core::AuxType::Double, true}}});
+  sink.WriteRow({{core::AuxValue::Null(core::AuxType::Double)}});
+  sink.End();
 }
 
 void TpchQ17Module::ExecuteFallback(core::AuxEngineServices &services,
@@ -1139,16 +1143,37 @@ std::unordered_map<int64_t, TpchQ17PartStats> TpchQ17Module::RebuildPartStatsBat
   return out;
 }
 
+// The fallback: the answer from a fresh build of the state.
 void TpchQ17Module::EmitResult(core::AuxEngineServices &services,
                                const std::string &brand,
                                const std::string &container,
                                core::AuxRowSink &sink) const {
-  (void)services;
-  (void)brand;
-  (void)container;
+  int64_t contribution_raw = 0;
+  if (!brand.empty() && !container.empty()) {
+    const auto state = BuildState(services);
+    const auto parts =
+        state.attribute_index.find(TpchQ17State::MakeAttrKey(brand, container));
+    if (parts != state.attribute_index.end()) {
+      for (const auto partkey : parts->second) {
+        const auto stats = state.part_stats.find(partkey);
+        if (stats != state.part_stats.end())
+          contribution_raw += stats->second.precomputed_contribution_raw;
+      }
+    }
+  }
   sink.Begin({{{"avg_yearly", core::AuxType::Double, true}}});
-  sink.WriteRow({{core::AuxValue::Null(core::AuxType::Double)}});
+  if (contribution_raw == 0) {
+    sink.WriteRow({{core::AuxValue::Null(core::AuxType::Double)}});
+  } else {
+    sink.WriteRow({{core::AuxValue::Of(
+        core::AuxType::Double,
+        static_cast<double>(contribution_raw) / 100.0 / 7.0)}});
+  }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ17Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(17);
 }
 
 } // namespace accelerator_codegen::aux_state::query

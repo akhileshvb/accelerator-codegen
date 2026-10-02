@@ -1,4 +1,5 @@
 #include "tpch/q21/verus/module.hpp"
+#include "tpch/q21/verus/store.hpp"
 
 #include <limits>
 #include <stdexcept>
@@ -97,13 +98,17 @@ void Rebuild(core::StagedMaintenanceOutcome &outcome) {
   outcome.pending_rebuild = outcome.invalidations;
 }
 
-const TpchQ21VerusImage *ReadImage(core::AuxEngineServices &services,
-                                   const core::VisibilityToken &visibility) {
+// The image owns the kernel state: hold it (shared) for as long as the state
+// is used, so a concurrent commit replacing the store's image cannot free it.
+std::shared_ptr<const TpchQ21VerusImage>
+ReadImage(core::AuxEngineServices &services,
+          const core::VisibilityToken &visibility) {
   const auto snapshot = services.StateStore().ReadPartitions(
       visibility, {TpchQ21VerusLayout::kState});
   for (const auto &image : snapshot.partitions) {
     if (image.partition == TpchQ21VerusLayout::kState)
-      return image.As<TpchQ21VerusImage>();
+      return std::shared_ptr<const TpchQ21VerusImage>(
+          image.payload, image.As<TpchQ21VerusImage>());
   }
   return nullptr;
 }
@@ -111,6 +116,15 @@ const TpchQ21VerusImage *ReadImage(core::AuxEngineServices &services,
 struct ResultDeleter {
   void operator()(q21v_result *r) const { q21v_result_free(r); }
 };
+
+struct BaseDeleter {
+  void operator()(q21vs_base *b) const { q21vs_base_free(b); }
+};
+
+// The services' store, if it is the verified Verus store.
+TpchQ21VerusStore *VerusStore(core::AuxEngineServices &services) {
+  return dynamic_cast<TpchQ21VerusStore *>(&services.StateStore());
+}
 
 } // namespace
 
@@ -127,39 +141,67 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ21VerusModule::CreateTxnBuffer() const 
   return std::make_unique<TpchQ21VerusTxnBuffer>();
 }
 
-q21v_state *TpchQ21VerusModule::BuildKernelState() const {
-  if (!scan)
-    throw std::logic_error("TPC-H Q21 (Verus) requires a scan source");
+// The build's scans in the kernel's C ABI (q21_verus.h, generated): text-free
+// rows as arrays, the others as column arrays with names concatenated.
+struct TpchQ21VerusModule::Scans {
   std::vector<int64_t> sup_sk;
-  std::vector<int32_t> sup_nk;
+  std::vector<int64_t> sup_nk;
   std::vector<uint8_t> sup_names;
   std::vector<size_t> sup_off{0};
-  scan->ScanSuppliers([&](int64_t sk, const std::string &name, int32_t nk) {
-    sup_sk.push_back(sk);
-    sup_nk.push_back(nk);
-    sup_names.insert(sup_names.end(), name.begin(), name.end());
-    sup_off.push_back(sup_names.size());
-  });
-  std::vector<int32_t> nat_nk;
+  std::vector<int64_t> nat_nk;
   std::vector<uint8_t> nat_names;
   std::vector<size_t> nat_off{0};
-  scan->ScanNations([&](int32_t nk, const std::string &name) {
-    nat_nk.push_back(nk);
-    nat_names.insert(nat_names.end(), name.begin(), name.end());
-    nat_off.push_back(nat_names.size());
-  });
   std::vector<int64_t> fkeys;
-  scan->ScanFOrderKeys([&](int64_t ok) { fkeys.push_back(ok); });
   std::vector<q21v_li_row> lis;
-  scan->ScanFLineitems([&](const q21v_li_row &row) { lis.push_back(row); });
-  return q21v_build(sup_sk.size(), sup_sk.data(), sup_nk.data(),
-                    sup_names.data(), sup_off.data(), nat_nk.size(),
-                    nat_nk.data(), nat_names.data(), nat_off.data(),
-                    fkeys.size(), fkeys.data(), lis.size(), lis.data());
+};
+
+TpchQ21VerusModule::Scans TpchQ21VerusModule::RunScans() const {
+  if (!scan)
+    throw std::logic_error("TPC-H Q21 (Verus) requires a scan source");
+  Scans s;
+  scan->ScanSuppliers([&](int64_t sk, const std::string &name, int32_t nk) {
+    s.sup_sk.push_back(sk);
+    s.sup_nk.push_back(nk);
+    s.sup_names.insert(s.sup_names.end(), name.begin(), name.end());
+    s.sup_off.push_back(s.sup_names.size());
+  });
+  scan->ScanNations([&](int32_t nk, const std::string &name) {
+    s.nat_nk.push_back(nk);
+    s.nat_names.insert(s.nat_names.end(), name.begin(), name.end());
+    s.nat_off.push_back(s.nat_names.size());
+  });
+  scan->ScanFOrderKeys([&](int64_t ok) { s.fkeys.push_back(ok); });
+  scan->ScanFLineitems([&](const q21v_li_row &row) { s.lis.push_back(row); });
+  return s;
 }
 
-void TpchQ21VerusModule::Build(core::AuxEngineServices &,
+q21v_state *TpchQ21VerusModule::BuildKernelState() const {
+  const auto s = RunScans();
+  return q21v_build(s.sup_sk.size(), s.sup_sk.data(), s.sup_names.data(),
+                    s.sup_off.data(), s.sup_nk.data(), s.nat_nk.size(),
+                    s.nat_nk.data(), s.nat_names.data(), s.nat_off.data(),
+                    s.fkeys.size(), s.fkeys.data(), s.lis.size(), s.lis.data());
+}
+
+void TpchQ21VerusModule::Build(core::AuxEngineServices &services,
                                core::StateBuilder &builder) {
+  if (auto *vstore = VerusStore(services)) {
+    // The next version of the Verus store, from scans of the database as of
+    // that version.
+    const auto s = RunScans();
+    auto *next = q21vs_prepare_build(
+        vstore->Handle(), s.sup_sk.size(), s.sup_sk.data(), s.sup_names.data(),
+        s.sup_off.data(), s.sup_nk.data(), s.nat_nk.size(), s.nat_nk.data(),
+        s.nat_names.data(), s.nat_off.data(), s.fkeys.size(), s.fkeys.data(),
+        s.lis.size(), s.lis.data());
+    if (!next)
+      throw std::runtime_error("TPC-H Q21 (Verus): no version can follow the newest");
+    builder.Write(core::StateImage::Make(TpchQ21VerusLayout::kAccelerator,
+                                         TpchQ21VerusLayout::kState, 0,
+                                         std::make_shared<const TpchQ21VerusPrepared>(next)));
+    builder.Finish();
+    return;
+  }
   auto image = std::make_shared<const TpchQ21VerusImage>(BuildKernelState());
   builder.Write(core::StateImage::Make(TpchQ21VerusLayout::kAccelerator,
                                        TpchQ21VerusLayout::kState, 0,
@@ -275,22 +317,27 @@ TpchQ21VerusModule::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  const auto *image = ReadImage(services, services.CurrentVisibility());
-  if (!image || !image->state) {
+  // The state the commit's changes apply to: the Verus store's newest
+  // version (in its mode), else the host store's image at this snapshot.
+  auto *vstore = VerusStore(services);
+  std::unique_ptr<q21vs_base, BaseDeleter> base;
+  std::shared_ptr<const TpchQ21VerusImage> image;
+  const q21v_state *state = nullptr;
+  if (vstore) {
+    base.reset(q21vs_newest_base(vstore->Handle()));
+    state = base ? q21vs_base_state(base.get()) : nullptr;
+  } else {
+    image = ReadImage(services, services.CurrentVisibility());
+    state = image ? image->state : nullptr;
+  }
+  if (!state) {
     Rebuild(outcome);
     return outcome;
   }
-  // Orders that become 'F' without being tracked: scan their lineitems as of
-  // this transaction's end.
-  std::vector<int64_t> keys(buffer.od.size());
-  keys.resize(q21v_needs_scan(image->state, buffer.od.size(), buffer.od.data(),
-                              keys.data()));
-  std::vector<q21v_li_row> rows;
-  if (!keys.empty())
-    scan->ScanLineitemsForKeys(keys, [&](const q21v_li_row &r) { rows.push_back(r); });
-  // Supplier / nation deltas as parallel arrays (names concatenated).
+  // Supplier / nation deltas as column arrays (names concatenated): supplier
+  // (s_suppkey, s_name, s_nationkey), nation (n_nationkey, n_name).
   auto flatten = [](const std::vector<TpchQ21VerusDimDelta> &ds,
-                    std::vector<int64_t> &key, std::vector<int32_t> &nk,
+                    std::vector<int64_t> &key, std::vector<int64_t> &nk,
                     std::vector<uint8_t> &names, std::vector<size_t> &off,
                     std::vector<int64_t> &sign) {
     off.assign(1, 0);
@@ -302,19 +349,54 @@ TpchQ21VerusModule::StageMaintenance(core::AuxEngineServices &services,
       sign.push_back(d.sign);
     }
   };
-  std::vector<int64_t> sd_sk, sd_sign, nd_key, nd_sign;
-  std::vector<int32_t> sd_nk, nd_nk;
+  std::vector<int64_t> sd_sk, sd_nk, sd_sign, nd_key, nd_nk, nd_sign;
   std::vector<uint8_t> sd_names, nd_names;
   std::vector<size_t> sd_off, nd_off;
   flatten(buffer.sd, sd_sk, sd_nk, sd_names, sd_off, sd_sign);
   flatten(buffer.nd, nd_key, nd_nk, nd_names, nd_off, nd_sign);
+  // Orders that become 'F' without being tracked: scan their lineitems as of
+  // this transaction's end.
+  auto rescan_keys = [&](int64_t *out, size_t cap) {
+    return q21v_rescan_lineitem_keys(
+        state, buffer.ld.size(), buffer.ld.data(), buffer.nd.size(), nd_key.data(),
+        nd_names.data(), nd_off.data(), nd_sign.data(), buffer.od.size(),
+        buffer.od.data(), buffer.sd.size(), sd_sk.data(), sd_names.data(),
+        sd_off.data(), sd_nk.data(), sd_sign.data(), out, cap);
+  };
+  std::vector<int64_t> keys(buffer.od.size());
+  const size_t n_keys = rescan_keys(keys.data(), keys.size());
+  if (n_keys > keys.size()) {
+    keys.resize(n_keys);
+    rescan_keys(keys.data(), keys.size());
+  }
+  keys.resize(n_keys);
+  std::vector<q21v_li_row> rows;
+  if (!keys.empty())
+    scan->ScanLineitemsForKeys(keys, [&](const q21v_li_row &r) { rows.push_back(r); });
   int32_t err = 0;
+  if (vstore) {
+    q21vs_prepared *next = q21vs_prepare_apply(
+        vstore->Handle(), base.get(), buffer.ld.size(), buffer.ld.data(),
+        buffer.nd.size(), nd_key.data(), nd_names.data(), nd_off.data(),
+        nd_sign.data(), buffer.od.size(), buffer.od.data(), buffer.sd.size(),
+        sd_sk.data(), sd_names.data(), sd_off.data(), sd_nk.data(), sd_sign.data(),
+        keys.size(), keys.data(), rows.size(), rows.data(), &err);
+    if (!next) {
+      Rebuild(outcome);
+      return outcome;
+    }
+    outcome.action = core::MaintenanceAction::ApplyDelta;
+    outcome.updates.push_back(core::StateImage::Make(
+        TpchQ21VerusLayout::kAccelerator, TpchQ21VerusLayout::kState, 0,
+        std::make_shared<const TpchQ21VerusPrepared>(next)));
+    return outcome;
+  }
   q21v_state *next = q21v_apply(
-      image->state, buffer.od.size(), buffer.od.data(), buffer.ld.size(),
-      buffer.ld.data(), buffer.sd.size(), sd_sk.data(), sd_nk.data(),
-      sd_names.data(), sd_off.data(), sd_sign.data(), buffer.nd.size(),
-      nd_nk.data(), nd_names.data(), nd_off.data(), nd_sign.data(), keys.size(),
-      keys.data(), rows.size(), rows.data(), &err);
+      state, buffer.ld.size(), buffer.ld.data(), buffer.nd.size(), nd_key.data(),
+      nd_names.data(), nd_off.data(), nd_sign.data(), buffer.od.size(),
+      buffer.od.data(), buffer.sd.size(), sd_sk.data(), sd_names.data(),
+      sd_off.data(), sd_nk.data(), sd_sign.data(), keys.size(), keys.data(),
+      rows.size(), rows.data(), &err);
   if (!next) {
     Rebuild(outcome);
     return outcome;
@@ -350,7 +432,7 @@ void TpchQ21VerusModule::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  const auto *image = ReadImage(services, visibility);
+  const auto image = ReadImage(services, visibility);
   if (!image || !image->state) {
     ExecuteFallback(services, arguments, sink);
     return;
@@ -367,13 +449,16 @@ void TpchQ21VerusModule::Execute(core::AuxEngineServices &services,
   core::AuxRow out;
   for (size_t i = 0; i < n; ++i) {
     size_t len = 0;
-    const uint8_t *name = q21v_result_name(result.get(), i, &len);
+    const uint8_t *name = nullptr;
+    int64_t numwait = 0;
+    q21v_result_c0(result.get(), i, &name, &len);
+    q21v_result_c1(result.get(), i, &numwait);
     out.values.clear();
     out.values.push_back(core::AuxValue::Of(
         core::AuxType::String,
         std::string(reinterpret_cast<const char *>(name), len)));
     out.values.push_back(
-        core::AuxValue::Of(core::AuxType::Int64, q21v_result_count(result.get(), i)));
+        core::AuxValue::Of(core::AuxType::Int64, numwait));
     sink.WriteRow(out);
   }
   sink.End();

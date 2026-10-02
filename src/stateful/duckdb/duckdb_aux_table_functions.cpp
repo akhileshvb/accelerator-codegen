@@ -197,12 +197,16 @@ AuxInitLocal(::duckdb::ExecutionContext &context, ::duckdb::TableFunctionInitInp
           *context.client.db, bind_data.entry.accelerator_id
                                   ? bind_data.entry.accelerator_id
                                   : "")) {
+    // Read at this query's snapshot, on this query's context.
+    ::accelerator_codegen::aux_state::engine::duckdb::DuckDBAuxBackend::ReaderScope
+        reader(context.client);
     local_state->rows = active->ExecuteCollect(arguments);
     return local_state;
   }
   ::duckdb::Connection connection(*context.client.db);
+  // No shared runtime: build a private one for this query only.
   duckdb_backend runtime(connection, bind_data.entry, 10.0);
-  runtime.Build();
+  runtime.Build(/*register_active=*/false);
   local_state->rows = runtime.ExecuteCollect(arguments);
   return local_state;
 }

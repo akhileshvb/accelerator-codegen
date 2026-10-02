@@ -10,7 +10,7 @@ enum class MaintenanceAction : uint8_t {
 	ApplyDelta,
 	RebuildPartition,
 	RebuildAll,
-	InvalidateAndFallback,
+	InvalidateAndRebuildOnRead,
 };
 
 enum class RepairTiming : uint8_t {

@@ -33,6 +33,18 @@ RETURNS void
 AS 'accelerator_codegen_pg', 'accel_postgres_set_force_maintenance_action'
 LANGUAGE C;
 
+DROP FUNCTION IF EXISTS accel_postgres_get_last_maintenance_decision() CASCADE;
+CREATE FUNCTION accel_postgres_get_last_maintenance_decision()
+RETURNS text
+AS 'accelerator_codegen_pg', 'accel_postgres_get_last_maintenance_decision'
+LANGUAGE C;
+
+DROP FUNCTION IF EXISTS accel_postgres_get_execute_counts() CASCADE;
+CREATE FUNCTION accel_postgres_get_execute_counts()
+RETURNS text
+AS 'accelerator_codegen_pg', 'accel_postgres_get_execute_counts'
+LANGUAGE C STRICT;
+
 DROP FUNCTION IF EXISTS accel_postgres_get_last_maintenance_action() CASCADE;
 CREATE FUNCTION accel_postgres_get_last_maintenance_action()
 RETURNS text

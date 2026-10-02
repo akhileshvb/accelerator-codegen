@@ -4,8 +4,10 @@
 #include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <iterator>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -43,6 +45,32 @@ void MaterializeSyncRebuild(AuxEngineServices &services, AuxQueryModule &module,
   for (auto &image : outcome.updates) {
     image.version = 0;
   }
+}
+
+// Whether committing `outcome` would publish a state with invalid partitions
+// (invalidated and not rebuilt). RebuildAll is rebuilt at commit.
+bool LeavesInvalidPartitions(const StagedMaintenanceOutcome &outcome) {
+  if (outcome.action == MaintenanceAction::RebuildAll) {
+    return false;
+  }
+  InvalidationPlan plan = outcome.invalidations;
+  MergeInvalidationPlan(plan, outcome.pending_rebuild);
+  if (plan.IsEmpty()) {
+    return false;
+  }
+  if (plan.scope == ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions) {
+    return true;
+  }
+  std::set<::accelerator_codegen::aux_state::PartitionKey> updated;
+  for (const auto &image : outcome.updates) {
+    updated.insert(static_cast<::accelerator_codegen::aux_state::PartitionKey>(image.partition));
+  }
+  for (const auto partition : plan.partitions) {
+    if (!updated.count(partition)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 } // namespace
@@ -220,6 +248,14 @@ void AuxTransactionCoordinator::PreCommit() {
     throw std::logic_error(
         "cannot precommit with an open auxiliary subtransaction");
   }
+  const auto precommit_start = std::chrono::steady_clock::now();
+  struct AddElapsed {
+    std::chrono::steady_clock::time_point start;
+    double &total;
+    ~AddElapsed() {
+      total += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+    }
+  } add_precommit{precommit_start, maintenance_us};
   for (auto &entry : entries) {
     if (!entry.buffer->HasPendingChanges() && entry.plan.IsEmpty()) {
       continue;
@@ -227,6 +263,15 @@ void AuxTransactionCoordinator::PreCommit() {
     entry.outcome =
         entry.module->StageMaintenance(*services, entry.plan, *entry.buffer);
     entry.staged = true;
+    if (!services->ReadersCanBuildState() &&
+        services->AllowsSynchronousRebuildOnCommit() &&
+        LeavesInvalidPartitions(entry.outcome)) {
+      // Readers could not answer from an invalid state: rebuild now.
+      entry.outcome.action = MaintenanceAction::RebuildAll;
+      entry.outcome.updates.clear();
+      entry.outcome.invalidations = AllPartitionsPlan();
+      entry.outcome.pending_rebuild = entry.outcome.invalidations;
+    }
     if (IsSyncRebuildAction(entry.outcome.action)) {
       if (!services->AllowsSynchronousRebuildOnCommit()) {
         // Postgres: discard any PRE_COMMIT SPI rebuild images (they can miss
@@ -258,22 +303,20 @@ void AuxTransactionCoordinator::PreCommit() {
     }
     RecordStagedMaintenanceAction(entry.outcome.action);
 
-    // PRE_COMMIT invalidate when Affects_Q: readers must not observe
-    // (DB_new, Aux_old Valid) after heap visibility. Prepared updates publish
-    // on Commit with expected_version=0 (post-invalidate unconditional CAS).
+    // PRE_COMMIT: once the commit is visible, readers must not observe
+    // (DB_new, Aux_old). The accelerator's state becomes pending: readers
+    // whose snapshot may include the commit wait for COMMIT, older snapshots
+    // keep reading the current state. `plan` names every partition the
+    // commit changes (invalidated, rebuilt or updated); a store without
+    // versions invalidates it here (BeginCommit's default).
     {
-      InvalidationPlan early = entry.outcome.invalidations;
-      MergeInvalidationPlan(early, entry.outcome.pending_rebuild);
-      if (early.IsEmpty() && !entry.outcome.updates.empty()) {
-        early = PartitionSetPlanFromImages(entry.outcome.updates);
-      }
-      if (!early.IsEmpty()) {
-        services->StateStore().Invalidate(early);
-        entry.outcome.invalidations = InvalidationPlan{};
-        entry.outcome.pending_rebuild = InvalidationPlan{};
-        if (!entry.outcome.updates.empty()) {
-          entry.outcome.expected_version = 0;
-        }
+      InvalidationPlan plan = entry.outcome.invalidations;
+      MergeInvalidationPlan(plan, entry.outcome.pending_rebuild);
+      MergeInvalidationPlan(plan, PartitionSetPlanFromImages(entry.outcome.updates));
+      if (!plan.IsEmpty()) {
+        services->StateStore().BeginCommit(entry.module->Id(), plan);
+        entry.began = true;
+        entry.began_plan = plan;
       }
     }
   }
@@ -285,8 +328,41 @@ void AuxTransactionCoordinator::Commit() {
     throw std::logic_error(
         "auxiliary transaction coordinator has no engine services");
   }
+  auto &store = services->StateStore();
+  const auto commit_start = std::chrono::steady_clock::now();
+  try {
+    CommitLocked();
+  } catch (...) {
+    // The engine commit is visible but the new state may not be: make the
+    // touched partitions unusable for every snapshot, then release waiters.
+    for (auto &entry : entries) {
+      if (entry.began) {
+        store.Invalidate(entry.began_plan);
+        store.AbortCommit(entry.module->Id());
+      }
+    }
+    store.ClearTransactionDirty();
+    ClearTransactionState();
+    throw;
+  }
+  maintenance_us += std::chrono::duration<double, std::micro>(
+                        std::chrono::steady_clock::now() - commit_start)
+                        .count();
+  bool staged = false;
+  for (const auto &entry : entries) {
+    staged = staged || entry.staged;
+  }
+  if (staged) {
+    RecordCoordinatorMaintenanceUs(maintenance_us);
+  }
+  store.ClearTransactionDirty();
+  ClearTransactionState();
+}
+
+void AuxTransactionCoordinator::CommitLocked() {
+  auto &store = services->StateStore();
   for (auto &entry : entries) {
-    if (!entry.staged) {
+    if (!entry.staged || !entry.began) {
       continue;
     }
 
@@ -299,9 +375,10 @@ void AuxTransactionCoordinator::Commit() {
     // every partition and Invalidate(All) would drop the untouched slots.
     // Modules that cannot rebuild locally leave updates empty; treat that as
     // RebuildAll so correctness is preserved.
-    // InvalidateAndFallback stays lazy on purpose.
+    // InvalidateAndRebuildOnRead stays lazy on purpose (except where readers
+    // cannot fall back: PreCommit turned it into RebuildAll).
     // PostgreSQL (AllowsSynchronousRebuildOnCommit==false) stages Rebuild* in
-    // PreCommit without SPI Build; empty updates → Invalidate here, then the
+    // PreCommit without SPI Build; empty updates → invalidate here, then the
     // next Execute CheckValidity→EnsureBuilt. DuckDB may Materialize above.
     if (action == MaintenanceAction::RebuildPartition &&
         entry.outcome.updates.empty()) {
@@ -317,52 +394,37 @@ void AuxTransactionCoordinator::Commit() {
       }
     }
 
-    if (IsSyncRebuildAction(action)) {
-      InvalidationPlan plan = entry.outcome.invalidations;
-      MergeInvalidationPlan(plan, entry.outcome.pending_rebuild);
-      if (action == MaintenanceAction::RebuildAll) {
-        // Dropping stale partitions is required even when a module already
-        // filled updates without an invalidation plan (sets can shrink).
-        if (plan.IsEmpty() && !entry.outcome.updates.empty()) {
-          plan = AllPartitionsPlan();
-        }
-      } else if (action == MaintenanceAction::RebuildPartition) {
-        // Never escalate to AllPartitions: other slots must stay Valid.
-        if (plan.IsEmpty() && !entry.outcome.updates.empty()) {
-          plan = PartitionSetPlanFromImages(entry.outcome.updates);
-        }
-        if (plan.scope ==
-            ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions) {
-          plan = PartitionSetPlanFromImages(entry.outcome.updates);
-        }
+    // The commit's whole change: what to invalidate, then what to publish.
+    InvalidationPlan invalidate = entry.outcome.invalidations;
+    MergeInvalidationPlan(invalidate, entry.outcome.pending_rebuild);
+    if (action == MaintenanceAction::RebuildAll) {
+      // Dropping stale partitions is required even when a module already
+      // filled updates without an invalidation plan (sets can shrink).
+      if (invalidate.IsEmpty() && !entry.outcome.updates.empty()) {
+        invalidate = AllPartitionsPlan();
       }
-      if (!plan.IsEmpty()) {
-        services->StateStore().Invalidate(plan);
+    } else if (action == MaintenanceAction::RebuildPartition) {
+      // Never escalate to AllPartitions: other partitions must stay valid.
+      if (invalidate.scope ==
+          ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions) {
+        invalidate = PartitionSetPlanFromImages(entry.outcome.updates);
       }
-      if (!entry.outcome.updates.empty()) {
-        services->StateStore().TryPublish(entry.outcome, /*expected_version=*/0);
-      }
-      continue;
     }
-
-    if (!entry.outcome.invalidations.IsEmpty()) {
-      services->StateStore().Invalidate(entry.outcome.invalidations);
-    }
-    if (!entry.outcome.pending_rebuild.IsEmpty()) {
-      services->StateStore().Invalidate(entry.outcome.pending_rebuild);
-    }
-    if (!entry.outcome.updates.empty()) {
-      services->StateStore().TryPublish(entry.outcome,
-                                        entry.outcome.expected_version);
-    }
+    store.FinishCommit(entry.module->Id(), invalidate, entry.outcome.updates,
+                       entry.outcome.expected_version);
+    entry.began = false;
   }
-  services->StateStore().ClearTransactionDirty();
-  ClearTransactionState();
 }
 
 void AuxTransactionCoordinator::Abort() {
   std::lock_guard<std::mutex> guard(mutex);
   if (services) {
+    // Nothing was published: the current state stays current.
+    for (auto &entry : entries) {
+      if (entry.began) {
+        services->StateStore().AbortCommit(entry.module->Id());
+      }
+    }
     services->StateStore().ClearTransactionDirty();
   }
   ClearTransactionState();
@@ -429,12 +491,15 @@ AuxTransactionCoordinator::FindEntry(const AcceleratorId &id) const {
 }
 
 void AuxTransactionCoordinator::ClearTransactionState() {
+  maintenance_us = 0.0;
   subtransaction_frames.clear();
   for (auto &entry : entries) {
     entry.buffer->Clear();
     entry.plan = InvalidationPlan();
     entry.outcome = StagedMaintenanceOutcome();
     entry.staged = false;
+    entry.began_plan = InvalidationPlan();
+    entry.began = false;
   }
 }
 

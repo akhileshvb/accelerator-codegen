@@ -13,7 +13,7 @@ ACTION_COLORS = {
     "ApplyDelta": "C0",
     "RebuildPartition": "C1",
     "RebuildAll": "C2",
-    "InvalidateAndFallback": "C3",
+    "InvalidateAndRebuildOnRead": "C3",
     "NoOp": "C4",
     "": "lightgray",
 }

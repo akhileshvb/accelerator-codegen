@@ -1,4 +1,5 @@
 #include "tpch/q19/postgres/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -204,9 +205,27 @@ void TpchQ19State::AddContribution(const std::string &brand,
                              [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
   if (it != vec.end() && it->qty == quantity_coord) {
     it->rev += delta;
+    it->count += 1;
   } else {
-    vec.insert(it, QtyRev{quantity_coord, delta});
+    vec.insert(it, QtyRev{quantity_coord, delta, 1});
   }
+}
+
+int64_t TpchQ19State::RangeCount(const std::string &brand, TpchQ19Family family,
+                                 int64_t qty_low, int64_t qty_high) const {
+  const int idx = FamilyIndex(family);
+  if (idx < 0 || idx >= kNumFamilies) return 0;
+  const auto brand_it = aggregates.find(brand);
+  if (brand_it == aggregates.end()) return 0;
+  const auto &vec = brand_it->second[idx];
+  auto lo = std::lower_bound(vec.begin(), vec.end(), qty_low,
+                             [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
+  auto hi = std::upper_bound(vec.begin(), vec.end(), qty_high,
+                             [](int64_t q, const QtyRev &qr) { return q < qr.qty; });
+  int64_t total = 0;
+  for (auto it = lo; it != hi; ++it)
+    total += it->count;
+  return total;
 }
 
 int64_t TpchQ19State::RangeSum(const std::string &brand,
@@ -245,7 +264,8 @@ void TpchQ19State::RemoveContribution(const std::string &brand,
                                   [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
   if (qty_it == vec.end() || qty_it->qty != quantity_coord) return;
   qty_it->rev -= delta;
-  if (qty_it->rev == 0)
+  qty_it->count -= 1;
+  if (qty_it->count <= 0)
     vec.erase(qty_it);
   // Look for empty slots to maybe erase this brand key
   bool all_empty = true;
@@ -288,6 +308,7 @@ std::vector<uint8_t> EncodeTpchQ19Aggregate(const TpchQ19State &state) {
       for (const auto &qr : family_vecs[fi]) {
         w.I64(qr.qty);
         w.I64(qr.rev);
+        w.I64(qr.count);
       }
     }
   }
@@ -344,11 +365,11 @@ bool DecodeTpchQ19Aggregate(const std::vector<uint8_t> &bytes,
           return false;
 
         for (uint32_t qi = 0; qi < qty_count; ++qi) {
-          int64_t qty = 0, rev = 0;
-          if (!reader.I64(qty) || !reader.I64(rev))
+          int64_t qty = 0, rev = 0, count = 0;
+          if (!reader.I64(qty) || !reader.I64(rev) || !reader.I64(count))
             return false;
           auto &vec = state.aggregates[brand][idx];
-          TpchQ19State::QtyRev qr{qty, rev};
+          TpchQ19State::QtyRev qr{qty, rev, count};
           vec.insert(std::lower_bound(vec.begin(), vec.end(), qty,
                      [](const TpchQ19State::QtyRev &qr, int64_t q) { return qr.qty < q; }), qr);
         }
@@ -573,9 +594,18 @@ void TpchQ19Module::EmitResult(const TpchQ19State &state,
   total_raw +=
       state.RangeSum(brand3, TpchQ19Family::LG, 1, 15, qty_low3, qty_high3);
 
+  const int64_t matches = state.RangeCount(brand1, TpchQ19Family::SM, qty_low1, qty_high1) +
+                          state.RangeCount(brand2, TpchQ19Family::MED, qty_low2, qty_high2) +
+                          state.RangeCount(brand3, TpchQ19Family::LG, qty_low3, qty_high3);
+
   sink.Begin({{{"revenue", core::AuxType::ScaledDecimal, true}}});
-  sink.WriteRow({{core::AuxValue::Of(core::AuxType::ScaledDecimal,
-                                      core::ScaledDecimal{total_raw, 4})}});
+  if (matches == 0) {
+    // The reference is COALESCE(SUM(...), 0): 0 when nothing matches.
+    sink.WriteRow({{core::AuxValue::Of(core::AuxType::ScaledDecimal, core::ScaledDecimal{0, 4})}});
+  } else {
+    sink.WriteRow({{core::AuxValue::Of(core::AuxType::ScaledDecimal,
+                                        core::ScaledDecimal{total_raw, 4})}});
+  }
   sink.End();
 }
 
@@ -845,6 +875,10 @@ void TpchQ19Module::ExecuteFallback(core::AuxEngineServices &services,
 
   EmitResult(state, args_str[0], qty1, args_str[1], qty2, args_str[2], qty3,
              sink);
+}
+
+std::vector<core::CalibrationWrite> TpchQ19Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(19);
 }
 
 } // namespace accelerator_codegen::aux_state::query

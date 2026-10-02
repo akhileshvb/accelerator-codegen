@@ -1,43 +1,30 @@
 // GENERATED BACKEND
 #pragma once
 
-#include <functional>
-#include <memory>
+#include <string>
 #include <vector>
 
-#include "accelerator_codegen/stateful/core/aux_state_store.hpp"
-#include "accelerator_codegen/stateful/state/partitioned_state_store.hpp"
+#include "accelerator_codegen/stateful/state/versioned_aux_store.hpp"
 
 namespace accelerator_codegen::aux_state::engine::duckdb {
 
-class DuckDBStateStore final : public core::AuxStateStore {
+// The engine-neutral store, configured for DuckDB: one store per
+// accelerator; versions at AuxCommitClock's epoch (commit id + 1); readers
+// at their transaction's start time; versions kept back to the lowest active
+// start time (the floor provider). Records the store diagnostics counters.
+class DuckDBStateStore final : public VersionedAuxStore {
 public:
-  using EpochProvider = std::function<core::Version()>;
+  using EpochProvider = VersionedAuxStore::EpochProvider;
+  using FloorProvider = VersionedAuxStore::FloorProvider;
 
-  DuckDBStateStore(
-      std::string accelerator_id,
-      ::accelerator_codegen::aux_state::PartitionedStateStore &store,
-      EpochProvider epoch_provider = {});
+  explicit DuckDBStateStore(std::string accelerator_id, EpochProvider epoch_provider = {},
+                            FloorProvider floor_provider = {});
 
   core::StateSnapshot Read(const core::VisibilityToken &) const override;
-  core::StateSnapshot ReadPartitions(
-      const core::VisibilityToken &,
-      const std::vector<core::PartitionId> &) const override;
-  core::ValidityResult
-  CheckValidity(const core::QueryKey &,
-                const core::VisibilityToken &) const override;
-  void Invalidate(const core::InvalidationPlan &) override;
-  bool TryPublish(const core::StagedMaintenanceOutcome &,
-                  core::Version expected_version) override;
-
-private:
-  core::StateSnapshot ReadInternal(
-      const core::VisibilityToken &,
-      const std::vector<core::PartitionId> *filter) const;
-
-  std::string accelerator_id;
-  ::accelerator_codegen::aux_state::PartitionedStateStore &store;
-  EpochProvider epoch_provider;
+  core::StateSnapshot ReadPartitions(const core::VisibilityToken &,
+                                     const std::vector<core::PartitionId> &) const override;
+  core::ValidityResult CheckValidity(const core::QueryKey &,
+                                     const core::VisibilityToken &) const override;
 };
 
 } // namespace accelerator_codegen::aux_state::engine::duckdb

@@ -1,4 +1,5 @@
 #include "tpch/q6/duckdb/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include "duckdb/common/types/hugeint.hpp"
@@ -386,7 +387,7 @@ void TpchQ6TxnBuffer::AddDelta(TpchQ6LineitemDelta delta) {
 core::AcceleratorId TpchQ6Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ6Module::Dependencies() const {
-  return {{config.lineitem_table, {0, 1, 2, 3}}};
+  return {{config.lineitem_table, {0, 1, 2, 3}, {10, 6, 4, 5}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ6Module::CreateTxnBuffer() const {
@@ -777,6 +778,10 @@ void TpchQ6Module::EmitResult(Q6AccT revenue, core::AuxRowSink &sink) const {
       {{core::AuxValue::Of(core::AuxType::ScaledDecimal,
                            TpchQ6RevenueOutputValue(revenue))}});
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ6Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(6);
 }
 
 } // namespace accelerator_codegen::aux_state::query

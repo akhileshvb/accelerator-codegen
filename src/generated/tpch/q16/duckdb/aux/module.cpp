@@ -1,4 +1,5 @@
 #include "tpch/q16/duckdb/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -382,9 +383,9 @@ core::AcceleratorId TpchQ16Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ16Module::Dependencies() const {
   std::vector<core::TableDependency> deps;
-  deps.push_back({config.part_table, {0, 1, 2, 3}});
-  deps.push_back({config.partsupp_table, {0, 1}});
-  deps.push_back({config.supplier_table, {0, 1}});
+  deps.push_back({config.part_table, {0, 1, 2, 3}, {0, 3, 4, 5}});
+  deps.push_back({config.partsupp_table, {0, 1}, {0, 1}});
+  deps.push_back({config.supplier_table, {0, 1}, {0, 6}});
   return deps;
 }
 
@@ -432,6 +433,8 @@ core::InvalidationPlan TpchQ16Module::InterpretMutation(
 
   // Supplier comment change only affects the eligibility partition.
   if (supplier) {
+    if (mutation.kind != core::MutationKind::Update)
+      return plan;
     for (const auto &col : mutation.updated_columns)
       if (col == 1)
         return plan;
@@ -454,8 +457,9 @@ void TpchQ16Module::AccumulateMutation(const core::MutationBatch &mutation,
   auto &buffer = dynamic_cast<TpchQ16TxnBuffer &>(txn_buffer);
 
   if (mutation.table == config.supplier_table) {
-    // Check whether any watched column changed.
-    bool watched_change = false;
+    // An update matters only if a watched column changed; inserts and
+    // deletes always do.
+    bool watched_change = mutation.kind != core::MutationKind::Update;
     for (const auto &col : mutation.updated_columns)
       if (col == 1)
         watched_change = true;
@@ -496,7 +500,7 @@ void TpchQ16Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 
   if (mutation.table == config.partsupp_table) {
-    bool watched_change = false;
+    bool watched_change = mutation.kind != core::MutationKind::Update;
     for (const auto &col : mutation.updated_columns)
       if (col == 0 || col == 1)
         watched_change = true;
@@ -1066,6 +1070,10 @@ void TpchQ16Module::EmitResult(
     sink.WriteRow(row);
   }
   sink.End();
+}
+
+std::vector<core::CalibrationWrite> TpchQ16Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(16);
 }
 
 } // namespace accelerator_codegen::aux_state::query

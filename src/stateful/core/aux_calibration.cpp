@@ -29,13 +29,17 @@ double Median(std::vector<double> values) {
 
 double Measure(const std::function<void()> &callback,
                const AuxCalibrationHooks &hooks, std::size_t warmups,
-               std::size_t samples) {
+               std::size_t samples,
+               const std::function<void()> &prepare = {}) {
   if (!callback) {
     return 0.0;
   }
   for (std::size_t sample = 0; sample < warmups; ++sample) {
     if (hooks.reset) {
       hooks.reset();
+    }
+    if (prepare) {
+      prepare();
     }
     callback();
   }
@@ -44,6 +48,9 @@ double Measure(const std::function<void()> &callback,
   for (std::size_t sample = 0; sample < samples; ++sample) {
     if (hooks.reset) {
       hooks.reset();
+    }
+    if (prepare) {
+      prepare(); // untimed
     }
     const auto start = Clock::now();
     callback();
@@ -133,13 +140,13 @@ AuxCalibrationResult CalibrateAuxCostModel(
                                config.warmup_samples, config.measurement_samples);
   result.partition_rebuild_us =
       Measure(hooks.rebuild_partition, hooks, config.warmup_samples,
-              config.measurement_samples);
+              config.measurement_samples, hooks.prepare_maintenance);
   result.full_rebuild_us =
       Measure(hooks.rebuild_all, hooks, config.warmup_samples,
-              config.measurement_samples);
+              config.measurement_samples, hooks.prepare_maintenance);
   result.invalidation_overhead_us =
       Measure(hooks.invalidate, hooks, config.warmup_samples,
-              config.measurement_samples);
+              config.measurement_samples, hooks.prepare_maintenance);
 
   std::vector<std::pair<std::size_t, double>> delta_samples;
   for (const auto row_count : config.delta_row_counts) {
@@ -149,7 +156,8 @@ AuxCalibrationResult CalibrateAuxCostModel(
             hooks.apply_delta(row_count);
           }
         },
-        hooks, config.warmup_samples, config.measurement_samples);
+        hooks, config.warmup_samples, config.measurement_samples,
+        hooks.prepare_maintenance);
     delta_samples.emplace_back(row_count, timing);
   }
   const auto fit = FitLinearCost(delta_samples);
@@ -192,6 +200,7 @@ void WriteAuxCostModelJson(const std::string &path,
   const auto &params = result.params;
   WriteNumber(out, "aux_hit_us", params.aux_hit_us);
   WriteNumber(out, "fallback_us", params.fallback_us);
+  WriteNumber(out, "partition_rebuild_base_us", params.partition_rebuild_base_us);
   WriteNumber(out, "partition_rebuild_us", params.partition_rebuild_us);
   WriteNumber(out, "full_rebuild_us", params.full_rebuild_us);
   WriteNumber(out, "first_query_blocking_us", params.first_query_blocking_us);
@@ -227,6 +236,95 @@ void WriteAuxCostModelJson(const std::string &path,
   out << "}\n";
 }
 
+double MedianTimeUs(const std::function<void()> &run, std::size_t warmups, std::size_t samples,
+                    const std::function<void()> &prepare) {
+  return Measure(run, AuxCalibrationHooks {}, warmups, std::max<std::size_t>(1, samples), prepare);
+}
+
+WriteCalibrationResult CalibrateFromWrites(const std::vector<CalibrationWrite> &writes,
+                                           CalibrationEngine &engine,
+                                           const maintenance::CostModelParams &seed,
+                                           int repeats) {
+  using maintenance::MaintenanceAction;
+  if (writes.empty()) {
+    throw std::invalid_argument("calibration needs at least one write");
+  }
+  repeats = std::max(1, repeats);
+  // Median over `repeats` of (cost(apply) + cost(revert)) / 2.
+  auto timed_pair = [&](const std::string &apply, const std::string &revert,
+                        std::optional<MaintenanceAction> forced,
+                        const std::function<double(const CalibrationEngine::Timed &)> &cost) {
+    std::vector<double> runs;
+    for (int i = 0; i < repeats; ++i) {
+      const double a = cost(engine.WriteThenRead(apply, forced));
+      const double b = cost(engine.WriteThenRead(revert, forced));
+      runs.push_back((a + b) / 2.0);
+    }
+    return Median(std::move(runs));
+  };
+
+  WriteCalibrationResult result;
+  result.params = seed;
+  std::vector<std::pair<std::size_t, double>> delta, partition;
+  double all_sum = 0.0;
+  for (const auto &write : writes) {
+    WriteCalibrationSample sample;
+    sample.name = write.name;
+    // The sizes the module reports to the cost model (an UPDATE is two delta
+    // rows: old and new), from an unforced write.
+    const auto unforced = engine.WriteThenRead(write.apply, std::nullopt);
+    engine.WriteThenRead(write.revert, std::nullopt);
+    if (!unforced.decision || !unforced.decision->valid) {
+      continue; // the accelerator does not depend on this write
+    }
+    sample.rows = unforced.decision->rows_touched;
+    sample.partitions = unforced.decision->affected_partition_count;
+    sample.control_us = timed_pair(write.control, write.control_revert, std::nullopt,
+                                   [](const CalibrationEngine::Timed &t) { return t.us; });
+    sample.hit_read_us = timed_pair(write.control, write.control_revert, std::nullopt,
+                                    [](const CalibrationEngine::Timed &t) { return t.read_us; });
+    auto net = [&](MaintenanceAction action) {
+      return timed_pair(write.apply, write.revert, action,
+                        [&](const CalibrationEngine::Timed &t) {
+                          const double maintenance = t.decision ? t.decision->maintenance_us : 0.0;
+                          return maintenance + std::max(0.0, t.read_us - sample.hit_read_us);
+                        });
+    };
+    sample.apply_delta_us = net(MaintenanceAction::ApplyDelta);
+    sample.rebuild_partition_us = net(MaintenanceAction::RebuildPartition);
+    sample.rebuild_all_us = net(MaintenanceAction::RebuildAll);
+    if (sample.rows > 0) {
+      delta.emplace_back(sample.rows, sample.apply_delta_us);
+    }
+    if (sample.partitions > 0) {
+      partition.emplace_back(sample.partitions, sample.rebuild_partition_us);
+    }
+    all_sum += sample.rebuild_all_us;
+    result.samples.push_back(sample);
+  }
+  if (delta.empty()) {
+    result.unfitted.push_back("apply_delta");
+  } else {
+    const auto fit = FitLinearCost(delta);
+    result.params.apply_delta_overhead_us = fit.intercept_us;
+    result.params.apply_delta_base_us = 0.0;
+    result.params.apply_delta_per_row_us = fit.per_row_us;
+  }
+  if (partition.empty()) {
+    result.unfitted.push_back("rebuild_partition");
+  } else {
+    const auto fit = FitLinearCost(partition);
+    result.params.partition_rebuild_base_us = fit.intercept_us;
+    result.params.partition_rebuild_us = fit.per_row_us;
+  }
+  if (result.samples.empty()) {
+    result.unfitted.push_back("rebuild_all");
+  } else {
+    result.params.full_rebuild_us = all_sum / static_cast<double>(result.samples.size());
+  }
+  return result;
+}
+
 maintenance::CostModelParams LoadAuxCostModelJson(
     const std::string &path, const maintenance::CostModelParams &fallback) {
   if (path.empty()) {
@@ -244,6 +342,8 @@ maintenance::CostModelParams LoadAuxCostModelJson(
   using maintenance::ParseJsonUint64;
   params.aux_hit_us = ParseJsonDouble(content, "aux_hit_us", params.aux_hit_us);
   params.fallback_us = ParseJsonDouble(content, "fallback_us", params.fallback_us);
+  params.partition_rebuild_base_us = ParseJsonDouble(
+      content, "partition_rebuild_base_us", params.partition_rebuild_base_us);
   params.partition_rebuild_us = ParseJsonDouble(
       content, "partition_rebuild_us", params.partition_rebuild_us);
   params.full_rebuild_us = ParseJsonDouble(content, "full_rebuild_us",

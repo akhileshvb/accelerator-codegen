@@ -150,8 +150,10 @@ static int AuditNotify(MYSQL_THD, mysql_event_class_t event_class,
     if (is_commit || is_rollback) {
       engine::DispatchMysqlTxnEvent(is_commit, is_rollback);
     } else if (is_dml) {
-      // Autocommit DML: there is no separate COMMIT event.
-      engine::DispatchMysqlTxnEvent(true, false);
+      // Autocommit DML: there is no separate COMMIT event. A failed
+      // statement was rolled back: drop what its triggers captured.
+      const bool failed = ev->general_error_code != 0;
+      engine::DispatchMysqlTxnEvent(!failed, failed);
     }
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_initialized || !g_backend) return 0;

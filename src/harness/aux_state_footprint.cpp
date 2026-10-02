@@ -1,11 +1,11 @@
 // SCAFFOLDING — footprint helper (no per-query module includes after wipe).
 #include "accelerator_codegen/harness/aux_state_footprint.hpp"
 
-#include "accelerator_codegen/stateful/state/partitioned_state_store.hpp"
+#include "accelerator_codegen/stateful/state/versioned_aux_store.hpp"
 
 namespace accelerator_codegen::aux_state::harness {
 
-uint64_t ComputeAuxStateFootprintBytes(const PartitionedStateStore &store,
+uint64_t ComputeAuxStateFootprintBytes(const VersionedAuxStore &store,
                                        const char *accelerator_id) {
   (void)accelerator_id;
   // Without regenerated typed images, report slot count * 0 payload estimate.

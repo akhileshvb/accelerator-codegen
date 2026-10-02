@@ -1,4 +1,5 @@
 #include "tpch/q15/duckdb/aux/module.hpp"
+#include "tpch/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
@@ -410,8 +411,8 @@ void TpchQ15TxnBuffer::AddSupplierDelta(TpchQ15SupplierDelta delta) {
 core::AcceleratorId TpchQ15Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ15Module::Dependencies() const {
-  return {{config.lineitem_table, {0, 1, 2, 3}},
-          {config.supplier_table, {0, 1, 2, 3}}};
+  return {{config.lineitem_table, {0, 1, 2, 3}, {10, 2, 5, 6}},
+          {config.supplier_table, {0, 1, 2, 3}, {0, 1, 2, 4}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> TpchQ15Module::CreateTxnBuffer() const {
@@ -988,6 +989,10 @@ bool TpchQ15Module::LoadDirectory(core::AuxEngineServices &services,
     return true;
   }
   return false;
+}
+
+std::vector<core::CalibrationWrite> TpchQ15Module::CalibrationWrites() const {
+  return TpchCalibrationWrites(15);
 }
 
 } // namespace accelerator_codegen::aux_state::query

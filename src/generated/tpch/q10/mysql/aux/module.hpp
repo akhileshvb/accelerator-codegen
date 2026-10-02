@@ -121,19 +121,17 @@ public:
     return false;
   }
 
-  // Fetch display strings for the Q10 top-k winners. Rank uses stored
-  // acctbal/nationkey only; Execute must not rescan all customers.
-  virtual bool LookupCustomers(
-      const std::vector<int64_t> &custkeys,
-      std::unordered_map<int64_t, TpchQ10Customer> &out) {
-    (void)custkeys;
-    (void)out;
-    return false;
-  }
 };
+
+using TpchQ10CustomerMap = std::unordered_map<int64_t, TpchQ10Customer>;
 
 struct TpchQ10State {
   core::DenseIdArray<TpchQ10CustomerRank> customer_ranks;
+  // Every customer's result columns (name, address, phone, comment), so
+  // Execute emits the top-k without querying the database. Shared: maintenance
+  // copies of the state do not copy it (customer changes rebuild the state).
+  std::shared_ptr<const TpchQ10CustomerMap> customers =
+      std::make_shared<const TpchQ10CustomerMap>();
   std::unordered_map<int32_t, std::string> nations;
   std::unordered_map<int64_t, TpchQ10Order> orders;
   std::map<int32_t, std::unordered_map<int64_t, int64_t>> month_revenue;
@@ -204,7 +202,7 @@ void TpchQ10FinalizeAndEmit(const TpchQ10State &state, int32_t start_days,
                             core::AuxRowSink &sink);
 
 // Hit-path finalize: rank from month maps + stored acctbal/nationkey, then
-// emit top-k using caller-fetched customer strings (typically 20 rows).
+// emit top-k with the stored customer columns (typically 20 rows).
 void TpchQ10FinalizeAndEmit(
     const core::DenseIdArray<TpchQ10CustomerRank> &ranks,
     const std::unordered_map<int32_t, std::string> &nations,
@@ -259,6 +257,7 @@ public:
                core::AuxRowSink &) override;
   void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
                        core::AuxRowSink &) override;
+  std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
   TpchQ10State BuildState(core::AuxEngineServices &) const;

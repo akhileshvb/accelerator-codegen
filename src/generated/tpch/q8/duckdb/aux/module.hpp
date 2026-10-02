@@ -34,6 +34,8 @@ struct TpchQ8Config {
   core::TableId customer_table = 0;
   core::TableId orders_table = 0;
   core::TableId lineitem_table = 0;
+  core::TableId nation_table = 0;
+  core::TableId region_table = 0;
 };
 
 // ── Typed bulk-scan contract ────────────────────────────────────────────────
@@ -260,6 +262,7 @@ public:
                core::AuxRowSink &) override;
   void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
                        core::AuxRowSink &) override;
+  std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
   TpchQ8State BuildState(core::AuxEngineServices &services) const;
