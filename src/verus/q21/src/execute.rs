@@ -6,6 +6,7 @@
 use vstd::prelude::*;
 use verus_common::sums::*;
 use crate::gen_spec::*;
+use crate::gen_obligations::*;
 use crate::bridge::*;
 use verus_common::bytes::*;
 use verus_common::sort::*;
@@ -17,12 +18,6 @@ verus! {
 // Interprets the result rows as (supplier name, numwait) pairs.
 pub open spec fn pair_view(o: Seq<(Vec<u8>, i64)>) -> Seq<(Seq<u8>, int)> {
     o.map_values(|r: (Vec<u8>, i64)| (r.0@, r.1 as int))
-}
-
-// The result rows as the generated spec's output rows: the logical output
-// table that must be the query's answer.
-pub open spec fn out_view(o: Seq<(Vec<u8>, i64)>) -> Seq<OutRow> {
-    out_rows(pair_view(o))
 }
 
 // The name of the supplier stored at a given row position.
@@ -111,17 +106,17 @@ proof fn lemma_gather_total(st: Static, orders: OrderMap, wm: Map<i64, i64>, db:
     assert forall|y: int| #[trigger] cb(y) == sum(rng(nn), |jj: int| t(jj, y)) by {}
     lemma_sum_swap(rng(nn), rng(ns), t, ra, cb);
     // (c) Σ_jj t(jj, i) = h(i) · nm(s_nationkey, p)
-    let st_i = |i: int| sup_term(db, p, g, sups_view(sups)[i]);
+    let st_i = |i: int| sup_term(db, p, g, sup_e_seq_view(sups)[i]);
     assert forall|i: int| 0 <= i < ns implies #[trigger] cb(i) == st_i(i) by {
-        let s = sups_view(sups)[i];
-        assert(s == sup_view(sups[i]));
+        let s = sup_e_seq_view(sups)[i];
+        assert(s == sup_e_view(sups[i]));
         let ind_n = |n: NationRow| ind(n.n_nationkey == s.s_nationkey && n.n_name == p);
-        let ind_j = |jj: int| ind_n(nats_view(nats)[jj]);
-        lemma_sum_index(nats_view(nats), ind_n, ind_j);
-        lemma_sum_perm(nats_view(nats), db.nation, ind_n);
+        let ind_j = |jj: int| ind_n(nat_e_seq_view(nats)[jj]);
+        lemma_sum_index(nat_e_seq_view(nats), ind_n, ind_j);
+        lemma_sum_perm(nat_e_seq_view(nats), db.nation, ind_n);
         let c = h(i as usize);
         assert forall|jj: int| 0 <= jj < nn implies #[trigger] t(jj, i) == c * ind_j(jj) by {
-            assert(nats_view(nats)[jj] == nat_view(nats[jj]));
+            assert(nat_e_seq_view(nats)[jj] == nat_e_view(nats[jj]));
         }
         // Σ_jj t(jj, i) = c · Σ_jj ind_j(jj)
         let tjs = |jj: int| t(jj, i);
@@ -144,8 +139,8 @@ proof fn lemma_gather_total(st: Static, orders: OrderMap, wm: Map<i64, i64>, db:
     }
     lemma_sum_ext(rng(ns), cb, st_i);
     // (d) Σ_i over supplier rows = numwait (bridge)
-    lemma_sum_index(sups_view(sups), |s: SupplierRow| sup_term(db, p, g, s), st_i);
-    lemma_sum_perm(sups_view(sups), db.supplier, |s: SupplierRow| sup_term(db, p, g, s));
+    lemma_sum_index(sup_e_seq_view(sups), |s: SupplierRow| sup_term(db, p, g, s), st_i);
+    lemma_sum_perm(sup_e_seq_view(sups), db.supplier, |s: SupplierRow| sup_term(db, p, g, s));
     lemma_numwait_by_supplier(db, p, g);
 }
 

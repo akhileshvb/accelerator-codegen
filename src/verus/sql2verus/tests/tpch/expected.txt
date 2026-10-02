@@ -22,4 +22,6 @@ q18 ok
 q19 ok
 q20 ok
 q21 ok
-q22 refused comparison of Text with Int in substr(cu
+q22 ok
+# the benchmark generator's Q22 compares SUBSTRING(c_phone ...) with unquoted integers
+q22u refused comparison of Text with Int in substr(cu

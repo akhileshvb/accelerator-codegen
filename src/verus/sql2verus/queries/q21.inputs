@@ -1,0 +1,23 @@
+-- Kernel inputs for TPC-H Q21 (as declared by analysis).
+scan supplier AS SupE:
+  SELECT s_suppkey AS sk, s_name AS name, s_nationkey AS nk FROM supplier;
+scan nation AS NatE:
+  SELECT n_nationkey AS nk, n_name AS name FROM nation;
+scan forders:
+  SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F';
+scan flineitem AS LiRow:
+  SELECT l_orderkey AS orderkey, l_suppkey AS suppkey, l_commitdate AS commitdate, l_receiptdate AS receiptdate
+  FROM lineitem l
+  WHERE EXISTS (SELECT 1 FROM orders o WHERE o.o_orderkey = l.l_orderkey AND o.o_orderstatus = 'F');
+rescan lineitem AS LiRow KEYS l_orderkey:
+  SELECT l_orderkey AS orderkey, l_suppkey AS suppkey, l_commitdate AS commitdate, l_receiptdate AS receiptdate
+  FROM lineitem;
+delta lineitem AS LiDelta OF LiRow:
+  SELECT l_orderkey AS orderkey, l_suppkey AS suppkey, l_commitdate AS commitdate, l_receiptdate AS receiptdate
+  FROM lineitem;
+delta nation OF NatE:
+  SELECT n_nationkey AS nk, n_name AS name FROM nation;
+delta orders AS OrdDelta:
+  SELECT o_orderkey AS orderkey, o_orderstatus = 'F' AS status_is_f FROM orders;
+delta supplier OF SupE:
+  SELECT s_suppkey AS sk, s_name AS name, s_nationkey AS nk FROM supplier;

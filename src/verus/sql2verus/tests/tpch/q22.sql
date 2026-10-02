@@ -5,7 +5,7 @@ WITH custsale AS (
   FROM
     customer
   WHERE
-    SUBSTRING(c_phone FROM 1 FOR 2) IN (30, 19, 14, 28, 11, 22, 32)
+    SUBSTRING(c_phone FROM 1 FOR 2) IN ('30', '19', '14', '28', '11', '22', '32')
     AND c_acctbal >(
       SELECT
         AVG(c_acctbal)
@@ -13,7 +13,7 @@ WITH custsale AS (
         customer
       WHERE
         c_acctbal > 0.00
-        AND SUBSTRING(c_phone FROM 1 FOR 2) IN (30, 19, 14, 28, 11, 22, 32))
+        AND SUBSTRING(c_phone FROM 1 FOR 2) IN ('30', '19', '14', '28', '11', '22', '32'))
       AND NOT EXISTS (
         SELECT
           *

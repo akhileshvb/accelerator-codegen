@@ -693,4 +693,20 @@ pub proof fn lemma_bag_step_multiset<A>(before: Seq<A>, after: Seq<A>, d: Seq<(A
     }
 }
 
+/// Two lists whose sums agree for every weight are the same bag.
+pub proof fn lemma_sums_eq_multiset<A>(a: Seq<A>, b: Seq<A>)
+    requires
+        forall|f: spec_fn(A) -> int| #[trigger] sum(a, f) == sum(b, f),
+    ensures
+        a.to_multiset() =~= b.to_multiset(),
+{
+    broadcast use vstd::multiset::group_multiset_axioms;
+
+    assert forall|v: A| a.to_multiset().count(v) == b.to_multiset().count(v) by {
+        lemma_count_as_sum(a, v);
+        lemma_count_as_sum(b, v);
+        assert(sum(a, eqv(v)) == sum(b, eqv(v)));
+    }
+}
+
 } // verus!

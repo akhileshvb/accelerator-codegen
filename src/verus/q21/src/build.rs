@@ -6,6 +6,7 @@ use verus_common::sums::*;
 use verus_common::bytes::*;
 use verus_common::sort::*;
 use crate::gen_spec::*;
+use crate::gen_obligations::*;
 use crate::bridge::*;
 use crate::orderspec::*;
 use crate::ents::*;
@@ -15,7 +16,8 @@ verus! {
 
 broadcast use vstd::std_specs::hash::group_hash_axioms;
 
-/// What the host's scans deliver (trusted: the scan SQL implements this).
+/// What build needs of its inputs: derived from the generated scan contracts
+/// by lemma_build_inputs (kernel::build).
 pub open spec fn build_contract(
     sups: Seq<SupE>,
     nats: Seq<NatE>,
@@ -24,12 +26,12 @@ pub open spec fn build_contract(
     db: Db,
 ) -> bool {
     // SELECT s_suppkey, s_name, s_nationkey FROM supplier
-    &&& sups_view(sups) == db.supplier
+    &&& sup_e_seq_view(sups).to_multiset() == db.supplier.to_multiset()
     // SELECT n_nationkey, n_name FROM nation
-    &&& nats_view(nats) == db.nation
+    &&& nat_e_seq_view(nats).to_multiset() == db.nation.to_multiset()
     // SELECT o_orderkey FROM orders WHERE o_orderstatus = 'F'   (as a bag)
     &&& forall|f: spec_fn(int) -> int| #[trigger]
-        sum(ikeys(fkeys), f) == sum(
+        sum(seq_view_i64(fkeys), f) == sum(
             db.orders,
             |o: OrdersRow| if is_f(o) { f(o.o_orderkey) } else { 0 },
         )
@@ -37,16 +39,10 @@ pub open spec fn build_contract(
     //  WHERE EXISTS (SELECT 1 FROM orders o
     //                WHERE o.o_orderkey = l.l_orderkey AND o.o_orderstatus = 'F')
     &&& forall|f: spec_fn(LineitemRow) -> int| #[trigger]
-        sum(lis_view(lis), f) == sum(
+        sum(li_row_seq_view(lis), f) == sum(
             db.lineitem,
             |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { f(l) } else { 0 },
         )
-}
-
-// Widens the scanned order keys to unbounded integers, so they can be fed to the sum/count
-// machinery that reasons over mathematical ints.
-pub open spec fn ikeys(ks: Seq<i64>) -> Seq<int> {
-    ks.map_values(|k: i64| k as int)
 }
 
 // 0/1 indicator of 'this key equals ok'; summing it over the scanned keys counts how many
@@ -58,19 +54,19 @@ pub open spec fn key_is(ok: int) -> spec_fn(int) -> int {
 // How many times an order key appears among the scanned finished-order keys; this is the
 // order's multiplicity, which later scales its contribution to each supplier's total.
 pub open spec fn fcount(fkeys: Seq<i64>, ok: int) -> int {
-    sum(ikeys(fkeys), key_is(ok))
+    sum(seq_view_i64(fkeys), key_is(ok))
 }
 
 // Per-order, per-supplier lineitem count (GROUP BY orderkey, suppkey) taken from the scanned rows
 // instead of the abstract table; it is the running quantity while building and updating.
 pub open spec fn cnt_rows(lis: Seq<LiRow>, ok: int, sk: int) -> int {
-    sum(lis_view(lis), |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk))
+    sum(li_row_seq_view(lis), |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk))
 }
 
 // Same per-order, per-supplier count as above, but only over late lineitems
 // (receipt date after commit date).
 pub open spec fn lcnt_rows(lis: Seq<LiRow>, ok: int, sk: int) -> int {
-    sum(lis_view(lis), |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk && late(l)))
+    sum(li_row_seq_view(lis), |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk && late(l)))
 }
 
 // Appending one key to a scanned prefix appends the same key to its integer version;
@@ -79,9 +75,9 @@ pub proof fn lemma_ikeys_take(ks: Seq<i64>, t: int)
     requires
         0 <= t < ks.len(),
     ensures
-        ikeys(ks.take(t + 1)) == ikeys(ks.take(t)).push(ks[t] as int),
+        seq_view_i64(ks.take(t + 1)) == seq_view_i64(ks.take(t)).push(ks[t] as int),
 {
-    assert(ikeys(ks.take(t + 1)) =~= ikeys(ks.take(t)).push(ks[t] as int));
+    assert(seq_view_i64(ks.take(t + 1)) =~= seq_view_i64(ks.take(t)).push(ks[t] as int));
 }
 
 // Appending one lineitem row to a prefix appends its logical row to the abstract table;
@@ -90,9 +86,9 @@ pub proof fn lemma_lis_take(lis: Seq<LiRow>, t: int)
     requires
         0 <= t < lis.len(),
     ensures
-        lis_view(lis.take(t + 1)) == lis_view(lis.take(t)).push(li_view(lis[t])),
+        li_row_seq_view(lis.take(t + 1)) == li_row_seq_view(lis.take(t)).push(li_row_view(lis[t])),
 {
-    assert(lis_view(lis.take(t + 1)) =~= lis_view(lis.take(t)).push(li_view(lis[t])));
+    assert(li_row_seq_view(lis.take(t + 1)) =~= li_row_seq_view(lis.take(t)).push(li_row_view(lis[t])));
 }
 
 // If the scanned distinct order keys have no repeats as machine numbers, they have none as
@@ -101,9 +97,9 @@ pub proof fn lemma_count_distinct_keys(ks: Seq<i64>)
     requires
         forall|i: int, j: int| 0 <= i < ks.len() && 0 <= j < ks.len() && i != j ==> ks[i] != ks[j],
     ensures
-        distinct(ikeys(ks)),
+        distinct(seq_view_i64(ks)),
 {
-    let ik = ikeys(ks);
+    let ik = seq_view_i64(ks);
     assert forall|i: int, j: int|
         0 <= i < ik.len() && 0 <= j < ik.len() && i != j implies ik[i] != ik[j] by {
         assert(ks[i] != ks[j]);
@@ -113,7 +109,7 @@ pub proof fn lemma_count_distinct_keys(ks: Seq<i64>)
 // ── per-nation supplier lists ──────────────────────────────────────────────
 // Scanning suppliers one at a time: adding supplier t to the prefix keeps it in the nation's
 // list exactly when its nation matches (one step of a WHERE nationkey = nk filter).
-pub proof fn lemma_nat_filter_step(sups: Seq<SupE>, nk: i32, t: int)
+pub proof fn lemma_nat_filter_step(sups: Seq<SupE>, nk: i64, t: int)
     requires
         0 <= t < usize::MAX,
     ensures
@@ -228,7 +224,7 @@ pub fn build_fmap(fkeys: &[i64]) -> (r: Option<(HashMap<i64, OrdE>, Vec<i64>)>)
     let mut t: usize = 0;
     proof {
         assert forall|ok: i64| #[trigger] fcount(fkeys@.take(0), ok as int) == 0 by {
-            assert(ikeys(fkeys@.take(0)).len() == 0);
+            assert(seq_view_i64(fkeys@.take(0)).len() == 0);
         }
     }
     while t < n
@@ -250,10 +246,10 @@ pub fn build_fmap(fkeys: &[i64]) -> (r: Option<(HashMap<i64, OrdE>, Vec<i64>)>)
                 fkeys@.take(t as int),
                 ok as int,
             ) + ind(k as int == ok as int) by {
-                lemma_sum_push(ikeys(fkeys@.take(t as int)), k as int, key_is(ok as int));
+                lemma_sum_push(seq_view_i64(fkeys@.take(t as int)), k as int, key_is(ok as int));
             }
             assert forall|ok: i64| #[trigger] fcount(fkeys@.take(t as int), ok as int) >= 0 by {
-                lemma_sum_nonneg(ikeys(fkeys@.take(t as int)), key_is(ok as int));
+                lemma_sum_nonneg(seq_view_i64(fkeys@.take(t as int)), key_is(ok as int));
             }
         }
         match m.remove(&k) {
@@ -382,12 +378,12 @@ pub fn build_accumulate(m: &mut HashMap<i64, OrdE>, lis: &[LiRow]) -> (ok: bool)
                         assert forall|sk: int| #[trigger]
                             cnt_rows(lis@.take(t as int + 1), ok as int, sk) == cnt_rows(pre, ok as int, sk)
                                 + ind(r.orderkey as int == ok as int && r.suppkey as int == sk) by {
-                            lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk));
+                            lemma_sum_push(li_row_seq_view(pre), li_row_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk));
                         }
                         assert forall|sk: int| #[trigger]
                             lcnt_rows(lis@.take(t as int + 1), ok as int, sk) == lcnt_rows(pre, ok as int, sk)
-                                + ind(r.orderkey as int == ok as int && r.suppkey as int == sk && late(li_view(r))) by {
-                            lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk && late(l)));
+                                + ind(r.orderkey as int == ok as int && r.suppkey as int == sk && late(li_row_view(r))) by {
+                            lemma_sum_push(li_row_seq_view(pre), li_row_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk && late(l)));
                         }
                         if ok == r.orderkey {
                             assert(m0.contains_key(ok));
@@ -411,11 +407,11 @@ pub fn build_accumulate(m: &mut HashMap<i64, OrdE>, lis: &[LiRow]) -> (ok: bool)
                         assert(ok != r.orderkey);
                         assert forall|sk: int| #[trigger]
                             cnt_rows(lis@.take(t as int + 1), ok as int, sk) == cnt_rows(pre, ok as int, sk) by {
-                            lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk));
+                            lemma_sum_push(li_row_seq_view(pre), li_row_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk));
                         }
                         assert forall|sk: int| #[trigger]
                             lcnt_rows(lis@.take(t as int + 1), ok as int, sk) == lcnt_rows(pre, ok as int, sk) by {
-                            lemma_sum_push(lis_view(pre), li_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk && late(l)));
+                            lemma_sum_push(li_row_seq_view(pre), li_row_view(r), |l: LineitemRow| ind(l.l_orderkey == ok as int && l.l_suppkey == sk && late(l)));
                         }
                     }
                 }
@@ -440,8 +436,8 @@ pub proof fn lemma_fcount_is_fm(fkeys: Seq<i64>, lis: Seq<LiRow>, sups: Seq<SupE
 {
     let f = key_is(ok);
     let g = |o: OrdersRow| if is_f(o) { f(o.o_orderkey) } else { 0 };
-    assert(sum(ikeys(fkeys), f) == sum(db.orders, g));
-    assert(fcount(fkeys, ok) == sum(ikeys(fkeys), f));
+    assert(sum(seq_view_i64(fkeys), f) == sum(db.orders, g));
+    assert(fcount(fkeys, ok) == sum(seq_view_i64(fkeys), f));
     let h = |o: OrdersRow| ind(o.o_orderkey == ok && is_f(o));
     assert forall|o: OrdersRow| #[trigger] g(o) == h(o) by {}
     lemma_sum_ext_all(db.orders, g, h);
@@ -460,8 +456,8 @@ pub proof fn lemma_rows_are_counts(fkeys: Seq<i64>, lis: Seq<LiRow>, sups: Seq<S
 {
     let fc = |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk);
     let fl = |l: LineitemRow| ind(l.l_orderkey == ok && l.l_suppkey == sk && late(l));
-    assert(sum(lis_view(lis), fc) == sum(db.lineitem, |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { fc(l) } else { 0 }));
-    assert(sum(lis_view(lis), fl) == sum(db.lineitem, |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { fl(l) } else { 0 }));
+    assert(sum(li_row_seq_view(lis), fc) == sum(db.lineitem, |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { fc(l) } else { 0 }));
+    assert(sum(li_row_seq_view(lis), fl) == sum(db.lineitem, |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { fl(l) } else { 0 }));
     lemma_sum_ext_all(db.lineitem, |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { fc(l) } else { 0 }, fc);
     lemma_sum_ext_all(db.lineitem, |l: LineitemRow| if fm(db, l.l_orderkey) > 0 { fl(l) } else { 0 }, fl);
 }
@@ -475,8 +471,8 @@ pub proof fn lemma_fm_pos_in_keys(fkeys: Seq<i64>, lis: Seq<LiRow>, sups: Seq<Su
         exists|i: int| 0 <= i < fkeys.len() && fkeys[i] as int == ok,
 {
     lemma_fcount_is_fm(fkeys, lis, sups, nats, db, ok);
-    let i = lemma_sum_nonzero_witness(ikeys(fkeys), key_is(ok));
-    assert(ikeys(fkeys)[i] == fkeys[i] as int);
+    let i = lemma_sum_nonzero_witness(seq_view_i64(fkeys), key_is(ok));
+    assert(seq_view_i64(fkeys)[i] == fkeys[i] as int);
 }
 
 /// Per-order contribution to W(sk), as a function of the orderkey.
@@ -495,15 +491,15 @@ pub fn compute_w(
         forall|i: int| 0 <= i < ks@.len() ==> m@.contains_key(#[trigger] ks@[i]),
         forall|ok: i64| #[trigger] m@.contains_key(ok) ==> ord_ok(m@[ok], db, ok as int),
     ensures
-        r matches Some(wm) ==> forall|sk: i64| #[trigger] wget(wm@, sk) == sum(ikeys(ks@), po(db, sk as int)),
+        r matches Some(wm) ==> forall|sk: i64| #[trigger] wget(wm@, sk) == sum(seq_view_i64(ks@), po(db, sk as int)),
 {
     assert(vstd::std_specs::hash::obeys_key_model::<i64>());
     let mut wm: HashMap<i64, i64> = HashMap::new();
     let nk = ks.len();
     let mut t: usize = 0;
     proof {
-        assert forall|sk: i64| #[trigger] wget(wm@, sk) == sum(ikeys(ks@.take(0)), po(db, sk as int)) by {
-            assert(ikeys(ks@.take(0)).len() == 0);
+        assert forall|sk: i64| #[trigger] wget(wm@, sk) == sum(seq_view_i64(ks@.take(0)), po(db, sk as int)) by {
+            assert(seq_view_i64(ks@.take(0)).len() == 0);
         }
     }
     while t < nk
@@ -512,7 +508,7 @@ pub fn compute_w(
             vstd::std_specs::hash::obeys_key_model::<i64>(),
             forall|i: int| 0 <= i < ks@.len() ==> m@.contains_key(#[trigger] ks@[i]),
             forall|ok: i64| #[trigger] m@.contains_key(ok) ==> ord_ok(m@[ok], db, ok as int),
-            forall|sk: i64| #[trigger] wget(wm@, sk) == sum(ikeys(ks@.take(t as int)), po(db, sk as int)),
+            forall|sk: i64| #[trigger] wget(wm@, sk) == sum(seq_view_i64(ks@.take(t as int)), po(db, sk as int)),
         decreases nk - t,
     {
         let ok = ks[t];
@@ -521,7 +517,7 @@ pub fn compute_w(
         let c = ents_contrib(&o.ents);
         let ghost w0 = wm@;
         proof {
-            assert(ikeys(ks@.take(t as int + 1)) =~= ikeys(ks@.take(t as int)).push(ok as int));
+            assert(seq_view_i64(ks@.take(t as int + 1)) =~= seq_view_i64(ks@.take(t as int)).push(ok as int));
             assert forall|sk: i64| #[trigger] per_order(db, ok as int, sk as int)
                 == o.fm as int * opt_val(c, sk as int) by {
                 lemma_contrib_from_ents(o.ents@, db, ok as int, sk as int);
@@ -546,8 +542,8 @@ pub fn compute_w(
             None => {},
         }
         proof {
-            assert forall|sk: i64| #[trigger] wget(wm@, sk) == sum(ikeys(ks@.take(t as int + 1)), po(db, sk as int)) by {
-                lemma_sum_push(ikeys(ks@.take(t as int)), ok as int, po(db, sk as int));
+            assert forall|sk: i64| #[trigger] wget(wm@, sk) == sum(seq_view_i64(ks@.take(t as int + 1)), po(db, sk as int)) by {
+                lemma_sum_push(seq_view_i64(ks@.take(t as int)), ok as int, po(db, sk as int));
                 match c {
                     Some(p) => {
                         if sk != p.0 {
@@ -605,7 +601,7 @@ pub fn build(
             &&& forall|sk: int| #[trigger] etot(m@[ok].ents@, sk) == cnt_rows(lis@.take(0), ok as int, sk)
             &&& forall|sk: int| #[trigger] elate(m@[ok].ents@, sk) == lcnt_rows(lis@.take(0), ok as int, sk)
         } by {
-            assert(lis_view(lis@.take(0)).len() == 0);
+            assert(li_row_seq_view(lis@.take(0)).len() == 0);
             assert forall|sk: int| #[trigger] etot(m@[ok].ents@, sk) == cnt_rows(lis@.take(0), ok as int, sk) by {
                 assert(m@[ok].ents@.len() == 0);
             }
@@ -644,7 +640,7 @@ pub fn build(
     proof {
         lemma_count_distinct_keys(ks@);
         // W decomposes over the scanned 'F' keys.
-        assert forall|ok: int| #[trigger] fm(db, ok) > 0 implies ikeys(ks@).contains(ok) by {
+        assert forall|ok: int| #[trigger] fm(db, ok) > 0 implies seq_view_i64(ks@).contains(ok) by {
             lemma_fm_pos_in_keys(fkeys@, lis@, st.sups@, st.nats@, db, ok);
             let i = choose|i: int| 0 <= i < fkeys@.len() && fkeys@[i] as int == ok;
             let k = fkeys@[i];
@@ -652,11 +648,11 @@ pub fn build(
             assert(m_f.contains_key(k));
             assert(ks@.contains(k));
             let j = choose|j: int| 0 <= j < ks@.len() && ks@[j] == k;
-            assert(ikeys(ks@)[j] == ok);
+            assert(seq_view_i64(ks@)[j] == ok);
         }
         assert forall|sk: i64| #[trigger] wget(wm@, sk) == w(db, sk as int) by {
-            lemma_w_by_orders(db, sk as int, ikeys(ks@));
-            lemma_sum_ext_all(ikeys(ks@), |ok: int| per_order(db, ok, sk as int), po(db, sk as int));
+            lemma_w_by_orders(db, sk as int, seq_view_i64(ks@));
+            lemma_sum_ext_all(seq_view_i64(ks@), |ok: int| per_order(db, ok, sk as int), po(db, sk as int));
         }
         assert forall|ok: i64| match #[trigger] om_get(orders, ok) {
             Some(o) => ord_ok(o, db, ok as int),

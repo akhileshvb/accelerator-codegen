@@ -16,13 +16,9 @@ use verus_common::bytes::*;
 use verus_common::sums::*;
 use verus_common::rel::*;
 use crate::gen_spec::*;
+use crate::gen_obligations::*;
 
 verus! {
-
-/// The parameters for :nation = p.
-pub open spec fn params(p: Seq<u8>) -> Params {
-    Params { p1: p }
-}
 
 /// l_receiptdate > l_commitdate
 pub open spec fn late(l: LineitemRow) -> bool {

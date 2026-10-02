@@ -1,6 +1,10 @@
 // sql2verus: SQL (+ DDL) -> trusted Verus reference spec (q_ref).
 //
 //   sql2verus --schema <ddl.sql> --query <query.sql> --out <spec.rs>
+//             [--obligations <gen_obligations.rs> [--inputs <q.inputs>] [--kernel-stub <kernel.rs>]
+//              [--world <gen_world.rs>] [--ffi <gen_ffi.rs> --ffi-header <q.h> --ffi-prefix <p>]]
+//   (kernel obligations: see obligations.rs; the store adapter and C ABI
+//   derived from them: see glue.rs)
 //
 // DataFusion parses the query and resolves names and types
 // (`create_logical_plan`: no optimizer, so the plan keeps the SQL's shape).
@@ -80,6 +84,9 @@ type Res<T> = Result<T, String>;
 macro_rules! bail {
     ($($t:tt)*) => { return Err(format!($($t)*)) };
 }
+
+mod obligations;
+mod glue;
 
 const VERSION: &str = "sql2verus 0.2 (datafusion 55.1.0)";
 const NS_PER_DAY: i128 = 86_400_000_000_000;
@@ -679,6 +686,7 @@ struct Tr<'a> {
     rels: HashMap<String, RelInfo>,
     counters: HashMap<&'static str, usize>,
     notes: BTreeSet<String>,
+    pfx: String, // prefix of subquery helper names (obligations)
 }
 
 impl<'a> Tr<'a> {
@@ -1649,7 +1657,7 @@ impl<'a> Tr<'a> {
 
     fn exists_sub(&mut self, sq: &Subquery, ctx: &Ctx) -> Res<String> {
         let k = self.fresh("exists");
-        let name = format!("exists_{k}");
+        let name = format!("{}exists_{k}", self.pfx);
         let mut p = sq.subquery.as_ref();
         if let LogicalPlan::Projection(pr) = p {
             p = &pr.input; // EXISTS ignores the SELECT list
@@ -1739,7 +1747,7 @@ impl<'a> Tr<'a> {
             bail!("IN with a fractional / computed-float value");
         }
         let k = self.fresh("in");
-        let name = format!("in_{k}");
+        let name = format!("{}in_{k}", self.pfx);
         let b = self.sub_block(&sq.subquery, format!("{name}_"))?;
         if b.outs.len() != 1 {
             bail!("IN (subquery) with {} columns", b.outs.len());
@@ -1769,7 +1777,7 @@ impl<'a> Tr<'a> {
             bail!("ALL / ANY with a fractional / computed-float value");
         }
         let k = self.fresh("quant");
-        let name = format!("quant_{k}");
+        let name = format!("{}quant_{k}", self.pfx);
         let b = self.sub_block(&sq.subquery, format!("{name}_"))?;
         if b.outs.len() != 1 {
             bail!("ALL / ANY (subquery) with {} columns", b.outs.len());
@@ -1798,7 +1806,7 @@ impl<'a> Tr<'a> {
 
     fn scalar_sub(&mut self, sq: &Subquery, ctx: &Ctx) -> Res<Val> {
         let k = self.fresh("scalar");
-        let name = format!("scalar_{k}");
+        let name = format!("{}scalar_{k}", self.pfx);
         let b = self.sub_block(&sq.subquery, format!("{name}_"))?;
         if b.shape != Shape::Scalar || b.outs.len() != 1 {
             bail!("scalar subquery that is not a single aggregate (it may return several rows)");
@@ -2989,37 +2997,51 @@ fn print_grouped_facts(w: &mut String, top: &Top, total: bool, defined: &[String
     writeln!(w, "{{").unwrap();
     let kc: Vec<String> = keys.iter().map(|(g, v)| format!("{} == {g}", v.code)).collect();
     writeln!(w, "    lemma_sum_nonzero_witness(tuples(db, params), |t: Tuple| if {} {{ 1int }} else {{ 0 }})\n}}\n", kc.join(" && ")).unwrap();
-    // the answer is an answer
-    writeln!(w, "/// The answer satisfies full_result.").unwrap();
-    writeln!(w, "pub proof fn lemma_answer_ok(db: Db, params: Params)\n{pre}    ensures\n        full_result(db, params, answer(db, params)),\n{{").unwrap();
+    // the answer is an answer: one lemma per conjunct of full_result, combined
+    // with `tuples` hidden (unfolding the FROM product there is costly)
+    let a = "answer(db, params)";
+    let gq2: Vec<String> = keys.iter().map(|(g, v)| format!("{g}: {}", verus_ty(v.ty))).collect();
+    let gm = |ans: &str| -> String {
+        kcols
+            .iter()
+            .enumerate()
+            .map(|(n, c)| {
+                let g = &keys[c.key.unwrap()].0;
+                if n == 0 { format!("(#[trigger] {ans}[i]).{} == {g}", c.field) } else { format!("{ans}[i].{} == {g}", c.field) }
+            })
+            .collect::<Vec<_>>()
+            .join(" && ")
+    };
+    writeln!(w, "/// Every row of the answer is a group's row.").unwrap();
+    writeln!(w, "proof fn lemma_answer_rows(db: Db, params: Params)\n{pre}    ensures\n        forall|i: int| 0 <= i < {a}.len() ==> row_ok(db, params, #[trigger] {a}[i]),\n{{").unwrap();
     writeln!(w, "    lemma_present(db, params);\n    let ans = answer(db, params);").unwrap();
     writeln!(w, "    assert forall|i: int| 0 <= i < ans.len() implies row_ok(db, params, #[trigger] ans[i]) by {{").unwrap();
     if defined.is_empty() {
-        writeln!(w, "        assert(ans.contains(ans[i]));\n        let k = {};\n        lemma_tuple_group(db, params, k);\n    }}", pick("ans[i]")).unwrap();
+        writeln!(w, "        assert(ans.contains(ans[i]));\n        let k = {};\n        lemma_tuple_group(db, params, k);\n    }}\n}}\n", pick("ans[i]")).unwrap();
     } else {
         // `defined` gives row_ok of every present group's row directly
         writeln!(w, "        assert(ans.contains(ans[i]));\n        let k = {};", pick("ans[i]")).unwrap();
-        writeln!(w, "        assert(row_ok(db, params, present_row(db, params)(tuples(db, params)[k])));\n    }}").unwrap();
+        writeln!(w, "        assert(row_ok(db, params, present_row(db, params)(tuples(db, params)[k])));\n    }}\n}}\n").unwrap();
     }
+    writeln!(w, "/// The answer's rows are of distinct groups, in ORDER BY order.").unwrap();
+    writeln!(w, "proof fn lemma_answer_order(db: Db, params: Params)\n    ensures\n        forall|i: int, j: int| 0 <= i < j < {a}.len() ==> !same_group(#[trigger] {a}[i], #[trigger] {a}[j]) && !row_lt({a}[j], {a}[i]),\n{{").unwrap();
+    writeln!(w, "    lemma_present(db, params);\n    let ans = answer(db, params);").unwrap();
     writeln!(w, "    assert forall|i: int, j: int| 0 <= i < j < ans.len() implies !same_group(#[trigger] ans[i], #[trigger] ans[j]) && !row_lt(ans[j], ans[i]) by {{").unwrap();
     writeln!(w, "        assert(ext_order()(ans[i], ans[j]));\n        lemma_row_lt_ext(ans[j], ans[i]);").unwrap();
     writeln!(w, "        assert(ans.contains(ans[i]) && ans.contains(ans[j]));").unwrap();
-    writeln!(w, "        let ki = {};\n        let kj = {};\n    }}", pick("ans[i]"), pick("ans[j]")).unwrap();
-    let gq2: Vec<String> = keys.iter().map(|(g, v)| format!("{g}: {}", verus_ty(v.ty))).collect();
-    let gm: Vec<String> = kcols
-        .iter()
-        .enumerate()
-        .map(|(n, c)| {
-            let g = &keys[c.key.unwrap()].0;
-            if n == 0 { format!("(#[trigger] ans[i]).{} == {g}", c.field) } else { format!("ans[i].{} == {g}", c.field) }
-        })
-        .collect();
-    writeln!(w, "    assert forall|{}| #[trigger] group_count(db, params{ga}) > 0 && having(db, params{ga}) implies exists|i: int| 0 <= i < ans.len() && {} by {{", gq2.join(", "), gm.join(" && ")).unwrap();
+    writeln!(w, "        let ki = {};\n        let kj = {};\n    }}\n}}\n", pick("ans[i]"), pick("ans[j]")).unwrap();
+    writeln!(w, "/// Every non-empty group that passes HAVING has a row in the answer.").unwrap();
+    writeln!(w, "proof fn lemma_answer_groups(db: Db, params: Params)\n    ensures\n        forall|{}| #[trigger] group_count(db, params{ga}) > 0 && having(db, params{ga}) ==> exists|i: int| 0 <= i < {a}.len() && {},\n{{", gq2.join(", "), gm(a)).unwrap();
+    writeln!(w, "    lemma_present(db, params);\n    let ans = answer(db, params);").unwrap();
+    writeln!(w, "    assert forall|{}| #[trigger] group_count(db, params{ga}) > 0 && having(db, params{ga}) implies exists|i: int| 0 <= i < ans.len() && {} by {{", gq2.join(", "), gm("ans")).unwrap();
     writeln!(w, "        let k = lemma_group_tuple(db, params{ga});").unwrap();
     writeln!(w, "        let y = row_of(db, params{ga});").unwrap();
     writeln!(w, "        assert(present_keep(db, params)(tuples(db, params)[k]) && present_row(db, params)(tuples(db, params)[k]) == y);").unwrap();
     writeln!(w, "        assert(answer(db, params).contains(y));").unwrap();
     writeln!(w, "        let i = choose|i: int| 0 <= i < ans.len() && ans[i] == y;\n        assert(ans[i] == y);\n    }}\n}}\n").unwrap();
+    writeln!(w, "/// The answer satisfies full_result.").unwrap();
+    writeln!(w, "pub proof fn lemma_answer_ok(db: Db, params: Params)\n{pre}    ensures\n        full_result(db, params, answer(db, params)),\n{{").unwrap();
+    writeln!(w, "    hide(tuples);\n    lemma_answer_rows(db, params);\n    lemma_answer_order(db, params);\n    lemma_answer_groups(db, params);\n}}\n").unwrap();
     // every full answer has the answer's rows
     let rkey: String = kcols.iter().map(|c| format!(", y.{}", c.field)).collect();
     writeln!(w, "/// Every full answer has exactly the answer's rows, without repeats.").unwrap();
@@ -3096,11 +3118,40 @@ async fn run() -> Res<()> {
         rels: HashMap::new(),
         counters: HashMap::new(),
         notes: BTreeSet::new(),
+        pfx: String::new(),
     };
     let top = translate(&mut tr, &plan)?;
     let src_name = std::path::Path::new(&query_path).file_name().unwrap().to_string_lossy().to_string();
     let text = print(&tr, &top, &sql, &src_name);
-    std::fs::write(&out_path, text).map_err(|e| format!("{out_path}: {e}"))?;
+    std::fs::write(&out_path, &text).map_err(|e| format!("{out_path}: {e}"))?;
+    let opt = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+    if let Some(ob_path) = opt("--obligations") {
+        let inputs = match opt("--inputs") {
+            Some(p) => {
+                let t = std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))?;
+                let n = std::path::Path::new(&p).file_name().unwrap().to_string_lossy().to_string();
+                Some((n, t))
+            }
+            None => None,
+        };
+        let inputs = inputs.as_ref().map(|(n, t)| (n.as_str(), t.clone()));
+        let (ob, stub, model) = obligations::obligations(&mut tr, &top, &ctx, &text, inputs, &src_name).await.map_err(|e| format!("obligations: {e}"))?;
+        std::fs::write(&ob_path, ob).map_err(|e| format!("{ob_path}: {e}"))?;
+        if let Some(sp) = opt("--kernel-stub") {
+            std::fs::write(&sp, stub).map_err(|e| format!("{sp}: {e}"))?;
+        }
+        if let Some(wp) = opt("--world") {
+            std::fs::write(&wp, glue::world(&model)).map_err(|e| format!("{wp}: {e}"))?;
+        }
+        if let Some(fp) = opt("--ffi") {
+            let hp = get("--ffi-header")?;
+            let prefix = get("--ffi-prefix")?;
+            let hname = std::path::Path::new(&hp).file_name().unwrap().to_string_lossy().to_string();
+            let (rs, h) = glue::ffi(&model, &prefix, &hname).map_err(|e| format!("ffi: {e}"))?;
+            std::fs::write(&fp, rs).map_err(|e| format!("{fp}: {e}"))?;
+            std::fs::write(&hp, h).map_err(|e| format!("{hp}: {e}"))?;
+        }
+    }
     Ok(())
 }
 

@@ -303,10 +303,10 @@ proof fn lemma_group_tuple(db: Db, params: Params, g_l_returnflag: Seq<u8>, g_l_
     lemma_sum_nonzero_witness(tuples(db, params), |t: Tuple| if t.lineitem.l_returnflag == g_l_returnflag && t.lineitem.l_linestatus == g_l_linestatus { 1int } else { 0 })
 }
 
-/// The answer satisfies full_result.
-pub proof fn lemma_answer_ok(db: Db, params: Params)
+/// Every row of the answer is a group's row.
+proof fn lemma_answer_rows(db: Db, params: Params)
     ensures
-        full_result(db, params, answer(db, params)),
+        forall|i: int| 0 <= i < answer(db, params).len() ==> row_ok(db, params, #[trigger] answer(db, params)[i]),
 {
     lemma_present(db, params);
     let ans = answer(db, params);
@@ -315,6 +315,15 @@ pub proof fn lemma_answer_ok(db: Db, params: Params)
         let k = choose|k: int| 0 <= k < tuples(db, params).len() && present_keep(db, params)(tuples(db, params)[k]) && present_row(db, params)(tuples(db, params)[k]) == ans[i];
         lemma_tuple_group(db, params, k);
     }
+}
+
+/// The answer's rows are of distinct groups, in ORDER BY order.
+proof fn lemma_answer_order(db: Db, params: Params)
+    ensures
+        forall|i: int, j: int| 0 <= i < j < answer(db, params).len() ==> !same_group(#[trigger] answer(db, params)[i], #[trigger] answer(db, params)[j]) && !row_lt(answer(db, params)[j], answer(db, params)[i]),
+{
+    lemma_present(db, params);
+    let ans = answer(db, params);
     assert forall|i: int, j: int| 0 <= i < j < ans.len() implies !same_group(#[trigger] ans[i], #[trigger] ans[j]) && !row_lt(ans[j], ans[i]) by {
         assert(ext_order()(ans[i], ans[j]));
         lemma_row_lt_ext(ans[j], ans[i]);
@@ -322,6 +331,15 @@ pub proof fn lemma_answer_ok(db: Db, params: Params)
         let ki = choose|k: int| 0 <= k < tuples(db, params).len() && present_keep(db, params)(tuples(db, params)[k]) && present_row(db, params)(tuples(db, params)[k]) == ans[i];
         let kj = choose|k: int| 0 <= k < tuples(db, params).len() && present_keep(db, params)(tuples(db, params)[k]) && present_row(db, params)(tuples(db, params)[k]) == ans[j];
     }
+}
+
+/// Every non-empty group that passes HAVING has a row in the answer.
+proof fn lemma_answer_groups(db: Db, params: Params)
+    ensures
+        forall|g_l_returnflag: Seq<u8>, g_l_linestatus: Seq<u8>| #[trigger] group_count(db, params, g_l_returnflag, g_l_linestatus) > 0 && having(db, params, g_l_returnflag, g_l_linestatus) ==> exists|i: int| 0 <= i < answer(db, params).len() && (#[trigger] answer(db, params)[i]).l_returnflag == g_l_returnflag && answer(db, params)[i].l_linestatus == g_l_linestatus,
+{
+    lemma_present(db, params);
+    let ans = answer(db, params);
     assert forall|g_l_returnflag: Seq<u8>, g_l_linestatus: Seq<u8>| #[trigger] group_count(db, params, g_l_returnflag, g_l_linestatus) > 0 && having(db, params, g_l_returnflag, g_l_linestatus) implies exists|i: int| 0 <= i < ans.len() && (#[trigger] ans[i]).l_returnflag == g_l_returnflag && ans[i].l_linestatus == g_l_linestatus by {
         let k = lemma_group_tuple(db, params, g_l_returnflag, g_l_linestatus);
         let y = row_of(db, params, g_l_returnflag, g_l_linestatus);
@@ -330,6 +348,17 @@ pub proof fn lemma_answer_ok(db: Db, params: Params)
         let i = choose|i: int| 0 <= i < ans.len() && ans[i] == y;
         assert(ans[i] == y);
     }
+}
+
+/// The answer satisfies full_result.
+pub proof fn lemma_answer_ok(db: Db, params: Params)
+    ensures
+        full_result(db, params, answer(db, params)),
+{
+    hide(tuples);
+    lemma_answer_rows(db, params);
+    lemma_answer_order(db, params);
+    lemma_answer_groups(db, params);
 }
 
 /// Every full answer has exactly the answer's rows, without repeats.

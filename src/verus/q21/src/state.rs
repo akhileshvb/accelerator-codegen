@@ -17,67 +17,22 @@ use crate::gen_spec::*;
 use crate::bridge::*;
 use crate::orderspec::*;
 use crate::ents::*;
+use crate::gen_obligations::*;
 
 verus! {
 
 broadcast use vstd::std_specs::hash::group_hash_axioms;
 
-// ── Rows crossing the FFI boundary ─────────────────────────────────────────
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LiRow {
-    pub orderkey: i64,
-    pub suppkey: i64,
-    pub commitdate: i32,
-    pub receiptdate: i32,
-}
-
-// Reads a raw input lineitem row as a logical lineitem, widening its fixed-width numbers to unbounded integers.
-// This is how host-supplied rows are related to the abstract query definition.
-pub open spec fn li_view(r: LiRow) -> LineitemRow {
-    LineitemRow {
-        l_orderkey: r.orderkey as int,
-        l_suppkey: r.suppkey as int,
-        l_commitdate: r.commitdate as int,
-        l_receiptdate: r.receiptdate as int,
-    }
-}
-
-// Reads a batch of raw lineitem rows as the logical lineitem table, i.e. the input data a scan or build is specified against.
-// The contracts of build and maintenance are stated in terms of it.
-pub open spec fn lis_view(s: Seq<LiRow>) -> Seq<LineitemRow> {
-    s.map_values(|r: LiRow| li_view(r))
-}
+// Boundary rows (LiRow, LiDelta, OrdDelta, SupE, NatE) and their views are
+// in gen_obligations.rs.
 
 // Decides whether a lineitem was received after its commit date (late), and is proved to agree with the logical definition of late.
 // Lateness is the basis for deciding which suppliers kept orders waiting.
 pub fn is_late(r: &LiRow) -> (b: bool)
     ensures
-        b == late(li_view(*r)),
+        b == late(li_row_view(*r)),
 {
     r.receiptdate > r.commitdate
-}
-
-/// A captured lineitem change: the projected row and +1 (insert) / -1 (delete).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LiDelta {
-    pub row: LiRow,
-    pub sign: i64,
-}
-
-/// A captured orders change: orderkey, (o_orderstatus = 'F'), and the sign.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct OrdDelta {
-    pub orderkey: i64,
-    pub status_is_f: u8,
-    pub sign: i64,
-}
-
-// Reads a batch of lineitem changes as (row, +1/-1) pairs (+1 inserts a copy, -1 deletes one): the logical form of an update batch.
-pub open spec fn ld_view(s: Seq<LiDelta>) -> Seq<(LineitemRow, int)> {
-    s.map_values(|d: LiDelta| (li_view(d.row), d.sign as int))
 }
 
 // Reads a batch of order changes as (order, +1/-1) pairs.  The executable delta carries only the
@@ -86,42 +41,11 @@ pub open spec fn od_view(s: Seq<OrdDelta>, st: Seq<Seq<u8>>) -> Seq<(OrdersRow, 
     Seq::new(s.len(), |i: int| (OrdersRow { o_orderkey: s[i].orderkey as int, o_orderstatus: st[i] }, s[i].sign as int))
 }
 
-/// Capture contract for the status flag: one status per delta, and the host's
-/// flag is nonzero exactly when that status is "F".
+/// The status flag agrees with the status bytes: one status per delta, and
+/// the flag is nonzero exactly when that status is "F".
 pub open spec fn od_status_ok(s: Seq<OrdDelta>, st: Seq<Seq<u8>>) -> bool {
     &&& st.len() == s.len()
     &&& forall|i: int| 0 <= i < s.len() ==> ((#[trigger] s[i]).status_is_f != 0) == (st[i] == seq![b'F'])
-}
-
-pub struct SupE {
-    pub sk: i64,
-    pub name: Vec<u8>,
-    pub nk: i32,
-}
-
-pub struct NatE {
-    pub nk: i32,
-    pub name: Vec<u8>,
-}
-
-// Reads a stored supplier entry as a logical supplier row (with its name as a byte string).
-pub open spec fn sup_view(s: SupE) -> SupplierRow {
-    SupplierRow { s_suppkey: s.sk as int, s_name: s.name@, s_nationkey: s.nk as int }
-}
-
-// Reads a stored nation entry as a logical nation row.
-pub open spec fn nat_view(n: NatE) -> NationRow {
-    NationRow { n_nationkey: n.nk as int, n_name: n.name@ }
-}
-
-// Reads a list of stored supplier entries as a logical supplier table; the state is required to hold the same bag of rows as the database.
-pub open spec fn sups_view(s: Seq<SupE>) -> Seq<SupplierRow> {
-    s.map_values(|x: SupE| sup_view(x))
-}
-
-// Reads a list of stored nation entries as a logical nation table; the state is required to hold the same bag of rows as the database.
-pub open spec fn nats_view(s: Seq<NatE>) -> Seq<NationRow> {
-    s.map_values(|x: NatE| nat_view(x))
 }
 
 // Lets shared multiset-of-rows machinery (insert/delete/compare) work on supplier entries, using their logical row as the meaning.
@@ -129,7 +53,7 @@ impl BagRow for SupE {
     type V = SupplierRow;
 
     open spec fn rv(&self) -> SupplierRow {
-        sup_view(*self)
+        sup_e_view(*self)
     }
 
     fn same(&self, o: &Self) -> (r: bool) {
@@ -150,7 +74,7 @@ impl BagRow for NatE {
     type V = NationRow;
 
     open spec fn rv(&self) -> NationRow {
-        nat_view(*self)
+        nat_e_view(*self)
     }
 
     fn same(&self, o: &Self) -> (r: bool) {
@@ -169,17 +93,17 @@ impl BagRow for NatE {
 // The generic bag-view of a supplier entry list is the same as the supplier-table view, so bag-level facts apply to supplier updates.
 pub proof fn lemma_rows_v_sups(s: Seq<SupE>)
     ensures
-        rows_v(s) == sups_view(s),
+        rows_v(s) == sup_e_seq_view(s),
 {
-    assert(rows_v(s) =~= sups_view(s));
+    assert(rows_v(s) =~= sup_e_seq_view(s));
 }
 
 // The generic bag-view of a nation entry list is the same as the nation-table view, so bag-level facts apply to nation updates.
 pub proof fn lemma_rows_v_nats(s: Seq<NatE>)
     ensures
-        rows_v(s) == nats_view(s),
+        rows_v(s) == nat_e_seq_view(s),
 {
-    assert(rows_v(s) =~= nats_view(s));
+    assert(rows_v(s) =~= nat_e_seq_view(s));
 }
 
 // ── Per-order record ───────────────────────────────────────────────────────
@@ -219,7 +143,7 @@ pub struct Static {
 }
 
 /// Indices 0..n of supplier rows whose nationkey is nk, in order.
-pub open spec fn nat_filter(sups: Seq<SupE>, nk: i32, n: int) -> Seq<usize> {
+pub open spec fn nat_filter(sups: Seq<SupE>, nk: i64, n: int) -> Seq<usize> {
     Seq::new(n as nat, |i: int| i as usize).filter(|i: usize| sups[i as int].nk == nk)
 }
 
@@ -262,7 +186,7 @@ pub proof fn lemma_name_le_preorder(sups: Seq<SupE>)
 /// A nation's supplier list: the suppliers with nationkey nk (the same bag
 /// as nat_filter), sorted by name so that a nation's suppliers come out of
 /// gather already in GROUP BY s_name order.
-pub open spec fn nat_list_ok(sups: Seq<SupE>, nk: i32, l: Seq<usize>) -> bool {
+pub open spec fn nat_list_ok(sups: Seq<SupE>, nk: i64, l: Seq<usize>) -> bool {
     &&& same_bag(l, nat_filter(sups, nk, sups.len() as int))
     &&& all_valid(l, valid_sup(sups))
     &&& sorted_le(l, name_le(sups))
@@ -270,8 +194,8 @@ pub open spec fn nat_list_ok(sups: Seq<SupE>, nk: i32, l: Seq<usize>) -> bool {
 
 /// Supplier / nation rows are the tables as bags (row order is irrelevant).
 pub open spec fn static_ok(st: Static, db: Db) -> bool {
-    &&& sups_view(st.sups@).to_multiset() == db.supplier.to_multiset()
-    &&& nats_view(st.nats@).to_multiset() == db.nation.to_multiset()
+    &&& sup_e_seq_view(st.sups@).to_multiset() == db.supplier.to_multiset()
+    &&& nat_e_seq_view(st.nats@).to_multiset() == db.nation.to_multiset()
     &&& st.sups@.len() < usize::MAX
     &&& st.nat_sups@.len() == st.nats@.len()
     &&& forall|j: int|

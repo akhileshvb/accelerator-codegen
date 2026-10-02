@@ -1,9 +1,10 @@
 # <query> ok | <query> refused <text the refusal must contain>
+# <query> ok-spec <text the obligations refusal must contain>: spec only
 g03 refused integer / integer
 g04 ok
 g05 refused integer / integer
 g06 ok
-g07 ok
+g07 ok-spec an empty row type
 g08 ok
 g09 ok
 g10 refused ORDER BY an expression

@@ -3,6 +3,7 @@
 use vstd::prelude::*;
 use verus_common::sums::*;
 use crate::gen_spec::*;
+use crate::gen_obligations::*;
 use crate::bridge::*;
 use crate::orderspec::*;
 
