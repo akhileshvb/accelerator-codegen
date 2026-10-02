@@ -4,8 +4,9 @@
 `query/schema.sql`) by a deterministic translator. Every proof downstream is
 checked against it, so it must mean exactly what the SQL means.
 
-Read the SQL, then the spec's definitions (`Db`, `Params`, the row and
-helper functions, `query_result` and what it requires of `out`). Check:
+Go through the SQL, then the spec's definitions (`Db`, `Params`, the row and
+helper functions, `query_result` and what it requires of `out`), both inlined
+below. Check:
 
 * the rows and columns each table contributes, as bags (duplicates kept);
 * every predicate: comparisons, `EXISTS`/`NOT EXISTS` and their correlation,
@@ -23,5 +24,15 @@ Write `analysis/spec_audit.json`:
 `{"verdict": "ok" | "issues", "issues": [{"where": "...", "sql": "...", "spec": "...", "why": "..."}], "notes": "..."}`.
 Only report real differences in meaning ("issues" stops the pipeline: the
 translator must be fixed).
+
+## Material
+
+You have these files in full below: do not re-read them. Work from this text and answer in a few steps; use tools only to check something against data (`verus_sql`).
+
+{{file:query/query.sql}}
+
+{{file:query/schema.sql}}
+
+{{file:spec/gen_spec.rs}}
 
 {{include:shared/rules.md}}

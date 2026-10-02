@@ -219,3 +219,76 @@ def test_sandbox_mounts_only_the_tree_and_tools(tmp_path: Path) -> None:
         args = sandbox.prefix(ctx, ctx.ws)
         assert args[args.index("--tmpfs", args.index("/run")) + 1] == "/home"  # $HOME hidden before the binds
         assert args[-2:] == ["--chdir", str(ctx.ws)]
+
+
+def test_codex_session_id_from_banner_or_log(tmp_path: Path) -> None:
+    import time as _time
+
+    from accel_pipeline.backends.codex_exec import CodexExecBackend
+
+    sid = "01a0fdce-14e4-71c1-acd6-2e3ad015fbd8"
+    assert CodexExecBackend._session_id(f"workdir: /x\nsession id: {sid}\n", None, 0) == sid
+    d = tmp_path / "sessions" / "2026" / "10" / "02"
+    d.mkdir(parents=True)
+    (d / f"rollout-2026-10-02T14-08-56-{sid}.jsonl").write_text("{}")
+    assert CodexExecBackend._session_id("no banner", str(tmp_path), _time.time() - 60) == sid
+    assert CodexExecBackend._session_id("no banner", str(tmp_path), _time.time() + 60) == ""
+
+
+def test_gate_failures_go_back_to_the_same_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from accel_pipeline.verus import stages
+
+    calls = []
+
+    class FakeRun:
+        def note(self, msg): pass
+
+        def gate(self, name, data): return data
+
+        def agent(self, stage, prompt, task, extra=None, timeout_sec=None, resume=""):
+            calls.append((stage, prompt, resume))
+            return SimpleNamespace(session_id=resume or "fresh", final_text="")
+
+    outcomes = iter([{"ok": False, "stage": "tests"}, {"ok": True}])
+    monkeypatch.setattr(stages, "_kernel_gates", lambda r, **kw: next(outcomes))
+    first = {"ok": False, "stage": "verify", "output": "error: postcondition not satisfied"}
+    g = stages._fix_loop(FakeRun(), first, 4, snapshots_too=False, why="kernel", session=("verus_kernel", "S1"))
+    assert g["ok"]
+    assert calls == [("verus_kernel", "", "S1"), ("verus_kernel", "", "S1")]
+    calls.clear()
+    outcomes = iter([{"ok": True}])
+    stages._fix_loop(FakeRun(), first, 4, snapshots_too=False, why="kernel")  # no session: a fresh fixer
+    assert calls == [("verus_kernel_fix", "04b_kernel_fix.md", "")]
+
+
+def test_review_prompts_inline_their_material(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    (ctx.ws / "query").mkdir(parents=True)
+    (ctx.ws / "query" / "query.sql").write_text("SELECT 42 AS answer")
+    (ctx.ws / "glue").mkdir()
+    (ctx.ws / "glue" / "glue.cpp").write_text("// the glue")
+    text = render(ctx, "01_spec_audit.md")
+    assert "SELECT 42 AS answer" in text and "```sql" in text
+    assert "`spec/gen_spec.rs`: (not present)" in text
+    assert "// the glue" in render(ctx, "03d_glue_audit.md")
+
+
+def test_spec_audit_is_reused_only_for_the_same_inputs(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from accel_pipeline.verus import stages
+
+    ws = tmp_path / "ws"
+    for rel, body in (("query/query.sql", "SELECT 1"), ("query/schema.sql", "CREATE TABLE t (a INT)"),
+                      ("spec/gen_spec.rs", "spec")):
+        (ws / rel).parent.mkdir(parents=True, exist_ok=True)
+        (ws / rel).write_text(body)
+    ctx = SimpleNamespace(ws=ws, pipeline_root=str(tmp_path / "pipeline"), workload_name="w", query=1)
+    key = stages._spec_audit_key(ctx)
+    assert stages._reused_spec_audit(ctx, key) is None
+    stages._record_spec_audit(ctx, key, {"verdict": "ok", "issues": []})
+    assert stages._reused_spec_audit(ctx, key)["verdict"] == "ok"
+    (ws / "spec/gen_spec.rs").write_text("a different spec")
+    assert stages._reused_spec_audit(ctx, stages._spec_audit_key(ctx)) is None

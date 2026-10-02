@@ -27,6 +27,9 @@ class ModelConfig:
     codex_seed_preserve_recent_cycles: int = 2
     # Headless codex exec cancels MCP tools without this (openai/codex#24135).
     codex_bypass_approvals_and_sandbox: bool = True
+    # Per-stage reasoning effort passed to codex (model_reasoning_effort):
+    # minimal | low | medium | high.  Unset stages use the model's default.
+    stage_reasoning_effort: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -467,6 +470,7 @@ def load_model_config(path: Path | None = None, repo_root: Path | None = None) -
         codex_bypass_approvals_and_sandbox=bool(
             data.get("codex_bypass_approvals_and_sandbox", True)
         ),
+        stage_reasoning_effort={str(k): str(v) for k, v in (data.get("stage_reasoning_effort") or {}).items()},
     )
 
 

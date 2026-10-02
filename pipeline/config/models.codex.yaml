@@ -45,6 +45,16 @@ stage_providers:
   verus_opt_worker: codex_exec
   verus_audit: codex_exec
 
+# Reasoning effort per stage (codex model_reasoning_effort: minimal | low | medium | high);
+# unset stages use the model's default.  Reviews run DeepSeek V4.1 Flash at its maximum
+# (`high`); their material is inlined in the prompt.
+stage_reasoning_effort:
+  verus_spec_audit: high
+  verus_critic: high
+  verus_obligations_audit: high
+  verus_glue_audit: high
+  verus_audit: high
+
 presets:
   cheap_code: deepseek/deepseek-v4-flash
   code: deepseek/deepseek-v4-pro
@@ -53,23 +63,24 @@ presets:
   reviewer: anthropic/claude-sonnet-5
   default: deepseek/deepseek-v4-pro
   # Verus pipeline only (the C++ pipeline keeps the presets above).
-  # Reviewers/audits stay on `reviewer` (a different family from the builders).
+  # Reviews: a different family from the builders (OpenAI, Xiaomi).
   verus_reasoning: openai/gpt-6.1-sol   # analysis, kernel + proofs, kernel fix, optimization
   verus_code: xiaomi/mimo-v2.6-pro      # tests, glue (gated by validation / the contract check)
+  verus_review: deepseek/deepseek-v4.1-flash   # spec / obligations / glue audits, critic, final audit
 
 stages:
   # Verus pipeline steps
-  verus_spec_audit: reviewer
+  verus_spec_audit: verus_review
   verus_analysis: verus_reasoning
-  verus_critic: reviewer
-  verus_obligations_audit: reviewer
+  verus_critic: verus_review
+  verus_obligations_audit: verus_review
   verus_tests: verus_code
   verus_glue: verus_code
-  verus_glue_audit: reviewer
+  verus_glue_audit: verus_review
   verus_kernel: verus_reasoning
   verus_kernel_fix: verus_reasoning
   verus_opt_worker: verus_reasoning
-  verus_audit: reviewer
+  verus_audit: verus_review
   analysis: reasoning
   adversarial_tests: code
   host_bootstrap: code

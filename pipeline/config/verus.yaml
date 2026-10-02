@@ -21,9 +21,10 @@ sandbox: bwrap
 
 stages:
   spec_audit_rounds: 1          # faithfulness audit of the generated spec
-  analysis_revisions: 2         # critic -> analysis revision rounds
+  reuse_spec_audit: true        # skip it when an accepted audit of the same SQL + schema + spec exists
+  analysis_revisions: 1         # critic -> analysis revision rounds (analysis revises in its own session)
   adversarial_revisions: 2      # strengthen rounds when the fault self-check misses a bug
-  kernel_fix_rounds: 4          # kernel fix rounds after failed gates
+  kernel_fix_rounds: 4          # per kernel phase (code, then proofs): the failure goes back to the kernel agent's session
   glue_fix_rounds: 3            # glue fix rounds (build, contract check, glue audit)
 
 gates:

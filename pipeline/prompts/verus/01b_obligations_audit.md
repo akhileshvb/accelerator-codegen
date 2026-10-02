@@ -6,7 +6,7 @@ translator that produced the spec. The kernel's proof assumes these
 contracts; the host glue is checked against the declared SQL. So each
 contract must mean exactly what its declaration's SQL means.
 
-For each declaration, compare the SQL with its contract:
+For each declaration, compare the SQL with its contract (all inlined below):
 
 * `scan_<name>_ok(db, rows)`: the rows are, as a bag, the SELECT's result on
   `db` (the table, its WHERE including `[NOT] EXISTS`, the projected columns
@@ -22,5 +22,15 @@ Use `verus_sql` to settle a question with data. Write
 `analysis/obligations_audit.json`:
 `{"verdict": "ok" | "issues", "issues": [{"declaration": "...", "sql": "...", "contract": "...", "why": "..."}]}`.
 Only real differences in meaning ("issues" stops the pipeline).
+
+## Material
+
+You have these files in full below: do not re-read them. Work from this text and answer in a few steps; use tools only to check something against data (`verus_sql`, `verus_check_inputs`).
+
+{{file:inputs/q.inputs}}
+
+{{file:contracts/inputs_language.md}}
+
+{{file:frozen/gen_obligations.rs}}
 
 {{include:shared/rules.md}}

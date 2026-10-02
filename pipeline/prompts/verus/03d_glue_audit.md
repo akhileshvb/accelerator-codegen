@@ -3,9 +3,9 @@
 `glue/glue.cpp` (written by another agent) connects the engine to the
 kernel's C ABI and is trusted: the kernel's proof assumes it delivers exactly
 what `inputs/q.inputs` declares. It already builds and passed a contract
-check on the test data. Your job is what the test data cannot show. Read
-`contracts/host_glue.md`, `inputs/q.inputs`, `frozen/{{crate}}_verus.h`,
-`ref/kit/verus_kit.hpp` and the glue.
+check on the test data. Your job is what the test data cannot show. The
+glue contract, the declared inputs, the C ABI header, the kit API and the
+glue are inlined below.
 
 Check:
 
@@ -26,5 +26,19 @@ Check:
 Write `analysis/glue_audit.json`:
 `{"verdict": "ok" | "issues", "issues": [{"where": "...", "problem": "...", "fix": "..."}]}`.
 Report only real defects (an "issues" verdict sends the glue back).
+
+## Material
+
+You have these files in full below: do not re-read them. Work from this text and answer in a few steps; use tools only to check something against data (`verus_sql`).
+
+{{file:contracts/host_glue.md}}
+
+{{file:inputs/q.inputs}}
+
+{{file:frozen/{{crate}}_verus.h}}
+
+{{file:ref/kit/verus_kit.hpp}}
+
+{{file:glue/*.cpp}}
 
 {{include:shared/rules.md}}

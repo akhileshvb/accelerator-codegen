@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -133,6 +134,7 @@ class CodexExecBackend:
 
     def run_stage(self, request: StageRunRequest) -> StageRunResult:
         started = time.monotonic()
+        started_wall = time.time()
         codex_bin = self._resolve_codex_bin()
         config_path = self._config_path()
         timeout = int(getattr(self._model_config, "codex_timeout_sec", 7200) or 7200)
@@ -226,12 +228,11 @@ class CodexExecBackend:
                 if key.startswith("ACCEL_VERUS_") or key == "ACCEL_PIPELINE_MODE":
                     mcp_env_parts.append(f'{key}="{value}"')
             mcp_env_toml = "{" + ", ".join(mcp_env_parts) + "}"
-            cmd = [
-                codex_bin,
-                "exec",
-                "--skip-git-repo-check",
-                "-C",
-                str(self._pipeline_config.repo_root),
+            # resume_session_id: continue that codex session (its context kept)
+            # with this task as the next message, instead of a fresh one.
+            resume = getattr(self, "resume_session_id", None)
+            head = [codex_bin, "exec", "resume"] if resume else [codex_bin, "exec"]
+            cmd = head + ["--skip-git-repo-check"] + ([] if resume else ["-C", str(self._pipeline_config.repo_root)]) + [
                 "-m",
                 model,
                 "-c",
@@ -241,6 +242,9 @@ class CodexExecBackend:
                 "-c",
                 'mcp_servers.accel_pipeline.default_tools_approval_mode="approve"',
             ]
+            effort = (getattr(self._model_config, "stage_reasoning_effort", None) or {}).get(self._stage)
+            if effort:
+                cmd.extend(["-c", f'model_reasoning_effort="{effort}"'])
             enabled = self._engine_impl_mcp_tools(self._stage)
             if enabled:
                 listed = ", ".join(f'"{n}"' for n in enabled)
@@ -253,6 +257,8 @@ class CodexExecBackend:
                 cmd.append("--dangerously-bypass-approvals-and-sandbox")
             else:
                 cmd.extend(["-s", "workspace-write", "--approve-for-me"])
+            if resume:
+                cmd.append(str(resume))
             cmd.append(str(task_path))
             # An OS sandbox to run codex (and its MCP server) in, e.g. bwrap.
             cmd = list(getattr(self, "command_prefix", None) or []) + cmd
@@ -288,6 +294,7 @@ class CodexExecBackend:
         stderr = proc.stderr or ""
         combined = stdout if stdout.strip() else stderr
         status = "finished" if proc.returncode == 0 else "error"
+        session_id = self._session_id(stdout + "\n" + stderr, env.get("CODEX_HOME"), started_wall)
         return StageRunResult(
             backend=self.name,
             stage=request.stage,
@@ -300,5 +307,22 @@ class CodexExecBackend:
                 "exit_code": proc.returncode,
                 "model": model,
                 "config_path": str(config_path),
+                "session_id": session_id,
             },
         )
+
+    @staticmethod
+    def _session_id(output: str, codex_home: str | None, since: float) -> str:
+        """The codex session the run used: from its banner, else the newest session log since `since`."""
+        m = re.search(r"session id:\s*([0-9a-fA-F-]{36})", output)
+        if m:
+            return m.group(1)
+        if codex_home:
+            logs = [q for q in (Path(codex_home) / "sessions").rglob("rollout-*.jsonl") if q.stat().st_mtime >= since]
+            if logs:
+                newest = max(logs, key=lambda q: q.stat().st_mtime)
+                m = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$",
+                              newest.name)
+                if m:
+                    return m.group(1)
+        return ""

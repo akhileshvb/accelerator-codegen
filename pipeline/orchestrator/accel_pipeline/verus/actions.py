@@ -253,17 +253,26 @@ def _verus_env(ctx: VerusContext) -> dict[str, str]:
 _RESULTS = re.compile(r"verification results:: (\d+) verified, (\d+) errors")
 
 
-def verify(ctx: VerusContext, *, compile_lib: bool = False) -> dict[str, Any]:
-    """Sync the workspace crate and verify it (and compile it to the kernel library)."""
+def verify(ctx: VerusContext, *, compile_lib: bool = False, proofs: bool = True) -> dict[str, Any]:
+    """Sync the workspace crate and verify it (and compile it to the kernel library).
+
+    proofs=False (code first): compile without checking the proofs.
+    """
     sync_crate(ctx)
     script = ctx.root / "scripts" / "build_verus_crate.sh"
-    cmd = ["bash", str(script), str(ctx.crate_dir), ctx.crate] + ([] if compile_lib else ["--verify-only"])
+    if not proofs:
+        mode = ["--no-verify"]
+    else:
+        mode = [] if compile_lib else ["--verify-only"]
+    cmd = ["bash", str(script), str(ctx.crate_dir), ctx.crate] + mode
     t0 = time.monotonic()
     proc = _run(cmd, env=_verus_env(ctx), timeout=float(ctx.setting("verify_timeout_sec", 3600)))
     seconds = round(time.monotonic() - t0, 1)
     out = (proc.stdout or "") + "\n" + (proc.stderr or "")
     m = _RESULTS.findall(out)
     verified, errors = (int(m[-1][0]), int(m[-1][1])) if m else (0, -1)
+    if not proofs:
+        verified, errors = 0, 0 if proc.returncode == 0 else -1
     ok = proc.returncode == 0 and errors == 0
     res: dict[str, Any] = {"ok": ok, "verified": verified, "errors": errors, "seconds": seconds}
     if not ok:
@@ -273,9 +282,27 @@ def verify(ctx: VerusContext, *, compile_lib: bool = False) -> dict[str, Any]:
     return res
 
 
-def build_runner(ctx: VerusContext) -> dict[str, Any]:
-    """Compile the kernel library, then the engine + runner (CMake picks up the kit glue)."""
-    lib = verify(ctx, compile_lib=True)
+def ensure_runner(ctx: VerusContext) -> dict[str, Any]:
+    """The runner binary, built if missing (the SQL tool needs it before any
+    accelerator exists; build_runner rebuilds it with the kernel and glue)."""
+    if ctx.runner.is_file():
+        return {"ok": True}
+    with file_lock(Path(ctx.build_dir) / ".verus_build.lock"):
+        if ctx.runner.is_file():
+            return {"ok": True}
+        proc = _run(["cmake", "--build", ctx.build_dir, "--target", "verus_kit_runner", "-j",
+                     str(os.cpu_count() or 8)], timeout=7200)
+    if proc.returncode != 0:
+        return {"ok": False, "error": _tail(proc.stdout + proc.stderr, 4000)}
+    return {"ok": True}
+
+
+def build_runner(ctx: VerusContext, *, proofs: bool = True) -> dict[str, Any]:
+    """Compile the kernel library, then the engine + runner (CMake picks up the kit glue).
+
+    proofs=False: the kernel compiled without checking its proofs (code first).
+    """
+    lib = verify(ctx, compile_lib=True, proofs=proofs)
     if not lib["ok"]:
         return {"ok": False, "stage": "verify", **lib}
     sync_glue(ctx)
@@ -415,6 +442,9 @@ def explain_fault(f: str) -> str:
 
 
 def sql(ctx: VerusContext, query: str, max_rows: int = 50) -> dict[str, Any]:
+    built = ensure_runner(ctx)
+    if not built["ok"]:
+        return {"error": "could not build verus_kit_runner for SQL", "detail": built["error"]}
     return _runner(ctx, ["sql", ctx.test_db, query, str(max_rows)], timeout=300)
 
 

@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.verus import actions, workspace
-from accel_pipeline.verus.agent import json_block, run_agent
+from accel_pipeline.verus.agent import json_block, render, run_agent
 from accel_pipeline.verus.context import IGNORED_WORKLOAD_FIELDS, VerusContext
 from accel_pipeline.verus.stopping import Attempt, StopConfig, StopState, should_stop, uncovered
 
@@ -45,6 +45,7 @@ class VerusState:
     spec_sha: str = ""
     frozen: dict[str, str] = field(default_factory=dict)
     tests_hash: str = ""
+    kernel_session: str = ""  # the kernel agent's codex session (gate failures go back to it)
     opt: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 
@@ -78,10 +79,10 @@ class Run:
     dry_run: bool
 
     def agent(self, stage: str, prompt: str, task: str, extra: dict[str, str] | None = None,
-              timeout_sec: int | None = None):
+              timeout_sec: int | None = None, resume: str = ""):
         res = run_agent(self.ctx, stage=stage, prompt=prompt, task=task, pipeline_config=self.pipeline_config,
                         model_config=self.model_config, model_overrides=self.model_overrides, extra=extra,
-                        dry_run=self.dry_run, timeout_sec=timeout_sec)
+                        dry_run=self.dry_run, timeout_sec=timeout_sec, resume=resume)
         if not res.ok:
             raise PipelineStop(f"{stage} agent failed: {res.error[:2000]}")
         return res
@@ -124,6 +125,10 @@ def preflight(r: Run) -> None:
         if not check["ok"]:
             problems.append(f"agent sandbox leaks or lacks something: visible={check['visible']} "
                             f"missing={check['missing']} {check['stderr'][-500:]}")
+    if not problems and not r.dry_run:
+        built = actions.ensure_runner(ctx)  # the agents' SQL tool runs it from the first stage
+        if not built["ok"]:
+            problems.append(f"verus_kit_runner does not build: {built['error'][-500:]}")
     if problems and not r.dry_run:
         raise PipelineStop("preflight: " + "; ".join(problems))
     ignored = [k for k in IGNORED_WORKLOAD_FIELDS if r.workload.get(k)]
@@ -141,6 +146,13 @@ def spec(r: Run) -> None:
         raise PipelineStop(f"sql2verus refused the query: {res['error']}")
     r.state.spec_sha = res["sha256"]
     r.state.save(r.ctx)
+    key = _spec_audit_key(r.ctx)
+    reused = _reused_spec_audit(r.ctx, key) if r.ctx.setting("stages.reuse_spec_audit", True) else None
+    if reused is not None:
+        (r.ctx.ws / "analysis").mkdir(parents=True, exist_ok=True)
+        (r.ctx.ws / "analysis" / "spec_audit.json").write_text(json.dumps(reused, indent=2), encoding="utf-8")
+        r.note("spec audit reused: an accepted audit of this exact SQL, schema and generated spec")
+        return
     r.agent("verus_spec_audit", "01_spec_audit.md",
             "Audit spec/gen_spec.rs against query/query.sql; write analysis/spec_audit.json.")
     if r.dry_run:
@@ -149,15 +161,72 @@ def spec(r: Run) -> None:
     if audit.get("verdict") != "ok":
         raise PipelineStop("the spec does not mean what the SQL means (sql2verus must be fixed, not the spec): "
                            + json.dumps(audit.get("issues") or audit)[:3000])
+    _record_spec_audit(r.ctx, key, audit)
+
+
+def _spec_audit_store(ctx: VerusContext) -> Path:
+    return Path(ctx.pipeline_root) / "verus" / "spec_audits.jsonl"
+
+
+def _spec_audit_key(ctx: VerusContext) -> str:
+    """The spec audit judges exactly these: the SQL, the schema, the generated spec."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for rel in ("query/query.sql", "query/schema.sql", "spec/gen_spec.rs"):
+        h.update(rel.encode() + b"\0" + (ctx.ws / rel).read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+def _reused_spec_audit(ctx: VerusContext, key: str) -> dict[str, Any] | None:
+    store = _spec_audit_store(ctx)
+    if not store.is_file():
+        return None
+    for line in reversed(store.read_text(encoding="utf-8").splitlines()):
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("key") == key and (rec.get("audit") or {}).get("verdict") == "ok":
+            return {**rec["audit"], "reused_from": rec.get("run", "")}
+    return None
+
+
+def _record_spec_audit(ctx: VerusContext, key: str, audit: dict[str, Any]) -> None:
+    store = _spec_audit_store(ctx)
+    store.parent.mkdir(parents=True, exist_ok=True)
+    with store.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"key": key, "run": f"{ctx.workload_name} q{ctx.query} {time.strftime('%Y-%m-%d %H:%M')}",
+                             "audit": audit}) + "\n")
+
+
+REVISE_MESSAGE = """Your work did not pass yet:
+
+{feedback}
+
+Revise it (same files, same rules as before), check it with your tools, and end with the same kind
+of summary as before."""
+
+
+def _round(r: Run, stage: str, prompt: str, task: str, feedback: str, sid: str,
+           extra: dict[str, str] | None = None) -> str:
+    """One round of a write-check loop: the full prompt the first time; after a failed
+    check, the feedback goes to the same agent session (its context kept).  Returns the
+    session id."""
+    if sid and feedback:
+        res = r.agent(stage, "", REVISE_MESSAGE.format(feedback=feedback), resume=sid)
+    else:
+        res = r.agent(stage, prompt, task, {**(extra or {}), "feedback": feedback or "(none: first round)"})
+    return res.session_id or sid
 
 
 def analysis(r: Run) -> None:
     ctx = r.ctx
-    revisions = int(ctx.setting("stages.analysis_revisions", 2))
+    revisions = int(ctx.setting("stages.analysis_revisions", 1))
     task = "Design the aux state and write analysis/analysis.json and inputs/q.inputs."
-    feedback = ""
+    feedback, sid = "", ""
     for round_ in range(revisions + 1):
-        r.agent("verus_analysis", "02_analysis.md", task, {"feedback": feedback or "(none: first round)"})
+        sid = _round(r, "verus_analysis", "02_analysis.md", task, feedback, sid)
         if r.dry_run:
             return
         check = r.gate("check_inputs", actions.check_inputs(ctx))
@@ -199,10 +268,9 @@ def _obligations_audit(r: Run) -> str:
 
 def tests(r: Run) -> None:
     ctx = r.ctx
-    feedback = ""
+    feedback, sid = "", ""
     for _ in range(3):
-        r.agent("verus_tests", "03_tests.md", "Write the adversarial tests in tests/.",
-                {"feedback": feedback or "(none: first round)"})
+        sid = _round(r, "verus_tests", "03_tests.md", "Write the adversarial tests in tests/.", feedback, sid)
         if r.dry_run:
             return
         v = r.gate("validate_tests", actions.validate_tests(ctx))
@@ -228,10 +296,10 @@ def glue(r: Run) -> None:
 def _write_glue(r: Run, task: str) -> tuple[bool, str]:
     """The glue agent writes glue/; then build, contract check, glue audit (with fix rounds)."""
     ctx = r.ctx
-    feedback = ""
+    feedback, sid = "", ""
     rounds = int(ctx.setting("stages.glue_fix_rounds", 3))
     for k in range(rounds + 1):
-        r.agent("verus_glue", "03c_glue.md", task, {"feedback": feedback or "(none: first round)"})
+        sid = _round(r, "verus_glue", "03c_glue.md", task, feedback, sid)
         if r.dry_run:
             r.agent("verus_glue_audit", "03d_glue_audit.md", "(dry run)")
             return True, ""
@@ -252,7 +320,7 @@ def _write_glue(r: Run, task: str) -> tuple[bool, str]:
     return False, f"the host glue fails its checks after {rounds + 1} rounds: {feedback[:2000]}"
 
 
-def _kernel_gates(r: Run, *, snapshots_too: bool = False) -> dict[str, Any]:
+def _kernel_gates(r: Run, *, snapshots_too: bool = False, proofs: bool = True) -> dict[str, Any]:
     ctx = r.ctx
     changed = actions.check_frozen(ctx, r.state.frozen, r.state.tests_hash)
     if changed:
@@ -261,7 +329,7 @@ def _kernel_gates(r: Run, *, snapshots_too: bool = False) -> dict[str, Any]:
     tb = actions.trusted_base(ctx)
     if not tb["ok"]:
         return {"ok": False, "stage": "trusted_base", **tb}
-    b = actions.build_runner(ctx)
+    b = actions.build_runner(ctx, proofs=proofs)
     if not b["ok"]:
         return b
     c = actions.correctness(ctx, snapshots_too=snapshots_too)
@@ -271,24 +339,63 @@ def _kernel_gates(r: Run, *, snapshots_too: bool = False) -> dict[str, Any]:
     return c
 
 
-def _fix_loop(r: Run, gates: dict[str, Any], rounds: int, *, snapshots_too: bool, why: str) -> dict[str, Any]:
+FIX_MESSAGE = """The gates failed after your last change (stage: {stage}). The failure:
+
+{failure}
+
+Fix it in crate/src (the frozen files, the glue and the tests stay as they are), check it with the
+tools ({check}), and end with the same kind of summary as before."""
+
+
+def _fix_loop(r: Run, gates: dict[str, Any], rounds: int, *, snapshots_too: bool, why: str,
+              session: tuple[str, str] = ("", ""), proofs: bool = True) -> dict[str, Any]:
+    """Up to `rounds` fixes.  `session` = (stage, codex session id): the agent that wrote the
+    code gets the failure as its next message (its context kept); without one, a fresh
+    kernel-fix agent."""
+    stage, sid = session
     for k in range(rounds):
         if gates["ok"]:
             break
-        r.note(f"{why}: fix round {k + 1}/{rounds} ({gates.get('stage')})")
-        r.agent("verus_kernel_fix", "04b_kernel_fix.md", "Make the kernel pass the gates.",
-                {"failure": _brief(gates, 12000)})
-        gates = r.gate("kernel_gates", _kernel_gates(r, snapshots_too=snapshots_too))
+        r.note(f"{why}: fix round {k + 1}/{rounds} ({gates.get('stage')})" + (" [same session]" if sid else ""))
+        if sid:
+            check = "verus_verify, verus_test" if proofs else "verus_test with proofs=false"
+            res = r.agent(stage, "", FIX_MESSAGE.format(stage=gates.get("stage"), failure=_brief(gates, 12000),
+                                                         check=check), resume=sid)
+            sid = res.session_id or sid
+        else:
+            r.agent("verus_kernel_fix", "04b_kernel_fix.md", "Make the kernel pass the gates.",
+                    {"failure": _brief(gates, 12000)})
+        gates = r.gate("kernel_gates", _kernel_gates(r, snapshots_too=snapshots_too, proofs=proofs))
     return gates
 
 
 def kernel(r: Run) -> None:
-    r.agent("verus_kernel", "04_kernel.md", "Implement and prove the kernel in crate/src.")
+    """Code first, then proofs, in one agent session: the executable kernel passes
+    the frozen tests (compiled without its proofs), then the same agent proves it;
+    gate failures go back to that session."""
+    rounds = int(r.ctx.setting("stages.kernel_fix_rounds", 4))
+    res = r.agent("verus_kernel", "04_kernel.md", "Implement the kernel in crate/src (code first; no proofs yet).")
     if r.dry_run:
+        r.agent("verus_kernel", "04c_kernel_proofs.md", "(dry run)")
         return
+    session = ("verus_kernel", res.session_id)
+    r.state.kernel_session = res.session_id
+    r.state.save(r.ctx)
+    gates = r.gate("kernel_code_gates", _kernel_gates(r, proofs=False))
+    gates = _fix_loop(r, gates, rounds, snapshots_too=False, why="kernel code", session=session, proofs=False)
+    if not gates["ok"]:
+        raise PipelineStop("the kernel's code does not pass the tests: " + _brief(gates, 3000))
+    r.note("kernel code passes the tests (unverified); proving it")
+    proof_task = render(r.ctx, "04c_kernel_proofs.md")
+    if res.session_id:
+        res = r.agent("verus_kernel", "", proof_task, resume=res.session_id)
+    else:
+        res = r.agent("verus_kernel", "04c_kernel_proofs.md", "Prove the kernel in crate/src.")
+    session = ("verus_kernel", res.session_id or session[1])
+    r.state.kernel_session = session[1]
+    r.state.save(r.ctx)
     gates = r.gate("kernel_gates", _kernel_gates(r))
-    gates = _fix_loop(r, gates, int(r.ctx.setting("stages.kernel_fix_rounds", 4)), snapshots_too=False,
-                      why="kernel")
+    gates = _fix_loop(r, gates, rounds, snapshots_too=False, why="kernel proofs", session=session)
     if not gates["ok"]:
         raise PipelineStop("the kernel does not pass its gates: " + _brief(gates, 3000))
     r.note(f"kernel verified ({gates.get('verified')} verified in {gates.get('verify_seconds')}s), tests pass")
@@ -302,7 +409,7 @@ def integration(r: Run) -> None:
     for k in range(rounds + 1):
         gates = r.gate("integration", _kernel_gates(r, snapshots_too=True))
         gates = _fix_loop(r, gates, int(ctx.setting("stages.kernel_fix_rounds", 4)), snapshots_too=True,
-                          why="integration")
+                          why="integration", session=("verus_kernel", r.state.kernel_session))
         if not gates["ok"]:
             raise PipelineStop("integration: the kernel fails the frozen tests: " + _brief(gates, 3000))
         sc = r.gate("fault_selfcheck", actions.fault_selfcheck(ctx))
@@ -410,7 +517,7 @@ def optimization(r: Run) -> None:
         target = str(report.get("target") or "unspecified")
         axis = str(report.get("axis") or "both")
         structural = bool(report.get("structural"))
-        outcome, gain = _try_candidate(r, o, threshold, structural)
+        outcome, gain = _try_candidate(r, o, threshold, structural, res.session_id)
         accepted = outcome == "accepted"
         st.record(Attempt(n, target, axis, structural, accepted, gain, outcome))
         o.setdefault("history", []).append({"attempt": n, "target": target, "axis": axis, "outcome": outcome,
@@ -451,7 +558,8 @@ def _opt_extra(r: Run, st: StopState, o: dict[str, Any], message: str, mixes: li
     }
 
 
-def _try_candidate(r: Run, o: dict[str, Any], threshold: float, structural: bool) -> tuple[str, float]:
+def _try_candidate(r: Run, o: dict[str, Any], threshold: float, structural: bool,
+                   session: str = "") -> tuple[str, float]:
     """Gate and score the workspace's candidate; keep it (accepted) or restore the best."""
     ctx = r.ctx
     inputs_changed = (ctx.ws / "inputs" / "q.inputs").read_text() != (ctx.ws / "frozen" / "q.inputs").read_text()
@@ -483,7 +591,7 @@ def _try_candidate(r: Run, o: dict[str, Any], threshold: float, structural: bool
         r.state.frozen.update(actions.glue_hashes(ctx))
     gates = _kernel_gates(r, snapshots_too=True)
     gates = _fix_loop(r, gates, int(ctx.setting("optimization.attempt_gate_fix_rounds", 2)), snapshots_too=True,
-                      why="attempt")
+                      why="attempt", session=("verus_opt_worker", session))
     actions.write_result(ctx, f"attempt_{o['attempt']}_gates", gates)
     if not gates["ok"]:
         return reject(f"gates failed ({gates.get('stage')})")

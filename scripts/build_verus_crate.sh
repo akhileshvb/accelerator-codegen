@@ -38,6 +38,10 @@ args=("$CRATE_DIR/src/lib.rs" --crate-type=staticlib --crate-name="${NAME}_verus
       -L "dependency=$OUT")
 if [ "$MODE" = "--verify-only" ]; then
   "$VERUS" "${args[@]}"
+elif [ "$MODE" = "--no-verify" ]; then
+  # code first: compile the kernel without checking its proofs (tests can run on it)
+  "$VERUS" "${args[@]}" --no-verify --compile "${RF[@]}" -o "$OUT/lib${NAME}_verus.a"
+  echo "built (unverified) $OUT/lib${NAME}_verus.a"
 else
   "$VERUS" "${args[@]}" --compile "${RF[@]}" -o "$OUT/lib${NAME}_verus.a"
   echo "built $OUT/lib${NAME}_verus.a"

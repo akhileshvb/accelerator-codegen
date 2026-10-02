@@ -1,8 +1,8 @@
 # Verus pipeline: critique the analysis ({{benchmark}} q{{query}})
 
-Read `query/query.sql`, `spec/gen_spec.rs`, `analysis/analysis.json` and
-`inputs/q.inputs` (`verus_check_inputs` shows the obligations). Try to break
-the design:
+The query, the spec, the analysis and the declared inputs are inlined below
+(`verus_check_inputs` shows the obligations they yield). Try to break the
+design:
 
 * a write path it misses (every table, insert / delete / update, key
   changes, duplicates: tables have no declared keys);
@@ -15,5 +15,19 @@ the design:
 Write `analysis/critique.json`:
 `{"verdict": "accept" | "revise", "objections": [{"issue": "...", "evidence": "...", "suggestion": "..."}]}`.
 Ask for a revision only for real problems, not taste.
+
+## Material
+
+You have these files in full below: do not re-read them. Work from this text and answer in a few steps; use tools only to check something against data (`verus_sql`, `verus_check_inputs`).
+
+{{file:query/query.sql}}
+
+{{file:analysis/analysis.json}}
+
+{{file:inputs/q.inputs}}
+
+{{file:contracts/scale_principles.md}}
+
+{{file:spec/gen_spec.rs}}
 
 {{include:shared/rules.md}}

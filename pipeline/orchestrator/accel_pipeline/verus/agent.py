@@ -34,6 +34,7 @@ class AgentResult:
     final_text: str
     seconds: float
     error: str = ""
+    session_id: str = ""  # the codex session (resume it to continue with its context)
 
 
 def render(ctx: VerusContext, prompt: str, extra: dict[str, str] | None = None) -> str:
@@ -54,9 +55,33 @@ def render(ctx: VerusContext, prompt: str, extra: dict[str, str] | None = None) 
             return expand(path.read_text(encoding="utf-8"), depth + 1) if depth < 4 and path.is_file() else m.group(0)
 
         text = re.sub(r"\{\{include:([^}]+)\}\}", inc, text)
-        return re.sub(r"\{\{(\w+)\}\}", lambda m: variables.get(m.group(1), m.group(0)), text)
+        text = re.sub(r"\{\{(\w+)\}\}", lambda m: variables.get(m.group(1), m.group(0)), text)
+        return re.sub(r"\{\{file:([^}]+)\}\}", lambda m: inline_files(ctx, m.group(1).strip()), text)
 
     return expand((base / prompt).read_text(encoding="utf-8"))
+
+
+INLINE_LIMIT = 60_000  # characters per inlined file
+
+
+def inline_files(ctx: VerusContext, pattern: str) -> str:
+    """`{{file:<path or glob>}}`: the workspace file(s) pasted into the prompt, so a
+    reviewer has its material in one message instead of reading it piece by piece."""
+    paths = sorted(p for p in ctx.ws.glob(pattern) if p.is_file()) if any(c in pattern for c in "*?[") \
+        else [ctx.ws / pattern]
+    out = []
+    for path in paths:
+        rel = path.relative_to(ctx.ws) if path.is_relative_to(ctx.ws) else path
+        if not path.is_file():
+            out.append(f"`{rel}`: (not present)")
+            continue
+        body = path.read_text(encoding="utf-8", errors="replace")
+        if len(body) > INLINE_LIMIT:
+            body = body[:INLINE_LIMIT] + f"\n... (truncated at {INLINE_LIMIT} characters; read the rest from the file)"
+        lang = {".rs": "rust", ".sql": "sql", ".json": "json", ".cpp": "cpp", ".hpp": "cpp", ".h": "c",
+                ".md": "markdown"}.get(path.suffix, "")
+        out.append(f"`{rel}`:\n\n```{lang}\n{body.rstrip()}\n```")
+    return "\n\n".join(out) if out else f"`{pattern}`: (no files)"
 
 
 _calls: dict[str, int] = {}
@@ -74,11 +99,17 @@ def run_agent(
     extra: dict[str, str] | None = None,
     dry_run: bool = False,
     timeout_sec: int | None = None,
+    resume: str = "",
 ) -> AgentResult:
-    """Run one agent step (stage name ``verus_*``) on codex exec in the workspace."""
+    """Run one agent step (stage name ``verus_*``) on codex exec in the workspace.
+
+    `resume`: a session id from an earlier step: continue that session (the
+    agent keeps what it read and did) with `task` as the next message; the
+    prompt file is not re-sent (pass prompt="").
+    """
     _calls[stage] = _calls.get(stage, 0) + 1
     n = _calls[stage]
-    text = render(ctx, prompt, extra)
+    text = render(ctx, prompt, extra) if prompt else ""
     pdir = ctx.art / "prompts"
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / f"{stage}_{n}.md").write_text(f"{text}\n\n## Task\n\n{task}\n", encoding="utf-8")
@@ -116,6 +147,8 @@ def run_agent(
         from accel_pipeline.verus import sandbox
         backend.command_prefix = sandbox.prefix(ctx, ctx.ws)
         backend.task_dir = Path(ctx.run_dir) / "tmp"
+    if resume:
+        backend.resume_session_id = resume
     t0 = time.monotonic()
     result = backend.run_stage(StageRunRequest(stage=stage, instructions=text, user_message=task,
                                                agent_name=f"accel_{stage}", model_id=model_id,
@@ -124,7 +157,8 @@ def run_agent(
     log_stage_complete(ctx.root, ctx.query, stage=stage, model_id=model_id, backend=result.backend,
                        duration_ms=result.metadata.get("duration_ms"), usage=usage_from_metadata(result.metadata))
     (pdir / f"{stage}_{n}.out.txt").write_text(result.final_text or result.error or "", encoding="utf-8")
-    return AgentResult(result.status == "finished", result.final_text or "", seconds, result.error or "")
+    return AgentResult(result.status == "finished", result.final_text or "", seconds, result.error or "",
+                       str(result.metadata.get("session_id") or ""))
 
 
 def _replay(ctx: VerusContext, root: Path, stage: str, n: int) -> AgentResult:

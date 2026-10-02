@@ -79,10 +79,14 @@ def verus_verify() -> str:
     return _json(res)
 
 
-def verus_test(snapshots: bool = False) -> str:
-    """Build the accelerator and run the frozen tests on the Verus store (differential; snapshots if asked)."""
+def verus_test(snapshots: bool = False, proofs: bool = True) -> str:
+    """Build the accelerator and run the frozen tests on the Verus store (differential; snapshots if asked).
+
+    proofs=false: compile the kernel without checking its proofs first (code first: test the
+    executable kernel before proving it). The kernel's gates always check the proofs.
+    """
     ctx = _ctx()
-    b = actions.build_runner(ctx)
+    b = actions.build_runner(ctx, proofs=proofs)
     if not b["ok"]:
         return _json(b)
     return _json(actions.correctness(ctx, snapshots_too=snapshots))
