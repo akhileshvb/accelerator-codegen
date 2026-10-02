@@ -44,10 +44,10 @@ def _tail(text: str, n: int = 6000) -> str:
 
 
 @contextmanager
-def file_lock(path: Path) -> Iterator[None]:
+def file_lock(path: Path, *, shared: bool = False) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        fcntl.flock(fh, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
         try:
             yield
         finally:
@@ -69,10 +69,21 @@ def write_result(ctx: VerusContext, name: str, data: dict[str, Any]) -> Path:
 # ───────────────────────────── sql2verus ─────────────────────────────
 
 
+def cargo_target_dir(ctx: VerusContext) -> Path:
+    """sql2verus's cargo build dir: shared across trees (outside them), so a fresh
+    tree does not rebuild DataFusion."""
+    d = ctx.setting("cargo_target_dir") or os.environ.get("CARGO_TARGET_DIR") \
+        or str(Path.home() / ".cache" / "accel_verus" / "cargo-target")
+    return Path(d)
+
+
 def sql2verus_bin(ctx: VerusContext) -> Path:
     t = ctx.root / "src" / "verus" / "sql2verus"
-    binary = Path(os.environ.get("CARGO_TARGET_DIR", t / "target")) / "release" / "sql2verus"
-    proc = _run(["cargo", "build", "--release", "--quiet", "--manifest-path", str(t / "Cargo.toml")], timeout=1800)
+    target = cargo_target_dir(ctx)
+    target.mkdir(parents=True, exist_ok=True)
+    binary = target / "release" / "sql2verus"
+    proc = _run(["cargo", "build", "--release", "--quiet", "--manifest-path", str(t / "Cargo.toml")],
+                env={"CARGO_TARGET_DIR": str(target)}, timeout=1800)
     if proc.returncode != 0:
         raise RuntimeError(f"sql2verus build failed:\n{_tail(proc.stderr)}")
     return binary
@@ -335,7 +346,9 @@ def db_copy(ctx: VerusContext, which: str, tag: str) -> Path:
 def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus", fault: str = "",
             timeout: float = 1800) -> dict[str, Any]:
     env = {"ACCEL_AUX_STORE": store, "ACCEL_VERUS_KIT_FAULT": fault}
-    proc = _run([str(ctx.runner), *args], env=env, timeout=timeout)
+    # shared: runs may overlap each other, never a build relinking the runner under them
+    with file_lock(Path(ctx.build_dir) / ".verus_build.lock", shared=True):
+        proc = _run([str(ctx.runner), *args], env=env, timeout=timeout)
     line = next((l for l in reversed(proc.stdout.splitlines()) if l.startswith("{")), "")
     try:
         data = json.loads(line) if line else {}

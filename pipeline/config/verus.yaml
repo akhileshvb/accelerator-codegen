@@ -18,6 +18,11 @@ bench_db: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb   # optimizat
 # Preflight probes it and stops if anything else of $HOME is visible.
 # `none` runs codex unsandboxed (approvals are bypassed either way).
 sandbox: bwrap
+# Independent stages run concurrently: the spec audit with the analysis; after
+# freeze B, the obligations audit, the tests and the glue.  false: one at a time.
+parallel_stages: true
+# sql2verus's cargo build dir, shared across trees (default ~/.cache/accel_verus/cargo-target)
+# cargo_target_dir: ...
 
 stages:
   spec_audit_rounds: 1          # faithfulness audit of the generated spec
@@ -37,7 +42,7 @@ gates:
 # the progress stop is the usual exit; it may fire only after a minimum of
 # profile-guided exploration.
 optimization:
-  stage_budget_sec: 7200        # whole loop (2 h); then the best kernel goes to the audit
+  stage_budget_sec: 3600        # whole loop (1 h); then the best kernel goes to the audit
   attempt_timeout_sec: 2700     # one attempt's agent run
   attempt_gate_fix_rounds: 2    # verify / test fix rounds inside an attempt
   patience: 4                   # consecutive attempts without an accepted improvement

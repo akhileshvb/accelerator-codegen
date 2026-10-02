@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 import random
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,8 @@ from accel_pipeline.verus import actions, workspace
 from accel_pipeline.verus.agent import json_block, render, run_agent
 from accel_pipeline.verus.context import IGNORED_WORKLOAD_FIELDS, VerusContext
 from accel_pipeline.verus.stopping import Attempt, StopConfig, StopState, should_stop, uncovered
+
+_STATE_LOCK = threading.RLock()
 
 STAGES = ("preflight", "spec", "analysis", "freeze", "tests", "glue", "kernel", "integration", "optimization",
           "audit")
@@ -46,6 +50,7 @@ class VerusState:
     frozen: dict[str, str] = field(default_factory=dict)
     tests_hash: str = ""
     kernel_session: str = ""  # the kernel agent's codex session (gate failures go back to it)
+    done: list[str] = field(default_factory=list)  # stages already run inside an earlier parallel group
     opt: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 
@@ -88,9 +93,48 @@ class Run:
         return res
 
     def note(self, msg: str) -> None:
-        print(f"[verus] {msg}", flush=True)
-        self.state.notes.append(f"{time.strftime('%H:%M:%S')} {msg}")
-        self.state.save(self.ctx)
+        with _STATE_LOCK:
+            print(f"[verus] {msg}", flush=True)
+            self.state.notes.append(f"{time.strftime('%H:%M:%S')} {msg}")
+            self.state.save(self.ctx)
+
+    def save(self) -> None:
+        with _STATE_LOCK:
+            self.state.save(self.ctx)
+
+    def parallel(self, jobs: dict[str, Any]) -> None:
+        """Run independent jobs (name -> fn(run)) concurrently; then raise the first failure."""
+        if self.dry_run or len(jobs) == 1 or not self.ctx.setting("parallel_stages", True):
+            for fn in jobs.values():
+                fn(self)
+            return
+        self.note("in parallel: " + ", ".join(jobs))
+        errors: dict[str, BaseException] = {}
+        with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+            futures = {pool.submit(fn, self): name for name, fn in jobs.items()}
+            for fut in as_completed(futures):
+                name = futures[fut]
+                exc = fut.exception()
+                if exc is not None:
+                    errors[name] = exc
+                    self.note(f"{name} failed: {str(exc)[:300]}")
+                else:
+                    self.note(f"{name} done")
+        for name in jobs:  # report in stage order
+            if name in errors:
+                exc = errors[name]
+                raise exc if isinstance(exc, PipelineStop) else PipelineStop(f"{name}: {exc!r}")
+
+    def mark_done(self, *stages: str) -> None:
+        with _STATE_LOCK:
+            self.state.done = sorted(set(self.state.done) | set(stages))
+            self.state.save(self.ctx)
+
+    def already_done(self, stage: str) -> bool:
+        if stage in self.state.done:
+            self.note(f"{stage}: already done (ran in parallel with an earlier stage)")
+            return True
+        return False
 
     def gate(self, name: str, data: dict[str, Any]) -> dict[str, Any]:
         actions.write_result(self.ctx, name, data)
@@ -153,6 +197,16 @@ def spec(r: Run) -> None:
         (r.ctx.ws / "analysis" / "spec_audit.json").write_text(json.dumps(reused, indent=2), encoding="utf-8")
         r.note("spec audit reused: an accepted audit of this exact SQL, schema and generated spec")
         return
+    # the audit reads only the SQL and the spec: the analysis (a later stage) runs meanwhile
+    r.parallel({"spec_audit": lambda run: _spec_audit(run, key), "analysis": _analysis_and_mark})
+
+
+def _analysis_and_mark(r: Run) -> None:
+    _analysis(r)
+    r.mark_done("analysis")
+
+
+def _spec_audit(r: Run, key: str) -> None:
     r.agent("verus_spec_audit", "01_spec_audit.md",
             "Audit spec/gen_spec.rs against query/query.sql; write analysis/spec_audit.json.")
     if r.dry_run:
@@ -221,6 +275,12 @@ def _round(r: Run, stage: str, prompt: str, task: str, feedback: str, sid: str,
 
 
 def analysis(r: Run) -> None:
+    if r.already_done("analysis"):
+        return
+    _analysis(r)
+
+
+def _analysis(r: Run) -> None:
     ctx = r.ctx
     revisions = int(ctx.setting("stages.analysis_revisions", 1))
     task = "Design the aux state and write analysis/analysis.json and inputs/q.inputs."
@@ -248,12 +308,25 @@ def freeze(r: Run) -> None:
         if not res["ok"]:
             raise PipelineStop(f"freeze B failed: {res['error']}")
         r.state.frozen = res["hashes"]
-        r.state.save(r.ctx)
+        r.save()
         r.note(f"frozen: {', '.join(sorted(r.state.frozen))}")
-    issues = _obligations_audit(r)
-    if issues:
-        raise PipelineStop("the generated obligations do not mean what the declared inputs say "
-                           "(sql2verus must be fixed): " + issues)
+
+    def audit(run: Run) -> None:
+        issues = _obligations_audit(run)
+        if issues:
+            raise PipelineStop("the generated obligations do not mean what the declared inputs say "
+                               "(sql2verus must be fixed): " + issues)
+
+    def tests_job(run: Run) -> None:
+        _tests(run)
+        run.mark_done("tests")
+
+    def glue_job(run: Run) -> None:
+        _glue(run)
+        run.mark_done("glue")
+
+    # independent after freeze B: they read the frozen inputs / header, write different dirs
+    r.parallel({"obligations_audit": audit, "tests": tests_job, "glue": glue_job})
 
 
 def _obligations_audit(r: Run) -> str:
@@ -267,6 +340,12 @@ def _obligations_audit(r: Run) -> str:
 
 
 def tests(r: Run) -> None:
+    if r.already_done("tests"):
+        return
+    _tests(r)
+
+
+def _tests(r: Run) -> None:
     ctx = r.ctx
     feedback, sid = "", ""
     for _ in range(3):
@@ -276,7 +355,7 @@ def tests(r: Run) -> None:
         v = r.gate("validate_tests", actions.validate_tests(ctx))
         if v["ok"]:
             r.state.tests_hash = actions.tree_hash(ctx.ws / "tests")
-            r.state.save(ctx)
+            r.save()
             r.note(f"tests frozen: {v.get('params')} parameter tuples, {v.get('txns')} transactions")
             return
         feedback = "verus_validate_tests failed:\n" + _brief(v, 4000)
@@ -284,12 +363,18 @@ def tests(r: Run) -> None:
 
 
 def glue(r: Run) -> None:
+    if r.already_done("glue"):
+        return
+    _glue(r)
+
+
+def _glue(r: Run) -> None:
     ok, why = _write_glue(r, "Write the host glue in glue/glue.cpp.")
     if not ok:
         raise PipelineStop(why)
     if not r.dry_run:
         r.state.frozen.update(actions.glue_hashes(r.ctx))
-        r.state.save(r.ctx)
+        r.save()
         r.note("glue frozen: it builds, delivers the declared inputs, and passed its audit")
 
 

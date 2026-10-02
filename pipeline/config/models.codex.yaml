@@ -46,14 +46,14 @@ stage_providers:
   verus_audit: codex_exec
 
 # Reasoning effort per stage (codex model_reasoning_effort: minimal | low | medium | high);
-# unset stages use the model's default.  Reviews run DeepSeek V4.1 Flash at its maximum
-# (`high`); their material is inlined in the prompt.
+# unset stages use the model's default.  Reviews run Sonnet 5 at `low`: their material is
+# inlined in the prompt, and they answer one question each.
 stage_reasoning_effort:
-  verus_spec_audit: high
-  verus_critic: high
-  verus_obligations_audit: high
-  verus_glue_audit: high
-  verus_audit: high
+  verus_spec_audit: low
+  verus_critic: low
+  verus_obligations_audit: low
+  verus_glue_audit: low
+  verus_audit: low
 
 presets:
   cheap_code: deepseek/deepseek-v4-flash
@@ -66,7 +66,7 @@ presets:
   # Reviews: a different family from the builders (OpenAI, Xiaomi).
   verus_reasoning: openai/gpt-6.1-sol   # analysis, kernel + proofs, kernel fix, optimization
   verus_code: xiaomi/mimo-v2.6-pro      # tests, glue (gated by validation / the contract check)
-  verus_review: deepseek/deepseek-v4.1-flash   # spec / obligations / glue audits, critic, final audit
+  verus_review: anthropic/claude-sonnet-5   # spec / obligations / glue audits, critic, final audit
 
 stages:
   # Verus pipeline steps

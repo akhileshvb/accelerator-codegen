@@ -214,7 +214,7 @@ def test_sandbox_mounts_only_the_tree_and_tools(tmp_path: Path) -> None:
     binds = sandbox.mounts(ctx)
     assert ("rw", ctx.root.resolve(), ctx.root.resolve()) in binds
     for mode, src, _ in binds:  # nothing else writable but the crate cache
-        assert mode != "rw" or src in (ctx.root.resolve(), Path.home() / ".cargo")
+        assert mode != "rw" or src in (ctx.root.resolve(), Path.home() / ".cargo", actions.cargo_target_dir(ctx))
     if shutil.which("bwrap"):
         args = sandbox.prefix(ctx, ctx.ws)
         assert args[args.index("--tmpfs", args.index("/run")) + 1] == "/home"  # $HOME hidden before the binds
@@ -292,3 +292,32 @@ def test_spec_audit_is_reused_only_for_the_same_inputs(tmp_path: Path) -> None:
     assert stages._reused_spec_audit(ctx, key)["verdict"] == "ok"
     (ws / "spec/gen_spec.rs").write_text("a different spec")
     assert stages._reused_spec_audit(ctx, stages._spec_audit_key(ctx)) is None
+
+
+def test_parallel_jobs_overlap_and_failures_stop_the_run(tmp_path: Path) -> None:
+    import time as _time
+
+    from accel_pipeline.verus import stages
+
+    ctx = _ctx(tmp_path)
+    ctx.art.mkdir(parents=True, exist_ok=True)
+    run = stages.Run(ctx, stages.VerusState(), {}, None, None, {}, False)
+    seen = []
+
+    def slow(name):
+        def job(r):
+            _time.sleep(0.5)
+            seen.append(name)
+        return job
+
+    t0 = _time.monotonic()
+    run.parallel({"a": slow("a"), "b": slow("b"), "c": slow("c")})
+    assert sorted(seen) == ["a", "b", "c"] and _time.monotonic() - t0 < 1.2  # overlapped, not 1.5 s
+
+    def bad(r):
+        raise stages.PipelineStop("the obligations are wrong")
+
+    seen.clear()
+    with pytest.raises(stages.PipelineStop, match="obligations are wrong"):
+        run.parallel({"audit": bad, "tests": slow("tests")})
+    assert seen == ["tests"]  # the other job still finished before the stop

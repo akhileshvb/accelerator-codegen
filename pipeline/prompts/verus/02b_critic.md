@@ -1,24 +1,32 @@
 # Verus pipeline: critique the analysis ({{benchmark}} q{{query}})
 
-The query, the spec, the analysis and the declared inputs are inlined below
-(`verus_check_inputs` shows the obligations they yield). Try to break the
-design:
+Answer one question, quickly: **does this design have a blocking problem?**
+The query, the spec, the analysis and the declared inputs are inlined below.
+
+Look for these only:
 
 * a write path it misses (every table, insert / delete / update, key
   changes, duplicates: tables have no declared keys);
 * changes that would force a rebuild or a whole-table rescan;
 * state that grows with whole tables rather than with what queries read, or
-  reads that touch the whole state (contracts/scale_principles.md);
+  reads that touch the whole state;
 * overflow at SF3000; NULLs; parameters the state cannot serve;
 * a final-answer cache without a convincing justification.
 
-Write `analysis/critique.json`:
-`{"verdict": "accept" | "revise", "objections": [{"issue": "...", "evidence": "...", "suggestion": "..."}]}`.
-Ask for a revision only for real problems, not taste.
+Be brief. Judge from the material below; do not re-derive or re-verify the
+design, and do not explore the workspace. Use a tool only if one specific
+claim decides your verdict (at most a couple of calls: `verus_check_inputs`,
+`verus_sql`). Then write `analysis/critique.json` and stop:
+
+`{"verdict": "accept" | "revise", "objections": [{"issue": "...", "evidence": "...", "suggestion": "..."}]}`
+
+`revise` only for a real, blocking problem (each objection one or two
+sentences); style, naming and nice-to-haves are not objections. If in doubt,
+`accept`.
 
 ## Material
 
-You have these files in full below: do not re-read them. Work from this text and answer in a few steps; use tools only to check something against data (`verus_sql`, `verus_check_inputs`).
+You have these files in full below: do not re-read them.
 
 {{file:query/query.sql}}
 

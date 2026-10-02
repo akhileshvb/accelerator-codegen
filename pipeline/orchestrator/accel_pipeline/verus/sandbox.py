@@ -71,6 +71,11 @@ def mounts(ctx: VerusContext) -> list[tuple[str, Path, Path]]:
         binds.append(("ro", HOME / ".rustup", HOME / ".rustup"))
     if (HOME / ".cargo").is_dir():  # crate cache (sql2verus builds); cargo writes its locks here
         binds.append(("rw", HOME / ".cargo", HOME / ".cargo"))
+    from accel_pipeline.verus.actions import cargo_target_dir  # sql2verus's shared build dir
+    target = cargo_target_dir(ctx)
+    target.mkdir(parents=True, exist_ok=True)
+    if not target.is_relative_to(root):
+        binds.append(("rw", target, target))
     for p in _codex_package():
         # the launcher stays a symlink (codex finds its native binary from its real path)
         binds.append(("symlink", Path(os.readlink(p)), p) if p.is_symlink() else ("ro", p, p))

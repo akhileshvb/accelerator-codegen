@@ -30,6 +30,7 @@ def run_verus_pipeline(
             print(f"unknown Verus stage {stage!r}; stages: {', '.join(STAGES)}", file=sys.stderr)
             return 2
         todo = [stage]
+        state.done = [s for s in state.done if s != stage]  # asked for explicitly: run it again
     else:
         start = STAGES.index(state.stage) if resume and state.stage in STAGES else 0
         todo = list(STAGES[start:])
