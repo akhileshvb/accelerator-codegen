@@ -110,10 +110,20 @@ def preflight(r: Run) -> None:
                     ("test database", ctx.test_db), ("bench database", ctx.bench_db)):
         if not p or not Path(p).exists():
             problems.append(f"{what}: {p or '(unset)'} not found (set verus.{what.split()[0]}... in the workload)")
-    if not (Path(ctx.build_dir) / "CMakeCache.txt").is_file():
-        problems.append(f"build dir {ctx.build_dir} is not configured (cmake with the DuckDB engine)")
-    if not (ctx.root / "tools" / "verus").is_dir():
-        problems.append("tools/verus (Verus) missing")
+    if not (Path(ctx.build_dir) / "CMakeCache.txt").is_file() and not r.dry_run:
+        cfg = actions.configure_build(ctx)
+        if not cfg["ok"]:
+            problems.append(f"build dir {ctx.build_dir}: cmake configure (DuckDB engine) failed: {cfg['error']}")
+    verus_bin = Path(str(ctx.setting("verus_bin") or ""))
+    if not verus_bin.is_file():
+        problems.append(f"Verus binary {verus_bin} missing (set VERUS_BIN or verus.verus_bin)")
+    if str(ctx.setting("sandbox", "bwrap")) == "bwrap" and not r.dry_run and not problems:
+        from accel_pipeline.verus import sandbox
+        check = sandbox.selfcheck(ctx)
+        r.note(f"sandbox (bwrap): {check['probed']} paths probed, visible {check['visible']}, missing {check['missing']}")
+        if not check["ok"]:
+            problems.append(f"agent sandbox leaks or lacks something: visible={check['visible']} "
+                            f"missing={check['missing']} {check['stderr'][-500:]}")
     if problems and not r.dry_run:
         raise PipelineStop("preflight: " + "; ".join(problems))
     ignored = [k for k in IGNORED_WORKLOAD_FIELDS if r.workload.get(k)]

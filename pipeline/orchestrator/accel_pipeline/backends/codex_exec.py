@@ -174,7 +174,12 @@ class CodexExecBackend:
             env["CODEX_HOME"] = str(codex_home)
             self._write_mcp_env_sidecar(codex_home)
 
-        with tempfile.TemporaryDirectory(prefix="accel_codex_") as tmp:
+        # task_dir: where the task file goes when codex runs in a sandbox that
+        # does not share the host's /tmp.
+        task_dir = getattr(self, "task_dir", None)
+        if task_dir is not None:
+            Path(task_dir).mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="accel_codex_", dir=task_dir) as tmp:
             task_path = Path(tmp) / "task.md"
             task_path.write_text(task, encoding="utf-8")
             # Force MCP env into Codex's mcp_servers config as well (belt + suspenders).
@@ -249,6 +254,8 @@ class CodexExecBackend:
             else:
                 cmd.extend(["-s", "workspace-write", "--approve-for-me"])
             cmd.append(str(task_path))
+            # An OS sandbox to run codex (and its MCP server) in, e.g. bwrap.
+            cmd = list(getattr(self, "command_prefix", None) or []) + cmd
             try:
                 proc = subprocess.run(
                     cmd,

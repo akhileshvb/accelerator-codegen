@@ -112,6 +112,10 @@ def run_agent(
     log_stage_start(ctx.root, ctx.query, stage=stage, model_id=model_id)
     backend = CodexExecBackend(pipeline_config=ws_config, model_config=mc, query=ctx.query, stage=stage,
                                workload_name=ctx.workload_name, art_dir=ctx.art)
+    if str(ctx.setting("sandbox", "bwrap")) == "bwrap":
+        from accel_pipeline.verus import sandbox
+        backend.command_prefix = sandbox.prefix(ctx, ctx.ws)
+        backend.task_dir = Path(ctx.run_dir) / "tmp"
     t0 = time.monotonic()
     result = backend.run_stage(StageRunRequest(stage=stage, instructions=text, user_message=task,
                                                agent_name=f"accel_{stage}", model_id=model_id,

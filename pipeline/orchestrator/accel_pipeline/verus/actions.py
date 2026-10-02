@@ -235,8 +235,19 @@ def glue_hashes(ctx: VerusContext) -> dict[str, str]:
     return {f"glue/{p.name}": sha256_file(p) for p in glue_files(ctx)}
 
 
+def configure_build(ctx: VerusContext) -> dict[str, Any]:
+    """Configure the build dir (DuckDB engine) when it is not yet (a fresh tree)."""
+    proc = _run(["cmake", "-S", str(ctx.root), "-B", str(ctx.build_dir), "-G", "Ninja",
+                 "-DCMAKE_BUILD_TYPE=Release", "-DACCEL_CODEGEN_ENGINE=duckdb", "-DACCEL_CALIBRATE_AT_BUILD=OFF",
+                 f"-DACCEL_VERUS_LIB_DIR={ctx.lib_dir}"], timeout=1800)
+    return {"ok": proc.returncode == 0, "error": _tail(proc.stdout + proc.stderr, 3000)}
+
+
 def _verus_env(ctx: VerusContext) -> dict[str, str]:
-    return {"ACCEL_VERUS_LIB_DIR": ctx.lib_dir}
+    env = {"ACCEL_VERUS_LIB_DIR": ctx.lib_dir}
+    if ctx.setting("verus_bin"):
+        env["VERUS_BIN"] = str(ctx.setting("verus_bin"))
+    return env
 
 
 _RESULTS = re.compile(r"verification results:: (\d+) verified, (\d+) errors")

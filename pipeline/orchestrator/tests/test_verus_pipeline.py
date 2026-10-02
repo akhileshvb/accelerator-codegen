@@ -202,3 +202,20 @@ def test_outputs_live_in_the_query_directory(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     assert ctx.kit_dir == ctx.root / "src" / "generated" / ctx.benchmark / f"q{ctx.query}" / "verus_kit" / ctx.crate
     assert ctx.crate_dir == ctx.kit_dir / "crate"
+
+
+def test_sandbox_mounts_only_the_tree_and_tools(tmp_path: Path) -> None:
+    import shutil
+
+    from accel_pipeline.verus import sandbox
+
+    ctx = _ctx(tmp_path)
+    ctx.root.mkdir(parents=True, exist_ok=True)
+    binds = sandbox.mounts(ctx)
+    assert ("rw", ctx.root.resolve(), ctx.root.resolve()) in binds
+    for mode, src, _ in binds:  # nothing else writable but the crate cache
+        assert mode != "rw" or src in (ctx.root.resolve(), Path.home() / ".cargo")
+    if shutil.which("bwrap"):
+        args = sandbox.prefix(ctx, ctx.ws)
+        assert args[args.index("--tmpfs", args.index("/run")) + 1] == "/home"  # $HOME hidden before the binds
+        assert args[-2:] == ["--chdir", str(ctx.ws)]

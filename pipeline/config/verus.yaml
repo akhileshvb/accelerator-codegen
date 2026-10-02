@@ -12,6 +12,12 @@ test_db: /home/akhilvb/accelerator-codegen-duckdb/tpch_test.duckdb   # correctne
 bench_db: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb   # optimization A/B (copied per run)
 # build_dir: build-release      # CMake build dir with the DuckDB engine (default: the pipeline's)
 # lib_dir: build-verus          # kernel static libraries
+# verus_bin: <tree>/tools/verus/verus-x86-linux/verus   (or env VERUS_BIN)
+# The agents' OS sandbox (accel_pipeline/verus/sandbox.py): each codex step and
+# its MCP server see only this tree, the DuckDB checkout, toolchains and codex.
+# Preflight probes it and stops if anything else of $HOME is visible.
+# `none` runs codex unsandboxed (approvals are bypassed either way).
+sandbox: bwrap
 
 stages:
   spec_audit_rounds: 1          # faithfulness audit of the generated spec

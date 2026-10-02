@@ -42,3 +42,6 @@ tmp/
 
 # Local Verus toolchain drop
 tools/verus/
+
+# orchestrator virtualenv (the MCP server launcher prefers it)
+pipeline/orchestrator/.venv/

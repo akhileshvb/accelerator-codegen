@@ -131,6 +131,9 @@ def build_context(pipeline_config: Any, workload: dict[str, Any], workload_name:
     bench_db = settings.get("bench_db") or str(datasets.get(f"{bench}_sf1") or "")
     build_dir = settings.get("build_dir") or str(pipeline_config.build_dir)
     lib_dir = settings.get("lib_dir") or str(root / "build-verus")
+    # the Verus binary (kept in settings: the MCP server loads the context)
+    settings["verus_bin"] = str(settings.get("verus_bin") or os.environ.get("VERUS_BIN")
+                                or root / "tools" / "verus" / "verus-x86-linux" / "verus")
     run_dir = Path(pipeline_config.pipeline_root) / "verus_runs" / workload_name
     art = query_artifacts_dir(root, query, workload=workload) / f"verus_{workload_name}"
 
