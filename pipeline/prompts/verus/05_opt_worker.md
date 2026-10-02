@@ -33,7 +33,8 @@ How to work:
   Read `contracts/scale_principles.md`: prefer changes that also hold at
   SF3000.
 * Measure with `verus_bench` (write mixes `{{mixes}}` this attempt) and
-  `verus_profile`; check with `verus_verify` and `verus_test`.
+  `verus_profile`; check with `verus_verify` and `verus_test`
+  (`contracts/proof_method.md` for keeping the proofs; prefer `vstd` collections).
 * A structural change may edit `inputs/q.inputs` (the obligations are then
   regenerated and audited, the host glue is rewritten by the glue agent and
   re-checked, and the kernel must verify against the new obligations);

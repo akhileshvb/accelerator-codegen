@@ -96,6 +96,7 @@ struct Spec {
   std::string setup;
   std::vector<std::string> params; // SQL literal tuples
   std::vector<std::string> txns;
+  std::vector<std::string> txn_names; // file names, for messages
   std::vector<std::string> bench_txns;
 };
 
@@ -127,6 +128,13 @@ Spec LoadSpec(const fs::path &dir) {
   if (s.params.empty())
     s.params.push_back(""); // a query without parameters
   s.txns = SqlFiles(dir / "txns");
+  if (fs::is_directory(dir / "txns")) {
+    for (const auto &e : fs::directory_iterator(dir / "txns"))
+      if (e.path().extension() == ".sql")
+        s.txn_names.push_back(e.path().filename().string());
+    std::sort(s.txn_names.begin(), s.txn_names.end());
+  }
+  s.txn_names.resize(s.txns.size());
   s.bench_txns = SqlFiles(dir / "bench_txns");
   if (s.bench_txns.empty())
     s.bench_txns = s.txns;
@@ -250,9 +258,19 @@ struct Setup {
   const engine::SharedQueryCatalogEntry *entry;
 };
 
+// The declared schema's constraints (ACCEL_VERUS_SCHEMA_SQL: e.g. ALTER TABLE ...
+// SET NOT NULL), applied before anything else, so a write that leaves the
+// schema's world fails instead of producing data the spec says cannot exist.
+std::string SchemaSql() {
+  const char *path = std::getenv("ACCEL_VERUS_SCHEMA_SQL");
+  return path && *path && fs::exists(path) ? ReadFile(path) : std::string();
+}
+
 Setup Prepare(duckdb::Connection &setup, const std::string &id, const Spec &spec) {
   Setup s{kit::Find(id), engine::VerusKitCatalogEntry(id)};
   Require(s.glue && s.entry, "no Verus accelerator registered as " + id);
+  if (const auto schema = SchemaSql(); !schema.empty())
+    Q(setup, schema);
   if (!spec.setup.empty())
     Q(setup, spec.setup);
   accelerator_codegen::RegisterAcceleratorFunctions(setup);
@@ -549,6 +567,11 @@ int Validate(const std::string &path, const Spec &spec, const std::string &query
   duckdb::DuckDB db(path);
   duckdb::Connection c(db);
   std::vector<std::string> errors;
+  if (const auto schema = SchemaSql(); !schema.empty()) {
+    auto r = c.Query(schema);
+    if (!r || r->HasError())
+      errors.push_back("schema constraints: " + (r ? r->GetError() : std::string("failed")));
+  }
   if (!spec.setup.empty()) {
     auto r = c.Query(spec.setup);
     if (!r || r->HasError())
@@ -562,6 +585,9 @@ int Validate(const std::string &path, const Spec &spec, const std::string &query
       errors.push_back("params " + t + ": " + e.what());
     }
   }
+  // In sequence, committed, as the tests run: a transaction is checked on the
+  // state the ones before it leave (a subquery that finds a row on the
+  // original data may find none later).
   int txn_errors = 0;
   for (std::size_t i = 0; i < spec.txns.size(); ++i) {
     c.BeginTransaction();
@@ -569,9 +595,12 @@ int Validate(const std::string &path, const Spec &spec, const std::string &query
     if (!r || r->HasError()) {
       ++txn_errors;
       if (errors.size() < 20)
-        errors.push_back("txn " + std::to_string(i) + ": " + (r ? r->GetError() : std::string("failed")));
+        errors.push_back("txn " + std::to_string(i) + " (" + spec.txn_names[i] + "): " +
+                         (r ? r->GetError() : std::string("failed")));
+      c.Rollback();
+    } else {
+      c.Commit();
     }
-    c.Rollback();
   }
   std::string ej = "[";
   for (std::size_t i = 0; i < errors.size(); ++i)

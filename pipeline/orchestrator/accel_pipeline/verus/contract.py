@@ -183,6 +183,7 @@ def check(ctx: VerusContext, runner_call, sql_call, tests_dir: Path, db: Path) -
         return {"ok": False, "error": run["error"]}
     problems: list[dict[str, Any]] = []
     checked = Counter()
+    declined: list[dict[str, Any]] = []  # transactions / scans the glue rightly refused (NULLs the ABI cannot carry)
 
     def probe(label: str, name: str) -> dict[str, Any]:
         p = out / f"probe_{label}_{name}.json"
@@ -205,6 +206,10 @@ def check(ctx: VerusContext, runner_call, sql_call, tests_dir: Path, db: Path) -
                 rec = next((r for r in recs if r["fn"] == "build" and r["param"] == n), None)
                 pr = probe("build", f"scan_{n}")
                 if rec is None:
+                    if any("NULL" in row for row in pr.get("rows") or []):
+                        checked["declined"] += 1  # the build declined: a NULL the ABI cannot carry
+                        declined.append({"at": "build", "why": f"scan {n} returns NULL (outside the ABI)"})
+                        continue
                     problems.append({"at": "build", "input": f"scan {n}", "error": "the glue did not deliver it"})
                     continue
                 plan = _plan(rec["fields"], pr["columns"])
@@ -217,6 +222,25 @@ def check(ctx: VerusContext, runner_call, sql_call, tests_dir: Path, db: Path) -
         elif label.startswith("txn"):
             i = label[3:]
             applies = [r for r in recs if r["fn"] == "apply"]
+            if not applies:
+                # The glue declined the transaction (nothing reached the kernel).  That is the
+                # required behavior when a changed row holds a value the C ABI cannot carry:
+                # a NULL where the declared (NOT NULL) schema promises none.  The host then
+                # rebuilds / answers by SQL, so it is correct, not a contract failure.
+                nulls = []
+                for d in decls:
+                    if d["kind"] != "delta":
+                        continue
+                    n = sanitize(d["name"])
+                    before, after = probe(f"before_{i}", f"delta_{n}"), probe(f"after_{i}", f"delta_{n}")
+                    want = Counter([tuple(r) for r in after["rows"]])
+                    want.subtract(Counter([tuple(r) for r in before["rows"]]))
+                    nulls += [f"{n}: {row}" for row, c in want.items() if c and "NULL" in row]
+                if nulls:
+                    checked["declined"] += 1
+                    declined.append({"at": f"txn {i}", "why": "a changed row holds NULL (outside the ABI)",
+                                     "rows": nulls[:3]})
+                    continue
             for d in decls:
                 if d["kind"] == "delta":
                     n = sanitize(d["name"])
@@ -257,4 +281,4 @@ def check(ctx: VerusContext, runner_call, sql_call, tests_dir: Path, db: Path) -
                     if (d_ := _diff(_rows_rec(rec, plan), want)):
                         problems.append({"at": f"txn {i}", "input": f"rescan {n}", **d_})
     return {"ok": not problems and bool(checked), "checked": dict(checked), "problems": problems[:12],
-            "write_errors": run.get("write_errors")}
+            "declined": declined[:6], "write_errors": run.get("write_errors")}

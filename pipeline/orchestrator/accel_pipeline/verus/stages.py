@@ -316,6 +316,7 @@ def freeze(r: Run) -> None:
         if issues:
             raise PipelineStop("the generated obligations do not mean what the declared inputs say "
                                "(sql2verus must be fixed): " + issues)
+        run.mark_done("obligations_audit")
 
     def tests_job(run: Run) -> None:
         _tests(run)
@@ -326,7 +327,13 @@ def freeze(r: Run) -> None:
         run.mark_done("glue")
 
     # independent after freeze B: they read the frozen inputs / header, write different dirs
-    r.parallel({"obligations_audit": audit, "tests": tests_job, "glue": glue_job})
+    jobs = {"obligations_audit": audit, "tests": tests_job, "glue": glue_job}
+    # on resume, skip what an earlier attempt of this group already finished
+    todo = {name: fn for name, fn in jobs.items() if name not in r.state.done}
+    for name in jobs.keys() - todo.keys():
+        r.note(f"{name}: already done")
+    if todo:
+        r.parallel(todo)
 
 
 def _obligations_audit(r: Run) -> str:
@@ -429,7 +436,9 @@ FIX_MESSAGE = """The gates failed after your last change (stage: {stage}). The f
 {failure}
 
 Fix it in crate/src (the frozen files, the glue and the tests stay as they are), check it with the
-tools ({check}), and end with the same kind of summary as before."""
+tools ({check}), and end with the same kind of summary as before. For proof failures,
+contracts/proof_method.md maps each obligation to its standard proof and the verus_common lemmas;
+work top-down from the failing top-level fact (build / apply / execute)."""
 
 
 def _fix_loop(r: Run, gates: dict[str, Any], rounds: int, *, snapshots_too: bool, why: str,
@@ -457,28 +466,35 @@ def _fix_loop(r: Run, gates: dict[str, Any], rounds: int, *, snapshots_too: bool
 def kernel(r: Run) -> None:
     """Code first, then proofs, in one agent session: the executable kernel passes
     the frozen tests (compiled without its proofs), then the same agent proves it;
-    gate failures go back to that session."""
+    gate failures go back to that session.  On a rerun, a kernel whose code already
+    passed continues straight to the proofs in its saved session."""
     rounds = int(r.ctx.setting("stages.kernel_fix_rounds", 4))
-    res = r.agent("verus_kernel", "04_kernel.md", "Implement the kernel in crate/src (code first; no proofs yet).")
-    if r.dry_run:
-        r.agent("verus_kernel", "04c_kernel_proofs.md", "(dry run)")
-        return
-    session = ("verus_kernel", res.session_id)
-    r.state.kernel_session = res.session_id
-    r.state.save(r.ctx)
-    gates = r.gate("kernel_code_gates", _kernel_gates(r, proofs=False))
-    gates = _fix_loop(r, gates, rounds, snapshots_too=False, why="kernel code", session=session, proofs=False)
-    if not gates["ok"]:
-        raise PipelineStop("the kernel's code does not pass the tests: " + _brief(gates, 3000))
-    r.note("kernel code passes the tests (unverified); proving it")
+    sid = r.state.kernel_session
+    if "kernel_code" in r.state.done and sid and not r.dry_run:
+        r.note("kernel code already passes the tests; continuing the proofs in the saved session")
+    else:
+        res = r.agent("verus_kernel", "04_kernel.md", "Implement the kernel in crate/src (code first; no proofs yet).")
+        if r.dry_run:
+            r.agent("verus_kernel", "04c_kernel_proofs.md", "(dry run)")
+            return
+        sid = res.session_id
+        r.state.kernel_session = sid
+        r.save()
+        gates = r.gate("kernel_code_gates", _kernel_gates(r, proofs=False))
+        gates = _fix_loop(r, gates, rounds, snapshots_too=False, why="kernel code", session=("verus_kernel", sid),
+                          proofs=False)
+        if not gates["ok"]:
+            raise PipelineStop("the kernel's code does not pass the tests: " + _brief(gates, 3000))
+        r.mark_done("kernel_code")
+        r.note("kernel code passes the tests (unverified); proving it")
     proof_task = render(r.ctx, "04c_kernel_proofs.md")
-    if res.session_id:
-        res = r.agent("verus_kernel", "", proof_task, resume=res.session_id)
+    if sid:
+        res = r.agent("verus_kernel", "", proof_task, resume=sid)
     else:
         res = r.agent("verus_kernel", "04c_kernel_proofs.md", "Prove the kernel in crate/src.")
-    session = ("verus_kernel", res.session_id or session[1])
+    session = ("verus_kernel", res.session_id or sid)
     r.state.kernel_session = session[1]
-    r.state.save(r.ctx)
+    r.save()
     gates = r.gate("kernel_gates", _kernel_gates(r))
     gates = _fix_loop(r, gates, rounds, snapshots_too=False, why="kernel proofs", session=session)
     if not gates["ok"]:

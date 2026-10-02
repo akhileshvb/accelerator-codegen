@@ -58,7 +58,8 @@ def verus_sql(query: str, max_rows: int = 50) -> str:
 
 
 def verus_validate_tests() -> str:
-    """Check tests/: setup.sql runs, every params.sql tuple runs the query, every txn applies (rolled back)."""
+    """Check tests/ under the schema's NOT NULL constraints: setup.sql runs, every params.sql tuple runs the query,
+    and the txns apply in sequence (committed, as the tests run them)."""
     return _json(actions.validate_tests(_ctx()))
 
 

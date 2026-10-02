@@ -14,7 +14,7 @@ Only these are copied in (read-only unless noted):
     ref/          verus_common, verus_substrate sources (the verified libraries);
                   kit/ (the host kit's API: verus_kit.hpp, aux_types.hpp)
     playbook/     performance.md, proofs.md      (append with playbook_append)
-    contracts/    the rules (inputs language, glue, trusted base, scale principles)
+    contracts/    the rules (inputs language, glue, trusted base, scale principles, proof method)
 
 Nothing from the C++ accelerators or other Verus kernels is copied.
 """
@@ -49,7 +49,7 @@ tests in its own tree through the MCP tools (accel_pipeline server, `verus_*`).
 | prooflib/src/lib.rs | the shared proof library (add lemmas; publish them) | append |
 | ref/ | verus_common and verus_substrate (the verified libraries you build on); kit/ (host kit API) | read |
 | playbook/ | what earlier runs learned (performance, proofs) | read; append via tool |
-| contracts/ | the rules: inputs language, glue, trusted base, scale principles | read |
+| contracts/ | the rules: inputs language, glue, trusted base, scale principles, how to prove a kernel | read |
 
 Accelerator id: `{accel_id}` (table function `accel_{accel_id}`); crate `{crate}`.
 """

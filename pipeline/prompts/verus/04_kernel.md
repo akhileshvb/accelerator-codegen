@@ -22,6 +22,25 @@ code; leave the proof bodies (lemmas, `assert`s, `proof` blocks) for the next
 step. Do not add `assume`, `admit` or new `external_body` to get there (the
 trusted-base check rejects them).
 
+"No proofs yet" still means **Verus-compatible code**: Verus checks these even
+without verifying, so write them from the start:
+
+* only the Rust standard library Verus supports: `Vec` (`new`, `push`, `pop`,
+  `len`, indexing, `set`, `insert`, `remove`, `clear`), slices by index, and
+  the `vstd` collections and helpers; no `swap`, `to_vec`, `sort`, iterators
+  or closures over collections; write the loop (or a small helper) instead;
+* every `loop` / `while` has a `decreases` clause (a termination measure);
+* every quantifier you write (`forall` / `exists`, in specs and invariants)
+  has a `#[trigger]` on a term that mentions its bound variables;
+* exec code calls only exec functions; spec functions appear only in specs,
+  `proof` blocks and ghost code.
+
+Write the code so it is ready to prove (read `contracts/proof_method.md`): say
+in the type invariant which sum over the database each structure equals; give
+every loop over input rows a ghost index (the invariant will be "accumulated
+so far == the sum over the rows processed"); prefer `vstd` collections to
+hand-written trees or indexes, whose own proofs are large.
+
 The host glue (`glue/`) is already written and frozen; you only write the
 kernel. Loop: `verus_test` with `proofs=false` (compiles the kernel without
 checking its proofs, builds the accelerator, runs the frozen tests on the Verus

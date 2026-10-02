@@ -571,9 +571,10 @@ def main(argv: list[str] | None = None) -> int:
         return _verus("verus_verify")
 
     @_tool(annotations=_rw)
-    def verus_test(snapshots: bool = False) -> str:
-        """Build the accelerator; run the frozen tests on the Verus store (differential; snapshots if asked)."""
-        return _verus("verus_test", snapshots)
+    def verus_test(snapshots: bool = False, proofs: bool = True) -> str:
+        """Build the accelerator; run the frozen tests on the Verus store (differential; snapshots if asked).
+        proofs=false: compile the kernel without checking its proofs (code first)."""
+        return _verus("verus_test", snapshots, proofs)
 
     @_tool(annotations=_rw)
     def verus_bench(write_mixes: str = "0.01,0.05") -> str:

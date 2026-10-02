@@ -22,9 +22,14 @@ Decide:
    sizes and distinct keys; integer widths at SF3000.
 5. If you cache the final answer, justify it (small, cheap to maintain
    locally, large speedup).
+6. **How it will be proved** (`contracts/proof_method.md`): the invariant as
+   sums over the database (which sum each structure equals), and the outline
+   of the three top-level proofs (build, apply, execute). Choose data
+   structures with proof cost in mind: `vstd` collections shared through
+   `Arc`, not hand-written trees or indexes that must be proved from scratch.
 
 Write `inputs/q.inputs` and `analysis/analysis.json`:
-`{"aux_state": "...", "keys": "...", "read_path": "...", "maintenance": {"<table>": "..."}, "rescans": "...", "complexity": {"state_bytes": "...", "build": "...", "write": "...", "read": "..."}, "widths": "...", "final_answer_cache": null | "justification", "risks": ["..."]}`.
+`{"aux_state": "...", "keys": "...", "read_path": "...", "maintenance": {"<table>": "..."}, "rescans": "...", "complexity": {"state_bytes": "...", "build": "...", "write": "...", "read": "..."}, "widths": "...", "proof": "...", "final_answer_cache": null | "justification", "risks": ["..."]}`.
 Run `verus_check_inputs` until sql2verus accepts the inputs, and read the
 obligations it returns: they are what the kernel will be proved against.
 

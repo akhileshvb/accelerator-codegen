@@ -35,6 +35,10 @@ general lemma there when it would serve other queries, then call
 `prooflib_publish`: lemmas are general (no query names), verify without
 `assume`, say when to use them in a doc comment. The library only grows.
 
+How to prove it: `contracts/proof_method.md` (the obligation shapes, their
+standard proofs, the lemmas, the patterns). Prefer `vstd` collections to
+hand-written trees or indexes: their own proofs are large.
+
 Verification: `verus_verify` runs Verus on the crate (and the trusted-base
 check). Keep functions small and proofs local; prefer lemmas with explicit
 triggers over large `assert forall` blocks; watch verification time (it is

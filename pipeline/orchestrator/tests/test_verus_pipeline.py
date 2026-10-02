@@ -321,3 +321,18 @@ def test_parallel_jobs_overlap_and_failures_stop_the_run(tmp_path: Path) -> None
     with pytest.raises(stages.PipelineStop, match="obligations are wrong"):
         run.parallel({"audit": bad, "tests": slow("tests")})
     assert seen == ["tests"]  # the other job still finished before the stop
+
+
+def test_mcp_wrappers_pass_every_tool_parameter() -> None:
+    """Each verus_* MCP wrapper takes exactly its tool's parameters (a dropped one is silently ignored)."""
+    import ast
+    import inspect
+
+    from accel_pipeline.verus.tools import TOOLS
+
+    src = (REPO / "pipeline" / "orchestrator" / "accel_pipeline" / "mcp_server.py").read_text()
+    wrappers = {n.name: [a.arg for a in n.args.args] for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.FunctionDef) and n.name in TOOLS}
+    for name, fn in TOOLS.items():
+        assert name in wrappers, f"{name} has no MCP wrapper"
+        assert wrappers[name] == list(inspect.signature(fn).parameters), name

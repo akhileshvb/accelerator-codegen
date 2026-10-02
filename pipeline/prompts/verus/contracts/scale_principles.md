@@ -14,6 +14,11 @@ accelerator keeps its advantage as data grows:
 * **Versions**: the store keeps a version per commit while snapshots need it.
   Share structure (`Arc`, a base plus a small overlay) so a new version costs
   about its changes, not a copy.
+* **Proof cost**: the kernel is proved, so choose structures whose proofs
+  stay small: `vstd` collections (`Vec`, `HashMap`) shared through `Arc`
+  with a small overlay, rather than a hand-written balanced tree or index
+  that must be proved from scratch. A structure's speed only matters if the
+  kernel that uses it can be proved.
 * **Build**: one pass, or close to it, over the scanned rows.
 * **Magnitudes**: keys and aggregates must not overflow at SF3000 (order keys
   exceed 2^31; sums of decimal products can exceed i64: use i128). Overflow is

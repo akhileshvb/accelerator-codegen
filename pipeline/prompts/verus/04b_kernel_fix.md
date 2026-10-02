@@ -11,5 +11,8 @@ gate: `frozen` (restore the listed files), `trusted_base` (remove the listed
 constructs and prove instead), `verify` (Verus errors), `build`, or `tests`
 (the accelerator's answer differs from the SQL: `examples` shows where; or it
 answers with SQL too often). Use `verus_verify` and `verus_test` until both pass.
+For `verify`, `contracts/proof_method.md` maps each obligation to its
+standard proof and the `verus_common` lemmas for it; work top-down from the
+failing top-level fact.
 
 {{include:shared/rules.md}}

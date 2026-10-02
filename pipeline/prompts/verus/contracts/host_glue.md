@@ -73,5 +73,12 @@ const kit::Registrar kRegistrar(&kGlue);
   field's type>)`, dates `kit::Date`, timestamps `kit::Ts`, booleans
   `kit::Bool`, text `kit::Text`. Let `Declined` propagate (the module rebuilds
   or answers with SQL); do not catch it to substitute values.
+* A captured value the C ABI cannot carry (e.g. a NULL in a column the schema
+  declares NOT NULL, which the database may still accept) must **decline**: let
+  the converter throw. Never substitute a value (0, a sentinel), drop the row,
+  or special-case the transaction. `verus_glue_check` accepts such a decline
+  (it reports it under "declined"); it rejects every workaround.
+* Deliver every captured change unconditionally: what Apply passes must never
+  depend on what the kernel returned (e.g. whether it asked for rescans).
 * Fill arrays in the header's argument order; one row per result row.
 * No state of your own, no caching, no threads, no I/O besides the Host.

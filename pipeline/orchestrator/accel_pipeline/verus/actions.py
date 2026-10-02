@@ -343,9 +343,41 @@ def db_copy(ctx: VerusContext, which: str, tag: str) -> Path:
     return dst
 
 
+_NOT_NULL = re.compile(r"^\s*(\w+)\s+.*\bNOT\s+NULL\b", re.I)
+
+
+def schema_constraints(ctx: VerusContext) -> Path:
+    """The declared schema's NOT NULL columns as ALTER statements, for every database the
+    runner opens: the test data then stays in the world the spec describes (the generated
+    TPC-H databases do not declare these constraints themselves)."""
+    out = Path(ctx.run_dir) / "schema_constraints.sql"
+    stmts = []
+    table = None
+    for line in Path(ctx.schema_sql).read_text(encoding="utf-8").splitlines():
+        m = re.match(r"\s*CREATE\s+TABLE\s+(\w+)", line, re.I)
+        if m:
+            table = m.group(1)
+            continue
+        if table and line.strip().startswith(")"):
+            table = None
+            continue
+        c = _NOT_NULL.match(line)
+        if table and c and c.group(1).upper() not in ("PRIMARY", "CONSTRAINT", "UNIQUE", "FOREIGN", "CHECK"):
+            stmts.append(f"ALTER TABLE {table} ALTER COLUMN {c.group(1)} SET NOT NULL;")
+    text = "\n".join(stmts) + ("\n" if stmts else "")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not out.is_file() or out.read_text(encoding="utf-8") != text:
+        out.write_text(text, encoding="utf-8")
+    return out
+
+
+def runner_env(ctx: VerusContext, **extra: str) -> dict[str, str]:
+    return {"ACCEL_VERUS_SCHEMA_SQL": str(schema_constraints(ctx)), **extra}
+
+
 def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus", fault: str = "",
             timeout: float = 1800) -> dict[str, Any]:
-    env = {"ACCEL_AUX_STORE": store, "ACCEL_VERUS_KIT_FAULT": fault}
+    env = runner_env(ctx, ACCEL_AUX_STORE=store, ACCEL_VERUS_KIT_FAULT=fault)
     # shared: runs may overlap each other, never a build relinking the runner under them
     with file_lock(Path(ctx.build_dir) / ".verus_build.lock", shared=True):
         proc = _run([str(ctx.runner), *args], env=env, timeout=timeout)
@@ -468,7 +500,7 @@ def glue_contract(ctx: VerusContext) -> dict[str, Any]:
     db = db_copy(ctx, "test", "contract")
 
     def runner_call(args: list[str], env: dict[str, str]) -> dict[str, Any]:
-        proc = _run([str(ctx.runner), *args], env=env, timeout=1800)
+        proc = _run([str(ctx.runner), *args], env=runner_env(ctx, **env), timeout=1800)
         line = next((l for l in reversed(proc.stdout.splitlines()) if l.startswith("{")), "")
         data = json.loads(line) if line else {"error": _tail(proc.stderr or proc.stdout, 3000)}
         if proc.returncode != 0 and "error" not in data:
@@ -516,7 +548,7 @@ def profile(ctx: VerusContext, mixes: list[float] | None = None) -> dict[str, An
     args = [str(ctx.runner), "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), "3",
             ",".join(str(m) for m in (mixes or [0.05])), "100"]
     rec = _run(["perf", "record", "-F", "499", "-g", "-o", str(data), "--", *args],
-               env={"ACCEL_AUX_STORE": "verus", "VERUS_KIT_ACCEL_ONLY": "1"}, timeout=3600)
+               env=runner_env(ctx, ACCEL_AUX_STORE="verus", VERUS_KIT_ACCEL_ONLY="1"), timeout=3600)
     if rec.returncode != 0:
         return {"ok": False, "error": _tail(rec.stderr, 2000)}
     rep = _run(["perf", "report", "-i", str(data), "--stdio", "--no-children", "--sort", "symbol",
