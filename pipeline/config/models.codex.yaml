@@ -52,19 +52,23 @@ presets:
   debug: openai/gpt-5.6-terra-pro
   reviewer: anthropic/claude-sonnet-5
   default: deepseek/deepseek-v4-pro
+  # Verus pipeline only (the C++ pipeline keeps the presets above).
+  # Reviewers/audits stay on `reviewer` (a different family from the builders).
+  verus_reasoning: openai/gpt-6.1-sol   # analysis, kernel + proofs, kernel fix, optimization
+  verus_code: xiaomi/mimo-v2.6-pro      # tests, glue (gated by validation / the contract check)
 
 stages:
   # Verus pipeline steps
   verus_spec_audit: reviewer
-  verus_analysis: reasoning
+  verus_analysis: verus_reasoning
   verus_critic: reviewer
   verus_obligations_audit: reviewer
-  verus_tests: code
-  verus_glue: code
+  verus_tests: verus_code
+  verus_glue: verus_code
   verus_glue_audit: reviewer
-  verus_kernel: reasoning
-  verus_kernel_fix: code
-  verus_opt_worker: code
+  verus_kernel: verus_reasoning
+  verus_kernel_fix: verus_reasoning
+  verus_opt_worker: verus_reasoning
   verus_audit: reviewer
   analysis: reasoning
   adversarial_tests: code
