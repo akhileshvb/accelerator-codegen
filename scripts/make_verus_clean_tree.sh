@@ -30,6 +30,10 @@ remove=(
 )
 for p in "${remove[@]}"; do rm -rf -- "${DEST:?}/${p}"; done
 mkdir -p pipeline/artifacts
+# tracked symlinks into untracked build dirs (e.g. build-release -> build) dangle here
+for l in build*; do
+  if [[ -L "${l}" && ! -e "${l}" ]]; then rm -f -- "${l}"; mkdir -p "${l}"; fi
+done
 
 git init -q && git add -A && git -c user.name="clean tree" -c user.email="clean@localhost" \
   commit -q -m "Clean tree: substrate + runtime backends + Verus seeds (exported from $(git -C "${SRC}" rev-parse --short HEAD))"
