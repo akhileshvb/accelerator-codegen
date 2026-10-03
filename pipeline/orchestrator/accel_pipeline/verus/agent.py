@@ -150,13 +150,22 @@ def run_agent(
     if resume:
         backend.resume_session_id = resume
     backend.prompt_via_stdin = True
-    t0 = time.monotonic()
+    t0, started = time.monotonic(), time.time()
     result = backend.run_stage(StageRunRequest(stage=stage, instructions=text, user_message=task,
                                                agent_name=f"accel_{stage}", model_id=model_id,
                                                agent_model=agent_model, max_turns=10_000))
     seconds = round(time.monotonic() - t0, 1)
+    from accel_pipeline.verus import usage as usage_mod
+
+    sid = str(result.metadata.get("session_id") or "")
+    use = usage_mod.session_usage(Path(codex_home), sid, started) or usage_from_metadata(result.metadata) or {}
+    cost = usage_mod.cost_usd(model_id, use, ctx.setting("pricing", {}) or {})
     log_stage_complete(ctx.root, ctx.query, stage=stage, model_id=model_id, backend=result.backend,
-                       duration_ms=result.metadata.get("duration_ms"), usage=usage_from_metadata(result.metadata))
+                       duration_ms=result.metadata.get("duration_ms"),
+                       usage={**use, **({"cost_usd": cost} if cost is not None else {})} or None)
+    usage_mod.record(ctx.art, {"stage": stage, "n": n, "model": model_id, "ok": result.status == "finished",
+                               "seconds": seconds, "session_id": sid, **use, "cost_usd": cost,
+                               "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
     (pdir / f"{stage}_{n}.out.txt").write_text(result.final_text or result.error or "", encoding="utf-8")
     return AgentResult(result.status == "finished", result.final_text or "", seconds, result.error or "",
                        str(result.metadata.get("session_id") or ""))

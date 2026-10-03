@@ -266,12 +266,14 @@ std::string SchemaSql() {
   return path && *path && fs::exists(path) ? ReadFile(path) : std::string();
 }
 
-Setup Prepare(duckdb::Connection &setup, const std::string &id, const Spec &spec) {
+// with_setup=false (bench): measure the real data, without the tests' setup
+// rows (edge cases for correctness, not a workload).
+Setup Prepare(duckdb::Connection &setup, const std::string &id, const Spec &spec, bool with_setup = true) {
   Setup s{kit::Find(id), engine::VerusKitCatalogEntry(id)};
   Require(s.glue && s.entry, "no Verus accelerator registered as " + id);
   if (const auto schema = SchemaSql(); !schema.empty())
     Q(setup, schema);
-  if (!spec.setup.empty())
+  if (with_setup && !spec.setup.empty())
     Q(setup, spec.setup);
   accelerator_codegen::RegisterAcceleratorFunctions(setup);
   return s;
@@ -407,23 +409,50 @@ double Median(std::vector<double> v) {
 }
 
 // VERUS_KIT_ACCEL_ONLY=1: only the accelerator's side runs (for profiling it).
+// Profiling hooks: VERUS_KIT_PERF_CTL / _ACK are perf's control FIFOs
+// (perf record -D -1 --control fifo:ctl,ack): profiling starts after the build,
+// so a profile shows the steady state (reads, write maintenance), not the
+// one-time build.
+void PerfEnable() {
+  const char *ctl = std::getenv("VERUS_KIT_PERF_CTL");
+  if (!ctl || !*ctl)
+    return;
+  if (FILE *f = std::fopen(ctl, "w")) {
+    std::fputs("enable\n", f);
+    std::fclose(f);
+  }
+  if (const char *ack = std::getenv("VERUS_KIT_PERF_ACK"); ack && *ack) {
+    if (FILE *f = std::fopen(ack, "r")) {
+      char buf[16];
+      (void)std::fgets(buf, sizeof buf, f);
+      std::fclose(f);
+    }
+  }
+}
+
 int Bench(const std::string &path, const std::string &id, const Spec &spec, int reps, std::vector<double> mixes,
           int ops) {
+  // VERUS_KIT_BENCH_PHASE=reads|writes: only that part (for per-axis profiles)
+  const char *phase_env = std::getenv("VERUS_KIT_BENCH_PHASE");
+  const std::string phase = phase_env ? phase_env : "";
+  if (phase == "reads")
+    mixes.clear();
   const bool accel_only = std::getenv("VERUS_KIT_ACCEL_ONLY") != nullptr;
   duckdb::DuckDB db(path);
   duckdb::Connection wc(db), qc(db), plain(db);
-  const auto s = Prepare(qc, id, spec);
+  const auto s = Prepare(qc, id, spec, /*with_setup=*/false);
   DuckdbRuntime rt(wc, *s.entry, 10.0);
   rt.EnableMutationCapture();
   const auto build_start = Clock::now();
   rt.Build();
   const double build_ms = std::chrono::duration<double, std::milli>(Clock::now() - build_start).count();
+  PerfEnable();
   auto us = [](Clock::time_point a) { return std::chrono::duration<double, std::micro>(Clock::now() - a).count(); };
   // read-only: per tuple, medians of the query and of the accelerator
   std::string per = "[";
   double log_sum = 0;
   int n = 0;
-  std::size_t tuples = std::min<std::size_t>(spec.params.size(), 12);
+  std::size_t tuples = phase == "writes" ? 0 : std::min<std::size_t>(spec.params.size(), 12);
   for (std::size_t i = 0; i < tuples; ++i) {
     const auto &t = spec.params[i];
     std::vector<double> q, a;

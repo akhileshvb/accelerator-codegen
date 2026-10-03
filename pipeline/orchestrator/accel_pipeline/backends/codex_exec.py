@@ -298,7 +298,8 @@ class CodexExecBackend:
         stderr = proc.stderr or ""
         combined = stdout if stdout.strip() else stderr
         status = "finished" if proc.returncode == 0 else "error"
-        session_id = self._session_id(stdout + "\n" + stderr, env.get("CODEX_HOME"), started_wall)
+        session_id = self._session_id(stdout + "\n" + stderr, env.get("CODEX_HOME"), started_wall,
+                                      str(self._pipeline_config.repo_root))
         return StageRunResult(
             backend=self.name,
             stage=request.stage,
@@ -316,13 +317,16 @@ class CodexExecBackend:
         )
 
     @staticmethod
-    def _session_id(output: str, codex_home: str | None, since: float) -> str:
-        """The codex session the run used: from its banner, else the newest session log since `since`."""
+    def _session_id(output: str, codex_home: str | None, since: float, cwd: str = "") -> str:
+        """The codex session the run used: from its banner, else the newest session log since
+        `since` started in `cwd` (other pipelines may share the codex home)."""
         m = re.search(r"session id:\s*([0-9a-fA-F-]{36})", output)
         if m:
             return m.group(1)
         if codex_home:
             logs = [q for q in (Path(codex_home) / "sessions").rglob("rollout-*.jsonl") if q.stat().st_mtime >= since]
+            if cwd:
+                logs = [q for q in logs if f'"cwd":"{cwd}"' in q.open(encoding="utf-8").readline()]
             if logs:
                 newest = max(logs, key=lambda q: q.stat().st_mtime)
                 m = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$",

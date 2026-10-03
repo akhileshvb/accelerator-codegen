@@ -24,8 +24,12 @@ mkdir -p "$OUT"
     [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$hash" ] && [ -f "$OUT/libverus_$lib.rlib" ] && continue
     deps=()
     [ "$lib" = prooflib ] && deps=(--import "verus_common=$OUT/verus_common.vir" --extern "verus_common=$OUT/libverus_common.rlib" -L "dependency=$OUT")
+    # written aside, then renamed: a crate build reading them never sees a partial file
+    tmp="$OUT/tmp.$$"; mkdir -p "$tmp"
     "$VERUS" "$src/lib.rs" --crate-type=lib --crate-name="verus_$lib" "${deps[@]}" \
-      --export "$OUT/verus_$lib.vir" --compile "${RF[@]}" -o "$OUT/libverus_$lib.rlib" >/dev/null
+      --export "$tmp/verus_$lib.vir" --compile "${RF[@]}" -o "$tmp/libverus_$lib.rlib" >/dev/null
+    mv -f "$tmp/verus_$lib.vir" "$OUT/verus_$lib.vir"; mv -f "$tmp/libverus_$lib.rlib" "$OUT/libverus_$lib.rlib"
+    rmdir "$tmp"
     echo "$hash" > "$stamp"
   done
 ) 9>"$OUT/.libs.lock"
@@ -38,11 +42,16 @@ args=("$CRATE_DIR/src/lib.rs" --crate-type=staticlib --crate-name="${NAME}_verus
       -L "dependency=$OUT")
 if [ "$MODE" = "--verify-only" ]; then
   "$VERUS" "${args[@]}"
-elif [ "$MODE" = "--no-verify" ]; then
-  # code first: compile the kernel without checking its proofs (tests can run on it)
-  "$VERUS" "${args[@]}" --no-verify --compile "${RF[@]}" -o "$OUT/lib${NAME}_verus.a"
-  echo "built (unverified) $OUT/lib${NAME}_verus.a"
 else
-  "$VERUS" "${args[@]}" --compile "${RF[@]}" -o "$OUT/lib${NAME}_verus.a"
-  echo "built $OUT/lib${NAME}_verus.a"
+  # written aside, then renamed: another pipeline's link never reads a partial archive
+  part="$OUT/tmp.$$.lib${NAME}_verus.a"
+  trap 'rm -f "$part"' EXIT
+  if [ "$MODE" = "--no-verify" ]; then
+    # code first: compile the kernel without checking its proofs (tests can run on it)
+    "$VERUS" "${args[@]}" --no-verify --compile "${RF[@]}" -o "$part"
+  else
+    "$VERUS" "${args[@]}" --compile "${RF[@]}" -o "$part"
+  fi
+  mv -f "$part" "$OUT/lib${NAME}_verus.a"
+  echo "built$([ "$MODE" = "--no-verify" ] && echo " (unverified)") $OUT/lib${NAME}_verus.a"
 fi

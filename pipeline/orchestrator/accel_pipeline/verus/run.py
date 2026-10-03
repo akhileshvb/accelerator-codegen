@@ -44,9 +44,20 @@ def run_verus_pipeline(
         except PipelineStop as exc:
             run.note(f"stopped in {name}: {exc}")
             print(f"verus pipeline stopped in {name}: {exc}", file=sys.stderr)
+            _print_usage(ctx)
             return 1
     if not dry_run and stage == "all":
         state.stage = "done"
         state.save(ctx)
     print("verus pipeline complete" + (" (dry run)" if dry_run else ""), file=sys.stderr)
+    _print_usage(ctx)
     return 0
+
+
+def _print_usage(ctx) -> None:
+    """Agent usage of the whole run, per stage (also in <artifacts>/usage.jsonl)."""
+    from accel_pipeline.verus import usage
+
+    sm = usage.summary(ctx.art)
+    if sm["stages"]:
+        print("agent usage (cost estimated from per-token prices):\n" + usage.format_summary(sm), file=sys.stderr)

@@ -65,7 +65,7 @@ presets:
   # Verus pipeline only (the C++ pipeline keeps the presets above).
   # Reviews: a different family from the builders (OpenAI, Xiaomi).
   verus_reasoning: openai/gpt-6.1-sol   # analysis, kernel + proofs, kernel fix, optimization
-  verus_code: xiaomi/mimo-v2.6-pro      # tests, glue (gated by validation / the contract check)
+  verus_code: openai/gpt-6.1-sol #xiaomi/mimo-v2.6-pro      # tests, glue (gated by validation / the contract check)
   verus_review: anthropic/claude-sonnet-5   # spec / obligations / glue audits, critic, final audit
 
 stages:
@@ -79,7 +79,7 @@ stages:
   verus_glue_audit: verus_review
   verus_kernel: verus_reasoning
   verus_kernel_fix: verus_reasoning
-  verus_opt_worker: verus_reasoning
+  verus_opt_worker: verus_code
   verus_audit: verus_review
   analysis: reasoning
   adversarial_tests: code

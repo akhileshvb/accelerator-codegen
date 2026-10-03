@@ -3,8 +3,8 @@
 Make one measured improvement to the accelerator, keeping it verified and
 correct. The pipeline accepts your change only if it still verifies with
 nothing added to the trusted base, passes the frozen tests (differential and
-concurrent snapshots, Verus store), and raises the score (read speedup ×
-write-mix speedup, measured by the pipeline on SF1) by more than the noise.
+concurrent snapshots, Verus store), and raises the score (steady-state read speedup ×
+write-mix speedup, measured by the pipeline on SF1; build time excluded) by more than the noise.
 Otherwise your change is reverted.
 
 Current best score: {{best_score}} (run-to-run noise {{noise_pct}}%).
@@ -13,8 +13,17 @@ Attempts so far:
 
 {{history}}
 
-Profile of the current best (perf on an SF1 bench; `share` is the fraction
-of samples):
+The objective is **steady-state** performance: query latency (reads) and the
+cost of keeping the aux state current under writes (maintenance). The build
+is a one-time cost: it is not in the score and not worth optimizing, and the
+profiles below exclude it.
+
+Profiles of the current best (perf on SF1, steady state only): `reads` samples
+accelerated queries; `maintenance` samples writes applied through the
+accelerator (it includes the engine executing the write itself, which you
+cannot remove; `overhead_us_per_write` is what the accelerator adds to a
+write, the part you can reduce). `share` is the fraction of that axis's
+samples; hotspot names are `<axis>:<function or area>`.
 
 ```
 {{profile}}

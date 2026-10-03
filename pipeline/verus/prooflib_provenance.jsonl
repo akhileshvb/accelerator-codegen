@@ -1,0 +1,1 @@
+{"ts": 1790979569.788576, "query": 21, "workload": "tpch_q21_aux", "note": "Publish the staged generic int/byte-sequence composite-key order and transitivity lemmas. The Q21 dependent kernel now verifies: 203 checks, zero errors, 7.5 seconds, trusted-base clean; proof-enabled differential and concurrent snapshot tests both pass.", "added_lines": 30}

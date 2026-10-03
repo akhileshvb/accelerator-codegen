@@ -316,10 +316,10 @@ def build_runner(ctx: VerusContext, *, proofs: bool = True) -> dict[str, Any]:
     lib = verify(ctx, compile_lib=True, proofs=proofs)
     if not lib["ok"]:
         return {"ok": False, "stage": "verify", **lib}
-    sync_glue(ctx)
     if not glue_files(ctx):
         return {"ok": False, "stage": "build", "output": "no host glue: glue/*.cpp is empty"}
     with file_lock(Path(ctx.build_dir) / ".verus_build.lock"):
+        sync_glue(ctx)  # under the lock: another pipeline's build never compiles a half-copied glue
         proc = _run(["cmake", "--build", ctx.build_dir, "--target", "verus_kit_runner", "-j",
                      str(os.cpu_count() or 8)], timeout=7200)
     if proc.returncode != 0:
@@ -329,6 +329,19 @@ def build_runner(ctx: VerusContext, *, proofs: bool = True) -> dict[str, Any]:
 
 
 # ───────────────────────────── runner ─────────────────────────────
+
+
+def bench_lock(ctx: VerusContext) -> Path:
+    """One lock for every timed run on the machine, across pipelines and trees (it
+    lives in the shared cargo build dir, which every sandbox mounts), so parallel
+    pipelines do not distort each other's measurements."""
+    return cargo_target_dir(ctx) / ".bench.lock"
+
+
+def drop_db(db: Path) -> None:
+    """Remove a scratch database copy (an SF1 copy is ~300 MB; benches make many)."""
+    for p in (db, Path(str(db) + ".wal")):
+        p.unlink(missing_ok=True)
 
 
 def db_copy(ctx: VerusContext, which: str, tag: str) -> Path:
@@ -375,12 +388,32 @@ def runner_env(ctx: VerusContext, **extra: str) -> dict[str, str]:
     return {"ACCEL_VERUS_SCHEMA_SQL": str(schema_constraints(ctx)), **extra}
 
 
+def freeze_runner(ctx: VerusContext, name: str) -> Path:
+    """A copy of the built runner and the library holding the kernel, so two
+    kernels can be benchmarked alternately without rebuilding in between."""
+    d = Path(ctx.run_dir) / "runners" / name
+    tmp = d.with_name(name + ".tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    with file_lock(Path(ctx.build_dir) / ".verus_build.lock", shared=True):
+        shutil.copy2(ctx.runner, tmp / ctx.runner.name)
+        for lib in Path(ctx.build_dir).glob("libaccelerator_codegen.so*"):
+            shutil.copy2(lib, tmp / lib.name)
+    shutil.rmtree(d, ignore_errors=True)
+    tmp.rename(d)
+    return d
+
+
 def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus", fault: str = "",
-            timeout: float = 1800) -> dict[str, Any]:
+            timeout: float = 1800, runner: Path | None = None) -> dict[str, Any]:
     env = runner_env(ctx, ACCEL_AUX_STORE=store, ACCEL_VERUS_KIT_FAULT=fault)
+    if runner is not None:  # a frozen copy (freeze_runner): its own kernel library first
+        env["LD_LIBRARY_PATH"] = str(runner) + (":" + os.environ["LD_LIBRARY_PATH"]
+                                                if os.environ.get("LD_LIBRARY_PATH") else "")
+    exe = runner / ctx.runner.name if runner is not None else ctx.runner
     # shared: runs may overlap each other, never a build relinking the runner under them
     with file_lock(Path(ctx.build_dir) / ".verus_build.lock", shared=True):
-        proc = _run([str(ctx.runner), *args], env=env, timeout=timeout)
+        proc = _run([str(exe), *args], env=env, timeout=timeout)
     line = next((l for l in reversed(proc.stdout.splitlines()) if l.startswith("{")), "")
     try:
         data = json.loads(line) if line else {}
@@ -514,14 +547,16 @@ def glue_contract(ctx: VerusContext) -> dict[str, Any]:
 
 
 def bench(ctx: VerusContext, mixes: list[float], *, store: str = "verus", tag: str = "bench",
-          reps: int | None = None, ops: int | None = None) -> dict[str, Any]:
+          reps: int | None = None, ops: int | None = None, runner: Path | None = None) -> dict[str, Any]:
     cfg = ctx.setting("optimization.bench", {}) or {}
     db = db_copy(ctx, "bench", tag)
-    lock = Path(ctx.pipeline_root) / "verus_runs" / ".bench.lock"
-    with file_lock(lock):  # timed runs never overlap another run's
-        r = _runner(ctx, ["bench", str(db), ctx.accel_id, str(tests_dir(ctx)), str(reps or cfg.get("reps", 5)),
-                          ",".join(str(m) for m in mixes), str(ops or cfg.get("ops", 200))], store=store,
-                    timeout=float(ctx.setting("bench_timeout_sec", 3600)))
+    try:
+        with file_lock(bench_lock(ctx)):  # timed runs never overlap another run's (any tree)
+            r = _runner(ctx, ["bench", str(db), ctx.accel_id, str(tests_dir(ctx)), str(reps or cfg.get("reps", 5)),
+                              ",".join(str(m) for m in mixes), str(ops or cfg.get("ops", 200))], store=store,
+                        timeout=float(ctx.setting("bench_timeout_sec", 3600)), runner=runner)
+    finally:
+        drop_db(db)
     r["ok"] = r.get("exit") == 0 and "error" not in r
     return r
 
@@ -542,13 +577,67 @@ def score(result: dict[str, Any], ctx: VerusContext) -> float:
 
 
 def profile(ctx: VerusContext, mixes: list[float] | None = None) -> dict[str, Any]:
-    """perf profile of a short bench: hotspots by symbol, grouped (kernel / glue / engine)."""
-    db = db_copy(ctx, "bench", "profile")
-    data = Path(ctx.run_dir) / "perf.data"
-    args = [str(ctx.runner), "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), "3",
-            ",".join(str(m) for m in (mixes or [0.05])), "100"]
-    rec = _run(["perf", "record", "-F", "499", "-g", "-o", str(data), "--", *args],
-               env=runner_env(ctx, ACCEL_AUX_STORE="verus", VERUS_KIT_ACCEL_ONLY="1"), timeout=3600)
+    """perf profiles of the steady state, one per axis of the score: `reads`
+    (accelerated queries) and `maintenance` (writes applied through the
+    accelerator). The build is a one-time cost and is not sampled: perf starts
+    paused and the runner enables it after the build."""
+    out: dict[str, Any] = {"ok": True, "note": "steady state only (build excluded); shares are per axis"}
+    phases = {"reads": ("reads", "3", "0", int(ctx.setting("optimization.profile_read_reps", 300))),
+              "maintenance": ("writes", "1", "1.0", int(ctx.setting("optimization.profile_write_ops", 300)))}
+    for axis, (phase, reps, mix, n) in phases.items():
+        if phase == "reads":
+            reps, ops = str(n), "1"
+        else:
+            ops = str(n)
+        r = _profile_phase(ctx, axis, phase, reps, mix, ops)
+        if axis == "maintenance" and r.get("ok"):
+            r.update(_write_overhead(ctx))
+        out[axis] = r
+        if not r.get("ok"):
+            out["ok"] = False
+    return out
+
+
+def _write_overhead(ctx: VerusContext, ops: int = 50) -> dict[str, Any]:
+    """What the accelerator adds per write: the same writes plain vs applied
+    through it (the engine executing the write itself is in both)."""
+    db = db_copy(ctx, "bench", "profile_overhead")
+    try:
+        with file_lock(bench_lock(ctx)):
+            p = _run([str(ctx.runner), "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), "1", "1.0", str(ops)],
+                     env=runner_env(ctx, ACCEL_AUX_STORE="verus", VERUS_KIT_BENCH_PHASE="writes"), timeout=3600)
+    finally:
+        drop_db(db)
+    try:
+        mx = json.loads(p.stdout.strip().splitlines()[-1])["mixes"][0]
+    except (ValueError, KeyError, IndexError):
+        return {"overhead_note": "could not measure: " + _tail(p.stderr, 500)}
+    plain, accel = mx["base_us"] / ops, mx["accel_us"] / ops
+    return {"plain_write_us": round(plain), "accel_write_us": round(accel),
+            "overhead_us_per_write": round(accel - plain),
+            "overhead_note": "accel_write_us - plain_write_us: the maintenance cost the accelerator adds; "
+                             "the rest is the engine executing the write (not removable)"}
+
+
+def _profile_phase(ctx: VerusContext, axis: str, phase: str, reps: str, mix: str, ops: str) -> dict[str, Any]:
+    db = db_copy(ctx, "bench", f"profile_{axis}")
+    run_dir = Path(ctx.run_dir)
+    data = run_dir / f"perf_{axis}.data"
+    ctl, ack = run_dir / f"perf_{axis}.ctl", run_dir / f"perf_{axis}.ack"
+    for f in (ctl, ack):
+        f.unlink(missing_ok=True)
+        os.mkfifo(f)
+    args = [str(ctx.runner), "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), reps, mix, ops]
+    env = runner_env(ctx, ACCEL_AUX_STORE="verus", VERUS_KIT_ACCEL_ONLY="1", VERUS_KIT_BENCH_PHASE=phase,
+                     VERUS_KIT_PERF_CTL=str(ctl), VERUS_KIT_PERF_ACK=str(ack))
+    try:
+        with file_lock(bench_lock(ctx)):
+            rec = _run(["perf", "record", "-F", "1999", "-g", "-D", "-1", "--control", f"fifo:{ctl},{ack}",
+                        "-o", str(data), "--", *args], env=env, timeout=3600)
+    finally:
+        drop_db(db)
+        for f in (ctl, ack):
+            f.unlink(missing_ok=True)
     if rec.returncode != 0:
         return {"ok": False, "error": _tail(rec.stderr, 2000)}
     rep = _run(["perf", "report", "-i", str(data), "--stdio", "--no-children", "--sort", "symbol",
@@ -557,13 +646,13 @@ def profile(ctx: VerusContext, mixes: list[float] | None = None) -> dict[str, An
     for line in rep.stdout.splitlines():
         m = re.match(r"\s*([\d.]+)%\s+\[[.k]\]\s+(.*)$", line)
         if m:
-            sym = m.group(2).strip()
-            hotspots.append({"share": round(float(m.group(1)) / 100.0, 4), "symbol": sym[:200],
+            sym = re.sub(r"(\s+-)+\s*$", "", m.group(2)).strip()  # perf pads with empty columns ("  -  -")
+            hotspots.append({"share": round(float(m.group(1)) / 100.0, 4), "symbol": sym[:140],
                              "area": _area(ctx, sym)})
     by_area: dict[str, float] = {}
     for h in hotspots:
         by_area[h["area"]] = round(by_area.get(h["area"], 0.0) + h["share"], 4)
-    return {"ok": True, "hotspots": hotspots[:30], "by_area": by_area}
+    return {"ok": True, "hotspots": hotspots[:12], "by_area": by_area}
 
 
 def _area(ctx: VerusContext, sym: str) -> str:

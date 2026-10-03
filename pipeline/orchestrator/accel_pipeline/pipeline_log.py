@@ -578,6 +578,12 @@ def format_usage(usage: dict[str, int] | None) -> str:
     if cache_read or cache_write:
         parts.append(f"cache_r={cache_read}")
         parts.append(f"cache_w={cache_write}")
+    if usage.get("model_calls") is not None:
+        parts.append(f"turns={usage['model_calls']}")
+    if usage.get("tool_calls") is not None:
+        parts.append(f"tools={usage['tool_calls']}")
+    if usage.get("cost_usd") is not None:
+        parts.append(f"cost=${usage['cost_usd']:.2f}")
     return " ".join(parts)
 
 
@@ -753,6 +759,9 @@ def _format_line(payload: dict[str, Any]) -> str:
             "total_tokens": payload.get("total_tokens"),
             "cache_read_tokens": payload.get("cache_read_tokens", 0),
             "cache_write_tokens": payload.get("cache_write_tokens", 0),
+            "model_calls": payload.get("model_calls"),
+            "tool_calls": payload.get("tool_calls"),
+            "cost_usd": payload.get("cost_usd"),
         }
         if not usage["total_tokens"]:
             usage = None

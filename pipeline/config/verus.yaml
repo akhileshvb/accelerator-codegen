@@ -51,12 +51,13 @@ optimization:
   min_attempts: 3
   hotspot_share: 0.10           # profile hotspots at or above this share need an attempt
   max_structural_moves: 2       # aux-state family changes (inputs re-freeze)
-  min_improvement_pct: 2.0      # accept threshold (raised to 2x measured noise)
+  min_improvement_pct: 2.0      # accept threshold on the paired median gain
   proof_cost_weight: 0.0        # score penalty per doubling of verification time
   bench:
     reps: 5
     ops: 200
     write_mix_choices: [0.01, 0.05, 0.1]
     write_mix_count: 2
+    paired_rounds: 3            # acceptance: best and candidate benched alternately, medians compared
     read_score_weight: 0.75
     write_score_weight: 0.25

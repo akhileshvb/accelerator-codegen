@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import random
+import shutil
+import statistics
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -543,18 +545,68 @@ def integration(r: Run) -> None:
 def _hotspots(ctx: VerusContext, prof: dict[str, Any]) -> list[str]:
     share = float(ctx.setting("optimization.hotspot_share", 0.10))
     agg: dict[str, float] = {}
-    for h in prof.get("hotspots") or []:
-        name = actions.hotspot_name(h)
-        agg[name] = agg.get(name, 0.0) + float(h["share"])
+    for axis in ("reads", "maintenance"):  # per axis of the score; names say which
+        a = prof.get(axis) or {}
+        if axis == "maintenance" and "overhead_us_per_write" in a:
+            # writes are mostly the engine executing the write itself; only what
+            # the accelerator adds is a target
+            if a["overhead_us_per_write"] < share * max(a.get("plain_write_us") or 0, 1):
+                continue
+        for h in a.get("hotspots") or []:
+            name = f"{axis}:{actions.hotspot_name(h)}"
+            agg[name] = agg.get(name, 0.0) + float(h["share"])
     return sorted((n for n, s in agg.items() if s >= share), key=lambda n: -agg[n])
 
 
-def _full_bench(r: Run, tag: str) -> tuple[float, dict[str, Any]]:
+def _full_bench(r: Run, tag: str, runner: Path | None = None) -> tuple[float, dict[str, Any]]:
     mixes = [float(x) for x in r.ctx.setting("optimization.bench.write_mix_choices", [0.01, 0.05, 0.1])]
-    b = actions.bench(r.ctx, mixes, tag=tag)
+    b = actions.bench(r.ctx, mixes, tag=tag, runner=runner)
     if not b["ok"]:
         return 0.0, b
     return actions.score(b, r.ctx), b
+
+
+def _paired_bench(r: Run, tag: str, best: Path, cand: Path) -> dict[str, Any]:
+    """Best and candidate benched alternately (best, cand, cand, best, ...), so
+    both see the same machine conditions; compared by their median scores.
+    A score stored from an earlier run drifts with the machine's load by more
+    than the gains being judged."""
+    rounds = int(r.ctx.setting("optimization.bench.paired_rounds", 3))
+    scores: dict[str, list[float]] = {"best": [], "cand": []}
+    benches: dict[str, list[dict[str, Any]]] = {"best": [], "cand": []}
+    for i in range(rounds):
+        order = [("best", best), ("cand", cand)] if i % 2 == 0 else [("cand", cand), ("best", best)]
+        for who, runner in order:
+            s, b = _full_bench(r, f"{tag}_{who}_{i}", runner=runner)
+            if not s:
+                return {"ok": False, "who": who, "bench": b}
+            scores[who].append(s)
+            benches[who].append(b)
+    med = {k: statistics.median(v) for k, v in scores.items()}
+    mid = {k: benches[k][v.index(sorted(v)[len(v) // 2])] for k, v in scores.items()}
+    spread = (max(scores["best"]) - min(scores["best"])) / med["best"] * 100.0
+    wins = sum(c > b for c, b in zip(scores["cand"], scores["best"]))
+    return {"ok": True, "best": med["best"], "cand": med["cand"], "scores": scores, "wins": wins,
+            "rounds": rounds, "best_spread_pct": spread, "cand_bench": mid["cand"], "best_bench": mid["best"]}
+
+
+def _best_runner_frozen(ctx: VerusContext) -> Path:
+    d = Path(ctx.run_dir) / "runners" / "best"
+    if not (d / ctx.runner.name).is_file():
+        raise PipelineStop("optimization: no frozen runner for the best kernel")
+    return d
+
+
+def _best_runner(r: Run) -> Path:
+    """The frozen runner of the best kernel (built from its snapshot if missing)."""
+    d = Path(r.ctx.run_dir) / "runners" / "best"
+    if not (d / r.ctx.runner.name).is_file():
+        workspace.restore_kernel(r.ctx, "best")
+        b = actions.build_runner(r.ctx)
+        if not b["ok"]:
+            raise PipelineStop("optimization: the best kernel no longer builds: " + _brief(b, 3000))
+        actions.freeze_runner(r.ctx, "best")
+    return d
 
 
 def optimization(r: Run) -> None:
@@ -575,6 +627,7 @@ def optimization(r: Run) -> None:
         s2, _ = _full_bench(r, "baseline_2")
         if not s1 or not s2:
             raise PipelineStop("optimization: the baseline bench failed: " + _brief(b1, 3000))
+        actions.freeze_runner(ctx, "best")
         o.update(best_snapshot="best", best_score=(s1 + s2) / 2, noise_pct=abs(s1 - s2) / ((s1 + s2) / 2) * 100,
                  best_verify_seconds=b.get("verify_seconds") or 1.0, structural_moves=0, attempt=0,
                  best_bench=b1, history=[])
@@ -585,7 +638,36 @@ def optimization(r: Run) -> None:
         o["stop"] = asdict(st)
         r.state.save(ctx)
         r.note(f"baseline score {o['best_score']:.3f} (noise {o['noise_pct']:.1f}%), hotspots {st.hotspots}")
-    threshold = max(float(opt.get("min_improvement_pct", 2.0)), 2 * float(o.get("noise_pct", 0.0)))
+    else:  # resuming
+        if workspace.differs(ctx, "best"):
+            # an interrupted attempt left a kernel: judge it (no fix rounds) rather than drop it
+            snap = workspace.snapshot_kernel(ctx, "interrupted")
+            _best_runner(r)
+            workspace.restore_kernel(ctx, "interrupted")
+            o["attempt"] = n = int(o.get("attempt", 0)) + 1
+            outcome, gain = _try_candidate(r, o, float(opt.get("min_improvement_pct", 2.0)), False, "",
+                                           fix_rounds=0)
+            st.record(Attempt(n, "interrupted attempt", "both", False, outcome == "accepted", gain, outcome))
+            o.setdefault("history", []).append({"attempt": n, "target": "interrupted attempt", "axis": "both",
+                                                "outcome": outcome, "gain_pct": round(gain, 2),
+                                                "summary": "the kernel an interrupted attempt left, judged on resume"})
+            o["stop"] = asdict(st)
+            r.state.save(ctx)
+            r.note(f"attempt {n} (interrupted, judged on resume): {outcome}")
+            shutil.rmtree(snap, ignore_errors=True)
+        workspace.restore_kernel(ctx, "best")
+        _best_runner(r)
+    if "reads" not in (o.get("profile") or {}):  # a profile from before the per-axis steady-state one
+        b = actions.build_runner(ctx)
+        prof = actions.profile(ctx) if b["ok"] else {"ok": False}
+        if prof.get("ok"):
+            st.hotspots = _hotspots(ctx, prof)
+            o["profile"] = prof
+            o["stop"] = asdict(st)
+            r.state.save(ctx)
+            r.note(f"re-profiled the steady state: hotspots {st.hotspots}")
+    # paired benches cancel the machine's drift: the bar is the configured minimum
+    threshold = float(opt.get("min_improvement_pct", 2.0))
     message = ""
     while True:
         stop, why = should_stop(st, cfg)
@@ -651,7 +733,7 @@ def _opt_extra(r: Run, st: StopState, o: dict[str, Any], message: str, mixes: li
         "noise_pct": f"{o.get('noise_pct', 0):.1f}",
         "history": "| # | target | axis | outcome | gain % |\n|---|---|---|---|---|\n" + "\n".join(lines)
         if lines else "(no attempts yet)",
-        "profile": _brief(o.get("profile") or {"note": "no profile yet"}, 5000),
+        "profile": _brief(o.get("profile") or {"note": "no profile yet"}, 8000),
         "owed": "\n".join(f"- {x}" for x in uncovered(st, cfg)) or "- nothing: you may stop when gains run out",
         "message": message or "(none)",
         "mixes": ",".join(str(m) for m in (mixes or [])),
@@ -660,7 +742,7 @@ def _opt_extra(r: Run, st: StopState, o: dict[str, Any], message: str, mixes: li
 
 
 def _try_candidate(r: Run, o: dict[str, Any], threshold: float, structural: bool,
-                   session: str = "") -> tuple[str, float]:
+                   session: str = "", fix_rounds: int | None = None) -> tuple[str, float]:
     """Gate and score the workspace's candidate; keep it (accepted) or restore the best."""
     ctx = r.ctx
     inputs_changed = (ctx.ws / "inputs" / "q.inputs").read_text() != (ctx.ws / "frozen" / "q.inputs").read_text()
@@ -691,15 +773,18 @@ def _try_candidate(r: Run, o: dict[str, Any], threshold: float, structural: bool
             return reject(why[:300])
         r.state.frozen.update(actions.glue_hashes(ctx))
     gates = _kernel_gates(r, snapshots_too=True)
-    gates = _fix_loop(r, gates, int(ctx.setting("optimization.attempt_gate_fix_rounds", 2)), snapshots_too=True,
+    rounds = int(ctx.setting("optimization.attempt_gate_fix_rounds", 2)) if fix_rounds is None else fix_rounds
+    gates = _fix_loop(r, gates, rounds, snapshots_too=True,
                       why="attempt", session=("verus_opt_worker", session))
     actions.write_result(ctx, f"attempt_{o['attempt']}_gates", gates)
     if not gates["ok"]:
         return reject(f"gates failed ({gates.get('stage')})")
-    score, bench = _full_bench(r, f"attempt_{o['attempt']}")
-    actions.write_result(ctx, f"attempt_{o['attempt']}_bench", bench)
-    if not score:
-        return reject("bench failed")
+    cand_runner = actions.freeze_runner(ctx, "candidate")
+    pb = _paired_bench(r, f"attempt_{o['attempt']}", _best_runner_frozen(ctx), cand_runner)
+    actions.write_result(ctx, f"attempt_{o['attempt']}_bench", pb)
+    if not pb["ok"]:
+        return reject(f"bench failed ({pb.get('who')})")
+    score, bench = pb["cand"], pb["cand_bench"]
     # proof cost: a slower proof needs a larger gain
     w = float(ctx.setting("optimization.proof_cost_weight", 0.0))
     t_best, t_new = float(o.get("best_verify_seconds") or 1.0), float(gates.get("verify_seconds") or 1.0)
@@ -707,11 +792,16 @@ def _try_candidate(r: Run, o: dict[str, Any], threshold: float, structural: bool
         import math
 
         score /= 1.0 + w * math.log2(t_new / t_best)
-    gain = (score / float(o["best_score"]) - 1.0) * 100.0
-    if gain <= threshold:
-        return reject(f"score {score:.3f} vs best {o['best_score']:.3f} ({gain:+.1f}%, needs > {threshold:.1f}%)")
+    gain = (score / pb["best"] - 1.0) * 100.0
+    majority = pb["wins"] * 2 > pb["rounds"]
+    if gain <= threshold or not majority:
+        return reject(f"paired median {score:.3f} vs best {pb['best']:.3f} ({gain:+.1f}%, needs > {threshold:.1f}%; "
+                      f"won {pb['wins']}/{pb['rounds']} pairs)")
     workspace.snapshot_kernel(ctx, "best")
-    o.update(best_score=score, best_bench=bench, best_verify_seconds=t_new)
+    shutil.rmtree(Path(ctx.run_dir) / "runners" / "best", ignore_errors=True)
+    cand_runner.rename(Path(ctx.run_dir) / "runners" / "best")
+    o.update(best_score=score, best_bench=bench, best_verify_seconds=t_new,
+             noise_pct=pb["best_spread_pct"])
     if inputs_changed:
         o["structural_moves"] = int(o.get("structural_moves", 0)) + 1
     return "accepted", gain

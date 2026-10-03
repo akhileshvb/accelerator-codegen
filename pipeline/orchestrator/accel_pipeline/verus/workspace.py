@@ -146,6 +146,22 @@ def snapshot_kernel(ctx: VerusContext, name: str) -> Path:
     return d
 
 
+def _files(d: Path) -> dict[str, bytes]:
+    if not d.is_dir():
+        return {}
+    return {str(p.relative_to(d)): p.read_bytes() for p in sorted(d.rglob("*"))
+            if p.is_file() and "target" not in p.relative_to(d).parts and p.suffix != ".lock"}
+
+
+def differs(ctx: VerusContext, name: str) -> bool:
+    """Whether the workspace's kernel, inputs or glue differ from snapshot `name`."""
+    d = Path(ctx.run_dir) / "snapshots" / name
+    pairs = [(ctx.ws / "crate" / "src", d / "crate_src"), (ctx.ws / "inputs", d / "inputs")]
+    if (d / "glue").is_dir():
+        pairs.append((ctx.ws / "glue", d / "glue"))
+    return any(_files(a) != _files(b) for a, b in pairs)
+
+
 def restore_kernel(ctx: VerusContext, name: str) -> None:
     d = Path(ctx.run_dir) / "snapshots" / name
     _copy(d / "crate_src", ctx.ws / "crate" / "src")

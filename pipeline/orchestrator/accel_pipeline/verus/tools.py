@@ -106,7 +106,7 @@ def verus_bench(write_mixes: str = "0.01,0.05") -> str:
 
 
 def verus_profile() -> str:
-    """perf profile of a short SF1 bench: hotspots by symbol and area (kernel, glue, store, engine)."""
+    """Steady-state perf profiles on SF1 (build excluded), one per axis: `reads` and `maintenance` (writes); hotspots by symbol and area (kernel, glue, store, engine)."""
     ctx = _ctx()
     b = actions.build_runner(ctx)
     if not b["ok"]:
