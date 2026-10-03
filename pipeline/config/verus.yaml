@@ -18,6 +18,7 @@ bench_db: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb   # optimizat
 # Preflight probes it and stops if anything else of $HOME is visible.
 # `none` runs codex unsandboxed (approvals are bypassed either way).
 sandbox: bwrap
+agent_retries: 2                # an agent step failing on a provider hiccup (429/5xx, dropped stream) is retried
 # Independent stages run concurrently: the spec audit with the analysis; after
 # freeze B, the obligations audit, the tests and the glue.  false: one at a time.
 parallel_stages: true
@@ -30,6 +31,9 @@ stages:
   analysis_revisions: 1         # critic -> analysis revision rounds (analysis revises in its own session)
   adversarial_revisions: 2      # strengthen rounds when the fault self-check misses a bug
   kernel_fix_rounds: 4          # per kernel phase (code, then proofs): the failure goes back to the kernel agent's session
+  escalate_after_stalled_rounds: 2  # fix rounds in a row without progress -> the session continues on
+                                    # <stage>_escalated's model (models config: verus_heavy)
+  escalation_extra_rounds: 2    # rounds added when escalating
   glue_fix_rounds: 3            # glue fix rounds (build, contract check, glue audit)
 
 gates:
@@ -42,6 +46,8 @@ gates:
 # the progress stop is the usual exit; it may fire only after a minimum of
 # profile-guided exploration.
 optimization:
+  max_concurrent: 4             # machine-wide: pipelines optimizing at once (their benchmarks take turns);
+                                # the others wait before the stage, their budget not running
   stage_budget_sec: 3600        # whole loop (1 h); then the best kernel goes to the audit
   attempt_timeout_sec: 2700     # one attempt's agent run
   attempt_gate_fix_rounds: 2    # verify / test fix rounds inside an attempt

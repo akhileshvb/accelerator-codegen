@@ -35,6 +35,7 @@ class AgentResult:
     seconds: float
     error: str = ""
     session_id: str = ""  # the codex session (resume it to continue with its context)
+    timed_out: bool = False
 
 
 def render(ctx: VerusContext, prompt: str, extra: dict[str, str] | None = None) -> str:
@@ -168,7 +169,7 @@ def run_agent(
                                "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
     (pdir / f"{stage}_{n}.out.txt").write_text(result.final_text or result.error or "", encoding="utf-8")
     return AgentResult(result.status == "finished", result.final_text or "", seconds, result.error or "",
-                       str(result.metadata.get("session_id") or ""))
+                       str(result.metadata.get("session_id") or ""), bool(result.metadata.get("timed_out")))
 
 
 def _replay(ctx: VerusContext, root: Path, stage: str, n: int) -> AgentResult:

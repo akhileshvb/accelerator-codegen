@@ -127,7 +127,7 @@ core::QueryArguments BuildArguments(const SharedQueryCatalogEntry &entry,
         } else if constexpr (std::is_same_v<Payload, double>) {
           return ::duckdb::Value::DOUBLE(payload);
         } else if constexpr (std::is_same_v<Payload, core::ScaledDecimal>) {
-          return ::duckdb::Value::DECIMAL(payload.value, 15, payload.scale);
+          return ::duckdb::Value::DECIMAL(payload.value, 18, payload.scale); // any int64 payload
         } else if constexpr (std::is_same_v<Payload, core::AuxDate>) {
           ::duckdb::date_t date{};
           date.days = payload.days_since_epoch;

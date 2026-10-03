@@ -6,6 +6,7 @@ agent to act on (errors are trimmed).  Nothing here calls an agent.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -319,9 +320,21 @@ def build_runner(ctx: VerusContext, *, proofs: bool = True) -> dict[str, Any]:
     if not glue_files(ctx):
         return {"ok": False, "stage": "build", "output": "no host glue: glue/*.cpp is empty"}
     with file_lock(Path(ctx.build_dir) / ".verus_build.lock"):
-        sync_glue(ctx)  # under the lock: another pipeline's build never compiles a half-copied glue
+        # under the lock: another pipeline's build never compiles a half-copied glue
+        before = {p.name: p.read_bytes() for p in ctx.kit_dir.glob("*.[ch]pp")} if ctx.kit_dir.is_dir() else {}
+        sync_glue(ctx)
         proc = _run(["cmake", "--build", ctx.build_dir, "--target", "verus_kit_runner", "-j",
                      str(os.cpu_count() or 8)], timeout=7200)
+        if proc.returncode != 0:
+            # every pipeline links every query's glue: put back the last glue that built, so
+            # this query's broken glue never fails another pipeline's build
+            for p in ctx.kit_dir.glob("*.[ch]pp"):
+                if p.name not in before:
+                    p.unlink()
+            for name, data in before.items():
+                (ctx.kit_dir / name).write_bytes(data)
+        else:
+            freeze_runner(ctx, "current", locked=True)
     if proc.returncode != 0:
         errs = "\n".join(l for l in (proc.stdout + proc.stderr).splitlines() if "error" in l.lower())
         return {"ok": False, "stage": "build", "output": _tail(errs or proc.stdout + proc.stderr, 8000)}
@@ -336,6 +349,33 @@ def bench_lock(ctx: VerusContext) -> Path:
     lives in the shared cargo build dir, which every sandbox mounts), so parallel
     pipelines do not distort each other's measurements."""
     return cargo_target_dir(ctx) / ".bench.lock"
+
+
+@contextmanager
+def machine_slot(ctx: VerusContext, kind: str, slots: int, note=None) -> Iterator[int]:
+    """One of `slots` machine-wide places for `kind` (e.g. optimization: its benchmarks take
+    turns on one machine, so only a few pipelines optimize at once).  Waits for a free one."""
+    d = cargo_target_dir(ctx) / f".{kind}_slots"
+    d.mkdir(parents=True, exist_ok=True)
+    waited = False
+    while True:
+        for i in range(max(slots, 1)):
+            fh = open(d / f"{i}.lock", "a+")
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                fh.close()
+                continue
+            try:
+                yield i
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+                fh.close()
+            return
+        if not waited and note:
+            note(f"waiting for one of {slots} machine-wide {kind} slots")
+            waited = True
+        time.sleep(30)
 
 
 def drop_db(db: Path) -> None:
@@ -388,14 +428,15 @@ def runner_env(ctx: VerusContext, **extra: str) -> dict[str, str]:
     return {"ACCEL_VERUS_SCHEMA_SQL": str(schema_constraints(ctx)), **extra}
 
 
-def freeze_runner(ctx: VerusContext, name: str) -> Path:
+def freeze_runner(ctx: VerusContext, name: str, *, locked: bool = False) -> Path:
     """A copy of the built runner and the library holding the kernel, so two
-    kernels can be benchmarked alternately without rebuilding in between."""
+    kernels can be benchmarked alternately without rebuilding in between.
+    `locked`: the caller holds the build lock already."""
     d = Path(ctx.run_dir) / "runners" / name
     tmp = d.with_name(name + ".tmp")
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
-    with file_lock(Path(ctx.build_dir) / ".verus_build.lock", shared=True):
+    with contextlib.nullcontext() if locked else file_lock(Path(ctx.build_dir) / ".verus_build.lock", shared=True):
         shutil.copy2(ctx.runner, tmp / ctx.runner.name)
         for lib in Path(ctx.build_dir).glob("libaccelerator_codegen.so*"):
             shutil.copy2(lib, tmp / lib.name)
@@ -404,16 +445,31 @@ def freeze_runner(ctx: VerusContext, name: str) -> Path:
     return d
 
 
+def current_runner(ctx: VerusContext) -> Path | None:
+    """This pipeline's copy of the runner from its last successful build (build_runner
+    freezes it): its tests run from it, so they neither hold the shared build lock
+    (another pipeline's rebuild is never starved) nor see another pipeline's relink."""
+    d = Path(ctx.run_dir) / "runners" / "current"
+    return d if (d / ctx.runner.name).is_file() else None
+
+
+def runner_exe(ctx: VerusContext, runner: Path | None = None) -> tuple[str, dict[str, str]]:
+    """The runner binary to run (a frozen copy when there is one) and the environment it needs."""
+    runner = runner or current_runner(ctx)
+    if runner is None:
+        return str(ctx.runner), {}
+    lib_path = str(runner) + (":" + os.environ["LD_LIBRARY_PATH"] if os.environ.get("LD_LIBRARY_PATH") else "")
+    return str(runner / ctx.runner.name), {"LD_LIBRARY_PATH": lib_path}
+
+
 def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus", fault: str = "",
             timeout: float = 1800, runner: Path | None = None) -> dict[str, Any]:
     env = runner_env(ctx, ACCEL_AUX_STORE=store, ACCEL_VERUS_KIT_FAULT=fault)
-    if runner is not None:  # a frozen copy (freeze_runner): its own kernel library first
-        env["LD_LIBRARY_PATH"] = str(runner) + (":" + os.environ["LD_LIBRARY_PATH"]
-                                                if os.environ.get("LD_LIBRARY_PATH") else "")
-    exe = runner / ctx.runner.name if runner is not None else ctx.runner
-    # shared: runs may overlap each other, never a build relinking the runner under them
-    with file_lock(Path(ctx.build_dir) / ".verus_build.lock", shared=True):
-        proc = _run([str(exe), *args], env=env, timeout=timeout)
+    exe, extra = runner_exe(ctx, runner)  # a frozen copy: its own kernel library first
+    env.update(extra)
+    # the shared binary only before this pipeline's first build (shared lock: never under a relink)
+    with contextlib.nullcontext() if extra else file_lock(Path(ctx.build_dir) / ".verus_build.lock", shared=True):
+        proc = _run([exe, *args], env=env, timeout=timeout)
     line = next((l for l in reversed(proc.stdout.splitlines()) if l.startswith("{")), "")
     try:
         data = json.loads(line) if line else {}
@@ -503,6 +559,13 @@ def fault_selfcheck(ctx: VerusContext) -> dict[str, Any]:
         results[f] = {"caught": caught, "mismatches": r.get("mismatches"), "error": r.get("error")}
         if not caught:
             missed.append(f)
+    # the other way round: when the kernel declines, the SQL fallback answers -- it must be right
+    fb = differential(ctx, fault="decline_execute")
+    fb_ok = fb.get("exit") == 0 and int(fb.get("mismatches", 0)) + int(fb.get("order_mismatches", 0)) == 0
+    results["fallback_correct"] = {"ok": fb_ok, "mismatches": fb.get("mismatches"), "examples": fb.get("examples"),
+                                   "error": fb.get("error")}
+    if not fb_ok:
+        missed.append("fallback_correct")
     s = snapshots(ctx, fault="ignore_snapshot")
     caught = int(s.get("mismatches", 0)) > 0
     results["ignore_snapshot"] = {"caught": caught, "mismatches": s.get("mismatches")}
@@ -516,6 +579,8 @@ def explain_fault(f: str) -> str:
         "skip_apply": "commits leave the state unchanged (no transaction's changes are applied)",
         "no_rescan": "rescans return no rows (rows the kernel asks to rescan never arrive)",
         "ignore_snapshot": "readers always see the newest version, not their snapshot's",
+        "fallback_correct": "the SQL fallback (every read declined) gives wrong answers: a host/runtime bug, "
+                            "not a test weakness",
     }.get(f, f"the changes to table {f.split(':', 1)[-1]} are dropped" if f.startswith("drop_delta:") else f)
 
 
@@ -533,7 +598,8 @@ def glue_contract(ctx: VerusContext) -> dict[str, Any]:
     db = db_copy(ctx, "test", "contract")
 
     def runner_call(args: list[str], env: dict[str, str]) -> dict[str, Any]:
-        proc = _run([str(ctx.runner), *args], env=runner_env(ctx, **env), timeout=1800)
+        exe, extra = runner_exe(ctx)
+        proc = _run([exe, *args], env=runner_env(ctx, **env, **extra), timeout=1800)
         line = next((l for l in reversed(proc.stdout.splitlines()) if l.startswith("{")), "")
         data = json.loads(line) if line else {"error": _tail(proc.stderr or proc.stdout, 3000)}
         if proc.returncode != 0 and "error" not in data:
@@ -604,8 +670,10 @@ def _write_overhead(ctx: VerusContext, ops: int = 50) -> dict[str, Any]:
     db = db_copy(ctx, "bench", "profile_overhead")
     try:
         with file_lock(bench_lock(ctx)):
-            p = _run([str(ctx.runner), "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), "1", "1.0", str(ops)],
-                     env=runner_env(ctx, ACCEL_AUX_STORE="verus", VERUS_KIT_BENCH_PHASE="writes"), timeout=3600)
+            exe, extra = runner_exe(ctx)
+            p = _run([exe, "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), "1", "1.0", str(ops)],
+                     env=runner_env(ctx, ACCEL_AUX_STORE="verus", VERUS_KIT_BENCH_PHASE="writes", **extra),
+                     timeout=3600)
     finally:
         drop_db(db)
     try:
@@ -627,9 +695,10 @@ def _profile_phase(ctx: VerusContext, axis: str, phase: str, reps: str, mix: str
     for f in (ctl, ack):
         f.unlink(missing_ok=True)
         os.mkfifo(f)
-    args = [str(ctx.runner), "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), reps, mix, ops]
+    exe, extra = runner_exe(ctx)
+    args = [exe, "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), reps, mix, ops]
     env = runner_env(ctx, ACCEL_AUX_STORE="verus", VERUS_KIT_ACCEL_ONLY="1", VERUS_KIT_BENCH_PHASE=phase,
-                     VERUS_KIT_PERF_CTL=str(ctl), VERUS_KIT_PERF_ACK=str(ack))
+                     VERUS_KIT_PERF_CTL=str(ctl), VERUS_KIT_PERF_ACK=str(ack), **extra)
     try:
         with file_lock(bench_lock(ctx)):
             rec = _run(["perf", "record", "-F", "1999", "-g", "-D", "-1", "--control", f"fifo:{ctl},{ack}",

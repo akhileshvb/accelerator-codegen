@@ -283,7 +283,10 @@ class CodexExecBackend:
                     status="error",
                     error=f"codex exec timed out after {timeout}s",
                     final_text=(exc.stdout or "") if isinstance(exc.stdout, str) else "",
-                    metadata={"duration_ms": int((time.monotonic() - started) * 1000)},
+                    # the session (to continue it) from its log: the banner went with the killed process
+                    metadata={"duration_ms": int((time.monotonic() - started) * 1000), "timed_out": True,
+                              "session_id": str(resume or "") or self._session_id(
+                                  "", env.get("CODEX_HOME"), started_wall, str(self._pipeline_config.repo_root))},
                 )
             except FileNotFoundError as exc:
                 return StageRunResult(

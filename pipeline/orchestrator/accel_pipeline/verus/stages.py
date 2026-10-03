@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import shutil
 import statistics
 import time
@@ -39,6 +40,11 @@ _STATE_LOCK = threading.RLock()
 
 STAGES = ("preflight", "spec", "analysis", "freeze", "tests", "glue", "kernel", "integration", "optimization",
           "audit")
+
+
+_TRANSIENT = re.compile(r"\b(429|500|502|503|504|529)\b|rate.?limit|overloaded|temporarily|unavailable|"
+                        r"stream (error|disconnected)|connection (reset|refused|closed)",
+                        re.I)
 
 
 class PipelineStop(RuntimeError):
@@ -86,10 +92,24 @@ class Run:
     dry_run: bool
 
     def agent(self, stage: str, prompt: str, task: str, extra: dict[str, str] | None = None,
-              timeout_sec: int | None = None, resume: str = ""):
-        res = run_agent(self.ctx, stage=stage, prompt=prompt, task=task, pipeline_config=self.pipeline_config,
-                        model_config=self.model_config, model_overrides=self.model_overrides, extra=extra,
-                        dry_run=self.dry_run, timeout_sec=timeout_sec, resume=resume)
+              timeout_sec: int | None = None, resume: str = "", tolerate_timeout: bool = False):
+        """`tolerate_timeout`: a step that runs out of time returns (its work is then judged by
+        the gates, and its session can be continued) instead of stopping the pipeline."""
+        retries = int(self.ctx.setting("agent_retries", 2))
+        for attempt in range(retries + 1):
+            res = run_agent(self.ctx, stage=stage, prompt=prompt, task=task, pipeline_config=self.pipeline_config,
+                            model_config=self.model_config, model_overrides=self.model_overrides, extra=extra,
+                            dry_run=self.dry_run, timeout_sec=timeout_sec, resume=resume)
+            if res.ok or res.timed_out or attempt == retries or not _TRANSIENT.search(res.error or ""):
+                break
+            # a provider hiccup (rate limit, overload, dropped stream): wait, then the same
+            # step again (a session that got going is continued, not restarted)
+            resume = res.session_id or resume
+            self.note(f"{stage}: transient agent failure, retry {attempt + 1}/{retries}: {res.error[:200]}")
+            time.sleep(120 * (attempt + 1))
+        if not res.ok and res.timed_out and tolerate_timeout:
+            self.note(f"{stage}: the step ran out of time; judging what it left")
+            return res
         if not res.ok:
             raise PipelineStop(f"{stage} agent failed: {res.error[:2000]}")
         return res
@@ -158,7 +178,10 @@ def preflight(r: Run) -> None:
         if not p or not Path(p).exists():
             problems.append(f"{what}: {p or '(unset)'} not found (set verus.{what.split()[0]}... in the workload)")
     if not (Path(ctx.build_dir) / "CMakeCache.txt").is_file() and not r.dry_run:
-        cfg = actions.configure_build(ctx)
+        Path(ctx.build_dir).mkdir(parents=True, exist_ok=True)
+        with actions.file_lock(Path(ctx.build_dir) / ".verus_build.lock"):  # parallel pipelines, one tree
+            done = (Path(ctx.build_dir) / "CMakeCache.txt").is_file()
+            cfg = {"ok": True} if done else actions.configure_build(ctx)
         if not cfg["ok"]:
             problems.append(f"build dir {ctx.build_dir}: cmake configure (DuckDB engine) failed: {cfg['error']}")
     verus_bin = Path(str(ctx.setting("verus_bin") or ""))
@@ -443,25 +466,61 @@ contracts/proof_method.md maps each obligation to its standard proof and the ver
 work top-down from the failing top-level fact (build / apply / execute)."""
 
 
+def _progress(gates: dict[str, Any]) -> tuple[int, int]:
+    """How far a failing kernel is (larger is better): fewer failing gates' errors, then more
+    verified.  A crate that does not compile (errors -1) ranks below every verifying one."""
+    errors = int(gates.get("errors", -1) if gates.get("stage") == "verify" else 0)
+    stage_rank = {"verify": 0, "build": 0, "tests": 1, "snapshots": 2}.get(str(gates.get("stage")), 0)
+    return (stage_rank, -(errors if errors >= 0 else 10**6), int(gates.get("verified") or 0))
+
+
+def _escalation_stage(r: Run, stage: str) -> str:
+    """`<stage>_escalated` when the models config maps it (a heavier model), else ''."""
+    from accel_pipeline.verus.tools import ESCALATED
+
+    name = stage + ESCALATED
+    return name if name in (getattr(r.model_config, "stages", {}) or {}) else ""
+
+
 def _fix_loop(r: Run, gates: dict[str, Any], rounds: int, *, snapshots_too: bool, why: str,
               session: tuple[str, str] = ("", ""), proofs: bool = True) -> dict[str, Any]:
     """Up to `rounds` fixes.  `session` = (stage, codex session id): the agent that wrote the
     code gets the failure as its next message (its context kept); without one, a fresh
-    kernel-fix agent."""
+    kernel-fix agent.
+
+    Escalation: after `stages.escalate_after_stalled_rounds` rounds in a row without
+    progress (fewer errors, or more verified at the same count), the session continues
+    on `<stage>_escalated`'s model (a heavier one) with `stages.escalation_extra_rounds`
+    more rounds."""
     stage, sid = session
-    for k in range(rounds):
+    stall_limit = int(r.ctx.setting("stages.escalate_after_stalled_rounds", 2))
+    extra = int(r.ctx.setting("stages.escalation_extra_rounds", 2))
+    best, stalled, escalated = _progress(gates), 0, False
+    k = 0
+    while k < rounds:
         if gates["ok"]:
             break
-        r.note(f"{why}: fix round {k + 1}/{rounds} ({gates.get('stage')})" + (" [same session]" if sid else ""))
+        if not escalated and stalled >= stall_limit:
+            up = _escalation_stage(r, stage if sid else "verus_kernel_fix")
+            if up:
+                escalated, rounds = True, rounds + extra
+                if sid:
+                    stage = up
+                r.note(f"{why}: no progress in {stalled} rounds; escalating to {up} (+{extra} rounds)")
+        k += 1
+        r.note(f"{why}: fix round {k}/{rounds} ({gates.get('stage')})" + (" [same session]" if sid else ""))
         if sid:
             check = "verus_verify, verus_test" if proofs else "verus_test with proofs=false"
             res = r.agent(stage, "", FIX_MESSAGE.format(stage=gates.get("stage"), failure=_brief(gates, 12000),
-                                                         check=check), resume=sid)
+                                                         check=check), resume=sid, tolerate_timeout=True)
             sid = res.session_id or sid
         else:
-            r.agent("verus_kernel_fix", "04b_kernel_fix.md", "Make the kernel pass the gates.",
+            fix = _escalation_stage(r, "verus_kernel_fix") if escalated else ""
+            r.agent(fix or "verus_kernel_fix", "04b_kernel_fix.md", "Make the kernel pass the gates.",
                     {"failure": _brief(gates, 12000)})
         gates = r.gate("kernel_gates", _kernel_gates(r, snapshots_too=snapshots_too, proofs=proofs))
+        now = _progress(gates)
+        stalled, best = (0, now) if now > best else (stalled + 1, best)
     return gates
 
 
@@ -475,7 +534,8 @@ def kernel(r: Run) -> None:
     if "kernel_code" in r.state.done and sid and not r.dry_run:
         r.note("kernel code already passes the tests; continuing the proofs in the saved session")
     else:
-        res = r.agent("verus_kernel", "04_kernel.md", "Implement the kernel in crate/src (code first; no proofs yet).")
+        res = r.agent("verus_kernel", "04_kernel.md", "Implement the kernel in crate/src (code first; no proofs yet).",
+                      tolerate_timeout=True)
         if r.dry_run:
             r.agent("verus_kernel", "04c_kernel_proofs.md", "(dry run)")
             return
@@ -491,9 +551,9 @@ def kernel(r: Run) -> None:
         r.note("kernel code passes the tests (unverified); proving it")
     proof_task = render(r.ctx, "04c_kernel_proofs.md")
     if sid:
-        res = r.agent("verus_kernel", "", proof_task, resume=sid)
+        res = r.agent("verus_kernel", "", proof_task, resume=sid, tolerate_timeout=True)
     else:
-        res = r.agent("verus_kernel", "04c_kernel_proofs.md", "Prove the kernel in crate/src.")
+        res = r.agent("verus_kernel", "04c_kernel_proofs.md", "Prove the kernel in crate/src.", tolerate_timeout=True)
     session = ("verus_kernel", res.session_id or sid)
     r.state.kernel_session = session[1]
     r.save()
@@ -517,8 +577,11 @@ def integration(r: Run) -> None:
             raise PipelineStop("integration: the kernel fails the frozen tests: " + _brief(gates, 3000))
         sc = r.gate("fault_selfcheck", actions.fault_selfcheck(ctx))
         if sc["ok"]:
-            r.note("integration passed; the tests catch every injected bug")
+            r.note("integration passed; the tests catch every injected bug and the SQL fallback is right")
             return
+        if "fallback_correct" in sc["missed"]:  # not the tests' fault: stronger tests cannot fix it
+            raise PipelineStop("integration: the SQL fallback gives wrong answers (a host/runtime bug, not the "
+                               "kernel's): " + _brief(sc["results"].get("fallback_correct"), 3000))
         if k == rounds:
             break
         missed = "\n".join(f"- {f}: {actions.explain_fault(f)}" for f in sc["missed"])
@@ -614,6 +677,16 @@ def optimization(r: Run) -> None:
     if r.dry_run:
         r.agent("verus_opt_worker", "05_opt_worker.md", "(dry run)", _opt_extra(r, StopState(), {}, ""))
         return
+    # parallel pipelines: only a few optimize at once (their benchmarks share one machine);
+    # the budget clock starts once this one has a slot
+    slots = int(ctx.setting("optimization.max_concurrent", 4))
+    with actions.machine_slot(ctx, "optimization", slots, note=r.note) as slot:
+        r.note(f"optimization slot {slot + 1}/{slots}")
+        _optimization(r)
+
+
+def _optimization(r: Run) -> None:
+    ctx = r.ctx
     opt = ctx.setting("optimization", {}) or {}
     cfg = StopConfig.from_settings(opt)
     o = r.state.opt
@@ -678,7 +751,8 @@ def optimization(r: Run) -> None:
         mixes = random.Random(n).sample(opt.get("bench", {}).get("write_mix_choices", [0.01, 0.05, 0.1]),
                                         int(opt.get("bench", {}).get("write_mix_count", 2)))
         res = r.agent("verus_opt_worker", "05_opt_worker.md", "Make one measured improvement (one attempt).",
-                      _opt_extra(r, st, o, message, mixes), timeout_sec=int(opt.get("attempt_timeout_sec", 2700)))
+                      _opt_extra(r, st, o, message, mixes), timeout_sec=int(opt.get("attempt_timeout_sec", 2700)),
+                      tolerate_timeout=True)
         report = json_block(res.final_text) or {}
         message = ""
         for h, why_inf in (report.get("infeasible") or {}).items():

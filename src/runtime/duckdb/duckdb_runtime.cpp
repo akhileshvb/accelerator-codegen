@@ -168,61 +168,38 @@ std::string SqlInt64InPredicate(const char *column,
   return sql.str();
 }
 
+// The scaled integer of a DECIMAL at its own scale (value = raw / 10^scale);
+// the caller pairs it with that scale (core::ScaledDecimal).
 int64_t DecimalRaw(const ::duckdb::Value &value) {
   if (value.IsNull()) {
     return 0;
   }
-  if (value.type().id() == ::duckdb::LogicalTypeId::DECIMAL) {
-    const auto scale = static_cast<int32_t>(
-        ::duckdb::DecimalType::GetScale(value.type()));
-    // GetValue<int64_t>() casts decimals like CAST(... AS BIGINT) and drops
-    // fractional digits. Read the scaled integral payload instead.
-    int64_t raw = 0;
-    switch (value.type().InternalType()) {
-    case ::duckdb::PhysicalType::INT16:
-      raw = value.GetValueUnsafe<int16_t>();
-      break;
-    case ::duckdb::PhysicalType::INT32:
-      raw = value.GetValueUnsafe<int32_t>();
-      break;
-    case ::duckdb::PhysicalType::INT64:
-      raw = value.GetValueUnsafe<int64_t>();
-      break;
-    case ::duckdb::PhysicalType::INT128: {
-      const auto huge = value.GetValueUnsafe<::duckdb::hugeint_t>();
-      if (huge.upper == 0) {
-        raw = static_cast<int64_t>(huge.lower);
-      } else if (huge.upper == -1 &&
-                 static_cast<int64_t>(huge.lower) < 0) {
-        raw = static_cast<int64_t>(huge.lower);
-      } else {
-        return static_cast<int64_t>(
-            std::llround(std::stod(value.ToString()) * 100.0));
-      }
-      break;
+  const auto scale = value.type().id() == ::duckdb::LogicalTypeId::DECIMAL
+                         ? static_cast<int32_t>(::duckdb::DecimalType::GetScale(value.type()))
+                         : 0;
+  // GetValue<int64_t>() casts decimals like CAST(... AS BIGINT) and drops
+  // fractional digits. Read the scaled integral payload instead.
+  switch (value.type().InternalType()) {
+  case ::duckdb::PhysicalType::INT16:
+    return value.GetValueUnsafe<int16_t>();
+  case ::duckdb::PhysicalType::INT32:
+    return value.GetValueUnsafe<int32_t>();
+  case ::duckdb::PhysicalType::INT64:
+    return value.GetValueUnsafe<int64_t>();
+  case ::duckdb::PhysicalType::INT128: {
+    const auto huge = value.GetValueUnsafe<::duckdb::hugeint_t>();
+    if (huge.upper == 0 && static_cast<int64_t>(huge.lower) >= 0) {
+      return static_cast<int64_t>(huge.lower);
     }
-    default:
-      return static_cast<int64_t>(
-          std::llround(std::stod(value.ToString()) * 100.0));
+    if (huge.upper == -1 && static_cast<int64_t>(huge.lower) < 0) {
+      return static_cast<int64_t>(huge.lower);
     }
-    // Normalize to scale 2 for aux kernels.
-    int32_t delta = 2 - scale;
-    if (delta == 0) {
-      return raw;
-    }
-    if (delta > 0) {
-      for (int32_t i = 0; i < delta; ++i) {
-        raw *= 10;
-      }
-      return raw;
-    }
-    for (int32_t i = 0; i < -delta; ++i) {
-      raw /= 10;
-    }
-    return raw;
+    break; // beyond 64 bits: through text (rounded)
   }
-  return static_cast<int64_t>(
-      std::llround(std::stod(value.ToString()) * 100.0));
+  default:
+    break;
+  }
+  return static_cast<int64_t>(std::llround(std::stod(value.ToString()) * std::pow(10.0, scale)));
 }
 
 int64_t SafeInt64(const ::duckdb::Value &value) {

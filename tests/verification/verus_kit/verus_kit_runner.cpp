@@ -43,11 +43,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <random>
@@ -216,6 +218,130 @@ int Compare(const Rows &accel, const Rows &query) {
   return SameRows(x, y) ? 1 : 2;
 }
 
+// The query's final ORDER BY (output columns) and LIMIT: SQL leaves the order of
+// rows with equal keys open, and with a LIMIT, which of them make the cut.  An
+// accelerator's answer is right if it is sorted by the keys, has the query's key
+// sequence, and its rows are among the query's (unlimited) rows.
+struct Ordering {
+  std::vector<std::pair<std::size_t, bool>> keys; // column, descending
+  bool limited = false;
+  std::string unlimited_sql;                      // the query without its LIMIT
+};
+
+int CellOrder(const std::string &a, const std::string &b) {
+  if (SameCell(a, b))
+    return 0;
+  char *ea = nullptr, *eb = nullptr;
+  const double x = std::strtod(a.c_str(), &ea), y = std::strtod(b.c_str(), &eb);
+  if (ea != a.c_str() && eb != b.c_str() && !*ea && !*eb)
+    return x < y ? -1 : 1;
+  return a < b ? -1 : 1; // text, ISO dates
+}
+
+// position of the last top-level occurrence of `word` (case-insensitive), or npos
+std::size_t TopLevel(const std::string &sql, const std::string &word) {
+  std::size_t found = std::string::npos;
+  int depth = 0;
+  bool quote = false;
+  for (std::size_t i = 0; i < sql.size(); ++i) {
+    const char ch = sql[i];
+    if (ch == '\'')
+      quote = !quote;
+    if (quote)
+      continue;
+    depth += ch == '(' ? 1 : ch == ')' ? -1 : 0;
+    if (depth == 0 && i + word.size() <= sql.size() && (i == 0 || !std::isalnum(sql[i - 1])) &&
+        std::equal(word.begin(), word.end(), sql.begin() + i,
+                   [](char x, char y) { return std::toupper(x) == std::toupper(y); }) &&
+        (i + word.size() == sql.size() || !std::isalnum(sql[i + word.size()])))
+      found = i;
+  }
+  return found;
+}
+
+Ordering MakeOrdering(duckdb::Connection &c, const std::string &sql) {
+  Ordering o;
+  const auto ob = TopLevel(sql, "ORDER BY");
+  if (ob == std::string::npos)
+    return o;
+  const auto lim = TopLevel(sql, "LIMIT");
+  o.limited = lim != std::string::npos && lim > ob;
+  o.unlimited_sql = o.limited ? sql.substr(0, lim) : sql;
+  auto stmt = c.Prepare(sql);
+  if (!stmt || stmt->HasError())
+    return o;
+  const auto names = stmt->GetNames();
+  std::stringstream items(sql.substr(ob + 8, (o.limited ? lim : sql.size()) - ob - 8));
+  for (std::string item; std::getline(items, item, ',');) {
+    std::stringstream words(item);
+    std::string name, dir;
+    words >> name >> dir;
+    for (auto &ch : dir)
+      ch = static_cast<char>(std::toupper(ch));
+    std::size_t col = names.size();
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      std::string a = names[i], b = name;
+      for (auto &ch : a) ch = static_cast<char>(std::tolower(ch));
+      for (auto &ch : b) ch = static_cast<char>(std::tolower(ch));
+      if (a == b) col = i;
+    }
+    if (col == names.size() && !name.empty() && std::all_of(name.begin(), name.end(), ::isdigit))
+      col = std::stoul(name) - 1; // ORDER BY 2
+    if (col >= names.size()) {    // an expression: keep the exact comparison
+      o.keys.clear();
+      return o;
+    }
+    o.keys.emplace_back(col, dir == "DESC");
+  }
+  return o;
+}
+
+bool SameKeys(const Ordering &o, const std::vector<std::string> &a, const std::vector<std::string> &b) {
+  for (const auto &[col, desc] : o.keys)
+    if (CellOrder(a[col], b[col]) != 0)
+      return false;
+  return true;
+}
+
+bool SortedBy(const Ordering &o, const Rows &rows) {
+  for (std::size_t i = 1; i < rows.size(); ++i)
+    for (const auto &[col, desc] : o.keys) {
+      const int c = CellOrder(rows[i - 1][col], rows[i][col]) * (desc ? -1 : 1);
+      if (c < 0)
+        break;
+      if (c > 0)
+        return false;
+    }
+  return true;
+}
+
+// Compare, allowing the order (and LIMIT cut) that ties leave open.  `full`
+// yields the query's rows without its LIMIT (only asked for when needed).
+int CompareOrdered(const Ordering &o, const Rows &accel, const Rows &query, const std::function<Rows()> &full) {
+  const int c = Compare(accel, query);
+  if (c == 0 || o.keys.empty())
+    return c;
+  if (c == 1)
+    return SortedBy(o, accel) ? 0 : 1;
+  if (!o.limited || accel.size() != query.size() || !SortedBy(o, accel))
+    return 2;
+  for (std::size_t i = 0; i < accel.size(); ++i)
+    if (accel[i].size() != query[i].size() || !SameKeys(o, accel[i], query[i]))
+      return 2;
+  Rows all = full(), mine = accel; // accel's rows must be among the query's
+  std::sort(all.begin(), all.end());
+  std::sort(mine.begin(), mine.end());
+  std::size_t j = 0;
+  for (const auto &row : mine) {
+    while (j < all.size() && all[j] < row && !SameRows({all[j]}, {row}))
+      ++j;
+    if (j == all.size() || !SameRows({all[j]}, {row}))
+      return 2;
+    ++j;
+  }
+  return 0;
+}
+
 std::string RowsJson(const Rows &rows, std::size_t limit = 5) {
   std::string o = "[";
   for (std::size_t i = 0; i < rows.size() && i < limit; ++i) {
@@ -232,9 +358,10 @@ std::string RowsJson(const Rows &rows, std::size_t limit = 5) {
 struct Tally {
   int checks = 0, mismatches = 0, order_mismatches = 0;
   std::vector<std::string> examples;
-  void Check(const std::string &where, const std::string &tuple, const Rows &a, const Rows &q) {
+  void Check(const std::string &where, const std::string &tuple, const Rows &a, const Rows &q,
+             const Ordering &o = {}, const std::function<Rows()> &full = {}) {
     ++checks;
-    const int c = Compare(a, q);
+    const int c = CompareOrdered(o, a, q, full);
     if (c == 0)
       return;
     (c == 1 ? order_mismatches : mismatches)++;
@@ -256,6 +383,7 @@ struct Tally {
 struct Setup {
   const kit::Glue *glue;
   const engine::SharedQueryCatalogEntry *entry;
+  Ordering ordering;
 };
 
 // The declared schema's constraints (ACCEL_VERUS_SCHEMA_SQL: e.g. ALTER TABLE ...
@@ -276,6 +404,7 @@ Setup Prepare(duckdb::Connection &setup, const std::string &id, const Spec &spec
   if (with_setup && !spec.setup.empty())
     Q(setup, spec.setup);
   accelerator_codegen::RegisterAcceleratorFunctions(setup);
+  s.ordering = MakeOrdering(setup, s.glue->query_sql);
   return s;
 }
 
@@ -301,7 +430,8 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
   std::mt19937_64 rng(7);
   auto check_all = [&](const std::string &where) {
     for (const auto &t : spec.params)
-      tally.Check(where, t, RunAccel(qc, id, t), RunQuery(qc, s.glue->query_sql, t));
+      tally.Check(where, t, RunAccel(qc, id, t), RunQuery(qc, s.glue->query_sql, t), s.ordering,
+                    [&] { return RunQuery(qc, s.ordering.unlimited_sql, t); });
   };
   check_all("build");
   std::map<std::string, int> actions;
@@ -322,7 +452,8 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
     } else {
       for (int k = 0; k < 2; ++k) {
         const auto &t = spec.params[rng() % spec.params.size()];
-        tally.Check(where, t, RunAccel(qc, id, t), RunQuery(qc, s.glue->query_sql, t));
+        tally.Check(where, t, RunAccel(qc, id, t), RunQuery(qc, s.glue->query_sql, t), s.ordering,
+                    [&] { return RunQuery(qc, s.ordering.unlimited_sql, t); });
       }
     }
   }
@@ -364,9 +495,11 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
           const auto b = RunQuery(rc, s.glue->query_sql, p);
           std::this_thread::sleep_for(std::chrono::microseconds(rng() % 3000));
           const auto c = RunAccel(rc, id, p);
+          const auto full = [&] { return RunQuery(rc, s.ordering.unlimited_sql, p); }; // same snapshot
+          const bool wrong = CompareOrdered(s.ordering, a, b, full) != 0 || CompareOrdered(s.ordering, c, b, full) != 0;
           Q(rc, "COMMIT");
           ++checks;
-          if (Compare(a, b) != 0 || Compare(c, b) != 0) {
+          if (wrong) {
             ++mismatches;
             std::lock_guard<std::mutex> lock(ex_mutex);
             if (examples.size() < 5)

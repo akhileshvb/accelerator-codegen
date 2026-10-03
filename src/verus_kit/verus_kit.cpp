@@ -485,7 +485,9 @@ public:
 
   void Execute(core::AuxEngineServices &services, const core::QueryArguments &arguments,
                core::AuxRowSink &sink) override {
-    if (services.StateStore().IsTransactionDirty()) {
+    // decline_execute (a test switch): every read answered by the SQL fallback, which
+    // must be as right as the kernel (the integration gate checks it)
+    if (services.StateStore().IsTransactionDirty() || Fault() == "decline_execute") {
       ExecuteFallback(services, arguments, sink);
       return;
     }

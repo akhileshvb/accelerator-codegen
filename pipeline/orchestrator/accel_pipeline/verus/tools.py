@@ -32,8 +32,11 @@ STAGE_TOOLS: dict[str, list[str]] = {
 }
 
 
+ESCALATED = "_escalated"  # a stage continued on the heavier model: same tools
+
+
 def stage_tools(stage: str) -> list[str] | None:
-    return STAGE_TOOLS.get(stage)
+    return STAGE_TOOLS.get(stage.removesuffix(ESCALATED))
 
 
 def _ctx() -> VerusContext:

@@ -42,6 +42,8 @@ stage_providers:
   verus_glue_audit: codex_exec
   verus_kernel: codex_exec
   verus_kernel_fix: codex_exec
+  verus_kernel_escalated: codex_exec
+  verus_kernel_fix_escalated: codex_exec
   verus_opt_worker: codex_exec
   verus_audit: codex_exec
 
@@ -67,6 +69,7 @@ presets:
   verus_reasoning: openai/gpt-6.1-sol   # analysis, kernel + proofs, kernel fix, optimization
   verus_code: openai/gpt-6.1-sol #xiaomi/mimo-v2.6-pro      # tests, glue (gated by validation / the contract check)
   verus_review: anthropic/claude-sonnet-5   # spec / obligations / glue audits, critic, final audit
+  verus_heavy: openai/gpt-6-astra       # kernel fixes stuck for several rounds (5x Sol's price)
 
 stages:
   # Verus pipeline steps
@@ -79,6 +82,8 @@ stages:
   verus_glue_audit: verus_review
   verus_kernel: verus_reasoning
   verus_kernel_fix: verus_reasoning
+  verus_kernel_escalated: verus_heavy        # same session, after rounds without progress
+  verus_kernel_fix_escalated: verus_heavy
   verus_opt_worker: verus_code
   verus_audit: verus_review
   analysis: reasoning

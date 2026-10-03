@@ -39,6 +39,8 @@ git init -q && git add -A && git -c user.name="clean tree" -c user.email="clean@
   commit -q -m "Clean tree: substrate + runtime backends + Verus seeds (exported from $(git -C "${SRC}" rev-parse --short HEAD))"
 
 [[ -f "${SRC}/.env" ]] && cp "${SRC}/.env" .env
+# the Verus binary, used in place (the sandbox mounts it): the pipeline reads VERUS_BIN from .env
+grep -q '^VERUS_BIN=' .env 2>/dev/null || echo "VERUS_BIN=${SRC}/tools/verus/verus-x86-linux/verus" >> .env
 mkdir -p pipeline/.codex
 for f in config.toml run_mcp_server.sh; do
   [[ -f "${SRC}/pipeline/.codex/${f}" ]] && cp "${SRC}/pipeline/.codex/${f}" "pipeline/.codex/${f}"

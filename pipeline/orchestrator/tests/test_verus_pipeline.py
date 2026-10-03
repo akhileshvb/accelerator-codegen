@@ -243,11 +243,14 @@ def test_gate_failures_go_back_to_the_same_session(monkeypatch: pytest.MonkeyPat
     calls = []
 
     class FakeRun:
+        ctx = SimpleNamespace(setting=lambda key, default=None: default)
+        model_config = SimpleNamespace(stages={})
+
         def note(self, msg): pass
 
         def gate(self, name, data): return data
 
-        def agent(self, stage, prompt, task, extra=None, timeout_sec=None, resume=""):
+        def agent(self, stage, prompt, task, extra=None, timeout_sec=None, resume="", tolerate_timeout=False):
             calls.append((stage, prompt, resume))
             return SimpleNamespace(session_id=resume or "fresh", final_text="")
 
@@ -336,3 +339,35 @@ def test_mcp_wrappers_pass_every_tool_parameter() -> None:
     for name, fn in TOOLS.items():
         assert name in wrappers, f"{name} has no MCP wrapper"
         assert wrappers[name] == list(inspect.signature(fn).parameters), name
+
+
+def test_stalled_fix_rounds_escalate_to_the_heavier_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No progress for `escalate_after_stalled_rounds` rounds: the same session continues on
+    <stage>_escalated (when the models config maps it), with extra rounds; progress resets it."""
+    from types import SimpleNamespace
+
+    from accel_pipeline.verus import stages
+
+    calls = []
+
+    class FakeRun:
+        ctx = SimpleNamespace(setting=lambda key, default=None: default)
+        model_config = SimpleNamespace(stages={"verus_kernel_escalated": "verus_heavy"})
+
+        def note(self, msg): pass
+
+        def gate(self, name, data): return data
+
+        def agent(self, stage, prompt, task, extra=None, timeout_sec=None, resume="", tolerate_timeout=False):
+            calls.append((stage, resume))
+            return SimpleNamespace(session_id=resume, final_text="")
+
+    stuck = {"ok": False, "stage": "verify", "errors": 3, "verified": 100}
+    outcomes = iter([{**stuck, "verified": 104}, stuck, stuck, {**stuck, "errors": 1}, {"ok": True}])
+    monkeypatch.setattr(stages, "_kernel_gates", lambda r, **kw: next(outcomes))
+    g = stages._fix_loop(FakeRun(), stuck, 4, snapshots_too=False, why="proofs", session=("verus_kernel", "S1"))
+    assert g["ok"]
+    # round 1 progressed (more verified); rounds 2-3 stalled; then Astra in the same session
+    assert calls == [("verus_kernel", "S1")] * 3 + [("verus_kernel_escalated", "S1")] * 2
+    from accel_pipeline.verus.tools import stage_tools
+    assert stage_tools("verus_kernel_escalated") == stage_tools("verus_kernel")
