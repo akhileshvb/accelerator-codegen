@@ -29,4 +29,23 @@ worked, with verification times) with `playbook_append` (section `proofs`).
 End with a short summary: what verifies (count and time), the lemmas you
 added or published, and what was hard.
 
+**Never stub out the kernel to make verification pass.** An `execute` that returns `None` for every read (or a `build` / `apply` that always declines) verifies trivially but answers nothing: the tests then reject it (at most 25% of reads may fall back to SQL), and the round is wasted. Prove the real code; if a part is too hard, simplify that part's design instead.
+
+## Proven code in this tree
+
+These kernels of other queries verified fully (read them freely; they are proved against their own specs):
+
+{{completed_kernels}}
+
+Before you write a data structure or a long lemma, look for one there (and in the shared proof library,
+`prooflib/src/lib.rs`). To reuse one, **lift it into the shared proof library** -- made generic (no
+query-specific types), with its specification and proofs -- and publish it with `prooflib_publish`; then
+use it through `verus_prooflib`. Do not copy another query's module into your crate. Lifting helps every
+later kernel, and the library is re-verified with every completed kernel when you publish.
+
+Every state version must stay valid after a write (readers may still use it): a structure that is cloned
+or rebuilt per write costs the whole state on every transaction. Prefer a persistent structure (a write
+copies only the path to the keys it changes, e.g. a path-copying trie) -- look for one in the kernels
+above and the library before writing your own.
+
 {{include:shared/rules.md}}

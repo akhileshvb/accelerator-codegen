@@ -49,6 +49,9 @@ def render(ctx: VerusContext, prompt: str, extra: dict[str, str] | None = None) 
         "workspace": ctx.workspace,
         **(extra or {}),
     }
+    if "{{completed_kernels}}" in (base / prompt).read_text(encoding="utf-8") or any(
+            "{{completed_kernels}}" in p.read_text(encoding="utf-8") for p in (base / "shared").glob("*.md")):
+        variables.setdefault("completed_kernels", completed_kernels(ctx))
 
     def expand(text: str, depth: int = 0) -> str:
         def inc(m: re.Match[str]) -> str:
@@ -60,6 +63,43 @@ def render(ctx: VerusContext, prompt: str, extra: dict[str, str] | None = None) 
         return re.sub(r"\{\{file:([^}]+)\}\}", lambda m: inline_files(ctx, m.group(1).strip()), text)
 
     return expand((base / prompt).read_text(encoding="utf-8"))
+
+
+def completed_kernels(ctx: VerusContext) -> str:
+    """The other queries' kernels in this tree that verified fully (the shared verified-crates list),
+    with their modules and, when audited, their measured speed: proven code to learn from or lift
+    into the shared proof library."""
+    import json
+
+    from accel_pipeline.verus import actions
+
+    cache = actions._verified_cache(ctx)
+    data = json.loads(cache.read_text()) if cache.is_file() else {}
+    notes_path = Path(ctx.pipeline_root) / "verus" / "kernel_notes.json"  # reviewers' notes per crate
+    notes = json.loads(notes_path.read_text()) if notes_path.is_file() else {}
+    rows = []
+    for crate_dir, digest in sorted(data.items()):
+        d = Path(crate_dir)
+        if d.resolve() == Path(ctx.crate_dir).resolve() or not d.is_dir() or actions._crate_hash(d) != digest:
+            continue  # this query, gone, or changed since it verified
+        name = d.parent.name
+        mods = [f"{p.name} ({sum(1 for _ in p.open(encoding='utf-8'))} lines)"
+                for p in sorted((d / "src").glob("*.rs")) if not p.name.startswith("gen_") and p.name != "lib.rs"]
+        speed = ""
+        q = re.search(r"q(\d+)", name)
+        if q:
+            rep = Path(ctx.pipeline_root) / "artifacts" / ctx.benchmark / f"q{q.group(1)}" / \
+                f"verus_{ctx.benchmark}_q{q.group(1)}_aux" / "audit_report.json"
+            if rep.is_file():
+                try:
+                    b = json.loads(rep.read_text()).get("bench_verus") or {}
+                    mixes = ", ".join(f"{m['write_fraction']:g}: {m['speedup']:.1f}x" for m in b.get("mixes", []))
+                    speed = f"; audited at SF1: reads {b.get('read_speedup', 0):.1f}x, write mixes {mixes}"
+                except (ValueError, KeyError, TypeError):
+                    pass
+        note = f"\n  review: {notes[name]}" if name in notes else ""
+        rows.append(f"* `{name}`: {d / 'src'}{speed}\n  modules: {', '.join(mods) or '(kernel.rs only)'}{note}")
+    return "\n".join(rows) or "(none yet)"
 
 
 INLINE_LIMIT = 60_000  # characters per inlined file
@@ -109,6 +149,13 @@ def run_agent(
     prompt file is not re-sent (pass prompt="").
     """
     _calls[stage] = _calls.get(stage, 0) + 1
+    if not dry_run:  # the workspace's proof library copy: with everything published so far
+        from accel_pipeline.verus import workspace as _ws
+
+        try:
+            _ws.refresh_prooflib(ctx)
+        except OSError:
+            pass
     n = _calls[stage]
     text = render(ctx, prompt, extra) if prompt else ""
     pdir = ctx.art / "prompts"

@@ -131,7 +131,7 @@ def test_leak_check_flags_copied_kernel(tmp_path: Path) -> None:
 
 def test_prompts_render_without_holes(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
-    extra = {k: "x" for k in ("feedback", "missed", "failure", "best_score", "noise_pct", "history", "profile",
+    extra = {k: "x" for k in ("feedback", "missed", "failure", "phase", "request", "verify_cmd", "best_score", "noise_pct", "history", "profile",
                               "owed", "message", "mixes", "structural_left")}
     for p in sorted((REPO / "pipeline" / "prompts" / "verus").glob("*.md")):
         text = render(ctx, p.name, extra)
@@ -341,33 +341,36 @@ def test_mcp_wrappers_pass_every_tool_parameter() -> None:
         assert wrappers[name] == list(inspect.signature(fn).parameters), name
 
 
-def test_stalled_fix_rounds_escalate_to_the_heavier_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No progress for `escalate_after_stalled_rounds` rounds: the same session continues on
-    <stage>_escalated (when the models config maps it), with extra rounds; progress resets it."""
+def test_stalled_fix_rounds_get_a_second_opinion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No progress for `escalate_after_stalled_rounds` rounds: the advisor (a different model)
+    diagnoses once, its advice goes to the same session (same stage, same model), with extra
+    rounds; progress (more verified) resets the count."""
     from types import SimpleNamespace
 
     from accel_pipeline.verus import stages
 
-    calls = []
+    calls, advised = [], []
 
     class FakeRun:
         ctx = SimpleNamespace(setting=lambda key, default=None: default)
-        model_config = SimpleNamespace(stages={"verus_kernel_escalated": "verus_heavy"})
+        model_config = SimpleNamespace(stages={})
 
         def note(self, msg): pass
 
         def gate(self, name, data): return data
 
         def agent(self, stage, prompt, task, extra=None, timeout_sec=None, resume="", tolerate_timeout=False):
-            calls.append((stage, resume))
+            calls.append((stage, resume, "ADVICE-TEXT" in task))
             return SimpleNamespace(session_id=resume, final_text="")
 
     stuck = {"ok": False, "stage": "verify", "errors": 3, "verified": 100}
     outcomes = iter([{**stuck, "verified": 104}, stuck, stuck, {**stuck, "errors": 1}, {"ok": True}])
     monkeypatch.setattr(stages, "_kernel_gates", lambda r, **kw: next(outcomes))
+    monkeypatch.setattr(stages, "_advice", lambda r, g, why, proofs: advised.append(g) or "ADVICE-TEXT")
     g = stages._fix_loop(FakeRun(), stuck, 4, snapshots_too=False, why="proofs", session=("verus_kernel", "S1"))
     assert g["ok"]
-    # round 1 progressed (more verified); rounds 2-3 stalled; then Astra in the same session
-    assert calls == [("verus_kernel", "S1")] * 3 + [("verus_kernel_escalated", "S1")] * 2
+    assert len(advised) == 1
+    # round 1 progressed; rounds 2-3 stalled; round 4 carries the advice (same stage and session); round 5 plain
+    assert calls == [("verus_kernel", "S1", False)] * 3 + [("verus_kernel", "S1", True), ("verus_kernel", "S1", False)]
     from accel_pipeline.verus.tools import stage_tools
-    assert stage_tools("verus_kernel_escalated") == stage_tools("verus_kernel")
+    assert "verus_verify" in stage_tools("verus_kernel_advisor")

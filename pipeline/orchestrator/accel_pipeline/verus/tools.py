@@ -24,7 +24,10 @@ STAGE_TOOLS: dict[str, list[str]] = {
     "verus_tests": ["verus_validate_tests", "verus_sql"],
     "verus_glue": ["verus_glue_check", "verus_sql"],
     "verus_glue_audit": ["verus_sql"],
-    "verus_kernel": ["verus_verify", "verus_test", "prooflib_publish", "backend_addition_record", *COMMON],
+    "verus_kernel": ["verus_verify", "verus_test", "prooflib_verify", "prooflib_publish", "backend_addition_record", *COMMON],
+    "verus_kernel_proofs": ["verus_verify", "verus_test", "prooflib_verify", "prooflib_publish", "backend_addition_record", *COMMON],
+    "verus_kernel_advisor": ["verus_verify", "verus_test", *COMMON],  # diagnoses; changes are undone
+    "verus_prooflib_lift": ["prooflib_verify", "prooflib_publish", *COMMON],  # lifts a proven structure into the shared library
     "verus_kernel_fix": ["verus_verify", "verus_test", "prooflib_publish", *COMMON],
     "verus_opt_worker": ["verus_verify", "verus_test", "verus_bench", "verus_profile", "verus_check_inputs",
                          "prooflib_publish", "backend_addition_record", *COMMON],
@@ -84,7 +87,7 @@ def verus_verify() -> str:
 
 
 def verus_test(snapshots: bool = False, proofs: bool = True) -> str:
-    """Build the accelerator and run the frozen tests on the Verus store (differential; snapshots if asked).
+    """Build the accelerator and run the frozen tests on the Verus global store (differential; snapshots if asked).
 
     proofs=false: compile the kernel without checking its proofs first (code first: test the
     executable kernel before proving it). The kernel's gates always check the proofs.
@@ -97,7 +100,7 @@ def verus_test(snapshots: bool = False, proofs: bool = True) -> str:
 
 
 def verus_bench(write_mixes: str = "0.01,0.05") -> str:
-    """Build and benchmark on the SF1 database (Verus store): read speedup per parameter tuple, write mixes."""
+    """Build and benchmark on the SF1 database (Verus global store): read speedup per parameter tuple, write mixes."""
     ctx = _ctx()
     b = actions.build_runner(ctx)
     if not b["ok"]:
@@ -115,6 +118,11 @@ def verus_profile() -> str:
     if not b["ok"]:
         return _json(b)
     return _json(actions.profile(ctx))
+
+
+def prooflib_verify() -> str:
+    """Verify this workspace's copy of the proof library (prooflib/src/lib.rs) on its own, without publishing."""
+    return _json(actions.prooflib_verify(_ctx()))
 
 
 def prooflib_publish(note: str) -> str:
@@ -136,5 +144,5 @@ TOOLS: dict[str, Callable[..., str]] = {
     f.__name__: f
     for f in (verus_check_inputs, verus_sql, verus_validate_tests, verus_glue_check, verus_verify, verus_test,
               verus_bench,
-              verus_profile, prooflib_publish, playbook_append, backend_addition_record)
+              verus_profile, prooflib_verify, prooflib_publish, playbook_append, backend_addition_record)
 }

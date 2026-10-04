@@ -9,8 +9,8 @@
     glue          the host glue (an agent writes it; trusted): build, contract
                   check against the declared inputs, glue audit; frozen
     kernel        the kernel and its proofs
-    integration   frozen tests on the Verus store; the tests' fault self-check
-    optimization  A/B loop on the Verus store (stopping.py)
+    integration   frozen tests on the Verus global store; the tests' fault self-check
+    optimization  A/B loop on the Verus global store (stopping.py)
     audit         trusted base, leaks, C++-store compatibility, report
 
 Hard gates are correctness and trust only.  Scaling is guidance in the
@@ -42,7 +42,7 @@ STAGES = ("preflight", "spec", "analysis", "freeze", "tests", "glue", "kernel", 
           "audit")
 
 
-_TRANSIENT = re.compile(r"\b(429|500|502|503|504|529)\b|rate.?limit|overloaded|temporarily|unavailable|"
+_TRANSIENT = re.compile(r"\b(402|429|500|502|503|504|529)\b|Payment Required|rate.?limit|overloaded|temporarily|unavailable|"
                         r"stream (error|disconnected)|connection (reset|refused|closed)",
                         re.I)
 
@@ -58,6 +58,7 @@ class VerusState:
     frozen: dict[str, str] = field(default_factory=dict)
     tests_hash: str = ""
     kernel_session: str = ""  # the kernel agent's codex session (gate failures go back to it)
+    kernel_restarts: int = 0  # fresh, simpler kernels after a design proved too hard to prove
     done: list[str] = field(default_factory=list)  # stages already run inside an earlier parallel group
     opt: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
@@ -106,7 +107,8 @@ class Run:
             # step again (a session that got going is continued, not restarted)
             resume = res.session_id or resume
             self.note(f"{stage}: transient agent failure, retry {attempt + 1}/{retries}: {res.error[:200]}")
-            time.sleep(120 * (attempt + 1))
+            # out of provider credits (402) waits longer: room for a top-up or in-flight requests to settle
+            time.sleep((900 if "402" in (res.error or "") else 120) * (attempt + 1))
         if not res.ok and res.timed_out and tolerate_timeout:
             self.note(f"{stage}: the step ran out of time; judging what it left")
             return res
@@ -320,11 +322,20 @@ def _analysis(r: Run) -> None:
             continue
         r.agent("verus_critic", "02b_critic.md", "Review the analysis; write analysis/critique.json.")
         crit = _read_json(ctx.ws / "analysis" / "critique.json")
-        if crit.get("verdict") == "accept" or round_ == revisions:
-            r.note(f"analysis accepted after {round_ + 1} round(s) (critic: {crit.get('verdict', '?')})")
+        failed = _failed_checks(crit)
+        if (crit.get("verdict") == "accept" and not failed) or round_ == revisions:
+            r.note(f"analysis accepted after {round_ + 1} round(s) (critic: {crit.get('verdict', '?')}"
+                   + (f"; failed checks left: {[c.get('id') for c in failed]}" if failed else "") + ")")
             return
-        feedback = "The critic asks for a revision:\n" + json.dumps(crit.get("objections") or crit, indent=2)
+        feedback = "The critic asks for a revision:\n" + json.dumps(failed or crit.get("objections") or crit, indent=2)
+        if crit.get("estimates"):
+            feedback += "\nIts SF3000 estimates of your design:\n" + json.dumps(crit["estimates"], indent=2)
     raise PipelineStop(f"analysis: inputs still refused after {revisions + 1} rounds: {feedback[:2000]}")
+
+
+def _failed_checks(review: dict[str, Any]) -> list[dict[str, Any]]:
+    """A checklist review's failed checks (any one rejects, whatever its overall verdict says)."""
+    return [c for c in (review.get("checks") or []) if isinstance(c, dict) and c.get("ok") is False]
 
 
 def freeze(r: Run) -> None:
@@ -430,9 +441,10 @@ def _write_glue(r: Run, task: str) -> tuple[bool, str]:
             continue
         r.agent("verus_glue_audit", "03d_glue_audit.md", "Audit glue/glue.cpp; write analysis/glue_audit.json.")
         audit = _read_json(ctx.ws / "analysis" / "glue_audit.json")
-        if audit.get("verdict") == "ok":
+        failed = _failed_checks(audit)
+        if audit.get("verdict") == "ok" and not failed:
             return True, ""
-        feedback = "The glue audit found problems:\n" + json.dumps(audit.get("issues") or audit, indent=2)[:6000]
+        feedback = "The glue audit found problems:\n" + json.dumps(failed or audit.get("issues") or audit, indent=2)[:6000]
         r.note(f"glue round {k + 1}: {feedback.splitlines()[0]}")
     return False, f"the host glue fails its checks after {rounds + 1} rounds: {feedback[:2000]}"
 
@@ -453,6 +465,13 @@ def _kernel_gates(r: Run, *, snapshots_too: bool = False, proofs: bool = True) -
     c["stage"] = "tests"
     c["verified"] = b.get("verified")
     c["verify_seconds"] = b.get("verify_seconds")
+    if c["ok"]:
+        # correct on the small test data: now also fast enough on SF1 (code first, and again once proved,
+        # so a proof-driven rewrite cannot quietly make it slow)
+        cost = r.gate("cost_check", actions.cost_check(ctx))
+        if not cost["ok"]:
+            return {**c, "ok": False, "stage": "cost", "cost": cost, "error": cost.get("error")}
+        c["cost"] = cost
     return c
 
 
@@ -463,23 +482,50 @@ FIX_MESSAGE = """The gates failed after your last change (stage: {stage}). The f
 Fix it in crate/src (the frozen files, the glue and the tests stay as they are), check it with the
 tools ({check}), and end with the same kind of summary as before. For proof failures,
 contracts/proof_method.md maps each obligation to its standard proof and the verus_common lemmas;
-work top-down from the failing top-level fact (build / apply / execute)."""
+work top-down from the failing top-level fact (build / apply / execute). Never stub out build / apply /
+execute (e.g. an execute that always returns None) to make verification pass: the tests reject a kernel
+that declines most reads."""
 
 
 def _progress(gates: dict[str, Any]) -> tuple[int, int]:
     """How far a failing kernel is (larger is better): fewer failing gates' errors, then more
     verified.  A crate that does not compile (errors -1) ranks below every verifying one."""
     errors = int(gates.get("errors", -1) if gates.get("stage") == "verify" else 0)
-    stage_rank = {"verify": 0, "build": 0, "tests": 1, "snapshots": 2}.get(str(gates.get("stage")), 0)
+    stage_rank = {"verify": 0, "build": 0, "tests": 1, "snapshots": 2, "cost": 3}.get(str(gates.get("stage")), 0)
     return (stage_rank, -(errors if errors >= 0 else 10**6), int(gates.get("verified") or 0))
 
 
-def _escalation_stage(r: Run, stage: str) -> str:
-    """`<stage>_escalated` when the models config maps it (a heavier model), else ''."""
-    from accel_pipeline.verus.tools import ESCALATED
+ADVICE_MESSAGE = """Your fixes have not made progress for a few rounds, so a reviewer looked at the
+problem afresh (it did not change any files). Its diagnosis and suggested approach:
 
-    name = stage + ESCALATED
-    return name if name in (getattr(r.model_config, "stages", {}) or {}) else ""
+{advice}
+
+Weigh it against what you know (you have more context; it may be wrong in details), then fix the
+kernel in crate/src. The current failure:
+
+{failure}
+
+Check it with the tools ({check}), and end with the same kind of summary as before."""
+
+
+def _advice(r: Run, gates: dict[str, Any], why: str, proofs: bool) -> str:
+    """A second opinion when fixes stall: a fresh, cheaper reviewer (verus_kernel_advisor)
+    diagnoses the failure and suggests an approach; it may not change the workspace (any
+    change is undone)."""
+    ctx = r.ctx
+    snap = workspace.snapshot_kernel(ctx, "before_advice")
+    try:
+        res = r.agent("verus_kernel_advisor", "04d_kernel_advice.md", "Diagnose the failure; write analysis/kernel_advice.md.",
+                      {"failure": _brief(gates, 12000), "phase": "proofs" if proofs else "code (tests)"},
+                      tolerate_timeout=True)
+    finally:
+        if workspace.differs(ctx, "before_advice"):
+            r.note(f"{why}: the advisor changed files; undone")
+        workspace.restore_kernel(ctx, "before_advice")
+        shutil.rmtree(snap, ignore_errors=True)
+    path = ctx.ws / "analysis" / "kernel_advice.md"
+    text = path.read_text(encoding="utf-8") if path.is_file() else (res.final_text or "")
+    return text.strip()[:8000]
 
 
 def _fix_loop(r: Run, gates: dict[str, Any], rounds: int, *, snapshots_too: bool, why: str,
@@ -488,40 +534,95 @@ def _fix_loop(r: Run, gates: dict[str, Any], rounds: int, *, snapshots_too: bool
     code gets the failure as its next message (its context kept); without one, a fresh
     kernel-fix agent.
 
-    Escalation: after `stages.escalate_after_stalled_rounds` rounds in a row without
-    progress (fewer errors, or more verified at the same count), the session continues
-    on `<stage>_escalated`'s model (a heavier one) with `stages.escalation_extra_rounds`
-    more rounds."""
+    A second opinion: after `stages.escalate_after_stalled_rounds` rounds in a row without
+    progress (fewer errors, or more verified at the same count), a reviewer
+    (verus_kernel_advisor, a different, cheaper model) diagnoses the failure in a fresh
+    session; its advice goes to the same agent, with `stages.escalation_extra_rounds` more
+    rounds."""
     stage, sid = session
     stall_limit = int(r.ctx.setting("stages.escalate_after_stalled_rounds", 2))
     extra = int(r.ctx.setting("stages.escalation_extra_rounds", 2))
-    best, stalled, escalated = _progress(gates), 0, False
+    check = "verus_verify, verus_test" if proofs else "verus_test with proofs=false"
+    best, stalled, advised, extended = _progress(gates), 0, False, False
+    advice = ""
     k = 0
-    while k < rounds:
+    while True:
         if gates["ok"]:
             break
-        if not escalated and stalled >= stall_limit:
-            up = _escalation_stage(r, stage if sid else "verus_kernel_fix")
-            if up:
-                escalated, rounds = True, rounds + extra
-                if sid:
-                    stage = up
-                r.note(f"{why}: no progress in {stalled} rounds; escalating to {up} (+{extra} rounds)")
+        if k >= rounds:
+            # out of rounds: a stall that has not had its second opinion yet gets one (below);
+            # a kernel still improving in its last round gets one more block of rounds, once
+            if not (not advised and stalled >= stall_limit):
+                if extended or stalled > 0:
+                    break
+                extended, rounds = True, rounds + extra
+                r.note(f"{why}: still improving after {k} rounds; {extra} more")
+        if not advised and stalled >= stall_limit:
+            advised, rounds = True, rounds + extra
+            r.note(f"{why}: no progress in {stalled} rounds; asking the advisor for a second opinion (+{extra} rounds)")
+            advice = _advice(r, gates, why, proofs)
         k += 1
         r.note(f"{why}: fix round {k}/{rounds} ({gates.get('stage')})" + (" [same session]" if sid else ""))
+        failure = _brief(gates, 12000)
         if sid:
-            check = "verus_verify, verus_test" if proofs else "verus_test with proofs=false"
-            res = r.agent(stage, "", FIX_MESSAGE.format(stage=gates.get("stage"), failure=_brief(gates, 12000),
-                                                         check=check), resume=sid, tolerate_timeout=True)
+            msg = (ADVICE_MESSAGE.format(advice=advice, failure=failure, check=check) if advice
+                   else FIX_MESSAGE.format(stage=gates.get("stage"), failure=failure, check=check))
+            res = r.agent(stage, "", msg, resume=sid, tolerate_timeout=True)
             sid = res.session_id or sid
         else:
-            fix = _escalation_stage(r, "verus_kernel_fix") if escalated else ""
-            r.agent(fix or "verus_kernel_fix", "04b_kernel_fix.md", "Make the kernel pass the gates.",
-                    {"failure": _brief(gates, 12000)})
+            r.agent("verus_kernel_fix", "04b_kernel_fix.md", "Make the kernel pass the gates.",
+                    {"failure": failure + (f"\n\nA reviewer's diagnosis:\n{advice}" if advice else "")})
+        advice = ""  # once: later rounds get the plain failure
         gates = r.gate("kernel_gates", _kernel_gates(r, snapshots_too=snapshots_too, proofs=proofs))
         now = _progress(gates)
         stalled, best = (0, now) if now > best else (stalled + 1, best)
     return gates
+
+
+SIMPLER_NOTE = """This is a fresh start on the kernel. The previous attempt passed the tests but could not be proved
+after its fix rounds and a reviewer's second opinion; it is archived ({archive}). Its last failure:
+
+{failure}
+
+Implement the state in analysis/analysis.json as plainly as possible, so that it can be proved:
+* persistent maps keyed by tuples: the shared verified one in the proof library, or one proven in
+  another query's kernel lifted into the library (see "Proven code in this tree"). Not a vstd HashMap /
+  Vec cloned per write (that is O(state) per transaction) and not a flat Vec searched linearly. No new
+  custom hash tables, pages, dictionaries, compression, prefix-array encodings or multi-level bucket
+  schemes unless the analysis requires one for a cost bound -- and then only that one, kept small;
+* keep the analysis's read and write cost bounds: reads touch only what the query needs, writes only
+  the keys they change;
+* every structure's invariant is a sum (or count) over db, proved with contracts/proof_method.md's
+  patterns: build = sum over the scans, apply = old + signed delta (bag_step at the same weight),
+  execute = the sum over what it reads;
+* small functions, each with its own lemma; prove one layer at a time (collections, build, apply,
+  execute). Never stub out build / apply / execute."""
+
+
+def _restart_kernel_simpler(r: Run, gates: dict[str, Any]) -> None:
+    """Archive the kernel, reset crate/src to the frozen skeleton, and start over with a note asking for
+    the plainest provable implementation of the analysis's state (code first, then proofs)."""
+    ctx = r.ctx
+    r.state.kernel_restarts += 1
+    src = ctx.ws / "crate" / "src"
+    archive = Path(ctx.run_dir) / "archive" / f"kernel_attempt{r.state.kernel_restarts}"
+    archive.mkdir(parents=True, exist_ok=True)
+    for p in src.glob("*"):
+        if p.is_file() and not p.name.startswith("gen_"):
+            shutil.move(str(p), str(archive / p.name))
+    shutil.copy2(ctx.ws / "frozen" / "kernel_stub.rs", src / "kernel.rs")
+    (src / "lib.rs").write_text(
+        "// Verus kernel crate (pipeline).  gen_* are generated and frozen; the\n"
+        "// kernel (kernel.rs and any modules it adds) is written by the agents.\n"
+        "#![allow(unused_imports)]\n\n" + "".join(f"pub mod {m};\n" for m in actions.LIB_RS_REQUIRED),
+        encoding="utf-8")
+    (ctx.ws / "analysis" / "operator_note.md").write_text(
+        SIMPLER_NOTE.format(archive=archive, failure=_brief(gates, 4000)), encoding="utf-8")
+    r.state.done = [d for d in r.state.done if d != "kernel_code"]
+    r.state.kernel_session = ""
+    r.save()
+    r.note(f"kernel: not provable after its rounds; restarting with a simpler implementation "
+           f"(attempt {r.state.kernel_restarts + 1}; previous archived in {archive})")
 
 
 def kernel(r: Run) -> None:
@@ -531,13 +632,19 @@ def kernel(r: Run) -> None:
     passed continues straight to the proofs in its saved session."""
     rounds = int(r.ctx.setting("stages.kernel_fix_rounds", 4))
     sid = r.state.kernel_session
+    note_path = r.ctx.ws / "analysis" / "operator_note.md"  # a reviewer's note for the next agent step, used once
+    note = ""
+    if note_path.is_file() and not r.dry_run:
+        note = f"A note from the pipeline operator (read it first):\n\n{note_path.read_text(encoding='utf-8')}\n\n"
+        note_path.rename(note_path.with_name("operator_note.used.md"))
     if "kernel_code" in r.state.done and sid and not r.dry_run:
         r.note("kernel code already passes the tests; continuing the proofs in the saved session")
     else:
-        res = r.agent("verus_kernel", "04_kernel.md", "Implement the kernel in crate/src (code first; no proofs yet).",
-                      tolerate_timeout=True)
+        res = r.agent("verus_kernel", "04_kernel.md",
+                      note + "Implement the kernel in crate/src (code first; no proofs yet).", tolerate_timeout=True)
+        note = ""
         if r.dry_run:
-            r.agent("verus_kernel", "04c_kernel_proofs.md", "(dry run)")
+            r.agent("verus_kernel_proofs", "04c_kernel_proofs.md", "(dry run)")
             return
         sid = res.session_id
         r.state.kernel_session = sid
@@ -549,16 +656,25 @@ def kernel(r: Run) -> None:
             raise PipelineStop("the kernel's code does not pass the tests: " + _brief(gates, 3000))
         r.mark_done("kernel_code")
         r.note("kernel code passes the tests (unverified); proving it")
-    proof_task = render(r.ctx, "04c_kernel_proofs.md")
+    proof_task = note + render(r.ctx, "04c_kernel_proofs.md")
     if sid:
-        res = r.agent("verus_kernel", "", proof_task, resume=sid, tolerate_timeout=True)
+        # the proofs continue the code's session, on the proofs' model (verus_kernel_proofs)
+        res = r.agent("verus_kernel_proofs", "", proof_task, resume=sid, tolerate_timeout=True)
     else:
-        res = r.agent("verus_kernel", "04c_kernel_proofs.md", "Prove the kernel in crate/src.", tolerate_timeout=True)
-    session = ("verus_kernel", res.session_id or sid)
+        res = r.agent("verus_kernel_proofs", "04c_kernel_proofs.md", "Prove the kernel in crate/src.", tolerate_timeout=True)
+    session = ("verus_kernel_proofs", res.session_id or sid)
     r.state.kernel_session = session[1]
     r.save()
     gates = r.gate("kernel_gates", _kernel_gates(r))
     gates = _fix_loop(r, gates, rounds, snapshots_too=False, why="kernel proofs", session=session)
+    # a kernel that is nearly proved is not thrown away: it stops for review (resume continues its session)
+    # -- and neither is one that verifies and fails a later gate (tests, snapshots, cost)
+    near = (gates.get("stage") == "verify" and 0 <= int(gates.get("errors", -1)) <= int(
+        r.ctx.setting("stages.keep_kernel_within_errors", 3))) or gates.get("stage") in ("tests", "snapshots", "cost")
+    if not gates["ok"] and not near and \
+            r.state.kernel_restarts < int(r.ctx.setting("stages.kernel_simplify_restarts", 1)):
+        _restart_kernel_simpler(r, gates)
+        return kernel(r)
     if not gates["ok"]:
         raise PipelineStop("the kernel does not pass its gates: " + _brief(gates, 3000))
     r.note(f"kernel verified ({gates.get('verified')} verified in {gates.get('verify_seconds')}s), tests pass")
@@ -572,7 +688,7 @@ def integration(r: Run) -> None:
     for k in range(rounds + 1):
         gates = r.gate("integration", _kernel_gates(r, snapshots_too=True))
         gates = _fix_loop(r, gates, int(ctx.setting("stages.kernel_fix_rounds", 4)), snapshots_too=True,
-                          why="integration", session=("verus_kernel", r.state.kernel_session))
+                          why="integration", session=("verus_kernel_proofs", r.state.kernel_session))
         if not gates["ok"]:
             raise PipelineStop("integration: the kernel fails the frozen tests: " + _brief(gates, 3000))
         sc = r.gate("fault_selfcheck", actions.fault_selfcheck(ctx))
@@ -893,7 +1009,7 @@ def audit(r: Run) -> None:
         report["leak_check"] = actions.leak_check(ctx)
         b = actions.build_runner(ctx)
         report["build"] = b
-        report["verus_store"] = actions.correctness(ctx, store="verus")
+        report["verus_store"] = actions.correctness(ctx, store="verus_global")
         report["cpp_store"] = actions.correctness(ctx, store="cpp")
         report["fault_selfcheck"] = actions.fault_selfcheck(ctx)
         report["glue_contract"] = actions.glue_contract(ctx)

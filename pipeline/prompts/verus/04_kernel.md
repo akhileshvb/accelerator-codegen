@@ -44,11 +44,28 @@ hand-written trees or indexes, whose own proofs are large.
 The host glue (`glue/`) is already written and frozen; you only write the
 kernel. Loop: `verus_test` with `proofs=false` (compiles the kernel without
 checking its proofs, builds the accelerator, runs the frozen tests on the Verus
-store; `snapshots=true` adds concurrent readers) until they pass. Performance
+store, the database's one global store; `snapshots=true` adds concurrent readers) until they pass. Performance
 comes later (an optimization loop), but design for it now: the aux state from
 the analysis, not a recomputation of the query.
 
 End with a short summary: the modules and what each holds, the state's
 invariant in words, and anything you expect to be hard to prove.
+
+## Proven code in this tree
+
+These kernels of other queries verified fully (read them freely; they are proved against their own specs):
+
+{{completed_kernels}}
+
+Before you write a data structure or a long lemma, look for one there (and in the shared proof library,
+`prooflib/src/lib.rs`). To reuse one, **lift it into the shared proof library** -- made generic (no
+query-specific types), with its specification and proofs -- and publish it with `prooflib_publish`; then
+use it through `verus_prooflib`. Do not copy another query's module into your crate. Lifting helps every
+later kernel, and the library is re-verified with every completed kernel when you publish.
+
+Every state version must stay valid after a write (readers may still use it): a structure that is cloned
+or rebuilt per write costs the whole state on every transaction. Prefer a persistent structure (a write
+copies only the path to the keys it changes, e.g. a path-copying trie) -- look for one in the kernels
+above and the library before writing your own.
 
 {{include:shared/rules.md}}

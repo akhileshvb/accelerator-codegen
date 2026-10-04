@@ -18,6 +18,7 @@ bench_db: /home/akhilvb/accelerator-codegen-duckdb/tpch_sf1.duckdb   # optimizat
 # Preflight probes it and stops if anything else of $HOME is visible.
 # `none` runs codex unsandboxed (approvals are bypassed either way).
 sandbox: bwrap
+engine: duckdb                  # the engine the accelerator runs on: the spec models its semantics (sql2verus --engine)
 agent_retries: 2                # an agent step failing on a provider hiccup (429/5xx, dropped stream) is retried
 # Independent stages run concurrently: the spec audit with the analysis; after
 # freeze B, the obligations audit, the tests and the glue.  false: one at a time.
@@ -28,12 +29,12 @@ parallel_stages: true
 stages:
   spec_audit_rounds: 1          # faithfulness audit of the generated spec
   reuse_spec_audit: true        # skip it when an accepted audit of the same SQL + schema + spec exists
-  analysis_revisions: 1         # critic -> analysis revision rounds (analysis revises in its own session)
+  analysis_revisions: 2         # critic -> analysis revision rounds (analysis revises in its own session)
   adversarial_revisions: 2      # strengthen rounds when the fault self-check misses a bug
   kernel_fix_rounds: 4          # per kernel phase (code, then proofs): the failure goes back to the kernel agent's session
-  escalate_after_stalled_rounds: 2  # fix rounds in a row without progress -> the session continues on
-                                    # <stage>_escalated's model (models config: verus_heavy)
-  escalation_extra_rounds: 2    # rounds added when escalating
+  escalate_after_stalled_rounds: 2  # fix rounds in a row without progress -> a second opinion from
+                                    # verus_kernel_advisor (models config: verus_advisor), fed back to the session
+  escalation_extra_rounds: 2    # rounds added with the advice
   glue_fix_rounds: 3            # glue fix rounds (build, contract check, glue audit)
 
 gates:
@@ -42,13 +43,13 @@ gates:
   snapshot_readers: 4
   differential_every: 10        # all parameter tuples every N transactions
 
-# Optimization loop (Verus store).  Hard ceilings always reach the audit;
+# Optimization loop (Verus global store: ACCEL_AUX_STORE=verus_global).  Hard ceilings always reach the audit;
 # the progress stop is the usual exit; it may fire only after a minimum of
 # profile-guided exploration.
 optimization:
   max_concurrent: 4             # machine-wide: pipelines optimizing at once (their benchmarks take turns);
                                 # the others wait before the stage, their budget not running
-  stage_budget_sec: 3600        # whole loop (1 h); then the best kernel goes to the audit
+  stage_budget_sec: 1800        # whole loop (30 min); then the best kernel goes to the audit
   attempt_timeout_sec: 2700     # one attempt's agent run
   attempt_gate_fix_rounds: 2    # verify / test fix rounds inside an attempt
   patience: 4                   # consecutive attempts without an accepted improvement
@@ -62,8 +63,21 @@ optimization:
   bench:
     reps: 5
     ops: 200
+    target_sec: 180               # benches scaled down (once per run, by a 10-op probe) to about this long
     write_mix_choices: [0.01, 0.05, 0.1]
     write_mix_count: 2
     paired_rounds: 3            # acceptance: best and candidate benched alternately, medians compared
     read_score_weight: 0.75
     write_score_weight: 0.25
+
+# A kernel that passes its tests is measured briefly on SF1 (code first, and again once proved): the tests'
+# database is too small to show per-write copies of the state or whole-state scans per read.
+cost_check:
+  enabled: true
+  ops: 20                       # operations per run (1 rep, one write mix)
+  write_mix: 0.05
+  min_read_speedup: 2.0         # reads vs the plain query
+  min_mix_speedup: 1.0          # the write mix vs the plain query: never slower than without the accelerator
+  timeout_sec: 240              # not finishing in time fails the check (work grows with the whole state)
+  max_write_overhead_ratio: 10  # the maintenance a write adds, at most this times the plain write ...
+  write_overhead_floor_us: 5000 # ... or this much, whichever is larger

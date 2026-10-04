@@ -3,7 +3,7 @@
 Make one measured improvement to the accelerator, keeping it verified and
 correct. The pipeline accepts your change only if it still verifies with
 nothing added to the trusted base, passes the frozen tests (differential and
-concurrent snapshots, Verus store), and raises the score (steady-state read speedup ×
+concurrent snapshots, on the Verus global store), and raises the score (steady-state read speedup ×
 write-mix speedup, measured by the pipeline on SF1; build time excluded) by more than the noise.
 Otherwise your change is reverted.
 

@@ -586,6 +586,11 @@ def main(argv: list[str] | None = None) -> int:
         """perf profile of a short SF1 bench: hotspots by symbol and area."""
         return _verus("verus_profile")
 
+    @_tool(annotations=_ro)
+    def prooflib_verify() -> str:
+        """Verify this workspace's copy of the proof library (prooflib/src/lib.rs) on its own, without publishing."""
+        return _verus("prooflib_verify")
+
     @_tool(annotations=_rw)
     def prooflib_publish(note: str) -> str:
         """Publish prooflib/src/lib.rs (additions only; dependents re-verified first)."""

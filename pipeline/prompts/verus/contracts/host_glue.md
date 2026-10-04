@@ -16,7 +16,8 @@ You write one C++ file against two APIs:
   keyed rescan in chunks; `Arg*` read query arguments; `Out*` make result
   cells; `Glue` describes the query; `Registrar` registers it.
 * `frozen/<crate>_verus.h`: the kernel's C ABI (prefix `{{ffi_prefix}}_` for
-  states owned by the host, `{{ffi_prefix}}s_` for the Verus store). Its
+  kernel states; ignore the `{{ffi_prefix}}s_` functions: the host keeps the
+  states in the database's one Verus store itself). Its
   conventions: a rows argument `x` is `size_t x__n` then either one array `x`
   (a row type without text: the header declares the struct) or column arrays
   in field order: `x__<field>` (nested `x__<field>__<field>`), a text column
@@ -33,8 +34,7 @@ const kit::Glue kGlue = {
     { /* tables: one per delta in inputs/q.inputs, any order */
       {"<table>", {"<captured column>", ...}}, ... },
     { /* parameter kinds, $1 first: kit::Kind::Text / Int / Dec / Date / Bool */ },
-    Build, FreeState, Apply, Execute, PrepareApply, PrepareBuild,
-    kit::StoreOps{ /* every {{ffi_prefix}}s_* function, wrapped */ },
+    Build, FreeState, Apply, Execute,
 };
 const kit::Registrar kRegistrar(&kGlue);
 ```
@@ -42,28 +42,25 @@ const kit::Registrar kRegistrar(&kGlue);
 * `tables`: the engine captures, for each listed table, every inserted /
   deleted / updated row, projected on the listed columns **in that order**
   (`Change::row` holds them; `Change::sign` is +1 / -1; an update is both).
-  List exactly the columns the table's delta declaration reads.
+  List exactly the table's own columns that the delta declaration's SELECT
+  reads (its base columns, never an output alias): for
+  `SELECT s_suppkey, s_comment LIKE '%x%' AS is_blocked FROM supplier`, capture
+  `s_suppkey, s_comment` and compute `is_blocked` in Apply.
   `Changes` (in Apply) is indexed in this table order.
 * `Build(Host &h)`: run every declared `scan`'s SQL **verbatim** through
   `h.Query`, fill the C ABI's arrays (cells in the SELECT's column order), and
-  call `{{ffi_prefix}}_build`. `PrepareBuild(store, h)`: the same into
-  `{{ffi_prefix}}s_prepare_build`.
+  call `{{ffi_prefix}}_build`.
 * `Apply(state, changes, h, err)`: marshal each table's changes into its
   delta argument (lossy fields computed exactly as the delta's SELECT says),
   call `{{ffi_prefix}}_rescan_<n>_keys` for each rescan (it writes up to `cap`
   keys and returns how many: call again with more room if needed), fetch
   those rows with `kit::QueryKeys(h, <declared rescan SQL>, <its KEYS output
-  column>, keys, ...)`, then call `{{ffi_prefix}}_apply`. `PrepareApply(store,
-  base, changes, h, err)`: the same with the base's state
-  (`{{ffi_prefix}}s_base_state(base)`) into `{{ffi_prefix}}s_prepare_apply`.
+  column>, keys, ...)`, then call `{{ffi_prefix}}_apply`.
 * `Execute(state, args, out)`: read the parameters (`kit::Arg*`; false: return
   false, the host answers with SQL), call `{{ffi_prefix}}_execute`, and turn
   every result row into an `AuxRow` (`kit::Out*`; columns in the query's
   order; a decimal with its scale; NULLs as `kit::OutNull`). Free the result.
-* `FreeState`: `{{ffi_prefix}}_free`. `StoreOps`: wrap each `{{ffi_prefix}}s_*`
-  function (new, free, newest_base, base_state, base_free, prepare_invalid,
-  prepared_free, begin, abort, install, read, state_release, invalidate_all,
-  version_count) with `void *` casts, in that field order.
+* `FreeState`: `{{ffi_prefix}}_free`.
 
 ## Rules
 

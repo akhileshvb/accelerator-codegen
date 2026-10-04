@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import re
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -111,7 +112,11 @@ class CodexExecBackend:
             if key.startswith("ACCEL_VERUS_") or key == "ACCEL_PIPELINE_MODE":
                 lines.append(sidecar_env_line(key, value))
         path = codex_home / "accel_pipeline_mcp.env"
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # atomically: parallel pipelines share this CODEX_HOME, and a reader must never
+        # see a half-written file
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")  # stages run in threads
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
         return path
 
     @staticmethod

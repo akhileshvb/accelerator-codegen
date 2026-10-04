@@ -7,6 +7,7 @@ agent to act on (errors are trimmed).  Nothing here calls an agent.
 from __future__ import annotations
 
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import json
@@ -92,7 +93,9 @@ def sql2verus_bin(ctx: VerusContext) -> Path:
 
 def _sql2verus(ctx: VerusContext, out_dir: Path, *, inputs: Path | None) -> subprocess.CompletedProcess[str]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [str(sql2verus_bin(ctx)), "--schema", ctx.schema_sql, "--query", ctx.query_sql,
+    # the spec models the engine the accelerator runs on (e.g. how CHAR(n) compares)
+    cmd = [str(sql2verus_bin(ctx)), "--engine", str(ctx.setting("engine", "duckdb")),
+           "--schema", ctx.schema_sql, "--query", ctx.query_sql,
            "--out", str(out_dir / "gen_spec.rs")]
     if inputs is not None:
         cmd += ["--obligations", str(out_dir / "gen_obligations.rs"), "--inputs", str(inputs),
@@ -150,6 +153,12 @@ def freeze_inputs(ctx: VerusContext) -> dict[str, Any]:
         shutil.copy2(tmp / f, src / f)
         shutil.copy2(tmp / f, ws_src / f)
     ctx.kit_dir.mkdir(parents=True, exist_ok=True)
+    # a new C ABI invalidates any installed glue: remove it, so the shared build never compiles old glue
+    # against the new header (the glue stage writes and installs the new one)
+    installed = ctx.kit_dir / ctx.header_name
+    if not installed.is_file() or installed.read_bytes() != (tmp / ctx.header_name).read_bytes():
+        for old in list(ctx.kit_dir.glob("*.cpp")) + list(ctx.kit_dir.glob("*.hpp")):
+            old.unlink()
     shutil.copy2(tmp / ctx.header_name, ctx.kit_dir / ctx.header_name)
     (ctx.ws / "frozen").mkdir(parents=True, exist_ok=True)
     for f in (ctx.header_name, "kernel_stub.rs", "gen_obligations.rs"):
@@ -265,6 +274,26 @@ def _verus_env(ctx: VerusContext) -> dict[str, str]:
 _RESULTS = re.compile(r"verification results:: (\d+) verified, (\d+) errors")
 
 
+def _crate_hash(crate_dir: Path) -> str:
+    h = hashlib.sha256()
+    for p in sorted((Path(crate_dir) / "src").glob("*.rs")):
+        h.update(p.name.encode() + b"\0" + p.read_bytes())
+    return h.hexdigest()
+
+
+def _verified_cache(ctx: VerusContext) -> Path:
+    """Crates that last verified fully (crate dir -> its source hash): the prooflib's dependents."""
+    return cargo_target_dir(ctx) / ".verified_crates.json"
+
+
+def mark_verified(ctx: VerusContext, crate_dir: Path) -> None:
+    path = _verified_cache(ctx)
+    with file_lock(path.with_suffix(".lock")):
+        data = json.loads(path.read_text()) if path.is_file() else {}
+        data[str(Path(crate_dir).resolve())] = _crate_hash(crate_dir)
+        path.write_text(json.dumps(data, indent=1))
+
+
 def verify(ctx: VerusContext, *, compile_lib: bool = False, proofs: bool = True) -> dict[str, Any]:
     """Sync the workspace crate and verify it (and compile it to the kernel library).
 
@@ -272,10 +301,12 @@ def verify(ctx: VerusContext, *, compile_lib: bool = False, proofs: bool = True)
     """
     sync_crate(ctx)
     script = ctx.root / "scripts" / "build_verus_crate.sh"
-    if not proofs:
-        mode = ["--no-verify"]
+    # compile_lib: the kit as a library for its benchmark's world (the one Verus
+    # store for every accelerator of the database); update_world then puts it there
+    if compile_lib:
+        mode = ["--rlib"] if proofs else ["--rlib-no-verify"]
     else:
-        mode = [] if compile_lib else ["--verify-only"]
+        mode = ["--verify-only"] if proofs else ["--no-verify"]
     cmd = ["bash", str(script), str(ctx.crate_dir), ctx.crate] + mode
     t0 = time.monotonic()
     proc = _run(cmd, env=_verus_env(ctx), timeout=float(ctx.setting("verify_timeout_sec", 3600)))
@@ -287,10 +318,47 @@ def verify(ctx: VerusContext, *, compile_lib: bool = False, proofs: bool = True)
         verified, errors = 0, 0 if proc.returncode == 0 else -1
     ok = proc.returncode == 0 and errors == 0
     res: dict[str, Any] = {"ok": ok, "verified": verified, "errors": errors, "seconds": seconds}
+    if ok and proofs:
+        mark_verified(ctx, ctx.crate_dir)
+    if ok and compile_lib:
+        world = update_world(ctx)
+        res["world"] = world
+        if not world["ok"]:
+            res["ok"] = False
+            res["output"] = world["output"]
+        return res
     if not ok:
-        # keep the error blocks, not the trigger notes
-        blocks = [b for b in re.split(r"\n(?=error|warning: unused)", out) if b.startswith("error")]
-        res["output"] = _tail("\n".join(blocks) or out, 12000)
+        # keep the error blocks, not the trigger notes; list EVERY error first (one line each,
+        # where and what) so a long report's tail never hides the first failures
+        blocks = [b for b in re.split(r"\n(?=error|warning: unused)", out)
+                  if b.startswith("error") and not b.startswith("error: aborting")]
+        index = []
+        for b in blocks:
+            head = b.splitlines()[0][:160]
+            at = re.search(r"-->\s*(\S+)", b)
+            index.append(f"- {Path(at.group(1)).name if at else '?'}: {head}")
+        res["error_list"] = index
+        listing = f"{len(index)} errors:\n" + "\n".join(index) + "\n\nDetails (first errors first):\n"
+        details = "\n".join(blocks) or out
+        res["output"] = listing + details[: max(2000, 12000 - len(listing))]
+    return res
+
+
+def update_world(ctx: VerusContext) -> dict[str, Any]:
+    """Put the kit (its library, just compiled) into its benchmark's Verus world
+    and rebuild it: the world is verified against every kit and compiled to the
+    archive the engines link (CMake links a benchmark's kits only through it)."""
+    t0 = time.monotonic()
+    proc = _run(["bash", str(ctx.root / "scripts" / "update_verus_world.sh"), ctx.benchmark, ctx.crate],
+                env=_verus_env(ctx), timeout=float(ctx.setting("verify_timeout_sec", 3600)))
+    out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    m = _RESULTS.findall(out)
+    res: dict[str, Any] = {"ok": proc.returncode == 0 and (not m or int(m[-1][1]) == 0),
+                           "seconds": round(time.monotonic() - t0, 1)}
+    if not res["ok"]:
+        errs = [b for b in re.split(r"\n(?=error)", out) if b.startswith("error") and not b.startswith("error: aborting")]
+        res["output"] = ("the Verus world (the one store for every accelerator of the database) does not verify or "
+                         "build with this kernel:\n" + ("\n".join(errs) or _tail(out, 6000))[:8000])
     return res
 
 
@@ -309,7 +377,7 @@ def ensure_runner(ctx: VerusContext) -> dict[str, Any]:
     return {"ok": True}
 
 
-def build_runner(ctx: VerusContext, *, proofs: bool = True) -> dict[str, Any]:
+def build_runner(ctx: VerusContext, *, proofs: bool = True, _foreign_retry: int = 0) -> dict[str, Any]:
     """Compile the kernel library, then the engine + runner (CMake picks up the kit glue).
 
     proofs=False: the kernel compiled without checking its proofs (code first).
@@ -337,6 +405,18 @@ def build_runner(ctx: VerusContext, *, proofs: bool = True) -> dict[str, Any]:
             freeze_runner(ctx, "current", locked=True)
     if proc.returncode != 0:
         errs = "\n".join(l for l in (proc.stdout + proc.stderr).splitlines() if "error" in l.lower())
+        # every error in another query's files: not this kernel's failure -- wait for that query to fix
+        # (or roll back) its glue and try again, rather than spend a fix round on it
+        mine = str(ctx.kit_dir.resolve())
+        paths = re.findall(r"(/\S+/src/generated/\S+?/verus_kit/[^/\s]+)/", errs)
+        foreign = paths and all(not p.startswith(mine) for p in paths)
+        retries = int(ctx.setting("build_foreign_retries", 15))
+        if foreign and _foreign_retry < retries:
+            time.sleep(60)
+            return build_runner(ctx, proofs=proofs, _foreign_retry=_foreign_retry + 1)
+        if foreign:
+            errs = (f"the shared build fails in OTHER queries' files (not this kernel's), still after {retries} "
+                    f"minutes of retries:\n{errs}")
         return {"ok": False, "stage": "build", "output": _tail(errs or proc.stdout + proc.stderr, 8000)}
     return {"ok": True, "verified": lib["verified"], "verify_seconds": lib["seconds"]}
 
@@ -462,7 +542,7 @@ def runner_exe(ctx: VerusContext, runner: Path | None = None) -> tuple[str, dict
     return str(runner / ctx.runner.name), {"LD_LIBRARY_PATH": lib_path}
 
 
-def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus", fault: str = "",
+def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus_global", fault: str = "",
             timeout: float = 1800, runner: Path | None = None) -> dict[str, Any]:
     env = runner_env(ctx, ACCEL_AUX_STORE=store, ACCEL_VERUS_KIT_FAULT=fault)
     exe, extra = runner_exe(ctx, runner)  # a frozen copy: its own kernel library first
@@ -494,7 +574,7 @@ def validate_tests(ctx: VerusContext) -> dict[str, Any]:
     return r
 
 
-def differential(ctx: VerusContext, *, store: str = "verus", fault: str = "") -> dict[str, Any]:
+def differential(ctx: VerusContext, *, store: str = "verus_global", fault: str = "") -> dict[str, Any]:
     db = db_copy(ctx, "test", f"diff_{store}_{fault.replace(':', '_') or 'none'}")
     every = str(ctx.setting("gates.differential_every", 10))
     r = _runner(ctx, ["differential", str(db), ctx.accel_id, str(tests_dir(ctx)), every], store=store, fault=fault)
@@ -502,7 +582,7 @@ def differential(ctx: VerusContext, *, store: str = "verus", fault: str = "") ->
     return r
 
 
-def snapshots(ctx: VerusContext, *, store: str = "verus", fault: str = "") -> dict[str, Any]:
+def snapshots(ctx: VerusContext, *, store: str = "verus_global", fault: str = "") -> dict[str, Any]:
     db = db_copy(ctx, "test", f"snap_{store}_{fault or 'none'}")
     r = _runner(ctx, ["snapshots", str(db), ctx.accel_id, str(tests_dir(ctx)),
                       str(ctx.setting("gates.snapshot_writes", 200)), str(ctx.setting("gates.snapshot_readers", 4)),
@@ -517,7 +597,7 @@ def fallback_rate(result: dict[str, Any]) -> float:
     return int(ex.get("fallback", 0)) / total if total else 1.0
 
 
-def correctness(ctx: VerusContext, *, store: str = "verus", snapshots_too: bool = True) -> dict[str, Any]:
+def correctness(ctx: VerusContext, *, store: str = "verus_global", snapshots_too: bool = True) -> dict[str, Any]:
     """The frozen tests on one store: differential (+ concurrent snapshots)."""
     d = differential(ctx, store=store)
     res: dict[str, Any] = {"differential": d}
@@ -612,18 +692,118 @@ def glue_contract(ctx: VerusContext) -> dict[str, Any]:
 # ───────────────────────────── bench / profile ─────────────────────────────
 
 
-def bench(ctx: VerusContext, mixes: list[float], *, store: str = "verus", tag: str = "bench",
-          reps: int | None = None, ops: int | None = None, runner: Path | None = None) -> dict[str, Any]:
+def bench_size(ctx: VerusContext, mixes: list[float]) -> tuple[int, int]:
+    """(reps, ops) for this query's benches: the configured size, scaled down so a full bench
+    takes about `optimization.bench.target_sec` (a slow kernel or base query would otherwise
+    hold the machine-wide bench lock for half an hour).  Probed once per run (10 ops, one mix)
+    and kept, so every bench of the run -- baseline, paired, audit -- is the same size."""
     cfg = ctx.setting("optimization.bench", {}) or {}
-    db = db_copy(ctx, "bench", tag)
+    reps, ops = int(cfg.get("reps", 5)), int(cfg.get("ops", 200))
+    cache = Path(ctx.run_dir) / "bench_size.json"
+    if cache.is_file():
+        try:
+            d = json.loads(cache.read_text())
+            return int(d["reps"]), int(d["ops"])
+        except (ValueError, KeyError):
+            pass
+    target = float(cfg.get("target_sec", 180))
+    db = Path(ctx.run_dir) / "dbs" / "size_probe.duckdb"
+    try:
+        with file_lock(bench_lock(ctx)):  # the copy too: no pipeline waits holding a 300 MB copy
+            db = db_copy(ctx, "bench", "size_probe")
+            t0 = time.monotonic()
+            r = _runner(ctx, ["bench", str(db), ctx.accel_id, str(tests_dir(ctx)), "1", str(mixes[0]), "10"],
+                        timeout=900)
+            wall = time.monotonic() - t0
+    finally:
+        drop_db(db)
+    if r.get("exit") != 0 or "error" in r:
+        return reps, ops  # the probe failed: the configured size, not cached (the next bench re-probes)
+    build = float(r.get("build_ms") or 0) / 1000.0
+    per_op = max(wall - build, 0.05) / 10.0
+    projected = reps * len(mixes) * ops * per_op
+    if projected > target:
+        ops = max(20, int(ops * target / projected))
+        if reps * len(mixes) * ops * per_op > target and reps > 3:
+            reps = 3
+    cache.write_text(json.dumps({"reps": reps, "ops": ops, "probe_wall_s": round(wall, 1),
+                                 "build_s": round(build, 1), "projected_full_s": round(projected, 1)}))
+    return reps, ops
+
+
+def cost_check(ctx: VerusContext) -> dict[str, Any]:
+    """A quick SF1 measurement of a kernel that passes its tests: correct is not enough, it must also be
+    fast at scale.  The tests' database is tiny, where per-write copies of the whole state or whole-state
+    scans per read are invisible; on SF1 they make the accelerator slower than the plain query."""
+    cfg = ctx.setting("cost_check", {}) or {}
+    if not cfg.get("enabled", True):
+        return {"ok": True, "skipped": True}
+    mix = float(cfg.get("write_mix", 0.05))
+    min_read, min_mix = float(cfg.get("min_read_speedup", 2.0)), float(cfg.get("min_mix_speedup", 1.0))
+    def measure() -> dict[str, Any]:
+        return bench(ctx, [mix], tag="cost_check", reps=1, ops=int(cfg.get("ops", 20)),
+                     timeout=float(cfg.get("timeout_sec", 420)))
+
+    def score(b: dict[str, Any]) -> tuple[float, float]:
+        return float(b.get("read_speedup") or 0.0), float((b.get("mixes") or [{}])[0].get("speedup") or 0.0)
+
+    r = measure()
+    if r["ok"]:
+        rd, mx = score(r)
+        near = rd >= 0.85 * min_read and mx >= 0.85 * min_mix
+        if (rd < min_read or mx < min_mix) and near:  # a near miss: re-measure once (a short run is noisy)
+            r2 = measure()
+            if r2["ok"] and min(score(r2)[0] / min_read, score(r2)[1] / min_mix) > min(rd / min_read, mx / min_mix):
+                r = r2
+    if not r["ok"]:
+        return {"ok": False, "error": (
+            f"the SF1 cost check did not finish ({_tail(str(r.get('error', '')), 600)}): {cfg.get('ops', 20)} reads/"
+            f"writes on SF1 took longer than {cfg.get('timeout_sec', 420)} s, so some read or write does work in "
+            "proportion to the whole state or a whole table")}
+    read = float(r.get("read_speedup") or 0.0)
+    mixed = float((r.get("mixes") or [{}])[0].get("speedup") or 0.0)
+    # the cost a write adds over the plain write (a mix can hide a few very expensive writes)
+    accel_w, plain_w = float(r.get("write_us_mean") or 0.0), float(r.get("plain_write_us_mean") or 0.0)
+    added = max(accel_w - plain_w, 0.0)
+    max_ratio, floor_us = float(cfg.get("max_write_overhead_ratio", 10.0)), float(cfg.get("write_overhead_floor_us", 5000))
+    write_ok = plain_w <= 0 or added <= max(max_ratio * plain_w, floor_us)
+    ok = read >= min_read and mixed >= min_mix and write_ok
+    res = {"ok": ok, "read_speedup": round(read, 2), "write_mix": mix, "mix_speedup": round(mixed, 2),
+           "plain_write_us": round(plain_w), "accel_write_us": round(accel_w), "build_ms": r.get("build_ms")}
+    if not ok:
+        res["error"] = (
+            f"correct but too slow at SF1: reads {read:.2f}x the plain query (need >= {min_read}), a "
+            f"{mix:.0%}-write mix {mixed:.2f}x (need >= {min_mix}). "
+            + ("Reads do too much work: they should touch only what the query needs (the analysis's read path), "
+               "not scan a structure or table. " if read < min_read else "")
+            + ("Writes cost too much: each committed version must cost about its changes -- use a persistent "
+               "structure (a write copies only the path to the keys it changes), not a collection cloned, "
+               "merged or rebuilt per write, and not a list searched linearly (contracts/scale_principles.md)."
+               if mixed < min_mix else "")
+            + (f" Each write adds {added / 1000:.1f} ms of maintenance over the plain write's {plain_w / 1000:.1f} ms "
+               f"(allowed: {max_ratio:g}x the plain write, or {floor_us / 1000:g} ms): a write must cost about its "
+               "changes -- touch only the keys it changes, and update ordered indexes per changed entry."
+               if not write_ok else ""))
+    return res
+
+
+def bench(ctx: VerusContext, mixes: list[float], *, store: str = "verus_global", tag: str = "bench",
+          reps: int | None = None, ops: int | None = None, runner: Path | None = None,
+          timeout: float | None = None) -> dict[str, Any]:
+    if reps is None and ops is None:
+        reps, ops = bench_size(ctx, mixes)
+    cfg = ctx.setting("optimization.bench", {}) or {}
+    db = Path(ctx.run_dir) / "dbs" / f"bench_{tag}.duckdb"
     try:
         with file_lock(bench_lock(ctx)):  # timed runs never overlap another run's (any tree)
+            db = db_copy(ctx, "bench", tag)  # inside the lock: no pipeline waits holding a 300 MB copy
             r = _runner(ctx, ["bench", str(db), ctx.accel_id, str(tests_dir(ctx)), str(reps or cfg.get("reps", 5)),
                               ",".join(str(m) for m in mixes), str(ops or cfg.get("ops", 200))], store=store,
-                        timeout=float(ctx.setting("bench_timeout_sec", 3600)), runner=runner)
+                        timeout=timeout or float(ctx.setting("bench_timeout_sec", 1200)), runner=runner)
     finally:
         drop_db(db)
     r["ok"] = r.get("exit") == 0 and "error" not in r
+    r["size"] = {"reps": reps, "ops": ops}
     return r
 
 
@@ -672,7 +852,7 @@ def _write_overhead(ctx: VerusContext, ops: int = 50) -> dict[str, Any]:
         with file_lock(bench_lock(ctx)):
             exe, extra = runner_exe(ctx)
             p = _run([exe, "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), "1", "1.0", str(ops)],
-                     env=runner_env(ctx, ACCEL_AUX_STORE="verus", VERUS_KIT_BENCH_PHASE="writes", **extra),
+                     env=runner_env(ctx, ACCEL_AUX_STORE="verus_global", VERUS_KIT_BENCH_PHASE="writes", **extra),
                      timeout=3600)
     finally:
         drop_db(db)
@@ -697,7 +877,7 @@ def _profile_phase(ctx: VerusContext, axis: str, phase: str, reps: str, mix: str
         os.mkfifo(f)
     exe, extra = runner_exe(ctx)
     args = [exe, "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), reps, mix, ops]
-    env = runner_env(ctx, ACCEL_AUX_STORE="verus", VERUS_KIT_ACCEL_ONLY="1", VERUS_KIT_BENCH_PHASE=phase,
+    env = runner_env(ctx, ACCEL_AUX_STORE="verus_global", VERUS_KIT_ACCEL_ONLY="1", VERUS_KIT_BENCH_PHASE=phase,
                      VERUS_KIT_PERF_CTL=str(ctl), VERUS_KIT_PERF_ACK=str(ack), **extra)
     try:
         with file_lock(bench_lock(ctx)):
@@ -727,8 +907,8 @@ def _profile_phase(ctx: VerusContext, axis: str, phase: str, reps: str, mix: str
 def _area(ctx: VerusContext, sym: str) -> str:
     if f"{ctx.crate}_verus" in sym or "verus_common" in sym or "verus_prooflib" in sym:
         return "kernel"
-    if "verus_substrate" in sym:
-        return "store"
+    if "verus_substrate" in sym or f"{ctx.benchmark}_world_verus" in sym:
+        return "store"  # the substrate and the benchmark's world (the one Verus store)
     if "verus_kit" in sym or "gen_glue" in sym or "DuckVerusHost" in sym or "KitModule" in sym:
         return "glue"
     if "duckdb" in sym:
@@ -811,11 +991,40 @@ def leak_check(ctx: VerusContext) -> dict[str, Any]:
 # ───────────────────────────── prooflib / playbook ─────────────────────────────
 
 
+def prooflib_verify(ctx: VerusContext) -> dict[str, Any]:
+    """Verify the workspace's copy of the proof library on its own (before publishing it)."""
+    from accel_pipeline.verus import workspace as _ws
+
+    _ws.refresh_prooflib(ctx)
+    ws_lib = ctx.ws / "prooflib" / "src" / "lib.rs"
+    lib_dir = Path(ctx.lib_dir)
+    t0 = time.monotonic()
+    proc = _run([str(ctx.setting("verus_bin")), str(ws_lib), "--crate-type=lib", "--crate-name=verus_prooflib",
+                 "--import", f"verus_common={lib_dir / 'verus_common.vir'}",
+                 "--extern", f"verus_common={lib_dir / 'libverus_common.rlib'}", "-L", f"dependency={lib_dir}"],
+                env=_verus_env(ctx), timeout=1200)
+    out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    m = _RESULTS.findall(out)
+    verified, errors = (int(m[-1][0]), int(m[-1][1])) if m else (0, -1)
+    res: dict[str, Any] = {"ok": proc.returncode == 0 and errors == 0, "verified": verified, "errors": errors,
+                           "seconds": round(time.monotonic() - t0, 1)}
+    if not res["ok"]:
+        blocks = [b for b in re.split(r"\n(?=error)", out) if b.startswith("error") and not b.startswith("error: aborting")]
+        index = [f"- {b.splitlines()[0][:160]}" for b in blocks]
+        res["output"] = f"{len(index)} errors:\n" + "\n".join(index) + "\n\n" + _tail("\n".join(blocks) or out, 9000)
+    return res
+
+
 def prooflib_publish(ctx: VerusContext, note: str) -> dict[str, Any]:
     """Publish the workspace's proof library: additions only, re-verified with every dependent."""
     ws_lib = ctx.ws / "prooflib" / "src" / "lib.rs"
     tree_lib = ctx.root / "src" / "verus" / "prooflib" / "src" / "lib.rs"
     with file_lock(Path(ctx.pipeline_root) / "verus_runs" / ".prooflib.lock"):
+        # take in what others published since this workspace's copy was made, keeping this
+        # agent's additions (else a stale copy looks like it removes their lemmas)
+        from accel_pipeline.verus import workspace as _ws
+
+        _ws.refresh_prooflib(ctx)
         old = tree_lib.read_text(encoding="utf-8")
         new = ws_lib.read_text(encoding="utf-8")
         removed = [l for l in old.splitlines() if l.strip() and l not in new.splitlines()]
@@ -828,15 +1037,32 @@ def prooflib_publish(ctx: VerusContext, note: str) -> dict[str, Any]:
         tree_lib.write_text(new, encoding="utf-8")
         script = ctx.root / "scripts" / "build_verus_crate.sh"
         failures = []
-        # every crate that can use the library (this run's and other runs')
-        for crate_dir in sorted(ctx.root.glob("src/generated/*/q*/verus_kit/*/crate")):
-            if (crate_dir / "src" / "lib.rs").is_file():
-                proc = _run(["bash", str(script), str(crate_dir), crate_dir.parent.name, "--verify-only"],
-                            env=_verus_env(ctx), timeout=3600)
-                out = proc.stdout + proc.stderr
-                m = _RESULTS.findall(out)
-                if proc.returncode != 0 or not m or int(m[-1][1]) != 0:
-                    failures.append({"crate": crate_dir.parent.name, "output": _tail(out, 3000)})
+        # the library itself must verify
+        lib_dir = Path(ctx.lib_dir)
+        proc = _run([str(ctx.setting("verus_bin")), str(tree_lib), "--crate-type=lib", "--crate-name=verus_prooflib",
+                     "--import", f"verus_common={lib_dir / 'verus_common.vir'}",
+                     "--extern", f"verus_common={lib_dir / 'libverus_common.rlib'}", "-L", f"dependency={lib_dir}"],
+                    env=_verus_env(ctx), timeout=600)
+        if proc.returncode != 0:
+            failures.append({"crate": "verus_prooflib", "output": _tail(proc.stdout + proc.stderr, 3000)})
+        # every crate that verified fully before (unchanged since) must still verify; the others
+        # (kernels mid-proof) pick the additions up at their next verify
+        cache = json.loads(_verified_cache(ctx).read_text()) if _verified_cache(ctx).is_file() else {}
+        deps = [d for d in sorted(ctx.root.glob("src/generated/*/q*/verus_kit/*/crate"))
+                if (d / "src" / "lib.rs").is_file() and cache.get(str(d.resolve())) == _crate_hash(d)]
+
+        def check(crate_dir: Path) -> dict[str, Any] | None:
+            p = _run(["bash", str(script), str(crate_dir), crate_dir.parent.name, "--verify-only"],
+                     env=_verus_env(ctx), timeout=600)
+            out = p.stdout + p.stderr
+            m = _RESULTS.findall(out)
+            if p.returncode != 0 or not m or int(m[-1][1]) != 0:
+                return {"crate": crate_dir.parent.name, "output": _tail(out, 3000)}
+            return None
+
+        if not failures:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                failures += [f for f in pool.map(check, deps) if f]
         if failures:
             tree_lib.write_text(backup, encoding="utf-8")
             return {"ok": False, "error": "a dependent no longer verifies; nothing published", "failures": failures}

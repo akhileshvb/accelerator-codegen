@@ -42,17 +42,18 @@ stage_providers:
   verus_glue_audit: codex_exec
   verus_kernel: codex_exec
   verus_kernel_fix: codex_exec
-  verus_kernel_escalated: codex_exec
-  verus_kernel_fix_escalated: codex_exec
+  verus_kernel_proofs: codex_exec
+  verus_kernel_advisor: codex_exec
+  verus_prooflib_lift: codex_exec
   verus_opt_worker: codex_exec
   verus_audit: codex_exec
 
 # Reasoning effort per stage (codex model_reasoning_effort: minimal | low | medium | high);
-# unset stages use the model's default.  Reviews run Sonnet 5 at `low`: their material is
+# unset stages use the model's default.  Reviews run Sonnet 5 at `low` (the critic at `medium`): their material is
 # inlined in the prompt, and they answer one question each.
 stage_reasoning_effort:
   verus_spec_audit: low
-  verus_critic: low
+  verus_critic: medium   # judges scale (SF3000 estimates) before hours of kernel work
   verus_obligations_audit: low
   verus_glue_audit: low
   verus_audit: low
@@ -67,9 +68,9 @@ presets:
   # Verus pipeline only (the C++ pipeline keeps the presets above).
   # Reviews: a different family from the builders (OpenAI, Xiaomi).
   verus_reasoning: openai/gpt-6.1-sol   # analysis, kernel + proofs, kernel fix, optimization
-  verus_code: openai/gpt-6.1-sol #xiaomi/mimo-v2.6-pro      # tests, glue (gated by validation / the contract check)
+  verus_code: xiaomi/mimo-v2.6-pro      # tests, glue, optimization worker (gated by validation / the contract check / the benchmark)
   verus_review: anthropic/claude-sonnet-5   # spec / obligations / glue audits, critic, final audit
-  verus_heavy: openai/gpt-6-astra       # kernel fixes stuck for several rounds (5x Sol's price)
+  verus_advisor: openai/gpt-6.1-sol    # second opinion when kernel fixes stall (fresh session, without the stuck context)
 
 stages:
   # Verus pipeline steps
@@ -80,10 +81,11 @@ stages:
   verus_tests: verus_code
   verus_glue: verus_code
   verus_glue_audit: verus_review
-  verus_kernel: verus_reasoning
+  verus_kernel: verus_reasoning     # code first (Sol)
+  verus_kernel_proofs: verus_reasoning   # proofs, proof fix rounds, integration fixes (Sol), same session
   verus_kernel_fix: verus_reasoning
-  verus_kernel_escalated: verus_heavy        # same session, after rounds without progress
-  verus_kernel_fix_escalated: verus_heavy
+  verus_prooflib_lift: verus_reasoning   # lifts a proven structure into the shared proof library
+  verus_kernel_advisor: verus_advisor         # diagnoses a stalled kernel; its advice goes back to the kernel's session
   verus_opt_worker: verus_code
   verus_audit: verus_review
   analysis: reasoning

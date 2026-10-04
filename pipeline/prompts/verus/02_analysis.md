@@ -11,9 +11,15 @@ Decide:
 
 1. **The aux-state family**: what is materialized, keyed by what, so a query
    reads only its slice. Explain why it answers the query (relate it to the
-   spec's definitions) and why it is cheap to read.
+   spec's definitions) and why it is cheap to read: the read path's cost in
+   proportion to the answer, at production scale (`scale_principles`:
+   ordered indexes for ranked or thresholded output, pre-ordered groups for
+   ordered output, coarse buckets for range parameters). The kernel is
+   measured: a read must beat the base query clearly, and a write mix must
+   not be slower than running without the accelerator.
 2. **Maintenance**: for every table the query reads, how an insert / delete
-   / update changes the state, locally. Which changes need rows the state
+   / update changes the state, locally: cost per changed row, independent of
+   table size, including keeping the read-side indexes above in order. Which changes need rows the state
    does not keep (a rescan), and of which keys.
 3. **The kernel inputs** (`inputs/q.inputs`): the scans the build needs, the
    rescans, and one delta per table (lossy where you can drop columns or text).
@@ -25,8 +31,14 @@ Decide:
 6. **How it will be proved** (`contracts/proof_method.md`): the invariant as
    sums over the database (which sum each structure equals), and the outline
    of the three top-level proofs (build, apply, execute). Choose data
-   structures with proof cost in mind: `vstd` collections shared through
-   `Arc`, not hand-written trees or indexes that must be proved from scratch.
+   structures with proof cost AND per-write cost in mind: every committed
+   version stays readable, so a structure that is cloned or rebuilt per write
+   costs the whole state on every transaction. Use a **persistent** map (a
+   write copies only the path to the keys it changes): the shared verified
+   one in the proof library, or one proven in another query's kernel (to be
+   lifted into the library), rather than writing a new tree from scratch. A
+   `vstd` `HashMap` / `Vec` behind an `Arc` is NOT persistent: updating it
+   copies it. Name the persistent structure for each part of the state.
 
 Write `inputs/q.inputs` and `analysis/analysis.json`:
 `{"aux_state": "...", "keys": "...", "read_path": "...", "maintenance": {"<table>": "..."}, "rescans": "...", "complexity": {"state_bytes": "...", "build": "...", "write": "...", "read": "..."}, "widths": "...", "proof": "...", "final_answer_cache": null | "justification", "risks": ["..."]}`.
@@ -34,5 +46,13 @@ Run `verus_check_inputs` until sql2verus accepts the inputs, and read the
 obligations it returns: they are what the kernel will be proved against.
 
 Feedback from the previous round: {{feedback}}
+
+
+**Prefer the plainest provable state.** The kernel must be proved in Verus, and each custom structure is
+its own proof project. Use maps (or sets) keyed by tuples, whose entries are sums or counts over the
+database (`contracts/proof_method.md`), and meet the read / write cost bounds with the choice of keys.
+Use a custom encoding (prefix arrays, multi-level or dyadic buckets, compression, packed offsets, custom
+hash tables or pages) only where the plain version misses a cost bound, and then state its invariant and
+how it will be proved. The critic rejects one without that.
 
 {{include:shared/rules.md}}
