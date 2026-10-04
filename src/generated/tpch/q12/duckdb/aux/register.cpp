@@ -106,6 +106,28 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
+// Zone-map friendly: contiguous runs of days become BETWEEN ranges.
+std::string ReceiptRunsPredicate(const std::set<int32_t> &days) {
+  if (days.size() > 64)
+    return "l_receiptdate BETWEEN " + SqlDateLiteral(*days.begin()) + " AND " +
+           SqlDateLiteral(*days.rbegin());
+  std::string out = "(";
+  bool first = true;
+  auto it = days.begin();
+  while (it != days.end()) {
+    const int32_t lo = *it;
+    int32_t hi = lo;
+    for (++it; it != days.end() && *it == hi + 1; ++it)
+      hi = *it;
+    if (!first)
+      out += " OR ";
+    first = false;
+    out += "l_receiptdate BETWEEN " + SqlDateLiteral(lo) + " AND " +
+           SqlDateLiteral(hi);
+  }
+  return out + ")";
+}
+
 struct TpchQ12Scan : TpchQ12InitialScan {
   explicit TpchQ12Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanOrders(
@@ -141,7 +163,7 @@ struct TpchQ12Scan : TpchQ12InitialScan {
         connection,
         "SELECT l_orderkey, l_shipmode, l_commitdate, l_receiptdate, "
         "l_shipdate FROM lineitem WHERE " +
-            SqlDateInPredicate("l_receiptdate", receipt_days),
+            ReceiptRunsPredicate(receipt_days),
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           consumer({SafeInt64(ChunkValue(chunk, 0, row)),
                     ChunkValue(chunk, 1, row).ToString(),

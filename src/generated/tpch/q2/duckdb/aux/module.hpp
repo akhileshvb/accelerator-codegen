@@ -76,76 +76,153 @@ struct TpchQ2SupplierInfo {
   std::string phone;
   int64_t acctbal_raw = 0;
   std::string comment;
+  bool valid = false;
 };
 
 struct TpchQ2PartInfo {
   std::string mfgr;
-  std::string type;
+  int32_t type_id = 0; // index into TpchQ2State::types
   int32_t size = 0;
+  bool valid = false;
 };
 
-struct TpchQ2RegionalMinCell {
-  int64_t min_supplycost_raw = 0;
-  std::vector<int64_t> tied_suppkeys;
+// One partsupp row of a part (the offer of one supplier).  Offers are stored
+// per part independent of whether the supplier / part row exists yet; the
+// derived candidate lists only count offers whose supplier joins.
+struct TpchQ2Offer {
+  int64_t cost_raw = 0;
+  int32_t suppkey = 0;
 };
+
+// Interned p_type strings.  Immutable once published; a write that introduces
+// a new type copies the (tiny) dictionary.
+struct TpchQ2TypeDict {
+  std::vector<std::string> names;
+  std::unordered_map<std::string, uint32_t> index;
+  uint32_t Intern(const std::string &s) {
+    const auto it = index.find(s);
+    if (it != index.end())
+      return it->second;
+    const auto id = static_cast<uint32_t>(names.size());
+    names.push_back(s);
+    index.emplace(s, id);
+    return id;
+  }
+};
+
+// Copy-on-write paged dense vector.  Pages are shared between state versions
+// through shared_ptr; Mut() clones a page only if it is still shared with a
+// published version (use_count() != 1).  Mut() must only be used on a
+// working (unpublished) copy that is held by a single thread; published
+// images are never mutated.
+template <typename T, unsigned kBits> class TpchQ2Paged {
+public:
+  static constexpr std::size_t kPage = std::size_t{1} << kBits;
+  using Page = std::vector<T>;
+
+  std::size_t Capacity() const { return pages_.size() << kBits; }
+
+  const T *Find(std::size_t i) const {
+    const std::size_t p = i >> kBits;
+    if (p >= pages_.size())
+      return nullptr;
+    return &(*pages_[p])[i & (kPage - 1)];
+  }
+
+  T &Mut(std::size_t i) {
+    const std::size_t p = i >> kBits;
+    while (pages_.size() <= p)
+      pages_.push_back(std::make_shared<const Page>(kPage));
+    if (pages_[p].use_count() != 1)
+      pages_[p] = std::make_shared<const Page>(*pages_[p]);
+    return const_cast<Page &>(*pages_[p])[i & (kPage - 1)];
+  }
+
+private:
+  std::vector<std::shared_ptr<const Page>> pages_;
+};
+
+// Clone-if-shared helper for shared_ptr<const X> members of a working state.
+template <typename X> X &TpchQ2MutOf(std::shared_ptr<const X> &p) {
+  if (!p)
+    p = std::make_shared<const X>();
+  else if (p.use_count() != 1)
+    p = std::make_shared<const X>(*p);
+  return const_cast<X &>(*p);
+}
+
+// One candidate output row: the (part, min-cost supplier) pair of one region.
+struct TpchQ2Entry {
+  int64_t acctbal_raw = 0;
+  int32_t partkey = 0;
+  int32_t suppkey = 0;
+  int32_t type_id = 0;
+  int32_t nation_rank = 0; // rank of n_name among nation names
+};
+
+struct TpchQ2Chunk {
+  std::vector<TpchQ2Entry> v; // sorted, never empty inside a list
+};
+
+// Candidates of one (p_size, region) in final output order
+// (s_acctbal desc, n_name, s_name, p_partkey, s_suppkey).
+struct TpchQ2GroupList {
+  std::vector<std::shared_ptr<const TpchQ2Chunk>> chunks;
+};
+
+using TpchQ2GroupMap =
+    std::unordered_map<int64_t, std::shared_ptr<const TpchQ2GroupList>>;
+
+inline int64_t TpchQ2GroupKey(int32_t size, int32_t region_key) {
+  return (static_cast<int64_t>(static_cast<uint32_t>(size)) << 32) |
+         static_cast<int64_t>(static_cast<uint32_t>(region_key));
+}
 
 struct TpchQ2State {
-  // Immutable dimension data — shared_ptr avoids deep copies during
-  // maintenance clones.  Flat vectors indexed by natural key (partkey,
-  // suppkey, nationkey, regionkey) eliminate hash lookups on hot paths.
+  // Small immutable dimensions.
   std::shared_ptr<const std::vector<std::string>> region_names;
   std::shared_ptr<const std::vector<std::string>> nation_names;
   std::shared_ptr<const std::vector<int32_t>> nation_region;
-  std::shared_ptr<const std::vector<TpchQ2SupplierInfo>> suppliers;
-  std::shared_ptr<const std::vector<uint8_t>> supplier_valid;
-  std::shared_ptr<const std::vector<TpchQ2PartInfo>> parts;
-  std::shared_ptr<const std::vector<uint8_t>> part_valid;
-  std::unordered_map<int32_t, std::vector<int64_t>> parts_by_size;
-  std::unordered_map<int64_t, TpchQ2RegionalMinCell> regional_minima;
+  std::shared_ptr<const std::vector<int32_t>> nation_rank;
 
-  // Two-level regional_minima for cheap incremental writes:
-  //   regional_minima_base is the immutable full map built once and shared
-  //   regional_minima_overlay holds only cells modified by ApplyDelta.
-  // Reads check the overlay first, then fall back to the base.
-  std::shared_ptr<const std::unordered_map<int64_t, TpchQ2RegionalMinCell>>
-      regional_minima_base;
-  std::unordered_map<int64_t, TpchQ2RegionalMinCell> regional_minima_overlay;
+  // Large dimensions / facts, copy-on-write at page granularity.
+  std::shared_ptr<const TpchQ2Paged<TpchQ2SupplierInfo, 6>> suppliers;
+  std::shared_ptr<const TpchQ2Paged<TpchQ2PartInfo, 10>> parts;
+  std::shared_ptr<const TpchQ2Paged<std::vector<TpchQ2Offer>, 9>> offers;
+  // supplier -> partkeys it offers (one element per partsupp row).
+  std::shared_ptr<const TpchQ2Paged<std::vector<int32_t>, 6>> supp_parts;
+  std::shared_ptr<const TpchQ2TypeDict> types;
+
+  // Derived: per (size, region) sorted candidate lists, chunked COW.
+  std::shared_ptr<const TpchQ2GroupMap> groups;
 
   const TpchQ2SupplierInfo *FindSupplier(int64_t suppkey) const {
-    if (!supplier_valid || suppkey < 0 ||
-        static_cast<std::size_t>(suppkey) >= supplier_valid->size())
+    if (!suppliers || suppkey < 0)
       return nullptr;
-    return (*supplier_valid)[static_cast<std::size_t>(suppkey)]
-               ? &(*suppliers)[static_cast<std::size_t>(suppkey)]
-               : nullptr;
+    const auto *s = suppliers->Find(static_cast<std::size_t>(suppkey));
+    return s && s->valid ? s : nullptr;
   }
 
   const TpchQ2PartInfo *FindPart(int64_t partkey) const {
-    if (!part_valid || partkey < 0 ||
-        static_cast<std::size_t>(partkey) >= part_valid->size())
+    if (!parts || partkey < 0)
       return nullptr;
-    return (*part_valid)[static_cast<std::size_t>(partkey)]
-               ? &(*parts)[static_cast<std::size_t>(partkey)]
-               : nullptr;
+    const auto *p = parts->Find(static_cast<std::size_t>(partkey));
+    return p && p->valid ? p : nullptr;
   }
 
-  const TpchQ2RegionalMinCell *FindRegionalMin(int64_t key) const {
-    const auto it = regional_minima_overlay.find(key);
-    if (it != regional_minima_overlay.end()) {
-      return it->second.tied_suppkeys.empty() ? nullptr : &it->second;
-    }
-    if (regional_minima_base) {
-      const auto it2 = regional_minima_base->find(key);
-      if (it2 != regional_minima_base->end())
-        return &it2->second;
-    }
-    return nullptr;
+  const std::vector<TpchQ2Offer> *FindOffers(int64_t partkey) const {
+    if (!offers || partkey < 0)
+      return nullptr;
+    return offers->Find(static_cast<std::size_t>(partkey));
+  }
+
+  const TpchQ2GroupList *FindGroup(int32_t size, int32_t region_key) const {
+    if (!groups)
+      return nullptr;
+    const auto it = groups->find(TpchQ2GroupKey(size, region_key));
+    return it == groups->end() ? nullptr : it->second.get();
   }
 };
-
-inline int64_t TpchQ2CellKey(int32_t region_key, int64_t partkey) {
-  return (static_cast<int64_t>(region_key) << 32) | (partkey & 0xFFFFFFFFLL);
-}
 
 // Pre-parsed LIKE pattern accelerator for fast type matching.
 struct TpchQ2LikeAccelerator {
@@ -173,6 +250,22 @@ struct TpchQ2PartsuppDelta {
   int8_t sign = 0;
 };
 
+// One captured change, applied in arrival order at StageMaintenance.
+struct TpchQ2Op {
+  enum class Kind : uint8_t {
+    Partsupp,
+    SupplierSet,
+    SupplierErase,
+    PartSet,
+    PartErase
+  };
+  Kind kind = Kind::Partsupp;
+  TpchQ2PartsuppDelta partsupp;
+  int64_t key = 0; // supplier / part key
+  TpchQ2SupplierInfo supplier;
+  TpchQ2PartInput part;
+};
+
 std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &);
 bool DecodeTpchQ2State(const std::vector<uint8_t> &, TpchQ2State &);
 
@@ -191,14 +284,14 @@ public:
   void Clear() override;
 
   bool RequiresRebuild() const;
-  const std::vector<TpchQ2PartsuppDelta> &PartsuppDeltas() const;
+  const std::vector<TpchQ2Op> &Ops() const;
   void MarkRebuild();
-  void AddPartsuppDelta(TpchQ2PartsuppDelta delta);
+  void AddOp(TpchQ2Op op);
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
-  std::vector<TpchQ2PartsuppDelta> partsupp_deltas;
+  std::vector<TpchQ2Op> ops;
 };
 
 class TpchQ2Module final : public core::AuxQueryModule {

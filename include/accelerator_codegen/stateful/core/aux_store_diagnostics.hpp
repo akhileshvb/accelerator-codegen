@@ -1,6 +1,7 @@
 // SCAFFOLDING
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -38,9 +39,13 @@ private:
   std::vector<double> partitions_read_samples_;
   std::vector<double> state_bytes_read_samples_;
   uint64_t execute_calls_ = 0;
+  std::size_t validity_next_ = 0, validity_us_next_ = 0, partitions_next_ = 0, bytes_next_ = 0;
 };
 
 bool AuxStoreProfilingBytesEnabled();
+// Per-read diagnostics (validity-scan timing, partitions-read samples). On by
+// default; ACCEL_AUX_DIAG=0 turns them off (concurrent/latency experiments).
+bool AuxStoreDiagnosticsEnabled();
 
 void RecordValidityScan(uint64_t slots_scanned, double scan_us);
 void RecordPartitionsRead(uint64_t partitions, uint64_t bytes_read = 0);

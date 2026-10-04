@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -76,29 +78,243 @@ public:
       const std::function<void(const TpchQ5LineitemInput &)> &) = 0;
 };
 
-struct TpchQ5NodeRevenue {
-  std::unordered_map<int32_t, int64_t> nation_revenue;
+// ---------------------------------------------------------------------------
+// Persistent (copy-on-write) containers.  A published image is never mutated:
+// writes copy the 256-entry top array, the touched 256-entry mid arrays and the
+// touched leaves (a few hundred entries), everything else stays shared.
+// ---------------------------------------------------------------------------
+template <typename V> struct TpchQ5Entry {
+  int64_t key = 0;
+  V val{};
 };
 
-struct TpchQ5State {
+inline uint32_t TpchQ5ShardOf(int64_t key) {
+  const uint64_t h = static_cast<uint64_t>(key) * 0x9E3779B97F4A7C15ULL;
+  return static_cast<uint32_t>(h >> 48);
+}
+
+template <typename V> struct TpchQ5ShardIndex {
+  using Entry = TpchQ5Entry<V>;
+  using Leaf = std::vector<Entry>;
+  struct Mid {
+    std::array<std::shared_ptr<const Leaf>, 256> leaves;
+  };
+  std::array<std::shared_ptr<const Mid>, 256> mids;
+
+  static const Entry *FindIn(const Leaf *leaf, int64_t key) {
+    if (!leaf)
+      return nullptr;
+    auto it = std::lower_bound(
+        leaf->begin(), leaf->end(), key,
+        [](const Entry &e, int64_t k) { return e.key < k; });
+    return (it != leaf->end() && it->key == key) ? &*it : nullptr;
+  }
+  const V *Find(int64_t key) const {
+    const auto shard = TpchQ5ShardOf(key);
+    const auto &mid = mids[shard >> 8];
+    if (!mid)
+      return nullptr;
+    const auto *e = FindIn(mid->leaves[shard & 255].get(), key);
+    return e ? &e->val : nullptr;
+  }
+};
+
+// Copy-on-write writer over a published index.
+template <typename V> class TpchQ5ShardTxn {
+public:
+  using Index = TpchQ5ShardIndex<V>;
+  using Entry = typename Index::Entry;
+  using Leaf = typename Index::Leaf;
+  using Mid = typename Index::Mid;
+
+  explicit TpchQ5ShardTxn(const Index &base) : top_(base) {}
+
+  const V *Find(int64_t key) const {
+    return Lookup(TpchQ5ShardOf(key), key);
+  }
+  void Set(int64_t key, const V &val) {
+    auto &leaf = Mutable(TpchQ5ShardOf(key));
+    auto it = std::lower_bound(
+        leaf.begin(), leaf.end(), key,
+        [](const Entry &e, int64_t k) { return e.key < k; });
+    if (it != leaf.end() && it->key == key)
+      it->val = val;
+    else
+      leaf.insert(it, Entry{key, val});
+  }
+  void Erase(int64_t key) {
+    const auto shard = TpchQ5ShardOf(key);
+    if (!Lookup(shard, key))
+      return;
+    auto &leaf = Mutable(shard);
+    auto it = std::lower_bound(
+        leaf.begin(), leaf.end(), key,
+        [](const Entry &e, int64_t k) { return e.key < k; });
+    if (it != leaf.end() && it->key == key)
+      leaf.erase(it);
+  }
+  bool Dirty() const { return !leaves_.empty(); }
+  Index Finish() {
+    std::unordered_map<uint32_t, std::shared_ptr<Mid>> mids;
+    for (auto &entry : leaves_) {
+      const uint32_t hi = entry.first >> 8, lo = entry.first & 255;
+      auto &mid = mids[hi];
+      if (!mid)
+        mid = top_.mids[hi] ? std::make_shared<Mid>(*top_.mids[hi])
+                            : std::make_shared<Mid>();
+      if (entry.second->empty())
+        mid->leaves[lo] = nullptr;
+      else
+        mid->leaves[lo] = std::move(entry.second);
+    }
+    for (auto &entry : mids)
+      top_.mids[entry.first] = std::move(entry.second);
+    leaves_.clear();
+    return std::move(top_);
+  }
+
+private:
+  const Leaf *Current(uint32_t shard) const {
+    auto it = leaves_.find(shard);
+    if (it != leaves_.end())
+      return it->second.get();
+    const auto &mid = top_.mids[shard >> 8];
+    return mid ? mid->leaves[shard & 255].get() : nullptr;
+  }
+  const V *Lookup(uint32_t shard, int64_t key) const {
+    const auto *e = Index::FindIn(Current(shard), key);
+    return e ? &e->val : nullptr;
+  }
+  Leaf &Mutable(uint32_t shard) {
+    auto it = leaves_.find(shard);
+    if (it != leaves_.end())
+      return *it->second;
+    const auto *cur = Current(shard);
+    auto copy = cur ? std::make_shared<Leaf>(*cur) : std::make_shared<Leaf>();
+    return *leaves_.emplace(shard, std::move(copy)).first->second;
+  }
+
+  Index top_;
+  std::unordered_map<uint32_t, std::shared_ptr<Leaf>> leaves_;
+};
+
+// Bulk builder (initial build): unsorted append, then Sort(), mutable Find(),
+// Finish() moves the shards into an immutable index.
+template <typename V> class TpchQ5ShardBuilder {
+public:
+  using Index = TpchQ5ShardIndex<V>;
+  using Entry = typename Index::Entry;
+  using Leaf = typename Index::Leaf;
+
+  TpchQ5ShardBuilder() : shards_(65536) {}
+  void Add(int64_t key, const V &val) {
+    shards_[TpchQ5ShardOf(key)].push_back(Entry{key, val});
+  }
+  void Sort() {
+    for (auto &shard : shards_)
+      std::sort(shard.begin(), shard.end(),
+                [](const Entry &a, const Entry &b) { return a.key < b.key; });
+  }
+  V *Find(int64_t key) {
+    auto &shard = shards_[TpchQ5ShardOf(key)];
+    auto it = std::lower_bound(
+        shard.begin(), shard.end(), key,
+        [](const Entry &e, int64_t k) { return e.key < k; });
+    return (it != shard.end() && it->key == key) ? &it->val : nullptr;
+  }
+  template <typename F> void ForEach(F &&f) {
+    for (auto &shard : shards_)
+      for (auto &e : shard)
+        f(e);
+  }
+  Index Finish() {
+    Index index;
+    for (uint32_t hi = 0; hi < 256; ++hi) {
+      std::shared_ptr<typename Index::Mid> mid;
+      for (uint32_t lo = 0; lo < 256; ++lo) {
+        auto &shard = shards_[(hi << 8) | lo];
+        if (shard.empty())
+          continue;
+        if (!mid)
+          mid = std::make_shared<typename Index::Mid>();
+        mid->leaves[lo] = std::make_shared<const Leaf>(std::move(shard));
+      }
+      index.mids[hi] = std::move(mid);
+    }
+    return index;
+  }
+
+private:
+  std::vector<Leaf> shards_;
+};
+
+// Per-order record. Exists only for orders whose customer exists.
+// `rev` is the revenue (scale 4) this order currently contributes to the tree
+// (lineitems whose supplier nation equals the customer nation).
+struct TpchQ5OrderRec {
+  int32_t nationkey = 0;
+  int32_t ordinal = 0;
+  int64_t custkey = 0;
+  int64_t rev = 0;
+};
+struct TpchQ5SuppRec {
+  int32_t nationkey = 0;
+  int32_t line_count = 0; // lineitems referencing this supplier
+};
+struct TpchQ5CustRec {
+  int32_t nationkey = 0;
+  int32_t order_count = 0; // orders referencing this customer
+};
+using TpchQ5OrderIndex = TpchQ5ShardIndex<TpchQ5OrderRec>;
+using TpchQ5SuppIndex = TpchQ5ShardIndex<TpchQ5SuppRec>;
+using TpchQ5CustIndex = TpchQ5ShardIndex<TpchQ5CustRec>;
+
+// Immutable dimension metadata (shared by every version until a rebuild).
+struct TpchQ5Meta {
   int32_t min_orderdate_days = 0;
   int32_t max_orderdate_days = 0;
   uint32_t tree_size = 0;
-  std::vector<TpchQ5NodeRevenue> tree;
   std::unordered_map<int32_t, std::string> nation_name;
   std::unordered_map<int32_t, int32_t> nation_region;
   std::unordered_map<std::string, int32_t> region_name_to_key;
   std::unordered_map<int32_t, std::vector<int32_t>> region_nations;
-  std::unordered_map<int64_t, int32_t> orderkey_to_nationkey;
-  std::unordered_map<int64_t, int32_t> orderkey_to_ordinal;
-  std::unordered_map<int64_t, int32_t> suppkey_to_nationkey;
-  std::unordered_map<int64_t, int32_t> custkey_to_nationkey;
+  std::vector<int32_t> nation_keys;                 // column -> nationkey
+  std::unordered_map<int32_t, int32_t> nation_index; // nationkey -> column
+  int32_t NationColumn(int32_t nationkey) const {
+    auto it = nation_index.find(nationkey);
+    return it == nation_index.end() ? -1 : it->second;
+  }
+};
+
+// Segment tree of per-nation revenue, stored in pages of 32 nodes x stride
+// int64 (stride = number of nations). Pages are immutable once published.
+constexpr uint32_t kTpchQ5PageNodes = 32;
+struct TpchQ5Tree {
+  uint32_t tree_size = 0;
+  uint32_t stride = 0;
+  std::vector<std::shared_ptr<const std::vector<int64_t>>> pages;
+  const int64_t *Node(uint32_t node) const {
+    return pages[node / kTpchQ5PageNodes]->data() +
+           static_cast<std::size_t>(node % kTpchQ5PageNodes) * stride;
+  }
+  bool Valid(uint32_t node) const {
+    return node / kTpchQ5PageNodes < pages.size() && stride > 0;
+  }
+};
+
+struct TpchQ5State {
+  std::shared_ptr<const TpchQ5Meta> meta;
+  TpchQ5OrderIndex orders;
+  TpchQ5SuppIndex supps;
+  TpchQ5CustIndex custs;
+  TpchQ5Tree tree; // only populated by BuildState (moved into the tree image)
 };
 
 struct TpchQ5StateImage {
   bool is_side = false;
   uint32_t node_index = 0;
   std::shared_ptr<const TpchQ5State> state;
+  std::shared_ptr<const TpchQ5Tree> tree;
 };
 
 class TpchQ5TxnBuffer final : public core::AuxTxnBuffer {
@@ -128,11 +344,30 @@ public:
   void AddOrderMutation(const OrderDelta &d);
   const std::vector<OrderDelta> &OrderMutations() const;
 
+  // Customer / supplier changes (projected row: key, nationkey).
+  struct DimDelta {
+    enum class Kind : uint8_t { Insert, Delete, UpdateNation };
+    Kind kind = Kind::Insert;
+    int64_t key = 0;
+    int32_t nationkey = 0;     // Insert/Delete: the row's nation; Update: new
+    int32_t old_nationkey = 0; // UpdateNation only
+  };
+  void AddCustomerMutation(const DimDelta &d);
+  void AddSupplierMutation(const DimDelta &d);
+  const std::vector<DimDelta> &CustomerMutations() const;
+  const std::vector<DimDelta> &SupplierMutations() const;
+  // A mutation that provably does not change the state (keeps the buffer
+  // "pending" so the coordinator does not escalate to a full invalidation).
+  void MarkNoop();
+  bool HasAnyDelta() const;
+
 private:
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<LineitemDelta> lineitem_mutations;
   std::vector<OrderDelta> order_mutations;
+  std::vector<DimDelta> customer_mutations;
+  std::vector<DimDelta> supplier_mutations;
 };
 
 int32_t TpchQ5DaysFromYmd(int32_t year, unsigned month, unsigned day);
@@ -189,15 +424,13 @@ public:
 
 private:
   TpchQ5State BuildState(core::AuxEngineServices &) const;
-  bool LoadSide(core::AuxEngineServices &, TpchQ5State &) const;
-  bool LoadTreeNodes(core::AuxEngineServices &, const TpchQ5State &,
-                     const std::vector<uint32_t> &node_indices,
-                     std::unordered_map<int32_t, int64_t> &revenue_by_nation,
-                     std::map<uint32_t, core::Version> *versions = nullptr) const;
-  int32_t ResolveRegion(const std::string &region_name,
-                        const TpchQ5State &,
+  // One ReadPartitions for both partitions: a consistent (side, tree) pair.
+  bool LoadSnapshot(core::AuxEngineServices &,
+                    std::shared_ptr<const TpchQ5State> &side,
+                    std::shared_ptr<const TpchQ5Tree> &tree) const;
+  int32_t ResolveRegion(const std::string &region_name, const TpchQ5Meta &,
                         std::vector<int32_t> &eligible_nations) const;
-  void EmitResult(core::AuxEngineServices &, const TpchQ5State &,
+  void EmitResult(core::AuxEngineServices &, const TpchQ5Meta &,
                   int32_t target_regionkey,
                   const std::unordered_map<int32_t, int64_t> &revenue_by_nation,
                   core::AuxRowSink &) const;

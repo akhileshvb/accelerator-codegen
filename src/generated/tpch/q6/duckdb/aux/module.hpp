@@ -37,6 +37,13 @@ public:
   virtual ~TpchQ6InitialScan() = default;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ6LineitemInput &)> &) = 0;
+  // Pre-aggregated scan for Build: one input per (month, discount, quantity)
+  // group; shipdate_days is any day of the month, extended_price_raw is the
+  // SUM of the group (the matrix contribution is linear in the price).
+  virtual void ScanLineitemGroups(
+      const std::function<void(const TpchQ6LineitemInput &)> &consumer) {
+    ScanLineitems(consumer);
+  }
   virtual void ScanLineitemsForMonths(
       const std::set<int32_t> &month_keys,
       const std::function<void(const TpchQ6LineitemInput &)> &consumer) {
@@ -131,9 +138,10 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
+  // Sorted by partition id; looked up by binary search (no per-read maps).
   using MatrixLookup =
-      std::unordered_map<core::PartitionId,
-                         std::shared_ptr<const ::accelerator_codegen::Q6RevenueMatrix>>;
+      std::vector<std::pair<core::PartitionId,
+                std::shared_ptr<const ::accelerator_codegen::Q6RevenueMatrix>>>;
 
   void ApplyLineitemInput(const TpchQ6LineitemInput &input,
                           std::unordered_map<core::PartitionId,

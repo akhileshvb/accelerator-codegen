@@ -122,12 +122,12 @@ struct TpchQ1Scan : TpchQ1InitialScan {
         connection,
         "SELECT l_shipdate, l_returnflag, l_linestatus, "
         "COUNT(*)::BIGINT, "
-        "SUM(CAST(round(l_quantity * 100) AS BIGINT)), "
-        "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
-        "SUM(CAST(round(l_discount * 100) AS BIGINT)), "
-        "SUM(CAST(round(l_extendedprice * (1 - l_discount) * 10000) AS BIGINT)), "
-        "SUM(CAST(round(l_extendedprice * (1 - l_discount) * (1 + l_tax) * "
-        "1000000) AS BIGINT)) "
+        "CAST(SUM(l_quantity) * 100 AS BIGINT), "
+        "CAST(SUM(l_extendedprice) * 100 AS BIGINT), "
+        "CAST(SUM(l_discount) * 100 AS BIGINT), "
+        "CAST(SUM(l_extendedprice * (1 - l_discount)) * 10000 AS BIGINT), "
+        "CAST(SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)) * "
+        "1000000 AS BIGINT) "
         "FROM lineitem GROUP BY 1, 2, 3",
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           consumer({DateDays(ChunkValue(chunk, 0, row)),
@@ -151,12 +151,12 @@ struct TpchQ1Scan : TpchQ1InitialScan {
     const std::string sql =
         "SELECT l_shipdate, l_returnflag, l_linestatus, "
         "COUNT(*)::BIGINT, "
-        "SUM(CAST(round(l_quantity * 100) AS BIGINT)), "
-        "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
-        "SUM(CAST(round(l_discount * 100) AS BIGINT)), "
-        "SUM(CAST(round(l_extendedprice * (1 - l_discount) * 10000) AS BIGINT)), "
-        "SUM(CAST(round(l_extendedprice * (1 - l_discount) * (1 + l_tax) * "
-        "1000000) AS BIGINT)) "
+        "CAST(SUM(l_quantity) * 100 AS BIGINT), "
+        "CAST(SUM(l_extendedprice) * 100 AS BIGINT), "
+        "CAST(SUM(l_discount) * 100 AS BIGINT), "
+        "CAST(SUM(l_extendedprice * (1 - l_discount)) * 10000 AS BIGINT), "
+        "CAST(SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)) * "
+        "1000000 AS BIGINT) "
         "FROM lineitem WHERE " +
         SqlDateInPredicate("l_shipdate", days) + " GROUP BY 1, 2, 3";
     ScanQueryStreaming(

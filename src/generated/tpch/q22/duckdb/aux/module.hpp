@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -50,135 +51,131 @@ public:
       const std::function<void(const TpchQ22CustomerInput &)> &) = 0;
   virtual void ScanOrders(
       const std::function<void(const TpchQ22OrderInput &)> &) = 0;
+
+  // Optional SQL pushdown for Build: orders per customer
+  // (SELECT o_custkey, COUNT(*) ... GROUP BY o_custkey).
+  virtual bool ScanOrderCounts(
+      const std::function<void(int64_t custkey, int64_t count)> &consumer) {
+    (void)consumer;
+    return false;
+  }
 };
 
 // ── State structures ────────────────────────────────────────────────────────
+// Per-prefix distribution of zero-order positive-balance customers as sorted
+// parallel arrays with suffix aggregates (always consistent: no dirty flag, a
+// published aggregate is never mutated).
+struct TpchQ22PrefixAggregate {
+  std::vector<int64_t> keys;         // distinct balances, ascending
+  std::vector<int64_t> counts;       // customers per balance
+  std::vector<int64_t> suffix_count; // size n + 1
+  std::vector<int64_t> suffix_sum;   // size n + 1
+
+  TpchQ22PrefixAggregate() : suffix_count(1, 0), suffix_sum(1, 0) {}
+
+  void AddBalance(int64_t balance) {
+    const auto it = std::lower_bound(keys.begin(), keys.end(), balance);
+    const std::size_t idx = static_cast<std::size_t>(it - keys.begin());
+    if (it != keys.end() && *it == balance) {
+      ++counts[idx];
+    } else {
+      keys.insert(it, balance);
+      counts.insert(counts.begin() + static_cast<std::ptrdiff_t>(idx), 1);
+      suffix_count.insert(suffix_count.begin() + static_cast<std::ptrdiff_t>(idx),
+                          suffix_count[idx]);
+      suffix_sum.insert(suffix_sum.begin() + static_cast<std::ptrdiff_t>(idx),
+                        suffix_sum[idx]);
+      // The new slot carries the old suffix; the loop below makes it exact.
+    }
+    for (std::size_t i = 0; i <= idx; ++i) {
+      suffix_count[i] += 1;
+      suffix_sum[i] += balance;
+    }
+  }
+
+  bool RemoveBalance(int64_t balance) {
+    const auto it = std::lower_bound(keys.begin(), keys.end(), balance);
+    if (it == keys.end() || *it != balance)
+      return false;
+    const std::size_t idx = static_cast<std::size_t>(it - keys.begin());
+    for (std::size_t i = 0; i <= idx; ++i) {
+      suffix_count[i] -= 1;
+      suffix_sum[i] -= balance;
+    }
+    if (--counts[idx] == 0) {
+      keys.erase(it);
+      counts.erase(counts.begin() + static_cast<std::ptrdiff_t>(idx));
+      suffix_count.erase(suffix_count.begin() + static_cast<std::ptrdiff_t>(idx));
+      suffix_sum.erase(suffix_sum.begin() + static_cast<std::ptrdiff_t>(idx));
+    }
+    return true;
+  }
+
+  // Strictly-greater-than lookup: {count, sum}. Read-only.
+  std::pair<int64_t, int64_t> QueryGreaterThanConst(int64_t balance) const {
+    if (keys.empty())
+      return {0, 0};
+    const auto it = std::upper_bound(keys.begin(), keys.end(), balance);
+    const std::size_t idx = static_cast<std::size_t>(it - keys.begin());
+    return {suffix_count[idx], suffix_sum[idx]};
+  }
+};
+
 struct TpchQ22State {
+  // Two-character phone prefix packed as (c0 << 8) | c1; 0 = no prefix.
+  using Prefix = uint16_t;
+
   struct CustomerRecord {
-    std::string prefix;
     int64_t balance_raw = 0;
     int64_t order_count = 0;
+    Prefix prefix = 0;
+    bool present = false;
   };
 
-  // Per-prefix positive-balance aggregates for AVG computation
-  std::unordered_map<std::string, int64_t> prefix_positive_sum;
-  std::unordered_map<std::string, int64_t> prefix_positive_count;
-
-  // custkey → customer record. Shared base + overlay so order-only RF
-  // deltas do not copy the SF-scale customer table.
-  using CustomerTable = std::unordered_map<int64_t, CustomerRecord>;
-  std::shared_ptr<CustomerTable> customers = std::make_shared<CustomerTable>();
-  CustomerTable customer_overlay;
-  std::unordered_set<int64_t> customer_erased;
+  // Customers live in fixed-size pages shared between published versions: a
+  // write clones only the touched page(s). Keys outside the dense range go to
+  // a (rarely used) sparse map. A null page means "no customers".
+  static constexpr std::size_t kPageSize = 2048;
+  static constexpr int64_t kDenseLimit = int64_t{1} << 26;
+  struct Page {
+    std::vector<CustomerRecord> recs = std::vector<CustomerRecord>(kPageSize);
+  };
+  using SparseMap = std::unordered_map<int64_t, CustomerRecord>;
+  std::vector<std::shared_ptr<Page>> pages;
+  std::shared_ptr<SparseMap> sparse = std::make_shared<SparseMap>();
 
   const CustomerRecord *FindCustomer(int64_t custkey) const {
-    if (customer_erased.find(custkey) != customer_erased.end())
+    if (custkey >= 0 && custkey < kDenseLimit) {
+      const std::size_t page = static_cast<std::size_t>(custkey) / kPageSize;
+      if (page < pages.size() && pages[page]) {
+        const auto &rec = pages[page]->recs[static_cast<std::size_t>(custkey) % kPageSize];
+        return rec.present ? &rec : nullptr;
+      }
       return nullptr;
-    const auto overlay_it = customer_overlay.find(custkey);
-    if (overlay_it != customer_overlay.end())
-      return &overlay_it->second;
-    if (!customers)
+    }
+    if (!sparse)
       return nullptr;
-    const auto it = customers->find(custkey);
-    return it == customers->end() ? nullptr : &it->second;
+    const auto it = sparse->find(custkey);
+    return it == sparse->end() || !it->second.present ? nullptr : &it->second;
   }
 
-  CustomerRecord &MutableCustomer(int64_t custkey) {
-    customer_erased.erase(custkey);
-    const auto overlay_it = customer_overlay.find(custkey);
-    if (overlay_it != customer_overlay.end())
-      return overlay_it->second;
-    if (customers) {
-      const auto it = customers->find(custkey);
-      if (it != customers->end())
-        return customer_overlay[custkey] = it->second;
-    }
-    return customer_overlay[custkey];
-  }
-
-  void EraseCustomer(int64_t custkey) {
-    customer_overlay.erase(custkey);
-    customer_erased.insert(custkey);
-  }
-
-  // Per-prefix distribution of zero-order positive-balance customers
-  struct PrefixAggregate {
-    // balance_counts maps a scaled integer balance to the number of
-    // zero-order customers with that balance in this prefix.
-    std::map<int64_t, int64_t> balance_counts;
-
-    // Sorted arrays built from balance_counts before querying.
-    std::vector<int64_t> keys;
-    std::vector<int64_t> counts;
-    std::vector<int64_t> suffix_count;
-    std::vector<int64_t> suffix_sum;
-    bool dirty = true;
-
-    void RebuildSuffixes() {
-      keys.clear();
-      counts.clear();
-      suffix_count.clear();
-      suffix_sum.clear();
-      keys.reserve(balance_counts.size());
-      counts.reserve(balance_counts.size());
-      for (const auto &entry : balance_counts) {
-        keys.push_back(entry.first);
-        counts.push_back(entry.second);
-      }
-      const size_t n = keys.size();
-      suffix_count.assign(n + 1, 0);
-      suffix_sum.assign(n + 1, 0);
-      for (size_t i = n; i-- > 0;) {
-        suffix_count[i] = suffix_count[i + 1] + counts[i];
-        suffix_sum[i] = suffix_sum[i + 1] + keys[i] * counts[i];
-      }
-      dirty = false;
-    }
-
-    void MarkDirty() { dirty = true; }
-
-    bool AddBalance(int64_t balance) {
-      auto it = balance_counts.find(balance);
-      if (it == balance_counts.end()) {
-        balance_counts.emplace(balance, 1);
-      } else {
-        it->second++;
-      }
-      MarkDirty();
-      return true;
-    }
-
-    bool RemoveBalance(int64_t balance) {
-      auto it = balance_counts.find(balance);
-      if (it == balance_counts.end() || it->second <= 0) {
-        return false;
-      }
-      if (--it->second == 0) {
-        balance_counts.erase(it);
-      }
-      MarkDirty();
-      return true;
-    }
-
-    // Strictly-greater-than lookup. Returns {count,sum}.
-    std::pair<int64_t, int64_t> QueryGreaterThan(int64_t balance) {
-      if (dirty) {
-        RebuildSuffixes();
-      }
-      if (keys.empty()) {
-        return {0, 0};
-      }
-      // upper_bound gives the first key strictly greater than `balance`.
-      auto it = std::upper_bound(keys.begin(), keys.end(), balance);
-      const size_t idx = static_cast<size_t>(it - keys.begin());
-      return {suffix_count[idx], suffix_sum[idx]};
-    }
+  // Per-prefix positive-balance totals (AVG numerator / denominator).
+  struct PositiveTotals {
+    int64_t sum = 0;
+    int64_t count = 0;
   };
+  std::unordered_map<Prefix, PositiveTotals> positive;
 
-  std::unordered_map<std::string, PrefixAggregate> prefix_aggregates;
+  // Zero-order positive-balance distributions; each shared between versions
+  // until a write touches that prefix.
+  std::unordered_map<Prefix, std::shared_ptr<const TpchQ22PrefixAggregate>>
+      prefix_aggregates;
 
-  // Orphan order counts: custkeys seen in orders but not in customer yet
-  std::unordered_map<int64_t, int64_t> orphan_orders;
+  // Orphan order counts: custkeys seen in orders but not in customer (shared
+  // between versions, cloned on write).
+  using OrphanMap = std::unordered_map<int64_t, int64_t>;
+  std::shared_ptr<const OrphanMap> orphan_orders =
+      std::make_shared<const OrphanMap>();
 };
 
 enum class TpchQ22ImageKind : uint8_t { FullState };

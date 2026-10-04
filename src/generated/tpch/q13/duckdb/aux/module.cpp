@@ -163,6 +163,283 @@ bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
   return lhs.c_count > rhs.c_count;
 }
 
+
+// ── Sharded, copy-on-write state machinery ──────────────────────────────────
+constexpr const char *kDefaultPattern = "%unusual%accounts%";
+constexpr int64_t kMaxKey = int64_t{1} << 36;  // keys outside are ignored
+constexpr std::size_t kShardMask = kTpchQ13Shards - 1;
+
+bool KeyOk(int64_t ck) { return ck >= 0 && ck < kMaxKey; }
+
+bool PatMatch(const TpchQ13Pattern &p, const char *d, std::size_t n) {
+  if (p.matcher.enabled)
+    return p.matcher.MatchesView(d, n);
+  return SqlLikeAt(d, n, p.text.data(), p.text.size(), 0, 0);
+}
+
+void HistAdd(std::vector<int64_t> &h, int64_t eff, int64_t delta) {
+  if (eff < 0)
+    eff = 0;
+  if (static_cast<std::size_t>(eff) >= h.size())
+    h.resize(static_cast<std::size_t>(eff) + 1, 0);
+  h[static_cast<std::size_t>(eff)] += delta;
+}
+
+// Mutable working copy of a state.  Only shards touched through O()/C() are
+// cloned; every other shard stays shared with the published version.
+struct Mut {
+  TpchQ13State st;
+  std::vector<std::shared_ptr<TpchQ13OrderShard>> mo;
+  std::vector<std::shared_ptr<TpchQ13CustShard>> mc;
+
+  Mut() {
+    st.orders.assign(kTpchQ13Shards, nullptr);
+    st.cust.assign(kTpchQ13Shards, nullptr);
+    mo.resize(kTpchQ13Shards);
+    mc.resize(kTpchQ13Shards);
+  }
+  explicit Mut(const TpchQ13State &base) : st(base) {
+    mo.resize(kTpchQ13Shards);
+    mc.resize(kTpchQ13Shards);
+  }
+  TpchQ13OrderShard &O(std::size_t s) {
+    if (!mo[s])
+      mo[s] = st.orders[s] ? std::make_shared<TpchQ13OrderShard>(*st.orders[s])
+                           : std::make_shared<TpchQ13OrderShard>();
+    return *mo[s];
+  }
+  TpchQ13CustShard &C(std::size_t s) {
+    if (!mc[s])
+      mc[s] = st.cust[s] ? std::make_shared<TpchQ13CustShard>(*st.cust[s])
+                         : std::make_shared<TpchQ13CustShard>();
+    return *mc[s];
+  }
+  const TpchQ13OrderShard *ReadO(std::size_t s) const {
+    return mo[s] ? mo[s].get() : st.orders[s].get();
+  }
+  const TpchQ13CustShard *ReadC(std::size_t s) const {
+    return mc[s] ? mc[s].get() : st.cust[s].get();
+  }
+  TpchQ13State Finish() {
+    for (std::size_t s = 0; s < kTpchQ13Shards; ++s) {
+      if (mo[s])
+        st.orders[s] = std::move(mo[s]);
+      if (mc[s])
+        st.cust[s] = std::move(mc[s]);
+    }
+    return std::move(st);
+  }
+};
+
+void EnsureCust(TpchQ13CustShard &c, std::size_t lc, std::size_t np) {
+  if (c.match.size() < np)
+    c.match.resize(np);
+  if (lc >= c.total.size()) {
+    c.total.resize(lc + 1, 0);
+    c.mult.resize(lc + 1, 0);
+  }
+  for (auto &m : c.match)
+    if (m.size() < c.total.size())
+      m.resize(c.total.size(), 0);
+}
+
+void CompactOrders(TpchQ13OrderShard &o) {
+  TpchQ13OrderShard n;
+  const std::size_t live = o.custkey.size() - o.dead;
+  n.custkey.reserve(live);
+  n.start.reserve(live);
+  n.len.reserve(live);
+  n.alive.reserve(live);
+  n.blob.reserve(o.blob.size() / 2 + 64);
+  for (std::size_t i = 0; i < o.custkey.size(); ++i) {
+    if (!o.alive[i])
+      continue;
+    n.custkey.push_back(o.custkey[i]);
+    n.start.push_back(static_cast<uint32_t>(n.blob.size()));
+    n.len.push_back(o.len[i]);
+    n.blob.append(o.blob, o.start[i], o.len[i]);
+    n.alive.push_back(1);
+  }
+  o = std::move(n);
+}
+
+// Applies one order insert (sign>0) or delete (sign<0).  Returns false when a
+// delete finds no matching order (caller falls back to a rebuild).
+bool ApplyOrder(Mut &m, int64_t ck, std::string_view comment, int sign,
+                bool track_hist) {
+  if (!KeyOk(ck))
+    return true;
+  const std::size_t s = static_cast<std::size_t>(ck) & kShardMask;
+  const std::size_t lc = static_cast<std::size_t>(ck) >> kTpchQ13ShardBits;
+  const std::size_t np = m.st.patterns.size();
+  TpchQ13OrderShard &o = m.O(s);
+  if (sign > 0) {
+    o.custkey.push_back(ck);
+    o.start.push_back(static_cast<uint32_t>(o.blob.size()));
+    o.len.push_back(static_cast<uint32_t>(comment.size()));
+    o.blob.append(comment.data(), comment.size());
+    o.alive.push_back(1);
+  } else {
+    bool found = false;
+    for (std::size_t i = o.custkey.size(); i > 0; --i) {
+      const std::size_t idx = i - 1;
+      if (!o.alive[idx] || o.custkey[idx] != ck || o.len[idx] != comment.size())
+        continue;
+      if (std::memcmp(o.blob.data() + o.start[idx], comment.data(),
+                      comment.size()) != 0)
+        continue;
+      o.alive[idx] = 0;
+      ++o.dead;
+      found = true;
+      break;
+    }
+    if (!found)
+      return false;
+    if (o.dead > 32 && static_cast<std::size_t>(o.dead) * 2 > o.custkey.size())
+      CompactOrders(o);
+  }
+  TpchQ13CustShard &c = m.C(s);
+  EnsureCust(c, lc, np);
+  const bool valid = c.mult[lc] > 0;
+  if (track_hist && valid)
+    for (std::size_t p = 0; p < np; ++p)
+      HistAdd(m.st.hist[p], int64_t{c.mult[lc]} * (c.total[lc] - c.match[p][lc]), -1);
+  c.total[lc] += sign;
+  for (std::size_t p = 0; p < np; ++p)
+    if (PatMatch(m.st.patterns[p], comment.data(), comment.size()))
+      c.match[p][lc] += sign;
+  if (track_hist && valid)
+    for (std::size_t p = 0; p < np; ++p)
+      HistAdd(m.st.hist[p], int64_t{c.mult[lc]} * (c.total[lc] - c.match[p][lc]), +1);
+  return true;
+}
+
+// Customer row insert (sign>0) / delete (sign<0).  False on delete of a
+// non-existent customer.
+bool ApplyCustomer(Mut &m, int64_t ck, int sign, bool track_hist) {
+  if (!KeyOk(ck))
+    return true;
+  const std::size_t s = static_cast<std::size_t>(ck) & kShardMask;
+  const std::size_t lc = static_cast<std::size_t>(ck) >> kTpchQ13ShardBits;
+  const std::size_t np = m.st.patterns.size();
+  TpchQ13CustShard &c = m.C(s);
+  EnsureCust(c, lc, np);
+  if (sign < 0 && c.mult[lc] <= 0)
+    return false;
+  // c_count = (#customer rows with this key) * (#non-matching orders): the
+  // LEFT JOIN multiplies rows for duplicated customer keys.
+  if (track_hist && c.mult[lc] > 0)
+    for (std::size_t p = 0; p < np; ++p)
+      HistAdd(m.st.hist[p], int64_t{c.mult[lc]} * (c.total[lc] - c.match[p][lc]), -1);
+  c.mult[lc] += sign;
+  if (track_hist && c.mult[lc] > 0)
+    for (std::size_t p = 0; p < np; ++p)
+      HistAdd(m.st.hist[p], int64_t{c.mult[lc]} * (c.total[lc] - c.match[p][lc]), +1);
+  return true;
+}
+
+void RecomputeHist(Mut &m) {
+  const std::size_t np = m.st.patterns.size();
+  m.st.hist.assign(np, {});
+  for (std::size_t s = 0; s < kTpchQ13Shards; ++s) {
+    const TpchQ13CustShard *c = m.ReadC(s);
+    if (!c)
+      continue;
+    for (std::size_t lc = 0; lc < c->total.size(); ++lc) {
+      if (c->mult[lc] <= 0)
+        continue;
+      for (std::size_t p = 0; p < np; ++p)
+        HistAdd(m.st.hist[p],
+                int64_t{c->mult[lc]} *
+                    (c->total[lc] - (p < c->match.size() ? c->match[p][lc] : 0)),
+                1);
+    }
+  }
+}
+
+TpchQ13Pattern MakePattern(const std::string &text) {
+  TpchQ13Pattern p;
+  p.text = text;
+  p.matcher.Build(text);
+  return p;
+}
+
+// Starts tracking a new pattern on an existing state: one pass over comments
+// (rare; done once per pattern), clones only customer shards.
+void AddPattern(Mut &m, const std::string &text) {
+  const std::size_t idx = m.st.patterns.size();
+  m.st.patterns.push_back(MakePattern(text));
+  const TpchQ13Pattern &pat = m.st.patterns[idx];
+  for (std::size_t s = 0; s < kTpchQ13Shards; ++s) {
+    if (!m.ReadC(s))
+      continue;
+    TpchQ13CustShard &c = m.C(s);
+    c.match.resize(idx + 1);
+    c.match[idx].assign(c.total.size(), 0);
+    const TpchQ13OrderShard *o = m.ReadO(s);
+    if (!o)
+      continue;
+    for (std::size_t i = 0; i < o->custkey.size(); ++i) {
+      if (!o->alive[i])
+        continue;
+      if (PatMatch(pat, o->blob.data() + o->start[i], o->len[i]))
+        ++c.match[idx][static_cast<std::size_t>(o->custkey[i]) >>
+                       kTpchQ13ShardBits];
+    }
+  }
+  m.st.hist.emplace_back();
+  auto &h = m.st.hist[idx];
+  for (std::size_t s = 0; s < kTpchQ13Shards; ++s) {
+    const TpchQ13CustShard *c = m.ReadC(s);
+    if (!c)
+      continue;
+    for (std::size_t lc = 0; lc < c->total.size(); ++lc)
+      if (c->mult[lc] > 0)
+        HistAdd(h, int64_t{c->mult[lc]} * (c->total[lc] - c->match[idx][lc]), 1);
+  }
+}
+
+void EmitHist(const std::vector<int64_t> &h, core::AuxRowSink &sink) {
+  std::vector<TpchQ13OutputRow> rows;
+  for (std::size_t e = 0; e < h.size(); ++e)
+    if (h[e] > 0)
+      rows.push_back({static_cast<int64_t>(e), h[e]});
+  std::sort(rows.begin(), rows.end(), Q13OutputRowBetter);
+  sink.Begin({{{"c_count", core::AuxType::Int64, false},
+               {"custdist", core::AuxType::Int64, false}}});
+  for (const auto &r : rows)
+    sink.WriteRow({{core::AuxValue::Of(core::AuxType::Int64, r.c_count),
+                    core::AuxValue::Of(core::AuxType::Int64, r.custdist)}});
+  sink.End();
+}
+
+// Read-only O(orders) evaluation for a pattern the state does not track.
+// Allocates only local scratch; never touches shared state.
+std::vector<int64_t> ScanHistogram(const TpchQ13State &state,
+                                   const std::string &pattern) {
+  const TpchQ13Pattern pat = MakePattern(pattern);
+  std::vector<int64_t> h;
+  std::vector<int32_t> m;
+  for (std::size_t s = 0; s < kTpchQ13Shards; ++s) {
+    const TpchQ13CustShard *c = state.cust[s].get();
+    if (!c)
+      continue;
+    m.assign(c->total.size(), 0);
+    if (const TpchQ13OrderShard *o = state.orders[s].get()) {
+      for (std::size_t i = 0; i < o->custkey.size(); ++i) {
+        if (!o->alive[i])
+          continue;
+        if (PatMatch(pat, o->blob.data() + o->start[i], o->len[i]))
+          ++m[static_cast<std::size_t>(o->custkey[i]) >> kTpchQ13ShardBits];
+      }
+    }
+    for (std::size_t lc = 0; lc < c->total.size(); ++lc)
+      if (c->mult[lc] > 0)
+        HistAdd(h, int64_t{c->mult[lc]} * (c->total[lc] - m[lc]), 1);
+  }
+  return h;
+}
+
 } // namespace
 
 // ── TwoPartLikeMatcher ──────────────────────────────────────────────────────
@@ -183,7 +460,11 @@ void TpchQ13TwoPartLikeMatcher::Build(const std::string &pattern) {
     return;
   part1 = pattern.substr(1, first_end - 1);
   part2 = pattern.substr(second_start, second_end - second_start);
-  enabled = !part1.empty() && !part2.empty();
+  enabled = !part1.empty() && !part2.empty() &&
+            part1.find('_') == std::string::npos &&
+            part2.find('_') == std::string::npos &&
+            part1.find('\\') == std::string::npos &&
+            part2.find('\\') == std::string::npos;
 }
 
 bool TpchQ13TwoPartLikeMatcher::Matches(const std::string &text) const {
@@ -218,165 +499,48 @@ bool TpchQ13TwoPartLikeMatcher::MatchesView(const char *data, std::size_t len) c
   return false;
 }
 
-// ── TpchQ13State implementation ─────────────────────────────────────────────
-void TpchQ13State::AddCustomer(int64_t custkey) {
-  if (custkey < 0)
-    return;
-  const auto required = static_cast<std::size_t>(custkey) + 1;
-  if (required > order_counts.size()) {
-    order_counts.resize(required, 0);
-    customer_valid.resize(required, 0);
-  }
-  if (customer_valid[static_cast<std::size_t>(custkey)] == 0) {
-    customer_valid[static_cast<std::size_t>(custkey)] = 1;
-    active_customers.push_back(custkey);
-  }
-  if (static_cast<int64_t>(custkey) > max_custkey)
-    max_custkey = custkey;
-}
-
-void TpchQ13State::RemoveCustomer(int64_t custkey) {
-  if (custkey < 0 || static_cast<std::size_t>(custkey) >= customer_valid.size())
-    return;
-  if (customer_valid[static_cast<std::size_t>(custkey)] == 0)
-    return;
-  customer_valid[static_cast<std::size_t>(custkey)] = 0;
-  order_counts[static_cast<std::size_t>(custkey)] = 0;
-  active_customers.erase(
-      std::remove(active_customers.begin(), active_customers.end(), custkey),
-      active_customers.end());
-}
-
-void TpchQ13State::AddOrder(int64_t custkey, const std::string &comment) {
-  if (custkey < 0) return;
-  AddCustomer(custkey);
-  ++order_counts[static_cast<std::size_t>(custkey)];
-  order_custkeys.push_back(custkey);
-  order_comment_start.push_back(static_cast<uint32_t>(comments_blob.size()));
-  order_comment_len.push_back(static_cast<uint32_t>(comment.size()));
-  comments_blob.append(comment);
-  order_alive.push_back(1);
-}
-
-void TpchQ13State::RemoveOrder(int64_t custkey, const std::string &comment) {
-  if (custkey < 0 || static_cast<std::size_t>(custkey) >= order_counts.size()) return;
-  if (order_counts[static_cast<std::size_t>(custkey)] > 0)
-    --order_counts[static_cast<std::size_t>(custkey)];
-  for (std::size_t i = order_custkeys.size(); i > 0; --i) {
-    const std::size_t idx = i - 1;
-    if (!order_alive[idx]) continue;
-    if (order_custkeys[idx] != custkey) continue;
-    const char *cp = comments_blob.data() + order_comment_start[idx];
-    if (comment.size() != order_comment_len[idx] ||
-        std::memcmp(cp, comment.data(), comment.size()) != 0)
-      continue;
-    order_alive[idx] = 0;
-    return;
-  }
-}
-
-void TpchQ13State::RebuildTrigramIndex() {
-  trigram_index_built = false;
-  trigram_index_pending = 0;
-  trigram_index_keys.clear();
-  trigram_index_offsets.clear();
-  trigram_index_rows.clear();
-  trigram_index_lookup.clear();
-
-  struct TrigramEntry {
-    uint32_t hash;
-    uint32_t order_idx;
-    bool operator<(const TrigramEntry &o) const {
-      return hash < o.hash || (hash == o.hash && order_idx < o.order_idx);
-    }
-  };
-
-  // For each comment, extract every length-3 substring (trigram) and index by
-  // hash.  This guarantees any LIKE pattern %a%b% with literal parts >= 3 chars
-  // is captured because at query time we intersect the trigram lists for one
-  // trigram each from part1 and part2, then verify survivors with full LIKE.
-  // Unlike word-level indexing, this correctly handles substring matches
-  // inside longer words (e.g. "special" within "especially").
-  //
-  // Per-order dedup happens before the global sort.  Comments are short and
-  // have many repeated trigrams, so this roughly halves the sort input.
-  std::vector<TrigramEntry> entries;
-  entries.reserve(trigram_index_rows.capacity() / 2 + 128);
-  const std::size_t oc = order_custkeys.size();
-  for (std::size_t idx = 0; idx < oc; ++idx) {
-    if (!order_alive[idx]) continue;
-    const char *cp = comments_blob.data() + order_comment_start[idx];
-    const std::size_t cl = order_comment_len[idx];
-    if (cl < 3) continue;
-    uint32_t last_hash = UINT32_MAX;
-    for (std::size_t i = 0; i + 3 <= cl; ++i) {
-      uint32_t h = 5381;
-      h = ((h << 5) + h) + static_cast<uint8_t>(cp[i]);
-      h = ((h << 5) + h) + static_cast<uint8_t>(cp[i + 1]);
-      h = ((h << 5) + h) + static_cast<uint8_t>(cp[i + 2]);
-      if (h != last_hash) {
-        last_hash = h;
-        entries.push_back({h, static_cast<uint32_t>(idx)});
-      }
-    }
-  }
-
-  if (entries.empty()) return;
-
-  std::sort(entries.begin(), entries.end());
-
-  // Compact into (key, offset, rows).
-  uint32_t prev_hash = entries[0].hash;
-  uint32_t last_idx = entries[0].order_idx;
-  trigram_index_keys.push_back(prev_hash);
-  trigram_index_offsets.push_back(0);
-  trigram_index_rows.push_back(last_idx);
-
-  for (size_t ei = 1; ei < entries.size(); ++ei) {
-    const auto &e = entries[ei];
-    if (e.hash != prev_hash) {
-      trigram_index_keys.push_back(e.hash);
-      trigram_index_offsets.push_back(static_cast<uint64_t>(trigram_index_rows.size()));
-      prev_hash = e.hash;
-      last_idx = e.order_idx;
-      trigram_index_rows.push_back(last_idx);
-    } else {
-      if (e.order_idx != last_idx) {
-        last_idx = e.order_idx;
-        trigram_index_rows.push_back(last_idx);
-      }
-    }
-  }
-
-  // Build the hash table used by the query probe to avoid binary search over
-  // the distinct-trigram key array.
-  trigram_index_lookup.reserve(trigram_index_keys.size());
-  for (std::size_t i = 0; i < trigram_index_keys.size(); ++i)
-    trigram_index_lookup.emplace(trigram_index_keys[i], i);
-
-  trigram_index_order_count = oc;
-  trigram_index_built = true;
-}
-
-
 // ── Encode / Decode ─────────────────────────────────────────────────────────
+// Layout: header, patterns, customer rows (key, multiplicity), live orders.
 std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state) {
   ByteWriter writer;
+  uint64_t live_orders = 0;
+  for (const auto &o : state.orders)
+    if (o)
+      live_orders += o->custkey.size() - o->dead;
   core::WriteImageHeader(writer, kCustomerMagic, kVersion,
-                         static_cast<uint32_t>(state.active_customers.size()));
+                         static_cast<uint32_t>(live_orders));
 
-  writer.I64(state.max_custkey);
-  writer.U64(static_cast<uint64_t>(state.order_counts.size()));
-  writer.U64(static_cast<uint64_t>(state.customer_valid.size()));
+  writer.U32(static_cast<uint32_t>(state.patterns.size()));
+  for (const auto &p : state.patterns)
+    writer.String(p.text);
 
-  for (const int32_t count : state.order_counts)
-    writer.I32(count);
-  for (const uint8_t valid : state.customer_valid)
-    writer.U8(valid);
+  std::vector<std::pair<int64_t, int32_t>> custs;
+  for (std::size_t s = 0; s < state.cust.size(); ++s) {
+    const auto &c = state.cust[s];
+    if (!c)
+      continue;
+    for (std::size_t lc = 0; lc < c->mult.size(); ++lc)
+      if (c->mult[lc] > 0)
+        custs.emplace_back(
+            static_cast<int64_t>((lc << kTpchQ13ShardBits) | s), c->mult[lc]);
+  }
+  writer.U64(custs.size());
+  for (const auto &[ck, mult] : custs) {
+    writer.I64(ck);
+    writer.I32(mult);
+  }
 
-  writer.U64(static_cast<uint64_t>(state.active_customers.size()));
-  for (const int64_t custkey : state.active_customers)
-    writer.I64(custkey);
+  writer.U64(live_orders);
+  for (const auto &o : state.orders) {
+    if (!o)
+      continue;
+    for (std::size_t i = 0; i < o->custkey.size(); ++i) {
+      if (!o->alive[i])
+        continue;
+      writer.I64(o->custkey[i]);
+      writer.String(std::string(o->blob, o->start[i], o->len[i]));
+    }
+  }
   return writer.bytes;
 }
 
@@ -387,44 +551,39 @@ bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
   if (!core::ReadImageHeader(reader, magic, version, record_count) ||
       magic != kCustomerMagic)
     return false;
-  (void)record_count;
-
-  int64_t max_custkey = 0;
-  uint64_t order_size = 0;
-  uint64_t valid_size = 0;
-  if (!reader.I64(max_custkey) || !reader.U64(order_size) || !reader.U64(valid_size))
+  uint32_t np = 0;
+  if (!reader.U32(np) || np > kTpchQ13MaxPatterns)
     return false;
-
-  state.max_custkey = max_custkey;
-  state.order_counts.clear();
-  state.order_counts.reserve(static_cast<std::size_t>(order_size));
-  for (uint64_t i = 0; i < order_size; ++i) {
-    int32_t count = 0;
-    if (!reader.I32(count))
+  Mut m;
+  for (uint32_t p = 0; p < np; ++p) {
+    std::string text;
+    if (!reader.String(text))
       return false;
-    state.order_counts.push_back(count);
+    m.st.patterns.push_back(MakePattern(text));
   }
-
-  state.customer_valid.clear();
-  state.customer_valid.reserve(static_cast<std::size_t>(valid_size));
-  for (uint64_t i = 0; i < valid_size; ++i) {
-    uint8_t valid = 0;
-    if (!reader.U8(valid))
-      return false;
-    state.customer_valid.push_back(valid);
-  }
-
-  uint64_t active_size = 0;
-  if (!reader.U64(active_size))
+  uint64_t ncust = 0;
+  if (!reader.U64(ncust))
     return false;
-  state.active_customers.clear();
-  state.active_customers.reserve(static_cast<std::size_t>(active_size));
-  for (uint64_t i = 0; i < active_size; ++i) {
-    int64_t custkey = 0;
-    if (!reader.I64(custkey))
+  for (uint64_t i = 0; i < ncust; ++i) {
+    int64_t ck = 0;
+    int32_t mult = 0;
+    if (!reader.I64(ck) || !reader.I32(mult) || mult < 0)
       return false;
-    state.active_customers.push_back(custkey);
+    for (int32_t k = 0; k < mult; ++k)
+      ApplyCustomer(m, ck, +1, false);
   }
+  uint64_t norders = 0;
+  if (!reader.U64(norders))
+    return false;
+  for (uint64_t i = 0; i < norders; ++i) {
+    int64_t ck = 0;
+    std::string comment;
+    if (!reader.I64(ck) || !reader.String(comment))
+      return false;
+    ApplyOrder(m, ck, comment, +1, false);
+  }
+  RecomputeHist(m);
+  state = m.Finish();
   return true;
 }
 
@@ -460,6 +619,21 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ13Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ13TxnBuffer>();
 }
 
+void TpchQ13Module::NoteWantedPattern(const std::string &pattern) const {
+  std::lock_guard<std::mutex> lock(wanted_mu);
+  if (wanted.size() + 1 >= kTpchQ13MaxPatterns)
+    return;
+  if (pattern == kDefaultPattern ||
+      std::find(wanted.begin(), wanted.end(), pattern) != wanted.end())
+    return;
+  wanted.push_back(pattern);
+}
+
+std::vector<std::string> TpchQ13Module::WantedPatterns() const {
+  std::lock_guard<std::mutex> lock(wanted_mu);
+  return wanted;
+}
+
 void TpchQ13Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
   const auto state = std::make_shared<TpchQ13State>(BuildState(services));
@@ -469,56 +643,39 @@ void TpchQ13Module::Build(core::AuxEngineServices &services,
   builder.Finish();
 }
 
-void TpchQ13Module::EnsureCustomerCapacity(TpchQ13State &state,
-                                           int64_t custkey) const {
-  if (custkey < 0)
-    return;
-  const auto required = static_cast<std::size_t>(custkey) + 1;
-  if (required > state.order_counts.size()) {
-    state.order_counts.resize(required, 0);
-    state.customer_valid.resize(required, 0);
-  }
-}
-
 TpchQ13State TpchQ13Module::BuildState(
     core::AuxEngineServices &services) const {
   (void)services;
-  TpchQ13State state;
-
   if (!initial_scan)
     throw std::logic_error("TPC-H Q13 requires a typed initial scan source");
 
   const bool profiling = CustomProfilingEnabled();
+  Mut m;
+  m.st.patterns.push_back(MakePattern(kDefaultPattern));
+  for (const auto &w : WantedPatterns())
+    if (m.st.patterns.size() < kTpchQ13MaxPatterns)
+      m.st.patterns.push_back(MakePattern(w));
 
   CustomTimer t_cust(profiling);
+  int64_t ncust = 0;
   initial_scan->ScanCustomers([&](const TpchQ13CustomerInput &input) {
-    state.AddCustomer(input.key);
+    ApplyCustomer(m, input.key, +1, false);
+    ++ncust;
   });
-  if (profiling) EmitCustomProfile("build_customers", t_cust.us(),
-      (int64_t)state.active_customers.size(), 0, 0, 0);
+  if (profiling)
+    EmitCustomProfile("build_customers", t_cust.us(), ncust, 0, 0, 0);
 
   CustomTimer t_orders(profiling);
+  int64_t norders = 0;
   initial_scan->ScanOrders([&](const TpchQ13OrderInput &input) {
-    state.AddOrder(input.custkey, input.comment);
+    ApplyOrder(m, input.custkey, input.comment, +1, false);
+    ++norders;
   });
-  if (profiling) EmitCustomProfile("build_orders", t_orders.us(),
-      (int64_t)state.order_custkeys.size(),
-      (int64_t)state.comments_blob.size(), 0, 0);
+  if (profiling)
+    EmitCustomProfile("build_orders", t_orders.us(), norders, 0, 0, 0);
 
-  // Do not build the full inverted trigram index: at SF1 it materializes
-  // ~tens of millions of postings (hundreds of MB) for a modest hit-path win.
-  // EmitResult falls back to the linear TwoPartLikeMatcher scan over comments.
-  // Comments themselves stay in-state: rescanning orders via InitialScan during
-  // Execute re-enters the same DuckDB connection and deadlocks.
-  state.trigram_index_built = false;
-  state.trigram_index_pending = 0;
-  state.trigram_index_order_count = 0;
-  state.trigram_index_keys.clear();
-  state.trigram_index_offsets.clear();
-  state.trigram_index_rows.clear();
-  state.trigram_index_lookup.clear();
-
-  return state;
+  RecomputeHist(m);
+  return m.Finish();
 }
 
 core::InvalidationPlan
@@ -536,9 +693,38 @@ void TpchQ13Module::AccumulateMutation(const core::MutationBatch &mutation,
   auto &buffer = dynamic_cast<TpchQ13TxnBuffer &>(base_buffer);
 
   if (mutation.table == config.customer_table) {
-    // Customer insert/delete can be applied as a delta, but conservative
-    // rebuild is safer for the flat vector resize path.
-    buffer.MarkRebuild();
+    auto addc = [&](const core::AuxRow &row, int8_t sign) {
+      int64_t custkey = 0;
+      if (!IntCell(row, 0, custkey)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      buffer.AddDelta({sign, custkey, std::string(), true});
+    };
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows)
+        addc(row, 1);
+      break;
+    case core::MutationKind::Delete:
+      for (const auto &row : mutation.old_rows)
+        addc(row, -1);
+      break;
+    case core::MutationKind::Update:
+      if (mutation.old_rows.size() != mutation.new_rows.size()) {
+        buffer.MarkRebuild();
+        return;
+      }
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        int64_t ok = 0, nk = 0;
+        if (IntCell(mutation.old_rows[i], 0, ok) &&
+            IntCell(mutation.new_rows[i], 0, nk) && ok == nk)
+          continue;  // key unchanged: no effect on Q13
+        addc(mutation.old_rows[i], -1);
+        addc(mutation.new_rows[i], 1);
+      }
+      break;
+    }
     return;
   }
   if (mutation.table != config.orders_table)
@@ -553,7 +739,7 @@ void TpchQ13Module::AccumulateMutation(const core::MutationBatch &mutation,
     }
     if (custkey < 0)
       return;
-    buffer.AddDelta({sign, custkey, comment});
+    buffer.AddDelta({sign, custkey, std::move(comment), false});
   };
 
   switch (mutation.kind) {
@@ -585,16 +771,21 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
   auto &buffer = dynamic_cast<TpchQ13TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
 
-  if (buffer.RequiresRebuild()) {
+  auto request_rebuild = [&]() {
     const auto decision = services.ChooseMaintenance(
         {0, 0, false, false, true, true, false,
          core::MaintenanceAction::NoOp,
          services.ExpectedQueriesBeforeNextWrite()});
+    outcome.updates.clear();
     outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
                          ? core::MaintenanceAction::RebuildAll
                          : decision.action;
     outcome.invalidations = All();
     outcome.pending_rebuild = outcome.invalidations;
+  };
+
+  if (buffer.RequiresRebuild()) {
+    request_rebuild();
     return outcome;
   }
   if (buffer.Deltas().empty())
@@ -620,7 +811,7 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
       visibility, {core::TpchQ13Layout::kCustomerCounts});
 
   bool found = false;
-  std::shared_ptr<TpchQ13State> updated_state;
+  std::shared_ptr<const TpchQ13State> base;
   core::Version existing_version = 0;
 
   for (const auto &image : snapshot.partitions) {
@@ -629,34 +820,45 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
     const auto *typed = AsQ13Image(image, TpchQ13ImageKind::CustomerCounts);
     if (!typed)
       return outcome;
-    updated_state = std::make_shared<TpchQ13State>(*typed->state);
+    base = typed->state;
     existing_version = image.version;
     found = true;
     break;
   }
-
   if (!found)
     return outcome;
 
-  const std::size_t delta_count = buffer.Deltas().size();
-  for (const auto &delta : buffer.Deltas()) {
-    if (delta.sign > 0)
-      updated_state->AddOrder(delta.custkey, delta.comment);
-    else
-      updated_state->RemoveOrder(delta.custkey, delta.comment);
+  // Copy-on-write: copies the shard pointer tables and clones only the shards
+  // touched by the deltas; the published base is never mutated.
+  Mut m(*base);
+
+  // Start tracking patterns that reads have asked for (one pass each, rare).
+  for (const auto &w : WantedPatterns()) {
+    if (m.st.patterns.size() >= kTpchQ13MaxPatterns)
+      break;
+    bool known = false;
+    for (const auto &p : m.st.patterns)
+      known = known || p.text == w;
+    if (!known)
+      AddPattern(m, w);
   }
 
-  // Rebuilding the trigram index is a 30s+ full-table sort at SF1 and scales
-  // with the entire order set.  For small point deltas the indexed probe is
-  // not worth this maintenance cliff: keep the already-built index but mark it
-  // stale so the query path uses the still-correct O(orders) matcher scan.
-  updated_state->trigram_index_pending += static_cast<uint64_t>(delta_count);
+  for (const auto &delta : buffer.Deltas()) {
+    const bool ok =
+        delta.customer
+            ? ApplyCustomer(m, delta.custkey, delta.sign, true)
+            : ApplyOrder(m, delta.custkey, delta.comment, delta.sign, true);
+    if (!ok) {
+      request_rebuild();  // inconsistent delta: drop the working copy
+      return outcome;
+    }
+  }
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
       kId, core::TpchQ13Layout::kCustomerCounts, existing_version,
       MakeStateImage(TpchQ13ImageKind::CustomerCounts,
-                     std::static_pointer_cast<const TpchQ13State>(updated_state))));
+                     std::make_shared<const TpchQ13State>(m.Finish()))));
   return outcome;
 }
 
@@ -721,306 +923,32 @@ bool TpchQ13Module::LoadState(
   return false;
 }
 
-void TpchQ13Module::EmitResultIndexed(
-    const TpchQ13State &state,
-    const TpchQ13TwoPartLikeMatcher &two_part,
-    core::AuxEngineServices &services,
-    core::AuxRowSink &sink) const {
-  (void)services;
-  const bool profiling = CustomProfilingEnabled();
-
-  const std::size_t cc = state.customer_valid.size();
-  const bool short_literal = (two_part.part1.size() < 3 || two_part.part2.size() < 3);
-  if (short_literal) {
-    // Cannot filter by trigrams when a literal is too short.  Run the exact
-    // O(orders) LIKE scan inline to preserve correctness.
-    CustomTimer t_exclude(profiling);
-    std::vector<int32_t> excluded(cc, 0);
-    int64_t excluded_count = 0;
-    const std::size_t oc = state.order_custkeys.size();
-    for (std::size_t idx = 0; idx < oc; ++idx) {
-      if (!state.order_alive[idx]) continue;
-      const int64_t ck = state.order_custkeys[idx];
-      if (ck < 0 || static_cast<std::size_t>(ck) >= cc) continue;
-      const char *cp = state.comments_blob.data() + state.order_comment_start[idx];
-      const std::size_t cl = state.order_comment_len[idx];
-      if (!two_part.MatchesView(cp, cl)) continue;
-      ++excluded[static_cast<std::size_t>(ck)];
-      ++excluded_count;
-    }
-    if (profiling) EmitCustomProfile("exclude_scan_short", t_exclude.us(),
-        (int64_t)oc, excluded_count, (int64_t)cc, 0);
-
-    // Counting histogram: max_eff ≪ ac, no sort needed.
-    CustomTimer t_hist(profiling);
-    const std::size_t ac = state.active_customers.size();
-    int32_t max_eff = 0;
-    for (std::size_t i = 0; i < ac; ++i) {
-      const int64_t ck = state.active_customers[i];
-      if (ck < 0 || static_cast<std::size_t>(ck) >= cc) continue;
-      int32_t eff = state.order_counts[static_cast<std::size_t>(ck)] -
-                    excluded[static_cast<std::size_t>(ck)];
-      if (eff < 0) eff = 0;
-      if (eff > max_eff) max_eff = eff;
-    }
-    std::vector<int64_t> buckets(static_cast<std::size_t>(max_eff) + 1, 0);
-    for (std::size_t i = 0; i < ac; ++i) {
-      const int64_t ck = state.active_customers[i];
-      if (ck < 0 || static_cast<std::size_t>(ck) >= cc) continue;
-      int32_t eff = state.order_counts[static_cast<std::size_t>(ck)] -
-                    excluded[static_cast<std::size_t>(ck)];
-      if (eff < 0) eff = 0;
-      ++buckets[static_cast<std::size_t>(eff)];
-    }
-    std::vector<TpchQ13OutputRow> rows;
-    rows.reserve(buckets.size());
-    for (int32_t eff = 0; eff <= max_eff; ++eff) {
-      if (buckets[static_cast<std::size_t>(eff)] > 0)
-        rows.push_back({static_cast<int64_t>(eff), buckets[static_cast<std::size_t>(eff)]});
-    }
-    if (profiling) EmitCustomProfile("histogram_short", t_hist.us(),
-        (int64_t)ac, (int64_t)rows.size(), (int64_t)max_eff, 0);
-    std::sort(rows.begin(), rows.end(), Q13OutputRowBetter);
-    sink.Begin({{{"c_count", core::AuxType::Int64, false},
-                 {"custdist", core::AuxType::Int64, false}}});
-    for (const auto &r : rows)
-      sink.WriteRow({{core::AuxValue::Of(core::AuxType::Int64, r.c_count),
-                      core::AuxValue::Of(core::AuxType::Int64, r.custdist)}});
-    sink.End();
-    return;
-  }
-
-  CustomTimer t_probe(profiling);
-  std::vector<int32_t> excluded(cc, 0);
-  int64_t excluded_count = 0;
-  int64_t candidates = 0;
-
-  CustomTimer t_tail(profiling);
-  const std::size_t oc = state.order_custkeys.size();
-  const std::size_t tail_start = std::min(oc, state.trigram_index_order_count);
-  for (std::size_t idx = tail_start; idx < oc; ++idx) {
-    if (!state.order_alive[idx]) continue;
-    const int64_t ck = state.order_custkeys[idx];
-    if (ck < 0 || static_cast<std::size_t>(ck) >= cc) continue;
-    const char *cp = state.comments_blob.data() + state.order_comment_start[idx];
-    const std::size_t cl = state.order_comment_len[idx];
-    if (!two_part.MatchesView(cp, cl)) continue;
-    ++excluded[static_cast<std::size_t>(ck)];
-    ++excluded_count;
-  }
-  if (profiling) EmitCustomProfile("tail_scan_indexed", t_tail.us(),
-      (int64_t)(oc - tail_start), excluded_count, (int64_t)cc, 0);
-
-  const auto &offs = state.trigram_index_offsets;
-  const auto &idx_rows = state.trigram_index_rows;
-  const auto &lookup_map = state.trigram_index_lookup;
-
-  auto trigram_hash = [](const char *p) {
-    uint32_t h = 5381;
-    h = ((h << 5) + h) + static_cast<uint8_t>(p[0]);
-    h = ((h << 5) + h) + static_cast<uint8_t>(p[1]);
-    h = ((h << 5) + h) + static_cast<uint8_t>(p[2]);
-    return h;
-  };
-
-  // Return [start, end) range into idx_rows for a trigram hash.
-  auto trigram_range = [&](uint32_t h) -> std::pair<std::size_t, std::size_t> {
-    auto it = lookup_map.find(h);
-    if (it == lookup_map.end()) return {0, 0};
-    const std::size_t idx = it->second;
-    const std::size_t start = static_cast<std::size_t>(offs[idx]);
-    const std::size_t end = (idx + 1 < offs.size())
-        ? static_cast<std::size_t>(offs[idx + 1])
-        : idx_rows.size();
-    return {start, end};
-  };
-
-  // Pick the rarest trigram from a literal part.
-  auto select_rarest_range = [&](const std::string &part) -> std::pair<std::size_t, std::size_t> {
-    auto best = trigram_range(trigram_hash(part.data()));
-    if (part.size() > 3) {
-      for (std::size_t pos = 1; pos + 3 <= part.size(); ++pos) {
-        auto cur = trigram_range(trigram_hash(part.data() + pos));
-        if ((cur.second - cur.first) < (best.second - best.first))
-          best = cur;
-      }
-    }
-    return best;
-  };
-
-  auto r1 = select_rarest_range(two_part.part1);
-  auto r2 = select_rarest_range(two_part.part2);
-  candidates = std::min((int64_t)(r1.second - r1.first), (int64_t)(r2.second - r2.first));
-
-  // Intersect directly from source arrays — no copy into temporary vectors.
-  if (r1.second > r1.first && r2.second > r2.first) {
-    std::size_t i1 = r1.first, i2 = r2.first;
-    std::size_t e1 = r1.second, e2 = r2.second;
-    while (i1 < e1 && i2 < e2) {
-      uint32_t v1 = idx_rows[i1], v2 = idx_rows[i2];
-      if (v1 < v2) { ++i1; continue; }
-      if (v2 < v1) { ++i2; continue; }
-      const uint32_t idx = v1;
-      ++i1; ++i2;
-      if (idx >= state.order_alive.size() || !state.order_alive[idx])
-        continue;
-      const char *cp = state.comments_blob.data() + state.order_comment_start[idx];
-      const std::size_t cl = state.order_comment_len[idx];
-      if (!two_part.MatchesView(cp, cl))
-        continue;
-      const int64_t ck = state.order_custkeys[idx];
-      if (ck < 0 || static_cast<std::size_t>(ck) >= cc)
-        continue;
-      ++excluded[static_cast<std::size_t>(ck)];
-      ++excluded_count;
-    }
-  }
-
-  if (profiling) EmitCustomProfile("index_probe", t_probe.us(),
-      candidates, excluded_count, (int64_t)cc, 0);
-
-  // ── Counting histogram: max_eff ≪ ac, no comparison sort ──
-  CustomTimer t_hist(profiling);
-  const std::size_t ac = state.active_customers.size();
-  int32_t max_eff = 0;
-
-  // Pass 1: find max effective count for bucket allocation
-  for (std::size_t i = 0; i < ac; ++i) {
-    const int64_t ck = state.active_customers[i];
-    if (ck < 0 || static_cast<std::size_t>(ck) >= cc) continue;
-    int32_t eff = state.order_counts[static_cast<std::size_t>(ck)] -
-                  excluded[static_cast<std::size_t>(ck)];
-    if (eff < 0) eff = 0;
-    if (eff > max_eff) max_eff = eff;
-  }
-
-  // Pass 2: count into buckets
-  std::vector<int64_t> buckets(static_cast<std::size_t>(max_eff) + 1, 0);
-  for (std::size_t i = 0; i < ac; ++i) {
-    const int64_t ck = state.active_customers[i];
-    if (ck < 0 || static_cast<std::size_t>(ck) >= cc) continue;
-    int32_t eff = state.order_counts[static_cast<std::size_t>(ck)] -
-                  excluded[static_cast<std::size_t>(ck)];
-    if (eff < 0) eff = 0;
-    ++buckets[static_cast<std::size_t>(eff)];
-  }
-
-  std::vector<TpchQ13OutputRow> rows;
-  rows.reserve(buckets.size());
-  for (int32_t eff = 0; eff <= max_eff; ++eff) {
-    if (buckets[static_cast<std::size_t>(eff)] > 0)
-      rows.push_back({static_cast<int64_t>(eff), buckets[static_cast<std::size_t>(eff)]});
-  }
-  if (profiling) EmitCustomProfile("histogram_indexed", t_hist.us(),
-      (int64_t)ac, (int64_t)rows.size(), (int64_t)max_eff, 0);
-
-  CustomTimer t_sort(profiling);
-  std::sort(rows.begin(), rows.end(), Q13OutputRowBetter);
-  if (profiling) EmitCustomProfile("sort_emit_indexed", t_sort.us(),
-      (int64_t)rows.size(), 0, 0, 0);
-
-  sink.Begin({{{"c_count", core::AuxType::Int64, false},
-               {"custdist", core::AuxType::Int64, false}}});
-  for (const auto &r : rows)
-    sink.WriteRow({{core::AuxValue::Of(core::AuxType::Int64, r.c_count),
-                    core::AuxValue::Of(core::AuxType::Int64, r.custdist)}});
-  sink.End();
-}
-
 void TpchQ13Module::EmitResult(const TpchQ13State &state,
                                const std::string &pattern,
                                core::AuxEngineServices &services,
                                core::AuxRowSink &sink) const {
   (void)services;
   const bool profiling = CustomProfilingEnabled();
+  CustomTimer t(profiling);
 
-  CustomTimer t_build(profiling);
-  TpchQ13TwoPartLikeMatcher two_part;
-  two_part.Build(pattern);
-  if (profiling) EmitCustomProfile("build_matcher", t_build.us(), 0, 0, 0, 0);
-
-  const std::size_t cc = state.customer_valid.size();
-  const std::size_t oc = state.order_custkeys.size();
-
-  // Use the token-pair index when the pattern is a two-part LIKE and the
-  // index has been built.  The index covers the first
-  // trigram_index_order_count rows; rows appended by point deltas are scanned
-  // as a tiny tail in EmitResultIndexed, so maintenance stays O(new orders)
-  // without a full-table rebuild per write.
-  if (two_part.enabled && state.trigram_index_built &&
-      state.trigram_index_order_count > 0) {
-    EmitResultIndexed(state, two_part, services, sink);
-    return;
-  }
-
-  // Flat excluded array indexed by custkey (avoids std::map overhead)
-  CustomTimer t_exclude(profiling);
-  std::vector<int32_t> excluded(cc, 0);
-  // Pre-capture to avoid repeated bounds checks in inner loop
-  const int64_t * __restrict custkeys = state.order_custkeys.data();
-  const uint8_t * __restrict alive = state.order_alive.data();
-  const uint32_t * __restrict starts = state.order_comment_start.data();
-  const uint32_t * __restrict lens = state.order_comment_len.data();
-  const char * __restrict blob = state.comments_blob.data();
-  int64_t excluded_count = 0;
-
-  for (std::size_t idx = 0; idx < oc; ++idx) {
-    if (!alive[idx]) continue;
-    const int64_t ck = custkeys[idx];
-    if (ck < 0 || static_cast<std::size_t>(ck) >= cc) continue;
-    const char *cp = blob + starts[idx];
-    const std::size_t cl = lens[idx];
-    if (two_part.enabled ? two_part.MatchesView(cp, cl)
-                         : SqlLikeSlice(cp, cl, pattern)) {
-      ++excluded[static_cast<std::size_t>(ck)];
-      ++excluded_count;
+  // Tracked pattern: answer is the maintained histogram, O(#distinct counts).
+  for (std::size_t p = 0; p < state.patterns.size(); ++p) {
+    if (state.patterns[p].text == pattern) {
+      EmitHist(state.hist[p], sink);
+      if (profiling)
+        EmitCustomProfile("hist_emit", t.us(), 0, 0,
+                          static_cast<int64_t>(state.hist[p].size()), 0);
+      return;
     }
   }
-  if (profiling) EmitCustomProfile("exclude_scan", t_exclude.us(),
-      (int64_t)oc, (int64_t)excluded_count, (int64_t)cc, 0);
 
-  // Counting histogram: max_eff ≪ ac, no sort needed
-  CustomTimer t_hist(profiling);
-  const std::size_t ac = state.active_customers.size();
-  int32_t max_eff = 0;
-  for (std::size_t i = 0; i < ac; ++i) {
-    const int64_t ck = state.active_customers[i];
-    if (ck < 0 || static_cast<std::size_t>(ck) >= cc) continue;
-    int32_t eff = state.order_counts[static_cast<std::size_t>(ck)] -
-                  excluded[static_cast<std::size_t>(ck)];
-    if (eff < 0) eff = 0;
-    if (eff > max_eff) max_eff = eff;
-  }
-  std::vector<int64_t> buckets(static_cast<std::size_t>(max_eff) + 1, 0);
-  for (std::size_t i = 0; i < ac; ++i) {
-    const int64_t ck = state.active_customers[i];
-    if (ck < 0 || static_cast<std::size_t>(ck) >= cc) continue;
-    int32_t eff = state.order_counts[static_cast<std::size_t>(ck)] -
-                  excluded[static_cast<std::size_t>(ck)];
-    if (eff < 0) eff = 0;
-    ++buckets[static_cast<std::size_t>(eff)];
-  }
-
-  std::vector<TpchQ13OutputRow> rows;
-  rows.reserve(buckets.size());
-  for (int32_t eff = 0; eff <= max_eff; ++eff) {
-    if (buckets[static_cast<std::size_t>(eff)] > 0)
-      rows.push_back({static_cast<int64_t>(eff), buckets[static_cast<std::size_t>(eff)]});
-  }
-  if (profiling) EmitCustomProfile("histogram", t_hist.us(),
-      (int64_t)ac, (int64_t)rows.size(), (int64_t)max_eff, 0);
-
-  CustomTimer t_sort(profiling);
-  std::sort(rows.begin(), rows.end(), Q13OutputRowBetter);
-  if (profiling) EmitCustomProfile("sort_emit", t_sort.us(),
-      (int64_t)rows.size(), 0, 0, 0);
-
-  sink.Begin({{{"c_count", core::AuxType::Int64, false},
-               {"custdist", core::AuxType::Int64, false}}});
-  for (const auto &r : rows)
-    sink.WriteRow({{core::AuxValue::Of(core::AuxType::Int64, r.c_count),
-                    core::AuxValue::Of(core::AuxType::Int64, r.custdist)}});
-  sink.End();
+  // Unseen pattern: exact read-only scan now; ask maintenance to track it.
+  NoteWantedPattern(pattern);
+  const auto h = ScanHistogram(state, pattern);
+  EmitHist(h, sink);
+  if (profiling)
+    EmitCustomProfile("exclude_scan", t.us(), 0, 0,
+                      static_cast<int64_t>(h.size()), 0);
 }
 
 std::vector<core::CalibrationWrite> TpchQ13Module::CalibrationWrites() const {

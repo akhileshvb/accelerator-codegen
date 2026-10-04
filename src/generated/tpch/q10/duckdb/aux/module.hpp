@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <algorithm>
 #include <functional>
 #include <map>
 #include <memory>
@@ -121,33 +122,119 @@ public:
     return false;
   }
 
+  // Which of `orderkeys` still have returned ('R') lineitems in the base table.
+  // Used to confirm an order delete carries all of its lineitems (so the
+  // lineitem deltas cancel the order's revenue). false = unsupported.
+  virtual bool OrdersWithReturnedLineitems(
+      const std::vector<int64_t> &orderkeys, std::set<int64_t> &out) {
+    (void)orderkeys;
+    (void)out;
+    return false;
+  }
+
 };
 
 using TpchQ10CustomerMap = std::unordered_map<int64_t, TpchQ10Customer>;
 
-struct TpchQ10State {
-  core::DenseIdArray<TpchQ10CustomerRank> customer_ranks;
-  // Every customer's result columns (name, address, phone, comment), so
-  // Execute emits the top-k without querying the database. Shared: maintenance
-  // copies of the state do not copy it (customer changes rebuild the state).
-  std::shared_ptr<const TpchQ10CustomerMap> customers =
-      std::make_shared<const TpchQ10CustomerMap>();
-  std::unordered_map<int32_t, std::string> nations;
-  std::unordered_map<int64_t, TpchQ10Order> orders;
-  std::map<int32_t, std::unordered_map<int64_t, int64_t>> month_revenue;
+// Immutable (once published) customer side: dense rank array + result strings.
+struct TpchQ10SideBase {
+  core::DenseIdArray<TpchQ10CustomerRank> ranks;
+  TpchQ10CustomerMap customers;
 
   void SetCustomerRank(int64_t custkey, int64_t acctbal_raw, int32_t nationkey) {
     TpchQ10CustomerRank rank;
     rank.acctbal_raw = acctbal_raw;
     rank.nationkey = nationkey;
     rank.present = 1;
-    customer_ranks.Set(custkey, rank);
+    ranks.Set(custkey, rank);
   }
-  bool HasCustomer(int64_t custkey) const {
-    return customer_ranks.Get(custkey).present != 0;
+};
+
+// Small copy-on-write overlay of customer changes on top of a shared base.
+struct TpchQ10CustomerSlot {
+  uint8_t present = 0;
+  TpchQ10Customer customer;
+};
+using TpchQ10CustomerOverlay = std::unordered_map<int64_t, TpchQ10CustomerSlot>;
+
+// Per-month returned revenue by custkey. The base (sorted by key, plus an
+// index sorted by revenue descending) is shared between versions; point
+// changes land in a small overlay (absolute effective values, 0 = erased)
+// that is compacted into a new base once it grows past a bound.
+struct TpchQ10MonthBase {
+  std::vector<int64_t> keys; // ascending
+  std::vector<int64_t> vals; // nonzero
+  std::vector<uint32_t> rank; // indices into keys, (val desc, key asc)
+  bool has_negative = false;
+};
+
+struct TpchQ10MonthData {
+  std::shared_ptr<const TpchQ10MonthBase> base =
+      std::make_shared<const TpchQ10MonthBase>();
+  std::vector<int64_t> ov_keys; // ascending
+  std::vector<int64_t> ov_vals; // absolute value (0 = erased)
+  std::vector<uint32_t> ov_rank; // nonzero entries, (val desc, key asc)
+  bool has_negative = false;
+
+  bool InOverlay(int64_t key) const {
+    return std::binary_search(ov_keys.begin(), ov_keys.end(), key);
   }
+  int64_t Lookup(int64_t key) const {
+    const auto o = std::lower_bound(ov_keys.begin(), ov_keys.end(), key);
+    if (o != ov_keys.end() && *o == key)
+      return ov_vals[static_cast<std::size_t>(o - ov_keys.begin())];
+    const auto &b = *base;
+    const auto it = std::lower_bound(b.keys.begin(), b.keys.end(), key);
+    if (it != b.keys.end() && *it == key)
+      return b.vals[static_cast<std::size_t>(it - b.keys.begin())];
+    return 0;
+  }
+};
+
+std::shared_ptr<const TpchQ10MonthData>
+TpchQ10MonthFromMap(const std::unordered_map<int64_t, int64_t> &revenue);
+// Sorted (key, nonzero effective value) pairs.
+std::vector<std::pair<int64_t, int64_t>>
+TpchQ10MonthEffective(const TpchQ10MonthData &month);
+// New version = prev (may be null) + per-custkey deltas. Shares prev's base.
+std::shared_ptr<const TpchQ10MonthData>
+TpchQ10MonthApply(const TpchQ10MonthData *prev,
+                  const std::vector<std::pair<int64_t, int64_t>> &deltas);
+
+struct TpchQ10State {
+  std::shared_ptr<const TpchQ10SideBase> side_base =
+      std::make_shared<const TpchQ10SideBase>();
+  std::shared_ptr<const TpchQ10CustomerOverlay> customer_overlay; // nullable
+  std::unordered_map<int32_t, std::string> nations;
+  std::unordered_map<int64_t, TpchQ10Order> orders;
+  // Build-time accumulation only; published month images use month_data.
+  std::map<int32_t, std::unordered_map<int64_t, int64_t>> month_revenue;
+  std::shared_ptr<const TpchQ10MonthData> month_data;
+
+  bool HasCustomer(int64_t custkey) const { return RankOf(custkey).present != 0; }
   TpchQ10CustomerRank RankOf(int64_t custkey) const {
-    return customer_ranks.Get(custkey);
+    if (customer_overlay) {
+      const auto it = customer_overlay->find(custkey);
+      if (it != customer_overlay->end()) {
+        TpchQ10CustomerRank rank;
+        if (it->second.present) {
+          rank.acctbal_raw = it->second.customer.acctbal_raw;
+          rank.nationkey = it->second.customer.nationkey;
+          rank.present = 1;
+        }
+        return rank;
+      }
+    }
+    return side_base->ranks.Get(custkey);
+  }
+  const TpchQ10Customer *CustomerOf(int64_t custkey) const {
+    if (customer_overlay) {
+      const auto it = customer_overlay->find(custkey);
+      if (it != customer_overlay->end())
+        return it->second.present ? &it->second.customer : nullptr;
+    }
+    const auto it = side_base->customers.find(custkey);
+    return it == side_base->customers.end() ? nullptr : &it->second;
   }
 };
 
@@ -157,6 +244,12 @@ struct TpchQ10StateImage {
   TpchQ10ImageKind kind = TpchQ10ImageKind::Side;
   int32_t month = 0;
   std::shared_ptr<const TpchQ10State> state;
+};
+
+struct TpchQ10CustomerDelta {
+  int64_t custkey = 0;
+  int8_t sign = 0; // +1 insert/update-new, -1 delete/update-old
+  TpchQ10Customer customer;
 };
 
 struct TpchQ10LineitemDelta {
@@ -192,25 +285,18 @@ int64_t TpchQ10RevenueRaw(double extended_price, double discount);
 // TPC-H Q10 returns the top 20 customers by revenue.
 constexpr std::size_t kTpchQ10ResultLimit = 20;
 
+// Exact top-k of the summed per-month revenue, restricted to customers
+// present in `side`. Threshold-algorithm over the ranked month streams: cost
+// is bounded by the answer depth, not by the number of customers.
 std::vector<std::pair<int64_t, int64_t>> TpchQ10SelectTopK(
-    const core::DenseIdArray<TpchQ10CustomerRank> &ranks,
-    const std::vector<const std::unordered_map<int64_t, int64_t> *>
-        &month_revenues,
+    const TpchQ10State &side,
+    const std::vector<const TpchQ10MonthData *> &months,
     std::size_t limit = kTpchQ10ResultLimit);
 
-void TpchQ10FinalizeAndEmit(const TpchQ10State &state, int32_t start_days,
-                            core::AuxRowSink &sink);
-
-// Hit-path finalize: rank from month maps + stored acctbal/nationkey, then
-// emit top-k with the stored customer columns (typically 20 rows).
-void TpchQ10FinalizeAndEmit(
-    const core::DenseIdArray<TpchQ10CustomerRank> &ranks,
-    const std::unordered_map<int32_t, std::string> &nations,
-    const std::vector<const std::unordered_map<int64_t, int64_t> *>
-        &month_revenues,
-    const std::unordered_map<int64_t, TpchQ10Customer> &customer_strings,
-    int32_t start_days, core::AuxRowSink &sink,
-    std::size_t limit = kTpchQ10ResultLimit);
+void TpchQ10FinalizeAndEmit(const TpchQ10State &side,
+                            const std::vector<const TpchQ10MonthData *> &months,
+                            core::AuxRowSink &sink,
+                            std::size_t limit = kTpchQ10ResultLimit);
 
 class TpchQ10TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -220,7 +306,9 @@ public:
   bool RequiresRebuild() const;
   const std::vector<TpchQ10LineitemDelta> &Deltas() const;
   const std::vector<TpchQ10OrderDelta> &OrderDeltas() const;
+  const std::vector<TpchQ10CustomerDelta> &CustomerDeltas() const;
   void MarkRebuild();
+  void AddCustomerDelta(TpchQ10CustomerDelta delta);
   void AddDelta(TpchQ10LineitemDelta delta);
   void AddOrderDelta(TpchQ10OrderDelta delta);
 
@@ -229,6 +317,7 @@ private:
   bool requires_rebuild = false;
   std::vector<TpchQ10LineitemDelta> deltas;
   std::vector<TpchQ10OrderDelta> order_deltas;
+  std::vector<TpchQ10CustomerDelta> customer_deltas;
 };
 
 class TpchQ10Module final : public core::AuxQueryModule {
@@ -261,8 +350,6 @@ public:
 
 private:
   TpchQ10State BuildState(core::AuxEngineServices &) const;
-  bool LoadState(core::AuxEngineServices &, TpchQ10State &, int32_t start_days,
-                 std::map<int32_t, core::Version> *versions = nullptr) const;
   void EmitResult(const TpchQ10State &, int32_t start_days,
                   core::AuxRowSink &) const;
 

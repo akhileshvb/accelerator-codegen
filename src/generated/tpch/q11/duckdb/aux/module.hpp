@@ -70,30 +70,66 @@ using Q11AccT = __int128_t;
 using Q11AccT = int64_t;
 #endif
 
-struct Q11PartContribution {
-  Q11AccT value = 0;
-  int64_t row_count = 0;
-};
-
 // ── Output row ──────────────────────────────────────────────────────────────
 struct TpchQ11OutputRow {
   int64_t partkey = 0;
   Q11AccT value = 0;
 };
 
+// ── Chunked copy-on-write structures ────────────────────────────────────────
+constexpr std::size_t kQ11ValueBuckets = 512;
+constexpr std::size_t kQ11SupplierBuckets = 4096;
+constexpr std::size_t kQ11ChunkTarget = 512;
+constexpr std::size_t kQ11ChunkMax = 1024;
+
+inline std::size_t Q11ValueBucketIndex(int64_t partkey) {
+  return static_cast<std::size_t>(
+      (static_cast<uint64_t>(partkey) * 0x9E3779B97F4A7C15ULL) >> 55);
+}
+inline std::size_t Q11SupplierBucketIndex(int64_t suppkey) {
+  return static_cast<std::size_t>(
+      (static_cast<uint64_t>(suppkey) * 0x9E3779B97F4A7C15ULL) >> 52);
+}
+
+// Sorted by value DESC, partkey ASC.
+struct Q11SortedChunk {
+  std::vector<TpchQ11OutputRow> rows;
+};
+using Q11ValueBucket = std::unordered_map<int64_t, Q11AccT>;
+
+// Per-nation aggregate.  Published instances are immutable; a delta copies the
+// two small directories and only the touched buckets/chunks.
+struct TpchQ11NationData {
+  Q11AccT total = 0;
+  // partkey -> value (value > 0 only); null bucket = empty.
+  std::vector<std::shared_ptr<const Q11ValueBucket>> value_buckets;
+  // Ordered chunks (non-empty) for the threshold walk.
+  std::vector<std::shared_ptr<const Q11SortedChunk>> chunks;
+};
+
+struct Q11SupplierPart {
+  int64_t partkey = 0;
+  int64_t value = 0; // sum of supplycost_raw * availqty
+  int32_t count = 0; // partsupp rows folded into this entry
+};
+
+struct Q11SupplierEntry {
+  int32_t nationkey = 0;
+  bool has_supplier = false; // supplier row currently exists
+  std::vector<Q11SupplierPart> parts; // sorted by partkey
+};
+using Q11SupplierBucket = std::unordered_map<int64_t, Q11SupplierEntry>;
+
 // ── State structures ────────────────────────────────────────────────────────
 struct TpchQ11State {
   std::unordered_map<std::string, int32_t> nation_name_to_key;
-  std::unordered_map<int32_t, std::vector<int64_t>> nationkey_to_suppliers;
-  std::unordered_map<int64_t, int32_t> supplier_to_nation;
+  // Per-supplier nation + contributions, bucketed by suppkey (COW per bucket).
+  std::vector<std::shared_ptr<const Q11SupplierBucket>> supplier_buckets;
+};
 
-  // Build-time per-supplier contributions (merged into nation maps after build)
-  std::unordered_map<int64_t, std::unordered_map<int64_t, Q11PartContribution>>
-      supplier_part_contributions;
-
-  // Per-nation pre-aggregated and pre-sorted rows
-  std::unordered_map<int32_t, std::vector<TpchQ11OutputRow>> nation_sorted_rows;
-  std::unordered_map<int32_t, Q11AccT> nation_total_value;
+struct TpchQ11Built {
+  std::shared_ptr<const TpchQ11State> state;
+  std::unordered_map<int32_t, std::shared_ptr<const TpchQ11NationData>> nations;
 };
 
 enum class TpchQ11ImageKind : uint8_t {
@@ -108,9 +144,7 @@ struct TpchQ11StateImage {
   // For NationPreAggregated: key and collision guard
   int32_t nationkey = 0;
   std::string nation_name;
-  Q11AccT total_value = 0;
-  // Pre-sorted by value DESC, partkey ASC
-  std::vector<TpchQ11OutputRow> sorted_rows;
+  std::shared_ptr<const TpchQ11NationData> data;
 };
 
 // ── Deltas ──────────────────────────────────────────────────────────────────
@@ -125,6 +159,8 @@ struct TpchQ11SupplierDelta {
   int64_t suppkey = 0;
   int32_t old_nationkey = 0;
   int32_t new_nationkey = 0;
+  bool has_old = false;
+  bool has_new = false;
 };
 
 struct TpchQ11NationDelta {
@@ -137,15 +173,13 @@ struct TpchQ11NationDelta {
 std::vector<uint8_t> EncodeTpchQ11Metadata(const TpchQ11State &state);
 std::vector<uint8_t> EncodeTpchQ11NationPartition(
     int32_t nationkey, const std::string &nation_name,
-    Q11AccT total_value,
-    const std::vector<TpchQ11OutputRow> &sorted_rows);
+    const TpchQ11NationData &data);
 bool DecodeTpchQ11Metadata(const std::vector<uint8_t> &bytes,
                            TpchQ11State &state);
 bool DecodeTpchQ11NationPartition(
     const std::vector<uint8_t> &bytes,
     int32_t &nationkey, std::string &nation_name,
-    Q11AccT &total_value,
-    std::vector<TpchQ11OutputRow> &sorted_rows);
+    std::shared_ptr<const TpchQ11NationData> &data);
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ11TxnBuffer final : public core::AuxTxnBuffer {
@@ -198,7 +232,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ11State BuildState(core::AuxEngineServices &services) const;
+  TpchQ11Built BuildState(core::AuxEngineServices &services) const;
   void EmitResult(const std::vector<TpchQ11OutputRow> &rows,
                   core::AuxRowSink &sink) const;
 

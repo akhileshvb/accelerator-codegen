@@ -15,15 +15,21 @@
 namespace accelerator_codegen::aux_state::query {
 
 // ── Q17 layout ──────────────────────────────────────────────────────────────
-// Avoid one partition per partkey (O(parts) slots hurts validity scans).
-// Maintenance uses chunked part stats; reads use one AttrParts partition per
-// (brand, container) listing per-part contributions (not a pre-summed scalar).
+// Maintenance uses small pages (1024 partkeys) of per-part (quantity -> count,
+// price sum) buckets, so a lineitem/part delta updates state locally with no
+// SQL; reads use one AttrParts partition per (brand, container) holding the
+// running total (O(1) read).
 struct TpchQ17Layout {
   static constexpr const char *kAccelerator = "tpch_q17_aux";
   static constexpr core::PartitionId kPartStatsChunkBase = 0;
-  static constexpr core::PartitionId kAttrPartsBase = 2'000'000;
-  static constexpr core::PartitionId kAttrPartsSlots = 1'048'576;
-  static constexpr std::size_t kPartChunkShift = 16;
+  // (brand, container) -> partition by a 64-bit hash into [2^30, 2^31): the
+  // store keys partitions as int32 (state/partition_key.hpp), and part chunks
+  // (partkey >> 10) stay below 2^30 for partkeys below 2^40.  Two pairs in one
+  // slot (~5e-4 for TPC-H's 1000 pairs) cost a fallback, never a wrong answer:
+  // the image carries its brand/container and a read checks them.
+  static constexpr core::PartitionId kAttrPartsBase = core::PartitionId{1} << 30;
+  static constexpr core::PartitionId kAttrPartsSlots = core::PartitionId{1} << 30;
+  static constexpr std::size_t kPartChunkShift = 10;
   static constexpr std::size_t kPartChunkSize = 1u << kPartChunkShift;
 
   static constexpr core::PartitionId PartStatsChunkPartition(int64_t partkey) {
@@ -103,43 +109,51 @@ public:
 };
 
 // ── Per-part statistics ─────────────────────────────────────────────────────
+// One (quantity -> row count, price sum) bucket of a part, sorted by quantity.
+// 16 bytes; the count lets a delete retire a bucket exactly (bag semantics).
 struct TpchQ17QtyPricePair {
-  int64_t quantity_raw = 0;
+  int32_t quantity_raw = 0;
+  int32_t row_count = 0;
   int64_t extendedprice_raw = 0;
 };
 
+// Working (build-time) stats of one part.
 struct TpchQ17PartStats {
   int64_t sum_qty_raw = 0;
   int32_t count = 0;
   std::vector<TpchQ17QtyPricePair> qty_price_pairs;
-  std::vector<int64_t> prefix_sums;
-  bool prefix_valid = false;
   int64_t precomputed_contribution_raw = 0;
 
-  void BuildPrefixSums();
   void RecomputeContribution();
-  int64_t SumExtendedpriceBelow(int64_t threshold_raw) const;
 };
 
+// Published per-part entry. The pair buckets are shared and immutable, so
+// copying a page (copy-on-write) copies pointers, not buckets.
 struct TpchQ17PartEntry {
-  std::string attr_key;
-  TpchQ17PartStats stats;
+  int64_t partkey = 0;
+  // Partition id of the part's (brand, container) AttrParts image; 0 = the
+  // part has no row in `part` (lineitems only).
+  core::PartitionId attr_partition = 0;
+  int64_t sum_qty_raw = 0;
+  int64_t contribution_raw = 0;
+  int32_t count = 0;
+  std::shared_ptr<const std::vector<TpchQ17QtyPricePair>> pairs;
 };
 
+// A small page of parts (kPartChunkSize partkeys), sorted by partkey.
 struct TpchQ17PartStatsChunk {
   int64_t chunk_index = 0;
-  std::unordered_map<int64_t, TpchQ17PartEntry> parts;
+  std::vector<TpchQ17PartEntry> parts;
 };
 
-struct TpchQ17AttrContribution {
-  int64_t partkey = 0;
-  int64_t precomputed_contribution_raw = 0;
-};
-
+// One (brand, container): the running total of its parts' contributions.
 struct TpchQ17AttrParts {
   std::string brand;
   std::string container;
-  std::vector<TpchQ17AttrContribution> contributions;
+  int64_t total_contribution_raw = 0;
+  // Another (brand, container) hashes to this partition: the total mixes both
+  // pairs, so reads of either fall back to SQL.
+  bool shared = false;
 };
 
 // In-memory build aggregate (not stored as a single partition).
@@ -171,13 +185,12 @@ struct TpchQ17LineitemDelta {
   int8_t sign = 0;
 };
 
+// One part row appearing (sign +1) or disappearing (sign -1).
 struct TpchQ17PartDelta {
-  int64_t old_partkey = 0;
-  int64_t new_partkey = 0;
-  std::string old_brand;
-  std::string old_container;
-  std::string new_brand;
-  std::string new_container;
+  int64_t partkey = 0;
+  std::string brand;
+  std::string container;
+  int8_t sign = 0;
 };
 
 // ── Encode / Decode (byte format retained for tooling) ──────────────────────
@@ -192,8 +205,6 @@ bool FindTpchQ17PartKeys(
     const std::vector<uint8_t> &bytes, const std::string &brand,
     const std::string &container,
     std::unordered_set<int64_t> &partkeys);
-
-void StripTpchQ17PartStatsForPublish(TpchQ17PartStats &stats);
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ17TxnBuffer final : public core::AuxTxnBuffer {
@@ -247,10 +258,6 @@ public:
 
 private:
   TpchQ17State BuildState(core::AuxEngineServices &) const;
-  TpchQ17PartStats RebuildPartStatsFromScan(int64_t partkey) const;
-  // One SF20-scale aggregate scan for many partkeys (avoid N full rebuilds).
-  std::unordered_map<int64_t, TpchQ17PartStats>
-  RebuildPartStatsBatch(const std::unordered_set<int64_t> &partkeys) const;
   void EmitResult(core::AuxEngineServices &, const std::string &brand,
                   const std::string &container, core::AuxRowSink &) const;
 

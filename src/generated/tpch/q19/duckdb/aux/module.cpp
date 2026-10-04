@@ -28,8 +28,10 @@ struct CustomTimer {
   using Clock = std::chrono::high_resolution_clock;
   Clock::time_point start;
   bool active;
-  explicit CustomTimer(bool enabled) : start(Clock::now()), active(enabled) {}
+  explicit CustomTimer(bool enabled)
+      : start(enabled ? Clock::now() : Clock::time_point()), active(enabled) {}
   double us() const {
+    if (!active) return 0.0;
     return static_cast<double>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count()) / 1000.0;
   }
@@ -117,39 +119,30 @@ bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
   return true;
 }
 
-bool ReadPartRow(const core::AuxRow &row, TpchQ19PartInput &out) {
-  int64_t partkey = 0;
-  std::string brand, container;
-  int32_t size = 0;
-  if (!IntCell(row, 0, partkey) || !StringCell(row, 1, brand) ||
-      !StringCell(row, 2, container) || !Int32Cell(row, 3, size))
-    return false;
-  out.key = partkey;
-  out.brand = std::move(brand);
-  out.container = std::move(container);
-  out.size = size;
-  return true;
+const std::string *StringCellPtr(const core::AuxRow &row, std::size_t index) {
+  if (index >= row.values.size() || row.values[index].is_null)
+    return nullptr;
+  return std::get_if<std::string>(&row.values[index].payload);
 }
 
-bool ReadLineitemRow(const core::AuxRow &row, TpchQ19LineitemInput &out) {
-  int64_t partkey = 0, quantity_raw = 0, extendedprice_raw = 0, discount_raw = 0;
+// Parses one lineitem row; sets `qualifies` when the shipping predicate holds
+// (no string copies). Returns false when the row cannot be interpreted.
+bool ReadLineitemRow(const core::AuxRow &row, int64_t &partkey,
+                     int64_t &quantity_raw, int64_t &extendedprice_raw,
+                     int64_t &discount_raw, bool &qualifies) {
   int32_t qty_scale = 0, ext_scale = 0, disc_scale = 0;
-  std::string shipmode, shipinstruct;
+  const std::string *shipmode = StringCellPtr(row, 4);
+  const std::string *shipinstruct = StringCellPtr(row, 5);
   if (!IntCell(row, 0, partkey) ||
       !RawDecimalCell(row, 1, quantity_raw, qty_scale) ||
       !RawDecimalCell(row, 2, extendedprice_raw, ext_scale) ||
-      !RawDecimalCell(row, 3, discount_raw, disc_scale) ||
-      !StringCell(row, 4, shipmode) ||
-      !StringCell(row, 5, shipinstruct))
+      !RawDecimalCell(row, 3, discount_raw, disc_scale) || !shipmode ||
+      !shipinstruct)
     return false;
   if (qty_scale != 2 || ext_scale != 2 || disc_scale != 2)
     return false;
-  out.partkey = partkey;
-  out.quantity_raw = quantity_raw;
-  out.extendedprice_raw = extendedprice_raw;
-  out.discount_raw = discount_raw;
-  out.shipmode = std::move(shipmode);
-  out.shipinstruct = std::move(shipinstruct);
+  qualifies = (*shipmode == "AIR" || *shipmode == "AIR REG") &&
+              *shipinstruct == "DELIVER IN PERSON";
   return true;
 }
 
@@ -211,6 +204,41 @@ void TpchQ19State::AddContribution(const std::string &brand,
   }
 }
 
+void TpchQ19State::AddAggregate(const std::string &brand, TpchQ19Family family,
+                                int64_t quantity_coord, int64_t rev,
+                                int64_t count) {
+  const int idx = FamilyIndex(family);
+  if (idx < 0 || idx >= kNumFamilies || count <= 0) return;
+  auto &vec = aggregates[brand][idx];
+  auto it = std::lower_bound(vec.begin(), vec.end(), quantity_coord,
+                             [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
+  if (it != vec.end() && it->qty == quantity_coord) {
+    it->rev += rev;
+    it->count += count;
+  } else {
+    vec.insert(it, QtyRev{quantity_coord, rev, count});
+  }
+}
+
+int64_t TpchQ19State::RangeSumCount(const std::string &brand,
+                                    TpchQ19Family family, int64_t qty_low,
+                                    int64_t qty_high, int64_t &count) const {
+  count = 0;
+  const int idx = FamilyIndex(family);
+  if (idx < 0 || idx >= kNumFamilies) return 0;
+  const auto brand_it = aggregates.find(brand);
+  if (brand_it == aggregates.end()) return 0;
+  const auto &vec = brand_it->second[idx];
+  auto lo = std::lower_bound(vec.begin(), vec.end(), qty_low,
+                             [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
+  int64_t total = 0;
+  for (auto it = lo; it != vec.end() && it->qty <= qty_high; ++it) {
+    total += it->rev;
+    count += it->count;
+  }
+  return total;
+}
+
 int64_t TpchQ19State::RangeCount(const std::string &brand, TpchQ19Family family,
                                  int64_t qty_low, int64_t qty_high) const {
   const int idx = FamilyIndex(family);
@@ -232,7 +260,6 @@ int64_t TpchQ19State::RangeSum(const std::string &brand,
                                 TpchQ19Family family, int32_t size_low,
                                 int32_t size_high, int64_t qty_low,
                                 int64_t qty_high) const {
-  CustomTimer t_rs(CustomProfilingEnabled());
   (void)size_low; (void)size_high;  // size folded into family
   int idx = FamilyIndex(family);
   if (idx < 0 || idx >= kNumFamilies) return 0;
@@ -247,7 +274,6 @@ int64_t TpchQ19State::RangeSum(const std::string &brand,
                                    [](int64_t q, const QtyRev &qr) { return q < qr.qty; });
   for (auto it = qty_it; it != qty_end; ++it)
     total += it->rev;
-  EmitCustomProfile2("range_sum", t_rs.us(), 0, total);
   return total;
 }
 
@@ -402,6 +428,48 @@ core::InvalidationPlan All() {
   return plan;
 }
 
+// ── Part dimension cache ────────────────────────────────────────────────────
+uint32_t TpchQ19Module::PartDimCache::Get(int64_t partkey) const {
+  if (partkey >= 0 && static_cast<std::size_t>(partkey) < dense.size())
+    return dense[static_cast<std::size_t>(partkey)];
+  const auto it = sparse.find(partkey);
+  return it == sparse.end() ? 0u : it->second;
+}
+
+void TpchQ19Module::PartDimCache::Set(int64_t partkey, uint32_t code) {
+  constexpr int64_t kDenseLimit = int64_t{1} << 25;
+  if (partkey >= 0 && partkey < kDenseLimit) {
+    if (static_cast<std::size_t>(partkey) >= dense.size())
+      dense.resize(std::max<std::size_t>(static_cast<std::size_t>(partkey) + 1,
+                                         dense.size() + dense.size() / 2),
+                   0u);
+    dense[static_cast<std::size_t>(partkey)] = code;
+    return;
+  }
+  sparse[partkey] = code;
+}
+
+uint32_t TpchQ19Module::PartDimCache::Encode(const std::string &brand,
+                                             int family) {
+  if (family < 1 || family > 3) return 1u;
+  auto it = brand_ids.find(brand);
+  if (it == brand_ids.end()) {
+    it = brand_ids.emplace(brand, brands.size()).first;
+    brands.push_back(brand);
+  }
+  const std::size_t i = it->second;
+  return (static_cast<uint32_t>(i + 1) << 2) | static_cast<uint32_t>(family);
+}
+
+void TpchQ19Module::PartDimCache::Clear() {
+  loaded = false;
+  dense.clear();
+  dense.shrink_to_fit();
+  sparse.clear();
+  brands.clear();
+  brand_ids.clear();
+}
+
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ19TxnBuffer::HasPendingChanges() const { return pending; }
 
@@ -442,13 +510,11 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ19Module::CreateTxnBuffer() const {
 
 void TpchQ19Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  auto state = BuildState(services);
+  auto state = BuildState(services, true);
   const auto shared = std::make_shared<const TpchQ19State>(std::move(state));
   builder.Write(core::StateImage::Make(
       Id(), TpchQ19Layout::kAggregatePartition, 0,
       MakeStateImage(shared)));
-  // Pre-initialize mutable active state during Build to avoid deep copy on first write.
-  active_state_ = std::make_shared<TpchQ19State>(*shared);
   builder.Finish();
 }
 
@@ -465,95 +531,112 @@ void TpchQ19Module::AccumulateMutation(const core::MutationBatch &mutation,
   auto &buf = static_cast<TpchQ19TxnBuffer &>(txn_buf);
 
   if (mutation.table == config.lineitem_table) {
-    for (std::size_t i = 0; i < mutation.new_rows.size(); ++i) {
-      if (mutation.kind == core::MutationKind::Insert) {
-        TpchQ19Delta d;
-        ReadLineitemRow(mutation.new_rows[i], d.new_line);
-        d.new_line_valid = ShippingQualifies(d.new_line);
-        buf.AddDelta(std::move(d));
-} else if (mutation.kind == core::MutationKind::Delete) {
-        TpchQ19Delta d;
-        ReadLineitemRow(mutation.old_rows[i], d.old_line);
-        if (ShippingQualifies(d.old_line))
-          d.old_line_valid = true;
-        buf.AddDelta(std::move(d));
-      } else if (mutation.kind == core::MutationKind::Update) {
-        TpchQ19Delta d;
-        if (i < mutation.old_rows.size())
-          ReadLineitemRow(mutation.old_rows[i], d.old_line);
-        if (i < mutation.new_rows.size())
-          ReadLineitemRow(mutation.new_rows[i], d.new_line);
-        d.old_line_valid = ShippingQualifies(d.old_line);
-        d.new_line_valid = ShippingQualifies(d.new_line);
-        buf.AddDelta(std::move(d));
+    // Deletes carry only old rows, inserts only new ones.
+    const auto emit = [&](const core::AuxRow &row, int8_t sign) {
+      int64_t partkey = 0, qty = 0, ext = 0, disc = 0;
+      bool qualifies = false;
+      if (!ReadLineitemRow(row, partkey, qty, ext, disc, qualifies)) {
+        buf.MarkRebuild();
+        return;
       }
+      if (!qualifies) return;
+      buf.AddDelta({partkey, qty, ComputeRevenue(ext, disc), sign});
+    };
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows) emit(row, 1);
+      break;
+    case core::MutationKind::Delete:
+      for (const auto &row : mutation.old_rows) emit(row, -1);
+      break;
+    case core::MutationKind::Update: {
+      if (mutation.old_rows.size() != mutation.new_rows.size()) {
+        buf.MarkRebuild();
+        break;
+      }
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        emit(mutation.new_rows[i], 1);
+        emit(mutation.old_rows[i], -1);
+      }
+      break;
+    }
     }
     return;
   }
 
   if (mutation.table == config.part_table) {
-    for (std::size_t i = 0; i < mutation.new_rows.size(); ++i) {
-      if (mutation.kind == core::MutationKind::Insert) {
-        TpchQ19Delta d;
-        ReadPartRow(mutation.new_rows[i], d.new_part);
-        buf.AddDelta(std::move(d));
-      } else if (mutation.kind == core::MutationKind::Delete) {
-        TpchQ19Delta d;
-        ReadPartRow(mutation.old_rows[i], d.old_part);
-        buf.AddDelta(std::move(d));
-      } else if (mutation.kind == core::MutationKind::Update) {
-        TpchQ19Delta d;
-        if (i < mutation.old_rows.size())
-          ReadPartRow(mutation.old_rows[i], d.old_part);
-        if (i < mutation.new_rows.size())
-          ReadPartRow(mutation.new_rows[i], d.new_part);
-        d.part_update = true;
-        buf.AddDelta(std::move(d));
-      }
-    }
+    // A part's attributes decide where its lineitems count: inserting,
+    // deleting or changing a part moves the contributions of every lineitem
+    // already referencing it, which the deltas do not carry.  Rebuild.
+    if (!mutation.old_rows.empty() || !mutation.new_rows.empty())
+      buf.MarkRebuild();
     return;
   }
 }
 
-TpchQ19State TpchQ19Module::BuildState(core::AuxEngineServices &services) const {
+TpchQ19State TpchQ19Module::BuildState(core::AuxEngineServices &services,
+                                        bool refresh_dims) const {
   (void)services;
   TpchQ19State state;
 
   if (!initial_scan)
     throw std::logic_error("TPC-H Q19 aux requires a typed initial scan source");
 
-  // First scan parts to build dimension cache
-  std::unordered_map<int64_t, TpchQ19PartInput> parts;
+  const auto family_of_index = [](int f) {
+    return static_cast<TpchQ19Family>(f);
+  };
+
+  // Preferred path: the filtered GROUP BY (brand, family, quantity) runs in
+  // SQL; no per-lineitem C++ work.
+  const bool used_sql = initial_scan->ScanQualifyingAggregates(
+      [&](const std::string &brand, int family, int64_t qty, int64_t rev,
+          int64_t count) {
+        state.AddAggregate(brand, family_of_index(family), qty, rev, count);
+      });
+
+  std::unordered_map<int64_t, TpchQ19PartInput> parts; // fallback path only
+
+  if (refresh_dims) {
+    // Compact per-part dims for lineitem delta resolution (from scratch: a
+    // part deleted since the last build must not stay cached).
+    std::lock_guard<std::mutex> lock(dim_mutex);
+    dims.Clear();
+    const bool have_families = initial_scan->ScanPartFamilies(
+        [&](int64_t key, const std::string &brand, int family) {
+          dims.Set(key, dims.Encode(brand, family));
+        });
+    if (!have_families) {
+      initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
+        const auto family = ClassifyContainerFamily(input.container);
+        const bool ok = family != TpchQ19Family::None && input.size >= 1 &&
+                        input.size <= BranchSizeLimit(family);
+        dims.Set(input.key,
+                 dims.Encode(input.brand, ok ? static_cast<int>(family) : 0));
+      });
+    }
+    dims.loaded = true;
+  }
+
+  if (used_sql)
+    return state;
+
   initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
     parts[input.key] = input;
-    TpchQ19PartDim dim;
-    dim.brand = input.brand;
-    dim.container = input.container;
-    dim.size = input.size;
-    dim.family = ClassifyContainerFamily(input.container);
-    part_dim_cache[input.key] = std::move(dim);
   });
-
-  // Then scan lineitems, filtering by shipping pred and joining to part
   initial_scan->ScanLineitems([&](const TpchQ19LineitemInput &input) {
     if (!ShippingQualifies(input))
       return;
-
     const auto part_it = parts.find(input.partkey);
     if (part_it == parts.end())
       return;
-
     const auto &part = part_it->second;
     const auto family = ClassifyContainerFamily(part.container);
     if (family == TpchQ19Family::None)
       return;
-
-    const int64_t revenue = ComputeRevenue(input.extendedprice_raw, input.discount_raw);
-
-    state.AddContribution(part.brand, family, part.size, input.quantity_raw, revenue);
-
+    state.AddContribution(part.brand, family, part.size, input.quantity_raw,
+                          ComputeRevenue(input.extendedprice_raw,
+                                         input.discount_raw));
   });
-
   return state;
 }
 
@@ -586,17 +669,12 @@ void TpchQ19Module::EmitResult(const TpchQ19State &state,
   const int64_t qty_high2 = qty_low2 + 1000;
   const int64_t qty_high3 = qty_low3 + 1000;
 
-  int64_t total_raw = 0;
-  total_raw +=
-      state.RangeSum(brand1, TpchQ19Family::SM, 1, 5, qty_low1, qty_high1);
-  total_raw +=
-      state.RangeSum(brand2, TpchQ19Family::MED, 1, 10, qty_low2, qty_high2);
-  total_raw +=
-      state.RangeSum(brand3, TpchQ19Family::LG, 1, 15, qty_low3, qty_high3);
-
-  const int64_t matches = state.RangeCount(brand1, TpchQ19Family::SM, qty_low1, qty_high1) +
-                          state.RangeCount(brand2, TpchQ19Family::MED, qty_low2, qty_high2) +
-                          state.RangeCount(brand3, TpchQ19Family::LG, qty_low3, qty_high3);
+  int64_t c1 = 0, c2 = 0, c3 = 0;
+  const int64_t total_raw =
+      state.RangeSumCount(brand1, TpchQ19Family::SM, qty_low1, qty_high1, c1) +
+      state.RangeSumCount(brand2, TpchQ19Family::MED, qty_low2, qty_high2, c2) +
+      state.RangeSumCount(brand3, TpchQ19Family::LG, qty_low3, qty_high3, c3);
+  const int64_t matches = c1 + c2 + c3;
 
   sink.Begin({{{"revenue", core::AuxType::ScaledDecimal, true}}});
   if (matches == 0) {
@@ -625,136 +703,78 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   if (buf.RequiresRebuild()) {
-    active_state_.reset();
+    {
+      std::lock_guard<std::mutex> lock(dim_mutex);
+      dims.Clear();
+    }
     outcome.action = core::MaintenanceAction::RebuildAll;
     EmitCustomProfile("stage_maintenance_rebuild", t_sm.us());
     return outcome;
   }
 
-  // Try delta application
   const auto &deltas = buf.Deltas();
-  bool can_delta = !deltas.empty();
-
-  if (can_delta) {
-    const auto decision = services.ChooseMaintenance(
-        {static_cast<uint64_t>(deltas.size()), 1, true, false, true, false,
-         false, core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    if (decision.action != core::MaintenanceAction::ApplyDelta) {
-      active_state_.reset();
-      outcome.action =
-          decision.action == core::MaintenanceAction::RebuildPartition
-              ? core::MaintenanceAction::RebuildAll
-              : decision.action;
-      EmitCustomProfile("stage_maintenance_rebuild_selected", t_sm.us());
-      return outcome;
-    }
-    // Ensure active state is loaded (lazy init, zero-copy from now on)
-    if (!active_state_) {
-      std::shared_ptr<const TpchQ19State> current_state;
-      if (!LoadState(services, current_state) || !current_state) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        EmitCustomProfile("stage_maintenance_rebuild_noload", t_sm.us());
-        return outcome;
-      }
-      active_state_ = std::make_shared<TpchQ19State>(*current_state);
-    }
-
-    auto &s = *active_state_;
-
-    // ── Handle part dimension cache maintenance ────────────────────
-    for (const auto &delta : deltas) {
-      // Part insert: populate cache
-      if (delta.new_part.key != 0 && !delta.part_update && !delta.lineitem_update && !delta.new_line_valid && !delta.old_line_valid) {
-        TpchQ19PartDim dim;
-        dim.brand = delta.new_part.brand;
-        dim.container = delta.new_part.container;
-        dim.size = delta.new_part.size;
-        dim.family = ClassifyContainerFamily(delta.new_part.container);
-        part_dim_cache[delta.new_part.key] = std::move(dim);
-      }
-      // Part delete: remove from cache
-      if (delta.old_part.key != 0 && !delta.part_update && !delta.lineitem_update && !delta.new_line_valid && !delta.old_line_valid) {
-        part_dim_cache.erase(delta.old_part.key);
-      }
-    }
-
-    // ── Handle part updates first ──────────────────────────────────
-    for (const auto &delta : deltas) {
-      if (!delta.part_update) continue;
-
-      const TpchQ19Family new_family = ClassifyContainerFamily(delta.new_part.container);
-      const TpchQ19Family old_family = ClassifyContainerFamily(delta.old_part.container);
-      
-      // Update part dimension cache
-      TpchQ19PartDim new_dim;
-      new_dim.brand = delta.new_part.brand;
-      new_dim.container = delta.new_part.container;
-      new_dim.size = delta.new_part.size;
-      new_dim.family = new_family;
-      part_dim_cache[delta.new_part.key] = new_dim;
-
-    }
-
-    // ── Helper to resolve part dimensions ─────────────────────────
-    auto resolve_part_dim = [&](int64_t partkey) -> const TpchQ19PartDim* {
-      auto it = part_dim_cache.find(partkey);
-      if (it != part_dim_cache.end()) return &it->second;
-      if (!initial_scan) return nullptr;
-      TpchQ19PartInput part;
-      if (!initial_scan->LookupPart(partkey, part)) return nullptr;
-      TpchQ19PartDim dim;
-      dim.brand = part.brand;
-      dim.container = part.container;
-      dim.size = part.size;
-      dim.family = ClassifyContainerFamily(part.container);
-      auto [ins, _] = part_dim_cache.emplace(partkey, std::move(dim));
-      return &ins->second;
-    };
-
-    // ── Handle lineitem deltas ────────────────────────────────────
-    for (const auto &delta : deltas) {
-      if (delta.part_update) continue;
-      // Skip pure part inserts/deletes (no lineitem data)
-      if (!delta.lineitem_update && !delta.new_line_valid && !delta.old_line_valid) continue;
-
-      if (delta.new_line_valid) {
-        if (const auto *dim = resolve_part_dim(delta.new_line.partkey)) {
-          if (dim->family != TpchQ19Family::None) {
-            const int64_t revenue =
-                ComputeRevenue(delta.new_line.extendedprice_raw,
-                               delta.new_line.discount_raw);
-            s.AddContribution(dim->brand, dim->family, dim->size,
-                                       delta.new_line.quantity_raw, revenue);
-          }
-        }
-      }
-
-      if (delta.old_line_valid) {
-        if (const auto *dim = resolve_part_dim(delta.old_line.partkey)) {
-          if (dim->family != TpchQ19Family::None) {
-            const int64_t revenue =
-                ComputeRevenue(delta.old_line.extendedprice_raw,
-                               delta.old_line.discount_raw);
-            s.RemoveContribution(dim->brand, dim->family, dim->size,
-                                          delta.old_line.quantity_raw,
-                                          revenue);
-          }
-        }
-      }
-    }
-
-    // Publish updated state as const shared_ptr
-    outcome.action = core::MaintenanceAction::ApplyDelta;
-    outcome.updates.push_back(core::StateImage::Make(
-        Id(), TpchQ19Layout::kAggregatePartition, 0,
-        MakeStateImage(active_state_)));
-    EmitCustomProfile("stage_maintenance_delta", t_sm.us());
+  if (deltas.empty()) {
+    // Only non-qualifying lineitems changed: the aggregate is unaffected.
+    outcome.action = core::MaintenanceAction::NoOp;
+    EmitCustomProfile("stage_maintenance_noop", t_sm.us());
     return outcome;
   }
 
-  outcome.action = core::MaintenanceAction::RebuildAll;
-  EmitCustomProfile("stage_maintenance_fallback", t_sm.us());
+  const auto decision = services.ChooseMaintenance(
+      {static_cast<uint64_t>(deltas.size()), 1, true, false, true, false,
+       false, core::MaintenanceAction::NoOp,
+       services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+    outcome.action =
+        decision.action == core::MaintenanceAction::RebuildPartition
+            ? core::MaintenanceAction::RebuildAll
+            : decision.action;
+    EmitCustomProfile("stage_maintenance_rebuild_selected", t_sm.us());
+    return outcome;
+  }
+
+  // Copy-on-write per commit: a published version is immutable (readers and
+  // older snapshots keep it; an aborted commit must leave it unchanged).
+  // The state is small (brands x families x quantities).
+  std::shared_ptr<const TpchQ19State> current_state;
+  if (!LoadState(services, current_state) || !current_state) {
+    outcome.action = core::MaintenanceAction::RebuildAll;
+    EmitCustomProfile("stage_maintenance_rebuild_noload", t_sm.us());
+    return outcome;
+  }
+  auto next = std::make_shared<TpchQ19State>(*current_state);
+
+  {
+    std::lock_guard<std::mutex> lock(dim_mutex);
+    for (const auto &delta : deltas) {
+      uint32_t code = dims.Get(delta.partkey);
+      if (code == 0) {
+        TpchQ19PartInput part;
+        if (!initial_scan || !initial_scan->LookupPart(delta.partkey, part))
+          continue; // no such part: the join contributes nothing
+        const auto family = ClassifyContainerFamily(part.container);
+        const bool ok = family != TpchQ19Family::None && part.size >= 1 &&
+                        part.size <= BranchSizeLimit(family);
+        code = dims.Encode(part.brand, ok ? static_cast<int>(family) : 0);
+        dims.Set(delta.partkey, code);
+      }
+      if (code < 4) continue; // part exists but never qualifies
+      const auto family = static_cast<TpchQ19Family>(code & 3u);
+      const std::string &brand = dims.brands[(code >> 2) - 1];
+      if (delta.sign > 0)
+        next->AddAggregate(brand, family, delta.quantity_raw,
+                           delta.revenue_raw, 1);
+      else
+        next->RemoveContribution(brand, family, 1, delta.quantity_raw,
+                                 delta.revenue_raw);
+    }
+  }
+
+  outcome.action = core::MaintenanceAction::ApplyDelta;
+  outcome.updates.push_back(core::StateImage::Make(
+      Id(), TpchQ19Layout::kAggregatePartition, 0,
+      MakeStateImage(std::static_pointer_cast<const TpchQ19State>(next))));
+  EmitCustomProfile("stage_maintenance_delta", t_sm.us());
   return outcome;
 }
 
@@ -808,25 +828,24 @@ void TpchQ19Module::Execute(core::AuxEngineServices &services,
   const auto visibility = services.CurrentVisibility();
   const auto validity = services.StateStore().CheckValidity({Id(), {}}, visibility);
   if (!validity.IsValid()) {
-    cached_state_.reset();
-    cached_partition_version_ = 0;
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  if (cached_state_ && cached_partition_version_ == validity.visible_version) {
-    // State was valid at this partition version and the version has not
-    // changed. Skip ReadPartitions slot scan; immutable state is safe.
-    state = cached_state_;
-    EmitCustomProfile("load_state_cached", 0.0);
+  // Immutable (state, version) pair swapped atomically: safe for concurrent
+  // readers and the writer's commits.
+  const std::shared_ptr<const CachedRead> cached = std::atomic_load(&cached_read_);
+  if (cached && cached->version == validity.visible_version) {
+    state = cached->state;
   } else {
     if (!LoadState(services, state)) {
-      cached_state_.reset();
-      cached_partition_version_ = 0;
       ExecuteFallback(services, arguments, sink);
       return;
     }
-    cached_state_ = state;
-    cached_partition_version_ = validity.visible_version;
+    auto fresh = std::make_shared<CachedRead>();
+    fresh->state = state;
+    fresh->version = validity.visible_version;
+    std::atomic_store(&cached_read_,
+                      std::static_pointer_cast<const CachedRead>(fresh));
   }
 
   double emit_start = t_exec.us();
@@ -839,7 +858,7 @@ void TpchQ19Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
   (void)services;
-  auto state = BuildState(services);
+  auto state = BuildState(services, false);
 
   if (arguments.values.size() < 6) {
     sink.Begin({{{"revenue", core::AuxType::ScaledDecimal, true}}});

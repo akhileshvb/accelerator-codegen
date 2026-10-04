@@ -81,7 +81,7 @@ int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
 
 std::shared_ptr<const TpchQ3StateImage>
 MakeSegmentIntervalImage(core::PartitionId segment,
-                         const std::shared_ptr<const TpchQ3State> &state) {
+                         const std::shared_ptr<const TpchQ3Segment> &state) {
   auto image = std::make_shared<TpchQ3StateImage>();
   image->kind = TpchQ3ImageKind::SegmentIntervalIndex;
   image->segment = segment;
@@ -89,19 +89,12 @@ MakeSegmentIntervalImage(core::PartitionId segment,
   return image;
 }
 
-std::shared_ptr<const TpchQ3StateImage> MakeOrderSegmentSideImage(
-    const std::shared_ptr<const TpchQ3OrderSegmentSide> &side) {
+std::shared_ptr<const TpchQ3StateImage>
+MakeOrderSegmentSideImage(const std::shared_ptr<const TpchQ3Side> &side) {
   auto image = std::make_shared<TpchQ3StateImage>();
   image->kind = TpchQ3ImageKind::OrderSegmentSide;
-  image->order_segment_side = side;
+  image->side = side;
   return image;
-}
-
-std::shared_ptr<const TpchQ3State>
-MakeSegmentIntervalState(const TpchQ3SegmentIntervalIndex &index) {
-  auto state = std::make_shared<TpchQ3State>();
-  state->segment_intervals.emplace(index.segment, index);
-  return state;
 }
 
 const TpchQ3StateImage *AsQ3Image(const core::StateImage &image,
@@ -109,8 +102,7 @@ const TpchQ3StateImage *AsQ3Image(const core::StateImage &image,
   const auto *payload = image.As<TpchQ3StateImage>();
   if (!payload || payload->kind != kind)
     return nullptr;
-  if (kind == TpchQ3ImageKind::OrderSegmentSide &&
-      !payload->order_segment_side)
+  if (kind == TpchQ3ImageKind::OrderSegmentSide && !payload->side)
     return nullptr;
   if (kind == TpchQ3ImageKind::SegmentIntervalIndex && !payload->state)
     return nullptr;
@@ -156,16 +148,24 @@ bool ReadOrder(const core::AuxRow &row, int64_t &orderkey,
   return true;
 }
 
-std::map<int32_t, int64_t>
-DayRevenueFromSummary(const TpchQ3SegmentIntervalIndex &index,
-                      const TpchQ3OrderSummary &order) {
+inline bool EntryBefore(const TpchQ3Entry &a, int64_t bound, uint32_t orderkey) {
+  return a.bound > bound || (a.bound == bound && a.orderkey < orderkey);
+}
+
+inline uint16_t BinOf(uint16_t orderdate) {
+  return static_cast<uint16_t>(orderdate >> kTpchQ3BinShift);
+}
+
+// Per-shipdate revenue of one stored entry (inverse of the suffix encoding).
+std::map<int32_t, int64_t> DayRevenueOf(const TpchQ3Chunk &chunk,
+                                        const TpchQ3Entry &entry) {
   std::map<int32_t, int64_t> day_revenue;
-  const auto begin = static_cast<std::size_t>(order.bucket_begin);
-  for (std::size_t i = 0; i < order.bucket_count; ++i) {
-    const auto &bucket = index.bucket_pool[begin + i];
-    const int64_t next_suffix = (i + 1 < order.bucket_count)
-                                    ? index.bucket_pool[begin + i + 1].suffix_revenue
-                                    : 0;
+  const auto begin = static_cast<std::size_t>(entry.bucket_begin);
+  for (std::size_t i = 0; i < entry.bucket_count; ++i) {
+    const auto &bucket = chunk.pool[begin + i];
+    const int64_t next_suffix =
+        (i + 1 < entry.bucket_count) ? chunk.pool[begin + i + 1].suffix_revenue
+                                     : 0;
     const int64_t revenue = bucket.suffix_revenue - next_suffix;
     if (revenue != 0)
       day_revenue.emplace(static_cast<int32_t>(bucket.shipdate), revenue);
@@ -173,33 +173,218 @@ DayRevenueFromSummary(const TpchQ3SegmentIntervalIndex &index,
   return day_revenue;
 }
 
-void ApplyLineitemDelta(TpchQ3SegmentIntervalIndex &index,
-                        TpchQ3OrderSummary &summary,
-                        const TpchQ3LineitemDelta &delta) {
-  auto day_revenue = DayRevenueFromSummary(index, summary);
-  day_revenue[delta.shipdate_day] +=
-      static_cast<int64_t>(delta.sign) * delta.revenue_raw;
-  if (day_revenue[delta.shipdate_day] == 0)
-    day_revenue.erase(delta.shipdate_day);
-  std::vector<TpchQ3ShipdateBucket> buckets;
-  FinalizeTpchQ3OrderSummary(buckets, day_revenue);
-  index.AssignBuckets(summary, std::move(buckets));
+// Upper bound of the order's revenue for any cutoff: sum of positive days.
+int64_t BoundOf(const std::map<int32_t, int64_t> &day_revenue) {
+  int64_t bound = 0;
+  for (const auto &entry : day_revenue)
+    if (entry.second > 0)
+      bound += entry.second;
+  return bound;
 }
 
-void EnsureOrderSegmentSlot(std::vector<uint8_t> &order_segment,
-                            int64_t orderkey) {
-  if (orderkey < 0)
-    return;
-  const auto index = static_cast<std::size_t>(orderkey);
-  if (index >= order_segment.size())
-    order_segment.resize(index + 1, 0);
+// Rebuilds a chunk from entries (already in key order) whose buckets live in
+// `src_pool`; the new chunk gets a compact private pool.
+std::shared_ptr<TpchQ3Chunk>
+MakeChunk(const TpchQ3Entry *entries, std::size_t count,
+          const TpchQ3ShipdateBucket *src_pool) {
+  auto chunk = std::make_shared<TpchQ3Chunk>();
+  chunk->entries.reserve(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    TpchQ3Entry e = entries[i];
+    const auto new_begin = static_cast<uint32_t>(chunk->pool.size());
+    chunk->pool.insert(chunk->pool.end(), src_pool + e.bucket_begin,
+                       src_pool + e.bucket_begin + e.bucket_count);
+    e.bucket_begin = new_begin;
+    chunk->max_maxship = std::max(chunk->max_maxship, e.maxship);
+    chunk->entries.push_back(e);
+  }
+  return chunk;
 }
 
-struct OrderBuilder {
-  int32_t orderdate_days = 0;
-  int32_t shippriority = 0;
-  core::PartitionId segment = 0;
-  std::map<int32_t, int64_t> shipdate_revenue;
+// Builds an immutable bin from key-sorted entries (buckets in src_pool).
+std::shared_ptr<const TpchQ3BinList>
+MakeBinList(const std::vector<TpchQ3Entry> &sorted,
+            const std::vector<TpchQ3ShipdateBucket> &src_pool) {
+  auto bin = std::make_shared<TpchQ3BinList>();
+  for (std::size_t i = 0; i < sorted.size(); i += kTpchQ3ChunkTarget) {
+    const auto n = std::min(kTpchQ3ChunkTarget, sorted.size() - i);
+    auto chunk = MakeChunk(sorted.data() + i, n, src_pool.data());
+    bin->max_maxship = std::max(bin->max_maxship, chunk->max_maxship);
+    bin->chunks.push_back(std::move(chunk));
+  }
+  return bin;
+}
+
+// Copy-on-write writer over a published segment: only the touched chunks (and
+// the chunk-pointer arrays of the touched bins) are copied.
+class Q3SegmentTxn {
+public:
+  Q3SegmentTxn(core::PartitionId segment,
+               std::shared_ptr<const TpchQ3Segment> base)
+      : segment_(segment), base_(std::move(base)) {}
+
+  // Removes the entry; returns its per-shipdate revenue. False if absent.
+  bool Take(uint16_t orderdate, int64_t bound, uint32_t orderkey,
+            std::map<int32_t, int64_t> &day_revenue) {
+    Bin *bin = FindBin(BinOf(orderdate), false);
+    if (!bin)
+      return false;
+    const std::size_t ci = ChunkFor(*bin, bound, orderkey);
+    if (ci >= bin->chunks.size())
+      return false;
+    const auto &chunk = *bin->chunks[ci];
+    auto it = std::lower_bound(
+        chunk.entries.begin(), chunk.entries.end(), 0,
+        [&](const TpchQ3Entry &e, int) {
+          return EntryBefore(e, bound, orderkey);
+        });
+    if (it == chunk.entries.end() || it->orderkey != orderkey ||
+        it->bound != bound)
+      return false;
+    day_revenue = DayRevenueOf(chunk, *it);
+    const auto pos = it - chunk.entries.begin();
+    auto &mutable_chunk = Mutable(*bin, ci);
+    mutable_chunk.entries.erase(mutable_chunk.entries.begin() + pos);
+    if (mutable_chunk.entries.empty()) {
+      bin->chunks.erase(bin->chunks.begin() + static_cast<std::ptrdiff_t>(ci));
+      bin->owned.erase(bin->owned.begin() + static_cast<std::ptrdiff_t>(ci));
+    }
+    dirty_ = true;
+    return true;
+  }
+
+  void Insert(const TpchQ3Entry &entry_in,
+              const std::vector<TpchQ3ShipdateBucket> &buckets) {
+    Bin *bin = FindBin(BinOf(entry_in.orderdate), true);
+    std::size_t ci = ChunkFor(*bin, entry_in.bound, entry_in.orderkey);
+    if (bin->chunks.empty()) {
+      bin->chunks.push_back(std::make_shared<TpchQ3Chunk>());
+      bin->owned.push_back(1);
+      ci = 0;
+    } else if (ci >= bin->chunks.size()) {
+      ci = bin->chunks.size() - 1;
+    }
+    auto &chunk = Mutable(*bin, ci);
+    TpchQ3Entry entry = entry_in;
+    entry.bucket_begin = static_cast<uint32_t>(chunk.pool.size());
+    entry.bucket_count = static_cast<uint16_t>(buckets.size());
+    entry.maxship = buckets.empty() ? 0 : buckets.back().shipdate;
+    chunk.pool.insert(chunk.pool.end(), buckets.begin(), buckets.end());
+    auto it = std::lower_bound(
+        chunk.entries.begin(), chunk.entries.end(), 0,
+        [&](const TpchQ3Entry &e, int) {
+          return EntryBefore(e, entry.bound, entry.orderkey);
+        });
+    chunk.entries.insert(it, entry);
+    if (chunk.entries.size() > kTpchQ3ChunkMax) {
+      const std::size_t half = chunk.entries.size() / 2;
+      auto lo = MakeChunk(chunk.entries.data(), half, chunk.pool.data());
+      auto hi = MakeChunk(chunk.entries.data() + half,
+                          chunk.entries.size() - half, chunk.pool.data());
+      bin->chunks[ci] = std::move(lo);
+      bin->chunks.insert(bin->chunks.begin() + static_cast<std::ptrdiff_t>(ci) + 1,
+                         std::move(hi));
+      bin->owned[ci] = 1;
+      bin->owned.insert(bin->owned.begin() + static_cast<std::ptrdiff_t>(ci) + 1, 1);
+    }
+    dirty_ = true;
+  }
+
+  bool Dirty() const { return dirty_; }
+
+  std::shared_ptr<const TpchQ3Segment> Finish() {
+    auto out = std::make_shared<TpchQ3Segment>();
+    out->segment = segment_;
+    if (base_)
+      out->bins = base_->bins;
+    for (auto &[bin_id, bin] : bins_) {
+      if (bin.chunks.empty()) {
+        out->bins.erase(bin_id);
+        continue;
+      }
+      auto list = std::make_shared<TpchQ3BinList>();
+      for (std::size_t i = 0; i < bin.chunks.size(); ++i) {
+        if (bin.owned[i])
+          Seal(const_cast<TpchQ3Chunk &>(*bin.chunks[i]));
+        list->max_maxship = std::max(list->max_maxship, bin.chunks[i]->max_maxship);
+        list->chunks.push_back(bin.chunks[i]);
+      }
+      out->bins[bin_id] = std::move(list);
+    }
+    return out;
+  }
+
+private:
+  struct Bin {
+    std::vector<std::shared_ptr<const TpchQ3Chunk>> chunks;
+    std::vector<char> owned;
+  };
+
+  Bin *FindBin(uint16_t bin_id, bool create) {
+    auto it = bins_.find(bin_id);
+    if (it != bins_.end())
+      return &it->second;
+    Bin bin;
+    if (base_) {
+      auto base_it = base_->bins.find(bin_id);
+      if (base_it != base_->bins.end() && base_it->second)
+        bin.chunks = base_it->second->chunks;
+    }
+    if (bin.chunks.empty() && !create)
+      return nullptr;
+    bin.owned.assign(bin.chunks.size(), 0);
+    return &bins_.emplace(bin_id, std::move(bin)).first->second;
+  }
+
+  // First chunk whose last entry does not sort before (bound, orderkey).
+  static std::size_t ChunkFor(const Bin &bin, int64_t bound, uint32_t orderkey) {
+    std::size_t lo = 0, hi = bin.chunks.size();
+    while (lo < hi) {
+      const std::size_t mid = (lo + hi) / 2;
+      const auto &entries = bin.chunks[mid]->entries;
+      if (!entries.empty() && EntryBefore(entries.back(), bound, orderkey))
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return lo;
+  }
+
+  // Chunks this txn created are private (made via make_shared<TpchQ3Chunk>),
+  // so mutating them through the const handle is well-defined.
+  static TpchQ3Chunk &Mutable(Bin &bin, std::size_t ci) {
+    if (!bin.owned[ci]) {
+      bin.chunks[ci] = std::make_shared<TpchQ3Chunk>(*bin.chunks[ci]);
+      bin.owned[ci] = 1;
+    }
+    return const_cast<TpchQ3Chunk &>(*bin.chunks[ci]);
+  }
+
+  static void Seal(TpchQ3Chunk &chunk) {
+    uint16_t max_ship = 0;
+    std::size_t live = 0;
+    for (const auto &e : chunk.entries) {
+      max_ship = std::max(max_ship, e.maxship);
+      live += e.bucket_count;
+    }
+    chunk.max_maxship = max_ship;
+    if (chunk.pool.size() > live * 2 + 32) {
+      std::vector<TpchQ3ShipdateBucket> pool;
+      pool.reserve(live);
+      for (auto &e : chunk.entries) {
+        const auto new_begin = static_cast<uint32_t>(pool.size());
+        pool.insert(pool.end(), chunk.pool.begin() + e.bucket_begin,
+                    chunk.pool.begin() + e.bucket_begin + e.bucket_count);
+        e.bucket_begin = new_begin;
+      }
+      chunk.pool = std::move(pool);
+    }
+  }
+
+  core::PartitionId segment_;
+  std::shared_ptr<const TpchQ3Segment> base_;
+  std::map<uint16_t, Bin> bins_;
+  bool dirty_ = false;
 };
 
 } // namespace
@@ -252,107 +437,118 @@ std::string TpchQ3MktsegmentFromPartition(core::PartitionId partition) {
   }
 }
 
-void SortTpchQ3SegmentIntervalIndex(TpchQ3SegmentIntervalIndex &index) {
-  std::sort(index.orders.begin(), index.orders.end(),
-            [&index](const TpchQ3OrderSummary &lhs, const TpchQ3OrderSummary &rhs) {
-              const auto lhs_max = index.MaxShipdate(lhs);
-              const auto rhs_max = index.MaxShipdate(rhs);
-              if (lhs_max != rhs_max)
-                return lhs_max < rhs_max;
-              return lhs.orderkey < rhs.orderkey;
-            });
-  index.ClearPositions();
-  for (std::size_t i = 0; i < index.orders.size(); ++i)
-    index.SetPosition(static_cast<int64_t>(index.orders[i].orderkey), i);
-}
-
-void RemoveOrderFromIndex(TpchQ3SegmentIntervalIndex &index, int64_t orderkey) {
-  std::size_t pos = 0;
-  if (!index.FindPosition(orderkey, pos))
-    return;
-  index.orders.erase(index.orders.begin() + static_cast<std::ptrdiff_t>(pos));
-  index.ErasePosition(orderkey);
-  for (std::size_t i = pos; i < index.orders.size(); ++i)
-    index.SetPosition(static_cast<int64_t>(index.orders[i].orderkey), i);
-}
-
-std::vector<uint8_t>
-EncodeTpchQ3OrderSegmentSide(const TpchQ3OrderSegmentSide &side) {
+std::vector<uint8_t> EncodeTpchQ3OrderSegmentSide(const TpchQ3Side &side) {
+  uint32_t order_count = 0, cust_count = 0;
+  side.orders.ForEach([&](const TpchQ3OrderRec &) { ++order_count; });
+  side.custs.ForEach([&](const TpchQ3CustRec &) { ++cust_count; });
   ByteWriter writer;
-  core::WriteImageHeader(writer, kOrderSegmentMagic, kVersion,
-                         static_cast<uint32_t>(side.order_segment.size()));
-  for (const auto segment : side.order_segment)
-    writer.U8(segment);
+  core::WriteImageHeader(writer, kOrderSegmentMagic, kVersion, order_count);
+  side.orders.ForEach([&](const TpchQ3OrderRec &rec) {
+    writer.U32(rec.key);
+    writer.U32(rec.orderdate);
+    writer.U8(rec.seg_flags);
+    writer.U8(rec.shippriority);
+    writer.I64(rec.bound);
+  });
+  writer.U32(cust_count);
+  side.custs.ForEach([&](const TpchQ3CustRec &rec) {
+    writer.U32(rec.key);
+    writer.U8(rec.segment);
+  });
   return std::move(writer.bytes);
 }
 
-std::vector<uint8_t> EncodeTpchQ3SegmentIntervalIndex(
-    const TpchQ3SegmentIntervalIndex &index) {
+std::vector<uint8_t>
+EncodeTpchQ3SegmentIntervalIndex(const TpchQ3Segment &segment) {
+  uint32_t count = 0;
+  for (const auto &bin : segment.bins)
+    for (const auto &chunk : bin.second->chunks)
+      count += static_cast<uint32_t>(chunk->entries.size());
   ByteWriter writer;
-  core::WriteImageHeader(writer, kIntervalMagic, kVersion,
-                         static_cast<uint32_t>(index.orders.size()));
-  for (const auto &order : index.orders) {
-    writer.I64(order.orderkey);
-    writer.I32(order.orderdate_days);
-    writer.I32(order.shippriority);
-    writer.I32(index.MaxShipdate(order));
-    writer.U32(order.bucket_count);
-    const auto begin = static_cast<std::size_t>(order.bucket_begin);
-    for (uint32_t b = 0; b < order.bucket_count; ++b) {
-      const auto &bucket = index.bucket_pool[begin + b];
-      writer.I32(bucket.shipdate);
-      writer.I64(bucket.suffix_revenue);
+  core::WriteImageHeader(writer, kIntervalMagic, kVersion, count);
+  for (const auto &bin : segment.bins) {
+    for (const auto &chunk : bin.second->chunks) {
+      for (const auto &order : chunk->entries) {
+        writer.I64(order.orderkey);
+        writer.I32(order.orderdate);
+        writer.I32(order.shippriority);
+        writer.I32(order.maxship);
+        writer.U32(order.bucket_count);
+        for (uint32_t b = 0; b < order.bucket_count; ++b) {
+          const auto &bucket = chunk->pool[order.bucket_begin + b];
+          writer.I32(bucket.shipdate);
+          writer.I64(bucket.suffix_revenue);
+        }
+      }
     }
   }
   return std::move(writer.bytes);
 }
 
 bool DecodeTpchQ3OrderSegmentSide(const std::vector<uint8_t> &bytes,
-                                  TpchQ3OrderSegmentSide &side) {
+                                  TpchQ3Side &side) {
   ByteReader reader{bytes};
   uint32_t count = 0;
   if (!core::ReadImageHeader(reader, kOrderSegmentMagic, kVersion, count))
     return false;
-  side.order_segment.clear();
-  side.order_segment.reserve(count);
+  TpchQ3ShardBuilder<TpchQ3OrderRec> orders;
   for (uint32_t i = 0; i < count; ++i) {
-    uint8_t segment = 0;
-    if (!reader.U8(segment))
+    TpchQ3OrderRec rec;
+    uint32_t orderdate = 0;
+    if (!reader.U32(rec.key) || !reader.U32(orderdate) ||
+        !reader.U8(rec.seg_flags) || !reader.U8(rec.shippriority) ||
+        !reader.I64(rec.bound))
       return false;
-    side.order_segment.push_back(segment);
+    rec.orderdate = static_cast<uint16_t>(orderdate);
+    orders.Add(rec);
   }
+  uint32_t cust_count = 0;
+  if (!reader.U32(cust_count))
+    return false;
+  TpchQ3ShardBuilder<TpchQ3CustRec> custs;
+  for (uint32_t i = 0; i < cust_count; ++i) {
+    TpchQ3CustRec rec;
+    if (!reader.U32(rec.key) || !reader.U8(rec.segment))
+      return false;
+    custs.Add(rec);
+  }
+  orders.Sort();
+  custs.Sort();
+  side.orders = orders.Finish();
+  side.custs = custs.Finish();
   return reader.offset == bytes.size();
 }
 
 bool DecodeTpchQ3SegmentIntervalIndex(const std::vector<uint8_t> &bytes,
-                                      core::PartitionId segment,
-                                      TpchQ3SegmentIntervalIndex &index) {
+                                      core::PartitionId segment_id,
+                                      TpchQ3Segment &segment) {
   ByteReader reader{bytes};
   uint32_t count = 0;
   if (!core::ReadImageHeader(reader, kIntervalMagic, kVersion, count))
     return false;
-  index.segment = segment;
-  index.orders.clear();
-  index.bucket_pool.clear();
-  index.ClearPositions();
-  index.orders.reserve(count);
+  segment.segment = segment_id;
+  segment.bins.clear();
+  std::map<uint16_t, std::pair<std::vector<TpchQ3Entry>,
+                               std::vector<TpchQ3ShipdateBucket>>>
+      staging;
   for (uint32_t i = 0; i < count; ++i) {
-    TpchQ3OrderSummary order;
+    TpchQ3Entry order;
     uint32_t bucket_count = 0;
     int64_t orderkey = 0;
-    int32_t orderdate_days = 0;
-    int32_t shippriority = 0;
-    int32_t max_shipdate = 0;
+    int32_t orderdate_days = 0, shippriority = 0, max_shipdate = 0;
     if (!reader.I64(orderkey) || !reader.I32(orderdate_days) ||
         !reader.I32(shippriority) || !reader.I32(max_shipdate) ||
         !reader.U32(bucket_count))
       return false;
-    (void)max_shipdate;
     order.orderkey = PackTpchQ3Orderkey(orderkey);
-    order.orderdate_days = PackTpchQ3Date(orderdate_days);
+    order.orderdate = PackTpchQ3Date(orderdate_days);
     order.shippriority = PackTpchQ3Shippriority(shippriority);
+    order.maxship = PackTpchQ3Date(max_shipdate);
+    auto &stage = staging[BinOf(order.orderdate)];
+    order.bucket_begin = static_cast<uint32_t>(stage.second.size());
+    order.bucket_count = static_cast<uint16_t>(bucket_count);
+    int64_t bound = 0, prev_suffix = 0;
     std::vector<TpchQ3ShipdateBucket> buckets;
-    buckets.reserve(bucket_count);
     for (uint32_t b = 0; b < bucket_count; ++b) {
       int32_t shipdate = 0;
       TpchQ3ShipdateBucket bucket;
@@ -361,10 +557,26 @@ bool DecodeTpchQ3SegmentIntervalIndex(const std::vector<uint8_t> &bytes,
       bucket.shipdate = PackTpchQ3Date(shipdate);
       buckets.push_back(bucket);
     }
-    index.AssignBuckets(order, std::move(buckets));
-    index.orders.push_back(order);
+    // day revenue = suffix[i] - suffix[i+1]
+    for (std::size_t b = 0; b < buckets.size(); ++b) {
+      const int64_t next =
+          b + 1 < buckets.size() ? buckets[b + 1].suffix_revenue : 0;
+      const int64_t day = buckets[b].suffix_revenue - next;
+      if (day > 0)
+        bound += day;
+    }
+    (void)prev_suffix;
+    order.bound = bound;
+    stage.second.insert(stage.second.end(), buckets.begin(), buckets.end());
+    stage.first.push_back(order);
   }
-  SortTpchQ3SegmentIntervalIndex(index);
+  for (auto &[bin_id, stage] : staging) {
+    std::sort(stage.first.begin(), stage.first.end(),
+              [](const TpchQ3Entry &a, const TpchQ3Entry &b) {
+                return EntryBefore(a, b.bound, b.orderkey);
+              });
+    segment.bins[bin_id] = MakeBinList(stage.first, stage.second);
+  }
   return reader.offset == bytes.size();
 }
 
@@ -374,6 +586,7 @@ void TpchQ3TxnBuffer::Clear() {
   requires_rebuild = false;
   deltas.clear();
   order_deltas.clear();
+  customer_deltas.clear();
 }
 bool TpchQ3TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
 const std::vector<TpchQ3LineitemDelta> &TpchQ3TxnBuffer::Deltas() const {
@@ -382,12 +595,17 @@ const std::vector<TpchQ3LineitemDelta> &TpchQ3TxnBuffer::Deltas() const {
 const std::vector<TpchQ3OrderDelta> &TpchQ3TxnBuffer::OrderDeltas() const {
   return order_deltas;
 }
+const std::vector<TpchQ3CustomerDelta> &TpchQ3TxnBuffer::CustomerDeltas() const {
+  return customer_deltas;
+}
 void TpchQ3TxnBuffer::MarkRebuild() {
   pending = true;
   requires_rebuild = true;
   deltas.clear();
   order_deltas.clear();
+  customer_deltas.clear();
 }
+void TpchQ3TxnBuffer::MarkNoop() { pending = true; }
 void TpchQ3TxnBuffer::AddDelta(TpchQ3LineitemDelta delta) {
   pending = true;
   deltas.push_back(delta);
@@ -395,6 +613,10 @@ void TpchQ3TxnBuffer::AddDelta(TpchQ3LineitemDelta delta) {
 void TpchQ3TxnBuffer::AddOrderDelta(TpchQ3OrderDelta delta) {
   pending = true;
   order_deltas.push_back(delta);
+}
+void TpchQ3TxnBuffer::AddCustomerDelta(TpchQ3CustomerDelta delta) {
+  pending = true;
+  customer_deltas.push_back(delta);
 }
 
 core::AcceleratorId TpchQ3Module::Id() const { return kId; }
@@ -409,26 +631,25 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ3Module::CreateTxnBuffer() const {
 
 void TpchQ3Module::Build(core::AuxEngineServices &services,
                          core::StateBuilder &builder) {
-  BuildScratch scratch;
-  const auto state = BuildState(services, scratch);
-  auto side = std::make_shared<TpchQ3OrderSegmentSide>();
-  side->order_segment = std::move(scratch.order_segment);
-  for (const auto &[custkey, segment] : scratch.customer_segments) {
-    if (custkey < 0)
-      continue;
-    const auto index = static_cast<std::size_t>(custkey);
-    if (index >= side->customer_segment.size())
-      side->customer_segment.resize(index + 1, 0);
-    side->customer_segment[index] = static_cast<uint8_t>(segment);
-  }
+  auto built = BuildState(services);
+  auto side = std::make_shared<TpchQ3Side>(std::move(built.side));
   builder.Write(core::StateImage::Make(
       core::TpchQ3Layout::kAccelerator, core::TpchQ3Layout::kOrderSegmentSide, 0,
       MakeOrderSegmentSideImage(side)));
-  for (const auto &entry : state.segment_intervals) {
+  for (core::PartitionId segment = core::TpchQ3Layout::kFirstSegment;
+       segment <= core::TpchQ3Layout::kLastSegment; ++segment) {
+    auto it = built.segments.find(segment);
+    std::shared_ptr<const TpchQ3Segment> state;
+    if (it != built.segments.end()) {
+      state = it->second;
+    } else {
+      auto empty = std::make_shared<TpchQ3Segment>();
+      empty->segment = segment;
+      state = empty;
+    }
     builder.Write(core::StateImage::Make(
-        core::TpchQ3Layout::kAccelerator, entry.first, 0,
-        MakeSegmentIntervalImage(entry.first,
-                                 MakeSegmentIntervalState(entry.second))));
+        core::TpchQ3Layout::kAccelerator, segment, 0,
+        MakeSegmentIntervalImage(segment, state)));
   }
   builder.Finish();
 }
@@ -442,8 +663,8 @@ TpchQ3Module::InterpretMutation(const core::MutationBatch &mutation) const {
         ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
     return plan;
   }
-  if (mutation.table == config.customer_table)
-    return All();
+  // Customer writes are applied precisely (or mark a rebuild) in
+  // AccumulateMutation; they need no blanket invalidation.
   return {};
 }
 
@@ -452,14 +673,59 @@ void TpchQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
                                       core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ3TxnBuffer &>(base_buffer);
   if (mutation.table == config.customer_table) {
-    buffer.MarkRebuild();
+    // Projected row: (c_mktsegment, c_custkey).
+    auto read = [&](const core::AuxRow &row, int64_t &custkey,
+                    core::PartitionId &segment) -> bool {
+      std::string mkt;
+      if (!StringCell(row, 0, mkt) || !IntCell(row, 1, custkey) || custkey < 0 ||
+          custkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+        return false;
+      segment = TpchQ3PartitionFromMktsegment(mkt);
+      return true;
+    };
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows) {
+        int64_t key = 0;
+        core::PartitionId segment = 0;
+        if (!read(row, key, segment)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        buffer.AddCustomerDelta({key, segment});
+      }
+      break;
+    case core::MutationKind::Delete:
+      // Orders of the removed customer would have to leave the index.
+      buffer.MarkRebuild();
+      break;
+    case core::MutationKind::Update:
+      if (mutation.old_rows.size() != mutation.new_rows.size()) {
+        buffer.MarkRebuild();
+        return;
+      }
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        int64_t ok = 0, nk = 0;
+        core::PartitionId os = 0, ns = 0;
+        if (!read(mutation.old_rows[i], ok, os) ||
+            !read(mutation.new_rows[i], nk, ns) || ok != nk || os != ns) {
+          // key or segment change moves orders between segments: rebuild
+          buffer.MarkRebuild();
+          return;
+        }
+        buffer.MarkNoop();
+      }
+      break;
+    }
     return;
   }
   if (mutation.table == config.orders_table) {
     auto add = [&](const core::AuxRow &row, int8_t sign) {
       int64_t orderkey = 0, custkey = 0;
       int32_t orderdate = 0, shippriority = 0;
-      if (!ReadOrder(row, orderkey, orderdate, custkey, shippriority)) {
+      if (!ReadOrder(row, orderkey, orderdate, custkey, shippriority) ||
+          orderkey < 0 ||
+          orderkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
         buffer.MarkRebuild();
         return;
       }
@@ -492,7 +758,9 @@ void TpchQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
     return;
   auto add = [&](const core::AuxRow &row, int8_t sign) {
     TpchQ3LineitemInput input;
-    if (!ReadLineitem(row, input)) {
+    if (!ReadLineitem(row, input) || input.orderkey < 0 ||
+        input.orderkey >
+            static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
       buffer.MarkRebuild();
       return;
     }
@@ -533,6 +801,13 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
                                core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ3TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
+  auto rebuild_all = [&]() {
+    outcome.action = core::MaintenanceAction::RebuildAll;
+    outcome.updates.clear();
+    outcome.invalidations = All();
+    outcome.pending_rebuild = outcome.invalidations;
+    return outcome;
+  };
   if (buffer.RequiresRebuild()) {
     const auto decision = services.ChooseMaintenance(
         {0, 0, false, false, true, true, false,
@@ -545,383 +820,222 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     outcome.pending_rebuild = outcome.invalidations;
     return outcome;
   }
-  if (buffer.Deltas().empty() && buffer.OrderDeltas().empty())
+  if (buffer.Deltas().empty() && buffer.OrderDeltas().empty() &&
+      buffer.CustomerDeltas().empty())
     return outcome;
 
-  const auto total_deltas =
-      buffer.Deltas().size() + buffer.OrderDeltas().size();
+  const auto total_deltas = buffer.Deltas().size() +
+                            buffer.OrderDeltas().size() +
+                            buffer.CustomerDeltas().size();
+  // RF-sized batches are always applied incrementally; the cost model is
+  // only consulted for bulk changes.
+  if (total_deltas > 256) {
+    const auto decision = services.ChooseMaintenance(
+        {static_cast<uint64_t>(total_deltas), 1, true, false, true, false,
+         false, core::MaintenanceAction::NoOp,
+         services.ExpectedQueriesBeforeNextWrite()});
+    if (decision.action != core::MaintenanceAction::ApplyDelta) {
+      outcome.action = decision.action == core::MaintenanceAction::RebuildPartition
+                           ? core::MaintenanceAction::RebuildAll
+                           : decision.action;
+      outcome.invalidations = All();
+      outcome.pending_rebuild = outcome.invalidations;
+      return outcome;
+    }
+  }
 
-  const auto visibility = services.CurrentVisibility();
-  std::shared_ptr<TpchQ3OrderSegmentSide> order_side;
+  // One consistent snapshot of the side partition and all segment partitions.
+  std::vector<core::PartitionId> partitions{core::TpchQ3Layout::kOrderSegmentSide};
+  for (core::PartitionId s = core::TpchQ3Layout::kFirstSegment;
+       s <= core::TpchQ3Layout::kLastSegment; ++s)
+    partitions.push_back(s);
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), partitions);
+  std::shared_ptr<const TpchQ3Side> side;
   core::Version side_version = 0;
-  {
-    const auto snapshot = services.StateStore().ReadPartitions(
-        visibility, {core::TpchQ3Layout::kOrderSegmentSide});
-    for (const auto &image : snapshot.partitions) {
-      if (image.partition != core::TpchQ3Layout::kOrderSegmentSide)
-        continue;
+  std::map<core::PartitionId, std::shared_ptr<const TpchQ3Segment>> seg_base;
+  std::map<core::PartitionId, core::Version> seg_version;
+  for (const auto &image : snapshot.partitions) {
+    if (image.partition == core::TpchQ3Layout::kOrderSegmentSide) {
       const auto *typed = AsQ3Image(image, TpchQ3ImageKind::OrderSegmentSide);
-      if (!typed) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      order_side =
-          std::make_shared<TpchQ3OrderSegmentSide>(*typed->order_segment_side);
+      if (!typed)
+        return rebuild_all();
+      side = typed->side;
       side_version = image.version;
-      break;
-    }
-    if (!order_side) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
+    } else if (core::TpchQ3Layout::IsSegmentPartition(image.partition)) {
+      const auto *typed = AsQ3Image(image, TpchQ3ImageKind::SegmentIntervalIndex);
+      if (!typed)
+        return rebuild_all();
+      seg_base[image.partition] = typed->state;
+      seg_version[image.partition] = image.version;
     }
   }
+  if (!side)
+    return rebuild_all();
 
-  struct OrderMeta {
-    int32_t orderdate_days = 0;
-    int32_t shippriority = 0;
-  };
-  std::unordered_map<int64_t, OrderMeta> order_meta;
-  std::unordered_map<int64_t, TpchQ3InitialScan::OrderContext> context_cache;
-  bool side_changed = false;
-
-  auto resolve_context = [&](int64_t orderkey,
-                             TpchQ3InitialScan::OrderContext &ctx) -> bool {
-    const auto cached = context_cache.find(orderkey);
-    if (cached != context_cache.end()) {
-      ctx = cached->second;
-      return ctx.segment != 0;
+  TpchQ3ShardTxn<TpchQ3OrderRec> otx(side->orders);
+  TpchQ3ShardTxn<TpchQ3CustRec> ctx(side->custs);
+  std::map<core::PartitionId, Q3SegmentTxn> seg_txns;
+  auto segtx = [&](core::PartitionId segment) -> Q3SegmentTxn & {
+    auto it = seg_txns.find(segment);
+    if (it == seg_txns.end()) {
+      auto base = seg_base.find(segment);
+      it = seg_txns
+               .emplace(segment,
+                        Q3SegmentTxn(segment, base != seg_base.end()
+                                                  ? base->second
+                                                  : nullptr))
+               .first;
     }
-    if (initial_scan && initial_scan->LookupOrderContext(orderkey, ctx) &&
-        ctx.segment != 0) {
-      context_cache.emplace(orderkey, ctx);
-      return true;
-    }
-    return false;
+    return it->second;
   };
 
-  auto resolve_from_order_delta =
-      [&](const TpchQ3OrderDelta &delta,
-          TpchQ3InitialScan::OrderContext &ctx) -> bool {
-    if (resolve_context(delta.orderkey, ctx))
-      return true;
-    if (delta.custkey <= 0)
-      return false;
-    core::PartitionId segment = 0;
-    if (static_cast<std::size_t>(delta.custkey) <
-        order_side->customer_segment.size()) {
-      segment = static_cast<core::PartitionId>(
-          order_side->customer_segment[static_cast<std::size_t>(delta.custkey)]);
-    }
-    if (segment == 0 && initial_scan) {
-      initial_scan->ScanCustomers([&](const TpchQ3CustomerInput &input) {
-        if (input.key == delta.custkey)
-          segment = TpchQ3PartitionFromMktsegment(input.mktsegment);
-      });
-    }
-    if (segment == 0)
-      return false;
-    ctx = {segment, delta.orderdate_days, delta.shippriority, delta.custkey};
-    context_cache.emplace(delta.orderkey, ctx);
-    return true;
-  };
-
-  // An UPDATE of an order arrives as its old row (-1) and new row (+1): the
-  // order and its lineitems stay; only its date / priority change in place
-  // (a move to another segment rebuilds). Deleted orders go in RF2 below.
-  std::unordered_set<int64_t> removed_orders, updated_orders;
-  for (const auto &delta : buffer.OrderDeltas())
-    if (delta.sign < 0)
-      removed_orders.insert(delta.orderkey);
-  for (const auto &delta : buffer.OrderDeltas())
-    if (delta.sign > 0 && removed_orders.count(delta.orderkey))
-      updated_orders.insert(delta.orderkey);
-  std::unordered_map<int64_t, core::PartitionId> updated_old_segment;
-  for (const auto orderkey : updated_orders) {
-    core::PartitionId segment = 0;
-    if (orderkey >= 0 &&
-        static_cast<std::size_t>(orderkey) < order_side->order_segment.size())
-      segment = static_cast<core::PartitionId>(
-          order_side->order_segment[static_cast<std::size_t>(orderkey)]);
-    updated_old_segment[orderkey] = segment;
+  // Customer inserts first (orders of this transaction may reference them).
+  for (const auto &c : buffer.CustomerDeltas()) {
+    if (c.segment == 0)
+      continue;
+    const auto key = static_cast<uint32_t>(c.custkey);
+    if (ctx.Find(key))
+      return rebuild_all();
+    TpchQ3CustRec rec;
+    rec.key = key;
+    rec.segment = static_cast<uint8_t>(c.segment);
+    ctx.Set(rec);
   }
 
-  // RF1: install order_segment (+ meta) before lineitem deltas.
+  // Order inserts / deletes by key. A key both deleted and inserted is an
+  // UPDATE: the order and its lineitems stay (in the same segment).
+  std::map<uint32_t, const TpchQ3OrderDelta *> inserted, deleted;
   for (const auto &delta : buffer.OrderDeltas()) {
-    if (delta.sign <= 0)
-      continue;
-    TpchQ3InitialScan::OrderContext ctx;
-    if (!resolve_from_order_delta(delta, ctx)) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
+    const auto key = static_cast<uint32_t>(delta.orderkey);
+    if (delta.sign > 0) {
+      if (!inserted.emplace(key, &delta).second)
+        return rebuild_all();
+    } else {
+      deleted.emplace(key, &delta);
     }
-    if (updated_orders.count(delta.orderkey)) {
-      const auto old_segment = updated_old_segment[delta.orderkey];
-      if (old_segment != 0 && old_segment != ctx.segment) {
-        core::FinishRebuildAll(outcome);
-        return outcome;
+  }
+  std::map<uint32_t, std::map<int32_t, int64_t>> line_delta;
+  for (const auto &delta : buffer.Deltas()) {
+    auto &day = line_delta[static_cast<uint32_t>(delta.orderkey)];
+    day[delta.shipdate_day] += static_cast<int64_t>(delta.sign) * delta.revenue_raw;
+  }
+  std::set<uint32_t> keys;
+  for (const auto &e : inserted)
+    keys.insert(e.first);
+  for (const auto &e : deleted)
+    keys.insert(e.first);
+  for (const auto &e : line_delta)
+    keys.insert(e.first);
+
+  for (const auto key : keys) {
+    const auto *found = otx.Find(key);
+    const bool had = found != nullptr;
+    TpchQ3OrderRec old_rec;
+    if (had)
+      old_rec = *found;
+    const auto ins_it = inserted.find(key);
+    const bool is_ins = ins_it != inserted.end();
+    const bool is_del = deleted.count(key) != 0;
+    if (!had && !is_ins)
+      continue; // lineitem/delete of an order outside every tracked segment
+
+    // Remove the old index entry (if any) and recover its day revenues.
+    std::map<int32_t, int64_t> day;
+    if (had && old_rec.indexed()) {
+      if (!segtx(old_rec.segment())
+               .Take(old_rec.orderdate, old_rec.bound, key, day))
+        return rebuild_all(); // index and side disagree
+    }
+
+    bool exists = false;
+    TpchQ3OrderRec rec = old_rec;
+    if (had && is_del && !is_ins) {
+      exists = false;
+    } else if (had && is_ins && !is_del) {
+      return rebuild_all(); // duplicate key
+    } else if (is_ins) {
+      // new order, or UPDATE of an existing one
+      const auto &d = *ins_it->second;
+      if (d.custkey < 0 ||
+          d.custkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+        return rebuild_all();
       }
-    }
-    EnsureOrderSegmentSlot(order_side->order_segment, delta.orderkey);
-    order_side->order_segment[static_cast<std::size_t>(delta.orderkey)] =
-        static_cast<uint8_t>(ctx.segment);
-    order_meta[delta.orderkey] = OrderMeta{delta.orderdate_days != 0
-                                               ? delta.orderdate_days
-                                               : ctx.orderdate_days,
-                                           delta.shippriority != 0
-                                               ? delta.shippriority
-                                               : ctx.shippriority};
-    side_changed = true;
-  }
-
-  std::map<core::PartitionId, std::vector<TpchQ3LineitemDelta>> grouped;
-  for (auto delta : buffer.Deltas()) {
-    if (delta.orderkey < 0)
-      continue;
-    core::PartitionId segment = 0;
-    if (static_cast<std::size_t>(delta.orderkey) <
-        order_side->order_segment.size())
-      segment = static_cast<core::PartitionId>(
-          order_side->order_segment[static_cast<std::size_t>(delta.orderkey)]);
-    if (segment == 0) {
-      TpchQ3InitialScan::OrderContext ctx;
-      if (!resolve_context(delta.orderkey, ctx))
-        continue;
-      EnsureOrderSegmentSlot(order_side->order_segment, delta.orderkey);
-      order_side->order_segment[static_cast<std::size_t>(delta.orderkey)] =
-          static_cast<uint8_t>(ctx.segment);
-      order_meta[delta.orderkey] =
-          OrderMeta{ctx.orderdate_days, ctx.shippriority};
-      segment = ctx.segment;
-      side_changed = true;
-    }
-    delta.segment = segment;
-    grouped[delta.segment].push_back(delta);
-  }
-
-  std::set<core::PartitionId> touched_segments;
-  for (const auto &group : grouped)
-    touched_segments.insert(group.first);
-
-  // Collect segments that order deletes must clear from interval indexes.
-  for (const auto &delta : buffer.OrderDeltas()) {
-    if (delta.sign >= 0)
-      continue;
-    if (delta.orderkey < 0 ||
-        static_cast<std::size_t>(delta.orderkey) >=
-            order_side->order_segment.size())
-      continue;
-    const auto segment = static_cast<core::PartitionId>(
-        order_side->order_segment[static_cast<std::size_t>(delta.orderkey)]);
-    if (segment != 0)
-      touched_segments.insert(segment);
-  }
-
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(total_deltas),
-       static_cast<uint64_t>(std::max<std::size_t>(1, touched_segments.size())),
-       true, true, true, false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    for (const auto segment : touched_segments) {
-      if (!core::TpchQ3Layout::IsSegmentPartition(segment))
-        continue;
-      auto index = BuildSegment(services, segment);
-      outcome.updates.push_back(core::StateImage::Make(
-          core::TpchQ3Layout::kAccelerator, segment, 0,
-          MakeSegmentIntervalImage(segment,
-                                   MakeSegmentIntervalState(index))));
-    }
-    if (side_changed) {
-      const auto typed_side =
-          std::static_pointer_cast<const TpchQ3OrderSegmentSide>(
-              std::move(order_side));
-      outcome.updates.push_back(core::StateImage::Make(
-          core::TpchQ3Layout::kAccelerator,
-          core::TpchQ3Layout::kOrderSegmentSide, 0,
-          MakeOrderSegmentSideImage(typed_side)));
-    }
-    core::FinishRebuildPartition(outcome);
-    return outcome;
-  }
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  std::map<core::PartitionId, TpchQ3SegmentIntervalIndex> indexes;
-  std::map<core::PartitionId, core::Version> versions;
-  for (const auto segment : touched_segments) {
-    const auto snapshot =
-        services.StateStore().ReadPartitions(visibility, {segment});
-    bool found = false;
-    for (const auto &image : snapshot.partitions) {
-      if (image.partition != segment)
-        continue;
-      const auto *typed =
-          AsQ3Image(image, TpchQ3ImageKind::SegmentIntervalIndex);
-      if (!typed || typed->segment != segment) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
+      const auto *cust = ctx.Find(static_cast<uint32_t>(d.custkey));
+      if (!cust) {
+        exists = false; // customer outside every tracked segment
+      } else {
+        if (had && cust->segment != old_rec.segment())
+          return rebuild_all(); // moved to another segment
+        rec.key = key;
+        rec.orderdate = PackTpchQ3Date(d.orderdate_days);
+        rec.shippriority = PackTpchQ3Shippriority(d.shippriority);
+        rec.seg_flags = cust->segment;
+        rec.bound = 0;
+        exists = true;
       }
-      const auto it = typed->state->segment_intervals.find(segment);
-      if (it != typed->state->segment_intervals.end())
-        indexes[segment] = it->second;
-      else {
-        indexes[segment] = TpchQ3SegmentIntervalIndex{segment, {}, {}};
-      }
-      versions[segment] = image.version;
-      found = true;
-      break;
+    } else {
+      exists = true; // lineitem-only change of an existing order
     }
-    if (!found) {
-      // New segment partition can appear for RF1 into an empty segment image.
-      indexes[segment] = TpchQ3SegmentIntervalIndex{segment, {}, {}};
-      versions[segment] = 0;
-    }
-  }
 
-  bool any_changed = false;
-  std::size_t applied_lineitem_orders = 0;
-  for (const auto orderkey : updated_orders) {
-    const auto segment = updated_old_segment[orderkey];
-    const auto meta_it = order_meta.find(orderkey);
-    auto index_it = indexes.find(segment);
-    if (segment == 0 || meta_it == order_meta.end() || index_it == indexes.end())
-      continue;
-    std::size_t position = 0;
-    if (!index_it->second.FindPosition(orderkey, position))
-      continue;
-    auto &summary = index_it->second.orders[position];
-    summary.orderdate_days = PackTpchQ3Date(meta_it->second.orderdate_days);
-    summary.shippriority = PackTpchQ3Shippriority(meta_it->second.shippriority);
-    any_changed = true;
-    outcome.action = core::MaintenanceAction::ApplyDelta;
-  }
-  for (auto &group : grouped) {
-    auto &index = indexes[group.first];
-    bool needs_resort = false;
-    bool changed = false;
-    std::map<int64_t, std::vector<TpchQ3LineitemDelta>> by_order;
-    for (const auto &delta : group.second)
-      by_order[delta.orderkey].push_back(delta);
-
-    for (const auto &order_deltas : by_order) {
-      const auto orderkey = order_deltas.first;
-      std::size_t position = 0;
-      if (!index.FindPosition(orderkey, position)) {
-        OrderMeta meta;
-        const auto meta_it = order_meta.find(orderkey);
-        if (meta_it != order_meta.end()) {
-          meta = meta_it->second;
-        } else {
-          TpchQ3InitialScan::OrderContext ctx;
-          if (!resolve_context(orderkey, ctx))
-            continue;
-          meta = OrderMeta{ctx.orderdate_days, ctx.shippriority};
+    if (exists) {
+      const auto ld = line_delta.find(key);
+      if (ld != line_delta.end()) {
+        for (const auto &entry : ld->second) {
+          day[entry.first] += entry.second;
+          if (day[entry.first] == 0)
+            day.erase(entry.first);
         }
-        TpchQ3OrderSummary summary;
-        summary.orderkey = PackTpchQ3Orderkey(orderkey);
-        summary.orderdate_days = PackTpchQ3Date(meta.orderdate_days);
-        summary.shippriority = PackTpchQ3Shippriority(meta.shippriority);
-        for (const auto &delta : order_deltas.second)
-          ApplyLineitemDelta(index, summary, delta);
-        if (summary.bucket_count == 0)
-          continue;
-        index.orders.push_back(summary);
-        needs_resort = true;
-        changed = true;
-        ++applied_lineitem_orders;
-        continue;
       }
-      auto &summary = index.orders[position];
-      const auto old_max = index.MaxShipdate(summary);
-      for (const auto &delta : order_deltas.second)
-        ApplyLineitemDelta(index, summary, delta);
-      if (summary.bucket_count == 0) {
-        RemoveOrderFromIndex(index, orderkey);
-        needs_resort = true;
-        changed = true;
-        ++applied_lineitem_orders;
-        continue;
+      std::vector<TpchQ3ShipdateBucket> buckets;
+      if (!day.empty()) {
+        FinalizeTpchQ3OrderSummary(buckets, day);
+        TpchQ3Entry entry;
+        entry.bound = BoundOf(day);
+        entry.orderkey = key;
+        entry.orderdate = rec.orderdate;
+        entry.shippriority = rec.shippriority;
+        rec.bound = entry.bound;
+        rec.seg_flags = static_cast<uint8_t>((rec.seg_flags & 0x7F) | 0x80);
+        if (!buckets.empty())
+          segtx(rec.segment()).Insert(entry, buckets);
+        else
+          rec.seg_flags = static_cast<uint8_t>(rec.seg_flags & 0x7F);
+      } else {
+        rec.bound = 0;
+        rec.seg_flags = static_cast<uint8_t>(rec.seg_flags & 0x7F);
       }
-      if (index.MaxShipdate(summary) != old_max)
-        needs_resort = true;
-      changed = true;
-      ++applied_lineitem_orders;
-    }
-    if (changed && needs_resort)
-      SortTpchQ3SegmentIntervalIndex(index);
-    if (changed) {
-      any_changed = true;
-      outcome.action = core::MaintenanceAction::ApplyDelta;
+      otx.Set(rec);
+    } else if (had) {
+      otx.Erase(key);
     }
   }
 
-  // RF2: clear segment slots and remove from interval indexes after lineitems.
-  for (const auto &delta : buffer.OrderDeltas()) {
-    if (delta.sign >= 0)
-      continue;
-    if (delta.orderkey < 0 || updated_orders.count(delta.orderkey))
-      continue;
-    core::PartitionId segment = 0;
-    if (static_cast<std::size_t>(delta.orderkey) <
-        order_side->order_segment.size()) {
-      segment = static_cast<core::PartitionId>(
-          order_side->order_segment[static_cast<std::size_t>(delta.orderkey)]);
-      order_side->order_segment[static_cast<std::size_t>(delta.orderkey)] = 0;
-      side_changed = true;
-    }
-    if (segment == 0)
-      continue;
-    auto index_it = indexes.find(segment);
-    if (index_it == indexes.end())
-      continue;
-    RemoveOrderFromIndex(index_it->second, delta.orderkey);
-    any_changed = true;
-    outcome.action = core::MaintenanceAction::ApplyDelta;
-  }
+  const bool side_dirty = otx.Dirty() || ctx.Dirty();
+  bool seg_dirty = false;
+  for (const auto &entry : seg_txns)
+    seg_dirty = seg_dirty || entry.second.Dirty();
+  if (!side_dirty && !seg_dirty)
+    return outcome; // nothing in any tracked segment changed
 
-  // A lineitem UPDATE that does not land on a published order used to still
-  // report ApplyDelta and republish the unchanged top-k (SF=1 Q3 probe).
-  if (!buffer.Deltas().empty() && applied_lineitem_orders == 0 &&
-      !any_changed && !side_changed) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.updates.clear();
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  for (const auto &[segment, index] : indexes) {
-    if (touched_segments.find(segment) == touched_segments.end())
+  outcome.action = core::MaintenanceAction::ApplyDelta;
+  for (auto &[segment, txn] : seg_txns) {
+    if (!txn.Dirty())
       continue;
-    if (!any_changed && !side_changed)
-      continue;
-    const auto version = versions.count(segment) ? versions[segment] : 0;
-    outcome.action = core::MaintenanceAction::ApplyDelta;
+    const auto version = seg_version.count(segment) ? seg_version[segment] : 0;
     outcome.updates.push_back(core::StateImage::Make(
         core::TpchQ3Layout::kAccelerator, segment, version,
-        MakeSegmentIntervalImage(segment, MakeSegmentIntervalState(index))));
+        MakeSegmentIntervalImage(segment, txn.Finish())));
   }
-
-  if (side_changed) {
-    outcome.action = core::MaintenanceAction::ApplyDelta;
-    const auto typed_side =
-        std::static_pointer_cast<const TpchQ3OrderSegmentSide>(
-            std::move(order_side));
+  if (side_dirty) {
+    auto new_side = std::make_shared<TpchQ3Side>();
+    new_side->orders = otx.Finish();
+    new_side->custs = ctx.Finish();
     outcome.updates.push_back(core::StateImage::Make(
         core::TpchQ3Layout::kAccelerator, core::TpchQ3Layout::kOrderSegmentSide,
-        side_version, MakeOrderSegmentSideImage(typed_side)));
+        side_version,
+        MakeOrderSegmentSideImage(std::shared_ptr<const TpchQ3Side>(
+            std::move(new_side)))));
   }
   return outcome;
 }
@@ -961,13 +1075,12 @@ void TpchQ3Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  const TpchQ3SegmentIntervalIndex *interval_index = nullptr;
-  if (!LoadSegmentIntervalIndex(services, partition, interval_index) ||
-      interval_index == nullptr) {
+  std::shared_ptr<const TpchQ3Segment> state;
+  if (!LoadSegment(services, partition, state) || !state) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitResult(ComposeTpchQ3TopK(*interval_index, cutoff), sink);
+  EmitResult(ComposeTpchQ3TopK(*state, cutoff), sink);
 }
 
 void TpchQ3Module::ExecuteFallback(core::AuxEngineServices &services,
@@ -982,138 +1095,180 @@ void TpchQ3Module::ExecuteFallback(core::AuxEngineServices &services,
       std::holds_alternative<core::AuxDate>(arguments.values[1].payload))
     cutoff =
         std::get<core::AuxDate>(arguments.values[1].payload).days_since_epoch;
-  BuildScratch scratch;
-  const auto state = BuildState(services, scratch);
+  const auto built = BuildState(services);
   const auto partition = TpchQ3PartitionFromMktsegment(segment);
-  const auto it = state.segment_intervals.find(partition);
-  EmitResult(ComposeTpchQ3TopK(
-                 it != state.segment_intervals.end()
-                     ? it->second
-                     : TpchQ3SegmentIntervalIndex{partition, {}, {}},
-                 cutoff),
-             sink);
+  const auto it = built.segments.find(partition);
+  if (it == built.segments.end()) {
+    EmitResult({}, sink);
+    return;
+  }
+  EmitResult(ComposeTpchQ3TopK(*it->second, cutoff), sink);
 }
 
-TpchQ3State TpchQ3Module::BuildState(core::AuxEngineServices &services,
-                                     BuildScratch &scratch) const {
+namespace {
+
+// Initial-build temporaries: per-order shipdate revenue lists chained through
+// a chunked node pool (no per-order std::map, no pool reallocation peaks).
+struct DayNode {
+  int64_t revenue = 0;
+  uint32_t next = 0; // index + 1; 0 = end
+  uint16_t date = 0;
+};
+
+class DayNodePool {
+public:
+  uint32_t Add(const DayNode &node) {
+    const std::size_t index = size_++;
+    if (index / kBlock >= blocks_.size())
+      blocks_.push_back(std::make_unique<DayNode[]>(kBlock));
+    blocks_[index / kBlock][index % kBlock] = node;
+    return static_cast<uint32_t>(index + 1);
+  }
+  DayNode &At(uint32_t handle) {
+    const std::size_t index = handle - 1;
+    return blocks_[index / kBlock][index % kBlock];
+  }
+
+private:
+  static constexpr std::size_t kBlock = 1u << 20;
+  std::vector<std::unique_ptr<DayNode[]>> blocks_;
+  std::size_t size_ = 0;
+};
+
+} // namespace
+
+TpchQ3Module::BuiltState
+TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   (void)services;
-  TpchQ3State state;
+  BuiltState built;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q3 requires a typed initial scan source");
+
+  TpchQ3ShardBuilder<TpchQ3CustRec> custs;
   initial_scan->ScanCustomers([&](const TpchQ3CustomerInput &input) {
     const auto partition = TpchQ3PartitionFromMktsegment(input.mktsegment);
-    if (partition != 0)
-      scratch.customer_segments[input.key] = partition;
-  });
-
-  std::unordered_map<int64_t, OrderBuilder> builders;
-  initial_scan->ScanOrders([&](const TpchQ3OrderInput &input) {
-    const auto segment_it = scratch.customer_segments.find(input.custkey);
-    if (segment_it == scratch.customer_segments.end())
+    if (partition == 0 || input.key < 0 ||
+        input.key > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
       return;
-    EnsureOrderSegmentSlot(scratch.order_segment, input.key);
-    scratch.order_segment[static_cast<std::size_t>(input.key)] =
-        static_cast<uint8_t>(segment_it->second);
-    auto &builder = builders[input.key];
-    builder.orderdate_days = input.orderdate_days;
-    builder.shippriority = input.shippriority;
-    builder.segment = segment_it->second;
+    TpchQ3CustRec rec;
+    rec.key = static_cast<uint32_t>(input.key);
+    rec.segment = static_cast<uint8_t>(partition);
+    custs.Add(rec);
   });
+  custs.Sort();
+
+  // `bound` temporarily holds the head of the order's day-node chain.
+  TpchQ3ShardBuilder<TpchQ3OrderRec> orders;
+  initial_scan->ScanOrders([&](const TpchQ3OrderInput &input) {
+    if (input.custkey < 0 ||
+        input.custkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+      return;
+    const auto *cust = custs.Find(static_cast<uint32_t>(input.custkey));
+    if (!cust)
+      return;
+    TpchQ3OrderRec rec;
+    rec.key = PackTpchQ3Orderkey(input.key);
+    rec.orderdate = PackTpchQ3Date(input.orderdate_days);
+    rec.shippriority = PackTpchQ3Shippriority(input.shippriority);
+    rec.seg_flags = cust->segment;
+    rec.bound = 0;
+    orders.Add(rec);
+  });
+  orders.Sort();
+
+  DayNodePool nodes;
   initial_scan->ScanLineitems([&](const TpchQ3LineitemInput &input) {
     if (input.orderkey < 0 ||
-        static_cast<std::size_t>(input.orderkey) >= scratch.order_segment.size())
+        input.orderkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
       return;
-    const auto segment =
-        static_cast<core::PartitionId>(scratch.order_segment[static_cast<std::size_t>(
-            input.orderkey)]);
-    if (segment == 0)
+    auto *order = orders.Find(static_cast<uint32_t>(input.orderkey));
+    if (!order)
       return;
-    auto &builder = builders[input.orderkey];
-    if (builder.segment == 0)
-      builder.segment = segment;
     const auto revenue =
         TpchQ3RevenueRaw(input.extended_price_raw, input.extended_price_scale,
                          input.discount_raw, input.discount_scale);
-    builder.shipdate_revenue[input.shipdate_days] += revenue;
+    const uint16_t date = PackTpchQ3Date(input.shipdate_days);
+    for (auto h = static_cast<uint32_t>(order->bound); h != 0;) {
+      auto &node = nodes.At(h);
+      if (node.date == date) {
+        node.revenue += revenue;
+        return;
+      }
+      h = node.next;
+    }
+    DayNode node;
+    node.revenue = revenue;
+    node.date = date;
+    node.next = static_cast<uint32_t>(order->bound);
+    order->bound = nodes.Add(node);
   });
 
-  for (auto &entry : builders) {
-    if (entry.second.shipdate_revenue.empty())
-      continue;
-    TpchQ3OrderSummary summary;
-    summary.orderkey = PackTpchQ3Orderkey(entry.first);
-    summary.orderdate_days = PackTpchQ3Date(entry.second.orderdate_days);
-    summary.shippriority = PackTpchQ3Shippriority(entry.second.shippriority);
-    std::vector<TpchQ3ShipdateBucket> buckets;
-    FinalizeTpchQ3OrderSummary(buckets, entry.second.shipdate_revenue);
-    auto &index = state.segment_intervals[entry.second.segment];
-    index.segment = entry.second.segment;
-    index.AssignBuckets(summary, std::move(buckets));
-    if (summary.bucket_count == 0)
-      continue;
-    index.orders.push_back(summary);
-  }
-  for (auto &entry : state.segment_intervals)
-    SortTpchQ3SegmentIntervalIndex(entry.second);
-  scratch.order_segment.shrink_to_fit();
-  return state;
-}
-
-TpchQ3SegmentIntervalIndex
-TpchQ3Module::BuildSegment(core::AuxEngineServices &services,
-                           core::PartitionId segment) const {
-  (void)services;
-  TpchQ3SegmentIntervalIndex index{segment, {}, {}};
-  if (!initial_scan)
-    throw std::logic_error("TPC-H Q3 requires a typed initial scan source");
-  const auto mktsegment = TpchQ3MktsegmentFromPartition(segment);
-  if (mktsegment.empty())
-    return index;
-
-  std::unordered_map<int64_t, OrderBuilder> builders;
-  auto consume_join = [&](const TpchQ3OrderInput &order,
-                          const TpchQ3LineitemInput &line) {
-    auto &builder = builders[order.key];
-    builder.orderdate_days = order.orderdate_days;
-    builder.shippriority = order.shippriority;
-    builder.segment = segment;
-    const auto revenue =
-        TpchQ3RevenueRaw(line.extended_price_raw, line.extended_price_scale,
-                         line.discount_raw, line.discount_scale);
-    builder.shipdate_revenue[line.shipdate_days] += revenue;
+  // Group orders with >= 1 shipdate into (segment, orderdate-bin) streams.
+  struct Staging {
+    std::vector<TpchQ3Entry> entries;
+    std::vector<TpchQ3ShipdateBucket> pool;
   };
+  std::map<std::pair<core::PartitionId, uint16_t>, Staging> staging;
+  std::vector<std::pair<int32_t, int64_t>> days;
+  std::map<int32_t, int64_t> day_map;
+  std::vector<TpchQ3ShipdateBucket> buckets;
+  orders.ForEach([&](TpchQ3OrderRec &order) {
+    auto head = static_cast<uint32_t>(order.bound);
+    order.bound = 0;
+    if (head == 0)
+      return;
+    day_map.clear();
+    for (auto h = head; h != 0;) {
+      const auto &node = nodes.At(h);
+      if (node.revenue != 0)
+        day_map[node.date] = node.revenue;
+      h = node.next;
+    }
+    if (day_map.empty())
+      return;
+    FinalizeTpchQ3OrderSummary(buckets, day_map);
+    if (buckets.empty())
+      return;
+    TpchQ3Entry entry;
+    entry.bound = BoundOf(day_map);
+    entry.orderkey = order.key;
+    entry.orderdate = order.orderdate;
+    entry.shippriority = order.shippriority;
+    entry.maxship = buckets.back().shipdate;
+    auto &stage = staging[{order.segment(), BinOf(order.orderdate)}];
+    entry.bucket_begin = static_cast<uint32_t>(stage.pool.size());
+    entry.bucket_count = static_cast<uint16_t>(buckets.size());
+    stage.pool.insert(stage.pool.end(), buckets.begin(), buckets.end());
+    stage.entries.push_back(entry);
+    order.bound = entry.bound;
+    order.seg_flags = static_cast<uint8_t>(order.seg_flags | 0x80);
+  });
 
-  if (!initial_scan->ScanSegmentJoin(mktsegment, consume_join)) {
-    BuildScratch scratch;
-    const auto state = BuildState(services, scratch);
-    const auto it = state.segment_intervals.find(segment);
-    if (it != state.segment_intervals.end())
-      return it->second;
-    return index;
+  std::map<core::PartitionId, std::shared_ptr<TpchQ3Segment>> segments;
+  for (auto &[key, stage] : staging) {
+    std::sort(stage.entries.begin(), stage.entries.end(),
+              [](const TpchQ3Entry &a, const TpchQ3Entry &b) {
+                return EntryBefore(a, b.bound, b.orderkey);
+              });
+    auto &segment = segments[key.first];
+    if (!segment) {
+      segment = std::make_shared<TpchQ3Segment>();
+      segment->segment = key.first;
+    }
+    segment->bins[key.second] = MakeBinList(stage.entries, stage.pool);
+    stage = Staging{}; // release the staging memory bin by bin
   }
-
-  for (auto &entry : builders) {
-    if (entry.second.shipdate_revenue.empty())
-      continue;
-    TpchQ3OrderSummary summary;
-    summary.orderkey = PackTpchQ3Orderkey(entry.first);
-    summary.orderdate_days = PackTpchQ3Date(entry.second.orderdate_days);
-    summary.shippriority = PackTpchQ3Shippriority(entry.second.shippriority);
-    std::vector<TpchQ3ShipdateBucket> buckets;
-    FinalizeTpchQ3OrderSummary(buckets, entry.second.shipdate_revenue);
-    index.AssignBuckets(summary, std::move(buckets));
-    if (summary.bucket_count == 0)
-      continue;
-    index.orders.push_back(summary);
-  }
-  SortTpchQ3SegmentIntervalIndex(index);
-  return index;
+  for (auto &[id, segment] : segments)
+    built.segments[id] = segment;
+  built.side.orders = orders.Finish();
+  built.side.custs = custs.Finish();
+  return built;
 }
 
-bool TpchQ3Module::LoadSegmentIntervalIndex(
+bool TpchQ3Module::LoadSegment(
     core::AuxEngineServices &services, core::PartitionId segment,
-    const TpchQ3SegmentIntervalIndex *&interval_index) const {
-  interval_index = nullptr;
+    std::shared_ptr<const TpchQ3Segment> &state) const {
+  state.reset();
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), {segment});
   for (const auto &image : snapshot.partitions) {
@@ -1123,10 +1278,7 @@ bool TpchQ3Module::LoadSegmentIntervalIndex(
         AsQ3Image(image, TpchQ3ImageKind::SegmentIntervalIndex);
     if (!typed || typed->segment != segment)
       return false;
-    const auto it = typed->state->segment_intervals.find(segment);
-    if (it == typed->state->segment_intervals.end())
-      return false;
-    interval_index = &it->second;
+    state = typed->state;
     return true;
   }
   return false;

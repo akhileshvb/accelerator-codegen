@@ -19,6 +19,19 @@ double Median(std::vector<double> samples) {
   return samples[middle];
 }
 
+// Samples are bounded: once full, the oldest are overwritten (a ring), so a
+// long-running reader thread does not grow without bound.
+constexpr std::size_t kMaxSamples = 1 << 14;
+
+void PushBounded(std::vector<double> &samples, std::size_t &next, double value) {
+  if (samples.size() < kMaxSamples) {
+    samples.push_back(value);
+    return;
+  }
+  samples[next % kMaxSamples] = value;
+  ++next;
+}
+
 } // namespace
 
 AuxStoreDiagnosticsCollector &AuxStoreDiagnosticsCollector::ThreadLocal() {
@@ -34,12 +47,13 @@ void AuxStoreDiagnosticsCollector::Reset() {
   partitions_read_samples_.clear();
   state_bytes_read_samples_.clear();
   execute_calls_ = 0;
+  validity_next_ = validity_us_next_ = partitions_next_ = bytes_next_ = 0;
 }
 
 void AuxStoreDiagnosticsCollector::RecordValidityScan(uint64_t slots_scanned,
                                                       double scan_us) {
-  validity_slots_scanned_samples_.push_back(static_cast<double>(slots_scanned));
-  validity_scan_us_samples_.push_back(scan_us);
+  PushBounded(validity_slots_scanned_samples_, validity_next_, static_cast<double>(slots_scanned));
+  PushBounded(validity_scan_us_samples_, validity_us_next_, scan_us);
 }
 
 void AuxStoreDiagnosticsCollector::RecordPartitionsRead(uint64_t partitions,
@@ -54,11 +68,11 @@ void AuxStoreDiagnosticsCollector::BeginExecute() {
 }
 
 void AuxStoreDiagnosticsCollector::EndExecute() {
-  partitions_read_samples_.push_back(
-      static_cast<double>(current_execute_partitions_));
+  PushBounded(partitions_read_samples_, partitions_next_,
+              static_cast<double>(current_execute_partitions_));
   if (AuxStoreProfilingBytesEnabled()) {
-    state_bytes_read_samples_.push_back(
-        static_cast<double>(current_execute_bytes_));
+    PushBounded(state_bytes_read_samples_, bytes_next_,
+                static_cast<double>(current_execute_bytes_));
   }
   execute_calls_++;
   current_execute_partitions_ = 0;
@@ -88,6 +102,14 @@ bool AuxStoreProfilingBytesEnabled() {
   return enabled;
 }
 
+bool AuxStoreDiagnosticsEnabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("ACCEL_AUX_DIAG");
+    return !(value && value[0] == '0');
+  }();
+  return enabled;
+}
+
 void RecordValidityScan(uint64_t slots_scanned, double scan_us) {
   AuxStoreDiagnosticsCollector::ThreadLocal().RecordValidityScan(slots_scanned,
                                                                  scan_us);
@@ -99,10 +121,12 @@ void RecordPartitionsRead(uint64_t partitions, uint64_t bytes_read) {
 }
 
 void BeginAuxExecuteProfiling() {
+  if (!AuxStoreDiagnosticsEnabled()) return;
   AuxStoreDiagnosticsCollector::ThreadLocal().BeginExecute();
 }
 
 void EndAuxExecuteProfiling() {
+  if (!AuxStoreDiagnosticsEnabled()) return;
   AuxStoreDiagnosticsCollector::ThreadLocal().EndExecute();
 }
 

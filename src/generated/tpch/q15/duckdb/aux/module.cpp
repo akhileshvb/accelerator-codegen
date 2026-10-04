@@ -16,7 +16,7 @@ namespace {
 using core::ByteReader;
 using core::ByteWriter;
 
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 constexpr uint32_t kDirMagic = 0x44313551;   // Q15D
 constexpr uint32_t kWindowMagic = 0x57313551; // Q15W
 constexpr int32_t kEpoch = 719468;
@@ -145,29 +145,16 @@ std::vector<int32_t> CoveringWindowMonths(int32_t shipdate_days) {
   return months;
 }
 
-// Compute max-revenue winner set from window data + supplier directory.
-void ComputeWinners(TpchQ15WindowState &win,
-                    const TpchQ15SupplierDirectory &dir) {
-  if (win.empty || win.revenue_by_supplier.empty()) {
-    win.max_revenue = 0;
-    win.winners.clear();
-    return;
-  }
-  int64_t max_rev = std::numeric_limits<int64_t>::min();
-  for (const auto &[sk, rev] : win.revenue_by_supplier) {
-    if (rev > max_rev) max_rev = rev;
-  }
-  win.max_revenue = max_rev;
-  win.winners.clear();
-  for (const auto &[sk, rev] : win.revenue_by_supplier) {
-    if (rev == max_rev) {
-      const auto it = dir.entries.find(sk);
-      if (it != dir.entries.end())
-        win.winners.emplace_back(sk, it->second);
-    }
-  }
-  std::sort(win.winners.begin(), win.winners.end(),
-            [](const auto &a, const auto &b) { return a.first < b.first; });
+int32_t PrevMonthKey(int32_t key) {
+  return key % 100 == 1 ? key - 100 + 11 : key - 1;
+}
+
+// Window keys (month-start YYYYMM) of the three rolling windows containing a
+// month: the month itself and the two before it.
+void CoveringWindowKeysOfMonth(int32_t month_key, int32_t out[3]) {
+  out[0] = month_key;
+  out[1] = PrevMonthKey(out[0]);
+  out[2] = PrevMonthKey(out[1]);
 }
 
 std::shared_ptr<const TpchQ15StateImage>
@@ -236,6 +223,113 @@ bool ReadSupplier(const core::AuxRow &row, TpchQ15SupplierInput &out) {
 
 } // namespace
 
+// ── State containers ──────────────────────────────────────────────────────
+
+int64_t TpchQ15RevArray::Get(int64_t suppkey) const {
+  const auto it = chunks.find(suppkey >> kQ15RevChunkShift);
+  return it == chunks.end() ? 0 : it->second->v[suppkey & (kQ15RevChunkSize - 1)];
+}
+
+int64_t TpchQ15RevArray::Add(int64_t suppkey, int64_t delta) {
+  auto &slot = chunks[suppkey >> kQ15RevChunkShift];
+  if (!slot)
+    slot = std::make_shared<TpchQ15RevChunk>();
+  else if (slot.use_count() > 1)
+    slot = std::make_shared<TpchQ15RevChunk>(*slot);
+  int64_t &cell = slot->v[suppkey & (kQ15RevChunkSize - 1)];
+  const int64_t old = cell;
+  cell += delta;
+  return old;
+}
+
+void TpchQ15WindowState::Rescan() {
+  int64_t count = 0;
+  int64_t max_rev = std::numeric_limits<int64_t>::min();
+  winners.clear();
+  for (const auto &[cid, chunk] : rev.chunks) {
+    for (int64_t i = 0; i < kQ15RevChunkSize; ++i) {
+      const int64_t r = chunk->v[i];
+      if (r == 0)
+        continue;
+      ++count;
+      if (r > max_rev) {
+        max_rev = r;
+        winners.clear();
+        winners.push_back((cid << kQ15RevChunkShift) | i);
+      } else if (r == max_rev) {
+        winners.push_back((cid << kQ15RevChunkShift) | i);
+      }
+    }
+  }
+  nonzero = count;
+  empty = count == 0;
+  max_revenue = count == 0 ? 0 : max_rev;
+}
+
+const TpchQ15SupplierRecord *
+TpchQ15SupplierDirectory::Find(int64_t suppkey) const {
+  const auto it = chunks.find(suppkey >> kQ15DirChunkShift);
+  if (it == chunks.end())
+    return nullptr;
+  const auto &items = it->second->items;
+  const auto pos = std::lower_bound(
+      items.begin(), items.end(), suppkey,
+      [](const auto &e, int64_t k) { return e.first < k; });
+  return pos != items.end() && pos->first == suppkey ? pos->second.get()
+                                                     : nullptr;
+}
+
+void TpchQ15SupplierDirectory::Set(int64_t suppkey, TpchQ15SupplierRecord record) {
+  auto &slot = chunks[suppkey >> kQ15DirChunkShift];
+  if (!slot)
+    slot = std::make_shared<TpchQ15DirChunk>();
+  else if (slot.use_count() > 1)
+    slot = std::make_shared<TpchQ15DirChunk>(*slot);
+  auto &items = slot->items;
+  auto rec = std::make_shared<const TpchQ15SupplierRecord>(std::move(record));
+  const auto pos = std::lower_bound(
+      items.begin(), items.end(), suppkey,
+      [](const auto &e, int64_t k) { return e.first < k; });
+  if (pos != items.end() && pos->first == suppkey)
+    pos->second = std::move(rec);
+  else
+    items.insert(pos, {suppkey, std::move(rec)});
+}
+
+void TpchQ15SupplierDirectory::Erase(int64_t suppkey) {
+  const auto it = chunks.find(suppkey >> kQ15DirChunkShift);
+  if (it == chunks.end() || !Find(suppkey))
+    return;
+  if (it->second.use_count() > 1)
+    it->second = std::make_shared<TpchQ15DirChunk>(*it->second);
+  auto &items = it->second->items;
+  const auto pos = std::lower_bound(
+      items.begin(), items.end(), suppkey,
+      [](const auto &e, int64_t k) { return e.first < k; });
+  items.erase(pos);
+  if (items.empty())
+    chunks.erase(it);
+}
+
+std::size_t TpchQ15SupplierDirectory::Size() const {
+  std::size_t n = 0;
+  for (const auto &[cid, chunk] : chunks)
+    n += chunk->items.size();
+  return n;
+}
+
+void TpchQ15InitialScan::ScanMonthRevenue(
+    const std::function<void(int32_t, int64_t, int64_t)> &consumer) {
+  std::map<std::pair<int32_t, int64_t>, int64_t> groups;
+  ScanLineitems([&](const TpchQ15LineitemInput &input) {
+    groups[{MonthKey(input.shipdate_days), input.suppkey}] += TpchQ15RevenueRaw(
+        input.extended_price_raw, input.extended_price_scale,
+        input.discount_raw, input.discount_scale);
+  });
+  for (const auto &[key, rev] : groups)
+    consumer(key.first, key.second, rev);
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 int32_t TpchQ15MonthKeyFromDays(int32_t days_since_epoch) {
@@ -271,12 +365,14 @@ std::vector<uint8_t> EncodeTpchQ15Directory(
   ByteWriter writer;
   writer.U32(kVersion);
   writer.U32(kDirMagic);
-  writer.I64(static_cast<int64_t>(dir.entries.size()));
-  for (const auto &[key, record] : dir.entries) {
-    writer.I64(key);
-    writer.String(record.name);
-    writer.String(record.address);
-    writer.String(record.phone);
+  writer.I64(static_cast<int64_t>(dir.Size()));
+  for (const auto &[cid, chunk] : dir.chunks) {
+    for (const auto &[key, record] : chunk->items) {
+      writer.I64(key);
+      writer.String(record->name);
+      writer.String(record->address);
+      writer.String(record->phone);
+    }
   }
   return writer.bytes;
 }
@@ -291,7 +387,7 @@ bool DecodeTpchQ15Directory(const std::vector<uint8_t> &bytes,
   int64_t count = 0;
   if (!reader.I64(count) || count < 0)
     return false;
-  dir.entries.clear();
+  dir.chunks.clear();
   for (int64_t i = 0; i < count; ++i) {
     int64_t key = 0;
     if (!reader.I64(key))
@@ -303,7 +399,7 @@ bool DecodeTpchQ15Directory(const std::vector<uint8_t> &bytes,
       return false;
     if (!reader.String(rec.phone))
       return false;
-    dir.entries[key] = std::move(rec);
+    dir.Set(key, std::move(rec));
   }
   return true;
 }
@@ -315,19 +411,19 @@ std::vector<uint8_t> EncodeTpchQ15Window(int32_t month_key,
   writer.U32(kWindowMagic);
   writer.I32(month_key);
   writer.U32(static_cast<uint32_t>(win.winners.empty() ? 0 : 1)); // has_winners
-  writer.I64(static_cast<int64_t>(win.revenue_by_supplier.size()));
-  for (const auto &[key, rev] : win.revenue_by_supplier) {
-    writer.I64(key);
-    writer.I64(rev);
+  writer.I64(win.nonzero);
+  for (const auto &[cid, chunk] : win.rev.chunks) {
+    for (int64_t i = 0; i < kQ15RevChunkSize; ++i) {
+      if (chunk->v[i] == 0)
+        continue;
+      writer.I64((cid << kQ15RevChunkShift) | i);
+      writer.I64(chunk->v[i]);
+    }
   }
   writer.I64(win.max_revenue);
   writer.I64(static_cast<int64_t>(win.winners.size()));
-  for (const auto &[sk, rec] : win.winners) {
+  for (const auto sk : win.winners)
     writer.I64(sk);
-    writer.String(rec.name);
-    writer.String(rec.address);
-    writer.String(rec.phone);
-  }
   return writer.bytes;
 }
 
@@ -342,35 +438,25 @@ bool DecodeTpchQ15Window(const std::vector<uint8_t> &bytes, int32_t month_key,
   if (!reader.I32(stored_month) || stored_month != month_key)
     return false;
   uint32_t has_winners = 0;
-  reader.U32(has_winners); // best-effort: don't fail if field absent (v1 compat)
+  reader.U32(has_winners);
   int64_t count = 0;
   if (!reader.I64(count) || count < 0)
     return false;
-  win.revenue_by_supplier.clear();
-  win.empty = (count == 0);
+  win = TpchQ15WindowState{};
   for (int64_t i = 0; i < count; ++i) {
     int64_t key = 0, rev = 0;
     if (!reader.I64(key) || !reader.I64(rev))
       return false;
-    win.revenue_by_supplier[key] = rev;
-    win.empty = false;
+    win.rev.Add(key, rev);
   }
-  win.max_revenue = 0;
-  win.winners.clear();
-  if (has_winners) {
-    int64_t max_rev = 0, winner_count = 0;
-    if (!reader.I64(max_rev) || !reader.I64(winner_count) ||
-        winner_count < 0)
+  win.Rescan();
+  int64_t max_rev = 0, winner_count = 0;
+  if (!reader.I64(max_rev) || !reader.I64(winner_count) || winner_count < 0)
+    return false;
+  for (int64_t i = 0; i < winner_count; ++i) {
+    int64_t sk = 0;
+    if (!reader.I64(sk))
       return false;
-    win.max_revenue = max_rev;
-    for (int64_t i = 0; i < winner_count; ++i) {
-      int64_t sk = 0;
-      TpchQ15SupplierRecord rec;
-      if (!reader.I64(sk) || !reader.String(rec.name) ||
-          !reader.String(rec.address) || !reader.String(rec.phone))
-        return false;
-      win.winners.emplace_back(sk, std::move(rec));
-    }
   }
   return true;
 }
@@ -421,8 +507,9 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ15Module::CreateTxnBuffer() const {
 
 void TpchQ15Module::Build(core::AuxEngineServices &services,
                            core::StateBuilder &builder) {
-  const auto state = BuildState(services);
-  const auto typed_state = std::make_shared<const TpchQ15State>(state);
+  auto built = BuildState(services);
+  const auto typed_state = std::make_shared<const TpchQ15State>(std::move(built));
+  const auto &state = *typed_state;
 
   builder.Write(core::StateImage::Make(
       TpchQ15Layout::kAccelerator, TpchQ15Layout::kSupplierDirectory, 0,
@@ -594,21 +681,6 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
       core::FinishRebuildAll(outcome);
       return outcome;
     }
-    core::StateSnapshot dir_snapshot = services.StateStore().ReadPartitions(
-        visibility, {TpchQ15Layout::kSupplierDirectory});
-    const TpchQ15SupplierDirectory *dir_ptr = nullptr;
-    for (const auto &image : dir_snapshot.partitions) {
-      if (image.partition != TpchQ15Layout::kSupplierDirectory)
-        continue;
-      const auto *typed = AsQ15Image(image, TpchQ15ImageKind::SupplierDirectory);
-      if (typed)
-        dir_ptr = &typed->state->directory;
-      break;
-    }
-    if (!dir_ptr) {
-      core::FinishRebuildAll(outcome);
-      return outcome;
-    }
     int32_t scan_lo = std::numeric_limits<int32_t>::max();
     int32_t scan_hi = std::numeric_limits<int32_t>::min();
     for (const auto month_key : touched_months) {
@@ -629,9 +701,7 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
                CoveringWindowMonths(input.shipdate_days)) {
             if (!touched_months.count(month_key))
               continue;
-            auto &ws = rebuilt[month_key];
-            ws.revenue_by_supplier[input.suppkey] += revenue;
-            ws.empty = false;
+            rebuilt[month_key].rev.Add(input.suppkey, revenue);
           }
         });
     for (const auto month : touched_months) {
@@ -639,7 +709,7 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
       const auto it = rebuilt.find(month);
       if (it != rebuilt.end())
         ws = std::move(it->second);
-      ComputeWinners(ws, *dir_ptr);
+      ws.Rescan();
       auto win_state = std::make_shared<const TpchQ15State>(
           TpchQ15State{TpchQ15SupplierDirectory{}, {{month, std::move(ws)}}});
       outcome.updates.push_back(core::StateImage::Make(
@@ -669,40 +739,10 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
     windows[month] = std::move(ws);
   }
 
-  // Load directory: copy only when supplier deltas exist (to mutate it);
-  // otherwise borrow via shared_ptr to avoid 10K-entry string copy (~3500us).
-  core::StateSnapshot dir_snapshot;
-  const TpchQ15SupplierDirectory *dir_ptr = nullptr;
-  TpchQ15SupplierDirectory dir_copy;
-
-  if (has_supplier_deltas) {
-    if (!LoadDirectory(services, dir_copy)) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    dir_ptr = &dir_copy;
-  } else {
-    dir_snapshot = services.StateStore().ReadPartitions(
-        visibility, {TpchQ15Layout::kSupplierDirectory});
-    for (const auto &image : dir_snapshot.partitions) {
-      if (image.partition != TpchQ15Layout::kSupplierDirectory)
-        continue;
-      const auto *typed = AsQ15Image(image, TpchQ15ImageKind::SupplierDirectory);
-      if (!typed) break;
-      dir_ptr = &typed->state->directory;
-      break;
-    }
-    if (!dir_ptr) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-  }
-
-  // Apply lineitem deltas to windows
+  // Apply lineitem deltas to windows, maintaining the max/winner set
+  // incrementally; a full pass over the dense array is needed only when the
+  // sole current winner of a window decreases.
+  std::set<int32_t> rescan;
   for (const auto &delta : buffer.LineitemDeltas()) {
     auto it = windows.find(delta.month_key);
     if (it == windows.end())
@@ -710,28 +750,52 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
     auto &ws = it->second;
     const int64_t signed_rev =
         static_cast<int64_t>(delta.sign) * delta.revenue_raw;
-    const auto key_it = ws.revenue_by_supplier.find(delta.suppkey);
-    if (key_it == ws.revenue_by_supplier.end()) {
-      if (signed_rev != 0) {
-        ws.revenue_by_supplier[delta.suppkey] = signed_rev;
-        ws.empty = false;
-      }
-    } else {
-      key_it->second += signed_rev;
-      if (key_it->second == 0) {
-        ws.revenue_by_supplier.erase(key_it);
-        if (ws.revenue_by_supplier.empty())
-          ws.empty = true;
-      }
+    if (signed_rev == 0)
+      continue;
+    const int64_t old_rev = ws.rev.Add(delta.suppkey, signed_rev);
+    const int64_t new_rev = old_rev + signed_rev;
+    if (old_rev == 0)
+      ++ws.nonzero;
+    if (new_rev == 0)
+      --ws.nonzero;
+    ws.empty = ws.nonzero == 0;
+    if (rescan.count(delta.month_key))
+      continue;
+    const bool was_winner =
+        old_rev != 0 && !ws.winners.empty() && old_rev == ws.max_revenue;
+    const auto pos = std::lower_bound(ws.winners.begin(), ws.winners.end(),
+                                      delta.suppkey);
+    if (was_winner && new_rev < old_rev) {
+      if (ws.winners.size() > 1)
+        ws.winners.erase(pos); // max unchanged: another supplier holds it
+      else
+        rescan.insert(delta.month_key);
+    } else if (new_rev != 0 &&
+               (ws.winners.empty() || new_rev > ws.max_revenue)) {
+      ws.max_revenue = new_rev;
+      ws.winners.assign(1, delta.suppkey);
+    } else if (new_rev != 0 && new_rev == ws.max_revenue && !was_winner) {
+      ws.winners.insert(pos, delta.suppkey);
     }
   }
+  for (auto &[month, ws] : windows) {
+    if (rescan.count(month) || ws.nonzero == 0)
+      ws.Rescan();
+  }
 
-  // Apply supplier deltas to directory
+  // Apply supplier deltas to a directory copy (chunk-level copy on write).
+  TpchQ15SupplierDirectory dir_copy;
   if (has_supplier_deltas) {
+    if (!LoadDirectory(services, dir_copy)) {
+      outcome.action = core::MaintenanceAction::RebuildAll;
+      outcome.invalidations = All();
+      outcome.pending_rebuild = outcome.invalidations;
+      return outcome;
+    }
     for (const auto &delta : buffer.SupplierDeltas()) {
       if (!delta.old_name.empty() || !delta.old_address.empty() ||
           !delta.old_phone.empty()) {
-        dir_copy.entries.erase(delta.suppkey);
+        dir_copy.Erase(delta.suppkey);
       }
       if (!delta.new_name.empty() || !delta.new_address.empty() ||
           !delta.new_phone.empty()) {
@@ -739,32 +803,25 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
         rec.name = delta.new_name;
         rec.address = delta.new_address;
         rec.phone = delta.new_phone;
-        dir_copy.entries[delta.suppkey] = std::move(rec);
+        dir_copy.Set(delta.suppkey, std::move(rec));
       }
     }
   }
 
-  // Recompute winners for touched windows after applying all deltas.
-  for (auto &[month, ws] : windows) {
-    ComputeWinners(ws, *dir_ptr);
-  }
-
   outcome.action = core::MaintenanceAction::ApplyDelta;
 
-  // Publish directory only if supplier deltas exist
   if (has_supplier_deltas) {
     auto dir_state = std::make_shared<const TpchQ15State>(
-        TpchQ15State{dir_copy, {}});
+        TpchQ15State{std::move(dir_copy), {}});
     outcome.updates.push_back(core::StateImage::Make(
         TpchQ15Layout::kAccelerator, TpchQ15Layout::kSupplierDirectory, 0,
         MakeDirImage(dir_state)));
   }
 
-  // Publish updated windows
-  for (const auto &[month, ws] : windows) {
+  for (auto &[month, ws] : windows) {
     const auto partition = static_cast<core::PartitionId>(month);
     auto win_state = std::make_shared<const TpchQ15State>(
-        TpchQ15State{TpchQ15SupplierDirectory{}, {{month, ws}}});
+        TpchQ15State{TpchQ15SupplierDirectory{}, {{month, std::move(ws)}}});
     outcome.updates.push_back(core::StateImage::Make(
         TpchQ15Layout::kAccelerator, partition, 0,
         MakeWindowImage(month, win_state)));
@@ -806,25 +863,30 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
 
   const auto month_key = TpchQ15MonthKeyFromDays(start);
 
-  // Direct state access: read partition snapshot and reference the shared
-  // TpchQ15State pointer to avoid copying the revenue_by_supplier map
-  // (10K+ entries) on every query hit. Only winners + max_revenue are needed.
+  // Direct state access: reference the shared state; only winners +
+  // max_revenue are needed (no revenue array access).
+  // The window and the supplier directory from one snapshot.
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(),
-      {static_cast<core::PartitionId>(month_key)});
+      {static_cast<core::PartitionId>(month_key), TpchQ15Layout::kSupplierDirectory});
   const TpchQ15WindowState *win = nullptr;
+  const TpchQ15SupplierDirectory *dir = nullptr;
   for (const auto &image : snapshot.partitions) {
+    if (image.partition == TpchQ15Layout::kSupplierDirectory) {
+      if (const auto *typed = AsQ15Image(image, TpchQ15ImageKind::SupplierDirectory))
+        dir = &typed->state->directory;
+      continue;
+    }
     if (static_cast<int32_t>(image.partition) != month_key)
       continue;
     const auto *typed = AsQ15Image(image, TpchQ15ImageKind::MonthWindow);
     if (!typed || typed->month_key != month_key)
-      break;
+      continue;
     const auto it = typed->state->windows.find(month_key);
     if (it != typed->state->windows.end())
       win = &it->second;
-    break;
   }
-  if (!win) {
+  if (!win || !dir) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
@@ -839,7 +901,15 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  EmitResult(win->winners, win->max_revenue, sink);
+  // Join the winners with the directory as of this snapshot (a supplier no
+  // longer there drops out; renamed ones show their current record).
+  std::vector<std::pair<int64_t, TpchQ15SupplierRecord>> winners;
+  winners.reserve(win->winners.size());
+  for (const auto sk : win->winners) {
+    if (const auto *rec = dir->Find(sk))
+      winners.emplace_back(sk, *rec);
+  }
+  EmitResult(winners, win->max_revenue, sink);
 }
 
 
@@ -863,8 +933,8 @@ void TpchQ15Module::ExecuteFallback(core::AuxEngineServices &services,
   TpchQ15SupplierDirectory dir;
 
   initial_scan->ScanSuppliers([&](const TpchQ15SupplierInput &input) {
-    dir.entries[input.suppkey] =
-        TpchQ15SupplierRecord{input.name, input.address, input.phone};
+    dir.Set(input.suppkey,
+            TpchQ15SupplierRecord{input.name, input.address, input.phone});
   });
 
   initial_scan->ScanLineitems([&](const TpchQ15LineitemInput &input) {
@@ -895,9 +965,8 @@ void TpchQ15Module::ExecuteFallback(core::AuxEngineServices &services,
   std::vector<std::pair<int64_t, TpchQ15SupplierRecord>> winners;
   for (const auto &[sk, rev] : total_rev) {
     if (rev == max_rev) {
-      const auto it = dir.entries.find(sk);
-      if (it != dir.entries.end())
-        winners.emplace_back(sk, it->second);
+      if (const auto *rec = dir.Find(sk))
+        winners.emplace_back(sk, *rec);
     }
   }
   std::sort(winners.begin(), winners.end(),
@@ -914,22 +983,22 @@ TpchQ15State TpchQ15Module::BuildState(
     throw std::logic_error("TPC-H Q15 requires a typed initial scan source");
 
   initial_scan->ScanSuppliers([&](const TpchQ15SupplierInput &input) {
-    state.directory.entries[input.suppkey] =
-        TpchQ15SupplierRecord{input.name, input.address, input.phone};
+    state.directory.Set(
+        input.suppkey,
+        TpchQ15SupplierRecord{input.name, input.address, input.phone});
   });
 
-  initial_scan->ScanLineitems([&](const TpchQ15LineitemInput &input) {
-    const auto revenue = TpchQ15RevenueRaw(
-        input.extended_price_raw, input.extended_price_scale,
-        input.discount_raw, input.discount_scale);
-    for (const auto month_key : CoveringWindowMonths(input.shipdate_days)) {
-      auto &ws = state.windows[month_key];
-      ws.revenue_by_supplier[input.suppkey] += revenue;
-      ws.empty = false;
-    }
-  });
+  // One (month, supplier) group per row; each feeds the three rolling windows
+  // that contain the month.
+  initial_scan->ScanMonthRevenue(
+      [&](int32_t month_key, int64_t suppkey, int64_t revenue) {
+        int32_t keys[3];
+        CoveringWindowKeysOfMonth(month_key, keys);
+        for (const auto key : keys)
+          state.windows[key].rev.Add(suppkey, revenue);
+      });
   for (auto &[month_key, ws] : state.windows)
-    ComputeWinners(ws, state.directory);
+    ws.Rescan();
   return state;
 }
 
@@ -968,10 +1037,13 @@ bool TpchQ15Module::LoadMonth(core::AuxEngineServices &services,
       return false;
     const auto it = typed->state->windows.find(month_key);
     if (it != typed->state->windows.end())
-      win = it->second;
+      win = it->second; // shares the array chunks; they are cloned on write
     return true;
   }
-  return false;
+  // No image yet: a month without data has no window partition (Build writes
+  // only non-empty windows), so it starts empty.
+  win = TpchQ15WindowState{};
+  return true;
 }
 
 bool TpchQ15Module::LoadDirectory(core::AuxEngineServices &services,
@@ -985,7 +1057,7 @@ bool TpchQ15Module::LoadDirectory(core::AuxEngineServices &services,
     const auto *typed = AsQ15Image(image, TpchQ15ImageKind::SupplierDirectory);
     if (!typed)
       return false;
-    dir = typed->state->directory;
+    dir = typed->state->directory; // shares chunks (COW)
     return true;
   }
   return false;

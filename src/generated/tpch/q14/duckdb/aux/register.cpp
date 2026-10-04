@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <set>
@@ -120,31 +121,101 @@ struct TpchQ14Scan : TpchQ14InitialScan {
                     DateDays(ChunkValue(chunk, 3, row))});
         });
   }
+  // Sargable shipdate ranges (zone-map friendly), one per month.
+  static std::string MonthRanges(const std::set<int32_t> &months) {
+    std::ostringstream out;
+    bool first = true;
+    for (const auto month : months) {
+      auto year = month / 100;
+      auto mon = month % 100;
+      auto next_year = mon == 12 ? year + 1 : year;
+      auto next_mon = mon == 12 ? 1 : mon + 1;
+      char buf[128];
+      std::snprintf(buf, sizeof(buf),
+                    "(l_shipdate >= DATE '%04d-%02d-01' AND l_shipdate < DATE "
+                    "'%04d-%02d-01')",
+                    year, mon, next_year, next_mon);
+      if (!first)
+        out << " OR ";
+      first = false;
+      out << buf;
+    }
+    return out.str();
+  }
+  static constexpr const char *kRevenueRaw =
+      "((l_extendedprice * 100)::BIGINT * (100 - (l_discount * 100)::BIGINT))";
+  static constexpr const char *kMonthKey =
+      "(year(l_shipdate) * 100 + month(l_shipdate))::BIGINT";
   void ScanLineitemsForMonths(
       const std::set<int32_t> &months,
       const std::function<void(const TpchQ14LineitemInput &)> &consumer)
       override {
     if (months.empty())
       return;
-    std::ostringstream sql;
-    sql << "SELECT l_partkey, l_extendedprice, l_discount, l_shipdate "
-           "FROM lineitem WHERE (EXTRACT(year FROM l_shipdate)::INT * 100 + "
-           "EXTRACT(month FROM l_shipdate)::INT) IN (";
-    bool first = true;
-    for (const auto month : months) {
-      if (!first)
-        sql << ", ";
-      first = false;
-      sql << month;
-    }
-    sql << ")";
+    const std::string sql =
+        "SELECT l_partkey, l_extendedprice, l_discount, l_shipdate FROM "
+        "lineitem WHERE " + MonthRanges(months);
     ScanQueryStreaming(
-        connection, sql.str(),
+        connection, sql,
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           consumer({SafeInt64(ChunkValue(chunk, 0, row)),
                     DecimalRaw(ChunkValue(chunk, 1, row)), 2,
                     DecimalRaw(ChunkValue(chunk, 2, row)), 2,
                     DateDays(ChunkValue(chunk, 3, row))});
+        });
+  }
+  void ScanPartPromo(
+      const std::function<void(int64_t, bool)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT p_partkey, CASE WHEN p_type LIKE 'PROMO%' THEN 1 ELSE 0 END "
+        "FROM part",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer(SafeInt64(ChunkValue(chunk, 0, row)),
+                   SafeInt64(ChunkValue(chunk, 1, row)) != 0);
+        });
+  }
+  bool ScanMonthAggregates(
+      const std::set<int32_t> &months,
+      const std::function<void(int32_t, int64_t, int64_t, int64_t)> &consumer)
+      override {
+    std::ostringstream sql;
+    sql << "SELECT " << kMonthKey << ", SUM(" << kRevenueRaw
+        << ")::BIGINT, SUM(CASE WHEN p_type LIKE 'PROMO%' THEN " << kRevenueRaw
+        << " ELSE 0 END)::BIGINT, COUNT(*)::BIGINT FROM lineitem JOIN part ON "
+           "l_partkey = p_partkey";
+    if (!months.empty())
+      sql << " WHERE " << MonthRanges(months);
+    sql << " GROUP BY 1";
+    ScanQueryStreaming(
+        connection, sql.str(),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer(static_cast<int32_t>(SafeInt64(ChunkValue(chunk, 0, row))),
+                   SafeInt64(ChunkValue(chunk, 1, row)),
+                   SafeInt64(ChunkValue(chunk, 2, row)),
+                   SafeInt64(ChunkValue(chunk, 3, row)));
+        });
+    return true;
+  }
+  void ScanPartMonthRevenue(
+      const std::vector<int64_t> &keys,
+      const std::function<void(int64_t, int32_t, int64_t, int64_t)> &consumer)
+      override {
+    if (keys.empty())
+      return;
+    std::ostringstream sql;
+    sql << "SELECT l_partkey, " << kMonthKey << ", SUM(" << kRevenueRaw
+        << ")::BIGINT, COUNT(*)::BIGINT FROM lineitem WHERE l_partkey IN (";
+    for (std::size_t i = 0; i < keys.size(); ++i)
+      sql << (i ? ", " : "") << keys[i];
+    sql << ") GROUP BY 1, 2";
+    ScanQueryStreaming(
+        connection, sql.str(),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer(SafeInt64(ChunkValue(chunk, 0, row)),
+                   static_cast<int32_t>(SafeInt64(ChunkValue(chunk, 1, row))),
+                   SafeInt64(ChunkValue(chunk, 2, row)),
+                   SafeInt64(ChunkValue(chunk, 3, row)));
         });
   }
   ::duckdb::Connection &connection;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <iterator>
@@ -79,29 +81,18 @@ public:
   }
 };
 
-// Packed live records. Encode still writes the original I32/I64 wire format.
-// TPC-H dates are DuckDB days since 1970 (~8000–11000 for 1992–1998); orderkeys
-// fit uint32 through at least SF100. Out-of-range values go to overflow maps so
-// Execute results stay exact.
+// Packed live records. Encode still writes a fixed wire format.
+// TPC-H dates are DuckDB days since 1970 (~8000-11000 for 1992-1998); orderkeys
+// fit uint32 through at least SF100.
 #pragma pack(push, 1)
 struct TpchQ3ShipdateBucket {
   uint16_t shipdate = 0;
   int64_t suffix_revenue = 0;
 };
-
-struct TpchQ3OrderSummary {
-  uint32_t orderkey = 0;
-  uint16_t orderdate_days = 0;
-  uint8_t shippriority = 0;
-  uint32_t bucket_begin = 0;
-  uint16_t bucket_count = 0;
-};
 #pragma pack(pop)
 
 static_assert(sizeof(TpchQ3ShipdateBucket) == 10,
               "Q3 shipdate bucket must stay 10 bytes packed");
-static_assert(sizeof(TpchQ3OrderSummary) == 13,
-              "Q3 order summary must stay 13 bytes packed");
 
 inline uint16_t PackTpchQ3Date(int32_t days) {
   if (days < 0 || days > static_cast<int32_t>(std::numeric_limits<uint16_t>::max()))
@@ -123,80 +114,234 @@ inline uint8_t PackTpchQ3Shippriority(int32_t shippriority) {
   return static_cast<uint8_t>(shippriority);
 }
 
-struct TpchQ3SegmentIntervalIndex {
-  core::PartitionId segment = 0;
-  std::vector<TpchQ3OrderSummary> orders;
-  std::vector<TpchQ3ShipdateBucket> bucket_pool;
-  // RF maintenance only; Execute scans `orders`. Hashmap is one entry per
-  // order in this segment (not a dense array up to max orderkey). Mutable so
-  // ApplyDelta can rebuild it when a published image has orders but no map.
-  mutable std::unordered_map<int64_t, std::size_t> order_positions;
+// ---------------------------------------------------------------------------
+// Persistent (copy-on-write) hash-sharded sorted maps keyed by uint32 `key`.
+// A published index is never mutated: a write copies the 256-entry top array,
+// the touched 256-entry mid arrays and the touched leaves (a few hundred
+// entries); everything else stays shared.
+// ---------------------------------------------------------------------------
+inline uint32_t TpchQ3ShardOf(uint32_t key) {
+  return static_cast<uint32_t>((static_cast<uint64_t>(key) *
+                                0x9E3779B97F4A7C15ULL) >> 48);
+}
 
-  int32_t BucketShipdate(std::size_t pool_index) const {
-    return static_cast<int32_t>(bucket_pool[pool_index].shipdate);
+template <typename E> struct TpchQ3ShardIndex {
+  using Leaf = std::vector<E>;
+  struct Mid {
+    std::array<std::shared_ptr<const Leaf>, 256> leaves;
+  };
+  std::array<std::shared_ptr<const Mid>, 256> mids;
+
+  static const E *FindIn(const Leaf *leaf, uint32_t key) {
+    if (!leaf)
+      return nullptr;
+    auto it = std::lower_bound(
+        leaf->begin(), leaf->end(), key,
+        [](const E &e, uint32_t k) { return e.key < k; });
+    return (it != leaf->end() && it->key == key) ? &*it : nullptr;
   }
-
-  int32_t MaxShipdate(const TpchQ3OrderSummary &order) const {
-    if (order.bucket_count == 0)
-      return 0;
-    return BucketShipdate(static_cast<std::size_t>(order.bucket_begin) +
-                          order.bucket_count - 1);
+  const E *Find(uint32_t key) const {
+    const auto shard = TpchQ3ShardOf(key);
+    const auto &mid = mids[shard >> 8];
+    if (!mid)
+      return nullptr;
+    return FindIn(mid->leaves[shard & 255].get(), key);
   }
-
-  void AssignBuckets(TpchQ3OrderSummary &order,
-                     std::vector<TpchQ3ShipdateBucket> &&buckets) {
-    if (buckets.size() > std::numeric_limits<uint16_t>::max())
-      throw std::runtime_error("TPC-H Q3 bucket_count exceeds uint16");
-    order.bucket_begin = static_cast<uint32_t>(bucket_pool.size());
-    order.bucket_count = static_cast<uint16_t>(buckets.size());
-    bucket_pool.insert(bucket_pool.end(),
-                       std::make_move_iterator(buckets.begin()),
-                       std::make_move_iterator(buckets.end()));
-  }
-
-  void ClearPositions() { order_positions.clear(); }
-
-  void SetPosition(int64_t orderkey, std::size_t index) {
-    order_positions[orderkey] = index;
-  }
-
-  void ErasePosition(int64_t orderkey) { order_positions.erase(orderkey); }
-
-  void RebuildPositions() const {
-    order_positions.clear();
-    for (std::size_t i = 0; i < orders.size(); ++i)
-      order_positions[static_cast<int64_t>(orders[i].orderkey)] = i;
-  }
-
-  bool FindPosition(int64_t orderkey, std::size_t &index) const {
-    if (order_positions.size() != orders.size())
-      RebuildPositions();
-    const auto it = order_positions.find(orderkey);
-    if (it != order_positions.end() && it->second < orders.size() &&
-        static_cast<int64_t>(orders[it->second].orderkey) == orderkey) {
-      index = it->second;
-      return true;
+  template <typename F> void ForEach(F &&f) const {
+    for (const auto &mid : mids) {
+      if (!mid)
+        continue;
+      for (const auto &leaf : mid->leaves)
+        if (leaf)
+          for (const auto &e : *leaf)
+            f(e);
     }
-    for (std::size_t i = 0; i < orders.size(); ++i) {
-      if (static_cast<int64_t>(orders[i].orderkey) == orderkey) {
-        index = i;
-        order_positions[orderkey] = i;
-        return true;
+  }
+};
+
+template <typename E> class TpchQ3ShardTxn {
+public:
+  using Index = TpchQ3ShardIndex<E>;
+  using Leaf = typename Index::Leaf;
+  using Mid = typename Index::Mid;
+
+  explicit TpchQ3ShardTxn(const Index &base) : top_(base) {}
+
+  const E *Find(uint32_t key) const {
+    return Index::FindIn(Current(TpchQ3ShardOf(key)), key);
+  }
+  void Set(const E &value) {
+    auto &leaf = Mutable(TpchQ3ShardOf(value.key));
+    auto it = std::lower_bound(
+        leaf.begin(), leaf.end(), value.key,
+        [](const E &e, uint32_t k) { return e.key < k; });
+    if (it != leaf.end() && it->key == value.key)
+      *it = value;
+    else
+      leaf.insert(it, value);
+  }
+  void Erase(uint32_t key) {
+    const auto shard = TpchQ3ShardOf(key);
+    if (!Index::FindIn(Current(shard), key))
+      return;
+    auto &leaf = Mutable(shard);
+    auto it = std::lower_bound(
+        leaf.begin(), leaf.end(), key,
+        [](const E &e, uint32_t k) { return e.key < k; });
+    if (it != leaf.end() && it->key == key)
+      leaf.erase(it);
+  }
+  bool Dirty() const { return !leaves_.empty(); }
+  Index Finish() {
+    std::unordered_map<uint32_t, std::shared_ptr<Mid>> mids;
+    for (auto &entry : leaves_) {
+      const uint32_t hi = entry.first >> 8, lo = entry.first & 255;
+      auto &mid = mids[hi];
+      if (!mid)
+        mid = top_.mids[hi] ? std::make_shared<Mid>(*top_.mids[hi])
+                            : std::make_shared<Mid>();
+      if (entry.second->empty())
+        mid->leaves[lo] = nullptr;
+      else
+        mid->leaves[lo] = std::move(entry.second);
+    }
+    for (auto &entry : mids)
+      top_.mids[entry.first] = std::move(entry.second);
+    leaves_.clear();
+    return std::move(top_);
+  }
+
+private:
+  const Leaf *Current(uint32_t shard) const {
+    auto it = leaves_.find(shard);
+    if (it != leaves_.end())
+      return it->second.get();
+    const auto &mid = top_.mids[shard >> 8];
+    return mid ? mid->leaves[shard & 255].get() : nullptr;
+  }
+  Leaf &Mutable(uint32_t shard) {
+    auto it = leaves_.find(shard);
+    if (it != leaves_.end())
+      return *it->second;
+    const auto *cur = Current(shard);
+    auto copy = cur ? std::make_shared<Leaf>(*cur) : std::make_shared<Leaf>();
+    return *leaves_.emplace(shard, std::move(copy)).first->second;
+  }
+
+  Index top_;
+  std::unordered_map<uint32_t, std::shared_ptr<Leaf>> leaves_;
+};
+
+// Bulk builder for the initial build: append, Sort(), mutable Find(), Finish().
+template <typename E> class TpchQ3ShardBuilder {
+public:
+  using Index = TpchQ3ShardIndex<E>;
+  using Leaf = typename Index::Leaf;
+
+  TpchQ3ShardBuilder() : shards_(65536) {}
+  void Add(const E &value) { shards_[TpchQ3ShardOf(value.key)].push_back(value); }
+  void Sort() {
+    for (auto &shard : shards_)
+      std::sort(shard.begin(), shard.end(),
+                [](const E &a, const E &b) { return a.key < b.key; });
+  }
+  E *Find(uint32_t key) {
+    auto &shard = shards_[TpchQ3ShardOf(key)];
+    auto it = std::lower_bound(
+        shard.begin(), shard.end(), key,
+        [](const E &e, uint32_t k) { return e.key < k; });
+    return (it != shard.end() && it->key == key) ? &*it : nullptr;
+  }
+  template <typename F> void ForEach(F &&f) {
+    for (auto &shard : shards_)
+      for (auto &e : shard)
+        f(e);
+  }
+  Index Finish() {
+    Index index;
+    for (uint32_t hi = 0; hi < 256; ++hi) {
+      std::shared_ptr<typename Index::Mid> mid;
+      for (uint32_t lo = 0; lo < 256; ++lo) {
+        auto &shard = shards_[(hi << 8) | lo];
+        if (shard.empty())
+          continue;
+        if (!mid)
+          mid = std::make_shared<typename Index::Mid>();
+        mid->leaves[lo] = std::make_shared<const Leaf>(std::move(shard));
       }
+      index.mids[hi] = std::move(mid);
     }
-    return false;
+    return index;
   }
+
+private:
+  std::vector<Leaf> shards_;
 };
 
-// Published segment-interval images hold only segment_intervals for one segment.
-struct TpchQ3State {
-  std::map<core::PartitionId, TpchQ3SegmentIntervalIndex> segment_intervals;
+// Per-order record (every order whose customer is in a tracked segment).
+// `bound` is an upper bound on the order's revenue for ANY cutoff: the sum of
+// its positive per-shipdate revenues. It is the sort key of the order's entry
+// in the segment index (valid iff indexed()).
+struct TpchQ3OrderRec {
+  uint32_t key = 0;
+  uint16_t orderdate = 0;
+  uint8_t seg_flags = 0; // low 7 bits: segment partition id; 0x80: indexed
+  uint8_t shippriority = 0;
+  int64_t bound = 0;
+
+  core::PartitionId segment() const { return seg_flags & 0x7F; }
+  bool indexed() const { return (seg_flags & 0x80) != 0; }
+};
+static_assert(sizeof(TpchQ3OrderRec) == 16, "Q3 order record must stay 16 bytes");
+
+struct TpchQ3CustRec {
+  uint32_t key = 0;
+  uint8_t segment = 0;
 };
 
-// Side partition: dense orderkey → segment id (partition id), 0 = absent.
-struct TpchQ3OrderSegmentSide {
-  std::vector<uint8_t> order_segment;
-  std::vector<uint8_t> customer_segment;
+// Side partition: orderkey -> order record, custkey -> segment.
+struct TpchQ3Side {
+  TpchQ3ShardIndex<TpchQ3OrderRec> orders;
+  TpchQ3ShardIndex<TpchQ3CustRec> custs;
+};
+
+// ---------------------------------------------------------------------------
+// Segment partition: orders with >= 1 lineitem, grouped into 16-day orderdate
+// bins; each bin is a list of immutable chunks sorted by (bound desc,
+// orderkey asc). A chunk owns its entries and their shipdate buckets.
+// Query: only bins that can hold an order with orderdate < cutoff < maxship are
+// visited, and a best-first merge over the bins stops as soon as the next
+// bound cannot beat the current 10th result.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kTpchQ3BinShift = 4;
+constexpr std::size_t kTpchQ3ChunkMax = 1024;
+constexpr std::size_t kTpchQ3ChunkTarget = 768;
+
+struct TpchQ3Entry {
+  int64_t bound = 0;
+  uint32_t orderkey = 0;
+  uint32_t bucket_begin = 0;
+  uint16_t orderdate = 0;
+  uint16_t bucket_count = 0;
+  uint16_t maxship = 0;
+  uint8_t shippriority = 0;
+  uint8_t pad = 0;
+};
+
+struct TpchQ3Chunk {
+  std::vector<TpchQ3Entry> entries;
+  std::vector<TpchQ3ShipdateBucket> pool;
+  uint16_t max_maxship = 0;
+};
+
+struct TpchQ3BinList {
+  std::vector<std::shared_ptr<const TpchQ3Chunk>> chunks;
+  uint16_t max_maxship = 0;
+};
+
+struct TpchQ3Segment {
+  core::PartitionId segment = 0;
+  std::map<uint16_t, std::shared_ptr<const TpchQ3BinList>> bins;
 };
 
 enum class TpchQ3ImageKind : uint8_t {
@@ -207,8 +352,8 @@ enum class TpchQ3ImageKind : uint8_t {
 struct TpchQ3StateImage {
   TpchQ3ImageKind kind = TpchQ3ImageKind::OrderSegmentSide;
   core::PartitionId segment = 0;
-  std::shared_ptr<const TpchQ3OrderSegmentSide> order_segment_side;
-  std::shared_ptr<const TpchQ3State> state;
+  std::shared_ptr<const TpchQ3Side> side;
+  std::shared_ptr<const TpchQ3Segment> state;
 };
 
 struct TpchQ3OutputRow {
@@ -234,15 +379,17 @@ struct TpchQ3OrderDelta {
   int8_t sign = 0; // +1 insert, -1 delete
 };
 
-std::vector<uint8_t> EncodeTpchQ3OrderSegmentSide(
-    const TpchQ3OrderSegmentSide &side);
-std::vector<uint8_t> EncodeTpchQ3SegmentIntervalIndex(
-    const TpchQ3SegmentIntervalIndex &);
-bool DecodeTpchQ3OrderSegmentSide(const std::vector<uint8_t> &,
-                                    TpchQ3OrderSegmentSide &);
+struct TpchQ3CustomerDelta {
+  int64_t custkey = 0;
+  core::PartitionId segment = 0; // 0 = not a tracked segment
+};
+
+std::vector<uint8_t> EncodeTpchQ3OrderSegmentSide(const TpchQ3Side &side);
+std::vector<uint8_t> EncodeTpchQ3SegmentIntervalIndex(const TpchQ3Segment &);
+bool DecodeTpchQ3OrderSegmentSide(const std::vector<uint8_t> &, TpchQ3Side &);
 bool DecodeTpchQ3SegmentIntervalIndex(const std::vector<uint8_t> &,
-                                        core::PartitionId segment,
-                                        TpchQ3SegmentIntervalIndex &);
+                                      core::PartitionId segment,
+                                      TpchQ3Segment &);
 
 int64_t TpchQ3RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
                          int64_t discount_raw, int32_t discount_scale);
@@ -252,13 +399,12 @@ int32_t TpchQ3DaysFromYmd(int32_t year, unsigned month, unsigned day);
 
 void FinalizeTpchQ3OrderSummary(std::vector<TpchQ3ShipdateBucket> &buckets,
                                 const std::map<int32_t, int64_t> &day_revenue);
-int64_t TpchQ3RevenueAboveCutoff(const TpchQ3OrderSummary &,
-                                 const std::vector<TpchQ3ShipdateBucket> &pool,
+int64_t TpchQ3RevenueAboveCutoff(const TpchQ3Entry &,
+                                 const TpchQ3ShipdateBucket *buckets,
                                  int32_t cutoff_days);
-void SortTpchQ3SegmentIntervalIndex(TpchQ3SegmentIntervalIndex &);
 
-std::vector<TpchQ3OutputRow>
-ComposeTpchQ3TopK(const TpchQ3SegmentIntervalIndex &, int32_t cutoff_days);
+std::vector<TpchQ3OutputRow> ComposeTpchQ3TopK(const TpchQ3Segment &,
+                                               int32_t cutoff_days);
 
 class TpchQ3TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -271,12 +417,18 @@ public:
   void MarkRebuild();
   void AddDelta(TpchQ3LineitemDelta delta);
   void AddOrderDelta(TpchQ3OrderDelta delta);
+  const std::vector<TpchQ3CustomerDelta> &CustomerDeltas() const;
+  void AddCustomerDelta(TpchQ3CustomerDelta delta);
+  // A mutation that provably leaves the state unchanged (keeps the buffer
+  // pending so the coordinator does not escalate to a full invalidation).
+  void MarkNoop();
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<TpchQ3LineitemDelta> deltas;
   std::vector<TpchQ3OrderDelta> order_deltas;
+  std::vector<TpchQ3CustomerDelta> customer_deltas;
 };
 
 class TpchQ3Module final : public core::AuxQueryModule {
@@ -308,16 +460,14 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  struct BuildScratch {
-    std::unordered_map<int64_t, core::PartitionId> customer_segments;
-    std::vector<uint8_t> order_segment;
+  struct BuiltState {
+    TpchQ3Side side;
+    std::map<core::PartitionId, std::shared_ptr<const TpchQ3Segment>> segments;
   };
 
-  TpchQ3State BuildState(core::AuxEngineServices &, BuildScratch &) const;
-  TpchQ3SegmentIntervalIndex
-  BuildSegment(core::AuxEngineServices &, core::PartitionId segment) const;
-  bool LoadSegmentIntervalIndex(core::AuxEngineServices &, core::PartitionId,
-                                const TpchQ3SegmentIntervalIndex *&) const;
+  BuiltState BuildState(core::AuxEngineServices &) const;
+  bool LoadSegment(core::AuxEngineServices &, core::PartitionId,
+                   std::shared_ptr<const TpchQ3Segment> &) const;
   void EmitResult(const std::vector<TpchQ3OutputRow> &, core::AuxRowSink &) const;
 
   TpchQ3Config config;

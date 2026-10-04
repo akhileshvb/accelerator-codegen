@@ -98,7 +98,8 @@ struct TpchQ13Scan : TpchQ13InitialScan {
   void ScanOrders(
       const std::function<void(const TpchQ13OrderInput &)> &consumer) override {
     ScanQueryStreaming(
-        connection, "SELECT o_custkey, o_comment FROM orders",
+        connection, "SELECT o_custkey, o_comment FROM orders "
+        "WHERE o_custkey IS NOT NULL AND o_comment IS NOT NULL",
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           consumer({SafeInt64(ChunkValue(chunk, 0, row)),
                     ChunkValue(chunk, 1, row).ToString()});

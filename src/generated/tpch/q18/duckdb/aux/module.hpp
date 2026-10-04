@@ -97,6 +97,13 @@ public:
     return false;
   }
 
+  // Point lookup of one customer name.
+  virtual bool LookupCustomerName(int64_t custkey, std::string &name) {
+    (void)custkey;
+    (void)name;
+    return false;
+  }
+
   // Current SUM(l_quantity) for one order, including the open transaction.
   virtual bool LookupOrderQuantitySum(int64_t orderkey, int64_t &sum_raw) {
     (void)orderkey;
@@ -189,8 +196,14 @@ public:
   const std::vector<TpchQ18LineitemDelta> &Deltas() const;
   void MarkRebuild();
   void AddDelta(TpchQ18LineitemDelta delta);
+  void NoteOrderInserted(int64_t orderkey);
+  void NoteOrderDeleted(int64_t orderkey);
+  const std::unordered_set<int64_t> &InsertedOrders() const;
+  const std::unordered_set<int64_t> &DeletedOrders() const;
 
 private:
+  std::unordered_set<int64_t> inserted_orders;
+  std::unordered_set<int64_t> deleted_orders;
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<TpchQ18LineitemDelta> deltas;

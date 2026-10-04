@@ -55,6 +55,11 @@ public:
   }
   virtual void ScanSuppliers(
       const std::function<void(const TpchQ15SupplierInput &)> &) = 0;
+  // Calls consumer(month_key YYYYMM, suppkey, revenue_raw) once per
+  // (month, supplier) group of lineitem revenue. The default derives it from
+  // ScanLineitems; engines override it to push the GROUP BY down.
+  virtual void ScanMonthRevenue(
+      const std::function<void(int32_t, int64_t, int64_t)> &consumer);
 };
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -65,15 +70,47 @@ struct TpchQ15SupplierRecord {
   std::string phone;
 };
 
+// Dense revenue array indexed by suppkey, split into fixed-size chunks that are
+// shared between versions and copied on write (only the touched chunks are
+// cloned; a cloned chunk is uniquely owned by the working copy until it is
+// published).
+constexpr int kQ15RevChunkShift = 11;
+constexpr int64_t kQ15RevChunkSize = int64_t{1} << kQ15RevChunkShift;
+struct TpchQ15RevChunk {
+  int64_t v[kQ15RevChunkSize] = {};
+};
+
+struct TpchQ15RevArray {
+  std::map<int64_t, std::shared_ptr<TpchQ15RevChunk>> chunks;
+  int64_t Get(int64_t suppkey) const;
+  // Adds delta (copy-on-write on the touched chunk); returns the old value.
+  int64_t Add(int64_t suppkey, int64_t delta);
+};
+
 struct TpchQ15WindowState {
-  std::unordered_map<int64_t, int64_t> revenue_by_supplier;
+  TpchQ15RevArray rev;
+  int64_t nonzero = 0; // suppliers with a non-zero revenue in the window
   bool empty = true;
   int64_t max_revenue = 0;
-  std::vector<std::pair<int64_t, TpchQ15SupplierRecord>> winners;
+  std::vector<int64_t> winners; // suppkeys at the max, ascending
+  // Recomputes nonzero / max / winners with one pass over the array.
+  void Rescan();
+};
+
+// Supplier directory: sorted per-chunk entry lists sharing immutable records,
+// so a supplier write copies one small chunk and the chunk table.
+constexpr int kQ15DirChunkShift = 10;
+struct TpchQ15DirChunk {
+  std::vector<std::pair<int64_t, std::shared_ptr<const TpchQ15SupplierRecord>>>
+      items;
 };
 
 struct TpchQ15SupplierDirectory {
-  std::unordered_map<int64_t, TpchQ15SupplierRecord> entries;
+  std::map<int64_t, std::shared_ptr<TpchQ15DirChunk>> chunks;
+  const TpchQ15SupplierRecord *Find(int64_t suppkey) const;
+  void Set(int64_t suppkey, TpchQ15SupplierRecord record);
+  void Erase(int64_t suppkey);
+  std::size_t Size() const;
 };
 
 struct TpchQ15State {

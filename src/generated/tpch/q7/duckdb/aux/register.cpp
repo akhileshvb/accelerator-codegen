@@ -167,6 +167,60 @@ struct TpchQ7Scan : TpchQ7InitialScan {
                     DateDays(ChunkValue(chunk, 4, row))});
         });
   }
+  int64_t CountOrders() override {
+    int64_t n = -1;
+    ScanQueryStreaming(
+        connection, "SELECT COUNT(*) FROM orders",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          n = SafeInt64(ChunkValue(chunk, 0, row));
+        });
+    return n;
+  }
+  // Join + GROUP BY (supp nation, cust nation, year) and the per-key window
+  // counts run inside DuckDB; revenue is exact integer arithmetic
+  // (price_raw * (100 - discount_raw), both scale 2).
+  bool ScanWindowAggregates(
+      const std::function<void(int32_t, int32_t, int32_t, int64_t)> &revenue,
+      const std::function<void(int64_t, int64_t)> &supplier_counts,
+      const std::function<void(int64_t, int64_t)> &customer_counts) override {
+    static const char *kWindow =
+        "l.l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'";
+    ScanQueryStreaming(
+        connection,
+        std::string("SELECT s.s_nationkey, c.c_nationkey, "
+                    "CAST(EXTRACT(year FROM l.l_shipdate) AS INTEGER), "
+                    "CAST(SUM(CAST(l.l_extendedprice * 100 AS BIGINT) * "
+                    "(100 - CAST(l.l_discount * 100 AS BIGINT))) AS BIGINT) "
+                    "FROM lineitem l "
+                    "JOIN supplier s ON s.s_suppkey = l.l_suppkey "
+                    "JOIN orders o ON o.o_orderkey = l.l_orderkey "
+                    "JOIN customer c ON c.c_custkey = o.o_custkey "
+                    "WHERE ") + kWindow + " GROUP BY 1, 2, 3",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          revenue(SafeInt32(ChunkValue(chunk, 0, row)),
+                  SafeInt32(ChunkValue(chunk, 1, row)),
+                  SafeInt32(ChunkValue(chunk, 2, row)),
+                  SafeInt64(ChunkValue(chunk, 3, row)));
+        });
+    ScanQueryStreaming(
+        connection,
+        std::string("SELECT l.l_suppkey, COUNT(*) FROM lineitem l WHERE ") +
+            kWindow + " GROUP BY l.l_suppkey",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          supplier_counts(SafeInt64(ChunkValue(chunk, 0, row)),
+                          SafeInt64(ChunkValue(chunk, 1, row)));
+        });
+    ScanQueryStreaming(
+        connection,
+        std::string("SELECT o.o_custkey, COUNT(*) FROM lineitem l "
+                    "JOIN orders o ON o.o_orderkey = l.l_orderkey WHERE ") +
+            kWindow + " GROUP BY o.o_custkey",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          customer_counts(SafeInt64(ChunkValue(chunk, 0, row)),
+                          SafeInt64(ChunkValue(chunk, 1, row)));
+        });
+    return true;
+  }
   ::duckdb::Connection &connection;
 };
 

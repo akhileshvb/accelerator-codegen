@@ -156,6 +156,49 @@ struct TpchQ19Scan : TpchQ19InitialScan {
                     ChunkValue(chunk, 5, row).ToString()});
         });
   }
+  static std::string FamilyCase() {
+    return "CASE WHEN p_container IN ('SM CASE','SM BOX','SM PACK','SM PKG') "
+           "AND p_size BETWEEN 1 AND 5 THEN 1 "
+           "WHEN p_container IN ('MED BAG','MED BOX','MED PKG','MED PACK') "
+           "AND p_size BETWEEN 1 AND 10 THEN 2 "
+           "WHEN p_container IN ('LG CASE','LG BOX','LG PACK','LG PKG') "
+           "AND p_size BETWEEN 1 AND 15 THEN 3 ELSE 0 END";
+  }
+  bool ScanQualifyingAggregates(
+      const std::function<void(const std::string &, int, int64_t, int64_t,
+                               int64_t)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT p.b, p.f, CAST(round(l.l_quantity * 100) AS BIGINT) AS q, "
+        "CAST(SUM(CAST(round(l.l_extendedprice * 100) AS BIGINT) * "
+        "(100 - CAST(round(l.l_discount * 100) AS BIGINT))) AS BIGINT), "
+        "COUNT(*) FROM lineitem l JOIN (SELECT * FROM (SELECT p_partkey, "
+        "p_brand AS b, " + FamilyCase() + " AS f FROM part) WHERE f > 0) p "
+        "ON l.l_partkey = p.p_partkey "
+        "WHERE l.l_shipmode IN ('AIR', 'AIR REG') "
+        "AND l.l_shipinstruct = 'DELIVER IN PERSON' GROUP BY 1, 2, 3",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer(ChunkValue(chunk, 0, row).ToString(),
+                   static_cast<int>(SafeInt64(ChunkValue(chunk, 1, row))),
+                   SafeInt64(ChunkValue(chunk, 2, row)),
+                   SafeInt64(ChunkValue(chunk, 3, row)),
+                   SafeInt64(ChunkValue(chunk, 4, row)));
+        });
+    return true;
+  }
+  bool ScanPartFamilies(
+      const std::function<void(int64_t, const std::string &, int)> &consumer)
+      override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT p_partkey, p_brand, " + FamilyCase() + " FROM part",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer(SafeInt64(ChunkValue(chunk, 0, row)),
+                   ChunkValue(chunk, 1, row).ToString(),
+                   static_cast<int>(SafeInt64(ChunkValue(chunk, 2, row))));
+        });
+    return true;
+  }
   bool LookupPart(int64_t partkey, TpchQ19PartInput &out) override {
     auto result = ScanConnection(connection).Query(
         "SELECT p_brand, p_container, p_size FROM part WHERE p_partkey = " +

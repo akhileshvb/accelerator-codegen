@@ -128,11 +128,104 @@ struct TpchQ8CubeKeyHash {
   }
 };
 
+// ── Persistent sharded map ──────────────────────────────────────────────────
+// Fixed shard count; each shard is an immutable-once-published hash map held
+// by shared_ptr.  Copying the map copies only the shard-pointer table (cheap);
+// a mutation copies just the touched shard (copy-on-write at shard granularity).
+// A map that has been published (held through a const pointer) must never be
+// mutated; copy it first (the copy owns none of the shards yet).
+template <class K, class V, std::size_t kShards>
+class TpchQ8ShardedMap {
+  static_assert((kShards & (kShards - 1)) == 0, "power of two");
+  static constexpr unsigned kShift = []() {
+    unsigned lg = 0;
+    while ((std::size_t(1) << lg) < kShards)
+      ++lg;
+    return 64u - lg;
+  }();
+
+public:
+  using Shard = std::unordered_map<K, V>;
+  TpchQ8ShardedMap() : shards_(kShards) {}
+  TpchQ8ShardedMap(const TpchQ8ShardedMap &o)
+      : shards_(o.shards_), size_(o.size_) {}
+  TpchQ8ShardedMap &operator=(const TpchQ8ShardedMap &o) {
+    if (this != &o) {
+      shards_ = o.shards_;
+      size_ = o.size_;
+      owned_.clear();
+      mut_.clear();
+    }
+    return *this;
+  }
+  TpchQ8ShardedMap(TpchQ8ShardedMap &&) = default;
+  TpchQ8ShardedMap &operator=(TpchQ8ShardedMap &&) = default;
+
+  const V *Find(const K &k) const {
+    const auto &s = shards_[Index(k)];
+    if (!s)
+      return nullptr;
+    const auto it = s->find(k);
+    return it == s->end() ? nullptr : &it->second;
+  }
+  std::size_t Size() const { return size_; }
+
+  template <class F> void ForEach(F &&f) const {
+    for (const auto &s : shards_) {
+      if (!s)
+        continue;
+      for (const auto &kv : *s)
+        f(kv.first, kv.second);
+    }
+  }
+
+  void Set(const K &k, V v) {
+    auto &s = Mutable(Index(k));
+    const auto r = s.try_emplace(k);
+    if (r.second)
+      ++size_;
+    r.first->second = std::move(v);
+  }
+  bool Erase(const K &k) {
+    if (!Find(k))
+      return false;
+    Mutable(Index(k)).erase(k);
+    --size_;
+    return true;
+  }
+
+private:
+  static std::size_t Index(const K &k) {
+    return static_cast<std::size_t>(
+        (static_cast<uint64_t>(std::hash<K>{}(k)) * 0x9E3779B97F4A7C15ull) >>
+        kShift);
+  }
+  Shard &Mutable(std::size_t i) {
+    if (owned_.empty()) {
+      owned_.assign(kShards, 0);
+      mut_.assign(kShards, nullptr);
+    }
+    if (!owned_[i]) {
+      std::shared_ptr<Shard> fresh = shards_[i]
+                                         ? std::make_shared<Shard>(*shards_[i])
+                                         : std::make_shared<Shard>();
+      mut_[i] = fresh.get();
+      shards_[i] = std::move(fresh);
+      owned_[i] = 1;
+    }
+    return *mut_[i];
+  }
+
+  std::vector<std::shared_ptr<const Shard>> shards_;
+  std::vector<uint8_t> owned_;
+  std::vector<Shard *> mut_;
+  std::size_t size_ = 0;
+};
+
 // ── State structures ────────────────────────────────────────────────────────
-// The dimension dictionaries are much larger than the annual cube (SF1
-// lineitem feeds ~28K cube cells but the reverse order map holds millions of
-// rows).  Keep them in a separate shared payload so delta maintenance can
-// copy only the mutable cube while sharing the expensive dictionaries.
+// The dimension dictionaries are much larger than the annual cube.  They live
+// in a separate shared payload built from persistent sharded maps, so delta
+// maintenance copies only the shards it touches.
 struct TpchQ8Dimensions {
   std::vector<std::string> part_types;
   std::unordered_map<std::string, int32_t> part_type_to_index;
@@ -140,16 +233,22 @@ struct TpchQ8Dimensions {
   std::unordered_map<int32_t, std::string> nation_region;
   std::unordered_map<std::string, std::vector<int32_t>> region_nations;
 
-  // Reverse maps for maintenance
-  std::unordered_map<int64_t, std::string> part_key_to_type;
-  std::unordered_map<int64_t, int32_t> suppkey_to_nation;
-  std::unordered_map<int64_t, int32_t> custkey_to_nation;
+  // Reverse maps for maintenance (part value = index into part_types)
+  TpchQ8ShardedMap<int64_t, int32_t, 2048> part_key_to_type;
+  TpchQ8ShardedMap<int64_t, int32_t, 2048> suppkey_to_nation;
+  TpchQ8ShardedMap<int64_t, int32_t, 2048> custkey_to_nation;
 
   struct OrderInfo {
     int64_t custkey = 0;
     int32_t orderdate_days = 0;
   };
-  std::unordered_map<int64_t, OrderInfo> order_info;
+  TpchQ8ShardedMap<int64_t, OrderInfo, 16384> order_info;
+
+  // Largest key present when the state was last (re)built.  Dimension keys
+  // above this bound are "fresh": no pre-existing lineitem can depend on them.
+  int64_t part_build_max = 0;
+  int64_t supp_build_max = 0;
+  int64_t cust_build_max = 0;
 };
 
 struct TpchQ8CubeCell {
@@ -161,13 +260,24 @@ struct TpchQ8CubeCell {
   int64_t total_volume_raw = 0;
 };
 
+// One page per (part_type_index, year): a dense (customer nation x supplier
+// nation) volume matrix plus a roll-up over supplier nation per customer
+// nation.  Axis size is nat_dim + 1 (last slot = "other / negative key").
+// (nation_volume == total_volume in every cell, so one matrix suffices.)
+struct TpchQ8CubePage {
+  std::vector<int64_t> cell;  // [customer_slot * axis + supplier_slot]
+  std::vector<int64_t> roll;  // [customer_slot]
+};
+
 struct TpchQ8State {
   struct VolumePair {
     int64_t nation_volume_raw = 0;
     int64_t total_volume_raw = 0;
   };
 
-  std::vector<TpchQ8CubeCell> cube;  // sorted by (year, customer_nationkey, supplier_nationkey, part_type_index)
+  int32_t nat_dim = 1;
+  // index = part_type_index * 2 + (year - 1995); null page = all zero.
+  std::vector<std::shared_ptr<const TpchQ8CubePage>> pages;
   std::shared_ptr<const TpchQ8Dimensions> dims;
 
   static constexpr int32_t kYear1995Start = 9131;
@@ -214,6 +324,13 @@ bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
 int64_t TpchQ8VolumeRaw(int64_t extendedprice_raw, int64_t discount_raw);
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
+// Net per-key change of a dimension row inside one transaction.
+struct TpchQ8DimNet {
+  bool present = false;
+  int32_t nationkey = 0;  // supplier / customer
+  std::string type;       // part
+};
+
 class TpchQ8TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
@@ -224,14 +341,26 @@ public:
   void MarkRebuild();
   void AddDelta(TpchQ8LineitemDelta delta);
   void AddOrderInfo(int64_t orderkey, int64_t custkey, int32_t orderdate_days);
+  void EraseOrder(int64_t orderkey);
   const std::unordered_map<int64_t, TpchQ8Dimensions::OrderInfo> &
   OrderInfoOverlay() const;
+  const std::unordered_set<int64_t> &OrderErase() const;
+
+  void SetPart(int64_t key, bool present, std::string type);
+  void SetSupplier(int64_t key, bool present, int32_t nationkey);
+  void SetCustomer(int64_t key, bool present, int32_t nationkey);
+  const std::unordered_map<int64_t, TpchQ8DimNet> &PartNet() const;
+  const std::unordered_map<int64_t, TpchQ8DimNet> &SupplierNet() const;
+  const std::unordered_map<int64_t, TpchQ8DimNet> &CustomerNet() const;
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<TpchQ8LineitemDelta> deltas;
   std::unordered_map<int64_t, TpchQ8Dimensions::OrderInfo> order_info_overlay;
+  std::unordered_set<int64_t> order_erase;
+  std::unordered_map<int64_t, TpchQ8DimNet> part_net, supplier_net,
+      customer_net;
 };
 
 // ── Module ──────────────────────────────────────────────────────────────────

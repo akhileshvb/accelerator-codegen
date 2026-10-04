@@ -127,13 +127,13 @@ struct TpchQ18Scan : TpchQ18InitialScan {
       override {
     ScanQueryStreaming(
         connection,
-        "SELECT l.l_orderkey, "
-        "CAST(SUM(CAST(round(l.l_quantity * 100) AS BIGINT)) AS BIGINT), "
-        "o.o_custkey, o.o_orderdate, o.o_totalprice "
-        "FROM lineitem l JOIN orders o ON l.l_orderkey = o.o_orderkey "
-        "GROUP BY 1, 3, 4, 5 HAVING "
-        "CAST(SUM(CAST(round(l.l_quantity * 100) AS BIGINT)) AS BIGINT) > " +
-            std::to_string(min_quantity_raw),
+        "SELECT a.k, a.s, o.o_custkey, o.o_orderdate, o.o_totalprice FROM ("
+        "SELECT l_orderkey AS k, "
+        "CAST(SUM(CAST(round(l_quantity * 100) AS BIGINT)) AS BIGINT) AS s "
+        "FROM lineitem GROUP BY l_orderkey HAVING "
+        "CAST(SUM(CAST(round(l_quantity * 100) AS BIGINT)) AS BIGINT) > " +
+            std::to_string(min_quantity_raw) +
+        ") a JOIN orders o ON a.k = o.o_orderkey",
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           consumer({SafeInt64(ChunkValue(chunk, 0, row)),
                     SafeInt64(ChunkValue(chunk, 1, row)),
@@ -182,6 +182,18 @@ struct TpchQ18Scan : TpchQ18InitialScan {
             std::to_string(orderkey),
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
           sum_raw = SafeInt64(ChunkValue(chunk, 0, row));
+          found = true;
+        });
+    return found;
+  }
+  bool LookupCustomerName(int64_t custkey, std::string &name) override {
+    bool found = false;
+    ScanQueryStreaming(
+        connection,
+        "SELECT c_name FROM customer WHERE c_custkey = " +
+            std::to_string(custkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          name = ChunkValue(chunk, 0, row).ToString();
           found = true;
         });
     return found;

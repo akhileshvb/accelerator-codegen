@@ -107,18 +107,49 @@ core::AcceleratorId VersionedAuxStore::AcceleratorFor(const core::StateImage &im
   return image.accelerator;
 }
 
-std::optional<core::AcceleratorId> VersionedAuxStore::OwnerOfLocked(PartitionKey key) const {
+
+void VersionedAuxStore::PartitionSet::Finalize() {
+  invalid_count = 0;
+  max_version = 0;
+  for (const auto &entry : map) {
+    if (!entry.second.valid) {
+      ++invalid_count;
+    }
+    max_version = std::max(max_version, entry.second.partition_version);
+  }
+}
+
+namespace {
+std::shared_ptr<const VersionedAuxStore::PartitionSet> MakeSet(VersionedAuxStore::PartitionMap &&map) {
+  auto set = std::make_shared<VersionedAuxStore::PartitionSet>();
+  set->map = std::move(map);
+  set->Finalize();
+  return set;
+}
+} // namespace
+
+void VersionedAuxStore::RefreshHintLocked() {
+  std::size_t n = 0;
+  for (const auto &entry : accelerators) {
+    if (!entry.second.versions.empty()) {
+      n += entry.second.versions.back().partitions->map.size();
+    }
+  }
+  total_partitions_hint.store(n, std::memory_order_relaxed);
+}
+
+const core::AcceleratorId *VersionedAuxStore::OwnerOfLocked(PartitionKey key) const {
   if (options.fixed_accelerator) {
-    return options.fixed_accelerator;
+    return &*options.fixed_accelerator;
   }
   auto it = owner.find(key);
   if (it == owner.end()) {
-    return std::nullopt;
+    return nullptr;
   }
-  return it->second;
+  return &it->second;
 }
 
-const VersionedAuxStore::PartitionMap *
+const VersionedAuxStore::PartitionSet *
 VersionedAuxStore::NewestLocked(const core::AcceleratorId &accelerator) const {
   auto it = accelerators.find(accelerator);
   if (it == accelerators.end() || it->second.versions.empty()) {
@@ -140,12 +171,15 @@ VersionedAuxStore::Resolved
 VersionedAuxStore::ResolveLocked(std::shared_lock<WriterPreferringSharedMutex> &lock,
                                  const core::AcceleratorId &accelerator, Epoch epoch) const {
   auto *scope = AuxReadScope::Current();
-  const AuxReadScope::Key pin_key {this, accelerator};
   if (scope) {
-    auto pinned = scope->pins.find(pin_key);
-    if (pinned != scope->pins.end()) {
-      return {Resolve::Found, pinned->second};
+    for (const auto &pin : scope->pins) {
+      if (pin.store == this && pin.accelerator == accelerator) {
+        return {Resolve::Found, pin.partitions}; // no lock needed
+      }
     }
+  }
+  if (!lock.owns_lock()) {
+    lock.lock();
   }
   if (pending_wait_micros == kWaitForPublish) {
     pending_cv.wait(lock, [&] { return !MustWaitLocked(accelerator, epoch); });
@@ -184,22 +218,29 @@ VersionedAuxStore::ResolveLocked(std::shared_lock<WriterPreferringSharedMutex> &
     return {Resolve::NotVisible, nullptr};
   }
   if (scope) {
-    scope->pins[pin_key] = selected->partitions;
+    scope->pins.push_back({this, accelerator, selected->partitions});
   }
   return {Resolve::Found, selected->partitions};
 }
 
-void VersionedAuxStore::AppendLocked(const core::AcceleratorId &accelerator, PartitionMap next,
-                                     Epoch epoch, Epoch floor) {
-  auto &versions = accelerators[accelerator].versions;
+void VersionedAuxStore::AppendLocked(const core::AcceleratorId &accelerator,
+                                     std::shared_ptr<const PartitionSet> next, Epoch epoch,
+                                     Epoch floor, std::vector<StateVersion> &dropped) {
+  auto &acc = accelerators[accelerator];
+  auto &versions = acc.versions;
+  acc.generation++;
   if (epoch == kAllSnapshots) {
+    for (auto &v : versions) {
+      dropped.push_back(std::move(v));
+    }
     versions.clear();
   } else {
     while (!versions.empty() && versions.back().epoch >= epoch) {
+      dropped.push_back(std::move(versions.back()));
       versions.pop_back();
     }
   }
-  versions.push_back(StateVersion {epoch, std::make_shared<const PartitionMap>(std::move(next))});
+  versions.push_back(StateVersion {epoch, std::move(next)});
   // Keep the version a snapshot at the floor selects, and everything newer.
   std::size_t keep_from = 0;
   for (std::size_t i = 0; i < versions.size(); ++i) {
@@ -207,7 +248,11 @@ void VersionedAuxStore::AppendLocked(const core::AcceleratorId &accelerator, Par
       keep_from = i;
     }
   }
+  for (std::size_t i = 0; i < keep_from; ++i) {
+    dropped.push_back(std::move(versions[i]));
+  }
   versions.erase(versions.begin(), versions.begin() + static_cast<std::ptrdiff_t>(keep_from));
+  RefreshHintLocked();
 }
 
 // ---- Reads ----
@@ -225,7 +270,7 @@ core::StateSnapshot VersionedAuxStore::Read(const core::VisibilityToken &visibil
     if (r.kind != Resolve::Found) {
       continue;
     }
-    for (const auto &entry : *r.partitions) {
+    for (const auto &entry : r.partitions->map) {
       if (!entry.second.valid) {
         continue;
       }
@@ -246,23 +291,37 @@ VersionedAuxStore::ReadPartitions(const core::VisibilityToken &visibility,
                                   const std::vector<core::PartitionId> &partitions) const {
   core::StateSnapshot snapshot;
   snapshot.visibility = visibility;
-  std::shared_lock<WriterPreferringSharedMutex> lock(mutex);
-  std::map<core::AcceleratorId, Resolved> resolved;
+  snapshot.partitions.reserve(partitions.size());
+  // With a fixed accelerator the owner map is not consulted, so the lock is
+  // taken lazily (not at all if the scope has already pinned the version).
+  std::shared_lock<WriterPreferringSharedMutex> lock(mutex, std::defer_lock);
+  if (!options.fixed_accelerator) {
+    lock.lock();
+  }
+  // Resolutions per accelerator; a read touches one accelerator in practice.
+  std::vector<std::pair<const core::AcceleratorId *, Resolved>> resolved;
   for (auto partition_id : partitions) {
     const auto key = static_cast<PartitionKey>(partition_id);
-    const auto name = OwnerOfLocked(key);
+    const core::AcceleratorId *name = OwnerOfLocked(key);
     if (!name) {
       continue;
     }
-    auto it = resolved.find(*name);
-    if (it == resolved.end()) {
-      it = resolved.emplace(*name, ResolveLocked(lock, *name, visibility.mutation_epoch)).first;
+    Resolved *res = nullptr;
+    for (auto &entry : resolved) {
+      if (entry.first == name || *entry.first == *name) {
+        res = &entry.second;
+        break;
+      }
     }
-    if (it->second.kind != Resolve::Found) {
+    if (!res) {
+      resolved.emplace_back(name, ResolveLocked(lock, *name, visibility.mutation_epoch));
+      res = &resolved.back().second;
+    }
+    if (res->kind != Resolve::Found) {
       continue;
     }
-    auto p = it->second.partitions->find(key);
-    if (p == it->second.partitions->end() || !p->second.valid) {
+    auto p = res->partitions->map.find(key);
+    if (p == res->partitions->map.end() || !p->second.valid) {
       continue;
     }
     core::StateImage image;
@@ -283,19 +342,21 @@ VersionedAuxStore::ReadHitPartitions(const core::VisibilityToken &visibility,
   core::StateSnapshot snapshot;
   snapshot.visibility = visibility;
   snapshot.available = false;
-  std::shared_lock<WriterPreferringSharedMutex> lock(mutex);
+  std::shared_lock<WriterPreferringSharedMutex> lock(mutex, std::defer_lock);
   const auto r = ResolveLocked(lock, accel_key.accelerator, visibility.mutation_epoch);
-  if (r.kind != Resolve::Found || r.partitions->empty()) {
+  if (lock.owns_lock()) {
+    lock.unlock(); // r holds the immutable version
+  }
+  if (r.kind != Resolve::Found || r.partitions->map.empty()) {
     return snapshot;
   }
-  for (const auto &entry : *r.partitions) {
-    if (!entry.second.valid) {
-      return snapshot; // the state is not usable as a whole
-    }
+  if (r.partitions->invalid_count != 0) {
+    return snapshot; // the state is not usable as a whole
   }
+  snapshot.partitions.reserve(partitions.size());
   for (auto partition_id : partitions) {
-    auto p = r.partitions->find(static_cast<PartitionKey>(partition_id));
-    if (p == r.partitions->end()) {
+    auto p = r.partitions->map.find(static_cast<PartitionKey>(partition_id));
+    if (p == r.partitions->map.end()) {
       snapshot.partitions.clear();
       return snapshot;
     }
@@ -326,8 +387,11 @@ core::ValidityResult VersionedAuxStore::CheckValidity(const core::QueryKey &key,
     }
     partition = static_cast<PartitionKey>(id);
   }
-  std::shared_lock<WriterPreferringSharedMutex> lock(mutex);
+  std::shared_lock<WriterPreferringSharedMutex> lock(mutex, std::defer_lock);
   const auto r = ResolveLocked(lock, key.accelerator, visibility.mutation_epoch);
+  if (lock.owns_lock()) {
+    lock.unlock(); // r holds the immutable version
+  }
   if (r.kind == Resolve::Unknown) {
     return result;
   }
@@ -336,8 +400,8 @@ core::ValidityResult VersionedAuxStore::CheckValidity(const core::QueryKey &key,
     return result;
   }
   if (partition) {
-    auto p = r.partitions->find(*partition);
-    if (p == r.partitions->end()) {
+    auto p = r.partitions->map.find(*partition);
+    if (p == r.partitions->map.end()) {
       return result;
     }
     if (!p->second.valid) {
@@ -348,25 +412,23 @@ core::ValidityResult VersionedAuxStore::CheckValidity(const core::QueryKey &key,
     result.visible_version = p->second.partition_version;
     return result;
   }
-  if (r.partitions->empty()) {
+  if (r.partitions->map.empty()) {
     return result;
   }
-  core::Version max_version = 0;
-  for (const auto &entry : *r.partitions) {
-    if (!entry.second.valid) {
-      result.code = core::ValidityCode::Invalidated;
-      return result;
-    }
-    max_version = std::max(max_version, entry.second.partition_version);
+  if (r.partitions->invalid_count != 0) {
+    result.code = core::ValidityCode::Invalidated;
+    return result;
   }
   result.code = core::ValidityCode::Valid;
-  result.visible_version = max_version;
+  result.visible_version = r.partitions->max_version;
   return result;
 }
 
 // ---- Writes outside a commit ----
 
 void VersionedAuxStore::Invalidate(const core::InvalidationPlan &plan) {
+  std::vector<StateVersion> dropped; // destroyed after the lock is released
+  std::vector<std::shared_ptr<const PartitionSet>> replaced;
   std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
   change_count++;
   // Accelerators the plan touches: every one for AllPartitions, else the
@@ -378,7 +440,7 @@ void VersionedAuxStore::Invalidate(const core::InvalidationPlan &plan) {
     }
   } else {
     for (auto key : plan.partitions) {
-      if (auto name = OwnerOfLocked(key)) {
+      if (auto *name = OwnerOfLocked(key)) {
         if (std::find(names.begin(), names.end(), *name) == names.end()) {
           names.push_back(*name);
         }
@@ -386,22 +448,26 @@ void VersionedAuxStore::Invalidate(const core::InvalidationPlan &plan) {
     }
   }
   for (const auto &name : names) {
-    auto &versions = accelerators[name].versions;
+    auto &acc = accelerators[name];
+    auto &versions = acc.versions;
+    acc.generation++;
     if (versions.empty()) {
       // Nothing published yet: record the invalid partitions (kAllSnapshots).
       PartitionMap map;
       InvalidateIn(map, plan, /*create_missing=*/true);
       if (!map.empty()) {
-        versions.push_back(StateVersion {kAllSnapshots, std::make_shared<const PartitionMap>(std::move(map))});
+        versions.push_back(StateVersion {kAllSnapshots, MakeSet(std::move(map))});
       }
       continue;
     }
     for (auto &version : versions) {
-      PartitionMap map = *version.partitions;
+      PartitionMap map = version.partitions->map;
       InvalidateIn(map, plan, /*create_missing=*/&version == &versions.back());
-      version.partitions = std::make_shared<const PartitionMap>(std::move(map));
+      replaced.push_back(std::move(version.partitions));
+      version.partitions = MakeSet(std::move(map));
     }
   }
+  RefreshHintLocked();
 }
 
 bool VersionedAuxStore::TryPublish(const core::StagedMaintenanceOutcome &staged,
@@ -412,37 +478,42 @@ bool VersionedAuxStore::TryPublish(const core::StagedMaintenanceOutcome &staged,
   for (const auto &image : staged.updates) {
     groups[AcceleratorFor(image)].push_back(&image);
   }
+  std::vector<StateVersion> dropped; // destroyed after the lock is released
+  std::vector<std::shared_ptr<const PartitionSet>> replaced;
   std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
   change_count++;
   for (const auto &group : groups) {
     const auto *newest = NewestLocked(group.first);
-    PartitionMap next = newest ? *newest : PartitionMap {};
+    PartitionMap next = newest ? newest->map : PartitionMap {};
     for (const auto *image : group.second) {
       const auto key = static_cast<PartitionKey>(image->partition);
       auto &p = next[key];
       if (expected_version != 0 && p.partition_version != expected_version) {
         // Lost the race: the partition is unusable for every snapshot.
-        for (auto &version : accelerators[group.first].versions) {
-          PartitionMap map = *version.partitions;
+        auto &acc = accelerators[group.first];
+        acc.generation++;
+        for (auto &version : acc.versions) {
+          PartitionMap map = version.partitions->map;
           auto it = map.find(key);
           if (it != map.end()) {
             it->second = Partition {false, nullptr, it->second.partition_version + 1};
           }
-          version.partitions = std::make_shared<const PartitionMap>(std::move(map));
+          replaced.push_back(std::move(version.partitions));
+          version.partitions = MakeSet(std::move(map));
         }
-        if (accelerators[group.first].versions.empty()) {
+        if (acc.versions.empty()) {
           PartitionMap map;
           map[key] = Partition {false, nullptr, 1};
-          accelerators[group.first].versions.push_back(
-              StateVersion {kAllSnapshots, std::make_shared<const PartitionMap>(std::move(map))});
+          acc.versions.push_back(StateVersion {kAllSnapshots, MakeSet(std::move(map))});
         }
         owner[key] = group.first;
+        RefreshHintLocked();
         return false;
       }
       p = Partition {image->payload != nullptr, image->payload, p.partition_version + 1};
       owner[key] = group.first;
     }
-    AppendLocked(group.first, std::move(next), epoch, floor);
+    AppendLocked(group.first, MakeSet(std::move(next)), epoch, floor, dropped);
   }
   return true;
 }
@@ -468,31 +539,78 @@ void VersionedAuxStore::FinishCommit(const core::AcceleratorId &accelerator,
                                      core::Version) {
   const Epoch epoch = CurrentEpoch();
   const Epoch floor = CurrentFloor();
+  const bool has_change = !invalidate.IsEmpty() || !updates.empty();
+
+  // Build the next version from `base`. Pure: touches no store state.
+  auto build = [&](const PartitionSet *base) {
+    PartitionMap next;
+    const PartitionMap *previous = nullptr;
+    if (invalidate.scope == InvalidationScope::AllPartitions && !updates.empty()) {
+      // A full rebuild: the updates are the whole state. Partitions it no
+      // longer has are dropped, not left invalid (which would make the
+      // accelerator read as invalid until the next rebuild).
+      previous = base ? &base->map : nullptr;
+    } else {
+      if (base) {
+        next = base->map;
+      }
+      InvalidateIn(next, invalidate, /*create_missing=*/true);
+    }
+    for (const auto &image : updates) {
+      const auto key = static_cast<PartitionKey>(image.partition);
+      auto &p = next[key];
+      core::Version base_version = p.partition_version;
+      if (previous) {
+        auto old = previous->find(key);
+        if (old != previous->end()) {
+          base_version = old->second.partition_version;
+        }
+      }
+      p = Partition {image.payload != nullptr, image.payload, base_version + 1};
+    }
+    return MakeSet(std::move(next));
+  };
+
+  // At most one commit per accelerator is in flight, so the newest version
+  // normally cannot change while we build: copy and modify it under a shared
+  // lock's snapshot of the pointer, outside any lock, and validate the
+  // accelerator's generation under the exclusive lock.
+  std::shared_ptr<const PartitionSet> built;
+  uint64_t built_generation = 0;
+  bool built_valid = false;
+  std::shared_ptr<const PartitionSet> base_ref;
+  if (has_change) {
+    {
+      std::shared_lock<WriterPreferringSharedMutex> shared(mutex);
+      auto it = accelerators.find(accelerator);
+      if (it != accelerators.end()) {
+        built_generation = it->second.generation;
+        if (!it->second.versions.empty()) {
+          base_ref = it->second.versions.back().partitions;
+        }
+      }
+    }
+    built = build(base_ref.get());
+    built_valid = true;
+  }
+
+  std::vector<StateVersion> dropped; // destroyed after the lock is released
   {
     std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
     change_count++;
-    if (!invalidate.IsEmpty() || !updates.empty()) {
-      const auto *newest = NewestLocked(accelerator);
-      PartitionMap next = newest ? *newest : PartitionMap {};
-      PartitionMap previous;
-      if (invalidate.scope == InvalidationScope::AllPartitions && !updates.empty()) {
-        // A full rebuild: the updates are the whole state. Partitions it no
-        // longer has are dropped, not left invalid (which would make the
-        // accelerator read as invalid until the next rebuild).
-        previous = std::move(next);
-        next = PartitionMap {};
-      } else {
-        InvalidateIn(next, invalidate, /*create_missing=*/true);
+    if (has_change) {
+      auto &acc = accelerators[accelerator];
+      if (!built_valid || acc.generation != built_generation) {
+        // A concurrent change (install/invalidate) raced the build: redo it.
+        const auto *newest = NewestLocked(accelerator);
+        built = build(newest);
       }
-      for (const auto &image : updates) {
-        const auto key = static_cast<PartitionKey>(image.partition);
-        auto &p = next[key];
-        auto old = previous.find(key);
-        const auto base = old != previous.end() ? old->second.partition_version : p.partition_version;
-        p = Partition {image.payload != nullptr, image.payload, base + 1};
-        owner[key] = accelerator;
+      if (!options.fixed_accelerator) {
+        for (const auto &image : updates) {
+          owner[static_cast<PartitionKey>(image.partition)] = accelerator;
+        }
       }
-      AppendLocked(accelerator, std::move(next), epoch, floor);
+      AppendLocked(accelerator, std::move(built), epoch, floor, dropped);
     }
     accelerators[accelerator].pending = false;
   }
@@ -532,6 +650,9 @@ bool VersionedAuxStore::IsTransactionDirty() const {
 
 // ---- Builds and status ----
 
+
+// ---- Builds and status ----
+
 void VersionedAuxStore::Install(std::vector<core::StateImage> images,
                                 core::AcceleratorId accelerator) {
   Install(std::move(images), std::move(accelerator), CurrentEpoch());
@@ -540,8 +661,9 @@ void VersionedAuxStore::Install(std::vector<core::StateImage> images,
 void VersionedAuxStore::Install(std::vector<core::StateImage> images,
                                 core::AcceleratorId accelerator, Epoch from_epoch) {
   const Epoch floor = CurrentFloor();
+  std::vector<StateVersion> dropped; // destroyed after the lock is released
   std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
-  InstallLocked(std::move(images), accelerator, from_epoch, floor);
+  InstallLocked(std::move(images), accelerator, from_epoch, floor, dropped);
 }
 
 bool VersionedAuxStore::InstallIfUnchanged(std::vector<core::StateImage> images,
@@ -549,12 +671,13 @@ bool VersionedAuxStore::InstallIfUnchanged(std::vector<core::StateImage> images,
                                            uint64_t expected_change_count) {
   const Epoch epoch = CurrentEpoch();
   const Epoch floor = CurrentFloor();
+  std::vector<StateVersion> dropped; // destroyed after the lock is released
   std::unique_lock<WriterPreferringSharedMutex> guard(mutex);
   auto it = accelerators.find(accelerator);
   if (change_count != expected_change_count || (it != accelerators.end() && it->second.pending)) {
     return false;
   }
-  InstallLocked(std::move(images), accelerator, epoch, floor);
+  InstallLocked(std::move(images), accelerator, epoch, floor, dropped);
   return true;
 }
 
@@ -565,7 +688,7 @@ uint64_t VersionedAuxStore::ChangeCount() const {
 
 void VersionedAuxStore::InstallLocked(std::vector<core::StateImage> images,
                                       const core::AcceleratorId &accelerator, Epoch from_epoch,
-                                      Epoch floor) {
+                                      Epoch floor, std::vector<StateVersion> &dropped) {
   change_count++;
   std::map<core::AcceleratorId, PartitionMap> maps;
   for (auto &image : images) {
@@ -581,15 +704,15 @@ void VersionedAuxStore::InstallLocked(std::vector<core::StateImage> images,
     for (auto &p : entry.second) {
       core::Version before = 0;
       if (newest) {
-        auto it = newest->find(p.first);
-        if (it != newest->end()) {
+        auto it = newest->map.find(p.first);
+        if (it != newest->map.end()) {
           before = it->second.partition_version;
         }
       }
       p.second.partition_version = before + 1;
       owner[p.first] = entry.first;
     }
-    AppendLocked(entry.first, std::move(entry.second), from_epoch, floor);
+    AppendLocked(entry.first, MakeSet(std::move(entry.second)), from_epoch, floor, dropped);
   }
 }
 
@@ -601,14 +724,9 @@ bool VersionedAuxStore::NeedsRebuild() const {
       continue;
     }
     any = true;
-    const auto &map = *entry.second.versions.back().partitions;
-    if (map.empty()) {
+    const auto &set = *entry.second.versions.back().partitions;
+    if (set.map.empty() || set.invalid_count != 0) {
       return true;
-    }
-    for (const auto &p : map) {
-      if (!p.second.valid) {
-        return true;
-      }
     }
   }
   return !any;
@@ -621,9 +739,8 @@ std::size_t VersionedAuxStore::ValidPartitionCount() const {
     if (entry.second.versions.empty()) {
       continue;
     }
-    for (const auto &p : *entry.second.versions.back().partitions) {
-      n += p.second.valid ? 1 : 0;
-    }
+    const auto &set = *entry.second.versions.back().partitions;
+    n += set.map.size() - set.invalid_count;
   }
   return n;
 }
@@ -633,7 +750,7 @@ std::size_t VersionedAuxStore::TotalPartitionCount() const {
   std::size_t n = 0;
   for (const auto &entry : accelerators) {
     if (!entry.second.versions.empty()) {
-      n += entry.second.versions.back().partitions->size();
+      n += entry.second.versions.back().partitions->map.size();
     }
   }
   return n;

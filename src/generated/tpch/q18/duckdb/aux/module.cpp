@@ -523,6 +523,22 @@ void TpchQ18TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
   deltas.clear();
+  inserted_orders.clear();
+  deleted_orders.clear();
+}
+void TpchQ18TxnBuffer::NoteOrderInserted(int64_t orderkey) {
+  pending = true;
+  inserted_orders.insert(orderkey);
+}
+void TpchQ18TxnBuffer::NoteOrderDeleted(int64_t orderkey) {
+  pending = true;
+  deleted_orders.insert(orderkey);
+}
+const std::unordered_set<int64_t> &TpchQ18TxnBuffer::InsertedOrders() const {
+  return inserted_orders;
+}
+const std::unordered_set<int64_t> &TpchQ18TxnBuffer::DeletedOrders() const {
+  return deleted_orders;
 }
 bool TpchQ18TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
 const std::vector<TpchQ18LineitemDelta> &TpchQ18TxnBuffer::Deltas() const {
@@ -586,8 +602,26 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
     buffer.MarkRebuild();
     return;
   }
-  if (mutation.table == config.orders_table)
+  if (mutation.table == config.orders_table) {
+    // Remember which order keys are created / removed in this transaction so
+    // maintenance can derive "previous sum = 0" without a SQL point query.
+    int64_t key = 0;
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows)
+        if (IntCell(row, 0, key))
+          buffer.NoteOrderInserted(key);
+      break;
+    case core::MutationKind::Delete:
+      for (const auto &row : mutation.old_rows)
+        if (IntCell(row, 0, key))
+          buffer.NoteOrderDeleted(key);
+      break;
+    case core::MutationKind::Update:
+      break;
+    }
     return;
+  }
   if (mutation.table != config.lineitem_table)
     return;
 
@@ -664,7 +698,7 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
   const auto snapshot = services.StateStore().ReadPartitions(
       visibility, {TpchQ18Layout::kOrderQuantitySums});
   bool found = false;
-  std::shared_ptr<TpchQ18State> new_state;
+  std::shared_ptr<const TpchQ18State> base_state;
   for (const auto &image : snapshot.partitions) {
     if (image.partition == TpchQ18Layout::kOrderQuantitySums) {
       const auto *typed = AsQ18Image(image, TpchQ18ImageKind::OrderQuantitySums);
@@ -674,7 +708,7 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
         outcome.pending_rebuild = outcome.invalidations;
         return outcome;
       }
-      new_state = std::make_shared<TpchQ18State>(*typed->state);
+      base_state = typed->state;
       existing_version = image.version;
       found = true;
       break;
@@ -695,39 +729,52 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
         static_cast<int64_t>(delta.sign) * delta.quantity_raw;
   }
 
+  // The published image is never mutated: clone lazily, only when a survivor
+  // actually changes (RF chunks on small orders leave the state untouched).
+  std::shared_ptr<TpchQ18State> new_state;
+  const auto mut = [&]() -> TpchQ18State & {
+    if (!new_state)
+      new_state = std::make_shared<TpchQ18State>(*base_state);
+    return *new_state;
+  };
+
   for (const auto &[orderkey, net] : net_by_order) {
     if (net == 0)
       continue;
+    const bool is_survivor = base_state->HasOrderMeta(orderkey);
     int64_t after = 0;
-    if (initial_scan && initial_scan->LookupOrderQuantitySum(orderkey, after)) {
-      // Scan includes this transaction — do not add `net` again.
-    } else if (new_state->HasOrderMeta(orderkey)) {
-      after = new_state->OrderQuantitySum(orderkey) + net;
+    if (is_survivor) {
+      after = base_state->OrderQuantitySum(orderkey) + net;
+    } else if (net < 0) {
+      // The state holds every order above the persist threshold, so this
+      // order's previous sum was <= threshold and only shrinks.
+      continue;
+    } else if (buffer.InsertedOrders().count(orderkey) &&
+               !buffer.DeletedOrders().count(orderkey)) {
+      // Order created in this transaction: previous sum is 0.
+      after = net;
+    } else if (initial_scan &&
+               initial_scan->LookupOrderQuantitySum(orderkey, after)) {
+      // Scan includes this transaction: do not add `net` again.
     } else {
-      // The state holds survivors only: this order's previous sum is
-      // unknown here, so rebuild rather than guess it from 0.
       core::FinishRebuildAll(outcome);
       return outcome;
     }
-    const int64_t before = after - net;
-    const bool was_survivor = before > TpchQ18State::kMinPersistQuantityRaw;
     const bool will_be_survivor = after > TpchQ18State::kMinPersistQuantityRaw;
 
-    new_state->SetOrderQuantitySum(orderkey, after);
-
-    if (was_survivor && !will_be_survivor) {
-      new_state->RemoveSurvivor(orderkey);
-      new_state->quantity_overflow.erase(orderkey);
-      UpdateActiveOrderkey(*new_state, orderkey);
+    if (is_survivor && !will_be_survivor) {
+      auto &st = mut();
+      st.RemoveSurvivor(orderkey);
+      st.quantity_overflow.erase(orderkey);
+      UpdateActiveOrderkey(st, orderkey);
       continue;
     }
-
-    if (!will_be_survivor) {
-      new_state->quantity_overflow.erase(orderkey);
+    if (!will_be_survivor)
       continue;
-    }
 
-    if (!new_state->HasOrderMeta(orderkey)) {
+    auto &st = mut();
+    st.SetOrderQuantitySum(orderkey, after);
+    if (!is_survivor) {
       TpchQ18OrderInput order;
       if (!initial_scan || !initial_scan->LookupOrder(orderkey, order) ||
           order.custkey <= 0) {
@@ -736,20 +783,26 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
         outcome.pending_rebuild = outcome.invalidations;
         return outcome;
       }
-      new_state->SetOrderMeta(order.key, order.custkey, order.orderdate_days,
-                              order.totalprice_raw);
-      if (new_state->customer_names.find(order.custkey) ==
-          new_state->customer_names.end()) {
-        initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
-          if (input.key == order.custkey)
-            new_state->customer_names.emplace(input.key, input.name);
-        });
+      st.SetOrderMeta(order.key, order.custkey, order.orderdate_days,
+                      order.totalprice_raw);
+      if (st.customer_names.find(order.custkey) == st.customer_names.end()) {
+        std::string name;
+        if (initial_scan->LookupCustomerName(order.custkey, name))
+          st.customer_names.emplace(order.custkey, std::move(name));
+        else
+          initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
+            if (input.key == order.custkey)
+              st.customer_names.emplace(input.key, input.name);
+          });
       }
-      UpdateActiveOrderkey(*new_state, orderkey);
+      UpdateActiveOrderkey(st, orderkey);
     } else {
-      new_state->SyncSurvivorQuantity(orderkey);
+      st.SyncSurvivorQuantity(orderkey);
     }
   }
+
+  if (!new_state)
+    return outcome;
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   const auto typed_state =
@@ -921,18 +974,15 @@ void TpchQ18Module::EmitResult(const TpchQ18State &state,
   }
 
   std::vector<TpchQ18OutputRow> output_rows;
-  output_rows.reserve(state.survivors.size());
-
   std::unordered_set<int64_t> emitted_orderkeys;
-  emitted_orderkeys.reserve(state.survivors.size());
 
-  auto consider = [&](int64_t orderkey, const TpchQ18SurvivorMeta &meta) {
-    const int64_t sum = state.OrderQuantitySum(orderkey);
-    if (sum <= threshold_raw)
-      return;
+  for (const auto &[orderkey, meta] : state.survivors) {
+    // meta.quantity_sum_raw is kept in sync with the sum on every write.
+    if (meta.quantity_sum_raw <= threshold_raw)
+      continue;
     const auto name_it = state.customer_names.find(meta.custkey);
     if (name_it == state.customer_names.end())
-      return;
+      continue;
     emitted_orderkeys.insert(orderkey);
     TpchQ18OutputRow row;
     row.name = name_it->second;
@@ -940,20 +990,8 @@ void TpchQ18Module::EmitResult(const TpchQ18State &state,
     row.orderkey = orderkey;
     row.orderdate_days = meta.orderdate_days;
     row.totalprice_raw = meta.totalprice_raw;
-    row.quantity_sum_raw = sum;
+    row.quantity_sum_raw = meta.quantity_sum_raw;
     output_rows.push_back(std::move(row));
-  };
-
-  if (!state.active_orderkeys.empty()) {
-    for (const int64_t orderkey : state.active_orderkeys) {
-      const auto it = state.survivors.find(orderkey);
-      if (it == state.survivors.end())
-        continue;
-      consider(orderkey, it->second);
-    }
-  } else {
-    for (const auto &[orderkey, meta] : state.survivors)
-      consider(orderkey, meta);
   }
 
   if (output_rows.empty() && state.customer_names.empty()) {

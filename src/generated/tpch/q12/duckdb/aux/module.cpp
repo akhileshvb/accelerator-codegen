@@ -17,7 +17,7 @@ namespace {
 using core::ByteReader;
 using core::ByteWriter;
 
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 constexpr uint32_t kPriorityMagic = 0x50313251; // Q12P
 constexpr uint32_t kDayMagic = 0x44313251;     // Q12D
 constexpr int32_t kEpoch = 719468;
@@ -161,13 +161,15 @@ bool TpchQ12LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days,
 std::vector<uint8_t> EncodeTpchQ12OrderPriorities(const TpchQ12State &state) {
   ByteWriter writer;
   std::vector<int64_t> keys;
-  for (std::size_t chunk_idx = 0; chunk_idx < state.order_priorities.chunks.size();
-       ++chunk_idx) {
-    const auto &chunk = state.order_priorities.chunks[chunk_idx];
-    const int64_t base =
-        static_cast<int64_t>(chunk_idx << core::DenseIdArray<uint8_t>::kShift);
-    for (std::size_t slot = 0; slot < chunk.size(); ++slot) {
-      if (chunk[slot] == 0)
+  const auto &pages = state.order_priorities.pages;
+  for (std::size_t page_idx = 0; page_idx < pages.size(); ++page_idx) {
+    if (!pages[page_idx])
+      continue;
+    const auto &page = *pages[page_idx];
+    const int64_t base = static_cast<int64_t>(
+        page_idx << TpchQ12PagedArray<uint8_t>::kShift);
+    for (std::size_t slot = 0; slot < page.size(); ++slot) {
+      if (page[slot] == 0)
         continue;
       keys.push_back(base + static_cast<int64_t>(slot));
     }
@@ -177,6 +179,7 @@ std::vector<uint8_t> EncodeTpchQ12OrderPriorities(const TpchQ12State &state) {
   for (const auto key : keys) {
     writer.I64(key);
     writer.U8(static_cast<uint8_t>(state.PriorityOf(key)));
+    writer.U16(state.line_counts.Get(key));
   }
   return std::move(writer.bytes);
 }
@@ -210,12 +213,15 @@ bool DecodeTpchQ12OrderPriorities(const std::vector<uint8_t> &bytes,
   if (!core::ReadImageHeader(reader, kPriorityMagic, kVersion, count))
     return false;
   state.order_priorities.Clear();
+  state.line_counts.Clear();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0;
     uint8_t priority = 0;
-    if (!reader.I64(key) || !reader.U8(priority))
+    uint16_t count = 0;
+    if (!reader.I64(key) || !reader.U8(priority) || !reader.U16(count))
       return false;
     state.SetPriority(key, static_cast<TpchQ12PriorityClass>(priority));
+    state.line_counts.Set(key, count);
   }
   return reader.offset == bytes.size();
 }
@@ -246,7 +252,7 @@ bool FindTpchQ12OrderPriority(const std::vector<uint8_t> &bytes,
   if (!core::ReadImageHeader(header, kPriorityMagic, kVersion, count))
     return false;
   constexpr std::size_t kHeaderBytes = 12;
-  constexpr std::size_t kRecordBytes = 9;
+  constexpr std::size_t kRecordBytes = 11;
   if (count > (std::numeric_limits<std::size_t>::max() - kHeaderBytes) /
                  kRecordBytes ||
       bytes.size() != kHeaderBytes +
@@ -318,13 +324,14 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ12Module::CreateTxnBuffer() const {
 
 void TpchQ12Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  const auto state = BuildState(services);
-  const auto typed_state = std::make_shared<const TpchQ12State>(state);
+  auto state_owned = BuildState(services);
+  const auto typed_state =
+      std::make_shared<const TpchQ12State>(std::move(state_owned));
   builder.Write(core::StateImage::Make(
       core::TpchQ12Layout::kAccelerator,
       core::TpchQ12Layout::kOrderPriorities, 0,
       MakeStateImage(TpchQ12ImageKind::OrderPriorities, 0, typed_state)));
-  for (const auto &entry : state.day_partitions) {
+  for (const auto &entry : typed_state->day_partitions) {
     builder.Write(core::StateImage::Make(
         core::TpchQ12Layout::kAccelerator, static_cast<core::PartitionId>(entry.first),
         0, MakeStateImage(TpchQ12ImageKind::Day, entry.first, typed_state)));
@@ -442,21 +449,12 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
   if (buffer.Deltas().empty() && buffer.OrderDeltas().empty())
     return outcome;
 
-  // A removed (deleted or updated) order may have lineitems counted under
-  // its old priority, which the deltas cannot move: rebuild.
-  for (const auto &delta : buffer.OrderDeltas()) {
-    if (delta.sign < 0) {
-      core::FinishRebuildAll(outcome);
-      return outcome;
-    }
-  }
-
-  const auto total_deltas =
-      buffer.Deltas().size() + buffer.OrderDeltas().size();
-
   const auto visibility = services.CurrentVisibility();
   const auto priority_snapshot = services.StateStore().ReadPartitions(
       visibility, {core::TpchQ12Layout::kOrderPriorities});
+  // Working copy: shares all pages with the published image (cheap page-table
+  // copy); only pages actually written are cloned. day_partitions is left
+  // empty so the new priority image does not carry any day data.
   std::shared_ptr<TpchQ12State> priority_state;
   core::Version priority_version = 0;
   for (const auto &image : priority_snapshot.partitions) {
@@ -468,7 +466,9 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
         outcome.pending_rebuild = outcome.invalidations;
         return outcome;
       }
-      priority_state = std::make_shared<TpchQ12State>(*typed->state);
+      priority_state = std::make_shared<TpchQ12State>();
+      priority_state->order_priorities = typed->state->order_priorities;
+      priority_state->line_counts = typed->state->line_counts;
       priority_version = image.version;
       break;
     }
@@ -480,13 +480,57 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  bool priorities_changed = false;
-  for (const auto &delta : buffer.OrderDeltas()) {
-    if (delta.sign > 0) {
-      priority_state->SetPriority(delta.orderkey, delta.priority);
-      priorities_changed = true;
+  // Order changes: an order that is inserted and removed in the same buffer
+  // (an update) needs the old priority for its lineitems: rebuild.
+  std::set<int64_t> inserted_orders, removed_orders;
+  for (const auto &delta : buffer.OrderDeltas())
+    (delta.sign > 0 ? inserted_orders : removed_orders).insert(delta.orderkey);
+  for (const auto key : removed_orders) {
+    if (inserted_orders.count(key)) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
     }
   }
+
+  bool priorities_changed = false;
+  for (const auto key : inserted_orders) {
+    for (const auto &delta : buffer.OrderDeltas()) {
+      if (delta.orderkey == key && delta.sign > 0) {
+        priority_state->SetPriority(key, delta.priority);
+        priorities_changed = true;
+      }
+    }
+  }
+
+  // Track per-order qualifying-lineitem counts so an order removal can be
+  // applied as a delta when none of its lineitems remain counted.
+  for (const auto &delta : buffer.Deltas()) {
+    const auto priority = priority_state->PriorityOf(delta.orderkey);
+    if (priority == TpchQ12PriorityClass::Absent) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+    if (priority == TpchQ12PriorityClass::Neither)
+      continue;
+    const int64_t count =
+        static_cast<int64_t>(priority_state->line_counts.Get(delta.orderkey)) +
+        delta.sign;
+    if (count < 0 || count > std::numeric_limits<uint16_t>::max()) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+    priority_state->line_counts.Set(delta.orderkey,
+                                    static_cast<uint16_t>(count));
+    priorities_changed = true;
+  }
+  for (const auto key : removed_orders) {
+    if (priority_state->line_counts.Get(key) != 0) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+  }
+  const auto total_deltas =
+      buffer.Deltas().size() + buffer.OrderDeltas().size();
 
   std::set<int32_t> touched_days;
   for (const auto &delta : buffer.Deltas())
@@ -532,12 +576,9 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
           static_cast<core::PartitionId>(day), 0,
           MakeStateImage(TpchQ12ImageKind::Day, day, typed_state)));
     }
-    for (const auto &delta : buffer.OrderDeltas()) {
-      if (delta.sign < 0) {
-        priority_state->SetPriority(delta.orderkey,
-                                    TpchQ12PriorityClass::Absent);
-        priorities_changed = true;
-      }
+    for (const auto key : removed_orders) {
+      priority_state->SetPriority(key, TpchQ12PriorityClass::Absent);
+      priorities_changed = true;
     }
     if (priorities_changed) {
       const auto typed_priorities =
@@ -596,12 +637,6 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
 
     for (const auto &delta : buffer.Deltas()) {
       const auto priority = priority_state->PriorityOf(delta.orderkey);
-      if (priority == TpchQ12PriorityClass::Absent) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
       if (priority == TpchQ12PriorityClass::Neither)
         continue;
       auto &stats = state.day_partitions[delta.receipt_day][delta.shipmode];
@@ -625,11 +660,9 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
     }
   }
 
-  for (const auto &delta : buffer.OrderDeltas()) {
-    if (delta.sign < 0) {
-      priority_state->SetPriority(delta.orderkey, TpchQ12PriorityClass::Absent);
-      priorities_changed = true;
-    }
+  for (const auto key : removed_orders) {
+    priority_state->SetPriority(key, TpchQ12PriorityClass::Absent);
+    priorities_changed = true;
   }
 
   if (priorities_changed) {
@@ -678,12 +711,29 @@ void TpchQ12Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  TpchQ12State state;
-  if (!LoadState(services, state, start, end)) {
-    ExecuteFallback(services, arguments, sink);
-    return;
+  std::vector<core::PartitionId> partitions;
+  partitions.reserve(end > start ? static_cast<std::size_t>(end - start) : 0);
+  for (int32_t day = start; day < end; ++day)
+    partitions.push_back(static_cast<core::PartitionId>(day));
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), partitions);
+  // Borrow the published day maps (immutable) instead of copying them.
+  std::vector<const TpchQ12DayMap *> days;
+  days.reserve(snapshot.partitions.size());
+  for (const auto &image : snapshot.partitions) {
+    if (image.partition == core::TpchQ12Layout::kOrderPriorities)
+      continue;
+    const auto receipt_day = static_cast<int32_t>(image.partition);
+    const auto *typed = AsQ12Image(image, TpchQ12ImageKind::Day);
+    if (!typed || typed->receipt_day != receipt_day) {
+      ExecuteFallback(services, arguments, sink);
+      return;
+    }
+    const auto day_it = typed->state->day_partitions.find(receipt_day);
+    if (day_it != typed->state->day_partitions.end())
+      days.push_back(&day_it->second);
   }
-  EmitResult(state, start, end, shipmode1, shipmode2, sink);
+  TpchQ12FinalizeAndEmit(days, shipmode1, shipmode2, sink);
 }
 
 void TpchQ12Module::ExecuteFallback(core::AuxEngineServices &services,
@@ -701,8 +751,13 @@ void TpchQ12Module::ExecuteFallback(core::AuxEngineServices &services,
       std::holds_alternative<core::AuxDate>(arguments.values[2].payload))
     start =
         std::get<core::AuxDate>(arguments.values[2].payload).days_since_epoch;
-  EmitResult(BuildState(services), start, TpchQ12AddMonths(start, 12), shipmode1,
-             shipmode2, sink);
+  const auto state = BuildState(services);
+  const auto end = TpchQ12AddMonths(start, 12);
+  std::vector<const TpchQ12DayMap *> days;
+  for (const auto &entry : state.day_partitions)
+    if (entry.first >= start && entry.first < end)
+      days.push_back(&entry.second);
+  TpchQ12FinalizeAndEmit(days, shipmode1, shipmode2, sink);
 }
 
 TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const {
@@ -724,39 +779,11 @@ TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const 
       return;
     auto &stats = state.day_partitions[input.receiptdate_days][input.shipmode];
     ApplyContribution(stats, priority, 1);
+    const auto count = state.line_counts.Get(input.orderkey);
+    if (count != std::numeric_limits<uint16_t>::max())
+      state.line_counts.Set(input.orderkey, static_cast<uint16_t>(count + 1));
   });
   return state;
-}
-
-bool TpchQ12Module::LoadState(core::AuxEngineServices &services,
-                              TpchQ12State &state, int32_t start_days,
-                              int32_t end_days) const {
-  std::vector<core::PartitionId> partitions;
-  for (int32_t day = start_days; day < end_days; ++day)
-    partitions.push_back(static_cast<core::PartitionId>(day));
-  const auto snapshot =
-      services.StateStore().ReadPartitions(services.CurrentVisibility(),
-                                          partitions);
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == core::TpchQ12Layout::kOrderPriorities)
-      continue;
-    const auto receipt_day = static_cast<int32_t>(image.partition);
-    const auto *typed = AsQ12Image(image, TpchQ12ImageKind::Day);
-    if (!typed || typed->receipt_day != receipt_day)
-      return false;
-    const auto day_it = typed->state->day_partitions.find(receipt_day);
-    if (day_it != typed->state->day_partitions.end())
-      state.day_partitions[receipt_day] = day_it->second;
-  }
-  return true;
-}
-
-void TpchQ12Module::EmitResult(const TpchQ12State &state, int32_t start_days,
-                               int32_t end_days, const std::string &shipmode1,
-                               const std::string &shipmode2,
-                               core::AuxRowSink &sink) const {
-  TpchQ12FinalizeAndEmit(state, start_days, end_days, shipmode1, shipmode2,
-                         sink);
 }
 
 std::vector<core::CalibrationWrite> TpchQ12Module::CalibrationWrites() const {

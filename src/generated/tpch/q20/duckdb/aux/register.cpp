@@ -105,6 +105,40 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
+// Typed streaming scan: reads DuckDB vectors directly (no boxed Values).
+template <typename T> struct TypedCol {
+  ::duckdb::UnifiedVectorFormat fmt;
+  const T *data = nullptr;
+  void Init(::duckdb::DataChunk &chunk, ::duckdb::idx_t col) {
+    chunk.data[col].ToUnifiedFormat(chunk.size(), fmt);
+    data = ::duckdb::UnifiedVectorFormat::GetData<T>(fmt);
+  }
+  bool Valid(::duckdb::idx_t row) const {
+    return fmt.validity.RowIsValid(fmt.sel->get_index(row));
+  }
+  const T &operator()(::duckdb::idx_t row) const {
+    return data[fmt.sel->get_index(row)];
+  }
+};
+
+template <typename Callback>
+void ScanTypedChunks(::duckdb::Connection &connection_p, const std::string &sql,
+                     Callback &&callback) {
+  auto &connection = ScanConnection(connection_p);
+  auto result = connection.SendQuery(sql);
+  if (!result || result->HasError())
+    throw std::runtime_error(result ? result->GetError()
+                                    : "DuckDB scan returned null");
+  while (true) {
+    auto chunk = result->Fetch();
+    if (!chunk || chunk->size() == 0)
+      break;
+    callback(*chunk);
+  }
+  if (result->HasError())
+    throw std::runtime_error(result->GetError());
+}
+
 struct TpchQ20Scan : TpchQ20InitialScan {
   explicit TpchQ20Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanLineitems(
@@ -118,6 +152,70 @@ struct TpchQ20Scan : TpchQ20InitialScan {
                     SafeInt64(ChunkValue(chunk, 2, row)),
                     DecimalRaw(ChunkValue(chunk, 3, row))});
         });
+  }
+  bool ScanLineitemsByPair(
+      const std::function<void(int64_t, int64_t, int32_t, int64_t)> &consumer)
+      override {
+    ScanTypedChunks(
+        connection,
+        "SELECT CAST(l_partkey AS BIGINT), CAST(l_suppkey AS BIGINT), "
+        "CAST(date_diff('day', DATE '1970-01-01', l_shipdate) AS INTEGER), "
+        "CAST(round(l_quantity * 100) AS BIGINT) "
+        "FROM lineitem ORDER BY l_partkey, l_suppkey",
+        [&](::duckdb::DataChunk &chunk) {
+          TypedCol<int64_t> pk, sk, qty;
+          TypedCol<int32_t> date;
+          pk.Init(chunk, 0);
+          sk.Init(chunk, 1);
+          date.Init(chunk, 2);
+          qty.Init(chunk, 3);
+          for (::duckdb::idx_t i = 0; i < chunk.size(); ++i) {
+            if (!pk.Valid(i) || !sk.Valid(i) || !date.Valid(i) || !qty.Valid(i))
+              continue;
+            consumer(pk(i), sk(i), date(i), qty(i));
+          }
+        });
+    return true;
+  }
+  bool ScanPartsuppsOrdered(
+      const std::function<void(int64_t, int64_t, int64_t)> &consumer) override {
+    ScanTypedChunks(
+        connection,
+        "SELECT CAST(ps_partkey AS BIGINT), CAST(ps_suppkey AS BIGINT), "
+        "CAST(ps_availqty AS BIGINT) FROM partsupp ORDER BY ps_partkey, "
+        "ps_suppkey",
+        [&](::duckdb::DataChunk &chunk) {
+          TypedCol<int64_t> pk, sk, av;
+          pk.Init(chunk, 0);
+          sk.Init(chunk, 1);
+          av.Init(chunk, 2);
+          for (::duckdb::idx_t i = 0; i < chunk.size(); ++i) {
+            if (!pk.Valid(i) || !sk.Valid(i) || !av.Valid(i))
+              continue;
+            consumer(pk(i), sk(i), av(i));
+          }
+        });
+    return true;
+  }
+  bool ScanPartNames(
+      const std::function<void(int64_t, const char *, std::size_t)> &consumer)
+      override {
+    ScanTypedChunks(
+        connection,
+        "SELECT CAST(p_partkey AS BIGINT), p_name FROM part ORDER BY p_name",
+        [&](::duckdb::DataChunk &chunk) {
+          TypedCol<int64_t> pk;
+          TypedCol<::duckdb::string_t> name;
+          pk.Init(chunk, 0);
+          name.Init(chunk, 1);
+          for (::duckdb::idx_t i = 0; i < chunk.size(); ++i) {
+            if (!pk.Valid(i) || !name.Valid(i))
+              continue;
+            const auto &str = name(i);
+            consumer(pk(i), str.GetData(), str.GetSize());
+          }
+        });
+    return true;
   }
   void ScanParts(
       const std::function<void(const TpchQ20PartInput &)> &consumer) override {

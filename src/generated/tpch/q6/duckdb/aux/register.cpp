@@ -108,13 +108,28 @@ struct TpchQ6Scan : TpchQ6InitialScan {
                     DecimalRaw(ChunkValue(chunk, 3, row)), 2});
         });
   }
+  void ScanLineitemGroups(
+      const std::function<void(const TpchQ6LineitemInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT date_trunc('month', l_shipdate)::DATE, l_discount, l_quantity, "
+        "SUM(l_extendedprice)::DECIMAL(18,2) FROM lineitem "
+        "GROUP BY date_trunc('month', l_shipdate), l_discount, l_quantity",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({DateDays(ChunkValue(chunk, 0, row)),
+                    DecimalRaw(ChunkValue(chunk, 1, row)), 2,
+                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
+                    DecimalRaw(ChunkValue(chunk, 3, row)), 2});
+        });
+  }
   void ScanLineitemsForMonths(
       const std::set<int32_t> &month_keys,
       const std::function<void(const TpchQ6LineitemInput &)> &consumer) override {
     if (month_keys.empty())
       return;
     std::ostringstream sql;
-    sql << "SELECT l_shipdate, l_discount, l_quantity, l_extendedprice "
+    sql << "SELECT date_trunc('month', l_shipdate)::DATE, l_discount, l_quantity, "
+           "SUM(l_extendedprice)::DECIMAL(18,2) "
            "FROM lineitem WHERE (EXTRACT(year FROM l_shipdate)::INT * 12 + "
            "EXTRACT(month FROM l_shipdate)::INT - 1) IN (";
     bool first = true;
@@ -124,7 +139,7 @@ struct TpchQ6Scan : TpchQ6InitialScan {
       first = false;
       sql << key;
     }
-    sql << ")";
+    sql << ") GROUP BY date_trunc('month', l_shipdate), l_discount, l_quantity";
     ScanQueryStreaming(
         connection, sql.str(),
         [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {

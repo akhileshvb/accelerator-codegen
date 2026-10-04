@@ -101,17 +101,82 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
+// Typed streaming scan: reads DuckDB vectors directly (no boxed Values).
+template <typename T> struct TypedCol {
+  ::duckdb::UnifiedVectorFormat fmt;
+  const T *data = nullptr;
+  void Init(::duckdb::DataChunk &chunk, ::duckdb::idx_t col) {
+    chunk.data[col].ToUnifiedFormat(chunk.size(), fmt);
+    data = ::duckdb::UnifiedVectorFormat::GetData<T>(fmt);
+  }
+  bool Valid(::duckdb::idx_t row) const {
+    return fmt.validity.RowIsValid(fmt.sel->get_index(row));
+  }
+  const T &operator()(::duckdb::idx_t row) const {
+    return data[fmt.sel->get_index(row)];
+  }
+};
+
+template <typename Callback>
+void ScanTypedChunks(::duckdb::Connection &connection_p, const std::string &sql,
+                     Callback &&callback) {
+  auto &connection = ScanConnection(connection_p);
+  auto result = connection.SendQuery(sql);
+  if (!result || result->HasError())
+    throw std::runtime_error(result ? result->GetError()
+                                    : "DuckDB scan returned null");
+  while (true) {
+    auto chunk = result->Fetch();
+    if (!chunk || chunk->size() == 0)
+      break;
+    callback(*chunk);
+  }
+  if (result->HasError())
+    throw std::runtime_error(result->GetError());
+}
+
 struct TpchQ22Scan : TpchQ22InitialScan {
   explicit TpchQ22Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanCustomers(
       const std::function<void(const TpchQ22CustomerInput &)> &consumer) override {
-    ScanQueryStreaming(
-        connection, "SELECT c_custkey, c_phone, c_acctbal FROM customer",
-        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
-          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
-                    ChunkValue(chunk, 1, row).ToString(),
-                    DecimalRaw(ChunkValue(chunk, 2, row)), 2});
+    ScanTypedChunks(
+        connection,
+        "SELECT CAST(c_custkey AS BIGINT), c_phone, "
+        "CAST(round(c_acctbal * 100) AS BIGINT) FROM customer",
+        [&](::duckdb::DataChunk &chunk) {
+          TypedCol<int64_t> key, bal;
+          TypedCol<::duckdb::string_t> phone;
+          key.Init(chunk, 0);
+          phone.Init(chunk, 1);
+          bal.Init(chunk, 2);
+          TpchQ22CustomerInput input;
+          for (::duckdb::idx_t i = 0; i < chunk.size(); ++i) {
+            if (!key.Valid(i) || !phone.Valid(i) || !bal.Valid(i))
+              continue;
+            input.custkey = key(i);
+            input.phone.assign(phone(i).GetData(), phone(i).GetSize());
+            input.acctbal_raw = bal(i);
+            input.acctbal_scale = 2;
+            consumer(input);
+          }
         });
+  }
+  bool ScanOrderCounts(
+      const std::function<void(int64_t, int64_t)> &consumer) override {
+    ScanTypedChunks(
+        connection,
+        "SELECT CAST(o_custkey AS BIGINT), COUNT(*) FROM orders GROUP BY o_custkey",
+        [&](::duckdb::DataChunk &chunk) {
+          TypedCol<int64_t> key, cnt;
+          key.Init(chunk, 0);
+          cnt.Init(chunk, 1);
+          for (::duckdb::idx_t i = 0; i < chunk.size(); ++i) {
+            if (!key.Valid(i) || !cnt.Valid(i))
+              continue;
+            consumer(key(i), cnt(i));
+          }
+        });
+    return true;
   }
   void ScanOrders(
       const std::function<void(const TpchQ22OrderInput &)> &consumer) override {

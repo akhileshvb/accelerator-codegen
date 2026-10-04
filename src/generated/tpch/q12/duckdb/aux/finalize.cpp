@@ -7,23 +7,31 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-void TpchQ12FinalizeAndEmit(const TpchQ12State &state, int32_t start_days,
-                            int32_t end_days, const std::string &shipmode1,
+void TpchQ12FinalizeAndEmit(const std::vector<const TpchQ12DayMap *> &days,
+                            const std::string &shipmode1,
                             const std::string &shipmode2,
                             core::AuxRowSink &sink) {
   std::unordered_map<std::string, TpchQ12DayShipmodeStats> merged;
-  for (int32_t day = start_days; day < end_days; ++day) {
-    const auto it = state.day_partitions.find(day);
-    if (it == state.day_partitions.end())
+  TpchQ12DayShipmodeStats s1, s2;
+  for (const auto *day : days) {
+    if (!day)
       continue;
-    for (const auto &entry : it->second) {
-      if (entry.first != shipmode1 && entry.first != shipmode2)
-        continue;
-      auto &stats = merged[entry.first];
-      stats.high_line_count += entry.second.high_line_count;
-      stats.low_line_count += entry.second.low_line_count;
+    auto it = day->find(shipmode1);
+    if (it != day->end()) {
+      s1.high_line_count += it->second.high_line_count;
+      s1.low_line_count += it->second.low_line_count;
+    }
+    if (shipmode2 != shipmode1) {
+      it = day->find(shipmode2);
+      if (it != day->end()) {
+        s2.high_line_count += it->second.high_line_count;
+        s2.low_line_count += it->second.low_line_count;
+      }
     }
   }
+  merged[shipmode1] = s1;
+  if (shipmode2 != shipmode1)
+    merged[shipmode2] = s2;
   std::vector<std::string> shipmodes;
   const bool modes_equal = shipmode1 == shipmode2;
   if (merged.count(shipmode1) &&

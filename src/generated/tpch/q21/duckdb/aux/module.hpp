@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -75,59 +76,189 @@ public:
       const std::function<void(const TpchQ21OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ21LineitemInput &)> &) = 0;
+
+  // Optional SQL pushdown for Build: for every fulfilled ('F') order that can
+  // contribute (>= 2 suppliers, exactly one supplier with a late item), one
+  // call per (orderkey, suppkey) with COUNT(*) and the late-item count.
+  virtual bool ScanContributingOrderSuppliers(
+      const std::function<void(int64_t orderkey, int64_t suppkey,
+                               int64_t total, int64_t late)> &consumer) {
+    (void)consumer;
+    return false;
+  }
 };
 
 // ── State structures ────────────────────────────────────────────────────────
+// Copy-on-write hash map: 128 shards, each an immutable-once-published
+// shared_ptr<Map>. Copying shares every shard; a mutation clones only the
+// touched shard (once per staged commit). Only the staging owner may mutate.
+template <typename K, typename V, typename H = std::hash<K>>
+class TpchQ21CowMap {
+public:
+  using Map = std::unordered_map<K, V, H>;
+  static constexpr std::size_t kShards = 128;
+
+  TpchQ21CowMap() = default;
+  TpchQ21CowMap(const TpchQ21CowMap &other)
+      : shards(other.shards), count(other.count) {}
+  TpchQ21CowMap &operator=(const TpchQ21CowMap &other) {
+    shards = other.shards;
+    count = other.count;
+    owned.fill(false);
+    return *this;
+  }
+
+  const V *Find(const K &key) const {
+    const auto &shard = shards[ShardOf(key)];
+    if (!shard)
+      return nullptr;
+    const auto it = shard->find(key);
+    return it == shard->end() ? nullptr : &it->second;
+  }
+  V &Mutable(const K &key, bool *inserted = nullptr) {
+    auto &map = OwnedShard(ShardOf(key));
+    const auto res = map.try_emplace(key);
+    if (res.second)
+      ++count;
+    if (inserted)
+      *inserted = res.second;
+    return res.first->second;
+  }
+  void Erase(const K &key) {
+    const std::size_t i = ShardOf(key);
+    if (!shards[i] || shards[i]->find(key) == shards[i]->end())
+      return;
+    OwnedShard(i).erase(key);
+    --count;
+  }
+  std::size_t Size() const { return count; }
+  bool Empty() const { return count == 0; }
+  template <typename F> void ForEach(F &&f) const {
+    for (const auto &shard : shards) {
+      if (!shard)
+        continue;
+      for (const auto &kv : *shard)
+        f(kv.first, kv.second);
+    }
+  }
+
+private:
+  static std::size_t ShardOf(const K &key) {
+    return static_cast<std::size_t>(
+        (static_cast<uint64_t>(H{}(key)) * 0x9E3779B97F4A7C15ULL) >> 57);
+  }
+  Map &OwnedShard(std::size_t i) {
+    if (!shards[i])
+      shards[i] = std::make_shared<Map>();
+    else if (!owned[i])
+      shards[i] = std::make_shared<Map>(*shards[i]);
+    owned[i] = true;
+    return *shards[i];
+  }
+  std::array<std::shared_ptr<Map>, kShards> shards{};
+  std::array<bool, kShards> owned{};
+  std::size_t count = 0;
+};
+
 struct SupplierOrderInfo {
-  int64_t total_count = 0;  // number of lineitems for this supplier on this order
-  int64_t late_count = 0;   // number of late lineitems (receiptdate > commitdate)
+  int64_t suppkey = 0;
+  int64_t total_count = 0; // lineitems of this supplier on this order
+  int64_t late_count = 0;  // late ones (receiptdate > commitdate)
 };
 
 struct OrderSummary {
   char orderstatus = 0;
-  std::unordered_map<int64_t, SupplierOrderInfo> suppliers;
+  // Orders have a handful of lineitems: a linear small vector beats a map.
+  std::vector<SupplierOrderInfo> suppliers;
+
+  SupplierOrderInfo *FindSupplier(int64_t suppkey) {
+    for (auto &s : suppliers)
+      if (s.suppkey == suppkey)
+        return &s;
+    return nullptr;
+  }
 };
 
-struct TpchQ21State {
-  // Supplier metadata: suppkey -> {name, nationkey}
-  std::unordered_map<int64_t, std::string> supplier_names;
-  std::unordered_map<int64_t, int32_t> supplier_nations;
+struct TpchQ21Supplier {
+  std::shared_ptr<const std::string> name;
+  int32_t nationkey = 0;
+};
 
-  // Nation name to nationkey mapping
-  std::unordered_map<std::string, std::vector<int32_t>> nation_name_to_keys;
+struct TpchQ21SupplierOverlay {
+  bool present = false;
+  TpchQ21Supplier supplier;
+};
 
-  // Per-order summaries for maintenance. The base map is shared across
-  // published images; RF/point writes land in `order_overlay` so ApplyDelta
-  // does not copy the SF-scale table.
-  using OrderSummaryMap = std::unordered_map<int64_t, OrderSummary>;
-  std::shared_ptr<OrderSummaryMap> order_summaries =
-      std::make_shared<OrderSummaryMap>();
-  OrderSummaryMap order_overlay;
+// Supplier directory: shared immutable base + small copy-on-write overlay.
+struct TpchQ21Dir {
+  std::shared_ptr<const std::unordered_map<int64_t, TpchQ21Supplier>> base;
+  TpchQ21CowMap<int64_t, TpchQ21SupplierOverlay> overlay;
+
+  const TpchQ21Supplier *Find(int64_t suppkey) const {
+    if (!overlay.Empty()) {
+      if (const auto *ov = overlay.Find(suppkey))
+        return ov->present ? &ov->supplier : nullptr;
+    }
+    if (!base)
+      return nullptr;
+    const auto it = base->find(suppkey);
+    return it == base->end() ? nullptr : &it->second;
+  }
+};
+
+// Order summaries (only orders that can contribute / were touched) and the
+// per-supplier numwait totals. Base + copy-on-write overlay.
+struct TpchQ21Core {
+  using OrderMap = std::unordered_map<int64_t, OrderSummary>;
+  std::shared_ptr<const OrderMap> base;
+  TpchQ21CowMap<int64_t, OrderSummary> overlay;
+  // suppkey -> numwait (independent of whether the supplier row exists).
+  TpchQ21CowMap<int64_t, int64_t> numwait;
 
   const OrderSummary *FindOrder(int64_t orderkey) const {
-    const auto overlay_it = order_overlay.find(orderkey);
-    if (overlay_it != order_overlay.end())
-      return &overlay_it->second;
-    if (!order_summaries)
-      return nullptr;
-    const auto it = order_summaries->find(orderkey);
-    return it == order_summaries->end() ? nullptr : &it->second;
-  }
-
-  OrderSummary &MutableOrder(int64_t orderkey) {
-    const auto overlay_it = order_overlay.find(orderkey);
-    if (overlay_it != order_overlay.end())
-      return overlay_it->second;
-    if (order_summaries) {
-      const auto it = order_summaries->find(orderkey);
-      if (it != order_summaries->end())
-        return order_overlay[orderkey] = it->second;
+    if (!overlay.Empty()) {
+      if (const auto *ov = overlay.Find(orderkey))
+        return ov;
     }
-    return order_overlay[orderkey];
+    if (!base)
+      return nullptr;
+    const auto it = base->find(orderkey);
+    return it == base->end() ? nullptr : &it->second;
   }
+  // Staging owner only: copy the base summary into the overlay on first touch.
+  OrderSummary &MutableOrder(int64_t orderkey) {
+    bool inserted = false;
+    auto &slot = overlay.Mutable(orderkey, &inserted);
+    if (inserted && base) {
+      const auto it = base->find(orderkey);
+      if (it != base->end())
+        slot = it->second;
+    }
+    return slot;
+  }
+};
 
-  // Per-nation supplier numwait: nationkey -> (suppkey -> numwait)
-  std::unordered_map<int32_t, std::unordered_map<int64_t, int64_t>> nation_numwait;
+struct TpchQ21NationIndex {
+  std::unordered_map<std::string, std::vector<int32_t>> nation_name_to_keys;
+};
+
+// Finalized answer rows of one nation, ordered (numwait DESC, name ASC) and
+// merged by s_name. Names are shared with the supplier directory.
+struct TpchQ21ImageRow {
+  std::shared_ptr<const std::string> name;
+  int64_t numwait = 0;
+};
+struct TpchQ21NationRows {
+  std::vector<TpchQ21ImageRow> rows;
+};
+
+// Logical whole state (Build result, Encode/Decode, fallback).
+struct TpchQ21State {
+  std::shared_ptr<TpchQ21Dir> dir = std::make_shared<TpchQ21Dir>();
+  std::shared_ptr<TpchQ21Core> core = std::make_shared<TpchQ21Core>();
+  std::shared_ptr<TpchQ21NationIndex> nation_index =
+      std::make_shared<TpchQ21NationIndex>();
+  std::map<int32_t, std::shared_ptr<const TpchQ21NationRows>> nations;
 };
 
 // ── Output row ──────────────────────────────────────────────────────────────
@@ -143,17 +274,16 @@ enum class TpchQ21ImageKind : uint8_t {
   Nation
 };
 
+// Each image owns only the piece it publishes (never the whole state).
 struct TpchQ21StateImage {
   TpchQ21ImageKind kind = TpchQ21ImageKind::SupplierMetadata;
   int32_t nationkey = 0;
   // Set only for parameter-keyed read images; guards hash collisions.
   std::string nation_name;
-  std::shared_ptr<const TpchQ21State> state;
-
-  // Nation images carry their already-materialized, ordered result.  This
-  // keeps the hit path independent of the global supplier metadata map and
-  // avoids reconstructing/sorting rows after a partition read.
-  std::vector<TpchQ21OutputRow> output_rows;
+  std::shared_ptr<const TpchQ21Dir> dir;                // SupplierMetadata
+  std::shared_ptr<const TpchQ21Core> core;              // OrderSummaries
+  std::shared_ptr<const TpchQ21NationIndex> nation_index; // NationNameIndex
+  std::shared_ptr<const TpchQ21NationRows> rows;        // Nation
 };
 
 // ── Delta ───────────────────────────────────────────────────────────────────
@@ -173,9 +303,9 @@ struct TpchQ21OrderDelta {
 
 struct TpchQ21SupplierDelta {
   int64_t suppkey = 0;
-  std::string old_name;
+  bool had_old = false; // supplier row removed / replaced
+  bool has_new = false; // supplier row inserted / replacing
   std::string new_name;
-  int32_t old_nationkey = 0;
   int32_t new_nationkey = 0;
 };
 
@@ -257,11 +387,12 @@ public:
 
 private:
   TpchQ21State BuildState(core::AuxEngineServices &services) const;
-  bool LoadStateForNations(core::AuxEngineServices &services,
-                            const std::vector<int32_t> &nationkeys,
-                            TpchQ21State &state) const;
-  void EmitResult(const TpchQ21State &state,
-                  core::AuxRowSink &sink) const;
+  bool LoadNationRows(
+      core::AuxEngineServices &services, const std::vector<int32_t> &nationkeys,
+      std::vector<std::shared_ptr<const TpchQ21NationRows>> &out) const;
+  void EmitMerged(
+      const std::vector<std::shared_ptr<const TpchQ21NationRows>> &nations,
+      core::AuxRowSink &sink) const;
 
   TpchQ21Config config;
   TpchQ21InitialScan *initial_scan = nullptr;

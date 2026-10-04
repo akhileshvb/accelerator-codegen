@@ -418,7 +418,7 @@ void TpchQ6Module::Build(core::AuxEngineServices &services,
   if (!initial_scan)
     throw std::logic_error("TPC-H Q6 requires a typed initial scan source");
   std::unordered_map<core::PartitionId, Q6RevenueMatrix> matrices;
-  initial_scan->ScanLineitems(
+  initial_scan->ScanLineitemGroups(
       [&](const TpchQ6LineitemInput &input) { ApplyLineitemInput(input, matrices); });
   for (const auto &entry : matrices) {
     const auto matrix = std::make_shared<const Q6RevenueMatrix>(entry.second);
@@ -648,31 +648,24 @@ bool TpchQ6Module::CheckValidity(core::AuxEngineServices &services,
 void TpchQ6Module::CollectQueryPartitions(
     const TpchQ6QueryParams &params,
     std::vector<core::PartitionId> &partitions) const {
-  std::unordered_set<core::PartitionId> unique;
-  auto add_day = [&](int32_t day) {
-    unique.insert(core::TpchQ6Layout::DayPartition(day));
-  };
-  auto add_month = [&](int32_t day) {
-    unique.insert(core::TpchQ6Layout::MonthPartition(
-        TpchQ6MonthKeyFromDays(day)));
-  };
-
+  // Partitions produced by the walk below are already unique (the cursor only
+  // advances), so no set is needed; sort once for the store.
+  partitions.clear();
   int32_t cursor = params.start_days;
   const int32_t end = params.end_days;
   while (cursor < end) {
     if (cursor == TpchQ6StartOfMonthDays(cursor)) {
       const int32_t month_end = TpchQ6StartOfNextMonthDays(cursor);
       if (month_end <= end) {
-        add_month(cursor);
+        partitions.push_back(core::TpchQ6Layout::MonthPartition(
+            TpchQ6MonthKeyFromDays(cursor)));
         cursor = month_end;
         continue;
       }
     }
-    add_day(cursor);
+    partitions.push_back(core::TpchQ6Layout::DayPartition(cursor));
     ++cursor;
   }
-
-  partitions.assign(unique.begin(), unique.end());
   std::sort(partitions.begin(), partitions.end());
 }
 
@@ -680,44 +673,31 @@ bool TpchQ6Module::LoadMatrices(core::AuxEngineServices &services,
                                 const TpchQ6QueryParams &params,
                                 MatrixLookup &matrices) const {
   std::vector<core::PartitionId> partitions;
+  partitions.reserve(16);
   CollectQueryPartitions(params, partitions);
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), partitions);
+  matrices.reserve(snapshot.partitions.size());
   for (const auto &image : snapshot.partitions) {
     const auto *typed = AsQ6Image(image);
     if (!typed || !typed->matrix)
       return false;
-    matrices.emplace(image.partition, typed->matrix);
+    matrices.emplace_back(image.partition, typed->matrix);
   }
+  std::sort(matrices.begin(), matrices.end(),
+            [](const auto &l, const auto &r) { return l.first < r.first; });
   return !matrices.empty();
 }
 
+// The loaded matrices are exactly the query's partitions (CollectQueryPartitions).
 Q6AccT TpchQ6Module::ComposeRevenue(const MatrixLookup &matrices,
                                     const TpchQ6QueryParams &params) const {
   Q6AccT revenue = static_cast<Q6AccT>(0);
-  auto add_matrix = [&](core::PartitionId partition) {
-    const auto it = matrices.find(partition);
-    if (it == matrices.end() || !it->second)
-      return;
-    revenue += it->second->SumRange(params.discount_lower_raw,
-                                    params.discount_upper_raw,
-                                    params.quantity_upper_raw);
-  };
-
-  int32_t cursor = params.start_days;
-  const int32_t end = params.end_days;
-  while (cursor < end) {
-    if (cursor == TpchQ6StartOfMonthDays(cursor)) {
-      const int32_t month_end = TpchQ6StartOfNextMonthDays(cursor);
-      if (month_end <= end) {
-        add_matrix(core::TpchQ6Layout::MonthPartition(
-            TpchQ6MonthKeyFromDays(cursor)));
-        cursor = month_end;
-        continue;
-      }
-    }
-    add_matrix(core::TpchQ6Layout::DayPartition(cursor));
-    ++cursor;
+  for (const auto &entry : matrices) {
+    if (entry.second)
+      revenue += entry.second->SumRange(params.discount_lower_raw,
+                                        params.discount_upper_raw,
+                                        params.quantity_upper_raw);
   }
   return revenue;
 }

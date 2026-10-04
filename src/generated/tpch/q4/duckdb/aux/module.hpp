@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -52,28 +53,46 @@ struct TpchQ4OrderInfo {
   int64_t qualifying_count = 0;
 };
 
-struct TpchQ4TreeNode {
-  std::vector<int64_t> counts;
+// Order eligibility index: a two-level (256 x 256) sharded table of immutable,
+// key-sorted leaves.  A published index is never mutated; a write copies the
+// top array (256 shared_ptrs), the touched mid arrays (256 shared_ptrs each)
+// and the touched leaves (a few hundred entries each) -- see
+// TpchQ4EligTxn.  A null pointer denotes an empty mid/leaf.
+struct TpchQ4EligEntry {
+  int64_t key = 0;
+  TpchQ4OrderInfo info;
+};
+using TpchQ4EligLeaf = std::vector<TpchQ4EligEntry>;
+struct TpchQ4EligMid {
+  std::array<std::shared_ptr<const TpchQ4EligLeaf>, 256> leaves;
+};
+struct TpchQ4EligIndex {
+  std::array<std::shared_ptr<const TpchQ4EligMid>, 256> mids;
+  const TpchQ4OrderInfo *Find(int64_t key) const;
 };
 
+// Tree counts are stored flat: node n, priority p at tree[n * tree_stride + p]
+// (tree has 2 * tree_size nodes).
 struct TpchQ4State {
   std::vector<std::string> priority_names;
   std::unordered_map<std::string, int32_t> priority_map;
-  std::unordered_map<int64_t, TpchQ4OrderInfo> order_eligibility;
+  TpchQ4EligIndex order_eligibility;
   int32_t min_orderdate_days = 0;
   int32_t max_orderdate_days = 0;
   uint32_t tree_size = 0;
-  std::vector<TpchQ4TreeNode> tree;
+  uint32_t tree_stride = 0;
+  std::vector<int64_t> tree;
 };
 
 
 struct TpchQ4TreePayload {
   uint32_t tree_size = 0;
-  std::vector<TpchQ4TreeNode> tree;
+  uint32_t tree_stride = 0;
+  std::vector<int64_t> tree;
 };
 
 struct TpchQ4EligibilityPayload {
-  std::unordered_map<int64_t, TpchQ4OrderInfo> order_eligibility;
+  TpchQ4EligIndex order_eligibility;
 };
 
 enum class TpchQ4ImageKind : uint8_t {
@@ -168,7 +187,8 @@ public:
 
 private:
   TpchQ4State BuildState(core::AuxEngineServices &) const;
-  bool LoadSide(core::AuxEngineServices &, TpchQ4State &) const;
+  bool LoadSide(core::AuxEngineServices &, TpchQ4State &,
+                std::shared_ptr<const TpchQ4EligibilityPayload> &) const;
   bool LoadMeta(core::AuxEngineServices &, TpchQ4State &) const;
   bool LoadTree(core::AuxEngineServices &, const TpchQ4State &,
                 const std::vector<uint32_t> &node_indices,

@@ -8,6 +8,9 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <numeric>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
@@ -203,35 +206,211 @@ uint32_t MonthPartition(int32_t month) {
                                static_cast<uint64_t>(month));
 }
 
-void CollectCustomerRankKeys(const TpchQ10State &state,
+void CollectCustomerRankKeys(const TpchQ10SideBase &base,
                              std::vector<int64_t> &keys) {
   keys.clear();
-  for (std::size_t chunk_idx = 0;
-       chunk_idx < state.customer_ranks.chunks.size(); ++chunk_idx) {
-    const auto &chunk = state.customer_ranks.chunks[chunk_idx];
-    const int64_t base = static_cast<int64_t>(
+  for (std::size_t chunk_idx = 0; chunk_idx < base.ranks.chunks.size();
+       ++chunk_idx) {
+    const auto &chunk = base.ranks.chunks[chunk_idx];
+    const auto key_base = static_cast<int64_t>(
         chunk_idx << core::DenseIdArray<TpchQ10CustomerRank>::kShift);
     for (std::size_t slot = 0; slot < chunk.size(); ++slot) {
       if (chunk[slot].present == 0)
         continue;
-      keys.push_back(base + static_cast<int64_t>(slot));
+      keys.push_back(key_base + static_cast<int64_t>(slot));
     }
   }
   std::sort(keys.begin(), keys.end());
 }
 
+// Fold the overlay into a fresh base (deep copy; only on compaction/encode).
+std::shared_ptr<const TpchQ10SideBase>
+CompactSideBase(const TpchQ10State &state) {
+  auto base = std::make_shared<TpchQ10SideBase>(*state.side_base);
+  if (state.customer_overlay) {
+    for (const auto &[key, slot] : *state.customer_overlay) {
+      if (slot.present) {
+        base->SetCustomerRank(key, slot.customer.acctbal_raw,
+                              slot.customer.nationkey);
+        base->customers[key] = slot.customer;
+      } else {
+        if (base->ranks.Get(key).present != 0)
+          base->ranks.Set(key, TpchQ10CustomerRank{});
+        base->customers.erase(key);
+      }
+    }
+  }
+  return base;
+}
+
+constexpr std::size_t kCustomerOverlayCap = 2048;
+constexpr std::size_t kMonthOverlayCap = 2048;
+
+std::shared_ptr<const TpchQ10State>
+ApplyCustomerDeltas(const TpchQ10State &prev,
+                    const std::vector<TpchQ10CustomerDelta> &deltas) {
+  auto overlay = prev.customer_overlay
+                     ? std::make_shared<TpchQ10CustomerOverlay>(
+                           *prev.customer_overlay)
+                     : std::make_shared<TpchQ10CustomerOverlay>();
+  for (const auto &delta : deltas) {
+    if (!core::DenseIdArray<TpchQ10CustomerRank>::Fits(delta.custkey))
+      return nullptr;
+    auto &slot = (*overlay)[delta.custkey];
+    if (delta.sign < 0) {
+      slot.present = 0;
+      slot.customer = TpchQ10Customer{};
+    } else {
+      slot.present = 1;
+      slot.customer = delta.customer;
+    }
+  }
+  auto next = std::make_shared<TpchQ10State>();
+  next->nations = prev.nations;
+  if (overlay->size() > kCustomerOverlayCap) {
+    TpchQ10State folded;
+    folded.side_base = prev.side_base;
+    folded.customer_overlay = std::move(overlay);
+    next->side_base = CompactSideBase(folded);
+  } else {
+    next->side_base = prev.side_base;
+    next->customer_overlay = std::move(overlay);
+  }
+  return next;
+}
+
+bool RankLess(const std::vector<int64_t> &keys, const std::vector<int64_t> &vals,
+              uint32_t a, uint32_t b) {
+  if (vals[a] != vals[b])
+    return vals[a] > vals[b];
+  return keys[a] < keys[b];
+}
+
+std::shared_ptr<const TpchQ10MonthBase>
+MakeMonthBase(const std::vector<std::pair<int64_t, int64_t>> &sorted_pairs) {
+  auto base = std::make_shared<TpchQ10MonthBase>();
+  base->keys.reserve(sorted_pairs.size());
+  base->vals.reserve(sorted_pairs.size());
+  for (const auto &[key, val] : sorted_pairs) {
+    if (val == 0)
+      continue;
+    base->keys.push_back(key);
+    base->vals.push_back(val);
+    if (val < 0)
+      base->has_negative = true;
+  }
+  base->rank.resize(base->keys.size());
+  std::iota(base->rank.begin(), base->rank.end(), 0u);
+  std::sort(base->rank.begin(), base->rank.end(),
+            [&](uint32_t a, uint32_t b) {
+              return RankLess(base->keys, base->vals, a, b);
+            });
+  return base;
+}
+
 } // namespace
 
-std::vector<uint8_t> EncodeTpchQ10Side(const TpchQ10State &state) {
+std::shared_ptr<const TpchQ10MonthData>
+TpchQ10MonthFromMap(const std::unordered_map<int64_t, int64_t> &revenue) {
+  std::vector<std::pair<int64_t, int64_t>> pairs;
+  pairs.reserve(revenue.size());
+  for (const auto &entry : revenue)
+    if (entry.second != 0)
+      pairs.emplace_back(entry.first, entry.second);
+  std::sort(pairs.begin(), pairs.end());
+  auto data = std::make_shared<TpchQ10MonthData>();
+  data->base = MakeMonthBase(pairs);
+  return data;
+}
+
+std::vector<std::pair<int64_t, int64_t>>
+TpchQ10MonthEffective(const TpchQ10MonthData &month) {
+  const auto &b = *month.base;
+  std::vector<std::pair<int64_t, int64_t>> out;
+  out.reserve(b.keys.size() + month.ov_keys.size());
+  std::size_t i = 0, j = 0;
+  while (i < b.keys.size() || j < month.ov_keys.size()) {
+    if (j >= month.ov_keys.size() ||
+        (i < b.keys.size() && b.keys[i] < month.ov_keys[j])) {
+      out.emplace_back(b.keys[i], b.vals[i]);
+      ++i;
+    } else {
+      if (i < b.keys.size() && b.keys[i] == month.ov_keys[j])
+        ++i;
+      if (month.ov_vals[j] != 0)
+        out.emplace_back(month.ov_keys[j], month.ov_vals[j]);
+      ++j;
+    }
+  }
+  return out;
+}
+
+std::shared_ptr<const TpchQ10MonthData>
+TpchQ10MonthApply(const TpchQ10MonthData *prev,
+                  const std::vector<std::pair<int64_t, int64_t>> &deltas) {
+  static const TpchQ10MonthData kEmpty;
+  const TpchQ10MonthData &p = prev ? *prev : kEmpty;
+  std::map<int64_t, int64_t> agg;
+  for (const auto &[key, delta] : deltas)
+    agg[key] += delta;
+  std::map<int64_t, int64_t> ov;
+  for (std::size_t i = 0; i < p.ov_keys.size(); ++i)
+    ov.emplace(p.ov_keys[i], p.ov_vals[i]);
+  for (const auto &[key, delta] : agg)
+    ov[key] = p.Lookup(key) + delta;
+
+  auto next = std::make_shared<TpchQ10MonthData>();
+  if (ov.size() > kMonthOverlayCap) {
+    // Compact: fold the overlay into a new base (linear merge + one sort).
+    TpchQ10MonthData folded;
+    folded.base = p.base;
+    folded.ov_keys.reserve(ov.size());
+    folded.ov_vals.reserve(ov.size());
+    for (const auto &[key, val] : ov) {
+      folded.ov_keys.push_back(key);
+      folded.ov_vals.push_back(val);
+    }
+    next->base = MakeMonthBase(TpchQ10MonthEffective(folded));
+    return next;
+  }
+  next->base = p.base;
+  next->ov_keys.reserve(ov.size());
+  next->ov_vals.reserve(ov.size());
+  for (const auto &[key, val] : ov) {
+    next->ov_keys.push_back(key);
+    next->ov_vals.push_back(val);
+    if (val < 0)
+      next->has_negative = true;
+  }
+  for (uint32_t i = 0; i < next->ov_keys.size(); ++i)
+    if (next->ov_vals[i] != 0)
+      next->ov_rank.push_back(i);
+  std::sort(next->ov_rank.begin(), next->ov_rank.end(),
+            [&](uint32_t a, uint32_t b) {
+              return RankLess(next->ov_keys, next->ov_vals, a, b);
+            });
+  return next;
+}
+
+std::vector<uint8_t> EncodeTpchQ10Side(const TpchQ10State &input) {
+  TpchQ10State folded;
+  const TpchQ10State *stateptr = &input;
+  if (input.customer_overlay && !input.customer_overlay->empty()) {
+    folded.side_base = CompactSideBase(input);
+    folded.nations = input.nations;
+    stateptr = &folded;
+  }
+  const auto &state = *stateptr;
   ByteWriter writer;
   std::vector<int64_t> keys;
-  CollectCustomerRankKeys(state, keys);
+  CollectCustomerRankKeys(*state.side_base, keys);
   core::WriteImageHeader(writer, kSideMagic, kVersion, static_cast<uint32_t>(keys.size()));
   static const TpchQ10Customer kNoCustomer;
   for (const auto key : keys) {
-    const auto rank = state.RankOf(key);
-    const auto it = state.customers->find(key);
-    const auto &customer = it == state.customers->end() ? kNoCustomer : it->second;
+    const auto rank = state.side_base->ranks.Get(key);
+    const auto it = state.side_base->customers.find(key);
+    const auto &customer =
+        it == state.side_base->customers.end() ? kNoCustomer : it->second;
     writer.I64(key);
     writer.String(customer.name);
     writer.I64(rank.acctbal_raw);
@@ -267,21 +446,16 @@ std::vector<uint8_t> EncodeTpchQ10Orders(const TpchQ10State &state) {
   return std::move(writer.bytes);
 }
 
-std::vector<uint8_t> EncodeTpchQ10Month(int32_t month,
+std::vector<uint8_t> EncodeTpchQ10Month(int32_t /*month*/,
                                         const TpchQ10State &state) {
-  const auto it = state.month_revenue.find(month);
-  std::vector<int64_t> keys;
-  if (it != state.month_revenue.end()) {
-    for (const auto &entry : it->second)
-      if (entry.second != 0)
-        keys.push_back(entry.first);
-    std::sort(keys.begin(), keys.end());
-  }
+  std::vector<std::pair<int64_t, int64_t>> pairs;
+  if (state.month_data)
+    pairs = TpchQ10MonthEffective(*state.month_data);
   ByteWriter writer;
-  core::WriteImageHeader(writer, kMonthMagic, kVersion, static_cast<uint32_t>(keys.size()));
-  for (const auto key : keys) {
+  core::WriteImageHeader(writer, kMonthMagic, kVersion, static_cast<uint32_t>(pairs.size()));
+  for (const auto &[key, val] : pairs) {
     writer.I64(key);
-    writer.I64(it->second.at(key));
+    writer.I64(val);
   }
   return std::move(writer.bytes);
 }
@@ -291,9 +465,9 @@ bool DecodeTpchQ10Side(const std::vector<uint8_t> &bytes, TpchQ10State &state) {
   uint32_t count = 0;
   if (!core::ReadImageHeader(reader, kSideMagic, kVersion, count))
     return false;
-  state.customer_ranks.Clear();
   state.nations.clear();
-  auto customers = std::make_shared<TpchQ10CustomerMap>();
+  state.customer_overlay = nullptr;
+  auto base = std::make_shared<TpchQ10SideBase>();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0;
     TpchQ10Customer customer;
@@ -302,10 +476,10 @@ bool DecodeTpchQ10Side(const std::vector<uint8_t> &bytes, TpchQ10State &state) {
         !reader.String(customer.address) || !reader.String(customer.phone) ||
         !reader.String(customer.comment))
       return false;
-    state.SetCustomerRank(key, customer.acctbal_raw, customer.nationkey);
-    customers->emplace(key, std::move(customer));
+    base->SetCustomerRank(key, customer.acctbal_raw, customer.nationkey);
+    base->customers.emplace(key, std::move(customer));
   }
-  state.customers = std::move(customers);
+  state.side_base = std::move(base);
   if (!reader.U32(count))
     return false;
   for (uint32_t i = 0; i < count; ++i) {
@@ -383,22 +557,29 @@ bool FindTpchQ10Order(const std::vector<uint8_t> &bytes, int64_t orderkey,
   return false;
 }
 
-bool DecodeTpchQ10Month(const std::vector<uint8_t> &bytes, int32_t month,
+bool DecodeTpchQ10Month(const std::vector<uint8_t> &bytes, int32_t /*month*/,
                         TpchQ10State &state) {
   ByteReader reader{bytes};
   uint32_t count = 0;
   if (!core::ReadImageHeader(reader, kMonthMagic, kVersion, count))
     return false;
-  auto &revenue = state.month_revenue[month];
-  revenue.clear();
+  std::vector<std::pair<int64_t, int64_t>> pairs;
+  pairs.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0, raw = 0;
     if (!reader.I64(key) || !reader.I64(raw))
       return false;
     if (raw != 0)
-      revenue[key] = raw;
+      pairs.emplace_back(key, raw);
   }
-  return reader.offset == bytes.size();
+  if (reader.offset != bytes.size())
+    return false;
+  if (!std::is_sorted(pairs.begin(), pairs.end()))
+    std::sort(pairs.begin(), pairs.end());
+  auto data = std::make_shared<TpchQ10MonthData>();
+  data->base = MakeMonthBase(pairs);
+  state.month_data = std::move(data);
+  return true;
 }
 
 int32_t TpchQ10MonthKeyFromDays(int32_t days_since_epoch) {
@@ -428,6 +609,7 @@ void TpchQ10TxnBuffer::Clear() {
   requires_rebuild = false;
   deltas.clear();
   order_deltas.clear();
+  customer_deltas.clear();
 }
 bool TpchQ10TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
 const std::vector<TpchQ10LineitemDelta> &TpchQ10TxnBuffer::Deltas() const {
@@ -436,11 +618,20 @@ const std::vector<TpchQ10LineitemDelta> &TpchQ10TxnBuffer::Deltas() const {
 const std::vector<TpchQ10OrderDelta> &TpchQ10TxnBuffer::OrderDeltas() const {
   return order_deltas;
 }
+const std::vector<TpchQ10CustomerDelta> &
+TpchQ10TxnBuffer::CustomerDeltas() const {
+  return customer_deltas;
+}
 void TpchQ10TxnBuffer::MarkRebuild() {
   pending = true;
   requires_rebuild = true;
   deltas.clear();
   order_deltas.clear();
+  customer_deltas.clear();
+}
+void TpchQ10TxnBuffer::AddCustomerDelta(TpchQ10CustomerDelta delta) {
+  pending = true;
+  customer_deltas.push_back(std::move(delta));
 }
 void TpchQ10TxnBuffer::AddDelta(TpchQ10LineitemDelta delta) {
   pending = true;
@@ -469,8 +660,7 @@ void TpchQ10Module::Build(core::AuxEngineServices &services,
   // Publish lean per-kind images so Side/Month payloads do not retain the
   // full orders map (orders are write-maintenance only).
   auto side_state = std::make_shared<TpchQ10State>();
-  side_state->customer_ranks = std::move(state.customer_ranks);
-  side_state->customers = std::move(state.customers);
+  side_state->side_base = std::move(state.side_base);
   side_state->nations = std::move(state.nations);
   builder.Write(core::StateImage::Make(
       core::TpchQ10Layout::kAccelerator,
@@ -492,7 +682,8 @@ void TpchQ10Module::Build(core::AuxEngineServices &services,
 
   for (auto &entry : state.month_revenue) {
     auto month_state = std::make_shared<TpchQ10State>();
-    month_state->month_revenue.emplace(entry.first, std::move(entry.second));
+    month_state->month_data = TpchQ10MonthFromMap(entry.second);
+    entry.second = {}; // release the hash map as soon as it is flattened
     builder.Write(core::StateImage::Make(
         core::TpchQ10Layout::kAccelerator, MonthPartition(entry.first), 0,
         MakeStateImage(TpchQ10ImageKind::Month, entry.first,
@@ -504,14 +695,14 @@ void TpchQ10Module::Build(core::AuxEngineServices &services,
 core::InvalidationPlan
 TpchQ10Module::InterpretMutation(const core::MutationBatch &mutation) const {
   if (mutation.table == config.lineitem_table ||
-      mutation.table == config.orders_table) {
+      mutation.table == config.orders_table ||
+      mutation.table == config.customer_table) {
     core::InvalidationPlan plan;
     plan.scope =
         ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
     return plan;
   }
-  if (mutation.table == config.customer_table ||
-      mutation.table == config.nation_table)
+  if (mutation.table == config.nation_table)
     return All();
   return {};
 }
@@ -520,9 +711,53 @@ void TpchQ10Module::AccumulateMutation(const core::MutationBatch &mutation,
                                        core::AuxEngineServices &,
                                        core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ10TxnBuffer &>(base_buffer);
-  if (mutation.table == config.customer_table ||
-      mutation.table == config.nation_table) {
+  if (mutation.table == config.nation_table) {
     buffer.MarkRebuild();
+    return;
+  }
+  if (mutation.table == config.customer_table) {
+    // Row layout: custkey, name, acctbal, nationkey, address, phone, comment.
+    auto add = [&](const core::AuxRow &row, int8_t sign) {
+      TpchQ10CustomerDelta delta;
+      delta.sign = sign;
+      int64_t key = 0, acct = 0, nation = 0;
+      int32_t scale = 0;
+      if (!IntCell(row, 0, key) || !StringCell(row, 1, delta.customer.name) ||
+          !RawDecimalCell(row, 2, acct, scale) || scale != 2 ||
+          !IntCell(row, 3, nation) ||
+          nation < std::numeric_limits<int32_t>::min() ||
+          nation > std::numeric_limits<int32_t>::max() ||
+          !StringCell(row, 4, delta.customer.address) ||
+          !StringCell(row, 5, delta.customer.phone) ||
+          !StringCell(row, 6, delta.customer.comment)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      delta.custkey = key;
+      delta.customer.acctbal_raw = acct;
+      delta.customer.nationkey = static_cast<int32_t>(nation);
+      buffer.AddCustomerDelta(std::move(delta));
+    };
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows)
+        add(row, 1);
+      break;
+    case core::MutationKind::Delete:
+      for (const auto &row : mutation.old_rows)
+        add(row, -1);
+      break;
+    case core::MutationKind::Update:
+      if (mutation.old_rows.size() != mutation.new_rows.size()) {
+        buffer.MarkRebuild();
+        return;
+      }
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        add(mutation.old_rows[i], -1);
+        add(mutation.new_rows[i], 1);
+      }
+      break;
+    }
     return;
   }
   if (mutation.table == config.orders_table) {
@@ -609,15 +844,84 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
     outcome.pending_rebuild = outcome.invalidations;
     return outcome;
   }
-  if (buffer.Deltas().empty() && buffer.OrderDeltas().empty())
+  if (buffer.Deltas().empty() && buffer.OrderDeltas().empty() &&
+      buffer.CustomerDeltas().empty())
     return outcome;
 
-  // An updated or deleted order moves (or drops) the revenue of all its
-  // existing lineitems, which the deltas cannot do: rebuild.
-  for (const auto &delta : buffer.OrderDeltas()) {
-    if (delta.sign < 0) {
-      core::FinishRebuildAll(outcome);
-      return outcome;
+  const auto rebuild_all = [&]() {
+    core::FinishRebuildAll(outcome);
+    return outcome;
+  };
+  const auto visibility = services.CurrentVisibility();
+
+  // Customer writes touch only the Side partition (revenue is keyed by custkey
+  // and never joins customer): copy-on-write overlay, compacted when large.
+  std::optional<core::StateImage> side_update;
+  if (!buffer.CustomerDeltas().empty()) {
+    const auto side_snapshot = services.StateStore().ReadPartitions(
+        visibility, {core::TpchQ10Layout::kCustomerDimensions});
+    const TpchQ10StateImage *typed = nullptr;
+    core::Version side_version = 0;
+    for (const auto &image : side_snapshot.partitions) {
+      if (image.partition == core::TpchQ10Layout::kCustomerDimensions) {
+        typed = AsQ10Image(image, TpchQ10ImageKind::Side);
+        side_version = image.version;
+        break;
+      }
+    }
+    if (!typed)
+      return rebuild_all();
+    const auto next = ApplyCustomerDeltas(*typed->state, buffer.CustomerDeltas());
+    if (!next)
+      return rebuild_all();
+    side_update = core::StateImage::Make(
+        core::TpchQ10Layout::kAccelerator,
+        core::TpchQ10Layout::kCustomerDimensions, side_version,
+        MakeStateImage(TpchQ10ImageKind::Side, 0, next));
+  }
+  if (buffer.Deltas().empty() && buffer.OrderDeltas().empty()) {
+    outcome.action = core::MaintenanceAction::ApplyDelta;
+    outcome.updates.push_back(std::move(*side_update));
+    return outcome;
+  }
+
+  // Order changes. An order whose (custkey, orderdate) changes moves all its
+  // lineitems' revenue, which lineitem deltas cannot express: rebuild. A pure
+  // delete is a delta only when the lineitem deltas cancel its revenue, i.e.
+  // no returned lineitem of that order remains in the base table (RF2).
+  {
+    struct Change {
+      bool has_old = false, has_new = false;
+      TpchQ10Order old_order, new_order;
+    };
+    std::unordered_map<int64_t, Change> changes;
+    for (const auto &delta : buffer.OrderDeltas()) {
+      auto &c = changes[delta.orderkey];
+      const TpchQ10Order order{delta.custkey, delta.orderdate_days};
+      if (delta.sign < 0) {
+        c.has_old = true;
+        c.old_order = order;
+      } else {
+        c.has_new = true;
+        c.new_order = order;
+      }
+    }
+    std::vector<int64_t> deleted_only;
+    for (const auto &[key, c] : changes) {
+      if (c.has_old && c.has_new) {
+        if (c.old_order.custkey != c.new_order.custkey ||
+            c.old_order.orderdate_days != c.new_order.orderdate_days)
+          return rebuild_all();
+      } else if (c.has_old) {
+        deleted_only.push_back(key);
+      }
+    }
+    if (!deleted_only.empty()) {
+      std::set<int64_t> remaining;
+      if (!initial_scan ||
+          !initial_scan->OrdersWithReturnedLineitems(deleted_only, remaining) ||
+          !remaining.empty())
+        return rebuild_all();
     }
   }
 
@@ -625,7 +929,6 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
       buffer.Deltas().size() + buffer.OrderDeltas().size();
 
   TpchQ10State state;
-  const auto visibility = services.CurrentVisibility();
   const auto order_snapshot = services.StateStore().ReadPartitions(
       visibility, {core::TpchQ10Layout::kOrderMetadata});
   std::shared_ptr<TpchQ10State> order_metadata;
@@ -634,12 +937,8 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
   for (const auto &image : order_snapshot.partitions) {
     if (image.partition == core::TpchQ10Layout::kOrderMetadata) {
       const auto *typed = AsQ10Image(image, TpchQ10ImageKind::Orders);
-      if (!typed) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
+      if (!typed)
+        return rebuild_all();
       order_metadata = std::make_shared<TpchQ10State>(*typed->state);
       order_version = image.version;
       have_orders_partition = true;
@@ -662,20 +961,17 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   // When build skipped the Orders partition, resolve only the touched keys.
-  // Same-txn RF1 inserts are visible to LookupOrders after the base write.
+  // Same-txn RF1 inserts (and RF2 deletes, which carry their old values) are
+  // taken from the order deltas themselves.
   std::unordered_map<int64_t, TpchQ10Order> looked_up_orders;
-  // Overlay same-txn order inserts when resolving without a full map, or when
-  // the partition exists but inserts arrived in this buffer.
   std::unordered_map<int64_t, TpchQ10Order> overlay_orders;
   const std::unordered_map<int64_t, TpchQ10Order> *orders_by_key = nullptr;
   if (have_orders_partition && order_metadata) {
     orders_by_key = &order_metadata->orders;
   } else if (!buffer.Deltas().empty()) {
-    for (const auto &delta : buffer.OrderDeltas()) {
-      if (delta.sign > 0)
-        overlay_orders[delta.orderkey] =
-            TpchQ10Order{delta.custkey, delta.orderdate_days};
-    }
+    for (const auto &delta : buffer.OrderDeltas())
+      overlay_orders[delta.orderkey] =
+          TpchQ10Order{delta.custkey, delta.orderdate_days};
     std::vector<int64_t> orderkeys;
     orderkeys.reserve(buffer.Deltas().size());
     for (const auto &delta : buffer.Deltas()) {
@@ -684,12 +980,8 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
     }
     if (!orderkeys.empty()) {
       if (!initial_scan ||
-          !initial_scan->LookupOrders(orderkeys, looked_up_orders)) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
+          !initial_scan->LookupOrders(orderkeys, looked_up_orders))
+        return rebuild_all();
     }
     for (const auto &[key, order] : looked_up_orders)
       overlay_orders.emplace(key, order);
@@ -702,22 +994,20 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
   };
   for (const auto &delta : buffer.OrderDeltas())
     add_month_from_days(delta.orderdate_days);
+  // month -> (custkey, signed revenue) for this buffer's lineitem deltas.
+  std::map<int32_t, std::vector<std::pair<int64_t, int64_t>>> month_deltas;
   if (!buffer.Deltas().empty()) {
-    if (!orders_by_key) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
+    if (!orders_by_key)
+      return rebuild_all();
     for (const auto &delta : buffer.Deltas()) {
       const auto order_it = orders_by_key->find(delta.orderkey);
-      if (order_it == orders_by_key->end()) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      add_month_from_days(order_it->second.orderdate_days);
+      if (order_it == orders_by_key->end())
+        return rebuild_all();
+      const auto month = TpchQ10MonthKeyFromDays(order_it->second.orderdate_days);
+      rebuild_months.insert(month);
+      month_deltas[month].emplace_back(
+          order_it->second.custkey,
+          static_cast<int64_t>(delta.sign) * delta.revenue_raw);
     }
   }
 
@@ -734,20 +1024,19 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
                 return;
               state.month_revenue[input.month_key][input.custkey] +=
                   input.revenue_raw;
-            })) {
-      core::FinishRebuildAll(outcome);
-      return outcome;
-    }
+            }))
+      return rebuild_all();
     for (const auto month : rebuild_months) {
-      TpchQ10State month_state;
+      auto month_state = std::make_shared<TpchQ10State>();
       const auto month_it = state.month_revenue.find(month);
-      if (month_it != state.month_revenue.end())
-        month_state.month_revenue.emplace(month, month_it->second);
-      const auto typed_state =
-          std::make_shared<const TpchQ10State>(std::move(month_state));
+      month_state->month_data =
+          month_it == state.month_revenue.end()
+              ? TpchQ10MonthFromMap({})
+              : TpchQ10MonthFromMap(month_it->second);
       outcome.updates.push_back(core::StateImage::Make(
           core::TpchQ10Layout::kAccelerator, MonthPartition(month), 0,
-          MakeStateImage(TpchQ10ImageKind::Month, month, typed_state)));
+          MakeStateImage(TpchQ10ImageKind::Month, month,
+                         std::shared_ptr<const TpchQ10State>(month_state))));
     }
     if (orders_changed && order_metadata) {
       for (const auto &delta : buffer.OrderDeltas()) {
@@ -760,6 +1049,8 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
           core::TpchQ10Layout::kAccelerator, core::TpchQ10Layout::kOrderMetadata,
           0, MakeStateImage(TpchQ10ImageKind::Orders, 0, typed_orders)));
     }
+    if (side_update)
+      outcome.updates.push_back(std::move(*side_update));
     core::FinishRebuildPartition(outcome);
     return outcome;
   }
@@ -770,79 +1061,39 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  if (!buffer.Deltas().empty()) {
-    std::set<int32_t> touched_months;
-    for (const auto &delta : buffer.Deltas()) {
-      const auto order_it = orders_by_key->find(delta.orderkey);
-      if (order_it == orders_by_key->end()) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      const auto month = TpchQ10MonthKeyFromDays(order_it->second.orderdate_days);
-      touched_months.insert(month);
-    }
-
+  if (!month_deltas.empty()) {
     std::vector<core::PartitionId> month_partitions;
-    month_partitions.reserve(touched_months.size());
-    for (const auto month : touched_months) {
-      month_partitions.push_back(MonthPartition(month));
-    }
+    month_partitions.reserve(month_deltas.size());
+    for (const auto &entry : month_deltas)
+      month_partitions.push_back(MonthPartition(entry.first));
     std::map<int32_t, core::Version> versions;
+    std::map<int32_t, std::shared_ptr<const TpchQ10State>> previous;
     const auto month_snapshot =
         services.StateStore().ReadPartitions(visibility, month_partitions);
     for (const auto &image : month_snapshot.partitions) {
-      if (image.partition < core::TpchQ10Layout::kFirstMonth) {
+      if (image.partition < core::TpchQ10Layout::kFirstMonth)
         continue;
-      }
       const auto month = static_cast<int32_t>(
           image.partition - core::TpchQ10Layout::kFirstMonth);
       const auto *typed = AsQ10Image(image, TpchQ10ImageKind::Month);
-      if (!typed || typed->month != month) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      const auto month_it = typed->state->month_revenue.find(month);
-      if (month_it != typed->state->month_revenue.end())
-        state.month_revenue[month] = month_it->second;
+      if (!typed || typed->month != month)
+        return rebuild_all();
+      previous[month] = typed->state;
       versions[month] = image.version;
     }
-    if (versions.size() != touched_months.size()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
+    if (versions.size() != month_deltas.size())
+      return rebuild_all();
 
-    for (const auto &delta : buffer.Deltas()) {
-      const auto order_it = orders_by_key->find(delta.orderkey);
-      if (order_it == orders_by_key->end()) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      const auto month = TpchQ10MonthKeyFromDays(order_it->second.orderdate_days);
-      state.month_revenue[month][order_it->second.custkey] +=
-          static_cast<int64_t>(delta.sign) * delta.revenue_raw;
-      if (state.month_revenue[month][order_it->second.custkey] == 0)
-        state.month_revenue[month].erase(order_it->second.custkey);
-    }
     outcome.action = core::MaintenanceAction::ApplyDelta;
-    for (const auto month : touched_months) {
-      const auto partition = MonthPartition(month);
-      const auto version = versions.count(month) ? versions[month] : 0;
-      TpchQ10State month_state;
-      const auto month_it = state.month_revenue.find(month);
-      if (month_it != state.month_revenue.end())
-        month_state.month_revenue.emplace(month, month_it->second);
-      const auto typed_state = std::make_shared<const TpchQ10State>(month_state);
+    for (const auto &[month, deltas] : month_deltas) {
+      auto month_state = std::make_shared<TpchQ10State>();
+      month_state->month_data =
+          TpchQ10MonthApply(previous[month]->month_data.get(), deltas);
       outcome.updates.push_back(core::StateImage::Make(
-          core::TpchQ10Layout::kAccelerator, partition, version,
-          MakeStateImage(TpchQ10ImageKind::Month, month, typed_state)));
+          core::TpchQ10Layout::kAccelerator, MonthPartition(month),
+          versions[month],
+          MakeStateImage(TpchQ10ImageKind::Month, month,
+                         std::shared_ptr<const TpchQ10State>(month_state))));
     }
   }
 
@@ -864,6 +1115,10 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
         core::TpchQ10Layout::kAccelerator, core::TpchQ10Layout::kOrderMetadata,
         order_version,
         MakeStateImage(TpchQ10ImageKind::Orders, 0, typed_orders)));
+  }
+  if (side_update) {
+    outcome.action = core::MaintenanceAction::ApplyDelta;
+    outcome.updates.push_back(std::move(*side_update));
   }
   return outcome;
 }
@@ -920,11 +1175,11 @@ void TpchQ10Module::Execute(core::AuxEngineServices &services,
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), partitions);
   std::shared_ptr<const TpchQ10State> side;
-  std::vector<const std::unordered_map<int64_t, int64_t> *> month_revenues;
-  month_revenues.reserve(3);
-  // Hold shared ownership for the duration of finalize.
+  // Hold shared ownership of the month images for the duration of finalize.
   std::vector<std::shared_ptr<const TpchQ10State>> month_holders;
+  std::vector<const TpchQ10MonthData *> months;
   month_holders.reserve(3);
+  months.reserve(3);
   for (const auto &image : snapshot.partitions) {
     if (image.partition == core::TpchQ10Layout::kCustomerDimensions) {
       const auto *typed = AsQ10Image(image, TpchQ10ImageKind::Side);
@@ -939,17 +1194,15 @@ void TpchQ10Module::Execute(core::AuxEngineServices &services,
         return;
       }
       month_holders.push_back(typed->state);
-      const auto month_it = typed->state->month_revenue.find(month);
-      if (month_it != typed->state->month_revenue.end())
-        month_revenues.push_back(&month_it->second);
+      if (typed->state->month_data)
+        months.push_back(typed->state->month_data.get());
     }
   }
   if (!side) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  TpchQ10FinalizeAndEmit(side->customer_ranks, side->nations, month_revenues,
-                         *side->customers, start, sink, kTpchQ10ResultLimit);
+  TpchQ10FinalizeAndEmit(*side, months, sink, kTpchQ10ResultLimit);
 }
 void TpchQ10Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
@@ -979,13 +1232,14 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
   };
 
   auto t = std::chrono::steady_clock::now();
-  auto customers = std::make_shared<TpchQ10CustomerMap>();
+  auto base = std::make_shared<TpchQ10SideBase>();
   initial_scan->ScanCustomers([&](const TpchQ10CustomerInput &input) {
-    state.SetCustomerRank(input.key, input.acctbal_raw, input.nationkey);
-    (*customers)[input.key] = {input.name,  input.acctbal_raw, input.nationkey,
-                               input.address, input.phone,     input.comment};
+    base->SetCustomerRank(input.key, input.acctbal_raw, input.nationkey);
+    base->customers[input.key] = {input.name,    input.acctbal_raw,
+                                  input.nationkey, input.address,
+                                  input.phone,   input.comment};
   });
-  state.customers = std::move(customers);
+  state.side_base = std::move(base);
   log_phase("customers", t);
 
   t = std::chrono::steady_clock::now();
@@ -1037,70 +1291,24 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
   return state;
 }
 
-bool TpchQ10Module::LoadState(
-    core::AuxEngineServices &services, TpchQ10State &state, int32_t start_days,
-    std::map<int32_t, core::Version> *versions) const {
-  // Query execution never needs the order lookup table; that partition is
-  // consumed only by write-side maintenance. Also load only the three month
-  // partitions addressed by this invocation. The cache is maintained state,
-  // not final query output, and its window is part of its key.
-  std::vector<core::PartitionId> partitions = {
-      core::TpchQ10Layout::kCustomerDimensions};
-  const auto end_days = TpchQ10AddMonths(start_days, 3);
-  for (int32_t cursor = start_days; cursor < end_days;) {
-    const auto month = TpchQ10MonthKeyFromDays(cursor);
-    partitions.push_back(MonthPartition(month));
-    const auto next = TpchQ10AddMonths(TpchQ10MonthStartDays(month), 1);
-    if (next <= cursor) {
-      return false;
-    }
-    cursor = next;
-  }
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), partitions);
-  bool side = false;
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == core::TpchQ10Layout::kCustomerDimensions) {
-      const auto *typed = AsQ10Image(image, TpchQ10ImageKind::Side);
-      if (typed) {
-        state.customer_ranks = typed->state->customer_ranks;
-        state.customers = typed->state->customers;
-        state.nations = typed->state->nations;
-        side = true;
-      }
-    }
-    else if (image.partition >= core::TpchQ10Layout::kFirstMonth) {
-      const auto month = static_cast<int32_t>(image.partition -
-                                              core::TpchQ10Layout::kFirstMonth);
-      const auto *typed = AsQ10Image(image, TpchQ10ImageKind::Month);
-      if (!typed || typed->month != month)
-        return false;
-      const auto month_it = typed->state->month_revenue.find(month);
-      if (month_it != typed->state->month_revenue.end())
-        state.month_revenue[month] = month_it->second;
-      if (versions)
-        (*versions)[month] = image.version;
-    }
-  }
-  return side;
-}
-
 void TpchQ10Module::EmitResult(const TpchQ10State &state, int32_t start_days,
                                core::AuxRowSink &sink) const {
   const auto end_days = TpchQ10AddMonths(start_days, 3);
-  std::vector<const std::unordered_map<int64_t, int64_t> *> month_revenues;
+  std::vector<std::shared_ptr<const TpchQ10MonthData>> holders;
   for (int32_t cursor = start_days; cursor < end_days;) {
     const auto month = TpchQ10MonthKeyFromDays(cursor);
     const auto it = state.month_revenue.find(month);
     if (it != state.month_revenue.end())
-      month_revenues.push_back(&it->second);
+      holders.push_back(TpchQ10MonthFromMap(it->second));
     const auto next = TpchQ10AddMonths(TpchQ10MonthStartDays(month), 1);
     if (next <= cursor)
       break;
     cursor = next;
   }
-  TpchQ10FinalizeAndEmit(state.customer_ranks, state.nations, month_revenues,
-                         *state.customers, start_days, sink, kTpchQ10ResultLimit);
+  std::vector<const TpchQ10MonthData *> months;
+  for (const auto &h : holders)
+    months.push_back(h.get());
+  TpchQ10FinalizeAndEmit(state, months, sink, kTpchQ10ResultLimit);
 }
 
 std::vector<core::CalibrationWrite> TpchQ10Module::CalibrationWrites() const {

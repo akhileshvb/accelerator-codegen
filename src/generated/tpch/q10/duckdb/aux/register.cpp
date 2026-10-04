@@ -233,6 +233,27 @@ struct TpchQ10Scan : TpchQ10InitialScan {
                        });
     return true;
   }
+  bool OrdersWithReturnedLineitems(const std::vector<int64_t> &orderkeys,
+                                   std::set<int64_t> &out) override {
+    out.clear();
+    if (orderkeys.empty())
+      return true;
+    std::ostringstream sql;
+    sql << "SELECT DISTINCT l_orderkey FROM lineitem "
+           "WHERE l_returnflag = 'R' AND l_orderkey IN (";
+    for (std::size_t i = 0; i < orderkeys.size(); ++i) {
+      if (i > 0)
+        sql << ',';
+      sql << orderkeys[i];
+    }
+    sql << ')';
+    ScanQueryStreaming(connection, sql.str(),
+                       [&](const ::duckdb::DataChunk &chunk,
+                           ::duckdb::idx_t row) {
+                         out.insert(SafeInt64(ChunkValue(chunk, 0, row)));
+                       });
+    return true;
+  }
   ::duckdb::Connection &connection;
 };
 

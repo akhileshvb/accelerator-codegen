@@ -7,6 +7,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -35,6 +36,9 @@ struct TpchQ14LineitemInput {
 };
 
 int32_t TpchQ14MonthKeyFromDays(int32_t days_since_epoch);
+bool TpchQ14IsPromoType(const std::string &type);
+int64_t TpchQ14RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
+                          int64_t discount_raw, int32_t discount_scale);
 
 class TpchQ14InitialScan {
 public:
@@ -51,6 +55,42 @@ public:
         consumer(input);
     });
   }
+  // (partkey, is PROMO type) for every part.
+  virtual void ScanPartPromo(
+      const std::function<void(int64_t, bool)> &consumer) {
+    ScanParts([&](const TpchQ14PartInput &input) {
+      consumer(input.key, TpchQ14IsPromoType(input.type));
+    });
+  }
+  // Pushed-down GROUP BY month over lineitem JOIN part: (month, total
+  // revenue raw, promo revenue raw, row count). `months` empty means every
+  // month. Returns false when the source cannot aggregate (callers then scan
+  // rows).
+  virtual bool ScanMonthAggregates(
+      const std::set<int32_t> &,
+      const std::function<void(int32_t, int64_t, int64_t, int64_t)> &) {
+    return false;
+  }
+  // Per (partkey, month): (revenue raw, row count) of the lineitems of the
+  // given parts.
+  virtual void ScanPartMonthRevenue(
+      const std::vector<int64_t> &keys,
+      const std::function<void(int64_t, int32_t, int64_t, int64_t)> &consumer) {
+    const std::unordered_set<int64_t> wanted(keys.begin(), keys.end());
+    std::map<std::pair<int64_t, int32_t>, std::pair<int64_t, int64_t>> acc;
+    ScanLineitems([&](const TpchQ14LineitemInput &input) {
+      if (!wanted.count(input.partkey))
+        return;
+      auto &cell = acc[{input.partkey,
+                        TpchQ14MonthKeyFromDays(input.shipdate_days)}];
+      cell.first += TpchQ14RevenueRaw(input.extended_price_raw,
+                                      input.extended_price_scale,
+                                      input.discount_raw, input.discount_scale);
+      cell.second += 1;
+    });
+    for (const auto &[k, v] : acc)
+      consumer(k.first, k.second, v.first, v.second);
+  }
 };
 
 enum class TpchQ14PromoClass : uint8_t {
@@ -66,34 +106,57 @@ struct TpchQ14MonthTotals {
   bool saw_contribution = false;
 };
 
+// Part -> promo class, paged so a point write copies one 64 KiB page plus the
+// page-pointer vector (published states are never mutated; a copy of the
+// state shares every page until SetRaw replaces the touched one).
 struct TpchQ14State {
   static constexpr int64_t kMaxDensePartkey = 1 << 24; // 16M; SF20 is 4M
-  std::vector<uint8_t> part_promo;
+  static constexpr std::size_t kPageSize = std::size_t(1) << 16;
+  static constexpr uint8_t kClassMask = 3;
+  // Part inserted after the build and not yet referenced by any lineitem
+  // delta: deleting/retyping it needs no lineitem scan.
+  static constexpr uint8_t kFreshBit = 4;
+  using Page = std::vector<uint8_t>;
+  std::vector<std::shared_ptr<Page>> pages;
   std::unordered_map<int64_t, uint8_t> promo_overflow;
   std::map<int32_t, TpchQ14MonthTotals> month_totals;
 
-  TpchQ14PromoClass PromoOf(int64_t partkey) const {
+  uint8_t RawOf(int64_t partkey) const {
     if (partkey < 0)
-      return TpchQ14PromoClass::Absent;
-    const auto ov = promo_overflow.find(partkey);
-    if (ov != promo_overflow.end())
-      return static_cast<TpchQ14PromoClass>(ov->second);
+      return 0;
+    if (partkey >= kMaxDensePartkey) {
+      const auto ov = promo_overflow.find(partkey);
+      return ov == promo_overflow.end() ? 0 : ov->second;
+    }
     const auto id = static_cast<std::size_t>(partkey);
-    if (id >= part_promo.size())
-      return TpchQ14PromoClass::Absent;
-    return static_cast<TpchQ14PromoClass>(part_promo[id]);
+    const auto page = id / kPageSize;
+    if (page >= pages.size() || !pages[page])
+      return 0;
+    return (*pages[page])[id % kPageSize];
   }
-  void SetPromo(int64_t partkey, TpchQ14PromoClass promo) {
+  TpchQ14PromoClass PromoOf(int64_t partkey) const {
+    return static_cast<TpchQ14PromoClass>(RawOf(partkey) & kClassMask);
+  }
+  void SetRaw(int64_t partkey, uint8_t raw) {
     if (partkey < 0)
       return;
     if (partkey >= kMaxDensePartkey) {
-      promo_overflow[partkey] = static_cast<uint8_t>(promo);
+      promo_overflow[partkey] = raw;
       return;
     }
     const auto id = static_cast<std::size_t>(partkey);
-    if (part_promo.size() <= id)
-      part_promo.resize(id + 1, 0);
-    part_promo[id] = static_cast<uint8_t>(promo);
+    const auto index = id / kPageSize;
+    if (pages.size() <= index)
+      pages.resize(index + 1);
+    auto &page = pages[index];
+    if (!page)
+      page = std::make_shared<Page>(kPageSize, 0);
+    else if (page.use_count() != 1) // shared with a published state: copy
+      page = std::make_shared<Page>(*page);
+    (*page)[id % kPageSize] = raw;
+  }
+  void SetPromo(int64_t partkey, TpchQ14PromoClass promo) {
+    SetRaw(partkey, static_cast<uint8_t>(promo));
   }
 };
 
@@ -121,13 +184,15 @@ bool DecodeTpchQ14Month(const std::vector<uint8_t> &, int32_t month,
 bool FindTpchQ14PartPromo(const std::vector<uint8_t> &, int64_t partkey,
                           TpchQ14PromoClass &);
 
-bool TpchQ14IsPromoType(const std::string &type);
-int64_t TpchQ14RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
-                          int64_t discount_raw, int32_t discount_scale);
-int32_t TpchQ14MonthKeyFromDays(int32_t days_since_epoch);
 int32_t TpchQ14DaysFromYmd(int32_t year, unsigned month, unsigned day);
 int32_t TpchQ14AddMonths(int32_t days_since_epoch, int32_t months);
 double TpchQ14FinalizePromoRevenue(const TpchQ14MonthTotals &);
+
+struct TpchQ14PartEvent {
+  core::MutationKind kind = core::MutationKind::Insert;
+  int64_t key = 0;
+  TpchQ14PromoClass new_class = TpchQ14PromoClass::Absent;
+};
 
 class TpchQ14TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -138,8 +203,11 @@ public:
   const std::vector<TpchQ14LineitemDelta> &Deltas() const;
   void MarkRebuild();
   void AddDelta(TpchQ14LineitemDelta delta);
+  const std::vector<TpchQ14PartEvent> &PartEvents() const;
+  void AddPartEvent(TpchQ14PartEvent event);
 
 private:
+  std::vector<TpchQ14PartEvent> part_events;
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<TpchQ14LineitemDelta> deltas;

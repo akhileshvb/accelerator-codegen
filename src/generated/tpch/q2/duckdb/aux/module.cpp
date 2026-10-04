@@ -59,7 +59,7 @@ static void EmitCustomProfile(const char *phase, double us_val, int64_t rows,
 using core::ByteReader;
 using core::ByteWriter;
 
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 constexpr uint32_t kStateMagic = 0x5132534d; // Q2SM
 
 bool StringValue(const core::AuxValue &value, std::string &out) {
@@ -129,6 +129,436 @@ bool AcceptDenseKey(int64_t key) {
   return key >= 0 && static_cast<uint64_t>(key) < kTpchQ2MaxDenseKey;
 }
 
+
+bool StrCell(const core::AuxRow &row, std::size_t index, std::string &out) {
+  if (index >= row.values.size())
+    return false;
+  return StringValue(row.values[index], out);
+}
+
+constexpr std::size_t kChunkTarget = 256;
+constexpr std::size_t kChunkMax = 512;
+
+// Total order of candidate entries = final ORDER BY of Q2, plus suppkey as a
+// last tie-break.  Supplier names are only consulted when the cheaper fields
+// tie.  Callers keep the lists consistent with the supplier table the
+// comparator reads (see Maintainer::ApplySupplier).
+struct EntryLess {
+  const TpchQ2State *st;
+  bool operator()(const TpchQ2Entry &a, const TpchQ2Entry &b) const {
+    if (a.acctbal_raw != b.acctbal_raw)
+      return a.acctbal_raw > b.acctbal_raw;
+    if (a.nation_rank != b.nation_rank)
+      return a.nation_rank < b.nation_rank;
+    if (a.suppkey != b.suppkey) {
+      const auto *sa = st->FindSupplier(a.suppkey);
+      const auto *sb = st->FindSupplier(b.suppkey);
+      if (sa && sb) {
+        const int c = sa->name.compare(sb->name);
+        if (c != 0)
+          return c < 0;
+      }
+    }
+    if (a.partkey != b.partkey)
+      return a.partkey < b.partkey;
+    return a.suppkey < b.suppkey;
+  }
+};
+
+struct GroupEntry {
+  int64_t group = 0;
+  TpchQ2Entry e;
+};
+
+bool GroupEntryEq(const GroupEntry &a, const GroupEntry &b) {
+  return a.group == b.group && a.e.acctbal_raw == b.e.acctbal_raw &&
+         a.e.partkey == b.e.partkey && a.e.suppkey == b.e.suppkey &&
+         a.e.type_id == b.e.type_id && a.e.nation_rank == b.e.nation_rank;
+}
+
+// Canonical order used only to diff two small multisets.
+bool GroupEntryCanon(const GroupEntry &a, const GroupEntry &b) {
+  if (a.group != b.group)
+    return a.group < b.group;
+  if (a.e.partkey != b.e.partkey)
+    return a.e.partkey < b.e.partkey;
+  if (a.e.suppkey != b.e.suppkey)
+    return a.e.suppkey < b.e.suppkey;
+  if (a.e.acctbal_raw != b.e.acctbal_raw)
+    return a.e.acctbal_raw < b.e.acctbal_raw;
+  if (a.e.type_id != b.e.type_id)
+    return a.e.type_id < b.e.type_id;
+  return a.e.nation_rank < b.e.nation_rank;
+}
+
+bool NationValid(const TpchQ2State &st, int64_t nk) {
+  return nk >= 0 && static_cast<std::size_t>(nk) < st.nation_names->size() &&
+         static_cast<std::size_t>(nk) < st.nation_region->size() &&
+         !(*st.nation_names)[static_cast<std::size_t>(nk)].empty();
+}
+
+// The candidate entries of one part: for every region, each live offer whose
+// cost equals the minimum cost of the part's offers in that region (ties give
+// several entries, duplicate partsupp rows give duplicate entries -- bag
+// semantics).  Pure function of (part, offers, suppliers, nations).
+void ComputeEntries(const TpchQ2State &st, int64_t partkey,
+                    std::vector<GroupEntry> &out) {
+  const auto *part = st.FindPart(partkey);
+  if (!part)
+    return;
+  const auto *offs = st.FindOffers(partkey);
+  if (!offs || offs->empty())
+    return;
+  struct Resolved {
+    const TpchQ2SupplierInfo *supplier;
+    int32_t region;
+    int32_t rank;
+    int64_t cost;
+    int32_t suppkey;
+  };
+  thread_local std::vector<Resolved> scratch;
+  scratch.clear();
+  for (const auto &o : *offs) {
+    const auto *s = st.FindSupplier(o.suppkey);
+    if (!s || !NationValid(st, s->nationkey))
+      continue;
+    const auto nk = static_cast<std::size_t>(s->nationkey);
+    scratch.push_back({s, (*st.nation_region)[nk], (*st.nation_rank)[nk],
+                       o.cost_raw, o.suppkey});
+  }
+  for (std::size_t i = 0; i < scratch.size(); ++i) {
+    const auto &r = scratch[i];
+    bool is_min = true;
+    for (std::size_t j = 0; j < scratch.size(); ++j) {
+      if (scratch[j].region == r.region && scratch[j].cost < r.cost) {
+        is_min = false;
+        break;
+      }
+    }
+    if (!is_min)
+      continue;
+    GroupEntry ge;
+    ge.group = TpchQ2GroupKey(part->size, r.region);
+    ge.e.acctbal_raw = r.supplier->acctbal_raw;
+    ge.e.partkey = static_cast<int32_t>(partkey);
+    ge.e.suppkey = r.suppkey;
+    ge.e.type_id = part->type_id;
+    ge.e.nation_rank = r.rank;
+    out.push_back(ge);
+  }
+}
+
+void BuildNationRank(TpchQ2State &st) {
+  const auto &names = *st.nation_names;
+  std::vector<std::string> sorted(names.begin(), names.end());
+  std::sort(sorted.begin(), sorted.end());
+  sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+  auto rank = std::make_shared<std::vector<int32_t>>(names.size(), 0);
+  for (std::size_t i = 0; i < names.size(); ++i)
+    (*rank)[i] = static_cast<int32_t>(
+        std::lower_bound(sorted.begin(), sorted.end(), names[i]) -
+        sorted.begin());
+  st.nation_rank = std::move(rank);
+}
+
+void AddOfferRaw(TpchQ2State &st, int64_t partkey, int64_t suppkey,
+                 int64_t cost) {
+  TpchQ2MutOf(st.offers).Mut(static_cast<std::size_t>(partkey))
+      .push_back({cost, static_cast<int32_t>(suppkey)});
+  TpchQ2MutOf(st.supp_parts).Mut(static_cast<std::size_t>(suppkey))
+      .push_back(static_cast<int32_t>(partkey));
+}
+
+// Builds the sorted candidate lists from scratch (Build / Decode).
+void BuildGroups(TpchQ2State &st) {
+  std::unordered_map<int64_t, std::vector<TpchQ2Entry>> acc;
+  std::vector<GroupEntry> tmp;
+  const std::size_t cap = st.parts->Capacity();
+  for (std::size_t k = 0; k < cap; ++k) {
+    const auto *p = st.parts->Find(k);
+    if (!p->valid)
+      continue;
+    tmp.clear();
+    ComputeEntries(st, static_cast<int64_t>(k), tmp);
+    for (const auto &ge : tmp)
+      acc[ge.group].push_back(ge.e);
+  }
+  auto groups = std::make_shared<TpchQ2GroupMap>();
+  groups->reserve(acc.size());
+  const EntryLess less{&st};
+  for (auto &kv : acc) {
+    auto &v = kv.second;
+    std::sort(v.begin(), v.end(), less);
+    auto list = std::make_shared<TpchQ2GroupList>();
+    list->chunks.reserve(v.size() / kChunkTarget + 1);
+    for (std::size_t i = 0; i < v.size(); i += kChunkTarget) {
+      auto chunk = std::make_shared<TpchQ2Chunk>();
+      const std::size_t end = std::min(v.size(), i + kChunkTarget);
+      chunk->v.assign(v.begin() + static_cast<std::ptrdiff_t>(i),
+                      v.begin() + static_cast<std::ptrdiff_t>(end));
+      list->chunks.push_back(std::move(chunk));
+    }
+    (*groups)[kv.first] = std::move(list);
+    std::vector<TpchQ2Entry>().swap(v);
+  }
+  st.groups = std::move(groups);
+}
+
+void InitEmptyState(TpchQ2State &st) {
+  st.suppliers = std::make_shared<const TpchQ2Paged<TpchQ2SupplierInfo, 6>>();
+  st.parts = std::make_shared<const TpchQ2Paged<TpchQ2PartInfo, 10>>();
+  st.offers =
+      std::make_shared<const TpchQ2Paged<std::vector<TpchQ2Offer>, 9>>();
+  st.supp_parts =
+      std::make_shared<const TpchQ2Paged<std::vector<int32_t>, 6>>();
+  st.types = std::make_shared<const TpchQ2TypeDict>();
+  st.groups = std::make_shared<const TpchQ2GroupMap>();
+}
+
+// Applies captured changes to a private working copy of a published state.
+// Every shared structure is cloned on first write (page / chunk granularity),
+// so the published image is never touched.  ok == false means the working
+// copy is inconsistent and the caller must fall back to a rebuild.
+class Maintainer {
+public:
+  explicit Maintainer(const TpchQ2State &old) : st(old) {}
+
+  TpchQ2State st;
+  bool ok = true;
+
+  void Apply(const TpchQ2Op &op) {
+    if (!ok)
+      return;
+    switch (op.kind) {
+    case TpchQ2Op::Kind::Partsupp:
+      ApplyPartsupp(op.partsupp);
+      break;
+    case TpchQ2Op::Kind::SupplierSet:
+      ApplySupplier(op.key, &op.supplier);
+      break;
+    case TpchQ2Op::Kind::SupplierErase:
+      ApplySupplier(op.key, nullptr);
+      break;
+    case TpchQ2Op::Kind::PartSet:
+      ApplyPart(op.key, &op.part);
+      break;
+    case TpchQ2Op::Kind::PartErase:
+      ApplyPart(op.key, nullptr);
+      break;
+    }
+  }
+
+private:
+  // ---- sorted list primitives -------------------------------------------
+  static std::size_t ChunkIndex(const TpchQ2GroupList &gl, const EntryLess &less,
+                                const TpchQ2Entry &e) {
+    // first chunk whose last element is not less than e
+    return static_cast<std::size_t>(
+        std::partition_point(gl.chunks.begin(), gl.chunks.end(),
+                             [&](const std::shared_ptr<const TpchQ2Chunk> &c) {
+                               return less(c->v.back(), e);
+                             }) -
+        gl.chunks.begin());
+  }
+
+  void InsertEntry(int64_t group, const TpchQ2Entry &e) {
+    const EntryLess less{&st};
+    auto &map = TpchQ2MutOf(st.groups);
+    auto &slot = map[group];
+    auto &gl = TpchQ2MutOf(slot);
+    if (gl.chunks.empty()) {
+      auto c = std::make_shared<TpchQ2Chunk>();
+      c->v.push_back(e);
+      gl.chunks.push_back(std::move(c));
+      return;
+    }
+    std::size_t idx = ChunkIndex(gl, less, e);
+    if (idx == gl.chunks.size())
+      idx = gl.chunks.size() - 1;
+    auto &chunk = TpchQ2MutOf(gl.chunks[idx]);
+    const auto pos = std::lower_bound(chunk.v.begin(), chunk.v.end(), e, less);
+    chunk.v.insert(pos, e);
+    if (chunk.v.size() > kChunkMax) {
+      auto upper = std::make_shared<TpchQ2Chunk>();
+      const auto mid = chunk.v.begin() +
+                       static_cast<std::ptrdiff_t>(chunk.v.size() / 2);
+      upper->v.assign(mid, chunk.v.end());
+      chunk.v.erase(mid, chunk.v.end());
+      gl.chunks.insert(gl.chunks.begin() + static_cast<std::ptrdiff_t>(idx) + 1,
+                       std::move(upper));
+    }
+  }
+
+  void RemoveEntry(int64_t group, const TpchQ2Entry &e) {
+    const EntryLess less{&st};
+    const auto git = st.groups->find(group);
+    if (git == st.groups->end()) {
+      ok = false;
+      return;
+    }
+    const std::size_t idx = ChunkIndex(*git->second, less, e);
+    if (idx >= git->second->chunks.size()) {
+      ok = false;
+      return;
+    }
+    {
+      const auto &cv = git->second->chunks[idx]->v;
+      const auto pos = std::lower_bound(cv.begin(), cv.end(), e, less);
+      if (pos == cv.end() || less(e, *pos) || pos->partkey != e.partkey ||
+          pos->suppkey != e.suppkey) {
+        ok = false;
+        return;
+      }
+    }
+    auto &map = TpchQ2MutOf(st.groups);
+    auto &gl = TpchQ2MutOf(map[group]);
+    auto &chunk = TpchQ2MutOf(gl.chunks[idx]);
+    const auto pos = std::lower_bound(chunk.v.begin(), chunk.v.end(), e, less);
+    chunk.v.erase(pos);
+    if (chunk.v.empty())
+      gl.chunks.erase(gl.chunks.begin() + static_cast<std::ptrdiff_t>(idx));
+  }
+
+  // Removes `before \ after`, inserts `after \ before` (multiset difference).
+  void ApplyDiff(std::vector<GroupEntry> &before,
+                 std::vector<GroupEntry> &after) {
+    std::sort(before.begin(), before.end(), GroupEntryCanon);
+    std::sort(after.begin(), after.end(), GroupEntryCanon);
+    std::vector<GroupEntry> rem, add;
+    std::size_t i = 0, j = 0;
+    while (i < before.size() || j < after.size()) {
+      if (i == before.size()) {
+        add.push_back(after[j++]);
+      } else if (j == after.size()) {
+        rem.push_back(before[i++]);
+      } else if (GroupEntryEq(before[i], after[j])) {
+        ++i;
+        ++j;
+      } else if (GroupEntryCanon(before[i], after[j])) {
+        rem.push_back(before[i++]);
+      } else {
+        add.push_back(after[j++]);
+      }
+    }
+    for (const auto &g : rem) {
+      RemoveEntry(g.group, g.e);
+      if (!ok)
+        return;
+    }
+    for (const auto &g : add)
+      InsertEntry(g.group, g.e);
+  }
+
+  // ---- operations ---------------------------------------------------------
+  void ApplyPartsupp(const TpchQ2PartsuppDelta &d) {
+    if (!AcceptDenseKey(d.partkey) || !AcceptDenseKey(d.suppkey))
+      return;
+    std::vector<GroupEntry> before, after;
+    ComputeEntries(st, d.partkey, before);
+    if (d.sign > 0) {
+      AddOfferRaw(st, d.partkey, d.suppkey, d.supplycost_raw);
+    } else {
+      auto &offs =
+          TpchQ2MutOf(st.offers).Mut(static_cast<std::size_t>(d.partkey));
+      auto it = std::find_if(offs.begin(), offs.end(), [&](const TpchQ2Offer &o) {
+        return o.suppkey == d.suppkey && o.cost_raw == d.supplycost_raw;
+      });
+      if (it == offs.end()) {
+        ok = false; // delete of an offer we never saw
+        return;
+      }
+      offs.erase(it);
+      auto &sp =
+          TpchQ2MutOf(st.supp_parts).Mut(static_cast<std::size_t>(d.suppkey));
+      const auto sit = std::find(sp.begin(), sp.end(),
+                                 static_cast<int32_t>(d.partkey));
+      if (sit != sp.end())
+        sp.erase(sit);
+    }
+    ComputeEntries(st, d.partkey, after);
+    ApplyDiff(before, after);
+  }
+
+  void ApplyPart(int64_t key, const TpchQ2PartInput *in) {
+    if (!AcceptDenseKey(key))
+      return;
+    const auto *cur = st.FindPart(key);
+    if (!cur && !in)
+      return;
+    std::vector<GroupEntry> before, after;
+    ComputeEntries(st, key, before);
+    auto &slot = TpchQ2MutOf(st.parts).Mut(static_cast<std::size_t>(key));
+    if (in) {
+      slot.mfgr = in->mfgr;
+      slot.type_id = static_cast<int32_t>(InternType(in->type));
+      slot.size = in->size;
+      slot.valid = true;
+    } else {
+      slot = TpchQ2PartInfo{};
+    }
+    ComputeEntries(st, key, after);
+    ApplyDiff(before, after);
+  }
+
+  uint32_t InternType(const std::string &t) {
+    const auto it = st.types->index.find(t);
+    if (it != st.types->index.end())
+      return it->second;
+    return TpchQ2MutOf(st.types).Intern(t);
+  }
+
+  void ApplySupplier(int64_t key, const TpchQ2SupplierInfo *in) {
+    if (!AcceptDenseKey(key))
+      return;
+    const auto *cur = st.FindSupplier(key);
+    if (!cur && !in)
+      return;
+    // Fields that only matter for output (address/phone/comment) need no
+    // list work at all.
+    if (cur && in && cur->name == in->name && cur->nationkey == in->nationkey &&
+        cur->acctbal_raw == in->acctbal_raw) {
+      auto &slot = TpchQ2MutOf(st.suppliers).Mut(static_cast<std::size_t>(key));
+      slot = *in;
+      slot.valid = true;
+      return;
+    }
+    // Affected parts = parts this supplier has offers for.
+    std::vector<int32_t> parts;
+    if (const auto *sp = st.supp_parts->Find(static_cast<std::size_t>(key)))
+      parts = *sp;
+    std::sort(parts.begin(), parts.end());
+    parts.erase(std::unique(parts.begin(), parts.end()), parts.end());
+
+    std::vector<GroupEntry> before, after;
+    for (const auto p : parts)
+      ComputeEntries(st, p, before);
+    // 1. remove this supplier's entries while the table still holds the old
+    //    sort key (keeps the list consistent with the comparator).
+    std::vector<GroupEntry> rest;
+    for (const auto &g : before) {
+      if (g.e.suppkey == key) {
+        RemoveEntry(g.group, g.e);
+        if (!ok)
+          return;
+      } else {
+        rest.push_back(g);
+      }
+    }
+    // 2. change the table.
+    auto &slot = TpchQ2MutOf(st.suppliers).Mut(static_cast<std::size_t>(key));
+    if (in) {
+      slot = *in;
+      slot.valid = true;
+    } else {
+      slot = TpchQ2SupplierInfo{};
+    }
+    // 3. recompute and diff the remaining entries against the new truth.
+    for (const auto p : parts)
+      ComputeEntries(st, p, after);
+    ApplyDiff(rest, after);
+  }
+};
+
 } // namespace
 
 std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &state) {
@@ -155,64 +585,58 @@ std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &state) {
     writer.I32(nation_regions[key]);
   }
 
-  const auto &suppliers = *state.suppliers;
-  const auto &supplier_valid = *state.supplier_valid;
-  writer.U32(static_cast<uint32_t>(suppliers.size()));
-  for (std::size_t key = 0; key < suppliers.size(); ++key) {
-    if (!supplier_valid[key])
-      continue;
-    const auto &supplier = suppliers[key];
-    writer.I64(static_cast<int64_t>(key));
-    writer.String(supplier.name);
-    writer.String(supplier.address);
-    writer.I32(supplier.nationkey);
-    writer.String(supplier.phone);
-    writer.I64(supplier.acctbal_raw);
-    writer.String(supplier.comment);
+  // Suppliers / parts: valid slots only, preceded by their count.
+  {
+    const std::size_t cap = state.suppliers->Capacity();
+    uint32_t valid = 0;
+    for (std::size_t key = 0; key < cap; ++key)
+      valid += state.suppliers->Find(key)->valid ? 1u : 0u;
+    writer.U32(valid);
+    for (std::size_t key = 0; key < cap; ++key) {
+      const auto &supplier = *state.suppliers->Find(key);
+      if (!supplier.valid)
+        continue;
+      writer.I64(static_cast<int64_t>(key));
+      writer.String(supplier.name);
+      writer.String(supplier.address);
+      writer.I32(supplier.nationkey);
+      writer.String(supplier.phone);
+      writer.I64(supplier.acctbal_raw);
+      writer.String(supplier.comment);
+    }
+  }
+  {
+    const std::size_t cap = state.parts->Capacity();
+    uint32_t valid = 0;
+    for (std::size_t key = 0; key < cap; ++key)
+      valid += state.parts->Find(key)->valid ? 1u : 0u;
+    writer.U32(valid);
+    for (std::size_t key = 0; key < cap; ++key) {
+      const auto &part = *state.parts->Find(key);
+      if (!part.valid)
+        continue;
+      writer.I64(static_cast<int64_t>(key));
+      writer.String(part.mfgr);
+      writer.String(state.types->names[static_cast<std::size_t>(part.type_id)]);
+      writer.I32(part.size);
+    }
   }
 
-  const auto &parts = *state.parts;
-  const auto &part_valid = *state.part_valid;
-  writer.U32(static_cast<uint32_t>(parts.size()));
-  for (std::size_t key = 0; key < parts.size(); ++key) {
-    if (!part_valid[key])
-      continue;
-    const auto &part = parts[key];
-    writer.I64(static_cast<int64_t>(key));
-    writer.String(part.mfgr);
-    writer.String(part.type);
-    writer.I32(part.size);
-  }
-
-  // parts_by_size: reconstructable from parts on decode; skip encoding
-  // to save serialization time. It's rebuilt during LoadState from BuildState.
-
-  // Encode the effective regional minima: start from the immutable base and
-  // apply the overlay (insertions, updates, and tombstones).
-  const auto *base = state.regional_minima_base
-                         ? state.regional_minima_base.get()
-                         : &state.regional_minima;
-  std::unordered_map<int64_t, TpchQ2RegionalMinCell> effective;
-  effective.reserve(base->size() + state.regional_minima_overlay.size());
-  effective.insert(base->begin(), base->end());
-  for (const auto &entry : state.regional_minima_overlay) {
-    if (entry.second.tied_suppkeys.empty())
-      effective.erase(entry.first);
-    else
-      effective[entry.first] = entry.second;
-  }
-  writer.U32(static_cast<uint32_t>(effective.size()));
-  std::vector<int64_t> cell_keys;
-  for (const auto &entry : effective)
-    cell_keys.push_back(entry.first);
-  std::sort(cell_keys.begin(), cell_keys.end());
-  for (const auto key : cell_keys) {
-    const auto &cell = effective.at(key);
-    writer.I64(key);
-    writer.I64(cell.min_supplycost_raw);
-    writer.U32(static_cast<uint32_t>(cell.tied_suppkeys.size()));
-    for (const auto suppkey : cell.tied_suppkeys)
-      writer.I64(suppkey);
+  // Partsupp offers (the candidate lists and supplier->parts index are
+  // derived and rebuilt on decode).
+  {
+    const std::size_t cap = state.offers->Capacity();
+    uint32_t total = 0;
+    for (std::size_t key = 0; key < cap; ++key)
+      total += static_cast<uint32_t>(state.offers->Find(key)->size());
+    writer.U32(total);
+    for (std::size_t key = 0; key < cap; ++key) {
+      for (const auto &o : *state.offers->Find(key)) {
+        writer.I64(static_cast<int64_t>(key));
+        writer.I64(o.suppkey);
+        writer.I64(o.cost_raw);
+      }
+    }
   }
   return std::move(writer.bytes);
 }
@@ -224,13 +648,11 @@ bool DecodeTpchQ2State(const std::vector<uint8_t> &bytes, TpchQ2State &state) {
     return false;
 
   state = TpchQ2State{};
+  InitEmptyState(state);
   auto regions = std::make_shared<std::vector<std::string>>();
   auto nations = std::make_shared<std::vector<std::string>>();
   auto nation_regions = std::make_shared<std::vector<int32_t>>();
-  auto suppliers = std::make_shared<std::vector<TpchQ2SupplierInfo>>();
-  auto supplier_valid = std::make_shared<std::vector<uint8_t>>();
-  auto parts = std::make_shared<std::vector<TpchQ2PartInfo>>();
-  auto part_valid = std::make_shared<std::vector<uint8_t>>();
+  TpchQ2TypeDict types;
 
   uint32_t region_count = 0;
   if (!reader.U32(region_count))
@@ -261,75 +683,66 @@ bool DecodeTpchQ2State(const std::vector<uint8_t> &bytes, TpchQ2State &state) {
     (*nations)[static_cast<std::size_t>(key)] = std::move(name);
     (*nation_regions)[static_cast<std::size_t>(key)] = region;
   }
+  state.region_names = std::move(regions);
+  state.nation_names = std::move(nations);
+  state.nation_region = std::move(nation_regions);
+  BuildNationRank(state);
 
   uint32_t supplier_count = 0;
   if (!reader.U32(supplier_count))
     return false;
-  for (uint32_t i = 0; i < supplier_count; ++i) {
-    int64_t key = 0;
-    TpchQ2SupplierInfo supplier;
-    if (!reader.I64(key) || !reader.String(supplier.name) ||
-        !reader.String(supplier.address) || !reader.I32(supplier.nationkey) ||
-        !reader.String(supplier.phone) || !reader.I64(supplier.acctbal_raw) ||
-        !reader.String(supplier.comment))
-      return false;
-    if (key < 0 || !AcceptDenseKey(key))
-      return false;
-    EnsureFlatSize(*suppliers, static_cast<std::size_t>(key) + 1);
-    EnsureFlatSize(*supplier_valid, static_cast<std::size_t>(key) + 1);
-    (*suppliers)[static_cast<std::size_t>(key)] = std::move(supplier);
-    (*supplier_valid)[static_cast<std::size_t>(key)] = 1;
+  {
+    auto &paged = TpchQ2MutOf(state.suppliers);
+    for (uint32_t i = 0; i < supplier_count; ++i) {
+      int64_t key = 0;
+      TpchQ2SupplierInfo supplier;
+      if (!reader.I64(key) || !reader.String(supplier.name) ||
+          !reader.String(supplier.address) || !reader.I32(supplier.nationkey) ||
+          !reader.String(supplier.phone) || !reader.I64(supplier.acctbal_raw) ||
+          !reader.String(supplier.comment))
+        return false;
+      if (!AcceptDenseKey(key))
+        return false;
+      supplier.valid = true;
+      paged.Mut(static_cast<std::size_t>(key)) = std::move(supplier);
+    }
   }
 
   uint32_t part_count = 0;
   if (!reader.U32(part_count))
     return false;
-  for (uint32_t i = 0; i < part_count; ++i) {
-    int64_t key = 0;
-    TpchQ2PartInfo part;
-    int32_t size = 0;
-    if (!reader.I64(key) || !reader.String(part.mfgr) ||
-        !reader.String(part.type) || !reader.I32(size))
-      return false;
-    if (key < 0 || !AcceptDenseKey(key))
-      return false;
-    EnsureFlatSize(*parts, static_cast<std::size_t>(key) + 1);
-    EnsureFlatSize(*part_valid, static_cast<std::size_t>(key) + 1);
-    part.size = size;
-    (*parts)[static_cast<std::size_t>(key)] = std::move(part);
-    (*part_valid)[static_cast<std::size_t>(key)] = 1;
-    state.parts_by_size[size].push_back(key);
-  }
-
-  state.region_names = std::move(regions);
-  state.nation_names = std::move(nations);
-  state.nation_region = std::move(nation_regions);
-  state.suppliers = std::move(suppliers);
-  state.supplier_valid = std::move(supplier_valid);
-  state.parts = std::move(parts);
-  state.part_valid = std::move(part_valid);
-
-  uint32_t cell_count = 0;
-  if (!reader.U32(cell_count))
-    return false;
-  for (uint32_t i = 0; i < cell_count; ++i) {
-    int64_t key = 0;
-    TpchQ2RegionalMinCell cell;
-    uint32_t tie_count = 0;
-    if (!reader.I64(key) || !reader.I64(cell.min_supplycost_raw) ||
-        !reader.U32(tie_count))
-      return false;
-    cell.tied_suppkeys.reserve(tie_count);
-    for (uint32_t j = 0; j < tie_count; ++j) {
-      int64_t suppkey = 0;
-      if (!reader.I64(suppkey))
+  {
+    auto &paged = TpchQ2MutOf(state.parts);
+    for (uint32_t i = 0; i < part_count; ++i) {
+      int64_t key = 0;
+      TpchQ2PartInfo part;
+      std::string type;
+      int32_t size = 0;
+      if (!reader.I64(key) || !reader.String(part.mfgr) ||
+          !reader.String(type) || !reader.I32(size))
         return false;
-      cell.tied_suppkeys.push_back(suppkey);
+      if (!AcceptDenseKey(key))
+        return false;
+      part.type_id = static_cast<int32_t>(types.Intern(type));
+      part.size = size;
+      part.valid = true;
+      paged.Mut(static_cast<std::size_t>(key)) = std::move(part);
     }
-    state.regional_minima[key] = std::move(cell);
   }
-  state.regional_minima_base = std::make_shared<const std::unordered_map<int64_t, TpchQ2RegionalMinCell>>(
-      std::move(state.regional_minima));
+  state.types = std::make_shared<const TpchQ2TypeDict>(std::move(types));
+
+  uint32_t offer_count = 0;
+  if (!reader.U32(offer_count))
+    return false;
+  for (uint32_t i = 0; i < offer_count; ++i) {
+    int64_t partkey = 0, suppkey = 0, cost = 0;
+    if (!reader.I64(partkey) || !reader.I64(suppkey) || !reader.I64(cost))
+      return false;
+    if (!AcceptDenseKey(partkey) || !AcceptDenseKey(suppkey))
+      return false;
+    AddOfferRaw(state, partkey, suppkey, cost);
+  }
+  BuildGroups(state);
   return true;
 }
 
@@ -418,20 +831,17 @@ bool TpchQ2TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ2TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
-  partsupp_deltas.clear();
+  ops.clear();
 }
 bool TpchQ2TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
-const std::vector<TpchQ2PartsuppDelta> &
-TpchQ2TxnBuffer::PartsuppDeltas() const {
-  return partsupp_deltas;
-}
+const std::vector<TpchQ2Op> &TpchQ2TxnBuffer::Ops() const { return ops; }
 void TpchQ2TxnBuffer::MarkRebuild() {
   pending = true;
   requires_rebuild = true;
 }
-void TpchQ2TxnBuffer::AddPartsuppDelta(TpchQ2PartsuppDelta delta) {
+void TpchQ2TxnBuffer::AddOp(TpchQ2Op op) {
   pending = true;
-  partsupp_deltas.push_back(std::move(delta));
+  ops.push_back(std::move(op));
 }
 
 core::AcceleratorId TpchQ2Module::Id() const { return kId; }
@@ -462,15 +872,15 @@ void TpchQ2Module::Build(core::AuxEngineServices &services,
 
 core::InvalidationPlan
 TpchQ2Module::InterpretMutation(const core::MutationBatch &mutation) const {
-  // Partsupp changes can be applied incrementally without full invalidation.
-  // Supplier/part/nation/region changes require rebuild since they affect
-  // multi-table join semantics that cannot be incrementally patched.
-  if (mutation.table == config.partsupp_table) {
-    return {};  // incremental — no invalidation needed
+  // Partsupp / supplier / part changes are applied incrementally (page- and
+  // chunk-level copy-on-write).  Nation/region changes are rare and alter the
+  // region mapping and name ranks of every supplier: full rebuild.
+  if (mutation.table == config.partsupp_table ||
+      mutation.table == config.supplier_table ||
+      mutation.table == config.part_table) {
+    return {};
   }
-  if (mutation.table == config.supplier_table ||
-      mutation.table == config.part_table ||
-      mutation.table == config.nation_table ||
+  if (mutation.table == config.nation_table ||
       mutation.table == config.region_table) {
     return All();
   }
@@ -481,41 +891,175 @@ void TpchQ2Module::AccumulateMutation(const core::MutationBatch &mutation,
                                       core::AuxEngineServices &,
                                       core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ2TxnBuffer &>(base_buffer);
-  if (mutation.table == config.partsupp_table) {
-    // Collect partsupp deltas for incremental apply — no rebuild needed.
-    for (std::size_t i = 0; i < mutation.old_rows.size() && i < mutation.new_rows.size(); ++i) {
-      int64_t partkey = 0, suppkey = 0, old_cost = 0, new_cost = 0;
-      int32_t scale = 0;
-      if (mutation.kind == core::MutationKind::Insert) {
-        if (!IntCell(mutation.new_rows[i], 0, partkey) ||
-            !IntCell(mutation.new_rows[i], 1, suppkey) ||
-            !RawDecimalCell(mutation.new_rows[i], 2, new_cost, scale))
-          continue;
-        buffer.AddPartsuppDelta({partkey, suppkey, new_cost, 1});
-      } else if (mutation.kind == core::MutationKind::Delete) {
-        if (!IntCell(mutation.old_rows[i], 0, partkey) ||
-            !IntCell(mutation.old_rows[i], 1, suppkey) ||
-            !RawDecimalCell(mutation.old_rows[i], 2, old_cost, scale))
-          continue;
-        buffer.AddPartsuppDelta({partkey, suppkey, old_cost, -1});
-      } else if (mutation.kind == core::MutationKind::Update) {
-        if (!IntCell(mutation.old_rows[i], 0, partkey) ||
-            !IntCell(mutation.old_rows[i], 1, suppkey) ||
-            !RawDecimalCell(mutation.old_rows[i], 2, old_cost, scale))
-          continue;
-        if (!RawDecimalCell(mutation.new_rows[i], 2, new_cost, scale))
-          continue;
-        buffer.AddPartsuppDelta({partkey, suppkey, old_cost, -1});
-        buffer.AddPartsuppDelta({partkey, suppkey, new_cost, 1});
+  const auto table = mutation.table;
+  if (table == config.nation_table || table == config.region_table) {
+    buffer.MarkRebuild();
+    return;
+  }
+  if (table != config.partsupp_table && table != config.supplier_table &&
+      table != config.part_table)
+    return;
+
+  // Insert -> new_rows, Delete -> old_rows, Update -> paired rows.
+  if (mutation.kind == core::MutationKind::Update &&
+      mutation.old_rows.size() != mutation.new_rows.size()) {
+    buffer.MarkRebuild();
+    return;
+  }
+
+  if (table == config.partsupp_table) {
+    // A row that cannot be parsed has a NULL join/aggregate column and
+    // contributes nothing (neither joins nor feeds MIN), so it is skipped.
+    auto add = [&](const core::AuxRow &row, int8_t sign) {
+      int64_t partkey = 0, suppkey = 0, cost = 0;
+      if (!ReadPartsupp(row, partkey, suppkey, cost))
+        return;
+      TpchQ2Op op;
+      op.kind = TpchQ2Op::Kind::Partsupp;
+      op.partsupp = {partkey, suppkey, cost, sign};
+      buffer.AddOp(std::move(op));
+    };
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows)
+        add(row, 1);
+      break;
+    case core::MutationKind::Delete:
+      for (const auto &row : mutation.old_rows)
+        add(row, -1);
+      break;
+    case core::MutationKind::Update:
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        int64_t pk0, sk0, c0, pk1, sk1, c1;
+        const bool o = ReadPartsupp(mutation.old_rows[i], pk0, sk0, c0);
+        const bool n = ReadPartsupp(mutation.new_rows[i], pk1, sk1, c1);
+        if (o && n && pk0 == pk1 && sk0 == sk1 && c0 == c1)
+          continue; // no-op update
+        if (o)
+          add(mutation.old_rows[i], -1);
+        if (n)
+          add(mutation.new_rows[i], 1);
       }
+      break;
     }
     return;
   }
-  if (mutation.table == config.supplier_table ||
-      mutation.table == config.part_table ||
-      mutation.table == config.nation_table ||
-      mutation.table == config.region_table) {
-    buffer.MarkRebuild();
+
+  if (table == config.supplier_table) {
+    auto parse = [&](const core::AuxRow &row, int64_t &key,
+                     TpchQ2SupplierInfo &info) {
+      int64_t nationkey = 0;
+      int32_t scale = 0;
+      if (!IntCell(row, 0, key) || !StrCell(row, 1, info.name) ||
+          !StrCell(row, 2, info.address) || !IntCell(row, 3, nationkey) ||
+          !StrCell(row, 4, info.phone) ||
+          !RawDecimalCell(row, 5, info.acctbal_raw, scale) ||
+          !StrCell(row, 6, info.comment))
+        return false;
+      if (nationkey < std::numeric_limits<int32_t>::min() ||
+          nationkey > std::numeric_limits<int32_t>::max())
+        return false;
+      info.nationkey = static_cast<int32_t>(nationkey);
+      info.valid = true;
+      return true;
+    };
+    auto set = [&](const core::AuxRow &row) {
+      TpchQ2Op op;
+      op.kind = TpchQ2Op::Kind::SupplierSet;
+      if (!parse(row, op.key, op.supplier)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      buffer.AddOp(std::move(op));
+    };
+    auto erase = [&](const core::AuxRow &row) {
+      TpchQ2Op op;
+      op.kind = TpchQ2Op::Kind::SupplierErase;
+      if (!IntCell(row, 0, op.key)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      buffer.AddOp(std::move(op));
+    };
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows)
+        set(row);
+      break;
+    case core::MutationKind::Delete:
+      for (const auto &row : mutation.old_rows)
+        erase(row);
+      break;
+    case core::MutationKind::Update:
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        int64_t old_key = 0, new_key = 0;
+        if (!IntCell(mutation.old_rows[i], 0, old_key) ||
+            !IntCell(mutation.new_rows[i], 0, new_key)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        if (old_key != new_key)
+          erase(mutation.old_rows[i]);
+        set(mutation.new_rows[i]);
+      }
+      break;
+    }
+    return;
+  }
+
+  // part table
+  auto parse = [&](const core::AuxRow &row, TpchQ2Op &op) {
+    int64_t size = 0;
+    if (!IntCell(row, 0, op.key) || !StrCell(row, 1, op.part.mfgr) ||
+        !StrCell(row, 2, op.part.type) || !IntCell(row, 3, size))
+      return false;
+    if (size < std::numeric_limits<int32_t>::min() ||
+        size > std::numeric_limits<int32_t>::max())
+      return false;
+    op.part.key = op.key;
+    op.part.size = static_cast<int32_t>(size);
+    return true;
+  };
+  auto set = [&](const core::AuxRow &row) {
+    TpchQ2Op op;
+    op.kind = TpchQ2Op::Kind::PartSet;
+    if (!parse(row, op)) {
+      buffer.MarkRebuild();
+      return;
+    }
+    buffer.AddOp(std::move(op));
+  };
+  auto erase = [&](const core::AuxRow &row) {
+    TpchQ2Op op;
+    op.kind = TpchQ2Op::Kind::PartErase;
+    if (!IntCell(row, 0, op.key)) {
+      buffer.MarkRebuild();
+      return;
+    }
+    buffer.AddOp(std::move(op));
+  };
+  switch (mutation.kind) {
+  case core::MutationKind::Insert:
+    for (const auto &row : mutation.new_rows)
+      set(row);
+    break;
+  case core::MutationKind::Delete:
+    for (const auto &row : mutation.old_rows)
+      erase(row);
+    break;
+  case core::MutationKind::Update:
+    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+      int64_t old_key = 0, new_key = 0;
+      if (!IntCell(mutation.old_rows[i], 0, old_key) ||
+          !IntCell(mutation.new_rows[i], 0, new_key)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (old_key != new_key)
+        erase(mutation.old_rows[i]);
+      set(mutation.new_rows[i]);
+    }
+    break;
   }
 }
 
@@ -529,9 +1073,8 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
   if (!buffer.RequiresRebuild()) {
-    // Incremental maintenance: apply partsupp deltas to the regional minima.
-    const auto &deltas = buffer.PartsuppDeltas();
-    if (deltas.empty()) {
+    const auto &ops = buffer.Ops();
+    if (ops.empty()) {
       buffer.Clear();
       return outcome;
     }
@@ -557,121 +1100,32 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
       return outcome;
     }
 
-    // Copy-on-write state: share immutable dimension maps and the immutable
-    // regional_minima_base.  Only regional_minima_overlay is mutated, so the
-    // per-write clone is O(overlay), not O(all 590K minima cells).
-    auto new_state = std::make_shared<TpchQ2State>();
-    new_state->region_names = old_state->region_names;
-    new_state->nation_names = old_state->nation_names;
-    new_state->nation_region = old_state->nation_region;
-    new_state->suppliers = old_state->suppliers;
-    new_state->supplier_valid = old_state->supplier_valid;
-    new_state->parts = old_state->parts;
-    new_state->part_valid = old_state->part_valid;
-    new_state->parts_by_size = old_state->parts_by_size;
-    new_state->regional_minima_base = old_state->regional_minima_base;
-    // Preserve prior ApplyDelta overlay so stacked writes compose correctly.
-    new_state->regional_minima_overlay = old_state->regional_minima_overlay;
-    if (!new_state->regional_minima_base) {
-      new_state->regional_minima_base =
-          std::make_shared<const std::unordered_map<int64_t, TpchQ2RegionalMinCell>>(
-              old_state->regional_minima);
-    }
+    // Copy-on-write working copy: a shallow copy of the state's shared_ptr
+    // members.  Pages / chunks / lists are cloned only where an op writes
+    // (the published image, kept alive by old_state, is never mutated).
     bool profiling = CustomProfilingEnabled();
-    std::unique_ptr<CustomTimer> clone_timer;
-    if (profiling) {
-      clone_timer = std::make_unique<CustomTimer>(true);
-    }
-
-    // Collect affected (region, part) cells and batch-update minima
     std::unique_ptr<CustomTimer> apply_timer;
-    if (profiling) {
+    if (profiling)
       apply_timer = std::make_unique<CustomTimer>(true);
+    auto work = std::make_unique<Maintainer>(*old_state);
+    for (const auto &op : ops) {
+      work->Apply(op);
+      if (!work->ok)
+        break;
     }
-    bool lost_unique_min = false;
-    for (const auto &delta : deltas) {
-      const auto *supplier = new_state->FindSupplier(delta.suppkey);
-      if (!supplier)
-        continue;
-      if (!new_state->FindPart(delta.partkey))
-        continue;
-      const auto nationkey = supplier->nationkey;
-      if (nationkey < 0 ||
-          static_cast<std::size_t>(nationkey) >=
-              new_state->nation_region->size())
-        continue;
-      const int32_t region_key =
-          (*new_state->nation_region)[static_cast<std::size_t>(nationkey)];
-      const auto cell_key = TpchQ2CellKey(region_key, delta.partkey);
+    if (profiling)
+      EmitCustomProfile("write_apply", apply_timer->us(),
+                        (int64_t)ops.size(), 0, 0);
 
-      auto &cell = new_state->regional_minima_overlay[cell_key];
-      if (delta.sign < 0) {
-        // Remove old entry from tied list
-        if (cell.tied_suppkeys.empty()) {
-          // Cell wasn't previously materialized in the overlay. Load it from
-          // the base so the tombstone/removal is applied to the full list.
-          if (new_state->regional_minima_base) {
-            const auto base_it = new_state->regional_minima_base->find(cell_key);
-            if (base_it != new_state->regional_minima_base->end())
-              cell = base_it->second;
-          }
-        }
-        auto &list = cell.tied_suppkeys;
-        list.erase(std::remove(list.begin(), list.end(), delta.suppkey),
-                   list.end());
-        if (list.empty()) {
-          // Unique-min delete: the next-best supplycost is not stored on the
-          // cell. Rebuild rather than publishing an empty tombstone or the
-          // same supplier at a higher cost.
-          lost_unique_min = true;
-        }
-      }
-      if (delta.sign > 0) {
-        if (cell.tied_suppkeys.empty()) {
-          if (new_state->regional_minima_base) {
-            const auto base_it = new_state->regional_minima_base->find(cell_key);
-            if (base_it != new_state->regional_minima_base->end())
-              cell = base_it->second;
-          }
-        }
-        if (cell.tied_suppkeys.empty() ||
-            delta.supplycost_raw < cell.min_supplycost_raw) {
-          cell.min_supplycost_raw = delta.supplycost_raw;
-          cell.tied_suppkeys = {delta.suppkey};
-        } else if (delta.supplycost_raw == cell.min_supplycost_raw) {
-          cell.tied_suppkeys.push_back(delta.suppkey);
-        }
-      }
-      if (cell.tied_suppkeys.empty()) {
-        // Empty overlay entry acts as a tombstone for FindRegionalMin().
-        // Keep the empty cell; no erase from overlay is needed.
-      }
-    }
-
-    if (profiling) {
-      double clone_dt = clone_timer->us();
-      double apply_dt = apply_timer->us();
-      EmitCustomProfile("write_clone", clone_dt,
-                        (int64_t)(new_state->regional_minima_base
-                                      ? new_state->regional_minima_base->size()
-                                      : 0),
-                        (int64_t)(new_state->parts
-                                      ? new_state->parts->size()
-                                      : 0),
-                        (int64_t)(new_state->suppliers
-                                      ? new_state->suppliers->size()
-                                      : 0));
-      EmitCustomProfile("write_apply", apply_dt, (int64_t)deltas.size(), 0, 0);
-    }
-    if (!lost_unique_min) {
+    if (work->ok) {
       const auto decision = services.ChooseMaintenance(
-          {static_cast<uint64_t>(deltas.size()), 1, true, false, true, false,
+          {static_cast<uint64_t>(ops.size()), 1, true, false, true, false,
            false, core::MaintenanceAction::NoOp,
            services.ExpectedQueriesBeforeNextWrite()});
       if (decision.action == core::MaintenanceAction::ApplyDelta) {
         auto image = std::make_shared<TpchQ2StateImage>();
         image->kind = TpchQ2ImageKind::Full;
-        image->state = std::move(new_state);
+        image->state = std::make_shared<const TpchQ2State>(std::move(work->st));
         const std::shared_ptr<const TpchQ2StateImage> const_image =
             std::move(image);
         outcome.action = core::MaintenanceAction::ApplyDelta;
@@ -686,7 +1140,8 @@ TpchQ2Module::StageMaintenance(core::AuxEngineServices &services,
     }
   }
 
-  // Full rebuild path for supplier/part/nation/region mutations
+  // Full rebuild path (nation/region mutations, unparsable rows, or an
+  // inconsistent incremental application).
   const auto decision = services.ChooseMaintenance(
       {0, 0, false, false, true, true, false,
        core::MaintenanceAction::NoOp,
@@ -760,17 +1215,8 @@ void TpchQ2Module::Execute(core::AuxEngineServices &services,
   EmitResult(*state, part_size, part_type_pattern, region_name, sink);
   if (profiling) {
     double dt = emit_timer->us();
-    int64_t part_count = (int64_t)(state->parts ? state->parts->size() : 0);
-    auto size_it = state->parts_by_size.find(part_size);
-    int64_t size_matches = size_it != state->parts_by_size.end()
-                               ? (int64_t)size_it->second.size()
-                               : 0;
-    int64_t minima_count =
-        state->regional_minima_base
-            ? (int64_t)state->regional_minima_base->size()
-            : (int64_t)state->regional_minima.size();
-    EmitCustomProfile("execute_emit", dt, part_count, size_matches,
-                      minima_count);
+    int64_t part_count = (int64_t)(state->parts ? state->parts->Capacity() : 0);
+    EmitCustomProfile("execute_emit", dt, part_count, 0, 0);
   }
 }
 
@@ -802,14 +1248,12 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
   TpchQ2State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q2 requires a typed initial scan source");
+  InitEmptyState(state);
 
   auto regions = std::make_shared<std::vector<std::string>>();
   auto nations = std::make_shared<std::vector<std::string>>();
   auto nation_regions = std::make_shared<std::vector<int32_t>>();
-  auto suppliers = std::make_shared<std::vector<TpchQ2SupplierInfo>>();
-  auto supplier_valid = std::make_shared<std::vector<uint8_t>>();
-  auto parts = std::make_shared<std::vector<TpchQ2PartInfo>>();
-  auto part_valid = std::make_shared<std::vector<uint8_t>>();
+  TpchQ2TypeDict types;
 
   initial_scan->ScanRegions([&](const TpchQ2RegionInput &input) {
     if (!AcceptDenseKey(input.key))
@@ -825,89 +1269,58 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
     (*nations)[static_cast<std::size_t>(input.key)] = input.name;
     (*nation_regions)[static_cast<std::size_t>(input.key)] = input.regionkey;
   });
-  initial_scan->ScanParts([&](const TpchQ2PartInput &input) {
-    if (!AcceptDenseKey(input.key))
-      return;
-    EnsureFlatSize(*parts, static_cast<std::size_t>(input.key) + 1);
-    EnsureFlatSize(*part_valid, static_cast<std::size_t>(input.key) + 1);
-    (*parts)[static_cast<std::size_t>(input.key)] = {input.mfgr, input.type,
-                                                      input.size};
-    (*part_valid)[static_cast<std::size_t>(input.key)] = 1;
-    state.parts_by_size[input.size].push_back(input.key);
-  });
-  initial_scan->ScanSuppliers([&](const TpchQ2SupplierInput &input) {
-    if (!AcceptDenseKey(input.key))
-      return;
-    EnsureFlatSize(*suppliers, static_cast<std::size_t>(input.key) + 1);
-    EnsureFlatSize(*supplier_valid, static_cast<std::size_t>(input.key) + 1);
-    (*suppliers)[static_cast<std::size_t>(input.key)] = {
-        input.name, input.address, input.nationkey, input.phone,
-        input.acctbal_raw, input.comment};
-    (*supplier_valid)[static_cast<std::size_t>(input.key)] = 1;
-  });
-
   state.region_names = std::move(regions);
   state.nation_names = std::move(nations);
   state.nation_region = std::move(nation_regions);
-  state.suppliers = std::move(suppliers);
-  state.supplier_valid = std::move(supplier_valid);
-  state.parts = std::move(parts);
-  state.part_valid = std::move(part_valid);
+  BuildNationRank(state);
 
-  // Rebuild the regional minima from the current partsupp facts. The state is
-  // intentionally not a final result cache: it stores one (region, part)
-  // minimum cell per live supplier/part offer.
+  {
+    auto &paged = TpchQ2MutOf(state.parts);
+    initial_scan->ScanParts([&](const TpchQ2PartInput &input) {
+      if (!AcceptDenseKey(input.key))
+        return;
+      auto &slot = paged.Mut(static_cast<std::size_t>(input.key));
+      slot.mfgr = input.mfgr;
+      slot.type_id = static_cast<int32_t>(types.Intern(input.type));
+      slot.size = input.size;
+      slot.valid = true;
+    });
+  }
+  state.types = std::make_shared<const TpchQ2TypeDict>(std::move(types));
+  {
+    auto &paged = TpchQ2MutOf(state.suppliers);
+    initial_scan->ScanSuppliers([&](const TpchQ2SupplierInput &input) {
+      if (!AcceptDenseKey(input.key))
+        return;
+      auto &slot = paged.Mut(static_cast<std::size_t>(input.key));
+      slot.name = input.name;
+      slot.address = input.address;
+      slot.nationkey = input.nationkey;
+      slot.phone = input.phone;
+      slot.acctbal_raw = input.acctbal_raw;
+      slot.comment = input.comment;
+      slot.valid = true;
+    });
+  }
+
+  // The state is intentionally not a final result cache: it stores the raw
+  // per-part offers plus per-(size, region) candidate lists in output order.
   bool profiling = CustomProfilingEnabled();
   std::unique_ptr<CustomTimer> partsupp_timer;
   if (profiling) {
     partsupp_timer = std::make_unique<CustomTimer>(true);
   }
   int64_t partsupp_rows = 0;
-  int64_t partsupp_matched = 0;
-  const auto &suppliers_ref = *state.suppliers;
-  const auto &supplier_valid_ref = *state.supplier_valid;
-  const auto &parts_ref = *state.parts;
-  const auto &part_valid_ref = *state.part_valid;
-  const auto &nation_region_ref = *state.nation_region;
   initial_scan->ScanPartsupps([&](const TpchQ2PartsuppInput &input) {
     partsupp_rows++;
-    if (input.suppkey < 0 ||
-        static_cast<std::size_t>(input.suppkey) >= supplier_valid_ref.size() ||
-        !supplier_valid_ref[static_cast<std::size_t>(input.suppkey)])
+    if (!AcceptDenseKey(input.suppkey) || !AcceptDenseKey(input.partkey))
       return;
-    if (input.partkey < 0 ||
-        static_cast<std::size_t>(input.partkey) >= part_valid_ref.size() ||
-        !part_valid_ref[static_cast<std::size_t>(input.partkey)])
-      return;
-    const auto &supplier =
-        suppliers_ref[static_cast<std::size_t>(input.suppkey)];
-    const auto nationkey = supplier.nationkey;
-    if (nationkey < 0 ||
-        static_cast<std::size_t>(nationkey) >= nation_region_ref.size())
-      return;
-    partsupp_matched++;
-    const int32_t region_key =
-        nation_region_ref[static_cast<std::size_t>(nationkey)];
-    const auto key = TpchQ2CellKey(region_key, input.partkey);
-    auto &cell = state.regional_minima[key];
-    if (cell.tied_suppkeys.empty() ||
-        input.supplycost_raw < cell.min_supplycost_raw) {
-      cell.min_supplycost_raw = input.supplycost_raw;
-      cell.tied_suppkeys = {input.suppkey};
-    } else if (input.supplycost_raw == cell.min_supplycost_raw) {
-      cell.tied_suppkeys.push_back(input.suppkey);
-    }
+    AddOfferRaw(state, input.partkey, input.suppkey, input.supplycost_raw);
   });
-  state.regional_minima_base =
-      std::make_shared<const std::unordered_map<int64_t, TpchQ2RegionalMinCell>>(
-          std::move(state.regional_minima));
+  BuildGroups(state);
   if (profiling) {
-    double dt = partsupp_timer->us();
-    EmitCustomProfile("build_partsupp_scan", dt, partsupp_rows,
-                      (int64_t)(state.regional_minima_base
-                                    ? state.regional_minima_base->size()
-                                    : 0),
-                      partsupp_matched);
+    EmitCustomProfile("build_partsupp_scan", partsupp_timer->us(),
+                      partsupp_rows, (int64_t)state.groups->size(), 0);
   }
   return state;
 }

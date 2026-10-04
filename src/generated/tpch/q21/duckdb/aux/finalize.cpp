@@ -14,29 +14,18 @@ bool TpchQ21BetterOutputRow(const TpchQ21OutputRow &lhs,
   return lhs.name < rhs.name;
 }
 
+// Emits the merged (GROUP BY s_name) answer over every nation's rows.
 void TpchQ21FinalizeAndEmit(const TpchQ21State &state,
                              core::AuxRowSink &sink) {
-  std::vector<TpchQ21OutputRow> output_rows;
-
-  for (const auto &[nationkey, supp_map] : state.nation_numwait) {
-    for (const auto &[suppkey, numwait] : supp_map) {
-      if (numwait <= 0)
-        continue;
-      const auto name_it = state.supplier_names.find(suppkey);
-      if (name_it == state.supplier_names.end())
-        continue;
-      TpchQ21OutputRow row;
-      row.name = name_it->second;
-      row.numwait = numwait;
-      output_rows.push_back(std::move(row));
-    }
-  }
-
   // GROUP BY s_name: suppliers sharing a name form one group.
   std::map<std::string, int64_t> by_name;
-  for (const auto &row : output_rows)
-    by_name[row.name] += row.numwait;
-  output_rows.clear();
+  for (const auto &[nationkey, rows] : state.nations) {
+    (void)nationkey;
+    for (const auto &row : rows->rows)
+      by_name[*row.name] += row.numwait;
+  }
+  std::vector<TpchQ21OutputRow> output_rows;
+  output_rows.reserve(by_name.size());
   for (auto &[name, numwait] : by_name)
     output_rows.push_back({name, numwait});
   std::sort(output_rows.begin(), output_rows.end(), TpchQ21BetterOutputRow);

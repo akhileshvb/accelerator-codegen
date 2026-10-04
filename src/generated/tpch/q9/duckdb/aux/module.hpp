@@ -25,6 +25,9 @@ struct TpchQ9Layout {
   static constexpr core::PartitionId kCompleteState = 0;
   // Maintenance-only side maps (supplier/order/partsupp); Execute never reads this.
   static constexpr core::PartitionId kMaintenanceSide = 1;
+  // Per-name-token aggregate cube [token][nation][year]; read path for
+  // whole-token needles touches only this partition + the metadata.
+  static constexpr core::PartitionId kCube = 2;
   static constexpr core::PartitionId kProfitSlotBase = 10000;
   // Internal-only profit shards (not published); sized from part cardinality at build.
   static constexpr core::PartitionId kMinProfitSlots = 128;
@@ -181,6 +184,51 @@ struct Q9PartRecord {
   std::vector<Q9ProfitCell> cells;
 };
 
+// ── Copy-on-write paged dense array ─────────────────────────────────────────
+// Pages are shared_ptr'd: copying the array copies only the page directory, and
+// Set() clones a page only when it is shared with a published image.
+template <typename T, std::size_t Shift>
+struct Q9PagedArray {
+  static constexpr std::size_t kShift = Shift;
+  static constexpr std::size_t kSize = std::size_t{1} << Shift;
+  static constexpr std::size_t kMask = kSize - 1;
+  static constexpr int64_t kMaxId = int64_t{1} << 28; // 268M ids
+
+  std::vector<std::shared_ptr<std::vector<T>>> chunks;
+
+  static bool Fits(int64_t key) { return key >= 0 && key < kMaxId; }
+  void Clear() { chunks.clear(); }
+
+  T Get(int64_t key, T absent = T{}) const {
+    if (!Fits(key))
+      return absent;
+    const auto id = static_cast<std::size_t>(key);
+    const auto chunk_idx = id >> kShift;
+    if (chunk_idx >= chunks.size() || !chunks[chunk_idx])
+      return absent;
+    return (*chunks[chunk_idx])[id & kMask];
+  }
+
+  bool Set(int64_t key, T value, T fill = T{}) {
+    if (!Fits(key))
+      return false;
+    const auto id = static_cast<std::size_t>(key);
+    const auto chunk_idx = id >> kShift;
+    if (chunks.size() <= chunk_idx)
+      chunks.resize(chunk_idx + 1);
+    auto &page = chunks[chunk_idx];
+    if (!page)
+      page = std::make_shared<std::vector<T>>(kSize, fill);
+    else if (page.use_count() > 1)
+      page = std::make_shared<std::vector<T>>(*page);
+    (*page)[id & kMask] = value;
+    return true;
+  }
+};
+
+// Per-token aggregate of profit cells over all parts whose name has the token.
+struct Q9TokenCube;
+
 // ── State structures ────────────────────────────────────────────────────────
 struct TpchQ9State {
   struct PartProfitPartition {
@@ -205,8 +253,8 @@ struct TpchQ9State {
   static constexpr uint8_t kAbsentYearCode = 0;
   static constexpr int32_t kPackedYearBias = 1991; // stored = year - 1991
 
-  core::DenseIdArray<uint8_t> supplier_nations;
-  core::DenseIdArray<uint8_t> order_years;
+  Q9PagedArray<uint8_t, 16> supplier_nations;
+  Q9PagedArray<uint8_t, 16> order_years;
   std::unordered_map<int64_t, int32_t> order_year_overflow;
 
   struct PackedPartsuppRow {
@@ -214,7 +262,7 @@ struct TpchQ9State {
     int32_t suppkeys[kSlots]{};
     int32_t costs[kSlots]{};
   };
-  core::DenseIdArray<PackedPartsuppRow> partsupp_rows;
+  Q9PagedArray<PackedPartsuppRow, 10> partsupp_rows;
 
   struct PartsuppKey {
     int64_t partkey = 0;
@@ -230,6 +278,25 @@ struct TpchQ9State {
     }
   };
   std::unordered_map<PartsuppKey, int64_t, PartsuppKeyHash> partsupp_overflow;
+
+  // Token cube (published in its own partition; null/inactive elsewhere).
+  std::unordered_map<std::string, std::shared_ptr<Q9TokenCube>> cube;
+  bool cube_active = false;
+
+  void CubeAdd(const std::vector<std::string> &tokens, int32_t nation,
+               int32_t year, int64_t delta);
+  // Add (sign=+1) / subtract (sign=-1) all cells of a record into the cube.
+  void CubeApplyRecord(const Q9PartRecord &record, int sign);
+  void BuildCube();
+
+  // Copy only the join-side maps (page directories + overflow maps).
+  void CopySideFrom(const TpchQ9State &o) {
+    supplier_nations = o.supplier_nations;
+    order_years = o.order_years;
+    order_year_overflow = o.order_year_overflow;
+    partsupp_rows = o.partsupp_rows;
+    partsupp_overflow = o.partsupp_overflow;
+  }
 
   bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) const {
     const auto code = supplier_nations.Get(suppkey, kAbsentNationCode);
@@ -364,6 +431,7 @@ struct TpchQ9State {
     return nullptr;
   }
 
+  static std::vector<std::string> NameTokensOf(const std::string &normalized);
   void FinalizePostings();
   void RebuildNationEmitOrder();
 
@@ -371,11 +439,21 @@ struct TpchQ9State {
   void AddContribution(int64_t partkey, int32_t nationkey, int32_t year,
                        int64_t profit_raw) {
     if (profit_raw == 0) return;
-    auto &cells = PartRecord(partkey).cells;
-    if (auto *cell = FindCell(cells, nationkey, year))
+    auto &record = PartRecord(partkey);
+    auto &cells = record.cells;
+    int32_t cube_nation = nationkey, cube_year = year;
+    if (auto *cell = FindCell(cells, nationkey, year)) {
       cell->profit += profit_raw;
-    else
+      cube_nation = cell->Nation();
+      cube_year = cell->Year();
+    } else {
       cells.push_back(Q9ProfitCell::Make(nationkey, year, profit_raw));
+      cube_nation = cells.back().Nation();
+      cube_year = cells.back().Year();
+    }
+    if (cube_active)
+      CubeAdd(NameTokensOf(record.normalized_name), cube_nation, cube_year,
+              profit_raw);
   }
 
   void RemoveContribution(int64_t partkey, int32_t nationkey, int32_t year,
@@ -387,6 +465,9 @@ struct TpchQ9State {
     for (auto cell_it = cells.begin(); cell_it != cells.end(); ++cell_it) {
       if (cell_it->Nation() != nationkey || cell_it->Year() != year) continue;
       cell_it->profit -= profit_raw;
+      if (cube_active)
+        CubeAdd(NameTokensOf(it->second.normalized_name), cell_it->Nation(),
+                cell_it->Year(), -profit_raw);
       if (cell_it->profit == 0)
         cells.erase(cell_it);
       return;
@@ -398,11 +479,21 @@ struct TpchQ9State {
   void RemoveNamePostings(int64_t partkey, const std::string &raw_name);
 };
 
+struct Q9TokenCube {
+  static constexpr int32_t kNations = 25;
+  static constexpr int32_t kYears = 7;
+  static constexpr int32_t kYearBase = 1992;
+  int64_t dense[kNations][kYears] = {};
+  // Cells outside the dense range (profit != 0 only).
+  std::vector<Q9ProfitCell> sparse;
+};
+
 enum class TpchQ9ImageKind : uint8_t {
   CompleteState,
   Metadata,
   MaintenanceSide,
   ProfitSlot,
+  Cube,
 };
 
 struct TpchQ9StateImage {
@@ -455,6 +546,8 @@ bool DecodeTpchQ9Metadata(const std::vector<uint8_t> &bytes,
 std::vector<uint8_t> EncodeTpchQ9MaintenanceSide(const TpchQ9State &state);
 bool DecodeTpchQ9MaintenanceSide(const std::vector<uint8_t> &bytes,
                                  TpchQ9State &state);
+std::vector<uint8_t> EncodeTpchQ9Cube(const TpchQ9State &state);
+bool DecodeTpchQ9Cube(const std::vector<uint8_t> &bytes, TpchQ9State &state);
 std::vector<uint8_t> EncodeTpchQ9ProfitSlot(
     core::PartitionId slot, const TpchQ9State::PartProfitPartition &partition);
 bool DecodeTpchQ9ProfitSlot(const std::vector<uint8_t> &bytes,
@@ -534,21 +627,21 @@ public:
 
 private:
   // Read-path helpers
-  bool LoadState(core::AuxEngineServices &services,
-                 std::shared_ptr<const TpchQ9State> &state,
-                 std::vector<core::PartitionId> &required_partitions,
-                 const std::string *color = nullptr) const;
-
-  void EmitResult(const TpchQ9State &state, const std::string &color,
-                  core::AuxEngineServices &services,
+  // Emit from per-slot partition views (slots[i] may be null = absent).
+  // `candidates` (sorted part keys) restricts the scan; null scans all slots.
+  void EmitResult(const TpchQ9State &meta,
+                  const std::vector<const TpchQ9State::PartProfitPartition *> &slots,
+                  const std::string &color,
+                  const std::vector<int32_t> *candidates,
                   core::AuxRowSink &sink) const;
 
-  // Build helper
-  void BuildStateInto(TpchQ9State &state) const;
+  // Build helper. `full` also populates the join-side maps and token cube.
+  void BuildStateInto(TpchQ9State &state, bool full = true) const;
 
   // Rebuild profit cells for specific partkeys from base data
   void RebuildPartkeys(TpchQ9State &state,
-                       const std::unordered_set<int64_t> &partkeys) const;
+                       const std::unordered_set<int64_t> &partkeys,
+                       const TpchQ9State *side = nullptr) const;
 
   TpchQ9Config config;
   TpchQ9InitialScan *initial_scan = nullptr;

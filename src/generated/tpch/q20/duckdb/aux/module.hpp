@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <string_view>
 #include <functional>
 #include <map>
 #include <memory>
@@ -76,6 +78,31 @@ public:
       const std::function<void(const TpchQ20SupplierInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ20NationInput &)> &) = 0;
+
+  // Optional typed/ordered bulk scans used by Build (SQL ORDER BY, no boxed
+  // per-cell values). Return false when unsupported (generic path is used).
+  //   lineitems ordered by (partkey, suppkey)
+  virtual bool ScanLineitemsByPair(
+      const std::function<void(int64_t partkey, int64_t suppkey,
+                               int32_t shipdate_days, int64_t quantity_raw)>
+          &consumer) {
+    (void)consumer;
+    return false;
+  }
+  //   partsupps ordered by (partkey, suppkey)
+  virtual bool ScanPartsuppsOrdered(
+      const std::function<void(int64_t partkey, int64_t suppkey,
+                               int64_t availqty)> &consumer) {
+    (void)consumer;
+    return false;
+  }
+  //   parts, any order
+  virtual bool ScanPartNames(
+      const std::function<void(int64_t partkey, const char *name,
+                               std::size_t len)> &consumer) {
+    (void)consumer;
+    return false;
+  }
 };
 
 // ── State structures ────────────────────────────────────────────────────────
@@ -84,87 +111,169 @@ struct TpchQ20DateQuantity {
   int64_t quantity_raw = 0;
 };
 
-// One (partkey, suppkey) temporal aggregate. Dates are kept sorted so
-// one-year-window probes are O(log n) per pair rather than O(n) for the
-// whole lineitem table.
-struct TpchQ20PairSeries {
-  std::vector<TpchQ20DateQuantity> entries;
-  int64_t total_quantity_raw = 0;
-  bool dirty = false;
-};
-
-struct TpchQ20PartRecord {
-  std::string name;
-  // active partsupp adjacency (suppkey -> availqty)
-  std::unordered_map<int64_t, int64_t> partsupps;
-};
-
 struct TpchQ20SupplierRecord {
   std::string name;
   std::string address;
   int32_t nationkey = 0;
 };
 
-struct TpchQ20NationRecord {
-  std::string name;
-  std::vector<int64_t> supplier_keys;
+// Copy-on-write hash map: 128 shards, each an immutable-once-published
+// shared_ptr<Map>. Copying a TpchQ20CowMap shares every shard; a mutation
+// clones only the touched shard (and only once per staged commit).
+template <typename V> class TpchQ20CowMap {
+public:
+  using Map = std::unordered_map<uint64_t, V>;
+  static constexpr std::size_t kShards = 128;
+
+  TpchQ20CowMap() = default;
+  TpchQ20CowMap(const TpchQ20CowMap &other)
+      : shards(other.shards), count(other.count) {} // owned stays empty
+  TpchQ20CowMap &operator=(const TpchQ20CowMap &other) {
+    shards = other.shards;
+    count = other.count;
+    owned.fill(false);
+    return *this;
+  }
+
+  const V *Find(uint64_t key) const {
+    const auto &shard = shards[ShardOf(key)];
+    if (!shard)
+      return nullptr;
+    const auto it = shard->find(key);
+    return it == shard->end() ? nullptr : &it->second;
+  }
+  // Returns a mutable slot (default-constructed when absent). The caller must
+  // be the staging owner of this instance (never a published state).
+  V &Mutable(uint64_t key, bool *inserted = nullptr) {
+    auto &map = OwnedShard(ShardOf(key));
+    const auto res = map.try_emplace(key);
+    if (res.second) {
+      ++count;
+    }
+    if (inserted)
+      *inserted = res.second;
+    return res.first->second;
+  }
+  void Erase(uint64_t key) {
+    const std::size_t i = ShardOf(key);
+    if (!shards[i] || shards[i]->find(key) == shards[i]->end())
+      return;
+    OwnedShard(i).erase(key);
+    --count;
+  }
+  std::size_t Size() const { return count; }
+  bool Empty() const { return count == 0; }
+  template <typename F> void ForEach(F &&f) const {
+    for (const auto &shard : shards) {
+      if (!shard)
+        continue;
+      for (const auto &kv : *shard)
+        f(kv.first, kv.second);
+    }
+  }
+
+private:
+  static std::size_t ShardOf(uint64_t key) {
+    return static_cast<std::size_t>((key * 0x9E3779B97F4A7C15ULL) >> 57);
+  }
+  Map &OwnedShard(std::size_t i) {
+    if (!shards[i])
+      shards[i] = std::make_shared<Map>();
+    else if (!owned[i])
+      shards[i] = std::make_shared<Map>(*shards[i]);
+    owned[i] = true;
+    return *shards[i];
+  }
+  std::array<std::shared_ptr<Map>, kShards> shards{};
+  std::array<bool, kShards> owned{};
+  std::size_t count = 0;
 };
 
-struct TpchQ20State {
-  // Keyed by (partkey << 20) | suppkey. Only pairs that actually appear in
-  // lineitem are materialized, keeping state proportional to fact cardinality
-  // (no SF-hardcoded dense arrays).
-  std::unordered_map<uint64_t, TpchQ20PairSeries> pair_series;
-  // Maintenance chain: if non-null, lookups fall back to this published
-  // state for keys not found in the local pair_series delta.
-  std::shared_ptr<const TpchQ20State> parent_state;
-
-  // Part name -> set of partkeys. Built from the ordered part scan and used
-  // for exact trailing-'%' prefix matching at query time (no other wildcards).
-  std::map<std::string, std::vector<int64_t>> part_name_index;
-  std::unordered_map<int64_t, TpchQ20PartRecord> parts;
-
-  // ── Evaluate fast-path structures ─────────────────────────────────────────
-  // Pointer into pair_series for each partsupp entry. Stored alongside the
-  // flat partsupp key in a merged struct so the evaluate loop avoids a
-  // per-entry hash lookup in pair_series. Built once at build time (the state
-  // is immutable after build) and invalidated via clear() on overlay states.
-  struct FlatPartsuppEntry {
-    uint64_t pair_key = 0;
-    int64_t availqty = 0;
-    const TpchQ20PairSeries *series = nullptr;
+// Immutable bulk image built once per (re)build; shared by every version.
+struct TpchQ20Base {
+  struct Entry {
+    int32_t date = 0;
+    int32_t qty = 0;
   };
-  std::vector<FlatPartsuppEntry> flat_partsupp_keys;
-  bool flat_partsupp_keys_sorted = false;
+  struct PsEntry {
+    int64_t availqty = 0;
+    int32_t suppkey = 0;
+    uint32_t series_idx = kNoSeries;
+  };
+  static constexpr uint32_t kNoSeries = 0xFFFFFFFFu;
 
-  // Dimension data, keyed naturally.
+  // (partkey << 20 | suppkey) sorted; CSR over series_entries.
+  std::vector<uint64_t> series_key;
+  std::vector<uint32_t> series_off; // series_key.size() + 1
+  std::vector<Entry> series_entries;
+  // Pairs whose quantities do not fit Entry::qty (idx -> entries).
+  std::unordered_map<uint32_t, std::vector<TpchQ20DateQuantity>> series_wide;
+
+  // partsupp CSR by partkey (dense).
+  std::vector<uint32_t> ps_off; // max_partkey + 2
+  std::vector<PsEntry> ps;
+
+  // part names sorted bytewise; parallel partkey array.
+  std::string name_arena;
+  std::vector<uint32_t> name_off; // n + 1
+  std::vector<int64_t> name_partkey;
+
+  // suppliers
   std::unordered_map<int64_t, TpchQ20SupplierRecord> suppliers;
-  std::unordered_map<int32_t, TpchQ20NationRecord> nations;
+  std::vector<int32_t> supp_nation; // dense by suppkey, -1 = absent
 
-  // Nation name -> key set for exact name lookups.
+  // nations
+  std::unordered_map<int32_t, std::string> nations;
   std::unordered_map<std::string, std::vector<int32_t>> nation_name_index;
 
-  void AddPairEntry(uint64_t pair_key, int32_t shipdate_days,
-                    int64_t quantity_raw);
-  void RemovePairEntry(uint64_t pair_key, int32_t shipdate_days,
-                       int64_t quantity_raw);
-  bool HasPairQuantityInWindow(uint64_t pair_key, int32_t start_date_days,
-                               int32_t end_date_days) const;
-  int64_t SumPairQuantity(uint64_t pair_key, int32_t start_date_days,
-                          int32_t end_date_days) const;
-  // Fused query: returns {sum_qty, has_entries}. Single sorted scan with
-  // early termination. Returns {-1, false} when pair_key is absent.
-  std::pair<int64_t, bool> QueryWindowSum(uint64_t pair_key,
-                                          int32_t start_date_days,
-                                          int32_t end_date_days) const;
-  // Sort all pair-series entries by shipdate_days. Called after build and
-  // after delta application so read-path probes are single-pass.
-  void SortPairEntries();
-  void BuildFlatPartsuppKeys();
-  const TpchQ20SupplierRecord *FindSupplier(int64_t suppkey) const;
-  const TpchQ20PartRecord *FindPart(int64_t partkey) const;
-  const TpchQ20PairSeries *FindPairSeries(uint64_t pair_key) const;
-  std::vector<int64_t> FindPartKeysByPrefix(const std::string &prefix) const;
+  uint32_t FindSeries(uint64_t pair_key) const; // idx or kNoSeries
+  // Sum of quantities with shipdate in [lo, hi); returns whether any entry.
+  bool WindowSum(uint32_t series_idx, int32_t lo, int32_t hi,
+                 int64_t &sum) const;
+  std::string_view PartName(std::size_t i) const {
+    return std::string_view(name_arena.data() + name_off[i],
+                            name_off[i + 1] - name_off[i]);
+  }
+};
+
+struct TpchQ20PsPair {
+  int64_t suppkey = 0;
+  int64_t availqty = 0;
+};
+
+struct TpchQ20PartOverlay {
+  bool present = false;
+  std::string name;
+};
+
+struct TpchQ20SupplierOverlay {
+  bool present = false;
+  TpchQ20SupplierRecord record;
+};
+
+// One published version: the shared immutable base plus small copy-on-write
+// overlays holding every pair / part / supplier changed since the base.
+struct TpchQ20State {
+  std::shared_ptr<const TpchQ20Base> base;
+  // pair_key -> complete current series (empty vector = no lineitems), sorted
+  // by shipdate.
+  TpchQ20CowMap<std::vector<TpchQ20DateQuantity>> series;
+  // partkey -> complete current partsupp list (empty = none).
+  TpchQ20CowMap<std::vector<TpchQ20PsPair>> partsupps;
+  TpchQ20CowMap<TpchQ20PartOverlay> parts;
+  TpchQ20CowMap<TpchQ20SupplierOverlay> suppliers;
+
+  // Total overlay population; Stage requests a rebuild past a bound.
+  std::size_t OverlayWeight() const {
+    return series.Size() + partsupps.Size() + parts.Size() + suppliers.Size();
+  }
+
+  // Effective-state helpers (overlay first, then base).
+  int32_t SupplierNation(int64_t suppkey) const; // -1 when absent
+  bool FindSupplier(int64_t suppkey, TpchQ20SupplierRecord &out) const;
+  // Window sum for a pair; returns whether any lineitem in the window.
+  bool PairWindowSum(uint64_t pair_key, int32_t lo, int32_t hi,
+                     int64_t &sum) const;
   std::vector<int32_t> FindNationKeysByName(const std::string &name) const;
 };
 
@@ -204,6 +313,12 @@ struct TpchQ20PartNameDelta {
   int8_t sign = 0;
 };
 
+struct TpchQ20SupplierDelta {
+  int64_t suppkey = 0;
+  bool present = false; // false: supplier removed
+  TpchQ20SupplierRecord record;
+};
+
 // ── Encode / Decode ─────────────────────────────────────────────────────────
 std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state);
 bool DecodeTpchQ20State(const std::vector<uint8_t> &bytes, TpchQ20State &state);
@@ -220,10 +335,12 @@ public:
   const std::vector<TpchQ20LineitemDelta> &LineitemDeltas() const;
   const std::vector<TpchQ20PartsuppDelta> &PartsuppDeltas() const;
   const std::vector<TpchQ20PartNameDelta> &PartNameDeltas() const;
+  const std::vector<TpchQ20SupplierDelta> &SupplierDeltas() const;
 
   void AddLineitemDelta(TpchQ20LineitemDelta delta);
   void AddPartsuppDelta(TpchQ20PartsuppDelta delta);
   void AddPartNameDelta(TpchQ20PartNameDelta delta);
+  void AddSupplierDelta(TpchQ20SupplierDelta delta);
 
 private:
   bool pending = false;
@@ -231,6 +348,7 @@ private:
   std::vector<TpchQ20LineitemDelta> lineitem_deltas;
   std::vector<TpchQ20PartsuppDelta> partsupp_deltas;
   std::vector<TpchQ20PartNameDelta> part_name_deltas;
+  std::vector<TpchQ20SupplierDelta> supplier_deltas;
 };
 
 // ── Module ──────────────────────────────────────────────────────────────────

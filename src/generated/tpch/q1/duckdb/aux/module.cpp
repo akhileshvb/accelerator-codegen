@@ -285,10 +285,10 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ1Module::CreateTxnBuffer() const {
 
 void TpchQ1Module::Build(core::AuxEngineServices &services,
                          core::StateBuilder &builder) {
-  const auto days = BuildState(services);
-  for (const auto &entry : days) {
+  auto days = BuildState(services);
+  for (auto &entry : days) {
     const auto typed =
-        std::make_shared<const Q1DayPartition>(entry.second);
+        std::make_shared<const Q1DayPartition>(std::move(entry.second));
     builder.Write(core::StateImage::Make(
         core::TpchQ1Layout::kAccelerator,
         core::TpchQ1Layout::PartitionFromDays(entry.first), 0,
@@ -390,9 +390,9 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
     const auto rebuilt = BuildStateForDays(services, touched_days);
     for (const auto day : touched_days) {
       Q1DayPartition part;
-      const auto it = rebuilt.find(day);
+      auto it = rebuilt.find(day);
       if (it != rebuilt.end())
-        part = it->second;
+        part = std::move(it->second);
       const auto typed = std::make_shared<const Q1DayPartition>(std::move(part));
       outcome.updates.push_back(core::StateImage::Make(
           core::TpchQ1Layout::kAccelerator,
@@ -442,7 +442,8 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
   for (const auto day : touched_days) {
     const auto partition = core::TpchQ1Layout::PartitionFromDays(day);
     const auto version = versions.count(day) ? versions.at(day) : 0;
-    const auto typed = std::make_shared<const Q1DayPartition>(state.at(day));
+    const auto typed =
+        std::make_shared<const Q1DayPartition>(std::move(state.at(day)));
     outcome.updates.push_back(core::StateImage::Make(
         core::TpchQ1Layout::kAccelerator, partition, version,
         MakeStateImage(day, typed)));
@@ -475,12 +476,41 @@ void TpchQ1Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  std::unordered_map<int32_t, Q1DayPartition> days;
-  if (!LoadPartitions(services, cutoff_days, days)) {
-    ExecuteFallback(services, arguments, sink);
-    return;
+  // Borrow the published (immutable) day images and merge in place: no
+  // per-day map copies, O(days x groups) additions into a tiny flat array.
+  std::vector<core::PartitionId> partitions;
+  CollectQ1DayPartitions(cutoff_days, partitions);
+  std::vector<std::pair<Q1GroupKey, ::accelerator_codegen::Q1MergedGroupStats>>
+      flat;
+  if (!partitions.empty()) {
+    const auto snapshot = services.StateStore().ReadPartitions(
+        services.CurrentVisibility(), partitions);
+    for (const auto &image : snapshot.partitions) {
+      const auto day = core::TpchQ1Layout::DaysFromPartition(image.partition);
+      if (day > cutoff_days)
+        continue;
+      const auto *typed = AsQ1Image(image);
+      if (!typed || !typed->partition || typed->shipdate_days != day) {
+        ExecuteFallback(services, arguments, sink);
+        return;
+      }
+      for (const auto &group_entry : typed->partition->groups) {
+        auto it = std::find_if(flat.begin(), flat.end(), [&](const auto &p) {
+          return p.first == group_entry.first;
+        });
+        if (it == flat.end()) {
+          flat.emplace_back(group_entry.first,
+                            ::accelerator_codegen::Q1MergedGroupStats{});
+          it = flat.end() - 1;
+        }
+        ::accelerator_codegen::MergeQ1DayGroupStats(it->second,
+                                                    group_entry.second);
+      }
+    }
   }
-  EmitResult(ComposeOutput(days, cutoff_days), sink);
+  std::unordered_map<Q1GroupKey, ::accelerator_codegen::Q1MergedGroupStats>
+      merged(flat.begin(), flat.end());
+  EmitResult(::accelerator_codegen::FinalizeQ1MergedGroups(merged), sink);
 }
 
 void TpchQ1Module::ExecuteFallback(core::AuxEngineServices &services,

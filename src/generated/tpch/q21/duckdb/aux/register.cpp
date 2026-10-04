@@ -103,6 +103,40 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
+// Typed streaming scan: reads DuckDB vectors directly (no boxed Values).
+template <typename T> struct TypedCol {
+  ::duckdb::UnifiedVectorFormat fmt;
+  const T *data = nullptr;
+  void Init(::duckdb::DataChunk &chunk, ::duckdb::idx_t col) {
+    chunk.data[col].ToUnifiedFormat(chunk.size(), fmt);
+    data = ::duckdb::UnifiedVectorFormat::GetData<T>(fmt);
+  }
+  bool Valid(::duckdb::idx_t row) const {
+    return fmt.validity.RowIsValid(fmt.sel->get_index(row));
+  }
+  const T &operator()(::duckdb::idx_t row) const {
+    return data[fmt.sel->get_index(row)];
+  }
+};
+
+template <typename Callback>
+void ScanTypedChunks(::duckdb::Connection &connection_p, const std::string &sql,
+                     Callback &&callback) {
+  auto &connection = ScanConnection(connection_p);
+  auto result = connection.SendQuery(sql);
+  if (!result || result->HasError())
+    throw std::runtime_error(result ? result->GetError()
+                                    : "DuckDB scan returned null");
+  while (true) {
+    auto chunk = result->Fetch();
+    if (!chunk || chunk->size() == 0)
+      break;
+    callback(*chunk);
+  }
+  if (result->HasError())
+    throw std::runtime_error(result->GetError());
+}
+
 struct TpchQ21Scan : TpchQ21InitialScan {
   explicit TpchQ21Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanSuppliers(
@@ -114,6 +148,39 @@ struct TpchQ21Scan : TpchQ21InitialScan {
                     ChunkValue(chunk, 1, row).ToString(),
                     SafeInt32(ChunkValue(chunk, 2, row))});
         });
+  }
+  bool ScanContributingOrderSuppliers(
+      const std::function<void(int64_t, int64_t, int64_t, int64_t)> &consumer)
+      override {
+    // Fulfilled orders with >= 2 suppliers and exactly one late supplier: the
+    // only orders that can contribute. Per-(order, supplier) counts are
+    // computed in SQL; no per-lineitem C++ work.
+    ScanTypedChunks(
+        connection,
+        "SELECT CAST(l.l_orderkey AS BIGINT), CAST(l.l_suppkey AS BIGINT), "
+        "COUNT(*), CAST(SUM(CASE WHEN l.l_receiptdate > l.l_commitdate THEN 1 ELSE 0 END) AS BIGINT) "
+        "FROM lineitem l JOIN ("
+        "SELECT l2.l_orderkey AS k FROM lineitem l2 JOIN orders o2 "
+        "ON l2.l_orderkey = o2.o_orderkey AND o2.o_orderstatus = 'F' "
+        "GROUP BY l2.l_orderkey "
+        "HAVING COUNT(DISTINCT l2.l_suppkey) > 1 AND "
+        "COUNT(DISTINCT CASE WHEN l2.l_receiptdate > l2.l_commitdate "
+        "THEN l2.l_suppkey END) = 1) c ON l.l_orderkey = c.k "
+        "GROUP BY l.l_orderkey, l.l_suppkey" +
+            OptionalBenchScanLimitSuffix("ACCEL_Q21_BENCH_SCAN_LIMIT"),
+        [&](::duckdb::DataChunk &chunk) {
+          TypedCol<int64_t> ok, sk, tot, late;
+          ok.Init(chunk, 0);
+          sk.Init(chunk, 1);
+          tot.Init(chunk, 2);
+          late.Init(chunk, 3);
+          for (::duckdb::idx_t i = 0; i < chunk.size(); ++i) {
+            if (!ok.Valid(i) || !sk.Valid(i))
+              continue;
+            consumer(ok(i), sk(i), tot(i), late.Valid(i) ? late(i) : 0);
+          }
+        });
+    return true;
   }
   void ScanNations(
       const std::function<void(const TpchQ21NationInput &)> &consumer) override {

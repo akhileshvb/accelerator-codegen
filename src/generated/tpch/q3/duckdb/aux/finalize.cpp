@@ -50,17 +50,17 @@ void FinalizeTpchQ3OrderSummary(std::vector<TpchQ3ShipdateBucket> &buckets,
   buckets.shrink_to_fit();
 }
 
-int64_t TpchQ3RevenueAboveCutoff(const TpchQ3OrderSummary &order,
-                                 const std::vector<TpchQ3ShipdateBucket> &pool,
+int64_t TpchQ3RevenueAboveCutoff(const TpchQ3Entry &order,
+                                 const TpchQ3ShipdateBucket *buckets,
                                  int32_t cutoff_days) {
-  if (order.orderdate_days >= cutoff_days || order.bucket_count == 0)
+  if (static_cast<int32_t>(order.orderdate) >= cutoff_days ||
+      order.bucket_count == 0)
     return 0;
-  const auto begin = pool.begin() + static_cast<std::ptrdiff_t>(order.bucket_begin);
-  const auto end =
-      begin + static_cast<std::ptrdiff_t>(order.bucket_count);
+  const auto *begin = buckets + order.bucket_begin;
+  const auto *end = begin + order.bucket_count;
   if (static_cast<int32_t>((end - 1)->shipdate) <= cutoff_days)
     return 0;
-  const auto it = std::upper_bound(
+  const auto *it = std::upper_bound(
       begin, end, cutoff_days,
       [](int32_t cutoff, const TpchQ3ShipdateBucket &bucket) {
         return cutoff < static_cast<int32_t>(bucket.shipdate);
@@ -70,36 +70,90 @@ int64_t TpchQ3RevenueAboveCutoff(const TpchQ3OrderSummary &order,
   return it->suffix_revenue;
 }
 
-std::vector<TpchQ3OutputRow>
-ComposeTpchQ3TopK(const TpchQ3SegmentIntervalIndex &index,
-                  int32_t cutoff_days) {
-  const auto begin = std::lower_bound(
-      index.orders.begin(), index.orders.end(), cutoff_days,
-      [&index](const TpchQ3OrderSummary &order, int32_t cutoff) {
-        return index.MaxShipdate(order) <= cutoff;
-      });
+namespace {
+
+// Best-first walk over the bins' (bound desc, orderkey asc) entry streams.
+// Every order's revenue at any cutoff is <= its bound, so once the next
+// bound is below the current 10th result nothing remaining can enter the
+// top 10: the walk touches O(answer * bins) entries, not the whole segment.
+struct Cursor {
+  const TpchQ3BinList *bin = nullptr;
+  std::size_t chunk = 0;
+  std::size_t idx = 0;
+  const TpchQ3Entry &Current() const { return bin->chunks[chunk]->entries[idx]; }
+  const TpchQ3Chunk &CurrentChunk() const { return *bin->chunks[chunk]; }
+  // Moves to the next entry; false when the bin is exhausted.
+  bool Advance() {
+    if (++idx < bin->chunks[chunk]->entries.size())
+      return true;
+    ++chunk;
+    idx = 0;
+    while (chunk < bin->chunks.size() && bin->chunks[chunk]->entries.empty())
+      ++chunk;
+    return chunk < bin->chunks.size();
+  }
+};
+
+struct CursorWorse {
+  // priority_queue keeps the "largest" at top: make it the best entry.
+  bool operator()(const Cursor &a, const Cursor &b) const {
+    const auto &x = a.Current();
+    const auto &y = b.Current();
+    if (x.bound != y.bound)
+      return x.bound < y.bound;
+    return x.orderkey > y.orderkey;
+  }
+};
+
+} // namespace
+
+std::vector<TpchQ3OutputRow> ComposeTpchQ3TopK(const TpchQ3Segment &segment,
+                                               int32_t cutoff_days) {
+  std::priority_queue<Cursor, std::vector<Cursor>, CursorWorse> cursors;
+  for (const auto &[bin_id, bin] : segment.bins) {
+    if (!bin || bin->chunks.empty())
+      continue;
+    const int32_t bin_start = static_cast<int32_t>(bin_id) << kTpchQ3BinShift;
+    if (bin_start >= cutoff_days ||
+        static_cast<int32_t>(bin->max_maxship) <= cutoff_days)
+      continue;
+    Cursor cursor;
+    cursor.bin = bin.get();
+    while (cursor.chunk < bin->chunks.size() &&
+           bin->chunks[cursor.chunk]->entries.empty())
+      ++cursor.chunk;
+    if (cursor.chunk < bin->chunks.size())
+      cursors.push(cursor);
+  }
+
   std::priority_queue<TpchQ3OutputRow, std::vector<TpchQ3OutputRow>, TopKLess>
       heap;
-  for (auto it = begin; it != index.orders.end(); ++it) {
-    if (it->orderdate_days >= cutoff_days)
-      continue;
-    const auto revenue_raw =
-        TpchQ3RevenueAboveCutoff(*it, index.bucket_pool, cutoff_days);
-    if (revenue_raw == 0)
-      continue;
-    TpchQ3OutputRow row;
-    row.orderkey = it->orderkey;
-    row.revenue_raw = revenue_raw;
-    row.orderdate_days = it->orderdate_days;
-    row.shippriority = it->shippriority;
-    if (heap.size() < kTopK) {
-      heap.push(row);
-      continue;
+  while (!cursors.empty()) {
+    Cursor cursor = cursors.top();
+    cursors.pop();
+    const TpchQ3Entry &entry = cursor.Current();
+    if (heap.size() >= kTopK && entry.bound < heap.top().revenue_raw)
+      break; // every remaining entry has bound <= this one
+    if (static_cast<int32_t>(entry.orderdate) < cutoff_days &&
+        static_cast<int32_t>(entry.maxship) > cutoff_days) {
+      const auto revenue_raw = TpchQ3RevenueAboveCutoff(
+          entry, cursor.CurrentChunk().pool.data(), cutoff_days);
+      if (revenue_raw != 0) {
+        TpchQ3OutputRow row;
+        row.orderkey = entry.orderkey;
+        row.revenue_raw = revenue_raw;
+        row.orderdate_days = entry.orderdate;
+        row.shippriority = entry.shippriority;
+        if (heap.size() < kTopK) {
+          heap.push(row);
+        } else if (BetterRow(row, heap.top())) {
+          heap.pop();
+          heap.push(row);
+        }
+      }
     }
-    if (BetterRow(row, heap.top())) {
-      heap.pop();
-      heap.push(row);
-    }
+    if (cursor.Advance())
+      cursors.push(cursor);
   }
   std::vector<TpchQ3OutputRow> ordered;
   ordered.reserve(heap.size());

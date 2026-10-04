@@ -5,6 +5,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -53,35 +54,43 @@ struct TpchQ13TwoPartLikeMatcher {
   bool MatchesView(const char *data, std::size_t len) const;
 };
 
+// Sharding: custkey -> shard (custkey & mask), local index (custkey >> bits).
+// Published states hold shared_ptr<const> shards; a write clones only the
+// shards it touches (copy-on-write), never the whole state.
+constexpr uint32_t kTpchQ13ShardBits = 14;
+constexpr std::size_t kTpchQ13Shards = std::size_t{1} << kTpchQ13ShardBits;
+constexpr std::size_t kTpchQ13MaxPatterns = 4;
+
+// Orders (custkey, comment) of one shard.  Deleted orders are tombstoned and
+// the shard is compacted locally once more than half is dead.
+struct TpchQ13OrderShard {
+  std::vector<int64_t> custkey;
+  std::vector<uint32_t> start;
+  std::vector<uint32_t> len;
+  std::string blob;
+  std::vector<uint8_t> alive;
+  uint32_t dead = 0;
+};
+
+// Per-customer data of one shard, indexed by custkey >> bits.
+struct TpchQ13CustShard {
+  std::vector<int32_t> total;               // orders with this custkey
+  std::vector<int32_t> mult;                // customer rows with this key
+  std::vector<std::vector<int32_t>> match;  // [pattern][local] matching orders
+};
+
+struct TpchQ13Pattern {
+  std::string text;
+  TpchQ13TwoPartLikeMatcher matcher;
+};
+
 struct TpchQ13State {
-  std::vector<int32_t> order_counts;
-  std::vector<uint8_t> customer_valid;
-  std::vector<int64_t> active_customers;
-  int64_t max_custkey = 0;
-
-  std::vector<int64_t> order_custkeys;
-  std::vector<uint32_t> order_comment_start;
-  std::vector<uint32_t> order_comment_len;
-  std::string comments_blob;
-  std::vector<uint8_t> order_alive;
-
-  // Inverted trigram index: maps 3-gram hash to the sorted list of order
-  // indices containing that trigram.  Used when the pattern is `%a%b%` with
-  // two non-empty literal parts.  At query time we intersect the lists for a
-  // rare trigram from each part, then verify survivors with a full LIKE match.
-  std::vector<uint32_t> trigram_index_keys;      // distinct trigram hashes
-  std::vector<uint64_t> trigram_index_offsets;   // start offset into rows
-  std::vector<uint32_t> trigram_index_rows;      // concatenated order index lists
-  std::unordered_map<uint32_t, std::size_t> trigram_index_lookup;
-  bool trigram_index_built = false;
-  uint64_t trigram_index_pending = 0;            // deltas since last rebuild
-  uint64_t trigram_index_order_count = 0;        // orders covered by last rebuild
-
-  void AddCustomer(int64_t custkey);
-  void RemoveCustomer(int64_t custkey);
-  void AddOrder(int64_t custkey, const std::string &comment);
-  void RemoveOrder(int64_t custkey, const std::string &comment);
-  void RebuildTrigramIndex();
+  std::vector<std::shared_ptr<const TpchQ13OrderShard>> orders;  // may be null
+  std::vector<std::shared_ptr<const TpchQ13CustShard>> cust;     // may be null
+  // Tracked LIKE patterns; hist[p][c] = #customers whose count of orders NOT
+  // matching patterns[p] equals c.  Immutable per published version.
+  std::vector<TpchQ13Pattern> patterns;
+  std::vector<std::vector<int64_t>> hist;
 };
 
 enum class TpchQ13ImageKind : uint8_t { CustomerCounts };
@@ -100,6 +109,7 @@ struct TpchQ13Delta {
   int8_t sign = 0;
   int64_t custkey = 0;
   std::string comment;
+  bool customer = false;  // customer-row delta (comment unused)
 };
 
 std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state);
@@ -146,19 +156,18 @@ public:
                        core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 private:
-  void EnsureCustomerCapacity(TpchQ13State &state, int64_t custkey) const;
+  void NoteWantedPattern(const std::string &pattern) const;
+  std::vector<std::string> WantedPatterns() const;
   TpchQ13State BuildState(core::AuxEngineServices &services) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ13State> &state) const;
   void EmitResult(const TpchQ13State &state, const std::string &pattern,
                   core::AuxEngineServices &services,
                   core::AuxRowSink &sink) const;
-  void EmitResultIndexed(const TpchQ13State &state,
-                         const TpchQ13TwoPartLikeMatcher &matcher,
-                         core::AuxEngineServices &services,
-                         core::AuxRowSink &sink) const;
   TpchQ13Config config;
   TpchQ13InitialScan *initial_scan = nullptr;
+  mutable std::mutex wanted_mu;
+  mutable std::vector<std::string> wanted;  // patterns seen by reads
 };
 
 } // namespace accelerator_codegen::aux_state::query

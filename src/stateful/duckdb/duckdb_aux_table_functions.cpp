@@ -1,9 +1,12 @@
 // GENERATED BACKEND
 #include "accelerator_codegen/runtime/catalog/shared_query_engine.hpp"
 
+#include <cctype>
+#include <cstdint>
 #include <cmath>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -82,10 +85,25 @@ core::AuxValue ToAuxValue(const ::duckdb::Value &value, core::AuxType type) {
   }
   switch (type) {
   case core::AuxType::Int64:
+    switch (value.type().InternalType()) {
+    case ::duckdb::PhysicalType::INT8:
+    case ::duckdb::PhysicalType::INT16:
+    case ::duckdb::PhysicalType::INT32:
+    case ::duckdb::PhysicalType::INT64:
+      if (value.type().id() != ::duckdb::LogicalTypeId::DECIMAL) {
+        return core::AuxValue::Of(core::AuxType::Int64, value.GetValue<int64_t>());
+      }
+      break;
+    default:
+      break;
+    }
     return core::AuxValue::Of(
         core::AuxType::Int64,
         static_cast<int64_t>(std::llround(std::stod(value.ToString()))));
   case core::AuxType::Double:
+    if (value.type().id() == ::duckdb::LogicalTypeId::DOUBLE) {
+      return core::AuxValue::Of(core::AuxType::Double, value.GetValue<double>());
+    }
     return core::AuxValue::Of(core::AuxType::Double, std::stod(value.ToString()));
   case core::AuxType::String:
     return core::AuxValue::Of(core::AuxType::String, value.ToString());
@@ -93,6 +111,31 @@ core::AuxValue ToAuxValue(const ::duckdb::Value &value, core::AuxType type) {
     const auto date = value.GetValue<::duckdb::date_t>();
     return core::AuxValue::Of(core::AuxType::Date,
                               core::AuxDate{::duckdb::Date::EpochDays(date)});
+  }
+  case core::AuxType::ScaledDecimal: {
+    // exact: a DECIMAL keeps its scale, an integer gets scale 0, anything else
+    // the largest scale (4 down to 0) whose DECIMAL(18, s) holds it; a value
+    // beyond all of them stays a double
+    const auto id = value.type().id();
+    std::vector<uint8_t> scales;
+    if (id == ::duckdb::LogicalTypeId::DECIMAL)
+      scales = {::duckdb::DecimalType::GetScale(value.type())};
+    else if (value.type().IsIntegral())
+      scales = {0};
+    else
+      scales = {4, 3, 2, 1, 0};
+    for (const auto scale : scales) {
+      try {
+        const auto exact = value.DefaultCastAs(::duckdb::LogicalType::DECIMAL(18, scale));
+        core::ScaledDecimal decimal;
+        decimal.value = exact.GetValueUnsafe<int64_t>();
+        decimal.scale = scale;
+        return core::AuxValue::Of(core::AuxType::ScaledDecimal, decimal);
+      } catch (const std::exception &) {
+        // too wide at this scale: try the next
+      }
+    }
+    return core::AuxValue::Of(core::AuxType::Double, std::stod(value.ToString()));
   }
   default:
     return core::AuxValue::Of(core::AuxType::String, value.ToString());
@@ -111,6 +154,25 @@ core::QueryArguments BuildArguments(const SharedQueryCatalogEntry &entry,
     arguments.values.push_back(ToAuxValue(inputs[index], type));
   }
   return arguments;
+}
+
+// `sql` with each $n replaced by the n-th value as a typed SQL literal (highest
+// n first, so $1 never matches inside $10).
+std::string WithLiterals(const std::string &sql, const ::duckdb::vector<::duckdb::Value> &values) {
+  std::string out = sql;
+  for (std::size_t n = values.size(); n >= 1; --n) {
+    const std::string marker = "$" + std::to_string(n);
+    const std::string literal = "(" + values[n - 1].ToSQLString() + ")";
+    for (std::size_t at = out.find(marker); at != std::string::npos; at = out.find(marker, at + literal.size())) {
+      const std::size_t after = at + marker.size();
+      if (after < out.size() && std::isdigit(static_cast<unsigned char>(out[after]))) {
+        at += marker.size() - literal.size(); // part of a longer $nn: skip
+        continue;
+      }
+      out.replace(at, marker.size(), literal);
+    }
+  }
+  return out;
 }
 
 ::duckdb::Value AuxValueToDuckdb(const core::AuxValue &value) {
@@ -151,10 +213,10 @@ AuxBind(::duckdb::ClientContext &context, ::duckdb::TableFunctionBindInput &inpu
     ::duckdb::vector<::duckdb::LogicalType> types;
     ::duckdb::vector<::duckdb::string> names;
   };
-  static std::mutex schema_mutex;
+  static std::shared_mutex schema_mutex;
   static std::unordered_map<std::string, SchemaCache> schemas;
   {
-    std::lock_guard<std::mutex> lock(schema_mutex);
+    std::shared_lock<std::shared_mutex> lock(schema_mutex);
     const auto it = schemas.find(entry.accelerator_id ? entry.accelerator_id : "");
     if (it != schemas.end()) {
       return_types = it->second.types;
@@ -166,13 +228,16 @@ AuxBind(::duckdb::ClientContext &context, ::duckdb::TableFunctionBindInput &inpu
 
   ::duckdb::Connection connection(*context.db);
   if (std::string(entry.base_sql).find('$') != std::string::npos) {
-    // Parameterized SQL (an entry built from a Verus kit glue): the schema
-    // from preparing it, without running it.
-    auto prepared = connection.Prepare(entry.base_sql);
-    Require(prepared != nullptr && !prepared->HasError(),
-            prepared ? prepared->GetError() : "failed to infer aux schema");
-    return_types = prepared->GetTypes();
-    names = prepared->GetNames();
+    // Parameterized SQL (an entry built from a Verus kit glue): the schema from
+    // running it with this call's values as literals, returning no rows. (Not by
+    // preparing it with unbound parameters: a parameter whose type depends on its
+    // value, e.g. `$2 - 0.01`, fails that and leaves this statement unbindable.)
+    auto probe = connection.Query("SELECT * FROM (" + WithLiterals(entry.base_sql, input.inputs) +
+                                  ") AS accel_schema LIMIT 0");
+    Require(probe != nullptr && !probe->HasError(),
+            probe ? probe->GetError() : "failed to infer aux schema");
+    return_types = probe->types;
+    names = probe->names;
   } else {
     auto base_result = connection.Query(entry.base_sql);
     Require(base_result != nullptr && !base_result->HasError(),
@@ -186,7 +251,7 @@ AuxBind(::duckdb::ClientContext &context, ::duckdb::TableFunctionBindInput &inpu
     }
   }
   {
-    std::lock_guard<std::mutex> lock(schema_mutex);
+    std::unique_lock<std::shared_mutex> lock(schema_mutex);
     schemas[entry.accelerator_id ? entry.accelerator_id : ""] =
         SchemaCache{return_types, names};
   }
@@ -223,19 +288,83 @@ AuxInitLocal(::duckdb::ExecutionContext &context, ::duckdb::TableFunctionInitInp
   return local_state;
 }
 
+// One cell straight into the output vector (no per-cell Value / heap string object): the common
+// type pairs; anything else (e.g. a decimal at another scale) goes through a Value cast.
+void WriteCell(::duckdb::Vector &vec, ::duckdb::idx_t i, const ::duckdb::LogicalType &type, const core::AuxValue &v) {
+  using ::duckdb::LogicalTypeId;
+  if (v.is_null) {
+    ::duckdb::FlatVector::SetNull(vec, i, true);
+    return;
+  }
+  const auto *s = std::get_if<std::string>(&v.payload);
+  const auto *i64 = std::get_if<int64_t>(&v.payload);
+  const auto *dec = std::get_if<core::ScaledDecimal>(&v.payload);
+  const auto *dbl = std::get_if<double>(&v.payload);
+  const auto *day = std::get_if<core::AuxDate>(&v.payload);
+  switch (type.id()) {
+  case LogicalTypeId::VARCHAR:
+    if (s) {
+      ::duckdb::FlatVector::GetData<::duckdb::string_t>(vec)[i] = ::duckdb::StringVector::AddString(vec, *s);
+      return;
+    }
+    break;
+  case LogicalTypeId::BIGINT:
+    if (i64) {
+      ::duckdb::FlatVector::GetData<int64_t>(vec)[i] = *i64;
+      return;
+    }
+    break;
+  case LogicalTypeId::INTEGER:
+    if (i64 && *i64 >= INT32_MIN && *i64 <= INT32_MAX) {
+      ::duckdb::FlatVector::GetData<int32_t>(vec)[i] = static_cast<int32_t>(*i64);
+      return;
+    }
+    break;
+  case LogicalTypeId::DOUBLE:
+    if (dbl) {
+      ::duckdb::FlatVector::GetData<double>(vec)[i] = *dbl;
+      return;
+    }
+    break;
+  case LogicalTypeId::DATE:
+    if (day) {
+      ::duckdb::FlatVector::GetData<::duckdb::date_t>(vec)[i] = ::duckdb::date_t(day->days_since_epoch);
+      return;
+    }
+    break;
+  case LogicalTypeId::DECIMAL:
+    if (dec && dec->scale == ::duckdb::DecimalType::GetScale(type)) {
+      switch (type.InternalType()) {
+      case ::duckdb::PhysicalType::INT64:
+        ::duckdb::FlatVector::GetData<int64_t>(vec)[i] = dec->value;
+        return;
+      case ::duckdb::PhysicalType::INT128:
+        ::duckdb::FlatVector::GetData<::duckdb::hugeint_t>(vec)[i] = ::duckdb::hugeint_t(dec->value);
+        return;
+      default:
+        break;
+      }
+    }
+    break;
+  default:
+    break;
+  }
+  vec.SetValue(i, AuxValueToDuckdb(v)); // the general path: DuckDB casts the value to the column's type
+}
+
 void AuxExecute(::duckdb::ClientContext &, ::duckdb::TableFunctionInput &input,
                 ::duckdb::DataChunk &output) {
   auto &local_state = input.local_state->Cast<AuxLocalState>();
   auto &bind_data = input.bind_data->Cast<AuxBindData>();
   ::duckdb::idx_t count = 0;
+  const auto columns = bind_data.types.size();
   while (count < kOutputBatchSize && local_state.row_index < local_state.rows.size()) {
     const auto &row = local_state.rows[local_state.row_index++];
-    for (::duckdb::idx_t column = 0; column < bind_data.types.size(); ++column) {
-      const auto value =
-          column < row.values.size()
-              ? AuxValueToDuckdb(row.values[column])
-              : ::duckdb::Value();
-      output.data[column].SetValue(count, value);
+    for (::duckdb::idx_t column = 0; column < columns; ++column) {
+      if (column < row.values.size())
+        WriteCell(output.data[column], count, bind_data.types[column], row.values[column]);
+      else
+        ::duckdb::FlatVector::SetNull(output.data[column], count, true);
     }
     ++count;
   }
@@ -297,6 +426,11 @@ void RegisterRegisteredAuxFunctions(::duckdb::Catalog &catalog,
 
 
 } // namespace
+
+core::QueryArguments AuxArgumentsFromValues(const SharedQueryCatalogEntry &entry,
+                                            const std::vector<::duckdb::Value> &values) {
+  return BuildArguments(entry, ::duckdb::vector<::duckdb::Value>(values.begin(), values.end()));
+}
 
 void RegisterDuckdbAuxTableFunctions(::duckdb::Connection &connection) {
   auto &context = *connection.context;

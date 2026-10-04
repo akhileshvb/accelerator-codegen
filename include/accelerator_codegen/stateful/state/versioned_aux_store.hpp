@@ -1,6 +1,7 @@
 // SCAFFOLDING
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -151,6 +152,11 @@ public:
   bool NeedsRebuild() const;
   std::size_t ValidPartitionCount() const;
   std::size_t TotalPartitionCount() const;
+  // Lock-free approximation of TotalPartitionCount (refreshed on every
+  // change), for diagnostics on the read path.
+  std::size_t TotalPartitionCountHint() const {
+    return total_partitions_hint.load(std::memory_order_relaxed);
+  }
   std::size_t TotalVersionCount() const;
   bool HasPendingCommit() const;
 
@@ -166,9 +172,17 @@ public:
     core::Version partition_version = 0;
   };
   using PartitionMap = std::map<PartitionKey, Partition>;
+  // An immutable partition map plus summary statistics computed once when the
+  // version is built, so whole-state validity checks are O(1).
+  struct PartitionSet {
+    PartitionMap map;
+    std::size_t invalid_count = 0; // partitions with valid == false
+    core::Version max_version = 0; // max partition_version over all partitions
+    void Finalize();
+  };
   struct StateVersion {
     Epoch epoch = kAllSnapshots;
-    std::shared_ptr<const PartitionMap> partitions;
+    std::shared_ptr<const PartitionSet> partitions;
   };
 
 private:
@@ -176,12 +190,15 @@ private:
     std::vector<StateVersion> versions; // oldest first, epochs increasing
     bool pending = false;
     Epoch pending_from = 0;
+    // Bumped whenever `versions` changes; lets a commit build its next
+    // version outside the lock and detect a concurrent change.
+    uint64_t generation = 0;
   };
 
   enum class Resolve { Found, NotVisible, Unknown };
   struct Resolved {
     Resolve kind = Resolve::Unknown;
-    std::shared_ptr<const PartitionMap> partitions;
+    std::shared_ptr<const PartitionSet> partitions;
   };
 
   core::AcceleratorId AcceleratorFor(const core::StateImage &) const;
@@ -189,16 +206,23 @@ private:
   Epoch CurrentFloor() const;
   // The accelerator's version at `epoch` (waits for a pending commit the
   // snapshot may include; honors the current AuxReadScope).
+  // `lock` may be unlocked (deferred) on entry: it is locked here only if the
+  // scope has not already pinned a version (a pin hit takes no lock).
   Resolved ResolveLocked(std::shared_lock<WriterPreferringSharedMutex> &lock,
                          const core::AcceleratorId &accelerator, Epoch epoch) const;
   bool MustWaitLocked(const core::AcceleratorId &accelerator, Epoch epoch) const;
-  // Append `next` as `accelerator`'s newest version at `epoch`.
-  void AppendLocked(const core::AcceleratorId &accelerator, PartitionMap next,
-                    Epoch epoch, Epoch floor);
-  const PartitionMap *NewestLocked(const core::AcceleratorId &accelerator) const;
+  // Append `next` as `accelerator`'s newest version at `epoch`. Dropped
+  // versions are moved into `dropped` so the caller destroys them (possibly
+  // large payloads) after releasing the lock.
+  void AppendLocked(const core::AcceleratorId &accelerator,
+                    std::shared_ptr<const PartitionSet> next, Epoch epoch, Epoch floor,
+                    std::vector<StateVersion> &dropped);
+  const PartitionSet *NewestLocked(const core::AcceleratorId &accelerator) const;
+  void RefreshHintLocked();
   void InstallLocked(std::vector<core::StateImage> images, const core::AcceleratorId &accelerator,
-                     Epoch from_epoch, Epoch floor);
-  std::optional<core::AcceleratorId> OwnerOfLocked(PartitionKey key) const;
+                     Epoch from_epoch, Epoch floor, std::vector<StateVersion> &dropped);
+  // nullptr if unknown. Valid while the lock is held.
+  const core::AcceleratorId *OwnerOfLocked(PartitionKey key) const;
 
   Options options;
   uint64_t pending_wait_micros;
@@ -210,6 +234,7 @@ private:
   std::unordered_map<PartitionKey, core::AcceleratorId> owner;
   bool transaction_dirty = false;
   uint64_t change_count = 0;
+  std::atomic<std::size_t> total_partitions_hint {0};
 };
 
 // Pins, per store and accelerator, the version the first read in the scope
@@ -224,8 +249,13 @@ public:
 
   static AuxReadScope *Current();
 
-  using Key = std::pair<const void *, core::AcceleratorId>;
-  std::map<Key, std::shared_ptr<const VersionedAuxStore::PartitionMap>> pins;
+  struct Pin {
+    const void *store;
+    core::AcceleratorId accelerator;
+    std::shared_ptr<const VersionedAuxStore::PartitionSet> partitions;
+  };
+  // A query touches a handful of (store, accelerator) pairs: linear search.
+  std::vector<Pin> pins;
 
 private:
   bool outermost;
