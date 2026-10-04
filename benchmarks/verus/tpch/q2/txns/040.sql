@@ -1,0 +1,1 @@
+UPDATE supplier SET s_name = 'Regional Supplier Revised' WHERE s_suppkey = (SELECT s_suppkey FROM q2_test_winners WHERE p_size = 10 AND r_name = 'EUROPE' AND s_suppkey < (SELECT supp_base FROM q2_test_keys) ORDER BY s_acctbal DESC, s_suppkey LIMIT 1);

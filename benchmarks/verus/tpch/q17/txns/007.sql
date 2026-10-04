@@ -1,0 +1,1 @@
+INSERT INTO lineitem SELECT * REPLACE (6 AS l_linenumber, 1.00 AS l_quantity, 210.00 AS l_extendedprice, 'q17-point-new' AS l_comment) FROM lineitem WHERE l_partkey = (SELECT p_partkey FROM part WHERE p_name = 'q17-fixture-01' LIMIT 1) AND l_linenumber = 1 LIMIT 1;

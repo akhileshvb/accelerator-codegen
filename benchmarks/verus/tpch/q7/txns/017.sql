@@ -1,0 +1,1 @@
+UPDATE lineitem SET l_extendedprice=l_extendedprice*1.02, l_discount=0.06 WHERE l_orderkey IN (SELECT o_orderkey FROM orders WHERE o_comment LIKE 'q7 batch %' ORDER BY o_orderkey LIMIT 4) AND l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31';

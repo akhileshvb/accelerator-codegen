@@ -3,7 +3,7 @@
 # src/verus/substrate, src/verus/prooflib) and, unless --verify-only, compile
 # it to $OUT/lib<name>_verus.a for the engines (CMake links each
 # src/generated/<bench>/q<N>/verus_kit/<name>/ whose library exists).
-#   scripts/build_verus_crate.sh <crate_dir> <name> [--verify-only]
+#   scripts/build_verus_crate.sh <crate_dir> <name> [--verify-only | --no-verify | --rlib | --rlib-no-verify]
 # OUT: $ACCEL_VERUS_LIB_DIR (default build-verus).  The libraries are rebuilt
 # only when their sources change, under a lock (parallel pipeline runs).
 set -euo pipefail
@@ -42,6 +42,18 @@ args=("$CRATE_DIR/src/lib.rs" --crate-type=staticlib --crate-name="${NAME}_verus
       -L "dependency=$OUT")
 if [ "$MODE" = "--verify-only" ]; then
   "$VERUS" "${args[@]}"
+elif [ "$MODE" = "--rlib" ] || [ "$MODE" = "--rlib-no-verify" ]; then
+  # a library for a world crate (one store for every accelerator of a
+  # benchmark, scripts/gen_verus_world.py): verified (--rlib-no-verify: code
+  # first, proofs not checked), its specs exported
+  args[1]=--crate-type=lib
+  [ "$MODE" = "--rlib-no-verify" ] && args+=(--no-verify)
+  part="$OUT/tmp.$$.lib${NAME}_verus.rlib"
+  trap 'rm -f "$part" "$OUT/tmp.$$.${NAME}_verus.vir"' EXIT
+  "$VERUS" "${args[@]}" --export "$OUT/tmp.$$.${NAME}_verus.vir" --compile "${RF[@]}" -o "$part"
+  mv -f "$part" "$OUT/lib${NAME}_verus.rlib"
+  mv -f "$OUT/tmp.$$.${NAME}_verus.vir" "$OUT/${NAME}_verus.vir"
+  echo "built$([ "$MODE" = "--rlib-no-verify" ] && echo " (unverified)") $OUT/lib${NAME}_verus.rlib"
 else
   # written aside, then renamed: another pipeline's link never reads a partial archive
   part="$OUT/tmp.$$.lib${NAME}_verus.a"

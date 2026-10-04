@@ -14,6 +14,7 @@
 //   ORDER BY custdist DESC, c_count DESC
 //
 // Query-specific notes (host contract):
+//  * CHAR(n) text: compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged (DuckDB: CHAR(n) is an alias of VARCHAR).
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
 #![allow(unused_imports)]
 use vstd::prelude::*;

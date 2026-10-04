@@ -25,8 +25,8 @@
 //   LIMIT 100
 //
 // Query-specific notes (host contract):
-//  * CHAR columns n_name, o_orderstatus, s_name: the host delivers them without trailing spaces.
-//  * $1 is params.p1: text bytes; compared with a CHAR column, so the host passes it without trailing spaces.
+//  * CHAR(n) text: compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged (DuckDB: CHAR(n) is an alias of VARCHAR).
+//  * $1 is params.p1: text bytes.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
 #![allow(unused_imports)]
 use vstd::prelude::*;
@@ -55,7 +55,7 @@ pub struct LineitemRow {
 pub struct NationRow {
     /// integer
     pub n_nationkey: int,
-    /// text bytes, CHAR
+    /// text bytes
     pub n_name: Seq<u8>,
 }
 
@@ -63,7 +63,7 @@ pub struct NationRow {
 pub struct OrdersRow {
     /// integer
     pub o_orderkey: int,
-    /// text bytes, CHAR
+    /// text bytes
     pub o_orderstatus: Seq<u8>,
 }
 
@@ -71,7 +71,7 @@ pub struct OrdersRow {
 pub struct SupplierRow {
     /// integer
     pub s_suppkey: int,
-    /// text bytes, CHAR
+    /// text bytes
     pub s_name: Seq<u8>,
     /// integer
     pub s_nationkey: int,

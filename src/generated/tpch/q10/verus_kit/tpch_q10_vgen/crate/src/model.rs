@@ -1,0 +1,424 @@
+use vstd::prelude::*;
+use verus_common::sums::sum;
+use verus_prooflib::ordered::Index;
+use crate::gen_spec::*;
+use crate::gen_obligations::*;
+use crate::values::*;
+use crate::facts::*;
+use crate::dimensions::*;
+use crate::calendar::*;
+
+verus! {
+
+pub open spec fn line_weight(row: LineitemRow, component: int) -> int {
+    if row.l_returnflag != seq![b'R'] { 0 }
+    else if component == 0 { 1 }
+    else {
+        let revenue = row.l_extendedprice * (100 - row.l_discount);
+        if component == 1 { revenue } else if revenue > 0 { revenue } else { 0 }
+    }
+}
+
+#[verifier::opaque]
+pub open spec fn fact_sum(db: Db, slice: int, customer: int, grain: int, component: int) -> int {
+    sum(db.orders, |order: OrdersRow| {
+        if order.o_custkey == customer && period_of(order.o_orderdate, grain) == slice {
+            sum(db.lineitem, |line: LineitemRow|
+                if line.l_orderkey == order.o_orderkey { line_weight(line, component) } else { 0 })
+        } else { 0 }
+    })
+}
+
+#[verifier::opaque]
+pub open spec fn facts_valid(db: Db, slices: Index<Slice>, grain: int) -> bool {
+    &&& forall|slice: int, customer: int, component: int|
+        #[trigger] slice_at(slices, slice, customer).component(component)
+        == fact_sum(db, slice, customer, grain, component)
+    &&& forall|key: (int, Seq<u8>)| #[trigger] slices.at(key).is_some() ==> {
+        let slice = slices.at(key).unwrap();
+        &&& key.1 == Seq::<u8>::empty()
+        &&& period_of(i32::MIN as int, grain) <= key.0 <= period_of(i32::MAX as int, grain)
+        &&& slice.cells.entries().len() > 0
+        &&& slice.valid()
+    }
+}
+
+pub open spec fn maxima_valid(totals: Index<i128>, maxima: Index<i128>) -> bool {
+    &&& forall|key: (int, Seq<u8>)| #[trigger] totals.at(key).is_some() ==> {
+        let value = totals.at(key).unwrap();
+        &&& key.1 == Seq::<u8>::empty() && i64::MIN <= key.0 <= i64::MAX
+        &&& value > 0
+        &&& maxima.at(rank_view(value as int, key.0)) == Some(value)
+    }
+    &&& forall|key: (int, Seq<u8>)| #[trigger] maxima.at(key).is_some() ==> {
+        let value = maxima.at(key).unwrap();
+        &&& value > 0
+        &&& exists|join_key: int| #[trigger] totals.at((join_key, Seq::empty())) == Some(value)
+            && key == rank_view(value as int, join_key)
+    }
+}
+
+pub open spec fn ranked_values_valid(maxima: Index<i128>) -> bool {
+    forall|key: (int, Seq<u8>)| #[trigger] maxima.at(key).is_some() ==> {
+        let value = maxima.at(key).unwrap();
+        &&& value > 0
+        &&& exists|tie: i64| #[trigger] rank_view(value as int, tie as int) == key
+    }
+}
+
+pub proof fn lemma_maxima_ranked_values(totals: Index<i128>, maxima: Index<i128>)
+    requires maxima_valid(totals, maxima),
+    ensures ranked_values_valid(maxima),
+{
+    assert forall|key: (int, Seq<u8>)| #[trigger] maxima.at(key).is_some() implies {
+        let value = maxima.at(key).unwrap();
+        &&& value > 0
+        &&& exists|tie: i64| #[trigger] rank_view(value as int, tie as int) == key
+    } by {
+        let value = maxima.at(key).unwrap();
+        let join_key = choose|join_key: int| #[trigger] totals.at((join_key, Seq::empty())) == Some(value)
+            && key == rank_view(value as int, join_key);
+        assert(i64::MIN <= join_key <= i64::MAX);
+        assert(rank_view(value as int, join_key as i64 as int) == key);
+    }
+}
+
+#[verifier::opaque]
+pub open spec fn dimensions_valid(db: Db, dimensions: Dimensions) -> bool {
+    &&& forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row)
+        == sum(db.customer, |value: CustomerRow| if value == row { 1 } else { 0 })
+    &&& forall|row: NationRow| #[trigger] nation_count(dimensions.nations, row)
+        == sum(db.nation, |value: NationRow| if value == row { 1 } else { 0 })
+    &&& forall|key: int| #[trigger] total_at(dimensions.customer_totals, key)
+        == sum(db.customer, |row: CustomerRow| if row.c_custkey == key { 1 } else { 0 })
+    &&& forall|key: int| #[trigger] total_at(dimensions.nation_totals, key)
+        == sum(db.nation, |row: NationRow| if row.n_nationkey == key { 1 } else { 0 })
+    &&& maxima_valid(dimensions.customer_totals, dimensions.customer_maxima)
+    &&& maxima_valid(dimensions.nation_totals, dimensions.nation_maxima)
+    &&& forall|outer: (int, Seq<u8>)| #[trigger] dimensions.customers.at(outer).is_some() ==> {
+        let inner = dimensions.customers.at(outer).unwrap();
+        &&& inner.wf()
+        &&& outer.1 == Seq::<u8>::empty()
+        &&& inner.entries().len() > 0
+        &&& forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() ==> {
+            let value = inner.at(key).unwrap();
+            &&& value.count > 0
+            &&& customer_input_view(*value.row).c_custkey == outer.0
+            &&& customer_inner_view(customer_input_view(*value.row)) == key
+        }
+    }
+    &&& forall|outer: (int, Seq<u8>)| #[trigger] dimensions.nations.at(outer).is_some() ==> {
+        let inner = dimensions.nations.at(outer).unwrap();
+        &&& inner.wf()
+        &&& outer.1 == Seq::<u8>::empty()
+        &&& inner.entries().len() > 0
+        &&& forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() ==> {
+            let value = inner.at(key).unwrap();
+            &&& value.count > 0
+            &&& nation_input_view(*value.row).n_nationkey == outer.0
+            &&& nation_inner_view(nation_input_view(*value.row)) == key
+        }
+    }
+}
+
+pub proof fn lemma_facts_shape(db: Db, slices: Index<Slice>, grain: int)
+    requires facts_valid(db, slices, grain),
+    ensures slices_valid(slices),
+{
+    reveal(facts_valid);
+}
+
+pub proof fn lemma_facts_equal(db: Db, previous: Index<Slice>, next: Index<Slice>, grain: int)
+    requires facts_valid(db, previous, grain),
+        forall|key: (int, Seq<u8>)| #![trigger previous.at(key), next.at(key)] previous.at(key) == next.at(key),
+    ensures facts_valid(db, next, grain),
+{
+    reveal(facts_valid);
+    assert forall|day: int, customer: int, component: int|
+        #[trigger] slice_at(next, day, customer).component(component) == fact_sum(db, day, customer, grain, component) by {
+        assert(next.at((day, Seq::empty())) == previous.at((day, Seq::empty())));
+        assert(slice_at(previous, day, customer).component(component) == fact_sum(db, day, customer, grain, component));
+    }
+    assert forall|key: (int, Seq<u8>)| #[trigger] next.at(key).is_some() implies {
+        let slice = next.at(key).unwrap();
+        &&& key.1 == Seq::<u8>::empty()
+        &&& period_of(i32::MIN as int, grain) <= key.0 <= period_of(i32::MAX as int, grain)
+        &&& slice.cells.entries().len() > 0
+        &&& slice.valid()
+    } by {
+        assert(next.at(key) == previous.at(key));
+        assert(previous.at(key).is_some());
+    }
+}
+
+pub proof fn lemma_dimensions_shape(db: Db, dimensions: Dimensions)
+    requires dimensions_valid(db, dimensions),
+    ensures customer_index_valid(dimensions.customers), nation_index_valid(dimensions.nations),
+        maxima_valid(dimensions.customer_totals, dimensions.customer_maxima),
+        maxima_valid(dimensions.nation_totals, dimensions.nation_maxima),
+{
+    reveal(dimensions_valid);
+}
+
+pub proof fn lemma_customer_count_nonnegative(db: Db, dimensions: Dimensions, row: CustomerRow)
+    requires forall|target: CustomerRow| #[trigger] customer_count(dimensions.customers, target)
+        == sum(db.customer, crate::dimension_updates::customer_eq(target)),
+    ensures customer_count(dimensions.customers, row) >= 0,
+{
+    hide(customer_count);
+    assert(customer_count(dimensions.customers, row) == sum(db.customer, crate::dimension_updates::customer_eq(row)));
+    verus_common::sums::lemma_sum_nonneg(db.customer, crate::dimension_updates::customer_eq(row));
+}
+
+pub proof fn lemma_nation_count_nonnegative(db: Db, dimensions: Dimensions, row: NationRow)
+    requires forall|target: NationRow| #[trigger] nation_count(dimensions.nations, target)
+        == sum(db.nation, crate::dimension_updates::nation_eq(target)),
+    ensures nation_count(dimensions.nations, row) >= 0,
+{
+    hide(nation_count);
+    assert(nation_count(dimensions.nations, row) == sum(db.nation, crate::dimension_updates::nation_eq(row)));
+    verus_common::sums::lemma_sum_nonneg(db.nation, crate::dimension_updates::nation_eq(row));
+}
+
+pub proof fn lemma_dimensions_from_counts(db: Db, dimensions: Dimensions)
+    requires crate::dimension_updates::shape(dimensions),
+        forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row)
+            == sum(db.customer, crate::dimension_updates::customer_eq(row)),
+        forall|row: NationRow| #[trigger] nation_count(dimensions.nations, row)
+            == sum(db.nation, crate::dimension_updates::nation_eq(row)),
+        forall|key: int| #[trigger] total_at(dimensions.customer_totals, key)
+            == sum(db.customer, |row: CustomerRow| if row.c_custkey == key { 1int } else { 0int }),
+        forall|key: int| #[trigger] total_at(dimensions.nation_totals, key)
+            == sum(db.nation, |row: NationRow| if row.n_nationkey == key { 1int } else { 0int }),
+    ensures dimensions_valid(db, dimensions),
+{
+    reveal(dimensions_valid);
+    assert forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row)
+        == sum(db.customer, |value: CustomerRow| if value == row { 1int } else { 0int }) by {
+        verus_common::sums::lemma_sum_ext_all(db.customer, crate::dimension_updates::customer_eq(row),
+            |value: CustomerRow| if value == row { 1int } else { 0int });
+    }
+    assert forall|row: NationRow| #[trigger] nation_count(dimensions.nations, row)
+        == sum(db.nation, |value: NationRow| if value == row { 1int } else { 0int }) by {
+        verus_common::sums::lemma_sum_ext_all(db.nation, crate::dimension_updates::nation_eq(row),
+            |value: NationRow| if value == row { 1int } else { 0int });
+    }
+    assert forall|outer: (int, Seq<u8>)| #[trigger] dimensions.customers.at(outer).is_some() implies {
+        let inner = dimensions.customers.at(outer).unwrap();
+        &&& inner.wf()
+        &&& outer.1 == Seq::<u8>::empty()
+        &&& inner.entries().len() > 0
+        &&& forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() ==> {
+            let value = inner.at(key).unwrap();
+            &&& value.count > 0
+            &&& customer_input_view(*value.row).c_custkey == outer.0
+            &&& customer_inner_view(customer_input_view(*value.row)) == key
+        }
+    } by {
+        let inner = dimensions.customers.at(outer).unwrap();
+        assert forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() implies {
+            let value = inner.at(key).unwrap();
+            &&& value.count > 0
+            &&& customer_input_view(*value.row).c_custkey == outer.0
+            &&& customer_inner_view(customer_input_view(*value.row)) == key
+        } by {
+            let value = inner.at(key).unwrap();
+            let row = customer_input_view(*value.row);
+            assert(customer_count(dimensions.customers, row) == value.count as int);
+            lemma_customer_count_nonnegative(db, dimensions, row);
+        }
+    }
+    assert forall|outer: (int, Seq<u8>)| #[trigger] dimensions.nations.at(outer).is_some() implies {
+        let inner = dimensions.nations.at(outer).unwrap();
+        &&& inner.wf()
+        &&& outer.1 == Seq::<u8>::empty()
+        &&& inner.entries().len() > 0
+        &&& forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() ==> {
+            let value = inner.at(key).unwrap();
+            &&& value.count > 0
+            &&& nation_input_view(*value.row).n_nationkey == outer.0
+            &&& nation_inner_view(nation_input_view(*value.row)) == key
+        }
+    } by {
+        let inner = dimensions.nations.at(outer).unwrap();
+        assert forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() implies {
+            let value = inner.at(key).unwrap();
+            &&& value.count > 0
+            &&& nation_input_view(*value.row).n_nationkey == outer.0
+            &&& nation_inner_view(nation_input_view(*value.row)) == key
+        } by {
+            let value = inner.at(key).unwrap();
+            let row = nation_input_view(*value.row);
+            assert(nation_count(dimensions.nations, row) == value.count as int);
+            lemma_nation_count_nonnegative(db, dimensions, row);
+        }
+    }
+}
+
+pub proof fn lemma_dimensions_equal(db: Db, previous: Dimensions, next: Dimensions)
+    requires dimensions_valid(db, previous), crate::dimension_updates::shape(next),
+        next.customers.tree() == previous.customers.tree(), next.nations.tree() == previous.nations.tree(),
+        next.customer_totals.tree() == previous.customer_totals.tree(), next.nation_totals.tree() == previous.nation_totals.tree(),
+    ensures dimensions_valid(db, next),
+{
+    reveal(dimensions_valid);
+    assert forall|key: (int, Seq<u8>)| #[trigger] next.customers.at(key) == previous.customers.at(key) by {}
+    assert forall|key: (int, Seq<u8>)| #[trigger] next.nations.at(key) == previous.nations.at(key) by {}
+    assert forall|key: (int, Seq<u8>)| #[trigger] next.customer_totals.at(key) == previous.customer_totals.at(key) by {}
+    assert forall|key: (int, Seq<u8>)| #[trigger] next.nation_totals.at(key) == previous.nation_totals.at(key) by {}
+    assert forall|row: CustomerRow| #[trigger] customer_count(next.customers, row)
+        == sum(db.customer, |value: CustomerRow| if value == row { 1int } else { 0int }) by {
+        assert(customer_count(previous.customers, row) == sum(db.customer, |value: CustomerRow| if value == row { 1int } else { 0int }));
+        verus_common::sums::lemma_sum_ext_all(db.customer, |value: CustomerRow| if value == row { 1int } else { 0int },
+            crate::dimension_updates::customer_eq(row));
+    }
+    assert forall|row: NationRow| #[trigger] nation_count(next.nations, row)
+        == sum(db.nation, |value: NationRow| if value == row { 1int } else { 0int }) by {
+        assert(nation_count(previous.nations, row) == sum(db.nation, |value: NationRow| if value == row { 1int } else { 0int }));
+        verus_common::sums::lemma_sum_ext_all(db.nation, |value: NationRow| if value == row { 1int } else { 0int },
+            crate::dimension_updates::nation_eq(row));
+    }
+    assert forall|key: int| #[trigger] total_at(next.customer_totals, key)
+        == sum(db.customer, |row: CustomerRow| if row.c_custkey == key { 1int } else { 0int }) by {
+        assert(total_at(previous.customer_totals, key) == sum(db.customer, |row: CustomerRow| if row.c_custkey == key { 1int } else { 0int }));
+    }
+    assert forall|key: int| #[trigger] total_at(next.nation_totals, key)
+        == sum(db.nation, |row: NationRow| if row.n_nationkey == key { 1int } else { 0int }) by {
+        assert(total_at(previous.nation_totals, key) == sum(db.nation, |row: NationRow| if row.n_nationkey == key { 1int } else { 0int }));
+    }
+    lemma_dimensions_from_counts(db, next);
+}
+
+pub proof fn lemma_maxima_equal(totals: Index<i128>, maxima: Index<i128>, other_totals: Index<i128>, other_maxima: Index<i128>)
+    requires maxima_valid(totals, maxima), totals.tree() == other_totals.tree(), maxima.tree() == other_maxima.tree(),
+    ensures maxima_valid(other_totals, other_maxima),
+{
+    assert forall|key: (int, Seq<u8>)| #[trigger] other_totals.at(key) == totals.at(key) by {}
+    assert forall|key: (int, Seq<u8>)| #[trigger] other_maxima.at(key) == maxima.at(key) by {}
+    assert forall|key: (int, Seq<u8>)| #[trigger] other_maxima.at(key).is_some() implies {
+        let value = other_maxima.at(key).unwrap();
+        &&& value > 0
+        &&& exists|join_key: int| #[trigger] other_totals.at((join_key, Seq::empty())) == Some(value)
+            && key == rank_view(value as int, join_key)
+    } by {
+        let value = other_maxima.at(key).unwrap();
+        let join_key = choose|join_key: int| #[trigger] totals.at((join_key, Seq::empty())) == Some(value)
+            && key == rank_view(value as int, join_key);
+        assert(other_totals.at((join_key, Seq::empty())) == Some(value));
+    }
+}
+
+#[verifier::rlimit(20)]
+pub proof fn lemma_dimensions_from_scans(db: Db, dimensions: Dimensions, customers: Seq<CustomerInput>, nations: Seq<NationInput>)
+    requires scan_customers_ok(db, customers), scan_nations_ok(db, nations),
+        customer_index_valid(dimensions.customers), nation_index_valid(dimensions.nations),
+        maxima_valid(dimensions.customer_totals, dimensions.customer_maxima),
+        maxima_valid(dimensions.nation_totals, dimensions.nation_maxima),
+        forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row)
+            == sum(customers, |input: CustomerInput| if customer_input_view(input) == row { 1 } else { 0 }),
+        forall|row: NationRow| #[trigger] nation_count(dimensions.nations, row)
+            == sum(nations, |input: NationInput| if nation_input_view(input) == row { 1 } else { 0 }),
+        forall|key: int| #[trigger] total_at(dimensions.customer_totals, key)
+            == sum(customers, |input: CustomerInput| if input.c_custkey == key { 1 } else { 0 }),
+        forall|key: int| #[trigger] total_at(dimensions.nation_totals, key)
+            == sum(nations, |input: NationInput| if input.n_nationkey == key { 1 } else { 0 }),
+    ensures dimensions_valid(db, dimensions),
+{
+    assert forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row)
+        == sum(db.customer, |value: CustomerRow| if value == row { 1 } else { 0 }) by {
+        let weight = |value: CustomerRow| if value == row { 1int } else { 0int };
+        verus_common::sums::lemma_sum_map(customers, |input: CustomerInput| customer_input_view(input), weight,
+            |input: CustomerInput| if customer_input_view(input) == row { 1int } else { 0int });
+        assert(sum(customer_input_seq_view(customers), weight) == sum(db.customer, weight));
+    }
+    assert forall|row: NationRow| #[trigger] nation_count(dimensions.nations, row)
+        == sum(db.nation, |value: NationRow| if value == row { 1 } else { 0 }) by {
+        let weight = |value: NationRow| if value == row { 1int } else { 0int };
+        verus_common::sums::lemma_sum_map(nations, |input: NationInput| nation_input_view(input), weight,
+            |input: NationInput| if nation_input_view(input) == row { 1int } else { 0int });
+        assert(sum(nation_input_seq_view(nations), weight) == sum(db.nation, weight));
+    }
+    assert forall|key: int| #[trigger] total_at(dimensions.customer_totals, key)
+        == sum(db.customer, |row: CustomerRow| if row.c_custkey == key { 1 } else { 0 }) by {
+        let weight = |value: CustomerRow| if value.c_custkey == key { 1int } else { 0int };
+        verus_common::sums::lemma_sum_map(customers, |input: CustomerInput| customer_input_view(input), weight,
+            |input: CustomerInput| if input.c_custkey == key { 1int } else { 0int });
+        assert(sum(customer_input_seq_view(customers), weight) == sum(db.customer, weight));
+    }
+    assert forall|key: int| #[trigger] total_at(dimensions.nation_totals, key)
+        == sum(db.nation, |row: NationRow| if row.n_nationkey == key { 1 } else { 0 }) by {
+        let weight = |value: NationRow| if value.n_nationkey == key { 1int } else { 0int };
+        verus_common::sums::lemma_sum_map(nations, |input: NationInput| nation_input_view(input), weight,
+            |input: NationInput| if input.n_nationkey == key { 1int } else { 0int });
+        assert(sum(nation_input_seq_view(nations), weight) == sum(db.nation, weight));
+    }
+    assert forall|outer: (int, Seq<u8>)| #[trigger] dimensions.customers.at(outer).is_some() implies {
+        let inner = dimensions.customers.at(outer).unwrap();
+        &&& outer.1 == Seq::<u8>::empty()
+        &&& inner.entries().len() > 0
+        &&& forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() ==> {
+            let value = inner.at(key).unwrap();
+            &&& value.count > 0
+            &&& customer_input_view(*value.row).c_custkey == outer.0
+            &&& customer_inner_view(customer_input_view(*value.row)) == key
+        }
+    } by {
+        let inner = dimensions.customers.at(outer).unwrap();
+        assert forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() implies {
+            let value = inner.at(key).unwrap();
+            &&& value.count > 0
+            &&& customer_input_view(*value.row).c_custkey == outer.0
+            &&& customer_inner_view(customer_input_view(*value.row)) == key
+        } by {
+            let value = inner.at(key).unwrap();
+            let row = customer_input_view(*value.row);
+            assert(customer_leaf_valid(inner, outer.0));
+            assert(value.count != 0);
+            let weight = |target: CustomerRow| if target == row { 1int } else { 0int };
+            verus_common::sums::lemma_sum_map(customers, |input: CustomerInput| customer_input_view(input), weight,
+                |input: CustomerInput| if customer_input_view(input) == row { 1int } else { 0int });
+            assert(sum(customer_input_seq_view(customers), weight) == sum(db.customer, weight));
+            verus_common::sums::lemma_sum_nonneg(db.customer, |target: CustomerRow| if target == row { 1int } else { 0int });
+            assert(customer_count(dimensions.customers, row) == value.count as int);
+            assert(customer_count(dimensions.customers, row)
+                == sum(db.customer, |target: CustomerRow| if target == row { 1int } else { 0int }));
+            assert(value.count > 0);
+        }
+    }
+    assert forall|outer: (int, Seq<u8>)| #[trigger] dimensions.nations.at(outer).is_some() implies {
+        let inner = dimensions.nations.at(outer).unwrap();
+        &&& outer.1 == Seq::<u8>::empty()
+        &&& inner.entries().len() > 0
+        &&& forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() ==> {
+            let value = inner.at(key).unwrap();
+            &&& value.count > 0
+            &&& nation_input_view(*value.row).n_nationkey == outer.0
+            &&& nation_inner_view(nation_input_view(*value.row)) == key
+        }
+    } by {
+        let inner = dimensions.nations.at(outer).unwrap();
+        assert forall|key: (int, Seq<u8>)| #[trigger] inner.at(key).is_some() implies {
+            let value = inner.at(key).unwrap();
+            &&& value.count > 0
+            &&& nation_input_view(*value.row).n_nationkey == outer.0
+            &&& nation_inner_view(nation_input_view(*value.row)) == key
+        } by {
+            let value = inner.at(key).unwrap();
+            let row = nation_input_view(*value.row);
+            assert(nation_leaf_valid(inner, outer.0));
+            assert(value.count != 0);
+            let weight = |target: NationRow| if target == row { 1int } else { 0int };
+            verus_common::sums::lemma_sum_map(nations, |input: NationInput| nation_input_view(input), weight,
+                |input: NationInput| if nation_input_view(input) == row { 1int } else { 0int });
+            assert(sum(nation_input_seq_view(nations), weight) == sum(db.nation, weight));
+            verus_common::sums::lemma_sum_nonneg(db.nation, |target: NationRow| if target == row { 1int } else { 0int });
+            assert(nation_count(dimensions.nations, row) == value.count as int);
+            assert(nation_count(dimensions.nations, row)
+                == sum(db.nation, |target: NationRow| if target == row { 1int } else { 0int }));
+            assert(value.count > 0);
+        }
+    }
+    reveal(dimensions_valid);
+}
+
+}

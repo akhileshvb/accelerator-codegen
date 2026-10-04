@@ -1,0 +1,3 @@
+UPDATE part SET p_name = 'gainsboro test ' || ps_suppkey FROM partsupp WHERE p_partkey = ps_partkey AND ps_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %' ORDER BY s_suppkey LIMIT 1);
+INSERT INTO partsupp SELECT * FROM partsupp WHERE ps_comment = 'q20-base' AND ps_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %');
+INSERT INTO lineitem SELECT * FROM lineitem WHERE l_comment IN ('q20-base-A','q20-base-B','q20-base-C') AND l_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %');

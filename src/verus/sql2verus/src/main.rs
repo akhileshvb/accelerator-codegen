@@ -56,8 +56,11 @@
 //     with u = 2^-53) instead of fixing it.  Float arithmetic elsewhere is
 //     refused.
 //   * Text: = is byte equality; < and ORDER BY are bytes_lt (C collation).
-//     CHAR(n) values are compared without trailing spaces (literals are
-//     trimmed here; columns and parameters by host contract).  LIKE and
+//     CHAR(n) follows the target engine (--engine): DuckDB has no padded
+//     CHAR (it is VARCHAR), so CHAR compares as bytes, trailing spaces
+//     significant; Postgres (bpchar) / MySQL (PAD SPACE) compare CHAR without
+//     trailing spaces (literals are trimmed here; columns and parameters by
+//     host contract).  LIKE and
 //     SUBSTRING count bytes (= characters for ASCII text).
 //   * ORDER BY: rows are sorted, ties in any order; LIMIT n takes the first n
 //     rows of some such ordering.
@@ -466,7 +469,10 @@ fn plan_doc(p: &LogicalPlan) -> String {
 // ── schema ────────────────────────────────────────────────────────────────
 struct Schema {
     ddl_cols: HashMap<String, Vec<String>>,
+    /// CHAR(n) columns compared without trailing spaces (empty under byte semantics)
     char_cols: HashSet<(String, String)>,
+    /// how the target engine compares CHAR(n): "bytes" or "padded" (and why)
+    char_semantics: (&'static str, &'static str),
     col_ty: HashMap<(String, String), (Option<Ty>, bool)>,
 }
 
@@ -476,7 +482,8 @@ fn norm_ident(id: &ast::Ident) -> String {
     if id.quote_style.is_some() { id.value.clone() } else { id.value.to_lowercase() }
 }
 
-async fn load_schema(ctx: &SessionContext, ddl: &str) -> Res<Schema> {
+async fn load_schema(ctx: &SessionContext, ddl: &str, char_semantics: (&'static str, &'static str)) -> Res<Schema> {
+    let padded = char_semantics.0 == "padded";
     let stmts = Parser::parse_sql(&GenericDialect {}, ddl).map_err(|e| format!("schema: {e}"))?;
     let mut ddl_cols = HashMap::new();
     let mut char_cols = HashSet::new();
@@ -491,7 +498,7 @@ async fn load_schema(ctx: &SessionContext, ddl: &str) -> Res<Schema> {
                 let mut cols = vec![];
                 for c in &ct.columns {
                     let n = norm_ident(&c.name);
-                    if matches!(c.data_type, ast::DataType::Char(_) | ast::DataType::Character(_)) {
+                    if padded && matches!(c.data_type, ast::DataType::Char(_) | ast::DataType::Character(_)) {
                         char_cols.insert((t.clone(), n.clone()));
                     }
                     cols.push(n);
@@ -542,7 +549,7 @@ async fn load_schema(ctx: &SessionContext, ddl: &str) -> Res<Schema> {
             other => bail!("schema: statement not supported: {}", other.to_string().lines().next().unwrap_or("")),
         }
     }
-    Ok(Schema { ddl_cols, char_cols, col_ty })
+    Ok(Schema { ddl_cols, char_cols, char_semantics, col_ty })
 }
 
 /// Verus names for a table: its Db field and its row struct.
@@ -2550,6 +2557,11 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
     }
     writeln!(w, "//").unwrap();
     writeln!(w, "// Query-specific notes (host contract):").unwrap();
+    writeln!(w, "//  * CHAR(n) text: {} ({}).", if tr.sch.char_semantics.0 == "bytes" {
+        "compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged"
+    } else {
+        "compared without trailing spaces"
+    }, tr.sch.char_semantics.1).unwrap();
     let mut chars: Vec<String> = tr
         .used
         .iter()
@@ -3095,6 +3107,10 @@ fn strip_sql_comments(s: &str) -> String {
     s.lines().filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n").trim().trim_end_matches(';').to_string()
 }
 
+fn opt0(args: &[String], k: &str) -> Option<String> {
+    args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned()
+}
+
 async fn run() -> Res<()> {
     let args: Vec<String> = std::env::args().collect();
     let get = |k: &str| -> Res<String> {
@@ -3106,7 +3122,20 @@ async fn run() -> Res<()> {
     // SQL numeric literals are exact: parse 0.06 as DECIMAL, not DOUBLE
     let cfg = SessionConfig::new().set_bool("datafusion.sql_parser.parse_float_as_decimal", true);
     let ctx = SessionContext::new_with_config(cfg);
-    let sch = load_schema(&ctx, &ddl).await?;
+    // CHAR(n) semantics of the target engine (the spec models the engine the accelerator runs on)
+    let engine = opt0(&args, "--engine").unwrap_or_else(|| "duckdb".to_string());
+    let char_semantics: (&'static str, &'static str) = match opt0(&args, "--char-semantics").as_deref() {
+        Some("bytes") => ("bytes", "set by --char-semantics"),
+        Some("padded") => ("padded", "set by --char-semantics"),
+        Some(o) => return Err(format!("--char-semantics: bytes or padded, not {o}")),
+        None => match engine.as_str() {
+            "duckdb" => ("bytes", "DuckDB: CHAR(n) is an alias of VARCHAR"),
+            "postgres" => ("padded", "Postgres bpchar; a parameter compared with it must bind as bpchar, not text"),
+            "mysql" => ("padded", "MySQL CHAR under a PAD SPACE collation"),
+            e => return Err(format!("--engine: duckdb, postgres or mysql, not {e}")),
+        },
+    };
+    let sch = load_schema(&ctx, &ddl, char_semantics).await?;
     // Unoptimized: SQL -> LogicalPlan, name/type resolution only.
     let plan = ctx.state().create_logical_plan(&sql).await.map_err(|e| format!("DataFusion: {e}"))?;
     let mut tr = Tr {

@@ -1,0 +1,1 @@
+UPDATE lineitem SET l_quantity = b.l_quantity, l_extendedprice = b.l_extendedprice, l_discount = b.l_discount FROM q9_test_lineitem b WHERE lineitem.l_orderkey = b.l_orderkey AND lineitem.l_linenumber = b.l_linenumber;

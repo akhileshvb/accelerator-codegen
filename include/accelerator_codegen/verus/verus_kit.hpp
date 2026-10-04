@@ -126,7 +126,8 @@ struct TableDecl {
   std::vector<const char *> columns; // captured columns, by name
 };
 
-// The kernel's Verus-store C ABI (<p>s_*), type-erased.
+// The kernel's per-accelerator Verus-store C ABI (<p>s_*), type-erased:
+// only for the legacy ACCEL_AUX_STORE=verus (Glue::store).
 struct StoreOps {
   void *(*new_store)();
   void (*free_store)(void *);
@@ -158,11 +159,14 @@ struct Glue {
   void (*free_state)(void *);
   void *(*apply)(const void *state, const Changes &, Host &, int32_t *err);
   bool (*execute)(const void *state, const core::QueryArguments &, std::vector<core::AuxRow> &);
-  // The Verus store: the next version from the newest (base) and one
-  // transaction, or from a build.
-  void *(*prepare_apply)(const void *store, const void *base, const Changes &, Host &, int32_t *err);
-  void *(*prepare_build)(const void *store, Host &);
-  StoreOps store;
+  // Optional, only for the legacy one-store-per-accelerator Verus store
+  // (ACCEL_AUX_STORE=verus): the next version from the newest (base) and one
+  // transaction, or from a build, and that store's C ABI.  The Verus store is
+  // the benchmark's world (ACCEL_AUX_STORE=verus_global, one store for every
+  // accelerator of the database), which needs none of them.
+  void *(*prepare_apply)(const void *store, const void *base, const Changes &, Host &, int32_t *err) = nullptr;
+  void *(*prepare_build)(const void *store, Host &) = nullptr;
+  StoreOps store = {};
 };
 
 void Register(const Glue *glue);
@@ -185,6 +189,40 @@ std::unique_ptr<core::AuxQueryModule> MakeModule(const Glue &glue, Host &host);
 std::unique_ptr<aux_state::VerusAuxStore> MakeStore(const Glue &glue,
                                                     aux_state::VerusAuxStore::EpochProvider epoch,
                                                     aux_state::VerusAuxStore::FloorProvider floor);
+
+// A benchmark's world (scripts/gen_verus_world.py): ONE verified store for
+// every accelerator it names -- one reader-writer lock, one version per
+// database commit, every accelerator's slot answering for the same database
+// version -- registered by its generated world_glue.cpp.  With
+// ACCEL_AUX_STORE=verus_global each accelerator's store is its view of it
+// (MakeWorldStore).
+struct WorldKitOps {
+  const char *accelerator;
+  void (*batch_set)(void *batch, void *state); // consumes state; NULL: invalid
+  const void *(*read)(const void *store, uint64_t at, uint64_t tries, int32_t *status);
+  const void *(*newest)(const void *store);
+  void (*release)(const void *state);
+  void (*invalidate)(const void *store);
+};
+struct World {
+  const char *bench;
+  void *(*new_store)();
+  void (*free_store)(void *store);
+  int32_t (*begin)(const void *store, uint64_t from); // 1: marked; 0: one in flight
+  void (*abort)(const void *store);
+  void *(*batch_new)(const void *store);
+  void (*batch_free)(void *batch);
+  int32_t (*install)(const void *store, void *batch, uint64_t from, uint64_t floor, int32_t end_commit);
+  size_t (*version_count)(const void *store);
+  std::vector<WorldKitOps> kits;
+};
+void RegisterWorld(const World *world);
+
+// The accelerator's view of the world that names it, or null if none does.
+// One world store per process (the host serves one database per process).
+std::unique_ptr<aux_state::VerusAuxStore> MakeWorldStore(const Glue &glue,
+                                                         aux_state::VerusAuxStore::EpochProvider epoch,
+                                                         aux_state::VerusAuxStore::FloorProvider floor);
 
 // The active fault (tests only; empty: none).
 const std::string &Fault();

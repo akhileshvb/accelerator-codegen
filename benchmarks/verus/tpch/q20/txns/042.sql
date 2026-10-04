@@ -1,0 +1,2 @@
+DELETE FROM lineitem WHERE rowid IN (SELECT max(rowid) FROM lineitem WHERE l_comment IN ('q20-base-A','q20-base-B','q20-base-C') AND l_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %') GROUP BY l_orderkey,l_linenumber);
+DELETE FROM partsupp WHERE rowid IN (SELECT max(rowid) FROM partsupp WHERE ps_comment = 'q20-base' AND ps_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %') GROUP BY ps_partkey,ps_suppkey);

@@ -39,21 +39,28 @@ pub fn prepare_apply(
     store: &QStore,
     base: &QBase,
     customer_delta: &Vec<CustomerDelta>,
-    lineitem_delta: &[ShipmentDelta],
-    orders_delta: &[OrdersDelta],
-    customer_orders_keys: &[i64],
-    customer_orders_rows: &[CustomerOrdersRescan],
+    lineitem_delta: &[ShipmentKeyDelta],
+    orders_delta: &[OrderKeyDelta],
+    orders_by_key_keys: &[i64],
+    orders_by_key_rows: &[OrderInput],
+    shipments_by_key_keys: &[i64],
+    shipments_by_key_rows: &[ShipmentInput],
+    Ghost(lineitem_full): Ghost<Seq<(LineitemRow, int)>>,
+    Ghost(orders_full): Ghost<Seq<(OrdersRow, int)>>,
 ) -> (r: Result<QPrepared, u32>)
     requires
         base.timeline() == store.timeline(),
-        capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), customer_delta_seq_view(customer_delta@), shipment_delta_seq_view(lineitem_delta@), orders_delta_seq_view(orders_delta@)),
-        rescan_customer_orders_ok(store.db_at((base.epoch() + 1) as nat), customer_orders_keys@, customer_orders_rows@),
+        lineitem_delta_ok(lineitem_delta@, lineitem_full),
+        orders_delta_ok(orders_delta@, orders_full),
+        capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), customer_delta_seq_view(customer_delta@), lineitem_full, orders_full),
+        rescan_orders_by_key_ok(store.db_at((base.epoch() + 1) as nat), orders_by_key_keys@, orders_by_key_rows@),
+        rescan_shipments_by_key_ok(store.db_at((base.epoch() + 1) as nat), shipments_by_key_keys@, shipments_by_key_rows@),
     ensures
         r matches Ok(p) ==> p.epoch() == base.epoch() && p.timeline() == store.timeline(),
 {
     let e = base.version();
     let state = base.state();
-    match ob_apply(state, customer_delta, lineitem_delta, orders_delta, customer_orders_keys, customer_orders_rows, Ghost(store.db_at((e + 1) as nat))) {
+    match ob_apply(state, customer_delta, lineitem_delta, orders_delta, orders_by_key_keys, orders_by_key_rows, shipments_by_key_keys, shipments_by_key_rows, Ghost(lineitem_full), Ghost(orders_full), Ghost(store.db_at((e + 1) as nat))) {
         Ok(s2) => Ok(prepare(store, e, Some(s2))),
         Err(code) => Err(code),
     }
@@ -64,9 +71,9 @@ pub fn prepare_apply(
 pub fn prepare_build(
     store: &QStore,
     e: u64,
-    customers: Vec<CustomerScan>,
-    orders: &[OrdersScan],
-    shipments: &[ShipmentScan],
+    customers: Vec<CustomerInput>,
+    orders: &[OrderInput],
+    shipments: &[ShipmentInput],
 ) -> (p: QPrepared)
     requires
         e < u64::MAX,

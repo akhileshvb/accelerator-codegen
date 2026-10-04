@@ -1,0 +1,1 @@
+UPDATE supplier SET s_acctbal = s_acctbal + 12.50, s_address = '8 Regional Depot', s_comment = 'Quarterly account review' WHERE s_suppkey IN (SELECT DISTINCT s_suppkey FROM q2_test_winners WHERE p_size = 10 AND r_name = 'ASIA' ORDER BY s_suppkey LIMIT 4);

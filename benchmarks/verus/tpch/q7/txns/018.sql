@@ -1,0 +1,1 @@
+UPDATE lineitem SET l_shipdate=CASE WHEN l_linenumber=1 THEN DATE '1996-02-29' WHEN l_linenumber=2 THEN DATE '1995-12-31' ELSE DATE '1995-01-01' END WHERE l_orderkey IN (SELECT o_orderkey FROM orders WHERE o_comment LIKE 'q7 batch %');

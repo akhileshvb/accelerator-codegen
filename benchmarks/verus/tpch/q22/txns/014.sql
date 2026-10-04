@@ -1,0 +1,10 @@
+UPDATE customer
+SET c_phone = CASE substring(c_phone, 1, 2)
+  WHEN '13' THEN '20-555-0121'
+  WHEN '31' THEN '21-555-0121'
+  WHEN '23' THEN '22-555-0121'
+  WHEN '29' THEN '23-555-0121'
+  WHEN '30' THEN '24-555-0121'
+  WHEN '18' THEN '25-555-0121'
+  ELSE '26-555-0121' END
+WHERE c_comment = 'q22-batch';

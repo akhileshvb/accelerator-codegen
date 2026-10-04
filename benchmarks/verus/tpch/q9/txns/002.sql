@@ -1,0 +1,1 @@
+UPDATE lineitem SET l_quantity = l_quantity + 2.50, l_extendedprice = l_extendedprice + 123.45, l_discount = 0.07 WHERE (l_orderkey, l_linenumber) IN (SELECT o_orderkey, l_linenumber FROM q9_test_seed);

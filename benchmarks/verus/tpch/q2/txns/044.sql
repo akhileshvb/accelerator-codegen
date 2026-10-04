@@ -1,0 +1,2 @@
+UPDATE partsupp SET ps_supplycost = CASE WHEN ps_suppkey = (SELECT supp_base FROM q2_test_keys) THEN -9999999999999.99 ELSE 9999999999999.99 END WHERE ps_partkey = (SELECT part_base + 125 FROM q2_test_keys);
+UPDATE supplier SET s_acctbal = CASE WHEN s_suppkey = (SELECT supp_base FROM q2_test_keys) THEN 9999999999999.99 ELSE -9999999999999.99 END WHERE s_suppkey IN ((SELECT supp_base FROM q2_test_keys), (SELECT supp_base + 1 FROM q2_test_keys));

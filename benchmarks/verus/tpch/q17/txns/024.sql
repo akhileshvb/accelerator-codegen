@@ -1,0 +1,1 @@
+INSERT INTO part SELECT * REPLACE ((SELECT MIN(l_partkey) FROM lineitem WHERE l_comment = 'q17-base-32') AS p_partkey, 'q17-fixture-32' AS p_name, 32 AS p_size, 'Brand#33' AS p_brand, 'LG BOX' AS p_container) FROM part WHERE p_name = 'q17-fixture-31';

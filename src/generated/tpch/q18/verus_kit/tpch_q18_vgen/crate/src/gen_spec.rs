@@ -14,6 +14,7 @@
 //   ORDER BY o_totalprice DESC, o_orderdate
 //
 // Query-specific notes (host contract):
+//  * CHAR(n) text: compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged (DuckDB: CHAR(n) is an alias of VARCHAR).
 //  * $1 is params.p1: DECIMAL, value * 10^2.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
 #![allow(unused_imports)]

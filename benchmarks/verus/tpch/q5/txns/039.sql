@@ -1,0 +1,2 @@
+INSERT INTO region SELECT seed.* REPLACE (((SELECT max(r_regionkey) FROM region)+1) AS r_regionkey, 'Q5 EDGE' AS r_name, 'q5 edge region' AS r_comment) FROM region seed ORDER BY r_regionkey LIMIT 1;
+INSERT INTO nation SELECT seed.* REPLACE (group_name AS n_name, (SELECT r_regionkey FROM region WHERE r_comment='q5 edge region') AS n_regionkey, 'q5 tied nation' AS n_comment) FROM nation seed CROSS JOIN (VALUES ('Q5 EDGE A'), ('Q5 EDGE B')) names(group_name) WHERE n_name='INDIA';

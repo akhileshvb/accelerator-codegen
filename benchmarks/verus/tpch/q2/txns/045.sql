@@ -1,0 +1,3 @@
+UPDATE partsupp SET ps_supplycost = CASE WHEN ps_suppkey = (SELECT supp_base FROM q2_test_keys) THEN 25.00 ELSE 30.00 END WHERE ps_partkey = (SELECT part_base + 125 FROM q2_test_keys);
+UPDATE supplier SET s_acctbal = CASE WHEN s_suppkey = (SELECT supp_base FROM q2_test_keys) THEN 9400.00 ELSE 9900.00 END, s_name = CASE WHEN s_suppkey = (SELECT supp_base FROM q2_test_keys) THEN 'Catalog Supplier A' ELSE 'Catalog Supplier B' END WHERE s_suppkey IN ((SELECT supp_base FROM q2_test_keys), (SELECT supp_base + 1 FROM q2_test_keys));
+UPDATE part SET p_size = -2147483648, p_type = 'BRASS' WHERE p_partkey = (SELECT part_base + 125 FROM q2_test_keys);

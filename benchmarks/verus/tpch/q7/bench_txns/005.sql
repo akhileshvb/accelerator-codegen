@@ -1,0 +1,1 @@
+UPDATE supplier SET s_nationkey=CASE WHEN s_nationkey=(SELECT n_nationkey FROM nation WHERE n_name='FRANCE') THEN (SELECT n_nationkey FROM nation WHERE n_name='GERMANY') ELSE (SELECT n_nationkey FROM nation WHERE n_name='FRANCE') END WHERE s_comment='q7 supplier B';

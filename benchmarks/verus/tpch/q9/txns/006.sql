@@ -1,0 +1,1 @@
+UPDATE orders SET o_orderdate = CASE WHEN o_orderkey = (SELECT okey FROM q9_test_keys) THEN DATE '1995-01-01' ELSE DATE '1994-12-31' END WHERE o_orderkey IN ((SELECT okey FROM q9_test_keys), (SELECT okey FROM q9_test_keys) + 1);

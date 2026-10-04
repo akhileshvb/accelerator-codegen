@@ -1,0 +1,4 @@
+INSERT INTO lineitem SELECT q9_test_lineitem.* REPLACE (k.okey + 3 AS l_orderkey, k.pkey + (offsets.number % 2) AS l_partkey, k.skey AS l_suppkey, offsets.number AS l_linenumber, 1.25 + offsets.number AS l_quantity, 999.99 + offsets.number AS l_extendedprice) FROM q9_test_lineitem CROSS JOIN q9_test_keys k CROSS JOIN range(1, 41) offsets(number);
+INSERT INTO orders SELECT q9_test_orders.* REPLACE (k.okey + 3 AS o_orderkey, DATE '1993-07-01' AS o_orderdate) FROM q9_test_orders CROSS JOIN q9_test_keys k;
+UPDATE supplier SET s_nationkey = (SELECT nkey FROM q9_test_keys) WHERE s_suppkey = (SELECT skey FROM q9_test_keys);
+UPDATE nation SET n_name = 'Q9 TEST NATION' WHERE n_nationkey = (SELECT nkey FROM q9_test_keys);

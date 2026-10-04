@@ -17,8 +17,8 @@
 //   LIMIT 10
 //
 // Query-specific notes (host contract):
-//  * CHAR columns c_mktsegment: the host delivers them without trailing spaces.
-//  * $1 is params.p1: text bytes; compared with a CHAR column, so the host passes it without trailing spaces.
+//  * CHAR(n) text: compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged (DuckDB: CHAR(n) is an alias of VARCHAR).
+//  * $1 is params.p1: text bytes.
 //  * $2 is params.p2: DATE, days since 1970-01-01.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
 #![allow(unused_imports)]
@@ -36,7 +36,7 @@ verus! {
 pub struct CustomerRow {
     /// integer
     pub c_custkey: int,
-    /// text bytes, CHAR
+    /// text bytes
     pub c_mktsegment: Seq<u8>,
 }
 

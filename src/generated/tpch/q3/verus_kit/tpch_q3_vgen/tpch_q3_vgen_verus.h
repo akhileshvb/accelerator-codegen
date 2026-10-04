@@ -25,59 +25,42 @@ typedef struct {
   int64_t o_custkey;
   int32_t o_orderdate;
   int64_t o_shippriority;
-} tpchq3vgen_orders_scan;
+} tpchq3vgen_order_input;
 
 typedef struct {
   int64_t l_orderkey;
+  int32_t l_shipdate;
   int64_t l_extendedprice;
   int64_t l_discount;
-  int32_t l_shipdate;
-} tpchq3vgen_shipment_scan;
-
-typedef struct {
-  int64_t o_orderkey;
-  int64_t o_custkey;
-  int32_t o_orderdate;
-  int64_t o_shippriority;
-} tpchq3vgen_customer_orders_rescan;
-
-typedef struct {
-  int64_t o_orderkey;
-  int64_t o_custkey;
-  int32_t o_orderdate;
-  int64_t o_shippriority;
-} tpchq3vgen_orders_input;
-
-typedef struct {
-  int64_t l_orderkey;
-  int64_t l_extendedprice;
-  int64_t l_discount;
-  int32_t l_shipdate;
 } tpchq3vgen_shipment_input;
 
 typedef struct {
-  tpchq3vgen_orders_input row;
+  int64_t o_orderkey;
   int64_t sign;
-} tpchq3vgen_orders_delta;
+} tpchq3vgen_order_key_delta;
 
 typedef struct {
-  tpchq3vgen_shipment_input row;
+  int64_t l_orderkey;
   int64_t sign;
-} tpchq3vgen_shipment_delta;
+} tpchq3vgen_shipment_key_delta;
 
 /* Build from the scans: a state, or NULL (the host then answers with SQL). */
-tpchq3vgen_state *tpchq3vgen_build(size_t customers__n, const int64_t *customers__c_custkey, const uint8_t *customers__c_mktsegment, const size_t *customers__c_mktsegment__off, size_t orders__n, const tpchq3vgen_orders_scan *orders, size_t shipments__n, const tpchq3vgen_shipment_scan *shipments);
+tpchq3vgen_state *tpchq3vgen_build(size_t customers__n, const int64_t *customers__c_custkey, const uint8_t *customers__c_mktsegment, const size_t *customers__c_mktsegment__off, size_t orders__n, const tpchq3vgen_order_input *orders, size_t shipments__n, const tpchq3vgen_shipment_input *shipments);
 
 /* Free a state from build / apply. */
 void tpchq3vgen_free(tpchq3vgen_state *s);
 
 /* The keys to rescan for apply: writes up to cap of them into out and
    returns how many there are (call again with more room if that is more). */
-size_t tpchq3vgen_rescan_customer_orders_keys(const tpchq3vgen_state *s, size_t customer_delta__n, const int64_t *customer_delta__row__c_custkey, const uint8_t *customer_delta__row__c_mktsegment, const size_t *customer_delta__row__c_mktsegment__off, const int64_t *customer_delta__sign, size_t lineitem_delta__n, const tpchq3vgen_shipment_delta *lineitem_delta, size_t orders_delta__n, const tpchq3vgen_orders_delta *orders_delta, int64_t *out, size_t cap);
+size_t tpchq3vgen_rescan_orders_by_key_keys(const tpchq3vgen_state *s, size_t customer_delta__n, const int64_t *customer_delta__row__c_custkey, const uint8_t *customer_delta__row__c_mktsegment, const size_t *customer_delta__row__c_mktsegment__off, const int64_t *customer_delta__sign, size_t lineitem_delta__n, const tpchq3vgen_shipment_key_delta *lineitem_delta, size_t orders_delta__n, const tpchq3vgen_order_key_delta *orders_delta, int64_t *out, size_t cap);
+
+/* The keys to rescan for apply: writes up to cap of them into out and
+   returns how many there are (call again with more room if that is more). */
+size_t tpchq3vgen_rescan_shipments_by_key_keys(const tpchq3vgen_state *s, size_t customer_delta__n, const int64_t *customer_delta__row__c_custkey, const uint8_t *customer_delta__row__c_mktsegment, const size_t *customer_delta__row__c_mktsegment__off, const int64_t *customer_delta__sign, size_t lineitem_delta__n, const tpchq3vgen_shipment_key_delta *lineitem_delta, size_t orders_delta__n, const tpchq3vgen_order_key_delta *orders_delta, int64_t *out, size_t cap);
 
 /* Apply one transaction: the new state (the input is unchanged), or NULL
    with *err set (the host then rebuilds). */
-tpchq3vgen_state *tpchq3vgen_apply(const tpchq3vgen_state *s, size_t customer_delta__n, const int64_t *customer_delta__row__c_custkey, const uint8_t *customer_delta__row__c_mktsegment, const size_t *customer_delta__row__c_mktsegment__off, const int64_t *customer_delta__sign, size_t lineitem_delta__n, const tpchq3vgen_shipment_delta *lineitem_delta, size_t orders_delta__n, const tpchq3vgen_orders_delta *orders_delta, size_t customer_orders_keys__n, const int64_t *customer_orders_keys, size_t customer_orders_rows__n, const tpchq3vgen_customer_orders_rescan *customer_orders_rows, int32_t *err);
+tpchq3vgen_state *tpchq3vgen_apply(const tpchq3vgen_state *s, size_t customer_delta__n, const int64_t *customer_delta__row__c_custkey, const uint8_t *customer_delta__row__c_mktsegment, const size_t *customer_delta__row__c_mktsegment__off, const int64_t *customer_delta__sign, size_t lineitem_delta__n, const tpchq3vgen_shipment_key_delta *lineitem_delta, size_t orders_delta__n, const tpchq3vgen_order_key_delta *orders_delta, size_t orders_by_key_keys__n, const int64_t *orders_by_key_keys, size_t orders_by_key_rows__n, const tpchq3vgen_order_input *orders_by_key_rows, size_t shipments_by_key_keys__n, const int64_t *shipments_by_key_keys, size_t shipments_by_key_rows__n, const tpchq3vgen_shipment_input *shipments_by_key_rows, int32_t *err);
 
 /* The query's answer on the state, or NULL (the host then answers with SQL). */
 tpchq3vgen_result *tpchq3vgen_execute(const tpchq3vgen_state *s, const uint8_t *p1, size_t p1__len, int32_t p2);
@@ -118,12 +101,12 @@ void tpchq3vgens_base_free(tpchq3vgens_base *b);
 
 /* The next version from the base and one commit's inputs (as for apply);
    NULL with *err set if the kernel cannot apply them (the host rebuilds). */
-tpchq3vgens_prepared *tpchq3vgens_prepare_apply(const tpchq3vgens_store *st, const tpchq3vgens_base *b, size_t customer_delta__n, const int64_t *customer_delta__row__c_custkey, const uint8_t *customer_delta__row__c_mktsegment, const size_t *customer_delta__row__c_mktsegment__off, const int64_t *customer_delta__sign, size_t lineitem_delta__n, const tpchq3vgen_shipment_delta *lineitem_delta, size_t orders_delta__n, const tpchq3vgen_orders_delta *orders_delta, size_t customer_orders_keys__n, const int64_t *customer_orders_keys, size_t customer_orders_rows__n, const tpchq3vgen_customer_orders_rescan *customer_orders_rows, int32_t *err);
+tpchq3vgens_prepared *tpchq3vgens_prepare_apply(const tpchq3vgens_store *st, const tpchq3vgens_base *b, size_t customer_delta__n, const int64_t *customer_delta__row__c_custkey, const uint8_t *customer_delta__row__c_mktsegment, const size_t *customer_delta__row__c_mktsegment__off, const int64_t *customer_delta__sign, size_t lineitem_delta__n, const tpchq3vgen_shipment_key_delta *lineitem_delta, size_t orders_delta__n, const tpchq3vgen_order_key_delta *orders_delta, size_t orders_by_key_keys__n, const int64_t *orders_by_key_keys, size_t orders_by_key_rows__n, const tpchq3vgen_order_input *orders_by_key_rows, size_t shipments_by_key_keys__n, const int64_t *shipments_by_key_keys, size_t shipments_by_key_rows__n, const tpchq3vgen_shipment_input *shipments_by_key_rows, int32_t *err);
 
 /* The next version built from scans (as for build) of the database as of
    that version; its state is invalid if the kernel cannot build it.  NULL
    only if no version can follow the newest. */
-tpchq3vgens_prepared *tpchq3vgens_prepare_build(const tpchq3vgens_store *st, size_t customers__n, const int64_t *customers__c_custkey, const uint8_t *customers__c_mktsegment, const size_t *customers__c_mktsegment__off, size_t orders__n, const tpchq3vgen_orders_scan *orders, size_t shipments__n, const tpchq3vgen_shipment_scan *shipments);
+tpchq3vgens_prepared *tpchq3vgens_prepare_build(const tpchq3vgens_store *st, size_t customers__n, const int64_t *customers__c_custkey, const uint8_t *customers__c_mktsegment, const size_t *customers__c_mktsegment__off, size_t orders__n, const tpchq3vgen_order_input *orders, size_t shipments__n, const tpchq3vgen_shipment_input *shipments);
 
 /* The next version with an invalid state (NULL: none can follow the newest). */
 tpchq3vgens_prepared *tpchq3vgens_prepare_invalid(const tpchq3vgens_store *st);

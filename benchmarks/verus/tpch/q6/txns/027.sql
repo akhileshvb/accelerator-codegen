@@ -1,0 +1,11 @@
+UPDATE lineitem SET l_shipdate = DATE '1994-01-01' WHERE l_comment = 'q6-boundary-1';
+UPDATE lineitem SET l_shipdate = DATE '1995-01-01' WHERE l_comment = 'q6-boundary-2';
+UPDATE lineitem SET l_shipdate = DATE '1994-12-31' WHERE l_comment = 'q6-boundary-4';
+UPDATE lineitem SET l_discount = 0.05 WHERE l_comment = 'q6-boundary-5';
+UPDATE lineitem SET l_discount = 0.04 WHERE l_comment = 'q6-boundary-6';
+UPDATE lineitem SET l_discount = 0.08 WHERE l_comment = 'q6-boundary-8';
+UPDATE lineitem SET l_discount = 0.07 WHERE l_comment = 'q6-boundary-9';
+UPDATE lineitem SET l_quantity = 23.99 WHERE l_comment = 'q6-boundary-10';
+UPDATE lineitem SET l_quantity = 24.00 WHERE l_comment = 'q6-boundary-11';
+UPDATE lineitem SET l_quantity = 1.01 WHERE l_comment = 'q6-boundary-12';
+UPDATE lineitem SET l_quantity = 50.01 WHERE l_comment = 'q6-boundary-13';

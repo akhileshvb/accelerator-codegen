@@ -1,0 +1,3 @@
+INSERT INTO part SELECT * REPLACE ((SELECT MAX(p_partkey) FROM part) + 1 AS p_partkey, 'q17-boundary' AS p_name, 'EDGE' AS p_brand, 'BOUNDARY' AS p_container) FROM part WHERE p_name = 'q17-fixture-01';
+INSERT INTO lineitem SELECT template.* REPLACE ((SELECT MAX(l_orderkey) FROM lineitem) + 1 AS l_orderkey, (SELECT p_partkey FROM part WHERE p_name = 'q17-boundary') AS l_partkey, quantities.ordinal AS l_linenumber, quantities.quantity AS l_quantity, 7.00 AS l_extendedprice, 'q17-boundary' AS l_comment)
+FROM (SELECT * FROM lineitem WHERE l_partkey = (SELECT p_partkey FROM part WHERE p_name = 'q17-fixture-01' LIMIT 1) AND l_linenumber = 1 LIMIT 1) AS template CROSS JOIN (VALUES (1, 1.00), (2, 9.00)) AS quantities(ordinal, quantity);

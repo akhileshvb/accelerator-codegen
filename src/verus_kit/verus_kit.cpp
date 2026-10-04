@@ -1,8 +1,10 @@
 // The generic host kit for Verus accelerators (see verus_kit.hpp).
 #include "accelerator_codegen/verus/verus_kit.hpp"
+#include "accelerator_codegen/stateful/core/aux_calibration.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <chrono>
 #include <cstdio>
 #include <cmath>
@@ -15,6 +17,7 @@
 #include <variant>
 
 namespace accelerator_codegen::verus_kit {
+
 
 namespace {
 
@@ -62,20 +65,32 @@ int64_t Rescale(int64_t v, int from, int to) {
 // ---- payloads ----
 // A kernel state owned by the host store, or shared with a Verus store read.
 struct KitImage {
-  KitImage(const Glue &g, void *s, bool shared_p) : glue(g), state(s), shared(shared_p) {}
+  KitImage(const Glue &g, void *s, bool shared_p, void (*release_p)(const void *) = nullptr)
+      : glue(g), state(s), shared(shared_p), release(release_p) {}
   ~KitImage() {
     if (!state)
       return;
-    if (shared)
+    if (shared && release)
+      release(state);
+    else if (shared)
       glue.store.state_release(state);
     else
       glue.free_state(state);
   }
   KitImage(const KitImage &) = delete;
   KitImage &operator=(const KitImage &) = delete;
+  // An owned state, handed over (to a world batch); null if shared or taken.
+  void *Take() const {
+    if (shared)
+      return nullptr;
+    void *s = state;
+    state = nullptr;
+    return s;
+  }
   const Glue &glue;
-  void *state;
+  mutable void *state;
   bool shared;
+  void (*release)(const void *);
 };
 
 // A prepared next version, from the module to the Verus store (consumed).
@@ -254,6 +269,263 @@ private:
   uint64_t pending_wait_micros;
   void *store;
   std::size_t stale_installs = 0;
+};
+
+// ---- the world store (ACCEL_AUX_STORE=verus_global) ----
+// One verified store for every accelerator of a benchmark (world_glue.cpp).
+// A commit's accelerators each stage their new state (their kernel's apply,
+// from the newest version's state); the first to begin marks the commit in
+// flight, each finish puts its state in one batch, and the last one installs
+// the batch as ONE version (or, if any aborted, drops it).  This assembly is
+// host code (trusted); the store, the batch's world and every read are
+// verified (world.rs, store.rs).
+std::vector<const World *> &Worlds() {
+  static std::vector<const World *> worlds;
+  return worlds;
+}
+
+class WorldShared {
+public:
+  explicit WorldShared(const World &w) : world(w), store(w.new_store()) {}
+  ~WorldShared() { world.free_store(store); }
+
+  static WorldShared &Of(const World &w) {
+    static std::mutex mutex;
+    static std::map<const World *, std::unique_ptr<WorldShared>> shared;
+    std::lock_guard<std::mutex> lock(mutex);
+    auto &slot = shared[&w];
+    if (!slot)
+      slot = std::make_unique<WorldShared>(w);
+    return *slot;
+  }
+
+  void Begin(VerusAuxStore::Epoch from) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (participants == 0 && !world.begin(store, from))
+      throw std::logic_error(std::string("concurrent commits on the Verus world ") + world.bench);
+    ++participants;
+  }
+
+  // set: the accelerator's slot changes (state, or null for invalid);
+  // otherwise it only took part.
+  void Finish(const WorldKitOps &kit, bool set, void *state, VerusAuxStore::Epoch from, VerusAuxStore::Epoch floor) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (set)
+      Set(kit, state);
+    if (++finished < participants)
+      return;
+    if (aborted || !batch) {
+      if (batch)
+        world.batch_free(batch);
+      world.abort(store);
+    } else if (world.install(store, batch, from, floor, 1) != 0) {
+      ++stale;
+    }
+    Reset();
+  }
+
+  void Abort() {
+    std::lock_guard<std::mutex> lock(mutex);
+    aborted = true;
+    if (++finished < participants)
+      return;
+    if (batch)
+      world.batch_free(batch);
+    world.abort(store);
+    Reset();
+  }
+
+  // A version outside a commit (a build): this accelerator's slot only.
+  void InstallNow(const WorldKitOps &kit, void *state, VerusAuxStore::Epoch from, VerusAuxStore::Epoch floor) {
+    std::lock_guard<std::mutex> lock(mutex);
+    void *b = world.batch_new(store);
+    if (!b) {
+      if (state)
+        kit.release(state); // never reached: a build's state is owned (see Take)
+      return;
+    }
+    kit.batch_set(b, state);
+    if (world.install(store, b, from, floor, 0) != 0)
+      ++stale;
+  }
+
+  const World &world;
+  void *store;
+  std::size_t stale = 0;
+
+private:
+  void Set(const WorldKitOps &kit, void *state) {
+    if (!batch)
+      batch = world.batch_new(store);
+    if (batch)
+      kit.batch_set(batch, state);
+  }
+  void Reset() {
+    batch = nullptr;
+    participants = finished = 0;
+    aborted = false;
+  }
+
+  std::mutex mutex;
+  int participants = 0, finished = 0;
+  bool aborted = false;
+  void *batch = nullptr;
+};
+
+class WorldKitStore final : public VerusAuxStore {
+public:
+  WorldKitStore(const Glue &g, const WorldKitOps &k, WorldShared &w, EpochProvider epoch_p, FloorProvider floor_p)
+      : glue(g), kit(k), world(w), epoch(std::move(epoch_p)), floor(std::move(floor_p)),
+        pending_wait_micros(PendingWaitMicros()) {}
+
+  const Glue &GlueOf() const { return glue; }
+
+  // The newest version's state: what this accelerator's next state is
+  // applied to (the batch is assembled from the newest version).
+  std::shared_ptr<const KitImage> Newest() const {
+    const void *s = kit.newest(world.store);
+    if (!s)
+      return nullptr;
+    return std::make_shared<const KitImage>(glue, const_cast<void *>(s), /*shared=*/true, kit.release);
+  }
+
+  core::StateSnapshot Read(const core::VisibilityToken &visibility) const override {
+    core::StateSnapshot snapshot;
+    snapshot.accelerator = glue.id;
+    snapshot.visibility = visibility;
+    int32_t status = 0;
+    if (auto image = Resolve(visibility.mutation_epoch, status))
+      snapshot.partitions.push_back(core::StateImage::Make(glue.id, kState, 0, std::move(image)));
+    snapshot.available = !snapshot.partitions.empty();
+    return snapshot;
+  }
+
+  core::StateSnapshot ReadPartitions(const core::VisibilityToken &visibility,
+                                     const std::vector<core::PartitionId> &partitions) const override {
+    if (std::find(partitions.begin(), partitions.end(), kState) != partitions.end())
+      return Read(visibility);
+    core::StateSnapshot snapshot;
+    snapshot.visibility = visibility;
+    return snapshot;
+  }
+
+  core::StateSnapshot ReadHitPartitions(const core::VisibilityToken &visibility, const core::QueryKey &key,
+                                        const std::vector<core::PartitionId> &partitions) const override {
+    core::StateSnapshot snapshot;
+    snapshot.visibility = visibility;
+    if (key.accelerator != glue.id || partitions.empty())
+      return snapshot;
+    for (auto p : partitions)
+      if (p != kState)
+        return snapshot;
+    return Read(visibility);
+  }
+
+  core::ValidityResult CheckValidity(const core::QueryKey &key,
+                                     const core::VisibilityToken &visibility) const override {
+    core::ValidityResult result;
+    result.code = core::ValidityCode::Missing;
+    if (key.accelerator != glue.id || (!key.value.empty() && key.value != "0"))
+      return result;
+    int32_t status = 0;
+    Resolve(visibility.mutation_epoch, status);
+    result.code = status == 0   ? core::ValidityCode::Valid
+                  : status == 1 ? core::ValidityCode::Invalidated
+                                : core::ValidityCode::NotVisible;
+    return result;
+  }
+
+  void Invalidate(const core::InvalidationPlan &plan) override {
+    if (!plan.IsEmpty())
+      kit.invalidate(world.store);
+  }
+
+  bool TryPublish(const core::StagedMaintenanceOutcome &staged, core::Version) override {
+    bool set = false;
+    void *state = Owned(staged.invalidations, staged.updates, set);
+    if (set)
+      world.InstallNow(kit, state, CurrentEpoch(), CurrentFloor());
+    return true;
+  }
+
+  void BeginCommit(const core::AcceleratorId &, const core::InvalidationPlan &) override {
+    world.Begin(CurrentEpoch());
+  }
+
+  void FinishCommit(const core::AcceleratorId &, const core::InvalidationPlan &invalidate,
+                    const std::vector<core::StateImage> &updates, core::Version) override {
+    bool set = false;
+    void *state = Owned(invalidate, updates, set);
+    world.Finish(kit, set, state, CurrentEpoch(), CurrentFloor());
+  }
+
+  void AbortCommit(const core::AcceleratorId &) override { world.Abort(); }
+
+  void Install(std::vector<core::StateImage> images, const core::AcceleratorId &, Epoch from_epoch) override {
+    bool set = false;
+    void *state = Owned(core::InvalidationPlan{}, images, set);
+    if (set)
+      world.InstallNow(kit, state, from_epoch, CurrentFloor());
+  }
+
+  std::size_t ValidPartitionCount() const override {
+    int32_t status = 0;
+    const void *s = kit.read(world.store, 0, 0, &status);
+    if (s)
+      kit.release(s);
+    return status == 0 ? 1 : 0;
+  }
+  std::size_t TotalPartitionCount() const override { return 1; }
+  std::size_t TotalVersionCount() const override { return world.world.version_count(world.store); }
+  std::size_t StaleInstalls() const override { return world.stale; }
+
+private:
+  Epoch CurrentEpoch() const { return epoch ? epoch() : 0; }
+  Epoch CurrentFloor() const { return floor ? floor() : std::numeric_limits<Epoch>::max(); }
+
+  // The slot's change: the last update's state (owned, handed over), or
+  // invalid; `set` false if the commit leaves the slot as it is.
+  static void *Owned(const core::InvalidationPlan &invalidate, const std::vector<core::StateImage> &updates,
+                     bool &set) {
+    void *state = nullptr;
+    set = !invalidate.IsEmpty();
+    for (const auto &image : updates) {
+      set = true;
+      if (!image.payload)
+        continue;
+      if (void *taken = image.As<KitImage>()->Take()) {
+        if (state)
+          image.As<KitImage>()->glue.free_state(state);
+        state = taken;
+      }
+    }
+    return state;
+  }
+
+  // status: 0 state (returned), 1 invalid, 2 pending, 3 not visible.
+  std::shared_ptr<const KitImage> Resolve(core::Version at, int32_t &status) const {
+    if (Fault() == "ignore_snapshot")
+      at = 0;
+    const void *s = nullptr;
+    if (pending_wait_micros == kWaitForPublish) {
+      s = kit.read(world.store, at, std::numeric_limits<uint64_t>::max(), &status);
+    } else {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(pending_wait_micros);
+      do {
+        s = kit.read(world.store, at, 64, &status);
+      } while (status == 2 && std::chrono::steady_clock::now() < deadline);
+    }
+    if (!s)
+      return nullptr;
+    return std::make_shared<const KitImage>(glue, const_cast<void *>(s), /*shared=*/true, kit.release);
+  }
+
+  const Glue &glue;
+  const WorldKitOps &kit;
+  WorldShared &world;
+  EpochProvider epoch;
+  FloorProvider floor;
+  uint64_t pending_wait_micros;
 };
 
 // ---- the module ----
@@ -460,7 +732,9 @@ public:
             core::StateImage::Make(glue.id, kState, 0, std::make_shared<const KitPrepared>(glue, next)));
         return outcome;
       }
-      const auto image = ReadImage(services, services.CurrentVisibility());
+      // the world's batch is assembled from the newest version: apply to its state
+      const auto *ws = WorldStore(services);
+      const auto image = ws ? ws->Newest() : ReadImage(services, services.CurrentVisibility());
       if (!image || !image->state) {
         Rebuild(outcome);
         return outcome;
@@ -477,6 +751,13 @@ public:
       Rebuild(outcome);
     }
     return outcome;
+  }
+
+  // The query's registered calibration writes (plain SQL on its tables, from
+  // src/generated/<bench>/q<N>/calibration_writes.hpp): the same for any
+  // accelerator of the query.
+  std::vector<core::CalibrationWrite> CalibrationWrites() const override {
+    return core::CalibrationWritesFor(glue.workload, glue.query_id);
   }
 
   bool CheckValidity(core::AuxEngineServices &services, const core::QueryArguments &) const override {
@@ -518,6 +799,11 @@ private:
   const KitStore *VerusStore(core::AuxEngineServices &services) const {
     const auto *vs = dynamic_cast<const KitStore *>(&services.StateStore());
     return vs && &vs->GlueOf() == &glue ? vs : nullptr;
+  }
+
+  const WorldKitStore *WorldStore(core::AuxEngineServices &services) const {
+    const auto *ws = dynamic_cast<const WorldKitStore *>(&services.StateStore());
+    return ws && &ws->GlueOf() == &glue ? ws : nullptr;
   }
 
   std::shared_ptr<const KitImage> ReadImage(core::AuxEngineServices &services,
@@ -731,6 +1017,12 @@ __int128 I128(int64_t hi, uint64_t lo) {
 
 core::AuxValue OutDec(int64_t hi, uint64_t lo, int scale) {
   __int128 v = I128(hi, lo);
+  if (v >= INT64_MIN && v <= INT64_MAX) { // the common case: an exact scaled integer, no text round trip
+    core::ScaledDecimal d;
+    d.value = static_cast<int64_t>(v);
+    d.scale = scale;
+    return core::AuxValue::Of(core::AuxType::ScaledDecimal, d);
+  }
   const bool neg = v < 0;
   unsigned __int128 u = neg ? static_cast<unsigned __int128>(-(v + 1)) + 1 : static_cast<unsigned __int128>(v);
   std::string digits;
@@ -777,8 +1069,12 @@ std::string Host::Quote(const std::string &identifier) const {
   return out + "\"";
 }
 
-void QueryKeys(Host &host, const std::string &sql, const std::string &key_column,
+void QueryKeys(Host &host, const std::string &sql_text, const std::string &key_column,
                const std::vector<int64_t> &keys, const RowFn &row) {
+  // the glue's statement becomes a subquery: no trailing `;` (or whitespace)
+  std::string sql = sql_text;
+  while (!sql.empty() && (sql.back() == ';' || std::isspace(static_cast<unsigned char>(sql.back()))))
+    sql.pop_back();
   constexpr std::size_t kChunk = 4096;
   for (std::size_t i = 0; i < keys.size(); i += kChunk) {
     const std::vector<int64_t> chunk(keys.begin() + static_cast<std::ptrdiff_t>(i),
@@ -815,7 +1111,23 @@ std::unique_ptr<core::AuxQueryModule> MakeModule(const Glue &glue, Host &host) {
 
 std::unique_ptr<aux_state::VerusAuxStore> MakeStore(const Glue &glue, aux_state::VerusAuxStore::EpochProvider epoch,
                                                     aux_state::VerusAuxStore::FloorProvider floor) {
+  if (!glue.store.new_store || !glue.prepare_apply || !glue.prepare_build)
+    throw std::runtime_error(std::string("ACCEL_AUX_STORE=verus: ") + glue.id +
+                             " has no per-accelerator store ABI; use ACCEL_AUX_STORE=verus_global");
   return std::make_unique<KitStore>(glue, std::move(epoch), std::move(floor));
+}
+
+void RegisterWorld(const World *world) { Worlds().push_back(world); }
+
+std::unique_ptr<aux_state::VerusAuxStore> MakeWorldStore(const Glue &glue,
+                                                         aux_state::VerusAuxStore::EpochProvider epoch,
+                                                         aux_state::VerusAuxStore::FloorProvider floor) {
+  for (const auto *world : Worlds())
+    for (const auto &kit : world->kits)
+      if (std::string(kit.accelerator) == glue.id)
+        return std::make_unique<WorldKitStore>(glue, kit, WorldShared::Of(*world), std::move(epoch),
+                                               std::move(floor));
+  return nullptr;
 }
 
 const std::string &Fault() {

@@ -1,0 +1,1 @@
+INSERT INTO lineitem SELECT q9_test_lineitem.* REPLACE (k.okey + 1 AS l_orderkey, k.pkey AS l_partkey, k.skey AS l_suppkey, offsets.number AS l_linenumber, 3.50 AS l_quantity, 415.25 AS l_extendedprice) FROM q9_test_lineitem CROSS JOIN q9_test_keys k CROSS JOIN (VALUES (20), (21), (22)) offsets(number);

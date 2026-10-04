@@ -1,0 +1,1 @@
+UPDATE orders SET o_custkey=(SELECT c_custkey FROM customer WHERE c_comment='q5 fixture customer' ORDER BY c_nationkey DESC LIMIT 1), o_comment='q5 reassigned order' WHERE o_orderkey=(SELECT min(o_orderkey) FROM orders WHERE o_comment='q5 fixture order');

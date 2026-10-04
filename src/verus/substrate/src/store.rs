@@ -22,9 +22,25 @@
 // gets the newest version with from <= E, or waits while a pending commit may
 // be in its snapshot; E = 0 means the newest, and a version from epoch 0 is
 // current for every snapshot.  This is the C++ VersionedAuxStore's protocol
-// (src/stateful/state).  The proofs say nothing about epochs: that version v
-// is the one snapshot E sees is the host's contract, as is the order of the
-// commits (world.rs).
+// (src/stateful/state).
+//
+// Proved about epochs (the snapshot theorem, `resolve_seen`): epochs increase
+// with version numbers (lock invariant), and what a snapshot at E gets is
+// decided on the window as it is under the read lock: Found(v) only if v is
+// the newest kept version current at E (`sees`: every newer kept version is
+// current only after E) and no commit in flight may be visible at E;
+// Pending if one may be; NotVisible if every kept version is newer than E.
+// Nothing is newer than the window's newest version, so v is the newest of
+// all installed versions current at E.
+//
+// Still the host's contract (TRUSTED, world.rs): each version is installed in
+// the engine's commit order with `from` = the epoch its commit becomes
+// visible at; `begin` runs before that commit is visible to any snapshot;
+// commits no accelerator depends on need no version; `floor` is at most the
+// oldest open snapshot.  Under that contract, the version a snapshot at E
+// gets is the database it sees.  With one store for every accelerator (a
+// world: one slot each, world.rs `Both`), one install per commit makes the
+// same hold for all of them at once.
 //
 // Concurrency.
 //   * A reader resolves its snapshot and clones the state pointers (`Arc`)
@@ -127,6 +143,72 @@ impl<W> Cell<W> {
     pub open spec fn newest(self) -> int {
         self.base + self.versions.len() - 1
     }
+
+    /// What a snapshot's selection depends on (ghost).
+    pub open spec fn window(self) -> Window {
+        Window { base: self.base as int, from: self.from@, pending: self.pending }
+    }
+}
+
+/// A window's version numbers, the engine epoch from which each kept version
+/// is current, and the commit in flight: what decides which version a
+/// snapshot sees.
+pub ghost struct Window {
+    pub base: int,
+    pub from: Seq<u64>,
+    pub pending: Option<u64>,
+}
+
+impl Window {
+    pub open spec fn newest(self) -> int {
+        self.base + self.from.len() - 1
+    }
+}
+
+/// Engine epochs increase with the version number.
+pub open spec fn increasing(from: Seq<u64>) -> bool {
+    forall|i: int, j: int| 0 <= i < j < from.len() ==> #[trigger] from[i] < #[trigger] from[j]
+}
+
+/// No commit in flight may be visible at `at` (at = 0: none in flight).
+pub open spec fn none_in_flight(w: Window, at: u64) -> bool {
+    match w.pending {
+        Some(p) => at != 0 && p > at,
+        None => true,
+    }
+}
+
+/// THE SNAPSHOT RULE.  Version v is the one a snapshot at engine epoch `at`
+/// sees in window w: the newest kept version current at `at` (no kept version
+/// after it is), and no commit in flight may be visible at `at`.  at = 0
+/// (no snapshot): the newest version, nothing in flight.  Epochs increase
+/// with version numbers and nothing is newer than the window's newest, so v
+/// is the newest version, of all installed, current at `at`.
+pub open spec fn sees(w: Window, at: u64, v: int) -> bool {
+    &&& w.base <= v <= w.newest()
+    &&& none_in_flight(w, at)
+    &&& if at == 0 {
+        v == w.newest()
+    } else {
+        &&& w.from[v - w.base] <= at
+        &&& forall|i: int| v - w.base < i < w.from.len() ==> #[trigger] w.from[i] > at
+    }
+}
+
+/// A commit in flight may be visible at `at`: the snapshot must wait.
+pub open spec fn in_flight(w: Window, at: u64) -> bool {
+    match w.pending {
+        Some(p) => at == 0 || p <= at,
+        None => false,
+    }
+}
+
+/// Every kept version is newer than a snapshot at `at` (and nothing in
+/// flight is visible): the version it should see was evicted.
+pub open spec fn none_current(w: Window, at: u64) -> bool {
+    &&& at != 0
+    &&& none_in_flight(w, at)
+    &&& forall|i: int| 0 <= i < w.from.len() ==> #[trigger] w.from[i] > at
 }
 
 /// The lock invariant: at least one version, version numbers fit in a u64,
@@ -136,6 +218,7 @@ pub open spec fn cell_ok<D, W: AuxWorld<D>>(c: Cell<W>, timeline: spec_fn(nat) -
     &&& c.versions.len() >= 1
     &&& c.newest() <= u64::MAX
     &&& c.from.len() == c.versions.len()
+    &&& increasing(c.from@)
     &&& forall|i: int|
         0 <= i < c.versions.len() ==> #[trigger] c.versions@[i].ok(timeline((c.base + i) as nat))
 }
@@ -205,14 +288,24 @@ impl<W> Cell<W> {
             cell_ok(*old(self), timeline),
             old(self).newest() < u64::MAX,
             w.ok(timeline((old(self).newest() + 1) as nat)),
+            old(self).from@.last() < from,
         ensures
             cell_ok(*final(self), timeline),
             final(self).base == old(self).base,
             final(self).newest() == old(self).newest() + 1,
             final(self).pending == old(self).pending,
     {
+        let ghost old_from = self.from@;
         self.versions.push(w);
         self.from.push(from);
+        assert(self.from@ == old_from.push(from));
+        assert forall|i: int, j: int| 0 <= i < j < self.from@.len() implies #[trigger] self.from@[i] < #[trigger] self.from@[j] by {
+            if j == old_from.len() {
+                if i < old_from.len() - 1 {
+                    assert(old_from[i] < old_from[old_from.len() - 1]);
+                }
+            }
+        }
         assert forall|j: int| 0 <= j < self.versions.len() implies #[trigger] self.versions@[j].ok(
             timeline((self.base + j) as nat),
         ) by {
@@ -244,9 +337,15 @@ impl<W> Cell<W> {
             let ghost old_base = self.base;
             let rest = self.versions.split_off(k);
             self.versions = rest;
+            let ghost old_from = self.from@;
             let rest_from = self.from.split_off(k);
             self.from = rest_from;
             self.base = keep_from;
+            assert(self.from@ == old_from.subrange(k as int, old_from.len() as int));
+            assert forall|i: int, j: int| 0 <= i < j < self.from@.len() implies #[trigger] self.from@[i] < #[trigger] self.from@[j] by {
+                assert(self.from@[i] == old_from[k + i]);
+                assert(self.from@[j] == old_from[k + j]);
+            }
             assert forall|j: int| 0 <= j < self.versions.len() implies #[trigger] self.versions@[j].ok(
                 timeline((self.base + j) as nat),
             ) by {
@@ -292,7 +391,16 @@ impl<W> Cell<W> {
         requires
             cell_ok(*self, timeline),
         ensures
-            r matches Some(v) ==> self.base <= v <= self.newest(),
+            r matches Some(v) ==> {
+                &&& self.base <= v <= self.newest()
+                &&& if at == 0 {
+                    v == self.newest()
+                } else {
+                    &&& self.from@[v - self.base] <= at
+                    &&& forall|i: int| v - self.base < i < self.from@.len() ==> #[trigger] self.from@[i] > at
+                }
+            },
+            r is None ==> at != 0 && forall|i: int| 0 <= i < self.from@.len() ==> #[trigger] self.from@[i] > at,
     {
         if at == 0 {
             return Some(self.newest_epoch(Ghost(timeline)));
@@ -301,11 +409,19 @@ impl<W> Cell<W> {
         while i > 0
             invariant
                 cell_ok(*self, timeline),
+                at != 0,
                 i <= self.from.len(),
+                forall|j: int| i <= j < self.from@.len() ==> #[trigger] self.from@[j] > at,
             decreases i,
         {
             if self.from[i - 1] <= at {
-                return Some(self.base + (i - 1) as u64);
+                let v = self.base + (i - 1) as u64;
+                assert(v - self.base == i - 1);
+                assert(self.from@[v - self.base] <= at);
+                assert forall|k: int| v - self.base < k < self.from@.len() implies #[trigger] self.from@[k] > at by {
+                    assert(i <= k);
+                }
+                return Some(v);
             }
             i -= 1;
         }
@@ -591,13 +707,17 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
             // (every snapshot), or one not after the newest, replaces it.
             let last = c.from[c.from.len() - 1];
             let replaces = from == 0 || from <= last;
-            c.push(next, from, Ghost(self.timeline()));
             if replaces {
-                c.evict(e + 1, Ghost(self.timeline()));
+                // only version e + 1 is kept (what evicting every older one leaves)
+                let pending = c.pending;
+                let mut s = single(e + 1, next, from, Ghost(self.timeline()));
+                s.pending = pending;
+                g.end(s);
             } else {
+                c.push(next, from, Ghost(self.timeline()));
                 c.prune(floor, Ghost(self.timeline()));
+                g.end(c);
             }
-            g.end(c);
             Install::Applied
         } else {
             let pending = c.pending;
@@ -609,13 +729,23 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
     }
 
     /// The version a snapshot at engine epoch `at` sees (at = 0: the newest),
-    /// with its world, shared.
-    pub fn resolve(&self, at: u64) -> (r: Resolved<W>)
+    /// with its world, shared; and the window it was decided on (ghost: the
+    /// store's window at the instant the read lock was held).
+    ///
+    /// SNAPSHOT THEOREM.  Found(v, w): v is the version the snapshot rule
+    /// (`sees`) selects in that window, and w answers for the database at v.
+    /// Pending: a commit in flight may be visible at `at`.  NotVisible: every
+    /// kept version is newer than the snapshot (its version was evicted).
+    pub fn resolve_seen(&self, at: u64) -> (r: (Resolved<W>, Ghost<Window>))
         ensures
-            r matches Resolved::Found(v, w) ==> w.ok(self.db_at(v as nat)),
+            increasing(r.1@.from),
+            r.0 matches Resolved::Found(v, w) ==> w.ok(self.db_at(v as nat)) && sees(r.1@, at, v as int),
+            r.0 is Pending ==> in_flight(r.1@, at),
+            r.0 is NotVisible ==> none_current(r.1@, at),
     {
         let g = self.begin_read();
         let c = g.borrow();
+        let ghost win = c.window();
         let waits = match c.pending {
             Some(p) => at == 0 || at >= p,
             None => false,
@@ -627,26 +757,44 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
                 None => Resolved::NotVisible,
                 Some(v) => match c.at(v, Ghost(self.timeline())) {
                     Lookup::Found(w) => Resolved::Found(v, w.share()),
-                    _ => Resolved::NotVisible,
+                    Lookup::Evicted => {
+                        assert(false);
+                        Resolved::NotVisible
+                    },
+                    Lookup::Future => {
+                        assert(false);
+                        Resolved::NotVisible
+                    },
                 },
             }
         };
         g.end();
-        r
+        (r, Ghost(win))
     }
 
-    /// `resolve`, waiting out a pending commit for up to `tries` checks
-    /// (each check backs off); then Pending.
-    #[verifier::exec_allows_no_decreases_clause]
-    pub fn resolve_wait(&self, at: u64, tries: u64) -> (r: Resolved<W>)
+    /// `resolve_seen` without the window.
+    pub fn resolve(&self, at: u64) -> (r: Resolved<W>)
         ensures
             r matches Resolved::Found(v, w) ==> w.ok(self.db_at(v as nat)),
+    {
+        self.resolve_seen(at).0
+    }
+
+    /// `resolve_seen`, waiting out a pending commit for up to `tries` checks
+    /// (each check backs off); then Pending.
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn resolve_wait_seen(&self, at: u64, tries: u64) -> (r: (Resolved<W>, Ghost<Window>))
+        ensures
+            increasing(r.1@.from),
+            r.0 matches Resolved::Found(v, w) ==> w.ok(self.db_at(v as nat)) && sees(r.1@, at, v as int),
+            r.0 is Pending ==> in_flight(r.1@, at),
+            r.0 is NotVisible ==> none_current(r.1@, at),
     {
         let mut spins: u32 = 0;
         let mut n: u64 = 0;
         loop {
-            let r = self.resolve(at);
-            match r {
+            let r = self.resolve_seen(at);
+            match r.0 {
                 Resolved::Pending => {},
                 _ => return r,
             }
@@ -656,6 +804,15 @@ impl<D, W: AuxWorld<D>> Store<D, W> {
             n += 1;
             backoff(&mut spins);
         }
+    }
+
+    /// `resolve_wait_seen` without the window.
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn resolve_wait(&self, at: u64, tries: u64) -> (r: Resolved<W>)
+        ensures
+            r matches Resolved::Found(v, w) ==> w.ok(self.db_at(v as nat)),
+    {
+        self.resolve_wait_seen(at, tries).0
     }
 
     /// The newest version, with its world (shared): what the next version is

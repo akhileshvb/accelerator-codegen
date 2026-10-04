@@ -1,0 +1,1 @@
+UPDATE customer SET c_nationkey=(SELECT min(n_nationkey) FROM nation JOIN region ON n_regionkey=r_regionkey WHERE r_name='EUROPE'), c_comment='q5 relocating customer' WHERE c_custkey=(SELECT c_custkey FROM customer JOIN nation ON c_nationkey=n_nationkey JOIN region ON n_regionkey=r_regionkey WHERE c_comment='q5 fixture customer' AND r_name='ASIA' ORDER BY c_custkey LIMIT 1);

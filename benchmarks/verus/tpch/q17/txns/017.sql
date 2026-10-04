@@ -1,0 +1,2 @@
+INSERT INTO part SELECT * REPLACE ((SELECT MAX(p_partkey) FROM part) + 1 AS p_partkey, 'q17-new-product' AS p_name) FROM part WHERE p_name = 'q17-fixture-01';
+INSERT INTO lineitem SELECT * REPLACE ((SELECT MAX(l_orderkey) FROM lineitem) + 1 AS l_orderkey, (SELECT p_partkey FROM part WHERE p_name = 'q17-new-product') AS l_partkey, 'q17-new-product' AS l_comment) FROM lineitem WHERE l_partkey = (SELECT p_partkey FROM part WHERE p_name = 'q17-fixture-01' LIMIT 1);

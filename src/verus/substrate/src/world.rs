@@ -45,6 +45,47 @@ impl<D, S: AccelState<D>> AuxWorld<D> for Slot<S> {
     }
 }
 
+/// Two worlds side by side, for nested pairs of their databases: a
+/// deployment's world is `Both<Slot<S1>, Both<Slot<S2>, ... Nothing>>`, one
+/// slot per accelerator, over `(D1, (D2, ... ()))`, each accelerator's
+/// projection of the one database.  One store holds all of them: one lock,
+/// one version per commit, every slot answering for the same database version.
+pub struct Both<A, B> {
+    pub first: A,
+    pub rest: B,
+}
+
+impl<DA, DB, A: AuxWorld<DA>, B: AuxWorld<DB>> AuxWorld<(DA, DB)> for Both<A, B> {
+    open spec fn ok(self, db: (DA, DB)) -> bool {
+        self.first.ok(db.0) && self.rest.ok(db.1)
+    }
+
+    fn invalid() -> (w: Self) {
+        Both { first: A::invalid(), rest: B::invalid() }
+    }
+
+    fn share(&self) -> (w: Self) {
+        Both { first: self.first.share(), rest: self.rest.share() }
+    }
+}
+
+/// The end of a world's slots.
+pub struct Nothing;
+
+impl AuxWorld<()> for Nothing {
+    open spec fn ok(self, db: ()) -> bool {
+        true
+    }
+
+    fn invalid() -> (w: Self) {
+        Nothing
+    }
+
+    fn share(&self) -> (w: Self) {
+        Nothing
+    }
+}
+
 /// The newest version's state, to prepare the next version from.
 pub struct Base<D, S: AccelState<D>> {
     e: u64,

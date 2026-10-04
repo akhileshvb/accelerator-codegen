@@ -1,0 +1,2 @@
+INSERT INTO orders SELECT q9_test_orders.* REPLACE (k.okey + 2 AS o_orderkey, DATE '1996-02-29' AS o_orderdate) FROM q9_test_orders CROSS JOIN q9_test_keys k;
+INSERT INTO lineitem SELECT q9_test_lineitem.* REPLACE (k.okey + 2 AS l_orderkey, k.pkey AS l_partkey, k.skey AS l_suppkey, offsets.number AS l_linenumber) FROM q9_test_lineitem CROSS JOIN q9_test_keys k CROSS JOIN (VALUES (1), (2), (3)) offsets(number);

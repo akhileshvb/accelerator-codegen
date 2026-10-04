@@ -1,0 +1,2 @@
+DELETE FROM part WHERE rowid = (SELECT min(rowid) FROM part WHERE p_partkey IN (SELECT ps_partkey FROM partsupp WHERE ps_comment = 'q20-base' AND ps_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %' ORDER BY s_suppkey LIMIT 1)));
+UPDATE part SET p_name = 'Gainsboro test ' || ps_suppkey FROM partsupp WHERE p_partkey = ps_partkey AND ps_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %' ORDER BY s_suppkey LIMIT 1);

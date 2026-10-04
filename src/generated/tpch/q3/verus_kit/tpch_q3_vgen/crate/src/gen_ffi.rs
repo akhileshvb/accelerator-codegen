@@ -77,24 +77,24 @@ pub struct FfiResult {
 
 /// Build from the scans: a state, or NULL (the host then answers with SQL).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq3vgen_build(customers__n: usize, customers__c_custkey: *const i64, customers__c_mktsegment: *const u8, customers__c_mktsegment__off: *const usize, orders__n: usize, orders: *const OrdersScan, shipments__n: usize, shipments: *const ShipmentScan) -> *mut State {
-    let customers__v: Vec<CustomerScan> = (0..customers__n).map(|i| CustomerScan { c_custkey: *customers__c_custkey.add(i), c_mktsegment: text(customers__c_mktsegment, customers__c_mktsegment__off, i) }).collect();
+pub unsafe extern "C" fn tpchq3vgen_build(customers__n: usize, customers__c_custkey: *const i64, customers__c_mktsegment: *const u8, customers__c_mktsegment__off: *const usize, orders__n: usize, orders: *const OrderInput, shipments__n: usize, shipments: *const ShipmentInput) -> *mut State {
+    let customers__v: Vec<CustomerInput> = (0..customers__n).map(|i| CustomerInput { c_custkey: *customers__c_custkey.add(i), c_mktsegment: text(customers__c_mktsegment, customers__c_mktsegment__off, i) }).collect();
     if rec_on() {
-        rec_rows("build", "customers", &["c_custkey:int", "c_mktsegment:text"], &customers__v, |r: &CustomerScan, o: &mut String| {
+        rec_rows("build", "customers", &["c_custkey:int", "c_mktsegment:text"], &customers__v, |r: &CustomerInput, o: &mut String| {
             o.push_str(&(r.c_custkey).to_string()); o.push(',');
             rec_text(&r.c_mktsegment, o);
         });
-        rec_rows("build", "orders", &["o_orderkey:int", "o_custkey:int", "o_orderdate:date", "o_shippriority:int"], slice(orders, orders__n), |r: &OrdersScan, o: &mut String| {
+        rec_rows("build", "orders", &["o_orderkey:int", "o_custkey:int", "o_orderdate:date", "o_shippriority:int"], slice(orders, orders__n), |r: &OrderInput, o: &mut String| {
             o.push_str(&(r.o_orderkey).to_string()); o.push(',');
             o.push_str(&(r.o_custkey).to_string()); o.push(',');
             o.push_str(&(r.o_orderdate).to_string()); o.push(',');
             o.push_str(&(r.o_shippriority).to_string());
         });
-        rec_rows("build", "shipments", &["l_orderkey:int", "l_extendedprice:dec2", "l_discount:dec2", "l_shipdate:date"], slice(shipments, shipments__n), |r: &ShipmentScan, o: &mut String| {
+        rec_rows("build", "shipments", &["l_orderkey:int", "l_shipdate:date", "l_extendedprice:dec2", "l_discount:dec2"], slice(shipments, shipments__n), |r: &ShipmentInput, o: &mut String| {
             o.push_str(&(r.l_orderkey).to_string()); o.push(',');
+            o.push_str(&(r.l_shipdate).to_string()); o.push(',');
             o.push_str(&(r.l_extendedprice).to_string()); o.push(',');
-            o.push_str(&(r.l_discount).to_string()); o.push(',');
-            o.push_str(&(r.l_shipdate).to_string());
+            o.push_str(&(r.l_discount).to_string());
         });
         return ptr::null_mut();
     }
@@ -115,7 +115,7 @@ pub unsafe extern "C" fn tpchq3vgen_free(s: *mut State) {
 /// The keys to rescan for apply: writes up to cap of them into out and
 /// returns how many there are (call again with more room if that is more).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq3vgen_rescan_customer_orders_keys(s: *const State, customer_delta__n: usize, customer_delta__row__c_custkey: *const i64, customer_delta__row__c_mktsegment: *const u8, customer_delta__row__c_mktsegment__off: *const usize, customer_delta__sign: *const i64, lineitem_delta__n: usize, lineitem_delta: *const ShipmentDelta, orders_delta__n: usize, orders_delta: *const OrdersDelta, out: *mut i64, cap: usize) -> usize {
+pub unsafe extern "C" fn tpchq3vgen_rescan_orders_by_key_keys(s: *const State, customer_delta__n: usize, customer_delta__row__c_custkey: *const i64, customer_delta__row__c_mktsegment: *const u8, customer_delta__row__c_mktsegment__off: *const usize, customer_delta__sign: *const i64, lineitem_delta__n: usize, lineitem_delta: *const ShipmentKeyDelta, orders_delta__n: usize, orders_delta: *const OrderKeyDelta, out: *mut i64, cap: usize) -> usize {
     let customer_delta__v: Vec<CustomerDelta> = (0..customer_delta__n).map(|i| CustomerDelta { row: CustomerInput { c_custkey: *customer_delta__row__c_custkey.add(i), c_mktsegment: text(customer_delta__row__c_mktsegment, customer_delta__row__c_mktsegment__off, i) }, sign: *customer_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("rescan_keys", "customer_delta", &["row.c_custkey:int", "row.c_mktsegment:text", "sign:int"], &customer_delta__v, |r: &CustomerDelta, o: &mut String| {
@@ -123,18 +123,12 @@ pub unsafe extern "C" fn tpchq3vgen_rescan_customer_orders_keys(s: *const State,
             rec_text(&r.row.c_mktsegment, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("rescan_keys", "lineitem_delta", &["row.l_orderkey:int", "row.l_extendedprice:dec2", "row.l_discount:dec2", "row.l_shipdate:date", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &ShipmentDelta, o: &mut String| {
-            o.push_str(&(r.row.l_orderkey).to_string()); o.push(',');
-            o.push_str(&(r.row.l_extendedprice).to_string()); o.push(',');
-            o.push_str(&(r.row.l_discount).to_string()); o.push(',');
-            o.push_str(&(r.row.l_shipdate).to_string()); o.push(',');
+        rec_rows("rescan_keys", "lineitem_delta", &["l_orderkey:int", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &ShipmentKeyDelta, o: &mut String| {
+            o.push_str(&(r.l_orderkey).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("rescan_keys", "orders_delta", &["row.o_orderkey:int", "row.o_custkey:int", "row.o_orderdate:date", "row.o_shippriority:int", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrdersDelta, o: &mut String| {
-            o.push_str(&(r.row.o_orderkey).to_string()); o.push(',');
-            o.push_str(&(r.row.o_custkey).to_string()); o.push(',');
-            o.push_str(&(r.row.o_orderdate).to_string()); o.push(',');
-            o.push_str(&(r.row.o_shippriority).to_string()); o.push(',');
+        rec_rows("rescan_keys", "orders_delta", &["o_orderkey:int", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrderKeyDelta, o: &mut String| {
+            o.push_str(&(r.o_orderkey).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         return {
@@ -145,7 +139,41 @@ pub unsafe extern "C" fn tpchq3vgen_rescan_customer_orders_keys(s: *const State,
             ks.len()
         };
     }
-    let keys = ob_rescan_customer_orders_keys(&*s, &customer_delta__v, slice(lineitem_delta, lineitem_delta__n), slice(orders_delta, orders_delta__n));
+    let keys = ob_rescan_orders_by_key_keys(&*s, &customer_delta__v, slice(lineitem_delta, lineitem_delta__n), slice(orders_delta, orders_delta__n));
+    for (i, k) in keys.iter().take(cap).enumerate() {
+        *out.add(i) = *k;
+    }
+    keys.len()
+}
+
+/// The keys to rescan for apply: writes up to cap of them into out and
+/// returns how many there are (call again with more room if that is more).
+#[no_mangle]
+pub unsafe extern "C" fn tpchq3vgen_rescan_shipments_by_key_keys(s: *const State, customer_delta__n: usize, customer_delta__row__c_custkey: *const i64, customer_delta__row__c_mktsegment: *const u8, customer_delta__row__c_mktsegment__off: *const usize, customer_delta__sign: *const i64, lineitem_delta__n: usize, lineitem_delta: *const ShipmentKeyDelta, orders_delta__n: usize, orders_delta: *const OrderKeyDelta, out: *mut i64, cap: usize) -> usize {
+    let customer_delta__v: Vec<CustomerDelta> = (0..customer_delta__n).map(|i| CustomerDelta { row: CustomerInput { c_custkey: *customer_delta__row__c_custkey.add(i), c_mktsegment: text(customer_delta__row__c_mktsegment, customer_delta__row__c_mktsegment__off, i) }, sign: *customer_delta__sign.add(i) }).collect();
+    if rec_on() {
+        rec_rows("rescan_keys", "customer_delta", &["row.c_custkey:int", "row.c_mktsegment:text", "sign:int"], &customer_delta__v, |r: &CustomerDelta, o: &mut String| {
+            o.push_str(&(r.row.c_custkey).to_string()); o.push(',');
+            rec_text(&r.row.c_mktsegment, o); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("rescan_keys", "lineitem_delta", &["l_orderkey:int", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &ShipmentKeyDelta, o: &mut String| {
+            o.push_str(&(r.l_orderkey).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("rescan_keys", "orders_delta", &["o_orderkey:int", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrderKeyDelta, o: &mut String| {
+            o.push_str(&(r.o_orderkey).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        return {
+            let ks = rec_keys();
+            for (i, k) in ks.iter().take(cap).enumerate() {
+                *out.add(i) = *k as i64;
+            }
+            ks.len()
+        };
+    }
+    let keys = ob_rescan_shipments_by_key_keys(&*s, &customer_delta__v, slice(lineitem_delta, lineitem_delta__n), slice(orders_delta, orders_delta__n));
     for (i, k) in keys.iter().take(cap).enumerate() {
         *out.add(i) = *k;
     }
@@ -155,7 +183,7 @@ pub unsafe extern "C" fn tpchq3vgen_rescan_customer_orders_keys(s: *const State,
 /// Apply one transaction: the new state (the input is unchanged), or NULL
 /// with *err set (the host then rebuilds).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq3vgen_apply(s: *const State, customer_delta__n: usize, customer_delta__row__c_custkey: *const i64, customer_delta__row__c_mktsegment: *const u8, customer_delta__row__c_mktsegment__off: *const usize, customer_delta__sign: *const i64, lineitem_delta__n: usize, lineitem_delta: *const ShipmentDelta, orders_delta__n: usize, orders_delta: *const OrdersDelta, customer_orders_keys__n: usize, customer_orders_keys: *const i64, customer_orders_rows__n: usize, customer_orders_rows: *const CustomerOrdersRescan, err: *mut i32) -> *mut State {
+pub unsafe extern "C" fn tpchq3vgen_apply(s: *const State, customer_delta__n: usize, customer_delta__row__c_custkey: *const i64, customer_delta__row__c_mktsegment: *const u8, customer_delta__row__c_mktsegment__off: *const usize, customer_delta__sign: *const i64, lineitem_delta__n: usize, lineitem_delta: *const ShipmentKeyDelta, orders_delta__n: usize, orders_delta: *const OrderKeyDelta, orders_by_key_keys__n: usize, orders_by_key_keys: *const i64, orders_by_key_rows__n: usize, orders_by_key_rows: *const OrderInput, shipments_by_key_keys__n: usize, shipments_by_key_keys: *const i64, shipments_by_key_rows__n: usize, shipments_by_key_rows: *const ShipmentInput, err: *mut i32) -> *mut State {
     let customer_delta__v: Vec<CustomerDelta> = (0..customer_delta__n).map(|i| CustomerDelta { row: CustomerInput { c_custkey: *customer_delta__row__c_custkey.add(i), c_mktsegment: text(customer_delta__row__c_mktsegment, customer_delta__row__c_mktsegment__off, i) }, sign: *customer_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("apply", "customer_delta", &["row.c_custkey:int", "row.c_mktsegment:text", "sign:int"], &customer_delta__v, |r: &CustomerDelta, o: &mut String| {
@@ -163,28 +191,31 @@ pub unsafe extern "C" fn tpchq3vgen_apply(s: *const State, customer_delta__n: us
             rec_text(&r.row.c_mktsegment, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "lineitem_delta", &["row.l_orderkey:int", "row.l_extendedprice:dec2", "row.l_discount:dec2", "row.l_shipdate:date", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &ShipmentDelta, o: &mut String| {
-            o.push_str(&(r.row.l_orderkey).to_string()); o.push(',');
-            o.push_str(&(r.row.l_extendedprice).to_string()); o.push(',');
-            o.push_str(&(r.row.l_discount).to_string()); o.push(',');
-            o.push_str(&(r.row.l_shipdate).to_string()); o.push(',');
+        rec_rows("apply", "lineitem_delta", &["l_orderkey:int", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &ShipmentKeyDelta, o: &mut String| {
+            o.push_str(&(r.l_orderkey).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "orders_delta", &["row.o_orderkey:int", "row.o_custkey:int", "row.o_orderdate:date", "row.o_shippriority:int", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrdersDelta, o: &mut String| {
-            o.push_str(&(r.row.o_orderkey).to_string()); o.push(',');
-            o.push_str(&(r.row.o_custkey).to_string()); o.push(',');
-            o.push_str(&(r.row.o_orderdate).to_string()); o.push(',');
-            o.push_str(&(r.row.o_shippriority).to_string()); o.push(',');
+        rec_rows("apply", "orders_delta", &["o_orderkey:int", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrderKeyDelta, o: &mut String| {
+            o.push_str(&(r.o_orderkey).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "customer_orders_keys", &["value:int"], slice(customer_orders_keys, customer_orders_keys__n), |r: &i64, o: &mut String| {
+        rec_rows("apply", "orders_by_key_keys", &["value:int"], slice(orders_by_key_keys, orders_by_key_keys__n), |r: &i64, o: &mut String| {
             o.push_str(&(*r).to_string());
         });
-        rec_rows("apply", "customer_orders_rows", &["o_orderkey:int", "o_custkey:int", "o_orderdate:date", "o_shippriority:int"], slice(customer_orders_rows, customer_orders_rows__n), |r: &CustomerOrdersRescan, o: &mut String| {
+        rec_rows("apply", "orders_by_key_rows", &["o_orderkey:int", "o_custkey:int", "o_orderdate:date", "o_shippriority:int"], slice(orders_by_key_rows, orders_by_key_rows__n), |r: &OrderInput, o: &mut String| {
             o.push_str(&(r.o_orderkey).to_string()); o.push(',');
             o.push_str(&(r.o_custkey).to_string()); o.push(',');
             o.push_str(&(r.o_orderdate).to_string()); o.push(',');
             o.push_str(&(r.o_shippriority).to_string());
+        });
+        rec_rows("apply", "shipments_by_key_keys", &["value:int"], slice(shipments_by_key_keys, shipments_by_key_keys__n), |r: &i64, o: &mut String| {
+            o.push_str(&(*r).to_string());
+        });
+        rec_rows("apply", "shipments_by_key_rows", &["l_orderkey:int", "l_shipdate:date", "l_extendedprice:dec2", "l_discount:dec2"], slice(shipments_by_key_rows, shipments_by_key_rows__n), |r: &ShipmentInput, o: &mut String| {
+            o.push_str(&(r.l_orderkey).to_string()); o.push(',');
+            o.push_str(&(r.l_shipdate).to_string()); o.push(',');
+            o.push_str(&(r.l_extendedprice).to_string()); o.push(',');
+            o.push_str(&(r.l_discount).to_string());
         });
         return {
             if !err.is_null() {
@@ -193,7 +224,7 @@ pub unsafe extern "C" fn tpchq3vgen_apply(s: *const State, customer_delta__n: us
             ptr::null_mut()
         };
     }
-    match ob_apply(&*s, &customer_delta__v, slice(lineitem_delta, lineitem_delta__n), slice(orders_delta, orders_delta__n), slice(customer_orders_keys, customer_orders_keys__n), slice(customer_orders_rows, customer_orders_rows__n), Ghost::assume_new()) {
+    match ob_apply(&*s, &customer_delta__v, slice(lineitem_delta, lineitem_delta__n), slice(orders_delta, orders_delta__n), slice(orders_by_key_keys, orders_by_key_keys__n), slice(orders_by_key_rows, orders_by_key_rows__n), slice(shipments_by_key_keys, shipments_by_key_keys__n), slice(shipments_by_key_rows, shipments_by_key_rows__n), Ghost::assume_new(), Ghost::assume_new(), Ghost::assume_new()) {
         Ok(s2) => {
             if !err.is_null() {
                 *err = 0;
@@ -319,7 +350,7 @@ pub unsafe extern "C" fn tpchq3vgens_base_free(b: *mut QBase) {
 /// The next version from the base and one commit's inputs (as for apply);
 /// NULL with *err set if the kernel cannot apply them (the host rebuilds).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq3vgens_prepare_apply(st: *const QStore, b: *const QBase, customer_delta__n: usize, customer_delta__row__c_custkey: *const i64, customer_delta__row__c_mktsegment: *const u8, customer_delta__row__c_mktsegment__off: *const usize, customer_delta__sign: *const i64, lineitem_delta__n: usize, lineitem_delta: *const ShipmentDelta, orders_delta__n: usize, orders_delta: *const OrdersDelta, customer_orders_keys__n: usize, customer_orders_keys: *const i64, customer_orders_rows__n: usize, customer_orders_rows: *const CustomerOrdersRescan, err: *mut i32) -> *mut QPrepared {
+pub unsafe extern "C" fn tpchq3vgens_prepare_apply(st: *const QStore, b: *const QBase, customer_delta__n: usize, customer_delta__row__c_custkey: *const i64, customer_delta__row__c_mktsegment: *const u8, customer_delta__row__c_mktsegment__off: *const usize, customer_delta__sign: *const i64, lineitem_delta__n: usize, lineitem_delta: *const ShipmentKeyDelta, orders_delta__n: usize, orders_delta: *const OrderKeyDelta, orders_by_key_keys__n: usize, orders_by_key_keys: *const i64, orders_by_key_rows__n: usize, orders_by_key_rows: *const OrderInput, shipments_by_key_keys__n: usize, shipments_by_key_keys: *const i64, shipments_by_key_rows__n: usize, shipments_by_key_rows: *const ShipmentInput, err: *mut i32) -> *mut QPrepared {
     let customer_delta__v: Vec<CustomerDelta> = (0..customer_delta__n).map(|i| CustomerDelta { row: CustomerInput { c_custkey: *customer_delta__row__c_custkey.add(i), c_mktsegment: text(customer_delta__row__c_mktsegment, customer_delta__row__c_mktsegment__off, i) }, sign: *customer_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("apply", "customer_delta", &["row.c_custkey:int", "row.c_mktsegment:text", "sign:int"], &customer_delta__v, |r: &CustomerDelta, o: &mut String| {
@@ -327,28 +358,31 @@ pub unsafe extern "C" fn tpchq3vgens_prepare_apply(st: *const QStore, b: *const 
             rec_text(&r.row.c_mktsegment, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "lineitem_delta", &["row.l_orderkey:int", "row.l_extendedprice:dec2", "row.l_discount:dec2", "row.l_shipdate:date", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &ShipmentDelta, o: &mut String| {
-            o.push_str(&(r.row.l_orderkey).to_string()); o.push(',');
-            o.push_str(&(r.row.l_extendedprice).to_string()); o.push(',');
-            o.push_str(&(r.row.l_discount).to_string()); o.push(',');
-            o.push_str(&(r.row.l_shipdate).to_string()); o.push(',');
+        rec_rows("apply", "lineitem_delta", &["l_orderkey:int", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &ShipmentKeyDelta, o: &mut String| {
+            o.push_str(&(r.l_orderkey).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "orders_delta", &["row.o_orderkey:int", "row.o_custkey:int", "row.o_orderdate:date", "row.o_shippriority:int", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrdersDelta, o: &mut String| {
-            o.push_str(&(r.row.o_orderkey).to_string()); o.push(',');
-            o.push_str(&(r.row.o_custkey).to_string()); o.push(',');
-            o.push_str(&(r.row.o_orderdate).to_string()); o.push(',');
-            o.push_str(&(r.row.o_shippriority).to_string()); o.push(',');
+        rec_rows("apply", "orders_delta", &["o_orderkey:int", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrderKeyDelta, o: &mut String| {
+            o.push_str(&(r.o_orderkey).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "customer_orders_keys", &["value:int"], slice(customer_orders_keys, customer_orders_keys__n), |r: &i64, o: &mut String| {
+        rec_rows("apply", "orders_by_key_keys", &["value:int"], slice(orders_by_key_keys, orders_by_key_keys__n), |r: &i64, o: &mut String| {
             o.push_str(&(*r).to_string());
         });
-        rec_rows("apply", "customer_orders_rows", &["o_orderkey:int", "o_custkey:int", "o_orderdate:date", "o_shippriority:int"], slice(customer_orders_rows, customer_orders_rows__n), |r: &CustomerOrdersRescan, o: &mut String| {
+        rec_rows("apply", "orders_by_key_rows", &["o_orderkey:int", "o_custkey:int", "o_orderdate:date", "o_shippriority:int"], slice(orders_by_key_rows, orders_by_key_rows__n), |r: &OrderInput, o: &mut String| {
             o.push_str(&(r.o_orderkey).to_string()); o.push(',');
             o.push_str(&(r.o_custkey).to_string()); o.push(',');
             o.push_str(&(r.o_orderdate).to_string()); o.push(',');
             o.push_str(&(r.o_shippriority).to_string());
+        });
+        rec_rows("apply", "shipments_by_key_keys", &["value:int"], slice(shipments_by_key_keys, shipments_by_key_keys__n), |r: &i64, o: &mut String| {
+            o.push_str(&(*r).to_string());
+        });
+        rec_rows("apply", "shipments_by_key_rows", &["l_orderkey:int", "l_shipdate:date", "l_extendedprice:dec2", "l_discount:dec2"], slice(shipments_by_key_rows, shipments_by_key_rows__n), |r: &ShipmentInput, o: &mut String| {
+            o.push_str(&(r.l_orderkey).to_string()); o.push(',');
+            o.push_str(&(r.l_shipdate).to_string()); o.push(',');
+            o.push_str(&(r.l_extendedprice).to_string()); o.push(',');
+            o.push_str(&(r.l_discount).to_string());
         });
         return {
             if !err.is_null() {
@@ -357,7 +391,7 @@ pub unsafe extern "C" fn tpchq3vgens_prepare_apply(st: *const QStore, b: *const 
             ptr::null_mut()
         };
     }
-    match prepare_apply(&*st, &*b, &customer_delta__v, slice(lineitem_delta, lineitem_delta__n), slice(orders_delta, orders_delta__n), slice(customer_orders_keys, customer_orders_keys__n), slice(customer_orders_rows, customer_orders_rows__n)) {
+    match prepare_apply(&*st, &*b, &customer_delta__v, slice(lineitem_delta, lineitem_delta__n), slice(orders_delta, orders_delta__n), slice(orders_by_key_keys, orders_by_key_keys__n), slice(orders_by_key_rows, orders_by_key_rows__n), slice(shipments_by_key_keys, shipments_by_key_keys__n), slice(shipments_by_key_rows, shipments_by_key_rows__n), Ghost::assume_new(), Ghost::assume_new()) {
         Ok(p) => {
             if !err.is_null() {
                 *err = 0;
@@ -377,28 +411,28 @@ pub unsafe extern "C" fn tpchq3vgens_prepare_apply(st: *const QStore, b: *const 
 /// that version; its state is invalid if the kernel cannot build it.  NULL
 /// only if no version can follow the newest.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq3vgens_prepare_build(st: *const QStore, customers__n: usize, customers__c_custkey: *const i64, customers__c_mktsegment: *const u8, customers__c_mktsegment__off: *const usize, orders__n: usize, orders: *const OrdersScan, shipments__n: usize, shipments: *const ShipmentScan) -> *mut QPrepared {
+pub unsafe extern "C" fn tpchq3vgens_prepare_build(st: *const QStore, customers__n: usize, customers__c_custkey: *const i64, customers__c_mktsegment: *const u8, customers__c_mktsegment__off: *const usize, orders__n: usize, orders: *const OrderInput, shipments__n: usize, shipments: *const ShipmentInput) -> *mut QPrepared {
     let e = (*st).newest();
     if e == u64::MAX {
         return ptr::null_mut();
     }
-    let customers__v: Vec<CustomerScan> = (0..customers__n).map(|i| CustomerScan { c_custkey: *customers__c_custkey.add(i), c_mktsegment: text(customers__c_mktsegment, customers__c_mktsegment__off, i) }).collect();
+    let customers__v: Vec<CustomerInput> = (0..customers__n).map(|i| CustomerInput { c_custkey: *customers__c_custkey.add(i), c_mktsegment: text(customers__c_mktsegment, customers__c_mktsegment__off, i) }).collect();
     if rec_on() {
-        rec_rows("build", "customers", &["c_custkey:int", "c_mktsegment:text"], &customers__v, |r: &CustomerScan, o: &mut String| {
+        rec_rows("build", "customers", &["c_custkey:int", "c_mktsegment:text"], &customers__v, |r: &CustomerInput, o: &mut String| {
             o.push_str(&(r.c_custkey).to_string()); o.push(',');
             rec_text(&r.c_mktsegment, o);
         });
-        rec_rows("build", "orders", &["o_orderkey:int", "o_custkey:int", "o_orderdate:date", "o_shippriority:int"], slice(orders, orders__n), |r: &OrdersScan, o: &mut String| {
+        rec_rows("build", "orders", &["o_orderkey:int", "o_custkey:int", "o_orderdate:date", "o_shippriority:int"], slice(orders, orders__n), |r: &OrderInput, o: &mut String| {
             o.push_str(&(r.o_orderkey).to_string()); o.push(',');
             o.push_str(&(r.o_custkey).to_string()); o.push(',');
             o.push_str(&(r.o_orderdate).to_string()); o.push(',');
             o.push_str(&(r.o_shippriority).to_string());
         });
-        rec_rows("build", "shipments", &["l_orderkey:int", "l_extendedprice:dec2", "l_discount:dec2", "l_shipdate:date"], slice(shipments, shipments__n), |r: &ShipmentScan, o: &mut String| {
+        rec_rows("build", "shipments", &["l_orderkey:int", "l_shipdate:date", "l_extendedprice:dec2", "l_discount:dec2"], slice(shipments, shipments__n), |r: &ShipmentInput, o: &mut String| {
             o.push_str(&(r.l_orderkey).to_string()); o.push(',');
+            o.push_str(&(r.l_shipdate).to_string()); o.push(',');
             o.push_str(&(r.l_extendedprice).to_string()); o.push(',');
-            o.push_str(&(r.l_discount).to_string()); o.push(',');
-            o.push_str(&(r.l_shipdate).to_string());
+            o.push_str(&(r.l_discount).to_string());
         });
         return ptr::null_mut();
     }

@@ -1,0 +1,1 @@
+UPDATE lineitem SET l_suppkey=(SELECT s_suppkey FROM orders JOIN customer ON o_custkey=c_custkey JOIN supplier ON c_nationkey=s_nationkey WHERE o_orderkey=l_orderkey AND s_comment='q5 fixture supplier'), l_comment='q5 fixture line' WHERE l_comment='q5 rerouted line';

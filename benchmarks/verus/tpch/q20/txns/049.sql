@@ -1,0 +1,2 @@
+UPDATE part SET p_partkey = p_partkey + 1000000 WHERE p_comment = 'q20-base' AND p_name = 'gainsboro test ' || (SELECT s_suppkey FROM supplier WHERE s_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %' ORDER BY s_suppkey LIMIT 1));
+UPDATE lineitem SET l_partkey = l_partkey + 1000000 WHERE l_comment LIKE 'q20-base-%' AND l_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %' ORDER BY s_suppkey LIMIT 1);

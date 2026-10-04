@@ -1,0 +1,1 @@
+UPDATE orders SET o_custkey=(SELECT c_custkey FROM lineitem JOIN supplier ON l_suppkey=s_suppkey JOIN customer ON s_nationkey=c_nationkey WHERE l_orderkey=o_orderkey AND c_comment='q5 fixture customer' ORDER BY l_linenumber LIMIT 1), o_orderdate=DATE '1994-01-01', o_comment='q5 fixture order' WHERE o_comment='q5 reassigned order';

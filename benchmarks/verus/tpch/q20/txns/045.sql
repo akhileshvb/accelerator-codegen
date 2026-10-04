@@ -1,0 +1,3 @@
+UPDATE lineitem SET l_quantity = 15.99 WHERE l_comment = 'q20-base-C' AND l_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %' ORDER BY s_suppkey LIMIT 1);
+UPDATE lineitem SET l_quantity = 0.00 WHERE l_comment IN ('q20-base-A','q20-base-B','q20-base-C') AND l_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %' ORDER BY s_suppkey DESC LIMIT 1);
+UPDATE partsupp SET ps_availqty = 1 WHERE ps_comment = 'q20-base' AND ps_suppkey IN (SELECT s_suppkey FROM supplier WHERE s_comment = 'q20-base' AND s_name LIKE 'Q20 CANADA %' ORDER BY s_suppkey DESC LIMIT 1);

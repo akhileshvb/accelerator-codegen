@@ -7,31 +7,29 @@
 // behind crate::kernel; the host calls only the ob_* functions below.
 //
 // Kernel inputs:
-//   -- Build projections; no fixed segment, date, scale, uniqueness, or FK assumption.
-//   scan customers AS CustomerScan:
+//   -- All dates, segments, duplicates, and initially unmatched rows must be retained.
+//   scan customers AS CustomerInput:
 //     SELECT c_custkey, c_mktsegment FROM customer;
-//   
-//   scan orders AS OrdersScan:
+//   scan orders AS OrderInput:
 //     SELECT o_orderkey, o_custkey, o_orderdate, o_shippriority FROM orders;
+//   scan shipments AS ShipmentInput:
+//     SELECT l_orderkey, l_shipdate, l_extendedprice, l_discount FROM lineitem;
 //   
-//   scan shipments AS ShipmentScan:
-//     SELECT l_orderkey, l_extendedprice, l_discount, l_shipdate FROM lineitem;
-//   
-//   -- Only customer changes need order rows that are not retained in the state.
-//   -- The host restricts this post-transaction scan to the supplied customer keys.
-//   rescan customer_orders AS CustomerOrdersRescan KEYS o_custkey:
+//   -- Both selectors return F: the union of keys in the two raw fact captures.
+//   -- These are unfiltered post-transaction neighborhoods, batched by orderkey.
+//   -- Customer-only changes reach their orders through the retained reverse index V(c,k),
+//   -- not an orders-by-custkey rescan; those transactions select no rescan keys.
+//   rescan orders_by_key AS OrderInput KEYS o_orderkey:
 //     SELECT o_orderkey, o_custkey, o_orderdate, o_shippriority FROM orders;
+//   rescan shipments_by_key AS ShipmentInput KEYS l_orderkey:
+//     SELECT l_orderkey, l_shipdate, l_extendedprice, l_discount FROM lineitem;
 //   
-//   -- Lossless relative to the spec projection, lossy relative to physical tables.
-//   -- Keep arbitrary segment text; discard every unreferenced text/decimal column.
 //   delta customer AS CustomerDelta OF CustomerInput:
 //     SELECT c_custkey, c_mktsegment FROM customer;
-//   
-//   delta orders AS OrdersDelta OF OrdersInput:
-//     SELECT o_orderkey, o_custkey, o_orderdate, o_shippriority FROM orders;
-//   
-//   delta lineitem AS ShipmentDelta OF ShipmentInput:
-//     SELECT l_orderkey, l_extendedprice, l_discount, l_shipdate FROM lineitem;
+//   delta orders AS OrderKeyDelta:
+//     SELECT o_orderkey FROM orders;
+//   delta lineitem AS ShipmentKeyDelta:
+//     SELECT l_orderkey FROM lineitem;
 #![allow(unused_imports)]
 use vstd::prelude::*;
 use verus_common::bytes::*;
@@ -48,107 +46,7 @@ verus! {
 
 // ── Runtime rows and their views ──
 
-/// Runtime row: scan customers.
-pub struct CustomerScan {
-    /// customer.c_custkey (integer)
-    pub c_custkey: i64,
-    /// customer.c_mktsegment (text bytes)
-    pub c_mktsegment: Vec<u8>,
-}
-
-pub open spec fn customer_scan_view(r: CustomerScan) -> CustomerRow {
-    CustomerRow {
-        c_custkey: r.c_custkey as int,
-        c_mktsegment: r.c_mktsegment@,
-    }
-}
-
-pub open spec fn customer_scan_seq_view(s: Seq<CustomerScan>) -> Seq<CustomerRow> {
-    s.map_values(|r: CustomerScan| customer_scan_view(r))
-}
-
-/// Runtime row: scan orders.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct OrdersScan {
-    /// orders.o_orderkey (integer)
-    pub o_orderkey: i64,
-    /// orders.o_custkey (integer)
-    pub o_custkey: i64,
-    /// orders.o_orderdate (DATE, days since 1970-01-01)
-    pub o_orderdate: i32,
-    /// orders.o_shippriority (integer)
-    pub o_shippriority: i64,
-}
-
-pub open spec fn orders_scan_view(r: OrdersScan) -> OrdersRow {
-    OrdersRow {
-        o_orderkey: r.o_orderkey as int,
-        o_custkey: r.o_custkey as int,
-        o_orderdate: r.o_orderdate as int,
-        o_shippriority: r.o_shippriority as int,
-    }
-}
-
-pub open spec fn orders_scan_seq_view(s: Seq<OrdersScan>) -> Seq<OrdersRow> {
-    s.map_values(|r: OrdersScan| orders_scan_view(r))
-}
-
-/// Runtime row: scan shipments.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ShipmentScan {
-    /// lineitem.l_orderkey (integer)
-    pub l_orderkey: i64,
-    /// lineitem.l_extendedprice (DECIMAL, value * 10^2)
-    pub l_extendedprice: i64,
-    /// lineitem.l_discount (DECIMAL, value * 10^2)
-    pub l_discount: i64,
-    /// lineitem.l_shipdate (DATE, days since 1970-01-01)
-    pub l_shipdate: i32,
-}
-
-pub open spec fn shipment_scan_view(r: ShipmentScan) -> LineitemRow {
-    LineitemRow {
-        l_orderkey: r.l_orderkey as int,
-        l_extendedprice: r.l_extendedprice as int,
-        l_discount: r.l_discount as int,
-        l_shipdate: r.l_shipdate as int,
-    }
-}
-
-pub open spec fn shipment_scan_seq_view(s: Seq<ShipmentScan>) -> Seq<LineitemRow> {
-    s.map_values(|r: ShipmentScan| shipment_scan_view(r))
-}
-
-/// Runtime row: rescan customer_orders.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct CustomerOrdersRescan {
-    /// orders.o_orderkey (integer)
-    pub o_orderkey: i64,
-    /// orders.o_custkey (integer)
-    pub o_custkey: i64,
-    /// orders.o_orderdate (DATE, days since 1970-01-01)
-    pub o_orderdate: i32,
-    /// orders.o_shippriority (integer)
-    pub o_shippriority: i64,
-}
-
-pub open spec fn customer_orders_rescan_view(r: CustomerOrdersRescan) -> OrdersRow {
-    OrdersRow {
-        o_orderkey: r.o_orderkey as int,
-        o_custkey: r.o_custkey as int,
-        o_orderdate: r.o_orderdate as int,
-        o_shippriority: r.o_shippriority as int,
-    }
-}
-
-pub open spec fn customer_orders_rescan_seq_view(s: Seq<CustomerOrdersRescan>) -> Seq<OrdersRow> {
-    s.map_values(|r: CustomerOrdersRescan| customer_orders_rescan_view(r))
-}
-
-/// Runtime row: delta customer.
+/// Runtime row: scan customers; delta customer.
 pub struct CustomerInput {
     /// customer.c_custkey (integer)
     pub c_custkey: i64,
@@ -167,10 +65,10 @@ pub open spec fn customer_input_seq_view(s: Seq<CustomerInput>) -> Seq<CustomerR
     s.map_values(|r: CustomerInput| customer_input_view(r))
 }
 
-/// Runtime row: delta orders.
+/// Runtime row: scan orders; rescan orders_by_key.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct OrdersInput {
+pub struct OrderInput {
     /// orders.o_orderkey (integer)
     pub o_orderkey: i64,
     /// orders.o_custkey (integer)
@@ -181,7 +79,7 @@ pub struct OrdersInput {
     pub o_shippriority: i64,
 }
 
-pub open spec fn orders_input_view(r: OrdersInput) -> OrdersRow {
+pub open spec fn order_input_view(r: OrderInput) -> OrdersRow {
     OrdersRow {
         o_orderkey: r.o_orderkey as int,
         o_custkey: r.o_custkey as int,
@@ -190,22 +88,22 @@ pub open spec fn orders_input_view(r: OrdersInput) -> OrdersRow {
     }
 }
 
-pub open spec fn orders_input_seq_view(s: Seq<OrdersInput>) -> Seq<OrdersRow> {
-    s.map_values(|r: OrdersInput| orders_input_view(r))
+pub open spec fn order_input_seq_view(s: Seq<OrderInput>) -> Seq<OrdersRow> {
+    s.map_values(|r: OrderInput| order_input_view(r))
 }
 
-/// Runtime row: delta lineitem.
+/// Runtime row: scan shipments; rescan shipments_by_key.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ShipmentInput {
     /// lineitem.l_orderkey (integer)
     pub l_orderkey: i64,
+    /// lineitem.l_shipdate (DATE, days since 1970-01-01)
+    pub l_shipdate: i32,
     /// lineitem.l_extendedprice (DECIMAL, value * 10^2)
     pub l_extendedprice: i64,
     /// lineitem.l_discount (DECIMAL, value * 10^2)
     pub l_discount: i64,
-    /// lineitem.l_shipdate (DATE, days since 1970-01-01)
-    pub l_shipdate: i32,
 }
 
 pub open spec fn shipment_input_view(r: ShipmentInput) -> LineitemRow {
@@ -238,26 +136,35 @@ pub open spec fn out_view(o: Seq<(i64, i128, i32, i64)>) -> Seq<OutRow> {
 // ── Scan and capture contracts ──
 
 /// scan customers: SELECT c_custkey, c_mktsegment FROM customer
-pub open spec fn scan_customers_ok(db: Db, rows: Seq<CustomerScan>) -> bool {
-    forall|f: spec_fn(CustomerRow) -> int| #[trigger] sum(customer_scan_seq_view(rows), f) == sum(db.customer, f)
+pub open spec fn scan_customers_ok(db: Db, rows: Seq<CustomerInput>) -> bool {
+    forall|f: spec_fn(CustomerRow) -> int| #[trigger] sum(customer_input_seq_view(rows), f) == sum(db.customer, f)
 }
 
 /// scan orders: SELECT o_orderkey, o_custkey, o_orderdate, o_shippriority FROM orders
-pub open spec fn scan_orders_ok(db: Db, rows: Seq<OrdersScan>) -> bool {
-    forall|f: spec_fn(OrdersRow) -> int| #[trigger] sum(orders_scan_seq_view(rows), f) == sum(db.orders, f)
+pub open spec fn scan_orders_ok(db: Db, rows: Seq<OrderInput>) -> bool {
+    forall|f: spec_fn(OrdersRow) -> int| #[trigger] sum(order_input_seq_view(rows), f) == sum(db.orders, f)
 }
 
-/// scan shipments: SELECT l_orderkey, l_extendedprice, l_discount, l_shipdate FROM lineitem
-pub open spec fn scan_shipments_ok(db: Db, rows: Seq<ShipmentScan>) -> bool {
-    forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(shipment_scan_seq_view(rows), f) == sum(db.lineitem, f)
+/// scan shipments: SELECT l_orderkey, l_shipdate, l_extendedprice, l_discount FROM lineitem
+pub open spec fn scan_shipments_ok(db: Db, rows: Seq<ShipmentInput>) -> bool {
+    forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(shipment_input_seq_view(rows), f) == sum(db.lineitem, f)
 }
 
-/// rescan customer_orders: SELECT o_orderkey, o_custkey, o_orderdate, o_shippriority FROM orders
-///   restricted to the rows whose o_custkey is one of `keys`.
-pub open spec fn rescan_customer_orders_ok(db: Db, keys: Seq<i64>, rows: Seq<CustomerOrdersRescan>) -> bool {
-    forall|f: spec_fn(OrdersRow) -> int| #[trigger] sum(customer_orders_rescan_seq_view(rows), f) == sum(
+/// rescan orders_by_key: SELECT o_orderkey, o_custkey, o_orderdate, o_shippriority FROM orders
+///   restricted to the rows whose o_orderkey is one of `keys`.
+pub open spec fn rescan_orders_by_key_ok(db: Db, keys: Seq<i64>, rows: Seq<OrderInput>) -> bool {
+    forall|f: spec_fn(OrdersRow) -> int| #[trigger] sum(order_input_seq_view(rows), f) == sum(
         db.orders,
-        |orders: OrdersRow| if seq_view_i64(keys).contains(orders.o_custkey) { f(orders) } else { 0 },
+        |orders: OrdersRow| if seq_view_i64(keys).contains(orders.o_orderkey) { f(orders) } else { 0 },
+    )
+}
+
+/// rescan shipments_by_key: SELECT l_orderkey, l_shipdate, l_extendedprice, l_discount FROM lineitem
+///   restricted to the rows whose l_orderkey is one of `keys`.
+pub open spec fn rescan_shipments_by_key_ok(db: Db, keys: Seq<i64>, rows: Seq<ShipmentInput>) -> bool {
+    forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(shipment_input_seq_view(rows), f) == sum(
+        db.lineitem,
+        |lineitem: LineitemRow| if seq_view_i64(keys).contains(lineitem.l_orderkey) { f(lineitem) } else { 0 },
     )
 }
 
@@ -271,28 +178,40 @@ pub open spec fn customer_delta_seq_view(s: Seq<CustomerDelta>) -> Seq<(Customer
     s.map_values(|d: CustomerDelta| (customer_input_view(d.row), d.sign as int))
 }
 
-/// delta orders: a changed `orders` row and its sign (+1 insert, -1 delete).
+/// delta orders (lossy): SELECT o_orderkey FROM orders
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct OrdersDelta {
-    pub row: OrdersInput,
+pub struct OrderKeyDelta {
+    pub o_orderkey: i64,
     pub sign: i64,
 }
 
-pub open spec fn orders_delta_seq_view(s: Seq<OrdersDelta>) -> Seq<(OrdersRow, int)> {
-    s.map_values(|d: OrdersDelta| (orders_input_view(d.row), d.sign as int))
+/// delta orders: each runtime delta is the projection of the full changed row.
+pub open spec fn orders_delta_ok(d: Seq<OrderKeyDelta>, full: Seq<(OrdersRow, int)>) -> bool {
+    &&& d.len() == full.len()
+    &&& forall|i: int| #![trigger d[i]] 0 <= i < d.len() ==> {
+        let orders = full[i].0;
+        &&& d[i].o_orderkey as int == orders.o_orderkey
+        &&& d[i].sign as int == full[i].1
+    }
 }
 
-/// delta lineitem: a changed `lineitem` row and its sign (+1 insert, -1 delete).
+/// delta lineitem (lossy): SELECT l_orderkey FROM lineitem
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ShipmentDelta {
-    pub row: ShipmentInput,
+pub struct ShipmentKeyDelta {
+    pub l_orderkey: i64,
     pub sign: i64,
 }
 
-pub open spec fn shipment_delta_seq_view(s: Seq<ShipmentDelta>) -> Seq<(LineitemRow, int)> {
-    s.map_values(|d: ShipmentDelta| (shipment_input_view(d.row), d.sign as int))
+/// delta lineitem: each runtime delta is the projection of the full changed row.
+pub open spec fn lineitem_delta_ok(d: Seq<ShipmentKeyDelta>, full: Seq<(LineitemRow, int)>) -> bool {
+    &&& d.len() == full.len()
+    &&& forall|i: int| #![trigger d[i]] 0 <= i < d.len() ==> {
+        let lineitem = full[i].0;
+        &&& d[i].l_orderkey as int == lineitem.l_orderkey
+        &&& d[i].sign as int == full[i].1
+    }
 }
 
 /// One transaction's changes: every table of db2 is that of db plus its deltas (bags).
@@ -306,9 +225,9 @@ pub open spec fn capture_ok(db: Db, db2: Db, customer: Seq<(CustomerRow, int)>, 
 
 /// Build: a state for db, or None (the host then answers with SQL).
 pub fn ob_build(
-    customers: Vec<CustomerScan>,
-    orders: &[OrdersScan],
-    shipments: &[ShipmentScan],
+    customers: Vec<CustomerInput>,
+    orders: &[OrderInput],
+    shipments: &[ShipmentInput],
     Ghost(db): Ghost<Db>,
 ) -> (r: Option<State>)
     requires
@@ -333,35 +252,54 @@ pub fn ob_execute(
     kernel::execute(s, p1, p2)
 }
 
-/// The keys whose rows the host rescans (rescan customer_orders) for apply.  No contract:
+/// The keys whose rows the host rescans (rescan orders_by_key) for apply.  No contract:
 /// apply's result does not depend on trusting them.
-pub fn ob_rescan_customer_orders_keys(
+pub fn ob_rescan_orders_by_key_keys(
     s: &State,
     customer_delta: &Vec<CustomerDelta>,
-    lineitem_delta: &[ShipmentDelta],
-    orders_delta: &[OrdersDelta],
+    lineitem_delta: &[ShipmentKeyDelta],
+    orders_delta: &[OrderKeyDelta],
 ) -> (r: Vec<i64>)
 {
-    kernel::rescan_customer_orders_keys(s, customer_delta, lineitem_delta, orders_delta)
+    kernel::rescan_orders_by_key_keys(s, customer_delta, lineitem_delta, orders_delta)
+}
+
+/// The keys whose rows the host rescans (rescan shipments_by_key) for apply.  No contract:
+/// apply's result does not depend on trusting them.
+pub fn ob_rescan_shipments_by_key_keys(
+    s: &State,
+    customer_delta: &Vec<CustomerDelta>,
+    lineitem_delta: &[ShipmentKeyDelta],
+    orders_delta: &[OrderKeyDelta],
+) -> (r: Vec<i64>)
+{
+    kernel::rescan_shipments_by_key_keys(s, customer_delta, lineitem_delta, orders_delta)
 }
 
 /// Apply one transaction: a state for db2, or Err (the host then rebuilds).
 pub fn ob_apply(
     s: &State,
     customer_delta: &Vec<CustomerDelta>,
-    lineitem_delta: &[ShipmentDelta],
-    orders_delta: &[OrdersDelta],
-    customer_orders_keys: &[i64],
-    customer_orders_rows: &[CustomerOrdersRescan],
+    lineitem_delta: &[ShipmentKeyDelta],
+    orders_delta: &[OrderKeyDelta],
+    orders_by_key_keys: &[i64],
+    orders_by_key_rows: &[OrderInput],
+    shipments_by_key_keys: &[i64],
+    shipments_by_key_rows: &[ShipmentInput],
+    Ghost(lineitem_full): Ghost<Seq<(LineitemRow, int)>>,
+    Ghost(orders_full): Ghost<Seq<(OrdersRow, int)>>,
     Ghost(db2): Ghost<Db>,
 ) -> (r: Result<State, u32>)
     requires
-        capture_ok(s.db(), db2, customer_delta_seq_view(customer_delta@), shipment_delta_seq_view(lineitem_delta@), orders_delta_seq_view(orders_delta@)),
-        rescan_customer_orders_ok(db2, customer_orders_keys@, customer_orders_rows@),
+        lineitem_delta_ok(lineitem_delta@, lineitem_full),
+        orders_delta_ok(orders_delta@, orders_full),
+        capture_ok(s.db(), db2, customer_delta_seq_view(customer_delta@), lineitem_full, orders_full),
+        rescan_orders_by_key_ok(db2, orders_by_key_keys@, orders_by_key_rows@),
+        rescan_shipments_by_key_ok(db2, shipments_by_key_keys@, shipments_by_key_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
 {
-    kernel::apply(s, customer_delta, lineitem_delta, orders_delta, customer_orders_keys, customer_orders_rows, Ghost(db2))
+    kernel::apply(s, customer_delta, lineitem_delta, orders_delta, orders_by_key_keys, orders_by_key_rows, shipments_by_key_keys, shipments_by_key_rows, Ghost(lineitem_full), Ghost(orders_full), Ghost(db2))
 }
 
 } // verus!

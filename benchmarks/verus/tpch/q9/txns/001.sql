@@ -1,0 +1,8 @@
+INSERT INTO nation SELECT q9_test_nation.* REPLACE (k.nkey AS n_nationkey, 'Q9 TEST NATION' AS n_name) FROM q9_test_nation CROSS JOIN q9_test_keys k;
+INSERT INTO supplier SELECT q9_test_supplier.* REPLACE (k.skey AS s_suppkey, k.nkey AS s_nationkey) FROM q9_test_supplier CROSS JOIN q9_test_keys k;
+INSERT INTO part SELECT q9_test_part.* REPLACE (k.pkey AS p_partkey, 'forest green polished' AS p_name) FROM q9_test_part CROSS JOIN q9_test_keys k;
+INSERT INTO part SELECT q9_test_part.* REPLACE (k.pkey + 1 AS p_partkey, 'ocean blue polished' AS p_name) FROM q9_test_part CROSS JOIN q9_test_keys k;
+INSERT INTO partsupp SELECT q9_test_partsupp.* REPLACE (k.pkey + offsets.delta AS ps_partkey, k.skey AS ps_suppkey, 50.25 AS ps_supplycost) FROM q9_test_partsupp CROSS JOIN q9_test_keys k CROSS JOIN (VALUES (0), (1)) offsets(delta);
+INSERT INTO orders SELECT q9_test_orders.* REPLACE (k.okey + offsets.delta AS o_orderkey, CASE WHEN offsets.delta = 0 THEN DATE '1994-12-31' ELSE DATE '1995-01-01' END AS o_orderdate) FROM q9_test_orders CROSS JOIN q9_test_keys k CROSS JOIN (VALUES (0), (1)) offsets(delta);
+INSERT INTO lineitem SELECT q9_test_lineitem.* REPLACE (k.okey + offsets.delta AS l_orderkey, k.pkey AS l_partkey, k.skey AS l_suppkey, 1 AS l_linenumber, 12.50 AS l_quantity, 1250.75 AS l_extendedprice, 0.05 AS l_discount) FROM q9_test_lineitem CROSS JOIN q9_test_keys k CROSS JOIN (VALUES (0), (1)) offsets(delta);
+INSERT INTO lineitem SELECT q9_test_lineitem.* REPLACE (k.okey + 1 AS l_orderkey, k.pkey + 1 AS l_partkey, k.skey AS l_suppkey, 2 AS l_linenumber) FROM q9_test_lineitem CROSS JOIN q9_test_keys k;
