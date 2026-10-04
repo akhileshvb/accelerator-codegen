@@ -135,14 +135,37 @@ const SharedQueryCatalogEntry &LookupSharedQuery(SharedWorkloadKind workload,
   return *entry;
 }
 
+static core::AuxType KitArgType(verus_kit::Kind kind) {
+  switch (kind) {
+  case verus_kit::Kind::Int:
+    return core::AuxType::Int64;
+  case verus_kit::Kind::Dec:
+    return core::AuxType::ScaledDecimal; // exact: a double turns 0.06 + 0.01 into 0.0699...
+  case verus_kit::Kind::Date:
+    return core::AuxType::Date;
+  case verus_kit::Kind::Bool:
+    return core::AuxType::Boolean;
+  case verus_kit::Kind::Text:
+    break;
+  }
+  return core::AuxType::String;
+}
+
 const SharedQueryCatalogEntry *VerusKitCatalogEntry(const std::string &accelerator_id) {
   const auto *glue = verus_kit::Find(accelerator_id);
   if (!glue) {
     return nullptr;
   }
   const auto workload = ParseWorkload(glue->workload);
+  // Derive from another accelerator's entry for the query only when its
+  // arguments are the glue's: the table function types each argument by the
+  // entry (a C++ accelerator that derives a parameter itself takes fewer).
   if (const auto *base = FindEntry(workload, glue->query_id)) {
-    return &Derived(accelerator_id, *base, std::string("SELECT * FROM accel_") + glue->id + "()", false);
+    bool same = base->benchmark_arguments.values.size() == glue->params.size();
+    for (std::size_t i = 0; same && i < glue->params.size(); ++i)
+      same = base->benchmark_arguments.values[i].type == KitArgType(glue->params[i]);
+    if (same)
+      return &Derived(accelerator_id, *base, std::string("SELECT * FROM accel_") + glue->id + "()", false);
   }
   // No other accelerator registered the query: the entry from the glue alone
   // (its parameterized SQL; arguments typed by its parameter kinds; no probes).
@@ -167,26 +190,8 @@ const SharedQueryCatalogEntry *VerusKitCatalogEntry(const std::string &accelerat
     e.accelerator_id = slot->id.c_str();
     e.base_sql = slot->sql.c_str();
     e.duckdb_aux_sql = slot->aux_sql.c_str();
-    for (const auto kind : glue->params) {
-      core::AuxType type = core::AuxType::String;
-      switch (kind) {
-      case verus_kit::Kind::Int:
-        type = core::AuxType::Int64;
-        break;
-      case verus_kit::Kind::Dec:
-        type = core::AuxType::Double;
-        break;
-      case verus_kit::Kind::Date:
-        type = core::AuxType::Date;
-        break;
-      case verus_kit::Kind::Bool:
-        type = core::AuxType::Boolean;
-        break;
-      case verus_kit::Kind::Text:
-        break;
-      }
-      e.benchmark_arguments.values.push_back(core::AuxValue::Null(type));
-    }
+    for (const auto kind : glue->params)
+      e.benchmark_arguments.values.push_back(core::AuxValue::Null(KitArgType(kind)));
   }
   return &slot->entry;
 }

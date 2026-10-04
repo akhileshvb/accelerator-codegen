@@ -153,6 +153,26 @@ endif()
 # A glue registers itself, so nothing shared names the query.
 set(ACCEL_VERUS_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build-verus"
     CACHE PATH "Directory of Verus kernel static libraries (lib<crate>_verus.a)")
+# A benchmark's Verus world (scripts/gen_verus_world.py: one verified store for
+# all its kits, ACCEL_AUX_STORE=verus_global) is
+# src/generated/<bench>/verus_world/<world>/ (world_glue.cpp) and
+# ${ACCEL_VERUS_LIB_DIR}/lib<world>_verus.a (scripts/build_verus_world.sh), an
+# archive holding every kit it names: linked instead of the kits' own.
+file(GLOB _verus_world_dirs LIST_DIRECTORIES true CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/*/verus_world/*")
+set(_verus_world_benches)
+foreach(_dir IN LISTS _verus_world_dirs)
+    get_filename_component(_world "${_dir}" NAME)
+    set(_lib "${ACCEL_VERUS_LIB_DIR}/lib${_world}_verus.a")
+    if(IS_DIRECTORY "${_dir}" AND EXISTS "${_lib}" AND EXISTS "${_dir}/world_glue.cpp")
+        string(REGEX MATCH "src/generated/([^/]+)/verus_world" _m "${_dir}")
+        list(APPEND _verus_world_benches "${CMAKE_MATCH_1}")
+        message(STATUS "Verus world: ${_world}")
+        target_sources(accelerator_codegen PRIVATE "${_dir}/world_glue.cpp")
+        set_source_files_properties("${_dir}/world_glue.cpp" PROPERTIES INCLUDE_DIRECTORIES "${_dir}")
+        target_link_libraries(accelerator_codegen PRIVATE "${_lib}" pthread dl m)
+    endif()
+endforeach()
 file(GLOB _verus_kit_dirs LIST_DIRECTORIES true CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/*/q*/verus_kit/*")
 foreach(_dir IN LISTS _verus_kit_dirs)
@@ -160,11 +180,18 @@ foreach(_dir IN LISTS _verus_kit_dirs)
     if(IS_DIRECTORY "${_dir}" AND _verus_kit_srcs)
         get_filename_component(_crate "${_dir}" NAME)
         set(_lib "${ACCEL_VERUS_LIB_DIR}/lib${_crate}_verus.a")
-        if(EXISTS "${_lib}")
+        string(REGEX MATCH "src/generated/([^/]+)/q" _m "${_dir}")
+        set(_in_world FALSE)
+        if("${CMAKE_MATCH_1}" IN_LIST _verus_world_benches)
+            set(_in_world TRUE)
+        endif()
+        if(EXISTS "${_lib}" OR _in_world)
             message(STATUS "Verus kit accelerator: ${_crate}")
             target_sources(accelerator_codegen PRIVATE ${_verus_kit_srcs})
             set_source_files_properties(${_verus_kit_srcs} PROPERTIES INCLUDE_DIRECTORIES "${_dir}")
-            target_link_libraries(accelerator_codegen PRIVATE "${_lib}" pthread dl m)
+            if(NOT _in_world)
+                target_link_libraries(accelerator_codegen PRIVATE "${_lib}" pthread dl m)
+            endif()
         endif()
     endif()
 endforeach()
@@ -492,6 +519,11 @@ target_link_libraries(measure_shared_sec_edgar_aux_memory
         accelerator_codegen
         duckdb_sibling
 )
+
+# C++ vs Verus aux accelerators: read-only and concurrent reader/writer runs
+# (benchmarks/compare/run_compare.py).
+add_executable(aux_compare benchmarks/compare/aux_compare.cpp)
+target_link_libraries(aux_compare PRIVATE accelerator_codegen duckdb_sibling)
 
 if(ACCEL_AUX_CALIBRATION)
     add_executable(calibrate_shared_aux_cost_model

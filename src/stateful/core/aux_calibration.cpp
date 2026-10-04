@@ -1,6 +1,7 @@
 // SCAFFOLDING
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
 
+#include <cstdlib>
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -267,6 +268,8 @@ WriteCalibrationResult CalibrateFromWrites(const std::vector<CalibrationWrite> &
 
   WriteCalibrationResult result;
   result.params = seed;
+  const char *once_env = std::getenv("ACCEL_AUX_CALIBRATION_REBUILD_ONCE");
+  const bool rebuild_once = once_env && std::string(once_env) == "1";
   std::vector<std::pair<std::size_t, double>> delta, partition;
   double all_sum = 0.0;
   for (const auto &write : writes) {
@@ -293,8 +296,16 @@ WriteCalibrationResult CalibrateFromWrites(const std::vector<CalibrationWrite> &
                         });
     };
     sample.apply_delta_us = net(MaintenanceAction::ApplyDelta);
-    sample.rebuild_partition_us = net(MaintenanceAction::RebuildPartition);
-    sample.rebuild_all_us = net(MaintenanceAction::RebuildAll);
+    // ACCEL_AUX_CALIBRATION_REBUILD_ONCE=1: an accelerator whose rebuild does
+    // not depend on the write and has one partition (a Verus kit) measures
+    // its rebuild on the first write only (it is a full rebuild either way).
+    if (rebuild_once && !result.samples.empty()) {
+      sample.rebuild_partition_us = result.samples.front().rebuild_partition_us;
+      sample.rebuild_all_us = result.samples.front().rebuild_all_us;
+    } else {
+      sample.rebuild_all_us = net(MaintenanceAction::RebuildAll);
+      sample.rebuild_partition_us = rebuild_once ? sample.rebuild_all_us : net(MaintenanceAction::RebuildPartition);
+    }
     if (sample.rows > 0) {
       delta.emplace_back(sample.rows, sample.apply_delta_us);
     }

@@ -1,4 +1,5 @@
 #include "accelerator_codegen/harness/cost_calibration.hpp"
+#include "accelerator_codegen/runtime/catalog/shared_query_engine.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -14,7 +15,10 @@ void Usage(const char *program) {
       << "usage: " << program
       << " <workload> <query_id> <duckdb_path> [output_json]\n"
       << "  workload: tpch | sec_edgar\n"
-      << "  output_json defaults to config/<workload>_q<query_id>_aux_cost_model.json\n";
+      << "  output_json defaults to config/<workload>_q<query_id>_aux_cost_model.json\n"
+      << "   or: " << program << " verus <accelerator_id> <duckdb_path> <output_json> [params]\n"
+      << "  a Verus kit (tpch_q6_vgen, ...), read with `params` (one SQL tuple, as in its\n"
+      << "  tests' params.sql); set ACCEL_AUX_STORE=verus for the Verus store\n";
 }
 
 } // namespace
@@ -27,15 +31,37 @@ int main(int argc, char **argv) {
     }
 
     const std::string workload = argv[1];
-    const int query_id = std::stoi(argv[2]);
     const std::string db_path = argv[3];
 
     using namespace accelerator_codegen::aux_state;
     using namespace accelerator_codegen::aux_state::harness;
     using namespace accelerator_codegen::aux_state::engine;
-    const auto &entry = LookupSharedQuery(workload, query_id);
-    const std::string out_path =
-        argc > 4 ? argv[4] : SharedCostModelConfigPath(entry.workload, query_id);
+    duckdb::DuckDB database(db_path);
+    duckdb::Connection connection(database);
+    SharedQueryCatalogEntry entry;
+    std::string out_path;
+    if (workload == "verus") {
+      // The cost model it loads and refines is the one the runtime reads: point
+      // ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL at output_json.
+      const auto *kit = VerusKitCatalogEntry(argv[2]);
+      if (!kit || argc < 5)
+        throw std::runtime_error(std::string("no Verus kit ") + argv[2] + " (or no output_json)");
+      entry = *kit;
+      out_path = argv[4];
+      if (argc > 5) {
+        auto row = connection.Query(std::string("SELECT ") + argv[5]);
+        if (!row || row->HasError() || row->RowCount() != 1)
+          throw std::runtime_error(std::string("params: ") + (row ? row->GetError() : argv[5]));
+        std::vector<duckdb::Value> values;
+        for (duckdb::idx_t c = 0; c < row->ColumnCount(); ++c)
+          values.push_back(row->GetValue(c, 0));
+        entry.benchmark_arguments.values = AuxArgumentsFromValues(entry, values).values;
+      }
+    } else {
+      const int query_id = std::stoi(argv[2]);
+      entry = LookupSharedQuery(workload, query_id);
+      out_path = argc > 4 ? argv[4] : SharedCostModelConfigPath(entry.workload, query_id);
+    }
 
     core::AuxCalibrationConfig config;
     if (const char *samples = std::getenv("ACCEL_AUX_CALIBRATION_SAMPLES")) {
@@ -45,8 +71,6 @@ int main(int argc, char **argv) {
       config.warmup_samples = static_cast<std::size_t>(std::stoul(warmups));
     }
 
-    duckdb::DuckDB database(db_path);
-    duckdb::Connection connection(database);
     const auto result = CalibrateSharedQueryCostModel(connection, entry, config);
     WriteSharedQueryCostModel(out_path, result, entry);
 

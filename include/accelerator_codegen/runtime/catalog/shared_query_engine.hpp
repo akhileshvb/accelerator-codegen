@@ -2,11 +2,13 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "catalog/query_catalog.hpp"
 
 namespace duckdb {
 class Connection;
+class Value;
 }
 
 namespace accelerator_codegen::aux_state::engine {
@@ -36,6 +38,11 @@ public:
 };
 
 void RegisterDuckdbAuxTableFunctions(::duckdb::Connection &connection);
+
+// An accelerator's arguments from DuckDB values, typed as the table function
+// accel_<id>(...) types them (by the entry's argument types).
+core::QueryArguments AuxArgumentsFromValues(const SharedQueryCatalogEntry &entry,
+                                            const std::vector<::duckdb::Value> &values);
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 void RegisterDuckdbAuxParallelTableFunctions(::duckdb::Connection &connection);

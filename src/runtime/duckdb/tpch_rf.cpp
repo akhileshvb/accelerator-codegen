@@ -162,6 +162,10 @@ core::AuxRow LineitemAuxRowForQuery(int query_id,
     return {{DateVal(shipdate), DecVal(qty, 2), DecVal(price, 2),
              DecVal(discount, 2), DecVal(tax, 2), StrVal(returnflag),
              StrVal(linestatus)}};
+  case 4:
+    return {{IntVal(orderkey), DateVal(commitdate), DateVal(receiptdate)}};
+  case 5:
+    return {{IntVal(orderkey), IntVal(suppkey), DecVal(price, 2), DecVal(discount, 2)}};
   case 3:
     return {{IntVal(orderkey), DecVal(price, 2), DecVal(discount, 2),
              DateVal(shipdate)}};
@@ -206,6 +210,10 @@ core::AuxRow OrderAuxRowForQuery(int query_id,
   const auto shippriority = SafeI64(ord.GetValue(7, row));
 
   switch (query_id) {
+  case 13:
+    return {{IntVal(custkey), StrVal(ord.GetValue(8, row).ToString())}};
+  case 4:
+    return {{IntVal(orderkey), DateVal(orderdate), StrVal(priority)}};
   case 3:
     return {{IntVal(orderkey), DateVal(orderdate), IntVal(custkey),
              IntVal(shippriority)}};
@@ -258,6 +266,22 @@ TpchRfTableIds TpchRfTableIdsForQuery(int query_id) {
   case 1:
   case 6:
     ids.lineitem = 1;
+    ids.watches_lineitem = true;
+    break;
+  case 13: // TpchQ13Config{customer 0, orders 1}; no lineitem
+    ids.orders = 1;
+    ids.watches_orders = true;
+    break;
+  case 4:
+    ids.orders = 1;
+    ids.lineitem = 2;
+    ids.watches_orders = true;
+    ids.watches_lineitem = true;
+    break;
+  case 5:
+    ids.orders = 5;
+    ids.lineitem = 6;
+    ids.watches_orders = true;
     ids.watches_lineitem = true;
     break;
   case 3:
@@ -324,6 +348,31 @@ TpchRfChunkPlan NextTpchRfChunkPlan(int write_seq, int order_count,
     plan.kind = TpchRfKind::Rf1Insert;
   }
   return plan;
+}
+
+std::string TpchRfChunkStatements(::duckdb::Connection &connection, const TpchRfChunkPlan &plan) {
+  std::ostringstream sql;
+  if (plan.kind == TpchRfKind::Rf2Delete) {
+    Require(!plan.orderkeys.empty(), "RF2 requires orderkeys");
+    const auto in_list = SqlInList(plan.orderkeys);
+    sql << "DELETE FROM lineitem WHERE l_orderkey IN " << in_list << "; DELETE FROM orders WHERE o_orderkey IN "
+        << in_list;
+    return sql.str();
+  }
+  auto max_res = connection.Query("SELECT COALESCE(MAX(o_orderkey),0)::BIGINT FROM orders");
+  Require(max_res && !max_res->HasError(), "RF1 max orderkey failed");
+  int64_t next_key = SafeI64(max_res->GetValue(0, 0)) + 1;
+  auto tmpl = connection.Query("SELECT o_orderkey FROM orders ORDER BY o_orderkey DESC LIMIT " +
+                               std::to_string(plan.order_count));
+  Require(tmpl && !tmpl->HasError() && tmpl->RowCount() > 0, "RF1 template orders failed");
+  for (::duckdb::idx_t i = 0; i < tmpl->RowCount(); ++i) {
+    const auto from = std::to_string(SafeI64(tmpl->GetValue(0, i)));
+    const auto key = std::to_string(next_key++);
+    sql << (i ? "; " : "") << "INSERT INTO orders SELECT * REPLACE (" << key
+        << " AS o_orderkey) FROM orders WHERE o_orderkey = " << from << "; INSERT INTO lineitem SELECT * REPLACE ("
+        << key << " AS l_orderkey) FROM lineitem WHERE l_orderkey = " << from;
+  }
+  return sql.str();
 }
 
 TpchRfApplyResult ApplyTpchRfChunkSql(::duckdb::Connection &connection,

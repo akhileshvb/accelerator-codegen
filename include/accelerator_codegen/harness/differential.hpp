@@ -38,6 +38,13 @@ void RunIncrementalDifferentialCheck(const std::string &db_path,
 // require Execute matches DuckDB base_sql. Escalates chunk size until the DuckDB
 // answer changes so the write is a real invalidation for this query. db_path
 // must be a writable work copy (mutations are permanent).
+// Writes of every TPC-H kind (RF1/RF2, lineitem / customer updates, parts and
+// suppliers deleted and inserted with their partsupp rows, a supplier-only
+// update), run as SQL and captured by the engine; after each one the
+// accelerator must match the query.
+void RunSqlWritesDifferentialCheck(const std::string &db_path,
+                                   const aux_engine::SharedQueryCatalogEntry &entry, int rounds);
+
 void RunRfChunkDifferentialCheck(const std::string &db_path,
                                  const aux_engine::SharedQueryCatalogEntry &entry,
                                  int num_chunks = 4, int order_count = 1);

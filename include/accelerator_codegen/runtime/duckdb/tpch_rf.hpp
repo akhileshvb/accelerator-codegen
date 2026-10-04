@@ -46,6 +46,13 @@ struct TpchRfApplyResult {
 TpchRfApplyResult ApplyTpchRfChunkSql(::duckdb::Connection &connection,
                                       int query_id, const TpchRfChunkPlan &plan);
 
+// The same chunk as one SQL text (statements separated by `;`), for engines
+// whose capture sees the SQL's own mutations (Verus kits map them to their
+// tables by name): RF2 deletes the plan's orders with their lineitems; RF1
+// inserts `order_count` orders cloned with their lineitems from the largest
+// existing orders, under fresh keys above the maximum.
+std::string TpchRfChunkStatements(::duckdb::Connection &connection, const TpchRfChunkPlan &plan);
+
 std::string TpchRfKindName(TpchRfKind kind);
 
 } // namespace accelerator_codegen::aux_state::engine

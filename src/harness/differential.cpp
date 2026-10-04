@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <iomanip>
@@ -357,6 +358,159 @@ void RunRfChunkDifferentialCheck(const std::string &db_path,
     }
   }
   Require(changed, "internal: RF differential exited without invalidation");
+}
+
+namespace {
+
+std::vector<int64_t> KeyList(duckdb::Connection &connection, const std::string &sql) {
+  auto result = connection.Query(sql);
+  Require(result != nullptr && !result->HasError(), result ? result->GetError() : sql);
+  std::vector<int64_t> keys;
+  for (duckdb::idx_t i = 0; i < result->RowCount(); ++i)
+    keys.push_back(result->GetValue(0, i).GetValue<int64_t>());
+  return keys;
+}
+
+struct NamedWrite {
+  std::string name;
+  std::string sql;
+};
+
+// TPC-H writes of every kind an accelerator must maintain under: RF2 / RF1
+// (orders with their lineitems, at both ends of the key range and in the
+// middle), lineitem and customer updates, and parts / suppliers deleted and
+// inserted with their partsupp rows, plus a supplier-only update.
+std::vector<NamedWrite> TpchDifferentialWrites(duckdb::Connection &connection, int rounds) {
+  const auto n = std::to_string(rounds + 2);
+  const auto low_orders = KeyList(connection, "SELECT o_orderkey FROM orders ORDER BY o_orderkey LIMIT " + n);
+  const auto mid_orders = KeyList(connection, "SELECT o_orderkey FROM orders ORDER BY o_orderkey LIMIT " + n +
+                                                  " OFFSET (SELECT count(*) // 2 FROM orders)");
+  const auto top_orders = KeyList(connection, "SELECT o_orderkey FROM orders ORDER BY o_orderkey DESC LIMIT " + n);
+  const auto low_parts = KeyList(connection, "SELECT p_partkey FROM part ORDER BY p_partkey LIMIT " + n);
+  const auto top_parts = KeyList(connection, "SELECT p_partkey FROM part ORDER BY p_partkey DESC LIMIT " + n);
+  const auto low_supps = KeyList(connection, "SELECT s_suppkey FROM supplier ORDER BY s_suppkey LIMIT " + n);
+  const auto top_supps = KeyList(connection, "SELECT s_suppkey FROM supplier ORDER BY s_suppkey DESC LIMIT " + n);
+  const auto mid_custs = KeyList(connection, "SELECT c_custkey FROM customer ORDER BY c_custkey LIMIT " + n +
+                                                 " OFFSET (SELECT count(*) // 3 FROM customer)");
+  int64_t next_order = KeyList(connection, "SELECT max(o_orderkey) FROM orders")[0] + 1;
+  int64_t next_part = KeyList(connection, "SELECT max(p_partkey) FROM part")[0] + 1;
+  int64_t next_supp = KeyList(connection, "SELECT max(s_suppkey) FROM supplier")[0] + 1;
+  const char *segments[] = {"BUILDING", "AUTOMOBILE", "MACHINERY", "HOUSEHOLD", "FURNITURE"};
+  auto s = [](int64_t v) { return std::to_string(v); };
+  auto delete_order = [&](int64_t k) {
+    return "DELETE FROM lineitem WHERE l_orderkey = " + s(k) + "; DELETE FROM orders WHERE o_orderkey = " + s(k);
+  };
+  std::vector<NamedWrite> writes;
+  for (int r = 0; r < rounds; ++r) {
+    const auto tag = "#" + std::to_string(r);
+    writes.push_back({"rf2 low order" + tag, delete_order(low_orders[r])});
+    writes.push_back({"rf2 mid order" + tag, delete_order(mid_orders[r])});
+    const auto k = next_order++;
+    writes.push_back({"rf1 order" + tag,
+                      "INSERT INTO orders SELECT * REPLACE (" + s(k) + " AS o_orderkey) FROM orders WHERE o_orderkey = " +
+                          s(top_orders[r]) + "; INSERT INTO lineitem SELECT * REPLACE (" + s(k) +
+                          " AS l_orderkey) FROM lineitem WHERE l_orderkey = " + s(top_orders[r])});
+    writes.push_back({"lineitem update" + tag,
+                      "UPDATE lineitem SET l_quantity = l_quantity + 1, l_discount = 0.04 WHERE l_orderkey = " +
+                          s(mid_orders[r + 1])});
+    writes.push_back({"customer segment" + tag, std::string("UPDATE customer SET c_mktsegment = '") +
+                                                    segments[r % 5] + "' WHERE c_custkey = " + s(mid_custs[r])});
+    writes.push_back({"part delete" + tag, "DELETE FROM partsupp WHERE ps_partkey = " + s(low_parts[r]) +
+                                               "; DELETE FROM part WHERE p_partkey = " + s(low_parts[r])});
+    const auto p = next_part++;
+    writes.push_back({"part insert" + tag,
+                      "INSERT INTO part SELECT * REPLACE (" + s(p) + " AS p_partkey) FROM part WHERE p_partkey = " +
+                          s(top_parts[r]) + "; INSERT INTO partsupp SELECT * REPLACE (" + s(p) +
+                          " AS ps_partkey) FROM partsupp WHERE ps_partkey = " + s(top_parts[r])});
+    writes.push_back({"supplier delete" + tag, "DELETE FROM partsupp WHERE ps_suppkey = " + s(low_supps[r]) +
+                                                   "; DELETE FROM supplier WHERE s_suppkey = " + s(low_supps[r])});
+    const auto q = next_supp++;
+    writes.push_back({"supplier insert" + tag,
+                      "INSERT INTO supplier SELECT * REPLACE (" + s(q) +
+                          " AS s_suppkey) FROM supplier WHERE s_suppkey = " + s(top_supps[r]) +
+                          "; INSERT INTO partsupp SELECT * REPLACE (" + s(q) +
+                          " AS ps_suppkey) FROM partsupp WHERE ps_suppkey = " + s(top_supps[r])});
+    writes.push_back({"supplier rename" + tag, "UPDATE supplier SET s_name = s_name || 'x', s_phone = '10-" +
+                                                   std::to_string(100 + r) + "-000-0000'"});
+  }
+  return writes;
+}
+
+// Writes aimed at one query's answer (its catalog default arguments): they
+// change rows the answer depends on, in the ways its maintenance must handle.
+std::vector<NamedWrite> TargetedWrites(duckdb::Connection &connection, const SharedQueryCatalogEntry &entry) {
+  std::vector<NamedWrite> writes;
+  auto list = [](const std::vector<int64_t> &keys) {
+    std::string out;
+    for (const auto k : keys)
+      out += (out.empty() ? "" : ",") + std::to_string(k);
+    return out;
+  };
+  switch (entry.query_id) {
+  case 15: { // rename the current winner(s): a supplier-only write
+    const auto winners = KeyList(connection, std::string("SELECT * FROM (") + entry.base_sql + ")");
+    if (!winners.empty())
+      writes.push_back({"rename q15 winner", "UPDATE supplier SET s_name = 'Supplier#renamed', s_address = 'moved', "
+                                             "s_phone = '00-000-000-0000' WHERE s_suppkey IN (" + list(winners) + ")"});
+    break;
+  }
+  case 16: // a complaint supplier deleted, its partsupp rows left: they now count
+    writes.push_back({"delete complaint supplier (partsupp kept)",
+                      "DELETE FROM supplier WHERE s_suppkey = (SELECT min(s_suppkey) FROM supplier "
+                      "WHERE s_comment LIKE '%Customer%Complaints%')"});
+    break;
+  case 19: { // qualifying lineitems deleted, then a qualifying part deleted (its lineitems kept)
+    const std::string branch = "p_brand = 'Brand#31' AND p_container IN ('SM CASE','SM BOX','SM PACK','SM PKG') "
+                               "AND l_quantity BETWEEN 4 AND 14 AND p_size BETWEEN 1 AND 5 "
+                               "AND l_shipmode IN ('AIR','AIR REG') AND l_shipinstruct = 'DELIVER IN PERSON'";
+    writes.push_back({"delete q19 qualifying lineitems",
+                      "DELETE FROM lineitem WHERE rowid IN (SELECT l.rowid FROM lineitem l JOIN part p ON "
+                      "p.p_partkey = l.l_partkey WHERE " + branch + " LIMIT 5)"});
+    const auto part = KeyList(connection, "SELECT p_partkey FROM lineitem JOIN part ON p_partkey = l_partkey WHERE " +
+                                              branch + " LIMIT 1");
+    if (!part.empty())
+      writes.push_back({"delete q19 qualifying part", "DELETE FROM part WHERE p_partkey = " + std::to_string(part[0])});
+    break;
+  }
+  case 20: { // every lineitem of a few qualifying (part, supplier) pairs deleted
+    auto pairs = connection.Query(
+        "SELECT DISTINCT l_partkey, l_suppkey FROM lineitem JOIN part ON p_partkey = l_partkey "
+        "JOIN supplier ON s_suppkey = l_suppkey JOIN nation ON n_nationkey = s_nationkey "
+        "WHERE p_name LIKE 'gainsboro%' AND n_name = 'RUSSIA' AND l_shipdate >= DATE '1997-01-01' "
+        "AND l_shipdate < DATE '1998-01-01' ORDER BY 1, 2 LIMIT 3");
+    Require(pairs && !pairs->HasError(), pairs ? pairs->GetError() : "q20 pairs");
+    for (duckdb::idx_t i = 0; i < pairs->RowCount(); ++i)
+      writes.push_back({"delete q20 pair lineitems",
+                        "DELETE FROM lineitem WHERE l_partkey = " + pairs->GetValue(0, i).ToString() +
+                            " AND l_suppkey = " + pairs->GetValue(1, i).ToString()});
+    break;
+  }
+  default:
+    break;
+  }
+  return writes;
+}
+
+} // namespace
+
+void RunSqlWritesDifferentialCheck(const std::string &db_path, const SharedQueryCatalogEntry &entry, int rounds) {
+  duckdb::DuckDB database(db_path.c_str());
+  duckdb::Connection connection(database);
+  DuckdbRuntime runtime(connection, entry, 10.0);
+  runtime.Build();
+  runtime.EnableMutationCapture();
+  RequireSharedMatchesBase(connection, runtime, entry);
+  auto writes = TargetedWrites(connection, entry);
+  for (auto &w : TpchDifferentialWrites(connection, rounds))
+    writes.push_back(std::move(w));
+  for (const auto &write : writes) {
+    runtime.ApplyWrite(write.sql);
+    try {
+      RequireSharedMatchesBase(connection, runtime, entry);
+    } catch (const std::exception &ex) {
+      throw std::runtime_error(std::string(ex.what()) + " (after " + write.name + ")");
+    }
+  }
 }
 
 void RunAdversarialWriteDifferentialCheck(const std::string &db_path,

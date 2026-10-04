@@ -79,6 +79,30 @@ int main(int argc, char **argv) {
               << " chunks=" << num_chunks << " orders/chunk=" << order_count
               << '\n';
 
+    // ACCEL_TPCH_DIFF_MODE=sql: every write kind as captured SQL, all 22 queries by default
+    const char *mode = std::getenv("ACCEL_TPCH_DIFF_MODE");
+    if (mode && std::string(mode) == "sql") {
+      const char *spec = std::getenv("ACCEL_TPCH_RF_DIFF_QUERIES");
+      std::vector<int> all;
+      for (int q = 1; q <= 22; ++q)
+        all.push_back(q);
+      const auto sql_queries = spec && *spec ? queries : all;
+      const int rounds = GetEnvInt("ACCEL_TPCH_DIFF_ROUNDS", 2);
+      int failed = 0;
+      for (const int query_id : sql_queries) {
+        const auto &entry = accelerator_codegen::aux_state::engine::LookupSharedQuery("tpch", query_id);
+        CopyDb(source, work);
+        try {
+          accelerator_codegen::aux_state::harness::RunSqlWritesDifferentialCheck(work.string(), entry, rounds);
+          std::cerr << "PASS tpch Q" << query_id << '\n';
+        } catch (const std::exception &ex) {
+          ++failed;
+          std::cerr << "FAIL tpch Q" << query_id << ": " << ex.what() << '\n';
+        }
+      }
+      std::cerr << (failed ? "FAILED " : "PASS ") << failed << " of " << sql_queries.size() << '\n';
+      return failed ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
     for (const int query_id : queries) {
       if (query_id == 11) {
         std::cerr << "SKIP tpch Q11 (RF does not touch partsupp/supplier)\n";

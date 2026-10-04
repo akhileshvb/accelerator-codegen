@@ -9,6 +9,7 @@
 #include "duckdb/main/attached_database.hpp"
 #include <map>
 #include "duckdb/accelerator/mutation_recorder.hpp"
+#include "duckdb/accelerator/snapshot_override.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/main/database.hpp"
@@ -24,7 +25,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <algorithm>
 #include <mutex>
+#include <shared_mutex>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -51,16 +54,27 @@ namespace duckdb_backend = accelerator_codegen::aux_state::engine::duckdb;
 
 // Scans normally run on the runtime's (writer's) connection. A reader thread
 // (ReaderScope from another connection) must not touch it: a ScanRedirect
-// sends its scans to a private connection, opened on first use.
+// sends its scans to a private connection, opened on first use. That
+// connection reads at the reader's snapshot (`snapshot`, the reader's
+// transaction start time; 0 = the newest data), not at the newest commit:
+// the SQL fallback must answer from the same state as the rest of the
+// reader's transaction (snapshot isolation).
 struct ScanRedirect {
-  ScanRedirect(::duckdb::DatabaseInstance &db_p, std::atomic<uint64_t> &opened_p)
-      : db(db_p), opened(opened_p), previous(current) {
+  ScanRedirect(::duckdb::DatabaseInstance &db_p, std::atomic<uint64_t> &opened_p,
+               ::duckdb::transaction_t snapshot_p = 0)
+      : db(db_p), opened(opened_p), snapshot(snapshot_p), previous(current) {
     current = this;
   }
-  ~ScanRedirect() { current = previous; }
+  ~ScanRedirect() {
+    current = previous;
+    if (connection && snapshot)
+      ::duckdb::ClearTransactionStartOverride(*connection->context);
+  }
   ::duckdb::Connection &Connection() {
     if (!connection) {
       connection = std::make_unique<::duckdb::Connection>(db);
+      if (snapshot)
+        ::duckdb::SetTransactionStartOverride(*connection->context, snapshot);
       opened++;
     }
     return *connection;
@@ -70,6 +84,7 @@ struct ScanRedirect {
 private:
   ::duckdb::DatabaseInstance &db;
   std::atomic<uint64_t> &opened;
+  ::duckdb::transaction_t snapshot;
   ScanRedirect *previous;
   std::unique_ptr<::duckdb::Connection> connection;
 };
@@ -401,7 +416,9 @@ struct DuckVerusHost final : verus_kit::Host {
         for (const auto &[name, cid] : cids)
           if (lower(name) == lower(col))
             found = cid;
-      Require(found >= 0, "table " + table + " has no column " + col);
+      Require(found >= 0, "table " + table + " has no column " + col +
+                              " (a capture lists the table's own columns; compute a derived delta field, e.g. "
+                              "`... AS " + col + "`, in the glue's Apply from the base columns it reads)");
       out.push_back(found);
     }
     return out;
@@ -445,32 +462,22 @@ CreateBinding(::duckdb::Connection &connection,
   return query->make_binding(connection);
 }
 
-struct ActiveRuntimeKey {
+// Active runtimes: a handful (one per registered accelerator), read on every
+// query and written on build/teardown. A vector with a shared lock: a lookup
+// allocates nothing and concurrent readers do not serialize.
+struct ActiveRuntimeEntry {
   ::duckdb::DatabaseInstance *db = nullptr;
   std::string accelerator_id;
-
-  bool operator==(const ActiveRuntimeKey &other) const {
-    return db == other.db && accelerator_id == other.accelerator_id;
-  }
+  DuckdbRuntime *runtime = nullptr;
 };
 
-struct ActiveRuntimeKeyHash {
-  std::size_t operator()(const ActiveRuntimeKey &key) const {
-    return std::hash<::duckdb::DatabaseInstance *>()(key.db) ^
-           (std::hash<std::string>()(key.accelerator_id) << 1);
-  }
-};
-
-std::mutex &ActiveRuntimeMutex() {
-  static std::mutex mutex;
+std::shared_mutex &ActiveRuntimeMutex() {
+  static std::shared_mutex mutex;
   return mutex;
 }
 
-std::unordered_map<ActiveRuntimeKey, DuckdbRuntime *, ActiveRuntimeKeyHash> &
-ActiveRuntimes() {
-  static std::unordered_map<ActiveRuntimeKey, DuckdbRuntime *,
-                            ActiveRuntimeKeyHash>
-      runtimes;
+std::vector<ActiveRuntimeEntry> &ActiveRuntimes() {
+  static std::vector<ActiveRuntimeEntry> runtimes;
   return runtimes;
 }
 
@@ -481,32 +488,37 @@ void RegisterActiveRuntime(DuckdbRuntime *runtime,
       !connection.context->db) {
     return;
   }
-  ActiveRuntimeKey key{connection.context->db.get(), entry.accelerator_id};
-  std::lock_guard<std::mutex> lock(ActiveRuntimeMutex());
-  ActiveRuntimes()[key] = runtime;
+  auto *db = connection.context->db.get();
+  std::unique_lock<std::shared_mutex> lock(ActiveRuntimeMutex());
+  for (auto &active : ActiveRuntimes()) {
+    if (active.db == db && active.accelerator_id == entry.accelerator_id) {
+      active.runtime = runtime;
+      return;
+    }
+  }
+  ActiveRuntimes().push_back({db, entry.accelerator_id, runtime});
 }
 
 void UnregisterActiveRuntime(DuckdbRuntime *runtime) {
   if (!runtime) {
     return;
   }
-  std::lock_guard<std::mutex> lock(ActiveRuntimeMutex());
+  std::unique_lock<std::shared_mutex> lock(ActiveRuntimeMutex());
   auto &runtimes = ActiveRuntimes();
-  for (auto it = runtimes.begin(); it != runtimes.end();) {
-    if (it->second == runtime) {
-      it = runtimes.erase(it);
-    } else {
-      ++it;
-    }
-  }
+  runtimes.erase(std::remove_if(runtimes.begin(), runtimes.end(),
+                                [&](const ActiveRuntimeEntry &e) { return e.runtime == runtime; }),
+                 runtimes.end());
 }
 
 DuckdbRuntime *FindActiveRuntimeImpl(::duckdb::DatabaseInstance &db,
                                      const std::string &accelerator_id) {
-  ActiveRuntimeKey key{&db, accelerator_id};
-  std::lock_guard<std::mutex> lock(ActiveRuntimeMutex());
-  const auto it = ActiveRuntimes().find(key);
-  return it == ActiveRuntimes().end() ? nullptr : it->second;
+  std::shared_lock<std::shared_mutex> lock(ActiveRuntimeMutex());
+  for (const auto &active : ActiveRuntimes()) {
+    if (active.db == &db && active.accelerator_id == accelerator_id) {
+      return active.runtime;
+    }
+  }
+  return nullptr;
 }
 
 } // namespace
@@ -604,19 +616,16 @@ public:
   }
   // Updates report the updated columns' new values plus the old values of
   // every watched column, so a capture can rebuild the old and new rows.
+  // Every update of a watched table is reported, also one that changes no
+  // watched column: a key-only (lossy) delta is a "row with this key changed"
+  // signal (its kernel rescans the key), so dropping it loses the change. For a
+  // full-row delta the old and new projections are equal and cancel.
   bool TryGetUpdateOldColumns(::duckdb::TableCatalogEntry &table,
-                              const ::duckdb::vector<::duckdb::PhysicalIndex> &updated,
+                              const ::duckdb::vector<::duckdb::PhysicalIndex> &,
                               ::duckdb::vector<::duckdb::PhysicalIndex> &old_columns) override {
     std::lock_guard<std::mutex> lock(mutex);
     auto it = watched.find(table.name);
     if (it == watched.end()) {
-      return false;
-    }
-    bool relevant = false;
-    for (const auto &u : updated) {
-      relevant = relevant || it->second.count(static_cast<int32_t>(u.index)) > 0;
-    }
-    if (!relevant) {
       return false;
     }
     old_columns.clear();
@@ -676,6 +685,13 @@ core::AuxValue CapturedValue(const ::duckdb::Value &value) {
   case LogicalTypeId::DECIMAL: {
     if (value.IsNull()) {
       return core::AuxValue::Null(core::AuxType::ScaledDecimal);
+    }
+    if (value.type().InternalType() == ::duckdb::PhysicalType::INT128) {
+      const auto huge = value.GetValueUnsafe<::duckdb::hugeint_t>();
+      const bool fits = (huge.upper == 0 && static_cast<int64_t>(huge.lower) >= 0) ||
+                        (huge.upper == -1 && static_cast<int64_t>(huge.lower) < 0);
+      if (!fits) // beyond 64 bits: exact as decimal text (DuckDB parses it back exactly), never via double
+        return core::AuxValue::Of(core::AuxType::String, value.ToString());
     }
     core::ScaledDecimal decimal;
     decimal.value = DecimalRaw(value);
@@ -748,17 +764,14 @@ void DuckdbRuntime::OnCapturedMutation(const ::duckdb::TableMutationEvent &event
                  : event.kind == ::duckdb::TableMutationKind::DELETE ? core::MutationKind::Delete
                                                                      : core::MutationKind::Update;
     if (batch.kind == core::MutationKind::Update) {
-      bool relevant = false;
+      // Delivered even when no captured column changed (see TryGetUpdateOldColumns):
+      // the old and new projections then are equal -- a key-only delta's "touched".
       for (std::size_t j = 0; j < dep.mutation_attnums.size(); ++j) {
         for (const auto &u : event.updated_columns) {
           if (static_cast<int32_t>(u.index) == dep.mutation_attnums[j]) {
             batch.updated_columns.push_back(static_cast<core::ColumnId>(j));
-            relevant = true;
           }
         }
-      }
-      if (!relevant) {
-        continue;
       }
     }
     for (const auto &row : event.rows) {
@@ -908,6 +921,12 @@ void DuckdbRuntime::CommitWrite() {
     connection_.Commit();
   } catch (...) {
     coordinator_.Abort();
+    // leave no open (or aborted) engine transaction behind: the next write starts clean
+    try {
+      if (connection_.HasActiveTransaction())
+        connection_.Rollback();
+    } catch (...) {
+    }
     throw;
   }
   coordinator_.Commit();
@@ -952,7 +971,8 @@ std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect(
   std::optional<ScanRedirect> redirect;
   auto *reader = DuckDBAuxBackend::CurrentReader();
   if (reader && reader != connection_.context.get()) {
-    redirect.emplace(*connection_.context->db, reader_fallbacks);
+    redirect.emplace(*connection_.context->db, reader_fallbacks,
+                     static_cast<::duckdb::transaction_t>(DuckDBAuxBackend::SnapshotEpoch(*reader)));
   }
   MaterializeSink sink;
   t_table_scans = 0;
@@ -1013,6 +1033,13 @@ void DuckdbRuntime::ApplyRfChunk(int write_seq, int order_count) {
   if (entry_.workload != SharedWorkloadKind::Tpch) {
     throw std::runtime_error("ApplyRfChunk is only supported for TPC-H");
   }
+  // A Verus kit's capture maps the SQL's own mutations to its tables by name
+  // (the hand-built batches below carry the C++ bindings' table ids and
+  // column layouts): run the chunk as SQL through the captured write path.
+  if (verus_kit::Find(entry_.accelerator_id)) {
+    ApplyWrite(TpchRfChunkStatements(connection_, NextTpchRfChunkPlan(write_seq, order_count, connection_)));
+    return;
+  }
   // Q11 does not watch orders/lineitem; RF would mutate the DB without
   // invalidating aux. Skip capture (and SQL) so RF sweeps stay meaningful.
   if (entry_.query_id == 11) {
@@ -1065,6 +1092,13 @@ void DuckdbRuntime::ApplyMutationBatch(const core::MutationBatch &mutation) {
 }
 
 void DuckdbRuntime::ExecuteBaseQuery() {
+  // A Verus kit's SQL is parameterized ($1, ...): its own fallback runs it
+  // with the benchmark arguments.
+  if (verus_kit::Find(entry_.accelerator_id)) {
+    MaterializeSink sink;
+    binding_->Module().ExecuteFallback(backend_, ToCoreArguments(entry_.benchmark_arguments), sink);
+    return;
+  }
   auto result = connection_.Query(entry_.base_sql);
   Require(result != nullptr && !result->HasError(),
           result ? result->GetError() : "DuckDB base query failed");

@@ -32,6 +32,20 @@
 // bench: per parameter tuple, median latency of the query vs the
 //   accelerator; then mixes of queries and writes (fraction of writes per
 //   operation), base (plain writes + query) vs accelerated.
+//   The writes come from VERUS_KIT_WRITE_MODE:
+//     txns    the spec's bench_txns (default)
+//     rf      TPC-H refresh functions in mini-chunks (VERUS_KIT_RF_CHUNK orders,
+//             default 1), alternating RF2 (delete the next smallest orders with
+//             their lineitems) and RF1 (insert as many orders, cloned with their
+//             lineitems from the largest ones, under fresh keys above the maximum)
+//     rf_dim  the same shape for the dimension tables, cycling: delete parts with
+//             their partsupp rows, insert cloned parts with theirs, then the same
+//             for suppliers
+//     auto    rf when the glue reads orders or lineitem, else rf_dim
+//   In the rf modes the plain pass runs each write and rolls it back, and the
+//   accelerated pass replays the same writes and commits them: the accelerator's
+//   capture sees only its own connection, so it stays in sync with the database.
+//   (The plain side then pays no commit: its write cost is a slight underestimate.)
 // The store is the C++ one unless ACCEL_AUX_STORE=verus.  Output: one JSON
 // object on stdout.  The database file is modified; pass a copy.
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
@@ -52,6 +66,7 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
@@ -183,6 +198,28 @@ Rows RunQuery(duckdb::Connection &c, const std::string &query_sql, const std::st
 Rows RunAccel(duckdb::Connection &c, const std::string &id, const std::string &tuple) {
   auto r = Q(c, "SELECT * FROM accel_" + id + "(" + tuple + ")");
   return Collect(*r);
+}
+
+// Timed runs (bench): the same statements, the result materialized but not rendered as
+// text -- per-cell Value::ToString is this harness's comparison format, not query work, and
+// on a large answer it dominates both sides alike.
+std::size_t TimeQuery(duckdb::Connection &c, const std::string &query_sql, const std::string &tuple) {
+  duckdb::vector<duckdb::Value> values;
+  if (!tuple.empty()) {
+    auto t = Q(c, "SELECT " + tuple);
+    for (duckdb::idx_t i = 0; i < t->ColumnCount(); ++i)
+      values.push_back(t->GetValue(i, 0));
+  }
+  auto stmt = c.Prepare(query_sql);
+  Require(stmt && !stmt->HasError(), stmt ? stmt->GetError() : "prepare failed");
+  auto r = stmt->Execute(values, false);
+  Require(r && !r->HasError(), r ? r->GetError() : "query failed");
+  return dynamic_cast<duckdb::MaterializedQueryResult &>(*r).RowCount();
+}
+
+std::size_t TimeAccel(duckdb::Connection &c, const std::string &id, const std::string &tuple) {
+  auto r = Q(c, "SELECT * FROM accel_" + id + "(" + tuple + ")");
+  return dynamic_cast<duckdb::MaterializedQueryResult &>(*r).RowCount();
 }
 
 bool SameCell(const std::string &a, const std::string &b) {
@@ -357,7 +394,33 @@ std::string RowsJson(const Rows &rows, std::size_t limit = 5) {
 
 struct Tally {
   int checks = 0, mismatches = 0, order_mismatches = 0;
+  int reference_errors = 0; // DuckDB itself could not evaluate the query: nothing to compare
   std::vector<std::string> examples;
+  // One comparison: the reference first (if DuckDB cannot evaluate it, e.g. a decimal
+  // overflow on extreme test values, the check is skipped and counted); an accelerator
+  // call that fails where the reference succeeds is a wrong answer.
+  void CheckCall(const std::string &where, const std::string &tuple, const std::function<Rows()> &accel,
+                 const std::function<Rows()> &query, const Ordering &o, const std::function<Rows()> &full) {
+    Rows q;
+    try {
+      q = query();
+    } catch (const std::exception &) {
+      ++reference_errors;
+      return;
+    }
+    Rows a;
+    try {
+      a = accel();
+    } catch (const std::exception &e) {
+      ++checks;
+      ++mismatches;
+      if (examples.size() < 8)
+        examples.push_back("{\"at\":" + Json(where) + ",\"params\":" + Json(tuple) +
+                           ",\"kind\":\"accel_error\",\"error\":" + Json(e.what()) + "}");
+      return;
+    }
+    Check(where, tuple, a, q, o, full);
+  }
   void Check(const std::string &where, const std::string &tuple, const Rows &a, const Rows &q,
              const Ordering &o = {}, const std::function<Rows()> &full = {}) {
     ++checks;
@@ -375,7 +438,8 @@ struct Tally {
     std::string ex = "[";
     for (std::size_t i = 0; i < examples.size(); ++i)
       ex += (i ? "," : "") + examples[i];
-    return "\"checks\":" + std::to_string(checks) + ",\"mismatches\":" + std::to_string(mismatches) +
+    return "\"checks\":" + std::to_string(checks) + ",\"reference_errors\":" + std::to_string(reference_errors) +
+           ",\"mismatches\":" + std::to_string(mismatches) +
            ",\"order_mismatches\":" + std::to_string(order_mismatches) + ",\"examples\":" + ex + "]";
   }
 };
@@ -430,18 +494,22 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
   std::mt19937_64 rng(7);
   auto check_all = [&](const std::string &where) {
     for (const auto &t : spec.params)
-      tally.Check(where, t, RunAccel(qc, id, t), RunQuery(qc, s.glue->query_sql, t), s.ordering,
-                    [&] { return RunQuery(qc, s.ordering.unlimited_sql, t); });
+      tally.CheckCall(where, t, [&] { return RunAccel(qc, id, t); }, [&] { return RunQuery(qc, s.glue->query_sql, t); },
+                        s.ordering, [&] { return RunQuery(qc, s.ordering.unlimited_sql, t); });
   };
   check_all("build");
   std::map<std::string, int> actions;
   int write_errors = 0;
+  std::string write_error_examples = "[";
   for (std::size_t i = 0; i < spec.txns.size(); ++i) {
     core::ClearMaintenanceDecisionLog();
     try {
       rt.ApplyWrite(spec.txns[i]);
-    } catch (const std::exception &) {
-      ++write_errors;
+    } catch (const std::exception &e) {
+      // the tests run on plain DuckDB (validated): a write the runtime cannot apply is a failure
+      if (++write_errors <= 3)
+        write_error_examples += std::string(write_errors > 1 ? "," : "") + "{\"txn\":" + Json(spec.txn_names[i]) +
+                                ",\"error\":" + Json(std::string(e.what()).substr(0, 600)) + "}";
       continue;
     }
     const auto d = core::LastMaintenanceDecision();
@@ -452,8 +520,8 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
     } else {
       for (int k = 0; k < 2; ++k) {
         const auto &t = spec.params[rng() % spec.params.size()];
-        tally.Check(where, t, RunAccel(qc, id, t), RunQuery(qc, s.glue->query_sql, t), s.ordering,
-                    [&] { return RunQuery(qc, s.ordering.unlimited_sql, t); });
+        tally.CheckCall(where, t, [&] { return RunAccel(qc, id, t); }, [&] { return RunQuery(qc, s.glue->query_sql, t); },
+                        s.ordering, [&] { return RunQuery(qc, s.ordering.unlimited_sql, t); });
       }
     }
   }
@@ -462,10 +530,13 @@ int Differential(const std::string &path, const std::string &id, const Spec &spe
   for (const auto &[k, v] : actions)
     acts += (acts.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(v);
   std::cout << "{\"mode\":\"differential\",\"txns\":" << spec.txns.size() << ",\"write_errors\":" << write_errors
-            << ",\"build_ms\":" << build_ms << "," << tally.Fields() << ",\"staged_actions\":" << acts
+            << ",\"write_error_examples\":" << write_error_examples << "]" << ",\"build_ms\":" << build_ms << "," << tally.Fields() << ",\"staged_actions\":" << acts
             << "},\"staged_action_names\":{\"1\":\"ApplyDelta\",\"3\":\"RebuildAll\"}," << StoreFields(rt) << "}"
             << std::endl;
-  return tally.mismatches + tally.order_mismatches == 0 && rt.StaleInstallCount() == 0 ? 0 : 1;
+  // skipped comparisons (reference errors) must stay a minority: a run that compared
+  // little or nothing proves little
+  const bool compared = tally.checks > 0 && tally.reference_errors <= tally.checks;
+  return compared && write_errors == 0 && tally.mismatches + tally.order_mismatches == 0 && rt.StaleInstallCount() == 0 ? 0 : 1;
 }
 
 int Snapshots(const std::string &path, const std::string &id, const Spec &spec, int writes, int readers,
@@ -478,7 +549,7 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
   rt.EnableMutationCapture();
   rt.Build();
   std::atomic<bool> done{false};
-  std::atomic<int> checks{0}, mismatches{0}, failures{0};
+  std::atomic<int> checks{0}, mismatches{0}, failures{0}, reference_errors{0};
   std::mutex ex_mutex;
   std::vector<std::string> examples;
   std::vector<std::thread> threads;
@@ -492,7 +563,16 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
           Q(rc, "BEGIN TRANSACTION");
           const auto a = RunAccel(rc, id, p);
           std::this_thread::sleep_for(std::chrono::microseconds(rng() % 3000));
-          const auto b = RunQuery(rc, s.glue->query_sql, p);
+          Rows b;
+          try {
+            b = RunQuery(rc, s.glue->query_sql, p);
+          } catch (const std::exception &) {
+            // DuckDB itself cannot evaluate the reference here (e.g. a decimal overflow on extreme
+            // test values): nothing to compare; skipped and counted, as in differential
+            Q(rc, "ROLLBACK");
+            ++reference_errors;
+            continue;
+          }
           std::this_thread::sleep_for(std::chrono::microseconds(rng() % 3000));
           const auto c = RunAccel(rc, id, p);
           const auto full = [&] { return RunQuery(rc, s.ordering.unlimited_sql, p); }; // same snapshot
@@ -515,11 +595,14 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
   }
   std::mt19937_64 rng(seed);
   int write_errors = 0;
+  std::string write_error_example;
   for (int i = 0; i < writes; ++i) {
     try {
       rt.ApplyWrite(spec.txns[rng() % spec.txns.size()]);
-    } catch (const std::exception &) {
-      ++write_errors;
+    } catch (const std::exception &e) {
+      // random order: a transaction can legitimately fail here (its rows gone)
+      if (++write_errors == 1)
+        write_error_example = std::string(e.what()).substr(0, 600);
     }
     std::this_thread::sleep_for(std::chrono::microseconds(rng() % 2000));
   }
@@ -530,10 +613,14 @@ int Snapshots(const std::string &path, const std::string &id, const Spec &spec, 
   for (std::size_t i = 0; i < examples.size(); ++i)
     ex += (i ? "," : "") + examples[i];
   std::cout << "{\"mode\":\"snapshots\",\"writes\":" << writes << ",\"write_errors\":" << write_errors
-            << ",\"readers\":" << readers << ",\"checks\":" << checks << ",\"mismatches\":" << mismatches
-            << ",\"reader_failures\":" << failures << ",\"examples\":" << ex << "]," << StoreFields(rt) << "}"
+            << ",\"write_error_example\":" << Json(write_error_example) << ",\"readers\":" << readers << ",\"checks\":" << checks << ",\"reference_errors\":" << reference_errors
+            << ",\"mismatches\":" << mismatches << ",\"reader_failures\":" << failures << ",\"examples\":" << ex << "]," << StoreFields(rt) << "}"
             << std::endl;
-  return mismatches == 0 && failures == 0 && rt.StaleInstallCount() == 0 ? 0 : 1;
+  // some writes must commit, or the readers saw no concurrent maintenance
+  return mismatches == 0 && failures == 0 && write_errors < writes && checks > 0 && reference_errors <= checks &&
+                 rt.StaleInstallCount() == 0
+             ? 0
+             : 1;
 }
 
 double Median(std::vector<double> v) {
@@ -563,6 +650,85 @@ void PerfEnable() {
   }
 }
 
+std::vector<int64_t> Keys(duckdb::Connection &c, const std::string &sql) {
+  auto r = c.Query(sql);
+  Require(r && !r->HasError(), r ? r->GetError() : sql);
+  std::vector<int64_t> keys;
+  for (duckdb::idx_t i = 0; i < r->RowCount(); ++i)
+    keys.push_back(r->GetValue(0, i).GetValue<int64_t>());
+  return keys;
+}
+
+// Deterministic refresh-style writes (see VERUS_KIT_WRITE_MODE above); a copy
+// replays the same sequence.
+struct RfWrites {
+  struct Entity {
+    std::string table, key, partsupp_key; // partsupp_key empty: orders (with lineitem)
+    std::vector<int64_t> victims, templates;
+    int64_t next_key = 0;
+    std::size_t victim_at = 0, template_at = 0;
+  };
+  std::vector<Entity> entities; // rf: orders; rf_dim: part, supplier
+  int chunk = 1;
+  long seq = 0;
+
+  static Entity Load(duckdb::Connection &c, const std::string &table, const std::string &key,
+                     const std::string &partsupp_key, std::size_t victims) {
+    Entity e{table, key, partsupp_key, {}, {}, 0, 0, 0};
+    e.victims = Keys(c, "SELECT " + key + " FROM " + table + " ORDER BY " + key + " LIMIT " + std::to_string(victims));
+    e.templates = Keys(c, "SELECT " + key + " FROM " + table + " ORDER BY " + key + " DESC LIMIT 1000");
+    e.next_key = Keys(c, "SELECT max(" + key + ") FROM " + table)[0] + 1;
+    Require(!e.templates.empty(), "rf: empty table " + table);
+    return e;
+  }
+
+  std::string Next() {
+    const long op = seq++;
+    auto &e = entities[(op / 2) % entities.size()];
+    std::ostringstream sql;
+    if (op % 2 == 0) { // delete the next victims
+      Require(e.victim_at + chunk <= e.victims.size(), "rf: out of " + e.table + " keys to delete");
+      std::string in = "(";
+      for (int j = 0; j < chunk; ++j)
+        in += (j ? "," : "") + std::to_string(e.victims[e.victim_at++]);
+      in += ")";
+      if (e.partsupp_key.empty())
+        sql << "DELETE FROM lineitem WHERE l_orderkey IN " << in << "; ";
+      else
+        sql << "DELETE FROM partsupp WHERE " << e.partsupp_key << " IN " << in << "; ";
+      sql << "DELETE FROM " << e.table << " WHERE " << e.key << " IN " << in;
+    } else { // insert clones under fresh keys
+      for (int j = 0; j < chunk; ++j) {
+        const auto from = std::to_string(e.templates[e.template_at++ % e.templates.size()]);
+        const auto key = std::to_string(e.next_key++);
+        sql << (j ? "; " : "") << "INSERT INTO " << e.table << " SELECT * REPLACE (" << key << " AS " << e.key
+            << ") FROM " << e.table << " WHERE " << e.key << " = " << from << "; ";
+        if (e.partsupp_key.empty())
+          sql << "INSERT INTO lineitem SELECT * REPLACE (" << key << " AS l_orderkey) FROM lineitem WHERE l_orderkey = "
+              << from;
+        else
+          sql << "INSERT INTO partsupp SELECT * REPLACE (" << key << " AS " << e.partsupp_key
+              << ") FROM partsupp WHERE " << e.partsupp_key << " = " << from;
+      }
+    }
+    return sql.str();
+  }
+};
+
+std::string WriteMode(const kit::Glue &glue) {
+  const char *env = std::getenv("VERUS_KIT_WRITE_MODE");
+  std::string mode = env && *env ? env : "txns";
+  if (mode == "auto") {
+    mode = "rf_dim";
+    for (const auto &t : glue.tables)
+      if (std::string(t.name) == "orders" || std::string(t.name) == "lineitem")
+        mode = "rf";
+  }
+  Require(mode == "txns" || mode == "rf" || mode == "rf_dim",
+          "VERUS_KIT_WRITE_MODE must be txns, rf, rf_dim or auto");
+  return mode;
+}
+
 int Bench(const std::string &path, const std::string &id, const Spec &spec, int reps, std::vector<double> mixes,
           int ops) {
   // VERUS_KIT_BENCH_PHASE=reads|writes: only that part (for per-axis profiles)
@@ -579,24 +745,51 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
   const auto build_start = Clock::now();
   rt.Build();
   const double build_ms = std::chrono::duration<double, std::milli>(Clock::now() - build_start).count();
+  // the parameter tuples the plain query can evaluate on this database (the tests' extreme tuples can
+  // overflow it at scale): those are what is timed
+  std::vector<std::string> usable;
+  for (const auto &t : spec.params) {
+    try {
+      RunQuery(qc, s.glue->query_sql, t);
+      usable.push_back(t);
+    } catch (const std::exception &) {
+    }
+  }
+  Require(!usable.empty(), "bench: the plain query fails for every parameter tuple on this database");
+  const std::string write_mode = WriteMode(*s.glue);
+  const char *chunk_env = std::getenv("VERUS_KIT_RF_CHUNK");
+  const int rf_chunk = chunk_env && *chunk_env ? std::max(1, std::atoi(chunk_env)) : 1;
+  std::optional<RfWrites> rf;
+  if (write_mode != "txns") {
+    rf.emplace();
+    rf->chunk = rf_chunk;
+    const std::size_t victims = static_cast<std::size_t>(ops) * std::max<std::size_t>(mixes.size(), 1) * rf_chunk + 16;
+    if (write_mode == "rf")
+      rf->entities.push_back(RfWrites::Load(qc, "orders", "o_orderkey", "", victims));
+    else {
+      rf->entities.push_back(RfWrites::Load(qc, "part", "p_partkey", "ps_partkey", victims));
+      rf->entities.push_back(RfWrites::Load(qc, "supplier", "s_suppkey", "ps_suppkey", victims));
+    }
+  }
+  const bool have_writes = rf.has_value() || !spec.bench_txns.empty();
   PerfEnable();
   auto us = [](Clock::time_point a) { return std::chrono::duration<double, std::micro>(Clock::now() - a).count(); };
   // read-only: per tuple, medians of the query and of the accelerator
   std::string per = "[";
   double log_sum = 0;
   int n = 0;
-  std::size_t tuples = phase == "writes" ? 0 : std::min<std::size_t>(spec.params.size(), 12);
+  std::size_t tuples = phase == "writes" ? 0 : std::min<std::size_t>(usable.size(), 12);
   for (std::size_t i = 0; i < tuples; ++i) {
-    const auto &t = spec.params[i];
+    const auto &t = usable[i];
     std::vector<double> q, a;
-    RunAccel(qc, id, t); // warm
+    TimeAccel(qc, id, t); // warm
     for (int r = 0; r < reps; ++r) {
       auto t0 = Clock::now();
       if (!accel_only)
-        RunQuery(qc, s.glue->query_sql, t);
+        TimeQuery(qc, s.glue->query_sql, t);
       q.push_back(us(t0));
       t0 = Clock::now();
-      RunAccel(qc, id, t);
+      TimeAccel(qc, id, t);
       a.push_back(us(t0));
     }
     const double mq = Median(q), ma = Median(a);
@@ -609,22 +802,27 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
   const double read_speedup = n ? std::exp(log_sum / n) : 0.0;
   // mixes: ops operations, each a write with probability f, else a query
   std::string mix_json = "[";
-  double maint_us_sum = 0;
-  int maint_n = 0;
+  double maint_us_sum = 0, plain_write_us_sum = 0;
+  int maint_n = 0, plain_write_n = 0;
   for (std::size_t m = 0; m < mixes.size(); ++m) {
     const double f = mixes[m];
     double base_us = 0, accel_us = 0;
+    std::optional<RfWrites> replay = rf; // the plain pass replays the writes the accelerated pass commits
     for (int pass = accel_only ? 1 : 0; pass < 2; ++pass) {
       std::mt19937_64 rng(1234 + m);
       const auto t0 = Clock::now();
       for (int i = 0; i < ops; ++i) {
-        const bool write = !spec.bench_txns.empty() && std::uniform_real_distribution<double>(0, 1)(rng) < f;
+        const bool write = have_writes && std::uniform_real_distribution<double>(0, 1)(rng) < f;
         if (write) {
-          const auto &sql = spec.bench_txns[rng() % spec.bench_txns.size()];
+          const std::string sql = rf ? (pass == 0 ? replay : rf)->Next()
+                                     : spec.bench_txns[rng() % spec.bench_txns.size()];
           if (pass == 0) {
-            auto r = plain.Query("BEGIN; " + sql + "; COMMIT;");
+            const auto w0 = Clock::now();
+            auto r = plain.Query("BEGIN; " + sql + (rf ? "; ROLLBACK;" : "; COMMIT;"));
             if (r && r->HasError())
               plain.Query("ROLLBACK");
+            plain_write_us_sum += us(w0);
+            ++plain_write_n;
           } else {
             const auto w0 = Clock::now();
             try {
@@ -635,11 +833,14 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
             ++maint_n;
           }
         } else {
-          const auto &t = spec.params[rng() % spec.params.size()];
-          if (pass == 0)
-            RunQuery(qc, s.glue->query_sql, t);
-          else
-            RunAccel(qc, id, t);
+          const auto &t = usable[rng() % usable.size()];
+          try { // a write can push a value past the plain query's range: skip that read in both passes
+            if (pass == 0)
+              TimeQuery(qc, s.glue->query_sql, t);
+            else
+              TimeAccel(qc, id, t);
+          } catch (const std::exception &) {
+          }
         }
       }
       (pass == 0 ? base_us : accel_us) = us(t0);
@@ -651,7 +852,9 @@ int Bench(const std::string &path, const std::string &id, const Spec &spec, int 
   mix_json += "]";
   std::cout << "{\"mode\":\"bench\",\"build_ms\":" << build_ms << ",\"read_speedup\":" << read_speedup
             << ",\"per_params\":" << per << ",\"mixes\":" << mix_json << ",\"write_us_mean\":"
-            << (maint_n ? maint_us_sum / maint_n : 0.0) << "," << StoreFields(rt) << "}" << std::endl;
+            << (maint_n ? maint_us_sum / maint_n : 0.0) << ",\"plain_write_us_mean\":"
+            << (plain_write_n ? plain_write_us_sum / plain_write_n : 0.0) << ",\"write_mode\":" << Json(write_mode)
+            << ",\"rf_chunk\":" << rf_chunk << "," << StoreFields(rt) << "}" << std::endl;
   return 0;
 }
 
