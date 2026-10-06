@@ -8,6 +8,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
+#include "accelerator_codegen/stateful/postgres/aux_server_text.hpp"
 #include "accelerator_codegen/stateful/maintenance/maintenance_action.hpp"
 
 using namespace accelerator_codegen::aux_state;
@@ -56,10 +57,17 @@ int accel_pg_get_observer_mutation_count() {
 void accel_pg_set_force_maintenance_action(const char *action_name) {
   core::ClearMaintenanceDecisionLog();
   core::SetForcedMaintenanceActionName(action_name ? action_name : "");
+  accelerator_codegen::aux_state::engine::postgres::aux_server::
+      SetForcedMaintenance(action_name ? action_name : "");
 }
 
 const char *accel_pg_get_last_maintenance_action(void) {
   static thread_local std::string cached;
+  cached = accelerator_codegen::aux_state::engine::postgres::aux_server::
+      LastMaintenanceActionName();
+  if (!cached.empty()) {
+    return cached.c_str(); // shared state: maintenance ran in the worker
+  }
   const auto entry = core::LastMaintenanceDecision();
   if (!entry || !entry->valid) {
     cached = "None";

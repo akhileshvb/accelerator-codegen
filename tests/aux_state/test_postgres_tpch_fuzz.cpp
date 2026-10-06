@@ -301,6 +301,10 @@ int main(int argc, char **argv) {
         // Every query starts from the same data: a fresh copy of the template.
         Conn admin(tools, "postgres");
         admin.Exec("DROP DATABASE IF EXISTS " + db + " WITH (FORCE)");
+        // A shared-state worker attached to the template (from an earlier run)
+        // would block the copy.
+        admin.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE "
+                   "backend_type = 'accel aux server' AND datname = '" + templ + "'");
         admin.Exec("CREATE DATABASE " + db + " TEMPLATE " + templ);
         r = FuzzQuery(tools, db, q, txns, seed, readers, force, write_interval_ms);
       } catch (const std::exception &e) {

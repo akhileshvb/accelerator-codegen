@@ -38,6 +38,10 @@ function(accel_build_postgres_extension)
     list(APPEND _pg_ext_sources src/stateful/postgres/snapshot_token.cpp)
   endif()
 
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/postgres/aux_server.cpp")
+    list(APPEND _pg_ext_sources src/stateful/postgres/aux_server.cpp)
+  endif()
+
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/postgres/aux_sync.cpp")
     list(APPEND _pg_ext_sources src/stateful/postgres/aux_sync.cpp)
   endif()

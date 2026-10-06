@@ -36,6 +36,61 @@ There is no portable DuckDB `DataChunk` scan IR on this host. Do not reintroduce
 `kernel_runner`, `NativeScanSpec`→chunk conversion, or `postgres/base`
 DataChunk kernels.
 
+## Shared accelerator state (`accel.shared_state`)
+
+By default every backend holds a private copy of each accelerator's state,
+built on its first query, so memory grows with connections x state size and
+every new connection pays a build. With `accel.shared_state = on` a
+per-database background worker holds the one copy and all backends use it
+(`stateful/postgres/aux_server.{hpp,cpp}`, design notes at the top of the
+header). Per-backend mode is unchanged and stays the default.
+
+- **Enable.** `SET accel.shared_state = on` (any scope), or server wide:
+  `ALTER SYSTEM SET accel.shared_state = on; SELECT pg_reload_conf();`
+  (sandbox: `pgsbx.sh shared <name> on`). Set it before the first accelerator
+  call or write of a session; switching a live session back to `off` is
+  supported but its private copy then resyncs.
+- **No `shared_preload_libraries` needed.** The worker is a dynamic background
+  worker started on demand by the first backend that needs it, and the shared
+  memory comes from the DSM registry (PostgreSQL 17). It loads the same
+  module (`accelerator_codegen_pg`) the backends use, so the module must be
+  findable from `$libdir` (as for the SQL functions) and `max_worker_processes`
+  needs one free slot per active database. Preloading is optional.
+- **Reads.** The backend sends the SQL function's oid, arguments, search_path
+  and its statement snapshot to the worker (a `shm_mq` pair per backend); the
+  worker runs the same function under that snapshot and streams tuples back.
+  It answers only if its state provably equals the database as that snapshot
+  sees it (the `aux_sync` counters and cover/see checks, unchanged); else
+  (or if the worker is busy/unreachable past `accel.shared_timeout_ms`, or
+  fails) the backend answers from SQL as today. A transaction's own writes to
+  a dependency table always take the SQL path.
+- **Writes.** Captured transition rows are staged per transaction (with
+  savepoint frames) and shipped at COMMIT, after the counters are published,
+  under a transaction-scoped commit gate so shipped commits are applied one at
+  a time in commit order. The worker applies a commit incrementally only when
+  the accelerator has exactly one captured statement in it (a later
+  statement's lookups would otherwise see rows the earlier one did not);
+  anything else, an unshipped commit, or an error leaves the shared counters
+  ahead of the worker's marker, and it rebuilds on the next query. Nothing
+  uncommitted ever reaches the worker; a backend that dies mid-transaction
+  releases its in-flight counters through the existing abort callback.
+- **Worker lifecycle.** `SELECT accel_postgres_stop_shared_worker()` (or
+  `pg_terminate_backend` on the `accel aux server` backend) stops it; the next
+  use restarts it and rebuilds. A worker holds a connection to its database:
+  `DROP DATABASE` needs `WITH (FORCE)` and `CREATE DATABASE ... TEMPLATE` needs
+  the worker stopped first (`accel.shared_idle_exit_s` makes it exit when
+  idle). `SELECT accel_postgres_shared_stats()` shows its counters.
+  Functions are installed like the other helpers
+  (`CREATE FUNCTION accel_postgres_shared_stats() RETURNS text AS
+  'accelerator_codegen_pg' LANGUAGE C`).
+- **Known limits.** The worker runs as the bootstrap superuser, so a backend
+  without SELECT privilege on a dependency table can read aggregates the
+  accelerator returns (enable it only where every user may read those
+  tables); one worker per database serialises queries and builds (a build
+  blocks that database's other queries up to `accel.shared_timeout_ms`);
+  forced maintenance actions and the decision log are bridged through shared
+  memory for the differential harness only.
+
 ## Calibrating the shared policy
 
 An engine-specific calibration harness should seed

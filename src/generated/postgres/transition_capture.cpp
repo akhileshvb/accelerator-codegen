@@ -29,6 +29,7 @@ extern "C" {
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
+#include "accelerator_codegen/stateful/postgres/aux_server.hpp"
 #include "accelerator_codegen/stateful/postgres/aux_sync.hpp"
 
 extern "C" {
@@ -307,15 +308,24 @@ Datum CaptureTransitionImpl(FunctionCallInfo fcinfo) {
   accelerator_codegen::aux_state::engine::postgres::aux_sync::RegisterWrite(
       table);
 
+  namespace srv = accelerator_codegen::aux_state::engine::postgres::aux_server;
+  // Per-backend mode: the accelerators this backend holds.  Shared mode: the
+  // accelerators the state worker hosts (their captured rows are staged and
+  // shipped at commit); this backend's own copies are not maintained.
   auto backends = RegisteredPostgresMutationBackends();
-  if (backends.empty()) {
+  std::vector<srv::CaptureTarget> shared_targets = srv::CaptureTargets(table);
+  if (srv::SharedEnabled()) {
+    backends.clear();
+  }
+  if (backends.empty() && shared_targets.empty()) {
     PG_RETURN_POINTER(nullptr);
   }
 
   TupleDesc tuple_desc = RelationGetDescr(trigger_data->tg_relation);
 
   struct Target {
-    PostgresAuxBackend *backend;
+    PostgresAuxBackend *backend; // null: a shared-state accelerator
+    std::string key;
     std::vector<int32_t> attnums;
   };
   std::vector<Target> targets;
@@ -328,7 +338,14 @@ Datum CaptureTransitionImpl(FunctionCallInfo fcinfo) {
       continue;
     }
     targets.push_back(
-        Target{backend, ResolveAttnums(*attnums, tuple_desc)});
+        Target{backend, std::string(), ResolveAttnums(*attnums, tuple_desc)});
+  }
+  for (auto &shared : shared_targets) {
+    targets.push_back(Target{nullptr, shared.key,
+                             ResolveAttnums(shared.attnums, tuple_desc)});
+    srv::StageExamined(shared.key,
+                       accelerator_codegen::aux_state::engine::postgres::
+                           aux_sync::SlotOf(table));
   }
   if (targets.empty()) {
     PG_RETURN_POINTER(nullptr);
@@ -401,8 +418,13 @@ Datum CaptureTransitionImpl(FunctionCallInfo fcinfo) {
     mutation.old_rows = std::move(old_by_target[i]);
     mutation.new_rows = std::move(new_by_target[i]);
     mutation.updated_columns = std::move(upd_by_target[i]);
-    targets[i].backend->CaptureMutationAtDepth(
-        mutation, static_cast<std::size_t>(GetCurrentTransactionNestLevel() - 1));
+    const auto depth =
+        static_cast<std::size_t>(GetCurrentTransactionNestLevel() - 1);
+    if (targets[i].backend) {
+      targets[i].backend->CaptureMutationAtDepth(mutation, depth);
+    } else {
+      srv::StageBatch(targets[i].key, std::move(mutation), depth);
+    }
     dispatched = true;
   }
   if (dispatched) {

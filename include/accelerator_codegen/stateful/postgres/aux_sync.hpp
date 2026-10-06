@@ -2,7 +2,9 @@
 //
 // Every PostgreSQL backend keeps a private (process-local) Aux store, so a
 // store may only serve a hit when no other backend has changed a dependency
-// table since the store was synchronised.  This module keeps, per database
+// table since the store was synchronised.  (With accel.shared_state the one
+// store lives in the per-database worker, aux_server.hpp, and the same
+// counters and snapshot checks decide whether it may answer.)  This module keeps, per database
 // and per table slot, two shared counters in a named DSM segment:
 //
 //   inflight[k]  transactions that have written slot k and not yet finished;
@@ -81,6 +83,20 @@ void ResetTransaction();
 // `allow_own` is true).
 bool ReadCounters(const std::vector<std::size_t> &slots, bool allow_own,
                   std::vector<uint64_t> &seq_out);
+
+// Like ReadCounters but only reads seq (no in-flight check): for the shared
+// state server applying one commit while holding the commit gate, when other
+// in-flight writers are harmless (they cannot become visible meanwhile).
+void ReadSeq(const std::vector<std::size_t> &slots,
+             std::vector<uint64_t> &seq_out);
+
+// Commit gate (shared state server): a transaction that will ship its
+// captured writes to the server holds this transaction-scoped lock from
+// PRE_COMMIT to the end of the transaction, so such commits become visible
+// and are applied one at a time, in commit order.  Correctness never depends
+// on it (the counters catch any interleaving); it only keeps the server in
+// sync under concurrent writers.
+void AcquireCommitGate();
 
 struct SnapMark {
   bool ok = false;
