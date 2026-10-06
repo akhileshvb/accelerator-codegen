@@ -672,6 +672,12 @@ void TpchQ11Module::EmitResult(const TpchQ11State &state,
                                      std::get<double>(frac.payload));
         ok = r.ec == std::errc() &&
              TpchQ11ParseFraction(std::string_view(buf, r.ptr - buf), parsed);
+      } else if (std::holds_alternative<core::ScaledDecimal>(frac.payload)) {
+        // Exact decimal (MySQL 'n' argument): coeff / 10^scale.
+        const auto d = std::get<core::ScaledDecimal>(frac.payload);
+        ok = TpchQ11ParseFraction(std::to_string(d.value) + "e-" +
+                                      std::to_string(d.scale),
+                                  parsed);
       } else if (std::holds_alternative<int64_t>(frac.payload)) {
         parsed.coeff = std::get<int64_t>(frac.payload);
         ok = true;
