@@ -124,16 +124,21 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ2(FunctionCallInfo fcinfo) {
+  // The SQL function is not STRICT: a NULL argument reaches the module as a
+  // NULL AuxValue (the predicate on it is then never true).
+  const auto text_arg = [&](int index) {
+    return PG_ARGISNULL(index)
+               ? core::AuxValue::Null(core::AuxType::String)
+               : core::AuxValue::Of(core::AuxType::String,
+                                    detail::TextDatum(PG_GETARG_DATUM(index)));
+  };
   detail::Q2Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::Int64,
-                                static_cast<int64_t>(PG_GETARG_INT32(0))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(1))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(2)))}},
+      core::QueryArguments{
+          {PG_ARGISNULL(0)
+               ? core::AuxValue::Null(core::AuxType::Int64)
+               : core::AuxValue::Of(core::AuxType::Int64,
+                                    static_cast<int64_t>(PG_GETARG_INT32(0))),
+           text_arg(1), text_arg(2)}},
       fcinfo);
 }
 
