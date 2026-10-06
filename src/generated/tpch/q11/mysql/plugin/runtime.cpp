@@ -37,7 +37,7 @@ void ScanTpchQ11Suppliers(
       "SELECT s_suppkey, s_nationkey FROM supplier",
       [&](const std::vector<std::string> &cols) {
         consumer({TypedInt(cols, 0),
-                  static_cast<int32_t>(TypedInt(cols, 1))});
+                  TypedInt(cols, 1)});
       });
 }
 
@@ -46,7 +46,7 @@ void ScanTpchQ11Nations(
   ScanTypedTuples(
       "SELECT n_nationkey, n_name FROM nation",
       [&](const std::vector<std::string> &cols) {
-        consumer({static_cast<int32_t>(TypedInt(cols, 0)),
+        consumer({TypedInt(cols, 0),
                   TypedText(cols, 1)});
       });
 }

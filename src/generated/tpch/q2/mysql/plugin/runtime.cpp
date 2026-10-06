@@ -41,7 +41,7 @@ void ScanTpchQ2Suppliers(
         consumer({TypedInt(cols, 0),
                   TypedText(cols, 1),
                   TypedText(cols, 2),
-                  static_cast<int32_t>(TypedInt(cols, 3)),
+                  TypedInt(cols, 3),
                   TypedText(cols, 4),
                   TypedDecimalRaw(cols, 5),
                   TypedText(cols, 6)});
@@ -64,9 +64,9 @@ void ScanTpchQ2Nations(
   ScanTypedTuples(
       "SELECT n_nationkey, n_name, n_regionkey FROM nation",
       [&](const std::vector<std::string> &cols) {
-        consumer({static_cast<int32_t>(TypedInt(cols, 0)),
+        consumer({TypedInt(cols, 0),
                   TypedText(cols, 1),
-                  static_cast<int32_t>(TypedInt(cols, 2))});
+                  TypedInt(cols, 2)});
       });
 }
 
@@ -75,7 +75,7 @@ void ScanTpchQ2Regions(
   ScanTypedTuples(
       "SELECT r_regionkey, r_name FROM region",
       [&](const std::vector<std::string> &cols) {
-        consumer({static_cast<int32_t>(TypedInt(cols, 0)),
+        consumer({TypedInt(cols, 0),
                   TypedText(cols, 1)});
       });
 }

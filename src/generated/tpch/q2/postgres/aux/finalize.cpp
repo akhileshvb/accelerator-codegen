@@ -70,16 +70,57 @@ using Q2Heap = std::priority_queue<Q2Candidate, std::vector<Q2Candidate>,
 
 // Scan part chunks [chunk_begin, chunk_end): p_size = :size AND p_type LIKE
 // :pattern, then the cheapest in-region offers of each qualifying part.
+// Considers one part: p_size = :size AND p_type LIKE :pattern, then the
+// cheapest in-region offers of the part.
+void ConsiderPart(const Q2Query &q, int64_t partkey, Q2Heap &heap) {
+  const TpchQ2State &st = *q.state;
+  const auto *slots = st.offers.Find(partkey);
+  if (!slots || slots->count == 0)
+    return;
+  // Regional minimum over offers of suppliers in the requested region ...
+  int64_t best = std::numeric_limits<int64_t>::max();
+  bool any = false;
+  for (uint32_t i = 0; i < slots->count; ++i) {
+    const auto offer = st.OfferAt(*slots, partkey, i);
+    const auto *sup = st.suppliers.Find(offer.suppkey);
+    if (!sup || !sup->present || q.NationRank(sup->nationkey) < 0)
+      continue;
+    any = true;
+    best = std::min(best, offer.cost_raw);
+  }
+  if (!any)
+    return;
+  // ... and every in-region supplier tied at that minimum is a result row.
+  for (uint32_t i = 0; i < slots->count; ++i) {
+    const auto offer = st.OfferAt(*slots, partkey, i);
+    if (offer.cost_raw != best)
+      continue;
+    const auto *sup = st.suppliers.Find(offer.suppkey);
+    if (!sup || !sup->present)
+      continue;
+    const int32_t rank = q.NationRank(sup->nationkey);
+    if (rank < 0)
+      continue;
+    if (heap.size() >= kTpchQ2ResultLimit &&
+        sup->acctbal_raw < heap.top().acctbal_raw)
+      continue; // cannot beat the current 100th row
+    heap.push({sup->acctbal_raw, static_cast<uint32_t>(rank), offer.suppkey,
+               partkey});
+    if (heap.size() > kTpchQ2ResultLimit)
+      heap.pop();
+  }
+}
+
+// Scan part chunks [chunk_begin, chunk_end).
 void ScanPartChunks(const Q2Query &q, std::size_t chunk_begin,
                     std::size_t chunk_end, Q2Heap &heap) {
   const TpchQ2State &st = *q.state;
-  using SizeCol = core::ChunkedCowArray<int32_t>;
+  using SizeCol = core::SignedKeyCowArray<int32_t>;
   for (std::size_t ci = chunk_begin; ci < chunk_end; ++ci) {
     const auto *sizes = st.part_size.ChunkAt(ci);
     const auto *types = st.part_type.ChunkAt(ci);
     if (!sizes || !types)
       continue;
-    const int64_t base = SizeCol::ChunkBase(ci);
     const int32_t *size_data = sizes->data();
     for (std::size_t slot = 0; slot < SizeCol::kChunkSize; ++slot) {
       if (size_data[slot] != q.size)
@@ -87,44 +128,22 @@ void ScanPartChunks(const Q2Query &q, std::size_t chunk_begin,
       const uint32_t type_id = (*types)[slot];
       if (type_id == kTpchQ2NoId || !q.TypeMatches(type_id))
         continue;
-      const int64_t partkey = base + static_cast<int64_t>(slot);
-      const auto *slots = st.offers.Find(partkey);
-      if (!slots || slots->count == 0)
-        continue;
-      // Regional minimum over offers of suppliers in the requested region ...
-      int64_t best = std::numeric_limits<int64_t>::max();
-      bool any = false;
-      for (uint32_t i = 0; i < slots->count; ++i) {
-        const auto offer = st.OfferAt(*slots, partkey, i);
-        const auto *sup = st.suppliers.Find(offer.suppkey);
-        if (!sup || !sup->present || q.NationRank(sup->nationkey) < 0)
-          continue;
-        any = true;
-        best = std::min(best, offer.cost_raw);
-      }
-      if (!any)
-        continue;
-      // ... and every in-region supplier tied at that minimum is a result row.
-      for (uint32_t i = 0; i < slots->count; ++i) {
-        const auto offer = st.OfferAt(*slots, partkey, i);
-        if (offer.cost_raw != best)
-          continue;
-        const auto *sup = st.suppliers.Find(offer.suppkey);
-        if (!sup || !sup->present)
-          continue;
-        const int32_t rank = q.NationRank(sup->nationkey);
-        if (rank < 0)
-          continue;
-        if (heap.size() >= kTpchQ2ResultLimit &&
-            sup->acctbal_raw < heap.top().acctbal_raw)
-          continue; // cannot beat the current 100th row
-        heap.push({sup->acctbal_raw, static_cast<uint32_t>(rank),
-                   offer.suppkey, partkey});
-        if (heap.size() > kTpchQ2ResultLimit)
-          heap.pop();
-      }
+      ConsiderPart(q, SizeCol::KeyAt(ci, slot), heap);
     }
   }
+}
+
+// Parts whose key is outside the dense range.
+void ScanSparseParts(const Q2Query &q, Q2Heap &heap) {
+  const TpchQ2State &st = *q.state;
+  st.part_size.ForEachSparse([&](int64_t partkey, const int32_t &size) {
+    if (size != q.size)
+      return;
+    const uint32_t type_id = st.part_type.Get(partkey);
+    if (type_id == kTpchQ2NoId || !q.TypeMatches(type_id))
+      return;
+    ConsiderPart(q, partkey, heap);
+  });
 }
 
 void EmitEmpty(core::AuxRowSink &sink, const core::OutputSchema &schema) {
@@ -214,6 +233,7 @@ void TpchQ2FinalizeAndEmit(const TpchQ2State &state, const TpchQ2Args &args,
   std::vector<Q2Heap> heaps;
   for (std::size_t t = 0; t < threads; ++t)
     heaps.emplace_back(better);
+  ScanSparseParts(q, heaps[0]);
   if (threads == 1) {
     ScanPartChunks(q, 0, chunks, heaps[0]);
   } else {

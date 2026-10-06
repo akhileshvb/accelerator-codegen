@@ -141,8 +141,6 @@ void TpchQ16State::RemoveFromGroup(int64_t partkey, uint32_t gid) {
 }
 
 void TpchQ16State::SetPart(int64_t partkey, const TpchQ16PartInput &part) {
-  if (partkey < 0)
-    return; // negative keys are never stored
   const uint32_t gid = GroupId(part);
   const uint32_t old = part_group.Get(partkey);
   if (old == gid)
@@ -162,8 +160,6 @@ void TpchQ16State::ErasePart(int64_t partkey) {
 }
 
 void TpchQ16State::AddSupplier(int64_t partkey, int64_t suppkey) {
-  if (partkey < 0)
-    return;
   auto &slots = suppliers_of.Mutable(partkey);
   if (slots.count < kTpchQ16InlineSuppliers)
     slots.suppkey[slots.count] = suppkey;
@@ -176,8 +172,6 @@ void TpchQ16State::AddSupplier(int64_t partkey, int64_t suppkey) {
 }
 
 bool TpchQ16State::RemoveSupplier(int64_t partkey, int64_t suppkey) {
-  if (partkey < 0)
-    return true;
   const auto *found = suppliers_of.Find(partkey);
   if (!found || found->count == 0)
     return false;
@@ -212,8 +206,6 @@ bool TpchQ16State::RemoveSupplier(int64_t partkey, int64_t suppkey) {
 }
 
 bool TpchQ16State::SetComplaint(int64_t suppkey, bool flag) {
-  if (suppkey < 0)
-    return false;
   const uint8_t value = flag ? 1 : 0;
   if (complaint.Get(suppkey) == value)
     return false;
@@ -223,23 +215,24 @@ bool TpchQ16State::SetComplaint(int64_t suppkey, bool flag) {
 
 void TpchQ16State::MarkGroupsOfSuppliers(
     const core::FlatHashMap<uint8_t> &changed) {
-  using Lists = core::ChunkedCowArray<TpchQ16Suppliers, 10>;
+  using Lists = core::SignedKeyCowArray<TpchQ16Suppliers, 10>;
+  const auto visit = [&](int64_t partkey, const TpchQ16Suppliers &slots) {
+    for (uint32_t i = 0; i < slots.count; ++i)
+      if (changed.Contains(SupplierAt(slots, partkey, i))) {
+        const uint32_t gid = part_group.Get(partkey);
+        if (gid != kTpchQ16NoGroup)
+          dirty.push_back(gid);
+        break;
+      }
+  };
   for (std::size_t ci = 0; ci < suppliers_of.NumChunks(); ++ci) {
     const auto *chunk = suppliers_of.ChunkAt(ci);
     if (!chunk)
       continue;
-    for (std::size_t slot = 0; slot < chunk->size(); ++slot) {
-      const auto &slots = (*chunk)[slot];
-      const int64_t partkey = Lists::ChunkBase(ci) + static_cast<int64_t>(slot);
-      for (uint32_t i = 0; i < slots.count; ++i)
-        if (changed.Contains(SupplierAt(slots, partkey, i))) {
-          const uint32_t gid = part_group.Get(partkey);
-          if (gid != kTpchQ16NoGroup)
-            dirty.push_back(gid);
-          break;
-        }
-    }
+    for (std::size_t slot = 0; slot < chunk->size(); ++slot)
+      visit(Lists::KeyAt(ci, slot), (*chunk)[slot]);
   }
+  suppliers_of.ForEachSparse(visit);
 }
 
 // Distinct non-complaint suppliers over the parts of one group.

@@ -40,7 +40,7 @@ void ScanTpchQ2Suppliers(
         consumer({TypedInt(tuple, tuple_desc, 0),
                   TypedText(tuple, tuple_desc, 1),
                   TypedText(tuple, tuple_desc, 2),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3)),
+                  TypedInt(tuple, tuple_desc, 3),
                   TypedText(tuple, tuple_desc, 4),
                   TypedDecimalRaw(tuple, tuple_desc, 5),
                   TypedText(tuple, tuple_desc, 6)});
@@ -63,9 +63,9 @@ void ScanTpchQ2Nations(
   ScanTypedTuples(
       "SELECT n_nationkey, n_name, n_regionkey FROM nation",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({static_cast<int32_t>(TypedInt(tuple, tuple_desc, 0)),
+        consumer({TypedInt(tuple, tuple_desc, 0),
                   TypedText(tuple, tuple_desc, 1),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 2))});
+                  TypedInt(tuple, tuple_desc, 2)});
       });
 }
 
@@ -74,7 +74,7 @@ void ScanTpchQ2Regions(
   ScanTypedTuples(
       "SELECT r_regionkey, r_name FROM region",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({static_cast<int32_t>(TypedInt(tuple, tuple_desc, 0)),
+        consumer({TypedInt(tuple, tuple_desc, 0),
                   TypedText(tuple, tuple_desc, 1)});
       });
 }

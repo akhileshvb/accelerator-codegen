@@ -36,7 +36,7 @@ void ScanTpchQ11Suppliers(
       "SELECT s_suppkey, s_nationkey FROM supplier",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
         consumer({TypedInt(tuple, tuple_desc, 0),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 1))});
+                  TypedInt(tuple, tuple_desc, 1)});
       });
 }
 
@@ -45,7 +45,7 @@ void ScanTpchQ11Nations(
   ScanTypedTuples(
       "SELECT n_nationkey, n_name FROM nation",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({static_cast<int32_t>(TypedInt(tuple, tuple_desc, 0)),
+        consumer({TypedInt(tuple, tuple_desc, 0),
                   TypedText(tuple, tuple_desc, 1)});
       });
 }

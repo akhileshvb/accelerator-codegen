@@ -93,27 +93,25 @@ bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, TpchQ11Offer &offer
 }
 
 bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey,
-                  int32_t &nationkey) {
+                  int64_t &nationkey) {
   nationkey = kTpchQ11NoNation; // NULL s_nationkey joins no nation
   if (!IntCell(row, 0, suppkey))
     return false;
   if (NullCell(row, 1))
     return true;
   int64_t nk = 0;
-  if (!IntCell(row, 1, nk) || nk <= std::numeric_limits<int32_t>::min() ||
-      nk > std::numeric_limits<int32_t>::max())
+  if (!IntCell(row, 1, nk) || nk == kTpchQ11NoNation)
     return false;
-  nationkey = static_cast<int32_t>(nk);
+  nationkey = nk;
   return true;
 }
 
 bool ReadNation(const core::AuxRow &row, TpchQ11NationInput &out, bool &skip) {
   int64_t nk = 0;
   skip = NullCell(row, 1); // n_name = <arg> is never true for NULL
-  if (!IntCell(row, 0, nk) || nk < std::numeric_limits<int32_t>::min() ||
-      nk > std::numeric_limits<int32_t>::max())
+  if (!IntCell(row, 0, nk))
     return false;
-  out.nationkey = static_cast<int32_t>(nk);
+  out.nationkey = nk;
   return skip || StringCell(row, 1, out.name);
 }
 
@@ -157,8 +155,8 @@ TpchQ11Offer TpchQ11State::OfferAt(const TpchQ11OfferSlots &slots,
 }
 
 TpchQ11PartValue TpchQ11State::PartValueIn(
-    int64_t partkey, int32_t nationkey,
-    const core::ChunkedCowArray<int32_t> &supplier_map) const {
+    int64_t partkey, int64_t nationkey,
+    const core::SignedKeyCowArray<int64_t> &supplier_map) const {
   TpchQ11PartValue out;
   const auto *slots = offers.Find(partkey);
   if (!slots || nationkey == kTpchQ11NoNation)
@@ -174,8 +172,6 @@ TpchQ11PartValue TpchQ11State::PartValueIn(
 }
 
 void TpchQ11State::AddOffer(int64_t partkey, const TpchQ11Offer &offer) {
-  if (partkey < 0)
-    return; // negative keys are never stored
   auto &slots = offers.Mutable(partkey);
   if (slots.count < kTpchQ11InlineOffers) {
     slots.suppkey[slots.count] = offer.suppkey;
@@ -188,8 +184,6 @@ void TpchQ11State::AddOffer(int64_t partkey, const TpchQ11Offer &offer) {
 }
 
 bool TpchQ11State::RemoveOffer(int64_t partkey, const TpchQ11Offer &offer) {
-  if (partkey < 0)
-    return true;
   const auto *found = offers.Find(partkey);
   if (!found || found->count == 0)
     return false;
@@ -226,7 +220,7 @@ bool TpchQ11State::RemoveOffer(int64_t partkey, const TpchQ11Offer &offer) {
   return true;
 }
 
-TpchQ11Group &TpchQ11State::MutableGroup(int32_t nationkey) {
+TpchQ11Group &TpchQ11State::MutableGroup(int64_t nationkey) {
   auto &group = groups[nationkey];
   if (!group)
     group = std::make_shared<TpchQ11Group>();
@@ -235,7 +229,7 @@ TpchQ11Group &TpchQ11State::MutableGroup(int32_t nationkey) {
   return *group;
 }
 
-void TpchQ11State::UpdateEntry(int32_t nationkey, int64_t partkey,
+void TpchQ11State::UpdateEntry(int64_t nationkey, int64_t partkey,
                                const TpchQ11PartValue &before,
                                const TpchQ11PartValue &after) {
   if (before == after)
@@ -249,22 +243,20 @@ void TpchQ11State::UpdateEntry(int32_t nationkey, int64_t partkey,
 
 bool TpchQ11State::ApplyPartsupp(int8_t sign, int64_t partkey,
                                  const TpchQ11Offer &offer) {
-  const int32_t nationkey = supplier_nation.Get(offer.suppkey);
+  const int64_t nationkey = supplier_nation.Get(offer.suppkey);
   const auto before = PartValueIn(partkey, nationkey, supplier_nation);
   if (sign > 0) {
     AddOffer(partkey, offer);
   } else if (!RemoveOffer(partkey, offer)) {
     return false;
   }
-  if (nationkey != kTpchQ11NoNation && partkey >= 0)
+  if (nationkey != kTpchQ11NoNation)
     UpdateEntry(nationkey, partkey, before,
                 PartValueIn(partkey, nationkey, supplier_nation));
   return true;
 }
 
-void TpchQ11State::SetSupplierNation(int64_t suppkey, int32_t nationkey) {
-  if (suppkey < 0)
-    return;
+void TpchQ11State::SetSupplierNation(int64_t suppkey, int64_t nationkey) {
   if (nationkey == kTpchQ11NoNation && !supplier_nation.Has(suppkey, kTpchQ11NoNation))
     return; // already absent: do not allocate a chunk
   supplier_nation.Set(suppkey, nationkey);
@@ -272,39 +264,38 @@ void TpchQ11State::SetSupplierNation(int64_t suppkey, int32_t nationkey) {
 
 void TpchQ11State::RegroupSuppliers(
     const core::FlatHashMap<uint8_t> &changed_suppliers,
-    const core::ChunkedCowArray<int32_t> &old_map) {
-  using Offers = core::ChunkedCowArray<TpchQ11OfferSlots, 10>;
-  std::vector<int32_t> nations_of_part;
+    const core::SignedKeyCowArray<int64_t> &old_map) {
+  using Offers = core::SignedKeyCowArray<TpchQ11OfferSlots, 10>;
+  std::vector<int64_t> nations_of_part;
+  const auto visit = [&](int64_t partkey, const TpchQ11OfferSlots &slots) {
+    bool touched = false;
+    for (uint32_t i = 0; i < slots.count && !touched; ++i)
+      touched = changed_suppliers.Contains(OfferAt(slots, partkey, i).suppkey);
+    if (!touched)
+      return;
+    // Every nation this part had or has offers in may change.
+    nations_of_part.clear();
+    for (uint32_t i = 0; i < slots.count; ++i) {
+      const auto offer = OfferAt(slots, partkey, i);
+      for (const int64_t nk :
+           {old_map.Get(offer.suppkey), supplier_nation.Get(offer.suppkey)})
+        if (nk != kTpchQ11NoNation &&
+            std::find(nations_of_part.begin(), nations_of_part.end(), nk) ==
+                nations_of_part.end())
+          nations_of_part.push_back(nk);
+    }
+    for (const int64_t nk : nations_of_part)
+      UpdateEntry(nk, partkey, PartValueIn(partkey, nk, old_map),
+                  PartValueIn(partkey, nk, supplier_nation));
+  };
   for (std::size_t ci = 0; ci < offers.NumChunks(); ++ci) {
     const auto *chunk = offers.ChunkAt(ci);
     if (!chunk)
       continue;
-    for (std::size_t slot = 0; slot < chunk->size(); ++slot) {
-      const auto &slots = (*chunk)[slot];
-      bool touched = false;
-      for (uint32_t i = 0; i < slots.count && !touched; ++i)
-        touched = changed_suppliers.Contains(
-            OfferAt(slots, Offers::ChunkBase(ci) + static_cast<int64_t>(slot), i)
-                .suppkey);
-      if (!touched)
-        continue;
-      const int64_t partkey = Offers::ChunkBase(ci) + static_cast<int64_t>(slot);
-      // Every nation this part had or has offers in may change.
-      nations_of_part.clear();
-      for (uint32_t i = 0; i < slots.count; ++i) {
-        const auto offer = OfferAt(slots, partkey, i);
-        for (const int32_t nk :
-             {old_map.Get(offer.suppkey), supplier_nation.Get(offer.suppkey)})
-          if (nk != kTpchQ11NoNation &&
-              std::find(nations_of_part.begin(), nations_of_part.end(), nk) ==
-                  nations_of_part.end())
-            nations_of_part.push_back(nk);
-      }
-      for (const int32_t nk : nations_of_part)
-        UpdateEntry(nk, partkey, PartValueIn(partkey, nk, old_map),
-                    PartValueIn(partkey, nk, supplier_nation));
-    }
+    for (std::size_t slot = 0; slot < chunk->size(); ++slot)
+      visit(Offers::KeyAt(ci, slot), (*chunk)[slot]);
   }
+  offers.ForEachSparse(visit);
 }
 
 void TpchQ11State::UpsertNation(const TpchQ11NationInput &nation) {
@@ -330,50 +321,51 @@ void TpchQ11State::EraseNation(const TpchQ11NationInput &nation) {
 }
 
 void TpchQ11State::BuildGroups() {
-  using Offers = core::ChunkedCowArray<TpchQ11OfferSlots, 10>;
+  using Offers = core::SignedKeyCowArray<TpchQ11OfferSlots, 10>;
   groups.clear();
-  std::unordered_map<int32_t, std::vector<TpchQ11Key>> pending; // per nation
-  std::vector<std::pair<int32_t, Q11AccT>> sums; // this part's per-nation values
+  std::unordered_map<int64_t, std::vector<TpchQ11Key>> pending; // per nation
+  std::vector<std::pair<int64_t, Q11AccT>> sums; // this part's per-nation values
+  const auto visit = [&](int64_t partkey, const TpchQ11OfferSlots &slots) {
+    if (slots.count == 0)
+      return;
+    sums.clear();
+    for (uint32_t i = 0; i < slots.count; ++i) {
+      const auto offer = OfferAt(slots, partkey, i);
+      const int64_t nk = supplier_nation.Get(offer.suppkey);
+      if (nk == kTpchQ11NoNation)
+        continue;
+      auto it = std::find_if(sums.begin(), sums.end(),
+                             [&](const auto &s) { return s.first == nk; });
+      if (it == sums.end())
+        sums.push_back({nk, Product(offer)});
+      else
+        it->second += Product(offer);
+    }
+    for (const auto &[nk, value] : sums) {
+      auto &group = groups[nk];
+      if (!group)
+        group = std::make_shared<TpchQ11Group>();
+      group->total += value;
+      ++group->parts;
+      if (value > kTpchQ11NarrowLimit)
+        group->wide_positive.insert({value, partkey});
+      else if (value < -kTpchQ11NarrowLimit)
+        group->wide_negative.insert({value, partkey});
+      else
+        pending[nk].push_back({static_cast<int64_t>(value), partkey});
+    }
+  };
   for (std::size_t ci = 0; ci < offers.NumChunks(); ++ci) {
     const auto *chunk = offers.ChunkAt(ci);
     if (!chunk)
       continue;
-    for (std::size_t slot = 0; slot < chunk->size(); ++slot) {
-      const auto &slots = (*chunk)[slot];
-      if (slots.count == 0)
-        continue;
-      const int64_t partkey = Offers::ChunkBase(ci) + static_cast<int64_t>(slot);
-      sums.clear();
-      for (uint32_t i = 0; i < slots.count; ++i) {
-        const auto offer = OfferAt(slots, partkey, i);
-        const int32_t nk = supplier_nation.Get(offer.suppkey);
-        if (nk == kTpchQ11NoNation)
-          continue;
-        auto it = std::find_if(sums.begin(), sums.end(),
-                               [&](const auto &s) { return s.first == nk; });
-        if (it == sums.end())
-          sums.push_back({nk, Product(offer)});
-        else
-          it->second += Product(offer);
-      }
-      for (const auto &[nk, value] : sums) {
-        auto &group = groups[nk];
-        if (!group)
-          group = std::make_shared<TpchQ11Group>();
-        group->total += value;
-        ++group->parts;
-        if (value > kTpchQ11NarrowLimit)
-          group->wide_positive.insert({value, partkey});
-        else if (value < -kTpchQ11NarrowLimit)
-          group->wide_negative.insert({value, partkey});
-        else
-          pending[nk].push_back({static_cast<int64_t>(value), partkey});
-      }
-    }
+    for (std::size_t slot = 0; slot < chunk->size(); ++slot)
+      visit(Offers::KeyAt(ci, slot), (*chunk)[slot]);
   }
+  offers.ForEachSparse(visit);
   // Sort each nation's entries (nations in parallel) and cut them into blocks;
   // each vector is released as soon as its blocks exist.
-  std::vector<int32_t> order;
+  std::vector<int64_t> order;
   for (const auto &entry : pending)
     order.push_back(entry.first);
   std::atomic<std::size_t> next{0};
@@ -539,7 +531,7 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
       }
     // ... then suppliers moving between nations re-group their parts.
     if (!need_rebuild && !buffer.suppliers.empty()) {
-      const core::ChunkedCowArray<int32_t> old_map = new_state->supplier_nation;
+      const core::SignedKeyCowArray<int64_t> old_map = new_state->supplier_nation;
       for (const auto &ev : buffer.suppliers)
         new_state->SetSupplierNation(ev.suppkey, ev.nationkey);
       core::FlatHashMap<uint8_t> changed;
