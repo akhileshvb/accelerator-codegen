@@ -411,11 +411,12 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
                 Contribution(it->second.before, -1));
     });
   }
-  // The lookup returned the lineitem set AFTER the batch, but the "before"
-  // contribution above was subtracted for all of it: correct it by the batch's
-  // own lineitem inserts / deletes, which were (not) in the old set.
-  // For every lineitem delta the old-class contribution is +-1 (this also
-  // covers keys whose class did not change).
+  // The lookup returned the lineitem set AFTER the batch, and above it was
+  // taken out of the OLD class for all of it.  The batch's own lineitem
+  // inserts were not in the old set (so were wrongly subtracted) and its
+  // deletes were (but are missing from the lookup): in both cases the
+  // correction is sign x old-class contribution.  For keys whose class did
+  // not change this is simply the lineitem delta itself.
   for (const auto &delta : buffer.Deltas()) {
     const auto it = changes.find(delta.orderkey);
     const auto before = it != changes.end() ? it->second.before

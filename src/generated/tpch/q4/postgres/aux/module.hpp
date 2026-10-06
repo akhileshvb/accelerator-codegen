@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -53,12 +54,12 @@ public:
 // ---------------------------------------------------------------------------
 // State layout (all per-write copies are O(touched chunks), never O(state)).
 //
-//   kEligibility  per-order columns keyed by o_orderkey (ChunkedCowArray):
-//                 orderdate (4 B), priority index (4 B), count of lineitems
-//                 with commitdate < receiptdate (4 B)  => 12 B per key slot.
-//                 TPC-H keys are ~25% dense, so ~48 B/order incl. the gaps
-//                 (dense keys: 12 B/order).  SF100 (150M orders): ~7 GB,
-//                 SF1000: ~72 GB; the former unordered_map was ~56 B/order
+//   kEligibility  per-order columns keyed by o_orderkey (WideKeyCowArray):
+//                 orderdate (4 B), priority index (2 B), count of lineitems
+//                 with commitdate < receiptdate (2 B)  => 8 B per key slot.
+//                 TPC-H keys are ~25% dense, so ~32 B/order incl. the gaps
+//                 (dense keys: 8 B/order).  SF100 (150M orders): ~4.8 GB,
+//                 SF1000: ~48 GB; the former unordered_map was ~56 B/order
 //                 (8.4 GB at SF100) plus a full map copy on every write.
 //                 Keys outside [0, 2^36) live in a sharded COW hash map
 //                 (core/wide_key_cow_array.hpp).
@@ -85,32 +86,73 @@ struct TpchQ4OrderInfo {
 };
 
 // Order columns keyed by orderkey (any int64).  Slots never written read as
-// "no order, no lineitems".
+// "no order, no lineitems".  Stored as 4 + 2 + 2 bytes per key slot: the
+// priority index in 16 bits (kTpchQ4NoOrder = no order row; at most 65534
+// distinct priorities, more throws) and the lineitem count in 16 bits, with
+// counts >= 0xFFFF kept exactly in a small sharded hash map.
 class TpchQ4OrderTable {
 public:
-  TpchQ4OrderTable()
-      : orderdate_(0), priority_(kTpchQ4NoOrder), qualifying_(0) {}
+  TpchQ4OrderTable() : orderdate_(0), priority_(kNoOrder16), qualifying_(0) {}
 
   TpchQ4OrderInfo Get(int64_t key) const {
-    return {orderdate_.Get(key), priority_.Get(key), qualifying_.Get(key)};
+    TpchQ4OrderInfo info;
+    info.orderdate_days = orderdate_.Get(key);
+    const uint16_t p = priority_.Get(key);
+    info.priority_idx = p == kNoOrder16 ? kTpchQ4NoOrder : p;
+    const uint16_t q = qualifying_.Get(key);
+    if (q != kBigCount) {
+      info.qualifying_count = q;
+    } else {
+      const uint32_t *big = big_counts_.Find(key);
+      info.qualifying_count = big ? *big : q;
+    }
+    return info;
   }
   // Writes only the columns that change (an unchanged chunk is never cloned).
   void Set(int64_t key, const TpchQ4OrderInfo &info) {
     orderdate_.Set(key, info.orderdate_days);
-    priority_.Set(key, info.priority_idx);
-    qualifying_.Set(key, info.qualifying_count);
+    priority_.Set(key, EncodePriority(info.priority_idx));
+    SetCount(key, info.qualifying_count);
   }
   // Build fast path: one more qualifying lineitem for `key`.
-  void AddQualifying(int64_t key) { qualifying_.Add(key, 1); }
+  void AddQualifying(int64_t key) {
+    const uint16_t q = qualifying_.Get(key);
+    if (q < kBigCount - 1)
+      qualifying_.Set(key, static_cast<uint16_t>(q + 1));
+    else
+      SetCount(key, Get(key).qualifying_count + 1);
+  }
   std::size_t MemoryBytes() const {
     return orderdate_.MemoryBytes() + priority_.MemoryBytes() +
-           qualifying_.MemoryBytes();
+           qualifying_.MemoryBytes() + big_counts_.memory_bytes();
   }
 
 private:
+  static constexpr uint16_t kNoOrder16 = 0xFFFF;
+  static constexpr uint16_t kBigCount = 0xFFFF;
+
+  static uint16_t EncodePriority(uint32_t idx) {
+    if (idx == kTpchQ4NoOrder)
+      return kNoOrder16;
+    if (idx >= kNoOrder16)
+      throw std::length_error("TPC-H Q4: more than 65534 distinct priorities");
+    return static_cast<uint16_t>(idx);
+  }
+  void SetCount(int64_t key, uint32_t count) {
+    if (count < kBigCount) {
+      qualifying_.Set(key, static_cast<uint16_t>(count));
+      if (big_counts_.Find(key))
+        big_counts_.Erase(key);
+    } else {
+      qualifying_.Set(key, kBigCount);
+      big_counts_.Upsert(key, count);
+    }
+  }
+
   core::WideKeyCowArray<int32_t, 15> orderdate_;
-  core::WideKeyCowArray<uint32_t, 15> priority_;
-  core::WideKeyCowArray<uint32_t, 15> qualifying_;
+  core::WideKeyCowArray<uint16_t, 16> priority_;
+  core::WideKeyCowArray<uint16_t, 16> qualifying_;
+  core::ShardedCowHashMap<uint32_t, 6> big_counts_;
 };
 
 // Counting tree over order-date days for ONE priority (core::RadixRangeTree):
