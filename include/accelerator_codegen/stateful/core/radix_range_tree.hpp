@@ -1,4 +1,16 @@
 #pragma once
+//
+// RadixRangeTree<T>
+// PURPOSE    Additive point-update / range-sum index over keys in [0, 2^24): a 4-level,
+//            fan-out-64 counting tree on ChunkedCowArray.
+// COMPLEXITY Add touches 4 cells; SumRange reads O(2*63*4) cells, never allocates.
+// MEMORY     sizeof(T) per touched slot at each of 4 levels (level 0 dominates); ~80 KB
+//            of directories for a sparse key space.
+// COW/THREADS Copy = 4 directory copies, chunks shared until written; mutate a private
+//            copy only.
+// USE WHEN   dynamic range sums over a bounded non-negative domain. Keys outside the
+//            range are the caller's responsibility (e.g. a small ordered map).
+//
 
 #include <cstddef>
 #include <cstdint>

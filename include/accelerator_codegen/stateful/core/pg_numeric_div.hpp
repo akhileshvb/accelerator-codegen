@@ -4,6 +4,16 @@
 // rounded half away from zero at that scale. Companion to pg_numeric.hpp
 // (which has the avg(numeric) special case).
 #pragma once
+//
+// pg_numeric::DivRound
+// PURPOSE    PostgreSQL NUMERIC division over scaled int128 coefficients
+//            (select_div_scale result scale, round half away from zero).
+// COMPLEXITY O(result scale) long division.
+// MEMORY     Stateless.
+// COW/THREADS Pure function; thread-safe.
+// USE WHEN   emitting exact quotient/ratio columns that must match PostgreSQL's
+//            numeric_div.
+//
 
 #include <stdexcept>
 

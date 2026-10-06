@@ -1,4 +1,14 @@
 #pragma once
+//
+// sql_date
+// PURPOSE    Proleptic-Gregorian civil date <-> days-since-1970 conversion and
+//            PostgreSQL/MySQL month/year interval arithmetic with end-of-month
+//            clamping.
+// COMPLEXITY O(1), branch-light integer arithmetic.
+// MEMORY     Stateless; dates are int32 day numbers.
+// COW/THREADS Pure functions; thread-safe.
+// USE WHEN   any date predicate, interval or extract over int32 day columns.
+//
 
 #include <cstdint>
 

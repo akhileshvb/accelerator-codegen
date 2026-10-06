@@ -1,4 +1,19 @@
 #pragma once
+//
+// KeyedStringColumn
+// PURPOSE    Copy-on-write column of strings keyed by int64 that can be scanned with a
+//            SQL LIKE matcher (multi-threaded, SIMD substring search).
+// COMPLEXITY Get O(1). Set/Erase of an existing key rewrite its 4096-key segment
+//            (O(segment bytes)); AppendNew is O(1) bulk load. ForEachMatch O(total
+//            bytes / threads).
+// MEMORY     ~12 B per key + string bytes (StringBlob + uint16 maps); 2 B per absent
+//            slot of a touched segment.
+// COW/THREADS Copy = pointer copies; mutate a private copy only. ForEachMatch runs
+//            worker threads over a const column; the callback must be thread-safe or
+//            worker-local.
+// USE WHEN   you must evaluate LIKE / pattern predicates over a whole string column.
+//            For plain point lookups of strings use ChunkedBlobMap.
+//
 
 #include <algorithm>
 #include <atomic>

@@ -1,4 +1,17 @@
 #pragma once
+//
+// CowSortedBlocks<Key, Less, kMaxBlock>
+// PURPOSE    Copy-on-write ordered set of fixed-width keys (two-level B+tree: directory
+//            of sorted blocks) with in-order scan and early exit.
+// COMPLEXITY Contains O(log #blocks + log block). Insert/Erase O(log #blocks + block
+//            size), cloning one block if shared. ForEach O(output). Bulk FromSorted
+//            O(n).
+// MEMORY     ~1.35 x sizeof(Key) per key; no per-key node or pointer.
+// COW/THREADS Copy = directory copy (n/3000 entries); mutate a private copy only.
+// USE WHEN   an ordered set under a custom comparison (top-k, threshold scans) that is
+//            versioned per transaction. For counts/sums above a threshold use
+//            SortedCountSum.
+//
 
 #include <algorithm>
 #include <cstddef>

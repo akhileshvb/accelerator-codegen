@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/cow_fenwick_g1.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/cow_fenwick.hpp"
 #include "tpch/q14/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -82,7 +82,7 @@ struct TpchQ14DayTotals {
 };
 
 struct TpchQ14State {
-  core::WideKeyCowArray<uint8_t, 16> part_class{0};
+  core::AnyKeyCowArray<uint8_t, 16> part_class{0};
   core::CowFenwick<TpchQ14DayTotals> days;
 
   TpchQ14PromoClass PromoOf(int64_t partkey) const {

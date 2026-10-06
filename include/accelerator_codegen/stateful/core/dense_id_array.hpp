@@ -1,4 +1,16 @@
 #pragma once
+//
+// DenseIdArray<T>
+// PURPOSE    Plain (NOT copy-on-write) chunked dense array indexed by a non-negative
+//            int64, 64K slots per leaf, for single-owner build-time or per-query
+//            scratch columns.
+// COMPLEXITY Get/Set O(1); Ensure may grow a leaf.
+// MEMORY     sizeof(T) per slot of touched leaves + 24 B of directory per 64K ids.
+// COW/THREADS No sharing: copying duplicates every leaf. Not thread-safe for writes;
+//            concurrent const reads are fine.
+// USE WHEN   the structure is never published as a shared version; otherwise use
+//            ChunkedCowArray / AnyKeyCowArray.
+//
 
 #include <algorithm>
 #include <cstddef>

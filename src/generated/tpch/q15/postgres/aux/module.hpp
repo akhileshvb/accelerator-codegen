@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/sparse_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -65,7 +65,7 @@ public:
 //
 // Layout (all published partitions are immutable; copies share COW chunks):
 //   * kSupplierDirectory: suppkey -> packed (name, address, phone), a
-//     SparseCowArray of std::string (empty string = no such supplier).
+//     AnyKeyCowArray of std::string (empty string = no such supplier).
 //   * one partition per calendar month: per-supplier revenue and row count for
 //     the WHOLE month (dense per-key columns, COW chunks), plus per-day
 //     (suppkey, revenue) lists for the day-granular edges of a window.
@@ -105,14 +105,14 @@ constexpr int64_t kTpchQ15WideRevenue = std::numeric_limits<int64_t>::min();
 struct TpchQ15MonthState {
   // Whole-month revenue per supplier; kTpchQ15WideRevenue means the exact
   // value lives in wide_revenue.
-  core::SparseCowArray<int64_t> revenue{0};
-  core::SparseCowArray<int32_t> count{0};
+  core::AnyKeyCowArray<int64_t> revenue{0};
+  core::AnyKeyCowArray<int32_t> count{0};
   std::map<int64_t, __int128> wide_revenue;
   std::array<TpchQ15DayList, 31> days;
 };
 
 struct TpchQ15SupplierDirectory {
-  core::SparseCowArray<std::string> entries;
+  core::AnyKeyCowArray<std::string> entries;
 };
 
 enum class TpchQ15ImageKind : uint8_t {

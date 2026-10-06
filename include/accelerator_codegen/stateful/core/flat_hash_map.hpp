@@ -1,4 +1,19 @@
 #pragma once
+//
+// FlatHashMap<V> / ShardedCowHashMap<V, kShardBits>
+// PURPOSE    Open-addressing int64 -> V hash map (Swiss-table style), and a copy-on-
+//            write sharded wrapper whose shards are shared between copies.
+// COMPLEXITY FlatHashMap: O(1) expected find/insert/erase, SIMD group probing.
+//            ShardedCowHashMap: same, plus the first write to a shard in a copy clones
+//            that shard (O(shard size)); copy is O(2^kShardBits) pointers.
+// MEMORY     ~9 B/slot + sizeof(V), at most 7/8 full (about 10.3 B + 1.14*sizeof(V) per
+//            entry at max load, 2x right after a doubling).
+// COW/THREADS FlatHashMap: single writer, pointers invalidated by inserts.
+//            ShardedCowHashMap: mutate a private copy only; const reads of a published
+//            copy are safe.
+// USE WHEN   keys are arbitrary int64 with no useful locality, or you need a map of fat
+//            values. For int64-keyed columns use AnyKeyCowArray.
+//
 
 #include <cstddef>
 #include <cstdint>

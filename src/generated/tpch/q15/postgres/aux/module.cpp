@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -725,8 +726,8 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
   // Whole months are summed from the dense columns; the edge days of a window
   // that does not start/end on a month boundary are scattered into scratch.
   std::vector<const TpchQ15MonthState *> whole;
-  core::SparseCowArray<Int128> edge_revenue{0};
-  core::SparseCowArray<int64_t> edge_count{0};
+  core::AnyKeyCowArray<Int128> edge_revenue{0};
+  core::AnyKeyCowArray<int64_t> edge_count{0};
   bool have_edge = false;
   for (int64_t m = first_month; m <= last_month; ++m) {
     const auto it = months.find(m);
@@ -749,38 +750,48 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
     }
   }
 
-  std::vector<uint64_t> chunk_ids;
+  std::vector<std::size_t> chunk_ids;
   for (const auto *ms : whole)
-    for (std::size_t i = 0; i < ms->revenue.NumChunks(); ++i)
-      chunk_ids.push_back(ms->revenue.ChunkIdAt(i));
+    ms->revenue.ForEachChunk(
+        [&](std::size_t ci, const std::vector<int64_t> &) { chunk_ids.push_back(ci); });
   if (have_edge)
-    for (std::size_t i = 0; i < edge_revenue.NumChunks(); ++i)
-      chunk_ids.push_back(edge_revenue.ChunkIdAt(i));
+    edge_revenue.ForEachChunk(
+        [&](std::size_t ci, const std::vector<Int128> &) { chunk_ids.push_back(ci); });
   std::sort(chunk_ids.begin(), chunk_ids.end());
   chunk_ids.erase(std::unique(chunk_ids.begin(), chunk_ids.end()),
                   chunk_ids.end());
 
   // Sweep: exact (int128) per-supplier sums; a supplier is a group iff it has
   // at least one lineitem in the window. Track the max and its holders.
-  constexpr std::size_t kChunk = core::SparseCowArray<int64_t>::kChunkSize;
+  constexpr std::size_t kChunk = core::AnyKeyCowArray<int64_t>::kChunkSize;
   std::vector<Int128> sum(kChunk);
   std::vector<int64_t> rows(kChunk);
   Int128 best = 0;
   bool have_best = false;
   std::vector<int64_t> winners;
-  for (const uint64_t cid : chunk_ids) {
+  const auto consider = [&](int64_t key, const Int128 &total, int64_t n) {
+    if (n <= 0)
+      return;
+    if (!have_best || total > best) {
+      best = total;
+      have_best = true;
+      winners.clear();
+    }
+    if (total == best)
+      winners.push_back(key);
+  };
+  for (const std::size_t cid : chunk_ids) {
     std::fill(sum.begin(), sum.end(), Int128{0});
     std::fill(rows.begin(), rows.end(), int64_t{0});
     for (const auto *ms : whole) {
-      const auto *rc = ms->revenue.FindChunk(cid);
-      const auto *cc = ms->count.FindChunk(cid);
+      const auto *rc = ms->revenue.ChunkAt(cid);
+      const auto *cc = ms->count.ChunkAt(cid);
       if (!rc || !cc)
         continue;
       for (std::size_t i = 0; i < kChunk; ++i) {
         int64_t v = (*rc)[i];
         if (v == kTpchQ15WideRevenue) {
-          const int64_t key = core::SparseCowArray<int64_t>::KeyOfOrdinal(
-              (cid << 12) | i);
+          const int64_t key = core::AnyKeyCowArray<int64_t>::KeyAt(cid, i);
           sum[i] += ms->wide_revenue.at(key);
         } else {
           sum[i] += v;
@@ -789,27 +800,36 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
       }
     }
     if (have_edge) {
-      if (const auto *rc = edge_revenue.FindChunk(cid)) {
-        const auto *cc = edge_count.FindChunk(cid);
+      if (const auto *rc = edge_revenue.ChunkAt(cid)) {
+        const auto *cc = edge_count.ChunkAt(cid);
         for (std::size_t i = 0; i < kChunk; ++i) {
           sum[i] += (*rc)[i];
           rows[i] += (*cc)[i];
         }
       }
     }
-    for (std::size_t i = 0; i < kChunk; ++i) {
-      if (rows[i] <= 0)
-        continue;
-      if (!have_best || sum[i] > best) {
-        best = sum[i];
-        have_best = true;
-        winners.clear();
-      }
-      if (sum[i] == best)
-        winners.push_back(core::SparseCowArray<int64_t>::KeyOfOrdinal(
-            (cid << 12) | i));
-    }
+    for (std::size_t i = 0; i < kChunk; ++i)
+      consider(core::AnyKeyCowArray<int64_t>::KeyAt(cid, i), sum[i], rows[i]);
   }
+  // Suppliers outside the dense key range (negative or huge keys) live in the
+  // arrays' sparse parts; fold them the same way.
+  std::map<int64_t, std::pair<Int128, int64_t>> far;
+  for (const auto *ms : whole) {
+    ms->revenue.ForEachSparse([&](int64_t key, const int64_t &v) {
+      far[key].first += v == kTpchQ15WideRevenue ? ms->wide_revenue.at(key) : v;
+    });
+    ms->count.ForEachSparse(
+        [&](int64_t key, const int32_t &c) { far[key].second += c; });
+  }
+  if (have_edge) {
+    edge_revenue.ForEachSparse(
+        [&](int64_t key, const Int128 &v) { far[key].first += v; });
+    edge_count.ForEachSparse(
+        [&](int64_t key, const int64_t &c) { far[key].second += c; });
+  }
+  for (const auto &entry : far)
+    consider(entry.first, entry.second.first, entry.second.second);
+  std::sort(winners.begin(), winners.end());
 
   sink.Begin(Schema());
   // Join supplier attributes at emit time (winners are already by suppkey).

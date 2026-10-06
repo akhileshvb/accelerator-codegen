@@ -1,4 +1,18 @@
 #pragma once
+//
+// StringBlob / StringDict
+// PURPOSE    Append-only string storage (one byte blob + uint64 offsets) and an
+//            interning dictionary with stable ids and lexicographic ranks.
+// COMPLEXITY Append amortised O(len); View O(1); StringDict Find/Intern O(len)
+//            expected.
+// MEMORY     StringBlob: 8 B + bytes per string. StringDict: + 4 B hash + ~8 B table
+//            slot per distinct string.
+// COW/THREADS Single writer; views are invalidated by Append. Not COW: copying
+//            duplicates the bytes.
+// USE WHEN   dictionary-encoding low-cardinality strings, or holding a build-time
+//            string column. For versioned (COW) strings use ChunkedBlobMap or
+//            KeyedStringColumn.
+//
 
 #include <algorithm>
 #include <cstddef>

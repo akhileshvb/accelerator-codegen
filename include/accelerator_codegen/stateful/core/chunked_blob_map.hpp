@@ -1,4 +1,21 @@
 #pragma once
+//
+// ChunkedBlobMap (+ varint helpers)
+// PURPOSE    Copy-on-write int64 -> short byte string map, one record per key,
+//            optimised for clustered keys; also LEB128/zigzag varint helpers for
+//            compact record encodings.
+// COMPLEXITY Get/Contains O(1) (bitmap popcount rank). Set/Erase O(chunk) at worst
+//            (offset-array insert), in place after the first touch of a chunk per
+//            version. ForEach/ForEachInChunk linear.
+// MEMORY     4 B offset + ~1 B length + payload per present key, plus a 128 B bitmap
+//            and ~1 KB chunk header per 1024 keys; far keys (negative / >= 2^36) ~60 B
+//            each.
+// COW/THREADS Copy = O(#directory pages); mutate a private copy only. A returned
+//            string_view is valid until the next mutation of the same chunk.
+// USE WHEN   one variable-length value per int64 key, keys reasonably clustered (dense
+//            or locally dense). Scattered keys: ShardedCowRecordStore. LIKE-scanning
+//            names: KeyedStringColumn.
+//
 
 #include <cstddef>
 #include <cstdint>
@@ -148,6 +165,9 @@ public:
     }
     MaybeCompact(c);
     return true;
+  }
+  bool Set(int64_t key, std::string_view bytes) {
+    return Set(key, reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size());
   }
   bool Set(int64_t key, const std::vector<uint8_t> &bytes) {
     return Set(key, bytes.data(), bytes.size());

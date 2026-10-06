@@ -1,4 +1,17 @@
 #pragma once
+//
+// ChunkedCowArray<T, kShift>
+// PURPOSE    Copy-on-write array indexed by a non-negative int64: the base building
+//            block for per-key columns and for directories of other COW structures.
+// COMPLEXITY Get/Find/Set O(1). Copy O(#directory entries). First write to a shared
+//            chunk clones it (O(2^kShift)); later writes are in place.
+// MEMORY     sizeof(T) per slot of each allocated chunk (2^kShift slots) + 16 B per
+//            directory entry. Null directory entries cost only the 16 B.
+// COW/THREADS Copies share chunks via shared_ptr; mutate only a private copy, concurrent
+//            const reads of a published copy are safe.
+// USE WHEN   ids are bounded non-negative integers (a directory entry per 2^kShift ids
+//            must be affordable). For negative or unbounded keys use AnyKeyCowArray.
+//
 
 #include <cstddef>
 #include <cstdint>
@@ -104,6 +117,10 @@ public:
     for (const auto &c : dir_)
       n += c && c.use_count() > 1;
     return n;
+  }
+  // True when chunk ci's payload is shared with another copy.
+  bool IsChunkShared(std::size_t ci) const {
+    return ci < dir_.size() && dir_[ci] && dir_[ci].use_count() > 1;
   }
   // True when chunk ci of *this and other is the same physical payload.
   bool SharesChunkWith(const ChunkedCowArray &other, std::size_t ci) const {

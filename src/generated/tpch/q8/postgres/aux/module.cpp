@@ -259,7 +259,7 @@ void ContributeRec(TpchQ8State &s, const OrderEntry &e, const LineRec &r,
   Contribute(s, type_id, sql_date::YearOf(e.day), cnk, snk, r.volume, sign);
 }
 
-void AddRef(core::WideKeyCowArray<uint32_t> &refs, int64_t key, int sign) {
+void AddRef(core::AnyKeyCowArray<uint32_t> &refs, int64_t key, int sign) {
   const uint32_t r = refs.Get(key);
   if (sign > 0)
     refs.Set(key, r + 1);

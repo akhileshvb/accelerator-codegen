@@ -1,4 +1,14 @@
 #pragma once
+//
+// i128 overflow-checked accumulation
+// PURPOSE    Overflow-checked add/sub/mul-add on __int128 for exact SUM-style state;
+//            throws std::overflow_error instead of wrapping.
+// COMPLEXITY O(1).
+// MEMORY     16 B per accumulator.
+// COW/THREADS Pure functions on caller-owned accumulators.
+// USE WHEN   exact SUM/AVG state over decimals; never accumulate scaled decimals in
+//            int64.
+//
 
 #include <cstdint>
 #include <stdexcept>

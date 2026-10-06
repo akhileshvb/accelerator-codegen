@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/sparse_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -114,9 +114,9 @@ constexpr uint32_t kTpchQ17NoGroup = 0xffffffffu;
 struct TpchQ17State {
   std::shared_ptr<const TpchQ17GroupDictionary> dictionary =
       std::make_shared<const TpchQ17GroupDictionary>();
-  core::SparseCowArray<TpchQ17GroupTotal, 8> totals;
-  core::SparseCowArray<uint32_t, 6> part_group{kTpchQ17NoGroup};
-  core::SparseCowArray<std::shared_ptr<const TpchQ17PartHistogram>, 6> parts;
+  core::AnyKeyCowArray<TpchQ17GroupTotal, 8> totals;
+  core::AnyKeyCowArray<uint32_t, 6> part_group{kTpchQ17NoGroup};
+  core::AnyKeyCowArray<std::shared_ptr<const TpchQ17PartHistogram>, 6> parts;
 };
 
 struct TpchQ17StateImage {

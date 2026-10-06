@@ -13,7 +13,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/radix_range_tree.hpp"
-#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
 #include "tpch/q5/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -22,7 +22,7 @@ namespace accelerator_codegen::aux_state::query {
 // State layout.  Published as five images; a write batch copies directories /
 // small maps and clones only the chunks it touches (never O(state)).
 //
-//   kOrders      per orderkey (core::WideKeyCowArray, any int64 key):
+//   kOrders      per orderkey (core::AnyKeyCowArray, any int64 key):
 //                  order_date   (4 B)  } the order's join tuple, present only
 //                  order_nation (4 B)  } when it has a date and its customer
 //                                        has a nation
@@ -197,10 +197,10 @@ struct TpchQ5State {
   std::unordered_map<int32_t, TpchQ5NationTrees> trees;
   std::map<std::pair<int64_t, int32_t>, TpchQ5Bucket> outliers;
   // kOrders / kCustomers / kSuppliers
-  core::WideKeyCowArray<int32_t, 15> order_date{kTpchQ5NoDate};
-  core::WideKeyCowArray<int32_t, 15> order_nation{kTpchQ5NoNation};
-  core::WideKeyCowArray<int32_t, 15> cust_nation{kTpchQ5NoNation};
-  core::WideKeyCowArray<int32_t, 15> supp_nation{kTpchQ5NoNation};
+  core::AnyKeyCowArray<int32_t, 15> order_date{kTpchQ5NoDate};
+  core::AnyKeyCowArray<int32_t, 15> order_nation{kTpchQ5NoNation};
+  core::AnyKeyCowArray<int32_t, 15> cust_nation{kTpchQ5NoNation};
+  core::AnyKeyCowArray<int32_t, 15> supp_nation{kTpchQ5NoNation};
 };
 
 enum class TpchQ5ImageKind : uint8_t {

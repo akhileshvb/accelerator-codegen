@@ -11,7 +11,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
-#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
 #include "tpch/q12/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -20,7 +20,7 @@ namespace accelerator_codegen::aux_state::query {
 // State layout (published as three images; a write batch copies directories /
 // shard pointers and clones only the chunks and shards it touches).
 //
-//   kOrderPriorities  priority class per orderkey: WideKeyCowArray<uint8_t>,
+//   kOrderPriorities  priority class per orderkey: AnyKeyCowArray<uint8_t>,
 //                     1 B per key slot (TPC-H keys are ~25% dense => ~4 B per
 //                     order: 0.6 GB at SF100, 6 GB at SF1000; the old
 //                     DenseIdArray + whole-array copy per write batch was the
@@ -109,7 +109,7 @@ struct TpchQ12Counts {
 };
 
 struct TpchQ12State {
-  core::WideKeyCowArray<uint8_t, 16> order_class;
+  core::AnyKeyCowArray<uint8_t, 16> order_class;
   // key = receipt_day * 2^24 + shipmode id.
   core::ShardedCowHashMap<TpchQ12Counts, 6> cells;
   std::vector<std::string> shipmodes;

@@ -1,4 +1,17 @@
 #pragma once
+//
+// ShardedCowRecordStore<kShardBits>
+// PURPOSE    Copy-on-write int64 -> short variable-length byte record (a few to a few
+//            hundred bytes) in a sharded hash index plus append-only arenas.
+// COMPLEXITY Find/Contains O(1); Put/Erase O(1) amortised plus a one-time shard clone
+//            per version; compaction when half a shard's arena is dead.
+// MEMORY     ~13 B hash slot + 4 B length + payload per record; no per-record
+//            allocation.
+// COW/THREADS Copy = 2^kShardBits pointer copies; mutate a private copy only. Views are
+//            valid until the next write to the same shard.
+// USE WHEN   keys are scattered (no locality), values are small variable-length
+//            records. For clustered keys prefer ChunkedBlobMap (~5 B overhead per key).
+//
 
 #include <cstddef>
 #include <cstdint>

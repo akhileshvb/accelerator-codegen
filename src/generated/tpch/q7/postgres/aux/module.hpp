@@ -10,7 +10,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
-#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/pg_numeric.hpp"
 #include "tpch/q7/layout.hpp"
 
@@ -119,10 +119,10 @@ struct TpchQ7State {
   static constexpr int32_t kAbsent = INT32_MIN;
 
   std::map<int32_t, std::string> nations;
-  core::WideKeyCowArray<int32_t> supplier_nation{kAbsent};
-  core::WideKeyCowArray<int32_t> customer_nation{kAbsent};
-  core::WideKeyCowArray<uint32_t> supplier_refs{0};
-  core::WideKeyCowArray<uint32_t> customer_refs{0};
+  core::AnyKeyCowArray<int32_t> supplier_nation{kAbsent};
+  core::AnyKeyCowArray<int32_t> customer_nation{kAbsent};
+  core::AnyKeyCowArray<uint32_t> supplier_refs{0};
+  core::AnyKeyCowArray<uint32_t> customer_refs{0};
   core::ChunkedBlobMap orders;
   std::map<TpchQ7CubeKey, TpchQ7CubeCell> cube;
 };

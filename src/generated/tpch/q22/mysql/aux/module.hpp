@@ -14,7 +14,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/sorted_count_sum.hpp"
-#include "accelerator_codegen/stateful/core/sparse_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -109,7 +109,7 @@ struct TpchQ22PrefixEntry {
 struct TpchQ22State {
   std::shared_ptr<const TpchQ22PrefixDictionary> dictionary =
       std::make_shared<const TpchQ22PrefixDictionary>();
-  core::SparseCowArray<TpchQ22CustomerRecord, 5> customers;
+  core::AnyKeyCowArray<TpchQ22CustomerRecord, 5> customers;
   std::vector<std::shared_ptr<const TpchQ22PrefixEntry>> prefixes;
 };
 

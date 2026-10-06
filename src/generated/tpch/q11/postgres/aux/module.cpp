@@ -156,7 +156,7 @@ TpchQ11Offer TpchQ11State::OfferAt(const TpchQ11OfferSlots &slots,
 
 TpchQ11PartValue TpchQ11State::PartValueIn(
     int64_t partkey, int64_t nationkey,
-    const core::SignedKeyCowArray<int64_t> &supplier_map) const {
+    const core::AnyKeyCowArray<int64_t> &supplier_map) const {
   TpchQ11PartValue out;
   const auto *slots = offers.Find(partkey);
   if (!slots || nationkey == kTpchQ11NoNation)
@@ -264,8 +264,8 @@ void TpchQ11State::SetSupplierNation(int64_t suppkey, int64_t nationkey) {
 
 void TpchQ11State::RegroupSuppliers(
     const core::FlatHashMap<uint8_t> &changed_suppliers,
-    const core::SignedKeyCowArray<int64_t> &old_map) {
-  using Offers = core::SignedKeyCowArray<TpchQ11OfferSlots, 10>;
+    const core::AnyKeyCowArray<int64_t> &old_map) {
+  using Offers = core::AnyKeyCowArray<TpchQ11OfferSlots, 10>;
   std::vector<int64_t> nations_of_part;
   const auto visit = [&](int64_t partkey, const TpchQ11OfferSlots &slots) {
     bool touched = false;
@@ -321,7 +321,7 @@ void TpchQ11State::EraseNation(const TpchQ11NationInput &nation) {
 }
 
 void TpchQ11State::BuildGroups() {
-  using Offers = core::SignedKeyCowArray<TpchQ11OfferSlots, 10>;
+  using Offers = core::AnyKeyCowArray<TpchQ11OfferSlots, 10>;
   groups.clear();
   std::unordered_map<int64_t, std::vector<TpchQ11Key>> pending; // per nation
   std::vector<std::pair<int64_t, Q11AccT>> sums; // this part's per-nation values
@@ -531,7 +531,7 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
       }
     // ... then suppliers moving between nations re-group their parts.
     if (!need_rebuild && !buffer.suppliers.empty()) {
-      const core::SignedKeyCowArray<int64_t> old_map = new_state->supplier_nation;
+      const core::AnyKeyCowArray<int64_t> old_map = new_state->supplier_nation;
       for (const auto &ev : buffer.suppliers)
         new_state->SetSupplierNation(ev.suppkey, ev.nationkey);
       core::FlatHashMap<uint8_t> changed;
