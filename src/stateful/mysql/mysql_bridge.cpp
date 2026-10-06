@@ -30,6 +30,7 @@
 #include "accelerator_codegen/stateful/mysql/mysql_mutation_capture.hpp"
 #include "accelerator_codegen/stateful/mysql/mysql_xact_callbacks.hpp"
 #include "accelerator_codegen/runtime/mysql/scan_helper.hpp"
+#include "mysql/runtime.hpp"
 
 namespace accel = accelerator_codegen::aux_state;
 namespace core = accel::core;
@@ -121,51 +122,64 @@ std::mutex g_mutex;
 // ---- Audit notification handler ----
 // Receives general-status events after COMMIT / ROLLBACK complete.
 
-static int AuditNotify(MYSQL_THD, mysql_event_class_t event_class,
+static int AuditNotify(MYSQL_THD thd, mysql_event_class_t event_class,
                        const void *event_raw) {
+  if (event_class == MYSQL_AUDIT_CONNECTION_CLASS) {
+    // A closed connection rolls its open transaction back (no ROLLBACK event).
+    auto *ev = static_cast<const mysql_event_connection *>(event_raw);
+    if (ev->event_subclass == MYSQL_AUDIT_CONNECTION_DISCONNECT) {
+      try {
+        engine::DispatchMysqlSessionEnd(engine::MysqlSessionFromThd(thd));
+      } catch (...) {
+      }
+    }
+    return 0;
+  }
   if (event_class != MYSQL_AUDIT_GENERAL_CLASS) return 0;
   auto *ev = static_cast<const mysql_event_general *>(event_raw);
   if (ev->event_subclass != MYSQL_AUDIT_GENERAL_STATUS) return 0;
 
-  auto has_word = [](const char *str, size_t len, const char *word) -> bool {
-    if (!str || len == 0) return false;
-    size_t wlen = strlen(word);
-    if (len < wlen) return false;
-    for (size_t i = 0; i < wlen; ++i) {
+  // The statement's SQL command name as the server spells it ("commit",
+  // "rollback", "rollback_to_savepoint", "begin", "update", ...).
+  auto is_command = [&](const char *name) -> bool {
+    const char *str = ev->general_sql_command.str;
+    const size_t len = ev->general_sql_command.length;
+    const size_t nlen = strlen(name);
+    if (!str || len != nlen) return false;
+    for (size_t i = 0; i < nlen; ++i) {
       char c = str[i];
       if (c >= 'A' && c <= 'Z') c = (char)(c + ('a' - 'A'));
-      if (c != word[i]) return false;
+      if (c != name[i]) return false;
     }
     return true;
   };
 
-  bool is_commit = has_word(ev->general_sql_command.str, ev->general_sql_command.length, "commit");
-  bool is_rollback = has_word(ev->general_sql_command.str, ev->general_sql_command.length, "rollback");
-  bool is_dml =
-      has_word(ev->general_sql_command.str, ev->general_sql_command.length, "update") ||
-      has_word(ev->general_sql_command.str, ev->general_sql_command.length, "insert") ||
-      has_word(ev->general_sql_command.str, ev->general_sql_command.length, "delete");
+  const bool is_commit = is_command("commit");
+  const bool is_rollback = is_command("rollback");
 
   try {
+    engine::MysqlStatementKind kind = engine::MysqlStatementKind::Other;
+    if (is_commit) kind = engine::MysqlStatementKind::Commit;
+    else if (is_rollback) kind = engine::MysqlStatementKind::Rollback;
+    else if (is_command("rollback_to_savepoint")) kind = engine::MysqlStatementKind::RollbackToSavepoint;
+    else if (is_command("begin")) kind = engine::MysqlStatementKind::Begin;
+    // A failed statement was rolled back: drop what its triggers captured.
+    engine::DispatchMysqlStatementEnd(engine::MysqlSessionFromThd(thd), kind,
+                                      /*failed=*/ev->general_error_code != 0,
+                                      engine::MysqlThdInActiveTransaction(thd));
     if (is_commit || is_rollback) {
-      engine::DispatchMysqlTxnEvent(is_commit, is_rollback);
-    } else if (is_dml) {
-      // Autocommit DML: there is no separate COMMIT event. A failed
-      // statement was rolled back: drop what its triggers captured.
-      const bool failed = ev->general_error_code != 0;
-      engine::DispatchMysqlTxnEvent(!failed, failed);
-    }
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_initialized || !g_backend) return 0;
-    if (is_commit) {
-      const bool had_work = g_coordinator && g_coordinator->HasPendingWork();
-      g_backend->OnPreCommit();
-      g_backend->OnCommit();
-      if (had_work) {
-        ++g_current_epoch;
+      std::lock_guard<std::mutex> lock(g_mutex);
+      if (!g_initialized || !g_backend) return 0;
+      if (is_commit) {
+        const bool had_work = g_coordinator && g_coordinator->HasPendingWork();
+        g_backend->OnPreCommit();
+        g_backend->OnCommit();
+        if (had_work) {
+          ++g_current_epoch;
+        }
+      } else {
+        g_backend->OnAbort();
       }
-    } else if (is_rollback) {
-      g_backend->OnAbort();
     }
   } catch (...) {
     // Must not surface C++ exceptions through the MySQL audit handler.
@@ -436,9 +450,8 @@ static bool UdfInitMutationsCaptureRow(UDF_INIT *initid, UDF_ARGS *args, char *m
   return false;
 }
 
-static char *UdfMutationsCaptureRow(UDF_INIT *, UDF_ARGS *args,
-                                     char *result, unsigned long *length,
-                                     unsigned char *, unsigned char *) {
+static char *CaptureRow(UDF_ARGS *args, char *result, unsigned long *length,
+                        bool typed) {
   if (!args || args->arg_count < 2) {
     std::strcpy(result, "error");
     *length = 5;
@@ -447,15 +460,17 @@ static char *UdfMutationsCaptureRow(UDF_INIT *, UDF_ARGS *args,
 
   try {
     // Build typed MutationBatch from trigger arguments (no coordinator needed for capture)
-    auto batch_opt = engine::BuildMutationBatchFromTriggerArgs(
-        args->arg_count, args->args, args->lengths);
+    auto batch_opt = typed ? engine::BuildMutationBatchFromTypedTriggerArgs(
+                                 args->arg_count, args->args, args->lengths)
+                           : engine::BuildMutationBatchFromTriggerArgs(
+                                 args->arg_count, args->args, args->lengths);
 
     if (!batch_opt.has_value()) {
       // The row could not be decoded: the accelerators may be missing it.
       engine::InvalidateAllMysqlAccelerators();
     } else {
       core::MutationBatch &batch = *batch_opt;
-      engine::DispatchMysqlMutation(nullptr, batch);
+      engine::DispatchMysqlMutation(batch);
 
       // Feed through g_backend → coordinator pipeline if initialized
       if (g_backend) {
@@ -680,8 +695,8 @@ public:
     }
 
     std::string sql = "SELECT " + columns + " FROM " + spec.table_name + where;
-    std::string cmd = "/usr/bin/mysql -h 127.0.0.1 -P 3306 -uroot -pmysql -D accel_mysql_test "
-                      "--batch --raw -e \"" + sql + "\" 2>/dev/null";
+    std::string cmd = engine::detail::MysqlCliBase() +
+                      " --batch --raw -e \"" + sql + "\" 2>/dev/null";
 
     FILE *pipe = popen(cmd.c_str(), "r");
     if (!pipe) return;
@@ -753,22 +768,22 @@ static char *UdfScanInit(UDF_INIT *, UDF_ARGS *,
 
     // Create a test table directly in MySQL and seed data
     std::string drop = "DROP TABLE IF EXISTS toy_scan_table";
-    std::string drop_cmd = "/usr/bin/mysql -h 127.0.0.1 -P 3306 -uroot -pmysql -D accel_mysql_test "
-                           "-e \"" + drop + "\" 2>/dev/null";
+    std::string drop_cmd = engine::detail::MysqlCliBase() +
+                           " -e \"" + drop + "\" 2>/dev/null";
     system(drop_cmd.c_str());
 
     std::string create = "CREATE TABLE toy_scan_table ("
                          "id INT, name VARCHAR(100), score INT)";
-    std::string create_cmd = "/usr/bin/mysql -h 127.0.0.1 -P 3306 -uroot -pmysql -D accel_mysql_test "
-                             "-e \"" + create + "\" 2>/dev/null";
+    std::string create_cmd = engine::detail::MysqlCliBase() +
+                             " -e \"" + create + "\" 2>/dev/null";
     system(create_cmd.c_str());
 
     std::string insert = "INSERT INTO toy_scan_table VALUES "
                          "(1, \"Alice\", 100), "
                          "(2, \"Bob\", NULL), "
                          "(3, \"Charlie\", 300)";
-    std::string insert_cmd = "/usr/bin/mysql -h 127.0.0.1 -P 3306 -uroot -pmysql -D accel_mysql_test "
-                             "-e \"" + insert + "\" 2>/dev/null";
+    std::string insert_cmd = engine::detail::MysqlCliBase() +
+                             " -e \"" + insert + "\" 2>/dev/null";
     system(insert_cmd.c_str());
 
     std::strcpy(result, "ok");
@@ -920,8 +935,8 @@ static char *UdfScanClear(UDF_INIT *, UDF_ARGS *,
                            unsigned char *, unsigned char *) {
   try {
     std::string drop = "DROP TABLE IF EXISTS toy_scan_table";
-    std::string cmd = "/usr/bin/mysql -h 127.0.0.1 -P 3306 -uroot -pmysql -D accel_mysql_test "
-                      "-e \"" + drop + "\" 2>/dev/null";
+    std::string cmd = engine::detail::MysqlCliBase() +
+                      " -e \"" + drop + "\" 2>/dev/null";
     system(cmd.c_str());
     engine::SetMysqlTableScanner(nullptr);  // reset to default mock
     std::strcpy(result, "ok");
@@ -1320,7 +1335,8 @@ static struct st_mysql_audit g_audit_descriptor = {
   MYSQL_AUDIT_INTERFACE_VERSION,
   nullptr,  /* release_thd */
   AuditNotify,
-  { [MYSQL_AUDIT_GENERAL_CLASS] = MYSQL_AUDIT_GENERAL_STATUS },
+  { [MYSQL_AUDIT_GENERAL_CLASS] = MYSQL_AUDIT_GENERAL_STATUS,
+    [MYSQL_AUDIT_CONNECTION_CLASS] = MYSQL_AUDIT_CONNECTION_DISCONNECT },
 };
 
 static int mysql_plugin_init(void *) {
@@ -1433,10 +1449,29 @@ bool mysql_accel_mutations_capture_row_init(UDF_INIT *initid, UDF_ARGS *args, ch
 }
 
 __attribute__((visibility("default")))
-char *mysql_accel_mutations_capture_row(UDF_INIT *initid, UDF_ARGS *args,
+char *mysql_accel_mutations_capture_row(UDF_INIT *, UDF_ARGS *args,
                                          char *result, unsigned long *length,
-                                         unsigned char *is_null, unsigned char *error) {
-  return UdfMutationsCaptureRow(initid, args, result, length, is_null, error);
+                                         unsigned char *, unsigned char *) {
+  return CaptureRow(args, result, length, /*typed=*/false);
+}
+
+// Self-describing capture (args: table_id, kind, type string, old row, new
+// row; see BuildMutationBatchFromTypedTriggerArgs).
+__attribute__((visibility("default")))
+bool mysql_accel_capture_row_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
+  if (args->arg_count < 3) {
+    std::snprintf(message, MYSQL_ERRMSG_SIZE,
+                  "mysql_accel_capture_row takes table_id, kind, types, columns...");
+    return true;
+  }
+  return UdfInitMutationsCaptureRow(initid, args, message);
+}
+
+__attribute__((visibility("default")))
+char *mysql_accel_capture_row(UDF_INIT *, UDF_ARGS *args, char *result,
+                              unsigned long *length, unsigned char *,
+                              unsigned char *) {
+  return CaptureRow(args, result, length, /*typed=*/true);
 }
 
 __attribute__((visibility("default")))

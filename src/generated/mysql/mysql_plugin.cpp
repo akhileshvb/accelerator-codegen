@@ -377,7 +377,7 @@ bool mysql_accel_set_scan_database_init(UDF_INIT *initid, UDF_ARGS *args, char *
 }
 
 // Selects the database the accelerators' table scans read (default: the
-// server's ACCEL_MYSQL_DB / TPCH_MYSQL_DB environment). Pair with
+// server's ACCEL_MYSQL_DB / MYSQL_DATABASE environment). Pair with
 // mysql_accel_invalidate_all() to rebuild from it.
 __attribute__((visibility("default")))
 char *mysql_accel_set_scan_database(UDF_INIT *, UDF_ARGS *args, char *result,

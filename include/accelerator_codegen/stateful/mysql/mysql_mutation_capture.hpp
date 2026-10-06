@@ -34,4 +34,15 @@ std::optional<core::MutationBatch>
 BuildMutationBatchFromTriggerArgs(std::size_t arg_count, char **args,
                                    unsigned long *lengths);
 
+// Self-describing variant: args[0] = table_id, args[1] = kind, args[2] = one
+// type character per column ('i' int64, 'u' uint64, 'n' exact decimal,
+// 'f' double, 'd' date, 'b' boolean, 's' string), then the old row's column
+// values followed by the new row's. No schema registry is involved: the capture
+// call (a trigger generated from the table's actual column types) carries what
+// the host needs to decode the row. nullopt if the header or type string is
+// malformed; throws if a value does not parse or the count is wrong.
+std::optional<core::MutationBatch>
+BuildMutationBatchFromTypedTriggerArgs(std::size_t arg_count, char **args,
+                                       unsigned long *lengths);
+
 } // namespace accelerator_codegen::aux_state::engine::mysql

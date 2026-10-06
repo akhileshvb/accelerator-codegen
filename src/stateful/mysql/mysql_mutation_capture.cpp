@@ -96,56 +96,40 @@ core::AuxValue ParseCaptureValue(const char *raw, std::size_t len,
   return core::AuxValue::Of(core::AuxType::String, std::string(raw, len));
 }
 
-std::optional<core::MutationBatch>
-BuildMutationBatchFromTriggerArgs(std::size_t arg_count, char **args,
-                                   unsigned long *lengths) {
-  if (!args || arg_count < 2) return std::nullopt;
+namespace {
 
-  // Parse table id (args[0])
-  std::size_t len0 = (lengths && lengths[0] > 0) ? lengths[0]
-                               : (args[0] ? std::strlen(args[0]) : 0);
-  std::string tid_str(args[0], len0);
-  core::TableId table_id = 0;
+std::size_t ArgLen(char **args, unsigned long *lengths, std::size_t idx) {
+  if (lengths && lengths[idx] > 0) return lengths[idx];
+  return args[idx] ? std::strlen(args[idx]) : 0;
+}
+
+// Table id (args[0]) and kind (args[1]); false if either is malformed.
+bool ParseHeader(char **args, unsigned long *lengths, core::TableId &table_id,
+                 int &kind_int) {
+  if (!args[0] || !args[1]) return false;
   try {
-    table_id = static_cast<core::TableId>(std::stoull(tid_str));
+    table_id = static_cast<core::TableId>(
+        std::stoull(std::string(args[0], ArgLen(args, lengths, 0))));
+    kind_int = std::stoi(std::string(args[1], ArgLen(args, lengths, 1)));
   } catch (...) {
-    return std::nullopt;
+    return false;
   }
+  return kind_int >= 0 && kind_int <= 2;
+}
 
-  // Parse mutation kind (args[1])
-  std::size_t len1 = (lengths && lengths[1] > 0) ? lengths[1]
-                               : (args[1] ? std::strlen(args[1]) : 0);
-  std::string kind_str(args[1], len1);
-  int kind_int = 0;
-  try {
-    kind_int = std::stoi(kind_str);
-  } catch (...) {
-    return std::nullopt;
-  }
-  if (kind_int < 0 || kind_int > 2) return std::nullopt;
-
+// Builds the batch from args[payload_start ..): the old row's columns (delete,
+// update) then the new row's (insert, update), each `schema.size()` values.
+// A row the schema does not describe is never half-read: it would leave the
+// accelerator silently out of date.
+core::MutationBatch BuildBatch(core::TableId table_id, int kind_int,
+                               const std::vector<CaptureColumn> &schema,
+                               std::size_t arg_count, char **args,
+                               unsigned long *lengths, std::size_t payload_start) {
   core::MutationBatch batch;
   batch.table = table_id;
   batch.kind = static_cast<core::MutationKind>(kind_int);
-
-  // Get registered schema for this table
-  auto schema_opt = LookupCaptureSchema(table_id);
-  if (!schema_opt.has_value()) {
-    // No schema registered — still return a basic batch so the
-    // harness can at least see table id and kind.
-    // Do not return nullopt here; the harness needs to verify typed fields.
-    // Without schema, we cannot parse columns but we store minimal info.
-    return batch;
-  }
-  const auto &schema = *schema_opt;
-  std::size_t col_count = schema.size();
-
-  // After table_id + kind, remaining args are:
-  // old-row columns (count: col_count), then optionally new-row columns
-  std::size_t payload_start = 2;
-  std::size_t total_payload = arg_count - payload_start;
-  // A row the schema does not describe is never half-read: it would leave
-  // the accelerator silently out of date.
+  const std::size_t col_count = schema.size();
+  const std::size_t total_payload = arg_count - payload_start;
   const std::size_t expected_payload =
       batch.kind == core::MutationKind::Update ? 2 * col_count : col_count;
   if (total_payload != expected_payload) {
@@ -153,45 +137,29 @@ BuildMutationBatchFromTriggerArgs(std::size_t arg_count, char **args,
                              " expects " + std::to_string(expected_payload) +
                              " column values, got " + std::to_string(total_payload));
   }
-
-  // Build old rows (for DELETE, UPDATE)
+  auto read_row = [&](std::size_t start) {
+    core::AuxRow row;
+    for (std::size_t i = 0; i < col_count; ++i) {
+      const std::size_t idx = start + i;
+      const char *val = args[idx]; // nullptr: SQL NULL
+      row.values.push_back(ParseCaptureValue(val, ArgLen(args, lengths, idx), schema[i]));
+    }
+    return row;
+  };
   if (batch.kind == core::MutationKind::Delete ||
       batch.kind == core::MutationKind::Update) {
-    if (total_payload >= col_count) {
-      core::AuxRow old_row;
-      for (std::size_t i = 0; i < col_count; ++i) {
-        std::size_t idx = payload_start + i;
-        const char *val = args[idx]; // nullptr: SQL NULL
-        const std::size_t len = (lengths && lengths[idx] > 0) ? lengths[idx]
-                                 : (val ? std::strlen(val) : 0);
-        old_row.values.push_back(ParseCaptureValue(val, len, schema[i]));
-      }
-      batch.old_rows.push_back(std::move(old_row));
-    }
+    batch.old_rows.push_back(read_row(payload_start));
   }
-
-  // Build new rows (for INSERT, UPDATE)
   if (batch.kind == core::MutationKind::Insert ||
       batch.kind == core::MutationKind::Update) {
-    std::size_t new_start = payload_start;
-    if (batch.kind == core::MutationKind::Update && total_payload >= col_count) {
-      new_start = payload_start + col_count;
-    }
-    if (new_start + col_count <= arg_count) {
-      core::AuxRow new_row;
-      for (std::size_t i = 0; i < col_count; ++i) {
-        std::size_t idx = new_start + i;
-        const char *val = args[idx]; // nullptr: SQL NULL
-        const std::size_t len = (lengths && lengths[idx] > 0) ? lengths[idx]
-                                 : (val ? std::strlen(val) : 0);
-        new_row.values.push_back(ParseCaptureValue(val, len, schema[i]));
-      }
-      batch.new_rows.push_back(std::move(new_row));
-    }
+    batch.new_rows.push_back(read_row(
+        batch.kind == core::MutationKind::Update ? payload_start + col_count : payload_start));
   }
+  return batch;
+}
 
-
-  // Detect updated columns for UPDATE: compare old vs new row values
+// Fills the updated-column list of an update.
+core::MutationBatch FinishBatch(core::MutationBatch batch) {
   // Detect updated columns for UPDATE: compare old vs new row values
   if (batch.kind == core::MutationKind::Update &&
       !batch.old_rows.empty() && !batch.new_rows.empty()) {
@@ -241,6 +209,61 @@ BuildMutationBatchFromTriggerArgs(std::size_t arg_count, char **args,
   }
 
   return batch;
+}
+
+
+// Column type codes of the self-describing capture call (see
+// mysql_accel_capture_row): one character per column.
+bool ParseTypeCode(char c, core::AuxType &type) {
+  switch (c) {
+  case 'b': type = core::AuxType::Boolean; return true;
+  case 'i': type = core::AuxType::Int64; return true;
+  case 'u': type = core::AuxType::UInt64; return true;
+  case 'f': type = core::AuxType::Double; return true;
+  case 'n': type = core::AuxType::ScaledDecimal; return true;
+  case 'd': type = core::AuxType::Date; return true;
+  case 's': type = core::AuxType::String; return true;
+  default: return false;
+  }
+}
+
+} // namespace
+
+std::optional<core::MutationBatch>
+BuildMutationBatchFromTriggerArgs(std::size_t arg_count, char **args,
+                                   unsigned long *lengths) {
+  if (!args || arg_count < 2) return std::nullopt;
+  core::TableId table_id = 0;
+  int kind_int = 0;
+  if (!ParseHeader(args, lengths, table_id, kind_int)) return std::nullopt;
+  auto schema = LookupCaptureSchema(table_id);
+  if (!schema.has_value()) {
+    // No schema registered: only the table id and kind can be reported.
+    core::MutationBatch batch;
+    batch.table = table_id;
+    batch.kind = static_cast<core::MutationKind>(kind_int);
+    return batch;
+  }
+  return FinishBatch(BuildBatch(table_id, kind_int, *schema, arg_count, args,
+                                lengths, /*payload_start=*/2));
+}
+
+std::optional<core::MutationBatch>
+BuildMutationBatchFromTypedTriggerArgs(std::size_t arg_count, char **args,
+                                       unsigned long *lengths) {
+  if (!args || arg_count < 3 || !args[2]) return std::nullopt;
+  core::TableId table_id = 0;
+  int kind_int = 0;
+  if (!ParseHeader(args, lengths, table_id, kind_int)) return std::nullopt;
+  std::vector<CaptureColumn> schema;
+  const char *types = args[2];
+  for (std::size_t i = 0, n = ArgLen(args, lengths, 2); i < n; ++i) {
+    CaptureColumn col;
+    if (!ParseTypeCode(types[i], col.type)) return std::nullopt;
+    schema.push_back(col);
+  }
+  return FinishBatch(BuildBatch(table_id, kind_int, schema, arg_count, args,
+                                lengths, /*payload_start=*/3));
 }
 
 } // namespace accelerator_codegen::aux_state::engine::mysql
