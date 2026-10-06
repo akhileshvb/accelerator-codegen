@@ -87,13 +87,27 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ11(FunctionCallInfo fcinfo) {
+  // The SQL function is not STRICT: a NULL argument reaches the module as a
+  // NULL AuxValue.  The fraction arrives as numeric (passed on as its exact
+  // decimal text) or as float8.
+  core::AuxValue nation =
+      PG_ARGISNULL(0)
+          ? core::AuxValue::Null(core::AuxType::String)
+          : core::AuxValue::Of(core::AuxType::String,
+                               detail::TextDatum(PG_GETARG_DATUM(0)));
+  core::AuxValue fraction = core::AuxValue::Null(core::AuxType::String);
+  if (!PG_ARGISNULL(1)) {
+    if (get_fn_expr_argtype(fcinfo->flinfo, 1) == NUMERICOID) {
+      char *text = DatumGetCString(
+          DirectFunctionCall1(numeric_out, PG_GETARG_DATUM(1)));
+      fraction = core::AuxValue::Of(core::AuxType::String, std::string(text));
+      pfree(text);
+    } else {
+      fraction = core::AuxValue::Of(core::AuxType::Double, PG_GETARG_FLOAT8(1));
+    }
+  }
   detail::Q11Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(0))),
-                            core::AuxValue::Of(core::AuxType::Double,
-                                               PG_GETARG_FLOAT8(1))}},
-      fcinfo);
+      core::QueryArguments{{std::move(nation), std::move(fraction)}}, fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{

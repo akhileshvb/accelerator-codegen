@@ -1,24 +1,17 @@
 #include "tpch/q11/postgres/aux/module.hpp"
 #include "tpch/q11/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
-#include <cmath>
-#include <cstring>
+#include <atomic>
+#include <charconv>
+#include <cstdlib>
 #include <limits>
-#include <set>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
-using core::ByteReader;
-using core::ByteWriter;
-
-constexpr uint32_t kVersion = 1;
-constexpr uint32_t kMetadataMagic = 0x4d313151; // Q11M
-constexpr uint32_t kNationMagic = 0x4e313151;   // Q11N
 
 // ── Cell helpers ────────────────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -27,6 +20,10 @@ bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
     return false;
   out = std::get<std::string>(row.values[index].payload);
   return true;
+}
+
+bool NullCell(const core::AuxRow &row, std::size_t index) {
+  return index >= row.values.size() || row.values[index].is_null;
 }
 
 bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
@@ -47,81 +44,26 @@ bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
   return false;
 }
 
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
+// A decimal cell as an integer count of 1/100 units (ps_supplycost's scale);
+// false when it is not exactly representable.
+bool CentsCell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
   if (index >= row.values.size() || row.values[index].is_null)
     return false;
   const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
-}
-
-// ── Hugeint / __int128 helpers ──────────────────────────────────────────────
-#if defined(__SIZEOF_INT128__)
-void WriteQ11Acc(ByteWriter &writer, Q11AccT value) {
-  writer.U64(static_cast<uint64_t>(value));
-  writer.U64(static_cast<uint64_t>(value >> 64));
-}
-
-bool ReadQ11Acc(ByteReader &reader, Q11AccT &value) {
-  uint64_t lo = 0;
-  uint64_t hi = 0;
-  if (!reader.U64(lo) || !reader.U64(hi))
+  if (!std::holds_alternative<core::ScaledDecimal>(cell.payload))
     return false;
-  value = static_cast<Q11AccT>(hi) << 64;
-  value |= static_cast<Q11AccT>(lo);
+  const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
+  int64_t value = decimal.value;
+  for (int32_t scale = decimal.scale; scale < 2; ++scale)
+    if (__builtin_mul_overflow(value, int64_t{10}, &value))
+      return false;
+  for (int32_t scale = decimal.scale; scale > 2; --scale) {
+    if (value % 10 != 0)
+      return false;
+    value /= 10;
+  }
+  raw = value;
   return true;
-}
-
-void AddAcc(Q11AccT &accumulator, int64_t supplycost_raw, int64_t availqty) {
-  accumulator += static_cast<Q11AccT>(supplycost_raw) *
-                 static_cast<Q11AccT>(availqty);
-}
-#else
-void WriteQ11Acc(ByteWriter &writer, Q11AccT value) {
-  writer.I64(value);
-}
-
-bool ReadQ11Acc(ByteReader &reader, Q11AccT &value) {
-  return reader.I64(value);
-}
-
-void AddAcc(Q11AccT &accumulator, int64_t supplycost_raw, int64_t availqty) {
-  accumulator += supplycost_raw * availqty;
-}
-#endif
-
-// ── StateImage helpers ──────────────────────────────────────────────────────
-std::shared_ptr<const TpchQ11StateImage>
-MakeMetadataImage(const std::shared_ptr<const TpchQ11State> &state) {
-  auto image = std::make_shared<TpchQ11StateImage>();
-  image->kind = TpchQ11ImageKind::Metadata;
-  image->state = state;
-  return image;
-}
-
-std::shared_ptr<const TpchQ11StateImage>
-MakeNationImage(int32_t nationkey, const std::string &nation_name,
-                Q11AccT total_value,
-                const std::vector<TpchQ11OutputRow> &sorted_rows) {
-  auto image = std::make_shared<TpchQ11StateImage>();
-  image->kind = TpchQ11ImageKind::NationPreAggregated;
-  image->nationkey = nationkey;
-  image->nation_name = nation_name;
-  image->total_value = total_value;
-  image->sorted_rows = sorted_rows;
-  return image;
-}
-
-const TpchQ11StateImage *AsQ11Image(const core::StateImage &image,
-                                     TpchQ11ImageKind kind) {
-  const auto *payload = image.As<TpchQ11StateImage>();
-  return payload && payload->kind == kind ? payload : nullptr;
 }
 
 core::InvalidationPlan All() {
@@ -131,278 +73,351 @@ core::InvalidationPlan All() {
   return plan;
 }
 
-// ── Row readers ─────────────────────────────────────────────────────────────
-bool ReadPartsupp(const core::AuxRow &row, TpchQ11PartsuppInput &out) {
-  int64_t partkey = 0, suppkey = 0, availqty = 0;
-  int64_t supplycost_raw = 0;
-  int32_t supplycost_scale = 0;
-  if (!IntCell(row, 0, partkey) || !IntCell(row, 1, suppkey) ||
-      !IntCell(row, 2, availqty) ||
-      !RawDecimalCell(row, 3, supplycost_raw, supplycost_scale))
+// ── Row readers (projected as in Dependencies()) ────────────────────────────
+// false: undecodable (forces a rebuild); `skip`: the row can never contribute
+// (a NULL key / cost / quantity), so it is ignored.
+bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, TpchQ11Offer &offer,
+                  bool &skip) {
+  skip = NullCell(row, 0) || NullCell(row, 1) || NullCell(row, 2) ||
+         NullCell(row, 3);
+  if (skip)
+    return true;
+  int64_t qty = 0;
+  if (!IntCell(row, 0, partkey) || !IntCell(row, 1, offer.suppkey) ||
+      !IntCell(row, 2, qty) || !CentsCell(row, 3, offer.cost_raw) ||
+      qty < std::numeric_limits<int32_t>::min() ||
+      qty > std::numeric_limits<int32_t>::max())
     return false;
-  out.partkey = partkey;
-  out.suppkey = suppkey;
-  out.availqty = availqty;
-  out.supplycost_raw = supplycost_raw;
-  out.supplycost_scale = supplycost_scale;
+  offer.availqty = static_cast<int32_t>(qty);
   return true;
 }
 
 bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey,
                   int32_t &nationkey) {
-  int64_t nk = 0;
-  if (!IntCell(row, 0, suppkey) || !IntCell(row, 1, nk))
+  nationkey = kTpchQ11NoNation; // NULL s_nationkey joins no nation
+  if (!IntCell(row, 0, suppkey))
     return false;
-  if (nk < std::numeric_limits<int32_t>::min() ||
+  if (NullCell(row, 1))
+    return true;
+  int64_t nk = 0;
+  if (!IntCell(row, 1, nk) || nk <= std::numeric_limits<int32_t>::min() ||
       nk > std::numeric_limits<int32_t>::max())
     return false;
   nationkey = static_cast<int32_t>(nk);
   return true;
 }
 
-bool ReadNation(const core::AuxRow &row, int32_t &nationkey,
-                std::string &name) {
+bool ReadNation(const core::AuxRow &row, TpchQ11NationInput &out, bool &skip) {
   int64_t nk = 0;
-  if (!IntCell(row, 0, nk) || !StringCell(row, 1, name))
-    return false;
-  if (nk < std::numeric_limits<int32_t>::min() ||
+  skip = NullCell(row, 1); // n_name = <arg> is never true for NULL
+  if (!IntCell(row, 0, nk) || nk < std::numeric_limits<int32_t>::min() ||
       nk > std::numeric_limits<int32_t>::max())
     return false;
-  nationkey = static_cast<int32_t>(nk);
-  return true;
+  out.nationkey = static_cast<int32_t>(nk);
+  return skip || StringCell(row, 1, out.name);
 }
 
-void ApplyPartsuppContribution(TpchQ11State &state,
-                               const TpchQ11PartsuppInput &input) {
-  Q11AccT product = 0;
-  AddAcc(product, input.supplycost_raw, input.availqty);
-  auto &contrib = state.supplier_part_contributions[input.suppkey][input.partkey];
-  contrib.value += product;
-  contrib.row_count++;
-}
-
-void ApplySignedPartValue(std::vector<TpchQ11OutputRow> &sorted_rows,
-                          Q11AccT &total_value, int64_t partkey,
-                          Q11AccT signed_value) {
-  total_value += signed_value;
-  auto cmp = [](const TpchQ11OutputRow &lhs, const TpchQ11OutputRow &rhs) {
-    if (lhs.value != rhs.value)
-      return lhs.value > rhs.value;
-    return lhs.partkey < rhs.partkey;
-  };
-  auto it = std::find_if(sorted_rows.begin(), sorted_rows.end(),
-                         [&](const TpchQ11OutputRow &row) {
-                           return row.partkey == partkey;
-                         });
-  if (it != sorted_rows.end()) {
-    it->value += signed_value;
-    if (it->value <= 0) {
-      sorted_rows.erase(it);
-      return;
-    }
-    const TpchQ11OutputRow updated = *it;
-    sorted_rows.erase(it);
-    const auto insert_pos =
-        std::lower_bound(sorted_rows.begin(), sorted_rows.end(), updated, cmp);
-    sorted_rows.insert(insert_pos, updated);
-    return;
-  }
-  if (signed_value <= 0)
-    return;
-  const TpchQ11OutputRow row{partkey, signed_value};
-  const auto insert_pos =
-      std::lower_bound(sorted_rows.begin(), sorted_rows.end(), row, cmp);
-  sorted_rows.insert(insert_pos, row);
+Q11AccT Product(const TpchQ11Offer &offer) {
+  return static_cast<Q11AccT>(offer.cost_raw) *
+         static_cast<Q11AccT>(offer.availqty);
 }
 
 } // namespace
 
-// ── Partition helpers ───────────────────────────────────────────────────────
-core::PartitionId NationNamePartition(const std::string &name) {
-  uint64_t hash = 1469598103934665603ULL;
-  for (const unsigned char c : name) {
-    hash ^= c;
-    hash *= 1099511628211ULL;
-  }
-  return TpchQ11Layout::kNationNameBase +
-         static_cast<core::PartitionId>(hash % TpchQ11Layout::kNationNameSlots);
+// ── TpchQ11Group ────────────────────────────────────────────────────────────
+void TpchQ11Group::Insert(int64_t partkey, Q11AccT value) {
+  total += value;
+  ++parts;
+  if (value > kTpchQ11NarrowLimit)
+    wide_positive.insert({value, partkey});
+  else if (value < -kTpchQ11NarrowLimit)
+    wide_negative.insert({value, partkey});
+  else
+    narrow.Insert({static_cast<int64_t>(value), partkey});
 }
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
-std::vector<uint8_t> EncodeTpchQ11Metadata(const TpchQ11State &state) {
-  ByteWriter writer;
-
-  uint32_t nation_count = static_cast<uint32_t>(state.nation_name_to_key.size());
-  uint32_t supplier_count = static_cast<uint32_t>(state.supplier_to_nation.size());
-
-  core::WriteImageHeader(writer, kMetadataMagic, kVersion,
-                         nation_count + supplier_count);
-
-  std::vector<std::string> nation_names;
-  for (const auto &entry : state.nation_name_to_key)
-    nation_names.push_back(entry.first);
-  std::sort(nation_names.begin(), nation_names.end());
-
-  writer.U32(nation_count);
-  for (const auto &name : nation_names) {
-    writer.String(name);
-    writer.I32(state.nation_name_to_key.at(name));
-    const auto nk = state.nation_name_to_key.at(name);
-    const auto it = state.nationkey_to_suppliers.find(nk);
-    if (it != state.nationkey_to_suppliers.end()) {
-      writer.U32(static_cast<uint32_t>(it->second.size()));
-      for (const auto sk : it->second)
-        writer.I64(sk);
-    } else {
-      writer.U32(0);
-    }
-  }
-
-  std::vector<int64_t> supplier_keys;
-  for (const auto &entry : state.supplier_to_nation)
-    supplier_keys.push_back(entry.first);
-  std::sort(supplier_keys.begin(), supplier_keys.end());
-
-  writer.U32(supplier_count);
-  for (const auto sk : supplier_keys) {
-    writer.I64(sk);
-    writer.I32(state.supplier_to_nation.at(sk));
-  }
-
-  return std::move(writer.bytes);
+void TpchQ11Group::Erase(int64_t partkey, Q11AccT value) {
+  total -= value;
+  --parts;
+  if (value > kTpchQ11NarrowLimit)
+    wide_positive.erase({value, partkey});
+  else if (value < -kTpchQ11NarrowLimit)
+    wide_negative.erase({value, partkey});
+  else
+    narrow.Erase({static_cast<int64_t>(value), partkey});
 }
 
-std::vector<uint8_t> EncodeTpchQ11NationPartition(
-    int32_t nationkey, const std::string &nation_name,
-    Q11AccT total_value,
-    const std::vector<TpchQ11OutputRow> &sorted_rows) {
-  ByteWriter writer;
-  uint32_t count = static_cast<uint32_t>(sorted_rows.size());
-  core::WriteImageHeader(writer, kNationMagic, kVersion, count);
-
-  writer.String(nation_name);
-  WriteQ11Acc(writer, total_value);
-
-  for (const auto &row : sorted_rows) {
-    writer.I64(row.partkey);
-    WriteQ11Acc(writer, row.value);
-  }
-
-  (void)nationkey;
-  return std::move(writer.bytes);
+// ── TpchQ11State ────────────────────────────────────────────────────────────
+TpchQ11Offer TpchQ11State::OfferAt(const TpchQ11OfferSlots &slots,
+                                   int64_t partkey, uint32_t i) const {
+  if (i < kTpchQ11InlineOffers)
+    return {slots.suppkey[i], slots.cost_raw[i], slots.availqty[i]};
+  const auto *extra = offer_overflow.Find(partkey);
+  return (*extra)[i - kTpchQ11InlineOffers];
 }
 
-bool DecodeTpchQ11Metadata(const std::vector<uint8_t> &bytes,
-                           TpchQ11State &state) {
-  ByteReader reader{bytes};
-  uint32_t total = 0;
-  if (!core::ReadImageHeader(reader, kMetadataMagic, kVersion, total))
-    return false;
-
-  state.nation_name_to_key.clear();
-  state.nationkey_to_suppliers.clear();
-  state.supplier_to_nation.clear();
-
-  uint32_t nation_count = 0;
-  if (!reader.U32(nation_count))
-    return false;
-  for (uint32_t i = 0; i < nation_count; ++i) {
-    std::string name;
-    int32_t nk = 0;
-    uint32_t sk_count = 0;
-    if (!reader.String(name) || !reader.I32(nk) || !reader.U32(sk_count))
-      return false;
-    state.nation_name_to_key.emplace(std::move(name), nk);
-    std::vector<int64_t> suppkeys;
-    suppkeys.reserve(sk_count);
-    for (uint32_t j = 0; j < sk_count; ++j) {
-      int64_t sk = 0;
-      if (!reader.I64(sk))
-        return false;
-      suppkeys.push_back(sk);
-    }
-    state.nationkey_to_suppliers.emplace(nk, std::move(suppkeys));
+TpchQ11PartValue TpchQ11State::PartValueIn(
+    int64_t partkey, int32_t nationkey,
+    const core::ChunkedCowArray<int32_t> &supplier_map) const {
+  TpchQ11PartValue out;
+  const auto *slots = offers.Find(partkey);
+  if (!slots || nationkey == kTpchQ11NoNation)
+    return out;
+  for (uint32_t i = 0; i < slots->count; ++i) {
+    const auto offer = OfferAt(*slots, partkey, i);
+    if (supplier_map.Get(offer.suppkey) != nationkey)
+      continue;
+    out.present = true;
+    out.value += Product(offer);
   }
-
-  uint32_t supplier_count = 0;
-  if (!reader.U32(supplier_count))
-    return false;
-  for (uint32_t i = 0; i < supplier_count; ++i) {
-    int64_t sk = 0;
-    int32_t nk = 0;
-    if (!reader.I64(sk) || !reader.I32(nk))
-      return false;
-    state.supplier_to_nation.emplace(sk, nk);
-  }
-
-  return reader.offset == bytes.size();
+  return out;
 }
 
-bool DecodeTpchQ11NationPartition(
-    const std::vector<uint8_t> &bytes,
-    int32_t &nationkey, std::string &nation_name,
-    Q11AccT &total_value,
-    std::vector<TpchQ11OutputRow> &sorted_rows) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kNationMagic, kVersion, count))
-    return false;
+void TpchQ11State::AddOffer(int64_t partkey, const TpchQ11Offer &offer) {
+  if (partkey < 0)
+    return; // negative keys are never stored
+  auto &slots = offers.Mutable(partkey);
+  if (slots.count < kTpchQ11InlineOffers) {
+    slots.suppkey[slots.count] = offer.suppkey;
+    slots.cost_raw[slots.count] = offer.cost_raw;
+    slots.availqty[slots.count] = offer.availqty;
+  } else {
+    offer_overflow[partkey].push_back(offer);
+  }
+  ++slots.count;
+}
 
-  if (!reader.String(nation_name))
+bool TpchQ11State::RemoveOffer(int64_t partkey, const TpchQ11Offer &offer) {
+  if (partkey < 0)
+    return true;
+  const auto *found = offers.Find(partkey);
+  if (!found || found->count == 0)
     return false;
-  if (!ReadQ11Acc(reader, total_value))
-    return false;
-
-  sorted_rows.clear();
-  sorted_rows.reserve(count);
+  const uint32_t count = found->count;
+  uint32_t hit = count;
   for (uint32_t i = 0; i < count; ++i) {
-    TpchQ11OutputRow row;
-    if (!reader.I64(row.partkey) || !ReadQ11Acc(reader, row.value))
-      return false;
-    sorted_rows.push_back(row);
+    const auto at = OfferAt(*found, partkey, i);
+    if (at.suppkey == offer.suppkey && at.cost_raw == offer.cost_raw &&
+        at.availqty == offer.availqty) {
+      hit = i;
+      break;
+    }
   }
+  if (hit == count)
+    return false;
+  const auto last = OfferAt(*found, partkey, count - 1);
+  auto &slots = offers.Mutable(partkey); // `found` may dangle after this
+  if (hit != count - 1) {
+    if (hit < kTpchQ11InlineOffers) {
+      slots.suppkey[hit] = last.suppkey;
+      slots.cost_raw[hit] = last.cost_raw;
+      slots.availqty[hit] = last.availqty;
+    } else {
+      offer_overflow[partkey][hit - kTpchQ11InlineOffers] = last;
+    }
+  }
+  if (count > kTpchQ11InlineOffers) {
+    auto &extra = offer_overflow[partkey];
+    extra.pop_back();
+    if (extra.empty())
+      offer_overflow.Erase(partkey);
+  }
+  --slots.count;
+  return true;
+}
 
-  (void)nationkey;
-  return reader.offset == bytes.size();
+TpchQ11Group &TpchQ11State::MutableGroup(int32_t nationkey) {
+  auto &group = groups[nationkey];
+  if (!group)
+    group = std::make_shared<TpchQ11Group>();
+  else if (group.use_count() > 1) // shared with a published state
+    group = std::make_shared<TpchQ11Group>(*group);
+  return *group;
+}
+
+void TpchQ11State::UpdateEntry(int32_t nationkey, int64_t partkey,
+                               const TpchQ11PartValue &before,
+                               const TpchQ11PartValue &after) {
+  if (before == after)
+    return;
+  auto &group = MutableGroup(nationkey);
+  if (before.present)
+    group.Erase(partkey, before.value);
+  if (after.present)
+    group.Insert(partkey, after.value);
+}
+
+bool TpchQ11State::ApplyPartsupp(int8_t sign, int64_t partkey,
+                                 const TpchQ11Offer &offer) {
+  const int32_t nationkey = supplier_nation.Get(offer.suppkey);
+  const auto before = PartValueIn(partkey, nationkey, supplier_nation);
+  if (sign > 0) {
+    AddOffer(partkey, offer);
+  } else if (!RemoveOffer(partkey, offer)) {
+    return false;
+  }
+  if (nationkey != kTpchQ11NoNation && partkey >= 0)
+    UpdateEntry(nationkey, partkey, before,
+                PartValueIn(partkey, nationkey, supplier_nation));
+  return true;
+}
+
+void TpchQ11State::SetSupplierNation(int64_t suppkey, int32_t nationkey) {
+  if (suppkey < 0)
+    return;
+  if (nationkey == kTpchQ11NoNation && !supplier_nation.Has(suppkey, kTpchQ11NoNation))
+    return; // already absent: do not allocate a chunk
+  supplier_nation.Set(suppkey, nationkey);
+}
+
+void TpchQ11State::RegroupSuppliers(
+    const core::FlatHashMap<uint8_t> &changed_suppliers,
+    const core::ChunkedCowArray<int32_t> &old_map) {
+  using Offers = core::ChunkedCowArray<TpchQ11OfferSlots, 10>;
+  std::vector<int32_t> nations_of_part;
+  for (std::size_t ci = 0; ci < offers.NumChunks(); ++ci) {
+    const auto *chunk = offers.ChunkAt(ci);
+    if (!chunk)
+      continue;
+    for (std::size_t slot = 0; slot < chunk->size(); ++slot) {
+      const auto &slots = (*chunk)[slot];
+      bool touched = false;
+      for (uint32_t i = 0; i < slots.count && !touched; ++i)
+        touched = changed_suppliers.Contains(
+            OfferAt(slots, Offers::ChunkBase(ci) + static_cast<int64_t>(slot), i)
+                .suppkey);
+      if (!touched)
+        continue;
+      const int64_t partkey = Offers::ChunkBase(ci) + static_cast<int64_t>(slot);
+      // Every nation this part had or has offers in may change.
+      nations_of_part.clear();
+      for (uint32_t i = 0; i < slots.count; ++i) {
+        const auto offer = OfferAt(slots, partkey, i);
+        for (const int32_t nk :
+             {old_map.Get(offer.suppkey), supplier_nation.Get(offer.suppkey)})
+          if (nk != kTpchQ11NoNation &&
+              std::find(nations_of_part.begin(), nations_of_part.end(), nk) ==
+                  nations_of_part.end())
+            nations_of_part.push_back(nk);
+      }
+      for (const int32_t nk : nations_of_part)
+        UpdateEntry(nk, partkey, PartValueIn(partkey, nk, old_map),
+                    PartValueIn(partkey, nk, supplier_nation));
+    }
+  }
+}
+
+void TpchQ11State::UpsertNation(const TpchQ11NationInput &nation) {
+  auto next = std::make_shared<std::vector<TpchQ11NationRec>>(*nations);
+  for (auto &rec : *next)
+    if (rec.key == nation.nationkey) {
+      rec.name = nation.name;
+      nations = std::move(next);
+      return;
+    }
+  next->push_back({nation.nationkey, nation.name});
+  nations = std::move(next);
+}
+
+void TpchQ11State::EraseNation(const TpchQ11NationInput &nation) {
+  auto next = std::make_shared<std::vector<TpchQ11NationRec>>(*nations);
+  for (auto it = next->begin(); it != next->end(); ++it)
+    if (it->key == nation.nationkey) {
+      next->erase(it);
+      break;
+    }
+  nations = std::move(next);
+}
+
+void TpchQ11State::BuildGroups() {
+  using Offers = core::ChunkedCowArray<TpchQ11OfferSlots, 10>;
+  groups.clear();
+  std::unordered_map<int32_t, std::vector<TpchQ11Key>> pending; // per nation
+  std::vector<std::pair<int32_t, Q11AccT>> sums; // this part's per-nation values
+  for (std::size_t ci = 0; ci < offers.NumChunks(); ++ci) {
+    const auto *chunk = offers.ChunkAt(ci);
+    if (!chunk)
+      continue;
+    for (std::size_t slot = 0; slot < chunk->size(); ++slot) {
+      const auto &slots = (*chunk)[slot];
+      if (slots.count == 0)
+        continue;
+      const int64_t partkey = Offers::ChunkBase(ci) + static_cast<int64_t>(slot);
+      sums.clear();
+      for (uint32_t i = 0; i < slots.count; ++i) {
+        const auto offer = OfferAt(slots, partkey, i);
+        const int32_t nk = supplier_nation.Get(offer.suppkey);
+        if (nk == kTpchQ11NoNation)
+          continue;
+        auto it = std::find_if(sums.begin(), sums.end(),
+                               [&](const auto &s) { return s.first == nk; });
+        if (it == sums.end())
+          sums.push_back({nk, Product(offer)});
+        else
+          it->second += Product(offer);
+      }
+      for (const auto &[nk, value] : sums) {
+        auto &group = groups[nk];
+        if (!group)
+          group = std::make_shared<TpchQ11Group>();
+        group->total += value;
+        ++group->parts;
+        if (value > kTpchQ11NarrowLimit)
+          group->wide_positive.insert({value, partkey});
+        else if (value < -kTpchQ11NarrowLimit)
+          group->wide_negative.insert({value, partkey});
+        else
+          pending[nk].push_back({static_cast<int64_t>(value), partkey});
+      }
+    }
+  }
+  // Sort each nation's entries (nations in parallel) and cut them into blocks;
+  // each vector is released as soon as its blocks exist.
+  std::vector<int32_t> order;
+  for (const auto &entry : pending)
+    order.push_back(entry.first);
+  std::atomic<std::size_t> next{0};
+  const auto worker = [&] {
+    for (std::size_t i = next.fetch_add(1); i < order.size();
+         i = next.fetch_add(1)) {
+      auto &keys = pending[order[i]];
+      std::sort(keys.begin(), keys.end(), TpchQ11KeyLess());
+      groups[order[i]]->narrow =
+          core::CowSortedBlocks<TpchQ11Key, TpchQ11KeyLess>::FromSorted(
+              std::move(keys));
+    }
+  };
+  const std::size_t threads = std::min<std::size_t>(
+      std::max(1u, std::thread::hardware_concurrency()),
+      std::min<std::size_t>(order.size(), 8));
+  if (threads <= 1) {
+    worker();
+  } else {
+    std::vector<std::thread> pool;
+    for (std::size_t t = 0; t < threads; ++t)
+      pool.emplace_back(worker);
+    for (auto &th : pool)
+      th.join();
+  }
+}
+
+std::size_t TpchQ11State::MemoryBytes() const {
+  std::size_t n = supplier_nation.MemoryBytes() + offers.MemoryBytes() +
+                  offer_overflow.memory_bytes();
+  for (const auto &entry : groups)
+    n += entry.second->narrow.MemoryBytes();
+  return n;
 }
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
-bool TpchQ11TxnBuffer::HasPendingChanges() const { return pending; }
+bool TpchQ11TxnBuffer::HasPendingChanges() const {
+  return requires_rebuild || EventCount() != 0;
+}
 void TpchQ11TxnBuffer::Clear() {
-  pending = false;
   requires_rebuild = false;
-  partsupp_deltas.clear();
-  supplier_deltas.clear();
-  nation_deltas.clear();
-}
-bool TpchQ11TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
-const std::vector<TpchQ11PartsuppDelta> &TpchQ11TxnBuffer::PartsuppDeltas() const {
-  return partsupp_deltas;
-}
-const std::vector<TpchQ11SupplierDelta> &TpchQ11TxnBuffer::SupplierDeltas() const {
-  return supplier_deltas;
-}
-const std::vector<TpchQ11NationDelta> &TpchQ11TxnBuffer::NationDeltas() const {
-  return nation_deltas;
-}
-void TpchQ11TxnBuffer::MarkRebuild() {
-  pending = true;
-  requires_rebuild = true;
-  partsupp_deltas.clear();
-  supplier_deltas.clear();
-  nation_deltas.clear();
-}
-void TpchQ11TxnBuffer::AddPartsuppDelta(TpchQ11PartsuppDelta delta) {
-  pending = true;
-  partsupp_deltas.push_back(delta);
-}
-void TpchQ11TxnBuffer::AddSupplierDelta(TpchQ11SupplierDelta delta) {
-  pending = true;
-  supplier_deltas.push_back(delta);
-}
-void TpchQ11TxnBuffer::AddNationDelta(TpchQ11NationDelta delta) {
-  pending = true;
-  nation_deltas.push_back(delta);
+  partsupps.clear();
+  suppliers.clear();
+  nations.clear();
 }
 
 // ── Module ──────────────────────────────────────────────────────────────────
@@ -420,47 +435,18 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ11Module::CreateTxnBuffer() const {
 
 void TpchQ11Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  const auto state = BuildState(services);
-  const auto typed_state = std::make_shared<const TpchQ11State>(state);
-
-  builder.Write(core::StateImage::Make(
-      TpchQ11Layout::kAccelerator, TpchQ11Layout::kMetadata, 0,
-      MakeMetadataImage(typed_state)));
-
-  // Write per-nation and FNV-1a nation-name partitions
-  for (const auto &[nk, sorted_rows] : state.nation_sorted_rows) {
-    Q11AccT total = 0;
-    auto tit = state.nation_total_value.find(nk);
-    if (tit != state.nation_total_value.end())
-      total = tit->second;
-
-    // Find nation name for collision guard
-    std::string name;
-    for (const auto &[nm, key] : state.nation_name_to_key) {
-      if (key == nk) { name = nm; break; }
-    }
-
-    const auto image = MakeNationImage(nk, name, total, sorted_rows);
-
-    // Write FNV-1a nation-name partition (fast path)
-    if (!name.empty()) {
-      builder.Write(core::StateImage::Make(
-          TpchQ11Layout::kAccelerator, NationNamePartition(name), 0, image));
-    }
-  }
+  auto state = std::make_shared<const TpchQ11State>(BuildState(services));
+  auto image = std::make_shared<TpchQ11StateImage>();
+  image->state = std::move(state);
+  const std::shared_ptr<const TpchQ11StateImage> const_image = std::move(image);
+  builder.Write(core::StateImage::Make(TpchQ11Layout::kAccelerator,
+                                       TpchQ11Layout::kState, 0, const_image));
   builder.Finish();
 }
 
 core::InvalidationPlan
-TpchQ11Module::InterpretMutation(const core::MutationBatch &mutation) const {
-  if (mutation.table == config.partsupp_table ||
-      mutation.table == config.supplier_table ||
-      mutation.table == config.nation_table) {
-    core::InvalidationPlan plan;
-    plan.scope =
-        ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
-    return plan;
-  }
+TpchQ11Module::InterpretMutation(const core::MutationBatch &) const {
+  // All three tables are maintained incrementally.
   return {};
 }
 
@@ -468,139 +454,51 @@ void TpchQ11Module::AccumulateMutation(const core::MutationBatch &mutation,
                                        core::AuxEngineServices &,
                                        core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ11TxnBuffer &>(base_buffer);
-
-  if (mutation.table == config.supplier_table) {
-    auto add = [&](const core::AuxRow &row, bool is_old) {
-      int64_t suppkey = 0;
-      int32_t nationkey = 0;
-      if (!ReadSupplier(row, suppkey, nationkey)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      if (is_old) {
-        buffer.AddSupplierDelta({suppkey, nationkey, 0});
-      } else {
-        buffer.AddSupplierDelta({suppkey, 0, nationkey});
-      }
-    };
-    switch (mutation.kind) {
-    case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows)
-        add(row, false);
-      break;
-    case core::MutationKind::Delete:
+  // Removals of a batch precede its insertions so an UPDATE that moves keys
+  // around composes correctly.
+  const auto each_image = [&](auto &&fn) {
+    if (mutation.kind != core::MutationKind::Insert)
       for (const auto &row : mutation.old_rows)
-        add(row, true);
-      break;
-    case core::MutationKind::Update:
-      if (mutation.old_rows.size() != mutation.new_rows.size()) {
-        buffer.MarkRebuild();
-        return;
-      }
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        int64_t old_sk = 0, new_sk = 0;
-        int32_t old_nk = 0, new_nk = 0;
-        if (!ReadSupplier(mutation.old_rows[i], old_sk, old_nk) ||
-            !ReadSupplier(mutation.new_rows[i], new_sk, new_nk)) {
-          buffer.MarkRebuild();
-          return;
-        }
-        if (old_sk != new_sk) {
-          buffer.MarkRebuild();
-          return;
-        }
-        buffer.AddSupplierDelta({old_sk, old_nk, new_nk});
-      }
-      break;
-    }
-    return;
-  }
-
-  if (mutation.table == config.nation_table) {
-    auto add = [&](const core::AuxRow &row, bool is_old) {
-      int32_t nationkey = 0;
-      std::string name;
-      if (!ReadNation(row, nationkey, name)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      if (is_old) {
-        buffer.AddNationDelta({nationkey, name, ""});
-      } else {
-        buffer.AddNationDelta({nationkey, "", name});
-      }
-    };
-    switch (mutation.kind) {
-    case core::MutationKind::Insert:
+        fn(row, int8_t{-1});
+    if (mutation.kind != core::MutationKind::Delete)
       for (const auto &row : mutation.new_rows)
-        add(row, false);
-      break;
-    case core::MutationKind::Delete:
-      for (const auto &row : mutation.old_rows)
-        add(row, true);
-      break;
-    case core::MutationKind::Update:
-      if (mutation.old_rows.size() != mutation.new_rows.size()) {
-        buffer.MarkRebuild();
-        return;
-      }
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        int32_t old_nk = 0, new_nk = 0;
-        std::string old_name, new_name;
-        if (!ReadNation(mutation.old_rows[i], old_nk, old_name) ||
-            !ReadNation(mutation.new_rows[i], new_nk, new_name)) {
-          buffer.MarkRebuild();
-          return;
-        }
-        if (old_nk != new_nk) {
-          buffer.MarkRebuild();
-          return;
-        }
-        buffer.AddNationDelta({old_nk, old_name, new_name});
-      }
-      break;
-    }
-    return;
-  }
-
-  if (mutation.table != config.partsupp_table)
-    return;
-
-  auto add = [&](const core::AuxRow &row, int8_t sign) {
-    TpchQ11PartsuppInput input;
-    if (!ReadPartsupp(row, input)) {
-      buffer.MarkRebuild();
-      return;
-    }
-    TpchQ11PartsuppDelta delta;
-    delta.partkey = input.partkey;
-    delta.suppkey = input.suppkey;
-    Q11AccT product = 0;
-    AddAcc(product, input.supplycost_raw, input.availqty);
-    delta.value = product;
-    delta.sign = sign;
-    buffer.AddPartsuppDelta(delta);
+        fn(row, int8_t{+1});
   };
 
-  switch (mutation.kind) {
-  case core::MutationKind::Insert:
-    for (const auto &row : mutation.new_rows)
-      add(row, 1);
-    break;
-  case core::MutationKind::Delete:
-    for (const auto &row : mutation.old_rows)
-      add(row, -1);
-    break;
-  case core::MutationKind::Update:
-    if (mutation.old_rows.size() != mutation.new_rows.size()) {
-      buffer.MarkRebuild();
-      return;
-    }
-    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-      add(mutation.old_rows[i], -1);
-      add(mutation.new_rows[i], 1);
-    }
-    break;
+  if (mutation.table == config.partsupp_table) {
+    each_image([&](const core::AuxRow &row, int8_t sign) {
+      TpchQ11PartsuppEvent event;
+      bool skip = false;
+      if (!ReadPartsupp(row, event.partkey, event.offer, skip)) {
+        buffer.MarkRebuild();
+      } else if (!skip) {
+        event.sign = sign;
+        buffer.partsupps.push_back(event);
+      }
+    });
+  } else if (mutation.table == config.supplier_table) {
+    each_image([&](const core::AuxRow &row, int8_t sign) {
+      TpchQ11SupplierEvent event;
+      if (!ReadSupplier(row, event.suppkey, event.nationkey)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      event.sign = sign;
+      if (sign < 0)
+        event.nationkey = kTpchQ11NoNation;
+      buffer.suppliers.push_back(event);
+    });
+  } else if (mutation.table == config.nation_table) {
+    each_image([&](const core::AuxRow &row, int8_t sign) {
+      TpchQ11NationEvent event;
+      bool skip = false;
+      if (!ReadNation(row, event.row, skip)) {
+        buffer.MarkRebuild();
+      } else if (!skip || sign < 0) {
+        event.sign = sign;
+        buffer.nations.push_back(std::move(event));
+      }
+    });
   }
 }
 
@@ -610,174 +508,85 @@ TpchQ11Module::StageMaintenance(core::AuxEngineServices &services,
                                 core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ11TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
-
-  if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+  if (!buffer.HasPendingChanges())
     return outcome;
-  }
 
-  if (buffer.PartsuppDeltas().empty() && buffer.SupplierDeltas().empty() &&
-      buffer.NationDeltas().empty()) {
-    return outcome;
-  }
-
-  if (!buffer.SupplierDeltas().empty() || !buffer.NationDeltas().empty()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  const auto visibility = services.CurrentVisibility();
-  const auto metadata_snapshot = services.StateStore().ReadPartitions(
-      visibility, {TpchQ11Layout::kMetadata});
-  const TpchQ11State *metadata = nullptr;
-  for (const auto &image : metadata_snapshot.partitions) {
-    if (image.partition != TpchQ11Layout::kMetadata)
-      continue;
-    const auto *typed = AsQ11Image(image, TpchQ11ImageKind::Metadata);
-    metadata = typed ? typed->state.get() : nullptr;
-    break;
-  }
-  if (!metadata) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  std::unordered_map<int32_t, std::string> nation_names;
-  for (const auto &entry : metadata->nation_name_to_key)
-    nation_names.emplace(entry.second, entry.first);
-
-  std::unordered_map<int32_t, std::vector<const TpchQ11PartsuppDelta *>>
-      deltas_by_nation;
-  std::set<int32_t> touched_nations;
-  for (const auto &delta : buffer.PartsuppDeltas()) {
-    const auto supplier_it = metadata->supplier_to_nation.find(delta.suppkey);
-    if (supplier_it == metadata->supplier_to_nation.end()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
+  bool need_rebuild = buffer.RequiresRebuild();
+  if (!need_rebuild) {
+    const auto old_state = LoadState(services);
+    core::Version old_version = 0;
+    if (!old_state) {
+      buffer.Clear();
       return outcome;
     }
-    const int32_t nationkey = supplier_it->second;
-    touched_nations.insert(nationkey);
-    deltas_by_nation[nationkey].push_back(&delta);
+    const auto snapshot = services.StateStore().ReadPartitions(
+        services.CurrentVisibility(), {TpchQ11Layout::kState});
+    for (const auto &image : snapshot.partitions)
+      if (image.partition == TpchQ11Layout::kState)
+        old_version = image.version;
+
+    // Copy-on-write: the copy shares every chunk / block / group with the
+    // published state; edits clone only what they touch.
+    auto new_state = std::make_shared<TpchQ11State>(*old_state);
+    for (const auto &ev : buffer.nations)
+      ev.sign < 0 ? new_state->EraseNation(ev.row)
+                  : new_state->UpsertNation(ev.row);
+    // Partsupp changes first, against the supplier map as it was ...
+    for (const auto &ev : buffer.partsupps)
+      if (!new_state->ApplyPartsupp(ev.sign, ev.partkey, ev.offer)) {
+        need_rebuild = true; // the state disagrees with the table
+        break;
+      }
+    // ... then suppliers moving between nations re-group their parts.
+    if (!need_rebuild && !buffer.suppliers.empty()) {
+      const core::ChunkedCowArray<int32_t> old_map = new_state->supplier_nation;
+      for (const auto &ev : buffer.suppliers)
+        new_state->SetSupplierNation(ev.suppkey, ev.nationkey);
+      core::FlatHashMap<uint8_t> changed;
+      for (const auto &ev : buffer.suppliers)
+        if (old_map.Get(ev.suppkey) != new_state->supplier_nation.Get(ev.suppkey))
+          changed.Upsert(ev.suppkey, 1);
+      if (!changed.empty())
+        new_state->RegroupSuppliers(changed, old_map);
+    }
+
+    if (!need_rebuild) {
+      const auto decision = services.ChooseMaintenance(
+          {buffer.EventCount(), 1, true, false, true, false, false,
+           core::MaintenanceAction::NoOp,
+           services.ExpectedQueriesBeforeNextWrite()});
+      if (decision.action == core::MaintenanceAction::ApplyDelta) {
+        auto image = std::make_shared<TpchQ11StateImage>();
+        image->state = std::move(new_state);
+        const std::shared_ptr<const TpchQ11StateImage> const_image =
+            std::move(image);
+        outcome.action = core::MaintenanceAction::ApplyDelta;
+        outcome.updates.push_back(core::StateImage::Make(
+            TpchQ11Layout::kAccelerator, TpchQ11Layout::kState, old_version,
+            const_image));
+        buffer.Clear();
+        return outcome;
+      }
+      // Cost-model rebuild: fall through with empty updates.
+    }
   }
 
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.PartsuppDeltas().size()),
-       static_cast<uint64_t>(touched_nations.size()), true, false, true, false,
-       false, core::MaintenanceAction::NoOp,
+      {0, 0, false, false, true, true, false, core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  std::vector<core::PartitionId> nation_partitions;
-  nation_partitions.reserve(touched_nations.size());
-  for (const auto nationkey : touched_nations) {
-    const auto name_it = nation_names.find(nationkey);
-    if (name_it == nation_names.end()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    nation_partitions.push_back(NationNamePartition(name_it->second));
-  }
-
-  std::unordered_map<int32_t, core::Version> versions;
-  std::unordered_map<int32_t, std::vector<TpchQ11OutputRow>> sorted_rows;
-  std::unordered_map<int32_t, Q11AccT> total_values;
-  std::unordered_map<int32_t, std::string> partition_names;
-
-  const auto nation_snapshot =
-      services.StateStore().ReadPartitions(visibility, nation_partitions);
-  for (const auto &image : nation_snapshot.partitions) {
-    const auto *typed =
-        AsQ11Image(image, TpchQ11ImageKind::NationPreAggregated);
-    if (!typed || typed->nation_name.empty()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    versions.emplace(typed->nationkey, image.version);
-    sorted_rows.emplace(typed->nationkey, typed->sorted_rows);
-    total_values.emplace(typed->nationkey, typed->total_value);
-    partition_names.emplace(typed->nationkey, typed->nation_name);
-  }
-  if (versions.size() != touched_nations.size()) {
+  outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
+                       ? core::MaintenanceAction::RebuildAll
+                       : decision.action;
+  if (outcome.action == core::MaintenanceAction::RebuildPartition)
     outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  for (const auto nationkey : touched_nations) {
-    auto rows_it = sorted_rows.find(nationkey);
-    auto total_it = total_values.find(nationkey);
-    if (rows_it == sorted_rows.end() || total_it == total_values.end()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    for (const auto *delta : deltas_by_nation[nationkey]) {
-      const Q11AccT signed_value =
-          static_cast<Q11AccT>(delta->sign) * delta->value;
-      ApplySignedPartValue(rows_it->second, total_it->second, delta->partkey,
-                           signed_value);
-    }
-  }
-
-  outcome.action = core::MaintenanceAction::ApplyDelta;
-  for (const auto nationkey : touched_nations) {
-    const auto name_it = partition_names.find(nationkey);
-    const auto version_it = versions.find(nationkey);
-    const auto rows_it = sorted_rows.find(nationkey);
-    const auto total_it = total_values.find(nationkey);
-    if (name_it == partition_names.end() || version_it == versions.end() ||
-        rows_it == sorted_rows.end() || total_it == total_values.end()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    const auto image = MakeNationImage(nationkey, name_it->second,
-                                       total_it->second, rows_it->second);
-    outcome.updates.push_back(core::StateImage::Make(
-        TpchQ11Layout::kAccelerator, NationNamePartition(name_it->second),
-        version_it->second, image));
-  }
+  outcome.invalidations = All();
+  outcome.pending_rebuild = outcome.invalidations;
+  buffer.Clear();
   return outcome;
 }
 
-bool TpchQ11Module::CheckValidity(
-    core::AuxEngineServices &services, const core::QueryArguments &) const {
+bool TpchQ11Module::CheckValidity(core::AuxEngineServices &services,
+                                  const core::QueryArguments &) const {
   return services.StateStore()
       .CheckValidity({Id(), {}}, services.CurrentVisibility())
       .IsValid();
@@ -786,230 +595,92 @@ bool TpchQ11Module::CheckValidity(
 void TpchQ11Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
-  if (arguments.values.size() < 2 ||
-      arguments.values[0].is_null ||
-      arguments.values[1].is_null)
-    return;
-
-  std::string nation_name;
-  double fraction = 0.0;
-
-  if (std::holds_alternative<std::string>(arguments.values[0].payload)) {
-    nation_name = std::get<std::string>(arguments.values[0].payload);
-  } else {
+  if (!services.StateStore()
+           .CheckValidity({Id(), {}}, services.CurrentVisibility())
+           .IsValid()) {
+    ExecuteFallback(services, arguments, sink);
     return;
   }
-
-  if (std::holds_alternative<double>(arguments.values[1].payload)) {
-    fraction = std::get<double>(arguments.values[1].payload);
-  } else if (std::holds_alternative<int64_t>(arguments.values[1].payload)) {
-    fraction = static_cast<double>(
-        std::get<int64_t>(arguments.values[1].payload));
-  } else {
+  const auto state = LoadState(services);
+  if (!state) {
+    ExecuteFallback(services, arguments, sink);
     return;
   }
-
-  if (!std::isfinite(fraction))
-    return;
-
-  const auto visibility = services.CurrentVisibility();
-
-  // ── Fast path: FNV-1a nation-name hash ─────────────────────────────────
-  {
-    const auto fast_snapshot = services.StateStore().ReadPartitions(
-        visibility, {NationNamePartition(nation_name)});
-    if (fast_snapshot.partitions.empty() &&
-        services.StateStore().CheckValidity({Id(), {}}, visibility).IsValid()) {
-      // The state has a partition for every nation: none for this name
-      // means no such nation (e.g. renamed), so no rows.
-      sink.Begin(core::OutputSchema{});
-      sink.End();
-      return;
-    }
-    for (const auto &image : fast_snapshot.partitions) {
-      const auto *typed = AsQ11Image(image, TpchQ11ImageKind::NationPreAggregated);
-      if (!typed) continue;
-      // Collision guard: verify stored nation_name matches query
-      if (typed->nation_name != nation_name) continue;
-
-      // Compute threshold in integer domain:
-      //   row.value / 100.0 > (total / 100.0) * fraction
-      // ⇔ row.value > total * fraction   (100.0 cancels)
-      // Convert total to double once, multiply by fraction, cast back.
-      Q11AccT threshold_raw = 0;
-#if defined(__SIZEOF_INT128__)
-      {
-        double total_as_double = static_cast<double>(static_cast<int64_t>(
-            static_cast<uint64_t>(typed->total_value)));
-        threshold_raw = static_cast<Q11AccT>(total_as_double * fraction);
-      }
-#else
-      threshold_raw = static_cast<Q11AccT>(
-          static_cast<double>(typed->total_value) * fraction);
-#endif
-
-      // Inline emission: iterate pre-sorted rows, compare in integer domain
-      sink.Begin(core::OutputSchema{});
-      core::AuxRow aux_row;
-      aux_row.values.reserve(2);
-      for (const auto &row : typed->sorted_rows) {
-        if (row.value > threshold_raw) {
-          aux_row.values.clear();
-          aux_row.values.push_back(
-              core::AuxValue::Of(core::AuxType::Int64, row.partkey));
-          core::ScaledDecimal decimal;
-#if defined(__SIZEOF_INT128__)
-          decimal.value = static_cast<int64_t>(static_cast<uint64_t>(row.value));
-#else
-          decimal.value = row.value;
-#endif
-          decimal.scale = 2;
-          aux_row.values.push_back(
-              core::AuxValue::Of(core::AuxType::ScaledDecimal, decimal));
-          sink.WriteRow(aux_row);
-        } else {
-          break; // sorted by value DESC
-        }
-      }
-      sink.End();
-      return;
-    }
-  }
-
-  // On any miss (missing partition, collision, invalid image):
-  // fall back to full build from base tables.
-  ExecuteFallback(services, arguments, sink);
+  EmitResult(*state, arguments, sink);
 }
 
 void TpchQ11Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
-  if (arguments.values.size() < 2 ||
-      arguments.values[0].is_null ||
-      arguments.values[1].is_null)
-    return;
-
-  std::string nation_name;
-  double fraction = 0.0;
-  if (std::holds_alternative<std::string>(arguments.values[0].payload))
-    nation_name = std::get<std::string>(arguments.values[0].payload);
-  else
-    return;
-  if (std::holds_alternative<double>(arguments.values[1].payload))
-    fraction = std::get<double>(arguments.values[1].payload);
-  else if (std::holds_alternative<int64_t>(arguments.values[1].payload))
-    fraction = static_cast<double>(
-        std::get<int64_t>(arguments.values[1].payload));
-  else
-    return;
-  if (!std::isfinite(fraction))
-    return;
-
-  const auto state = BuildState(services);
-
-  auto name_it = state.nation_name_to_key.find(nation_name);
-  if (name_it == state.nation_name_to_key.end()) {
-    EmitResult({}, sink);
-    return;
-  }
-  const int32_t nationkey = name_it->second;
-
-  auto nk_it = state.nation_sorted_rows.find(nationkey);
-  if (nk_it == state.nation_sorted_rows.end()) {
-    EmitResult({}, sink);
-    return;
-  }
-
-  Q11AccT total_value = 0;
-  auto tot_it = state.nation_total_value.find(nationkey);
-  if (tot_it != state.nation_total_value.end())
-    total_value = tot_it->second;
-
-  auto output = FinalizeQ11FromSorted(nk_it->second, total_value, fraction);
-  EmitResult(output, sink);
+  const TpchQ11State state = BuildState(services);
+  EmitResult(state, arguments, sink);
 }
 
-TpchQ11State TpchQ11Module::BuildState(
-    core::AuxEngineServices &services) const {
+TpchQ11State TpchQ11Module::BuildState(core::AuxEngineServices &services) const {
   (void)services;
-  TpchQ11State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q11 requires a typed initial scan source");
-
-  initial_scan->ScanNations([&](const TpchQ11NationInput &input) {
-    state.nation_name_to_key[input.name] = input.nationkey;
-  });
-
+  TpchQ11State state;
+  initial_scan->ScanNations(
+      [&](const TpchQ11NationInput &input) { state.UpsertNation(input); });
   initial_scan->ScanSuppliers([&](const TpchQ11SupplierInput &input) {
-    state.supplier_to_nation[input.suppkey] = input.nationkey;
-    state.nationkey_to_suppliers[input.nationkey].push_back(input.suppkey);
+    state.SetSupplierNation(input.suppkey, input.nationkey);
   });
-
   initial_scan->ScanPartsupp([&](const TpchQ11PartsuppInput &input) {
-    ApplyPartsuppContribution(state, input);
+    state.AddOffer(input.partkey,
+                   {input.suppkey, input.supplycost_raw,
+                    static_cast<int32_t>(input.availqty)});
   });
-
-  // Pre-aggregate per-nation: merge supplier contributions into per-nation maps
-  std::unordered_map<int32_t, std::unordered_map<int64_t, Q11PartContribution>>
-      nation_merged;
-  std::unordered_map<int32_t, Q11AccT> nation_total;
-
-  for (const auto &[suppkey, contribs] : state.supplier_part_contributions) {
-    auto nk_it = state.supplier_to_nation.find(suppkey);
-    if (nk_it == state.supplier_to_nation.end())
-      continue;
-    const int32_t nk = nk_it->second;
-    auto &merged = nation_merged[nk];
-    Q11AccT &total = nation_total[nk];
-    for (const auto &[pk, contrib] : contribs) {
-      auto &m = merged[pk];
-      m.value += contrib.value;
-      m.row_count += contrib.row_count;
-      total += contrib.value;
-    }
-  }
-
-  // Pre-sort per-nation: sort by value DESC, partkey ASC
-  for (auto &[nk, merged] : nation_merged) {
-    std::vector<TpchQ11OutputRow> sorted;
-    sorted.reserve(merged.size());
-    for (const auto &[pk, contrib] : merged)
-      sorted.push_back({pk, contrib.value});
-    std::sort(sorted.begin(), sorted.end(),
-              [](const TpchQ11OutputRow &lhs, const TpchQ11OutputRow &rhs) {
-                if (lhs.value != rhs.value)
-                  return lhs.value > rhs.value;
-                return lhs.partkey < rhs.partkey;
-              });
-    state.nation_sorted_rows[nk] = std::move(sorted);
-  }
-  state.nation_total_value = std::move(nation_total);
-
+  state.BuildGroups();
   return state;
 }
 
-void TpchQ11Module::EmitResult(const std::vector<TpchQ11OutputRow> &rows,
-                               core::AuxRowSink &sink) const {
-  sink.Begin(core::OutputSchema{});
-
-  core::AuxRow aux_row;
-  aux_row.values.reserve(2);
-  for (const auto &row : rows) {
-    aux_row.values.clear();
-    aux_row.values.push_back(
-        core::AuxValue::Of(core::AuxType::Int64, row.partkey));
-    core::ScaledDecimal decimal;
-#if defined(__SIZEOF_INT128__)
-    decimal.value = static_cast<int64_t>(static_cast<uint64_t>(row.value));
-#else
-    decimal.value = row.value;
-#endif
-    decimal.scale = 2;
-    aux_row.values.push_back(
-        core::AuxValue::Of(core::AuxType::ScaledDecimal, decimal));
-    sink.WriteRow(aux_row);
+std::shared_ptr<const TpchQ11State>
+TpchQ11Module::LoadState(core::AuxEngineServices &services) const {
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {TpchQ11Layout::kState});
+  for (const auto &image : snapshot.partitions) {
+    if (image.partition != TpchQ11Layout::kState)
+      continue;
+    const auto *typed = image.As<TpchQ11StateImage>();
+    return typed ? typed->state : nullptr;
   }
-  sink.End();
+  return nullptr;
+}
+
+void TpchQ11Module::EmitResult(const TpchQ11State &state,
+                               const core::QueryArguments &arguments,
+                               core::AuxRowSink &sink) const {
+  // A NULL (or missing / mistyped) argument makes the predicate or HAVING
+  // comparison unknown: an empty result.
+  TpchQ11Args args;
+  if (arguments.values.size() >= 2) {
+    const auto &nation = arguments.values[0];
+    if (!nation.is_null && std::holds_alternative<std::string>(nation.payload))
+      args.nation = std::get<std::string>(nation.payload);
+    const auto &frac = arguments.values[1];
+    if (!frac.is_null) {
+      TpchQ11Fraction parsed;
+      bool ok = false;
+      if (std::holds_alternative<std::string>(frac.payload)) {
+        ok = TpchQ11ParseFraction(std::get<std::string>(frac.payload), parsed);
+      } else if (std::holds_alternative<double>(frac.payload)) {
+        // A float8 argument: its shortest round-trip decimal is the value the
+        // caller typed (the exact binary expansion would not be).
+        char buf[64];
+        const auto r = std::to_chars(buf, buf + sizeof(buf),
+                                     std::get<double>(frac.payload));
+        ok = r.ec == std::errc() &&
+             TpchQ11ParseFraction(std::string_view(buf, r.ptr - buf), parsed);
+      } else if (std::holds_alternative<int64_t>(frac.payload)) {
+        parsed.coeff = std::get<int64_t>(frac.payload);
+        ok = true;
+      }
+      if (ok)
+        args.fraction = parsed;
+    }
+  }
+  TpchQ11FinalizeAndEmit(state, args, sink);
 }
 
 std::vector<core::CalibrationWrite> TpchQ11Module::CalibrationWrites() const {

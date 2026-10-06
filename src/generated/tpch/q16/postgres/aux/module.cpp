@@ -1,64 +1,19 @@
 #include "tpch/q16/postgres/aux/module.hpp"
 #include "tpch/q16/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
-#include <chrono>
-#include <cmath>
+#include <atomic>
 #include <cstdlib>
-#include <cstring>
 #include <limits>
-#include <set>
 #include <stdexcept>
+#include <thread>
+#include <unordered_map>
 #include <utility>
+
+#include "accelerator_codegen/stateful/core/sql_like.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
-
-using core::ByteReader;
-using core::ByteWriter;
-
-constexpr uint32_t kVersion = 1;
-constexpr uint32_t kEligibilityMagic = 0x45313651;  // Q16E
-constexpr uint32_t kSizeMagic = 0x53313651;          // Q16S
-constexpr int32_t kMaxSize = TpchQ16Layout::kMaxSize;
-constexpr int64_t kBlockWidth = TpchQ16State::kBlockWidth;
-
-
-// ── Custom profiling (no-op unless ACCEL_AUX_CUSTOM_PROFILE is set) ─────────
-struct CustomTimer {
-  using Clock = std::chrono::high_resolution_clock;
-  Clock::time_point start;
-  bool active;
-  explicit CustomTimer(bool enabled) : start(Clock::now()), active(enabled) {}
-  double us() const {
-    return static_cast<double>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count()) / 1000.0;
-  }
-};
-
-static bool CustomProfilingEnabled() {
-  static const bool enabled = []() {
-    const char *v = std::getenv("ACCEL_AUX_CUSTOM_PROFILE");
-    return v && v[0] != '\0';
-  }();
-  return enabled;
-}
-
-static void EmitCustomProfile(const char *phase, double us_val,
-                              int64_t groups, int64_t rows, int64_t suppkeys) {
-  if (!CustomProfilingEnabled())
-    return;
-  fprintf(stderr,
-          "ACCEL_CUSTOM_PROFILE {"
-          "\"phase\":\"%s\","
-          "\"us\":%.3f,"
-          "\"groups\":%ld,"
-          "\"rows\":%ld,"
-          "\"suppkeys\":%ld"
-          "}\n",
-          phase, us_val, (long)groups, (long)rows, (long)suppkeys);
-}
 
 // ── Cell helpers ────────────────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -67,6 +22,10 @@ bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
     return false;
   out = std::get<std::string>(row.values[index].payload);
   return true;
+}
+
+bool NullCell(const core::AuxRow &row, std::size_t index) {
+  return index >= row.values.size() || row.values[index].is_null;
 }
 
 bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
@@ -94,291 +53,276 @@ core::InvalidationPlan All() {
   return plan;
 }
 
-std::shared_ptr<const TpchQ16StateImage>
-MakeEligibilityImage(const std::shared_ptr<const TpchQ16State> &state) {
-  auto image = std::make_shared<TpchQ16StateImage>();
-  image->kind = TpchQ16ImageKind::Eligibility;
-  image->state = state;
-  return image;
+// s_comment LIKE '%Customer%Complaints%' (a NULL comment is not a complaint).
+bool IsComplaintComment(std::string_view comment) {
+  static const auto matcher =
+      core::sql_like::LikeMatcher::Compile("%Customer%Complaints%");
+  return matcher.Match(comment);
 }
 
-std::shared_ptr<const TpchQ16StateImage>
-MakeSizeImage(int32_t size,
-              const std::shared_ptr<const TpchQ16SizePartition> &membership) {
-  auto image = std::make_shared<TpchQ16StateImage>();
-  image->kind = TpchQ16ImageKind::SizeMembership;
-  image->size = size;
-  image->size_membership = membership;
-  return image;
-}
-
-const TpchQ16StateImage *AsQ16Image(const core::StateImage &image,
-                                    TpchQ16ImageKind kind) {
-  const auto *payload = image.As<TpchQ16StateImage>();
-  return payload && payload->kind == kind ? payload : nullptr;
-}
-
-bool IsComplaintComment(const std::string &comment) {
-  return comment.find("Customer") != std::string::npos &&
-         comment.find("Complaints") != std::string::npos;
-}
-
-// ── Row readers ─────────────────────────────────────────────────────────────
-bool ReadSupplier(const core::AuxRow &row, TpchQ16SupplierInput &out) {
-  int64_t suppkey = 0;
-  if (!IntCell(row, 0, suppkey) || !StringCell(row, 1, out.comment))
-    return false;
-  out.suppkey = suppkey;
-  return true;
-}
-
-bool ReadPart(const core::AuxRow &row, TpchQ16PartInput &out) {
-  int64_t partkey = 0;
-  if (!IntCell(row, 0, partkey) || !StringCell(row, 1, out.brand) ||
-      !StringCell(row, 2, out.type))
-    return false;
+// ── Row readers (projected as in Dependencies()) ────────────────────────────
+// false: undecodable (forces a rebuild); `skip`: the row can never qualify
+// (a NULL brand / type / size / key), so a new image of it is ignored.
+bool ReadPart(const core::AuxRow &row, TpchQ16PartInput &out, bool &skip) {
   int64_t size = 0;
-  if (!IntCell(row, 3, size))
+  if (!IntCell(row, 0, out.partkey))
     return false;
-  out.partkey = partkey;
+  skip = NullCell(row, 1) || NullCell(row, 2) || NullCell(row, 3);
+  if (skip)
+    return true;
+  if (!StringCell(row, 1, out.brand) || !StringCell(row, 2, out.type) ||
+      !IntCell(row, 3, size) || size < std::numeric_limits<int32_t>::min() ||
+      size > std::numeric_limits<int32_t>::max())
+    return false;
   out.size = static_cast<int32_t>(size);
   return true;
 }
 
-bool ReadPartsupp(const core::AuxRow &row, TpchQ16PartsuppInput &out) {
-  int64_t partkey = 0;
-  int64_t suppkey = 0;
-  if (!IntCell(row, 0, partkey) || !IntCell(row, 1, suppkey))
-    return false;
-  out.partkey = partkey;
-  out.suppkey = suppkey;
-  return true;
+bool ReadPartsupp(const core::AuxRow &row, TpchQ16PartsuppInput &out,
+                  bool &skip) {
+  skip = NullCell(row, 0) || NullCell(row, 1);
+  return skip || (IntCell(row, 0, out.partkey) && IntCell(row, 1, out.suppkey));
 }
 
-// ── SQL LIKE helper ────────────────────────────────────────────────────────
-bool SqlLikeAt(const char *text, std::size_t text_len, const char *pattern,
-               std::size_t pattern_len, std::size_t text_pos,
-               std::size_t pattern_pos) {
-  while (pattern_pos < pattern_len) {
-    const char pattern_ch = pattern[pattern_pos];
-    if (pattern_ch == '%') {
-      if (pattern_pos + 1 == pattern_len)
-        return true;
-      for (std::size_t start = text_pos; start <= text_len; ++start) {
-        if (SqlLikeAt(text, text_len, pattern, pattern_len, start,
-                      pattern_pos + 1))
-          return true;
-      }
-      return false;
-    }
-    if (pattern_ch == '_') {
-      if (text_pos >= text_len)
-        return false;
-      ++text_pos;
-      ++pattern_pos;
-      continue;
-    }
-    if (text_pos >= text_len || text[text_pos] != pattern_ch)
-      return false;
-    ++text_pos;
-    ++pattern_pos;
-  }
-  return text_pos == text_len;
-}
-
-bool SqlLike(const std::string &text, const std::string &pattern) {
-  return SqlLikeAt(text.data(), text.size(), pattern.data(), pattern.size(), 0,
-                   0);
-}
-
-uint16_t InternBrand(TpchQ16State &state, const std::string &brand) {
-  for (uint16_t i = 0; i < state.brand_intern.size(); ++i)
-    if (state.brand_intern[i] == brand) return i;
-  state.brand_intern.push_back(brand);
-  return static_cast<uint16_t>(state.brand_intern.size() - 1);
-}
-
-uint16_t InternType(TpchQ16State &state, const std::string &type) {
-  for (uint16_t i = 0; i < state.type_intern.size(); ++i)
-    if (state.type_intern[i] == type) return i;
-  state.type_intern.push_back(type);
-  return static_cast<uint16_t>(state.type_intern.size() - 1);
+uint32_t Intern(std::shared_ptr<core::StringDict> &dict,
+                const std::string &value) {
+  const uint32_t id = dict->Find(value);
+  if (id != core::StringDict::kNone)
+    return id;
+  if (dict.use_count() > 1) // shared with a published state: clone first
+    dict = std::make_shared<core::StringDict>(*dict);
+  return dict->Intern(value);
 }
 
 } // namespace
 
-// ── Public predicate helpers ────────────────────────────────────────────────
-bool TpchQ16IsComplaintSupplier(const std::string &comment) {
-  return IsComplaintComment(comment);
+// ── TpchQ16State ────────────────────────────────────────────────────────────
+int64_t TpchQ16State::SupplierAt(const TpchQ16Suppliers &slots,
+                                 int64_t partkey, uint32_t i) const {
+  if (i < kTpchQ16InlineSuppliers)
+    return slots.suppkey[i];
+  return (*supplier_overflow.Find(partkey))[i - kTpchQ16InlineSuppliers];
 }
 
-bool TpchQ16TypeNotLike(const std::string &type, const std::string &pattern) {
-  return !SqlLike(type, pattern);
+uint32_t TpchQ16State::GroupId(const TpchQ16PartInput &part) {
+  const TpchQ16GroupKey key{Intern(brands, part.brand), Intern(types, part.type),
+                            part.size};
+  const auto it = group_table->ids.find(key);
+  if (it != group_table->ids.end())
+    return it->second;
+  if (group_table.use_count() > 1) // shared with a published state
+    group_table = std::make_shared<TpchQ16GroupTable>(*group_table);
+  const auto gid = static_cast<uint32_t>(group_table->keys.size());
+  group_table->keys.push_back(key);
+  group_table->ids.emplace(key, gid);
+  group_table->by_size[key.size].push_back(gid);
+  return gid;
 }
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
-std::vector<uint8_t>
-EncodeTpchQ16Eligibility(const TpchQ16State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kEligibilityMagic, kVersion,
-                         static_cast<uint32_t>(state.supplier_eligible.size()));
-  writer.bytes.insert(writer.bytes.end(), state.supplier_eligible.begin(),
-                      state.supplier_eligible.end());
-  // Append brand/type interning vectors + precomputed pre-sorted rows.
-  writer.U32(static_cast<uint32_t>(state.brand_intern.size()));
-  for (const auto &s : state.brand_intern)
-    writer.String(s);
-  writer.U32(static_cast<uint32_t>(state.type_intern.size()));
-  for (const auto &s : state.type_intern)
-    writer.String(s);
-  writer.U64(static_cast<uint64_t>(state.precomputed_rows.size()));
-  for (const auto &row : state.precomputed_rows) {
-    writer.U16(row.brand_id);
-    writer.U16(row.type_id);
-    writer.I32(row.size);
-    writer.I64(row.count);
-  }
-  return std::move(writer.bytes);
+void TpchQ16State::AddToGroup(int64_t partkey, uint32_t gid) {
+  auto &slot = members.Mutable(gid);
+  if (!slot)
+    slot = std::make_shared<TpchQ16Members>();
+  else if (slot.use_count() > 1) // shared with a published state
+    slot = std::make_shared<TpchQ16Members>(*slot);
+  slot->Insert(partkey);
+  MarkDirty(gid);
 }
 
-std::vector<uint8_t> EncodeTpchQ16SizeMembership(
-    int32_t size, const TpchQ16SizePartition &membership) {
-  ByteWriter writer;
-  writer.U32(kSizeMagic);
-  writer.U32(kVersion);
-  writer.I32(size);
-  writer.U64(static_cast<uint64_t>(membership.groups.size()));
-  for (const auto &group : membership.groups) {
-    writer.String(group.brand);
-    writer.String(group.type);
-    writer.U64(static_cast<uint64_t>(group.blocks.size()));
-    for (const auto &[block_index, block] : group.blocks) {
-      writer.I64(block_index);
-      writer.U64(static_cast<uint64_t>(block.suppkeys.size()));
-      for (const auto suppkey : block.suppkeys)
-        writer.I64(suppkey);
-      writer.U64(static_cast<uint64_t>(block.ref_counts.size()));
-      for (const auto count : block.ref_counts)
-        writer.I32(count);
+void TpchQ16State::RemoveFromGroup(int64_t partkey, uint32_t gid) {
+  const auto *found = members.Find(gid);
+  if (!found || !*found)
+    return;
+  auto &slot = members.Mutable(gid);
+  if (slot.use_count() > 1)
+    slot = std::make_shared<TpchQ16Members>(*slot);
+  slot->Erase(partkey);
+  MarkDirty(gid);
+}
+
+void TpchQ16State::SetPart(int64_t partkey, const TpchQ16PartInput &part) {
+  if (partkey < 0)
+    return; // negative keys are never stored
+  const uint32_t gid = GroupId(part);
+  const uint32_t old = part_group.Get(partkey);
+  if (old == gid)
+    return;
+  if (old != kTpchQ16NoGroup)
+    RemoveFromGroup(partkey, old);
+  AddToGroup(partkey, gid);
+  part_group.Set(partkey, gid);
+}
+
+void TpchQ16State::ErasePart(int64_t partkey) {
+  const uint32_t old = part_group.Get(partkey);
+  if (old == kTpchQ16NoGroup)
+    return;
+  RemoveFromGroup(partkey, old);
+  part_group.Set(partkey, kTpchQ16NoGroup);
+}
+
+void TpchQ16State::AddSupplier(int64_t partkey, int64_t suppkey) {
+  if (partkey < 0)
+    return;
+  auto &slots = suppliers_of.Mutable(partkey);
+  if (slots.count < kTpchQ16InlineSuppliers)
+    slots.suppkey[slots.count] = suppkey;
+  else
+    supplier_overflow[partkey].push_back(suppkey);
+  ++slots.count;
+  const uint32_t gid = part_group.Get(partkey);
+  if (gid != kTpchQ16NoGroup)
+    MarkDirty(gid);
+}
+
+bool TpchQ16State::RemoveSupplier(int64_t partkey, int64_t suppkey) {
+  if (partkey < 0)
+    return true;
+  const auto *found = suppliers_of.Find(partkey);
+  if (!found || found->count == 0)
+    return false;
+  const uint32_t count = found->count;
+  uint32_t hit = count;
+  for (uint32_t i = 0; i < count; ++i)
+    if (SupplierAt(*found, partkey, i) == suppkey) {
+      hit = i;
+      break;
     }
+  if (hit == count)
+    return false;
+  const int64_t last = SupplierAt(*found, partkey, count - 1);
+  auto &slots = suppliers_of.Mutable(partkey); // `found` may dangle after this
+  if (hit != count - 1) {
+    if (hit < kTpchQ16InlineSuppliers)
+      slots.suppkey[hit] = last;
+    else
+      supplier_overflow[partkey][hit - kTpchQ16InlineSuppliers] = last;
   }
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ16Eligibility(const std::vector<uint8_t> &bytes,
-                              TpchQ16State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kEligibilityMagic, kVersion, count))
-    return false;
-  state.supplier_eligible.resize(static_cast<std::size_t>(count));
-  for (uint32_t i = 0; i < count; ++i) {
-    uint8_t value = 0;
-    if (!reader.U8(value))
-      return false;
-    state.supplier_eligible[i] = value;
+  if (count > kTpchQ16InlineSuppliers) {
+    auto &extra = supplier_overflow[partkey];
+    extra.pop_back();
+    if (extra.empty())
+      supplier_overflow.Erase(partkey);
   }
-  // Read brand/type interning vectors + precomputed pre-sorted rows.
-  uint32_t brand_count = 0;
-  if (!reader.U32(brand_count))
-    return false;
-  state.brand_intern.resize(static_cast<std::size_t>(brand_count));
-  for (auto &s : state.brand_intern)
-    if (!reader.String(s))
-      return false;
-  uint32_t type_count = 0;
-  if (!reader.U32(type_count))
-    return false;
-  state.type_intern.resize(static_cast<std::size_t>(type_count));
-  for (auto &s : state.type_intern)
-    if (!reader.String(s))
-      return false;
-  uint64_t row_count = 0;
-  if (!reader.U64(row_count))
-    return false;
-  state.precomputed_rows.resize(static_cast<std::size_t>(row_count));
-  for (auto &row : state.precomputed_rows) {
-    if (!reader.U16(row.brand_id) || !reader.U16(row.type_id) ||
-        !reader.I32(row.size) || !reader.I64(row.count))
-      return false;
-  }
-  return reader.offset == bytes.size();
-}
-
-bool DecodeTpchQ16SizeMembership(const std::vector<uint8_t> &bytes,
-                                 int32_t size, TpchQ16SizePartition &membership) {
-  ByteReader reader{bytes};
-  uint32_t magic = 0;
-  uint32_t version = 0;
-  int32_t stored_size = 0;
-  uint64_t group_count = 0;
-  if (!reader.U32(magic) || magic != kSizeMagic || !reader.U32(version) ||
-      !reader.I32(stored_size) || stored_size != size ||
-      !reader.U64(group_count))
-    return false;
-  membership.groups.resize(static_cast<std::size_t>(group_count));
-  for (auto &group : membership.groups) {
-    if (!reader.String(group.brand) || !reader.String(group.type))
-      return false;
-    uint64_t block_count = 0;
-    if (!reader.U64(block_count))
-      return false;
-    for (uint64_t b = 0; b < block_count; ++b) {
-      int64_t block_index = 0;
-      if (!reader.I64(block_index))
-        return false;
-      TpchQ16SupplierBlock block;
-      uint64_t suppkey_count = 0;
-      if (!reader.U64(suppkey_count))
-        return false;
-      block.suppkeys.resize(static_cast<std::size_t>(suppkey_count));
-      for (auto &suppkey : block.suppkeys)
-        if (!reader.I64(suppkey))
-          return false;
-      uint64_t count_size = 0;
-      if (!reader.U64(count_size))
-        return false;
-      block.ref_counts.resize(static_cast<std::size_t>(count_size));
-      for (auto &count : block.ref_counts)
-        if (!reader.I32(count))
-          return false;
-      group.blocks[block_index] = std::move(block);
-    }
-  }
+  --slots.count;
+  const uint32_t gid = part_group.Get(partkey);
+  if (gid != kTpchQ16NoGroup)
+    MarkDirty(gid);
   return true;
 }
 
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
-bool TpchQ16TxnBuffer::HasPendingChanges() const { return pending; }
-void TpchQ16TxnBuffer::Clear() {
-  pending = false;
-  requires_rebuild = false;
-  partsupp_deltas.clear();
-  supplier_deltas.clear();
-}
-bool TpchQ16TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
-const std::vector<TpchQ16PartsuppDelta> &
-TpchQ16TxnBuffer::PartsuppDeltas() const {
-  return partsupp_deltas;
-}
-const std::vector<TpchQ16SupplierDelta> &
-TpchQ16TxnBuffer::SupplierDeltas() const {
-  return supplier_deltas;
-}
-void TpchQ16TxnBuffer::MarkRebuild() {
-  pending = true;
-  requires_rebuild = true;
-}
-void TpchQ16TxnBuffer::AddPartsuppDelta(TpchQ16PartsuppDelta delta) {
-  pending = true;
-  partsupp_deltas.push_back(std::move(delta));
-}
-void TpchQ16TxnBuffer::AddSupplierDelta(TpchQ16SupplierDelta delta) {
-  pending = true;
-  supplier_deltas.push_back(std::move(delta));
+bool TpchQ16State::SetComplaint(int64_t suppkey, bool flag) {
+  if (suppkey < 0)
+    return false;
+  const uint8_t value = flag ? 1 : 0;
+  if (complaint.Get(suppkey) == value)
+    return false;
+  complaint.Set(suppkey, value);
+  return true;
 }
 
-// ── Module identity / dependencies ─────────────────────────────────────────
+void TpchQ16State::MarkGroupsOfSuppliers(
+    const core::FlatHashMap<uint8_t> &changed) {
+  using Lists = core::ChunkedCowArray<TpchQ16Suppliers, 10>;
+  for (std::size_t ci = 0; ci < suppliers_of.NumChunks(); ++ci) {
+    const auto *chunk = suppliers_of.ChunkAt(ci);
+    if (!chunk)
+      continue;
+    for (std::size_t slot = 0; slot < chunk->size(); ++slot) {
+      const auto &slots = (*chunk)[slot];
+      const int64_t partkey = Lists::ChunkBase(ci) + static_cast<int64_t>(slot);
+      for (uint32_t i = 0; i < slots.count; ++i)
+        if (changed.Contains(SupplierAt(slots, partkey, i))) {
+          const uint32_t gid = part_group.Get(partkey);
+          if (gid != kTpchQ16NoGroup)
+            dirty.push_back(gid);
+          break;
+        }
+    }
+  }
+}
+
+// Distinct non-complaint suppliers over the parts of one group.
+int64_t TpchQ16State::CountDistinct(uint32_t gid) const {
+  const auto *found = members.Find(gid);
+  if (!found || !*found)
+    return 0;
+  std::vector<int64_t> seen;
+  (*found)->ForEach([&](int64_t partkey) {
+    const auto *slots = suppliers_of.Find(partkey);
+    if (!slots)
+      return true;
+    for (uint32_t i = 0; i < slots->count; ++i) {
+      const int64_t suppkey = SupplierAt(*slots, partkey, i);
+      if (!complaint.Get(suppkey))
+        seen.push_back(suppkey);
+    }
+    return true;
+  });
+  std::sort(seen.begin(), seen.end());
+  return static_cast<int64_t>(std::unique(seen.begin(), seen.end()) -
+                              seen.begin());
+}
+
+void TpchQ16State::RecomputeDirty() {
+  std::sort(dirty.begin(), dirty.end());
+  dirty.erase(std::unique(dirty.begin(), dirty.end()), dirty.end());
+  for (const uint32_t gid : dirty)
+    distinct.Set(gid, CountDistinct(gid));
+  dirty.clear();
+}
+
+void TpchQ16State::RecomputeAll() {
+  const std::size_t groups = group_table->keys.size();
+  std::vector<int64_t> counts(groups, 0);
+  std::atomic<std::size_t> next{0};
+  const auto worker = [&] {
+    for (std::size_t g = next.fetch_add(64); g < groups; g = next.fetch_add(64))
+      for (std::size_t i = g; i < std::min(groups, g + 64); ++i)
+        counts[i] = CountDistinct(static_cast<uint32_t>(i));
+  };
+  const std::size_t threads = std::min<std::size_t>(
+      std::max(1u, std::thread::hardware_concurrency()), 8);
+  if (groups < 256 || threads <= 1) {
+    worker();
+  } else {
+    std::vector<std::thread> pool;
+    for (std::size_t t = 0; t < threads; ++t)
+      pool.emplace_back(worker);
+    for (auto &th : pool)
+      th.join();
+  }
+  for (std::size_t g = 0; g < groups; ++g)
+    if (counts[g] != 0)
+      distinct.Set(static_cast<int64_t>(g), counts[g]);
+  dirty.clear();
+}
+
+std::size_t TpchQ16State::MemoryBytes() const {
+  std::size_t n = part_group.MemoryBytes() + suppliers_of.MemoryBytes() +
+                  supplier_overflow.memory_bytes() + complaint.MemoryBytes() +
+                  members.MemoryBytes() + distinct.MemoryBytes() +
+                  brands->MemoryBytes() + types->MemoryBytes();
+  for (std::size_t ci = 0; ci < members.NumChunks(); ++ci)
+    if (const auto *chunk = members.ChunkAt(ci))
+      for (const auto &m : *chunk)
+        if (m)
+          n += m->MemoryBytes();
+  return n;
+}
+
+// ── TxnBuffer ───────────────────────────────────────────────────────────────
+bool TpchQ16TxnBuffer::HasPendingChanges() const {
+  return requires_rebuild || EventCount() != 0;
+}
+void TpchQ16TxnBuffer::Clear() {
+  requires_rebuild = false;
+  parts.clear();
+  partsupps.clear();
+  suppliers.clear();
+}
+
+// ── Module ──────────────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ16Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ16Module::Dependencies() const {
@@ -393,266 +337,177 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ16Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ16TxnBuffer>();
 }
 
-// ── Build ───────────────────────────────────────────────────────────────────
 void TpchQ16Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  const auto state = BuildState(services);
-
-  // Publish supplier eligibility partition.
-  auto shared_state = std::make_shared<const TpchQ16State>(state);
-  builder.Write(core::StateImage::Make(
-      Id(), TpchQ16Layout::kSupplierEligibility, 0,
-      MakeEligibilityImage(shared_state)));
-
-  // Publish one sparse size partition per observed size (bounded).
-  for (const auto &[size, partition] : state.membership) {
-    if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
-      continue;
-    auto shared_partition =
-        std::make_shared<const TpchQ16SizePartition>(partition);
-    builder.Write(core::StateImage::Make(
-        Id(), TpchQ16Layout::SizePartition(size), 0,
-        MakeSizeImage(size, shared_partition)));
-  }
+  auto image = std::make_shared<TpchQ16StateImage>();
+  image->state = std::make_shared<const TpchQ16State>(BuildState(services));
+  const std::shared_ptr<const TpchQ16StateImage> const_image = std::move(image);
+  builder.Write(core::StateImage::Make(Id(), TpchQ16Layout::kState, 0,
+                                       const_image));
   builder.Finish();
 }
 
-// ── Mutation interpretation ────────────────────────────────────────────────
-core::InvalidationPlan TpchQ16Module::InterpretMutation(
-    const core::MutationBatch &mutation) const {
-  const bool partsupp = mutation.table == config.partsupp_table;
-  const bool part = mutation.table == config.part_table;
-  const bool supplier = mutation.table == config.supplier_table;
-
-  if (!partsupp && !part && !supplier)
-    return {};
-
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
-
-  // Supplier comment change only affects the eligibility partition.
-  if (supplier) {
-    if (mutation.kind != core::MutationKind::Update)
-      return plan;
-    for (const auto &col : mutation.updated_columns)
-      if (col == 1)
-        return plan;
-    return {};
-  }
-
-  // Part key/attribute change may affect multiple size partitions.
-  if (part) {
-    return plan;
-  }
-
-  // Partsupp changes affect one size partition after catalog resolution.
-  return plan;
+core::InvalidationPlan
+TpchQ16Module::InterpretMutation(const core::MutationBatch &) const {
+  // All three tables are maintained incrementally.
+  return {};
 }
 
 void TpchQ16Module::AccumulateMutation(const core::MutationBatch &mutation,
-                                       core::AuxEngineServices &services,
+                                       core::AuxEngineServices &,
                                        core::AuxTxnBuffer &txn_buffer) {
-  (void)services;
   auto &buffer = dynamic_cast<TpchQ16TxnBuffer &>(txn_buffer);
-
-  if (mutation.table == config.supplier_table) {
-    // An update matters only if a watched column changed; inserts and
-    // deletes always do.
-    bool watched_change = mutation.kind != core::MutationKind::Update;
-    for (const auto &col : mutation.updated_columns)
-      if (col == 1)
-        watched_change = true;
-    if (!watched_change)
-      return;
-
-    for (std::size_t i = 0; i < mutation.new_rows.size(); ++i) {
-      TpchQ16SupplierInput new_input;
-      if (!ReadSupplier(mutation.new_rows[i], new_input))
-        continue;
-      TpchQ16SupplierInput old_input;
-      bool have_old = false;
-      if (mutation.kind == core::MutationKind::Update &&
-          i < mutation.old_rows.size() &&
-          ReadSupplier(mutation.old_rows[i], old_input))
-        have_old = true;
-
-      TpchQ16SupplierDelta delta;
-      delta.suppkey = new_input.suppkey;
-      delta.new_eligible = !TpchQ16IsComplaintSupplier(new_input.comment);
-      if (mutation.kind == core::MutationKind::Update && have_old) {
-        delta.old_eligible = !TpchQ16IsComplaintSupplier(old_input.comment);
-      } else if (mutation.kind == core::MutationKind::Insert) {
-        delta.old_eligible = false;
-      } else if (mutation.kind == core::MutationKind::Delete) {
-        delta.old_eligible = delta.new_eligible;
-        delta.new_eligible = false;
-      }
-      buffer.AddSupplierDelta(delta);
-    }
-    return;
-  }
+  // An UPDATE that touches none of the columns the query reads changes nothing.
+  const auto touches = [&](std::initializer_list<core::ColumnId> watched) {
+    if (mutation.kind != core::MutationKind::Update ||
+        mutation.updated_columns.empty())
+      return true;
+    for (const auto col : mutation.updated_columns)
+      for (const auto w : watched)
+        if (col == w)
+          return true;
+    return false;
+  };
+  // Removals of a batch precede its insertions so an UPDATE that moves keys
+  // around composes correctly.
+  const auto each_image = [&](auto &&fn) {
+    if (mutation.kind != core::MutationKind::Insert)
+      for (const auto &row : mutation.old_rows)
+        fn(row, int8_t{-1});
+    if (mutation.kind != core::MutationKind::Delete)
+      for (const auto &row : mutation.new_rows)
+        fn(row, int8_t{+1});
+  };
 
   if (mutation.table == config.part_table) {
-    // Partsupp membership may move across groups/sizes.
-    buffer.MarkRebuild();
-    return;
-  }
-
-  if (mutation.table == config.partsupp_table) {
-    bool watched_change = mutation.kind != core::MutationKind::Update;
-    for (const auto &col : mutation.updated_columns)
-      if (col == 0 || col == 1)
-        watched_change = true;
-    if (!watched_change)
+    each_image([&](const core::AuxRow &row, int8_t sign) {
+      TpchQ16PartEvent event;
+      bool skip = false;
+      if (!ReadPart(row, event.row, skip)) {
+        buffer.MarkRebuild();
+      } else if (!skip || sign < 0) {
+        event.sign = sign;
+        buffer.parts.push_back(std::move(event));
+      }
+    });
+  } else if (mutation.table == config.partsupp_table) {
+    if (!touches({0, 1}))
       return;
-    buffer.MarkRebuild();
-    return;
+    each_image([&](const core::AuxRow &row, int8_t sign) {
+      TpchQ16PartsuppEvent event;
+      bool skip = false;
+      if (!ReadPartsupp(row, event.row, skip)) {
+        buffer.MarkRebuild();
+      } else if (!skip) {
+        event.sign = sign;
+        buffer.partsupps.push_back(event);
+      }
+    });
+  } else if (mutation.table == config.supplier_table) {
+    if (!touches({0, 1}))
+      return;
+    each_image([&](const core::AuxRow &row, int8_t sign) {
+      TpchQ16SupplierEvent event;
+      if (!IntCell(row, 0, event.suppkey)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      std::string comment;
+      event.sign = sign;
+      event.complaint = sign > 0 && StringCell(row, 1, comment) &&
+                        IsComplaintComment(comment);
+      buffer.suppliers.push_back(event);
+    });
   }
 }
 
-// ── Maintenance staging ────────────────────────────────────────────────────
-core::StagedMaintenanceOutcome TpchQ16Module::StageMaintenance(
-    core::AuxEngineServices &services, const core::InvalidationPlan &plan,
-    core::AuxTxnBuffer &txn_buffer) {
+core::StagedMaintenanceOutcome
+TpchQ16Module::StageMaintenance(core::AuxEngineServices &services,
+                                const core::InvalidationPlan &,
+                                core::AuxTxnBuffer &txn_buffer) {
   auto &buffer = dynamic_cast<TpchQ16TxnBuffer &>(txn_buffer);
   core::StagedMaintenanceOutcome outcome;
-
-  if (!buffer.HasPendingChanges()) {
-    outcome.action = core::MaintenanceAction::NoOp;
+  if (!buffer.HasPendingChanges())
     return outcome;
-  }
 
-  const bool full_rebuild = buffer.RequiresRebuild();
-  const auto deltas = buffer.PartsuppDeltas();
-  const auto supplier_deltas = buffer.SupplierDeltas();
-
-  if (!full_rebuild && deltas.empty() && supplier_deltas.empty()) {
-    outcome.action = core::MaintenanceAction::NoOp;
-    return outcome;
-  }
-
-  if (full_rebuild || !deltas.empty()) {
-    // Part / partsupp membership changes require a full rebuild for correctness.
-    auto state = BuildState(services);
-    auto shared_state = std::make_shared<const TpchQ16State>(state);
-
-    outcome.updates.push_back(core::StateImage::Make(
-        Id(), TpchQ16Layout::kSupplierEligibility, 0,
-        MakeEligibilityImage(shared_state)));
-
-    for (const auto &[size, partition] : state.membership) {
-      if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
-        continue;
-      auto shared_partition =
-          std::make_shared<const TpchQ16SizePartition>(partition);
-      outcome.updates.push_back(core::StateImage::Make(
-          Id(), TpchQ16Layout::SizePartition(size), 0,
-          MakeSizeImage(size, shared_partition)));
-    }
-
-    outcome.action = core::MaintenanceAction::RebuildAll;
-  } else if (!supplier_deltas.empty()) {
-    // Supplier-only eligibility change: incremental ApplyDelta when selected.
-    const auto decision = services.ChooseMaintenance(
-        {static_cast<uint64_t>(supplier_deltas.size()), 1, true, false, true,
-         false, false, core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    if (decision.action != core::MaintenanceAction::ApplyDelta) {
-      auto state = BuildState(services);
-      auto shared_state = std::make_shared<const TpchQ16State>(state);
-      outcome.updates.push_back(core::StateImage::Make(
-          Id(), TpchQ16Layout::kSupplierEligibility, 0,
-          MakeEligibilityImage(shared_state)));
-      for (const auto &[size, partition] : state.membership) {
-        if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
-          continue;
-        auto shared_partition =
-            std::make_shared<const TpchQ16SizePartition>(partition);
-        outcome.updates.push_back(core::StateImage::Make(
-            Id(), TpchQ16Layout::SizePartition(size), 0,
-            MakeSizeImage(size, shared_partition)));
-      }
-      outcome.action = decision.action == core::MaintenanceAction::RebuildPartition
-                           ? core::MaintenanceAction::RebuildAll
-                           : decision.action;
-      if (outcome.action != core::MaintenanceAction::RebuildAll &&
-          outcome.action != core::MaintenanceAction::RebuildPartition) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-      }
+  bool need_rebuild = buffer.RequiresRebuild();
+  if (!need_rebuild) {
+    const auto old_state = LoadState(services);
+    core::Version old_version = 0;
+    if (!old_state) {
+      buffer.Clear();
       return outcome;
     }
+    const auto snapshot = services.StateStore().ReadPartitions(
+        services.CurrentVisibility(), {TpchQ16Layout::kState});
+    for (const auto &image : snapshot.partitions)
+      if (image.partition == TpchQ16Layout::kState)
+        old_version = image.version;
 
-    TpchQ16State state;
-    bool have_eligibility = false;
-    {
-      const auto snapshot = services.StateStore().ReadPartitions(
-          services.CurrentVisibility(), {TpchQ16Layout::kSupplierEligibility});
-      for (const auto &image : snapshot.partitions) {
-        const auto *typed = AsQ16Image(image, TpchQ16ImageKind::Eligibility);
-        if (!typed || !typed->state)
-          continue;
-        state = *typed->state;
-        have_eligibility = true;
+    // Copy-on-write: the copy shares every chunk / group with the published
+    // state; edits clone only what they touch.
+    auto new_state = std::make_shared<TpchQ16State>(*old_state);
+    new_state->dirty.clear();
+    for (const auto &ev : buffer.parts)
+      ev.sign < 0 ? new_state->ErasePart(ev.row.partkey)
+                  : new_state->SetPart(ev.row.partkey, ev.row);
+    for (const auto &ev : buffer.partsupps) {
+      if (ev.sign > 0) {
+        new_state->AddSupplier(ev.row.partkey, ev.row.suppkey);
+      } else if (!new_state->RemoveSupplier(ev.row.partkey, ev.row.suppkey)) {
+        need_rebuild = true; // the state disagrees with the table
         break;
       }
     }
-    if (!have_eligibility) {
-      state = BuildState(services);
-    } else {
-      for (const auto &delta : supplier_deltas)
-        state.SetSupplierEligible(delta.suppkey, delta.new_eligible);
-    }
-
-    std::vector<core::PartitionId> size_window;
-    size_window.reserve(TpchQ16Layout::kMaxSize);
-    for (int32_t size = TpchQ16Layout::kMinSize; size <= TpchQ16Layout::kMaxSize;
-         ++size)
-      size_window.push_back(TpchQ16Layout::SizePartition(size));
-    const auto snapshot = services.StateStore().ReadPartitions(
-        services.CurrentVisibility(), size_window);
-
-    state.precomputed_rows.clear();
-    for (const auto &image : snapshot.partitions) {
-      const auto *typed = AsQ16Image(image, TpchQ16ImageKind::SizeMembership);
-      if (!typed || !typed->size_membership)
-        continue;
-      const auto size = typed->size;
-      for (const auto &group : typed->size_membership->groups) {
-        int64_t distinct = 0;
-        for (const auto &[block_index, block] : group.blocks) {
-          for (const auto suppkey : block.suppkeys) {
-            if (state.IsSupplierEligible(suppkey))
-              ++distinct;
-          }
-        }
-        if (distinct > 0)
-          state.precomputed_rows.push_back(
-              {group.brand_id, group.type_id, size, distinct});
+    if (!need_rebuild) {
+      // Net complaint flips (an UPDATE of an unrelated column removes and
+      // re-adds the same flag): only a real flip pays the pass over the lists.
+      std::unordered_map<int64_t, uint8_t> original;
+      for (const auto &ev : buffer.suppliers) {
+        original.emplace(ev.suppkey, new_state->complaint.Get(ev.suppkey));
+        new_state->SetComplaint(ev.suppkey, ev.sign > 0 && ev.complaint);
       }
-    }
-    std::sort(state.precomputed_rows.begin(), state.precomputed_rows.end(),
-              [](const Q16PrecomputedRow &lhs, const Q16PrecomputedRow &rhs) {
-                if (lhs.count != rhs.count)
-                  return lhs.count > rhs.count;
-                if (lhs.brand_id != rhs.brand_id)
-                  return lhs.brand_id < rhs.brand_id;
-                if (lhs.type_id != rhs.type_id)
-                  return lhs.type_id < rhs.type_id;
-                return lhs.size < rhs.size;
-              });
+      core::FlatHashMap<uint8_t> flipped;
+      for (const auto &[suppkey, before] : original)
+        if (new_state->complaint.Get(suppkey) != before)
+          flipped.Upsert(suppkey, 1);
+      if (!flipped.empty())
+        new_state->MarkGroupsOfSuppliers(flipped);
+      new_state->RecomputeDirty();
 
-    auto shared_state = std::make_shared<const TpchQ16State>(std::move(state));
-    outcome.updates.push_back(core::StateImage::Make(
-        Id(), TpchQ16Layout::kSupplierEligibility, 0,
-        MakeEligibilityImage(shared_state)));
-    outcome.action = core::MaintenanceAction::ApplyDelta;
+      const auto decision = services.ChooseMaintenance(
+          {buffer.EventCount(), 1, true, false, true, false, false,
+           core::MaintenanceAction::NoOp,
+           services.ExpectedQueriesBeforeNextWrite()});
+      if (decision.action == core::MaintenanceAction::ApplyDelta) {
+        auto image = std::make_shared<TpchQ16StateImage>();
+        image->state = std::move(new_state);
+        const std::shared_ptr<const TpchQ16StateImage> const_image =
+            std::move(image);
+        outcome.action = core::MaintenanceAction::ApplyDelta;
+        outcome.updates.push_back(core::StateImage::Make(
+            Id(), TpchQ16Layout::kState, old_version, const_image));
+        buffer.Clear();
+        return outcome;
+      }
+      // Cost-model rebuild: fall through with empty updates.
+    }
   }
 
+  const auto decision = services.ChooseMaintenance(
+      {0, 0, false, false, true, true, false, core::MaintenanceAction::NoOp,
+       services.ExpectedQueriesBeforeNextWrite()});
+  outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
+                       ? core::MaintenanceAction::RebuildAll
+                       : decision.action;
+  if (outcome.action == core::MaintenanceAction::RebuildPartition)
+    outcome.action = core::MaintenanceAction::RebuildAll;
+  outcome.invalidations = All();
+  outcome.pending_rebuild = outcome.invalidations;
+  buffer.Clear();
   return outcome;
 }
 
-// ── Validity / read path ───────────────────────────────────────────────────
 bool TpchQ16Module::CheckValidity(core::AuxEngineServices &services,
                                   const core::QueryArguments &) const {
   return services.StateStore()
@@ -663,397 +518,94 @@ bool TpchQ16Module::CheckValidity(core::AuxEngineServices &services,
 void TpchQ16Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
-  if (arguments.values.size() < 3) {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
-
-  // Parse the p_size set from arguments (indices 2..9).
-  bool size_wanted[TpchQ16Layout::kMaxSize + 1] = {};
-  for (std::size_t i = 2; i < arguments.values.size() && i < 10; ++i) {
-    const auto &value = arguments.values[i];
-    if (value.is_null)
-      continue;
-    int64_t size = 0;
-    if (std::holds_alternative<int64_t>(value.payload)) {
-      size = std::get<int64_t>(value.payload);
-    } else if (std::holds_alternative<uint64_t>(value.payload)) {
-      size = static_cast<int64_t>(std::get<uint64_t>(value.payload));
-    } else {
-      continue;
-    }
-    if (size >= TpchQ16Layout::kMinSize && size <= TpchQ16Layout::kMaxSize)
-      size_wanted[static_cast<std::size_t>(size)] = true;
-  }
-
-  std::string exclude_brand;
-  std::string type_pattern;
-  if (!arguments.values[0].is_null &&
-      std::holds_alternative<std::string>(arguments.values[0].payload))
-    exclude_brand = std::get<std::string>(arguments.values[0].payload);
-  if (!arguments.values[1].is_null &&
-      std::holds_alternative<std::string>(arguments.values[1].payload))
-    type_pattern = std::get<std::string>(arguments.values[1].payload);
-
   if (!CheckValidity(services, arguments)) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-
-  // Load eligibility partition which now also carries brand/type interning
-  // vectors and precomputed pre-sorted result rows.
-  CustomTimer t_load(CustomProfilingEnabled());
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {TpchQ16Layout::kSupplierEligibility});
-  const TpchQ16State *loaded_state = nullptr;
-  for (const auto &image : snapshot.partitions) {
-    const auto *typed = AsQ16Image(image, TpchQ16ImageKind::Eligibility);
-    if (!typed || !typed->state)
-      continue;
-    loaded_state = typed->state.get();
-    break;
-  }
-  if (!loaded_state) {
+  const auto state = LoadState(services);
+  if (!state) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitCustomProfile("load_partitions", t_load.us(),
-                    static_cast<int64_t>(loaded_state->precomputed_rows.size()),
-                    0, 0);
-
-  // Resolve exclude_brand to brand_id via binary search in intern vectors.
-  int32_t exclude_brand_id = -1;
-  if (!exclude_brand.empty()) {
-    auto it = std::lower_bound(loaded_state->brand_intern.begin(),
-                               loaded_state->brand_intern.end(), exclude_brand);
-    if (it != loaded_state->brand_intern.end() && *it == exclude_brand)
-      exclude_brand_id = static_cast<int32_t>(
-          it - loaded_state->brand_intern.begin());
-  }
-
-
-  // Precompute NOT LIKE predicate results per unique type_id to avoid
-  // redundant SqlLike evaluations inside the per-row loop below.
-  std::vector<bool> type_matches(loaded_state->type_intern.size(), true);
-  if (!type_pattern.empty()) {
-    for (std::size_t tid = 0; tid < loaded_state->type_intern.size(); ++tid) {
-      type_matches[tid] = TpchQ16TypeNotLike(loaded_state->type_intern[tid], type_pattern);
-    }
-  }
-
-  CustomTimer t_filter(CustomProfilingEnabled());
-  int64_t filter_groups = 0;
-  int64_t emitted_rows = 0;
-  sink.Begin({{{"p_brand", core::AuxType::String, false},
-               {"p_type", core::AuxType::String, false},
-               {"p_size", core::AuxType::Int64, false},
-               {"supplier_cnt", core::AuxType::Int64, false}}});
-  core::AuxRow row;
-  row.values.resize(4);
-
-  // Hoist static field assignments out of the per-row loop.
-  row.values[0].type = core::AuxType::String;
-  row.values[0].is_null = false;
-  row.values[1].type = core::AuxType::String;
-  row.values[1].is_null = false;
-  row.values[2].type = core::AuxType::Int64;
-  row.values[2].is_null = false;
-  row.values[3].type = core::AuxType::Int64;
-  row.values[3].is_null = false;
-  // Fuse filtering and emission into a single pass over the pre-sorted rows.
-  for (const auto &pr : loaded_state->precomputed_rows) {
-    if (!size_wanted[static_cast<std::size_t>(pr.size)])
-      continue;
-    if (exclude_brand_id >= 0 &&
-        pr.brand_id == static_cast<uint16_t>(exclude_brand_id))
-      continue;
-    if (!type_pattern.empty()) {
-      if (pr.type_id >= type_matches.size())
-        continue;
-      if (!type_matches[pr.type_id])
-        continue;
-    }
-    ++filter_groups;
-    row.values[0].payload = loaded_state->brand_intern[pr.brand_id];
-    row.values[1].payload = loaded_state->type_intern[pr.type_id];
-    row.values[2].payload = static_cast<int64_t>(pr.size);
-    row.values[3].payload = pr.count;
-    sink.WriteRow(row);
-    ++emitted_rows;
-  }
-  EmitCustomProfile("filter_emit", t_filter.us(), filter_groups, emitted_rows, 0);
-  sink.End();
+  EmitResult(*state, arguments, sink);
 }
 
 void TpchQ16Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
-  std::string brand;
-  std::string type_pattern;
-  std::vector<int32_t> sizes;
-  if (arguments.values.size() >= 3) {
-    if (!arguments.values[0].is_null &&
-        std::holds_alternative<std::string>(arguments.values[0].payload))
-      brand = std::get<std::string>(arguments.values[0].payload);
-    if (!arguments.values[1].is_null &&
-        std::holds_alternative<std::string>(arguments.values[1].payload))
-      type_pattern = std::get<std::string>(arguments.values[1].payload);
-    for (std::size_t i = 2; i < arguments.values.size() && i < 10; ++i) {
-      const auto &value = arguments.values[i];
-      if (value.is_null)
-        continue;
-      int64_t size = 0;
-      if (std::holds_alternative<int64_t>(value.payload))
-        size = std::get<int64_t>(value.payload);
-      else if (std::holds_alternative<uint64_t>(value.payload))
-        size = static_cast<int64_t>(std::get<uint64_t>(value.payload));
-      if (size >= TpchQ16Layout::kMinSize && size <= TpchQ16Layout::kMaxSize) {
-        const int32_t typed_size = static_cast<int32_t>(size);
-        if (std::find(sizes.begin(), sizes.end(), typed_size) == sizes.end())
-          sizes.push_back(typed_size);
-      }
-    }
-  }
-
-  const auto state = BuildState(services);
-  std::unordered_map<std::string, int64_t> distinct_by_group;
-  for (const auto size : sizes) {
-    auto it = state.membership.find(size);
-    if (it == state.membership.end())
-      continue;
-    for (const auto &group : it->second.groups) {
-      if (!brand.empty() && group.brand == brand)
-        continue;
-      if (!type_pattern.empty() &&
-          !TpchQ16TypeNotLike(group.type, type_pattern))
-        continue;
-      int64_t distinct = 0;
-      for (const auto &[block_index, block] : group.blocks) {
-        for (const auto suppkey : block.suppkeys) {
-          if (state.IsSupplierEligible(suppkey))
-            ++distinct;
-        }
-      }
-      if (distinct > 0)
-        distinct_by_group[TpchQ16State::MakeGroupKey(group.brand, group.type)] =
-            distinct;
-    }
-  }
-
-  std::vector<Q16ResultRow> rows;
-  for (const auto size : sizes) {
-    auto it = state.membership.find(size);
-    if (it == state.membership.end())
-      continue;
-    for (const auto &group : it->second.groups) {
-      if (!brand.empty() && group.brand == brand)
-        continue;
-      if (!type_pattern.empty() &&
-          !TpchQ16TypeNotLike(group.type, type_pattern))
-        continue;
-      int64_t distinct = 0;
-      for (const auto &[block_index, block] : group.blocks)
-        for (const auto suppkey : block.suppkeys)
-          if (state.IsSupplierEligible(suppkey))
-            ++distinct;
-      if (distinct > 0)
-        rows.push_back({group.brand, group.type, group.brand_id, group.type_id,
-                        size, distinct});
-    }
-  }
-
-  CustomTimer t_sort(CustomProfilingEnabled());
-  std::sort(rows.begin(), rows.end(),
-            [](const auto &lhs, const auto &rhs) {
-              if (lhs.count != rhs.count)
-                return lhs.count > rhs.count;
-              if (lhs.brand_id != rhs.brand_id)
-                return lhs.brand_id < rhs.brand_id;
-              if (lhs.type_id != rhs.type_id)
-                return lhs.type_id < rhs.type_id;
-              return lhs.size < rhs.size;
-            });
-  EmitCustomProfile("sort", t_sort.us(), 0, static_cast<int64_t>(rows.size()), 0);
-  CustomTimer t_emit(CustomProfilingEnabled());
-  EmitResult(rows, sink);
-  EmitCustomProfile("emit", t_emit.us(), 0, static_cast<int64_t>(rows.size()), 0);
+  const TpchQ16State state = BuildState(services);
+  EmitResult(state, arguments, sink);
 }
 
-// ── State build ────────────────────────────────────────────────────────────
 TpchQ16State TpchQ16Module::BuildState(core::AuxEngineServices &services) const {
   (void)services;
-  TpchQ16State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q16 requires a typed initial scan source");
-
+  TpchQ16State state;
+  state.track_dirty = false;
   initial_scan->ScanSuppliers([&](const TpchQ16SupplierInput &input) {
-    state.EnsureSupplierCapacity(input.suppkey);
-    state.SetSupplierEligible(input.suppkey,
-                              !TpchQ16IsComplaintSupplier(input.comment));
+    state.SetComplaint(input.suppkey, IsComplaintComment(input.comment));
   });
-
   initial_scan->ScanParts([&](const TpchQ16PartInput &input) {
-    state.part_brand[input.partkey] = input.brand;
-    state.part_type[input.partkey] = input.type;
-    state.part_size[input.partkey] = input.size;
-    if (input.size >= TpchQ16Layout::kMinSize &&
-        input.size <= TpchQ16Layout::kMaxSize)
-      state.membership[input.size];  // Ensure sparse partition exists.
+    state.SetPart(input.partkey, input);
   });
-
   initial_scan->ScanPartsupp([&](const TpchQ16PartsuppInput &input) {
-    auto part_it = state.part_brand.find(input.partkey);
-    if (part_it == state.part_brand.end())
-      return;
-    const auto size = state.part_size[input.partkey];
-    if (size < TpchQ16Layout::kMinSize || size > TpchQ16Layout::kMaxSize)
-      return;
-    state.reverse_postings[input.partkey].push_back(input.suppkey);
-
-    auto &partition = state.membership[size];
-    auto *group = static_cast<TpchQ16GroupMembership *>(nullptr);
-    for (auto &candidate : partition.groups) {
-      if (candidate.brand == part_it->second &&
-          candidate.type == state.part_type[input.partkey]) {
-        group = &candidate;
-        break;
-      }
-    }
-    if (!group) {
-      partition.groups.emplace_back();
-      group = &partition.groups.back();
-      group->brand = part_it->second;
-      group->type = state.part_type[input.partkey];
-      InternBrand(state, group->brand);
-      InternType(state, group->type);
-    }
-    const auto block_index = TpchQ16State::BlockIndex(input.suppkey);
-    auto &block = group->blocks[block_index];
-    auto supp_it =
-        std::lower_bound(block.suppkeys.begin(), block.suppkeys.end(),
-                         input.suppkey);
-    if (supp_it == block.suppkeys.end() || *supp_it != input.suppkey) {
-      auto offset = static_cast<std::size_t>(supp_it - block.suppkeys.begin());
-      block.suppkeys.insert(supp_it, input.suppkey);
-      block.ref_counts.insert(block.ref_counts.begin() +
-                                  static_cast<std::ptrdiff_t>(offset),
-                              1);
-    } else {
-      auto offset = static_cast<std::size_t>(supp_it - block.suppkeys.begin());
-      block.ref_counts[offset]++;
-    }
+    state.AddSupplier(input.partkey, input.suppkey);
   });
-
-  // Reassign interning IDs from sorted intern vectors so uint16 IDs have the
-  // same total order as the original lexicographic string comparison.
-  std::sort(state.brand_intern.begin(), state.brand_intern.end());
-  std::sort(state.type_intern.begin(), state.type_intern.end());
-  for (auto &[size, partition] : state.membership) {
-    for (auto &group : partition.groups) {
-      const auto brand_pos =
-          std::lower_bound(state.brand_intern.begin(), state.brand_intern.end(),
-                           group.brand) -
-          state.brand_intern.begin();
-      const auto type_pos =
-          std::lower_bound(state.type_intern.begin(), state.type_intern.end(),
-                           group.type) -
-          state.type_intern.begin();
-      group.brand_id = static_cast<uint16_t>(brand_pos);
-      group.type_id = static_cast<uint16_t>(type_pos);
-    }
-  }
-
-  // Pre-compute eligible supplier counts per group and pre-sort by the
-  // query's invariant ORDER BY (count DESC, brand_id, type_id, size).
-  CustomTimer t_precompute(CustomProfilingEnabled());
-  state.precomputed_rows.clear();
-  for (auto &[size, partition] : state.membership) {
-    for (auto &group : partition.groups) {
-      int64_t distinct = 0;
-      for (auto &[block_index, block] : group.blocks) {
-        for (const auto suppkey : block.suppkeys) {
-          if (state.IsSupplierEligible(suppkey))
-            ++distinct;
-        }
-      }
-      if (distinct > 0) {
-        state.precomputed_rows.push_back(
-            {group.brand_id, group.type_id, size, distinct});
-      }
-    }
-  }
-  std::sort(state.precomputed_rows.begin(), state.precomputed_rows.end(),
-            [](const Q16PrecomputedRow &lhs, const Q16PrecomputedRow &rhs) {
-              if (lhs.count != rhs.count)
-                return lhs.count > rhs.count;
-              if (lhs.brand_id != rhs.brand_id)
-                return lhs.brand_id < rhs.brand_id;
-              if (lhs.type_id != rhs.type_id)
-                return lhs.type_id < rhs.type_id;
-              return lhs.size < rhs.size;
-            });
-  EmitCustomProfile("precompute", t_precompute.us(),
-                    static_cast<int64_t>(state.precomputed_rows.size()), 0, 0);
-
+  state.RecomputeAll();
+  state.track_dirty = true;
   return state;
 }
 
-// ── Load helpers ───────────────────────────────────────────────────────────
-bool TpchQ16Module::LoadEligibility(core::AuxEngineServices &services,
-                                    std::vector<uint8_t> &eligible) const {
+std::shared_ptr<const TpchQ16State>
+TpchQ16Module::LoadState(core::AuxEngineServices &services) const {
   const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {TpchQ16Layout::kSupplierEligibility});
+      services.CurrentVisibility(), {TpchQ16Layout::kState});
   for (const auto &image : snapshot.partitions) {
-    const auto *typed = AsQ16Image(image, TpchQ16ImageKind::Eligibility);
-    if (!typed || !typed->state)
-      return false;
-    eligible = typed->state->supplier_eligible;
-    return true;
+    if (image.partition != TpchQ16Layout::kState)
+      continue;
+    const auto *typed = image.As<TpchQ16StateImage>();
+    return typed ? typed->state : nullptr;
   }
-  return false;
+  return nullptr;
 }
 
-bool TpchQ16Module::LoadSizePartition(core::AuxEngineServices &services,
-                                      int32_t size,
-                                      TpchQ16SizePartition &out) const {
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {TpchQ16Layout::SizePartition(size)});
-  for (const auto &image : snapshot.partitions) {
-    const auto *typed = AsQ16Image(image, TpchQ16ImageKind::SizeMembership);
-    if (!typed || !typed->size_membership || typed->size != size)
-      return false;
-    out = *typed->size_membership;
-    return true;
+void TpchQ16Module::EmitResult(const TpchQ16State &state,
+                               const core::QueryArguments &arguments,
+                               core::AuxRowSink &sink) const {
+  // arguments: brand, type pattern, then the p_size IN-list (up to 8 items).
+  // SQL NULL (or a missing / mistyped value) is nullopt / a dropped item.
+  TpchQ16Args args;
+  if (arguments.values.size() >= 2) {
+    const auto text = [&](std::size_t i) -> std::optional<std::string> {
+      const auto &v = arguments.values[i];
+      if (!v.is_null && std::holds_alternative<std::string>(v.payload))
+        return std::get<std::string>(v.payload);
+      return std::nullopt;
+    };
+    args.brand = text(0);
+    args.type_pattern = text(1);
+    for (std::size_t i = 2; i < arguments.values.size(); ++i) {
+      const auto &v = arguments.values[i];
+      if (v.is_null)
+        continue;
+      if (std::holds_alternative<int64_t>(v.payload)) {
+        args.sizes.push_back(std::get<int64_t>(v.payload));
+      } else if (std::holds_alternative<uint64_t>(v.payload)) {
+        const auto u = std::get<uint64_t>(v.payload);
+        if (u <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+          args.sizes.push_back(static_cast<int64_t>(u));
+      } else if (std::holds_alternative<std::string>(v.payload)) {
+        // Engines that pass every argument as text: "" is NULL.
+        const auto &s = std::get<std::string>(v.payload);
+        char *end = nullptr;
+        const long long parsed = std::strtoll(s.c_str(), &end, 10);
+        if (!s.empty() && *end == '\0')
+          args.sizes.push_back(parsed);
+      }
+    }
   }
-  return false;
-}
-
-// ── Emit ────────────────────────────────────────────────────────────────────
-void TpchQ16Module::EmitResult(
-    const std::vector<Q16ResultRow> &rows,
-    core::AuxRowSink &sink) const {
-  sink.Begin({{{"p_brand", core::AuxType::String, false},
-               {"p_type", core::AuxType::String, false},
-               {"p_size", core::AuxType::Int64, false},
-               {"supplier_cnt", core::AuxType::Int64, false}}});
-  core::AuxRow row;
-  row.values.resize(4);
-  for (const auto &entry : rows) {
-    row.values[0].type = core::AuxType::String;
-    row.values[0].is_null = false;
-    row.values[0].payload = entry.brand;
-    row.values[1].type = core::AuxType::String;
-    row.values[1].is_null = false;
-    row.values[1].payload = entry.type;
-    row.values[2].type = core::AuxType::Int64;
-    row.values[2].is_null = false;
-    row.values[2].payload = static_cast<int64_t>(entry.size);
-    row.values[3].type = core::AuxType::Int64;
-    row.values[3].is_null = false;
-    row.values[3].payload = entry.count;
-    sink.WriteRow(row);
-  }
-  sink.End();
+  TpchQ16FinalizeAndEmit(state, args, sink);
 }
 
 std::vector<core::CalibrationWrite> TpchQ16Module::CalibrationWrites() const {
