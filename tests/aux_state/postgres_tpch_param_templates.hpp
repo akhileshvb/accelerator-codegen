@@ -116,15 +116,18 @@ inline const std::vector<QueryTemplate> &Templates() {
        "GROUP BY l_returnflag, l_linestatus "
        "ORDER BY l_returnflag, l_linestatus",
        "SELECT * FROM accel_tpch_q1_aux({0})", false},
+      // Q2: the correlated MIN(ps_supplycost) subquery of the catalog is
+      // decorrelated into a per-part GROUP BY (same semantics, but PG runs the
+      // correlated form for minutes at SF1).
       {2, "iss",
        "SELECT s_acctbal, s_name, n_name, p_partkey, p_mfgr, s_address, s_phone, s_comment "
-       "FROM part, supplier, partsupp, nation, region "
+       "FROM part, supplier, partsupp, nation, region, "
+       "(SELECT ps_partkey AS mk, MIN(ps_supplycost) AS mc FROM partsupp, supplier, nation, region "
+       "WHERE s_suppkey = ps_suppkey AND s_nationkey = n_nationkey "
+       "AND n_regionkey = r_regionkey AND r_name = {2} GROUP BY ps_partkey) m "
        "WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND p_size = {0} "
        "AND p_type LIKE {1} AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey "
-       "AND r_name = {2} "
-       "AND ps_supplycost = (SELECT MIN(ps_supplycost) FROM partsupp, supplier, nation, region "
-       "WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND s_nationkey = n_nationkey "
-       "AND n_regionkey = r_regionkey AND r_name = {2}) "
+       "AND r_name = {2} AND mk = p_partkey AND ps_supplycost = mc "
        "ORDER BY s_acctbal DESC, n_name, s_name, p_partkey LIMIT 100",
        "SELECT * FROM accel_tpch_q2_aux({0}, {1}, {2})", true},
       {3, "sd",
@@ -819,7 +822,9 @@ inline EdgeSet EdgeCases(int q) {
     return {{"1997-01-01", "gainsboro%", "RUSSIA"},
             {{0, EdgeDates()}, {1, pats}, {2, NationEdges()}},
             {{"1996-01-01", "forest%", "CANADA"}, {"1995-03-01", "azure%", "ARGENTINA"}, {"1996-02-29", "gre%", "GERMANY"}, {"1995-03-01", "gre%", "RUSSIA"},
-             {"1996-01-01", "g%", "RUSSIA"}, {"1994-02-28", "forest%", "FRANCE"}, {"1996-01-01", "gainsboro%", "RUSSIA"}, {"1993-03-01", "%", "CANADA"}}};
+             {"1996-01-01", "g%", "RUSSIA"}, {"1994-02-28", "forest%", "FRANCE"}, {"1996-01-01", "gainsboro%", "RUSSIA"}, {"1993-03-01", "%", "CANADA"},
+             {"1996-01-01", "%", "RUSSIA"}, {"1996-01-01", "%", "CANADA"}, {"1996-01-01", "g%", "FRANCE"}, {"1995-03-01", "%", "RUSSIA"}, {"1995-03-01", "%", "FRANCE"},
+             {"1995-03-01", "g%", "CANADA"}}};
   }
   case 21: return {{"SAUDI ARABIA"}, {{0, NationEdges()}}, {}};
   case 22: {

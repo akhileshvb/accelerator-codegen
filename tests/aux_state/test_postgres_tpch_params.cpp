@@ -73,6 +73,7 @@ public:
     Require(PQstatus(conn) == CONNECTION_OK, std::string("connect: ") + PQerrorMessage(conn));
     Exec("SET client_min_messages = warning");
     if (!so.empty()) Exec("LOAD '" + so + "'");
+    Exec("SET max_parallel_workers_per_gather = 4");
     if (timeout_ms > 0) Exec("SET statement_timeout = " + std::to_string(timeout_ms));
   }
   // After a backend crash: wait for the postmaster to finish recovery, then reconnect.
@@ -217,6 +218,12 @@ std::vector<std::string> PerturbStatements() {
   s.push_back(Clone("l_orderkey % 50 = 3 AND l_linenumber < 100", 400, "0.5", "0.0", "DATE '1996-02-29'", "DATE '1996-03-01'", "DATE '1996-03-05'", "l_shipmode"));
   s.push_back(Clone("l_orderkey % 50 = 4 AND l_linenumber < 100", 500, "100", "0.1", "DATE '1997-12-31'", "DATE '1998-01-02'", "DATE '1998-01-31'", "'mail'"));
   s.push_back(Clone("l_orderkey % 50 = 5 AND l_linenumber < 100", 550, "l_quantity", "l_discount", "DATE '1994-01-31'", "DATE '1994-02-10'", "DATE '1994-02-28'", "l_shipmode"));
+  // huge-quantity shipments on the LAST day of the one-year windows starting 1996-01-01 and 1995-03-01
+  // (a window that is 365 days instead of "+ 1 year" misses exactly these)
+  s.push_back("INSERT INTO lineitem SELECT (SELECT min(o_orderkey) FROM orders), ps_partkey, ps_suppkey, 800 + (ps_partkey % 8), 1000000, 1000, 0.05, 0.02, 'N', 'O', "
+              "DATE '1996-12-31', DATE '1996-12-31', DATE '1997-01-02', 'NONE', 'MAIL', 'leap' FROM partsupp WHERE ps_partkey % 8 IN (0, 1)");
+  s.push_back("INSERT INTO lineitem SELECT (SELECT min(o_orderkey) FROM orders), ps_partkey, ps_suppkey, 820 + (ps_partkey % 8), 1000000, 1000, 0.05, 0.02, 'N', 'O', "
+              "DATE '1996-02-29', DATE '1996-02-29', DATE '1996-03-02', 'NONE', 'MAIL', 'leap' FROM partsupp WHERE ps_partkey % 8 IN (2, 3)");
   // parts: GREEN uppercase, size 0 / 1000 / 51, odd brand and container, lowercase type
   s.push_back("INSERT INTO part SELECT p_partkey + 1000000, upper(p_name), p_mfgr, CASE WHEN p_partkey % 80 = 0 THEN 'Brand#99' ELSE p_brand END, "
               "p_type, CASE WHEN p_partkey % 80 = 0 THEN 0 ELSE 1000 END, CASE WHEN p_partkey % 80 = 0 THEN 'ZZ BOX' ELSE p_container END, "
