@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -108,7 +108,7 @@ struct TpchQ19State {
   };
   using Vec = std::vector<QtyRev>; // sorted by qty
 
-  core::ChunkedCowArray<uint32_t, 16> part_code{0};
+  core::WideKeyCowArray<uint32_t, 14> part_code{0};
   std::shared_ptr<const core::StringDict> brands =
       std::make_shared<core::StringDict>();
   // (brand id + 1) << 2 | family -> sorted vector; vectors shared COW.

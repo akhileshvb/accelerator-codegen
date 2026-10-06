@@ -66,7 +66,17 @@ struct Q6Predicate {
 // the band is [d - 0.01, d + 0.01] and the quantity bound `< q`, evaluated in
 // exact decimal arithmetic against cent-precision columns. False: an argument
 // is NaN (no row can match).
-bool Q6ResolvePredicate(int64_t start_days, double discount, double quantity, Q6Predicate &out);
+// A template argument as floor(100 * v) and whether 100 * v is an integer.
+struct Q6Scaled100 {
+	__int128_t floor100 = 0;
+	bool exact = true;
+};
+// From a double (false: NaN) or from an exact decimal coefficient / scale.
+bool Q6Scaled100FromDouble(double v, Q6Scaled100 &out);
+Q6Scaled100 Q6Scaled100FromDecimal(int64_t raw, int32_t scale);
+
+bool Q6ResolvePredicate(int64_t start_days, const Q6Scaled100 &discount, const Q6Scaled100 &quantity,
+                        Q6Predicate &out);
 
 struct Q6Result {
 	Q6AccT revenue = 0;

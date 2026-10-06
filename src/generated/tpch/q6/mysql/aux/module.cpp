@@ -116,24 +116,24 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ6LineitemDelta &delta,
   return true;
 }
 
-// A numeric template argument (DOUBLE PRECISION in PostgreSQL, a decimal or
-// integer literal elsewhere) as a double.
-bool NumericArg(const core::AuxValue &value, double &out) {
+// A numeric template argument (DOUBLE PRECISION in PostgreSQL, an exact
+// decimal or integer elsewhere) as floor(100 v).
+bool NumericArg(const core::AuxValue &value,
+                ::accelerator_codegen::Q6Scaled100 &out) {
   if (value.is_null)
     return false;
-  if (std::holds_alternative<double>(value.payload)) {
-    out = std::get<double>(value.payload);
-    return true;
-  }
+  if (std::holds_alternative<double>(value.payload))
+    return ::accelerator_codegen::Q6Scaled100FromDouble(
+        std::get<double>(value.payload), out);
   if (std::holds_alternative<int64_t>(value.payload)) {
-    out = static_cast<double>(std::get<int64_t>(value.payload));
+    out = ::accelerator_codegen::Q6Scaled100FromDecimal(
+        std::get<int64_t>(value.payload), 0);
     return true;
   }
   if (std::holds_alternative<core::ScaledDecimal>(value.payload)) {
     const auto decimal = std::get<core::ScaledDecimal>(value.payload);
-    out = static_cast<double>(decimal.value);
-    for (int32_t i = 0; i < decimal.scale; ++i)
-      out /= 10.0;
+    out = ::accelerator_codegen::Q6Scaled100FromDecimal(decimal.value,
+                                                        decimal.scale);
     return true;
   }
   return false;
@@ -354,7 +354,7 @@ void TpchQ6Module::Answer(const Q6State &state,
   // A NULL argument makes the predicate NULL: no row qualifies, and
   // SUM over no rows is one NULL row.
   ::accelerator_codegen::Q6Result result;
-  double discount = 0, quantity = 0;
+  ::accelerator_codegen::Q6Scaled100 discount, quantity;
   int64_t start_days = 0;
   ::accelerator_codegen::Q6Predicate predicate;
   if (arguments.values.size() >= 3 && !arguments.values[0].is_null &&

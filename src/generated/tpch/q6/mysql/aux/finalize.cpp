@@ -123,18 +123,38 @@ void Q6AddCell(Q6State &state, int32_t day, int64_t discount_raw, int64_t quanti
 	});
 }
 
-bool Q6ResolvePredicate(int64_t start_days, double discount, double quantity, Q6Predicate &out) {
-	Int128 fl = 0;
-	bool exact = false;
-	if (!Floor100(discount, fl, exact))
-		return false;
+bool Q6Scaled100FromDouble(double v, Q6Scaled100 &out) {
+	return Floor100(v, out.floor100, out.exact);
+}
+
+Q6Scaled100 Q6Scaled100FromDecimal(int64_t raw, int32_t scale) {
+	Q6Scaled100 out;
+	Int128 value = raw;
+	if (scale <= 2) {
+		for (int i = scale; i < 2; ++i)
+			value *= 10;
+		out.floor100 = value;
+		return out;
+	}
+	Int128 divisor = 1;
+	for (int i = 2; i < scale && i < 38; ++i)
+		divisor *= 10;
+	Int128 q = value / divisor;
+	const Int128 r = value % divisor;
+	if (r < 0)
+		--q;
+	out.floor100 = q;
+	out.exact = r == 0;
+	return out;
+}
+
+bool Q6ResolvePredicate(int64_t start_days, const Q6Scaled100 &discount, const Q6Scaled100 &quantity,
+                        Q6Predicate &out) {
 	// raw/100 >= d - 0.01  <=>  raw >= ceil(100d) - 1;  raw/100 <= d + 0.01  <=>  raw <= floor(100d) + 1.
-	out.discount_lo = Saturate((exact ? fl : fl + 1) - 1);
-	out.discount_hi = Saturate(fl + 1);
-	if (!Floor100(quantity, fl, exact))
-		return false;
+	out.discount_lo = Saturate((discount.exact ? discount.floor100 : discount.floor100 + 1) - 1);
+	out.discount_hi = Saturate(discount.floor100 + 1);
 	// raw/100 < q  <=>  raw <= ceil(100q) - 1.
-	out.quantity_hi = Saturate((exact ? fl : fl + 1) - 1);
+	out.quantity_hi = Saturate((quantity.exact ? quantity.floor100 : quantity.floor100 + 1) - 1);
 	out.start_days = start_days;
 	// shipdate < start + INTERVAL '1' YEAR (end-of-month clamped).
 	out.end_days = aux_state::core::sql_date::AddYears(start_days, 1);
