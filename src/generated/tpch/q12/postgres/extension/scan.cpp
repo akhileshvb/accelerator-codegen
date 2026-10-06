@@ -22,18 +22,25 @@ namespace scans {
 void ScanTpchQ12Orders(
     const std::function<void(const query::TpchQ12OrderInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT o_orderkey, o_orderpriority FROM orders",
+      "SELECT o_orderkey, o_orderpriority, (o_orderpriority IS NULL)::int "
+      "FROM orders WHERE o_orderkey IS NOT NULL",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
         consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1)});
+                  TypedText(tuple, tuple_desc, 1),
+                  TypedInt(tuple, tuple_desc, 2) != 0});
       });
 }
 
-void ScanTpchQ12Lineitems(
+// Lineitems that can contribute: non-NULL key / shipmode, commit < receipt,
+// ship < commit (NULL dates fail the comparisons).  `where` narrows further.
+void ScanTpchQ12QualifyingLineitems(
+    const std::string &where,
     const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
   ScanTypedTuples(
       "SELECT l_orderkey, l_shipmode, l_commitdate, l_receiptdate, l_shipdate "
-      "FROM lineitem",
+      "FROM lineitem WHERE l_orderkey IS NOT NULL AND l_shipmode IS NOT NULL "
+      "AND l_commitdate < l_receiptdate AND l_shipdate < l_commitdate" +
+          where,
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
         consumer({TypedInt(tuple, tuple_desc, 0),
                   TypedText(tuple, tuple_desc, 1),
@@ -41,6 +48,38 @@ void ScanTpchQ12Lineitems(
                   TypedDate(tuple, tuple_desc, 3),
                   TypedDate(tuple, tuple_desc, 4)});
       });
+}
+
+void ScanTpchQ12Lineitems(
+    const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
+  ScanTpchQ12QualifyingLineitems("", consumer);
+}
+
+// Index lookup of the qualifying lineitems of some orders, as the transaction
+// leaves the database (this runs while staging maintenance at pre-commit).
+void LookupTpchQ12LineitemsByOrder(
+    const std::vector<int64_t> &orderkeys,
+    const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
+  constexpr std::size_t kBatch = 4096;
+  for (std::size_t from = 0; from < orderkeys.size(); from += kBatch) {
+    const std::vector<int64_t> batch(
+        orderkeys.begin() + from,
+        orderkeys.begin() + std::min(orderkeys.size(), from + kBatch));
+    const std::string sql =
+        std::string("SELECT l_orderkey, l_shipmode, l_commitdate, "
+                    "l_receiptdate, l_shipdate FROM lineitem WHERE ") +
+        KeyListPredicate("l_orderkey", batch) +
+        " AND l_shipmode IS NOT NULL AND l_commitdate < l_receiptdate "
+        "AND l_shipdate < l_commitdate";
+    ScanTypedTuplesAfterOwnWrites(
+        sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
+          consumer({TypedInt(tuple, tuple_desc, 0),
+                    TypedText(tuple, tuple_desc, 1),
+                    TypedDate(tuple, tuple_desc, 2),
+                    TypedDate(tuple, tuple_desc, 3),
+                    TypedDate(tuple, tuple_desc, 4)});
+        });
+  }
 }
 
 } // namespace scans
@@ -56,6 +95,12 @@ public:
       const std::function<void(const query::TpchQ12LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ12Lineitems(consumer);
+  }
+  void LookupLineitemsByOrder(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(const query::TpchQ12LineitemInput &)> &consumer)
+      override {
+    scans::LookupTpchQ12LineitemsByOrder(orderkeys, consumer);
   }
 };
 Runtime<query::TpchQ12Module, query::TpchQ12Config, TpchQ12Scan> &
@@ -73,17 +118,24 @@ namespace core = accelerator_codegen::aux_state::core;
 
 namespace {
 
+// SQL NULL arguments reach the module as NULL values.
 void ExecutePostgresTpchQ12(FunctionCallInfo fcinfo) {
   detail::Q12Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(0))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(1))),
-                            core::AuxValue::Of(
-                                core::AuxType::Date,
-                                detail::PostgresDateArg(2, fcinfo))}},
+      core::QueryArguments{{PG_ARGISNULL(0)
+                                ? core::AuxValue::Null(core::AuxType::String)
+                                : core::AuxValue::Of(
+                                      core::AuxType::String,
+                                      detail::TextDatum(PG_GETARG_DATUM(0))),
+                            PG_ARGISNULL(1)
+                                ? core::AuxValue::Null(core::AuxType::String)
+                                : core::AuxValue::Of(
+                                      core::AuxType::String,
+                                      detail::TextDatum(PG_GETARG_DATUM(1))),
+                            PG_ARGISNULL(2)
+                                ? core::AuxValue::Null(core::AuxType::Date)
+                                : core::AuxValue::Of(
+                                      core::AuxType::Date,
+                                      detail::PostgresDateArg(2, fcinfo))}},
       fcinfo);
 }
 

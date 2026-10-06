@@ -86,6 +86,34 @@ fi
 
 _ensure_ninja
 
+# Optional: a MySQL C client library for in-process table scans and snapshot
+# builds (src/generated/mysql/runtime.cpp). The plugin builds without it (CLI
+# scans); cmake/MySQLAdapter.cmake looks in /usr and /opt/accel-mysql-client.
+# The server image has none, and its -devel RPM conflicts with the server
+# package, so on RPM systems unpack MariaDB Connector/C into /opt.
+_ensure_mysql_client() {
+  if [[ -f /usr/include/mysql/mysql.h || -f /usr/include/mariadb/mysql.h || \
+        -f /opt/accel-mysql-client/usr/include/mysql/mysql.h ]]; then
+    return 0
+  fi
+  local pm=""
+  if command -v microdnf >/dev/null 2>&1; then pm=microdnf
+  elif command -v dnf >/dev/null 2>&1; then pm=dnf
+  else return 0; fi
+  (
+    set -e
+    ${pm} install -y cpio >/dev/null
+    rm -rf /tmp/accel-client-rpms && mkdir -p /tmp/accel-client-rpms /opt/accel-mysql-client
+    cd /tmp/accel-client-rpms
+    ${pm} download mariadb-connector-c mariadb-connector-c-devel mariadb-connector-c-config >/dev/null
+    rm -f ./*.i686.rpm
+    cd /opt/accel-mysql-client
+    for f in /tmp/accel-client-rpms/*.rpm; do rpm2cpio "$f" | cpio -idm 2>/dev/null; done
+    # Connector/C needs libssl at run time; the server image has it.
+  ) || echo "warning: MySQL client library unavailable; plugin will use CLI scans" >&2
+}
+_ensure_mysql_client
+
 # In-container DuckDB build (host Arch libduckdb often needs newer glibc).
 if [[ ! -f /accel-build/duckdb/src/libduckdb.so ]]; then
   mkdir -p /accel-build/duckdb

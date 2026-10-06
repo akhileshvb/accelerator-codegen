@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <iterator>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::engine::mysql {
@@ -29,16 +30,94 @@ MysqlAuxBackend::MysqlAuxBackend(
   }
 }
 
+namespace {
+// A build that logs more rows than this while it runs is discarded (and
+// retried): replaying an unbounded log would cost more than rebuilding.
+constexpr std::size_t kMaxBuildLogRows = 4u << 20;
+
+std::size_t RowCount(const core::MutationBatch &m) {
+  return m.old_rows.size() + m.new_rows.size() + 1;
+}
+} // namespace
+
 void MysqlAuxBackend::CaptureMutation(
     const core::MutationBatch &mutation) {
+  {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    staged_count.fetch_add(1);
+    if (log_active && !log_overflow) {
+      log_rows += RowCount(mutation);
+      if (log_rows > kMaxBuildLogRows) {
+        log_overflow = true;
+        pending_log.clear();
+        committed_log.clear();
+      } else {
+        pending_log.push_back(mutation);
+      }
+    }
+  }
   coordinator.OnMutation(mutation);
 }
 
 void MysqlAuxBackend::OnPreCommit() { coordinator.PreCommit(); }
 
-void MysqlAuxBackend::OnCommit() { coordinator.Commit(); }
+void MysqlAuxBackend::OnCommit() {
+  coordinator.Commit();
+  failure_open = false;
+  std::lock_guard<std::mutex> lock(log_mutex);
+  if (log_active && !pending_log.empty()) {
+    committed_log.insert(committed_log.end(),
+                         std::make_move_iterator(pending_log.begin()),
+                         std::make_move_iterator(pending_log.end()));
+  }
+  pending_log.clear();
+}
 
-void MysqlAuxBackend::OnAbort() { coordinator.Abort(); }
+void MysqlAuxBackend::OnAbort() {
+  coordinator.Abort();
+  failure_open = false;
+  std::lock_guard<std::mutex> lock(log_mutex);
+  pending_log.clear();
+}
+
+bool MysqlAuxBackend::BeginBuildLog(uint64_t expected_staged) {
+  std::lock_guard<std::mutex> commit_lock(commit_mutex); // no commit in flight
+  std::lock_guard<std::mutex> lock(log_mutex);
+  if (staged_count.load() != expected_staged || HasPendingWork()) {
+    return false;
+  }
+  log_active = true;
+  log_overflow = false;
+  log_rows = 0;
+  log_failures_at_start = capture_failures.load();
+  pending_log.clear();
+  committed_log.clear();
+  return true;
+}
+
+MysqlAuxBackend::BuildLog MysqlAuxBackend::EndBuildLog() {
+  std::lock_guard<std::mutex> lock(log_mutex);
+  BuildLog out;
+  out.complete = log_active && !log_overflow &&
+                 capture_failures.load() == log_failures_at_start;
+  out.batches = std::move(committed_log);
+  committed_log.clear();
+  pending_log.clear();
+  log_active = false;
+  log_overflow = false;
+  log_rows = 0;
+  return out;
+}
+
+void MysqlAuxBackend::NoteCaptureFailure(bool transaction_open) {
+  {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    staged_count.fetch_add(1); // a captured event, for BeginBuildLog's check
+    capture_failures.fetch_add(1);
+    if (transaction_open) failure_open = true;
+  }
+  state_store.Invalidate(core::AllPartitionsPlan());
+}
 
 core::VisibilityToken MysqlAuxBackend::CurrentVisibility() const {
   return visibility ? visibility() : core::VisibilityToken{};

@@ -91,7 +91,8 @@ std::string ExecuteQuery(const core::QueryArguments &arguments) {
 } // namespace
 
 static const MysqlUdfRegistrar kRegisterQ16Udf(MysqlUdfEntry{
-    "mysql_accel_tpch_q16_aux", "ssiiiiiiii", &ExecuteQuery});
+    "mysql_accel_tpch_q16_aux", "ssssssssss", &ExecuteQuery,
+    /*null_first_arg_yields_empty=*/true});
 
 } // namespace accelerator_codegen::aux_state::engine::mysql
 
