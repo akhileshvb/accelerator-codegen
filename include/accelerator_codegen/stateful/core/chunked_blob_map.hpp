@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 
@@ -73,8 +74,10 @@ inline bool GetSignedVarint(const uint8_t *&p, const uint8_t *end, int64_t &v) {
 //     fine, mutate only a private copy (same rule as ChunkedCowArray).
 //   * string_views returned by Get are valid until the next mutation of THE
 //     SAME CHUNK in this map object (copy the bytes if you keep them).
-//   * Keys must be >= 0 (Set returns false otherwise); any int64 up to
-//     INT64_MAX works (directory memory grows with key / 1024 / 1024 pages).
+//   * Any int64 key works. Keys in [0, 2^36) use the chunked layout above;
+//     negative or larger keys (which would need an absurd directory) live in a
+//     sharded COW hash map of immutable per-key byte strings (exact, but
+//     ~60 B overhead per key: they are expected to be rare).
 // ---------------------------------------------------------------------------
 class ChunkedBlobMap {
 public:
@@ -95,6 +98,13 @@ public:
 
   // Value of `key`; false when absent. See the view-lifetime note above.
   bool Get(int64_t key, std::string_view &out) const {
+    if (!Dense(key)) {
+      const auto *p = sparse_.Find(key);
+      if (!p)
+        return false;
+      out = {reinterpret_cast<const char *>((*p)->data()), (*p)->size()};
+      return true;
+    }
     const Chunk *c = ChunkOf(key);
     if (!c)
       return false;
@@ -105,6 +115,8 @@ public:
     return true;
   }
   bool Contains(int64_t key) const {
+    if (!Dense(key))
+      return sparse_.Find(key) != nullptr;
     const Chunk *c = ChunkOf(key);
     if (!c)
       return false;
@@ -112,10 +124,14 @@ public:
     return (c->present[slot >> 6] >> (slot & 63)) & 1;
   }
 
-  // Insert or replace. Returns false only for a negative key.
+  // Insert or replace. Always succeeds (returns true).
   bool Set(int64_t key, const uint8_t *data, std::size_t n) {
-    if (key < 0)
-      return false;
+    if (!Dense(key)) {
+      if (!sparse_.Find(key))
+        ++count_;
+      sparse_.Upsert(key, std::make_shared<const std::vector<uint8_t>>(data, data + n));
+      return true;
+    }
     Chunk &c = MutableChunk(key);
     const std::size_t slot = static_cast<std::size_t>(key) & kMask;
     const std::size_t rank = Rank(c, slot);
@@ -141,6 +157,11 @@ public:
   void Erase(int64_t key) {
     if (!Contains(key))
       return;
+    if (!Dense(key)) {
+      sparse_.Erase(key);
+      --count_;
+      return;
+    }
     Chunk &c = MutableChunk(key);
     const std::size_t slot = static_cast<std::size_t>(key) & kMask;
     const std::size_t rank = Rank(c, slot);
@@ -155,6 +176,9 @@ public:
   template <typename F> void ForEach(F &&fn) const {
     for (std::size_t ci = 0; ci < NumChunkSlots(); ++ci)
       ForEachInChunk(ci, fn);
+    sparse_.ForEach([&](int64_t key, const std::shared_ptr<const std::vector<uint8_t>> &v) {
+      fn(key, std::string_view(reinterpret_cast<const char *>(v->data()), v->size()));
+    });
   }
   // Chunk-granular iteration (to split a scan across threads: chunk indices
   // [0, NumChunkSlots()) are independent; empty slots are skipped).
@@ -192,7 +216,7 @@ public:
 
   // Bytes owned by this version (shared chunks counted in full).
   std::size_t MemoryBytes() const {
-    std::size_t n = dir_.MemoryBytes();
+    std::size_t n = dir_.MemoryBytes() + sparse_.memory_bytes();
     for (std::size_t ci = 0; ci < NumChunkSlots(); ++ci)
       if (const Chunk *c = ChunkAtSlot(ci))
         n += sizeof(Chunk) + c->off.capacity() * 4 + c->arena.capacity();
@@ -213,7 +237,7 @@ private:
     return sp ? sp->get() : nullptr;
   }
   const Chunk *ChunkOf(int64_t key) const {
-    if (key < 0)
+    if (!Dense(key))
       return nullptr;
     return ChunkAtSlot(static_cast<std::size_t>(key) >> kKeyShift);
   }
@@ -264,7 +288,11 @@ private:
       Compact(c);
   }
 
+  static constexpr int64_t kDenseKeyLimit = int64_t{1} << 36;
+  static bool Dense(int64_t key) { return key >= 0 && key < kDenseKeyLimit; }
+
   Dir dir_;
+  ShardedCowHashMap<std::shared_ptr<const std::vector<uint8_t>>, 6> sparse_;
   std::size_t count_ = 0;
 };
 

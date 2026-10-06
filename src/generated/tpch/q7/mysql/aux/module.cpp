@@ -110,16 +110,15 @@ struct OrderEntry {
 };
 
 constexpr uint8_t kFlagOrderPresent = 1;
-constexpr int64_t kMaxKey = int64_t{1} << 61; // suppkey is packed with a year bit
 
 void EncodeEntry(const OrderEntry &e, std::vector<uint8_t> &out) {
   out.clear();
   out.push_back(e.present ? kFlagOrderPresent : 0);
   if (e.present)
-    core::PutVarint(out, static_cast<uint64_t>(e.custkey));
+    core::PutSignedVarint(out, e.custkey);
   for (const auto &l : e.lines) {
-    core::PutVarint(out, (static_cast<uint64_t>(l.suppkey) << 1) |
-                             (l.year == kTpchQ7MaxYear ? 1u : 0u));
+    core::PutSignedVarint(out, l.suppkey);
+    out.push_back(l.year == kTpchQ7MaxYear ? 1 : 0);
     core::PutSignedVarint(out, l.volume);
   }
 }
@@ -133,17 +132,17 @@ bool DecodeEntry(std::string_view v, OrderEntry &e) {
   e.present = (*p++ & kFlagOrderPresent) != 0;
   uint64_t u = 0;
   if (e.present) {
-    if (!core::GetVarint(p, end, u))
+    if (!core::GetSignedVarint(p, end, e.custkey))
       return false;
-    e.custkey = static_cast<int64_t>(u);
   }
   while (p < end) {
     LineRec l;
     int64_t volume = 0;
-    if (!core::GetVarint(p, end, u) || !core::GetSignedVarint(p, end, volume))
+    if (!core::GetSignedVarint(p, end, l.suppkey) || p >= end)
       return false;
-    l.suppkey = static_cast<int64_t>(u >> 1);
-    l.year = (u & 1) ? kTpchQ7MaxYear : kTpchQ7MinYear;
+    l.year = *p++ ? kTpchQ7MaxYear : kTpchQ7MinYear;
+    if (!core::GetSignedVarint(p, end, volume))
+      return false;
     l.volume = volume;
     e.lines.push_back(l);
   }
@@ -160,8 +159,6 @@ bool LoadEntry(const TpchQ7State &s, int64_t orderkey, OrderEntry &e) {
 }
 
 bool StoreEntry(TpchQ7State &s, int64_t orderkey, const OrderEntry &e) {
-  if (orderkey < 0)
-    return false;
   if (!e.present && e.lines.empty()) {
     s.orders.Erase(orderkey);
     return true;
@@ -190,16 +187,12 @@ bool Joins(const TpchQ7State &s, int64_t suppkey, int64_t custkey,
   return supp_nk != TpchQ7State::kAbsent && cust_nk != TpchQ7State::kAbsent;
 }
 
-bool InWindowKey(int64_t key) { return key >= 0 && key < kMaxKey; }
-
 // ---- Incremental maintenance primitives ------------------------------------
 // Each returns false when the write cannot be applied exactly to this state
 // (inconsistent row, unsupported key); the caller then rebuilds.
 
 bool ApplyLineitem(TpchQ7State &s, int64_t orderkey, int64_t suppkey,
                    int32_t year, int64_t volume, int sign) {
-  if (!InWindowKey(orderkey) || !InWindowKey(suppkey))
-    return false;
   OrderEntry e;
   if (!LoadEntry(s, orderkey, e))
     return false;
@@ -214,11 +207,11 @@ bool ApplyLineitem(TpchQ7State &s, int64_t orderkey, int64_t suppkey,
   }
   if (!StoreEntry(s, orderkey, e))
     return false;
-  auto &refs = s.supplier_refs.Mutable(suppkey);
+  const uint32_t refs = s.supplier_refs.Get(suppkey);
   if (sign > 0)
-    ++refs;
+    s.supplier_refs.Set(suppkey, refs + 1);
   else if (refs > 0)
-    --refs;
+    s.supplier_refs.Set(suppkey, refs - 1);
   int32_t snk = 0, cnk = 0;
   if (e.present && Joins(s, suppkey, e.custkey, snk, cnk))
     Contribute(s, snk, cnk, year, volume, sign);
@@ -226,8 +219,6 @@ bool ApplyLineitem(TpchQ7State &s, int64_t orderkey, int64_t suppkey,
 }
 
 bool ApplyOrder(TpchQ7State &s, int64_t orderkey, int64_t custkey, int sign) {
-  if (!InWindowKey(orderkey) || !InWindowKey(custkey))
-    return false;
   OrderEntry e;
   if (!LoadEntry(s, orderkey, e))
     return false;
@@ -243,11 +234,11 @@ bool ApplyOrder(TpchQ7State &s, int64_t orderkey, int64_t custkey, int sign) {
   }
   if (!StoreEntry(s, orderkey, e))
     return false;
-  auto &refs = s.customer_refs.Mutable(custkey);
+  const uint32_t refs = s.customer_refs.Get(custkey);
   if (sign > 0)
-    ++refs;
+    s.customer_refs.Set(custkey, refs + 1);
   else if (refs > 0)
-    --refs;
+    s.customer_refs.Set(custkey, refs - 1);
   for (const auto &l : e.lines) {
     int32_t snk = 0, cnk = 0;
     if (Joins(s, l.suppkey, custkey, snk, cnk))
@@ -393,12 +384,10 @@ std::shared_ptr<TpchQ7State> TpchQ7Module::BuildState() const {
     s.nations[input.key] = input.name;
   });
   initial_scan->ScanSuppliers([&](const TpchQ7SupplierInput &input) {
-    if (!s.supplier_nation.Set(input.key, input.nationkey))
-      throw std::runtime_error("TPC-H Q7: negative s_suppkey is unsupported");
+    s.supplier_nation.Set(input.key, input.nationkey);
   });
   initial_scan->ScanCustomers([&](const TpchQ7CustomerInput &input) {
-    if (!s.customer_nation.Set(input.key, input.nationkey))
-      throw std::runtime_error("TPC-H Q7: negative c_custkey is unsupported");
+    s.customer_nation.Set(input.key, input.nationkey);
   });
   initial_scan->ScanOrders([&](const TpchQ7OrderInput &input) {
     if (!ApplyOrder(s, input.key, input.custkey, +1))
@@ -515,10 +504,6 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
     if (ok) {
       for (auto it = changes.begin(); it != changes.end();) {
         auto &arr = supplier ? s.supplier_nation : s.customer_nation;
-        if (it->first < 0) {
-          ok = false;
-          break;
-        }
         // The row must be what the state believes it is.
         if (it->second.before != arr.Get(it->first)) {
           ok = false;

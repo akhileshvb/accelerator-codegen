@@ -156,8 +156,6 @@ bool LoadEntry(const TpchQ10State &s, int64_t orderkey, OrderEntry &e) {
 }
 
 bool StoreEntry(TpchQ10State &s, int64_t orderkey, const OrderEntry &e) {
-  if (orderkey < 0)
-    return false;
   if (!e.present && e.returned_rows == 0 && e.returned_volume == 0) {
     s.orders.Erase(orderkey);
     return true;
@@ -175,8 +173,8 @@ struct RevRow {
 };
 
 int64_t RevenueKey(uint32_t buckets, int32_t day, int64_t custkey) {
-  const uint64_t day_index =
-      static_cast<uint64_t>(static_cast<int64_t>(day) - INT32_MIN);
+  // Zigzag: dates around the epoch get small keys (a compact directory).
+  const uint64_t day_index = core::ZigZagEncode(day);
   return static_cast<int64_t>(
       day_index * buckets + (static_cast<uint64_t>(custkey) & (buckets - 1)));
 }
@@ -254,7 +252,7 @@ bool GetString(const uint8_t *&p, const uint8_t *end, std::string &s) {
 
 bool StoreCustomer(TpchQ10State &s, int64_t custkey, int32_t nationkey,
                    const CustomerRec &c) {
-  if (custkey < 0 || nationkey == TpchQ10State::kAbsent)
+  if (nationkey == TpchQ10State::kAbsent)
     return false;
   thread_local std::vector<uint8_t> buf;
   buf.clear();
@@ -287,7 +285,7 @@ bool LoadCustomer(const TpchQ10State &s, int64_t custkey, CustomerRec &c) {
 bool ApplyOrder(TpchQ10State &s, int64_t orderkey, int64_t custkey, int32_t day,
                 int sign) {
   OrderEntry e;
-  if (orderkey < 0 || !LoadEntry(s, orderkey, e))
+  if (!LoadEntry(s, orderkey, e))
     return false;
   if (sign > 0) {
     if (e.present)
@@ -309,7 +307,7 @@ bool ApplyOrder(TpchQ10State &s, int64_t orderkey, int64_t custkey, int32_t day,
 bool ApplyReturnedLineitem(TpchQ10State &s, int64_t orderkey, int64_t volume,
                            int sign) {
   OrderEntry e;
-  if (orderkey < 0 || !LoadEntry(s, orderkey, e))
+  if (!LoadEntry(s, orderkey, e))
     return false;
   e.returned_rows += sign;
   if (e.returned_rows < 0 ||
@@ -513,7 +511,7 @@ void TpchQ10Module::AccumulateMutation(const core::MutationBatch &mutation,
           continue; // never joins
         if (null_cell || scale != 2)
           return false; // NOT NULL numeric(15,2) columns in TPC-H
-        if (custkey < 0 || nationkey < std::numeric_limits<int32_t>::min() + 1 ||
+        if (nationkey < std::numeric_limits<int32_t>::min() + 1 ||
             nationkey > std::numeric_limits<int32_t>::max())
           return false;
         if (sign < 0) {
@@ -712,8 +710,7 @@ void ScanBuckets(const TpchQ10State &s, int64_t first_day, int64_t last_day,
       }
       if (count <= 0)
         continue;
-      const int32_t nk = custkey >= 0 ? s.customer_nation.Get(custkey)
-                                      : TpchQ10State::kAbsent;
+      const int32_t nk = s.customer_nation.Get(custkey);
       if (nk == TpchQ10State::kAbsent || s.nations.find(nk) == s.nations.end())
         continue;
       top.Offer({custkey, revenue});

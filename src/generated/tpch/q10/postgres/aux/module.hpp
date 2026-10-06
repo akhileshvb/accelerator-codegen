@@ -10,7 +10,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
-#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
 #include "tpch/q10/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -109,7 +109,7 @@ struct TpchQ10State {
   static constexpr int32_t kAbsent = INT32_MIN;
 
   std::map<int32_t, std::string> nations;
-  core::ChunkedCowArray<int32_t> customer_nation{kAbsent};
+  core::WideKeyCowArray<int32_t> customer_nation{kAbsent};
   core::ChunkedBlobMap customers;
   core::ChunkedBlobMap orders;
   core::ChunkedBlobMap revenue;

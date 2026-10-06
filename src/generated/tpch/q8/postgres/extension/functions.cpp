@@ -35,7 +35,7 @@ DROP FUNCTION IF EXISTS accel_tpch_q8 CASCADE;
 CREATE FUNCTION accel_tpch_q8(text, text, text)
 RETURNS TABLE (
   o_year bigint,
-  mkt_share double precision
+  mkt_share numeric
 )
 AS 'accelerator_codegen_pg', 'AcceleratorCodegenBaseTpchQ8'
 LANGUAGE C;
@@ -44,7 +44,7 @@ DROP FUNCTION IF EXISTS accel_tpch_q8_aux CASCADE;
 CREATE FUNCTION accel_tpch_q8_aux(text, text, text)
 RETURNS TABLE (
   o_year bigint,
-  mkt_share double precision
+  mkt_share numeric
 )
 AS 'accelerator_codegen_pg', 'AcceleratorCodegenAuxTpchQ8'
 LANGUAGE C;

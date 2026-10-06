@@ -170,8 +170,8 @@ void EncodeEntry(const OrderEntry &e, std::vector<uint8_t> &out) {
     return;
   }
   for (const auto &l : e.lines) {
-    core::PutVarint(out, static_cast<uint64_t>(l.partkey));
-    core::PutVarint(out, static_cast<uint64_t>(l.suppkey));
+    core::PutSignedVarint(out, l.partkey);
+    core::PutSignedVarint(out, l.suppkey);
     core::PutSignedVarint(out, l.volume);
   }
 }
@@ -196,12 +196,10 @@ bool DecodeEntry(std::string_view v, OrderEntry &e) {
     return core::GetVarint(p, end, e.nlines);
   while (p < end) {
     LineRec l;
-    uint64_t partkey = 0, suppkey = 0;
-    if (!core::GetVarint(p, end, partkey) || !core::GetVarint(p, end, suppkey) ||
+    if (!core::GetSignedVarint(p, end, l.partkey) ||
+        !core::GetSignedVarint(p, end, l.suppkey) ||
         !core::GetSignedVarint(p, end, l.volume))
       return false;
-    l.partkey = static_cast<int64_t>(partkey);
-    l.suppkey = static_cast<int64_t>(suppkey);
     e.lines.push_back(l);
   }
   return true;
@@ -217,8 +215,6 @@ bool LoadEntry(const TpchQ8State &s, int64_t orderkey, OrderEntry &e) {
 }
 
 bool StoreEntry(TpchQ8State &s, int64_t orderkey, const OrderEntry &e) {
-  if (orderkey < 0)
-    return false;
   if (e.Empty()) {
     s.orders.Erase(orderkey);
     return true;
@@ -263,15 +259,13 @@ void ContributeRec(TpchQ8State &s, const OrderEntry &e, const LineRec &r,
   Contribute(s, type_id, sql_date::YearOf(e.day), cnk, snk, r.volume, sign);
 }
 
-void AddRef(core::ChunkedCowArray<uint32_t> &refs, int64_t key, int sign) {
-  auto &r = refs.Mutable(key);
+void AddRef(core::WideKeyCowArray<uint32_t> &refs, int64_t key, int sign) {
+  const uint32_t r = refs.Get(key);
   if (sign > 0)
-    ++r;
+    refs.Set(key, r + 1);
   else if (r > 0)
-    --r;
+    refs.Set(key, r - 1);
 }
-
-bool KeyOk(int64_t key) { return key >= 0 && key < (int64_t{1} << 62); }
 
 // ---- Incremental maintenance primitives ------------------------------------
 // Each returns false when the write cannot be applied exactly to this state;
@@ -279,8 +273,6 @@ bool KeyOk(int64_t key) { return key >= 0 && key < (int64_t{1} << 62); }
 
 bool ApplyLineitem(TpchQ8State &s, int64_t orderkey, int64_t partkey,
                    int64_t suppkey, int64_t volume, int sign) {
-  if (!KeyOk(orderkey) || !KeyOk(partkey) || !KeyOk(suppkey))
-    return false;
   OrderEntry e;
   if (!LoadEntry(s, orderkey, e))
     return false;
@@ -313,8 +305,6 @@ bool ApplyLineitem(TpchQ8State &s, int64_t orderkey, int64_t partkey,
 
 bool ApplyOrder(TpchQ8State &s, int64_t orderkey, int64_t custkey, int32_t day,
                 int sign) {
-  if (!KeyOk(orderkey) || !KeyOk(custkey))
-    return false;
   OrderEntry e;
   if (!LoadEntry(s, orderkey, e))
     return false;
@@ -465,7 +455,7 @@ bool CollectNationChanges(const core::MutationBatch &m, Changes<int32_t> &out) {
       int32_t nation = 0;
       const Cell k = IntCell(row, 0, key);
       const Cell n = KeyCell(row, 1, nation);
-      if (k == Cell::Bad || n == Cell::Bad || (k == Cell::Ok && !KeyOk(key)))
+      if (k == Cell::Bad || n == Cell::Bad)
         return false;
       if (k != Cell::Ok)
         continue;
@@ -530,17 +520,15 @@ std::shared_ptr<TpchQ8State> TpchQ8Module::BuildState() const {
     s.regions[input.key] = input.name;
   });
   initial_scan->ScanParts([&](const TpchQ8PartInput &input) {
-    if (!KeyOk(input.key))
-      throw std::runtime_error("TPC-H Q8: unsupported p_partkey");
     s.part_type.Set(input.key, InternType(s, input.type));
   });
   initial_scan->ScanSuppliers([&](const TpchQ8SupplierInput &input) {
-    if (!KeyOk(input.key) || input.nationkey == TpchQ8State::kAbsent)
+    if (input.nationkey == TpchQ8State::kAbsent)
       throw std::runtime_error("TPC-H Q8: unsupported supplier row");
     s.supplier_nation.Set(input.key, input.nationkey);
   });
   initial_scan->ScanCustomers([&](const TpchQ8CustomerInput &input) {
-    if (!KeyOk(input.key) || input.nationkey == TpchQ8State::kAbsent)
+    if (input.nationkey == TpchQ8State::kAbsent)
       throw std::runtime_error("TPC-H Q8: unsupported customer row");
     s.customer_nation.Set(input.key, input.nationkey);
   });
@@ -674,7 +662,7 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
         std::string type;
         const Cell k = IntCell(row, 0, key);
         const Cell t = TextCell(row, 1, type);
-        if (k == Cell::Bad || t == Cell::Bad || (k == Cell::Ok && !KeyOk(key)))
+        if (k == Cell::Bad || t == Cell::Bad)
           return false;
         if (k != Cell::Ok)
           continue;
