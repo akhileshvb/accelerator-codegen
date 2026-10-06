@@ -18,7 +18,7 @@
 //   <seconds> while one writer commits a deterministic TPC-H write stream at
 //   <writes_per_sec> (0: none): RF2 / RF1 refresh mini-chunks (an order with its
 //   lineitems deleted at the low end of the key range / inserted above the
-//   maximum), and every fifth write a point write rotating over supplier,
+//   maximum; every fourth RF1 clones a large order, sum(l_quantity) > 300), and every fifth write a point write rotating over supplier,
 //   customer, part (+partsupp), supplier (+partsupp), partsupp, lineitem and
 //   orders, so every table a TPC-H query reads changes during a run.
 //   phase=accel: readers call the accelerator; the writer commits through the
@@ -31,6 +31,32 @@
 //   how many writes (whole run, warmup included) made the accelerator maintain
 //   its state (and how), and for how many cases the answer changed over the run.
 //   A commit that outlasts the run is waited for (the writer stops after it).
+//
+//   aux_compare multi <db> <phase> <spec.tsv> <readers> <seconds> <writes_per_sec>
+//                     [seed=1] [warmup_sec=2] [rotate|pinned]
+// <writes_per_sec>: a rate or a comma list ("5,10,20,-1"): the accelerators are
+// built once, then one run per rate (each with its own warmup), in order, each
+// on the database and state the previous left; one JSON line per rate.  < 0:
+// uncapped, the writer commits back to back.
+// Several accelerators live in one process (a database with many
+// accelerators).  spec.tsv: one per line, "<accel_id>\t<baseline_kit>\t<cases.tsv>";
+// <cases.tsv> may be "r0.tsv|r1.tsv|...", one parameter draw per repetition
+// (the same count for every accelerator): each rate then runs once per
+// repetition with that draw, one JSON line per (rate, repetition), rate-major.
+//   phase=accel: every accelerator is built; each commit of the writer (the
+//     same stream as `concurrent`) is ONE engine transaction maintaining all of
+//     them (DuckdbRuntime::ApplyWriteAll).  The C++ store has one lock per
+//     accelerator; ACCEL_AUX_STORE=verus_global has one store and lock for all,
+//     so here unrelated accelerators' commits and reads meet.
+//   phase=base: the same readers on DuckDB, plain SQL writes.
+//   rotate: <readers> threads each cycle over the accelerators (and each one's
+//   cases); pinned: <readers> threads per accelerator, each running only its
+//   cases (so one slow accelerator does not pace the others' reads).
+//   Reported per accelerator: reads, latency percentiles, time spent in the
+//   store choosing the state (its lock, a pending commit), maintenance and
+//   install time per commit, whether its answers changed; the writer's commit
+//   latency and where it went; totals of read and commit time; and a per-write
+//   log over the measured window.
 // Output: one JSON object on stdout.
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
@@ -49,6 +75,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <malloc.h>
 #include <map>
 #include <mutex>
 #include <random>
@@ -93,6 +120,34 @@ double Percentile(std::vector<double> v, double p) {
     return 0;
   std::sort(v.begin(), v.end());
   return v[std::min(v.size() - 1, static_cast<std::size_t>(p * (v.size() - 1) + 0.5))];
+}
+
+// This process's resident and peak resident memory, MB (/proc/self/status).
+std::pair<double, double> RssMb() {
+  std::ifstream in("/proc/self/status");
+  double rss = 0, hwm = 0;
+  for (std::string line; std::getline(in, line);) {
+    if (line.rfind("VmRSS:", 0) == 0)
+      rss = std::stod(line.substr(6)) / 1024;
+    else if (line.rfind("VmHWM:", 0) == 0)
+      hwm = std::stod(line.substr(6)) / 1024;
+  }
+  return {rss, hwm};
+}
+
+// Resident memory with DuckDB's buffer cache dropped (memory limit lowered,
+// then restored) and freed heap returned to the OS: what the process holds
+// besides cached table data -- before and after a build, the difference is
+// roughly the accelerator's state.
+double SettledRssMb(duckdb::Connection &c) {
+  auto limit = c.Query("SELECT current_setting('memory_limit')");
+  Require(limit && !limit->HasError(), "memory_limit");
+  const auto old = limit->GetValue(0, 0).ToString();
+  c.Query("SET memory_limit = '256MB'");
+  malloc_trim(0);
+  const double rss = RssMb().first;
+  c.Query("SET memory_limit = '" + old + "'");
+  return rss;
 }
 
 struct Case {
@@ -205,6 +260,10 @@ public:
     const auto n = std::to_string(max_writes + 16);
     low_orders = Keys(c, "SELECT o_orderkey FROM orders ORDER BY o_orderkey LIMIT " + n);
     template_orders = Keys(c, "SELECT o_orderkey FROM orders ORDER BY o_orderkey DESC LIMIT 1000");
+    // large orders (TPC-H Q18's "large volume customer" orders): every fourth
+    // RF1 clones one, so writes also change answers that only such orders reach
+    large_orders = Keys(c, "SELECT l_orderkey FROM lineitem GROUP BY l_orderkey HAVING sum(l_quantity) > 300 "
+                           "ORDER BY l_orderkey DESC LIMIT 200");
     mid_orders = Keys(c, "SELECT o_orderkey FROM orders ORDER BY o_orderkey LIMIT " + n +
                              " OFFSET (SELECT count(*) // 2 FROM orders)");
     const auto dims = std::to_string(max_writes / 5 + 16);
@@ -231,9 +290,11 @@ public:
         const auto k = s(Take(low_orders, low_at));
         return {"rf2", "DELETE FROM lineitem WHERE l_orderkey = " + k + "; DELETE FROM orders WHERE o_orderkey = " + k};
       }
-      const auto from = s(template_orders[rng() % template_orders.size()]);
+      const bool large = rf1++ % 4 == 3 && !large_orders.empty();
+      const auto &pool = large ? large_orders : template_orders;
+      const auto from = s(pool[rng() % pool.size()]);
       const auto k = s(next_order++);
-      return {"rf1", "INSERT INTO orders SELECT * REPLACE (" + k + " AS o_orderkey) FROM orders WHERE o_orderkey = " +
+      return {large ? "rf1 large order" : "rf1", "INSERT INTO orders SELECT * REPLACE (" + k + " AS o_orderkey) FROM orders WHERE o_orderkey = " +
                          from + "; INSERT INTO lineitem SELECT * REPLACE (" + k +
                          " AS l_orderkey) FROM lineitem WHERE l_orderkey = " + from};
     }
@@ -299,12 +360,12 @@ private:
   }
 
   std::mt19937_64 rng;
-  std::vector<int64_t> low_orders, template_orders, mid_orders, low_parts, template_parts, low_supps, template_supps,
+  std::vector<int64_t> low_orders, template_orders, large_orders, mid_orders, low_parts, template_parts, low_supps, template_supps,
       mid_supps, custs, mid_parts;
   std::size_t low_at = 0, mid_order_at = 0, low_part_at = 0, low_supp_at = 0, mid_supp_at = 0, cust_at = 0,
               mid_part_at = 0;
   int64_t next_order = 0, next_part = 0, next_supp = 0;
-  uint64_t seq = 0, rf = 0, dim = 0;
+  uint64_t seq = 0, rf = 0, rf1 = 0, dim = 0;
 };
 
 int Read(const std::string &path, const std::string &id, const std::string &base_kit,
@@ -317,9 +378,11 @@ int Read(const std::string &path, const std::string &id, const std::string &base
   const auto fn = FunctionFor(id);
   DuckdbRuntime rt(wc, EntryFor(id), 10.0);
   rt.EnableMutationCapture();
+  const double rss_before = SettledRssMb(qc);
   const auto b0 = Clock::now();
   rt.Build();
   const double build_ms = Us(b0, Clock::now()) / 1000;
+  const double rss_peak = RssMb().second, rss_after = SettledRssMb(qc);
   core::ResetAuxExecuteCounts();
   std::string per = "[";
   double log_sum = 0;
@@ -352,7 +415,9 @@ int Read(const std::string &path, const std::string &id, const std::string &base
   }
   const auto counts = core::ReadAuxExecuteCounts();
   std::cout << "{\"mode\":\"read\",\"accel\":" << Json(id) << ",\"function\":" << Json(fn) << ",\"store\":" << Json(rt.UsesVerusStore() ? "verus" : "cpp")
-            << ",\"build_ms\":" << build_ms << ",\"speedup_geomean\":" << (n ? std::exp(log_sum / n) : 0)
+            << ",\"build_ms\":" << build_ms << ",\"state_mb\":" << rss_after - rss_before
+            << ",\"rss_mb_settled_before\":" << rss_before << ",\"rss_mb_settled_after\":" << rss_after
+            << ",\"rss_mb_peak_build\":" << rss_peak << ",\"speedup_geomean\":" << (n ? std::exp(log_sum / n) : 0)
             << ",\"mismatches\":" << mismatches << ",\"hits\":" << counts.hit << ",\"fallbacks\":" << counts.fallback
             << ",\"cases\":" << per << "]}" << std::endl;
   return 0;
@@ -428,7 +493,9 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
   }
   // the writer: this thread
   std::vector<double> commit_us;
-  std::map<std::string, uint64_t> maintenance, write_kinds;
+  std::map<std::string, uint64_t> maintenance, write_kinds, maintenance_by_kind;
+  std::string slowest; // the slowest commit's write kind and maintenance action
+  double slowest_us = 0;
   uint64_t write_errors = 0, measured_writes = 0, total_writes = 0;
   double max_commit_us = 0;
   std::string write_error_example;
@@ -466,7 +533,14 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
       write_kinds[kind]++;
       if (accel) {
         const auto d = core::LastMaintenanceDecision();
-        maintenance[d ? accelerator_codegen::aux_state::maintenance::MaintenanceActionName(d->staged_action) : "none"]++;
+        const std::string action =
+            d ? accelerator_codegen::aux_state::maintenance::MaintenanceActionName(d->staged_action) : "none";
+        maintenance[action]++;
+        maintenance_by_kind[kind + ": " + action]++;
+        if (Us(t0, t1) > slowest_us) {
+          slowest_us = Us(t0, t1);
+          slowest = kind + ": " + action;
+        }
       }
       if (t0 >= measure_from) {
         commit_us.push_back(Us(t0, t1));
@@ -484,7 +558,9 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
   for (std::size_t i = 0; i < cases.size(); ++i)
     changed += Canon(*RunBaseline(qc, glue->query_sql, cases[i].base_args)) != before[i] ? 1 : 0;
   uint64_t invalidating = 0;
-  std::string mjson = "{", kjson = "{";
+  std::string mjson = "{", kjson = "{", bjson = "{";
+  for (const auto &[k, v] : maintenance_by_kind)
+    bjson += (bjson.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(v);
   for (const auto &[k, v] : maintenance) {
     mjson += (mjson.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(v);
     if (k != "none" && k != "NoOp")
@@ -504,9 +580,337 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
             << ",\"commit_p99_us\":" << Percentile(commit_us, 0.99)
             << ",\"writes_total\":" << total_writes << ",\"max_commit_us\":" << max_commit_us << ",\"write_errors\":" << write_errors
             << ",\"write_error_example\":" << Json(write_error_example.substr(0, 300)) << ",\"write_kinds\":" << kjson
-            << "},\"maintenance\":" << mjson << "},\"invalidating_writes\":" << invalidating
+            << "},\"maintenance\":" << mjson << "},\"maintenance_by_kind\":" << bjson
+            << "},\"slowest_commit\":" << Json(slowest) << ",\"invalidating_writes\":" << invalidating
             << ",\"answers_changed\":" << changed << ",\"cases\":" << cases.size() << ",\"hits\":" << counts.hit
             << ",\"fallbacks\":" << counts.fallback << "}" << std::endl;
+  return 0;
+}
+
+struct MultiSpec {
+  std::string id, base_kit, fn;
+  const kit::Glue *glue = nullptr;
+  std::vector<Case> cases;                   // the current repetition's
+  std::vector<std::vector<Case>> rep_cases;  // one parameter draw per repetition
+};
+
+std::string KindsJson(const std::map<std::string, uint64_t> &m) {
+  std::string j = "{";
+  for (const auto &[k, v] : m)
+    j += (j.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(v);
+  return j + "}";
+}
+
+double Mean(const std::vector<double> &v) {
+  double sum = 0;
+  for (const double x : v)
+    sum += x;
+  return v.empty() ? 0 : sum / v.size();
+}
+
+int Multi(const std::string &path, const std::string &phase, const std::string &spec_path, int readers,
+          double seconds, const std::vector<double> &rates, uint64_t seed, double warmup,
+          const std::string &reader_mode) {
+  Require(phase == "accel" || phase == "base", "phase must be accel or base");
+  Require(reader_mode == "rotate" || reader_mode == "pinned", "reader mode must be rotate or pinned");
+  const bool pinned = reader_mode == "pinned";
+  const bool accel = phase == "accel";
+  std::vector<MultiSpec> specs;
+  {
+    std::ifstream in(spec_path);
+    Require(in.good(), "cannot read " + spec_path);
+    for (std::string line; std::getline(in, line);) {
+      if (line.empty() || line[0] == '#')
+        continue;
+      std::istringstream fields(line);
+      MultiSpec m;
+      std::string cases_path;
+      Require(std::getline(fields, m.id, '\t') && std::getline(fields, m.base_kit, '\t') &&
+                  std::getline(fields, cases_path),
+              spec_path + ": want <accel_id>\t<baseline_kit>\t<cases.tsv>");
+      m.glue = kit::Find(m.base_kit);
+      Require(m.glue != nullptr, "no baseline kit " + m.base_kit);
+      // "a.tsv|b.tsv|...": one cases file (parameter draw) per repetition
+      std::stringstream paths(cases_path);
+      for (std::string one; std::getline(paths, one, '|');)
+        m.rep_cases.push_back(ReadCases(one));
+      Require(specs.empty() || m.rep_cases.size() == specs.front().rep_cases.size(),
+              spec_path + ": every accelerator needs the same number of repetitions");
+      specs.push_back(std::move(m));
+    }
+  }
+  Require(!specs.empty(), spec_path + ": no accelerators");
+  const std::size_t reps = specs.front().rep_cases.size();
+  duckdb::DuckDB db(path);
+  duckdb::Connection wc(db), qc(db);
+  accelerator_codegen::RegisterAcceleratorFunctions(qc);
+  // ACCEL_COMPARE_DUCKDB_MEMORY: cap DuckDB's buffer cache (default: 80% of
+  // RAM), so many accelerators' state and the cache fit in one process
+  if (const char *limit = std::getenv("ACCEL_COMPARE_DUCKDB_MEMORY")) {
+    auto r = qc.Query(std::string("SET memory_limit = '") + limit + "'");
+    Require(r && !r->HasError(), r ? r->GetError() : "memory_limit");
+  }
+  // one write stream across every rate; uncapped (< 0): key pools for up to 200 writes/s
+  double pool_writes = 0;
+  for (const double w : rates)
+    pool_writes += (w < 0 ? 200 : w) * (seconds + warmup) * 1.2 * reps;
+  Writes writes(qc, static_cast<std::size_t>(pool_writes) + 32 * rates.size() * reps, seed);
+  std::vector<std::unique_ptr<DuckdbRuntime>> runtimes;
+  std::vector<DuckdbRuntime *> live;
+  std::string builds = "{", build_rss = "{";
+  double build_ms_total = 0;
+  if (accel) {
+    for (auto &m : specs) {
+      m.fn = FunctionFor(m.id);
+      runtimes.push_back(std::make_unique<DuckdbRuntime>(wc, EntryFor(m.id), 10.0));
+      runtimes.back()->EnableMutationCapture();
+      const auto b0 = Clock::now();
+      runtimes.back()->Build();
+      const double ms = Us(b0, Clock::now()) / 1000;
+      build_ms_total += ms;
+      builds += (builds.size() > 1 ? "," : "") + Json(m.id) + ":" + std::to_string(ms);
+      // resident memory after each build: the growth is roughly that accelerator's state
+      const auto [rss, peak] = RssMb();
+      build_rss += (build_rss.size() > 1 ? "," : "") + Json(m.id) + ":[" + std::to_string(rss) + "," +
+                   std::to_string(peak) + "]";
+      std::cerr << "built " << m.id << " in " << ms / 1000 << "s, rss " << rss / 1024 << " GB (peak "
+                << peak / 1024 << " GB)" << std::endl;
+      live.push_back(runtimes.back().get());
+    }
+  }
+  builds += "}";
+  build_rss += "}";
+  // the accelerators are built once; each (rate, repetition) is its own run
+  // (warmup, then the measured window) on the state the previous one left, with
+  // that repetition's parameter draw; one JSON line each, rate-major
+  for (const double writes_per_sec : rates) {
+  for (std::size_t rep = 0; rep < reps; ++rep) {
+  for (auto &m : specs)
+    m.cases = m.rep_cases[rep];
+  // whether the writes changed an answer: checked on each accelerator's first
+  // case only (every case, around every window, costs minutes at SF20)
+  std::vector<std::vector<std::vector<std::string>>> before(specs.size());
+  for (std::size_t q = 0; q < specs.size(); ++q)
+    if (!specs[q].cases.empty())
+      before[q].push_back(Canon(*RunBaseline(qc, specs[q].glue->query_sql, specs[q].cases[0].base_args)));
+  core::ResetAuxExecuteCounts();
+
+  std::atomic<bool> stop{false};
+  const auto start = Clock::now();
+  const auto measure_from = start + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(warmup));
+  const auto deadline =
+      measure_from + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds));
+  std::mutex mu;
+  // per query: read latency, and the part of it spent in the store choosing
+  // the state (its lock, waiting for a pending commit)
+  std::vector<std::vector<double>> latencies(specs.size()), waits(specs.size());
+  uint64_t read_errors = 0;
+  std::string read_error_example;
+  std::vector<std::thread> threads;
+  // rotate: `readers` threads, each cycling over every query; pinned: `readers`
+  // threads per query, each running only its query's cases
+  const std::size_t n_threads = pinned ? static_cast<std::size_t>(readers) * specs.size() : readers;
+  for (std::size_t r = 0; r < n_threads; ++r) {
+    threads.emplace_back([&, r] {
+      duckdb::Connection c(db);
+      std::vector<std::vector<double>> mine(specs.size()), mine_waits(specs.size());
+      uint64_t errors = 0;
+      std::string example;
+      for (std::size_t i = r; !stop.load(std::memory_order_relaxed); ++i) {
+        const auto q = pinned ? r % specs.size() : i % specs.size();
+        const auto &m = specs[q];
+        const auto &cs = pinned ? m.cases[(i / specs.size() + r / specs.size()) % m.cases.size()]
+                                : m.cases[(i / specs.size()) % m.cases.size()];
+        const double w0 = core::ThreadStoreResolveMicros();
+        const auto t0 = Clock::now();
+        try {
+          if (accel)
+            RunAccel(c, m.fn, cs.accel_args);
+          else
+            RunBaseline(c, m.glue->query_sql, cs.base_args);
+        } catch (const std::exception &e) {
+          if (++errors == 1)
+            example = m.id + ": " + e.what();
+          continue;
+        }
+        const auto t1 = Clock::now();
+        if (t0 >= measure_from && t1 <= deadline) {
+          mine[q].push_back(Us(t0, t1));
+          mine_waits[q].push_back(core::ThreadStoreResolveMicros() - w0);
+        }
+      }
+      std::lock_guard<std::mutex> lock(mu);
+      for (std::size_t q = 0; q < specs.size(); ++q) {
+        latencies[q].insert(latencies[q].end(), mine[q].begin(), mine[q].end());
+        waits[q].insert(waits[q].end(), mine_waits[q].begin(), mine_waits[q].end());
+      }
+      read_errors += errors;
+      if (read_error_example.empty())
+        read_error_example = example;
+    });
+  }
+  std::vector<double> commit_us;
+  std::map<std::string, uint64_t> write_kinds;
+  uint64_t write_errors = 0, measured_writes = 0, total_writes = 0;
+  // accel: where each measured commit's time went (DuckdbRuntime::ApplyWriteAll),
+  // and per accelerator how many writes (all, warmup too) made it maintain
+  DuckdbRuntime::WriteAllTiming timing;
+  std::vector<double> statement_us, engine_commit_us, pre_commit_total_us, install_total_us;
+  std::vector<double> pre_commit_sum(specs.size(), 0), install_sum(specs.size(), 0), pre_commit_max(specs.size(), 0);
+  std::vector<uint64_t> maintained(specs.size(), 0);
+  std::vector<std::map<std::string, uint64_t>> maintained_by_kind(specs.size()); // write kind -> writes
+  std::map<std::string, uint64_t> accels_maintained_hist; // writes by how many accelerators they maintained
+  uint64_t writes_maintaining_none = 0;
+  double max_commit_us = 0;
+  std::string write_error_example;
+  // one entry per measured write: [start s (from the measured window), kind,
+  // commit us, maintenance us (all PRE_COMMITs), install us (all COMMITs),
+  // accelerators maintained]
+  std::string write_log = "[";
+  if (writes_per_sec != 0) {
+    // < 0: uncapped, the writer commits back to back
+    const auto interval = writes_per_sec < 0 ? Clock::duration::zero()
+                                             : std::chrono::duration_cast<Clock::duration>(
+                                                   std::chrono::duration<double>(1.0 / writes_per_sec));
+    auto next = start;
+    while (Clock::now() < deadline) {
+      std::this_thread::sleep_until(next);
+      next = std::max(next + interval, Clock::now());
+      if (Clock::now() >= deadline)
+        break;
+      const auto [kind, sql] = writes.Next();
+      const auto t0 = Clock::now();
+      int last_maintained = 0;
+      try {
+        if (accel) {
+          DuckdbRuntime::ApplyWriteAll(live, sql, &timing);
+        } else {
+          auto res = wc.Query("BEGIN; " + sql + "; COMMIT;");
+          if (res && res->HasError()) {
+            wc.Query("ROLLBACK");
+            throw std::runtime_error(res->GetError());
+          }
+        }
+      } catch (const std::exception &e) {
+        if (++write_errors == 1)
+          write_error_example = kind + ": " + e.what();
+        continue;
+      }
+      const auto t1 = Clock::now();
+      ++total_writes;
+      max_commit_us = std::max(max_commit_us, Us(t0, t1));
+      write_kinds[kind]++;
+      if (accel) {
+        int n = 0;
+        for (std::size_t q = 0; q < specs.size(); ++q) {
+          const auto &a = timing.action[q];
+          if (a != "none" && a != "NoOp") {
+            ++maintained[q];
+            maintained_by_kind[q][kind]++;
+            ++n;
+          }
+        }
+        accels_maintained_hist[std::to_string(n)]++;
+        writes_maintaining_none += n == 0 ? 1 : 0;
+        last_maintained = n;
+      }
+      if (t0 >= measure_from) {
+        commit_us.push_back(Us(t0, t1));
+        ++measured_writes;
+        double pre = 0, inst = 0;
+        if (accel) {
+          for (std::size_t q = 0; q < specs.size(); ++q) {
+            pre += timing.pre_commit_us[q];
+            inst += timing.commit_us[q];
+            pre_commit_sum[q] += timing.pre_commit_us[q];
+            install_sum[q] += timing.commit_us[q];
+            pre_commit_max[q] = std::max(pre_commit_max[q], timing.pre_commit_us[q]);
+          }
+          statement_us.push_back(timing.statement_us);
+          engine_commit_us.push_back(timing.engine_commit_us);
+          pre_commit_total_us.push_back(pre);
+          install_total_us.push_back(inst);
+        }
+        write_log += (write_log.size() > 1 ? ",[" : "[") + std::to_string(Us(measure_from, t0) / 1e6) + "," +
+                     Json(kind) + "," + std::to_string(Us(t0, t1)) + "," + std::to_string(pre) + "," +
+                     std::to_string(inst) + "," + std::to_string(last_maintained) + "]";
+      }
+    }
+  } else {
+    std::this_thread::sleep_until(deadline);
+  }
+  stop = true;
+  for (auto &t : threads)
+    t.join();
+  const auto counts = core::ReadAuxExecuteCounts();
+  std::string per = "[";
+  uint64_t reads = 0;
+  for (std::size_t q = 0; q < specs.size(); ++q) {
+    int changed = 0;
+    for (std::size_t i = 0; i < before[q].size(); ++i)
+      changed += Canon(*RunBaseline(qc, specs[q].glue->query_sql, specs[q].cases[i].base_args)) != before[q][i] ? 1 : 0;
+    reads += latencies[q].size();
+    uint64_t waited = 0; // reads that spent over 1 ms in the store
+    for (const double w : waits[q])
+      waited += w > 1000 ? 1 : 0;
+    const double n_measured = static_cast<double>(std::max<std::size_t>(measured_writes, 1));
+    per += std::string(q ? "," : "") + "{\"accel\":" + Json(specs[q].id) + ",\"reads\":" +
+           std::to_string(latencies[q].size()) + ",\"read_p50_us\":" + std::to_string(Percentile(latencies[q], 0.5)) +
+           ",\"read_p99_us\":" + std::to_string(Percentile(latencies[q], 0.99)) +
+           ",\"read_max_us\":" + std::to_string(Percentile(latencies[q], 1.0)) +
+           ",\"read_mean_us\":" + std::to_string(Mean(latencies[q])) +
+           ",\"store_wait_mean_us\":" + std::to_string(Mean(waits[q])) +
+           ",\"store_wait_p99_us\":" + std::to_string(Percentile(waits[q], 0.99)) +
+           ",\"store_wait_max_us\":" + std::to_string(Percentile(waits[q], 1.0)) +
+           ",\"reads_waited_over_1ms\":" + std::to_string(waited) +
+           (accel ? ",\"maintained_writes\":" + std::to_string(maintained[q]) +
+                        ",\"maintained_by_kind\":" + KindsJson(maintained_by_kind[q]) +
+                        ",\"pre_commit_mean_us\":" + std::to_string(pre_commit_sum[q] / n_measured) +
+                        ",\"pre_commit_max_us\":" + std::to_string(pre_commit_max[q]) +
+                        ",\"install_mean_us\":" + std::to_string(install_sum[q] / n_measured)
+                  : std::string()) +
+           ",\"answers_changed\":" + std::to_string(changed) + ",\"answers_checked\":" + std::to_string(before[q].size()) +
+           ",\"cases\":" + std::to_string(specs[q].cases.size()) +
+           "}";
+  }
+  std::string kjson = "{", hjson = "{";
+  for (const auto &[k, v] : write_kinds)
+    kjson += (kjson.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(v);
+  for (const auto &[k, v] : accels_maintained_hist)
+    hjson += (hjson.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(v);
+  hjson += "}";
+  const std::string breakdown =
+      accel ? ",\"commit_breakdown_mean_us\":{\"statement\":" + std::to_string(Mean(statement_us)) +
+                  ",\"pre_commit_all\":" + std::to_string(Mean(pre_commit_total_us)) +
+                  ",\"engine_commit\":" + std::to_string(Mean(engine_commit_us)) +
+                  ",\"install_all\":" + std::to_string(Mean(install_total_us)) +
+                  "},\"writes_by_accels_maintained\":" + hjson +
+                  ",\"writes_maintaining_none\":" + std::to_string(writes_maintaining_none)
+            : std::string();
+  double read_total_us = 0, commit_total_us = 0;
+  for (const auto &l : latencies)
+    for (const double x : l)
+      read_total_us += x;
+  for (const double x : commit_us)
+    commit_total_us += x;
+  std::cout << "{\"mode\":\"multi\",\"phase\":" << Json(phase) << ",\"accelerators\":" << specs.size()
+            << ",\"store\":" << Json(!accel ? "none" : live.front()->UsesVerusStore() ? "verus" : "cpp")
+            << ",\"reader_mode\":" << Json(reader_mode) << ",\"readers\":" << readers
+            << ",\"reader_threads\":" << n_threads << ",\"seconds\":" << seconds << ",\"build_ms\":" << build_ms_total
+            << ",\"build_ms_by_accel\":" << builds << ",\"rss_mb_after_build\":" << build_rss
+            << ",\"rss_mb_end\":" << RssMb().first << ",\"rss_mb_peak\":" << RssMb().second << ",\"reads\":" << reads << ",\"qps\":" << reads / seconds
+            << ",\"read_total_us\":" << read_total_us << ",\"read_errors\":" << read_errors
+            << ",\"read_error_example\":" << Json(read_error_example.substr(0, 300))
+            << ",\"writes_per_sec_target\":" << writes_per_sec << ",\"writes\":" << measured_writes
+            << ",\"writes_total\":" << total_writes << ",\"writes_per_sec\":" << measured_writes / seconds
+            << ",\"commit_p50_us\":" << Percentile(commit_us, 0.5) << ",\"commit_p99_us\":" << Percentile(commit_us, 0.99)
+            << ",\"commit_total_us\":" << commit_total_us << ",\"max_commit_us\":" << max_commit_us
+            << ",\"write_errors\":" << write_errors << ",\"write_error_example\":" << Json(write_error_example.substr(0, 300))
+            << ",\"write_kinds\":" << kjson << "}" << breakdown << ",\"write_log\":" << write_log << "]"
+            << ",\"hits\":" << counts.hit << ",\"fallbacks\":" << counts.fallback << ",\"rep\":" << rep
+            << ",\"per_accel\":" << per << "]}" << std::endl;
+  }
+  }
   return 0;
 }
 
@@ -514,8 +918,20 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
 
 int main(int argc, char **argv) {
   try {
-    Require(argc >= 6, "usage: aux_compare read|concurrent <db> <accel_id> <baseline_kit> <cases.tsv> ...");
+    Require(argc >= 6, "usage: aux_compare read|concurrent|multi <db> ...");
     const std::string mode = argv[1];
+    if (mode == "multi") {
+      Require(argc >= 8, "multi: <db> <phase> <spec.tsv> <readers> <seconds> <writes_per_sec> [seed] [warmup_sec] "
+                         "[rotate|pinned]");
+      std::vector<double> rates; // "5,10,-1": one run per rate, built once
+      std::stringstream list(argv[7]);
+      for (std::string w; std::getline(list, w, ',');)
+        rates.push_back(std::stod(w));
+      Require(!rates.empty(), "multi: no writes_per_sec");
+      return Multi(argv[2], argv[3], argv[4], std::stoi(argv[5]), std::stod(argv[6]), rates,
+                   argc > 8 ? std::stoull(argv[8]) : 1, argc > 9 ? std::stod(argv[9]) : 2,
+                   argc > 10 ? argv[10] : "rotate");
+    }
     const auto cases = ReadCases(argv[5]);
     if (mode == "read")
       return Read(argv[2], argv[3], argv[4], cases, argc > 6 ? std::stoi(argv[6]) : 5);
