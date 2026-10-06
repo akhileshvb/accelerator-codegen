@@ -40,20 +40,24 @@ void ScanTpchQ17Lineitems(
       });
 }
 
-void ScanTpchQ17PartQuantityAggregatesForPart(
-    int64_t partkey,
+// GROUP BY (partkey, quantity), ordered by partkey so the module can assemble
+// one part's histogram at a time. Rows with a NULL partkey or quantity never
+// take part in the query.
+void ScanTpchQ17PartQuantityAggregates(
     const std::function<void(const query::TpchQ17PartQuantityAggregate &)>
         &consumer) {
-  const std::string sql =
-      "SELECT CAST(round(l_quantity * 100) AS BIGINT), "
-      "SUM(CAST(round(l_extendedprice * 100) AS BIGINT)), "
-      "COUNT(*)::BIGINT "
-      "FROM lineitem WHERE l_partkey = " +
-      std::to_string(partkey) + " GROUP BY 1";
-  ScanTypedTuples(sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
-    consumer({partkey, TypedInt(tuple, tuple_desc, 0),
-              TypedInt(tuple, tuple_desc, 1), TypedInt(tuple, tuple_desc, 2)});
-  });
+  ScanTypedTuples(
+      "SELECT l_partkey, CAST(round(l_quantity * 100) AS BIGINT) AS q, "
+      "CAST(SUM(CAST(round(COALESCE(l_extendedprice, 0) * 100) AS BIGINT)) "
+      "AS BIGINT), COUNT(*)::BIGINT "
+      "FROM lineitem WHERE l_partkey IS NOT NULL AND l_quantity IS NOT NULL "
+      "GROUP BY l_partkey, q ORDER BY l_partkey, q",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedInt(tuple, tuple_desc, 1),
+                  TypedInt(tuple, tuple_desc, 2),
+                  TypedInt(tuple, tuple_desc, 3)});
+      });
 }
 
 } // namespace scans
@@ -70,11 +74,10 @@ public:
       override {
     scans::ScanTpchQ17Lineitems(consumer);
   }
-  bool ScanPartQuantityAggregatesForPart(
-      int64_t partkey,
+  bool ScanPartQuantityAggregates(
       const std::function<void(const query::TpchQ17PartQuantityAggregate &)>
           &consumer) override {
-    scans::ScanTpchQ17PartQuantityAggregatesForPart(partkey, consumer);
+    scans::ScanTpchQ17PartQuantityAggregates(consumer);
     return true;
   }
 };

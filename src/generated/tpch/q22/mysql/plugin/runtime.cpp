@@ -39,6 +39,17 @@ void ScanTpchQ22Orders(
       });
 }
 
+// Orders per customer, aggregated in SQL (one row per o_custkey).
+void ScanTpchQ22OrderCounts(
+    const std::function<void(const query::TpchQ22OrderCount &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT o_custkey, CAST(COUNT(*) AS SIGNED) FROM orders "
+      "WHERE o_custkey IS NOT NULL GROUP BY o_custkey",
+      [&](const std::vector<std::string> &cols) {
+        consumer({TypedInt(cols, 0), TypedInt(cols, 1)});
+      });
+}
+
 } // namespace scans
 
 class TpchQ22Scan final : public query::TpchQ22InitialScan {
@@ -52,6 +63,12 @@ public:
       const std::function<void(const query::TpchQ22OrderInput &)> &consumer)
       override {
     scans::ScanTpchQ22Orders(consumer);
+  }
+  bool ScanOrderCounts(
+      const std::function<void(const query::TpchQ22OrderCount &)> &consumer)
+      override {
+    scans::ScanTpchQ22OrderCounts(consumer);
+    return true;
   }
 };
 

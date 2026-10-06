@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -12,10 +13,30 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/sorted_count_sum.hpp"
+#include "accelerator_codegen/stateful/core/sparse_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
 // ── Q22 layout ──────────────────────────────────────────────────────────────
+// One published partition holds the whole state, built from copy-on-write
+// pieces (a write batch copies pointers plus the pieces it touches):
+//   * per custkey (columnar): present flag + phone-prefix id, account balance,
+//     and the number of orders of that custkey (also for custkeys without a
+//     customer row, so orders may arrive before their customer),
+//   * per phone prefix: count and sum of the customers with c_acctbal > 0 (the
+//     AVG subquery) and an ordered multiset of the balances of those that have
+//     NO orders (the outer query), answering "count and sum of balances above
+//     x" exactly.
+// Execute: O(codes * (log blocks + blocks)) with no per-customer work; the
+// AVG comparison is the exact rational  balance * C > S.
+//
+// Memory: 16 B per custkey (customers and order-only custkeys) + ~2.5 B of
+// chunk overhead, plus 16 B per distinct (prefix, balance) of zero-order
+// customers (bounded by the balance domain): ~19 B/customer, 0.3 GB at SF100,
+// 2.8 GB at SF1000 (the old unordered_map<custkey, record with a std::string>
+// cost ~80 B/customer: 1.2 GB at SF100). Write batch: O(touched custkeys *
+// 32-customer chunk + touched prefixes' balance blocks); no table scan.
 struct TpchQ22Layout {
   static constexpr const char *kAccelerator = "tpch_q22_aux";
   static constexpr core::PartitionId kFull = 0;
@@ -43,6 +64,11 @@ struct TpchQ22OrderInput {
   int64_t custkey = 0;
 };
 
+struct TpchQ22OrderCount {
+  int64_t custkey = 0;
+  int64_t count = 0;
+};
+
 class TpchQ22InitialScan {
 public:
   virtual ~TpchQ22InitialScan() = default;
@@ -50,135 +76,41 @@ public:
       const std::function<void(const TpchQ22CustomerInput &)> &) = 0;
   virtual void ScanOrders(
       const std::function<void(const TpchQ22OrderInput &)> &) = 0;
+  // Optional SQL pre-aggregation: number of orders per o_custkey (non-NULL).
+  // Returns false when the engine does not implement it.
+  virtual bool ScanOrderCounts(
+      const std::function<void(const TpchQ22OrderCount &)> &) {
+    return false;
+  }
 };
 
 // ── State structures ────────────────────────────────────────────────────────
+constexpr uint32_t kTpchQ22NoCustomer = 0xffffffffu; // no customer row
+constexpr uint32_t kTpchQ22NullPhone = 0xfffffffeu;  // customer, phone NULL
+constexpr int64_t kTpchQ22NullBalance = std::numeric_limits<int64_t>::min();
+
+struct TpchQ22CustomerRecord {
+  int64_t balance_raw = 0; // kTpchQ22NullBalance when NULL
+  int32_t order_count = 0; // orders with o_custkey = this custkey
+  uint32_t prefix_id = kTpchQ22NoCustomer;
+};
+
+// Phone prefix (first two characters) -> dense id. Exact string equality.
+struct TpchQ22PrefixDictionary {
+  std::unordered_map<std::string, uint32_t> ids;
+};
+
+struct TpchQ22PrefixEntry {
+  int64_t positive_count = 0;       // customers with c_acctbal > 0
+  __int128 positive_sum_raw = 0;    // their balance sum (x100)
+  core::SortedCountSum zero_order;  // balances (>0) of those without orders
+};
+
 struct TpchQ22State {
-  struct CustomerRecord {
-    std::string prefix;
-    int64_t balance_raw = 0;
-    int64_t order_count = 0;
-  };
-
-  // Per-prefix positive-balance aggregates for AVG computation
-  std::unordered_map<std::string, int64_t> prefix_positive_sum;
-  std::unordered_map<std::string, int64_t> prefix_positive_count;
-
-  // custkey → customer record. Shared base + overlay so order-only RF
-  // deltas do not copy the SF-scale customer table.
-  using CustomerTable = std::unordered_map<int64_t, CustomerRecord>;
-  std::shared_ptr<CustomerTable> customers = std::make_shared<CustomerTable>();
-  CustomerTable customer_overlay;
-  std::unordered_set<int64_t> customer_erased;
-
-  const CustomerRecord *FindCustomer(int64_t custkey) const {
-    if (customer_erased.find(custkey) != customer_erased.end())
-      return nullptr;
-    const auto overlay_it = customer_overlay.find(custkey);
-    if (overlay_it != customer_overlay.end())
-      return &overlay_it->second;
-    if (!customers)
-      return nullptr;
-    const auto it = customers->find(custkey);
-    return it == customers->end() ? nullptr : &it->second;
-  }
-
-  CustomerRecord &MutableCustomer(int64_t custkey) {
-    customer_erased.erase(custkey);
-    const auto overlay_it = customer_overlay.find(custkey);
-    if (overlay_it != customer_overlay.end())
-      return overlay_it->second;
-    if (customers) {
-      const auto it = customers->find(custkey);
-      if (it != customers->end())
-        return customer_overlay[custkey] = it->second;
-    }
-    return customer_overlay[custkey];
-  }
-
-  void EraseCustomer(int64_t custkey) {
-    customer_overlay.erase(custkey);
-    customer_erased.insert(custkey);
-  }
-
-  // Per-prefix distribution of zero-order positive-balance customers
-  struct PrefixAggregate {
-    // balance_counts maps a scaled integer balance to the number of
-    // zero-order customers with that balance in this prefix.
-    std::map<int64_t, int64_t> balance_counts;
-
-    // Sorted arrays built from balance_counts before querying.
-    std::vector<int64_t> keys;
-    std::vector<int64_t> counts;
-    std::vector<int64_t> suffix_count;
-    std::vector<int64_t> suffix_sum;
-    bool dirty = true;
-
-    void RebuildSuffixes() {
-      keys.clear();
-      counts.clear();
-      suffix_count.clear();
-      suffix_sum.clear();
-      keys.reserve(balance_counts.size());
-      counts.reserve(balance_counts.size());
-      for (const auto &entry : balance_counts) {
-        keys.push_back(entry.first);
-        counts.push_back(entry.second);
-      }
-      const size_t n = keys.size();
-      suffix_count.assign(n + 1, 0);
-      suffix_sum.assign(n + 1, 0);
-      for (size_t i = n; i-- > 0;) {
-        suffix_count[i] = suffix_count[i + 1] + counts[i];
-        suffix_sum[i] = suffix_sum[i + 1] + keys[i] * counts[i];
-      }
-      dirty = false;
-    }
-
-    void MarkDirty() { dirty = true; }
-
-    bool AddBalance(int64_t balance) {
-      auto it = balance_counts.find(balance);
-      if (it == balance_counts.end()) {
-        balance_counts.emplace(balance, 1);
-      } else {
-        it->second++;
-      }
-      MarkDirty();
-      return true;
-    }
-
-    bool RemoveBalance(int64_t balance) {
-      auto it = balance_counts.find(balance);
-      if (it == balance_counts.end() || it->second <= 0) {
-        return false;
-      }
-      if (--it->second == 0) {
-        balance_counts.erase(it);
-      }
-      MarkDirty();
-      return true;
-    }
-
-    // Strictly-greater-than lookup. Returns {count,sum}.
-    std::pair<int64_t, int64_t> QueryGreaterThan(int64_t balance) {
-      if (dirty) {
-        RebuildSuffixes();
-      }
-      if (keys.empty()) {
-        return {0, 0};
-      }
-      // upper_bound gives the first key strictly greater than `balance`.
-      auto it = std::upper_bound(keys.begin(), keys.end(), balance);
-      const size_t idx = static_cast<size_t>(it - keys.begin());
-      return {suffix_count[idx], suffix_sum[idx]};
-    }
-  };
-
-  std::unordered_map<std::string, PrefixAggregate> prefix_aggregates;
-
-  // Orphan order counts: custkeys seen in orders but not in customer yet
-  std::unordered_map<int64_t, int64_t> orphan_orders;
+  std::shared_ptr<const TpchQ22PrefixDictionary> dictionary =
+      std::make_shared<const TpchQ22PrefixDictionary>();
+  core::SparseCowArray<TpchQ22CustomerRecord, 5> customers;
+  std::vector<std::shared_ptr<const TpchQ22PrefixEntry>> prefixes;
 };
 
 enum class TpchQ22ImageKind : uint8_t { FullState };
@@ -204,13 +136,16 @@ public:
   bool RequiresRebuild() const;
   void MarkRebuild();
 
+  // One customer row change: the old row (if any) is removed, then the new
+  // row (if any) is stored under its own key.
   struct CustomerDelta {
-    int64_t custkey = 0;
-    std::string old_prefix;
+    bool has_old = false;
+    bool has_new = false;
+    int64_t old_custkey = 0;
+    int64_t new_custkey = 0;
+    bool new_phone_null = false;
     std::string new_prefix;
-    int64_t old_balance = 0;
-    int64_t new_balance = 0;
-    int8_t sign = 0; // 1 insert, -1 delete, 0 update
+    int64_t new_balance = 0; // kTpchQ22NullBalance when NULL
   };
 
   struct OrderDelta {
@@ -256,12 +191,8 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ22State BuildState(core::AuxEngineServices &services) const;
-  bool LoadState(core::AuxEngineServices &services,
-                 std::shared_ptr<const TpchQ22State> &state) const;
-  void EmitResult(const TpchQ22State &state,
-                  const std::vector<std::string> &country_codes,
-                  core::AuxRowSink &sink) const;
+  static void EmitRows(const std::vector<TpchQ22OutputRow> &rows,
+                       core::AuxRowSink &sink);
 
   TpchQ22Config config;
   TpchQ22InitialScan *initial_scan = nullptr;

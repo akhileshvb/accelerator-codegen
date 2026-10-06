@@ -2,20 +2,17 @@
 #include "tpch/q22/calibration_writes.hpp"
 
 #include <algorithm>
-#include <cmath>
-#include <cstring>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
-#include <unordered_set>
+#include <unordered_map>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::AuxValue;
-using core::AuxType;
-using core::ScaledDecimal;
+using Int128 = __int128;
 
 // ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
@@ -44,56 +41,107 @@ bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
   return false;
 }
 
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
+// A decimal as an exact x100 integer; false when it is not representable.
+bool ToScale2(int64_t raw_in, int32_t scale, int64_t &out) {
+  Int128 raw = raw_in;
+  for (int32_t s = scale; s < 2; ++s)
+    raw *= 10;
+  for (int32_t s = scale; s > 2; --s) {
+    if (raw % 10 != 0)
+      return false;
+    raw /= 10;
   }
-  return false;
-}
-
-bool ReadCustomer(const core::AuxRow &row, int64_t &custkey,
-                  std::string &phone, int64_t &acctbal_raw,
-                  int32_t &acctbal_scale) {
-  if (!IntCell(row, 0, custkey))
+  if (raw > std::numeric_limits<int64_t>::max() ||
+      raw <= std::numeric_limits<int64_t>::min())
     return false;
-  if (!StringCell(row, 1, phone))
-    return false;
-  if (!RawDecimalCell(row, 2, acctbal_raw, acctbal_scale))
-    return false;
+  out = static_cast<int64_t>(raw);
   return true;
 }
 
-bool ReadOrder(const core::AuxRow &row, int64_t &custkey) {
-  return IntCell(row, 0, custkey);
+bool Scale2Cell(const core::AuxRow &row, std::size_t index, int64_t &out) {
+  if (index >= row.values.size() || row.values[index].is_null ||
+      !std::holds_alternative<core::ScaledDecimal>(row.values[index].payload))
+    return false;
+  const auto decimal = std::get<core::ScaledDecimal>(row.values[index].payload);
+  return ToScale2(decimal.value, decimal.scale, out);
 }
 
-std::string ExtractPrefix(const std::string &phone) {
-  if (phone.size() < 2)
-    return "";
-  return phone.substr(0, 2);
+// substring(c_phone from 1 for 2): the first two CHARACTERS (UTF-8 aware); a
+// shorter phone yields what there is (possibly the empty string).
+std::string PhonePrefix(const std::string &phone) {
+  std::size_t i = 0;
+  for (int chars = 0; i < phone.size() && chars < 2; ++chars) {
+    ++i;
+    while (i < phone.size() &&
+           (static_cast<unsigned char>(phone[i]) & 0xC0) == 0x80)
+      ++i;
+  }
+  return phone.substr(0, i);
 }
 
-std::shared_ptr<const TpchQ22StateImage>
-MakeStateImage(const std::shared_ptr<const TpchQ22State> &state) {
-  auto image = std::make_shared<TpchQ22StateImage>();
-  image->kind = TpchQ22ImageKind::FullState;
-  image->state = state;
-  return image;
-}
+// ── State editing ───────────────────────────────────────────────────────────
 
-const TpchQ22StateImage *AsQ22Image(const core::StateImage &image) {
-  const auto *payload = image.As<TpchQ22StateImage>();
-  return payload && payload->kind == TpchQ22ImageKind::FullState &&
-                 payload->state
-             ? payload
-             : nullptr;
+// Edits a private copy of the state: clones the prefix dictionary only when a
+// new prefix appears and each touched prefix entry once.
+class StateEditor {
+public:
+  explicit StateEditor(TpchQ22State &state, bool fresh = false)
+      : state_(state), fresh_(fresh) {
+    owned_.assign(state.prefixes.size(), fresh ? 1 : 0);
+  }
+
+  uint32_t PrefixId(const std::string &prefix) {
+    const auto &ids = own_dictionary_ ? own_dictionary_->ids
+                                      : state_.dictionary->ids;
+    const auto it = ids.find(prefix);
+    if (it != ids.end())
+      return it->second;
+    if (!own_dictionary_)
+      own_dictionary_ =
+          std::make_shared<TpchQ22PrefixDictionary>(*state_.dictionary);
+    const auto id = static_cast<uint32_t>(state_.prefixes.size());
+    own_dictionary_->ids.emplace(prefix, id);
+    state_.prefixes.push_back(std::make_shared<const TpchQ22PrefixEntry>());
+    owned_.push_back(1);
+    return id;
+  }
+
+  TpchQ22PrefixEntry &Entry(uint32_t id) {
+    if (!owned_[id]) {
+      state_.prefixes[id] =
+          std::make_shared<const TpchQ22PrefixEntry>(*state_.prefixes[id]);
+      owned_[id] = 1;
+    }
+    return const_cast<TpchQ22PrefixEntry &>(*state_.prefixes[id]);
+  }
+
+  void Finish() {
+    if (own_dictionary_)
+      state_.dictionary = std::move(own_dictionary_);
+  }
+
+private:
+  TpchQ22State &state_;
+  bool fresh_;
+  std::shared_ptr<TpchQ22PrefixDictionary> own_dictionary_;
+  std::vector<char> owned_;
+};
+
+// Adds (sign = +1) or removes (-1) a record's contribution to its prefix:
+// the AVG aggregate for balance > 0, and the zero-order balance multiset.
+// False when the state does not contain what is being removed.
+bool Contribute(StateEditor &editor, const TpchQ22CustomerRecord &rec, int sign) {
+  if (rec.prefix_id == kTpchQ22NoCustomer || rec.prefix_id == kTpchQ22NullPhone ||
+      rec.balance_raw == kTpchQ22NullBalance || rec.balance_raw <= 0)
+    return true;
+  auto &entry = editor.Entry(rec.prefix_id);
+  entry.positive_count += sign;
+  entry.positive_sum_raw += static_cast<Int128>(sign) * rec.balance_raw;
+  if (entry.positive_count < 0)
+    return false;
+  if (rec.order_count == 0)
+    return entry.zero_order.Add(rec.balance_raw, sign);
+  return true;
 }
 
 core::InvalidationPlan All() {
@@ -101,6 +149,47 @@ core::InvalidationPlan All() {
   plan.scope =
       ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
   return plan;
+}
+
+core::InvalidationPlan StatePlan() {
+  core::InvalidationPlan plan;
+  plan.scope =
+      ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
+  plan.partitions.insert(static_cast<::accelerator_codegen::aux_state::PartitionKey>(
+      TpchQ22Layout::kFull));
+  return plan;
+}
+
+core::StateImage MakeImage(std::shared_ptr<const TpchQ22State> state) {
+  auto image = std::make_shared<TpchQ22StateImage>();
+  image->kind = TpchQ22ImageKind::FullState;
+  image->state = std::move(state);
+  return core::StateImage::Make(
+      TpchQ22Layout::kAccelerator, TpchQ22Layout::kFull, 0,
+      std::shared_ptr<const TpchQ22StateImage>(std::move(image)));
+}
+
+const TpchQ22State *ReadState(core::AuxEngineServices &services) {
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {TpchQ22Layout::kFull});
+  for (const auto &image : snapshot.partitions) {
+    if (image.partition != TpchQ22Layout::kFull)
+      continue;
+    const auto *typed = image.As<TpchQ22StateImage>();
+    return typed && typed->kind == TpchQ22ImageKind::FullState && typed->state
+               ? typed->state.get()
+               : nullptr;
+  }
+  return nullptr;
+}
+
+// The IN-list: non-NULL strings, de-duplicated (NULL never matches).
+std::set<std::string> CountryCodes(const core::QueryArguments &arguments) {
+  std::set<std::string> codes;
+  for (const auto &value : arguments.values)
+    if (!value.is_null && std::holds_alternative<std::string>(value.payload))
+      codes.insert(std::get<std::string>(value.payload));
+  return codes;
 }
 
 } // namespace
@@ -139,25 +228,52 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ22Module::CreateTxnBuffer() const {
 }
 
 // ── Build ───────────────────────────────────────────────────────────────────
-void TpchQ22Module::Build(core::AuxEngineServices &services,
+void TpchQ22Module::Build(core::AuxEngineServices &,
                           core::StateBuilder &builder) {
-  const auto state = BuildState(services);
-  const auto typed_state = std::make_shared<const TpchQ22State>(state);
-  builder.Write(core::StateImage::Make(
-      TpchQ22Layout::kAccelerator, TpchQ22Layout::kFull, 0,
-      MakeStateImage(typed_state)));
+  if (!initial_scan)
+    throw std::logic_error("TPC-H Q22 aux requires a typed initial scan source");
+  auto state = std::make_shared<TpchQ22State>();
+  StateEditor editor(*state, /*fresh=*/true);
+
+  // Order counts first (custkeys without a customer row keep theirs), straight
+  // into the per-custkey column.
+  const bool counted = initial_scan->ScanOrderCounts([&](const TpchQ22OrderCount &c) {
+    auto &rec = state->customers.Mutable(c.custkey);
+    const int64_t total = static_cast<int64_t>(rec.order_count) + c.count;
+    if (total > std::numeric_limits<int32_t>::max())
+      throw std::overflow_error("TPC-H Q22 order count overflow");
+    rec.order_count = static_cast<int32_t>(total);
+  });
+  if (!counted) {
+    initial_scan->ScanOrders([&](const TpchQ22OrderInput &input) {
+      auto &rec = state->customers.Mutable(input.custkey);
+      if (rec.order_count == std::numeric_limits<int32_t>::max())
+        throw std::overflow_error("TPC-H Q22 order count overflow");
+      ++rec.order_count;
+    });
+  }
+
+  initial_scan->ScanCustomers([&](const TpchQ22CustomerInput &input) {
+    int64_t balance = 0;
+    if (!ToScale2(input.acctbal_raw, input.acctbal_scale, balance))
+      throw std::logic_error("TPC-H Q22: c_acctbal not representable at scale 2");
+    auto &rec = state->customers.Mutable(input.custkey);
+    rec.prefix_id = editor.PrefixId(PhonePrefix(input.phone));
+    rec.balance_raw = balance;
+    Contribute(editor, rec, +1);
+  });
+  editor.Finish();
+
+  builder.Write(MakeImage(std::move(state)));
   builder.Finish();
 }
 
 // ── Mutation interpretation ─────────────────────────────────────────────────
 core::InvalidationPlan
 TpchQ22Module::InterpretMutation(const core::MutationBatch &mutation) const {
-  if (mutation.table == config.customer_table || mutation.table == config.orders_table) {
-    core::InvalidationPlan plan;
-    plan.scope =
-        ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
-    return plan;
-  }
+  if (mutation.table == config.customer_table ||
+      mutation.table == config.orders_table)
+    return StatePlan();
   return {};
 }
 
@@ -168,88 +284,81 @@ void TpchQ22Module::AccumulateMutation(const core::MutationBatch &mutation,
   auto &buffer = dynamic_cast<TpchQ22TxnBuffer &>(base_buffer);
 
   if (mutation.table == config.customer_table) {
-    auto process_customer = [&](const core::AuxRow &row, int8_t sign) {
-      int64_t custkey = 0;
-      std::string phone;
-      int64_t acctbal_raw = 0;
-      int32_t acctbal_scale = 0;
-      if (!ReadCustomer(row, custkey, phone, acctbal_raw,
-                        acctbal_scale)) {
-        buffer.MarkRebuild();
-        return;
-      }
+    // Rows are [custkey, phone, acctbal].
+    auto make = [&](const core::AuxRow *old_row, const core::AuxRow *new_row) {
       TpchQ22TxnBuffer::CustomerDelta delta;
-      delta.custkey = custkey;
-      delta.old_prefix = ExtractPrefix(phone);
-      delta.new_prefix = delta.old_prefix;
-      delta.old_balance = acctbal_raw;
-      delta.new_balance = acctbal_raw;
-      delta.sign = sign;
-      buffer.customer_deltas.push_back(delta);
+      if (old_row) {
+        if (!IntCell(*old_row, 0, delta.old_custkey)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        delta.has_old = true;
+      }
+      if (new_row) {
+        std::string phone;
+        if (!IntCell(*new_row, 0, delta.new_custkey)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        delta.has_new = true;
+        delta.new_phone_null = new_row->values.size() > 1 && new_row->values[1].is_null;
+        if (!delta.new_phone_null) {
+          if (!StringCell(*new_row, 1, phone)) {
+            buffer.MarkRebuild();
+            return;
+          }
+          delta.new_prefix = PhonePrefix(phone);
+        }
+        delta.new_balance = kTpchQ22NullBalance;
+        if (new_row->values.size() > 2 && !new_row->values[2].is_null &&
+            !Scale2Cell(*new_row, 2, delta.new_balance)) {
+          buffer.MarkRebuild();
+          return;
+        }
+      }
+      buffer.customer_deltas.push_back(std::move(delta));
     };
-
     switch (mutation.kind) {
     case core::MutationKind::Insert:
       for (const auto &row : mutation.new_rows)
-        process_customer(row, 1);
+        make(nullptr, &row);
       break;
     case core::MutationKind::Delete:
       for (const auto &row : mutation.old_rows)
-        process_customer(row, -1);
+        make(&row, nullptr);
       break;
-    case core::MutationKind::Update: {
+    case core::MutationKind::Update:
       if (mutation.old_rows.size() != mutation.new_rows.size()) {
         buffer.MarkRebuild();
         return;
       }
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        int64_t old_custkey = 0, new_custkey = 0;
-        std::string old_phone, new_phone;
-        int64_t old_bal = 0, new_bal = 0;
-        int32_t old_scale = 0, new_scale = 0;
-        if (!ReadCustomer(mutation.old_rows[i], old_custkey, old_phone,
-                          old_bal, old_scale) ||
-            !ReadCustomer(mutation.new_rows[i], new_custkey, new_phone,
-                          new_bal, new_scale)) {
-          buffer.MarkRebuild();
-          return;
-        }
-        TpchQ22TxnBuffer::CustomerDelta delta;
-        delta.custkey = old_custkey;
-        delta.old_prefix = ExtractPrefix(old_phone);
-        delta.new_prefix = ExtractPrefix(new_phone);
-        delta.old_balance = old_bal;
-        delta.new_balance = new_bal;
-        delta.sign = 0;
-        buffer.customer_deltas.push_back(delta);
-      }
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i)
+        make(&mutation.old_rows[i], &mutation.new_rows[i]);
       break;
-    }
     }
     return;
   }
 
   if (mutation.table == config.orders_table) {
-    auto process_order = [&](const core::AuxRow &row, int8_t sign) {
+    // Rows are [o_custkey]; a NULL custkey never matches a customer.
+    auto order = [&](const core::AuxRow &row, int8_t sign) {
+      if (row.values.empty() || row.values[0].is_null)
+        return;
       int64_t custkey = 0;
-      if (!ReadOrder(row, custkey)) {
+      if (!IntCell(row, 0, custkey)) {
         buffer.MarkRebuild();
         return;
       }
-      TpchQ22TxnBuffer::OrderDelta delta;
-      delta.custkey = custkey;
-      delta.sign = sign;
-      buffer.order_deltas.push_back(delta);
+      buffer.order_deltas.push_back({custkey, sign});
     };
-
     switch (mutation.kind) {
     case core::MutationKind::Insert:
       for (const auto &row : mutation.new_rows)
-        process_order(row, 1);
+        order(row, 1);
       break;
     case core::MutationKind::Delete:
       for (const auto &row : mutation.old_rows)
-        process_order(row, -1);
+        order(row, -1);
       break;
     case core::MutationKind::Update:
       if (mutation.old_rows.size() != mutation.new_rows.size()) {
@@ -257,22 +366,11 @@ void TpchQ22Module::AccumulateMutation(const core::MutationBatch &mutation,
         return;
       }
       for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        int64_t old_ck = 0, new_ck = 0;
-        if (!ReadOrder(mutation.old_rows[i], old_ck) ||
-            !ReadOrder(mutation.new_rows[i], new_ck)) {
-          buffer.MarkRebuild();
-          return;
-        }
-        if (old_ck != new_ck) {
-          // Order custkey changed: old goes -1, new goes +1
-          buffer.order_deltas.push_back({old_ck, -1});
-          buffer.order_deltas.push_back({new_ck, 1});
-        }
-        // If custkey unchanged, no effect on Q22 order existence
+        order(mutation.old_rows[i], -1);
+        order(mutation.new_rows[i], 1);
       }
       break;
     }
-    return;
   }
 }
 
@@ -285,303 +383,67 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
   core::StagedMaintenanceOutcome outcome;
 
   if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  const bool has_customer_changes = !buffer.customer_deltas.empty();
-  const bool has_order_changes = !buffer.order_deltas.empty();
-  if (!has_customer_changes && !has_order_changes)
-    return outcome;
-
-  // Count the total rows affected and the number of affected prefixes
-  std::set<std::string> touched_prefixes;
-  size_t total_rows_touched = buffer.customer_deltas.size() + buffer.order_deltas.size();
-
-  for (const auto &delta : buffer.customer_deltas) {
-    if (!delta.old_prefix.empty())
-      touched_prefixes.insert(delta.old_prefix);
-    if (!delta.new_prefix.empty())
-      touched_prefixes.insert(delta.new_prefix);
-  }
-  // Order deltas don't touch prefixes directly; they affect customer records
-
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(total_rows_touched),
-       static_cast<uint64_t>(touched_prefixes.size()), true, false, true,
-       false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
     core::FinishRebuildAll(outcome);
     return outcome;
   }
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+  if (buffer.customer_deltas.empty() && buffer.order_deltas.empty())
+    return outcome;
+
+  const TpchQ22State *current = ReadState(services);
+  if (!current) {
+    core::FinishRebuildAll(outcome);
     return outcome;
   }
+  // A copy shares every chunk / prefix entry; edits clone only what they touch.
+  auto state = std::make_shared<TpchQ22State>(*current);
+  StateEditor editor(*state);
 
-  // Load existing state
-  const auto visibility = services.CurrentVisibility();
-  const auto snapshot = services.StateStore().ReadPartitions(
-      visibility, {TpchQ22Layout::kFull});
-
-  core::Version existing_version = 0;
-  std::shared_ptr<TpchQ22State> new_state;
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == TpchQ22Layout::kFull) {
-      const auto *typed = AsQ22Image(image);
-      if (!typed || !typed->state) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      new_state = std::make_shared<TpchQ22State>();
-      new_state->prefix_positive_sum = typed->state->prefix_positive_sum;
-      new_state->prefix_positive_count = typed->state->prefix_positive_count;
-      new_state->prefix_aggregates = typed->state->prefix_aggregates;
-      new_state->orphan_orders = typed->state->orphan_orders;
-      new_state->customers = typed->state->customers;
-      new_state->customer_overlay = typed->state->customer_overlay;
-      new_state->customer_erased = typed->state->customer_erased;
-      existing_version = image.version;
-      break;
-    }
-  }
-
-  if (!new_state) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+  auto inconsistent = [&] {
+    core::FinishRebuildAll(outcome);
     return outcome;
-  }
+  };
 
-  // Apply customer deltas
   for (const auto &delta : buffer.customer_deltas) {
-    if (delta.sign == 1) {
-      // Insert
-      TpchQ22State::CustomerRecord rec;
-      rec.prefix = delta.new_prefix;
+    if (delta.has_old) {
+      auto rec = state->customers.Get(delta.old_custkey);
+      if (rec.prefix_id == kTpchQ22NoCustomer || !Contribute(editor, rec, -1))
+        return inconsistent();
+      // The row is gone; orders of this custkey are kept (they may outlive it).
+      rec.prefix_id = kTpchQ22NoCustomer;
+      rec.balance_raw = 0;
+      state->customers.Set(delta.old_custkey, rec);
+    }
+    if (delta.has_new) {
+      auto rec = state->customers.Get(delta.new_custkey);
+      if (rec.prefix_id != kTpchQ22NoCustomer)
+        return inconsistent(); // duplicate key
+      rec.prefix_id = delta.new_phone_null ? kTpchQ22NullPhone
+                                           : editor.PrefixId(delta.new_prefix);
       rec.balance_raw = delta.new_balance;
-      rec.order_count = 0;
-
-      // Check for orphan orders
-      auto orphan_it = new_state->orphan_orders.find(delta.custkey);
-      if (orphan_it != new_state->orphan_orders.end()) {
-        rec.order_count = orphan_it->second;
-        new_state->orphan_orders.erase(orphan_it);
-      }
-
-      new_state->MutableCustomer(delta.custkey) = rec;
-
-      // Update positive aggregates
-      if (rec.balance_raw > 0 && !rec.prefix.empty()) {
-        new_state->prefix_positive_sum[rec.prefix] += rec.balance_raw;
-        new_state->prefix_positive_count[rec.prefix]++;
-      }
-
-      // Update prefix aggregate: if zero-order, add to distribution
-      if (rec.order_count == 0 && rec.balance_raw > 0 && !rec.prefix.empty()) {
-        auto &agg = new_state->prefix_aggregates[rec.prefix];
-        agg.AddBalance(rec.balance_raw);
-      }
-    } else if (delta.sign == -1) {
-      // Delete
-      const auto *found = new_state->FindCustomer(delta.custkey);
-      if (!found) {
-        // Not found — need rebuild
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-
-      auto rec = *found;
-
-      // Remove from positive aggregates
-      if (rec.balance_raw > 0 && !rec.prefix.empty()) {
-        new_state->prefix_positive_sum[rec.prefix] -= rec.balance_raw;
-        new_state->prefix_positive_count[rec.prefix]--;
-        if (new_state->prefix_positive_count[rec.prefix] <= 0) {
-          new_state->prefix_positive_sum.erase(rec.prefix);
-          new_state->prefix_positive_count.erase(rec.prefix);
-        }
-      }
-
-      // Remove from prefix aggregate if zero-order
-      if (rec.order_count == 0 && rec.balance_raw > 0 &&
-          !rec.prefix.empty()) {
-        auto agg_it = new_state->prefix_aggregates.find(rec.prefix);
-        if (agg_it != new_state->prefix_aggregates.end()) {
-          agg_it->second.RemoveBalance(rec.balance_raw);
-        }
-      }
-
-      new_state->EraseCustomer(delta.custkey);
-    } else {
-      // Update
-      if (!new_state->FindCustomer(delta.custkey)) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-
-      auto &rec = new_state->MutableCustomer(delta.custkey);
-
-      // Handle prefix change
-      if (rec.prefix != delta.new_prefix) {
-        // Remove from old prefix positive aggregates
-        if (rec.balance_raw > 0 && !rec.prefix.empty()) {
-          new_state->prefix_positive_sum[rec.prefix] -= rec.balance_raw;
-          new_state->prefix_positive_count[rec.prefix]--;
-          if (new_state->prefix_positive_count[rec.prefix] <= 0) {
-            new_state->prefix_positive_sum.erase(rec.prefix);
-            new_state->prefix_positive_count.erase(rec.prefix);
-          }
-        }
-
-        // Remove from old prefix aggregate if zero-order
-        if (rec.order_count == 0 && rec.balance_raw > 0 &&
-            !rec.prefix.empty()) {
-          auto agg_it = new_state->prefix_aggregates.find(rec.prefix);
-          if (agg_it != new_state->prefix_aggregates.end()) {
-            agg_it->second.RemoveBalance(rec.balance_raw);
-          }
-        }
-
-        rec.prefix = delta.new_prefix;
-
-        // Add to new prefix positive aggregates
-        if (rec.balance_raw > 0 && !rec.prefix.empty()) {
-          new_state->prefix_positive_sum[rec.prefix] += rec.balance_raw;
-          new_state->prefix_positive_count[rec.prefix]++;
-        }
-
-        // Add to new prefix aggregate
-        if (rec.order_count == 0 && rec.balance_raw > 0 &&
-            !rec.prefix.empty()) {
-          auto &agg = new_state->prefix_aggregates[rec.prefix];
-          agg.AddBalance(rec.balance_raw);
-        }
-      }
-
-      // Handle balance change
-      if (rec.balance_raw != delta.new_balance) {
-        int64_t old_balance = rec.balance_raw;
-        int64_t new_balance = delta.new_balance;
-        rec.balance_raw = new_balance;
-
-        bool old_positive = old_balance > 0;
-        bool new_positive = new_balance > 0;
-
-        if (!rec.prefix.empty()) {
-          if (old_positive) {
-            new_state->prefix_positive_sum[rec.prefix] -= old_balance;
-            new_state->prefix_positive_count[rec.prefix]--;
-          }
-          if (new_positive) {
-            new_state->prefix_positive_sum[rec.prefix] += new_balance;
-            new_state->prefix_positive_count[rec.prefix]++;
-          }
-          if (new_state->prefix_positive_count[rec.prefix] <= 0) {
-            new_state->prefix_positive_sum.erase(rec.prefix);
-            new_state->prefix_positive_count.erase(rec.prefix);
-          }
-
-          // Update prefix aggregate
-          if (rec.order_count == 0 && !rec.prefix.empty()) {
-            auto agg_it = new_state->prefix_aggregates.find(rec.prefix);
-            if (agg_it != new_state->prefix_aggregates.end()) {
-              if (old_positive)
-                agg_it->second.RemoveBalance(old_balance);
-              if (new_positive)
-                agg_it->second.AddBalance(new_balance);
-            } else if (new_positive) {
-              auto &agg = new_state->prefix_aggregates[rec.prefix];
-              agg.AddBalance(new_balance);
-            }
-          }
-        }
-      }
+      if (!Contribute(editor, rec, +1))
+        return inconsistent();
+      state->customers.Set(delta.new_custkey, rec);
     }
   }
 
-  // Apply order deltas
   for (const auto &delta : buffer.order_deltas) {
-    int64_t old_count = 0;
-    int64_t new_count = 0;
-    std::string prefix;
-
-    auto *customer = new_state->FindCustomer(delta.custkey)
-                         ? &new_state->MutableCustomer(delta.custkey)
-                         : nullptr;
-    if (customer) {
-      old_count = customer->order_count;
-      new_count = old_count + delta.sign;
-      prefix = customer->prefix;
-      customer->order_count = new_count;
-
-      // If order count crossed zero boundary, update prefix aggregate
-      bool was_zero_order = (old_count == 0);
-      bool is_zero_order = (new_count == 0);
-
-      if (was_zero_order != is_zero_order) {
-        if (!is_zero_order) {
-          // Was zero-order, now has orders → remove from distribution
-          if (customer->balance_raw > 0 && !prefix.empty()) {
-            auto agg_it = new_state->prefix_aggregates.find(prefix);
-            if (agg_it != new_state->prefix_aggregates.end()) {
-              agg_it->second.RemoveBalance(customer->balance_raw);
-            }
-          }
-        } else {
-          // Now zero-order → add to distribution
-          if (customer->balance_raw > 0 && !prefix.empty()) {
-            auto &agg = new_state->prefix_aggregates[prefix];
-            agg.AddBalance(customer->balance_raw);
-          }
-        }
-      }
-    } else {
-      // Customer not found — update orphan orders
-      auto orphan_it = new_state->orphan_orders.find(delta.custkey);
-      old_count = (orphan_it != new_state->orphan_orders.end())
-                      ? orphan_it->second
-                      : 0;
-      new_count = old_count + delta.sign;
-
-      if (new_count <= 0) {
-        if (orphan_it != new_state->orphan_orders.end())
-          new_state->orphan_orders.erase(orphan_it);
-      } else {
-        new_state->orphan_orders[delta.custkey] = new_count;
-      }
-    }
+    auto rec = state->customers.Get(delta.custkey);
+    const int64_t orders = static_cast<int64_t>(rec.order_count) + delta.sign;
+    if (orders < 0 || orders > std::numeric_limits<int32_t>::max())
+      return inconsistent();
+    // Only crossing zero changes the zero-order multiset.
+    if (!Contribute(editor, rec, -1))
+      return inconsistent();
+    rec.order_count = static_cast<int32_t>(orders);
+    if (!Contribute(editor, rec, +1))
+      return inconsistent();
+    state->customers.Set(delta.custkey, rec);
   }
+  editor.Finish();
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
-  const auto typed_state =
-      std::static_pointer_cast<const TpchQ22State>(std::move(new_state));
-  outcome.updates.push_back(core::StateImage::Make(
-      TpchQ22Layout::kAccelerator, TpchQ22Layout::kFull, existing_version,
-      MakeStateImage(typed_state)));
-
-  // Populate interference_us from cost model
-  const auto &cost_model = services.MaintenanceCostModel();
-  (void)cost_model; // interference is handled by the harness via cost model
-
+  outcome.updates.push_back(
+      MakeImage(std::shared_ptr<const TpchQ22State>(std::move(state))));
   return outcome;
 }
 
@@ -593,227 +455,123 @@ bool TpchQ22Module::CheckValidity(core::AuxEngineServices &services,
       .IsValid();
 }
 
+void TpchQ22Module::EmitRows(const std::vector<TpchQ22OutputRow> &rows,
+                             core::AuxRowSink &sink) {
+  sink.Begin({{{"cntrycode", core::AuxType::String, false},
+               {"numcust", core::AuxType::Int64, false},
+               {"totacctbal", core::AuxType::ScaledDecimal, false}}});
+  for (const auto &row : rows) {
+    core::AuxRow out;
+    out.values.push_back(core::AuxValue::Of(core::AuxType::String, row.cntrycode));
+    out.values.push_back(core::AuxValue::Of(core::AuxType::Int64, row.numcust));
+    out.values.push_back(core::AuxValue::Of(
+        core::AuxType::ScaledDecimal, core::ScaledDecimal{row.totacctbal_raw, 2}));
+    sink.WriteRow(out);
+  }
+  sink.End();
+}
+
 // ── Execute ─────────────────────────────────────────────────────────────────
 void TpchQ22Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
-  if (!services.StateStore()
-           .CheckValidity({Id(), {}}, services.CurrentVisibility())
-           .IsValid()) {
+  const TpchQ22State *state = nullptr;
+  if (services.StateStore()
+          .CheckValidity({Id(), {}}, services.CurrentVisibility())
+          .IsValid())
+    state = ReadState(services);
+  if (!state) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
 
-  std::shared_ptr<const TpchQ22State> state;
-  if (!LoadState(services, state)) {
-    ExecuteFallback(services, arguments, sink);
-    return;
+  // AVG(c_acctbal) over customers with c_acctbal > 0 in the listed prefixes,
+  // as the exact rational S / C.
+  struct Selected {
+    const std::string *code;
+    const TpchQ22PrefixEntry *entry;
+  };
+  const auto codes = CountryCodes(arguments);
+  std::vector<Selected> selected;
+  int64_t positive_count = 0;
+  Int128 positive_sum = 0;
+  for (const auto &code : codes) {
+    const auto it = state->dictionary->ids.find(code);
+    if (it == state->dictionary->ids.end())
+      continue;
+    const auto *entry = state->prefixes[it->second].get();
+    selected.push_back({&code, entry});
+    positive_count += entry->positive_count;
+    positive_sum += entry->positive_sum_raw;
   }
-
-  // Extract 7 country codes from arguments
-  std::vector<std::string> country_codes;
-  for (const auto &val : arguments.values) {
-    if (!val.is_null && std::holds_alternative<std::string>(val.payload)) {
-      country_codes.push_back(std::get<std::string>(val.payload));
+  std::vector<TpchQ22OutputRow> rows;
+  if (positive_count > 0) {
+    // balance > S / C  <=>  balance > floor(S / C) for integral balances
+    // (S > 0 here), so one suffix query per code answers it exactly.
+    const auto threshold = static_cast<int64_t>(positive_sum / positive_count);
+    for (const auto &sel : selected) { // codes iterate in sorted order
+      const auto above = sel.entry->zero_order.SuffixAbove(threshold);
+      if (above.count <= 0)
+        continue;
+      if (above.sum > std::numeric_limits<int64_t>::max())
+        throw std::overflow_error("TPC-H Q22 totacctbal exceeds int64");
+      rows.push_back({*sel.code, above.count, static_cast<int64_t>(above.sum)});
     }
   }
-  if (country_codes.empty()) {
-    // Use fallback if no valid codes
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
-
-  EmitResult(*state, country_codes, sink);
+  EmitRows(rows, sink);
 }
 
 // ── ExecuteFallback ─────────────────────────────────────────────────────────
-void TpchQ22Module::ExecuteFallback(core::AuxEngineServices &services,
+// Exact answer straight from the tables (own uncommitted writes).
+void TpchQ22Module::ExecuteFallback(core::AuxEngineServices &,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
-  // Fallback: recompute from base tables using BuildState + EmitResult
-  const auto state = BuildState(services);
-
-  std::vector<std::string> country_codes;
-  for (const auto &val : arguments.values) {
-    if (!val.is_null && std::holds_alternative<std::string>(val.payload)) {
-      country_codes.push_back(std::get<std::string>(val.payload));
-    }
-  }
-
-  EmitResult(state, country_codes, sink);
-}
-
-// ── BuildState ──────────────────────────────────────────────────────────────
-TpchQ22State
-TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
   if (!initial_scan)
-    throw std::logic_error(
-        "TPC-H Q22 aux requires a typed initial scan source");
+    throw std::logic_error("TPC-H Q22 aux requires a typed initial scan source");
+  const auto codes = CountryCodes(arguments);
 
-  TpchQ22State state;
+  std::unordered_map<int64_t, bool> has_orders; // custkeys with an order
+  const bool counted = initial_scan->ScanOrderCounts(
+      [&](const TpchQ22OrderCount &c) { has_orders[c.custkey] = c.count > 0; });
+  if (!counted)
+    initial_scan->ScanOrders(
+        [&](const TpchQ22OrderInput &input) { has_orders[input.custkey] = true; });
 
-  // First, scan orders to determine which custkeys have orders
-  std::unordered_map<int64_t, int64_t> order_counts;
-  initial_scan->ScanOrders([&](const TpchQ22OrderInput &input) {
-    if (input.custkey > 0) {
-      order_counts[input.custkey]++;
-    }
-  });
-
-  // Then scan customers
+  struct Candidate {
+    std::string code;
+    int64_t balance;
+  };
+  std::vector<Candidate> zero_order;
+  int64_t positive_count = 0;
+  Int128 positive_sum = 0;
   initial_scan->ScanCustomers([&](const TpchQ22CustomerInput &input) {
-    if (input.custkey <= 0)
+    const auto code = PhonePrefix(input.phone);
+    int64_t balance = 0;
+    if (!codes.count(code) || !ToScale2(input.acctbal_raw, input.acctbal_scale, balance) ||
+        balance <= 0)
       return;
-
-    std::string prefix = ExtractPrefix(input.phone);
-    TpchQ22State::CustomerRecord rec;
-    rec.prefix = prefix;
-    rec.balance_raw = input.acctbal_raw;
-
-    // Determine order count
-    auto order_it = order_counts.find(input.custkey);
-    rec.order_count = (order_it != order_counts.end()) ? order_it->second : 0;
-
-    (*state.customers)[input.custkey] = rec;
-
-    // Positive balance aggregate
-    if (rec.balance_raw > 0 && !prefix.empty()) {
-      state.prefix_positive_sum[prefix] += rec.balance_raw;
-      state.prefix_positive_count[prefix]++;
-    }
-
-    // Zero-order positive balance → add to prefix aggregate
-    if (rec.order_count == 0 && rec.balance_raw > 0 && !prefix.empty()) {
-      auto &agg = state.prefix_aggregates[prefix];
-      agg.AddBalance(rec.balance_raw);
-    }
+    ++positive_count;
+    positive_sum += balance;
+    const auto it = has_orders.find(input.custkey);
+    if (it == has_orders.end() || !it->second)
+      zero_order.push_back({code, balance});
   });
 
-  // Handle orphan orders (custkeys in orders but not in customers)
-  for (const auto &[custkey, count] : order_counts) {
-    if (state.customers->find(custkey) == state.customers->end()) {
-      state.orphan_orders[custkey] = count;
-    }
+  std::map<std::string, std::pair<int64_t, Int128>> groups;
+  if (positive_count > 0)
+    for (const auto &c : zero_order)
+      if (static_cast<Int128>(c.balance) * positive_count > positive_sum) {
+        auto &g = groups[c.code];
+        ++g.first;
+        g.second += c.balance;
+      }
+  std::vector<TpchQ22OutputRow> rows;
+  for (const auto &[code, g] : groups) {
+    if (g.second > std::numeric_limits<int64_t>::max())
+      throw std::overflow_error("TPC-H Q22 totacctbal exceeds int64");
+    rows.push_back({code, g.first, static_cast<int64_t>(g.second)});
   }
-
-  // Rebuild all the suffix arrays for querying
-  for (auto &[prefix, agg] : state.prefix_aggregates) {
-    agg.RebuildSuffixes();
-  }
-
-  return state;
-}
-
-// ── LoadState ───────────────────────────────────────────────────────────────
-bool TpchQ22Module::LoadState(
-    core::AuxEngineServices &services,
-    std::shared_ptr<const TpchQ22State> &state) const {
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {TpchQ22Layout::kFull});
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == TpchQ22Layout::kFull) {
-      const auto *typed = AsQ22Image(image);
-      if (!typed || !typed->state)
-        return false;
-      state = typed->state;
-      return true;
-    }
-  }
-  return false;
-}
-
-// ── EmitResult ──────────────────────────────────────────────────────────────
-void TpchQ22Module::EmitResult(
-    const TpchQ22State &state,
-    const std::vector<std::string> &country_codes,
-    core::AuxRowSink &sink) const {
-  // Deduplicate codes
-  std::set<std::string> unique_codes(country_codes.begin(),
-                                     country_codes.end());
-
-  // Compute overall positive sum/count for the selected codes
-  int64_t global_positive_sum = 0;
-  int64_t global_positive_count = 0;
-  for (const auto &code : unique_codes) {
-    auto sum_it = state.prefix_positive_sum.find(code);
-    if (sum_it != state.prefix_positive_sum.end()) {
-      global_positive_sum += sum_it->second;
-      auto cnt_it = state.prefix_positive_count.find(code);
-      global_positive_count += (cnt_it != state.prefix_positive_count.end())
-                                   ? cnt_it->second
-                                   : 0;
-    }
-  }
-
-  // No positive customers → no rows (AVG is NULL in SQL)
-  if (global_positive_count <= 0) {
-    sink.Begin(core::OutputSchema{});
-    sink.End();
-    return;
-  }
-
-  // Compute the threshold balance (strictly greater than AVG)
-  // AVG = global_positive_sum / global_positive_count
-  // threshold is the integer scaled balance: acctbal > AVG means
-  // acctbal_raw > global_positive_sum / global_positive_count
-  // i.e., acctbal_raw * global_positive_count > global_positive_sum
-  int64_t threshold_raw = 0;
-  if (global_positive_count > 0) {
-    // For strictly greater: acctbal_raw * count > sum
-    // So we use floor division to find the strict boundary
-    // threshold_raw = floor(global_positive_sum / global_positive_count)
-    // A balance > AVG iff balance_raw > threshold_raw or
-    // (balance_raw == threshold_raw + 1 when remainder != 0)
-    // Actually: balance_raw > sum / count
-    // iff count * balance_raw > sum
-    threshold_raw = global_positive_sum / global_positive_count;
-  }
-
-  std::vector<TpchQ22OutputRow> output_rows;
-
-  for (const auto &code : unique_codes) {
-    auto agg_it = state.prefix_aggregates.find(code);
-    if (agg_it == state.prefix_aggregates.end()) {
-      continue;
-    }
-
-    auto &agg = const_cast<TpchQ22State::PrefixAggregate &>(agg_it->second);
-    auto [count, sum] = agg.QueryGreaterThan(threshold_raw);
-
-    if (count > 0) {
-      TpchQ22OutputRow row;
-      row.cntrycode = code;
-      row.numcust = count;
-      row.totacctbal_raw = sum;
-      output_rows.push_back(row);
-    }
-  }
-
-  // Sort by cntrycode
-  std::sort(output_rows.begin(), output_rows.end(),
-            [](const TpchQ22OutputRow &a, const TpchQ22OutputRow &b) {
-              return a.cntrycode < b.cntrycode;
-            });
-
-  sink.Begin(
-      {{{"cntrycode", core::AuxType::String, false},
-        {"numcust", core::AuxType::Int64, false},
-        {"totacctbal", core::AuxType::ScaledDecimal, false}}});
-
-  for (const auto &row : output_rows) {
-    core::AuxRow out;
-    out.values.push_back(
-        core::AuxValue::Of(core::AuxType::String, row.cntrycode));
-    out.values.push_back(
-        core::AuxValue::Of(core::AuxType::Int64, row.numcust));
-    out.values.push_back(core::AuxValue::Of(
-        core::AuxType::ScaledDecimal,
-        core::ScaledDecimal{row.totacctbal_raw, 2}));
-    sink.WriteRow(out);
-  }
-
-  sink.End();
+  EmitRows(rows, sink);
 }
 
 std::vector<core::CalibrationWrite> TpchQ22Module::CalibrationWrites() const {
