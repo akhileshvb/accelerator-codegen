@@ -1631,6 +1631,29 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
             ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
             ${ACCEL_PG_INCLUDEDIR}
     )
+    # Shared accelerator state (accel.shared_state): hits across connections,
+    # memory vs connections, concurrency, killed backends, worker restarts.
+    add_executable(test_postgres_shared_state
+        tests/aux_state/test_postgres_shared_state.cpp
+        tests/aux_state/postgres_server_stubs.cpp
+    )
+    find_library(LIBPQ_SHARED_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_postgres_shared_state
+        PRIVATE
+            accelerator_codegen
+            duckdb_sibling
+            ${LIBPQ_SHARED_LIB}
+            Threads::Threads
+    )
+    target_include_directories(test_postgres_shared_state
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+            ${ACCEL_PG_INCLUDEDIR}
+    )
     add_executable(test_postgres_tpch_differential
         tests/aux_state/test_postgres_tpch_differential.cpp
         tests/aux_state/postgres_server_stubs.cpp

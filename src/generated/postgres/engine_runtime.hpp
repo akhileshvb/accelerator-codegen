@@ -7,6 +7,7 @@
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
 #include "postgres/engine_helpers.hpp"
+#include "accelerator_codegen/stateful/postgres/aux_server.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
@@ -136,7 +137,9 @@ namespace auxsync = accelerator_codegen::aux_state::engine::postgres::aux_sync;
 //                commit's counter increment.
 template <typename Module, typename Config, typename ScanT>
 class Runtime final : public accelerator_codegen::aux_state::engine::postgres::
-                          aux_sync::Participant {
+                          aux_sync::Participant,
+                      public accelerator_codegen::aux_state::engine::postgres::
+                          aux_server::ServerRuntime {
 public:
   // A table/column whose text ordering the verified result depends on.
   struct CollationKey {
@@ -171,14 +174,24 @@ public:
       tables.push_back(dependency.table);
     }
     dep_slots = auxsync::SlotsOf(tables);
-    accelerator_codegen::aux_state::engine::postgres::
-        RegisterPostgresMutationBackend(&backend);
+    namespace srv = accelerator_codegen::aux_state::engine::postgres::aux_server;
+    if (srv::InServer()) {
+      // The state server hosts this runtime: it is maintained from shipped
+      // commits, not from this process's transactions.
+      srv::RegisterServerRuntime(this);
+      return;
+    }
+    if (!srv::SharedEnabled()) {
+      accelerator_codegen::aux_state::engine::postgres::
+          RegisterPostgresMutationBackend(&backend);
+    }
     accelerator_codegen::aux_state::engine::postgres::
         RegisterPostgresXactCallbacks();
     auxsync::RegisterParticipant(this);
   }
 
   void Execute(const core::QueryArguments &arguments, FunctionCallInfo fcinfo) {
+    namespace srv = accelerator_codegen::aux_state::engine::postgres::aux_server;
     // Every read in this statement: one aux state version.
     accelerator_codegen::aux_state::AuxReadScope one_version;
     // TokenForSnapshot: freeze (S, epoch) at the earliest UDF entry.
@@ -186,6 +199,14 @@ public:
 
     RequireCCollation();
     RequireMaterialize(fcinfo);
+    if (srv::InServer()) {
+      ServerExecute(arguments, fcinfo);
+      return;
+    }
+    if (srv::SharedEnabled()) {
+      SharedExecute(arguments, fcinfo);
+      return;
+    }
     // Prefer this Runtime for subsequent trigger captures in this session.
     accelerator_codegen::aux_state::engine::postgres::
         RegisterPostgresMutationBackend(&backend);
@@ -199,6 +220,13 @@ public:
       rebuilt = hit;
     }
     observed_mutations = accel_pg_get_observer_mutation_count();
+    if (aux_server::LogDecisions()) {
+      elog(LOG, "DBG %s hit=%d rebuilt=%d synced=%d built=%d S[xmin=%u xmax=%u xcnt=%u sub=%d] base[ok=%d xmax=%u run=%zu] own=%zu seq_ok=%d",
+           accelerator.c_str(), (int)hit, (int)rebuilt, (int)marker.synced, (int)built,
+           statement->xmin, statement->xmax, statement->xcnt, (int)statement->subxcnt,
+           (int)marker.base.ok, marker.base.xmax, marker.base.running.size(),
+           marker.own_commits.size(), (int)CountersMatch());
+    }
     auto *return_set_info =
         reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
     PgSink sink(return_set_info->setResult, return_set_info->setDesc);
@@ -216,6 +244,143 @@ public:
                                      : core::AuxExecutePath::Hit);
   }
 
+  // Shared state: ask the per-database worker, which holds the one copy.  The
+  // worker declines (or is unreachable) whenever it cannot prove the state
+  // equals the database as this statement's snapshot sees it; then the
+  // answer comes from SQL here, as in per-backend mode.
+  void SharedExecute(const core::QueryArguments &arguments,
+                     FunctionCallInfo fcinfo) {
+    namespace srv = accelerator_codegen::aux_state::engine::postgres::aux_server;
+    // A transaction's own writes to a dependency are not in anyone's state.
+    if (!auxsync::OwnRegisteredAnyOf(dep_slots)) {
+      core::AuxExecutePath path = core::AuxExecutePath::Fallback;
+      if (srv::RemoteExecute(fcinfo, path) == srv::Remote::Served) {
+        core::RecordAuxExecute(path);
+        return;
+      }
+    }
+    auto *return_set_info =
+        reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
+    PgSink sink(return_set_info->setResult, return_set_info->setDesc);
+    t_table_scans = 0;
+    module.ExecuteFallback(backend, arguments, sink);
+    core::RecordAuxExecute(core::AuxExecutePath::Fallback);
+  }
+
+  // In the worker: the same hit / rebuild decision, but a statement that
+  // cannot be served is declined (the caller answers from SQL) instead of
+  // being answered by a fallback here.
+  void ServerExecute(const core::QueryArguments &arguments,
+                     FunctionCallInfo fcinfo) {
+    namespace srv = accelerator_codegen::aux_state::engine::postgres::aux_server;
+    srv::NoteCurrentRuntime(this);
+    Snapshot statement = GetActiveSnapshot();
+    bool hit = HitAllowed(statement);
+    bool rebuilt = false;
+    if (!hit && NeedsSync() && CanRebuildNow()) {
+      Rebuild();
+      hit = HitAllowed(statement);
+      rebuilt = hit;
+    }
+    if (!hit) {
+      srv::NoteDeclined();
+      return;
+    }
+    auto *return_set_info =
+        reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
+    PgSink sink(return_set_info->setResult, return_set_info->setDesc);
+    t_table_scans = 0;
+    module.Execute(backend, arguments, sink);
+    srv::NoteServed(t_table_scans > 0 ? core::AuxExecutePath::Fallback
+                    : rebuilt         ? core::AuxExecutePath::RebuiltOnRead
+                                      : core::AuxExecutePath::Hit);
+  }
+
+  // ---- ServerRuntime ----
+  const core::AcceleratorId &ServerKey() const override { return accelerator; }
+  std::vector<core::TableDependency> ServerDependencies() const override {
+    return const_cast<Module &>(module).Dependencies();
+  }
+  void ServerInvalidate() override {
+    marker.synced = false;
+    marker.own_commits.clear();
+  }
+  // One committed transaction, shipped by its backend (see aux_server.hpp).
+  // Folds it into the state only if the state was synced right before it, the
+  // capture saw every write the commit made to this accelerator's tables, and
+  // the counters show nothing else slipped in; otherwise the marker is
+  // dropped and the state is rebuilt by the next query.
+  void ServerApply(const aux_server::ApplyInfo &info,
+                   const aux_server::ApplyEntry *entry) override {
+    namespace srv = accelerator_codegen::aux_state::engine::postgres::aux_server;
+    bool touched = false;
+    for (auto slot : dep_slots)
+      touched = touched || info.wrote[slot];
+    if (!touched || !built || !marker.synced) {
+      return;
+    }
+    auto fail = [&] {
+      marker.synced = false;
+      marker.own_commits.clear();
+      srv::NoteApplyOutcome(false);
+    };
+    if (!entry || entry->batches.size() > 1) {
+      return fail();
+    }
+    for (auto slot : dep_slots) {
+      if (info.wrote[slot] &&
+          std::find(entry->examined_slots.begin(), entry->examined_slots.end(),
+                    slot) == entry->examined_slots.end()) {
+        return fail();
+      }
+    }
+    std::vector<uint64_t> seq;
+    auxsync::ReadSeq(dep_slots, seq);
+    for (std::size_t i = 0; i < dep_slots.size(); ++i) {
+      const auto slot = dep_slots[i];
+      const uint64_t add = info.wrote[slot] ? 1 : 0;
+      if (seq[i] != marker.seq[i] + add ||
+          (add && info.old_seq[slot] != marker.seq[i])) {
+        return fail();
+      }
+    }
+    try {
+      if (!entry->batches.empty()) {
+        for (const auto &batch : entry->batches) {
+          backend.CaptureMutationAtDepth(batch, 0);
+        }
+        backend.OnPreCommit();
+        backend.OnCommit();
+      }
+    } catch (...) {
+      try {
+        backend.OnAbort();
+      } catch (...) {
+      }
+      store.ClearTransactionDirty();
+      return fail();
+    }
+    std::vector<uint64_t> after;
+    auxsync::ReadSeq(dep_slots, after);
+    if (store.NeedsRebuild() || after != seq) {
+      return fail();
+    }
+    marker.seq = seq;
+    marker.own_commits.push_back(info.xid);
+    if (marker.own_commits.size() >= kRebaseOwnCommits) {
+      // Nothing else committed on these tables (the counters above), so a
+      // snapshot taken now sees exactly the applied commits: it becomes the
+      // new base and the list of applied commits can be dropped.
+      auxsync::SnapMark base = auxsync::MarkOf(GetLatestSnapshot());
+      if (!base.ok) {
+        return fail();
+      }
+      marker.base = std::move(base);
+      marker.own_commits.clear();
+    }
+    srv::NoteApplyOutcome(true);
+  }
+
   void BeforePreCommit() override {
     precommit_ok = false;
     if (!auxsync::OwnRegisteredAnyOf(dep_slots) || !marker.synced) {
@@ -227,6 +392,12 @@ public:
   }
 
   void AfterCommit(const auxsync::CommitInfo &info) override {
+    if (accelerator_codegen::aux_state::engine::postgres::aux_server::
+            SharedEnabled()) {
+      // This backend's copy (if any) is not maintained in shared mode.
+      marker.synced = false;
+      return;
+    }
     if (info.maintenance_failed) {
       marker.synced = false;
     }
@@ -261,6 +432,7 @@ public:
 
 private:
   static constexpr std::size_t kMaxOwnCommits = 1024;
+  static constexpr std::size_t kRebaseOwnCommits = 64;
   struct SyncMarker {
     bool synced = false;
     auxsync::SnapMark base;
@@ -302,11 +474,14 @@ private:
   }
 
   void Rebuild() {
-    marker = SyncMarker{};
     std::vector<uint64_t> before;
     if (!auxsync::ReadCounters(dep_slots, /*allow_own=*/false, before)) {
-      return; // a writer is in flight: the result could not be certified
+      // A writer is in flight: the result could not be certified.  The
+      // marker is left alone: hits are re-validated against the counters.
+      return;
     }
+    aux_server::BusyScope busy;
+    marker = SyncMarker{};
     Snapshot fresh = GetLatestSnapshot();
     auxsync::SnapMark base = auxsync::MarkOf(fresh);
     PushActiveSnapshot(fresh);
@@ -332,8 +507,10 @@ private:
     }
     elog(DEBUG1, "accelerator %s: rebuild (%s)", accelerator.c_str(),
          marker.synced ? "synced" : "unsynced");
-    accelerator_codegen::aux_state::engine::postgres::
-        RegisterPostgresBackendForMutations();
+    if (!aux_server::InServer()) {
+      accelerator_codegen::aux_state::engine::postgres::
+          RegisterPostgresBackendForMutations();
+    }
   }
 
   // Verified domain: the reference semantics orders text byte-wise

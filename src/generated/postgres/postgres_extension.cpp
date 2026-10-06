@@ -14,6 +14,7 @@
 
 #include "accelerator_codegen/runtime/postgres/postgres_extension_bridge.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
+#include "accelerator_codegen/stateful/postgres/aux_server_text.hpp"
 #include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
 #include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
@@ -353,7 +354,10 @@ Datum accel_postgres_get_execute_counts(PG_FUNCTION_ARGS) {
 // ("action=A rows=N partitions=M"; NULL if none), for calibration.
 PG_FUNCTION_INFO_V1(accel_postgres_get_last_maintenance_decision);
 Datum accel_postgres_get_last_maintenance_decision(PG_FUNCTION_ARGS) {
-  const auto text = accelerator_codegen::aux_state::core::FormatLastMaintenanceDecision();
+  auto text = accelerator_codegen::aux_state::engine::postgres::aux_server::
+      LastMaintenanceDecisionText();
+  if (text.empty())
+    text = accelerator_codegen::aux_state::core::FormatLastMaintenanceDecision();
   if (text.empty())
     PG_RETURN_NULL();
   PG_RETURN_TEXT_P(cstring_to_text(text.c_str()));

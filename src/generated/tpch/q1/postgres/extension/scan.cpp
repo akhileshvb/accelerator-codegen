@@ -10,7 +10,7 @@
 
 #include "accelerator_codegen/stateful/core/decimal_text.hpp"
 #include "accelerator_codegen/stateful/core/sql_date.hpp"
-#include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
+#include "tpch/postgres_tpch_table_ids.hpp"
 #include "postgres/engine_runtime.hpp"
 #include "postgres/runtime.hpp"
 

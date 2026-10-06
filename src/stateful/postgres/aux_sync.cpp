@@ -6,6 +6,8 @@ extern "C" {
 #include <miscadmin.h>
 #include <port/atomics.h>
 #include <storage/dsm_registry.h>
+#include <storage/lock.h>
+#include <storage/lmgr.h>
 #include <utils/snapshot.h>
 }
 
@@ -29,6 +31,7 @@ Oid g_shared_db = InvalidOid;
 std::array<bool, kSlots> g_registered{};
 std::array<bool, kSlots> g_truncated{};
 bool g_registered_any = false;
+bool g_gate_held = false;
 CommitInfo g_commit_info;
 
 std::vector<Participant *> g_participants;
@@ -195,6 +198,7 @@ void ResetTransaction() {
   g_registered.fill(false);
   g_truncated.fill(false);
   g_registered_any = false;
+  g_gate_held = false;
   g_commit_info = CommitInfo{};
 }
 
@@ -214,6 +218,27 @@ bool ReadCounters(const std::vector<std::size_t> &slots, bool allow_own,
     seq_out.push_back(pg_atomic_read_u64(&shared->seq[slot]));
   }
   return true;
+}
+
+void ReadSeq(const std::vector<std::size_t> &slots,
+             std::vector<uint64_t> &seq_out) {
+  SharedCounters *shared = Shared();
+  pg_memory_barrier();
+  seq_out.clear();
+  for (auto slot : slots) {
+    seq_out.push_back(pg_atomic_read_u64(&shared->seq[slot]));
+  }
+}
+
+void AcquireCommitGate() {
+  if (g_gate_held) {
+    return; // held for the rest of this transaction
+  }
+  LOCKTAG tag;
+  // An advisory-class lock in a field-4 namespace no pg_advisory_* call uses.
+  SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, 0x41435841u, 0u, 3);
+  (void)LockAcquire(&tag, ExclusiveLock, false, false);
+  g_gate_held = true;
 }
 
 bool UsableSnapshot(Snapshot snapshot) {

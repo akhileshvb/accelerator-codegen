@@ -1,8 +1,8 @@
 // GENERATED BACKEND - PostgreSQL transaction callbacks + mutation fan-out
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
+#include "accelerator_codegen/stateful/postgres/aux_server.hpp"
 #include "accelerator_codegen/stateful/postgres/aux_sync.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
-#include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
 #include "accelerator_codegen/stateful/postgres/snapshot_token.hpp"
 
 #include <algorithm>
@@ -26,6 +26,9 @@ static std::vector<PostgresAuxBackend *> g_mutation_backends;
 
 void XactCallbackBridge(XactEvent event, void *arg) {
   (void)arg;
+  if (aux_server::InServer()) {
+    return; // the state server's own transactions are not accelerator writes
+  }
   std::vector<PostgresAuxBackend *> backends;
   {
     std::lock_guard<std::mutex> lock(g_backends_mu);
@@ -40,6 +43,8 @@ void XactCallbackBridge(XactEvent event, void *arg) {
     break;
   case XACT_EVENT_PRE_COMMIT: {
     aux_sync::NoteTopXid();
+    // Shared state: decide what ships and take the commit gate (may wait).
+    aux_server::PrepareCommit();
     // Statement portals have already popped their snapshot; SPI scans in
     // StageMaintenance need an active one.  Use the latest snapshot (not the
     // transaction snapshot, which is stale under REPEATABLE READ): the
@@ -75,6 +80,9 @@ void XactCallbackBridge(XactEvent event, void *arg) {
     // Past the point of no return: nothing here may raise an error.
     const aux_sync::CommitInfo &published = aux_sync::PublishCommit();
     aux_sync::CommitInfo info = published;
+    // Shared state: hand the (now visible and counted) commit to the worker.
+    aux_server::ShipCommit(published);
+    aux_server::ResetStage();
     for (auto *backend : backends) {
       if (!backend) {
         continue;
@@ -98,6 +106,7 @@ void XactCallbackBridge(XactEvent event, void *arg) {
     break;
   }
   case XACT_EVENT_ABORT:
+    aux_server::ResetStage();
     for (auto *backend : backends) {
       if (!backend) {
         continue;
@@ -120,6 +129,9 @@ void SubXactCallbackBridge(SubXactEvent event, SubTransactionId my_subid,
   (void)my_subid;
   (void)parent_subid;
   (void)arg;
+  if (aux_server::InServer()) {
+    return;
+  }
   if (event != SUBXACT_EVENT_COMMIT_SUB && event != SUBXACT_EVENT_ABORT_SUB) {
     return;
   }
@@ -129,6 +141,11 @@ void SubXactCallbackBridge(SubXactEvent event, SubTransactionId my_subid,
     return;
   }
   const auto depth = static_cast<std::size_t>(level - 1);
+  if (event == SUBXACT_EVENT_COMMIT_SUB) {
+    aux_server::OnSubCommit(depth);
+  } else {
+    aux_server::OnSubAbort(depth);
+  }
   std::vector<PostgresAuxBackend *> backends;
   {
     std::lock_guard<std::mutex> lock(g_backends_mu);
@@ -211,15 +228,7 @@ void UnregisterPostgresMutationBackend(PostgresAuxBackend *backend) {
   }
 }
 
-void DispatchPostgresMutation(const char *relname,
-                              const core::MutationBatch &mutation) {
-  core::MutationBatch batch = mutation;
-  if (relname && *relname) {
-    const auto id = tpch_tables::IdFromRelname(relname);
-    if (id != 0) {
-      batch.table = id;
-    }
-  }
+void DispatchPostgresMutation(const core::MutationBatch &batch) {
 
   std::vector<PostgresAuxBackend *> backends;
   {

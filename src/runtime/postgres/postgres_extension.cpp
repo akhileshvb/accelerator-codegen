@@ -23,6 +23,7 @@ extern "C" {
 #include <executor/executor.h>
 PG_MODULE_MAGIC;
 }
+#include "accelerator_codegen/stateful/postgres/aux_server.hpp"
 #include <algorithm>
 
 #include <mutex>
@@ -928,6 +929,9 @@ extern "C" {
 void accel_pg_init_backend(const char *backing_dir);
 }
 
-void _PG_init(void) { accel_pg_init_backend(nullptr); }
+void _PG_init(void) {
+  accel_pg_init_backend(nullptr);
+  accelerator_codegen::aux_state::engine::postgres::aux_server::DefineGucs();
+}
 
 } // extern "C"

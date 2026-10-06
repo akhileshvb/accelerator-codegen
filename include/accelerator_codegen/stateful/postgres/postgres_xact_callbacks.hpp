@@ -26,10 +26,8 @@ void RegisterPostgresMutationBackend(PostgresAuxBackend *backend);
 void UnregisterPostgresMutationBackend(PostgresAuxBackend *backend);
 bool HasRegisteredPostgresMutationBackend();
 
-// Remap TPC-H relname → canonical table id (when relname non-null) and
-// CaptureMutation on all registered Runtime backends.
-void DispatchPostgresMutation(const char *relname,
-                              const core::MutationBatch &mutation);
+// CaptureMutation (keyed by mutation.table) on all registered Runtime backends.
+void DispatchPostgresMutation(const core::MutationBatch &mutation);
 
 // Snapshot of backends currently registered for mutation fan-out.
 std::vector<PostgresAuxBackend *> RegisteredPostgresMutationBackends();
