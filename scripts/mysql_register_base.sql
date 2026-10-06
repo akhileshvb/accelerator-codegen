@@ -36,6 +36,9 @@ CREATE FUNCTION mysql_accel_set_expected_queries RETURNS STRING SONAME 'accelera
 DROP FUNCTION IF EXISTS mysql_accel_get_last_maintenance_action;
 CREATE FUNCTION mysql_accel_get_last_maintenance_action RETURNS STRING SONAME 'accelerator_codegen_mysql.so';
 
+DROP FUNCTION IF EXISTS mysql_accel_capture_row;
+CREATE FUNCTION mysql_accel_capture_row RETURNS STRING SONAME 'accelerator_codegen_mysql.so';
+
 DROP FUNCTION IF EXISTS mysql_accel_mutations_capture_row;
 CREATE FUNCTION mysql_accel_mutations_capture_row RETURNS STRING SONAME 'accelerator_codegen_mysql.so';
 
