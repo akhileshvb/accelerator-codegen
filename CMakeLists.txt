@@ -1611,6 +1611,26 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
             ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
             ${ACCEL_PG_INCLUDEDIR}
     )
+    # Parameter-generality differential (all 22 queries, spec / off-spec / edge params).
+    add_executable(test_postgres_tpch_params
+        tests/aux_state/test_postgres_tpch_params.cpp
+        tests/aux_state/postgres_server_stubs.cpp
+    )
+    find_library(LIBPQ_PARAMS_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+    target_link_libraries(test_postgres_tpch_params
+        PRIVATE
+            accelerator_codegen
+            duckdb_sibling
+            ${LIBPQ_PARAMS_LIB}
+    )
+    target_include_directories(test_postgres_tpch_params
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+            ${ACCEL_PG_INCLUDEDIR}
+    )
     add_executable(test_postgres_tpch_differential
         tests/aux_state/test_postgres_tpch_differential.cpp
         tests/aux_state/postgres_server_stubs.cpp
@@ -2050,6 +2070,24 @@ if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
         endif()
         if(BUILD_TESTING)
             add_test(NAME test_mysql_aux_multi_connection_stress COMMAND test_mysql_aux_multi_connection_stress)
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_mysql_aux_build_race.cpp")
+        add_executable(test_mysql_aux_build_race
+            tests/aux_state/test_mysql_aux_build_race.cpp
+        )
+        target_link_libraries(test_mysql_aux_build_race
+            PRIVATE accelerator_codegen duckdb_sibling)
+        target_include_directories(test_mysql_aux_build_race
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+        )
+        if(TARGET accelerator_codegen_mysql)
+            add_dependencies(test_mysql_aux_build_race accelerator_codegen_mysql)
         endif()
     endif()
 

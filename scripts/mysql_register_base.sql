@@ -15,6 +15,18 @@ CREATE FUNCTION mysql_accel_set_force_maintenance_action RETURNS STRING SONAME '
 DROP FUNCTION IF EXISTS mysql_accel_get_last_maintenance_decision;
 CREATE FUNCTION mysql_accel_get_last_maintenance_decision RETURNS STRING SONAME 'accelerator_codegen_mysql.so';
 
+DROP FUNCTION IF EXISTS mysql_accel_invalidate_all;
+CREATE FUNCTION mysql_accel_invalidate_all RETURNS STRING SONAME 'accelerator_codegen_mysql.so';
+
+DROP FUNCTION IF EXISTS mysql_accel_set_scan_database;
+CREATE FUNCTION mysql_accel_set_scan_database RETURNS STRING SONAME 'accelerator_codegen_mysql.so';
+
+DROP FUNCTION IF EXISTS mysql_accel_set_scan_mode;
+CREATE FUNCTION mysql_accel_set_scan_mode RETURNS STRING SONAME 'accelerator_codegen_mysql.so';
+
+DROP FUNCTION IF EXISTS mysql_accel_get_build_stats;
+CREATE FUNCTION mysql_accel_get_build_stats RETURNS STRING SONAME 'accelerator_codegen_mysql.so';
+
 DROP FUNCTION IF EXISTS mysql_accel_get_execute_counts;
 CREATE FUNCTION mysql_accel_get_execute_counts RETURNS STRING SONAME 'accelerator_codegen_mysql.so';
 

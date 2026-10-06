@@ -11,8 +11,9 @@ namespace accelerator_codegen::aux_state::query {
 
 inline std::vector<core::CalibrationWrite> TpchQ2CalibrationWrites() {
   using namespace calibration;
-  // A supplier that is not a part's cheapest (cost > 900, the minimum is
-  // almost always lower) changes in place; a cheapest one rebuilds.
+  // Every partsupp change is a point edit of the part's offer list (the
+  // cheapest regional offer is derived at query time); cost > 900 keeps the
+  // writes away from the cheapest offers so they mostly leave results alone.
   std::vector<Shape> shapes;
   static const std::vector<std::string> wheres = [] {
     std::vector<std::string> out;
