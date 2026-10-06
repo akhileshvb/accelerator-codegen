@@ -447,6 +447,101 @@ std::vector<NamedWrite> TargetedWrites(duckdb::Connection &connection, const Sha
     return out;
   };
   switch (entry.query_id) {
+  case 3: { // customers of current top-10 orders change segment / are deleted / re-inserted (BUILDING)
+    const auto custs = KeyList(connection,
+        std::string("SELECT o_custkey FROM orders WHERE o_orderkey IN (SELECT l_orderkey FROM (") + entry.base_sql +
+        ")) GROUP BY o_custkey ORDER BY min(o_orderkey) LIMIT 3");
+    if (custs.size() == 3) {
+      const auto c0 = std::to_string(custs[0]), c1 = std::to_string(custs[1]), c2 = std::to_string(custs[2]);
+      writes.push_back({"q3 top customer to MACHINERY (acctbal too)",
+                        "UPDATE customer SET c_acctbal = c_acctbal + 1, c_mktsegment = 'MACHINERY' WHERE c_custkey = " + c0});
+      writes.push_back({"q3 top customer back to BUILDING",
+                        "UPDATE customer SET c_mktsegment = 'BUILDING' WHERE c_custkey = " + c0});
+      writes.push_back({"q3 acctbal only", "UPDATE customer SET c_acctbal = c_acctbal + 1 WHERE c_custkey = " + c0});
+      writes.push_back({"q3 top customer deleted (orders stay)",
+                        "CREATE OR REPLACE TEMP TABLE q3_keep AS SELECT * FROM customer WHERE c_custkey = " + c1 +
+                            "; DELETE FROM customer WHERE c_custkey = " + c1});
+      writes.push_back({"q3 deleted customer re-inserted", "INSERT INTO customer SELECT * FROM q3_keep"});
+      writes.push_back({"q3 customer segment + lineitem delete in one transaction",
+                        "UPDATE customer SET c_mktsegment = 'FURNITURE' WHERE c_custkey = " + c2 +
+                            "; DELETE FROM lineitem WHERE rowid IN (SELECT l.rowid FROM lineitem l JOIN orders o ON "
+                            "o.o_orderkey = l.l_orderkey WHERE o.o_custkey = " + c2 + " LIMIT 1)"});
+      writes.push_back({"q3 customer back to BUILDING (again)",
+                        "UPDATE customer SET c_mktsegment = 'BUILDING' WHERE c_custkey = " + c2});
+    }
+    break;
+  }
+  case 8: { // orders changed or deleted alone while their lineitems stay (INDIA / ASIA / PROMO BRUSHED BRASS)
+    const auto orders = KeyList(connection,
+        "SELECT o_orderkey FROM orders JOIN lineitem ON l_orderkey = o_orderkey JOIN part ON p_partkey = l_partkey "
+        "JOIN customer ON c_custkey = o_custkey JOIN nation ON n_nationkey = c_nationkey JOIN region ON "
+        "r_regionkey = n_regionkey WHERE r_name = 'ASIA' AND p_type = 'PROMO BRUSHED BRASS' AND o_orderdate "
+        "BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' GROUP BY o_orderkey ORDER BY o_orderkey LIMIT 3");
+    const auto other_cust = KeyList(connection,
+        "SELECT c_custkey FROM customer JOIN nation ON n_nationkey = c_nationkey JOIN region ON r_regionkey = "
+        "n_regionkey WHERE r_name <> 'ASIA' ORDER BY c_custkey LIMIT 1");
+    if (orders.size() == 3 && other_cust.size() == 1) {
+      const auto o0 = std::to_string(orders[0]), o1 = std::to_string(orders[1]), o2 = std::to_string(orders[2]);
+      writes.push_back({"q8 order date moves year",
+                        "UPDATE orders SET o_orderdate = CASE WHEN year(o_orderdate) = 1995 THEN o_orderdate + "
+                        "INTERVAL 1 YEAR ELSE o_orderdate - INTERVAL 1 YEAR END WHERE o_orderkey = " + o0});
+      writes.push_back({"q8 order moves customer (out of the region)",
+                        "UPDATE orders SET o_custkey = " + std::to_string(other_cust[0]) + " WHERE o_orderkey = " + o1});
+      writes.push_back({"q8 order deleted alone (lineitems stay)", "DELETE FROM orders WHERE o_orderkey = " + o2});
+    }
+    break;
+  }
+  case 7: { // dimension changes under lineitems in the window (UNITED KINGDOM / BRAZIL)
+    const std::string window = " JOIN lineitem ON l_suppkey = s_suppkey JOIN orders ON o_orderkey = l_orderkey "
+                               "JOIN customer ON c_custkey = o_custkey WHERE l_shipdate BETWEEN DATE '1995-01-01' "
+                               "AND DATE '1996-12-31' AND ";
+    const auto supp = KeyList(connection, "SELECT s_suppkey FROM supplier" + window +
+                                              "s_nationkey = (SELECT n_nationkey FROM nation WHERE n_name = 'UNITED KINGDOM') "
+                                              "AND c_nationkey = (SELECT n_nationkey FROM nation WHERE n_name = 'BRAZIL') "
+                                              "GROUP BY s_suppkey ORDER BY s_suppkey LIMIT 2");
+    const auto cust = KeyList(connection, "SELECT c_custkey FROM supplier" + window +
+                                              "c_nationkey = (SELECT n_nationkey FROM nation WHERE n_name = 'BRAZIL') "
+                                              "AND s_nationkey = (SELECT n_nationkey FROM nation WHERE n_name = 'UNITED KINGDOM') "
+                                              "GROUP BY c_custkey ORDER BY c_custkey LIMIT 2");
+    if (supp.size() == 2 && cust.size() == 2) {
+      const auto s0 = std::to_string(supp[0]), s1 = std::to_string(supp[1]);
+      const auto c0 = std::to_string(cust[0]), c1 = std::to_string(cust[1]);
+      const std::string germany = "(SELECT n_nationkey FROM nation WHERE n_name = 'BRAZIL')";
+      const std::string france = "(SELECT n_nationkey FROM nation WHERE n_name = 'UNITED KINGDOM')";
+      writes.push_back({"q7 supplier to BRAZIL", "UPDATE supplier SET s_nationkey = " + germany + " WHERE s_suppkey = " + s0});
+      writes.push_back({"q7 supplier back to UNITED KINGDOM", "UPDATE supplier SET s_nationkey = " + france + " WHERE s_suppkey = " + s0});
+      writes.push_back({"q7 customer to UNITED KINGDOM", "UPDATE customer SET c_nationkey = " + france + " WHERE c_custkey = " + c0});
+      writes.push_back({"q7 customer delete (orders stay)", "DELETE FROM customer WHERE c_custkey = " + c1});
+      writes.push_back({"q7 supplier delete (lineitems stay)", "DELETE FROM supplier WHERE s_suppkey = " + s1});
+    }
+    break;
+  }
+  case 12: { // flip orders between the high and low priority classes (orders with counted lineitems)
+    const std::string counted = "SELECT o_orderkey FROM orders JOIN lineitem ON l_orderkey = o_orderkey "
+                                "WHERE l_shipmode IN ('MAIL', 'SHIP') AND l_commitdate < l_receiptdate "
+                                "AND l_shipdate < l_commitdate AND l_receiptdate >= DATE '1995-01-01' "
+                                "AND l_receiptdate < DATE '1996-01-01' AND o_orderpriority IN ";
+    const auto high = KeyList(connection, counted + "('1-URGENT', '2-HIGH') GROUP BY o_orderkey ORDER BY o_orderkey LIMIT 2");
+    const auto low = KeyList(connection, counted + "('3-MEDIUM', '5-LOW') GROUP BY o_orderkey ORDER BY o_orderkey LIMIT 2");
+    if (high.size() == 2 && low.size() == 2) {
+      const auto h0 = std::to_string(high[0]), h1 = std::to_string(high[1]);
+      const auto l0 = std::to_string(low[0]), l1 = std::to_string(low[1]);
+      writes.push_back({"q12 flip high->low", "UPDATE orders SET o_orderpriority = '5-LOW' WHERE o_orderkey = " + h0});
+      writes.push_back({"q12 flip low->high", "UPDATE orders SET o_orderpriority = '1-URGENT' WHERE o_orderkey = " + l0});
+      writes.push_back({"q12 same class", "UPDATE orders SET o_orderpriority = '2-HIGH' WHERE o_orderkey = " + l0});
+      // a flip with lineitem changes of the same order in the same transaction
+      writes.push_back({"q12 flip + lineitem delete",
+                        "UPDATE orders SET o_orderpriority = '4-NOT SPECIFIED' WHERE o_orderkey = " + h1 +
+                            "; DELETE FROM lineitem WHERE l_orderkey = " + h1 + " AND l_linenumber = (SELECT min(l_linenumber) "
+                            "FROM lineitem WHERE l_orderkey = " + h1 + ")"});
+      writes.push_back({"q12 flip + lineitem insert",
+                        "INSERT INTO lineitem SELECT * REPLACE (l_linenumber + 100 AS l_linenumber) FROM lineitem "
+                        "WHERE l_orderkey = " + l1 + " AND l_shipmode IN ('MAIL', 'SHIP') AND l_commitdate < l_receiptdate "
+                        "AND l_shipdate < l_commitdate LIMIT 1; UPDATE orders SET o_orderpriority = '1-URGENT' "
+                        "WHERE o_orderkey = " + l1});
+    }
+    break;
+  }
   case 15: { // rename the current winner(s): a supplier-only write
     const auto winners = KeyList(connection, std::string("SELECT * FROM (") + entry.base_sql + ")");
     if (!winners.empty())

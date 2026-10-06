@@ -27,4 +27,23 @@ void ResetAuxExecuteCounts();
 // "hit=H rebuilt_on_read=R fallback=F"
 std::string FormatAuxExecuteCounts(const AuxExecuteCounts &counts);
 
+// Time a reader spends in an aux store choosing the state its snapshot sees
+// (the store's lock, waiting for a pending commit, selecting the version):
+// cumulative per thread.  Stores add to it; a benchmark reads the difference
+// around one query.
+void AddStoreResolveMicros(double us);
+double ThreadStoreResolveMicros();
+
+// Adds the time from construction to destruction to this thread's resolve time.
+class StoreResolveTimer {
+public:
+  StoreResolveTimer();
+  ~StoreResolveTimer();
+  StoreResolveTimer(const StoreResolveTimer &) = delete;
+  StoreResolveTimer &operator=(const StoreResolveTimer &) = delete;
+
+private:
+  int64_t start_ns_;
+};
+
 } // namespace accelerator_codegen::aux_state::core

@@ -85,10 +85,27 @@ struct TpchQ4State {
 };
 
 
+// Published tree: 2 * tree_size nodes of tree_stride counts each, held in
+// immutable pages of kTpchQ4PageNodes nodes so a write copies only the pages
+// on the touched leaf-to-root paths.
+constexpr uint32_t kTpchQ4PageNodes = 64;
 struct TpchQ4TreePayload {
   uint32_t tree_size = 0;
   uint32_t tree_stride = 0;
-  std::vector<int64_t> tree;
+  std::vector<std::shared_ptr<const std::vector<int64_t>>> pages;
+  bool WellFormed() const {
+    const std::size_t nodes = static_cast<std::size_t>(tree_size) * 2;
+    return tree_stride > 0 &&
+           pages.size() == (nodes + kTpchQ4PageNodes - 1) / kTpchQ4PageNodes;
+  }
+  bool Valid(uint32_t node) const {
+    return node < static_cast<std::size_t>(tree_size) * 2 &&
+           node / kTpchQ4PageNodes < pages.size();
+  }
+  const int64_t *Node(uint32_t node) const {
+    return pages[node / kTpchQ4PageNodes]->data() +
+           static_cast<std::size_t>(node % kTpchQ4PageNodes) * tree_stride;
+  }
 };
 
 struct TpchQ4EligibilityPayload {

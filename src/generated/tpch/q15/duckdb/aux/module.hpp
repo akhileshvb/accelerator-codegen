@@ -107,9 +107,12 @@ struct TpchQ15DirChunk {
 
 struct TpchQ15SupplierDirectory {
   std::map<int64_t, std::shared_ptr<TpchQ15DirChunk>> chunks;
-  const TpchQ15SupplierRecord *Find(int64_t suppkey) const;
-  void Set(int64_t suppkey, TpchQ15SupplierRecord record);
-  void Erase(int64_t suppkey);
+  // Bag semantics: a key may hold several records (duplicate supplier rows).
+  void FindAll(int64_t suppkey,
+               std::vector<const TpchQ15SupplierRecord *> &out) const;
+  void Add(int64_t suppkey, TpchQ15SupplierRecord record);
+  // Removes one record equal to `record`; no-op when absent.
+  void EraseOne(int64_t suppkey, const TpchQ15SupplierRecord &record);
   std::size_t Size() const;
 };
 
@@ -138,6 +141,8 @@ struct TpchQ15LineitemDelta {
 
 struct TpchQ15SupplierDelta {
   int64_t suppkey = 0;
+  bool has_old = false;
+  bool has_new = false;
   std::string old_name;
   std::string old_address;
   std::string old_phone;

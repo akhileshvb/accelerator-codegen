@@ -525,6 +525,15 @@ void TpchQ18TxnBuffer::Clear() {
   deltas.clear();
   inserted_orders.clear();
   deleted_orders.clear();
+  customer_names.clear();
+}
+void TpchQ18TxnBuffer::AddCustomerName(int64_t custkey, std::string name) {
+  pending = true;
+  customer_names.emplace_back(custkey, std::move(name));
+}
+const std::vector<std::pair<int64_t, std::string>> &
+TpchQ18TxnBuffer::CustomerNames() const {
+  return customer_names;
 }
 void TpchQ18TxnBuffer::NoteOrderInserted(int64_t orderkey) {
   pending = true;
@@ -599,7 +608,26 @@ void TpchQ18Module::AccumulateMutation(const core::MutationBatch &mutation,
   // Delete are NoOp here: survivor meta is filled via LookupOrder when a
   // lineitem delta first crosses the persist threshold.
   if (mutation.table == config.customer_table) {
-    buffer.MarkRebuild();
+    if (mutation.kind != core::MutationKind::Update ||
+        mutation.old_rows.size() != mutation.new_rows.size()) {
+      buffer.MarkRebuild();
+      return;
+    }
+    // Q18 reads c_custkey and c_name only; capture also delivers updates that
+    // changed no captured column.
+    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+      int64_t ok = 0, nk = 0;
+      std::string on, nn;
+      if (!IntCell(mutation.old_rows[i], 0, ok) ||
+          !StringCell(mutation.old_rows[i], 1, on) ||
+          !IntCell(mutation.new_rows[i], 0, nk) ||
+          !StringCell(mutation.new_rows[i], 1, nn) || ok != nk) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (on != nn)
+        buffer.AddCustomerName(nk, std::move(nn));
+    }
     return;
   }
   if (mutation.table == config.orders_table) {
@@ -675,11 +703,13 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
     outcome.pending_rebuild = outcome.invalidations;
     return outcome;
   }
-  if (buffer.Deltas().empty())
+  if (buffer.Deltas().empty() && buffer.CustomerNames().empty())
     return outcome;
 
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, false, true,
+      {static_cast<uint64_t>(buffer.Deltas().size() +
+                             buffer.CustomerNames().size()),
+       1, true, false, true,
        false, false, core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
   if (decision.action == core::MaintenanceAction::RebuildPartition) {
@@ -737,6 +767,13 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
       new_state = std::make_shared<TpchQ18State>(*base_state);
     return *new_state;
   };
+
+  // Customer renames: refresh the cached names of survivors' customers.
+  for (const auto &[custkey, name] : buffer.CustomerNames()) {
+    const auto it = base_state->customer_names.find(custkey);
+    if (it != base_state->customer_names.end() && it->second != name)
+      mut().customer_names[custkey] = name;
+  }
 
   for (const auto &[orderkey, net] : net_by_order) {
     if (net == 0)

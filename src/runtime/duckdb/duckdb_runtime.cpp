@@ -840,6 +840,69 @@ void DuckdbRuntime::ApplyWrite(const std::string &sql) {
   CommitWrite();
 }
 
+void DuckdbRuntime::ApplyWriteAll(const std::vector<DuckdbRuntime *> &runtimes, const std::string &sql,
+                                  WriteAllTiming *timing) {
+  if (runtimes.empty())
+    throw std::invalid_argument("ApplyWriteAll: no runtimes");
+  auto &connection = runtimes.front()->connection_;
+  for (auto *rt : runtimes)
+    if (&rt->connection_ != &connection)
+      throw std::invalid_argument("ApplyWriteAll: runtimes on different connections");
+  const auto abort_all = [&] {
+    for (auto *rt : runtimes)
+      rt->coordinator_.Abort();
+    try {
+      if (connection.HasActiveTransaction())
+        connection.Rollback();
+    } catch (...) {
+    }
+  };
+  using TimingClock = std::chrono::steady_clock;
+  const auto us = [](TimingClock::time_point a, TimingClock::time_point b) {
+    return std::chrono::duration<double, std::micro>(b - a).count();
+  };
+  if (timing)
+    *timing = WriteAllTiming{};
+  auto t0 = TimingClock::now();
+  connection.BeginTransaction();
+  auto result = connection.Query(sql);
+  if (!result || result->HasError()) {
+    abort_all();
+    throw std::runtime_error(sql + ": " + (result ? result->GetError() : "null result"));
+  }
+  if (timing)
+    timing->statement_us = us(t0, TimingClock::now());
+  // as CommitWrite, for every runtime: one clock (per database), each
+  // coordinator's PRE_COMMIT, the engine commit, each one's COMMIT
+  runtimes.front()->clock_->epoch = DuckDBAuxBackend::SnapshotEpoch(*connection.context) + 1;
+  try {
+    for (auto *rt : runtimes) {
+      if (timing)
+        core::ClearMaintenanceDecisionLog();
+      t0 = TimingClock::now();
+      rt->coordinator_.PreCommit();
+      if (timing) {
+        timing->pre_commit_us.push_back(us(t0, TimingClock::now()));
+        const auto d = core::LastMaintenanceDecision();
+        timing->action.push_back(d ? maintenance::MaintenanceActionName(d->staged_action) : "none");
+      }
+    }
+    t0 = TimingClock::now();
+    connection.Commit();
+    if (timing)
+      timing->engine_commit_us = us(t0, TimingClock::now());
+  } catch (...) {
+    abort_all();
+    throw;
+  }
+  for (auto *rt : runtimes) {
+    t0 = TimingClock::now();
+    rt->coordinator_.Commit();
+    if (timing)
+      timing->commit_us.push_back(us(t0, TimingClock::now()));
+  }
+}
+
 std::vector<core::CalibrationWrite> DuckdbRuntime::CalibrationWrites() const {
   return binding_->Module().CalibrationWrites();
 }
@@ -964,6 +1027,20 @@ std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect() {
   return ExecuteCollect(ToCoreArguments(entry_.benchmark_arguments));
 }
 
+void DuckdbRuntime::ExecuteInto(const core::QueryArguments &arguments, core::AuxRowSink &sink) {
+  AuxReadScope one_version; // every read in this query: one state version
+  std::optional<ScanRedirect> redirect;
+  auto *reader = DuckDBAuxBackend::CurrentReader();
+  if (reader && reader != connection_.context.get()) {
+    redirect.emplace(*connection_.context->db, reader_fallbacks,
+                     static_cast<::duckdb::transaction_t>(DuckDBAuxBackend::SnapshotEpoch(*reader)));
+  }
+  t_table_scans = 0;
+  binding_->Execute(backend_, arguments, sink);
+  core::RecordAuxExecute(t_table_scans > 0 ? core::AuxExecutePath::Fallback
+                                           : core::AuxExecutePath::Hit);
+}
+
 std::vector<core::AuxRow> DuckdbRuntime::ExecuteCollect(
     const core::QueryArguments &arguments) {
   AuxReadScope one_version; // every read in this query: one state version
@@ -1036,8 +1113,25 @@ void DuckdbRuntime::ApplyRfChunk(int write_seq, int order_count) {
   // A Verus kit's capture maps the SQL's own mutations to its tables by name
   // (the hand-built batches below carry the C++ bindings' table ids and
   // column layouts): run the chunk as SQL through the captured write path.
-  if (verus_kit::Find(entry_.accelerator_id)) {
-    ApplyWrite(TpchRfChunkStatements(connection_, NextTpchRfChunkPlan(write_seq, order_count, connection_)));
+  // Likewise a C++ accelerator the hand-built batches do not cover (no case in
+  // TpchRfTableIdsForQuery): its module receives the SQL's real mutations,
+  // projected as it declares, instead of none at all.
+  const auto rf_ids = TpchRfTableIdsForQuery(entry_.query_id);
+  if (verus_kit::Find(entry_.accelerator_id) ||
+      (!rf_ids.watches_orders && !rf_ids.watches_lineitem && entry_.query_id != 11)) {
+    // capture on for this chunk only: the hand-built probe writes (Apply)
+    // deliver their own mutation and must not be captured twice
+    const bool was_capturing = capture_enabled_;
+    EnableMutationCapture();
+    try {
+      ApplyWrite(TpchRfChunkStatements(connection_, NextTpchRfChunkPlan(write_seq, order_count, connection_)));
+    } catch (...) {
+      if (!was_capturing)
+        DisableMutationCapture();
+      throw;
+    }
+    if (!was_capturing)
+      DisableMutationCapture();
     return;
   }
   // Q11 does not watch orders/lineitem; RF would mutate the DB without

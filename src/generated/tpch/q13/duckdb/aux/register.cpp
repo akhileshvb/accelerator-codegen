@@ -105,6 +105,63 @@ struct TpchQ13Scan : TpchQ13InitialScan {
                     ChunkValue(chunk, 1, row).ToString()});
         });
   }
+  bool ShardSizes(std::vector<TpchQ13ShardSize> &out) override {
+    std::unordered_map<uint32_t, TpchQ13ShardSize> sizes;
+    ScanQuery(connection,
+              "SELECT o_custkey % 16384, count(*), sum(strlen(o_comment)) "
+              "FROM orders WHERE o_custkey >= 0 AND o_custkey < 68719476736 "
+              "AND o_comment IS NOT NULL GROUP BY 1",
+              [&](::duckdb::MaterializedQueryResult &r, ::duckdb::idx_t row) {
+                auto &s = sizes[static_cast<uint32_t>(SafeInt64(r.GetValue(0, row)))];
+                s.orders = static_cast<uint64_t>(SafeInt64(r.GetValue(1, row)));
+                s.comment_bytes = static_cast<uint64_t>(SafeInt64(r.GetValue(2, row)));
+              });
+    ScanQuery(connection,
+              "SELECT c_custkey % 16384, max(c_custkey // 16384) + 1 FROM customer "
+              "WHERE c_custkey >= 0 AND c_custkey < 68719476736 GROUP BY 1",
+              [&](::duckdb::MaterializedQueryResult &r, ::duckdb::idx_t row) {
+                auto &s = sizes[static_cast<uint32_t>(SafeInt64(r.GetValue(0, row)))];
+                s.cust_slots = static_cast<uint64_t>(SafeInt64(r.GetValue(1, row)));
+              });
+    for (auto &[shard, size] : sizes) {
+      size.shard = shard;
+      out.push_back(size);
+    }
+    return true;
+  }
+  // The initial load: column vectors read in place (no Value or std::string
+  // per row).
+  void ScanOrdersView(const std::function<void(int64_t, const char *, std::size_t)>
+                          &consumer) override {
+    auto &conn = ScanConnection(connection);
+    auto result = conn.SendQuery(
+        "SELECT o_custkey, o_comment FROM orders "
+        "WHERE o_custkey IS NOT NULL AND o_comment IS NOT NULL");
+    Require(result != nullptr && !result->HasError(),
+            result ? result->GetError() : "DuckDB scan returned null");
+    for (;;) {
+      auto chunk = result->Fetch();
+      if (!chunk || chunk->size() == 0)
+        break;
+      const auto n = chunk->size();
+      ::duckdb::UnifiedVectorFormat keys, comments;
+      chunk->data[0].ToUnifiedFormat(n, keys);
+      chunk->data[1].ToUnifiedFormat(n, comments);
+      const auto *cd = ::duckdb::UnifiedVectorFormat::GetData<::duckdb::string_t>(comments);
+      const auto kt = chunk->data[0].GetType().id();
+      for (::duckdb::idx_t i = 0; i < n; ++i) {
+        const auto ki = keys.sel->get_index(i), ci = comments.sel->get_index(i);
+        const int64_t key =
+            kt == ::duckdb::LogicalTypeId::BIGINT
+                ? ::duckdb::UnifiedVectorFormat::GetData<int64_t>(keys)[ki]
+            : kt == ::duckdb::LogicalTypeId::INTEGER
+                ? int64_t{::duckdb::UnifiedVectorFormat::GetData<int32_t>(keys)[ki]}
+                : SafeInt64(chunk->GetValue(0, i));
+        consumer(key, cd[ci].GetData(), cd[ci].GetSize());
+      }
+    }
+    Require(!result->HasError(), result->GetError());
+  }
   ::duckdb::Connection &connection;
 };
 

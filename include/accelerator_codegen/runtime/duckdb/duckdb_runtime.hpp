@@ -58,6 +58,9 @@ public:
   void Execute(const core::QueryArguments &arguments);
   std::vector<core::AuxRow> ExecuteCollect();
   std::vector<core::AuxRow> ExecuteCollect(const core::QueryArguments &arguments);
+  // The same read, rows streamed into `sink` as the module writes them (no
+  // intermediate row vector).  The SQL table function uses it for C++ stores.
+  void ExecuteInto(const core::QueryArguments &arguments, core::AuxRowSink &sink);
   void Apply(SharedProbe &probe);
 
   // Apply multiple point probes in one transaction so StageMaintenance sees
@@ -110,6 +113,21 @@ public:
   void RollbackWrite();
   // One captured write transaction running `sql` (rolled back on error).
   void ApplyWrite(const std::string &sql);
+  // One engine transaction running `sql` that maintains every runtime in
+  // `runtimes` (all on the same connection, capture enabled): each one's
+  // PRE_COMMIT, the engine commit, then each one's COMMIT -- the commit of a
+  // database with several live accelerators.  Rolled back (every aux commit
+  // aborted) on error.  `timing`, if given, receives where the commit's time
+  // went, per runtime in `runtimes` order.
+  struct WriteAllTiming {
+    double statement_us = 0;               // the write's statements
+    std::vector<double> pre_commit_us;     // each runtime's PRE_COMMIT (its maintenance)
+    std::vector<std::string> action;       // each runtime's staged maintenance action
+    double engine_commit_us = 0;           // the engine's commit
+    std::vector<double> commit_us;         // each runtime's COMMIT (its install)
+  };
+  static void ApplyWriteAll(const std::vector<DuckdbRuntime *> &runtimes, const std::string &sql,
+                            WriteAllTiming *timing = nullptr);
   // The module's calibration writes (core::CalibrationWrite).
   std::vector<core::CalibrationWrite> CalibrationWrites() const;
   // A mutation event from the capture hook (called during the statement).

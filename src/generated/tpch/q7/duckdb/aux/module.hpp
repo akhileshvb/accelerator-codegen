@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <algorithm>
@@ -82,14 +83,31 @@ public:
       const std::function<void(int64_t, int64_t)> &) {
     return false;
   }
+  // Point contribution queries for dimension deletes / nation changes whose
+  // rows still have in-window lineitems. Rows: (other-side nationkey, year,
+  // sum of price_raw*(100-disc_raw)) over the key's window lineitems joined to
+  // orders and the opposite dimension, in the current (pre-commit) DB state.
+  virtual bool ScanSupplierContribution(
+      int64_t /*suppkey*/,
+      const std::function<void(int32_t, int32_t, int64_t)> &) {
+    return false;
+  }
+  virtual bool ScanCustomerContribution(
+      int64_t /*custkey*/,
+      const std::function<void(int32_t, int32_t, int64_t)> &) {
+    return false;
+  }
 };
 
 constexpr int32_t kTpchQ7MinNationSlots = 25;
 constexpr int32_t kTpchQ7MinYear = 1995;
 constexpr int32_t kTpchQ7MaxYear = 1996;
 
-// Copy-on-write hash-paged sorted map. Pages are immutable once published;
-// With() copies only the pages a change touches and shares the rest.
+// Copy-on-write hash-paged sorted map. Small sorted pages are grouped in
+// fixed-size chunks of page pointers; pages and chunks are immutable once
+// published. With() copies the chunk table, the touched chunks (kChunk page
+// pointers each) and the touched pages (a few hundred entries) and shares the
+// rest.  A null page is an empty page.
 template <class V> class PagedMap {
 public:
   struct Entry {
@@ -97,8 +115,12 @@ public:
     V val;
   };
   using Page = std::vector<Entry>;
-  static constexpr std::size_t kTargetPage = 4096;
-  static constexpr std::size_t kMaxPages = 1u << 16;
+  static constexpr std::size_t kTargetPage = 256;
+  static constexpr std::size_t kChunk = 256;
+  static constexpr std::size_t kMaxPages = 1u << 18;
+  struct Chunk {
+    std::array<std::shared_ptr<const Page>, kChunk> p;
+  };
 
   static std::size_t PagesFor(std::size_t n) {
     std::size_t p = 1;
@@ -108,9 +130,13 @@ public:
   }
 
   const V *Find(int64_t key) const {
-    if (pages.empty())
+    if (chunks.empty())
       return nullptr;
-    const Page &p = *pages[Slot(key, mask)];
+    const std::size_t slot = Slot(key, mask);
+    const auto &pg = chunks[slot / kChunk]->p[slot % kChunk];
+    if (!pg)
+      return nullptr;
+    const Page &p = *pg;
     const auto it = std::lower_bound(
         p.begin(), p.end(), key,
         [](const Entry &e, int64_t k) { return e.key < k; });
@@ -118,44 +144,70 @@ public:
   }
   std::size_t Size() const { return total; }
   template <class F> void ForEach(F &&f) const {
-    for (const auto &p : pages)
-      for (const auto &e : *p)
-        f(e.key, e.val);
+    for (const auto &c : chunks)
+      for (const auto &p : c->p)
+        if (p)
+          for (const auto &e : *p)
+            f(e.key, e.val);
   }
 
   // Returns a new map with `changes` applied (nullopt = erase). *this and its
-  // pages are untouched; only touched pages are copied.
+  // pages are untouched; only touched chunks/pages are copied.
   PagedMap With(const std::unordered_map<int64_t, std::optional<V>> &changes) const {
     PagedMap out = *this;
-    if (out.pages.empty()) {
-      out.pages.push_back(std::make_shared<const Page>());
+    if (out.chunks.empty()) {
+      out.chunks.push_back(std::make_shared<const Chunk>());
       out.mask = 0;
     }
-    std::unordered_map<std::size_t,
-                       std::vector<std::pair<int64_t, const std::optional<V> *>>>
-        by_page;
+    struct Change {
+      std::size_t slot;
+      int64_t key;
+      const std::optional<V> *val;
+    };
+    std::vector<Change> list;
+    list.reserve(changes.size());
     for (const auto &[k, v] : changes)
-      by_page[Slot(k, out.mask)].emplace_back(k, &v);
-    for (auto &[slot, list] : by_page) {
-      std::sort(list.begin(), list.end(),
-                [](const auto &a, const auto &b) { return a.first < b.first; });
-      const Page &old = *out.pages[slot];
+      list.push_back({Slot(k, out.mask), k, &v});
+    std::sort(list.begin(), list.end(), [](const Change &a, const Change &b) {
+      return a.slot != b.slot ? a.slot < b.slot : a.key < b.key;
+    });
+    static const Page kEmpty;
+    std::size_t cur_chunk = static_cast<std::size_t>(-1);
+    Chunk *mut_chunk = nullptr;
+    std::size_t j = 0;
+    while (j < list.size()) {
+      const std::size_t slot = list[j].slot;
+      std::size_t end = j;
+      while (end < list.size() && list[end].slot == slot)
+        ++end;
+      const std::size_t ci = slot / kChunk;
+      if (ci != cur_chunk) {
+        auto fresh = std::make_shared<Chunk>(*out.chunks[ci]);
+        mut_chunk = fresh.get();
+        out.chunks[ci] = std::move(fresh);
+        cur_chunk = ci;
+      }
+      auto &slot_ptr = mut_chunk->p[slot % kChunk];
+      const Page &old = slot_ptr ? *slot_ptr : kEmpty;
       auto next = std::make_shared<Page>();
-      next->reserve(old.size() + list.size());
-      std::size_t i = 0, j = 0;
-      while (i < old.size() || j < list.size()) {
-        if (j == list.size() || (i < old.size() && old[i].key < list[j].first)) {
+      next->reserve(old.size() + (end - j));
+      std::size_t i = 0;
+      while (i < old.size() || j < end) {
+        if (j == end || (i < old.size() && old[i].key < list[j].key)) {
           next->push_back(old[i++]);
         } else {
-          if (i < old.size() && old[i].key == list[j].first)
+          if (i < old.size() && old[i].key == list[j].key)
             ++i;
-          if (list[j].second->has_value())
-            next->push_back({list[j].first, **list[j].second});
+          if (list[j].val->has_value())
+            next->push_back({list[j].key, **list[j].val});
           ++j;
         }
       }
       out.total = out.total - old.size() + next->size();
-      out.pages[slot] = std::shared_ptr<const Page>(std::move(next));
+      if (next->empty())
+        slot_ptr.reset();
+      else
+        slot_ptr = std::shared_ptr<const Page>(std::move(next));
     }
     return out;
   }
@@ -184,9 +236,16 @@ public:
     PagedMap Freeze() {
       PagedMap out;
       out.mask = mask;
-      for (auto &p : pages) {
-        out.total += p.size();
-        out.pages.push_back(std::make_shared<const Page>(std::move(p)));
+      const std::size_t nchunks = (pages.size() + kChunk - 1) / kChunk;
+      for (std::size_t c = 0; c < nchunks; ++c) {
+        auto chunk = std::make_shared<Chunk>();
+        for (std::size_t k = 0; k < kChunk && c * kChunk + k < pages.size(); ++k) {
+          auto &p = pages[c * kChunk + k];
+          out.total += p.size();
+          if (!p.empty())
+            chunk->p[k] = std::make_shared<const Page>(std::move(p));
+        }
+        out.chunks.push_back(std::move(chunk));
       }
       pages.clear();
       return out;
@@ -203,14 +262,16 @@ private:
                (static_cast<uint64_t>(key) * 0x9E3779B97F4A7C15ULL) >> 40) &
            mask;
   }
-  std::vector<std::shared_ptr<const Page>> pages;
+  std::vector<std::shared_ptr<const Chunk>> chunks;
   std::size_t mask = 0;
   std::size_t total = 0;
 };
 
 // nation key plus the number of in-window (1995-1996) lineitems that reference
-// the key (conservative: a non-zero count forces a rebuild when the key is
-// deleted or its nation changes).
+// the key. nation < 0 is a tombstone: the dimension row is absent but that many
+// lineitems still reference the key (a re-insert must add their revenue back).
+// A non-zero count makes delete / nation change fetch the key's contribution
+// with one point SQL query.
 struct TpchQ7NationCount {
   int32_t nation = 0;
   int32_t window_count = 0;

@@ -70,6 +70,23 @@ public:
     return false;
   }
 
+  // Point lookups on the same connection (the transaction's own writes are
+  // visible). Return false when unsupported.
+  virtual bool ScanOrdersByCustomer(
+      int64_t custkey,
+      const std::function<void(const TpchQ3OrderInput &)> &consumer) {
+    (void)custkey;
+    (void)consumer;
+    return false;
+  }
+  virtual bool ScanLineitemsByOrders(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(const TpchQ3LineitemInput &)> &consumer) {
+    (void)orderkeys;
+    (void)consumer;
+    return false;
+  }
+
   // Optional: DuckDB join filtered to one market segment for RebuildPartition.
   virtual bool ScanSegmentJoin(
       const std::string &mktsegment,
@@ -294,8 +311,13 @@ struct TpchQ3OrderRec {
 };
 static_assert(sizeof(TpchQ3OrderRec) == 16, "Q3 order record must stay 16 bytes");
 
+// Customer record. segment != 0: tracked customer. segment == 0: the key is
+// not a tracked customer (absent, deleted or unknown segment); then
+// orphan_orders counts the orders that reference it (they are untracked), so a
+// later insert / segment change knows whether it has to look them up.
 struct TpchQ3CustRec {
   uint32_t key = 0;
+  uint32_t orphan_orders = 0;
   uint8_t segment = 0;
 };
 
@@ -380,8 +402,10 @@ struct TpchQ3OrderDelta {
 };
 
 struct TpchQ3CustomerDelta {
+  enum class Kind : uint8_t { Insert, Delete, Move };
+  Kind kind = Kind::Insert;
   int64_t custkey = 0;
-  core::PartitionId segment = 0; // 0 = not a tracked segment
+  core::PartitionId segment = 0; // new segment; 0 = not a tracked segment
 };
 
 std::vector<uint8_t> EncodeTpchQ3OrderSegmentSide(const TpchQ3Side &side);

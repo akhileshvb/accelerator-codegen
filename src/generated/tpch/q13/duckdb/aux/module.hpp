@@ -29,6 +29,15 @@ struct TpchQ13OrderInput {
   std::string comment;
 };
 
+// Exact per-shard sizes of the initial load (optional): lets the build reserve
+// every vector once instead of growing it.
+struct TpchQ13ShardSize {
+  uint32_t shard = 0;
+  uint64_t orders = 0;       // orders with this custkey shard
+  uint64_t comment_bytes = 0;
+  uint64_t cust_slots = 0;   // highest customer local index + 1
+};
+
 class TpchQ13InitialScan {
 public:
   virtual ~TpchQ13InitialScan() = default;
@@ -36,6 +45,18 @@ public:
       const std::function<void(const TpchQ13CustomerInput &)> &) = 0;
   virtual void ScanOrders(
       const std::function<void(const TpchQ13OrderInput &)> &) = 0;
+  // Same rows as ScanOrders, without per-row string copies where the source
+  // allows (the data pointer is valid only during the call).
+  virtual void ScanOrdersView(
+      const std::function<void(int64_t, const char *, std::size_t)> &consumer) {
+    ScanOrders([&](const TpchQ13OrderInput &input) {
+      consumer(input.custkey, input.comment.data(), input.comment.size());
+    });
+  }
+  virtual bool ShardSizes(std::vector<TpchQ13ShardSize> &out) {
+    (void)out;
+    return false;
+  }
   virtual bool LookupOrder(int64_t custkey, TpchQ13OrderInput &out) {
     (void)custkey;
     (void)out;
@@ -54,12 +75,50 @@ struct TpchQ13TwoPartLikeMatcher {
   bool MatchesView(const char *data, std::size_t len) const;
 };
 
+// Exact SQL LIKE matcher ('%' any run, '_' one byte, no ESCAPE, bytewise),
+// compiled once per pattern.  Literal-only segments use a vectorised search.
+struct TpchQ13Like {
+  struct Seg {
+    std::string text;
+    bool wild = false;  // contains '_'
+  };
+  std::string pattern;
+  std::vector<Seg> parts;      // pattern split on '%'
+  bool has_pct = false;
+  bool all_pct = false;        // only '%' characters (matches everything)
+  bool single_lit = false;     // exactly "%literal%" (no '_')
+  std::vector<std::string> chunks;  // literal runs between wildcards
+  std::string anchor;          // longest literal chunk ("" = none)
+  void Build(const std::string &pattern);
+  bool Matches(const char *data, std::size_t len) const;
+};
+
 // Sharding: custkey -> shard (custkey & mask), local index (custkey >> bits).
 // Published states hold shared_ptr<const> shards; a write clones only the
 // shards it touches (copy-on-write), never the whole state.
 constexpr uint32_t kTpchQ13ShardBits = 14;
 constexpr std::size_t kTpchQ13Shards = std::size_t{1} << kTpchQ13ShardBits;
-constexpr std::size_t kTpchQ13MaxPatterns = 4;
+constexpr std::size_t kTpchQ13MaxPatterns = 32;  // tracked (maintained) patterns
+
+// Word-token inverted index of one order shard.  A token is a maximal run of
+// ASCII letters/digits; postings list the shard-local orders containing it.
+// Orders whose tokens cannot all be indexed (very long token, full vocabulary)
+// are listed in `always` and verified for every query.  Postings of deleted
+// orders stay until the shard is compacted (queries check liveness).
+struct TpchQ13TokIndex {
+  std::vector<uint16_t> toks;    // sorted token ids present in the shard
+  std::vector<uint32_t> off;     // toks.size()+1 offsets into `ords`
+  std::vector<uint16_t> ords;    // order indices, ascending within a token
+  std::vector<uint16_t> always;  // unindexable orders
+  uint32_t covered = 0;          // orders [0, covered) are indexed
+  bool disabled = false;         // > 65535 orders: queries scan this shard
+};
+
+// Token vocabulary shared by all shards of one published version.
+struct TpchQ13Vocab {
+  std::vector<std::string> toks;
+  std::unordered_map<std::string, uint16_t> id;
+};
 
 // Orders (custkey, comment) of one shard.  Deleted orders are tombstoned and
 // the shard is compacted locally once more than half is dead.
@@ -70,6 +129,7 @@ struct TpchQ13OrderShard {
   std::string blob;
   std::vector<uint8_t> alive;
   uint32_t dead = 0;
+  TpchQ13TokIndex ix;
 };
 
 // Per-customer data of one shard, indexed by custkey >> bits.
@@ -81,7 +141,20 @@ struct TpchQ13CustShard {
 
 struct TpchQ13Pattern {
   std::string text;
-  TpchQ13TwoPartLikeMatcher matcher;
+  TpchQ13Like like;
+  uint64_t need = 0;       // literal bits an order must contain (0: verify all)
+};
+
+// Literals (distinct pattern chunks of the tracked patterns, <= 64): a
+// per-order bitmask of the literals it contains cheaply rules patterns out.
+struct TpchQ13LitTable {
+  std::vector<std::string> lits;
+};
+
+
+struct TpchQ13OutputRow {
+  int64_t c_count = 0;
+  int64_t custdist = 0;
 };
 
 struct TpchQ13State {
@@ -91,6 +164,17 @@ struct TpchQ13State {
   // matching patterns[p] equals c.  Immutable per published version.
   std::vector<TpchQ13Pattern> patterns;
   std::vector<std::vector<int64_t>> hist;
+  // Read-ready: hist[p] as (c_count, custdist) rows already in output order
+  // (custdist DESC, c_count DESC), rebuilt from hist on every publish.
+  std::vector<std::vector<TpchQ13OutputRow>> sorted;
+  // Histogram when no order matches (c_count = all orders).  An untracked
+  // pattern's histogram is this one adjusted only for customers owning
+  // matching orders.
+  std::vector<int64_t> base;
+  int64_t live_orders = 0;  // live (non-tombstoned) orders
+  std::shared_ptr<const TpchQ13LitTable> lits;
+  std::shared_ptr<const TpchQ13Vocab> vocab;
+  std::vector<int32_t> df;  // postings per token id (document frequency)
 };
 
 enum class TpchQ13ImageKind : uint8_t { CustomerCounts };
@@ -98,11 +182,6 @@ enum class TpchQ13ImageKind : uint8_t { CustomerCounts };
 struct TpchQ13StateImage {
   TpchQ13ImageKind kind = TpchQ13ImageKind::CustomerCounts;
   std::shared_ptr<const TpchQ13State> state;
-};
-
-struct TpchQ13OutputRow {
-  int64_t c_count = 0;
-  int64_t custdist = 0;
 };
 
 struct TpchQ13Delta {
@@ -156,8 +235,6 @@ public:
                        core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 private:
-  void NoteWantedPattern(const std::string &pattern) const;
-  std::vector<std::string> WantedPatterns() const;
   TpchQ13State BuildState(core::AuxEngineServices &services) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ13State> &state) const;
@@ -166,8 +243,7 @@ private:
                   core::AuxRowSink &sink) const;
   TpchQ13Config config;
   TpchQ13InitialScan *initial_scan = nullptr;
-  mutable std::mutex wanted_mu;
-  mutable std::vector<std::string> wanted;  // patterns seen by reads
+  core::QueryKey hit_key{core::AcceleratorId(core::TpchQ13Layout::kAccelerator), {}};
 };
 
 } // namespace accelerator_codegen::aux_state::query

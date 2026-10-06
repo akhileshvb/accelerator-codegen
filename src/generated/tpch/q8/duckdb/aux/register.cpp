@@ -181,6 +181,101 @@ struct TpchQ8Scan : TpchQ8InitialScan {
                     ChunkValue(chunk, 1, row).ToString()});
         });
   }
+  // Point lookups: same connection as the transaction, so its own writes are
+  // visible (as for the other queries' Lookup* calls).
+  bool LookupPart(int64_t partkey, TpchQ8PartInput &out) override {
+    bool found = false;
+    ScanQueryStreaming(
+        connection,
+        "SELECT p_partkey, p_type FROM part WHERE p_partkey = " +
+            std::to_string(partkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          out = {SafeInt64(ChunkValue(chunk, 0, row)),
+                 ChunkValue(chunk, 1, row).ToString()};
+          found = true;
+        });
+    return found;
+  }
+  bool LookupSupplier(int64_t suppkey, TpchQ8SupplierInput &out) override {
+    bool found = false;
+    ScanQueryStreaming(
+        connection,
+        "SELECT s_suppkey, s_nationkey FROM supplier WHERE s_suppkey = " +
+            std::to_string(suppkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          out = {SafeInt64(ChunkValue(chunk, 0, row)),
+                 SafeInt32(ChunkValue(chunk, 1, row))};
+          found = true;
+        });
+    return found;
+  }
+  bool LookupCustomer(int64_t custkey, TpchQ8CustomerInput &out) override {
+    bool found = false;
+    ScanQueryStreaming(
+        connection,
+        "SELECT c_custkey, c_nationkey FROM customer WHERE c_custkey = " +
+            std::to_string(custkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          out = {SafeInt64(ChunkValue(chunk, 0, row)),
+                 SafeInt32(ChunkValue(chunk, 1, row))};
+          found = true;
+        });
+    return found;
+  }
+  bool LookupOrder(int64_t orderkey, TpchQ8OrdersInput &out) override {
+    bool found = false;
+    ScanQueryStreaming(
+        connection,
+        "SELECT o_orderkey, o_custkey, o_orderdate FROM orders "
+        "WHERE o_orderkey = " + std::to_string(orderkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          out = {SafeInt64(ChunkValue(chunk, 0, row)),
+                 SafeInt64(ChunkValue(chunk, 1, row)),
+                 DateDays(ChunkValue(chunk, 2, row))};
+          found = true;
+        });
+    return found;
+  }
+  bool ScanLineitemsWhere(const std::string &from_where,
+                          const LineitemConsumer &consumer) {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l.l_partkey, l.l_orderkey, l.l_suppkey, l.l_extendedprice, "
+        "l.l_discount " + from_where,
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    SafeInt64(ChunkValue(chunk, 2, row)),
+                    DecimalRaw(ChunkValue(chunk, 3, row)),
+                    DecimalRaw(ChunkValue(chunk, 4, row))});
+        });
+    return true;
+  }
+  bool ScanLineitemsOfPart(int64_t partkey,
+                           const LineitemConsumer &consumer) override {
+    return ScanLineitemsWhere(
+        "FROM lineitem l WHERE l.l_partkey = " + std::to_string(partkey),
+        consumer);
+  }
+  bool ScanLineitemsOfOrder(int64_t orderkey,
+                            const LineitemConsumer &consumer) override {
+    return ScanLineitemsWhere(
+        "FROM lineitem l WHERE l.l_orderkey = " + std::to_string(orderkey),
+        consumer);
+  }
+  bool ScanLineitemsOfSupplier(int64_t suppkey,
+                               const LineitemConsumer &consumer) override {
+    return ScanLineitemsWhere(
+        "FROM lineitem l WHERE l.l_suppkey = " + std::to_string(suppkey),
+        consumer);
+  }
+  bool ScanLineitemsOfCustomer(int64_t custkey,
+                               const LineitemConsumer &consumer) override {
+    return ScanLineitemsWhere(
+        "FROM lineitem l JOIN orders o ON l.l_orderkey = o.o_orderkey "
+        "WHERE o.o_custkey = " + std::to_string(custkey),
+        consumer);
+  }
   ::duckdb::Connection &connection;
 };
 

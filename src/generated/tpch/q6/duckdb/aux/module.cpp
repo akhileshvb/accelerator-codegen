@@ -24,7 +24,7 @@ using core::ByteWriter;
 using Q6AccT = ::accelerator_codegen::Q6AccT;
 using Q6RevenueMatrix = ::accelerator_codegen::Q6RevenueMatrix;
 
-constexpr uint32_t kVersion = 2;
+constexpr uint32_t kVersion = 3; // cells are 2D prefix sums
 constexpr uint32_t kMatrixMagic = 0x51364D58; // Q6MX
 constexpr int32_t kEpoch = 719468;
 
@@ -93,14 +93,60 @@ void CivilFromDays(int32_t days, int32_t &year, unsigned &month,
   year += month <= 2;
 }
 
-std::shared_ptr<const TpchQ6StateImage>
-MakeStateImage(TpchQ6PartitionKind kind, int32_t key,
-               const std::shared_ptr<const Q6RevenueMatrix> &matrix) {
+// A fresh, zeroed image to fill in place before it is published as const.
+std::shared_ptr<TpchQ6StateImage> NewStateImage(TpchQ6PartitionKind kind,
+                                                int32_t key) {
   auto image = std::make_shared<TpchQ6StateImage>();
   image->kind = kind;
   image->key = key;
-  image->matrix = matrix;
   return image;
+}
+
+TpchQ6PartitionKind KindOf(core::PartitionId partition) {
+  return core::TpchQ6Layout::IsMonthPartition(partition)
+             ? TpchQ6PartitionKind::Month
+             : TpchQ6PartitionKind::Day;
+}
+
+int32_t KeyOf(core::PartitionId partition) {
+  return core::TpchQ6Layout::IsMonthPartition(partition)
+             ? core::TpchQ6Layout::MonthKeyFromPartition(partition)
+             : core::TpchQ6Layout::DaysFromPartition(partition);
+}
+
+// For each requested partition the matching image of `found` (or nullptr).
+// Stores return found partitions in request order, but the interface does not
+// promise it: the in-order walk is the fast path, anything else is matched by
+// sorted lookup.
+void MatchSnapshot(const std::vector<core::PartitionId> &requested,
+                   const std::vector<core::StateImage> &found,
+                   std::vector<const core::StateImage *> &out) {
+  out.assign(requested.size(), nullptr);
+  std::size_t at = 0;
+  for (std::size_t slot = 0; slot < requested.size(); ++slot) {
+    if (at < found.size() && found[at].partition == requested[slot])
+      out[slot] = &found[at++];
+  }
+  if (at == found.size())
+    return;
+  std::vector<const core::StateImage *> sorted;
+  sorted.reserve(found.size());
+  for (const auto &image : found)
+    sorted.push_back(&image);
+  std::sort(sorted.begin(), sorted.end(),
+            [](const core::StateImage *l, const core::StateImage *r) {
+              return l->partition < r->partition;
+            });
+  for (std::size_t slot = 0; slot < requested.size(); ++slot) {
+    const auto it = std::lower_bound(
+        sorted.begin(), sorted.end(), requested[slot],
+        [](const core::StateImage *image, core::PartitionId id) {
+          return image->partition < id;
+        });
+    out[slot] = it != sorted.end() && (*it)->partition == requested[slot]
+                    ? *it
+                    : nullptr;
+  }
 }
 
 const TpchQ6StateImage *AsQ6Image(const core::StateImage &image) {
@@ -409,7 +455,7 @@ void TpchQ6Module::ApplyLineitemInput(
   const auto discount_cent = static_cast<int8_t>(discount_raw);
   const auto month_partition = core::TpchQ6Layout::MonthPartition(
       TpchQ6MonthKeyFromDays(input.shipdate_days));
-  matrices[month_partition].AddCell(discount_cent, quantity_raw, contribution, 1);
+  matrices[month_partition].AddRawCell(discount_cent, quantity_raw, contribution, 1);
 }
 
 void TpchQ6Module::Build(core::AuxEngineServices &services,
@@ -420,18 +466,13 @@ void TpchQ6Module::Build(core::AuxEngineServices &services,
   std::unordered_map<core::PartitionId, Q6RevenueMatrix> matrices;
   initial_scan->ScanLineitemGroups(
       [&](const TpchQ6LineitemInput &input) { ApplyLineitemInput(input, matrices); });
-  for (const auto &entry : matrices) {
-    const auto matrix = std::make_shared<const Q6RevenueMatrix>(entry.second);
-    const auto kind = core::TpchQ6Layout::IsMonthPartition(entry.first)
-                          ? TpchQ6PartitionKind::Month
-                          : TpchQ6PartitionKind::Day;
-    const auto key =
-        kind == TpchQ6PartitionKind::Month
-            ? core::TpchQ6Layout::MonthKeyFromPartition(entry.first)
-            : core::TpchQ6Layout::DaysFromPartition(entry.first);
+  for (auto &entry : matrices) {
+    auto image = NewStateImage(KindOf(entry.first), KeyOf(entry.first));
+    image->matrix = entry.second;
+    image->matrix.PrefixInPlace();
     builder.Write(core::StateImage::Make(
         core::TpchQ6Layout::kAccelerator, entry.first, 0,
-        MakeStateImage(kind, key, matrix)));
+        std::shared_ptr<const TpchQ6StateImage>(std::move(image))));
   }
   builder.Finish();
 }
@@ -517,21 +558,33 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
   if (buffer.Deltas().empty())
     return outcome;
 
-  std::map<core::PartitionId, std::vector<TpchQ6LineitemDelta>> grouped;
-  for (const auto &delta : buffer.Deltas()) {
-    grouped[core::TpchQ6Layout::MonthPartition(delta.month_key)].push_back(delta);
+  // Deltas grouped by month partition: indices sorted by (partition, index).
+  const auto &deltas = buffer.Deltas();
+  std::vector<std::pair<core::PartitionId, uint32_t>> order;
+  order.reserve(deltas.size());
+  for (uint32_t i = 0; i < deltas.size(); ++i)
+    order.emplace_back(core::TpchQ6Layout::MonthPartition(deltas[i].month_key),
+                       i);
+  std::sort(order.begin(), order.end());
+  std::vector<core::PartitionId> partitions; // unique, ascending
+  std::vector<uint32_t> group_begin;         // into `order`, + end sentinel
+  for (uint32_t i = 0; i < order.size(); ++i) {
+    if (partitions.empty() || partitions.back() != order[i].first) {
+      partitions.push_back(order[i].first);
+      group_begin.push_back(i);
+    }
   }
+  group_begin.push_back(static_cast<uint32_t>(order.size()));
 
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()),
-       static_cast<uint64_t>(grouped.size()), true, true, true, false, false,
+      {static_cast<uint64_t>(deltas.size()),
+       static_cast<uint64_t>(partitions.size()), true, true, true, false, false,
        core::MaintenanceAction::NoOp, services.ExpectedQueriesBeforeNextWrite()});
   if (decision.action == core::MaintenanceAction::RebuildPartition) {
     std::set<int32_t> month_keys;
-    for (const auto &entry : grouped) {
-      if (core::TpchQ6Layout::IsMonthPartition(entry.first))
-        month_keys.insert(
-            core::TpchQ6Layout::MonthKeyFromPartition(entry.first));
+    for (const auto partition : partitions) {
+      if (core::TpchQ6Layout::IsMonthPartition(partition))
+        month_keys.insert(core::TpchQ6Layout::MonthKeyFromPartition(partition));
     }
     std::unordered_map<core::PartitionId, Q6RevenueMatrix> rebuilt;
     if (initial_scan) {
@@ -540,22 +593,16 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
             ApplyLineitemInput(input, rebuilt);
           });
     }
-    for (const auto &entry : grouped) {
-      Q6RevenueMatrix matrix;
-      const auto it = rebuilt.find(entry.first);
-      if (it != rebuilt.end())
-        matrix = it->second;
-      const auto kind = core::TpchQ6Layout::IsMonthPartition(entry.first)
-                            ? TpchQ6PartitionKind::Month
-                            : TpchQ6PartitionKind::Day;
-      const auto key =
-          kind == TpchQ6PartitionKind::Month
-              ? core::TpchQ6Layout::MonthKeyFromPartition(entry.first)
-              : core::TpchQ6Layout::DaysFromPartition(entry.first);
-      const auto typed = std::make_shared<const Q6RevenueMatrix>(matrix);
+    for (const auto partition : partitions) {
+      auto image = NewStateImage(KindOf(partition), KeyOf(partition));
+      const auto it = rebuilt.find(partition);
+      if (it != rebuilt.end()) {
+        image->matrix = it->second;
+        image->matrix.PrefixInPlace();
+      }
       outcome.updates.push_back(core::StateImage::Make(
-          core::TpchQ6Layout::kAccelerator, entry.first, 0,
-          MakeStateImage(kind, key, typed)));
+          core::TpchQ6Layout::kAccelerator, partition, 0,
+          std::shared_ptr<const TpchQ6StateImage>(std::move(image))));
     }
     core::FinishRebuildPartition(outcome);
     return outcome;
@@ -567,74 +614,56 @@ TpchQ6Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  std::vector<core::PartitionId> partitions;
-  partitions.reserve(grouped.size());
-  for (const auto &entry : grouped)
-    partitions.push_back(entry.first);
-
-  std::map<core::PartitionId, core::Version> versions;
-  std::unordered_map<core::PartitionId, Q6RevenueMatrix> state;
-  const auto visibility = services.CurrentVisibility();
-  const auto snapshot =
-      services.StateStore().ReadPartitions(visibility, partitions);
-  for (const auto &image : snapshot.partitions) {
-    const auto *typed = AsQ6Image(image);
-    if (!typed || !typed->matrix) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    const auto expected_kind =
-        core::TpchQ6Layout::IsMonthPartition(image.partition)
-            ? TpchQ6PartitionKind::Month
-            : TpchQ6PartitionKind::Day;
-    const auto expected_key =
-        expected_kind == TpchQ6PartitionKind::Month
-            ? core::TpchQ6Layout::MonthKeyFromPartition(image.partition)
-            : core::TpchQ6Layout::DaysFromPartition(image.partition);
-    if (typed->kind != expected_kind || typed->key != expected_key) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    state[image.partition] = *typed->matrix;
-    versions[image.partition] = image.version;
-  }
-  if (versions.size() != grouped.size()) {
+  auto rebuild_all = [&]() {
+    outcome.updates.clear();
     outcome.action = core::MaintenanceAction::RebuildAll;
     outcome.invalidations = All();
     outcome.pending_rebuild = outcome.invalidations;
     return outcome;
-  }
-
-  for (const auto &entry : grouped) {
-    auto &matrix = state.at(entry.first);
-    for (const auto &delta : entry.second) {
-      matrix.AddCell(delta.discount_cent, delta.quantity_scaled,
-                     delta.contribution, delta.sign);
+  };
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), partitions);
+  // All partitions must exist.
+  if (snapshot.partitions.size() != partitions.size())
+    return rebuild_all();
+  std::vector<const core::StateImage *> matched;
+  MatchSnapshot(partitions, snapshot.partitions, matched);
+  outcome.updates.reserve(partitions.size());
+  for (std::size_t p = 0; p < partitions.size(); ++p) {
+    if (!matched[p])
+      return rebuild_all();
+    const auto &old = *matched[p];
+    const auto *typed = AsQ6Image(old);
+    if (old.partition != partitions[p] || !typed ||
+        typed->kind != KindOf(partitions[p]) ||
+        typed->key != KeyOf(partitions[p]))
+      return rebuild_all();
+    // Copy-on-write: a fresh image holding the old matrix plus the delta.
+    auto image = NewStateImage(typed->kind, typed->key);
+    image->matrix = typed->matrix;
+    const uint32_t begin = group_begin[p], end = group_begin[p + 1];
+    if (end - begin <= 3) {
+      for (uint32_t i = begin; i < end; ++i) {
+        const auto &delta = deltas[order[i].second];
+        image->matrix.AddCell(delta.discount_cent, delta.quantity_scaled,
+                              delta.contribution, delta.sign);
+      }
+    } else {
+      // Accumulate the batch raw, prefix it once, add the whole block.
+      Q6RevenueMatrix batch;
+      for (uint32_t i = begin; i < end; ++i) {
+        const auto &delta = deltas[order[i].second];
+        batch.AddRawCell(delta.discount_cent, delta.quantity_scaled,
+                         delta.contribution, delta.sign);
+      }
+      batch.PrefixInPlace();
+      image->matrix.AddMatrix(batch);
     }
-  }
-
-  outcome.action = core::MaintenanceAction::ApplyDelta;
-  for (const auto &entry : grouped) {
-    const auto partition = entry.first;
-    const auto version = versions.at(partition);
-    const auto expected_kind =
-        core::TpchQ6Layout::IsMonthPartition(partition)
-            ? TpchQ6PartitionKind::Month
-            : TpchQ6PartitionKind::Day;
-    const auto expected_key =
-        expected_kind == TpchQ6PartitionKind::Month
-            ? core::TpchQ6Layout::MonthKeyFromPartition(partition)
-            : core::TpchQ6Layout::DaysFromPartition(partition);
-    const auto matrix =
-        std::make_shared<const Q6RevenueMatrix>(state.at(partition));
     outcome.updates.push_back(core::StateImage::Make(
-        core::TpchQ6Layout::kAccelerator, partition, version,
-        MakeStateImage(expected_kind, expected_key, matrix)));
+        core::TpchQ6Layout::kAccelerator, partitions[p], old.version,
+        std::shared_ptr<const TpchQ6StateImage>(std::move(image))));
   }
+  outcome.action = core::MaintenanceAction::ApplyDelta;
   return outcome;
 }
 
@@ -651,6 +680,19 @@ void TpchQ6Module::CollectQueryPartitions(
   // Partitions produced by the walk below are already unique (the cursor only
   // advances), so no set is needed; sort once for the store.
   partitions.clear();
+  {
+    // Fast path (every TPC-H instance): a window that starts on the first of a
+    // month and ends exactly twelve months later is twelve whole months.
+    int32_t year = 0;
+    unsigned month = 0, day = 0;
+    CivilFromDays(params.start_days, year, month, day);
+    if (day == 1 && params.end_days == DaysFromCivil(year + 1, month, 1)) {
+      const int32_t first = year * 12 + static_cast<int32_t>(month) - 1;
+      for (int32_t i = 0; i < 12; ++i)
+        partitions.push_back(core::TpchQ6Layout::MonthPartition(first + i));
+      return; // ascending, unique
+    }
+  }
   int32_t cursor = params.start_days;
   const int32_t end = params.end_days;
   while (cursor < end) {
@@ -669,57 +711,52 @@ void TpchQ6Module::CollectQueryPartitions(
   std::sort(partitions.begin(), partitions.end());
 }
 
-bool TpchQ6Module::LoadMatrices(core::AuxEngineServices &services,
-                                const TpchQ6QueryParams &params,
-                                MatrixLookup &matrices) const {
-  std::vector<core::PartitionId> partitions;
-  partitions.reserve(16);
-  CollectQueryPartitions(params, partitions);
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), partitions);
-  matrices.reserve(snapshot.partitions.size());
-  for (const auto &image : snapshot.partitions) {
-    const auto *typed = AsQ6Image(image);
-    if (!typed || !typed->matrix)
-      return false;
-    matrices.emplace_back(image.partition, typed->matrix);
-  }
-  std::sort(matrices.begin(), matrices.end(),
-            [](const auto &l, const auto &r) { return l.first < r.first; });
-  return !matrices.empty();
-}
-
-// The loaded matrices are exactly the query's partitions (CollectQueryPartitions).
-Q6AccT TpchQ6Module::ComposeRevenue(const MatrixLookup &matrices,
-                                    const TpchQ6QueryParams &params) const {
-  Q6AccT revenue = static_cast<Q6AccT>(0);
-  for (const auto &entry : matrices) {
-    if (entry.second)
-      revenue += entry.second->SumRange(params.discount_lower_raw,
-                                        params.discount_upper_raw,
-                                        params.quantity_upper_raw);
-  }
-  return revenue;
-}
-
 void TpchQ6Module::Execute(core::AuxEngineServices &services,
                            const core::QueryArguments &arguments,
                            core::AuxRowSink &sink) {
   TpchQ6QueryParams params;
   if (!ParseTpchQ6QueryParams(arguments, params))
     return;
-  if (!services.StateStore()
-           .CheckValidity({Id(), {}}, services.CurrentVisibility())
-           .IsValid()) {
-    ExecuteFallback(services, arguments, sink);
-    return;
+  thread_local std::vector<core::PartitionId> partitions;
+  CollectQueryPartitions(params, partitions);
+  // Common case (every month present): validity and all partitions in one
+  // linearized observation. Otherwise the general path below.
+  auto snapshot = services.StateStore().ReadHitPartitions(
+      services.CurrentVisibility(), {Id(), {}}, partitions);
+  if (!snapshot.available) {
+    if (!services.StateStore()
+             .CheckValidity({Id(), {}}, services.CurrentVisibility())
+             .IsValid()) {
+      ExecuteFallback(services, arguments, sink);
+      return;
+    }
+    snapshot = services.StateStore().ReadPartitions(
+        services.CurrentVisibility(), partitions);
+    if (snapshot.partitions.empty()) {
+      ExecuteFallback(services, arguments, sink);
+      return;
+    }
   }
-  MatrixLookup matrices;
-  if (!LoadMatrices(services, params, matrices)) {
-    ExecuteFallback(services, arguments, sink);
-    return;
+  // The images borrowed from the snapshot are exactly the query's partitions.
+  // Resolve the cells once, prefetch every matrix, then two loads each.
+  const auto plan = ::accelerator_codegen::Q6RangePlan::Make(
+      params.discount_lower_raw, params.discount_upper_raw,
+      params.quantity_upper_raw);
+  for (const auto &image : snapshot.partitions) {
+    const auto *typed = AsQ6Image(image);
+    if (!typed) {
+      ExecuteFallback(services, arguments, sink);
+      return;
+    }
+    if (!plan.empty)
+      plan.Prefetch(typed->matrix);
   }
-  EmitResult(ComposeRevenue(matrices, params), sink);
+  Q6AccT revenue = static_cast<Q6AccT>(0);
+  if (!plan.empty) {
+    for (const auto &image : snapshot.partitions)
+      revenue += plan.Eval(AsQ6Image(image)->matrix);
+  }
+  EmitResult(revenue, sink);
 }
 
 void TpchQ6Module::ExecuteFallback(core::AuxEngineServices &services,
@@ -754,10 +791,15 @@ void TpchQ6Module::ExecuteFallback(core::AuxEngineServices &services,
 }
 
 void TpchQ6Module::EmitResult(Q6AccT revenue, core::AuxRowSink &sink) const {
-  sink.Begin({{{"revenue", core::AuxType::ScaledDecimal, false}}});
-  sink.WriteRow(
-      {{core::AuxValue::Of(core::AuxType::ScaledDecimal,
-                           TpchQ6RevenueOutputValue(revenue))}});
+  static const core::OutputSchema kSchema{
+      {{"revenue", core::AuxType::ScaledDecimal, false}}};
+  sink.Begin(kSchema);
+  core::AuxRow row;
+  row.values.resize(1);
+  row.values[0].type = core::AuxType::ScaledDecimal;
+  row.values[0].is_null = false;
+  row.values[0].payload = TpchQ6RevenueOutputValue(revenue);
+  sink.WriteRow(row);
   sink.End();
 }
 

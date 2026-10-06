@@ -119,8 +119,8 @@ version. Differences from `VersionedAuxStore`:
 - a waiting reader spins with backoff (no condition variable); no
   `AuxReadScope` pinning (a module reads its state once per query).
 
-`ACCEL_AUX_STORE=verus` selects it for accelerators that have one (now:
-`tpch_q21_verus`), on DuckDB; anything else keeps the C++ store. Postgres
+`ACCEL_AUX_STORE=verus` selects it for accelerators that have one (the Verus
+pipeline's kits), on DuckDB; anything else keeps the C++ store. Postgres
 and MySQL use the C++ store.
 
 # Shared auxiliary-state calibration

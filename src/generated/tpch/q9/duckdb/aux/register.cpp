@@ -188,6 +188,30 @@ struct TpchQ9Scan : TpchQ9InitialScan {
         });
     return true;
   }
+  bool ScanPairAggregates(
+      const std::function<void(int64_t, int64_t, int32_t, int64_t, int64_t)>
+          &consumer) override {
+    // Per (part, supplier, order year) lineitem aggregates; dimension-side
+    // joins (supplier/partsupp/nation) are applied in the accelerator so
+    // dimension writes stay incremental. rev = SUM(ep_raw * (100 - disc_raw)),
+    // qty = SUM(quantity_raw).
+    ScanQueryStreaming(
+        connection,
+        "SELECT l.l_partkey, l.l_suppkey, year(o.o_orderdate), "
+        "SUM(CAST(round(l.l_extendedprice * (1 - l.l_discount) * 10000) AS "
+        "BIGINT)), "
+        "SUM(CAST(round(l.l_quantity * 100) AS BIGINT)) "
+        "FROM lineitem l JOIN orders o ON l.l_orderkey = o.o_orderkey "
+        "GROUP BY 1, 2, 3",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer(SafeInt64(ChunkValue(chunk, 0, row)),
+                   SafeInt64(ChunkValue(chunk, 1, row)),
+                   SafeInt32(ChunkValue(chunk, 2, row)),
+                   SafeInt64(ChunkValue(chunk, 3, row)),
+                   SafeInt64(ChunkValue(chunk, 4, row)));
+        });
+    return true;
+  }
   bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) override {
     bool found = false;
     ScanQueryStreaming(

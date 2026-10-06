@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -116,6 +117,12 @@ struct TpchQ14State {
   // Part inserted after the build and not yet referenced by any lineitem
   // delta: deleting/retyping it needs no lineitem scan.
   static constexpr uint8_t kFreshBit = 4;
+  // Absent keys only: lineitems of the key may exist (a re-insert must add
+  // them) / the key was deleted while known to have none.
+  static constexpr uint8_t kGoneBit = 8;
+  static constexpr uint8_t kDeadBit = 16;
+  // Largest partkey present at build; larger absent keys never had rows.
+  int64_t build_max_partkey = std::numeric_limits<int64_t>::max();
   using Page = std::vector<uint8_t>;
   std::vector<std::shared_ptr<Page>> pages;
   std::unordered_map<int64_t, uint8_t> promo_overflow;
@@ -162,10 +169,13 @@ struct TpchQ14State {
 
 enum class TpchQ14ImageKind : uint8_t { PartPromo, Month };
 
+// PartPromo images carry the part-class state; Month images carry their
+// totals inline (one small allocation per published month).
 struct TpchQ14StateImage {
   TpchQ14ImageKind kind = TpchQ14ImageKind::PartPromo;
   int32_t month = 0;
   std::shared_ptr<const TpchQ14State> state;
+  TpchQ14MonthTotals totals;
 };
 
 struct TpchQ14LineitemDelta {

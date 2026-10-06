@@ -1,5 +1,6 @@
 // SCAFFOLDING
 #include "accelerator_codegen/stateful/state/versioned_aux_store.hpp"
+#include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -170,6 +171,7 @@ bool VersionedAuxStore::MustWaitLocked(const core::AcceleratorId &accelerator, E
 VersionedAuxStore::Resolved
 VersionedAuxStore::ResolveLocked(std::shared_lock<WriterPreferringSharedMutex> &lock,
                                  const core::AcceleratorId &accelerator, Epoch epoch) const {
+  const core::StoreResolveTimer timer;
   auto *scope = AuxReadScope::Current();
   if (scope) {
     for (const auto &pin : scope->pins) {

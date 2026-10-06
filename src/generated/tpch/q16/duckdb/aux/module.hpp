@@ -113,6 +113,9 @@ struct TpchQ16Meta {
   // Rank of an id in lexicographic order (ids are assigned in arrival order).
   std::vector<uint16_t> brand_rank;
   std::vector<uint16_t> type_rank;
+  // Inverse of the ranks: id of the name with a given lexicographic rank.
+  std::vector<uint16_t> brand_by_rank;
+  std::vector<uint16_t> type_by_rank;
   std::unordered_map<std::string, uint16_t> brand_index;
   std::unordered_map<std::string, uint16_t> type_index;
 };

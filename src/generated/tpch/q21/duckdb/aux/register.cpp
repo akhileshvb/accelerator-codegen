@@ -71,7 +71,7 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{21,
      "l2.l_suppkey <> l1.l_suppkey) AND NOT EXISTS (SELECT * FROM lineitem l3 "
      "WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND "
      "l3.l_receiptdate > l3.l_commitdate) AND s_nationkey = n_nationkey AND "
-     "n_name = 'SAUDI ARABIA' GROUP BY s_name ORDER BY numwait DESC, s_name",
+     "n_name = 'SAUDI ARABIA' GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100",
      "SELECT * FROM accel_tpch_q21_aux('SAUDI ARABIA')",
      "SELECT * FROM accel_tpch_q21('SAUDI ARABIA')",
      "SELECT * FROM accel_tpch_q21_aux('SAUDI ARABIA')",
@@ -148,6 +148,30 @@ struct TpchQ21Scan : TpchQ21InitialScan {
                     ChunkValue(chunk, 1, row).ToString(),
                     SafeInt32(ChunkValue(chunk, 2, row))});
         });
+  }
+  bool LookupOrderSummary(int64_t orderkey, OrderLookup &out) override {
+    out = OrderLookup{};
+    const std::string key = std::to_string(orderkey);
+    ScanQueryStreaming(
+        connection,
+        "SELECT o_orderstatus FROM orders WHERE o_orderkey = " + key,
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          out.found = true;
+          out.status = FirstChar(ChunkValue(chunk, 0, row));
+        });
+    if (!out.found)
+      return true;
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_suppkey, COUNT(*), "
+        "SUM(CASE WHEN l_receiptdate > l_commitdate THEN 1 ELSE 0 END) "
+        "FROM lineitem WHERE l_orderkey = " + key + " GROUP BY l_suppkey",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          out.suppliers.push_back({SafeInt64(ChunkValue(chunk, 0, row)),
+                                   SafeInt64(ChunkValue(chunk, 1, row)),
+                                   SafeInt64(ChunkValue(chunk, 2, row))});
+        });
+    return true;
   }
   bool ScanContributingOrderSuppliers(
       const std::function<void(int64_t, int64_t, int64_t, int64_t)> &consumer)

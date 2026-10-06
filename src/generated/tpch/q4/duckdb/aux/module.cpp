@@ -1,4 +1,7 @@
 #include "tpch/q4/duckdb/aux/module.hpp"
+#if defined(__AVX2__) || defined(__AVX512F__)
+#include <immintrin.h>
+#endif
 #include "tpch/q4/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
@@ -15,6 +18,7 @@
 #include <unordered_map>
 #include <stdexcept>
 #include <utility>
+
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -177,6 +181,57 @@ const TpchQ4EligibilityImage *AsQ4EligibilityImage(const core::StateImage &image
 
 uint32_t LeafNode(uint32_t tree_size, int32_t ord) {
   return tree_size + static_cast<uint32_t>(ord);
+}
+
+constexpr uint32_t kMaxStride = 64;
+
+// acc[0..n) += row[0..n) (AVX-512 / AVX2 when available, scalar otherwise).
+// acc must be 64-byte aligned.
+inline void AddRow(int64_t *acc, const int64_t *row, uint32_t n) {
+  uint32_t i = 0;
+#if defined(__AVX512F__)
+  for (; i + 8 <= n; i += 8) {
+    const __m512i a = _mm512_load_si512(acc + i);
+    const __m512i b = _mm512_loadu_si512(row + i);
+    _mm512_store_si512(acc + i, _mm512_add_epi64(a, b));
+  }
+  if (i < n) {
+    const __mmask8 m = static_cast<__mmask8>((1u << (n - i)) - 1u);
+    const __m512i a = _mm512_maskz_loadu_epi64(m, acc + i);
+    const __m512i b = _mm512_maskz_loadu_epi64(m, row + i);
+    _mm512_mask_storeu_epi64(acc + i, m, _mm512_add_epi64(a, b));
+    return;
+  }
+#elif defined(__AVX2__)
+  for (; i + 4 <= n; i += 4) {
+    const __m256i a = _mm256_load_si256(reinterpret_cast<const __m256i *>(acc + i));
+    const __m256i b = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(row + i));
+    _mm256_store_si256(reinterpret_cast<__m256i *>(acc + i), _mm256_add_epi64(a, b));
+  }
+#endif
+  for (; i < n; ++i)
+    acc[i] += row[i];
+}
+
+// Splits a flat node-major tree (node * stride + priority) into immutable
+// pages of kTpchQ4PageNodes nodes.
+std::vector<std::shared_ptr<const std::vector<int64_t>>>
+PaginateTree(const std::vector<int64_t> &flat, std::size_t nodes,
+             uint32_t stride) {
+  const std::size_t page_len =
+      static_cast<std::size_t>(kTpchQ4PageNodes) * stride;
+  const std::size_t count = (nodes + kTpchQ4PageNodes - 1) / kTpchQ4PageNodes;
+  std::vector<std::shared_ptr<const std::vector<int64_t>>> pages;
+  pages.reserve(count);
+  for (std::size_t p = 0; p < count; ++p) {
+    auto page = std::make_shared<std::vector<int64_t>>(page_len, 0);
+    const std::size_t begin = p * page_len;
+    const std::size_t end = std::min(flat.size(), begin + page_len);
+    if (begin < end)
+      std::copy(flat.begin() + begin, flat.begin() + end, page->begin());
+    pages.push_back(std::move(page));
+  }
+  return pages;
 }
 
 bool ReadLineitem(const core::AuxRow &row, TpchQ4LineitemInput &out) {
@@ -385,7 +440,9 @@ void TpchQ4Module::Build(core::AuxEngineServices &services,
   auto tree_payload = std::make_shared<TpchQ4TreePayload>();
   tree_payload->tree_size = state.tree_size;
   tree_payload->tree_stride = state.tree_stride;
-  tree_payload->tree = std::move(state.tree);
+  tree_payload->pages = PaginateTree(
+      state.tree, static_cast<std::size_t>(state.tree_size) * 2,
+      state.tree_stride);
   builder.Write(core::StateImage::Make(
       TpchQ4Layout::kAccelerator, TpchQ4Layout::kTreeBase, 0,
       MakeTreeImage(tree_payload)));
@@ -534,28 +591,24 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
   if (!LoadSide(services, side, elig_payload))
     return rebuild_all();
 
-  // Load current tree image (flat; one memcpy-sized copy per write).
+  // Load the current tree image (shared pages; only touched pages are copied).
   const auto tree_snapshot = services.StateStore().ReadPartitions(
       visibility, {TpchQ4Layout::kTreeBase});
-  std::vector<int64_t> tree;
+  std::shared_ptr<const TpchQ4TreePayload> tree_in;
   uint32_t stride = 0;
-  bool have_tree = false;
   for (const auto &image : tree_snapshot.partitions) {
     if (image.partition == TpchQ4Layout::kTreeBase) {
       const auto *typed = AsQ4TreeImage(image);
       if (!typed || typed->kind != TpchQ4ImageKind::Tree || !typed->payload ||
           typed->payload->tree_size != side.tree_size ||
-          typed->payload->tree.size() !=
-              static_cast<std::size_t>(side.tree_size) * 2 *
-                  typed->payload->tree_stride)
+          !typed->payload->WellFormed())
         return rebuild_all();
-      tree = typed->payload->tree;
-      stride = typed->payload->tree_stride;
-      have_tree = true;
+      tree_in = typed->payload;
+      stride = tree_in->tree_stride;
       break;
     }
   }
-  if (!have_tree)
+  if (!tree_in)
     return rebuild_all();
 
   // Per order key: remove the order's old contribution (if it counted), then
@@ -629,51 +682,44 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
       adjust(info, +1);
   }
 
+  // Working copy of the page table (pages shared with the published tree).
+  std::vector<std::shared_ptr<const std::vector<int64_t>>> pages = tree_in->pages;
+  const std::size_t total_nodes = static_cast<std::size_t>(side.tree_size) * 2;
+
   // A new priority string widens the per-node stride (rare): re-layout.
   const uint32_t num_p = static_cast<uint32_t>(side.priority_names.size());
   if (num_p > stride) {
-    const std::size_t nodes = static_cast<std::size_t>(side.tree_size) * 2;
-    std::vector<int64_t> wide(nodes * num_p, 0);
-    for (std::size_t n = 0; n < nodes; ++n)
+    std::vector<int64_t> wide(total_nodes * num_p, 0);
+    for (std::size_t n = 0; n < total_nodes; ++n) {
+      const int64_t *src = tree_in->Node(static_cast<uint32_t>(n));
       for (uint32_t p = 0; p < stride; ++p)
-        wide[n * num_p + p] = tree[n * stride + p];
-    tree = std::move(wide);
+        wide[n * num_p + p] = src[p];
+    }
+    pages = PaginateTree(wide, total_nodes, num_p);
     stride = num_p;
   }
 
-  // Apply leaf adjustments to tree
-  std::set<uint32_t> ancestor_set;
+  // Apply leaf adjustments: add each leaf's delta to the leaf and every
+  // ancestor (an ancestor is the sum of its children, so adding the same
+  // delta keeps the tree exact).  A page is copied the first time it is hit.
+  std::vector<std::shared_ptr<std::vector<int64_t>>> dirty(pages.size());
   for (const auto &[leaf, adj] : leaf_adjustments) {
-    if (leaf >= side.tree_size * 2)
+    if (leaf >= total_nodes)
       continue;
-    for (size_t pi = 0; pi < adj.size() && pi < stride; ++pi)
-      tree[static_cast<std::size_t>(leaf) * stride + pi] += adj[pi];
-    uint32_t node = leaf / 2;
-    while (node > 0) {
-      ancestor_set.insert(node);
-      node /= 2;
+    const std::size_t lim = std::min<std::size_t>(adj.size(), stride);
+    for (uint32_t node = leaf; node > 0; node >>= 1) {
+      const std::size_t pg = node / kTpchQ4PageNodes;
+      if (!dirty[pg])
+        dirty[pg] = std::make_shared<std::vector<int64_t>>(*pages[pg]);
+      int64_t *row = dirty[pg]->data() +
+                     static_cast<std::size_t>(node % kTpchQ4PageNodes) * stride;
+      for (std::size_t pi = 0; pi < lim; ++pi)
+        row[pi] += adj[pi];
     }
   }
-
-  // Recompute ancestor paths: deeper nodes first, then shallower.
-  std::vector<uint32_t> ancestors(ancestor_set.begin(), ancestor_set.end());
-  std::sort(ancestors.begin(), ancestors.end(),
-            [](uint32_t a, uint32_t b) { return a > b; });
-  const std::size_t total_nodes = static_cast<std::size_t>(side.tree_size) * 2;
-  for (uint32_t node_idx : ancestors) {
-    if (node_idx >= total_nodes)
-      continue;
-    const std::size_t left = static_cast<std::size_t>(node_idx) * 2;
-    const std::size_t right = left + 1;
-    for (uint32_t pi = 0; pi < stride; ++pi) {
-      int64_t sum = 0;
-      if (left < total_nodes)
-        sum += tree[left * stride + pi];
-      if (right < total_nodes)
-        sum += tree[right * stride + pi];
-      tree[static_cast<std::size_t>(node_idx) * stride + pi] = sum;
-    }
-  }
+  for (std::size_t pg = 0; pg < dirty.size(); ++pg)
+    if (dirty[pg])
+      pages[pg] = std::move(dirty[pg]);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   {
@@ -698,7 +744,7 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
     auto tp = std::make_shared<TpchQ4TreePayload>();
     tp->tree_size = side.tree_size;
     tp->tree_stride = stride;
-    tp->tree = std::move(tree);
+    tp->pages = std::move(pages);
     outcome.updates.push_back(core::StateImage::Make(
         TpchQ4Layout::kAccelerator, TpchQ4Layout::kTreeBase, 0,
         MakeTreeImage(tp)));
@@ -772,34 +818,43 @@ void TpchQ4Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  std::vector<uint32_t> node_indices;
+  // Canonical cover on the stack (at most ~2 log2(tree_size) nodes), summed
+  // straight out of the pages with a vector add per node row.
+  uint32_t node_indices[96];
+  std::size_t node_count = 0;
   uint32_t l = LeafNode(side.tree_size, left_ord);
   uint32_t r = LeafNode(side.tree_size, right_ord);
-  while (l < r) {
-    if (l & 1) {
-      node_indices.push_back(l);
-      l++;
-    }
-    if (r & 1) {
-      r--;
-      node_indices.push_back(r);
-    }
-    l /= 2;
-    r /= 2;
+  while (l < r && node_count + 2 <= 96) {
+    if (l & 1)
+      node_indices[node_count++] = l++;
+    if (r & 1)
+      node_indices[node_count++] = --r;
+    l >>= 1;
+    r >>= 1;
   }
 
-  std::vector<int64_t> counts(side.priority_names.size(), 0);
   const std::size_t stride = tree_payload.tree_stride;
-  for (auto idx : node_indices) {
-    if ((static_cast<std::size_t>(idx) + 1) * stride > tree_payload.tree.size())
-      continue;
-    const int64_t *node = tree_payload.tree.data() + idx * stride;
-    for (size_t pi = 0; pi < stride && pi < counts.size(); ++pi)
-      counts[pi] += node[pi];
+  std::vector<int64_t> counts(side.priority_names.size(), 0);
+  if (stride > 0 && stride <= kMaxStride) {
+    alignas(64) int64_t acc[kMaxStride] = {};
+    for (std::size_t i = 0; i < node_count; ++i) {
+      if (!tree_payload.Valid(node_indices[i]))
+        continue;
+      AddRow(acc, tree_payload.Node(node_indices[i]),
+             static_cast<uint32_t>(stride));
+    }
+    const std::size_t lim = std::min(stride, counts.size());
+    for (std::size_t pi = 0; pi < lim; ++pi)
+      counts[pi] = acc[pi];
+  } else {
+    for (std::size_t i = 0; i < node_count; ++i) {
+      if (!tree_payload.Valid(node_indices[i]))
+        continue;
+      const int64_t *node = tree_payload.Node(node_indices[i]);
+      for (size_t pi = 0; pi < stride && pi < counts.size(); ++pi)
+        counts[pi] += node[pi];
+    }
   }
-
-  EmitCustomProfile("state_load", load_timer.us(), side.priority_names.size(),
-                    node_indices.size(), node_indices.size());
 
   EmitResult(side, counts, sink);
 }
@@ -1020,12 +1075,12 @@ bool TpchQ4Module::LoadTree(
       const auto *typed = AsQ4TreeImage(image);
       if (!typed || typed->kind != TpchQ4ImageKind::Tree || !typed->payload)
         return false;
-      const auto &tree = typed->payload->tree;
-      const std::size_t stride = typed->payload->tree_stride;
+      const auto &tp = *typed->payload;
+      const std::size_t stride = tp.tree_stride;
       for (auto idx : node_indices) {
-        if ((static_cast<std::size_t>(idx) + 1) * stride > tree.size())
+        if (!tp.Valid(idx))
           continue;
-        const int64_t *node = tree.data() + idx * stride;
+        const int64_t *node = tp.Node(idx);
         for (size_t pi = 0; pi < stride && pi < counts.size(); ++pi)
           counts[pi] += node[pi];
       }

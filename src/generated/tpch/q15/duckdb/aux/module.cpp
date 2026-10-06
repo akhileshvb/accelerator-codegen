@@ -266,20 +266,20 @@ void TpchQ15WindowState::Rescan() {
   max_revenue = count == 0 ? 0 : max_rev;
 }
 
-const TpchQ15SupplierRecord *
-TpchQ15SupplierDirectory::Find(int64_t suppkey) const {
+void TpchQ15SupplierDirectory::FindAll(
+    int64_t suppkey, std::vector<const TpchQ15SupplierRecord *> &out) const {
   const auto it = chunks.find(suppkey >> kQ15DirChunkShift);
   if (it == chunks.end())
-    return nullptr;
+    return;
   const auto &items = it->second->items;
-  const auto pos = std::lower_bound(
+  auto pos = std::lower_bound(
       items.begin(), items.end(), suppkey,
       [](const auto &e, int64_t k) { return e.first < k; });
-  return pos != items.end() && pos->first == suppkey ? pos->second.get()
-                                                     : nullptr;
+  for (; pos != items.end() && pos->first == suppkey; ++pos)
+    out.push_back(pos->second.get());
 }
 
-void TpchQ15SupplierDirectory::Set(int64_t suppkey, TpchQ15SupplierRecord record) {
+void TpchQ15SupplierDirectory::Add(int64_t suppkey, TpchQ15SupplierRecord record) {
   auto &slot = chunks[suppkey >> kQ15DirChunkShift];
   if (!slot)
     slot = std::make_shared<TpchQ15DirChunk>();
@@ -287,27 +287,32 @@ void TpchQ15SupplierDirectory::Set(int64_t suppkey, TpchQ15SupplierRecord record
     slot = std::make_shared<TpchQ15DirChunk>(*slot);
   auto &items = slot->items;
   auto rec = std::make_shared<const TpchQ15SupplierRecord>(std::move(record));
-  const auto pos = std::lower_bound(
+  const auto pos = std::upper_bound(
       items.begin(), items.end(), suppkey,
-      [](const auto &e, int64_t k) { return e.first < k; });
-  if (pos != items.end() && pos->first == suppkey)
-    pos->second = std::move(rec);
-  else
-    items.insert(pos, {suppkey, std::move(rec)});
+      [](int64_t k, const auto &e) { return k < e.first; });
+  items.insert(pos, {suppkey, std::move(rec)});
 }
 
-void TpchQ15SupplierDirectory::Erase(int64_t suppkey) {
+void TpchQ15SupplierDirectory::EraseOne(int64_t suppkey,
+                                        const TpchQ15SupplierRecord &record) {
   const auto it = chunks.find(suppkey >> kQ15DirChunkShift);
-  if (it == chunks.end() || !Find(suppkey))
+  if (it == chunks.end())
     return;
-  if (it->second.use_count() > 1)
+  const auto same = [&](const auto &e) {
+    return e.first == suppkey && e.second->name == record.name &&
+           e.second->address == record.address &&
+           e.second->phone == record.phone;
+  };
+  auto *chunk = it->second.get();
+  if (std::none_of(chunk->items.begin(), chunk->items.end(), same))
+    return;
+  if (it->second.use_count() > 1) {
     it->second = std::make_shared<TpchQ15DirChunk>(*it->second);
-  auto &items = it->second->items;
-  const auto pos = std::lower_bound(
-      items.begin(), items.end(), suppkey,
-      [](const auto &e, int64_t k) { return e.first < k; });
-  items.erase(pos);
-  if (items.empty())
+    chunk = it->second.get();
+  }
+  chunk->items.erase(
+      std::find_if(chunk->items.begin(), chunk->items.end(), same));
+  if (chunk->items.empty())
     chunks.erase(it);
 }
 
@@ -399,7 +404,7 @@ bool DecodeTpchQ15Directory(const std::vector<uint8_t> &bytes,
       return false;
     if (!reader.String(rec.phone))
       return false;
-    dir.Set(key, std::move(rec));
+    dir.Add(key, std::move(rec));
   }
   return true;
 }
@@ -579,35 +584,41 @@ void TpchQ15Module::AccumulateMutation(const core::MutationBatch &mutation,
       break;
     }
   } else if (mutation.table == config.supplier_table) {
+    auto make = [](const TpchQ15SupplierInput *old_in,
+                   const TpchQ15SupplierInput *new_in) {
+      TpchQ15SupplierDelta delta;
+      delta.suppkey = old_in ? old_in->suppkey : new_in->suppkey;
+      if (old_in) {
+        delta.has_old = true;
+        delta.old_name = old_in->name;
+        delta.old_address = old_in->address;
+        delta.old_phone = old_in->phone;
+      }
+      if (new_in) {
+        delta.has_new = true;
+        delta.new_name = new_in->name;
+        delta.new_address = new_in->address;
+        delta.new_phone = new_in->phone;
+      }
+      return delta;
+    };
     switch (mutation.kind) {
     case core::MutationKind::Insert:
       for (const auto &row : mutation.new_rows) {
         TpchQ15SupplierInput input;
-        if (ReadSupplier(row, input)) {
-          TpchQ15SupplierDelta delta;
-          delta.suppkey = input.suppkey;
-          delta.new_name = input.name;
-          delta.new_address = input.address;
-          delta.new_phone = input.phone;
-          buffer.AddSupplierDelta(delta);
-        } else {
+        if (ReadSupplier(row, input))
+          buffer.AddSupplierDelta(make(nullptr, &input));
+        else
           buffer.MarkRebuild();
-        }
       }
       break;
     case core::MutationKind::Delete:
       for (const auto &row : mutation.old_rows) {
         TpchQ15SupplierInput input;
-        if (ReadSupplier(row, input)) {
-          TpchQ15SupplierDelta delta;
-          delta.suppkey = input.suppkey;
-          delta.old_name = input.name;
-          delta.old_address = input.address;
-          delta.old_phone = input.phone;
-          buffer.AddSupplierDelta(delta);
-        } else {
+        if (ReadSupplier(row, input))
+          buffer.AddSupplierDelta(make(&input, nullptr));
+        else
           buffer.MarkRebuild();
-        }
       }
       break;
     case core::MutationKind::Update:
@@ -622,15 +633,14 @@ void TpchQ15Module::AccumulateMutation(const core::MutationBatch &mutation,
           buffer.MarkRebuild();
           return;
         }
-        TpchQ15SupplierDelta delta;
-        delta.suppkey = old_input.suppkey;
-        delta.old_name = old_input.name;
-        delta.old_address = old_input.address;
-        delta.old_phone = old_input.phone;
-        delta.new_name = new_input.name;
-        delta.new_address = new_input.address;
-        delta.new_phone = new_input.phone;
-        buffer.AddSupplierDelta(delta);
+        // Unchanged projection (e.g. only s_acctbal/s_comment changed): no-op.
+        if (old_input.suppkey == new_input.suppkey &&
+            old_input.name == new_input.name &&
+            old_input.address == new_input.address &&
+            old_input.phone == new_input.phone)
+          continue;
+        buffer.AddSupplierDelta(make(&old_input, nullptr));
+        buffer.AddSupplierDelta(make(nullptr, &new_input));
       }
       break;
     }
@@ -672,7 +682,7 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
       {static_cast<uint64_t>(buffer.LineitemDeltas().size() +
                              buffer.SupplierDeltas().size()),
        static_cast<uint64_t>(std::max<std::size_t>(1, touched_months.size())),
-       true, can_rebuild_windows, true, has_supplier_deltas, false,
+       true, can_rebuild_windows, true, false, false,
        core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
 
@@ -793,18 +803,12 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
       return outcome;
     }
     for (const auto &delta : buffer.SupplierDeltas()) {
-      if (!delta.old_name.empty() || !delta.old_address.empty() ||
-          !delta.old_phone.empty()) {
-        dir_copy.Erase(delta.suppkey);
-      }
-      if (!delta.new_name.empty() || !delta.new_address.empty() ||
-          !delta.new_phone.empty()) {
-        TpchQ15SupplierRecord rec;
-        rec.name = delta.new_name;
-        rec.address = delta.new_address;
-        rec.phone = delta.new_phone;
-        dir_copy.Set(delta.suppkey, std::move(rec));
-      }
+      if (delta.has_old)
+        dir_copy.EraseOne(delta.suppkey,
+                          {delta.old_name, delta.old_address, delta.old_phone});
+      if (delta.has_new)
+        dir_copy.Add(delta.suppkey,
+                     {delta.new_name, delta.new_address, delta.new_phone});
     }
   }
 
@@ -905,8 +909,11 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
   // longer there drops out; renamed ones show their current record).
   std::vector<std::pair<int64_t, TpchQ15SupplierRecord>> winners;
   winners.reserve(win->winners.size());
+  std::vector<const TpchQ15SupplierRecord *> matches;
   for (const auto sk : win->winners) {
-    if (const auto *rec = dir->Find(sk))
+    matches.clear();
+    dir->FindAll(sk, matches);
+    for (const auto *rec : matches)
       winners.emplace_back(sk, *rec);
   }
   EmitResult(winners, win->max_revenue, sink);
@@ -933,7 +940,7 @@ void TpchQ15Module::ExecuteFallback(core::AuxEngineServices &services,
   TpchQ15SupplierDirectory dir;
 
   initial_scan->ScanSuppliers([&](const TpchQ15SupplierInput &input) {
-    dir.Set(input.suppkey,
+    dir.Add(input.suppkey,
             TpchQ15SupplierRecord{input.name, input.address, input.phone});
   });
 
@@ -965,7 +972,9 @@ void TpchQ15Module::ExecuteFallback(core::AuxEngineServices &services,
   std::vector<std::pair<int64_t, TpchQ15SupplierRecord>> winners;
   for (const auto &[sk, rev] : total_rev) {
     if (rev == max_rev) {
-      if (const auto *rec = dir.Find(sk))
+      std::vector<const TpchQ15SupplierRecord *> matches;
+      dir.FindAll(sk, matches);
+      for (const auto *rec : matches)
         winners.emplace_back(sk, *rec);
     }
   }
@@ -983,7 +992,7 @@ TpchQ15State TpchQ15Module::BuildState(
     throw std::logic_error("TPC-H Q15 requires a typed initial scan source");
 
   initial_scan->ScanSuppliers([&](const TpchQ15SupplierInput &input) {
-    state.directory.Set(
+    state.directory.Add(
         input.suppkey,
         TpchQ15SupplierRecord{input.name, input.address, input.phone});
   });

@@ -118,6 +118,15 @@ public:
     return false;
   }
 
+  // Optional: SQL pushdown of lineitem (JOIN orders) GROUP BY part/supp/year:
+  // rev = SUM(extendedprice_raw * (100 - discount_raw)), qty = SUM(quantity_raw).
+  virtual bool ScanPairAggregates(
+      const std::function<void(int64_t partkey, int64_t suppkey, int32_t year,
+                               int64_t rev, int64_t qty)> &consumer) {
+    (void)consumer;
+    return false;
+  }
+
   virtual bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) {
     (void)suppkey;
     (void)nationkey;
@@ -179,9 +188,32 @@ struct Q9ProfitCell {
 };
 #pragma pack(pop)
 
+// Lineitem aggregate of one (part, supplier) pair, per order year
+// 1992..1998 (rev = Σ ep_raw*(100-disc_raw), qty = Σ quantity_raw). A pair's
+// contribution to the answer is rev - cost*qty under the supplier's nation,
+// present iff part, supplier and partsupp rows all exist.
+struct Q9Pair {
+  static constexpr int32_t kYearBase = 1992;
+  static constexpr int32_t kYears = 7;
+  int32_t suppkey = 0;
+  int64_t rev[kYears] = {};
+  int64_t qty[kYears] = {};
+};
+
+// Aggregate for an order year outside Q9Pair's dense range.
+struct Q9ExtraAgg {
+  int32_t suppkey = 0;
+  int32_t year = 0;
+  int64_t rev = 0;
+  int64_t qty = 0;
+};
+
 struct Q9PartRecord {
   std::string normalized_name;
-  std::vector<Q9ProfitCell> cells;
+  bool exists = false; // a part row exists (aggregates may outlive it)
+  std::vector<Q9ProfitCell> cells; // derived from pairs; empty if !exists
+  std::vector<Q9Pair> pairs;
+  std::vector<Q9ExtraAgg> extras;
 };
 
 // ── Copy-on-write paged dense array ─────────────────────────────────────────
@@ -241,7 +273,11 @@ struct TpchQ9State {
 
   // Name index: word token -> sorted unique part keys (uint32; TPC-H partkeys
   // fit). Execute intersects these lists; keep them dense and decode-free.
-  std::unordered_map<std::string, std::vector<int32_t>> name_postings;
+  // Posting vectors are shared_ptr'd so a name write clones only the touched
+  // tokens' vectors; published images never mutate them.
+  using Posting = std::vector<int32_t>;
+  std::unordered_map<std::string, std::shared_ptr<Posting>> name_postings;
+  bool postings_bulk = false; // build mode: append now, sort in Finalize
 
   // Nations sorted by name for ORDER BY nation ASC without per-query sort.
   std::vector<std::pair<std::string, int32_t>> nation_emit_order;
@@ -255,6 +291,8 @@ struct TpchQ9State {
 
   Q9PagedArray<uint8_t, 16> supplier_nations;
   Q9PagedArray<uint8_t, 16> order_years;
+  // suppkey -> partkeys that have a lineitem-aggregate pair with that supplier.
+  Q9PagedArray<std::shared_ptr<const std::vector<int64_t>>, 10> supp_pairs;
   std::unordered_map<int64_t, int32_t> order_year_overflow;
 
   struct PackedPartsuppRow {
@@ -296,6 +334,22 @@ struct TpchQ9State {
     order_year_overflow = o.order_year_overflow;
     partsupp_rows = o.partsupp_rows;
     partsupp_overflow = o.partsupp_overflow;
+    supp_pairs = o.supp_pairs;
+  }
+
+  void EraseSupplierNation(int64_t suppkey) {
+    supplier_nations.Set(suppkey, kAbsentNationCode, kAbsentNationCode);
+  }
+  std::shared_ptr<const std::vector<int64_t>> SuppPairs(int64_t suppkey) const {
+    return supp_pairs.Get(suppkey, nullptr);
+  }
+  // Register partkey under suppkey (clones that supplier's list).
+  void AddSuppPair(int64_t suppkey, int64_t partkey) {
+    auto cur = supp_pairs.Get(suppkey, nullptr);
+    auto next = cur ? std::make_shared<std::vector<int64_t>>(*cur)
+                    : std::make_shared<std::vector<int64_t>>();
+    next->push_back(partkey);
+    supp_pairs.Set(suppkey, std::move(next), nullptr);
   }
 
   bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) const {
@@ -347,7 +401,8 @@ struct TpchQ9State {
       cost = ov->second;
       return true;
     }
-    if (suppkey < 1 || suppkey > static_cast<int64_t>(INT32_MAX))
+    if (!decltype(partsupp_rows)::Fits(partkey) || suppkey < 1 ||
+        suppkey > static_cast<int64_t>(INT32_MAX))
       return false;
     const auto row = partsupp_rows.Get(partkey);
     const auto sk = static_cast<int32_t>(suppkey);
@@ -359,10 +414,33 @@ struct TpchQ9State {
     }
     return false;
   }
+  // Clear the packed-row entry (if any) for the pair.
+  void ErasePackedPartsupp(int64_t partkey, int64_t suppkey) {
+    if (!decltype(partsupp_rows)::Fits(partkey) || suppkey < 1 || suppkey > static_cast<int64_t>(INT32_MAX))
+      return;
+    auto row = partsupp_rows.Get(partkey);
+    const auto sk = static_cast<int32_t>(suppkey);
+    for (int i = 0; i < PackedPartsuppRow::kSlots; ++i) {
+      if (row.suppkeys[i] == sk) {
+        row.suppkeys[i] = 0;
+        row.costs[i] = 0;
+        partsupp_rows.Set(partkey, row);
+        return;
+      }
+    }
+  }
+  void ErasePartsupp(int64_t partkey, int64_t suppkey) {
+    partsupp_overflow.erase(PartsuppKey{partkey, suppkey});
+    ErasePackedPartsupp(partkey, suppkey);
+  }
   void SetPartsuppCost(int64_t partkey, int64_t suppkey, int64_t cost) {
-    if (suppkey < 1 || suppkey > static_cast<int64_t>(INT32_MAX) ||
+    if (!partsupp_overflow.empty())
+      partsupp_overflow.erase(PartsuppKey{partkey, suppkey});
+    if (!decltype(partsupp_rows)::Fits(partkey) || suppkey < 1 ||
+        suppkey > static_cast<int64_t>(INT32_MAX) ||
         cost < static_cast<int64_t>(INT32_MIN) ||
         cost > static_cast<int64_t>(INT32_MAX)) {
+      ErasePackedPartsupp(partkey, suppkey);
       partsupp_overflow[PartsuppKey{partkey, suppkey}] = cost;
       return;
     }
@@ -390,6 +468,13 @@ struct TpchQ9State {
   // ── Initialization ─────────────────────────────────────────────────────
   static core::PartitionId ChooseProfitSlots(std::size_t part_count);
 
+  // Fix the slot count exactly (InitPartitions takes a PART count).
+  void InitSlots(core::PartitionId slots) {
+    profit_slot_count = slots < TpchQ9Layout::kMinProfitSlots
+                            ? TpchQ9Layout::kMinProfitSlots
+                            : slots;
+    profit_partitions.assign(profit_slot_count, PartProfitPartition{});
+  }
   void InitPartitions(std::size_t part_count = 0) {
     if (part_count > 0)
       profit_slot_count = ChooseProfitSlots(part_count);
@@ -435,44 +520,33 @@ struct TpchQ9State {
   void FinalizePostings();
   void RebuildNationEmitOrder();
 
-  // ── Profit contribution helpers ────────────────────────────────────────
-  void AddContribution(int64_t partkey, int32_t nationkey, int32_t year,
-                       int64_t profit_raw) {
-    if (profit_raw == 0) return;
-    auto &record = PartRecord(partkey);
-    auto &cells = record.cells;
-    int32_t cube_nation = nationkey, cube_year = year;
-    if (auto *cell = FindCell(cells, nationkey, year)) {
-      cell->profit += profit_raw;
-      cube_nation = cell->Nation();
-      cube_year = cell->Year();
-    } else {
-      cells.push_back(Q9ProfitCell::Make(nationkey, year, profit_raw));
-      cube_nation = cells.back().Nation();
-      cube_year = cells.back().Year();
-    }
-    if (cube_active)
-      CubeAdd(NameTokensOf(record.normalized_name), cube_nation, cube_year,
-              profit_raw);
+  // ── Pair aggregates / contributions ────────────────────────────────────
+  static Q9Pair *FindPair(Q9PartRecord &rec, int32_t suppkey) {
+    for (auto &p : rec.pairs)
+      if (p.suppkey == suppkey)
+        return &p;
+    return nullptr;
   }
-
-  void RemoveContribution(int64_t partkey, int32_t nationkey, int32_t year,
-                          int64_t profit_raw) {
-    if (profit_raw == 0) return;
-    auto it = GetPartition(partkey).parts.find(partkey);
-    if (it == GetPartition(partkey).parts.end()) return;
-    auto &cells = it->second.cells;
-    for (auto cell_it = cells.begin(); cell_it != cells.end(); ++cell_it) {
-      if (cell_it->Nation() != nationkey || cell_it->Year() != year) continue;
-      cell_it->profit -= profit_raw;
-      if (cube_active)
-        CubeAdd(NameTokensOf(it->second.normalized_name), cell_it->Nation(),
-                cell_it->Year(), -profit_raw);
-      if (cell_it->profit == 0)
-        cells.erase(cell_it);
-      return;
-    }
+  static const Q9Pair *FindPair(const Q9PartRecord &rec, int32_t suppkey) {
+    for (const auto &p : rec.pairs)
+      if (p.suppkey == suppkey)
+        return &p;
+    return nullptr;
   }
+  // Add signed aggregate; returns true if a new dense pair was created.
+  static bool AddPairAgg(Q9PartRecord &rec, int32_t suppkey, int32_t year,
+                         int64_t rev, int64_t qty);
+  // Add (sign=+1) / remove (sign=-1) one pair's contribution to the record's
+  // cells and the token cube, resolving supplier nation / cost from `side`.
+  void ApplyPairContribution(int64_t partkey, Q9PartRecord &rec,
+                             const std::vector<std::string> &tokens,
+                             int32_t suppkey, int sign,
+                             const TpchQ9State &side);
+  void AdjustCell(Q9PartRecord &rec, const std::vector<std::string> &tokens,
+                  int32_t nation, int32_t year, int64_t delta);
+  // Build-time: derive cells of every existing part from its pairs.
+  void BuildCellsFromPairs();
+  void BuildSuppPairsIndex();
 
   // ── Name posting helpers ───────────────────────────────────────────────
   void AddNamePostings(int64_t partkey, const std::string &raw_name);
@@ -530,6 +604,19 @@ struct TpchQ9LineitemDelta {
   int8_t sign = 0;
 };
 
+struct TpchQ9SupplierDelta {
+  int64_t suppkey = 0;
+  int64_t nationkey = 0;
+  int8_t sign = 0;
+};
+
+struct TpchQ9PartsuppDelta {
+  int64_t partkey = 0;
+  int64_t suppkey = 0;
+  int64_t cost_raw = 0;
+  int8_t sign = 0;
+};
+
 struct TpchQ9OrderDelta {
   int64_t orderkey = 0;
   int32_t order_year = 0;
@@ -576,6 +663,15 @@ public:
                           const std::string &new_name);
   void AddRebuildPartkey(int64_t partkey);
 
+  const std::vector<TpchQ9SupplierDelta> &SupplierDeltas() const {
+    return supplier_deltas;
+  }
+  const std::vector<TpchQ9PartsuppDelta> &PartsuppDeltas() const {
+    return partsupp_deltas;
+  }
+  void AddSupplierDelta(TpchQ9SupplierDelta d);
+  void AddPartsuppDelta(TpchQ9PartsuppDelta d);
+
   bool PartNameChanged() const { return !part_name_deltas.empty(); }
   const std::vector<std::tuple<int64_t, std::string, std::string>> &
   PartNameDeltas() const { return part_name_deltas; }
@@ -590,6 +686,8 @@ private:
   bool requires_rebuild = false;
   std::vector<TpchQ9LineitemDelta> deltas;
   std::vector<TpchQ9OrderDelta> order_deltas;
+  std::vector<TpchQ9SupplierDelta> supplier_deltas;
+  std::vector<TpchQ9PartsuppDelta> partsupp_deltas;
   std::vector<std::tuple<int64_t, std::string, std::string>> part_name_deltas;
   std::unordered_set<int64_t> rebuild_partkeys;
 };
@@ -638,10 +736,6 @@ private:
   // Build helper. `full` also populates the join-side maps and token cube.
   void BuildStateInto(TpchQ9State &state, bool full = true) const;
 
-  // Rebuild profit cells for specific partkeys from base data
-  void RebuildPartkeys(TpchQ9State &state,
-                       const std::unordered_set<int64_t> &partkeys,
-                       const TpchQ9State *side = nullptr) const;
 
   TpchQ9Config config;
   TpchQ9InitialScan *initial_scan = nullptr;

@@ -72,9 +72,11 @@ public:
   }
 };
 
+// One dyadic node. The flat partition lives inside the image (a single
+// allocation per published node).
 struct TpchQ1StateImage {
   int32_t shipdate_days = 0;
-  std::shared_ptr<const ::accelerator_codegen::Q1DayPartition> partition;
+  ::accelerator_codegen::Q1DayPartition partition;
 };
 
 struct TpchQ1LineitemDelta {
@@ -146,11 +148,8 @@ private:
   std::vector<::accelerator_codegen::Q1OutputRow>
   ComposeOutput(const std::unordered_map<int32_t, ::accelerator_codegen::Q1DayPartition> &,
                 int32_t cutoff_days) const;
-  bool LoadPartitions(core::AuxEngineServices &, int32_t cutoff_days,
-                      std::unordered_map<int32_t, ::accelerator_codegen::Q1DayPartition> &,
-                      std::map<int32_t, core::Version> *versions = nullptr) const;
-  void EmitResult(const std::vector<::accelerator_codegen::Q1OutputRow> &,
-                  core::AuxRowSink &) const;
+  void EmitResult(const ::accelerator_codegen::Q1OutputRow *rows,
+                  uint32_t row_count, core::AuxRowSink &) const;
 
   TpchQ1Config config;
   TpchQ1InitialScan *initial_scan = nullptr;

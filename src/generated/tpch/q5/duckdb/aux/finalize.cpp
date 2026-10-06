@@ -51,4 +51,33 @@ void TpchQ5FinalizeAndEmit(
   sink.End();
 }
 
+void TpchQ5FinalizeColumns(const TpchQ5Meta &meta, int32_t target_regionkey,
+                           const int64_t *revenue, std::size_t columns,
+                           core::AuxRowSink &sink) {
+  sink.Begin({{{"n_name", core::AuxType::String, false},
+               {"revenue", core::AuxType::ScaledDecimal, false}}});
+  columns = std::min(columns, meta.column_region.size());
+  // Select the surviving columns (a handful) and order them.
+  std::vector<uint32_t> pick;
+  pick.reserve(32);
+  for (std::size_t c = 0; c < columns; ++c)
+    if (revenue[c] != 0 && meta.column_region[c] == target_regionkey)
+      pick.push_back(static_cast<uint32_t>(c));
+  std::sort(pick.begin(), pick.end(), [&](uint32_t a, uint32_t b) {
+    if (revenue[a] != revenue[b])
+      return revenue[a] > revenue[b];
+    return meta.column_name[a] < meta.column_name[b];
+  });
+  for (const uint32_t c : pick) {
+    core::AuxRow row;
+    row.values.reserve(2);
+    row.values.push_back(
+        core::AuxValue::Of(core::AuxType::String, meta.column_name[c]));
+    row.values.push_back(core::AuxValue::Of(
+        core::AuxType::ScaledDecimal, core::ScaledDecimal{revenue[c], 4}));
+    sink.WriteRow(row);
+  }
+  sink.End();
+}
+
 } // namespace accelerator_codegen::aux_state::query

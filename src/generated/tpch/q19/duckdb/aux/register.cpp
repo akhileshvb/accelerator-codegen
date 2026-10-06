@@ -129,6 +129,40 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
+// Typed streaming scan: reads DuckDB vectors directly (no boxed Values).
+template <typename T> struct TypedCol {
+  ::duckdb::UnifiedVectorFormat fmt;
+  const T *data = nullptr;
+  void Init(::duckdb::DataChunk &chunk, ::duckdb::idx_t col) {
+    chunk.data[col].ToUnifiedFormat(chunk.size(), fmt);
+    data = ::duckdb::UnifiedVectorFormat::GetData<T>(fmt);
+  }
+  bool Valid(::duckdb::idx_t row) const {
+    return fmt.validity.RowIsValid(fmt.sel->get_index(row));
+  }
+  const T &operator()(::duckdb::idx_t row) const {
+    return data[fmt.sel->get_index(row)];
+  }
+};
+
+template <typename Callback>
+void ScanTypedChunks(::duckdb::Connection &connection_p, const std::string &sql,
+                     Callback &&callback) {
+  auto &connection = ScanConnection(connection_p);
+  auto result = connection.SendQuery(sql);
+  if (!result || result->HasError())
+    throw std::runtime_error(result ? result->GetError()
+                                    : "DuckDB scan returned null");
+  while (true) {
+    auto chunk = result->Fetch();
+    if (!chunk || chunk->size() == 0)
+      break;
+    callback(*chunk);
+  }
+  if (result->HasError())
+    throw std::runtime_error(result->GetError());
+}
+
 struct TpchQ19Scan : TpchQ19InitialScan {
   explicit TpchQ19Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanParts(
@@ -183,6 +217,33 @@ struct TpchQ19Scan : TpchQ19InitialScan {
                    SafeInt64(ChunkValue(chunk, 2, row)),
                    SafeInt64(ChunkValue(chunk, 3, row)),
                    SafeInt64(ChunkValue(chunk, 4, row)));
+        });
+    return true;
+  }
+  bool ScanQualifyingLineitemsByPart(
+      const std::function<void(int64_t, int64_t, int64_t, int64_t)> &consumer)
+      override {
+    ScanTypedChunks(
+        connection,
+        "SELECT CAST(l_partkey AS BIGINT), "
+        "CAST(round(l_quantity * 100) AS BIGINT), "
+        "CAST(SUM(CAST(round(l_extendedprice * 100) AS BIGINT) * "
+        "(100 - CAST(round(l_discount * 100) AS BIGINT))) AS BIGINT), "
+        "COUNT(*) FROM lineitem "
+        "WHERE l_shipmode IN ('AIR', 'AIR REG') "
+        "AND l_shipinstruct = 'DELIVER IN PERSON' "
+        "GROUP BY l_partkey, l_quantity ORDER BY l_partkey",
+        [&](::duckdb::DataChunk &chunk) {
+          TypedCol<int64_t> pk, qty, rev, cnt;
+          pk.Init(chunk, 0);
+          qty.Init(chunk, 1);
+          rev.Init(chunk, 2);
+          cnt.Init(chunk, 3);
+          for (::duckdb::idx_t i = 0; i < chunk.size(); ++i) {
+            if (!pk.Valid(i) || !qty.Valid(i))
+              continue;
+            consumer(pk(i), qty(i), rev.Valid(i) ? rev(i) : 0, cnt(i));
+          }
         });
     return true;
   }

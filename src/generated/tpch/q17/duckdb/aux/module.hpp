@@ -263,6 +263,8 @@ private:
 
   TpchQ17Config config;
   TpchQ17InitialScan *initial_scan = nullptr;
+  // Prebuilt read key (no per-read string construction).
+  core::QueryKey hit_key{core::AcceleratorId(TpchQ17Layout::kAccelerator), {}};
 };
 
 } // namespace accelerator_codegen::aux_state::query

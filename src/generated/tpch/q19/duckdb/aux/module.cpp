@@ -13,6 +13,7 @@
 #include <unordered_set>
 #include <utility>
 
+
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
@@ -192,7 +193,7 @@ void TpchQ19State::AddContribution(const std::string &brand,
   if (size < 1 || size > BranchSizeLimit(family)) return;
   int idx = FamilyIndex(family);
   if (idx < 0 || idx >= kNumFamilies) return;
-  auto &vec = aggregates[brand][idx];
+  auto &vec = aggregates.Mut(brand)[idx];
   // Binary search for qty
   auto it = std::lower_bound(vec.begin(), vec.end(), quantity_coord,
                              [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
@@ -209,7 +210,7 @@ void TpchQ19State::AddAggregate(const std::string &brand, TpchQ19Family family,
                                 int64_t count) {
   const int idx = FamilyIndex(family);
   if (idx < 0 || idx >= kNumFamilies || count <= 0) return;
-  auto &vec = aggregates[brand][idx];
+  auto &vec = aggregates.Mut(brand)[idx];
   auto it = std::lower_bound(vec.begin(), vec.end(), quantity_coord,
                              [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
   if (it != vec.end() && it->qty == quantity_coord) {
@@ -226,9 +227,9 @@ int64_t TpchQ19State::RangeSumCount(const std::string &brand,
   count = 0;
   const int idx = FamilyIndex(family);
   if (idx < 0 || idx >= kNumFamilies) return 0;
-  const auto brand_it = aggregates.find(brand);
-  if (brand_it == aggregates.end()) return 0;
-  const auto &vec = brand_it->second[idx];
+  const BrandAgg *brand_agg = aggregates.Find(brand);
+  if (!brand_agg) return 0;
+  const auto &vec = (*brand_agg)[idx];
   auto lo = std::lower_bound(vec.begin(), vec.end(), qty_low,
                              [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
   int64_t total = 0;
@@ -243,9 +244,9 @@ int64_t TpchQ19State::RangeCount(const std::string &brand, TpchQ19Family family,
                                  int64_t qty_low, int64_t qty_high) const {
   const int idx = FamilyIndex(family);
   if (idx < 0 || idx >= kNumFamilies) return 0;
-  const auto brand_it = aggregates.find(brand);
-  if (brand_it == aggregates.end()) return 0;
-  const auto &vec = brand_it->second[idx];
+  const BrandAgg *brand_agg = aggregates.Find(brand);
+  if (!brand_agg) return 0;
+  const auto &vec = (*brand_agg)[idx];
   auto lo = std::lower_bound(vec.begin(), vec.end(), qty_low,
                              [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
   auto hi = std::upper_bound(vec.begin(), vec.end(), qty_high,
@@ -263,9 +264,9 @@ int64_t TpchQ19State::RangeSum(const std::string &brand,
   (void)size_low; (void)size_high;  // size folded into family
   int idx = FamilyIndex(family);
   if (idx < 0 || idx >= kNumFamilies) return 0;
-  const auto brand_it = aggregates.find(brand);
-  if (brand_it == aggregates.end()) return 0;
-  const auto &vec = brand_it->second[idx];
+  const BrandAgg *brand_agg = aggregates.Find(brand);
+  if (!brand_agg) return 0;
+  const auto &vec = (*brand_agg)[idx];
   if (vec.empty()) return 0;
   int64_t total = 0;
   auto qty_it = std::lower_bound(vec.begin(), vec.end(), qty_low,
@@ -283,23 +284,21 @@ void TpchQ19State::RemoveContribution(const std::string &brand,
   if (size < 1 || size > BranchSizeLimit(family)) return;
   int idx = FamilyIndex(family);
   if (idx < 0 || idx >= kNumFamilies) return;
-  auto brand_it = aggregates.find(brand);
-  if (brand_it == aggregates.end()) return;
-  auto &vec = brand_it->second[idx];
+  if (!aggregates.Find(brand)) return;
+  {
+    const auto &cvec = (*aggregates.Find(brand))[idx];
+    auto cit = std::lower_bound(cvec.begin(), cvec.end(), quantity_coord,
+                                [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
+    if (cit == cvec.end() || cit->qty != quantity_coord) return;
+  }
+  auto &vec = aggregates.Mut(brand)[idx];
   auto qty_it = std::lower_bound(vec.begin(), vec.end(), quantity_coord,
                                   [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
-  if (qty_it == vec.end() || qty_it->qty != quantity_coord) return;
   qty_it->rev -= delta;
   qty_it->count -= 1;
   if (qty_it->count <= 0)
     vec.erase(qty_it);
-  // Look for empty slots to maybe erase this brand key
-  bool all_empty = true;
-  for (int fi = 0; fi < kNumFamilies; ++fi) {
-    if (!brand_it->second[fi].empty()) { all_empty = false; break; }
-  }
-  if (all_empty)
-    aggregates.erase(brand_it);
+  // (An all-empty brand stays as an empty slot; it is skipped when encoded.)
 }
 
 
@@ -313,8 +312,9 @@ std::vector<uint8_t> EncodeTpchQ19Aggregate(const TpchQ19State &state) {
   core::WriteImageHeader(w, kAggregateMagic, kVersionV2, 0); // count unused
 
   // brand count
-  w.U32(static_cast<uint32_t>(state.aggregates.size()));
-  for (const auto &[brand, family_vecs] : state.aggregates) {
+  w.U32(static_cast<uint32_t>(state.aggregates.NonEmptyCount()));
+  state.aggregates.ForEachNonEmpty([&](const std::string &brand,
+                                       const TpchQ19State::BrandAgg &family_vecs) {
     w.String(brand);
     // family count (always 3 slots, only write non-empty)
     uint32_t non_empty_families = 0;
@@ -337,7 +337,7 @@ std::vector<uint8_t> EncodeTpchQ19Aggregate(const TpchQ19State &state) {
         w.I64(qr.count);
       }
     }
-  }
+  });
 
   return std::move(w.bytes);
 }
@@ -353,7 +353,7 @@ bool DecodeTpchQ19Aggregate(const std::vector<uint8_t> &bytes,
   if (magic != kAggregateMagic) return false;
   if (version != kVersionV2 && version != kVersionV1_Deprecated) return false;
 
-  state.aggregates.clear();
+  state.aggregates.Clear();
 
   uint32_t brand_count = 0;
   if (!reader.U32(brand_count))
@@ -394,7 +394,7 @@ bool DecodeTpchQ19Aggregate(const std::vector<uint8_t> &bytes,
           int64_t qty = 0, rev = 0, count = 0;
           if (!reader.I64(qty) || !reader.I64(rev) || !reader.I64(count))
             return false;
-          auto &vec = state.aggregates[brand][idx];
+          auto &vec = state.aggregates.Mut(brand)[idx];
           TpchQ19State::QtyRev qr{qty, rev, count};
           vec.insert(std::lower_bound(vec.begin(), vec.end(), qty,
                      [](const TpchQ19State::QtyRev &qr, int64_t q) { return qr.qty < q; }), qr);
@@ -428,47 +428,133 @@ core::InvalidationPlan All() {
   return plan;
 }
 
-// ── Part dimension cache ────────────────────────────────────────────────────
-uint32_t TpchQ19Module::PartDimCache::Get(int64_t partkey) const {
-  if (partkey >= 0 && static_cast<std::size_t>(partkey) < dense.size())
-    return dense[static_cast<std::size_t>(partkey)];
-  const auto it = sparse.find(partkey);
-  return it == sparse.end() ? 0u : it->second;
-}
-
-void TpchQ19Module::PartDimCache::Set(int64_t partkey, uint32_t code) {
-  constexpr int64_t kDenseLimit = int64_t{1} << 25;
-  if (partkey >= 0 && partkey < kDenseLimit) {
-    if (static_cast<std::size_t>(partkey) >= dense.size())
-      dense.resize(std::max<std::size_t>(static_cast<std::size_t>(partkey) + 1,
-                                         dense.size() + dense.size() / 2),
-                   0u);
-    dense[static_cast<std::size_t>(partkey)] = code;
-    return;
+// ── Part index / dimension codes ────────────────────────────────────────────
+std::vector<TpchQ19State::IndexEnt>
+TpchQ19State::IndexEntries(int64_t partkey) const {
+  std::vector<IndexEnt> out;
+  if (!index_overlay.Empty()) {
+    if (const auto *ov = index_overlay.Find(static_cast<uint64_t>(partkey)))
+      return *ov;
   }
-  sparse[partkey] = code;
+  const auto &b = *index_base;
+  const auto it = std::lower_bound(b.keys.begin(), b.keys.end(), partkey);
+  if (it == b.keys.end() || *it != partkey)
+    return out;
+  const std::size_t i = static_cast<std::size_t>(it - b.keys.begin());
+  for (uint32_t j = b.off[i]; j < b.off[i + 1]; ++j)
+    out.push_back({b.ents[j].qty, b.ents[j].rev, b.ents[j].count});
+  return out;
 }
 
-uint32_t TpchQ19Module::PartDimCache::Encode(const std::string &brand,
-                                             int family) {
-  if (family < 1 || family > 3) return 1u;
-  auto it = brand_ids.find(brand);
-  if (it == brand_ids.end()) {
-    it = brand_ids.emplace(brand, brands.size()).first;
+uint32_t TpchQ19State::DimGet(int64_t partkey) const {
+  if (partkey >= 0 && partkey < kDimDenseLimit) {
+    const std::size_t page = static_cast<std::size_t>(partkey) / kDimPage;
+    if (page < dim_pages.size() && dim_pages[page])
+      return dim_pages[page]->codes[static_cast<std::size_t>(partkey) % kDimPage];
+    return 0u;
+  }
+  if (!dim_sparse)
+    return 0u;
+  const auto it = dim_sparse->find(partkey);
+  return it == dim_sparse->end() ? 0u : it->second;
+}
+
+uint32_t TpchQ19State::EncodeDim(const std::string &brand, int family) {
+  if (family < 1 || family > 3)
+    return 1u;
+  std::size_t i = 0;
+  while (i < brands.size() && brands[i] != brand)
+    ++i;
+  if (i == brands.size())
     brands.push_back(brand);
-  }
-  const std::size_t i = it->second;
   return (static_cast<uint32_t>(i + 1) << 2) | static_cast<uint32_t>(family);
 }
 
-void TpchQ19Module::PartDimCache::Clear() {
-  loaded = false;
-  dense.clear();
-  dense.shrink_to_fit();
-  sparse.clear();
-  brands.clear();
-  brand_ids.clear();
+void TpchQ19State::RemoveAggregate(const std::string &brand,
+                                   TpchQ19Family family,
+                                   int64_t quantity_coord, int64_t rev,
+                                   int64_t count) {
+  const int idx = FamilyIndex(family);
+  if (idx < 0 || idx >= kNumFamilies)
+    return;
+  const BrandAgg *cur = aggregates.Find(brand);
+  if (!cur)
+    return;
+  {
+    const auto &cvec = (*cur)[idx];
+    const auto cit = std::lower_bound(
+        cvec.begin(), cvec.end(), quantity_coord,
+        [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
+    if (cit == cvec.end() || cit->qty != quantity_coord)
+      return;
+  }
+  auto &vec = aggregates.Mut(brand)[idx];
+  auto it = std::lower_bound(vec.begin(), vec.end(), quantity_coord,
+                             [](const QtyRev &qr, int64_t q) { return qr.qty < q; });
+  it->rev -= rev;
+  it->count -= count;
+  if (it->count <= 0)
+    vec.erase(it);
+  // (An all-empty brand stays as an empty slot; it is skipped when encoded.)
 }
+
+namespace {
+
+// Staging bookkeeping for copy-on-write dimension pages (fresh = Build).
+struct DimStage {
+  bool fresh = false;
+  std::unordered_set<std::size_t> pages;
+  bool sparse_owned = false;
+};
+
+void DimSet(TpchQ19State &s, DimStage &st, int64_t key, uint32_t code) {
+  if (key >= 0 && key < TpchQ19State::kDimDenseLimit) {
+    const std::size_t page = static_cast<std::size_t>(key) / TpchQ19State::kDimPage;
+    if (s.dim_pages.size() <= page)
+      s.dim_pages.resize(page + 1);
+    auto &pp = s.dim_pages[page];
+    if (!pp) {
+      pp = std::make_shared<TpchQ19State::DimPage>();
+      st.pages.insert(page);
+    } else if (!st.fresh && st.pages.insert(page).second) {
+      pp = std::make_shared<TpchQ19State::DimPage>(*pp);
+    }
+    pp->codes[static_cast<std::size_t>(key) % TpchQ19State::kDimPage] = code;
+    return;
+  }
+  if (!st.fresh && !st.sparse_owned) {
+    s.dim_sparse = std::make_shared<std::unordered_map<int64_t, uint32_t>>(
+        s.dim_sparse ? *s.dim_sparse
+                     : std::unordered_map<int64_t, uint32_t>{});
+    st.sparse_owned = true;
+  }
+  if (code == 0)
+    s.dim_sparse->erase(key);
+  else
+    (*s.dim_sparse)[key] = code;
+}
+
+// Dimension code of a part row under Q19's three-branch predicate.
+uint32_t PartCode(TpchQ19State &s, const std::string &brand,
+                  const std::string &container, int32_t size) {
+  const auto family = ClassifyContainerFamily(container);
+  const bool ok = family != TpchQ19Family::None && size >= 1 &&
+                  size <= BranchSizeLimit(family);
+  return s.EncodeDim(brand, ok ? static_cast<int>(family) : 0);
+}
+
+bool ReadPartRow(const core::AuxRow &row, int64_t &partkey, std::string &brand,
+                 std::string &container, int32_t &size) {
+  const std::string *b = StringCellPtr(row, 1);
+  const std::string *c = StringCellPtr(row, 2);
+  if (!IntCell(row, 0, partkey) || !b || !c || !Int32Cell(row, 3, size))
+    return false;
+  brand = *b;
+  container = *c;
+  return true;
+}
+
+} // namespace
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ19TxnBuffer::HasPendingChanges() const { return pending; }
@@ -565,17 +651,51 @@ void TpchQ19Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 
   if (mutation.table == config.part_table) {
-    // A part's attributes decide where its lineitems count: inserting,
-    // deleting or changing a part moves the contributions of every lineitem
-    // already referencing it, which the deltas do not carry.  Rebuild.
-    if (!mutation.old_rows.empty() || !mutation.new_rows.empty())
-      buf.MarkRebuild();
+    // Part writes move that part's qualifying lineitems (kept in the per-part
+    // index) between (brand, family) aggregates.
+    const auto make = [&](const core::AuxRow &row, int8_t op) {
+      TpchQ19Delta d;
+      d.part_op = op;
+      if (!ReadPartRow(row, d.partkey, d.new_brand, d.new_container,
+                       d.new_size)) {
+        buf.MarkRebuild();
+        return;
+      }
+      buf.AddDelta(std::move(d));
+    };
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows) make(row, 1);
+      break;
+    case core::MutationKind::Delete:
+      for (const auto &row : mutation.old_rows) make(row, 2);
+      break;
+    case core::MutationKind::Update:
+      if (mutation.old_rows.size() != mutation.new_rows.size()) {
+        buf.MarkRebuild();
+        break;
+      }
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        int64_t ok = 0, nk = 0;
+        std::string ob, oc, nb, nc;
+        int32_t os = 0, ns = 0;
+        if (!ReadPartRow(mutation.old_rows[i], ok, ob, oc, os) ||
+            !ReadPartRow(mutation.new_rows[i], nk, nb, nc, ns) || ok != nk) {
+          buf.MarkRebuild();
+          break;
+        }
+        if (ob == nb && oc == nc && os == ns)
+          continue; // untracked column only
+        make(mutation.new_rows[i], 3);
+      }
+      break;
+    }
     return;
   }
 }
 
 TpchQ19State TpchQ19Module::BuildState(core::AuxEngineServices &services,
-                                        bool refresh_dims) const {
+                                        bool full) const {
   (void)services;
   TpchQ19State state;
 
@@ -586,57 +706,124 @@ TpchQ19State TpchQ19Module::BuildState(core::AuxEngineServices &services,
     return static_cast<TpchQ19Family>(f);
   };
 
-  // Preferred path: the filtered GROUP BY (brand, family, quantity) runs in
-  // SQL; no per-lineitem C++ work.
-  const bool used_sql = initial_scan->ScanQualifyingAggregates(
-      [&](const std::string &brand, int family, int64_t qty, int64_t rev,
-          int64_t count) {
-        state.AddAggregate(brand, family_of_index(family), qty, rev, count);
-      });
-
-  std::unordered_map<int64_t, TpchQ19PartInput> parts; // fallback path only
-
-  if (refresh_dims) {
-    // Compact per-part dims for lineitem delta resolution (from scratch: a
-    // part deleted since the last build must not stay cached).
-    std::lock_guard<std::mutex> lock(dim_mutex);
-    dims.Clear();
-    const bool have_families = initial_scan->ScanPartFamilies(
-        [&](int64_t key, const std::string &brand, int family) {
-          dims.Set(key, dims.Encode(brand, family));
-        });
-    if (!have_families) {
-      initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
-        const auto family = ClassifyContainerFamily(input.container);
-        const bool ok = family != TpchQ19Family::None && input.size >= 1 &&
-                        input.size <= BranchSizeLimit(family);
-        dims.Set(input.key,
-                 dims.Encode(input.brand, ok ? static_cast<int>(family) : 0));
-      });
-    }
-    dims.loaded = true;
+  if (!full) {
+    // Read-only fallback: aggregates only.
+    if (initial_scan->ScanQualifyingAggregates(
+            [&](const std::string &brand, int family, int64_t qty, int64_t rev,
+                int64_t count) {
+              state.AddAggregate(brand, family_of_index(family), qty, rev,
+                                 count);
+            }))
+      return state;
+    std::unordered_map<int64_t, TpchQ19PartInput> parts;
+    initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
+      parts[input.key] = input;
+    });
+    initial_scan->ScanLineitems([&](const TpchQ19LineitemInput &input) {
+      if (!ShippingQualifies(input))
+        return;
+      const auto part_it = parts.find(input.partkey);
+      if (part_it == parts.end())
+        return;
+      const auto &part = part_it->second;
+      const auto family = ClassifyContainerFamily(part.container);
+      if (family == TpchQ19Family::None)
+        return;
+      state.AddContribution(part.brand, family, part.size, input.quantity_raw,
+                            ComputeRevenue(input.extendedprice_raw,
+                                           input.discount_raw));
+    });
+    return state;
   }
 
-  if (used_sql)
-    return state;
+  // Part dimension codes for every part.
+  DimStage dim_stage;
+  dim_stage.fresh = true;
+  if (!initial_scan->ScanPartFamilies(
+          [&](int64_t key, const std::string &brand, int family) {
+            DimSet(state, dim_stage, key, state.EncodeDim(brand, family));
+          })) {
+    initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
+      DimSet(state, dim_stage, input.key,
+             PartCode(state, input.brand, input.container, input.size));
+    });
+  }
 
-  initial_scan->ScanParts([&](const TpchQ19PartInput &input) {
-    parts[input.key] = input;
-  });
-  initial_scan->ScanLineitems([&](const TpchQ19LineitemInput &input) {
-    if (!ShippingQualifies(input))
+  // Per-part index; each closed part also feeds the (brand, family, qty)
+  // aggregates under its current qualification.
+  auto base = std::make_shared<TpchQ19State::IndexBase>();
+  base->off.push_back(0);
+  std::vector<TpchQ19State::IndexEnt> pending;
+  int64_t cur_key = 0;
+  bool has_cur = false;
+  const auto close_part = [&]() {
+    if (!has_cur)
       return;
-    const auto part_it = parts.find(input.partkey);
-    if (part_it == parts.end())
+    std::sort(pending.begin(), pending.end(),
+              [](const auto &a, const auto &b) { return a.qty < b.qty; });
+    std::vector<TpchQ19State::IndexEnt> merged;
+    for (const auto &e : pending) {
+      if (!merged.empty() && merged.back().qty == e.qty) {
+        merged.back().rev += e.rev;
+        merged.back().count += e.count;
+      } else {
+        merged.push_back(e);
+      }
+    }
+    pending.clear();
+    has_cur = false;
+    const uint32_t code = state.DimGet(cur_key);
+    if (code >= 4) {
+      const auto family = static_cast<TpchQ19Family>(code & 3u);
+      const std::string &brand = state.brands[(code >> 2) - 1];
+      for (const auto &e : merged)
+        state.AddAggregate(brand, family, e.qty, e.rev, e.count);
+    }
+    bool fits = true;
+    for (const auto &e : merged)
+      if (e.qty < std::numeric_limits<int32_t>::min() ||
+          e.qty > std::numeric_limits<int32_t>::max() ||
+          e.count > std::numeric_limits<int32_t>::max())
+        fits = false;
+    if (!fits) {
+      state.index_overlay.Mutable(static_cast<uint64_t>(cur_key)) = std::move(merged);
       return;
-    const auto &part = part_it->second;
-    const auto family = ClassifyContainerFamily(part.container);
-    if (family == TpchQ19Family::None)
-      return;
-    state.AddContribution(part.brand, family, part.size, input.quantity_raw,
-                          ComputeRevenue(input.extendedprice_raw,
-                                         input.discount_raw));
-  });
+    }
+    base->keys.push_back(cur_key);
+    for (const auto &e : merged)
+      base->ents.push_back({e.rev, static_cast<int32_t>(e.count),
+                            static_cast<int32_t>(e.qty)});
+    base->off.push_back(static_cast<uint32_t>(base->ents.size()));
+  };
+  const auto feed = [&](int64_t partkey, int64_t qty, int64_t rev,
+                        int64_t count) {
+    if (has_cur && partkey != cur_key) {
+      if (partkey < cur_key)
+        throw std::logic_error("TPC-H Q19 aux: lineitem scan not ordered");
+      close_part();
+    }
+    cur_key = partkey;
+    has_cur = true;
+    pending.push_back({qty, rev, count});
+  };
+  if (!initial_scan->ScanQualifyingLineitemsByPart(feed)) {
+    struct Row {
+      int64_t partkey, qty, rev;
+    };
+    std::vector<Row> rows;
+    initial_scan->ScanLineitems([&](const TpchQ19LineitemInput &input) {
+      if (ShippingQualifies(input))
+        rows.push_back({input.partkey, input.quantity_raw,
+                        ComputeRevenue(input.extendedprice_raw,
+                                       input.discount_raw)});
+    });
+    std::stable_sort(rows.begin(), rows.end(),
+                     [](const Row &a, const Row &b) { return a.partkey < b.partkey; });
+    for (const auto &r : rows)
+      feed(r.partkey, r.qty, r.rev, 1);
+  }
+  close_part();
+  state.index_base = std::move(base);
   return state;
 }
 
@@ -703,10 +890,6 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   if (buf.RequiresRebuild()) {
-    {
-      std::lock_guard<std::mutex> lock(dim_mutex);
-      dims.Clear();
-    }
     outcome.action = core::MaintenanceAction::RebuildAll;
     EmitCustomProfile("stage_maintenance_rebuild", t_sm.us());
     return outcome;
@@ -742,31 +925,106 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
     EmitCustomProfile("stage_maintenance_rebuild_noload", t_sm.us());
     return outcome;
   }
-  auto next = std::make_shared<TpchQ19State>(*current_state);
+  // Index/dimension overlays are bounded: past this, a fresh bulk build is
+  // the compaction.
+  constexpr std::size_t kMaxIndexOverlay = 300000;
+  if (current_state->index_overlay.Size() + deltas.size() > kMaxIndexOverlay) {
+    outcome.action = core::MaintenanceAction::RebuildAll;
+    return outcome;
+  }
 
-  {
-    std::lock_guard<std::mutex> lock(dim_mutex);
-    for (const auto &delta : deltas) {
-      uint32_t code = dims.Get(delta.partkey);
-      if (code == 0) {
-        TpchQ19PartInput part;
-        if (!initial_scan || !initial_scan->LookupPart(delta.partkey, part))
-          continue; // no such part: the join contributes nothing
-        const auto family = ClassifyContainerFamily(part.container);
-        const bool ok = family != TpchQ19Family::None && part.size >= 1 &&
-                        part.size <= BranchSizeLimit(family);
-        code = dims.Encode(part.brand, ok ? static_cast<int>(family) : 0);
-        dims.Set(delta.partkey, code);
-      }
-      if (code < 4) continue; // part exists but never qualifies
-      const auto family = static_cast<TpchQ19Family>(code & 3u);
-      const std::string &brand = dims.brands[(code >> 2) - 1];
-      if (delta.sign > 0)
-        next->AddAggregate(brand, family, delta.quantity_raw,
-                           delta.revenue_raw, 1);
+  std::shared_ptr<TpchQ19State> next;
+  next = std::make_shared<TpchQ19State>(*current_state);
+  DimStage dim_stage;
+  const auto rebuild = [&]() {
+    outcome = core::StagedMaintenanceOutcome{};
+    outcome.action = core::MaintenanceAction::RebuildAll;
+    return outcome;
+  };
+
+  const auto mutable_index = [&](int64_t part) -> std::vector<TpchQ19State::IndexEnt> & {
+    const uint64_t k = static_cast<uint64_t>(part);
+    if (next->index_overlay.Find(k))
+      return next->index_overlay.Mutable(k);
+    auto init = next->IndexEntries(part);
+    auto &v = next->index_overlay.Mutable(k);
+    v = std::move(init);
+    return v;
+  };
+  // Adds (+1) / removes (-1) all of a part's indexed lineitems to / from the
+  // aggregates under the given dimension code.
+  const auto apply_part = [&](int64_t part, uint32_t code, int sign) {
+    if (code < 4)
+      return;
+    const auto family = static_cast<TpchQ19Family>(code & 3u);
+    const std::string brand = next->brands[(code >> 2) - 1];
+    for (const auto &e : next->IndexEntries(part)) {
+      if (sign > 0)
+        next->AddAggregate(brand, family, e.qty, e.rev, e.count);
       else
-        next->RemoveContribution(brand, family, 1, delta.quantity_raw,
-                                 delta.revenue_raw);
+        next->RemoveAggregate(brand, family, e.qty, e.rev, e.count);
+    }
+  };
+
+  for (const auto &delta : deltas) {
+    if (delta.part_op == 0) {
+      auto &vec = mutable_index(delta.partkey);
+      auto it = std::lower_bound(
+          vec.begin(), vec.end(), delta.quantity_raw,
+          [](const TpchQ19State::IndexEnt &e, int64_t q) { return e.qty < q; });
+      const bool found = it != vec.end() && it->qty == delta.quantity_raw;
+      if (delta.sign > 0) {
+        if (found) {
+          it->rev += delta.revenue_raw;
+          it->count += 1;
+        } else {
+          vec.insert(it, {delta.quantity_raw, delta.revenue_raw, 1});
+        }
+      } else {
+        if (!found || it->count <= 0)
+          return rebuild(); // index disagrees with the table
+        it->rev -= delta.revenue_raw;
+        it->count -= 1;
+        if (it->count == 0)
+          vec.erase(it);
+      }
+      const uint32_t code = next->DimGet(delta.partkey);
+      if (code >= 4) {
+        const auto family = static_cast<TpchQ19Family>(code & 3u);
+        const std::string &brand = next->brands[(code >> 2) - 1];
+        if (delta.sign > 0)
+          next->AddAggregate(brand, family, delta.quantity_raw,
+                             delta.revenue_raw, 1);
+        else
+          next->RemoveAggregate(brand, family, delta.quantity_raw,
+                                delta.revenue_raw, 1);
+      }
+      continue;
+    }
+
+    const uint32_t old_code = next->DimGet(delta.partkey);
+    if (delta.part_op == 1) { // insert
+      if (old_code != 0)
+        return rebuild(); // duplicate key
+      const uint32_t code =
+          PartCode(*next, delta.new_brand, delta.new_container, delta.new_size);
+      DimSet(*next, dim_stage, delta.partkey, code);
+      apply_part(delta.partkey, code, +1);
+    } else if (delta.part_op == 2) { // delete
+      if (old_code == 0)
+        return rebuild(); // missing key
+      apply_part(delta.partkey, old_code, -1);
+      DimSet(*next, dim_stage, delta.partkey, 0u);
+    } else { // update of brand / container / size
+      if (old_code == 0)
+        return rebuild();
+      const uint32_t code =
+          PartCode(*next, delta.new_brand, delta.new_container, delta.new_size);
+      if (code != old_code) {
+        apply_part(delta.partkey, old_code, -1);
+        DimSet(*next, dim_stage, delta.partkey, code);
+        apply_part(delta.partkey, code, +1);
+      }
     }
   }
 

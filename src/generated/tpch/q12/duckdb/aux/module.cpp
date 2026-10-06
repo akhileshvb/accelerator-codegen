@@ -7,6 +7,7 @@
 #include <cstring>
 #include <limits>
 #include <set>
+#include <tuple>
 #include <stdexcept>
 #include <utility>
 #include "tpch/q12/layout.hpp"
@@ -87,10 +88,100 @@ MakeStateImage(TpchQ12ImageKind kind, int32_t receipt_day,
   return image;
 }
 
+// For each requested partition the matching image of `found` (or nullptr).
+// Stores return found partitions in request order, but the interface does not
+// promise it: the in-order walk is the fast path, anything else is matched by
+// sorted lookup.
+void MatchSnapshot(const std::vector<core::PartitionId> &requested,
+                   const std::vector<core::StateImage> &found,
+                   std::vector<const core::StateImage *> &out) {
+  out.assign(requested.size(), nullptr);
+  std::size_t at = 0;
+  for (std::size_t slot = 0; slot < requested.size(); ++slot) {
+    if (at < found.size() && found[at].partition == requested[slot])
+      out[slot] = &found[at++];
+  }
+  if (at == found.size())
+    return;
+  std::vector<const core::StateImage *> sorted;
+  sorted.reserve(found.size());
+  for (const auto &image : found)
+    sorted.push_back(&image);
+  std::sort(sorted.begin(), sorted.end(),
+            [](const core::StateImage *l, const core::StateImage *r) {
+              return l->partition < r->partition;
+            });
+  for (std::size_t slot = 0; slot < requested.size(); ++slot) {
+    const auto it = std::lower_bound(
+        sorted.begin(), sorted.end(), requested[slot],
+        [](const core::StateImage *image, core::PartitionId id) {
+          return image->partition < id;
+        });
+    out[slot] = it != sorted.end() && (*it)->partition == requested[slot]
+                    ? *it
+                    : nullptr;
+  }
+}
+
 const TpchQ12StateImage *AsQ12Image(const core::StateImage &image,
                                     TpchQ12ImageKind kind) {
   const auto *payload = image.As<TpchQ12StateImage>();
   return payload && payload->kind == kind && payload->state ? payload : nullptr;
+}
+
+// Dyadic tree over receipt days, implicit heap numbering: node 1 is the root,
+// leaves are kTreeN + (day - kTreeBase). Days outside [kTreeBase,
+// kTreeBase + kTreeN) live in one overflow partition. All partition ids stay
+// well below 2^31 and never collide with kOrderPriorities (0).
+constexpr int kTreeBits = 18;
+constexpr int64_t kTreeN = int64_t(1) << kTreeBits;
+constexpr int32_t kTreeBase = -(1 << (kTreeBits - 1));
+constexpr core::PartitionId kOverflowPartition =
+    static_cast<core::PartitionId>(1) << (kTreeBits + 2);
+static_assert(kOverflowPartition < (int64_t(1) << 31), "int32 partition keys");
+
+bool InTree(int32_t day) {
+  return day >= kTreeBase && static_cast<int64_t>(day) - kTreeBase < kTreeN;
+}
+int64_t LeafNode(int32_t day) {
+  return kTreeN + (static_cast<int64_t>(day) - kTreeBase);
+}
+
+// Adds (shipmode, high, low) for `day` to the leaf-to-root path (or overflow)
+// of a map of nodes (Build only; maintenance uses the flat level walk).
+void AddToTree(std::map<core::PartitionId, TpchQ12Node> &nodes, int32_t day,
+               const std::string &shipmode, int64_t high, int64_t low) {
+  const int slot = TpchQ12ModeSlot(shipmode);
+  if (!InTree(day)) {
+    nodes[kOverflowPartition].overflow_days[day].Add(slot, shipmode, high, low);
+    return;
+  }
+  for (int64_t n = LeafNode(day); n >= 1; n >>= 1)
+    nodes[static_cast<core::PartitionId>(n)].modes.Add(slot, shipmode, high,
+                                                        low);
+}
+
+// A fresh node image (the node is stored inline in the image).
+std::shared_ptr<TpchQ12StateImage> NewNodeImage() {
+  auto image = std::make_shared<TpchQ12StateImage>();
+  image->kind = TpchQ12ImageKind::Node;
+  return image;
+}
+
+const TpchQ12Node *AsNodeImage(const core::StateImage &image) {
+  const auto *payload = image.As<TpchQ12StateImage>();
+  return payload && payload->kind == TpchQ12ImageKind::Node ? &payload->node
+                                                            : nullptr;
+}
+
+// dst += src (dense slots, plus extra names).
+void MergeModes(TpchQ12Modes &dst, const TpchQ12Modes &src) {
+  for (int i = 0; i < kQ12ModeSlots; ++i) {
+    dst.high[i] += src.high[i];
+    dst.low[i] += src.low[i];
+  }
+  for (const auto &entry : src.extra)
+    dst.Add(-1, entry.shipmode, entry.high_line_count, entry.low_line_count);
 }
 
 core::InvalidationPlan All() {
@@ -160,21 +251,9 @@ bool TpchQ12LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days,
 
 std::vector<uint8_t> EncodeTpchQ12OrderPriorities(const TpchQ12State &state) {
   ByteWriter writer;
-  std::vector<int64_t> keys;
-  const auto &pages = state.order_priorities.pages;
-  for (std::size_t page_idx = 0; page_idx < pages.size(); ++page_idx) {
-    if (!pages[page_idx])
-      continue;
-    const auto &page = *pages[page_idx];
-    const int64_t base = static_cast<int64_t>(
-        page_idx << TpchQ12PagedArray<uint8_t>::kShift);
-    for (std::size_t slot = 0; slot < page.size(); ++slot) {
-      if (page[slot] == 0)
-        continue;
-      keys.push_back(base + static_cast<int64_t>(slot));
-    }
-  }
-  std::sort(keys.begin(), keys.end());
+  std::vector<int64_t> keys; // ascending (ForEachNonZero walks in key order)
+  state.order_priorities.ForEachNonZero(
+      [&](int64_t key, uint8_t) { keys.push_back(key); });
   core::WriteImageHeader(writer, kPriorityMagic, kVersion, static_cast<uint32_t>(keys.size()));
   for (const auto key : keys) {
     writer.I64(key);
@@ -325,16 +404,24 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ12Module::CreateTxnBuffer() const {
 void TpchQ12Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
   auto state_owned = BuildState(services);
+  std::map<core::PartitionId, TpchQ12Node> nodes;
+  for (const auto &day : state_owned.day_partitions)
+    for (const auto &entry : day.second)
+      AddToTree(nodes, day.first, entry.first, entry.second.high_line_count,
+                entry.second.low_line_count);
+  state_owned.day_partitions.clear();
   const auto typed_state =
       std::make_shared<const TpchQ12State>(std::move(state_owned));
   builder.Write(core::StateImage::Make(
       core::TpchQ12Layout::kAccelerator,
       core::TpchQ12Layout::kOrderPriorities, 0,
       MakeStateImage(TpchQ12ImageKind::OrderPriorities, 0, typed_state)));
-  for (const auto &entry : typed_state->day_partitions) {
+  for (auto &entry : nodes) {
+    auto image = NewNodeImage();
+    image->node = std::move(entry.second);
     builder.Write(core::StateImage::Make(
-        core::TpchQ12Layout::kAccelerator, static_cast<core::PartitionId>(entry.first),
-        0, MakeStateImage(TpchQ12ImageKind::Day, entry.first, typed_state)));
+        core::TpchQ12Layout::kAccelerator, entry.first, 0,
+        std::shared_ptr<const TpchQ12StateImage>(std::move(image))));
   }
   builder.Finish();
 }
@@ -480,31 +567,109 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  // Order changes: an order that is inserted and removed in the same buffer
-  // (an update) needs the old priority for its lineitems: rebuild.
-  std::set<int64_t> inserted_orders, removed_orders;
-  for (const auto &delta : buffer.OrderDeltas())
-    (delta.sign > 0 ? inserted_orders : removed_orders).insert(delta.orderkey);
-  for (const auto key : removed_orders) {
-    if (inserted_orders.count(key)) {
+  // Order changes. A key with exactly one removal and one insertion is an
+  // in-place update: same class (or untracked columns only) is a no-op; a class
+  // change moves that order's lineitems between classes (looked up in the base
+  // table below). Anything more tangled is a rebuild. Deltas are grouped by key
+  // with one stable sort (per-key order is preserved).
+  const auto &order_deltas = buffer.OrderDeltas();
+  std::vector<uint32_t> by_key(order_deltas.size());
+  for (uint32_t i = 0; i < by_key.size(); ++i)
+    by_key[i] = i;
+  std::stable_sort(by_key.begin(), by_key.end(), [&](uint32_t l, uint32_t r) {
+    return order_deltas[l].orderkey < order_deltas[r].orderkey;
+  });
+  std::vector<int64_t> removed_orders; // ascending
+  struct Changed {
+    int64_t key;
+    TpchQ12PriorityClass from;
+    TpchQ12PriorityClass to;
+  };
+  std::vector<Changed> changed_orders; // ascending by key
+  auto find_changed = [&](int64_t key) -> const Changed * {
+    if (changed_orders.empty())
+      return nullptr;
+    const auto it = std::lower_bound(
+        changed_orders.begin(), changed_orders.end(), key,
+        [](const Changed &c, int64_t k) { return c.key < k; });
+    return it != changed_orders.end() && it->key == key ? &*it : nullptr;
+  };
+
+  bool priorities_changed = false;
+  for (std::size_t i = 0; i < by_key.size();) {
+    std::size_t j = i;
+    const int64_t key = order_deltas[by_key[i]].orderkey;
+    const TpchQ12OrderDelta *ins = nullptr, *rem = nullptr;
+    std::size_t ins_n = 0, rem_n = 0;
+    for (; j < by_key.size() && order_deltas[by_key[j]].orderkey == key; ++j) {
+      const auto &d = order_deltas[by_key[j]];
+      if (d.sign > 0) {
+        ins = &d;
+        ++ins_n;
+      } else {
+        rem = &d;
+        ++rem_n;
+      }
+    }
+    if (ins_n == 0) {
+      removed_orders.push_back(key);
+    } else if (rem_n == 0) {
+      // Inserted order: the class of its last inserted row wins.
+      priority_state->SetPriority(key, ins->priority);
+      priorities_changed = true;
+    } else {
+      if (ins_n != 1 || rem_n != 1) {
+        core::FinishRebuildAll(outcome);
+        return outcome;
+      }
+      if (ins->priority != rem->priority) {
+        if (priority_state->PriorityOf(key) != rem->priority) {
+          core::FinishRebuildAll(outcome);
+          return outcome;
+        }
+        changed_orders.push_back({key, rem->priority, ins->priority});
+      }
+    }
+    i = j;
+  }
+
+  // Class-changing updates: the order's current qualifying lineitems S.
+  // Published state holds (S - inserted + deleted by this txn) under the old
+  // class; the final state needs S under the new class. The per-delta term
+  // (+-1 under the old class) is added in the node-delta loop below.
+  std::vector<std::tuple<int64_t, int32_t, std::string>> changed_lines;
+  if (!changed_orders.empty()) {
+    std::vector<int64_t> keys;
+    for (const auto &entry : changed_orders)
+      keys.push_back(entry.key);
+    if (!initial_scan ||
+        !initial_scan->LookupQualifyingLineitems(
+            keys, [&](int64_t key, int32_t day, const std::string &mode) {
+              changed_lines.emplace_back(key, day, mode);
+            })) {
       core::FinishRebuildAll(outcome);
       return outcome;
     }
-  }
-
-  bool priorities_changed = false;
-  for (const auto key : inserted_orders) {
-    for (const auto &delta : buffer.OrderDeltas()) {
-      if (delta.orderkey == key && delta.sign > 0) {
-        priority_state->SetPriority(key, delta.priority);
-        priorities_changed = true;
+    std::map<int64_t, std::size_t> line_n;
+    for (const auto &line : changed_lines)
+      ++line_n[std::get<0>(line)];
+    for (const auto &entry : changed_orders) {
+      const auto n = line_n[entry.key];
+      if (n > std::numeric_limits<uint16_t>::max()) {
+        core::FinishRebuildAll(outcome);
+        return outcome;
       }
+      priority_state->SetPriority(entry.key, entry.to);
+      priority_state->line_counts.Set(entry.key, static_cast<uint16_t>(n));
     }
+    priorities_changed = true;
   }
 
   // Track per-order qualifying-lineitem counts so an order removal can be
   // applied as a delta when none of its lineitems remain counted.
   for (const auto &delta : buffer.Deltas()) {
+    if (find_changed(delta.orderkey))
+      continue; // count set from the base-table lookup
     const auto priority = priority_state->PriorityOf(delta.orderkey);
     if (priority == TpchQ12PriorityClass::Absent) {
       core::FinishRebuildAll(outcome);
@@ -530,134 +695,150 @@ TpchQ12Module::StageMaintenance(core::AuxEngineServices &services,
     }
   }
   const auto total_deltas =
-      buffer.Deltas().size() + buffer.OrderDeltas().size();
+      buffer.Deltas().size() + buffer.OrderDeltas().size() +
+      changed_lines.size();
 
-  std::set<int32_t> touched_days;
-  for (const auto &delta : buffer.Deltas())
-    touched_days.insert(delta.receipt_day);
+  std::size_t touched_days = 0;
+  {
+    std::vector<int32_t> days;
+    days.reserve(buffer.Deltas().size());
+    for (const auto &delta : buffer.Deltas())
+      days.push_back(delta.receipt_day);
+    std::sort(days.begin(), days.end());
+    touched_days = static_cast<std::size_t>(
+        std::unique(days.begin(), days.end()) - days.begin());
+  }
 
-  const bool can_rebuild_days = !touched_days.empty() && initial_scan;
+  // Always apply as a delta: the lineitem deltas move leaf-to-root paths of the
+  // dyadic tree. (No partition rebuild: it would need a diff against the old
+  // leaf to fix the ancestors.)
   const auto decision = services.ChooseMaintenance(
       {static_cast<uint64_t>(total_deltas),
        static_cast<uint64_t>(std::max<std::size_t>(
-           1, touched_days.size() + (priorities_changed ? 1 : 0))),
-       true, can_rebuild_days, true, false, false,
-       core::MaintenanceAction::NoOp,
+           1, touched_days + (priorities_changed ? 1 : 0))),
+       true, false, true, false, false, core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    if (!can_rebuild_days) {
-      core::FinishRebuildAll(outcome);
-      return outcome;
-    }
-    TpchQ12State rebuilt;
-    initial_scan->ScanLineitemsForReceiptDays(
-        touched_days, [&](const TpchQ12LineitemInput &input) {
-          const auto priority = priority_state->PriorityOf(input.orderkey);
-          if (priority == TpchQ12PriorityClass::Absent ||
-              priority == TpchQ12PriorityClass::Neither)
-            return;
-          if (!TpchQ12LineitemQualifies(input.commitdate_days,
-                                        input.receiptdate_days,
-                                        input.shipdate_days))
-            return;
-          auto &stats =
-              rebuilt.day_partitions[input.receiptdate_days][input.shipmode];
-          ApplyContribution(stats, priority, 1);
-        });
-    for (const auto day : touched_days) {
-      TpchQ12State day_state;
-      const auto day_it = rebuilt.day_partitions.find(day);
-      if (day_it != rebuilt.day_partitions.end())
-        day_state.day_partitions.emplace(day, day_it->second);
-      const auto typed_state =
-          std::make_shared<const TpchQ12State>(std::move(day_state));
-      outcome.updates.push_back(core::StateImage::Make(
-          core::TpchQ12Layout::kAccelerator,
-          static_cast<core::PartitionId>(day), 0,
-          MakeStateImage(TpchQ12ImageKind::Day, day, typed_state)));
-    }
-    for (const auto key : removed_orders) {
-      priority_state->SetPriority(key, TpchQ12PriorityClass::Absent);
-      priorities_changed = true;
-    }
-    if (priorities_changed) {
-      const auto typed_priorities =
-          std::static_pointer_cast<const TpchQ12State>(
-              std::move(priority_state));
-      outcome.updates.push_back(core::StateImage::Make(
-          core::TpchQ12Layout::kAccelerator,
-          core::TpchQ12Layout::kOrderPriorities, 0,
-          MakeStateImage(TpchQ12ImageKind::OrderPriorities, 0,
-                         typed_priorities)));
-    }
-    core::FinishRebuildPartition(outcome);
-    return outcome;
-  }
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
+  if (decision.action != core::MaintenanceAction::ApplyDelta &&
+      decision.action != core::MaintenanceAction::RebuildPartition) {
     outcome.action = decision.action;
     outcome.invalidations = All();
     outcome.pending_rebuild = outcome.invalidations;
     return outcome;
   }
 
-  TpchQ12State state;
-  std::map<int32_t, core::Version> versions;
-  if (!buffer.Deltas().empty()) {
-    std::set<int32_t> touched_days;
-    for (const auto &delta : buffer.Deltas())
-      touched_days.insert(delta.receipt_day);
-
-    std::vector<core::PartitionId> day_partitions;
-    day_partitions.reserve(touched_days.size());
-    for (const auto day : touched_days)
-      day_partitions.push_back(static_cast<core::PartitionId>(day));
-
-    const auto day_snapshot =
-        services.StateStore().ReadPartitions(visibility, day_partitions);
-    for (const auto &image : day_snapshot.partitions) {
-      const auto day = static_cast<int32_t>(image.partition);
-      const auto *typed = AsQ12Image(image, TpchQ12ImageKind::Day);
-      if (!typed || typed->receipt_day != day) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      const auto day_it = typed->state->day_partitions.find(day);
-      if (day_it != typed->state->day_partitions.end())
-        state.day_partitions[day] = day_it->second;
-      versions[day] = image.version;
+  if (!buffer.Deltas().empty() || !changed_lines.empty()) {
+    // Net contribution of every line to the tree. Lines in the tree domain
+    // are keyed by their leaf node; the rest go to the overflow partition.
+    struct Contribution {
+      int64_t leaf;
+      int32_t day;
+      int slot; // dense mode slot, -1: look up by name
+      const std::string *mode;
+      int64_t high;
+      int64_t low;
+    };
+    std::vector<Contribution> tree, overflow;
+    tree.reserve(buffer.Deltas().size() + changed_lines.size());
+    auto add = [&](int32_t day, const std::string &mode,
+                   TpchQ12PriorityClass cls, int64_t amount) {
+      if (cls != TpchQ12PriorityClass::High && cls != TpchQ12PriorityClass::Low)
+        return;
+      Contribution c{InTree(day) ? LeafNode(day) : 0, day,
+                     TpchQ12ModeSlot(mode), &mode,
+                     cls == TpchQ12PriorityClass::High ? amount : 0,
+                     cls == TpchQ12PriorityClass::Low ? amount : 0};
+      (InTree(day) ? tree : overflow).push_back(c);
+    };
+    for (const auto &line : changed_lines) {
+      const auto *cls = find_changed(std::get<0>(line));
+      add(std::get<1>(line), std::get<2>(line), cls->from, -1);
+      add(std::get<1>(line), std::get<2>(line), cls->to, +1);
     }
-    if (versions.size() != touched_days.size()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-
     for (const auto &delta : buffer.Deltas()) {
-      const auto priority = priority_state->PriorityOf(delta.orderkey);
-      if (priority == TpchQ12PriorityClass::Neither)
+      if (const auto *changed = find_changed(delta.orderkey)) {
+        add(delta.receipt_day, delta.shipmode, changed->from, delta.sign);
         continue;
-      auto &stats = state.day_partitions[delta.receipt_day][delta.shipmode];
-      ApplyContribution(stats, priority, delta.sign);
-      if (stats.high_line_count == 0 && stats.low_line_count == 0)
-        state.day_partitions[delta.receipt_day].erase(delta.shipmode);
+      }
+      add(delta.receipt_day, delta.shipmode,
+          priority_state->PriorityOf(delta.orderkey), delta.sign);
     }
+    std::sort(tree.begin(), tree.end(),
+              [](const Contribution &l, const Contribution &r) {
+                return l.leaf < r.leaf;
+              });
 
-    outcome.action = core::MaintenanceAction::ApplyDelta;
-    for (const auto day : touched_days) {
-      const auto partition = static_cast<core::PartitionId>(day);
-      const auto version = versions.count(day) ? versions[day] : 0;
-      TpchQ12State day_state;
-      const auto day_it = state.day_partitions.find(day);
-      if (day_it != state.day_partitions.end())
-        day_state.day_partitions.emplace(day, day_it->second);
-      const auto typed_state = std::make_shared<const TpchQ12State>(day_state);
-      outcome.updates.push_back(core::StateImage::Make(
-          core::TpchQ12Layout::kAccelerator, partition, version,
-          MakeStateImage(TpchQ12ImageKind::Day, day, typed_state)));
+    // Ancestors per level (leaf level 0 .. root level kTreeBits): because the
+    // contributions are visited in leaf order, each level is a sorted run and
+    // each contribution finds its node with a forward-only cursor.
+    constexpr int kLevels = kTreeBits + 1;
+    std::vector<core::PartitionId> partitions;
+    partitions.reserve(tree.size() * 4 + kLevels + 1);
+    uint32_t level_begin[kLevels];
+    for (int level = 0; level < kLevels; ++level) {
+      level_begin[level] = static_cast<uint32_t>(partitions.size());
+      int64_t last = 0;
+      for (const auto &c : tree) {
+        const int64_t node = c.leaf >> level;
+        if (node != last) {
+          partitions.push_back(static_cast<core::PartitionId>(node));
+          last = node;
+        }
+      }
     }
+    const std::size_t tree_slots = partitions.size();
+    if (!overflow.empty())
+      partitions.push_back(kOverflowPartition);
+
+    std::vector<std::shared_ptr<TpchQ12StateImage>> work(partitions.size());
+    std::vector<core::Version> versions(partitions.size(), 0);
+    if (!partitions.empty()) {
+      const auto snapshot =
+          services.StateStore().ReadPartitions(visibility, partitions);
+      std::vector<const core::StateImage *> matched;
+      MatchSnapshot(partitions, snapshot.partitions, matched);
+      for (std::size_t slot = 0; slot < partitions.size(); ++slot) {
+        auto image = NewNodeImage();
+        if (matched[slot]) {
+          const auto *node = AsNodeImage(*matched[slot]);
+          if (!node) {
+            outcome.action = core::MaintenanceAction::RebuildAll;
+            outcome.invalidations = All();
+            outcome.pending_rebuild = outcome.invalidations;
+            return outcome;
+          }
+          image->node = *node;
+          versions[slot] = matched[slot]->version;
+        }
+        work[slot] = std::move(image);
+      }
+    }
+    uint32_t cursor[kLevels];
+    for (int level = 0; level < kLevels; ++level)
+      cursor[level] = level_begin[level];
+    int64_t previous_leaf = 0;
+    for (const auto &c : tree) {
+      for (int level = 0; level < kLevels; ++level) {
+        const int64_t node = c.leaf >> level;
+        if (c.leaf != previous_leaf &&
+            node != static_cast<int64_t>(partitions[cursor[level]]))
+          ++cursor[level];
+        work[cursor[level]]->node.modes.Add(c.slot, *c.mode, c.high, c.low);
+      }
+      previous_leaf = c.leaf;
+    }
+    if (!overflow.empty()) {
+      auto &days = work[tree_slots]->node.overflow_days;
+      for (const auto &c : overflow)
+        days[c.day].Add(c.slot, *c.mode, c.high, c.low);
+      for (auto it = days.begin(); it != days.end();)
+        it = it->second.Empty() ? days.erase(it) : std::next(it);
+    }
+    outcome.action = core::MaintenanceAction::ApplyDelta;
+    outcome.updates.reserve(partitions.size() + 1);
+    for (std::size_t slot = 0; slot < partitions.size(); ++slot)
+      outcome.updates.push_back(core::StateImage::Make(
+          core::TpchQ12Layout::kAccelerator, partitions[slot], versions[slot],
+          std::shared_ptr<const TpchQ12StateImage>(std::move(work[slot]))));
   }
 
   for (const auto key : removed_orders) {
@@ -687,16 +868,19 @@ bool TpchQ12Module::CheckValidity(core::AuxEngineServices &services,
 void TpchQ12Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
-  std::string shipmode1, shipmode2;
+  static const std::string kEmpty;
+  const std::string *shipmode1 = &kEmpty, *shipmode2 = &kEmpty;
   int32_t start = 0;
   if (arguments.values.size() < 3)
     return ExecuteFallback(services, arguments, sink);
-  if (!arguments.values[0].is_null &&
-      std::holds_alternative<std::string>(arguments.values[0].payload))
-    shipmode1 = std::get<std::string>(arguments.values[0].payload);
-  if (!arguments.values[1].is_null &&
-      std::holds_alternative<std::string>(arguments.values[1].payload))
-    shipmode2 = std::get<std::string>(arguments.values[1].payload);
+  if (!arguments.values[0].is_null)
+    if (const auto *text =
+            std::get_if<std::string>(&arguments.values[0].payload))
+      shipmode1 = text;
+  if (!arguments.values[1].is_null)
+    if (const auto *text =
+            std::get_if<std::string>(&arguments.values[1].payload))
+      shipmode2 = text;
   if (!arguments.values[2].is_null) {
     if (std::holds_alternative<core::AuxDate>(arguments.values[2].payload))
       start =
@@ -705,35 +889,64 @@ void TpchQ12Module::Execute(core::AuxEngineServices &services,
       start = static_cast<int32_t>(std::get<int64_t>(arguments.values[2].payload));
   }
   const auto end = TpchQ12AddMonths(start, 12);
-  if (!services.StateStore()
-           .CheckValidity({Id(), {}}, services.CurrentVisibility())
-           .IsValid()) {
-    ExecuteFallback(services, arguments, sink);
-    return;
+  // Decompose the window into aligned tree nodes (bottom-up segment tree).
+  thread_local std::vector<core::PartitionId> partitions;
+  partitions.clear();
+  const int64_t lo = std::max<int64_t>(start, kTreeBase);
+  const int64_t hi = std::min<int64_t>(end, int64_t(kTreeBase) + kTreeN);
+  if (lo < hi) {
+    int64_t l = lo - kTreeBase + kTreeN, r = hi - kTreeBase + kTreeN;
+    while (l < r) {
+      if (l & 1)
+        partitions.push_back(static_cast<core::PartitionId>(l++));
+      if (r & 1)
+        partitions.push_back(static_cast<core::PartitionId>(--r));
+      l >>= 1;
+      r >>= 1;
+    }
   }
-  std::vector<core::PartitionId> partitions;
-  partitions.reserve(end > start ? static_cast<std::size_t>(end - start) : 0);
-  for (int32_t day = start; day < end; ++day)
-    partitions.push_back(static_cast<core::PartitionId>(day));
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), partitions);
-  // Borrow the published day maps (immutable) instead of copying them.
-  std::vector<const TpchQ12DayMap *> days;
-  days.reserve(snapshot.partitions.size());
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == core::TpchQ12Layout::kOrderPriorities)
-      continue;
-    const auto receipt_day = static_cast<int32_t>(image.partition);
-    const auto *typed = AsQ12Image(image, TpchQ12ImageKind::Day);
-    if (!typed || typed->receipt_day != receipt_day) {
+  const bool outside = start < kTreeBase || end > int64_t(kTreeBase) + kTreeN;
+  if (outside)
+    partitions.push_back(kOverflowPartition);
+  // Common case (every node present): validity and all partitions in one
+  // linearized observation. Empty nodes are absent, so otherwise the general
+  // path: validity, then whatever exists.
+  auto snapshot = services.StateStore().ReadHitPartitions(
+      services.CurrentVisibility(), {Id(), {}}, partitions);
+  if (!snapshot.available) {
+    if (!services.StateStore()
+             .CheckValidity({Id(), {}}, services.CurrentVisibility())
+             .IsValid()) {
       ExecuteFallback(services, arguments, sink);
       return;
     }
-    const auto day_it = typed->state->day_partitions.find(receipt_day);
-    if (day_it != typed->state->day_partitions.end())
-      days.push_back(&day_it->second);
+    snapshot = services.StateStore().ReadPartitions(
+        services.CurrentVisibility(), partitions);
   }
-  TpchQ12FinalizeAndEmit(days, shipmode1, shipmode2, sink);
+  // At most two nodes per level plus the overflow sum.
+  constexpr std::size_t kMaxParts = 2 * (kTreeBits + 1) + 2;
+  const TpchQ12Modes *parts[kMaxParts];
+  std::size_t part_count = 0;
+  TpchQ12Modes overflow_sum;
+  for (const auto &image : snapshot.partitions) {
+    const auto *node = AsNodeImage(image);
+    if (!node || part_count >= kMaxParts - 1) {
+      ExecuteFallback(services, arguments, sink);
+      return;
+    }
+    if (image.partition == kOverflowPartition) {
+      for (const auto &day : node->overflow_days) {
+        if (day.first < start || day.first >= end)
+          continue;
+        MergeModes(overflow_sum, day.second);
+      }
+    } else {
+      parts[part_count++] = &node->modes;
+    }
+  }
+  if (outside)
+    parts[part_count++] = &overflow_sum;
+  TpchQ12FinalizeAndEmit(parts, part_count, *shipmode1, *shipmode2, sink);
 }
 
 void TpchQ12Module::ExecuteFallback(core::AuxEngineServices &services,
@@ -753,11 +966,16 @@ void TpchQ12Module::ExecuteFallback(core::AuxEngineServices &services,
         std::get<core::AuxDate>(arguments.values[2].payload).days_since_epoch;
   const auto state = BuildState(services);
   const auto end = TpchQ12AddMonths(start, 12);
-  std::vector<const TpchQ12DayMap *> days;
-  for (const auto &entry : state.day_partitions)
-    if (entry.first >= start && entry.first < end)
-      days.push_back(&entry.second);
-  TpchQ12FinalizeAndEmit(days, shipmode1, shipmode2, sink);
+  TpchQ12Modes window;
+  for (const auto &day : state.day_partitions) {
+    if (day.first < start || day.first >= end)
+      continue;
+    for (const auto &entry : day.second)
+      window.Add(TpchQ12ModeSlot(entry.first), entry.first,
+                 entry.second.high_line_count, entry.second.low_line_count);
+  }
+  const TpchQ12Modes *parts[1] = {&window};
+  TpchQ12FinalizeAndEmit(parts, 1, shipmode1, shipmode2, sink);
 }
 
 TpchQ12State TpchQ12Module::BuildState(core::AuxEngineServices &services) const {

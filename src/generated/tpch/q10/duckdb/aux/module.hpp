@@ -157,59 +157,177 @@ struct TpchQ10CustomerSlot {
 };
 using TpchQ10CustomerOverlay = std::unordered_map<int64_t, TpchQ10CustomerSlot>;
 
-// Per-month returned revenue by custkey. The base (sorted by key, plus an
-// index sorted by revenue descending) is shared between versions; point
-// changes land in a small overlay (absolute effective values, 0 = erased)
-// that is compacted into a new base once it grows past a bound.
-struct TpchQ10MonthBase {
-  std::vector<int64_t> keys; // ascending
-  std::vector<int64_t> vals; // nonzero
-  std::vector<uint32_t> rank; // indices into keys, (val desc, key asc)
-  bool has_negative = false;
+// ── Persistent chunked sorted layout ────────────────────────────────────────
+// A sorted sequence of (key, val) entries stored as shared immutable chunks
+// plus a small top-level index (first entry of each chunk). A commit copies
+// only the chunks it touches and the (n / chunk) sized index; every other
+// chunk stays shared with the published predecessor.
+struct TpchQ10KV {
+  int64_t key = 0;
+  int64_t val = 0;
 };
-
-struct TpchQ10MonthData {
-  std::shared_ptr<const TpchQ10MonthBase> base =
-      std::make_shared<const TpchQ10MonthBase>();
-  std::vector<int64_t> ov_keys; // ascending
-  std::vector<int64_t> ov_vals; // absolute value (0 = erased)
-  std::vector<uint32_t> ov_rank; // nonzero entries, (val desc, key asc)
-  bool has_negative = false;
-
-  bool InOverlay(int64_t key) const {
-    return std::binary_search(ov_keys.begin(), ov_keys.end(), key);
+struct TpchQ10ByKey {
+  bool operator()(const TpchQ10KV &a, const TpchQ10KV &b) const {
+    return a.key < b.key;
   }
-  int64_t Lookup(int64_t key) const {
-    const auto o = std::lower_bound(ov_keys.begin(), ov_keys.end(), key);
-    if (o != ov_keys.end() && *o == key)
-      return ov_vals[static_cast<std::size_t>(o - ov_keys.begin())];
-    const auto &b = *base;
-    const auto it = std::lower_bound(b.keys.begin(), b.keys.end(), key);
-    if (it != b.keys.end() && *it == key)
-      return b.vals[static_cast<std::size_t>(it - b.keys.begin())];
-    return 0;
+};
+// Revenue descending, custkey ascending (the query's ORDER BY).
+struct TpchQ10ByRank {
+  bool operator()(const TpchQ10KV &a, const TpchQ10KV &b) const {
+    return a.val != b.val ? a.val > b.val : a.key < b.key;
   }
 };
 
-std::shared_ptr<const TpchQ10MonthData>
-TpchQ10MonthFromMap(const std::unordered_map<int64_t, int64_t> &revenue);
-// Sorted (key, nonzero effective value) pairs.
-std::vector<std::pair<int64_t, int64_t>>
-TpchQ10MonthEffective(const TpchQ10MonthData &month);
-// New version = prev (may be null) + per-custkey deltas. Shares prev's base.
-std::shared_ptr<const TpchQ10MonthData>
-TpchQ10MonthApply(const TpchQ10MonthData *prev,
-                  const std::vector<std::pair<int64_t, int64_t>> &deltas);
+template <class Less> class TpchQ10Chunked {
+public:
+  static constexpr std::size_t kTarget = 512;  // fill at build / split
+  static constexpr std::size_t kMax = 1024;    // split above this
 
+  struct Chunk {
+    std::vector<TpchQ10KV> e;
+  };
+  std::vector<std::shared_ptr<const Chunk>> chunks;
+  std::vector<TpchQ10KV> firsts;
+  std::size_t count = 0;
+
+  static TpchQ10Chunked FromSorted(std::vector<TpchQ10KV> &&sorted) {
+    TpchQ10Chunked out;
+    out.count = sorted.size();
+    for (std::size_t i = 0; i < sorted.size(); i += kTarget) {
+      const auto n = std::min(kTarget, sorted.size() - i);
+      auto chunk = std::make_shared<Chunk>();
+      chunk->e.assign(sorted.begin() + static_cast<std::ptrdiff_t>(i),
+                      sorted.begin() + static_cast<std::ptrdiff_t>(i + n));
+      out.firsts.push_back(chunk->e.front());
+      out.chunks.push_back(std::move(chunk));
+    }
+    return out;
+  }
+
+  // Entry whose key equals `probe.key` under Less == ByKey; returns val or 0.
+  int64_t FindVal(int64_t key) const {
+    if (chunks.empty())
+      return 0;
+    const TpchQ10KV probe{key, 0};
+    const Less less;
+    auto it = std::upper_bound(firsts.begin(), firsts.end(), probe, less);
+    const std::size_t c = it == firsts.begin()
+                              ? 0
+                              : static_cast<std::size_t>(it - firsts.begin()) - 1;
+    const auto &e = chunks[c]->e;
+    auto pos = std::lower_bound(e.begin(), e.end(), probe, less);
+    return (pos != e.end() && pos->key == key) ? pos->val : 0;
+  }
+
+  template <class Fn> void ForEach(Fn &&fn) const {
+    for (const auto &chunk : chunks)
+      for (const auto &e : chunk->e)
+        fn(e);
+  }
+
+  void Flatten(std::vector<TpchQ10KV> &out) const {
+    out.clear();
+    out.reserve(count);
+    for (const auto &chunk : chunks)
+      out.insert(out.end(), chunk->e.begin(), chunk->e.end());
+  }
+
+  // prev + removals - ... + inserts. `rem` / `ins` are sorted by Less; a
+  // removal must match an existing entry exactly (key and val). Returns false
+  // (leaving `out` untouched) if it does not, so the caller can rebuild.
+  static bool Apply(const TpchQ10Chunked &prev,
+                    const std::vector<TpchQ10KV> &rem,
+                    const std::vector<TpchQ10KV> &ins, TpchQ10Chunked &out) {
+    const Less less;
+    TpchQ10Chunked next;
+    next.count = prev.count + ins.size();
+    if (rem.size() > prev.count)
+      return false;
+    next.count -= rem.size();
+    if (prev.chunks.empty()) {
+      if (!rem.empty())
+        return false;
+      std::vector<TpchQ10KV> copy = ins;
+      out = FromSorted(std::move(copy));
+      return true;
+    }
+    const std::size_t n = prev.chunks.size();
+    next.chunks.reserve(n + 4);
+    next.firsts.reserve(n + 4);
+    std::size_t ri = 0, ii = 0;
+    std::vector<TpchQ10KV> kept, merged;
+    for (std::size_t c = 0; c < n; ++c) {
+      std::size_t rj = ri, ij = ii;
+      if (c + 1 == n) {
+        rj = rem.size();
+        ij = ins.size();
+      } else {
+        while (rj < rem.size() && less(rem[rj], prev.firsts[c + 1]))
+          ++rj;
+        while (ij < ins.size() && less(ins[ij], prev.firsts[c + 1]))
+          ++ij;
+      }
+      if (rj == ri && ij == ii) {
+        next.chunks.push_back(prev.chunks[c]);
+        next.firsts.push_back(prev.firsts[c]);
+        continue;
+      }
+      const auto &old = prev.chunks[c]->e;
+      kept.clear();
+      std::size_t p = ri;
+      for (const auto &e : old) {
+        if (p < rj && !less(e, rem[p]) && !less(rem[p], e)) {
+          if (e.val != rem[p].val)
+            return false;
+          ++p;
+        } else if (p < rj && less(rem[p], e)) {
+          return false; // removal not present
+        } else {
+          kept.push_back(e);
+        }
+      }
+      if (p != rj)
+        return false;
+      merged.resize(kept.size() + (ij - ii));
+      std::merge(kept.begin(), kept.end(),
+                 ins.begin() + static_cast<std::ptrdiff_t>(ii),
+                 ins.begin() + static_cast<std::ptrdiff_t>(ij), merged.begin(),
+                 less);
+      ri = rj;
+      ii = ij;
+      if (merged.empty())
+        continue;
+      if (merged.size() <= kMax) {
+        auto chunk = std::make_shared<Chunk>();
+        chunk->e = merged;
+        next.firsts.push_back(chunk->e.front());
+        next.chunks.push_back(std::move(chunk));
+      } else {
+        for (std::size_t i = 0; i < merged.size(); i += kTarget) {
+          const auto m = std::min(kTarget, merged.size() - i);
+          auto chunk = std::make_shared<Chunk>();
+          chunk->e.assign(merged.begin() + static_cast<std::ptrdiff_t>(i),
+                          merged.begin() + static_cast<std::ptrdiff_t>(i + m));
+          next.firsts.push_back(chunk->e.front());
+          next.chunks.push_back(std::move(chunk));
+        }
+      }
+    }
+    out = std::move(next);
+    return true;
+  }
+};
+
+using TpchQ10KeyIndex = TpchQ10Chunked<TpchQ10ByKey>;
+using TpchQ10RankIndex = TpchQ10Chunked<TpchQ10ByRank>;
+
+// Customer side + order metadata (Side / Orders partitions).
 struct TpchQ10State {
   std::shared_ptr<const TpchQ10SideBase> side_base =
       std::make_shared<const TpchQ10SideBase>();
   std::shared_ptr<const TpchQ10CustomerOverlay> customer_overlay; // nullable
   std::unordered_map<int32_t, std::string> nations;
   std::unordered_map<int64_t, TpchQ10Order> orders;
-  // Build-time accumulation only; published month images use month_data.
-  std::map<int32_t, std::unordered_map<int64_t, int64_t>> month_revenue;
-  std::shared_ptr<const TpchQ10MonthData> month_data;
 
   bool HasCustomer(int64_t custkey) const { return RankOf(custkey).present != 0; }
   TpchQ10CustomerRank RankOf(int64_t custkey) const {
@@ -238,12 +356,27 @@ struct TpchQ10State {
   }
 };
 
-enum class TpchQ10ImageKind : uint8_t { Side, Orders, Month };
+// Everything BuildState produces (month tables are key-sorted, nonzero).
+struct TpchQ10BuildData {
+  TpchQ10State state;
+  std::map<int32_t, std::vector<TpchQ10KV>> months;
+};
+
+// Partitions:
+//   0 Side   customer dimensions + nations
+//   2 Orders order metadata (optional)
+//   4 Meta   month range [lo, hi] that has month / window images
+//   kFirstMonth + YYYYMM          Month   custkey -> returned revenue (by key)
+//   kFirstWindow + YYYYMM(start)  Window  3-month sum, ranked (rev desc, key)
+enum class TpchQ10ImageKind : uint8_t { Side, Orders, Month, Window, Meta };
 
 struct TpchQ10StateImage {
   TpchQ10ImageKind kind = TpchQ10ImageKind::Side;
-  int32_t month = 0;
-  std::shared_ptr<const TpchQ10State> state;
+  int32_t month = 0; // Month: month key; Window: start month key
+  std::shared_ptr<const TpchQ10State> state; // Side / Orders
+  TpchQ10KeyIndex by_key;                    // Month
+  TpchQ10RankIndex ranked;                   // Window
+  int32_t lo_month = 0, hi_month = -1;       // Meta (YYYYMM, inclusive)
 };
 
 struct TpchQ10CustomerDelta {
@@ -265,18 +398,6 @@ struct TpchQ10OrderDelta {
   int8_t sign = 0; // +1 insert/update-new, -1 delete/update-old
 };
 
-std::vector<uint8_t> EncodeTpchQ10Side(const TpchQ10State &);
-std::vector<uint8_t> EncodeTpchQ10Orders(const TpchQ10State &);
-std::vector<uint8_t> EncodeTpchQ10Month(int32_t month, const TpchQ10State &);
-bool DecodeTpchQ10Side(const std::vector<uint8_t> &, TpchQ10State &);
-bool DecodeTpchQ10Orders(const std::vector<uint8_t> &, TpchQ10State &);
-bool DecodeTpchQ10Month(const std::vector<uint8_t> &, int32_t month,
-                        TpchQ10State &);
-// Order metadata is encoded as sorted fixed-width records. Maintenance can
-// look up one order without reconstructing the full order hash table.
-bool FindTpchQ10Order(const std::vector<uint8_t> &, int64_t orderkey,
-                      TpchQ10Order &);
-
 int32_t TpchQ10MonthKeyFromDays(int32_t days_since_epoch);
 int32_t TpchQ10MonthStartDays(int32_t month_key);
 int32_t TpchQ10AddMonths(int32_t days_since_epoch, int32_t months);
@@ -285,18 +406,14 @@ int64_t TpchQ10RevenueRaw(double extended_price, double discount);
 // TPC-H Q10 returns the top 20 customers by revenue.
 constexpr std::size_t kTpchQ10ResultLimit = 20;
 
-// Exact top-k of the summed per-month revenue, restricted to customers
-// present in `side`. Threshold-algorithm over the ranked month streams: cost
-// is bounded by the answer depth, not by the number of customers.
-std::vector<std::pair<int64_t, int64_t>> TpchQ10SelectTopK(
-    const TpchQ10State &side,
-    const std::vector<const TpchQ10MonthData *> &months,
-    std::size_t limit = kTpchQ10ResultLimit);
-
-void TpchQ10FinalizeAndEmit(const TpchQ10State &side,
-                            const std::vector<const TpchQ10MonthData *> &months,
-                            core::AuxRowSink &sink,
-                            std::size_t limit = kTpchQ10ResultLimit);
+// First `limit` entries of a ranked window whose customer exists and whose
+// revenue is positive: (custkey, revenue), in result order.
+std::vector<std::pair<int64_t, int64_t>>
+TpchQ10WindowTop(const TpchQ10State &side, const TpchQ10RankIndex &window,
+                 std::size_t limit = kTpchQ10ResultLimit);
+void TpchQ10EmitRows(const TpchQ10State &side,
+                     const std::vector<std::pair<int64_t, int64_t>> &ranked,
+                     core::AuxRowSink &sink);
 
 class TpchQ10TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -349,8 +466,8 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ10State BuildState(core::AuxEngineServices &) const;
-  void EmitResult(const TpchQ10State &, int32_t start_days,
+  TpchQ10BuildData BuildState(core::AuxEngineServices &) const;
+  void EmitResult(const TpchQ10BuildData &, int32_t start_days,
                   core::AuxRowSink &) const;
 
   TpchQ10Config config;

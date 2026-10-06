@@ -22,7 +22,43 @@ using core::ByteWriter;
 
 constexpr uint32_t kStateMagic = 0x51323053; // Q20S
 constexpr uint32_t kVersion = 2;
-constexpr int32_t kOneYearDays = 365;
+
+// Calendar helpers (proleptic Gregorian; days since 1970-01-01).
+int64_t DaysFromCivil(int64_t y, unsigned m, unsigned d) {
+  y -= m <= 2;
+  const int64_t era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(y - era * 400);
+  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + static_cast<int64_t>(doe) - 719468;
+}
+
+void CivilFromDays(int64_t z, int64_t &y, unsigned &m, unsigned &d) {
+  z += 719468;
+  const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+  const unsigned doe = static_cast<unsigned>(z - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  y = static_cast<int64_t>(yoe) + era * 400;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  d = doy - (153 * mp + 2) / 5 + 1;
+  m = mp < 10 ? mp + 3 : mp - 9;
+  y += m <= 2;
+}
+
+// start + INTERVAL '1' YEAR (Feb 29 clamps to Feb 28, as SQL does).
+int32_t AddOneYear(int32_t start_days) {
+  int64_t y = 0;
+  unsigned m = 0, d = 0;
+  CivilFromDays(start_days, y, m, d);
+  ++y;
+  if (m == 2 && d == 29) {
+    const bool leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    if (!leap)
+      d = 28;
+  }
+  return static_cast<int32_t>(DaysFromCivil(y, m, d));
+}
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
       !std::holds_alternative<std::string>(row.values[index].payload))
@@ -1146,7 +1182,7 @@ void TpchQ20Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  const int32_t end_date_days = start_date_days + kOneYearDays;
+  const int32_t end_date_days = AddOneYear(start_date_days);
 
   if (!services.StateStore()
            .CheckValidity({Id(), {}}, services.CurrentVisibility())
@@ -1192,7 +1228,7 @@ void TpchQ20Module::ExecuteFallback(core::AuxEngineServices &services,
     }
   }
 
-  const int32_t end_date_days = start_date_days + kOneYearDays;
+  const int32_t end_date_days = AddOneYear(start_date_days);
   const auto state = BuildState(services);
   EmitResult(state, start_date_days, end_date_days, part_name_pattern,
              nation_name, services, sink);

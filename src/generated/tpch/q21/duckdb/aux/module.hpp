@@ -80,6 +80,20 @@ public:
   // Optional SQL pushdown for Build: for every fulfilled ('F') order that can
   // contribute (>= 2 suppliers, exactly one supplier with a late item), one
   // call per (orderkey, suppkey) with COUNT(*) and the late-item count.
+  // Point lookup of one order's current (including the open transaction)
+  // status and per-supplier (count, late count). Returns false when
+  // unsupported; `found` is false when the order row does not exist.
+  struct OrderLookup {
+    bool found = false;
+    char status = 0;
+    std::vector<std::array<int64_t, 3>> suppliers; // suppkey, total, late
+  };
+  virtual bool LookupOrderSummary(int64_t orderkey, OrderLookup &out) {
+    (void)orderkey;
+    (void)out;
+    return false;
+  }
+
   virtual bool ScanContributingOrderSuppliers(
       const std::function<void(int64_t orderkey, int64_t suppkey,
                                int64_t total, int64_t late)> &consumer) {

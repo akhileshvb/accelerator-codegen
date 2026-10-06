@@ -13,6 +13,8 @@
 #include <unordered_set>
 #include <stdexcept>
 #include <utility>
+#include <algorithm>
+#include <vector>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -995,6 +997,28 @@ bool TpchQ11Module::CheckValidity(
       .IsValid();
 }
 
+namespace {
+const core::OutputSchema &Q11EmptySchema() {
+  static const core::OutputSchema schema{};
+  return schema;
+}
+// Thread-local two-cell row: (BIGINT partkey, DECIMAL scale 2 value).
+core::AuxRow &Q11RowBuffer() {
+  thread_local core::AuxRow row = [] {
+    core::AuxRow r;
+    r.values.resize(2);
+    r.values[0].type = core::AuxType::Int64;
+    r.values[0].is_null = false;
+    r.values[0].payload = int64_t{0};
+    r.values[1].type = core::AuxType::ScaledDecimal;
+    r.values[1].is_null = false;
+    r.values[1].payload = core::ScaledDecimal{0, 2};
+    return r;
+  }();
+  return row;
+}
+} // namespace
+
 void TpchQ11Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
@@ -1028,8 +1052,10 @@ void TpchQ11Module::Execute(core::AuxEngineServices &services,
 
   // ── Fast path: FNV-1a nation-name hash ─────────────────────────────────
   {
-    const auto fast_snapshot = services.StateStore().ReadPartitions(
-        visibility, {NationNamePartition(nation_name)});
+    thread_local std::vector<core::PartitionId> wanted(1);
+    wanted[0] = NationNamePartition(nation_name);
+    const auto fast_snapshot =
+        services.StateStore().ReadPartitions(visibility, wanted);
     if (fast_snapshot.partitions.empty() &&
         services.StateStore().CheckValidity({Id(), {}}, visibility).IsValid()) {
       // The state has a partition for every nation: none for this name
@@ -1060,34 +1086,38 @@ void TpchQ11Module::Execute(core::AuxEngineServices &services,
           static_cast<double>(typed->data->total) * fraction);
 #endif
 
-      // Inline emission: iterate pre-sorted rows, compare in integer domain
-      sink.Begin(core::OutputSchema{});
-      core::AuxRow aux_row;
-      aux_row.values.reserve(2);
-      bool done = false;
-      for (const auto &chunk : typed->data->chunks) {
-       for (const auto &row : chunk->rows) {
-        if (row.value > threshold_raw) {
-          aux_row.values.clear();
-          aux_row.values.push_back(
-              core::AuxValue::Of(core::AuxType::Int64, row.partkey));
-          core::ScaledDecimal decimal;
-#if defined(__SIZEOF_INT128__)
-          decimal.value = static_cast<int64_t>(static_cast<uint64_t>(row.value));
-#else
-          decimal.value = row.value;
-#endif
-          decimal.scale = 2;
-          aux_row.values.push_back(
-              core::AuxValue::Of(core::AuxType::ScaledDecimal, decimal));
-          sink.WriteRow(aux_row);
-        } else {
-          done = true; // sorted by value DESC
-          break;
+      // Rows are sorted value DESC: per chunk, one comparison against its last
+      // row decides "whole chunk passes"; otherwise a binary search finds the
+      // cut and the walk ends.  Emission reuses one two-cell row buffer.
+      sink.Begin(Q11EmptySchema());
+      auto &aux_row = Q11RowBuffer();
+      for (const auto &chunk_ptr : typed->data->chunks) {
+        const auto &rows = chunk_ptr->rows;
+        if (rows.empty())
+          continue;
+        const TpchQ11OutputRow *first = rows.data();
+        const TpchQ11OutputRow *last = first + rows.size();
+        bool done = false;
+        if (!(last[-1].value > threshold_raw)) {
+          last = std::partition_point(
+              first, last, [&](const TpchQ11OutputRow &r) {
+                return r.value > threshold_raw;
+              });
+          done = true;
         }
-       }
-       if (done)
-         break;
+        for (const TpchQ11OutputRow *r = first; r != last; ++r) {
+          aux_row.values[0].payload.emplace<int64_t>(r->partkey);
+#if defined(__SIZEOF_INT128__)
+          const int64_t dv =
+              static_cast<int64_t>(static_cast<uint64_t>(r->value));
+#else
+          const int64_t dv = r->value;
+#endif
+          std::get<core::ScaledDecimal>(aux_row.values[1].payload).value = dv;
+          sink.WriteRow(aux_row);
+        }
+        if (done)
+          break;
       }
       sink.End();
       return;

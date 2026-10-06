@@ -196,12 +196,15 @@ public:
   const std::vector<TpchQ18LineitemDelta> &Deltas() const;
   void MarkRebuild();
   void AddDelta(TpchQ18LineitemDelta delta);
+  void AddCustomerName(int64_t custkey, std::string name);
+  const std::vector<std::pair<int64_t, std::string>> &CustomerNames() const;
   void NoteOrderInserted(int64_t orderkey);
   void NoteOrderDeleted(int64_t orderkey);
   const std::unordered_set<int64_t> &InsertedOrders() const;
   const std::unordered_set<int64_t> &DeletedOrders() const;
 
 private:
+  std::vector<std::pair<int64_t, std::string>> customer_names;
   std::unordered_set<int64_t> inserted_orders;
   std::unordered_set<int64_t> deleted_orders;
   bool pending = false;

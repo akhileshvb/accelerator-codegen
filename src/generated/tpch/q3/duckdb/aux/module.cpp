@@ -453,6 +453,7 @@ std::vector<uint8_t> EncodeTpchQ3OrderSegmentSide(const TpchQ3Side &side) {
   writer.U32(cust_count);
   side.custs.ForEach([&](const TpchQ3CustRec &rec) {
     writer.U32(rec.key);
+    writer.U32(rec.orphan_orders);
     writer.U8(rec.segment);
   });
   return std::move(writer.bytes);
@@ -508,7 +509,8 @@ bool DecodeTpchQ3OrderSegmentSide(const std::vector<uint8_t> &bytes,
   TpchQ3ShardBuilder<TpchQ3CustRec> custs;
   for (uint32_t i = 0; i < cust_count; ++i) {
     TpchQ3CustRec rec;
-    if (!reader.U32(rec.key) || !reader.U8(rec.segment))
+    if (!reader.U32(rec.key) || !reader.U32(rec.orphan_orders) ||
+        !reader.U8(rec.segment))
       return false;
     custs.Add(rec);
   }
@@ -683,6 +685,7 @@ void TpchQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
       segment = TpchQ3PartitionFromMktsegment(mkt);
       return true;
     };
+    using CKind = TpchQ3CustomerDelta::Kind;
     switch (mutation.kind) {
     case core::MutationKind::Insert:
       for (const auto &row : mutation.new_rows) {
@@ -692,12 +695,19 @@ void TpchQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
           buffer.MarkRebuild();
           return;
         }
-        buffer.AddCustomerDelta({key, segment});
+        buffer.AddCustomerDelta({CKind::Insert, key, segment});
       }
       break;
     case core::MutationKind::Delete:
-      // Orders of the removed customer would have to leave the index.
-      buffer.MarkRebuild();
+      for (const auto &row : mutation.old_rows) {
+        int64_t key = 0;
+        core::PartitionId segment = 0;
+        if (!read(row, key, segment)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        buffer.AddCustomerDelta({CKind::Delete, key, 0});
+      }
       break;
     case core::MutationKind::Update:
       if (mutation.old_rows.size() != mutation.new_rows.size()) {
@@ -708,12 +718,18 @@ void TpchQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
         int64_t ok = 0, nk = 0;
         core::PartitionId os = 0, ns = 0;
         if (!read(mutation.old_rows[i], ok, os) ||
-            !read(mutation.new_rows[i], nk, ns) || ok != nk || os != ns) {
-          // key or segment change moves orders between segments: rebuild
+            !read(mutation.new_rows[i], nk, ns)) {
           buffer.MarkRebuild();
           return;
         }
-        buffer.MarkNoop();
+        if (ok == nk && os == ns) {
+          buffer.MarkNoop();
+        } else if (ok == nk) {
+          buffer.AddCustomerDelta({CKind::Move, nk, ns});
+        } else {
+          buffer.AddCustomerDelta({CKind::Delete, ok, 0});
+          buffer.AddCustomerDelta({CKind::Insert, nk, ns});
+        }
       }
       break;
     }
@@ -890,21 +906,61 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     return it->second;
   };
 
-  // Customer inserts first (orders of this transaction may reference them).
-  for (const auto &c : buffer.CustomerDeltas()) {
-    if (c.segment == 0)
-      continue;
-    const auto key = static_cast<uint32_t>(c.custkey);
-    if (ctx.Find(key))
-      return rebuild_all();
-    TpchQ3CustRec rec;
-    rec.key = key;
-    rec.segment = static_cast<uint8_t>(c.segment);
-    ctx.Set(rec);
-  }
+  // Orders referencing a key that is not a tracked customer are untracked;
+  // the key's record counts them so a later customer insert / segment change
+  // knows whether a lookup is needed.
+  auto adjust_orphans = [&](int64_t custkey, int32_t delta) {
+    if (custkey < 0 ||
+        custkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+      return;
+    const auto key = static_cast<uint32_t>(custkey);
+    const auto *rec = ctx.Find(key);
+    if (rec) {
+      if (rec->segment != 0) {
+        return;
+      }
+      TpchQ3CustRec next = *rec;
+      const int64_t count = static_cast<int64_t>(next.orphan_orders) + delta;
+      next.orphan_orders = count > 0 ? static_cast<uint32_t>(count) : 0;
+      ctx.Set(next);
+    } else if (delta > 0) {
+      TpchQ3CustRec next;
+      next.key = key;
+      next.orphan_orders = static_cast<uint32_t>(delta);
+      ctx.Set(next);
+    }
+  };
+  auto tracked_customer = [&](int64_t custkey) -> const TpchQ3CustRec * {
+    if (custkey < 0 ||
+        custkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+      return nullptr;
+    const auto *rec = ctx.Find(static_cast<uint32_t>(custkey));
+    return rec && rec->segment != 0 ? rec : nullptr;
+  };
+
+  // Inserts the order's index entry (if it has lineitems) into its segment.
+  auto place_order = [&](TpchQ3OrderRec &rec,
+                         const std::map<int32_t, int64_t> &day) {
+    rec.seg_flags = static_cast<uint8_t>(rec.seg_flags & 0x7F);
+    rec.bound = 0;
+    if (day.empty())
+      return;
+    std::vector<TpchQ3ShipdateBucket> buckets;
+    FinalizeTpchQ3OrderSummary(buckets, day);
+    if (buckets.empty())
+      return;
+    TpchQ3Entry entry;
+    entry.bound = BoundOf(day);
+    entry.orderkey = rec.key;
+    entry.orderdate = rec.orderdate;
+    entry.shippriority = rec.shippriority;
+    rec.bound = entry.bound;
+    rec.seg_flags = static_cast<uint8_t>(rec.seg_flags | 0x80);
+    segtx(rec.segment()).Insert(entry, buckets);
+  };
 
   // Order inserts / deletes by key. A key both deleted and inserted is an
-  // UPDATE: the order and its lineitems stay (in the same segment).
+  // UPDATE: the order and its lineitems stay.
   std::map<uint32_t, const TpchQ3OrderDelta *> inserted, deleted;
   for (const auto &delta : buffer.OrderDeltas()) {
     const auto key = static_cast<uint32_t>(delta.orderkey);
@@ -935,10 +991,15 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     if (had)
       old_rec = *found;
     const auto ins_it = inserted.find(key);
+    const auto del_it = deleted.find(key);
     const bool is_ins = ins_it != inserted.end();
-    const bool is_del = deleted.count(key) != 0;
-    if (!had && !is_ins)
-      continue; // lineitem/delete of an order outside every tracked segment
+    const bool is_del = del_it != deleted.end();
+    if (!had && !is_ins) {
+      // lineitem change / delete of an order outside every tracked segment
+      if (is_del)
+        adjust_orphans(del_it->second->custkey, -1);
+      continue;
+    }
 
     // Remove the old index entry (if any) and recover its day revenues.
     std::map<int32_t, int64_t> day;
@@ -955,18 +1016,20 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     } else if (had && is_ins && !is_del) {
       return rebuild_all(); // duplicate key
     } else if (is_ins) {
-      // new order, or UPDATE of an existing one
+      // new order, or UPDATE of an existing one (possibly to another customer
+      // and hence segment: the entry is re-placed in the new segment)
       const auto &d = *ins_it->second;
       if (d.custkey < 0 ||
           d.custkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
         return rebuild_all();
       }
-      const auto *cust = ctx.Find(static_cast<uint32_t>(d.custkey));
+      if (!had && is_del)
+        adjust_orphans(del_it->second->custkey, -1); // old row was untracked
+      const auto *cust = tracked_customer(d.custkey);
       if (!cust) {
         exists = false; // customer outside every tracked segment
+        adjust_orphans(d.custkey, 1);
       } else {
-        if (had && cust->segment != old_rec.segment())
-          return rebuild_all(); // moved to another segment
         rec.key = key;
         rec.orderdate = PackTpchQ3Date(d.orderdate_days);
         rec.shippriority = PackTpchQ3Shippriority(d.shippriority);
@@ -987,28 +1050,110 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
             day.erase(entry.first);
         }
       }
-      std::vector<TpchQ3ShipdateBucket> buckets;
-      if (!day.empty()) {
-        FinalizeTpchQ3OrderSummary(buckets, day);
-        TpchQ3Entry entry;
-        entry.bound = BoundOf(day);
-        entry.orderkey = key;
-        entry.orderdate = rec.orderdate;
-        entry.shippriority = rec.shippriority;
-        rec.bound = entry.bound;
-        rec.seg_flags = static_cast<uint8_t>((rec.seg_flags & 0x7F) | 0x80);
-        if (!buckets.empty())
-          segtx(rec.segment()).Insert(entry, buckets);
-        else
-          rec.seg_flags = static_cast<uint8_t>(rec.seg_flags & 0x7F);
-      } else {
-        rec.bound = 0;
-        rec.seg_flags = static_cast<uint8_t>(rec.seg_flags & 0x7F);
-      }
+      place_order(rec, day);
       otx.Set(rec);
     } else if (had) {
       otx.Erase(key);
     }
+  }
+
+  // Customer changes last, against the post-write tables: orders of the
+  // customer are fetched with one point query and moved between segment
+  // indexes (or dropped / materialized) copy-on-write.
+  auto move_customer = [&](uint32_t custkey, core::PartitionId new_seg,
+                           bool is_insert) -> bool {
+    const auto *cur = ctx.Find(custkey);
+    const core::PartitionId cur_seg = cur ? cur->segment : 0;
+    const uint32_t orphans = cur ? cur->orphan_orders : 0;
+    if (is_insert && cur_seg != 0)
+      return false; // duplicate key
+    if (cur_seg == new_seg)
+      return true;
+    TpchQ3CustRec next;
+    next.key = custkey;
+    next.segment = static_cast<uint8_t>(new_seg);
+    if (cur_seg != 0) {
+      std::vector<TpchQ3OrderInput> orders;
+      if (!initial_scan ||
+          !initial_scan->ScanOrdersByCustomer(
+              custkey,
+              [&](const TpchQ3OrderInput &o) { orders.push_back(o); }))
+        return false;
+      for (const auto &o : orders) {
+        if (o.key < 0 ||
+            o.key > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+          return false;
+        const auto okey = static_cast<uint32_t>(o.key);
+        const auto *rec = otx.Find(okey);
+        if (!rec)
+          continue;
+        TpchQ3OrderRec r = *rec;
+        if (r.segment() != cur_seg)
+          return false;
+        std::map<int32_t, int64_t> day;
+        if (r.indexed() &&
+            !segtx(cur_seg).Take(r.orderdate, r.bound, okey, day))
+          return false;
+        if (new_seg == 0) {
+          otx.Erase(okey);
+          continue;
+        }
+        r.seg_flags = static_cast<uint8_t>(new_seg);
+        place_order(r, day);
+        otx.Set(r);
+      }
+      next.orphan_orders =
+          new_seg == 0 ? static_cast<uint32_t>(orders.size()) : 0;
+    } else if (new_seg != 0 && orphans > 0) {
+      // The key had untracked orders: materialize them (post-write state).
+      std::vector<TpchQ3OrderInput> orders;
+      if (!initial_scan ||
+          !initial_scan->ScanOrdersByCustomer(
+              custkey,
+              [&](const TpchQ3OrderInput &o) { orders.push_back(o); }))
+        return false;
+      std::vector<int64_t> order_keys;
+      for (const auto &o : orders)
+        order_keys.push_back(o.key);
+      std::map<int64_t, std::map<int32_t, int64_t>> days;
+      if (!initial_scan->ScanLineitemsByOrders(
+              order_keys, [&](const TpchQ3LineitemInput &li) {
+                days[li.orderkey][li.shipdate_days] += TpchQ3RevenueRaw(
+                    li.extended_price_raw, li.extended_price_scale,
+                    li.discount_raw, li.discount_scale);
+              }))
+        return false;
+      for (const auto &o : orders) {
+        if (o.key < 0 ||
+            o.key > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+          return false;
+        const auto okey = static_cast<uint32_t>(o.key);
+        if (otx.Find(okey))
+          return false; // should be untracked
+        TpchQ3OrderRec r;
+        r.key = okey;
+        r.orderdate = PackTpchQ3Date(o.orderdate_days);
+        r.shippriority = PackTpchQ3Shippriority(o.shippriority);
+        r.seg_flags = static_cast<uint8_t>(new_seg);
+        std::map<int32_t, int64_t> day;
+        for (const auto &e : days[o.key])
+          if (e.second != 0)
+            day[e.first] = e.second;
+        place_order(r, day);
+        otx.Set(r);
+      }
+      next.orphan_orders = 0;
+    } else {
+      next.orphan_orders = new_seg == 0 ? orphans : 0;
+    }
+    ctx.Set(next);
+    return true;
+  };
+  using CKind = TpchQ3CustomerDelta::Kind;
+  for (const auto &c : buffer.CustomerDeltas()) {
+    const auto key = static_cast<uint32_t>(c.custkey);
+    if (!move_customer(key, c.segment, c.kind == CKind::Insert))
+      return rebuild_all();
   }
 
   const bool side_dirty = otx.Dirty() || ctx.Dirty();
@@ -1158,14 +1303,17 @@ TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   custs.Sort();
 
   // `bound` temporarily holds the head of the order's day-node chain.
+  std::unordered_map<uint32_t, uint32_t> orphan_custs;
   TpchQ3ShardBuilder<TpchQ3OrderRec> orders;
   initial_scan->ScanOrders([&](const TpchQ3OrderInput &input) {
     if (input.custkey < 0 ||
         input.custkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
       return;
     const auto *cust = custs.Find(static_cast<uint32_t>(input.custkey));
-    if (!cust)
+    if (!cust) {
+      ++orphan_custs[static_cast<uint32_t>(input.custkey)];
       return;
+    }
     TpchQ3OrderRec rec;
     rec.key = PackTpchQ3Orderkey(input.key);
     rec.orderdate = PackTpchQ3Date(input.orderdate_days);
@@ -1175,6 +1323,15 @@ TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
     orders.Add(rec);
   });
   orders.Sort();
+  if (!orphan_custs.empty()) {
+    for (const auto &entry : orphan_custs) {
+      TpchQ3CustRec rec;
+      rec.key = entry.first;
+      rec.orphan_orders = entry.second;
+      custs.Add(rec);
+    }
+    custs.Sort();
+  }
 
   DayNodePool nodes;
   initial_scan->ScanLineitems([&](const TpchQ3LineitemInput &input) {

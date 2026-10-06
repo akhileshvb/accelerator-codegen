@@ -76,6 +76,23 @@ public:
       const std::function<void(const TpchQ5OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ5LineitemInput &)> &) = 0;
+
+  // Point lookups of the current (post-write, same connection) lineitems of
+  // one supplier / a set of orders. Return false when unsupported.
+  virtual bool ScanLineitemsBySupplier(
+      int64_t suppkey,
+      const std::function<void(const TpchQ5LineitemInput &)> &consumer) {
+    (void)suppkey;
+    (void)consumer;
+    return false;
+  }
+  virtual bool ScanLineitemsByOrder(
+      int64_t orderkey,
+      const std::function<void(const TpchQ5LineitemInput &)> &consumer) {
+    (void)orderkey;
+    (void)consumer;
+    return false;
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -88,18 +105,24 @@ template <typename V> struct TpchQ5Entry {
   V val{};
 };
 
+// 2^17 shards: 1024 top slots x 128 leaves per mid.
+constexpr uint32_t kTpchQ5TopSlots = 1024;
+constexpr uint32_t kTpchQ5MidLeaves = 128;
+constexpr uint32_t kTpchQ5MidBits = 7;
+constexpr uint32_t kTpchQ5ShardCount = kTpchQ5TopSlots * kTpchQ5MidLeaves;
+
 inline uint32_t TpchQ5ShardOf(int64_t key) {
   const uint64_t h = static_cast<uint64_t>(key) * 0x9E3779B97F4A7C15ULL;
-  return static_cast<uint32_t>(h >> 48);
+  return static_cast<uint32_t>(h >> 47);
 }
 
 template <typename V> struct TpchQ5ShardIndex {
   using Entry = TpchQ5Entry<V>;
   using Leaf = std::vector<Entry>;
   struct Mid {
-    std::array<std::shared_ptr<const Leaf>, 256> leaves;
+    std::array<std::shared_ptr<const Leaf>, kTpchQ5MidLeaves> leaves;
   };
-  std::array<std::shared_ptr<const Mid>, 256> mids;
+  std::array<std::shared_ptr<const Mid>, kTpchQ5TopSlots> mids;
 
   static const Entry *FindIn(const Leaf *leaf, int64_t key) {
     if (!leaf)
@@ -111,10 +134,10 @@ template <typename V> struct TpchQ5ShardIndex {
   }
   const V *Find(int64_t key) const {
     const auto shard = TpchQ5ShardOf(key);
-    const auto &mid = mids[shard >> 8];
+    const auto &mid = mids[shard >> kTpchQ5MidBits];
     if (!mid)
       return nullptr;
-    const auto *e = FindIn(mid->leaves[shard & 255].get(), key);
+    const auto *e = FindIn(mid->leaves[shard & (kTpchQ5MidLeaves - 1)].get(), key);
     return e ? &e->val : nullptr;
   }
 };
@@ -127,7 +150,7 @@ public:
   using Leaf = typename Index::Leaf;
   using Mid = typename Index::Mid;
 
-  explicit TpchQ5ShardTxn(const Index &base) : top_(base) {}
+  explicit TpchQ5ShardTxn(const Index &base) : base_(base) {}
 
   const V *Find(int64_t key) const {
     return Lookup(TpchQ5ShardOf(key), key);
@@ -155,22 +178,25 @@ public:
   }
   bool Dirty() const { return !leaves_.empty(); }
   Index Finish() {
+    Index out = base_;
     std::unordered_map<uint32_t, std::shared_ptr<Mid>> mids;
+    mids.reserve(leaves_.size());
     for (auto &entry : leaves_) {
-      const uint32_t hi = entry.first >> 8, lo = entry.first & 255;
+      const uint32_t hi = entry.first >> kTpchQ5MidBits;
+      const uint32_t lo = entry.first & (kTpchQ5MidLeaves - 1);
       auto &mid = mids[hi];
       if (!mid)
-        mid = top_.mids[hi] ? std::make_shared<Mid>(*top_.mids[hi])
-                            : std::make_shared<Mid>();
+        mid = base_.mids[hi] ? std::make_shared<Mid>(*base_.mids[hi])
+                             : std::make_shared<Mid>();
       if (entry.second->empty())
         mid->leaves[lo] = nullptr;
       else
         mid->leaves[lo] = std::move(entry.second);
     }
     for (auto &entry : mids)
-      top_.mids[entry.first] = std::move(entry.second);
+      out.mids[entry.first] = std::move(entry.second);
     leaves_.clear();
-    return std::move(top_);
+    return out;
   }
 
 private:
@@ -178,8 +204,8 @@ private:
     auto it = leaves_.find(shard);
     if (it != leaves_.end())
       return it->second.get();
-    const auto &mid = top_.mids[shard >> 8];
-    return mid ? mid->leaves[shard & 255].get() : nullptr;
+    const auto &mid = base_.mids[shard >> kTpchQ5MidBits];
+    return mid ? mid->leaves[shard & (kTpchQ5MidLeaves - 1)].get() : nullptr;
   }
   const V *Lookup(uint32_t shard, int64_t key) const {
     const auto *e = Index::FindIn(Current(shard), key);
@@ -194,7 +220,7 @@ private:
     return *leaves_.emplace(shard, std::move(copy)).first->second;
   }
 
-  Index top_;
+  const Index &base_;
   std::unordered_map<uint32_t, std::shared_ptr<Leaf>> leaves_;
 };
 
@@ -206,7 +232,7 @@ public:
   using Entry = typename Index::Entry;
   using Leaf = typename Index::Leaf;
 
-  TpchQ5ShardBuilder() : shards_(65536) {}
+  TpchQ5ShardBuilder() : shards_(kTpchQ5ShardCount) {}
   void Add(int64_t key, const V &val) {
     shards_[TpchQ5ShardOf(key)].push_back(Entry{key, val});
   }
@@ -229,10 +255,10 @@ public:
   }
   Index Finish() {
     Index index;
-    for (uint32_t hi = 0; hi < 256; ++hi) {
+    for (uint32_t hi = 0; hi < kTpchQ5TopSlots; ++hi) {
       std::shared_ptr<typename Index::Mid> mid;
-      for (uint32_t lo = 0; lo < 256; ++lo) {
-        auto &shard = shards_[(hi << 8) | lo];
+      for (uint32_t lo = 0; lo < kTpchQ5MidLeaves; ++lo) {
+        auto &shard = shards_[(hi << kTpchQ5MidBits) | lo];
         if (shard.empty())
           continue;
         if (!mid)
@@ -259,7 +285,10 @@ struct TpchQ5OrderRec {
 };
 struct TpchQ5SuppRec {
   int32_t nationkey = 0;
-  int32_t line_count = 0; // lineitems referencing this supplier
+  int32_t line_count = 0; // lineitems referencing this suppkey (post-state)
+  // false: no supplier row exists, but lineitems reference the key (they
+  // contribute nothing until the supplier is inserted).
+  bool present = true;
 };
 struct TpchQ5CustRec {
   int32_t nationkey = 0;
@@ -279,6 +308,8 @@ struct TpchQ5Meta {
   std::unordered_map<std::string, int32_t> region_name_to_key;
   std::unordered_map<int32_t, std::vector<int32_t>> region_nations;
   std::vector<int32_t> nation_keys;                 // column -> nationkey
+  std::vector<int32_t> column_region;               // column -> regionkey (-1 none)
+  std::vector<std::string> column_name;             // column -> n_name
   std::unordered_map<int32_t, int32_t> nation_index; // nationkey -> column
   int32_t NationColumn(int32_t nationkey) const {
     auto it = nation_index.find(nationkey);
@@ -369,6 +400,12 @@ private:
   std::vector<DimDelta> customer_mutations;
   std::vector<DimDelta> supplier_mutations;
 };
+
+// Fast emit: `revenue[c]` per nation column (meta.column_*), zero columns and
+// columns outside `target_regionkey` skipped; rows by revenue desc, name asc.
+void TpchQ5FinalizeColumns(const TpchQ5Meta &meta, int32_t target_regionkey,
+                           const int64_t *revenue, std::size_t columns,
+                           core::AuxRowSink &sink);
 
 int32_t TpchQ5DaysFromYmd(int32_t year, unsigned month, unsigned day);
 int32_t TpchQ5AddMonths(int32_t days_since_epoch, int32_t months);

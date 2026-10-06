@@ -213,7 +213,8 @@ uint16_t InternName(std::vector<std::string> &names,
 }
 
 void ComputeRanks(const std::vector<std::string> &names,
-                  std::vector<uint16_t> &rank) {
+                  std::vector<uint16_t> &rank,
+                  std::vector<uint16_t> &by_rank) {
   std::vector<uint16_t> order(names.size());
   for (std::size_t i = 0; i < order.size(); ++i)
     order[i] = static_cast<uint16_t>(i);
@@ -223,11 +224,12 @@ void ComputeRanks(const std::vector<std::string> &names,
   rank.assign(names.size(), 0);
   for (std::size_t i = 0; i < order.size(); ++i)
     rank[order[i]] = static_cast<uint16_t>(i);
+  by_rank = std::move(order);
 }
 
 void RecomputeRanks(TpchQ16Meta &meta) {
-  ComputeRanks(meta.brands, meta.brand_rank);
-  ComputeRanks(meta.types, meta.type_rank);
+  ComputeRanks(meta.brands, meta.brand_rank, meta.brand_by_rank);
+  ComputeRanks(meta.types, meta.type_rank, meta.type_by_rank);
 }
 
 // ORDER BY supplier_cnt DESC, p_brand, p_type, p_size. New brands/types keep
@@ -281,7 +283,7 @@ bool ParseArguments(const core::QueryArguments &arguments, QueryParams &out) {
 // k-way merge of the requested per-size lists (each already sorted), applying
 // the brand / type filters. Cost is proportional to the rows scanned in the
 // requested sizes only.
-void EmitMerged(const TpchQ16Meta &meta,
+void EmitMergedSlow(const TpchQ16Meta &meta,
                 const std::vector<const TpchQ16SizeList *> &lists,
                 const QueryParams &params, core::AuxRowSink &sink) {
   int32_t exclude_id = -1;
@@ -357,6 +359,171 @@ void EmitMerged(const TpchQ16Meta &meta,
     skip(*best);
   }
   EmitCustomProfile("merge_emit", t_emit.us(), 0, emitted, 0);
+  sink.End();
+}
+
+
+// Fast path. Every surviving row becomes one self-describing 64-bit sort key
+//   (INT32_MAX - count) << 30 | brand_rank << 22 | type_rank << 6 | size
+// (31 + 8 + 16 + 6 bits, ascending key == ORDER BY count DESC, brand, type,
+// size). Each per-size list is already sorted, so its keys form a sorted run;
+// the runs are merged pairwise into one reusable buffer (no allocation after
+// warm-up) and decoded straight into the output row.
+// Branch-free two-run merge (keys are unique, so ties never occur).
+inline void MergeBranchless(const uint64_t *a, const uint64_t *a_end,
+                            const uint64_t *b, const uint64_t *b_end,
+                            uint64_t *out) {
+  while (a != a_end && b != b_end) {
+    const uint64_t x = *a, y = *b;
+    const bool take_b = y < x;
+    *out++ = take_b ? y : x;
+    b += take_b;
+    a += !take_b;
+  }
+  while (a != a_end)
+    *out++ = *a++;
+  while (b != b_end)
+    *out++ = *b++;
+}
+
+constexpr int64_t kFastMaxCount = 0x7FFFFFFF;
+
+void EmitMerged(const TpchQ16Meta &meta,
+                const std::vector<const TpchQ16SizeList *> &lists,
+                const QueryParams &params, core::AuxRowSink &sink) {
+  bool fast = meta.brands.size() <= 256 && meta.types.size() <= 0x10000;
+  std::size_t total = 0;
+  for (const auto *list : lists)
+    if (list)
+      total += list->rows.size();
+  if (!fast) {
+    EmitMergedSlow(meta, lists, params, sink);
+    return;
+  }
+  CustomTimer t_merge(CustomProfilingEnabled());
+  uint32_t exclude_rank = 0xFFFFFFFFu;
+  if (!params.brand.empty()) {
+    const auto it = meta.brand_index.find(params.brand);
+    if (it != meta.brand_index.end())
+      exclude_rank = meta.brand_rank[it->second];
+  }
+  thread_local std::vector<uint8_t> type_ok;
+  thread_local std::vector<uint64_t> buf_a, buf_b;
+  type_ok.assign(meta.types.size(), 1);
+  if (!params.type_pattern.empty()) {
+    const std::string &pat = params.type_pattern;
+    // "literal%" (the TPC-H shape) is a plain prefix test.
+    const bool prefix_only =
+        pat.size() >= 1 && pat.back() == '%' &&
+        pat.find_first_of("%_") == pat.size() - 1;
+    for (std::size_t tid = 0; tid < meta.types.size(); ++tid) {
+      if (prefix_only) {
+        const std::string &t = meta.types[tid];
+        const std::size_t plen = pat.size() - 1;
+        type_ok[tid] = !(t.size() >= plen && std::memcmp(t.data(), pat.data(), plen) == 0);
+      } else {
+        type_ok[tid] = TpchQ16TypeNotLike(meta.types[tid], pat);
+      }
+    }
+  }
+  buf_a.resize(total);
+  buf_b.resize(total);
+
+  const uint16_t *brand_rank = meta.brand_rank.data();
+  const uint16_t *type_rank = meta.type_rank.data();
+  const uint8_t *ok = type_ok.data();
+  // Filter + key each list into buf_a as consecutive sorted runs.
+  uint64_t *out = buf_a.data();
+  std::size_t run_bounds[64];
+  std::size_t nruns = 0;
+  run_bounds[0] = 0;
+  for (const auto *list : lists) {
+    if (!list || list->rows.empty() || nruns + 1 >= 63)
+      continue;
+    const Q16PrecomputedRow *r = list->rows.data();
+    const std::size_t n = list->rows.size();
+    uint64_t *o = out;
+    for (std::size_t i = 0; i < n; ++i) {
+      const uint32_t br = brand_rank[r[i].brand_id];
+      const uint32_t tid = r[i].type_id;
+      const uint64_t key =
+          (static_cast<uint64_t>(kFastMaxCount - r[i].count) << 30) |
+          (static_cast<uint64_t>(br) << 22) |
+          (static_cast<uint64_t>(type_rank[tid]) << 6) |
+          static_cast<uint64_t>(r[i].size);
+      *o = key;
+      o += (br != exclude_rank) & (ok[tid] != 0);
+    }
+    out = o;
+    run_bounds[++nruns] = static_cast<std::size_t>(out - buf_a.data());
+  }
+  // Bottom-up pairwise merge of runs, ping-ponging between the buffers.
+  uint64_t *src = buf_a.data();
+  uint64_t *dst = buf_b.data();
+  while (nruns > 1) {
+    std::size_t next_runs = 0;
+    std::size_t next_bounds[64];
+    next_bounds[0] = 0;
+    for (std::size_t i = 0; i < nruns; i += 2) {
+      const std::size_t lo = run_bounds[i];
+      const std::size_t mid = run_bounds[i + 1];
+      const std::size_t hi = (i + 1 < nruns) ? run_bounds[i + 2] : mid;
+      MergeBranchless(src + lo, src + mid, src + mid, src + hi, dst + lo);
+      next_bounds[++next_runs] = hi;
+    }
+    std::copy(next_bounds, next_bounds + next_runs + 1, run_bounds);
+    nruns = next_runs;
+    std::swap(src, dst);
+  }
+  const std::size_t count = nruns ? run_bounds[1] : 0;
+  const double merge_us = t_merge.us();
+
+  CustomTimer t_emit(CustomProfilingEnabled());
+  sink.Begin({{{"p_brand", core::AuxType::String, false},
+               {"p_type", core::AuxType::String, false},
+               {"p_size", core::AuxType::Int64, false},
+               {"supplier_cnt", core::AuxType::Int64, false}}});
+  core::AuxRow row;
+  row.values.resize(4);
+  row.values[0].type = core::AuxType::String;
+  row.values[0].is_null = false;
+  row.values[0].payload = std::string();
+  row.values[1].type = core::AuxType::String;
+  row.values[1].is_null = false;
+  row.values[1].payload = std::string();
+  row.values[2].type = core::AuxType::Int64;
+  row.values[2].is_null = false;
+  row.values[2].payload = int64_t{0};
+  row.values[3].type = core::AuxType::Int64;
+  row.values[3].is_null = false;
+  row.values[3].payload = int64_t{0};
+  auto &brand_cell = std::get<std::string>(row.values[0].payload);
+  auto &type_cell = std::get<std::string>(row.values[1].payload);
+  auto &size_cell = std::get<int64_t>(row.values[2].payload);
+  auto &count_cell = std::get<int64_t>(row.values[3].payload);
+  const std::string *brand_names = meta.brands.data();
+  const std::string *type_names = meta.types.data();
+  const uint16_t *brand_by_rank = meta.brand_by_rank.data();
+  const uint16_t *type_by_rank = meta.type_by_rank.data();
+  uint32_t last_brand = 0xFFFFFFFFu, last_type = 0xFFFFFFFFu;
+  for (std::size_t i = 0; i < count; ++i) {
+    const uint64_t key = src[i];
+    const uint32_t br = static_cast<uint32_t>((key >> 22) & 0xFF);
+    const uint32_t tr = static_cast<uint32_t>((key >> 6) & 0xFFFF);
+    if (br != last_brand) {
+      brand_cell = brand_names[brand_by_rank[br]];
+      last_brand = br;
+    }
+    if (tr != last_type) {
+      type_cell = type_names[type_by_rank[tr]];
+      last_type = tr;
+    }
+    size_cell = static_cast<int64_t>(key & 0x3F);
+    count_cell = kFastMaxCount - static_cast<int64_t>(key >> 30);
+    sink.WriteRow(row);
+  }
+  EmitCustomProfile("merge_only", merge_us, 0, static_cast<int64_t>(count), 0);
+  EmitCustomProfile("emit_only", t_emit.us(), 0, static_cast<int64_t>(count), 0);
   sink.End();
 }
 

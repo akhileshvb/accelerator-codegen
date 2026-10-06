@@ -161,6 +161,41 @@ struct TpchQ3Scan : TpchQ3InitialScan {
                     DateDays(ChunkValue(chunk, 3, row))});
         });
   }
+  bool ScanOrdersByCustomer(
+      int64_t custkey,
+      const std::function<void(const TpchQ3OrderInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT o_orderkey, o_orderdate, o_custkey, o_shippriority FROM orders "
+        "WHERE o_custkey = " + std::to_string(custkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    DateDays(ChunkValue(chunk, 1, row)),
+                    SafeInt64(ChunkValue(chunk, 2, row)),
+                    SafeInt32(ChunkValue(chunk, 3, row))});
+        });
+    return true;
+  }
+  bool ScanLineitemsByOrders(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(const TpchQ3LineitemInput &)> &consumer) override {
+    if (orderkeys.empty())
+      return true;
+    std::string in_list;
+    for (const auto key : orderkeys)
+      in_list += (in_list.empty() ? "" : ",") + std::to_string(key);
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_orderkey, l_extendedprice, l_discount, l_shipdate FROM lineitem "
+        "WHERE l_orderkey IN (" + in_list + ")",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    DecimalRaw(ChunkValue(chunk, 1, row)), 2,
+                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
+                    DateDays(ChunkValue(chunk, 3, row))});
+        });
+    return true;
+  }
   bool ScanSegmentJoin(
       const std::string &mktsegment,
       const std::function<void(const TpchQ3OrderInput &,

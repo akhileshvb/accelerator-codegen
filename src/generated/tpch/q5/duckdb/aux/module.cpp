@@ -1,4 +1,7 @@
 #include "tpch/q5/duckdb/aux/module.hpp"
+#if defined(__AVX2__) || defined(__AVX512F__)
+#include <immintrin.h>
+#endif
 #include "tpch/q5/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
@@ -13,6 +16,7 @@
 #include <unordered_set>
 #include <utility>
 #include "tpch/q5/layout.hpp"
+
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -411,6 +415,35 @@ void ParseArgs(const core::QueryArguments &arguments, std::string &region_name,
   }
 }
 
+constexpr uint32_t kQ5MaxStride = 64;
+
+// acc[0..n) += row[0..n) (AVX-512 / AVX2 when available).
+inline void AddRow(int64_t *acc, const int64_t *row, uint32_t n) {
+  uint32_t i = 0;
+#if defined(__AVX512F__)
+  for (; i + 8 <= n; i += 8) {
+    const __m512i a = _mm512_load_si512(acc + i);
+    const __m512i b = _mm512_loadu_si512(row + i);
+    _mm512_store_si512(acc + i, _mm512_add_epi64(a, b));
+  }
+  if (i < n) {
+    const __mmask8 m = static_cast<__mmask8>((1u << (n - i)) - 1u);
+    const __m512i a = _mm512_maskz_loadu_epi64(m, acc + i);
+    const __m512i b = _mm512_maskz_loadu_epi64(m, row + i);
+    _mm512_mask_storeu_epi64(acc + i, m, _mm512_add_epi64(a, b));
+    return;
+  }
+#elif defined(__AVX2__)
+  for (; i + 4 <= n; i += 4) {
+    const __m256i a = _mm256_load_si256(reinterpret_cast<const __m256i *>(acc + i));
+    const __m256i b = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(row + i));
+    _mm256_store_si256(reinterpret_cast<__m256i *>(acc + i), _mm256_add_epi64(a, b));
+  }
+#endif
+  for (; i < n; ++i)
+    acc[i] += row[i];
+}
+
 // Sums the covered tree nodes into revenue-by-nationkey (zero columns skipped).
 std::unordered_map<int32_t, int64_t>
 SumCover(const TpchQ5Meta &meta, const TpchQ5Tree &tree,
@@ -563,6 +596,18 @@ void TpchQ5Module::AccumulateMutation(const core::MutationBatch &mutation,
         return;
       }
       for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        // Q5 reads only (orderkey, custkey, orderdate): an update of other
+        // columns leaves the state unchanged.
+        TpchQ5TxnBuffer::OrderDelta o, n;
+        if (ReadOrder(mutation.old_rows[i], o.orderkey, o.custkey,
+                      o.orderdate_days) &&
+            ReadOrder(mutation.new_rows[i], n.orderkey, n.custkey,
+                      n.orderdate_days) &&
+            o.orderkey == n.orderkey && o.custkey == n.custkey &&
+            o.orderdate_days == n.orderdate_days) {
+          buffer.MarkNoop();
+          continue;
+        }
         add(mutation.old_rows[i], -1);
         add(mutation.new_rows[i], 1);
       }
@@ -655,18 +700,6 @@ TpchQ5Module::StageIncrementalMaintenance(
     return rebuild();
   const auto &meta = *side->meta;
 
-  // An order key both deleted and inserted in one transaction is an update
-  // whose lineitems would have to be re-attributed: rebuild (rare).
-  {
-    std::unordered_set<int64_t> inserted;
-    for (const auto &o : buffer.OrderMutations())
-      if (o.sign > 0)
-        inserted.insert(o.orderkey);
-    for (const auto &o : buffer.OrderMutations())
-      if (o.sign < 0 && inserted.count(o.orderkey))
-        return rebuild();
-  }
-
   // RF-sized batches are always applied incrementally; the cost model is only
   // consulted for bulk changes.
   const auto total_deltas = buffer.LineitemMutations().size() +
@@ -688,21 +721,18 @@ TpchQ5Module::StageIncrementalMaintenance(
   Q5TreeTxn ttx(*tree);
   using Kind = TpchQ5TxnBuffer::DimDelta::Kind;
 
-  // Phase A: customer/supplier inserts and nation changes. A nation change
-  // (or removal) of a row that existing lineitems/orders reference would
-  // re-attribute their revenue: rebuild in that (rare) case.
-  for (const auto &d : buffer.SupplierMutations()) {
-    if (d.kind == Kind::Insert) {
-      if (stx.Find(d.key))
-        return rebuild();
-      stx.Set(d.key, TpchQ5SuppRec{d.nationkey, 0});
-    } else if (d.kind == Kind::UpdateNation) {
-      const auto *rec = stx.Find(d.key);
-      if (!rec || rec->line_count > 0)
-        return rebuild();
-      stx.Set(d.key, TpchQ5SuppRec{d.nationkey, 0});
-    }
-  }
+  // Adds `rev` to (leaf of ordinal, nation column) and to the order's record.
+  auto credit_order = [&](TpchQ5OrderRec &orec, int64_t rev) {
+    const int32_t col = meta.NationColumn(orec.nationkey);
+    if (col < 0 || rev == 0)
+      return;
+    orec.rev += rev;
+    ttx.Add(TpchQ5LeafNode(meta.tree_size, orec.ordinal), col, rev);
+  };
+
+  // Phase A: customer inserts and nation changes. A nation change (or
+  // removal) of a customer that existing orders reference would re-attribute
+  // their revenue: rebuild in that (rare) case.
   for (const auto &d : buffer.CustomerMutations()) {
     if (d.kind == Kind::Insert) {
       if (ctx.Find(d.key))
@@ -716,10 +746,85 @@ TpchQ5Module::StageIncrementalMaintenance(
     }
   }
 
-  // Phase A2: order inserts. Orders of unknown customers contribute nothing
-  // and are not tracked (as in BuildState).
+  // Orders whose lineitem contribution was recomputed from the post-write
+  // table (their lineitem deltas must not be applied again), and orders
+  // dropped by an update (lineitem deltas ignored).
+  std::unordered_set<int64_t> recomputed, dropped;
+  std::unordered_set<int64_t> updated; // keys both deleted and inserted
+  {
+    std::unordered_set<int64_t> ins;
+    for (const auto &o : buffer.OrderMutations())
+      if (o.sign > 0)
+        ins.insert(o.orderkey);
+    for (const auto &o : buffer.OrderMutations())
+      if (o.sign < 0 && ins.count(o.orderkey))
+        updated.insert(o.orderkey);
+  }
+
+  // Contribution of an order's current lineitems under its new customer.
+  auto recompute_rev = [&](int64_t orderkey, int32_t nationkey,
+                           bool &ok) -> int64_t {
+    int64_t rev = 0;
+    ok = initial_scan &&
+         initial_scan->ScanLineitemsByOrder(
+             orderkey, [&](const TpchQ5LineitemInput &li) {
+               const auto *supp = stx.Find(li.suppkey);
+               if (supp && supp->present && supp->nationkey == nationkey)
+                 rev += ComputeRevenueRaw(li.extended_price_raw, li.discount_raw);
+             });
+    return rev;
+  };
+
+  // Phase A2: order UPDATEs (same key removed and inserted).
+  for (const auto key64 : updated) {
+    const auto *found = otx.Find(key64);
+    const TpchQ5TxnBuffer::OrderDelta *nd = nullptr;
+    for (const auto &o : buffer.OrderMutations())
+      if (o.sign > 0 && o.orderkey == key64)
+        nd = &o;
+    TpchQ5OrderRec old_rec;
+    const bool had = found != nullptr;
+    if (had) {
+      old_rec = *found;
+      // Detach the old contribution and customer reference.
+      const int32_t col = meta.NationColumn(old_rec.nationkey);
+      if (col >= 0 && old_rec.rev != 0)
+        ttx.Add(TpchQ5LeafNode(meta.tree_size, old_rec.ordinal), col,
+                -old_rec.rev);
+      if (const auto *oc = ctx.Find(old_rec.custkey))
+        ctx.Set(old_rec.custkey,
+                TpchQ5CustRec{oc->nationkey, oc->order_count - 1});
+      otx.Erase(key64);
+    }
+    const auto *cust = ctx.Find(nd->custkey);
+    if (!cust) {
+      dropped.insert(key64); // customer outside the join
+      continue;
+    }
+    const int32_t ord =
+        TpchQ5DateOrdinal(nd->orderdate_days, meta.min_orderdate_days);
+    if (ord < 0 || ord >= static_cast<int32_t>(meta.tree_size))
+      return rebuild();
+    TpchQ5OrderRec nr{cust->nationkey, ord, nd->custkey, 0};
+    if (had && old_rec.nationkey == cust->nationkey) {
+      // Same nation: the existing revenue just moves (date / customer).
+      credit_order(nr, old_rec.rev);
+    } else {
+      bool ok = false;
+      const int64_t rev = recompute_rev(key64, cust->nationkey, ok);
+      if (!ok)
+        return rebuild();
+      credit_order(nr, rev);
+      recomputed.insert(key64);
+    }
+    ctx.Set(nd->custkey, TpchQ5CustRec{cust->nationkey, cust->order_count + 1});
+    otx.Set(key64, nr);
+  }
+
+  // Phase A3: plain order inserts. Orders of unknown customers contribute
+  // nothing and are not tracked (as in BuildState).
   for (const auto &order : buffer.OrderMutations()) {
-    if (order.sign < 0)
+    if (order.sign < 0 || updated.count(order.orderkey))
       continue;
     const auto *cust = ctx.Find(order.custkey);
     if (!cust)
@@ -737,29 +842,31 @@ TpchQ5Module::StageIncrementalMaintenance(
   }
 
   // Phase B: lineitems. Credit a nation only when supplier nation equals
-  // customer nation (same filter as BuildState / the Q5 join).
+  // customer nation (same filter as BuildState / the Q5 join). A lineitem of
+  // an absent supplier only adjusts the supplier's reference count.
   bool unresolved = false;
   auto apply_row = [&](const TpchQ5LineitemInput &row, int64_t sign) {
-    const auto *order = otx.Find(row.orderkey);
     const auto *supp = stx.Find(row.suppkey);
-    if (!order || !supp) {
+    TpchQ5SuppRec srec;
+    if (supp)
+      srec = *supp;
+    else
+      srec = TpchQ5SuppRec{0, 0, false};
+    srec.line_count += static_cast<int32_t>(sign);
+    stx.Set(row.suppkey, srec);
+    if (dropped.count(row.orderkey) || recomputed.count(row.orderkey))
+      return;
+    const auto *order = otx.Find(row.orderkey);
+    if (!order) {
       unresolved = true;
       return;
     }
+    if (!srec.present || srec.nationkey != order->nationkey)
+      return;
     TpchQ5OrderRec orec = *order;
-    const TpchQ5SuppRec srec{supp->nationkey,
-                             supp->line_count + static_cast<int32_t>(sign)};
-    stx.Set(row.suppkey, srec);
-    if (srec.nationkey != orec.nationkey)
-      return;
-    const int32_t col = meta.NationColumn(orec.nationkey);
-    if (col < 0)
-      return;
-    const int64_t rev = sign * ComputeRevenueRaw(row.extended_price_raw,
-                                                 row.discount_raw);
-    orec.rev += rev;
+    credit_order(orec, sign * ComputeRevenueRaw(row.extended_price_raw,
+                                                row.discount_raw));
     otx.Set(row.orderkey, orec);
-    ttx.Add(TpchQ5LeafNode(meta.tree_size, orec.ordinal), col, rev);
   };
   for (const auto &m : buffer.LineitemMutations()) {
     if (!m.is_insert)
@@ -772,7 +879,7 @@ TpchQ5Module::StageIncrementalMaintenance(
 
   // Phase C: order deletes subtract whatever the order still contributes.
   for (const auto &order : buffer.OrderMutations()) {
-    if (order.sign > 0)
+    if (order.sign > 0 || updated.count(order.orderkey))
       continue;
     const auto *rec = otx.Find(order.orderkey);
     if (!rec)
@@ -789,7 +896,7 @@ TpchQ5Module::StageIncrementalMaintenance(
     otx.Erase(order.orderkey);
   }
 
-  // Phase D: customer/supplier deletes (only when nothing references them).
+  // Phase D: customer deletes (only when nothing references them).
   for (const auto &d : buffer.CustomerMutations()) {
     if (d.kind != Kind::Delete)
       continue;
@@ -798,13 +905,62 @@ TpchQ5Module::StageIncrementalMaintenance(
       return rebuild();
     ctx.Erase(d.key);
   }
+
+  // Phase E: supplier changes, in arrival order, against the post-write
+  // lineitem table: the supplier's lineitems are fetched with one point query
+  // and each matching contribution is removed / added through the order map.
+  // (A key with no lineitems needs no query.)
+  auto adjust_supplier = [&](int64_t suppkey, bool has_old, int32_t old_nation,
+                             bool has_new, int32_t new_nation) -> bool {
+    const auto *rec = stx.Find(suppkey);
+    const int32_t lines = rec ? rec->line_count : 0;
+    if (lines > 0) {
+      std::vector<TpchQ5LineitemInput> rows;
+      if (!initial_scan ||
+          !initial_scan->ScanLineitemsBySupplier(
+              suppkey,
+              [&](const TpchQ5LineitemInput &li) { rows.push_back(li); }))
+        return false;
+      for (const auto &li : rows) {
+        const auto *order = otx.Find(li.orderkey);
+        if (!order)
+          continue; // no tracked order: contributed nothing
+        TpchQ5OrderRec orec = *order;
+        const int64_t rev =
+            ComputeRevenueRaw(li.extended_price_raw, li.discount_raw);
+        if (has_old && orec.nationkey == old_nation)
+          credit_order(orec, -rev);
+        if (has_new && orec.nationkey == new_nation)
+          credit_order(orec, rev);
+        otx.Set(li.orderkey, orec);
+      }
+    }
+    if (has_new)
+      stx.Set(suppkey, TpchQ5SuppRec{new_nation, lines, true});
+    else if (lines > 0)
+      stx.Set(suppkey, TpchQ5SuppRec{0, lines, false});
+    else
+      stx.Erase(suppkey);
+    return true;
+  };
   for (const auto &d : buffer.SupplierMutations()) {
-    if (d.kind != Kind::Delete)
-      continue;
     const auto *rec = stx.Find(d.key);
-    if (!rec || rec->line_count > 0)
-      return rebuild();
-    stx.Erase(d.key);
+    if (d.kind == Kind::Insert) {
+      if (rec && rec->present)
+        return rebuild(); // duplicate key
+      if (!adjust_supplier(d.key, false, 0, true, d.nationkey))
+        return rebuild();
+    } else if (d.kind == Kind::Delete) {
+      if (!rec || !rec->present)
+        return rebuild();
+      if (!adjust_supplier(d.key, true, rec->nationkey, false, 0))
+        return rebuild();
+    } else {
+      if (!rec || !rec->present)
+        return rebuild();
+      if (!adjust_supplier(d.key, true, rec->nationkey, true, d.nationkey))
+        return rebuild();
+    }
   }
 
   const bool side_dirty = otx.Dirty() || stx.Dirty() || ctx.Dirty();
@@ -882,9 +1038,36 @@ void TpchQ5Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  const auto nodes = TpchQ5TreeCover(meta.tree_size, start_ord, end_ord);
-  EmitResult(services, meta, target_regionkey, SumCover(meta, *tree, nodes),
-             sink);
+  // Canonical cover on the stack, then sum the covered node rows (one
+  // contiguous stride-sized row per node) and emit straight from the columns.
+  uint32_t nodes[96];
+  std::size_t node_count = 0;
+  {
+    int32_t l = start_ord + static_cast<int32_t>(meta.tree_size);
+    int32_t r = end_ord + static_cast<int32_t>(meta.tree_size);
+    while (l < r && node_count + 2 <= 96) {
+      if (l & 1)
+        nodes[node_count++] = static_cast<uint32_t>(l++);
+      if (r & 1)
+        nodes[node_count++] = static_cast<uint32_t>(--r);
+      l >>= 1;
+      r >>= 1;
+    }
+  }
+  const uint32_t stride = tree->stride;
+  if (stride == 0 || stride > kQ5MaxStride) {
+    const std::vector<uint32_t> cover(nodes, nodes + node_count);
+    EmitResult(services, meta, target_regionkey, SumCover(meta, *tree, cover),
+               sink);
+    return;
+  }
+  alignas(64) int64_t acc[kQ5MaxStride] = {};
+  for (std::size_t i = 0; i < node_count; ++i) {
+    if (!tree->Valid(nodes[i]))
+      continue;
+    AddRow(acc, tree->Node(nodes[i]), stride);
+  }
+  TpchQ5FinalizeColumns(meta, target_regionkey, acc, stride, sink);
 }
 
 void TpchQ5Module::ExecuteFallback(core::AuxEngineServices &services,
@@ -944,6 +1127,17 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
     }
   });
   const uint32_t stride = static_cast<uint32_t>(meta.nation_keys.size());
+  meta.column_region.assign(stride, -1);
+  meta.column_name.assign(stride, std::string());
+  for (uint32_t c = 0; c < stride; ++c) {
+    const int32_t nk = meta.nation_keys[c];
+    const auto rit = meta.nation_region.find(nk);
+    if (rit != meta.nation_region.end())
+      meta.column_region[c] = rit->second;
+    const auto nit = meta.nation_name.find(nk);
+    if (nit != meta.nation_name.end())
+      meta.column_name[c] = nit->second;
+  }
 
   // Dimension and order lookups live in hash-sharded sorted vectors (no
   // 30M-entry node maps); they become the published persistent indexes.
@@ -992,11 +1186,14 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
   });
   orders.Sort();
 
+  std::unordered_map<int64_t, int32_t> orphan_supp;
   std::vector<int64_t> flat(static_cast<std::size_t>(tree_size) * 2 * stride, 0);
   initial_scan->ScanLineitems([&](const TpchQ5LineitemInput &input) {
     auto *supp = supps.Find(input.suppkey);
-    if (!supp)
+    if (!supp) {
+      ++orphan_supp[input.suppkey]; // lineitem of a supplier that does not exist
       return;
+    }
     supp->line_count += 1;
     auto *order = orders.Find(input.orderkey);
     if (!order || supp->nationkey != order->nationkey)
@@ -1012,6 +1209,12 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
              stride +
          static_cast<uint32_t>(col)] += revenue;
   });
+
+  if (!orphan_supp.empty()) {
+    for (const auto &entry : orphan_supp)
+      supps.Add(entry.first, TpchQ5SuppRec{0, entry.second, false});
+    supps.Sort();
+  }
 
   for (uint32_t i = tree_size - 1; i > 0; i--)
     for (uint32_t c = 0; c < stride; ++c)

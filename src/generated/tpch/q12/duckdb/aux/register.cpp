@@ -153,6 +153,30 @@ struct TpchQ12Scan : TpchQ12InitialScan {
                     DateDays(ChunkValue(chunk, 4, row))});
         });
   }
+  bool LookupQualifyingLineitems(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(int64_t, int32_t, const std::string &)>
+          &consumer) override {
+    if (orderkeys.empty())
+      return true;
+    std::string sql =
+        "SELECT l_orderkey, l_receiptdate, l_shipmode FROM lineitem WHERE "
+        "l_orderkey IN (";
+    for (std::size_t i = 0; i < orderkeys.size(); ++i) {
+      if (i > 0)
+        sql += ',';
+      sql += std::to_string(orderkeys[i]);
+    }
+    sql += ") AND l_commitdate < l_receiptdate AND l_shipdate < l_commitdate";
+    ScanQueryStreaming(
+        connection, sql,
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer(SafeInt64(ChunkValue(chunk, 0, row)),
+                   DateDays(ChunkValue(chunk, 1, row)),
+                   ChunkValue(chunk, 2, row).ToString());
+        });
+    return true;
+  }
   void ScanLineitemsForReceiptDays(
       const std::set<int32_t> &receipt_days,
       const std::function<void(const TpchQ12LineitemInput &)> &consumer)

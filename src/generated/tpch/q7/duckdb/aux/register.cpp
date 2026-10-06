@@ -221,6 +221,50 @@ struct TpchQ7Scan : TpchQ7InitialScan {
         });
     return true;
   }
+  bool ScanSupplierContribution(
+      int64_t suppkey,
+      const std::function<void(int32_t, int32_t, int64_t)> &out) override {
+    return ScanContribution(
+        "SELECT c.c_nationkey, "
+        "CAST(EXTRACT(year FROM l.l_shipdate) AS INTEGER), "
+        "CAST(SUM(CAST(l.l_extendedprice * 100 AS BIGINT) * "
+        "(100 - CAST(l.l_discount * 100 AS BIGINT))) AS BIGINT) "
+        "FROM lineitem l "
+        "JOIN orders o ON o.o_orderkey = l.l_orderkey "
+        "JOIN customer c ON c.c_custkey = o.o_custkey "
+        "WHERE l.l_suppkey = " + std::to_string(suppkey) +
+        " AND l.l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
+        "GROUP BY 1, 2",
+        out);
+  }
+  bool ScanCustomerContribution(
+      int64_t custkey,
+      const std::function<void(int32_t, int32_t, int64_t)> &out) override {
+    return ScanContribution(
+        "SELECT s.s_nationkey, "
+        "CAST(EXTRACT(year FROM l.l_shipdate) AS INTEGER), "
+        "CAST(SUM(CAST(l.l_extendedprice * 100 AS BIGINT) * "
+        "(100 - CAST(l.l_discount * 100 AS BIGINT))) AS BIGINT) "
+        "FROM orders o "
+        "JOIN lineitem l ON l.l_orderkey = o.o_orderkey "
+        "JOIN supplier s ON s.s_suppkey = l.l_suppkey "
+        "WHERE o.o_custkey = " + std::to_string(custkey) +
+        " AND l.l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
+        "GROUP BY 1, 2",
+        out);
+  }
+  bool ScanContribution(
+      const std::string &sql,
+      const std::function<void(int32_t, int32_t, int64_t)> &out) {
+    ScanQueryStreaming(
+        connection, sql,
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          out(SafeInt32(ChunkValue(chunk, 0, row)),
+              SafeInt32(ChunkValue(chunk, 1, row)),
+              SafeInt64(ChunkValue(chunk, 2, row)));
+        });
+    return true;
+  }
   ::duckdb::Connection &connection;
 };
 

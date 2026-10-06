@@ -3,6 +3,7 @@
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -13,6 +14,7 @@
 #include <stdexcept>
 #include <utility>
 #include "tpch/q7/layout.hpp"
+
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -678,47 +680,132 @@ TpchQ7Module::StageMaintenance(core::AuxEngineServices &services,
   bool rebuild = false;
   bool revenue_changed = false;
 
-  const auto dim_insert = [&](Overlay<TpchQ7NationCount> &ov, int64_t key,
-                              int64_t nation) {
-    if (ov.Get(key)) {
+  // Point SQL (one per distinct key, cached) is only exact when the DB state it
+  // sees equals the pre-transaction state for every table it joins: so no
+  // lineitem/order ops, and no ops on the opposite dimension, in this txn.
+  bool has_li_order = false, has_supp = false, has_cust = false;
+  for (const auto &op : buffer.Ops()) {
+    has_li_order |= op.type == TpchQ7Op::Lineitem || op.type == TpchQ7Op::Order;
+    has_supp |= op.type == TpchQ7Op::Supplier;
+    has_cust |= op.type == TpchQ7Op::Customer;
+  }
+  struct Contribution {
+    bool ok = false;
+    std::vector<std::array<int64_t, 3>> rows; // other nk, year, revenue
+  };
+  std::unordered_map<int64_t, Contribution> supp_contrib, cust_contrib;
+  const auto fetch = [&](bool is_supp, int64_t key) -> const Contribution * {
+    if (is_supp ? (has_li_order || has_cust) : (has_li_order || has_supp)) {
+      rebuild = true;
+      return nullptr;
+    }
+    auto &cache = is_supp ? supp_contrib : cust_contrib;
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+      Contribution c;
+      const auto cb = [&](int32_t nk, int32_t year, int64_t rev) {
+        c.rows.push_back({nk, year, rev});
+      };
+      c.ok = initial_scan && (is_supp ? initial_scan->ScanSupplierContribution(key, cb)
+                                      : initial_scan->ScanCustomerContribution(key, cb));
+      it = cache.emplace(key, std::move(c)).first;
+    }
+    if (!it->second.ok) {
+      rebuild = true;
+      return nullptr;
+    }
+    return &it->second;
+  };
+  // Adds sign * contribution into the grid with this key on the given
+  // nationkey side (supplier side when is_supp, else customer side).
+  const auto move_cells = [&](bool is_supp, int64_t key, int32_t nation,
+                              int sign) {
+    const auto *c = fetch(is_supp, key);
+    if (!c || nation < 0)
+      return;
+    for (const auto &r : c->rows) {
+      const int64_t other = r[0];
+      if (other < 0)
+        continue;
+      if (other >= slots || nation >= slots) {
+        rebuild = true;
+        return;
+      }
+      const auto slot = is_supp ? static_cast<std::size_t>(nation) * slots + other
+                                : static_cast<std::size_t>(other) * slots + nation;
+      if (r[1] == kTpchQ7MinYear)
+        rev95[slot] += sign * r[2];
+      else if (r[1] == kTpchQ7MaxYear)
+        rev96[slot] += sign * r[2];
+      revenue_changed = true;
+    }
+  };
+
+  const auto dim_insert = [&](Overlay<TpchQ7NationCount> &ov, bool is_supp,
+                              int64_t key, int64_t nation) {
+    const auto e = ov.Get(key);
+    if (e && e->nation >= 0) {
       rebuild = true; // duplicate key: bag semantics need a rescan
       return;
     }
-    ov.Set(key, {static_cast<int32_t>(nation), 0});
+    const int32_t cnt = e ? e->window_count : 0;
+    if (cnt != 0)
+      move_cells(is_supp, key, static_cast<int32_t>(nation), +1);
+    ov.Set(key, {static_cast<int32_t>(nation), cnt});
   };
-  const auto dim_delete = [&](Overlay<TpchQ7NationCount> &ov, int64_t key) {
+  const auto dim_delete = [&](Overlay<TpchQ7NationCount> &ov, bool is_supp,
+                              int64_t key) {
     const auto e = ov.Get(key);
-    if (!e)
+    if (!e || e->nation < 0)
       return;
     if (e->window_count != 0) {
-      rebuild = true; // existing in-window lineitems depend on this row
+      move_cells(is_supp, key, e->nation, -1);
+      ov.Set(key, {-1, e->window_count}); // tombstone keeps the count
       return;
     }
     ov.Erase(key);
   };
-  const auto dim_apply = [&](Overlay<TpchQ7NationCount> &ov,
+  const auto dim_apply = [&](Overlay<TpchQ7NationCount> &ov, bool is_supp,
                              const TpchQ7Op &op) {
     if (op.kind == 0) {
-      dim_insert(ov, op.k1, op.v1);
+      dim_insert(ov, is_supp, op.k1, op.v1);
     } else if (op.kind == 1) {
-      dim_delete(ov, op.k0);
+      dim_delete(ov, is_supp, op.k0);
     } else if (op.k0 == op.k1) {
       const auto e = ov.Get(op.k0);
-      if (!e || e->window_count != 0) {
+      if (!e || e->nation < 0) {
         rebuild = true;
         return;
       }
-      ov.Set(op.k0, {static_cast<int32_t>(op.v1), 0});
+      if (e->window_count != 0) {
+        move_cells(is_supp, op.k0, e->nation, -1);
+        move_cells(is_supp, op.k0, static_cast<int32_t>(op.v1), +1);
+      }
+      ov.Set(op.k0, {static_cast<int32_t>(op.v1), e->window_count});
     } else {
-      dim_delete(ov, op.k0);
-      dim_insert(ov, op.k1, op.v1);
+      dim_delete(ov, is_supp, op.k0);
+      dim_insert(ov, is_supp, op.k1, op.v1);
     }
+  };
+
+  const auto adjust_count = [&](Overlay<TpchQ7NationCount> &ov, int64_t key,
+                                std::optional<TpchQ7NationCount> e, int kind) {
+    if (!e) {
+      if (kind < 0)
+        return;
+      e = TpchQ7NationCount{-1, 0};
+    }
+    e->window_count += kind;
+    if (e->nation < 0 && e->window_count == 0)
+      ov.Erase(key);
+    else
+      ov.Set(key, *e);
   };
 
   // Returns false when a +1 lineitem cannot be resolved yet (a dimension row
   // may arrive later in the same transaction).
   const auto process_lineitem = [&](const TpchQ7Op &op, bool final) {
-    auto s = supp.Get(op.v0);
+    const auto s = supp.Get(op.v0);
     std::optional<int64_t> custkey;
     if (const auto o = ords.Get(op.k0))
       custkey = o->custkey;
@@ -730,20 +817,15 @@ TpchQ7Module::StageMaintenance(core::AuxEngineServices &services,
     std::optional<TpchQ7NationCount> c;
     if (custkey)
       c = cust.Get(*custkey);
-    if (op.kind > 0 && !final && (!s || !c))
+    const bool s_live = s && s->nation >= 0;
+    const bool c_live = c && c->nation >= 0;
+    if (op.kind > 0 && !final && (!s_live || !c_live))
       return false;
-    if (s) {
-      s->window_count += op.kind;
-      supp.Set(op.v0, *s);
-    }
-    if (c) {
-      c->window_count += op.kind;
-      cust.Set(*custkey, *c);
-    }
-    if (!s || !c)
+    adjust_count(supp, op.v0, s, op.kind);
+    if (custkey)
+      adjust_count(cust, *custkey, c, op.kind);
+    if (!s_live || !c_live)
       return true; // contributes nothing to the join
-    if (s->nation < 0 || c->nation < 0)
-      return true;
     if (s->nation >= slots || c->nation >= slots) {
       rebuild = true;
       return true;
@@ -767,10 +849,10 @@ TpchQ7Module::StageMaintenance(core::AuxEngineServices &services,
       break;
     switch (op.type) {
     case TpchQ7Op::Supplier:
-      dim_apply(supp, op);
+      dim_apply(supp, true, op);
       break;
     case TpchQ7Op::Customer:
-      dim_apply(cust, op);
+      dim_apply(cust, false, op);
       break;
     case TpchQ7Op::Order:
       if (op.kind == 0) {
@@ -1040,6 +1122,9 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
 
   {
     CustomTimer timer("scan_lineitems");
+    // Counts for keys with no dimension row become tombstones (nation -1) so a
+    // later insert of that key can add the lineitems' revenue.
+    std::unordered_map<int64_t, int64_t> supp_orphans, cust_orphans;
     // Preferred: the engine runs join + GROUP BY (supp nation, cust nation,
     // year) and the per-key window counts in SQL.
     const bool pushed = initial_scan->ScanWindowAggregates(
@@ -1050,10 +1135,14 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
         [&](int64_t key, int64_t n) {
           if (auto *v = supp_b.FindMut(key))
             v->window_count = static_cast<int32_t>(n);
+          else
+            supp_orphans[key] += n;
         },
         [&](int64_t key, int64_t n) {
           if (auto *v = cust_b.FindMut(key))
             v->window_count = static_cast<int32_t>(n);
+          else
+            cust_orphans[key] += n;
         });
     if (!pushed) {
       const int32_t lo = DaysFromCivil(kTpchQ7MinYear, 1, 1);
@@ -1065,12 +1154,16 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
         auto *supp_v = supp_b.FindMut(input.suppkey);
         if (supp_v)
           ++supp_v->window_count;
+        else
+          ++supp_orphans[input.suppkey];
         const auto *order_v = state.order_custkeys.Find(input.orderkey);
         if (!order_v)
           return;
         auto *cust_v = cust_b.FindMut(order_v->custkey);
         if (cust_v)
           ++cust_v->window_count;
+        else
+          ++cust_orphans[order_v->custkey];
         if (!supp_v || !cust_v)
           return;
         ++lineitem_valid;
@@ -1082,6 +1175,12 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
                                      input.discount_scale));
       });
     }
+    for (const auto &[k, n] : supp_orphans)
+      supp_b.Add(k, {-1, static_cast<int32_t>(n)});
+    for (const auto &[k, n] : cust_orphans)
+      cust_b.Add(k, {-1, static_cast<int32_t>(n)});
+    supp_b.Sort();
+    cust_b.Sort();
     if (profile)
       timer.Emit(lineitem_count, lineitem_valid);
   }
@@ -1119,14 +1218,33 @@ void TpchQ7Module::EmitResult(
     const std::string &nation1, const std::string &nation2,
     core::AuxRowSink &sink) const {
   // Group by nation *name*: every nation key carrying the name participates.
-  std::vector<int32_t> set1, set2;
+  // (A handful of keys at most: small on-stack lists, heap only if enormous.)
+  struct KeyList {
+    int32_t inline_keys[32];
+    std::vector<int32_t> overflow;
+    std::size_t n = 0;
+    void Add(int32_t k) {
+      if (n < 32) {
+        inline_keys[n++] = k;
+        return;
+      }
+      if (overflow.empty())
+        overflow.assign(inline_keys, inline_keys + 32);
+      overflow.push_back(k);
+      ++n;
+    }
+    const int32_t *data() const {
+      return overflow.empty() ? inline_keys : overflow.data();
+    }
+  };
+  KeyList set1, set2;
   for (const auto &[nk, name] : side->nation_names) {
     if (name == nation1)
-      set1.push_back(nk);
+      set1.Add(nk);
     if (name == nation2)
-      set2.push_back(nk);
+      set2.Add(nk);
   }
-  if (set1.empty() || set2.empty()) {
+  if (set1.n == 0 || set2.n == 0) {
     sink.Begin({{{"supp_nation", core::AuxType::String, true},
                  {"cust_nation", core::AuxType::String, true},
                  {"l_year", core::AuxType::Int64, true},
@@ -1135,23 +1253,27 @@ void TpchQ7Module::EmitResult(
     return;
   }
 
-  const auto cell = [&](const std::vector<int64_t> &v, int32_t supp_nk,
-                        int32_t cust_nk) {
-    if (supp_nk < 0 || cust_nk < 0 || supp_nk >= revenue->num_nation_slots ||
-        cust_nk >= revenue->num_nation_slots)
-      return int64_t{0};
-    const auto slot = static_cast<std::size_t>(supp_nk) *
-                          revenue->num_nation_slots + cust_nk;
-    return slot < v.size() ? v[slot] : int64_t{0};
-  };
-  const auto sum = [&](const std::vector<int32_t> &from,
-                       const std::vector<int32_t> &to, int year) {
+  const int32_t slots = revenue->num_nation_slots;
+  const auto sum = [&](const KeyList &from, const KeyList &to, int year) {
     int64_t total = 0;
     const auto &v = year == kTpchQ7MinYear ? revenue->revenue_1995
                                            : revenue->revenue_1996;
-    for (const auto f : from)
-      for (const auto t : to)
-        total += cell(v, f, t);
+    const int32_t *fp = from.data();
+    const int32_t *tp = to.data();
+    for (std::size_t i = 0; i < from.n; ++i) {
+      const int32_t f = fp[i];
+      if (f < 0 || f >= slots)
+        continue;
+      const std::size_t row = static_cast<std::size_t>(f) * slots;
+      for (std::size_t j = 0; j < to.n; ++j) {
+        const int32_t t = tp[j];
+        if (t < 0 || t >= slots)
+          continue;
+        const std::size_t slot = row + static_cast<std::size_t>(t);
+        if (slot < v.size())
+          total += v[slot];
+      }
+    }
     return total;
   };
 
@@ -1163,47 +1285,46 @@ void TpchQ7Module::EmitResult(
   const int64_t b_1996 = same_name ? 0 : sum(set2, set1, kTpchQ7MaxYear);
 
   struct ResultRow {
-    std::string supp_nation;
-    std::string cust_nation;
-    int64_t year = 0;
-    double revenue = 0.0;
+    const std::string *supp_nation;
+    const std::string *cust_nation;
+    int64_t year;
+    double revenue;
   };
-
-  std::vector<ResultRow> rows;
-
-  if (a_1995 != 0)
-    rows.push_back({nation1, nation2, 1995,
-                    static_cast<double>(a_1995) / 10000.0});
-  if (a_1996 != 0)
-    rows.push_back({nation1, nation2, 1996,
-                    static_cast<double>(a_1996) / 10000.0});
-  if (b_1995 != 0)
-    rows.push_back({nation2, nation1, 1995,
-                    static_cast<double>(b_1995) / 10000.0});
-  if (b_1996 != 0)
-    rows.push_back({nation2, nation1, 1996,
-                    static_cast<double>(b_1996) / 10000.0});
-
-  std::sort(rows.begin(), rows.end(),
-            [](const ResultRow &l, const ResultRow &r) {
-              if (l.supp_nation != r.supp_nation)
-                return l.supp_nation < r.supp_nation;
-              if (l.cust_nation != r.cust_nation)
-                return l.cust_nation < r.cust_nation;
-              return l.year < r.year;
-            });
+  // Rows sorted by (supp_nation, cust_nation, year): group A is
+  // (nation1, nation2), group B is (nation2, nation1); order the groups by
+  // their (supp, cust) name pair, years ascending inside a group.
+  const bool a_first = nation1 < nation2 ||
+                       (nation1 == nation2);  // equal names: B is empty
+  ResultRow rows[4];
+  std::size_t nrows = 0;
+  const auto add_group = [&](const std::string *s, const std::string *c,
+                             int64_t v95, int64_t v96) {
+    if (v95 != 0)
+      rows[nrows++] = {s, c, 1995, static_cast<double>(v95) / 10000.0};
+    if (v96 != 0)
+      rows[nrows++] = {s, c, 1996, static_cast<double>(v96) / 10000.0};
+  };
+  if (a_first) {
+    add_group(&nation1, &nation2, a_1995, a_1996);
+    add_group(&nation2, &nation1, b_1995, b_1996);
+  } else {
+    add_group(&nation2, &nation1, b_1995, b_1996);
+    add_group(&nation1, &nation2, a_1995, a_1996);
+  }
 
   sink.Begin({{{"supp_nation", core::AuxType::String, true},
                {"cust_nation", core::AuxType::String, true},
                {"l_year", core::AuxType::Int64, true},
                {"revenue", core::AuxType::Double, true}}});
 
-  for (const auto &row : rows) {
+  for (std::size_t ri = 0; ri < nrows; ++ri) {
+    const auto &row = rows[ri];
     core::AuxRow out;
+    out.values.reserve(4);
     out.values.push_back(
-        core::AuxValue::Of(core::AuxType::String, row.supp_nation));
+        core::AuxValue::Of(core::AuxType::String, *row.supp_nation));
     out.values.push_back(
-        core::AuxValue::Of(core::AuxType::String, row.cust_nation));
+        core::AuxValue::Of(core::AuxType::String, *row.cust_nation));
     out.values.push_back(
         core::AuxValue::Of(core::AuxType::Int64, row.year));
     out.values.push_back(

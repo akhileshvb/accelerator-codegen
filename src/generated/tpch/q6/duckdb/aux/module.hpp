@@ -59,7 +59,9 @@ enum class TpchQ6PartitionKind : uint8_t { Day, Month };
 struct TpchQ6StateImage {
   TpchQ6PartitionKind kind = TpchQ6PartitionKind::Day;
   int32_t key = 0;
-  std::shared_ptr<const ::accelerator_codegen::Q6RevenueMatrix> matrix;
+  // The matrix (64-byte aligned prefix-sum block) lives in the image itself:
+  // one allocation per published partition, no pointer chase on reads.
+  ::accelerator_codegen::Q6RevenueMatrix matrix;
 };
 
 struct TpchQ6LineitemDelta {
@@ -138,18 +140,10 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  // Sorted by partition id; looked up by binary search (no per-read maps).
-  using MatrixLookup =
-      std::vector<std::pair<core::PartitionId,
-                std::shared_ptr<const ::accelerator_codegen::Q6RevenueMatrix>>>;
-
+  // Matrices are accumulated raw per partition; PrefixInPlace() before publish.
   void ApplyLineitemInput(const TpchQ6LineitemInput &input,
                           std::unordered_map<core::PartitionId,
                                              ::accelerator_codegen::Q6RevenueMatrix> &matrices) const;
-  ::accelerator_codegen::Q6AccT
-  ComposeRevenue(const MatrixLookup &, const TpchQ6QueryParams &) const;
-  bool LoadMatrices(core::AuxEngineServices &, const TpchQ6QueryParams &,
-                    MatrixLookup &matrices) const;
   void CollectQueryPartitions(const TpchQ6QueryParams &params,
                               std::vector<core::PartitionId> &partitions) const;
   void EmitResult(::accelerator_codegen::Q6AccT revenue,

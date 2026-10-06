@@ -75,6 +75,9 @@ bool CharCell(const core::AuxRow &row, std::size_t index, char &out) {
   return true;
 }
 
+// TPC-H Q21: ORDER BY numwait DESC, s_name LIMIT 100.
+constexpr std::size_t kTpchQ21Limit = 100;
+
 bool BetterOutputRow(const TpchQ21OutputRow &lhs, const TpchQ21OutputRow &rhs) {
   if (lhs.numwait != rhs.numwait)
     return lhs.numwait > rhs.numwait;
@@ -750,6 +753,8 @@ void TpchQ21Module::AccumulateMutation(const core::MutationBatch &mutation,
           buffer.MarkRebuild();
           return;
         }
+        if (old_status == new_status)
+          continue; // only untracked columns changed
         buffer.AddOrderDelta({old_orderkey, old_status, new_status});
       }
       break;
@@ -793,6 +798,12 @@ void TpchQ21Module::AccumulateMutation(const core::MutationBatch &mutation,
       return;
     }
     for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+      int64_t ook = 0, osk = 0, nok = 0, nsk = 0;
+      int32_t ocd = 0, ord = 0, ncd = 0, nrd = 0;
+      if (ReadLineitem(mutation.old_rows[i], ook, osk, ocd, ord) &&
+          ReadLineitem(mutation.new_rows[i], nok, nsk, ncd, nrd) &&
+          ook == nok && osk == nsk && ocd == ncd && ord == nrd)
+        continue; // only untracked columns changed
       add(mutation.old_rows[i], -1);
       add(mutation.new_rows[i], 1);
     }
@@ -922,7 +933,27 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
         continue; // Deleted by this batch: contributes nothing before/after.
       if (first_it == first_old_status.end() || first_it->second != 0 ||
           status_it == order_status_changes.end())
-        return rebuild_all(); // Untracked pre-existing order.
+      {
+        // Untracked pre-existing order: it did not contribute before this
+        // transaction. Recompute from the table's current (post-write) state
+        // by point lookup instead of rebuilding everything.
+        TpchQ21InitialScan::OrderLookup lk;
+        if (!initial_scan || !initial_scan->LookupOrderSummary(orderkey, lk))
+          return rebuild_all();
+        if (lk.found && lk.status == 'F') {
+          OrderSummary fresh;
+          fresh.orderstatus = 'F';
+          for (const auto &e : lk.suppliers)
+            if (e[1] > 0)
+              fresh.suppliers.push_back({e[0], e[1], e[2]});
+          int64_t supp = 0, count = 0;
+          if (ComputeOrderContribution(fresh, supp, count)) {
+            next_core->MutableOrder(orderkey) = std::move(fresh);
+            numwait_delta[supp] += count;
+          }
+        }
+        continue;
+      }
       // Order inserted by this batch (RF1): no earlier lineitems can reference
       // it (lineitem -> orders referential integrity), so start from empty.
       next_core->MutableOrder(orderkey).orderstatus = status_it->second.second;
@@ -1155,8 +1186,10 @@ void TpchQ21Module::Execute(core::AuxEngineServices &services,
       // being treated as authoritative.
       if (!typed->rows->rows.empty()) {
         sink.Begin(core::OutputSchema{});
-        for (const auto &row : typed->rows->rows)
-          EmitRow(sink, *row.name, row.numwait);
+        // rows are kept in output order (numwait DESC, s_name): TPC-H's LIMIT 100
+        const auto n = std::min(typed->rows->rows.size(), kTpchQ21Limit);
+        for (std::size_t i = 0; i < n; ++i)
+          EmitRow(sink, *typed->rows->rows[i].name, typed->rows->rows[i].numwait);
         sink.End();
         return;
       }
@@ -1339,8 +1372,10 @@ void TpchQ21Module::EmitMerged(
     core::AuxRowSink &sink) const {
   sink.Begin(core::OutputSchema{});
   if (nations.size() == 1) {
-    for (const auto &row : nations.front()->rows)
-      EmitRow(sink, *row.name, row.numwait);
+    const auto &rows = nations.front()->rows;
+    const auto n = std::min(rows.size(), kTpchQ21Limit);
+    for (std::size_t i = 0; i < n; ++i)
+      EmitRow(sink, *rows[i].name, rows[i].numwait);
     sink.End();
     return;
   }
@@ -1354,6 +1389,8 @@ void TpchQ21Module::EmitMerged(
   for (auto &[name, numwait] : by_name)
     output_rows.push_back({name, numwait});
   std::sort(output_rows.begin(), output_rows.end(), BetterOutputRow);
+  if (output_rows.size() > kTpchQ21Limit)
+    output_rows.resize(kTpchQ21Limit);
   for (const auto &row : output_rows)
     EmitRow(sink, row.name, row.numwait);
   sink.End();

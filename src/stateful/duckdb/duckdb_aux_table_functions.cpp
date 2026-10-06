@@ -41,13 +41,15 @@ struct AuxFunctionInfo : public ::duckdb::TableFunctionInfo {
 };
 
 struct AuxBindData : public ::duckdb::FunctionData {
-  AuxBindData(SharedQueryCatalogEntry entry_p, ::duckdb::vector<::duckdb::Value> arguments_p,
+  // `entry_p` lives in the registered function's AuxFunctionInfo (catalog-owned for the database's
+  // lifetime), so bind data refers to it instead of copying the entry (vector + std::function).
+  AuxBindData(const SharedQueryCatalogEntry &entry_p, ::duckdb::vector<::duckdb::Value> arguments_p,
               ::duckdb::vector<::duckdb::LogicalType> types_p,
               ::duckdb::vector<::duckdb::string> names_p)
-      : entry(std::move(entry_p)), arguments(std::move(arguments_p)), types(std::move(types_p)),
+      : entry(entry_p), arguments(std::move(arguments_p)), types(std::move(types_p)),
         names(std::move(names_p)) {}
 
-  SharedQueryCatalogEntry entry;
+  const SharedQueryCatalogEntry &entry;
   ::duckdb::vector<::duckdb::Value> arguments;
   ::duckdb::vector<::duckdb::LogicalType> types;
   ::duckdb::vector<::duckdb::string> names;
@@ -69,8 +71,17 @@ struct AuxGlobalState : public ::duckdb::GlobalTableFunctionState {
 };
 
 struct AuxLocalState : public ::duckdb::LocalTableFunctionState {
+  // Materialized path (Verus stores, private runtimes): the rows, copied out per chunk.
   std::vector<core::AuxRow> rows;
   ::duckdb::idx_t row_index = 0;
+  // Streaming path (C++ stores): the read runs at the first AuxExecute call and writes its rows
+  // straight into DataChunks -- the first into the output chunk, the rest into `spill`, which
+  // later calls hand over by reference.
+  bool streaming = false;
+  bool executed = false;
+  core::QueryArguments arguments;
+  std::vector<::duckdb::unique_ptr<::duckdb::DataChunk>> spill;
+  std::size_t spill_index = 0;
 };
 
 void Require(bool condition, const std::string &message) {
@@ -104,6 +115,22 @@ core::AuxValue ToAuxValue(const ::duckdb::Value &value, core::AuxType type) {
     if (value.type().id() == ::duckdb::LogicalTypeId::DOUBLE) {
       return core::AuxValue::Of(core::AuxType::Double, value.GetValue<double>());
     }
+    if (value.type().id() == ::duckdb::LogicalTypeId::DECIMAL) {
+      // raw / 10^scale is the correctly rounded quotient, the same double stod() of the text gives
+      const auto scale = ::duckdb::DecimalType::GetScale(value.type());
+      int64_t raw = 0;
+      bool have = true;
+      switch (value.type().InternalType()) {
+      case ::duckdb::PhysicalType::INT16: raw = value.GetValueUnsafe<int16_t>(); break;
+      case ::duckdb::PhysicalType::INT32: raw = value.GetValueUnsafe<int32_t>(); break;
+      case ::duckdb::PhysicalType::INT64: raw = value.GetValueUnsafe<int64_t>(); break;
+      default: have = false; break;
+      }
+      static constexpr double kPow10[] = {1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15};
+      if (have && scale <= 15 && raw > -(int64_t(1) << 53) && raw < (int64_t(1) << 53)) {
+        return core::AuxValue::Of(core::AuxType::Double, static_cast<double>(raw) / kPow10[scale]);
+      }
+    }
     return core::AuxValue::Of(core::AuxType::Double, std::stod(value.ToString()));
   case core::AuxType::String:
     return core::AuxValue::Of(core::AuxType::String, value.ToString());
@@ -113,17 +140,42 @@ core::AuxValue ToAuxValue(const ::duckdb::Value &value, core::AuxType type) {
                               core::AuxDate{::duckdb::Date::EpochDays(date)});
   }
   case core::AuxType::ScaledDecimal: {
-    // exact: a DECIMAL keeps its scale, an integer gets scale 0, anything else
-    // the largest scale (4 down to 0) whose DECIMAL(18, s) holds it; a value
-    // beyond all of them stays a double
+    // exact: a DECIMAL keeps its scale, an integer gets scale 0, a double the
+    // largest scale (4 down to 0) whose DECIMAL(18, s) holds it -- unless it
+    // needs more decimals (e.g. TPC-H Q11's fraction 0.0001/SF), then the
+    // smallest scale 5..9 that holds it exactly; a value beyond all of them
+    // stays a double
     const auto id = value.type().id();
+    if (id == ::duckdb::LogicalTypeId::DECIMAL) {
+      core::ScaledDecimal decimal;
+      decimal.scale = ::duckdb::DecimalType::GetScale(value.type());
+      switch (value.type().InternalType()) {
+      case ::duckdb::PhysicalType::INT16: decimal.value = value.GetValueUnsafe<int16_t>(); return core::AuxValue::Of(core::AuxType::ScaledDecimal, decimal);
+      case ::duckdb::PhysicalType::INT32: decimal.value = value.GetValueUnsafe<int32_t>(); return core::AuxValue::Of(core::AuxType::ScaledDecimal, decimal);
+      case ::duckdb::PhysicalType::INT64: decimal.value = value.GetValueUnsafe<int64_t>(); return core::AuxValue::Of(core::AuxType::ScaledDecimal, decimal);
+      default: break;
+      }
+    }
     std::vector<uint8_t> scales;
     if (id == ::duckdb::LogicalTypeId::DECIMAL)
       scales = {::duckdb::DecimalType::GetScale(value.type())};
     else if (value.type().IsIntegral())
       scales = {0};
-    else
+    else {
       scales = {4, 3, 2, 1, 0};
+      // a double with more than 4 decimals: DECIMAL(18, 4) would round it
+      const double d = value.GetValue<double>();
+      static constexpr double kTen[] = {1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9};
+      const auto at = [](double x, int s) { return std::round(x * kTen[s]) / kTen[s]; };
+      if (std::isfinite(d) && std::fabs(d) < 1e8 && at(d, 4) != d) {
+        for (uint8_t s = 5; s <= 9; ++s) {
+          if (at(d, s) == d) {
+            scales = {s};
+            break;
+          }
+        }
+      }
+    }
     for (const auto scale : scales) {
       try {
         const auto exact = value.DefaultCastAs(::duckdb::LogicalType::DECIMAL(18, scale));
@@ -263,31 +315,6 @@ AuxInitGlobal(::duckdb::ClientContext &, ::duckdb::TableFunctionInitInput &) {
   return ::duckdb::make_uniq<AuxGlobalState>();
 }
 
-::duckdb::unique_ptr<::duckdb::LocalTableFunctionState>
-AuxInitLocal(::duckdb::ExecutionContext &context, ::duckdb::TableFunctionInitInput &input,
-             ::duckdb::GlobalTableFunctionState *) {
-  auto &bind_data = input.bind_data->Cast<AuxBindData>();
-  auto local_state = ::duckdb::make_uniq<AuxLocalState>();
-  const auto arguments =
-      BuildArguments(bind_data.entry, bind_data.arguments);
-  if (auto *active = duckdb_backend::FindActive(
-          *context.client.db, bind_data.entry.accelerator_id
-                                  ? bind_data.entry.accelerator_id
-                                  : "")) {
-    // Read at this query's snapshot, on this query's context.
-    ::accelerator_codegen::aux_state::engine::duckdb::DuckDBAuxBackend::ReaderScope
-        reader(context.client);
-    local_state->rows = active->ExecuteCollect(arguments);
-    return local_state;
-  }
-  ::duckdb::Connection connection(*context.client.db);
-  // No shared runtime: build a private one for this query only.
-  duckdb_backend runtime(connection, bind_data.entry, 10.0);
-  runtime.Build(/*register_active=*/false);
-  local_state->rows = runtime.ExecuteCollect(arguments);
-  return local_state;
-}
-
 // One cell straight into the output vector (no per-cell Value / heap string object): the common
 // type pairs; anything else (e.g. a decimal at another scale) goes through a Value cast.
 void WriteCell(::duckdb::Vector &vec, ::duckdb::idx_t i, const ::duckdb::LogicalType &type, const core::AuxValue &v) {
@@ -352,10 +379,109 @@ void WriteCell(::duckdb::Vector &vec, ::duckdb::idx_t i, const ::duckdb::Logical
   vec.SetValue(i, AuxValueToDuckdb(v)); // the general path: DuckDB casts the value to the column's type
 }
 
-void AuxExecute(::duckdb::ClientContext &, ::duckdb::TableFunctionInput &input,
+
+// Writes each row the module emits straight into DataChunk columns: the first kOutputBatchSize
+// rows into `first`, the rest into freshly allocated spill chunks (no AuxRow is retained).
+struct ChunkSink final : core::AuxRowSink {
+  ChunkSink(::duckdb::ClientContext &context_p, const ::duckdb::vector<::duckdb::LogicalType> &types_p,
+            ::duckdb::DataChunk &first_p, std::vector<::duckdb::unique_ptr<::duckdb::DataChunk>> &spill_p)
+      : context(context_p), types(types_p), current(&first_p), spill(spill_p) {}
+
+  void Begin(const core::OutputSchema &) override {}
+  void WriteRow(const core::AuxRow &row) override {
+    if (count == kOutputBatchSize) {
+      current->SetCardinality(count);
+      auto chunk = ::duckdb::make_uniq<::duckdb::DataChunk>();
+      chunk->Initialize(::duckdb::Allocator::Get(context), types);
+      current = chunk.get();
+      spill.push_back(std::move(chunk));
+      count = 0;
+    }
+    const auto columns = types.size();
+    const auto have = row.values.size();
+    for (::duckdb::idx_t column = 0; column < columns; ++column) {
+      if (column < have)
+        WriteCell(current->data[column], count, types[column], row.values[column]);
+      else
+        ::duckdb::FlatVector::SetNull(current->data[column], count, true);
+    }
+    ++count;
+  }
+  void End() override {}
+  void Finish() { current->SetCardinality(count); }
+
+  ::duckdb::ClientContext &context;
+  const ::duckdb::vector<::duckdb::LogicalType> &types;
+  ::duckdb::DataChunk *current;
+  std::vector<::duckdb::unique_ptr<::duckdb::DataChunk>> &spill;
+  ::duckdb::idx_t count = 0;
+};
+
+void StreamRead(::duckdb::ClientContext &context, const AuxBindData &bind_data, AuxLocalState &local_state,
+                ::duckdb::DataChunk &output) {
+  ChunkSink sink(context, bind_data.types, output, local_state.spill);
+  const std::string accelerator_id = bind_data.entry.accelerator_id ? bind_data.entry.accelerator_id : "";
+  if (auto *active = duckdb_backend::FindActive(*context.db, accelerator_id)) {
+    // Read at this query's snapshot, on this query's context.
+    ::accelerator_codegen::aux_state::engine::duckdb::DuckDBAuxBackend::ReaderScope reader(context);
+    active->ExecuteInto(local_state.arguments, sink);
+  } else {
+    ::duckdb::Connection connection(*context.db);
+    duckdb_backend runtime(connection, bind_data.entry, 10.0);
+    runtime.Build(/*register_active=*/false);
+    runtime.ExecuteInto(local_state.arguments, sink);
+  }
+  sink.Finish();
+}
+
+::duckdb::unique_ptr<::duckdb::LocalTableFunctionState>
+AuxInitLocal(::duckdb::ExecutionContext &context, ::duckdb::TableFunctionInitInput &input,
+             ::duckdb::GlobalTableFunctionState *) {
+  auto &bind_data = input.bind_data->Cast<AuxBindData>();
+  auto local_state = ::duckdb::make_uniq<AuxLocalState>();
+  const auto arguments =
+      BuildArguments(bind_data.entry, bind_data.arguments);
+  const std::string accelerator_id = bind_data.entry.accelerator_id ? bind_data.entry.accelerator_id : "";
+  if (auto *active = duckdb_backend::FindActive(*context.client.db, accelerator_id)) {
+    if (!active->UsesVerusStore() && !verus_kit::Find(accelerator_id)) {
+      // C++ store: the read itself runs at the first AuxExecute call, streaming into chunks.
+      local_state->streaming = true;
+      local_state->arguments = arguments;
+      return local_state;
+    }
+    // Read at this query's snapshot, on this query's context.  (Streaming
+    // Verus reads too was measured 2026-10-05: no difference for Q16's ~7.5K
+    // rows at SF1 -- the per-row cost is the AuxRow conversion and WriteCell,
+    // which both paths pay.)
+    ::accelerator_codegen::aux_state::engine::duckdb::DuckDBAuxBackend::ReaderScope
+        reader(context.client);
+    local_state->rows = active->ExecuteCollect(arguments);
+    return local_state;
+  }
+  ::duckdb::Connection connection(*context.client.db);
+  // No shared runtime: build a private one for this query only.
+  duckdb_backend runtime(connection, bind_data.entry, 10.0);
+  runtime.Build(/*register_active=*/false);
+  local_state->rows = runtime.ExecuteCollect(arguments);
+  return local_state;
+}
+
+void AuxExecute(::duckdb::ClientContext &context, ::duckdb::TableFunctionInput &input,
                 ::duckdb::DataChunk &output) {
   auto &local_state = input.local_state->Cast<AuxLocalState>();
   auto &bind_data = input.bind_data->Cast<AuxBindData>();
+  if (local_state.streaming) {
+    if (!local_state.executed) {
+      local_state.executed = true;
+      StreamRead(context, bind_data, local_state, output); // output holds the first rows
+    } else if (local_state.spill_index < local_state.spill.size()) {
+      auto &chunk = *local_state.spill[local_state.spill_index++];
+      output.Reference(chunk);
+    } else {
+      output.SetCardinality(0);
+    }
+    return;
+  }
   ::duckdb::idx_t count = 0;
   const auto columns = bind_data.types.size();
   while (count < kOutputBatchSize && local_state.row_index < local_state.rows.size()) {

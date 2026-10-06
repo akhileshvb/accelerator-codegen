@@ -170,6 +170,36 @@ struct TpchQ5Scan : TpchQ5InitialScan {
                     DecimalRaw(ChunkValue(chunk, 3, row)), 2});
         });
   }
+  bool ScanLineitemsBySupplier(
+      int64_t suppkey,
+      const std::function<void(const TpchQ5LineitemInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount FROM lineitem "
+        "WHERE l_suppkey = " + std::to_string(suppkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
+                    DecimalRaw(ChunkValue(chunk, 3, row)), 2});
+        });
+    return true;
+  }
+  bool ScanLineitemsByOrder(
+      int64_t orderkey,
+      const std::function<void(const TpchQ5LineitemInput &)> &consumer) override {
+    ScanQueryStreaming(
+        connection,
+        "SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount FROM lineitem "
+        "WHERE l_orderkey = " + std::to_string(orderkey),
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          consumer({SafeInt64(ChunkValue(chunk, 0, row)),
+                    SafeInt64(ChunkValue(chunk, 1, row)),
+                    DecimalRaw(ChunkValue(chunk, 2, row)), 2,
+                    DecimalRaw(ChunkValue(chunk, 3, row)), 2});
+        });
+    return true;
+  }
   ::duckdb::Connection &connection;
 };
 

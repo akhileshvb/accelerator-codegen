@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -41,6 +42,15 @@ public:
       const std::function<void(const TpchQ12OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ12LineitemInput &)> &) = 0;
+  // Qualifying lineitems (l_commitdate < l_receiptdate AND l_shipdate <
+  // l_commitdate) of the given orders in the current base-table snapshot
+  // (including this transaction's own writes). False: unsupported.
+  virtual bool LookupQualifyingLineitems(
+      const std::vector<int64_t> &,
+      const std::function<void(int64_t orderkey, int32_t receipt_day,
+                               const std::string &shipmode)> &) {
+    return false;
+  }
   virtual void ScanLineitemsForReceiptDays(
       const std::set<int32_t> &receipt_days,
       const std::function<void(const TpchQ12LineitemInput &)> &consumer) {
@@ -65,46 +75,82 @@ struct TpchQ12DayShipmodeStats {
   int64_t low_line_count = 0;
 };
 
-// Copy-on-write paged dense array indexed by order key. Copying the struct
-// copies only the page table (shared_ptr per 64K keys); Set() clones a page
-// only while it is still shared with another (published) copy. A published
-// copy is never mutated: writers always work on their own copy.
+// Copy-on-write paged dense array indexed by order key, three levels:
+// directory table -> directory (128 page pointers) -> page (4096 values).
+// Copying the struct copies only the directory table (one shared_ptr per 512K
+// keys); Set() clones a directory / a page only while it is still shared with
+// another (published) copy, so a point write copies one directory (1 KiB) and
+// one small page. A published copy is never mutated: writers always work on
+// their own copy.
 template <typename T> struct TpchQ12PagedArray {
-  static constexpr std::size_t kShift = 16;
-  static constexpr std::size_t kSize = std::size_t(1) << kShift;
-  static constexpr std::size_t kMask = kSize - 1;
-  static constexpr std::size_t kMaxPages = 4096;
-  static constexpr int64_t kMaxId = static_cast<int64_t>(kMaxPages) << kShift;
+  static constexpr std::size_t kPageShift = 12;
+  static constexpr std::size_t kPageSize = std::size_t(1) << kPageShift;
+  static constexpr std::size_t kPageMask = kPageSize - 1;
+  static constexpr std::size_t kDirShift = 7;
+  static constexpr std::size_t kDirPages = std::size_t(1) << kDirShift;
+  static constexpr std::size_t kKeyShiftToDir = kPageShift + kDirShift;
+  static constexpr std::size_t kMaxDirs = 512;
+  static constexpr int64_t kMaxId = static_cast<int64_t>(kMaxDirs)
+                                    << kKeyShiftToDir;
 
-  std::vector<std::shared_ptr<std::vector<T>>> pages;
+  using Page = std::array<T, kPageSize>;
+  struct Dir {
+    std::array<std::shared_ptr<Page>, kDirPages> pages;
+  };
+
+  std::vector<std::shared_ptr<Dir>> dirs;
 
   static bool Fits(int64_t key) { return key >= 0 && key < kMaxId; }
-  void Clear() { pages.clear(); }
+  void Clear() { dirs.clear(); }
 
   T Get(int64_t key) const {
     if (!Fits(key))
       return T{};
     const auto id = static_cast<std::size_t>(key);
-    const auto page = id >> kShift;
-    if (page >= pages.size() || !pages[page])
+    const auto dir = id >> kKeyShiftToDir;
+    if (dir >= dirs.size() || !dirs[dir])
       return T{};
-    return (*pages[page])[id & kMask];
+    const auto &page = dirs[dir]->pages[(id >> kPageShift) & (kDirPages - 1)];
+    return page ? (*page)[id & kPageMask] : T{};
   }
 
   bool Set(int64_t key, T value) {
     if (!Fits(key))
       return false;
     const auto id = static_cast<std::size_t>(key);
-    const auto page = id >> kShift;
-    if (pages.size() <= page)
-      pages.resize(page + 1);
-    auto &ptr = pages[page];
-    if (!ptr)
-      ptr = std::make_shared<std::vector<T>>(kSize, T{});
-    else if (ptr.use_count() > 1)
-      ptr = std::make_shared<std::vector<T>>(*ptr);
-    (*ptr)[id & kMask] = value;
+    const auto dir_index = id >> kKeyShiftToDir;
+    if (dirs.size() <= dir_index)
+      dirs.resize(dir_index + 1);
+    auto &dir = dirs[dir_index];
+    if (!dir)
+      dir = std::make_shared<Dir>();
+    else if (dir.use_count() > 1)
+      dir = std::make_shared<Dir>(*dir);
+    auto &page = dir->pages[(id >> kPageShift) & (kDirPages - 1)];
+    if (!page)
+      page = std::make_shared<Page>();
+    else if (page.use_count() > 1)
+      page = std::make_shared<Page>(*page);
+    (*page)[id & kPageMask] = value;
     return true;
+  }
+
+  // Calls fn(key, value) for every non-zero slot, ascending by key.
+  template <typename Fn> void ForEachNonZero(Fn &&fn) const {
+    for (std::size_t d = 0; d < dirs.size(); ++d) {
+      if (!dirs[d])
+        continue;
+      for (std::size_t p = 0; p < kDirPages; ++p) {
+        const auto &page = dirs[d]->pages[p];
+        if (!page)
+          continue;
+        const int64_t base = static_cast<int64_t>(
+            (d << kKeyShiftToDir) | (p << kPageShift));
+        for (std::size_t slot = 0; slot < kPageSize; ++slot)
+          if ((*page)[slot] != T{})
+            fn(base + static_cast<int64_t>(slot), (*page)[slot]);
+      }
+    }
   }
 };
 
@@ -125,12 +171,45 @@ struct TpchQ12State {
 };
 using TpchQ12DayMap = std::unordered_map<std::string, TpchQ12DayShipmodeStats>;
 
-enum class TpchQ12ImageKind : uint8_t { OrderPriorities, Day };
+// The seven TPC-H ship modes get a fixed slot (dense, branch-free adds); any
+// other name lives in `extra` (empty for TPC-H data). Zero means absent.
+constexpr int kQ12KnownModes = 7;
+constexpr int kQ12ModeSlots = 8;
+
+// Slot of a known ship mode, or -1.
+int TpchQ12ModeSlot(const std::string &shipmode);
+
+struct TpchQ12ModeStats {
+  std::string shipmode;
+  int64_t high_line_count = 0;
+  int64_t low_line_count = 0;
+};
+
+struct alignas(64) TpchQ12Modes {
+  int64_t high[kQ12ModeSlots] = {};
+  int64_t low[kQ12ModeSlots] = {};
+  std::vector<TpchQ12ModeStats> extra;
+
+  // Adds (high, low) for `shipmode`; slot < 0 means "look up / add in extra".
+  void Add(int slot, const std::string &shipmode, int64_t h, int64_t l);
+  bool Empty() const;
+};
+
+// One partition of the dyadic tree over receipt days. Tree nodes (heap
+// numbering) use `modes`; the single overflow partition (days outside the tree
+// domain) uses `overflow_days`.
+struct TpchQ12Node {
+  TpchQ12Modes modes;
+  std::map<int32_t, TpchQ12Modes> overflow_days;
+};
+
+enum class TpchQ12ImageKind : uint8_t { OrderPriorities, Node };
 
 struct TpchQ12StateImage {
   TpchQ12ImageKind kind = TpchQ12ImageKind::OrderPriorities;
   int32_t receipt_day = 0;
   std::shared_ptr<const TpchQ12State> state;
+  TpchQ12Node node; // the node lives in the image: one allocation per node
 };
 
 struct TpchQ12LineitemDelta {
@@ -161,9 +240,10 @@ bool TpchQ12LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days,
 int32_t TpchQ12DaysFromYmd(int32_t year, unsigned month, unsigned day);
 int32_t TpchQ12AddMonths(int32_t days_since_epoch, int32_t months);
 
-// `days` holds the per-receipt-day shipmode maps in the query window (null
-// entries are skipped).
-void TpchQ12FinalizeAndEmit(const std::vector<const TpchQ12DayMap *> &days,
+// `parts` holds the aligned tree nodes covering the query window (null entries
+// are skipped).
+void TpchQ12FinalizeAndEmit(const TpchQ12Modes *const *parts,
+                            std::size_t part_count,
                             const std::string &shipmode1,
                             const std::string &shipmode2, core::AuxRowSink &sink);
 

@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <algorithm>
+#include <vector>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -736,64 +738,105 @@ bool TpchQ17Module::CheckValidity(core::AuxEngineServices &services,
       .IsValid();
 }
 
+namespace {
+
+// FNV-1a over brand, '\0', container: the same hash as AttrPartsPartition,
+// without materializing the key.
+inline core::PartitionId AttrPartsPartitionView(const std::string &brand,
+                                                const std::string &container) {
+  uint64_t hash = 1469598103934665603ULL;
+  for (const unsigned char c : brand) {
+    hash ^= c;
+    hash *= 1099511628211ULL;
+  }
+  hash *= 1099511628211ULL; // the '\0' separator: hash ^= 0
+  for (const unsigned char c : container) {
+    hash ^= c;
+    hash *= 1099511628211ULL;
+  }
+  return TpchQ17Layout::kAttrPartsBase +
+         static_cast<core::PartitionId>(hash % TpchQ17Layout::kAttrPartsSlots);
+}
+
+inline const std::string *StringArg(const core::QueryArguments &arguments,
+                                    std::size_t i) {
+  if (arguments.values.size() <= i || arguments.values[i].is_null)
+    return nullptr;
+  return std::get_if<std::string>(&arguments.values[i].payload);
+}
+
+// One-column nullable DOUBLE result, built once.
+inline const core::OutputSchema &Q17Schema() {
+  static const core::OutputSchema schema{
+      {{"avg_yearly", core::AuxType::Double, true}}};
+  return schema;
+}
+
+inline void EmitQ17(core::AuxRowSink &sink, int64_t contribution_raw) {
+  thread_local core::AuxRow row = [] {
+    core::AuxRow r;
+    r.values.resize(1);
+    return r;
+  }();
+  sink.Begin(Q17Schema());
+  if (contribution_raw == 0) {
+    row.values[0].type = core::AuxType::Double;
+    row.values[0].is_null = true;
+  } else {
+    row.values[0].type = core::AuxType::Double;
+    row.values[0].is_null = false;
+    row.values[0].payload =
+        static_cast<double>(contribution_raw) / 100.0 / 7.0;
+  }
+  sink.WriteRow(row);
+  sink.End();
+}
+
+} // namespace
+
 void TpchQ17Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
-  std::string brand;
-  std::string container;
-  if (arguments.values.size() >= 2) {
-    if (!arguments.values[0].is_null &&
-        std::holds_alternative<std::string>(arguments.values[0].payload))
-      brand = std::get<std::string>(arguments.values[0].payload);
-    if (!arguments.values[1].is_null &&
-        std::holds_alternative<std::string>(arguments.values[1].payload))
-      container = std::get<std::string>(arguments.values[1].payload);
-  }
-
-  if (brand.empty() || container.empty()) {
+  const std::string *brand = StringArg(arguments, 0);
+  const std::string *container = StringArg(arguments, 1);
+  if (!brand || !container || brand->empty() || container->empty() ||
+      arguments.values.size() < 2) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
 
-  if (!services.StateStore()
-           .CheckValidity({Id(), {}}, services.CurrentVisibility())
-           .IsValid()) {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
-
+  const auto &store = services.StateStore();
   const auto visibility = services.CurrentVisibility();
-  const auto snapshot = services.StateStore().ReadPartitions(
-      visibility, {AttrPartsPartition(brand, container)});
-  for (const auto &image : snapshot.partitions) {
-    const auto *typed = AsQ17Image(image, TpchQ17ImageKind::AttrParts);
-    if (!typed || !typed->attr_parts)
-      continue;
-    if (typed->attr_parts->shared) {
+  const auto partition = AttrPartsPartitionView(*brand, *container);
+
+  // One observation: whole-state validity plus the partition's handle.
+  thread_local std::vector<core::PartitionId> wanted(1);
+  wanted[0] = partition;
+  const auto snapshot = store.ReadHitPartitions(visibility, hit_key, wanted);
+  if (!snapshot.available) {
+    if (!store.CheckValidity(hit_key, visibility).IsValid()) {
       ExecuteFallback(services, arguments, sink);
       return;
     }
-    if (typed->attr_parts->brand != brand ||
-        typed->attr_parts->container != container)
-      continue;
-
-    const int64_t contribution_raw = typed->attr_parts->total_contribution_raw;
-    sink.Begin({{{"avg_yearly", core::AuxType::Double, true}}});
-    if (contribution_raw == 0) {
-      sink.WriteRow({{core::AuxValue::Null(core::AuxType::Double)}});
-    } else {
-      const double result =
-          static_cast<double>(contribution_raw) / 100.0 / 7.0;
-      sink.WriteRow({{core::AuxValue::Of(core::AuxType::Double, result)}});
-    }
-    sink.End();
+    // A valid state without this brand/container's partition: no such part.
+    EmitQ17(sink, 0);
     return;
   }
-
-  // A valid state without this brand/container's partition: no such part.
-  sink.Begin({{{"avg_yearly", core::AuxType::Double, true}}});
-  sink.WriteRow({{core::AuxValue::Null(core::AuxType::Double)}});
-  sink.End();
+  for (const auto &image : snapshot.partitions) {
+    const auto *typed = AsQ17Image(image, TpchQ17ImageKind::AttrParts);
+    if (!typed)
+      continue;
+    const auto &attr = *typed->attr_parts;
+    if (attr.shared) {
+      ExecuteFallback(services, arguments, sink);
+      return;
+    }
+    if (attr.brand != *brand || attr.container != *container)
+      continue;
+    EmitQ17(sink, attr.total_contribution_raw);
+    return;
+  }
+  EmitQ17(sink, 0);
 }
 
 void TpchQ17Module::ExecuteFallback(core::AuxEngineServices &services,
