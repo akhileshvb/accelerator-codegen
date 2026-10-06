@@ -98,14 +98,15 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ17(FunctionCallInfo fcinfo) {
-  detail::Q17Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(0))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(1)))}},
-      fcinfo);
+  // SQL NULL arguments are passed on as NULL (p_brand = NULL matches nothing).
+  core::QueryArguments arguments;
+  for (int i = 0; i < 2; ++i)
+    arguments.values.push_back(
+        PG_ARGISNULL(i) ? core::AuxValue::Null(core::AuxType::String)
+                        : core::AuxValue::Of(
+                              core::AuxType::String,
+                              detail::TextDatum(PG_GETARG_DATUM(i))));
+  detail::Q17Runtime().Execute(std::move(arguments), fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
