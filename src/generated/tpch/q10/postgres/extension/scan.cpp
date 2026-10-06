@@ -11,6 +11,9 @@
 #include "postgres/engine_runtime.hpp"
 #include "postgres/runtime.hpp"
 
+#include <stdexcept>
+#include <string>
+
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
 namespace {
@@ -110,15 +113,37 @@ namespace core = accelerator_codegen::aux_state::core;
 
 namespace {
 
+// Exceptions must not leave the extension function (an uncaught C++ exception
+// would terminate the backend): report them as a SQL error.
+template <typename F> void RunOrReport(F &&run) {
+  std::string message;
+  bool division_by_zero = false;
+  try {
+    run();
+  } catch (const std::domain_error &e) {
+    message = e.what();
+    division_by_zero = true;
+  } catch (const std::exception &e) {
+    message = e.what();
+  }
+  if (!message.empty()) {
+    if (division_by_zero)
+      ereport(ERROR, (errcode(ERRCODE_DIVISION_BY_ZERO), errmsg("%s", message.c_str())));
+    ereport(ERROR, (errmsg("accelerator: %s", message.c_str())));
+  }
+}
+
 void ExecutePostgresTpchQ10(FunctionCallInfo fcinfo) {
   // A NULL date makes the window predicate NULL (no rows).
-  detail::Q10Runtime().Execute(
-      core::QueryArguments{{PG_ARGISNULL(0)
-                                ? core::AuxValue::Null(core::AuxType::Date)
-                                : core::AuxValue::Of(
-                                      core::AuxType::Date,
-                                      detail::PostgresDateArg(0, fcinfo))}},
-      fcinfo);
+  RunOrReport([&] {
+    detail::Q10Runtime().Execute(
+        core::QueryArguments{{PG_ARGISNULL(0)
+                                  ? core::AuxValue::Null(core::AuxType::Date)
+                                  : core::AuxValue::Of(
+                                        core::AuxType::Date,
+                                        detail::PostgresDateArg(0, fcinfo))}},
+        fcinfo);
+  });
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{

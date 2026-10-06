@@ -1,495 +1,509 @@
 #include "tpch/q8/mysql/aux/module.hpp"
 #include "tpch/q8/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
-#include <cmath>
-#include <cstddef>
-#include <cstring>
 #include <limits>
+#include <set>
 #include <stdexcept>
+#include <string_view>
+#include <tuple>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 
+#include "accelerator_codegen/stateful/core/pg_numeric_div.hpp"
+#include "accelerator_codegen/stateful/core/query_module_helpers.hpp"
+#include "accelerator_codegen/stateful/core/sql_date.hpp"
+
 namespace accelerator_codegen::aux_state::query {
+
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
+namespace sql_date = core::sql_date;
+using Int128 = ::accelerator_codegen::pg_numeric::Int128;
 
-constexpr uint32_t kCubeMagic = 0x51385143; // Q8C
-constexpr uint32_t kVersionV1 = 1;
+constexpr core::PartitionId kStatePartition = TpchQ8Layout::kYear1995;
+// volume = price * (1 - discount): numeric(15,2) * numeric(15,2) -> scale 4.
+constexpr int32_t kVolumeScale = 4;
 
-// ── Cell extraction helpers ─────────────────────────────────────────────────
-bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload))
-    return false;
-  out = std::get<std::string>(row.values[index].payload);
-  return true;
-}
+// ---- Row decoding (mutation capture rows) ---------------------------------
+// A cell is Ok, SQL NULL (the row cannot join / pass a predicate), or of an
+// unexpected type (the state cannot follow the write: it is rebuilt).
+enum class Cell { Ok, Null, Bad };
 
-bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
+Cell IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
+  if (index >= row.values.size())
+    return Cell::Bad;
   const auto &cell = row.values[index];
+  if (cell.is_null)
+    return Cell::Null;
   if (std::holds_alternative<int64_t>(cell.payload)) {
     out = std::get<int64_t>(cell.payload);
-    return true;
+    return Cell::Ok;
   }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
+  if (std::holds_alternative<uint64_t>(cell.payload)) {
+    const auto value = std::get<uint64_t>(cell.payload);
+    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+      return Cell::Bad;
+    out = static_cast<int64_t>(value);
+    return Cell::Ok;
   }
-  return false;
+  return Cell::Bad;
 }
 
-bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  out = static_cast<int32_t>(value);
-  return true;
+// A nation / region key (int32 column). INT32_MIN is the state's "absent"
+// marker, so it cannot be stored.
+Cell KeyCell(const core::AuxRow &row, std::size_t index, int32_t &out) {
+  int64_t v = 0;
+  const Cell c = IntCell(row, index, v);
+  if (c != Cell::Ok)
+    return c;
+  if (v <= std::numeric_limits<int32_t>::min() ||
+      v > std::numeric_limits<int32_t>::max())
+    return Cell::Bad;
+  out = static_cast<int32_t>(v);
+  return Cell::Ok;
 }
 
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
-    return false;
+Cell DecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
+                 int32_t &scale) {
+  if (index >= row.values.size())
+    return Cell::Bad;
   const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
-  }
-  return false;
+  if (cell.is_null)
+    return Cell::Null;
+  if (!std::holds_alternative<core::ScaledDecimal>(cell.payload))
+    return Cell::Bad;
+  const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
+  raw = decimal.value;
+  scale = decimal.scale;
+  return Cell::Ok;
 }
 
-bool ReadLineitem(const core::AuxRow &row, TpchQ8LineitemInput &out) {
-  int64_t partkey = 0, orderkey = 0, suppkey = 0, extended_raw = 0, discount_raw = 0;
-  int32_t scale = 0;
-  if (!IntCell(row, 0, partkey) ||
-      !IntCell(row, 1, orderkey) ||
-      !IntCell(row, 2, suppkey) ||
-      !RawDecimalCell(row, 3, extended_raw, scale) ||
-      !RawDecimalCell(row, 4, discount_raw, scale))
+Cell DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
+  if (index >= row.values.size())
+    return Cell::Bad;
+  const auto &cell = row.values[index];
+  if (cell.is_null)
+    return Cell::Null;
+  if (!std::holds_alternative<core::AuxDate>(cell.payload))
+    return Cell::Bad;
+  days = std::get<core::AuxDate>(cell.payload).days_since_epoch;
+  return Cell::Ok;
+}
+
+Cell TextCell(const core::AuxRow &row, std::size_t index, std::string &out) {
+  if (index >= row.values.size())
+    return Cell::Bad;
+  const auto &cell = row.values[index];
+  if (cell.is_null)
+    return Cell::Null;
+  if (!std::holds_alternative<std::string>(cell.payload))
+    return Cell::Bad;
+  out = std::get<std::string>(cell.payload);
+  return Cell::Ok;
+}
+
+// price * (1 - discount) as a scale-4 integer; false on overflow or when the
+// operand scales do not give scale 4.
+bool VolumeRaw(int64_t price_raw, int32_t price_scale, int64_t discount_raw,
+               int32_t discount_scale, int64_t &out) {
+  if (price_scale + discount_scale != kVolumeScale || discount_scale < 0 ||
+      discount_scale > 9)
     return false;
-  out.partkey = partkey;
-  out.orderkey = orderkey;
-  out.suppkey = suppkey;
-  out.extendedprice_raw = extended_raw;
-  out.discount_raw = discount_raw;
-  return true;
-}
-
-bool ReadPart(const core::AuxRow &row, int64_t &key, std::string &type) {
-  int64_t k = 0;
-  if (!IntCell(row, 0, k) || !StringCell(row, 1, type))
+  int64_t one = 1;
+  for (int32_t i = 0; i < discount_scale; ++i)
+    one *= 10;
+  int64_t factor = 0;
+  if (__builtin_sub_overflow(one, discount_raw, &factor))
     return false;
-  key = k;
-  return true;
+  return !__builtin_mul_overflow(price_raw, factor, &out);
 }
 
-bool ReadSupplier(const core::AuxRow &row, int64_t &key, int32_t &nationkey) {
-  int64_t k = 0;
-  if (!IntCell(row, 0, k) || !Int32Cell(row, 1, nationkey))
-    return false;
-  key = k;
-  return true;
+// o_orderdate BETWEEN 1995-01-01 AND 1996-12-31
+bool InWindow(int32_t day) {
+  static const int64_t first = sql_date::DaysFromCivil(kTpchQ8MinYear, 1, 1);
+  static const int64_t last = sql_date::DaysFromCivil(kTpchQ8MaxYear, 12, 31);
+  return day >= first && day <= last;
 }
 
-bool ReadCustomer(const core::AuxRow &row, int64_t &key, int32_t &nationkey) {
-  int64_t k = 0;
-  if (!IntCell(row, 0, k) || !Int32Cell(row, 1, nationkey))
-    return false;
-  key = k;
-  return true;
-}
-
-bool ReadOrders(const core::AuxRow &row, int64_t &key, int64_t &custkey,
-                int32_t &orderdate_days) {
-  int64_t k = 0, ck = 0;
-  if (!IntCell(row, 0, k) || !IntCell(row, 1, ck) || !Int32Cell(row, 2, orderdate_days))
-    return false;
-  key = k;
-  custkey = ck;
-  return true;
-}
-
-bool ReadNation(const core::AuxRow &row, int32_t &key, std::string &name,
-                int32_t &regionkey) {
-  if (!Int32Cell(row, 0, key) || !StringCell(row, 1, name) ||
-      !Int32Cell(row, 2, regionkey))
-    return false;
-  return true;
-}
-
-bool ReadRegion(const core::AuxRow &row, int32_t &key, std::string &name) {
-  if (!Int32Cell(row, 0, key) || !StringCell(row, 1, name))
-    return false;
-  return true;
-}
-
-// ── Image helpers ───────────────────────────────────────────────────────────
-std::shared_ptr<const TpchQ8StateImage>
-MakeStateImage(TpchQ8ImageKind kind, int32_t year,
-               const std::shared_ptr<const TpchQ8State> &state) {
-  auto image = std::make_shared<TpchQ8StateImage>();
-  image->kind = kind;
-  image->year = year;
-  image->state = state;
-  return image;
-}
-
-const TpchQ8StateImage *AsQ8Image(const core::StateImage &image,
-                                  TpchQ8ImageKind kind) {
-  const auto *payload = image.As<TpchQ8StateImage>();
-  return payload && payload->kind == kind && payload->state ? payload : nullptr;
-}
-
-core::InvalidationPlan All() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
-  return plan;
-}
-
-core::InvalidationPlan PartitionSet(std::vector<core::PartitionId> partitions) {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
-  for (const auto partition : partitions)
-    plan.partitions.insert(partition);
-  return plan;
-}
-
-// ── Dense cube helpers ─────────────────────────────────────────────────────
-struct TpchQ8CubeCellLess {
-  bool operator()(const TpchQ8CubeCell &a, const TpchQ8CubeCell &b) const {
-    if (a.year != b.year) return a.year < b.year;
-    if (a.customer_nationkey != b.customer_nationkey)
-      return a.customer_nationkey < b.customer_nationkey;
-    if (a.supplier_nationkey != b.supplier_nationkey)
-      return a.supplier_nationkey < b.supplier_nationkey;
-    return a.part_type_index < b.part_type_index;
+// ---- Order entry: the one blob kept per orderkey ---------------------------
+struct LineRec {
+  int64_t partkey = 0;
+  int64_t suppkey = 0;
+  int64_t volume = 0;
+  bool operator==(const LineRec &o) const {
+    return partkey == o.partkey && suppkey == o.suppkey && volume == o.volume;
   }
 };
 
-bool CubeCellKeyLess(const TpchQ8CubeCell &cell, int32_t year,
-                     int32_t customer_nationkey, int32_t supplier_nationkey,
-                     int32_t part_type_index) {
-  if (cell.year != year) return cell.year < year;
-  if (cell.customer_nationkey != customer_nationkey)
-    return cell.customer_nationkey < customer_nationkey;
-  if (cell.supplier_nationkey != supplier_nationkey)
-    return cell.supplier_nationkey < supplier_nationkey;
-  return cell.part_type_index < part_type_index;
+// Forms (invariants):
+//   records      !counts_only: `lines` are all lineitems of the order. If
+//                present, the order is in the window (and contributes).
+//   counts_only  the order is out of the window (present) or its row was
+//                deleted while it had lineitems (!present): only the number of
+//                lineitems is kept.
+struct OrderEntry {
+  bool present = false;
+  bool counts_only = false;
+  int64_t custkey = 0;
+  int32_t day = 0;
+  std::vector<LineRec> lines;
+  uint64_t nlines = 0; // counts_only
+  bool Empty() const {
+    return !present && (counts_only ? nlines == 0 : lines.empty());
+  }
+};
+
+constexpr uint8_t kFlagPresent = 1;
+constexpr uint8_t kFlagCountsOnly = 2;
+
+void EncodeEntry(const OrderEntry &e, std::vector<uint8_t> &out) {
+  out.clear();
+  out.push_back(static_cast<uint8_t>((e.present ? kFlagPresent : 0) |
+                                     (e.counts_only ? kFlagCountsOnly : 0)));
+  if (e.present) {
+    core::PutSignedVarint(out, e.custkey);
+    core::PutSignedVarint(out, e.day);
+  }
+  if (e.counts_only) {
+    core::PutVarint(out, e.nlines);
+    return;
+  }
+  for (const auto &l : e.lines) {
+    core::PutVarint(out, static_cast<uint64_t>(l.partkey));
+    core::PutVarint(out, static_cast<uint64_t>(l.suppkey));
+    core::PutSignedVarint(out, l.volume);
+  }
 }
 
-bool CubeCellKeyEqual(const TpchQ8CubeCell &cell, int32_t year,
-                      int32_t customer_nationkey, int32_t supplier_nationkey,
-                      int32_t part_type_index) {
-  return cell.year == year && cell.customer_nationkey == customer_nationkey &&
-         cell.supplier_nationkey == supplier_nationkey &&
-         cell.part_type_index == part_type_index;
+bool DecodeEntry(std::string_view v, OrderEntry &e) {
+  e = OrderEntry{};
+  const auto *p = reinterpret_cast<const uint8_t *>(v.data());
+  const auto *end = p + v.size();
+  if (p >= end)
+    return false;
+  const uint8_t flags = *p++;
+  e.present = (flags & kFlagPresent) != 0;
+  e.counts_only = (flags & kFlagCountsOnly) != 0;
+  if (e.present) {
+    int64_t day = 0;
+    if (!core::GetSignedVarint(p, end, e.custkey) ||
+        !core::GetSignedVarint(p, end, day))
+      return false;
+    e.day = static_cast<int32_t>(day);
+  }
+  if (e.counts_only)
+    return core::GetVarint(p, end, e.nlines);
+  while (p < end) {
+    LineRec l;
+    uint64_t partkey = 0, suppkey = 0;
+    if (!core::GetVarint(p, end, partkey) || !core::GetVarint(p, end, suppkey) ||
+        !core::GetSignedVarint(p, end, l.volume))
+      return false;
+    l.partkey = static_cast<int64_t>(partkey);
+    l.suppkey = static_cast<int64_t>(suppkey);
+    e.lines.push_back(l);
+  }
+  return true;
 }
 
-// Find the first cell whose key >= the requested key.  If it does not match,
-// returns an insertion point.
-size_t CubeCellLowerBound(const std::vector<TpchQ8CubeCell> &cube,
-                          int32_t year, int32_t customer_nationkey,
-                          int32_t supplier_nationkey, int32_t part_type_index) {
-  size_t lo = 0;
-  size_t hi = cube.size();
-  while (lo < hi) {
-    const size_t mid = lo + (hi - lo) / 2;
-    if (CubeCellKeyLess(cube[mid], year, customer_nationkey,
-                        supplier_nationkey, part_type_index)) {
-      lo = mid + 1;
+bool LoadEntry(const TpchQ8State &s, int64_t orderkey, OrderEntry &e) {
+  std::string_view v;
+  if (!s.orders.Get(orderkey, v)) {
+    e = OrderEntry{};
+    return true;
+  }
+  return DecodeEntry(v, e);
+}
+
+bool StoreEntry(TpchQ8State &s, int64_t orderkey, const OrderEntry &e) {
+  if (orderkey < 0)
+    return false;
+  if (e.Empty()) {
+    s.orders.Erase(orderkey);
+    return true;
+  }
+  thread_local std::vector<uint8_t> buf;
+  EncodeEntry(e, buf);
+  return s.orders.Set(orderkey, buf);
+}
+
+// ---- Cube --------------------------------------------------------------------
+void Contribute(TpchQ8State &s, uint32_t type_id, int32_t year, int32_t cust_nk,
+                int32_t supp_nk, int64_t volume, int sign) {
+  auto &cube = s.cubes.Mutable(type_id);
+  if (!cube)
+    cube = std::make_shared<TpchQ8TypeCube>();
+  else if (cube.use_count() > 1)
+    cube = std::make_shared<TpchQ8TypeCube>(*cube);
+  auto it = std::lower_bound(
+      cube->begin(), cube->end(), std::make_tuple(year, cust_nk, supp_nk),
+      [](const TpchQ8CubeCell &c, const std::tuple<int32_t, int32_t, int32_t> &k) {
+        return std::make_tuple(c.year, c.customer_nationkey,
+                               c.supplier_nationkey) < k;
+      });
+  if (it == cube->end() || it->year != year || it->customer_nationkey != cust_nk ||
+      it->supplier_nationkey != supp_nk)
+    it = cube->insert(it, TpchQ8CubeCell{year, cust_nk, supp_nk, 0, 0});
+  it->volume += static_cast<Int128>(sign) * volume;
+  it->rows += sign;
+  if (it->rows == 0 && it->volume == 0)
+    cube->erase(it);
+}
+
+// The cube contribution of a record of the present, in-window order `e`.
+void ContributeRec(TpchQ8State &s, const OrderEntry &e, const LineRec &r,
+                   int sign) {
+  const uint32_t type_id = s.part_type.Get(r.partkey);
+  const int32_t snk = s.supplier_nation.Get(r.suppkey);
+  const int32_t cnk = s.customer_nation.Get(e.custkey);
+  if (type_id == TpchQ8State::kNoType || snk == TpchQ8State::kAbsent ||
+      cnk == TpchQ8State::kAbsent)
+    return;
+  Contribute(s, type_id, sql_date::YearOf(e.day), cnk, snk, r.volume, sign);
+}
+
+void AddRef(core::ChunkedCowArray<uint32_t> &refs, int64_t key, int sign) {
+  auto &r = refs.Mutable(key);
+  if (sign > 0)
+    ++r;
+  else if (r > 0)
+    --r;
+}
+
+bool KeyOk(int64_t key) { return key >= 0 && key < (int64_t{1} << 62); }
+
+// ---- Incremental maintenance primitives ------------------------------------
+// Each returns false when the write cannot be applied exactly to this state;
+// the caller then rebuilds.
+
+bool ApplyLineitem(TpchQ8State &s, int64_t orderkey, int64_t partkey,
+                   int64_t suppkey, int64_t volume, int sign) {
+  if (!KeyOk(orderkey) || !KeyOk(partkey) || !KeyOk(suppkey))
+    return false;
+  OrderEntry e;
+  if (!LoadEntry(s, orderkey, e))
+    return false;
+  if (e.counts_only) {
+    if (sign > 0)
+      ++e.nlines;
+    else if (e.nlines > 0)
+      --e.nlines;
+    else
+      return false;
+    return StoreEntry(s, orderkey, e);
+  }
+  const LineRec rec{partkey, suppkey, volume};
+  if (sign > 0) {
+    e.lines.push_back(rec);
+  } else {
+    const auto it = std::find(e.lines.begin(), e.lines.end(), rec);
+    if (it == e.lines.end())
+      return false;
+    e.lines.erase(it);
+  }
+  if (!StoreEntry(s, orderkey, e))
+    return false;
+  AddRef(s.part_refs, partkey, sign);
+  AddRef(s.supplier_refs, suppkey, sign);
+  if (e.present)
+    ContributeRec(s, e, rec, sign);
+  return true;
+}
+
+bool ApplyOrder(TpchQ8State &s, int64_t orderkey, int64_t custkey, int32_t day,
+                int sign) {
+  if (!KeyOk(orderkey) || !KeyOk(custkey))
+    return false;
+  OrderEntry e;
+  if (!LoadEntry(s, orderkey, e))
+    return false;
+  if (sign > 0) {
+    if (e.present)
+      return false; // duplicate order key
+    if (InWindow(day)) {
+      if (e.counts_only) {
+        // Lineitems of an out-of-window order are not retained.
+        if (e.nlines > 0)
+          return false;
+        e = OrderEntry{};
+      }
+      e.present = true;
+      e.custkey = custkey;
+      e.day = day;
+      AddRef(s.customer_refs, custkey, +1);
+      for (const auto &r : e.lines)
+        ContributeRec(s, e, r, +1);
     } else {
-      hi = mid;
+      if (!e.counts_only) {
+        // Orphan lineitems of a not-yet-present order: they cannot contribute
+        // out of the window; keep only their count.
+        for (const auto &r : e.lines) {
+          AddRef(s.part_refs, r.partkey, -1);
+          AddRef(s.supplier_refs, r.suppkey, -1);
+        }
+        e.nlines = e.lines.size();
+        e.lines.clear();
+        e.counts_only = true;
+      }
+      e.present = true;
+      e.custkey = custkey;
+      e.day = day;
     }
+    return StoreEntry(s, orderkey, e);
   }
-  return lo;
-}
-
-void SortCube(std::vector<TpchQ8CubeCell> &cube) {
-  std::sort(cube.begin(), cube.end(), TpchQ8CubeCellLess());
-}
-
-TpchQ8CubeCell *CubeCellFindOrInsert(std::vector<TpchQ8CubeCell> &cube,
-                                     int32_t year, int32_t customer_nationkey,
-                                     int32_t supplier_nationkey,
-                                     int32_t part_type_index) {
-  const size_t idx = CubeCellLowerBound(cube, year, customer_nationkey,
-                                        supplier_nationkey, part_type_index);
-  if (idx >= cube.size() ||
-      !CubeCellKeyEqual(cube[idx], year, customer_nationkey,
-                        supplier_nationkey, part_type_index)) {
-    TpchQ8CubeCell cell;
-    cell.year = year;
-    cell.customer_nationkey = customer_nationkey;
-    cell.supplier_nationkey = supplier_nationkey;
-    cell.part_type_index = part_type_index;
-    cube.insert(cube.begin() + static_cast<std::ptrdiff_t>(idx), cell);
-    return &cube[idx];
+  if (!e.present || e.custkey != custkey || e.day != day)
+    return false;
+  if (!e.counts_only) {
+    for (const auto &r : e.lines)
+      ContributeRec(s, e, r, -1);
+    AddRef(s.customer_refs, custkey, -1);
   }
-  return &cube[idx];
+  e.present = false;
+  return StoreEntry(s, orderkey, e);
 }
 
-// ── Date helpers ────────────────────────────────────────────────────────────
-// Use the range-based helper on TpchQ8State. A naive Howard-Hinnant year
-// extraction without the Jan/Feb (m <= 2) civil adjustment mis-bins those
-// months (e.g. 1995-01 → 1994) and shifts Q8 market share (~0.046 vs 0.0455).
-int32_t OrderDateToYear(int32_t days) {
-  return TpchQ8State::YearFromDays(days);
+// Dimension rows changed in one write batch: key -> value before / after
+// (absent marker when the row does not exist before / after).
+template <typename V> struct Change {
+  V before;
+  V after;
+};
+template <typename V> using Changes = std::map<int64_t, Change<V>>;
+
+// Visits every record of every present in-window order. `fn(entry, record)`.
+// Iterates a shallow copy, so the callback may modify the state.
+template <typename F> void ForEachContributingRecord(TpchQ8State &s, F &&fn) {
+  const core::ChunkedBlobMap snapshot = s.orders;
+  snapshot.ForEach([&](int64_t, std::string_view v) {
+    OrderEntry e;
+    if (!DecodeEntry(v, e) || !e.present || e.counts_only)
+      return;
+    for (const auto &r : e.lines)
+      fn(e, r);
+  });
 }
 
-// ── Volume computation ──────────────────────────────────────────────────────
-int64_t ComputeVolumeRaw(int64_t extendedprice_raw, int64_t discount_raw) {
-  // volume = l_extendedprice * (1 - l_discount)
-  // Both inputs are scaled by 100 (scale=2).
-  // So volume_raw = extendedprice_raw * (100 - discount_raw)
-  // Result scale is 2+2=4, i.e. raw *= 100 for output scale 4
-  return extendedprice_raw * (100 - discount_raw);
+// Part types changed: move the contribution of the referenced parts' lineitems
+// from the old type's cube to the new one's.
+void RetypeParts(TpchQ8State &s, const Changes<uint32_t> &changes) {
+  std::unordered_map<int64_t, Change<uint32_t>> hot;
+  for (const auto &[partkey, change] : changes)
+    if (s.part_refs.Get(partkey) > 0)
+      hot.emplace(partkey, change);
+  if (hot.empty())
+    return;
+  ForEachContributingRecord(s, [&](const OrderEntry &e, const LineRec &r) {
+    const auto it = hot.find(r.partkey);
+    if (it == hot.end())
+      return;
+    const int32_t snk = s.supplier_nation.Get(r.suppkey);
+    const int32_t cnk = s.customer_nation.Get(e.custkey);
+    if (snk == TpchQ8State::kAbsent || cnk == TpchQ8State::kAbsent)
+      return;
+    const int32_t year = sql_date::YearOf(e.day);
+    if (it->second.before != TpchQ8State::kNoType)
+      Contribute(s, it->second.before, year, cnk, snk, r.volume, -1);
+    if (it->second.after != TpchQ8State::kNoType)
+      Contribute(s, it->second.after, year, cnk, snk, r.volume, +1);
+  });
+}
+
+void RepointSuppliers(TpchQ8State &s, const Changes<int32_t> &changes) {
+  std::unordered_map<int64_t, Change<int32_t>> hot;
+  for (const auto &[suppkey, change] : changes)
+    if (s.supplier_refs.Get(suppkey) > 0)
+      hot.emplace(suppkey, change);
+  if (hot.empty())
+    return;
+  ForEachContributingRecord(s, [&](const OrderEntry &e, const LineRec &r) {
+    const auto it = hot.find(r.suppkey);
+    if (it == hot.end())
+      return;
+    const uint32_t type_id = s.part_type.Get(r.partkey);
+    const int32_t cnk = s.customer_nation.Get(e.custkey);
+    if (type_id == TpchQ8State::kNoType || cnk == TpchQ8State::kAbsent)
+      return;
+    const int32_t year = sql_date::YearOf(e.day);
+    if (it->second.before != TpchQ8State::kAbsent)
+      Contribute(s, type_id, year, cnk, it->second.before, r.volume, -1);
+    if (it->second.after != TpchQ8State::kAbsent)
+      Contribute(s, type_id, year, cnk, it->second.after, r.volume, +1);
+  });
+}
+
+void RepointCustomers(TpchQ8State &s, const Changes<int32_t> &changes) {
+  std::unordered_map<int64_t, Change<int32_t>> hot;
+  for (const auto &[custkey, change] : changes)
+    if (s.customer_refs.Get(custkey) > 0)
+      hot.emplace(custkey, change);
+  if (hot.empty())
+    return;
+  ForEachContributingRecord(s, [&](const OrderEntry &e, const LineRec &r) {
+    const auto it = hot.find(e.custkey);
+    if (it == hot.end())
+      return;
+    const uint32_t type_id = s.part_type.Get(r.partkey);
+    const int32_t snk = s.supplier_nation.Get(r.suppkey);
+    if (type_id == TpchQ8State::kNoType || snk == TpchQ8State::kAbsent)
+      return;
+    const int32_t year = sql_date::YearOf(e.day);
+    if (it->second.before != TpchQ8State::kAbsent)
+      Contribute(s, type_id, year, it->second.before, snk, r.volume, -1);
+    if (it->second.after != TpchQ8State::kAbsent)
+      Contribute(s, type_id, year, it->second.after, snk, r.volume, +1);
+  });
+}
+
+// Net before / after nation key per supplier / customer key of a mutation
+// (rows: [key, nationkey]). A NULL nation key never joins n_nationkey: the
+// row exists but is inert (same as absent for the cube).
+bool CollectNationChanges(const core::MutationBatch &m, Changes<int32_t> &out) {
+  const auto add = [&](const std::vector<core::AuxRow> &rows, bool before) {
+    for (const auto &row : rows) {
+      int64_t key = 0;
+      int32_t nation = 0;
+      const Cell k = IntCell(row, 0, key);
+      const Cell n = KeyCell(row, 1, nation);
+      if (k == Cell::Bad || n == Cell::Bad || (k == Cell::Ok && !KeyOk(key)))
+        return false;
+      if (k != Cell::Ok)
+        continue;
+      auto &change = out.try_emplace(key, Change<int32_t>{TpchQ8State::kAbsent,
+                                                           TpchQ8State::kAbsent})
+                         .first->second;
+      (before ? change.before : change.after) =
+          n == Cell::Null ? TpchQ8State::kAbsent : nation;
+    }
+    return true;
+  };
+  return add(m.old_rows, true) && add(m.new_rows, false);
+}
+
+// Interns `type` into the working state's dictionary (cloning the shared
+// dictionary first when it gets a new entry).
+uint32_t InternType(TpchQ8State &s, const std::string &type) {
+  const uint32_t found = s.types->Find(type);
+  if (found != core::StringDict::kNone)
+    return found;
+  if (s.types.use_count() > 1)
+    s.types = std::make_shared<core::StringDict>(*s.types);
+  return s.types->Intern(type);
 }
 
 } // namespace
 
-int64_t TpchQ8VolumeRaw(int64_t extendedprice_raw, int64_t discount_raw) {
-  return ComputeVolumeRaw(extendedprice_raw, discount_raw);
-}
-
-// ── Encode ──────────────────────────────────────────────────────────────────
-std::vector<uint8_t> EncodeTpchQ8AnnualCube(const TpchQ8State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kCubeMagic, kVersionV1,
-                         static_cast<uint32_t>(state.cube.size()));
-  for (const auto &cell : state.cube) {
-    writer.I32(cell.year);
-    writer.I32(cell.customer_nationkey);
-    writer.I32(cell.supplier_nationkey);
-    writer.I32(cell.part_type_index);
-    writer.I64(cell.nation_volume_raw);
-    writer.I64(cell.total_volume_raw);
-  }
-  // Encode dimension dictionaries
-  writer.U32(static_cast<uint32_t>(state.dims->part_types.size()));
-  for (const auto &pt : state.dims->part_types)
-    writer.String(pt);
-  writer.U32(static_cast<uint32_t>(state.dims->nation_name_to_key.size()));
-  for (const auto &[name, nk] : state.dims->nation_name_to_key) {
-    writer.String(name);
-    writer.I32(nk);
-  }
-  writer.U32(static_cast<uint32_t>(state.dims->nation_region.size()));
-  for (const auto &[nk, rname] : state.dims->nation_region) {
-    writer.I32(nk);
-    writer.String(rname);
-  }
-  writer.U32(static_cast<uint32_t>(state.dims->region_nations.size()));
-  for (const auto &[rname, nks] : state.dims->region_nations) {
-    writer.String(rname);
-    writer.U32(static_cast<uint32_t>(nks.size()));
-    for (const auto nk : nks)
-      writer.I32(nk);
-  }
-  // Reverse maps for maintenance
-  writer.U32(static_cast<uint32_t>(state.dims->part_key_to_type.size()));
-  for (const auto &[pk, pt] : state.dims->part_key_to_type) {
-    writer.I64(pk);
-    writer.String(pt);
-  }
-  writer.U32(static_cast<uint32_t>(state.dims->suppkey_to_nation.size()));
-  for (const auto &[sk, nk] : state.dims->suppkey_to_nation) {
-    writer.I64(sk);
-    writer.I32(nk);
-  }
-  writer.U32(static_cast<uint32_t>(state.dims->custkey_to_nation.size()));
-  for (const auto &[ck, nk] : state.dims->custkey_to_nation) {
-    writer.I64(ck);
-    writer.I32(nk);
-  }
-  writer.U32(static_cast<uint32_t>(state.dims->order_info.size()));
-  for (const auto &[ok, oi] : state.dims->order_info) {
-    writer.I64(ok);
-    writer.I64(oi.custkey);
-    writer.I32(oi.orderdate_days);
-  }
-  return std::move(writer.bytes);
-}
-
-// ── Decode ──────────────────────────────────────────────────────────────────
-bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
-                            TpchQ8State &state) {
-  TpchQ8Dimensions d;
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kCubeMagic, kVersionV1, count))
-    return false;
-
-  state.cube.clear();
-  state.cube.reserve(count);
-  for (uint32_t i = 0; i < count; ++i) {
-    TpchQ8CubeCell cell;
-    if (!reader.I32(cell.year) || !reader.I32(cell.customer_nationkey) ||
-        !reader.I32(cell.supplier_nationkey) || !reader.I32(cell.part_type_index) ||
-        !reader.I64(cell.nation_volume_raw) || !reader.I64(cell.total_volume_raw))
-      return false;
-    state.cube.push_back(cell);
-  }
-  SortCube(state.cube);
-
-  uint32_t pt_count = 0;
-  if (!reader.U32(pt_count))
-    return false;
-  d.part_types.clear();
-  d.part_type_to_index.clear();
-  d.part_types.reserve(pt_count);
-  for (uint32_t i = 0; i < pt_count; ++i) {
-    std::string pt;
-    if (!reader.String(pt))
-      return false;
-    d.part_type_to_index[pt] = static_cast<int32_t>(d.part_types.size());
-    d.part_types.push_back(pt);
-  }
-
-  uint32_t nn_count = 0;
-  if (!reader.U32(nn_count))
-    return false;
-  d.nation_name_to_key.clear();
-  for (uint32_t i = 0; i < nn_count; ++i) {
-    std::string name;
-    int32_t nk = 0;
-    if (!reader.String(name) || !reader.I32(nk))
-      return false;
-    d.nation_name_to_key[name] = nk;
-  }
-
-  uint32_t nr_count = 0;
-  if (!reader.U32(nr_count))
-    return false;
-  d.nation_region.clear();
-  for (uint32_t i = 0; i < nr_count; ++i) {
-    int32_t nk = 0;
-    std::string rname;
-    if (!reader.I32(nk) || !reader.String(rname))
-      return false;
-    d.nation_region[nk] = rname;
-  }
-
-  uint32_t rn_count = 0;
-  if (!reader.U32(rn_count))
-    return false;
-  d.region_nations.clear();
-  for (uint32_t i = 0; i < rn_count; ++i) {
-    std::string rname;
-    uint32_t nks_count = 0;
-    if (!reader.String(rname) || !reader.U32(nks_count))
-      return false;
-    auto &nks = d.region_nations[rname];
-    nks.reserve(nks_count);
-    for (uint32_t j = 0; j < nks_count; ++j) {
-      int32_t nk = 0;
-      if (!reader.I32(nk))
-        return false;
-      nks.push_back(nk);
-    }
-  }
-
-  uint32_t pkt_count = 0;
-  if (!reader.U32(pkt_count))
-    return false;
-  d.part_key_to_type.clear();
-  for (uint32_t i = 0; i < pkt_count; ++i) {
-    int64_t pk = 0;
-    std::string pt;
-    if (!reader.I64(pk) || !reader.String(pt))
-      return false;
-    d.part_key_to_type[pk] = pt;
-  }
-
-  uint32_t skn_count = 0;
-  if (!reader.U32(skn_count))
-    return false;
-  d.suppkey_to_nation.clear();
-  for (uint32_t i = 0; i < skn_count; ++i) {
-    int64_t sk = 0;
-    int32_t nk = 0;
-    if (!reader.I64(sk) || !reader.I32(nk))
-      return false;
-    d.suppkey_to_nation[sk] = nk;
-  }
-
-  uint32_t ckn_count = 0;
-  if (!reader.U32(ckn_count))
-    return false;
-  d.custkey_to_nation.clear();
-  for (uint32_t i = 0; i < ckn_count; ++i) {
-    int64_t ck = 0;
-    int32_t nk = 0;
-    if (!reader.I64(ck) || !reader.I32(nk))
-      return false;
-    d.custkey_to_nation[ck] = nk;
-  }
-
-  uint32_t oi_count = 0;
-  if (!reader.U32(oi_count))
-    return false;
-  d.order_info.clear();
-  for (uint32_t i = 0; i < oi_count; ++i) {
-    int64_t ok = 0;
-    TpchQ8Dimensions::OrderInfo oi;
-    if (!reader.I64(ok) || !reader.I64(oi.custkey) || !reader.I32(oi.orderdate_days))
-      return false;
-    d.order_info[ok] = oi;
-  }
-
-  state.dims = std::make_shared<const TpchQ8Dimensions>(std::move(d));
-  return reader.FullyConsumed();
-}
-
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
-bool TpchQ8TxnBuffer::HasPendingChanges() const { return pending; }
-void TpchQ8TxnBuffer::Clear() {
-  pending = false;
-  requires_rebuild = false;
-  deltas.clear();
-  order_info_overlay.clear();
-}
-bool TpchQ8TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
-const std::vector<TpchQ8LineitemDelta> &TpchQ8TxnBuffer::Deltas() const {
-  return deltas;
-}
-void TpchQ8TxnBuffer::MarkRebuild() {
-  pending = true;
-  requires_rebuild = true;
-  deltas.clear();
-}
-void TpchQ8TxnBuffer::AddDelta(TpchQ8LineitemDelta delta) {
-  pending = true;
-  if (delta.volume_raw != 0)
-    deltas.push_back(delta);
-}
-void TpchQ8TxnBuffer::AddOrderInfo(int64_t orderkey, int64_t custkey,
-                                  int32_t orderdate_days) {
-  pending = true;
-  order_info_overlay[orderkey] = TpchQ8Dimensions::OrderInfo{custkey,
-                                                            orderdate_days};
-}
-const std::unordered_map<int64_t, TpchQ8Dimensions::OrderInfo> &
-TpchQ8TxnBuffer::OrderInfoOverlay() const {
-  return order_info_overlay;
-}
-
-// ── Module identity ─────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ8Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ8Module::Dependencies() const {
+  // Projected columns (physical attribute numbers):
+  //   part     : p_partkey, p_type
+  //   supplier : s_suppkey, s_nationkey
+  //   customer : c_custkey, c_nationkey
+  //   orders   : o_orderkey, o_custkey, o_orderdate
+  //   lineitem : l_partkey, l_orderkey, l_suppkey, l_extendedprice, l_discount
+  //   nation   : n_nationkey, n_name, n_regionkey
+  //   region   : r_regionkey, r_name
   return {{config.part_table, {0, 1}, {0, 4}},
           {config.supplier_table, {0, 1}, {0, 3}},
           {config.customer_table, {0, 1}, {0, 3}},
@@ -503,629 +517,393 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ8Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ8TxnBuffer>();
 }
 
-// ── Build ───────────────────────────────────────────────────────────────────
-void TpchQ8Module::Build(core::AuxEngineServices &services,
-                         core::StateBuilder &builder) {
-  const auto state = BuildState(services);
-  auto typed_state = std::make_shared<const TpchQ8State>(state);
-  // Store full state in both year partitions (same full cube with both years)
+std::shared_ptr<TpchQ8State> TpchQ8Module::BuildState() const {
+  if (!initial_scan)
+    throw std::logic_error("TPC-H Q8 requires a typed initial scan source");
+  auto state = std::make_shared<TpchQ8State>();
+  TpchQ8State &s = *state;
+
+  initial_scan->ScanNations([&](const TpchQ8NationInput &input) {
+    s.nations[input.key] = {input.name, input.regionkey};
+  });
+  initial_scan->ScanRegions([&](const TpchQ8RegionInput &input) {
+    s.regions[input.key] = input.name;
+  });
+  initial_scan->ScanParts([&](const TpchQ8PartInput &input) {
+    if (!KeyOk(input.key))
+      throw std::runtime_error("TPC-H Q8: unsupported p_partkey");
+    s.part_type.Set(input.key, InternType(s, input.type));
+  });
+  initial_scan->ScanSuppliers([&](const TpchQ8SupplierInput &input) {
+    if (!KeyOk(input.key) || input.nationkey == TpchQ8State::kAbsent)
+      throw std::runtime_error("TPC-H Q8: unsupported supplier row");
+    s.supplier_nation.Set(input.key, input.nationkey);
+  });
+  initial_scan->ScanCustomers([&](const TpchQ8CustomerInput &input) {
+    if (!KeyOk(input.key) || input.nationkey == TpchQ8State::kAbsent)
+      throw std::runtime_error("TPC-H Q8: unsupported customer row");
+    s.customer_nation.Set(input.key, input.nationkey);
+  });
+  initial_scan->ScanOrders([&](const TpchQ8OrdersInput &input) {
+    if (!ApplyOrder(s, input.key, input.custkey, input.orderdate_days, +1))
+      throw std::runtime_error("TPC-H Q8: unsupported orders row");
+  });
+  initial_scan->ScanLineitems([&](const TpchQ8LineitemInput &input) {
+    int64_t volume = 0;
+    if (!VolumeRaw(input.extendedprice_raw, 2, input.discount_raw, 2, volume) ||
+        !ApplyLineitem(s, input.orderkey, input.partkey, input.suppkey, volume,
+                       +1))
+      throw std::runtime_error("TPC-H Q8: unsupported lineitem row");
+  });
+  s.orders.Shrink();
+  return state;
+}
+
+void TpchQ8Module::Build(core::AuxEngineServices &, core::StateBuilder &builder) {
+  auto image = std::make_shared<TpchQ8StateImage>();
+  image->state = BuildState();
   builder.Write(core::StateImage::Make(
-      TpchQ8Layout::kAccelerator, TpchQ8Layout::kYear1995, 0,
-      MakeStateImage(TpchQ8ImageKind::AnnualCube, 1995, typed_state)));
-  builder.Write(core::StateImage::Make(
-      TpchQ8Layout::kAccelerator, TpchQ8Layout::kYear1996, 0,
-      MakeStateImage(TpchQ8ImageKind::AnnualCube, 1996, typed_state)));
+      TpchQ8Layout::kAccelerator, kStatePartition, 0,
+      std::shared_ptr<const TpchQ8StateImage>(std::move(image))));
   builder.Finish();
 }
 
-// ── InterpretMutation ──────────────────────────────────────────────────────
 core::InvalidationPlan
 TpchQ8Module::InterpretMutation(const core::MutationBatch &mutation) const {
-  if (mutation.table == config.lineitem_table ||
-      mutation.table == config.orders_table ||
-      mutation.table == config.part_table ||
+  if (mutation.table == config.part_table ||
       mutation.table == config.supplier_table ||
       mutation.table == config.customer_table ||
+      mutation.table == config.orders_table ||
+      mutation.table == config.lineitem_table ||
       mutation.table == config.nation_table ||
       mutation.table == config.region_table) {
-    return All();
+    core::InvalidationPlan plan;
+    plan.scope =
+        ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
+    plan.partitions.insert(kStatePartition);
+    return plan;
   }
   return {};
 }
 
-// ── AccumulateMutation ─────────────────────────────────────────────────────
 void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
-                                      core::AuxEngineServices &,
+                                      core::AuxEngineServices &services,
                                       core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ8TxnBuffer &>(base_buffer);
-
-  // Dimension-table mutations (part, supplier, customer, nation, region:
-  // the state caches nation names and regions) → full rebuild
-  if (mutation.table == config.part_table ||
-      mutation.table == config.supplier_table ||
-      mutation.table == config.customer_table ||
-      mutation.table == config.nation_table ||
-      mutation.table == config.region_table) {
-    buffer.MarkRebuild();
+  if (buffer.requires_rebuild)
     return;
-  }
-
-  if (mutation.table == config.orders_table) {
-    auto add = [&](const core::AuxRow &row) {
-      int64_t orderkey = 0, custkey = 0;
-      int32_t orderdate_days = 0;
-      if (!ReadOrders(row, orderkey, custkey, orderdate_days)) {
-        buffer.MarkRebuild();
-        return;
+  if (!buffer.work) {
+    // Fork the published state (pointer copies) for this transaction.
+    const auto snapshot = services.StateStore().ReadPartitions(
+        services.CurrentVisibility(), {kStatePartition});
+    for (const auto &image : snapshot.partitions) {
+      const auto *typed = image.partition == kStatePartition
+                              ? image.As<TpchQ8StateImage>()
+                              : nullptr;
+      if (typed && typed->state) {
+        buffer.work = std::make_shared<TpchQ8State>(*typed->state);
+        buffer.base_version = image.version;
+        break;
       }
-      buffer.AddOrderInfo(orderkey, custkey, orderdate_days);
+    }
+    if (!buffer.work) {
+      buffer.MarkRebuild();
+      return;
+    }
+  }
+  TpchQ8State &s = *buffer.work;
+  buffer.pending = true;
+  buffer.rows += core::MutationRowCount(mutation);
+
+  bool ok = true;
+  if (mutation.table == config.nation_table) {
+    // Rows: nationkey, name, regionkey. A NULL name / region key makes the
+    // nation unable to join / match: it is dropped from the map.
+    for (const auto &row : mutation.old_rows) {
+      int32_t key = 0;
+      const Cell c = KeyCell(row, 0, key);
+      if (c == Cell::Bad) {
+        ok = false;
+        break;
+      }
+      if (c == Cell::Ok)
+        s.nations.erase(key);
+    }
+    for (const auto &row : mutation.new_rows) {
+      int32_t key = 0, regionkey = 0;
+      std::string name;
+      const Cell k = KeyCell(row, 0, key);
+      const Cell n = TextCell(row, 1, name);
+      const Cell r = KeyCell(row, 2, regionkey);
+      if (k == Cell::Bad || n == Cell::Bad || r == Cell::Bad) {
+        ok = false;
+        break;
+      }
+      if (k == Cell::Ok && n == Cell::Ok && r == Cell::Ok)
+        s.nations[key] = {name, regionkey};
+    }
+  } else if (mutation.table == config.region_table) {
+    for (const auto &row : mutation.old_rows) {
+      int32_t key = 0;
+      const Cell c = KeyCell(row, 0, key);
+      if (c == Cell::Bad) {
+        ok = false;
+        break;
+      }
+      if (c == Cell::Ok)
+        s.regions.erase(key);
+    }
+    for (const auto &row : mutation.new_rows) {
+      int32_t key = 0;
+      std::string name;
+      const Cell k = KeyCell(row, 0, key);
+      const Cell n = TextCell(row, 1, name);
+      if (k == Cell::Bad || n == Cell::Bad) {
+        ok = false;
+        break;
+      }
+      if (k == Cell::Ok && n == Cell::Ok)
+        s.regions[key] = name;
+    }
+  } else if (mutation.table == config.part_table) {
+    // Rows: partkey, type. A NULL type never equals the parameter.
+    Changes<uint32_t> changes;
+    const auto collect = [&](const std::vector<core::AuxRow> &rows, bool before) {
+      for (const auto &row : rows) {
+        int64_t key = 0;
+        std::string type;
+        const Cell k = IntCell(row, 0, key);
+        const Cell t = TextCell(row, 1, type);
+        if (k == Cell::Bad || t == Cell::Bad || (k == Cell::Ok && !KeyOk(key)))
+          return false;
+        if (k != Cell::Ok)
+          continue;
+        uint32_t id = TpchQ8State::kNoType;
+        if (t == Cell::Ok) {
+          id = before ? s.types->Find(type) : InternType(s, type);
+          if (before && id == core::StringDict::kNone)
+            return false; // the state has never seen this type
+        }
+        auto &change = changes
+                           .try_emplace(key, Change<uint32_t>{TpchQ8State::kNoType,
+                                                              TpchQ8State::kNoType})
+                           .first->second;
+        (before ? change.before : change.after) = id;
+      }
+      return true;
     };
-    switch (mutation.kind) {
-    case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows)
-        add(row);
-      break;
-    case core::MutationKind::Delete:
-    case core::MutationKind::Update:
-      for (const auto &row : mutation.old_rows)
-        add(row);
-      for (const auto &row : mutation.new_rows)
-        add(row);
-      break;
+    ok = collect(mutation.old_rows, true) && collect(mutation.new_rows, false);
+    for (auto it = changes.begin(); ok && it != changes.end();) {
+      if (it->second.before != s.part_type.Get(it->first)) {
+        ok = false;
+      } else if (it->second.before == it->second.after) {
+        it = changes.erase(it);
+      } else {
+        s.part_type.Set(it->first, it->second.after);
+        ++it;
+      }
     }
-    return;
+    if (ok)
+      RetypeParts(s, changes);
+  } else if (mutation.table == config.supplier_table ||
+             mutation.table == config.customer_table) {
+    const bool supplier = mutation.table == config.supplier_table;
+    Changes<int32_t> changes;
+    ok = CollectNationChanges(mutation, changes);
+    auto &arr = supplier ? s.supplier_nation : s.customer_nation;
+    for (auto it = changes.begin(); ok && it != changes.end();) {
+      if (it->second.before != arr.Get(it->first)) {
+        ok = false;
+      } else if (it->second.before == it->second.after) {
+        it = changes.erase(it);
+      } else {
+        arr.Set(it->first, it->second.after);
+        ++it;
+      }
+    }
+    if (ok) {
+      if (supplier)
+        RepointSuppliers(s, changes);
+      else
+        RepointCustomers(s, changes);
+    }
+  } else if (mutation.table == config.orders_table) {
+    const auto apply = [&](const std::vector<core::AuxRow> &rows, int sign) {
+      for (const auto &row : rows) {
+        int64_t orderkey = 0, custkey = 0;
+        int32_t day = 0;
+        const Cell a = IntCell(row, 0, orderkey);
+        const Cell b = IntCell(row, 1, custkey);
+        const Cell d = DateCell(row, 2, day);
+        if (a == Cell::Bad || b == Cell::Bad || d == Cell::Bad)
+          return false;
+        // A NULL key or date never passes the join / window predicate.
+        if (a == Cell::Null || b == Cell::Null || d == Cell::Null)
+          continue;
+        if (!ApplyOrder(s, orderkey, custkey, day, sign))
+          return false;
+      }
+      return true;
+    };
+    ok = apply(mutation.old_rows, -1) && apply(mutation.new_rows, +1);
+  } else if (mutation.table == config.lineitem_table) {
+    const auto apply = [&](const std::vector<core::AuxRow> &rows, int sign) {
+      for (const auto &row : rows) {
+        int64_t partkey = 0, orderkey = 0, suppkey = 0, price = 0, discount = 0;
+        int32_t price_scale = 0, discount_scale = 0;
+        const Cell cells[5] = {IntCell(row, 0, partkey),
+                               IntCell(row, 1, orderkey),
+                               IntCell(row, 2, suppkey),
+                               DecimalCell(row, 3, price, price_scale),
+                               DecimalCell(row, 4, discount, discount_scale)};
+        bool null_cell = false;
+        for (const Cell c : cells) {
+          if (c == Cell::Bad)
+            return false;
+          null_cell = null_cell || c == Cell::Null;
+        }
+        if (null_cell)
+          continue; // never joins / NULL volume
+        int64_t volume = 0;
+        if (!VolumeRaw(price, price_scale, discount, discount_scale, volume) ||
+            !ApplyLineitem(s, orderkey, partkey, suppkey, volume, sign))
+          return false;
+      }
+      return true;
+    };
+    ok = apply(mutation.old_rows, -1) && apply(mutation.new_rows, +1);
   }
-
-  if (mutation.table != config.lineitem_table)
-    return;
-
-  auto add = [&](const core::AuxRow &row, int8_t sign) {
-    TpchQ8LineitemInput input;
-    if (!ReadLineitem(row, input)) {
-      buffer.MarkRebuild();
-      return;
-    }
-    const int64_t volume = ComputeVolumeRaw(input.extendedprice_raw,
-                                            input.discount_raw);
-    buffer.AddDelta({input.partkey, input.orderkey, input.suppkey,
-                     volume, sign});
-  };
-
-  switch (mutation.kind) {
-  case core::MutationKind::Insert:
-    for (const auto &row : mutation.new_rows)
-      add(row, 1);
-    break;
-  case core::MutationKind::Delete:
-    for (const auto &row : mutation.old_rows)
-      add(row, -1);
-    break;
-  case core::MutationKind::Update:
-    if (mutation.old_rows.size() != mutation.new_rows.size()) {
-      buffer.MarkRebuild();
-      return;
-    }
-    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-      add(mutation.old_rows[i], -1);
-      add(mutation.new_rows[i], 1);
-    }
-    break;
-  }
+  if (!ok)
+    buffer.MarkRebuild();
 }
 
-// ── StageMaintenance ───────────────────────────────────────────────────────
 core::StagedMaintenanceOutcome
 TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
                                const core::InvalidationPlan &,
                                core::AuxTxnBuffer &base_buffer) {
-  auto &buffer = dynamic_cast<TpchQ8TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
-
-  if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+  auto &buffer = dynamic_cast<TpchQ8TxnBuffer &>(base_buffer);
+  const auto rebuild = [&] {
+    core::FinishRebuildAll(outcome);
     return outcome;
-  }
-  if (buffer.Deltas().empty())
+  };
+  if (buffer.RequiresRebuild())
+    return rebuild();
+  if (!buffer.HasPendingChanges() || !buffer.work)
     return outcome;
 
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, false, true,
-       false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    core::FinishRebuildAll(outcome);
-    return outcome;
-  }
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
+      {std::max<uint64_t>(1, buffer.rows), 1, true, false, true, false, false,
+       core::MaintenanceAction::NoOp, services.ExpectedQueriesBeforeNextWrite()});
+  if (decision.action != core::MaintenanceAction::ApplyDelta)
+    return rebuild();
 
-  // Read existing state — dense cube is copied contiguously (memcpy); dimensions are shared (COW on write).
-  core::Version existing_version = 0;
-  const auto visibility = services.CurrentVisibility();
-  const auto snapshot = services.StateStore().ReadPartitions(
-      visibility, {TpchQ8Layout::kYear1995});
-  std::shared_ptr<TpchQ8State> new_state;
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == TpchQ8Layout::kYear1995) {
-      const auto *typed = AsQ8Image(image, TpchQ8ImageKind::AnnualCube);
-      if (!typed) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      new_state = std::make_shared<TpchQ8State>();
-      new_state->cube = typed->state->cube;  // vector copy: contiguous, no rehash
-      new_state->dims = typed->state->dims;  // shared — cheap
-      existing_version = image.version;
-      break;
-    }
-  }
-  if (!new_state) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  // COW helper: only deep-copy dims when a write to them is actually needed.
-  const TpchQ8Dimensions *dims = new_state->dims.get();
-  std::shared_ptr<TpchQ8Dimensions> mutable_dims;
-
-  auto EnsureMutableDims = [&]() {
-    if (!mutable_dims) {
-      mutable_dims = std::make_shared<TpchQ8Dimensions>(*dims);
-      new_state->dims = mutable_dims;
-      dims = mutable_dims.get();
-    }
-  };
-
-  // Apply each delta to the cube
-  for (const auto &delta : buffer.Deltas()) {
-    // Resolve dimension keys
-    auto pk_it = dims->part_key_to_type.find(delta.partkey);
-    if (pk_it == dims->part_key_to_type.end()) {
-      if (!initial_scan) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      TpchQ8PartInput part;
-      if (!initial_scan->LookupPart(delta.partkey, part) || part.type.empty()) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      EnsureMutableDims();
-      mutable_dims->part_key_to_type[delta.partkey] = part.type;
-      if (mutable_dims->part_type_to_index.find(part.type) ==
-          mutable_dims->part_type_to_index.end()) {
-        mutable_dims->part_type_to_index[part.type] =
-            static_cast<int32_t>(mutable_dims->part_types.size());
-        mutable_dims->part_types.push_back(part.type);
-      }
-      pk_it = mutable_dims->part_key_to_type.find(delta.partkey);
-    }
-    const auto &part_type = pk_it->second;
-
-    auto sk_it = dims->suppkey_to_nation.find(delta.suppkey);
-    if (sk_it == dims->suppkey_to_nation.end()) {
-      if (!initial_scan) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      TpchQ8SupplierInput supplier;
-      if (!initial_scan->LookupSupplier(delta.suppkey, supplier)) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      EnsureMutableDims();
-      mutable_dims->suppkey_to_nation[delta.suppkey] = supplier.nationkey;
-      sk_it = mutable_dims->suppkey_to_nation.find(delta.suppkey);
-    }
-    const int32_t supplier_nationkey = sk_it->second;
-
-    // Resolve order → customer → nation
-    const TpchQ8Dimensions::OrderInfo *order_info = nullptr;
-    const auto overlay_it = buffer.OrderInfoOverlay().find(delta.orderkey);
-    if (overlay_it != buffer.OrderInfoOverlay().end()) {
-      order_info = &overlay_it->second;
-    } else {
-      auto oi_it = dims->order_info.find(delta.orderkey);
-      if (oi_it != dims->order_info.end())
-        order_info = &oi_it->second;
-    }
-    int32_t customer_nationkey = -1;
-    if (order_info) {
-      auto ck_it = dims->custkey_to_nation.find(order_info->custkey);
-      if (ck_it != dims->custkey_to_nation.end())
-        customer_nationkey = ck_it->second;
-    }
-    if (customer_nationkey < 0) {
-      if (!initial_scan) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      TpchQ8OrdersInput order;
-      if (!initial_scan->LookupOrder(delta.orderkey, order)) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      EnsureMutableDims();
-      mutable_dims->order_info[delta.orderkey] =
-          TpchQ8Dimensions::OrderInfo{order.custkey, order.orderdate_days};
-      auto ck_it = mutable_dims->custkey_to_nation.find(order.custkey);
-      if (ck_it == mutable_dims->custkey_to_nation.end()) {
-        TpchQ8CustomerInput customer;
-        if (!initial_scan->LookupCustomer(order.custkey, customer)) {
-          outcome.action = core::MaintenanceAction::RebuildAll;
-          outcome.invalidations = All();
-          outcome.pending_rebuild = outcome.invalidations;
-          return outcome;
-        }
-        mutable_dims->custkey_to_nation[order.custkey] = customer.nationkey;
-        ck_it = mutable_dims->custkey_to_nation.find(order.custkey);
-      }
-      customer_nationkey = ck_it->second;
-      order_info = &mutable_dims->order_info[delta.orderkey];
-    }
-
-    const int32_t year = OrderDateToYear(order_info->orderdate_days);
-    if (year != 1995 && year != 1996)
-      continue;
-
-    const auto pt_idx =
-        dims->part_type_to_index.find(part_type);
-    if (pt_idx == dims->part_type_to_index.end())
-      continue;
-
-    auto *cell = CubeCellFindOrInsert(new_state->cube, year, customer_nationkey,
-                                      supplier_nationkey, pt_idx->second);
-    const int64_t signed_vol =
-        static_cast<int64_t>(delta.sign) * delta.volume_raw;
-    cell->total_volume_raw += signed_vol;
-    // nation_volume is added for all cells; which nation the volume is
-    // attributed to is determined at query time by filtering on supplier_nation
-    cell->nation_volume_raw += signed_vol;
-  }
-
+  auto image = std::make_shared<TpchQ8StateImage>();
+  image->state = std::move(buffer.work);
   outcome.action = core::MaintenanceAction::ApplyDelta;
-  const auto typed_state =
-      std::static_pointer_cast<const TpchQ8State>(std::move(new_state));
-  // Publish to both year partitions
   outcome.updates.push_back(core::StateImage::Make(
-      TpchQ8Layout::kAccelerator, TpchQ8Layout::kYear1995, existing_version,
-      MakeStateImage(TpchQ8ImageKind::AnnualCube, 1995, typed_state)));
-  outcome.updates.push_back(core::StateImage::Make(
-      TpchQ8Layout::kAccelerator, TpchQ8Layout::kYear1996, existing_version,
-      MakeStateImage(TpchQ8ImageKind::AnnualCube, 1996, typed_state)));
+      TpchQ8Layout::kAccelerator, kStatePartition, buffer.base_version,
+      std::shared_ptr<const TpchQ8StateImage>(std::move(image))));
   return outcome;
 }
 
-// ── CheckValidity ──────────────────────────────────────────────────────────
 bool TpchQ8Module::CheckValidity(core::AuxEngineServices &services,
-                                 const core::QueryArguments &arguments) const {
-  if (arguments.values.size() < 3)
-    return false;
+                                 const core::QueryArguments &) const {
   return services.StateStore()
       .CheckValidity({Id(), {}}, services.CurrentVisibility())
       .IsValid();
 }
 
-// ── ResolveBindings ────────────────────────────────────────────────────────
-bool TpchQ8Module::ResolveBindings(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments,
-                                   std::string &nation_name,
-                                   std::string &region_name,
-                                   std::string &part_type) const {
-  (void)services;
-  if (arguments.values.size() < 3)
-    return false;
-  if (arguments.values[0].is_null || arguments.values[1].is_null ||
-      arguments.values[2].is_null)
-    return false;
-  nation_name = std::get<std::string>(arguments.values[0].payload);
-  region_name = std::get<std::string>(arguments.values[1].payload);
-  part_type = std::get<std::string>(arguments.values[2].payload);
-  return !nation_name.empty() && !region_name.empty() && !part_type.empty();
-}
-
-// ── Execute ────────────────────────────────────────────────────────────────
 void TpchQ8Module::Execute(core::AuxEngineServices &services,
                            const core::QueryArguments &arguments,
                            core::AuxRowSink &sink) {
-  std::string nation_name, region_name, part_type;
-  if (!ResolveBindings(services, arguments, nation_name, region_name, part_type)) {
+  if (!CheckValidity(services, arguments)) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-
-  if (!services.StateStore()
-           .CheckValidity({Id(), {}}, services.CurrentVisibility())
-           .IsValid()) {
-    ExecuteFallback(services, arguments, sink);
-    return;
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(), {kStatePartition});
+  for (const auto &image : snapshot.partitions) {
+    const auto *typed = image.partition == kStatePartition
+                            ? image.As<TpchQ8StateImage>()
+                            : nullptr;
+    if (typed && typed->state) {
+      const auto hold = image.payload; // keep the state alive while emitting
+      EmitResult(*typed->state, arguments, sink);
+      return;
+    }
   }
-
-  std::shared_ptr<const TpchQ8State> state;
-  if (!LoadState(services, state)) {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
-
-  EmitResult(*state, nation_name, region_name, part_type, services, sink);
+  ExecuteFallback(services, arguments, sink);
 }
 
-void TpchQ8Module::ExecuteFallback(core::AuxEngineServices &services,
+void TpchQ8Module::ExecuteFallback(core::AuxEngineServices &,
                                    const core::QueryArguments &arguments,
                                    core::AuxRowSink &sink) {
-  std::string nation_name, region_name, part_type;
-  if (!ResolveBindings(services, arguments, nation_name, region_name, part_type)) {
-    sink.Begin(core::OutputSchema{});
-    sink.End();
-    return;
-  }
-
-  EmitResult(BuildState(services), nation_name, region_name, part_type,
-             services, sink);
+  const auto state = BuildState();
+  EmitResult(*state, arguments, sink);
 }
 
-// ── BuildState ─────────────────────────────────────────────────────────────
-TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
-  TpchQ8State state;
-  TpchQ8Dimensions dims;
-  // Build-time aggregation uses a temporary hash map for O(N) inserts.  The
-  // finalized state stores a dense, sorted vector so point-write maintenance
-  // can copy it with a cheap contiguous memcpy.
-  std::unordered_map<TpchQ8CubeKey, TpchQ8State::VolumePair,
-                     TpchQ8CubeKeyHash> build_cube;
-  if (!initial_scan)
-    throw std::logic_error("TPC-H Q8 aux requires a typed initial scan source");
-
-  // Build dimension dictionaries: parts
-  std::unordered_map<int64_t, std::string> part_type_map;
-  initial_scan->ScanParts([&](const TpchQ8PartInput &input) {
-    if (input.key <= 0)
-      return;
-    part_type_map[input.key] = input.type;
-    dims.part_key_to_type[input.key] = input.type;
-    if (dims.part_type_to_index.find(input.type) ==
-        dims.part_type_to_index.end()) {
-      dims.part_type_to_index[input.type] =
-          static_cast<int32_t>(dims.part_types.size());
-      dims.part_types.push_back(input.type);
-    }
-  });
-
-  // Build dimension dictionaries: suppliers
-  initial_scan->ScanSuppliers([&](const TpchQ8SupplierInput &input) {
-    if (input.key <= 0)
-      return;
-    dims.suppkey_to_nation[input.key] = input.nationkey;
-  });
-
-  // Build dimension dictionaries: customers
-  initial_scan->ScanCustomers([&](const TpchQ8CustomerInput &input) {
-    if (input.key <= 0)
-      return;
-    dims.custkey_to_nation[input.key] = input.nationkey;
-  });
-
-  // Build orders map
-  initial_scan->ScanOrders([&](const TpchQ8OrdersInput &input) {
-    if (input.key <= 0)
-      return;
-    dims.order_info[input.key] =
-        TpchQ8Dimensions::OrderInfo{input.custkey, input.orderdate_days};
-  });
-
-  // Build nation/region dictionaries in one pass each.
-  std::unordered_map<int32_t, std::string> regionkey_to_name;
-  initial_scan->ScanRegions([&](const TpchQ8RegionInput &input) {
-    regionkey_to_name[input.key] = input.name;
-  });
-
-  initial_scan->ScanNations([&](const TpchQ8NationInput &input) {
-    dims.nation_name_to_key[input.name] = input.key;
-    const auto rit = regionkey_to_name.find(input.regionkey);
-    if (rit != regionkey_to_name.end()) {
-      dims.nation_region[input.key] = rit->second;
-      dims.region_nations[rit->second].push_back(input.key);
-    }
-  });
-
-  // Now scan lineitems and build the cube
-  initial_scan->ScanLineitems([&](const TpchQ8LineitemInput &input) {
-    if (input.partkey <= 0 || input.orderkey <= 0 || input.suppkey <= 0)
-      return;
-
-    // Resolve part type
-    const auto pt_it = part_type_map.find(input.partkey);
-    if (pt_it == part_type_map.end())
-      return;
-    const auto &pt = pt_it->second;
-    const auto pt_idx_it = dims.part_type_to_index.find(pt);
-    if (pt_idx_it == dims.part_type_to_index.end())
-      return;
-
-    // Resolve order → customer → nation
-    const auto oi_it = dims.order_info.find(input.orderkey);
-    if (oi_it == dims.order_info.end())
-      return;
-    const auto &oi = oi_it->second;
-    const auto ckn_it = dims.custkey_to_nation.find(oi.custkey);
-    if (ckn_it == dims.custkey_to_nation.end())
-      return;
-    const int32_t customer_nationkey = ckn_it->second;
-
-    // Resolve supplier nation
-    const auto skn_it = dims.suppkey_to_nation.find(input.suppkey);
-    if (skn_it == dims.suppkey_to_nation.end())
-      return;
-
-    const int32_t year = OrderDateToYear(oi.orderdate_days);
-    if (year != 1995 && year != 1996)
-      return;
-
-    const int64_t volume = ComputeVolumeRaw(input.extendedprice_raw,
-                                            input.discount_raw);
-
-    TpchQ8CubeKey key;
-    key.year = year;
-    key.customer_nationkey = customer_nationkey;
-    key.supplier_nationkey = skn_it->second;
-    key.part_type_index = pt_idx_it->second;
-    auto &vol = build_cube[key];
-    vol.nation_volume_raw += volume;
-    vol.total_volume_raw += volume;
-  });
-
-  state.cube.reserve(build_cube.size());
-  for (auto &[key, vol] : build_cube) {
-    state.cube.push_back({key.year, key.customer_nationkey,
-                          key.supplier_nationkey, key.part_type_index,
-                          vol.nation_volume_raw, vol.total_volume_raw});
-  }
-  SortCube(state.cube);
-
-  // Keep reverse maps published. PostgreSQL PreCommit cannot safely run SPI
-  // InitialScan lookups, and RF inserts/deletes need order/part/supplier
-  // resolution without falling back to RebuildAll.
-
-  state.dims = std::make_shared<const TpchQ8Dimensions>(std::move(dims));
-  return state;
-}
-
-// ── LoadState ──────────────────────────────────────────────────────────────
-bool TpchQ8Module::LoadState(core::AuxEngineServices &services,
-                             std::shared_ptr<const TpchQ8State> &state) const {
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {TpchQ8Layout::kYear1995, TpchQ8Layout::kYear1996});
-  for (const auto &image : snapshot.partitions) {
-    const auto *typed = AsQ8Image(image, TpchQ8ImageKind::AnnualCube);
-    if (!typed)
-      continue;
-    state = typed->state;
-    return true;
-  }
-  return false;
-}
-
-// ── EmitResult ─────────────────────────────────────────────────────────────
-void TpchQ8Module::EmitResult(const TpchQ8State &state,
-                              const std::string &nation_name,
-                              const std::string &region_name,
-                              const std::string &part_type,
-                              core::AuxEngineServices &services,
+void TpchQ8Module::EmitResult(const TpchQ8State &s,
+                              const core::QueryArguments &arguments,
                               core::AuxRowSink &sink) const {
-  (void)services;
+  sink.Begin({{{"o_year", core::AuxType::Int64, false},
+               {"mkt_share", core::AuxType::String, false}}});
 
-  // Resolve target nationkey
-  int32_t target_nationkey = -1;
-  const auto nn_it = state.dims->nation_name_to_key.find(nation_name);
-  if (nn_it != state.dims->nation_name_to_key.end())
-    target_nationkey = nn_it->second;
-
-  // Resolve part type index
-  const auto pt_it = state.dims->part_type_to_index.find(part_type);
-  if (pt_it == state.dims->part_type_to_index.end()) {
-    sink.Begin(core::OutputSchema{});
-    sink.End();
-    return;
-  }
-  const int32_t pt_index = pt_it->second;
-
-  // Resolve region nations
-  const auto rn_it = state.dims->region_nations.find(region_name);
-  if (rn_it == state.dims->region_nations.end() || rn_it->second.empty()) {
-    sink.Begin(core::OutputSchema{});
-    sink.End();
-    return;
-  }
-  const auto &region_nationkeys = rn_it->second;
-  std::unordered_set<int32_t> region_set(region_nationkeys.begin(),
-                                         region_nationkeys.end());
-
-  // Aggregate: year → (nation_volume, total_volume)
-  struct YearAgg {
-    int64_t nation_volume_raw = 0;
-    int64_t total_volume_raw = 0;
+  // NULL parameters make their comparison NULL: nothing matches (for the
+  // nation parameter: the CASE never takes its THEN branch).
+  const auto text_arg = [&](std::size_t i, std::string &out) {
+    if (i >= arguments.values.size() || arguments.values[i].is_null ||
+        !std::holds_alternative<std::string>(arguments.values[i].payload))
+      return false;
+    out = std::get<std::string>(arguments.values[i].payload);
+    return true;
   };
-  YearAgg year_aggs[2];
-  static constexpr int32_t kYear1995 = 1995;
-  static constexpr int32_t kYear1996 = 1996;
+  std::string nation, region, type;
+  const bool have_nation = text_arg(0, nation);
+  const bool have_region = text_arg(1, region);
+  const bool have_type = text_arg(2, type);
 
-  for (const auto &cell : state.cube) {
-    if (cell.year != kYear1995 && cell.year != kYear1996)
-      continue;
-    if (cell.part_type_index != pt_index)
-      continue;
-    // Customer nation must be in region
-    if (region_set.find(cell.customer_nationkey) == region_set.end())
-      continue;
-
-    const int year_idx = cell.year == kYear1995 ? 0 : 1;
-    year_aggs[year_idx].total_volume_raw += cell.total_volume_raw;
-    if (target_nationkey >= 0 && cell.supplier_nationkey == target_nationkey)
-      year_aggs[year_idx].nation_volume_raw += cell.nation_volume_raw;
+  Int128 total[2] = {0, 0}, nation_sum[2] = {0, 0};
+  int64_t total_rows[2] = {0, 0}, nation_rows[2] = {0, 0};
+  const uint32_t type_id = have_type ? s.types->Find(type) : core::StringDict::kNone;
+  if (have_region && type_id != core::StringDict::kNone) {
+    // r_name = region; n1 (customer nation) in such a region; n2 (supplier
+    // nation) is any existing nation, matched against the parameter by name.
+    std::set<int32_t> region_keys;
+    for (const auto &[key, name] : s.regions)
+      if (name == region)
+        region_keys.insert(key);
+    const auto *cube = s.cubes.Find(type_id);
+    if (cube && *cube) {
+      for (const auto &cell : **cube) {
+        const int y = cell.year - kTpchQ8MinYear;
+        const auto cust = s.nations.find(cell.customer_nationkey);
+        const auto supp = s.nations.find(cell.supplier_nationkey);
+        if (y < 0 || y > 1 || cust == s.nations.end() ||
+            supp == s.nations.end() || !region_keys.count(cust->second.regionkey))
+          continue;
+        total[y] += cell.volume;
+        total_rows[y] += cell.rows;
+        if (have_nation && supp->second.name == nation) {
+          nation_sum[y] += cell.volume;
+          nation_rows[y] += cell.rows;
+        }
+      }
+    }
   }
 
-  // Build output rows sorted by year.
-  // SQL GROUP BY only emits years with at least one qualifying fact row;
-  // a year with no denominator does not appear in the result set.
-  std::vector<TpchQ8OutputRow> output_rows;
-  output_rows.reserve(2);
-  for (int i = 0; i < 2; ++i) {
-    const auto &agg = year_aggs[i];
-    if (agg.total_volume_raw == 0)
-      continue;
-    const int64_t year = i == 0 ? kYear1995 : kYear1996;
-    // Compute market share as double
-    // nation_volume_raw / total_volume_raw
-    // Both are scaled by 4 (extendedprice scale 2 * discount scale 2)
-    // The ratio cancels the scale.
-    double mkt_share = static_cast<double>(agg.nation_volume_raw) /
-                       static_cast<double>(agg.total_volume_raw);
-    output_rows.push_back({year, mkt_share});
-  }
-
-  // Sort by year
-  std::sort(output_rows.begin(), output_rows.end(),
-            [](const TpchQ8OutputRow &a, const TpchQ8OutputRow &b) {
-              return a.o_year < b.o_year;
-            });
-
-  sink.Begin(core::OutputSchema{});
-  for (const auto &row : output_rows) {
-    core::AuxRow out;
-    out.values.reserve(2);
-    out.values.push_back(core::AuxValue::Of(core::AuxType::Int64, row.o_year));
-    out.values.push_back(core::AuxValue::Of(core::AuxType::Double,
-                                            row.mkt_share));
-    sink.WriteRow(out);
+  namespace pgn = ::accelerator_codegen::pg_numeric;
+  for (int y = 0; y < 2; ++y) {
+    if (total_rows[y] <= 0)
+      continue; // no row in this year's group
+    // SUM(CASE ... ELSE 0 END) has scale 4 iff some row took the THEN branch
+    // (every other input is the integer literal 0, scale 0).
+    const auto share = pgn::DivRound(nation_sum[y], nation_rows[y] > 0 ? kVolumeScale : 0,
+                                     total[y], kVolumeScale);
+    sink.WriteRow(
+        {{core::AuxValue::Of(core::AuxType::Int64,
+                             static_cast<int64_t>(kTpchQ8MinYear + y)),
+          core::AuxValue::Of(core::AuxType::String, pgn::ToText(share))}});
   }
   sink.End();
 }

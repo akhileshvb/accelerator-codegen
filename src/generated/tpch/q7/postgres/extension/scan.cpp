@@ -11,6 +11,9 @@
 #include "postgres/engine_runtime.hpp"
 #include "postgres/runtime.hpp"
 
+#include <stdexcept>
+#include <string>
+
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
 namespace {
@@ -127,9 +130,31 @@ core::AuxValue TextArg(FunctionCallInfo fcinfo, int index) {
                                   detail::TextDatum(PG_GETARG_DATUM(index)));
 }
 
+// Exceptions must not leave the extension function (an uncaught C++ exception
+// would terminate the backend): report them as a SQL error.
+template <typename F> void RunOrReport(F &&run) {
+  std::string message;
+  bool division_by_zero = false;
+  try {
+    run();
+  } catch (const std::domain_error &e) {
+    message = e.what();
+    division_by_zero = true;
+  } catch (const std::exception &e) {
+    message = e.what();
+  }
+  if (!message.empty()) {
+    if (division_by_zero)
+      ereport(ERROR, (errcode(ERRCODE_DIVISION_BY_ZERO), errmsg("%s", message.c_str())));
+    ereport(ERROR, (errmsg("accelerator: %s", message.c_str())));
+  }
+}
+
 void ExecutePostgresTpchQ7(FunctionCallInfo fcinfo) {
-  detail::Q7Runtime().Execute(
-      core::QueryArguments{{TextArg(fcinfo, 0), TextArg(fcinfo, 1)}}, fcinfo);
+  RunOrReport([&] {
+    detail::Q7Runtime().Execute(
+        core::QueryArguments{{TextArg(fcinfo, 0), TextArg(fcinfo, 1)}}, fcinfo);
+  });
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
