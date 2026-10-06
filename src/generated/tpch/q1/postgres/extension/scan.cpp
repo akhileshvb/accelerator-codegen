@@ -9,6 +9,7 @@
 
 
 #include "accelerator_codegen/stateful/core/decimal_text_g1.hpp"
+#include "accelerator_codegen/stateful/core/sql_date.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
 #include "postgres/engine_runtime.hpp"
 #include "postgres/runtime.hpp"
@@ -99,6 +100,17 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ1(FunctionCallInfo fcinfo) {
+  // DATE '1998-12-01' - INTERVAL 'DELTA' DAY is a timestamp (4713 BC ..
+  // 294276 AD): outside it PostgreSQL raises an error, so do we.
+  namespace sd = accelerator_codegen::aux_state::core::sql_date;
+  if (!PG_ARGISNULL(0)) {
+    const int64_t cutoff = sd::DaysFromCivil(1998, 12, 1) -
+                           static_cast<int64_t>(PG_GETARG_INT32(0));
+    if (cutoff < sd::DaysFromCivil(-4712, 11, 24) ||
+        cutoff > sd::DaysFromCivil(294276, 12, 31))
+      ereport(ERROR, (errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+                      errmsg("timestamp out of range")));
+  }
   // A NULL DELTA makes the predicate NULL: no row qualifies.
   detail::Q1Runtime().Execute(
       core::QueryArguments{{PG_ARGISNULL(0)

@@ -17,16 +17,16 @@ constexpr int32_t kEpoch = 719468;
 // The single state image's partition id.
 constexpr core::PartitionId kStatePartition = 0;
 
-constexpr int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
+constexpr int64_t DaysFromCivil(int64_t year, unsigned month, unsigned day) {
   year -= month <= 2;
-  const int32_t era = (year >= 0 ? year : year - 399) / 400;
+  const int64_t era = (year >= 0 ? year : year - 399) / 400;
   const unsigned yoe = static_cast<unsigned>(year - era * 400);
   const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
   const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int32_t>(doe) - kEpoch;
+  return era * 146097 + static_cast<int64_t>(doe) - kEpoch;
 }
 
-constexpr int32_t kQ1BaseDays = DaysFromCivil(1998, 12, 1);
+constexpr int64_t kQ1BaseDays = DaysFromCivil(1998, 12, 1);
 
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
@@ -337,7 +337,9 @@ bool CutoffOf(const core::QueryArguments &arguments, int64_t &cutoff_days) {
     return false;
   cutoff_days = static_cast<int64_t>(kQ1BaseDays) -
                 std::get<int64_t>(arguments.values[0].payload);
-  return true;
+  // MySQL: DATE_SUB outside 0000-01-01 .. 9999-12-31 is NULL: no row qualifies.
+  return cutoff_days >= DaysFromCivil(0, 1, 1) &&
+         cutoff_days <= DaysFromCivil(9999, 12, 31);
 }
 
 } // namespace
