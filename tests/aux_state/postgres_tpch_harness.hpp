@@ -306,6 +306,12 @@ inline void EnsureExtension(const Tools &tools) {
   if (!(present.first && TrimLines(present.second).find('1') != std::string::npos)) {
     Require(RunPsqlFile(tools, register_sql),
             "failed to register TPC-H SQL functions from " + register_sql);
+  } else {
+    // Always re-create the per-query functions from the loaded module: a DB
+    // restored from an older build may carry stale signatures (calling one
+    // with the wrong argument types crashes the backend).
+    Require(RunSQL(tools, "SELECT accel_postgres_register_queries()"),
+            "accel_postgres_register_queries() failed");
   }
 }
 
