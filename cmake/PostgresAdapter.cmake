@@ -59,19 +59,8 @@ function(accel_build_postgres_extension)
   list(SORT _pg_query_sources)
   list(APPEND _pg_ext_sources ${_pg_query_sources})
 
-  # Verus-verified stateless Q1 (scripts/build_q1_verus.sh builds the archive).
-  set(_pg_q1_verus_lib "${CMAKE_CURRENT_SOURCE_DIR}/build-verus/libq1_verus.a")
-  if(EXISTS "${_pg_q1_verus_lib}")
-    file(GLOB _pg_verus_entries CONFIGURE_DEPENDS
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/*/q*/postgres/verus/entry.cpp")
-    list(APPEND _pg_ext_sources ${_pg_verus_entries})
-  endif()
-
   if(_pg_ext_sources)
     add_library(accelerator_codegen_pg MODULE ${_pg_ext_sources})
-    if(EXISTS "${_pg_q1_verus_lib}")
-      target_link_libraries(accelerator_codegen_pg PRIVATE ${_pg_q1_verus_lib} pthread dl m)
-    endif()
     set_target_properties(accelerator_codegen_pg PROPERTIES
       PREFIX ""
       SUFFIX ".so"

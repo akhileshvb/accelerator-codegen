@@ -22,10 +22,7 @@ cd "${DEST}"
 shopt -s nullglob
 remove=(
   src/generated/tpch/q[0-9]* src/generated/sec_edgar/q[0-9]*
-  src/verus/q1 src/verus/q21 src/verus/gen
-  include/accelerator_codegen/verus/q1_verus.h include/accelerator_codegen/verus/q21_verus.h
   src/verus/sql2verus/queries/*.inputs
-  tests/verification/q1verus tests/verification/q21verus tests/verification/verus_kit/q21_spec
   pipeline/artifacts pipeline/verus_runs
 )
 for p in "${remove[@]}"; do rm -rf -- "${DEST:?}/${p}"; done

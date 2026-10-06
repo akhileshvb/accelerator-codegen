@@ -1,1 +1,0 @@
-INSERT INTO lineitem SELECT * REPLACE (l_suppkey % 10 + 1 AS l_suppkey, l_linenumber + 100 AS l_linenumber, l_commitdate - 5 AS l_receiptdate) FROM lineitem WHERE rowid = (SELECT rowid FROM lineitem ORDER BY hash(rowid + 34) LIMIT 1);

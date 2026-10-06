@@ -41,14 +41,5 @@ want aux && for q in $(seq 1 22); do
   run "aux_q${q}" "${B}/test_tpch_shared_differential" "${TPCH}" "${q}"
 done
 want incremental && run incremental "${B}/test_shared_incremental_differential" "${TPCH}" "${SEC}"
-if want verus && [[ -x "${B}/verus_kit_runner" ]]; then
-  cp "${SMALL}" "${WORK}/kit.duckdb"
-  run verus_kit_q21 "${B}/verus_kit_runner" differential "${WORK}/kit.duckdb" tpch_q21_verus_kit \
-    "${ROOT}/tests/verification/verus_kit/q21_spec"
-fi
-if want verus && [[ -x "${B}/q21_verus_duckdb_snapshots" ]]; then
-  cp "${SMALL}" "${WORK}/snap.duckdb"
-  run verus_q21_snapshots "${B}/q21_verus_duckdb_snapshots" "${WORK}/snap.duckdb" 20 2 7
-fi
 echo "summary pass=${pass} fail=${fail} ${failed[*]:-}"
 [[ ${fail} -eq 0 ]]

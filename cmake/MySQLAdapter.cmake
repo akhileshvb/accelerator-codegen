@@ -30,24 +30,6 @@ function(accel_build_mysql_plugin)
   list(SORT _mysql_query_plugin_sources)
   list(APPEND _mysql_plugin_sources ${_mysql_query_plugin_sources})
 
-  # Verus-verified stateless queries (e.g. scripts/build_q1_verus.sh builds
-  # build-verus/libq1_verus.a): src/generated/<bench>/q<N>/mysql/verus/entry.cpp
-  # is linked when build-verus/libq<N>_verus.a exists.
-  set(_mysql_verus_libs "")
-  file(GLOB _mysql_verus_entries CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/*/q*/mysql/verus/entry.cpp")
-  list(SORT _mysql_verus_entries)
-  foreach(_entry IN LISTS _mysql_verus_entries)
-    get_filename_component(_verus_dir "${_entry}" DIRECTORY)
-    get_filename_component(_verus_dir "${_verus_dir}" DIRECTORY)
-    get_filename_component(_verus_q "${_verus_dir}" NAME)
-    set(_verus_lib "${CMAKE_CURRENT_SOURCE_DIR}/build-verus/lib${_verus_q}_verus.a")
-    if(EXISTS "${_verus_lib}")
-      list(APPEND _mysql_plugin_sources "${_entry}")
-      list(APPEND _mysql_verus_libs "${_verus_lib}")
-    endif()
-  endforeach()
-
   add_library(accelerator_codegen_mysql MODULE ${_mysql_plugin_sources})
   set_target_properties(accelerator_codegen_mysql PROPERTIES
     PREFIX ""
@@ -58,9 +40,6 @@ function(accel_build_mysql_plugin)
       accelerator_codegen
       duckdb_sibling
   )
-  if(_mysql_verus_libs)
-    target_link_libraries(accelerator_codegen_mysql PRIVATE ${_mysql_verus_libs} pthread dl m)
-  endif()
   target_include_directories(accelerator_codegen_mysql
     PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include
