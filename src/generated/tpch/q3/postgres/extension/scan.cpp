@@ -4,7 +4,6 @@
 // Finalize headers pull in DuckDB types; include them before PostgreSQL
 // headers to avoid timestamp.h macro collisions.
 #include "tpch/q3/postgres/aux/module.hpp"
-#include "tpch/q3/layout.hpp"
 
 
 #include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
@@ -19,65 +18,71 @@ namespace pg_tbl = accelerator_codegen::aux_state::engine::postgres::tpch_tables
 
 namespace scans {
 
-void ScanTpchQ3Customers(
-    const std::function<void(const query::TpchQ3CustomerInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT c_custkey, c_mktsegment FROM customer",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1)});
-      });
-}
-
-void ScanTpchQ3Orders(
-    const std::function<void(const query::TpchQ3OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_orderdate, o_custkey, o_shippriority FROM orders",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedDate(tuple, tuple_desc, 1),
-                  TypedInt(tuple, tuple_desc, 2),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 3))});
-      });
-}
-
-void ScanTpchQ3Lineitems(
-    const std::function<void(const query::TpchQ3LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_orderkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedDecimalRaw(tuple, tuple_desc, 1), 2,
-                  TypedDecimalRaw(tuple, tuple_desc, 2), 2,
-                  TypedDate(tuple, tuple_desc, 3)});
-      });
+// customer ⨝ orders ⨝ lineitem, one row per lineitem, one order's rows
+// consecutive. `restrict_sql` is an extra predicate (empty: every order).
+template <typename Scan>
+void RunOrderLines(
+    Scan &&scan, const std::string &restrict_sql,
+    const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer) {
+  scan("SELECT o.o_orderkey, o.o_orderdate, o.o_shippriority, c.c_mktsegment, "
+       "l.l_shipdate, l.l_extendedprice, l.l_discount "
+       "FROM orders o JOIN customer c ON c.c_custkey = o.o_custkey "
+       "JOIN lineitem l ON l.l_orderkey = o.o_orderkey" +
+           restrict_sql + " ORDER BY o.o_orderkey",
+       [&](HeapTuple tuple, TupleDesc tuple_desc) {
+         query::TpchQ3OrderLineInput line;
+         line.orderkey = TypedInt(tuple, tuple_desc, 0);
+         line.orderdate_days = TypedDate(tuple, tuple_desc, 1);
+         line.shippriority =
+             static_cast<int32_t>(TypedInt(tuple, tuple_desc, 2));
+         line.mktsegment = TypedText(tuple, tuple_desc, 3);
+         line.shipdate_days = TypedDate(tuple, tuple_desc, 4);
+         line.extended_price_raw = TypedDecimalRaw(tuple, tuple_desc, 5);
+         line.discount_raw = TypedDecimalRaw(tuple, tuple_desc, 6);
+         consumer(line);
+       });
 }
 
 } // namespace scans
 
 class TpchQ3Scan final : public query::TpchQ3InitialScan {
 public:
-  void ScanCustomers(
-      const std::function<void(const query::TpchQ3CustomerInput &)> &consumer)
+  void ScanOrderLines(
+      const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer)
       override {
-    scans::ScanTpchQ3Customers(consumer);
+    scans::RunOrderLines(
+        [](const std::string &sql, auto &&row) { ScanTypedTuples(sql, row); },
+        "", consumer);
   }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ3OrderInput &)> &consumer)
+  bool LookupOrderLines(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer)
       override {
-    scans::ScanTpchQ3Orders(consumer);
+    // Called from the capture trigger: read the database as the writing
+    // statement (and this transaction) left it.
+    scans::RunOrderLines(
+        [](const std::string &sql, auto &&row) {
+          ScanTypedTuplesAfterOwnWrites(sql, row);
+        },
+        " WHERE " + KeyListPredicate("o.o_orderkey", orderkeys), consumer);
+    return true;
   }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ3LineitemInput &)> &consumer)
-      override {
-    scans::ScanTpchQ3Lineitems(consumer);
+  bool LookupOrdersOfCustomers(const std::vector<int64_t> &custkeys,
+                               std::vector<int64_t> &orderkeys) override {
+    ScanTypedTuplesAfterOwnWrites(
+        "SELECT o_orderkey FROM orders WHERE " +
+            KeyListPredicate("o_custkey", custkeys),
+        [&](HeapTuple tuple, TupleDesc tuple_desc) {
+          orderkeys.push_back(TypedInt(tuple, tuple_desc, 0));
+        });
+    return true;
   }
 };
 Runtime<query::TpchQ3Module, query::TpchQ3Config, TpchQ3Scan> &Q3Runtime() {
   static Runtime<query::TpchQ3Module, query::TpchQ3Config, TpchQ3Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q3_COST_MODEL",
               "config/q3_aux_cost_model.json",
-              core::TpchQ3Layout::kAccelerator,
+              query::TpchQ3Layout::kAccelerator,
               query::TpchQ3Config{pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem});
   return runtime;
 }
@@ -89,14 +94,20 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ3(FunctionCallInfo fcinfo) {
-  detail::Q3Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(0))),
-                            core::AuxValue::Of(
-                                core::AuxType::Date,
-                                detail::PostgresDateArg(1, fcinfo))}},
-      fcinfo);
+  // NULL arguments stay NULL; an infinite date keeps no row either (no
+  // finite date is below -infinity or above +infinity), so it reads as NULL.
+  core::QueryArguments arguments;
+  if (PG_ARGISNULL(0))
+    arguments.values.push_back(core::AuxValue::Null(core::AuxType::String));
+  else
+    arguments.values.push_back(core::AuxValue::Of(
+        core::AuxType::String, detail::TextDatum(PG_GETARG_DATUM(0))));
+  if (PG_ARGISNULL(1) || DATE_NOT_FINITE(PG_GETARG_DATEADT(1)))
+    arguments.values.push_back(core::AuxValue::Null(core::AuxType::Date));
+  else
+    arguments.values.push_back(core::AuxValue::Of(
+        core::AuxType::Date, detail::PostgresDateArg(1, fcinfo)));
+  detail::Q3Runtime().Execute(arguments, fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{

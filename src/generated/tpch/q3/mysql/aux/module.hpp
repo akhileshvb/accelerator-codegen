@@ -1,21 +1,30 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
-#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
-#include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "tpch/q3/layout.hpp"
+#include "accelerator_codegen/stateful/core/cow_record_store.hpp"
+#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
+
+// ── Q3 layout ───────────────────────────────────────────────────────────────
+struct TpchQ3Layout {
+  static constexpr const char *kAccelerator = "tpch_q3";
+  static constexpr core::PartitionId kState = 0;
+
+  static constexpr std::array<core::PartitionId, 1> Partitions() {
+    return {kState};
+  }
+};
 
 struct TpchQ3Config {
   core::TableId customer_table = 0;
@@ -23,191 +32,83 @@ struct TpchQ3Config {
   core::TableId lineitem_table = 0;
 };
 
-struct TpchQ3CustomerInput {
-  int64_t key = 0;
-  std::string mktsegment;
-};
-
-struct TpchQ3OrderInput {
-  int64_t key = 0;
-  int32_t orderdate_days = 0;
-  int64_t custkey = 0;
-  int32_t shippriority = 0;
-};
-
-struct TpchQ3LineitemInput {
+// ── Typed bulk-scan contract ────────────────────────────────────────────────
+// One row per lineitem of customer ⨝ orders ⨝ lineitem. The rows of one order
+// are consecutive (ordered by orderkey).
+struct TpchQ3OrderLineInput {
   int64_t orderkey = 0;
-  int64_t extended_price_raw = 0;
-  int32_t extended_price_scale = 2;
-  int64_t discount_raw = 0;
-  int32_t discount_scale = 2;
+  int32_t orderdate_days = 0;
+  int32_t shippriority = 0;
+  std::string mktsegment;
   int32_t shipdate_days = 0;
+  int64_t extended_price_raw = 0; // scale 2
+  int64_t discount_raw = 0;       // scale 2
 };
 
 class TpchQ3InitialScan {
 public:
   virtual ~TpchQ3InitialScan() = default;
-  virtual void ScanCustomers(
-      const std::function<void(const TpchQ3CustomerInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ3OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ3LineitemInput &)> &) = 0;
+  virtual void ScanOrderLines(
+      const std::function<void(const TpchQ3OrderLineInput &)> &) = 0;
+  // The same rows for the given orders only, as the database holds them after
+  // the calling statement.
+  virtual bool LookupOrderLines(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(const TpchQ3OrderLineInput &)> &) = 0;
+  // Orders of the given customers (any customer row change may move them
+  // between market segments).
+  virtual bool LookupOrdersOfCustomers(const std::vector<int64_t> &custkeys,
+                                       std::vector<int64_t> &orderkeys) = 0;
+};
 
-  // orders ⨝ customer lookup for RF1 lineitems / orders Insert when the
-  // dense order_segment side does not yet know orderkey.
-  struct OrderContext {
-    core::PartitionId segment = 0;
+// ── State ───────────────────────────────────────────────────────────────────
+// An order that has a customer and at least one lineitem is one record:
+//   orderdate, shippriority and its lineitems as (shipdate, revenue) pairs,
+//   revenue = SUM(extendedprice * (1 - discount)) at scale 4 per shipdate.
+// Records of a market segment are grouped into bins by an upper bound of what
+// the order can contribute to any answer (the sum of its positive per-shipdate
+// revenues), so a top-k search walks the bins from the largest bound down and
+// stops once the k-th best revenue exceeds the bound of the next bin.
+//
+// Memory: ~12 B per lineitem (shipdate + revenue) + ~40 B per order (record
+// header, hash slot, locator).
+//   SF100: ~11 GB   SF1000: ~110 GB   (before: ~75 B/order + a dense
+//   order_segment array + a transient 45-50 GB node-map build at SF100)
+// Write cost: an order write clones one bin shard (~2K records at SF1000) and
+// one locator shard; the bin directory (~1K bins) is copied per batch.
+struct TpchQ3State {
+  static constexpr unsigned kBinShardBits = 9;
+  using Bin = core::ShardedCowRecordStore<kBinShardBits>;
+
+  struct Locator {
+    uint32_t segment = 0;
+    int32_t bin = 0;
+  };
+
+  // Market segments are data-driven: the dictionary grows with the data.
+  std::map<std::string, uint32_t> segment_ids;
+  // (segment id, bound bin) -> records of the orders in it, keyed by orderkey.
+  std::map<std::pair<uint32_t, int32_t>, Bin> bins;
+  // orderkey -> where its record is.
+  core::ShardedCowHashMap<Locator, 16> locators;
+
+  struct Bucket {
+    int32_t shipdate = 0;
+    int64_t revenue_raw = 0;
+  };
+  struct OrderRecord {
+    int64_t orderkey = 0;
     int32_t orderdate_days = 0;
     int32_t shippriority = 0;
-    int64_t custkey = 0;
+    std::vector<Bucket> buckets; // ascending shipdate, one per distinct day
   };
-  virtual bool LookupOrderContext(int64_t orderkey, OrderContext &out) {
-    (void)orderkey;
-    (void)out;
-    return false;
-  }
 
-  // Optional: DuckDB join filtered to one market segment for RebuildPartition.
-  virtual bool ScanSegmentJoin(
-      const std::string &mktsegment,
-      const std::function<void(const TpchQ3OrderInput &,
-                               const TpchQ3LineitemInput &)> &consumer) {
-    (void)mktsegment;
-    (void)consumer;
-    return false;
-  }
-};
-
-// Packed live records. Encode still writes the original I32/I64 wire format.
-// TPC-H dates are DuckDB days since 1970 (~8000–11000 for 1992–1998); orderkeys
-// fit uint32 through at least SF100. Out-of-range values go to overflow maps so
-// Execute results stay exact.
-#pragma pack(push, 1)
-struct TpchQ3ShipdateBucket {
-  uint16_t shipdate = 0;
-  int64_t suffix_revenue = 0;
-};
-
-struct TpchQ3OrderSummary {
-  uint32_t orderkey = 0;
-  uint16_t orderdate_days = 0;
-  uint8_t shippriority = 0;
-  uint32_t bucket_begin = 0;
-  uint16_t bucket_count = 0;
-};
-#pragma pack(pop)
-
-static_assert(sizeof(TpchQ3ShipdateBucket) == 10,
-              "Q3 shipdate bucket must stay 10 bytes packed");
-static_assert(sizeof(TpchQ3OrderSummary) == 13,
-              "Q3 order summary must stay 13 bytes packed");
-
-inline uint16_t PackTpchQ3Date(int32_t days) {
-  if (days < 0 || days > static_cast<int32_t>(std::numeric_limits<uint16_t>::max()))
-    throw std::runtime_error("TPC-H Q3 date exceeds uint16 packed range");
-  return static_cast<uint16_t>(days);
-}
-
-inline uint32_t PackTpchQ3Orderkey(int64_t orderkey) {
-  if (orderkey < 0 ||
-      orderkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
-    throw std::runtime_error("TPC-H Q3 orderkey exceeds uint32 packed range");
-  return static_cast<uint32_t>(orderkey);
-}
-
-inline uint8_t PackTpchQ3Shippriority(int32_t shippriority) {
-  if (shippriority < 0 ||
-      shippriority > static_cast<int32_t>(std::numeric_limits<uint8_t>::max()))
-    throw std::runtime_error("TPC-H Q3 shippriority exceeds uint8 packed range");
-  return static_cast<uint8_t>(shippriority);
-}
-
-struct TpchQ3SegmentIntervalIndex {
-  core::PartitionId segment = 0;
-  std::vector<TpchQ3OrderSummary> orders;
-  std::vector<TpchQ3ShipdateBucket> bucket_pool;
-  // RF maintenance only; Execute scans `orders`. Hashmap is one entry per
-  // order in this segment (not a dense array up to max orderkey). Mutable so
-  // ApplyDelta can rebuild it when a published image has orders but no map.
-  mutable std::unordered_map<int64_t, std::size_t> order_positions;
-
-  int32_t BucketShipdate(std::size_t pool_index) const {
-    return static_cast<int32_t>(bucket_pool[pool_index].shipdate);
-  }
-
-  int32_t MaxShipdate(const TpchQ3OrderSummary &order) const {
-    if (order.bucket_count == 0)
-      return 0;
-    return BucketShipdate(static_cast<std::size_t>(order.bucket_begin) +
-                          order.bucket_count - 1);
-  }
-
-  void AssignBuckets(TpchQ3OrderSummary &order,
-                     std::vector<TpchQ3ShipdateBucket> &&buckets) {
-    if (buckets.size() > std::numeric_limits<uint16_t>::max())
-      throw std::runtime_error("TPC-H Q3 bucket_count exceeds uint16");
-    order.bucket_begin = static_cast<uint32_t>(bucket_pool.size());
-    order.bucket_count = static_cast<uint16_t>(buckets.size());
-    bucket_pool.insert(bucket_pool.end(),
-                       std::make_move_iterator(buckets.begin()),
-                       std::make_move_iterator(buckets.end()));
-  }
-
-  void ClearPositions() { order_positions.clear(); }
-
-  void SetPosition(int64_t orderkey, std::size_t index) {
-    order_positions[orderkey] = index;
-  }
-
-  void ErasePosition(int64_t orderkey) { order_positions.erase(orderkey); }
-
-  void RebuildPositions() const {
-    order_positions.clear();
-    for (std::size_t i = 0; i < orders.size(); ++i)
-      order_positions[static_cast<int64_t>(orders[i].orderkey)] = i;
-  }
-
-  bool FindPosition(int64_t orderkey, std::size_t &index) const {
-    if (order_positions.size() != orders.size())
-      RebuildPositions();
-    const auto it = order_positions.find(orderkey);
-    if (it != order_positions.end() && it->second < orders.size() &&
-        static_cast<int64_t>(orders[it->second].orderkey) == orderkey) {
-      index = it->second;
-      return true;
-    }
-    for (std::size_t i = 0; i < orders.size(); ++i) {
-      if (static_cast<int64_t>(orders[i].orderkey) == orderkey) {
-        index = i;
-        order_positions[orderkey] = i;
-        return true;
-      }
-    }
-    return false;
-  }
-};
-
-// Published segment-interval images hold only segment_intervals for one segment.
-struct TpchQ3State {
-  std::map<core::PartitionId, TpchQ3SegmentIntervalIndex> segment_intervals;
-};
-
-// Side partition: dense orderkey → segment id (partition id), 0 = absent.
-struct TpchQ3OrderSegmentSide {
-  std::vector<uint8_t> order_segment;
-  std::vector<uint8_t> customer_segment;
-};
-
-enum class TpchQ3ImageKind : uint8_t {
-  OrderSegmentSide,
-  SegmentIntervalIndex,
+  // Replace the record of an order (no buckets: remove it).
+  void SetOrder(const std::string &mktsegment, const OrderRecord &record);
+  void RemoveOrder(int64_t orderkey);
 };
 
 struct TpchQ3StateImage {
-  TpchQ3ImageKind kind = TpchQ3ImageKind::OrderSegmentSide;
-  core::PartitionId segment = 0;
-  std::shared_ptr<const TpchQ3OrderSegmentSide> order_segment_side;
   std::shared_ptr<const TpchQ3State> state;
 };
 
@@ -218,70 +119,38 @@ struct TpchQ3OutputRow {
   int32_t shippriority = 0;
 };
 
-struct TpchQ3LineitemDelta {
-  core::PartitionId segment = 0;
+// The new state of one order, read from the database as the writing statement
+// left it (the last one recorded for an order wins).
+struct TpchQ3OrderResult {
   int64_t orderkey = 0;
-  int32_t shipdate_day = 0;
-  int64_t revenue_raw = 0;
-  int8_t sign = 0;
+  bool present = false; // has a customer and at least one lineitem
+  std::string mktsegment;
+  TpchQ3State::OrderRecord record;
 };
 
-struct TpchQ3OrderDelta {
-  int64_t orderkey = 0;
-  int32_t orderdate_days = 0;
-  int64_t custkey = 0;
-  int32_t shippriority = 0;
-  int8_t sign = 0; // +1 insert, -1 delete
-};
+// Largest revenue sum an order of bound-bin `bin` can have (see TpchQ3State).
+int64_t TpchQ3BinUpperBound(int32_t bin);
 
-std::vector<uint8_t> EncodeTpchQ3OrderSegmentSide(
-    const TpchQ3OrderSegmentSide &side);
-std::vector<uint8_t> EncodeTpchQ3SegmentIntervalIndex(
-    const TpchQ3SegmentIntervalIndex &);
-bool DecodeTpchQ3OrderSegmentSide(const std::vector<uint8_t> &,
-                                    TpchQ3OrderSegmentSide &);
-bool DecodeTpchQ3SegmentIntervalIndex(const std::vector<uint8_t> &,
-                                        core::PartitionId segment,
-                                        TpchQ3SegmentIntervalIndex &);
-
-int64_t TpchQ3RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
-                         int64_t discount_raw, int32_t discount_scale);
-core::PartitionId TpchQ3PartitionFromMktsegment(const std::string &segment);
-std::string TpchQ3MktsegmentFromPartition(core::PartitionId partition);
-int32_t TpchQ3DaysFromYmd(int32_t year, unsigned month, unsigned day);
-
-void FinalizeTpchQ3OrderSummary(std::vector<TpchQ3ShipdateBucket> &buckets,
-                                const std::map<int32_t, int64_t> &day_revenue);
-int64_t TpchQ3RevenueAboveCutoff(const TpchQ3OrderSummary &,
-                                 const std::vector<TpchQ3ShipdateBucket> &pool,
-                                 int32_t cutoff_days);
-void SortTpchQ3SegmentIntervalIndex(TpchQ3SegmentIntervalIndex &);
-
-std::vector<TpchQ3OutputRow>
-ComposeTpchQ3TopK(const TpchQ3SegmentIntervalIndex &, int32_t cutoff_days);
-
+// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ3TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
   void Clear() override;
 
   bool RequiresRebuild() const;
-  const std::vector<TpchQ3LineitemDelta> &Deltas() const;
-  const std::vector<TpchQ3OrderDelta> &OrderDeltas() const;
   void MarkRebuild();
-  void AddDelta(TpchQ3LineitemDelta delta);
-  void AddOrderDelta(TpchQ3OrderDelta delta);
+  void AddOrderResult(TpchQ3OrderResult result);
+  const std::vector<TpchQ3OrderResult> &OrderResults() const;
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
-  std::vector<TpchQ3LineitemDelta> deltas;
-  std::vector<TpchQ3OrderDelta> order_deltas;
+  std::vector<TpchQ3OrderResult> order_results;
 };
 
 class TpchQ3Module final : public core::AuxQueryModule {
 public:
-  static constexpr const char *kId = core::TpchQ3Layout::kAccelerator;
+  static constexpr const char *kId = TpchQ3Layout::kAccelerator;
 
   explicit TpchQ3Module(TpchQ3Config config,
                         TpchQ3InitialScan *initial_scan = nullptr)
@@ -308,16 +177,10 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  struct BuildScratch {
-    std::unordered_map<int64_t, core::PartitionId> customer_segments;
-    std::vector<uint8_t> order_segment;
-  };
-
-  TpchQ3State BuildState(core::AuxEngineServices &, BuildScratch &) const;
-  TpchQ3SegmentIntervalIndex
-  BuildSegment(core::AuxEngineServices &, core::PartitionId segment) const;
-  bool LoadSegmentIntervalIndex(core::AuxEngineServices &, core::PartitionId,
-                                const TpchQ3SegmentIntervalIndex *&) const;
+  TpchQ3State BuildState() const;
+  bool LoadState(core::AuxEngineServices &services,
+                 std::shared_ptr<const TpchQ3State> &state,
+                 core::Version *version = nullptr) const;
   void EmitResult(const std::vector<TpchQ3OutputRow> &, core::AuxRowSink &) const;
 
   TpchQ3Config config;

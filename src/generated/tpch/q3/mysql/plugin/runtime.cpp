@@ -8,7 +8,6 @@
 
 #include "accelerator_codegen/stateful/mysql/mysql_tpch_table_ids.hpp"
 #include "tpch/q3/mysql/aux/module.hpp"
-#include "tpch/q3/layout.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
 namespace {
@@ -20,58 +19,69 @@ using namespace detail;
 
 namespace scans {
 
-void ScanTpchQ3Customers(
-    const std::function<void(const query::TpchQ3CustomerInput &)> &consumer) {
+// customer ⨝ orders ⨝ lineitem, one row per lineitem, one order's rows
+// consecutive. `restrict_sql` is an extra predicate (empty: every order).
+void ScanTpchQ3OrderLines(
+    const std::string &restrict_sql,
+    const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT c_custkey, c_mktsegment FROM customer",
+      "SELECT o.o_orderkey, o.o_orderdate, o.o_shippriority, c.c_mktsegment, "
+      "l.l_shipdate, l.l_extendedprice, l.l_discount "
+      "FROM orders o JOIN customer c ON c.c_custkey = o.o_custkey "
+      "JOIN lineitem l ON l.l_orderkey = o.o_orderkey" +
+          restrict_sql + " ORDER BY o.o_orderkey",
       [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1)});
+        query::TpchQ3OrderLineInput line;
+        line.orderkey = TypedInt(cols, 0);
+        line.orderdate_days = TypedDate(cols, 1);
+        line.shippriority = static_cast<int32_t>(TypedInt(cols, 2));
+        line.mktsegment = TypedText(cols, 3);
+        line.shipdate_days = TypedDate(cols, 4);
+        line.extended_price_raw = TypedDecimalRaw(cols, 5);
+        line.discount_raw = TypedDecimalRaw(cols, 6);
+        consumer(line);
       });
 }
 
-void ScanTpchQ3Orders(
-    const std::function<void(const query::TpchQ3OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_orderdate, o_custkey, o_shippriority FROM orders",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedDate(cols, 1),
-                  TypedInt(cols, 2),
-                  static_cast<int32_t>(TypedInt(cols, 3))});
-      });
-}
-
-void ScanTpchQ3Lineitems(
-    const std::function<void(const query::TpchQ3LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l_orderkey, l_extendedprice, l_discount, l_shipdate FROM lineitem",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedDecimalRaw(cols, 1), 2,
-                  TypedDecimalRaw(cols, 2), 2,
-                  TypedDate(cols, 3)});
-      });
+std::string KeyList(const std::vector<int64_t> &keys) {
+  std::string list = "(";
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    if (i)
+      list += ',';
+    list += std::to_string(keys[i]);
+  }
+  return list + ")";
 }
 
 } // namespace scans
 
 class TpchQ3Scan final : public query::TpchQ3InitialScan {
 public:
-  void ScanCustomers(
-      const std::function<void(const query::TpchQ3CustomerInput &)> &consumer)
+  void ScanOrderLines(
+      const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer)
       override {
-    scans::ScanTpchQ3Customers(consumer);
+    scans::ScanTpchQ3OrderLines("", consumer);
   }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ3OrderInput &)> &consumer)
+  bool LookupOrderLines(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(const query::TpchQ3OrderLineInput &)> &consumer)
       override {
-    scans::ScanTpchQ3Orders(consumer);
+    if (orderkeys.empty())
+      return true;
+    scans::ScanTpchQ3OrderLines(
+        " WHERE o.o_orderkey IN " + scans::KeyList(orderkeys), consumer);
+    return true;
   }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ3LineitemInput &)> &consumer)
-      override {
-    scans::ScanTpchQ3Lineitems(consumer);
+  bool LookupOrdersOfCustomers(const std::vector<int64_t> &custkeys,
+                               std::vector<int64_t> &orderkeys) override {
+    if (custkeys.empty())
+      return true;
+    ScanTypedTuples("SELECT o_orderkey FROM orders WHERE o_custkey IN " +
+                        scans::KeyList(custkeys),
+                    [&](const std::vector<std::string> &cols) {
+                      orderkeys.push_back(TypedInt(cols, 0));
+                    });
+    return true;
   }
 };
 
@@ -79,7 +89,7 @@ Runtime<query::TpchQ3Module, query::TpchQ3Config, TpchQ3Scan> &Q3Runtime() {
   static Runtime<query::TpchQ3Module, query::TpchQ3Config, TpchQ3Scan>
       runtime("ACCELERATOR_CODEGEN_MYSQL_Q3_COST_MODEL",
               "config/q3_aux_cost_model.json",
-              core::TpchQ3Layout::kAccelerator,
+              query::TpchQ3Layout::kAccelerator,
               query::TpchQ3Config{mysql_tbl::kCustomer, mysql_tbl::kOrders, mysql_tbl::kLineitem});
   return runtime;
 }
