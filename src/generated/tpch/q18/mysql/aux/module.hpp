@@ -105,7 +105,7 @@ struct TpchQ18OrderRec {
 };
 
 // Memory: 32 B record + ~9 B hash slot / 0.875 load = ~47 B per order, plus
-// ~1 B per hot order and ~80 B per cached customer name (hot orders only).
+// ~1 B per hot order and ~80 B per customer name (SF1000: +12 GB).
 //   SF100  (1.5e8 orders): ~7 GB      SF1000 (1.5e9 orders): ~70 GB
 // The previous state was an unordered_map per survivor (~100 B each) but its
 // build transiently held a node map over EVERY order (6 GB at SF100).
@@ -120,8 +120,7 @@ struct TpchQ18State {
 
   core::ShardedCowHashMap<TpchQ18OrderRec, 16> orders;
   core::ShardedCowHashMap<uint8_t, 12> hot;
-  // Names of customers of hot orders (a cache: a customer that is missing here
-  // is looked up by key when a result needs it).
+  // Names of all customers (~80 B each).
   core::ShardedCowHashMap<std::string, 10> customer_names;
 
   // Record maintenance. `Reindex` re-derives the hot-set membership of one

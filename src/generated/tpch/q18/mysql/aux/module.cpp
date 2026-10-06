@@ -547,15 +547,11 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
     new_state->Reindex(delta.orderkey);
   }
 
-  // Customer names are a cache of the hot orders' customers: keep the cached
-  // ones current, never add (an uncached customer is looked up by key).
+  // Customer names: every customer is kept, so a result never needs SQL.
   for (const auto &delta : buffer.Customers()) {
-    const bool was_cached =
-        delta.has_old && new_state->customer_names.Contains(delta.old_key);
     if (delta.has_old && (!delta.has_new || delta.old_key != delta.new_row.key))
       new_state->customer_names.Erase(delta.old_key);
-    if (delta.has_new &&
-        (was_cached || new_state->customer_names.Contains(delta.new_row.key)))
+    if (delta.has_new)
       new_state->customer_names.Upsert(delta.new_row.key, delta.new_row.name);
   }
 
@@ -699,24 +695,16 @@ TpchQ18State TpchQ18Module::BuildState() const {
 
   // Hot set and the names of its customers.
   std::vector<int64_t> hot_orders;
-  std::vector<int64_t> hot_customers;
   state.orders.ForEach([&](int64_t orderkey, const TpchQ18OrderRec &rec) {
     if (!rec.Qualifies(TpchQ18State::kHotFloorRaw))
       return;
     hot_orders.push_back(orderkey);
-    hot_customers.push_back(rec.custkey);
   });
   for (const int64_t orderkey : hot_orders)
     state.hot.Upsert(orderkey, 1);
-  std::sort(hot_customers.begin(), hot_customers.end());
-  hot_customers.erase(std::unique(hot_customers.begin(), hot_customers.end()),
-                      hot_customers.end());
-  if (!hot_customers.empty()) {
-    initial_scan->LookupCustomerNames(
-        hot_customers, [&](const TpchQ18CustomerInput &input) {
-          state.customer_names.Upsert(input.key, input.name);
-        });
-  }
+  initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
+    state.customer_names.Upsert(input.key, input.name);
+  });
   return state;
 }
 
