@@ -450,7 +450,10 @@ static char *UdfMutationsCaptureRow(UDF_INIT *, UDF_ARGS *args,
     auto batch_opt = engine::BuildMutationBatchFromTriggerArgs(
         args->arg_count, args->args, args->lengths);
 
-    if (batch_opt.has_value()) {
+    if (!batch_opt.has_value()) {
+      // The row could not be decoded: the accelerators may be missing it.
+      engine::InvalidateAllMysqlAccelerators();
+    } else {
       core::MutationBatch &batch = *batch_opt;
       engine::DispatchMysqlMutation(nullptr, batch);
 
@@ -470,6 +473,9 @@ static char *UdfMutationsCaptureRow(UDF_INIT *, UDF_ARGS *args,
     *length = 2;
     return result;
   } catch (...) {
+    // Never fail the user's write because of the accelerator; but the
+    // accelerators missed it, so none of their states may be trusted.
+    try { engine::InvalidateAllMysqlAccelerators(); } catch (...) {}
     std::strcpy(result, "ok");
     *length = 2;
     return result;

@@ -16,7 +16,7 @@ namespace accelerator_codegen::aux_state::engine::mysql {
 bool MysqlUdfInit(UDF_INIT *initid, UDF_ARGS *args, char *message, const char *name);
 void MysqlUdfDeinit(UDF_INIT *initid);
 char *MysqlUdfCall(UDF_INIT *initid, UDF_ARGS *args, unsigned long *length,
-                   unsigned char *error, const char *name);
+                   unsigned char *is_null, unsigned char *error, const char *name);
 
 } // namespace accelerator_codegen::aux_state::engine::mysql
 
@@ -32,8 +32,8 @@ char *MysqlUdfCall(UDF_INIT *initid, UDF_ARGS *args, unsigned long *length,
   }                                                                            \
   __attribute__((visibility("default"))) char *NAME(                           \
       UDF_INIT *initid, UDF_ARGS *args, char *, unsigned long *length,         \
-      unsigned char *, unsigned char *error) {                                 \
+      unsigned char *is_null, unsigned char *error) {                          \
     return ::accelerator_codegen::aux_state::engine::mysql::MysqlUdfCall(      \
-        initid, args, length, error, #NAME);                                   \
+        initid, args, length, is_null, error, #NAME);                          \
   }                                                                            \
   }
