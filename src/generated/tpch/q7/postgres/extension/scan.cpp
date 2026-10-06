@@ -11,6 +11,9 @@
 #include "postgres/engine_runtime.hpp"
 #include "postgres/runtime.hpp"
 
+#include <stdexcept>
+#include <string>
+
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
 namespace {
@@ -107,7 +110,8 @@ Runtime<query::TpchQ7Module, query::TpchQ7Config, TpchQ7Scan> &Q7Runtime() {
   static Runtime<query::TpchQ7Module, query::TpchQ7Config, TpchQ7Scan>
       runtime("ACCELERATOR_CODEGEN_POSTGRES_Q7_COST_MODEL",
               "config/q7_aux_cost_model.json", core::TpchQ7Layout::kAccelerator,
-              query::TpchQ7Config{pg_tbl::kNation, pg_tbl::kSupplier, pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem});
+              query::TpchQ7Config{pg_tbl::kNation, pg_tbl::kSupplier, pg_tbl::kCustomer, pg_tbl::kOrders, pg_tbl::kLineitem},
+              {{"nation", "n_name"}});
   return runtime;
 }
 } // namespace
@@ -117,15 +121,40 @@ namespace core = accelerator_codegen::aux_state::core;
 
 namespace {
 
+// A NULL parameter makes the template's comparison NULL (no rows): pass it on
+// as a NULL value.
+core::AuxValue TextArg(FunctionCallInfo fcinfo, int index) {
+  return PG_ARGISNULL(index)
+             ? core::AuxValue::Null(core::AuxType::String)
+             : core::AuxValue::Of(core::AuxType::String,
+                                  detail::TextDatum(PG_GETARG_DATUM(index)));
+}
+
+// Exceptions must not leave the extension function (an uncaught C++ exception
+// would terminate the backend): report them as a SQL error.
+template <typename F> void RunOrReport(F &&run) {
+  std::string message;
+  bool division_by_zero = false;
+  try {
+    run();
+  } catch (const std::domain_error &e) {
+    message = e.what();
+    division_by_zero = true;
+  } catch (const std::exception &e) {
+    message = e.what();
+  }
+  if (!message.empty()) {
+    if (division_by_zero)
+      ereport(ERROR, (errcode(ERRCODE_DIVISION_BY_ZERO), errmsg("%s", message.c_str())));
+    ereport(ERROR, (errmsg("accelerator: %s", message.c_str())));
+  }
+}
+
 void ExecutePostgresTpchQ7(FunctionCallInfo fcinfo) {
-  detail::Q7Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(0))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(1)))}},
-      fcinfo);
+  RunOrReport([&] {
+    detail::Q7Runtime().Execute(
+        core::QueryArguments{{TextArg(fcinfo, 0), TextArg(fcinfo, 1)}}, fcinfo);
+  });
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{

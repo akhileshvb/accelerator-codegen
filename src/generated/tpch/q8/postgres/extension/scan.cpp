@@ -10,6 +10,9 @@
 #include "postgres/engine_runtime.hpp"
 #include "postgres/runtime.hpp"
 
+#include <stdexcept>
+#include <string>
+
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
 namespace {
@@ -148,18 +151,42 @@ namespace core = accelerator_codegen::aux_state::core;
 
 namespace {
 
+// A NULL parameter makes its comparison NULL (no match): pass it on as a NULL
+// value.
+core::AuxValue TextArg(FunctionCallInfo fcinfo, int index) {
+  return PG_ARGISNULL(index)
+             ? core::AuxValue::Null(core::AuxType::String)
+             : core::AuxValue::Of(core::AuxType::String,
+                                  detail::TextDatum(PG_GETARG_DATUM(index)));
+}
+
+// Exceptions must not leave the extension function (an uncaught C++ exception
+// would terminate the backend): report them as a SQL error.
+template <typename F> void RunOrReport(F &&run) {
+  std::string message;
+  bool division_by_zero = false;
+  try {
+    run();
+  } catch (const std::domain_error &e) {
+    message = e.what();
+    division_by_zero = true;
+  } catch (const std::exception &e) {
+    message = e.what();
+  }
+  if (!message.empty()) {
+    if (division_by_zero)
+      ereport(ERROR, (errcode(ERRCODE_DIVISION_BY_ZERO), errmsg("%s", message.c_str())));
+    ereport(ERROR, (errmsg("accelerator: %s", message.c_str())));
+  }
+}
+
 void ExecutePostgresTpchQ8(FunctionCallInfo fcinfo) {
-  detail::Q8Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(0))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(1))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(2)))}},
-      fcinfo);
+  RunOrReport([&] {
+    detail::Q8Runtime().Execute(
+        core::QueryArguments{{TextArg(fcinfo, 0), TextArg(fcinfo, 1),
+                              TextArg(fcinfo, 2)}},
+        fcinfo);
+  });
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{

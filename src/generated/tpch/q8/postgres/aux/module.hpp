@@ -6,12 +6,15 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
+#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/pg_numeric.hpp"
+#include "accelerator_codegen/stateful/core/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -88,150 +91,108 @@ public:
   virtual void ScanLineitems(const std::function<void(const TpchQ8LineitemInput &)> &) = 0;
   virtual void ScanNations(const std::function<void(const TpchQ8NationInput &)> &) = 0;
   virtual void ScanRegions(const std::function<void(const TpchQ8RegionInput &)> &) = 0;
-
-  virtual bool LookupOrder(int64_t orderkey, TpchQ8OrdersInput &out) {
-    (void)orderkey; (void)out; return false;
-  }
-  virtual bool LookupPart(int64_t partkey, TpchQ8PartInput &out) {
-    (void)partkey; (void)out; return false;
-  }
-  virtual bool LookupSupplier(int64_t suppkey, TpchQ8SupplierInput &out) {
-    (void)suppkey; (void)out; return false;
-  }
-  virtual bool LookupCustomer(int64_t custkey, TpchQ8CustomerInput &out) {
-    (void)custkey; (void)out; return false;
-  }
 };
 
-// ── Cube key ────────────────────────────────────────────────────────────────
-struct TpchQ8CubeKey {
-  int32_t year = 0;
-  int32_t customer_nationkey = 0;
-  int32_t supplier_nationkey = 0;
-  int32_t part_type_index = 0;
+// The years of the template (o_orderdate BETWEEN 1995-01-01 AND 1996-12-31)
+// are constants of the query, not parameters.
+constexpr int32_t kTpchQ8MinYear = 1995;
+constexpr int32_t kTpchQ8MaxYear = 1996;
 
-  bool operator==(const TpchQ8CubeKey &other) const {
-    return year == other.year &&
-           customer_nationkey == other.customer_nationkey &&
-           supplier_nationkey == other.supplier_nationkey &&
-           part_type_index == other.part_type_index;
-  }
+struct TpchQ8Nation {
+  std::string name;
+  int32_t regionkey = 0;
 };
 
-struct TpchQ8CubeKeyHash {
-  std::size_t operator()(const TpchQ8CubeKey &k) const {
-    std::size_t h = static_cast<std::size_t>(k.year);
-    h = h * 31 + static_cast<std::size_t>(k.customer_nationkey);
-    h = h * 31 + static_cast<std::size_t>(k.supplier_nationkey);
-    h = h * 31 + static_cast<std::size_t>(k.part_type_index);
-    return h;
-  }
-};
-
-// ── State structures ────────────────────────────────────────────────────────
-// The dimension dictionaries are much larger than the annual cube (SF1
-// lineitem feeds ~28K cube cells but the reverse order map holds millions of
-// rows).  Keep them in a separate shared payload so delta maintenance can
-// copy only the mutable cube while sharing the expensive dictionaries.
-struct TpchQ8Dimensions {
-  std::vector<std::string> part_types;
-  std::unordered_map<std::string, int32_t> part_type_to_index;
-  std::unordered_map<std::string, int32_t> nation_name_to_key;
-  std::unordered_map<int32_t, std::string> nation_region;
-  std::unordered_map<std::string, std::vector<int32_t>> region_nations;
-
-  // Reverse maps for maintenance
-  std::unordered_map<int64_t, std::string> part_key_to_type;
-  std::unordered_map<int64_t, int32_t> suppkey_to_nation;
-  std::unordered_map<int64_t, int32_t> custkey_to_nation;
-
-  struct OrderInfo {
-    int64_t custkey = 0;
-    int32_t orderdate_days = 0;
-  };
-  std::unordered_map<int64_t, OrderInfo> order_info;
-};
-
+// One cube cell: the joined lineitems of one part type, grouped by order year
+// and the customer / supplier nation KEYS (names and regions are applied at
+// query time, so nation / region writes never touch the cube).
 struct TpchQ8CubeCell {
   int32_t year = 0;
   int32_t customer_nationkey = 0;
   int32_t supplier_nationkey = 0;
-  int32_t part_type_index = 0;
-  int64_t nation_volume_raw = 0;
-  int64_t total_volume_raw = 0;
+  ::accelerator_codegen::pg_numeric::Int128 volume = 0; // SUM(volume), scale 4
+  int64_t rows = 0; // joined lineitems (a group exists iff > 0)
 };
+// Sorted by (year, customer_nationkey, supplier_nationkey); at most
+// 2 * #nations^2 cells (1250 for TPC-H).
+using TpchQ8TypeCube = std::vector<TpchQ8CubeCell>;
 
+// ---- State (immutable once published; copies share chunks) ----------------
+//
+// The cube answers any (nation, region, type) in O(#cells of one type),
+// independent of the scale factor. Everything needed to keep it exact under
+// writes to all seven tables is kept in compact columnar form:
+//
+//   part_type[partkey]        dictionary id of p_type (4 B/part)
+//   part_refs / supplier_refs / customer_refs
+//                             (4 B each) how many retained lineitems / orders
+//                             reference the key: a dimension write that no
+//                             retained row references needs no pass at all
+//   supplier_nation, customer_nation
+//                             nation key per supplier / customer (4 B each)
+//   orders[orderkey]          ONE blob per order. In-window orders (o_orderdate
+//                             in 1995-1996, ~30% of orders) hold
+//                             [flags][custkey][date] + their lineitems
+//                             (partkey, suppkey, volume: ~13 B each);
+//                             other orders only a lineitem COUNT (the
+//                             lineitems cannot contribute)
+//   cubes[type id]            the cube (above)
+//   nations, regions          small maps
+// A lineitem / orders / supplier / customer / part write moves exactly the
+// affected contributions between cube cells (a dimension write that touches
+// referenced keys makes one pass over the retained orders: it is O(retained
+// rows) and only needed for updates / deletes of referenced dimension rows).
+// The single case that needs a rebuild is an order moving INTO the window
+// while it already has lineitems: the lineitems of out-of-window orders are
+// not retained.
+//
+// Memory: ~12 B/order + 13 B per in-window lineitem (30% of lineitems) + 20 B
+// per part + 12 B per supplier/customer ~= 5.5 GB at SF100, 55 GB at SF1000
+// (before: ~13 GB at SF100 + 2 GB transient, string per part).
+// Write batch: O(touched chunks) (1 KB-40 KB each) + the small maps.
 struct TpchQ8State {
-  struct VolumePair {
-    int64_t nation_volume_raw = 0;
-    int64_t total_volume_raw = 0;
-  };
+  static constexpr int32_t kAbsent = INT32_MIN;
+  static constexpr uint32_t kNoType = 0xFFFFFFFFu;
 
-  std::vector<TpchQ8CubeCell> cube;  // sorted by (year, customer_nationkey, supplier_nationkey, part_type_index)
-  std::shared_ptr<const TpchQ8Dimensions> dims;
-
-  static constexpr int32_t kYear1995Start = 9131;
-  static constexpr int32_t kYear1997Start = 9862;
-
-  static int32_t YearFromDays(int32_t days_since_epoch) {
-    if (days_since_epoch >= kYear1995Start && days_since_epoch < 9496) return 1995;
-    if (days_since_epoch >= 9496 && days_since_epoch < kYear1997Start) return 1996;
-    return 0;
-  }
-
-  static constexpr int32_t kYear1996Start_days() { return 9496; }
+  std::map<int32_t, TpchQ8Nation> nations;
+  std::map<int32_t, std::string> regions;
+  std::shared_ptr<core::StringDict> types = std::make_shared<core::StringDict>();
+  core::WideKeyCowArray<uint32_t> part_type{kNoType};
+  core::WideKeyCowArray<uint32_t> part_refs{0};
+  core::WideKeyCowArray<int32_t> supplier_nation{kAbsent};
+  core::WideKeyCowArray<uint32_t> supplier_refs{0};
+  core::WideKeyCowArray<int32_t> customer_nation{kAbsent};
+  core::WideKeyCowArray<uint32_t> customer_refs{0};
+  core::ChunkedBlobMap orders;
+  core::ChunkedCowArray<std::shared_ptr<TpchQ8TypeCube>> cubes{nullptr};
 };
-
-enum class TpchQ8ImageKind : uint8_t { AnnualCube };
 
 struct TpchQ8StateImage {
-  TpchQ8ImageKind kind = TpchQ8ImageKind::AnnualCube;
-  int32_t year = 0;
   std::shared_ptr<const TpchQ8State> state;
 };
 
-// ── Output row ──────────────────────────────────────────────────────────────
-struct TpchQ8OutputRow {
-  int64_t o_year = 0;
-  double mkt_share = 0.0;
-};
-
-// ── Delta ───────────────────────────────────────────────────────────────────
-struct TpchQ8LineitemDelta {
-  int64_t partkey = 0;
-  int64_t orderkey = 0;
-  int64_t suppkey = 0;
-  int64_t volume_raw = 0;
-  int8_t sign = 0;
-};
-
-// ── Encode / Decode ─────────────────────────────────────────────────────────
-std::vector<uint8_t> EncodeTpchQ8AnnualCube(const TpchQ8State &state);
-bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
-                            TpchQ8State &state);
-
-// ── Revenue ─────────────────────────────────────────────────────────────────
-int64_t TpchQ8VolumeRaw(int64_t extendedprice_raw, int64_t discount_raw);
-
-// ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ8TxnBuffer final : public core::AuxTxnBuffer {
 public:
-  bool HasPendingChanges() const override;
-  void Clear() override;
+  bool HasPendingChanges() const override { return pending; }
+  void Clear() override {
+    pending = false;
+    requires_rebuild = false;
+    work.reset();
+    rows = 0;
+  }
+  bool RequiresRebuild() const { return requires_rebuild; }
+  void MarkRebuild() {
+    pending = true;
+    requires_rebuild = true;
+    work.reset();
+  }
 
-  bool RequiresRebuild() const;
-  const std::vector<TpchQ8LineitemDelta> &Deltas() const;
-  void MarkRebuild();
-  void AddDelta(TpchQ8LineitemDelta delta);
-  void AddOrderInfo(int64_t orderkey, int64_t custkey, int32_t orderdate_days);
-  const std::unordered_map<int64_t, TpchQ8Dimensions::OrderInfo> &
-  OrderInfoOverlay() const;
-
-private:
   bool pending = false;
   bool requires_rebuild = false;
-  std::vector<TpchQ8LineitemDelta> deltas;
-  std::unordered_map<int64_t, TpchQ8Dimensions::OrderInfo> order_info_overlay;
+  // Private copy-on-write working state of this transaction (see Q7).
+  std::shared_ptr<TpchQ8State> work;
+  core::Version base_version = 0;
+  uint64_t rows = 0;
 };
 
 // ── Module ──────────────────────────────────────────────────────────────────
@@ -264,19 +225,9 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ8State BuildState(core::AuxEngineServices &services) const;
-  bool LoadState(core::AuxEngineServices &services,
-                 std::shared_ptr<const TpchQ8State> &state) const;
-  bool ResolveBindings(core::AuxEngineServices &services,
-                       const core::QueryArguments &arguments,
-                       std::string &nation_name, std::string &region_name,
-                       std::string &part_type) const;
-  void EmitResult(const TpchQ8State &state,
-                  const std::string &nation_name,
-                  const std::string &region_name,
-                  const std::string &part_type,
-                  core::AuxEngineServices &services,
-                  core::AuxRowSink &sink) const;
+  std::shared_ptr<TpchQ8State> BuildState() const;
+  void EmitResult(const TpchQ8State &, const core::QueryArguments &,
+                  core::AuxRowSink &) const;
 
   TpchQ8Config config;
   TpchQ8InitialScan *initial_scan = nullptr;
