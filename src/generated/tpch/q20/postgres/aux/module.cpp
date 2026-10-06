@@ -1,56 +1,29 @@
 #include "tpch/q20/postgres/aux/module.hpp"
 #include "tpch/q20/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/byte_stream.hpp"
+#include "accelerator_codegen/stateful/core/sql_date.hpp"
+#include "accelerator_codegen/stateful/core/sql_like.hpp"
 
 #include <algorithm>
-#include <cstdlib>
-#include <cmath>
-#include <chrono>
 #include <cstring>
-#include <cstdio>
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <unordered_set>
+#include <thread>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
+namespace like = core::sql_like;
+namespace sql_date = core::sql_date;
 
-constexpr uint32_t kStateMagic = 0x51323053; // Q20S
-constexpr uint32_t kVersion = 1;
-constexpr int32_t kOneYearDays = 365;
-static bool CustomProfileEnabled() {
-  static const bool enabled = [] {
-    const char *v = std::getenv("ACCEL_AUX_CUSTOM_PROFILE");
-    return v && (v[0] == '1' || v[0] == 't' || v[0] == 'T' || v[0] == 'y' ||
-                 v[0] == 'Y');
-  }();
-  return enabled;
-}
+// String semantics of the target DBMS (LIKE and `n_name = ...`): PostgreSQL is
+// case-sensitive; the MySQL copy of this file sets this to true (default utf8mb4
+// collations are case-insensitive). This is the only intentional difference
+// between the postgres/ and mysql/ copies. '_' matches one UTF-8 character.
+constexpr bool kCaseInsensitive = false;
 
-static void EmitCustomProfile(const char *phase, double us,
-                              const std::vector<std::pair<const char *, int64_t>> &counts) {
-  if (!CustomProfileEnabled())
-    return;
-  std::string json = "ACCEL_CUSTOM_PROFILE {\"phase\":\"";
-  json += phase;
-  json += "\",\"us\":";
-  json += std::to_string(us);
-  for (const auto &[key, val] : counts) {
-    json += ",\"";
-    json += key;
-    json += "\":";
-    json += std::to_string(val);
-  }
-  json += "}";
-  fprintf(stderr, "%s\n", json.c_str());
-}
-
-
+// ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
       !std::holds_alternative<std::string>(row.values[index].payload))
@@ -90,33 +63,51 @@ bool Int32Cell(const core::AuxRow &row, std::size_t index, int32_t &out) {
   return true;
 }
 
-bool RawDecimalCell(const core::AuxRow &row, std::size_t index, int64_t &raw,
-                    int32_t &scale) {
-  if (index >= row.values.size() || row.values[index].is_null)
+// Quantity in hundredths (the engine hands columns over as scaled decimals).
+bool QuantityCell(const core::AuxRow &row, std::size_t index, int64_t &raw) {
+  if (index >= row.values.size() || row.values[index].is_null ||
+      !std::holds_alternative<core::ScaledDecimal>(row.values[index].payload))
     return false;
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<core::ScaledDecimal>(cell.payload)) {
-    const auto decimal = std::get<core::ScaledDecimal>(cell.payload);
-    raw = decimal.value;
-    scale = decimal.scale;
-    return true;
+  const auto decimal = std::get<core::ScaledDecimal>(row.values[index].payload);
+  raw = decimal.value;
+  for (int32_t s = decimal.scale; s < 2; ++s)
+    if (__builtin_mul_overflow(raw, int64_t{10}, &raw))
+      throw std::overflow_error("Q20 quantity overflows int64");
+  for (int32_t s = decimal.scale; s > 2; --s) {
+    if (raw % 10 != 0)
+      throw std::domain_error("Q20 quantity has more than 2 decimals");
+    raw /= 10;
   }
-  return false;
-}
-
-bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  days = static_cast<int32_t>(value);
   return true;
 }
 
-inline uint64_t MakePairKey(int64_t partkey, int64_t suppkey) {
-  return (static_cast<uint64_t>(partkey) << 20) |
-         static_cast<uint64_t>(suppkey);
+// A NULL in any column the query joins or filters on means the row can never
+// contribute, so these readers return false and the row is ignored.
+bool ReadLineitem(const core::AuxRow &row, int32_t &shipdate_days,
+                  int64_t &partkey, int64_t &suppkey, int64_t &quantity_raw) {
+  return Int32Cell(row, 0, shipdate_days) && IntCell(row, 1, partkey) &&
+         IntCell(row, 2, suppkey) && QuantityCell(row, 3, quantity_raw);
+}
+
+bool ReadPart(const core::AuxRow &row, int64_t &partkey, std::string &name) {
+  return IntCell(row, 0, partkey) && StringCell(row, 1, name);
+}
+
+bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, int64_t &suppkey,
+                  int64_t &availqty) {
+  return IntCell(row, 0, partkey) && IntCell(row, 1, suppkey) &&
+         IntCell(row, 2, availqty);
+}
+
+bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey, std::string &name,
+                  std::string &address, int32_t &nationkey) {
+  return IntCell(row, 0, suppkey) && StringCell(row, 1, name) &&
+         StringCell(row, 2, address) && Int32Cell(row, 3, nationkey);
+}
+
+bool ReadNation(const core::AuxRow &row, int32_t &nationkey,
+                std::string &name) {
+  return Int32Cell(row, 0, nationkey) && StringCell(row, 1, name);
 }
 
 core::InvalidationPlan All() {
@@ -141,513 +132,283 @@ const TpchQ20StateImage *AsQ20Image(const core::StateImage &image) {
              : nullptr;
 }
 
-bool AvailQtyGreaterThanHalfSum(int64_t availqty, int64_t sum_qty_raw) {
-#if defined(__SIZEOF_INT128__)
-  return static_cast<__int128_t>(availqty) * 200 >
-         static_cast<__int128_t>(sum_qty_raw);
-#else
-  return availqty > sum_qty_raw / 200;
-#endif
+// ps_availqty > 0.5 * SUM(l_quantity), exactly: availqty * 200 > sum in
+// hundredths, in 128-bit arithmetic.
+bool AvailQtyGreaterThanHalfSum(int64_t availqty, __int128 sum_qty_raw) {
+  return static_cast<__int128>(availqty) * 200 > sum_qty_raw;
 }
 
-bool SqlLikeAt(const char *text, std::size_t text_len, const char *pattern,
-               std::size_t pattern_len, std::size_t text_pos,
-               std::size_t pattern_pos) {
-  while (pattern_pos < pattern_len) {
-    const char ch = pattern[pattern_pos];
-    if (ch == '%') {
-      if (pattern_pos + 1 == pattern_len)
-        return true;
-      for (std::size_t start = text_pos; start <= text_len; ++start) {
-        if (SqlLikeAt(text, text_len, pattern, pattern_len, start,
-                      pattern_pos + 1))
-          return true;
-      }
-      return false;
+bool NameEquals(const std::string &a, const std::string &b) {
+  if (a.size() != b.size())
+    return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    char x = a[i], y = b[i];
+    if (kCaseInsensitive) {
+      x = static_cast<char>(x >= 'A' && x <= 'Z' ? x + 32 : x);
+      y = static_cast<char>(y >= 'A' && y <= 'Z' ? y + 32 : y);
     }
-    if (ch == '_') {
-      if (text_pos >= text_len)
-        return false;
-      ++text_pos;
-      ++pattern_pos;
-      continue;
-    }
-    if (text_pos >= text_len || text[text_pos] != ch)
+    if (x != y)
       return false;
-    ++text_pos;
-    ++pattern_pos;
   }
-  return text_pos == text_len;
-}
-
-bool SqlLike(const std::string &text, const std::string &pattern) {
-  return SqlLikeAt(text.data(), text.size(), pattern.data(), pattern.size(), 0,
-                   0);
-}
-
-bool ReadLineitem(const core::AuxRow &row, int32_t &shipdate_days,
-                  int64_t &partkey, int64_t &suppkey, int64_t &quantity_raw) {
-  if (!DateCell(row, 0, shipdate_days) || !IntCell(row, 1, partkey) ||
-      !IntCell(row, 2, suppkey))
-    return false;
-  int64_t raw = 0;
-  int32_t scale = 0;
-  if (!RawDecimalCell(row, 3, raw, scale))
-    return false;
-  if (scale != 2)
-    return false;
-  quantity_raw = raw;
   return true;
 }
 
-bool ReadPart(const core::AuxRow &row, int64_t &partkey, std::string &name) {
-  return IntCell(row, 0, partkey) && StringCell(row, 1, name);
+bool NameLess(const std::string &a, const std::string &b) {
+  if (!kCaseInsensitive)
+    return a < b;
+  const std::size_t n = std::min(a.size(), b.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    char x = a[i], y = b[i];
+    x = static_cast<char>(x >= 'A' && x <= 'Z' ? x + 32 : x);
+    y = static_cast<char>(y >= 'A' && y <= 'Z' ? y + 32 : y);
+    if (x != y)
+      return static_cast<unsigned char>(x) < static_cast<unsigned char>(y);
+  }
+  return a.size() < b.size();
 }
 
-bool ReadPartsupp(const core::AuxRow &row, int64_t &partkey, int64_t &suppkey,
-                  int64_t &availqty) {
-  if (!IntCell(row, 0, partkey) || !IntCell(row, 1, suppkey))
-    return false;
-  if (row.values.size() > 2)
-    return IntCell(row, 2, availqty);
-  return false;
+// ── Small-value packing: any int64 stays exact ──────────────────────────────
+// Values in [-2^30, 2^30) are stored as is; others are stored in the block's
+// `wide` table and referenced as INT32_MIN + index (always < -2^30).
+constexpr int64_t kNarrowMin = -(int64_t{1} << 30);
+constexpr int64_t kNarrowMax = (int64_t{1} << 30) - 1;
+
+int32_t PackValue(int64_t v, std::vector<int64_t> &wide) {
+  if (v >= kNarrowMin && v <= kNarrowMax)
+    return static_cast<int32_t>(v);
+  if (wide.size() >= (std::size_t{1} << 30))
+    throw std::length_error("Q20 block wide-value table overflow");
+  wide.push_back(v);
+  return static_cast<int32_t>(std::numeric_limits<int32_t>::min() +
+                              static_cast<int64_t>(wide.size() - 1));
 }
 
-bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey, std::string &name,
-                  std::string &address, int32_t &nationkey) {
-  return IntCell(row, 0, suppkey) && StringCell(row, 1, name) &&
-         StringCell(row, 2, address) && Int32Cell(row, 3, nationkey);
+int64_t UnpackValue(int32_t code, const std::vector<int64_t> &wide) {
+  return code >= kNarrowMin
+             ? static_cast<int64_t>(code)
+             : wide[static_cast<std::size_t>(static_cast<int64_t>(code) -
+                                             std::numeric_limits<int32_t>::min())];
 }
 
-bool ReadNation(const core::AuxRow &row, int32_t &nationkey,
-                std::string &name) {
-  return Int32Cell(row, 0, nationkey) && StringCell(row, 1, name);
+// ── Editable form of a block ────────────────────────────────────────────────
+// Used for the bulk build and for write batches: a block is decoded, edited
+// (cheap appends / searches over a handful of pairs) and re-encoded once.
+struct RawPair {
+  uint8_t slot = 0; // part index inside the block
+  int64_t suppkey = 0;
+  bool has_avail = false;
+  int64_t avail = 0;
+};
+
+struct RawLine {
+  uint32_t pair = 0;
+  int32_t shipdate = 0;
+  int32_t qty = 0; // packed against RawBlock::wide
+};
+
+struct RawBlock {
+  std::vector<RawPair> pairs;
+  std::vector<uint32_t> order; // pair indices sorted by (slot, suppkey)
+  std::vector<RawLine> lines;
+  std::vector<int64_t> wide;
+
+  // Index of the pair, or kNone.
+  static constexpr uint32_t kNone = 0xFFFFFFFFu;
+  std::size_t LowerBound(uint8_t slot, int64_t suppkey) const {
+    std::size_t lo = 0, hi = order.size();
+    while (lo < hi) {
+      const std::size_t mid = (lo + hi) / 2;
+      const RawPair &p = pairs[order[mid]];
+      if (p.slot < slot || (p.slot == slot && p.suppkey < suppkey))
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return lo;
+  }
+  uint32_t Find(uint8_t slot, int64_t suppkey) const {
+    const std::size_t pos = LowerBound(slot, suppkey);
+    if (pos < order.size()) {
+      const RawPair &p = pairs[order[pos]];
+      if (p.slot == slot && p.suppkey == suppkey)
+        return order[pos];
+    }
+    return kNone;
+  }
+  uint32_t FindOrAdd(uint8_t slot, int64_t suppkey) {
+    const std::size_t pos = LowerBound(slot, suppkey);
+    if (pos < order.size()) {
+      const RawPair &p = pairs[order[pos]];
+      if (p.slot == slot && p.suppkey == suppkey)
+        return order[pos];
+    }
+    pairs.push_back({slot, suppkey, false, 0});
+    const auto idx = static_cast<uint32_t>(pairs.size() - 1);
+    order.insert(order.begin() + static_cast<std::ptrdiff_t>(pos), idx);
+    return idx;
+  }
+
+  void AddLine(uint8_t slot, int64_t suppkey, int32_t shipdate, int64_t qty) {
+    const uint32_t pair = FindOrAdd(slot, suppkey);
+    lines.push_back({pair, shipdate, PackValue(qty, wide)});
+  }
+  // Removes one matching lineitem entry; a missing one is ignored (the row was
+  // never tracked, e.g. it had a NULL column).
+  void RemoveLine(uint8_t slot, int64_t suppkey, int32_t shipdate, int64_t qty) {
+    const uint32_t pair = Find(slot, suppkey);
+    if (pair == kNone)
+      return;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+      if (lines[i].pair == pair && lines[i].shipdate == shipdate &&
+          UnpackValue(lines[i].qty, wide) == qty) {
+        lines[i] = lines.back();
+        lines.pop_back();
+        return;
+      }
+    }
+  }
+  void SetAvail(uint8_t slot, int64_t suppkey, int64_t availqty) {
+    RawPair &p = pairs[FindOrAdd(slot, suppkey)];
+    p.has_avail = true;
+    p.avail = availqty;
+  }
+  void ClearAvail(uint8_t slot, int64_t suppkey) {
+    const uint32_t pair = Find(slot, suppkey);
+    if (pair != kNone)
+      pairs[pair].has_avail = false;
+  }
+};
+
+RawBlock DecodeBlock(const TpchQ20PartBlock *block) {
+  RawBlock raw;
+  if (!block)
+    return raw;
+  raw.wide = block->wide;
+  for (std::size_t slot = 0; slot < kTpchQ20BlockParts; ++slot) {
+    for (uint32_t j = block->pair_begin[slot]; j < block->pair_begin[slot + 1]; ++j) {
+      const TpchQ20Pair &p = block->pairs[j];
+      RawPair rp;
+      rp.slot = static_cast<uint8_t>(slot);
+      rp.suppkey = p.suppkey;
+      rp.has_avail = (p.entry_begin & TpchQ20Pair::kHasAvail) != 0;
+      rp.avail = rp.has_avail ? UnpackValue(p.availqty, block->wide) : 0;
+      raw.pairs.push_back(rp);
+      raw.order.push_back(static_cast<uint32_t>(raw.pairs.size() - 1));
+      const uint32_t begin = p.entry_begin & ~TpchQ20Pair::kHasAvail;
+      const uint32_t end = j + 1 < block->pairs.size()
+                               ? (block->pairs[j + 1].entry_begin & ~TpchQ20Pair::kHasAvail)
+                               : static_cast<uint32_t>(block->entries.size());
+      for (uint32_t e = begin; e < end; ++e)
+        raw.lines.push_back({static_cast<uint32_t>(raw.pairs.size() - 1),
+                             block->entries[e].shipdate, block->entries[e].qty});
+    }
+  }
+  return raw;
 }
+
+// Pairs with neither a partsupp row nor lineitems are dropped; an empty block
+// becomes nullptr.
+std::shared_ptr<TpchQ20PartBlock> EncodeBlock(const RawBlock &raw) {
+  std::vector<uint32_t> count(raw.pairs.size(), 0);
+  for (const RawLine &line : raw.lines)
+    ++count[line.pair];
+  std::vector<uint32_t> live_order;
+  live_order.reserve(raw.order.size());
+  for (const uint32_t idx : raw.order)
+    if (raw.pairs[idx].has_avail || count[idx] > 0)
+      live_order.push_back(idx);
+  if (live_order.empty())
+    return nullptr;
+  if (raw.lines.size() >= (std::size_t{1} << 31))
+    throw std::length_error("Q20 block entry count overflow");
+
+  auto block = std::make_shared<TpchQ20PartBlock>();
+  block->pairs.reserve(live_order.size());
+  block->entries.resize(raw.lines.size());
+  std::vector<uint32_t> start(raw.pairs.size(), 0);
+  std::size_t slot = 0;
+  uint32_t entry_pos = 0;
+  block->pair_begin[0] = 0;
+  for (const uint32_t idx : live_order) {
+    const RawPair &rp = raw.pairs[idx];
+    while (slot < rp.slot) {
+      ++slot;
+      block->pair_begin[slot] = static_cast<uint32_t>(block->pairs.size());
+    }
+    TpchQ20Pair pair;
+    pair.suppkey = rp.suppkey;
+    pair.entry_begin = entry_pos | (rp.has_avail ? TpchQ20Pair::kHasAvail : 0u);
+    if (rp.has_avail)
+      pair.availqty = PackValue(rp.avail, block->wide);
+    start[idx] = entry_pos;
+    entry_pos += count[idx];
+    block->pairs.push_back(pair);
+  }
+  while (slot < kTpchQ20BlockParts) {
+    ++slot;
+    block->pair_begin[slot] = static_cast<uint32_t>(block->pairs.size());
+  }
+  // Counting-sort the lines into their pair's range, then order by date.
+  std::vector<uint32_t> fill(start);
+  for (const RawLine &line : raw.lines) {
+    const int64_t qty = UnpackValue(line.qty, raw.wide);
+    block->entries[fill[line.pair]++] = {line.shipdate, PackValue(qty, block->wide)};
+  }
+  for (const uint32_t idx : live_order)
+    std::sort(block->entries.begin() + start[idx],
+              block->entries.begin() + start[idx] + count[idx],
+              [&](const TpchQ20Entry &a, const TpchQ20Entry &b) {
+                return a.shipdate != b.shipdate
+                           ? a.shipdate < b.shipdate
+                           : UnpackValue(a.qty, block->wide) < UnpackValue(b.qty, block->wide);
+              });
+  block->entries.shrink_to_fit();
+  block->pairs.shrink_to_fit();
+  block->wide.shrink_to_fit();
+  return block;
+}
+
+constexpr int64_t kBlockParts = static_cast<int64_t>(kTpchQ20BlockParts);
+static_assert((kBlockParts & (kBlockParts - 1)) == 0);
+// Floor division / modulo by the (power of two) block size: exact for negative keys.
+constexpr int64_t BlockOf(int64_t key) { return key >> __builtin_ctzll(static_cast<uint64_t>(kBlockParts)); }
+constexpr std::size_t SlotOf(int64_t key) { return static_cast<std::size_t>(key & (kBlockParts - 1)); }
+
+// Blocks being edited, keyed by block index; re-encoded into the state by Flush.
+class BlockEditor {
+public:
+  explicit BlockEditor(TpchQ20State &state) : state_(state) {}
+  RawBlock &For(int64_t partkey) {
+    const int64_t bi = BlockOf(partkey);
+    auto it = edited_.find(bi);
+    if (it == edited_.end())
+      it = edited_.emplace(bi, DecodeBlock(state_.FindBlock(partkey))).first;
+    return it->second;
+  }
+  void Flush() {
+    for (auto &[bi, raw] : edited_) {
+      auto encoded = EncodeBlock(raw);
+      if (encoded || state_.blocks.Get(bi))
+        state_.blocks.Set(bi, encoded);
+    }
+    edited_.clear();
+  }
+private:
+  TpchQ20State &state_;
+  std::map<int64_t, RawBlock> edited_;
+};
 
 } // namespace
-
-// ── TpchQ20State accessors ──────────────────────────────────────────────────
-void TpchQ20State::AddPairEntry(uint64_t pair_key, int32_t shipdate_days,
-                                int64_t quantity_raw) {
-  // Copy the full ancestor series (not just immediate parent) so stacked
-  // overlay publishes still see base lineitem history.
-  if (pair_series.find(pair_key) == pair_series.end() && parent_state) {
-    if (const auto *src = parent_state->FindPairSeries(pair_key))
-      pair_series[pair_key] = *src;
-  }
-  auto &series = pair_series[pair_key];
-  series.entries.push_back({shipdate_days, quantity_raw});
-  series.total_quantity_raw += quantity_raw;
-  series.dirty = true;
-}
-
-void TpchQ20State::RemovePairEntry(uint64_t pair_key, int32_t shipdate_days,
-                                   int64_t quantity_raw) {
-  if (pair_series.find(pair_key) == pair_series.end() && parent_state) {
-    if (const auto *src = parent_state->FindPairSeries(pair_key))
-      pair_series[pair_key] = *src;
-  }
-  auto it = pair_series.find(pair_key);
-  if (it == pair_series.end())
-    return;
-  auto &series = it->second;
-  for (auto entry_it = series.entries.begin();
-       entry_it != series.entries.end(); ++entry_it) {
-    if (entry_it->shipdate_days == shipdate_days &&
-        entry_it->quantity_raw == quantity_raw) {
-      series.entries.erase(entry_it);
-      series.total_quantity_raw -= quantity_raw;
-      series.dirty = true;
-      break;
-    }
-  }
-  if (series.entries.empty())
-    pair_series.erase(it);
-}
-
-int64_t TpchQ20State::SumPairQuantity(uint64_t pair_key,
-                                      int32_t start_date_days,
-                                      int32_t end_date_days) const {
-  auto it = pair_series.find(pair_key);
-  if (it == pair_series.end()) {
-    if (parent_state) return parent_state->SumPairQuantity(pair_key, start_date_days, end_date_days);
-    return 0;
-  }
-  const auto &entries = it->second.entries;
-  int64_t total = 0;
-  for (const auto &entry : entries) {
-    if (entry.shipdate_days >= start_date_days &&
-        entry.shipdate_days < end_date_days) {
-      total += entry.quantity_raw;
-    }
-  }
-  return total;
-}
-
-bool TpchQ20State::HasPairQuantityInWindow(
-    uint64_t pair_key, int32_t start_date_days, int32_t end_date_days) const {
-  auto it = pair_series.find(pair_key);
-  if (it == pair_series.end()) {
-    if (parent_state) return parent_state->HasPairQuantityInWindow(pair_key, start_date_days, end_date_days);
-    return false;
-  }
-  const auto &entries = it->second.entries;
-  // Entries are sorted by shipdate_days after build/delta apply. Skip the
-  // prefix outside the window and stop as soon as the window ends.
-  for (const auto &entry : entries) {
-    if (entry.shipdate_days < start_date_days)
-      continue;
-    if (entry.shipdate_days >= end_date_days)
-      break;
-    return true;
-  }
-  return false;
-}
-
-std::pair<int64_t, bool> TpchQ20State::QueryWindowSum(
-    uint64_t pair_key, int32_t start_date_days, int32_t end_date_days) const {
-  auto it = pair_series.find(pair_key);
-  if (it == pair_series.end()) {
-    if (parent_state) return parent_state->QueryWindowSum(pair_key, start_date_days, end_date_days);
-    return {-1, false};
-  }
-  const auto &entries = it->second.entries;
-  int64_t total = 0;
-  bool has_entry = false;
-  for (const auto &entry : entries) {
-    if (entry.shipdate_days < start_date_days)
-      continue;
-    if (entry.shipdate_days >= end_date_days)
-      break;
-    has_entry = true;
-    total += entry.quantity_raw;
-  }
-  return {total, has_entry};
-}
-
-const TpchQ20PairSeries *
-TpchQ20State::FindPairSeries(uint64_t pair_key) const {
-  const auto it = pair_series.find(pair_key);
-  if (it != pair_series.end())
-    return &it->second;
-  if (parent_state)
-    return parent_state->FindPairSeries(pair_key);
-  return nullptr;
-}
-
-void TpchQ20State::SortPairEntries() {
-  for (auto &[key, series] : pair_series) {
-    (void)key;
-    if (!series.dirty)
-      continue;
-    std::sort(series.entries.begin(), series.entries.end(),
-              [](const TpchQ20DateQuantity &a, const TpchQ20DateQuantity &b) {
-                return a.shipdate_days < b.shipdate_days;
-              });
-    series.dirty = false;
-  }
-}
-
-const TpchQ20SupplierRecord *
-TpchQ20State::FindSupplier(int64_t suppkey) const {
-  const auto it = suppliers.find(suppkey);
-  if (it != suppliers.end())
-    return &it->second;
-  if (parent_state)
-    return parent_state->FindSupplier(suppkey);
-  return nullptr;
-}
-
-const TpchQ20PartRecord *TpchQ20State::FindPart(int64_t partkey) const {
-  const auto it = parts.find(partkey);
-  if (it != parts.end())
-    return &it->second;
-  if (parent_state)
-    return parent_state->FindPart(partkey);
-  return nullptr;
-}
-
-void TpchQ20State::BuildFlatPartsuppKeys() {
-  flat_partsupp_keys.clear();
-  flat_partsupp_keys.reserve(parts.size() * 4 + 16);
-  for (const auto &[partkey, part] : parts) {
-    for (const auto &[suppkey, availqty] : part.partsupps) {
-      const uint64_t pair_key = MakePairKey(partkey, suppkey);
-      const TpchQ20PairSeries *series = FindPairSeries(pair_key);
-      flat_partsupp_keys.push_back({pair_key, availqty, series});
-    }
-  }
-  std::sort(flat_partsupp_keys.begin(), flat_partsupp_keys.end(),
-            [](const auto &a, const auto &b) { return a.pair_key < b.pair_key; });
-  flat_partsupp_keys_sorted = true;
-}
-
-std::vector<int64_t>
-TpchQ20State::FindPartKeysByPrefix(const std::string &prefix) const {
-  std::vector<int64_t> result;
-  std::unordered_set<int64_t> seen;
-  auto collect = [&](const TpchQ20State &s) {
-    auto it = s.part_name_index.lower_bound(prefix);
-    for (; it != s.part_name_index.end(); ++it) {
-      if (it->first.size() < prefix.size())
-        break;
-      if (it->first.compare(0, prefix.size(), prefix) != 0)
-        break;
-      for (auto key : it->second) {
-        if (seen.insert(key).second)
-          result.push_back(key);
-      }
-    }
-  };
-  for (const TpchQ20State *s = this; s; s = s->parent_state.get())
-    collect(*s);
-  return result;
-}
-
-std::vector<int32_t>
-TpchQ20State::FindNationKeysByName(const std::string &name) const {
-  const auto it = nation_name_index.find(name);
-  if (it != nation_name_index.end())
-    return it->second;
-  if (parent_state)
-    return parent_state->FindNationKeysByName(name);
-  return {};
-}
-
-// ── Encode / Decode ─────────────────────────────────────────────────────────
-std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kStateMagic, kVersion,
-                         static_cast<uint32_t>(state.pair_series.size()));
-
-  writer.U32(static_cast<uint32_t>(state.pair_series.size()));
-  for (const auto &[key, series] : state.pair_series) {
-    writer.U64(key);
-    writer.I64(series.total_quantity_raw);
-    writer.U32(static_cast<uint32_t>(series.entries.size()));
-    for (const auto &entry : series.entries) {
-      writer.I32(entry.shipdate_days);
-      writer.I64(entry.quantity_raw);
-    }
-  }
-
-  writer.U32(static_cast<uint32_t>(state.part_name_index.size()));
-  for (const auto &[name, keys] : state.part_name_index) {
-    writer.String(name);
-    writer.U32(static_cast<uint32_t>(keys.size()));
-    for (const auto key : keys)
-      writer.I64(key);
-  }
-
-  writer.U32(static_cast<uint32_t>(state.parts.size()));
-  for (const auto &[key, part] : state.parts) {
-    writer.I64(key);
-    writer.String(part.name);
-    writer.U32(static_cast<uint32_t>(part.partsupps.size()));
-    for (const auto &[suppkey, availqty] : part.partsupps) {
-      writer.I64(suppkey);
-      writer.I64(availqty);
-    }
-  }
-
-  writer.U32(static_cast<uint32_t>(state.suppliers.size()));
-  for (const auto &[key, supplier] : state.suppliers) {
-    writer.I64(key);
-    writer.String(supplier.name);
-    writer.String(supplier.address);
-    writer.I32(supplier.nationkey);
-  }
-
-  writer.U32(static_cast<uint32_t>(state.nations.size()));
-  for (const auto &[key, nation] : state.nations) {
-    writer.I32(key);
-    writer.String(nation.name);
-  }
-
-  writer.U32(static_cast<uint32_t>(state.nation_name_index.size()));
-  for (const auto &[name, keys] : state.nation_name_index) {
-    writer.String(name);
-    writer.U32(static_cast<uint32_t>(keys.size()));
-    for (const auto key : keys)
-      writer.I32(key);
-  }
-
-  writer.U32(static_cast<uint32_t>(state.flat_partsupp_keys.size()));
-  for (const auto &entry : state.flat_partsupp_keys) {
-    writer.U64(entry.pair_key);
-    writer.I64(entry.availqty);
-  }
-
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ20State(const std::vector<uint8_t> &bytes,
-                        TpchQ20State &state) {
-  ByteReader reader(bytes);
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kStateMagic, kVersion, count))
-    return false;
-
-  state = TpchQ20State{};
-
-  uint32_t series_count = 0;
-  if (!reader.U32(series_count))
-    return false;
-  for (uint32_t i = 0; i < series_count; ++i) {
-    uint64_t key = 0;
-    TpchQ20PairSeries series;
-    if (!reader.U64(key) || !reader.I64(series.total_quantity_raw))
-      return false;
-    uint32_t entry_count = 0;
-    if (!reader.U32(entry_count))
-      return false;
-    series.entries.reserve(entry_count);
-    for (uint32_t j = 0; j < entry_count; ++j) {
-      TpchQ20DateQuantity entry;
-      if (!reader.I32(entry.shipdate_days) || !reader.I64(entry.quantity_raw))
-        return false;
-      series.entries.push_back(entry);
-    }
-    state.pair_series[key] = std::move(series);
-  }
-
-  uint32_t name_idx_count = 0;
-  if (!reader.U32(name_idx_count))
-    return false;
-  for (uint32_t i = 0; i < name_idx_count; ++i) {
-    std::string name;
-    if (!reader.String(name))
-      return false;
-    uint32_t key_count = 0;
-    if (!reader.U32(key_count))
-      return false;
-    std::vector<int64_t> keys;
-    keys.reserve(key_count);
-    for (uint32_t j = 0; j < key_count; ++j) {
-      int64_t k = 0;
-      if (!reader.I64(k))
-        return false;
-      keys.push_back(k);
-    }
-    state.part_name_index[std::move(name)] = std::move(keys);
-  }
-
-  uint32_t parts_count = 0;
-  if (!reader.U32(parts_count))
-    return false;
-  for (uint32_t i = 0; i < parts_count; ++i) {
-    int64_t key = 0;
-    TpchQ20PartRecord part;
-    if (!reader.I64(key) || !reader.String(part.name))
-      return false;
-    uint32_t ps_count = 0;
-    if (!reader.U32(ps_count))
-      return false;
-    part.partsupps.reserve(ps_count);
-    for (uint32_t j = 0; j < ps_count; ++j) {
-      int64_t suppkey = 0;
-      int64_t availqty = 0;
-      if (!reader.I64(suppkey) || !reader.I64(availqty))
-        return false;
-      part.partsupps[suppkey] = availqty;
-    }
-    state.parts[key] = std::move(part);
-  }
-
-  uint32_t supplier_count = 0;
-  if (!reader.U32(supplier_count))
-    return false;
-  for (uint32_t i = 0; i < supplier_count; ++i) {
-    int64_t key = 0;
-    TpchQ20SupplierRecord supplier;
-    if (!reader.I64(key) || !reader.String(supplier.name) ||
-        !reader.String(supplier.address) || !reader.I32(supplier.nationkey))
-      return false;
-    state.suppliers[key] = std::move(supplier);
-  }
-
-  uint32_t nation_count = 0;
-  if (!reader.U32(nation_count))
-    return false;
-  for (uint32_t i = 0; i < nation_count; ++i) {
-    int32_t key = 0;
-    TpchQ20NationRecord nation;
-    if (!reader.I32(key) || !reader.String(nation.name))
-      return false;
-    state.nations[key] = std::move(nation);
-  }
-
-  uint32_t nni_count = 0;
-  if (!reader.U32(nni_count))
-    return false;
-  for (uint32_t i = 0; i < nni_count; ++i) {
-    std::string name;
-    if (!reader.String(name))
-      return false;
-    uint32_t key_count = 0;
-    if (!reader.U32(key_count))
-      return false;
-    std::vector<int32_t> keys;
-    keys.reserve(key_count);
-    for (uint32_t j = 0; j < key_count; ++j) {
-      int32_t k = 0;
-      if (!reader.I32(k))
-        return false;
-      keys.push_back(k);
-    }
-    state.nation_name_index[std::move(name)] = std::move(keys);
-  }
-
-  uint32_t flat_count = 0;
-  if (!reader.U32(flat_count))
-    return true;
-  state.flat_partsupp_keys.reserve(flat_count);
-  for (uint32_t i = 0; i < flat_count; ++i) {
-    uint64_t pair_key = 0;
-    int64_t availqty = 0;
-    if (!reader.U64(pair_key) || !reader.I64(availqty))
-      return true;
-    state.flat_partsupp_keys.push_back({pair_key, availqty, nullptr});
-  }
-  state.flat_partsupp_keys_sorted = true;
-  // Rebuild series pointers after decode (not serialized).
-  for (auto &entry : state.flat_partsupp_keys) {
-    auto it = state.pair_series.find(entry.pair_key);
-    if (it != state.pair_series.end())
-      entry.series = &it->second;
-  }
-
-  return true;
-}
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 bool TpchQ20TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ20TxnBuffer::Clear() {
   pending = false;
-  requires_rebuild = false;
   lineitem_deltas.clear();
   partsupp_deltas.clear();
-  part_name_deltas.clear();
-}
-bool TpchQ20TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
-void TpchQ20TxnBuffer::MarkRebuild() {
-  pending = true;
-  requires_rebuild = true;
-  lineitem_deltas.clear();
-  partsupp_deltas.clear();
-  part_name_deltas.clear();
-}
-const std::vector<TpchQ20LineitemDelta> &
-TpchQ20TxnBuffer::LineitemDeltas() const {
-  return lineitem_deltas;
-}
-const std::vector<TpchQ20PartsuppDelta> &
-TpchQ20TxnBuffer::PartsuppDeltas() const {
-  return partsupp_deltas;
-}
-const std::vector<TpchQ20PartNameDelta> &
-TpchQ20TxnBuffer::PartNameDeltas() const {
-  return part_name_deltas;
+  part_deltas.clear();
+  supplier_deltas.clear();
+  nation_deltas.clear();
 }
 void TpchQ20TxnBuffer::AddLineitemDelta(TpchQ20LineitemDelta delta) {
   pending = true;
@@ -657,12 +418,20 @@ void TpchQ20TxnBuffer::AddPartsuppDelta(TpchQ20PartsuppDelta delta) {
   pending = true;
   partsupp_deltas.push_back(delta);
 }
-void TpchQ20TxnBuffer::AddPartNameDelta(TpchQ20PartNameDelta delta) {
+void TpchQ20TxnBuffer::AddPartDelta(TpchQ20PartDelta delta) {
   pending = true;
-  part_name_deltas.push_back(delta);
+  part_deltas.push_back(std::move(delta));
+}
+void TpchQ20TxnBuffer::AddSupplierDelta(TpchQ20SupplierDelta delta) {
+  pending = true;
+  supplier_deltas.push_back(std::move(delta));
+}
+void TpchQ20TxnBuffer::AddNationDelta(TpchQ20NationDelta delta) {
+  pending = true;
+  nation_deltas.push_back(std::move(delta));
 }
 
-// ── Module implementation ───────────────────────────────────────────────────
+// ── Module ──────────────────────────────────────────────────────────────────
 core::AcceleratorId TpchQ20Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> TpchQ20Module::Dependencies() const {
@@ -679,14 +448,10 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ20Module::CreateTxnBuffer() const {
 
 void TpchQ20Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  auto state = BuildState(services);
-  // BuildFlatPartsuppKeys stores pointers into pair_series; run it on the
-  // final shared object so pointers are alive for the lifetime of the state.
-  auto typed_state = std::make_shared<TpchQ20State>(std::move(state));
-  typed_state->BuildFlatPartsuppKeys();
+  const auto state = BuildState(services);
   builder.Write(core::StateImage::Make(
       TpchQ20Layout::kAccelerator, TpchQ20Layout::kFullState, 0,
-      MakeStateImage(typed_state)));
+      MakeStateImage(state)));
   builder.Finish();
 }
 
@@ -710,116 +475,55 @@ void TpchQ20Module::AccumulateMutation(const core::MutationBatch &mutation,
                                        core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ20TxnBuffer &>(base_buffer);
 
+  std::function<void(const core::AuxRow &, int8_t)> add;
   if (mutation.table == config.lineitem_table) {
-    auto add = [&](const core::AuxRow &row, int8_t sign) {
-      int32_t shipdate = 0;
-      int64_t partkey = 0, suppkey = 0, quantity = 0;
-      if (!ReadLineitem(row, shipdate, partkey, suppkey, quantity)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      buffer.AddLineitemDelta({shipdate, partkey, suppkey, quantity, sign});
+    add = [&](const core::AuxRow &row, int8_t sign) {
+      TpchQ20LineitemDelta d;
+      d.sign = sign;
+      if (ReadLineitem(row, d.shipdate_days, d.partkey, d.suppkey, d.quantity_raw) )
+        buffer.AddLineitemDelta(d);
     };
-    switch (mutation.kind) {
-    case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows)
-        add(row, 1);
-      break;
-    case core::MutationKind::Delete:
-      for (const auto &row : mutation.old_rows)
-        add(row, -1);
-      break;
-    case core::MutationKind::Update:
-      if (mutation.old_rows.size() != mutation.new_rows.size()) {
-        buffer.MarkRebuild();
-        return;
-      }
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        add(mutation.old_rows[i], -1);
-        add(mutation.new_rows[i], 1);
-      }
-      break;
-    }
+  } else if (mutation.table == config.partsupp_table) {
+    add = [&](const core::AuxRow &row, int8_t sign) {
+      TpchQ20PartsuppDelta d;
+      d.sign = sign;
+      if (ReadPartsupp(row, d.partkey, d.suppkey, d.availqty))
+        buffer.AddPartsuppDelta(d);
+    };
+  } else if (mutation.table == config.part_table) {
+    add = [&](const core::AuxRow &row, int8_t sign) {
+      TpchQ20PartDelta d;
+      d.sign = sign;
+      if (ReadPart(row, d.partkey, d.name))
+        buffer.AddPartDelta(std::move(d));
+    };
+  } else if (mutation.table == config.supplier_table) {
+    add = [&](const core::AuxRow &row, int8_t sign) {
+      TpchQ20SupplierDelta d;
+      d.sign = sign;
+      if (ReadSupplier(row, d.suppkey, d.supplier.name, d.supplier.address,
+                       d.supplier.nationkey))
+        buffer.AddSupplierDelta(std::move(d));
+    };
+  } else if (mutation.table == config.nation_table) {
+    add = [&](const core::AuxRow &row, int8_t sign) {
+      TpchQ20NationDelta d;
+      d.sign = sign;
+      if (ReadNation(row, d.nationkey, d.name))
+        buffer.AddNationDelta(std::move(d));
+    };
+  } else {
     return;
   }
 
-  if (mutation.table == config.partsupp_table) {
-    auto add = [&](const core::AuxRow &row, int8_t sign) {
-      int64_t partkey = 0, suppkey = 0, availqty = 0;
-      if (!ReadPartsupp(row, partkey, suppkey, availqty)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      buffer.AddPartsuppDelta({partkey, suppkey, availqty, sign});
-    };
-    switch (mutation.kind) {
-    case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows)
-        add(row, 1);
-      break;
-    case core::MutationKind::Delete:
-      for (const auto &row : mutation.old_rows)
-        add(row, -1);
-      break;
-    case core::MutationKind::Update:
-      if (mutation.old_rows.size() != mutation.new_rows.size()) {
-        buffer.MarkRebuild();
-        return;
-      }
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        add(mutation.old_rows[i], -1);
-        add(mutation.new_rows[i], 1);
-      }
-      break;
-    }
-    return;
-  }
-
-  if (mutation.table == config.part_table) {
-    auto add = [&](const core::AuxRow &row, int8_t sign) {
-      int64_t partkey = 0;
-      std::string name;
-      if (!ReadPart(row, partkey, name)) {
-        buffer.MarkRebuild();
-        return;
-      }
-      buffer.AddPartNameDelta({partkey, {}, std::move(name), sign});
-    };
-    switch (mutation.kind) {
-    case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows)
-        add(row, 1);
-      break;
-    case core::MutationKind::Delete:
-      for (const auto &row : mutation.old_rows)
-        add(row, -1);
-      break;
-    case core::MutationKind::Update:
-      if (mutation.old_rows.size() != mutation.new_rows.size()) {
-        buffer.MarkRebuild();
-        return;
-      }
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        int64_t old_key = 0, new_key = 0;
-        std::string old_name, new_name;
-        if (!ReadPart(mutation.old_rows[i], old_key, old_name) ||
-            !ReadPart(mutation.new_rows[i], new_key, new_name)) {
-          buffer.MarkRebuild();
-          return;
-        }
-        buffer.AddPartNameDelta(
-            {old_key, std::move(old_name), std::move(new_name), 0});
-      }
-      break;
-    }
-    return;
-  }
-
-  if (mutation.table == config.supplier_table ||
-      mutation.table == config.nation_table) {
-    buffer.MarkRebuild();
-    return;
-  }
+  // An update is "all old rows removed, then all new rows added": identical to
+  // pairwise handling, and immune to key swaps within one statement.
+  if (mutation.kind != core::MutationKind::Insert)
+    for (const auto &row : mutation.old_rows)
+      add(row, -1);
+  if (mutation.kind != core::MutationKind::Delete)
+    for (const auto &row : mutation.new_rows)
+      add(row, 1);
 }
 
 core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
@@ -828,28 +532,13 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
   auto &buffer = dynamic_cast<TpchQ20TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
 
-  if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  const bool has_lineitem = !buffer.LineitemDeltas().empty();
-  const bool has_partsupp = !buffer.PartsuppDeltas().empty();
-  const bool has_part = !buffer.PartNameDeltas().empty();
-  if (!has_lineitem && !has_partsupp && !has_part)
-    return outcome;
-
   const uint64_t delta_count =
       buffer.LineitemDeltas().size() + buffer.PartsuppDeltas().size() +
-      buffer.PartNameDeltas().size();
+      buffer.PartDeltas().size() + buffer.SupplierDeltas().size() +
+      buffer.NationDeltas().size();
+  if (delta_count == 0)
+    return outcome;
+
   const auto decision = services.ChooseMaintenance(
       {delta_count, 1, true, false, true, false, false,
        core::MaintenanceAction::NoOp,
@@ -866,144 +555,66 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
   }
 
   core::Version existing_version = 0;
-  const auto visibility = services.CurrentVisibility();
   const auto snapshot = services.StateStore().ReadPartitions(
-      visibility, {TpchQ20Layout::kFullState});
-  bool found = false;
-  std::shared_ptr<TpchQ20State> new_state;
+      services.CurrentVisibility(), {TpchQ20Layout::kFullState});
+  std::shared_ptr<TpchQ20State> updated;
   for (const auto &image : snapshot.partitions) {
-    if (image.partition == TpchQ20Layout::kFullState) {
-      const auto *typed = AsQ20Image(image);
-      if (!typed) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      new_state = std::make_shared<TpchQ20State>();
-      new_state->parent_state = typed->state;
-      existing_version = image.version;
-      found = true;
-      break;
-    }
+    if (image.partition != TpchQ20Layout::kFullState)
+      continue;
+    const auto *typed = AsQ20Image(image);
+    if (!typed)
+      return outcome;
+    // Copy-on-write: shares every block / name segment / supplier shard with
+    // the published state; only the touched ones are cloned below.
+    updated = std::make_shared<TpchQ20State>(*typed->state);
+    existing_version = image.version;
+    break;
   }
-  if (!found) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+  if (!updated)
     return outcome;
+
+  BlockEditor editor(*updated);
+  for (const auto &d : buffer.LineitemDeltas()) {
+    auto &raw = editor.For(d.partkey);
+    const auto slot = SlotOf(d.partkey);
+    if (d.sign > 0)
+      raw.AddLine(slot, d.suppkey, d.shipdate_days, d.quantity_raw);
+    else
+      raw.RemoveLine(slot, d.suppkey, d.shipdate_days, d.quantity_raw);
+  }
+  for (const auto &d : buffer.PartsuppDeltas()) {
+    auto &raw = editor.For(d.partkey);
+    const auto slot = SlotOf(d.partkey);
+    if (d.sign > 0)
+      raw.SetAvail(slot, d.suppkey, d.availqty);
+    else
+      raw.ClearAvail(slot, d.suppkey);
+  }
+  editor.Flush();
+
+  for (const auto &d : buffer.PartDeltas()) {
+    if (d.sign > 0)
+      updated->part_names.Set(d.partkey, d.name);
+    else
+      updated->part_names.Erase(d.partkey);
+  }
+  for (const auto &d : buffer.SupplierDeltas()) {
+    if (d.sign > 0)
+      updated->suppliers.Upsert(d.suppkey, d.supplier);
+    else
+      updated->suppliers.Erase(d.suppkey);
+  }
+  for (const auto &d : buffer.NationDeltas()) {
+    if (d.sign > 0)
+      updated->nations[d.nationkey] = d.name;
+    else
+      updated->nations.erase(d.nationkey);
   }
 
-  // Apply lineitem deltas
-  for (const auto &delta : buffer.LineitemDeltas()) {
-    const auto pair_key = MakePairKey(delta.partkey, delta.suppkey);
-    if (delta.sign > 0) {
-      new_state->AddPairEntry(pair_key, delta.shipdate_days,
-                              delta.quantity_raw);
-    } else {
-      new_state->RemovePairEntry(pair_key, delta.shipdate_days,
-                                 delta.quantity_raw);
-    }
-  }
-  // Re-sort affected series after lineitem delta application.
-  new_state->SortPairEntries();
-
-  // Apply partsupp deltas (lazy-copy parent part records when needed)
-  for (const auto &delta : buffer.PartsuppDeltas()) {
-    if (delta.sign > 0) {
-      if (new_state->parts.find(delta.partkey) == new_state->parts.end()) {
-        const auto *parent_part =
-            new_state->parent_state ? new_state->parent_state->FindPart(delta.partkey) : nullptr;
-        if (parent_part)
-          new_state->parts[delta.partkey] = *parent_part;
-      }
-      new_state->parts[delta.partkey].partsupps[delta.suppkey] =
-          delta.availqty;
-    } else {
-      if (new_state->parts.find(delta.partkey) == new_state->parts.end()) {
-        const auto *parent_part =
-            new_state->parent_state ? new_state->parent_state->FindPart(delta.partkey) : nullptr;
-        if (parent_part)
-          new_state->parts[delta.partkey] = *parent_part;
-      }
-      auto part_it = new_state->parts.find(delta.partkey);
-      if (part_it != new_state->parts.end())
-        part_it->second.partsupps.erase(delta.suppkey);
-    }
-  }
-
-  // Apply part name deltas
-  for (const auto &delta : buffer.PartNameDeltas()) {
-    if (delta.sign == 0 && !delta.old_name.empty() &&
-        new_state->parts.find(delta.partkey) == new_state->parts.end()) {
-      const auto *parent_part =
-          new_state->parent_state ? new_state->parent_state->FindPart(delta.partkey) : nullptr;
-      if (parent_part)
-        new_state->parts[delta.partkey] = *parent_part;
-    }
-    if (delta.sign > 0) {
-      // Insert
-      if (!delta.new_name.empty()) {
-        new_state->parts[delta.partkey].name = delta.new_name;
-        new_state->part_name_index[delta.new_name].push_back(delta.partkey);
-      }
-    } else if (delta.sign < 0) {
-      // Delete
-      auto idx_it = new_state->part_name_index.find(delta.new_name);
-      if (idx_it == new_state->part_name_index.end() &&
-          new_state->parent_state) {
-        const auto parent_keys =
-            new_state->parent_state->FindPartKeysByPrefix(delta.new_name);
-        for (auto key : parent_keys)
-          new_state->part_name_index[delta.new_name].push_back(key);
-        idx_it = new_state->part_name_index.find(delta.new_name);
-      }
-      if (idx_it != new_state->part_name_index.end()) {
-        auto &idx = idx_it->second;
-        idx.erase(std::remove(idx.begin(), idx.end(), delta.partkey),
-                  idx.end());
-        if (idx.empty())
-          new_state->part_name_index.erase(idx_it);
-      }
-      new_state->parts.erase(delta.partkey);
-    } else {
-      // Update (sign == 0)
-      if (!delta.old_name.empty()) {
-        auto old_idx_it = new_state->part_name_index.find(delta.old_name);
-        if (old_idx_it == new_state->part_name_index.end() &&
-            new_state->parent_state) {
-          const auto parent_keys =
-              new_state->parent_state->FindPartKeysByPrefix(delta.old_name);
-          for (auto key : parent_keys)
-            new_state->part_name_index[delta.old_name].push_back(key);
-          old_idx_it = new_state->part_name_index.find(delta.old_name);
-        }
-        if (old_idx_it != new_state->part_name_index.end()) {
-          auto &old_idx = old_idx_it->second;
-          old_idx.erase(
-              std::remove(old_idx.begin(), old_idx.end(), delta.partkey),
-              old_idx.end());
-          if (old_idx.empty())
-            new_state->part_name_index.erase(old_idx_it);
-        }
-      }
-      if (!delta.new_name.empty()) {
-        new_state->part_name_index[delta.new_name].push_back(delta.partkey);
-        auto part_it = new_state->parts.find(delta.partkey);
-        if (part_it != new_state->parts.end())
-          part_it->second.name = delta.new_name;
-      }
-    }
-  }
-
-  // Publish the overlay state. It carries a parent pointer for lookups,
-  // so we do NOT merge or deep-copy the large base map here. Delta stays local.
   outcome.action = core::MaintenanceAction::ApplyDelta;
-  const auto typed_state =
-      std::static_pointer_cast<const TpchQ20State>(std::move(new_state));
   outcome.updates.push_back(core::StateImage::Make(
       TpchQ20Layout::kAccelerator, TpchQ20Layout::kFullState, existing_version,
-      MakeStateImage(typed_state)));
+      MakeStateImage(std::static_pointer_cast<const TpchQ20State>(updated))));
   return outcome;
 }
 
@@ -1017,164 +628,59 @@ bool TpchQ20Module::CheckValidity(core::AuxEngineServices &services,
 void TpchQ20Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
-  if (arguments.values.size() < 3) {
+  if (!services.StateStore()
+           .CheckValidity({Id(), {}}, services.CurrentVisibility())
+           .IsValid()) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-
-  int32_t start_date_days = 0;
-  std::string part_name_pattern;
-  std::string nation_name;
-
-  if (std::holds_alternative<core::AuxDate>(arguments.values[0].payload)) {
-    start_date_days =
-        std::get<core::AuxDate>(arguments.values[0].payload).days_since_epoch;
-  } else if (std::holds_alternative<int64_t>(arguments.values[0].payload)) {
-    start_date_days = static_cast<int32_t>(
-        std::get<int64_t>(arguments.values[0].payload));
-  } else {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
-
-  if (!arguments.values[1].is_null &&
-      std::holds_alternative<std::string>(arguments.values[1].payload)) {
-    part_name_pattern =
-        std::get<std::string>(arguments.values[1].payload);
-  } else {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
-
-  if (!arguments.values[2].is_null &&
-      std::holds_alternative<std::string>(arguments.values[2].payload)) {
-    nation_name = std::get<std::string>(arguments.values[2].payload);
-  } else {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
-
-  const int32_t end_date_days = start_date_days + kOneYearDays;
-
-  {
-    auto t0 = std::chrono::steady_clock::now();
-    const bool valid = services.StateStore()
-        .CheckValidity({Id(), {}}, services.CurrentVisibility())
-        .IsValid();
-    auto t1 = std::chrono::steady_clock::now();
-    EmitCustomProfile("check_validity",
-                      std::chrono::duration<double, std::micro>(t1 - t0).count(),
-                      {{"valid", valid ? static_cast<int64_t>(1) : static_cast<int64_t>(0)}});
-    if (!valid) {
-      ExecuteFallback(services, arguments, sink);
-      return;
-    }
-  }
-
   std::shared_ptr<const TpchQ20State> state;
-  {
-    auto t0 = std::chrono::steady_clock::now();
-    const bool loaded = LoadState(services, state);
-    auto t1 = std::chrono::steady_clock::now();
-    EmitCustomProfile("load_state",
-                      std::chrono::duration<double, std::micro>(t1 - t0).count(),
-                      {{"loaded", loaded ? static_cast<int64_t>(1) : static_cast<int64_t>(0)}});
-    if (!loaded) {
-      ExecuteFallback(services, arguments, sink);
-      return;
-    }
+  if (!LoadState(services, state)) {
+    ExecuteFallback(services, arguments, sink);
+    return;
   }
-
-  EmitResult(*state, start_date_days, end_date_days, part_name_pattern,
-             nation_name, services, sink);
+  EmitResult(*state, arguments, sink);
 }
 
 void TpchQ20Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
-  int32_t start_date_days = 0;
-  std::string part_name_pattern;
-  std::string nation_name;
-
-  if (arguments.values.size() >= 3) {
-    if (std::holds_alternative<core::AuxDate>(arguments.values[0].payload)) {
-      start_date_days =
-          std::get<core::AuxDate>(arguments.values[0].payload).days_since_epoch;
-    } else if (std::holds_alternative<int64_t>(
-                   arguments.values[0].payload)) {
-      start_date_days = static_cast<int32_t>(
-          std::get<int64_t>(arguments.values[0].payload));
-    }
-    if (!arguments.values[1].is_null &&
-        std::holds_alternative<std::string>(arguments.values[1].payload)) {
-      part_name_pattern =
-          std::get<std::string>(arguments.values[1].payload);
-    }
-    if (!arguments.values[2].is_null &&
-        std::holds_alternative<std::string>(arguments.values[2].payload)) {
-      nation_name = std::get<std::string>(arguments.values[2].payload);
-    }
-  }
-
-  const int32_t end_date_days = start_date_days + kOneYearDays;
   const auto state = BuildState(services);
-  EmitResult(state, start_date_days, end_date_days, part_name_pattern,
-             nation_name, services, sink);
+  EmitResult(*state, arguments, sink);
 }
 
-TpchQ20State
+std::shared_ptr<TpchQ20State>
 TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
   (void)services;
-  TpchQ20State state;
   if (!initial_scan)
     throw std::logic_error(
         "TPC-H Q20 aux requires a typed initial scan source");
-
-  initial_scan->ScanLineitems(
-      [&](const TpchQ20LineitemInput &input) {
-        if (input.partkey < 0 || input.suppkey < 0)
-          return;
-        const auto key = MakePairKey(input.partkey, input.suppkey);
-        state.AddPairEntry(key, input.shipdate_days, input.quantity_raw);
-      });
-
-  initial_scan->ScanParts([&](const TpchQ20PartInput &input) {
-    if (input.key < 0)
-      return;
-    TpchQ20PartRecord part;
-    part.name = input.name;
-    state.parts[input.key] = std::move(part);
-    state.part_name_index[input.name].push_back(input.key);
-  });
-
-  initial_scan->ScanPartsupps([&](const TpchQ20PartsuppInput &input) {
-    if (input.partkey < 0 || input.suppkey < 0)
-      return;
-    auto part_it = state.parts.find(input.partkey);
-    if (part_it == state.parts.end()) {
-      TpchQ20PartRecord part;
-      part.partsupps[input.suppkey] = input.availqty;
-      state.parts[input.partkey] = std::move(part);
-    } else {
-      part_it->second.partsupps[input.suppkey] = input.availqty;
-    }
-  });
-
-  initial_scan->ScanSuppliers([&](const TpchQ20SupplierInput &input) {
-    if (input.key < 0)
-      return;
-    state.suppliers[input.key] = {input.name, input.address, input.nationkey};
-  });
+  auto state = std::make_shared<TpchQ20State>();
 
   initial_scan->ScanNations([&](const TpchQ20NationInput &input) {
-    if (input.key < 0)
-      return;
-    state.nations[input.key].name = input.name;
-    state.nation_name_index[input.name].push_back(input.key);
+    state->nations[input.key] = input.name;
+  });
+  initial_scan->ScanSuppliers([&](const TpchQ20SupplierInput &input) {
+    state->suppliers.Upsert(input.key, {input.name, input.address, input.nationkey});
+  });
+  initial_scan->ScanParts([&](const TpchQ20PartInput &input) {
+      state->part_names.Set(input.key, input.name);
   });
 
-  state.SortPairEntries();
-  // Flat partsupp keys rebuilt in Build() after copy to shared state.
+  // Pair / lineitem data is gathered per block in editable form and encoded at
+  // the end; the raw form is 12 B/lineitem (transient peak ~1.5x the final).
+  BlockEditor editor(*state);
+  initial_scan->ScanPartsupps([&](const TpchQ20PartsuppInput &input) {
+      editor.For(input.partkey)
+          .SetAvail(SlotOf(input.partkey), input.suppkey,
+                    input.availqty);
+  });
+  initial_scan->ScanLineitems([&](const TpchQ20LineitemInput &input) {
+      editor.For(input.partkey)
+          .AddLine(SlotOf(input.partkey), input.suppkey,
+                   input.shipdate_days, input.quantity_raw);
+  });
+  editor.Flush();
   return state;
 }
 
@@ -1195,171 +701,106 @@ bool TpchQ20Module::LoadState(core::AuxEngineServices &services,
 }
 
 void TpchQ20Module::EmitResult(const TpchQ20State &state,
-                               int32_t start_date_days,
-                               int32_t end_date_days,
-                               const std::string &part_name_pattern,
-                               const std::string &nation_name,
-                               core::AuxEngineServices &services,
+                               const core::QueryArguments &arguments,
                                core::AuxRowSink &sink) const {
-  (void)services;
-
-  auto find_keys_t0 = std::chrono::steady_clock::now();
-  const auto nation_keys = state.FindNationKeysByName(nation_name);
-  std::unordered_set<int32_t> target_nationkeys(nation_keys.begin(),
-                                                nation_keys.end());
-  auto find_keys_t1 = std::chrono::steady_clock::now();
-  EmitCustomProfile("find_keys",
-                    std::chrono::duration<double, std::micro>(find_keys_t1 - find_keys_t0).count(),
-                    {{"nation_keys", static_cast<int64_t>(nation_keys.size())}});
-
-  // Prefix index is only valid for a single trailing '%' with no other
-  // wildcards (same rule as PrefixLikeMatcher in the base kernel). Patterns
-  // like '%forest%' must go through SqlLike.
-  std::string prefix;
-  const bool trailing_percent_only =
-      !part_name_pattern.empty() && part_name_pattern.back() == '%' &&
-      part_name_pattern.find('%') == part_name_pattern.size() - 1 &&
-      part_name_pattern.find('_') == std::string::npos;
-  if (trailing_percent_only)
-    prefix = part_name_pattern.substr(0, part_name_pattern.size() - 1);
-
-  auto part_find_t0 = std::chrono::steady_clock::now();
-  std::vector<int64_t> qualifying_partkeys;
-  if (!prefix.empty()) {
-    qualifying_partkeys = state.FindPartKeysByPrefix(prefix);
-  } else {
-    std::unordered_set<int64_t> seen_partkeys;
-    for (const TpchQ20State *s = &state; s; s = s->parent_state.get()) {
-      for (const auto &[partkey, part] : s->parts) {
-        if (seen_partkeys.insert(partkey).second &&
-            (part_name_pattern.empty() ||
-             SqlLike(part.name, part_name_pattern))) {
-          qualifying_partkeys.push_back(partkey);
-        }
-      }
-    }
-  }
-  auto part_find_t1 = std::chrono::steady_clock::now();
-  EmitCustomProfile("find_part_keys",
-                    std::chrono::duration<double, std::micro>(part_find_t1 - part_find_t0).count(),
-                    {{"qualifying_partkeys", static_cast<int64_t>(qualifying_partkeys.size())}});
-
-  // Pre-reserve based on flat entry count scaled down to typical yield.
-  const int64_t estimated_suppkeys =
-      std::max<int64_t>(static_cast<int64_t>(qualifying_partkeys.size() * 4),
-                        1024);
-  std::unordered_set<int64_t> qualifying_suppkeys;
-  qualifying_suppkeys.reserve(static_cast<std::size_t>(estimated_suppkeys));
-  auto eval_t0 = std::chrono::steady_clock::now();
-  if (!state.flat_partsupp_keys.empty()) {
-    const auto flat_begin = state.flat_partsupp_keys.begin();
-    const auto flat_end = state.flat_partsupp_keys.end();
-    for (const auto partkey : qualifying_partkeys) {
-      // Binary search in the partkey-major flat array. Eliminates FindPart
-      // hash lookup + partsupps unordered_map traversal per qualifying part.
-      const uint64_t lo_key = MakePairKey(partkey, 0);
-      const uint64_t hi_key = MakePairKey(partkey, 0xFFFFFULL);
-      auto it = std::lower_bound(flat_begin, flat_end, lo_key,
-                                 [](const TpchQ20State::FlatPartsuppEntry &entry, uint64_t key) {
-                                   return entry.pair_key < key;
-                                 });
-      for (; it != flat_end && it->pair_key >= lo_key && it->pair_key <= hi_key;
-           ++it) {
-        const int64_t availqty = it->availqty;
-        const auto *series = it->series;
-        if (!series) {
-          // Fall back: pointer not cached (e.g. after decode in transient state).
-          const auto [fallback_sum, fallback_has] =
-              state.QueryWindowSum(it->pair_key, start_date_days, end_date_days);
-          if (!fallback_has)
-            continue;
-          if (AvailQtyGreaterThanHalfSum(availqty, fallback_sum)) {
-            const int64_t suppkey = static_cast<int64_t>(it->pair_key & 0xFFFFFULL);
-            qualifying_suppkeys.insert(suppkey);
-          }
-          continue;
-        }
-        int64_t total = 0;
-        bool has_entry = false;
-        for (const auto &entry : series->entries) {
-          if (entry.shipdate_days < start_date_days)
-            continue;
-          if (entry.shipdate_days >= end_date_days)
-            break;
-          has_entry = true;
-          total += entry.quantity_raw;
-        }
-        if (!has_entry)
-          continue;
-        if (AvailQtyGreaterThanHalfSum(availqty, total)) {
-          const int64_t suppkey = static_cast<int64_t>(it->pair_key & 0xFFFFFULL);
-          qualifying_suppkeys.insert(suppkey);
-        }
-      }
-    }
-  } else {
-    // Overlay / delta states: exact fallback using parts maps.
-    for (const auto partkey : qualifying_partkeys) {
-      const auto *part = state.FindPart(partkey);
-      if (!part)
-        continue;
-      for (const auto &[suppkey, availqty] : part->partsupps) {
-        const auto pair_key = MakePairKey(partkey, suppkey);
-        const auto [sum_qty, has_entries] =
-            state.QueryWindowSum(pair_key, start_date_days, end_date_days);
-        if (!has_entries)
-          continue;
-        if (AvailQtyGreaterThanHalfSum(availqty, sum_qty))
-          qualifying_suppkeys.insert(suppkey);
-      }
-    }
-  }
-  auto eval_t1 = std::chrono::steady_clock::now();
-  EmitCustomProfile("evaluate",
-                    std::chrono::duration<double, std::micro>(eval_t1 - eval_t0).count(),
-                    {{"qualifying_partkeys", static_cast<int64_t>(qualifying_partkeys.size())},
-                     {"qualifying_suppkeys", static_cast<int64_t>(qualifying_suppkeys.size())}});
-
-  // Nation name maps to exactly one key in TPC-H Q20 (`nation_name = ...`).
-  // Avoid a hash set containment lookup per candidate: fetch target key once.
-  const int32_t target_nationkey =
-      target_nationkeys.empty() ? -1 : *target_nationkeys.begin();
-  if (target_nationkeys.empty()) {
-    // No nation has this name (e.g. renamed): no supplier qualifies.
+  auto empty = [&] {
     sink.Begin(core::OutputSchema{});
     sink.End();
-    return;
-  }
+  };
+
+  // Any NULL argument makes a predicate NULL (never true): empty result.
+  if (arguments.values.size() < 3)
+    return empty();
+  for (std::size_t i = 0; i < 3; ++i)
+    if (arguments.values[i].is_null)
+      return empty();
+  int64_t start_days = 0;
+  const auto &date_payload = arguments.values[0].payload;
+  if (std::holds_alternative<core::AuxDate>(date_payload))
+    start_days = std::get<core::AuxDate>(date_payload).days_since_epoch;
+  else if (std::holds_alternative<int64_t>(date_payload))
+    start_days = std::get<int64_t>(date_payload);
+  else
+    return empty();
+  if (!std::holds_alternative<std::string>(arguments.values[1].payload) ||
+      !std::holds_alternative<std::string>(arguments.values[2].payload))
+    return empty();
+  const auto &pattern = std::get<std::string>(arguments.values[1].payload);
+  const auto &nation_name = std::get<std::string>(arguments.values[2].payload);
+
+  // l_shipdate >= D AND l_shipdate < D + INTERVAL '1' YEAR (calendar year,
+  // end-of-month clamped: Feb 29 + 1 year = Feb 28).
+  const int64_t window_end = sql_date::AddYears(start_days, 1);
+
+  std::vector<int32_t> target_nations;
+  for (const auto &[key, name] : state.nations)
+    if (NameEquals(name, nation_name))
+      target_nations.push_back(key);
+  if (target_nations.empty())
+    return empty();
+
+  const auto matcher = like::LikeMatcher::Compile(pattern, '\\', kCaseInsensitive,
+                                                  /*utf8_underscore=*/true);
+  const unsigned max_threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+  std::vector<std::vector<int64_t>> qualifying(max_threads);
+
+  // Parts whose name matches (SIMD / prefix scan of the name column), then for
+  // each of their partsupp pairs a binary search for the shipdate window.
+  state.part_names.ForEachMatch(matcher, max_threads, [&](unsigned worker, int64_t partkey) {
+    const TpchQ20PartBlock *block = state.FindBlock(partkey);
+    if (!block)
+      return;
+    const std::size_t slot = SlotOf(partkey);
+    for (uint32_t j = block->pair_begin[slot]; j < block->pair_begin[slot + 1]; ++j) {
+      const TpchQ20Pair &pair = block->pairs[j];
+      if (!(pair.entry_begin & TpchQ20Pair::kHasAvail))
+        continue;
+      const uint32_t begin = pair.entry_begin & ~TpchQ20Pair::kHasAvail;
+      const uint32_t end = j + 1 < block->pairs.size()
+                               ? (block->pairs[j + 1].entry_begin & ~TpchQ20Pair::kHasAvail)
+                               : static_cast<uint32_t>(block->entries.size());
+      const auto *first = block->entries.data() + begin;
+      const auto *last = block->entries.data() + end;
+      const auto *lo = std::lower_bound(first, last, start_days,
+                                        [](const TpchQ20Entry &e, int64_t d) { return e.shipdate < d; });
+      const auto *hi = std::lower_bound(lo, last, window_end,
+                                        [](const TpchQ20Entry &e, int64_t d) { return e.shipdate < d; });
+      if (lo == hi)
+        continue; // SUM over no rows is NULL: the comparison is not true
+      __int128 sum = 0;
+      for (const auto *e = lo; e != hi; ++e)
+        sum += UnpackValue(e->qty, block->wide);
+      if (AvailQtyGreaterThanHalfSum(UnpackValue(pair.availqty, block->wide), sum))
+        qualifying[worker].push_back(pair.suppkey);
+    }
+  });
+
+  std::vector<int64_t> suppkeys;
+  for (auto &v : qualifying)
+    suppkeys.insert(suppkeys.end(), v.begin(), v.end());
+  std::sort(suppkeys.begin(), suppkeys.end());
+  suppkeys.erase(std::unique(suppkeys.begin(), suppkeys.end()), suppkeys.end());
 
   std::vector<TpchQ20OutputRow> output_rows;
-  output_rows.reserve(qualifying_suppkeys.size());
-  for (const auto suppkey : qualifying_suppkeys) {
-    const auto *supplier = state.FindSupplier(suppkey);
-    if (!supplier)
-      continue;
-    if (target_nationkey >= 0 && supplier->nationkey != target_nationkey)
+  for (const int64_t suppkey : suppkeys) {
+    const TpchQ20Supplier *supplier = state.suppliers.Find(suppkey);
+    if (!supplier ||
+        std::find(target_nations.begin(), target_nations.end(), supplier->nationkey) ==
+            target_nations.end())
       continue;
     output_rows.push_back({supplier->name, supplier->address});
   }
-
-  auto sort_t0 = std::chrono::steady_clock::now();
   std::sort(output_rows.begin(), output_rows.end(),
             [](const TpchQ20OutputRow &a, const TpchQ20OutputRow &b) {
-              return a.name < b.name;
+              return NameLess(a.name, b.name);
             });
-  auto sort_t1 = std::chrono::steady_clock::now();
-  EmitCustomProfile("output_sort",
-                    std::chrono::duration<double, std::micro>(sort_t1 - sort_t0).count(),
-                    {{"rows", static_cast<int64_t>(output_rows.size())}});
 
   sink.Begin(core::OutputSchema{});
   for (const auto &row : output_rows) {
     core::AuxRow out;
     out.values.reserve(2);
-    out.values.push_back(
-        core::AuxValue::Of(core::AuxType::String, row.name));
-    out.values.push_back(
-        core::AuxValue::Of(core::AuxType::String, row.address));
+    out.values.push_back(core::AuxValue::Of(core::AuxType::String, row.name));
+    out.values.push_back(core::AuxValue::Of(core::AuxType::String, row.address));
     sink.WriteRow(out);
   }
   sink.End();

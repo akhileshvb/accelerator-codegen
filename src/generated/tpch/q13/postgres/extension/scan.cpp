@@ -22,7 +22,7 @@ namespace scans {
 void ScanTpchQ13Customers(
     const std::function<void(const query::TpchQ13CustomerInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT c_custkey FROM customer",
+      "SELECT c_custkey FROM customer WHERE c_custkey IS NOT NULL",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
         consumer({TypedInt(tuple, tuple_desc, 0)});
       });
@@ -31,10 +31,11 @@ void ScanTpchQ13Customers(
 void ScanTpchQ13Orders(
     const std::function<void(const query::TpchQ13OrderInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT o_custkey, o_comment FROM orders",
+      "SELECT o_orderkey, o_custkey, o_comment FROM orders "
+      "WHERE o_orderkey IS NOT NULL AND o_custkey IS NOT NULL AND o_comment IS NOT NULL",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedText(tuple, tuple_desc, 1)});
+        consumer({TypedInt(tuple, tuple_desc, 0), TypedInt(tuple, tuple_desc, 1),
+                  TypedText(tuple, tuple_desc, 2)});
       });
 }
 
@@ -70,8 +71,11 @@ namespace {
 
 void ExecutePostgresTpchQ13(FunctionCallInfo fcinfo) {
   detail::Q13Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-          core::AuxType::String, detail::TextDatum(PG_GETARG_DATUM(0)))}},
+      core::QueryArguments{{PG_ARGISNULL(0)
+                                ? core::AuxValue::Null(core::AuxType::String)
+                                : core::AuxValue::Of(
+                                      core::AuxType::String,
+                                      detail::TextDatum(PG_GETARG_DATUM(0)))}},
       fcinfo);
 }
 

@@ -1,16 +1,19 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/g5_keyed_string_column.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -33,6 +36,8 @@ struct TpchQ20Config {
 };
 
 // ── Typed bulk-scan contract ───────────────────────────────────────────────
+// Scans return only rows whose join / filter columns are NOT NULL (a row with a
+// NULL there can never satisfy the query's predicates).
 struct TpchQ20LineitemInput {
   int32_t shipdate_days = 0;
   int64_t partkey = 0;
@@ -78,94 +83,59 @@ public:
       const std::function<void(const TpchQ20NationInput &)> &) = 0;
 };
 
-// ── State structures ────────────────────────────────────────────────────────
-struct TpchQ20DateQuantity {
-  int32_t shipdate_days = 0;
-  int64_t quantity_raw = 0;
+// ── State ───────────────────────────────────────────────────────────────────
+//
+// For every (partkey, suppkey) pair that appears in partsupp and/or lineitem,
+// the state keeps ps_availqty (if any) and the pair's lineitems as a sorted
+// array of (shipdate, quantity) entries. Pairs are grouped by partkey into
+// immutable blocks of kTpchQ20BlockParts parts (CSR layout, one allocation set
+// per block), held in a copy-on-write chunked array: a write batch clones only
+// the blocks of the touched parts, and nothing is ever dropped lazily (no
+// overlay chain). Quantities / availqty that do not fit 31 bits live in a
+// per-block `wide` table, so any int64 value is exact.
+//
+// Memory: 8 B per lineitem entry + 16 B per pair (~7.5 lineitems per pair in
+// TPC-H => ~2.1 B/lineitem) + ~22 B/part of block overhead + part names
+// (~45 B/part) => ~12 B per lineitem all-in: ~7.5 GB at SF100, ~75 GB at
+// SF1000 (the old per-pair std::vector design needed 25-30 GB / 250-300 GB).
+// Execute is a multithreaded SIMD scan of the part-name column (O(parts)),
+// then O(log entries) per partsupp pair of the matching parts.
+constexpr std::size_t kTpchQ20BlockParts = 8; // power of two (block = key >> 3)
+
+struct TpchQ20Entry {
+  int32_t shipdate = 0;
+  int32_t qty = 0; // narrow value, or INT32_MIN + index into the block's wide table
 };
 
-// One (partkey, suppkey) temporal aggregate. Dates are kept sorted so
-// one-year-window probes are O(log n) per pair rather than O(n) for the
-// whole lineitem table.
-struct TpchQ20PairSeries {
-  std::vector<TpchQ20DateQuantity> entries;
-  int64_t total_quantity_raw = 0;
-  bool dirty = false;
+struct TpchQ20Pair {
+  static constexpr uint32_t kHasAvail = 0x80000000u;
+  int64_t suppkey = 0;
+  int32_t availqty = 0;   // narrow value or wide-table code (valid if kHasAvail)
+  uint32_t entry_begin = 0; // low 31 bits: first entry; bit 31: partsupp row exists
 };
 
-struct TpchQ20PartRecord {
-  std::string name;
-  // active partsupp adjacency (suppkey -> availqty)
-  std::unordered_map<int64_t, int64_t> partsupps;
+struct TpchQ20PartBlock {
+  uint32_t pair_begin[kTpchQ20BlockParts + 1] = {};
+  std::vector<TpchQ20Pair> pairs;   // per part sorted by suppkey
+  std::vector<TpchQ20Entry> entries; // per pair sorted by (shipdate, qty)
+  std::vector<int64_t> wide;
 };
 
-struct TpchQ20SupplierRecord {
+struct TpchQ20Supplier {
   std::string name;
   std::string address;
   int32_t nationkey = 0;
 };
 
-struct TpchQ20NationRecord {
-  std::string name;
-  std::vector<int64_t> supplier_keys;
-};
-
 struct TpchQ20State {
-  // Keyed by (partkey << 20) | suppkey. Only pairs that actually appear in
-  // lineitem are materialized, keeping state proportional to fact cardinality
-  // (no SF-hardcoded dense arrays).
-  std::unordered_map<uint64_t, TpchQ20PairSeries> pair_series;
-  // Maintenance chain: if non-null, lookups fall back to this published
-  // state for keys not found in the local pair_series delta.
-  std::shared_ptr<const TpchQ20State> parent_state;
+  core::WideKeyCowArray<std::shared_ptr<TpchQ20PartBlock>, 12> blocks;
+  core::KeyedStringColumn part_names;
+  core::ShardedCowHashMap<TpchQ20Supplier, 12> suppliers;
+  std::map<int32_t, std::string> nations;
 
-  // Part name -> set of partkeys. Built from the ordered part scan and used
-  // for exact trailing-'%' prefix matching at query time (no other wildcards).
-  std::map<std::string, std::vector<int64_t>> part_name_index;
-  std::unordered_map<int64_t, TpchQ20PartRecord> parts;
-
-  // ── Evaluate fast-path structures ─────────────────────────────────────────
-  // Pointer into pair_series for each partsupp entry. Stored alongside the
-  // flat partsupp key in a merged struct so the evaluate loop avoids a
-  // per-entry hash lookup in pair_series. Built once at build time (the state
-  // is immutable after build) and invalidated via clear() on overlay states.
-  struct FlatPartsuppEntry {
-    uint64_t pair_key = 0;
-    int64_t availqty = 0;
-    const TpchQ20PairSeries *series = nullptr;
-  };
-  std::vector<FlatPartsuppEntry> flat_partsupp_keys;
-  bool flat_partsupp_keys_sorted = false;
-
-  // Dimension data, keyed naturally.
-  std::unordered_map<int64_t, TpchQ20SupplierRecord> suppliers;
-  std::unordered_map<int32_t, TpchQ20NationRecord> nations;
-
-  // Nation name -> key set for exact name lookups.
-  std::unordered_map<std::string, std::vector<int32_t>> nation_name_index;
-
-  void AddPairEntry(uint64_t pair_key, int32_t shipdate_days,
-                    int64_t quantity_raw);
-  void RemovePairEntry(uint64_t pair_key, int32_t shipdate_days,
-                       int64_t quantity_raw);
-  bool HasPairQuantityInWindow(uint64_t pair_key, int32_t start_date_days,
-                               int32_t end_date_days) const;
-  int64_t SumPairQuantity(uint64_t pair_key, int32_t start_date_days,
-                          int32_t end_date_days) const;
-  // Fused query: returns {sum_qty, has_entries}. Single sorted scan with
-  // early termination. Returns {-1, false} when pair_key is absent.
-  std::pair<int64_t, bool> QueryWindowSum(uint64_t pair_key,
-                                          int32_t start_date_days,
-                                          int32_t end_date_days) const;
-  // Sort all pair-series entries by shipdate_days. Called after build and
-  // after delta application so read-path probes are single-pass.
-  void SortPairEntries();
-  void BuildFlatPartsuppKeys();
-  const TpchQ20SupplierRecord *FindSupplier(int64_t suppkey) const;
-  const TpchQ20PartRecord *FindPart(int64_t partkey) const;
-  const TpchQ20PairSeries *FindPairSeries(uint64_t pair_key) const;
-  std::vector<int64_t> FindPartKeysByPrefix(const std::string &prefix) const;
-  std::vector<int32_t> FindNationKeysByName(const std::string &name) const;
+  const TpchQ20PartBlock *FindBlock(int64_t partkey) const {
+    return blocks.Get(partkey >> 3).get(); // floor: exact for negative keys
+  }
 };
 
 enum class TpchQ20ImageKind : uint8_t { Full };
@@ -197,16 +167,23 @@ struct TpchQ20PartsuppDelta {
   int8_t sign = 0;
 };
 
-struct TpchQ20PartNameDelta {
+struct TpchQ20PartDelta {
   int64_t partkey = 0;
-  std::string old_name;
-  std::string new_name;
+  std::string name;
   int8_t sign = 0;
 };
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
-std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state);
-bool DecodeTpchQ20State(const std::vector<uint8_t> &bytes, TpchQ20State &state);
+struct TpchQ20SupplierDelta {
+  int64_t suppkey = 0;
+  TpchQ20Supplier supplier;
+  int8_t sign = 0;
+};
+
+struct TpchQ20NationDelta {
+  int32_t nationkey = 0;
+  std::string name;
+  int8_t sign = 0;
+};
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ20TxnBuffer final : public core::AuxTxnBuffer {
@@ -214,23 +191,25 @@ public:
   bool HasPendingChanges() const override;
   void Clear() override;
 
-  bool RequiresRebuild() const;
-  void MarkRebuild();
-
-  const std::vector<TpchQ20LineitemDelta> &LineitemDeltas() const;
-  const std::vector<TpchQ20PartsuppDelta> &PartsuppDeltas() const;
-  const std::vector<TpchQ20PartNameDelta> &PartNameDeltas() const;
+  const std::vector<TpchQ20LineitemDelta> &LineitemDeltas() const { return lineitem_deltas; }
+  const std::vector<TpchQ20PartsuppDelta> &PartsuppDeltas() const { return partsupp_deltas; }
+  const std::vector<TpchQ20PartDelta> &PartDeltas() const { return part_deltas; }
+  const std::vector<TpchQ20SupplierDelta> &SupplierDeltas() const { return supplier_deltas; }
+  const std::vector<TpchQ20NationDelta> &NationDeltas() const { return nation_deltas; }
 
   void AddLineitemDelta(TpchQ20LineitemDelta delta);
   void AddPartsuppDelta(TpchQ20PartsuppDelta delta);
-  void AddPartNameDelta(TpchQ20PartNameDelta delta);
+  void AddPartDelta(TpchQ20PartDelta delta);
+  void AddSupplierDelta(TpchQ20SupplierDelta delta);
+  void AddNationDelta(TpchQ20NationDelta delta);
 
 private:
   bool pending = false;
-  bool requires_rebuild = false;
   std::vector<TpchQ20LineitemDelta> lineitem_deltas;
   std::vector<TpchQ20PartsuppDelta> partsupp_deltas;
-  std::vector<TpchQ20PartNameDelta> part_name_deltas;
+  std::vector<TpchQ20PartDelta> part_deltas;
+  std::vector<TpchQ20SupplierDelta> supplier_deltas;
+  std::vector<TpchQ20NationDelta> nation_deltas;
 };
 
 // ── Module ──────────────────────────────────────────────────────────────────
@@ -263,13 +242,10 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ20State BuildState(core::AuxEngineServices &services) const;
+  std::shared_ptr<TpchQ20State> BuildState(core::AuxEngineServices &services) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ20State> &state) const;
-  void EmitResult(const TpchQ20State &state, int32_t start_date_days,
-                  int32_t end_date_days, const std::string &part_name_pattern,
-                  const std::string &nation_name,
-                  core::AuxEngineServices &services,
+  void EmitResult(const TpchQ20State &state, const core::QueryArguments &arguments,
                   core::AuxRowSink &sink) const;
 
   TpchQ20Config config;
