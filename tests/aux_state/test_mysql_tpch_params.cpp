@@ -32,7 +32,7 @@
 //
 // Usage: test_mysql_tpch_params [queries|all] [draws_per_class=10] [seed=1]
 //          [--keep-going] [--data-perturb] [--wide-keys] [--negative-keys] [--plain]
-//          [--max-edge=N] [--tol=1e-9] [--classes=abcn] [--strict-text]
+//          [--max-edge=N] [--tol=X (loose numeric compare)] [--classes=abcn] [--timeout-ms=N]
 //   queries: all | 6 | 1,3,5 | 3-7
 // Env: TPCH_MYSQL_DB (template DB) plus the usual MYSQL_* variables.
 // Exit status: 0 = all calls matched, 1 = at least one mismatch/error, 2 = harness error.
@@ -63,9 +63,10 @@ struct Options {
   int draws = 10;
   uint64_t seed = 1;
   bool keep_going = false, perturb = false, wide = false, negative = false, plain = false;
-  bool strict_text = false;
+  bool strict_text = true; // numeric cells must match MySQL's DECIMAL text exactly (scale included)
   int max_edge = 0;
   double tol = 1e-9;
+  int timeout_ms = 0; // reference SELECTs are cut off after this long (skipped, not failed)
   std::string classes = "abcn";
   bool classes_explicit = false;
 };
@@ -360,7 +361,9 @@ int RunQuery(const Tools &conn, const tp::QueryTemplate &t, const Options &o, co
   std::map<std::string, Res> refcache;
   int failures = 0;
   for (const auto &c : BuildCases(t, o, spec_only, mode_salt)) {
-    const std::string ref_sql = RenderMy(t.ref, t.types, c.params);
+    std::string ref_sql = RenderMy(t.ref, t.types, c.params);
+    if (o.timeout_ms > 0 && ref_sql.rfind("SELECT ", 0) == 0)
+      ref_sql.insert(7, "/*+ MAX_EXECUTION_TIME(" + std::to_string(o.timeout_ms) + ") */ ");
     const std::string acc_sql = RenderMy(t.call, t.types, c.params);
     auto it = refcache.find(ref_sql);
     if (it == refcache.end()) it = refcache.emplace(ref_sql, Try(conn, ref_sql)).first;
@@ -496,7 +499,8 @@ int main(int argc, char **argv) {
       else if (a == "--plain") o.plain = true;
       else if (a == "--strict-text") o.strict_text = true;
       else if (a.rfind("--max-edge=", 0) == 0) o.max_edge = std::atoi(a.c_str() + 11);
-      else if (a.rfind("--tol=", 0) == 0) o.tol = std::atof(a.c_str() + 6);
+      else if (a.rfind("--tol=", 0) == 0) { o.tol = std::atof(a.c_str() + 6); o.strict_text = false; } // relative-tolerance compare instead
+      else if (a.rfind("--timeout-ms=", 0) == 0) o.timeout_ms = std::atoi(a.c_str() + 13);
       else if (a.rfind("--classes=", 0) == 0) { o.classes = a.substr(10); o.classes_explicit = true; }
       else if (a.rfind("--", 0) == 0) { std::cerr << "unknown option " << a << std::endl; return 2; }
       else if (pos == 0) { which = a; pos++; }

@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "accelerator_codegen/stateful/core/mysql_collation.hpp"
 #include "accelerator_codegen/stateful/core/sql_like.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -181,7 +182,7 @@ void TpchQ2FinalizeAndEmit(const TpchQ2State &state, const TpchQ2Args &args,
   // Nations of every region named :region, ranked by name (byte order).
   std::vector<int64_t> region_keys;
   for (const auto &region : *state.regions)
-    if (region.name == *args.region_name)
+    if (mysql_collation::EqualsCi(region.name, *args.region_name))
       region_keys.push_back(region.key);
   std::vector<const TpchQ2NationRec *> region_nations;
   for (const auto &nation : *state.nations)
@@ -214,7 +215,8 @@ void TpchQ2FinalizeAndEmit(const TpchQ2State &state, const TpchQ2Args &args,
   }
 
   // Evaluate LIKE once per distinct type, not once per part.
-  const auto matcher = core::sql_like::LikeMatcher::Compile(*args.type_pattern);
+  const auto matcher = core::sql_like::LikeMatcher::Compile(
+      *args.type_pattern, '\\', /*case_insensitive=*/true); // p_type LIKE ?: MySQL default collation
   const auto &blob = state.types->blob();
   q.type_bits = core::sql_like::MatchBlobBitmap(
       matcher, blob.offsets(), state.types->size(), blob.data(),

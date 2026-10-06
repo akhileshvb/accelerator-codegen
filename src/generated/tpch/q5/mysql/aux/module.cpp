@@ -1,5 +1,6 @@
 #include "tpch/q5/mysql/aux/module.hpp"
 #include "tpch/q5/calibration_writes.hpp"
+#include "accelerator_codegen/stateful/core/mysql_collation.hpp"
 #include "accelerator_codegen/stateful/core/sql_date.hpp"
 
 #include <algorithm>
@@ -711,7 +712,7 @@ std::vector<TpchQ5Group> AnswerFrom(const TpchQ5State &side,
     if (!nation.has_region)
       continue;
     const auto r = side.region_names.find(nation.regionkey);
-    if (r != side.region_names.end() && r->second == region)
+    if (r != side.region_names.end() && mysql_collation::EqualsCi(r->second, region))
       eligible.insert(nationkey);
   }
 

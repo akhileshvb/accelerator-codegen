@@ -1,5 +1,6 @@
 #include "tpch/q12/mysql/aux/module.hpp"
 #include "tpch/q12/calibration_writes.hpp"
+#include "accelerator_codegen/stateful/core/mysql_collation.hpp"
 #include "accelerator_codegen/stateful/core/sql_date.hpp"
 
 #include <algorithm>
@@ -98,14 +99,16 @@ TpchQ12Counts Contribution(TpchQ12PriorityClass priority, int64_t sign) {
 }
 
 uint32_t ShipmodeId(TpchQ12State &state, const std::string &mode) {
-  const auto it = state.shipmode_ids.find(mode);
+  // l_shipmode = ? / IN (..) are case-insensitive (MySQL default collation): ids are
+  // keyed by the folded mode, the first stored spelling is what gets printed.
+  const auto it = state.shipmode_ids.find(mysql_collation::FoldAscii(mode));
   if (it != state.shipmode_ids.end())
     return it->second;
   const auto id = static_cast<uint32_t>(state.shipmodes.size());
   if (id >= (uint32_t{1} << kModeBits))
     throw std::runtime_error("TPC-H Q12: too many distinct shipmodes");
   state.shipmodes.push_back(mode);
-  state.shipmode_ids.emplace(mode, id);
+  state.shipmode_ids.emplace(mysql_collation::FoldAscii(mode), id);
   return id;
 }
 
@@ -143,7 +146,8 @@ TpchQ12PriorityClass TpchQ12ClassifyPriority(const std::string &priority,
                                              bool is_null) {
   if (is_null)
     return TpchQ12PriorityClass::Neither;
-  if (priority == "1-URGENT" || priority == "2-HIGH")
+  if (mysql_collation::EqualsCi(priority, "1-URGENT") ||
+      mysql_collation::EqualsCi(priority, "2-HIGH")) // case-insensitive collation
     return TpchQ12PriorityClass::High;
   return TpchQ12PriorityClass::Low;
 }
@@ -498,9 +502,9 @@ std::vector<TpchQ12Group> TpchQ12Module::Answer(const TpchQ12State &state,
     return groups;
   const int64_t end = core::sql_date::AddYears(start, 1);
   for (int i = 0; i < 2; ++i) {
-    if (mode_null[i] || (i == 1 && !mode_null[0] && modes[1] == modes[0]))
+    if (mode_null[i] || (i == 1 && !mode_null[0] && mysql_collation::EqualsCi(modes[1], modes[0])))
       continue;  // IN (x, x) is one group
-    const auto id = state.shipmode_ids.find(modes[i]);
+    const auto id = state.shipmode_ids.find(mysql_collation::FoldAscii(modes[i]));
     if (id == state.shipmode_ids.end())
       continue;
     TpchQ12Counts total;
@@ -511,7 +515,7 @@ std::vector<TpchQ12Group> TpchQ12Module::Answer(const TpchQ12State &state,
         total += *c;
     }
     if (total.rows > 0)
-      groups.push_back({modes[i], total});
+      groups.push_back({state.shipmodes[id->second], total});
   }
   return groups;
 }
@@ -536,6 +540,7 @@ void TpchQ12Module::Execute(core::AuxEngineServices &services,
   TpchQ12State view;
   view.cells = cells_image->state->cells;
   view.shipmode_ids = side_image->state->shipmode_ids;
+  view.shipmodes = side_image->state->shipmodes;
   TpchQ12FinalizeAndEmit(Answer(view, arguments), sink);
 }
 

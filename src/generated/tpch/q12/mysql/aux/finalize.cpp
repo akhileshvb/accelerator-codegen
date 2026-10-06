@@ -1,4 +1,5 @@
 #include "tpch/q12/mysql/aux/module.hpp"
+#include "accelerator_codegen/stateful/core/mysql_collation.hpp"
 
 #include <algorithm>
 #include <string>
@@ -10,7 +11,7 @@ void TpchQ12FinalizeAndEmit(std::vector<TpchQ12Group> groups,
                             core::AuxRowSink &sink) {
   std::sort(groups.begin(), groups.end(),
             [](const TpchQ12Group &a, const TpchQ12Group &b) {
-              return a.shipmode < b.shipmode;
+              return mysql_collation::LessCi(a.shipmode, b.shipmode);
             });
   sink.Begin({{{"l_shipmode", core::AuxType::String, false},
                {"high_line_count", core::AuxType::Int64, false},

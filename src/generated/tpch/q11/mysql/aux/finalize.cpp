@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "accelerator_codegen/stateful/core/mysql_collation.hpp"
 #include "accelerator_codegen/stateful/core/pg_numeric.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -218,7 +219,7 @@ void TpchQ11FinalizeAndEmit(const TpchQ11State &state, const TpchQ11Args &args,
   // Groups of every nation named :nation (normally exactly one).
   std::vector<const TpchQ11Group *> groups;
   for (const auto &nation : *state.nations)
-    if (nation.name == *args.nation)
+    if (mysql_collation::EqualsCi(nation.name, *args.nation))
       if (const auto *group = state.FindGroup(nation.key))
         if (group->parts != 0)
           groups.push_back(group);
