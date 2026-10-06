@@ -164,3 +164,25 @@ Missing files intentionally fall back to default parameters.
 The maintenance selector also consumes the adapter's estimate of queries
 before the next write (`WorkloadCallback` or an engine-specific expected-queries
 env/GUC).
+
+## Generic data-structure primitives
+
+Workload-agnostic building blocks (all header-only, namespace
+`accelerator_codegen::aux_state::core`; unit test `tests/aux_state/test_core_primitives.cpp`).
+Cost figures assume 64-bit builds without `-march` flags.
+
+| Header | Primitive | Use it for |
+| --- | --- | --- |
+| `dense_id_array.hpp` | `DenseIdArray<T>` | int64-id -> small value, mutable, single owner. Any id >= 0 (no 2^28 cap). 64K-slot chunks allocated on touch; 24 B directory per 64K ids; `Set` fails only for negative ids. Dense/moderately sparse keys. |
+| `chunked_cow_array.hpp` | `ChunkedCowArray<T, kShift=12>` | Same use, but for immutable published states: copy = O(#chunks) pointer copies, `Set` clones only the touched chunk. Null chunks read as `fill` (sparse OK). |
+| `flat_hash_map.hpp` | `FlatHashMap<V>` | int64 -> V when keys are too sparse for a dense array. Swiss-table style, SSE2 group probe, inline keys, erase via tombstones. ~13 B/slot + sizeof(V), load 3/7..7/8. Call `Reserve` for big loads (rehash = 2x transient). |
+| `flat_hash_map.hpp` | `ShardedCowHashMap<V, kShardBits>` | `FlatHashMap` split into shared_ptr shards: copy = N pointers, write clones one shard. Pick shards of ~1e4-1e5 entries. |
+| `sql_date.hpp` | `sql_date::*` | days-since-1970 civil conversion for any int32 day; `AddMonths/AddYears` with PostgreSQL/MySQL end-of-month clamping; `MonthStart`, `IsMonthStart`, `YearOf/MonthOf/DayOfMonth`. |
+| `sql_like.hpp` | `sql_like::LikeMatcher`, `FindSubstring`, `MatchBlobBitmap/Indices` | LIKE with `%`, `_`, escape, optional ASCII case folding. Compile once; exact/prefix/suffix/contains/segment fast paths (SSE2/AVX2 substring search). Bulk over a `uint64` offsets + blob, optionally multithreaded. Byte-wise: the caller must pick case/collation behavior to match the DBMS. |
+| `string_blob.hpp` | `StringBlob`, `StringDict` | Append-only strings (8 B offset/string, no per-string allocation, > 4 GB OK); dictionary encoding with stable uint32 ids (~9 B + bytes per distinct string) and `SortedRanks()` for ordered comparisons. |
+| `int128_acc.hpp` | `i128::*` | Overflow-checked int128 accumulation. Exact decimal text is `pg_numeric::ToText(coeff, scale)`. |
+
+Scale guidance: prefer columnar arrays (`DenseIdArray`/`ChunkedCowArray`) at
+~1-16 B per key over node-based maps with per-row strings; use `FlatHashMap`
+only when the key space is sparse; use the COW variants when a write batch
+must publish a new immutable state in O(touched chunks) rather than O(state).
