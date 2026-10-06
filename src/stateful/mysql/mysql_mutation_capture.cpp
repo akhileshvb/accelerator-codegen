@@ -2,6 +2,7 @@
 #include "accelerator_codegen/stateful/mysql/mysql_mutation_capture.hpp"
 
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
+#include "accelerator_codegen/stateful/mysql/mysql_exact_parse.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -16,61 +17,6 @@ namespace {
 
 std::mutex g_schema_mutex;
 std::unordered_map<core::TableId, std::vector<CaptureColumn>> g_schema;
-
-bool ParseInt(const char *s, std::size_t len, int64_t &out) {
-  if (!s || len == 0) return false;
-  std::string str(s, len);
-  char *end = nullptr;
-  out = static_cast<int64_t>(std::strtoll(str.c_str(), &end, 10));
-  return end != str.c_str() && *end == '\0';
-}
-
-bool ParseDouble(const char *s, std::size_t len, double &out) {
-  if (!s || len == 0) return false;
-  std::string str(s, len);
-  char *end = nullptr;
-  out = std::strtod(str.c_str(), &end);
-  return end != str.c_str();
-}
-
-bool ParseScaledDecimal(const char *s, std::size_t len, core::ScaledDecimal &out) {
-  if (!s || len == 0) return false;
-  std::string str(s, len);
-  std::size_t dot = str.find('.');
-  int32_t scale = 0;
-  std::string digits = str;
-  if (dot != std::string::npos) {
-    scale = static_cast<int32_t>(str.size() - dot - 1);
-    digits.erase(dot, 1);
-  }
-  char *end = nullptr;
-  out.value = static_cast<int64_t>(std::strtoll(digits.c_str(), &end, 10));
-  if (end == digits.c_str()) {
-    return false;
-  }
-  out.scale = scale;
-  return true;
-}
-
-int DaysFromCivil(int y, unsigned m, unsigned d) {
-  y -= m <= 2;
-  const int era = (y >= 0 ? y : y - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(y - era * 400);
-  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int>(doe) - 719468;
-}
-
-bool ParseDateDays(const char *s, std::size_t len, core::AuxDate &out) {
-  if (!s || len < 10) return false;
-  std::string str(s, len);
-  int y = std::atoi(str.substr(0, 4).c_str());
-  unsigned m = static_cast<unsigned>(std::atoi(str.substr(5, 2).c_str()));
-  unsigned d = static_cast<unsigned>(std::atoi(str.substr(8, 2).c_str()));
-  if (y == 0 || m == 0 || d == 0) return false;
-  out.days_since_epoch = DaysFromCivil(y, m, d);
-  return true;
-}
 
 } // namespace
 
@@ -88,67 +34,66 @@ LookupCaptureSchema(core::TableId table_id) {
   return it->second;
 }
 
+// One captured column.  `raw == nullptr` is SQL NULL (the UDF layer passes a
+// NULL argument as a null pointer).  Text that does not parse exactly as the
+// column's type throws: a captured row the accelerator cannot decode must not
+// become a silent default or NULL (the caller invalidates the aux state).
+// For non-text columns an empty value or the text "NULL" is also read as NULL
+// (hand-written captures); a text column keeps both literally.
 core::AuxValue ParseCaptureValue(const char *raw, std::size_t len,
                                  const CaptureColumn &col) {
-  if (!raw || len == 0) {
+  if (!raw) {
     return core::AuxValue::Null(col.type);
   }
-  std::string str(raw, len);
-  if (str == "NULL") {
+  if (col.type == core::AuxType::String) {
+    return core::AuxValue::Of(core::AuxType::String, std::string(raw, len));
+  }
+  if (len == 0 || (len == 4 && std::memcmp(raw, "NULL", 4) == 0)) {
     return core::AuxValue::Null(col.type);
   }
-
+  auto bad = [&](const char *what) {
+    throw std::runtime_error(std::string("mutation capture: cannot parse '") +
+                             std::string(raw, len).substr(0, 64) + "' as " + what);
+  };
   switch (col.type) {
     case core::AuxType::Boolean: {
-      if (str == "true" || str == "1") {
-        return core::AuxValue::Of(core::AuxType::Boolean, true);
-      }
-      return core::AuxValue::Of(core::AuxType::Boolean, false);
+      const std::string str(raw, len);
+      if (str == "true" || str == "1") return core::AuxValue::Of(core::AuxType::Boolean, true);
+      if (str == "false" || str == "0") return core::AuxValue::Of(core::AuxType::Boolean, false);
+      bad("boolean");
+      break;
     }
     case core::AuxType::Int64: {
       int64_t val = 0;
-      if (ParseInt(raw, len, val)) {
-        return core::AuxValue::Of(core::AuxType::Int64, val);
-      }
-      return core::AuxValue::Null(col.type);
+      if (!exact::ParseInt64(raw, len, val)) bad("int64");
+      return core::AuxValue::Of(core::AuxType::Int64, val);
     }
     case core::AuxType::UInt64: {
-      int64_t val = 0;
-      if (ParseInt(raw, len, val)) {
-        return core::AuxValue::Of(core::AuxType::UInt64,
-                                  static_cast<uint64_t>(val));
-      }
-      return core::AuxValue::Null(col.type);
+      uint64_t val = 0;
+      if (!exact::ParseUInt64(raw, len, val)) bad("uint64");
+      return core::AuxValue::Of(core::AuxType::UInt64, val);
     }
     case core::AuxType::Double: {
-      double val = 0.0;
-      if (ParseDouble(raw, len, val)) {
-        return core::AuxValue::Of(core::AuxType::Double, val);
-      }
-      return core::AuxValue::Null(col.type);
+      const std::string str(raw, len);
+      char *end = nullptr;
+      const double val = std::strtod(str.c_str(), &end);
+      if (end == str.c_str() || *end != '\0') bad("double");
+      return core::AuxValue::Of(core::AuxType::Double, val);
     }
-    case core::AuxType::String:
-      return core::AuxValue::Of(core::AuxType::String, str);
     case core::AuxType::ScaledDecimal: {
       core::ScaledDecimal sd;
-      if (ParseScaledDecimal(raw, len, sd)) {
-        return core::AuxValue::Of(core::AuxType::ScaledDecimal, sd);
-      }
-      double dval = 0.0;
-      if (ParseDouble(raw, len, dval)) {
-        return core::AuxValue::Of(core::AuxType::Double, dval);
-      }
-      return core::AuxValue::Null(col.type);
+      if (!exact::ParseDecimal(raw, len, sd)) bad("decimal");
+      return core::AuxValue::Of(core::AuxType::ScaledDecimal, sd);
     }
     case core::AuxType::Date: {
-      core::AuxDate date;
-      if (ParseDateDays(raw, len, date)) {
-        return core::AuxValue::Of(core::AuxType::Date, date);
-      }
-      return core::AuxValue::Null(col.type);
+      int32_t days = 0;
+      if (!exact::ParseDate(raw, len, days)) bad("date");
+      return core::AuxValue::Of(core::AuxType::Date, core::AuxDate{days});
     }
+    case core::AuxType::String:
+      break;
   }
-  return core::AuxValue::Of(core::AuxType::String, str);
+  return core::AuxValue::Of(core::AuxType::String, std::string(raw, len));
 }
 
 std::optional<core::MutationBatch>
@@ -199,6 +144,15 @@ BuildMutationBatchFromTriggerArgs(std::size_t arg_count, char **args,
   // old-row columns (count: col_count), then optionally new-row columns
   std::size_t payload_start = 2;
   std::size_t total_payload = arg_count - payload_start;
+  // A row the schema does not describe is never half-read: it would leave
+  // the accelerator silently out of date.
+  const std::size_t expected_payload =
+      batch.kind == core::MutationKind::Update ? 2 * col_count : col_count;
+  if (total_payload != expected_payload) {
+    throw std::runtime_error("mutation capture: table " + std::to_string(table_id) +
+                             " expects " + std::to_string(expected_payload) +
+                             " column values, got " + std::to_string(total_payload));
+  }
 
   // Build old rows (for DELETE, UPDATE)
   if (batch.kind == core::MutationKind::Delete ||
@@ -207,20 +161,10 @@ BuildMutationBatchFromTriggerArgs(std::size_t arg_count, char **args,
       core::AuxRow old_row;
       for (std::size_t i = 0; i < col_count; ++i) {
         std::size_t idx = payload_start + i;
-        const char *val = (idx < arg_count) ? args[idx] : nullptr;
-        std::size_t len = (lengths && idx < arg_count && lengths[idx] > 0)
-                           ? lengths[idx]
-                           : (val ? std::strlen(val) : 0);
-        if (val && len > 0) {
-          std::string sv(val, len);
-          if (sv == "NULL") {
-            old_row.values.push_back(core::AuxValue::Null(schema[i].type));
-          } else {
-            old_row.values.push_back(ParseCaptureValue(val, len, schema[i]));
-          }
-        } else {
-          old_row.values.push_back(core::AuxValue::Null(schema[i].type));
-        }
+        const char *val = args[idx]; // nullptr: SQL NULL
+        const std::size_t len = (lengths && lengths[idx] > 0) ? lengths[idx]
+                                 : (val ? std::strlen(val) : 0);
+        old_row.values.push_back(ParseCaptureValue(val, len, schema[i]));
       }
       batch.old_rows.push_back(std::move(old_row));
     }
@@ -237,20 +181,10 @@ BuildMutationBatchFromTriggerArgs(std::size_t arg_count, char **args,
       core::AuxRow new_row;
       for (std::size_t i = 0; i < col_count; ++i) {
         std::size_t idx = new_start + i;
-        const char *val = (idx < arg_count) ? args[idx] : nullptr;
-        std::size_t len = (lengths && idx < arg_count && lengths[idx] > 0)
-                           ? lengths[idx]
-                           : (val ? std::strlen(val) : 0);
-        if (val && len > 0) {
-          std::string sv(val, len);
-          if (sv == "NULL") {
-            new_row.values.push_back(core::AuxValue::Null(schema[i].type));
-          } else {
-            new_row.values.push_back(ParseCaptureValue(val, len, schema[i]));
-          }
-        } else {
-          new_row.values.push_back(core::AuxValue::Null(schema[i].type));
-        }
+        const char *val = args[idx]; // nullptr: SQL NULL
+        const std::size_t len = (lengths && lengths[idx] > 0) ? lengths[idx]
+                                 : (val ? std::strlen(val) : 0);
+        new_row.values.push_back(ParseCaptureValue(val, len, schema[i]));
       }
       batch.new_rows.push_back(std::move(new_row));
     }

@@ -2,13 +2,20 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/cow_blob_column.hpp"
+#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/core/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -47,6 +54,7 @@ struct TpchQ2NationInput {
   int32_t key = 0;
   std::string name;
   int32_t regionkey = 0;
+  bool regionkey_null = false; // captured rows only: n_regionkey IS NULL
 };
 
 struct TpchQ2RegionInput {
@@ -69,125 +77,159 @@ public:
       const std::function<void(const TpchQ2RegionInput &)> &) = 0;
 };
 
-struct TpchQ2SupplierInfo {
-  std::string name;
-  std::string address;
-  int32_t nationkey = 0;
-  std::string phone;
+// ---------------------------------------------------------------------------
+// State layout (columnar, copy-on-write, no cap on key values)
+//
+// Q2 answers "cheapest regional offer per qualifying part", so the state keeps
+// the BASE FACTS compactly instead of a precomputed per-(region, part) minimum:
+//   * part columns keyed by partkey: p_size (4 B), p_type id (4 B, dictionary
+//     encoded), p_mfgr id (4 B, dictionary encoded);
+//   * the partsupp offers of each part inline in its partkey slot (16 B per
+//     offer, up to 4 inline, the rest in a sharded overflow map);
+//   * supplier columns keyed by suppkey: nationkey + acctbal (16 B) and one
+//     packed text blob (name/address/phone/comment, 8 B + bytes);
+//   * the (tiny) nation and region tables.
+// Because nothing is derived across tables, every write (any of the five
+// tables) is a point edit of one chunk: nation/region/supplier changes simply
+// change what Execute sees, and there is never a rebuild for routine writes.
+// All arrays are ChunkedCowArray / ChunkedCowBlobColumn, so a published state
+// is copied as chunk pointers and a write batch clones only the touched chunks.
+//
+// Memory: ~12 B/part + 72 B/part for up to 4 offers (= 18 B per partsupp row at
+// 4 offers/part) + ~150 B/supplier.  SF100 (20M parts, 80M partsupp, 1M
+// suppliers): ~1.9 GB; SF1000 (200M parts, 800M partsupp, 10M suppliers):
+// ~19 GB (was ~10 GB at SF100 and silently dropped keys above 32M).
+// Execute: a size-column scan over all parts (4 B/part, multi-threaded for
+// large tables) plus, for the ~1/250 parts that also match the type bitmap,
+// at most a few supplier lookups: ~25 ms at SF100, ~0.1-0.2 s at SF1000.
+// Keys must be non-negative (a negative key is not stored).
+// ---------------------------------------------------------------------------
+constexpr int32_t kTpchQ2NoSize = std::numeric_limits<int32_t>::min();
+constexpr uint32_t kTpchQ2NoId = 0xFFFFFFFFu;
+constexpr std::size_t kTpchQ2InlineOffers = 4;
+
+struct TpchQ2Offer {
+  int64_t suppkey = 0;
+  int64_t cost_raw = 0;
+};
+
+// All partsupp offers of one part: the first kTpchQ2InlineOffers inline, the
+// remainder (count > 4) in TpchQ2State::offer_overflow[partkey].
+struct TpchQ2OfferSlots {
+  int64_t suppkey[kTpchQ2InlineOffers] = {0, 0, 0, 0};
+  int64_t cost_raw[kTpchQ2InlineOffers] = {0, 0, 0, 0};
+  uint32_t count = 0;
+};
+
+struct TpchQ2SupplierRec {
   int64_t acctbal_raw = 0;
-  std::string comment;
+  int32_t nationkey = 0;
+  uint8_t present = 0;
 };
 
-struct TpchQ2PartInfo {
-  std::string mfgr;
-  std::string type;
-  int32_t size = 0;
+struct TpchQ2NationRec {
+  int64_t key = 0;
+  std::string name;
+  int64_t regionkey = 0;
 };
 
-struct TpchQ2RegionalMinCell {
-  int64_t min_supplycost_raw = 0;
-  std::vector<int64_t> tied_suppkeys;
+struct TpchQ2RegionRec {
+  int64_t key = 0;
+  std::string name;
 };
+
+// name/address/phone/comment of one supplier packed in a single blob value.
+struct TpchQ2SupplierText {
+  std::string_view name, address, phone, comment;
+};
+std::string TpchQ2PackSupplierText(const std::string &name,
+                                   const std::string &address,
+                                   const std::string &phone,
+                                   const std::string &comment);
+TpchQ2SupplierText TpchQ2UnpackSupplierText(std::string_view packed);
 
 struct TpchQ2State {
-  // Immutable dimension data — shared_ptr avoids deep copies during
-  // maintenance clones.  Flat vectors indexed by natural key (partkey,
-  // suppkey, nationkey, regionkey) eliminate hash lookups on hot paths.
-  std::shared_ptr<const std::vector<std::string>> region_names;
-  std::shared_ptr<const std::vector<std::string>> nation_names;
-  std::shared_ptr<const std::vector<int32_t>> nation_region;
-  std::shared_ptr<const std::vector<TpchQ2SupplierInfo>> suppliers;
-  std::shared_ptr<const std::vector<uint8_t>> supplier_valid;
-  std::shared_ptr<const std::vector<TpchQ2PartInfo>> parts;
-  std::shared_ptr<const std::vector<uint8_t>> part_valid;
-  std::unordered_map<int32_t, std::vector<int64_t>> parts_by_size;
-  std::unordered_map<int64_t, TpchQ2RegionalMinCell> regional_minima;
+  std::shared_ptr<const std::vector<TpchQ2RegionRec>> regions;
+  std::shared_ptr<const std::vector<TpchQ2NationRec>> nations;
+  // Dictionaries are append-only and cloned only when a write introduces a
+  // value the shared copy does not have yet.
+  std::shared_ptr<core::StringDict> types = std::make_shared<core::StringDict>();
+  std::shared_ptr<core::StringDict> mfgrs = std::make_shared<core::StringDict>();
 
-  // Two-level regional_minima for cheap incremental writes:
-  //   regional_minima_base is the immutable full map built once and shared
-  //   regional_minima_overlay holds only cells modified by ApplyDelta.
-  // Reads check the overlay first, then fall back to the base.
-  std::shared_ptr<const std::unordered_map<int64_t, TpchQ2RegionalMinCell>>
-      regional_minima_base;
-  std::unordered_map<int64_t, TpchQ2RegionalMinCell> regional_minima_overlay;
+  core::ChunkedCowArray<int32_t> part_size{kTpchQ2NoSize};
+  core::ChunkedCowArray<uint32_t> part_type{kTpchQ2NoId};
+  core::ChunkedCowArray<uint32_t> part_mfgr{kTpchQ2NoId};
+  core::ChunkedCowArray<TpchQ2OfferSlots, 10> offers;
+  core::ShardedCowHashMap<std::vector<TpchQ2Offer>> offer_overflow;
 
-  const TpchQ2SupplierInfo *FindSupplier(int64_t suppkey) const {
-    if (!supplier_valid || suppkey < 0 ||
-        static_cast<std::size_t>(suppkey) >= supplier_valid->size())
-      return nullptr;
-    return (*supplier_valid)[static_cast<std::size_t>(suppkey)]
-               ? &(*suppliers)[static_cast<std::size_t>(suppkey)]
-               : nullptr;
+  core::ChunkedCowArray<TpchQ2SupplierRec> suppliers;
+  core::ChunkedCowBlobColumn<> supplier_text;
+
+  TpchQ2State() {
+    regions = std::make_shared<const std::vector<TpchQ2RegionRec>>();
+    nations = std::make_shared<const std::vector<TpchQ2NationRec>>();
   }
 
-  const TpchQ2PartInfo *FindPart(int64_t partkey) const {
-    if (!part_valid || partkey < 0 ||
-        static_cast<std::size_t>(partkey) >= part_valid->size())
-      return nullptr;
-    return (*part_valid)[static_cast<std::size_t>(partkey)]
-               ? &(*parts)[static_cast<std::size_t>(partkey)]
-               : nullptr;
-  }
+  // --- point edits (used by Build and by incremental maintenance) ----------
+  // A part with NULL p_size / p_type can never qualify, so it is simply absent.
+  void SetPart(int64_t partkey, const TpchQ2PartInput &part);
+  void ErasePart(int64_t partkey);
+  void SetSupplier(int64_t suppkey, const TpchQ2SupplierInput &supplier);
+  void EraseSupplier(int64_t suppkey);
+  void AddOffer(int64_t partkey, int64_t suppkey, int64_t cost_raw);
+  // False when no such offer exists (state out of sync with the table).
+  bool RemoveOffer(int64_t partkey, int64_t suppkey, int64_t cost_raw);
+  void UpsertNation(const TpchQ2NationInput &nation);
+  void EraseNation(const TpchQ2NationInput &nation);
+  void UpsertRegion(const TpchQ2RegionInput &region);
+  void EraseRegion(const TpchQ2RegionInput &region);
 
-  const TpchQ2RegionalMinCell *FindRegionalMin(int64_t key) const {
-    const auto it = regional_minima_overlay.find(key);
-    if (it != regional_minima_overlay.end()) {
-      return it->second.tied_suppkeys.empty() ? nullptr : &it->second;
-    }
-    if (regional_minima_base) {
-      const auto it2 = regional_minima_base->find(key);
-      if (it2 != regional_minima_base->end())
-        return &it2->second;
-    }
-    return nullptr;
-  }
+  // Offer `i` (0 <= i < slots.count) of the part whose slots are `slots`.
+  TpchQ2Offer OfferAt(const TpchQ2OfferSlots &slots, int64_t partkey,
+                      uint32_t i) const;
+
+  std::size_t MemoryBytes() const;
+
+private:
+  void InternInto(std::shared_ptr<core::StringDict> &dict,
+                  const std::string &value, uint32_t &id);
 };
-
-inline int64_t TpchQ2CellKey(int32_t region_key, int64_t partkey) {
-  return (static_cast<int64_t>(region_key) << 32) | (partkey & 0xFFFFFFFFLL);
-}
-
-// Pre-parsed LIKE pattern accelerator for fast type matching.
-struct TpchQ2LikeAccelerator {
-  bool enabled = false;
-  bool prefix_wild = false;
-  bool suffix_wild = false;
-  std::string pattern;
-};
-
-TpchQ2LikeAccelerator TpchQ2BuildLikeAccelerator(const std::string &pattern);
-bool TpchQ2LikeAcceleratedMatch(const TpchQ2LikeAccelerator &acc,
-                                const std::string &text);
-
-enum class TpchQ2ImageKind : uint8_t { Full };
 
 struct TpchQ2StateImage {
-  TpchQ2ImageKind kind = TpchQ2ImageKind::Full;
   std::shared_ptr<const TpchQ2State> state;
 };
 
-struct TpchQ2PartsuppDelta {
-  int64_t partkey = 0;
-  int64_t suppkey = 0;
-  int64_t supplycost_raw = 0;
+// One captured row change.  sign +1 = row inserted / new image, -1 = row
+// deleted / old image; per-table order is the order of application.
+struct TpchQ2PartEvent {
   int8_t sign = 0;
+  TpchQ2PartInput row;
+};
+struct TpchQ2SupplierEvent {
+  int8_t sign = 0;
+  TpchQ2SupplierInput row;
+};
+struct TpchQ2PartsuppEvent {
+  int8_t sign = 0;
+  TpchQ2PartsuppInput row;
+};
+struct TpchQ2NationEvent {
+  int8_t sign = 0;
+  TpchQ2NationInput row;
+};
+struct TpchQ2RegionEvent {
+  int8_t sign = 0;
+  TpchQ2RegionInput row;
 };
 
-// Attribute-only supplier update (nationkey unchanged). Display fields
-// affect ORDER BY / projection without touching regional minima.
-struct TpchQ2SupplierAttrDelta {
-  int64_t suppkey = 0;
-  TpchQ2SupplierInfo info;
+// Query arguments; std::nullopt = SQL NULL (the predicate is then never true).
+struct TpchQ2Args {
+  std::optional<int64_t> size;
+  std::optional<std::string> type_pattern;
+  std::optional<std::string> region_name;
 };
 
-std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &);
-bool DecodeTpchQ2State(const std::vector<uint8_t> &, TpchQ2State &);
-
-bool TpchQ2MatchesLike(const std::string &text, const std::string &pattern);
-
-void TpchQ2FinalizeAndEmit(const TpchQ2State &state, int32_t part_size,
-                           const std::string &part_type_pattern,
-                           const std::string &region_name,
+void TpchQ2FinalizeAndEmit(const TpchQ2State &state, const TpchQ2Args &args,
                            core::AuxRowSink &sink);
 
 constexpr std::size_t kTpchQ2ResultLimit = 100;
@@ -197,18 +239,21 @@ public:
   bool HasPendingChanges() const override;
   void Clear() override;
 
-  bool RequiresRebuild() const;
-  const std::vector<TpchQ2PartsuppDelta> &PartsuppDeltas() const;
-  const std::vector<TpchQ2SupplierAttrDelta> &SupplierAttrDeltas() const;
+  bool RequiresRebuild() const { return requires_rebuild; }
   void MarkRebuild();
-  void AddPartsuppDelta(TpchQ2PartsuppDelta delta);
-  void AddSupplierAttrDelta(TpchQ2SupplierAttrDelta delta);
+
+  std::vector<TpchQ2PartEvent> parts;
+  std::vector<TpchQ2SupplierEvent> suppliers;
+  std::vector<TpchQ2PartsuppEvent> partsupps;
+  std::vector<TpchQ2NationEvent> nations;
+  std::vector<TpchQ2RegionEvent> regions;
+  uint64_t EventCount() const {
+    return parts.size() + suppliers.size() + partsupps.size() +
+           nations.size() + regions.size();
+  }
 
 private:
-  bool pending = false;
   bool requires_rebuild = false;
-  std::vector<TpchQ2PartsuppDelta> partsupp_deltas;
-  std::vector<TpchQ2SupplierAttrDelta> supplier_attr_deltas;
 };
 
 class TpchQ2Module final : public core::AuxQueryModule {
@@ -242,9 +287,8 @@ private:
   TpchQ2State BuildState(core::AuxEngineServices &) const;
   std::shared_ptr<const TpchQ2State>
   LoadState(core::AuxEngineServices &) const;
-  void EmitResult(const TpchQ2State &, int32_t part_size,
-                  const std::string &part_type_pattern,
-                  const std::string &region_name, core::AuxRowSink &) const;
+  void EmitResult(const TpchQ2State &, const core::QueryArguments &,
+                  core::AuxRowSink &) const;
 
   TpchQ2Config config;
   TpchQ2InitialScan *initial_scan = nullptr;

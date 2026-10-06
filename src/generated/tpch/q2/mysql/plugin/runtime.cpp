@@ -128,7 +128,8 @@ std::string ExecuteQuery(const core::QueryArguments &arguments) {
 } // namespace
 
 static const MysqlUdfRegistrar kRegisterQ2Udf(MysqlUdfEntry{
-    "mysql_accel_tpch_q2_aux", "iss", &ExecuteQuery});
+    "mysql_accel_tpch_q2_aux", "iss", &ExecuteQuery,
+    /*null_first_arg_yields_empty=*/true});
 
 } // namespace accelerator_codegen::aux_state::engine::mysql
 

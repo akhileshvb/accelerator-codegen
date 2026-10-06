@@ -31,7 +31,17 @@ namespace {
 
 // Executed by accel_postgres_register_queries().
 constexpr char kFunctionsSql[] = R"SQL(
-DROP FUNCTION IF EXISTS accel_tpch_q11 CASCADE;
+DROP FUNCTION IF EXISTS accel_tpch_q11(text, double precision) CASCADE;
+DROP FUNCTION IF EXISTS accel_tpch_q11(text, numeric) CASCADE;
+-- The fraction may be passed as numeric (exact decimal) or float8 (its shortest
+-- round-trip decimal is used); both reach the same C entry point.
+CREATE FUNCTION accel_tpch_q11(text, numeric)
+RETURNS TABLE (
+  ps_partkey bigint,
+  value numeric
+)
+AS 'accelerator_codegen_pg', 'AcceleratorCodegenBaseTpchQ11'
+LANGUAGE C;
 CREATE FUNCTION accel_tpch_q11(text, double precision)
 RETURNS TABLE (
   ps_partkey bigint,
@@ -40,7 +50,15 @@ RETURNS TABLE (
 AS 'accelerator_codegen_pg', 'AcceleratorCodegenBaseTpchQ11'
 LANGUAGE C;
 
-DROP FUNCTION IF EXISTS accel_tpch_q11_aux CASCADE;
+DROP FUNCTION IF EXISTS accel_tpch_q11_aux(text, double precision) CASCADE;
+DROP FUNCTION IF EXISTS accel_tpch_q11_aux(text, numeric) CASCADE;
+CREATE FUNCTION accel_tpch_q11_aux(text, numeric)
+RETURNS TABLE (
+  ps_partkey bigint,
+  value numeric
+)
+AS 'accelerator_codegen_pg', 'AcceleratorCodegenAuxTpchQ11'
+LANGUAGE C;
 CREATE FUNCTION accel_tpch_q11_aux(text, double precision)
 RETURNS TABLE (
   ps_partkey bigint,
