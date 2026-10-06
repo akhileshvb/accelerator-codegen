@@ -5,8 +5,7 @@
 // by the generic MySQL host layer (src/stateful/mysql, src/generated/mysql):
 // capture decodes rows from self-describing trigger calls
 // (mysql_accel_capture_row, scripts/gen_mysql_capture_triggers.py) and keys on
-// the table id the trigger passes. Move this header next to the per-query code
-// once its includes are updated.
+
 
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
 

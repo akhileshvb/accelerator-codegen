@@ -1,6 +1,7 @@
 #include "tpch/q21/mysql/aux/module.hpp"
 #include "tpch/q21/calibration_writes.hpp"
 
+#include "accelerator_codegen/stateful/core/mysql_collation.hpp"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -223,11 +224,11 @@ bool TpchQ21State::RemoveSupplier(int64_t suppkey) {
 }
 
 void TpchQ21State::PutNation(int64_t nationkey, const std::string &name) {
-  nation_keys[name].push_back(nationkey);
+  nation_keys[mysql_collation::FoldAscii(name)].push_back(nationkey); // n_name = ? is case-insensitive
 }
 
 bool TpchQ21State::RemoveNation(int64_t nationkey, const std::string &name) {
-  const auto it = nation_keys.find(name);
+  const auto it = nation_keys.find(mysql_collation::FoldAscii(name));
   if (it == nation_keys.end())
     return false;
   auto &keys = it->second;
@@ -528,7 +529,7 @@ void TpchQ21Module::Execute(core::AuxEngineServices &services,
   }
 
   std::vector<TpchQ21OutputRow> rows;
-  const auto keys = state->nation_keys.find(nation_name);
+  const auto keys = state->nation_keys.find(mysql_collation::FoldAscii(nation_name));
   if (keys != state->nation_keys.end()) {
     for (const int64_t nationkey : keys->second) {
       const auto nation = state->nation_numwait.find(nationkey);
@@ -558,7 +559,7 @@ void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &,
   }
   std::vector<int64_t> nationkeys;
   initial_scan->ScanNations([&](const TpchQ21NationInput &input) {
-    if (input.name == nation_name)
+    if (mysql_collation::EqualsCi(input.name, nation_name))
       nationkeys.push_back(input.nationkey);
   });
   std::unordered_map<int64_t, std::string> suppliers; // suppkey -> s_name

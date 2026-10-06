@@ -4,11 +4,14 @@
 #include <algorithm>
 #include <cstdlib>
 #include <limits>
+#include <map>
+#include <tuple>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
 
+#include "accelerator_codegen/stateful/core/mysql_collation.hpp"
 #include "accelerator_codegen/stateful/core/query_module_helpers.hpp"
 #include "accelerator_codegen/stateful/core/sql_date.hpp"
 #include "tpch/q7/layout.hpp"
@@ -664,48 +667,51 @@ void TpchQ7Module::EmitResult(const TpchQ7State &state,
   std::vector<std::pair<std::string, std::string>> pairs; // (supplier, customer)
   if (have_a && have_b) {
     pairs.emplace_back(a, b);
-    if (a != b)
+    if (!mysql_collation::EqualsCi(a, b))
       pairs.emplace_back(b, a);
   }
 
+  // MySQL's default collation compares n_name case-insensitively and prints the
+  // stored spelling; the groups are keyed by that spelling.
   struct Out {
-    const std::string *supp;
-    const std::string *cust;
+    std::string supp;
+    std::string cust;
     int32_t year;
     Int128 revenue;
   };
   std::vector<Out> rows;
   for (const auto &[supp_name, cust_name] : pairs) {
-    Int128 revenue[2] = {0, 0};
-    int64_t count[2] = {0, 0};
+    std::map<std::tuple<std::string, std::string, int>, std::pair<Int128, int64_t>> groups;
     for (const auto &[key, cell] : state.cube) {
       const auto supp = state.nations.find(key.supp_nationkey);
       const auto cust = state.nations.find(key.cust_nationkey);
       if (supp == state.nations.end() || cust == state.nations.end() ||
-          supp->second != supp_name || cust->second != cust_name)
+          !mysql_collation::EqualsCi(supp->second, supp_name) ||
+          !mysql_collation::EqualsCi(cust->second, cust_name))
         continue;
       const int y = key.year - kTpchQ7MinYear;
       if (y < 0 || y > 1)
         continue;
-      revenue[y] += cell.revenue;
-      count[y] += cell.rows;
+      auto &g = groups[{supp->second, cust->second, y}];
+      g.first += cell.revenue;
+      g.second += cell.rows;
     }
-    for (int y = 0; y < 2; ++y)
-      if (count[y] > 0)
-        rows.push_back({&supp_name, &cust_name, kTpchQ7MinYear + y, revenue[y]});
+    for (const auto &[k, g] : groups)
+      if (g.second > 0)
+        rows.push_back({std::get<0>(k), std::get<1>(k), kTpchQ7MinYear + std::get<2>(k), g.first});
   }
-  // ORDER BY supp_nation, cust_nation, l_year (text columns are C-collated).
+  // ORDER BY supp_nation, cust_nation, l_year (case-insensitive collation).
   std::sort(rows.begin(), rows.end(), [](const Out &l, const Out &r) {
-    if (*l.supp != *r.supp)
-      return *l.supp < *r.supp;
-    if (*l.cust != *r.cust)
-      return *l.cust < *r.cust;
+    if (const int c = mysql_collation::CompareCi(l.supp, r.supp))
+      return c < 0;
+    if (const int c = mysql_collation::CompareCi(l.cust, r.cust))
+      return c < 0;
     return l.year < r.year;
   });
   for (const auto &row : rows) {
     core::AuxRow out;
-    out.values.push_back(core::AuxValue::Of(core::AuxType::String, *row.supp));
-    out.values.push_back(core::AuxValue::Of(core::AuxType::String, *row.cust));
+    out.values.push_back(core::AuxValue::Of(core::AuxType::String, row.supp));
+    out.values.push_back(core::AuxValue::Of(core::AuxType::String, row.cust));
     out.values.push_back(
         core::AuxValue::Of(core::AuxType::Int64, static_cast<int64_t>(row.year)));
     out.values.push_back(core::AuxValue::Of(

@@ -2035,6 +2035,20 @@ if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
                 ${CMAKE_CURRENT_SOURCE_DIR}/include
                 ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
         )
+        # Parameter-generality differential (all 22 queries, spec / off-spec / edge / NULL
+        # params; plain, data-perturb, wide-keys, negative-keys modes).
+        add_executable(test_mysql_tpch_params
+            tests/aux_state/test_mysql_tpch_params.cpp
+        )
+        target_link_libraries(test_mysql_tpch_params
+            PRIVATE accelerator_codegen duckdb_sibling)
+        target_include_directories(test_mysql_tpch_params
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+        )
         add_executable(test_mysql_tpch_differential
             tests/aux_state/test_mysql_tpch_differential.cpp
         )

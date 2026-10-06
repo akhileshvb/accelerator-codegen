@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "accelerator_codegen/stateful/core/mysql_collation.hpp"
 #include "accelerator_codegen/stateful/core/sql_like.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -43,12 +44,17 @@ void TpchQ16FinalizeAndEmit(const TpchQ16State &state, const TpchQ16Args &args,
 
   // p_type NOT LIKE :pattern, evaluated once per distinct type (a bitmap of
   // the types that MATCH, which the NOT LIKE rejects).
-  const auto matcher = core::sql_like::LikeMatcher::Compile(*args.type_pattern);
+  const auto matcher = core::sql_like::LikeMatcher::Compile(
+      *args.type_pattern, '\\', /*case_insensitive=*/true); // MySQL default collation
   const auto &blob = state.types->blob();
   const auto like_bits = core::sql_like::MatchBlobBitmap(
       matcher, blob.offsets(), state.types->size(), blob.data());
-  // p_brand <> :brand: at most one brand id is excluded.
-  const uint32_t excluded_brand = state.brands->Find(*args.brand);
+  // p_brand <> :brand under the case-insensitive default collation: every
+  // brand spelling equal to the parameter is excluded.
+  std::vector<char> excluded_brand(state.brands->size(), 0);
+  for (std::size_t id = 0; id < excluded_brand.size(); ++id)
+    excluded_brand[id] =
+        mysql_collation::EqualsCi(state.brands->Get(static_cast<uint32_t>(id)), *args.brand);
 
   std::vector<Q16Row> rows;
   const auto &table = *state.group_table;
@@ -58,7 +64,7 @@ void TpchQ16FinalizeAndEmit(const TpchQ16State &state, const TpchQ16Args &args,
       continue;
     for (const uint32_t gid : it->second) {
       const auto &key = table.keys[gid];
-      if (key.brand_id == excluded_brand)
+      if (excluded_brand[key.brand_id])
         continue;
       if ((like_bits[key.type_id >> 6] >> (key.type_id & 63)) & 1)
         continue;
@@ -68,19 +74,23 @@ void TpchQ16FinalizeAndEmit(const TpchQ16State &state, const TpchQ16Args &args,
     }
   }
 
-  // ORDER BY supplier_cnt DESC, p_brand, p_type, p_size (byte-wise text order).
+  // ORDER BY supplier_cnt DESC, p_brand, p_type, p_size (case-insensitive text order).
   std::sort(rows.begin(), rows.end(), [&](const Q16Row &a, const Q16Row &b) {
     if (a.count != b.count)
       return a.count > b.count;
     if (a.brand_id != b.brand_id) {
       const auto ba = state.brands->Get(a.brand_id);
       const auto bb = state.brands->Get(b.brand_id);
+      if (const int c = mysql_collation::CompareCi(ba, bb))
+        return c < 0;
       if (ba != bb)
         return ba < bb;
     }
     if (a.type_id != b.type_id) {
       const auto ta = state.types->Get(a.type_id);
       const auto tb = state.types->Get(b.type_id);
+      if (const int c = mysql_collation::CompareCi(ta, tb))
+        return c < 0;
       if (ta != tb)
         return ta < tb;
     }

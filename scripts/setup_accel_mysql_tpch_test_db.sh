@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${ROOT}/.venv-pg-test/bin/python"
+PYTHON="${ACCEL_PYTHON:-${ROOT}/.venv-pg-test/bin/python}"
 if [[ ! -x "$PYTHON" ]] || ! "$PYTHON" -c 'import duckdb' >/dev/null 2>&1; then
   PYTHON="${ROOT}/pipeline/orchestrator/.venv/bin/python3"
 fi

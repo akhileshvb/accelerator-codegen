@@ -1,22 +1,21 @@
 #include "tpch/q14/mysql/aux/module.hpp"
 
-#include <cmath>
-#include <limits>
+#include "accelerator_codegen/stateful/core/mysql_decimal.hpp"
+#include "accelerator_codegen/stateful/core/pg_numeric.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
-double TpchQ14FinalizePromoRevenue(const TpchQ14DayTotals &totals) {
+// 100.00 * SUM(promo revenue) / SUM(revenue) as MySQL's DECIMAL arithmetic
+// prints it: the numerator has scale 2 + 4 = 6, so the quotient has scale 6 + 4.
+// False: NULL (SUM over no rows, or a zero denominator).
+bool TpchQ14FinalizePromoRevenue(const TpchQ14DayTotals &totals, std::string &text) {
   if (totals.count == 0)
-    return std::numeric_limits<double>::quiet_NaN(); // SUM over no rows: NULL
-  if (totals.total_revenue_raw == 0) {
-    if (totals.promo_revenue_raw == 0)
-      return std::copysign(std::numeric_limits<double>::quiet_NaN(), -1.0);
-    return std::numeric_limits<double>::infinity();
-  }
-  // 100.00 * promo / total from the exact scale-4 sums.
-  return static_cast<double>(
-      static_cast<long double>(totals.promo_revenue_raw) * 100.0L /
-      static_cast<long double>(totals.total_revenue_raw));
+    return false;
+  pg_numeric::Decimal quotient;
+  if (!mysql_decimal::Div(totals.promo_revenue_raw * 10000, 6, totals.total_revenue_raw, 4, quotient))
+    return false;
+  text = pg_numeric::ToText(quotient);
+  return true;
 }
 
 } // namespace accelerator_codegen::aux_state::query

@@ -1,6 +1,7 @@
 #include "tpch/q3/mysql/aux/module.hpp"
 #include "tpch/q3/calibration_writes.hpp"
 
+#include "accelerator_codegen/stateful/core/mysql_collation.hpp"
 #include <algorithm>
 #include <cstring>
 #include <queue>
@@ -268,7 +269,8 @@ void TpchQ3State::SetOrder(const std::string &mktsegment,
     if (bucket.revenue_raw > 0)
       bound += bucket.revenue_raw;
   const uint32_t segment =
-      segment_ids.emplace(mktsegment, static_cast<uint32_t>(segment_ids.size()))
+      // c_mktsegment = ? is case-insensitive (MySQL default collation): folded ids.
+      segment_ids.emplace(mysql_collation::FoldAscii(mktsegment), static_cast<uint32_t>(segment_ids.size()))
           .first->second;
   const int32_t bin = BinOfBound(bound);
   const auto bytes = EncodeRecord(record);
@@ -514,7 +516,7 @@ void TpchQ3Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  const auto segment_it = state->segment_ids.find(segment);
+  const auto segment_it = state->segment_ids.find(mysql_collation::FoldAscii(segment));
   if (segment_it == state->segment_ids.end()) {
     EmitResult({}, sink); // no customer has this market segment
     return;
@@ -555,7 +557,7 @@ void TpchQ3Module::ExecuteFallback(core::AuxEngineServices &,
   }
   TopK top;
   OrderLineGrouper grouper([&](TpchQ3OrderResult &&result) {
-    if (result.mktsegment != segment)
+    if (!mysql_collation::EqualsCi(result.mktsegment, segment))
       return;
     const auto bytes = EncodeRecord(result.record);
     core::ShardedCowRecordStore<TpchQ3State::kBinShardBits>::View view{

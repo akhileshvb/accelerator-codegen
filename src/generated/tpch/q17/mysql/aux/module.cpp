@@ -2,6 +2,7 @@
 #include "tpch/q17/calibration_writes.hpp"
 
 #include <algorithm>
+#include "accelerator_codegen/stateful/core/mysql_collation.hpp"
 #include <limits>
 #include <map>
 #include <set>
@@ -272,8 +273,10 @@ std::string TpchQ17GroupDictionary::MakeKey(const std::string &brand,
   key.reserve(4 + brand.size() + container.size());
   const uint32_t n = static_cast<uint32_t>(brand.size());
   key.append(reinterpret_cast<const char *>(&n), sizeof(n));
-  key.append(brand);
-  key.append(container);
+  // p_brand = ? AND p_container = ? are case-insensitive (MySQL default
+  // collation): the key is the ASCII-folded pair.
+  key.append(mysql_collation::FoldAscii(brand));
+  key.append(mysql_collation::FoldAscii(container));
   return key;
 }
 
@@ -631,7 +634,8 @@ void TpchQ17Module::ExecuteFallback(core::AuxEngineServices &,
     throw std::logic_error("TPC-H Q17 requires a typed initial scan source");
   std::unordered_set<int64_t> parts;
   initial_scan->ScanParts([&](const TpchQ17PartInput &input) {
-    if (input.brand == brand && input.container == container)
+    if (mysql_collation::EqualsCi(input.brand, brand) &&
+        mysql_collation::EqualsCi(input.container, container))
       parts.insert(input.key);
   });
   std::unordered_map<int64_t, TpchQ17PartHistogram> histograms;

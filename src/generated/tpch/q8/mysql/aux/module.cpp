@@ -10,7 +10,8 @@
 #include <unordered_map>
 #include <utility>
 
-#include "accelerator_codegen/stateful/core/pg_numeric_div.hpp"
+#include "accelerator_codegen/stateful/core/mysql_collation.hpp"
+#include "accelerator_codegen/stateful/core/mysql_decimal.hpp"
 #include "accelerator_codegen/stateful/core/query_module_helpers.hpp"
 #include "accelerator_codegen/stateful/core/sql_date.hpp"
 
@@ -472,7 +473,10 @@ bool CollectNationChanges(const core::MutationBatch &m, Changes<int32_t> &out) {
 
 // Interns `type` into the working state's dictionary (cloning the shared
 // dictionary first when it gets a new entry).
-uint32_t InternType(TpchQ8State &s, const std::string &type) {
+// p_type = ? is case-insensitive under MySQL's default collation: the
+// dictionary holds ASCII-folded types and the parameter is folded to match.
+uint32_t InternType(TpchQ8State &s, const std::string &type_text) {
+  const std::string type = mysql_collation::FoldAscii(type_text);
   const uint32_t found = s.types->Find(type);
   if (found != core::StringDict::kNone)
     return found;
@@ -668,7 +672,7 @@ void TpchQ8Module::AccumulateMutation(const core::MutationBatch &mutation,
           continue;
         uint32_t id = TpchQ8State::kNoType;
         if (t == Cell::Ok) {
-          id = before ? s.types->Find(type) : InternType(s, type);
+          id = before ? s.types->Find(mysql_collation::FoldAscii(type)) : InternType(s, type);
           if (before && id == core::StringDict::kNone)
             return false; // the state has never seen this type
         }
@@ -835,7 +839,7 @@ void TpchQ8Module::EmitResult(const TpchQ8State &s,
                               const core::QueryArguments &arguments,
                               core::AuxRowSink &sink) const {
   sink.Begin({{{"o_year", core::AuxType::Int64, false},
-               {"mkt_share", core::AuxType::String, false}}});
+               {"mkt_share", core::AuxType::String, true}}});
 
   // NULL parameters make their comparison NULL: nothing matches (for the
   // nation parameter: the CASE never takes its THEN branch).
@@ -853,13 +857,13 @@ void TpchQ8Module::EmitResult(const TpchQ8State &s,
 
   Int128 total[2] = {0, 0}, nation_sum[2] = {0, 0};
   int64_t total_rows[2] = {0, 0}, nation_rows[2] = {0, 0};
-  const uint32_t type_id = have_type ? s.types->Find(type) : core::StringDict::kNone;
+  const uint32_t type_id = have_type ? s.types->Find(mysql_collation::FoldAscii(type)) : core::StringDict::kNone;
   if (have_region && type_id != core::StringDict::kNone) {
     // r_name = region; n1 (customer nation) in such a region; n2 (supplier
     // nation) is any existing nation, matched against the parameter by name.
     std::set<int32_t> region_keys;
     for (const auto &[key, name] : s.regions)
-      if (name == region)
+      if (mysql_collation::EqualsCi(name, region))
         region_keys.insert(key);
     const auto *cube = s.cubes.Find(type_id);
     if (cube && *cube) {
@@ -872,7 +876,7 @@ void TpchQ8Module::EmitResult(const TpchQ8State &s,
           continue;
         total[y] += cell.volume;
         total_rows[y] += cell.rows;
-        if (have_nation && supp->second.name == nation) {
+        if (have_nation && mysql_collation::EqualsCi(supp->second.name, nation)) {
           nation_sum[y] += cell.volume;
           nation_rows[y] += cell.rows;
         }
@@ -880,18 +884,20 @@ void TpchQ8Module::EmitResult(const TpchQ8State &s,
     }
   }
 
-  namespace pgn = ::accelerator_codegen::pg_numeric;
+  namespace myd = ::accelerator_codegen::mysql_decimal;
   for (int y = 0; y < 2; ++y) {
     if (total_rows[y] <= 0)
       continue; // no row in this year's group
-    // SUM(CASE ... ELSE 0 END) has scale 4 iff some row took the THEN branch
-    // (every other input is the integer literal 0, scale 0).
-    const auto share = pgn::DivRound(nation_sum[y], nation_rows[y] > 0 ? kVolumeScale : 0,
-                                     total[y], kVolumeScale);
+    // MySQL types SUM(CASE WHEN .. THEN volume ELSE 0 END) statically as
+    // DECIMAL scale 4, so an empty THEN branch still prints 0.00000000
+    // (PostgreSQL's dynamic numeric scale differs). a / b has scale 4 + 4.
+    pg_numeric::Decimal share;
+    const bool defined = myd::Div(nation_sum[y], kVolumeScale, total[y], kVolumeScale, share);
     sink.WriteRow(
         {{core::AuxValue::Of(core::AuxType::Int64,
                              static_cast<int64_t>(kTpchQ8MinYear + y)),
-          core::AuxValue::Of(core::AuxType::String, pgn::ToText(share))}});
+          defined ? core::AuxValue::Of(core::AuxType::String, pg_numeric::ToText(share))
+                  : core::AuxValue::Null(core::AuxType::String)}});
   }
   sink.End();
 }

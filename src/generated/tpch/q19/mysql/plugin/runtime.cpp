@@ -9,7 +9,7 @@
 #include <stdexcept>
 
 #include "accelerator_codegen/stateful/core/decimal_text.hpp"
-#include "accelerator_codegen/stateful/mysql/mysql_tpch_table_ids.hpp"
+#include "tpch/mysql_table_ids.hpp"
 #include "tpch/q19/mysql/aux/module.hpp"
 
 namespace accelerator_codegen::aux_state::engine::mysql {
