@@ -74,9 +74,13 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ4(FunctionCallInfo fcinfo) {
+  // SQL NULL arguments reach the module as NULL values.
   detail::Q4Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-          core::AuxType::Date, detail::PostgresDateArg(0, fcinfo))}},
+      core::QueryArguments{{PG_ARGISNULL(0)
+                                ? core::AuxValue::Null(core::AuxType::Date)
+                                : core::AuxValue::Of(
+                                      core::AuxType::Date,
+                                      detail::PostgresDateArg(0, fcinfo))}},
       fcinfo);
 }
 

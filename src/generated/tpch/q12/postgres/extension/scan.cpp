@@ -118,17 +118,24 @@ namespace core = accelerator_codegen::aux_state::core;
 
 namespace {
 
+// SQL NULL arguments reach the module as NULL values.
 void ExecutePostgresTpchQ12(FunctionCallInfo fcinfo) {
   detail::Q12Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(0))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(1))),
-                            core::AuxValue::Of(
-                                core::AuxType::Date,
-                                detail::PostgresDateArg(2, fcinfo))}},
+      core::QueryArguments{{PG_ARGISNULL(0)
+                                ? core::AuxValue::Null(core::AuxType::String)
+                                : core::AuxValue::Of(
+                                      core::AuxType::String,
+                                      detail::TextDatum(PG_GETARG_DATUM(0))),
+                            PG_ARGISNULL(1)
+                                ? core::AuxValue::Null(core::AuxType::String)
+                                : core::AuxValue::Of(
+                                      core::AuxType::String,
+                                      detail::TextDatum(PG_GETARG_DATUM(1))),
+                            PG_ARGISNULL(2)
+                                ? core::AuxValue::Null(core::AuxType::Date)
+                                : core::AuxValue::Of(
+                                      core::AuxType::Date,
+                                      detail::PostgresDateArg(2, fcinfo))}},
       fcinfo);
 }
 
