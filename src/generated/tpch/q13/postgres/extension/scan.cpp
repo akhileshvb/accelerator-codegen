@@ -71,8 +71,11 @@ namespace {
 
 void ExecutePostgresTpchQ13(FunctionCallInfo fcinfo) {
   detail::Q13Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-          core::AuxType::String, detail::TextDatum(PG_GETARG_DATUM(0)))}},
+      core::QueryArguments{{PG_ARGISNULL(0)
+                                ? core::AuxValue::Null(core::AuxType::String)
+                                : core::AuxValue::Of(
+                                      core::AuxType::String,
+                                      detail::TextDatum(PG_GETARG_DATUM(0)))}},
       fcinfo);
 }
 

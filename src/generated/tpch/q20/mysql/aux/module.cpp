@@ -389,16 +389,6 @@ public:
     }
     edited_.clear();
   }
-  // Bulk build: encode and drop a block as soon as it is complete enough that
-  // the caller says so (keeps raw 12 B/line buffers from outliving the build).
-  void FlushOne(int64_t bi) {
-    auto it = edited_.find(bi);
-    if (it == edited_.end())
-      return;
-    state_.blocks.Mutable(bi) = EncodeBlock(it->second);
-    edited_.erase(it);
-  }
-
 private:
   TpchQ20State &state_;
   std::map<int64_t, RawBlock> edited_;

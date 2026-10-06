@@ -128,15 +128,16 @@ namespace {
 
 void ExecutePostgresTpchQ20(FunctionCallInfo fcinfo) {
   detail::Q20Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::Date,
-                                detail::PostgresDateArg(0, fcinfo)),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(1))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(2)))}},
+      core::QueryArguments{
+          {PG_ARGISNULL(0) ? core::AuxValue::Null(core::AuxType::Date)
+                           : core::AuxValue::Of(core::AuxType::Date,
+                                                detail::PostgresDateArg(0, fcinfo)),
+           PG_ARGISNULL(1) ? core::AuxValue::Null(core::AuxType::String)
+                           : core::AuxValue::Of(core::AuxType::String,
+                                                detail::TextDatum(PG_GETARG_DATUM(1))),
+           PG_ARGISNULL(2) ? core::AuxValue::Null(core::AuxType::String)
+                           : core::AuxValue::Of(core::AuxType::String,
+                                                detail::TextDatum(PG_GETARG_DATUM(2)))}},
       fcinfo);
 }
 
