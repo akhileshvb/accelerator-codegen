@@ -23,7 +23,8 @@ namespace scans {
 void ScanTpchQ5Regions(
     const std::function<void(const query::TpchQ5RegionInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT r_regionkey, r_name FROM region",
+      "SELECT r_regionkey, r_name FROM region "
+      "WHERE r_regionkey IS NOT NULL AND r_name IS NOT NULL",
       [&](const std::vector<std::string> &cols) {
         consumer({static_cast<int32_t>(TypedInt(cols, 0)),
                   TypedText(cols, 1)});
@@ -33,18 +34,24 @@ void ScanTpchQ5Regions(
 void ScanTpchQ5Nations(
     const std::function<void(const query::TpchQ5NationInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT n_nationkey, n_name, n_regionkey FROM nation",
+      "SELECT n_nationkey, n_name, n_regionkey, "
+      "CASE WHEN n_name IS NULL THEN 1 ELSE 0 END, "
+      "CASE WHEN n_regionkey IS NULL THEN 1 ELSE 0 END "
+      "FROM nation WHERE n_nationkey IS NOT NULL",
       [&](const std::vector<std::string> &cols) {
         consumer({static_cast<int32_t>(TypedInt(cols, 0)),
                   TypedText(cols, 1),
-                  static_cast<int32_t>(TypedInt(cols, 2))});
+                  static_cast<int32_t>(TypedInt(cols, 2)),
+                  TypedInt(cols, 3) != 0,
+                  TypedInt(cols, 4) != 0});
       });
 }
 
 void ScanTpchQ5Customers(
     const std::function<void(const query::TpchQ5CustomerInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT c_custkey, c_nationkey FROM customer",
+      "SELECT c_custkey, c_nationkey FROM customer "
+      "WHERE c_custkey IS NOT NULL AND c_nationkey IS NOT NULL",
       [&](const std::vector<std::string> &cols) {
         consumer({TypedInt(cols, 0),
                   static_cast<int32_t>(TypedInt(cols, 1))});
@@ -54,17 +61,24 @@ void ScanTpchQ5Customers(
 void ScanTpchQ5Suppliers(
     const std::function<void(const query::TpchQ5SupplierInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT s_suppkey, s_nationkey FROM supplier",
+      "SELECT s_suppkey, s_nationkey FROM supplier "
+      "WHERE s_suppkey IS NOT NULL AND s_nationkey IS NOT NULL",
       [&](const std::vector<std::string> &cols) {
         consumer({TypedInt(cols, 0),
                   static_cast<int32_t>(TypedInt(cols, 1))});
       });
 }
 
+// Orders that can join: NULL custkey / orderdate never reach the revenue sum.
+const char kOrdersSql[] =
+    "SELECT o_orderkey, o_custkey, o_orderdate FROM orders "
+    "WHERE o_orderkey IS NOT NULL AND o_custkey IS NOT NULL "
+    "AND o_orderdate IS NOT NULL";
+
 void ScanTpchQ5Orders(
     const std::function<void(const query::TpchQ5OrderInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT o_orderkey, o_custkey, o_orderdate FROM orders",
+      kOrdersSql,
       [&](const std::vector<std::string> &cols) {
         consumer({TypedInt(cols, 0),
                   TypedInt(cols, 1),
@@ -72,16 +86,57 @@ void ScanTpchQ5Orders(
       });
 }
 
+// Lineitems that reach the SUM; price and discount as exact cents.
+const char kLineitemsSql[] =
+    "SELECT l_orderkey, l_suppkey, CAST(l_extendedprice * 100 AS SIGNED), "
+    "CAST(l_discount * 100 AS SIGNED) FROM lineitem "
+    "WHERE l_orderkey IS NOT NULL AND l_suppkey IS NOT NULL "
+    "AND l_extendedprice IS NOT NULL AND l_discount IS NOT NULL";
+
 void ScanTpchQ5Lineitems(
     const std::function<void(const query::TpchQ5LineitemInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT l_orderkey, l_suppkey, l_extendedprice, l_discount FROM lineitem",
+      kLineitemsSql,
       [&](const std::vector<std::string> &cols) {
         consumer({TypedInt(cols, 0),
                   TypedInt(cols, 1),
-                  TypedDecimalRaw(cols, 2), 2,
-                  TypedDecimalRaw(cols, 3), 2});
+                  TypedInt(cols, 2), 2,
+                  TypedInt(cols, 3), 2});
       });
+}
+
+// Index lookups (keys go in batches).
+template <typename Consumer>
+void LookupBatches(const std::string &base_sql, const char *key_column,
+                   const std::vector<int64_t> &keys, Consumer &&scan_batch) {
+  constexpr std::size_t kBatch = 4096;
+  for (std::size_t from = 0; from < keys.size(); from += kBatch) {
+    const std::vector<int64_t> batch(
+        keys.begin() + from,
+        keys.begin() + std::min(keys.size(), from + kBatch));
+    scan_batch(base_sql + " AND " + KeyListPredicate(key_column, batch));
+  }
+}
+
+void LookupTpchQ5Lineitems(
+    const char *key_column, const std::vector<int64_t> &keys,
+    const std::function<void(const query::TpchQ5LineitemInput &)> &consumer) {
+  LookupBatches(kLineitemsSql, key_column, keys, [&](const std::string &sql) {
+    ScanTypedTuples(sql, [&](const std::vector<std::string> &cols) {
+      consumer({TypedInt(cols, 0), TypedInt(cols, 1), TypedInt(cols, 2), 2,
+                TypedInt(cols, 3), 2});
+    });
+  });
+}
+
+void LookupTpchQ5OrdersByCustomer(
+    const std::vector<int64_t> &custkeys,
+    const std::function<void(const query::TpchQ5OrderInput &)> &consumer) {
+  LookupBatches(kOrdersSql, "o_custkey", custkeys, [&](const std::string &sql) {
+    ScanTypedTuples(sql, [&](const std::vector<std::string> &cols) {
+      consumer({TypedInt(cols, 0), TypedInt(cols, 1), TypedDate(cols, 2)});
+    });
+  });
 }
 
 } // namespace scans
@@ -117,6 +172,24 @@ public:
       const std::function<void(const query::TpchQ5LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ5Lineitems(consumer);
+  }
+  void LookupLineitemsByOrder(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(const query::TpchQ5LineitemInput &)> &consumer)
+      override {
+    scans::LookupTpchQ5Lineitems("l_orderkey", orderkeys, consumer);
+  }
+  void LookupLineitemsBySupplier(
+      const std::vector<int64_t> &suppkeys,
+      const std::function<void(const query::TpchQ5LineitemInput &)> &consumer)
+      override {
+    scans::LookupTpchQ5Lineitems("l_suppkey", suppkeys, consumer);
+  }
+  void LookupOrdersByCustomer(
+      const std::vector<int64_t> &custkeys,
+      const std::function<void(const query::TpchQ5OrderInput &)> &consumer)
+      override {
+    scans::LookupTpchQ5OrdersByCustomer(custkeys, consumer);
   }
 };
 
