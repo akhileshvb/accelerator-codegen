@@ -5,7 +5,7 @@
 // query in the UDF registry (runtime.hpp) by name:
 //
 //   #include "mysql/udf_shim.hpp"
-//   ACCEL_MYSQL_QUERY_UDF(mysql_accel_tpch_q1_aux)
+//   ACCEL_MYSQL_QUERY_UDF(mysql_accel_<query>_aux)
 #pragma once
 
 #include "accelerator_codegen/mysql/plugin_minimal.h"
