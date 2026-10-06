@@ -70,6 +70,8 @@ Read `taxonomy_index.md` first; open `aux_state_taxonomy.md` and `aux_state_desi
 
 Keep prose fields concise (≤3 sentences each unless schema requires lists).
 
+**Generality in the design (required):** for the selected candidate, list in `fallback_conditions`/`notes` (a) each template parameter and how an arbitrary value (incl. NULL, off-domain) is answered exactly and fast when not precomputed, (b) key/offset width and capacity at SF1000+, (c) bytes/row estimate and chosen `core/` primitives (`core/README.md` "Which one to use"), (d) per-write cost for each mutation. Reject candidates that need a parameter-domain enumeration, narrow key packing, or whole-state copy/rebuild per write.
+
 ### 5. Performance hypotheses
 
 Maintenance fan-out, likely actions, initial cost model, eligibility rules, speedup plan — hypotheses only.

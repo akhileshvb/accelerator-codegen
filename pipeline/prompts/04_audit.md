@@ -18,7 +18,8 @@ Gate summaries on disk: `{{artifacts_path}}/gates/` — read `baseline.json`, `p
 4. Fused kernels: `pre_scan_us` may include aggregation unless `num_aggregate_us` is separate — check aggregation share before blaming scan.
 5. Aux: rebuild paths must resync, not invalidate-only, when rebuild is selected.
 6. `request_gate` with `fairness`{{audit_gate_suffix}}.
-7. Write `{{artifacts_path}}/final_audit.md` (10-section report).
+7. Check `hard_guidelines.md` §4 (exact for any parameter value incl. NULL, off-spec data, 64-bit keys) where it applies to this kernel.
+8. Write `{{artifacts_path}}/final_audit.md` (10-section report).
 
 Read-only code changes only for clear fairness bugs.
 

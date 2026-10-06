@@ -22,6 +22,8 @@ Read the workload `reference_sql_path` (tar placeholders / materialized seeds) *
    - One mutation path that changes results (update watched column → republish → re-execute).
    - Hot path and fallback must agree when both are reachable (same args / same expected rows).
 
+   - Off-spec generality cases (`hard_guidelines.md` §4): NULL/odd parameter values, off-range rows, wide and negative keys.
+
 4. **Comment each case with the SQL clause it exercises**
    - Example: `// p_type NOT LIKE 'SMALL%': MED BOX survives`.
 

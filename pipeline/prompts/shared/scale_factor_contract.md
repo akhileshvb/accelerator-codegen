@@ -8,7 +8,7 @@ The pipeline optimizes on **small datasets for fast feedback**. Production bench
 |------|------------|-----------|------------------|
 | **Iteration (SF1)** | `ACCEL_TPCH_DB` / `tpch_sf1` | Correctness, baseline, profile, aux write-freq sweeps, A/B quick benchmarks | Primary optimization signal during the pipeline — fast turnarounds |
 | **Scale check (SF10)** | `scale_db` / `tpch_sf10` | `sf10` gate after optimization + audit | Catches sizing blowups, state that only fits SF1, benchmark crashes at 10× rows |
-| **Production target (SF20+)** | optional `tpch_sf20` (manual / out-of-pipeline) | Final validated benchmarking outside rapid iteration | **Design target** — algorithms and memory must scale here even though the pipeline rarely runs it |
+| **Production target (SF1000+ for key/memory sizing; SF20+ benchmarked)** | optional `tpch_sf20` (manual / out-of-pipeline) | Final validated benchmarking outside rapid iteration | **Design target** — algorithms, key widths and memory must scale here even though the pipeline rarely runs it |
 
 **Rule:** A technique that wins on SF1 but uses SF1-hardcoded capacities, full-domain scans sized for SF1, or structures with superlinear growth in table cardinality is **not acceptable**, even if SF1 gates pass. Agents must design for **high speedups at high SF**, not merely “doesn’t crash.”
 
@@ -19,7 +19,7 @@ SEC workloads use **SF3** as both iteration and production scale in this repo (`
 ## Sizing rules (all benchmarks)
 
 1. **Bind-time sizing** — derive capacities from `row_estimate`, `GetNativeScanTableRowCount`, or query-specific bind parameters. Never hardcode `150000`, `6000000`, or other SF1 cardinalities in production paths.
-2. **Sparse / dense tradeoffs** — prefer dense direct indexing only when the key domain is bounded by bind metadata; use hash maps or two-level structures when distinct counts scale with data.
+2. **Sparse / dense tradeoffs** — prefer dense direct indexing only when the key domain is bounded by bind metadata *and* keys are known non-negative and small; use chunked/sparse structures (`AnyKeyCowArray`, `FlatHashMap`, ...) when distinct counts scale with data or keys can be large/negative. Keys are 64-bit; no fixed-width packing, no fixed dense caps (see `hard_guidelines.md` §4).
 3. **Avoid full-domain finalization** — do not iterate fixed slots sized for SF1 maxima when qualifying groups are sparse at SF20.
 4. **Aux-state partitions** — partition count and per-partition payload must scale with query window and mutation locality, not total SF1 table size. Read paths must stay bounded to the query window at any scale.
 5. **Maintenance locality** — bulk refresh and point writes should scale with touched data / local partitions, not always full rebuilds.
@@ -31,7 +31,9 @@ SEC workloads use **SF3** as both iteration and production scale in this repo (`
 | SF1-only win | Fails at SF20 because |
 |--------------|----------------------|
 | `std::vector` sized to SF1 max groups | Memory and cache blow up |
-| Per-row `unordered_map<std::string,…>` | Probe cost dominates at scale |
+| Per-row `unordered_map<std::string,…>` / node-based maps | Memory (tens of B/row overhead) and probe cost dominate at scale; use columnar `core/` primitives |
+| 32-bit keys/offsets, bit-packed ids, fixed dense caps | Silent overflow / collisions at SF1000 (orderkey ~6e9) |
+| Copy whole state per write batch / transient build copies | O(state) per write, 2-5x peak memory |
 | Scan all partition slots / all groups | Read cost ∝ total state, not query window |
 | Micro-opts on cold paths | Noise at SF1; dominant cost shifts to scan/aggregate at scale |
 | Full rebuild on every point write | Write amplification destroys mixed workloads at scale |

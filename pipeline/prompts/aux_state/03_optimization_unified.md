@@ -21,6 +21,7 @@ Work like a **Cursor agent** doing performance engineering on **two equal axes**
      `read_only^0.75 * write_mix^0.25` (read weighs more; write still moves the gate).
      Prefer **ApplyDelta / partition-local** maintenance over **RebuildAll on every point write**.
      A design that is fast at 0% but collapses under write load is **incomplete** — the dual-axis score will reject pure read wins that deepen the write cliff.
+4b. **Optimizations must not trade away generality** (`hard_guidelines.md` §4): no narrowing keys/offsets, enumerating parameter values, double arithmetic, per-row heap objects, or whole-state copies/rebuilds per write to win a benchmark. Re-run the param/off-spec differential after structural changes.
 5. **Honor measured A/B** — never keep/yield a change that regresses the dual-axis score vs `scoreboard.best_valid_score`. When read is already strong and write-mix workload is ≪1×, **prefer a maintenance hypothesis** over further ≤5% read micro-opts.
 6. **Few turns** — hypothesize, implement with `write_file` / `apply_patch`, then `HYPOTHESIS_PATCH_COMPLETE`.
 7. **Custom profiling required for phase breakdown** — invent whatever timers/counts help; getenv(`ACCEL_AUX_CUSTOM_PROFILE`) + `ACCEL_CUSTOM_PROFILE {json}` with **phase + us + work counts**; no-op when unset. Remeasure after every accept/restore (`freshness.stale`). Own shell/scripts for ad-hoc profiling are fine.

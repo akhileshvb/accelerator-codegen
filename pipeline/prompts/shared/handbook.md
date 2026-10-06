@@ -2,7 +2,7 @@
 
 ## dense_direct_index
 
-Use when: integer keys, bounded domain, hash probe dominates.
+Use when: integer keys, bounded domain (known at bind time, non-negative, within a sane cap), hash probe dominates; otherwise use sparse `core/` primitives.
 
 Prior successes: Q3, Q9, Q12, Q14.
 
@@ -18,7 +18,8 @@ Prior successes: Q4, Q9.
 
 ## Anti-patterns (retry only with different measured profile)
 
-- `unordered_map` for dense bounded domains
+- `unordered_map` for dense bounded domains (and node-based maps / per-row `std::string` anywhere: use `core/` columnar primitives)
+- Narrow key packing (32-bit keys, bit-fields, fixed dense caps) and per-call rebuild for un-precomputed parameters
 - SF1-hardcoded capacities
 - Full-domain finalization scans
 - Ambient env vars on production path
