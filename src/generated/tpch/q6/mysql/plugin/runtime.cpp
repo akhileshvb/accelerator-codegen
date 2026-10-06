@@ -6,6 +6,9 @@
 
 #include "mysql/runtime.hpp"
 
+#include <stdexcept>
+
+#include "accelerator_codegen/stateful/core/decimal_text_g1.hpp"
 #include "accelerator_codegen/stateful/mysql/mysql_tpch_table_ids.hpp"
 #include "tpch/q6/mysql/aux/module.hpp"
 #include "tpch/q6/layout.hpp"
@@ -32,6 +35,30 @@ void ScanTpchQ6Lineitems(
       });
 }
 
+// One SQL GROUP BY: the engine aggregates, the process receives one row per
+// (shipdate, discount, quantity) cell with the exact revenue sum (text).
+void ScanTpchQ6CellAggregates(
+    const std::function<void(const query::TpchQ6CellAggregate &)> &consumer) {
+  namespace dec = accelerator_codegen::aux_state::core::decimal_text;
+  ScanTypedTuples(
+      "SELECT l_shipdate, l_discount, l_quantity, count(*), "
+      "sum(l_extendedprice * l_discount) FROM lineitem "
+      "GROUP BY l_shipdate, l_discount, l_quantity",
+      [&](const std::vector<std::string> &cols) {
+        query::TpchQ6CellAggregate cell;
+        cell.shipdate_days = TypedDate(cols, 0);
+        __int128 discount = 0, quantity = 0;
+        if (!dec::Parse(TypedText(cols, 1), 2, discount) ||
+            !dec::Parse(TypedText(cols, 2), 2, quantity) ||
+            !dec::Parse(TypedText(cols, 4), 4, cell.revenue_raw))
+          throw std::runtime_error("TPC-H Q6: unparsable decimal");
+        cell.discount_raw = static_cast<int64_t>(discount);
+        cell.quantity_raw = static_cast<int64_t>(quantity);
+        cell.count = TypedInt(cols, 3);
+        consumer(cell);
+      });
+}
+
 } // namespace scans
 
 class TpchQ6Scan final : public query::TpchQ6InitialScan {
@@ -40,6 +67,11 @@ public:
       const std::function<void(const query::TpchQ6LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ6Lineitems(consumer);
+  }
+  void ScanCellAggregates(
+      const std::function<void(const query::TpchQ6CellAggregate &)> &consumer)
+      override {
+    scans::ScanTpchQ6CellAggregates(consumer);
   }
 };
 
@@ -60,7 +92,7 @@ std::string ExecuteQuery(const core::QueryArguments &arguments) {
 } // namespace
 
 static const MysqlUdfRegistrar kRegisterQ6Udf(MysqlUdfEntry{
-    "mysql_accel_tpch_q6_aux", "dff", &ExecuteQuery});
+    "mysql_accel_tpch_q6_aux", "dnn", &ExecuteQuery});
 
 } // namespace accelerator_codegen::aux_state::engine::mysql
 

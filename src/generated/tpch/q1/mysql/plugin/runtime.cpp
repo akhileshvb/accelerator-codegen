@@ -6,6 +6,9 @@
 
 #include "mysql/runtime.hpp"
 
+#include <stdexcept>
+
+#include "accelerator_codegen/stateful/core/decimal_text_g1.hpp"
 #include "accelerator_codegen/stateful/mysql/mysql_tpch_table_ids.hpp"
 #include "tpch/q1/mysql/aux/module.hpp"
 #include "tpch/q1/layout.hpp"
@@ -36,6 +39,37 @@ void ScanTpchQ1Lineitems(
       });
 }
 
+// One SQL GROUP BY: the engine aggregates, the process receives one row per
+// (shipdate, returnflag, linestatus) cell with exact DECIMAL sums (text).
+void ScanTpchQ1DayGroupAggregates(
+    const std::function<void(const query::TpchQ1DayGroupAggregate &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT l_shipdate, l_returnflag, l_linestatus, count(*), "
+      "sum(l_quantity), sum(l_extendedprice), sum(l_discount), "
+      "sum(l_extendedprice * (1 - l_discount)), "
+      "sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) "
+      "FROM lineitem GROUP BY l_shipdate, l_returnflag, l_linestatus",
+      [&](const std::vector<std::string> &cols) {
+        query::TpchQ1DayGroupAggregate agg;
+        agg.shipdate_days = TypedDate(cols, 0);
+        agg.returnflag = TypedChar(cols, 1);
+        agg.linestatus = TypedChar(cols, 2);
+        agg.count = TypedInt(cols, 3);
+        const auto sum = [&](int attribute, int scale) {
+          __int128 value = 0;
+          if (!core::decimal_text::Parse(TypedText(cols, attribute), scale, value))
+            throw std::runtime_error("TPC-H Q1: unparsable decimal aggregate");
+          return value;
+        };
+        agg.sum_qty_raw = sum(4, 2);
+        agg.sum_base_price_raw = sum(5, 2);
+        agg.sum_discount_raw = sum(6, 2);
+        agg.sum_disc_price_raw = sum(7, 4);
+        agg.sum_charge_raw = sum(8, 6);
+        consumer(agg);
+      });
+}
+
 } // namespace scans
 
 class TpchQ1Scan final : public query::TpchQ1InitialScan {
@@ -44,6 +78,11 @@ public:
       const std::function<void(const query::TpchQ1LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ1Lineitems(consumer);
+  }
+  void ScanDayGroupAggregates(
+      const std::function<void(const query::TpchQ1DayGroupAggregate &)>
+          &consumer) override {
+    scans::ScanTpchQ1DayGroupAggregates(consumer);
   }
 };
 
