@@ -13,7 +13,7 @@
 #include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
 #include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/g5_keyed_string_column.hpp"
+#include "accelerator_codegen/stateful/core/keyed_string_column.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 

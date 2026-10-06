@@ -9,7 +9,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/cow_fenwick_g1.hpp"
+#include "accelerator_codegen/stateful/core/cow_fenwick.hpp"
 #include "tpch/q14/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
