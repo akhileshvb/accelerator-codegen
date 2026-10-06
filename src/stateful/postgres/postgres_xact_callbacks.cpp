@@ -2,7 +2,6 @@
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
 #include "accelerator_codegen/stateful/postgres/aux_sync.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
-#include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
 #include "accelerator_codegen/stateful/postgres/snapshot_token.hpp"
 
 #include <algorithm>
@@ -211,15 +210,7 @@ void UnregisterPostgresMutationBackend(PostgresAuxBackend *backend) {
   }
 }
 
-void DispatchPostgresMutation(const char *relname,
-                              const core::MutationBatch &mutation) {
-  core::MutationBatch batch = mutation;
-  if (relname && *relname) {
-    const auto id = tpch_tables::IdFromRelname(relname);
-    if (id != 0) {
-      batch.table = id;
-    }
-  }
+void DispatchPostgresMutation(const core::MutationBatch &batch) {
 
   std::vector<PostgresAuxBackend *> backends;
   {

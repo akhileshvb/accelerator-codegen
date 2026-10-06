@@ -7,7 +7,7 @@
 #include "tpch/q12/layout.hpp"
 
 
-#include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
+#include "tpch/postgres_tpch_table_ids.hpp"
 #include "postgres/engine_runtime.hpp"
 #include "postgres/runtime.hpp"
 

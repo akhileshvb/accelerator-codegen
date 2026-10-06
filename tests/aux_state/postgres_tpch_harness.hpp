@@ -21,6 +21,7 @@
 
 #include "accelerator_codegen/engine_backend/postgres_tooling.hpp"
 #include "catalog/postgres/query_catalog.hpp"
+#include "tpch/postgres_tpch_table_ids.hpp"
 
 namespace accel::postgres::tpch_harness {
 
@@ -363,8 +364,8 @@ inline void EnsureMutationTriggers(const Tools &tools) {
                      ", 'accel_postgres_get_last_maintenance_action' LANGUAGE C STRICT"),
           "install last-maintenance helper failed");
 
-  // One statement-level trigger set per TPC-H table. Table ids come from
-  // relname (postgres_tpch_table_ids.hpp), not trigger arguments.
+  // One statement-level trigger set per TPC-H table. Each trigger passes
+  // its table id (tpch/postgres_tpch_table_ids.hpp) as the argument.
   Require(
       RunSQL(tools,
              "DO $$ DECLARE r record; BEGIN "
@@ -382,22 +383,25 @@ inline void EnsureMutationTriggers(const Tools &tools) {
   const char *tables[] = {"lineitem", "orders",  "customer", "part",
                           "partsupp", "supplier", "nation",   "region"};
   for (const char *t : tables) {
+    const std::string id = std::to_string(
+        accelerator_codegen::aux_state::engine::postgres::tpch_tables::
+            IdFromRelname(t));
     std::string sql = std::string(
                           "DO $$ BEGIN "
                           "EXECUTE format('CREATE TRIGGER accel_tpch_%s_i AFTER INSERT ON %I "
                           "REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT "
-                          "EXECUTE FUNCTION accel_aux_capture_transition()', '") +
+                          "EXECUTE FUNCTION accel_aux_capture_transition(''" + id + "'')', '") +
                       t + "', '" + t +
                       "'); "
                       "EXECUTE format('CREATE TRIGGER accel_tpch_%s_d AFTER DELETE ON %I "
                       "REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT "
-                      "EXECUTE FUNCTION accel_aux_capture_transition()', '" +
+                      "EXECUTE FUNCTION accel_aux_capture_transition(''" + id + "'')', '" +
                       t + "', '" + t +
                       "'); "
                       "EXECUTE format('CREATE TRIGGER accel_tpch_%s_u AFTER UPDATE ON %I "
                       "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows "
                       "FOR EACH STATEMENT "
-                      "EXECUTE FUNCTION accel_aux_capture_transition()', '" +
+                      "EXECUTE FUNCTION accel_aux_capture_transition(''" + id + "'')', '" +
                       t + "', '" + t + "'); END $$";
     Require(RunSQL(tools, sql), std::string("install statement trigger failed for ") + t);
   }

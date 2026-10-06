@@ -51,10 +51,10 @@ psql_cmd -d "$DB" -c "LOAD '${EXTENSION_SO}';" || {
 echo "=== registering TPC-H accelerator SQL functions ==="
 psql_cmd -d "$DB" -f "${ROOT}/scripts/postgres_register_tpch_all.sql"
 
-if [[ -f "${ROOT}/scripts/postgres_accel_mutation_triggers.sql" ]]; then
+if [[ -f "${ROOT}/scripts/postgres_tpch_mutation_triggers.sql" ]]; then
   echo "=== creating mutation capture triggers ==="
   # Trigger SQL may reference functions; ignore if not yet registered for this host.
-  psql_cmd -d "$DB" -f "${ROOT}/scripts/postgres_accel_mutation_triggers.sql" || true
+  psql_cmd -d "$DB" -f "${ROOT}/scripts/postgres_tpch_mutation_triggers.sql" || true
 fi
 
 echo "=== TPC-H PostgreSQL test database ready: $DB (native storage) ==="

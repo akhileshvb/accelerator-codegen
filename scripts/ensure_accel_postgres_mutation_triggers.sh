@@ -69,4 +69,4 @@ if [[ "${trigger_count}" -gt 0 ]]; then
 else
   echo "installing mutation capture triggers on ${DB}"
 fi
-psql_cmd -f "${ROOT}/scripts/postgres_accel_mutation_triggers.sql"
+psql_cmd -f "${ROOT}/scripts/postgres_tpch_mutation_triggers.sql"

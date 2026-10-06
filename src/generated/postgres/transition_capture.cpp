@@ -28,7 +28,6 @@ extern "C" {
 
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
-#include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_xact_callbacks.hpp"
 #include "accelerator_codegen/stateful/postgres/aux_sync.hpp"
 
@@ -240,13 +239,8 @@ std::vector<ColumnId> UpdatedColumnsForProjection(
 }
 
 TableId TableIdFromTrigger(const TriggerData *trigger_data) {
-  const char *relname = RelationGetRelationName(trigger_data->tg_relation);
-  const auto canonical =
-      accelerator_codegen::aux_state::engine::postgres::tpch_tables::
-          IdFromRelname(relname ? relname : "");
-  if (canonical != 0) {
-    return canonical;
-  }
+  // The trigger names the table id the query modules use in Dependencies().
+  // Without an argument fall back to the relation OID.
   const auto *trigger = trigger_data->tg_trigger;
   if (trigger && trigger->tgnargs > 0 && trigger->tgargs &&
       trigger->tgargs[0] && trigger->tgargs[0][0] != '\0') {

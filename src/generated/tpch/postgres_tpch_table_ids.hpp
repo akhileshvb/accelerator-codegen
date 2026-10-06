@@ -1,4 +1,7 @@
-// Canonical TPC-H table ids for Postgres mutation capture ↔ module configs.
+// TPC-H table-id vocabulary for the per-query Postgres modules
+// (src/generated/tpch/q<N>/postgres/**), which name their tables in
+// Dependencies(). The generic Postgres host layer does not use it: the capture
+// trigger passes the table id as its argument (scripts/postgres_tpch_mutation_triggers.sql).
 #pragma once
 
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
