@@ -6,6 +6,9 @@
 
 #include "mysql/runtime.hpp"
 
+#include <stdexcept>
+
+#include "accelerator_codegen/stateful/core/decimal_text_g1.hpp"
 #include "accelerator_codegen/stateful/mysql/mysql_tpch_table_ids.hpp"
 #include "tpch/q19/mysql/aux/module.hpp"
 
@@ -31,32 +34,60 @@ void ScanTpchQ19Parts(
       });
 }
 
-void ScanTpchQ19Lineitems(
-    const std::function<void(const query::TpchQ19LineitemInput &)> &consumer) {
+// lineitem JOIN part with the shipping predicate and family classification
+// applied and grouped in the engine: one row per (brand, family, quantity)
+// with exact decimal sums (text). Comparisons follow the columns' collation.
+void ScanTpchQ19GroupAggregates(
+    const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer) {
+  namespace dec = accelerator_codegen::aux_state::core::decimal_text;
+  const std::string family = query::TpchQ19FamilySql();
   ScanTypedTuples(
-      "SELECT l_partkey, l_quantity, l_extendedprice, l_discount, l_shipmode, "
-      "l_shipinstruct FROM lineitem",
+      "SELECT p_brand, " + family +
+          " AS fam, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
+          "count(*) FROM lineitem, part WHERE l_partkey = p_partkey AND " +
+          query::TpchQ19ShippingSql() + " AND " + family +
+          " IS NOT NULL GROUP BY p_brand, fam, l_quantity",
       [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedDecimalRaw(cols, 1),
-                  TypedDecimalRaw(cols, 2),
-                  TypedDecimalRaw(cols, 3),
-                  TypedText(cols, 4),
-                  TypedText(cols, 5)});
+        query::TpchQ19GroupAggregate agg;
+        agg.brand = TypedText(cols, 0);
+        agg.family = static_cast<int>(TypedInt(cols, 1));
+        __int128 quantity = 0;
+        if (!dec::Parse(TypedText(cols, 2), 2, quantity) ||
+            !dec::Parse(TypedText(cols, 3), 4, agg.revenue_raw))
+          throw std::runtime_error("TPC-H Q19: unparsable decimal");
+        agg.quantity_raw = static_cast<int64_t>(quantity);
+        agg.count = TypedInt(cols, 4);
+        consumer(agg);
       });
 }
 
-bool LookupTpchQ19Part(int64_t partkey, query::TpchQ19PartInput &out) {
-  bool found = false;
-  const std::string sql =
-      "SELECT p_brand, p_container, p_size FROM part WHERE p_partkey = " +
-      std::to_string(partkey);
-  ScanTypedTuples(sql, [&](const std::vector<std::string> &cols) {
-    out = {partkey, TypedText(cols, 0), TypedText(cols, 1),
-           static_cast<int32_t>(TypedInt(cols, 2))};
-    found = true;
-  });
-  return found;
+// Point re-aggregation of the given parts' qualifying lineitems (the schema
+// has no l_partkey index: this is a table scan on MySQL).
+void ScanTpchQ19PartQuantityRevenue(
+    const std::vector<int64_t> &partkeys,
+    const std::function<void(const query::TpchQ19PartQuantityRevenue &)>
+        &consumer) {
+  namespace dec = accelerator_codegen::aux_state::core::decimal_text;
+  if (partkeys.empty())
+    return;
+  std::string keys;
+  for (const auto key : partkeys)
+    keys += (keys.empty() ? "" : ",") + std::to_string(key);
+  ScanTypedTuples(
+      "SELECT l_partkey, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
+      "count(*) FROM lineitem WHERE l_partkey IN (" + keys + ") AND " +
+          query::TpchQ19ShippingSql() + " GROUP BY l_partkey, l_quantity",
+      [&](const std::vector<std::string> &cols) {
+        query::TpchQ19PartQuantityRevenue row;
+        row.partkey = TypedInt(cols, 0);
+        __int128 quantity = 0;
+        if (!dec::Parse(TypedText(cols, 1), 2, quantity) ||
+            !dec::Parse(TypedText(cols, 2), 4, row.revenue_raw))
+          throw std::runtime_error("TPC-H Q19: unparsable decimal");
+        row.quantity_raw = static_cast<int64_t>(quantity);
+        row.count = TypedInt(cols, 3);
+        consumer(row);
+      });
 }
 
 } // namespace scans
@@ -68,13 +99,16 @@ public:
       override {
     scans::ScanTpchQ19Parts(consumer);
   }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ19LineitemInput &)> &consumer)
+  void ScanGroupAggregates(
+      const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer)
       override {
-    scans::ScanTpchQ19Lineitems(consumer);
+    scans::ScanTpchQ19GroupAggregates(consumer);
   }
-  bool LookupPart(int64_t partkey, query::TpchQ19PartInput &out) override {
-    return scans::LookupTpchQ19Part(partkey, out);
+  void ScanPartQuantityRevenue(
+      const std::vector<int64_t> &partkeys,
+      const std::function<void(const query::TpchQ19PartQuantityRevenue &)>
+          &consumer) override {
+    scans::ScanTpchQ19PartQuantityRevenue(partkeys, consumer);
   }
 };
 

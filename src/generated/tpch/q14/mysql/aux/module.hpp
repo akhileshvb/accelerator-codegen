@@ -2,18 +2,30 @@
 
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
-#include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/cow_fenwick_g1.hpp"
 #include "tpch/q14/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
+
+// State size and costs (one image, copy-on-write):
+//  * part class: 1 B per part (ChunkedCowArray<uint8_t>, 64 Ki-id chunks;
+//    absent / non-promo / promo) = 20 MB at SF100 (2e7 parts), 200 MB at
+//    SF1000 (2e8 parts). The previous layout (dense array to 16M + an
+//    unordered_map overflow) cost ~40 B per part beyond 16M ids.
+//  * revenue: a Fenwick tree over shipdate days with {total, promo, count}
+//    cells: ~2 x days nodes x 48 B = well under 1 MB, independent of SF.
+// A lineitem insert/delete/update costs O(log days) node clones; a part
+// insert/delete/type change costs one indexed point re-aggregation of that
+// part's lineitems (WHERE l_partkey IN (...) GROUP BY day; PostgreSQL has
+// idx_lineitem_partkey) and O(log days) node updates per affected day.
+// Execute: <= 64 node visits, independent of SF.
 
 struct TpchQ14Config {
   core::TableId part_table = 0;
@@ -25,109 +37,86 @@ struct TpchQ14PartInput {
   std::string type;
 };
 
-struct TpchQ14LineitemInput {
-  int64_t partkey = 0;
-  int64_t extended_price_raw = 0;
-  int32_t extended_price_scale = 2;
-  int64_t discount_raw = 0;
-  int32_t discount_scale = 2;
+// Pre-aggregated (shipdate) revenue of lineitems that join a part, for
+// SQL-pushdown builds. Revenue is sum(price * (1 - discount)) at scale 4.
+struct TpchQ14DayAggregate {
   int32_t shipdate_days = 0;
+  __int128 total_revenue_raw = 0;
+  __int128 promo_revenue_raw = 0;
+  int64_t count = 0;
 };
 
-int32_t TpchQ14MonthKeyFromDays(int32_t days_since_epoch);
+// One part's lineitem revenue on one day (point re-aggregation by partkey).
+struct TpchQ14PartDayRevenue {
+  int64_t partkey = 0;
+  int32_t shipdate_days = 0;
+  __int128 revenue_raw = 0;
+  int64_t count = 0;
+};
 
 class TpchQ14InitialScan {
 public:
   virtual ~TpchQ14InitialScan() = default;
   virtual void ScanParts(
       const std::function<void(const TpchQ14PartInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ14LineitemInput &)> &) = 0;
-  virtual void ScanLineitemsForMonths(
-      const std::set<int32_t> &months,
-      const std::function<void(const TpchQ14LineitemInput &)> &consumer) {
-    ScanLineitems([&](const TpchQ14LineitemInput &input) {
-      if (months.count(TpchQ14MonthKeyFromDays(input.shipdate_days)))
-        consumer(input);
-    });
-  }
+  // lineitem JOIN part GROUP BY shipdate, aggregated in the engine.
+  virtual void ScanDayAggregates(
+      const std::function<void(const TpchQ14DayAggregate &)> &) = 0;
+  // lineitem WHERE l_partkey IN (partkeys) GROUP BY l_partkey, shipdate.
+  virtual void ScanPartDayRevenue(
+      const std::vector<int64_t> &partkeys,
+      const std::function<void(const TpchQ14PartDayRevenue &)> &) = 0;
 };
 
 enum class TpchQ14PromoClass : uint8_t {
-  Absent = 0,
+  Absent = 0,   // no such part: its lineitems do not join
   NonPromo = 1,
   Promo = 2,
 };
 
-struct TpchQ14MonthTotals {
-  int64_t total_revenue_raw = 0;
-  int64_t promo_revenue_raw = 0;
-  int64_t row_count = 0;
-  bool saw_contribution = false;
+// One Fenwick cell: sums over the days it covers.
+struct TpchQ14DayTotals {
+  __int128 total_revenue_raw = 0;
+  __int128 promo_revenue_raw = 0;
+  int64_t count = 0; // joined lineitems (SUM over none is NULL)
 };
 
 struct TpchQ14State {
-  static constexpr int64_t kMaxDensePartkey = 1 << 24; // 16M; SF20 is 4M
-  std::vector<uint8_t> part_promo;
-  std::unordered_map<int64_t, uint8_t> promo_overflow;
-  std::map<int32_t, TpchQ14MonthTotals> month_totals;
+  core::ChunkedCowArray<uint8_t, 16> part_class{0};
+  core::CowFenwick<TpchQ14DayTotals> days;
 
   TpchQ14PromoClass PromoOf(int64_t partkey) const {
-    if (partkey < 0)
-      return TpchQ14PromoClass::Absent;
-    const auto ov = promo_overflow.find(partkey);
-    if (ov != promo_overflow.end())
-      return static_cast<TpchQ14PromoClass>(ov->second);
-    const auto id = static_cast<std::size_t>(partkey);
-    if (id >= part_promo.size())
-      return TpchQ14PromoClass::Absent;
-    return static_cast<TpchQ14PromoClass>(part_promo[id]);
+    return static_cast<TpchQ14PromoClass>(part_class.Get(partkey));
   }
   void SetPromo(int64_t partkey, TpchQ14PromoClass promo) {
-    if (partkey < 0)
-      return;
-    if (partkey >= kMaxDensePartkey) {
-      promo_overflow[partkey] = static_cast<uint8_t>(promo);
-      return;
-    }
-    const auto id = static_cast<std::size_t>(partkey);
-    if (part_promo.size() <= id)
-      part_promo.resize(id + 1, 0);
-    part_promo[id] = static_cast<uint8_t>(promo);
+    part_class.Set(partkey, static_cast<uint8_t>(promo));
   }
+  // Add `sign` x a (revenue, count) contribution of a part of class `promo`
+  // on `day`.
+  void AddRevenue(int32_t day, TpchQ14PromoClass promo, __int128 revenue,
+                  int64_t count);
 };
 
-enum class TpchQ14ImageKind : uint8_t { PartPromo, Month };
-
+// The whole state is one image (partition 0).
 struct TpchQ14StateImage {
-  TpchQ14ImageKind kind = TpchQ14ImageKind::PartPromo;
-  int32_t month = 0;
   std::shared_ptr<const TpchQ14State> state;
 };
 
 struct TpchQ14LineitemDelta {
-  int32_t month = 0;
+  int32_t shipdate_days = 0;
   int64_t partkey = 0;
-  int64_t revenue_raw = 0;
-  bool is_promo = false;
+  __int128 revenue_raw = 0;
   int8_t sign = 0;
 };
 
-std::vector<uint8_t> EncodeTpchQ14PartPromo(const TpchQ14State &);
-std::vector<uint8_t> EncodeTpchQ14Month(int32_t month, const TpchQ14State &);
-bool DecodeTpchQ14PartPromo(const std::vector<uint8_t> &, TpchQ14State &);
-bool DecodeTpchQ14Month(const std::vector<uint8_t> &, int32_t month,
-                        TpchQ14State &);
-bool FindTpchQ14PartPromo(const std::vector<uint8_t> &, int64_t partkey,
-                          TpchQ14PromoClass &);
+// A part row appeared (class Promo / NonPromo) or went away (Absent).
+struct TpchQ14PartEvent {
+  int64_t partkey = 0;
+  TpchQ14PromoClass promo = TpchQ14PromoClass::Absent;
+};
 
 bool TpchQ14IsPromoType(const std::string &type);
-int64_t TpchQ14RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
-                          int64_t discount_raw, int32_t discount_scale);
-int32_t TpchQ14MonthKeyFromDays(int32_t days_since_epoch);
-int32_t TpchQ14DaysFromYmd(int32_t year, unsigned month, unsigned day);
-int32_t TpchQ14AddMonths(int32_t days_since_epoch, int32_t months);
-double TpchQ14FinalizePromoRevenue(const TpchQ14MonthTotals &);
+double TpchQ14FinalizePromoRevenue(const TpchQ14DayTotals &);
 
 class TpchQ14TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -136,13 +125,16 @@ public:
 
   bool RequiresRebuild() const;
   const std::vector<TpchQ14LineitemDelta> &Deltas() const;
+  const std::vector<TpchQ14PartEvent> &PartEvents() const;
   void MarkRebuild();
   void AddDelta(TpchQ14LineitemDelta delta);
+  void AddPartEvent(TpchQ14PartEvent event);
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
   std::vector<TpchQ14LineitemDelta> deltas;
+  std::vector<TpchQ14PartEvent> part_events;
 };
 
 class TpchQ14Module final : public core::AuxQueryModule {
@@ -174,10 +166,10 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ14State BuildState(core::AuxEngineServices &) const;
-  bool LoadMonth(core::AuxEngineServices &, int32_t month,
-                 TpchQ14MonthTotals &) const;
-  void EmitResult(const TpchQ14MonthTotals &, core::AuxRowSink &) const;
+  std::shared_ptr<TpchQ14State> BuildState(core::AuxEngineServices &) const;
+  void Answer(const TpchQ14State &, const core::QueryArguments &,
+              core::AuxRowSink &) const;
+  void EmitResult(const TpchQ14DayTotals &, core::AuxRowSink &) const;
 
   TpchQ14Config config;
   TpchQ14InitialScan *initial_scan = nullptr;

@@ -2,11 +2,8 @@
 
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
-#include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -16,7 +13,15 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-int32_t TpchQ6MonthKeyFromDays(int32_t days_since_epoch);
+// State size (independent of the scale factor): one Fenwick node per touched
+// day-tree node, each a (distinct discount) x (distinct quantity) grid of
+// 24 B cells (int128 revenue + int64 count). TPC-H data: ~2.5k days -> ~5k
+// nodes x (11 x 50 cells) = ~65 MB at any SF, i.e. 0 B/row amortized (a row
+// costs nothing once its cell exists). Dictionaries grow with distinct
+// observed values only (off-spec data adds cells, never drops rows).
+// Per-write cost: O(log days) node clones per changed row (a node is cloned
+// once per write batch). Execute: <= 64 node visits x qualifying cells
+// (<= ~550), independent of SF.
 
 struct TpchQ6Config {
   core::TableId lineitem_table = 0;
@@ -32,59 +37,40 @@ struct TpchQ6LineitemInput {
   int32_t extended_price_scale = 2;
 };
 
+// Pre-aggregated (shipdate, discount, quantity) cell for SQL-pushdown builds.
+struct TpchQ6CellAggregate {
+  int32_t shipdate_days = 0;
+  int64_t discount_raw = 0; // scale 2
+  int64_t quantity_raw = 0; // scale 2
+  int64_t count = 0;
+  ::accelerator_codegen::Q6AccT revenue_raw = 0; // sum(price * discount), scale 4
+};
+
 class TpchQ6InitialScan {
 public:
   virtual ~TpchQ6InitialScan() = default;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ6LineitemInput &)> &) = 0;
-  virtual void ScanLineitemsForMonths(
-      const std::set<int32_t> &month_keys,
-      const std::function<void(const TpchQ6LineitemInput &)> &consumer) {
-    ScanLineitems([&](const TpchQ6LineitemInput &input) {
-      if (month_keys.count(TpchQ6MonthKeyFromDays(input.shipdate_days)))
-        consumer(input);
-    });
-  }
+
+  // GROUP BY (shipdate, discount, quantity) pushed into the engine. The
+  // default aggregates the row scan here; engines override it with one SQL
+  // aggregate (its output is bounded by days x discounts x quantities).
+  virtual void ScanCellAggregates(
+      const std::function<void(const TpchQ6CellAggregate &)> &consumer);
 };
 
-enum class TpchQ6PartitionKind : uint8_t { Day, Month };
-
+// The whole state is one image (partition 0).
 struct TpchQ6StateImage {
-  TpchQ6PartitionKind kind = TpchQ6PartitionKind::Day;
-  int32_t key = 0;
-  std::shared_ptr<const ::accelerator_codegen::Q6RevenueMatrix> matrix;
+  std::shared_ptr<const ::accelerator_codegen::Q6State> state;
 };
 
 struct TpchQ6LineitemDelta {
   int32_t shipdate_days = 0;
-  int32_t month_key = 0;
-  int8_t discount_cent = 0;
-  int64_t quantity_scaled = 0;
-  ::accelerator_codegen::Q6AccT contribution =
-      static_cast<::accelerator_codegen::Q6AccT>(0);
+  int64_t discount_raw = 0;
+  int64_t quantity_raw = 0;
+  ::accelerator_codegen::Q6AccT revenue = 0;
   int8_t sign = 0;
 };
-
-std::vector<uint8_t> EncodeTpchQ6Matrix(const ::accelerator_codegen::Q6RevenueMatrix &);
-bool DecodeTpchQ6Matrix(const std::vector<uint8_t> &,
-                        ::accelerator_codegen::Q6RevenueMatrix &);
-
-int32_t TpchQ6MonthKeyFromDays(int32_t days_since_epoch);
-int32_t TpchQ6StartOfMonthDays(int32_t days_since_epoch);
-int32_t TpchQ6StartOfNextMonthDays(int32_t days_since_epoch);
-int32_t TpchQ6ExclusiveEndDays(int32_t start_days);
-int32_t TpchQ6AddMonths(int32_t days_since_epoch, int32_t months);
-
-struct TpchQ6QueryParams {
-  int32_t start_days = 0;
-  int32_t end_days = 0;
-  int64_t discount_lower_raw = 0;
-  int64_t discount_upper_raw = 0;
-  int64_t quantity_upper_raw = 0;
-};
-
-bool ParseTpchQ6QueryParams(const core::QueryArguments &, TpchQ6QueryParams &);
-core::ScaledDecimal TpchQ6RevenueOutputValue(::accelerator_codegen::Q6AccT raw);
 
 class TpchQ6TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -131,20 +117,12 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  using MatrixLookup =
-      std::unordered_map<core::PartitionId,
-                         std::shared_ptr<const ::accelerator_codegen::Q6RevenueMatrix>>;
-
-  void ApplyLineitemInput(const TpchQ6LineitemInput &input,
-                          std::unordered_map<core::PartitionId,
-                                             ::accelerator_codegen::Q6RevenueMatrix> &matrices) const;
-  ::accelerator_codegen::Q6AccT
-  ComposeRevenue(const MatrixLookup &, const TpchQ6QueryParams &) const;
-  bool LoadMatrices(core::AuxEngineServices &, const TpchQ6QueryParams &,
-                    MatrixLookup &matrices) const;
-  void CollectQueryPartitions(const TpchQ6QueryParams &params,
-                              std::vector<core::PartitionId> &partitions) const;
-  void EmitResult(::accelerator_codegen::Q6AccT revenue,
+  // Aggregate scan -> state (one SQL GROUP BY; no row scan).
+  std::shared_ptr<::accelerator_codegen::Q6State>
+  BuildState(core::AuxEngineServices &) const;
+  void Answer(const ::accelerator_codegen::Q6State &, const core::QueryArguments &,
+              core::AuxRowSink &) const;
+  void EmitResult(const ::accelerator_codegen::Q6Result &,
                   core::AuxRowSink &) const;
 
   TpchQ6Config config;

@@ -1,26 +1,22 @@
 #include "tpch/q14/mysql/aux/module.hpp"
 #include "tpch/q14/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/byte_stream.hpp"
+#include "accelerator_codegen/stateful/core/sql_date.hpp"
+#include "accelerator_codegen/stateful/core/sql_like.hpp"
 
-#include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <limits>
-#include <set>
+#include <map>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
-#include "tpch/q14/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
-
-constexpr uint32_t kVersion = 1;
-constexpr uint32_t kPartMagic = 0x50313451;  // Q14P
-constexpr uint32_t kMonthMagic = 0x4d313451; // Q14M
-constexpr int32_t kEpoch = 719468;
+// The single state image's partition id.
+constexpr core::PartitionId kStatePartition = 0;
+// More affected parts than this per commit: rebuild instead of point scans.
+constexpr std::size_t kMaxPointParts = 50000;
 
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
@@ -36,6 +32,13 @@ bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
   const auto &cell = row.values[index];
   if (std::holds_alternative<int64_t>(cell.payload)) {
     out = std::get<int64_t>(cell.payload);
+    return true;
+  }
+  if (std::holds_alternative<uint64_t>(cell.payload)) {
+    const auto value = std::get<uint64_t>(cell.payload);
+    if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+      return false;
+    out = static_cast<int64_t>(value);
     return true;
   }
   if (std::holds_alternative<core::AuxDate>(cell.payload)) {
@@ -69,50 +72,30 @@ bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
   return true;
 }
 
-int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
-  year -= month <= 2;
-  const int32_t era = (year >= 0 ? year : year - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(year - era * 400);
-  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int32_t>(doe) - kEpoch;
-}
-
-void CivilFromDays(int32_t days, int32_t &year, unsigned &month,
-                   unsigned &day) {
-  int32_t z = days + kEpoch;
-  const int32_t era = (z >= 0 ? z : z - 146096) / 146097;
-  const unsigned doe = static_cast<unsigned>(z - era * 146097);
-  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  year = static_cast<int32_t>(yoe) + era * 400;
-  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  const unsigned mp = (5 * doy + 2) / 153;
-  day = doy - (153 * mp + 2) / 5 + 1;
-  month = mp + (mp < 10 ? 3 : -9);
-  year += month <= 2;
-}
-
-int32_t MonthKey(int32_t days) {
-  int32_t year = 0;
-  unsigned month = 0, day = 0;
-  CivilFromDays(days, year, month, day);
-  return year * 100 + static_cast<int32_t>(month);
+int64_t ScaleToRaw(int64_t raw, int32_t scale, int32_t target_scale) {
+  if (scale == target_scale)
+    return raw;
+  if (scale < target_scale) {
+    int64_t factor = 1;
+    for (int32_t i = scale; i < target_scale; ++i)
+      factor *= 10;
+    return raw * factor;
+  }
+  int64_t factor = 1;
+  for (int32_t i = target_scale; i < scale; ++i)
+    factor *= 10;
+  return raw / factor;
 }
 
 std::shared_ptr<const TpchQ14StateImage>
-MakeStateImage(TpchQ14ImageKind kind, int32_t month,
-               const std::shared_ptr<const TpchQ14State> &state) {
+MakeStateImage(std::shared_ptr<const TpchQ14State> state) {
   auto image = std::make_shared<TpchQ14StateImage>();
-  image->kind = kind;
-  image->month = month;
-  image->state = state;
+  image->state = std::move(state);
   return image;
 }
 
-const TpchQ14StateImage *AsQ14Image(const core::StateImage &image,
-                                    TpchQ14ImageKind kind) {
-  const auto *payload = image.As<TpchQ14StateImage>();
-  return payload && payload->kind == kind && payload->state ? payload : nullptr;
+const TpchQ14StateImage *AsQ14Image(const core::StateImage &image) {
+  return image.As<TpchQ14StateImage>();
 }
 
 core::InvalidationPlan All() {
@@ -122,168 +105,52 @@ core::InvalidationPlan All() {
   return plan;
 }
 
-bool ReadLineitem(const core::AuxRow &row, TpchQ14LineitemInput &out) {
-  int64_t partkey = 0;
+TpchQ14PromoClass ClassOfType(const std::string &type) {
+  return TpchQ14IsPromoType(type) ? TpchQ14PromoClass::Promo
+                                  : TpchQ14PromoClass::NonPromo;
+}
+
+// l_extendedprice * (1 - l_discount) at scale 4 (price and discount scale 2).
+__int128 RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
+                    int64_t discount_raw, int32_t discount_scale) {
+  return static_cast<__int128>(ScaleToRaw(extended_price_raw, extended_scale, 2)) *
+         (100 - ScaleToRaw(discount_raw, discount_scale, 2));
+}
+
+bool ReadLineitem(const core::AuxRow &row, TpchQ14LineitemDelta &delta,
+                  int8_t sign) {
   int64_t extended_raw = 0, discount_raw = 0;
   int32_t extended_scale = 0, discount_scale = 0;
-  if (!IntCell(row, 0, partkey) ||
+  if (!IntCell(row, 0, delta.partkey) ||
       !RawDecimalCell(row, 1, extended_raw, extended_scale) ||
       !RawDecimalCell(row, 2, discount_raw, discount_scale) ||
-      !DateCell(row, 3, out.shipdate_days))
+      !DateCell(row, 3, delta.shipdate_days))
     return false;
-  out.partkey = partkey;
-  out.extended_price_raw = extended_raw;
-  out.extended_price_scale = extended_scale;
-  out.discount_raw = discount_raw;
-  out.discount_scale = discount_scale;
+  delta.revenue_raw =
+      RevenueRaw(extended_raw, extended_scale, discount_raw, discount_scale);
+  delta.sign = sign;
   return true;
 }
 
 } // namespace
 
-int32_t TpchQ14DaysFromYmd(int32_t year, unsigned month, unsigned day) {
-  return DaysFromCivil(year, month, day);
-}
-
-int32_t TpchQ14AddMonths(int32_t days_since_epoch, int32_t months) {
-  int32_t year = 0;
-  unsigned month = 0, day = 0;
-  CivilFromDays(days_since_epoch, year, month, day);
-  const int total = year * 12 + static_cast<int>(month) - 1 + months;
-  const int new_year = total / 12;
-  const unsigned new_month = static_cast<unsigned>(total % 12 + 1);
-  return DaysFromCivil(new_year, new_month, day);
-}
-
-int32_t TpchQ14MonthKeyFromDays(int32_t days_since_epoch) {
-  return MonthKey(days_since_epoch);
-}
-
 bool TpchQ14IsPromoType(const std::string &type) {
-  static constexpr const char kPromo[] = "PROMO";
-  return type.size() >= sizeof(kPromo) - 1 &&
-         type.compare(0, sizeof(kPromo) - 1, kPromo) == 0;
+  // p_type LIKE 'PROMO%' under MySQL's default (case-insensitive) collation.
+  static const auto kPromo = core::sql_like::LikeMatcher::Compile(
+      "PROMO%", '\\', /*case_insensitive=*/true);
+  return kPromo.Match(type);
 }
 
-int64_t TpchQ14RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
-                          int64_t discount_raw, int32_t discount_scale) {
-  if (extended_scale == 2 && discount_scale == 2)
-    return extended_price_raw * (100 - discount_raw);
-  double price = static_cast<double>(extended_price_raw);
-  double discount = static_cast<double>(discount_raw);
-  for (int32_t i = 0; i < extended_scale; ++i)
-    price /= 10.0;
-  for (int32_t i = 0; i < discount_scale; ++i)
-    discount /= 10.0;
-  return static_cast<int64_t>(std::llround(price * (1.0 - discount) * 10000.0));
-}
-
-std::vector<uint8_t> EncodeTpchQ14PartPromo(const TpchQ14State &state) {
-  ByteWriter writer;
-  std::vector<int64_t> keys;
-  for (std::size_t i = 0; i < state.part_promo.size(); ++i) {
-    if (state.part_promo[i] == 0)
-      continue;
-    keys.push_back(static_cast<int64_t>(i));
-  }
-  for (const auto &[key, promo] : state.promo_overflow) {
-    if (promo != 0)
-      keys.push_back(key);
-  }
-  core::WriteImageHeader(writer, kPartMagic, kVersion, static_cast<uint32_t>(keys.size()));
-  for (const auto key : keys) {
-    writer.I64(key);
-    writer.U8(static_cast<uint8_t>(state.PromoOf(key)));
-  }
-  return std::move(writer.bytes);
-}
-
-std::vector<uint8_t> EncodeTpchQ14Month(int32_t month,
-                                        const TpchQ14State &state) {
-  ByteWriter writer;
-  const auto it = state.month_totals.find(month);
-  TpchQ14MonthTotals totals;
-  if (it != state.month_totals.end())
-    totals = it->second;
-  core::WriteImageHeader(writer, kMonthMagic, kVersion, 1);
-  writer.I64(totals.total_revenue_raw);
-  writer.I64(totals.promo_revenue_raw);
-  writer.I64(totals.row_count);
-  writer.U8(totals.saw_contribution ? 1 : 0);
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ14PartPromo(const std::vector<uint8_t> &bytes,
-                            TpchQ14State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kPartMagic, kVersion, count))
-    return false;
-  state.part_promo.clear();
-  for (uint32_t i = 0; i < count; ++i) {
-    int64_t key = 0;
-    uint8_t promo = 0;
-    if (!reader.I64(key) || !reader.U8(promo))
-      return false;
-    state.SetPromo(key, static_cast<TpchQ14PromoClass>(promo));
-  }
-  return reader.offset == bytes.size();
-}
-
-bool DecodeTpchQ14Month(const std::vector<uint8_t> &bytes, int32_t month,
-                          TpchQ14State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kMonthMagic, kVersion, count) || count != 1)
-    return false;
-  TpchQ14MonthTotals totals;
-  uint8_t saw = 0;
-  if (!reader.I64(totals.total_revenue_raw) ||
-      !reader.I64(totals.promo_revenue_raw) || !reader.I64(totals.row_count) ||
-      !reader.U8(saw))
-    return false;
-  totals.saw_contribution = saw != 0;
-  state.month_totals[month] = totals;
-  return reader.offset == bytes.size();
-}
-
-bool FindTpchQ14PartPromo(const std::vector<uint8_t> &bytes, int64_t partkey,
-                            TpchQ14PromoClass &promo) {
-  ByteReader header{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(header, kPartMagic, kVersion, count))
-    return false;
-  constexpr std::size_t kHeaderBytes = 12;
-  constexpr std::size_t kRecordBytes = 9;
-  if (count > (std::numeric_limits<std::size_t>::max() - kHeaderBytes) /
-                 kRecordBytes ||
-      bytes.size() != kHeaderBytes +
-                          static_cast<std::size_t>(count) * kRecordBytes)
-    return false;
-  std::size_t first = 0;
-  std::size_t last = count;
-  while (first < last) {
-    const auto middle = first + (last - first) / 2;
-    ByteReader reader{bytes};
-    reader.offset = kHeaderBytes + middle * kRecordBytes;
-    int64_t key = 0;
-    if (!reader.I64(key))
-      return false;
-    if (key < partkey) {
-      first = middle + 1;
-      continue;
-    }
-    if (key > partkey) {
-      last = middle;
-      continue;
-    }
-    uint8_t value = 0;
-    if (!reader.U8(value))
-      return false;
-    promo = static_cast<TpchQ14PromoClass>(value);
-    return true;
-  }
-  return false;
+void TpchQ14State::AddRevenue(int32_t day, TpchQ14PromoClass promo,
+                              __int128 revenue, int64_t count) {
+  if (promo == TpchQ14PromoClass::Absent || (revenue == 0 && count == 0))
+    return;
+  days.Update(day, [&](TpchQ14DayTotals &cell) {
+    cell.total_revenue_raw += revenue;
+    if (promo == TpchQ14PromoClass::Promo)
+      cell.promo_revenue_raw += revenue;
+    cell.count += count;
+  });
 }
 
 bool TpchQ14TxnBuffer::HasPendingChanges() const { return pending; }
@@ -291,19 +158,28 @@ void TpchQ14TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
   deltas.clear();
+  part_events.clear();
 }
 bool TpchQ14TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
 const std::vector<TpchQ14LineitemDelta> &TpchQ14TxnBuffer::Deltas() const {
   return deltas;
 }
+const std::vector<TpchQ14PartEvent> &TpchQ14TxnBuffer::PartEvents() const {
+  return part_events;
+}
 void TpchQ14TxnBuffer::MarkRebuild() {
   pending = true;
   requires_rebuild = true;
   deltas.clear();
+  part_events.clear();
 }
 void TpchQ14TxnBuffer::AddDelta(TpchQ14LineitemDelta delta) {
   pending = true;
   deltas.push_back(delta);
+}
+void TpchQ14TxnBuffer::AddPartEvent(TpchQ14PartEvent event) {
+  pending = true;
+  part_events.push_back(event);
 }
 
 core::AcceleratorId TpchQ14Module::Id() const { return kId; }
@@ -317,30 +193,21 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ14Module::CreateTxnBuffer() const {
 
 void TpchQ14Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  const auto state = BuildState(services);
-  const auto typed_state = std::make_shared<const TpchQ14State>(state);
   builder.Write(core::StateImage::Make(
-      core::TpchQ14Layout::kAccelerator, core::TpchQ14Layout::kPartPromo, 0,
-      MakeStateImage(TpchQ14ImageKind::PartPromo, 0, typed_state)));
-  for (const auto &entry : state.month_totals) {
-    builder.Write(core::StateImage::Make(
-        core::TpchQ14Layout::kAccelerator,
-        static_cast<core::PartitionId>(entry.first), 0,
-        MakeStateImage(TpchQ14ImageKind::Month, entry.first, typed_state)));
-  }
+      core::TpchQ14Layout::kAccelerator, kStatePartition, 0,
+      MakeStateImage(BuildState(services))));
   builder.Finish();
 }
 
 core::InvalidationPlan
 TpchQ14Module::InterpretMutation(const core::MutationBatch &mutation) const {
-  if (mutation.table == config.lineitem_table) {
+  if (mutation.table == config.part_table ||
+      mutation.table == config.lineitem_table) {
     core::InvalidationPlan plan;
     plan.scope =
         ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
     return plan;
   }
-  if (mutation.table == config.part_table)
-    return All();
   return {};
 }
 
@@ -348,26 +215,67 @@ void TpchQ14Module::AccumulateMutation(const core::MutationBatch &mutation,
                                        core::AuxEngineServices &,
                                        core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ14TxnBuffer &>(base_buffer);
+
   if (mutation.table == config.part_table) {
-    // A part's type decides whether its revenue counts as promo: rebuild.
-    buffer.MarkRebuild();
+    // A part row appearing, disappearing or changing type moves its lineitems'
+    // revenue (re-aggregated per part at maintenance, not a rebuild).
+    auto part_of = [&](const core::AuxRow &row, int64_t &key,
+                       TpchQ14PromoClass &promo) {
+      std::string type;
+      if (!IntCell(row, 0, key) || !StringCell(row, 1, type))
+        return false;
+      promo = ClassOfType(type);
+      return true;
+    };
+    int64_t key = 0;
+    TpchQ14PromoClass promo = TpchQ14PromoClass::Absent;
+    switch (mutation.kind) {
+    case core::MutationKind::Insert:
+      for (const auto &row : mutation.new_rows) {
+        if (!part_of(row, key, promo)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        buffer.AddPartEvent({key, promo});
+      }
+      break;
+    case core::MutationKind::Delete:
+      for (const auto &row : mutation.old_rows) {
+        if (!part_of(row, key, promo)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        buffer.AddPartEvent({key, TpchQ14PromoClass::Absent});
+      }
+      break;
+    case core::MutationKind::Update:
+      if (mutation.old_rows.size() != mutation.new_rows.size()) {
+        buffer.MarkRebuild();
+        return;
+      }
+      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
+        int64_t old_key = 0;
+        if (!part_of(mutation.old_rows[i], old_key, promo) ||
+            !part_of(mutation.new_rows[i], key, promo)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        if (old_key != key) // key change = delete + insert
+          buffer.AddPartEvent({old_key, TpchQ14PromoClass::Absent});
+        buffer.AddPartEvent({key, promo});
+      }
+      break;
+    }
     return;
   }
   if (mutation.table != config.lineitem_table)
     return;
   auto add = [&](const core::AuxRow &row, int8_t sign) {
-    TpchQ14LineitemInput input;
-    if (!ReadLineitem(row, input)) {
+    TpchQ14LineitemDelta delta;
+    if (!ReadLineitem(row, delta, sign)) {
       buffer.MarkRebuild();
       return;
     }
-    TpchQ14LineitemDelta delta;
-    delta.month = TpchQ14MonthKeyFromDays(input.shipdate_days);
-    delta.partkey = input.partkey;
-    delta.revenue_raw =
-        TpchQ14RevenueRaw(input.extended_price_raw, input.extended_price_scale,
-                          input.discount_raw, input.discount_scale);
-    delta.sign = sign;
     buffer.AddDelta(delta);
   };
   switch (mutation.kind) {
@@ -398,164 +306,104 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
                                 core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ14TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
-  if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
+  if (!buffer.RequiresRebuild() && buffer.Deltas().empty() &&
+      buffer.PartEvents().empty())
+    return outcome;
+
+  // The state is one copy-on-write image: applying the deltas is always
+  // cheaper than a rebuild, which is chosen only when the deltas could not be
+  // read, the state is missing, too many parts changed, or it is forced.
+  std::shared_ptr<TpchQ14State> next;
+  core::Version version = 0;
+  std::unordered_map<int64_t, TpchQ14PromoClass> final_class;
+  std::vector<int64_t> affected;
+  if (!buffer.RequiresRebuild()) {
+    const auto snapshot = services.StateStore().ReadPartitions(
+        services.CurrentVisibility(), {kStatePartition});
+    for (const auto &image : snapshot.partitions) {
+      const auto *typed = AsQ14Image(image);
+      if (image.partition == kStatePartition && typed && typed->state) {
+        next = std::make_shared<TpchQ14State>(*typed->state); // COW copy
+        version = image.version;
+      }
+    }
+    if (next) {
+      for (const auto &event : buffer.PartEvents())
+        final_class[event.partkey] = event.promo; // last event wins
+      for (const auto &entry : final_class)
+        if (next->PromoOf(entry.first) != entry.second)
+          affected.push_back(entry.first);
+    }
+  }
+  const auto decision = services.ChooseMaintenance(
+      {static_cast<uint64_t>(buffer.Deltas().size() + affected.size()), 1,
+       next != nullptr && affected.size() <= kMaxPointParts && initial_scan,
+       false, true, false, false, core::MaintenanceAction::NoOp,
+       services.ExpectedQueriesBeforeNextWrite()});
+  if (!next || affected.size() > kMaxPointParts ||
+      decision.action != core::MaintenanceAction::ApplyDelta) {
+    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta ||
+                             decision.action == core::MaintenanceAction::RebuildPartition
                          ? core::MaintenanceAction::RebuildAll
                          : decision.action;
     outcome.invalidations = All();
     outcome.pending_rebuild = outcome.invalidations;
     return outcome;
   }
-  if (buffer.Deltas().empty())
-    return outcome;
 
-  std::set<int32_t> touched_months;
-  for (const auto &delta : buffer.Deltas())
-    touched_months.insert(delta.month);
-
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()),
-       static_cast<uint64_t>(touched_months.size()), true, true, true, false,
-       false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    const auto visibility = services.CurrentVisibility();
-    const auto part_snapshot = services.StateStore().ReadPartitions(
-        visibility, {core::TpchQ14Layout::kPartPromo});
-    const TpchQ14State *part_state = nullptr;
-    for (const auto &image : part_snapshot.partitions) {
-      if (image.partition == core::TpchQ14Layout::kPartPromo) {
-        const auto *typed = AsQ14Image(image, TpchQ14ImageKind::PartPromo);
-        part_state = typed ? typed->state.get() : nullptr;
-        break;
-      }
-    }
-    if (!part_state || !initial_scan) {
-      core::FinishRebuildAll(outcome);
-      return outcome;
-    }
-    TpchQ14State rebuilt;
-    initial_scan->ScanLineitemsForMonths(
-        touched_months, [&](const TpchQ14LineitemInput &input) {
-          const auto promo = part_state->PromoOf(input.partkey);
-          if (promo == TpchQ14PromoClass::Absent)
-            return;
-          const auto revenue = TpchQ14RevenueRaw(
-              input.extended_price_raw, input.extended_price_scale,
-              input.discount_raw, input.discount_scale);
-          const auto month = TpchQ14MonthKeyFromDays(input.shipdate_days);
-          auto &totals = rebuilt.month_totals[month];
-          totals.total_revenue_raw += revenue;
-          totals.row_count++;
-          totals.saw_contribution = true;
-          if (promo == TpchQ14PromoClass::Promo)
-            totals.promo_revenue_raw += revenue;
+  // Parts whose class changed: their lineitems move between {absent, non-promo,
+  // promo}. The table now holds this transaction's lineitem writes too, so the
+  // post-write revenue per (part, day) comes from one indexed point scan, the
+  // pre-write revenue is that minus this transaction's lineitem deltas, and
+  // those deltas are not applied again below.
+  struct DayRevenue {
+    __int128 post = 0, pre = 0;
+    int64_t post_count = 0, pre_count = 0;
+  };
+  std::map<std::pair<int64_t, int32_t>, DayRevenue> moved;
+  if (!affected.empty()) {
+    initial_scan->ScanPartDayRevenue(
+        affected, [&](const TpchQ14PartDayRevenue &row) {
+          auto &cell = moved[{row.partkey, row.shipdate_days}];
+          cell.post += row.revenue_raw;
+          cell.post_count += row.count;
+          cell.pre += row.revenue_raw;
+          cell.pre_count += row.count;
         });
-    for (const auto month : touched_months) {
-      TpchQ14State month_state;
-      const auto it = rebuilt.month_totals.find(month);
-      if (it != rebuilt.month_totals.end())
-        month_state.month_totals.emplace(month, it->second);
-      const auto typed_state =
-          std::make_shared<const TpchQ14State>(std::move(month_state));
-      outcome.updates.push_back(core::StateImage::Make(
-          core::TpchQ14Layout::kAccelerator,
-          static_cast<core::PartitionId>(month), 0,
-          MakeStateImage(TpchQ14ImageKind::Month, month, typed_state)));
-    }
-    core::FinishRebuildPartition(outcome);
-    return outcome;
   }
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  const auto visibility = services.CurrentVisibility();
-  const auto part_snapshot = services.StateStore().ReadPartitions(
-      visibility, {core::TpchQ14Layout::kPartPromo});
-  const TpchQ14State *part_state = nullptr;
-  for (const auto &image : part_snapshot.partitions) {
-    if (image.partition == core::TpchQ14Layout::kPartPromo) {
-      const auto *typed = AsQ14Image(image, TpchQ14ImageKind::PartPromo);
-      part_state = typed ? typed->state.get() : nullptr;
-      break;
-    }
-  }
-  if (!part_state) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  std::vector<core::PartitionId> month_partitions;
-  month_partitions.reserve(touched_months.size());
-  for (const auto month : touched_months)
-    month_partitions.push_back(static_cast<core::PartitionId>(month));
-
-  TpchQ14State state;
-  std::map<int32_t, core::Version> versions;
-  const auto month_snapshot =
-      services.StateStore().ReadPartitions(visibility, month_partitions);
-  for (const auto &image : month_snapshot.partitions) {
-    const auto month = static_cast<int32_t>(image.partition);
-    const auto *typed = AsQ14Image(image, TpchQ14ImageKind::Month);
-    if (!typed || typed->month != month) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    const auto month_it = typed->state->month_totals.find(month);
-    if (month_it != typed->state->month_totals.end())
-      state.month_totals[month] = month_it->second;
-    versions[month] = image.version;
-  }
-  if (versions.size() != touched_months.size()) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
+  std::unordered_map<int64_t, bool> is_affected;
+  for (const auto key : affected)
+    is_affected[key] = true;
   for (const auto &delta : buffer.Deltas()) {
-    const auto promo = part_state->PromoOf(delta.partkey);
-    if (promo == TpchQ14PromoClass::Absent) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = All();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    auto &totals = state.month_totals[delta.month];
-    const auto signed_revenue =
-        static_cast<int64_t>(delta.sign) * delta.revenue_raw;
-    totals.total_revenue_raw += signed_revenue;
-    totals.row_count += delta.sign;
-    totals.saw_contribution = totals.row_count > 0;
-    if (promo == TpchQ14PromoClass::Promo)
-      totals.promo_revenue_raw += signed_revenue;
+    if (!is_affected.count(delta.partkey))
+      continue;
+    auto &cell = moved[{delta.partkey, delta.shipdate_days}];
+    cell.pre -= delta.sign * delta.revenue_raw;
+    cell.pre_count -= delta.sign;
+  }
+  for (const auto &entry : moved) {
+    const auto key = entry.first.first;
+    const auto day = entry.first.second;
+    next->AddRevenue(day, final_class.at(key), entry.second.post,
+                     entry.second.post_count);
+    next->AddRevenue(day, next->PromoOf(key), -entry.second.pre,
+                     -entry.second.pre_count);
+  }
+  for (const auto key : affected)
+    next->SetPromo(key, final_class.at(key));
+
+  // Lineitems of unaffected parts: -old +new with the part's (unchanged) class.
+  for (const auto &delta : buffer.Deltas()) {
+    if (is_affected.count(delta.partkey))
+      continue;
+    next->AddRevenue(delta.shipdate_days, next->PromoOf(delta.partkey),
+                     delta.sign * delta.revenue_raw, delta.sign);
   }
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
-  for (const auto month : touched_months) {
-    const auto partition = static_cast<core::PartitionId>(month);
-    const auto version = versions.count(month) ? versions[month] : 0;
-    TpchQ14State month_state;
-    const auto month_it = state.month_totals.find(month);
-    if (month_it != state.month_totals.end())
-      month_state.month_totals.emplace(month, month_it->second);
-    const auto typed_state = std::make_shared<const TpchQ14State>(month_state);
-    outcome.updates.push_back(core::StateImage::Make(
-        core::TpchQ14Layout::kAccelerator, partition, version,
-        MakeStateImage(TpchQ14ImageKind::Month, month, typed_state)));
-  }
+  outcome.updates.push_back(core::StateImage::Make(
+      core::TpchQ14Layout::kAccelerator, kStatePartition, version,
+      MakeStateImage(std::move(next))));
   return outcome;
 }
 
@@ -569,92 +417,84 @@ bool TpchQ14Module::CheckValidity(core::AuxEngineServices &services,
 void TpchQ14Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
-  int32_t start = 0;
-  if (!arguments.values.empty() && !arguments.values[0].is_null) {
-    if (std::holds_alternative<core::AuxDate>(arguments.values[0].payload))
-      start =
-          std::get<core::AuxDate>(arguments.values[0].payload).days_since_epoch;
-    else if (std::holds_alternative<int64_t>(arguments.values[0].payload))
-      start = static_cast<int32_t>(std::get<int64_t>(arguments.values[0].payload));
-  }
-  const auto month = TpchQ14MonthKeyFromDays(start);
-  if (!services.StateStore()
-           .CheckValidity({Id(), {}}, services.CurrentVisibility())
-           .IsValid()) {
+  // LocalWriteSafe: same-transaction relevant writes => fallback.
+  if (services.StateStore().IsTransactionDirty()) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  TpchQ14MonthTotals totals;
-  if (!LoadMonth(services, month, totals)) {
+  // ReadHit: validity + the one immutable state image under one visibility.
+  const auto snapshot = services.StateStore().ReadHitPartitions(
+      services.CurrentVisibility(), {Id(), {}}, {kStatePartition});
+  const auto *typed = snapshot.available && snapshot.partitions.size() == 1
+                          ? AsQ14Image(snapshot.partitions[0])
+                          : nullptr;
+  if (!typed || !typed->state) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitResult(totals, sink);
+  Answer(*typed->state, arguments, sink);
 }
 
 void TpchQ14Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
-  int32_t start = 0;
-  if (!arguments.values.empty() && !arguments.values[0].is_null &&
-      std::holds_alternative<core::AuxDate>(arguments.values[0].payload))
-    start =
-        std::get<core::AuxDate>(arguments.values[0].payload).days_since_epoch;
-  const auto state = BuildState(services);
-  const auto month = TpchQ14MonthKeyFromDays(start);
-  const auto it = state.month_totals.find(month);
-  EmitResult(it != state.month_totals.end() ? it->second : TpchQ14MonthTotals{},
-               sink);
+  Answer(*BuildState(services), arguments, sink);
 }
 
-TpchQ14State TpchQ14Module::BuildState(core::AuxEngineServices &services) const {
+std::shared_ptr<TpchQ14State>
+TpchQ14Module::BuildState(core::AuxEngineServices &services) const {
   (void)services;
-  TpchQ14State state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q14 requires a typed initial scan source");
+  auto state = std::make_shared<TpchQ14State>();
   initial_scan->ScanParts([&](const TpchQ14PartInput &input) {
-    state.SetPromo(input.key,
-                   TpchQ14IsPromoType(input.type) ? TpchQ14PromoClass::Promo
-                                                  : TpchQ14PromoClass::NonPromo);
+    state->SetPromo(input.key, ClassOfType(input.type));
   });
-  initial_scan->ScanLineitems([&](const TpchQ14LineitemInput &input) {
-    const auto promo = state.PromoOf(input.partkey);
-    if (promo == TpchQ14PromoClass::Absent)
-      return;
-    const auto revenue =
-        TpchQ14RevenueRaw(input.extended_price_raw, input.extended_price_scale,
-                          input.discount_raw, input.discount_scale);
-    const auto month = TpchQ14MonthKeyFromDays(input.shipdate_days);
-    auto &totals = state.month_totals[month];
-    totals.total_revenue_raw += revenue;
-    totals.row_count++;
-    totals.saw_contribution = true;
-    if (promo == TpchQ14PromoClass::Promo)
-      totals.promo_revenue_raw += revenue;
+  initial_scan->ScanDayAggregates([&](const TpchQ14DayAggregate &agg) {
+    state->days.Update(agg.shipdate_days, [&](TpchQ14DayTotals &cell) {
+      cell.total_revenue_raw += agg.total_revenue_raw;
+      cell.promo_revenue_raw += agg.promo_revenue_raw;
+      cell.count += agg.count;
+    });
   });
   return state;
 }
 
-bool TpchQ14Module::LoadMonth(core::AuxEngineServices &services, int32_t month,
-                              TpchQ14MonthTotals &totals) const {
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(),
-      {static_cast<core::PartitionId>(month)});
-  for (const auto &image : snapshot.partitions) {
-    if (static_cast<int32_t>(image.partition) != month)
-      continue;
-    const auto *typed = AsQ14Image(image, TpchQ14ImageKind::Month);
-    if (!typed || typed->month != month)
-      return false;
-    const auto it = typed->state->month_totals.find(month);
-    if (it != typed->state->month_totals.end())
-      totals = it->second;
-    return true;
+void TpchQ14Module::Answer(const TpchQ14State &state,
+                           const core::QueryArguments &arguments,
+                           core::AuxRowSink &sink) const {
+  // shipdate in [D, D + INTERVAL '1' MONTH): day-exact (not month-aligned),
+  // end-of-month clamped. A NULL date makes the predicate NULL: no rows.
+  TpchQ14DayTotals totals;
+  if (!arguments.values.empty() && !arguments.values[0].is_null) {
+    const auto &payload = arguments.values[0].payload;
+    int64_t start = 0;
+    bool have = true;
+    if (std::holds_alternative<core::AuxDate>(payload))
+      start = std::get<core::AuxDate>(payload).days_since_epoch;
+    else if (std::holds_alternative<int64_t>(payload))
+      start = std::get<int64_t>(payload);
+    else
+      have = false;
+    if (have) {
+      const int64_t end = core::sql_date::AddMonths(start, 1);
+      const auto add = [&](int sign) {
+        return [&totals, sign](const TpchQ14DayTotals &cell) {
+          totals.total_revenue_raw += sign * cell.total_revenue_raw;
+          totals.promo_revenue_raw += sign * cell.promo_revenue_raw;
+          totals.count += sign * cell.count;
+        };
+      };
+      if (start < end) {
+        state.days.VisitPrefix(end - 1, add(1));
+        state.days.VisitPrefix(start - 1, add(-1));
+      }
+    }
   }
-  return false;
+  EmitResult(totals, sink);
 }
 
-void TpchQ14Module::EmitResult(const TpchQ14MonthTotals &totals,
+void TpchQ14Module::EmitResult(const TpchQ14DayTotals &totals,
                                core::AuxRowSink &sink) const {
   const auto value = TpchQ14FinalizePromoRevenue(totals);
   sink.Begin({{{"promo_revenue", core::AuxType::Double, true}}});

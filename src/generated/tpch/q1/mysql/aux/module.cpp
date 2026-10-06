@@ -1,31 +1,21 @@
 #include "tpch/q1/mysql/aux/module.hpp"
 #include "tpch/q1/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
-#include "duckdb/common/types/hugeint.hpp"
-
-#include <algorithm>
-#include <cmath>
-#include <cstring>
 #include <limits>
-#include <set>
+#include <map>
 #include <stdexcept>
-#include <unordered_set>
+#include <tuple>
 #include <utility>
 #include "tpch/q1/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
+using Q1FenwickState = ::accelerator_codegen::Q1FenwickState;
 
-using Q1DayPartition = ::accelerator_codegen::Q1DayPartition;
-using Q1GroupKey = ::accelerator_codegen::Q1GroupKey;
-
-constexpr uint32_t kVersion = 1;
-constexpr uint32_t kDayMagic = 0x44315151; // Q1D
 constexpr int32_t kEpoch = 719468;
+// The single state image's partition id.
+constexpr core::PartitionId kStatePartition = 0;
 
 constexpr int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
   year -= month <= 2;
@@ -37,43 +27,6 @@ constexpr int32_t DaysFromCivil(int32_t year, unsigned month, unsigned day) {
 }
 
 constexpr int32_t kQ1BaseDays = DaysFromCivil(1998, 12, 1);
-// TPC-H lineitem shipdate lower bound (1992-01-02).
-constexpr int32_t kTpchMinLineitemShipdateDays = DaysFromCivil(1992, 1, 2);
-
-void CollectQ1DayPartitions(int32_t cutoff_days,
-                            std::vector<core::PartitionId> &partitions) {
-  partitions.clear();
-  if (cutoff_days < kTpchMinLineitemShipdateDays)
-    return;
-  partitions.reserve(static_cast<std::size_t>(cutoff_days -
-                                              kTpchMinLineitemShipdateDays + 1));
-  for (int32_t day = kTpchMinLineitemShipdateDays; day <= cutoff_days; ++day)
-    partitions.push_back(core::TpchQ1Layout::PartitionFromDays(day));
-}
-
-void WriteQ1Acc(ByteWriter &writer, ::accelerator_codegen::Q1AccT value) {
-#if defined(__SIZEOF_INT128__)
-  writer.U64(static_cast<uint64_t>(value));
-  writer.U64(static_cast<uint64_t>(value >> 64));
-#else
-  writer.I64(value);
-#endif
-}
-
-bool ReadQ1Acc(ByteReader &reader, ::accelerator_codegen::Q1AccT &value) {
-#if defined(__SIZEOF_INT128__)
-  uint64_t lo = 0;
-  uint64_t hi = 0;
-  if (!reader.U64(lo) || !reader.U64(hi)) {
-    return false;
-  }
-  value = static_cast<::accelerator_codegen::Q1AccT>(hi) << 64;
-  value |= static_cast<::accelerator_codegen::Q1AccT>(lo);
-  return true;
-#else
-  return reader.I64(value);
-#endif
-}
 
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
@@ -145,11 +98,9 @@ int64_t ScaleToRaw(int64_t raw, int32_t scale, int32_t target_scale) {
 }
 
 std::shared_ptr<const TpchQ1StateImage>
-MakeStateImage(int32_t shipdate_days,
-               const std::shared_ptr<const Q1DayPartition> &partition) {
+MakeStateImage(std::shared_ptr<const Q1FenwickState> state) {
   auto image = std::make_shared<TpchQ1StateImage>();
-  image->shipdate_days = shipdate_days;
-  image->partition = partition;
+  image->state = std::move(state);
   return image;
 }
 
@@ -190,63 +141,31 @@ bool ReadLineitem(const core::AuxRow &row, TpchQ1LineitemDelta &delta,
   return true;
 }
 
-void ApplyLineitemInput(const TpchQ1LineitemInput &input,
-                        Q1DayPartition &day) {
-  const auto group_key = ::accelerator_codegen::PackQ1GroupKey(
-      input.returnflag, input.linestatus);
-  auto &group = day.groups[group_key];
-  ::accelerator_codegen::ApplyQ1RowContribution(
-      group, ScaleToRaw(input.quantity_raw, input.quantity_scale, 2),
-      ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2),
-      ScaleToRaw(input.discount_raw, input.discount_scale, 2),
-      ScaleToRaw(input.tax_raw, input.tax_scale, 2), 1);
-}
-
-int64_t HugeintLower(const duckdb::hugeint_t &value) {
-  return static_cast<int64_t>(value.lower);
-}
-
 } // namespace
 
-std::vector<uint8_t> EncodeTpchQ1Day(const Q1DayPartition &partition) {
-  std::vector<Q1GroupKey> keys;
-  keys.reserve(partition.groups.size());
-  for (const auto &entry : partition.groups)
-    keys.push_back(entry.first);
-  std::sort(keys.begin(), keys.end());
-
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kDayMagic, kVersion, static_cast<uint32_t>(keys.size()));
-  for (const auto key : keys) {
-    const auto &stats = partition.groups.at(key);
-    writer.U16(key);
-    writer.I64(stats.count);
-    writer.I64(stats.sum_qty);
-    writer.I64(stats.sum_base_price);
-    WriteQ1Acc(writer, stats.sum_disc_price);
-    WriteQ1Acc(writer, stats.sum_charge);
-    WriteQ1Acc(writer, stats.sum_discount);
-  }
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ1Day(const std::vector<uint8_t> &bytes, Q1DayPartition &partition) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kDayMagic, kVersion, count))
-    return false;
-  partition.groups.clear();
-  for (uint32_t i = 0; i < count; ++i) {
-    uint16_t key = 0;
-    ::accelerator_codegen::Q1DayGroupStats stats;
-    if (!reader.U16(key) || !reader.I64(stats.count) ||
-        !reader.I64(stats.sum_qty) || !reader.I64(stats.sum_base_price) ||
-        !ReadQ1Acc(reader, stats.sum_disc_price) || !ReadQ1Acc(reader, stats.sum_charge) ||
-        !ReadQ1Acc(reader, stats.sum_discount))
-      return false;
-    partition.groups.emplace(key, stats);
-  }
-  return reader.offset == bytes.size();
+void TpchQ1InitialScan::ScanDayGroupAggregates(
+    const std::function<void(const TpchQ1DayGroupAggregate &)> &consumer) {
+  // Row-scan fallback: aggregate (day, group) cells here.
+  std::map<std::tuple<int32_t, char, char>, TpchQ1DayGroupAggregate> cells;
+  ScanLineitems([&](const TpchQ1LineitemInput &input) {
+    auto &cell = cells[{input.shipdate_days, input.returnflag, input.linestatus}];
+    cell.shipdate_days = input.shipdate_days;
+    cell.returnflag = input.returnflag;
+    cell.linestatus = input.linestatus;
+    const auto stats = ::accelerator_codegen::Q1RowContribution(
+        ScaleToRaw(input.quantity_raw, input.quantity_scale, 2),
+        ScaleToRaw(input.extended_price_raw, input.extended_price_scale, 2),
+        ScaleToRaw(input.discount_raw, input.discount_scale, 2),
+        ScaleToRaw(input.tax_raw, input.tax_scale, 2), 1);
+    cell.count += stats.count;
+    cell.sum_qty_raw += stats.sum_qty;
+    cell.sum_base_price_raw += stats.sum_base_price;
+    cell.sum_discount_raw += stats.sum_discount;
+    cell.sum_disc_price_raw += stats.sum_disc_price;
+    cell.sum_charge_raw += stats.sum_charge;
+  });
+  for (const auto &entry : cells)
+    consumer(entry.second);
 }
 
 int32_t TpchQ1CutoffDays(int32_t day_offset) {
@@ -286,15 +205,9 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ1Module::CreateTxnBuffer() const {
 
 void TpchQ1Module::Build(core::AuxEngineServices &services,
                          core::StateBuilder &builder) {
-  const auto days = BuildState(services);
-  for (const auto &entry : days) {
-    const auto typed =
-        std::make_shared<const Q1DayPartition>(entry.second);
-    builder.Write(core::StateImage::Make(
-        core::TpchQ1Layout::kAccelerator,
-        core::TpchQ1Layout::PartitionFromDays(entry.first), 0,
-        MakeStateImage(entry.first, typed)));
-  }
+  builder.Write(core::StateImage::Make(
+      core::TpchQ1Layout::kAccelerator, kStatePartition, 0,
+      MakeStateImage(BuildState(services))));
   builder.Finish();
 }
 
@@ -346,10 +259,6 @@ void TpchQ1Module::AccumulateMutation(const core::MutationBatch &mutation,
         buffer.MarkRebuild();
         return;
       }
-      if (old_delta.shipdate_days != new_delta.shipdate_days) {
-        buffer.MarkRebuild();
-        return;
-      }
       add(mutation.old_rows[i], -1);
       add(mutation.new_rows[i], 1);
     }
@@ -363,91 +272,50 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
                                core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ1TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
-  if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
+  if (!buffer.RequiresRebuild() && buffer.Deltas().empty())
+    return outcome;
+
+  // The state is one copy-on-write Fenwick tree: applying a delta is always
+  // cheaper than any rebuild, so a rebuild is chosen only when the deltas
+  // could not be read (or the state is missing) or when it is forced.
+  std::shared_ptr<Q1FenwickState> next;
+  core::Version version = 0;
+  if (!buffer.RequiresRebuild()) {
+    const auto snapshot = services.StateStore().ReadPartitions(
+        services.CurrentVisibility(), {kStatePartition});
+    for (const auto &image : snapshot.partitions) {
+      const auto *typed = AsQ1Image(image);
+      if (image.partition == kStatePartition && typed && typed->state) {
+        next = std::make_shared<Q1FenwickState>(*typed->state); // COW copy
+        version = image.version;
+      }
+    }
+  }
+  const auto decision = services.ChooseMaintenance(
+      {static_cast<uint64_t>(buffer.Deltas().size()), 1, next != nullptr,
+       false, true, false, false, core::MaintenanceAction::NoOp,
+       services.ExpectedQueriesBeforeNextWrite()});
+  if (!next || decision.action != core::MaintenanceAction::ApplyDelta) {
+    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta ||
+                             decision.action == core::MaintenanceAction::RebuildPartition
                          ? core::MaintenanceAction::RebuildAll
                          : decision.action;
     outcome.invalidations = All();
     outcome.pending_rebuild = outcome.invalidations;
     return outcome;
   }
-  if (buffer.Deltas().empty())
-    return outcome;
 
-  std::set<int32_t> touched_days;
   for (const auto &delta : buffer.Deltas())
-    touched_days.insert(delta.shipdate_days);
-
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()),
-       static_cast<uint64_t>(std::max<std::size_t>(1, touched_days.size())),
-       true, true, true, false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action == core::MaintenanceAction::RebuildPartition) {
-    const auto rebuilt = BuildStateForDays(services, touched_days);
-    for (const auto day : touched_days) {
-      Q1DayPartition part;
-      const auto it = rebuilt.find(day);
-      if (it != rebuilt.end())
-        part = it->second;
-      const auto typed = std::make_shared<const Q1DayPartition>(std::move(part));
-      outcome.updates.push_back(core::StateImage::Make(
-          core::TpchQ1Layout::kAccelerator,
-          core::TpchQ1Layout::PartitionFromDays(day), 0,
-          MakeStateImage(day, typed)));
-    }
-    core::FinishRebuildPartition(outcome);
-    return outcome;
-  }
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  std::vector<core::PartitionId> partitions;
-  partitions.reserve(touched_days.size());
-  for (const auto day : touched_days)
-    partitions.push_back(core::TpchQ1Layout::PartitionFromDays(day));
-
-  std::map<int32_t, core::Version> versions;
-  std::unordered_map<int32_t, Q1DayPartition> state;
-  const auto visibility = services.CurrentVisibility();
-  const auto snapshot =
-      services.StateStore().ReadPartitions(visibility, partitions);
-  for (const auto &image : snapshot.partitions) {
-    const auto day = core::TpchQ1Layout::DaysFromPartition(image.partition);
-    const auto *typed = AsQ1Image(image);
-    if (!typed || !typed->partition || typed->shipdate_days != day) {
-      continue;
-    }
-    state[day] = *typed->partition;
-    versions[day] = image.version;
-  }
-
-  for (const auto &delta : buffer.Deltas()) {
-    auto &group = state[delta.shipdate_days].groups[delta.group_key];
-    ::accelerator_codegen::ApplyQ1RowContribution(
-        group, delta.quantity_raw, delta.extended_price_raw, delta.discount_raw,
-        delta.tax_raw, delta.sign);
-    if (group.count == 0)
-      state[delta.shipdate_days].groups.erase(delta.group_key);
-  }
+    ::accelerator_codegen::Q1FenwickAdd(
+        *next, delta.shipdate_days, delta.group_key,
+        ::accelerator_codegen::Q1RowContribution(
+            delta.quantity_raw, delta.extended_price_raw, delta.discount_raw,
+            delta.tax_raw, delta.sign));
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
-  for (const auto day : touched_days) {
-    const auto partition = core::TpchQ1Layout::PartitionFromDays(day);
-    const auto version = versions.count(day) ? versions.at(day) : 0;
-    const auto typed = std::make_shared<const Q1DayPartition>(state.at(day));
-    outcome.updates.push_back(core::StateImage::Make(
-        core::TpchQ1Layout::kAccelerator, partition, version,
-        MakeStateImage(day, typed)));
-  }
+  outcome.updates.push_back(core::StateImage::Make(
+      core::TpchQ1Layout::kAccelerator, kStatePartition, version,
+      MakeStateImage(std::move(next))));
   return outcome;
 }
 
@@ -458,139 +326,102 @@ bool TpchQ1Module::CheckValidity(core::AuxEngineServices &services,
       .IsValid();
 }
 
+namespace {
+
+// DELTA of the template: the cutoff day is 1998-12-01 - DELTA, computed in
+// 64 bits (any int32 DELTA, negative or huge, stays exact). NULL: no row
+// qualifies, so the grouped result is empty.
+bool CutoffOf(const core::QueryArguments &arguments, int64_t &cutoff_days) {
+  if (arguments.values.empty() || arguments.values[0].is_null ||
+      !std::holds_alternative<int64_t>(arguments.values[0].payload))
+    return false;
+  cutoff_days = static_cast<int64_t>(kQ1BaseDays) -
+                std::get<int64_t>(arguments.values[0].payload);
+  return true;
+}
+
+} // namespace
+
 void TpchQ1Module::Execute(core::AuxEngineServices &services,
                            const core::QueryArguments &arguments,
                            core::AuxRowSink &sink) {
-  int32_t day_offset = 0;
-  if (arguments.values.empty() || arguments.values[0].is_null)
+  int64_t cutoff_days = 0;
+  if (!CutoffOf(arguments, cutoff_days))
     return;
-  if (std::holds_alternative<int64_t>(arguments.values[0].payload))
-    day_offset = static_cast<int32_t>(
-        std::get<int64_t>(arguments.values[0].payload));
-  else
-    return;
-  const auto cutoff_days = TpchQ1CutoffDays(day_offset);
-  if (!services.StateStore()
-           .CheckValidity({Id(), {}}, services.CurrentVisibility())
-           .IsValid()) {
+
+  // LocalWriteSafe: same-transaction relevant writes => fallback.
+  if (services.StateStore().IsTransactionDirty()) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  std::unordered_map<int32_t, Q1DayPartition> days;
-  if (!LoadPartitions(services, cutoff_days, days)) {
+
+  // ReadHit: validity + the one immutable state image under one visibility.
+  const auto visibility = services.CurrentVisibility();
+  const auto snapshot = services.StateStore().ReadHitPartitions(
+      visibility, {Id(), {}}, {kStatePartition});
+  const auto *typed = snapshot.available && snapshot.partitions.size() == 1
+                          ? AsQ1Image(snapshot.partitions[0])
+                          : nullptr;
+  if (!typed || !typed->state) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitResult(ComposeOutput(days, cutoff_days), sink);
+  EmitResult(::accelerator_codegen::Q1FenwickPrefixRows(*typed->state, cutoff_days),
+             sink);
 }
 
 void TpchQ1Module::ExecuteFallback(core::AuxEngineServices &services,
                                    const core::QueryArguments &arguments,
                                    core::AuxRowSink &sink) {
-  int32_t day_offset = 0;
-  if (arguments.values.empty() || arguments.values[0].is_null ||
-      !std::holds_alternative<int64_t>(arguments.values[0].payload))
+  int64_t cutoff_days = 0;
+  if (!CutoffOf(arguments, cutoff_days))
     return;
-  day_offset =
-      static_cast<int32_t>(std::get<int64_t>(arguments.values[0].payload));
-  EmitResult(ComposeOutput(BuildState(services), TpchQ1CutoffDays(day_offset)),
+  EmitResult(::accelerator_codegen::Q1FenwickPrefixRows(*BuildState(services),
+                                                        cutoff_days),
              sink);
 }
 
-std::unordered_map<int32_t, Q1DayPartition>
+std::shared_ptr<::accelerator_codegen::Q1FenwickState>
 TpchQ1Module::BuildState(core::AuxEngineServices &services) const {
-  return BuildStateForDays(services, {});
-}
-
-std::unordered_map<int32_t, Q1DayPartition>
-TpchQ1Module::BuildStateForDays(core::AuxEngineServices &services,
-                                const std::set<int32_t> &days) const {
   (void)services;
-  std::unordered_map<int32_t, Q1DayPartition> state;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q1 requires a typed initial scan source");
-
-  auto consume = [&](const TpchQ1DayGroupAggregate &agg) {
-    if (!days.empty() && days.find(agg.shipdate_days) == days.end())
-      return;
-    const auto group_key = ::accelerator_codegen::PackQ1GroupKey(
-        agg.returnflag, agg.linestatus);
-    auto &group = state[agg.shipdate_days].groups[group_key];
-    group.count += agg.count;
-    group.sum_qty += agg.sum_qty_raw;
-    group.sum_base_price += agg.sum_base_price_raw;
-    group.sum_discount += agg.sum_discount_raw;
-    group.sum_disc_price +=
-        static_cast<::accelerator_codegen::Q1AccT>(agg.sum_disc_price_raw);
-    group.sum_charge +=
-        static_cast<::accelerator_codegen::Q1AccT>(agg.sum_charge_raw);
-  };
-
-  if (!days.empty() && initial_scan->ScanDayGroupAggregatesForDays(days, consume))
-    return state;
-  if (initial_scan->ScanDayGroupAggregates(consume))
-    return state;
-
-  initial_scan->ScanLineitems([&](const TpchQ1LineitemInput &input) {
-    if (!days.empty() && days.find(input.shipdate_days) == days.end())
-      return;
-    ApplyLineitemInput(input, state[input.shipdate_days]);
+  auto state = std::make_shared<::accelerator_codegen::Q1FenwickState>();
+  initial_scan->ScanDayGroupAggregates([&](const TpchQ1DayGroupAggregate &agg) {
+    ::accelerator_codegen::Q1DayGroupStats stats;
+    stats.count = agg.count;
+    stats.sum_qty = agg.sum_qty_raw;
+    stats.sum_base_price = agg.sum_base_price_raw;
+    stats.sum_discount = agg.sum_discount_raw;
+    stats.sum_disc_price = agg.sum_disc_price_raw;
+    stats.sum_charge = agg.sum_charge_raw;
+    ::accelerator_codegen::Q1FenwickAdd(
+        *state, agg.shipdate_days,
+        ::accelerator_codegen::PackQ1GroupKey(agg.returnflag, agg.linestatus),
+        stats);
   });
   return state;
-}
-
-std::vector<::accelerator_codegen::Q1OutputRow> TpchQ1Module::ComposeOutput(
-    const std::unordered_map<int32_t, Q1DayPartition> &days,
-    int32_t cutoff_days) const {
-  std::unordered_map<Q1GroupKey, ::accelerator_codegen::Q1MergedGroupStats>
-      merged;
-  for (const auto &entry : days) {
-    if (entry.first > cutoff_days)
-      continue;
-    for (const auto &group_entry : entry.second.groups)
-      ::accelerator_codegen::MergeQ1DayGroupStats(
-          merged[group_entry.first], group_entry.second);
-  }
-  return ::accelerator_codegen::FinalizeQ1MergedGroups(merged);
-}
-
-bool TpchQ1Module::LoadPartitions(
-    core::AuxEngineServices &services, int32_t cutoff_days,
-    std::unordered_map<int32_t, Q1DayPartition> &days,
-    std::map<int32_t, core::Version> *versions) const {
-  std::vector<core::PartitionId> partitions;
-  CollectQ1DayPartitions(cutoff_days, partitions);
-  if (partitions.empty())
-    return true;
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), partitions);
-  for (const auto &image : snapshot.partitions) {
-    const auto day = core::TpchQ1Layout::DaysFromPartition(image.partition);
-    if (day > cutoff_days)
-      continue;
-    const auto *typed = AsQ1Image(image);
-    if (!typed || !typed->partition || typed->shipdate_days != day)
-      return false;
-    days.emplace(day, *typed->partition);
-    if (versions)
-      (*versions)[day] = image.version;
-  }
-  return true;
 }
 
 void TpchQ1Module::EmitResult(
     const std::vector<::accelerator_codegen::Q1OutputRow> &rows,
     core::AuxRowSink &sink) const {
+  // Numeric columns are emitted as exact DECIMAL text (any width: sums can
+  // exceed int64); the TSV sink prints text as is.
   sink.Begin({{{"l_returnflag", core::AuxType::String, false},
                {"l_linestatus", core::AuxType::String, false},
-               {"sum_qty", core::AuxType::ScaledDecimal, false},
-               {"sum_base_price", core::AuxType::ScaledDecimal, false},
-               {"sum_disc_price", core::AuxType::ScaledDecimal, false},
-               {"sum_charge", core::AuxType::ScaledDecimal, false},
-               {"avg_qty", core::AuxType::Double, false},
-               {"avg_price", core::AuxType::Double, false},
-               {"avg_disc", core::AuxType::Double, false},
+               {"sum_qty", core::AuxType::String, false},
+               {"sum_base_price", core::AuxType::String, false},
+               {"sum_disc_price", core::AuxType::String, false},
+               {"sum_charge", core::AuxType::String, false},
+               {"avg_qty", core::AuxType::String, false},
+               {"avg_price", core::AuxType::String, false},
+               {"avg_disc", core::AuxType::String, false},
                {"count_order", core::AuxType::Int64, false}}});
+  namespace pgn = ::accelerator_codegen::pg_numeric;
+  const auto numeric = [](std::string text) {
+    return core::AuxValue::Of(core::AuxType::String, std::move(text));
+  };
   for (const auto &row : rows) {
     sink.WriteRow(
         {{core::AuxValue::Of(
@@ -599,20 +430,13 @@ void TpchQ1Module::EmitResult(
           core::AuxValue::Of(
               core::AuxType::String,
               ::accelerator_codegen::UnpackQ1Linestatus(row.group_key)),
-          core::AuxValue::Of(core::AuxType::ScaledDecimal,
-                             core::ScaledDecimal{HugeintLower(row.sum_qty), 2}),
-          core::AuxValue::Of(
-              core::AuxType::ScaledDecimal,
-              core::ScaledDecimal{HugeintLower(row.sum_base_price), 2}),
-          core::AuxValue::Of(
-              core::AuxType::ScaledDecimal,
-              core::ScaledDecimal{HugeintLower(row.sum_disc_price), 4}),
-          core::AuxValue::Of(
-              core::AuxType::ScaledDecimal,
-              core::ScaledDecimal{HugeintLower(row.sum_charge), 6}),
-          core::AuxValue::Of(core::AuxType::Double, row.avg_qty),
-          core::AuxValue::Of(core::AuxType::Double, row.avg_price),
-          core::AuxValue::Of(core::AuxType::Double, row.avg_disc),
+          numeric(pgn::ToText(row.sum_qty, 2)),
+          numeric(pgn::ToText(row.sum_base_price, 2)),
+          numeric(pgn::ToText(row.sum_disc_price, 4)),
+          numeric(pgn::ToText(row.sum_charge, 6)),
+          numeric(pgn::ToText(row.avg_qty)),
+          numeric(pgn::ToText(row.avg_price)),
+          numeric(pgn::ToText(row.avg_disc)),
           core::AuxValue::Of(core::AuxType::Int64, row.count_order)}});
   }
   sink.End();

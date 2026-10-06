@@ -4,8 +4,10 @@
 // Finalize headers pull in DuckDB types; include them before PostgreSQL
 // headers to avoid timestamp.h macro collisions.
 #include "tpch/q19/postgres/aux/module.hpp"
+#include <stdexcept>
 
 
+#include "accelerator_codegen/stateful/core/decimal_text_g1.hpp"
 #include "accelerator_codegen/stateful/postgres/postgres_tpch_table_ids.hpp"
 #include "postgres/engine_runtime.hpp"
 #include "postgres/runtime.hpp"
@@ -30,42 +32,56 @@ void ScanTpchQ19Parts(
       });
 }
 
-void ScanTpchQ19Lineitems(
-    const std::function<void(const query::TpchQ19LineitemInput &)> &consumer) {
+// lineitem JOIN part with the shipping predicate and family classification
+// applied and grouped in the engine: one row per (brand, family, quantity)
+// with exact numeric sums (text).
+void ScanTpchQ19GroupAggregates(
+    const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer) {
+  namespace dec = accelerator_codegen::aux_state::core::decimal_text;
+  const std::string family = query::TpchQ19FamilySql();
   ScanTypedTuples(
-      "SELECT l_partkey, l_quantity, l_extendedprice, l_discount, l_shipmode, "
-      "l_shipinstruct FROM lineitem",
+      "SELECT p_brand, " + family +
+          " AS fam, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
+          "count(*) FROM lineitem, part WHERE l_partkey = p_partkey AND " +
+          query::TpchQ19ShippingSql() + " AND " + family +
+          " IS NOT NULL GROUP BY p_brand, fam, l_quantity",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedDecimalRaw(tuple, tuple_desc, 1),
-                  TypedDecimalRaw(tuple, tuple_desc, 2),
-                  TypedDecimalRaw(tuple, tuple_desc, 3),
-                  TypedText(tuple, tuple_desc, 4),
-                  TypedText(tuple, tuple_desc, 5)});
+        query::TpchQ19GroupAggregate agg;
+        agg.brand = TypedText(tuple, tuple_desc, 0);
+        agg.family = static_cast<int>(TypedInt(tuple, tuple_desc, 1));
+        __int128 quantity = 0;
+        if (!dec::Parse(TypedText(tuple, tuple_desc, 2), 2, quantity) ||
+            !dec::Parse(TypedText(tuple, tuple_desc, 3), 4, agg.revenue_raw))
+          throw std::runtime_error("TPC-H Q19: unparsable numeric");
+        agg.quantity_raw = static_cast<int64_t>(quantity);
+        agg.count = TypedInt(tuple, tuple_desc, 4);
+        consumer(agg);
       });
 }
 
-bool LookupTpchQ19Part(int64_t partkey, query::TpchQ19PartInput &out) {
-  if (SPI_connect() != SPI_OK_CONNECT) {
-    return false;
-  }
-  char sql[256];
-  snprintf(sql, sizeof(sql),
-           "SELECT p_brand, p_container, p_size FROM part WHERE p_partkey = %lld",
-           static_cast<long long>(partkey));
-  ++t_table_scans;
-  const int status = SPI_execute(sql, true, 1);
-  bool found = false;
-  if (status == SPI_OK_SELECT && SPI_processed > 0 && SPI_tuptable) {
-    HeapTuple tuple = SPI_tuptable->vals[0];
-    TupleDesc tuple_desc = SPI_tuptable->tupdesc;
-    out = {partkey, TypedText(tuple, tuple_desc, 0),
-           TypedText(tuple, tuple_desc, 1),
-           static_cast<int32_t>(TypedInt(tuple, tuple_desc, 2))};
-    found = true;
-  }
-  SPI_finish();
-  return found;
+// Point re-aggregation of the given parts' qualifying lineitems (l_partkey is
+// indexed).
+void ScanTpchQ19PartQuantityRevenue(
+    const std::vector<int64_t> &partkeys,
+    const std::function<void(const query::TpchQ19PartQuantityRevenue &)>
+        &consumer) {
+  namespace dec = accelerator_codegen::aux_state::core::decimal_text;
+  ScanTypedTuplesAfterOwnWrites(
+      "SELECT l_partkey, l_quantity, sum(l_extendedprice * (1 - l_discount)), "
+      "count(*) FROM lineitem WHERE " +
+          KeyListPredicate("l_partkey", partkeys) + " AND " +
+          query::TpchQ19ShippingSql() + " GROUP BY l_partkey, l_quantity",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        query::TpchQ19PartQuantityRevenue row;
+        row.partkey = TypedInt(tuple, tuple_desc, 0);
+        __int128 quantity = 0;
+        if (!dec::Parse(TypedText(tuple, tuple_desc, 1), 2, quantity) ||
+            !dec::Parse(TypedText(tuple, tuple_desc, 2), 4, row.revenue_raw))
+          throw std::runtime_error("TPC-H Q19: unparsable numeric");
+        row.quantity_raw = static_cast<int64_t>(quantity);
+        row.count = TypedInt(tuple, tuple_desc, 3);
+        consumer(row);
+      });
 }
 
 } // namespace scans
@@ -77,13 +93,16 @@ public:
       override {
     scans::ScanTpchQ19Parts(consumer);
   }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ19LineitemInput &)> &consumer)
+  void ScanGroupAggregates(
+      const std::function<void(const query::TpchQ19GroupAggregate &)> &consumer)
       override {
-    scans::ScanTpchQ19Lineitems(consumer);
+    scans::ScanTpchQ19GroupAggregates(consumer);
   }
-  bool LookupPart(int64_t partkey, query::TpchQ19PartInput &out) override {
-    return scans::LookupTpchQ19Part(partkey, out);
+  void ScanPartQuantityRevenue(
+      const std::vector<int64_t> &partkeys,
+      const std::function<void(const query::TpchQ19PartQuantityRevenue &)>
+          &consumer) override {
+    scans::ScanTpchQ19PartQuantityRevenue(partkeys, consumer);
   }
 };
 Runtime<query::TpchQ19Module, query::TpchQ19Config, TpchQ19Scan> &
@@ -103,22 +122,21 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ19(FunctionCallInfo fcinfo) {
+  // A NULL argument is passed on as a NULL value (its OR branch is then NULL).
+  const auto text = [&](int index) {
+    return PG_ARGISNULL(index)
+               ? core::AuxValue::Null(core::AuxType::String)
+               : core::AuxValue::Of(core::AuxType::String,
+                                    detail::TextDatum(PG_GETARG_DATUM(index)));
+  };
+  const auto integer = [&](int index) {
+    return PG_ARGISNULL(index)
+               ? core::AuxValue::Null(core::AuxType::Int64)
+               : core::AuxValue::Of(core::AuxType::Int64, PG_GETARG_INT64(index));
+  };
   detail::Q19Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(0))),
-                            core::AuxValue::Of(core::AuxType::Int64,
-                                               PG_GETARG_INT64(1)),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(2))),
-                            core::AuxValue::Of(core::AuxType::Int64,
-                                               PG_GETARG_INT64(3)),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(4))),
-                            core::AuxValue::Of(core::AuxType::Int64,
-                                               PG_GETARG_INT64(5))}},
+      core::QueryArguments{{text(0), integer(1), text(2), integer(3), text(4),
+                            integer(5)}},
       fcinfo);
 }
 

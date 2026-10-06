@@ -1,49 +1,35 @@
 #include "tpch/q1/mysql/aux/finalize.hpp"
 
 #include <algorithm>
-#include <cmath>
-#include <limits>
-#include <string>
-
-#include "duckdb/common/types/hugeint.hpp"
-#include "duckdb/common/types/value.hpp"
 
 namespace accelerator_codegen {
 namespace {
 
-constexpr uint8_t kDecimalScale2 = 2;
-constexpr uint8_t kDecimalScale4 = 4;
-constexpr uint8_t kDecimalScale6 = 6;
-constexpr uint8_t kDecimalWidth38 = 38;
+constexpr int kDecimalScale2 = 2;
+constexpr int64_t kFenwickDomain = int64_t{1} << 32; // day indexes 1 .. 2^32
 
-duckdb::hugeint_t AccToHugeint(Q1AccT value) {
-#if defined(__SIZEOF_INT128__)
-	return duckdb::hugeint_t(static_cast<int64_t>(value >> 64), static_cast<uint64_t>(value));
-#else
-	return duckdb::hugeint_t(value);
-#endif
+// avg(decimal(p, 2)) as MySQL evaluates it: the sum divided by the count at
+// scale 2 + div_precision_increment (4), rounded half away from zero.
+pg_numeric::Decimal MysqlAvgOfScaledSum(Q1AccT sum, int64_t count) {
+	constexpr int kDivPrecisionIncrement = 4;
+	pg_numeric::Int128 scaled = sum;
+	for (int i = 0; i < kDivPrecisionIncrement; ++i)
+		scaled *= 10;
+	const pg_numeric::Int128 n = count;
+	pg_numeric::Int128 q = scaled / n;
+	const pg_numeric::Int128 r = scaled % n;
+	const pg_numeric::Int128 twice_r = (r < 0 ? -r : r) * 2;
+	if (twice_r >= n)
+		q += scaled < 0 ? -1 : 1;
+	return {q, kDecimalScale2 + kDivPrecisionIncrement};
 }
 
-inline void AddAcc(Q1AccT &accumulator, Q1AccT value) {
-	accumulator += value;
+inline int64_t NodeKey(int64_t node, Q1GroupKey group) {
+	return (node << 16) | group;
 }
 
-inline void AddAcc(Q1AccT &accumulator, int64_t value) {
-	accumulator += static_cast<Q1AccT>(value);
-}
-
-double HugeintScaleToDouble(Q1AccT value, uint8_t scale, uint64_t count) {
-	if (count == 0) {
-		return 0.0;
-	}
-	auto as_hugeint = AccToHugeint(value);
-	auto numeric = duckdb::Hugeint::Cast<double>(as_hugeint);
-	double scaled = numeric;
-	while (scale > 0) {
-		scaled /= 10.0;
-		scale--;
-	}
-	return scaled / static_cast<double>(count);
+inline int64_t DayIndex(int64_t day) {
+	return day - static_cast<int64_t>(INT32_MIN) + 1;
 }
 
 } // namespace
@@ -61,51 +47,69 @@ std::string UnpackQ1Linestatus(Q1GroupKey key) {
 	return std::string(1, static_cast<char>(key & 0xFF));
 }
 
-void ApplyQ1RowContribution(Q1DayGroupStats &stats, int64_t quantity_raw, int64_t extendedprice_raw,
-                            int64_t discount_raw, int64_t tax_raw, int8_t sign) {
-	stats.count += sign;
-	stats.sum_qty += sign * quantity_raw;
-	stats.sum_base_price += sign * extendedprice_raw;
-	stats.sum_discount += sign * discount_raw;
-	const auto one_minus_discount_raw = static_cast<int64_t>(100 - discount_raw);
-	const Q1AccT disc_price_raw = static_cast<Q1AccT>(extendedprice_raw) * static_cast<Q1AccT>(one_minus_discount_raw);
-	stats.sum_disc_price += static_cast<Q1AccT>(sign) * disc_price_raw;
-	const auto one_plus_tax_raw = static_cast<int64_t>(100 + tax_raw);
-	stats.sum_charge += static_cast<Q1AccT>(sign) * disc_price_raw * static_cast<Q1AccT>(one_plus_tax_raw);
+Q1DayGroupStats Q1RowContribution(int64_t quantity_raw, int64_t extendedprice_raw, int64_t discount_raw,
+                                  int64_t tax_raw, int8_t sign) {
+	Q1DayGroupStats stats;
+	const Q1AccT s = sign;
+	const Q1AccT disc_price = static_cast<Q1AccT>(extendedprice_raw) * static_cast<Q1AccT>(100 - discount_raw);
+	stats.count = sign;
+	stats.sum_qty = s * quantity_raw;
+	stats.sum_base_price = s * extendedprice_raw;
+	stats.sum_discount = s * discount_raw;
+	stats.sum_disc_price = s * disc_price;
+	stats.sum_charge = s * disc_price * static_cast<Q1AccT>(100 + tax_raw);
+	return stats;
 }
 
-void MergeQ1DayGroupStats(Q1MergedGroupStats &merged, const Q1DayGroupStats &day_stats) {
-	merged.count += day_stats.count;
-	AddAcc(merged.sum_qty, day_stats.sum_qty);
-	AddAcc(merged.sum_base_price, day_stats.sum_base_price);
-	AddAcc(merged.sum_disc_price, day_stats.sum_disc_price);
-	AddAcc(merged.sum_charge, day_stats.sum_charge);
-	AddAcc(merged.sum_discount, day_stats.sum_discount);
+void AddQ1Stats(Q1DayGroupStats &into, const Q1DayGroupStats &delta) {
+	into.count += delta.count;
+	into.sum_qty += delta.sum_qty;
+	into.sum_base_price += delta.sum_base_price;
+	into.sum_disc_price += delta.sum_disc_price;
+	into.sum_charge += delta.sum_charge;
+	into.sum_discount += delta.sum_discount;
 }
 
-std::vector<Q1OutputRow> FinalizeQ1MergedGroups(const std::unordered_map<Q1GroupKey, Q1MergedGroupStats> &merged) {
+void Q1FenwickAdd(Q1FenwickState &state, int32_t day, Q1GroupKey group, const Q1DayGroupStats &delta) {
+	const auto it = std::lower_bound(state.groups.begin(), state.groups.end(), group);
+	if (it == state.groups.end() || *it != group)
+		state.groups.insert(it, group);
+	for (int64_t node = DayIndex(day); node <= kFenwickDomain; node += node & -node)
+		AddQ1Stats(state.nodes[NodeKey(node, group)], delta);
+}
+
+std::vector<Q1OutputRow> Q1FenwickPrefixRows(const Q1FenwickState &state, int64_t cutoff_days) {
 	std::vector<Q1OutputRow> rows;
-	rows.reserve(merged.size());
-	for (const auto &entry : merged) {
-		const auto &stats = entry.second;
-		if (stats.count <= 0) {
-			continue;
+	if (cutoff_days < INT32_MIN)
+		return rows;
+	const int64_t last = std::min<int64_t>(DayIndex(std::min<int64_t>(cutoff_days, INT32_MAX)), kFenwickDomain);
+	for (const auto group : state.groups) { // sorted: output order
+		Q1MergedGroupStats stats;
+		for (int64_t node = last; node > 0; node -= node & -node) {
+			const auto *cell = state.nodes.Find(NodeKey(node, group));
+			if (!cell)
+				continue;
+			stats.count += cell->count;
+			stats.sum_qty += cell->sum_qty;
+			stats.sum_base_price += cell->sum_base_price;
+			stats.sum_disc_price += cell->sum_disc_price;
+			stats.sum_charge += cell->sum_charge;
+			stats.sum_discount += cell->sum_discount;
 		}
+		if (stats.count <= 0)
+			continue;
 		Q1OutputRow row;
-		row.group_key = entry.first;
-		row.sum_qty = AccToHugeint(stats.sum_qty);
-		row.sum_base_price = AccToHugeint(stats.sum_base_price);
-		row.sum_disc_price = AccToHugeint(stats.sum_disc_price);
-		row.sum_charge = AccToHugeint(stats.sum_charge);
-		const auto count = static_cast<uint64_t>(stats.count);
-		row.avg_qty = HugeintScaleToDouble(stats.sum_qty, kDecimalScale2, count);
-		row.avg_price = HugeintScaleToDouble(stats.sum_base_price, kDecimalScale2, count);
-		row.avg_disc = HugeintScaleToDouble(stats.sum_discount, kDecimalScale2, count);
+		row.group_key = group;
+		row.sum_qty = stats.sum_qty;
+		row.sum_base_price = stats.sum_base_price;
+		row.sum_disc_price = stats.sum_disc_price;
+		row.sum_charge = stats.sum_charge;
+		row.avg_qty = MysqlAvgOfScaledSum(stats.sum_qty, stats.count);
+		row.avg_price = MysqlAvgOfScaledSum(stats.sum_base_price, stats.count);
+		row.avg_disc = MysqlAvgOfScaledSum(stats.sum_discount, stats.count);
 		row.count_order = stats.count;
 		rows.push_back(row);
 	}
-	std::sort(rows.begin(), rows.end(),
-	          [](const Q1OutputRow &lhs, const Q1OutputRow &rhs) { return lhs.group_key < rhs.group_key; });
 	return rows;
 }
 

@@ -1,70 +1,78 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
-#include "duckdb/common/types/date.hpp"
-#include "duckdb/common/types/hugeint.hpp"
+#include "accelerator_codegen/stateful/core/cow_fenwick_g1.hpp"
 
 namespace accelerator_codegen {
 
-#if defined(__SIZEOF_INT128__)
 using Q6AccT = __int128_t;
-#else
-using Q6AccT = duckdb::hugeint_t;
-#endif
 
-constexpr uint8_t kQ6RevenueDecimalWidth = 38;
-constexpr uint8_t kQ6RevenueDecimalScale = 4;
+// Distinct observed values of one lineitem column (raw coefficients at scale
+// 2), interned in first-seen order; the id is stable, so growing the
+// dictionary never renumbers (and never rewrites) existing state.
+struct Q6ValueDict {
+	std::vector<int64_t> values; // id -> raw value
+	std::unordered_map<int64_t, uint32_t> ids;
 
-// Discount and quantity are stored at cent precision (scale 2). TPC-H bounds are
-// discount in [0.00, 0.10] and integer quantity in [0, 50]. Cells are indexed by
-// integer quantity (quantity_raw / 100), not the 0.01 grid.
-constexpr int32_t kQ6DiscountBuckets = 11;
-constexpr int32_t kQ6QuantityScale = 100;
-constexpr int32_t kQ6QuantityBuckets = 51;
-constexpr int32_t kQ6MaxDiscountCent = kQ6DiscountBuckets - 1;
-constexpr int32_t kQ6MaxQuantityBucket = kQ6QuantityBuckets - 1;
-
-struct Q6RevenueMatrix {
-	std::array<Q6AccT, static_cast<std::size_t>(kQ6DiscountBuckets * kQ6QuantityBuckets)> cells{};
-
-	static constexpr int32_t QuantityBucket(int64_t quantity_scaled) {
-		if (quantity_scaled < 0)
-			return -1;
-		return static_cast<int32_t>(quantity_scaled / kQ6QuantityScale);
+	uint32_t Intern(int64_t raw);
+	std::size_t size() const {
+		return values.size();
 	}
-
-	static constexpr std::size_t CellIndex(int8_t discount_cent, int64_t quantity_scaled) {
-		return static_cast<std::size_t>(discount_cent) *
-		           static_cast<std::size_t>(kQ6QuantityBuckets) +
-		       static_cast<std::size_t>(QuantityBucket(quantity_scaled));
-	}
-
-	Q6AccT &At(int8_t discount_cent, int64_t quantity_scaled) {
-		return cells[CellIndex(discount_cent, quantity_scaled)];
-	}
-
-	const Q6AccT &At(int8_t discount_cent, int64_t quantity_scaled) const {
-		return cells[CellIndex(discount_cent, quantity_scaled)];
-	}
-
-	void AddCell(int8_t discount_cent, int64_t quantity_scaled, Q6AccT contribution, int8_t sign = 1);
-
-	Q6AccT SumRange(int64_t discount_lower_raw, int64_t discount_upper_raw,
-	                int64_t quantity_upper_raw) const;
 };
 
-Q6AccT Q6RowContributionRaw(int64_t extendedprice_raw, int64_t discount_raw);
+// One Fenwick node: revenue sum and row count per (discount id, quantity id)
+// cell, row-major with the node's own grid dimensions (ids beyond them read
+// as empty; the grid is regrown, ids kept, when a write meets a larger
+// dictionary).
+struct Q6Node {
+	uint32_t discounts = 0;
+	uint32_t quantities = 0;
+	std::vector<Q6AccT> revenue;
+	std::vector<int64_t> count;
+};
 
-void ApplyQ6CellContribution(Q6RevenueMatrix &matrix, int8_t discount_cent, int64_t quantity_scaled,
-                             Q6AccT contribution, int8_t sign = 1);
+// The whole state (one image, SF-independent): a copy-on-write Fenwick tree
+// over shipdate days whose nodes are discount x quantity grids, plus the two
+// value dictionaries. Revenue is sum(extendedprice * discount) at scale 4.
+struct Q6State {
+	aux_state::core::CowFenwick<Q6Node> days;
+	Q6ValueDict discounts;
+	Q6ValueDict quantities;
+};
 
-Q6AccT SumQ6MatrixRange(const Q6RevenueMatrix &matrix, int64_t discount_lower_raw,
-                        int64_t discount_upper_raw, int64_t quantity_upper_raw);
+// Add `revenue` / `count` rows to the (day, discount, quantity) cell.
+void Q6AddCell(Q6State &state, int32_t day, int64_t discount_raw, int64_t quantity_raw, Q6AccT revenue,
+               int64_t count);
 
-duckdb::hugeint_t Q6RevenueFromAccumulator(Q6AccT raw);
+// The row's SUM(l_extendedprice * l_discount) term (scale 4).
+Q6AccT Q6RowRevenue(int64_t extendedprice_raw, int64_t discount_raw);
 
-duckdb::date_t Q6ComputeExclusiveEndDate(duckdb::date_t start_date);
+// A resolved query: shipdate in [start_days, end_days), discount raw (cents)
+// in [discount_lo, discount_hi], quantity raw (hundredths) <= quantity_hi.
+struct Q6Predicate {
+	int64_t start_days = 0;
+	int64_t end_days = 0;
+	int64_t discount_lo = 0;
+	int64_t discount_hi = 0;
+	int64_t quantity_hi = 0;
+};
+
+// Resolve the template parameters exactly. The double arguments are read as
+// the shortest decimal that round-trips them (the literal the caller wrote);
+// the band is [d - 0.01, d + 0.01] and the quantity bound `< q`, evaluated in
+// exact decimal arithmetic against cent-precision columns. False: an argument
+// is NaN (no row can match).
+bool Q6ResolvePredicate(int64_t start_days, double discount, double quantity, Q6Predicate &out);
+
+struct Q6Result {
+	Q6AccT revenue = 0;
+	int64_t count = 0; // qualifying rows (SUM over none is NULL)
+};
+
+Q6Result Q6Query(const Q6State &state, const Q6Predicate &predicate);
 
 } // namespace accelerator_codegen
