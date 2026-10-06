@@ -165,17 +165,19 @@ std::string ShellEscape(const std::string &s) {
 }
 
 // ---- Connection settings --------------------------------------------------
-// The scan connection is made back to the server this plugin runs in, as the
-// same environment contract the CLI path always used: MYSQL_HOST, MYSQL_PORT
-// (or MYSQL_TCP_PORT), MYSQL_USER, MYSQL_PWD, the database from ACCEL_MYSQL_DB
-// (legacy: TPCH_MYSQL_DB), and optionally MYSQL_UNIX_PORT (a socket path,
-// preferred over TCP when set).
+// The scan connection is made back to the server this plugin runs in. It is
+// configured only through the server process's environment (nothing is
+// compiled in): MYSQL_HOST (default 127.0.0.1), MYSQL_PORT / MYSQL_TCP_PORT
+// (3306), MYSQL_USER (root), the password from MYSQL_PWD, else the image's
+// MYSQL_ROOT_PASSWORD (else empty), the database from ACCEL_MYSQL_DB, else
+// MYSQL_DATABASE (else none; mysql_accel_set_scan_database overrides it), and
+// optionally MYSQL_UNIX_PORT (a socket path, preferred over TCP when set).
 struct ConnSettings {
   std::string host = "127.0.0.1";
   unsigned port = 3306;
   std::string user = "root";
-  std::string password = "mysql";
-  std::string db = "accel_mysql_test";
+  std::string password;
+  std::string db;
   std::string socket;
 };
 
@@ -206,8 +208,9 @@ ConnSettings ReadConnSettings() {
   else if (auto v2 = EnvNonEmpty("MYSQL_TCP_PORT")) c.port = static_cast<unsigned>(std::strtoul(v2, nullptr, 10));
   if (auto v = EnvNonEmpty("MYSQL_USER")) c.user = v;
   if (const char *v = std::getenv("MYSQL_PWD")) c.password = v;
+  else if (auto v2 = EnvNonEmpty("MYSQL_ROOT_PASSWORD")) c.password = v2;
   if (auto v = EnvNonEmpty("ACCEL_MYSQL_DB")) c.db = v;
-  else if (auto v2 = EnvNonEmpty("TPCH_MYSQL_DB")) c.db = v2;
+  else if (auto v2 = EnvNonEmpty("MYSQL_DATABASE")) c.db = v2;
   if (auto v = EnvNonEmpty("MYSQL_UNIX_PORT")) c.socket = v;
   {
     std::lock_guard<std::mutex> lock(g_scan_db_mutex);
@@ -216,13 +219,17 @@ ConnSettings ReadConnSettings() {
   return c;
 }
 
-std::string MysqlCliPrefix() {
+std::string MysqlCliBase() {
   const ConnSettings c = ReadConnSettings();
   std::ostringstream cmd;
-  cmd << "MYSQL_PWD=" << ShellEscape(c.password) << " mysql -h " << c.host << " -P " << c.port
-      << " -u" << c.user << " -D " << c.db
-      << " --quick --batch --skip-column-names -e ";
+  cmd << "MYSQL_PWD=" << ShellEscape(c.password) << " mysql -h " << ShellEscape(c.host)
+      << " -P " << c.port << " -u" << ShellEscape(c.user);
+  if (!c.db.empty()) cmd << " -D " << ShellEscape(c.db);
   return cmd.str();
+}
+
+std::string MysqlCliPrefix() {
+  return MysqlCliBase() + " --quick --batch --skip-column-names -e ";
 }
 
 // Tab-separated line from `mysql --batch` (without --raw): fields are

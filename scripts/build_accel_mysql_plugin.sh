@@ -162,10 +162,13 @@ for d in /usr/lib/mysql/plugin /usr/lib64/mysql/plugin /usr/lib/x86_64-linux-gnu
   fi
 done
 if [[ -n "${PLUGIN_DIR}" && -f accelerator_codegen_mysql.so ]]; then
-  cp -f accelerator_codegen_mysql.so "${PLUGIN_DIR}/"
-  cp -f libaccelerator_codegen.so "${PLUGIN_DIR}/" || true
+  # Replace the files by rename, never in place: the running server has the
+  # old plugin mapped, and overwriting a mapped .so crashes mysqld on shutdown.
+  install_atomic() { cp -f "$1" "${PLUGIN_DIR}/.$(basename "$1").new" && mv -f "${PLUGIN_DIR}/.$(basename "$1").new" "${PLUGIN_DIR}/$(basename "$1")"; }
+  install_atomic accelerator_codegen_mysql.so
+  install_atomic libaccelerator_codegen.so || true
   if [[ -f /accel-build/duckdb/src/libduckdb.so ]]; then
-    cp -f /accel-build/duckdb/src/libduckdb.so "${PLUGIN_DIR}/" || true
+    install_atomic /accel-build/duckdb/src/libduckdb.so || true
   fi
   echo "installed accelerator_codegen_mysql.so into ${PLUGIN_DIR}"
 else

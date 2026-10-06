@@ -101,7 +101,7 @@ struct BuildStats {
 BuildStats &GetBuildStats();
 
 std::string ResolveCostModelPath(const char *env_name, const char *default_relative_path);
-// The database the scan connections use: ACCEL_MYSQL_DB / TPCH_MYSQL_DB from
+// The database the scan connections use: ACCEL_MYSQL_DB / MYSQL_DATABASE from
 // the server's environment, or this override (mysql_accel_set_scan_database).
 // Aux states already built are not affected: invalidate them to rebuild.
 void SetScanDatabase(const std::string &db);
@@ -110,6 +110,9 @@ void SetScanDatabase(const std::string &db);
 void SetScanMode(const std::string &mode);
 // Strict 'YYYY-MM-DD' -> Unix-epoch days; throws std::runtime_error if malformed.
 int32_t ParseUnixDays(const std::string &text);
+// `mysql` CLI command line (connection options only) for the server's scan
+// connection settings; append further options and the statement.
+std::string MysqlCliBase();
 std::string MysqlCliPrefix();
 std::string ShellEscape(const std::string &s);
 std::vector<std::string> SplitTsv(const std::string &line);
@@ -286,8 +289,16 @@ public:
         scan(), module(config, &scan), accelerator(std::move(accelerator)) {
     auto module_view = std::shared_ptr<Module>(&module, [](Module *) {});
     replay_coordinator.Register(module_view);
-    coordinator.Register(std::move(module_view));
+    coordinator.Register(module_view);
     replay_coordinator.AttachServices(backend);
+    // Every session (connection) stages its writes in a coordinator of its own
+    // over this same module: one session's ROLLBACK or COMMIT never touches
+    // another's staged writes (see MysqlAuxBackend, "Per-session transactions").
+    backend.SetSessionCoordinatorFactory([module_view] {
+      auto session_coordinator = std::make_unique<core::AuxTransactionCoordinator>();
+      session_coordinator->Register(module_view);
+      return session_coordinator;
+    });
     accelerator_codegen::aux_state::engine::mysql::
         RegisterMysqlMutationBackend(&backend);
     accelerator_codegen::aux_state::engine::mysql::
@@ -417,6 +428,7 @@ private:
       }
       // Install atomically wrt commits of captured writes and readers.
       std::lock_guard<std::mutex> commits(backend.CommitMutex());
+      std::lock_guard<std::mutex> module_calls(backend.ModuleMutex()); // replay uses the module
       std::unique_lock<accelerator_codegen::aux_state::WriterPreferringSharedMutex> readers(read_gate);
       auto log = backend.EndBuildLog();
       if (!log.complete) {

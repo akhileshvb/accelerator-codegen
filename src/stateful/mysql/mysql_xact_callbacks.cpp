@@ -5,14 +5,16 @@
 #include "accelerator_codegen/stateful/maintenance/maintenance_action.hpp"
 #include "accelerator_codegen/stateful/mysql/mysql_aux_backend.hpp"
 #include "accelerator_codegen/stateful/mysql/mysql_mutation_capture.hpp"
-#include "accelerator_codegen/stateful/mysql/mysql_tpch_table_ids.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <cstdlib>
-#include <initializer_list>
+#include <dlfcn.h>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace accelerator_codegen::aux_state::engine::mysql {
@@ -24,8 +26,7 @@ namespace {
 MysqlAuxBackend *g_active_backend = nullptr;
 std::mutex g_backends_mu;
 std::vector<MysqlAuxBackend *> g_mutation_backends;
-int g_observer_mutations = 0;
-bool g_schemas_registered = false;
+std::atomic<int> g_observer_mutations{0};
 std::unordered_map<MysqlAuxBackend *, std::string> g_backend_last_action;
 
 core::AuxRow ProjectRow(const core::AuxRow &src,
@@ -65,51 +66,53 @@ core::MutationBatch ProjectBatch(const core::MutationBatch &src,
   return out;
 }
 
-} // namespace
+// ---- Sessions -------------------------------------------------------------
+// A session is one server connection (one THD). The server exports
+// thd_get_current_thd() (the connection the calling thread serves) and
+// thd_in_active_multi_stmt_transaction(); both are looked up at run time so
+// the plugin still loads (and falls back to one session per OS thread, i.e.
+// per connection under the default thread-per-connection model, and to
+// autocommit semantics) on a server that lacks them.
+struct ServerHooks {
+  void *(*current_thd)() = nullptr;
+  bool (*in_transaction)(const void *) = nullptr;
+};
 
-void RegisterTpchCaptureSchemas() {
-  if (g_schemas_registered) {
-    return;
-  }
-  using T = core::AuxType;
-  auto Cols = [](std::initializer_list<T> types) {
-    std::vector<CaptureColumn> cols;
-    for (auto type : types) {
-      cols.push_back(CaptureColumn{type, true});
-    }
-    return cols;
-  };
-  RegisterCaptureTableSchema(
-      tpch_tables::kLineitem,
-      Cols({T::Int64, T::Int64, T::Int64, T::Int64, T::ScaledDecimal,
-            T::ScaledDecimal, T::ScaledDecimal, T::ScaledDecimal, T::String,
-            T::String, T::Date, T::Date, T::Date, T::String, T::String,
-            T::String}));
-  RegisterCaptureTableSchema(
-      tpch_tables::kOrders,
-      Cols({T::Int64, T::Int64, T::String, T::ScaledDecimal, T::Date, T::String,
-            T::String, T::Int64, T::String}));
-  RegisterCaptureTableSchema(
-      tpch_tables::kCustomer,
-      Cols({T::Int64, T::String, T::String, T::Int64, T::String,
-            T::ScaledDecimal, T::String, T::String}));
-  RegisterCaptureTableSchema(
-      tpch_tables::kPart,
-      Cols({T::Int64, T::String, T::String, T::String, T::String, T::Int64,
-            T::String, T::ScaledDecimal, T::String}));
-  RegisterCaptureTableSchema(
-      tpch_tables::kPartsupp,
-      Cols({T::Int64, T::Int64, T::Int64, T::ScaledDecimal, T::String}));
-  RegisterCaptureTableSchema(
-      tpch_tables::kSupplier,
-      Cols({T::Int64, T::String, T::String, T::Int64, T::String,
-            T::ScaledDecimal, T::String}));
-  RegisterCaptureTableSchema(
-      tpch_tables::kNation, Cols({T::Int64, T::String, T::Int64, T::String}));
-  RegisterCaptureTableSchema(tpch_tables::kRegion,
-                             Cols({T::Int64, T::String, T::String}));
-  g_schemas_registered = true;
+const ServerHooks &Hooks() {
+  static const ServerHooks hooks = [] {
+    ServerHooks h;
+    h.current_thd = reinterpret_cast<void *(*)()>(
+        dlsym(RTLD_DEFAULT, "_Z19thd_get_current_thdv"));
+    h.in_transaction = reinterpret_cast<bool (*)(const void *)>(
+        dlsym(RTLD_DEFAULT, "_Z36thd_in_active_multi_stmt_transactionPK3THD"));
+    return h;
+  }();
+  return hooks;
 }
+
+thread_local char t_thread_marker;
+
+// Sessions that captured something not yet committed or rolled back: the
+// statement-end fast path (most statements never touch an accelerator).
+std::mutex g_active_mu;
+std::unordered_set<std::uintptr_t> g_active_sessions;
+
+void MarkSessionActive(std::uintptr_t session) {
+  std::lock_guard<std::mutex> lock(g_active_mu);
+  g_active_sessions.insert(session);
+}
+
+bool IsSessionActive(std::uintptr_t session) {
+  std::lock_guard<std::mutex> lock(g_active_mu);
+  return g_active_sessions.count(session) != 0;
+}
+
+void ClearSessionActive(std::uintptr_t session) {
+  std::lock_guard<std::mutex> lock(g_active_mu);
+  g_active_sessions.erase(session);
+}
+
+} // namespace
 
 void RegisterMysqlXactCallbacks() {}
 
@@ -125,7 +128,6 @@ void RegisterMysqlMutationBackend(MysqlAuxBackend *backend) {
   if (!backend) {
     return;
   }
-  RegisterTpchCaptureSchemas();
   std::lock_guard<std::mutex> lock(g_backends_mu);
   for (auto *existing : g_mutation_backends) {
     if (existing == backend) {
@@ -165,19 +167,33 @@ std::vector<MysqlAuxBackend *> RegisteredMysqlMutationBackends() {
   return {};
 }
 
-void DispatchMysqlMutation(const char *relname,
-                           const core::MutationBatch &mutation) {
-  core::MutationBatch batch = mutation;
-  if (relname && *relname) {
-    const auto id = tpch_tables::IdFromRelname(relname);
-    if (id != 0) {
-      batch.table = id;
+std::uintptr_t MysqlSessionFromThd(const void *thd) {
+  if (thd && Hooks().current_thd) {
+    return reinterpret_cast<std::uintptr_t>(thd);
+  }
+  return reinterpret_cast<std::uintptr_t>(&t_thread_marker);
+}
+
+std::uintptr_t CurrentMysqlSession() {
+  if (Hooks().current_thd) {
+    if (void *thd = Hooks().current_thd()) {
+      return reinterpret_cast<std::uintptr_t>(thd);
     }
   }
+  return reinterpret_cast<std::uintptr_t>(&t_thread_marker);
+}
+
+bool MysqlThdInActiveTransaction(const void *thd) {
+  return thd && Hooks().in_transaction && Hooks().in_transaction(thd);
+}
+
+void DispatchMysqlMutation(const core::MutationBatch &batch) {
   auto backends = RegisteredMysqlMutationBackends();
   if (backends.empty()) {
     return;
   }
+  const std::uintptr_t session = CurrentMysqlSession();
+  MarkSessionActive(session);
   ++g_observer_mutations;
   for (auto *backend : backends) {
     if (!backend) {
@@ -188,53 +204,132 @@ void DispatchMysqlMutation(const char *relname,
       if (!attnums || attnums->empty()) {
         continue;
       }
-      backend->CaptureMutation(ProjectBatch(batch, *attnums));
+      backend->CaptureMutation(ProjectBatch(batch, *attnums), session);
     } catch (...) {
       // One accelerator must not skip capture for the others. This one may
       // have missed the write, so its state can no longer be trusted.
-      try { backend->NoteCaptureFailure(); } catch (...) {}
+      try { backend->NoteCaptureFailure(true, session); } catch (...) {}
     }
   }
 }
 
 void InvalidateAllMysqlAccelerators(bool transaction_open) {
+  const std::uintptr_t session = CurrentMysqlSession();
+  if (transaction_open) {
+    MarkSessionActive(session);
+  }
   for (auto *backend : RegisteredMysqlMutationBackends()) {
     if (!backend) continue;
-    try { backend->NoteCaptureFailure(transaction_open); } catch (...) {}
+    try { backend->NoteCaptureFailure(transaction_open, session); } catch (...) {}
   }
 }
 
-void DispatchMysqlTxnEvent(bool is_commit, bool is_rollback) {
-  auto backends = RegisteredMysqlMutationBackends();
-  for (auto *backend : backends) {
-    if (!backend) {
+namespace {
+
+// Publishes (or discards) one session's staged writes on one backend. Commit
+// and abort of captured writes are serialized with the install of a snapshot
+// build (MysqlAuxBackend::BeginBuildLog) and with each other: sessions publish
+// one at a time, each staged against the state the previous one left.
+void CommitSession(MysqlAuxBackend *backend, std::uintptr_t session) {
+  std::lock_guard<std::mutex> commit_lock(backend->CommitMutex());
+  try {
+    backend->OnPreCommit(session);
+    backend->OnCommit(session);
+    const auto entry = core::LastMaintenanceDecision();
+    if (entry && entry->valid) {
+      std::lock_guard<std::mutex> lock(g_backends_mu);
+      g_backend_last_action[backend] =
+          maintenance::MaintenanceActionName(entry->staged_action);
+    }
+  } catch (...) {
+    // Keep the remaining accelerators' commit paths running; this one's
+    // state may be missing the write.
+    try { backend->OnAbort(session); } catch (...) {}
+    try { backend->NoteCaptureFailure(/*transaction_open=*/false, session); } catch (...) {}
+  }
+}
+
+void AbortSession(MysqlAuxBackend *backend, std::uintptr_t session) {
+  std::lock_guard<std::mutex> commit_lock(backend->CommitMutex());
+  try {
+    backend->OnAbort(session);
+  } catch (...) {
+    try { backend->NoteCaptureFailure(/*transaction_open=*/false, session); } catch (...) {}
+  }
+}
+
+} // namespace
+
+void DispatchMysqlStatementEnd(std::uintptr_t session, MysqlStatementKind kind,
+                               bool failed, bool in_active_transaction) {
+  if (!IsSessionActive(session)) {
+    return; // this session captured nothing
+  }
+  bool work_left = false;
+  for (auto *backend : RegisteredMysqlMutationBackends()) {
+    if (!backend || !backend->SessionHasWork(session)) {
       continue;
     }
-    // Commit/abort of captured writes are serialized with the install of a
-    // snapshot build (MysqlAuxBackend::BeginBuildLog).
-    std::lock_guard<std::mutex> commit_lock(backend->CommitMutex());
     try {
-      if (is_commit) {
-        backend->OnPreCommit();
-        backend->OnCommit();
-        const auto entry = core::LastMaintenanceDecision();
-        if (entry && entry->valid) {
-          std::lock_guard<std::mutex> lock(g_backends_mu);
-          g_backend_last_action[backend] =
-              maintenance::MaintenanceActionName(entry->staged_action);
+      switch (kind) {
+      case MysqlStatementKind::Commit:
+        if (failed) {
+          // The commit failed: the transaction's fate is unknown here.
+          AbortSession(backend, session);
+          backend->NoteCaptureFailure(/*transaction_open=*/false, session);
+        } else {
+          CommitSession(backend, session);
         }
-      } else if (is_rollback) {
-        backend->OnAbort();
+        break;
+      case MysqlStatementKind::Rollback:
+        AbortSession(backend, session);
+        break;
+      case MysqlStatementKind::RollbackToSavepoint:
+        // Writes after the savepoint were captured but are now undone, and
+        // are not tracked individually: discard the transaction's writes at
+        // its end and rebuild (a failed ROLLBACK TO changed nothing).
+        backend->EndStatement(session, false);
+        if (!failed) backend->PoisonSession(session);
+        break;
+      case MysqlStatementKind::Begin:
+        // START TRANSACTION commits a transaction still open (implicit
+        // commit); the new one has captured nothing yet.
+        backend->EndStatement(session, failed);
+        CommitSession(backend, session);
+        break;
+      case MysqlStatementKind::Other:
+        backend->EndStatement(session, failed);
+        if (!in_active_transaction) {
+          // Autocommit statement (or one that implicitly ended the
+          // transaction): its writes are committed, or all rolled back.
+          if (failed) AbortSession(backend, session);
+          else CommitSession(backend, session);
+        }
+        break;
       }
     } catch (...) {
-      // Keep remaining accelerators' commit/abort paths running; this one's
-      // state may be missing the write.
-      try { backend->NoteCaptureFailure(/*transaction_open=*/false); } catch (...) {}
+      try { backend->OnAbort(session); } catch (...) {}
+      try { backend->NoteCaptureFailure(/*transaction_open=*/false, session); } catch (...) {}
     }
+    work_left = work_left || backend->SessionHasWork(session);
+  }
+  if (!work_left) {
+    ClearSessionActive(session);
   }
 }
 
-int MysqlObserverMutationCount() { return g_observer_mutations; }
+void DispatchMysqlSessionEnd(std::uintptr_t session) {
+  if (!IsSessionActive(session)) {
+    return;
+  }
+  for (auto *backend : RegisteredMysqlMutationBackends()) {
+    if (!backend) continue;
+    try { backend->EndSession(session); } catch (...) {}
+  }
+  ClearSessionActive(session);
+}
+
+int MysqlObserverMutationCount() { return g_observer_mutations.load(); }
 
 void MysqlResetObserver() { g_observer_mutations = 0; }
 
