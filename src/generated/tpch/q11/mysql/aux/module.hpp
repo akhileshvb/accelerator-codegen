@@ -15,6 +15,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/signed_key_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/cow_sorted_blocks.hpp"
 #include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
 
@@ -48,11 +49,11 @@ struct TpchQ11PartsuppInput {
 
 struct TpchQ11SupplierInput {
   int64_t suppkey = 0;
-  int32_t nationkey = 0;
+  int64_t nationkey = 0;
 };
 
 struct TpchQ11NationInput {
-  int32_t nationkey = 0;
+  int64_t nationkey = 0;
   std::string name;
 };
 
@@ -91,13 +92,13 @@ struct TpchQ11OutputRow {
 // touch nothing else; a supplier moving nation re-groups just its parts (found
 // by one in-memory scan of the facts, no table scan, no rebuild).
 // Values with |value| > 2^62 (impossible for TPC-H data) live in a side set so
-// no data overflows; keys must be non-negative.
+// no data overflows; any int64 key works (SignedKeyCowArray).
 //
 // Memory: ~22 B/partsupp row facts + ~19 B/row ordered entries = ~41 B/row:
 // SF100 (80M rows) ~3.3 GB, SF1000 (800M rows) ~33 GB (was ~15-20 GB at SF100).
 // Execute: O(output rows + log n); deltas O(log n + 64 KB block copy).
 // ---------------------------------------------------------------------------
-constexpr int32_t kTpchQ11NoNation = std::numeric_limits<int32_t>::min();
+constexpr int64_t kTpchQ11NoNation = std::numeric_limits<int64_t>::min();
 constexpr std::size_t kTpchQ11InlineOffers = 4;
 constexpr int64_t kTpchQ11NarrowLimit = int64_t{1} << 62;
 
@@ -144,7 +145,7 @@ struct TpchQ11Group {
 };
 
 struct TpchQ11NationRec {
-  int32_t key = 0;
+  int64_t key = 0;
   std::string name;
 };
 
@@ -160,18 +161,18 @@ struct TpchQ11PartValue {
 struct TpchQ11State {
   std::shared_ptr<const std::vector<TpchQ11NationRec>> nations =
       std::make_shared<const std::vector<TpchQ11NationRec>>();
-  core::ChunkedCowArray<int32_t> supplier_nation{kTpchQ11NoNation};
-  core::ChunkedCowArray<TpchQ11OfferSlots, 10> offers;
+  core::SignedKeyCowArray<int64_t> supplier_nation{kTpchQ11NoNation};
+  core::SignedKeyCowArray<TpchQ11OfferSlots, 10> offers;
   core::ShardedCowHashMap<std::vector<TpchQ11Offer>> offer_overflow;
-  std::unordered_map<int32_t, std::shared_ptr<TpchQ11Group>> groups;
+  std::unordered_map<int64_t, std::shared_ptr<TpchQ11Group>> groups;
 
   TpchQ11Offer OfferAt(const TpchQ11OfferSlots &slots, int64_t partkey,
                        uint32_t i) const;
   // Value of `partkey` in `nationkey` given a suppkey -> nationkey map.
   TpchQ11PartValue
-  PartValueIn(int64_t partkey, int32_t nationkey,
-              const core::ChunkedCowArray<int32_t> &supplier_map) const;
-  const TpchQ11Group *FindGroup(int32_t nationkey) const {
+  PartValueIn(int64_t partkey, int64_t nationkey,
+              const core::SignedKeyCowArray<int64_t> &supplier_map) const;
+  const TpchQ11Group *FindGroup(int64_t nationkey) const {
     const auto it = groups.find(nationkey);
     return it == groups.end() ? nullptr : it->second.get();
   }
@@ -182,11 +183,11 @@ struct TpchQ11State {
   bool RemoveOffer(int64_t partkey, const TpchQ11Offer &offer);
   // sign > 0 adds the row, < 0 removes it; false if a removal finds no row.
   bool ApplyPartsupp(int8_t sign, int64_t partkey, const TpchQ11Offer &offer);
-  void SetSupplierNation(int64_t suppkey, int32_t nationkey); // kNoNation: absent
+  void SetSupplierNation(int64_t suppkey, int64_t nationkey); // kNoNation: absent
   // Re-group the parts of suppliers whose nation changed (old_map -> current).
   void RegroupSuppliers(
       const core::FlatHashMap<uint8_t> &changed_suppliers,
-      const core::ChunkedCowArray<int32_t> &old_map);
+      const core::SignedKeyCowArray<int64_t> &old_map);
   void UpsertNation(const TpchQ11NationInput &nation);
   void EraseNation(const TpchQ11NationInput &nation);
   // (Re)build every group from the facts and the supplier map.
@@ -195,10 +196,10 @@ struct TpchQ11State {
   std::size_t MemoryBytes() const;
 
 private:
-  void UpdateEntry(int32_t nationkey, int64_t partkey,
+  void UpdateEntry(int64_t nationkey, int64_t partkey,
                    const TpchQ11PartValue &before,
                    const TpchQ11PartValue &after);
-  TpchQ11Group &MutableGroup(int32_t nationkey);
+  TpchQ11Group &MutableGroup(int64_t nationkey);
 };
 
 struct TpchQ11StateImage {
@@ -234,7 +235,7 @@ struct TpchQ11PartsuppEvent {
 struct TpchQ11SupplierEvent {
   int8_t sign = 0;
   int64_t suppkey = 0;
-  int32_t nationkey = kTpchQ11NoNation;
+  int64_t nationkey = kTpchQ11NoNation;
 };
 struct TpchQ11NationEvent {
   int8_t sign = 0;

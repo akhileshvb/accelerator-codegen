@@ -105,11 +105,9 @@ bool ReadSupplier(const core::AuxRow &row, TpchQ2SupplierInput &out,
     skip = true; // no nation: the supplier joins nothing
     return true;
   }
-  if (!IntCell(row, 3, nationkey) ||
-      nationkey < std::numeric_limits<int32_t>::min() ||
-      nationkey > std::numeric_limits<int32_t>::max())
+  if (!IntCell(row, 3, nationkey))
     return false;
-  out.nationkey = static_cast<int32_t>(nationkey);
+  out.nationkey = nationkey;
   for (const std::size_t col : {1, 2, 4, 6}) {
     std::string &dst = col == 1 ? out.name
                        : col == 2 ? out.address
@@ -137,10 +135,9 @@ bool ReadPartsupp(const core::AuxRow &row, TpchQ2PartsuppInput &out,
 bool ReadNation(const core::AuxRow &row, TpchQ2NationInput &out, bool &skip) {
   skip = false;
   int64_t key = 0, region = 0;
-  if (!IntCell(row, 0, key) || key < std::numeric_limits<int32_t>::min() ||
-      key > std::numeric_limits<int32_t>::max())
+  if (!IntCell(row, 0, key))
     return false;
-  out.key = static_cast<int32_t>(key);
+  out.key = key;
   out.name.clear();
   if (!NullCell(row, 1) && !StringValue(row.values[1], out.name))
     return false;
@@ -149,20 +146,18 @@ bool ReadNation(const core::AuxRow &row, TpchQ2NationInput &out, bool &skip) {
     out.regionkey_null = true;
     return true;
   }
-  if (!IntCell(row, 2, region) || region < std::numeric_limits<int32_t>::min() ||
-      region > std::numeric_limits<int32_t>::max())
+  if (!IntCell(row, 2, region))
     return false;
-  out.regionkey = static_cast<int32_t>(region);
+  out.regionkey = region;
   return true;
 }
 
 bool ReadRegion(const core::AuxRow &row, TpchQ2RegionInput &out, bool &skip) {
   skip = false;
   int64_t key = 0;
-  if (!IntCell(row, 0, key) || key < std::numeric_limits<int32_t>::min() ||
-      key > std::numeric_limits<int32_t>::max())
+  if (!IntCell(row, 0, key))
     return false;
-  out.key = static_cast<int32_t>(key);
+  out.key = key;
   if (NullCell(row, 1)) {
     skip = true; // r_name = <arg> is never true
     return true;
@@ -220,8 +215,6 @@ void TpchQ2State::InternInto(std::shared_ptr<core::StringDict> &dict,
 }
 
 void TpchQ2State::SetPart(int64_t partkey, const TpchQ2PartInput &part) {
-  if (partkey < 0)
-    return;
   uint32_t type_id = 0, mfgr_id = 0;
   InternInto(types, part.type, type_id);
   InternInto(mfgrs, part.mfgr, mfgr_id);
@@ -240,8 +233,6 @@ void TpchQ2State::ErasePart(int64_t partkey) {
 
 void TpchQ2State::SetSupplier(int64_t suppkey,
                               const TpchQ2SupplierInput &supplier) {
-  if (suppkey < 0)
-    return;
   TpchQ2SupplierRec rec;
   rec.acctbal_raw = supplier.acctbal_raw;
   rec.nationkey = supplier.nationkey;
@@ -270,8 +261,6 @@ TpchQ2Offer TpchQ2State::OfferAt(const TpchQ2OfferSlots &slots,
 
 void TpchQ2State::AddOffer(int64_t partkey, int64_t suppkey,
                            int64_t cost_raw) {
-  if (partkey < 0)
-    return;
   auto &slots = offers.Mutable(partkey);
   if (slots.count < kTpchQ2InlineOffers) {
     slots.suppkey[slots.count] = suppkey;
@@ -284,8 +273,6 @@ void TpchQ2State::AddOffer(int64_t partkey, int64_t suppkey,
 
 bool TpchQ2State::RemoveOffer(int64_t partkey, int64_t suppkey,
                               int64_t cost_raw) {
-  if (partkey < 0)
-    return true; // negative keys are never stored
   const auto *found = offers.Find(partkey);
   if (!found || found->count == 0)
     return false;
