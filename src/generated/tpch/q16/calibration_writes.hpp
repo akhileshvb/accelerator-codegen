@@ -11,7 +11,7 @@ namespace accelerator_codegen::aux_state::query {
 
 inline std::vector<core::CalibrationWrite> TpchQ16CalibrationWrites() {
   using namespace calibration;
-  // supplier comments (complaints) are maintained in place; part changes rebuild
+  // supplier comments (complaints) and part / partsupp changes are all maintained in place
   return Writes("supplier", "s_comment = concat(s_comment, 'x')",
                 "s_comment = substr(s_comment, 1, length(s_comment) - 1)", "s_acctbal = s_acctbal + 1",
                 "s_acctbal = s_acctbal - 1", kSupplierShapes);
