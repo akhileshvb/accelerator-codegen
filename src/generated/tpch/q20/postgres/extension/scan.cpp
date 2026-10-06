@@ -21,7 +21,9 @@ namespace scans {
 void ScanTpchQ20Lineitems(
     const std::function<void(const query::TpchQ20LineitemInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT l_shipdate, l_partkey, l_suppkey, l_quantity FROM lineitem",
+      "SELECT l_shipdate, l_partkey, l_suppkey, l_quantity FROM lineitem "
+      "WHERE l_shipdate IS NOT NULL AND l_partkey IS NOT NULL AND "
+      "l_suppkey IS NOT NULL AND l_quantity IS NOT NULL",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
         consumer({TypedDate(tuple, tuple_desc, 0),
                   TypedInt(tuple, tuple_desc, 1),
@@ -33,7 +35,8 @@ void ScanTpchQ20Lineitems(
 void ScanTpchQ20Parts(
     const std::function<void(const query::TpchQ20PartInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT p_partkey, p_name FROM part",
+      "SELECT p_partkey, p_name FROM part "
+      "WHERE p_partkey IS NOT NULL AND p_name IS NOT NULL",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
         consumer({TypedInt(tuple, tuple_desc, 0),
                   TypedText(tuple, tuple_desc, 1)});
@@ -43,7 +46,9 @@ void ScanTpchQ20Parts(
 void ScanTpchQ20Partsupps(
     const std::function<void(const query::TpchQ20PartsuppInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp",
+      "SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp "
+      "WHERE ps_partkey IS NOT NULL AND ps_suppkey IS NOT NULL AND "
+      "ps_availqty IS NOT NULL",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
         consumer({TypedInt(tuple, tuple_desc, 0),
                   TypedInt(tuple, tuple_desc, 1),
@@ -54,7 +59,8 @@ void ScanTpchQ20Partsupps(
 void ScanTpchQ20Suppliers(
     const std::function<void(const query::TpchQ20SupplierInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT s_suppkey, s_name, s_address, s_nationkey FROM supplier",
+      "SELECT s_suppkey, s_name, s_address, s_nationkey FROM supplier "
+      "WHERE s_suppkey IS NOT NULL AND s_nationkey IS NOT NULL",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
         consumer({TypedInt(tuple, tuple_desc, 0),
                   TypedText(tuple, tuple_desc, 1),
@@ -66,7 +72,8 @@ void ScanTpchQ20Suppliers(
 void ScanTpchQ20Nations(
     const std::function<void(const query::TpchQ20NationInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT n_nationkey, n_name FROM nation",
+      "SELECT n_nationkey, n_name FROM nation "
+      "WHERE n_nationkey IS NOT NULL AND n_name IS NOT NULL",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
         consumer({static_cast<int32_t>(TypedInt(tuple, tuple_desc, 0)),
                   TypedText(tuple, tuple_desc, 1)});

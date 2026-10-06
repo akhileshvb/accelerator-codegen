@@ -1,18 +1,45 @@
 #pragma once
 
 #include <cstdint>
-#include <cstring>
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
-#include <unordered_map>
+#include <string_view>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/core/string_blob.hpp"
 #include "tpch/q13/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
+
+// Q13: for every customer, count the orders whose o_comment does NOT match the
+// LIKE pattern argument, then histogram those counts (c_count -> custdist).
+//
+// State (columnar, copy-on-write; a write batch copies O(touched chunks)):
+//   * order_count[custkey]    int32, orders carrying a comment, per custkey
+//   * customer_valid[custkey] uint8
+//   * order segments: 4096 orders each (orderkey, custkey, alive flag, comment
+//     bytes in a StringBlob with uint64 offsets, so > 4 GB of comments is fine)
+//   * order_row: orderkey -> segment slot, to find the row of a deleted order.
+// Bytes per order: 8 (orderkey) + 8 (custkey) + 8 (comment offset) + 1 (alive)
+// + comment bytes (~49 in TPC-H) + ~25 (index slot: 13 B slot + 8 B value at
+// ~80% load) => ~100 B/order, i.e. ~15 GB at SF100 and ~150 GB at SF1000; the
+// comment text is about half of it and is inherent: a general LIKE needs the
+// text. Customers cost 5 B per custkey in the arrays (0.75 GB at SF1000).
+// (Before: ~ 8+4+4+1 + comments in one std::string whose uint32 offsets wrapped
+// at 4.29 GB, ~SF58; whole-state copy per write batch.)
+//
+// Execute is O(orders) for a general pattern (a multithreaded SIMD scan of the
+// comment blobs, then one pass over the customers); nothing in the state can
+// answer an arbitrary LIKE faster. A write batch costs O(touched segments +
+// touched index shards + customer chunks) and never rebuilds.
+//
+// Data assumptions: o_orderkey is the orders primary key; keys are >= 0; rows
+// with a NULL key or NULL comment never contribute (they cannot join).
+constexpr std::size_t kTpchQ13SegmentRows = 4096;
 
 struct TpchQ13Config {
   core::TableId customer_table = 0;
@@ -24,6 +51,7 @@ struct TpchQ13CustomerInput {
 };
 
 struct TpchQ13OrderInput {
+  int64_t orderkey = 0;
   int64_t custkey = 0;
   std::string comment;
 };
@@ -31,57 +59,45 @@ struct TpchQ13OrderInput {
 class TpchQ13InitialScan {
 public:
   virtual ~TpchQ13InitialScan() = default;
+  // Only rows whose key is not NULL.
   virtual void ScanCustomers(
       const std::function<void(const TpchQ13CustomerInput &)> &) = 0;
+  // Only rows whose orderkey, custkey and comment are not NULL.
   virtual void ScanOrders(
       const std::function<void(const TpchQ13OrderInput &)> &) = 0;
-  virtual bool LookupOrder(int64_t custkey, TpchQ13OrderInput &out) {
-    (void)custkey;
-    (void)out;
-    return false;
-  }
 };
 
-// Fast two-part LIKE matcher for "%a%b%" patterns.
-struct TpchQ13TwoPartLikeMatcher {
-  std::string part1;
-  std::string part2;
-  bool enabled = false;
-  TpchQ13TwoPartLikeMatcher() = default;
-  void Build(const std::string &pattern);
-  bool Matches(const std::string &text) const;
-  bool MatchesView(const char *data, std::size_t len) const;
+struct TpchQ13OrderSegment {
+  std::vector<int64_t> orderkey;
+  std::vector<int64_t> custkey;
+  std::vector<uint8_t> alive;
+  core::StringBlob comment;
+  uint32_t live = 0;
 };
 
 struct TpchQ13State {
-  std::vector<int32_t> order_counts;
-  std::vector<uint8_t> customer_valid;
-  std::vector<int64_t> active_customers;
-  int64_t max_custkey = 0;
+  core::ChunkedCowArray<int32_t> order_count{0};
+  core::ChunkedCowArray<uint8_t> customer_valid{0};
+  int64_t customers = 0;
+  int64_t live_orders = 0;
 
-  std::vector<int64_t> order_custkeys;
-  std::vector<uint32_t> order_comment_start;
-  std::vector<uint32_t> order_comment_len;
-  std::string comments_blob;
-  std::vector<uint8_t> order_alive;
-
-  // Inverted trigram index: maps 3-gram hash to the sorted list of order
-  // indices containing that trigram.  Used when the pattern is `%a%b%` with
-  // two non-empty literal parts.  At query time we intersect the lists for a
-  // rare trigram from each part, then verify survivors with a full LIKE match.
-  std::vector<uint32_t> trigram_index_keys;      // distinct trigram hashes
-  std::vector<uint64_t> trigram_index_offsets;   // start offset into rows
-  std::vector<uint32_t> trigram_index_rows;      // concatenated order index lists
-  std::unordered_map<uint32_t, std::size_t> trigram_index_lookup;
-  bool trigram_index_built = false;
-  uint64_t trigram_index_pending = 0;            // deltas since last rebuild
-  uint64_t trigram_index_order_count = 0;        // orders covered by last rebuild
+  std::vector<std::shared_ptr<TpchQ13OrderSegment>> segments;
+  std::vector<uint32_t> free_segments; // released (empty) segment ids
+  int64_t open_segment = -1;           // segment receiving appends
+  core::ShardedCowHashMap<uint64_t, 16> order_row; // orderkey -> seg*4096+slot
 
   void AddCustomer(int64_t custkey);
   void RemoveCustomer(int64_t custkey);
-  void AddOrder(int64_t custkey, const std::string &comment);
-  void RemoveOrder(int64_t custkey, const std::string &comment);
-  void RebuildTrigramIndex();
+  void AddOrder(int64_t orderkey, int64_t custkey, std::string_view comment);
+  void RemoveOrder(int64_t orderkey);
+  // Rewrites the segments touched since the last call that are mostly dead
+  // (once per write batch); releases segments that became empty.
+  void CompactTouched();
+
+private:
+  std::shared_ptr<TpchQ13OrderSegment> &MutableSegment(uint32_t id);
+  void CompactSegment(uint32_t id);
+  std::vector<uint32_t> touched_;
 };
 
 enum class TpchQ13ImageKind : uint8_t { CustomerCounts };
@@ -97,26 +113,22 @@ struct TpchQ13OutputRow {
 };
 
 struct TpchQ13Delta {
+  enum class Table : uint8_t { Customer, Order };
+  Table table = Table::Order;
   int8_t sign = 0;
+  int64_t orderkey = 0; // customer delta: the custkey
   int64_t custkey = 0;
   std::string comment;
 };
-
-std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state);
-bool DecodeTpchQ13CustomerCounts(const std::vector<uint8_t> &bytes,
-                                 TpchQ13State &state);
 
 class TpchQ13TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
   void Clear() override;
-  bool RequiresRebuild() const;
   const std::vector<TpchQ13Delta> &Deltas() const;
-  void MarkRebuild();
   void AddDelta(TpchQ13Delta delta);
 private:
   bool pending = false;
-  bool requires_rebuild = false;
   std::vector<TpchQ13Delta> deltas;
 };
 
@@ -146,17 +158,11 @@ public:
                        core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 private:
-  void EnsureCustomerCapacity(TpchQ13State &state, int64_t custkey) const;
-  TpchQ13State BuildState(core::AuxEngineServices &services) const;
+  std::shared_ptr<TpchQ13State> BuildState(core::AuxEngineServices &services) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ13State> &state) const;
-  void EmitResult(const TpchQ13State &state, const std::string &pattern,
-                  core::AuxEngineServices &services,
+  void EmitResult(const TpchQ13State &state, const core::QueryArguments &arguments,
                   core::AuxRowSink &sink) const;
-  void EmitResultIndexed(const TpchQ13State &state,
-                         const TpchQ13TwoPartLikeMatcher &matcher,
-                         core::AuxEngineServices &services,
-                         core::AuxRowSink &sink) const;
   TpchQ13Config config;
   TpchQ13InitialScan *initial_scan = nullptr;
 };
