@@ -33,7 +33,7 @@ Hard gates after this stage verify **correctness** and run a **fair SF1 bench sw
      8. Writes: per-write cost O(touched); no whole-state copy per batch; no `RebuildAll` for routine insert/delete/update.
      9. Parameters not precomputed take a fast exact path, not a per-call full rebuild.
      10. Numerics: no `double` for decimals/thresholds, no int128 -> int64 truncation, engine rounding rules matched.
-     11. Evidence: host `test_<engine>_tpch_params` (plain, `--data-perturb`, `--wide-keys`, `--negative-keys`) run or equivalent tests present; state results.
+     11. Evidence: host `test_<engine>_<bench>_params` (plain, `--data-perturb`, `--wide-keys`, `--negative-keys`) run or equivalent tests present; state results.
 4. **Harness / benchmark fairness** — confirm the timed path is the real production query (consume results; no result-cache-as-aux; no skipping work the base path does). Flag any harness gaming.
 5. Write `{{artifacts_path}}/audit_result.json` and `{{artifacts_path}}/final_audit.md` with clear verdicts:
 

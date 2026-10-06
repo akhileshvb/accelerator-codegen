@@ -86,7 +86,7 @@ Fast is worthless if the answer is wrong or the state breaks at scale. Spec-valu
 
 **Primitive selection.** Use the generic substrate primitives in `include/accelerator_codegen/stateful/core/` (see the "Which one to use" guide in `core/README.md`: COW arrays/maps/record stores/blob maps, dense/sorted/Fenwick/radix structures, `sql_date`, `sql_like`, exact decimal/int128) instead of hand-rolled `std::unordered_map`/`std::vector` state; read that guide before choosing a layout.
 
-**Acceptance evidence.** Beyond the seed binding, when the host has a parameter-generality harness (e.g. `tests/aux_state/test_<engine>_tpch_params.cpp`), run it for this query: plain (classes a/b/c) plus `--data-perturb` (rebuild and delta variants), `--wide-keys`, `--negative-keys`. Where none exists, write equivalent differential cases (off-spec params incl. NULL, off-spec rows, shifted/negated keys) in the unit/differential tests. A mismatch is a correctness failure, not a tolerance issue.
+**Acceptance evidence.** Beyond the seed binding, when the host has a parameter/data differential harness (e.g. `tests/aux_state/test_<engine>_<bench>_params.cpp`), run it for this query: plain (classes a/b/c) plus `--data-perturb` (rebuild and delta variants), `--wide-keys`, `--negative-keys`. Where none exists, write equivalent differential cases (off-spec params incl. NULL, off-spec rows, shifted/negated keys) in the unit/differential tests. A mismatch is a correctness failure, not a tolerance issue.
 
 ## Edit freedom
 

@@ -32,7 +32,7 @@ SEC workloads use **SF3** as both iteration and production scale in this repo (`
 |--------------|----------------------|
 | `std::vector` sized to SF1 max groups | Memory and cache blow up |
 | Per-row `unordered_map<std::string,…>` / node-based maps | Memory (tens of B/row overhead) and probe cost dominate at scale; use columnar `core/` primitives |
-| 32-bit keys/offsets, bit-packed ids, fixed dense caps | Silent overflow / collisions at SF1000 (orderkey ~6e9) |
+| 32-bit keys/offsets, bit-packed ids, fixed dense caps | Silent overflow / collisions at SF1000 (e.g. a fact-table key reaching ~6e9) |
 | Copy whole state per write batch / transient build copies | O(state) per write, 2-5x peak memory |
 | Scan all partition slots / all groups | Read cost ∝ total state, not query window |
 | Micro-opts on cold paths | Noise at SF1; dominant cost shifts to scan/aggregate at scale |

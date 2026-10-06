@@ -16,7 +16,9 @@ partition_key × group_key → sum, count, min, max, conditional sums
 
 Examples: daily revenue totals, counts by status, sums by region.
 
-**Best for:** SUM, COUNT, AVG; small fixed group cardinality; range predicates aligned with partitions; rows mapping to one or a few partitions; read-heavy workloads.
+**Best for:** SUM, COUNT, AVG; small group cardinality; range predicates on the partition key; rows mapping to one or a few partitions; read-heavy workloads.
+
+**Parameter generality:** a partition grain (month, bucket) is a *coarse index*, not the parameter domain. A query bound that does not fall on a partition boundary (mid-month day, Feb 29, month-end + interval, a date outside the populated range) must combine whole-partition summaries for the interior with an **exact** residual for the edge partitions (finer-grain summaries, e.g. day-level, or a bounded scan of the edge partition's rows). Never answer only grid-aligned bounds or round the bound to the grid. Statistics are exact integer/decimal accumulators (`int128_acc`), never `double`.
 
 **Advantages:** Compact; easy delta maintenance; exact; often eliminates scan, join, and aggregation.
 
@@ -34,7 +36,7 @@ Maintain the same sufficient statistics at multiple granularities (e.g. year →
 
 **Best for:** Arbitrary range predicates; many historical partitions; queries where flat partition merging is expensive; workloads needing both coarse and fine parameter bindings.
 
-**Advantages:** Much lower read amplification than flat partitions; boundary handling remains exact; point writes update only a bounded path or small number of levels.
+**Advantages:** Much lower read amplification than flat partitions; boundary handling remains exact for arbitrary (non-aligned) bounds via the finest level; point writes update only a bounded path or small number of levels.
 
 **Tradeoff:** More state replication; greater write amplification; more complicated consistency invariants.
 
@@ -48,7 +50,7 @@ Maintain the same sufficient statistics at multiple granularities (e.g. year →
 
 Store cumulative sufficient statistics: `prefix[k] = aggregate of partitions 0..k`. A prefix query is one lookup. A range query may use `prefix[right] - prefix[left - 1]` when the aggregate supports subtraction.
 
-**Best for:** Static or append-mostly data; frequent prefix or range queries; additive/invertible aggregates; extremely read-heavy workloads.
+**Best for:** Static or append-mostly data; frequent prefix or range queries; additive/invertible aggregates; extremely read-heavy workloads. Index prefixes by the finest exact grain of the bound (e.g. day, not month), or pair with an exact edge residual; out-of-range bounds clamp (empty or full), never index out of bounds.
 
 **Advantages:** O(1) or near-constant query cost; often the highest possible read speed for range aggregates.
 
@@ -64,7 +66,7 @@ Store cumulative sufficient statistics: `prefix[k] = aggregate of partitions 0..
 
 Store aggregates in a compositional tree or range index. Queries combine O(log P) nodes; writes update a logarithmic path.
 
-**Best for:** Dynamic prefix and range queries; arbitrary cutoff or interval parameters; workloads requiring both fast reads and frequent point writes; associative aggregates.
+**Best for:** Dynamic prefix and range queries; arbitrary cutoff or interval parameters (e.g. a Fenwick tree over days: `CowFenwick`, or `RadixRangeTree` over a bounded integer domain, so any day bound is exact); workloads requiring both fast reads and frequent point writes; associative aggregates.
 
 **Advantages:** Typically O(log P) reads and writes; better balanced than flat summaries or fully materialized prefixes; exact and compositional.
 
@@ -174,7 +176,7 @@ Map equality keys directly to rows, row identifiers, aggregates, or state partit
 key → payload or matching row IDs
 ```
 
-**Best for:** Equality predicates; key-based joins; point lookup queries; sparse access into large state.
+**Best for:** Equality predicates; key-based joins; point lookup queries; sparse access into large state. Keys are 64-bit and may be negative or sparse: do not index a dense array by raw key without a bound known at bind time; use `AnyKeyCowArray` / `FlatHashMap` (see `core/README.md` "Which one to use"). A probe for an absent or unseen key returns "no match", not an error.
 
 **Advantages:** Expected constant-time lookup; eliminates scan and often hash-table construction; straightforward point maintenance.
 
@@ -210,7 +212,7 @@ attribute_value → matching-row bitmap
 
 Queries combine bitmaps with AND, OR, and NOT.
 
-**Best for:** Low- or moderate-cardinality categorical columns; combinations of many predicates; analytical filtering; relatively stable data.
+**Best for:** Low- or moderate-cardinality categorical columns (values are discovered from data, not enumerated up front; an unseen value must still be handled); combinations of many predicates; analytical filtering; relatively stable data.
 
 **Advantages:** Extremely fast predicate composition; compact with compression; efficient vectorized execution.
 
@@ -260,7 +262,7 @@ partition/group → ordered top candidates
 
 Maintain only rows capable of entering a final result, based on bounds or precomputed thresholds.
 
-**Best for:** Top-k; HAVING predicates; expensive scoring functions; cases where most groups can be safely pruned.
+**Best for:** Top-k; HAVING predicates; expensive scoring functions; cases where most groups can be safely pruned. Thresholds that depend on parameters (e.g. `> fraction * total`) are compared in exact integer/decimal arithmetic, and a parameter that makes the candidate set insufficient takes an exact bounded path, not a full rebuild.
 
 **Advantages:** Much smaller than storing all outputs; can avoid full aggregation or ranking.
 
@@ -344,7 +346,7 @@ value_bucket → count or aggregate
 
 **Tradeoff:** Usually approximate; poor for exact arbitrary boundaries unless buckets are fine enough.
 
-For **exact** TPC-H results, histograms are normally supporting state rather than the final answer structure.
+For **exact** results, histograms are supporting state (coarse buckets) only, combined with exact edge handling; they are not the final answer structure.
 
 ---
 
@@ -457,7 +459,7 @@ Combine multiple representations, e.g. coarse aggregate hierarchy + fine-grained
 | Wide-row decoding | Covering projection, narrow subset |
 | Repeated parameter combinations | Composable summaries, selective replication |
 
-### Step 2: Check the residual read path
+### Step 2: Check the residual read path and parameter coverage
 
 A design is not necessarily good merely because it removes the base scan. Ask:
 
@@ -465,6 +467,7 @@ A design is not necessarily good merely because it removes the base scan. Ask:
 - Does that grow with history, range width, groups, or entity count?
 - Is another scan, join, aggregate, or sort still present?
 - Can a hierarchy, index, or second-level summary eliminate it?
+- Is every parameter value (off-grid, NULL, unseen, out of range) answered exactly without a per-call rebuild? If only grid-aligned or precomputed values are fast, add an exact residual level (see `hard_guidelines.md` §4).
 
 ### Step 3: Match the read/write regime
 

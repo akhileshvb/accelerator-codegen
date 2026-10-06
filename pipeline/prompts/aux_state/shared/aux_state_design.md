@@ -18,6 +18,10 @@ Aux state must **materially accelerate** the query while remaining maintainable 
 | **Negligible-speedup state** | Fast path still runs most of the base kernel; maintenance cost exceeds benefit. |
 | **Scan-for-scan swap** | Base-table scan removed but replaced by a linear scan or merge over many auxiliary partitions, buckets, or index nodes with similar asymptotic cost. |
 
+## Parameter generality applies to every family
+
+Whatever the family, the read algorithm must be exact for any parameter value (`hard_guidelines.md` §4). Coarse grains (months, buckets, precomputed value lists) are acceleration structure only: pair them with an exact residual (finer grain, Fenwick/range tree over the exact key, or bounded edge scan) rather than restricting the parameter domain. Key spaces are 64-bit, possibly sparse or negative; payload arithmetic is exact. Choose containers via `core/README.md` "Which one to use".
+
 ## Prohibited full-result cache (precise definition)
 
 A **full-result cache** stores, per partition or parameter binding, the **final answer artifact** the user would read from the query.
@@ -68,7 +72,7 @@ Use `design_family` on each candidate. Candidates must differ materially in fami
 | `selectively_replicated_summaries` | Duplicated aggregates at multiple grains for faster reads at cost of write fan-out |
 | `compact_join_intermediate` | Narrow pre-joined or semi-joined state replacing repeated join work |
 | `narrow_prefiltered_subset` | Materialized qualifying row subset or column projection |
-| `hybrid_multi_grain` | Combines two or more grains or access paths (e.g. daily partitions + group rollups) |
+| `hybrid_multi_grain` | Combines two or more grains or access paths (e.g. coarse buckets for interior + exact day-level edges, or daily partitions + group rollups) |
 
 ## Read-path bottleneck checks
 

@@ -4,7 +4,7 @@ Map dominant base cost → candidate `design_family`. Pick **materially differen
 
 | # | Family | `design_family` | Best when |
 |---|--------|-----------------|-----------|
-| 1 | Partitioned sufficient aggregates | `flat_partitioned_sufficient_summaries` | SUM/COUNT/AVG, partition-aligned predicates |
+| 1 | Partitioned sufficient aggregates | `flat_partitioned_sufficient_summaries` | SUM/COUNT/AVG, partition-key ranges (exact edge residual for off-grid bounds) |
 | 2 | Hierarchical aggregates | `multilevel_hierarchical_summaries` | Wide date ranges, boundary merges expensive |
 | 3 | Prefix aggregates | `range_prefix_composable_summaries` | Prefix/range on invertible aggregates, read-heavy |
 | 4 | Tree/index aggregates | `tree_or_index_aggregate_organization` | Ordered range queries on aggregates |
