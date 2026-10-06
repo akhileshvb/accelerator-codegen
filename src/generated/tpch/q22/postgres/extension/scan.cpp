@@ -38,6 +38,17 @@ void ScanTpchQ22Orders(
       });
 }
 
+// Orders per customer, aggregated in SQL (one row per o_custkey).
+void ScanTpchQ22OrderCounts(
+    const std::function<void(const query::TpchQ22OrderCount &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT o_custkey, COUNT(*)::BIGINT FROM orders "
+      "WHERE o_custkey IS NOT NULL GROUP BY o_custkey",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0), TypedInt(tuple, tuple_desc, 1)});
+      });
+}
+
 } // namespace scans
 
 class TpchQ22Scan final : public query::TpchQ22InitialScan {
@@ -51,6 +62,12 @@ public:
       const std::function<void(const query::TpchQ22OrderInput &)> &consumer)
       override {
     scans::ScanTpchQ22Orders(consumer);
+  }
+  bool ScanOrderCounts(
+      const std::function<void(const query::TpchQ22OrderCount &)> &consumer)
+      override {
+    scans::ScanTpchQ22OrderCounts(consumer);
+    return true;
   }
 };
 Runtime<query::TpchQ22Module, query::TpchQ22Config, TpchQ22Scan> &
@@ -70,29 +87,15 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ22(FunctionCallInfo fcinfo) {
-  detail::Q22Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(0))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(1))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(2))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(3))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(4))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(5))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(6)))}},
-      fcinfo);
+  // SQL NULL codes are passed on as NULL (they never match a phone prefix).
+  core::QueryArguments arguments;
+  for (int i = 0; i < 7; ++i)
+    arguments.values.push_back(
+        PG_ARGISNULL(i) ? core::AuxValue::Null(core::AuxType::String)
+                        : core::AuxValue::Of(
+                              core::AuxType::String,
+                              detail::TextDatum(PG_GETARG_DATUM(i))));
+  detail::Q22Runtime().Execute(std::move(arguments), fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{

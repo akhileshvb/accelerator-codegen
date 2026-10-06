@@ -1,40 +1,29 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
-#include <map>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
-#include <tuple>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/cow_sorted_blocks.hpp"
+#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/core/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
 // ── Q16 layout ──────────────────────────────────────────────────────────────
-// Sparse p_size partitions. Partition 0 holds supplier eligibility. Partitions
-// 1..50 hold size-keyed group/supplier-block membership. This keeps reads
-// bounded to the query's p_size set without scanning all supplier or part data.
 struct TpchQ16Layout {
   static constexpr const char *kAccelerator = "tpch_q16_aux";
-  static constexpr core::PartitionId kSupplierEligibility = 0;
-  static constexpr core::PartitionId kSizeBase = 1;
-  static constexpr int32_t kMinSize = 1;
-  static constexpr int32_t kMaxSize = 50;
-
-  static constexpr core::PartitionId SizePartition(int32_t p_size) {
-    return kSizeBase + static_cast<core::PartitionId>(p_size);
-  }
-  static constexpr int32_t SizeFromPartition(core::PartitionId partition) {
-    return static_cast<int32_t>(partition - kSizeBase);
-  }
-  static constexpr bool IsSizePartition(core::PartitionId partition) {
-    return partition >= kSizeBase &&
-           partition <= kSizeBase + static_cast<core::PartitionId>(kMaxSize);
-  }
+  static constexpr core::PartitionId kState = 0;
 };
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -73,151 +62,157 @@ public:
       const std::function<void(const TpchQ16PartsuppInput &)> &) = 0;
 };
 
-// ── State payloads ──────────────────────────────────────────────────────────
-// Supplier eligibility is stored as a byte vector indexed by suppkey.
-// Size partitions hold sparse supplier blocks; each block is keyed by
-// floor(suppkey / block_width) to make both lookup and updates bounded.
-struct TpchQ16SupplierBlock {
-  std::vector<int64_t> suppkeys;
-  std::vector<int32_t> ref_counts;
+// ---------------------------------------------------------------------------
+// State layout
+//
+// Q16 counts DISTINCT non-complaint suppliers per (p_brand, p_type, p_size)
+// group.  Instead of per-(group, supplier) reference counts (a hash entry per
+// partsupp row) the state keeps the facts and one number per group:
+//   * part -> group id (4 B/part), groups = dictionary-encoded
+//     (brand id, type id, size) triples (a size is any int32: no 1..50 limit);
+//   * the suppliers of each part (partkey-indexed, up to 4 inline = 40 B/part
+//     ~ 10 B/row, the rest in an overflow map);
+//   * per group the sorted member parts (8 B/part, core::CowSortedBlocks) and
+//     the distinct eligible supplier count;
+//   * complaint[suppkey]: the supplier row exists and its comment LIKE
+//     '%Customer%Complaints%' (a supplier without a row is not excluded).
+// A write batch applies its point edits to the facts and then recomputes the
+// count of only the groups it touched (one pass over that group's member parts,
+// O(group size x 4)); a supplier whose complaint flag flips finds its groups by
+// one in-memory pass over the supplier lists (no table scan, no rebuild).
+// Execute walks only the groups whose p_size is in the IN list (bitmap of the
+// NOT LIKE verdict per distinct type), so it is independent of the table sizes.
+//
+// Memory: ~55 B/part (SF100 20M parts: ~1.1 GB, SF1000: ~11 GB; was
+// ~12-15 GB at SF100).  Keys must be non-negative.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kTpchQ16NoGroup = 0xFFFFFFFFu;
+constexpr std::size_t kTpchQ16InlineSuppliers = 4;
+
+struct TpchQ16Suppliers {
+  int64_t suppkey[kTpchQ16InlineSuppliers] = {0, 0, 0, 0};
+  uint32_t count = 0;
 };
 
-struct TpchQ16GroupMembership {
-  std::string brand;
-  std::string type;
-  uint16_t brand_id = 0;
-  uint16_t type_id = 0;
-  std::unordered_map<int64_t, TpchQ16SupplierBlock> blocks;
-};
-
-struct TpchQ16SizePartition {
-  std::vector<TpchQ16GroupMembership> groups;
-};
-
-// Pre-computed result row with already-counted eligible supplier count,
-// stored pre-sorted by the query's invariant ORDER BY (count DESC, brand, type, size).
-struct Q16PrecomputedRow {
-  uint16_t brand_id = 0;
-  uint16_t type_id = 0;
+struct TpchQ16GroupKey {
+  uint32_t brand_id = 0;
+  uint32_t type_id = 0;
   int32_t size = 0;
-  int64_t count = 0;
+  bool operator==(const TpchQ16GroupKey &o) const {
+    return brand_id == o.brand_id && type_id == o.type_id && size == o.size;
+  }
 };
+struct TpchQ16GroupKeyHash {
+  std::size_t operator()(const TpchQ16GroupKey &k) const {
+    uint64_t h = (static_cast<uint64_t>(k.brand_id) << 32) | k.type_id;
+    h = (h ^ static_cast<uint64_t>(static_cast<uint32_t>(k.size))) *
+        0x9E3779B97F4A7C15ULL;
+    return static_cast<std::size_t>(h ^ (h >> 29));
+  }
+};
+
+// Append-only table of the groups seen so far (cloned when a new group appears).
+struct TpchQ16GroupTable {
+  std::vector<TpchQ16GroupKey> keys; // by group id
+  std::unordered_map<TpchQ16GroupKey, uint32_t, TpchQ16GroupKeyHash> ids;
+  std::unordered_map<int32_t, std::vector<uint32_t>> by_size;
+};
+
+using TpchQ16Members = core::CowSortedBlocks<int64_t, std::less<int64_t>, 1024>;
 
 struct TpchQ16State {
-  std::vector<uint8_t> supplier_eligible;
-  std::unordered_map<int64_t, std::string> part_brand;
-  std::unordered_map<int64_t, std::string> part_type;
-  std::unordered_map<int64_t, int32_t> part_size;
-  // ps_partkey -> ps_suppkey (TpchQ16Partsupp rows are unique on part/supp)
-  std::unordered_map<int64_t, std::vector<int64_t>> reverse_postings;
-  std::unordered_map<int32_t, TpchQ16SizePartition> membership;
-  std::vector<std::string> brand_intern;
-  std::vector<std::string> type_intern;
-  std::vector<Q16PrecomputedRow> precomputed_rows;
+  std::shared_ptr<core::StringDict> brands = std::make_shared<core::StringDict>();
+  std::shared_ptr<core::StringDict> types = std::make_shared<core::StringDict>();
+  std::shared_ptr<TpchQ16GroupTable> group_table =
+      std::make_shared<TpchQ16GroupTable>();
+  core::ChunkedCowArray<uint32_t> part_group{kTpchQ16NoGroup};
+  core::ChunkedCowArray<TpchQ16Suppliers, 10> suppliers_of;
+  core::ShardedCowHashMap<std::vector<int64_t>> supplier_overflow;
+  core::ChunkedCowArray<uint8_t> complaint;
+  core::ChunkedCowArray<std::shared_ptr<TpchQ16Members>> members;
+  core::ChunkedCowArray<int64_t> distinct;
 
-  static constexpr int64_t kBlockWidth = 4096;
+  int64_t SupplierAt(const TpchQ16Suppliers &slots, int64_t partkey,
+                     uint32_t i) const;
 
-  static int64_t BlockIndex(int64_t suppkey) {
-    if (suppkey < 0)
-      suppkey = -suppkey;
-    return suppkey / kBlockWidth;
+  // ── point edits (Build and incremental maintenance) ──
+  // Each edit records the groups whose count may change in `dirty`.
+  void SetPart(int64_t partkey, const TpchQ16PartInput &part);
+  void ErasePart(int64_t partkey);
+  void AddSupplier(int64_t partkey, int64_t suppkey);
+  bool RemoveSupplier(int64_t partkey, int64_t suppkey); // false: not present
+  // Returns true if the flag changed.
+  bool SetComplaint(int64_t suppkey, bool complaint);
+  // Groups containing any part that lists one of `suppliers` become dirty.
+  void MarkGroupsOfSuppliers(const core::FlatHashMap<uint8_t> &suppliers);
+  // Recompute `distinct` of every dirty group.
+  void RecomputeDirty();
+  // Recompute every group (after a bulk load).
+  void RecomputeAll();
+
+  std::size_t MemoryBytes() const;
+
+  std::vector<uint32_t> dirty;
+  bool track_dirty = true; // off during a bulk build (RecomputeAll follows)
+
+private:
+  uint32_t GroupId(const TpchQ16PartInput &part);
+  int64_t CountDistinct(uint32_t gid) const;
+  void MarkDirty(uint32_t gid) {
+    if (track_dirty)
+      dirty.push_back(gid);
   }
-
-  static std::string MakeGroupKey(const std::string &brand,
-                                  const std::string &type) {
-    return brand + '\x1f' + type;
-  }
-
-  bool IsSupplierEligible(int64_t suppkey) const {
-    if (suppkey < 0 ||
-        static_cast<std::size_t>(suppkey) >= supplier_eligible.size())
-      return false;
-    return supplier_eligible[static_cast<std::size_t>(suppkey)] != 0;
-  }
-
-  void EnsureSupplierCapacity(int64_t max_suppkey) {
-    if (max_suppkey < 0)
-      return;
-    if (static_cast<std::size_t>(max_suppkey) >= supplier_eligible.size())
-      supplier_eligible.resize(static_cast<std::size_t>(max_suppkey) + 1, 0);
-  }
-
-  void SetSupplierEligible(int64_t suppkey, bool eligible) {
-    if (suppkey < 0)
-      return;
-    EnsureSupplierCapacity(suppkey);
-    supplier_eligible[static_cast<std::size_t>(suppkey)] = eligible ? 1 : 0;
-  }
+  void RemoveFromGroup(int64_t partkey, uint32_t gid);
+  void AddToGroup(int64_t partkey, uint32_t gid);
 };
-
-enum class TpchQ16ImageKind : uint8_t { Eligibility, SizeMembership };
 
 struct TpchQ16StateImage {
-  TpchQ16ImageKind kind = TpchQ16ImageKind::Eligibility;
-  int32_t size = 0;
   std::shared_ptr<const TpchQ16State> state;
-  std::shared_ptr<const TpchQ16SizePartition> size_membership;
 };
 
-struct Q16ResultRow {
-  std::string brand;
-  std::string type;
-  uint16_t brand_id = 0;
-  uint16_t type_id = 0;
-  int32_t size = 0;
-  int64_t count = 0;
+// ── Query arguments ─────────────────────────────────────────────────────────
+// std::nullopt = SQL NULL.  `sizes` are the IN-list items (NULL items drop out).
+struct TpchQ16Args {
+  std::optional<std::string> brand;
+  std::optional<std::string> type_pattern;
+  std::vector<int64_t> sizes;
 };
 
-// ── Deltas ──────────────────────────────────────────────────────────────────
-struct TpchQ16PartsuppDelta {
-  int64_t partkey = 0;
+void TpchQ16FinalizeAndEmit(const TpchQ16State &state, const TpchQ16Args &args,
+                            core::AuxRowSink &sink);
+
+// ── Captured row changes ────────────────────────────────────────────────────
+struct TpchQ16PartEvent {
+  int8_t sign = 0;
+  TpchQ16PartInput row;
+};
+struct TpchQ16PartsuppEvent {
+  int8_t sign = 0;
+  TpchQ16PartsuppInput row;
+};
+struct TpchQ16SupplierEvent {
+  int8_t sign = 0;
   int64_t suppkey = 0;
-  int8_t sign = 0; // +1 insert, -1 delete
-  int32_t old_size = 0;
-  int32_t new_size = 0;
-  std::string old_brand;
-  std::string old_type;
-  std::string new_brand;
-  std::string new_type;
+  bool complaint = false; // meaningful for sign > 0 (new image)
 };
-
-struct TpchQ16SupplierDelta {
-  int64_t suppkey = 0;
-  bool old_eligible = false;
-  bool new_eligible = false;
-};
-
-// ── Encode / Decode ─────────────────────────────────────────────────────────
-std::vector<uint8_t> EncodeTpchQ16Eligibility(const TpchQ16State &state);
-std::vector<uint8_t> EncodeTpchQ16SizeMembership(
-    int32_t size, const TpchQ16SizePartition &membership);
-bool DecodeTpchQ16Eligibility(const std::vector<uint8_t> &bytes,
-                              TpchQ16State &state);
-bool DecodeTpchQ16SizeMembership(const std::vector<uint8_t> &bytes,
-                                 int32_t size, TpchQ16SizePartition &membership);
-
-// ── Predicates ──────────────────────────────────────────────────────────────
-bool TpchQ16IsComplaintSupplier(const std::string &comment);
-bool TpchQ16TypeNotLike(const std::string &type, const std::string &pattern);
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ16TxnBuffer final : public core::AuxTxnBuffer {
 public:
   bool HasPendingChanges() const override;
   void Clear() override;
+  bool RequiresRebuild() const { return requires_rebuild; }
+  void MarkRebuild() { requires_rebuild = true; }
+  uint64_t EventCount() const {
+    return parts.size() + partsupps.size() + suppliers.size();
+  }
 
-  bool RequiresRebuild() const;
-  const std::vector<TpchQ16PartsuppDelta> &PartsuppDeltas() const;
-  const std::vector<TpchQ16SupplierDelta> &SupplierDeltas() const;
-  void MarkRebuild();
-  void AddPartsuppDelta(TpchQ16PartsuppDelta delta);
-  void AddSupplierDelta(TpchQ16SupplierDelta delta);
+  std::vector<TpchQ16PartEvent> parts;
+  std::vector<TpchQ16PartsuppEvent> partsupps;
+  std::vector<TpchQ16SupplierEvent> suppliers;
 
 private:
-  bool pending = false;
   bool requires_rebuild = false;
-  std::vector<TpchQ16PartsuppDelta> partsupp_deltas;
-  std::vector<TpchQ16SupplierDelta> supplier_deltas;
 };
 
 // ── Module ──────────────────────────────────────────────────────────────────
@@ -251,13 +246,10 @@ public:
 
 private:
   TpchQ16State BuildState(core::AuxEngineServices &) const;
-  bool LoadSizePartition(core::AuxEngineServices &, int32_t size,
-                         TpchQ16SizePartition &) const;
-  bool LoadEligibility(core::AuxEngineServices &,
-                       std::vector<uint8_t> &eligible) const;
-  void EmitResult(
-      const std::vector<Q16ResultRow> &rows,
-      core::AuxRowSink &sink) const;
+  std::shared_ptr<const TpchQ16State>
+  LoadState(core::AuxEngineServices &) const;
+  void EmitResult(const TpchQ16State &, const core::QueryArguments &,
+                  core::AuxRowSink &) const;
 
   TpchQ16Config config;
   TpchQ16InitialScan *initial_scan = nullptr;

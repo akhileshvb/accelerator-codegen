@@ -190,8 +190,17 @@ void DispatchMysqlMutation(const char *relname,
       }
       backend->CaptureMutation(ProjectBatch(batch, *attnums));
     } catch (...) {
-      // One accelerator must not skip capture for the others.
+      // One accelerator must not skip capture for the others. This one may
+      // have missed the write, so its state can no longer be trusted.
+      try { backend->NoteCaptureFailure(); } catch (...) {}
     }
+  }
+}
+
+void InvalidateAllMysqlAccelerators(bool transaction_open) {
+  for (auto *backend : RegisteredMysqlMutationBackends()) {
+    if (!backend) continue;
+    try { backend->NoteCaptureFailure(transaction_open); } catch (...) {}
   }
 }
 
@@ -201,6 +210,9 @@ void DispatchMysqlTxnEvent(bool is_commit, bool is_rollback) {
     if (!backend) {
       continue;
     }
+    // Commit/abort of captured writes are serialized with the install of a
+    // snapshot build (MysqlAuxBackend::BeginBuildLog).
+    std::lock_guard<std::mutex> commit_lock(backend->CommitMutex());
     try {
       if (is_commit) {
         backend->OnPreCommit();
@@ -215,7 +227,9 @@ void DispatchMysqlTxnEvent(bool is_commit, bool is_rollback) {
         backend->OnAbort();
       }
     } catch (...) {
-      // Keep remaining accelerators' commit/abort paths running.
+      // Keep remaining accelerators' commit/abort paths running; this one's
+      // state may be missing the write.
+      try { backend->NoteCaptureFailure(/*transaction_open=*/false); } catch (...) {}
     }
   }
 }

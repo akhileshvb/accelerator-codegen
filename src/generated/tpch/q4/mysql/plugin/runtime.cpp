@@ -22,18 +22,22 @@ namespace scans {
 void ScanTpchQ4Orders(
     const std::function<void(const query::TpchQ4OrderInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT o_orderkey, o_orderdate, o_orderpriority FROM orders",
+      "SELECT o_orderkey, o_orderdate, o_orderpriority, "
+      "CASE WHEN o_orderpriority IS NULL THEN 1 ELSE 0 END FROM orders "
+      "WHERE o_orderkey IS NOT NULL AND o_orderdate IS NOT NULL",
       [&](const std::vector<std::string> &cols) {
         consumer({TypedInt(cols, 0),
                   TypedDate(cols, 1),
-                  TypedText(cols, 2)});
+                  TypedText(cols, 2),
+                TypedInt(cols, 3) != 0});
       });
 }
 
 void ScanTpchQ4Lineitems(
     const std::function<void(const query::TpchQ4LineitemInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT l_orderkey, l_commitdate, l_receiptdate FROM lineitem",
+      "SELECT l_orderkey, l_commitdate, l_receiptdate FROM lineitem "
+      "WHERE l_orderkey IS NOT NULL AND l_commitdate < l_receiptdate",
       [&](const std::vector<std::string> &cols) {
         consumer({TypedInt(cols, 0),
                   TypedDate(cols, 1),

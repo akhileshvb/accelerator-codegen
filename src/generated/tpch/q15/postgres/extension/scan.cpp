@@ -99,9 +99,13 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ15(FunctionCallInfo fcinfo) {
+  // A NULL date is passed on as NULL: the window is empty, as in SQL.
   detail::Q15Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-          core::AuxType::Date, detail::PostgresDateArg(0, fcinfo))}},
+      core::QueryArguments{{PG_ARGISNULL(0)
+                                ? core::AuxValue::Null(core::AuxType::Date)
+                                : core::AuxValue::Of(
+                                      core::AuxType::Date,
+                                      detail::PostgresDateArg(0, fcinfo))}},
       fcinfo);
 }
 

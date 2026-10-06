@@ -18,10 +18,12 @@
 //                   packings (orderkey +5e9, suppkey +2e6, partkey +4e7,
 //                   custkey +3e8), FK-consistent; spec draws for all queries.
 //                   (A >4 GB string-offset test is not feasible here.)
+//   --negative-keys fresh DB copy with every key (incl. nation/region) negated,
+//                   FK-consistent; spec draws for all queries.
 //   --plain         also run plain when another mode is given.
 //
 // Usage: test_postgres_tpch_params [queries|all] [draws_per_class=10] [seed=1]
-//          [--keep-going] [--data-perturb] [--wide-keys] [--plain]
+//          [--keep-going] [--data-perturb] [--wide-keys] [--negative-keys] [--plain]
 //          [--max-edge=N] [--tol=1e-9] [--timeout-ms=N] [--classes=abc]
 //   queries: all | 6 | 1,3,5 | 3-7
 // Env: TPCH_PG_DB (template DB), plus the usual PG* vars.
@@ -53,7 +55,7 @@ struct Options {
   std::vector<int> queries;
   int draws = 10;
   uint64_t seed = 1;
-  bool keep_going = false, perturb = false, wide = false, plain = false;
+  bool keep_going = false, perturb = false, wide = false, negative = false, plain = false;
   int max_edge = 0;
   double tol = 1e-9;
   int timeout_ms = 0;
@@ -279,6 +281,19 @@ std::vector<std::string> WideKeyStatements() {
           "ANALYZE"};
 }
 
+// Every key negated (FK-consistent; 0 stays 0): keys < 0 must be exact too.
+std::vector<std::string> NegativeKeyStatements() {
+  return {"UPDATE lineitem SET l_orderkey = -l_orderkey, l_suppkey = -l_suppkey, l_partkey = -l_partkey",
+          "UPDATE orders SET o_orderkey = -o_orderkey, o_custkey = -o_custkey",
+          "UPDATE customer SET c_custkey = -c_custkey, c_nationkey = -c_nationkey",
+          "UPDATE part SET p_partkey = -p_partkey",
+          "UPDATE partsupp SET ps_partkey = -ps_partkey, ps_suppkey = -ps_suppkey",
+          "UPDATE supplier SET s_suppkey = -s_suppkey, s_nationkey = -s_nationkey",
+          "UPDATE nation SET n_nationkey = -n_nationkey, n_regionkey = -n_regionkey",
+          "UPDATE region SET r_regionkey = -r_regionkey",
+          "ANALYZE"};
+}
+
 // ---- run -----------------------------------------------------------------
 
 struct Cell {
@@ -459,6 +474,7 @@ int main(int argc, char **argv) {
       if (a == "--keep-going") o.keep_going = true;
       else if (a == "--data-perturb") o.perturb = true;
       else if (a == "--wide-keys") o.wide = true;
+      else if (a == "--negative-keys") o.negative = true;
       else if (a == "--plain") o.plain = true;
       else if (a.rfind("--max-edge=", 0) == 0) o.max_edge = std::atoi(a.c_str() + 11);
       else if (a.rfind("--tol=", 0) == 0) o.tol = std::atof(a.c_str() + 6);
@@ -470,7 +486,7 @@ int main(int argc, char **argv) {
       else if (pos == 2) { o.seed = std::strtoull(a.c_str(), nullptr, 10); pos++; }
     }
     o.queries = ParseQueries(which);
-    const bool run_plain = o.plain || (!o.perturb && !o.wide);
+    const bool run_plain = o.plain || (!o.perturb && !o.wide && !o.negative);
 
     auto tools = ConnectTpch();
     EnsureMutationTriggers(tools);
@@ -540,6 +556,21 @@ int main(int argc, char **argv) {
         Conn c(tools, copy, o.timeout_ms); // new backend: accelerator state is rebuilt from the rewritten data
         for (int q : o.queries) {
           RunQuery(c, Tmpl(q), o, "wide-keys", true, 17, rep);
+          if (!o.keep_going && rep.failures) return;
+        }
+      });
+
+    if (o.negative)
+      Guarded("negative-keys", [&] {
+        Fresh();
+        {
+          Conn w(tools, copy);
+          w.Exec("SET session_replication_role = replica");
+          for (const auto &s : NegativeKeyStatements()) w.Exec(s);
+        }
+        Conn c(tools, copy, o.timeout_ms);
+        for (int q : o.queries) {
+          RunQuery(c, Tmpl(q), o, "negative-keys", true, 19, rep);
           if (!o.keep_going && rep.failures) return;
         }
       });
