@@ -200,6 +200,13 @@ void SetPartHistogram(TpchQ17State &state, int64_t partkey,
     state.parts.Set(partkey, std::move(hist));
 }
 
+core::InvalidationPlan All() {
+  core::InvalidationPlan plan;
+  plan.scope =
+      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
+  return plan;
+}
+
 core::InvalidationPlan StatePlan() {
   core::InvalidationPlan plan;
   plan.scope =
@@ -489,6 +496,25 @@ TpchQ17Module::StageMaintenance(core::AuxEngineServices &services,
   }
   if (buffer.LineitemDeltas().empty() && buffer.PartDeltas().empty())
     return outcome;
+
+  // Honor the cost model's (or a forced) choice: this state has no finer
+  // partitions, so anything but ApplyDelta is a whole-state rebuild.
+  {
+    const auto decision = services.ChooseMaintenance(
+        {static_cast<uint64_t>(buffer.LineitemDeltas().size() + buffer.PartDeltas().size()), 1, true, false, true, false, false,
+         core::MaintenanceAction::NoOp,
+         services.ExpectedQueriesBeforeNextWrite()});
+    if (decision.action == core::MaintenanceAction::RebuildPartition) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+    if (decision.action != core::MaintenanceAction::ApplyDelta) {
+      outcome.action = decision.action;
+      outcome.invalidations = All();
+      outcome.pending_rebuild = outcome.invalidations;
+      return outcome;
+    }
+  }
 
   const TpchQ17State *current = ReadState(services);
   if (!current) {

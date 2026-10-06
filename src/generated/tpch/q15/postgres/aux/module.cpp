@@ -576,6 +576,25 @@ TpchQ15Module::StageMaintenance(core::AuxEngineServices &services,
   if (buffer.LineitemDeltas().empty() && buffer.SupplierDeltas().empty())
     return outcome;
 
+  // Honor the cost model's (or a forced) choice: this state has no finer
+  // partitions, so anything but ApplyDelta is a whole-state rebuild.
+  {
+    const auto decision = services.ChooseMaintenance(
+        {static_cast<uint64_t>(buffer.LineitemDeltas().size() + buffer.SupplierDeltas().size()), 1, true, false, true, false, false,
+         core::MaintenanceAction::NoOp,
+         services.ExpectedQueriesBeforeNextWrite()});
+    if (decision.action == core::MaintenanceAction::RebuildPartition) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+    if (decision.action != core::MaintenanceAction::ApplyDelta) {
+      outcome.action = decision.action;
+      outcome.invalidations = All();
+      outcome.pending_rebuild = outcome.invalidations;
+      return outcome;
+    }
+  }
+
   // Group the lineitem deltas by (month, day).
   struct MonthDeltas {
     std::array<std::vector<TpchQ15DayEntry>, 31> days;

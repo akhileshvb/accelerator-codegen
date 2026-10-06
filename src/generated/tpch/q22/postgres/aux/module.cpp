@@ -389,6 +389,25 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
   if (buffer.customer_deltas.empty() && buffer.order_deltas.empty())
     return outcome;
 
+  // Honor the cost model's (or a forced) choice: this state has no finer
+  // partitions, so anything but ApplyDelta is a whole-state rebuild.
+  {
+    const auto decision = services.ChooseMaintenance(
+        {static_cast<uint64_t>(buffer.customer_deltas.size() + buffer.order_deltas.size()), 1, true, false, true, false, false,
+         core::MaintenanceAction::NoOp,
+         services.ExpectedQueriesBeforeNextWrite()});
+    if (decision.action == core::MaintenanceAction::RebuildPartition) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+    if (decision.action != core::MaintenanceAction::ApplyDelta) {
+      outcome.action = decision.action;
+      outcome.invalidations = All();
+      outcome.pending_rebuild = outcome.invalidations;
+      return outcome;
+    }
+  }
+
   const TpchQ22State *current = ReadState(services);
   if (!current) {
     core::FinishRebuildAll(outcome);
@@ -432,10 +451,11 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
     if (orders < 0 || orders > std::numeric_limits<int32_t>::max())
       return inconsistent();
     // Only crossing zero changes the zero-order multiset.
-    if (!Contribute(editor, rec, -1))
+    const bool crossing = (rec.order_count == 0) != (orders == 0);
+    if (crossing && !Contribute(editor, rec, -1))
       return inconsistent();
     rec.order_count = static_cast<int32_t>(orders);
-    if (!Contribute(editor, rec, +1))
+    if (crossing && !Contribute(editor, rec, +1))
       return inconsistent();
     state->customers.Set(delta.custkey, rec);
   }
