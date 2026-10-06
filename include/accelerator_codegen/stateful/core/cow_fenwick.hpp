@@ -1,4 +1,17 @@
 #pragma once
+//
+// CowFenwick<Cell>
+// PURPOSE    Copy-on-write Fenwick (binary indexed) tree over the whole int32 range
+//            with an arbitrary per-node Cell (struct of sums, small grid, ...).
+// COMPLEXITY Update touches <= 32 nodes; VisitPrefix reads <= 32 nodes, independent of
+//            data size.
+// MEMORY     <= 32 nodes per populated position, each shared_ptr<Cell> (cell bytes +
+//            ~16 B); only touched nodes exist.
+// COW/THREADS Copy = shard pointer copies; Update clones touched nodes once per version.
+//            Mutate a private copy only.
+// USE WHEN   prefix/range aggregates over int32 positions (days, ids) of multi-field
+//            cells. For a plain 64-ary count tree use RadixRangeTree.
+//
 
 #include <cstddef>
 #include <cstdint>

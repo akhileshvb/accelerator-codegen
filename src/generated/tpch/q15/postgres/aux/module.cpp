@@ -752,13 +752,11 @@ void TpchQ15Module::Execute(core::AuxEngineServices &services,
 
   std::vector<std::size_t> chunk_ids;
   for (const auto *ms : whole)
-    for (std::size_t i = 0; i < ms->revenue.NumChunks(); ++i)
-      if (ms->revenue.ChunkAt(i))
-        chunk_ids.push_back(i);
+    ms->revenue.ForEachChunk(
+        [&](std::size_t ci, const std::vector<int64_t> &) { chunk_ids.push_back(ci); });
   if (have_edge)
-    for (std::size_t i = 0; i < edge_revenue.NumChunks(); ++i)
-      if (edge_revenue.ChunkAt(i))
-        chunk_ids.push_back(i);
+    edge_revenue.ForEachChunk(
+        [&](std::size_t ci, const std::vector<Int128> &) { chunk_ids.push_back(ci); });
   std::sort(chunk_ids.begin(), chunk_ids.end());
   chunk_ids.erase(std::unique(chunk_ids.begin(), chunk_ids.end()),
                   chunk_ids.end());

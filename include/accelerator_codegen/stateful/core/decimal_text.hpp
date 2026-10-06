@@ -1,4 +1,14 @@
 #pragma once
+//
+// decimal_text::Parse
+// PURPOSE    Exact parse of engine-printed NUMERIC/DECIMAL text into an int128
+//            coefficient at a fixed scale.
+// COMPLEXITY O(length).
+// MEMORY     Stateless (no allocation).
+// COW/THREADS Pure function; thread-safe.
+// USE WHEN   reading decimal values as text from an engine API. Output formatting lives
+//            in pg_numeric::ToText.
+//
 
 #include <cstddef>
 #include <cstdint>

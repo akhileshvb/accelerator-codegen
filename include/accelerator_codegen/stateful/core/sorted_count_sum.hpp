@@ -1,4 +1,16 @@
 #pragma once
+//
+// SortedCountSum
+// PURPOSE    Copy-on-write ordered multiset of int64 keys answering exactly 'count and
+//            sum of keys strictly above x'.
+// COMPLEXITY Add O(log #blocks + block) after the first touch; SuffixAbove O(log
+//            #blocks + block + #blocks).
+// MEMORY     16 B per distinct key (int64 key + int64 multiplicity) plus a 24 B summary per block.
+// COW/THREADS Copy = O(#blocks) pointers; mutate a private copy only.
+// USE WHEN   you need rank/suffix aggregates of a multiset of numbers. For prefix sums
+//            over a bounded integer domain use RadixRangeTree; over int32 positions
+//            with per-node structs use CowFenwick.
+//
 
 #include <algorithm>
 #include <cstddef>

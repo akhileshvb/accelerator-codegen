@@ -5,7 +5,8 @@
 // PURPOSE   Default per-key column (int64 key -> fixed-size value) for state that
 //           is published as immutable versions and edited on a private copy.
 //           Negative keys, huge keys and sparse key spaces are all exact.
-// LAYOUT    Keys in [-2^35, 2^35) are zigzag-mapped (k >= 0 -> 2k, k < 0 -> -2k-1)
+// LAYOUT    Keys in [-2^(b-1), 2^(b-1)) with b = min(36, kShift+24) (default kShift
+//           12: +-2^35; kShift 6: +-2^29) are zigzag-mapped (k >= 0 -> 2k, k < 0 -> -2k-1)
 //           to an id, so small keys of both signs share the first chunks. Ids are
 //           grouped 2^kShift per chunk (std::vector<T>, allocated on first
 //           write); chunks hang off a two-level directory (pages of 256 chunk
@@ -23,8 +24,10 @@
 // COW/THREADS Copy-construct/assign shares chunks; writes clone only the touched
 //           chunk/page. Concurrent const reads of a published copy are fine;
 //           mutate a private copy only (use_count is a hint under races).
-// ITERATION NumChunks()/ChunkAt(ci)/KeyAt(ci,i) scan the dense part in
-//           directory (zigzag) order; ForEachSparse visits the hash part;
+// ITERATION ForEachChunk(fn(ci, chunk)) visits allocated dense chunks (cost
+//           independent of key spread); KeyAt(ci,i) gives a slot's key.
+//           NumChunks()/ChunkAt(ci) is the indexed form (O(max chunk index)
+//           to sweep, prefer ForEachChunk for sparse key spaces); ForEachSparse visits the hash part;
 //           ForEach visits both; ForEachOrdered visits all slots of allocated
 //           chunks in ascending key order. Slots equal to `fill` may be visited.
 // DELETION  Set(key, fill) restores "absent" (and removes a far key's hash
@@ -62,7 +65,10 @@ class AnyKeyCowArray {
 public:
   using Chunk = std::vector<T>;
   static constexpr std::size_t kChunkSize = std::size_t{1} << kShift;
-  static constexpr int64_t kDenseLimit = int64_t{1} << 36; // zigzag ids
+  // Dense zigzag ids are < 2^kDenseBits: at most 2^36, and at most 2^(kShift+24)
+  // so the top directory level never exceeds 2^16 entries (1 MB per copy).
+  static constexpr unsigned kDenseBits = kShift + 24 < 36 ? kShift + 24 : 36;
+  static constexpr int64_t kDenseLimit = int64_t{1} << kDenseBits; // zigzag ids
 
   explicit AnyKeyCowArray(T fill = T{}) : dir_(nullptr), fill_(std::move(fill)) {}
 
@@ -138,16 +144,29 @@ public:
   static int64_t KeyAt(std::size_t ci, std::size_t i) {
     return Unzig((static_cast<uint64_t>(ci) << kShift) | i);
   }
+  // fn(ci, const Chunk&) for every allocated chunk in ascending ci; skips
+  // unallocated directory pages in O(1) each, so cost does not depend on how
+  // far apart the populated keys are.
+  template <typename F> void ForEachChunk(F &&fn) const {
+    for (std::size_t p = 0, np = dir_.NumChunks(); p < np; ++p) {
+      const auto *page = dir_.ChunkAt(p);
+      if (!page)
+        continue;
+      for (std::size_t j = 0; j < page->size(); ++j)
+        if ((*page)[j])
+          fn((p << kPageShift) | j, *(*page)[j]);
+    }
+  }
   // fn(key, const T&) for entries outside the dense range (unordered).
   template <typename F> void ForEachSparse(F &&fn) const {
     sparse_.ForEach(fn);
   }
   // fn(key, const T&): dense slots in zigzag order, then the sparse part.
   template <typename F> void ForEach(F &&fn) const {
-    for (std::size_t ci = 0, n = NumChunks(); ci < n; ++ci)
-      if (const Chunk *c = ChunkAt(ci))
-        for (std::size_t i = 0; i < kChunkSize; ++i)
-          fn(KeyAt(ci, i), (*c)[i]);
+    ForEachChunk([&](std::size_t ci, const Chunk &c) {
+      for (std::size_t i = 0; i < kChunkSize; ++i)
+        fn(KeyAt(ci, i), c[i]);
+    });
     sparse_.ForEach(fn);
   }
   // fn(key, const T&) in ascending key order over every slot of every
@@ -160,38 +179,33 @@ public:
     std::size_t f = 0;
     for (; f < far.size() && far[f].first < 0; ++f)
       fn(far[f].first, *far[f].second);
-    const std::size_t n = NumChunks();
-    for (std::size_t ci = n; ci-- > 0;) { // negatives: odd ids, descending
-      const Chunk *c = ChunkAt(ci);
-      if (!c)
-        continue;
+    std::vector<std::pair<std::size_t, const Chunk *>> chunks;
+    ForEachChunk([&](std::size_t ci, const Chunk &c) { chunks.emplace_back(ci, &c); });
+    for (std::size_t n = chunks.size(); n-- > 0;) // negatives: odd ids, descending
       for (std::size_t i = kChunkSize; i-- > 0;)
         if (i & 1)
-          fn(KeyAt(ci, i), (*c)[i]);
-    }
-    for (std::size_t ci = 0; ci < n; ++ci) { // non-negatives: even ids, ascending
-      const Chunk *c = ChunkAt(ci);
-      if (!c)
-        continue;
+          fn(KeyAt(chunks[n].first, i), (*chunks[n].second)[i]);
+    for (const auto &e : chunks) // non-negatives: even ids, ascending
       for (std::size_t i = 0; i < kChunkSize; i += 2)
-        fn(KeyAt(ci, i), (*c)[i]);
-    }
+        fn(KeyAt(e.first, i), (*e.second)[i]);
     for (; f < far.size(); ++f)
       fn(far[f].first, *far[f].second);
   }
 
   std::size_t AllocatedChunks() const {
     std::size_t n = 0;
-    for (std::size_t ci = 0, m = NumChunks(); ci < m; ++ci)
-      n += ChunkAt(ci) != nullptr;
+    ForEachChunk([&](std::size_t, const Chunk &) { ++n; });
     return n;
   }
   // Chunks whose payload is shared with at least one other copy.
   std::size_t SharedChunks() const {
     std::size_t n = 0;
-    for (std::size_t ci = 0, m = NumChunks(); ci < m; ++ci)
-      if (const auto *p = dir_.Find(static_cast<int64_t>(ci)); p && *p)
-        n += p->use_count() > 1;
+    for (std::size_t p = 0, np = dir_.NumChunks(); p < np; ++p)
+      if (const auto *page = dir_.ChunkAt(p)) {
+        const bool page_shared = dir_.IsChunkShared(p); // then every chunk is
+        for (const auto &c : *page)
+          n += c && (page_shared || c.use_count() > 1);
+      }
     return n;
   }
   // Bytes owned by this version (shared chunks counted in full).

@@ -167,22 +167,69 @@ env/GUC).
 
 ## Generic data-structure primitives
 
-Workload-agnostic building blocks (all header-only, namespace
-`accelerator_codegen::aux_state::core`; unit test `tests/aux_state/test_core_primitives.cpp`).
-Cost figures assume 64-bit builds without `-march` flags.
+Workload-agnostic building blocks (header-only, namespace
+`accelerator_codegen::aux_state::core` unless noted). Every header starts with a
+comment giving purpose, complexity, memory per element and COW/thread rules.
+Unit and randomized reference tests: `tests/aux_state/test_core_primitives.cpp`.
+"COW" means: copying is cheap (pointer copies), copies share payload, and a
+write clones only the touched chunk/shard; mutate a private copy and publish it,
+concurrent const reads of a published copy are safe.
+
+### Per-key columns and maps
+
+| Header | Primitive | Key | Value | Memory per element | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `dense_id_array.hpp` | `DenseIdArray<T>` | id >= 0 | fixed-size | sizeof(T) per slot of touched 64K leaves | Not COW; single owner / scratch. |
+| `chunked_cow_array.hpp` | `ChunkedCowArray<T, kShift>` | id >= 0 | fixed-size | sizeof(T) per slot of allocated chunks + 16 B per directory entry | COW base block; directory has one entry per 2^kShift ids. |
+| `any_key_cow_array.hpp` | `AnyKeyCowArray<T, kShift, kShardBits>` | any int64 | fixed-size | sizeof(T) per slot of touched chunks; ~60 B per far key | COW. Zigzag dense range [-2^35, 2^35) for both signs, two-level sparse directory (memory only for touched pages), sharded hash for far keys, ordered / full iteration. |
+| `flat_hash_map.hpp` | `FlatHashMap<V>` | any int64 | any V | ~10 B + 1.14 sizeof(V) | Not COW. Swiss-table style. |
+| `flat_hash_map.hpp` | `ShardedCowHashMap<V, kShardBits>` | any int64 | any V | same | COW shards. |
+| `chunked_blob_map.hpp` | `ChunkedBlobMap` | any int64 | byte string | 4 B offset + ~1 B length + payload | COW. Clustered keys; bitmap + arena chunks; chunk-granular iteration for parallel scans. Also varint helpers. |
+| `cow_record_store.hpp` | `ShardedCowRecordStore<kShardBits>` | any int64 | byte record | ~13 B slot + 4 B length + payload | COW. Scattered keys, small records. |
+| `keyed_string_column.hpp` | `KeyedStringColumn` | any int64 | string | ~12 B + bytes | COW. Parallel SIMD LIKE scan over the whole column. |
+| `string_blob.hpp` | `StringBlob`, `StringDict` | id / string | string | 8 B + bytes; dict adds ~9-12 B | Append-only, not COW. |
+
+### Ordered and aggregate structures
+
+| Header | Primitive | Operations | Memory | Notes |
+| --- | --- | --- | --- | --- |
+| `cow_sorted_blocks.hpp` | `CowSortedBlocks<Key, Less>` | insert / erase / contains / in-order scan with early exit | ~1.35 sizeof(Key) per key | COW ordered set under a custom order. |
+| `sorted_count_sum.hpp` | `SortedCountSum` | add(key, n), count and sum of keys > x | 16 B per distinct key | COW multiset with block summaries; exact int128 sums. |
+| `radix_range_tree.hpp` | `RadixRangeTree<T>` | point add, range sum over [0, 2^24) | sizeof(T) per touched slot x 4 levels | COW, additive T. |
+| `cow_fenwick.hpp` | `CowFenwick<Cell>` | update, prefix visit over int32 positions | <= 32 nodes per populated position | COW Fenwick tree with arbitrary per-node cells. |
+
+### SQL value semantics (stateless)
 
 | Header | Primitive | Use it for |
 | --- | --- | --- |
-| `dense_id_array.hpp` | `DenseIdArray<T>` | int64-id -> small value, mutable, single owner. Any id >= 0 (no 2^28 cap). 64K-slot chunks allocated on touch; 24 B directory per 64K ids; `Set` fails only for negative ids. Dense/moderately sparse keys. |
-| `chunked_cow_array.hpp` | `ChunkedCowArray<T, kShift=12>` | Same use, but for immutable published states: copy = O(#chunks) pointer copies, `Set` clones only the touched chunk. Null chunks read as `fill` (sparse OK). |
-| `flat_hash_map.hpp` | `FlatHashMap<V>` | int64 -> V when keys are too sparse for a dense array. Swiss-table style, SSE2 group probe, inline keys, erase via tombstones. ~13 B/slot + sizeof(V), load 3/7..7/8. Call `Reserve` for big loads (rehash = 2x transient). |
-| `flat_hash_map.hpp` | `ShardedCowHashMap<V, kShardBits>` | `FlatHashMap` split into shared_ptr shards: copy = N pointers, write clones one shard. Pick shards of ~1e4-1e5 entries. |
-| `sql_date.hpp` | `sql_date::*` | days-since-1970 civil conversion for any int32 day; `AddMonths/AddYears` with PostgreSQL/MySQL end-of-month clamping; `MonthStart`, `IsMonthStart`, `YearOf/MonthOf/DayOfMonth`. |
-| `sql_like.hpp` | `sql_like::LikeMatcher`, `FindSubstring`, `MatchBlobBitmap/Indices` | LIKE with `%`, `_`, escape, optional ASCII case folding. Compile once; exact/prefix/suffix/contains/segment fast paths (SSE2/AVX2 substring search). Bulk over a `uint64` offsets + blob, optionally multithreaded. Byte-wise: the caller must pick case/collation behavior to match the DBMS. |
-| `string_blob.hpp` | `StringBlob`, `StringDict` | Append-only strings (8 B offset/string, no per-string allocation, > 4 GB OK); dictionary encoding with stable uint32 ids (~9 B + bytes per distinct string) and `SortedRanks()` for ordered comparisons. |
-| `int128_acc.hpp` | `i128::*` | Overflow-checked int128 accumulation. Exact decimal text is `pg_numeric::ToText(coeff, scale)`. |
+| `sql_date.hpp` | `sql_date::*` | days-since-1970 <-> civil date for any int32 day; month/year interval arithmetic with end-of-month clamping. |
+| `sql_like.hpp` | `sql_like::LikeMatcher`, `FindSubstring`, `MatchBlobBitmap/Indices` | LIKE (`%`, `_`, escape, case folding) compiled once, SIMD substring search, bulk match over offsets + blob. Byte-wise: the caller picks collation behavior. |
+| `int128_acc.hpp` | `i128::*` | overflow-checked int128 accumulation for exact SUM state. |
+| `pg_numeric.hpp`, `pg_numeric_div.hpp` | `pg_numeric::*` | PostgreSQL NUMERIC result scale, avg, division, exact text output. |
+| `decimal_text.hpp` | `decimal_text::Parse` | exact decimal text -> int128 coefficient at a fixed scale. |
+| `byte_stream.hpp` | little-endian readers/writers | serialized state images at a process boundary. |
 
-Scale guidance: prefer columnar arrays (`DenseIdArray`/`ChunkedCowArray`) at
-~1-16 B per key over node-based maps with per-row strings; use `FlatHashMap`
-only when the key space is sparse; use the COW variants when a write batch
-must publish a new immutable state in O(touched chunks) rather than O(state).
+### Which one to use
+
+- **Value per integer key, fixed size.** Ids are bounded and non-negative and
+  the state is published as versions: `ChunkedCowArray`. Sign or range unknown,
+  sparse, or you must scan it: `AnyKeyCowArray` (the default; a far or negative
+  key is exact, only slower per key). Never published, single owner:
+  `DenseIdArray`. Keys with no locality and fat values: `ShardedCowHashMap`.
+- **Variable-length value per key.** Keys cluster (dense or locally dense):
+  `ChunkedBlobMap`. Keys scattered, records small: `ShardedCowRecordStore`.
+  The column must be filtered by a LIKE pattern: `KeyedStringColumn`. Build-time
+  dictionary of distinct strings: `StringDict`.
+- **Ordered data.** A set under a custom order with top-k / threshold scans:
+  `CowSortedBlocks`. Rank / suffix count-and-sum of numbers: `SortedCountSum`.
+  Range sums over a bounded integer domain: `RadixRangeTree`. Prefix aggregates
+  of structured cells over int32 positions: `CowFenwick`.
+- **Arithmetic and text semantics.** Dates and intervals: `sql_date`. Patterns:
+  `sql_like`. Exact sums: `int128_acc`; NUMERIC output and division:
+  `pg_numeric*`; decimal text input: `decimal_text`.
+
+Scale guidance: prefer columnar arrays at ~1-16 B per key over node-based maps
+with per-row strings; use hash maps only when the key space has no locality; use
+the COW variants when a write batch must publish a new immutable state in
+O(touched chunks) rather than O(state). Small `kShift` (5-8) suits arrays where
+few slots per chunk are used; larger (12-16) suits dense 1-4 byte columns.

@@ -1,4 +1,16 @@
 #pragma once
+//
+// sql_like (LikeMatcher, FindSubstring, MatchBlobBitmap)
+// PURPOSE    SQL LIKE / NOT LIKE semantics (escape, case-insensitive, UTF-8 '_')
+//            compiled once to a matcher with fast paths for exact / prefix / suffix /
+//            %x% shapes and SIMD substring search.
+// COMPLEXITY Compile O(pattern). Match O(text) per string (SIMD for %x%);
+//            MatchBlobBitmap is O(total bytes), linear and branch-friendly.
+// MEMORY     Matcher is a few tokens; MatchBlobBitmap allocates one bit per string.
+// COW/THREADS A compiled LikeMatcher is immutable: share it across threads.
+// USE WHEN   any LIKE predicate over a string column; pair with StringBlob /
+//            KeyedStringColumn to scan many strings at once.
+//
 
 #include <algorithm>
 #include <cstddef>

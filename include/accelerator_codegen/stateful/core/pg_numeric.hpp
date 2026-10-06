@@ -9,6 +9,15 @@
 //
 // Values are integer coefficients at a decimal scale (value = coeff / 10^scale).
 #pragma once
+//
+// pg_numeric (Decimal, DivScale, avg, ToText)
+// PURPOSE    PostgreSQL NUMERIC helpers over int128 coefficients: result-scale
+//            selection, avg(numeric), exact text formatting.
+// COMPLEXITY O(digits).
+// MEMORY     Stateless.
+// COW/THREADS Pure functions; thread-safe.
+// USE WHEN   emitting exact aggregate results in PostgreSQL's NUMERIC text format.
+//
 
 #include <cstdint>
 #include <stdexcept>
