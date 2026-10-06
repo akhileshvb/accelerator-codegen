@@ -302,16 +302,18 @@ inline void EnsureExtension(const Tools &tools) {
   }
   const std::string register_sql =
       RepoRootHint() + "/scripts/postgres_register_tpch_all.sql";
-  auto present = QuerySQL(tools, "SELECT 1 FROM pg_proc WHERE proname = 'accel_tpch_q1_aux'");
-  if (!(present.first && TrimLines(present.second).find('1') != std::string::npos)) {
-    Require(RunPsqlFile(tools, register_sql),
-            "failed to register TPC-H SQL functions from " + register_sql);
-  } else {
-    // Always re-create the per-query functions from the loaded module: a DB
-    // restored from an older build may carry stale signatures (calling one
-    // with the wrong argument types crashes the backend).
+  // Re-create the per-query functions from the loaded module every time: a DB
+  // restored from an older build may carry stale signatures (calling one with
+  // the wrong argument types crashes the backend). Older DBs lack the
+  // registrar function itself; the full script installs it first.
+  auto present = QuerySQL(
+      tools, "SELECT 1 FROM pg_proc WHERE proname = 'accel_postgres_register_queries'");
+  if (present.first && TrimLines(present.second).find('1') != std::string::npos) {
     Require(RunSQL(tools, "SELECT accel_postgres_register_queries()"),
             "accel_postgres_register_queries() failed");
+  } else {
+    Require(RunPsqlFile(tools, register_sql),
+            "failed to register TPC-H SQL functions from " + register_sql);
   }
 }
 
