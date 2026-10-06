@@ -37,7 +37,7 @@ namespace accelerator_codegen::aux_state::query {
 // answer an arbitrary LIKE faster. A write batch costs O(touched segments +
 // touched index shards + customer chunks) and never rebuilds.
 //
-// Data assumptions: o_orderkey is the orders primary key; keys are >= 0; rows
+// Data assumptions: o_orderkey is the orders primary key; keys may be any int64; rows
 // with a NULL key or NULL comment never contribute (they cannot join).
 constexpr std::size_t kTpchQ13SegmentRows = 4096;
 
@@ -76,8 +76,21 @@ struct TpchQ13OrderSegment {
 };
 
 struct TpchQ13State {
+  // Per-custkey columns for keys in [0, 2^36); negative / huge keys live in the
+  // sparse hash (exact, pay only for what is present).
+  static constexpr int64_t kDenseKeyLimit = int64_t{1} << 36;
+  struct SparseSlot {
+    int32_t count = 0;
+    uint8_t valid = 0;
+  };
   core::ChunkedCowArray<int32_t> order_count{0};
   core::ChunkedCowArray<uint8_t> customer_valid{0};
+  core::ShardedCowHashMap<SparseSlot, 8> sparse_customers;
+  static bool Dense(int64_t key) { return key >= 0 && key < kDenseKeyLimit; }
+  int32_t Count(int64_t key) const;
+  bool Valid(int64_t key) const;
+  void AddCount(int64_t key, int32_t delta);
+  void SetValid(int64_t key, bool valid);
   int64_t customers = 0;
   int64_t live_orders = 0;
 

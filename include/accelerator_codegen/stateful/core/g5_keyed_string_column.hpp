@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
 #include "accelerator_codegen/stateful/core/sql_like.hpp"
 #include "accelerator_codegen/stateful/core/string_blob.hpp"
 
@@ -44,6 +45,8 @@ public:
   };
 
   KeyedStringColumn() : segs_(nullptr) {}
+  // Any int64 key works: segments of keys in [0, 2^36) live in a chunked array,
+  // the (negative or huge) rest in a sharded COW hash keyed by segment index.
 
   std::size_t size() const { return size_; }
 
@@ -96,7 +99,15 @@ public:
   template <typename Fn>
   unsigned ForEachMatch(const sql_like::LikeMatcher &matcher, unsigned max_threads,
                         Fn &&fn) const {
-    const std::size_t nseg = segs_.NumChunks() * SegArray::kChunkSize;
+    std::vector<std::pair<int64_t, const Segment *>> work;
+    for (std::size_t si = 0; si < segs_.NumChunks() * SegArray::kChunkSize; ++si)
+      if (const auto *sp = segs_.Find(static_cast<int64_t>(si)); sp && *sp && (*sp)->live)
+        work.emplace_back(static_cast<int64_t>(si), sp->get());
+    other_.ForEach([&](int64_t si, const std::shared_ptr<Segment> &sp) {
+      if (sp && sp->live)
+        work.emplace_back(si, sp.get());
+    });
+    const std::size_t nseg = work.size();
     constexpr std::size_t kBlock = 8;
     unsigned workers = 1;
     if (max_threads > 1 && size_ >= 8 * kSegKeys)
@@ -109,11 +120,9 @@ public:
         const std::size_t lo = next.fetch_add(kBlock);
         if (lo >= nseg)
           return;
-        for (std::size_t si = lo; si < std::min(nseg, lo + kBlock); ++si) {
-          const auto *sp = segs_.Find(static_cast<int64_t>(si));
-          if (!sp || !*sp || (*sp)->live == 0)
-            continue;
-          const Segment &s = **sp;
+        for (std::size_t wi = lo; wi < std::min(nseg, lo + kBlock); ++wi) {
+          const int64_t si = work[wi].first;
+          const Segment &s = *work[wi].second;
           const std::size_t n = s.strings.size();
           const auto bits = sql_like::MatchBlobBitmap(matcher, s.strings.offsets(), n,
                                                       s.strings.data(), 1);
@@ -122,9 +131,7 @@ public:
             while (b) {
               const std::size_t id = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
               b &= b - 1;
-              if (s.id_of_slot[s.key_slot[id]] != id)
-                continue; // superseded string (never happens after Rewrite)
-              fn(worker, static_cast<int64_t>((si << kSegShift) | s.key_slot[id]));
+              fn(worker, static_cast<int64_t>((static_cast<uint64_t>(si) << kSegShift) | s.key_slot[id]));
             }
           }
         }
@@ -143,26 +150,41 @@ public:
   }
 
   std::size_t MemoryBytes() const {
-    std::size_t n = segs_.MemoryBytes();
+    std::size_t n = segs_.MemoryBytes() + other_.memory_bytes();
+    auto add = [&](const std::shared_ptr<Segment> &p) {
+      if (p)
+        n += sizeof(Segment) + p->strings.MemoryBytes() + p->key_slot.capacity() * 2 +
+             p->id_of_slot.capacity() * 2;
+    };
     for (std::size_t i = 0; i < segs_.NumChunks() * SegArray::kChunkSize; ++i)
-      if (const auto *p = segs_.Find(static_cast<int64_t>(i)); p && *p)
-        n += sizeof(Segment) + (*p)->strings.MemoryBytes() + (*p)->key_slot.capacity() * 2 +
-             (*p)->id_of_slot.capacity() * 2;
+      if (const auto *p = segs_.Find(static_cast<int64_t>(i)); p)
+        add(*p);
+    other_.ForEach([&](int64_t, const std::shared_ptr<Segment> &p) { add(p); });
     return n;
   }
 
 private:
   using SegArray = ChunkedCowArray<std::shared_ptr<Segment>, 10>;
+  static constexpr int64_t kDenseSegLimit = int64_t{1} << 24; // keys < 2^36
 
   static std::size_t Slot(int64_t key) { return static_cast<std::size_t>(key) & (kSegKeys - 1); }
+  static int64_t SegIndex(int64_t key) { return key >> kSegShift; } // floor
+  static bool DenseSeg(int64_t si) { return si >= 0 && si < kDenseSegLimit; }
+
   const Segment *SegmentOf(int64_t key) const {
-    if (key < 0)
-      return nullptr;
-    const auto *p = segs_.Find(key >> kSegShift);
+    const int64_t si = SegIndex(key);
+    if (DenseSeg(si)) {
+      const auto *p = segs_.Find(si);
+      return p ? p->get() : nullptr;
+    }
+    const auto *p = other_.Find(si);
     return p ? p->get() : nullptr;
   }
+  std::shared_ptr<Segment> &SegSlot(int64_t si) {
+    return DenseSeg(si) ? segs_.Mutable(si) : other_[si];
+  }
   Segment &MutableSegment(int64_t key) {
-    auto &p = segs_.Mutable(key >> kSegShift);
+    auto &p = SegSlot(SegIndex(key));
     if (!p) {
       p = std::make_shared<Segment>();
       p->id_of_slot.assign(kSegKeys, kNoSlot);
@@ -173,7 +195,7 @@ private:
   }
   // Rebuilds the key's segment with `key` replaced by *value (or dropped).
   void Rewrite(int64_t key, const std::string_view *value) {
-    const std::shared_ptr<Segment> old = *segs_.Find(key >> kSegShift);
+    const std::shared_ptr<Segment> old(const_cast<Segment *>(SegmentOf(key)), [](Segment *) {});
     auto fresh = std::make_shared<Segment>();
     fresh->id_of_slot.assign(kSegKeys, kNoSlot);
     fresh->strings.Reserve(old->live, old->strings.bytes());
@@ -193,10 +215,11 @@ private:
     }
     if (!value)
       --size_;
-    segs_.Mutable(key >> kSegShift) = std::move(fresh);
+    SegSlot(SegIndex(key)) = std::move(fresh);
   }
 
   SegArray segs_;
+  ShardedCowHashMap<std::shared_ptr<Segment>, 4> other_;
   std::size_t size_ = 0;
 };
 

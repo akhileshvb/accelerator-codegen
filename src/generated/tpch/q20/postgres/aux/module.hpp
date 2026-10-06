@@ -12,6 +12,7 @@
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/g5_keyed_string_column.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -99,7 +100,7 @@ public:
 // SF1000 (the old per-pair std::vector design needed 25-30 GB / 250-300 GB).
 // Execute is a multithreaded SIMD scan of the part-name column (O(parts)),
 // then O(log entries) per partsupp pair of the matching parts.
-constexpr std::size_t kTpchQ20BlockParts = 8;
+constexpr std::size_t kTpchQ20BlockParts = 8; // power of two (block = key >> 3)
 
 struct TpchQ20Entry {
   int32_t shipdate = 0;
@@ -127,14 +128,13 @@ struct TpchQ20Supplier {
 };
 
 struct TpchQ20State {
-  core::ChunkedCowArray<std::shared_ptr<TpchQ20PartBlock>, 12> blocks;
+  core::WideKeyCowArray<std::shared_ptr<TpchQ20PartBlock>, 12> blocks;
   core::KeyedStringColumn part_names;
   core::ShardedCowHashMap<TpchQ20Supplier, 12> suppliers;
   std::map<int32_t, std::string> nations;
 
   const TpchQ20PartBlock *FindBlock(int64_t partkey) const {
-    const auto *slot = blocks.Find(partkey / static_cast<int64_t>(kTpchQ20BlockParts));
-    return slot ? slot->get() : nullptr;
+    return blocks.Get(partkey >> 3).get(); // floor: exact for negative keys
   }
 };
 

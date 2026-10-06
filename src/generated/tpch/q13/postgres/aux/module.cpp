@@ -8,6 +8,8 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <mutex>
+#include <unordered_map>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -88,19 +90,42 @@ bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
 } // namespace
 
 // ── TpchQ13State implementation ─────────────────────────────────────────────
+int32_t TpchQ13State::Count(int64_t key) const {
+  if (Dense(key))
+    return order_count.Get(key);
+  const SparseSlot *s = sparse_customers.Find(key);
+  return s ? s->count : 0;
+}
+bool TpchQ13State::Valid(int64_t key) const {
+  if (Dense(key))
+    return customer_valid.Get(key) != 0;
+  const SparseSlot *s = sparse_customers.Find(key);
+  return s && s->valid;
+}
+void TpchQ13State::AddCount(int64_t key, int32_t delta) {
+  if (Dense(key))
+    order_count.Mutable(key) += delta;
+  else
+    sparse_customers[key].count += delta;
+}
+void TpchQ13State::SetValid(int64_t key, bool valid) {
+  if (Dense(key))
+    customer_valid.Set(key, valid ? 1 : 0);
+  else
+    sparse_customers[key].valid = valid ? 1 : 0;
+}
+
 void TpchQ13State::AddCustomer(int64_t custkey) {
-  if (custkey < 0)
+  if (Valid(custkey))
     return;
-  if (customer_valid.Get(custkey) != 0)
-    return;
-  customer_valid.Set(custkey, 1);
+  SetValid(custkey, true);
   ++customers;
 }
 
 void TpchQ13State::RemoveCustomer(int64_t custkey) {
-  if (custkey < 0 || customer_valid.Get(custkey) == 0)
+  if (!Valid(custkey))
     return;
-  customer_valid.Set(custkey, 0);
+  SetValid(custkey, false);
   --customers;
 }
 
@@ -116,8 +141,6 @@ std::shared_ptr<TpchQ13OrderSegment> &TpchQ13State::MutableSegment(uint32_t id) 
 // independent and a customer insert/delete is a single flag flip.
 void TpchQ13State::AddOrder(int64_t orderkey, int64_t custkey,
                             std::string_view comment) {
-  if (orderkey < 0 || custkey < 0)
-    return;
   RemoveOrder(orderkey); // primary key: re-adding an existing key replaces it
   if (open_segment < 0 ||
       segments[static_cast<std::size_t>(open_segment)]->orderkey.size() >=
@@ -145,12 +168,12 @@ void TpchQ13State::AddOrder(int64_t orderkey, int64_t custkey,
   segment.comment.Append(comment);
   ++segment.live;
   order_row.Upsert(orderkey, (static_cast<uint64_t>(id) << kSlotBits) | slot);
-  ++order_count.Mutable(custkey);
+  AddCount(custkey, 1);
   ++live_orders;
 }
 
 void TpchQ13State::RemoveOrder(int64_t orderkey) {
-  const uint64_t *found = orderkey < 0 ? nullptr : order_row.Find(orderkey);
+  const uint64_t *found = order_row.Find(orderkey);
   if (!found)
     return;
   const auto id = static_cast<uint32_t>(*found >> kSlotBits);
@@ -158,7 +181,7 @@ void TpchQ13State::RemoveOrder(int64_t orderkey) {
   auto &segment = *MutableSegment(id);
   segment.alive[slot] = 0;
   --segment.live;
-  --order_count.Mutable(segment.custkey[slot]);
+  AddCount(segment.custkey[slot], -1);
   order_row.Erase(orderkey);
   --live_orders;
   touched_.push_back(id);
@@ -278,8 +301,8 @@ void TpchQ13Module::AccumulateMutation(const core::MutationBatch &mutation,
 
   auto add_customer = [&](const core::AuxRow &row, int8_t sign) {
     int64_t custkey = 0;
-    if (!IntCell(row, 0, custkey) || custkey < 0)
-      return; // a NULL / negative key never joins
+    if (!IntCell(row, 0, custkey))
+      return; // a NULL key never joins
     TpchQ13Delta delta;
     delta.table = TpchQ13Delta::Table::Customer;
     delta.sign = sign;
@@ -292,8 +315,7 @@ void TpchQ13Module::AccumulateMutation(const core::MutationBatch &mutation,
     TpchQ13Delta delta;
     delta.sign = sign;
     if (!IntCell(row, 0, delta.orderkey) || !IntCell(row, 1, delta.custkey) ||
-        !StringCell(row, 2, delta.comment) || delta.orderkey < 0 ||
-        delta.custkey < 0)
+        !StringCell(row, 2, delta.comment))
       return;
     buffer.AddDelta(std::move(delta));
   };
@@ -440,9 +462,30 @@ namespace {
 // excluded[custkey] = number of the customer's orders whose comment matches
 // `matcher`. Segments are handed out in blocks to worker threads; each segment
 // is matched with one SIMD pass over its comment blob.
+// Matches are counted in a flat array when the custkey range is dense enough,
+// otherwise (and for negative / huge keys) in a mutex-protected hash.
+struct Excluded {
+  std::vector<int32_t> flat;
+  std::mutex mu;
+  std::unordered_map<int64_t, int32_t> hash;
+  void Add(int64_t key) {
+    if (key >= 0 && static_cast<std::size_t>(key) < flat.size()) {
+      __atomic_fetch_add(&flat[static_cast<std::size_t>(key)], 1, __ATOMIC_RELAXED);
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mu);
+    ++hash[key];
+  }
+  int32_t Get(int64_t key) const {
+    if (key >= 0 && static_cast<std::size_t>(key) < flat.size())
+      return flat[static_cast<std::size_t>(key)];
+    const auto it = hash.find(key);
+    return it == hash.end() ? 0 : it->second;
+  }
+};
+
 void CountMatchingOrders(const TpchQ13State &state,
-                         const like::LikeMatcher &matcher,
-                         std::vector<int32_t> &excluded) {
+                         const like::LikeMatcher &matcher, Excluded &excluded) {
   const std::size_t nseg = state.segments.size();
   constexpr std::size_t kBlock = 16;
   unsigned threads = 1;
@@ -468,8 +511,7 @@ void CountMatchingOrders(const TpchQ13State &state,
             const std::size_t i = w * 64 + static_cast<std::size_t>(__builtin_ctzll(b));
             b &= b - 1;
             if (seg->alive[i])
-              __atomic_fetch_add(&excluded[static_cast<std::size_t>(seg->custkey[i])],
-                                 1, __ATOMIC_RELAXED);
+              excluded.Add(seg->custkey[i]);
           }
         }
       }
@@ -502,12 +544,13 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
 
   // `o_comment NOT LIKE NULL` is never true: no order joins, every customer has
   // c_count 0. Otherwise count the matching orders per customer.
-  std::vector<int32_t> excluded;
+  Excluded excluded;
   if (!pattern_null) {
     const auto matcher = like::LikeMatcher::Compile(
         std::get<std::string>(arguments.values[0].payload), '\\',
         kLikeCaseInsensitive, /*utf8_underscore=*/true);
-    excluded.assign(span, 0);
+    if (span <= static_cast<std::size_t>(state.customers) * 4 + (std::size_t{1} << 20))
+      excluded.flat.assign(span, 0);
     CountMatchingOrders(state, matcher, excluded);
   }
 
@@ -519,6 +562,9 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
     if (const auto *chunk = state.order_count.ChunkAt(ci))
       for (const int32_t c : *chunk)
         max_count = std::max<int64_t>(max_count, c);
+  state.sparse_customers.ForEach([&](int64_t, const TpchQ13State::SparseSlot &slot) {
+    max_count = std::max<int64_t>(max_count, slot.count);
+  });
   std::vector<int64_t> dense(static_cast<std::size_t>(std::min(max_count, kDense)) + 1, 0);
   std::map<int64_t, int64_t> sparse;
 
@@ -533,13 +579,22 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
         continue;
       int64_t eff = pattern_null ? 0 : (counts ? (*counts)[j] : 0);
       if (!pattern_null)
-        eff -= excluded[base + j];
+        eff -= excluded.Get(static_cast<int64_t>(base + j));
       if (eff <= kDense)
         ++dense[static_cast<std::size_t>(eff)];
       else
         ++sparse[eff];
     }
   }
+  state.sparse_customers.ForEach([&](int64_t key, const TpchQ13State::SparseSlot &slot) {
+    if (!slot.valid)
+      return;
+    const int64_t eff = pattern_null ? 0 : slot.count - excluded.Get(key);
+    if (eff <= kDense)
+      ++dense[static_cast<std::size_t>(eff)];
+    else
+      ++sparse[eff];
+  });
 
   std::vector<TpchQ13OutputRow> rows;
   for (std::size_t c = 0; c < dense.size(); ++c)

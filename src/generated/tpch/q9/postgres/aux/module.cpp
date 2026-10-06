@@ -243,13 +243,17 @@ std::shared_ptr<TpchQ9PartBlock> EncodeBlock(const EditBlock &edit) {
 }
 
 constexpr int64_t kBlockParts = static_cast<int64_t>(kParts);
+static_assert((kBlockParts & (kBlockParts - 1)) == 0);
+// Floor division / modulo by the (power of two) block size: exact for negative keys.
+constexpr int64_t BlockOf(int64_t key) { return key >> __builtin_ctzll(static_cast<uint64_t>(kBlockParts)); }
+constexpr std::size_t SlotOf(int64_t key) { return static_cast<std::size_t>(key & (kBlockParts - 1)); }
 
 // Blocks being edited, keyed by block index; re-encoded into the state by Flush.
 class BlockEditor {
 public:
   explicit BlockEditor(TpchQ9State &state) : state_(state) {}
   EditBlock &For(int64_t partkey) {
-    auto &slot = edited_[partkey / kBlockParts];
+    auto &slot = edited_[BlockOf(partkey)];
     if (!slot)
       slot = DecodeBlock(state_.FindBlock(partkey));
     return *slot;
@@ -257,8 +261,8 @@ public:
   void Flush() {
     for (auto entry : edited_) {
       auto encoded = EncodeBlock(*entry.second);
-      if (encoded || state_.blocks.Find(entry.first))
-        state_.blocks.Mutable(entry.first) = std::move(encoded);
+      if (encoded || state_.blocks.Get(entry.first))
+        state_.blocks.Set(entry.first, encoded);
     }
     edited_.Clear();
   }
@@ -317,12 +321,11 @@ bool TpchQ9State::LookupSupplierNation(int64_t suppkey, int32_t &nationkey) cons
 }
 
 void TpchQ9State::SetSupplierNation(int64_t suppkey, int32_t nationkey) {
-  if (suppkey >= 0)
-    supplier_nation.Set(suppkey, nationkey);
+  supplier_nation.Set(suppkey, nationkey);
 }
 
 void TpchQ9State::EraseSupplier(int64_t suppkey) {
-  if (suppkey >= 0 && supplier_nation.Get(suppkey) != kNoNation)
+  if (supplier_nation.Get(suppkey) != kNoNation)
     supplier_nation.Set(suppkey, kNoNation);
 }
 
@@ -342,8 +345,6 @@ bool TpchQ9State::LookupOrderYear(int64_t orderkey, int32_t &year) const {
 // Years are interned into a table of at most 255 entries (first come first
 // served); orders whose year no longer fits keep it in a hash overflow.
 void TpchQ9State::SetOrderYear(int64_t orderkey, int32_t year) {
-  if (orderkey < 0)
-    return;
   EraseOrder(orderkey);
   std::size_t code = 0;
   for (std::size_t i = 0; i < year_table.size(); ++i)
@@ -360,8 +361,6 @@ void TpchQ9State::SetOrderYear(int64_t orderkey, int32_t year) {
 }
 
 void TpchQ9State::EraseOrder(int64_t orderkey) {
-  if (orderkey < 0)
-    return;
   if (order_year_code.Get(orderkey) != 0)
     order_year_code.Set(orderkey, 0);
   order_year_overflow.Erase(orderkey);
@@ -434,7 +433,6 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState() const {
     state->SetOrderYear(input.orderkey, TpchQ9ExtractYear(input.orderdate_days));
   });
   initial_scan->ScanParts([&](const TpchQ9PartInput &input) {
-    if (input.partkey >= 0)
       state->part_names.Set(input.partkey, input.name);
   });
 
@@ -442,28 +440,27 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState() const {
   // encoded at the end (transient: the editable copy of the cells, ~1.3x).
   BlockEditor editor(*state);
   initial_scan->ScanPartsupps([&](const TpchQ9PartsuppInput &input) {
-    if (input.partkey >= 0)
       editor.For(input.partkey)
-          .SetPs(static_cast<std::size_t>(input.partkey % kBlockParts), input.suppkey,
+          .SetPs(SlotOf(input.partkey), input.suppkey,
                  input.supplycost_raw);
   });
 
   const bool pushed_down = initial_scan->ScanProfitContributions(
       [&](const TpchQ9ProfitContribution &input) {
-        if (input.partkey >= 0 && input.rows > 0)
+        if (input.rows > 0)
           editor.For(input.partkey)
-              .AddCell(static_cast<std::size_t>(input.partkey % kBlockParts),
+              .AddCell(SlotOf(input.partkey),
                        state->GroupFor(input.nationkey, input.year), input.rows,
                        input.profit_raw);
       });
   if (!pushed_down) {
     initial_scan->ScanLineitems([&](const TpchQ9LineitemInput &input) {
       int32_t nationkey = 0, year = 0;
-      if (input.partkey < 0 || !state->LookupSupplierNation(input.suppkey, nationkey) ||
+      if (!state->LookupSupplierNation(input.suppkey, nationkey) ||
           !state->LookupOrderYear(input.orderkey, year))
         return;
       auto &edit = editor.For(input.partkey);
-      const auto slot = static_cast<std::size_t>(input.partkey % kBlockParts);
+      const auto slot = SlotOf(input.partkey);
       int64_t cost = 0, profit = 0;
       if (!edit.FindPs(slot, input.suppkey, cost))
         return;
@@ -508,14 +505,14 @@ void TpchQ9Module::AccumulateMutation(const core::MutationBatch &mutation,
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ9PartDelta d;
       d.sign = sign;
-      if (IntCell(row, 0, d.partkey) && d.partkey >= 0 && StringCell(row, 1, d.name))
+      if (IntCell(row, 0, d.partkey) && StringCell(row, 1, d.name))
         buffer.Add(std::move(d));
     };
   } else if (mutation.table == config.supplier_table) {
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ9SupplierDelta d;
       d.sign = sign;
-      if (IntCell(row, 0, d.suppkey) && d.suppkey >= 0 && Int32Cell(row, 1, d.nationkey))
+      if (IntCell(row, 0, d.suppkey) && Int32Cell(row, 1, d.nationkey))
         buffer.Add(d);
     };
   } else if (mutation.table == config.nation_table) {
@@ -532,7 +529,7 @@ void TpchQ9Module::AccumulateMutation(const core::MutationBatch &mutation,
       TpchQ9OrderDelta d;
       d.sign = sign;
       int32_t days = 0;
-      if (IntCell(row, 0, d.orderkey) && d.orderkey >= 0 && Int32Cell(row, 1, days)) {
+      if (IntCell(row, 0, d.orderkey) && Int32Cell(row, 1, days)) {
         d.order_year = TpchQ9ExtractYear(days);
         buffer.Add(d);
       }
@@ -541,7 +538,7 @@ void TpchQ9Module::AccumulateMutation(const core::MutationBatch &mutation,
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ9PartsuppDelta d;
       d.sign = sign;
-      if (IntCell(row, 0, d.partkey) && d.partkey >= 0 && IntCell(row, 1, d.suppkey) &&
+      if (IntCell(row, 0, d.partkey) && IntCell(row, 1, d.suppkey) &&
           Decimal2Cell(row, 2, d.cost_raw))
         buffer.Add(d);
     };
@@ -549,7 +546,7 @@ void TpchQ9Module::AccumulateMutation(const core::MutationBatch &mutation,
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ9LineitemDelta d;
       d.sign = sign;
-      if (ReadLineitem(row, d) && d.partkey >= 0)
+      if (ReadLineitem(row, d))
         buffer.Add(d);
     };
   } else {
@@ -645,7 +642,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
       int64_t before = 0;
       value_change |= after &&
                       BlockFindPs(old.FindBlock(key.first),
-                                  static_cast<std::size_t>(key.first % kBlockParts), key.second,
+                                  SlotOf(key.first), key.second,
                                   before) &&
                       before != *after;
     }
@@ -694,7 +691,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   for (const auto *d : deletes) {
     int32_t nationkey = 0, year = 0;
     int64_t cost = 0, profit = 0;
-    const auto slot = static_cast<std::size_t>(d->partkey % kBlockParts);
+    const auto slot = SlotOf(d->partkey);
     if (!old.LookupSupplierNation(d->suppkey, nationkey) ||
         !old.LookupOrderYear(d->orderkey, year) ||
         !BlockFindPs(old.FindBlock(d->partkey), slot, d->suppkey, cost))
@@ -718,7 +715,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   }
   for (const auto &d : buffer.PartsuppDeltas()) {
     auto &edit = editor.For(d.partkey);
-    const auto slot = static_cast<std::size_t>(d.partkey % kBlockParts);
+    const auto slot = SlotOf(d.partkey);
     if (d.sign > 0)
       edit.SetPs(slot, d.suppkey, d.cost_raw);
     else
@@ -742,7 +739,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     int32_t nationkey = 0, year = 0;
     int64_t cost = 0, profit = 0;
     auto &edit = editor.For(d->partkey);
-    const auto slot = static_cast<std::size_t>(d->partkey % kBlockParts);
+    const auto slot = SlotOf(d->partkey);
     if (!updated->LookupSupplierNation(d->suppkey, nationkey) ||
         !updated->LookupOrderYear(d->orderkey, year) || !edit.FindPs(slot, d->suppkey, cost))
       continue; // does not join (yet)
@@ -840,7 +837,7 @@ void TpchQ9Module::EmitResult(const TpchQ9State &state,
     const TpchQ9PartBlock *block = state.FindBlock(partkey);
     if (!block)
       return;
-    const auto slot = static_cast<std::size_t>(partkey % kBlockParts);
+    const auto slot = SlotOf(partkey);
     auto &mine = acc[worker];
     for (uint32_t i = block->cell_begin[slot]; i < block->cell_begin[slot + 1]; ++i) {
       mine[block->cells[i].group].profit += block->cells[i].profit;

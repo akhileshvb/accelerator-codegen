@@ -369,13 +369,17 @@ std::shared_ptr<TpchQ20PartBlock> EncodeBlock(const RawBlock &raw) {
 }
 
 constexpr int64_t kBlockParts = static_cast<int64_t>(kTpchQ20BlockParts);
+static_assert((kBlockParts & (kBlockParts - 1)) == 0);
+// Floor division / modulo by the (power of two) block size: exact for negative keys.
+constexpr int64_t BlockOf(int64_t key) { return key >> __builtin_ctzll(static_cast<uint64_t>(kBlockParts)); }
+constexpr std::size_t SlotOf(int64_t key) { return static_cast<std::size_t>(key & (kBlockParts - 1)); }
 
 // Blocks being edited, keyed by block index; re-encoded into the state by Flush.
 class BlockEditor {
 public:
   explicit BlockEditor(TpchQ20State &state) : state_(state) {}
   RawBlock &For(int64_t partkey) {
-    const int64_t bi = partkey / kBlockParts;
+    const int64_t bi = BlockOf(partkey);
     auto it = edited_.find(bi);
     if (it == edited_.end())
       it = edited_.emplace(bi, DecodeBlock(state_.FindBlock(partkey))).first;
@@ -384,8 +388,8 @@ public:
   void Flush() {
     for (auto &[bi, raw] : edited_) {
       auto encoded = EncodeBlock(raw);
-      if (encoded || state_.blocks.Find(bi))
-        state_.blocks.Mutable(bi) = std::move(encoded);
+      if (encoded || state_.blocks.Get(bi))
+        state_.blocks.Set(bi, encoded);
     }
     edited_.clear();
   }
@@ -476,22 +480,21 @@ void TpchQ20Module::AccumulateMutation(const core::MutationBatch &mutation,
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ20LineitemDelta d;
       d.sign = sign;
-      if (ReadLineitem(row, d.shipdate_days, d.partkey, d.suppkey, d.quantity_raw) &&
-          d.partkey >= 0)
+      if (ReadLineitem(row, d.shipdate_days, d.partkey, d.suppkey, d.quantity_raw) )
         buffer.AddLineitemDelta(d);
     };
   } else if (mutation.table == config.partsupp_table) {
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ20PartsuppDelta d;
       d.sign = sign;
-      if (ReadPartsupp(row, d.partkey, d.suppkey, d.availqty) && d.partkey >= 0)
+      if (ReadPartsupp(row, d.partkey, d.suppkey, d.availqty))
         buffer.AddPartsuppDelta(d);
     };
   } else if (mutation.table == config.part_table) {
     add = [&](const core::AuxRow &row, int8_t sign) {
       TpchQ20PartDelta d;
       d.sign = sign;
-      if (ReadPart(row, d.partkey, d.name) && d.partkey >= 0)
+      if (ReadPart(row, d.partkey, d.name))
         buffer.AddPartDelta(std::move(d));
     };
   } else if (mutation.table == config.supplier_table) {
@@ -573,7 +576,7 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
   BlockEditor editor(*updated);
   for (const auto &d : buffer.LineitemDeltas()) {
     auto &raw = editor.For(d.partkey);
-    const auto slot = static_cast<uint8_t>(d.partkey % kBlockParts);
+    const auto slot = SlotOf(d.partkey);
     if (d.sign > 0)
       raw.AddLine(slot, d.suppkey, d.shipdate_days, d.quantity_raw);
     else
@@ -581,7 +584,7 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
   }
   for (const auto &d : buffer.PartsuppDeltas()) {
     auto &raw = editor.For(d.partkey);
-    const auto slot = static_cast<uint8_t>(d.partkey % kBlockParts);
+    const auto slot = SlotOf(d.partkey);
     if (d.sign > 0)
       raw.SetAvail(slot, d.suppkey, d.availqty);
     else
@@ -661,7 +664,6 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
     state->suppliers.Upsert(input.key, {input.name, input.address, input.nationkey});
   });
   initial_scan->ScanParts([&](const TpchQ20PartInput &input) {
-    if (input.key >= 0)
       state->part_names.Set(input.key, input.name);
   });
 
@@ -669,15 +671,13 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
   // the end; the raw form is 12 B/lineitem (transient peak ~1.5x the final).
   BlockEditor editor(*state);
   initial_scan->ScanPartsupps([&](const TpchQ20PartsuppInput &input) {
-    if (input.partkey >= 0)
       editor.For(input.partkey)
-          .SetAvail(static_cast<uint8_t>(input.partkey % kBlockParts), input.suppkey,
+          .SetAvail(SlotOf(input.partkey), input.suppkey,
                     input.availqty);
   });
   initial_scan->ScanLineitems([&](const TpchQ20LineitemInput &input) {
-    if (input.partkey >= 0)
       editor.For(input.partkey)
-          .AddLine(static_cast<uint8_t>(input.partkey % kBlockParts), input.suppkey,
+          .AddLine(SlotOf(input.partkey), input.suppkey,
                    input.shipdate_days, input.quantity_raw);
   });
   editor.Flush();
@@ -750,7 +750,7 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
     const TpchQ20PartBlock *block = state.FindBlock(partkey);
     if (!block)
       return;
-    const std::size_t slot = static_cast<std::size_t>(partkey % kBlockParts);
+    const std::size_t slot = SlotOf(partkey);
     for (uint32_t j = block->pair_begin[slot]; j < block->pair_begin[slot + 1]; ++j) {
       const TpchQ20Pair &pair = block->pairs[j];
       if (!(pair.entry_begin & TpchQ20Pair::kHasAvail))

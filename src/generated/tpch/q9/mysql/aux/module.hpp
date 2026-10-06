@@ -12,6 +12,7 @@
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/g5_keyed_string_column.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -137,7 +138,7 @@ public:
 //
 // Limits: cell profit sums are int64 in 1e-4 units (a checked add throws on
 // overflow); keys are >= 0; per-cell row counts fit uint32.
-constexpr std::size_t kTpchQ9BlockParts = 16;
+constexpr std::size_t kTpchQ9BlockParts = 16; // power of two (block = key >> 4)
 
 struct TpchQ9Cell {
   uint32_t group = 0;
@@ -158,7 +159,7 @@ struct TpchQ9PartBlock {
 };
 
 struct TpchQ9State {
-  core::ChunkedCowArray<std::shared_ptr<TpchQ9PartBlock>, 12> blocks;
+  core::WideKeyCowArray<std::shared_ptr<TpchQ9PartBlock>, 12> blocks;
   core::KeyedStringColumn part_names;
 
   // (nationkey, year) groups, interned in first-use order; never removed.
@@ -169,15 +170,14 @@ struct TpchQ9State {
 
   // Join keys needed to resolve lineitem deltas.
   static constexpr int64_t kNoNation = INT64_MIN;
-  core::ChunkedCowArray<int64_t> supplier_nation{kNoNation};
+  core::WideKeyCowArray<int64_t> supplier_nation{kNoNation};
   static constexpr std::size_t kMaxYearCodes = 255;
-  core::ChunkedCowArray<uint8_t, 8> order_year_code{0}; // 0 = absent
+  core::WideKeyCowArray<uint8_t, 10> order_year_code{0}; // 0 = absent
   std::vector<int32_t> year_table;                      // code - 1 -> year
   core::ShardedCowHashMap<int32_t, 12> order_year_overflow;
 
   const TpchQ9PartBlock *FindBlock(int64_t partkey) const {
-    const auto *slot = blocks.Find(partkey / static_cast<int64_t>(kTpchQ9BlockParts));
-    return slot ? slot->get() : nullptr;
+    return blocks.Get(partkey >> 4).get(); // floor: exact for negative keys
   }
   uint32_t GroupFor(int32_t nationkey, int32_t year);
   bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) const;
