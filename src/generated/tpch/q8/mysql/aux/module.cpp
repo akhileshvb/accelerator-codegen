@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "accelerator_codegen/stateful/core/pg_numeric_div.hpp"
+#include "accelerator_codegen/stateful/core/mysql_decimal.hpp"
 #include "accelerator_codegen/stateful/core/query_module_helpers.hpp"
 #include "accelerator_codegen/stateful/core/sql_date.hpp"
 
@@ -835,7 +835,7 @@ void TpchQ8Module::EmitResult(const TpchQ8State &s,
                               const core::QueryArguments &arguments,
                               core::AuxRowSink &sink) const {
   sink.Begin({{{"o_year", core::AuxType::Int64, false},
-               {"mkt_share", core::AuxType::String, false}}});
+               {"mkt_share", core::AuxType::String, true}}});
 
   // NULL parameters make their comparison NULL: nothing matches (for the
   // nation parameter: the CASE never takes its THEN branch).
@@ -880,18 +880,20 @@ void TpchQ8Module::EmitResult(const TpchQ8State &s,
     }
   }
 
-  namespace pgn = ::accelerator_codegen::pg_numeric;
+  namespace myd = ::accelerator_codegen::mysql_decimal;
   for (int y = 0; y < 2; ++y) {
     if (total_rows[y] <= 0)
       continue; // no row in this year's group
-    // SUM(CASE ... ELSE 0 END) has scale 4 iff some row took the THEN branch
-    // (every other input is the integer literal 0, scale 0).
-    const auto share = pgn::DivRound(nation_sum[y], nation_rows[y] > 0 ? kVolumeScale : 0,
-                                     total[y], kVolumeScale);
+    // MySQL types SUM(CASE WHEN .. THEN volume ELSE 0 END) statically as
+    // DECIMAL scale 4, so an empty THEN branch still prints 0.00000000
+    // (PostgreSQL's dynamic numeric scale differs). a / b has scale 4 + 4.
+    pg_numeric::Decimal share;
+    const bool defined = myd::Div(nation_sum[y], kVolumeScale, total[y], kVolumeScale, share);
     sink.WriteRow(
         {{core::AuxValue::Of(core::AuxType::Int64,
                              static_cast<int64_t>(kTpchQ8MinYear + y)),
-          core::AuxValue::Of(core::AuxType::String, pgn::ToText(share))}});
+          defined ? core::AuxValue::Of(core::AuxType::String, pg_numeric::ToText(share))
+                  : core::AuxValue::Null(core::AuxType::String)}});
   }
   sink.End();
 }

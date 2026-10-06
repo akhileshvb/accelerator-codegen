@@ -496,12 +496,13 @@ void TpchQ14Module::Answer(const TpchQ14State &state,
 
 void TpchQ14Module::EmitResult(const TpchQ14DayTotals &totals,
                                core::AuxRowSink &sink) const {
-  const auto value = TpchQ14FinalizePromoRevenue(totals);
-  sink.Begin({{{"promo_revenue", core::AuxType::Double, true}}});
-  if (std::isnan(value))
-    sink.WriteRow({{core::AuxValue::Null(core::AuxType::Double)}});
+  std::string text;
+  const bool defined = TpchQ14FinalizePromoRevenue(totals, text);
+  sink.Begin({{{"promo_revenue", core::AuxType::String, true}}});
+  if (defined)
+    sink.WriteRow({{core::AuxValue::Of(core::AuxType::String, text)}});
   else
-    sink.WriteRow({{core::AuxValue::Of(core::AuxType::Double, value)}});
+    sink.WriteRow({{core::AuxValue::Null(core::AuxType::String)}});
   sink.End();
 }
 

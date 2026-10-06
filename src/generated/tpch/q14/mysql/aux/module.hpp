@@ -116,7 +116,7 @@ struct TpchQ14PartEvent {
 };
 
 bool TpchQ14IsPromoType(const std::string &type);
-double TpchQ14FinalizePromoRevenue(const TpchQ14DayTotals &);
+bool TpchQ14FinalizePromoRevenue(const TpchQ14DayTotals &, std::string &text);
 
 class TpchQ14TxnBuffer final : public core::AuxTxnBuffer {
 public:
