@@ -111,9 +111,13 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ10(FunctionCallInfo fcinfo) {
+  // A NULL date makes the window predicate NULL (no rows).
   detail::Q10Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-          core::AuxType::Date, detail::PostgresDateArg(0, fcinfo))}},
+      core::QueryArguments{{PG_ARGISNULL(0)
+                                ? core::AuxValue::Null(core::AuxType::Date)
+                                : core::AuxValue::Of(
+                                      core::AuxType::Date,
+                                      detail::PostgresDateArg(0, fcinfo))}},
       fcinfo);
 }
 

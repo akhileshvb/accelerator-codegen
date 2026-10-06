@@ -4,14 +4,13 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/dense_id_array.hpp"
+#include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
+#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
 #include "tpch/q10/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -56,33 +55,6 @@ struct TpchQ10LineitemInput {
   bool returned = false;
 };
 
-// Pre-aggregated returned revenue for the SQL-pushdown build path.
-struct TpchQ10ReturnedRevenueInput {
-  int32_t month_key = 0; // YYYYMM
-  int64_t custkey = 0;
-  int64_t revenue_raw = 0;
-};
-
-struct TpchQ10Customer {
-  std::string name;
-  int64_t acctbal_raw = 0;
-  int32_t nationkey = 0;
-  std::string address;
-  std::string phone;
-  std::string comment;
-};
-
-struct TpchQ10Order {
-  int64_t custkey = 0;
-  int32_t orderdate_days = 0;
-};
-
-struct TpchQ10CustomerRank {
-  int64_t acctbal_raw = 0;
-  int32_t nationkey = 0;
-  uint8_t present = 0;
-};
-
 class TpchQ10InitialScan {
 public:
   virtual ~TpchQ10InitialScan() = default;
@@ -94,141 +66,82 @@ public:
       const std::function<void(const TpchQ10OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ10LineitemInput &)> &) = 0;
-
-  virtual bool ScanReturnedCustomerRevenue(
-      const std::function<void(const TpchQ10ReturnedRevenueInput &)> &consumer) {
-    (void)consumer;
-    return false;
-  }
-
-  virtual bool ScanReturnedCustomerRevenueForMonths(
-      const std::set<int32_t> &months,
-      const std::function<void(const TpchQ10ReturnedRevenueInput &)> &consumer) {
-    if (months.empty())
-      return true;
-    return ScanReturnedCustomerRevenue(
-        [&](const TpchQ10ReturnedRevenueInput &input) {
-          if (months.count(input.month_key))
-            consumer(input);
-        });
-  }
-
-  virtual bool LookupOrders(
-      const std::vector<int64_t> &orderkeys,
-      std::unordered_map<int64_t, TpchQ10Order> &out) {
-    (void)orderkeys;
-    (void)out;
-    return false;
-  }
-
 };
-
-using TpchQ10CustomerMap = std::unordered_map<int64_t, TpchQ10Customer>;
-
-struct TpchQ10State {
-  core::DenseIdArray<TpchQ10CustomerRank> customer_ranks;
-  // Every customer's result columns (name, address, phone, comment), so
-  // Execute emits the top-k without querying the database. Shared: maintenance
-  // copies of the state do not copy it (customer changes rebuild the state).
-  std::shared_ptr<const TpchQ10CustomerMap> customers =
-      std::make_shared<const TpchQ10CustomerMap>();
-  std::unordered_map<int32_t, std::string> nations;
-  std::unordered_map<int64_t, TpchQ10Order> orders;
-  std::map<int32_t, std::unordered_map<int64_t, int64_t>> month_revenue;
-
-  void SetCustomerRank(int64_t custkey, int64_t acctbal_raw, int32_t nationkey) {
-    TpchQ10CustomerRank rank;
-    rank.acctbal_raw = acctbal_raw;
-    rank.nationkey = nationkey;
-    rank.present = 1;
-    customer_ranks.Set(custkey, rank);
-  }
-  bool HasCustomer(int64_t custkey) const {
-    return customer_ranks.Get(custkey).present != 0;
-  }
-  TpchQ10CustomerRank RankOf(int64_t custkey) const {
-    return customer_ranks.Get(custkey);
-  }
-};
-
-enum class TpchQ10ImageKind : uint8_t { Side, Orders, Month };
-
-struct TpchQ10StateImage {
-  TpchQ10ImageKind kind = TpchQ10ImageKind::Side;
-  int32_t month = 0;
-  std::shared_ptr<const TpchQ10State> state;
-};
-
-struct TpchQ10LineitemDelta {
-  int64_t orderkey = 0;
-  int64_t revenue_raw = 0;
-  int8_t sign = 0;
-};
-
-struct TpchQ10OrderDelta {
-  int64_t orderkey = 0;
-  int64_t custkey = 0;
-  int32_t orderdate_days = 0;
-  int8_t sign = 0; // +1 insert/update-new, -1 delete/update-old
-};
-
-std::vector<uint8_t> EncodeTpchQ10Side(const TpchQ10State &);
-std::vector<uint8_t> EncodeTpchQ10Orders(const TpchQ10State &);
-std::vector<uint8_t> EncodeTpchQ10Month(int32_t month, const TpchQ10State &);
-bool DecodeTpchQ10Side(const std::vector<uint8_t> &, TpchQ10State &);
-bool DecodeTpchQ10Orders(const std::vector<uint8_t> &, TpchQ10State &);
-bool DecodeTpchQ10Month(const std::vector<uint8_t> &, int32_t month,
-                        TpchQ10State &);
-// Order metadata is encoded as sorted fixed-width records. Maintenance can
-// look up one order without reconstructing the full order hash table.
-bool FindTpchQ10Order(const std::vector<uint8_t> &, int64_t orderkey,
-                      TpchQ10Order &);
-
-int32_t TpchQ10MonthKeyFromDays(int32_t days_since_epoch);
-int32_t TpchQ10MonthStartDays(int32_t month_key);
-int32_t TpchQ10AddMonths(int32_t days_since_epoch, int32_t months);
-int64_t TpchQ10RevenueRaw(double extended_price, double discount);
 
 // TPC-H Q10 returns the top 20 customers by revenue.
 constexpr std::size_t kTpchQ10ResultLimit = 20;
+// Revenue = price * (1 - discount): numeric(15,2) * numeric(15,2) -> scale 4.
+constexpr int32_t kTpchQ10RevenueScale = 4;
 
-std::vector<std::pair<int64_t, int64_t>> TpchQ10SelectTopK(
-    const core::DenseIdArray<TpchQ10CustomerRank> &ranks,
-    const std::vector<const std::unordered_map<int64_t, int64_t> *>
-        &month_revenues,
-    std::size_t limit = kTpchQ10ResultLimit);
+// ---- State (immutable once published; copies share chunks) ----------------
+//
+// The result for ANY window [date, date + 3 months) is
+//   top 20 customers by (revenue DESC, c_custkey) of the returned-lineitem
+//   revenue of orders dated in the window, joined to customer and nation.
+// The state is the revenue by (order date, customer), kept as a COW blob map
+// bucketed so that one customer always lands in the same bucket:
+//
+//   revenue[day * buckets + custkey % buckets]
+//       -> list of (custkey, #returned lineitems, revenue at scale 4)
+//
+// A window is then answered exactly, for any start date (month aligned or not),
+// by merging the lists of the window's days bucket by bucket (the same
+// customer's rows of all days are in the same bucket: a small local merge, no
+// global hash over customers) and keeping the best 20. Whole-month sums are
+// not needed: the work is proportional to the window's rows either way.
+//
+//   orders[orderkey]    [flags][custkey][orderdate] + the order's returned
+//                       lineitem count and revenue sum, so an order update /
+//                       delete moves its revenue exactly, whatever the order
+//                       of the statements (lineitems may precede their order)
+//   customers[custkey]  acctbal, nation key and the four result strings, so
+//                       Execute answers without querying the database
+//   customer_nation     nation key per customer (4 B), the filter at query time
+//   nations             nation key -> name
+//
+// Memory: ~18 B per order (orders blob) + ~4 B per order (revenue lists; one
+// row of ~12 B per customer-day with returned revenue) + ~140 B per customer
+// = about 5.4 GB at SF100 and 54 GB at SF1000 (the old state: 6 GB customer
+// map + 8 GB order map + month maps at SF100). A write batch copies O(touched
+// chunks) (one chunk is ~1024 keys, 5-40 KB). Customer / nation writes never
+// touch the revenue lists (the join with them is applied at query time).
+struct TpchQ10State {
+  static constexpr int32_t kAbsent = INT32_MIN;
 
-void TpchQ10FinalizeAndEmit(const TpchQ10State &state, int32_t start_days,
-                            core::AuxRowSink &sink);
+  std::map<int32_t, std::string> nations;
+  core::ChunkedCowArray<int32_t> customer_nation{kAbsent};
+  core::ChunkedBlobMap customers;
+  core::ChunkedBlobMap orders;
+  core::ChunkedBlobMap revenue;
+  uint32_t buckets = 1; // power of two, fixed at build time
+};
 
-// Hit-path finalize: rank from month maps + stored acctbal/nationkey, then
-// emit top-k with the stored customer columns (typically 20 rows).
-void TpchQ10FinalizeAndEmit(
-    const core::DenseIdArray<TpchQ10CustomerRank> &ranks,
-    const std::unordered_map<int32_t, std::string> &nations,
-    const std::vector<const std::unordered_map<int64_t, int64_t> *>
-        &month_revenues,
-    const std::unordered_map<int64_t, TpchQ10Customer> &customer_strings,
-    int32_t start_days, core::AuxRowSink &sink,
-    std::size_t limit = kTpchQ10ResultLimit);
+struct TpchQ10StateImage {
+  std::shared_ptr<const TpchQ10State> state;
+};
 
 class TpchQ10TxnBuffer final : public core::AuxTxnBuffer {
 public:
-  bool HasPendingChanges() const override;
-  void Clear() override;
+  bool HasPendingChanges() const override { return pending; }
+  void Clear() override {
+    pending = false;
+    requires_rebuild = false;
+    work.reset();
+    rows = 0;
+  }
+  bool RequiresRebuild() const { return requires_rebuild; }
+  void MarkRebuild() {
+    pending = true;
+    requires_rebuild = true;
+    work.reset();
+  }
 
-  bool RequiresRebuild() const;
-  const std::vector<TpchQ10LineitemDelta> &Deltas() const;
-  const std::vector<TpchQ10OrderDelta> &OrderDeltas() const;
-  void MarkRebuild();
-  void AddDelta(TpchQ10LineitemDelta delta);
-  void AddOrderDelta(TpchQ10OrderDelta delta);
-
-private:
   bool pending = false;
   bool requires_rebuild = false;
-  std::vector<TpchQ10LineitemDelta> deltas;
-  std::vector<TpchQ10OrderDelta> order_deltas;
+  // Private copy-on-write working state of this transaction (see Q7).
+  std::shared_ptr<TpchQ10State> work;
+  core::Version base_version = 0;
+  uint64_t rows = 0;
 };
 
 class TpchQ10Module final : public core::AuxQueryModule {
@@ -260,11 +173,9 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ10State BuildState(core::AuxEngineServices &) const;
-  bool LoadState(core::AuxEngineServices &, TpchQ10State &, int32_t start_days,
-                 std::map<int32_t, core::Version> *versions = nullptr) const;
-  void EmitResult(const TpchQ10State &, int32_t start_days,
-                  core::AuxRowSink &) const;
+  std::shared_ptr<TpchQ10State> BuildState() const;
+  void EmitResult(const TpchQ10State &, const core::QueryArguments &,
+                  std::size_t workers, core::AuxRowSink &) const;
 
   TpchQ10Config config;
   TpchQ10InitialScan *initial_scan = nullptr;
