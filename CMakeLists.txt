@@ -1716,6 +1716,7 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_postgres_aux_multi_connection_stress.cpp")
         add_executable(test_postgres_aux_multi_connection_stress
             tests/aux_state/test_postgres_aux_multi_connection_stress.cpp
+            tests/aux_state/postgres_server_stubs.cpp
         )
         target_link_libraries(test_postgres_aux_multi_connection_stress
             PRIVATE
@@ -1745,6 +1746,7 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_postgres_cross_accel.cpp")
         add_executable(test_postgres_cross_accel
             tests/aux_state/test_postgres_cross_accel.cpp
+            tests/aux_state/postgres_server_stubs.cpp
         )
         target_link_libraries(test_postgres_cross_accel
             PRIVATE
