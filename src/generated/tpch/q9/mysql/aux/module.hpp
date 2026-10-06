@@ -12,7 +12,7 @@
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
-#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/keyed_string_column.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -159,7 +159,7 @@ struct TpchQ9PartBlock {
 };
 
 struct TpchQ9State {
-  core::WideKeyCowArray<std::shared_ptr<TpchQ9PartBlock>, 12> blocks;
+  core::AnyKeyCowArray<std::shared_ptr<TpchQ9PartBlock>, 12> blocks;
   core::KeyedStringColumn part_names;
 
   // (nationkey, year) groups, interned in first-use order; never removed.
@@ -170,9 +170,9 @@ struct TpchQ9State {
 
   // Join keys needed to resolve lineitem deltas.
   static constexpr int64_t kNoNation = INT64_MIN;
-  core::WideKeyCowArray<int64_t> supplier_nation{kNoNation};
+  core::AnyKeyCowArray<int64_t> supplier_nation{kNoNation};
   static constexpr std::size_t kMaxYearCodes = 255;
-  core::WideKeyCowArray<uint8_t, 10> order_year_code{0}; // 0 = absent
+  core::AnyKeyCowArray<uint8_t, 10> order_year_code{0}; // 0 = absent
   std::vector<int32_t> year_table;                      // code - 1 -> year
   core::ShardedCowHashMap<int32_t, 12> order_year_overflow;
 

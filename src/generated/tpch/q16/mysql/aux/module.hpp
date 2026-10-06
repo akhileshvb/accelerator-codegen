@@ -14,7 +14,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/signed_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/cow_sorted_blocks.hpp"
 #include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
 #include "accelerator_codegen/stateful/core/string_blob.hpp"
@@ -85,7 +85,7 @@ public:
 // NOT LIKE verdict per distinct type), so it is independent of the table sizes.
 //
 // Memory: ~55 B/part (SF100 20M parts: ~1.1 GB, SF1000: ~11 GB; was
-// ~12-15 GB at SF100).  Any int64 key works (SignedKeyCowArray).
+// ~12-15 GB at SF100).  Any int64 key works (AnyKeyCowArray).
 // ---------------------------------------------------------------------------
 constexpr uint32_t kTpchQ16NoGroup = 0xFFFFFFFFu;
 constexpr std::size_t kTpchQ16InlineSuppliers = 4;
@@ -126,10 +126,10 @@ struct TpchQ16State {
   std::shared_ptr<core::StringDict> types = std::make_shared<core::StringDict>();
   std::shared_ptr<TpchQ16GroupTable> group_table =
       std::make_shared<TpchQ16GroupTable>();
-  core::SignedKeyCowArray<uint32_t> part_group{kTpchQ16NoGroup};
-  core::SignedKeyCowArray<TpchQ16Suppliers, 10> suppliers_of;
+  core::AnyKeyCowArray<uint32_t> part_group{kTpchQ16NoGroup};
+  core::AnyKeyCowArray<TpchQ16Suppliers, 10> suppliers_of;
   core::ShardedCowHashMap<std::vector<int64_t>> supplier_overflow;
-  core::SignedKeyCowArray<uint8_t> complaint;
+  core::AnyKeyCowArray<uint8_t> complaint;
   core::ChunkedCowArray<std::shared_ptr<TpchQ16Members>> members;
   core::ChunkedCowArray<int64_t> distinct;
 

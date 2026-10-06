@@ -115,7 +115,7 @@ void ConsiderPart(const Q2Query &q, int64_t partkey, Q2Heap &heap) {
 void ScanPartChunks(const Q2Query &q, std::size_t chunk_begin,
                     std::size_t chunk_end, Q2Heap &heap) {
   const TpchQ2State &st = *q.state;
-  using SizeCol = core::SignedKeyCowArray<int32_t>;
+  using SizeCol = core::AnyKeyCowArray<int32_t>;
   for (std::size_t ci = chunk_begin; ci < chunk_end; ++ci) {
     const auto *sizes = st.part_size.ChunkAt(ci);
     const auto *types = st.part_type.ChunkAt(ci);

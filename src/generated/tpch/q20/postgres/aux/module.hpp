@@ -12,7 +12,7 @@
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
-#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/keyed_string_column.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -128,7 +128,7 @@ struct TpchQ20Supplier {
 };
 
 struct TpchQ20State {
-  core::WideKeyCowArray<std::shared_ptr<TpchQ20PartBlock>, 12> blocks;
+  core::AnyKeyCowArray<std::shared_ptr<TpchQ20PartBlock>, 12> blocks;
   core::KeyedStringColumn part_names;
   core::ShardedCowHashMap<TpchQ20Supplier, 12> suppliers;
   std::map<int32_t, std::string> nations;

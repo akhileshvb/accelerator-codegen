@@ -12,7 +12,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/radix_range_tree.hpp"
-#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -54,7 +54,7 @@ public:
 // ---------------------------------------------------------------------------
 // State layout (all per-write copies are O(touched chunks), never O(state)).
 //
-//   kEligibility  per-order columns keyed by o_orderkey (WideKeyCowArray):
+//   kEligibility  per-order columns keyed by o_orderkey (AnyKeyCowArray):
 //                 orderdate (4 B), priority index (2 B), count of lineitems
 //                 with commitdate < receiptdate (2 B)  => 8 B per key slot.
 //                 TPC-H keys are ~25% dense, so ~32 B/order incl. the gaps
@@ -62,7 +62,7 @@ public:
 //                 SF1000: ~48 GB; the former unordered_map was ~56 B/order
 //                 (8.4 GB at SF100) plus a full map copy on every write.
 //                 Keys outside [0, 2^36) live in a sharded COW hash map
-//                 (core/wide_key_cow_array.hpp).
+//                 (core/any_key_cow_array.hpp).
 //   kTreeBase     per priority, a radix-64 counting tree over the order date
 //                 (core::RadixRangeTree: 4 levels x 6 bits = 2^24 day slots
 //                 around the epoch):
@@ -149,9 +149,9 @@ private:
     }
   }
 
-  core::WideKeyCowArray<int32_t, 15> orderdate_;
-  core::WideKeyCowArray<uint16_t, 16> priority_;
-  core::WideKeyCowArray<uint16_t, 16> qualifying_;
+  core::AnyKeyCowArray<int32_t, 15> orderdate_;
+  core::AnyKeyCowArray<uint16_t, 16> priority_;
+  core::AnyKeyCowArray<uint16_t, 16> qualifying_;
   core::ShardedCowHashMap<uint32_t, 6> big_counts_;
 };
 

@@ -13,8 +13,8 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/signed_key_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/cow_blob_column.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
 #include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
 #include "accelerator_codegen/stateful/core/string_blob.hpp"
 
@@ -93,7 +93,7 @@ public:
 // Because nothing is derived across tables, every write (any of the five
 // tables) is a point edit of one chunk: nation/region/supplier changes simply
 // change what Execute sees, and there is never a rebuild for routine writes.
-// All arrays are ChunkedCowArray / ChunkedCowBlobColumn, so a published state
+// All arrays are ChunkedCowArray / ChunkedBlobMap, so a published state
 // is copied as chunk pointers and a write batch clones only the touched chunks.
 //
 // Memory: ~12 B/part + 72 B/part for up to 4 offers (= 18 B per partsupp row at
@@ -104,7 +104,7 @@ public:
 // large tables) plus, for the ~1/250 parts that also match the type bitmap,
 // at most a few supplier lookups: ~25 ms at SF100, ~0.1-0.2 s at SF1000.
 // Any int64 key works: keys in [-2^35, 2^35) are zigzag-mapped into the dense
-// chunks, the rest live in sharded hash maps (SignedKeyCowArray).
+// chunks, the rest live in sharded hash maps (AnyKeyCowArray).
 // ---------------------------------------------------------------------------
 constexpr int32_t kTpchQ2NoSize = std::numeric_limits<int32_t>::min();
 constexpr uint32_t kTpchQ2NoId = 0xFFFFFFFFu;
@@ -158,14 +158,14 @@ struct TpchQ2State {
   std::shared_ptr<core::StringDict> types = std::make_shared<core::StringDict>();
   std::shared_ptr<core::StringDict> mfgrs = std::make_shared<core::StringDict>();
 
-  core::SignedKeyCowArray<int32_t> part_size{kTpchQ2NoSize};
-  core::SignedKeyCowArray<uint32_t> part_type{kTpchQ2NoId};
-  core::SignedKeyCowArray<uint32_t> part_mfgr{kTpchQ2NoId};
-  core::SignedKeyCowArray<TpchQ2OfferSlots, 10> offers;
+  core::AnyKeyCowArray<int32_t> part_size{kTpchQ2NoSize};
+  core::AnyKeyCowArray<uint32_t> part_type{kTpchQ2NoId};
+  core::AnyKeyCowArray<uint32_t> part_mfgr{kTpchQ2NoId};
+  core::AnyKeyCowArray<TpchQ2OfferSlots, 10> offers;
   core::ShardedCowHashMap<std::vector<TpchQ2Offer>> offer_overflow;
 
-  core::SignedKeyCowArray<TpchQ2SupplierRec> suppliers;
-  core::SignedKeyBlobColumn<> supplier_text;
+  core::AnyKeyCowArray<TpchQ2SupplierRec> suppliers;
+  core::ChunkedBlobMap supplier_text;
 
   TpchQ2State() {
     regions = std::make_shared<const std::vector<TpchQ2RegionRec>>();

@@ -15,7 +15,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/signed_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
 #include "accelerator_codegen/stateful/core/cow_sorted_blocks.hpp"
 #include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
 
@@ -92,7 +92,7 @@ struct TpchQ11OutputRow {
 // touch nothing else; a supplier moving nation re-groups just its parts (found
 // by one in-memory scan of the facts, no table scan, no rebuild).
 // Values with |value| > 2^62 (impossible for TPC-H data) live in a side set so
-// no data overflows; any int64 key works (SignedKeyCowArray).
+// no data overflows; any int64 key works (AnyKeyCowArray).
 //
 // Memory: ~22 B/partsupp row facts + ~19 B/row ordered entries = ~41 B/row:
 // SF100 (80M rows) ~3.3 GB, SF1000 (800M rows) ~33 GB (was ~15-20 GB at SF100).
@@ -161,8 +161,8 @@ struct TpchQ11PartValue {
 struct TpchQ11State {
   std::shared_ptr<const std::vector<TpchQ11NationRec>> nations =
       std::make_shared<const std::vector<TpchQ11NationRec>>();
-  core::SignedKeyCowArray<int64_t> supplier_nation{kTpchQ11NoNation};
-  core::SignedKeyCowArray<TpchQ11OfferSlots, 10> offers;
+  core::AnyKeyCowArray<int64_t> supplier_nation{kTpchQ11NoNation};
+  core::AnyKeyCowArray<TpchQ11OfferSlots, 10> offers;
   core::ShardedCowHashMap<std::vector<TpchQ11Offer>> offer_overflow;
   std::unordered_map<int64_t, std::shared_ptr<TpchQ11Group>> groups;
 
@@ -171,7 +171,7 @@ struct TpchQ11State {
   // Value of `partkey` in `nationkey` given a suppkey -> nationkey map.
   TpchQ11PartValue
   PartValueIn(int64_t partkey, int64_t nationkey,
-              const core::SignedKeyCowArray<int64_t> &supplier_map) const;
+              const core::AnyKeyCowArray<int64_t> &supplier_map) const;
   const TpchQ11Group *FindGroup(int64_t nationkey) const {
     const auto it = groups.find(nationkey);
     return it == groups.end() ? nullptr : it->second.get();
@@ -187,7 +187,7 @@ struct TpchQ11State {
   // Re-group the parts of suppliers whose nation changed (old_map -> current).
   void RegroupSuppliers(
       const core::FlatHashMap<uint8_t> &changed_suppliers,
-      const core::SignedKeyCowArray<int64_t> &old_map);
+      const core::AnyKeyCowArray<int64_t> &old_map);
   void UpsertNation(const TpchQ11NationInput &nation);
   void EraseNation(const TpchQ11NationInput &nation);
   // (Re)build every group from the facts and the supplier map.

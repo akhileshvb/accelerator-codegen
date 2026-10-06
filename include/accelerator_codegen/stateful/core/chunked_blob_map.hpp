@@ -149,6 +149,9 @@ public:
     MaybeCompact(c);
     return true;
   }
+  bool Set(int64_t key, std::string_view bytes) {
+    return Set(key, reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size());
+  }
   bool Set(int64_t key, const std::vector<uint8_t> &bytes) {
     return Set(key, bytes.data(), bytes.size());
   }

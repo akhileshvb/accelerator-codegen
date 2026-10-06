@@ -215,7 +215,7 @@ bool TpchQ16State::SetComplaint(int64_t suppkey, bool flag) {
 
 void TpchQ16State::MarkGroupsOfSuppliers(
     const core::FlatHashMap<uint8_t> &changed) {
-  using Lists = core::SignedKeyCowArray<TpchQ16Suppliers, 10>;
+  using Lists = core::AnyKeyCowArray<TpchQ16Suppliers, 10>;
   const auto visit = [&](int64_t partkey, const TpchQ16Suppliers &slots) {
     for (uint32_t i = 0; i < slots.count; ++i)
       if (changed.Contains(SupplierAt(slots, partkey, i))) {
