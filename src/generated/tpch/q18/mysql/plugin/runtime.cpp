@@ -51,18 +51,35 @@ void ScanTpchQ18Customers(
       });
 }
 
-bool LookupTpchQ18Order(int64_t orderkey, query::TpchQ18OrderInput &out) {
-  bool found = false;
-  const std::string sql =
-      "SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice "
-      "FROM orders WHERE o_orderkey = " +
-      std::to_string(orderkey);
+// SUM(l_quantity) and COUNT(*) per order, computed by the database.
+bool ScanTpchQ18OrderQuantityAggregates(
+    const std::function<void(const query::TpchQ18OrderQuantityAggregate &)>
+        &consumer) {
+  ScanTypedTuples(
+      "SELECT l_orderkey, SUM(l_quantity), COUNT(*) FROM lineitem "
+      "GROUP BY l_orderkey",
+      [&](const std::vector<std::string> &cols) {
+        consumer({TypedInt(cols, 0),
+                  TypedDecimalRaw(cols, 1),
+                  TypedInt(cols, 2)});
+      });
+  return true;
+}
+
+// Keyed lookup of customer names (the primary key answers it).
+void LookupTpchQ18CustomerNames(
+    const std::vector<int64_t> &custkeys,
+    const std::function<void(const query::TpchQ18CustomerInput &)> &consumer) {
+  std::string sql = "SELECT c_custkey, c_name FROM customer WHERE c_custkey IN (";
+  for (std::size_t i = 0; i < custkeys.size(); ++i) {
+    if (i)
+      sql += ',';
+    sql += std::to_string(custkeys[i]);
+  }
+  sql += ')';
   ScanTypedTuples(sql, [&](const std::vector<std::string> &cols) {
-    out = {TypedInt(cols, 0), TypedInt(cols, 1), TypedDate(cols, 2),
-           TypedDecimalRaw(cols, 3)};
-    found = out.key == orderkey;
+    consumer({TypedInt(cols, 0), TypedText(cols, 1)});
   });
-  return found;
 }
 
 } // namespace scans
@@ -84,13 +101,20 @@ public:
       override {
     scans::ScanTpchQ18Customers(consumer);
   }
-  bool LookupOrder(int64_t orderkey,
-                   query::TpchQ18OrderInput &out) override {
-    // SPI is unsafe inside PostgreSQL xact callbacks (PreCommit maintenance).
-    // Returning false makes StageMaintenance fall back to RebuildAll.
-    (void)orderkey;
-    (void)out;
-    return false;
+  bool ScanOrderQuantityAggregates(
+      const std::function<void(const query::TpchQ18OrderQuantityAggregate &)>
+          &consumer) override {
+    return scans::ScanTpchQ18OrderQuantityAggregates(consumer);
+  }
+  void LookupCustomerNames(
+      const std::vector<int64_t> &custkeys,
+      const std::function<void(const query::TpchQ18CustomerInput &)> &consumer)
+      override {
+    // A big key list is cheaper as one scan than as an IN list.
+    if (custkeys.size() > 4096)
+      query::TpchQ18InitialScan::LookupCustomerNames(custkeys, consumer);
+    else
+      scans::LookupTpchQ18CustomerNames(custkeys, consumer);
   }
 };
 
@@ -113,7 +137,7 @@ std::string ExecuteQuery(const core::QueryArguments &arguments) {
 } // namespace
 
 static const MysqlUdfRegistrar kRegisterQ18Udf(MysqlUdfEntry{
-    "mysql_accel_tpch_q18_aux", "i", &ExecuteQuery});
+    "mysql_accel_tpch_q18_aux", "s", &ExecuteQuery});
 
 } // namespace accelerator_codegen::aux_state::engine::mysql
 
