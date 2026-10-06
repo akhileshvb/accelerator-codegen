@@ -1,34 +1,26 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
 // ── Q21 layout ──────────────────────────────────────────────────────────────
 struct TpchQ21Layout {
   static constexpr const char *kAccelerator = "tpch_q21_aux";
-  static constexpr core::PartitionId kSupplierMetadata = 0;
-  static constexpr core::PartitionId kOrderSummaries = 1;
-  // Tiny partition holding only nation_name -> nationkeys; decoded on every
-  // hit to resolve the query parameter without touching supplier metadata.
-  static constexpr core::PartitionId kNationNameIndex = 2;
-  static constexpr core::PartitionId kNationBase = 1000;
-  // A bounded hash namespace for parameter-keyed, already-finalized results.
-  // The actual nation name is retained in the image and verified on lookup.
-  static constexpr core::PartitionId kNationNameBase = 2000000;
-  static constexpr core::PartitionId kNationNameSlots = 1048576;
+  static constexpr core::PartitionId kState = 0;
 
-  static constexpr std::array<core::PartitionId, 3> FixedPartitions() {
-    return {kSupplierMetadata, kOrderSummaries, kNationNameIndex};
+  static constexpr std::array<core::PartitionId, 1> Partitions() {
+    return {kState};
   }
 };
 
@@ -44,24 +36,20 @@ struct TpchQ21Config {
 struct TpchQ21SupplierInput {
   int64_t suppkey = 0;
   std::string name;
-  int32_t nationkey = 0;
+  int64_t nationkey = 0;
 };
 
 struct TpchQ21NationInput {
-  int32_t nationkey = 0;
+  int64_t nationkey = 0;
   std::string name;
 };
 
-struct TpchQ21OrderInput {
-  int64_t orderkey = 0;
-  char orderstatus = 0;
-};
-
-struct TpchQ21LineitemInput {
+// A lineitem of a fulfilled order ('F'): its supplier and whether it is late
+// (receiptdate > commitdate).
+struct TpchQ21LineInput {
   int64_t orderkey = 0;
   int64_t suppkey = 0;
-  int32_t commitdate = 0;
-  int32_t receiptdate = 0;
+  bool late = false;
 };
 
 class TpchQ21InitialScan {
@@ -71,63 +59,66 @@ public:
       const std::function<void(const TpchQ21SupplierInput &)> &) = 0;
   virtual void ScanNations(
       const std::function<void(const TpchQ21NationInput &)> &) = 0;
-  virtual void ScanOrders(
-      const std::function<void(const TpchQ21OrderInput &)> &) = 0;
-  virtual void ScanLineitems(
-      const std::function<void(const TpchQ21LineitemInput &)> &) = 0;
+  // The lineitems of every fulfilled order (join with orders done by the
+  // database), grouped by orderkey: all rows of one order are consecutive.
+  virtual void ScanFulfilledLineitems(
+      const std::function<void(const TpchQ21LineInput &)> &) = 0;
+  // The same for the given orders only, as the database holds them after the
+  // calling statement (orders that are not fulfilled or have no lineitem
+  // report nothing).
+  virtual bool LookupFulfilledLineitems(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(const TpchQ21LineInput &)> &) = 0;
 };
 
-// ── State structures ────────────────────────────────────────────────────────
-struct SupplierOrderInfo {
-  int64_t total_count = 0;  // number of lineitems for this supplier on this order
-  int64_t late_count = 0;   // number of late lineitems (receiptdate > commitdate)
+// ── State ───────────────────────────────────────────────────────────────────
+// What an order adds to the answer: `count` rows for supplier `suppkey`. An
+// order contributes iff it is fulfilled, has lineitems of at least two
+// suppliers and exactly one supplier has late ones (that supplier, with its
+// number of late lineitems). Orders that do not contribute are not stored, so
+// the state is proportional to the contributing orders, not to all orders.
+struct TpchQ21Contribution {
+  int64_t suppkey = 0;
+  int64_t count = 0;
 };
 
-struct OrderSummary {
-  char orderstatus = 0;
-  std::unordered_map<int64_t, SupplierOrderInfo> suppliers;
+struct TpchQ21Supplier {
+  std::string name;
+  int64_t nationkey = 0;
 };
 
+// Memory: ~29 B per contributing order + ~90 B per supplier + ~25 B per
+// supplier with waiting orders. At SF100 (1e6 suppliers, ~2-3% of the 1.5e8
+// orders contributing) that is ~0.2 GB, at SF1000 ~2 GB; the previous state
+// kept a node map per contributing order with a nested map per supplier
+// (~250 B each) and built it from a per-order map of ALL orders (~25-40 GB
+// transient at SF100). Maintenance clones touched shards only.
 struct TpchQ21State {
-  // Supplier metadata: suppkey -> {name, nationkey}
-  std::unordered_map<int64_t, std::string> supplier_names;
-  std::unordered_map<int64_t, int32_t> supplier_nations;
+  // orderkey -> contribution, for contributing orders.
+  core::ShardedCowHashMap<TpchQ21Contribution, 12> contributions;
+  // suppkey -> sum of its contributions (non-zero entries), whether or not a
+  // supplier row exists (a supplier inserted later picks it up).
+  core::ShardedCowHashMap<int64_t, 10> numwait;
+  core::ShardedCowHashMap<TpchQ21Supplier, 10> suppliers;
+  // nationkey -> (suppkey -> numwait) for existing suppliers with numwait != 0.
+  std::map<int64_t, core::ShardedCowHashMap<int64_t, 6>> nation_numwait;
+  // n_name -> nationkeys (several nations may share a name).
+  std::map<std::string, std::vector<int64_t>> nation_keys;
 
-  // Nation name to nationkey mapping
-  std::unordered_map<std::string, std::vector<int32_t>> nation_name_to_keys;
+  // Replace the contribution of one order (`has` false: it contributes nothing).
+  void SetContribution(int64_t orderkey, bool has,
+                       const TpchQ21Contribution &contribution);
+  void AdjustNumwait(int64_t suppkey, int64_t delta);
+  void PutSupplier(int64_t suppkey, const std::string &name, int64_t nationkey);
+  // false: no such supplier.
+  bool RemoveSupplier(int64_t suppkey);
+  void PutNation(int64_t nationkey, const std::string &name);
+  // false: no such nation row.
+  bool RemoveNation(int64_t nationkey, const std::string &name);
+};
 
-  // Per-order summaries for maintenance. The base map is shared across
-  // published images; RF/point writes land in `order_overlay` so ApplyDelta
-  // does not copy the SF-scale table.
-  using OrderSummaryMap = std::unordered_map<int64_t, OrderSummary>;
-  std::shared_ptr<OrderSummaryMap> order_summaries =
-      std::make_shared<OrderSummaryMap>();
-  OrderSummaryMap order_overlay;
-
-  const OrderSummary *FindOrder(int64_t orderkey) const {
-    const auto overlay_it = order_overlay.find(orderkey);
-    if (overlay_it != order_overlay.end())
-      return &overlay_it->second;
-    if (!order_summaries)
-      return nullptr;
-    const auto it = order_summaries->find(orderkey);
-    return it == order_summaries->end() ? nullptr : &it->second;
-  }
-
-  OrderSummary &MutableOrder(int64_t orderkey) {
-    const auto overlay_it = order_overlay.find(orderkey);
-    if (overlay_it != order_overlay.end())
-      return overlay_it->second;
-    if (order_summaries) {
-      const auto it = order_summaries->find(orderkey);
-      if (it != order_summaries->end())
-        return order_overlay[orderkey] = it->second;
-    }
-    return order_overlay[orderkey];
-  }
-
-  // Per-nation supplier numwait: nationkey -> (suppkey -> numwait)
-  std::unordered_map<int32_t, std::unordered_map<int64_t, int64_t>> nation_numwait;
+struct TpchQ21StateImage {
+  std::shared_ptr<const TpchQ21State> state;
 };
 
 // ── Output row ──────────────────────────────────────────────────────────────
@@ -136,73 +127,30 @@ struct TpchQ21OutputRow {
   int64_t numwait = 0;
 };
 
-enum class TpchQ21ImageKind : uint8_t {
-  SupplierMetadata,
-  OrderSummaries,
-  NationNameIndex,
-  Nation
-};
-
-struct TpchQ21StateImage {
-  TpchQ21ImageKind kind = TpchQ21ImageKind::SupplierMetadata;
-  int32_t nationkey = 0;
-  // Set only for parameter-keyed read images; guards hash collisions.
-  std::string nation_name;
-  std::shared_ptr<const TpchQ21State> state;
-
-  // Nation images carry their already-materialized, ordered result.  This
-  // keeps the hit path independent of the global supplier metadata map and
-  // avoids reconstructing/sorting rows after a partition read.
-  std::vector<TpchQ21OutputRow> output_rows;
-};
-
-// ── Delta ───────────────────────────────────────────────────────────────────
-struct TpchQ21LineitemDelta {
+// ── Deltas ──────────────────────────────────────────────────────────────────
+// The new contribution of an order, from the database as the writing
+// statement left it (the last one recorded for an order wins).
+struct TpchQ21OrderResult {
   int64_t orderkey = 0;
-  int64_t suppkey = 0;
-  int32_t commitdate = 0;
-  int32_t receiptdate = 0;
-  int8_t sign = 0;
+  bool has = false;
+  TpchQ21Contribution contribution;
 };
 
-struct TpchQ21OrderDelta {
-  int64_t orderkey = 0;
-  char old_orderstatus = 0;
-  char new_orderstatus = 0;
-};
-
+// A supplier or nation row change (insert: new only, delete: old only,
+// update: both).
 struct TpchQ21SupplierDelta {
-  int64_t suppkey = 0;
-  std::string old_name;
-  std::string new_name;
-  int32_t old_nationkey = 0;
-  int32_t new_nationkey = 0;
+  bool has_old = false;
+  bool has_new = false;
+  int64_t old_suppkey = 0;
+  TpchQ21SupplierInput new_row;
 };
 
 struct TpchQ21NationDelta {
-  int32_t nationkey = 0;
-  std::string old_name;
-  std::string new_name;
+  bool has_old = false;
+  bool has_new = false;
+  TpchQ21NationInput old_row;
+  TpchQ21NationInput new_row;
 };
-
-// ── Encode / Decode ─────────────────────────────────────────────────────────
-std::vector<uint8_t> EncodeTpchQ21SupplierMetadata(const TpchQ21State &state);
-std::vector<uint8_t> EncodeTpchQ21OrderSummaries(const TpchQ21State &state);
-std::vector<uint8_t> EncodeTpchQ21NationNameIndex(const TpchQ21State &state);
-std::vector<uint8_t> EncodeTpchQ21Nation(int32_t nationkey,
-                                          const TpchQ21State &state);
-bool DecodeTpchQ21SupplierMetadata(const std::vector<uint8_t> &bytes,
-                                    TpchQ21State &state);
-bool DecodeTpchQ21OrderSummaries(const std::vector<uint8_t> &bytes,
-                                  TpchQ21State &state);
-bool DecodeTpchQ21NationNameIndex(const std::vector<uint8_t> &bytes,
-                                   TpchQ21State &state);
-bool DecodeTpchQ21Nation(const std::vector<uint8_t> &bytes, int32_t nationkey,
-                          TpchQ21State &state);
-
-// Exposed for extract-diff / verification (used by module.cpp build/repair).
-std::unordered_map<int64_t, int64_t>
-TpchQ21ComputeOrderContributions(const OrderSummary &order);
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ21TxnBuffer final : public core::AuxTxnBuffer {
@@ -211,21 +159,20 @@ public:
   void Clear() override;
 
   bool RequiresRebuild() const;
-  const std::vector<TpchQ21LineitemDelta> &LineitemDeltas() const;
-  const std::vector<TpchQ21OrderDelta> &OrderDeltas() const;
-  const std::vector<TpchQ21SupplierDelta> &SupplierDeltas() const;
-  const std::vector<TpchQ21NationDelta> &NationDeltas() const;
   void MarkRebuild();
-  void AddLineitemDelta(TpchQ21LineitemDelta delta);
-  void AddOrderDelta(TpchQ21OrderDelta delta);
+  void AddOrderResult(TpchQ21OrderResult result);
   void AddSupplierDelta(TpchQ21SupplierDelta delta);
   void AddNationDelta(TpchQ21NationDelta delta);
+
+  const std::vector<TpchQ21OrderResult> &OrderResults() const;
+  const std::vector<TpchQ21SupplierDelta> &SupplierDeltas() const;
+  const std::vector<TpchQ21NationDelta> &NationDeltas() const;
+  uint64_t Size() const;
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
-  std::vector<TpchQ21LineitemDelta> lineitem_deltas;
-  std::vector<TpchQ21OrderDelta> order_deltas;
+  std::vector<TpchQ21OrderResult> order_results;
   std::vector<TpchQ21SupplierDelta> supplier_deltas;
   std::vector<TpchQ21NationDelta> nation_deltas;
 };
@@ -236,7 +183,7 @@ public:
   static constexpr const char *kId = TpchQ21Layout::kAccelerator;
 
   explicit TpchQ21Module(TpchQ21Config config,
-                          TpchQ21InitialScan *initial_scan = nullptr)
+                         TpchQ21InitialScan *initial_scan = nullptr)
       : config(config), initial_scan(initial_scan) {}
 
   core::AcceleratorId Id() const override;
@@ -252,7 +199,7 @@ public:
   StageMaintenance(core::AuxEngineServices &, const core::InvalidationPlan &,
                    core::AuxTxnBuffer &) override;
   bool CheckValidity(core::AuxEngineServices &,
-                      const core::QueryArguments &) const override;
+                     const core::QueryArguments &) const override;
   void Execute(core::AuxEngineServices &, const core::QueryArguments &,
                core::AuxRowSink &) override;
   void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
@@ -260,14 +207,12 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ21State BuildState(core::AuxEngineServices &services) const;
-  // ReadHit: caller must pass the same VisibilityToken pinned in Execute.
-  bool LoadStateForNations(core::AuxEngineServices &services,
-                            const core::VisibilityToken &visibility,
-                            const std::vector<int32_t> &nationkeys,
-                            TpchQ21State &state) const;
-  void EmitResult(const TpchQ21State &state,
-                  core::AuxRowSink &sink) const;
+  TpchQ21State BuildState() const;
+  bool LoadState(core::AuxEngineServices &services,
+                 std::shared_ptr<const TpchQ21State> &state,
+                 core::Version *version = nullptr) const;
+  void EmitRows(std::vector<TpchQ21OutputRow> rows,
+                core::AuxRowSink &sink) const;
 
   TpchQ21Config config;
   TpchQ21InitialScan *initial_scan = nullptr;
