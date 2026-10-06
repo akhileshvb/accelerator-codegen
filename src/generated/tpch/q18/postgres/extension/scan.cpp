@@ -50,28 +50,32 @@ void ScanTpchQ18Customers(
       });
 }
 
-bool LookupTpchQ18Order(int64_t orderkey, query::TpchQ18OrderInput &out) {
-  if (SPI_connect() != SPI_OK_CONNECT) {
-    return false;
-  }
-  char sql[256];
-  snprintf(sql, sizeof(sql),
-                "SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice "
-                "FROM orders WHERE o_orderkey = %lld",
-                static_cast<long long>(orderkey));
-  ++t_table_scans;
-  const int status = SPI_execute(sql, true, 1);
-  bool found = false;
-  if (status == SPI_OK_SELECT && SPI_processed > 0 && SPI_tuptable) {
-    HeapTuple tuple = SPI_tuptable->vals[0];
-    TupleDesc tuple_desc = SPI_tuptable->tupdesc;
-    out = {TypedInt(tuple, tuple_desc, 0), TypedInt(tuple, tuple_desc, 1),
-           TypedDate(tuple, tuple_desc, 2),
-           TypedDecimalRaw(tuple, tuple_desc, 3)};
-    found = out.key == orderkey;
-  }
-  SPI_finish();
-  return found;
+// SUM(l_quantity) and COUNT(*) per order, computed by the database.
+bool ScanTpchQ18OrderQuantityAggregates(
+    const std::function<void(const query::TpchQ18OrderQuantityAggregate &)>
+        &consumer) {
+  ScanTypedTuples(
+      "SELECT l_orderkey, SUM(l_quantity), COUNT(*) FROM lineitem "
+      "GROUP BY l_orderkey",
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedDecimalRaw(tuple, tuple_desc, 1),
+                  TypedInt(tuple, tuple_desc, 2)});
+      });
+  return true;
+}
+
+// Keyed lookup of customer names (the index on c_custkey answers it).
+void LookupTpchQ18CustomerNames(
+    const std::vector<int64_t> &custkeys,
+    const std::function<void(const query::TpchQ18CustomerInput &)> &consumer) {
+  ScanTypedTuples(
+      "SELECT c_custkey, c_name FROM customer WHERE " +
+          KeyListPredicate("c_custkey", custkeys),
+      [&](HeapTuple tuple, TupleDesc tuple_desc) {
+        consumer({TypedInt(tuple, tuple_desc, 0),
+                  TypedText(tuple, tuple_desc, 1)});
+      });
 }
 
 } // namespace scans
@@ -93,13 +97,20 @@ public:
       override {
     scans::ScanTpchQ18Customers(consumer);
   }
-  bool LookupOrder(int64_t orderkey,
-                   query::TpchQ18OrderInput &out) override {
-    // SPI is unsafe inside PostgreSQL xact callbacks (PreCommit maintenance).
-    // Returning false makes StageMaintenance fall back to RebuildAll.
-    (void)orderkey;
-    (void)out;
-    return false;
+  bool ScanOrderQuantityAggregates(
+      const std::function<void(const query::TpchQ18OrderQuantityAggregate &)>
+          &consumer) override {
+    return scans::ScanTpchQ18OrderQuantityAggregates(consumer);
+  }
+  void LookupCustomerNames(
+      const std::vector<int64_t> &custkeys,
+      const std::function<void(const query::TpchQ18CustomerInput &)> &consumer)
+      override {
+    // A big key list is cheaper as one scan than as an array literal.
+    if (custkeys.size() > 4096)
+      query::TpchQ18InitialScan::LookupCustomerNames(custkeys, consumer);
+    else
+      scans::LookupTpchQ18CustomerNames(custkeys, consumer);
   }
 };
 Runtime<query::TpchQ18Module, query::TpchQ18Config, TpchQ18Scan> &
@@ -119,10 +130,15 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ18(FunctionCallInfo fcinfo) {
-  detail::Q18Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-          core::AuxType::Int64, static_cast<int64_t>(PG_GETARG_INT64(0)))}},
-      fcinfo);
+  // QUANTITY is a NUMERIC: passed as its exact text (NULL stays NULL).
+  core::QueryArguments arguments;
+  if (PG_ARGISNULL(0))
+    arguments.values.push_back(core::AuxValue::Null(core::AuxType::String));
+  else
+    arguments.values.push_back(core::AuxValue::Of(
+        core::AuxType::String,
+        detail::DatumText(PG_GETARG_DATUM(0), NUMERICOID)));
+  detail::Q18Runtime().Execute(arguments, fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{

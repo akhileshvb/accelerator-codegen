@@ -26,7 +26,7 @@ void ScanTpchQ21Suppliers(
       [&](const std::vector<std::string> &cols) {
         consumer({TypedInt(cols, 0),
                   TypedText(cols, 1),
-                  static_cast<int32_t>(TypedInt(cols, 2))});
+                  TypedInt(cols, 2)});
       });
 }
 
@@ -35,33 +35,25 @@ void ScanTpchQ21Nations(
   ScanTypedTuples(
       "SELECT n_nationkey, n_name FROM nation",
       [&](const std::vector<std::string> &cols) {
-        consumer({static_cast<int32_t>(TypedInt(cols, 0)),
+        consumer({TypedInt(cols, 0),
                   TypedText(cols, 1)});
       });
 }
 
-void ScanTpchQ21Orders(
-    const std::function<void(const query::TpchQ21OrderInput &)> &consumer) {
+// Lineitems of fulfilled orders, one order's rows consecutive. `restrict_sql`
+// is an extra predicate (empty: every order).
+void ScanTpchQ21FulfilledLineitems(
+    const std::string &restrict_sql,
+    const std::function<void(const query::TpchQ21LineInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderstatus = 'F'",
+      "SELECT l_orderkey, l_suppkey, "
+      "COALESCE(l_receiptdate > l_commitdate, 0) "
+      "FROM lineitem JOIN orders ON o_orderkey = l_orderkey "
+      "WHERE o_orderstatus = 'F'" +
+          restrict_sql + " ORDER BY l_orderkey",
       [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedChar(cols, 1)});
-      });
-}
-
-void ScanTpchQ21Lineitems(
-    const std::function<void(const query::TpchQ21LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l.l_orderkey, l.l_suppkey, l.l_commitdate, l.l_receiptdate "
-      "FROM lineitem l "
-      "INNER JOIN orders o ON l.l_orderkey = o.o_orderkey AND "
-      "o.o_orderstatus = 'F'",
-      [&](const std::vector<std::string> &cols) {
-        consumer({TypedInt(cols, 0),
-                  TypedInt(cols, 1),
-                  TypedDate(cols, 2),
-                  TypedDate(cols, 3)});
+        consumer({TypedInt(cols, 0), TypedInt(cols, 1),
+                  TypedInt(cols, 2) != 0});
       });
 }
 
@@ -79,15 +71,26 @@ public:
       override {
     scans::ScanTpchQ21Nations(consumer);
   }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ21OrderInput &)> &consumer)
+  void ScanFulfilledLineitems(
+      const std::function<void(const query::TpchQ21LineInput &)> &consumer)
       override {
-    scans::ScanTpchQ21Orders(consumer);
+    scans::ScanTpchQ21FulfilledLineitems("", consumer);
   }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ21LineitemInput &)> &consumer)
+  bool LookupFulfilledLineitems(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(const query::TpchQ21LineInput &)> &consumer)
       override {
-    scans::ScanTpchQ21Lineitems(consumer);
+    if (orderkeys.empty())
+      return true;
+    std::string restrict_sql = " AND l_orderkey IN (";
+    for (std::size_t i = 0; i < orderkeys.size(); ++i) {
+      if (i)
+        restrict_sql += ',';
+      restrict_sql += std::to_string(orderkeys[i]);
+    }
+    restrict_sql += ')';
+    scans::ScanTpchQ21FulfilledLineitems(restrict_sql, consumer);
+    return true;
   }
 };
 

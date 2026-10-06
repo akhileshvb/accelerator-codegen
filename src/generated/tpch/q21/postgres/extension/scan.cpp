@@ -26,7 +26,7 @@ void ScanTpchQ21Suppliers(
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
         consumer({TypedInt(tuple, tuple_desc, 0),
                   TypedText(tuple, tuple_desc, 1),
-                  static_cast<int32_t>(TypedInt(tuple, tuple_desc, 2))});
+                  TypedInt(tuple, tuple_desc, 2)});
       });
 }
 
@@ -35,34 +35,30 @@ void ScanTpchQ21Nations(
   ScanTypedTuples(
       "SELECT n_nationkey, n_name FROM nation",
       [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({static_cast<int32_t>(TypedInt(tuple, tuple_desc, 0)),
+        consumer({TypedInt(tuple, tuple_desc, 0),
                   TypedText(tuple, tuple_desc, 1)});
       });
 }
 
-void ScanTpchQ21Orders(
-    const std::function<void(const query::TpchQ21OrderInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderstatus = 'F'",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedChar(tuple, tuple_desc, 1)});
-      });
-}
+// Lineitems of fulfilled orders, one order's rows consecutive. `restrict_sql`
+// is an extra predicate (empty: every order).
+const char *kFulfilledLineitemsSql =
+    "SELECT l_orderkey, l_suppkey, "
+    "COALESCE(l_receiptdate > l_commitdate, false)::int "
+    "FROM lineitem JOIN orders ON o_orderkey = l_orderkey "
+    "WHERE o_orderstatus = 'F'";
 
-void ScanTpchQ21Lineitems(
-    const std::function<void(const query::TpchQ21LineitemInput &)> &consumer) {
-  ScanTypedTuples(
-      "SELECT l.l_orderkey, l.l_suppkey, l.l_commitdate, l.l_receiptdate "
-      "FROM lineitem l "
-      "INNER JOIN orders o ON l.l_orderkey = o.o_orderkey AND "
-      "o.o_orderstatus = 'F'",
-      [&](HeapTuple tuple, TupleDesc tuple_desc) {
-        consumer({TypedInt(tuple, tuple_desc, 0),
-                  TypedInt(tuple, tuple_desc, 1),
-                  TypedDate(tuple, tuple_desc, 2),
-                  TypedDate(tuple, tuple_desc, 3)});
-      });
+template <typename Scan>
+void RunFulfilledLineitems(
+    Scan &&scan, const std::string &restrict_sql,
+    const std::function<void(const query::TpchQ21LineInput &)> &consumer) {
+  scan(std::string(kFulfilledLineitemsSql) + restrict_sql +
+           " ORDER BY l_orderkey",
+       [&](HeapTuple tuple, TupleDesc tuple_desc) {
+         consumer({TypedInt(tuple, tuple_desc, 0),
+                   TypedInt(tuple, tuple_desc, 1),
+                   TypedInt(tuple, tuple_desc, 2) != 0});
+       });
 }
 
 } // namespace scans
@@ -79,15 +75,27 @@ public:
       override {
     scans::ScanTpchQ21Nations(consumer);
   }
-  void ScanOrders(
-      const std::function<void(const query::TpchQ21OrderInput &)> &consumer)
+  void ScanFulfilledLineitems(
+      const std::function<void(const query::TpchQ21LineInput &)> &consumer)
       override {
-    scans::ScanTpchQ21Orders(consumer);
+    scans::RunFulfilledLineitems(
+        [](const std::string &sql, auto &&row) {
+          ScanTypedTuples(sql, row);
+        },
+        "", consumer);
   }
-  void ScanLineitems(
-      const std::function<void(const query::TpchQ21LineitemInput &)> &consumer)
+  bool LookupFulfilledLineitems(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(const query::TpchQ21LineInput &)> &consumer)
       override {
-    scans::ScanTpchQ21Lineitems(consumer);
+    // Called from the capture trigger: read the database as the writing
+    // statement (and this transaction) left it.
+    scans::RunFulfilledLineitems(
+        [](const std::string &sql, auto &&row) {
+          ScanTypedTuplesAfterOwnWrites(sql, row);
+        },
+        " AND " + KeyListPredicate("l_orderkey", orderkeys), consumer);
+    return true;
   }
 };
 Runtime<query::TpchQ21Module, query::TpchQ21Config, TpchQ21Scan> &
@@ -108,10 +116,14 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ21(FunctionCallInfo fcinfo) {
-  detail::Q21Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-          core::AuxType::String, detail::TextDatum(PG_GETARG_DATUM(0)))}},
-      fcinfo);
+  // A NULL nation name stays NULL (n_name = NULL keeps no row).
+  core::QueryArguments arguments;
+  if (PG_ARGISNULL(0))
+    arguments.values.push_back(core::AuxValue::Null(core::AuxType::String));
+  else
+    arguments.values.push_back(core::AuxValue::Of(
+        core::AuxType::String, detail::TextDatum(PG_GETARG_DATUM(0))));
+  detail::Q21Runtime().Execute(arguments, fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{

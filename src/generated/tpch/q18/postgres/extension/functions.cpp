@@ -32,7 +32,7 @@ namespace {
 // Executed by accel_postgres_register_queries().
 constexpr char kFunctionsSql[] = R"SQL(
 DROP FUNCTION IF EXISTS accel_tpch_q18 CASCADE;
-CREATE FUNCTION accel_tpch_q18(bigint)
+CREATE FUNCTION accel_tpch_q18(numeric)
 RETURNS TABLE (
   c_name text,
   c_custkey bigint,
@@ -45,7 +45,7 @@ AS 'accelerator_codegen_pg', 'AcceleratorCodegenBaseTpchQ18'
 LANGUAGE C;
 
 DROP FUNCTION IF EXISTS accel_tpch_q18_aux CASCADE;
-CREATE FUNCTION accel_tpch_q18_aux(bigint)
+CREATE FUNCTION accel_tpch_q18_aux(numeric)
 RETURNS TABLE (
   c_name text,
   c_custkey bigint,

@@ -1,20 +1,19 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
-// ── Q18 layout (inlined here because query_layouts.hpp is not writable) ─────
+// ── Q18 layout ──────────────────────────────────────────────────────────────
 struct TpchQ18Layout {
   static constexpr const char *kAccelerator = "tpch_q18_aux";
   static constexpr core::PartitionId kOrderQuantitySums = 0;
@@ -49,17 +48,11 @@ struct TpchQ18CustomerInput {
   std::string name;
 };
 
+// One row per orderkey: SUM(l_quantity) and COUNT(*) over its lineitems.
 struct TpchQ18OrderQuantityAggregate {
   int64_t orderkey = 0;
   int64_t quantity_sum_raw = 0;
-};
-
-struct TpchQ18SurvivorAggregate {
-  int64_t orderkey = 0;
-  int64_t quantity_sum_raw = 0;
-  int64_t custkey = 0;
-  int32_t orderdate_days = 0;
-  int64_t totalprice_raw = 0;
+  int64_t line_count = 0;
 };
 
 class TpchQ18InitialScan {
@@ -72,88 +65,77 @@ public:
   virtual void ScanCustomers(
       const std::function<void(const TpchQ18CustomerInput &)> &) = 0;
 
-  // Optional: SQL SUM(quantity) GROUP BY orderkey.
+  // Optional: SQL `SELECT l_orderkey, SUM(l_quantity), COUNT(*) FROM lineitem
+  // GROUP BY l_orderkey`, streamed (one row per orderkey). Returns false when
+  // the engine has no such scan; the caller then streams ScanLineitems.
   virtual bool ScanOrderQuantityAggregates(
-      const std::function<void(const TpchQ18OrderQuantityAggregate &)> &consumer) {
+      const std::function<void(const TpchQ18OrderQuantityAggregate &)>
+          &consumer) {
     (void)consumer;
     return false;
   }
 
-  // Optional: orders whose SUM(quantity) already exceeds min_quantity_raw,
-  // with order metadata joined in. Avoids an O(orders) C++ hash map at SF20.
-  virtual bool ScanSurvivorOrders(
-      int64_t min_quantity_raw,
-      const std::function<void(const TpchQ18SurvivorAggregate &)> &consumer) {
-    (void)min_quantity_raw;
-    (void)consumer;
-    return false;
-  }
+  // Names of the given customers (customers that do not exist are not
+  // reported). Engines override this with a keyed SQL lookup; the default
+  // filters a full customer scan.
+  virtual void LookupCustomerNames(
+      const std::vector<int64_t> &custkeys,
+      const std::function<void(const TpchQ18CustomerInput &)> &consumer);
+};
 
-  // Point-lookup for write maintenance when a lineitem delta crosses the
-  // survivor threshold and order metadata is not yet cached.
-  virtual bool LookupOrder(int64_t orderkey, TpchQ18OrderInput &out) {
-    (void)orderkey;
-    (void)out;
-    return false;
-  }
+// ── State ───────────────────────────────────────────────────────────────────
+// One record per orderkey that has an orders row or at least one lineitem.
+// The record carries everything the query needs about the order, so a write to
+// lineitem or orders is a per-key delta that needs no lookup in the database.
+struct TpchQ18OrderRec {
+  int64_t sum_raw = 0;        // SUM(l_quantity) * 100 over the order's lineitems
+  int64_t totalprice_raw = 0; // orders row (valid when HasOrder)
+  int64_t custkey = 0;        // orders row (valid when HasOrder)
+  int32_t orderdate_days = 0; // orders row (valid when HasOrder)
+  uint32_t flags_lines = 0;   // top bit: orders row present; rest: #lineitems
 
-  // Current SUM(l_quantity) for one order, including the open transaction.
-  virtual bool LookupOrderQuantitySum(int64_t orderkey, int64_t &sum_raw) {
-    (void)orderkey;
-    (void)sum_raw;
-    return false;
+  static constexpr uint32_t kHasOrder = 0x80000000u;
+  bool HasOrder() const { return (flags_lines & kHasOrder) != 0; }
+  uint32_t Lines() const { return flags_lines & ~kHasOrder; }
+  bool Empty() const { return flags_lines == 0 && sum_raw == 0; }
+  // The order can appear in the result for a threshold below its sum.
+  bool Qualifies(int64_t threshold_raw) const {
+    return HasOrder() && Lines() > 0 && sum_raw > threshold_raw;
   }
 };
 
-// ── State structures ────────────────────────────────────────────────────────
-struct TpchQ18SurvivorMeta {
-  int64_t custkey = 0;
-  int32_t orderdate_days = 0;
-  int64_t totalprice_raw = 0;
-  int64_t quantity_sum_raw = 0;
-};
-
+// Memory: 32 B record + ~9 B hash slot / 0.875 load = ~47 B per order, plus
+// ~1 B per hot order and ~80 B per customer name (SF1000: +12 GB).
+//   SF100  (1.5e8 orders): ~7 GB      SF1000 (1.5e9 orders): ~70 GB
+// The previous state was an unordered_map per survivor (~100 B each) but its
+// build transiently held a node map over EVERY order (6 GB at SF100).
+// Write cost: a batch of B touched orders clones <= B shards of ~5K-25K
+// records (~1 MB each at SF1000); the shard directory is 64K pointers.
 struct TpchQ18State {
-  // Persist order metadata only for orders whose quantity sum exceeds this
-  // threshold (300.00 at scale 2).  TPC-H Q18 uses 312.00, so survivors
-  // cover every order that can appear in the default result set.
-  static constexpr int64_t kMinPersistQuantityRaw = 30000;
+  // Orders whose sum exceeds this are indexed in `hot` (300.00 at scale 2; the
+  // TPC-H threshold range is 312-315). A threshold at or above it enumerates
+  // only the hot set; a lower one scans every record (the result is then
+  // large anyway: it holds every order above that quantity).
+  static constexpr int64_t kHotFloorRaw = 30000;
 
-  // Sparse quantity sums for survivor orders only. Non-survivors are resolved
-  // with a point SQL lookup on write so Execute memory stays O(survivors)
-  // at SF20 (dense max(orderkey) arrays do not).
-  std::unordered_map<int64_t, int64_t> quantity_overflow;
+  core::ShardedCowHashMap<TpchQ18OrderRec, 16> orders;
+  core::ShardedCowHashMap<uint8_t, 12> hot;
+  // Names of all customers (~80 B each).
+  core::ShardedCowHashMap<std::string, 10> customer_names;
 
-  // Sparse order metadata for high-quantity orders only.
-  std::unordered_map<int64_t, TpchQ18SurvivorMeta> survivors;
-
-  // Survivor orderkeys — mirrors survivors keys for fast iteration.
-  std::vector<int64_t> active_orderkeys;
-
-  // Customer names cached at build time so EmitResult does not rescan
-  // the customer table on every hit (dominant cost at SF20).
-  std::unordered_map<int64_t, std::string> customer_names;
-
-  // ── Quantity sum accessors ──────────────────────────────────────────────
-  void AddOrderQuantity(int64_t orderkey, int64_t delta);
-  void SetOrderQuantitySum(int64_t orderkey, int64_t sum);
-  int64_t OrderQuantitySum(int64_t orderkey) const;
-
-  // ── Survivor metadata accessors ─────────────────────────────────────────
-  void SetOrderMeta(int64_t orderkey, int64_t custkey, int32_t orderdate_days,
-                    int64_t totalprice_raw);
-  void RemoveSurvivor(int64_t orderkey);
-  void SyncSurvivorQuantity(int64_t orderkey);
-  bool HasOrderMeta(int64_t orderkey) const;
-  int64_t OrderCustkey(int64_t orderkey) const;
-  int32_t OrderOrderdate(int64_t orderkey) const;
-  int64_t OrderTotalprice(int64_t orderkey) const;
+  // Record maintenance. `Reindex` re-derives the hot-set membership of one
+  // order and drops its record when nothing is left of it.
+  TpchQ18OrderRec &MutableRec(int64_t orderkey) { return orders[orderkey]; }
+  void Reindex(int64_t orderkey);
+  // false: the delta would leave a negative lineitem count (state mismatch).
+  bool AddLineitem(int64_t orderkey, int64_t quantity_raw, int sign);
+  void SetOrder(int64_t orderkey, int64_t custkey, int32_t orderdate_days,
+                int64_t totalprice_raw);
+  // false: there was no orders row for the key.
+  bool ClearOrder(int64_t orderkey);
 };
-
-enum class TpchQ18ImageKind : uint8_t { OrderQuantitySums };
 
 struct TpchQ18StateImage {
-  TpchQ18ImageKind kind = TpchQ18ImageKind::OrderQuantitySums;
   std::shared_ptr<const TpchQ18State> state;
 };
 
@@ -167,17 +149,26 @@ struct TpchQ18OutputRow {
   int64_t quantity_sum_raw = 0;
 };
 
-// ── Delta ───────────────────────────────────────────────────────────────────
+// ── Deltas ──────────────────────────────────────────────────────────────────
 struct TpchQ18LineitemDelta {
   int64_t orderkey = 0;
   int64_t quantity_raw = 0;
   int8_t sign = 0;
 };
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
-std::vector<uint8_t> EncodeTpchQ18OrderQuantitySums(const TpchQ18State &state);
-bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
-                                    TpchQ18State &state);
+struct TpchQ18OrderDelta {
+  int8_t sign = 0; // +1: orders row inserted, -1: deleted
+  TpchQ18OrderInput order;
+};
+
+// A customer row change. `has_old` / `has_new`: the row before / after the
+// write (insert: new only, delete: old only, update: both).
+struct TpchQ18CustomerDelta {
+  bool has_old = false;
+  bool has_new = false;
+  int64_t old_key = 0;
+  TpchQ18CustomerInput new_row;
+};
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
 class TpchQ18TxnBuffer final : public core::AuxTxnBuffer {
@@ -186,14 +177,22 @@ public:
   void Clear() override;
 
   bool RequiresRebuild() const;
-  const std::vector<TpchQ18LineitemDelta> &Deltas() const;
   void MarkRebuild();
-  void AddDelta(TpchQ18LineitemDelta delta);
+  void AddLineitem(TpchQ18LineitemDelta delta);
+  void AddOrder(TpchQ18OrderDelta delta);
+  void AddCustomer(TpchQ18CustomerDelta delta);
+
+  const std::vector<TpchQ18LineitemDelta> &Lineitems() const;
+  const std::vector<TpchQ18OrderDelta> &Orders() const;
+  const std::vector<TpchQ18CustomerDelta> &Customers() const;
+  uint64_t Size() const;
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
-  std::vector<TpchQ18LineitemDelta> deltas;
+  std::vector<TpchQ18LineitemDelta> lineitems;
+  std::vector<TpchQ18OrderDelta> orders;
+  std::vector<TpchQ18CustomerDelta> customers;
 };
 
 // ── Module ──────────────────────────────────────────────────────────────────
@@ -226,12 +225,13 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  TpchQ18State BuildState(core::AuxEngineServices &services) const;
+  TpchQ18State BuildState() const;
   bool LoadState(core::AuxEngineServices &services,
-                  std::shared_ptr<const TpchQ18State> &state) const;
-  void EmitResult(const TpchQ18State &state, int64_t threshold_raw,
-                  core::AuxEngineServices &services,
-                  core::AuxRowSink &sink) const;
+                 std::shared_ptr<const TpchQ18State> &state) const;
+  // Customer names for the rows (cache first, then a keyed lookup), then the
+  // ORDER BY and the output. Rows whose customer does not exist are dropped.
+  void EmitRows(std::vector<TpchQ18OutputRow> rows,
+                const TpchQ18State *state, core::AuxRowSink &sink) const;
 
   TpchQ18Config config;
   TpchQ18InitialScan *initial_scan = nullptr;

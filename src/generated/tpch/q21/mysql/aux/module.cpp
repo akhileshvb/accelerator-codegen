@@ -1,27 +1,16 @@
 #include "tpch/q21/mysql/aux/module.hpp"
 #include "tpch/q21/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
-#include <cstring>
 #include <limits>
-#include <map>
-#include <set>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
-
-constexpr uint32_t kVersion = 1;
-constexpr uint32_t kSupplierMagic = 0x53323151; // Q21S
-constexpr uint32_t kOrdersMagic = 0x4f323151;   // Q21O
-constexpr uint32_t kNationMagic = 0x4e323151;   // Q21N
-constexpr uint32_t kNationNameIdxMagic = 0x49323151; // Q21I
-
+// ── Cell extraction helpers ─────────────────────────────────────────────────
 bool StringCell(const core::AuxRow &row, std::size_t index, std::string &out) {
   if (index >= row.values.size() || row.values[index].is_null ||
       !std::holds_alternative<std::string>(row.values[index].payload))
@@ -45,81 +34,28 @@ bool IntCell(const core::AuxRow &row, std::size_t index, int64_t &out) {
     out = static_cast<int64_t>(value);
     return true;
   }
-  if (std::holds_alternative<core::AuxDate>(cell.payload)) {
-    out = std::get<core::AuxDate>(cell.payload).days_since_epoch;
-    return true;
-  }
   return false;
 }
 
-bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
-  int64_t value = 0;
-  if (!IntCell(row, index, value) ||
-      value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return false;
-  days = static_cast<int32_t>(value);
-  return true;
+bool ReadSupplier(const core::AuxRow &row, TpchQ21SupplierInput &out) {
+  return IntCell(row, 0, out.suppkey) && StringCell(row, 1, out.name) &&
+         IntCell(row, 2, out.nationkey);
 }
 
-bool CharCell(const core::AuxRow &row, std::size_t index, char &out) {
-  std::string value;
-  if (!StringCell(row, index, value) || value.empty())
-    return false;
-  out = value[0];
-  return true;
-}
-
-bool BetterOutputRow(const TpchQ21OutputRow &lhs, const TpchQ21OutputRow &rhs) {
-  if (lhs.numwait != rhs.numwait)
-    return lhs.numwait > rhs.numwait;
-  return lhs.name < rhs.name;
-}
-
-// Q21 groups by s_name, not s_suppkey: suppliers that share a name form one
-// output group whose numwait is the sum of their counts.  Merge per-supplier
-// rows by name, then sort by (numwait DESC, s_name ASC).
-void MergeByNameAndSort(std::vector<TpchQ21OutputRow> &rows) {
-  std::map<std::string, int64_t> by_name;
-  for (const auto &row : rows)
-    by_name[row.name] += row.numwait;
-  rows.clear();
-  rows.reserve(by_name.size());
-  for (auto &[name, numwait] : by_name)
-    rows.push_back({name, numwait});
-  std::sort(rows.begin(), rows.end(), BetterOutputRow);
+bool ReadNation(const core::AuxRow &row, TpchQ21NationInput &out) {
+  return IntCell(row, 0, out.nationkey) && StringCell(row, 1, out.name);
 }
 
 std::shared_ptr<const TpchQ21StateImage>
-MakeStateImage(TpchQ21ImageKind kind, int32_t nationkey,
-               const std::shared_ptr<const TpchQ21State> &state,
-               const std::string &nation_name = "") {
+MakeStateImage(const std::shared_ptr<const TpchQ21State> &state) {
   auto image = std::make_shared<TpchQ21StateImage>();
-  image->kind = kind;
-  image->nationkey = nationkey;
-  image->nation_name = nation_name;
   image->state = state;
-  if (kind == TpchQ21ImageKind::Nation) {
-    const auto nation_it = state->nation_numwait.find(nationkey);
-    if (nation_it != state->nation_numwait.end()) {
-      image->output_rows.reserve(nation_it->second.size());
-      for (const auto &[suppkey, numwait] : nation_it->second) {
-        if (numwait <= 0)
-          continue;
-        const auto name_it = state->supplier_names.find(suppkey);
-        if (name_it != state->supplier_names.end())
-          image->output_rows.push_back({name_it->second, numwait});
-      }
-      MergeByNameAndSort(image->output_rows);
-    }
-  }
   return image;
 }
 
-const TpchQ21StateImage *AsQ21Image(const core::StateImage &image,
-                                     TpchQ21ImageKind kind) {
+const TpchQ21StateImage *AsQ21Image(const core::StateImage &image) {
   const auto *payload = image.As<TpchQ21StateImage>();
-  return payload && payload->kind == kind && payload->state ? payload : nullptr;
+  return payload && payload->state ? payload : nullptr;
 }
 
 core::InvalidationPlan All() {
@@ -129,355 +65,179 @@ core::InvalidationPlan All() {
   return plan;
 }
 
-core::PartitionId NationPartition(int32_t nationkey) {
-  return TpchQ21Layout::kNationBase + static_cast<core::PartitionId>(nationkey);
-}
-
-// Key the read image by the query parameter rather than first loading a global
-// name->nation metadata image.  FNV-1a is stable across processes; collisions
-// are detected by the image's retained name and take the safe fallback path.
-core::PartitionId NationNamePartition(const std::string &name) {
-  uint64_t hash = 1469598103934665603ULL;
-  for (const unsigned char c : name) {
-    hash ^= c;
-    hash *= 1099511628211ULL;
-  }
-  return TpchQ21Layout::kNationNameBase +
-         static_cast<core::PartitionId>(hash % TpchQ21Layout::kNationNameSlots);
-}
-
-
-// ── Contribution computation ────────────────────────────────────────────────
-// Reduce the two correlated EXISTS predicates to per-order sufficient facts:
-// the number of participating suppliers and the number (and identity) of
-// suppliers with a late item.  Q21 can contribute only if exactly one supplier
-// is late and at least one different supplier participates.  Keeping this
-// reduction linear is important on build and touched-order repair paths.
-std::unordered_map<int64_t, int64_t>
-ComputeOrderContributions(const OrderSummary &order) {
-  std::unordered_map<int64_t, int64_t> contributions;
-  if (order.orderstatus != 'F' || order.suppliers.size() <= 1)
-    return contributions;
-
-  int64_t sole_late_suppkey = 0;
-  int64_t sole_late_count = 0;
-  uint32_t late_supplier_count = 0;
-  for (const auto &[suppkey, info] : order.suppliers) {
-    if (info.total_count <= 0 || info.late_count <= 0)
+// ── Order contribution ──────────────────────────────────────────────────────
+// Reduces the two correlated subqueries of one fulfilled order. Candidate
+// l1 rows are the late lineitems; EXISTS needs a second supplier on the order
+// and NOT EXISTS forbids a late lineitem of any other supplier, so the order
+// counts only when exactly one supplier has late lineitems (and another
+// supplier has any lineitem): that supplier gains its number of late rows.
+bool ContributionOf(std::vector<std::pair<int64_t, bool>> &lines,
+                    TpchQ21Contribution &out) {
+  std::sort(lines.begin(), lines.end());
+  std::size_t suppliers = 0, late_suppliers = 0;
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    const bool first_of_supplier = i == 0 || lines[i].first != lines[i - 1].first;
+    if (first_of_supplier)
+      ++suppliers;
+    if (!lines[i].second)
       continue;
-    ++late_supplier_count;
-    if (late_supplier_count > 1)
-      return contributions; // NOT EXISTS fails for every candidate.
-    sole_late_suppkey = suppkey;
-    sole_late_count = info.late_count;
+    if (first_of_supplier || !lines[i - 1].second) {
+      ++late_suppliers; // first late row of this supplier
+      out.suppkey = lines[i].first;
+      out.count = 0;
+    }
+    ++out.count;
+  }
+  return suppliers >= 2 && late_suppliers == 1;
+}
+
+// Collects the consecutive rows of one order and reports its contribution
+// when the next order starts (or at Flush).
+class OrderGrouper {
+public:
+  using Emit = std::function<void(int64_t, bool, const TpchQ21Contribution &)>;
+  explicit OrderGrouper(Emit emit) : emit(std::move(emit)) {}
+
+  void Add(const TpchQ21LineInput &line) {
+    if (open && line.orderkey != orderkey)
+      Flush();
+    orderkey = line.orderkey;
+    open = true;
+    lines.emplace_back(line.suppkey, line.late);
+  }
+  void Flush() {
+    if (!open)
+      return;
+    TpchQ21Contribution contribution;
+    const bool has = ContributionOf(lines, contribution);
+    emit(orderkey, has, contribution);
+    lines.clear();
+    open = false;
   }
 
-  if (late_supplier_count == 1)
-    contributions.emplace(sole_late_suppkey, sole_late_count);
-  return contributions;
+private:
+  Emit emit;
+  int64_t orderkey = 0;
+  bool open = false;
+  std::vector<std::pair<int64_t, bool>> lines;
+};
+
+// Q21 groups by s_name, not s_suppkey: suppliers that share a name form one
+// output group whose numwait is the sum of their counts. ORDER BY numwait
+// DESC, s_name (bytewise, the C collation the runtime requires).
+void MergeByNameAndSort(std::vector<TpchQ21OutputRow> &rows) {
+  std::map<std::string, int64_t> by_name;
+  for (const auto &row : rows)
+    by_name[row.name] += row.numwait;
+  rows.clear();
+  rows.reserve(by_name.size());
+  for (auto &[name, numwait] : by_name)
+    rows.push_back({name, numwait});
+  std::sort(rows.begin(), rows.end(),
+            [](const TpchQ21OutputRow &lhs, const TpchQ21OutputRow &rhs) {
+              if (lhs.numwait != rhs.numwait)
+                return lhs.numwait > rhs.numwait;
+              return lhs.name < rhs.name;
+            });
 }
 
-// ── Mutation helpers ────────────────────────────────────────────────────────
-bool ReadLineitem(const core::AuxRow &row, int64_t &orderkey, int64_t &suppkey,
-                  int32_t &commitdate, int32_t &receiptdate) {
-  return IntCell(row, 0, orderkey) && IntCell(row, 1, suppkey) &&
-         DateCell(row, 2, commitdate) && DateCell(row, 3, receiptdate);
-}
-
-bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey, std::string &name,
-                  int64_t &nationkey_raw) {
-  int64_t nk = 0;
-  if (!IntCell(row, 0, suppkey) || !StringCell(row, 1, name) ||
-      !IntCell(row, 2, nk))
-    return false;
-  if (nk < std::numeric_limits<int32_t>::min() ||
-      nk > std::numeric_limits<int32_t>::max())
-    return false;
-  nationkey_raw = nk;
+bool NationParameter(const core::QueryArguments &arguments, std::string &name) {
+  if (arguments.values.empty() || arguments.values[0].is_null ||
+      !std::holds_alternative<std::string>(arguments.values[0].payload))
+    return false; // n_name = NULL keeps nothing
+  name = std::get<std::string>(arguments.values[0].payload);
   return true;
 }
 
-bool ReadOrder(const core::AuxRow &row, int64_t &orderkey, char &orderstatus) {
-  return IntCell(row, 0, orderkey) && CharCell(row, 1, orderstatus);
-}
-
-bool ReadNation(const core::AuxRow &row, int64_t &nationkey_raw,
-                std::string &name) {
-  int64_t nk = 0;
-  if (!IntCell(row, 0, nk) || !StringCell(row, 1, name))
-    return false;
-  if (nk < std::numeric_limits<int32_t>::min() ||
-      nk > std::numeric_limits<int32_t>::max())
-    return false;
-  nationkey_raw = nk;
-  return true;
-}
-
-// ── Order summary rebuild from initial scan ─────────────────────────────────
-OrderSummary BuildOrderSummary(int64_t orderkey,
-                                TpchQ21InitialScan *scan) {
-  OrderSummary summary;
-  summary.orderstatus = 0;
-  bool have_status = false;
-  scan->ScanOrders([&](const TpchQ21OrderInput &input) {
-    if (input.orderkey != orderkey) return;
-    summary.orderstatus = input.orderstatus;
-    have_status = true;
-  });
-  if (!have_status) return summary;
-
-  scan->ScanLineitems([&](const TpchQ21LineitemInput &input) {
-    if (input.orderkey != orderkey) return;
-    auto &info = summary.suppliers[input.suppkey];
-    info.total_count++;
-    if (input.receiptdate > input.commitdate)
-      info.late_count++;
-  });
-  return summary;
-}
-
-// ── Apply contribution deltas to state ──────────────────────────────────────
-void ApplyContributionDeltas(
-    TpchQ21State &state,
-    const std::unordered_map<int64_t, int64_t> &old_contribs,
-    const std::unordered_map<int64_t, int64_t> &new_contribs) {
-  std::set<int64_t> affected_suppkeys;
-  for (const auto &[sk, _] : old_contribs) affected_suppkeys.insert(sk);
-  for (const auto &[sk, _] : new_contribs) affected_suppkeys.insert(sk);
-
-  for (const auto suppkey : affected_suppkeys) {
-    const auto old_val = old_contribs.count(suppkey) ? old_contribs.at(suppkey) : 0;
-    const auto new_val = new_contribs.count(suppkey) ? new_contribs.at(suppkey) : 0;
-    const int64_t delta = new_val - old_val;
-    if (delta == 0) continue;
-
-    const auto nation_it = state.supplier_nations.find(suppkey);
-    if (nation_it == state.supplier_nations.end()) continue;
-    const int32_t nationkey = nation_it->second;
-
-    auto &nation_map = state.nation_numwait[nationkey];
-    nation_map[suppkey] += delta;
-    if (nation_map[suppkey] == 0)
-      nation_map.erase(suppkey);
-    if (nation_map.empty())
-      state.nation_numwait.erase(nationkey);
-  }
+void EmitEmpty(core::AuxRowSink &sink) {
+  sink.Begin(core::OutputSchema{});
+  sink.End();
 }
 
 } // namespace
 
-// ── Encode / Decode ─────────────────────────────────────────────────────────
-std::vector<uint8_t> EncodeTpchQ21SupplierMetadata(const TpchQ21State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kSupplierMagic, kVersion,
-                         static_cast<uint32_t>(state.supplier_names.size()));
-  std::vector<int64_t> keys;
-  for (const auto &entry : state.supplier_names)
-    keys.push_back(entry.first);
-  std::sort(keys.begin(), keys.end());
-  for (const auto key : keys) {
-    writer.I64(key);
-    writer.String(state.supplier_names.at(key));
-    const auto nation_it = state.supplier_nations.find(key);
-    writer.I32(nation_it != state.supplier_nations.end() ? nation_it->second : 0);
+// ── State ───────────────────────────────────────────────────────────────────
+void TpchQ21State::SetContribution(int64_t orderkey, bool has,
+                                   const TpchQ21Contribution &contribution) {
+  const TpchQ21Contribution *found = contributions.Find(orderkey);
+  const bool had = found != nullptr;
+  const TpchQ21Contribution old = had ? *found : TpchQ21Contribution{};
+  if (had && has && old.suppkey == contribution.suppkey &&
+      old.count == contribution.count)
+    return;
+  if (had) {
+    AdjustNumwait(old.suppkey, -old.count);
+    if (!has)
+      contributions.Erase(orderkey);
   }
-  // Also encode nation_name_to_keys for backward compatibility
-  std::vector<std::string> nation_names;
-  for (const auto &entry : state.nation_name_to_keys)
-    nation_names.push_back(entry.first);
-  std::sort(nation_names.begin(), nation_names.end());
-  writer.U32(static_cast<uint32_t>(nation_names.size()));
-  for (const auto &name : nation_names) {
-    writer.String(name);
-    const auto &nkeys = state.nation_name_to_keys.at(name);
-    writer.U32(static_cast<uint32_t>(nkeys.size()));
-    for (const auto nk : nkeys)
-      writer.I32(nk);
+  if (has) {
+    contributions.Upsert(orderkey, contribution);
+    AdjustNumwait(contribution.suppkey, contribution.count);
   }
-  return std::move(writer.bytes);
 }
 
-std::vector<uint8_t> EncodeTpchQ21OrderSummaries(const TpchQ21State &state) {
-  ByteWriter writer;
-  std::vector<int64_t> keys;
-  if (state.order_summaries) {
-    for (const auto &entry : *state.order_summaries)
-      keys.push_back(entry.first);
+void TpchQ21State::AdjustNumwait(int64_t suppkey, int64_t delta) {
+  const int64_t *current = numwait.Find(suppkey);
+  const int64_t value = (current ? *current : 0) + delta;
+  if (value == 0)
+    numwait.Erase(suppkey);
+  else
+    numwait.Upsert(suppkey, value);
+  const TpchQ21Supplier *supplier = suppliers.Find(suppkey);
+  if (!supplier)
+    return;
+  const int64_t nationkey = supplier->nationkey;
+  if (value != 0) {
+    nation_numwait[nationkey].Upsert(suppkey, value);
+    return;
   }
-  for (const auto &entry : state.order_overlay)
-    keys.push_back(entry.first);
-  std::sort(keys.begin(), keys.end());
-  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
-  core::WriteImageHeader(writer, kOrdersMagic, kVersion,
-                         static_cast<uint32_t>(keys.size()));
-  for (const auto key : keys) {
-    const auto *summary = state.FindOrder(key);
-    if (!summary)
-      continue;
-    writer.I64(key);
-    writer.U8(static_cast<uint8_t>(summary->orderstatus));
-    writer.U32(static_cast<uint32_t>(summary->suppliers.size()));
-    for (const auto &[suppkey, info] : summary->suppliers) {
-      writer.I64(suppkey);
-      writer.I64(info.total_count);
-      writer.I64(info.late_count);
-    }
-  }
-  return std::move(writer.bytes);
+  const auto it = nation_numwait.find(nationkey);
+  if (it == nation_numwait.end())
+    return;
+  it->second.Erase(suppkey);
+  if (it->second.size() == 0)
+    nation_numwait.erase(it);
 }
 
-std::vector<uint8_t> EncodeTpchQ21NationNameIndex(const TpchQ21State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kNationNameIdxMagic, kVersion,
-                         static_cast<uint32_t>(state.nation_name_to_keys.size()));
-  std::vector<std::string> nation_names;
-  for (const auto &entry : state.nation_name_to_keys)
-    nation_names.push_back(entry.first);
-  std::sort(nation_names.begin(), nation_names.end());
-  for (const auto &name : nation_names) {
-    writer.String(name);
-    const auto &nkeys = state.nation_name_to_keys.at(name);
-    writer.U32(static_cast<uint32_t>(nkeys.size()));
-    for (const auto nk : nkeys)
-      writer.I32(nk);
-  }
-  return std::move(writer.bytes);
+void TpchQ21State::PutSupplier(int64_t suppkey, const std::string &name,
+                               int64_t nationkey) {
+  RemoveSupplier(suppkey);
+  suppliers.Upsert(suppkey, TpchQ21Supplier{name, nationkey});
+  if (const int64_t *current = numwait.Find(suppkey))
+    nation_numwait[nationkey].Upsert(suppkey, *current);
 }
 
-std::vector<uint8_t> EncodeTpchQ21Nation(int32_t nationkey,
-                                          const TpchQ21State &state) {
-  ByteWriter writer;
-  const auto it = state.nation_numwait.find(nationkey);
-  uint32_t count = 0;
-  std::vector<int64_t> keys;
-  if (it != state.nation_numwait.end()) {
-    for (const auto &[suppkey, nw] : it->second) {
-      if (nw != 0)
-        keys.push_back(suppkey);
-    }
-    std::sort(keys.begin(), keys.end());
-    count = static_cast<uint32_t>(keys.size());
-  }
-  core::WriteImageHeader(writer, kNationMagic, kVersion, count);
-  for (const auto suppkey : keys) {
-    writer.I64(suppkey);
-    writer.I64(it->second.at(suppkey));
-    // Include supplier name for direct output
-    const auto name_it = state.supplier_names.find(suppkey);
-    writer.String(name_it != state.supplier_names.end() ? name_it->second : "");
-  }
-  return std::move(writer.bytes);
-}
-
-bool DecodeTpchQ21SupplierMetadata(const std::vector<uint8_t> &bytes,
-                                    TpchQ21State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kSupplierMagic, kVersion, count))
+bool TpchQ21State::RemoveSupplier(int64_t suppkey) {
+  const TpchQ21Supplier *found = suppliers.Find(suppkey);
+  if (!found)
     return false;
-  state.supplier_names.clear();
-  state.supplier_nations.clear();
-  for (uint32_t i = 0; i < count; ++i) {
-    int64_t key = 0;
-    std::string name;
-    int32_t nationkey = 0;
-    if (!reader.I64(key) || !reader.String(name) || !reader.I32(nationkey))
-      return false;
-    state.supplier_names.emplace(key, std::move(name));
-    state.supplier_nations.emplace(key, nationkey);
+  const int64_t nationkey = found->nationkey;
+  const auto it = nation_numwait.find(nationkey);
+  if (it != nation_numwait.end()) {
+    it->second.Erase(suppkey);
+    if (it->second.size() == 0)
+      nation_numwait.erase(it);
   }
-  // Read nation_name_to_keys for backward compat (may be absent in old format)
-  uint32_t name_count = 0;
-  if (!reader.U32(name_count))
-    return reader.offset == bytes.size(); // old format without nation names
-  state.nation_name_to_keys.clear();
-  for (uint32_t i = 0; i < name_count; ++i) {
-    std::string name;
-    uint32_t nk_count = 0;
-    if (!reader.String(name) || !reader.U32(nk_count))
-      return false;
-    std::vector<int32_t> nkeys;
-    for (uint32_t j = 0; j < nk_count; ++j) {
-      int32_t nk = 0;
-      if (!reader.I32(nk))
-        return false;
-      nkeys.push_back(nk);
-    }
-    state.nation_name_to_keys.emplace(std::move(name), std::move(nkeys));
-  }
-  return reader.offset == bytes.size();
+  suppliers.Erase(suppkey);
+  return true;
 }
 
-bool DecodeTpchQ21OrderSummaries(const std::vector<uint8_t> &bytes,
-                                  TpchQ21State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kOrdersMagic, kVersion, count))
-    return false;
-  state.order_summaries = std::make_shared<TpchQ21State::OrderSummaryMap>();
-  state.order_overlay.clear();
-  for (uint32_t i = 0; i < count; ++i) {
-    int64_t key = 0;
-    uint8_t status = 0;
-    uint32_t supplier_count = 0;
-    if (!reader.I64(key) || !reader.U8(status) || !reader.U32(supplier_count))
-      return false;
-    OrderSummary summary;
-    summary.orderstatus = static_cast<char>(status);
-    for (uint32_t j = 0; j < supplier_count; ++j) {
-      int64_t suppkey = 0, total = 0, late = 0;
-      if (!reader.I64(suppkey) || !reader.I64(total) || !reader.I64(late))
-        return false;
-      summary.suppliers[suppkey] = {total, late};
-    }
-    state.order_summaries->emplace(key, std::move(summary));
-  }
-  return reader.offset == bytes.size();
+void TpchQ21State::PutNation(int64_t nationkey, const std::string &name) {
+  nation_keys[name].push_back(nationkey);
 }
 
-bool DecodeTpchQ21NationNameIndex(const std::vector<uint8_t> &bytes,
-                                   TpchQ21State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kNationNameIdxMagic, kVersion, count))
+bool TpchQ21State::RemoveNation(int64_t nationkey, const std::string &name) {
+  const auto it = nation_keys.find(name);
+  if (it == nation_keys.end())
     return false;
-  state.nation_name_to_keys.clear();
-  for (uint32_t i = 0; i < count; ++i) {
-    std::string name;
-    uint32_t nk_count = 0;
-    if (!reader.String(name) || !reader.U32(nk_count))
-      return false;
-    std::vector<int32_t> nkeys;
-    for (uint32_t j = 0; j < nk_count; ++j) {
-      int32_t nk = 0;
-      if (!reader.I32(nk))
-        return false;
-      nkeys.push_back(nk);
-    }
-    state.nation_name_to_keys.emplace(std::move(name), std::move(nkeys));
-  }
-  return reader.offset == bytes.size();
-}
-
-bool DecodeTpchQ21Nation(const std::vector<uint8_t> &bytes, int32_t nationkey,
-                          TpchQ21State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kNationMagic, kVersion, count))
+  auto &keys = it->second;
+  const auto pos = std::find(keys.begin(), keys.end(), nationkey);
+  if (pos == keys.end())
     return false;
-  auto &nation_map = state.nation_numwait[nationkey];
-  nation_map.clear();
-  for (uint32_t i = 0; i < count; ++i) {
-    int64_t suppkey = 0, numwait = 0;
-    std::string name;
-    if (!reader.I64(suppkey) || !reader.I64(numwait) || !reader.String(name))
-      return false;
-    if (numwait != 0)
-      nation_map[suppkey] = numwait;
-    if (!name.empty() && state.supplier_names.find(suppkey) == state.supplier_names.end())
-      state.supplier_names.emplace(suppkey, std::move(name));
-  }
-  return reader.offset == bytes.size();
+  keys.erase(pos);
+  if (keys.empty())
+    nation_keys.erase(it);
+  return true;
 }
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
@@ -485,17 +245,32 @@ bool TpchQ21TxnBuffer::HasPendingChanges() const { return pending; }
 void TpchQ21TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
-  lineitem_deltas.clear();
-  order_deltas.clear();
+  order_results.clear();
   supplier_deltas.clear();
   nation_deltas.clear();
 }
 bool TpchQ21TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
-const std::vector<TpchQ21LineitemDelta> &TpchQ21TxnBuffer::LineitemDeltas() const {
-  return lineitem_deltas;
+void TpchQ21TxnBuffer::MarkRebuild() {
+  pending = true;
+  requires_rebuild = true;
+  order_results.clear();
+  supplier_deltas.clear();
+  nation_deltas.clear();
 }
-const std::vector<TpchQ21OrderDelta> &TpchQ21TxnBuffer::OrderDeltas() const {
-  return order_deltas;
+void TpchQ21TxnBuffer::AddOrderResult(TpchQ21OrderResult result) {
+  pending = true;
+  order_results.push_back(result);
+}
+void TpchQ21TxnBuffer::AddSupplierDelta(TpchQ21SupplierDelta delta) {
+  pending = true;
+  supplier_deltas.push_back(std::move(delta));
+}
+void TpchQ21TxnBuffer::AddNationDelta(TpchQ21NationDelta delta) {
+  pending = true;
+  nation_deltas.push_back(std::move(delta));
+}
+const std::vector<TpchQ21OrderResult> &TpchQ21TxnBuffer::OrderResults() const {
+  return order_results;
 }
 const std::vector<TpchQ21SupplierDelta> &TpchQ21TxnBuffer::SupplierDeltas() const {
   return supplier_deltas;
@@ -503,29 +278,8 @@ const std::vector<TpchQ21SupplierDelta> &TpchQ21TxnBuffer::SupplierDeltas() cons
 const std::vector<TpchQ21NationDelta> &TpchQ21TxnBuffer::NationDeltas() const {
   return nation_deltas;
 }
-void TpchQ21TxnBuffer::MarkRebuild() {
-  pending = true;
-  requires_rebuild = true;
-  lineitem_deltas.clear();
-  order_deltas.clear();
-  supplier_deltas.clear();
-  nation_deltas.clear();
-}
-void TpchQ21TxnBuffer::AddLineitemDelta(TpchQ21LineitemDelta delta) {
-  pending = true;
-  lineitem_deltas.push_back(delta);
-}
-void TpchQ21TxnBuffer::AddOrderDelta(TpchQ21OrderDelta delta) {
-  pending = true;
-  order_deltas.push_back(delta);
-}
-void TpchQ21TxnBuffer::AddSupplierDelta(TpchQ21SupplierDelta delta) {
-  pending = true;
-  supplier_deltas.push_back(delta);
-}
-void TpchQ21TxnBuffer::AddNationDelta(TpchQ21NationDelta delta) {
-  pending = true;
-  nation_deltas.push_back(delta);
+uint64_t TpchQ21TxnBuffer::Size() const {
+  return order_results.size() + supplier_deltas.size() + nation_deltas.size();
 }
 
 // ── Module ──────────────────────────────────────────────────────────────────
@@ -542,39 +296,12 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ21Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ21TxnBuffer>();
 }
 
-void TpchQ21Module::Build(core::AuxEngineServices &services,
-                           core::StateBuilder &builder) {
-  const auto state = BuildState(services);
-  const auto typed_state = std::make_shared<const TpchQ21State>(state);
-
+void TpchQ21Module::Build(core::AuxEngineServices &,
+                          core::StateBuilder &builder) {
+  const auto typed_state = std::make_shared<const TpchQ21State>(BuildState());
   builder.Write(core::StateImage::Make(
-      TpchQ21Layout::kAccelerator, TpchQ21Layout::kSupplierMetadata, 0,
-      MakeStateImage(TpchQ21ImageKind::SupplierMetadata, 0, typed_state)));
-  builder.Write(core::StateImage::Make(
-      TpchQ21Layout::kAccelerator, TpchQ21Layout::kOrderSummaries, 0,
-      MakeStateImage(TpchQ21ImageKind::OrderSummaries, 0, typed_state)));
-  builder.Write(core::StateImage::Make(
-      TpchQ21Layout::kAccelerator, TpchQ21Layout::kNationNameIndex, 0,
-      MakeStateImage(TpchQ21ImageKind::NationNameIndex, 0, typed_state)));
-  // Persist NationPartition images so StageMaintenance can load/apply deltas
-  // without publishing empty NationNamePartition hits after the first write.
-  for (const auto &[nk, _] : state.nation_numwait) {
-    (void)_;
-    builder.Write(core::StateImage::Make(
-        TpchQ21Layout::kAccelerator, NationPartition(nk), 0,
-        MakeStateImage(TpchQ21ImageKind::Nation, nk, typed_state)));
-  }
-  // Materialize the result at the query-parameter grain.  This enables the
-  // fast read path: one FNV-1a-hashed partition read directly from the nation
-  // name, with collision detection via the stored nation_name.
-  for (const auto &[name, nationkeys] : state.nation_name_to_keys) {
-    if (nationkeys.size() != 1)
-      continue; // uncommon duplicate names retain the correctness slow path.
-    const int32_t nk = nationkeys.front();
-    builder.Write(core::StateImage::Make(
-        TpchQ21Layout::kAccelerator, NationNamePartition(name), 0,
-        MakeStateImage(TpchQ21ImageKind::Nation, nk, typed_state, name)));
-  }
+      TpchQ21Layout::kAccelerator, TpchQ21Layout::kState, 0,
+      MakeStateImage(typed_state)));
   builder.Finish();
 }
 
@@ -592,74 +319,112 @@ TpchQ21Module::InterpretMutation(const core::MutationBatch &mutation) const {
   return {};
 }
 
+// Every write is applied incrementally:
+//   supplier / nation rows  -> a row delta on the supplier and nation maps;
+//   lineitem / orders rows  -> the touched orders are re-read from the
+//     database as the statement left them (one keyed query) and their new
+//     contribution recorded. An order that is not in the state contributes
+//     nothing, so no earlier state of it is needed.
 void TpchQ21Module::AccumulateMutation(const core::MutationBatch &mutation,
-                                        core::AuxEngineServices &,
-                                        core::AuxTxnBuffer &base_buffer) {
+                                       core::AuxEngineServices &,
+                                       core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ21TxnBuffer &>(base_buffer);
-
-  if (mutation.table == config.supplier_table) {
+  const bool paired = mutation.kind == core::MutationKind::Update;
+  if (paired && mutation.old_rows.size() != mutation.new_rows.size()) {
     buffer.MarkRebuild();
     return;
   }
+  const bool has_old = mutation.kind != core::MutationKind::Insert;
+  const bool has_new = mutation.kind != core::MutationKind::Delete;
+  const std::size_t count =
+      has_old ? mutation.old_rows.size() : mutation.new_rows.size();
 
-  if (mutation.table == config.orders_table) {
-    auto add = [&](const core::AuxRow &row, int8_t sign) {
-      int64_t orderkey = 0;
-      char orderstatus = 0;
-      if (!ReadOrder(row, orderkey, orderstatus)) {
+  if (mutation.table == config.supplier_table) {
+    for (std::size_t i = 0; i < count; ++i) {
+      TpchQ21SupplierDelta delta;
+      delta.has_old = has_old;
+      delta.has_new = has_new;
+      TpchQ21SupplierInput old_row;
+      if ((has_old && !ReadSupplier(mutation.old_rows[i], old_row)) ||
+          (has_new && !ReadSupplier(mutation.new_rows[i], delta.new_row))) {
         buffer.MarkRebuild();
         return;
       }
-      buffer.AddOrderDelta({orderkey, static_cast<char>(sign > 0 ? 0 : orderstatus),
-                            static_cast<char>(sign > 0 ? orderstatus : 0)});
-    };
-    switch (mutation.kind) {
-    case core::MutationKind::Insert:
-      for (const auto &row : mutation.new_rows)
-        add(row, 1);
-      break;
-    case core::MutationKind::Delete:
-      for (const auto &row : mutation.old_rows)
-        add(row, -1);
-      break;
-    case core::MutationKind::Update:
-      if (mutation.old_rows.size() != mutation.new_rows.size()) {
-        buffer.MarkRebuild();
-        return;
-      }
-      for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-        int64_t old_orderkey = 0, new_orderkey = 0;
-        char old_status = 0, new_status = 0;
-        if (!ReadOrder(mutation.old_rows[i], old_orderkey, old_status) ||
-            !ReadOrder(mutation.new_rows[i], new_orderkey, new_status) ||
-            old_orderkey != new_orderkey) {
-          buffer.MarkRebuild();
-          return;
-        }
-        buffer.AddOrderDelta({old_orderkey, old_status, new_status});
-      }
-      break;
+      delta.old_suppkey = old_row.suppkey;
+      buffer.AddSupplierDelta(std::move(delta));
     }
     return;
   }
 
   if (mutation.table == config.nation_table) {
-    // Nation changes can rename/remove a name whose parameter-keyed
-    // NationNamePartition image would otherwise stay Valid and serve stale
-    // rows.  Nations are effectively static; rebuild instead of patching.
-    buffer.MarkRebuild();
+    for (std::size_t i = 0; i < count; ++i) {
+      TpchQ21NationDelta delta;
+      delta.has_old = has_old;
+      delta.has_new = has_new;
+      if ((has_old && !ReadNation(mutation.old_rows[i], delta.old_row)) ||
+          (has_new && !ReadNation(mutation.new_rows[i], delta.new_row))) {
+        buffer.MarkRebuild();
+        return;
+      }
+      buffer.AddNationDelta(std::move(delta));
+    }
     return;
   }
 
-  if (mutation.table != config.lineitem_table)
+  if (mutation.table != config.lineitem_table &&
+      mutation.table != config.orders_table)
     return;
-  buffer.MarkRebuild();
+
+  // Both tables carry the orderkey in column 0.
+  std::vector<int64_t> orderkeys;
+  for (std::size_t i = 0; i < count; ++i) {
+    int64_t key = 0;
+    if (has_old) {
+      if (!IntCell(mutation.old_rows[i], 0, key)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      orderkeys.push_back(key);
+    }
+    if (has_new) {
+      if (!IntCell(mutation.new_rows[i], 0, key)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      orderkeys.push_back(key);
+    }
+  }
+  std::sort(orderkeys.begin(), orderkeys.end());
+  orderkeys.erase(std::unique(orderkeys.begin(), orderkeys.end()),
+                  orderkeys.end());
+  if (orderkeys.empty())
+    return;
+
+  std::unordered_map<int64_t, TpchQ21OrderResult> results;
+  OrderGrouper grouper([&](int64_t orderkey, bool has,
+                           const TpchQ21Contribution &contribution) {
+    results[orderkey] = TpchQ21OrderResult{orderkey, has, contribution};
+  });
+  if (!initial_scan ||
+      !initial_scan->LookupFulfilledLineitems(
+          orderkeys,
+          [&](const TpchQ21LineInput &line) { grouper.Add(line); })) {
+    buffer.MarkRebuild();
+    return;
+  }
+  grouper.Flush();
+  for (const int64_t orderkey : orderkeys) {
+    const auto it = results.find(orderkey);
+    buffer.AddOrderResult(it != results.end()
+                              ? it->second
+                              : TpchQ21OrderResult{orderkey, false, {}});
+  }
 }
 
 core::StagedMaintenanceOutcome
 TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
-                                 const core::InvalidationPlan &,
-                                 core::AuxTxnBuffer &base_buffer) {
+                                const core::InvalidationPlan &,
+                                core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<TpchQ21TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
 
@@ -675,22 +440,12 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
     outcome.pending_rebuild = outcome.invalidations;
     return outcome;
   }
-
-  const auto &lineitem_deltas = buffer.LineitemDeltas();
-  const auto &order_deltas = buffer.OrderDeltas();
-  const auto &supplier_deltas = buffer.SupplierDeltas();
-  const auto &nation_deltas = buffer.NationDeltas();
-
-  if (lineitem_deltas.empty() && order_deltas.empty() &&
-      supplier_deltas.empty() && nation_deltas.empty())
+  if (buffer.Size() == 0)
     return outcome;
 
-  const auto total_deltas = lineitem_deltas.size() + order_deltas.size() +
-                            supplier_deltas.size() + nation_deltas.size();
   const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(total_deltas), 1, true, false, true,
-       false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
+      {buffer.Size(), 1, true, false, true, false, false,
+       core::MaintenanceAction::NoOp, services.ExpectedQueriesBeforeNextWrite()});
   if (decision.action == core::MaintenanceAction::RebuildPartition) {
     core::FinishRebuildAll(outcome);
     return outcome;
@@ -702,289 +457,47 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
     return outcome;
   }
 
-  // Load current state from side partitions
-  const auto visibility = services.CurrentVisibility();
-  TpchQ21State state;
-
-  const auto side_snapshot = services.StateStore().ReadPartitions(
-      visibility, {TpchQ21Layout::kSupplierMetadata,
-                   TpchQ21Layout::kOrderSummaries,
-                   TpchQ21Layout::kNationNameIndex});
-  bool have_supp = false, have_orders = false, have_nameidx = false;
-  for (const auto &image : side_snapshot.partitions) {
-    if (image.partition == TpchQ21Layout::kSupplierMetadata) {
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::SupplierMetadata);
-      if (!typed) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      state.supplier_names = typed->state->supplier_names;
-      state.supplier_nations = typed->state->supplier_nations;
-      have_supp = true;
-    }
-    if (image.partition == TpchQ21Layout::kOrderSummaries) {
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::OrderSummaries);
-      if (!typed) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      state.order_summaries = typed->state->order_summaries;
-      state.order_overlay = typed->state->order_overlay;
-      have_orders = true;
-    }
-    if (image.partition == TpchQ21Layout::kNationNameIndex) {
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::NationNameIndex);
-      if (!typed) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      state.nation_name_to_keys = typed->state->nation_name_to_keys;
-      have_nameidx = true;
-    }
-  }
-  if (!have_supp || !have_orders || !have_nameidx) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = All();
-    outcome.pending_rebuild = outcome.invalidations;
+  std::shared_ptr<const TpchQ21State> current;
+  core::Version version = 0;
+  if (!LoadState(services, current, &version)) {
+    core::FinishRebuildAll(outcome);
     return outcome;
   }
+  // Copy-on-write copy: only the shards a delta touches are cloned.
+  auto new_state = std::make_shared<TpchQ21State>(*current);
 
-  // Track which nation partitions we need to load
-  std::set<int32_t> needed_nationkeys;
-  std::set<int64_t> affected_orderkeys;
-
-  // Handle supplier deltas
-  for (const auto &delta : supplier_deltas) {
-    const auto nation_it = state.supplier_nations.find(delta.suppkey);
-    if (nation_it != state.supplier_nations.end())
-      needed_nationkeys.insert(nation_it->second);
-    needed_nationkeys.insert(delta.old_nationkey);
-    needed_nationkeys.insert(delta.new_nationkey);
+  for (const auto &delta : buffer.NationDeltas()) {
+    if (delta.has_old &&
+        !new_state->RemoveNation(delta.old_row.nationkey, delta.old_row.name)) {
+      core::FinishRebuildAll(outcome); // state and tables disagree
+      return outcome;
+    }
+    if (delta.has_new)
+      new_state->PutNation(delta.new_row.nationkey, delta.new_row.name);
   }
-
-  // Collect order status changes (deferred: apply inside the order loop)
-  std::unordered_map<int64_t, std::pair<char, char>> order_status_changes;
-  // First old status seen per order in this batch: 0 means the batch starts
-  // by inserting the order (it did not exist before this transaction).
-  std::unordered_map<int64_t, char> first_old_status;
-  for (const auto &delta : order_deltas) {
-    first_old_status.emplace(delta.orderkey, delta.old_orderstatus);
-    affected_orderkeys.insert(delta.orderkey);
-    if (delta.old_orderstatus != delta.new_orderstatus) {
-      order_status_changes[delta.orderkey] = {delta.old_orderstatus, delta.new_orderstatus};
-      const auto *summary = state.FindOrder(delta.orderkey);
-      if (!summary)
-        continue;
-      for (const auto &[suppkey, _] : summary->suppliers) {
-        const auto nation_it = state.supplier_nations.find(suppkey);
-        if (nation_it != state.supplier_nations.end())
-          needed_nationkeys.insert(nation_it->second);
-      }
+  for (const auto &delta : buffer.SupplierDeltas()) {
+    if (delta.has_old && !new_state->RemoveSupplier(delta.old_suppkey)) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
     }
+    if (delta.has_new)
+      new_state->PutSupplier(delta.new_row.suppkey, delta.new_row.name,
+                             delta.new_row.nationkey);
   }
-
-  // Handle lineitem deltas: group by orderkey
-  std::unordered_map<int64_t, std::vector<TpchQ21LineitemDelta>> deltas_by_order;
-  for (const auto &delta : lineitem_deltas) {
-    deltas_by_order[delta.orderkey].push_back(delta);
-    affected_orderkeys.insert(delta.orderkey);
-  }
-
-  // Pre-compute needed nationkeys from all affected orders (before applying deltas)
-  for (const auto orderkey : affected_orderkeys) {
-    // Nations of delta suppliers must be loaded even for orders that are not
-    // yet summarized (e.g. RF1 inserts); otherwise their contribution lands in
-    // an unloaded (empty) nation map and republishing it drops existing rows.
-    if (const auto *summary = state.FindOrder(orderkey)) {
-      for (const auto &[suppkey, _] : summary->suppliers) {
-        const auto nation_it = state.supplier_nations.find(suppkey);
-        if (nation_it != state.supplier_nations.end())
-          needed_nationkeys.insert(nation_it->second);
-      }
-    }
-    auto it = deltas_by_order.find(orderkey);
-    if (it != deltas_by_order.end()) {
-      for (const auto &delta : it->second) {
-        const auto nation_it = state.supplier_nations.find(delta.suppkey);
-        if (nation_it != state.supplier_nations.end())
-          needed_nationkeys.insert(nation_it->second);
-      }
-    }
-  }
-
-  // Load needed nation partitions BEFORE processing orders
-  if (!needed_nationkeys.empty()) {
-    std::vector<core::PartitionId> nation_partitions;
-    for (const auto nk : needed_nationkeys)
-      nation_partitions.push_back(NationPartition(nk));
-    const auto nation_snapshot = services.StateStore().ReadPartitions(
-        visibility, nation_partitions);
-    for (const auto &image : nation_snapshot.partitions) {
-      if (image.partition < TpchQ21Layout::kNationBase)
-        continue;
-      const auto nk = static_cast<int32_t>(
-          image.partition - TpchQ21Layout::kNationBase);
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::Nation);
-      if (!typed || typed->nationkey != nk) {
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      // Empty / absent nation_numwait means zero waiters — still a valid image.
-      const auto nk_it = typed->state->nation_numwait.find(nk);
-      if (nk_it != typed->state->nation_numwait.end()) {
-        state.nation_numwait[nk] = nk_it->second;
-      }
-    }
-    // Nations that were never materialized (no waiters at Build time) are
-    // treated as empty rather than escalating to RebuildAll.
-  }
-
-  // For each affected order, recompute contributions
-  for (const auto orderkey : affected_orderkeys) {
-    const auto *existing = state.FindOrder(orderkey);
-    if (!existing) {
-      // Build keeps summaries only for orders that currently contribute, so an
-      // absent order contributes nothing but its lineitems are NOT tracked.
-      const auto status_it = order_status_changes.find(orderkey);
-      const auto first_it = first_old_status.find(orderkey);
-      if (status_it != order_status_changes.end() &&
-          status_it->second.second == 0) {
-        // Deleted by this batch: contributes nothing before or after.
-        continue;
-      }
-      if (first_it == first_old_status.end() || first_it->second != 0 ||
-          status_it == order_status_changes.end()) {
-        // Untracked pre-existing order: its lineitems are unknown here.
-        outcome.action = core::MaintenanceAction::RebuildAll;
-        outcome.invalidations = All();
-        outcome.pending_rebuild = outcome.invalidations;
-        return outcome;
-      }
-      // Order inserted by this batch (RF1): no earlier lineitems can reference
-      // it (lineitem -> orders referential integrity), so start from empty.
-      auto &created = state.MutableOrder(orderkey);
-      created.orderstatus = status_it->second.second;
-    }
-    auto &summary = state.MutableOrder(orderkey);
-
-    // Compute old contributions BEFORE applying any changes
-    const auto old_contribs = ComputeOrderContributions(summary);
-
-    // Apply order status change if any
-    auto status_it = order_status_changes.find(orderkey);
-    if (status_it != order_status_changes.end()) {
-      summary.orderstatus = status_it->second.second; // new_status
-    }
-
-    // Apply lineitem deltas
-    auto it = deltas_by_order.find(orderkey);
-    if (it != deltas_by_order.end()) {
-      for (const auto &delta : it->second) {
-        auto &info = summary.suppliers[delta.suppkey];
-        info.total_count += delta.sign;
-        if (delta.receiptdate > delta.commitdate)
-          info.late_count += delta.sign;
-        // Ensure we track the nation of affected suppliers
-        const auto nation_it = state.supplier_nations.find(delta.suppkey);
-        if (nation_it != state.supplier_nations.end())
-          needed_nationkeys.insert(nation_it->second);
-        // Clean up zero-count suppliers
-        if (info.total_count <= 0 && info.late_count <= 0)
-          summary.suppliers.erase(delta.suppkey);
-      }
-    }
-
-    // Compute new contributions
-    const auto new_contribs = ComputeOrderContributions(summary);
-
-    // Apply deltas to state
-    ApplyContributionDeltas(state, old_contribs, new_contribs);
-
-    // Track nations of all affected suppliers
-    for (const auto &[suppkey, _] : old_contribs) {
-      const auto nation_it = state.supplier_nations.find(suppkey);
-      if (nation_it != state.supplier_nations.end())
-        needed_nationkeys.insert(nation_it->second);
-    }
-    for (const auto &[suppkey, _] : new_contribs) {
-      const auto nation_it = state.supplier_nations.find(suppkey);
-      if (nation_it != state.supplier_nations.end())
-        needed_nationkeys.insert(nation_it->second);
-    }
-  }
-
-  // Handle nation deltas (rename)
-  for (const auto &delta : nation_deltas) {
-    if (!delta.old_name.empty()) {
-      auto &name_vec = state.nation_name_to_keys[delta.old_name];
-      name_vec.erase(std::remove(name_vec.begin(), name_vec.end(), delta.nationkey),
-                     name_vec.end());
-      if (name_vec.empty())
-        state.nation_name_to_keys.erase(delta.old_name);
-    }
-    if (!delta.new_name.empty()) {
-      state.nation_name_to_keys[delta.new_name].push_back(delta.nationkey);
-    }
-  }
+  for (const auto &result : buffer.OrderResults())
+    new_state->SetContribution(result.orderkey, result.has, result.contribution);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
-  const auto shared_state = std::make_shared<const TpchQ21State>(std::move(state));
-
-  // Publish updated side partitions
+  const auto typed_state =
+      std::static_pointer_cast<const TpchQ21State>(std::move(new_state));
   outcome.updates.push_back(core::StateImage::Make(
-      TpchQ21Layout::kAccelerator, TpchQ21Layout::kSupplierMetadata, 0,
-      MakeStateImage(TpchQ21ImageKind::SupplierMetadata, 0, shared_state)));
-  outcome.updates.push_back(core::StateImage::Make(
-      TpchQ21Layout::kAccelerator, TpchQ21Layout::kOrderSummaries, 0,
-      MakeStateImage(TpchQ21ImageKind::OrderSummaries, 0, shared_state)));
-  outcome.updates.push_back(core::StateImage::Make(
-      TpchQ21Layout::kAccelerator, TpchQ21Layout::kNationNameIndex, 0,
-      MakeStateImage(TpchQ21ImageKind::NationNameIndex, 0, shared_state)));
-
-  // Build nationkey -> name reverse lookup
-  std::unordered_map<int32_t, std::string> nk_to_name;
-  for (const auto &[name, nkeys] : shared_state->nation_name_to_keys) {
-    for (const auto nk : nkeys) {
-      if (nk_to_name.find(nk) == nk_to_name.end())
-        nk_to_name[nk] = name;
-    }
-  }
-
-  // Republish affected nation partitions. Zero waiters → empty output_rows
-  // (MakeStateImage handles missing nation_numwait entries); still publish so
-  // later ApplyDeltas find the slot instead of treating it as missing.
-  std::set<int32_t> published_nations;
-  for (const auto nk : needed_nationkeys)
-    published_nations.insert(nk);
-  for (const auto nk : published_nations) {
-    outcome.updates.push_back(core::StateImage::Make(
-        TpchQ21Layout::kAccelerator, NationPartition(nk), 0,
-        MakeStateImage(TpchQ21ImageKind::Nation, nk, shared_state)));
-    // Also update the NationNamePartition entry so the single-read fast path stays fresh
-    // Mirror Build: the parameter-keyed image is authoritative only when the
-    // name denotes exactly one nation (duplicate names use the slow path).
-    auto name_it = nk_to_name.find(nk);
-    if (name_it != nk_to_name.end() &&
-        shared_state->nation_name_to_keys.at(name_it->second).size() == 1) {
-      outcome.updates.push_back(core::StateImage::Make(
-          TpchQ21Layout::kAccelerator, NationNamePartition(name_it->second), 0,
-          MakeStateImage(TpchQ21ImageKind::Nation, nk, shared_state, name_it->second)));
-    }
-  }
-
+      TpchQ21Layout::kAccelerator, TpchQ21Layout::kState, version,
+      MakeStateImage(typed_state)));
   return outcome;
 }
 
 bool TpchQ21Module::CheckValidity(core::AuxEngineServices &services,
-                                   const core::QueryArguments &arguments) const {
+                                  const core::QueryArguments &arguments) const {
   if (arguments.values.empty())
     return false;
   return services.StateStore()
@@ -992,266 +505,134 @@ bool TpchQ21Module::CheckValidity(core::AuxEngineServices &services,
       .IsValid();
 }
 
+// Execute cost: O(suppliers of the nation) (the result size) plus its sort.
 void TpchQ21Module::Execute(core::AuxEngineServices &services,
-                             const core::QueryArguments &arguments,
-                             core::AuxRowSink &sink) {
-  if (arguments.values.empty() || arguments.values[0].is_null) {
+                            const core::QueryArguments &arguments,
+                            core::AuxRowSink &sink) {
+  // LocalWriteSafe: same-transaction relevant writes => fallback.
+  if (services.StateStore().IsTransactionDirty()) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-
   std::string nation_name;
-  if (std::holds_alternative<std::string>(arguments.values[0].payload)) {
-    nation_name = std::get<std::string>(arguments.values[0].payload);
-  } else {
-    ExecuteFallback(services, arguments, sink);
+  if (!NationParameter(arguments, nation_name)) {
+    EmitEmpty(sink);
     return;
   }
-
-  if (!services.StateStore()
-           .CheckValidity({Id(), {}}, services.CurrentVisibility())
-           .IsValid()) {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
-
   const auto visibility = services.CurrentVisibility();
-
-  // ── Fast path: single-partition read via FNV-1a nation-name hash ──────
-  // Try the NationNamePartition first.  On a hit the image already carries
-  // pre-sorted output_rows; a valid hit needs only one bounded partition
-  // fetch with zero decode/reconstruct work.
-  {
-    const auto fast_snapshot = services.StateStore().ReadPartitions(
-        visibility, {NationNamePartition(nation_name)});
-    for (const auto &image : fast_snapshot.partitions) {
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::Nation);
-      if (!typed) continue;
-      // Collision guard: verify the stored nation_name matches the query.
-      if (typed->nation_name != nation_name) continue;
-      // Empty output_rows on the name partition can be a stale/missing nation
-      // image after maintenance — fall through to the NationPartition path
-      // rather than treating an empty hit as authoritative when the nation
-      // key is known to the index.
-      if (!typed->output_rows.empty()) {
-        sink.Begin(core::OutputSchema{});
-        for (const auto &row : typed->output_rows) {
-          core::AuxRow out;
-          out.values.reserve(2);
-          out.values.push_back(core::AuxValue::Of(core::AuxType::String, row.name));
-          out.values.push_back(core::AuxValue::Of(core::AuxType::Int64, row.numwait));
-          sink.WriteRow(out);
-        }
-        sink.End();
-        return;
-      }
-      break;
-    }
-  }
-
-  // ── Slow path: resolve nation name via the tiny NationNameIndex ────────
-  // This avoids decoding the full supplier metadata; only the ~25-entry
-  // nation_name → nationkeys map is read.
-  const auto idx_snapshot = services.StateStore().ReadPartitions(
-      visibility, {TpchQ21Layout::kNationNameIndex});
-  const TpchQ21State *idx_state = nullptr;
-  for (const auto &image : idx_snapshot.partitions) {
-    if (image.partition == TpchQ21Layout::kNationNameIndex) {
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::NationNameIndex);
-      if (typed) idx_state = typed->state.get();
-      break;
-    }
-  }
-  if (!idx_state) {
+  std::shared_ptr<const TpchQ21State> state;
+  if (!services.StateStore().CheckValidity({Id(), {}}, visibility).IsValid() ||
+      !LoadState(services, state)) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
 
-  const auto name_it = idx_state->nation_name_to_keys.find(nation_name);
-  if (name_it == idx_state->nation_name_to_keys.end() || name_it->second.empty()) {
-    sink.Begin(core::OutputSchema{});
-    sink.End();
-    return;
-  }
-
-  const auto &nationkeys = name_it->second;
-  if (nationkeys.size() != 1) {
-    // Preserve the general (non-TPC-H) duplicate-name semantics on the slow
-    // path rather than silently dropping a partition.
-    TpchQ21State state;
-    if (!LoadStateForNations(services, nationkeys, state)) {
-      ExecuteFallback(services, arguments, sink);
-      return;
-    }
-    EmitResult(state, sink);
-    return;
-  }
-
-  const int32_t nationkey = nationkeys.front();
-  const auto snapshot = services.StateStore().ReadPartitions(
-      visibility, {NationPartition(nationkey)});
-  const TpchQ21StateImage *nation_image = nullptr;
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == NationPartition(nationkey)) {
-      nation_image = AsQ21Image(image, TpchQ21ImageKind::Nation);
-      break;
+  std::vector<TpchQ21OutputRow> rows;
+  const auto keys = state->nation_keys.find(nation_name);
+  if (keys != state->nation_keys.end()) {
+    for (const int64_t nationkey : keys->second) {
+      const auto nation = state->nation_numwait.find(nationkey);
+      if (nation == state->nation_numwait.end())
+        continue;
+      nation->second.ForEach([&](int64_t suppkey, const int64_t &numwait) {
+        const TpchQ21Supplier *supplier = state->suppliers.Find(suppkey);
+        if (supplier && numwait > 0)
+          rows.push_back({supplier->name, numwait});
+      });
     }
   }
-
-  sink.Begin(core::OutputSchema{});
-  if (nation_image && nation_image->nationkey == nationkey) {
-    for (const auto &row : nation_image->output_rows) {
-      core::AuxRow out;
-      out.values.reserve(2);
-      out.values.push_back(core::AuxValue::Of(core::AuxType::String, row.name));
-      out.values.push_back(core::AuxValue::Of(core::AuxType::Int64, row.numwait));
-      sink.WriteRow(out);
-    }
-  }
-  sink.End();
+  EmitRows(std::move(rows), sink);
 }
 
-void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &services,
-                                     const core::QueryArguments &arguments,
-                                     core::AuxRowSink &sink) {
-  std::string nation_name;
-  if (!arguments.values.empty() && !arguments.values[0].is_null &&
-      std::holds_alternative<std::string>(arguments.values[0].payload)) {
-    nation_name = std::get<std::string>(arguments.values[0].payload);
-  }
-  // Build full state and filter by nation_name
-  auto full_state = BuildState(services);
-  // Filter to only matching nations
-  TpchQ21State filtered_state;
-  const auto name_it = full_state.nation_name_to_keys.find(nation_name);
-  if (name_it != full_state.nation_name_to_keys.end()) {
-    for (const auto nk : name_it->second) {
-      const auto nk_it = full_state.nation_numwait.find(nk);
-      if (nk_it != full_state.nation_numwait.end())
-        filtered_state.nation_numwait[nk] = nk_it->second;
-    }
-  }
-  filtered_state.supplier_names = std::move(full_state.supplier_names);
-  EmitResult(filtered_state, sink);
-}
-
-TpchQ21State
-TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
-  TpchQ21State state;
+// No usable state: stream the fulfilled lineitems once, keeping only the
+// suppliers of the requested nation(s).
+void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &,
+                                    const core::QueryArguments &arguments,
+                                    core::AuxRowSink &sink) {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q21 aux requires a typed initial scan source");
-
-  // Scan suppliers
-  initial_scan->ScanSuppliers([&](const TpchQ21SupplierInput &input) {
-    state.supplier_names[input.suppkey] = input.name;
-    state.supplier_nations[input.suppkey] = input.nationkey;
-  });
-
-  // Scan nations
+  std::string nation_name;
+  if (!NationParameter(arguments, nation_name)) {
+    EmitEmpty(sink);
+    return;
+  }
+  std::vector<int64_t> nationkeys;
   initial_scan->ScanNations([&](const TpchQ21NationInput &input) {
-    state.nation_name_to_keys[input.name].push_back(input.nationkey);
+    if (input.name == nation_name)
+      nationkeys.push_back(input.nationkey);
   });
-
-  // Scan orders
-  initial_scan->ScanOrders([&](const TpchQ21OrderInput &input) {
-    state.order_summaries->operator[](input.orderkey).orderstatus =
-        input.orderstatus;
+  std::unordered_map<int64_t, std::string> suppliers; // suppkey -> s_name
+  initial_scan->ScanSuppliers([&](const TpchQ21SupplierInput &input) {
+    if (std::find(nationkeys.begin(), nationkeys.end(), input.nationkey) !=
+        nationkeys.end())
+      suppliers[input.suppkey] = input.name;
   });
-
-  // Scan lineitems and build order summaries
-  initial_scan->ScanLineitems([&](const TpchQ21LineitemInput &input) {
-    auto it = state.order_summaries->find(input.orderkey);
-    if (it == state.order_summaries->end() || it->second.orderstatus != 'F')
-      return;
-    auto &summary = it->second;
-    auto &info = summary.suppliers[input.suppkey];
-    info.total_count++;
-    if (input.receiptdate > input.commitdate)
-      info.late_count++;
-  });
-
-  // Compute contributions for fulfilled orders only.
-  for (auto &[orderkey, summary] : *state.order_summaries) {
-    if (summary.orderstatus != 'F')
-      continue;
-    const auto contribs = ComputeOrderContributions(summary);
-    for (const auto &[suppkey, count] : contribs) {
-      if (count == 0) continue;
-      const auto nation_it = state.supplier_nations.find(suppkey);
-      if (nation_it == state.supplier_nations.end()) continue;
-      state.nation_numwait[nation_it->second][suppkey] += count;
-    }
+  std::vector<TpchQ21OutputRow> rows;
+  if (!suppliers.empty()) {
+    std::unordered_map<int64_t, int64_t> numwait;
+    OrderGrouper grouper([&](int64_t, bool has,
+                             const TpchQ21Contribution &contribution) {
+      if (has && suppliers.count(contribution.suppkey))
+        numwait[contribution.suppkey] += contribution.count;
+    });
+    initial_scan->ScanFulfilledLineitems(
+        [&](const TpchQ21LineInput &line) { grouper.Add(line); });
+    grouper.Flush();
+    for (const auto &[suppkey, count] : numwait)
+      rows.push_back({suppliers[suppkey], count});
   }
+  EmitRows(std::move(rows), sink);
+}
 
-  for (auto it = state.order_summaries->begin();
-       it != state.order_summaries->end();) {
-    if (it->second.orderstatus != 'F' || it->second.suppliers.size() <= 1 ||
-        ComputeOrderContributions(it->second).empty()) {
-      it = state.order_summaries->erase(it);
-    } else {
-      ++it;
-    }
-  }
+TpchQ21State TpchQ21Module::BuildState() const {
+  if (!initial_scan)
+    throw std::logic_error("TPC-H Q21 aux requires a typed initial scan source");
+  TpchQ21State state;
 
+  initial_scan->ScanNations([&](const TpchQ21NationInput &input) {
+    state.PutNation(input.nationkey, input.name);
+  });
+  initial_scan->ScanSuppliers([&](const TpchQ21SupplierInput &input) {
+    state.PutSupplier(input.suppkey, input.name, input.nationkey);
+  });
+
+  // One pass over the lineitems of fulfilled orders, an order at a time: only
+  // the contributing orders are kept.
+  OrderGrouper grouper([&](int64_t orderkey, bool has,
+                           const TpchQ21Contribution &contribution) {
+    if (has)
+      state.SetContribution(orderkey, true, contribution);
+  });
+  initial_scan->ScanFulfilledLineitems(
+      [&](const TpchQ21LineInput &line) { grouper.Add(line); });
+  grouper.Flush();
   return state;
 }
 
-bool TpchQ21Module::LoadStateForNations(
-    core::AuxEngineServices &services,
-    const std::vector<int32_t> &nationkeys,
-    TpchQ21State &state) const {
-  std::vector<core::PartitionId> partitions;
-  for (const auto nk : nationkeys)
-    partitions.push_back(NationPartition(nk));
-  // Also load supplier names
-  partitions.push_back(TpchQ21Layout::kSupplierMetadata);
-
+bool TpchQ21Module::LoadState(core::AuxEngineServices &services,
+                              std::shared_ptr<const TpchQ21State> &state,
+                              core::Version *version) const {
   const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), partitions);
-
-  bool have_names = false;
+      services.CurrentVisibility(), {TpchQ21Layout::kState});
   for (const auto &image : snapshot.partitions) {
-    if (image.partition == TpchQ21Layout::kSupplierMetadata) {
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::SupplierMetadata);
-      if (!typed) return false;
-      state.supplier_names = typed->state->supplier_names;
-      have_names = true;
+    if (image.partition != TpchQ21Layout::kState)
       continue;
-    }
-    if (image.partition >= TpchQ21Layout::kNationBase) {
-      const auto nk = static_cast<int32_t>(
-          image.partition - TpchQ21Layout::kNationBase);
-      const auto *typed = AsQ21Image(image, TpchQ21ImageKind::Nation);
-      if (!typed || typed->nationkey != nk) return false;
-      const auto nk_it = typed->state->nation_numwait.find(nk);
-      if (nk_it != typed->state->nation_numwait.end())
-        state.nation_numwait[nk] = nk_it->second;
-    }
+    const auto *typed = AsQ21Image(image);
+    if (!typed)
+      return false;
+    state = typed->state;
+    if (version)
+      *version = image.version;
+    return true;
   }
-  return have_names;
+  return false;
 }
 
-void TpchQ21Module::EmitResult(const TpchQ21State &state,
-                                core::AuxRowSink &sink) const {
-  std::vector<TpchQ21OutputRow> output_rows;
-
-  for (const auto &[nationkey, supp_map] : state.nation_numwait) {
-    for (const auto &[suppkey, numwait] : supp_map) {
-      if (numwait <= 0) continue;
-      const auto name_it = state.supplier_names.find(suppkey);
-      if (name_it == state.supplier_names.end()) continue;
-      TpchQ21OutputRow row;
-      row.name = name_it->second;
-      row.numwait = numwait;
-      output_rows.push_back(std::move(row));
-    }
-  }
-
-  MergeByNameAndSort(output_rows);
-
+void TpchQ21Module::EmitRows(std::vector<TpchQ21OutputRow> rows,
+                             core::AuxRowSink &sink) const {
+  MergeByNameAndSort(rows);
   sink.Begin(core::OutputSchema{});
-  for (const auto &row : output_rows) {
+  for (const auto &row : rows) {
     core::AuxRow out;
     out.values.reserve(2);
     out.values.push_back(core::AuxValue::Of(core::AuxType::String, row.name));
