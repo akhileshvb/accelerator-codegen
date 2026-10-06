@@ -188,7 +188,7 @@ pub fn partial(profile: &BucketProfile, lower: i32, upper: i32) -> (result: Opti
             lemma_sum_push(before, profile.days@[position as int], |day: Day| day.revenue as int);
         }
         count = Ghost(count@ + profile.days@[position as int].count as int);
-        revenue = match add(revenue, profile.days[position].revenue) { Some(value) => value, None => return None };
+        revenue = match add(revenue, profile.days[position].revenue as i128) { Some(value) => value, None => return None };
         position += 1;
     }
     proof {

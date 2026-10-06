@@ -79,6 +79,36 @@ impl<Value> Leaf<Value> {
         }
         match self.base.get(&key) { Some(value) => Some(Arc::clone(value)), None => None }
     }
+    /// Like `get`, but borrows the value instead of cloning its `Arc` (no atomic traffic).
+    pub fn get_ref(&self, key: i64) -> (result: Option<&Value>)
+        requires self.content_valid(),
+        ensures result matches Some(value) ==> self.lookup(key) == Some(*value),
+            result.is_none() ==> self.lookup(key).is_none(),
+    {
+        proof { lemma_unique_key_lookup(self.overlay@, key); }
+        let mut index = 0;
+        while index < self.overlay.len()
+            invariant index <= self.overlay.len(), self.content_valid(),
+                forall|offset: int| #![trigger self.overlay@[offset]] 0 <= offset < index ==> self.overlay@[offset].0 != key,
+            decreases self.overlay.len() - index,
+        {
+            if self.overlay[index].0 == key {
+                proof { lemma_unique_key_lookup(self.overlay@, key); }
+                return match &self.overlay[index].1 { Some(value) => Some(&**value), None => None };
+            }
+            index += 1;
+        }
+        proof {
+            assert(!self.overlay@.map_values(|entry: (i64, Option<Arc<Value>>)| entry.0).contains(key)) by {
+                let keys = self.overlay@.map_values(|entry: (i64, Option<Arc<Value>>)| entry.0);
+                if keys.contains(key) {
+                    let offset = choose|offset: int| #![trigger keys[offset]] 0 <= offset < keys.len() && keys[offset] == key;
+                    assert(self.overlay@[offset].0 != key);
+                }
+            }
+        }
+        match self.base.get(&key) { Some(value) => Some(&**value), None => None }
+    }
     pub fn live_keys(&self) -> (result: Vec<i64>)
         requires self.content_valid(),
         ensures result@.no_duplicates(),
@@ -301,6 +331,24 @@ impl<Value> Table<Value> {
                 Some(page) => match &page.leaves[position % 64] {
                     None => None,
                     Some(leaf) => leaf.get(key),
+                },
+            },
+        }
+    }
+    pub fn get_ref(&self, key: i64) -> (result: Option<&Value>)
+        ensures result matches Some(value) ==> self.lookup(key) == Some(*value),
+            result.is_none() ==> self.lookup(key).is_none(),
+    {
+        proof { use_type_invariant(self); }
+        let position = (key as u64 % 262144) as usize;
+        proof { assert(cell_at(self.roots@, position as int).is_some() ==> cell_at(self.roots@, position as int).unwrap().content_valid()); }
+        match &self.roots[position / 4096] {
+            None => None,
+            Some(directory) => match &directory.pages[position / 64 % 64] {
+                None => None,
+                Some(page) => match &page.leaves[position % 64] {
+                    None => None,
+                    Some(leaf) => leaf.get_ref(key),
                 },
             },
         }

@@ -278,18 +278,18 @@ pub proof fn lemma_facts_from_scans(db: Db, slices: Index<Slice>, orders: Seq<Or
         let slice = slices.at(key).unwrap();
         &&& key.1 == Seq::<u8>::empty()
         &&& period_of(i32::MIN as int, grain) <= key.0 <= period_of(i32::MAX as int, grain)
-        &&& slice.cells.entries().len() > 0
+        &&& slice.cells.nonempty()
         &&& slice.valid()
     } by {
         let slice = slices.at(key).unwrap();
         if key.0 < period_of(i32::MIN as int, grain) || key.0 > period_of(i32::MAX as int, grain) {
-            slice.cells.model();
-            let entry = slice.cells.entries()[0];
-            assert(slice.cells.at(entry.0).is_some());
-            assert(entry.1.count > 0);
-            lemma_scanned_bounds(orders, rows, key.0, entry.0.0, grain, 0);
-            assert(slice_at(slices, key.0, entry.0.0).count == entry.1.count);
-            assert(slice_at(slices, key.0, entry.0.0).component(0) == 0);
+            let ckey = choose|ckey: (int, Seq<u8>)| slice.cells.at(ckey).is_some();
+            lemma_cell_key(slice.cells, ckey);
+            let cell = slice.cells.at(ckey).unwrap();
+            assert(cell.count > 0);
+            lemma_scanned_bounds(orders, rows, key.0, ckey.0, grain, 0);
+            assert(slice_at(slices, key.0, ckey.0).count == cell.count as int);
+            assert(slice_at(slices, key.0, ckey.0).component(0) == 0);
         }
     }
 }

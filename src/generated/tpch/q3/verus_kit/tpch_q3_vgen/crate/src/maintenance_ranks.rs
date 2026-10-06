@@ -1,4 +1,6 @@
 use vstd::prelude::*;
+use crate::paged::{Paged, PageCursor, entry_sorted, Ent};
+use crate::rank_ent::*;
 use std::sync::Arc;
 use verus_prooflib::ordered::{Index, Key, KeyView};
 use crate::gen_spec::*;
@@ -12,13 +14,13 @@ pub open spec fn page_rank(pages: Index<Page>, outer: KeyView, rank: KeyView) ->
         && rank_present((*pages.at(key).unwrap().groups)@, outer, rank)
 }
 
-pub open spec fn rank_exact(pages: Index<Page>, ranks: Index<Index<()>>) -> bool {
+pub open spec fn rank_exact(pages: Index<Page>, ranks: Index<Paged<RankEnt>>) -> bool {
     &&& ranks_wf(ranks)
     &&& forall|outer: KeyView, rank: KeyView| #![trigger rank_at(ranks, outer, rank)]
         rank_at(ranks, outer, rank) == page_rank(pages, outer, rank)
 }
 
-pub proof fn lemma_rank_share(before: Index<Page>, prior: Index<Index<()>>, after: Index<Page>, ranks: Index<Index<()>>)
+pub proof fn lemma_rank_share(before: Index<Page>, prior: Index<Paged<RankEnt>>, after: Index<Page>, ranks: Index<Paged<RankEnt>>)
     requires rank_exact(before, prior), ranks.wf(),
         forall|key: KeyView| #![trigger after.at(key)] after.at(key) == before.at(key),
         forall|key: KeyView| #![trigger ranks.at(key)] ranks.at(key) == prior.at(key),
@@ -50,7 +52,7 @@ pub open spec fn page_rank_shape(pages: Index<Page>) -> bool {
     }
 }
 
-pub proof fn lemma_rank_exact(pages: Index<Page>, ranks: Index<Index<()>>)
+pub proof fn lemma_rank_exact(pages: Index<Page>, ranks: Index<Paged<RankEnt>>)
     requires rank_database_ok(pages, ranks),
     ensures rank_exact(pages, ranks),
 {
@@ -75,9 +77,9 @@ pub proof fn lemma_rank_exact(pages: Index<Page>, ranks: Index<Index<()>>)
     }
 }
 
-pub fn remove_groups(ranks: &mut Index<Index<()>>, groups: &Vec<GroupCell>)
+pub fn remove_groups(ranks: &mut Index<Paged<RankEnt>>, groups: &Vec<GroupCell>)
     requires ranks_wf(*old(ranks)),
-        forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> groups@[position].bound >= 0,
+        forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> groups@[position].bound >= 0 && id_fits(groups@[position].id),
     ensures ranks_wf(*final(ranks)),
         forall|outer: KeyView, rank: KeyView| #![trigger rank_at(*final(ranks), outer, rank)]
             rank_at(*final(ranks), outer, rank) == (rank_at(*old(ranks), outer, rank) && !rank_present(groups@, outer, rank)),
@@ -86,7 +88,7 @@ pub fn remove_groups(ranks: &mut Index<Index<()>>, groups: &Vec<GroupCell>)
     let mut position = 0;
     while position < groups.len()
         invariant position <= groups.len(), ranks_wf(*ranks),
-            forall|source: int| #![trigger groups@[source]] 0 <= source < groups@.len() ==> groups@[source].bound >= 0,
+            forall|source: int| #![trigger groups@[source]] 0 <= source < groups@.len() ==> groups@[source].bound >= 0 && id_fits(groups@[source].id),
             forall|outer: KeyView, rank: KeyView| #![trigger rank_at(*ranks, outer, rank)]
                 rank_at(*ranks, outer, rank) == (rank_at(original, outer, rank) && !rank_present(groups@.take(position as int), outer, rank)),
         decreases groups.len() - position,
@@ -172,7 +174,7 @@ pub proof fn lemma_page_replacement(before: Index<Page>, after: Index<Page>, key
     }
 }
 
-pub fn publish_page(pages: &mut Index<Page>, ranks: &mut Index<Index<()>>, key: i64, page: Page)
+pub fn publish_page(pages: &mut Index<Page>, ranks: &mut Index<Paged<RankEnt>>, key: i64, page: Page)
     requires rank_exact(*old(pages), *old(ranks)), page_rank_shape(*old(pages)),
         forall|position: int| #![trigger (*page.groups)@[position]] 0 <= position < (*page.groups)@.len() ==>
             (*page.groups)@[position].id.key as int / 256 == key as int && (*page.groups)@[position].bound >= 0,
@@ -185,9 +187,13 @@ pub fn publish_page(pages: &mut Index<Page>, ranks: &mut Index<Index<()>>, key: 
     let ghost before = *pages;
     let ghost original_ranks = *ranks;
     let old_page = pages.get(&Key::number(key));
-    if let Some(old_page) = old_page { remove_groups(ranks, &old_page.groups); }
+    if let Some(old_page) = old_page {
+        old_page.groups.fits();
+        remove_groups(ranks, &old_page.groups.to_vec());
+    }
     let ghost removed_ranks = *ranks;
-    crate::ranks::append_groups(ranks, &page.groups);
+    page.groups.fits();
+    crate::ranks::append_groups(ranks, &page.groups.to_vec());
     if page.orders.len() == 0 && page.ships.len() == 0 && page.groups.len() == 0 { pages.remove(&Key::number(key)); }
     else { pages.put(Key::number(key), Arc::new(page)); }
     proof {
@@ -205,7 +211,7 @@ pub fn publish_page(pages: &mut Index<Page>, ranks: &mut Index<Index<()>>, key: 
     }
 }
 
-pub proof fn lemma_rank_finish(pages: Index<Page>, ranks: Index<Index<()>>, db: Db)
+pub proof fn lemma_rank_finish(pages: Index<Page>, ranks: Index<Paged<RankEnt>>, db: Db)
     requires rank_exact(pages, ranks),
         forall|key: KeyView| #![trigger pages.at(key)] pages.at(key).is_some() ==> key.1.len() == 0 && page_shape(pages.at(key).unwrap(), key.0, db),
     ensures rank_database_ok(pages, ranks),

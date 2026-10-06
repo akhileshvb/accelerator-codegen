@@ -2,6 +2,7 @@ use vstd::prelude::*;
 use std::sync::Arc;
 use crate::gen_obligations::*;
 use crate::bags::*;
+use crate::gen_spec::PartRow;
 use crate::model::*;
 use crate::storage::*;
 use verus_common::sums::*;
@@ -120,6 +121,7 @@ pub fn finish_bags<Row: BagRow>(directory: &mut Directory<Bag<Row>>, changes: &D
             index_weight(*old(directory), key, weight) + index_weight(*changes, key, weight)
         &&& forall|key: i64, value: Row::V| #[trigger] index_amount(*final(directory), key, value) ==
             index_amount(*old(directory), key, value) + index_amount(*changes, key, value)
+        &&& forall|key: i64| (#[trigger] changes.lookup(key)) is None ==> final(directory).lookup(key) == old(directory).lookup(key)
     },
 {
     let ghost original = *directory;
@@ -133,6 +135,7 @@ pub fn finish_bags<Row: BagRow>(directory: &mut Directory<Bag<Row>>, changes: &D
             index_unique(original) ==> index_unique(*directory),
             index_positive(original) ==> index_positive(*directory),
             index_nonempty(original) ==> index_nonempty(*directory),
+            forall|probe: i64| !entry_keys(keys@.take(index as int)).contains(probe) ==> #[trigger] directory.lookup(probe) == original.lookup(probe),
             forall|predicate: spec_fn(i64, Row::V) -> bool| #[trigger] index_routed(original, predicate) && index_routed(*changes, predicate) ==>
                 index_routed(*directory, predicate),
             forall|key: i64, weight: spec_fn(Row::V) -> int| #[trigger] index_weight(*directory, key, weight) ==
@@ -204,6 +207,12 @@ pub fn finish_bags<Row: BagRow>(directory: &mut Directory<Bag<Row>>, changes: &D
                 }
             }
             assert(entry_keys(keys@.take(index as int + 1)) =~= entry_keys(keys@.take(index as int)).push(key));
+            assert forall|probe: i64| !entry_keys(keys@.take(index as int + 1)).contains(probe) implies directory.lookup(probe) == original.lookup(probe) by {
+                broadcast use vstd::seq_lib::group_seq_properties;
+                assert(probe != key);
+                assert(!entry_keys(keys@.take(index as int)).contains(probe));
+                assert(directory.lookup(probe) == previous_directory.lookup(probe));
+            }
             assert(entry_keys(keys@.take(index as int)) =~= entry_keys(keys@).take(index as int));
             assert(!entry_keys(keys@.take(index as int)).contains(key));
             assert forall|probe: i64, weight: spec_fn(Row::V) -> int| #[trigger] index_weight(*directory, probe, weight) ==
@@ -221,6 +230,9 @@ pub fn finish_bags<Row: BagRow>(directory: &mut Directory<Bag<Row>>, changes: &D
     }
     proof {
         assert(keys@.take(index as int) =~= keys@);
+        assert forall|probe: i64| (#[trigger] changes.lookup(probe)) is None implies directory.lookup(probe) == original.lookup(probe) by {
+            assert(!entry_keys(keys@).contains(probe));
+        }
         assert forall|probe: i64, weight: spec_fn(Row::V) -> int| #[trigger] index_weight(*directory, probe, weight) ==
             index_weight(original, probe, weight) + index_weight(*changes, probe, weight) by {
             if !entry_keys(keys@).contains(probe) { assert(changes.lookup(probe) is None); }
@@ -234,215 +246,6 @@ pub fn finish_bags<Row: BagRow>(directory: &mut Directory<Bag<Row>>, changes: &D
         }
     }
     true
-}
-
-pub fn replace_size_count(index: &mut Directory<Directory<Count>>, size: i64, key: i64, count: i128)
-    requires sizes_valid(*old(index)), count >= 0,
-    ensures
-        sizes_valid(*final(index)),
-        forall|probe_size: i64, probe_key: i64| #[trigger] size_count(*final(index), probe_size, probe_key) ==
-            if probe_size == size && probe_key == key { count as int } else { size_count(*old(index), probe_size, probe_key) },
-{
-    let ghost original = *index;
-    let mut slice = match index.get(size) { None => Directory::new(), Some(before) => before.share() };
-    if count == 0 { slice.replace(key, None); }
-    else { slice.replace(key, Some(Arc::new(Count { value: count }))); }
-    let ghost after_slice = slice;
-    let empty = slice.is_empty();
-    if empty { index.replace(size, None); }
-    else { index.replace(size, Some(Arc::new(slice))); }
-    proof {
-        assert forall|probe_size: i64, probe_key: i64| #[trigger] size_count(*index, probe_size, probe_key) ==
-            if probe_size == size && probe_key == key { count as int } else { size_count(original, probe_size, probe_key) } by {
-            if probe_size == size && empty { assert(after_slice.lookup(probe_key) == None); }
-        }
-    }
-}
-
-pub fn insert_part(parts: &mut Directory<PartBucket>, sizes: &mut Directory<Directory<Count>>, row: Arc<BrassPartScan>) -> (result: bool)
-    requires
-        parts_valid(*old(parts)), sizes_valid(*old(sizes)),
-        forall|key: i64, size: i64| #[trigger] part_size_total(*old(parts), key, size) == size_count(*old(sizes), size, key),
-    ensures result ==> {
-        &&& parts_valid(*final(parts)) && sizes_valid(*final(sizes))
-        &&& forall|key: i64| #[trigger] part_support(*final(parts), key) == part_support(*old(parts), key) + if key == (*row).p_partkey { 1int } else { 0int }
-        &&& forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(*final(parts), key, size, mfgr) == part_amount(*old(parts), key, size, mfgr) +
-            if key == (*row).p_partkey && size == (*row).p_size && mfgr == (*row).p_mfgr@ { 1int } else { 0int }
-        &&& forall|size: i64, key: i64| #[trigger] size_count(*final(sizes), size, key) == size_count(*old(sizes), size, key) +
-            if key == (*row).p_partkey && size == (*row).p_size { 1int } else { 0int }
-        &&& forall|key: i64, size: i64| #[trigger] part_size_total(*final(parts), key, size) == size_count(*final(sizes), size, key)
-    },
-{
-    let ghost original_parts = *parts;
-    let ghost original_sizes = *sizes;
-    let key = row.p_partkey;
-    let size = row.p_size;
-    let (mut directory, support) = match parts.get(key) {
-        None => (Directory::new(), 0i128),
-        Some(before) => (before.sizes.share(), before.support),
-    };
-    let support = match support.checked_add(1) { None => return false, Some(value) => value };
-    let empty = Bag::new();
-    let old_bag = directory.get(size);
-    let before = match &old_bag { None => &empty, Some(bag) => &**bag };
-    proof {
-        assert(part_size_total(original_parts, key, size) == before.total());
-        assert(size_count(original_sizes, size, key) == before.total());
-    }
-    let mut count: i128 = 1;
-    let mut offset = 0;
-    while offset < before.entries.len()
-        invariant offset <= before.entries.len(), count > 0, before.valid(),
-            count as int == 1 + sum(before.entries@.take(offset as int), |entry: Counted<BrassPartScan>| entry.count as int),
-        decreases before.entries.len() - offset,
-    {
-        count = match count.checked_add(before.entries[offset].count) { None => return false, Some(value) => value };
-        proof { verus_common::sums::lemma_sum_take(before.entries@, offset as int, |entry: Counted<BrassPartScan>| entry.count as int); }
-        offset += 1;
-    }
-    proof { assert(before.entries@.take(offset as int) =~= before.entries@); }
-    let after = match before.adjust(Arc::clone(&row), 1) { None => return false, Some(bag) => bag };
-    let ghost after_bag = after;
-    proof {
-        let weight = |value: (int, Seq<u8>, int)| 1int;
-        assert(after.weight(weight) == before.weight(weight) + 1);
-        lemma_sum_ext_all(after.entries@,
-            |entry: Counted<BrassPartScan>| entry.count as int * weight((*entry.row).rv()),
-            |entry: Counted<BrassPartScan>| entry.count as int);
-        lemma_sum_ext_all(before.entries@,
-            |entry: Counted<BrassPartScan>| entry.count as int * weight((*entry.row).rv()),
-            |entry: Counted<BrassPartScan>| entry.count as int);
-        assert(after.weight(weight) == after.total());
-        assert(before.weight(weight) == before.total());
-        assert(count as int == after.total());
-        assert(after.entries@.len() > 0);
-        assert forall|index: int| 0 <= index < after.entries@.len() implies
-            (*((#[trigger] after.entries@[index]).row)).p_partkey == key && (*after.entries@[index].row).p_size == size by {
-            if (*after.entries@[index].row).rv() != (*row).rv() {
-                let witness = choose|source: int| 0 <= source < before.entries@.len() &&
-                    (*after.entries@[index].row).rv() == (*(#[trigger] before.entries@[source]).row).rv();
-            }
-        }
-    }
-    let ghost previous_directory = directory;
-    directory.replace(size, Some(Arc::new(after)));
-    proof {
-        assert forall|probe_size: i64| match #[trigger] directory.lookup(probe_size) {
-            None => true,
-            Some(bag) => (*bag).valid() && (*bag).entries@.len() > 0 &&
-                forall|index: int| 0 <= index < (*bag).entries@.len() ==>
-                    (*((#[trigger] (*bag).entries@[index]).row)).p_partkey == key && (*(*bag).entries@[index].row).p_size == probe_size,
-        } by {
-            if probe_size != size { assert(directory.lookup(probe_size) == previous_directory.lookup(probe_size)); }
-        }
-    }
-    parts.replace(key, Some(Arc::new(PartBucket { sizes: directory, support })));
-    replace_size_count(sizes, size, key, count);
-    proof {
-        assert(parts_valid(*parts));
-        assert forall|probe_size: i64, probe_key: i64| #[trigger] size_count(*sizes, probe_size, probe_key) ==
-            size_count(original_sizes, probe_size, probe_key) + if probe_key == key && probe_size == size { 1int } else { 0int } by {
-            if probe_size == size && probe_key == key {
-                assert(size_count(original_sizes, size, key) == before.total());
-                assert(count as int == before.total() + 1);
-            }
-        }
-        assert forall|probe: i64, probe_size: i64, mfgr: Seq<u8>| #[trigger] part_amount(*parts, probe, probe_size, mfgr) ==
-            part_amount(original_parts, probe, probe_size, mfgr) + if probe == key && probe_size == size && mfgr == row.p_mfgr@ { 1int } else { 0int } by {
-            if probe == key && probe_size == size {
-                let weight = |value: (int, Seq<u8>, int)| if value.1 == mfgr { 1int } else { 0int };
-                assert(after_bag.weight(weight) == before.weight(weight) + if row.p_mfgr@ == mfgr { 1int } else { 0int });
-            }
-        }
-        assert forall|probe: i64, probe_size: i64| #[trigger] part_size_total(*parts, probe, probe_size) ==
-            size_count(*sizes, probe_size, probe) by {
-            if probe == key && probe_size == size {
-                assert(part_size_total(*parts, probe, probe_size) == after_bag.total());
-            } else if probe == key {
-                assert(directory.lookup(probe_size) == previous_directory.lookup(probe_size));
-                assert(part_size_total(*parts, probe, probe_size) == part_size_total(original_parts, probe, probe_size));
-            } else {
-                assert(parts.lookup(probe) == original_parts.lookup(probe));
-                assert(part_size_total(*parts, probe, probe_size) == part_size_total(original_parts, probe, probe_size));
-            }
-            assert(part_size_total(original_parts, probe, probe_size) == size_count(original_sizes, probe_size, probe));
-        }
-    }
-    true
-}
-
-pub fn remove_part(parts: &mut Directory<PartBucket>, sizes: &mut Directory<Directory<Count>>, key: i64)
-    requires
-        parts_valid(*old(parts)), sizes_valid(*old(sizes)),
-        forall|probe: i64, size: i64| #[trigger] part_size_total(*old(parts), probe, size) == size_count(*old(sizes), size, probe),
-    ensures
-        parts_valid(*final(parts)), sizes_valid(*final(sizes)),
-        forall|probe: i64| #[trigger] part_support(*final(parts), probe) == if probe == key { 0int } else { part_support(*old(parts), probe) },
-        forall|probe: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(*final(parts), probe, size, mfgr) ==
-            if probe == key { 0int } else { part_amount(*old(parts), probe, size, mfgr) },
-        forall|size: i64, probe: i64| #[trigger] size_count(*final(sizes), size, probe) ==
-            if probe == key { 0int } else { size_count(*old(sizes), size, probe) },
-        forall|probe: i64, size: i64| #[trigger] part_size_total(*final(parts), probe, size) == size_count(*final(sizes), size, probe),
-{
-    let ghost original_parts = *parts;
-    let ghost original_sizes = *sizes;
-    if let Some(before) = parts.get(key) {
-        let entries = before.sizes.entries();
-        let mut offset = 0;
-        while offset < entries.len()
-            invariant
-                offset <= entries.len(), sizes_valid(*sizes),
-                original_parts.lookup(key) == Some(before),
-                forall|size: i64| (#[trigger] before.sizes.lookup(size) is Some) == entry_keys(entries@).contains(size),
-                forall|probe: i64, size: i64| #[trigger] part_size_total(original_parts, probe, size) == size_count(original_sizes, size, probe),
-                forall|size: i64, probe: i64| #[trigger] size_count(*sizes, size, probe) ==
-                    if probe == key && entry_keys(entries@.take(offset as int)).contains(size) { 0int }
-                    else { size_count(original_sizes, size, probe) },
-            decreases entries.len() - offset,
-        {
-            let ghost previous_sizes = *sizes;
-            replace_size_count(sizes, entries[offset].0, key, 0);
-            proof {
-                assert(entry_keys(entries@.take(offset as int + 1)) =~= entry_keys(entries@.take(offset as int)).push(entries@[offset as int].0));
-                assert forall|size: i64, probe: i64| #[trigger] size_count(*sizes, size, probe) ==
-                    if probe == key && entry_keys(entries@.take(offset as int + 1)).contains(size) { 0int }
-                    else { size_count(original_sizes, size, probe) } by {
-                    broadcast use vstd::seq_lib::group_seq_properties;
-                    assert(size_count(previous_sizes, size, probe) ==
-                        if probe == key && entry_keys(entries@.take(offset as int)).contains(size) { 0int }
-                        else { size_count(original_sizes, size, probe) });
-                }
-            }
-            offset += 1;
-        }
-        proof {
-            assert(entries@.take(offset as int) =~= entries@);
-            assert forall|size: i64| #[trigger] size_count(*sizes, size, key) == 0 by {
-                if !entry_keys(entries@).contains(size) {
-                    assert(before.sizes.lookup(size) is None);
-                    assert(part_size_total(original_parts, key, size) == 0);
-                    assert(size_count(original_sizes, size, key) == 0);
-                }
-            }
-        }
-        parts.replace(key, None);
-    }
-    proof {
-        assert forall|size: i64, probe: i64| #[trigger] size_count(*sizes, size, probe) ==
-            if probe == key { 0int } else { size_count(original_sizes, size, probe) } by {
-            if original_parts.lookup(key) is None && probe == key {
-                assert(part_size_total(original_parts, key, size) == 0);
-            }
-        }
-        assert forall|probe: i64, size: i64| #[trigger] part_size_total(*parts, probe, size) == size_count(*sizes, size, probe) by {
-            if probe == key { assert(parts.lookup(key) is None); }
-            else {
-                assert(parts.lookup(probe) == original_parts.lookup(probe));
-                assert(part_size_total(*parts, probe, size) == part_size_total(original_parts, probe, size));
-                assert(part_size_total(original_parts, probe, size) == size_count(original_sizes, size, probe));
-            }
-        }
-    }
 }
 
 pub fn adjust_region(regions: &mut Directory<RegionBucket>, name: &[u8], key: i64, change: i128) -> (result: bool)

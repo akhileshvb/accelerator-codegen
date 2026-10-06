@@ -3,6 +3,9 @@
 #include "accelerator_codegen/verus/verus_kit.hpp"
 
 #include <algorithm>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -320,8 +323,10 @@ RescanRows FetchRescans(const tpchq10vgen_state *state,
 }
 
 void *Build(kit::Host &host) {
+  void *state = nullptr;
+  {
   BuildRows rows(host);
-  return tpchq10vgen_build(
+  state = tpchq10vgen_build(
       rows.customers.c_custkey.size(), rows.customers.c_custkey.data(),
       rows.customers.c_name.bytes.data(), rows.customers.c_name.off.data(),
       rows.customers.c_address.bytes.data(),
@@ -332,6 +337,12 @@ void *Build(kit::Host &host) {
       rows.nations.n_nationkey.data(), rows.nations.n_name.bytes.data(),
       rows.nations.n_name.off.data(), rows.orders.size(), rows.orders.data(),
       rows.returned_lines.size(), rows.returned_lines.data());
+  }
+#if defined(__GLIBC__)
+  // the scan rows and the build's temporaries are gone; give their pages back
+  malloc_trim(0);
+#endif
+  return state;
 }
 
 void FreeState(void *state) {

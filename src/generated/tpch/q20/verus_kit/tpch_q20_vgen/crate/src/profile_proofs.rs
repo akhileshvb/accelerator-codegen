@@ -5,33 +5,33 @@ use std::sync::Arc;
 use verus_common::sums::*;
 
 verus! {
-pub open spec fn pair_lookup(rows: Seq<(i64, Arc<Pair>)>, key: i64) -> Option<Pair> {
-    match verus_prooflib::unique_key_lookup(rows, key) { Some(pair) => Some(*pair), None => None }
+pub open spec fn pair_lookup(rows: Seq<(i64, Pair)>, key: i64) -> Option<Pair> {
+    match verus_prooflib::unique_key_lookup(rows, key) { Some(pair) => Some(pair), None => None }
 }
-pub open spec fn part_stock(rows: Seq<(i64, Arc<Pair>)>, key: i64, value: int) -> int {
+pub open spec fn part_stock(rows: Seq<(i64, Pair)>, key: i64, value: int) -> int {
     match pair_lookup(rows, key) { Some(pair) => stock_measure(pair.stocks@, value), None => 0 }
 }
-pub open spec fn part_day(rows: Seq<(i64, Arc<Pair>)>, key: i64, date: int, quantity: bool) -> int {
+pub open spec fn part_day(rows: Seq<(i64, Pair)>, key: i64, date: int, quantity: bool) -> int {
     match pair_lookup(rows, key) { Some(pair) => ship_measure(pair.ship@, date, quantity), None => 0 }
 }
 pub open spec fn part_shape(part: Part) -> bool {
-    &&& part.pairs@.map_values(|entry: (i64, Arc<Pair>)| entry.0).no_duplicates()
+    &&& part.pairs@.map_values(|entry: (i64, Pair)| entry.0).no_duplicates()
     &&& forall|index: int| #![trigger part.pairs@[index]] 0 <= index < part.pairs@.len() ==>
-        crate::model::pair_valid(*part.pairs@[index].1)
+        crate::model::pair_valid(part.pairs@[index].1)
             && (part.pairs@[index].1.stocks@.len() > 0 || part.pairs@[index].1.ship@.len() > 0)
 }
-pub proof fn lemma_pair_push(rows: Seq<(i64, Arc<Pair>)>, key: i64, pair: Arc<Pair>)
-    requires rows.map_values(|entry: (i64, Arc<Pair>)| entry.0).no_duplicates(),
-        !rows.map_values(|entry: (i64, Arc<Pair>)| entry.0).contains(key),
-    ensures rows.push((key, pair)).map_values(|entry: (i64, Arc<Pair>)| entry.0).no_duplicates(),
-        pair_lookup(rows.push((key, pair)), key) == Some(*pair),
+pub proof fn lemma_pair_push(rows: Seq<(i64, Pair)>, key: i64, pair: Pair)
+    requires rows.map_values(|entry: (i64, Pair)| entry.0).no_duplicates(),
+        !rows.map_values(|entry: (i64, Pair)| entry.0).contains(key),
+    ensures rows.push((key, pair)).map_values(|entry: (i64, Pair)| entry.0).no_duplicates(),
+        pair_lookup(rows.push((key, pair)), key) == Some(pair),
         forall|other: i64| #![trigger pair_lookup(rows.push((key, pair)), other)] other != key ==>
             pair_lookup(rows.push((key, pair)), other) == pair_lookup(rows, other),
 {
     let next = rows.push((key, pair));
-    let keys = rows.map_values(|entry: (i64, Arc<Pair>)| entry.0);
+    let keys = rows.map_values(|entry: (i64, Pair)| entry.0);
     verus_prooflib::lemma_unique_push(keys, key);
-    assert(next.map_values(|entry: (i64, Arc<Pair>)| entry.0) =~= keys.push(key));
+    assert(next.map_values(|entry: (i64, Pair)| entry.0) =~= keys.push(key));
     verus_prooflib::lemma_unique_key_lookup(next, key);
     assert(next[rows.len() as int] == (key, pair));
     assert forall|other: i64| #![trigger pair_lookup(next, other)] other != key implies pair_lookup(next, other) == pair_lookup(rows, other) by {

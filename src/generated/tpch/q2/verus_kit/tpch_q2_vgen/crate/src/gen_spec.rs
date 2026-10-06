@@ -8,11 +8,11 @@
 //   SELECT s_acctbal, s_name, n_name, p_partkey, p_mfgr, s_address, s_phone, s_comment
 //   FROM part, supplier, partsupp, nation, region
 //   WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND p_size = $1
-//     AND p_type LIKE '%BRASS' AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey
-//     AND r_name = $2
+//     AND p_type LIKE $2 AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey
+//     AND r_name = $3
 //     AND ps_supplycost = (SELECT MIN(ps_supplycost) FROM partsupp, supplier, nation, region
 //                          WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND s_nationkey = n_nationkey
-//                            AND n_regionkey = r_regionkey AND r_name = $2)
+//                            AND n_regionkey = r_regionkey AND r_name = $3)
 //   ORDER BY s_acctbal DESC, n_name, s_name, p_partkey
 //   LIMIT 100
 //
@@ -20,7 +20,9 @@
 //  * CHAR(n) text: compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged (DuckDB: CHAR(n) is an alias of VARCHAR).
 //  * $1 is params.p1: integer.
 //  * $2 is params.p2: text bytes.
+//  * $3 is params.p3: text bytes.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
+//  * LIKE with a parameter pattern: the pattern uses '%' and '_' (ASCII text, bytes = characters).
 #![allow(unused_imports)]
 use vstd::prelude::*;
 use verus_common::bytes::*;
@@ -105,6 +107,8 @@ pub struct Params {
     pub p1: int,
     /// $2: text bytes
     pub p2: Seq<u8>,
+    /// $3: text bytes
+    pub p3: Seq<u8>,
 }
 
 // ── Block scalar_1 ──
@@ -123,7 +127,7 @@ pub open spec fn scalar_1_where_clause(db: Db, params: Params, part: PartRow, pa
     &&& supplier_2.s_suppkey == partsupp_2.ps_suppkey
     &&& supplier_2.s_nationkey == nation_2.n_nationkey
     &&& nation_2.n_regionkey == region_2.r_regionkey
-    &&& region_2.r_name == params.p2
+    &&& region_2.r_name == params.p3
 }
 
 /// The FROM-clause tuples of block scalar_1 (bag product) that satisfy WHERE.
@@ -205,10 +209,10 @@ pub open spec fn where_clause(db: Db, params: Params, part: PartRow, supplier: S
     &&& part.p_partkey == partsupp.ps_partkey
     &&& supplier.s_suppkey == partsupp.ps_suppkey
     &&& part.p_size == params.p1
-    &&& like_match(part.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S'])
+    &&& like_match(part.p_type, params.p2)
     &&& supplier.s_nationkey == nation.n_nationkey
     &&& nation.n_regionkey == region.r_regionkey
-    &&& region.r_name == params.p2
+    &&& region.r_name == params.p3
     &&& (scalar_1_value(db, params, part) is Some && partsupp.ps_supplycost == scalar_1_value(db, params, part)->0)
 }
 

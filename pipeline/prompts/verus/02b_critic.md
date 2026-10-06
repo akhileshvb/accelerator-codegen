@@ -9,8 +9,9 @@ over hours; one that breaks at scale wastes all of it. Reject it now.
 from the design itself, not from the analysis's own numbers (they have
 undercounted per-entry cost by 5-20x):
 
-* **state**: entries per structure x real bytes per entry (60-100 bytes of
-  map overhead plus the value), summed, at SF20 and at SF3000;
+* **state**: entries per structure x real bytes per entry (the per-entry
+  costs in `scale_principles`: allocations, `Vec` / `HashMap` slack, map
+  nodes, alignment), summed, at SF20 (steady and build peak) and at SF3000;
 * **read**: keys visited by one read, for the worst parameter values,
   next to the answer's size and the rows the base query scans;
 * **write**: work per changed row, for each table, including the physical
@@ -33,13 +34,21 @@ estimate breaks the check.
   with a table, or if apply can decline a valid write (a decline rebuilds
   from scratch).
 * **C3 size**: the state grows with what queries read, not with whole tables;
-  a read does not touch the whole state. Fails if your SF20 state estimate
-  does not fit comfortably in RAM (more than ~50 GB), or the state keeps a
-  map entry per row of the largest table. At SF3000 the state may spill to
-  NVMe: there it fails only if a read or a write would touch many scattered
-  entries (no locality), not for its size alone.
+  a read does not touch the whole state. Fails if your SF20 estimate exceeds
+  the budget in `scale_principles` (about 3 GB steady per accelerator, build
+  peak about twice that), if the state keeps a map entry per row of the
+  largest table, or if a structure with millions of keys (one per order,
+  customer, part, ...) gives each key its own heap containers (a `Vec`, a
+  `HashMap`, an `Arc`'d node per key) instead of plain records in shared
+  pages. At SF3000 the state may spill to NVMe: there it fails only if a
+  read or a write would touch many scattered entries (no locality), not for
+  its size alone. Size never excuses a slower read or write: a compact
+  design that breaks C2 or C7 still fails those.
 * **C4 values**: no overflow at SF3000; NULLs handled; every parameter value
-  can be served.
+  of the TPC-H domain can be served (every substitution parameter, LIKE
+  patterns and fractions included, is a `$n` parameter). Fails if the design
+  is specialized to one parameter value (state only for parts of one color,
+  one pattern, one nation), or declines values inside the domain.
 * **C5 no answer cache**: the state is not a cache of final answers (unless
   the analysis justifies it convincingly).
 * **C7 fast reads at scale**: the read path's cost follows the answer, not

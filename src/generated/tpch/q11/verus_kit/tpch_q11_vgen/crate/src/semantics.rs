@@ -1,3 +1,4 @@
+use crate::packed::{self, Packed, PackedCursor};
 use vstd::prelude::*;
 use verus_common::sums::*;
 use verus_prooflib::{lemma_scan_property, lemma_bag_step_property, lemma_flat_map_contains};
@@ -145,10 +146,10 @@ pub proof fn lemma_partsupp_capture(before: Db, after: Db, changes: Seq<Partsupp
 }
 
 pub proof fn lemma_group_key_bounded(db: Db, name: Seq<u8>, part: int)
-    requires db_bounded(db), group_count(db, params(name), part) > 0,
+    requires db_bounded(db), group_count(db, params0(name), part) > 0,
     ensures i64::MIN <= part <= i64::MAX,
 {
-    let parameter = params(name);
+    let parameter = params0(name);
     let joined = tuples(db, parameter);
     assert forall|position: int| 0 <= position < joined.len() implies
         part_bounded((#[trigger] joined[position]).partsupp) by {
@@ -250,23 +251,25 @@ pub proof fn lemma_nation_capture(before: Db, after: Db, changes: Seq<NationDelt
     lemma_sum_map(changes, project, signed, raw);
 }
 
-pub open spec fn inventory_answer(inventory: Inventory, weight: int, output: Seq<(i64, i128)>) -> bool {
+pub open spec fn params0(name: Seq<u8>) -> Params { Params { p1: name, p2: 0 } }
+
+pub open spec fn inventory_answer(inventory: Inventory, weight: int, output: Seq<(i64, i128)>, fraction: int) -> bool {
     &&& forall|position: int| 0 <= position < output.len() ==> {
         let row = #[trigger] output[position];
         &&& moment_at(inventory.groups, row.0 as int).count > 0
         &&& row.1 as int == weight * moment_at(inventory.groups, row.0 as int).value as int
         &&& inventory.total.count > 0
-        &&& 10000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int
+        &&& 1000000000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int * fraction
     }
     &&& forall|left: int, right: int| 0 <= left < right < output.len() ==>
         (#[trigger] output[left]).0 != (#[trigger] output[right]).0 && output[left].1 >= output[right].1
     &&& forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count > 0
-        && 10000 * moment_at(inventory.groups, part as int).value as int > inventory.total.value as int ==>
+        && 1000000000 * moment_at(inventory.groups, part as int).value as int > inventory.total.value as int * fraction ==>
         exists|position: int| 0 <= position < output.len() && (#[trigger] output[position]).0 == part
 }
 
 pub open spec fn query_group_value(db: Db, name: Seq<u8>, part: int) -> int {
-    group_sum(db, params(name), part, |tuple: Tuple| tuple.partsupp.ps_supplycost * tuple.partsupp.ps_availqty)
+    group_sum(db, params0(name), part, |tuple: Tuple| tuple.partsupp.ps_supplycost * tuple.partsupp.ps_availqty)
 }
 
 pub open spec fn supplier_weight(db: Db, name: Seq<u8>, supplier: int) -> int {
@@ -279,19 +282,19 @@ pub open spec fn query_fold(db: Db, name: Seq<u8>, weight: spec_fn(PartsuppRow) 
 
 pub proof fn lemma_nation_fold(db: Db, name: Seq<u8>, part: PartsuppRow, supplier: SupplierRow, weight: spec_fn(PartsuppRow) -> int)
     ensures
-        sum(tuples_2(db, params(name), part, supplier), |row: Tuple| weight(row.partsupp))
+        sum(tuples_2(db, params0(name), part, supplier), |row: Tuple| weight(row.partsupp))
             == if part.ps_suppkey == supplier.s_suppkey { weight(part) * n_count(db, supplier.s_nationkey, name) } else { 0 },
-        sum(scalar_1_tuples_2(db, params(name), part, supplier), |row: Scalar1Tuple| weight(row.partsupp_2))
+        sum(scalar_1_tuples_2(db, params0(name), part, supplier), |row: Scalar1Tuple| weight(row.partsupp_2))
             == if part.ps_suppkey == supplier.s_suppkey { weight(part) * n_count(db, supplier.s_nationkey, name) } else { 0 },
 {
     let matches = |row: NationRow| if supplier.s_nationkey == row.n_nationkey && row.n_name == name { 1int } else { 0 };
     let nested = |row: NationRow| if part.ps_suppkey == supplier.s_suppkey { weight(part) * matches(row) } else { 0int };
     assert forall|row: NationRow| #[trigger] nested(row)
-        == sum(tuples_3(db, params(name), part, supplier, row), |tuple: Tuple| weight(tuple.partsupp)) by { reveal_with_fuel(sum, 2); }
+        == sum(tuples_3(db, params0(name), part, supplier, row), |tuple: Tuple| weight(tuple.partsupp)) by { reveal_with_fuel(sum, 2); }
     assert forall|row: NationRow| #[trigger] nested(row)
-        == sum(scalar_1_tuples_3(db, params(name), part, supplier, row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2)) by { reveal_with_fuel(sum, 2); }
-    verus_prooflib::lemma_flat_map_weight(db.nation, |row: NationRow| tuples_3(db, params(name), part, supplier, row), |tuple: Tuple| weight(tuple.partsupp), nested);
-    verus_prooflib::lemma_flat_map_weight(db.nation, |row: NationRow| scalar_1_tuples_3(db, params(name), part, supplier, row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2), nested);
+        == sum(scalar_1_tuples_3(db, params0(name), part, supplier, row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2)) by { reveal_with_fuel(sum, 2); }
+    verus_prooflib::lemma_flat_map_weight(db.nation, |row: NationRow| tuples_3(db, params0(name), part, supplier, row), |tuple: Tuple| weight(tuple.partsupp), nested);
+    verus_prooflib::lemma_flat_map_weight(db.nation, |row: NationRow| scalar_1_tuples_3(db, params0(name), part, supplier, row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2), nested);
     if part.ps_suppkey == supplier.s_suppkey {
         lemma_sum_scale(db.nation, matches, nested, weight(part));
     } else { lemma_sum_zero(db.nation, nested); }
@@ -300,36 +303,36 @@ pub proof fn lemma_nation_fold(db: Db, name: Seq<u8>, part: PartsuppRow, supplie
 
 pub proof fn lemma_supplier_fold(db: Db, name: Seq<u8>, part: PartsuppRow, weight: spec_fn(PartsuppRow) -> int)
     ensures
-        sum(tuples_1(db, params(name), part), |row: Tuple| weight(row.partsupp)) == weight(part) * supplier_weight(db, name, part.ps_suppkey),
-        sum(scalar_1_tuples_1(db, params(name), part), |row: Scalar1Tuple| weight(row.partsupp_2)) == weight(part) * supplier_weight(db, name, part.ps_suppkey),
+        sum(tuples_1(db, params0(name), part), |row: Tuple| weight(row.partsupp)) == weight(part) * supplier_weight(db, name, part.ps_suppkey),
+        sum(scalar_1_tuples_1(db, params0(name), part), |row: Scalar1Tuple| weight(row.partsupp_2)) == weight(part) * supplier_weight(db, name, part.ps_suppkey),
 {
     let matches = |row: SupplierRow| if part.ps_suppkey == row.s_suppkey { n_count(db, row.s_nationkey, name) } else { 0int };
     let nested = |row: SupplierRow| if part.ps_suppkey == row.s_suppkey { weight(part) * n_count(db, row.s_nationkey, name) } else { 0int };
-    assert forall|row: SupplierRow| #[trigger] nested(row) == sum(tuples_2(db, params(name), part, row), |tuple: Tuple| weight(tuple.partsupp)) by {
+    assert forall|row: SupplierRow| #[trigger] nested(row) == sum(tuples_2(db, params0(name), part, row), |tuple: Tuple| weight(tuple.partsupp)) by {
         lemma_nation_fold(db, name, part, row, weight);
     }
-    assert forall|row: SupplierRow| #[trigger] nested(row) == sum(scalar_1_tuples_2(db, params(name), part, row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2)) by {
+    assert forall|row: SupplierRow| #[trigger] nested(row) == sum(scalar_1_tuples_2(db, params0(name), part, row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2)) by {
         lemma_nation_fold(db, name, part, row, weight);
     }
-    verus_prooflib::lemma_flat_map_weight(db.supplier, |row: SupplierRow| tuples_2(db, params(name), part, row), |tuple: Tuple| weight(tuple.partsupp), nested);
-    verus_prooflib::lemma_flat_map_weight(db.supplier, |row: SupplierRow| scalar_1_tuples_2(db, params(name), part, row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2), nested);
+    verus_prooflib::lemma_flat_map_weight(db.supplier, |row: SupplierRow| tuples_2(db, params0(name), part, row), |tuple: Tuple| weight(tuple.partsupp), nested);
+    verus_prooflib::lemma_flat_map_weight(db.supplier, |row: SupplierRow| scalar_1_tuples_2(db, params0(name), part, row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2), nested);
     lemma_sum_scale(db.supplier, matches, nested, weight(part));
     assert(matches =~= (|row: SupplierRow| if row.s_suppkey == part.ps_suppkey { n_count(db, row.s_nationkey, name) } else { 0int }));
 }
 
 pub proof fn lemma_query_fold(db: Db, name: Seq<u8>, weight: spec_fn(PartsuppRow) -> int)
-    ensures sum(tuples(db, params(name)), |tuple: Tuple| weight(tuple.partsupp)) == query_fold(db, name, weight),
-        sum(scalar_1_tuples(db, params(name)), |tuple: Scalar1Tuple| weight(tuple.partsupp_2)) == query_fold(db, name, weight),
+    ensures sum(tuples(db, params0(name)), |tuple: Tuple| weight(tuple.partsupp)) == query_fold(db, name, weight),
+        sum(scalar_1_tuples(db, params0(name)), |tuple: Scalar1Tuple| weight(tuple.partsupp_2)) == query_fold(db, name, weight),
 {
     let nested = |row: PartsuppRow| weight(row) * supplier_weight(db, name, row.ps_suppkey);
-    assert forall|row: PartsuppRow| #[trigger] nested(row) == sum(tuples_1(db, params(name), row), |tuple: Tuple| weight(tuple.partsupp)) by {
+    assert forall|row: PartsuppRow| #[trigger] nested(row) == sum(tuples_1(db, params0(name), row), |tuple: Tuple| weight(tuple.partsupp)) by {
         lemma_supplier_fold(db, name, row, weight);
     }
-    assert forall|row: PartsuppRow| #[trigger] nested(row) == sum(scalar_1_tuples_1(db, params(name), row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2)) by {
+    assert forall|row: PartsuppRow| #[trigger] nested(row) == sum(scalar_1_tuples_1(db, params0(name), row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2)) by {
         lemma_supplier_fold(db, name, row, weight);
     }
-    verus_prooflib::lemma_flat_map_weight(db.partsupp, |row: PartsuppRow| tuples_1(db, params(name), row), |tuple: Tuple| weight(tuple.partsupp), nested);
-    verus_prooflib::lemma_flat_map_weight(db.partsupp, |row: PartsuppRow| scalar_1_tuples_1(db, params(name), row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2), nested);
+    verus_prooflib::lemma_flat_map_weight(db.partsupp, |row: PartsuppRow| tuples_1(db, params0(name), row), |tuple: Tuple| weight(tuple.partsupp), nested);
+    verus_prooflib::lemma_flat_map_weight(db.partsupp, |row: PartsuppRow| scalar_1_tuples_1(db, params0(name), row), |tuple: Scalar1Tuple| weight(tuple.partsupp_2), nested);
 }
 
 pub proof fn lemma_singleton_nations(data: Data, db: Db, name: Seq<u8>, nation: i64, multiplicity: i128)
@@ -397,7 +400,7 @@ pub proof fn lemma_singleton_fold(data: Data, db: Db, name: Seq<u8>, nation: i64
 
 pub proof fn lemma_singleton_group(data: Data, db: Db, name: Seq<u8>, nation: i64, multiplicity: i128, part: int)
     requires data.valid(db), data.names.at(text_key(name)) == Some(NameView::Singleton { nation, multiplicity }),
-    ensures group_count(db, params(name), part) == multiplicity as int * h_count(db, nation as int, part),
+    ensures group_count(db, params0(name), part) == multiplicity as int * h_count(db, nation as int, part),
         query_group_value(db, name, part) == multiplicity as int * h_value(db, nation as int, part),
 {
     let count = |row: PartsuppRow| if row.ps_partkey == part { 1int } else { 0 };
@@ -421,7 +424,7 @@ pub proof fn lemma_singleton_group(data: Data, db: Db, name: Seq<u8>, nation: i6
     lemma_sum_ext_all(db.partsupp, weighted, normalized);
     assert((|tuple: Tuple| value(tuple.partsupp)) =~=
         (|tuple: Tuple| if tuple.partsupp.ps_partkey == part { tuple.partsupp.ps_supplycost * tuple.partsupp.ps_availqty } else { 0int }));
-    lemma_sum_ext_all(tuples(db, params(name)), |tuple: Tuple| value(tuple.partsupp),
+    lemma_sum_ext_all(tuples(db, params0(name)), |tuple: Tuple| value(tuple.partsupp),
         |tuple: Tuple| if tuple.partsupp.ps_partkey == part { (|source: Tuple| source.partsupp.ps_supplycost * source.partsupp.ps_availqty)(tuple) } else { 0int });
     assert(query_group_value(db, name, part) == query_fold(db, name, value));
     assert(query_fold(db, name, value) == multiplicity as int * sum(db.partsupp, weighted));
@@ -430,8 +433,8 @@ pub proof fn lemma_singleton_group(data: Data, db: Db, name: Seq<u8>, nation: i6
 
 pub proof fn lemma_singleton_total(data: Data, db: Db, name: Seq<u8>, nation: i64, multiplicity: i128)
     requires data.valid(db), data.names.at(text_key(name)) == Some(NameView::Singleton { nation, multiplicity }),
-    ensures scalar_1_group_count(db, params(name)) == multiplicity as int * h_total_count(db, nation as int),
-        scalar_1_group_sum(db, params(name), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
+    ensures scalar_1_group_count(db, params0(name)) == multiplicity as int * h_total_count(db, nation as int),
+        scalar_1_group_sum(db, params0(name), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
             == multiplicity as int * h_total_value(db, nation as int),
 {
     let one = |row: PartsuppRow| 1int;
@@ -445,7 +448,7 @@ pub proof fn lemma_singleton_total(data: Data, db: Db, name: Seq<u8>, nation: i6
         (|row: PartsuppRow| s_count(db, row.ps_suppkey, nation as int)));
     assert((|tuple: Scalar1Tuple| price(tuple.partsupp_2)) =~=
         (|tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty));
-    verus_prooflib::lemma_sum_constant_one(scalar_1_tuples(db, params(name)));
+    verus_prooflib::lemma_sum_constant_one(scalar_1_tuples(db, params0(name)));
     let weighted = |row: PartsuppRow| price(row) * s_count(db, row.ps_suppkey, nation as int);
     let normalized = |row: PartsuppRow| row.ps_availqty * row.ps_supplycost * s_count(db, row.ps_suppkey, nation as int);
     assert forall|row: PartsuppRow| #[trigger] weighted(row) == normalized(row) by {
@@ -453,16 +456,16 @@ pub proof fn lemma_singleton_total(data: Data, db: Db, name: Seq<u8>, nation: i6
             == row.ps_availqty * row.ps_supplycost * s_count(db, row.ps_suppkey, nation as int)) by (nonlinear_arith);
     }
     lemma_sum_ext_all(db.partsupp, weighted, normalized);
-    assert(scalar_1_group_count(db, params(name)) == query_fold(db, name, one));
+    assert(scalar_1_group_count(db, params0(name)) == query_fold(db, name, one));
     assert(query_fold(db, name, one) == multiplicity as int * h_total_count(db, nation as int));
-    assert(scalar_1_group_sum(db, params(name), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
+    assert(scalar_1_group_sum(db, params0(name), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
         == query_fold(db, name, price));
     assert(h_total_value(db, nation as int) == sum(db.partsupp, normalized));
 }
 
 pub proof fn lemma_missing_name(data: Data, db: Db, name: Seq<u8>)
     requires data.valid(db), data.names.at(text_key(name)).is_none(),
-    ensures query_result(db, params(name), Seq::<OutRow>::empty()),
+    ensures scalar_1_group_count(db, params0(name)) == 0,
 {
     assert(data.names_ok(db));
     assert(data.nations_reverse.at(text_key(name)).is_none());
@@ -485,9 +488,42 @@ pub proof fn lemma_missing_name(data: Data, db: Db, name: Seq<u8>)
     lemma_query_fold(db, name, one);
     assert((|tuple: Scalar1Tuple| one(tuple.partsupp_2)) =~= (|tuple: Scalar1Tuple| 1int));
     lemma_sum_zero(db.partsupp, |row: PartsuppRow| one(row) * supplier_weight(db, name, row.ps_suppkey));
-    verus_prooflib::lemma_sum_constant_one(scalar_1_tuples(db, params(name)));
-    assert(scalar_1_group_count(db, params(name)) == 0);
-    assert forall|part: int| !#[trigger] having(db, params(name), part) by {}
+    verus_prooflib::lemma_sum_constant_one(scalar_1_tuples(db, params0(name)));
+    assert(scalar_1_group_count(db, params0(name)) == 0);
+}
+
+/// The parameters other than $1 do not select tuples.
+pub proof fn lemma_params_agree(db: Db, name: Seq<u8>, fraction: int)
+    ensures tuples(db, params(name, fraction)) == tuples(db, params0(name)),
+        scalar_1_tuples(db, params(name, fraction)) == scalar_1_tuples(db, params0(name)),
+{
+    let p = params(name, fraction);
+    let q = params0(name);
+    assert forall|a: PartsuppRow, b: SupplierRow, c: NationRow| #[trigger] tuples_3(db, p, a, b, c) == tuples_3(db, q, a, b, c) by {}
+    assert forall|a: PartsuppRow, b: SupplierRow, c: NationRow| #[trigger] scalar_1_tuples_3(db, p, a, b, c) == scalar_1_tuples_3(db, q, a, b, c) by {}
+    assert forall|a: PartsuppRow, b: SupplierRow| #[trigger] tuples_2(db, p, a, b) == tuples_2(db, q, a, b) by {
+        assert(db.nation.map_values(|c: NationRow| tuples_3(db, p, a, b, c)) =~= db.nation.map_values(|c: NationRow| tuples_3(db, q, a, b, c)));
+    }
+    assert forall|a: PartsuppRow, b: SupplierRow| #[trigger] scalar_1_tuples_2(db, p, a, b) == scalar_1_tuples_2(db, q, a, b) by {
+        assert(db.nation.map_values(|c: NationRow| scalar_1_tuples_3(db, p, a, b, c)) =~= db.nation.map_values(|c: NationRow| scalar_1_tuples_3(db, q, a, b, c)));
+    }
+    assert forall|a: PartsuppRow| #[trigger] tuples_1(db, p, a) == tuples_1(db, q, a) by {
+        assert(db.supplier.map_values(|b: SupplierRow| tuples_2(db, p, a, b)) =~= db.supplier.map_values(|b: SupplierRow| tuples_2(db, q, a, b)));
+    }
+    assert forall|a: PartsuppRow| #[trigger] scalar_1_tuples_1(db, p, a) == scalar_1_tuples_1(db, q, a) by {
+        assert(db.supplier.map_values(|b: SupplierRow| scalar_1_tuples_2(db, p, a, b)) =~= db.supplier.map_values(|b: SupplierRow| scalar_1_tuples_2(db, q, a, b)));
+    }
+    assert(db.partsupp.map_values(|a: PartsuppRow| tuples_1(db, p, a)) =~= db.partsupp.map_values(|a: PartsuppRow| tuples_1(db, q, a)));
+    assert(db.partsupp.map_values(|a: PartsuppRow| scalar_1_tuples_1(db, p, a)) =~= db.partsupp.map_values(|a: PartsuppRow| scalar_1_tuples_1(db, q, a)));
+}
+
+pub proof fn lemma_empty_answer(db: Db, name: Seq<u8>, fraction: int)
+    requires scalar_1_group_count(db, params0(name)) == 0,
+    ensures query_result(db, params(name, fraction), Seq::<OutRow>::empty()),
+{
+    lemma_params_agree(db, name, fraction);
+    assert(scalar_1_group_count(db, params(name, fraction)) == 0);
+    assert forall|part: int| !#[trigger] having(db, params(name, fraction), part) by {}
 }
 
 pub proof fn lemma_absent_inventory(data: Data, db: Db, nation: i64)
@@ -523,48 +559,61 @@ pub proof fn lemma_absent_inventory(data: Data, db: Db, nation: i64)
     lemma_sum_zero(db.partsupp, priced);
 }
 
-pub proof fn lemma_execute_model(db: Db, name: Seq<u8>, inventory: &Inventory, weight: int, output: Seq<(i64, i128)>)
-    requires db_bounded(db), weight > 0, inventory_answer(*inventory, weight, output),
-        forall|part: i64| #[trigger] group_count(db, params(name), part as int)
+pub proof fn lemma_execute_model(db: Db, name: Seq<u8>, fraction: int, inventory: &Inventory, weight: int, output: Seq<(i64, i128)>)
+    requires db_bounded(db), weight > 0, inventory_answer(*inventory, weight, output, fraction),
+        forall|part: i64| #[trigger] group_count(db, params0(name), part as int)
             == weight * moment_at(inventory.groups, part as int).count as int,
         forall|part: i64| #[trigger] query_group_value(db, name, part as int)
             == weight * moment_at(inventory.groups, part as int).value as int,
-        scalar_1_group_count(db, params(name)) == weight * inventory.total.count as int,
-        scalar_1_group_sum(db, params(name), |tuple: Scalar1Tuple|
+        scalar_1_group_count(db, params0(name)) == weight * inventory.total.count as int,
+        scalar_1_group_sum(db, params0(name), |tuple: Scalar1Tuple|
             tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty) == weight * inventory.total.value as int,
-    ensures query_result(db, params(name), out_view(output)),
+    ensures query_result(db, params(name, fraction), out_view(output)),
 {
+    lemma_params_agree(db, name, fraction);
+    let wanted = params(name, fraction);
+    let price = |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty;
+    assert(scalar_1_group_count(db, wanted) == weight * inventory.total.count as int);
+    assert(scalar_1_group_sum(db, wanted, price) == weight * inventory.total.value as int);
+    assert forall|part: int| #[trigger] group_count(db, wanted, part) == group_count(db, params0(name), part) by {}
+    assert forall|part: int| group_sum(db, wanted, part, |t: Tuple| t.partsupp.ps_supplycost * t.partsupp.ps_availqty)
+        == #[trigger] query_group_value(db, name, part) by {}
     assert forall|position: int| 0 <= position < output.len() implies
-        row_ok(db, params(name), #[trigger] out_view(output)[position]) by {
+        row_ok(db, wanted, #[trigger] out_view(output)[position]) by {
         let part = output[position].0;
         let value = moment_at(inventory.groups, part as int).value as int;
         let count = moment_at(inventory.groups, part as int).count as int;
         assert(count > 0);
         assert(inventory.total.count > 0);
-        assert(group_count(db, params(name), part as int) == weight * count);
+        assert(group_count(db, wanted, part as int) == weight * count);
         assert(query_group_value(db, name, part as int) == weight * value);
         assert(weight * count > 0) by (nonlinear_arith) requires weight > 0, count > 0;
         assert(weight * inventory.total.count as int > 0) by (nonlinear_arith)
             requires weight > 0, inventory.total.count > 0;
-        assert(10000 * (weight * value) > weight * inventory.total.value as int) by (nonlinear_arith)
-            requires weight > 0, 10000 * value > inventory.total.value as int;
+        assert(1000000000 * (weight * value) > (weight * inventory.total.value as int) * fraction) by (nonlinear_arith)
+            requires weight > 0, 1000000000 * value > inventory.total.value as int * fraction;
+        assert(scalar_1_value(db, wanted) == Some((weight * inventory.total.value as int) * fraction));
     }
     assert forall|left: int, right: int| 0 <= left < right < output.len() implies
         !same_group(#[trigger] out_view(output)[left], #[trigger] out_view(output)[right])
             && !row_lt(out_view(output)[right], out_view(output)[left]) by {}
-    assert forall|part: int| #[trigger] group_count(db, params(name), part) > 0 && having(db, params(name), part) implies
+    assert forall|part: int| #[trigger] group_count(db, wanted, part) > 0 && having(db, wanted, part) implies
         exists|position: int| 0 <= position < output.len() && (#[trigger] out_view(output)[position]).ps_partkey == part by {
         lemma_group_key_bounded(db, name, part);
         let bounded = part as i64;
         assert(bounded as int == part);
         let count = moment_at(inventory.groups, part).count as int;
         let value = moment_at(inventory.groups, part).value as int;
-        assert(group_count(db, params(name), bounded as int) == weight * count);
+        assert(group_count(db, wanted, bounded as int) == weight * count);
         assert(query_group_value(db, name, bounded as int) == weight * value);
-        assert(10000 * (weight * value) > weight * inventory.total.value as int);
         assert(count > 0) by (nonlinear_arith) requires weight > 0, weight * count > 0;
-        assert(10000 * value > inventory.total.value as int) by (nonlinear_arith)
-            requires weight > 0, 10000 * (weight * value) > weight * inventory.total.value as int;
+        assert(scalar_1_group_count(db, wanted) > 0);
+        assert(inventory.total.count > 0) by (nonlinear_arith)
+            requires weight > 0, weight * inventory.total.count as int > 0;
+        assert(scalar_1_value(db, wanted) == Some((weight * inventory.total.value as int) * fraction));
+        assert(1000000000 * (weight * value) > (weight * inventory.total.value as int) * fraction);
+        assert(1000000000 * value > inventory.total.value as int * fraction) by (nonlinear_arith)
+            requires weight > 0, 1000000000 * (weight * value) > (weight * inventory.total.value as int) * fraction;
         let position = choose|position: int| 0 <= position < output.len() && (#[trigger] output[position]).0 == bounded;
         assert(out_view(output)[position].ps_partkey == part);
     }

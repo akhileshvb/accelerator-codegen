@@ -8,47 +8,37 @@ use crate::gen_obligations::*;
 use crate::model::*;
 use crate::storage::Table;
 use crate::profiles::Part;
-use crate::dimensions::{Suppliers, Nations};
+use crate::dimensions::{Suppliers, Nations, PartNames};
 
 verus! {
 pub open spec fn qualifying_weight(key: int) -> spec_fn(PartRow) -> int {
-    |row: PartRow| if row.p_partkey == key && like_match(row.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%']) { 1 } else { 0 }
+    |row: PartRow| if row.p_partkey == key { 1 } else { 0 }
 }
 pub open spec fn part_capture_weight(key: int) -> spec_fn(PartDelta) -> int {
-    |row: PartDelta| if row.p_partkey == key && row.is_qualifying != 0 { row.sign as int } else { 0 }
+    |row: PartDelta| if row.row.p_partkey == key { row.sign as int } else { 0 }
 }
 
-pub proof fn lemma_build_part_count(db: Db, rows: Seq<QualifyingPartInput>, key: int)
-    requires scan_qualifying_parts_ok(db, rows),
-    ensures eligible(db, key) == sum(rows, |row: QualifyingPartInput| if row.p_partkey == key { 1 } else { 0 }),
+pub proof fn lemma_build_part_count(db: Db, rows: Seq<PartInput>, key: int)
+    requires scan_parts_ok(db, rows),
+    ensures eligible(db, key) == sum(rows, |row: PartInput| if row.p_partkey == key { 1 } else { 0 }),
 {
-    let weight = |value: int| if value == key { 1int } else { 0int };
-    let runtime_weight = |row: QualifyingPartInput| if row.p_partkey == key { 1int } else { 0int };
-    lemma_sum_map(rows, |row: QualifyingPartInput| qualifying_part_input_view(row), weight, runtime_weight);
-    assert(sum(qualifying_part_input_seq_view(rows), weight) == sum(db.part,
-        |row: PartRow| if like_match(row.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%']) { weight(row.p_partkey) } else { 0 }));
-    lemma_sum_ext_all(db.part,
-        |row: PartRow| if like_match(row.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%']) { weight(row.p_partkey) } else { 0 },
-        qualifying_weight(key));
+    let weight = qualifying_weight(key);
+    let runtime_weight = |row: PartInput| if row.p_partkey == key { 1int } else { 0int };
+    lemma_sum_map(rows, |row: PartInput| part_input_view(row), weight, runtime_weight);
+    assert(sum(part_input_seq_view(rows), weight) == sum(db.part, weight));
 }
 
-pub proof fn lemma_apply_part_count(before: Db, after: Db, rows: Seq<PartDelta>, full: Seq<(PartRow, int)>, key: int)
-    requires part_delta_ok(rows, full), bag_step(before.part, after.part, full),
+pub proof fn lemma_apply_part_count(before: Db, after: Db, rows: Seq<PartDelta>, key: int)
+    requires bag_step(before.part, after.part, part_delta_seq_view(rows)),
     ensures eligible(after, key) == eligible(before, key) + sum(rows, part_capture_weight(key)),
 {
     let weight = qualifying_weight(key);
-    let full_weight = |change: (PartRow, int)| change.1 * weight(change.0);
-    let runtime_weight = part_capture_weight(key);
-    assert forall|index: int| #![trigger rows[index], full[index]]
-        0 <= index < rows.len() implies runtime_weight(rows[index]) == full_weight(full[index]) by {
-        assert(rows[index].p_partkey == full[index].0.p_partkey);
-        assert(rows[index].sign == full[index].1);
-    }
-    lemma_sum_aligned(rows, full, runtime_weight, full_weight);
-    assert(sum(after.part, weight) == sum(before.part, weight) + sum(full, full_weight));
+    let signed = |entry: (PartRow, int)| entry.1 * weight(entry.0);
+    assert(sum(after.part, weight) == sum(before.part, weight) + sum(part_delta_seq_view(rows), signed));
+    lemma_sum_map(rows, |delta: PartDelta| (part_input_view(delta.row), delta.sign as int), signed, part_capture_weight(key));
 }
-pub proof fn lemma_coalesced_after(before: Db, after: Db, rows: Seq<PartDelta>, full: Seq<(PartRow, int)>, parts: Table<Part>, counts: Map<i64, i128>)
-    requires part_delta_ok(rows, full), bag_step(before.part, after.part, full),
+pub proof fn lemma_coalesced_after(before: Db, after: Db, rows: Seq<PartDelta>, parts: Table<Part>, counts: Map<i64, i128>)
+    requires bag_step(before.part, after.part, part_delta_seq_view(rows)),
         forall|key: i64| #![trigger part_count(parts, key)] part_count(parts, key) == eligible(before, key as int),
         forall|key: i64| #![trigger coalesced_part_count(parts, counts, key)]
             coalesced_part_count(parts, counts, key) == part_count(parts, key) + sum(rows, part_capture_weight(key as int)),
@@ -57,7 +47,7 @@ pub proof fn lemma_coalesced_after(before: Db, after: Db, rows: Seq<PartDelta>, 
 {
     assert forall|key: i64| #![trigger coalesced_part_count(parts, counts, key)]
         coalesced_part_count(parts, counts, key) == eligible(after, key as int) by {
-        lemma_apply_part_count(before, after, rows, full, key as int);
+        lemma_apply_part_count(before, after, rows, key as int);
         assert(part_count(parts, key) == eligible(before, key as int));
     }
 }
@@ -86,46 +76,16 @@ pub proof fn lemma_eligible_presence(db: Db, key: int)
     } else { lemma_sum_zero(db.part, weight); }
 }
 
-pub proof fn lemma_stock_exists(db: Db, row: PartsuppRow)
-    ensures scan_stocks_exists_1(db, row) == (eligible(db, row.ps_partkey) > 0),
-{
-    lemma_eligible_presence(db, row.ps_partkey);
-}
-
-pub proof fn lemma_shipment_exists(db: Db, row: LineitemRow)
-    ensures scan_shipments_exists_1(db, row) == (eligible(db, row.l_partkey) > 0),
-{
-    lemma_eligible_presence(db, row.l_partkey);
-}
-
 pub proof fn lemma_stock_scan_weight(db: Db, rows: Seq<StockInput>, key: int, weight: spec_fn(PartsuppRow) -> int)
-    requires scan_stocks_ok(db, rows), eligible(db, key) > 0,
-        forall|row: PartsuppRow| #[trigger] weight(row) != 0 ==> row.ps_partkey == key,
+    requires scan_stocks_ok(db, rows),
     ensures sum(stock_input_seq_view(rows), weight) == sum(db.partsupp, weight),
 {
-    let filtered = |row: PartsuppRow| if scan_stocks_exists_1(db, row) { weight(row) } else { 0int };
-    assert forall|index: int| #![trigger db.partsupp[index]] 0 <= index < db.partsupp.len()
-        implies filtered(db.partsupp[index]) == weight(db.partsupp[index]) by {
-        let row = db.partsupp[index];
-        if weight(row) != 0 { lemma_stock_exists(db, row); }
-    }
-    lemma_sum_ext(db.partsupp, filtered, weight);
-    assert(sum(stock_input_seq_view(rows), weight) == sum(db.partsupp, filtered));
 }
 
 pub proof fn lemma_shipment_scan_weight(db: Db, rows: Seq<ShipmentInput>, key: int, weight: spec_fn(LineitemRow) -> int)
-    requires scan_shipments_ok(db, rows), eligible(db, key) > 0,
-        forall|row: LineitemRow| #[trigger] weight(row) != 0 ==> row.l_partkey == key,
+    requires scan_shipments_ok(db, rows),
     ensures sum(shipment_input_seq_view(rows), weight) == sum(db.lineitem, weight),
 {
-    let filtered = |row: LineitemRow| if scan_shipments_exists_1(db, row) { weight(row) } else { 0int };
-    assert forall|index: int| #![trigger db.lineitem[index]] 0 <= index < db.lineitem.len()
-        implies filtered(db.lineitem[index]) == weight(db.lineitem[index]) by {
-        let row = db.lineitem[index];
-        if weight(row) != 0 { lemma_shipment_exists(db, row); }
-    }
-    lemma_sum_ext(db.lineitem, filtered, weight);
-    assert(sum(shipment_input_seq_view(rows), weight) == sum(db.lineitem, filtered));
 }
 
 pub open spec fn scan_db(db: Db, stocks: Seq<StockInput>, shipments: Seq<ShipmentInput>, suppliers: Seq<SupplierInput>, nations: Seq<NationInput>) -> Db {
@@ -135,12 +95,12 @@ pub open spec fn scan_db(db: Db, stocks: Seq<StockInput>, shipments: Seq<Shipmen
 
 pub proof fn lemma_build_meaning(
     db: Db, stocks: Seq<StockInput>, shipments: Seq<ShipmentInput>, supplier_rows: Seq<SupplierInput>, nation_rows: Seq<NationInput>,
-    parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations,
+    parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations, names: PartNames,
 )
     requires scan_stocks_ok(db, stocks), scan_shipments_ok(db, shipments),
         scan_suppliers_ok(db, supplier_rows), scan_nations_ok(db, nation_rows),
-        meaning(scan_db(db, stocks, shipments, supplier_rows, nation_rows), parts, directory, suppliers, nations),
-    ensures meaning(db, parts, directory, suppliers, nations),
+        meaning(scan_db(db, stocks, shipments, supplier_rows, nation_rows), parts, directory, suppliers, nations, names),
+    ensures meaning(db, parts, directory, suppliers, nations, names),
 {
     let projected = scan_db(db, stocks, shipments, supplier_rows, nation_rows);
     assert forall|part: i64, supplier: i64| #![trigger pair_of(parts, part, supplier)]
@@ -193,18 +153,32 @@ pub proof fn lemma_build_meaning(
         let weight = |row: NationRow| if row.n_name == name && row.n_nationkey == key { 1int } else { 0int };
         assert(sum(nation_input_seq_view(nation_rows), weight) == sum(db.nation, weight));
     }
+    assert(names_correct(db, names));
+    assert(parts.well_formed() && directory.well_formed() && suppliers.well_formed() && nations.well_formed() && names.well_formed());
+    assert(forall|key: i64| #![trigger part_count(parts, key)] part_count(parts, key) == eligible(db, key as int));
+    assert(forall|key: i64| #![trigger parts.lookup(key)] parts.lookup(key) matches Some(part) ==>
+        part.count > 0 && part.pairs@.map_values(|entry: (i64, crate::profiles::Pair)| entry.0).no_duplicates());
+    assert(forall|nation: i64| #![trigger suppliers.lookup(nation)]
+        suppliers.lookup(nation) matches Some(bucket) ==> bucket.well_formed()
+            && forall|supplier: i64| #![trigger bucket.lookup(supplier)]
+                bucket.lookup(supplier) matches Some(rows) ==>
+                    forall|index: int| #![trigger rows@[index]] 0 <= index < rows@.len() ==> rows@[index].count > 0);
+    assert(forall|hash: i64| #![trigger nations.lookup(hash)]
+        nations.lookup(hash) matches Some(rows) ==>
+            forall|index: int| #![trigger rows@[index]] 0 <= index < rows@.len() ==>
+                rows@[index].count > 0 && crate::profiles::name_hash(rows@[index].name@) == hash);
 }
 
 pub proof fn lemma_meaning_equal_sums(
-    before: Db, after: Db, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations,
+    before: Db, after: Db, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations, names: PartNames,
 )
-    requires meaning(before, parts, directory, suppliers, nations),
+    requires meaning(before, parts, directory, suppliers, nations, names),
         forall|weight: spec_fn(PartRow) -> int| #[trigger] sum(after.part, weight) == sum(before.part, weight),
         forall|weight: spec_fn(PartsuppRow) -> int| #[trigger] sum(after.partsupp, weight) == sum(before.partsupp, weight),
         forall|weight: spec_fn(LineitemRow) -> int| #[trigger] sum(after.lineitem, weight) == sum(before.lineitem, weight),
         forall|weight: spec_fn(SupplierRow) -> int| #[trigger] sum(after.supplier, weight) == sum(before.supplier, weight),
         forall|weight: spec_fn(NationRow) -> int| #[trigger] sum(after.nation, weight) == sum(before.nation, weight),
-    ensures meaning(after, parts, directory, suppliers, nations),
+    ensures meaning(after, parts, directory, suppliers, nations, names),
 {
     assert forall|key: i64| #[trigger] eligible(after, key as int) == eligible(before, key as int) by {
         let weight = qualifying_weight(key as int);
@@ -248,6 +222,10 @@ pub proof fn lemma_meaning_equal_sums(
         nation_count(nations, name, key) == sum(after.nation, |row: NationRow| if row.n_name == name && row.n_nationkey == key { 1 } else { 0 }) by {
         let weight = |row: NationRow| if row.n_name == name && row.n_nationkey == key { 1int } else { 0int };
         assert(sum(after.nation, weight) == sum(before.nation, weight));
+    }    assert forall|key: i64, name: Seq<u8>| #[trigger] name_count(names, key, name) ==
+        sum(after.part, |row: PartRow| if row.p_partkey == key && row.p_name == name { 1 } else { 0 }) by {
+        let weight = |row: PartRow| if row.p_partkey == key && row.p_name == name { 1int } else { 0int };
+        assert(sum(after.part, weight) == sum(before.part, weight));
     }
 }
 
@@ -255,12 +233,12 @@ pub proof fn lemma_apply_meaning(
     before: Db, candidate: Db, after: Db,
     lineitem: Seq<(LineitemRow, int)>, nation: Seq<(NationRow, int)>, part: Seq<(PartRow, int)>,
     partsupp: Seq<(PartsuppRow, int)>, supplier: Seq<(SupplierRow, int)>,
-    parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations,
+    parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations, names: PartNames,
 )
     requires capture_ok(before, candidate, lineitem, nation, part, partsupp, supplier),
         capture_ok(before, after, lineitem, nation, part, partsupp, supplier),
-        meaning(candidate, parts, directory, suppliers, nations),
-    ensures meaning(after, parts, directory, suppliers, nations),
+        meaning(candidate, parts, directory, suppliers, nations, names),
+    ensures meaning(after, parts, directory, suppliers, nations, names),
 {
     assert forall|weight: spec_fn(PartRow) -> int| #[trigger] sum(after.part, weight) == sum(candidate.part, weight) by {
         assert(sum(after.part, weight) == sum(before.part, weight) + sum(part, |change: (PartRow, int)| change.1 * weight(change.0)));
@@ -282,6 +260,6 @@ pub proof fn lemma_apply_meaning(
         assert(sum(after.nation, weight) == sum(before.nation, weight) + sum(nation, |change: (NationRow, int)| change.1 * weight(change.0)));
         assert(sum(candidate.nation, weight) == sum(before.nation, weight) + sum(nation, |change: (NationRow, int)| change.1 * weight(change.0)));
     }
-    lemma_meaning_equal_sums(candidate, after, parts, directory, suppliers, nations);
+    lemma_meaning_equal_sums(candidate, after, parts, directory, suppliers, nations, names);
 }
 }

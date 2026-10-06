@@ -158,8 +158,8 @@ pub unsafe extern "C" fn tpchq11vgen_apply(s: *const State, nation_delta__n: usi
 
 /// The query's answer on the state, or NULL (the host then answers with SQL).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq11vgen_execute(s: *const State, p1: *const u8, p1__len: usize) -> *mut FfiResult {
-    match ob_execute(&*s, slice(p1, p1__len)) {
+pub unsafe extern "C" fn tpchq11vgen_execute(s: *const State, p1: *const u8, p1__len: usize, p2: i64) -> *mut FfiResult {
+    match ob_execute(&*s, slice(p1, p1__len), p2) {
         Some(rows) => Box::into_raw(Box::new(FfiResult { rows })),
         None => ptr::null_mut(),
     }

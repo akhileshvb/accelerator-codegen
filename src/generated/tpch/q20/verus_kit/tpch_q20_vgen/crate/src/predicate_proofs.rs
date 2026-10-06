@@ -9,12 +9,12 @@ use crate::profiles::*;
 use crate::profile_proofs::*;
 use crate::storage::*;
 use crate::dimensions::*;
+use verus_common::sqlfns::like_match;
 
 verus! {
 pub proof fn lemma_in2(db: Db, parameters: Params, key: int)
-    ensures in_2(db, parameters, key) == (eligible(db, key) > 0),
+    ensures in_2(db, parameters, key) == part_matches(db, parameters.p2, key),
 {
-    crate::semantic_proofs::lemma_eligible_presence(db, key);
     let extend = |row: PartRow| in_2_tuples_1(db, parameters, row);
     if in_2(db, parameters, key) {
         let index = choose|index: int| #![trigger in_2_rows(db, parameters)[index]] 0 <= index < in_2_rows(db, parameters).len() && in_2_rows(db, parameters)[index].p_partkey == key;
@@ -23,10 +23,14 @@ pub proof fn lemma_in2(db: Db, parameters: Params, key: int)
         lemma_flat_map_contains(db.part, extend, tuple);
         let source = choose|source: int| #![trigger extend(db.part[source]).contains(tuple)] 0 <= source < db.part.len() && extend(db.part[source]).contains(tuple);
         assert(tuple.part == db.part[source]);
-        assert(crate::semantic_proofs::qualifying_weight(key)(db.part[source]) == 1);
+        if !in_2_where_clause(db, parameters, db.part[source]) { assert(extend(db.part[source]) =~= Seq::<In2Tuple>::empty()); }
+        assert(in_2_where_clause(db, parameters, db.part[source]));
+        assert(db.part[source].p_partkey == key);
+        assert(like_match(db.part[source].p_name, parameters.p2));
     }
-    if eligible(db, key) > 0 {
-        let source = choose|source: int| #![trigger db.part[source]] 0 <= source < db.part.len() && crate::semantic_proofs::qualifying_weight(key)(db.part[source]) == 1;
+    if part_matches(db, parameters.p2, key) {
+        let source = choose|source: int| #![trigger db.part[source]] 0 <= source < db.part.len()
+            && db.part[source].p_partkey == key && like_match(db.part[source].p_name, parameters.p2);
         let tuple = In2Tuple { part: db.part[source] };
         assert(in_2_where_clause(db, parameters, db.part[source]));
         assert(extend(db.part[source])[0] == tuple);
@@ -36,14 +40,46 @@ pub proof fn lemma_in2(db: Db, parameters: Params, key: int)
         assert(in_2_rows(db, parameters)[index].p_partkey == key);
     }
 }
+pub proof fn lemma_part_matches_eligible(db: Db, pattern: Seq<u8>, key: int)
+    requires part_matches(db, pattern, key),
+    ensures eligible(db, key) > 0,
+{
+    let source = choose|source: int| #![trigger db.part[source]] 0 <= source < db.part.len()
+        && db.part[source].p_partkey == key && like_match(db.part[source].p_name, pattern);
+    assert(crate::semantic_proofs::qualifying_weight(key)(db.part[source]) == 1);
+    crate::semantic_proofs::lemma_eligible_presence(db, key);
+}
+pub proof fn lemma_names_match(db: Db, names: PartNames, pattern: Seq<u8>, key: i64)
+    requires names_correct(db, names),
+    ensures names_match(names, key, pattern) == part_matches(db, pattern, key as int),
+{
+    if names_match(names, key, pattern) {
+        let name = choose|name: Seq<u8>| #![trigger name_count(names, key, name)] name_count(names, key, name) > 0 && like_match(name, pattern);
+        let wp = |row: PartRow| if row.p_partkey == key && row.p_name == name { 1int } else { 0int };
+        assert(name_count(names, key, name) == sum(db.part, wp));
+        let j = lemma_sum_nonzero_witness(db.part, wp);
+        assert(db.part[j].p_partkey == key as int && db.part[j].p_name == name);
+        assert(part_matches(db, pattern, key as int));
+    }
+    if part_matches(db, pattern, key as int) {
+        let j = choose|j: int| #![trigger db.part[j]] 0 <= j < db.part.len()
+            && db.part[j].p_partkey == key as int && like_match(db.part[j].p_name, pattern);
+        let name = db.part[j].p_name;
+        let wp = |row: PartRow| if row.p_partkey == key && row.p_name == name { 1int } else { 0int };
+        lemma_sum_pos(db.part, wp, j);
+        assert(name_count(names, key, name) == sum(db.part, wp));
+        assert(name_count(names, key, name) > 0 && like_match(name, pattern));
+        assert(names_match(names, key, pattern));
+    }
+}
 pub open spec fn aggregate_quantity(db: Db, parameters: Params, part: int, supplier: int) -> int {
     agg_lineitem_group_sum(db, parameters, part, supplier, |tuple: AggLineitemTuple| tuple.lineitem.l_quantity)
 }
 pub open spec fn window_count(db: Db, parameters: Params, part: int, supplier: int) -> int {
-    sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p3 { 1 } else { 0 })
+    sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { 1 } else { 0 })
 }
 pub open spec fn window_quantity(db: Db, parameters: Params, part: int, supplier: int) -> int {
-    sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p3 { row.l_quantity } else { 0 })
+    sum(db.lineitem, |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { row.l_quantity } else { 0 })
 }
 pub proof fn lemma_aggregate_values(db: Db, parameters: Params, part: int, supplier: int)
     ensures agg_lineitem_group_count(db, parameters, part, supplier) == window_count(db, parameters, part, supplier),
@@ -56,17 +92,17 @@ pub proof fn lemma_aggregate_values(db: Db, parameters: Params, part: int, suppl
     lemma_sum_flat_map(db.lineitem, extend, count);
     lemma_sum_flat_map(db.lineitem, extend, quantity);
     assert forall|row: LineitemRow| #[trigger] sum(extend(row), count) ==
-        if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p3 { 1int } else { 0int } by {
+        if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { 1int } else { 0int } by {
         if agg_lineitem_where_clause(db, parameters, row) { lemma_sum_singleton(AggLineitemTuple { lineitem: row }, count); }
     }
     assert forall|row: LineitemRow| #[trigger] sum(extend(row), quantity) ==
-        if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p3 { row.l_quantity } else { 0int } by {
+        if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { row.l_quantity } else { 0int } by {
         if agg_lineitem_where_clause(db, parameters, row) { lemma_sum_singleton(AggLineitemTuple { lineitem: row }, quantity); }
     }
     lemma_sum_ext_all(db.lineitem, |row: LineitemRow| sum(extend(row), count),
-        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p3 { 1int } else { 0int });
+        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { 1int } else { 0int });
     lemma_sum_ext_all(db.lineitem, |row: LineitemRow| sum(extend(row), quantity),
-        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p3 { row.l_quantity } else { 0int });
+        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { row.l_quantity } else { 0int });
     lemma_sum_ext_all(agg_lineitem_tuples(db, parameters), quantity,
         |tuple: AggLineitemTuple| if tuple.lineitem.l_partkey == part && tuple.lineitem.l_suppkey == supplier { tuple.lineitem.l_quantity } else { 0int });
 }
@@ -139,34 +175,34 @@ pub proof fn lemma_profile_weight(db: Db, part: i64, supplier: i64, pair: Pair, 
         |row: LineitemRow| (if row.l_partkey == part && row.l_suppkey == supplier { if quantity { row.l_quantity } else { 1int } } else { 0int }) * weight(row.l_shipdate));
 }
 pub proof fn lemma_pair_window(db: Db, parameters: Params, part: i64, supplier: i64, pair: Pair)
-    requires parameters.p1 < parameters.p3,
+    requires parameters.p1 < parameters.p4,
         forall|date: int| #![trigger stored_day_count(pair, date)] stored_day_count(pair, date) == daily_count(db, part as int, supplier as int, date)
             && stored_day_quantity(pair, date) == daily_quantity(db, part as int, supplier as int, date),
-    ensures stored_before_count(pair, parameters.p3) - stored_before_count(pair, parameters.p1) == agg_lineitem_group_count(db, parameters, part as int, supplier as int),
-        stored_before_quantity(pair, parameters.p3) - stored_before_quantity(pair, parameters.p1) == aggregate_quantity(db, parameters, part as int, supplier as int),
+    ensures stored_before_count(pair, parameters.p4) - stored_before_count(pair, parameters.p1) == agg_lineitem_group_count(db, parameters, part as int, supplier as int),
+        stored_before_quantity(pair, parameters.p4) - stored_before_quantity(pair, parameters.p1) == aggregate_quantity(db, parameters, part as int, supplier as int),
 {
     reveal(stored_before_count);
     reveal(stored_before_quantity);
-    let keep = |date: int| if parameters.p1 <= date < parameters.p3 { 1int } else { 0int };
+    let keep = |date: int| if parameters.p1 <= date < parameters.p4 { 1int } else { 0int };
     lemma_profile_weight(db, part, supplier, pair, false, keep);
     lemma_profile_weight(db, part, supplier, pair, true, keep);
     let positions = rng(pair.ship@.len() as int);
     let start_count = |index: int| if pair.ship@[index].date < parameters.p1 { pair.ship@[index].count as int - if index == 0 { 0 } else { pair.ship@[index - 1].count as int } } else { 0 };
-    let end_count = |index: int| if pair.ship@[index].date < parameters.p3 { pair.ship@[index].count as int - if index == 0 { 0 } else { pair.ship@[index - 1].count as int } } else { 0 };
+    let end_count = |index: int| if pair.ship@[index].date < parameters.p4 { pair.ship@[index].count as int - if index == 0 { 0 } else { pair.ship@[index - 1].count as int } } else { 0 };
     let start_quantity = |index: int| if pair.ship@[index].date < parameters.p1 { pair.ship@[index].quantity as int - if index == 0 { 0 } else { pair.ship@[index - 1].quantity as int } } else { 0 };
-    let end_quantity = |index: int| if pair.ship@[index].date < parameters.p3 { pair.ship@[index].quantity as int - if index == 0 { 0 } else { pair.ship@[index - 1].quantity as int } } else { 0 };
+    let end_quantity = |index: int| if pair.ship@[index].date < parameters.p4 { pair.ship@[index].quantity as int - if index == 0 { 0 } else { pair.ship@[index - 1].quantity as int } } else { 0 };
     let count = |index: int| end_count(index) - start_count(index);
     let quantity = |index: int| end_quantity(index) - start_quantity(index);
     lemma_before_as_sum(pair, parameters.p1, false, start_count);
-    lemma_before_as_sum(pair, parameters.p3, false, end_count);
+    lemma_before_as_sum(pair, parameters.p4, false, end_count);
     lemma_before_as_sum(pair, parameters.p1, true, start_quantity);
-    lemma_before_as_sum(pair, parameters.p3, true, end_quantity);
+    lemma_before_as_sum(pair, parameters.p4, true, end_quantity);
     lemma_profile_weight_as_sum(pair, false, keep, count);
     lemma_profile_weight_as_sum(pair, true, keep, quantity);
     lemma_database_weight_as_sum(db, part, supplier, false, keep,
-        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p3 { 1int } else { 0int });
+        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { 1int } else { 0int });
     lemma_database_weight_as_sum(db, part, supplier, true, keep,
-        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p3 { row.l_quantity } else { 0int });
+        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { row.l_quantity } else { 0int });
     lemma_sum_sub(positions, end_count, start_count, count);
     lemma_sum_sub(positions, end_quantity, start_quantity, quantity);
     lemma_sum_ext_all(positions, count, |index: int| ((if false { pair.ship@[index].quantity as int } else { pair.ship@[index].count as int })
@@ -175,10 +211,10 @@ pub proof fn lemma_pair_window(db: Db, parameters: Params, part: i64, supplier: 
         - if index == 0 { 0 } else if true { pair.ship@[index - 1].quantity as int } else { pair.ship@[index - 1].count as int }) * keep(pair.ship@[index].date as int));
     lemma_sum_ext_all(db.lineitem,
         |row: LineitemRow| (if row.l_partkey == part && row.l_suppkey == supplier { if false { row.l_quantity } else { 1int } } else { 0int }) * keep(row.l_shipdate),
-        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p3 { 1int } else { 0int });
+        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { 1int } else { 0int });
     lemma_sum_ext_all(db.lineitem,
         |row: LineitemRow| (if row.l_partkey == part && row.l_suppkey == supplier { if true { row.l_quantity } else { 1int } } else { 0int }) * keep(row.l_shipdate),
-        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p3 { row.l_quantity } else { 0int });
+        |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && parameters.p1 <= row.l_shipdate < parameters.p4 { row.l_quantity } else { 0int });
     lemma_aggregate_values(db, parameters, part as int, supplier as int);
 }
 pub proof fn lemma_aggregate_support(db: Db, parameters: Params, part: int, supplier: int)
@@ -218,7 +254,7 @@ pub proof fn lemma_aggregate_support(db: Db, parameters: Params, part: int, supp
 }
 pub open spec fn stock_witness(db: Db, parameters: Params, supplier: int, index: int) -> bool {
     0 <= index < db.partsupp.len() && db.partsupp[index].ps_suppkey == supplier
-        && eligible(db, db.partsupp[index].ps_partkey) > 0
+        && part_matches(db, parameters.p2, db.partsupp[index].ps_partkey)
         && agg_lineitem_group_count(db, parameters, db.partsupp[index].ps_partkey, supplier) > 0
         && db.partsupp[index].ps_availqty * 1000 > 5 * aggregate_quantity(db, parameters, db.partsupp[index].ps_partkey, supplier)
 }
@@ -262,14 +298,15 @@ pub proof fn lemma_in1(db: Db, parameters: Params, supplier: int)
     }
 }
 #[verifier::rlimit(100)]
-pub proof fn lemma_cached_supplier(db: Db, parameters: Params, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations, supplier: i64)
-    requires meaning(db, parts, directory, suppliers, nations), domain_valid(db), parameters.p1 < parameters.p3,
-    ensures cached_supplier_passes(parts, directory, supplier, parameters.p1, parameters.p3) == in_1(db, parameters, supplier as int),
+pub proof fn lemma_cached_supplier(db: Db, parameters: Params, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations, names: PartNames, supplier: i64)
+    requires meaning(db, parts, directory, suppliers, nations, names), domain_valid(db), parameters.p1 < parameters.p4,
+    ensures cached_supplier_passes(parts, directory, names, supplier, parameters.p1, parameters.p4, parameters.p2) == in_1(db, parameters, supplier as int),
 {
     lemma_in1(db, parameters, supplier as int);
-    if cached_supplier_passes(parts, directory, supplier, parameters.p1, parameters.p3) {
-        let part = choose|part: i64| #![trigger cached_part_passes(parts, part, supplier, parameters.p1, parameters.p3)]
-            directory_contains(directory, supplier, part) && cached_part_passes(parts, part, supplier, parameters.p1, parameters.p3);
+    if cached_supplier_passes(parts, directory, names, supplier, parameters.p1, parameters.p4, parameters.p2) {
+        let part = choose|part: i64| #![trigger cached_part_selected(parts, names, part, supplier, parameters.p1, parameters.p4, parameters.p2)]
+            cached_part_selected(parts, names, part, supplier, parameters.p1, parameters.p4, parameters.p2);
+        lemma_names_match(db, names, parameters.p2, part);
         let pair = pair_of(parts, part, supplier).unwrap();
         assert(pair_of(parts, part, supplier) == Some(pair));
         assert(stored_stock(pair, 0) == stock_count(db, part as int, supplier as int, 0));
@@ -292,9 +329,11 @@ pub proof fn lemma_cached_supplier(db: Db, parameters: Params, parts: Table<Part
     if in_1(db, parameters, supplier as int) {
         let index = choose|index: int| #[trigger] stock_witness(db, parameters, supplier as int, index);
         let row = db.partsupp[index];
+        lemma_part_matches_eligible(db, parameters.p2, row.ps_partkey);
         assert(machine_key(row.ps_partkey));
         let part = row.ps_partkey as i64;
         assert(part as int == row.ps_partkey);
+        lemma_names_match(db, names, parameters.p2, part);
         let value = row.ps_availqty;
         let weight = |row: PartsuppRow| if row.ps_partkey == part && row.ps_suppkey == supplier && row.ps_availqty == value { 1int } else { 0int };
         lemma_sum_pos(db.partsupp, weight, index);
@@ -309,9 +348,9 @@ pub proof fn lemma_cached_supplier(db: Db, parameters: Params, parts: Table<Part
             if selected < last { assert(pair.stocks@[selected].value < pair.stocks@[last].value); }
             assert(value <= pair.stocks@[last].value);
             lemma_pair_window(db, parameters, part, supplier, pair);
-            assert(cached_pair_passes(pair, parameters.p1, parameters.p3));
-            assert(directory_contains(directory, supplier, part));
-            assert(cached_part_passes(parts, part, supplier, parameters.p1, parameters.p3));
+            assert(cached_pair_passes(pair, parameters.p1, parameters.p4));
+            assert(cached_part_passes(parts, part, supplier, parameters.p1, parameters.p4));
+            assert(cached_part_selected(parts, names, part, supplier, parameters.p1, parameters.p4, parameters.p2));
         } else {
             assert(stock_count(db, part as int, supplier as int, value) == 0);
             assert(false);

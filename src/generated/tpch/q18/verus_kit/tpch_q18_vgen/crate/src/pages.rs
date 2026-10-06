@@ -137,7 +137,7 @@ pub fn share_vec<T>(source: &Vec<Arc<T>>) -> (out: Vec<Arc<T>>)
 pub fn copy_keys(source: &Vec<i128>) -> (out: Vec<i128>)
     ensures out@ == source@,
 {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(source.len());
     let mut index = 0usize;
     while index < source.len()
         invariant index <= source.len(), out@ == source@.take(index as int),
@@ -172,7 +172,7 @@ impl<T> Page<T> {
         ensures out.wf(), out.rows@ == self.rows@, out.keys@ == self.keys@,
     {
         broadcast use vstd::seq_lib::group_seq_properties;
-        let mut rows = HashMap::new();
+        let mut rows = HashMap::with_capacity(self.keys.len());
         let mut index = 0usize;
         while index < self.keys.len()
             invariant index <= self.keys.len(),
@@ -342,6 +342,32 @@ impl<T> Table<T> {
         match page.rows.get(&key) {
             Some(value) => Some(Arc::clone(value)),
             None => None,
+        }
+    }
+
+    /// Rebuild every page at its exact size (pages grow by doubling while built).
+    pub fn compact(&mut self)
+        requires old(self).wf(),
+        ensures final(self).wf(), final(self).shards == old(self).shards,
+            forall|key: i128| #[trigger] final(self).at(key) == old(self).at(key),
+    {
+        let mut index = 0usize;
+        while index < self.shards
+            invariant index <= self.shards, self.wf(), self.shards == old(self).shards,
+                forall|key: i128| #[trigger] self.at(key) == old(self).at(key),
+            decreases self.shards - index,
+        {
+            proof { self.bounds(index); }
+            let page = self.roots[index / 128].pages[index % 128].share();
+            let ghost before = *self;
+            self.replace(index, page);
+            proof {
+                assert forall|key: i128| #[trigger] self.at(key) == before.at(key) by {
+                    let position = shard(key, self.shards);
+                    assert(position < self.shards);
+                }
+            }
+            index += 1;
         }
     }
 

@@ -10,7 +10,7 @@ namespace {
 namespace kit = accelerator_codegen::verus_kit;
 namespace core = accelerator_codegen::aux_state::core;
 
-const char kQuerySql[] = R"SQL(-- TPC-H Q9 (catalog text). No parameters: the color is a LIKE pattern ('%green%') and sql2verus takes only a literal LIKE pattern.
+const char kQuerySql[] = R"SQL(-- TPC-H Q9 (catalog text), :color_pattern ('%' || :color || '%', e.g. '%green%') as $1 (a text LIKE pattern parameter).
 SELECT nation, o_year, SUM(amount) AS sum_profit
 FROM (SELECT n_name AS nation, EXTRACT(year FROM o_orderdate) AS o_year,
              l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity AS amount
@@ -21,27 +21,18 @@ FROM (SELECT n_name AS nation, EXTRACT(year FROM o_orderdate) AS o_year,
         AND p_partkey = l_partkey
         AND o_orderkey = l_orderkey
         AND s_nationkey = n_nationkey
-        AND p_name LIKE '%green%') AS profit
+        AND p_name LIKE $1) AS profit
 GROUP BY nation, o_year
 ORDER BY nation, o_year DESC
 )SQL";
 
-const char kGreenPartsSql[] = "SELECT p_partkey FROM part WHERE p_name LIKE '%green%';";
-const char kOrderDatesSql[] = R"SQL(SELECT o_orderkey, o_orderdate FROM orders
-  WHERE EXISTS (SELECT l_orderkey FROM lineitem
-                WHERE l_orderkey = o_orderkey
-                  AND EXISTS (SELECT p_partkey FROM part
-                              WHERE p_partkey = l_partkey
-                                AND p_name LIKE '%green%'));)SQL";
+const char kAllPartsSql[] = "SELECT p_partkey, p_name FROM part;";
+const char kOrderDatesSql[] = "SELECT o_orderkey, o_orderdate FROM orders;";
 const char kSupplierNationsSql[] = "SELECT s_suppkey, s_nationkey FROM supplier;";
 const char kNationNamesSql[] = "SELECT n_nationkey, n_name FROM nation;";
-const char kActivePartsuppSql[] = R"SQL(SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp
-  WHERE EXISTS (SELECT p_partkey FROM part
-                WHERE p_partkey = ps_partkey AND p_name LIKE '%green%');)SQL";
+const char kActivePartsuppSql[] = "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp;";
 const char kActiveLinesSql[] = R"SQL(SELECT l_orderkey, l_partkey, l_suppkey,
-         l_quantity, l_extendedprice, l_discount FROM lineitem
-  WHERE EXISTS (SELECT p_partkey FROM part
-                WHERE p_partkey = l_partkey AND p_name LIKE '%green%');)SQL";
+         l_quantity, l_extendedprice, l_discount FROM lineitem;)SQL";
 const char kLinesSql[] = R"SQL(SELECT l_orderkey, l_partkey, l_suppkey,
          l_quantity, l_extendedprice, l_discount FROM lineitem;)SQL";
 const char kPartsuppSql[] = "SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp;";
@@ -80,7 +71,7 @@ struct NationRows {
 };
 
 struct BuildInputs {
-  std::vector<tpchq9vgen_green_part_in> green_parts;
+  NationRows all_parts;
   std::vector<tpchq9vgen_order_in> order_dates;
   std::vector<tpchq9vgen_supplier_in> supplier_nations;
   NationRows nation_names;
@@ -88,8 +79,8 @@ struct BuildInputs {
   std::vector<tpchq9vgen_line_in> active_lines;
 
   explicit BuildInputs(kit::Host &host) {
-    host.Query(kGreenPartsSql, [&](const core::AuxRow &row) {
-      green_parts.push_back({kit::I64(row, 0, 0)});
+    host.Query(kAllPartsSql, [&](const core::AuxRow &row) {
+      all_parts.Push(row);
     });
     host.Query(kOrderDatesSql, [&](const core::AuxRow &row) {
       order_dates.push_back(ReadOrder(row));
@@ -111,7 +102,8 @@ struct BuildInputs {
   template <typename Function, typename... Prefix>
   auto Call(Function function, Prefix... prefix) const {
     return function(prefix...,
-                    green_parts.size(), green_parts.data(),
+                    all_parts.keys.size(), all_parts.keys.data(),
+                    all_parts.names.bytes.data(), all_parts.names.off.data(),
                     order_dates.size(), order_dates.data(),
                     supplier_nations.size(), supplier_nations.data(),
                     nation_names.keys.size(), nation_names.keys.data(),
@@ -122,7 +114,8 @@ struct BuildInputs {
 };
 
 struct DeltaInputs {
-  std::vector<tpchq9vgen_part_delta> part;
+  NationRows part;
+  std::vector<int64_t> part_signs;
   std::vector<tpchq9vgen_order_delta> orders;
   std::vector<tpchq9vgen_supplier_delta> supplier;
   NationRows nation;
@@ -131,12 +124,11 @@ struct DeltaInputs {
   std::vector<tpchq9vgen_line_delta> lineitem;
 
   explicit DeltaInputs(const kit::Changes &changes) {
-    part.reserve(changes.at(0).size());
+    part.Reserve(changes.at(0).size());
+    part_signs.reserve(changes.at(0).size());
     for (const auto &change : changes.at(0)) {
-      const int64_t key = kit::I64(change.row, 0, 0);
-      const auto &name = kit::Text(change.row, 1);
-      part.push_back({key, static_cast<uint8_t>(name.find("green") != std::string::npos),
-                      change.sign});
+      part.Push(change.row);
+      part_signs.push_back(change.sign);
     }
     orders.reserve(changes.at(1).size());
     for (const auto &change : changes.at(1)) {
@@ -170,7 +162,8 @@ struct DeltaInputs {
           state, lineitem.size(), lineitem.data(),
           nation.keys.size(), nation.keys.data(), nation.names.bytes.data(),
           nation.names.off.data(), nation_signs.data(),
-          orders.size(), orders.data(), part.size(), part.data(),
+          orders.size(), orders.data(), part.keys.size(), part.keys.data(),
+          part.names.bytes.data(), part.names.off.data(), part_signs.data(),
           partsupp.size(), partsupp.data(), supplier.size(), supplier.data(),
           keys.data(), keys.size());
       if (count <= keys.size()) {
@@ -188,6 +181,8 @@ struct ApplyInputs {
   std::vector<tpchq9vgen_line_in> lines_for_orders_rows;
   std::vector<int64_t> lines_for_parts_keys;
   std::vector<tpchq9vgen_line_in> lines_for_parts_rows;
+  std::vector<int64_t> lines_for_suppliers_keys;
+  std::vector<tpchq9vgen_line_in> lines_for_suppliers_rows;
   std::vector<int64_t> partsupp_for_parts_keys;
   std::vector<tpchq9vgen_partsupp_in> partsupp_for_parts_rows;
   std::vector<int64_t> orders_for_keys_keys;
@@ -197,6 +192,7 @@ struct ApplyInputs {
       : delta(changes) {
     lines_for_orders_keys = delta.Keys(tpchq9vgen_rescan_lines_for_orders_keys, state);
     lines_for_parts_keys = delta.Keys(tpchq9vgen_rescan_lines_for_parts_keys, state);
+    lines_for_suppliers_keys = delta.Keys(tpchq9vgen_rescan_lines_for_suppliers_keys, state);
     partsupp_for_parts_keys = delta.Keys(tpchq9vgen_rescan_partsupp_for_parts_keys, state);
     orders_for_keys_keys = delta.Keys(tpchq9vgen_rescan_orders_for_keys_keys, state);
 
@@ -208,14 +204,19 @@ struct ApplyInputs {
                    [&](const core::AuxRow &row) {
       lines_for_parts_rows.push_back(ReadLine(row));
     });
+    kit::QueryKeys(host, kLinesSql, "l_suppkey", lines_for_suppliers_keys,
+                   [&](const core::AuxRow &row) {
+      lines_for_suppliers_rows.push_back(ReadLine(row));
+    });
     kit::QueryKeys(host, kPartsuppSql, "ps_partkey", partsupp_for_parts_keys,
                    [&](const core::AuxRow &row) {
       partsupp_for_parts_rows.push_back(ReadPartsupp(row));
     });
 
-    orders_for_keys_keys.reserve(orders_for_keys_keys.size() + lines_for_parts_rows.size());
-    for (const auto &line : lines_for_parts_rows) {
-      orders_for_keys_keys.push_back(line.l_orderkey);
+    for (const auto *rows : {&lines_for_orders_rows, &lines_for_parts_rows, &lines_for_suppliers_rows}) {
+      for (const auto &line : *rows) {
+        orders_for_keys_keys.push_back(line.l_orderkey);
+      }
     }
     std::sort(orders_for_keys_keys.begin(), orders_for_keys_keys.end());
     orders_for_keys_keys.erase(
@@ -234,12 +235,15 @@ struct ApplyInputs {
         prefix..., delta.lineitem.size(), delta.lineitem.data(),
         delta.nation.keys.size(), delta.nation.keys.data(), delta.nation.names.bytes.data(),
         delta.nation.names.off.data(), delta.nation_signs.data(),
-        delta.orders.size(), delta.orders.data(), delta.part.size(), delta.part.data(),
+        delta.orders.size(), delta.orders.data(), delta.part.keys.size(), delta.part.keys.data(),
+        delta.part.names.bytes.data(), delta.part.names.off.data(), delta.part_signs.data(),
         delta.partsupp.size(), delta.partsupp.data(), delta.supplier.size(), delta.supplier.data(),
         lines_for_orders_keys.size(), lines_for_orders_keys.data(),
         lines_for_orders_rows.size(), lines_for_orders_rows.data(),
         lines_for_parts_keys.size(), lines_for_parts_keys.data(),
         lines_for_parts_rows.size(), lines_for_parts_rows.data(),
+        lines_for_suppliers_keys.size(), lines_for_suppliers_keys.data(),
+        lines_for_suppliers_rows.size(), lines_for_suppliers_rows.data(),
         partsupp_for_parts_keys.size(), partsupp_for_parts_keys.data(),
         partsupp_for_parts_rows.size(), partsupp_for_parts_rows.data(),
         orders_for_keys_keys.size(), orders_for_keys_keys.data(),
@@ -272,9 +276,15 @@ void *PrepareApply(const void *store, const void *base, const kit::Changes &chan
       tpchq9vgens_prepare_apply, err, static_cast<const tpchq9vgens_store *>(store), typed_base);
 }
 
-bool Execute(const void *state, const core::QueryArguments &, std::vector<core::AuxRow> &out) {
+bool Execute(const void *state, const core::QueryArguments &args, std::vector<core::AuxRow> &out) {
+  std::string pattern;
+  if (!kit::ArgText(args, 0, pattern)) {
+    return false;
+  }
   std::unique_ptr<tpchq9vgen_result, decltype(&tpchq9vgen_result_free)> result(
-      tpchq9vgen_execute(static_cast<const tpchq9vgen_state *>(state)), tpchq9vgen_result_free);
+      tpchq9vgen_execute(static_cast<const tpchq9vgen_state *>(state),
+                         reinterpret_cast<const uint8_t *>(pattern.data()), pattern.size()),
+      tpchq9vgen_result_free);
   if (!result) {
     return false;
   }
@@ -310,7 +320,7 @@ const kit::Glue kGlue = {
      {"nation", {"n_nationkey", "n_name"}},
      {"partsupp", {"ps_partkey", "ps_suppkey", "ps_supplycost"}},
      {"lineitem", {"l_orderkey", "l_partkey", "l_suppkey", "l_quantity", "l_extendedprice", "l_discount"}}},
-    {},
+    {kit::Kind::Text},
     Build, FreeState, Apply, Execute, PrepareApply, PrepareBuild,
     kit::StoreOps{
         []() -> void * { return tpchq9vgens_new(); },

@@ -7,6 +7,9 @@ use crate::gen_spec::{OutRow, ext_lt};
 use crate::gen_obligations::{CustomerInput, NationInput, customer_input_view, nation_input_view};
 use crate::values::*;
 use crate::facts::*;
+use crate::paged::*;
+use crate::ents::*;
+use crate::customers::*;
 use crate::dimensions::*;
 use crate::calendar::*;
 use crate::model::*;
@@ -48,42 +51,49 @@ pub open spec fn candidate_rows(candidates: Seq<Candidate>) -> Seq<OutRow> {
 
 pub struct ReadSlice {
     pub slice: Arc<Slice>,
-    pub cursor: Cursor<Rank>,
-    pub head: Option<Arc<Rank>>,
+    pub cursor: PageCursor<RankEnt>,
+    pub head: Option<RankEnt>,
     pub consumed: Ghost<int>,
 }
 
-pub open spec fn pending_rows(slice: ReadSlice) -> Seq<((int, Seq<u8>), Rank)> {
-    if slice.head.is_some() {
-        let rank = *slice.head.unwrap();
-        seq![(rank_view(rank.moments.upper as int, rank.customer as int), rank)] + slice.cursor.remaining()
-    } else { slice.cursor.remaining() }
+pub open spec fn pending_rows(slice: ReadSlice) -> Seq<RankEnt> {
+    if slice.head.is_some() { seq![slice.head.unwrap()] + slice.cursor.remaining() } else { slice.cursor.remaining() }
 }
 
 pub open spec fn head_upper(slice: ReadSlice) -> int {
-    if slice.head.is_some() { slice.head.unwrap().moments.upper as int } else { 0int }
+    if slice.head.is_some() { slice.head.unwrap().upper as int } else { 0int }
 }
 
 pub open spec fn head_upper_weight() -> spec_fn(ReadSlice) -> int {
     |slice: ReadSlice| head_upper(slice)
 }
 
-pub open spec fn read_cell_index(slice: ReadSlice) -> Index<Moments> {
+pub open spec fn read_cell_index(slice: ReadSlice) -> Paged<CellEnt> {
     slice.slice.cells
 }
 
 pub open spec fn read_slice_valid(slice: ReadSlice) -> bool {
     &&& slice.slice.valid()
+    &&& slice.cursor.well_formed()
     &&& 0 <= slice.consumed@ <= slice.slice.ranks.entries().len()
     &&& pending_rows(slice) == slice.slice.ranks.entries().skip(slice.consumed@)
     &&& slice.head.is_some() == (slice.consumed@ < slice.slice.ranks.entries().len())
-    &&& (slice.head matches Some(value) ==> *value.moments == moment_at(slice.slice.cells, value.customer as int))
-    &&& forall|position: int| #![trigger slice.cursor.remaining()[position]]
-        0 <= position < slice.cursor.remaining().len() ==> {
-            let value = slice.cursor.remaining()[position].1;
-            &&& *value.moments == moment_at(slice.slice.cells, value.customer as int)
-            &&& slice.cursor.remaining()[position].0 == rank_view(value.moments.upper as int, value.customer as int)
-        }
+}
+
+pub proof fn lemma_head_cell(slice: ReadSlice)
+    requires read_slice_valid(slice), slice.head.is_some(),
+    ensures slice.head.unwrap().upper >= 0,
+        cell_at(slice.slice.cells, slice.head.unwrap().customer as int).upper == slice.head.unwrap().upper as int,
+        slice.slice.ranks.entries()[slice.consumed@] == slice.head.unwrap(),
+{
+    let ranks = slice.slice.ranks;
+    ranks.model();
+    let head = slice.head.unwrap();
+    assert(pending_rows(slice)[0] == head);
+    assert(ranks.entries().skip(slice.consumed@)[0] == ranks.entries()[slice.consumed@]);
+    assert(ranks.entries().contains(head));
+    lemma_at(ranks, head.kv(), head);
+    assert(ranks.at(head.kv()) == Some(head));
 }
 
 pub open spec fn read_slices_valid(slices: Seq<ReadSlice>) -> bool {
@@ -103,7 +113,7 @@ pub open spec fn remaining_work(slices: Seq<ReadSlice>) -> int {
 }
 
 pub open spec fn read_moment_weight(customer: int, component: int) -> spec_fn(ReadSlice) -> int {
-    |slice: ReadSlice| moment_at(slice.slice.cells, customer).component(component)
+    |slice: ReadSlice| cell_at(slice.slice.cells, customer).component(component)
 }
 
 pub open spec fn read_moment_sum(slices: Seq<ReadSlice>, customer: int, component: int) -> int {
@@ -212,40 +222,19 @@ pub fn add_range(result: &mut Vec<ReadSlice>, slices: &Index<Slice>, lower: i64,
             assert(slices.at(key.view()).unwrap().valid());
             assert(slice.valid());
         }
-        let rank_snapshot = slice.ranks.share();
         proof { slice.ranks.model(); }
         let mut ranks = slice.ranks.cursor();
-        proof {
-            assert forall|position: int| #![trigger ranks.remaining()[position]]
-                0 <= position < ranks.remaining().len() implies {
-                    let value = ranks.remaining()[position].1;
-                    &&& *value.moments == moment_at(slice.cells, value.customer as int)
-                    &&& ranks.remaining()[position].0 == rank_view(value.moments.upper as int, value.customer as int)
-                } by {}
-        }
         let ghost rank_rows = ranks.remaining();
-        let head = match ranks.next() { Some((_, value)) => Some(value), None => None };
+        let head = ranks.next();
         let read = ReadSlice { slice, cursor: ranks, head, consumed: Ghost(0int) };
         proof {
             assert(rank_rows == slice.ranks.entries());
-            if read.head.is_some() {
-                assert(slice.ranks.at(rank_rows[0].0) == Some(rank_rows[0].1));
-                assert(rank_rows[0].0 == rank_view(rank_rows[0].1.moments.upper as int, rank_rows[0].1.customer as int));
-                assert(pending_rows(read) =~= seq![rank_rows[0]] + rank_rows.skip(1));
-            }
             assert(pending_rows(read) =~= rank_rows);
+            if read.head.is_some() { assert(rank_rows.len() > 0); }
             assert(read.slice.valid());
             assert(0 <= read.consumed@ <= read.slice.ranks.entries().len());
             assert(read.head.is_some() == (read.consumed@ < read.slice.ranks.entries().len()));
             assert(pending_rows(read) == read.slice.ranks.entries().skip(read.consumed@));
-            assert forall|position: int| #![trigger read.cursor.remaining()[position]]
-                0 <= position < read.cursor.remaining().len() implies {
-                    let value = read.cursor.remaining()[position].1;
-                    &&& *value.moments == moment_at(read.slice.cells, value.customer as int)
-                    &&& read.cursor.remaining()[position].0 == rank_view(value.moments.upper as int, value.customer as int)
-                } by {
-                assert(read.cursor.remaining()[position] == rank_rows[position + 1]);
-            }
             assert(read_slice_valid(read));
         }
         let ghost before_result = result@;
@@ -259,9 +248,9 @@ pub fn add_range(result: &mut Vec<ReadSlice>, slices: &Index<Slice>, lower: i64,
                     == read_moment_sum(original, customer, component) + sum(rows.take(processed), weight));
                 verus_common::sums::lemma_sum_push(before_result, read, read_moment_weight(customer, component));
                 verus_common::sums::lemma_sum_take(rows, processed, weight);
-                assert(weight(rows[processed]) == moment_at(read.slice.cells, customer).component(component));
+                assert(weight(rows[processed]) == cell_at(read.slice.cells, customer).component(component));
                 assert(read_moment_sum(result@, customer, component)
-                    == read_moment_sum(before_result, customer, component) + moment_at(read.slice.cells, customer).component(component));
+                    == read_moment_sum(before_result, customer, component) + cell_at(read.slice.cells, customer).component(component));
             }
             processed = processed + 1;
         }
@@ -454,7 +443,7 @@ pub fn group_key(customer: &CustomerInput, nation: &NationInput) -> (result: Key
     Key::text(bytes)
 }
 
-pub fn add_group(result: &mut Index<Group>, cust: &Arc<Customer>, nation: &Arc<Nation>, customer: i64) -> (success: bool)
+pub fn add_group(result: &mut Index<Group>, cust: &Customer, nation: &Arc<Nation>, customer: i64) -> (success: bool)
     requires crate::group_proofs::groups_valid(*old(result), customer as int),
         cust.count > 0, nation.count > 0, cust.row.c_custkey == customer,
     ensures success ==> crate::group_proofs::groups_valid(*final(result), customer as int),
@@ -489,15 +478,11 @@ pub fn add_group(result: &mut Index<Group>, cust: &Arc<Customer>, nation: &Arc<N
     true
 }
 
-pub open spec fn customer_variant_rows(index: &Arc<Index<Customer>>) -> Seq<((int, Seq<u8>), Customer)> {
-    index.entries()
-}
-
 pub open spec fn nation_variant_rows(index: &Arc<Index<Nation>>) -> Seq<((int, Seq<u8>), Nation)> {
     index.entries()
 }
 
-pub open spec fn customer_variant_view(customer: &Arc<Customer>) -> crate::gen_spec::CustomerRow {
+pub open spec fn customer_variant_view(customer: &Customer) -> crate::gen_spec::CustomerRow {
     customer_input_view(*customer.row)
 }
 
@@ -508,41 +493,27 @@ pub fn groups(dimensions: &Dimensions, customer: i64, Ghost(db): Ghost<Db>) -> (
             == crate::group_proofs::joined_group_sum(*dimensions, customer as int, key),
 {
     let mut result: Index<Group> = Index::new();
-    proof { reveal(dimensions_valid); }
-    let variants = match dimensions.customers.get(&Key::number(customer)) { Some(value) => value, None => return Some(result) };
-    let ghost customer_rows = customer_variant_rows(&variants);
-    proof { variants.model(); }
-    let mut customers = variants.cursor();
-    let ghost mut processed = 0int;
-    loop
+    proof { lemma_dimensions_shape(db, *dimensions); reveal(dimensions_valid); }
+    let probe = CustEnt { custkey: customer, variants: Arc::new(Vec::new()) };
+    proof { assert(probe.kv() == (customer as int, Seq::<u8>::empty())); }
+    let entry = match dimensions.customers.get(&probe) { Some(value) => value, None => return Some(result) };
+    proof { assert(entry_valid(entry)); }
+    let variants = &*entry.variants;
+    let ghost customer_rows = variants@;
+    proof { assert(customer_rows == variants_at(dimensions.customers, customer as int)); }
+    let mut processed = 0usize;
+    while processed < variants.len()
         invariant dimensions_valid(db, *dimensions), crate::group_proofs::groups_valid(result, customer as int),
-            dimensions.customers.at((customer as int, Seq::empty())) == Some(*variants),
-            variants.wf(), customer_rows == variants.entries(),
-            forall|position: int| #![trigger customer_rows[position]] 0 <= position < customer_rows.len()
-                ==> variants.at(customer_rows[position].0) == Some(customer_rows[position].1),
-            0 <= processed <= customer_rows.len(), customers.remaining() == customer_rows.skip(processed),
+            customer_rows == variants@, customer_rows == variants_at(dimensions.customers, customer as int),
+            entry_valid(entry), variants == &*entry.variants,
+            0 <= processed <= customer_rows.len(),
             forall|key: (int, Seq<u8>)| #[trigger] crate::group_proofs::group_total(result, key)
-                == sum(customer_rows.take(processed), crate::group_proofs::customer_group_weight(*dimensions, key)),
-        decreases customers.remaining().len(),
+                == sum(customer_rows.take(processed as int), crate::group_proofs::customer_group_weight(*dimensions, key)),
+        decreases customer_rows.len() - processed,
     {
-        let (_, cust) = match customers.next() {
-            Some(row) => row,
-            None => {
-                proof {
-                    assert(customer_rows.take(processed) =~= customer_rows);
-                    assert forall|key: (int, Seq<u8>)| #[trigger] crate::group_proofs::group_total(result, key)
-                        == crate::group_proofs::joined_group_sum(*dimensions, customer as int, key) by {
-                        assert(crate::group_proofs::group_total(result, key)
-                            == sum(customer_rows, crate::group_proofs::customer_group_weight(*dimensions, key)));
-                    }
-                }
-                return Some(result);
-            },
-        };
+        let cust = &variants[processed];
         proof {
             reveal(dimensions_valid);
-            assert(customer_rows[processed].1 == *cust);
-            assert(variants.at(customer_rows[processed].0).is_some());
             assert(cust.count > 0 && cust.row.c_custkey == customer);
         }
         let nations = match dimensions.nations.get(&Key::number(cust.row.c_nationkey)) {
@@ -550,32 +521,28 @@ pub fn groups(dimensions: &Dimensions, customer: i64, Ghost(db): Ghost<Db>) -> (
             None => {
                 proof {
                     assert forall|key: (int, Seq<u8>)| #[trigger] crate::group_proofs::group_total(result, key)
-                        == sum(customer_rows.take(processed + 1), crate::group_proofs::customer_group_weight(*dimensions, key)) by {
+                        == sum(customer_rows.take(processed as int + 1), crate::group_proofs::customer_group_weight(*dimensions, key)) by {
                         let weight = crate::group_proofs::customer_group_weight(*dimensions, key);
-                        verus_common::sums::lemma_sum_take(customer_rows, processed, weight);
-                        assert(weight(customer_rows[processed]) == 0);
-                        assert(crate::group_proofs::group_total(result, key) == sum(customer_rows.take(processed), weight));
+                        verus_common::sums::lemma_sum_take(customer_rows, processed as int, weight);
+                        assert(weight(customer_rows[processed as int]) == 0);
+                        assert(crate::group_proofs::group_total(result, key) == sum(customer_rows.take(processed as int), weight));
                     }
-                    processed = processed + 1;
                 }
+                processed += 1;
                 continue;
             },
         };
         let ghost nation_rows = nation_variant_rows(&nations);
         let ghost before_nations = result;
-        let ghost customer_row = customer_variant_view(&cust);
+        let ghost customer_row = customer_variant_view(cust);
         proof { nations.model(); }
         let mut names = nations.cursor();
         let ghost mut named = 0int;
         let mut finished = false;
         while !finished
             invariant dimensions_valid(db, *dimensions), crate::group_proofs::groups_valid(result, customer as int),
-                0 <= processed < customer_rows.len(), customers.remaining() == customer_rows.skip(processed + 1),
-                variants.wf(), customer_rows == variants.entries(),
-                dimensions.customers.at((customer as int, Seq::empty())) == Some(*variants),
-                forall|position: int| #![trigger customer_rows[position]] 0 <= position < customer_rows.len()
-                    ==> variants.at(customer_rows[position].0) == Some(customer_rows[position].1),
-                customer_rows[processed].1 == *cust, cust.count > 0, cust.row.c_custkey == customer,
+                0 <= processed < customer_rows.len(), customer_rows == variants@,
+                customer_rows[processed as int] == *cust, cust.count > 0, cust.row.c_custkey == customer,
                 customer_row == customer_input_view(*cust.row),
                 dimensions.nations.at((customer_row.c_nationkey, Seq::empty())) == Some(*nations),
                 nation_rows == nations.entries(), nations.wf(),
@@ -584,7 +551,7 @@ pub fn groups(dimensions: &Dimensions, customer: i64, Ghost(db): Ghost<Db>) -> (
                 0 <= named <= nation_rows.len(), names.remaining() == nation_rows.skip(named),
                 finished ==> named == nation_rows.len(),
                 forall|key: (int, Seq<u8>)| #[trigger] crate::group_proofs::group_total(before_nations, key)
-                    == sum(customer_rows.take(processed), crate::group_proofs::customer_group_weight(*dimensions, key)),
+                    == sum(customer_rows.take(processed as int), crate::group_proofs::customer_group_weight(*dimensions, key)),
                 forall|key: (int, Seq<u8>)| #[trigger] crate::group_proofs::group_total(result, key)
                     == crate::group_proofs::group_total(before_nations, key)
                         + cust.count as int * sum(nation_rows.take(named), crate::group_proofs::nation_group_weight(customer_row, key)),
@@ -606,7 +573,7 @@ pub fn groups(dimensions: &Dimensions, customer: i64, Ghost(db): Ghost<Db>) -> (
                 assert(nation.count > 0);
             }
             let ghost original = result;
-            if !add_group(&mut result, &cust, &nation, customer) { return None; }
+            if !add_group(&mut result, cust, &nation, customer) { return None; }
             proof {
                 assert forall|key: (int, Seq<u8>)| #[trigger] crate::group_proofs::group_total(result, key)
                     == crate::group_proofs::group_total(before_nations, key)
@@ -628,18 +595,27 @@ pub fn groups(dimensions: &Dimensions, customer: i64, Ghost(db): Ghost<Db>) -> (
         proof {
             assert(nation_rows.take(named) =~= nation_rows);
             assert forall|key: (int, Seq<u8>)| #[trigger] crate::group_proofs::group_total(result, key)
-                == sum(customer_rows.take(processed + 1), crate::group_proofs::customer_group_weight(*dimensions, key)) by {
+                == sum(customer_rows.take(processed as int + 1), crate::group_proofs::customer_group_weight(*dimensions, key)) by {
                 let weight = crate::group_proofs::customer_group_weight(*dimensions, key);
-                verus_common::sums::lemma_sum_take(customer_rows, processed, weight);
-                assert(weight(customer_rows[processed]) == cust.count as int
+                verus_common::sums::lemma_sum_take(customer_rows, processed as int, weight);
+                assert(weight(customer_rows[processed as int]) == cust.count as int
                     * sum(nation_rows, crate::group_proofs::nation_group_weight(customer_row, key)));
-                assert(crate::group_proofs::group_total(before_nations, key) == sum(customer_rows.take(processed), weight));
+                assert(crate::group_proofs::group_total(before_nations, key) == sum(customer_rows.take(processed as int), weight));
                 assert(crate::group_proofs::group_total(result, key) == crate::group_proofs::group_total(before_nations, key)
                     + cust.count as int * sum(nation_rows, crate::group_proofs::nation_group_weight(customer_row, key)));
             }
-            processed = processed + 1;
+        }
+        processed += 1;
+    }
+    proof {
+        assert(customer_rows.take(processed as int) =~= customer_rows);
+        assert forall|key: (int, Seq<u8>)| #[trigger] crate::group_proofs::group_total(result, key)
+            == crate::group_proofs::joined_group_sum(*dimensions, customer as int, key) by {
+            assert(crate::group_proofs::group_total(result, key)
+                == sum(customer_rows, crate::group_proofs::customer_group_weight(*dimensions, key)));
         }
     }
+    Some(result)
 }
 
 pub fn candidate_before(left: &Candidate, right: &Candidate) -> (result: bool)
@@ -733,35 +709,40 @@ pub fn insert_top(top: &mut Vec<Candidate>, candidate: Candidate)
 }
 
 pub fn window_moments(slices: &Vec<ReadSlice>, customer: i64) -> (result: Option<Moments>)
+    requires read_slices_valid(slices@),
     ensures result matches Some(value) ==> forall|component: int| #[trigger] value.component(component)
-        == sum(slices@, |slice: ReadSlice| moment_at(slice.slice.cells, customer as int).component(component)),
+        == sum(slices@, |slice: ReadSlice| cell_at(slice.slice.cells, customer as int).component(component)),
         result matches Some(value) ==> forall|component: int| #[trigger] value.component(component)
             == read_moment_sum(slices@, customer as int, component),
 {
     let mut result = Moments::zero();
-    let key = Key::number(customer);
+    let probe = probe_cell(customer);
     let mut index = 0usize;
     while index < slices.len()
-        invariant index <= slices.len(), key.view() == (customer as int, Seq::<u8>::empty()),
+        invariant index <= slices.len(), read_slices_valid(slices@), probe.kv() == (customer as int, Seq::<u8>::empty()),
             forall|component: int| #[trigger] result.component(component)
                 == sum(slices@.take(index as int), |slice: ReadSlice|
-                    moment_at(slice.slice.cells, customer as int).component(component)),
+                    cell_at(slice.slice.cells, customer as int).component(component)),
         decreases slices.len() - index,
     {
         let ghost processed = index as int;
         let ghost accumulated = result;
-        let cell = match slices[index].slice.cells.get(&key) { Some(value) => *value, None => Moments::zero() };
-        proof { assert(cell == moment_at(slices@[index as int].slice.cells, customer as int)); }
+        proof { assert(read_slice_valid(slices@[index as int])); assert(slices@[index as int].slice.cells.wf()); }
+        let cell = match slices[index].slice.cells.get(&probe) {
+            Some(value) => Moments { count: value.count as i128, revenue: value.revenue as i128, upper: value.upper as i128 },
+            None => Moments::zero(),
+        };
+        proof { assert(cell == cell_at(slices@[index as int].slice.cells, customer as int)); }
         result = match result.add(cell) { Some(value) => value, None => return None };
         proof {
             assert forall|component: int| #[trigger] result.component(component)
                 == sum(slices@.take(index as int + 1), |slice: ReadSlice|
-                    moment_at(slice.slice.cells, customer as int).component(component)) by {
+                    cell_at(slice.slice.cells, customer as int).component(component)) by {
                 assert(accumulated.component(component) == sum(slices@.take(index as int),
-                    |slice: ReadSlice| moment_at(slice.slice.cells, customer as int).component(component)));
+                    |slice: ReadSlice| cell_at(slice.slice.cells, customer as int).component(component)));
                 assert(result.component(component) == accumulated.component(component) + cell.component(component));
                 verus_common::sums::lemma_sum_take(slices@, index as int,
-                    |slice: ReadSlice| moment_at(slice.slice.cells, customer as int).component(component));
+                    |slice: ReadSlice| cell_at(slice.slice.cells, customer as int).component(component));
             }
         }
         index += 1;
@@ -771,7 +752,7 @@ pub fn window_moments(slices: &Vec<ReadSlice>, customer: i64) -> (result: Option
         assert forall|component: int| #[trigger] result.component(component)
             == read_moment_sum(slices@, customer as int, component) by {
             assert(read_moment_weight(customer as int, component) =~=
-                (|slice: ReadSlice| moment_at(slice.slice.cells, customer as int).component(component)));
+                (|slice: ReadSlice| cell_at(slice.slice.cells, customer as int).component(component)));
         }
     }
     Some(result)
@@ -815,13 +796,14 @@ pub fn insert_scored(top: &mut Vec<Candidate>, candidate: Candidate,
 
 pub fn score(top: &mut Vec<Candidate>, dimensions: &Dimensions, slices: &Vec<ReadSlice>, customer: i64, hint: Moments,
     Ghost(db): Ghost<Db>, Ghost(parameters): Ghost<crate::gen_spec::Params>) -> (success: bool)
-    requires top.len() <= 20, dimensions_valid(db, *dimensions), dimensions.customers.wf(), dimensions.nations.wf(),
+    requires top.len() <= 20, dimensions_valid(db, *dimensions), dimensions.nations.wf(),
         top_rows_ok(db, parameters, old(top)@),
         crate::selection::valid_top(candidate_rows(old(top)@)),
         verus_common::order::nondesc(candidate_rows(old(top)@), crate::gen_spec::ext_order()),
         read_moment_sum(slices@, customer as int, 0) == crate::query_semantics::window_fact(db, parameters, customer as int, 0),
         read_moment_sum(slices@, customer as int, 1) == crate::query_semantics::window_fact(db, parameters, customer as int, 1),
-        slices.len() == 1 ==> hint == moment_at(slices@[0].slice.cells, customer as int),
+        slices.len() == 1 ==> hint == cell_at(slices@[0].slice.cells, customer as int),
+        read_slices_valid(slices@),
     ensures final(top).len() <= 20, success ==> top_rows_ok(db, parameters, final(top)@),
         success ==> crate::selection::valid_top(candidate_rows(final(top)@)),
         success ==> forall|row: OutRow| #[trigger] crate::selection::covered(candidate_rows(old(top)@), row)
@@ -854,7 +836,9 @@ pub fn score(top: &mut Vec<Candidate>, dimensions: &Dimensions, slices: &Vec<Rea
         }
         return true;
     }
-    let customers = match dimensions.customers.get(&Key::number(customer)) { Some(value) => value, None => {
+    let probe = CustEnt { custkey: customer, variants: Arc::new(Vec::new()) };
+    proof { lemma_dimensions_shape(db, *dimensions); assert(probe.kv() == (customer as int, Seq::<u8>::empty())); }
+    let entry = match dimensions.customers.get(&probe) { Some(value) => value, None => {
         proof {
             assert forall|row: OutRow| #[trigger] crate::gen_spec::row_ok(db, parameters, row)
                 && row.c_custkey == customer as int implies false by {
@@ -863,27 +847,20 @@ pub fn score(top: &mut Vec<Candidate>, dimensions: &Dimensions, slices: &Vec<Rea
         }
         return true;
     } };
-    let ghost customer_rows = customer_variant_rows(&customers);
-    let mut customer_cursor = customers.cursor();
-    let cust = match customer_cursor.next() { Some((_, value)) => value, None => {
-        proof { assert(dimensions.customers.at((customer as int, Seq::empty())).is_some()); }
-        return true;
-    } };
-    proof {
-        customers.model();
-        assert(dimensions.customers.at((customer as int, Seq::empty())).is_some());
-        assert(customer_rows[0].1 == *cust);
-        assert(customers.at(customer_rows[0].0).is_some());
-        assert(cust.count > 0 && cust.row.c_custkey == customer);
-    }
-    if customer_cursor.next().is_none() {
+    proof { assert(entry_valid(entry)); }
+    let variants = &*entry.variants;
+    let ghost customer_rows = variants@;
+    proof { assert(customer_rows == variants_at(dimensions.customers, customer as int)); }
+    let cust = &variants[0];
+    proof { assert(cust.count > 0 && cust.row.c_custkey == customer); }
+    if variants.len() == 1 {
         let nations = match dimensions.nations.get(&Key::number(cust.row.c_nationkey)) { Some(value) => value, None => {
             proof {
                 assert(customer_rows.len() == 1);
                 assert forall|row: OutRow| #[trigger] crate::gen_spec::row_ok(db, parameters, row)
                     && row.c_custkey == customer as int implies false by {
                     let representatives = crate::completeness::lemma_representatives(db, parameters, *dimensions, row);
-                    assert(customer_rows.contains((customer_inner_view(customer_input_view(*representatives.0.row)), representatives.0)));
+                    assert(customer_rows.contains(representatives.0));
                     assert(representatives.0 == *cust);
                 }
             }
@@ -911,11 +888,11 @@ pub fn score(top: &mut Vec<Candidate>, dimensions: &Dimensions, slices: &Vec<Rea
             let candidate = Candidate { group, revenue };
             proof {
                 crate::group_proofs::lemma_singleton_candidate(db, parameters, *dimensions,
-                    &*customers, &*nations, &*cust, &*nation, candidate, moments);
+                    &*nations, cust, &*nation, candidate, moments);
                 assert forall|row: OutRow| #[trigger] crate::gen_spec::row_ok(db, parameters, row)
                     && row.c_custkey == customer as int implies row == candidate.view() by {
                     let representatives = crate::completeness::lemma_representatives(db, parameters, *dimensions, row);
-                    assert(customer_rows.contains((customer_inner_view(customer_input_view(*representatives.0.row)), representatives.0)));
+                    assert(customer_rows.contains(representatives.0));
                     assert(representatives.0 == *cust);
                     assert(nation_rows.contains((nation_inner_view(nation_input_view(*representatives.1.row)), representatives.1)));
                     assert(representatives.1 == *nation);
@@ -942,7 +919,7 @@ pub fn score(top: &mut Vec<Candidate>, dimensions: &Dimensions, slices: &Vec<Rea
             forall|row: OutRow| #[trigger] crate::selection::covered(candidate_rows(original_top), row)
                 ==> crate::selection::covered(candidate_rows(top@), row),
             verus_common::order::nondesc(candidate_rows(top@), crate::gen_spec::ext_order()),
-            dimensions.customers.wf(), dimensions.nations.wf(),
+            dimensions.nations.wf(),
             crate::group_proofs::groups_valid(groups, customer as int),
             forall|key: (int, Seq<u8>)| #[trigger] crate::group_proofs::group_total(groups, key)
                 == crate::group_proofs::joined_group_sum(*dimensions, customer as int, key),
@@ -1029,6 +1006,8 @@ pub fn output_rows(top: &Vec<Candidate>) -> (result: Vec<OutputRow>)
     result
 }
 
+#[verifier::spinoff_prover]
+#[verifier::rlimit(100)]
 pub fn run(days: &Index<Slice>, periods: &Periods, dimensions: &Dimensions, lower: i32, upper: i32,
     Ghost(db): Ghost<Db>) -> (result: Option<Vec<OutputRow>>)
     requires facts_valid(db, *days, 0), facts_valid(db, periods.months, 1),
@@ -1043,7 +1022,6 @@ pub fn run(days: &Index<Slice>, periods: &Periods, dimensions: &Dimensions, lowe
         lemma_facts_shape(db, periods.years, 3);
         lemma_dimensions_shape(db, *dimensions);
         reveal(dimensions_valid);
-        lemma_maxima_ranked_values(dimensions.customer_totals, dimensions.customer_maxima);
         lemma_maxima_ranked_values(dimensions.nation_totals, dimensions.nation_maxima);
     }
     let mut top: Vec<Candidate> = Vec::new();
@@ -1055,7 +1033,7 @@ pub fn run(days: &Index<Slice>, periods: &Periods, dimensions: &Dimensions, lowe
         }
         return Some(empty);
     }
-    let max_customers = maximum(&dimensions.customer_maxima);
+    let max_customers = dimensions.customer_max;
     let max_nations = maximum(&dimensions.nation_maxima);
     if max_customers == 0 || max_nations == 0 {
         let empty = Vec::new();
@@ -1071,14 +1049,13 @@ pub fn run(days: &Index<Slice>, periods: &Periods, dimensions: &Dimensions, lowe
         crate::completeness::lemma_maximum_bounds(db, *dimensions, max_customers as int, max_nations as int);
     }
     let mut slices = selected_slices(days, periods, lower, upper, Ghost(db));
-    let customer_snapshot = dimensions.customers.share();
     let nation_snapshot = dimensions.nations.share();
     let mut visited: HashMap<i64, ()> = HashMap::new();
     let ghost mut seen: Set<i64> = Set::empty();
     loop
         invariant top.len() <= 20, read_slices_valid(slices@),
             dimensions_valid(db, *dimensions),
-            dimensions.customers.wf(), dimensions.nations.wf(), top_rows_ok(db, params(lower as int, upper as int), top@),
+            dimensions.nations.wf(), top_rows_ok(db, params(lower as int, upper as int), top@),
             verus_common::order::nondesc(candidate_rows(top@), crate::gen_spec::ext_order()),
             crate::selection::valid_top(candidate_rows(top@)),
             crate::completeness::seen_prefix(slices@, seen),
@@ -1114,11 +1091,11 @@ pub fn run(days: &Index<Slice>, periods: &Periods, dimensions: &Dimensions, lowe
                 Some(value) => {
                     proof {
                         assert(read_slice_valid(slices@[index as int]));
-                        assert(*value.moments == moment_at(slices@[index as int].slice.cells, value.customer as int));
-                        assert(value.moments.upper >= 0);
+                        lemma_head_cell(slices@[index as int]);
                     }
-                    if value.moments.upper > highest { highest = value.moments.upper; choice = Some(index); }
-                    bound = match bound { Some(total) => total.checked_add(value.moments.upper), None => None };
+                    let upper = value.upper as i128;
+                    if upper > highest { highest = upper; choice = Some(index); }
+                    bound = match bound { Some(total) => total.checked_add(upper), None => None };
                 },
                 None => {},
             }
@@ -1153,26 +1130,23 @@ pub fn run(days: &Index<Slice>, periods: &Periods, dimensions: &Dimensions, lowe
         let ghost before_selected = selected;
         let ghost removed_slices = slices@;
         proof { verus_common::sums::lemma_sum_remove(before_slices, position as int, |slice: ReadSlice| slice_work(slice)); }
-        let (customer, hint) = match &selected.head { Some(value) => (value.customer, *value.moments), None => return None };
+        let customer = match &selected.head { Some(value) => value.customer, None => return None };
+        let hint = match selected.slice.cells.get(&probe_cell(customer)) {
+            Some(value) => Moments { count: value.count as i128, revenue: value.revenue as i128, upper: value.upper as i128 },
+            None => Moments::zero(),
+        };
         proof {
-            assert(pending_rows(before_selected)[0].1.customer == customer);
-            assert(before_selected.slice.ranks.entries()[before_selected.consumed@].1.customer == customer);
+            lemma_head_cell(before_selected);
+            assert(hint == cell_at(before_selected.slice.cells, customer as int));
+            assert(before_selected.slice.ranks.entries()[before_selected.consumed@].customer == customer);
         }
-        selected.head = match selected.cursor.next() { Some((_, value)) => Some(value), None => None };
+        selected.head = selected.cursor.next();
         selected.consumed = Ghost(before_selected.consumed@ + 1);
         proof {
             assert(pending_rows(selected) =~= before_selected.cursor.remaining());
             assert(pending_rows(selected) =~= pending_rows(before_selected).drop_first());
             assert(selected.slice.ranks.entries().skip(selected.consumed@) =~=
                 selected.slice.ranks.entries().skip(before_selected.consumed@).drop_first());
-            assert forall|index: int| #![trigger selected.cursor.remaining()[index]]
-                0 <= index < selected.cursor.remaining().len() implies {
-                    let value = selected.cursor.remaining()[index].1;
-                    &&& *value.moments == moment_at(selected.slice.cells, value.customer as int)
-                    &&& selected.cursor.remaining()[index].0 == rank_view(value.moments.upper as int, value.customer as int)
-                } by {
-                assert(selected.cursor.remaining()[index] == before_selected.cursor.remaining()[index + 1]);
-            }
             assert(read_slice_valid(selected));
             assert(slice_work(selected) == slice_work(before_selected) - 1);
             verus_prooflib::lemma_sum_insert(removed_slices, position as int, selected, |slice: ReadSlice| slice_work(slice));
@@ -1182,15 +1156,15 @@ pub fn run(days: &Index<Slice>, periods: &Periods, dimensions: &Dimensions, lowe
         proof {
             assert forall|slice_position: int, rank_position: int| #![trigger slices@[slice_position].slice.ranks.entries()[rank_position]]
                 0 <= slice_position < slices.len() && 0 <= rank_position < slices@[slice_position].consumed@
-                implies seen.contains(slices@[slice_position].slice.ranks.entries()[rank_position].1.customer) by {
+                implies seen.contains(slices@[slice_position].slice.ranks.entries()[rank_position].customer) by {
                 if slice_position == position as int {
                     assert(slices@[slice_position] == selected);
                     if rank_position < before_selected.consumed@ {
-                        assert(before_seen.contains(before_slices[position as int].slice.ranks.entries()[rank_position].1.customer));
+                        assert(before_seen.contains(before_slices[position as int].slice.ranks.entries()[rank_position].customer));
                     }
                 } else {
                     assert(slices@[slice_position] == before_slices[slice_position]);
-                    assert(before_seen.contains(before_slices[slice_position].slice.ranks.entries()[rank_position].1.customer));
+                    assert(before_seen.contains(before_slices[slice_position].slice.ranks.entries()[rank_position].customer));
                 }
             }
             assert forall|customer: int, component: int| #[trigger] read_moment_sum(slices@, customer, component)

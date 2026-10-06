@@ -1,3 +1,4 @@
+use crate::packed::{self, Packed, PackedCursor};
 use std::sync::Arc;
 use vstd::prelude::*;
 use verus_common::sums::{sum, lemma_sum_take};
@@ -71,14 +72,14 @@ pub fn merge_inventory(target: &mut Inventory, source: &Inventory, weight: i128)
                     assert forall|part: i64| #[trigger] moment_at(target.groups, part as int).count as int
                         == moment_at(initial, part as int).count as int + moment_at(source.groups, part as int).count as int * weight as int by {
                         let weighted = |row: (KeyView, Moment)| row.1.count as int * weight as int;
-                        verus_prooflib::ordered::lemma_key_contribution(&source.groups, numeric_key(part as int),
+                        packed::lemma_key_contribution(&source.groups, numeric_key(part as int),
                             weighted);
                         assert((|row: (KeyView, Moment)| if row.0 == numeric_key(part as int) { row.1.count as int * weight as int } else { 0 })
                             =~= (|row: (KeyView, Moment)| if row.0 == numeric_key(part as int) { weighted(row) } else { 0 }));
                         assert(moment_at(target.groups, part as int).count as int == moment_at(initial, part as int).count as int
                             + sum(source.groups.entries().take(processed@), |row: (KeyView, Moment)|
                                 if row.0 == numeric_key(part as int) { row.1.count as int * weight as int } else { 0 }));
-                        assert(verus_prooflib::ordered::contribution(source.groups, numeric_key(part as int),
+                        assert(packed::contribution(source.groups, numeric_key(part as int),
                             weighted)
                             == moment_at(source.groups, part as int).count as int * weight as int) by {
                             reveal(verus_prooflib::ordered::contribution);
@@ -90,14 +91,14 @@ pub fn merge_inventory(target: &mut Inventory, source: &Inventory, weight: i128)
                     assert forall|part: i64| #[trigger] moment_at(target.groups, part as int).value as int
                         == moment_at(initial, part as int).value as int + moment_at(source.groups, part as int).value as int * weight as int by {
                         let weighted = |row: (KeyView, Moment)| row.1.value as int * weight as int;
-                        verus_prooflib::ordered::lemma_key_contribution(&source.groups, numeric_key(part as int),
+                        packed::lemma_key_contribution(&source.groups, numeric_key(part as int),
                             weighted);
                         assert((|row: (KeyView, Moment)| if row.0 == numeric_key(part as int) { row.1.value as int * weight as int } else { 0 })
                             =~= (|row: (KeyView, Moment)| if row.0 == numeric_key(part as int) { weighted(row) } else { 0 }));
                         assert(moment_at(target.groups, part as int).value as int == moment_at(initial, part as int).value as int
                             + sum(source.groups.entries().take(processed@), |row: (KeyView, Moment)|
                                 if row.0 == numeric_key(part as int) { row.1.value as int * weight as int } else { 0 }));
-                        assert(verus_prooflib::ordered::contribution(source.groups, numeric_key(part as int),
+                        assert(packed::contribution(source.groups, numeric_key(part as int),
                             weighted)
                             == moment_at(source.groups, part as int).value as int * weight as int) by {
                             reveal(verus_prooflib::ordered::contribution);
@@ -358,7 +359,7 @@ pub fn coalesce_partsupp(rows: &[PartsuppDelta]) -> (result: Option<Profiles>)
         proof { lemma_i64_product(row.row.ps_availqty, row.row.ps_supplycost); }
         let value = (row.row.ps_availqty as i128) * (row.row.ps_supplycost as i128);
         let change = match scale(Moment { count: 1, value }, row.sign as i128) { Some(change) => change, None => return None };
-        if !add_profile(&mut profiles, row.row.ps_suppkey, row.row.ps_partkey, change, true) { return None; }
+        if !add_profile(&mut profiles, row.row.ps_suppkey, row.row.ps_partkey, change, true, 63) { return None; }
         proof {
             assert forall|supplier: i64, part: i64| #[trigger] profile_at(profiles, supplier as int, part as int).count as int
                 == p_delta_count(rows@.take(index as int + 1), supplier as int, part as int)
@@ -475,7 +476,7 @@ pub open spec fn nation_delta_count(rows: Seq<NationDelta>, nation: i64, name: S
     sum(rows, nation_delta_weight(nation, name))
 }
 
-pub proof fn lemma_inventory_group_finish(groups: Index<Moment>, nation: i64, query: i64, part: Option<i64>, value: bool, selected: spec_fn((KeyView, Moment)) -> int)
+pub proof fn lemma_inventory_group_finish(groups: Packed, nation: i64, query: i64, part: Option<i64>, value: bool, selected: spec_fn((KeyView, Moment)) -> int)
     requires forall|row: (KeyView, Moment)| #[trigger] selected(row) == if query == nation { profile_row_measure(row, part, value) } else { 0 },
     ensures sum(groups.entries(), selected) == if query == nation { profile_measure(groups, part, value) } else { 0 },
 {
@@ -484,18 +485,18 @@ pub proof fn lemma_inventory_group_finish(groups: Index<Moment>, nation: i64, qu
     } else { verus_common::sums::lemma_sum_zero(groups.entries(), selected); }
 }
 
-pub proof fn lemma_inventory_changes_finish(changes: Profiles, nation: i64, part: Option<i64>, value: bool, selected: spec_fn((KeyView, Index<Moment>)) -> int)
-    requires changes.wf(), forall|row: (KeyView, Index<Moment>)| #[trigger] selected(row) == if row.0 == numeric_key(nation as int) { profile_measure(row.1, part, value) } else { 0 },
+pub proof fn lemma_inventory_changes_finish(changes: Profiles, nation: i64, part: Option<i64>, value: bool, selected: spec_fn((KeyView, Packed)) -> int)
+    requires changes.wf(), forall|row: (KeyView, Packed)| #[trigger] selected(row) == if row.0 == numeric_key(nation as int) { profile_measure(row.1, part, value) } else { 0 },
     ensures sum(changes.entries(), selected) == crate::construction::profile_measure_at(changes, numeric_key(nation as int), part, value),
 {
-    let weight = |row: (KeyView, Index<Moment>)| profile_measure(row.1, part, value);
-    let filtered = |row: (KeyView, Index<Moment>)| if row.0 == numeric_key(nation as int) { weight(row) } else { 0 };
+    let weight = |row: (KeyView, Packed)| profile_measure(row.1, part, value);
+    let filtered = |row: (KeyView, Packed)| if row.0 == numeric_key(nation as int) { weight(row) } else { 0 };
     verus_prooflib::ordered::lemma_key_contribution(&changes, numeric_key(nation as int), weight);
     verus_common::sums::lemma_sum_ext_all(changes.entries(), selected, filtered);
     reveal(verus_prooflib::ordered::contribution);
 }
 
-pub fn apply_inventory_group(data: &mut Data, nation: i64, groups: &Index<Moment>) -> (result: bool)
+pub fn apply_inventory_group(data: &mut Data, nation: i64, groups: &Packed) -> (result: bool)
     requires old(data).structures_valid(), crate::construction::profile_keys_ok(*groups),
         crate::names::indexed_names_ok(*old(data)), crate::name_updates::symmetric(*old(data)), counts_layout(old(data).nations_reverse, false, true),
     ensures final(data).structures_valid(), same_dimensions(*old(data), *final(data)),
@@ -581,7 +582,7 @@ pub fn apply_inventory_changes(data: &mut Data, changes: &Profiles) -> (result: 
             profile_layout(*changes), 0 <= processed@ <= changes.entries().len(), nations.remaining() == changes.entries().skip(processed@),
             forall|nation: i64, part: Option<i64>, value: bool| #[trigger] inventory_measure(data.inventories, nation, part, value)
                 == inventory_measure(initial.inventories, nation, part, value)
-                    + sum(changes.entries().take(processed@), |row: (KeyView, Index<Moment>)|
+                    + sum(changes.entries().take(processed@), |row: (KeyView, Packed)|
                         if row.0 == numeric_key(nation as int) { profile_measure(row.1, part, value) } else { 0 }),
         decreases nations.remaining().len(),
     {
@@ -593,7 +594,7 @@ pub fn apply_inventory_changes(data: &mut Data, changes: &Profiles) -> (result: 
                     assert forall|nation: i64, part: Option<i64>, value: bool| #[trigger] inventory_measure(data.inventories, nation, part, value)
                         == inventory_measure(initial.inventories, nation, part, value)
                             + crate::construction::profile_measure_at(*changes, numeric_key(nation as int), part, value) by {
-                        let selected = |row: (KeyView, Index<Moment>)| if row.0 == numeric_key(nation as int) { profile_measure(row.1, part, value) } else { 0 };
+                        let selected = |row: (KeyView, Packed)| if row.0 == numeric_key(nation as int) { profile_measure(row.1, part, value) } else { 0 };
                         lemma_inventory_changes_finish(*changes, nation, part, value, selected);
                         assert(inventory_measure(data.inventories, nation, part, value) == inventory_measure(initial.inventories, nation, part, value) + sum(changes.entries(), selected));
                     }
@@ -607,9 +608,9 @@ pub fn apply_inventory_changes(data: &mut Data, changes: &Profiles) -> (result: 
         proof {
             assert forall|query: i64, part: Option<i64>, value: bool| #[trigger] inventory_measure(data.inventories, query, part, value)
                 == inventory_measure(initial.inventories, query, part, value)
-                    + sum(changes.entries().take(processed@ + 1), |row: (KeyView, Index<Moment>)|
+                    + sum(changes.entries().take(processed@ + 1), |row: (KeyView, Packed)|
                         if row.0 == numeric_key(query as int) { profile_measure(row.1, part, value) } else { 0 }) by {
-                let weight = |row: (KeyView, Index<Moment>)| if row.0 == numeric_key(query as int) { profile_measure(row.1, part, value) } else { 0 };
+                let weight = |row: (KeyView, Packed)| if row.0 == numeric_key(query as int) { profile_measure(row.1, part, value) } else { 0 };
                 lemma_sum_take(changes.entries(), processed@, weight);
                 assert(changes.entries()[processed@] == (nation.view(), *groups));
                 assert(inventory_measure(previous.inventories, query, part, value)
@@ -645,14 +646,14 @@ pub fn stage_partsupp_cell(data: &mut Data, supplier: &Key, part: &Key, change: 
                     + if other_supplier == supplier.number && other_part == part.number { crate::construction::moment_measure(change, value) } else { 0 },
 {
     let ghost initial = *data;
-    if !add_profile(&mut data.profiles, supplier.number, part.number, change, false) { return false; }
+    if !add_profile(&mut data.profiles, supplier.number, part.number, change, false, 63) { return false; }
     if let Some(links) = links {
         if !crate::staging::linked_part(inventory_changes, part.number, change, links) { return false; }
     }
     true
 }
 
-pub fn stage_partsupp_groups(data: &mut Data, supplier: &Key, groups: &Index<Moment>, inventory_changes: &mut Profiles) -> (result: bool)
+pub fn stage_partsupp_groups(data: &mut Data, supplier: &Key, groups: &Packed, inventory_changes: &mut Profiles) -> (result: bool)
     requires old(data).structures_valid(), profile_storage_ok(old(data).profiles), numeric(supplier.view()), crate::construction::profile_keys_ok(*groups),
         profile_layout(*old(inventory_changes)), counts_layout(old(data).suppliers, true, true),
     ensures final(data).structures_valid(), profile_storage_ok(final(data).profiles), profile_frame(*old(data), *final(data)),
@@ -702,7 +703,7 @@ pub fn stage_partsupp_groups(data: &mut Data, supplier: &Key, groups: &Index<Mom
                         == profile_cell(initial.profiles, other_supplier, part, value)
                             + if other_supplier == supplier.number { crate::construction::moment_measure(moment_at(*groups, part as int), value) } else { 0 } by {
                         let weight = |row: (KeyView, Moment)| if other_supplier == supplier.number { crate::construction::moment_measure(row.1, value) } else { 0 };
-                        verus_prooflib::ordered::lemma_key_contribution(groups, numeric_key(part as int), weight);
+                        packed::lemma_key_contribution(groups, numeric_key(part as int), weight);
                         assert((|row: (KeyView, Moment)| if other_supplier == supplier.number && row.0 == numeric_key(part as int) { crate::construction::moment_measure(row.1, value) } else { 0 })
                             =~= (|row: (KeyView, Moment)| if row.0 == numeric_key(part as int) { weight(row) } else { 0 }));
                         reveal(verus_prooflib::ordered::contribution);
@@ -750,7 +751,7 @@ pub fn stage_partsupp(data: &mut Data, changes: &Profiles, inventory_changes: &m
         profile_layout(*final(inventory_changes)),
         result ==> forall|nation: i64, part: i64, value: bool| #[trigger] profile_cell(*final(inventory_changes), nation, part, value)
             == profile_cell(*old(inventory_changes), nation, part, value)
-                + sum(changes.entries(), |row: (KeyView, Index<Moment>)| partsupp_effect(row, old(data).suppliers, nation, part, value)),
+                + sum(changes.entries(), |row: (KeyView, Packed)| partsupp_effect(row, old(data).suppliers, nation, part, value)),
         result ==> forall|supplier: i64, part: i64, value: bool| #[trigger] profile_cell(final(data).profiles, supplier, part, value)
             == profile_cell(old(data).profiles, supplier, part, value) + profile_cell(*changes, supplier, part, value),
 {
@@ -764,11 +765,11 @@ pub fn stage_partsupp(data: &mut Data, changes: &Profiles, inventory_changes: &m
             initial_changes == *old(inventory_changes), counts_layout(initial.suppliers, true, true),
             forall|nation: i64, part: i64, value: bool| #[trigger] profile_cell(*inventory_changes, nation, part, value)
                 == profile_cell(initial_changes, nation, part, value)
-                    + sum(changes.entries().take(processed@), |row: (KeyView, Index<Moment>)| partsupp_effect(row, initial.suppliers, nation, part, value)),
+                    + sum(changes.entries().take(processed@), |row: (KeyView, Packed)| partsupp_effect(row, initial.suppliers, nation, part, value)),
             profile_layout(*changes), 0 <= processed@ <= changes.entries().len(), suppliers.remaining() == changes.entries().skip(processed@),
             forall|supplier: i64, part: i64, value: bool| #[trigger] profile_cell(data.profiles, supplier, part, value)
                 == profile_cell(initial.profiles, supplier, part, value)
-                    + sum(changes.entries().take(processed@), |row: (KeyView, Index<Moment>)|
+                    + sum(changes.entries().take(processed@), |row: (KeyView, Packed)|
                         if row.0 == numeric_key(supplier as int) { crate::construction::moment_measure(moment_at(row.1, part as int), value) } else { 0 }),
         decreases suppliers.remaining().len(),
     {
@@ -779,10 +780,10 @@ pub fn stage_partsupp(data: &mut Data, changes: &Profiles, inventory_changes: &m
                     assert(processed@ == changes.entries().len()); assert(changes.entries().take(processed@) =~= changes.entries());
                     assert forall|supplier: i64, part: i64, value: bool| #[trigger] profile_cell(data.profiles, supplier, part, value)
                         == profile_cell(initial.profiles, supplier, part, value) + profile_cell(*changes, supplier, part, value) by {
-                        let weight = |row: (KeyView, Index<Moment>)| crate::construction::moment_measure(moment_at(row.1, part as int), value);
+                        let weight = |row: (KeyView, Packed)| crate::construction::moment_measure(moment_at(row.1, part as int), value);
                         verus_prooflib::ordered::lemma_key_contribution(changes, numeric_key(supplier as int), weight);
-                        assert((|row: (KeyView, Index<Moment>)| if row.0 == numeric_key(supplier as int) { crate::construction::moment_measure(moment_at(row.1, part as int), value) } else { 0 })
-                            =~= (|row: (KeyView, Index<Moment>)| if row.0 == numeric_key(supplier as int) { weight(row) } else { 0 }));
+                        assert((|row: (KeyView, Packed)| if row.0 == numeric_key(supplier as int) { crate::construction::moment_measure(moment_at(row.1, part as int), value) } else { 0 })
+                            =~= (|row: (KeyView, Packed)| if row.0 == numeric_key(supplier as int) { weight(row) } else { 0 }));
                         reveal(verus_prooflib::ordered::contribution);
                         if changes.at(numeric_key(supplier as int)).is_none() { assert(profile_cell(*changes, supplier, part, value) == 0); }
                     }
@@ -797,20 +798,20 @@ pub fn stage_partsupp(data: &mut Data, changes: &Profiles, inventory_changes: &m
         proof {
             assert forall|nation: i64, part: i64, value: bool| #[trigger] profile_cell(*inventory_changes, nation, part, value)
                 == profile_cell(initial_changes, nation, part, value)
-                    + sum(changes.entries().take(processed@ + 1), |row: (KeyView, Index<Moment>)| partsupp_effect(row, initial.suppliers, nation, part, value)) by {
-                let weight = |row: (KeyView, Index<Moment>)| partsupp_effect(row, initial.suppliers, nation, part, value);
+                    + sum(changes.entries().take(processed@ + 1), |row: (KeyView, Packed)| partsupp_effect(row, initial.suppliers, nation, part, value)) by {
+                let weight = |row: (KeyView, Packed)| partsupp_effect(row, initial.suppliers, nation, part, value);
                 lemma_sum_take(changes.entries(), processed@, weight);
                 assert(profile_cell(previous_changes, nation, part, value) == profile_cell(initial_changes, nation, part, value) + sum(changes.entries().take(processed@), weight));
             }
             assert forall|other: i64, part: i64, value: bool| #[trigger] profile_cell(data.profiles, other, part, value)
                 == profile_cell(initial.profiles, other, part, value)
-                    + sum(changes.entries().take(processed@ + 1), |row: (KeyView, Index<Moment>)|
+                    + sum(changes.entries().take(processed@ + 1), |row: (KeyView, Packed)|
                         if row.0 == numeric_key(other as int) { crate::construction::moment_measure(moment_at(row.1, part as int), value) } else { 0 }) by {
-                lemma_sum_take(changes.entries(), processed@, |row: (KeyView, Index<Moment>)|
+                lemma_sum_take(changes.entries(), processed@, |row: (KeyView, Packed)|
                     if row.0 == numeric_key(other as int) { crate::construction::moment_measure(moment_at(row.1, part as int), value) } else { 0 });
                 assert(profile_cell(previous.profiles, other, part, value)
                     == profile_cell(initial.profiles, other, part, value)
-                        + sum(changes.entries().take(processed@), |row: (KeyView, Index<Moment>)|
+                        + sum(changes.entries().take(processed@), |row: (KeyView, Packed)|
                             if row.0 == numeric_key(other as int) { crate::construction::moment_measure(moment_at(row.1, part as int), value) } else { 0 }));
             }
         }
@@ -818,7 +819,7 @@ pub fn stage_partsupp(data: &mut Data, changes: &Profiles, inventory_changes: &m
     }
 }
 
-pub open spec fn partsupp_effect(row: (KeyView, Index<Moment>), suppliers: Counts, nation: i64, part: i64, value: bool) -> int {
+pub open spec fn partsupp_effect(row: (KeyView, Packed), suppliers: Counts, nation: i64, part: i64, value: bool) -> int {
     moment_measure(moment_at(row.1, part as int), value) * count_at(suppliers, row.0, numeric_key(nation as int))
 }
 

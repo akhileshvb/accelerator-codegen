@@ -1,3 +1,5 @@
+use crate::semantics::params0;
+use crate::packed::{self, Packed, PackedCursor};
 use std::sync::Arc;
 use vstd::prelude::*;
 use verus_common::sums::sum;
@@ -10,7 +12,7 @@ use verus_prooflib::lemma_ordered_equal;
 
 verus! {
 
-pub type Profiles = Index<Index<Moment>>;
+pub type Profiles = Index<Packed>;
 pub type Counts = Index<Index<i128>>;
 
 pub enum NameView {
@@ -255,12 +257,12 @@ impl Data {
                 NameView::Merged { inventory } => {
                     &&& support.entries().len() >= 2
                     &&& inventory.valid()
-                    &&& inventory.total.count as int == scalar_1_group_count(db, params(key.1))
-                    &&& inventory.total.value as int == scalar_1_group_sum(db, params(key.1), |tuple: Scalar1Tuple|
+                    &&& inventory.total.count as int == scalar_1_group_count(db, params0(key.1))
+                    &&& inventory.total.value as int == scalar_1_group_sum(db, params0(key.1), |tuple: Scalar1Tuple|
                         tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
                     &&& forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count as int
-                        == group_count(db, params(key.1), part as int)
-                        && moment_at(inventory.groups, part as int).value as int == group_sum(db, params(key.1), part as int,
+                        == group_count(db, params0(key.1), part as int)
+                        && moment_at(inventory.groups, part as int).value as int == group_sum(db, params0(key.1), part as int,
                             |tuple: Tuple| tuple.partsupp.ps_supplycost * tuple.partsupp.ps_availqty)
                 },
             }
@@ -371,10 +373,10 @@ impl Data {
                         NameView::Singleton { nation, multiplicity } => support.entries().len() == 1
                             && support.at(numeric_key(nation as int)) == Some(multiplicity) && multiplicity > 0,
                         NameView::Merged { inventory } => support.entries().len() >= 2 && inventory.valid()
-                            && inventory.total.count as int == scalar_1_group_count(db, params(key.1))
-                            && inventory.total.value as int == scalar_1_group_sum(db, params(key.1), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
-                            && forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count as int == group_count(db, params(key.1), part as int)
-                                && moment_at(inventory.groups, part as int).value as int == group_sum(db, params(key.1), part as int, |tuple: Tuple| tuple.partsupp.ps_supplycost * tuple.partsupp.ps_availqty),
+                            && inventory.total.count as int == scalar_1_group_count(db, params0(key.1))
+                            && inventory.total.value as int == scalar_1_group_sum(db, params0(key.1), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
+                            && forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count as int == group_count(db, params0(key.1), part as int)
+                                && moment_at(inventory.groups, part as int).value as int == group_sum(db, params0(key.1), part as int, |tuple: Tuple| tuple.partsupp.ps_supplycost * tuple.partsupp.ps_availqty),
                     }
                 } by {
                     assert(self.names.at(key) == result.names.at(key));
@@ -388,7 +390,8 @@ impl Data {
     }
 }
 
-pub fn add_profile(profiles: &mut Profiles, supplier: i64, part: i64, change: Moment, signed: bool) -> (result: bool)
+pub fn add_profile(profiles: &mut Profiles, supplier: i64, part: i64, change: Moment, signed: bool, shift: u32) -> (result: bool)
+    requires shift < 64,
     ensures !signed && profile_storage_ok(*old(profiles)) ==> profile_storage_ok(*final(profiles)),
         profile_layout(*old(profiles)) ==> profile_layout(*final(profiles)),
         result ==> profile_at(*final(profiles), supplier as int, part as int).count as int
@@ -406,18 +409,18 @@ pub fn add_profile(profiles: &mut Profiles, supplier: i64, part: i64, change: Mo
     let mut groups = match profiles.get(&outer) {
         Some(source) => {
             let copy = source.share();
-            proof { lemma_ordered_equal(&*source, &copy); }
             copy
         },
-        None => Index::new(),
+        None => Packed::new(shift),
     };
     proof {
         assert forall|other_part: int| #[trigger] moment_at(groups, other_part)
             == profile_at(original, supplier as int, other_part) by {}
     }
     let ghost initial_groups = groups;
-    let previous = match groups.get(&inner) { Some(moment) => *moment, None => zero() };
+    let previous = match groups.get(part) { Some(moment) => moment, None => zero() };
     let next = match plus(previous, change) { Some(moment) => moment, None => return false };
+    if !packed::fits_exec(&next) { return false; }
     if !signed && (next.count < 0 || (next.count == 0 && next.value != 0)) { return false; }
     if previous.count == next.count && previous.value == next.value {
         proof {
@@ -427,8 +430,8 @@ pub fn add_profile(profiles: &mut Profiles, supplier: i64, part: i64, change: Mo
         }
         return true;
     }
-    if next.count == 0 && next.value == 0 { groups.remove(&inner); }
-    else { groups.put(inner, Arc::new(next)); }
+    if next.count == 0 && next.value == 0 { groups.remove(part); }
+    else { groups.put(part, next); }
     proof {
         assert(moment_at(groups, part as int) == next);
         assert forall|other_part: int| other_part != part implies

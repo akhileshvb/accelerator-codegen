@@ -46,6 +46,10 @@
 //   accelerated pass replays the same writes and commits them: the accelerator's
 //   capture sees only its own connection, so it stays in sync with the database.
 //   (The plain side then pays no commit: its write cost is a slight underestimate.)
+// Parameter tuples drawn by the pipeline from the query's domain, fresh on every run:
+//   VERUS_KIT_PARAMS_FILE=<file>        these tuples replace the spec's (bench, profiles)
+//   VERUS_KIT_EXTRA_PARAMS_FILE=<file>  these are checked besides the spec's (differential, snapshots)
+// (one tuple per line, as in params.sql)
 // The store is the C++ one unless ACCEL_AUX_STORE=verus.  Output: one JSON
 // object on stdout.  The database file is modified; pass a copy.
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
@@ -135,13 +139,30 @@ Spec LoadSpec(const fs::path &dir) {
   Spec s;
   if (fs::exists(dir / "setup.sql"))
     s.setup = ReadFile(dir / "setup.sql");
-  std::istringstream lines(fs::exists(dir / "params.sql") ? ReadFile(dir / "params.sql") : "");
-  for (std::string line; std::getline(lines, line);) {
-    const auto b = line.find_first_not_of(" \t\r");
-    if (b == std::string::npos || line.compare(b, 2, "--") == 0)
-      continue;
-    s.params.push_back(line.substr(b));
+  auto load_params = [&](const std::string &text) {
+    std::vector<std::string> out;
+    std::istringstream lines(text);
+    for (std::string line; std::getline(lines, line);) {
+      const auto b = line.find_first_not_of(" \t\r");
+      if (b == std::string::npos || line.compare(b, 2, "--") == 0)
+        continue;
+      out.push_back(line.substr(b));
+    }
+    return out;
+  };
+  s.params = load_params(fs::exists(dir / "params.sql") ? ReadFile(dir / "params.sql") : "");
+  // Random parameter tuples drawn by the pipeline from the query's domain (a fresh draw per run):
+  //   VERUS_KIT_PARAMS_FILE        replaces the spec's tuples (bench, profiles)
+  //   VERUS_KIT_EXTRA_PARAMS_FILE  adds to them (differential, snapshots)
+  if (const char *f = std::getenv("VERUS_KIT_PARAMS_FILE"); f && *f) {
+    auto drawn = load_params(ReadFile(f));
+    if (!drawn.empty())
+      s.params = std::move(drawn);
   }
+  if (const char *f = std::getenv("VERUS_KIT_EXTRA_PARAMS_FILE"); f && *f)
+    for (auto &t : load_params(ReadFile(f)))
+      if (std::find(s.params.begin(), s.params.end(), t) == s.params.end())
+        s.params.push_back(std::move(t));
   if (s.params.empty())
     s.params.push_back(""); // a query without parameters
   s.txns = SqlFiles(dir / "txns");

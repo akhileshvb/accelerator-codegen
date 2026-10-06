@@ -1,6 +1,7 @@
 #include "tpch_q20_vgen_verus.h"
 #include "accelerator_codegen/verus/verus_kit.hpp"
 
+#include <malloc.h>
 #include <memory>
 #include <utility>
 
@@ -9,29 +10,26 @@ namespace {
 namespace kit = accelerator_codegen::verus_kit;
 namespace core = accelerator_codegen::aux_state::core;
 
-const char kQuerySql[] = R"SQL(-- TPC-H Q20 (catalog text), :start_date as $1, :nation_name as $2, $3 = $1 + 1 year (derived end date: sql2verus cannot add months to a non-literal date). The part_name_pattern ('gainsboro%') stays a literal: sql2verus takes only a literal LIKE pattern.
+const char kQuerySql[] = R"SQL(-- TPC-H Q20 (catalog text), :start_date as $1, :part_name_pattern (:color || '%', e.g. 'gainsboro%') as $2, :nation_name as $3, $4 = $1 + 1 year (derived end date: sql2verus cannot add months to a non-literal date).
 SELECT s_name, s_address
 FROM supplier, nation
 WHERE s_suppkey IN (SELECT ps_suppkey FROM partsupp,
                       (SELECT l_partkey agg_partkey, l_suppkey agg_suppkey, 0.5 * SUM(l_quantity) AS agg_quantity
                        FROM lineitem WHERE l_shipdate >= $1
-                         AND l_shipdate < $3
+                         AND l_shipdate < $4
                        GROUP BY l_partkey, l_suppkey) agg_lineitem
                     WHERE agg_partkey = ps_partkey AND agg_suppkey = ps_suppkey
-                      AND ps_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE 'gainsboro%')
+                      AND ps_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE $2)
                       AND ps_availqty > agg_quantity)
-  AND s_nationkey = n_nationkey AND n_name = $2
+  AND s_nationkey = n_nationkey AND n_name = $3
 ORDER BY s_name
 )SQL";
 
-const char kQualifyingPartsSql[] =
-    "SELECT p_partkey FROM part WHERE p_name LIKE 'gainsboro%'";
-const char kStocksSql[] = R"SQL(SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp
-  WHERE EXISTS (SELECT p_partkey FROM part
-                WHERE p_partkey = ps_partkey AND p_name LIKE 'gainsboro%'))SQL";
-const char kShipmentsSql[] = R"SQL(SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem
-  WHERE EXISTS (SELECT p_partkey FROM part
-                WHERE p_partkey = l_partkey AND p_name LIKE 'gainsboro%'))SQL";
+const char kPartsSql[] = "SELECT p_partkey, p_name FROM part";
+const char kStocksSql[] =
+    "SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp";
+const char kShipmentsSql[] =
+    "SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem";
 const char kSuppliersSql[] =
     "SELECT s_suppkey, s_name, s_address, s_nationkey FROM supplier";
 const char kNationsSql[] = "SELECT n_nationkey, n_name FROM nation";
@@ -39,7 +37,6 @@ const char kStocksForPartsSql[] =
     "SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp";
 const char kShipmentsForPartsSql[] =
     "SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem";
-constexpr char kQualifyingPrefix[] = "gainsboro";
 
 tpchq20vgen_stock_input Stock(const core::AuxRow &row) {
   return {kit::I64(row, 0, 0), kit::I64(row, 1, 0), kit::I64(row, 2, 0)};
@@ -91,15 +88,15 @@ struct Nations {
 };
 
 struct BuildInputs {
-  std::vector<tpchq20vgen_qualifying_part_input> qualifying_parts;
+  Nations parts;
   std::vector<tpchq20vgen_stock_input> stocks;
   std::vector<tpchq20vgen_shipment_input> shipments;
   Suppliers suppliers;
   Nations nations;
 
   explicit BuildInputs(kit::Host &host) {
-    host.Query(kQualifyingPartsSql, [&](const core::AuxRow &row) {
-      qualifying_parts.push_back({kit::I64(row, 0, 0)});
+    host.Query(kPartsSql, [&](const core::AuxRow &row) {
+      parts.Push(row);
     });
     host.Query(kStocksSql, [&](const core::AuxRow &row) {
       stocks.push_back(Stock(row));
@@ -117,9 +114,12 @@ struct BuildInputs {
 };
 
 void *Build(kit::Host &host) {
+  void *built = nullptr;
+  {
   const BuildInputs inputs(host);
-  return tpchq20vgen_build(
-      inputs.qualifying_parts.size(), inputs.qualifying_parts.data(),
+  built = tpchq20vgen_build(
+      inputs.parts.keys.size(), inputs.parts.keys.data(),
+      inputs.parts.names.bytes.data(), inputs.parts.names.off.data(),
       inputs.stocks.size(), inputs.stocks.data(),
       inputs.shipments.size(), inputs.shipments.data(),
       inputs.suppliers.keys.size(), inputs.suppliers.keys.data(),
@@ -128,13 +128,19 @@ void *Build(kit::Host &host) {
       inputs.suppliers.nation_keys.data(),
       inputs.nations.keys.size(), inputs.nations.keys.data(),
       inputs.nations.names.bytes.data(), inputs.nations.names.off.data());
+  }
+  malloc_trim(0);
+  return built;
 }
 
 void *PrepareBuild(const void *store, kit::Host &host) {
+  void *built = nullptr;
+  {
   const BuildInputs inputs(host);
-  return tpchq20vgens_prepare_build(
+  built = tpchq20vgens_prepare_build(
       static_cast<const tpchq20vgens_store *>(store),
-      inputs.qualifying_parts.size(), inputs.qualifying_parts.data(),
+      inputs.parts.keys.size(), inputs.parts.keys.data(),
+      inputs.parts.names.bytes.data(), inputs.parts.names.off.data(),
       inputs.stocks.size(), inputs.stocks.data(),
       inputs.shipments.size(), inputs.shipments.data(),
       inputs.suppliers.keys.size(), inputs.suppliers.keys.data(),
@@ -143,12 +149,15 @@ void *PrepareBuild(const void *store, kit::Host &host) {
       inputs.suppliers.nation_keys.data(),
       inputs.nations.keys.size(), inputs.nations.keys.data(),
       inputs.nations.names.bytes.data(), inputs.nations.names.off.data());
+  }
+  malloc_trim(0);
+  return built;
 }
 
 struct ApplyInputs {
   std::vector<tpchq20vgen_lineitem_delta> lineitem;
   Nations nation;
-  std::vector<tpchq20vgen_part_delta> part;
+  Nations part;
   std::vector<tpchq20vgen_partsupp_delta> partsupp;
   Suppliers supplier;
   std::vector<int64_t> stock_keys;
@@ -157,13 +166,10 @@ struct ApplyInputs {
   std::vector<tpchq20vgen_shipment_input> shipments;
 
   explicit ApplyInputs(const kit::Changes &changes) {
-    part.reserve(changes.at(0).size());
+    part.Reserve(changes.at(0).size());
     for (const auto &change : changes.at(0)) {
-      const int64_t key = kit::I64(change.row, 0, 0);
-      const std::string &name = kit::Text(change.row, 1);
-      const uint8_t qualifying =
-          name.compare(0, sizeof(kQualifyingPrefix) - 1, kQualifyingPrefix) == 0;
-      part.push_back({key, qualifying, change.sign});
+      part.Push(change.row);
+      part.signs.push_back(change.sign);
     }
     partsupp.reserve(changes.at(1).size());
     for (const auto &change : changes.at(1)) {
@@ -195,7 +201,9 @@ struct ApplyInputs {
           lineitem.size(), lineitem.data(),
           nation.keys.size(), nation.keys.data(),
           nation.names.bytes.data(), nation.names.off.data(), nation.signs.data(),
-          part.size(), part.data(), partsupp.size(), partsupp.data(),
+          part.keys.size(), part.keys.data(),
+          part.names.bytes.data(), part.names.off.data(), part.signs.data(),
+          partsupp.size(), partsupp.data(),
           supplier.keys.size(), supplier.keys.data(),
           supplier.names.bytes.data(), supplier.names.off.data(),
           supplier.addresses.bytes.data(), supplier.addresses.off.data(),
@@ -230,7 +238,9 @@ void *Apply(const void *state, const kit::Changes &changes, kit::Host &host,
       inputs.nation.keys.size(), inputs.nation.keys.data(),
       inputs.nation.names.bytes.data(), inputs.nation.names.off.data(),
       inputs.nation.signs.data(),
-      inputs.part.size(), inputs.part.data(),
+      inputs.part.keys.size(), inputs.part.keys.data(),
+      inputs.part.names.bytes.data(), inputs.part.names.off.data(),
+      inputs.part.signs.data(),
       inputs.partsupp.size(), inputs.partsupp.data(),
       inputs.supplier.keys.size(), inputs.supplier.keys.data(),
       inputs.supplier.names.bytes.data(), inputs.supplier.names.off.data(),
@@ -253,7 +263,9 @@ void *PrepareApply(const void *store, const void *base,
       inputs.nation.keys.size(), inputs.nation.keys.data(),
       inputs.nation.names.bytes.data(), inputs.nation.names.off.data(),
       inputs.nation.signs.data(),
-      inputs.part.size(), inputs.part.data(),
+      inputs.part.keys.size(), inputs.part.keys.data(),
+      inputs.part.names.bytes.data(), inputs.part.names.off.data(),
+      inputs.part.signs.data(),
       inputs.partsupp.size(), inputs.partsupp.data(),
       inputs.supplier.keys.size(), inputs.supplier.keys.data(),
       inputs.supplier.names.bytes.data(), inputs.supplier.names.off.data(),
@@ -272,16 +284,20 @@ void FreeState(void *state) {
 bool Execute(const void *state, const core::QueryArguments &args,
              std::vector<core::AuxRow> &out) {
   int32_t start_date;
+  std::string pattern;
   std::string nation_name;
   int32_t end_date;
   if (!kit::ArgDate(args, 0, start_date) ||
-      !kit::ArgText(args, 1, nation_name) ||
-      !kit::ArgDate(args, 2, end_date)) {
+      !kit::ArgText(args, 1, pattern) ||
+      !kit::ArgText(args, 2, nation_name) ||
+      !kit::ArgDate(args, 3, end_date)) {
     return false;
   }
   std::unique_ptr<tpchq20vgen_result, decltype(&tpchq20vgen_result_free)> result(
       tpchq20vgen_execute(static_cast<const tpchq20vgen_state *>(state),
                          start_date,
+                         reinterpret_cast<const uint8_t *>(pattern.data()),
+                         pattern.size(),
                          reinterpret_cast<const uint8_t *>(nation_name.data()),
                          nation_name.size(), end_date),
       tpchq20vgen_result_free);
@@ -319,7 +335,7 @@ const kit::Glue kGlue = {
      {"lineitem", {"l_partkey", "l_suppkey", "l_quantity", "l_shipdate"}},
      {"supplier", {"s_suppkey", "s_name", "s_address", "s_nationkey"}},
      {"nation", {"n_nationkey", "n_name"}}},
-    {kit::Kind::Date, kit::Kind::Text, kit::Kind::Date},
+    {kit::Kind::Date, kit::Kind::Text, kit::Kind::Text, kit::Kind::Date},
     Build, FreeState, Apply, Execute, PrepareApply, PrepareBuild,
     kit::StoreOps{
         []() -> void * { return tpchq20vgens_new(); },

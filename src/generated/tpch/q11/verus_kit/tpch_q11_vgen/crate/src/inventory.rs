@@ -1,3 +1,4 @@
+use crate::packed::{self, Packed, PackedCursor};
 use std::sync::Arc;
 use vstd::prelude::*;
 use verus_common::sums::sum;
@@ -9,12 +10,12 @@ use verus_prooflib::lemma_ordered_equal;
 verus! {
 
 pub struct Inventory {
-    pub groups: Index<Moment>,
+    pub groups: Packed,
     pub ranks: Pages,
     pub total: Moment,
 }
 
-pub open spec fn moment_at(groups: Index<Moment>, part: int) -> Moment {
+pub open spec fn moment_at(groups: Packed, part: int) -> Moment {
     match groups.at((part, Seq::<u8>::empty())) {
         Some(moment) => moment,
         None => Moment { count: 0, value: 0 },
@@ -47,7 +48,7 @@ impl Inventory {
         ensures result.valid(), result.groups.entries().len() == 0, result.total.count == 0, result.total.value == 0,
             forall|part: int| #[trigger] moment_at(result.groups, part) == zero_moment(),
     {
-        Inventory { groups: Index::new(), ranks: ranks::new(), total: zero() }
+        Inventory { groups: Packed::new(8), ranks: ranks::new(), total: zero() }
     }
 
     pub fn share(&self) -> (result: Self)
@@ -59,7 +60,6 @@ impl Inventory {
         let ranks = self.ranks.share();
         let result = Inventory { groups, ranks, total: self.total };
         proof {
-            lemma_ordered_equal(&self.groups, &result.groups);
             lemma_ordered_equal(&self.ranks, &result.ranks);
             assert(result.groups.entries() == self.groups.entries());
             assert(result.ranks.entries() == self.ranks.entries());
@@ -94,9 +94,10 @@ impl Inventory {
     {
         let ghost original = *self;
         let key = Key::number(part);
-        let previous = match self.groups.get(&key) { Some(moment) => *moment, None => zero() };
+        let previous = match self.groups.get(part) { Some(moment) => moment, None => zero() };
         let next = match plus(previous, change) { Some(moment) => moment, None => return false };
         let total = match plus(self.total, change) { Some(moment) => moment, None => return false };
+        if !packed::fits_exec(&next) { return false; }
         if next.count < 0 || total.count < 0 || (next.count == 0 && next.value != 0) {
             return false;
         }
@@ -117,16 +118,16 @@ impl Inventory {
             }
         }
         if next.count == 0 {
-            self.groups.remove(&key);
+            self.groups.remove(part);
             proof {
-                verus_prooflib::ordered::lemma_sum_remove(&original.groups, &self.groups, key.view(), |row: (KeyView, Moment)| row.1.count as int);
-                verus_prooflib::ordered::lemma_sum_remove(&original.groups, &self.groups, key.view(), |row: (KeyView, Moment)| row.1.value as int);
+                packed::lemma_sum_remove(&original.groups, &self.groups, (part as int, Seq::<u8>::empty()), |row: (KeyView, Moment)| row.1.count as int);
+                packed::lemma_sum_remove(&original.groups, &self.groups, (part as int, Seq::<u8>::empty()), |row: (KeyView, Moment)| row.1.value as int);
             }
         } else {
-            self.groups.put(key, Arc::new(next));
+            self.groups.put(part, next);
             proof {
-                verus_prooflib::ordered::lemma_sum_put(&original.groups, &self.groups, (part as int, Seq::<u8>::empty()), next, |row: (KeyView, Moment)| row.1.count as int);
-                verus_prooflib::ordered::lemma_sum_put(&original.groups, &self.groups, (part as int, Seq::<u8>::empty()), next, |row: (KeyView, Moment)| row.1.value as int);
+                packed::lemma_sum_put(&original.groups, &self.groups, (part as int, Seq::<u8>::empty()), next, |row: (KeyView, Moment)| row.1.count as int);
+                packed::lemma_sum_put(&original.groups, &self.groups, (part as int, Seq::<u8>::empty()), next, |row: (KeyView, Moment)| row.1.value as int);
             }
             if rank_changed && !ranks::insert(&mut self.ranks, Ranked { part, value: next.value }) { return false; }
         }
@@ -228,13 +229,13 @@ pub proof fn lemma_empty_inventory(inventory: &Inventory)
     }
 }
 
-pub proof fn lemma_emission_answer(inventory: &Inventory, weight: int, output: Seq<(i64, i128)>, cutoff: i128)
+pub proof fn lemma_emission_answer(inventory: &Inventory, weight: int, output: Seq<(i64, i128)>, cutoff: i128, fraction: int)
     requires inventory.valid(), weight > 0, emission_prefix(*inventory, weight, output, cutoff),
-        cutoff as int * 10000 > inventory.total.value as int,
-        (cutoff as int - 1) * 10000 <= inventory.total.value as int,
+        cutoff as int * 1000000000 > inventory.total.value as int * fraction,
+        (cutoff as int - 1) * 1000000000 <= inventory.total.value as int * fraction,
         forall|position: int| output.len() <= position < ranks::rows(inventory.ranks).len() ==>
             (#[trigger] ranks::rows(inventory.ranks)[position]).value < cutoff,
-    ensures crate::semantics::inventory_answer(*inventory, weight, output),
+    ensures crate::semantics::inventory_answer(*inventory, weight, output, fraction),
 {
     ranks::lemma_rows_sorted(&inventory.ranks);
     let ranked_rows = ranks::rows(inventory.ranks);
@@ -243,7 +244,7 @@ pub proof fn lemma_emission_answer(inventory: &Inventory, weight: int, output: S
         &&& moment_at(inventory.groups, row.0 as int).count > 0
         &&& row.1 as int == weight * moment_at(inventory.groups, row.0 as int).value as int
         &&& inventory.total.count > 0
-        &&& 10000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int
+        &&& 1000000000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int * fraction
     } by {
         assert(ranked_rows.contains(ranked_rows[position]));
         lemma_positive_group(inventory, output[position].0 as int);
@@ -262,7 +263,7 @@ pub proof fn lemma_emission_answer(inventory: &Inventory, weight: int, output: S
                 output[right].1 as int == weight * ranked_rows[right].value as int;
     }
     assert forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count > 0
-        && 10000 * moment_at(inventory.groups, part as int).value as int > inventory.total.value as int implies
+        && 1000000000 * moment_at(inventory.groups, part as int).value as int > inventory.total.value as int * fraction implies
         exists|position: int| 0 <= position < output.len() && (#[trigger] output[position]).0 == part by {
         let moment = moment_at(inventory.groups, part as int);
         assert(inventory.groups.at((part as int, Seq::<u8>::empty())).is_some());
@@ -274,15 +275,15 @@ pub proof fn lemma_emission_answer(inventory: &Inventory, weight: int, output: S
     }
 }
 
-pub fn emit(inventory: &Inventory, weight: i128) -> (result: Option<Vec<(i64, i128)>>)
+pub fn emit(inventory: &Inventory, weight: i128, fraction: i64) -> (result: Option<Vec<(i64, i128)>>)
     requires inventory.valid(), weight > 0,
     ensures result matches Some(rows) ==> forall|index: int| 0 <= index < rows.len() ==> {
         let row = #[trigger] rows[index];
         &&& moment_at(inventory.groups, row.0 as int).count > 0
         &&& row.1 as int == weight as int * moment_at(inventory.groups, row.0 as int).value as int
-        &&& 10000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int
+        &&& 1000000000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int * fraction as int
     },
-        result matches Some(rows) ==> crate::semantics::inventory_answer(*inventory, weight as int, rows@),
+        result matches Some(rows) ==> crate::semantics::inventory_answer(*inventory, weight as int, rows@, fraction as int),
 {
     let mut result = Vec::new();
     if inventory.total.count == 0 {
@@ -293,7 +294,7 @@ pub fn emit(inventory: &Inventory, weight: i128) -> (result: Option<Vec<(i64, i1
         }
         return Some(result);
     }
-    let cutoff = threshold(inventory.total.value);
+    let cutoff = match threshold(inventory.total.value, fraction) { Some(cutoff) => cutoff, None => return None };
     proof { ranks::lemma_rows_sorted(&inventory.ranks); }
     let ghost mapped = inventory.ranks.entries().map_values(|entry: (KeyView, crate::ranks::Page)| entry.1.rows@);
     let mut cursor = inventory.ranks.cursor();
@@ -301,8 +302,8 @@ pub fn emit(inventory: &Inventory, weight: i128) -> (result: Option<Vec<(i64, i1
     loop
         invariant
             inventory.valid(), inventory.ranks.wf(), weight > 0,
-            cutoff as int * 10000 > inventory.total.value as int,
-            (cutoff as int - 1) * 10000 <= inventory.total.value as int,
+            cutoff as int * 1000000000 > inventory.total.value as int * fraction as int,
+            (cutoff as int - 1) * 1000000000 <= inventory.total.value as int * fraction as int,
             mapped == inventory.ranks.entries().map_values(|entry: (KeyView, crate::ranks::Page)| entry.1.rows@),
             0 <= processed@ <= inventory.ranks.entries().len(),
             cursor.remaining() == inventory.ranks.entries().skip(processed@),
@@ -312,7 +313,7 @@ pub fn emit(inventory: &Inventory, weight: i128) -> (result: Option<Vec<(i64, i1
                 let row = #[trigger] result@[index];
                 &&& moment_at(inventory.groups, row.0 as int).count > 0
                 &&& row.1 as int == weight as int * moment_at(inventory.groups, row.0 as int).value as int
-                &&& 10000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int
+                &&& 1000000000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int * fraction as int
             },
         decreases cursor.remaining().len(),
     {
@@ -322,7 +323,7 @@ pub fn emit(inventory: &Inventory, weight: i128) -> (result: Option<Vec<(i64, i1
                 proof {
                     assert(processed@ == mapped.len());
                     assert(mapped.take(processed@) =~= mapped);
-                    lemma_emission_answer(inventory, weight as int, result@, cutoff);
+                    lemma_emission_answer(inventory, weight as int, result@, cutoff, fraction as int);
                 }
                 return Some(result);
             },
@@ -361,7 +362,7 @@ pub fn emit(inventory: &Inventory, weight: i128) -> (result: Option<Vec<(i64, i1
                     prefix.len() + page.rows.len() <= ranks::rows(inventory.ranks).len(),
                     forall|offset: int| 0 <= offset < page.rows.len() ==>
                         #[trigger] ranks::rows(inventory.ranks)[prefix.len() as int + offset] == page.rows@[offset],
-                    cutoff as int * 10000 > inventory.total.value as int,
+                    cutoff as int * 1000000000 > inventory.total.value as int * fraction as int,
                     forall|offset: int| 0 <= offset < count ==> {
                         let ranked = #[trigger] page.rows@[offset];
                         &&& ranked.value >= cutoff
@@ -371,7 +372,7 @@ pub fn emit(inventory: &Inventory, weight: i128) -> (result: Option<Vec<(i64, i1
                         let row = #[trigger] result@[index];
                         &&& moment_at(inventory.groups, row.0 as int).count > 0
                         &&& row.1 as int == weight as int * moment_at(inventory.groups, row.0 as int).value as int
-                        &&& 10000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int
+                        &&& 1000000000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int * fraction as int
                     },
                 decreases count - position,
             {
@@ -389,7 +390,7 @@ pub fn emit(inventory: &Inventory, weight: i128) -> (result: Option<Vec<(i64, i1
                     prefix.len() + page.rows.len() <= ranks::rows(inventory.ranks).len(),
                     forall|offset: int| 0 <= offset < page.rows.len() ==>
                         #[trigger] ranks::rows(inventory.ranks)[prefix.len() as int + offset] == page.rows@[offset],
-                    cutoff as int * 10000 > inventory.total.value as int,
+                    cutoff as int * 1000000000 > inventory.total.value as int * fraction as int,
                     forall|offset: int| 0 <= offset < count ==> {
                         let ranked = #[trigger] page.rows@[offset];
                         &&& ranked.value >= cutoff
@@ -399,7 +400,7 @@ pub fn emit(inventory: &Inventory, weight: i128) -> (result: Option<Vec<(i64, i1
                         let row = #[trigger] result@[index];
                         &&& moment_at(inventory.groups, row.0 as int).count > 0
                         &&& row.1 as int == weight as int * moment_at(inventory.groups, row.0 as int).value as int
-                        &&& 10000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int
+                        &&& 1000000000 * moment_at(inventory.groups, row.0 as int).value as int > inventory.total.value as int * fraction as int
                     },
                 decreases count - position,
             {
@@ -425,7 +426,7 @@ pub fn emit(inventory: &Inventory, weight: i128) -> (result: Option<Vec<(i64, i1
                         assert(ranks::before(ranks::rows(inventory.ranks)[result.len() as int], ranks::rows(inventory.ranks)[offset]));
                     }
                 }
-                lemma_emission_answer(inventory, weight as int, result@, cutoff);
+                lemma_emission_answer(inventory, weight as int, result@, cutoff, fraction as int);
             }
             return Some(result);
         }

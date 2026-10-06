@@ -7,20 +7,18 @@
 // behind crate::kernel; the host calls only the ob_* functions below.
 //
 // Kernel inputs:
-//   -- The SQL/spec has no parameters; the LIKE pattern is a literal.
+//   -- The LIKE pattern is the query parameter $1; scans/deltas carry the order comment.
 //   -- Customer multiplicities are required: the schema does not promise uniqueness.
 //   scan customers AS CustomerScan: SELECT c_custkey FROM customer;
-//   -- Keep qualifying counts even for keys with no current customer.
-//   scan qualifying_orders AS QualifyingOrderScan:
-//     SELECT o_custkey FROM orders
-//     WHERE o_comment NOT LIKE '%unusual%accounts%';
+//   -- Keep order counts even for keys with no current customer.
+//   scan orders AS OrderScan:
+//     SELECT o_custkey, o_comment FROM orders;
 //   
 //   delta customer AS CustomerDelta OF CustomerInput:
 //     SELECT c_custkey FROM customer;
 //   -- Order identity is irrelevant to COUNT of this NOT NULL column.
 //   delta orders AS OrderDelta:
-//     SELECT o_custkey, o_comment NOT LIKE '%unusual%accounts%' AS qualifies
-//     FROM orders;
+//     SELECT o_custkey, o_comment FROM orders;
 #![allow(unused_imports)]
 use vstd::prelude::*;
 use verus_common::bytes::*;
@@ -55,20 +53,20 @@ pub open spec fn customer_scan_seq_view(s: Seq<CustomerScan>) -> Seq<CustomerRow
     s.map_values(|r: CustomerScan| customer_scan_view(r))
 }
 
-/// Runtime row: scan qualifying_orders.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct QualifyingOrderScan {
+/// Runtime row: scan orders.
+pub struct OrderScan {
     /// orders.o_custkey (integer)
     pub o_custkey: i64,
+    /// orders.o_comment (text bytes)
+    pub o_comment: Vec<u8>,
 }
 
-pub open spec fn qualifying_order_scan_view(r: QualifyingOrderScan) -> int {
-    r.o_custkey as int
+pub open spec fn order_scan_view(r: OrderScan) -> (int, Seq<u8>) {
+    (r.o_custkey as int, r.o_comment@)
 }
 
-pub open spec fn qualifying_order_scan_seq_view(s: Seq<QualifyingOrderScan>) -> Seq<int> {
-    s.map_values(|r: QualifyingOrderScan| qualifying_order_scan_view(r))
+pub open spec fn order_scan_seq_view(s: Seq<OrderScan>) -> Seq<(int, Seq<u8>)> {
+    s.map_values(|r: OrderScan| order_scan_view(r))
 }
 
 /// Runtime row: delta customer.
@@ -91,8 +89,8 @@ pub open spec fn customer_input_seq_view(s: Seq<CustomerInput>) -> Seq<CustomerR
 
 // ── Parameters and result ──
 
-pub open spec fn params() -> Params {
-    Params {  }
+pub open spec fn params(p1: Seq<u8>) -> Params {
+    Params { p1 }
 }
 
 pub open spec fn out_view(o: Seq<(i64, i64)>) -> Seq<OutRow> {
@@ -106,11 +104,11 @@ pub open spec fn scan_customers_ok(db: Db, rows: Seq<CustomerScan>) -> bool {
     forall|f: spec_fn(CustomerRow) -> int| #[trigger] sum(customer_scan_seq_view(rows), f) == sum(db.customer, f)
 }
 
-/// scan qualifying_orders: SELECT o_custkey FROM orders WHERE o_comment NOT LIKE '%unusual%accounts%'
-pub open spec fn scan_qualifying_orders_ok(db: Db, rows: Seq<QualifyingOrderScan>) -> bool {
-    forall|f: spec_fn(int) -> int| #[trigger] sum(qualifying_order_scan_seq_view(rows), f) == sum(
+/// scan orders: SELECT o_custkey, o_comment FROM orders
+pub open spec fn scan_orders_ok(db: Db, rows: Seq<OrderScan>) -> bool {
+    forall|f: spec_fn((int, Seq<u8>)) -> int| #[trigger] sum(order_scan_seq_view(rows), f) == sum(
         db.orders,
-        |orders: OrdersRow| if !like_match(orders.o_comment, seq![b'%', b'u', b'n', b'u', b's', b'u', b'a', b'l', b'%', b'a', b'c', b'c', b'o', b'u', b'n', b't', b's', b'%']) { f(orders.o_custkey) } else { 0 },
+        |orders: OrdersRow| if true { f((orders.o_custkey, orders.o_comment)) } else { 0 },
     )
 }
 
@@ -126,12 +124,10 @@ pub open spec fn customer_delta_seq_view(s: Seq<CustomerDelta>) -> Seq<(Customer
     s.map_values(|d: CustomerDelta| (customer_input_view(d.row), d.sign as int))
 }
 
-/// delta orders (lossy): SELECT o_custkey, o_comment NOT LIKE '%unusual%accounts%' AS qualifies FROM orders
-#[repr(C)]
-#[derive(Clone, Copy)]
+/// delta orders (lossy): SELECT o_custkey, o_comment FROM orders
 pub struct OrderDelta {
     pub o_custkey: i64,
-    pub qualifies: u8,
+    pub o_comment: Vec<u8>,
     pub sign: i64,
 }
 
@@ -141,7 +137,7 @@ pub open spec fn orders_delta_ok(d: Seq<OrderDelta>, full: Seq<(OrdersRow, int)>
     &&& forall|i: int| #![trigger d[i]] 0 <= i < d.len() ==> {
         let orders = full[i].0;
         &&& d[i].o_custkey as int == orders.o_custkey
-        &&& (d[i].qualifies != 0) == !like_match(orders.o_comment, seq![b'%', b'u', b'n', b'u', b's', b'u', b'a', b'l', b'%', b'a', b'c', b'c', b'o', b'u', b'n', b't', b's', b'%'])
+        &&& d[i].o_comment@ == orders.o_comment
         &&& d[i].sign as int == full[i].1
     }
 }
@@ -157,33 +153,34 @@ pub open spec fn capture_ok(db: Db, db2: Db, customer: Seq<(CustomerRow, int)>, 
 /// Build: a state for db, or None (the host then answers with SQL).
 pub fn ob_build(
     customers: &[CustomerScan],
-    qualifying_orders: &[QualifyingOrderScan],
+    orders: Vec<OrderScan>,
     Ghost(db): Ghost<Db>,
 ) -> (r: Option<State>)
     requires
         scan_customers_ok(db, customers@),
-        scan_qualifying_orders_ok(db, qualifying_orders@),
+        scan_orders_ok(db, orders@),
     ensures
         r matches Some(s) ==> s.db() == db,
 {
-    kernel::build(customers, qualifying_orders, Ghost(db))
+    kernel::build(customers, orders, Ghost(db))
 }
 
 /// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
 pub fn ob_execute(
     s: &State,
+    p1: &[u8],
 ) -> (r: Option<Vec<(i64, i64)>>)
     ensures
-        r matches Some(out) ==> query_result(s.db(), params(), out_view(out@)),
+        r matches Some(out) ==> query_result(s.db(), params(p1@), out_view(out@)),
 {
-    kernel::execute(s)
+    kernel::execute(s, p1)
 }
 
 /// Apply one transaction: a state for db2, or Err (the host then rebuilds).
 pub fn ob_apply(
     s: &State,
     customer_delta: &[CustomerDelta],
-    orders_delta: &[OrderDelta],
+    orders_delta: &Vec<OrderDelta>,
     Ghost(orders_full): Ghost<Seq<(OrdersRow, int)>>,
     Ghost(db2): Ghost<Db>,
 ) -> (r: Result<State, u32>)

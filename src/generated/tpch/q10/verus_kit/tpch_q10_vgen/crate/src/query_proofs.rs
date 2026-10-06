@@ -151,23 +151,22 @@ pub proof fn lemma_empty_query(db: Db, parameters: Params)
 
 pub proof fn lemma_empty_dimensions(db: Db, dimensions: Dimensions)
     requires dimensions_valid(db, dimensions),
-        (forall|key: (int, Seq<u8>)| #[trigger] dimensions.customer_maxima.at(key) == None)
+        dimensions.customer_max == 0
             || (forall|key: (int, Seq<u8>)| #[trigger] dimensions.nation_maxima.at(key) == None),
     ensures db.customer.len() == 0 || db.nation.len() == 0,
 {
     reveal(dimensions_valid);
-    if db.customer.len() > 0 && db.nation.len() > 0 {
+    if db.customer.len() > 0 && db.nation.len() > 0 && dimensions.customer_max == 0 {
         let customer = db.customer[0];
+        let weight = crate::dimension_updates::customer_key_weight(customer.c_custkey);
+        verus_common::sums::lemma_sum_pos(db.customer, weight, 0);
+        crate::completeness::lemma_customer_bound(db, dimensions, customer.c_custkey);
+    } else if db.customer.len() > 0 && db.nation.len() > 0 {
         let nation = db.nation[0];
-        verus_common::sums::lemma_sum_pos(db.customer,
-            |row: CustomerRow| if row.c_custkey == customer.c_custkey { 1int } else { 0int }, 0);
         verus_common::sums::lemma_sum_pos(db.nation,
             |row: NationRow| if row.n_nationkey == nation.n_nationkey { 1int } else { 0int }, 0);
-        assert(total_at(dimensions.customer_totals, customer.c_custkey) > 0);
         assert(total_at(dimensions.nation_totals, nation.n_nationkey) > 0);
-        let customer_total = dimensions.customer_totals.at((customer.c_custkey, Seq::empty())).unwrap();
         let nation_total = dimensions.nation_totals.at((nation.n_nationkey, Seq::empty())).unwrap();
-        assert(dimensions.customer_maxima.at(crate::values::rank_view(customer_total as int, customer.c_custkey)).is_some());
         assert(dimensions.nation_maxima.at(crate::values::rank_view(nation_total as int, nation.n_nationkey)).is_some());
     }
 }

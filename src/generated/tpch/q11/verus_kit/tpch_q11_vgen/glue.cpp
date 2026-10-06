@@ -7,13 +7,13 @@ namespace core = kit::core;
 
 namespace {
 
-const char *const kQuerySql = R"SQL(-- TPC-H Q11 (catalog text), :nation_name as $1 (no LIMIT, as in the catalog). The fraction (0.0001) stays a literal: sql2verus cannot type a parameter used as a multiplier.
+const char *const kQuerySql = R"SQL(-- TPC-H Q11 (catalog text), :nation_name as $1, :fraction (0.0001/SF) as $2 (no LIMIT, as in the catalog).
 SELECT ps_partkey, SUM(ps_supplycost * ps_availqty) AS value
 FROM partsupp, supplier, nation
 WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey
   AND n_name = $1
 GROUP BY ps_partkey
-HAVING SUM(ps_supplycost * ps_availqty) > (SELECT SUM(ps_supplycost * ps_availqty) * 0.0001
+HAVING SUM(ps_supplycost * ps_availqty) > (SELECT SUM(ps_supplycost * ps_availqty) * $2
                                            FROM partsupp, supplier, nation
                                            WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey
                                              AND n_name = $1)
@@ -139,9 +139,14 @@ bool Execute(const void *state, const core::QueryArguments &args,
   if (!kit::ArgText(args, 0, nation_name)) {
     return false;
   }
+  int64_t fraction = 0; // $2 * 10^9, converted exactly (else decline)
+  if (!kit::ArgI64(args, 1, 9, fraction)) {
+    return false;
+  }
   tpchq11vgen_result *result = tpchq11vgen_execute(
       static_cast<const tpchq11vgen_state *>(state),
-      reinterpret_cast<const uint8_t *>(nation_name.data()), nation_name.size());
+      reinterpret_cast<const uint8_t *>(nation_name.data()), nation_name.size(),
+      fraction);
   if (result == nullptr) {
     return false;
   }
@@ -250,7 +255,7 @@ const kit::Glue kGlue = {
     {{"partsupp", {"ps_partkey", "ps_suppkey", "ps_availqty", "ps_supplycost"}},
      {"supplier", {"s_suppkey", "s_nationkey"}},
      {"nation", {"n_nationkey", "n_name"}}},
-    {kit::Kind::Text},
+    {kit::Kind::Text, kit::Kind::Dec},
     Build,
     FreeState,
     Apply,

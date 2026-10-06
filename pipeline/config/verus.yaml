@@ -42,6 +42,16 @@ gates:
   snapshot_writes: 200
   snapshot_readers: 4
   differential_every: 10        # all parameter tuples every N transactions
+  random_param_sets: 6          # fresh random domain tuples added to every differential / snapshots run
+  frozen_param_sets: 8          # random domain tuples appended to tests/params.sql when the tests are frozen
+
+# Query parameters: every substitution parameter is a runtime $n parameter.  Benchmarks, profiles and the
+# gates draw random tuples from the TPC-H domain (benchmarks/compare/gen_tpch_params.py) with a new random
+# seed per run, recorded in <artifacts>/param_draws/; a paired comparison shares one draw.
+params:
+  sets: 5                       # tuples per benchmark / profile draw
+  # generator: benchmarks/compare/gen_tpch_params.py
+  # seed: 1                     # tests only: pins the draw (a run never sets it)
 
 # Optimization loop (Verus global store: ACCEL_AUX_STORE=verus_global).  Hard ceilings always reach the audit;
 # the progress stop is the usual exit; it may fire only after a minimum of

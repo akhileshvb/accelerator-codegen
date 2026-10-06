@@ -1,3 +1,5 @@
+use crate::semantics::params0;
+use crate::packed::{self, Packed, PackedCursor};
 use vstd::prelude::*;
 use verus_common::sums::{sum, lemma_sum_take};
 use verus_prooflib::ordered::{Index, KeyView};
@@ -165,9 +167,9 @@ pub proof fn lemma_indexed_names(data: Data, db: Db)
         &&& match data.names.at(key).unwrap() {
             NameView::Singleton { nation, multiplicity } => support.entries().len() == 1 && support.at(numeric_key(nation as int)) == Some(multiplicity) && multiplicity > 0,
             NameView::Merged { inventory } => support.entries().len() >= 2 && inventory.valid()
-                && inventory.total.count as int == scalar_1_group_count(db, params(key.1))
-                && inventory.total.value as int == scalar_1_group_sum(db, params(key.1), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
-                && forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count as int == group_count(db, params(key.1), part as int)
+                && inventory.total.count as int == scalar_1_group_count(db, params0(key.1))
+                && inventory.total.value as int == scalar_1_group_sum(db, params0(key.1), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty)
+                && forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count as int == group_count(db, params0(key.1), part as int)
                     && moment_at(inventory.groups, part as int).value as int == query_group_value(db, key.1, part as int),
         }
     } by {
@@ -184,10 +186,10 @@ pub proof fn lemma_indexed_names(data: Data, db: Db)
             lemma_query_fold(db, key.1, one); lemma_query_fold(db, key.1, price);
             assert((|tuple: Scalar1Tuple| one(tuple.partsupp_2)) =~= (|tuple: Scalar1Tuple| 1int));
             assert((|tuple: Scalar1Tuple| price(tuple.partsupp_2)) =~= (|tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty));
-            verus_prooflib::lemma_sum_constant_one(scalar_1_tuples(db, params(key.1)));
+            verus_prooflib::lemma_sum_constant_one(scalar_1_tuples(db, params0(key.1)));
             assert(inventory.total.count as int == query_fold(db, key.1, one));
             assert(inventory.total.value as int == query_fold(db, key.1, price));
-            assert forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count as int == group_count(db, params(key.1), part as int)
+            assert forall|part: i64| #[trigger] moment_at(inventory.groups, part as int).count as int == group_count(db, params0(key.1), part as int)
                 && moment_at(inventory.groups, part as int).value as int == query_group_value(db, key.1, part as int) by {
                 let count = |row: PartsuppRow| row_weight(row, Some(part), false);
                 let price = |row: PartsuppRow| row_weight(row, Some(part), true);
@@ -198,10 +200,10 @@ pub proof fn lemma_indexed_names(data: Data, db: Db)
                 lemma_query_fold(db, key.1, count); lemma_query_fold(db, key.1, price);
                 assert((|tuple: Tuple| count(tuple.partsupp)) =~= (|tuple: Tuple| if tuple.partsupp.ps_partkey == part { 1int } else { 0 }));
                 assert((|tuple: Tuple| price(tuple.partsupp)) =~= (|tuple: Tuple| if tuple.partsupp.ps_partkey == part { tuple.partsupp.ps_supplycost * tuple.partsupp.ps_availqty } else { 0 }));
-                verus_common::sums::lemma_sum_ext_all(tuples(db, params(key.1)), |tuple: Tuple| price(tuple.partsupp),
+                verus_common::sums::lemma_sum_ext_all(tuples(db, params0(key.1)), |tuple: Tuple| price(tuple.partsupp),
                     |tuple: Tuple| if tuple.partsupp.ps_partkey == part { (|source: Tuple| source.partsupp.ps_supplycost * source.partsupp.ps_availqty)(tuple) } else { 0int });
                 assert(query_group_value(db, key.1, part as int) == query_fold(db, key.1, price));
-                assert(group_count(db, params(key.1), part as int) == query_fold(db, key.1, count));
+                assert(group_count(db, params0(key.1), part as int) == query_fold(db, key.1, count));
             }
         }
     }
@@ -265,7 +267,7 @@ pub proof fn lemma_database_names(data: Data, db: Db)
                 assert forall|part: Option<i64>, value: bool| #[trigger] measure(inventory, part, value)
                     == support_measure(data.inventories, support, part, value) by {
                     if let Some(part) = part {
-                        assert(moment_at(inventory.groups, part as int).count as int == group_count(db, params(key.1), part as int));
+                        assert(moment_at(inventory.groups, part as int).count as int == group_count(db, params0(key.1), part as int));
                         assert(moment_at(inventory.groups, part as int).value as int == query_group_value(db, key.1, part as int));
                     }
                     assert(measure(inventory, part, value) == sql_measure(db, key.1, part, value));
@@ -278,8 +280,8 @@ pub proof fn lemma_database_names(data: Data, db: Db)
 
 pub open spec fn sql_measure(db: Db, name: Seq<u8>, part: Option<i64>, value: bool) -> int {
     match part {
-        Some(part) => if value { query_group_value(db, name, part as int) } else { group_count(db, params(name), part as int) },
-        None => if value { scalar_1_group_sum(db, params(name), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty) } else { scalar_1_group_count(db, params(name)) },
+        Some(part) => if value { query_group_value(db, name, part as int) } else { group_count(db, params0(name), part as int) },
+        None => if value { scalar_1_group_sum(db, params0(name), |tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty) } else { scalar_1_group_count(db, params0(name)) },
     }
 }
 
@@ -295,7 +297,7 @@ pub proof fn lemma_support_sql(data: Data, db: Db, name: Seq<u8>, support: Index
         lemma_query_fold(db, name, count); lemma_query_fold(db, name, price);
         assert((|tuple: Tuple| count(tuple.partsupp)) =~= (|tuple: Tuple| if tuple.partsupp.ps_partkey == part { 1int } else { 0 }));
         assert((|tuple: Tuple| price(tuple.partsupp)) =~= (|tuple: Tuple| if tuple.partsupp.ps_partkey == part { tuple.partsupp.ps_supplycost * tuple.partsupp.ps_availqty } else { 0 }));
-        verus_common::sums::lemma_sum_ext_all(tuples(db, params(name)), |tuple: Tuple| price(tuple.partsupp),
+        verus_common::sums::lemma_sum_ext_all(tuples(db, params0(name)), |tuple: Tuple| price(tuple.partsupp),
             |tuple: Tuple| if tuple.partsupp.ps_partkey == part { (|source: Tuple| source.partsupp.ps_supplycost * source.partsupp.ps_availqty)(tuple) } else { 0int });
     } else {
         let one = |row: PartsuppRow| row_weight(row, None, false);
@@ -305,7 +307,7 @@ pub proof fn lemma_support_sql(data: Data, db: Db, name: Seq<u8>, support: Index
         lemma_query_fold(db, name, one); lemma_query_fold(db, name, price);
         assert((|tuple: Scalar1Tuple| one(tuple.partsupp_2)) =~= (|tuple: Scalar1Tuple| 1int));
         assert((|tuple: Scalar1Tuple| price(tuple.partsupp_2)) =~= (|tuple: Scalar1Tuple| tuple.partsupp_2.ps_supplycost * tuple.partsupp_2.ps_availqty));
-        verus_prooflib::lemma_sum_constant_one(scalar_1_tuples(db, params(name)));
+        verus_prooflib::lemma_sum_constant_one(scalar_1_tuples(db, params0(name)));
     }
 }
 

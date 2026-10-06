@@ -2,6 +2,7 @@
 
 #include "accelerator_codegen/verus/verus_kit.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -13,12 +14,12 @@ namespace kit = ::accelerator_codegen::verus_kit;
 namespace {
 
 const char kQuerySql[] =
-    R"SQL(-- TPC-H Q16 (catalog text), :brand as $1, :size1..:size8 as $2..$9. The type_pattern ('SMALL BRUSHED%') stays a literal: sql2verus takes only a literal LIKE pattern.
+    R"SQL(-- TPC-H Q16 (catalog text), :brand as $1, :type_pattern as $2 (NOT LIKE pattern on p_type), :size1..:size8 as $3..$10.
 SELECT p_brand, p_type, p_size, COUNT(DISTINCT ps_suppkey) AS supplier_cnt
 FROM partsupp, part
 WHERE p_partkey = ps_partkey AND p_brand <> $1
-  AND p_type NOT LIKE 'SMALL BRUSHED%'
-  AND p_size IN ($2, $3, $4, $5, $6, $7, $8, $9)
+  AND p_type NOT LIKE $2
+  AND p_size IN ($3, $4, $5, $6, $7, $8, $9, $10)
   AND ps_suppkey NOT IN (SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%')
 GROUP BY p_brand, p_type, p_size
 ORDER BY supplier_cnt DESC, p_brand, p_type, p_size)SQL";
@@ -209,6 +210,19 @@ void QueryBlockerRows(kit::Host &host, const std::vector<int64_t> &keys,
       [&rows](const kit::core::AuxRow &row) { rows.Push(row); });
 }
 
+void SortUnique(std::vector<int64_t> &keys) {
+  std::sort(keys.begin(), keys.end());
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+}
+
+// The kernel's key functions see only the deltas, but the rows it needs depend
+// on earlier rescans: the suppliers of a changed part are known only from the
+// partsupp rows now in the database, and the parts to load are those of the
+// affected suppliers' current partsupp rows.  The keys it is handed may be any
+// superset of what it asks for (rows are filtered by its own scopes), so the
+// glue chains the rescans: edges of changed parts -> their suppliers join the
+// supplier keys -> edges and blockers of those suppliers -> their parts join the
+// neighbor keys.
 void CollectRescans(const tpchq16vgen_state *state, const Deltas &deltas,
                     kit::Host &host, RescanRows &rows) {
   CollectRescanKeys(
@@ -221,8 +235,17 @@ void CollectRescans(const tpchq16vgen_state *state, const Deltas &deltas,
                     tpchq16vgen_rescan_blockers_for_suppliers_keys,
                     rows.blocker_keys);
   QueryEdgeRows(host, "ps_partkey", rows.edge_keys, rows.edge_rows);
+  for (const auto &edge : rows.edge_rows.rows) {
+    rows.edge_supplier_keys.push_back(edge.ps_suppkey);
+    rows.blocker_keys.push_back(edge.ps_suppkey);
+  }
+  SortUnique(rows.edge_supplier_keys);
+  SortUnique(rows.blocker_keys);
   QueryEdgeRows(host, "ps_suppkey", rows.edge_supplier_keys,
                 rows.edge_supplier_rows);
+  for (const auto &edge : rows.edge_supplier_rows.rows)
+    rows.part_keys.push_back(edge.ps_partkey);
+  SortUnique(rows.part_keys);
   QueryPartRows(host, rows.part_keys, rows.part_rows);
   QueryBlockerRows(host, rows.blocker_keys, rows.blocker_rows);
 }
@@ -230,7 +253,7 @@ void CollectRescans(const tpchq16vgen_state *state, const Deltas &deltas,
 void LoadBuild(kit::Host &host, PartColumn &parts, EdgeColumn &edges,
                BlockerColumn &blockers) {
   host.Query(
-      "SELECT p_partkey, p_brand, p_type, p_size FROM part WHERE p_type NOT LIKE 'SMALL BRUSHED%'",
+      "SELECT p_partkey, p_brand, p_type, p_size FROM part",
       [&parts](const kit::core::AuxRow &row) { parts.Push(row); });
   host.Query("SELECT ps_partkey, ps_suppkey FROM partsupp",
              [&edges](const kit::core::AuxRow &row) { edges.Push(row); });
@@ -282,19 +305,23 @@ void *Apply(const void *state, const kit::Changes &changes, kit::Host &host,
 bool Execute(const void *state, const kit::core::QueryArguments &args,
              std::vector<kit::core::AuxRow> &out) {
   std::string brand;
+  std::string pattern;
   int64_t sizes[8] = {};
-  if (!kit::ArgText(args, 0, brand) || !kit::ArgI64(args, 1, 0, sizes[0]) ||
-      !kit::ArgI64(args, 2, 0, sizes[1]) || !kit::ArgI64(args, 3, 0, sizes[2]) ||
-      !kit::ArgI64(args, 4, 0, sizes[3]) || !kit::ArgI64(args, 5, 0, sizes[4]) ||
-      !kit::ArgI64(args, 6, 0, sizes[5]) || !kit::ArgI64(args, 7, 0, sizes[6]) ||
-      !kit::ArgI64(args, 8, 0, sizes[7])) {
+  if (!kit::ArgText(args, 0, brand) || !kit::ArgText(args, 1, pattern)) {
     return false;
+  }
+  for (int i = 0; i < 8; ++i) {
+    if (!kit::ArgI64(args, 2 + i, 0, sizes[i])) {
+      return false;
+    }
   }
 
   tpchq16vgen_result *result = tpchq16vgen_execute(
       static_cast<const tpchq16vgen_state *>(state),
-      reinterpret_cast<const uint8_t *>(brand.data()), brand.size(), sizes[0],
-      sizes[1], sizes[2], sizes[3], sizes[4], sizes[5], sizes[6], sizes[7]);
+      reinterpret_cast<const uint8_t *>(brand.data()), brand.size(),
+      reinterpret_cast<const uint8_t *>(pattern.data()), pattern.size(),
+      sizes[0], sizes[1], sizes[2], sizes[3], sizes[4], sizes[5], sizes[6],
+      sizes[7]);
   if (result == nullptr) {
     return false;
   }
@@ -438,9 +465,9 @@ const kit::Glue kGlue = {
     {{"part", {"p_partkey", "p_brand", "p_type", "p_size"}},
      {"partsupp", {"ps_partkey", "ps_suppkey"}},
      {"supplier", {"s_suppkey", "s_comment"}}},
-    {kit::Kind::Text, kit::Kind::Int, kit::Kind::Int, kit::Kind::Int,
+    {kit::Kind::Text, kit::Kind::Text, kit::Kind::Int, kit::Kind::Int,
      kit::Kind::Int, kit::Kind::Int, kit::Kind::Int, kit::Kind::Int,
-     kit::Kind::Int},
+     kit::Kind::Int, kit::Kind::Int},
     Build,
     FreeState,
     Apply,

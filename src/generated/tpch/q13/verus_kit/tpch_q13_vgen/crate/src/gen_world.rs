@@ -39,7 +39,7 @@ pub fn prepare_apply(
     store: &QStore,
     base: &QBase,
     customer_delta: &[CustomerDelta],
-    orders_delta: &[OrderDelta],
+    orders_delta: &Vec<OrderDelta>,
     Ghost(orders_full): Ghost<Seq<(OrdersRow, int)>>,
 ) -> (r: Result<QPrepared, u32>)
     requires
@@ -63,17 +63,17 @@ pub fn prepare_build(
     store: &QStore,
     e: u64,
     customers: &[CustomerScan],
-    qualifying_orders: &[QualifyingOrderScan],
+    orders: Vec<OrderScan>,
 ) -> (p: QPrepared)
     requires
         e < u64::MAX,
         scan_customers_ok(store.db_at((e + 1) as nat), customers@),
-        scan_qualifying_orders_ok(store.db_at((e + 1) as nat), qualifying_orders@),
+        scan_orders_ok(store.db_at((e + 1) as nat), orders@),
     ensures
         p.epoch() == e,
         p.timeline() == store.timeline(),
 {
-    let state = ob_build(customers, qualifying_orders, Ghost(store.db_at((e + 1) as nat)));
+    let state = ob_build(customers, orders, Ghost(store.db_at((e + 1) as nat)));
     prepare(store, e, state)
 }
 

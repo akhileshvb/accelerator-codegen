@@ -24,24 +24,24 @@ pub proof fn lemma_variant_take(rows: Seq<SupplierVariant>, index: int, weight: 
 pub open spec fn bucket_rows(bucket: Table<Vec<SupplierVariant>>, key: i64) -> Seq<SupplierVariant> {
     match bucket.lookup(key) { Some(rows) => rows@, None => Seq::empty() }
 }
-pub open spec fn bucket_weight(parts: Table<Part>, directory: Table<Vec<i64>>, bucket: Table<Vec<SupplierVariant>>, keys: Seq<i64>, parameters: Params, weight: spec_fn(OutRow) -> int) -> int {
-    sum(keys, |key: i64| if cached_supplier_passes(parts, directory, key, parameters.p1, parameters.p3) { variant_weight(bucket_rows(bucket, key), weight) } else { 0 })
+pub open spec fn bucket_weight(parts: Table<Part>, directory: Table<Vec<i64>>, names: PartNames, bucket: Table<Vec<SupplierVariant>>, keys: Seq<i64>, parameters: Params, weight: spec_fn(OutRow) -> int) -> int {
+    sum(keys, |key: i64| if cached_supplier_passes(parts, directory, names, key, parameters.p1, parameters.p4, parameters.p2) { variant_weight(bucket_rows(bucket, key), weight) } else { 0 })
 }
-pub proof fn lemma_bucket_take(parts: Table<Part>, directory: Table<Vec<i64>>, bucket: Table<Vec<SupplierVariant>>, keys: Seq<i64>, index: int, parameters: Params, weight: spec_fn(OutRow) -> int)
+pub proof fn lemma_bucket_take(parts: Table<Part>, directory: Table<Vec<i64>>, names: PartNames, bucket: Table<Vec<SupplierVariant>>, keys: Seq<i64>, index: int, parameters: Params, weight: spec_fn(OutRow) -> int)
     requires 0 <= index < keys.len(),
-    ensures bucket_weight(parts, directory, bucket, keys.take(index + 1), parameters, weight) == bucket_weight(parts, directory, bucket, keys.take(index), parameters, weight)
-        + if cached_supplier_passes(parts, directory, keys[index], parameters.p1, parameters.p3) { variant_weight(bucket_rows(bucket, keys[index]), weight) } else { 0 },
+    ensures bucket_weight(parts, directory, names, bucket, keys.take(index + 1), parameters, weight) == bucket_weight(parts, directory, names, bucket, keys.take(index), parameters, weight)
+        + if cached_supplier_passes(parts, directory, names, keys[index], parameters.p1, parameters.p4, parameters.p2) { variant_weight(bucket_rows(bucket, keys[index]), weight) } else { 0 },
 {
-    lemma_sum_take(keys, index, |key: i64| if cached_supplier_passes(parts, directory, key, parameters.p1, parameters.p3) { variant_weight(bucket_rows(bucket, key), weight) } else { 0 });
+    lemma_sum_take(keys, index, |key: i64| if cached_supplier_passes(parts, directory, names, key, parameters.p1, parameters.p4, parameters.p2) { variant_weight(bucket_rows(bucket, key), weight) } else { 0 });
 }
 pub open spec fn nation_weight(db: Db, parameters: Params, nation: int, weight: spec_fn(OutRow) -> int) -> int {
     sum(db.supplier, |row: SupplierRow| if row.s_nationkey == nation && in_1(db, parameters, row.s_suppkey) { weight(OutRow { s_name: row.s_name, s_address: row.s_address }) } else { 0 })
 }
 pub open spec fn nation_output_weight(db: Db, parameters: Params, rows: Seq<NationVariant>, weight: spec_fn(OutRow) -> int) -> int {
-    sum(rows, |row: NationVariant| if row.name@ == parameters.p2 { row.count as int * nation_weight(db, parameters, row.key as int, weight) } else { 0 })
+    sum(rows, |row: NationVariant| if row.name@ == parameters.p3 { row.count as int * nation_weight(db, parameters, row.key as int, weight) } else { 0 })
 }
 pub open spec fn sql_nation_weight(db: Db, parameters: Params, weight: spec_fn(OutRow) -> int) -> int {
-    sum(db.nation, |row: NationRow| if row.n_name == parameters.p2 { nation_weight(db, parameters, row.n_nationkey, weight) } else { 0 })
+    sum(db.nation, |row: NationRow| if row.n_name == parameters.p3 { nation_weight(db, parameters, row.n_nationkey, weight) } else { 0 })
 }
 pub proof fn lemma_nation_weight_as_sum(db: Db, parameters: Params, nation: int, weight: spec_fn(OutRow) -> int, term: spec_fn(SupplierRow) -> int)
     requires forall|row: SupplierRow| #[trigger] term(row) == if row.s_nationkey == nation && in_1(db, parameters, row.s_suppkey) { weight(OutRow { s_name: row.s_name, s_address: row.s_address }) } else { 0 },
@@ -70,36 +70,36 @@ pub proof fn lemma_query_weight(db: Db, parameters: Params, weight: spec_fn(OutR
     }
     lemma_sum_ext_all(db.supplier, |supplier: SupplierRow| sum(outer(supplier), tuple_weight), by_supplier);
     lemma_sum_swap(db.supplier, db.nation, joint, by_supplier, by_nation);
-    assert forall|nation: NationRow| #[trigger] by_nation(nation) == if nation.n_name == parameters.p2 { nation_weight(db, parameters, nation.n_nationkey, weight) } else { 0int } by {
-        if nation.n_name == parameters.p2 {
+    assert forall|nation: NationRow| #[trigger] by_nation(nation) == if nation.n_name == parameters.p3 { nation_weight(db, parameters, nation.n_nationkey, weight) } else { 0int } by {
+        if nation.n_name == parameters.p3 {
             lemma_nation_weight_as_sum(db, parameters, nation.n_nationkey, weight, |supplier: SupplierRow| joint(supplier, nation));
         } else { lemma_sum_zero(db.supplier, |supplier: SupplierRow| joint(supplier, nation)); }
     }
-    lemma_sum_ext_all(db.nation, by_nation, |nation: NationRow| if nation.n_name == parameters.p2 { nation_weight(db, parameters, nation.n_nationkey, weight) } else { 0int });
+    lemma_sum_ext_all(db.nation, by_nation, |nation: NationRow| if nation.n_name == parameters.p3 { nation_weight(db, parameters, nation.n_nationkey, weight) } else { 0int });
 }
 pub proof fn lemma_nation_rows(db: Db, parameters: Params, nations: Nations, rows: Seq<NationVariant>, weight: spec_fn(OutRow) -> int)
-    requires nation_correct(db, nations), domain_valid(db), nations.lookup(name_hash(parameters.p2) as i64) matches Some(bucket) && bucket@ == rows,
+    requires nation_correct(db, nations), domain_valid(db), nations.lookup(name_hash(parameters.p3) as i64) matches Some(bucket) && bucket@ == rows,
     ensures nation_output_weight(db, parameters, rows, weight) == sum(crate::gen_spec::rows(db, parameters), weight),
 {
     let left_project = |row: NationVariant| row.key as int;
     let right_project = |row: NationRow| row.n_nationkey;
-    let left_count = |row: NationVariant| if row.name@ == parameters.p2 { row.count as int } else { 0int };
-    let right_count = |row: NationRow| if row.n_name == parameters.p2 { 1int } else { 0int };
+    let left_count = |row: NationVariant| if row.name@ == parameters.p3 { row.count as int } else { 0int };
+    let right_count = |row: NationRow| if row.n_name == parameters.p3 { 1int } else { 0int };
     assert forall|key: int| #[trigger] class_total(rows, left_project, left_count, key) == class_total(db.nation, right_project, right_count, key) by {
         if machine_key(key) {
             let bounded = key as i64;
             assert(bounded as int == key);
             lemma_sum_ext_all(rows, |row: NationVariant| if left_project(row) == key { left_count(row) } else { 0 },
-                |row: NationVariant| if row.name@ == parameters.p2 && row.key == bounded { row.count as int } else { 0 });
+                |row: NationVariant| if row.name@ == parameters.p3 && row.key == bounded { row.count as int } else { 0 });
             lemma_sum_ext_all(db.nation, |row: NationRow| if right_project(row) == key { right_count(row) } else { 0 },
-                |row: NationRow| if row.n_name == parameters.p2 && row.n_nationkey == bounded { 1int } else { 0int });
-            assert(nation_measure(rows, parameters.p2, bounded) == nation_count(nations, parameters.p2, bounded));
-            lemma_nation_measure_weight(rows, parameters.p2, bounded, |row: NationVariant| if left_project(row) == key { left_count(row) } else { 0 });
-            assert(class_total(rows, left_project, left_count, key) == nation_measure(rows, parameters.p2, bounded));
+                |row: NationRow| if row.n_name == parameters.p3 && row.n_nationkey == bounded { 1int } else { 0int });
+            assert(nation_measure(rows, parameters.p3, bounded) == nation_count(nations, parameters.p3, bounded));
+            lemma_nation_measure_weight(rows, parameters.p3, bounded, |row: NationVariant| if left_project(row) == key { left_count(row) } else { 0 });
+            assert(class_total(rows, left_project, left_count, key) == nation_measure(rows, parameters.p3, bounded));
             assert(class_total(db.nation, right_project, right_count, key) == sum(db.nation,
-                |row: NationRow| if row.n_name == parameters.p2 && row.n_nationkey == bounded { 1int } else { 0int }));
-            assert(nation_count(nations, parameters.p2, bounded) == sum(db.nation,
-                |row: NationRow| if row.n_name == parameters.p2 && row.n_nationkey == bounded { 1int } else { 0int }));
+                |row: NationRow| if row.n_name == parameters.p3 && row.n_nationkey == bounded { 1int } else { 0int }));
+            assert(nation_count(nations, parameters.p3, bounded) == sum(db.nation,
+                |row: NationRow| if row.n_name == parameters.p3 && row.n_nationkey == bounded { 1int } else { 0int }));
         } else {
             lemma_sum_zero(rows, |row: NationVariant| if left_project(row) == key { left_count(row) } else { 0 });
             lemma_sum_zero(db.nation, |row: NationRow| if right_project(row) == key { right_count(row) } else { 0 });
@@ -108,9 +108,9 @@ pub proof fn lemma_nation_rows(db: Db, parameters: Params, nations: Nations, row
     let class_weight = |key: int| nation_weight(db, parameters, key, weight);
     lemma_equal_classes(rows, db.nation, left_project, right_project, left_count, right_count, class_weight);
     lemma_sum_ext_all(rows, |row: NationVariant| left_count(row) * class_weight(left_project(row)),
-        |row: NationVariant| if row.name@ == parameters.p2 { row.count as int * nation_weight(db, parameters, row.key as int, weight) } else { 0 });
+        |row: NationVariant| if row.name@ == parameters.p3 { row.count as int * nation_weight(db, parameters, row.key as int, weight) } else { 0 });
     lemma_sum_ext_all(db.nation, |row: NationRow| right_count(row) * class_weight(right_project(row)),
-        |row: NationRow| if row.n_name == parameters.p2 { nation_weight(db, parameters, row.n_nationkey, weight) } else { 0 });
+        |row: NationRow| if row.n_name == parameters.p3 { nation_weight(db, parameters, row.n_nationkey, weight) } else { 0 });
     lemma_query_weight(db, parameters, weight);
 }
 pub proof fn lemma_variants(db: Db, nation: i64, supplier: i64, rows: Seq<SupplierVariant>, weight: spec_fn(OutRow) -> int)
@@ -137,21 +137,21 @@ pub proof fn lemma_variants(db: Db, nation: i64, supplier: i64, rows: Seq<Suppli
     lemma_sum_ext_all(db.supplier, |row: SupplierRow| right_count(row) * class_weight(right_project(row)),
         |row: SupplierRow| if row.s_nationkey == nation && row.s_suppkey == supplier { weight(OutRow { s_name: row.s_name, s_address: row.s_address }) } else { 0 });
 }
-pub proof fn lemma_bucket(db: Db, parameters: Params, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations,
+pub proof fn lemma_bucket(db: Db, parameters: Params, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations, names: PartNames,
     nation: i64, bucket: Table<Vec<SupplierVariant>>, keys: Seq<i64>, weight: spec_fn(OutRow) -> int)
-    requires meaning(db, parts, directory, suppliers, nations), domain_valid(db), parameters.p1 < parameters.p3,
+    requires meaning(db, parts, directory, suppliers, nations, names), domain_valid(db), parameters.p1 < parameters.p4,
         suppliers.lookup(nation) == Some(bucket), keys.no_duplicates(),
         forall|key: i64| #![trigger bucket.lookup(key)] keys.contains(key) == bucket.lookup(key).is_some(),
-    ensures bucket_weight(parts, directory, bucket, keys, parameters, weight) == nation_weight(db, parameters, nation as int, weight),
+    ensures bucket_weight(parts, directory, names, bucket, keys, parameters, weight) == nation_weight(db, parameters, nation as int, weight),
 {
     let joint = |key: i64, row: SupplierRow| if row.s_nationkey == nation && row.s_suppkey == key && in_1(db, parameters, key as int) {
         weight(OutRow { s_name: row.s_name, s_address: row.s_address })
     } else { 0int };
-    let by_key = |key: i64| if cached_supplier_passes(parts, directory, key, parameters.p1, parameters.p3) { variant_weight(bucket_rows(bucket, key), weight) } else { 0int };
+    let by_key = |key: i64| if cached_supplier_passes(parts, directory, names, key, parameters.p1, parameters.p4, parameters.p2) { variant_weight(bucket_rows(bucket, key), weight) } else { 0int };
     let by_row = |row: SupplierRow| sum(keys, |key: i64| joint(key, row));
     assert forall|key: i64| #[trigger] by_key(key) == sum(db.supplier, |row: SupplierRow| joint(key, row)) by {
-        lemma_cached_supplier(db, parameters, parts, directory, suppliers, nations, key);
-        if cached_supplier_passes(parts, directory, key, parameters.p1, parameters.p3) {
+        lemma_cached_supplier(db, parameters, parts, directory, suppliers, nations, names, key);
+        if cached_supplier_passes(parts, directory, names, key, parameters.p1, parameters.p4, parameters.p2) {
             assert forall|name: Seq<u8>, address: Seq<u8>| #[trigger] supplier_measure(bucket_rows(bucket, key), name, address) ==
                 sum(db.supplier, |row: SupplierRow| if row.s_nationkey == nation && row.s_suppkey == key && row.s_name == name && row.s_address == address { 1 } else { 0 }) by {
                 assert(supplier_count(suppliers, nation, key, name, address) == supplier_measure(bucket_rows(bucket, key), name, address));

@@ -1,4 +1,7 @@
 use vstd::prelude::*;
+use crate::custs::Custs;
+use crate::paged::{Paged, PageCursor, entry_sorted, Ent};
+use crate::rank_ent::*;
 use verus_common::sums::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
@@ -171,7 +174,7 @@ pub proof fn lemma_unselected(before: Db, after: Db, customers: Seq<CustomerDelt
     }
 }
 
-pub proof fn lemma_initial_pages(customer_index: Index<CustomerCell>, pages: Index<Page>, ranks: Index<Index<()>>, before: Db, after: Db,
+pub proof fn lemma_initial_pages(customer_index: Custs, pages: Index<Page>, ranks: Index<Paged<RankEnt>>, before: Db, after: Db,
     customers: Seq<CustomerDelta>, lines: Seq<(LineitemRow, int)>, orders: Seq<(OrdersRow, int)>, selected: Set<int>)
     requires state_ok(customer_index, pages, ranks, before), capture_ok(before, after, customer_delta_seq_view(customers), lines, orders),
         forall|position: int| #![trigger lines[position]] 0 <= position < lines.len() ==> selected.contains(lines[position].0.l_orderkey / 256),
@@ -278,7 +281,7 @@ pub proof fn lemma_weight_locality(before: Db, after: Db, customers: Seq<Custome
     lemma_sum_ext(before.orders, after_weight, before_weight);
 }
 
-pub proof fn lemma_state_work(customers: Index<CustomerCell>, pages: Index<Page>, ranks: Index<Index<()>>, db: Db, number: int, work: PageWork)
+pub proof fn lemma_state_work(customers: Custs, pages: Index<Page>, ranks: Index<Paged<RankEnt>>, db: Db, number: int, work: PageWork)
     requires state_ok(customers, pages, ranks, db), work_page_shape(work, number),
         match pages.at((number, Seq::empty())) {
             Some(page) => work.orders@ == (*page.orders)@ && work.ships@ == (*page.ships)@,
@@ -314,7 +317,7 @@ pub proof fn lemma_columns_frame(work: PageWork, number: int, before: Db, after:
     }
 }
 
-pub proof fn lemma_state_page(customers: Index<CustomerCell>, pages: Index<Page>, ranks: Index<Index<()>>, db: Db, number: int, page: Page)
+pub proof fn lemma_state_page(customers: Custs, pages: Index<Page>, ranks: Index<Paged<RankEnt>>, db: Db, number: int, page: Page)
     requires state_ok(customers, pages, ranks, db), pages.at((number, Seq::empty())) == Some(page),
     ensures page_database_ok(page, number, db),
 {

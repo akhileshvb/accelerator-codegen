@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from accel_pipeline.verus import actions, workspace
+from accel_pipeline.verus import params as qparams
 from accel_pipeline.verus.agent import json_block, render, run_agent
 from accel_pipeline.verus.context import IGNORED_WORKLOAD_FIELDS, VerusContext
 from accel_pipeline.verus.stopping import Attempt, StopConfig, StopState, should_stop, uncovered
@@ -186,6 +187,8 @@ def preflight(r: Run) -> None:
             cfg = {"ok": True} if done else actions.configure_build(ctx)
         if not cfg["ok"]:
             problems.append(f"build dir {ctx.build_dir}: cmake configure (DuckDB engine) failed: {cfg['error']}")
+    if Path(ctx.query_sql or "/nonexistent").is_file() and (why := qparams.check_query(ctx)):
+        problems.append(why)
     verus_bin = Path(str(ctx.setting("verus_bin") or ""))
     if not verus_bin.is_file():
         problems.append(f"Verus binary {verus_bin} missing (set VERUS_BIN or verus.verus_bin)")
@@ -395,6 +398,7 @@ def _tests(r: Run) -> None:
         sid = _round(r, "verus_tests", "03_tests.md", "Write the adversarial tests in tests/.", feedback, sid)
         if r.dry_run:
             return
+        r.note(f"random parameter sets added to the tests: {actions.add_random_params(ctx)}")
         v = r.gate("validate_tests", actions.validate_tests(ctx))
         if v["ok"]:
             r.state.tests_hash = actions.tree_hash(ctx.ws / "tests")
@@ -737,9 +741,10 @@ def _hotspots(ctx: VerusContext, prof: dict[str, Any]) -> list[str]:
     return sorted((n for n, s in agg.items() if s >= share), key=lambda n: -agg[n])
 
 
-def _full_bench(r: Run, tag: str, runner: Path | None = None) -> tuple[float, dict[str, Any]]:
+def _full_bench(r: Run, tag: str, runner: Path | None = None, draw: qparams.Draw | None = None) -> tuple[float, dict[str, Any]]:
+    """`draw`: random parameter tuples shared with other benches of one decision; None: a fresh draw."""
     mixes = [float(x) for x in r.ctx.setting("optimization.bench.write_mix_choices", [0.01, 0.05, 0.1])]
-    b = actions.bench(r.ctx, mixes, tag=tag, runner=runner)
+    b = actions.bench(r.ctx, mixes, tag=tag, runner=runner, draw=draw)
     if not b["ok"]:
         return 0.0, b
     return actions.score(b, r.ctx), b
@@ -751,12 +756,14 @@ def _paired_bench(r: Run, tag: str, best: Path, cand: Path) -> dict[str, Any]:
     A score stored from an earlier run drifts with the machine's load by more
     than the gains being judged."""
     rounds = int(r.ctx.setting("optimization.bench.paired_rounds", 3))
+    # one fresh random draw of parameters for this decision, the same for both sides and every round
+    draw = qparams.new_draw(r.ctx, tag)
     scores: dict[str, list[float]] = {"best": [], "cand": []}
     benches: dict[str, list[dict[str, Any]]] = {"best": [], "cand": []}
     for i in range(rounds):
         order = [("best", best), ("cand", cand)] if i % 2 == 0 else [("cand", cand), ("best", best)]
         for who, runner in order:
-            s, b = _full_bench(r, f"{tag}_{who}_{i}", runner=runner)
+            s, b = _full_bench(r, f"{tag}_{who}_{i}", runner=runner, draw=draw)
             if not s:
                 return {"ok": False, "who": who, "bench": b}
             scores[who].append(s)
@@ -765,7 +772,7 @@ def _paired_bench(r: Run, tag: str, best: Path, cand: Path) -> dict[str, Any]:
     mid = {k: benches[k][v.index(sorted(v)[len(v) // 2])] for k, v in scores.items()}
     spread = (max(scores["best"]) - min(scores["best"])) / med["best"] * 100.0
     wins = sum(c > b for c, b in zip(scores["cand"], scores["best"]))
-    return {"ok": True, "best": med["best"], "cand": med["cand"], "scores": scores, "wins": wins,
+    return {"ok": True, **qparams.summary(draw), "best": med["best"], "cand": med["cand"], "scores": scores, "wins": wins,
             "rounds": rounds, "best_spread_pct": spread, "cand_bench": mid["cand"], "best_bench": mid["best"]}
 
 
@@ -812,8 +819,9 @@ def _optimization(r: Run) -> None:
         b = actions.build_runner(ctx)
         if not b["ok"]:
             raise PipelineStop("optimization: the accepted kernel no longer builds: " + _brief(b, 3000))
-        s1, b1 = _full_bench(r, "baseline_1")
-        s2, _ = _full_bench(r, "baseline_2")
+        base_draw = qparams.new_draw(r.ctx, "baseline")  # both baselines on one fresh draw
+        s1, b1 = _full_bench(r, "baseline_1", draw=base_draw)
+        s2, _ = _full_bench(r, "baseline_2", draw=base_draw)
         if not s1 or not s2:
             raise PipelineStop("optimization: the baseline bench failed: " + _brief(b1, 3000))
         actions.freeze_runner(ctx, "best")
@@ -1013,9 +1021,10 @@ def audit(r: Run) -> None:
         report["cpp_store"] = actions.correctness(ctx, store="cpp")
         report["fault_selfcheck"] = actions.fault_selfcheck(ctx)
         report["glue_contract"] = actions.glue_contract(ctx)
-        _, report["bench_verus"] = _full_bench(r, "audit_verus")
+        audit_draw = qparams.new_draw(ctx, "audit")  # a fresh draw, shared by the two audit benches
+        _, report["bench_verus"] = _full_bench(r, "audit_verus", draw=audit_draw)
         mixes = [float(x) for x in ctx.setting("optimization.bench.write_mix_choices", [0.01, 0.05, 0.1])]
-        report["bench_cpp_store"] = actions.bench(ctx, mixes, store="cpp", tag="audit_cpp")
+        report["bench_cpp_store"] = actions.bench(ctx, mixes, store="cpp", tag="audit_cpp", draw=audit_draw)
         report["optimization"] = {k: v for k, v in r.state.opt.items() if k not in ("stop", "best_bench")}
         ok = (not report["frozen_changed"] and report["trusted_base"]["ok"] and b.get("ok")
               and report["verus_store"]["ok"] and report["cpp_store"]["ok"] and report["fault_selfcheck"]["ok"]

@@ -15,13 +15,15 @@
 //           AND p_partkey = l_partkey
 //           AND o_orderkey = l_orderkey
 //           AND s_nationkey = n_nationkey
-//           AND p_name LIKE '%green%') AS profit
+//           AND p_name LIKE $1) AS profit
 //   GROUP BY nation, o_year
 //   ORDER BY nation, o_year DESC
 //
 // Query-specific notes (host contract):
 //  * CHAR(n) text: compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged (DuckDB: CHAR(n) is an alias of VARCHAR).
+//  * $1 is params.p1: text bytes.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
+//  * LIKE with a parameter pattern: the pattern uses '%' and '_' (ASCII text, bytes = characters).
 #![allow(unused_imports)]
 use vstd::prelude::*;
 use verus_common::bytes::*;
@@ -103,6 +105,8 @@ pub struct Db {
 
 /// The query parameters.
 pub struct Params {
+    /// $1: text bytes
+    pub p1: Seq<u8>,
 }
 
 // ── Block profit ──
@@ -125,7 +129,7 @@ pub open spec fn profit_where_clause(db: Db, params: Params, part: PartRow, supp
     &&& part.p_partkey == lineitem.l_partkey
     &&& orders.o_orderkey == lineitem.l_orderkey
     &&& supplier.s_nationkey == nation.n_nationkey
-    &&& like_match(part.p_name, seq![b'%', b'g', b'r', b'e', b'e', b'n', b'%'])
+    &&& like_match(part.p_name, params.p1)
 }
 
 /// The FROM-clause tuples of block profit (bag product) that satisfy WHERE.

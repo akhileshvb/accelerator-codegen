@@ -249,6 +249,9 @@ fn flt_rescale(code: &str, prec: u8, from: u32, to: u32) -> (String, u8) {
     }
 }
 
+/// scale of a numeric parameter used as a multiplier (`x * $n`): DECIMAL(.., 9), value * 10^9.
+const MULT_PARAM_SCALE: u32 = 9;
+
 fn bytes_lit(s: &str) -> String {
     if s.is_empty() {
         return "Seq::<u8>::empty()".into();
@@ -947,6 +950,9 @@ impl<'a> Tr<'a> {
     fn hint_for(op: Operator, other: &Val) -> Option<Ty> {
         match op {
             Operator::Multiply if matches!(other.ty, Ty::Days | Ty::Months | Ty::Nanos) => Some(Ty::Int),
+            // a parameter multiplying a number is a DECIMAL with MULT_PARAM_SCALE places (exact for any value
+            // with at most that many decimals: TPC-H Q11's 0.0001/SF down to SF 100000)
+            Operator::Multiply if matches!(other.ty, Ty::Int | Ty::Dec(_)) => Some(Ty::Dec(MULT_PARAM_SCALE)),
             Operator::Multiply | Operator::Divide => None,
             Operator::Plus | Operator::Minus if matches!(other.ty, Ty::Date | Ty::Ts) => None,
             _ if other.ty == Ty::Rat => None,
@@ -1027,12 +1033,30 @@ impl<'a> Tr<'a> {
                     bail!("LIKE with ESCAPE / ILIKE");
                 }
                 let v = self.expr(expr, ctx)?;
-                let Expr::Literal(ScalarValue::Utf8(Some(p)) | ScalarValue::Utf8View(Some(p)), _) = strip_alias(pattern) else {
-                    bail!("LIKE with a non-literal pattern");
-                };
                 if v.ty != Ty::Text {
                     bail!("LIKE on {:?}", v.ty);
                 }
+                if let Expr::Placeholder(ph) = strip_alias(pattern) {
+                    // a text parameter as the pattern: like_match(value, params.pN).  The parameter is
+                    // matched byte for byte: a pattern for a CHAR(n) column would need its trailing
+                    // spaces trimmed (as for a literal), which a parameter cannot express, so refuse it.
+                    if v.char_col {
+                        bail!("LIKE with a parameter pattern on a CHAR(n) column (the pattern's trailing spaces cannot be trimmed)");
+                    }
+                    let pv = self.placeholder(ph, Some(Ty::Text))?;
+                    let code = format!("like_match({}, {})", v.code, pv.code);
+                    let code = if *negated { format!("!{code}") } else { code };
+                    let mut out = Val::atom(code, Ty::Bool).with_meta(&[&v]);
+                    if out.guard.is_some() && *negated {
+                        bail!("NOT LIKE on a possibly-NULL value");
+                    }
+                    out.nullcmp |= out.guard.is_some();
+                    self.notes.insert("LIKE with a parameter pattern: the pattern uses '%' and '_' (ASCII text, bytes = characters).".into());
+                    return Ok(out);
+                }
+                let Expr::Literal(ScalarValue::Utf8(Some(p)) | ScalarValue::Utf8View(Some(p)), _) = strip_alias(pattern) else {
+                    bail!("LIKE with a non-literal, non-parameter pattern");
+                };
                 if p.contains('_') {
                     self.notes.insert("LIKE patterns use '_': the text they match is ASCII (bytes = characters).".into());
                 }

@@ -6,6 +6,8 @@ use crate::gen_spec::*;
 use crate::model::*;
 use crate::relational::*;
 
+use verus_common::sqlfns::like_match;
+
 verus! {
 
 pub open spec fn row_projection(part: PartRow, supplier: SupplierRow, nation: NationRow) -> OutRow {
@@ -14,7 +16,7 @@ pub open spec fn row_projection(part: PartRow, supplier: SupplierRow, nation: Na
         s_phone: supplier.s_phone, s_comment: supplier.s_comment }
 }
 
-pub open spec fn part_selected(part: PartRow, p: Params) -> bool { brass(part) && part.p_size == p.p1 }
+pub open spec fn part_selected(part: PartRow, p: Params) -> bool { retained(part) && part.p_size == p.p1 && like_match(part.p_type, p.p2) }
 
 pub open spec fn quote_selected(db: Db, p: Params, part: PartRow, quote: PartsuppRow) -> bool {
     quote.ps_partkey == part.p_partkey && scalar_1_value(db, p, part) is Some && quote.ps_supplycost == scalar_1_value(db, p, part)->0
@@ -22,7 +24,7 @@ pub open spec fn quote_selected(db: Db, p: Params, part: PartRow, quote: Partsup
 
 pub open spec fn part_query_weight(db: Db, p: Params, part: PartRow, weight: spec_fn(OutRow) -> int) -> int {
     if part_selected(part, p) {
-        quote_join(db, p.p2, part.p_partkey, |quote: PartsuppRow, supplier: SupplierRow, nation: NationRow|
+        quote_join(db, p.p3, part.p_partkey, |quote: PartsuppRow, supplier: SupplierRow, nation: NationRow|
             if quote_selected(db, p, part, quote) { weight(row_projection(part, supplier, nation)) } else { 0int })
     } else { 0int }
 }
@@ -31,19 +33,19 @@ pub open spec fn part_query_weight(db: Db, p: Params, part: PartRow, weight: spe
 pub proof fn lemma_result_nation(db: Db, p: Params, part: PartRow, supplier: SupplierRow, quote: PartsuppRow, nation: NationRow, weight: spec_fn(OutRow) -> int)
     ensures sum(tuples_4(db, p, part, supplier, quote, nation), |t: Tuple| weight(row_projection(t.part, t.supplier, t.nation))) ==
         if part_selected(part, p) && quote_selected(db, p, part, quote) && supplier.s_suppkey == quote.ps_suppkey && supplier.s_nationkey == nation.n_nationkey {
-            region_count(db, p.p2, nation.n_regionkey) * weight(row_projection(part, supplier, nation))
+            region_count(db, p.p3, nation.n_regionkey) * weight(row_projection(part, supplier, nation))
         } else { 0int },
 {
     let tuple_weight = |t: Tuple| weight(row_projection(t.part, t.supplier, t.nation));
     let keep = part_selected(part, p) && quote_selected(db, p, part, quote) && supplier.s_suppkey == quote.ps_suppkey && supplier.s_nationkey == nation.n_nationkey;
-    let raw = |region: RegionRow| if keep && region.r_name == p.p2 && region.r_regionkey == nation.n_regionkey { weight(row_projection(part, supplier, nation)) } else { 0int };
+    let raw = |region: RegionRow| if keep && region.r_name == p.p3 && region.r_regionkey == nation.n_regionkey { weight(row_projection(part, supplier, nation)) } else { 0int };
     assert forall|region: RegionRow| #[trigger] raw(region) == sum(tuples_5(db, p, part, supplier, quote, nation, region), tuple_weight) by {
         lemma_sum_opt(where_clause(db, p, part, supplier, quote, nation, region), Tuple { part, supplier, partsupp: quote, nation, region }, tuple_weight);
     }
     lemma_flat_map_weight(db.region, |region: RegionRow| tuples_5(db, p, part, supplier, quote, nation, region), tuple_weight, raw);
     if keep {
-        lemma_sum_scale(db.region, |region: RegionRow| if region.r_name == p.p2 && region.r_regionkey == nation.n_regionkey { 1int } else { 0int }, raw, weight(row_projection(part, supplier, nation)));
-        assert(region_count(db, p.p2, nation.n_regionkey) * weight(row_projection(part, supplier, nation)) == weight(row_projection(part, supplier, nation)) * region_count(db, p.p2, nation.n_regionkey)) by (nonlinear_arith);
+        lemma_sum_scale(db.region, |region: RegionRow| if region.r_name == p.p3 && region.r_regionkey == nation.n_regionkey { 1int } else { 0int }, raw, weight(row_projection(part, supplier, nation)));
+        assert(region_count(db, p.p3, nation.n_regionkey) * weight(row_projection(part, supplier, nation)) == weight(row_projection(part, supplier, nation)) * region_count(db, p.p3, nation.n_regionkey)) by (nonlinear_arith);
     } else { lemma_sum_zero(db.region, raw); }
 }
 
@@ -51,17 +53,17 @@ pub proof fn lemma_result_nation(db: Db, p: Params, part: PartRow, supplier: Sup
 pub proof fn lemma_result_quote(db: Db, p: Params, part: PartRow, supplier: SupplierRow, quote: PartsuppRow, weight: spec_fn(OutRow) -> int)
     ensures sum(tuples_3(db, p, part, supplier, quote), |t: Tuple| weight(row_projection(t.part, t.supplier, t.nation))) ==
         if part_selected(part, p) && quote_selected(db, p, part, quote) && supplier.s_suppkey == quote.ps_suppkey {
-            nation_join(db, p.p2, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)))
+            nation_join(db, p.p3, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)))
         } else { 0int },
 {
     let tuple_weight = |t: Tuple| weight(row_projection(t.part, t.supplier, t.nation));
     let keep = part_selected(part, p) && quote_selected(db, p, part, quote) && supplier.s_suppkey == quote.ps_suppkey;
-    let raw = |nation: NationRow| if keep && supplier.s_nationkey == nation.n_nationkey { region_count(db, p.p2, nation.n_regionkey) * weight(row_projection(part, supplier, nation)) } else { 0int };
+    let raw = |nation: NationRow| if keep && supplier.s_nationkey == nation.n_nationkey { region_count(db, p.p3, nation.n_regionkey) * weight(row_projection(part, supplier, nation)) } else { 0int };
     assert forall|nation: NationRow| #[trigger] raw(nation) == sum(tuples_4(db, p, part, supplier, quote, nation), tuple_weight) by {
         lemma_result_nation(db, p, part, supplier, quote, nation, weight);
     }
     lemma_flat_map_weight(db.nation, |nation: NationRow| tuples_4(db, p, part, supplier, quote, nation), tuple_weight, raw);
-    if keep { lemma_nation_join_weight(db, p.p2, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)), raw); }
+    if keep { lemma_nation_join_weight(db, p.p3, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)), raw); }
     else { lemma_sum_zero(db.nation, raw); }
 }
 
@@ -69,12 +71,12 @@ pub proof fn lemma_result_quote(db: Db, p: Params, part: PartRow, supplier: Supp
 pub proof fn lemma_result_supplier(db: Db, p: Params, part: PartRow, supplier: SupplierRow, weight: spec_fn(OutRow) -> int)
     ensures sum(tuples_2(db, p, part, supplier), |t: Tuple| weight(row_projection(t.part, t.supplier, t.nation))) ==
         sum(db.partsupp, |quote: PartsuppRow| if part_selected(part, p) && quote_selected(db, p, part, quote) && supplier.s_suppkey == quote.ps_suppkey {
-            nation_join(db, p.p2, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)))
+            nation_join(db, p.p3, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)))
         } else { 0int }),
 {
     let tuple_weight = |t: Tuple| weight(row_projection(t.part, t.supplier, t.nation));
     let raw = |quote: PartsuppRow| if part_selected(part, p) && quote_selected(db, p, part, quote) && supplier.s_suppkey == quote.ps_suppkey {
-        nation_join(db, p.p2, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)))
+        nation_join(db, p.p3, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)))
     } else { 0int };
     assert forall|quote: PartsuppRow| #[trigger] raw(quote) == sum(tuples_3(db, p, part, supplier, quote), tuple_weight) by {
         lemma_result_quote(db, p, part, supplier, quote, weight);
@@ -88,14 +90,14 @@ pub proof fn lemma_result_part(db: Db, p: Params, part: PartRow, weight: spec_fn
 {
     let tuple_weight = |t: Tuple| weight(row_projection(t.part, t.supplier, t.nation));
     let pair = |supplier: SupplierRow, quote: PartsuppRow| if part_selected(part, p) && quote_selected(db, p, part, quote) && supplier.s_suppkey == quote.ps_suppkey {
-        nation_join(db, p.p2, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)))
+        nation_join(db, p.p3, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)))
     } else { 0int };
     let left = |supplier: SupplierRow| sum(db.partsupp, |quote: PartsuppRow| pair(supplier, quote));
     let right = |quote: PartsuppRow| sum(db.supplier, |supplier: SupplierRow| pair(supplier, quote));
     assert forall|supplier: SupplierRow| #[trigger] left(supplier) == sum(tuples_2(db, p, part, supplier), tuple_weight) by {
         lemma_result_supplier(db, p, part, supplier, weight);
         assert((|quote: PartsuppRow| pair(supplier, quote)) =~= (|quote: PartsuppRow| if part_selected(part, p) && quote_selected(db, p, part, quote) && supplier.s_suppkey == quote.ps_suppkey {
-            nation_join(db, p.p2, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)))
+            nation_join(db, p.p3, supplier, |nation: NationRow| weight(row_projection(part, supplier, nation)))
         } else { 0int }));
     }
     lemma_flat_map_weight(db.supplier, |supplier: SupplierRow| tuples_2(db, p, part, supplier), tuple_weight, left);
@@ -103,35 +105,35 @@ pub proof fn lemma_result_part(db: Db, p: Params, part: PartRow, weight: spec_fn
     if part_selected(part, p) {
         let joined = |quote: PartsuppRow, supplier: SupplierRow, nation: NationRow| if quote_selected(db, p, part, quote) { weight(row_projection(part, supplier, nation)) } else { 0int };
         assert forall|quote: PartsuppRow| #[trigger] right(quote) == if quote.ps_partkey == part.p_partkey {
-            supplier_join(db, p.p2, quote, |supplier: SupplierRow, nation: NationRow| joined(quote, supplier, nation))
+            supplier_join(db, p.p3, quote, |supplier: SupplierRow, nation: NationRow| joined(quote, supplier, nation))
         } else { 0int } by {
             let quote_weight = |supplier: SupplierRow, nation: NationRow| joined(quote, supplier, nation);
             if quote_selected(db, p, part, quote) {
                 assert forall|supplier: SupplierRow| #[trigger] pair(supplier, quote) == if supplier.s_suppkey == quote.ps_suppkey {
-                    nation_join(db, p.p2, supplier, |nation: NationRow| quote_weight(supplier, nation))
+                    nation_join(db, p.p3, supplier, |nation: NationRow| quote_weight(supplier, nation))
                 } else { 0int } by {
                     assert((|nation: NationRow| weight(row_projection(part, supplier, nation))) =~= (|nation: NationRow| quote_weight(supplier, nation)));
                 }
-                lemma_supplier_join_weight(db, p.p2, quote, quote_weight, |supplier: SupplierRow| pair(supplier, quote));
+                lemma_supplier_join_weight(db, p.p3, quote, quote_weight, |supplier: SupplierRow| pair(supplier, quote));
             } else {
                 lemma_sum_zero(db.supplier, |supplier: SupplierRow| pair(supplier, quote));
                 if quote.ps_partkey == part.p_partkey {
-                    let nation_zero = |supplier: SupplierRow| nation_join(db, p.p2, supplier, |nation: NationRow| quote_weight(supplier, nation));
+                    let nation_zero = |supplier: SupplierRow| nation_join(db, p.p3, supplier, |nation: NationRow| quote_weight(supplier, nation));
                     assert forall|supplier: SupplierRow| #[trigger] nation_zero(supplier) == 0 by {
                         let raw = |nation: NationRow| 0int;
-                        lemma_nation_join_weight(db, p.p2, supplier, |nation: NationRow| quote_weight(supplier, nation), raw);
+                        lemma_nation_join_weight(db, p.p3, supplier, |nation: NationRow| quote_weight(supplier, nation), raw);
                         lemma_sum_zero(db.nation, raw);
                     }
                     let zero = |supplier: SupplierRow| 0int;
                     assert forall|supplier: SupplierRow| #[trigger] zero(supplier) == if supplier.s_suppkey == quote.ps_suppkey {
-                        nation_join(db, p.p2, supplier, |nation: NationRow| quote_weight(supplier, nation))
+                        nation_join(db, p.p3, supplier, |nation: NationRow| quote_weight(supplier, nation))
                     } else { 0int } by { assert(nation_zero(supplier) == 0); }
-                    lemma_supplier_join_weight(db, p.p2, quote, quote_weight, zero);
+                    lemma_supplier_join_weight(db, p.p3, quote, quote_weight, zero);
                     lemma_sum_zero(db.supplier, |supplier: SupplierRow| 0int);
                 }
             }
         }
-        lemma_quote_join_weight(db, p.p2, part.p_partkey, joined, right);
+        lemma_quote_join_weight(db, p.p3, part.p_partkey, joined, right);
     } else {
         assert forall|quote: PartsuppRow| #[trigger] right(quote) == 0 by {
             lemma_sum_zero(db.supplier, |supplier: SupplierRow| pair(supplier, quote));

@@ -8,6 +8,8 @@ use crate::values::*;
 use crate::facts::*;
 use crate::dimensions::*;
 use crate::calendar::*;
+use crate::paged::*;
+use crate::customers::*;
 
 verus! {
 
@@ -64,7 +66,7 @@ pub open spec fn orders_valid(orders: Orders) -> bool {
     }
 }
 
-#[verifier::rlimit(20)]
+#[verifier::rlimit(60)]
 pub fn change_order(orders: &mut Orders, row: OrderInput, change: i128) -> (result: bool)
     requires orders_valid(*old(orders)),
     ensures result ==> orders_valid(*final(orders)),
@@ -757,14 +759,22 @@ pub open spec fn scanned_fact_sum(orders: Seq<OrderInput>, rows: Seq<ReturnedLin
     } else { 0 })
 }
 
-pub fn build_scanned_patches(orders: &[OrderInput], rows: &[ReturnedLineInput]) -> (result: Option<Patches>)
-    ensures result matches Some(patches) ==> patches_valid(patches),
-        result matches Some(patches) ==> forall|day: int, customer: int, component: int|
-            #[trigger] patch_at(patches, day, customer).component(component)
-                == scanned_fact_sum(orders@, rows@, day, customer, 0, component),
-        result matches Some(patches) ==> forall|day: int, customer: int, grain: int, component: int|
-            #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
-                == scanned_fact_sum(orders@, rows@, day, customer, grain, component),
+pub proof fn lemma_scanned_fact_split(orders: Seq<OrderInput>, rows: Seq<ReturnedLineInput>, start: int, end: int,
+    day: int, customer: int, grain: int, component: int)
+    requires 0 <= start <= end <= orders.len(),
+    ensures scanned_fact_sum(orders.take(end), rows, day, customer, grain, component)
+        == scanned_fact_sum(orders.take(start), rows, day, customer, grain, component)
+            + scanned_fact_sum(orders.subrange(start, end), rows, day, customer, grain, component),
+{
+    assert(orders.take(end) =~= orders.take(start) + orders.subrange(start, end));
+    verus_common::sums::lemma_sum_concat(orders.take(start), orders.subrange(start, end),
+        |order: OrderInput| if period_of(order.o_orderdate as int, grain) == day && order.o_custkey == customer {
+            scanned_line_sum(rows, order.o_orderkey as int, component) } else { 0 });
+}
+
+pub fn scan_lines(rows: &[ReturnedLineInput]) -> (result: Option<HashMap<i64, Moments>>)
+    ensures result matches Some(lines) ==> forall|key: i64, component: int|
+        #[trigger] hash_moment_at(lines@, key).component(component) == scanned_line_sum(rows@, key as int, component),
 {
     let mut lines: HashMap<i64, Moments> = HashMap::new();
     let mut index = 0usize;
@@ -801,19 +811,33 @@ pub fn build_scanned_patches(orders: &[OrderInput], rows: &[ReturnedLineInput]) 
         index += 1;
     }
     proof { assert(rows@.take(index as int) =~= rows@); }
+    Some(lines)
+}
+
+pub fn build_chunk_patches(orders: &[OrderInput], Ghost(rows): Ghost<Seq<ReturnedLineInput>>, lines: &HashMap<i64, Moments>) -> (result: Option<Patches>)
+    requires forall|key: i64, component: int| #[trigger] hash_moment_at(lines@, key).component(component)
+        == scanned_line_sum(rows, key as int, component),
+    ensures result matches Some(patches) ==> patches_valid(patches),
+        result matches Some(patches) ==> forall|day: int, customer: int, component: int|
+            #[trigger] patch_at(patches, day, customer).component(component)
+                == scanned_fact_sum(orders@, rows, day, customer, 0, component),
+        result matches Some(patches) ==> forall|day: int, customer: int, grain: int, component: int|
+            #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
+                == scanned_fact_sum(orders@, rows, day, customer, grain, component),
+{
     let ghost line_table = lines@;
     let mut patches = Index::new();
-    index = 0;
+    let mut index = 0usize;
     while index < orders.len()
         invariant index <= orders.len(), patches_valid(patches), lines@ == line_table,
             forall|key: i64, component: int| #[trigger] hash_moment_at(lines@, key).component(component)
-                == scanned_line_sum(rows@, key as int, component),
+                == scanned_line_sum(rows, key as int, component),
             forall|day: int, customer: int, component: int|
                 #[trigger] patch_at(patches, day, customer).component(component)
-                    == scanned_fact_sum(orders@.take(index as int), rows@, day, customer, 0, component),
+                    == scanned_fact_sum(orders@.take(index as int), rows, day, customer, 0, component),
             forall|day: int, customer: int, grain: int, component: int|
                 #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
-                    == scanned_fact_sum(orders@.take(index as int), rows@, day, customer, grain, component),
+                    == scanned_fact_sum(orders@.take(index as int), rows, day, customer, grain, component),
         decreases orders.len() - index,
     {
         let ghost processed = index as int;
@@ -824,19 +848,19 @@ pub fn build_scanned_patches(orders: &[OrderInput], rows: &[ReturnedLineInput]) 
         proof {
             assert forall|day: int, customer: int, component: int|
                 #[trigger] patch_at(patches, day, customer).component(component)
-                    == scanned_fact_sum(orders@.take(index as int + 1), rows@, day, customer, 0, component) by {
-                assert(moment.component(component) == scanned_line_sum(rows@, row.o_orderkey as int, component));
+                    == scanned_fact_sum(orders@.take(index as int + 1), rows, day, customer, 0, component) by {
+                assert(moment.component(component) == scanned_line_sum(rows, row.o_orderkey as int, component));
                 verus_common::sums::lemma_sum_take(orders@, index as int,
                     |order: OrderInput| if period_of(order.o_orderdate as int, 0) == day && order.o_custkey == customer {
-                        scanned_line_sum(rows@, order.o_orderkey as int, component) } else { 0 });
+                        scanned_line_sum(rows, order.o_orderkey as int, component) } else { 0 });
             }
             assert forall|day: int, customer: int, grain: int, component: int|
                 #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)
-                    == scanned_fact_sum(orders@.take(index as int + 1), rows@, day, customer, grain, component) by {
-                assert(moment.component(component) == scanned_line_sum(rows@, row.o_orderkey as int, component));
+                    == scanned_fact_sum(orders@.take(index as int + 1), rows, day, customer, grain, component) by {
+                assert(moment.component(component) == scanned_line_sum(rows, row.o_orderkey as int, component));
                 verus_common::sums::lemma_sum_take(orders@, index as int,
                     |order: OrderInput| if period_of(order.o_orderdate as int, grain) == day && order.o_custkey == customer {
-                        scanned_line_sum(rows@, order.o_orderkey as int, component) } else { 0 });
+                        scanned_line_sum(rows, order.o_orderkey as int, component) } else { 0 });
             }
         }
         index += 1;
@@ -1369,21 +1393,14 @@ pub fn changed_patches(keys: &Index<()>, order_changes: &Orders, line_changes: &
 }
 
 pub fn apply_dimensions(dimensions: &mut Dimensions, customers: &Vec<CustomerDelta>, nations: &Vec<NationDelta>) -> (result: bool)
-    requires customer_index_valid(old(dimensions).customers), nation_index_valid(old(dimensions).nations),
-        crate::model::maxima_valid(old(dimensions).customer_totals, old(dimensions).customer_maxima),
-        crate::model::maxima_valid(old(dimensions).nation_totals, old(dimensions).nation_maxima),
-    ensures result ==> customer_index_valid(final(dimensions).customers),
-        result ==> nation_index_valid(final(dimensions).nations),
-        result ==> crate::dimension_updates::shape(*final(dimensions)),
-        result ==> forall|row: crate::gen_spec::CustomerRow| #[trigger] customer_count(final(dimensions).customers, row)
-            == customer_count(old(dimensions).customers, row)
-                + sum(customers@, |delta: CustomerDelta| if customer_input_view(delta.row) == row { delta.sign as int } else { 0 }),
+    requires crate::dimension_updates::shape(*old(dimensions)),
+    ensures result ==> crate::dimension_updates::shape(*final(dimensions)),
+        result ==> forall|weight: spec_fn(crate::gen_spec::CustomerRow) -> int| #[trigger] table_sum(final(dimensions).customers, weight)
+            == table_sum(old(dimensions).customers, weight)
+                + sum(customers@, |delta: CustomerDelta| delta.sign as int * weight(customer_input_view(delta.row))),
         result ==> forall|row: crate::gen_spec::NationRow| #[trigger] nation_count(final(dimensions).nations, row)
             == nation_count(old(dimensions).nations, row)
                 + sum(nations@, |delta: NationDelta| if nation_input_view(delta.row) == row { delta.sign as int } else { 0 }),
-        result ==> forall|key: int| #[trigger] total_at(final(dimensions).customer_totals, key)
-            == total_at(old(dimensions).customer_totals, key)
-                + sum(customers@, |delta: CustomerDelta| if delta.row.c_custkey == key { delta.sign as int } else { 0 }),
         result ==> forall|key: int| #[trigger] total_at(final(dimensions).nation_totals, key)
             == total_at(old(dimensions).nation_totals, key)
                 + sum(nations@, |delta: NationDelta| if delta.row.n_nationkey == key { delta.sign as int } else { 0 }),
@@ -1392,9 +1409,7 @@ pub fn apply_dimensions(dimensions: &mut Dimensions, customers: &Vec<CustomerDel
     let mut index = 0usize;
     while index < customers.len()
         invariant index <= customers.len(),
-            customer_index_valid(dimensions.customers), nation_index_valid(dimensions.nations),
-            crate::model::maxima_valid(dimensions.customer_totals, dimensions.customer_maxima),
-            crate::model::maxima_valid(dimensions.nation_totals, dimensions.nation_maxima),
+            crate::dimension_updates::shape(*dimensions), *dimensions == *old(dimensions),
             customer_index_valid(customer_changes),
             forall|row: crate::gen_spec::CustomerRow| #[trigger] customer_count(customer_changes, row)
                 == sum(customers@.take(index as int), |delta: CustomerDelta|
@@ -1418,9 +1433,7 @@ pub fn apply_dimensions(dimensions: &mut Dimensions, customers: &Vec<CustomerDel
     index = 0;
     while index < nations.len()
         invariant index <= nations.len(),
-            customer_index_valid(dimensions.customers), nation_index_valid(dimensions.nations),
-            crate::model::maxima_valid(dimensions.customer_totals, dimensions.customer_maxima),
-            crate::model::maxima_valid(dimensions.nation_totals, dimensions.nation_maxima),
+            crate::dimension_updates::shape(*dimensions), *dimensions == *old(dimensions),
             nation_index_valid(nation_changes),
             customer_index_valid(customer_changes),
             forall|row: crate::gen_spec::CustomerRow| #[trigger] customer_count(customer_changes, row)
@@ -1446,32 +1459,21 @@ pub fn apply_dimensions(dimensions: &mut Dimensions, customers: &Vec<CustomerDel
     let nation_snapshot = nation_changes.share();
     proof {
         assert(nations@.take(index as int) =~= nations@);
-        assert forall|row: crate::gen_spec::CustomerRow|
-            #[trigger] crate::dimension_updates::customer_index_sum(customer_changes.entries(), crate::dimension_updates::customer_eq(row))
-                == sum(customers@, |delta: CustomerDelta| if customer_input_view(delta.row) == row { delta.sign as int } else { 0 }) by {
-            let weight = crate::dimension_updates::customer_eq(row);
+        assert forall|weight: spec_fn(crate::gen_spec::CustomerRow) -> int|
+            #[trigger] crate::dimension_updates::customer_index_sum(customer_changes.entries(), weight)
+                == sum(customers@, |delta: CustomerDelta| delta.sign as int * weight(customer_input_view(delta.row))) by {
             crate::dimension_updates::lemma_customer_capture_sum(&customer_changes, customers@, weight);
-            verus_common::sums::lemma_sum_ext_all(customers@,
-                |delta: CustomerDelta| delta.sign as int * weight(customer_input_view(delta.row)),
-                |delta: CustomerDelta| if customer_input_view(delta.row) == row { delta.sign as int } else { 0 });
         }
         assert forall|row: crate::gen_spec::NationRow|
             #[trigger] crate::dimension_updates::nation_index_sum(nation_changes.entries(), crate::dimension_updates::nation_eq(row))
                 == sum(nations@, |delta: NationDelta| if nation_input_view(delta.row) == row { delta.sign as int } else { 0 }) by {
             let weight = crate::dimension_updates::nation_eq(row);
             crate::dimension_updates::lemma_nation_capture_sum(&nation_changes, nations@, weight);
+            assert forall|delta: NationDelta| #[trigger] (delta.sign as int * weight(nation_input_view(delta.row)))
+                == (if nation_input_view(delta.row) == row { delta.sign as int } else { 0 }) by {}
             verus_common::sums::lemma_sum_ext_all(nations@,
                 |delta: NationDelta| delta.sign as int * weight(nation_input_view(delta.row)),
                 |delta: NationDelta| if nation_input_view(delta.row) == row { delta.sign as int } else { 0 });
-        }
-        assert forall|key: int|
-            #[trigger] crate::dimension_updates::customer_index_sum(customer_changes.entries(), crate::dimension_updates::customer_key_weight(key))
-                == sum(customers@, |delta: CustomerDelta| if delta.row.c_custkey == key { delta.sign as int } else { 0 }) by {
-            let weight = crate::dimension_updates::customer_key_weight(key);
-            crate::dimension_updates::lemma_customer_capture_sum(&customer_changes, customers@, weight);
-            verus_common::sums::lemma_sum_ext_all(customers@,
-                |delta: CustomerDelta| delta.sign as int * weight(customer_input_view(delta.row)),
-                |delta: CustomerDelta| if delta.row.c_custkey == key { delta.sign as int } else { 0 });
         }
         assert forall|key: int|
             #[trigger] crate::dimension_updates::nation_index_sum(nation_changes.entries(), crate::dimension_updates::nation_key_weight(key))

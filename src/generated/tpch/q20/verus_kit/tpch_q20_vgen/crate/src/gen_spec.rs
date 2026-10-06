@@ -10,20 +10,22 @@
 //   WHERE s_suppkey IN (SELECT ps_suppkey FROM partsupp,
 //                         (SELECT l_partkey agg_partkey, l_suppkey agg_suppkey, 0.5 * SUM(l_quantity) AS agg_quantity
 //                          FROM lineitem WHERE l_shipdate >= $1
-//                            AND l_shipdate < $3
+//                            AND l_shipdate < $4
 //                          GROUP BY l_partkey, l_suppkey) agg_lineitem
 //                       WHERE agg_partkey = ps_partkey AND agg_suppkey = ps_suppkey
-//                         AND ps_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE 'gainsboro%')
+//                         AND ps_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE $2)
 //                         AND ps_availqty > agg_quantity)
-//     AND s_nationkey = n_nationkey AND n_name = $2
+//     AND s_nationkey = n_nationkey AND n_name = $3
 //   ORDER BY s_name
 //
 // Query-specific notes (host contract):
 //  * CHAR(n) text: compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged (DuckDB: CHAR(n) is an alias of VARCHAR).
 //  * $1 is params.p1: DATE, days since 1970-01-01.
 //  * $2 is params.p2: text bytes.
-//  * $3 is params.p3: DATE, days since 1970-01-01.
+//  * $3 is params.p3: text bytes.
+//  * $4 is params.p4: DATE, days since 1970-01-01.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
+//  * LIKE with a parameter pattern: the pattern uses '%' and '_' (ASCII text, bytes = characters).
 #![allow(unused_imports)]
 use vstd::prelude::*;
 use verus_common::bytes::*;
@@ -100,8 +102,10 @@ pub struct Params {
     pub p1: int,
     /// $2: text bytes
     pub p2: Seq<u8>,
-    /// $3: DATE, days since 1970-01-01
-    pub p3: int,
+    /// $3: text bytes
+    pub p3: Seq<u8>,
+    /// $4: DATE, days since 1970-01-01
+    pub p4: int,
 }
 
 // ── Block agg_lineitem ──
@@ -114,7 +118,7 @@ pub struct AggLineitemTuple {
 /// The WHERE clause of block agg_lineitem, conjunct by conjunct in SQL order.
 pub open spec fn agg_lineitem_where_clause(db: Db, params: Params, lineitem: LineitemRow) -> bool {
     &&& lineitem.l_shipdate >= params.p1
-    &&& lineitem.l_shipdate < params.p3
+    &&& lineitem.l_shipdate < params.p4
 }
 
 /// The FROM-clause tuples of block agg_lineitem (bag product) that satisfy WHERE.
@@ -186,7 +190,7 @@ pub struct In2Tuple {
 
 /// The WHERE clause of block in_2, conjunct by conjunct in SQL order.
 pub open spec fn in_2_where_clause(db: Db, params: Params, part: PartRow) -> bool {
-    &&& like_match(part.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%'])
+    &&& like_match(part.p_name, params.p2)
 }
 
 /// The FROM-clause tuples of block in_2 (bag product) that satisfy WHERE.
@@ -210,7 +214,7 @@ pub open spec fn in_2_rows(db: Db, params: Params) -> Seq<In2Row> {
     in_2_tuples(db, params).map_values(|t: In2Tuple| In2Row { p_partkey: t.part.p_partkey })
 }
 
-/// x IN (TableScan: part <- Filter: part.p_name LIKE Utf8("gainsboro%") <- Projection: part.p_partkey)
+/// x IN (TableScan: part <- Filter: part.p_name LIKE $2 <- Projection: part.p_partkey)
 pub open spec fn in_2(db: Db, params: Params, x: int) -> bool {
     exists|i: int| #![trigger in_2_rows(db, params)[i]]
         0 <= i < in_2_rows(db, params).len() && x == in_2_rows(db, params)[i].p_partkey
@@ -258,7 +262,7 @@ pub open spec fn in_1_rows(db: Db, params: Params) -> Seq<In1Row> {
     in_1_tuples(db, params).map_values(|t: In1Tuple| In1Row { ps_suppkey: t.partsupp.ps_suppkey })
 }
 
-/// x IN (TableScan: lineitem <- Filter: lineitem.l_shipdate >= $1 AND lineitem.l_shipdate < $3 <- Aggregate: groupBy=[[lineitem.l_partkey, lineitem.l_suppkey]], aggr=[[sum(lineitem.l_quantity)]] <- Projection: lineitem.l_partkey AS agg_partkey, line ...)
+/// x IN (TableScan: lineitem <- Filter: lineitem.l_shipdate >= $1 AND lineitem.l_shipdate < $4 <- Aggregate: groupBy=[[lineitem.l_partkey, lineitem.l_suppkey]], aggr=[[sum(lineitem.l_quantity)]] <- Projection: lineitem.l_partkey AS agg_partkey, line ...)
 pub open spec fn in_1(db: Db, params: Params, x: int) -> bool {
     exists|i: int| #![trigger in_1_rows(db, params)[i]]
         0 <= i < in_1_rows(db, params).len() && x == in_1_rows(db, params)[i].ps_suppkey
@@ -276,7 +280,7 @@ pub struct Tuple {
 pub open spec fn where_clause(db: Db, params: Params, supplier: SupplierRow, nation: NationRow) -> bool {
     &&& in_1(db, params, supplier.s_suppkey)
     &&& supplier.s_nationkey == nation.n_nationkey
-    &&& nation.n_name == params.p2
+    &&& nation.n_name == params.p3
 }
 
 /// The FROM-clause tuples of the query (bag product) that satisfy WHERE.

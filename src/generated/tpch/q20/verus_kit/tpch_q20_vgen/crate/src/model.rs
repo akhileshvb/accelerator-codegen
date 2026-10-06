@@ -14,8 +14,7 @@ pub open spec fn domain_valid(db: Db) -> bool {
         machine_key(db.supplier[index].s_suppkey) && machine_key(db.supplier[index].s_nationkey)
     &&& forall|index: int| #![trigger db.nation[index]] 0 <= index < db.nation.len() ==>
         machine_key(db.nation[index].n_nationkey)
-    &&& forall|index: int| #![trigger db.part[index]] 0 <= index < db.part.len()
-        && like_match(db.part[index].p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%']) ==>
+    &&& forall|index: int| #![trigger db.part[index]] 0 <= index < db.part.len() ==>
             machine_key(db.part[index].p_partkey)
     &&& forall|index: int| #![trigger db.partsupp[index]] 0 <= index < db.partsupp.len()
         && eligible(db, db.partsupp[index].ps_partkey) > 0 ==>
@@ -25,8 +24,114 @@ pub open spec fn domain_valid(db: Db) -> bool {
             machine_key(db.lineitem[index].l_partkey) && machine_key(db.lineitem[index].l_suppkey)
 }
 
+/// The build processes parts in 16 chunks by key, bounding its transient work state.
+pub open spec fn chunk_of(key: i64) -> int { ((key as u64) % 16) as int }
 pub open spec fn eligible(db: Db, part: int) -> int {
-    sum(db.part, |row: PartRow| if row.p_partkey == part && like_match(row.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%']) { 1 } else { 0 })
+    sum(db.part, |row: PartRow| if row.p_partkey == part { 1 } else { 0 })
+}
+/// Some part row with this key has a name matching the LIKE pattern.
+pub open spec fn part_matches(db: Db, pattern: Seq<u8>, key: int) -> bool {
+    exists|index: int| #![trigger db.part[index]] 0 <= index < db.part.len()
+        && db.part[index].p_partkey == key && like_match(db.part[index].p_name, pattern)
+}
+pub open spec fn name_count(names: PartNames, key: i64, name: Seq<u8>) -> int {
+    match names.lookup(name_slot(key, name)) { None => 0, Some(rows) => nation_measure(rows@, name, key) }
+}
+/// Some stored name of this part key matches the LIKE pattern.
+pub open spec fn names_match(names: PartNames, key: i64, pattern: Seq<u8>) -> bool {
+    exists|name: Seq<u8>| #![trigger name_count(names, key, name)] name_count(names, key, name) > 0 && like_match(name, pattern)
+}
+/// The pattern starts with three literal bytes (no wildcard), so a matching name shares its first three bytes.
+pub open spec fn pattern_literal3(pattern: Seq<u8>) -> bool {
+    pattern.len() >= 3 && pattern[0] != 37u8 && pattern[0] != 95u8 && pattern[1] != 37u8 && pattern[1] != 95u8
+        && pattern[2] != 37u8 && pattern[2] != 95u8
+}
+pub proof fn lemma_like_prefix(name: Seq<u8>, pattern: Seq<u8>)
+    requires pattern_literal3(pattern), like_match(name, pattern),
+    ensures name.len() >= 3, name[0] == pattern[0], name[1] == pattern[1], name[2] == pattern[2],
+        name_code(name) == name_code(pattern),
+{
+    reveal_with_fuel(like_match, 4);
+    assert(name.len() > 0 && name[0] == pattern[0] && like_match(name.drop_first(), pattern.drop_first()));
+    let n1 = name.drop_first(); let p1 = pattern.drop_first();
+    assert(n1.len() > 0 && n1[0] == p1[0] && like_match(n1.drop_first(), p1.drop_first()));
+    let n2 = n1.drop_first(); let p2 = p1.drop_first();
+    assert(n2.len() > 0 && n2[0] == p2[0]);
+}
+/// The pattern is `lp%`: a literal prefix (no wildcard) followed by one final `%`.
+pub open spec fn prefix_pattern(p: Seq<u8>) -> bool {
+    p.len() >= 1 && p[p.len() - 1] == 37u8
+        && forall|i: int| #![trigger p[i]] 0 <= i < p.len() - 1 ==> p[i] != 37u8 && p[i] != 95u8
+}
+pub proof fn lemma_like_anything(s: Seq<u8>)
+    ensures like_match(s, seq![37u8]),
+    decreases s.len(),
+{
+    reveal_with_fuel(like_match, 2);
+    let p = seq![37u8];
+    assert(p.drop_first() =~= Seq::<u8>::empty());
+    if s.len() > 0 {
+        lemma_like_anything(s.drop_first());
+        assert(like_match(s.drop_first(), p));
+    } else {
+        assert(like_match(s, p.drop_first()));
+    }
+}
+pub proof fn lemma_like_prefix_pattern(s: Seq<u8>, p: Seq<u8>)
+    requires prefix_pattern(p),
+    ensures like_match(s, p) == (s.len() + 1 >= p.len() && s.subrange(0, p.len() - 1) =~= p.subrange(0, p.len() - 1)),
+    decreases p.len(),
+{
+    reveal_with_fuel(like_match, 2);
+    if p.len() == 1 {
+        assert(p =~= seq![37u8]);
+        lemma_like_anything(s);
+        assert(s.subrange(0, 0) =~= p.subrange(0, 0));
+    } else {
+        let q = p.drop_first();
+        assert(prefix_pattern(q)) by {
+            assert(q.len() >= 1 && q[q.len() - 1] == 37u8);
+            assert forall|i: int| #![trigger q[i]] 0 <= i < q.len() - 1 implies q[i] != 37u8 && q[i] != 95u8 by {
+                assert(q[i] == p[i + 1]);
+            }
+        }
+        assert(p[0] != 37u8 && p[0] != 95u8);
+        if s.len() > 0 {
+            lemma_like_prefix_pattern(s.drop_first(), q);
+            let k = p.len() - 1;
+            if like_match(s, p) {
+                assert(s[0] == p[0]);
+                assert(s.len() + 1 >= p.len());
+                assert(s.subrange(0, k) =~= p.subrange(0, k)) by {
+                    assert forall|i: int| 0 <= i < k implies #[trigger] s.subrange(0, k)[i] == p.subrange(0, k)[i] by {
+                        if i > 0 { assert(s.drop_first().subrange(0, k - 1)[i - 1] == q.subrange(0, k - 1)[i - 1]); }
+                    }
+                }
+            }
+            if s.len() + 1 >= p.len() && s.subrange(0, k) =~= p.subrange(0, k) {
+                assert(s.subrange(0, k)[0] == p.subrange(0, k)[0]);
+                assert(s[0] == p[0]);
+                assert(s.drop_first().subrange(0, k - 1) =~= q.subrange(0, k - 1)) by {
+                    assert forall|i: int| 0 <= i < k - 1 implies #[trigger] s.drop_first().subrange(0, k - 1)[i] == q.subrange(0, k - 1)[i] by {
+                        assert(s.subrange(0, k)[i + 1] == p.subrange(0, k)[i + 1]);
+                    }
+                }
+                assert(like_match(s, p));
+            }
+        } else {
+            assert(!like_match(s, p));
+        }
+    }
+}
+pub proof fn lemma_slot_split(key: i64, name: Seq<u8>)
+    ensures name_slot(key, name) as int == name_code(name) * 1024 + key_low(key), 0 <= key_low(key) < 1024,
+        0 <= name_code(name) < 16777216,
+{
+    assert(0 <= byte_or_zero(name, 0) <= 255 && 0 <= byte_or_zero(name, 1) <= 255 && 0 <= byte_or_zero(name, 2) <= 255);
+}
+pub open spec fn names_correct(db: Db, names: PartNames) -> bool {
+    names_positive(names) && forall|key: i64, name: Seq<u8>| #[trigger] name_count(names, key, name) ==
+        sum(db.part, |row: PartRow| if row.p_partkey == key && row.p_name == name { 1 } else { 0 })
 }
 pub open spec fn stock_count(db: Db, part: int, supplier: int, availability: int) -> int {
     sum(db.partsupp, |row: PartsuppRow| if row.ps_partkey == part && row.ps_suppkey == supplier && row.ps_availqty == availability { 1 } else { 0 })
@@ -139,8 +244,9 @@ pub open spec fn nation_count(state: Nations, name: Seq<u8>, key: i64) -> int {
         Some(rows) => sum(rows@, |row: NationVariant| if row.name@ == name && row.key == key { row.count as int } else { 0 }),
     }
 }
-pub open spec fn dimensions_empty(suppliers: Suppliers, nations: Nations) -> bool {
+pub open spec fn dimensions_empty(suppliers: Suppliers, nations: Nations, names: PartNames) -> bool {
     (forall|key: i64| #[trigger] suppliers.lookup(key).is_none()) && (forall|key: i64| #[trigger] nations.lookup(key).is_none())
+        && (forall|key: i64| #[trigger] names.lookup(key).is_none())
 }
 pub open spec fn supplier_correct(db: Db, suppliers: Suppliers) -> bool {
     suppliers_positive(suppliers) && forall|nation: i64, supplier: i64, name: Seq<u8>, address: Seq<u8>| #[trigger] supplier_count(suppliers, nation, supplier, name, address) ==
@@ -153,10 +259,10 @@ pub open spec fn nation_correct(db: Db, nations: Nations) -> bool {
 pub open spec fn directory_contains(directory: Table<Vec<i64>>, supplier: i64, part: i64) -> bool {
     match directory.lookup(supplier) { None => false, Some(keys) => keys@.contains(part) }
 }
-pub open spec fn stock_support(rows: Seq<(i64, std::sync::Arc<Pair>)>, supplier: i64) -> bool {
+pub open spec fn stock_support(rows: Seq<(i64, Pair)>, supplier: i64) -> bool {
     exists|index: int| #![trigger rows[index]] 0 <= index < rows.len() && rows[index].0 == supplier && rows[index].1.stocks@.len() > 0
 }
-pub proof fn lemma_stock_support_step(rows: Seq<(i64, std::sync::Arc<Pair>)>, index: int, supplier: i64)
+pub proof fn lemma_stock_support_step(rows: Seq<(i64, Pair)>, index: int, supplier: i64)
     requires 0 <= index < rows.len(),
     ensures stock_support(rows.take(index + 1), supplier) == (stock_support(rows.take(index), supplier)
         || rows[index].0 == supplier && rows[index].1.stocks@.len() > 0),
@@ -173,13 +279,10 @@ pub proof fn lemma_stock_support_step(rows: Seq<(i64, std::sync::Arc<Pair>)>, in
     }
     if rows[index].0 == supplier && rows[index].1.stocks@.len() > 0 { assert(rows.take(index + 1)[index] == rows[index]); }
 }
-pub open spec fn directory_unique(directory: Table<Vec<i64>>) -> bool {
-    forall|supplier: i64| #![trigger directory.lookup(supplier)] directory.lookup(supplier) matches Some(keys) ==> keys@.no_duplicates()
-}
-pub open spec fn directory_matches(parts: Table<Part>, directory: Table<Vec<i64>>) -> bool {
-    directory_unique(directory) && forall|supplier: i64, part: i64| #![trigger directory_contains(directory, supplier, part)]
-        directory_contains(directory, supplier, part) == match parts.lookup(part) { Some(data) => stock_support(data.pairs@, supplier), None => false }
-}
+/// The supplier-to-parts directory was dropped: reads go through the part-name index, so the state keeps
+/// (and maintains) no directory.  These stay as trivially true specs for the maintenance interfaces.
+pub open spec fn directory_unique(directory: Table<Vec<i64>>) -> bool { true }
+pub open spec fn directory_matches(parts: Table<Part>, directory: Table<Vec<i64>>) -> bool { true }
 pub open spec fn part_correct(db: Db, key: i64, part: Option<Part>) -> bool {
     match part {
         None => eligible(db, key as int) == 0,
@@ -223,9 +326,16 @@ pub proof fn lemma_pair_order(pair: &Pair)
         }
     }
 }
+pub open spec fn same_pair(a: Pair, b: Pair) -> bool { a.stocks@ == b.stocks@ && a.ship@ == b.ship@ }
+pub proof fn lemma_same_pair(a: Pair, b: Pair)
+    requires same_pair(a, b),
+    ensures pair_valid(a) == pair_valid(b),
+{
+    reveal(pair_valid);
+}
 pub open spec fn read_shape(parts: Table<Part>) -> bool {
     &&& forall|key: i64| #![trigger parts.lookup(key)] parts.lookup(key) matches Some(part) ==>
-        part.pairs@.map_values(|entry: (i64, std::sync::Arc<Pair>)| entry.0).no_duplicates()
+        part.pairs@.map_values(|entry: (i64, Pair)| entry.0).no_duplicates()
     &&& forall|part: i64, supplier: i64| #![trigger pair_of(parts, part, supplier)]
         pair_of(parts, part, supplier) matches Some(pair) ==> pair_valid(pair)
 }
@@ -238,24 +348,54 @@ pub open spec fn cached_pair_passes(pair: Pair, start: int, end: int) -> bool {
 pub open spec fn cached_part_passes(parts: Table<Part>, part: i64, supplier: i64, start: int, end: int) -> bool {
     match pair_of(parts, part, supplier) { None => false, Some(pair) => cached_pair_passes(pair, start, end) }
 }
-pub open spec fn cached_supplier_passes(parts: Table<Part>, directory: Table<Vec<i64>>, supplier: i64, start: int, end: int) -> bool {
-    exists|part: i64| #![trigger cached_part_passes(parts, part, supplier, start, end)]
-        directory_contains(directory, supplier, part) && cached_part_passes(parts, part, supplier, start, end)
+pub open spec fn any_cand_passes(parts: Table<Part>, cands: Seq<i64>, supplier: i64, start: int, end: int) -> bool {
+    exists|j: int| #![trigger cands[j]] 0 <= j < cands.len() && cached_part_passes(parts, cands[j], supplier, start, end)
+}
+pub open spec fn cached_part_selected(parts: Table<Part>, names: PartNames, part: i64, supplier: i64, start: int, end: int, pattern: Seq<u8>) -> bool {
+    cached_part_passes(parts, part, supplier, start, end) && names_match(names, part, pattern)
+}
+pub open spec fn cached_supplier_passes(parts: Table<Part>, directory: Table<Vec<i64>>, names: PartNames, supplier: i64, start: int, end: int, pattern: Seq<u8>) -> bool {
+    exists|part: i64| #![trigger cached_part_selected(parts, names, part, supplier, start, end, pattern)]
+        cached_part_selected(parts, names, part, supplier, start, end, pattern)
+}
+pub proof fn lemma_cands_equiv(db: Db, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations, names: PartNames,
+    cands: Seq<i64>, supplier: i64, start: int, end: int, pattern: Seq<u8>)
+    requires meaning(db, parts, directory, suppliers, nations, names),
+        forall|key: i64| #![trigger names_match(names, key, pattern)] names_match(names, key, pattern) ==> cands.contains(key),
+        forall|key: i64| #![trigger cands.contains(key)] cands.contains(key) ==> names_match(names, key, pattern),
+    ensures any_cand_passes(parts, cands, supplier, start, end) == cached_supplier_passes(parts, directory, names, supplier, start, end, pattern),
+{
+    if any_cand_passes(parts, cands, supplier, start, end) {
+        let j = choose|j: int| #![trigger cands[j]] 0 <= j < cands.len() && cached_part_passes(parts, cands[j], supplier, start, end);
+        let part = cands[j];
+        assert(cands.contains(part));
+        assert(names_match(names, part, pattern));
+        assert(cached_part_selected(parts, names, part, supplier, start, end, pattern));
+    }
+    if cached_supplier_passes(parts, directory, names, supplier, start, end, pattern) {
+        let part = choose|part: i64| #![trigger cached_part_selected(parts, names, part, supplier, start, end, pattern)]
+            cached_part_selected(parts, names, part, supplier, start, end, pattern);
+        assert(names_match(names, part, pattern));
+        assert(cands.contains(part));
+        let j = choose|j: int| #![trigger cands[j]] 0 <= j < cands.len() && cands[j] == part;
+        assert(cached_part_passes(parts, cands[j], supplier, start, end));
+    }
 }
 pub proof fn lemma_pair_at(parts: Table<Part>, key: i64, supplier: i64, part: &Part, index: int)
     requires parts.lookup(key) == Some(*part),
-        part.pairs@.map_values(|entry: (i64, std::sync::Arc<Pair>)| entry.0).no_duplicates(),
+        part.pairs@.map_values(|entry: (i64, Pair)| entry.0).no_duplicates(),
         0 <= index < part.pairs@.len(), part.pairs@[index].0 == supplier,
-    ensures pair_of(parts, key, supplier) == Some(*part.pairs@[index].1),
+    ensures pair_of(parts, key, supplier) == Some(part.pairs@[index].1),
 {
     verus_prooflib::lemma_unique_key_lookup(part.pairs@, supplier);
     assert(verus_prooflib::unique_key_lookup(part.pairs@, supplier) == Some(part.pairs@[index].1));
 }
-pub open spec fn meaning(db: Db, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations) -> bool {
-    &&& parts.well_formed() && directory.well_formed() && suppliers.well_formed() && nations.well_formed()
+pub open spec fn meaning(db: Db, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations, names: PartNames) -> bool {
+    &&& parts.well_formed() && directory.well_formed() && suppliers.well_formed() && nations.well_formed() && names.well_formed()
+    &&& names_correct(db, names)
     &&& forall|key: i64| #![trigger part_count(parts, key)] part_count(parts, key) == eligible(db, key as int)
     &&& forall|key: i64| #![trigger parts.lookup(key)] parts.lookup(key) matches Some(part) ==>
-        part.count > 0 && part.pairs@.map_values(|entry: (i64, std::sync::Arc<Pair>)| entry.0).no_duplicates()
+        part.count > 0 && part.pairs@.map_values(|entry: (i64, Pair)| entry.0).no_duplicates()
     &&& forall|part: i64, supplier: i64| #![trigger pair_of(parts, part, supplier)]
         match pair_of(parts, part, supplier) {
             Some(pair) => pair_valid(pair) && eligible(db, part as int) > 0
@@ -273,10 +413,6 @@ pub open spec fn meaning(db: Db, parts: Table<Part>, directory: Table<Vec<i64>>,
                 (forall|value: int| #![trigger stock_count(db, part as int, supplier as int, value)] stock_count(db, part as int, supplier as int, value) == 0)
                 && (forall|date: int| #![trigger daily_count(db, part as int, supplier as int, date)] daily_count(db, part as int, supplier as int, date) == 0)),
         }
-    &&& forall|supplier: i64, part: i64| #![trigger directory_contains(directory, supplier, part)]
-        directory_contains(directory, supplier, part) == match pair_of(parts, part, supplier) { Some(pair) => pair.stocks@.len() > 0, None => false }
-    &&& forall|supplier: i64| #![trigger directory.lookup(supplier)]
-        directory.lookup(supplier) matches Some(keys) ==> keys@.no_duplicates()
     &&& forall|nation: i64| #![trigger suppliers.lookup(nation)]
         suppliers.lookup(nation) matches Some(bucket) ==> bucket.well_formed()
             && forall|supplier: i64| #![trigger bucket.lookup(supplier)]

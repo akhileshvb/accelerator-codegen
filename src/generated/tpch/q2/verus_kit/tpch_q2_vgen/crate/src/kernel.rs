@@ -8,6 +8,9 @@ use crate::model::*;
 use crate::storage::*;
 use crate::maintenance::*;
 use crate::semantics::*;
+use crate::parts::*;
+use crate::parts_exec::*;
+use crate::flat::*;
 use crate::output::{Output, enumerate};
 pub use crate::model::State;
 
@@ -24,80 +27,38 @@ pub fn build(
         scan_suppliers_ok(db, suppliers@), scan_nations_ok(db, nations@), scan_regions_ok(db, regions@),
     ensures result matches Some(state) ==> state.db() == db,
 {
-    let mut parts = Directory::new();
-    let mut sizes = Directory::new();
+    let parts = match build_parts(brass_parts.as_slice()) { None => return None, Some(parts) => parts };
+    proof {
+        lemma_scan_representable(db, brass_parts@, brass_partsupp@, suppliers@, nations@, regions@);
+        lemma_build_parts_meaning(db, brass_parts@, parts);
+        assert forall|index: int| 0 <= index < db.part.len() implies fits_i64((#[trigger] db.part[index]).p_size) by {
+            assert(retained(db.part[index]));
+        }
+    }
     let mut quotes = Directory::new();
     let mut supplier_index = Directory::new();
     let mut nation_index = Directory::new();
     let mut region_index = Directory::new();
     let mut index = 0;
     let mut processed: Ghost<int> = Ghost(0);
-    while index < brass_parts.len()
-        invariant
-            index <= brass_parts.len(), processed@ == index as int, parts_valid(parts), sizes_valid(sizes),
-            forall|key: i64, size: i64| #[trigger] part_size_total(parts, key, size) == size_count(sizes, size, key),
-            forall|key: i64| #[trigger] part_support(parts, key) ==
-                sum(brass_parts@.take(processed@), |row: BrassPartScan| if row.p_partkey == key { 1 } else { 0 }),
-            forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(parts, key, size, mfgr) ==
-                sum(brass_parts@.take(processed@), |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1 } else { 0 }),
-            forall|size: i64, key: i64| #[trigger] size_count(sizes, size, key) ==
-                sum(brass_parts@.take(processed@), |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1 } else { 0 }),
-        decreases brass_parts.len() - index,
-    {
-        if !insert_part(&mut parts, &mut sizes, Arc::new(brass_parts[index].dup())) { return None; }
-        proof {
-            assert forall|key: i64| #[trigger] part_support(parts, key) ==
-                sum(brass_parts@.take(index as int + 1), |row: BrassPartScan| if row.p_partkey == key { 1int } else { 0int }) by {
-                lemma_sum_take(brass_parts@, index as int, |row: BrassPartScan| if row.p_partkey == key { 1int } else { 0int });
-            }
-            assert forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(parts, key, size, mfgr) ==
-                sum(brass_parts@.take(index as int + 1), |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int }) by {
-                lemma_sum_take(brass_parts@, index as int, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int });
-            }
-            assert forall|size: i64, key: i64| #[trigger] size_count(sizes, size, key) ==
-                sum(brass_parts@.take(index as int + 1), |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1int } else { 0int }) by {
-                lemma_sum_take(brass_parts@, index as int, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1int } else { 0int });
-            }
-        }
-        index += 1;
-        processed = Ghost(index as int);
-    }
-    proof {
-        assert(brass_parts@.take(processed@) =~= brass_parts@);
-        assert forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(parts, key, size, mfgr) ==
-            sum(brass_parts@, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int }) by {
-            lemma_sum_take_full(brass_parts@, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int });
-        }
-        assert forall|size: i64, key: i64| #[trigger] size_count(sizes, size, key) ==
-            sum(brass_parts@, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1int } else { 0int }) by {
-            lemma_sum_take_full(brass_parts@, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1int } else { 0int });
-        }
-    }
-    let ghost built_parts = parts;
-    let ghost built_sizes = sizes;
-    proof {
-        assert forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(built_parts, key, size, mfgr) ==
-            sum(brass_parts@, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int }) by {}
-        assert forall|size: i64, key: i64| #[trigger] size_count(built_sizes, size, key) ==
-            sum(brass_parts@, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1int } else { 0int }) by {}
-    }
     index = 0;
     processed = Ghost(0);
     while index < brass_partsupp.len()
         invariant
-            index <= brass_partsupp.len(), processed@ == index as int, quotes.valid(), parts_valid(parts),
-            parts == built_parts, sizes == built_sizes,
+            index <= brass_partsupp.len(), processed@ == index as int, quotes.valid(),
+            parts.meaning(db), supported_db(db),
+            forall|index: int| 0 <= index < db.part.len() ==> fits_i64((#[trigger] db.part[index]).p_size),
             index_positive(quotes),
             index_nonempty(quotes),
-            forall|key: i64, size: i64| #[trigger] part_size_total(parts, key, size) == size_count(sizes, size, key),
-            index_routed(quotes, |key: i64, row: PartsuppRow| row.ps_partkey == key as int),
-            forall|key: i64| #[trigger] quotes.lookup(key) is Some ==> part_support(parts, key) > 0,
+            index_routed(quotes, quote_routing(db)),
             forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(quotes, key, supplier, cost) ==
                 sum(brass_partsupp@.take(processed@), |row: BrassPartsuppScan| if row.ps_partkey == key && row.ps_suppkey as int == supplier && row.ps_supplycost as int == cost { 1 } else { 0 }),
         decreases brass_partsupp.len() - index,
     {
         let row = brass_partsupp[index];
-        if parts.get(row.ps_partkey).is_none() { return None; }
+        let cells = parts.tp.get((row.ps_partkey, 0, 0));
+        if cells.len() == 0 { return None; }
+        proof { lemma_eligible_cells(db, parts, row.ps_partkey); }
         let ghost previous = quotes;
         if !adjust_bag(&mut quotes, row.ps_partkey, Arc::new(row), 1) { return None; }
         proof {
@@ -184,28 +145,6 @@ pub fn build(
         processed = Ghost(index as int);
     }
     proof {
-        lemma_scan_representable(db, brass_parts@, brass_partsupp@, suppliers@, nations@, regions@);
-        assert forall|key: i64| #[trigger] part_support(parts, key) == eligible(db, key) by {
-            assert(brass_parts@.take(brass_parts@.len() as int) =~= brass_parts@);
-            lemma_part_scan_counts(db, brass_parts@, key, 0, Seq::empty());
-        }
-        assert forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(parts, key, size, mfgr) ==
-            sum(db.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1int } else { 0int }) by {
-            lemma_sum_take_full(brass_parts@, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int });
-            assert(parts == built_parts);
-            assert(part_amount(built_parts, key, size, mfgr) == sum(brass_parts@, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int }));
-            lemma_sum_ext_all(brass_parts@, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int },
-                |row: BrassPartScan| part_scan_weight(row, key, size, mfgr));
-            lemma_part_amount_transfer(db, brass_parts@, key, size, mfgr, part_amount(parts, key, size, mfgr));
-            lemma_sum_ext_all(db.part, |row: PartRow| part_database_weight(row, key, size, mfgr),
-                |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1int } else { 0int });
-        }
-        assert forall|size: i64, key: i64| #[trigger] size_count(sizes, size, key) ==
-            sum(db.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int }) by {
-            assert(sizes == built_sizes);
-            assert(size_count(built_sizes, size, key) == sum(brass_parts@, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1int } else { 0int }));
-            lemma_part_scan_counts(db, brass_parts@, key, size, Seq::empty());
-        }
         assert forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(quotes, key, supplier, cost) ==
             if eligible(db, key) > 0 { sum(db.partsupp, |row: PartsuppRow| if row.ps_partkey == key as int && row.ps_suppkey == supplier && row.ps_supplycost == cost { 1int } else { 0int }) } else { 0int } by {
             assert(brass_partsupp@.take(brass_partsupp@.len() as int) =~= brass_partsupp@);
@@ -236,25 +175,23 @@ pub fn build(
             assert(sum(region_scan_seq_view(regions@), weight) == sum(db.region, weight));
         }
     }
+    let sflat = Arc::new(build_flat(&supplier_index));
     proof {
-        assert(parts_valid(parts));
-        assert(sizes_valid(sizes));
         assert(index_positive(quotes));
         assert(index_positive(supplier_index));
         assert(index_positive(nation_index));
         assert(regions_valid(region_index));
         assert(regions_positive(region_index));
-        assert forall|key: i64, size: i64| #[trigger] part_size_total(parts, key, size) == size_count(sizes, size, key) by {}
         assert forall|key: i64| match #[trigger] quotes.lookup(key) {
             None => true,
-            Some(bag) => (*bag).valid() && part_support(parts, key) > 0 &&
+            Some(bag) => (*bag).valid() && eligible(db, key) > 0 &&
                 forall|index: int| 0 <= index < (*bag).entries@.len() ==> (*((#[trigger] (*bag).entries@[index]).row)).ps_partkey == key,
         } by {
             if quotes.lookup(key) is Some {
                 let bag = quotes.lookup(key)->0;
                 assert((*bag).entries@.len() > 0);
-                assert(index_routed(quotes, |key: i64, row: PartsuppRow| row.ps_partkey == key as int));
-                assert(part_support(parts, key) > 0);
+                assert(index_routed(quotes, quote_routing(db)));
+                assert(eligible(db, key) > 0) by { assert(quote_routing(db)(key, (*(*bag).entries@[0].row).rv())); }
                 assert forall|index: int| 0 <= index < (*bag).entries@.len() implies
                     (*((#[trigger] (*bag).entries@[index]).row)).ps_partkey == key by {
                     assert(brass_partsupp_scan_view(*(*bag).entries@[index].row).ps_partkey == key as int);
@@ -288,16 +225,16 @@ pub fn build(
             }
         }
         lemma_dimension_database_counts(db, supplier_index, nation_index);
-        assert(state_meaning(db, parts, sizes, quotes, supplier_index, nation_index, region_index));
+        lemma_state_indexes_meaning(db, parts, quotes, supplier_index, nation_index, region_index, sflat);
     }
-    let state = State::new(parts, sizes, quotes, supplier_index, nation_index, region_index, Ghost(db));
+    let state = State::new(parts, quotes, supplier_index, nation_index, region_index, sflat, Ghost(db));
     proof { state.database_witness(); }
     Some(state)
 }
 
-pub fn execute(s: &State, p1: i64, p2: &[u8]) -> (result: Option<Vec<Output>>)
-    ensures result matches Some(out) ==> query_result(s.db(), params(p1 as int, p2@), out_view(out@)),
-{ Some(enumerate(s, p1, p2)) }
+pub fn execute(s: &State, p1: i64, p2: &[u8], p3: &[u8]) -> (result: Option<Vec<Output>>)
+    ensures result matches Some(out) ==> query_result(s.db(), params(p1 as int, p2@, p3@), out_view(out@)),
+{ Some(enumerate(s, p1, p2, p3)) }
 
 pub fn rescan_brass_parts_after_keys(
     s: &State, nation_delta: &Vec<NationDelta>, part_delta: &[PartKeyDelta],
@@ -329,9 +266,39 @@ pub fn apply(
 {
     proof { use_type_invariant(s); s.database_witness(); }
     let touched_keys = part_keys(part_delta);
+    let mut check = 0;
+    while check < touched_keys.len()
+        invariant check <= touched_keys.len(),
+            forall|j: int| 0 <= j < check ==> brass_parts_after_keys@.contains(touched_keys@[j]) && brass_partsupp_after_keys@.contains(touched_keys@[j]),
+        decreases touched_keys.len() - check,
+    {
+        let key = touched_keys[check];
+        if !contains_key(brass_parts_after_keys, key) || !contains_key(brass_partsupp_after_keys, key) { return Err(1); }
+        check += 1;
+    }
+    proof {
+        assert forall|key: i64| #[trigger] touched_keys@.contains(key) implies
+            brass_parts_after_keys@.contains(key) && brass_partsupp_after_keys@.contains(key) by {
+            let j = choose|j: int| 0 <= j < touched_keys@.len() && touched_keys@[j] == key;
+        }
+    }
+    let parts = match apply_parts(&s.parts, touched_keys.as_slice(), brass_parts_after_rows.as_slice()) {
+        None => return Err(2), Some(parts) => parts,
+    };
+    proof {
+        lemma_parts_transfer(*s, db2, part_delta@, part_full, touched_keys@,
+            brass_parts_after_keys@, brass_parts_after_rows@, parts);
+        assert forall|key: i64| !touched_keys@.contains(key) implies #[trigger] eligible(db2, key) == eligible(s.db(), key) by {
+            lemma_eligible_untouched(s.db(), db2, part_delta@, part_full, touched_keys@, brass_parts_after_keys@, brass_parts_after_rows@, key);
+        }
+        lemma_apply_representable(*s, db2, touched_keys@, part_delta@, part_full, partsupp_delta@,
+            supplier_delta@, nation_delta@, region_delta@, brass_parts_after_keys@, brass_parts_after_rows@,
+            brass_partsupp_after_keys@, brass_partsupp_after_rows@);
+        assert forall|k: int| 0 <= k < db2.part.len() implies fits_i64((#[trigger] db2.part[k]).p_size) by {
+            assert(retained(db2.part[k]));
+        }
+    }
     let mut touched: Directory<Count> = Directory::new();
-    let mut parts = s.parts.share();
-    let mut sizes = s.sizes.share();
     let mut quotes = s.quotes.share();
     let mut suppliers = s.suppliers.share();
     let mut nations = s.nations.share();
@@ -341,57 +308,29 @@ pub fn apply(
     while index < touched_keys.len()
         invariant
             index <= touched_keys.len(), processed@ == index as int, touched.valid(),
-            parts_valid(parts), sizes_valid(sizes), quotes.valid(),
+            quotes.valid(),
             index_positive(quotes), index_unique(quotes), index_nonempty(quotes),
-            index_routed(quotes, quote_routing(parts)),
+            index_routed(quotes, quote_routing(s.db())),
             forall|key: i64| (#[trigger] touched.lookup(key) is Some) == touched_keys@.take(processed@).contains(key),
-            forall|key: i64| #[trigger] touched_keys@.take(processed@).contains(key) ==>
-                brass_parts_after_keys@.contains(key) && brass_partsupp_after_keys@.contains(key),
-            forall|key: i64, size: i64| #[trigger] part_size_total(parts, key, size) == size_count(sizes, size, key),
-            forall|key: i64| #[trigger] part_support(parts, key) ==
-                if touched_keys@.take(processed@).contains(key) { 0 } else { part_support(s.parts, key) },
-            forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(parts, key, size, mfgr) ==
-                if touched_keys@.take(processed@).contains(key) { 0 } else { part_amount(s.parts, key, size, mfgr) },
-            forall|size: i64, key: i64| #[trigger] size_count(sizes, size, key) ==
-                if touched_keys@.take(processed@).contains(key) { 0 } else { size_count(s.sizes, size, key) },
+            forall|key: i64| #[trigger] touched_keys@.take(processed@).contains(key) ==> quotes.lookup(key) is None,
             forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(quotes, key, supplier, cost) ==
                 if touched_keys@.take(processed@).contains(key) { 0 } else { quote_amount(s.quotes, key, supplier, cost) },
         decreases touched_keys.len() - index,
     {
         let key = touched_keys[index];
-        if !contains_key(brass_parts_after_keys, key) || !contains_key(brass_partsupp_after_keys, key) { return Err(1); }
         let ghost previous_touched = touched;
-        let ghost previous_parts = parts;
-        let ghost previous_sizes = sizes;
         let ghost previous_quotes = quotes;
         touched.replace(key, Some(Arc::new(Count { value: 1 })));
-        remove_part(&mut parts, &mut sizes, key);
         quotes.replace(key, None);
         proof {
             assert(touched_keys@.take(index as int + 1) =~= touched_keys@.take(index as int).push(key));
-            assert forall|probe: i64| #[trigger] touched_keys@.take(index as int + 1).contains(probe) implies
-                brass_parts_after_keys@.contains(probe) && brass_partsupp_after_keys@.contains(probe) by {
-                broadcast use vstd::seq_lib::group_seq_properties;
-                if probe != key { assert(touched_keys@.take(index as int).contains(probe)); }
-            }
             assert forall|probe: i64| (#[trigger] touched.lookup(probe) is Some) == touched_keys@.take(index as int + 1).contains(probe) by {
                 broadcast use vstd::seq_lib::group_seq_properties;
                 assert((previous_touched.lookup(probe) is Some) == touched_keys@.take(index as int).contains(probe));
             }
-            assert forall|probe: i64| #[trigger] part_support(parts, probe) ==
-                if touched_keys@.take(index as int + 1).contains(probe) { 0 } else { part_support(s.parts, probe) } by {
+            assert forall|probe: i64| #[trigger] touched_keys@.take(index as int + 1).contains(probe) implies quotes.lookup(probe) is None by {
                 broadcast use vstd::seq_lib::group_seq_properties;
-                assert(part_support(previous_parts, probe) == if touched_keys@.take(index as int).contains(probe) { 0 } else { part_support(s.parts, probe) });
-            }
-            assert forall|probe: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(parts, probe, size, mfgr) ==
-                if touched_keys@.take(index as int + 1).contains(probe) { 0 } else { part_amount(s.parts, probe, size, mfgr) } by {
-                broadcast use vstd::seq_lib::group_seq_properties;
-                assert(part_amount(previous_parts, probe, size, mfgr) == if touched_keys@.take(index as int).contains(probe) { 0 } else { part_amount(s.parts, probe, size, mfgr) });
-            }
-            assert forall|size: i64, probe: i64| #[trigger] size_count(sizes, size, probe) ==
-                if touched_keys@.take(index as int + 1).contains(probe) { 0 } else { size_count(s.sizes, size, probe) } by {
-                broadcast use vstd::seq_lib::group_seq_properties;
-                assert(size_count(previous_sizes, size, probe) == if touched_keys@.take(index as int).contains(probe) { 0 } else { size_count(s.sizes, size, probe) });
+                if probe != key { assert(touched_keys@.take(index as int).contains(probe)); }
             }
             assert forall|probe: i64, supplier: int, cost: int| #[trigger] quote_amount(quotes, probe, supplier, cost) ==
                 if touched_keys@.take(index as int + 1).contains(probe) { 0 } else { quote_amount(s.quotes, probe, supplier, cost) } by {
@@ -405,62 +344,13 @@ pub fn apply(
     proof { assert(touched_keys@.take(processed@) =~= touched_keys@); }
     index = 0;
     processed = Ghost(0);
-    while index < brass_parts_after_rows.len()
-        invariant
-            index <= brass_parts_after_rows.len(), processed@ == index as int,
-            touched.valid(), parts_valid(parts), sizes_valid(sizes),
-            index_positive(quotes), index_unique(quotes), index_nonempty(quotes),
-            index_routed(quotes, quote_routing(parts)),
-            forall|key: i64| (#[trigger] touched.lookup(key) is Some) == touched_keys@.contains(key),
-            forall|key: i64, size: i64| #[trigger] part_size_total(parts, key, size) == size_count(sizes, size, key),
-            forall|key: i64| #[trigger] part_support(parts, key) == if touched_keys@.contains(key) {
-                sum(brass_parts_after_rows@.take(processed@), |row: BrassPartScan| if row.p_partkey == key { 1 } else { 0 })
-            } else { part_support(s.parts, key) },
-            forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(parts, key, size, mfgr) == if touched_keys@.contains(key) {
-                sum(brass_parts_after_rows@.take(processed@), |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1 } else { 0 })
-            } else { part_amount(s.parts, key, size, mfgr) },
-            forall|size: i64, key: i64| #[trigger] size_count(sizes, size, key) == if touched_keys@.contains(key) {
-                sum(brass_parts_after_rows@.take(processed@), |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1 } else { 0 })
-            } else { size_count(s.sizes, size, key) },
-        decreases brass_parts_after_rows.len() - index,
-    {
-        let row = &brass_parts_after_rows[index];
-        if touched.get(row.p_partkey).is_some() {
-            if !insert_part(&mut parts, &mut sizes, Arc::new(row.dup())) { return Err(2); }
-        }
-        proof {
-            assert forall|key: i64| #[trigger] part_support(parts, key) == if touched_keys@.contains(key) {
-                sum(brass_parts_after_rows@.take(index as int + 1), |value: BrassPartScan| if value.p_partkey == key { 1int } else { 0int })
-            } else { part_support(s.parts, key) } by {
-                lemma_sum_take(brass_parts_after_rows@, index as int, |value: BrassPartScan| if value.p_partkey == key { 1int } else { 0int });
-            }
-            assert forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(parts, key, size, mfgr) == if touched_keys@.contains(key) {
-                sum(brass_parts_after_rows@.take(index as int + 1), |value: BrassPartScan| if value.p_partkey == key && value.p_size == size && value.p_mfgr@ == mfgr { 1int } else { 0int })
-            } else { part_amount(s.parts, key, size, mfgr) } by {
-                lemma_sum_take(brass_parts_after_rows@, index as int, |value: BrassPartScan| if value.p_partkey == key && value.p_size == size && value.p_mfgr@ == mfgr { 1int } else { 0int });
-            }
-            assert forall|size: i64, key: i64| #[trigger] size_count(sizes, size, key) == if touched_keys@.contains(key) {
-                sum(brass_parts_after_rows@.take(index as int + 1), |value: BrassPartScan| if value.p_partkey == key && value.p_size == size { 1int } else { 0int })
-            } else { size_count(s.sizes, size, key) } by {
-                lemma_sum_take(brass_parts_after_rows@, index as int, |value: BrassPartScan| if value.p_partkey == key && value.p_size == size { 1int } else { 0int });
-            }
-        }
-        index += 1;
-        processed = Ghost(index as int);
-    }
-    proof {
-        assert(brass_parts_after_rows@.take(processed@) =~= brass_parts_after_rows@);
-        lemma_part_indexes_transfer(*s, db2, part_delta@, part_full, touched_keys@,
-            brass_parts_after_keys@, brass_parts_after_rows@, parts, sizes);
-    }
-    index = 0;
-    processed = Ghost(0);
     while index < brass_partsupp_after_rows.len()
         invariant
             index <= brass_partsupp_after_rows.len(), processed@ == index as int,
-            touched.valid(), parts_valid(parts), quotes.valid(),
+            touched.valid(), quotes.valid(), parts.meaning(db2), supported_db(db2),
+            forall|k: int| 0 <= k < db2.part.len() ==> fits_i64((#[trigger] db2.part[k]).p_size),
             index_positive(quotes), index_unique(quotes), index_nonempty(quotes),
-            index_routed(quotes, quote_routing(parts)),
+            index_routed(quotes, routing_after(touched_keys@, s.db(), db2)),
             forall|key: i64| (#[trigger] touched.lookup(key) is Some) == touched_keys@.contains(key),
             forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(quotes, key, supplier, cost) == if touched_keys@.contains(key) {
                 sum(brass_partsupp_after_rows@.take(processed@), |row: BrassPartsuppScan| if row.ps_partkey == key && row.ps_suppkey as int == supplier && row.ps_supplycost as int == cost { 1 } else { 0 })
@@ -470,7 +360,9 @@ pub fn apply(
         let row = brass_partsupp_after_rows[index];
         let ghost previous = quotes;
         if touched.get(row.ps_partkey).is_some() {
-            if parts.get(row.ps_partkey).is_none() { return Err(3); }
+            let cells = parts.tp.get((row.ps_partkey, 0, 0));
+            if cells.len() == 0 { return Err(3); }
+            proof { lemma_eligible_cells(db2, parts, row.ps_partkey); }
             if !adjust_bag(&mut quotes, row.ps_partkey, Arc::new(row), 1) { return Err(2); }
         }
         proof {
@@ -498,12 +390,14 @@ pub fn apply(
     while index < partsupp_delta.len()
         invariant
             index <= partsupp_delta.len(), processed@ == index as int,
-            touched.valid(), parts_valid(parts), quote_changes.valid(),
+            touched.valid(), parts.meaning(db2), supported_db(db2),
+            forall|k: int| 0 <= k < db2.part.len() ==> fits_i64((#[trigger] db2.part[k]).p_size),
+            quote_changes.valid(),
             index_unique(quote_changes), index_nonempty(quote_changes),
-            index_routed(quote_changes, quote_routing(parts)),
+            index_routed(quote_changes, quote_routing(db2)),
             forall|key: i64| (#[trigger] touched.lookup(key) is Some) == touched_keys@.contains(key),
             forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(quote_changes, key, supplier, cost) ==
-                if !touched_keys@.contains(key) && part_support(parts, key) > 0 {
+                if !touched_keys@.contains(key) && eligible(db2, key) > 0 {
                     sum(partsupp_delta@.take(processed@), |delta: PartsuppDelta| if delta.row.ps_partkey == key && delta.row.ps_suppkey as int == supplier && delta.row.ps_supplycost as int == cost { delta.sign as int } else { 0 })
                 } else { 0 },
         decreases partsupp_delta.len() - index,
@@ -511,19 +405,21 @@ pub fn apply(
         let delta = &partsupp_delta[index];
         let key = delta.row.ps_partkey;
         let ghost previous = quote_changes;
-        if touched.get(key).is_none() && parts.get(key).is_some() {
+        proof { lemma_eligible_cells(db2, parts, key); }
+        let cells = parts.tp.get((key, 0, 0));
+        if touched.get(key).is_none() && cells.len() > 0 {
             if !adjust_bag(&mut quote_changes, key, Arc::new(delta.row), delta.sign as i128) { return Err(2); }
         }
         proof {
             assert forall|probe: i64, supplier: int, cost: int| #[trigger] quote_amount(quote_changes, probe, supplier, cost) ==
-                if !touched_keys@.contains(probe) && part_support(parts, probe) > 0 {
+                if !touched_keys@.contains(probe) && eligible(db2, probe) > 0 {
                     sum(partsupp_delta@.take(index as int + 1), |value: PartsuppDelta| if value.row.ps_partkey == probe && value.row.ps_suppkey as int == supplier && value.row.ps_supplycost as int == cost { value.sign as int } else { 0int })
                 } else { 0int } by {
                 let weight = |value: PartsuppRow| if value.ps_suppkey == supplier && value.ps_supplycost == cost { 1int } else { 0int };
-                if !touched_keys@.contains(key) && part_support(parts, key) > 0 {
+                if !touched_keys@.contains(key) && eligible(db2, key) > 0 {
                     assert(index_weight(quote_changes, probe, weight) == index_weight(previous, probe, weight) + if probe == key { delta.sign as int * weight(brass_partsupp_scan_view(delta.row)) } else { 0int });
                 }
-                assert(quote_amount(previous, probe, supplier, cost) == if !touched_keys@.contains(probe) && part_support(parts, probe) > 0 {
+                assert(quote_amount(previous, probe, supplier, cost) == if !touched_keys@.contains(probe) && eligible(db2, probe) > 0 {
                     sum(partsupp_delta@.take(index as int), |value: PartsuppDelta| if value.row.ps_partkey == probe && value.row.ps_suppkey as int == supplier && value.row.ps_supplycost as int == cost { value.sign as int } else { 0int })
                 } else { 0int });
                 lemma_sum_take(partsupp_delta@, index as int, |value: PartsuppDelta| if value.row.ps_partkey == probe && value.row.ps_suppkey as int == supplier && value.row.ps_supplycost as int == cost { value.sign as int } else { 0int });
@@ -533,10 +429,11 @@ pub fn apply(
         processed = Ghost(index as int);
     }
     proof { assert(partsupp_delta@.take(processed@) =~= partsupp_delta@); }
+    proof { lemma_routing_after(touched_keys@, s.db(), db2, quotes); }
     if !finish_bags(&mut quotes, &quote_changes) { return Err(4); }
     proof {
         lemma_quotes_transfer(*s, db2, touched_keys@, brass_partsupp_after_keys@, brass_partsupp_after_rows@,
-            partsupp_delta@, parts, rebuilt_quotes, quote_changes, quotes);
+            partsupp_delta@, rebuilt_quotes, quote_changes, quotes);
     }
     let mut supplier_changes = Directory::new();
     index = 0;
@@ -566,7 +463,9 @@ pub fn apply(
     }
     proof { assert(supplier_delta@.take(processed@) =~= supplier_delta@); }
     proof { assert(index_routed(suppliers, supplier_routing())); }
+    let ghost suppliers_before = suppliers;
     if !finish_bags(&mut suppliers, &supplier_changes) { return Err(4); }
+    let sflat = Arc::new(patch_flat(&*s.sflat, &s.suppliers, &suppliers, &supplier_changes));
     proof {
         assert(index_routed(suppliers, supplier_routing()));
         lemma_supplier_capture(*s, db2, supplier_delta@, supplier_changes, suppliers);
@@ -656,19 +555,15 @@ pub fn apply(
     }
     proof {
         lemma_regions_positive(db2, regions);
-        lemma_apply_representable(*s, db2, touched_keys@, part_delta@, part_full, partsupp_delta@,
-            supplier_delta@, nation_delta@, region_delta@, brass_parts_after_keys@, brass_parts_after_rows@,
-            brass_partsupp_after_keys@, brass_partsupp_after_rows@, parts);
-        assert(part_indexes_meaning(db2, parts, sizes));
         assert(index_positive(quotes));
-        assert(index_routed(quotes, quote_routing(parts)));
+        assert(index_routed(quotes, quote_routing(db2)));
         assert(index_positive(suppliers));
         assert(index_routed(suppliers, supplier_routing()));
         assert(index_positive(nations));
         assert(index_routed(nations, nation_routing()));
-        lemma_state_indexes_meaning(db2, parts, sizes, quotes, suppliers, nations, regions);
+        lemma_state_indexes_meaning(db2, parts, quotes, suppliers, nations, regions, sflat);
     }
-    let state = State::new(parts, sizes, quotes, suppliers, nations, regions, Ghost(db2));
+    let state = State::new(parts, quotes, suppliers, nations, regions, sflat, Ghost(db2));
     Ok(state)
 }
 

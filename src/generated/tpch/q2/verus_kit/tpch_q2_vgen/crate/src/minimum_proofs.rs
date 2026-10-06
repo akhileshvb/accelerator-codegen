@@ -254,16 +254,16 @@ pub(crate) proof fn lemma_index_cost_support(state: State, regions: Directory<Co
 }
 
 #[verifier::auto_ext_equal(assert, assert_by, ensures)]
-pub(crate) proof fn lemma_minimum_query(state: State, regions: Directory<Count>, name: Seq<u8>, key: i64, part: PartRow)
+pub(crate) proof fn lemma_minimum_query(state: State, regions: Directory<Count>, name: Seq<u8>, pat: Seq<u8>, key: i64, part: PartRow)
     requires state.meaning(), state.db() == state.database@, eligible(state.db(), key) > 0,
         part.p_partkey == key as int, state.quotes.lookup(key) is Some,
         forall|region: i64| #[trigger] count_at(regions, region) == region_amount(state.regions, name, region),
-    ensures scalar_1_value(state.db(), Params { p1: part.p_size, p2: name }, part) ==
+    ensures scalar_1_value(state.db(), Params { p1: part.p_size, p2: pat, p3: name }, part) ==
         if key_costs(state, regions, key).len() == 0 { None }
         else { Some(min_of(key_costs(state, regions, key))) },
 {
     let db = state.db();
-    let p = Params { p1: part.p_size, p2: name };
+    let p = Params { p1: part.p_size, p2: pat, p3: name };
     let costs = key_costs(state, regions, key);
     let values = scalar_1_group_vals(db, p, part, |t: Scalar1Tuple| t.partsupp_2.ps_supplycost);
     lemma_regions_nonnegative(state, regions, name);

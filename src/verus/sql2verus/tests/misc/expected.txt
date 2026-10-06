@@ -42,3 +42,7 @@ m47 ok-spec an empty row type
 m48 ok
 m49 ok
 m50 refused UNION column
+m51 refused only NOT NULL columns
+m52 ok
+m53 ok
+m54 ok

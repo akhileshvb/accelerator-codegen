@@ -41,6 +41,15 @@ How to work:
   read path, maintenance (writes), or a structural change of the aux state.
   Read `contracts/scale_principles.md`: prefer changes that also hold at
   SF3000.
+* The score is measured on parameter values drawn at random from the TPC-H
+  domain, new on every run (not shown ahead, the same for the best and the
+  candidate within one decision). Never specialize to particular parameter
+  values: the kit must stay correct and fast for any value of the domain,
+  and a decline inside the domain counts against it.
+* Memory footprint is the third objective (`scale_principles`, "Memory
+  footprint"). Do not raise the score by growing the state past its SF20
+  budget (e.g. a per-key container, an extra copy of the facts, wider
+  stored values); when two ways to a speedup are close, take the smaller.
 * Measure with `verus_bench` (write mixes `{{mixes}}` this attempt) and
   `verus_profile`; check with `verus_verify` and `verus_test`
   (`contracts/proof_method.md` for keeping the proofs; prefer `vstd` collections).

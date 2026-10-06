@@ -1,6 +1,8 @@
 #include "tpch_q13_vgen_verus.h"
 #include "accelerator_codegen/verus/verus_kit.hpp"
 
+#include <malloc.h>
+
 #include <memory>
 #include <string>
 #include <utility>
@@ -11,66 +13,81 @@ namespace {
 namespace kit = accelerator_codegen::verus_kit;
 namespace core = kit::core;
 
-const char kQuerySql[] = R"SQL(-- TPC-H Q13 (catalog text). No parameters: sql2verus takes only a literal LIKE pattern.
+const char kQuerySql[] = R"SQL(-- TPC-H Q13 (catalog text), :comment_pattern ('%' || :word1 || '%' || :word2 || '%') as $1.
 SELECT c_count, COUNT(*) AS custdist
 FROM (SELECT c_custkey, COUNT(o_orderkey) AS c_count
       FROM customer LEFT OUTER JOIN orders
-        ON c_custkey = o_custkey AND o_comment NOT LIKE '%unusual%accounts%'
+        ON c_custkey = o_custkey AND o_comment NOT LIKE $1
       GROUP BY c_custkey) AS c_orders
 GROUP BY c_count
 ORDER BY custdist DESC, c_count DESC
 )SQL";
 
 const char kCustomerScanSql[] = "SELECT c_custkey FROM customer;";
-const char kOrderScanSql[] = R"SQL(SELECT o_custkey FROM orders
-  WHERE o_comment NOT LIKE '%unusual%accounts%';)SQL";
+const char kOrderScanSql[] = "SELECT o_custkey, o_comment FROM orders;";
+
+// A text column in the kernel's columnar form: text i is bytes[off[i], off[i + 1]).
+struct TextColumn {
+  std::vector<uint8_t> bytes;
+  std::vector<std::size_t> off{0};
+
+  void Push(const std::string &text) {
+    bytes.insert(bytes.end(), text.begin(), text.end());
+    off.push_back(bytes.size());
+  }
+};
 
 struct ScanInputs {
   std::vector<tpchq13vgen_customer_scan> customers;
-  std::vector<tpchq13vgen_qualifying_order_scan> qualifying_orders;
+  std::vector<int64_t> order_custkeys;
+  TextColumn order_comments;
 
   explicit ScanInputs(kit::Host &host) {
     host.Query(kCustomerScanSql, [&](const core::AuxRow &row) {
       customers.push_back({kit::I64(row, 0, 0)});
     });
     host.Query(kOrderScanSql, [&](const core::AuxRow &row) {
-      qualifying_orders.push_back({kit::I64(row, 0, 0)});
+      order_custkeys.push_back(kit::I64(row, 0, 0));
+      order_comments.Push(kit::Text(row, 1));
     });
   }
 };
 
-uint8_t Qualifies(const std::string &comment) {
-  const std::size_t unusual = comment.find("unusual");
-  if (unusual == std::string::npos) {
-    return 1;
-  }
-  return comment.find("accounts", unusual + 7) == std::string::npos ? 1 : 0;
-}
-
 struct DeltaInputs {
   std::vector<tpchq13vgen_customer_delta> customers;
-  std::vector<tpchq13vgen_order_delta> orders;
+  std::vector<int64_t> order_custkeys;
+  TextColumn order_comments;
+  std::vector<int64_t> order_signs;
 
   explicit DeltaInputs(const kit::Changes &changes) {
     const auto &customer_changes = changes.at(0);
     const auto &order_changes = changes.at(1);
     customers.reserve(customer_changes.size());
-    orders.reserve(order_changes.size());
+    order_custkeys.reserve(order_changes.size());
+    order_signs.reserve(order_changes.size());
     for (const auto &change : customer_changes) {
       customers.push_back({{kit::I64(change.row, 0, 0)}, change.sign});
     }
     for (const auto &change : order_changes) {
-      const int64_t custkey = kit::I64(change.row, 0, 0);
-      const std::string &comment = kit::Text(change.row, 1);
-      orders.push_back({custkey, Qualifies(comment), change.sign});
+      order_custkeys.push_back(kit::I64(change.row, 0, 0));
+      order_comments.Push(kit::Text(change.row, 1));
+      order_signs.push_back(change.sign);
     }
   }
 };
 
 void *Build(kit::Host &host) {
-  const ScanInputs inputs(host);
-  return tpchq13vgen_build(inputs.customers.size(), inputs.customers.data(),
-                          inputs.qualifying_orders.size(), inputs.qualifying_orders.data());
+  void *state = nullptr;
+  {
+    const ScanInputs inputs(host);
+    state = tpchq13vgen_build(inputs.customers.size(), inputs.customers.data(),
+                              inputs.order_custkeys.size(), inputs.order_custkeys.data(),
+                              inputs.order_comments.bytes.data(), inputs.order_comments.off.data());
+  }
+  // The scan copies (and the kernel's per-row buffers) are freed; give the arena back so the
+  // resident set is the state, not the build's garbage.
+  malloc_trim(0);
+  return state;
 }
 
 void FreeState(void *state) {
@@ -81,16 +98,22 @@ void *Apply(const void *state, const kit::Changes &changes, kit::Host &, int32_t
   const DeltaInputs inputs(changes);
   return tpchq13vgen_apply(static_cast<const tpchq13vgen_state *>(state),
                           inputs.customers.size(), inputs.customers.data(),
-                          inputs.orders.size(), inputs.orders.data(), err);
+                          inputs.order_custkeys.size(), inputs.order_custkeys.data(),
+                          inputs.order_comments.bytes.data(), inputs.order_comments.off.data(),
+                          inputs.order_signs.data(), err);
 }
 
 bool Execute(const void *state, const core::QueryArguments &args,
              std::vector<core::AuxRow> &out) {
-  if (!args.values.empty()) {
+  // The kernel answers only the patterns it tracks (the 16 TPC-H
+  // '%word1%word2%' patterns); any other pattern declines (false: SQL answers).
+  std::string pattern;
+  if (!kit::ArgText(args, 0, pattern)) {
     return false;
   }
   const std::unique_ptr<tpchq13vgen_result, decltype(&tpchq13vgen_result_free)> result(
-      tpchq13vgen_execute(static_cast<const tpchq13vgen_state *>(state)),
+      tpchq13vgen_execute(static_cast<const tpchq13vgen_state *>(state),
+                          reinterpret_cast<const uint8_t *>(pattern.data()), pattern.size()),
       tpchq13vgen_result_free);
   if (!result) {
     return false;
@@ -117,20 +140,28 @@ void *PrepareApply(const void *store, const void *base, const kit::Changes &chan
   return tpchq13vgens_prepare_apply(static_cast<const tpchq13vgens_store *>(store),
                                    static_cast<const tpchq13vgens_base *>(base),
                                    inputs.customers.size(), inputs.customers.data(),
-                                   inputs.orders.size(), inputs.orders.data(), err);
+                                   inputs.order_custkeys.size(), inputs.order_custkeys.data(),
+                                   inputs.order_comments.bytes.data(), inputs.order_comments.off.data(),
+                                   inputs.order_signs.data(), err);
 }
 
 void *PrepareBuild(const void *store, kit::Host &host) {
-  const ScanInputs inputs(host);
-  return tpchq13vgens_prepare_build(static_cast<const tpchq13vgens_store *>(store),
-                                   inputs.customers.size(), inputs.customers.data(),
-                                   inputs.qualifying_orders.size(), inputs.qualifying_orders.data());
+  void *prepared = nullptr;
+  {
+    const ScanInputs inputs(host);
+    prepared = tpchq13vgens_prepare_build(static_cast<const tpchq13vgens_store *>(store),
+                                          inputs.customers.size(), inputs.customers.data(),
+                                          inputs.order_custkeys.size(), inputs.order_custkeys.data(),
+                                          inputs.order_comments.bytes.data(), inputs.order_comments.off.data());
+  }
+  malloc_trim(0);
+  return prepared;
 }
 
 const kit::Glue kGlue = {
     "tpch_q13_vgen", "tpch", 13, kQuerySql,
     {{"customer", {"c_custkey"}}, {"orders", {"o_custkey", "o_comment"}}},
-    {},
+    {kit::Kind::Text},
     Build, FreeState, Apply, Execute, PrepareApply, PrepareBuild,
     kit::StoreOps{
         []() -> void * { return tpchq13vgens_new(); },

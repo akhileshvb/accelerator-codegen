@@ -9,23 +9,26 @@ use crate::meaning::*;
 
 verus! {
 
-#[derive(Clone, Copy)]
-pub struct Cell { pub count: i128, pub revenue: i128, pub quantity: i128 }
 
+#[derive(Clone, Copy)]
 pub struct Pair { pub supplier: i64, pub count: i128, pub cost: i128 }
-pub struct Moment { pub supplier: i64, pub year: i64, pub cell: Cell }
-pub struct Part { pub green: i128, pub pairs: Vec<Pair>, pub moments: Vec<Moment> }
 #[derive(Clone, Copy)]
 pub struct Year { pub year: i64, pub count: i128 }
-pub struct Order { pub refs: i128, pub years: Vec<Year> }
 #[derive(Clone, Copy)]
 pub struct Number { pub key: i64, pub count: i128 }
 pub struct Name { pub bytes: Arc<Vec<u8>>, pub count: i128 }
 #[derive(Clone, Copy)]
 pub struct Total { pub year: i64, pub count: i128, pub profit: i128 }
 pub struct Group { pub name: Arc<Vec<u8>>, pub totals: Vec<Total> }
-
-pub fn zero() -> Cell { Cell { count: 0, revenue: 0, quantity: 0 } }
+/// One part-name class: the tracked patterns it matches (bit c of `mask`) and how many rows.
+#[derive(Clone, Copy)]
+pub struct MaskRow { pub mask: u128, pub count: i128 }
+/// One cell of the rollup of a tracked pattern: nation key, year, tuple count, profit sum.
+#[derive(Clone, Copy)]
+pub struct RCell { pub nk: i64, pub year: i64, pub count: i128, pub profit: i128 }
+/// A weight on a year.
+#[derive(Clone, Copy)]
+pub struct YearW { pub year: i64, pub weight: i128 }
 
 pub fn copy_bytes(bytes: &Vec<u8>) -> (result: Vec<u8>)
     ensures result@ == bytes@,
@@ -179,34 +182,6 @@ pub fn copy_names(rows: &Vec<Name>) -> (result: Vec<Name>)
     result
 }
 
-pub fn copy_part(part: &Part) -> (result: Part)
-    ensures result.green == part.green, result.pairs@ == part.pairs@, result.moments@ == part.moments@,
-{
-    let mut pairs = Vec::new();
-    let mut index = 0;
-    while index < part.pairs.len()
-        invariant index <= part.pairs.len(), pairs@ == part.pairs@.take(index as int),
-        decreases part.pairs.len() - index,
-    {
-        pairs.push(Pair { supplier: part.pairs[index].supplier, count: part.pairs[index].count, cost: part.pairs[index].cost });
-        index += 1;
-    }
-    let mut moments = Vec::new();
-    index = 0;
-    while index < part.moments.len()
-        invariant index <= part.moments.len(), moments@ == part.moments@.take(index as int), pairs@ == part.pairs@,
-        decreases part.moments.len() - index,
-    {
-        moments.push(Moment { supplier: part.moments[index].supplier, year: part.moments[index].year, cell: part.moments[index].cell });
-        index += 1;
-    }
-    Part { green: part.green, pairs, moments }
-}
-
-pub fn empty_part() -> (result: Part)
-    ensures result.green == 0, result.pairs@ == Seq::<Pair>::empty(), result.moments@ == Seq::<Moment>::empty(),
-{ Part { green: 0, pairs: Vec::new(), moments: Vec::new() } }
-
 pub fn bump_year(rows: &mut Vec<Year>, target: i64, amount: i128) -> (result: Option<()>)
     ensures
         (forall|position: int| 0 <= position < old(rows).len() && (#[trigger] old(rows)[position]).year == target ==>
@@ -347,103 +322,6 @@ pub fn bump_name(rows: &mut Vec<Name>, bytes: &Arc<Vec<u8>>, amount: i128) -> (r
     Some(())
 }
 
-pub fn bump_pair(part: &mut Part, supplier: i64, count: i128, cost: i128) -> (result: Option<()>)
-    ensures
-        result.is_some() && count > 0 && pairs_positive(old(part).pairs@) ==> pairs_positive(final(part).pairs@),
-        final(part).green == old(part).green, final(part).moments@ == old(part).moments@,
-        result.is_some() ==> forall|target_supplier: int, field: int| 0 <= field <= 1 ==> #[trigger] stored_pair(*final(part), target_supplier, field) == stored_pair(*old(part), target_supplier, field) + if target_supplier == supplier as int { if field == 0 { count as int } else { cost as int } } else { 0 },
-        old(part).pairs@.map_values(|row: Pair| row.supplier).no_duplicates() ==> final(part).pairs@.map_values(|row: Pair| row.supplier).no_duplicates(),
-{
-    let ghost before = *part;
-    let ghost increment_count = count as int;
-    let ghost increment_cost = cost as int;
-    let mut index = 0;
-    while index < part.pairs.len()
-        invariant index <= part.pairs.len(), *part == before, before == *old(part),
-            forall|position: int| 0 <= position < index ==> #[trigger] part.pairs@[position].supplier != supplier, increment_count == count as int, increment_cost == cost as int,
-        decreases part.pairs.len() - index,
-    {
-        if part.pairs[index].supplier == supplier {
-            let count = part.pairs[index].count.checked_add(count)?;
-            let cost = part.pairs[index].cost.checked_add(cost)?;
-            let entry = Pair { supplier, count, cost };
-            let ghost replacement = entry;
-            part.pairs.set(index, entry);
-            proof {
-                assert forall|target_supplier: int, field: int| 0 <= field <= 1 ==> #[trigger] stored_pair(*part, target_supplier, field) == stored_pair(before, target_supplier, field) + if target_supplier == supplier as int { if field == 0 { increment_count } else { increment_cost } } else { 0 } by {
-                    lemma_sum_update(before.pairs@, index as int, replacement, |row: Pair| if row.supplier as int == target_supplier { if field == 0 { row.count as int } else { row.cost as int } } else { 0 });
-                }
-                assert(part.pairs@.map_values(|row: Pair| row.supplier) =~= before.pairs@.map_values(|row: Pair| row.supplier));
-            }
-            return Some(());
-        }
-        index += 1;
-    }
-    let entry = Pair { supplier, count, cost };
-    let ghost appended = entry;
-    part.pairs.push(entry);
-    proof {
-        assert forall|target_supplier: int, field: int| 0 <= field <= 1 ==> #[trigger] stored_pair(*part, target_supplier, field) == stored_pair(before, target_supplier, field) + if target_supplier == supplier as int { if field == 0 { increment_count } else { increment_cost } } else { 0 } by {
-            lemma_sum_push(before.pairs@, appended, |row: Pair| if row.supplier as int == target_supplier { if field == 0 { row.count as int } else { row.cost as int } } else { 0 });
-        }
-        if before.pairs@.map_values(|row: Pair| row.supplier).no_duplicates() {
-            let projected = before.pairs@.map_values(|row: Pair| row.supplier);
-            assert(!projected.contains(supplier));
-            verus_prooflib::lemma_unique_push(projected, supplier);
-            assert(part.pairs@.map_values(|row: Pair| row.supplier) =~= projected.push(supplier));
-        }
-    }
-    Some(())
-}
-
-pub fn bump_moment(part: &mut Part, supplier: i64, year: i64, cell: Cell) -> (result: Option<()>)
-    ensures
-        result.is_some() && cell.count > 0 && moments_positive(old(part).moments@) ==> moments_positive(final(part).moments@),
-        final(part).green == old(part).green, final(part).pairs@ == old(part).pairs@,
-        result.is_some() ==> forall|target_supplier: int, target_year: int, field: int| 0 <= field <= 2 ==> #[trigger] stored_moment(*final(part), target_supplier, target_year, field) == stored_moment(*old(part), target_supplier, target_year, field) + if target_supplier == supplier as int && target_year == year as int { if field == 0 { cell.count as int } else if field == 1 { cell.revenue as int } else { cell.quantity as int } } else { 0 },
-        old(part).moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates() ==> final(part).moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates(),
-{
-    let ghost before = *part;
-    let mut index = 0;
-    while index < part.moments.len()
-        invariant index <= part.moments.len(), *part == before, before == *old(part),
-            forall|position: int| 0 <= position < index ==> #[trigger] part.moments@[position].supplier != supplier || part.moments@[position].year != year,
-        decreases part.moments.len() - index,
-    {
-        if part.moments[index].supplier == supplier && part.moments[index].year == year {
-            let count = part.moments[index].cell.count.checked_add(cell.count)?;
-            let revenue = part.moments[index].cell.revenue.checked_add(cell.revenue)?;
-            let quantity = part.moments[index].cell.quantity.checked_add(cell.quantity)?;
-            let entry = Moment { supplier, year, cell: Cell { count, revenue, quantity } };
-            let ghost replacement = entry;
-            part.moments.set(index, entry);
-            proof {
-                assert forall|target_supplier: int, target_year: int, field: int| 0 <= field <= 2 ==> #[trigger] stored_moment(*part, target_supplier, target_year, field) == stored_moment(before, target_supplier, target_year, field) + if target_supplier == supplier as int && target_year == year as int { if field == 0 { cell.count as int } else if field == 1 { cell.revenue as int } else { cell.quantity as int } } else { 0 } by {
-                    lemma_sum_update(before.moments@, index as int, replacement, |row: Moment| if row.supplier as int == target_supplier && row.year as int == target_year { if field == 0 { row.cell.count as int } else if field == 1 { row.cell.revenue as int } else { row.cell.quantity as int } } else { 0 });
-                }
-                assert(part.moments@.map_values(|row: Moment| (row.supplier, row.year)) =~= before.moments@.map_values(|row: Moment| (row.supplier, row.year)));
-            }
-            return Some(());
-        }
-        index += 1;
-    }
-    let entry = Moment { supplier, year, cell };
-    let ghost appended = entry;
-    part.moments.push(entry);
-    proof {
-        assert forall|target_supplier: int, target_year: int, field: int| 0 <= field <= 2 ==> #[trigger] stored_moment(*part, target_supplier, target_year, field) == stored_moment(before, target_supplier, target_year, field) + if target_supplier == supplier as int && target_year == year as int { if field == 0 { cell.count as int } else if field == 1 { cell.revenue as int } else { cell.quantity as int } } else { 0 } by {
-            lemma_sum_push(before.moments@, appended, |row: Moment| if row.supplier as int == target_supplier && row.year as int == target_year { if field == 0 { row.cell.count as int } else if field == 1 { row.cell.revenue as int } else { row.cell.quantity as int } } else { 0 });
-        }
-        if before.moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates() {
-            let projected = before.moments@.map_values(|row: Moment| (row.supplier, row.year));
-            assert(!projected.contains((supplier, year)));
-            verus_prooflib::lemma_unique_push(projected, (supplier, year));
-            assert(part.moments@.map_values(|row: Moment| (row.supplier, row.year)) =~= projected.push((supplier, year)));
-        }
-    }
-    Some(())
-}
-
 pub fn bump_total(rows: &mut Vec<Total>, year: i64, count: i128, profit: i128) -> (result: Option<()>)
     ensures
         result.is_some() ==> final(rows).len() > 0,
@@ -493,112 +371,6 @@ pub fn bump_total(rows: &mut Vec<Total>, year: i64, count: i128, profit: i128) -
     Some(())
 }
 
-pub fn line_cell(line: LineIn, multiplicity: i128) -> (result: Option<Cell>)
-    ensures result matches Some(cell) ==> cell.count == multiplicity
-        && cell.revenue as int == line_weight(line_in_view(line), 1) * multiplicity as int
-        && cell.quantity as int == line_weight(line_in_view(line), 2) * multiplicity as int,
-{
-    let revenue = (line.l_extendedprice as i128).checked_mul(100i128.checked_sub(line.l_discount as i128)?)?.checked_mul(multiplicity)?;
-    let quantity = (line.l_quantity as i128).checked_mul(multiplicity)?;
-    Some(Cell { count: multiplicity, revenue, quantity })
-}
-
-pub fn add_line(part: &mut Part, line: LineIn, years: &Vec<Year>, sign: i128) -> (result: Option<()>)
-    ensures final(part).green == old(part).green, final(part).pairs@ == old(part).pairs@,
-        result.is_some() && sign > 0 && years_positive(years@) && moments_positive(old(part).moments@) ==> moments_positive(final(part).moments@),
-        result.is_some() ==> forall|supplier: int, target_year: int, field: int| 0 <= field <= 2 ==>
-            #[trigger] stored_moment(*final(part), supplier, target_year, field) == stored_moment(*old(part), supplier, target_year, field)
-                + if supplier == line.l_suppkey as int {
-                    year_at(years@, target_year) * line_weight(line_in_view(line), field) * sign as int
-                } else { 0 },
-        old(part).moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates()
-            ==> final(part).moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates(),
-{
-    let ghost before = *part;
-    proof {
-        assert(years@.take(0) =~= Seq::<Year>::empty());
-        assert forall|target_year: int| #[trigger] year_at(years@.take(0), target_year) == 0 by {
-            lemma_sum_empty(years@.take(0), |row: Year| if row.year as int == target_year { row.count as int } else { 0 });
-        }
-        assert forall|supplier: int, target_year: int, field: int| 0 <= field <= 2 implies
-            #[trigger] stored_moment(*part, supplier, target_year, field) == stored_moment(before, supplier, target_year, field)
-                + if supplier == line.l_suppkey as int {
-                    year_at(years@.take(0), target_year) * line_weight(line_in_view(line), field) * sign as int
-                } else { 0 } by {
-            let weight = line_weight(line_in_view(line), field);
-            assert(0int * weight * sign as int == 0) by (nonlinear_arith);
-        }
-    }
-    let mut index = 0;
-    let mut processed = Ghost(0int);
-    while index < years.len()
-        invariant index <= years.len(), processed@ == index as int,
-            sign > 0 && years_positive(years@) && moments_positive(before.moments@) ==> moments_positive(part.moments@),
-            before == *old(part), part.green == before.green, part.pairs@ == before.pairs@,
-            before.moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates()
-                ==> part.moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates(),
-            forall|supplier: int, target_year: int, field: int| 0 <= field <= 2 ==>
-                #[trigger] stored_moment(*part, supplier, target_year, field) == stored_moment(before, supplier, target_year, field)
-                    + if supplier == line.l_suppkey as int {
-                        year_at(years@.take(index as int), target_year) * line_weight(line_in_view(line), field) * sign as int
-                    } else { 0 },
-        decreases years.len() - index,
-    {
-        let ghost previous = *part;
-        proof {
-            assert forall|supplier: int, target_year: int, field: int| 0 <= field <= 2 implies
-                #[trigger] stored_moment(previous, supplier, target_year, field) == stored_moment(before, supplier, target_year, field)
-                    + if supplier == line.l_suppkey as int {
-                        year_at(years@.take(index as int), target_year) * line_weight(line_in_view(line), field) * sign as int
-                    } else { 0 } by {}
-        }
-        let cell = line_cell(line, years[index].count.checked_mul(sign)?)?;
-        proof {
-            if sign > 0 && years_positive(years@) {
-                assert(years@[index as int].count > 0);
-                assert(cell.count as int == years@[index as int].count as int * sign as int);
-                let multiplicity = years@[index as int].count as int;
-                let scale = sign as int;
-                assert(multiplicity > 0 && scale > 0);
-                assert(multiplicity * scale > 0) by (nonlinear_arith) requires multiplicity > 0, scale > 0;
-                assert(cell.count > 0);
-            }
-        }
-        bump_moment(part, line.l_suppkey, years[index].year, cell)?;
-        proof {
-            assert forall|supplier: int, target_year: int, field: int| 0 <= field <= 2 implies
-                #[trigger] stored_moment(*part, supplier, target_year, field) == stored_moment(before, supplier, target_year, field)
-                    + if supplier == line.l_suppkey as int {
-                        year_at(years@.take(index as int + 1), target_year) * line_weight(line_in_view(line), field) * sign as int
-                    } else { 0 } by {
-                lemma_sum_take(years@, index as int, |row: Year| if row.year as int == target_year { row.count as int } else { 0 });
-                let prior = year_at(years@.take(index as int), target_year);
-                let increment = if years@[index as int].year as int == target_year { years@[index as int].count as int } else { 0 };
-                let weight = line_weight(line_in_view(line), field);
-                assert((prior + increment) * weight * sign as int == prior * weight * sign as int + increment * weight * sign as int) by (nonlinear_arith);
-                assert(cell.count as int == years@[index as int].count as int * sign as int);
-                let multiplicity = years@[index as int].count as int;
-                let scale = sign as int;
-                if field == 1 {
-                    assert(cell.revenue as int == weight * (multiplicity * scale));
-                    assert(weight * (multiplicity * scale) == multiplicity * weight * scale) by (nonlinear_arith);
-                } else if field == 2 {
-                    assert(cell.quantity as int == weight * (multiplicity * scale));
-                    assert(weight * (multiplicity * scale) == multiplicity * weight * scale) by (nonlinear_arith);
-                } else { assert(weight == 1); }
-                assert(stored_moment(*part, supplier, target_year, field) == stored_moment(previous, supplier, target_year, field)
-                    + if supplier == line.l_suppkey as int && target_year == years@[index as int].year as int {
-                        if field == 0 { cell.count as int } else if field == 1 { cell.revenue as int } else { cell.quantity as int }
-                    } else { 0 });
-            }
-        }
-        index += 1;
-        processed = Ghost(index as int);
-    }
-    proof { assert(years@.take(index as int) =~= years@); }
-    Some(())
-}
-
 pub fn prune_totals(rows: &mut Vec<Total>) -> (result: Option<()>)
     ensures
         forall|year: int, field: int| 0 <= field <= 1 ==>
@@ -638,94 +410,5 @@ pub fn prune_totals(rows: &mut Vec<Total>) -> (result: Option<()>)
     Some(())
 }
 
-pub fn prune_part(part: &mut Part) -> (result: Option<()>)
-    ensures
-        final(part).green == old(part).green,
-        result.is_some() ==> 0 <= final(part).green <= u64::MAX,
-        result.is_some() && final(part).green == 0 ==> final(part).pairs.len() == 0 && final(part).moments.len() == 0,
-        result.is_some() && final(part).green > 0 ==> forall|supplier: int, field: int| 0 <= field <= 1 ==>
-            #[trigger] stored_pair(*final(part), supplier, field) == stored_pair(*old(part), supplier, field),
-        result.is_some() && final(part).green > 0 ==> forall|supplier: int, year: int, field: int| 0 <= field <= 2 ==>
-            #[trigger] stored_moment(*final(part), supplier, year, field) == stored_moment(*old(part), supplier, year, field),
-        result.is_some() ==> pairs_positive(final(part).pairs@) && moments_positive(final(part).moments@),
-        old(part).pairs@.map_values(|row: Pair| row.supplier).no_duplicates() ==> final(part).pairs@.map_values(|row: Pair| row.supplier).no_duplicates(),
-        old(part).moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates() ==> final(part).moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates(),
-{
-    broadcast use vstd::seq_lib::group_seq_properties;
-    let ghost initial = *part;
-    if part.green < 0 || part.green > u64::MAX as i128 { return None; }
-    if part.green == 0 { part.pairs.clear(); part.moments.clear(); return Some(()); }
-    let mut index = 0;
-    while index < part.pairs.len()
-        invariant index <= part.pairs.len(),
-            initial == *old(part), part.green == initial.green, 0 < part.green <= u64::MAX,
-            part.moments@ == initial.moments@,
-            forall|supplier: int, field: int| 0 <= field <= 1 ==>
-                #[trigger] stored_pair(*part, supplier, field) == stored_pair(initial, supplier, field),
-            initial.pairs@.map_values(|row: Pair| row.supplier).no_duplicates() ==> part.pairs@.map_values(|row: Pair| row.supplier).no_duplicates(),
-            forall|position: int| 0 <= position < index ==> 0 < (#[trigger] part.pairs[position]).count <= u64::MAX,
-        decreases part.pairs.len() - index,
-    {
-        if part.pairs[index].count < 0 || part.pairs[index].count > u64::MAX as i128 { return None; }
-        if part.pairs[index].count == 0 {
-            if part.pairs[index].cost != 0 { return None; }
-            let ghost before = *part;
-            part.pairs.remove(index);
-            proof {
-                assert forall|supplier: int, field: int| 0 <= field <= 1 implies
-                    #[trigger] stored_pair(*part, supplier, field) == stored_pair(before, supplier, field) by {
-                    lemma_sum_remove(before.pairs@, index as int, |row: Pair| if row.supplier == supplier { if field == 0 { row.count as int } else { row.cost as int } } else { 0int });
-                }
-                if before.pairs@.map_values(|row: Pair| row.supplier).no_duplicates() {
-                    assert(part.pairs@.map_values(|row: Pair| row.supplier) =~= before.pairs@.map_values(|row: Pair| row.supplier).remove(index as int));
-                    verus_prooflib::lemma_unique_remove(before.pairs@.map_values(|row: Pair| row.supplier), index as int);
-                }
-            }
-        } else { index += 1; }
-    }
-    let ghost clean_pairs = part.pairs@;
-    index = 0;
-    while index < part.moments.len()
-        invariant index <= part.moments.len(),
-            initial == *old(part), part.green == initial.green, 0 < part.green <= u64::MAX,
-            part.pairs@ == clean_pairs, pairs_positive(part.pairs@),
-            forall|supplier: int, field: int| 0 <= field <= 1 ==>
-                #[trigger] stored_pair(*part, supplier, field) == stored_pair(initial, supplier, field),
-            initial.pairs@.map_values(|row: Pair| row.supplier).no_duplicates() ==> part.pairs@.map_values(|row: Pair| row.supplier).no_duplicates(),
-            forall|supplier: int, year: int, field: int| 0 <= field <= 2 ==>
-                #[trigger] stored_moment(*part, supplier, year, field) == stored_moment(initial, supplier, year, field),
-            initial.moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates() ==> part.moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates(),
-            forall|position: int| 0 <= position < index ==> (#[trigger] part.moments[position]).cell.count > 0,
-        decreases part.moments.len() - index,
-    {
-        if part.moments[index].cell.count < 0 { return None; }
-        if part.moments[index].cell.count == 0 {
-            if part.moments[index].cell.revenue != 0 || part.moments[index].cell.quantity != 0 { return None; }
-            let ghost before = *part;
-            proof {
-                assert forall|supplier: int, field: int| 0 <= field <= 1 implies
-                    #[trigger] stored_pair(before, supplier, field) == stored_pair(initial, supplier, field) by {}
-            }
-            part.moments.remove(index);
-            proof {
-                assert forall|supplier: int, field: int| 0 <= field <= 1 implies
-                    #[trigger] stored_pair(*part, supplier, field) == stored_pair(initial, supplier, field) by {
-                    assert(stored_pair(*part, supplier, field) == stored_pair(before, supplier, field));
-                }
-                assert forall|supplier: int, year: int, field: int| 0 <= field <= 2 implies
-                    #[trigger] stored_moment(*part, supplier, year, field) == stored_moment(before, supplier, year, field) by {
-                    lemma_sum_remove(before.moments@, index as int, |row: Moment| if row.supplier == supplier && row.year == year {
-                        if field == 0 { row.cell.count as int } else if field == 1 { row.cell.revenue as int } else { row.cell.quantity as int }
-                    } else { 0int });
-                }
-                if before.moments@.map_values(|row: Moment| (row.supplier, row.year)).no_duplicates() {
-                    assert(part.moments@.map_values(|row: Moment| (row.supplier, row.year)) =~= before.moments@.map_values(|row: Moment| (row.supplier, row.year)).remove(index as int));
-                    verus_prooflib::lemma_unique_remove(before.moments@.map_values(|row: Moment| (row.supplier, row.year)), index as int);
-                }
-            }
-        } else { index += 1; }
-    }
-    Some(())
-}
 
 }

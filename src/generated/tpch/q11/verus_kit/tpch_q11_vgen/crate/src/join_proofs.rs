@@ -1,3 +1,4 @@
+use crate::packed::{self, Packed, PackedCursor};
 use vstd::prelude::*;
 use verus_common::sums::*;
 use verus_prooflib::ordered::{Index, KeyView};
@@ -19,13 +20,13 @@ pub open spec fn joined(profiles: Profiles, suppliers: Counts, nation: i64, part
 pub proof fn lemma_transpose(profiles: Profiles, suppliers: Counts, nation: i64, part: i64, value: bool)
     requires profile_layout(profiles), counts_layout(suppliers, true, true),
     ensures joined(profiles, suppliers, nation, part, value)
-        == sum(profiles.entries(), |row: (KeyView, Index<Moment>)| partsupp_effect(row, suppliers, nation, part, value)),
+        == sum(profiles.entries(), |row: (KeyView, Packed)| partsupp_effect(row, suppliers, nation, part, value)),
 {
-    let profile_weight = |row: (KeyView, Index<Moment>)| moment_measure(moment_at(row.1, part as int), value);
+    let profile_weight = |row: (KeyView, Packed)| moment_measure(moment_at(row.1, part as int), value);
     let supplier_weight = |row: (KeyView, Index<i128>)| link_count(row.1, nation);
     lemma_ordered_dot_transpose(&profiles, &suppliers, profile_weight, supplier_weight);
-    let left = |row: (KeyView, Index<Moment>)| partsupp_effect(row, suppliers, nation, part, value);
-    let dot_left = |row: (KeyView, Index<Moment>)| profile_weight(row) * ordered_weight_at(suppliers, row.0, supplier_weight);
+    let left = |row: (KeyView, Packed)| partsupp_effect(row, suppliers, nation, part, value);
+    let dot_left = |row: (KeyView, Packed)| profile_weight(row) * ordered_weight_at(suppliers, row.0, supplier_weight);
     lemma_sum_ext_all(profiles.entries(), left, dot_left);
     let right = |row: (KeyView, Index<i128>)| supplier_effect(row, profiles, nation, part, value);
     let dot_right = |row: (KeyView, Index<i128>)| supplier_weight(row) * ordered_weight_at(profiles, row.0, profile_weight);
@@ -75,10 +76,10 @@ pub proof fn lemma_supplier_join(profiles: Profiles, before: Counts, after: Coun
     lemma_transpose(profiles, before, nation, part, value);
     lemma_transpose(profiles, after, nation, part, value);
     lemma_transpose(profiles, changes, nation, part, value);
-    let old_weight = |row: (KeyView, Index<Moment>)| partsupp_effect(row, before, nation, part, value);
-    let delta_weight = |row: (KeyView, Index<Moment>)| partsupp_effect(row, changes, nation, part, value);
-    let new_weight = |row: (KeyView, Index<Moment>)| partsupp_effect(row, after, nation, part, value);
-    assert forall|row: (KeyView, Index<Moment>)| #[trigger] new_weight(row) == old_weight(row) + delta_weight(row) by {
+    let old_weight = |row: (KeyView, Packed)| partsupp_effect(row, before, nation, part, value);
+    let delta_weight = |row: (KeyView, Packed)| partsupp_effect(row, changes, nation, part, value);
+    let new_weight = |row: (KeyView, Packed)| partsupp_effect(row, after, nation, part, value);
+    assert forall|row: (KeyView, Packed)| #[trigger] new_weight(row) == old_weight(row) + delta_weight(row) by {
         assert(count_at(after, row.0, numeric_key(nation as int)) == count_at(before, row.0, numeric_key(nation as int)) + count_at(changes, row.0, numeric_key(nation as int)));
         assert(new_weight(row) == old_weight(row) + delta_weight(row)) by (nonlinear_arith)
             requires count_at(after, row.0, numeric_key(nation as int)) == count_at(before, row.0, numeric_key(nation as int)) + count_at(changes, row.0, numeric_key(nation as int)),
@@ -113,7 +114,7 @@ pub proof fn lemma_inventory_commit(before: Data, after: Data, db: Db, db2: Db, 
         forall|outer: KeyView, inner: KeyView| #[trigger] count_at(after.suppliers, outer, inner)
             == count_at(before.suppliers, outer, inner) + count_at(suppliers, outer, inner),
         forall|nation: i64, part: i64, value: bool| #[trigger] profile_cell(changes, nation, part, value)
-            == sum(parts.entries(), |row: (KeyView, Index<Moment>)| partsupp_effect(row, before.suppliers, nation, part, value))
+            == sum(parts.entries(), |row: (KeyView, Packed)| partsupp_effect(row, before.suppliers, nation, part, value))
                 + sum(suppliers.entries(), |row: (KeyView, Index<i128>)| supplier_effect(row, after.profiles, nation, part, value)),
         forall|nation: i64, part: Option<i64>, value: bool| #[trigger] inventory_measure(after.inventories, nation, part, value)
             == inventory_measure(before.inventories, nation, part, value) + profile_measure_at(changes, numeric_key(nation as int), part, value),
@@ -144,7 +145,7 @@ pub proof fn lemma_inventory_commit_part(before: Data, after: Data, db: Db, db2:
         forall|outer: KeyView, inner: KeyView| #[trigger] count_at(after.suppliers, outer, inner)
             == count_at(before.suppliers, outer, inner) + count_at(suppliers, outer, inner),
         profile_cell(changes, nation, part, value)
-            == sum(parts.entries(), |row: (KeyView, Index<Moment>)| partsupp_effect(row, before.suppliers, nation, part, value))
+            == sum(parts.entries(), |row: (KeyView, Packed)| partsupp_effect(row, before.suppliers, nation, part, value))
                 + sum(suppliers.entries(), |row: (KeyView, Index<i128>)| supplier_effect(row, after.profiles, nation, part, value)),
         inventory_measure(after.inventories, nation, Some(part), value)
             == inventory_measure(before.inventories, nation, Some(part), value) + profile_measure_at(changes, numeric_key(nation as int), Some(part), value),

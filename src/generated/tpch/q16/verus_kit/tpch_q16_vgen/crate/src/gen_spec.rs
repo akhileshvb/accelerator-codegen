@@ -8,8 +8,8 @@
 //   SELECT p_brand, p_type, p_size, COUNT(DISTINCT ps_suppkey) AS supplier_cnt
 //   FROM partsupp, part
 //   WHERE p_partkey = ps_partkey AND p_brand <> $1
-//     AND p_type NOT LIKE 'SMALL BRUSHED%'
-//     AND p_size IN ($2, $3, $4, $5, $6, $7, $8, $9)
+//     AND p_type NOT LIKE $2
+//     AND p_size IN ($3, $4, $5, $6, $7, $8, $9, $10)
 //     AND ps_suppkey NOT IN (SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%')
 //   GROUP BY p_brand, p_type, p_size
 //   ORDER BY supplier_cnt DESC, p_brand, p_type, p_size
@@ -17,7 +17,7 @@
 // Query-specific notes (host contract):
 //  * CHAR(n) text: compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged (DuckDB: CHAR(n) is an alias of VARCHAR).
 //  * $1 is params.p1: text bytes.
-//  * $2 is params.p2: integer.
+//  * $2 is params.p2: text bytes.
 //  * $3 is params.p3: integer.
 //  * $4 is params.p4: integer.
 //  * $5 is params.p5: integer.
@@ -25,7 +25,9 @@
 //  * $7 is params.p7: integer.
 //  * $8 is params.p8: integer.
 //  * $9 is params.p9: integer.
+//  * $10 is params.p10: integer.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
+//  * LIKE with a parameter pattern: the pattern uses '%' and '_' (ASCII text, bytes = characters).
 #![allow(unused_imports)]
 use vstd::prelude::*;
 use verus_common::bytes::*;
@@ -76,8 +78,8 @@ pub struct Db {
 pub struct Params {
     /// $1: text bytes
     pub p1: Seq<u8>,
-    /// $2: integer
-    pub p2: int,
+    /// $2: text bytes
+    pub p2: Seq<u8>,
     /// $3: integer
     pub p3: int,
     /// $4: integer
@@ -92,6 +94,8 @@ pub struct Params {
     pub p8: int,
     /// $9: integer
     pub p9: int,
+    /// $10: integer
+    pub p10: int,
 }
 
 // ── Block in_1 ──
@@ -145,8 +149,8 @@ pub struct Tuple {
 pub open spec fn where_clause(db: Db, params: Params, partsupp: PartsuppRow, part: PartRow) -> bool {
     &&& part.p_partkey == partsupp.ps_partkey
     &&& part.p_brand != params.p1
-    &&& !like_match(part.p_type, seq![b'S', b'M', b'A', b'L', b'L', b' ', b'B', b'R', b'U', b'S', b'H', b'E', b'D', b'%'])
-    &&& (((((((part.p_size == params.p2 || part.p_size == params.p3) || part.p_size == params.p4) || part.p_size == params.p5) || part.p_size == params.p6) || part.p_size == params.p7) || part.p_size == params.p8) || part.p_size == params.p9)
+    &&& !like_match(part.p_type, params.p2)
+    &&& (((((((part.p_size == params.p3 || part.p_size == params.p4) || part.p_size == params.p5) || part.p_size == params.p6) || part.p_size == params.p7) || part.p_size == params.p8) || part.p_size == params.p9) || part.p_size == params.p10)
     &&& !in_1(db, params, partsupp.ps_suppkey)
 }
 

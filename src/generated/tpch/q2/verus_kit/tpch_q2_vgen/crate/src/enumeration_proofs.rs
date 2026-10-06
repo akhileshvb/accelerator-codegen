@@ -12,6 +12,7 @@ use crate::relational::*;
 use crate::result_proofs::*;
 use crate::enumeration::*;
 use crate::selection::copies_of;
+use verus_common::sqlfns::like_match;
 use crate::query_transfer::*;
 use crate::minimum_proofs::*;
 
@@ -22,8 +23,12 @@ pub open spec fn manufacturer_projection(key: int, mfgr: Seq<u8>, supplier: Supp
         s_address: supplier.s_address, s_phone: supplier.s_phone, s_comment: supplier.s_comment }
 }
 
-pub open spec fn part_fold(parts: Seq<Counted<BrassPartScan>>, supplier: SupplierRow, nation: NationRow, weight: spec_fn(OutRow) -> int) -> int {
-    weighted_entries(parts, |part: (int, Seq<u8>, int)| weight(manufacturer_projection(part.0, part.1, supplier, nation)))
+pub open spec fn part_fold_weight(supplier: SupplierRow, nation: NationRow, weight: spec_fn(OutRow) -> int) -> spec_fn(PartCnt) -> int {
+    |part: PartCnt| part.count as int * weight(row_projection(part.row, supplier, nation))
+}
+
+pub open spec fn part_fold(parts: Seq<PartCnt>, supplier: SupplierRow, nation: NationRow, weight: spec_fn(OutRow) -> int) -> int {
+    sum(parts, part_fold_weight(supplier, nation, weight))
 }
 
 pub proof fn lemma_output_copies_weight(row: OutRow, copies: nat, weight: spec_fn(OutRow) -> int)
@@ -39,45 +44,45 @@ pub proof fn lemma_output_copies_weight(row: OutRow, copies: nat, weight: spec_f
 }
 
 #[verifier::auto_ext_equal(assert, assert_by, ensures)]
-pub proof fn lemma_part_output_weight(part: Counted<BrassPartScan>, quote: Counted<BrassPartsuppScan>, supplier: Counted<SupplierScan>, nation: Counted<NationScan>, region: i128, weight: spec_fn(OutRow) -> int)
+pub proof fn lemma_part_output_weight(part: PartCnt, quote: Counted<BrassPartsuppScan>, supplier: Counted<SupplierScan>, nation: Counted<NationScan>, region: i128, weight: spec_fn(OutRow) -> int)
     requires part.count > 0, quote.count > 0, supplier.count > 0, nation.count > 0, region >= 0,
     ensures sum(part_output(part, quote, supplier, nation, region), weight) ==
         (quote.count as int * supplier.count as int * nation.count as int * region as int) *
-        (part.count as int * weight(manufacturer_projection((*part.row).p_partkey as int, (*part.row).p_mfgr@, (*supplier.row).rv(), (*nation.row).rv()))),
+        (part.count as int * weight(row_projection(part.row, (*supplier.row).rv(), (*nation.row).rv()))),
 {
     let product = part.count as int * quote.count as int * supplier.count as int * nation.count as int * region as int;
     assert(product >= 0) by (nonlinear_arith)
         requires part.count > 0, quote.count > 0, supplier.count > 0, nation.count > 0, region >= 0,
             product == part.count as int * quote.count as int * supplier.count as int * nation.count as int * region as int;
-    lemma_output_copies_weight(manufacturer_projection((*part.row).p_partkey as int, (*part.row).p_mfgr@, (*supplier.row).rv(), (*nation.row).rv()), product as nat, weight);
-    assert(product * weight(projected_output(*part.row, *supplier.row, *nation.row)) ==
+    lemma_output_copies_weight(row_projection(part.row, (*supplier.row).rv(), (*nation.row).rv()), product as nat, weight);
+    assert(product * weight(projected_output(part.row, *supplier.row, *nation.row)) ==
         (quote.count as int * supplier.count as int * nation.count as int * region as int) *
-        (part.count as int * weight(projected_output(*part.row, *supplier.row, *nation.row)))) by (nonlinear_arith)
+        (part.count as int * weight(projected_output(part.row, *supplier.row, *nation.row)))) by (nonlinear_arith)
         requires product == part.count as int * quote.count as int * supplier.count as int * nation.count as int * region as int;
 }
 
 #[verifier::auto_ext_equal(assert, assert_by, ensures)]
-pub proof fn lemma_part_outputs_weight(parts: Seq<Counted<BrassPartScan>>, quote: Counted<BrassPartsuppScan>, supplier: Counted<SupplierScan>, nation: Counted<NationScan>, region: i128, weight: spec_fn(OutRow) -> int)
+pub proof fn lemma_part_outputs_weight(parts: Seq<PartCnt>, quote: Counted<BrassPartsuppScan>, supplier: Counted<SupplierScan>, nation: Counted<NationScan>, region: i128, weight: spec_fn(OutRow) -> int)
     requires quote.count > 0, supplier.count > 0, nation.count > 0, region >= 0,
         forall|index: int| 0 <= index < parts.len() ==> (#[trigger] parts[index]).count > 0,
     ensures sum(part_outputs(parts, quote, supplier, nation, region), weight) ==
         (quote.count as int * supplier.count as int * nation.count as int * region as int) * part_fold(parts, (*supplier.row).rv(), (*nation.row).rv(), weight),
 {
     let factor = quote.count as int * supplier.count as int * nation.count as int * region as int;
-    let base = |part: Counted<BrassPartScan>| part.count as int * weight(manufacturer_projection((*part.row).p_partkey as int, (*part.row).p_mfgr@, (*supplier.row).rv(), (*nation.row).rv()));
-    let raw = |part: Counted<BrassPartScan>| sum(part_output(part, quote, supplier, nation, region), weight);
-    lemma_flat_map_weight(parts, |part: Counted<BrassPartScan>| part_output(part, quote, supplier, nation, region), weight, raw);
+    let base = |part: PartCnt| part.count as int * weight(row_projection(part.row, (*supplier.row).rv(), (*nation.row).rv()));
+    let raw = |part: PartCnt| sum(part_output(part, quote, supplier, nation, region), weight);
+    lemma_flat_map_weight(parts, |part: PartCnt| part_output(part, quote, supplier, nation, region), weight, raw);
     assert forall|index: int| 0 <= index < parts.len() implies raw(#[trigger] parts[index]) == factor * base(parts[index]) by {
         lemma_part_output_weight(parts[index], quote, supplier, nation, region, weight);
     }
-    let scaled = |part: Counted<BrassPartScan>| factor * base(part);
+    let scaled = |part: PartCnt| factor * base(part);
     lemma_sum_ext(parts, raw, scaled);
     lemma_sum_scale(parts, base, scaled, factor);
-    lemma_brass_entries(parts, |part: (int, Seq<u8>, int)| weight(manufacturer_projection(part.0, part.1, (*supplier.row).rv(), (*nation.row).rv())), base);
+    lemma_sum_ext_all(parts, base, part_fold_weight((*supplier.row).rv(), (*nation.row).rv(), weight));
 }
 
 #[verifier::auto_ext_equal(assert, assert_by, ensures)]
-pub proof fn lemma_nation_output_weight(nation: Counted<NationScan>, parts: Seq<Counted<BrassPartScan>>, quote: Counted<BrassPartsuppScan>, supplier: Counted<SupplierScan>, regions: Directory<Count>, weight: spec_fn(OutRow) -> int)
+pub proof fn lemma_nation_output_weight(nation: Counted<NationScan>, parts: Seq<PartCnt>, quote: Counted<BrassPartsuppScan>, supplier: Counted<SupplierScan>, regions: Directory<Count>, weight: spec_fn(OutRow) -> int)
     requires quote.count > 0, supplier.count > 0, nation.count > 0,
         forall|index: int| 0 <= index < parts.len() ==> (#[trigger] parts[index]).count > 0,
         forall|key: i64| #[trigger] count_at(regions, key) >= 0,
@@ -126,7 +131,7 @@ pub proof fn lemma_supplier_entries(entries: Seq<Counted<SupplierScan>>, weight:
 }
 
 #[verifier::auto_ext_equal(assert, assert_by, ensures)]
-pub(crate) proof fn lemma_supplier_output_weight(state: State, supplier: Counted<SupplierScan>, parts: Seq<Counted<BrassPartScan>>, quote: Counted<BrassPartsuppScan>, regions: Directory<Count>, weight: spec_fn(OutRow) -> int)
+pub(crate) proof fn lemma_supplier_output_weight(state: State, supplier: Counted<SupplierScan>, parts: Seq<PartCnt>, quote: Counted<BrassPartsuppScan>, regions: Directory<Count>, weight: spec_fn(OutRow) -> int)
     requires state.meaning(), quote.count > 0, supplier.count > 0,
         forall|index: int| 0 <= index < parts.len() ==> (#[trigger] parts[index]).count > 0,
         forall|key: i64| #[trigger] count_at(regions, key) >= 0,
@@ -150,7 +155,7 @@ pub(crate) proof fn lemma_supplier_output_weight(state: State, supplier: Counted
 }
 
 #[verifier::auto_ext_equal(assert, assert_by, ensures)]
-pub(crate) proof fn lemma_quote_output_weight(state: State, quote: Counted<BrassPartsuppScan>, parts: Seq<Counted<BrassPartScan>>, cost: i64, regions: Directory<Count>, weight: spec_fn(OutRow) -> int)
+pub(crate) proof fn lemma_quote_output_weight(state: State, quote: Counted<BrassPartsuppScan>, parts: Seq<PartCnt>, cost: i64, regions: Directory<Count>, weight: spec_fn(OutRow) -> int)
     requires state.meaning(), quote.count > 0,
         forall|index: int| 0 <= index < parts.len() ==> (#[trigger] parts[index]).count > 0,
         forall|key: i64| #[trigger] count_at(regions, key) >= 0,
@@ -184,7 +189,7 @@ pub(crate) proof fn lemma_quote_output_weight(state: State, quote: Counted<Brass
 }
 
 #[verifier::auto_ext_equal(assert, assert_by, ensures)]
-pub(crate) proof fn lemma_quote_outputs_weight(state: State, key: i64, parts: Seq<Counted<BrassPartScan>>, cost: i64, regions: Directory<Count>, weight: spec_fn(OutRow) -> int)
+pub(crate) proof fn lemma_quote_outputs_weight(state: State, key: i64, parts: Seq<PartCnt>, cost: i64, regions: Directory<Count>, weight: spec_fn(OutRow) -> int)
     requires state.meaning(), state.quotes.lookup(key) is Some,
         forall|index: int| 0 <= index < parts.len() ==> (#[trigger] parts[index]).count > 0,
         forall|region: i64| #[trigger] count_at(regions, region) >= 0,
@@ -212,27 +217,5 @@ pub(crate) proof fn lemma_quote_outputs_weight(state: State, key: i64, parts: Se
     lemma_quote_entries((*bag).entries@, |quote: PartsuppRow| index_supplier(state, regions, quote.ps_suppkey as i64, |supplier: SupplierRow, nation: NationRow| joined(quote, supplier, nation)), base);
 }
 
-#[verifier::auto_ext_equal(assert, assert_by, ensures)]
-pub(crate) proof fn lemma_part_fold_meaning(state: State, key: i64, size: i64, supplier: SupplierRow, nation: NationRow, weight: spec_fn(OutRow) -> int)
-    requires state.meaning(), state.db() == state.database@, manufacturer_bag(state.parts, key, size) is Some,
-    ensures part_fold((manufacturer_bag(state.parts, key, size)->0).entries@, supplier, nation, weight) ==
-        sum(state.db().part, |part: PartRow| if brass(part) && part.p_partkey == key as int && part.p_size == size as int {
-            weight(row_projection(part, supplier, nation))
-        } else { 0int }),
-{
-    let bag = manufacturer_bag(state.parts, key, size)->0;
-    let mfgr_weight = |mfgr: Seq<u8>| weight(manufacturer_projection(key as int, mfgr, supplier, nation));
-    lemma_manufacturer_weight(state, key, size, mfgr_weight);
-    let left = |part: Counted<BrassPartScan>| part.count as int * weight(manufacturer_projection((*part.row).p_partkey as int, (*part.row).p_mfgr@, supplier, nation));
-    let right = |part: Counted<BrassPartScan>| part.count as int * mfgr_weight((*part.row).p_mfgr@);
-    assert forall|index: int| 0 <= index < (*bag).entries@.len() implies left(#[trigger] (*bag).entries@[index]) == right((*bag).entries@[index]) by {
-        assert((*(*bag).entries@[index].row).p_partkey == key);
-    }
-    lemma_sum_ext((*bag).entries@, left, right);
-    lemma_brass_entries((*bag).entries@, |part: (int, Seq<u8>, int)| weight(manufacturer_projection(part.0, part.1, supplier, nation)), left);
-    lemma_brass_entries((*bag).entries@, |part: (int, Seq<u8>, int)| mfgr_weight(part.1), right);
-    lemma_sum_ext_all(state.db().part, |part: PartRow| if brass(part) && part.p_partkey == key as int && part.p_size == size as int { mfgr_weight(part.p_mfgr) } else { 0int },
-        |part: PartRow| if brass(part) && part.p_partkey == key as int && part.p_size == size as int { weight(row_projection(part, supplier, nation)) } else { 0int });
-}
 
 }

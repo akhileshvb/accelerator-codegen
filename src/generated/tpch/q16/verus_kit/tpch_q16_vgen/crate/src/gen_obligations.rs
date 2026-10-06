@@ -7,7 +7,7 @@
 // behind crate::kernel; the host calls only the ob_* functions below.
 //
 // Kernel inputs:
-//   scan eligible_parts AS PartInput: SELECT p_partkey, p_brand, p_type, p_size FROM part WHERE p_type NOT LIKE 'SMALL BRUSHED%';
+//   scan parts AS PartInput: SELECT p_partkey, p_brand, p_type, p_size FROM part;
 //   scan edges AS EdgeInput: SELECT ps_partkey, ps_suppkey FROM partsupp;
 //   scan blockers AS BlockerInput: SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%';
 //   
@@ -35,7 +35,7 @@ verus! {
 
 // ── Runtime rows and their views ──
 
-/// Runtime row: scan eligible_parts; rescan parts_for_neighbors; delta part.
+/// Runtime row: scan parts; rescan parts_for_neighbors; delta part.
 pub struct PartInput {
     /// part.p_partkey (integer)
     pub p_partkey: i64,
@@ -103,8 +103,8 @@ pub open spec fn seq_view_i64(s: Seq<i64>) -> Seq<int> {
 
 // ── Parameters and result ──
 
-pub open spec fn params(p1: Seq<u8>, p2: int, p3: int, p4: int, p5: int, p6: int, p7: int, p8: int, p9: int) -> Params {
-    Params { p1, p2, p3, p4, p5, p6, p7, p8, p9 }
+pub open spec fn params(p1: Seq<u8>, p2: Seq<u8>, p3: int, p4: int, p5: int, p6: int, p7: int, p8: int, p9: int, p10: int) -> Params {
+    Params { p1, p2, p3, p4, p5, p6, p7, p8, p9, p10 }
 }
 
 pub open spec fn out_view(o: Seq<(Vec<u8>, Vec<u8>, i64, i64)>) -> Seq<OutRow> {
@@ -113,12 +113,9 @@ pub open spec fn out_view(o: Seq<(Vec<u8>, Vec<u8>, i64, i64)>) -> Seq<OutRow> {
 
 // ── Scan and capture contracts ──
 
-/// scan eligible_parts: SELECT p_partkey, p_brand, p_type, p_size FROM part WHERE p_type NOT LIKE 'SMALL BRUSHED%'
-pub open spec fn scan_eligible_parts_ok(db: Db, rows: Seq<PartInput>) -> bool {
-    forall|f: spec_fn(PartRow) -> int| #[trigger] sum(part_input_seq_view(rows), f) == sum(
-        db.part,
-        |part: PartRow| if !like_match(part.p_type, seq![b'S', b'M', b'A', b'L', b'L', b' ', b'B', b'R', b'U', b'S', b'H', b'E', b'D', b'%']) { f(part) } else { 0 },
-    )
+/// scan parts: SELECT p_partkey, p_brand, p_type, p_size FROM part
+pub open spec fn scan_parts_ok(db: Db, rows: Seq<PartInput>) -> bool {
+    forall|f: spec_fn(PartRow) -> int| #[trigger] sum(part_input_seq_view(rows), f) == sum(db.part, f)
 }
 
 /// scan edges: SELECT ps_partkey, ps_suppkey FROM partsupp
@@ -223,26 +220,26 @@ pub open spec fn capture_ok(db: Db, db2: Db, part: Seq<(PartRow, int)>, partsupp
 
 /// Build: a state for db, or None (the host then answers with SQL).
 pub fn ob_build(
-    eligible_parts: Vec<PartInput>,
+    parts: Vec<PartInput>,
     edges: &[EdgeInput],
     blockers: &[BlockerInput],
     Ghost(db): Ghost<Db>,
 ) -> (r: Option<State>)
     requires
-        scan_eligible_parts_ok(db, eligible_parts@),
+        scan_parts_ok(db, parts@),
         scan_edges_ok(db, edges@),
         scan_blockers_ok(db, blockers@),
     ensures
         r matches Some(s) ==> s.db() == db,
 {
-    kernel::build(eligible_parts, edges, blockers, Ghost(db))
+    kernel::build(parts, edges, blockers, Ghost(db))
 }
 
 /// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
 pub fn ob_execute(
     s: &State,
     p1: &[u8],
-    p2: i64,
+    p2: &[u8],
     p3: i64,
     p4: i64,
     p5: i64,
@@ -250,11 +247,12 @@ pub fn ob_execute(
     p7: i64,
     p8: i64,
     p9: i64,
+    p10: i64,
 ) -> (r: Option<Vec<(Vec<u8>, Vec<u8>, i64, i64)>>)
     ensures
-        r matches Some(out) ==> query_result(s.db(), params(p1@, p2 as int, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int), out_view(out@)),
+        r matches Some(out) ==> query_result(s.db(), params(p1@, p2@, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int, p10 as int), out_view(out@)),
 {
-    kernel::execute(s, p1, p2, p3, p4, p5, p6, p7, p8, p9)
+    kernel::execute(s, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10)
 }
 
 /// The keys whose rows the host rescans (rescan edges_for_parts) for apply.  No contract:

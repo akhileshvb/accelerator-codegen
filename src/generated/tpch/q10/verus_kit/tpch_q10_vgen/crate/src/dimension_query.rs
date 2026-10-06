@@ -6,36 +6,10 @@ use crate::gen_spec::*;
 use crate::gen_obligations::{customer_input_view, nation_input_view};
 use crate::dimension_updates::*;
 use crate::model::*;
+use crate::paged::*;
+use crate::customers::*;
 
 verus! {
-
-pub proof fn lemma_customer_database_sum(db: Db, index: &Index<Index<Customer>>, weight: spec_fn(CustomerRow) -> int)
-    requires index.wf(), customer_index_valid(*index),
-        forall|row: CustomerRow| #[trigger] customer_count(*index, row) == sum(db.customer, customer_eq(row)),
-    ensures customer_index_sum(index.entries(), weight) == sum(db.customer, weight),
-{
-    let representatives = customer_representatives(index.entries());
-    let source_view = |row: CustomerRow| row;
-    let source_count = |row: CustomerRow| 1int;
-    let representative_view = |value: Customer| customer_input_view(*value.row);
-    let representative_count = |value: Customer| value.count as int;
-    assert forall|row: CustomerRow| #[trigger] verus_prooflib::class_total(db.customer, source_view, source_count, row)
-        == verus_prooflib::class_total(representatives, representative_view, representative_count, row) by {
-        lemma_customer_point(index, row);
-        lemma_customer_fold(index.entries(), customer_eq(row));
-        lemma_sum_ext_all(representatives, customer_value_weight(customer_eq(row)),
-            |value: Customer| if representative_view(value) == row { representative_count(value) } else { 0int });
-        assert(customer_count(*index, row) == sum(db.customer, customer_eq(row)));
-        lemma_sum_ext_all(db.customer,
-            |value: CustomerRow| if source_view(value) == row { source_count(value) } else { 0int }, customer_eq(row));
-    }
-    verus_prooflib::lemma_equal_classes(db.customer, representatives, source_view, representative_view,
-        source_count, representative_count, weight);
-    lemma_customer_fold(index.entries(), weight);
-    lemma_sum_ext_all(representatives,
-        |value: Customer| representative_count(value) * weight(representative_view(value)), customer_value_weight(weight));
-    lemma_sum_ext_all(db.customer, |row: CustomerRow| source_count(row) * weight(source_view(row)), weight);
-}
 
 pub proof fn lemma_nation_database_sum(db: Db, index: &Index<Index<Nation>>, weight: spec_fn(NationRow) -> int)
     requires index.wf(), nation_index_valid(*index),
@@ -65,37 +39,25 @@ pub proof fn lemma_nation_database_sum(db: Db, index: &Index<Index<Nation>>, wei
     lemma_sum_ext_all(db.nation, |row: NationRow| source_count(row) * weight(source_view(row)), weight);
 }
 
-pub proof fn lemma_customer_join_key(index: &Index<Index<Customer>>, key: int, weight: spec_fn(CustomerRow) -> int)
-    requires index.wf(), customer_index_valid(*index),
+pub proof fn lemma_customer_join_key(table: Paged<CustEnt>, key: int, weight: spec_fn(CustomerRow) -> int)
+    requires table_valid(table),
         forall|row: CustomerRow| row.c_custkey != key ==> #[trigger] weight(row) == 0,
-    ensures customer_index_sum(index.entries(), weight) == match index.at((key, Seq::empty())) {
-        Some(inner) => customer_leaf_sum(inner.entries(), weight), None => 0int,
-    },
+    ensures table_sum(table, weight) == variants_sum(variants_at(table, key), weight),
 {
-    index.model();
-    let outer_weight = customer_outer_weight(weight);
-    assert forall|position: int| #![trigger index.entries()[position]] 0 <= position < index.entries().len()
-        implies outer_weight(index.entries()[position]) == if index.entries()[position].0 == (key, Seq::empty()) {
-            outer_weight(index.entries()[position])
-        } else { 0int } by {
-        let entry = index.entries()[position];
-        assert(index.at(entry.0).is_some());
-        let inner = entry.1;
-        inner.model();
-        if entry.0.0 != key {
-            assert forall|inner_position: int| #![trigger inner.entries()[inner_position]]
-                0 <= inner_position < inner.entries().len()
-                    implies customer_weight(weight)(inner.entries()[inner_position]) == 0 by {
-                assert(inner.at(inner.entries()[inner_position].0).is_some());
-                assert(customer_input_view(*inner.entries()[inner_position].1.row).c_custkey == entry.0.0);
-                assert(weight(customer_input_view(*inner.entries()[inner_position].1.row)) == 0);
-            }
-            lemma_sum_zero(inner.entries(), customer_weight(weight));
+    let kv = (key, Seq::<u8>::empty());
+    assert forall|entry: CustEnt| #![trigger table.holds(entry)] table.holds(entry) && entry.kv() != kv
+        implies entry_weight(weight)(entry) == 0 by {
+        lemma_entry_valid(table, entry);
+        assert forall|index: int| #![trigger entry.variants@[index]] 0 <= index < entry.variants@.len()
+            implies variant_weight(weight)(entry.variants@[index]) == 0 by {
+            assert(customer_input_view(*entry.variants@[index].row).c_custkey == entry.custkey as int);
+            assert(entry.custkey as int != key);
+            assert(weight(customer_input_view(*entry.variants@[index].row)) == 0);
         }
+        lemma_sum_zero(entry.variants@, variant_weight(weight));
     }
-    lemma_sum_ext(index.entries(), outer_weight,
-        |entry: (KeyView, Index<Customer>)| if entry.0 == (key, Seq::<u8>::empty()) { outer_weight(entry) } else { 0int });
-    verus_prooflib::ordered::lemma_key_contribution(index, (key, Seq::empty()), outer_weight);
+    lemma_sum_key(table, kv, entry_weight(weight));
+    match table.at(kv) { Some(entry) => {}, None => {} }
 }
 
 pub proof fn lemma_nation_join_key(index: &Index<Index<Nation>>, key: int, weight: spec_fn(NationRow) -> int)
@@ -148,9 +110,7 @@ pub open spec fn indexed_dimension_weight(dimensions: Dimensions, group: OutRow)
 }
 
 pub open spec fn indexed_dimension_multiplicity(dimensions: Dimensions, group: OutRow) -> int {
-    match dimensions.customers.at((group.c_custkey, Seq::empty())) {
-        Some(inner) => customer_leaf_sum(inner.entries(), indexed_dimension_weight(dimensions, group)), None => 0int,
-    }
+    variants_sum(variants_at(dimensions.customers, group.c_custkey), indexed_dimension_weight(dimensions, group))
 }
 
 pub proof fn lemma_indexed_names(db: Db, dimensions: Dimensions, key: int, name: Seq<u8>)
@@ -180,17 +140,14 @@ pub proof fn lemma_indexed_names(db: Db, dimensions: Dimensions, key: int, name:
 }
 
 pub proof fn lemma_indexed_dimension_multiplicity(db: Db, dimensions: Dimensions, group: OutRow)
-    requires dimensions_valid(db, dimensions), dimensions.customers.wf(), dimensions.nations.wf(),
+    requires dimensions_valid(db, dimensions), dimensions.nations.wf(),
     ensures indexed_dimension_multiplicity(dimensions, group) == crate::query_semantics::dimension_multiplicity(db, group),
 {
     lemma_dimensions_shape(db, dimensions);
     reveal(dimensions_valid);
     let weight = indexed_dimension_weight(dimensions, group);
-    assert forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row) == sum(db.customer, customer_eq(row)) by {
-        assert(customer_eq(row) =~= (|value: CustomerRow| if value == row { 1int } else { 0int }));
-    }
-    lemma_customer_database_sum(db, &dimensions.customers, weight);
-    lemma_customer_join_key(&dimensions.customers, group.c_custkey, weight);
+    assert(table_sum(dimensions.customers, weight) == sum(db.customer, weight));
+    lemma_customer_join_key(dimensions.customers, group.c_custkey, weight);
     let raw = |customer: CustomerRow| if crate::query_semantics::customer_matches(customer, group) {
         sum(db.nation, crate::query_semantics::nation_weight(customer.c_nationkey, group.n_name))
     } else { 0int };

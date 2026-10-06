@@ -1,7 +1,9 @@
 use vstd::prelude::*;
 use verus_common::sums::*;
-use verus_prooflib::ordered::{Index, KeyView};
+use verus_prooflib::ordered::{Index, KeyView, key_lt};
 use crate::facts::*;
+use crate::paged::*;
+use crate::ents::*;
 use crate::values::*;
 use crate::calendar::*;
 use crate::model::*;
@@ -11,14 +13,14 @@ use crate::query_semantics::*;
 verus! {
 
 pub open spec fn slice_entry_weight(customer: int, component: int) -> spec_fn((KeyView, Slice)) -> int {
-    |entry: (KeyView, Slice)| moment_at(entry.1.cells, customer).component(component)
+    |entry: (KeyView, Slice)| cell_at(entry.1.cells, customer).component(component)
 }
 
 pub open spec fn slice_range_weight(lower: int, upper: int, customer: int, component: int)
     -> spec_fn((KeyView, Slice)) -> int
 {
     |entry: (KeyView, Slice)| if lower <= entry.0.0 < upper {
-        moment_at(entry.1.cells, customer).component(component)
+        cell_at(entry.1.cells, customer).component(component)
     } else { 0int }
 }
 
@@ -202,38 +204,31 @@ pub proof fn lemma_dimension_maximum(index: &Index<i128>, key: KeyView, value: i
 pub proof fn lemma_slice_unseen_bound(slice: crate::output::ReadSlice, customer: i64, seen: Set<i64>)
     requires crate::output::read_slice_valid(slice), !seen.contains(customer),
         forall|position: int| #![trigger slice.slice.ranks.entries()[position]]
-            0 <= position < slice.consumed@ ==> seen.contains(slice.slice.ranks.entries()[position].1.customer),
-    ensures moment_at(slice.slice.cells, customer as int).upper as int <= crate::output::head_upper(slice),
-        slice.head.is_none() ==> moment_at(slice.slice.cells, customer as int).count == 0,
+            0 <= position < slice.consumed@ ==> seen.contains(slice.slice.ranks.entries()[position].customer),
+    ensures cell_at(slice.slice.cells, customer as int).upper as int <= crate::output::head_upper(slice),
+        slice.head.is_none() ==> cell_at(slice.slice.cells, customer as int).count == 0,
 {
     let ghost cells = crate::output::read_cell_index(slice);
-    let ghost cell = moment_at(cells, customer as int);
-    let ghost stored_cell = cells.at((customer as int, Seq::empty()));
-    if slice.head.is_some() { assert(slice.head.unwrap().moments.upper >= 0); }
-    match stored_cell {
-        Some(value) => {
+    let ghost ckey = (customer as int, Seq::<u8>::empty());
+    if slice.head.is_some() { crate::output::lemma_head_cell(slice); }
+    match cells.at(ckey) {
+        Some(cell) => {
             let ghost ranks = slice.slice.ranks;
             ranks.model();
-            let key = rank_view(value.upper as int, customer as int);
-            assert(ranks.at(key).is_some());
+            let rank = rank_of(cell);
+            assert(ranks.at(rank.kv()) == Some(rank));
+            lemma_at(ranks, rank.kv(), rank);
+            assert(ranks.entries().contains(rank));
             let position = choose|position: int| #![trigger ranks.entries()[position]]
-                0 <= position < ranks.entries().len() && ranks.entries()[position].0 == key;
-            assert(ranks.entries()[position].1.customer == customer);
+                0 <= position < ranks.entries().len() && ranks.entries()[position] == rank;
+            lemma_cell_key(cells, ckey);
+            assert(cell.customer == customer);
             assert(position >= slice.consumed@);
             assert(slice.head.is_some());
-            let first = *slice.head.unwrap();
-            assert(crate::output::pending_rows(slice) == ranks.entries().skip(slice.consumed@));
-            assert(crate::output::pending_rows(slice)[0]
-                == (rank_view(first.moments.upper as int, first.customer as int), first));
-            assert(ranks.entries().skip(slice.consumed@)[0] == ranks.entries()[slice.consumed@]);
-            assert(ranks.entries()[slice.consumed@] == (rank_view(first.moments.upper as int, first.customer as int), first));
-            assert(ranks.entries()[slice.consumed@].0 == rank_view(first.moments.upper as int, first.customer as int));
+            let first = slice.head.unwrap();
             if position > slice.consumed@ {
-                assert(verus_prooflib::ordered::key_lt(ranks.entries()[slice.consumed@].0, key));
-                verus_prooflib::lemma_i128_rank_order(first.moments.upper, value.upper, first.customer, customer);
-            } else {
-                assert(ranks.entries()[position].1 == first);
-                assert(*first.moments == value);
+                assert(key_lt(ranks.entries()[slice.consumed@].kv(), ranks.entries()[position].kv()));
+                lemma_rank_order(first, rank);
             }
         },
         None => {},
@@ -246,7 +241,7 @@ pub proof fn lemma_window_unseen_bound(slices: Seq<crate::output::ReadSlice>, db
         crate::output::read_moment_sum(slices, customer as int, 2) == window_fact(db, parameters, customer as int, 2),
         forall|slice_position: int, rank_position: int| #![trigger slices[slice_position].slice.ranks.entries()[rank_position]]
             0 <= slice_position < slices.len() && 0 <= rank_position < slices[slice_position].consumed@
-                ==> seen.contains(slices[slice_position].slice.ranks.entries()[rank_position].1.customer),
+                ==> seen.contains(slices[slice_position].slice.ranks.entries()[rank_position].customer),
     ensures window_fact(db, parameters, customer as int, 2) <= sum(slices, crate::output::head_upper_weight()),
 {
     let cells = crate::output::read_moment_weight(customer as int, 2);
@@ -255,7 +250,7 @@ pub proof fn lemma_window_unseen_bound(slices: Seq<crate::output::ReadSlice>, db
         if slices.contains(slice) {
             let position = choose|position: int| #![trigger slices[position]] 0 <= position < slices.len() && slices[position] == slice;
             assert forall|rank_position: int| #![trigger slice.slice.ranks.entries()[rank_position]]
-                0 <= rank_position < slice.consumed@ implies seen.contains(slice.slice.ranks.entries()[rank_position].1.customer) by {
+                0 <= rank_position < slice.consumed@ implies seen.contains(slice.slice.ranks.entries()[rank_position].customer) by {
                 assert(slice.slice.ranks.entries()[rank_position] == slices[position].slice.ranks.entries()[rank_position]);
             }
             lemma_slice_unseen_bound(slice, customer, seen);

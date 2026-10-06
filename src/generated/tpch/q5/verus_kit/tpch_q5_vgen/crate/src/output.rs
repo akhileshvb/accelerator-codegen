@@ -123,7 +123,7 @@ pub proof fn lemma_window_empty(rows: Seq<Cell>, start: i32, end: i32)
     lemma_sum_zero(rows, |cell: Cell| if start <= cell.day < end { cell.revenue as int } else { 0 });
 }
 
-pub proof fn lemma_window_step(group: Group, start: i32, day: i32)
+pub proof fn lemma_window_step(group: Run, start: i32, day: i32)
     requires group.wf(), start <= day, day < i32::MAX,
         forall|index: int| 0 <= index < group.rows@.len() ==> (#[trigger] group.rows@[index]).sub == 0,
     ensures window_cells(group.rows@, start, (day + 1) as i32) ==
@@ -308,13 +308,13 @@ pub fn window(profiles: &Table, nation: i64, start: i32, end: i32) -> (out: Opti
     }
     let group = match profiles.group(nation) { Some(group) => group, None => return Some(Cell { sub: nation, day: 0, count, revenue }) };
     let mut index = 0;
-    while index < group.rows.len()
-        invariant group.wf(), group.rows@ == profiles.rows(nation), index <= group.rows.len(),
+    while index < group.len()
+        invariant group.wf(), group.rows@ == profiles.rows(nation), index <= group.rows@.len(),
             count == sum(group.rows@.take(index as int), |cell: Cell| if start <= cell.day < end { cell.count as int } else { 0 }),
             revenue == sum(group.rows@.take(index as int), |cell: Cell| if start <= cell.day < end { cell.revenue as int } else { 0 }),
-        decreases group.rows.len() - index,
+        decreases group.rows@.len() - index,
     {
-        let cell = group.rows[index];
+        let cell = group.cell(index);
         proof {
             lemma_sum_take(group.rows@, index as int, |cell: Cell| if start <= cell.day < end { cell.count as int } else { 0 });
             lemma_sum_take(group.rows@, index as int, |cell: Cell| if start <= cell.day < end { cell.revenue as int } else { 0 });

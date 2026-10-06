@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+use crate::custs::Custs;
 use vstd::hash_map::HashMapWithView;
 use std::sync::Arc;
 use verus_prooflib::ordered::{Index, Key};
@@ -66,7 +67,7 @@ pub proof fn lemma_page_groups_put(before: Index<Page>, after: Index<Page>, prio
     }
 }
 
-pub fn publish_customers(mut cells: HashMapWithView<i64, CustomerCell>, keys: &Vec<i64>) -> (result: Option<Index<CustomerCell>>)
+pub fn publish_customers(mut cells: HashMapWithView<i64, CustomerCell>, keys: &Vec<i64>) -> (result: Option<Custs>)
     requires
         keys@.no_duplicates(), keys@.to_set() == cells@.dom(),
         forall|key: i64| #![trigger cells@[key]] cells@.contains_key(key) ==> customer_shape(cells@[key]),
@@ -84,7 +85,7 @@ pub fn publish_customers(mut cells: HashMapWithView<i64, CustomerCell>, keys: &V
     },
 {
     let ghost original = cells@;
-    let mut result = Index::new();
+    let mut result = Custs::new();
     let mut position = 0;
     while position < keys.len()
         invariant position <= keys.len(), result.wf(), keys@.no_duplicates(), keys@.to_set() == original.dom(),
@@ -101,7 +102,7 @@ pub fn publish_customers(mut cells: HashMapWithView<i64, CustomerCell>, keys: &V
         let ghost before = cells@;
         proof { verus_prooflib::lemma_prefix_fresh(keys@, position as int); }
         let cell = match cells.remove(&key) { Some(cell) => cell, None => return None };
-        result.put(Key::number(key), Arc::new(cell));
+        result.put(key, Arc::new(cell));
         proof {
             assert(keys@.take(position as int + 1) =~= keys@.take(position as int).push(key));
             verus_prooflib::lemma_push_membership(keys@.take(position as int), key);
@@ -118,8 +119,8 @@ pub fn publish_customers(mut cells: HashMapWithView<i64, CustomerCell>, keys: &V
     Some(result)
 }
 
-pub fn make_groups(work: &PageWork, customers: &Index<CustomerCell>) -> (result: Option<Vec<GroupCell>>)
-    requires orders_sorted(work.orders@), ships_sorted(work.ships@),
+pub fn make_groups(work: &PageWork, customers: &Custs) -> (result: Option<Vec<GroupCell>>)
+    requires customers.wf(), orders_sorted(work.orders@), ships_sorted(work.ships@),
         forall|position: int| #![trigger work.orders@[position]] 0 <= position < work.orders@.len() ==> work.orders@[position].count > 0,
         forall|position: int| #![trigger work.ships@[position]] 0 <= position < work.ships@.len() ==> work.ships@[position].positive >= 0,
         forall|target: verus_prooflib::ordered::KeyView| #![trigger customers.at(target)]
@@ -148,7 +149,7 @@ pub fn make_groups(work: &PageWork, customers: &Index<CustomerCell>) -> (result:
         }
     }
     while order_index < work.orders.len()
-        invariant order_index <= work.orders.len(), orders_sorted(work.orders@), ships_sorted(work.ships@),
+        invariant order_index <= work.orders.len(), customers.wf(), orders_sorted(work.orders@), ships_sorted(work.ships@),
             groups_sorted(groups@),
             forall|position: int| #![trigger work.orders@[position]] 0 <= position < work.orders@.len() ==> work.orders@[position].count > 0,
             forall|position: int| #![trigger work.ships@[position]] 0 <= position < work.ships@.len() ==> work.ships@[position].positive >= 0,
@@ -242,19 +243,31 @@ pub fn make_groups(work: &PageWork, customers: &Index<CustomerCell>) -> (result:
     Some(groups)
 }
 
+pub open spec fn chunk_of(page: i64) -> int { ((page as u64) % 16) as int }
+
+pub open spec fn chunk_done(key: int, chunk: int) -> bool {
+    i64::MIN <= key <= i64::MAX && chunk_of((key / 256) as i64) < chunk
+}
+
+pub open spec fn in_chunk(key: i64, chunk: int) -> bool { chunk_of(((key as int) / 256) as i64) == chunk }
+
+pub fn chunk_exec(page: i64) -> (result: i64)
+    ensures result == chunk_of(page), 0 <= result < 16,
+{
+    ((page as u64) % 16) as i64
+}
+
 pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments: &[ShipmentInput], Ghost(db): Ghost<Db>) -> (result: Option<State>)
     requires scan_customers_ok(db, customers@), scan_orders_ok(db, orders@), scan_shipments_ok(db, shipments@),
     ensures result matches Some(state) ==> state.db() == db,
 {
     let mut customer_work: HashMapWithView<i64, CustomerCell> = HashMapWithView::new();
     let mut customer_keys = Vec::new();
-    let mut pages_work: HashMapWithView<i64, PageWork> = HashMapWithView::new();
-    let mut page_keys = Vec::new();
+    let mut names: Vec<Arc<Vec<u8>>> = Vec::new();
     let mut index: usize = 0;
     while index < customers.len()
         invariant
             index <= customers.len(),
-            pages_work@ == Map::<i64, PageWork>::empty(), page_keys@.len() == 0,
             customer_keys@.no_duplicates(), customer_keys@.to_set() == customer_work@.dom(),
             forall|key: i64| #![trigger customer_work@[key]] customer_work@.dom().contains(key) ==>
                 customer_shape(customer_work@[key]) && customer_work@[key].orders@.len() == 0,
@@ -280,7 +293,8 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
             assert forall|segment: Seq<u8>| #![trigger segment_count(previous.segments@, segment)]
                 segment_count(previous.segments@, segment) == scratch_customer_at(before, row.c_custkey, segment) by {}
         }
-        if !segment_change(&mut cell, &row.c_mktsegment, 1) { return None; }
+        let name = intern(&mut names, &row.c_mktsegment);
+        if !segment_change(&mut cell, &name, 1) { return None; }
         customer_work.insert(row.c_custkey, cell);
         proof {
             assert(customer_work@ == before.insert(row.c_custkey, cell));
@@ -304,20 +318,15 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
         invariant
             index <= orders.len(),
             customer_keys@.no_duplicates(), customer_keys@.to_set() == customer_work@.dom(),
-            page_keys@.no_duplicates(), page_keys@.to_set() == pages_work@.dom(),
             forall|key: i64| #![trigger customer_work@[key]] customer_work@.dom().contains(key) ==> customer_shape(customer_work@[key]),
-            forall|key: i64| #![trigger pages_work@[key]] pages_work@.dom().contains(key) ==> work_page_shape(pages_work@[key], key as int) && pages_work@[key].ships@.len() == 0,
             forall|customer: i64, segment: Seq<u8>| #![trigger scratch_customer_at(customer_work@, customer, segment)]
                 scratch_customer_at(customer_work@, customer, segment) == customer_prefix(customers@, customer, segment),
             forall|customer: i64, key: i64| #![trigger scratch_reverse_at(customer_work@, customer, key)]
                 scratch_reverse_at(customer_work@, customer, key) == reverse_prefix(orders@.take(index as int), customer, key),
-            forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(pages_work@, key, customer, date, priority)]
-                scratch_order_at(pages_work@, key, customer, date, priority) == order_prefix(orders@.take(index as int), key, customer, date, priority),
         decreases orders.len() - index,
     {
         let ghost processed = index as int;
         let ghost previous_customers = customer_work@;
-        let ghost previous_pages = pages_work@;
         let row = orders[index];
         let mut customer = match customer_work.remove(&row.o_custkey) {
             Some(cell) => cell,
@@ -348,107 +357,10 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
                 }
             }
         }
-        let page = page_id(row.o_orderkey);
-        let mut work = match pages_work.remove(&page) {
-            Some(work) => work,
-            None => {
-                proof {
-                    verus_prooflib::lemma_unique_push(page_keys@, page);
-                    verus_prooflib::lemma_push_to_set(page_keys@, page);
-                }
-                page_keys.push(page); empty_page()
-            },
-        };
-        let ghost previous_work = work;
-        if !insert_order(&mut work.orders, row) { return None; }
-        pages_work.insert(page, work);
-        proof {
-            assert(pages_work@ == previous_pages.insert(page, work));
-            assert forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(pages_work@, key, customer, date, priority)]
-                scratch_order_at(pages_work@, key, customer, date, priority) == order_prefix(orders@.take(processed + 1), key, customer, date, priority) by {
-                let weight = |entry: OrderInput| if entry.o_orderkey == key && entry.o_custkey == customer && entry.o_orderdate == date && entry.o_shippriority == priority { 1int } else { 0int };
-                lemma_sum_take(orders@, processed, weight);
-                assert(scratch_order_at(previous_pages, key, customer, date, priority) == order_prefix(orders@.take(processed), key, customer, date, priority));
-                assert(order_prefix(orders@.take(processed + 1), key, customer, date, priority) == order_prefix(orders@.take(processed), key, customer, date, priority) + weight(row));
-                if (key as int / 256) as i64 == page {
-                    assert(order_count(previous_work.orders@, key as int, customer as int, date as int, priority as int) == scratch_order_at(previous_pages, key, customer, date, priority));
-                    assert(order_count(work.orders@, key as int, customer as int, date as int, priority as int) == order_count(previous_work.orders@, key as int, customer as int, date as int, priority as int)
-                        + if key == row.o_orderkey && customer == row.o_custkey && date == row.o_orderdate && priority == row.o_shippriority { 1int } else { 0int });
-                }
-            }
-        }
         index += 1;
     }
     proof { assert(orders@.take(index as int) =~= orders@); }
-    index = 0;
-    while index < shipments.len()
-        invariant
-            index <= shipments.len(),
-            customer_keys@.no_duplicates(), customer_keys@.to_set() == customer_work@.dom(),
-            page_keys@.no_duplicates(), page_keys@.to_set() == pages_work@.dom(),
-            forall|key: i64| #![trigger customer_work@[key]] customer_work@.dom().contains(key) ==> customer_shape(customer_work@[key]),
-            forall|key: i64| #![trigger pages_work@[key]] pages_work@.dom().contains(key) ==> work_page_shape(pages_work@[key], key as int),
-            forall|customer: i64, segment: Seq<u8>| #![trigger scratch_customer_at(customer_work@, customer, segment)]
-                scratch_customer_at(customer_work@, customer, segment) == customer_prefix(customers@, customer, segment),
-            forall|customer: i64, key: i64| #![trigger scratch_reverse_at(customer_work@, customer, key)]
-                scratch_reverse_at(customer_work@, customer, key) == reverse_prefix(orders@, customer, key),
-            forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(pages_work@, key, customer, date, priority)]
-                scratch_order_at(pages_work@, key, customer, date, priority) == order_prefix(orders@, key, customer, date, priority),
-            forall|key: i64, date: i32, kind: int| #![trigger scratch_ship_at(pages_work@, key, date, kind)]
-                0 <= kind <= 2 ==> scratch_ship_at(pages_work@, key, date, kind) == ship_prefix(shipments@.take(index as int), key, date, kind),
-        decreases shipments.len() - index,
-    {
-        let ghost processed = index as int;
-        let ghost previous_pages = pages_work@;
-        let row = shipments[index];
-        let page = page_id(row.l_orderkey);
-        let mut work = match pages_work.remove(&page) {
-            Some(work) => work,
-            None => {
-                proof {
-                    verus_prooflib::lemma_unique_push(page_keys@, page);
-                    verus_prooflib::lemma_push_to_set(page_keys@, page);
-                }
-                page_keys.push(page); empty_page()
-            },
-        };
-        let ghost previous_work = work;
-        if !insert_ship(&mut work.ships, row) { return None; }
-        pages_work.insert(page, work);
-        proof {
-            assert(pages_work@ == previous_pages.insert(page, work));
-            assert forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(pages_work@, key, customer, date, priority)]
-                scratch_order_at(pages_work@, key, customer, date, priority) == scratch_order_at(previous_pages, key, customer, date, priority) by {}
-            assert forall|key: i64, date: i32, kind: int| #![trigger scratch_ship_at(pages_work@, key, date, kind)]
-                0 <= kind <= 2 implies scratch_ship_at(pages_work@, key, date, kind) == ship_prefix(shipments@.take(processed + 1), key, date, kind) by {
-                let weight = |entry: ShipmentInput| if entry.l_orderkey == key && entry.l_shipdate == date {
-                    let value = entry.l_extendedprice as int * (100 - entry.l_discount as int);
-                    if kind == 0 { 1int } else if kind == 1 { value } else { if value > 0 { value } else { 0int } }
-                } else { 0int };
-                lemma_sum_take(shipments@, processed, weight);
-                assert(scratch_ship_at(previous_pages, key, date, kind) == ship_prefix(shipments@.take(processed), key, date, kind));
-                assert(ship_prefix(shipments@.take(processed + 1), key, date, kind) == ship_prefix(shipments@.take(processed), key, date, kind) + weight(row));
-                if (key as int / 256) as i64 == page {
-                    assert(ship_count(previous_work.ships@, key as int, date as int, kind) == scratch_ship_at(previous_pages, key, date, kind));
-                    assert(ship_count(work.ships@, key as int, date as int, kind) == ship_count(previous_work.ships@, key as int, date as int, kind)
-                        + if key == row.l_orderkey && date == row.l_shipdate {
-                            let value = row.l_extendedprice as int * (100 - row.l_discount as int);
-                            if kind == 0 { 1int } else if kind == 1 { value } else { if value > 0 { value } else { 0int } }
-                        } else { 0int });
-                }
-            }
-        }
-        index += 1;
-    }
-    proof { assert(shipments@.take(index as int) =~= shipments@); }
-    let ghost completed_pages = pages_work@;
-    proof {
-        assert forall|number: i64| #![trigger completed_pages[number]] completed_pages.contains_key(number)
-            implies work_database_ok(completed_pages[number], number as int, db) by {
-            crate::semantics::lemma_work_scan(db, customers@, orders@, shipments@, completed_pages, number);
-        }
-    }
-    let ghost completed_customers = customer_work@;
+
     let customer_index = match publish_customers(customer_work, &customer_keys) { Some(index) => index, None => return None };
     proof {
         crate::input_proofs::lemma_scan_domains(db, customers@, orders@, shipments@);
@@ -487,67 +399,372 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
     let mut page_index = Index::new();
     let mut rank_index = Index::new();
     let ghost published_groups = Seq::<GroupCell>::empty();
-    index = 0;
-    while index < page_keys.len()
-        invariant index <= page_keys.len(),
+    let mut chunk: i64 = 0;
+    while chunk < 16
+        invariant 0 <= chunk <= 16,
+            scan_customers_ok(db, customers@), scan_orders_ok(db, orders@), scan_shipments_ok(db, shipments@),
             customer_database_ok(customer_index, db),
+            forall|target: verus_prooflib::ordered::KeyView| #![trigger customer_index.at(target)] customer_index.at(target).is_some() ==> customer_shape(customer_index.at(target).unwrap()),
             page_index.wf(), ranks_wf(rank_index),
-            page_keys@.no_duplicates(), page_keys@.to_set() == completed_pages.dom(),
             groups_in_pages(page_index, published_groups),
             forall|outer: verus_prooflib::ordered::KeyView, rank: verus_prooflib::ordered::KeyView| #![trigger rank_at(rank_index, outer, rank)]
                 rank_at(rank_index, outer, rank) == rank_present(published_groups, outer, rank),
-            forall|target: verus_prooflib::ordered::KeyView| #![trigger page_index.at(target)] page_index.at(target).is_some() ==
-                (target.1 == Seq::<u8>::empty() && i64::MIN <= target.0 <= i64::MAX && page_keys@.take(index as int).contains(target.0 as i64)),
-            forall|key: i64| #![trigger pages_work@[key]] pages_work@.contains_key(key) ==> work_database_ok(pages_work@[key], key as int, db),
             forall|target: verus_prooflib::ordered::KeyView| #![trigger page_index.at(target)] page_index.at(target).is_some() ==>
-                target.1.len() == 0 && page_database_ok(page_index.at(target).unwrap(), target.0, db),
-            forall|key: i64| #![trigger pages_work@[key]] pages_work@.dom().contains(key) ==> work_page_shape(pages_work@[key], key as int),
-            forall|target: verus_prooflib::ordered::KeyView| #![trigger customer_index.at(target)] customer_index.at(target).is_some() ==> customer_shape(customer_index.at(target).unwrap()),
-        decreases page_keys.len() - index,
+                (target.1.len() == 0 && i64::MIN <= target.0 <= i64::MAX && chunk_of(target.0 as i64) < chunk as int
+                    && page_database_ok(page_index.at(target).unwrap(), target.0, db)),
+            forall|key: int, customer: int, date: int, priority: int| #![trigger order_at(page_index, key, customer, date, priority)]
+                chunk_done(key, chunk as int) ==> order_at(page_index, key, customer, date, priority) == order_sum(db, key, customer, date, priority),
+            forall|key: int, date: int, kind: int| #![trigger ship_at(page_index, key, date, kind)]
+                chunk_done(key, chunk as int) && 0 <= kind <= 2 ==> ship_at(page_index, key, date, kind) == ship_sum(db, key, date, kind),
+            forall|segment: Seq<u8>, key: int, date: int, priority: int| #![trigger group_at(page_index, segment, key, date, priority)]
+                chunk_done(key, chunk as int) ==> group_at(page_index, segment, key, date, priority) == weight_sum(db, segment, key, date, priority),
+        decreases 16 - chunk,
     {
-        let key = page_keys[index];
-        let ghost previous_pages = page_index;
-        let ghost previous_ranks = rank_index;
-        let ghost previous_groups = published_groups;
-        proof { verus_prooflib::lemma_prefix_fresh(page_keys@, index as int); }
-        let work = match pages_work.remove(&key) { Some(work) => work, None => return None };
-        let ghost original_work = work;
-        let groups = match make_groups(&work, &customer_index) { Some(groups) => groups, None => return None };
-        ranks::append_groups(&mut rank_index, &groups);
-        proof { published_groups = published_groups + groups@; }
-        let page = Page { orders: Arc::new(work.orders), ships: Arc::new(work.ships), groups: Arc::new(groups) };
-        proof { crate::semantics::lemma_page_publication(page, original_work, key as int, customer_index, db); }
-        page_index.put(Key::number(key), Arc::new(page));
+        let ghost base_index = page_index;
+        proof { assert(base_index == page_index); }
+        let mut pages_work: HashMapWithView<i64, PageWork> = HashMapWithView::new();
+        let mut page_keys: Vec<i64> = Vec::new();
+        index = 0;
+        while index < orders.len()
+            invariant
+                index <= orders.len(), 0 <= chunk < 16,
+                scan_customers_ok(db, customers@), scan_orders_ok(db, orders@), scan_shipments_ok(db, shipments@),
+                page_keys@.no_duplicates(), page_keys@.to_set() == pages_work@.dom(),
+                forall|key: i64| #![trigger pages_work@.dom().contains(key)] pages_work@.dom().contains(key) ==>
+                    work_page_shape(pages_work@[key], key as int) && pages_work@[key].ships@.len() == 0 && chunk_of(key) == chunk as int,
+                forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(pages_work@, key, customer, date, priority)]
+                    in_chunk(key, chunk as int) ==> scratch_order_at(pages_work@, key, customer, date, priority) == order_prefix(orders@.take(index as int), key, customer, date, priority),
+            decreases orders.len() - index,
+        {
+            let ghost processed = index as int;
+            let ghost previous_pages = pages_work@;
+            let row = orders[index];
+            let page = page_id(row.o_orderkey);
+            if chunk_exec(page) == chunk {
+                let mut work = match pages_work.remove(&page) {
+                    Some(work) => work,
+                    None => {
+                        proof {
+                            verus_prooflib::lemma_unique_push(page_keys@, page);
+                            verus_prooflib::lemma_push_to_set(page_keys@, page);
+                        }
+                        page_keys.push(page); empty_page()
+                    },
+                };
+                let ghost previous_work = work;
+                if !insert_order(&mut work.orders, row) { return None; }
+                pages_work.insert(page, work);
+                proof {
+                    assert(pages_work@ == previous_pages.insert(page, work));
+                    assert forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(pages_work@, key, customer, date, priority)]
+                        in_chunk(key, chunk as int) implies scratch_order_at(pages_work@, key, customer, date, priority) == order_prefix(orders@.take(processed + 1), key, customer, date, priority) by {
+                        let weight = |entry: OrderInput| if entry.o_orderkey == key && entry.o_custkey == customer && entry.o_orderdate == date && entry.o_shippriority == priority { 1int } else { 0int };
+                        lemma_sum_take(orders@, processed, weight);
+                        assert(scratch_order_at(previous_pages, key, customer, date, priority) == order_prefix(orders@.take(processed), key, customer, date, priority));
+                        assert(order_prefix(orders@.take(processed + 1), key, customer, date, priority) == order_prefix(orders@.take(processed), key, customer, date, priority) + weight(row));
+                        if (key as int / 256) as i64 == page {
+                            assert(order_count(previous_work.orders@, key as int, customer as int, date as int, priority as int) == scratch_order_at(previous_pages, key, customer, date, priority));
+                            assert(order_count(work.orders@, key as int, customer as int, date as int, priority as int) == order_count(previous_work.orders@, key as int, customer as int, date as int, priority as int)
+                                + if key == row.o_orderkey && customer == row.o_custkey && date == row.o_orderdate && priority == row.o_shippriority { 1int } else { 0int });
+                        }
+                    }
+                }
+            } else {
+                proof {
+                    assert forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(pages_work@, key, customer, date, priority)]
+                        in_chunk(key, chunk as int) implies scratch_order_at(pages_work@, key, customer, date, priority) == order_prefix(orders@.take(processed + 1), key, customer, date, priority) by {
+                        let weight = |entry: OrderInput| if entry.o_orderkey == key && entry.o_custkey == customer && entry.o_orderdate == date && entry.o_shippriority == priority { 1int } else { 0int };
+                        lemma_sum_take(orders@, processed, weight);
+                        assert(row.o_orderkey != key);
+                    }
+                }
+            }
+            index += 1;
+        }
+        proof { assert(orders@.take(index as int) =~= orders@); }
+        index = 0;
+        while index < shipments.len()
+            invariant
+                index <= shipments.len(), 0 <= chunk < 16,
+                scan_customers_ok(db, customers@), scan_orders_ok(db, orders@), scan_shipments_ok(db, shipments@),
+                page_keys@.no_duplicates(), page_keys@.to_set() == pages_work@.dom(),
+                forall|key: i64| #![trigger pages_work@.dom().contains(key)] pages_work@.dom().contains(key) ==>
+                    work_page_shape(pages_work@[key], key as int) && chunk_of(key) == chunk as int,
+                forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(pages_work@, key, customer, date, priority)]
+                    in_chunk(key, chunk as int) ==> scratch_order_at(pages_work@, key, customer, date, priority) == order_prefix(orders@, key, customer, date, priority),
+                forall|key: i64, date: i32, kind: int| #![trigger scratch_ship_at(pages_work@, key, date, kind)]
+                    in_chunk(key, chunk as int) && 0 <= kind <= 2 ==> scratch_ship_at(pages_work@, key, date, kind) == ship_prefix(shipments@.take(index as int), key, date, kind),
+            decreases shipments.len() - index,
+        {
+            let ghost processed = index as int;
+            let ghost previous_pages = pages_work@;
+            let row = shipments[index];
+            let page = page_id(row.l_orderkey);
+            if chunk_exec(page) == chunk {
+                let mut work = match pages_work.remove(&page) {
+                    Some(work) => work,
+                    None => {
+                        proof {
+                            verus_prooflib::lemma_unique_push(page_keys@, page);
+                            verus_prooflib::lemma_push_to_set(page_keys@, page);
+                        }
+                        page_keys.push(page); empty_page()
+                    },
+                };
+                let ghost previous_work = work;
+                if !insert_ship(&mut work.ships, row) { return None; }
+                pages_work.insert(page, work);
+                proof {
+                    assert(pages_work@ == previous_pages.insert(page, work));
+                    assert forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(pages_work@, key, customer, date, priority)]
+                        in_chunk(key, chunk as int) implies scratch_order_at(pages_work@, key, customer, date, priority) == order_prefix(orders@, key, customer, date, priority) by {
+                        assert(scratch_order_at(previous_pages, key, customer, date, priority) == order_prefix(orders@, key, customer, date, priority));
+                    }
+                    assert forall|key: i64, date: i32, kind: int| #![trigger scratch_ship_at(pages_work@, key, date, kind)]
+                        in_chunk(key, chunk as int) && 0 <= kind <= 2 implies scratch_ship_at(pages_work@, key, date, kind) == ship_prefix(shipments@.take(processed + 1), key, date, kind) by {
+                        let weight = |entry: ShipmentInput| if entry.l_orderkey == key && entry.l_shipdate == date {
+                            let value = entry.l_extendedprice as int * (100 - entry.l_discount as int);
+                            if kind == 0 { 1int } else if kind == 1 { value } else { if value > 0 { value } else { 0int } }
+                        } else { 0int };
+                        lemma_sum_take(shipments@, processed, weight);
+                        assert(scratch_ship_at(previous_pages, key, date, kind) == ship_prefix(shipments@.take(processed), key, date, kind));
+                        assert(ship_prefix(shipments@.take(processed + 1), key, date, kind) == ship_prefix(shipments@.take(processed), key, date, kind) + weight(row));
+                        if (key as int / 256) as i64 == page {
+                            assert(ship_count(previous_work.ships@, key as int, date as int, kind) == scratch_ship_at(previous_pages, key, date, kind));
+                            assert(ship_count(work.ships@, key as int, date as int, kind) == ship_count(previous_work.ships@, key as int, date as int, kind)
+                                + if key == row.l_orderkey && date == row.l_shipdate {
+                                    let value = row.l_extendedprice as int * (100 - row.l_discount as int);
+                                    if kind == 0 { 1int } else if kind == 1 { value } else { if value > 0 { value } else { 0int } }
+                                } else { 0int });
+                        }
+                    }
+                }
+            } else {
+                proof {
+                    assert forall|key: i64, date: i32, kind: int| #![trigger scratch_ship_at(pages_work@, key, date, kind)]
+                        in_chunk(key, chunk as int) && 0 <= kind <= 2 implies scratch_ship_at(pages_work@, key, date, kind) == ship_prefix(shipments@.take(processed + 1), key, date, kind) by {
+                        let weight = |entry: ShipmentInput| if entry.l_orderkey == key && entry.l_shipdate == date {
+                            let value = entry.l_extendedprice as int * (100 - entry.l_discount as int);
+                            if kind == 0 { 1int } else if kind == 1 { value } else { if value > 0 { value } else { 0int } }
+                        } else { 0int };
+                        lemma_sum_take(shipments@, processed, weight);
+                        assert(row.l_orderkey != key);
+                    }
+                }
+            }
+            index += 1;
+        }
+        proof { assert(shipments@.take(index as int) =~= shipments@); }
+        let ghost completed_pages = pages_work@;
         proof {
-            lemma_page_groups_put(previous_pages, page_index, previous_groups, page, key);
-            assert(page_keys@.take(index as int + 1) =~= page_keys@.take(index as int).push(key));
-            verus_prooflib::lemma_push_membership(page_keys@.take(index as int), key);
-            assert forall|outer: verus_prooflib::ordered::KeyView, rank: verus_prooflib::ordered::KeyView| #![trigger rank_at(rank_index, outer, rank)]
-                rank_at(rank_index, outer, rank) == rank_present(published_groups, outer, rank) by {
-                ranks::lemma_rank_concat(previous_groups, (*page.groups)@, outer, rank);
-                assert(rank_at(previous_ranks, outer, rank) == rank_present(previous_groups, outer, rank));
+            assert forall|number: i64| #![trigger completed_pages[number]] completed_pages.contains_key(number)
+                implies work_database_ok(completed_pages[number], number as int, db) by {
+                crate::semantics::lemma_work_scan(db, customers@, orders@, shipments@, completed_pages, number);
             }
         }
-        index += 1;
+        proof {
+            assert forall|key: i64| #![trigger completed_pages.dom().contains(key)] completed_pages.dom().contains(key) implies chunk_of(key) == chunk as int by {
+                assert(pages_work@.dom().contains(key));
+            }
+        }
+        proof {
+            assert forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(completed_pages, key, customer, date, priority)]
+                in_chunk(key, chunk as int) implies scratch_order_at(completed_pages, key, customer, date, priority) == order_prefix(orders@, key, customer, date, priority) by {}
+            assert forall|key: i64, date: i32, kind: int| #![trigger scratch_ship_at(completed_pages, key, date, kind)]
+                in_chunk(key, chunk as int) && 0 <= kind <= 2 implies scratch_ship_at(completed_pages, key, date, kind) == ship_prefix(shipments@, key, date, kind) by {}
+        }
+        let mut position = 0;
+        while position < page_keys.len()
+            invariant position <= page_keys.len(), 0 <= chunk < 16,
+                forall|key: int, customer: int, date: int, priority: int| #![trigger order_at(base_index, key, customer, date, priority)]
+                    chunk_done(key, chunk as int) ==> order_at(base_index, key, customer, date, priority) == order_sum(db, key, customer, date, priority),
+                forall|key: int, date: int, kind: int| #![trigger ship_at(base_index, key, date, kind)]
+                    chunk_done(key, chunk as int) && 0 <= kind <= 2 ==> ship_at(base_index, key, date, kind) == ship_sum(db, key, date, kind),
+                forall|segment: Seq<u8>, key: int, date: int, priority: int| #![trigger group_at(base_index, segment, key, date, priority)]
+                    chunk_done(key, chunk as int) ==> group_at(base_index, segment, key, date, priority) == weight_sum(db, segment, key, date, priority),
+                forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(completed_pages, key, customer, date, priority)]
+                    in_chunk(key, chunk as int) ==> scratch_order_at(completed_pages, key, customer, date, priority) == order_prefix(orders@, key, customer, date, priority),
+                forall|key: i64, date: i32, kind: int| #![trigger scratch_ship_at(completed_pages, key, date, kind)]
+                    in_chunk(key, chunk as int) && 0 <= kind <= 2 ==> scratch_ship_at(completed_pages, key, date, kind) == ship_prefix(shipments@, key, date, kind),
+                customer_database_ok(customer_index, db),
+                page_index.wf(), ranks_wf(rank_index),
+                page_keys@.no_duplicates(), page_keys@.to_set() == completed_pages.dom(),
+                forall|key: i64| #![trigger completed_pages.dom().contains(key)] completed_pages.dom().contains(key) ==> chunk_of(key) == chunk as int,
+                groups_in_pages(page_index, published_groups),
+                forall|outer: verus_prooflib::ordered::KeyView, rank: verus_prooflib::ordered::KeyView| #![trigger rank_at(rank_index, outer, rank)]
+                    rank_at(rank_index, outer, rank) == rank_present(published_groups, outer, rank),
+                forall|target: verus_prooflib::ordered::KeyView| #![trigger page_index.at(target)]
+                    !(target.1 =~= Seq::<u8>::empty() && i64::MIN <= target.0 <= i64::MAX && page_keys@.take(position as int).contains(target.0 as i64))
+                    ==> page_index.at(target) == base_index.at(target),
+                forall|target: verus_prooflib::ordered::KeyView| #![trigger page_index.at(target)]
+                    (target.1 =~= Seq::<u8>::empty() && i64::MIN <= target.0 <= i64::MAX && page_keys@.take(position as int).contains(target.0 as i64))
+                    ==> page_index.at(target).is_some(),
+                forall|target: verus_prooflib::ordered::KeyView| #![trigger base_index.at(target)] base_index.at(target).is_some() ==>
+                    (target.1.len() == 0 && i64::MIN <= target.0 <= i64::MAX && chunk_of(target.0 as i64) < chunk as int
+                        && page_database_ok(base_index.at(target).unwrap(), target.0, db)),
+                forall|target: verus_prooflib::ordered::KeyView| #![trigger page_index.at(target)] page_index.at(target).is_some() ==>
+                    (target.1.len() == 0 && i64::MIN <= target.0 <= i64::MAX && chunk_of(target.0 as i64) <= chunk as int
+                        && page_database_ok(page_index.at(target).unwrap(), target.0, db)),
+                forall|key: i64| #![trigger pages_work@[key]] pages_work@.contains_key(key) ==> work_database_ok(pages_work@[key], key as int, db),
+                forall|key: i64| #![trigger pages_work@[key]] pages_work@.dom().contains(key) ==> work_page_shape(pages_work@[key], key as int),
+                forall|key: i64| #![trigger pages_work@.dom().contains(key)] pages_work@.dom().contains(key) ==> completed_pages.dom().contains(key),
+                scan_customers_ok(db, customers@), scan_orders_ok(db, orders@), scan_shipments_ok(db, shipments@),
+                forall|target: verus_prooflib::ordered::KeyView| #![trigger customer_index.at(target)] customer_index.at(target).is_some() ==> customer_shape(customer_index.at(target).unwrap()),
+            decreases page_keys.len() - position,
+        {
+            let key = page_keys[position];
+            let ghost previous_pages = page_index;
+            let ghost previous_ranks = rank_index;
+            let ghost previous_groups = published_groups;
+            proof { verus_prooflib::lemma_prefix_fresh(page_keys@, position as int); }
+            let work = match pages_work.remove(&key) { Some(work) => work, None => return None };
+            let ghost original_work = work;
+            let groups = match make_groups(&work, &customer_index) { Some(groups) => groups, None => return None };
+            let packed_orders = match crate::packed::PackedOrders::pack(&work.orders, key) { Some(value) => value, None => return None };
+            let packed_ships = match crate::packed::PackedShips::pack(&work.ships, key) { Some(value) => value, None => return None };
+            let packed_groups = match crate::packed::PackedGroups::pack(&groups, key) { Some(value) => value, None => return None };
+            let page = Page { orders: Arc::new(packed_orders), ships: Arc::new(packed_ships), groups: Arc::new(packed_groups) };
+            let page_groups = page.groups.to_vec();
+            page.groups.fits();
+            ranks::append_groups(&mut rank_index, &page_groups);
+            proof { published_groups = published_groups + page_groups@; }
+            proof { crate::semantics::lemma_page_publication_equiv(page, groups@, original_work, key as int, customer_index, db); }
+            proof {
+                assert(page_keys@.contains(key)) by {
+                    page_keys@.to_set_ensures();
+                    assert(page_keys@.take(position as int + 1)[position as int] == key);
+                    assert(page_keys@[position as int] == key);
+                }
+                assert(completed_pages.dom().contains(key));
+                assert(chunk_of(key) == chunk as int);
+                assert(base_index.at((key as int, Seq::<u8>::empty())).is_none()) by {
+                    if base_index.at((key as int, Seq::<u8>::empty())).is_some() { assert(chunk_of(key) < chunk as int); }
+                }
+                assert(previous_pages.at((key as int, Seq::<u8>::empty())).is_none()) by {
+                    assert(!page_keys@.take(position as int).contains(key));
+                }
+            }
+            page_index.put(Key::number(key), Arc::new(page));
+            proof {
+                assert(page_index.at((key as int, Seq::<u8>::empty())) == Some(page));
+                lemma_page_groups_put(previous_pages, page_index, previous_groups, page, key);
+                assert(page_keys@.take(position as int + 1) =~= page_keys@.take(position as int).push(key));
+                verus_prooflib::lemma_push_membership(page_keys@.take(position as int), key);
+                assert forall|outer: verus_prooflib::ordered::KeyView, rank: verus_prooflib::ordered::KeyView| #![trigger rank_at(rank_index, outer, rank)]
+                    rank_at(rank_index, outer, rank) == rank_present(published_groups, outer, rank) by {
+                    ranks::lemma_rank_concat(previous_groups, (*page.groups)@, outer, rank);
+                    assert(rank_at(previous_ranks, outer, rank) == rank_present(previous_groups, outer, rank));
+                }
+            }
+            position += 1;
+        }
+        proof {
+            assert(page_keys@.take(position as int) =~= page_keys@);
+            assert forall|number: i64| #![trigger page_keys@.contains(number)] page_keys@.contains(number) implies chunk_of(number) == chunk as int by {
+                page_keys@.to_set_ensures();
+                assert(completed_pages.dom().contains(number));
+            }
+            // the chunk's pages are in; the pages of earlier chunks are untouched
+            assert forall|target: verus_prooflib::ordered::KeyView| #![trigger page_index.at(target)] page_index.at(target).is_some() implies
+                (target.1.len() == 0 && i64::MIN <= target.0 <= i64::MAX && chunk_of(target.0 as i64) < chunk as int + 1
+                    && page_database_ok(page_index.at(target).unwrap(), target.0, db)) by {
+                if target.1 =~= Seq::<u8>::empty() && i64::MIN <= target.0 <= i64::MAX && page_keys@.contains(target.0 as i64) {
+                    assert(completed_pages.dom().contains(target.0 as i64));
+                } else { assert(page_index.at(target) == base_index.at(target)); }
+            }
+            // sums of the chunk's keys
+            crate::input_proofs::lemma_scan_domains(db, customers@, orders@, shipments@);
+            assert forall|key: int, customer: int, date: int, priority: int| #![trigger order_at(page_index, key, customer, date, priority)]
+                chunk_done(key, chunk as int + 1) implies order_at(page_index, key, customer, date, priority) == order_sum(db, key, customer, date, priority) by {
+                if chunk_done(key, chunk as int) {
+                    assert(page_index.at((key / 256, Seq::<u8>::empty())) == base_index.at((key / 256, Seq::<u8>::empty()))) by {
+                        assert(!page_keys@.contains((key / 256) as i64));
+                    }
+                    assert(order_at(base_index, key, customer, date, priority) == order_sum(db, key, customer, date, priority));
+                } else if page_index.at((key / 256, Seq::empty())).is_some() {
+                    assert(page_database_ok(page_index.at((key / 256, Seq::empty())).unwrap(), key / 256, db));
+                    assert(order_count((*page_index.at((key / 256, Seq::empty())).unwrap().orders)@, key, customer, date, priority)
+                        == order_sum(db, key, customer, date, priority));
+                } else if i64::MIN <= customer <= i64::MAX && i32::MIN <= date <= i32::MAX && i64::MIN <= priority <= i64::MAX {
+                    assert(i64::MIN <= key / 256 <= i64::MAX);
+                    assert(!completed_pages.contains_key((key / 256) as i64)) by {
+                        assert(!page_keys@.contains((key / 256) as i64));
+                    }
+                    crate::input_proofs::lemma_order_scan(db, orders@, customer as i64, key as i64, date as i32, priority as i64);
+                    assert(in_chunk(key as i64, chunk as int));
+                    assert(scratch_order_at(completed_pages, key as i64, customer as i64, date as i32, priority as i64) == 0);
+                    assert(scratch_order_at(completed_pages, key as i64, customer as i64, date as i32, priority as i64)
+                        == order_prefix(orders@, key as i64, customer as i64, date as i32, priority as i64));
+                } else {
+                    lemma_sum_zero(db.orders, |row: OrdersRow| if row.o_orderkey == key && row.o_custkey == customer
+                        && row.o_orderdate == date && row.o_shippriority == priority { 1int } else { 0int });
+                }
+            }
+            assert forall|key: int, date: int, kind: int| #![trigger ship_at(page_index, key, date, kind)]
+                chunk_done(key, chunk as int + 1) && 0 <= kind <= 2 implies ship_at(page_index, key, date, kind) == ship_sum(db, key, date, kind) by {
+                if chunk_done(key, chunk as int) {
+                    assert(page_index.at((key / 256, Seq::<u8>::empty())) == base_index.at((key / 256, Seq::<u8>::empty()))) by {
+                        assert(!page_keys@.contains((key / 256) as i64));
+                    }
+                    assert(ship_at(base_index, key, date, kind) == ship_sum(db, key, date, kind));
+                } else if page_index.at((key / 256, Seq::empty())).is_some() {
+                    assert(page_database_ok(page_index.at((key / 256, Seq::empty())).unwrap(), key / 256, db));
+                    assert(ship_count((*page_index.at((key / 256, Seq::empty())).unwrap().ships)@, key, date, kind) == ship_sum(db, key, date, kind));
+                } else if i32::MIN <= date <= i32::MAX {
+                    assert(i64::MIN <= key / 256 <= i64::MAX);
+                    assert(!completed_pages.contains_key((key / 256) as i64)) by {
+                        assert(!page_keys@.contains((key / 256) as i64));
+                    }
+                    crate::input_proofs::lemma_ship_scan(db, shipments@, key as i64, date as i32, kind);
+                    assert(in_chunk(key as i64, chunk as int));
+                    assert(scratch_ship_at(completed_pages, key as i64, date as i32, kind) == 0);
+                    assert(scratch_ship_at(completed_pages, key as i64, date as i32, kind) == ship_prefix(shipments@, key as i64, date as i32, kind));
+                } else {
+                    lemma_sum_zero(db.lineitem, |row: LineitemRow| if row.l_orderkey == key && row.l_shipdate == date {
+                        let value = row.l_extendedprice * (100 - row.l_discount);
+                        if kind == 0 { 1int } else if kind == 1 { value } else { if value > 0 { value } else { 0int } }
+                    } else { 0int });
+                }
+            }
+            assert forall|segment: Seq<u8>, key: int, date: int, priority: int| #![trigger group_at(page_index, segment, key, date, priority)]
+                chunk_done(key, chunk as int + 1) implies group_at(page_index, segment, key, date, priority) == weight_sum(db, segment, key, date, priority) by {
+                if chunk_done(key, chunk as int) {
+                    assert(page_index.at((key / 256, Seq::<u8>::empty())) == base_index.at((key / 256, Seq::<u8>::empty()))) by {
+                        assert(!page_keys@.contains((key / 256) as i64));
+                    }
+                    assert(group_at(base_index, segment, key, date, priority) == weight_sum(db, segment, key, date, priority));
+                } else if page_index.at((key / 256, Seq::empty())).is_some() {
+                    assert(page_database_ok(page_index.at((key / 256, Seq::empty())).unwrap(), key / 256, db));
+                    assert(column_weight((*page_index.at((key / 256, Seq::empty())).unwrap().groups)@, segment, key, date, priority)
+                        == weight_sum(db, segment, key, date, priority));
+                } else {
+                    assert forall|position: int| #![trigger db.orders[position]] 0 <= position < db.orders.len() implies db.orders[position].o_orderkey != key by {
+                        let row = db.orders[position];
+                        if row.o_orderkey == key {
+                            let weight = |entry: OrdersRow| if entry.o_orderkey == key && entry.o_custkey == row.o_custkey
+                                && entry.o_orderdate == row.o_orderdate && entry.o_shippriority == row.o_shippriority { 1int } else { 0int };
+                            lemma_sum_pos(db.orders, weight, position);
+                            assert(chunk_done(key, chunk as int + 1));
+                            assert(order_at(page_index, key, row.o_custkey, row.o_orderdate, row.o_shippriority) == 0);
+                            assert(order_sum(db, key, row.o_custkey, row.o_orderdate, row.o_shippriority) == 0);
+                        }
+                    }
+                    lemma_sum_zero(db.orders, |row: OrdersRow| if row.o_orderkey == key && row.o_orderdate == date && row.o_shippriority == priority {
+                        customer_sum(db, row.o_custkey, segment)
+                    } else { 0int });
+                }
+            }
+        }
+        chunk += 1;
     }
     proof {
-        assert(page_keys@.take(index as int) =~= page_keys@);
         crate::semantics::lemma_rank_publication(page_index, rank_index, published_groups, db);
         crate::input_proofs::lemma_scan_domains(db, customers@, orders@, shipments@);
         assert forall|key: int, customer: int, date: int, priority: int| #![trigger order_at(page_index, key, customer, date, priority)]
             order_at(page_index, key, customer, date, priority) == order_sum(db, key, customer, date, priority) by {
-            if page_index.at((key / 256, Seq::empty())).is_some() {
+            if chunk_done(key, 16) {}
+            else if page_index.at((key / 256, Seq::<u8>::empty())).is_some() {
                 assert(page_database_ok(page_index.at((key / 256, Seq::empty())).unwrap(), key / 256, db));
-                assert(order_count((*page_index.at((key / 256, Seq::empty())).unwrap().orders)@, key, customer, date, priority)
-                    == order_sum(db, key, customer, date, priority));
-            } else if i64::MIN <= key <= i64::MAX && i64::MIN <= customer <= i64::MAX
-                && i32::MIN <= date <= i32::MAX && i64::MIN <= priority <= i64::MAX {
-                assert(i64::MIN <= key / 256 <= i64::MAX);
-                assert(!completed_pages.contains_key((key / 256) as i64));
-                crate::input_proofs::lemma_order_scan(db, orders@, customer as i64, key as i64, date as i32, priority as i64);
-                assert(scratch_order_at(completed_pages, key as i64, customer as i64, date as i32, priority as i64) == 0);
-                assert(scratch_order_at(completed_pages, key as i64, customer as i64, date as i32, priority as i64)
-                    == order_prefix(orders@, key as i64, customer as i64, date as i32, priority as i64));
             } else {
                 lemma_sum_zero(db.orders, |row: OrdersRow| if row.o_orderkey == key && row.o_custkey == customer
                     && row.o_orderdate == date && row.o_shippriority == priority { 1int } else { 0int });
@@ -555,15 +772,9 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
         }
         assert forall|key: int, date: int, kind: int| #![trigger ship_at(page_index, key, date, kind)]
             0 <= kind <= 2 implies ship_at(page_index, key, date, kind) == ship_sum(db, key, date, kind) by {
-            if page_index.at((key / 256, Seq::empty())).is_some() {
+            if chunk_done(key, 16) {}
+            else if page_index.at((key / 256, Seq::<u8>::empty())).is_some() {
                 assert(page_database_ok(page_index.at((key / 256, Seq::empty())).unwrap(), key / 256, db));
-                assert(ship_count((*page_index.at((key / 256, Seq::empty())).unwrap().ships)@, key, date, kind) == ship_sum(db, key, date, kind));
-            } else if i64::MIN <= key <= i64::MAX && i32::MIN <= date <= i32::MAX {
-                assert(i64::MIN <= key / 256 <= i64::MAX);
-                assert(!completed_pages.contains_key((key / 256) as i64));
-                crate::input_proofs::lemma_ship_scan(db, shipments@, key as i64, date as i32, kind);
-                assert(scratch_ship_at(completed_pages, key as i64, date as i32, kind) == 0);
-                assert(scratch_ship_at(completed_pages, key as i64, date as i32, kind) == ship_prefix(shipments@, key as i64, date as i32, kind));
             } else {
                 lemma_sum_zero(db.lineitem, |row: LineitemRow| if row.l_orderkey == key && row.l_shipdate == date {
                     let value = row.l_extendedprice * (100 - row.l_discount);
@@ -573,21 +784,11 @@ pub fn construct(customers: Vec<CustomerInput>, orders: &[OrderInput], shipments
         }
         assert forall|segment: Seq<u8>, key: int, date: int, priority: int| #![trigger group_at(page_index, segment, key, date, priority)]
             group_at(page_index, segment, key, date, priority) == weight_sum(db, segment, key, date, priority) by {
-            if page_index.at((key / 256, Seq::empty())).is_some() {
+            if chunk_done(key, 16) {}
+            else if page_index.at((key / 256, Seq::<u8>::empty())).is_some() {
                 assert(page_database_ok(page_index.at((key / 256, Seq::empty())).unwrap(), key / 256, db));
-                assert(column_weight((*page_index.at((key / 256, Seq::empty())).unwrap().groups)@, segment, key, date, priority)
-                    == weight_sum(db, segment, key, date, priority));
             } else {
-                assert forall|position: int| #![trigger db.orders[position]] 0 <= position < db.orders.len() implies db.orders[position].o_orderkey != key by {
-                    let row = db.orders[position];
-                    if row.o_orderkey == key {
-                        let weight = |entry: OrdersRow| if entry.o_orderkey == key && entry.o_custkey == row.o_custkey
-                            && entry.o_orderdate == row.o_orderdate && entry.o_shippriority == row.o_shippriority { 1int } else { 0int };
-                        lemma_sum_pos(db.orders, weight, position);
-                        assert(order_at(page_index, key, row.o_custkey, row.o_orderdate, row.o_shippriority) == 0);
-                        assert(order_sum(db, key, row.o_custkey, row.o_orderdate, row.o_shippriority) == 0);
-                    }
-                }
+                assert forall|position: int| #![trigger db.orders[position]] 0 <= position < db.orders.len() implies db.orders[position].o_orderkey != key by {}
                 lemma_sum_zero(db.orders, |row: OrdersRow| if row.o_orderkey == key && row.o_orderdate == date && row.o_shippriority == priority {
                     customer_sum(db, row.o_custkey, segment)
                 } else { 0int });

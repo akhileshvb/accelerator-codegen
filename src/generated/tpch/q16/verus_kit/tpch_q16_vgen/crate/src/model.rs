@@ -5,6 +5,7 @@ use verus_common::sums::*;
 use verus_common::sqlfns::*;
 use verus_prooflib::ordered::{Index, Key, KeyView};
 use crate::gen_spec::*;
+use crate::vocab::*;
 
 verus! {
 
@@ -12,6 +13,8 @@ pub struct Group {
     pub brand: Arc<Vec<u8>>,
     pub kind: Arc<Vec<u8>>,
     pub size: i64,
+    pub brand_id: u16,
+    pub kind_id: u16,
     pub identity: Key,
     pub order: Key,
 }
@@ -19,6 +22,28 @@ pub struct Group {
 pub struct Cell {
     pub group: Arc<Group>,
     pub count: i64,
+    pub brand_id: u16,
+    pub kind_id: u16,
+    pub size: i64,
+}
+
+impl Cell {
+    pub open spec fn of(group: Arc<Group>, count: i64) -> Cell {
+        Cell { group, count, brand_id: group.brand_id, kind_id: group.kind_id, size: group.size }
+    }
+
+    pub open spec fn consistent(self) -> bool {
+        self == Cell::of(self.group, self.count)
+    }
+
+    pub fn new(group: Arc<Group>, count: i64) -> (cell: Cell)
+        ensures cell == Cell::of(group, count),
+    {
+        let brand_id = group.brand_id;
+        let kind_id = group.kind_id;
+        let size = group.size;
+        Cell { group, count, brand_id, kind_id, size }
+    }
 }
 
 pub type Counts = Index<Cell>;
@@ -36,10 +61,6 @@ pub struct SizeRanks {
 }
 
 pub type Ranks = Index<SizeRanks>;
-
-pub open spec fn eligible(kind: Seq<u8>) -> bool {
-    !like_match(kind, seq![b'S', b'M', b'A', b'L', b'L', b' ', b'B', b'R', b'U', b'S', b'H', b'E', b'D', b'%'])
-}
 
 pub open spec fn escape(bytes: Seq<u8>) -> Seq<u8>
     decreases bytes.len(),
@@ -65,6 +86,7 @@ pub open spec fn pow256(power: int) -> int
 impl Group {
     pub open spec fn valid(self) -> bool {
         self.identity.view() == self.key()
+        && self.brand_id as int == brand_code((*self.brand)@) && self.kind_id as int == type_code((*self.kind)@)
         && self.order.view() == (0int, escape((*self.brand)@) + escape((*self.kind)@) + size_bytes(self.size as int))
     }
 
@@ -75,7 +97,7 @@ impl Group {
 
 pub open spec fn part_count(db: Db, part: int, brand: Seq<u8>, kind: Seq<u8>, size: int) -> int {
     sum(db.part, |row: PartRow| if row.p_partkey == part && row.p_brand == brand
-        && row.p_type == kind && row.p_size == size && eligible(row.p_type) { 1 } else { 0 })
+        && row.p_type == kind && row.p_size == size { 1 } else { 0 })
 }
 
 pub open spec fn edge_count(db: Db, part: int, supplier: int) -> int {
@@ -88,7 +110,7 @@ pub open spec fn blocker_count(db: Db, supplier: int) -> int {
 }
 
 pub open spec fn support_term(db: Db, supplier: int, brand: Seq<u8>, kind: Seq<u8>, size: int, row: PartRow) -> int {
-    if row.p_brand == brand && row.p_type == kind && row.p_size == size && eligible(row.p_type) {
+    if row.p_brand == brand && row.p_type == kind && row.p_size == size {
         edge_count(db, row.p_partkey, supplier)
     } else { 0int }
 }
@@ -142,6 +164,7 @@ pub open spec fn edge_at(edges: Edges, supplier: int, part: int) -> int {
 pub open spec fn cell_keys_valid(counts: Counts) -> bool {
     counts.wf() && forall|key: KeyView| #[trigger] counts.at(key).is_some() ==>
         counts.at(key).unwrap().group.valid() && counts.at(key).unwrap().group.key() == key
+        && counts.at(key).unwrap().consistent()
 }
 
 pub open spec fn parts_keys_valid(parts: Parts) -> bool {
@@ -184,7 +207,7 @@ pub open spec fn supplier_contribution(parts: Parts, edges: Edges, blockers: Ind
 }
 
 pub open spec fn part_weight(row: PartRow, part: int, key: KeyView) -> int {
-    if row.p_partkey == part && eligible(row.p_type)
+    if row.p_partkey == part
         && group_key(row.p_brand, row.p_type, row.p_size) == key { 1 } else { 0 }
 }
 
@@ -211,7 +234,7 @@ pub open spec fn counts_valid(counts: Counts, db: Db) -> bool {
         #[trigger] count_at(counts, group_key(brand, kind, size)) == total(db, brand, kind, size)
     &&& forall|key: KeyView| #[trigger] counts.at(key).is_some() ==>
         counts.at(key).unwrap().count > 0 && counts.at(key).unwrap().group.key() == key
-        && counts.at(key).unwrap().group.valid()
+        && counts.at(key).unwrap().group.valid() && counts.at(key).unwrap().consistent()
 }
 
 pub open spec fn ranks_valid(ranks: Ranks, counts: Counts) -> bool {

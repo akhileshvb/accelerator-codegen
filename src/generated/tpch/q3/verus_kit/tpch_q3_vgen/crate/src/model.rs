@@ -1,4 +1,7 @@
 use vstd::prelude::*;
+use crate::custs::Custs;
+use crate::paged::{Paged, PageCursor, entry_sorted, Ent};
+use crate::rank_ent::*;
 use std::sync::Arc;
 use verus_common::bytes::*;
 use verus_common::sums::*;
@@ -6,6 +9,7 @@ use verus_prooflib::ordered::{Index, KeyView};
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::values::*;
+use crate::packed::{PackedOrders, PackedShips, PackedGroups};
 pub use verus_prooflib::dyadic_width as pow2;
 
 verus! {
@@ -42,9 +46,9 @@ pub struct GroupCell {
 }
 
 pub struct Page {
-    pub orders: Arc<Vec<OrderCell>>,
-    pub ships: Arc<Vec<ShipCell>>,
-    pub groups: Arc<Vec<GroupCell>>,
+    pub orders: Arc<PackedOrders>,
+    pub ships: Arc<PackedShips>,
+    pub groups: Arc<PackedGroups>,
 }
 
 pub struct PageWork {
@@ -210,20 +214,20 @@ pub open spec fn positive_sum(db: Db, key: int) -> int {
     } else { 0 })
 }
 
-pub open spec fn customer_at(customers: Index<CustomerCell>, customer: int, segment: Seq<u8>) -> int {
+pub open spec fn customer_at(customers: Custs, customer: int, segment: Seq<u8>) -> int {
     match customers.at((customer, Seq::empty())) {
         Some(cell) => segment_count(cell.segments@, segment),
         None => 0,
     }
 }
 
-pub open spec fn order_group_measure(customers: Index<CustomerCell>, segment: Seq<u8>, key: int, date: int, priority: int) -> spec_fn(OrderCell) -> int {
+pub open spec fn order_group_measure(customers: Custs, segment: Seq<u8>, key: int, date: int, priority: int) -> spec_fn(OrderCell) -> int {
     |row: OrderCell| if row.key == key && row.date == date && row.priority == priority {
         row.count as int * customer_at(customers, row.customer as int, segment)
     } else { 0int }
 }
 
-pub open spec fn column_join(rows: Seq<OrderCell>, customers: Index<CustomerCell>, segment: Seq<u8>, key: int, date: int, priority: int) -> int {
+pub open spec fn column_join(rows: Seq<OrderCell>, customers: Custs, segment: Seq<u8>, key: int, date: int, priority: int) -> int {
     sum(rows, order_group_measure(customers, segment, key, date, priority))
 }
 
@@ -277,12 +281,12 @@ pub open spec fn ship_prefix(rows: Seq<ShipmentInput>, key: i64, date: i32, kind
     } else { 0 })
 }
 
-pub open spec fn customer_overlay(work: Map<i64, CustomerCell>, before: Index<CustomerCell>, customer: i64, segment: Seq<u8>) -> int {
+pub open spec fn customer_overlay(work: Map<i64, CustomerCell>, before: Custs, customer: i64, segment: Seq<u8>) -> int {
     if work.dom().contains(customer) { scratch_customer_at(work, customer, segment) }
     else { customer_at(before, customer as int, segment) }
 }
 
-pub open spec fn reverse_overlay(work: Map<i64, CustomerCell>, before: Index<CustomerCell>, customer: i64, key: i64) -> int {
+pub open spec fn reverse_overlay(work: Map<i64, CustomerCell>, before: Custs, customer: i64, key: i64) -> int {
     if work.dom().contains(customer) { scratch_reverse_at(work, customer, key) }
     else { reverse_at(before, customer as int, key as int) }
 }
@@ -295,7 +299,7 @@ pub open spec fn customer_delta_weight(customer: i64, segment: Seq<u8>) -> spec_
     |delta: CustomerDelta| if delta.row.c_custkey == customer && delta.row.c_mktsegment@ == segment { delta.sign as int } else { 0int }
 }
 
-pub open spec fn reverse_at(customers: Index<CustomerCell>, customer: int, key: int) -> int {
+pub open spec fn reverse_at(customers: Custs, customer: int, key: int) -> int {
     match customers.at((customer, Seq::empty())) {
         Some(cell) => reverse_count(cell.orders@, key),
         None => 0,
@@ -353,8 +357,8 @@ pub open spec fn covers(group: GroupCell, node: int) -> bool {
     match group.last_ship {
         None => false,
         Some(last) => group.id.date as int + 1 <= last as int - 1 && {
-            let first = (group.id.date as int + 1 - i32::MIN as int) / 64;
-            let final_leaf = (last as int - 1 - i32::MIN as int) / 64;
+            let first = (group.id.date as int + 1 - i32::MIN as int) / 128;
+            let final_leaf = (last as int - 1 - i32::MIN as int) / 128;
             let level = node / 67108864;
             let offset = node % 67108864;
             let width = pow2(level);
@@ -374,7 +378,7 @@ pub open spec fn customer_shape(cell: CustomerCell) -> bool {
         0 <= left < right < cell.orders@.len() ==> cell.orders@[left].0 < cell.orders@[right].0
 }
 
-pub open spec fn customer_database_ok(customers: Index<CustomerCell>, db: Db) -> bool {
+pub open spec fn customer_database_ok(customers: Custs, db: Db) -> bool {
     &&& customers.wf()
     &&& forall|customer: int, segment: Seq<u8>| #![trigger customer_at(customers, customer, segment)]
         customer_at(customers, customer, segment) == customer_sum(db, customer, segment)
@@ -414,22 +418,22 @@ pub open spec fn page_shape(page: Page, number: int, db: Db) -> bool {
     }
 }
 
-pub open spec fn listed(ranks: Index<Index<()>>, node: int, segment: Seq<u8>, group: GroupCell) -> bool {
+pub open spec fn listed(ranks: Index<Paged<RankEnt>>, node: int, segment: Seq<u8>, group: GroupCell) -> bool {
     rank_at(ranks, (node, segment), group_rank(group))
 }
 
 pub open spec fn group_rank(group: GroupCell) -> KeyView {
-    (-(if group.bound >= i64::MAX { i64::MAX as int } else { group.bound as int }), group_bytes(group.id))
+    rank_of(if group.bound >= i64::MAX { i64::MAX as int } else { group.bound as int }, group.id)
 }
 
-pub open spec fn rank_at(ranks: Index<Index<()>>, outer: KeyView, key: KeyView) -> bool {
+pub open spec fn rank_at(ranks: Index<Paged<RankEnt>>, outer: KeyView, key: KeyView) -> bool {
     match ranks.at(outer) {
         Some(index) => index.at(key).is_some(),
         None => false,
     }
 }
 
-pub open spec fn ranks_wf(ranks: Index<Index<()>>) -> bool {
+pub open spec fn ranks_wf(ranks: Index<Paged<RankEnt>>) -> bool {
     ranks.wf() && forall|outer: KeyView| #![trigger ranks.at(outer)]
         ranks.at(outer).is_some() ==> ranks.at(outer).unwrap().wf()
 }
@@ -448,7 +452,7 @@ pub open spec fn groups_in_pages(pages: Index<Page>, groups: Seq<GroupCell>) -> 
                 && (*pages.at(page_key).unwrap().groups)@[position] == group)
 }
 
-pub open spec fn rank_database_ok(pages: Index<Page>, ranks: Index<Index<()>>) -> bool {
+pub open spec fn rank_database_ok(pages: Index<Page>, ranks: Index<Paged<RankEnt>>) -> bool {
     &&& ranks_wf(ranks)
     &&& forall|page_key: KeyView, position: int, node: int| #![trigger listed(ranks, node, (*(*pages.at(page_key).unwrap().groups)@[position].segment)@, (*pages.at(page_key).unwrap().groups)@[position])]
         pages.at(page_key).is_some() && 0 <= position < (*pages.at(page_key).unwrap().groups)@.len() ==> {
@@ -467,7 +471,7 @@ pub open spec fn rank_database_ok(pages: Index<Page>, ranks: Index<Index<()>>) -
     }
 }
 
-pub open spec fn state_ok(customers: Index<CustomerCell>, pages: Index<Page>, ranks: Index<Index<()>>, db: Db) -> bool {
+pub open spec fn state_ok(customers: Custs, pages: Index<Page>, ranks: Index<Paged<RankEnt>>, db: Db) -> bool {
     &&& database_domains(db)
     &&& customers.wf() && pages.wf() && ranks.wf()
     &&& forall|customer: int, segment: Seq<u8>| #![trigger customer_at(customers, customer, segment)]
@@ -494,7 +498,7 @@ pub open spec fn state_ok(customers: Index<CustomerCell>, pages: Index<Page>, ra
                 pages.at(page_key).is_some() && 0 <= position < (*pages.at(page_key).unwrap().groups)@.len() && {
                     let group = (*pages.at(page_key).unwrap().groups)@[position];
                     (*group.segment)@ == outer.1 && covers(group, outer.0)
-                    && rank == (-(if group.bound >= i64::MAX { i64::MAX as int } else { group.bound as int }), group_bytes(group.id))
+                    && rank == group_rank(group)
                 }
     }
 }

@@ -1,4 +1,6 @@
 use vstd::prelude::*;
+use crate::paged::{Paged, PageCursor, entry_sorted, Ent};
+use crate::rank_ent::*;
 use std::sync::Arc;
 use verus_prooflib::ordered::{Index, Key};
 use crate::model::*;
@@ -8,9 +10,9 @@ use verus_prooflib::ordered::KeyView;
 
 verus! {
 
-pub fn append_groups(ranks: &mut Index<Index<()>>, groups: &Vec<GroupCell>)
+pub fn append_groups(ranks: &mut Index<Paged<RankEnt>>, groups: &Vec<GroupCell>)
     requires ranks_wf(*old(ranks)),
-        forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> groups@[position].bound >= 0,
+        forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==> groups@[position].bound >= 0 && id_fits(groups@[position].id),
     ensures ranks_wf(*final(ranks)),
         forall|outer: KeyView, rank: KeyView| #![trigger rank_at(*final(ranks), outer, rank)]
             rank_at(*final(ranks), outer, rank) == (rank_at(*old(ranks), outer, rank) || rank_present(groups@, outer, rank)),
@@ -19,7 +21,7 @@ pub fn append_groups(ranks: &mut Index<Index<()>>, groups: &Vec<GroupCell>)
     let mut position = 0;
     while position < groups.len()
         invariant position <= groups.len(), ranks_wf(*ranks),
-            forall|source: int| #![trigger groups@[source]] 0 <= source < groups@.len() ==> groups@[source].bound >= 0,
+            forall|source: int| #![trigger groups@[source]] 0 <= source < groups@.len() ==> groups@[source].bound >= 0 && id_fits(groups@[source].id),
             forall|outer: KeyView, rank: KeyView| #![trigger rank_at(*ranks, outer, rank)]
                 rank_at(*ranks, outer, rank) == (rank_at(original, outer, rank) || rank_present(groups@.take(position as int), outer, rank)),
         decreases groups.len() - position,
@@ -87,8 +89,8 @@ pub fn cover(group: &GroupCell) -> (nodes: Vec<i64>)
     let first_date = group.id.date as i64 + 1;
     let last_date = last as i64 - 1;
     if first_date > last_date { return nodes; }
-    let mut low = (first_date - i32::MIN as i64) / 64;
-    let mut high = (last_date - i32::MIN as i64) / 64 + 1;
+    let mut low = (first_date - i32::MIN as i64) / 128;
+    let mut high = (last_date - i32::MIN as i64) / 128 + 1;
     let ghost first = low as int;
     let ghost end = high as int;
     let mut level: i64 = 0;
@@ -97,8 +99,8 @@ pub fn cover(group: &GroupCell) -> (nodes: Vec<i64>)
             0 <= level <= 27, 0 <= low <= high <= 67108864,
             group.last_ship == Some(last), first_date == group.id.date as int + 1, last_date == last as int - 1,
             first_date <= last_date,
-            first == (first_date - i32::MIN as int) / 64,
-            end == (last_date - i32::MIN as int) / 64 + 1,
+            first == (first_date - i32::MIN as int) / 128,
+            end == (last_date - i32::MIN as int) / 128 + 1,
             0 <= first < end <= 67108864,
             low * pow2(level as int) >= first, (low - 1) * pow2(level as int) < first,
             high * pow2(level as int) <= end, (high + 1) * pow2(level as int) > end,
@@ -238,9 +240,9 @@ pub fn cover(group: &GroupCell) -> (nodes: Vec<i64>)
     nodes
 }
 
-pub fn change(ranks: &mut Index<Index<()>>, group: &GroupCell, insert: bool)
-    requires group.bound >= 0,
-    ensures old(ranks).wf() ==> final(ranks).wf(), ranks_wf(*old(ranks)) ==> ranks_wf(*final(ranks)),
+pub fn change(ranks: &mut Index<Paged<RankEnt>>, group: &GroupCell, insert: bool)
+    requires group.bound >= 0, id_fits(group.id), ranks_wf(*old(ranks)),
+    ensures ranks_wf(*final(ranks)),
         forall|outer: KeyView, key: KeyView| #![trigger rank_at(*final(ranks), outer, key)]
         rank_at(*final(ranks), outer, key) ==
             if outer.1 == (*group.segment)@ && covers(*group, outer.0) && key == group_rank(*group) { insert }
@@ -248,10 +250,12 @@ pub fn change(ranks: &mut Index<Index<()>>, group: &GroupCell, insert: bool)
 {
     let ghost original = *ranks;
     let nodes = cover(group);
+    let ent = rank_ent(group.bound, group.id);
     let mut index = 0;
     while index < nodes.len()
-        invariant index <= nodes.len(), group.bound >= 0,
-            original.wf() ==> ranks.wf(), ranks_wf(original) ==> ranks_wf(*ranks),
+        invariant index <= nodes.len(), group.bound >= 0, id_fits(group.id),
+            ent.kv() == group_rank(*group),
+            ranks_wf(*ranks),
             forall|outer: KeyView, key: KeyView| #![trigger rank_at(*ranks, outer, key)]
                 rank_at(*ranks, outer, key) ==
                     if outer.1 == (*group.segment)@ && seq_view_i64(nodes@.take(index as int)).contains(outer.0) && key == group_rank(*group) { insert }
@@ -260,22 +264,31 @@ pub fn change(ranks: &mut Index<Index<()>>, group: &GroupCell, insert: bool)
     {
         let ghost before = *ranks;
         let outer_key = Key { number: nodes[index], text: group.segment.clone() };
-        let mut inner = match ranks.get(&outer_key) { Some(value) => value.share(), None => Index::new() };
+        let mut inner = match ranks.get(&outer_key) {
+            Some(value) => {
+                proof { assert(ranks.at(outer_key.view()) == Some(*value)); }
+                value.share()
+            },
+            None => Paged::new(),
+        };
         let ghost before_inner = inner;
-        let key = rank_key(group.bound, group.id);
-        if insert { inner.put(key, Arc::new(())); }
-        else { inner.remove(&key); }
-        proof { inner.model(); }
-        if inner.is_empty() { ranks.remove(&outer_key); }
+        if insert { inner.put(ent); }
+        else { inner.remove(&ent); }
+        let empty = inner.is_empty();
+        if empty { ranks.remove(&outer_key); }
         else { ranks.put(outer_key, Arc::new(inner)); }
         proof {
             assert forall|outer: KeyView, query: KeyView| #![trigger rank_at(*ranks, outer, query)]
                 rank_at(*ranks, outer, query) ==
-                    if outer == outer_key.view() && query == key.view() { insert } else { rank_at(before, outer, query) } by {
+                    if outer == outer_key.view() && query == ent.kv() { insert } else { rank_at(before, outer, query) } by {
                 if outer == outer_key.view() {
                     assert(rank_at(before, outer, query) == before_inner.at(query).is_some());
-                    if inner.entries().len() == 0 { assert(inner.at(query).is_none()); }
+                    if empty { assert(!inner.nonempty()); assert(inner.at(query).is_none()); }
                 }
+            }
+            assert forall|outer: KeyView| #![trigger ranks.at(outer)] ranks.at(outer).is_some() implies ranks.at(outer).unwrap().wf() by {
+                if outer == outer_key.view() { assert(ranks.at(outer) == Some(inner)); }
+                else { assert(before.at(outer) == ranks.at(outer)); }
             }
             let prior_nodes = seq_view_i64(nodes@.take(index as int));
             assert(seq_view_i64(nodes@.take(index as int + 1)) =~= prior_nodes.push(nodes@[index as int] as int));

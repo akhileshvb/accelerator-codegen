@@ -1,0 +1,1 @@
+SELECT id FROM events WHERE kind LIKE $1 AND note NOT LIKE $2 ORDER BY id

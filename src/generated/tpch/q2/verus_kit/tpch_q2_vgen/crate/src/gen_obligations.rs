@@ -7,18 +7,17 @@
 // behind crate::kernel; the host calls only the ob_* functions below.
 //
 // Kernel inputs:
-//   -- Only BRASS part projections and their partsupp neighborhoods are retained.
+//   -- All parts (with p_type, so the pattern is applied at read time) and the partsupp rows of existing parts are retained.
 //   scan brass_parts AS BrassPartScan:
-//     SELECT p_partkey, p_mfgr, p_size
-//     FROM part
-//     WHERE p_type LIKE '%BRASS';
+//     SELECT p_partkey, p_mfgr, p_size, p_type
+//     FROM part;
 //   
 //   scan brass_partsupp AS BrassPartsuppScan:
 //     SELECT ps_partkey, ps_suppkey, ps_supplycost
 //     FROM partsupp
 //     WHERE EXISTS (
 //       SELECT p_partkey FROM part
-//       WHERE p_partkey = ps_partkey AND p_type LIKE '%BRASS'
+//       WHERE p_partkey = ps_partkey
 //     );
 //   
 //   scan suppliers AS SupplierScan:
@@ -35,16 +34,15 @@
 //   -- Both selectors use the union of all raw signed part-key occurrences.
 //   -- They do not cancel projected -key/+key updates or need another rescan's rows.
 //   rescan brass_parts_after AS BrassPartScan KEYS p_partkey:
-//     SELECT p_partkey, p_mfgr, p_size
-//     FROM part
-//     WHERE p_type LIKE '%BRASS';
+//     SELECT p_partkey, p_mfgr, p_size, p_type
+//     FROM part;
 //   
 //   rescan brass_partsupp_after AS BrassPartsuppScan KEYS ps_partkey:
 //     SELECT ps_partkey, ps_suppkey, ps_supplycost
 //     FROM partsupp
 //     WHERE EXISTS (
 //       SELECT p_partkey FROM part
-//       WHERE p_partkey = ps_partkey AND p_type LIKE '%BRASS'
+//       WHERE p_partkey = ps_partkey
 //     );
 //   
 //   delta part AS PartKeyDelta:
@@ -87,13 +85,20 @@ pub struct BrassPartScan {
     pub p_mfgr: Vec<u8>,
     /// part.p_size (integer)
     pub p_size: i64,
+    /// part.p_type (text bytes)
+    pub p_type: Vec<u8>,
 }
 
-pub open spec fn brass_part_scan_view(r: BrassPartScan) -> (int, Seq<u8>, int) {
-    (r.p_partkey as int, r.p_mfgr@, r.p_size as int)
+pub open spec fn brass_part_scan_view(r: BrassPartScan) -> PartRow {
+    PartRow {
+        p_partkey: r.p_partkey as int,
+        p_mfgr: r.p_mfgr@,
+        p_type: r.p_type@,
+        p_size: r.p_size as int,
+    }
 }
 
-pub open spec fn brass_part_scan_seq_view(s: Seq<BrassPartScan>) -> Seq<(int, Seq<u8>, int)> {
+pub open spec fn brass_part_scan_seq_view(s: Seq<BrassPartScan>) -> Seq<PartRow> {
     s.map_values(|r: BrassPartScan| brass_part_scan_view(r))
 }
 
@@ -202,8 +207,8 @@ pub open spec fn seq_view_i64(s: Seq<i64>) -> Seq<int> {
 
 // ── Parameters and result ──
 
-pub open spec fn params(p1: int, p2: Seq<u8>) -> Params {
-    Params { p1, p2 }
+pub open spec fn params(p1: int, p2: Seq<u8>, p3: Seq<u8>) -> Params {
+    Params { p1, p2, p3 }
 }
 
 pub open spec fn out_view(o: Seq<(i128, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>) -> Seq<OutRow> {
@@ -212,27 +217,23 @@ pub open spec fn out_view(o: Seq<(i128, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>,
 
 // ── Scan and capture contracts ──
 
-/// scan brass_parts: SELECT p_partkey, p_mfgr, p_size FROM part WHERE p_type LIKE '%BRASS'
+/// scan brass_parts: SELECT p_partkey, p_mfgr, p_size, p_type FROM part
 pub open spec fn scan_brass_parts_ok(db: Db, rows: Seq<BrassPartScan>) -> bool {
-    forall|f: spec_fn((int, Seq<u8>, int)) -> int| #[trigger] sum(brass_part_scan_seq_view(rows), f) == sum(
-        db.part,
-        |part: PartRow| if like_match(part.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S']) { f((part.p_partkey, part.p_mfgr, part.p_size)) } else { 0 },
-    )
+    forall|f: spec_fn(PartRow) -> int| #[trigger] sum(brass_part_scan_seq_view(rows), f) == sum(db.part, f)
 }
 
-/// The WHERE clause of EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) AND part.p_type LIKE Utf8("%BRASS") <- Projection: part.p_partkey)
+/// The WHERE clause of EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) <- Projection: part.p_partkey)
 pub open spec fn scan_brass_partsupp_exists_1_where(partsupp: PartsuppRow, part: PartRow) -> bool {
     &&& part.p_partkey == partsupp.ps_partkey
-    &&& like_match(part.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S'])
 }
 
-/// EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) AND part.p_type LIKE Utf8("%BRASS") <- Projection: part.p_partkey)
+/// EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) <- Projection: part.p_partkey)
 pub open spec fn scan_brass_partsupp_exists_1(db: Db, partsupp: PartsuppRow) -> bool {
     exists|i_part: int| #![trigger db.part[i_part]]
         0 <= i_part < db.part.len() && scan_brass_partsupp_exists_1_where(partsupp, db.part[i_part])
 }
 
-/// scan brass_partsupp: SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp WHERE EXISTS ( SELECT p_partkey FROM part WHERE p_partkey = ps_partkey AND p_type LIKE '%BRASS' )
+/// scan brass_partsupp: SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp WHERE EXISTS ( SELECT p_partkey FROM part WHERE p_partkey = ps_partkey )
 pub open spec fn scan_brass_partsupp_ok(db: Db, rows: Seq<BrassPartsuppScan>) -> bool {
     forall|f: spec_fn(PartsuppRow) -> int| #[trigger] sum(brass_partsupp_scan_seq_view(rows), f) == sum(
         db.partsupp,
@@ -255,28 +256,27 @@ pub open spec fn scan_regions_ok(db: Db, rows: Seq<RegionScan>) -> bool {
     forall|f: spec_fn(RegionRow) -> int| #[trigger] sum(region_scan_seq_view(rows), f) == sum(db.region, f)
 }
 
-/// rescan brass_parts_after: SELECT p_partkey, p_mfgr, p_size FROM part WHERE p_type LIKE '%BRASS'
+/// rescan brass_parts_after: SELECT p_partkey, p_mfgr, p_size, p_type FROM part
 ///   restricted to the rows whose p_partkey is one of `keys`.
 pub open spec fn rescan_brass_parts_after_ok(db: Db, keys: Seq<i64>, rows: Seq<BrassPartScan>) -> bool {
-    forall|f: spec_fn((int, Seq<u8>, int)) -> int| #[trigger] sum(brass_part_scan_seq_view(rows), f) == sum(
+    forall|f: spec_fn(PartRow) -> int| #[trigger] sum(brass_part_scan_seq_view(rows), f) == sum(
         db.part,
-        |part: PartRow| if (like_match(part.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S'])) && (seq_view_i64(keys).contains(part.p_partkey)) { f((part.p_partkey, part.p_mfgr, part.p_size)) } else { 0 },
+        |part: PartRow| if seq_view_i64(keys).contains(part.p_partkey) { f(part) } else { 0 },
     )
 }
 
-/// The WHERE clause of EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) AND part.p_type LIKE Utf8("%BRASS") <- Projection: part.p_partkey)
+/// The WHERE clause of EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) <- Projection: part.p_partkey)
 pub open spec fn rescan_brass_partsupp_after_exists_1_where(partsupp: PartsuppRow, part: PartRow) -> bool {
     &&& part.p_partkey == partsupp.ps_partkey
-    &&& like_match(part.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S'])
 }
 
-/// EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) AND part.p_type LIKE Utf8("%BRASS") <- Projection: part.p_partkey)
+/// EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) <- Projection: part.p_partkey)
 pub open spec fn rescan_brass_partsupp_after_exists_1(db: Db, partsupp: PartsuppRow) -> bool {
     exists|i_part: int| #![trigger db.part[i_part]]
         0 <= i_part < db.part.len() && rescan_brass_partsupp_after_exists_1_where(partsupp, db.part[i_part])
 }
 
-/// rescan brass_partsupp_after: SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp WHERE EXISTS ( SELECT p_partkey FROM part WHERE p_partkey = ps_partkey AND p_type LIKE '%BRASS' )
+/// rescan brass_partsupp_after: SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp WHERE EXISTS ( SELECT p_partkey FROM part WHERE p_partkey = ps_partkey )
 ///   restricted to the rows whose ps_partkey is one of `keys`.
 pub open spec fn rescan_brass_partsupp_after_ok(db: Db, keys: Seq<i64>, rows: Seq<BrassPartsuppScan>) -> bool {
     forall|f: spec_fn(PartsuppRow) -> int| #[trigger] sum(brass_partsupp_scan_seq_view(rows), f) == sum(
@@ -382,11 +382,12 @@ pub fn ob_execute(
     s: &State,
     p1: i64,
     p2: &[u8],
+    p3: &[u8],
 ) -> (r: Option<Vec<(i128, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>>)
     ensures
-        r matches Some(out) ==> query_result(s.db(), params(p1 as int, p2@), out_view(out@)),
+        r matches Some(out) ==> query_result(s.db(), params(p1 as int, p2@, p3@), out_view(out@)),
 {
-    kernel::execute(s, p1, p2)
+    kernel::execute(s, p1, p2, p3)
 }
 
 /// The keys whose rows the host rescans (rescan brass_parts_after) for apply.  No contract:

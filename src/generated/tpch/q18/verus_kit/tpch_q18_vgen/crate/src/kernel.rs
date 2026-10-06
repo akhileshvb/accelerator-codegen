@@ -364,9 +364,11 @@ pub fn build(
     }
     proof { assert(quantities@.take(index as int) =~= quantities@); }
     let directory = Arc::new(sort_quantities(&quantities, 0, quantities.len()));
-    let orders = orders.finish();
-    let customers = customers.finish();
+    let mut orders = orders.finish();
+    let mut customers = customers.finish();
     let buckets = buckets.finish();
+    orders.compact();
+    customers.compact();
     proof {
         assert forall|quantity: i128, key: i64| #[trigger] eligible_order(orders.at(key as i128), quantity) ==
             (buckets.at(quantity) matches Some(bucket) && bucket.view().contains(key)) by {

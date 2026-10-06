@@ -1,14 +1,34 @@
 use vstd::prelude::*;
+use crate::custs::Custs;
 use std::sync::Arc;
 use verus_common::bytes::*;
 use verus_common::sums::*;
 use verus_prooflib::ordered::{Index, Key};
 use crate::gen_obligations::*;
 use crate::model::*;
+use crate::packed::{PackedOrders, PackedShips, PackedGroups};
 use crate::values::*;
 use crate::values::{add, mul};
 
 verus! {
+
+/// A shared buffer for a segment name: names seen before (a few) are reused, so the cells of
+/// millions of customers share their handful of names.
+pub fn intern(names: &mut Vec<Arc<Vec<u8>>>, bytes: &[u8]) -> (result: Arc<Vec<u8>>)
+    ensures (*result)@ == bytes@,
+{
+    let mut index = 0;
+    while index < names.len()
+        invariant index <= names.len(),
+        decreases names.len() - index,
+    {
+        if bytes_eq_exec(&names[index], bytes) { return names[index].clone(); }
+        index += 1;
+    }
+    let fresh = Arc::new(copy_bytes(bytes));
+    if names.len() < 32 { names.push(fresh.clone()); }
+    fresh
+}
 
 pub fn empty_customer() -> (result: CustomerCell)
     ensures result.segments@ == Seq::empty(), result.orders@ == Seq::empty(),
@@ -40,7 +60,7 @@ pub fn copy_customer(source: &CustomerCell) -> (result: CustomerCell)
     CustomerCell { segments, orders }
 }
 
-pub fn segment_change(cell: &mut CustomerCell, segment: &[u8], delta: i64) -> (result: bool)
+pub fn segment_change(cell: &mut CustomerCell, segment: &Arc<Vec<u8>>, delta: i64) -> (result: bool)
     requires
         segments_sorted(old(cell).segments@),
         forall|index: int| #![trigger old(cell).segments@[index]] 0 <= index < old(cell).segments@.len() ==> old(cell).segments@[index].1 != 0,
@@ -100,7 +120,7 @@ pub fn segment_change(cell: &mut CustomerCell, segment: &[u8], delta: i64) -> (r
             proof { verus_prooflib::lemma_sorted_update_at(before, low as int, cell.segments@[low as int], less); }
         }
     } else if count != 0 {
-        cell.segments.insert(low, (Arc::new(copy_bytes(segment)), count));
+        cell.segments.insert(low, (segment.clone(), count));
         proof {
             assert forall|index: int| #![trigger before[index]] low <= index < before.len() implies bytes_lt(segment@, (*before[index].0)@) by {
                 if (*before[index].0)@ == segment@ {
@@ -473,6 +493,45 @@ pub fn ships_start(rows: &Vec<ShipCell>, key: i64) -> (result: usize)
     low
 }
 
+pub fn ships_start_packed(rows: &PackedShips, key: i64) -> (result: usize)
+    requires ships_sorted(rows@),
+    ensures result <= rows@.len(),
+        forall|index: int| #![trigger rows@[index]] 0 <= index < result ==> rows@[index].key < key,
+        forall|index: int| #![trigger rows@[index]] result <= index < rows@.len() ==> rows@[index].key >= key,
+{
+    let mut low = 0;
+    let mut high = rows.len();
+    while low < high
+        invariant low <= high <= rows@.len(), ships_sorted(rows@),
+            forall|index: int| #![trigger rows@[index]] 0 <= index < low ==> rows@[index].key < key,
+            forall|index: int| #![trigger rows@[index]] high <= index < rows@.len() ==> rows@[index].key >= key,
+        decreases high - low,
+    {
+        let middle = low + (high - low) / 2;
+        if rows.get(middle).key < key { low = middle + 1; } else { high = middle; }
+    }
+    low
+}
+
+pub fn copy_groups(source: &Vec<GroupCell>) -> (result: Vec<GroupCell>)
+    ensures result@ == source@,
+{
+    let mut result = Vec::with_capacity(source.len());
+    let mut index = 0;
+    while index < source.len()
+        invariant index <= source.len(), result@ == source@.take(index as int),
+        decreases source.len() - index,
+    {
+        let group = &source[index];
+        result.push(GroupCell { segment: group.segment.clone(), id: group.id, weight: group.weight,
+            bound: group.bound, last_ship: group.last_ship });
+        proof { assert(source@.take(index as int + 1) =~= source@.take(index as int).push(source@[index as int])); }
+        index += 1;
+    }
+    proof { assert(source@.take(index as int) =~= source@); }
+    result
+}
+
 pub fn group_less(segment: &[u8], id: GroupId, right: &GroupCell) -> bool {
     bytes_lt_exec(segment, &right.segment) || (bytes_eq_exec(segment, &right.segment)
         && (id.key < right.id.key || (id.key == right.id.key && (id.date < right.id.date
@@ -497,6 +556,47 @@ pub fn group_start(rows: &Vec<GroupCell>, segment: &[u8], id: GroupId) -> (resul
         if bytes_lt_exec(&stored.segment, segment) || (bytes_eq_exec(&stored.segment, segment)
             && (stored.id.key < id.key || (stored.id.key == id.key && (stored.id.date < id.date
             || (stored.id.date == id.date && stored.id.priority < id.priority))))) {
+            proof {
+                if groups_sorted(rows@) {
+                    assert forall|index: int| #![trigger rows@[index]] 0 <= index <= middle implies group_before_id(rows@[index], segment@, id) by {
+                        if index < middle {
+                            lemma_group_search_order(rows@[index], rows@[middle as int], segment@, id);
+                        }
+                    }
+                }
+            }
+            low = middle + 1;
+        } else {
+            proof {
+                if groups_sorted(rows@) {
+                    assert forall|index: int| #![trigger rows@[index]] middle <= index < rows@.len() implies !group_before_id(rows@[index], segment@, id) by {
+                        if index > middle {
+                            lemma_group_search_order(rows@[middle as int], rows@[index], segment@, id);
+                        }
+                    }
+                }
+            }
+            high = middle;
+        }
+    }
+    low
+}
+
+pub fn group_start_packed(rows: &PackedGroups, segment: &[u8], id: GroupId) -> (result: usize)
+    ensures result <= rows@.len(),
+        groups_sorted(rows@) ==> forall|index: int| #![trigger rows@[index]] 0 <= index < result ==> group_before_id(rows@[index], segment@, id),
+        groups_sorted(rows@) ==> forall|index: int| #![trigger rows@[index]] result <= index < rows@.len() ==> !group_before_id(rows@[index], segment@, id),
+{
+    let mut low = 0;
+    let mut high = rows.len();
+    while low < high
+        invariant low <= high <= rows@.len(),
+            groups_sorted(rows@) ==> forall|index: int| #![trigger rows@[index]] 0 <= index < low ==> group_before_id(rows@[index], segment@, id),
+            groups_sorted(rows@) ==> forall|index: int| #![trigger rows@[index]] high <= index < rows@.len() ==> !group_before_id(rows@[index], segment@, id),
+        decreases high - low,
+    {
+        let middle = low + (high - low) / 2;
+        if rows.before_id(middle, segment, id) {
             proof {
                 if groups_sorted(rows@) {
                     assert forall|index: int| #![trigger rows@[index]] 0 <= index <= middle implies group_before_id(rows@[index], segment@, id) by {
@@ -618,8 +718,8 @@ pub fn increment_group(groups: &mut Vec<GroupCell>, segment: Arc<Vec<u8>>, id: G
 }
 
 pub fn compute_key(groups: &mut Vec<GroupCell>, orders: &Vec<OrderCell>, ships: &Vec<ShipCell>,
-    customers: &Index<CustomerCell>, key: i64) -> (result: bool)
-    requires
+    customers: &Custs, key: i64) -> (result: bool)
+    requires customers.wf(),
         orders_sorted(orders@), ships_sorted(ships@),
         forall|index: int| #![trigger ships@[index]] 0 <= index < ships@.len() ==> ships@[index].positive >= 0,
         forall|index: int| #![trigger orders@[index]] 0 <= index < orders@.len() ==> orders@[index].count > 0,
@@ -680,7 +780,7 @@ pub fn compute_key(groups: &mut Vec<GroupCell>, orders: &Vec<OrderCell>, ships: 
         }
     }
     while index < orders.len() && orders[index].key == key
-        invariant index <= orders.len(), positive >= 0,
+        invariant index <= orders.len(), positive >= 0, customers.wf(),
             positive as int == ship_positive(ships@, key as int), ship_last_ok(ships@, key as int, last_ship),
             forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==>
                 original_groups.contains(groups@[position]) || (groups@[position].id.key == key && group_ship_ok(groups@[position], ships@)),
@@ -702,10 +802,10 @@ pub fn compute_key(groups: &mut Vec<GroupCell>, orders: &Vec<OrderCell>, ships: 
                 column_weight(before_order, target, target_key, date, priority) == column_weight(original_groups, target, target_key, date, priority)
                     + if target_key == key { column_join(orders@.take(index as int), *customers, target, target_key, date, priority) } else { 0int });
         }
-        if let Some(customer) = customers.get(&Key::number(order.customer)) {
+        if let Some(customer) = customers.get(order.customer) {
             let mut segment_index = 0;
             while segment_index < customer.segments.len()
-                invariant segment_index <= customer.segments.len(), customer_shape(*customer), order.count > 0, order.key == key, positive >= 0,
+                invariant segment_index <= customer.segments.len(), customer_shape(*customer), customers.wf(), order.count > 0, order.key == key, positive >= 0,
                     positive as int == ship_positive(ships@, key as int), ship_last_ok(ships@, key as int, last_ship),
                     forall|position: int| #![trigger groups@[position]] 0 <= position < groups@.len() ==>
                         original_groups.contains(groups@[position]) || (groups@[position].id.key == key && group_ship_ok(groups@[position], ships@)),

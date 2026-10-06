@@ -25,7 +25,10 @@ database with `verus_sql`. Write in `tests/`:
   commas (e.g. `'SAUDI ARABIA'` or `DATE '1995-01-01', 24`). Mostly real
   values spread over the domain (large, typical and small answers; for a
   small domain, all of it), plus a few edge values: values that match
-  nothing, boundaries, text that differs only in case or spacing.
+  nothing, boundaries, text that differs only in case or spacing. Cover each
+  parameter's whole TPC-H domain (all colors, nations, ... or a wide spread).
+  The pipeline appends random domain tuples to `params.sql` and adds a fresh
+  random set to every differential run.
 * `txns/NNN.sql`: one write transaction per file (DuckDB SQL; statements
   separated by `;`). They run **in sequence, committed**: each one runs on
   the state the previous ones left, so write each to be valid there (a

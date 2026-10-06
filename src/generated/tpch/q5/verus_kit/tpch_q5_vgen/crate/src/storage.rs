@@ -2,6 +2,7 @@ use vstd::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use verus_common::sums::*;
+use verus_prooflib::lemma_sum_insert;
 
 verus! {
 
@@ -274,135 +275,674 @@ impl Bucket {
     }
 }
 
-pub struct Layer {
-    pub base: Arc<Bucket>,
-    pub replacements: Bucket,
+// ---------------------------------------------------------------------------
+// Compact persistent tables.
+//
+// A table is a three-level tree of `Arc`s (128 x 128 x 64 slots) over 2^20
+// chunks.  A key lives in chunk `partition(key)` (a multiplicative hash, so
+// TPC-H's sparse order keys spread evenly).  A chunk is one flat array of
+// 32-byte entries (key, sub, day, count, revenue), sorted by key, one entry per
+// (key, sub, day) slot with a non-zero value; a key's cells are therefore a
+// contiguous run.  There is no per-key allocation, no hash map and no per-entry
+// Arc: a version of the table shares every chunk it did not touch, and a
+// change copies one chunk and the 3 slot arrays on its path.
+//
+// Stored counts are i32 and revenues i64 (the in-flight `Cell` stays i128); a
+// value that does not fit makes the change fail like any other overflow, which
+// every caller already treats as "cannot maintain" (build returns None, apply
+// returns an error and the engine falls back to the base query).
+// ---------------------------------------------------------------------------
+
+pub open spec fn partition(key: i64) -> int {
+    (((key as u64).wrapping_mul(0x9E3779B97F4A7C15u64)) >> 44u64) as int
 }
 
-impl Layer {
-    pub open spec fn rows(self, key: i64) -> Seq<Cell> {
-        if self.replacements.groups@.contains_key(key) { self.replacements.groups@[key].rows@ }
-        else if self.base.groups@.contains_key(key) { self.base.groups@[key].rows@ }
-        else { Seq::empty() }
+pub proof fn lemma_partition_bound(key: i64)
+    ensures 0 <= partition(key) < 1048576,
+{
+    let x = (key as u64).wrapping_mul(0x9E3779B97F4A7C15u64);
+    assert(x >> 44u64 < 1048576u64) by (bit_vector);
+}
+
+pub fn part(key: i64) -> (out: usize)
+    ensures out == partition(key), out < 1048576,
+{
+    let x = (key as u64).wrapping_mul(0x9E3779B97F4A7C15u64) >> 44u64;
+    proof { lemma_partition_bound(key); }
+    x as usize
+}
+
+#[derive(Clone, Copy)]
+pub struct Entry {
+    pub key: i64,
+    pub sub: i64,
+    pub revenue: i64,
+    pub day: i32,
+    pub count: i32,
+}
+
+impl Entry {
+    pub open spec fn cell(self) -> Cell {
+        Cell { sub: self.sub, day: self.day, count: self.count as i128, revenue: self.revenue as i128 }
     }
-
-    pub open spec fn at(self, key: i64, sub: i64, day: i32) -> (int, int) {
-        if self.replacements.groups@.contains_key(key) { self.replacements.at(key, sub, day) }
-        else { self.base.at(key, sub, day) }
+    pub open spec fn live(self) -> bool { self.count != 0 || self.revenue != 0 }
+    pub open spec fn same_slot(self, other: Entry) -> bool {
+        self.key == other.key && self.sub == other.sub && self.day == other.day
     }
+}
 
-    pub open spec fn wf(self) -> bool { self.base.wf() && self.replacements.wf() && self.replacements.keys@.len() < 64 }
+pub open spec fn entry_cell(e: Entry) -> Cell { e.cell() }
 
-    pub fn group(&self, key: i64) -> (out: Option<&Group>)
-        requires self.wf(),
-        ensures out matches Some(group) ==> group.wf(),
-            match out { Some(group) => group.rows@ == self.rows(key), None => self.rows(key).len() == 0 },
-            forall|sub: i64, day: i32| #[trigger] self.at(key, sub, day) ==
-                match out { Some(group) => group.at(sub, day), None => (0, 0) },
-    {
-        match self.replacements.groups.get(&key) {
-            Some(group) => Some(group),
-            None => self.base.groups.get(&key),
+pub open spec fn sorted_by_key(s: Seq<Entry>) -> bool {
+    forall|i: int, j: int| 0 <= i < j < s.len() ==> (#[trigger] s[i]).key <= (#[trigger] s[j]).key
+}
+
+pub open spec fn live_all(s: Seq<Entry>) -> bool {
+    forall|i: int| 0 <= i < s.len() ==> (#[trigger] s[i]).live()
+}
+
+pub open spec fn distinct_slots(s: Seq<Entry>) -> bool {
+    forall|i: int, j: int| 0 <= i < j < s.len() ==> !(#[trigger] s[i]).same_slot(#[trigger] s[j])
+}
+
+pub open spec fn entries_ok(s: Seq<Entry>) -> bool {
+    sorted_by_key(s) && live_all(s) && distinct_slots(s)
+}
+
+pub open spec fn homed(s: Seq<Entry>, idx: int) -> bool {
+    forall|i: int| 0 <= i < s.len() ==> partition((#[trigger] s[i]).key) == idx
+}
+
+pub open spec fn slot_count(e: Entry, key: i64, sub: i64, day: i32) -> int {
+    if e.key == key && e.sub == sub && e.day == day { e.count as int } else { 0 }
+}
+
+pub open spec fn slot_revenue(e: Entry, key: i64, sub: i64, day: i32) -> int {
+    if e.key == key && e.sub == sub && e.day == day { e.revenue as int } else { 0 }
+}
+
+pub open spec fn entries_at(s: Seq<Entry>, key: i64, sub: i64, day: i32) -> (int, int) {
+    (sum(s, |e: Entry| slot_count(e, key, sub, day)), sum(s, |e: Entry| slot_revenue(e, key, sub, day)))
+}
+
+/// The cells of `key`, in entry order.
+pub open spec fn rows_of(s: Seq<Entry>, key: i64) -> Seq<Cell>
+    decreases s.len(),
+{
+    if s.len() == 0 { Seq::empty() }
+    else {
+        let before = rows_of(s.drop_last(), key);
+        if s.last().key == key { before.push(s.last().cell()) } else { before }
+    }
+}
+
+pub open spec fn rows_ok(rows: Seq<Cell>) -> bool {
+    &&& forall|i: int| 0 <= i < rows.len() ==> (#[trigger] rows[i]).count != 0 || rows[i].revenue != 0
+    &&& forall|i: int, j: int| 0 <= i < j < rows.len() ==>
+        !((#[trigger] rows[i]).sub == (#[trigger] rows[j]).sub && rows[i].day == rows[j].day)
+}
+
+pub open spec fn rows_count(rows: Seq<Cell>, sub: i64, day: i32) -> int {
+    sum(rows, |cell: Cell| if cell.sub == sub && cell.day == day { cell.count as int } else { 0 })
+}
+
+pub open spec fn rows_revenue(rows: Seq<Cell>, sub: i64, day: i32) -> int {
+    sum(rows, |cell: Cell| if cell.sub == sub && cell.day == day { cell.revenue as int } else { 0 })
+}
+
+pub open spec fn rows_at(rows: Seq<Cell>, sub: i64, day: i32) -> (int, int) {
+    (rows_count(rows, sub, day), rows_revenue(rows, sub, day))
+}
+
+pub proof fn lemma_rows_of_concat(a: Seq<Entry>, b: Seq<Entry>, key: i64)
+    ensures rows_of(a + b, key) == rows_of(a, key) + rows_of(b, key),
+    decreases b.len(),
+{
+    if b.len() == 0 {
+        assert(a + b =~= a);
+        assert(rows_of(b, key) =~= Seq::<Cell>::empty());
+        assert(rows_of(a, key) + rows_of(b, key) =~= rows_of(a, key));
+    } else {
+        let c = a + b;
+        assert(c.drop_last() =~= a + b.drop_last());
+        assert(c.last() == b.last());
+        lemma_rows_of_concat(a, b.drop_last(), key);
+        if b.last().key == key {
+            assert(rows_of(a, key) + rows_of(b, key) =~=
+                (rows_of(a, key) + rows_of(b.drop_last(), key)).push(b.last().cell()));
+        } else {
+            assert(rows_of(a, key) + rows_of(b, key) =~= rows_of(a, key) + rows_of(b.drop_last(), key));
         }
     }
+}
 
-    pub fn changed(&self, key: i64, cell: Cell) -> (out: Option<Self>)
-        requires self.wf(),
-        ensures out matches Some(layer) ==> layer.wf()
-            && layer.at(key, cell.sub, cell.day) ==
-                (self.at(key, cell.sub, cell.day).0 + cell.count, self.at(key, cell.sub, cell.day).1 + cell.revenue)
-            && forall|other: i64, sub: i64, day: i32| (other, sub, day) != (key, cell.sub, cell.day) ==>
-                #[trigger] layer.at(other, sub, day) == self.at(other, sub, day),
-    {
-        let mut replacements = self.replacements.copy();
-        let mut group = match self.group(key) { Some(group) => group.copy(), None => Group::new() };
-        if !group.add(cell.sub, cell.day, cell.count, cell.revenue) { return None; }
-        replacements.replace(key, group);
-        if replacements.keys.len() < 64 { return Some(Self { base: self.base.clone(), replacements }); }
-        let mut base = Bucket::new();
-        let mut index = 0;
-        while index < self.base.keys.len()
-            invariant self.wf(), replacements.wf(), base.wf(), index <= self.base.keys.len(),
-                forall|key: i64, sub: i64, day: i32| #[trigger] base.at(key, sub, day) ==
-                    if self.base.keys@.take(index as int).contains(key) && !replacements.groups@.contains_key(key) {
-                        self.base.at(key, sub, day)
-                    } else { (0, 0) },
-            decreases self.base.keys.len() - index,
-        {
-            let old_key = self.base.keys[index];
-            proof {
-                verus_prooflib::lemma_prefix_fresh(self.base.keys@, index as int);
-                verus_prooflib::lemma_push_membership(self.base.keys@.take(index as int), old_key);
-                assert(self.base.keys@.take(index as int + 1) =~= self.base.keys@.take(index as int).push(old_key));
+pub proof fn lemma_rows_of_none(s: Seq<Entry>, key: i64)
+    requires forall|i: int| 0 <= i < s.len() ==> (#[trigger] s[i]).key != key,
+    ensures rows_of(s, key).len() == 0,
+    decreases s.len(),
+{
+    if s.len() > 0 {
+        assert forall|i: int| 0 <= i < s.drop_last().len() implies (#[trigger] s.drop_last()[i]).key != key by {
+            assert(s.drop_last()[i] == s[i]);
+        }
+        lemma_rows_of_none(s.drop_last(), key);
+        assert(s.last() == s[s.len() - 1]);
+    }
+}
+
+pub proof fn lemma_rows_of_all(s: Seq<Entry>, key: i64)
+    requires forall|i: int| 0 <= i < s.len() ==> (#[trigger] s[i]).key == key,
+    ensures rows_of(s, key) == s.map_values(|e: Entry| entry_cell(e)),
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        assert(s.map_values(|e: Entry| entry_cell(e)) =~= Seq::<Cell>::empty());
+    } else {
+        assert forall|i: int| 0 <= i < s.drop_last().len() implies (#[trigger] s.drop_last()[i]).key == key by {
+            assert(s.drop_last()[i] == s[i]);
+        }
+        lemma_rows_of_all(s.drop_last(), key);
+        assert(s.last() == s[s.len() - 1]);
+        assert(s.map_values(|e: Entry| entry_cell(e)) =~=
+            s.drop_last().map_values(|e: Entry| entry_cell(e)).push(entry_cell(s.last())));
+    }
+}
+
+/// A run: entries lo..hi carry `key`, everything before and after does not.
+pub proof fn lemma_rows_char(s: Seq<Entry>, key: i64, lo: int, hi: int)
+    requires 0 <= lo <= hi <= s.len(),
+        forall|m: int| 0 <= m < lo ==> (#[trigger] s[m]).key != key,
+        forall|m: int| lo <= m < hi ==> (#[trigger] s[m]).key == key,
+        forall|m: int| hi <= m < s.len() ==> (#[trigger] s[m]).key != key,
+    ensures rows_of(s, key) == s.subrange(lo, hi).map_values(|e: Entry| entry_cell(e)),
+{
+    let a = s.subrange(0, lo);
+    let b = s.subrange(lo, hi);
+    let c = s.subrange(hi, s.len() as int);
+    assert(s =~= a + b + c);
+    lemma_rows_of_concat(a + b, c, key);
+    lemma_rows_of_concat(a, b, key);
+    assert forall|i: int| 0 <= i < a.len() implies (#[trigger] a[i]).key != key by { assert(a[i] == s[i]); }
+    assert forall|i: int| 0 <= i < b.len() implies (#[trigger] b[i]).key == key by { assert(b[i] == s[lo + i]); }
+    assert forall|i: int| 0 <= i < c.len() implies (#[trigger] c[i]).key != key by { assert(c[i] == s[hi + i]); }
+    lemma_rows_of_none(a, key);
+    lemma_rows_of_none(c, key);
+    lemma_rows_of_all(b, key);
+    assert(rows_of(a, key) =~= Seq::<Cell>::empty());
+    assert(rows_of(c, key) =~= Seq::<Cell>::empty());
+    assert(rows_of(s, key) =~= b.map_values(|e: Entry| entry_cell(e)));
+}
+
+/// Every cell of `key` comes from an entry of `key`.
+pub proof fn lemma_rows_of_elem(s: Seq<Entry>, key: i64, i: int)
+    requires 0 <= i < rows_of(s, key).len(),
+    ensures exists|m: int| 0 <= m < s.len() && (#[trigger] s[m]).key == key && s[m].cell() == rows_of(s, key)[i],
+    decreases s.len(),
+{
+    let before = rows_of(s.drop_last(), key);
+    if s.last().key == key && i == before.len() as int {
+        let m = s.len() - 1;
+        assert(s[m] == s.last());
+        assert(rows_of(s, key)[i] == s.last().cell());
+    } else {
+        assert(i < before.len());
+        assert(rows_of(s, key)[i] == before[i]);
+        lemma_rows_of_elem(s.drop_last(), key, i);
+        let m = choose|m: int| 0 <= m < s.drop_last().len() && (#[trigger] s.drop_last()[m]).key == key && s.drop_last()[m].cell() == before[i];
+        assert(s[m] == s.drop_last()[m]);
+    }
+}
+
+pub proof fn lemma_rows_of_ok(s: Seq<Entry>, key: i64)
+    requires live_all(s), distinct_slots(s),
+    ensures rows_ok(rows_of(s, key)),
+    decreases s.len(),
+{
+    if s.len() > 0 {
+        let before = rows_of(s.drop_last(), key);
+        assert forall|i: int| 0 <= i < s.drop_last().len() implies (#[trigger] s.drop_last()[i]).live() by {
+            assert(s.drop_last()[i] == s[i]);
+        }
+        assert forall|i: int, j: int| 0 <= i < j < s.drop_last().len() implies
+            !(#[trigger] s.drop_last()[i]).same_slot(#[trigger] s.drop_last()[j]) by {
+            assert(s.drop_last()[i] == s[i]);
+            assert(s.drop_last()[j] == s[j]);
+        }
+        lemma_rows_of_ok(s.drop_last(), key);
+        let last = s.last();
+        let at_last = s.len() - 1;
+        assert(s[at_last] == last);
+        if last.key == key {
+            let rows = before.push(last.cell());
+            assert forall|i: int| 0 <= i < rows.len() implies (#[trigger] rows[i]).count != 0 || rows[i].revenue != 0 by {
+                if i < before.len() { assert(rows[i] == before[i]); }
             }
-            if !replacements.groups.contains_key(&old_key) {
-                let old_group = self.base.groups.get(&old_key).unwrap();
-                if old_group.rows.len() > 0 {
-                    base.replace(old_key, old_group.copy());
+            assert forall|i: int, j: int| 0 <= i < j < rows.len() implies
+                !((#[trigger] rows[i]).sub == (#[trigger] rows[j]).sub && rows[i].day == rows[j].day) by {
+                if j < before.len() {
+                    assert(rows[i] == before[i]);
+                    assert(rows[j] == before[j]);
+                } else {
+                    assert(rows[j] == last.cell());
+                    assert(rows[i] == before[i]);
+                    lemma_rows_of_elem(s.drop_last(), key, i);
+                    let m = choose|m: int| 0 <= m < s.drop_last().len() && (#[trigger] s.drop_last()[m]).key == key && s.drop_last()[m].cell() == before[i];
+                    assert(s[m] == s.drop_last()[m]);
+                    assert(m < at_last);
+                    assert(!s[m].same_slot(s[at_last]));
                 }
             }
-            index += 1;
         }
-        proof { assert(self.base.keys@.take(self.base.keys@.len() as int) =~= self.base.keys@); }
-        let ghost old_base = base;
-        proof {
-            assert forall|key: i64, sub: i64, day: i32| #[trigger] old_base.at(key, sub, day) ==
-                if !replacements.groups@.contains_key(key) { self.base.at(key, sub, day) } else { (0, 0) } by {
-                if !self.base.keys@.contains(key) { assert(!self.base.groups@.contains_key(key)); }
-            }
-        }
-        index = 0;
-        while index < replacements.keys.len()
-            invariant self.wf(), replacements.wf(), base.wf(), index <= replacements.keys.len(),
-                forall|key: i64, sub: i64, day: i32| #[trigger] base.at(key, sub, day) ==
-                    if replacements.keys@.take(index as int).contains(key) { replacements.at(key, sub, day) }
-                    else { old_base.at(key, sub, day) },
-                forall|key: i64, sub: i64, day: i32| #[trigger] old_base.at(key, sub, day) ==
-                    if !replacements.groups@.contains_key(key) { self.base.at(key, sub, day) } else { (0, 0) },
-            decreases replacements.keys.len() - index,
-        {
-            let new_key = replacements.keys[index];
-            proof {
-                verus_prooflib::lemma_prefix_fresh(replacements.keys@, index as int);
-                verus_prooflib::lemma_push_membership(replacements.keys@.take(index as int), new_key);
-                assert(replacements.keys@.take(index as int + 1) =~= replacements.keys@.take(index as int).push(new_key));
-            }
-            let new_group = replacements.groups.get(&new_key).unwrap();
-            if new_group.rows.len() > 0 {
-                base.replace(new_key, new_group.copy());
-            }
-            index += 1;
-        }
-        proof {
-            assert(replacements.keys@.take(replacements.keys@.len() as int) =~= replacements.keys@);
-        }
-        Some(Self { base: Arc::new(base), replacements: Bucket::new() })
     }
 }
 
-pub struct Page { pub buckets: Vec<Arc<Layer>> }
-pub struct Directory { pub pages: Vec<Arc<Page>> }
-pub struct Table { pub pages: Vec<Arc<Directory>> }
-
-pub open spec fn partition_at(parts: Map<i64, Bucket>, key: i64, sub: i64, day: i32) -> (int, int) {
-    if parts.contains_key(partition(key) as i64) { parts[partition(key) as i64].at(key, sub, day) } else { (0, 0) }
+pub proof fn lemma_rows_of_sum(s: Seq<Entry>, key: i64, g: spec_fn(Cell) -> int)
+    ensures sum(rows_of(s, key), g) == sum(s, |e: Entry| if e.key == key { g(e.cell()) } else { 0 }),
+    decreases s.len(),
+{
+    if s.len() > 0 {
+        lemma_rows_of_sum(s.drop_last(), key, g);
+        if s.last().key == key {
+            lemma_sum_push(rows_of(s.drop_last(), key), s.last().cell(), g);
+        }
+    }
 }
 
-pub open spec fn page_matches(page: Page, parts: Map<i64, Bucket>, leaf: i64) -> bool {
-    &&& page.buckets@.len() == 256
-    &&& forall|slot: int| 0 <= slot < 256 ==> (#[trigger] page.buckets@[slot]).wf()
-    &&& forall|slot: int| 0 <= slot < 256 ==>
-        (#[trigger] page.buckets@[slot]).replacements.groups@ == Map::empty()
-        && page.buckets@[slot].base.groups@ ==
-            if parts.contains_key((leaf as int * 256 + slot) as i64) { parts[(leaf as int * 256 + slot) as i64].groups@ } else { Map::empty() }
+/// The per-slot sums of a sequence of entries are the sums over the key's cells.
+pub proof fn lemma_entries_at_rows(s: Seq<Entry>, key: i64, sub: i64, day: i32)
+    ensures entries_at(s, key, sub, day) == rows_at(rows_of(s, key), sub, day),
+{
+    let count = |cell: Cell| if cell.sub == sub && cell.day == day { cell.count as int } else { 0 };
+    let revenue = |cell: Cell| if cell.sub == sub && cell.day == day { cell.revenue as int } else { 0 };
+    lemma_rows_of_sum(s, key, count);
+    lemma_rows_of_sum(s, key, revenue);
+    lemma_sum_ext_all(s, |e: Entry| slot_count(e, key, sub, day), |e: Entry| if e.key == key { count(e.cell()) } else { 0 });
+    lemma_sum_ext_all(s, |e: Entry| slot_revenue(e, key, sub, day), |e: Entry| if e.key == key { revenue(e.cell()) } else { 0 });
 }
 
-pub open spec fn partition(key: i64) -> int { (key as u64 % 16777216u64) as int }
+/// With distinct slots, a row's slot holds exactly that row.
+pub proof fn lemma_rows_at_row(rows: Seq<Cell>, index: int)
+    requires rows_ok(rows), 0 <= index < rows.len(),
+    ensures rows_at(rows, rows[index].sub, rows[index].day) == (rows[index].count as int, rows[index].revenue as int),
+{
+    let sub = rows[index].sub;
+    let day = rows[index].day;
+    let count = |cell: Cell| if cell.sub == sub && cell.day == day { cell.count as int } else { 0 };
+    let revenue = |cell: Cell| if cell.sub == sub && cell.day == day { cell.revenue as int } else { 0 };
+    assert forall|i: int| 0 <= i < rows.len() && i != index implies count(#[trigger] rows[i]) == 0 && revenue(rows[i]) == 0 by {
+        if i < index { assert(!(rows[i].sub == rows[index].sub && rows[i].day == rows[index].day)); }
+        else { assert(!(rows[index].sub == rows[i].sub && rows[index].day == rows[i].day)); }
+    }
+    lemma_sum_single_match(rows, count, index);
+    lemma_sum_single_match(rows, revenue, index);
+}
+
+pub proof fn lemma_rows_at_zero(rows: Seq<Cell>, sub: i64, day: i32)
+    requires forall|i: int| 0 <= i < rows.len() ==> !((#[trigger] rows[i]).sub == sub && rows[i].day == day),
+    ensures rows_at(rows, sub, day) == (0int, 0int),
+{
+    let count = |cell: Cell| if cell.sub == sub && cell.day == day { cell.count as int } else { 0 };
+    let revenue = |cell: Cell| if cell.sub == sub && cell.day == day { cell.revenue as int } else { 0 };
+    lemma_sum_zero(rows, count);
+    lemma_sum_zero(rows, revenue);
+}
+
+pub struct Chunk {
+    pub entries: Vec<Entry>,
+}
+
+// --- one-entry edits of a chunk's entry sequence -------------------------
+
+pub proof fn lemma_edit_update(old: Seq<Entry>, j: int, ne: Entry, idx: int)
+    requires entries_ok(old), homed(old, idx), 0 <= j < old.len(), ne.live(),
+        ne.key == old[j].key, ne.sub == old[j].sub, ne.day == old[j].day,
+    ensures entries_ok(old.update(j, ne)), homed(old.update(j, ne), idx),
+{
+    let new = old.update(j, ne);
+    assert forall|a: int, b: int| 0 <= a < b < new.len() implies (#[trigger] new[a]).key <= (#[trigger] new[b]).key by {
+        assert(new[a].key == old[a].key);
+        assert(new[b].key == old[b].key);
+    }
+    assert forall|a: int| 0 <= a < new.len() implies (#[trigger] new[a]).live() by {
+        if a != j { assert(new[a] == old[a]); }
+    }
+    assert forall|a: int, b: int| 0 <= a < b < new.len() implies !(#[trigger] new[a]).same_slot(#[trigger] new[b]) by {
+        assert(new[a].key == old[a].key && new[a].sub == old[a].sub && new[a].day == old[a].day);
+        assert(new[b].key == old[b].key && new[b].sub == old[b].sub && new[b].day == old[b].day);
+    }
+    assert forall|a: int| 0 <= a < new.len() implies partition((#[trigger] new[a]).key) == idx by {
+        assert(new[a].key == old[a].key);
+    }
+}
+
+pub proof fn lemma_edit_remove(old: Seq<Entry>, j: int, idx: int)
+    requires entries_ok(old), homed(old, idx), 0 <= j < old.len(),
+    ensures entries_ok(old.remove(j)), homed(old.remove(j), idx),
+{
+    let new = old.remove(j);
+    assert forall|a: int, b: int| 0 <= a < b < new.len() implies (#[trigger] new[a]).key <= (#[trigger] new[b]).key by {
+        let sa = if a < j { a } else { a + 1 };
+        let sb = if b < j { b } else { b + 1 };
+        assert(new[a] == old[sa]);
+        assert(new[b] == old[sb]);
+    }
+    assert forall|a: int| 0 <= a < new.len() implies (#[trigger] new[a]).live() by {
+        let sa = if a < j { a } else { a + 1 };
+        assert(new[a] == old[sa]);
+    }
+    assert forall|a: int, b: int| 0 <= a < b < new.len() implies !(#[trigger] new[a]).same_slot(#[trigger] new[b]) by {
+        let sa = if a < j { a } else { a + 1 };
+        let sb = if b < j { b } else { b + 1 };
+        assert(new[a] == old[sa]);
+        assert(new[b] == old[sb]);
+    }
+    assert forall|a: int| 0 <= a < new.len() implies partition((#[trigger] new[a]).key) == idx by {
+        let sa = if a < j { a } else { a + 1 };
+        assert(new[a] == old[sa]);
+    }
+}
+
+/// Insert `ne` at the end of its key's run: everything before has key <= ne.key
+/// (and differs in slot), everything after has key > ne.key.
+pub proof fn lemma_edit_insert(old: Seq<Entry>, j: int, ne: Entry, idx: int)
+    requires entries_ok(old), homed(old, idx), 0 <= j <= old.len(), ne.live(), partition(ne.key) == idx,
+        forall|m: int| 0 <= m < j ==> (#[trigger] old[m]).key <= ne.key,
+        forall|m: int| j <= m < old.len() ==> (#[trigger] old[m]).key > ne.key,
+        forall|m: int| 0 <= m < j ==> !(#[trigger] old[m]).same_slot(ne),
+    ensures entries_ok(old.insert(j, ne)), homed(old.insert(j, ne), idx),
+{
+    let new = old.insert(j, ne);
+    assert forall|a: int, b: int| 0 <= a < b < new.len() implies (#[trigger] new[a]).key <= (#[trigger] new[b]).key by {
+        if b < j {
+            assert(new[a] == old[a]); assert(new[b] == old[b]);
+        } else if a < j {
+            assert(new[a] == old[a]);
+            if b == j { assert(new[b] == ne); } else { assert(new[b] == old[b - 1]); }
+        } else if a == j {
+            assert(new[a] == ne); assert(new[b] == old[b - 1]);
+        } else {
+            assert(new[a] == old[a - 1]); assert(new[b] == old[b - 1]);
+        }
+    }
+    assert forall|a: int| 0 <= a < new.len() implies (#[trigger] new[a]).live() by {
+        if a < j { assert(new[a] == old[a]); }
+        else if a == j { assert(new[a] == ne); }
+        else { assert(new[a] == old[a - 1]); }
+    }
+    assert forall|a: int, b: int| 0 <= a < b < new.len() implies !(#[trigger] new[a]).same_slot(#[trigger] new[b]) by {
+        if b < j {
+            assert(new[a] == old[a]); assert(new[b] == old[b]);
+        } else if a < j {
+            assert(new[a] == old[a]);
+            if b == j { assert(new[b] == ne); } else { assert(new[b] == old[b - 1]); }
+        } else if a == j {
+            assert(new[a] == ne); assert(new[b] == old[b - 1]);
+        } else {
+            assert(new[a] == old[a - 1]); assert(new[b] == old[b - 1]);
+        }
+    }
+    assert forall|a: int| 0 <= a < new.len() implies partition((#[trigger] new[a]).key) == idx by {
+        if a < j { assert(new[a] == old[a]); }
+        else if a == j { assert(new[a] == ne); }
+        else { assert(new[a] == old[a - 1]); }
+    }
+}
+
+pub open spec fn bumped(old: (int, int), key: i64, sub: i64, day: i32, count: int, revenue: int, other: i64, s: i64, d: i32) -> (int, int) {
+    (old.0 + (if other == key && s == sub && d == day { count } else { 0 }),
+     old.1 + (if other == key && s == sub && d == day { revenue } else { 0 }))
+}
+
+pub proof fn lemma_at_update(old: Seq<Entry>, j: int, ne: Entry, count: int, revenue: int)
+    requires 0 <= j < old.len(),
+        ne.key == old[j].key, ne.sub == old[j].sub, ne.day == old[j].day,
+        ne.count as int == old[j].count as int + count, ne.revenue as int == old[j].revenue as int + revenue,
+    ensures forall|other: i64, s: i64, d: i32| #[trigger] entries_at(old.update(j, ne), other, s, d) ==
+        bumped(entries_at(old, other, s, d), old[j].key, old[j].sub, old[j].day, count, revenue, other, s, d),
+{
+    assert forall|other: i64, s: i64, d: i32| #[trigger] entries_at(old.update(j, ne), other, s, d) ==
+        bumped(entries_at(old, other, s, d), old[j].key, old[j].sub, old[j].day, count, revenue, other, s, d) by {
+        lemma_sum_update(old, j, ne, |x: Entry| slot_count(x, other, s, d));
+        lemma_sum_update(old, j, ne, |x: Entry| slot_revenue(x, other, s, d));
+    }
+}
+
+pub proof fn lemma_at_remove(old: Seq<Entry>, j: int, count: int, revenue: int)
+    requires 0 <= j < old.len(),
+        old[j].count as int + count == 0, old[j].revenue as int + revenue == 0,
+    ensures forall|other: i64, s: i64, d: i32| #[trigger] entries_at(old.remove(j), other, s, d) ==
+        bumped(entries_at(old, other, s, d), old[j].key, old[j].sub, old[j].day, count, revenue, other, s, d),
+{
+    assert forall|other: i64, s: i64, d: i32| #[trigger] entries_at(old.remove(j), other, s, d) ==
+        bumped(entries_at(old, other, s, d), old[j].key, old[j].sub, old[j].day, count, revenue, other, s, d) by {
+        lemma_sum_remove(old, j, |x: Entry| slot_count(x, other, s, d));
+        lemma_sum_remove(old, j, |x: Entry| slot_revenue(x, other, s, d));
+    }
+}
+
+pub proof fn lemma_at_insert(old: Seq<Entry>, j: int, ne: Entry)
+    requires 0 <= j <= old.len(),
+    ensures forall|other: i64, s: i64, d: i32| #[trigger] entries_at(old.insert(j, ne), other, s, d) ==
+        bumped(entries_at(old, other, s, d), ne.key, ne.sub, ne.day, ne.count as int, ne.revenue as int, other, s, d),
+{
+    assert forall|other: i64, s: i64, d: i32| #[trigger] entries_at(old.insert(j, ne), other, s, d) ==
+        bumped(entries_at(old, other, s, d), ne.key, ne.sub, ne.day, ne.count as int, ne.revenue as int, other, s, d) by {
+        lemma_sum_insert(old, j, ne, |x: Entry| slot_count(x, other, s, d));
+        lemma_sum_insert(old, j, ne, |x: Entry| slot_revenue(x, other, s, d));
+    }
+}
+
+impl Chunk {
+    pub open spec fn wf(self, idx: int) -> bool { entries_ok(self.entries@) && homed(self.entries@, idx) }
+
+    pub open spec fn at(self, key: i64, sub: i64, day: i32) -> (int, int) { entries_at(self.entries@, key, sub, day) }
+
+    pub open spec fn rows(self, key: i64) -> Seq<Cell> { rows_of(self.entries@, key) }
+
+    pub fn copy(&self) -> (out: Chunk)
+        ensures out.entries@ == self.entries@,
+    { Chunk { entries: self.entries.clone() } }
+
+    /// The entries lo..hi are exactly the cells of `key`.
+    pub fn run(&self, key: i64) -> (out: (usize, usize))
+        requires entries_ok(self.entries@),
+        ensures out.0 <= out.1 <= self.entries@.len(),
+            self.rows(key) == self.entries@.subrange(out.0 as int, out.1 as int).map_values(|e: Entry| entry_cell(e)),
+            forall|m: int| out.0 <= m < out.1 ==> (#[trigger] self.entries@[m]).key == key,
+    {
+        let n = self.entries.len();
+        let mut lo = 0usize;
+        while lo < n && self.entries[lo].key < key
+            invariant lo <= n, n == self.entries.len(),
+                forall|m: int| 0 <= m < lo ==> (#[trigger] self.entries@[m]).key < key,
+            decreases n - lo,
+        { lo += 1; }
+        let mut hi = lo;
+        while hi < n && self.entries[hi].key == key
+            invariant lo <= hi <= n, n == self.entries.len(),
+                forall|m: int| lo <= m < hi ==> (#[trigger] self.entries@[m]).key == key,
+            decreases n - hi,
+        { hi += 1; }
+        proof {
+            if hi < n {
+                if hi > lo {
+                    assert(self.entries@[hi - 1].key == key);
+                } else {
+                    assert(self.entries@[lo as int].key >= key);
+                }
+                assert(self.entries@[hi as int].key > key);
+            }
+            assert forall|m: int| hi <= m < n implies (#[trigger] self.entries@[m]).key != key by {
+                if m > hi { assert(self.entries@[hi as int].key <= self.entries@[m].key); }
+            }
+            lemma_rows_char(self.entries@, key, lo as int, hi as int);
+        }
+        (lo, hi)
+    }
+
+    /// Add `count` and `revenue` to the slot (key, sub, day), in place.
+    pub fn add(&mut self, key: i64, sub: i64, day: i32, count: i128, revenue: i128) -> (ok: bool)
+        requires old(self).wf(partition(key)),
+        ensures final(self).wf(partition(key)),
+            !ok ==> final(self).entries@ == old(self).entries@,
+            ok ==> forall|other: i64, s: i64, d: i32| #[trigger] final(self).at(other, s, d) ==
+                bumped(old(self).at(other, s, d), key, sub, day, count as int, revenue as int, other, s, d),
+    {
+        if count == 0 && revenue == 0 { return true; }
+        let n = self.entries.len();
+        let mut lo = 0usize;
+        while lo < n && self.entries[lo].key < key
+            invariant lo <= n, n == self.entries.len(),
+                forall|m: int| 0 <= m < lo ==> (#[trigger] self.entries@[m]).key < key,
+            decreases n - lo,
+        { lo += 1; }
+        let mut j = lo;
+        while j < n && self.entries[j].key == key && !(self.entries[j].sub == sub && self.entries[j].day == day)
+            invariant lo <= j <= n, n == self.entries.len(),
+                forall|m: int| 0 <= m < lo ==> (#[trigger] self.entries@[m]).key < key,
+                lo < n ==> self.entries@[lo as int].key >= key,
+                forall|m: int| lo <= m < j ==> (#[trigger] self.entries@[m]).key == key
+                    && !(self.entries@[m].sub == sub && self.entries@[m].day == day),
+            decreases n - j,
+        { j += 1; }
+        let ghost old_entries = self.entries@;
+        if j < n && self.entries[j].key == key && self.entries[j].sub == sub && self.entries[j].day == day {
+            let e = self.entries[j];
+            let c = match (e.count as i128).checked_add(count) { Some(value) => value, None => return false };
+            let r = match (e.revenue as i128).checked_add(revenue) { Some(value) => value, None => return false };
+            if c < i32::MIN as i128 || c > i32::MAX as i128 || r < i64::MIN as i128 || r > i64::MAX as i128 { return false; }
+            if c == 0 && r == 0 {
+                self.entries.remove(j);
+                proof {
+                    lemma_edit_remove(old_entries, j as int, partition(key));
+                    lemma_at_remove(old_entries, j as int, count as int, revenue as int);
+                    assert(self.entries@ =~= old_entries.remove(j as int));
+                }
+            } else {
+                let ne = Entry { key, sub, revenue: r as i64, day, count: c as i32 };
+                self.entries.set(j, ne);
+                proof {
+                    lemma_edit_update(old_entries, j as int, ne, partition(key));
+                    lemma_at_update(old_entries, j as int, ne, count as int, revenue as int);
+                    assert(self.entries@ =~= old_entries.update(j as int, ne));
+                }
+            }
+            true
+        } else {
+            if count < i32::MIN as i128 || count > i32::MAX as i128 || revenue < i64::MIN as i128 || revenue > i64::MAX as i128 {
+                return false;
+            }
+            let ne = Entry { key, sub, revenue: revenue as i64, day, count: count as i32 };
+            proof {
+                if j < n {
+                    if j > lo { assert(old_entries[j as int - 1].key == key); }
+                    assert(old_entries[j as int].key > key);
+                }
+                assert forall|m: int| j <= m < n implies (#[trigger] old_entries[m]).key > key by {
+                    if m > j { assert(old_entries[j as int].key <= old_entries[m].key); }
+                }
+                assert forall|m: int| 0 <= m < j implies (#[trigger] old_entries[m]).key <= key by {}
+                assert forall|m: int| 0 <= m < j implies !(#[trigger] old_entries[m]).same_slot(ne) by {}
+            }
+            self.entries.insert(j, ne);
+            proof {
+                lemma_edit_insert(old_entries, j as int, ne, partition(key));
+                lemma_at_insert(old_entries, j as int, ne);
+                assert(self.entries@ =~= old_entries.insert(j as int, ne));
+            }
+            true
+        }
+    }
+}
+
+/// A key's cells inside a chunk: a window onto the chunk's entries.
+#[derive(Clone, Copy)]
+pub struct Run<'a> {
+    pub entries: &'a [Entry],
+    pub lo: usize,
+    pub hi: usize,
+    pub rows: Ghost<Seq<Cell>>,
+}
+
+impl<'a> Run<'a> {
+    pub open spec fn wf(self) -> bool {
+        &&& self.lo <= self.hi <= self.entries@.len()
+        &&& self.rows@ == self.entries@.subrange(self.lo as int, self.hi as int).map_values(|e: Entry| entry_cell(e))
+        &&& rows_ok(self.rows@)
+    }
+
+    pub open spec fn at(self, sub: i64, day: i32) -> (int, int) { rows_at(self.rows@, sub, day) }
+
+    pub proof fn lemma_row(self, index: int)
+        requires self.wf(), 0 <= index < self.rows@.len(),
+        ensures self.at(self.rows@[index].sub, self.rows@[index].day) ==
+            (self.rows@[index].count as int, self.rows@[index].revenue as int),
+    { lemma_rows_at_row(self.rows@, index); }
+
+    pub proof fn lemma_at(self, sub: i64, day: i32)
+        requires self.wf(),
+        ensures self.at(sub, day).0 == sum(self.rows@, |cell: Cell| if cell.sub == sub && cell.day == day { cell.count as int } else { 0 }),
+            self.at(sub, day).1 == sum(self.rows@, |cell: Cell| if cell.sub == sub && cell.day == day { cell.revenue as int } else { 0 }),
+    {}
+
+    /// A slot with a non-zero value has a row.
+    pub proof fn lemma_at_witness(self, sub: i64, day: i32)
+        requires self.wf(), self.at(sub, day).0 != 0 || self.at(sub, day).1 != 0,
+        ensures exists|index: int| 0 <= index < self.rows@.len()
+            && (#[trigger] self.rows@[index]).sub == sub && self.rows@[index].day == day,
+    {
+        if !exists|index: int| 0 <= index < self.rows@.len()
+            && (#[trigger] self.rows@[index]).sub == sub && self.rows@[index].day == day {
+            assert forall|index: int| 0 <= index < self.rows@.len() implies
+                !((#[trigger] self.rows@[index]).sub == sub && self.rows@[index].day == day) by {}
+            lemma_rows_at_zero(self.rows@, sub, day);
+        }
+    }
+
+    pub fn len(&self) -> (out: usize)
+        requires self.wf(),
+        ensures out == self.rows@.len(),
+    { self.hi - self.lo }
+
+    pub fn cell(&self, index: usize) -> (out: Cell)
+        requires self.wf(), index < self.rows@.len(),
+        ensures out == self.rows@[index as int],
+    {
+        let e = self.entries[self.lo + index];
+        Cell { sub: e.sub, day: e.day, count: e.count as i128, revenue: e.revenue as i128 }
+    }
+
+    pub fn get(&self, sub: i64, day: i32) -> (out: Cell)
+        requires self.wf(),
+        ensures out.sub == sub, out.day == day, (out.count as int, out.revenue as int) == self.at(sub, day),
+    {
+        let mut index = 0usize;
+        let length = self.hi - self.lo;
+        while index < length
+            invariant self.wf(), length == self.rows@.len(), index <= length,
+                forall|i: int| 0 <= i < index ==> !((#[trigger] self.rows@[i]).sub == sub && self.rows@[i].day == day),
+            decreases length - index,
+        {
+            let e = self.entries[self.lo + index];
+            if e.sub == sub && e.day == day {
+                proof { lemma_rows_at_row(self.rows@, index as int); }
+                return Cell { sub, day, count: e.count as i128, revenue: e.revenue as i128 };
+            }
+            index += 1;
+        }
+        proof { lemma_rows_at_zero(self.rows@, sub, day); }
+        Cell { sub, day, count: 0, revenue: 0 }
+    }
+}
+
+pub struct Page { pub chunks: Vec<Arc<Chunk>> }
+pub struct Dir { pub pages: Vec<Arc<Page>> }
+pub struct Table { pub dirs: Vec<Arc<Dir>> }
 
 pub fn share_arcs<Value>(source: &Vec<Arc<Value>>) -> (out: Vec<Arc<Value>>)
     ensures out@ == source@,
 {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(source.len());
     let mut index = 0;
     while index < source.len()
         invariant index <= source.len(), out@ == source@.take(index as int),
@@ -411,24 +951,102 @@ pub fn share_arcs<Value>(source: &Vec<Arc<Value>>) -> (out: Vec<Arc<Value>>)
     out
 }
 
-impl Table {
-    pub proof fn lemma_rows(self, key: i64, sub: i64, day: i32)
-        requires self.wf(),
-        ensures self.at(key, sub, day).0 == sum(self.rows(key), |cell: Cell| if cell.sub == sub && cell.day == day { cell.count as int } else { 0 }),
-            self.at(key, sub, day).1 == sum(self.rows(key), |cell: Cell| if cell.sub == sub && cell.day == day { cell.revenue as int } else { 0 }),
-            forall|position: int| 0 <= position < self.rows(key).len() ==>
-                #[trigger] self.at(key, self.rows(key)[position].sub, self.rows(key)[position].day) ==
-                    (self.rows(key)[position].count as int, self.rows(key)[position].revenue as int),
+/// `count` consecutive Arcs starting at `lo`.
+pub fn clone_range<Value>(source: &Vec<Arc<Value>>, lo: usize, count: usize) -> (out: Vec<Arc<Value>>)
+    requires lo + count <= source.len(),
+    ensures out@ == source@.subrange(lo as int, (lo + count) as int),
+{
+    let mut out = Vec::with_capacity(count);
+    let mut index = 0;
+    while index < count
+        invariant index <= count, lo + count <= source.len(),
+            out@ == source@.subrange(lo as int, (lo + index) as int),
+        decreases count - index,
     {
-        let layer = self.bucket(key);
-        assert(layer.wf());
-        if layer.replacements.groups@.contains_key(key) {
-            layer.replacements.groups@[key].lemma_at(sub, day);
-        } else if layer.base.groups@.contains_key(key) {
-            layer.base.groups@[key].lemma_at(sub, day);
+        out.push(source[lo + index].clone());
+        proof {
+            assert(source@.subrange(lo as int, (lo + index + 1) as int) =~=
+                source@.subrange(lo as int, (lo + index) as int).push(source@[(lo + index) as int]));
+        }
+        index += 1;
+    }
+    out
+}
+
+/// Tables with the same slots are the same table.
+pub proof fn lemma_same_dirs(a: Table, b: Table)
+    requires a.wf(), a.dirs@ == b.dirs@,
+    ensures b.wf(), forall|idx: int| #[trigger] b.chunk(idx) == a.chunk(idx),
+{
+    assert forall|idx: int| #[trigger] b.chunk(idx) == a.chunk(idx) by {}
+    assert forall|idx: int| 0 <= idx < 1048576 implies (#[trigger] b.chunk(idx)).wf(idx) by {
+        assert(a.chunk(idx).wf(idx));
+    }
+}
+
+/// Setting one chunk changes only that chunk.
+pub proof fn lemma_set_chunk(old: Table, new: Table, code: int, chunk: Chunk)
+    requires old.wf(), 0 <= code < 1048576, chunk.wf(code),
+        new.dirs@.len() == 128,
+        new.dirs@ == old.dirs@.update(code / 8192, new.dirs@[code / 8192]),
+        new.dirs@[code / 8192].pages@ == old.dirs@[code / 8192].pages@.update((code / 64) % 128, new.dirs@[code / 8192].pages@[(code / 64) % 128]),
+        new.dirs@[code / 8192].pages@[(code / 64) % 128].chunks@ ==
+            old.dirs@[code / 8192].pages@[(code / 64) % 128].chunks@.update(code % 64, new.dirs@[code / 8192].pages@[(code / 64) % 128].chunks@[code % 64]),
+        *new.dirs@[code / 8192].pages@[(code / 64) % 128].chunks@[code % 64] == chunk,
+    ensures new.wf(),
+        new.chunk(code) == chunk,
+        forall|idx: int| 0 <= idx < 1048576 && idx != code ==> #[trigger] new.chunk(idx) == old.chunk(idx),
+{
+    let d = code / 8192;
+    let p = (code / 64) % 128;
+    let s = code % 64;
+    assert forall|idx: int| 0 <= idx < 1048576 && idx != code implies #[trigger] new.chunk(idx) == old.chunk(idx) by {
+        let d2 = idx / 8192;
+        let p2 = (idx / 64) % 128;
+        let s2 = idx % 64;
+        assert(((d2 * 128 + p2) * 64 + s2) == idx);
+        assert(((d * 128 + p) * 64 + s) == code);
+        if d2 != d {
+            assert(new.dirs@[d2] == old.dirs@[d2]);
+        } else if p2 != p {
+            assert(new.dirs@[d2].pages@[p2] == old.dirs@[d2].pages@[p2]);
+        } else {
+            assert(s2 != s);
+            assert(new.dirs@[d2].pages@[p2].chunks@[s2] == old.dirs@[d2].pages@[p2].chunks@[s2]);
         }
     }
-    pub open spec fn rows(self, key: i64) -> Seq<Cell> { self.bucket(key).rows(key) }
+    assert(new.chunk(code) == chunk);
+    assert forall|dd: int| 0 <= dd < 128 implies (#[trigger] new.dirs@[dd]).pages@.len() == 128 by {
+        if dd == d {} else { assert(new.dirs@[dd] == old.dirs@[dd]); }
+    }
+    assert forall|dd: int, pp: int| 0 <= dd < 128 && 0 <= pp < 128 implies
+        (#[trigger] new.dirs@[dd].pages@[pp]).chunks@.len() == 64 by {
+        if dd == d && pp == p {} else if dd == d { assert(new.dirs@[dd].pages@[pp] == old.dirs@[dd].pages@[pp]); }
+        else { assert(new.dirs@[dd] == old.dirs@[dd]); }
+    }
+    assert forall|idx: int| 0 <= idx < 1048576 implies (#[trigger] new.chunk(idx)).wf(idx) by {
+        if idx != code { assert(old.chunk(idx).wf(idx)); }
+    }
+}
+
+impl Table {
+    pub open spec fn chunk(self, idx: int) -> Chunk {
+        *self.dirs@[idx / 8192].pages@[(idx / 64) % 128].chunks@[idx % 64]
+    }
+
+    pub open spec fn rows(self, key: i64) -> Seq<Cell> { self.chunk(partition(key)).rows(key) }
+
+    pub open spec fn at(self, key: i64, sub: i64, day: i32) -> (int, int) {
+        self.chunk(partition(key)).at(key, sub, day)
+    }
+
+    pub open spec fn wf(self) -> bool {
+        &&& self.dirs@.len() == 128
+        &&& forall|d: int| 0 <= d < 128 ==> (#[trigger] self.dirs@[d]).pages@.len() == 128
+        &&& forall|d: int, p: int| 0 <= d < 128 && 0 <= p < 128 ==>
+            (#[trigger] self.dirs@[d].pages@[p]).chunks@.len() == 64
+        &&& forall|idx: int| 0 <= idx < 1048576 ==> (#[trigger] self.chunk(idx)).wf(idx)
+    }
 
     pub open spec fn counts_nonnegative(self) -> bool {
         forall|key: i64, sub: i64, day: i32| (#[trigger] self.at(key, sub, day)).0 >= 0
@@ -447,24 +1065,28 @@ impl Table {
             self.at(key, sub, day).1 == 0
     }
 
-    pub open spec fn bucket(self, key: i64) -> Layer {
-        *self.pages@[partition(key) / 65536].pages@[(partition(key) / 256) % 256].buckets@[partition(key) % 256]
+    pub proof fn lemma_rows(self, key: i64, sub: i64, day: i32)
+        requires self.wf(),
+        ensures self.at(key, sub, day).0 == sum(self.rows(key), |cell: Cell| if cell.sub == sub && cell.day == day { cell.count as int } else { 0 }),
+            self.at(key, sub, day).1 == sum(self.rows(key), |cell: Cell| if cell.sub == sub && cell.day == day { cell.revenue as int } else { 0 }),
+            forall|position: int| 0 <= position < self.rows(key).len() ==>
+                #[trigger] self.at(key, self.rows(key)[position].sub, self.rows(key)[position].day) ==
+                    (self.rows(key)[position].count as int, self.rows(key)[position].revenue as int),
+    {
+        lemma_partition_bound(key);
+        let chunk = self.chunk(partition(key));
+        assert(chunk.wf(partition(key)));
+        lemma_entries_at_rows(chunk.entries@, key, sub, day);
+        lemma_rows_of_ok(chunk.entries@, key);
+        assert forall|position: int| 0 <= position < self.rows(key).len() implies
+            #[trigger] self.at(key, self.rows(key)[position].sub, self.rows(key)[position].day) ==
+                (self.rows(key)[position].count as int, self.rows(key)[position].revenue as int) by {
+            lemma_rows_at_row(self.rows(key), position);
+            lemma_entries_at_rows(chunk.entries@, key, self.rows(key)[position].sub, self.rows(key)[position].day);
+        }
     }
 
-    pub open spec fn at(self, key: i64, sub: i64, day: i32) -> (int, int) {
-        self.bucket(key).at(key, sub, day)
-    }
-
-    pub open spec fn wf(self) -> bool {
-        &&& self.pages@.len() == 256
-        &&& forall|directory: int| 0 <= directory < 256 ==> (#[trigger] self.pages@[directory]).pages@.len() == 256
-        &&& forall|directory: int, page: int| 0 <= directory < 256 && 0 <= page < 256 ==>
-            (#[trigger] self.pages@[directory].pages@[page]).buckets@.len() == 256
-        &&& forall|directory: int, page: int, slot: int| 0 <= directory < 256 && 0 <= page < 256 && 0 <= slot < 256 ==>
-            (#[trigger] self.pages@[directory].pages@[page].buckets@[slot]).wf()
-    }
-
-    pub fn group(&self, key: i64) -> (out: Option<&Group>)
+    pub fn group(&self, key: i64) -> (out: Option<Run<'_>>)
         requires self.wf(),
         ensures out matches Some(group) ==> group.wf(),
             match out { Some(group) => group.rows@ == self.rows(key), None => self.rows(key).len() == 0 },
@@ -478,38 +1100,61 @@ impl Table {
             out matches Some(group) ==> (self.daily() ==> forall|index: int| 0 <= index < group.rows@.len() ==>
                 (#[trigger] group.rows@[index]).sub == 0 && group.rows@[index].count > 0),
     {
-        let code = (key as u64 % 16777216) as usize;
-        let out = self.pages[code / 65536].pages[(code / 256) % 256].buckets[code % 256].group(key);
+        let code = part(key);
+        let chunk: &Chunk = &*self.dirs[code / 8192].pages[(code / 64) % 128].chunks[code % 64];
         proof {
-            if let Some(group) = out {
-                assert forall|index: int| 0 <= index < group.rows@.len() implies
-                    #[trigger] self.at(key, group.rows@[index].sub, group.rows@[index].day) ==
-                    (group.rows@[index].count as int, group.rows@[index].revenue as int) by {
-                    group.lemma_row(index);
+            lemma_partition_bound(key);
+            assert(*chunk == self.chunk(partition(key)));
+            assert(chunk.wf(partition(key)));
+        }
+        let (lo, hi) = chunk.run(key);
+        let ghost rows = chunk.rows(key);
+        proof {
+            lemma_rows_of_ok(chunk.entries@, key);
+            self.lemma_rows(key, 0, 0);
+            assert forall|sub: i64, day: i32| #[trigger] self.at(key, sub, day) == rows_at(rows, sub, day) by {
+                lemma_entries_at_rows(chunk.entries@, key, sub, day);
+            }
+        }
+        if lo == hi {
+            proof {
+                assert(rows =~= Seq::<Cell>::empty());
+                assert forall|sub: i64, day: i32| #[trigger] self.at(key, sub, day) == (0int, 0int) by {
+                    lemma_rows_at_zero(rows, sub, day);
                 }
-                if self.dimension() {
-                    assert forall|index: int| 0 <= index < group.rows@.len() implies
-                        (#[trigger] group.rows@[index]).day == 0 && group.rows@[index].count > 0 && group.rows@[index].revenue == 0 by {
-                        let cell = group.rows@[index];
-                        assert(self.at(key, cell.sub, cell.day) == (cell.count as int, cell.revenue as int));
-                        assert(cell.revenue == 0);
-                        assert(cell.count >= 0);
-                        if cell.day != 0 { assert(cell.count == 0); }
-                    }
+            }
+            return None;
+        }
+        let out = Run { entries: chunk.entries.as_slice(), lo, hi, rows: Ghost(rows) };
+        proof {
+            assert(out.wf());
+            assert forall|index: int| 0 <= index < out.rows@.len() implies
+                #[trigger] self.at(key, out.rows@[index].sub, out.rows@[index].day) ==
+                    (out.rows@[index].count as int, out.rows@[index].revenue as int) by {
+                out.lemma_row(index);
+            }
+            if self.dimension() {
+                assert forall|index: int| 0 <= index < out.rows@.len() implies
+                    (#[trigger] out.rows@[index]).day == 0 && out.rows@[index].count > 0 && out.rows@[index].revenue == 0 by {
+                    let cell = out.rows@[index];
+                    assert(self.at(key, cell.sub, cell.day) == (cell.count as int, cell.revenue as int));
+                    assert(cell.revenue == 0);
+                    assert(cell.count >= 0);
+                    if cell.day != 0 { assert(cell.count == 0); }
                 }
-                if self.daily() {
-                    assert forall|index: int| 0 <= index < group.rows@.len() implies
-                        (#[trigger] group.rows@[index]).sub == 0 && group.rows@[index].count > 0 by {
-                        let cell = group.rows@[index];
-                        assert(self.at(key, cell.sub, cell.day) == (cell.count as int, cell.revenue as int));
-                        assert(cell.count >= 0);
-                        if cell.count == 0 { assert(cell.revenue == 0); }
-                        if cell.sub != 0 { assert(cell.count == 0); }
-                    }
+            }
+            if self.daily() {
+                assert forall|index: int| 0 <= index < out.rows@.len() implies
+                    (#[trigger] out.rows@[index]).sub == 0 && out.rows@[index].count > 0 by {
+                    let cell = out.rows@[index];
+                    assert(self.at(key, cell.sub, cell.day) == (cell.count as int, cell.revenue as int));
+                    assert(cell.count >= 0);
+                    if cell.count == 0 { assert(cell.revenue == 0); }
+                    if cell.sub != 0 { assert(cell.count == 0); }
                 }
             }
         }
-        out
+        Some(out)
     }
 
     pub fn get(&self, key: i64, sub: i64, day: i32) -> (out: Cell)
@@ -524,13 +1169,14 @@ impl Table {
 
     pub fn share(&self) -> (out: Self)
         requires self.wf(),
-        ensures out.wf(), out.pages@ == self.pages@,
+        ensures out.wf(), out.dirs@ == self.dirs@,
             self.counts_nonnegative() ==> out.counts_nonnegative(),
             self.dimension() ==> out.dimension(), self.daily() ==> out.daily(),
             forall|key: i64, sub: i64, day: i32| #[trigger] out.at(key, sub, day) == self.at(key, sub, day),
     {
-        let out = Self { pages: share_arcs(&self.pages) };
+        let out = Self { dirs: share_arcs(&self.dirs) };
         proof {
+            lemma_same_dirs(*self, out);
             assert forall|key: i64, sub: i64, day: i32| #[trigger] out.at(key, sub, day) == self.at(key, sub, day) by {}
             if self.counts_nonnegative() {
                 assert forall|key: i64, sub: i64, day: i32| (#[trigger] out.at(key, sub, day)).0 >= 0 by {
@@ -556,215 +1202,219 @@ impl Table {
             forall|other: i64, sub: i64, day: i32| (other, sub, day) != (key, cell.sub, cell.day) ==>
                 #[trigger] final(self).at(other, sub, day) == old(self).at(other, sub, day),
     {
-        let code = (key as u64 % 16777216) as usize;
-        let directory_index = code / 65536;
-        let page_index = (code / 256) % 256;
-        let slot = code % 256;
-        let old_directory = &self.pages[directory_index];
+        let code = part(key);
+        let directory_index = code / 8192;
+        let page_index = (code / 64) % 128;
+        let slot = code % 64;
+        proof {
+            lemma_partition_bound(key);
+            assert(self.chunk(code as int).wf(partition(key)));
+        }
+        let ghost entry = *self;
+        let old_directory = &self.dirs[directory_index];
         let old_page = &old_directory.pages[page_index];
-        let bucket = match old_page.buckets[slot].changed(key, cell) { Some(bucket) => bucket, None => return false };
-        let mut buckets = share_arcs(&old_page.buckets);
-        buckets.set(slot, Arc::new(bucket));
+        let mut chunk = old_page.chunks[slot].copy();
+        proof { assert(*old_page.chunks[slot as int] == entry.chunk(code as int)); }
+        if !chunk.add(key, cell.sub, cell.day, cell.count, cell.revenue) { return false; }
+        let mut chunks = share_arcs(&old_page.chunks);
+        chunks.set(slot, Arc::new(chunk));
         let mut pages = share_arcs(&old_directory.pages);
-        pages.set(page_index, Arc::new(Page { buckets }));
-        self.pages.set(directory_index, Arc::new(Directory { pages }));
+        pages.set(page_index, Arc::new(Page { chunks }));
+        self.dirs.set(directory_index, Arc::new(Dir { pages }));
+        proof {
+            lemma_set_chunk(entry, *self, code as int, chunk);
+            assert forall|other: i64, sub: i64, day: i32| #[trigger] self.at(other, sub, day) ==
+                (if partition(other) == code as int {
+                    bumped(entry.at(other, sub, day), key, cell.sub, cell.day, cell.count as int, cell.revenue as int, other, sub, day)
+                } else { entry.at(other, sub, day) }) by {
+                lemma_partition_bound(other);
+                if partition(other) == code as int {
+                    assert(self.chunk(partition(other)) == chunk);
+                } else {
+                    assert(self.chunk(partition(other)) == entry.chunk(partition(other)));
+                }
+            }
+            lemma_partition_bound(key);
+        }
         true
     }
 }
 
-pub fn freeze(source: Bucket) -> (out: Table)
-    requires source.wf(),
-    ensures out.wf(),
-        forall|key: i64, sub: i64, day: i32| #[trigger] out.at(key, sub, day) == source.at(key, sub, day),
+/// Per-chunk row counts, so a builder can size every chunk once.
+pub fn count_hints() -> (out: Vec<u32>)
+    ensures out@.len() == 1048576,
+{ vec![0u32; 1048576] }
+
+pub fn bump_hint(hints: &mut Vec<u32>, key: i64)
+    requires old(hints)@.len() == 1048576,
+    ensures final(hints)@.len() == 1048576,
 {
-    let ghost original = source;
-    let mut source = source;
-    let mut partitions: HashMap<i64, Bucket> = HashMap::new();
-    let mut leaf_keys: Vec<i64> = Vec::new();
-    let mut leaf_seen: HashMap<i64, bool> = HashMap::new();
-    let mut index = 0;
-    while index < source.keys.len()
-        invariant original.wf(), index <= source.keys.len(), source.keys@ == original.keys@,
-            forall|key: i64| #[trigger] source.groups@.contains_key(key) <==>
-                original.groups@.contains_key(key) && !original.keys@.take(index as int).contains(key),
-            forall|key: i64| source.groups@.contains_key(key) ==> #[trigger] source.groups@[key] == original.groups@[key],
-            forall|code: i64| partitions@.contains_key(code) ==> (#[trigger] partitions@[code]).wf() && 0 <= code < 16777216,
-            forall|key: i64, sub: i64, day: i32| #[trigger] partition_at(partitions@, key, sub, day) ==
-                if original.keys@.take(index as int).contains(key) { original.at(key, sub, day) } else { (0, 0) },
-            leaf_keys@.no_duplicates(),
-            forall|leaf: i64| #[trigger] leaf_seen@.contains_key(leaf) <==> leaf_keys@.contains(leaf),
-            forall|position: int| 0 <= position < leaf_keys@.len() ==> 0 <= #[trigger] leaf_keys@[position] < 65536,
-            forall|code: i64| #[trigger] partitions@.contains_key(code) ==> leaf_keys@.contains((code / 256) as i64),
-        decreases source.keys.len() - index,
+    let slot = part(key);
+    let value = hints[slot];
+    if value < u32::MAX { hints.set(slot, value + 1); }
+}
+
+/// A table under construction: the same chunks, owned and changed in place.
+pub struct Builder {
+    pub chunks: Vec<Chunk>,
+}
+
+impl Builder {
+    pub open spec fn wf(self) -> bool {
+        &&& self.chunks@.len() == 1048576
+        &&& forall|idx: int| 0 <= idx < 1048576 ==> (#[trigger] self.chunks@[idx]).wf(idx)
+    }
+
+    pub open spec fn at(self, key: i64, sub: i64, day: i32) -> (int, int) {
+        self.chunks@[partition(key)].at(key, sub, day)
+    }
+
+    pub fn with_counts(hints: &Vec<u32>) -> (out: Builder)
+        requires hints@.len() == 1048576,
+        ensures out.wf(), forall|key: i64, sub: i64, day: i32| #[trigger] out.at(key, sub, day) == (0int, 0int),
     {
-        let key = source.keys[index];
-        let ghost before_parts = partitions@;
-        proof {
-            verus_prooflib::lemma_prefix_fresh(original.keys@, index as int);
-            assert(source.groups@.contains_key(key));
-            verus_prooflib::lemma_push_membership(original.keys@.take(index as int), key);
-            assert(original.keys@.take(index as int + 1) =~= original.keys@.take(index as int).push(key));
+        let mut chunks: Vec<Chunk> = Vec::with_capacity(1048576);
+        let mut index = 0usize;
+        while index < 1048576
+            invariant index <= 1048576, hints@.len() == 1048576, chunks@.len() == index,
+                forall|i: int| 0 <= i < index ==> (#[trigger] chunks@[i]).entries@.len() == 0,
+            decreases 1048576 - index,
+        {
+            chunks.push(Chunk { entries: Vec::with_capacity(hints[index] as usize) });
+            index += 1;
         }
-        let code = (key as u64 % 16777216) as i64;
-        let leaf_key = code / 256;
-        if !leaf_seen.contains_key(&leaf_key) {
-            proof {
-                verus_prooflib::lemma_unique_push(leaf_keys@, leaf_key);
-                verus_prooflib::lemma_push_membership(leaf_keys@, leaf_key);
+        let out = Builder { chunks };
+        proof {
+            assert forall|idx: int| 0 <= idx < 1048576 implies (#[trigger] out.chunks@[idx]).wf(idx) by {
+                assert(out.chunks@[idx].entries@ =~= Seq::<Entry>::empty());
             }
-            leaf_seen.insert(leaf_key, true);
-            leaf_keys.push(leaf_key);
+            assert forall|key: i64, sub: i64, day: i32| #[trigger] out.at(key, sub, day) == (0int, 0int) by {
+                lemma_partition_bound(key);
+                assert(out.chunks@[partition(key)].entries@ =~= Seq::<Entry>::empty());
+            }
         }
-        let mut bucket = match partitions.remove(&code) { Some(bucket) => bucket, None => Bucket::new() };
-        let group = source.groups.remove(&key).unwrap();
-        let ghost stored = group;
-        bucket.replace(key, group);
-        let ghost updated = bucket;
-        partitions.insert(code, bucket);
+        out
+    }
+
+    pub fn new() -> (out: Builder)
+        ensures out.wf(), forall|key: i64, sub: i64, day: i32| #[trigger] out.at(key, sub, day) == (0int, 0int),
+    {
+        let hints = count_hints();
+        Builder::with_counts(&hints)
+    }
+
+    pub fn add(&mut self, key: i64, sub: i64, day: i32, count: i128, revenue: i128) -> (ok: bool)
+        requires old(self).wf(),
+        ensures final(self).wf(), ok ==> final(self).at(key, sub, day) ==
+            (old(self).at(key, sub, day).0 + count, old(self).at(key, sub, day).1 + revenue),
+            ok ==> forall|other: i64, s: i64, d: i32| (other, s, d) != (key, sub, day) ==>
+                #[trigger] final(self).at(other, s, d) == old(self).at(other, s, d),
+    {
+        let slot = part(key);
+        let ghost entry = *self;
+        proof { lemma_partition_bound(key); assert(self.chunks@[slot as int].wf(slot as int)); }
+        let ok = self.chunks[slot].add(key, sub, day, count, revenue);
         proof {
-            assert(partitions@ =~= before_parts.insert(code, updated));
-            assert forall|other: i64, sub: i64, day: i32| #[trigger] partition_at(partitions@, other, sub, day) ==
-                if original.keys@.take(index as int + 1).contains(other) { original.at(other, sub, day) } else { (0, 0) } by {
-                if other == key {
-                    assert(stored == original.groups@[key]);
-                    assert(updated.at(key, sub, day) == stored.at(sub, day));
-                } else if partition(other) as i64 == code {
-                    assert(updated.at(other, sub, day) == partition_at(before_parts, other, sub, day));
-                } else {
-                    assert(partition_at(partitions@, other, sub, day) == partition_at(before_parts, other, sub, day));
+            assert forall|idx: int| 0 <= idx < 1048576 implies (#[trigger] self.chunks@[idx]).wf(idx) by {
+                if idx != slot as int { assert(self.chunks@[idx] == entry.chunks@[idx]); }
+            }
+            if ok {
+                assert forall|other: i64, s: i64, d: i32| #[trigger] self.at(other, s, d) ==
+                    (if partition(other) == slot as int {
+                        bumped(entry.at(other, s, d), key, sub, day, count as int, revenue as int, other, s, d)
+                    } else { entry.at(other, s, d) }) by {
+                    lemma_partition_bound(other);
+                    if partition(other) != slot as int { assert(self.chunks@[partition(other)] == entry.chunks@[partition(other)]); }
                 }
             }
         }
-        index += 1;
+        ok
     }
-    proof { assert(original.keys@.take(original.keys@.len() as int) =~= original.keys@); }
-    let ghost full_parts = partitions@;
-    let empty = Arc::new(Layer { base: Arc::new(Bucket::new()), replacements: Bucket::new() });
-    let mut leaf_pages: HashMap<i64, Arc<Page>> = HashMap::new();
-    index = 0;
-    while index < leaf_keys.len()
-        invariant original.wf(), index <= leaf_keys.len(), leaf_keys@.no_duplicates(),
-            forall|position: int| 0 <= position < leaf_keys@.len() ==> 0 <= #[trigger] leaf_keys@[position] < 65536,
-            forall|code: i64| full_parts.contains_key(code) ==> (#[trigger] full_parts[code]).wf() && 0 <= code < 16777216,
-            forall|code: i64| #[trigger] full_parts.contains_key(code) ==> leaf_keys@.contains((code / 256) as i64),
-            forall|key: i64, sub: i64, day: i32| #[trigger] partition_at(full_parts, key, sub, day) == original.at(key, sub, day),
-            forall|code: i64| #[trigger] partitions@.contains_key(code) <==>
-                full_parts.contains_key(code) && !leaf_keys@.take(index as int).contains((code / 256) as i64),
-            forall|code: i64| partitions@.contains_key(code) ==> #[trigger] partitions@[code] == full_parts[code],
-            forall|leaf: i64| #[trigger] leaf_pages@.contains_key(leaf) <==> leaf_keys@.take(index as int).contains(leaf),
-            forall|leaf: i64| leaf_pages@.contains_key(leaf) ==> #[trigger] page_matches(*leaf_pages@[leaf], full_parts, leaf),
-            empty.wf(), empty.base.groups@ == Map::empty(), empty.replacements.groups@ == Map::empty(),
-        decreases leaf_keys.len() - index,
+
+    /// Wrap the chunks into the shared, persistent tree.  Nothing is copied.
+    pub fn freeze(self) -> (out: Table)
+        requires self.wf(),
+        ensures out.wf(), forall|key: i64, sub: i64, day: i32| #[trigger] out.at(key, sub, day) == self.at(key, sub, day),
     {
-        let leaf_key = leaf_keys[index];
-        proof { verus_prooflib::lemma_prefix_fresh(leaf_keys@, index as int); }
-        let mut buckets: Vec<Arc<Layer>> = Vec::new();
-        let mut slot = 0usize;
-        while slot < 256
-            invariant slot <= 256, 0 <= leaf_key < 65536, leaf_key == leaf_keys@[index as int], index < leaf_keys.len(),
-                leaf_keys@.no_duplicates(), !leaf_keys@.take(index as int).contains(leaf_key), buckets@.len() == slot,
-                forall|code: i64| full_parts.contains_key(code) ==> (#[trigger] full_parts[code]).wf() && 0 <= code < 16777216,
-                forall|code: i64| #[trigger] partitions@.contains_key(code) <==>
-                    full_parts.contains_key(code) && !leaf_keys@.take(index as int).contains((code / 256) as i64)
-                    && (code / 256 != leaf_key || code % 256 >= slot),
-                forall|code: i64| partitions@.contains_key(code) ==> #[trigger] partitions@[code] == full_parts[code],
-                empty.wf(), empty.base.groups@ == Map::empty(), empty.replacements.groups@ == Map::empty(),
-                forall|position: int| 0 <= position < slot ==> (#[trigger] buckets@[position]).wf()
-                    && buckets@[position].replacements.groups@ == Map::empty()
-                    && buckets@[position].base.groups@ == if full_parts.contains_key((leaf_key as int * 256 + position) as i64) {
-                        full_parts[(leaf_key as int * 256 + position) as i64].groups@
-                    } else { Map::empty() },
-            decreases 256 - slot,
+        let ghost snapshot = self;
+        let mut builder = self;
+        let ghost original = builder.chunks@;
+        let empty: Arc<Chunk> = Arc::new(Chunk { entries: Vec::new() });
+        let mut flat: Vec<Arc<Chunk>> = Vec::with_capacity(1048576);
+        let mut index = 0usize;
+        while index < 1048576
+            invariant index <= 1048576, builder.chunks@.len() == 1048576, original.len() == 1048576,
+                flat@.len() == index, (*empty).entries@.len() == 0,
+                forall|i: int| 0 <= i < index ==> (*#[trigger] flat@[i]).entries@ == original[i].entries@,
+                forall|i: int| index <= i < 1048576 ==> builder.chunks@[i] == original[i],
+            decreases 1048576 - index,
         {
-            let code = leaf_key * 256 + slot as i64;
-            let bucket = match partitions.remove(&code) {
-                Some(bucket) => Arc::new(Layer { base: Arc::new(bucket), replacements: Bucket::new() }),
-                None => empty.clone(),
-            };
-            buckets.push(bucket);
-            slot += 1;
+            let mut c = Chunk { entries: Vec::new() };
+            std::mem::swap(&mut c, &mut builder.chunks[index]);
+            if c.entries.len() == 0 {
+                flat.push(empty.clone());
+                proof { assert(c.entries@ =~= (*empty).entries@); }
+            } else {
+                flat.push(Arc::new(c));
+            }
+            index += 1;
         }
+        let mut pages: Vec<Arc<Page>> = Vec::with_capacity(16384);
+        let mut group = 0usize;
+        while group < 16384
+            invariant group <= 16384, flat@.len() == 1048576, pages@.len() == group,
+                forall|i: int| 0 <= i < group ==> (*#[trigger] pages@[i]).chunks@ == flat@.subrange(i * 64, i * 64 + 64),
+            decreases 16384 - group,
+        {
+            pages.push(Arc::new(Page { chunks: clone_range(&flat, group * 64, 64) }));
+            group += 1;
+        }
+        let mut dirs: Vec<Arc<Dir>> = Vec::with_capacity(128);
+        let mut dir = 0usize;
+        while dir < 128
+            invariant dir <= 128, pages@.len() == 16384, dirs@.len() == dir,
+                forall|i: int| 0 <= i < dir ==> (*#[trigger] dirs@[i]).pages@ == pages@.subrange(i * 128, i * 128 + 128),
+            decreases 128 - dir,
+        {
+            dirs.push(Arc::new(Dir { pages: clone_range(&pages, dir * 128, 128) }));
+            dir += 1;
+        }
+        let out = Table { dirs };
         proof {
-            verus_prooflib::lemma_push_membership(leaf_keys@.take(index as int), leaf_key);
-            assert(leaf_keys@.take(index as int + 1) =~= leaf_keys@.take(index as int).push(leaf_key));
+            assert forall|idx: int| 0 <= idx < 1048576 implies #[trigger] out.chunk(idx).entries@ == original[idx].entries@ by {
+                assert(((idx / 8192) * 128 + (idx / 64) % 128) * 64 + idx % 64 == idx);
+            }
+            assert forall|d: int| 0 <= d < 128 implies (#[trigger] out.dirs@[d]).pages@.len() == 128 by {}
+            assert forall|d: int, p: int| 0 <= d < 128 && 0 <= p < 128 implies
+                (#[trigger] out.dirs@[d].pages@[p]).chunks@.len() == 64 by {
+                assert(out.dirs@[d].pages@[p] == pages@[d * 128 + p]);
+            }
+            assert forall|idx: int| 0 <= idx < 1048576 implies (#[trigger] out.chunk(idx)).wf(idx) by {
+                assert(original[idx].wf(idx));
+            }
+            assert forall|key: i64, sub: i64, day: i32| #[trigger] out.at(key, sub, day) == snapshot.at(key, sub, day) by {
+                lemma_partition_bound(key);
+            }
         }
-        leaf_pages.insert(leaf_key, Arc::new(Page { buckets }));
-        index += 1;
+        out
     }
-    proof { assert(leaf_keys@.take(leaf_keys@.len() as int) =~= leaf_keys@); }
-    let mut empty_buckets: Vec<Arc<Layer>> = Vec::new();
-    index = 0;
-    while index < 256
-        invariant index <= 256, empty_buckets@.len() == index,
-            empty.wf(), empty.base.groups@ == Map::empty(), empty.replacements.groups@ == Map::empty(),
-            forall|position: int| 0 <= position < index ==> #[trigger] empty_buckets@[position] == empty,
-        decreases 256 - index,
-    { empty_buckets.push(empty.clone()); index += 1; }
-    let empty_page = Arc::new(Page { buckets: empty_buckets });
-    let mut pages: Vec<Arc<Directory>> = Vec::new();
-    let mut page = 0usize;
-    while page < 256
-        invariant original.wf(), page <= 256, pages@.len() == page,
-            forall|key: i64, sub: i64, day: i32| #[trigger] partition_at(full_parts, key, sub, day) == original.at(key, sub, day),
-            forall|leaf: i64| leaf_pages@.contains_key(leaf) ==> #[trigger] page_matches(*leaf_pages@[leaf], full_parts, leaf),
-            forall|code: i64| #[trigger] full_parts.contains_key(code) ==> leaf_pages@.contains_key((code / 256) as i64),
-            empty_page.buckets@.len() == 256,
-            forall|position: int| 0 <= position < 256 ==> (#[trigger] empty_page.buckets@[position]).wf()
-                && empty_page.buckets@[position].base.groups@ == Map::empty()
-                && empty_page.buckets@[position].replacements.groups@ == Map::empty(),
-            forall|directory: int| 0 <= directory < page ==> (#[trigger] pages@[directory]).pages@.len() == 256,
-            forall|directory: int, slot: int| 0 <= directory < page && 0 <= slot < 256 ==>
-                #[trigger] page_matches(*pages@[directory].pages@[slot], full_parts, (directory * 256 + slot) as i64),
-        decreases 256 - page,
-    {
-        let mut directory_pages: Vec<Arc<Page>> = Vec::new();
-        let mut slot = 0usize;
-        while slot < 256
-            invariant page < 256, slot <= 256, directory_pages@.len() == slot,
-                pages@.len() == page,
-                forall|directory: int| 0 <= directory < page ==> (#[trigger] pages@[directory]).pages@.len() == 256,
-                forall|directory: int, position: int| 0 <= directory < page && 0 <= position < 256 ==>
-                    #[trigger] page_matches(*pages@[directory].pages@[position], full_parts, (directory * 256 + position) as i64),
-                forall|leaf: i64| leaf_pages@.contains_key(leaf) ==> #[trigger] page_matches(*leaf_pages@[leaf], full_parts, leaf),
-                forall|code: i64| #[trigger] full_parts.contains_key(code) ==> leaf_pages@.contains_key((code / 256) as i64),
-                empty_page.buckets@.len() == 256,
-                forall|position: int| 0 <= position < 256 ==> (#[trigger] empty_page.buckets@[position]).wf()
-                    && empty_page.buckets@[position].base.groups@ == Map::empty()
-                    && empty_page.buckets@[position].replacements.groups@ == Map::empty(),
-                forall|position: int| 0 <= position < slot ==>
-                    #[trigger] page_matches(*directory_pages@[position], full_parts, (page as int * 256 + position) as i64),
-            decreases 256 - slot,
-        {
-            let code = (page * 256 + slot) as i64;
-            let leaf_page = match leaf_pages.get(&code) { Some(leaf_page) => leaf_page.clone(), None => empty_page.clone() };
-            directory_pages.push(leaf_page);
-            slot += 1;
-        }
-        pages.push(Arc::new(Directory { pages: directory_pages }));
-        page += 1;
-    }
-    let out = Table { pages };
-    proof {
-        assert forall|directory: int, page: int| 0 <= directory < 256 && 0 <= page < 256 implies
-            (#[trigger] out.pages@[directory].pages@[page]).buckets@.len() == 256 by {
-            assert(page_matches(*out.pages@[directory].pages@[page], full_parts, (directory * 256 + page) as i64));
-        }
-        assert forall|directory: int, page: int, slot: int| 0 <= directory < 256 && 0 <= page < 256 && 0 <= slot < 256 implies
-            (#[trigger] out.pages@[directory].pages@[page].buckets@[slot]).wf() by {
-            assert(page_matches(*out.pages@[directory].pages@[page], full_parts, (directory * 256 + page) as i64));
-        }
-        assert(out.wf());
-        assert forall|key: i64, sub: i64, day: i32| #[trigger] out.at(key, sub, day) == original.at(key, sub, day) by {
-            let code = partition(key);
-            let directory = code / 65536;
-            let page = (code / 256) % 256;
-            let slot = code % 256;
-            assert((directory * 256 + page) * 256 + slot == code);
-            assert(page_matches(*out.pages@[directory].pages@[page], full_parts, (code / 256) as i64));
-            assert(out.at(key, sub, day) == partition_at(full_parts, key, sub, day));
-        }
-    }
-    out
+}
+
+pub fn empty_table() -> (out: Table)
+    ensures out.wf(), forall|key: i64, sub: i64, day: i32| #[trigger] out.at(key, sub, day) == (0int, 0int),
+{
+    Builder::new().freeze()
+}
+
+/// A table with the contents of an accumulator.
+pub fn freeze(source: Bucket) -> (out: Option<Table>)
+    requires source.wf(),
+    ensures out matches Some(table) ==> table.wf()
+        && forall|key: i64, sub: i64, day: i32| #[trigger] table.at(key, sub, day) == source.at(key, sub, day),
+{
+    let mut table = empty_table();
+    if !merge(&mut table, &source, false) { return None; }
+    Some(table)
 }
 
 pub fn merge(table: &mut Table, changes: &Bucket, positive: bool) -> (ok: bool)

@@ -2,7 +2,7 @@ use vstd::prelude::*;
 use verus_common::rel::*;
 use verus_common::sums::*;
 use crate::gen_spec::*;
-use crate::kernel::State;
+use crate::storage::*;
 use crate::meaning::*;
 use crate::values::*;
 
@@ -70,12 +70,23 @@ pub open spec fn bucket_rows(groups: Seq<Group>) -> Seq<OutRow> {
     flat(groups.map_values(|group: Group| group_rows(group)))
 }
 
-pub open spec fn cache_rows(state: State, keys: Seq<i64>) -> Seq<OutRow> {
+pub open spec fn cache_rows(state: Pages<Vec<Group>>, keys: Seq<i64>) -> Seq<OutRow> {
     flat(keys.map_values(|key: i64| cache_page(state, key)))
 }
 
-pub open spec fn cache_page(state: State, key: i64) -> Seq<OutRow> {
-    match state.group_model(key) { Some(groups) => bucket_rows(groups@), None => Seq::empty() }
+pub open spec fn cache_page(state: Pages<Vec<Group>>, key: i64) -> Seq<OutRow> {
+    match state.at(key) { Some(groups) => bucket_rows(groups@), None => Seq::empty() }
+}
+
+pub open spec fn groups_shape(groups: Pages<Vec<Group>>) -> bool {
+    groups.valid() && forall|key: i64| #[trigger] groups.at(key).is_some() ==> {
+        let groups = groups.at(key).unwrap();
+        groups.len() > 0 && groups@.map_values(|group: Group| group.name@).no_duplicates()
+            && forall|index: int| 0 <= index < groups.len() ==> {
+                let group = #[trigger] groups[index];
+                name_hash(group.name@) == key as int && group.totals.len() > 0 && totals_valid(group.totals@)
+            }
+    }
 }
 
 pub open spec fn bucket_valid(groups: Seq<Group>) -> bool {
@@ -184,26 +195,25 @@ pub proof fn lemma_bucket_support(groups: Seq<Group>, name: Seq<u8>, year: int, 
     }
 }
 
-pub proof fn lemma_cache_meaning(state: State, keys: Seq<i64>)
-    requires state.valid(), keys.no_duplicates(),
-        forall|key: i64| #[trigger] state.group_model(key).is_some() <==> keys.contains(key),
+pub proof fn lemma_cache_meaning(state: Pages<Vec<Group>>, keys: Seq<i64>)
+    requires groups_shape(state), keys.no_duplicates(),
+        forall|key: i64| #[trigger] state.at(key).is_some() <==> keys.contains(key),
     ensures cache_rows(state, keys).map_values(|row: OutRow| output_key(row)).no_duplicates(),
         forall|index: int| 0 <= index < cache_rows(state, keys).len() ==> {
             let row = #[trigger] cache_rows(state, keys)[index];
-            state.group_value(row.nation, row.o_year, 0) > 0 && row.sum_profit == state.group_value(row.nation, row.o_year, 1)
+            page_group(state, row.nation, row.o_year, 0) > 0 && row.sum_profit == page_group(state, row.nation, row.o_year, 1)
         },
-        forall|name: Seq<u8>, year: int| #[trigger] state.group_value(name, year, 0) > 0 ==>
+        forall|name: Seq<u8>, year: int| #[trigger] page_group(state, name, year, 0) > 0 ==>
             exists|row: OutRow| #[trigger] cache_rows(state, keys).contains(row) && row.nation == name && row.o_year == year,
 {
-    state.lemma_cache_facts();
     let pages = keys.map_values(|key: i64| cache_page(state, key));
     let key_pages = pages.map_values(|page: Seq<OutRow>| page.map_values(|row: OutRow| output_key(row)));
     verus_prooflib::lemma_map_flat(pages, |row: OutRow| output_key(row));
     assert forall|position: int| 0 <= position < key_pages.len() implies (#[trigger] key_pages[position]).no_duplicates() by {
         let key = keys[position];
         assert(keys.contains(key));
-        assert(state.group_model(key).is_some());
-        let groups = state.group_model(key).unwrap();
+        assert(state.at(key).is_some());
+        let groups = state.at(key).unwrap();
         assert(bucket_valid(groups@));
         lemma_bucket_unique(groups@);
     }
@@ -215,8 +225,8 @@ pub proof fn lemma_cache_meaning(state: State, keys: Seq<i64>)
             let left_row = pages[left][left_index];
             let right_row = pages[right][right_index];
             assert(pages[left].contains(left_row)); assert(pages[right].contains(right_row));
-            let left_groups = state.group_model(keys[left]).unwrap();
-            let right_groups = state.group_model(keys[right]).unwrap();
+            let left_groups = state.at(keys[left]).unwrap();
+            let right_groups = state.at(keys[right]).unwrap();
             lemma_bucket_member(left_groups@, left_row);
             lemma_bucket_member(right_groups@, right_row);
             let left_group = choose|group_index: int, total_index: int| 0 <= group_index < left_groups.len()
@@ -231,13 +241,13 @@ pub proof fn lemma_cache_meaning(state: State, keys: Seq<i64>)
     verus_prooflib::lemma_flat_unique(key_pages);
     assert forall|index: int| 0 <= index < cache_rows(state, keys).len() implies {
         let row = #[trigger] cache_rows(state, keys)[index];
-        state.group_value(row.nation, row.o_year, 0) > 0 && row.sum_profit == state.group_value(row.nation, row.o_year, 1)
+        page_group(state, row.nation, row.o_year, 0) > 0 && row.sum_profit == page_group(state, row.nation, row.o_year, 1)
     } by {
         let row = cache_rows(state, keys)[index];
         assert(flat(pages).contains(row));
         lemma_flat_contains(pages, row);
         let position = choose|position: int| 0 <= position < pages.len() && (#[trigger] pages[position]).contains(row);
-        let groups = state.group_model(keys[position]).unwrap();
+        let groups = state.at(keys[position]).unwrap();
         lemma_bucket_member(groups@, row);
         let cell = choose|group_index: int, total_index: int| 0 <= group_index < groups.len()
             && 0 <= total_index < groups[group_index].totals.len() && #[trigger] group_rows(groups[group_index])[total_index] == row;
@@ -247,11 +257,11 @@ pub proof fn lemma_cache_meaning(state: State, keys: Seq<i64>)
         assert(name_hash(group.name@) == keys[position] as int);
         assert(group.totals[cell.1].count > 0);
     }
-    assert forall|name: Seq<u8>, year: int| #[trigger] state.group_value(name, year, 0) > 0 implies
+    assert forall|name: Seq<u8>, year: int| #[trigger] page_group(state, name, year, 0) > 0 implies
         exists|row: OutRow| #[trigger] cache_rows(state, keys).contains(row) && row.nation == name && row.o_year == year by {
         let key = name_hash(name) as i64;
-        let groups = state.group_model(key).unwrap();
-        assert(state.group_model(key).is_some());
+        let groups = state.at(key).unwrap();
+        assert(state.at(key).is_some());
         assert(keys.contains(key));
         let position = choose|position: int| 0 <= position < keys.len() && (#[trigger] keys[position]) == key;
         lemma_bucket_support(groups@, name, year, 0);

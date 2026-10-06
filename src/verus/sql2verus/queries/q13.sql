@@ -1,8 +1,8 @@
--- TPC-H Q13 (catalog text). No parameters: sql2verus takes only a literal LIKE pattern.
+-- TPC-H Q13 (catalog text), :comment_pattern ('%' || :word1 || '%' || :word2 || '%', e.g. '%unusual%accounts%') as $1 (a text LIKE pattern parameter).
 SELECT c_count, COUNT(*) AS custdist
 FROM (SELECT c_custkey, COUNT(o_orderkey) AS c_count
       FROM customer LEFT OUTER JOIN orders
-        ON c_custkey = o_custkey AND o_comment NOT LIKE '%unusual%accounts%'
+        ON c_custkey = o_custkey AND o_comment NOT LIKE $1
       GROUP BY c_custkey) AS c_orders
 GROUP BY c_count
 ORDER BY custdist DESC, c_count DESC

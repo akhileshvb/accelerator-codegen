@@ -6,15 +6,12 @@ use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::bags::*;
 use crate::storage::*;
+use crate::parts::*;
+use crate::flat::*;
 
 verus! {
 
 pub struct Count { pub value: i128 }
-
-pub struct PartBucket {
-    pub sizes: Directory<Bag<BrassPartScan>>,
-    pub support: i128,
-}
 
 pub struct RegionName {
     pub name: Arc<Vec<u8>>,
@@ -22,30 +19,6 @@ pub struct RegionName {
 }
 
 pub struct RegionBucket { pub names: Vec<RegionName> }
-
-pub open spec fn parts_valid(parts: Directory<PartBucket>) -> bool {
-    &&& parts.valid()
-    &&& forall|key: i64| match #[trigger] parts.lookup(key) {
-        None => true,
-        Some(part) => (*part).support > 0 && (*part).sizes.valid() &&
-            forall|size: i64| match #[trigger] (*part).sizes.lookup(size) {
-                None => true,
-                Some(bag) => (*bag).valid() && (*bag).entries@.len() > 0 &&
-                    forall|index: int| 0 <= index < (*bag).entries@.len() ==>
-                        (*((#[trigger] (*bag).entries@[index]).row)).p_partkey == key && (*(*bag).entries@[index].row).p_size == size,
-            },
-    }
-}
-
-pub open spec fn sizes_valid(sizes: Directory<Directory<Count>>) -> bool {
-    &&& sizes.valid()
-    &&& forall|size: i64| match #[trigger] sizes.lookup(size) {
-        None => true,
-        Some(slice) => (*slice).valid() && forall|key: i64| match #[trigger] (*slice).lookup(key) {
-            None => true, Some(count) => (*count).value > 0,
-        },
-    }
-}
 
 pub open spec fn region_bucket_valid(bucket: RegionBucket, hash: i64) -> bool {
     &&& forall|index: int| 0 <= index < bucket.names@.len() ==>
@@ -85,12 +58,17 @@ pub open spec fn regions_nonzero(regions: Directory<RegionBucket>) -> bool {
     forall|hash: i64| match #[trigger] regions.lookup(hash) { None => true, Some(bucket) => region_bucket_nonzero(*bucket) }
 }
 
-pub open spec fn brass(row: PartRow) -> bool {
-    like_match(row.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S'])
+/// Every part row is kept (with its type); the LIKE pattern is applied when a query reads.
+pub open spec fn retained(row: PartRow) -> bool {
+    true
 }
 
 pub open spec fn eligible(db: Db, key: i64) -> int {
-    sum(db.part, |row: PartRow| if row.p_partkey == key as int && brass(row) { 1 } else { 0 })
+    sum(db.part, |row: PartRow| if row.p_partkey == key as int && retained(row) { 1 } else { 0 })
+}
+
+pub open spec fn blank_part() -> PartRow {
+    PartRow { p_partkey: 0, p_mfgr: Seq::empty(), p_type: Seq::empty(), p_size: 0 }
 }
 
 pub open spec fn fits_i64(value: int) -> bool {
@@ -100,7 +78,7 @@ pub open spec fn fits_i64(value: int) -> bool {
 pub open spec fn supported_db(db: Db) -> bool {
     &&& forall|index: int| 0 <= index < db.part.len() ==> {
         let row = #[trigger] db.part[index];
-        brass(row) ==> fits_i64(row.p_partkey) && fits_i64(row.p_size)
+        retained(row) ==> fits_i64(row.p_partkey) && fits_i64(row.p_size)
     }
     &&& forall|index: int| 0 <= index < db.partsupp.len() ==> {
         let row = #[trigger] db.partsupp[index];
@@ -149,43 +127,8 @@ pub open spec fn count_at(directory: Directory<Count>, key: i64) -> int {
     match directory.lookup(key) { None => 0, Some(value) => (*value).value as int }
 }
 
-pub open spec fn part_amount(parts: Directory<PartBucket>, key: i64, size: i64, mfgr: Seq<u8>) -> int {
-    match parts.lookup(key) {
-        None => 0,
-        Some(part) => match (*part).sizes.lookup(size) {
-            None => 0,
-            Some(bag) => (*bag).weight(|row: (int, Seq<u8>, int)| if row.1 == mfgr { 1int } else { 0int }),
-        },
-    }
-}
-
-pub open spec fn part_support(parts: Directory<PartBucket>, key: i64) -> int {
-    match parts.lookup(key) { None => 0, Some(part) => (*part).support as int }
-}
-
-pub open spec fn part_size_total(parts: Directory<PartBucket>, key: i64, size: i64) -> int {
-    match parts.lookup(key) {
-        None => 0,
-        Some(part) => match (*part).sizes.lookup(size) { None => 0, Some(bag) => (*bag).total() },
-    }
-}
-
-pub open spec fn size_count(index: Directory<Directory<Count>>, size: i64, key: i64) -> int {
-    match index.lookup(size) { None => 0, Some(slice) => count_at(*slice, key) }
-}
-
-pub open spec fn part_indexes_meaning(db: Db, parts: Directory<PartBucket>, sizes: Directory<Directory<Count>>) -> bool {
-    &&& parts_valid(parts) && sizes_valid(sizes)
-    &&& forall|key: i64| #[trigger] part_support(parts, key) == eligible(db, key)
-    &&& forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(parts, key, size, mfgr) ==
-        sum(db.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1int } else { 0int })
-    &&& forall|size: i64, key: i64| #[trigger] size_count(sizes, size, key) ==
-        sum(db.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int })
-    &&& forall|key: i64, size: i64| #[trigger] part_size_total(parts, key, size) == size_count(sizes, size, key)
-}
-
-pub open spec fn quote_routing(parts: Directory<PartBucket>) -> spec_fn(i64, PartsuppRow) -> bool {
-    |key: i64, row: PartsuppRow| row.ps_partkey == key as int && part_support(parts, key) > 0
+pub open spec fn quote_routing(db: Db) -> spec_fn(i64, PartsuppRow) -> bool {
+    |key: i64, row: PartsuppRow| row.ps_partkey == key as int && eligible(db, key) > 0
 }
 
 pub open spec fn supplier_routing() -> spec_fn(i64, SupplierRow) -> bool {
@@ -292,44 +235,39 @@ pub proof fn lemma_region_names_weight(names: Seq<RegionName>, name: Seq<u8>, ke
 }
 
 pub struct State {
-    pub(crate) parts: Directory<PartBucket>,
+    pub(crate) parts: Parts,
     pub(crate) quotes: Directory<Bag<BrassPartsuppScan>>,
     pub(crate) suppliers: Directory<Bag<SupplierScan>>,
     pub(crate) nations: Directory<Bag<NationScan>>,
     pub(crate) regions: Directory<RegionBucket>,
-    pub(crate) sizes: Directory<Directory<Count>>,
+    pub(crate) sflat: Arc<Vec<SInfo>>,
     pub(crate) database: Ghost<Db>,
 }
 
-pub(crate) open spec fn state_meaning(db: Db, parts: Directory<PartBucket>, sizes: Directory<Directory<Count>>,
+pub(crate) open spec fn state_meaning(db: Db, parts: Parts,
     quotes: Directory<Bag<BrassPartsuppScan>>, suppliers: Directory<Bag<SupplierScan>>, nations: Directory<Bag<NationScan>>,
-    regions: Directory<RegionBucket>) -> bool
+    regions: Directory<RegionBucket>, sflat: Arc<Vec<SInfo>>) -> bool
 {
-    (State { parts, sizes, quotes, suppliers, nations, regions, database: Ghost(db) }).meaning()
+    (State { parts, quotes, suppliers, nations, regions, sflat, database: Ghost(db) }).meaning()
 }
 
 impl State {
-    pub(crate) fn new(parts: Directory<PartBucket>, sizes: Directory<Directory<Count>>,
+    pub(crate) fn new(parts: Parts,
         quotes: Directory<Bag<BrassPartsuppScan>>, suppliers: Directory<Bag<SupplierScan>>, nations: Directory<Bag<NationScan>>,
-        regions: Directory<RegionBucket>, Ghost(db): Ghost<Db>) -> (result: Self)
-        requires state_meaning(db, parts, sizes, quotes, suppliers, nations, regions),
+        regions: Directory<RegionBucket>, sflat: Arc<Vec<SInfo>>, Ghost(db): Ghost<Db>) -> (result: Self)
+        requires state_meaning(db, parts, quotes, suppliers, nations, regions, sflat),
         ensures result.db() == db,
     {
-        State { parts, sizes, quotes, suppliers, nations, regions, database: Ghost(db) }
+        State { parts, quotes, suppliers, nations, regions, sflat, database: Ghost(db) }
     }
     pub closed spec fn db(self) -> Db { self.database@ }
 
     pub(crate) open spec fn meaning(self) -> bool {
         let db = self.database@;
         &&& supported_db(db)
-        &&& self.parts.valid() && self.quotes.valid() && self.suppliers.valid()
-            && self.nations.valid() && self.regions.valid() && self.sizes.valid()
-        &&& forall|key: i64| #[trigger] part_support(self.parts, key) == eligible(db, key)
-        &&& forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(self.parts, key, size, mfgr) ==
-            sum(db.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1 } else { 0 })
-        &&& forall|size: i64, key: i64| #[trigger] size_count(self.sizes, size, key) ==
-            sum(db.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { 1 } else { 0 })
-        &&& forall|key: i64, size: i64| #[trigger] part_size_total(self.parts, key, size) == size_count(self.sizes, size, key)
+        &&& self.quotes.valid() && self.suppliers.valid() && self.nations.valid() && self.regions.valid()
+        &&& self.parts.meaning(db)
+        &&& flat_ok((*self.sflat)@, self.suppliers)
         &&& forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(self.quotes, key, supplier, cost) ==
             if eligible(db, key) > 0 {
                 sum(db.partsupp, |row: PartsuppRow| if row.ps_partkey == key as int && row.ps_suppkey == supplier && row.ps_supplycost == cost { 1 } else { 0 })
@@ -340,19 +278,9 @@ impl State {
             nation_database_count(db, key, row)
         &&& forall|name: Seq<u8>, key: i64| #[trigger] region_amount(self.regions, name, key) ==
             sum(db.region, |row: RegionRow| if row.r_name == name && row.r_regionkey == key as int { 1 } else { 0 })
-        &&& forall|key: i64| match #[trigger] self.parts.lookup(key) {
-            None => true,
-            Some(part) => (*part).support > 0 && (*part).sizes.valid() &&
-                forall|size: i64| match #[trigger] (*part).sizes.lookup(size) {
-                    None => true,
-                    Some(bag) => (*bag).valid() && (*bag).entries@.len() > 0 &&
-                        forall|index: int| 0 <= index < (*bag).entries@.len() ==>
-                            (*((#[trigger] (*bag).entries@[index]).row)).p_partkey == key && (*(*bag).entries@[index].row).p_size == size,
-                },
-        }
         &&& forall|key: i64| match #[trigger] self.quotes.lookup(key) {
             None => true,
-            Some(bag) => (*bag).valid() && (*bag).entries@.len() > 0 && part_support(self.parts, key) > 0 &&
+            Some(bag) => (*bag).valid() && (*bag).entries@.len() > 0 && eligible(db, key) > 0 &&
                 forall|index: int| 0 <= index < (*bag).entries@.len() ==> (*((#[trigger] (*bag).entries@[index]).row)).ps_partkey == key,
         }
         &&& forall|key: i64| match #[trigger] self.suppliers.lookup(key) {
@@ -364,12 +292,6 @@ impl State {
             None => true,
             Some(bag) => (*bag).valid() &&
                 forall|index: int| 0 <= index < (*bag).entries@.len() ==> (*((#[trigger] (*bag).entries@[index]).row)).n_nationkey == key,
-        }
-        &&& forall|size: i64| match #[trigger] self.sizes.lookup(size) {
-            None => true,
-            Some(slice) => (*slice).valid() && forall|key: i64| match #[trigger] (*slice).lookup(key) {
-                None => true, Some(count) => (*count).value > 0,
-            },
         }
         &&& forall|hash: i64| match #[trigger] self.regions.lookup(hash) {
             None => true,

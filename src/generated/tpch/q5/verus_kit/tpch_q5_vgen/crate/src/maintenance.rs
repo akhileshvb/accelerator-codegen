@@ -41,7 +41,7 @@ pub open spec fn customer_weight(suppliers: Table, line: LineitemInput, order: C
 }
 
 pub proof fn lemma_customer_weight(customers: Table, suppliers: Table, line: LineitemInput,
-    order: Cell, group: Group, nation: i64, sub: i64, day: i32, factor: int)
+    order: Cell, group: Run, nation: i64, sub: i64, day: i32, factor: int)
     requires group.wf(), group.rows@ == customers.rows(order.sub),
         forall|target: i64, date: i32| #[trigger] group.at(target, date) == customers.at(order.sub, target, date),
         forall|index: int| 0 <= index < group.rows@.len() ==> (#[trigger] group.rows@[index]).day == 0,
@@ -155,8 +155,8 @@ pub fn order_keys(reverse: &Table, customers: &[CustomerDelta], orders: &[Orders
         match reverse.group(customers[index].row.c_custkey) {
             Some(group) => {
                 let mut variant = 0;
-                while variant < group.rows.len()
-                    invariant reverse.wf(), reverse.dimension(), group.wf(), variant <= group.rows.len(),
+                while variant < group.len()
+                    invariant reverse.wf(), reverse.dimension(), group.wf(), variant <= group.rows@.len(),
                         forall|key: i64| #[trigger] seen@.contains_key(key) <==> keys@.contains(key),
                         index < customers.len(), customer == customers@[index as int].row.c_custkey,
                         forall|key: i64| #[trigger] previous_keys.contains(key) <==>
@@ -166,9 +166,9 @@ pub fn order_keys(reverse: &Table, customers: &[CustomerDelta], orders: &[Orders
                         forall|key: i64, day: i32| #[trigger] group.at(key, day) == reverse.at(customer, key, day),
                         forall|position: int| 0 <= position < group.rows@.len() ==>
                             (#[trigger] group.rows@[position]).count > 0 && group.rows@[position].day == 0,
-                    decreases group.rows.len() - variant,
+                    decreases group.rows@.len() - variant,
                 {
-                    if group.rows[variant].count > 0 { add_key(&mut keys, &mut seen, group.rows[variant].sub); }
+                    if group.cell(variant).count > 0 { add_key(&mut keys, &mut seen, group.cell(variant).sub); }
                     proof {
                         let prefix = group.rows@.take(variant as int).map_values(|cell: Cell| cell.sub);
                         assert(group.rows@.take(variant as int + 1).map_values(|cell: Cell| cell.sub) =~= prefix.push(group.rows@[variant as int].sub));
@@ -185,8 +185,10 @@ pub fn order_keys(reverse: &Table, customers: &[CustomerDelta], orders: &[Orders
                             group.lemma_row(position);
                             assert(reverse.at(customer, key, 0).0 > 0);
                         } else if reverse.at(customer, key, 0).0 > 0 {
-                            assert(group.positions@.contains_key(cell_key(key, 0)));
-                            let position = group.positions@[cell_key(key, 0)] as int;
+                            assert(group.at(key, 0) == reverse.at(customer, key, 0));
+                            group.lemma_at_witness(key, 0);
+                            let position = choose|position: int| 0 <= position < group.rows@.len()
+                                && (#[trigger] group.rows@[position]).sub == key && group.rows@[position].day == 0;
                             assert(mapped[position] == key);
                             assert(mapped.contains(key));
                         }
@@ -333,10 +335,10 @@ pub fn contribute(customers: &Table, orders: &Table, suppliers: &Table,
             assert(orders.at(line.l_orderkey, order.sub, order.day) == (order.count as int, order.revenue as int));
         }
     }
-    while order_index < order_group.rows.len()
+    while order_index < order_group.len()
         invariant customers.wf(), customers.dimension(), orders.wf(), orders.counts_nonnegative(),
             suppliers.wf(), suppliers.dimension(), order_group.wf(), supplier_group.wf(), changes.wf(),
-            order_index <= order_group.rows.len(),
+            order_index <= order_group.rows@.len(),
             entry == *old(changes), amount as int == line.l_extendedprice * (100 - line.l_discount as int),
             order_group.rows@ == orders.rows(line.l_orderkey),
             forall|target: i64, date: i32| #[trigger] supplier_group.at(target, date) == suppliers.at(line.l_suppkey, target, date),
@@ -345,20 +347,20 @@ pub fn contribute(customers: &Table, orders: &Table, suppliers: &Table,
             forall|nation: i64, sub: i64, day: i32| #[trigger] changes.at(nation, sub, day) ==
                 (entry.at(nation, sub, day).0 + sum(order_group.rows@.take(order_index as int), |order: Cell| order_weight(*customers, *suppliers, line, order, nation, sub, day, factor as int)),
                  entry.at(nation, sub, day).1 + sum(order_group.rows@.take(order_index as int), |order: Cell| order_weight(*customers, *suppliers, line, order, nation, sub, day, factor as int) * amount)),
-        decreases order_group.rows.len() - order_index,
+        decreases order_group.rows@.len() - order_index,
     {
-        let order = order_group.rows[order_index];
+        let order = order_group.cell(order_index);
         let ghost before_order = *changes;
         match customers.group(order.sub) {
             Some(customer_group) => {
                 let mut customer_index = 0;
-                while customer_index < customer_group.rows.len()
+                while customer_index < customer_group.len()
                     invariant customers.wf(), customers.dimension(), orders.wf(), orders.counts_nonnegative(),
                         suppliers.wf(), suppliers.dimension(), order_group.wf(), supplier_group.wf(), customer_group.wf(), changes.wf(),
-                        customer_index <= customer_group.rows.len(),
+                        customer_index <= customer_group.rows@.len(),
                         entry == *old(changes), order.count >= 0,
                         amount as int == line.l_extendedprice * (100 - line.l_discount as int),
-                        order_index < order_group.rows.len(), order == order_group.rows@[order_index as int],
+                        order_index < order_group.rows@.len(), order == order_group.rows@[order_index as int],
                         order_group.rows@ == orders.rows(line.l_orderkey),
                         forall|position: int| 0 <= position < order_group.rows@.len() ==>
                             (#[trigger] order_group.rows@[position]).count >= 0,
@@ -373,9 +375,9 @@ pub fn contribute(customers: &Table, orders: &Table, suppliers: &Table,
                         forall|nation: i64, sub: i64, day: i32| #[trigger] changes.at(nation, sub, day) ==
                             (before_order.at(nation, sub, day).0 + sum(customer_group.rows@.take(customer_index as int), |customer: Cell| customer_weight(*suppliers, line, order, customer, nation, sub, day, factor as int)),
                              before_order.at(nation, sub, day).1 + sum(customer_group.rows@.take(customer_index as int), |customer: Cell| customer_weight(*suppliers, line, order, customer, nation, sub, day, factor as int) * amount)),
-                    decreases customer_group.rows.len() - customer_index,
+                    decreases customer_group.rows@.len() - customer_index,
                 {
-                    let customer = customer_group.rows[customer_index];
+                    let customer = customer_group.cell(customer_index);
                     let supplier = supplier_group.get(customer.sub, 0);
                     let ghost before_customer = *changes;
                     proof { assert(supplier.count >= 0); }
@@ -422,7 +424,7 @@ pub fn contribute(customers: &Table, orders: &Table, suppliers: &Table,
                     assert forall|nation: i64, sub: i64, day: i32| #[trigger] changes.at(nation, sub, day) ==
                         (before_order.at(nation, sub, day).0 + order_weight(*customers, *suppliers, line, order, nation, sub, day, factor as int),
                          before_order.at(nation, sub, day).1 + order_weight(*customers, *suppliers, line, order, nation, sub, day, factor as int) * amount) by {
-                        lemma_customer_weight(*customers, *suppliers, line, order, *customer_group, nation, sub, day, factor as int);
+                        lemma_customer_weight(*customers, *suppliers, line, order, customer_group, nation, sub, day, factor as int);
                         lemma_revenue_sum(customer_group.rows@, |row: Cell| customer_weight(*suppliers, line, order, row, nation, sub, day, factor as int), amount as int);
                         let weight = |row: Cell| customer_weight(*suppliers, line, order, row, nation, sub, day, factor as int);
                         lemma_sum_ext_all(customer_group.rows@,
@@ -497,22 +499,22 @@ pub fn refresh_reverse(reverse: &mut Table, before: &Table, after: &Table, chang
         match before.group(key) {
             Some(group) => {
                 let mut variant = 0;
-                while variant < group.rows.len()
-                    invariant reverse.wf(), before.wf(), after.wf(), changes.wf(), group.wf(), variant <= group.rows.len(),
+                while variant < group.len()
+                    invariant reverse.wf(), before.wf(), after.wf(), changes.wf(), group.wf(), variant <= group.rows@.len(),
                         forall|key: i64| #[trigger] seen@.contains_key(key) <==> customers@.contains(key),
-                    decreases group.rows.len() - variant,
-                { add_key(&mut customers, &mut seen, group.rows[variant].sub); variant += 1; }
+                    decreases group.rows@.len() - variant,
+                { add_key(&mut customers, &mut seen, group.cell(variant).sub); variant += 1; }
             },
             None => {},
         }
         match after.group(key) {
             Some(group) => {
                 let mut variant = 0;
-                while variant < group.rows.len()
-                    invariant reverse.wf(), before.wf(), after.wf(), changes.wf(), group.wf(), variant <= group.rows.len(),
+                while variant < group.len()
+                    invariant reverse.wf(), before.wf(), after.wf(), changes.wf(), group.wf(), variant <= group.rows@.len(),
                         forall|key: i64| #[trigger] seen@.contains_key(key) <==> customers@.contains(key),
-                    decreases group.rows.len() - variant,
-                { add_key(&mut customers, &mut seen, group.rows[variant].sub); variant += 1; }
+                    decreases group.rows@.len() - variant,
+                { add_key(&mut customers, &mut seen, group.cell(variant).sub); variant += 1; }
             },
             None => {},
         }
@@ -526,11 +528,11 @@ pub fn refresh_reverse(reverse: &mut Table, before: &Table, after: &Table, chang
             match after.group(key) {
                 Some(group) => {
                     let mut variant = 0;
-                    while variant < group.rows.len()
-                        invariant reverse.wf(), before.wf(), after.wf(), changes.wf(), group.wf(), variant <= group.rows.len(),
-                        decreases group.rows.len() - variant,
+                    while variant < group.len()
+                        invariant reverse.wf(), before.wf(), after.wf(), changes.wf(), group.wf(), variant <= group.rows@.len(),
+                        decreases group.rows@.len() - variant,
                     {
-                        if group.rows[variant].sub == customer && group.rows[variant].count > 0 { supported = true; }
+                        if group.cell(variant).sub == customer && group.cell(variant).count > 0 { supported = true; }
                         variant += 1;
                     }
                 },

@@ -7,18 +7,15 @@
 // behind crate::kernel; the host calls only the ob_* functions below.
 //
 // Kernel inputs:
-//   -- query.sql and the frozen spec have no parameters: LIKE '%green%' is literal.
-//   scan green_parts AS GreenPartIn:
-//     SELECT p_partkey FROM part WHERE p_name LIKE '%green%';
+//   -- LIKE pattern is a runtime parameter ($1).  The kernel keeps a rollup for the
+//   -- tracked patterns '%color%' (the 92 TPC-H colors) and answers those exactly; every
+//   -- other pattern is declined.  Scans are unfiltered; keyed rescans give the lines
+//   -- and orders a write touches.
+//   scan all_parts AS PartIn:
+//     SELECT p_partkey, p_name FROM part;
 //   
-//   -- Retain dates only for orders referenced by lines of currently green parts.
-//   scan order_dates AS OrderIn:
-//     SELECT o_orderkey, o_orderdate FROM orders
-//     WHERE EXISTS (SELECT l_orderkey FROM lineitem
-//                   WHERE l_orderkey = o_orderkey
-//                     AND EXISTS (SELECT p_partkey FROM part
-//                                 WHERE p_partkey = l_partkey
-//                                   AND p_name LIKE '%green%'));
+//   scan all_orders AS OrderIn:
+//     SELECT o_orderkey, o_orderdate FROM orders;
 //   
 //   scan supplier_nations AS SupplierIn:
 //     SELECT s_suppkey, s_nationkey FROM supplier;
@@ -26,21 +23,13 @@
 //   scan nation_names AS NationIn:
 //     SELECT n_nationkey, n_name FROM nation;
 //   
-//   scan active_partsupp AS PartsuppIn:
-//     SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp
-//     WHERE EXISTS (SELECT p_partkey FROM part
-//                   WHERE p_partkey = ps_partkey AND p_name LIKE '%green%');
+//   scan all_partsupp AS PartsuppIn:
+//     SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp;
 //   
-//   -- Do not filter away orphan supplier/partsupp/order matches: their subsequent
-//   -- insertions must be maintainable without a full fact scan.
-//   scan active_lines AS LineIn:
+//   scan all_lines AS LineIn:
 //     SELECT l_orderkey, l_partkey, l_suppkey,
-//            l_quantity, l_extendedprice, l_discount FROM lineitem
-//     WHERE EXISTS (SELECT p_partkey FROM part
-//                   WHERE p_partkey = l_partkey AND p_name LIKE '%green%');
+//            l_quantity, l_extendedprice, l_discount FROM lineitem;
 //   
-//   -- Post-state neighborhoods are deliberately unfiltered. Order deletions and
-//   -- simultaneous eligibility changes must not hide surviving line occurrences.
 //   rescan lines_for_orders AS LineIn KEYS l_orderkey:
 //     SELECT l_orderkey, l_partkey, l_suppkey,
 //            l_quantity, l_extendedprice, l_discount FROM lineitem;
@@ -49,19 +38,18 @@
 //     SELECT l_orderkey, l_partkey, l_suppkey,
 //            l_quantity, l_extendedprice, l_discount FROM lineitem;
 //   
+//   rescan lines_for_suppliers AS LineIn KEYS l_suppkey:
+//     SELECT l_orderkey, l_partkey, l_suppkey,
+//            l_quantity, l_extendedprice, l_discount FROM lineitem;
+//   
 //   rescan partsupp_for_parts AS PartsuppIn KEYS ps_partkey:
 //     SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp;
 //   
-//   -- Second wave: augment the selector's seed keys with orderkeys from the
-//   -- first-wave lines_for_parts rows. Pass this augmented key list to apply;
-//   -- apply independently checks all required date-key coverage. The host only
-//   -- projects keys from returned rows, not dates or aggregate values.
 //   rescan orders_for_keys AS OrderIn KEYS o_orderkey:
 //     SELECT o_orderkey, o_orderdate FROM orders;
 //   
-//   -- Only predicate truth, not arbitrary catalog text, affects the literal LIKE.
-//   delta part AS PartDelta:
-//     SELECT p_partkey, p_name LIKE '%green%' AS is_green FROM part;
+//   delta part AS PartDelta OF PartIn:
+//     SELECT p_partkey, p_name FROM part;
 //   
 //   delta orders AS OrderDelta OF OrderIn:
 //     SELECT o_orderkey, o_orderdate FROM orders;
@@ -94,23 +82,26 @@ verus! {
 
 // ── Runtime rows and their views ──
 
-/// Runtime row: scan green_parts.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct GreenPartIn {
+/// Runtime row: scan all_parts; delta part.
+pub struct PartIn {
     /// part.p_partkey (integer)
     pub p_partkey: i64,
+    /// part.p_name (text bytes)
+    pub p_name: Vec<u8>,
 }
 
-pub open spec fn green_part_in_view(r: GreenPartIn) -> int {
-    r.p_partkey as int
+pub open spec fn part_in_view(r: PartIn) -> PartRow {
+    PartRow {
+        p_partkey: r.p_partkey as int,
+        p_name: r.p_name@,
+    }
 }
 
-pub open spec fn green_part_in_seq_view(s: Seq<GreenPartIn>) -> Seq<int> {
-    s.map_values(|r: GreenPartIn| green_part_in_view(r))
+pub open spec fn part_in_seq_view(s: Seq<PartIn>) -> Seq<PartRow> {
+    s.map_values(|r: PartIn| part_in_view(r))
 }
 
-/// Runtime row: scan order_dates; rescan orders_for_keys; delta orders.
+/// Runtime row: scan all_orders; rescan orders_for_keys; delta orders.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OrderIn {
@@ -171,7 +162,7 @@ pub open spec fn nation_in_seq_view(s: Seq<NationIn>) -> Seq<NationRow> {
     s.map_values(|r: NationIn| nation_in_view(r))
 }
 
-/// Runtime row: scan active_partsupp; rescan partsupp_for_parts; delta partsupp.
+/// Runtime row: scan all_partsupp; rescan partsupp_for_parts; delta partsupp.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PartsuppIn {
@@ -195,7 +186,7 @@ pub open spec fn partsupp_in_seq_view(s: Seq<PartsuppIn>) -> Seq<PartsuppRow> {
     s.map_values(|r: PartsuppIn| partsupp_in_view(r))
 }
 
-/// Runtime row: scan active_lines; rescan lines_for_orders; rescan lines_for_parts; delta lineitem.
+/// Runtime row: scan all_lines; rescan lines_for_orders; rescan lines_for_parts; rescan lines_for_suppliers; delta lineitem.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LineIn {
@@ -234,8 +225,8 @@ pub open spec fn seq_view_i64(s: Seq<i64>) -> Seq<int> {
 
 // ── Parameters and result ──
 
-pub open spec fn params() -> Params {
-    Params {  }
+pub open spec fn params(p1: Seq<u8>) -> Params {
+    Params { p1 }
 }
 
 pub open spec fn out_view(o: Seq<(Vec<u8>, i64, i128)>) -> Seq<OutRow> {
@@ -244,44 +235,14 @@ pub open spec fn out_view(o: Seq<(Vec<u8>, i64, i128)>) -> Seq<OutRow> {
 
 // ── Scan and capture contracts ──
 
-/// scan green_parts: SELECT p_partkey FROM part WHERE p_name LIKE '%green%'
-pub open spec fn scan_green_parts_ok(db: Db, rows: Seq<GreenPartIn>) -> bool {
-    forall|f: spec_fn(int) -> int| #[trigger] sum(green_part_in_seq_view(rows), f) == sum(
-        db.part,
-        |part: PartRow| if like_match(part.p_name, seq![b'%', b'g', b'r', b'e', b'e', b'n', b'%']) { f(part.p_partkey) } else { 0 },
-    )
+/// scan all_parts: SELECT p_partkey, p_name FROM part
+pub open spec fn scan_all_parts_ok(db: Db, rows: Seq<PartIn>) -> bool {
+    forall|f: spec_fn(PartRow) -> int| #[trigger] sum(part_in_seq_view(rows), f) == sum(db.part, f)
 }
 
-/// The WHERE clause of EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(lineitem.l_partkey) AND part.p_name LIKE Utf8("%green%") <- Projection: part.p_partkey)
-pub open spec fn scan_order_dates_exists_2_where(lineitem: LineitemRow, part: PartRow) -> bool {
-    &&& part.p_partkey == lineitem.l_partkey
-    &&& like_match(part.p_name, seq![b'%', b'g', b'r', b'e', b'e', b'n', b'%'])
-}
-
-/// EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(lineitem.l_partkey) AND part.p_name LIKE Utf8("%green%") <- Projection: part.p_partkey)
-pub open spec fn scan_order_dates_exists_2(db: Db, lineitem: LineitemRow) -> bool {
-    exists|i_part: int| #![trigger db.part[i_part]]
-        0 <= i_part < db.part.len() && scan_order_dates_exists_2_where(lineitem, db.part[i_part])
-}
-
-/// The WHERE clause of EXISTS (TableScan: lineitem <- TableScan: part <- Filter: part.p_partkey = outer_ref(lineitem.l_partkey) AND part.p_name LIKE Utf8("%green%") <- Projection: part.p_partkey <- Subquery: <- Filter: lineitem.l_orderkey = outer_ref(orders.o_orderkey) A ...)
-pub open spec fn scan_order_dates_exists_1_where(db: Db, orders: OrdersRow, lineitem: LineitemRow) -> bool {
-    &&& lineitem.l_orderkey == orders.o_orderkey
-    &&& scan_order_dates_exists_2(db, lineitem)
-}
-
-/// EXISTS (TableScan: lineitem <- TableScan: part <- Filter: part.p_partkey = outer_ref(lineitem.l_partkey) AND part.p_name LIKE Utf8("%green%") <- Projection: part.p_partkey <- Subquery: <- Filter: lineitem.l_orderkey = outer_ref(orders.o_orderkey) A ...)
-pub open spec fn scan_order_dates_exists_1(db: Db, orders: OrdersRow) -> bool {
-    exists|i_lineitem: int| #![trigger db.lineitem[i_lineitem]]
-        0 <= i_lineitem < db.lineitem.len() && scan_order_dates_exists_1_where(db, orders, db.lineitem[i_lineitem])
-}
-
-/// scan order_dates: SELECT o_orderkey, o_orderdate FROM orders WHERE EXISTS (SELECT l_orderkey FROM lineitem WHERE l_orderkey = o_orderkey AND EXISTS (SELECT p_partkey FROM part WHERE p_partkey = l_partkey AND p_name LIKE '%green%'))
-pub open spec fn scan_order_dates_ok(db: Db, rows: Seq<OrderIn>) -> bool {
-    forall|f: spec_fn(OrdersRow) -> int| #[trigger] sum(order_in_seq_view(rows), f) == sum(
-        db.orders,
-        |orders: OrdersRow| if scan_order_dates_exists_1(db, orders) { f(orders) } else { 0 },
-    )
+/// scan all_orders: SELECT o_orderkey, o_orderdate FROM orders
+pub open spec fn scan_all_orders_ok(db: Db, rows: Seq<OrderIn>) -> bool {
+    forall|f: spec_fn(OrdersRow) -> int| #[trigger] sum(order_in_seq_view(rows), f) == sum(db.orders, f)
 }
 
 /// scan supplier_nations: SELECT s_suppkey, s_nationkey FROM supplier
@@ -294,44 +255,14 @@ pub open spec fn scan_nation_names_ok(db: Db, rows: Seq<NationIn>) -> bool {
     forall|f: spec_fn(NationRow) -> int| #[trigger] sum(nation_in_seq_view(rows), f) == sum(db.nation, f)
 }
 
-/// The WHERE clause of EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) AND part.p_name LIKE Utf8("%green%") <- Projection: part.p_partkey)
-pub open spec fn scan_active_partsupp_exists_1_where(partsupp: PartsuppRow, part: PartRow) -> bool {
-    &&& part.p_partkey == partsupp.ps_partkey
-    &&& like_match(part.p_name, seq![b'%', b'g', b'r', b'e', b'e', b'n', b'%'])
+/// scan all_partsupp: SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp
+pub open spec fn scan_all_partsupp_ok(db: Db, rows: Seq<PartsuppIn>) -> bool {
+    forall|f: spec_fn(PartsuppRow) -> int| #[trigger] sum(partsupp_in_seq_view(rows), f) == sum(db.partsupp, f)
 }
 
-/// EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) AND part.p_name LIKE Utf8("%green%") <- Projection: part.p_partkey)
-pub open spec fn scan_active_partsupp_exists_1(db: Db, partsupp: PartsuppRow) -> bool {
-    exists|i_part: int| #![trigger db.part[i_part]]
-        0 <= i_part < db.part.len() && scan_active_partsupp_exists_1_where(partsupp, db.part[i_part])
-}
-
-/// scan active_partsupp: SELECT ps_partkey, ps_suppkey, ps_supplycost FROM partsupp WHERE EXISTS (SELECT p_partkey FROM part WHERE p_partkey = ps_partkey AND p_name LIKE '%green%')
-pub open spec fn scan_active_partsupp_ok(db: Db, rows: Seq<PartsuppIn>) -> bool {
-    forall|f: spec_fn(PartsuppRow) -> int| #[trigger] sum(partsupp_in_seq_view(rows), f) == sum(
-        db.partsupp,
-        |partsupp: PartsuppRow| if scan_active_partsupp_exists_1(db, partsupp) { f(partsupp) } else { 0 },
-    )
-}
-
-/// The WHERE clause of EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(lineitem.l_partkey) AND part.p_name LIKE Utf8("%green%") <- Projection: part.p_partkey)
-pub open spec fn scan_active_lines_exists_1_where(lineitem: LineitemRow, part: PartRow) -> bool {
-    &&& part.p_partkey == lineitem.l_partkey
-    &&& like_match(part.p_name, seq![b'%', b'g', b'r', b'e', b'e', b'n', b'%'])
-}
-
-/// EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(lineitem.l_partkey) AND part.p_name LIKE Utf8("%green%") <- Projection: part.p_partkey)
-pub open spec fn scan_active_lines_exists_1(db: Db, lineitem: LineitemRow) -> bool {
-    exists|i_part: int| #![trigger db.part[i_part]]
-        0 <= i_part < db.part.len() && scan_active_lines_exists_1_where(lineitem, db.part[i_part])
-}
-
-/// scan active_lines: SELECT l_orderkey, l_partkey, l_suppkey, l_quantity, l_extendedprice, l_discount FROM lineitem WHERE EXISTS (SELECT p_partkey FROM part WHERE p_partkey = l_partkey AND p_name LIKE '%green%')
-pub open spec fn scan_active_lines_ok(db: Db, rows: Seq<LineIn>) -> bool {
-    forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(line_in_seq_view(rows), f) == sum(
-        db.lineitem,
-        |lineitem: LineitemRow| if scan_active_lines_exists_1(db, lineitem) { f(lineitem) } else { 0 },
-    )
+/// scan all_lines: SELECT l_orderkey, l_partkey, l_suppkey, l_quantity, l_extendedprice, l_discount FROM lineitem
+pub open spec fn scan_all_lines_ok(db: Db, rows: Seq<LineIn>) -> bool {
+    forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(line_in_seq_view(rows), f) == sum(db.lineitem, f)
 }
 
 /// rescan lines_for_orders: SELECT l_orderkey, l_partkey, l_suppkey, l_quantity, l_extendedprice, l_discount FROM lineitem
@@ -349,6 +280,15 @@ pub open spec fn rescan_lines_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq<Lin
     forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(line_in_seq_view(rows), f) == sum(
         db.lineitem,
         |lineitem: LineitemRow| if seq_view_i64(keys).contains(lineitem.l_partkey) { f(lineitem) } else { 0 },
+    )
+}
+
+/// rescan lines_for_suppliers: SELECT l_orderkey, l_partkey, l_suppkey, l_quantity, l_extendedprice, l_discount FROM lineitem
+///   restricted to the rows whose l_suppkey is one of `keys`.
+pub open spec fn rescan_lines_for_suppliers_ok(db: Db, keys: Seq<i64>, rows: Seq<LineIn>) -> bool {
+    forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(line_in_seq_view(rows), f) == sum(
+        db.lineitem,
+        |lineitem: LineitemRow| if seq_view_i64(keys).contains(lineitem.l_suppkey) { f(lineitem) } else { 0 },
     )
 }
 
@@ -370,24 +310,14 @@ pub open spec fn rescan_orders_for_keys_ok(db: Db, keys: Seq<i64>, rows: Seq<Ord
     )
 }
 
-/// delta part (lossy): SELECT p_partkey, p_name LIKE '%green%' AS is_green FROM part
-#[repr(C)]
-#[derive(Clone, Copy)]
+/// delta part: a changed `part` row and its sign (+1 insert, -1 delete).
 pub struct PartDelta {
-    pub p_partkey: i64,
-    pub is_green: u8,
+    pub row: PartIn,
     pub sign: i64,
 }
 
-/// delta part: each runtime delta is the projection of the full changed row.
-pub open spec fn part_delta_ok(d: Seq<PartDelta>, full: Seq<(PartRow, int)>) -> bool {
-    &&& d.len() == full.len()
-    &&& forall|i: int| #![trigger d[i]] 0 <= i < d.len() ==> {
-        let part = full[i].0;
-        &&& d[i].p_partkey as int == part.p_partkey
-        &&& (d[i].is_green != 0) == like_match(part.p_name, seq![b'%', b'g', b'r', b'e', b'e', b'n', b'%'])
-        &&& d[i].sign as int == full[i].1
-    }
+pub open spec fn part_delta_seq_view(s: Seq<PartDelta>) -> Seq<(PartRow, int)> {
+    s.map_values(|d: PartDelta| (part_in_view(d.row), d.sign as int))
 }
 
 /// delta orders: a changed `orders` row and its sign (+1 insert, -1 delete).
@@ -462,35 +392,36 @@ pub open spec fn capture_ok(db: Db, db2: Db, lineitem: Seq<(LineitemRow, int)>, 
 
 /// Build: a state for db, or None (the host then answers with SQL).
 pub fn ob_build(
-    green_parts: &[GreenPartIn],
-    order_dates: &[OrderIn],
+    all_parts: Vec<PartIn>,
+    all_orders: &[OrderIn],
     supplier_nations: &[SupplierIn],
     nation_names: Vec<NationIn>,
-    active_partsupp: &[PartsuppIn],
-    active_lines: &[LineIn],
+    all_partsupp: &[PartsuppIn],
+    all_lines: &[LineIn],
     Ghost(db): Ghost<Db>,
 ) -> (r: Option<State>)
     requires
-        scan_green_parts_ok(db, green_parts@),
-        scan_order_dates_ok(db, order_dates@),
+        scan_all_parts_ok(db, all_parts@),
+        scan_all_orders_ok(db, all_orders@),
         scan_supplier_nations_ok(db, supplier_nations@),
         scan_nation_names_ok(db, nation_names@),
-        scan_active_partsupp_ok(db, active_partsupp@),
-        scan_active_lines_ok(db, active_lines@),
+        scan_all_partsupp_ok(db, all_partsupp@),
+        scan_all_lines_ok(db, all_lines@),
     ensures
         r matches Some(s) ==> s.db() == db,
 {
-    kernel::build(green_parts, order_dates, supplier_nations, nation_names, active_partsupp, active_lines, Ghost(db))
+    kernel::build(all_parts, all_orders, supplier_nations, nation_names, all_partsupp, all_lines, Ghost(db))
 }
 
 /// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
 pub fn ob_execute(
     s: &State,
+    p1: &[u8],
 ) -> (r: Option<Vec<(Vec<u8>, i64, i128)>>)
     ensures
-        r matches Some(out) ==> query_result(s.db(), params(), out_view(out@)),
+        r matches Some(out) ==> query_result(s.db(), params(p1@), out_view(out@)),
 {
-    kernel::execute(s)
+    kernel::execute(s, p1)
 }
 
 /// The keys whose rows the host rescans (rescan lines_for_orders) for apply.  No contract:
@@ -500,7 +431,7 @@ pub fn ob_rescan_lines_for_orders_keys(
     lineitem_delta: &[LineDelta],
     nation_delta: &Vec<NationDelta>,
     orders_delta: &[OrderDelta],
-    part_delta: &[PartDelta],
+    part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
@@ -515,12 +446,27 @@ pub fn ob_rescan_lines_for_parts_keys(
     lineitem_delta: &[LineDelta],
     nation_delta: &Vec<NationDelta>,
     orders_delta: &[OrderDelta],
-    part_delta: &[PartDelta],
+    part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
 {
     kernel::rescan_lines_for_parts_keys(s, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta)
+}
+
+/// The keys whose rows the host rescans (rescan lines_for_suppliers) for apply.  No contract:
+/// apply's result does not depend on trusting them.
+pub fn ob_rescan_lines_for_suppliers_keys(
+    s: &State,
+    lineitem_delta: &[LineDelta],
+    nation_delta: &Vec<NationDelta>,
+    orders_delta: &[OrderDelta],
+    part_delta: &Vec<PartDelta>,
+    partsupp_delta: &[PartsuppDelta],
+    supplier_delta: &[SupplierDelta],
+) -> (r: Vec<i64>)
+{
+    kernel::rescan_lines_for_suppliers_keys(s, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta)
 }
 
 /// The keys whose rows the host rescans (rescan partsupp_for_parts) for apply.  No contract:
@@ -530,7 +476,7 @@ pub fn ob_rescan_partsupp_for_parts_keys(
     lineitem_delta: &[LineDelta],
     nation_delta: &Vec<NationDelta>,
     orders_delta: &[OrderDelta],
-    part_delta: &[PartDelta],
+    part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
@@ -545,7 +491,7 @@ pub fn ob_rescan_orders_for_keys_keys(
     lineitem_delta: &[LineDelta],
     nation_delta: &Vec<NationDelta>,
     orders_delta: &[OrderDelta],
-    part_delta: &[PartDelta],
+    part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &[SupplierDelta],
 ) -> (r: Vec<i64>)
@@ -559,31 +505,32 @@ pub fn ob_apply(
     lineitem_delta: &[LineDelta],
     nation_delta: &Vec<NationDelta>,
     orders_delta: &[OrderDelta],
-    part_delta: &[PartDelta],
+    part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &[SupplierDelta],
     lines_for_orders_keys: &[i64],
     lines_for_orders_rows: &[LineIn],
     lines_for_parts_keys: &[i64],
     lines_for_parts_rows: &[LineIn],
+    lines_for_suppliers_keys: &[i64],
+    lines_for_suppliers_rows: &[LineIn],
     partsupp_for_parts_keys: &[i64],
     partsupp_for_parts_rows: &[PartsuppIn],
     orders_for_keys_keys: &[i64],
     orders_for_keys_rows: &[OrderIn],
-    Ghost(part_full): Ghost<Seq<(PartRow, int)>>,
     Ghost(db2): Ghost<Db>,
 ) -> (r: Result<State, u32>)
     requires
-        part_delta_ok(part_delta@, part_full),
-        capture_ok(s.db(), db2, line_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@), part_full, partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
+        capture_ok(s.db(), db2, line_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
         rescan_lines_for_orders_ok(db2, lines_for_orders_keys@, lines_for_orders_rows@),
         rescan_lines_for_parts_ok(db2, lines_for_parts_keys@, lines_for_parts_rows@),
+        rescan_lines_for_suppliers_ok(db2, lines_for_suppliers_keys@, lines_for_suppliers_rows@),
         rescan_partsupp_for_parts_ok(db2, partsupp_for_parts_keys@, partsupp_for_parts_rows@),
         rescan_orders_for_keys_ok(db2, orders_for_keys_keys@, orders_for_keys_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
 {
-    kernel::apply(s, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta, lines_for_orders_keys, lines_for_orders_rows, lines_for_parts_keys, lines_for_parts_rows, partsupp_for_parts_keys, partsupp_for_parts_rows, orders_for_keys_keys, orders_for_keys_rows, Ghost(part_full), Ghost(db2))
+    kernel::apply(s, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta, lines_for_orders_keys, lines_for_orders_rows, lines_for_parts_keys, lines_for_parts_rows, lines_for_suppliers_keys, lines_for_suppliers_rows, partsupp_for_parts_keys, partsupp_for_parts_rows, orders_for_keys_keys, orders_for_keys_rows, Ghost(db2))
 }
 
 } // verus!

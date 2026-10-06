@@ -34,12 +34,18 @@ pub proof fn lemma_day_frame(before: Map<i64, PartWork>, after: Map<i64, PartWor
 pub open spec fn stock_weight(key: i64, supplier: i64, value: int) -> spec_fn(StockInput) -> int {
     |row: StockInput| if row.ps_partkey == key && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 }
 }
-pub proof fn lemma_dimensions_share(db: Db, suppliers: Suppliers, nations: Nations, shared_suppliers: Suppliers, shared_nations: Nations)
-    requires supplier_correct(db, suppliers), nation_correct(db, nations),
+pub proof fn lemma_dimensions_share(db: Db, suppliers: Suppliers, nations: Nations, names: PartNames, shared_suppliers: Suppliers, shared_nations: Nations, shared_names: PartNames)
+    requires supplier_correct(db, suppliers), nation_correct(db, nations), names_correct(db, names),
         forall|key: i64| #[trigger] shared_suppliers.lookup(key) == suppliers.lookup(key),
         forall|key: i64| #[trigger] shared_nations.lookup(key) == nations.lookup(key),
-    ensures supplier_correct(db, shared_suppliers), nation_correct(db, shared_nations),
+        forall|key: i64| #[trigger] shared_names.lookup(key) == names.lookup(key),
+    ensures supplier_correct(db, shared_suppliers), nation_correct(db, shared_nations), names_correct(db, shared_names),
 {
+    assert(names_positive(shared_names));
+    assert forall|key: i64, name: Seq<u8>| #[trigger] name_count(shared_names, key, name) == sum(db.part, |row: PartRow| if row.p_partkey == key && row.p_name == name { 1 } else { 0 }) by {
+        assert(shared_names.lookup(name_slot(key, name)) == names.lookup(name_slot(key, name)));
+        assert(name_count(names, key, name) == sum(db.part, |row: PartRow| if row.p_partkey == key && row.p_name == name { 1 } else { 0 }));
+    }
     assert forall|nation: i64, supplier: i64, name: Seq<u8>, address: Seq<u8>| #[trigger] supplier_count(shared_suppliers, nation, supplier, name, address) ==
         sum(db.supplier, |row: SupplierRow| if row.s_nationkey == nation && row.s_suppkey == supplier && row.s_name == name && row.s_address == address { 1 } else { 0 }) by {
         assert(shared_suppliers.lookup(nation) == suppliers.lookup(nation));
@@ -81,6 +87,22 @@ pub proof fn lemma_nation_updated(before: Db, after: Db, original: Nations, upda
         assert(sum(after.nation, weight) == sum(before.nation, weight) + sum(nation_delta_seq_view(deltas), signed));
         lemma_sum_map(deltas, |delta: NationDelta| (nation_input_view(delta.row), delta.sign as int), signed, nation_delta_weight(name, key));
         assert(nation_count(original, name, key) == sum(before.nation, weight));
+    }
+}
+pub open spec fn name_delta_weight(key: i64, name: Seq<u8>) -> spec_fn(PartDelta) -> int {
+    |delta: PartDelta| if delta.row.p_partkey == key && delta.row.p_name@ == name { delta.sign as int } else { 0 }
+}
+pub proof fn lemma_names_updated(before: Db, after: Db, original: PartNames, updated: PartNames, deltas: Seq<PartDelta>)
+    requires names_correct(before, original), names_positive(updated), bag_step(before.part, after.part, part_delta_seq_view(deltas)),
+        forall|key: i64, name: Seq<u8>| #[trigger] name_count(updated, key, name) == name_count(original, key, name) + sum(deltas, name_delta_weight(key, name)),
+    ensures names_correct(after, updated),
+{
+    assert forall|key: i64, name: Seq<u8>| #[trigger] name_count(updated, key, name) == sum(after.part, |row: PartRow| if row.p_partkey == key && row.p_name == name { 1 } else { 0 }) by {
+        let weight = |row: PartRow| if row.p_partkey == key && row.p_name == name { 1int } else { 0int };
+        let signed = |entry: (PartRow, int)| entry.1 * weight(entry.0);
+        assert(sum(after.part, weight) == sum(before.part, weight) + sum(part_delta_seq_view(deltas), signed));
+        lemma_sum_map(deltas, |delta: PartDelta| (part_input_view(delta.row), delta.sign as int), signed, name_delta_weight(key, name));
+        assert(name_count(original, key, name) == sum(before.part, weight));
     }
 }
 pub open spec fn ship_weight(key: i64, supplier: i64, date: int, quantity: bool) -> spec_fn(ShipmentInput) -> int {
@@ -270,16 +292,17 @@ impl FactUpdate {
         }
     }
 }
-pub proof fn lemma_apply_domain(before: Db, after: Db, parts: Seq<PartDelta>, full: Seq<(PartRow, int)>, stocks: Seq<PartsuppDelta>, shipments: Seq<LineitemDelta>, suppliers: Seq<SupplierDelta>, nations: Seq<NationDelta>, stock_keys: Seq<i64>, stock_rows: Seq<StockInput>, ship_keys: Seq<i64>, ship_rows: Seq<ShipmentInput>)
-    requires domain_valid(before), part_delta_ok(parts, full),
-        capture_ok(before, after, lineitem_delta_seq_view(shipments), nation_delta_seq_view(nations), full, partsupp_delta_seq_view(stocks), supplier_delta_seq_view(suppliers)),
+pub proof fn lemma_apply_domain(before: Db, after: Db, parts: Seq<PartDelta>, stocks: Seq<PartsuppDelta>, shipments: Seq<LineitemDelta>, suppliers: Seq<SupplierDelta>, nations: Seq<NationDelta>, stock_keys: Seq<i64>, stock_rows: Seq<StockInput>, ship_keys: Seq<i64>, ship_rows: Seq<ShipmentInput>)
+    requires domain_valid(before),
+        capture_ok(before, after, lineitem_delta_seq_view(shipments), nation_delta_seq_view(nations), part_delta_seq_view(parts), partsupp_delta_seq_view(stocks), supplier_delta_seq_view(suppliers)),
         rescan_stocks_for_parts_ok(after, stock_keys, stock_rows), rescan_shipments_for_parts_ok(after, ship_keys, ship_rows),
         forall|key: i64| #![trigger eligible(after, key as int)] eligible(after, key as int) > 0 && eligible(before, key as int) == 0 ==> stock_keys.contains(key) && ship_keys.contains(key),
     ensures domain_valid(after),
 {
-    let part_property = |row: PartRow| !like_match(row.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%']) || machine_key(row.p_partkey);
+    let part_property = |row: PartRow| machine_key(row.p_partkey);
+    let full = part_delta_seq_view(parts);
     assert forall|index: int| #![trigger full[index]] 0 <= index < full.len() implies part_property(full[index].0) by {
-        assert(parts[index].p_partkey as int == full[index].0.p_partkey);
+        assert(parts[index].row.p_partkey as int == full[index].0.p_partkey);
     }
     lemma_bag_step_preserves_predicate(before.part, after.part, full, part_property);
     lemma_bag_step_preserves_predicate(before.supplier, after.supplier, supplier_delta_seq_view(suppliers), |row: SupplierRow| machine_key(row.s_suppkey) && machine_key(row.s_nationkey));

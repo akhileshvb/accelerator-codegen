@@ -8,14 +8,16 @@
 //   SELECT c_count, COUNT(*) AS custdist
 //   FROM (SELECT c_custkey, COUNT(o_orderkey) AS c_count
 //         FROM customer LEFT OUTER JOIN orders
-//           ON c_custkey = o_custkey AND o_comment NOT LIKE '%unusual%accounts%'
+//           ON c_custkey = o_custkey AND o_comment NOT LIKE $1
 //         GROUP BY c_custkey) AS c_orders
 //   GROUP BY c_count
 //   ORDER BY custdist DESC, c_count DESC
 //
 // Query-specific notes (host contract):
 //  * CHAR(n) text: compared as bytes like VARCHAR, trailing spaces significant; the host delivers text unchanged (DuckDB: CHAR(n) is an alias of VARCHAR).
+//  * $1 is params.p1: text bytes.
 //  * Text order is bytes_lt: the host runs only under a C (byte) collation.
+//  * LIKE with a parameter pattern: the pattern uses '%' and '_' (ASCII text, bytes = characters).
 #![allow(unused_imports)]
 use vstd::prelude::*;
 use verus_common::bytes::*;
@@ -51,6 +53,8 @@ pub struct Db {
 
 /// The query parameters.
 pub struct Params {
+    /// $1: text bytes
+    pub p1: Seq<u8>,
 }
 
 // ── Block c_orders ──
@@ -69,7 +73,7 @@ pub open spec fn c_orders_where_clause(db: Db, params: Params, customer: Custome
 /// The ON condition of LEFT JOIN orders.
 pub open spec fn c_orders_on_orders(db: Db, params: Params, customer: CustomerRow, orders: OrdersRow) -> bool {
     &&& customer.c_custkey == orders.o_custkey
-    &&& !like_match(orders.o_comment, seq![b'%', b'u', b'n', b'u', b's', b'u', b'a', b'l', b'%', b'a', b'c', b'c', b'o', b'u', b'n', b't', b's', b'%'])
+    &&& !like_match(orders.o_comment, params.p1)
 }
 
 /// The FROM-clause tuples of block c_orders (bag product) that satisfy WHERE.

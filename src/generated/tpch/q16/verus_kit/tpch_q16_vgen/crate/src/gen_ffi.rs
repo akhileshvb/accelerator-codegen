@@ -77,10 +77,10 @@ pub struct FfiResult {
 
 /// Build from the scans: a state, or NULL (the host then answers with SQL).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq16vgen_build(eligible_parts__n: usize, eligible_parts__p_partkey: *const i64, eligible_parts__p_brand: *const u8, eligible_parts__p_brand__off: *const usize, eligible_parts__p_type: *const u8, eligible_parts__p_type__off: *const usize, eligible_parts__p_size: *const i64, edges__n: usize, edges: *const EdgeInput, blockers__n: usize, blockers: *const BlockerInput) -> *mut State {
-    let eligible_parts__v: Vec<PartInput> = (0..eligible_parts__n).map(|i| PartInput { p_partkey: *eligible_parts__p_partkey.add(i), p_brand: text(eligible_parts__p_brand, eligible_parts__p_brand__off, i), p_type: text(eligible_parts__p_type, eligible_parts__p_type__off, i), p_size: *eligible_parts__p_size.add(i) }).collect();
+pub unsafe extern "C" fn tpchq16vgen_build(parts__n: usize, parts__p_partkey: *const i64, parts__p_brand: *const u8, parts__p_brand__off: *const usize, parts__p_type: *const u8, parts__p_type__off: *const usize, parts__p_size: *const i64, edges__n: usize, edges: *const EdgeInput, blockers__n: usize, blockers: *const BlockerInput) -> *mut State {
+    let parts__v: Vec<PartInput> = (0..parts__n).map(|i| PartInput { p_partkey: *parts__p_partkey.add(i), p_brand: text(parts__p_brand, parts__p_brand__off, i), p_type: text(parts__p_type, parts__p_type__off, i), p_size: *parts__p_size.add(i) }).collect();
     if rec_on() {
-        rec_rows("build", "eligible_parts", &["p_partkey:int", "p_brand:text", "p_type:text", "p_size:int"], &eligible_parts__v, |r: &PartInput, o: &mut String| {
+        rec_rows("build", "parts", &["p_partkey:int", "p_brand:text", "p_type:text", "p_size:int"], &parts__v, |r: &PartInput, o: &mut String| {
             o.push_str(&(r.p_partkey).to_string()); o.push(',');
             rec_text(&r.p_brand, o); o.push(',');
             rec_text(&r.p_type, o); o.push(',');
@@ -95,7 +95,7 @@ pub unsafe extern "C" fn tpchq16vgen_build(eligible_parts__n: usize, eligible_pa
         });
         return ptr::null_mut();
     }
-    match ob_build(eligible_parts__v, slice(edges, edges__n), slice(blockers, blockers__n), Ghost::assume_new()) {
+    match ob_build(parts__v, slice(edges, edges__n), slice(blockers, blockers__n), Ghost::assume_new()) {
         Some(s) => Box::into_raw(Box::new(s)),
         None => ptr::null_mut(),
     }
@@ -339,8 +339,8 @@ pub unsafe extern "C" fn tpchq16vgen_apply(s: *const State, part_delta__n: usize
 
 /// The query's answer on the state, or NULL (the host then answers with SQL).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq16vgen_execute(s: *const State, p1: *const u8, p1__len: usize, p2: i64, p3: i64, p4: i64, p5: i64, p6: i64, p7: i64, p8: i64, p9: i64) -> *mut FfiResult {
-    match ob_execute(&*s, slice(p1, p1__len), p2, p3, p4, p5, p6, p7, p8, p9) {
+pub unsafe extern "C" fn tpchq16vgen_execute(s: *const State, p1: *const u8, p1__len: usize, p2: *const u8, p2__len: usize, p3: i64, p4: i64, p5: i64, p6: i64, p7: i64, p8: i64, p9: i64, p10: i64) -> *mut FfiResult {
+    match ob_execute(&*s, slice(p1, p1__len), slice(p2, p2__len), p3, p4, p5, p6, p7, p8, p9, p10) {
         Some(rows) => Box::into_raw(Box::new(FfiResult { rows })),
         None => ptr::null_mut(),
     }
@@ -525,14 +525,14 @@ pub unsafe extern "C" fn tpchq16vgens_prepare_apply(st: *const QStore, b: *const
 /// that version; its state is invalid if the kernel cannot build it.  NULL
 /// only if no version can follow the newest.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq16vgens_prepare_build(st: *const QStore, eligible_parts__n: usize, eligible_parts__p_partkey: *const i64, eligible_parts__p_brand: *const u8, eligible_parts__p_brand__off: *const usize, eligible_parts__p_type: *const u8, eligible_parts__p_type__off: *const usize, eligible_parts__p_size: *const i64, edges__n: usize, edges: *const EdgeInput, blockers__n: usize, blockers: *const BlockerInput) -> *mut QPrepared {
+pub unsafe extern "C" fn tpchq16vgens_prepare_build(st: *const QStore, parts__n: usize, parts__p_partkey: *const i64, parts__p_brand: *const u8, parts__p_brand__off: *const usize, parts__p_type: *const u8, parts__p_type__off: *const usize, parts__p_size: *const i64, edges__n: usize, edges: *const EdgeInput, blockers__n: usize, blockers: *const BlockerInput) -> *mut QPrepared {
     let e = (*st).newest();
     if e == u64::MAX {
         return ptr::null_mut();
     }
-    let eligible_parts__v: Vec<PartInput> = (0..eligible_parts__n).map(|i| PartInput { p_partkey: *eligible_parts__p_partkey.add(i), p_brand: text(eligible_parts__p_brand, eligible_parts__p_brand__off, i), p_type: text(eligible_parts__p_type, eligible_parts__p_type__off, i), p_size: *eligible_parts__p_size.add(i) }).collect();
+    let parts__v: Vec<PartInput> = (0..parts__n).map(|i| PartInput { p_partkey: *parts__p_partkey.add(i), p_brand: text(parts__p_brand, parts__p_brand__off, i), p_type: text(parts__p_type, parts__p_type__off, i), p_size: *parts__p_size.add(i) }).collect();
     if rec_on() {
-        rec_rows("build", "eligible_parts", &["p_partkey:int", "p_brand:text", "p_type:text", "p_size:int"], &eligible_parts__v, |r: &PartInput, o: &mut String| {
+        rec_rows("build", "parts", &["p_partkey:int", "p_brand:text", "p_type:text", "p_size:int"], &parts__v, |r: &PartInput, o: &mut String| {
             o.push_str(&(r.p_partkey).to_string()); o.push(',');
             rec_text(&r.p_brand, o); o.push(',');
             rec_text(&r.p_type, o); o.push(',');
@@ -547,7 +547,7 @@ pub unsafe extern "C" fn tpchq16vgens_prepare_build(st: *const QStore, eligible_
         });
         return ptr::null_mut();
     }
-    Box::into_raw(Box::new(prepare_build(&*st, e, eligible_parts__v, slice(edges, edges__n), slice(blockers, blockers__n))))
+    Box::into_raw(Box::new(prepare_build(&*st, e, parts__v, slice(edges, edges__n), slice(blockers, blockers__n))))
 }
 
 /// The next version with an invalid state (NULL: none can follow the newest).

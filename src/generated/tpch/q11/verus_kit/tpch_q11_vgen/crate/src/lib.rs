@@ -8,6 +8,7 @@ pub mod kernel;
 pub mod values;
 pub mod inventory;
 pub mod ranks;
+pub mod packed;
 pub mod model;
 pub mod maintenance;
 pub mod semantics;

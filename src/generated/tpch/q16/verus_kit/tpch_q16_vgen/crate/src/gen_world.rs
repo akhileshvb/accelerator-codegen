@@ -75,20 +75,20 @@ pub fn prepare_apply(
 pub fn prepare_build(
     store: &QStore,
     e: u64,
-    eligible_parts: Vec<PartInput>,
+    parts: Vec<PartInput>,
     edges: &[EdgeInput],
     blockers: &[BlockerInput],
 ) -> (p: QPrepared)
     requires
         e < u64::MAX,
-        scan_eligible_parts_ok(store.db_at((e + 1) as nat), eligible_parts@),
+        scan_parts_ok(store.db_at((e + 1) as nat), parts@),
         scan_edges_ok(store.db_at((e + 1) as nat), edges@),
         scan_blockers_ok(store.db_at((e + 1) as nat), blockers@),
     ensures
         p.epoch() == e,
         p.timeline() == store.timeline(),
 {
-    let state = ob_build(eligible_parts, edges, blockers, Ghost(store.db_at((e + 1) as nat)));
+    let state = ob_build(parts, edges, blockers, Ghost(store.db_at((e + 1) as nat)));
     prepare(store, e, state)
 }
 

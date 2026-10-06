@@ -1,4 +1,4 @@
--- TPC-H Q9 (catalog text). No parameters: the color is a LIKE pattern ('%green%') and sql2verus takes only a literal LIKE pattern.
+-- TPC-H Q9 (catalog text), :color_pattern ('%' || :color || '%', e.g. '%green%') as $1 (a text LIKE pattern parameter).
 SELECT nation, o_year, SUM(amount) AS sum_profit
 FROM (SELECT n_name AS nation, EXTRACT(year FROM o_orderdate) AS o_year,
              l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity AS amount
@@ -9,6 +9,6 @@ FROM (SELECT n_name AS nation, EXTRACT(year FROM o_orderdate) AS o_year,
         AND p_partkey = l_partkey
         AND o_orderkey = l_orderkey
         AND s_nationkey = n_nationkey
-        AND p_name LIKE '%green%') AS profit
+        AND p_name LIKE $1) AS profit
 GROUP BY nation, o_year
 ORDER BY nation, o_year DESC

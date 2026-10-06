@@ -110,8 +110,8 @@ pub open spec fn nation_input_seq_view(s: Seq<NationInput>) -> Seq<NationRow> {
 
 // ── Parameters and result ──
 
-pub open spec fn params(p1: Seq<u8>) -> Params {
-    Params { p1 }
+pub open spec fn params(p1: Seq<u8>, p2: int) -> Params {
+    Params { p1, p2 }
 }
 
 pub open spec fn out_view(o: Seq<(i64, i128)>) -> Seq<OutRow> {
@@ -199,11 +199,12 @@ pub fn ob_build(
 pub fn ob_execute(
     s: &State,
     p1: &[u8],
+    p2: i64,
 ) -> (r: Option<Vec<(i64, i128)>>)
     ensures
-        r matches Some(out) ==> query_result(s.db(), params(p1@), out_view(out@)),
+        r matches Some(out) ==> query_result(s.db(), params(p1@, p2 as int), out_view(out@)),
 {
-    kernel::execute(s, p1)
+    kernel::execute(s, p1, p2)
 }
 
 /// Apply one transaction: a state for db2, or Err (the host then rebuilds).

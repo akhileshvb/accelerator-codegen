@@ -41,25 +41,26 @@ pub fn prepare_apply(
     lineitem_delta: &[LineDelta],
     nation_delta: &Vec<NationDelta>,
     orders_delta: &[OrderDelta],
-    part_delta: &[PartDelta],
+    part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &[SupplierDelta],
     lines_for_orders_keys: &[i64],
     lines_for_orders_rows: &[LineIn],
     lines_for_parts_keys: &[i64],
     lines_for_parts_rows: &[LineIn],
+    lines_for_suppliers_keys: &[i64],
+    lines_for_suppliers_rows: &[LineIn],
     partsupp_for_parts_keys: &[i64],
     partsupp_for_parts_rows: &[PartsuppIn],
     orders_for_keys_keys: &[i64],
     orders_for_keys_rows: &[OrderIn],
-    Ghost(part_full): Ghost<Seq<(PartRow, int)>>,
 ) -> (r: Result<QPrepared, u32>)
     requires
         base.timeline() == store.timeline(),
-        part_delta_ok(part_delta@, part_full),
-        capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), line_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@), part_full, partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
+        capture_ok(store.db_at(base.epoch() as nat), store.db_at((base.epoch() + 1) as nat), line_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), order_delta_seq_view(orders_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
         rescan_lines_for_orders_ok(store.db_at((base.epoch() + 1) as nat), lines_for_orders_keys@, lines_for_orders_rows@),
         rescan_lines_for_parts_ok(store.db_at((base.epoch() + 1) as nat), lines_for_parts_keys@, lines_for_parts_rows@),
+        rescan_lines_for_suppliers_ok(store.db_at((base.epoch() + 1) as nat), lines_for_suppliers_keys@, lines_for_suppliers_rows@),
         rescan_partsupp_for_parts_ok(store.db_at((base.epoch() + 1) as nat), partsupp_for_parts_keys@, partsupp_for_parts_rows@),
         rescan_orders_for_keys_ok(store.db_at((base.epoch() + 1) as nat), orders_for_keys_keys@, orders_for_keys_rows@),
     ensures
@@ -67,7 +68,7 @@ pub fn prepare_apply(
 {
     let e = base.version();
     let state = base.state();
-    match ob_apply(state, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta, lines_for_orders_keys, lines_for_orders_rows, lines_for_parts_keys, lines_for_parts_rows, partsupp_for_parts_keys, partsupp_for_parts_rows, orders_for_keys_keys, orders_for_keys_rows, Ghost(part_full), Ghost(store.db_at((e + 1) as nat))) {
+    match ob_apply(state, lineitem_delta, nation_delta, orders_delta, part_delta, partsupp_delta, supplier_delta, lines_for_orders_keys, lines_for_orders_rows, lines_for_parts_keys, lines_for_parts_rows, lines_for_suppliers_keys, lines_for_suppliers_rows, partsupp_for_parts_keys, partsupp_for_parts_rows, orders_for_keys_keys, orders_for_keys_rows, Ghost(store.db_at((e + 1) as nat))) {
         Ok(s2) => Ok(prepare(store, e, Some(s2))),
         Err(code) => Err(code),
     }
@@ -78,26 +79,26 @@ pub fn prepare_apply(
 pub fn prepare_build(
     store: &QStore,
     e: u64,
-    green_parts: &[GreenPartIn],
-    order_dates: &[OrderIn],
+    all_parts: Vec<PartIn>,
+    all_orders: &[OrderIn],
     supplier_nations: &[SupplierIn],
     nation_names: Vec<NationIn>,
-    active_partsupp: &[PartsuppIn],
-    active_lines: &[LineIn],
+    all_partsupp: &[PartsuppIn],
+    all_lines: &[LineIn],
 ) -> (p: QPrepared)
     requires
         e < u64::MAX,
-        scan_green_parts_ok(store.db_at((e + 1) as nat), green_parts@),
-        scan_order_dates_ok(store.db_at((e + 1) as nat), order_dates@),
+        scan_all_parts_ok(store.db_at((e + 1) as nat), all_parts@),
+        scan_all_orders_ok(store.db_at((e + 1) as nat), all_orders@),
         scan_supplier_nations_ok(store.db_at((e + 1) as nat), supplier_nations@),
         scan_nation_names_ok(store.db_at((e + 1) as nat), nation_names@),
-        scan_active_partsupp_ok(store.db_at((e + 1) as nat), active_partsupp@),
-        scan_active_lines_ok(store.db_at((e + 1) as nat), active_lines@),
+        scan_all_partsupp_ok(store.db_at((e + 1) as nat), all_partsupp@),
+        scan_all_lines_ok(store.db_at((e + 1) as nat), all_lines@),
     ensures
         p.epoch() == e,
         p.timeline() == store.timeline(),
 {
-    let state = ob_build(green_parts, order_dates, supplier_nations, nation_names, active_partsupp, active_lines, Ghost(store.db_at((e + 1) as nat)));
+    let state = ob_build(all_parts, all_orders, supplier_nations, nation_names, all_partsupp, all_lines, Ghost(store.db_at((e + 1) as nat)));
     prepare(store, e, state)
 }
 

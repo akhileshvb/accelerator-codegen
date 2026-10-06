@@ -77,13 +77,15 @@ pub struct FfiResult {
 
 /// Build from the scans: a state, or NULL (the host then answers with SQL).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq9vgen_build(green_parts__n: usize, green_parts: *const GreenPartIn, order_dates__n: usize, order_dates: *const OrderIn, supplier_nations__n: usize, supplier_nations: *const SupplierIn, nation_names__n: usize, nation_names__n_nationkey: *const i64, nation_names__n_name: *const u8, nation_names__n_name__off: *const usize, active_partsupp__n: usize, active_partsupp: *const PartsuppIn, active_lines__n: usize, active_lines: *const LineIn) -> *mut State {
+pub unsafe extern "C" fn tpchq9vgen_build(all_parts__n: usize, all_parts__p_partkey: *const i64, all_parts__p_name: *const u8, all_parts__p_name__off: *const usize, all_orders__n: usize, all_orders: *const OrderIn, supplier_nations__n: usize, supplier_nations: *const SupplierIn, nation_names__n: usize, nation_names__n_nationkey: *const i64, nation_names__n_name: *const u8, nation_names__n_name__off: *const usize, all_partsupp__n: usize, all_partsupp: *const PartsuppIn, all_lines__n: usize, all_lines: *const LineIn) -> *mut State {
+    let all_parts__v: Vec<PartIn> = (0..all_parts__n).map(|i| PartIn { p_partkey: *all_parts__p_partkey.add(i), p_name: text(all_parts__p_name, all_parts__p_name__off, i) }).collect();
     let nation_names__v: Vec<NationIn> = (0..nation_names__n).map(|i| NationIn { n_nationkey: *nation_names__n_nationkey.add(i), n_name: text(nation_names__n_name, nation_names__n_name__off, i) }).collect();
     if rec_on() {
-        rec_rows("build", "green_parts", &["p_partkey:int"], slice(green_parts, green_parts__n), |r: &GreenPartIn, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string());
+        rec_rows("build", "all_parts", &["p_partkey:int", "p_name:text"], &all_parts__v, |r: &PartIn, o: &mut String| {
+            o.push_str(&(r.p_partkey).to_string()); o.push(',');
+            rec_text(&r.p_name, o);
         });
-        rec_rows("build", "order_dates", &["o_orderkey:int", "o_orderdate:date"], slice(order_dates, order_dates__n), |r: &OrderIn, o: &mut String| {
+        rec_rows("build", "all_orders", &["o_orderkey:int", "o_orderdate:date"], slice(all_orders, all_orders__n), |r: &OrderIn, o: &mut String| {
             o.push_str(&(r.o_orderkey).to_string()); o.push(',');
             o.push_str(&(r.o_orderdate).to_string());
         });
@@ -95,12 +97,12 @@ pub unsafe extern "C" fn tpchq9vgen_build(green_parts__n: usize, green_parts: *c
             o.push_str(&(r.n_nationkey).to_string()); o.push(',');
             rec_text(&r.n_name, o);
         });
-        rec_rows("build", "active_partsupp", &["ps_partkey:int", "ps_suppkey:int", "ps_supplycost:dec2"], slice(active_partsupp, active_partsupp__n), |r: &PartsuppIn, o: &mut String| {
+        rec_rows("build", "all_partsupp", &["ps_partkey:int", "ps_suppkey:int", "ps_supplycost:dec2"], slice(all_partsupp, all_partsupp__n), |r: &PartsuppIn, o: &mut String| {
             o.push_str(&(r.ps_partkey).to_string()); o.push(',');
             o.push_str(&(r.ps_suppkey).to_string()); o.push(',');
             o.push_str(&(r.ps_supplycost).to_string());
         });
-        rec_rows("build", "active_lines", &["l_orderkey:int", "l_partkey:int", "l_suppkey:int", "l_quantity:dec2", "l_extendedprice:dec2", "l_discount:dec2"], slice(active_lines, active_lines__n), |r: &LineIn, o: &mut String| {
+        rec_rows("build", "all_lines", &["l_orderkey:int", "l_partkey:int", "l_suppkey:int", "l_quantity:dec2", "l_extendedprice:dec2", "l_discount:dec2"], slice(all_lines, all_lines__n), |r: &LineIn, o: &mut String| {
             o.push_str(&(r.l_orderkey).to_string()); o.push(',');
             o.push_str(&(r.l_partkey).to_string()); o.push(',');
             o.push_str(&(r.l_suppkey).to_string()); o.push(',');
@@ -110,7 +112,7 @@ pub unsafe extern "C" fn tpchq9vgen_build(green_parts__n: usize, green_parts: *c
         });
         return ptr::null_mut();
     }
-    match ob_build(slice(green_parts, green_parts__n), slice(order_dates, order_dates__n), slice(supplier_nations, supplier_nations__n), nation_names__v, slice(active_partsupp, active_partsupp__n), slice(active_lines, active_lines__n), Ghost::assume_new()) {
+    match ob_build(all_parts__v, slice(all_orders, all_orders__n), slice(supplier_nations, supplier_nations__n), nation_names__v, slice(all_partsupp, all_partsupp__n), slice(all_lines, all_lines__n), Ghost::assume_new()) {
         Some(s) => Box::into_raw(Box::new(s)),
         None => ptr::null_mut(),
     }
@@ -127,8 +129,9 @@ pub unsafe extern "C" fn tpchq9vgen_free(s: *mut State) {
 /// The keys to rescan for apply: writes up to cap of them into out and
 /// returns how many there are (call again with more room if that is more).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq9vgen_rescan_lines_for_orders_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta: *const PartDelta, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, out: *mut i64, cap: usize) -> usize {
+pub unsafe extern "C" fn tpchq9vgen_rescan_lines_for_orders_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta__row__p_partkey: *const i64, part_delta__row__p_name: *const u8, part_delta__row__p_name__off: *const usize, part_delta__sign: *const i64, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, out: *mut i64, cap: usize) -> usize {
     let nation_delta__v: Vec<NationDelta> = (0..nation_delta__n).map(|i| NationDelta { row: NationIn { n_nationkey: *nation_delta__row__n_nationkey.add(i), n_name: text(nation_delta__row__n_name, nation_delta__row__n_name__off, i) }, sign: *nation_delta__sign.add(i) }).collect();
+    let part_delta__v: Vec<PartDelta> = (0..part_delta__n).map(|i| PartDelta { row: PartIn { p_partkey: *part_delta__row__p_partkey.add(i), p_name: text(part_delta__row__p_name, part_delta__row__p_name__off, i) }, sign: *part_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("rescan_keys", "lineitem_delta", &["row.l_orderkey:int", "row.l_partkey:int", "row.l_suppkey:int", "row.l_quantity:dec2", "row.l_extendedprice:dec2", "row.l_discount:dec2", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LineDelta, o: &mut String| {
             o.push_str(&(r.row.l_orderkey).to_string()); o.push(',');
@@ -149,9 +152,9 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_lines_for_orders_keys(s: *const State
             o.push_str(&(r.row.o_orderdate).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("rescan_keys", "part_delta", &["p_partkey:int", "is_green:bool", "sign:int"], slice(part_delta, part_delta__n), |r: &PartDelta, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string()); o.push(',');
-            o.push_str(&(r.is_green).to_string()); o.push(',');
+        rec_rows("rescan_keys", "part_delta", &["row.p_partkey:int", "row.p_name:text", "sign:int"], &part_delta__v, |r: &PartDelta, o: &mut String| {
+            o.push_str(&(r.row.p_partkey).to_string()); o.push(',');
+            rec_text(&r.row.p_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         rec_rows("rescan_keys", "partsupp_delta", &["row.ps_partkey:int", "row.ps_suppkey:int", "row.ps_supplycost:dec2", "sign:int"], slice(partsupp_delta, partsupp_delta__n), |r: &PartsuppDelta, o: &mut String| {
@@ -173,7 +176,7 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_lines_for_orders_keys(s: *const State
             ks.len()
         };
     }
-    let keys = ob_rescan_lines_for_orders_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), slice(part_delta, part_delta__n), slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n));
+    let keys = ob_rescan_lines_for_orders_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), &part_delta__v, slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n));
     for (i, k) in keys.iter().take(cap).enumerate() {
         *out.add(i) = *k;
     }
@@ -183,8 +186,9 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_lines_for_orders_keys(s: *const State
 /// The keys to rescan for apply: writes up to cap of them into out and
 /// returns how many there are (call again with more room if that is more).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq9vgen_rescan_lines_for_parts_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta: *const PartDelta, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, out: *mut i64, cap: usize) -> usize {
+pub unsafe extern "C" fn tpchq9vgen_rescan_lines_for_parts_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta__row__p_partkey: *const i64, part_delta__row__p_name: *const u8, part_delta__row__p_name__off: *const usize, part_delta__sign: *const i64, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, out: *mut i64, cap: usize) -> usize {
     let nation_delta__v: Vec<NationDelta> = (0..nation_delta__n).map(|i| NationDelta { row: NationIn { n_nationkey: *nation_delta__row__n_nationkey.add(i), n_name: text(nation_delta__row__n_name, nation_delta__row__n_name__off, i) }, sign: *nation_delta__sign.add(i) }).collect();
+    let part_delta__v: Vec<PartDelta> = (0..part_delta__n).map(|i| PartDelta { row: PartIn { p_partkey: *part_delta__row__p_partkey.add(i), p_name: text(part_delta__row__p_name, part_delta__row__p_name__off, i) }, sign: *part_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("rescan_keys", "lineitem_delta", &["row.l_orderkey:int", "row.l_partkey:int", "row.l_suppkey:int", "row.l_quantity:dec2", "row.l_extendedprice:dec2", "row.l_discount:dec2", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LineDelta, o: &mut String| {
             o.push_str(&(r.row.l_orderkey).to_string()); o.push(',');
@@ -205,9 +209,9 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_lines_for_parts_keys(s: *const State,
             o.push_str(&(r.row.o_orderdate).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("rescan_keys", "part_delta", &["p_partkey:int", "is_green:bool", "sign:int"], slice(part_delta, part_delta__n), |r: &PartDelta, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string()); o.push(',');
-            o.push_str(&(r.is_green).to_string()); o.push(',');
+        rec_rows("rescan_keys", "part_delta", &["row.p_partkey:int", "row.p_name:text", "sign:int"], &part_delta__v, |r: &PartDelta, o: &mut String| {
+            o.push_str(&(r.row.p_partkey).to_string()); o.push(',');
+            rec_text(&r.row.p_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         rec_rows("rescan_keys", "partsupp_delta", &["row.ps_partkey:int", "row.ps_suppkey:int", "row.ps_supplycost:dec2", "sign:int"], slice(partsupp_delta, partsupp_delta__n), |r: &PartsuppDelta, o: &mut String| {
@@ -229,7 +233,7 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_lines_for_parts_keys(s: *const State,
             ks.len()
         };
     }
-    let keys = ob_rescan_lines_for_parts_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), slice(part_delta, part_delta__n), slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n));
+    let keys = ob_rescan_lines_for_parts_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), &part_delta__v, slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n));
     for (i, k) in keys.iter().take(cap).enumerate() {
         *out.add(i) = *k;
     }
@@ -239,8 +243,9 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_lines_for_parts_keys(s: *const State,
 /// The keys to rescan for apply: writes up to cap of them into out and
 /// returns how many there are (call again with more room if that is more).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq9vgen_rescan_partsupp_for_parts_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta: *const PartDelta, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, out: *mut i64, cap: usize) -> usize {
+pub unsafe extern "C" fn tpchq9vgen_rescan_lines_for_suppliers_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta__row__p_partkey: *const i64, part_delta__row__p_name: *const u8, part_delta__row__p_name__off: *const usize, part_delta__sign: *const i64, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, out: *mut i64, cap: usize) -> usize {
     let nation_delta__v: Vec<NationDelta> = (0..nation_delta__n).map(|i| NationDelta { row: NationIn { n_nationkey: *nation_delta__row__n_nationkey.add(i), n_name: text(nation_delta__row__n_name, nation_delta__row__n_name__off, i) }, sign: *nation_delta__sign.add(i) }).collect();
+    let part_delta__v: Vec<PartDelta> = (0..part_delta__n).map(|i| PartDelta { row: PartIn { p_partkey: *part_delta__row__p_partkey.add(i), p_name: text(part_delta__row__p_name, part_delta__row__p_name__off, i) }, sign: *part_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("rescan_keys", "lineitem_delta", &["row.l_orderkey:int", "row.l_partkey:int", "row.l_suppkey:int", "row.l_quantity:dec2", "row.l_extendedprice:dec2", "row.l_discount:dec2", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LineDelta, o: &mut String| {
             o.push_str(&(r.row.l_orderkey).to_string()); o.push(',');
@@ -261,9 +266,9 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_partsupp_for_parts_keys(s: *const Sta
             o.push_str(&(r.row.o_orderdate).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("rescan_keys", "part_delta", &["p_partkey:int", "is_green:bool", "sign:int"], slice(part_delta, part_delta__n), |r: &PartDelta, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string()); o.push(',');
-            o.push_str(&(r.is_green).to_string()); o.push(',');
+        rec_rows("rescan_keys", "part_delta", &["row.p_partkey:int", "row.p_name:text", "sign:int"], &part_delta__v, |r: &PartDelta, o: &mut String| {
+            o.push_str(&(r.row.p_partkey).to_string()); o.push(',');
+            rec_text(&r.row.p_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         rec_rows("rescan_keys", "partsupp_delta", &["row.ps_partkey:int", "row.ps_suppkey:int", "row.ps_supplycost:dec2", "sign:int"], slice(partsupp_delta, partsupp_delta__n), |r: &PartsuppDelta, o: &mut String| {
@@ -285,7 +290,7 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_partsupp_for_parts_keys(s: *const Sta
             ks.len()
         };
     }
-    let keys = ob_rescan_partsupp_for_parts_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), slice(part_delta, part_delta__n), slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n));
+    let keys = ob_rescan_lines_for_suppliers_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), &part_delta__v, slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n));
     for (i, k) in keys.iter().take(cap).enumerate() {
         *out.add(i) = *k;
     }
@@ -295,8 +300,9 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_partsupp_for_parts_keys(s: *const Sta
 /// The keys to rescan for apply: writes up to cap of them into out and
 /// returns how many there are (call again with more room if that is more).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq9vgen_rescan_orders_for_keys_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta: *const PartDelta, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, out: *mut i64, cap: usize) -> usize {
+pub unsafe extern "C" fn tpchq9vgen_rescan_partsupp_for_parts_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta__row__p_partkey: *const i64, part_delta__row__p_name: *const u8, part_delta__row__p_name__off: *const usize, part_delta__sign: *const i64, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, out: *mut i64, cap: usize) -> usize {
     let nation_delta__v: Vec<NationDelta> = (0..nation_delta__n).map(|i| NationDelta { row: NationIn { n_nationkey: *nation_delta__row__n_nationkey.add(i), n_name: text(nation_delta__row__n_name, nation_delta__row__n_name__off, i) }, sign: *nation_delta__sign.add(i) }).collect();
+    let part_delta__v: Vec<PartDelta> = (0..part_delta__n).map(|i| PartDelta { row: PartIn { p_partkey: *part_delta__row__p_partkey.add(i), p_name: text(part_delta__row__p_name, part_delta__row__p_name__off, i) }, sign: *part_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("rescan_keys", "lineitem_delta", &["row.l_orderkey:int", "row.l_partkey:int", "row.l_suppkey:int", "row.l_quantity:dec2", "row.l_extendedprice:dec2", "row.l_discount:dec2", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LineDelta, o: &mut String| {
             o.push_str(&(r.row.l_orderkey).to_string()); o.push(',');
@@ -317,9 +323,9 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_orders_for_keys_keys(s: *const State,
             o.push_str(&(r.row.o_orderdate).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("rescan_keys", "part_delta", &["p_partkey:int", "is_green:bool", "sign:int"], slice(part_delta, part_delta__n), |r: &PartDelta, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string()); o.push(',');
-            o.push_str(&(r.is_green).to_string()); o.push(',');
+        rec_rows("rescan_keys", "part_delta", &["row.p_partkey:int", "row.p_name:text", "sign:int"], &part_delta__v, |r: &PartDelta, o: &mut String| {
+            o.push_str(&(r.row.p_partkey).to_string()); o.push(',');
+            rec_text(&r.row.p_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         rec_rows("rescan_keys", "partsupp_delta", &["row.ps_partkey:int", "row.ps_suppkey:int", "row.ps_supplycost:dec2", "sign:int"], slice(partsupp_delta, partsupp_delta__n), |r: &PartsuppDelta, o: &mut String| {
@@ -341,7 +347,64 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_orders_for_keys_keys(s: *const State,
             ks.len()
         };
     }
-    let keys = ob_rescan_orders_for_keys_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), slice(part_delta, part_delta__n), slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n));
+    let keys = ob_rescan_partsupp_for_parts_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), &part_delta__v, slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n));
+    for (i, k) in keys.iter().take(cap).enumerate() {
+        *out.add(i) = *k;
+    }
+    keys.len()
+}
+
+/// The keys to rescan for apply: writes up to cap of them into out and
+/// returns how many there are (call again with more room if that is more).
+#[no_mangle]
+pub unsafe extern "C" fn tpchq9vgen_rescan_orders_for_keys_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta__row__p_partkey: *const i64, part_delta__row__p_name: *const u8, part_delta__row__p_name__off: *const usize, part_delta__sign: *const i64, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, out: *mut i64, cap: usize) -> usize {
+    let nation_delta__v: Vec<NationDelta> = (0..nation_delta__n).map(|i| NationDelta { row: NationIn { n_nationkey: *nation_delta__row__n_nationkey.add(i), n_name: text(nation_delta__row__n_name, nation_delta__row__n_name__off, i) }, sign: *nation_delta__sign.add(i) }).collect();
+    let part_delta__v: Vec<PartDelta> = (0..part_delta__n).map(|i| PartDelta { row: PartIn { p_partkey: *part_delta__row__p_partkey.add(i), p_name: text(part_delta__row__p_name, part_delta__row__p_name__off, i) }, sign: *part_delta__sign.add(i) }).collect();
+    if rec_on() {
+        rec_rows("rescan_keys", "lineitem_delta", &["row.l_orderkey:int", "row.l_partkey:int", "row.l_suppkey:int", "row.l_quantity:dec2", "row.l_extendedprice:dec2", "row.l_discount:dec2", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LineDelta, o: &mut String| {
+            o.push_str(&(r.row.l_orderkey).to_string()); o.push(',');
+            o.push_str(&(r.row.l_partkey).to_string()); o.push(',');
+            o.push_str(&(r.row.l_suppkey).to_string()); o.push(',');
+            o.push_str(&(r.row.l_quantity).to_string()); o.push(',');
+            o.push_str(&(r.row.l_extendedprice).to_string()); o.push(',');
+            o.push_str(&(r.row.l_discount).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("rescan_keys", "nation_delta", &["row.n_nationkey:int", "row.n_name:text", "sign:int"], &nation_delta__v, |r: &NationDelta, o: &mut String| {
+            o.push_str(&(r.row.n_nationkey).to_string()); o.push(',');
+            rec_text(&r.row.n_name, o); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("rescan_keys", "orders_delta", &["row.o_orderkey:int", "row.o_orderdate:date", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrderDelta, o: &mut String| {
+            o.push_str(&(r.row.o_orderkey).to_string()); o.push(',');
+            o.push_str(&(r.row.o_orderdate).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("rescan_keys", "part_delta", &["row.p_partkey:int", "row.p_name:text", "sign:int"], &part_delta__v, |r: &PartDelta, o: &mut String| {
+            o.push_str(&(r.row.p_partkey).to_string()); o.push(',');
+            rec_text(&r.row.p_name, o); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("rescan_keys", "partsupp_delta", &["row.ps_partkey:int", "row.ps_suppkey:int", "row.ps_supplycost:dec2", "sign:int"], slice(partsupp_delta, partsupp_delta__n), |r: &PartsuppDelta, o: &mut String| {
+            o.push_str(&(r.row.ps_partkey).to_string()); o.push(',');
+            o.push_str(&(r.row.ps_suppkey).to_string()); o.push(',');
+            o.push_str(&(r.row.ps_supplycost).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        rec_rows("rescan_keys", "supplier_delta", &["row.s_suppkey:int", "row.s_nationkey:int", "sign:int"], slice(supplier_delta, supplier_delta__n), |r: &SupplierDelta, o: &mut String| {
+            o.push_str(&(r.row.s_suppkey).to_string()); o.push(',');
+            o.push_str(&(r.row.s_nationkey).to_string()); o.push(',');
+            o.push_str(&(r.sign).to_string());
+        });
+        return {
+            let ks = rec_keys();
+            for (i, k) in ks.iter().take(cap).enumerate() {
+                *out.add(i) = *k as i64;
+            }
+            ks.len()
+        };
+    }
+    let keys = ob_rescan_orders_for_keys_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), &part_delta__v, slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n));
     for (i, k) in keys.iter().take(cap).enumerate() {
         *out.add(i) = *k;
     }
@@ -351,8 +414,9 @@ pub unsafe extern "C" fn tpchq9vgen_rescan_orders_for_keys_keys(s: *const State,
 /// Apply one transaction: the new state (the input is unchanged), or NULL
 /// with *err set (the host then rebuilds).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq9vgen_apply(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta: *const PartDelta, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, lines_for_orders_keys__n: usize, lines_for_orders_keys: *const i64, lines_for_orders_rows__n: usize, lines_for_orders_rows: *const LineIn, lines_for_parts_keys__n: usize, lines_for_parts_keys: *const i64, lines_for_parts_rows__n: usize, lines_for_parts_rows: *const LineIn, partsupp_for_parts_keys__n: usize, partsupp_for_parts_keys: *const i64, partsupp_for_parts_rows__n: usize, partsupp_for_parts_rows: *const PartsuppIn, orders_for_keys_keys__n: usize, orders_for_keys_keys: *const i64, orders_for_keys_rows__n: usize, orders_for_keys_rows: *const OrderIn, err: *mut i32) -> *mut State {
+pub unsafe extern "C" fn tpchq9vgen_apply(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta__row__p_partkey: *const i64, part_delta__row__p_name: *const u8, part_delta__row__p_name__off: *const usize, part_delta__sign: *const i64, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, lines_for_orders_keys__n: usize, lines_for_orders_keys: *const i64, lines_for_orders_rows__n: usize, lines_for_orders_rows: *const LineIn, lines_for_parts_keys__n: usize, lines_for_parts_keys: *const i64, lines_for_parts_rows__n: usize, lines_for_parts_rows: *const LineIn, lines_for_suppliers_keys__n: usize, lines_for_suppliers_keys: *const i64, lines_for_suppliers_rows__n: usize, lines_for_suppliers_rows: *const LineIn, partsupp_for_parts_keys__n: usize, partsupp_for_parts_keys: *const i64, partsupp_for_parts_rows__n: usize, partsupp_for_parts_rows: *const PartsuppIn, orders_for_keys_keys__n: usize, orders_for_keys_keys: *const i64, orders_for_keys_rows__n: usize, orders_for_keys_rows: *const OrderIn, err: *mut i32) -> *mut State {
     let nation_delta__v: Vec<NationDelta> = (0..nation_delta__n).map(|i| NationDelta { row: NationIn { n_nationkey: *nation_delta__row__n_nationkey.add(i), n_name: text(nation_delta__row__n_name, nation_delta__row__n_name__off, i) }, sign: *nation_delta__sign.add(i) }).collect();
+    let part_delta__v: Vec<PartDelta> = (0..part_delta__n).map(|i| PartDelta { row: PartIn { p_partkey: *part_delta__row__p_partkey.add(i), p_name: text(part_delta__row__p_name, part_delta__row__p_name__off, i) }, sign: *part_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("apply", "lineitem_delta", &["row.l_orderkey:int", "row.l_partkey:int", "row.l_suppkey:int", "row.l_quantity:dec2", "row.l_extendedprice:dec2", "row.l_discount:dec2", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LineDelta, o: &mut String| {
             o.push_str(&(r.row.l_orderkey).to_string()); o.push(',');
@@ -373,9 +437,9 @@ pub unsafe extern "C" fn tpchq9vgen_apply(s: *const State, lineitem_delta__n: us
             o.push_str(&(r.row.o_orderdate).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "part_delta", &["p_partkey:int", "is_green:bool", "sign:int"], slice(part_delta, part_delta__n), |r: &PartDelta, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string()); o.push(',');
-            o.push_str(&(r.is_green).to_string()); o.push(',');
+        rec_rows("apply", "part_delta", &["row.p_partkey:int", "row.p_name:text", "sign:int"], &part_delta__v, |r: &PartDelta, o: &mut String| {
+            o.push_str(&(r.row.p_partkey).to_string()); o.push(',');
+            rec_text(&r.row.p_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         rec_rows("apply", "partsupp_delta", &["row.ps_partkey:int", "row.ps_suppkey:int", "row.ps_supplycost:dec2", "sign:int"], slice(partsupp_delta, partsupp_delta__n), |r: &PartsuppDelta, o: &mut String| {
@@ -411,6 +475,17 @@ pub unsafe extern "C" fn tpchq9vgen_apply(s: *const State, lineitem_delta__n: us
             o.push_str(&(r.l_extendedprice).to_string()); o.push(',');
             o.push_str(&(r.l_discount).to_string());
         });
+        rec_rows("apply", "lines_for_suppliers_keys", &["value:int"], slice(lines_for_suppliers_keys, lines_for_suppliers_keys__n), |r: &i64, o: &mut String| {
+            o.push_str(&(*r).to_string());
+        });
+        rec_rows("apply", "lines_for_suppliers_rows", &["l_orderkey:int", "l_partkey:int", "l_suppkey:int", "l_quantity:dec2", "l_extendedprice:dec2", "l_discount:dec2"], slice(lines_for_suppliers_rows, lines_for_suppliers_rows__n), |r: &LineIn, o: &mut String| {
+            o.push_str(&(r.l_orderkey).to_string()); o.push(',');
+            o.push_str(&(r.l_partkey).to_string()); o.push(',');
+            o.push_str(&(r.l_suppkey).to_string()); o.push(',');
+            o.push_str(&(r.l_quantity).to_string()); o.push(',');
+            o.push_str(&(r.l_extendedprice).to_string()); o.push(',');
+            o.push_str(&(r.l_discount).to_string());
+        });
         rec_rows("apply", "partsupp_for_parts_keys", &["value:int"], slice(partsupp_for_parts_keys, partsupp_for_parts_keys__n), |r: &i64, o: &mut String| {
             o.push_str(&(*r).to_string());
         });
@@ -433,7 +508,7 @@ pub unsafe extern "C" fn tpchq9vgen_apply(s: *const State, lineitem_delta__n: us
             ptr::null_mut()
         };
     }
-    match ob_apply(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), slice(part_delta, part_delta__n), slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n), slice(lines_for_orders_keys, lines_for_orders_keys__n), slice(lines_for_orders_rows, lines_for_orders_rows__n), slice(lines_for_parts_keys, lines_for_parts_keys__n), slice(lines_for_parts_rows, lines_for_parts_rows__n), slice(partsupp_for_parts_keys, partsupp_for_parts_keys__n), slice(partsupp_for_parts_rows, partsupp_for_parts_rows__n), slice(orders_for_keys_keys, orders_for_keys_keys__n), slice(orders_for_keys_rows, orders_for_keys_rows__n), Ghost::assume_new(), Ghost::assume_new()) {
+    match ob_apply(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), &part_delta__v, slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n), slice(lines_for_orders_keys, lines_for_orders_keys__n), slice(lines_for_orders_rows, lines_for_orders_rows__n), slice(lines_for_parts_keys, lines_for_parts_keys__n), slice(lines_for_parts_rows, lines_for_parts_rows__n), slice(lines_for_suppliers_keys, lines_for_suppliers_keys__n), slice(lines_for_suppliers_rows, lines_for_suppliers_rows__n), slice(partsupp_for_parts_keys, partsupp_for_parts_keys__n), slice(partsupp_for_parts_rows, partsupp_for_parts_rows__n), slice(orders_for_keys_keys, orders_for_keys_keys__n), slice(orders_for_keys_rows, orders_for_keys_rows__n), Ghost::assume_new()) {
         Ok(s2) => {
             if !err.is_null() {
                 *err = 0;
@@ -451,8 +526,8 @@ pub unsafe extern "C" fn tpchq9vgen_apply(s: *const State, lineitem_delta__n: us
 
 /// The query's answer on the state, or NULL (the host then answers with SQL).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq9vgen_execute(s: *const State) -> *mut FfiResult {
-    match ob_execute(&*s) {
+pub unsafe extern "C" fn tpchq9vgen_execute(s: *const State, p1: *const u8, p1__len: usize) -> *mut FfiResult {
+    match ob_execute(&*s, slice(p1, p1__len)) {
         Some(rows) => Box::into_raw(Box::new(FfiResult { rows })),
         None => ptr::null_mut(),
     }
@@ -549,8 +624,9 @@ pub unsafe extern "C" fn tpchq9vgens_base_free(b: *mut QBase) {
 /// The next version from the base and one commit's inputs (as for apply);
 /// NULL with *err set if the kernel cannot apply them (the host rebuilds).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq9vgens_prepare_apply(st: *const QStore, b: *const QBase, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta: *const PartDelta, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, lines_for_orders_keys__n: usize, lines_for_orders_keys: *const i64, lines_for_orders_rows__n: usize, lines_for_orders_rows: *const LineIn, lines_for_parts_keys__n: usize, lines_for_parts_keys: *const i64, lines_for_parts_rows__n: usize, lines_for_parts_rows: *const LineIn, partsupp_for_parts_keys__n: usize, partsupp_for_parts_keys: *const i64, partsupp_for_parts_rows__n: usize, partsupp_for_parts_rows: *const PartsuppIn, orders_for_keys_keys__n: usize, orders_for_keys_keys: *const i64, orders_for_keys_rows__n: usize, orders_for_keys_rows: *const OrderIn, err: *mut i32) -> *mut QPrepared {
+pub unsafe extern "C" fn tpchq9vgens_prepare_apply(st: *const QStore, b: *const QBase, lineitem_delta__n: usize, lineitem_delta: *const LineDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, orders_delta__n: usize, orders_delta: *const OrderDelta, part_delta__n: usize, part_delta__row__p_partkey: *const i64, part_delta__row__p_name: *const u8, part_delta__row__p_name__off: *const usize, part_delta__sign: *const i64, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta: *const SupplierDelta, lines_for_orders_keys__n: usize, lines_for_orders_keys: *const i64, lines_for_orders_rows__n: usize, lines_for_orders_rows: *const LineIn, lines_for_parts_keys__n: usize, lines_for_parts_keys: *const i64, lines_for_parts_rows__n: usize, lines_for_parts_rows: *const LineIn, lines_for_suppliers_keys__n: usize, lines_for_suppliers_keys: *const i64, lines_for_suppliers_rows__n: usize, lines_for_suppliers_rows: *const LineIn, partsupp_for_parts_keys__n: usize, partsupp_for_parts_keys: *const i64, partsupp_for_parts_rows__n: usize, partsupp_for_parts_rows: *const PartsuppIn, orders_for_keys_keys__n: usize, orders_for_keys_keys: *const i64, orders_for_keys_rows__n: usize, orders_for_keys_rows: *const OrderIn, err: *mut i32) -> *mut QPrepared {
     let nation_delta__v: Vec<NationDelta> = (0..nation_delta__n).map(|i| NationDelta { row: NationIn { n_nationkey: *nation_delta__row__n_nationkey.add(i), n_name: text(nation_delta__row__n_name, nation_delta__row__n_name__off, i) }, sign: *nation_delta__sign.add(i) }).collect();
+    let part_delta__v: Vec<PartDelta> = (0..part_delta__n).map(|i| PartDelta { row: PartIn { p_partkey: *part_delta__row__p_partkey.add(i), p_name: text(part_delta__row__p_name, part_delta__row__p_name__off, i) }, sign: *part_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("apply", "lineitem_delta", &["row.l_orderkey:int", "row.l_partkey:int", "row.l_suppkey:int", "row.l_quantity:dec2", "row.l_extendedprice:dec2", "row.l_discount:dec2", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LineDelta, o: &mut String| {
             o.push_str(&(r.row.l_orderkey).to_string()); o.push(',');
@@ -571,9 +647,9 @@ pub unsafe extern "C" fn tpchq9vgens_prepare_apply(st: *const QStore, b: *const 
             o.push_str(&(r.row.o_orderdate).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "part_delta", &["p_partkey:int", "is_green:bool", "sign:int"], slice(part_delta, part_delta__n), |r: &PartDelta, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string()); o.push(',');
-            o.push_str(&(r.is_green).to_string()); o.push(',');
+        rec_rows("apply", "part_delta", &["row.p_partkey:int", "row.p_name:text", "sign:int"], &part_delta__v, |r: &PartDelta, o: &mut String| {
+            o.push_str(&(r.row.p_partkey).to_string()); o.push(',');
+            rec_text(&r.row.p_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         rec_rows("apply", "partsupp_delta", &["row.ps_partkey:int", "row.ps_suppkey:int", "row.ps_supplycost:dec2", "sign:int"], slice(partsupp_delta, partsupp_delta__n), |r: &PartsuppDelta, o: &mut String| {
@@ -609,6 +685,17 @@ pub unsafe extern "C" fn tpchq9vgens_prepare_apply(st: *const QStore, b: *const 
             o.push_str(&(r.l_extendedprice).to_string()); o.push(',');
             o.push_str(&(r.l_discount).to_string());
         });
+        rec_rows("apply", "lines_for_suppliers_keys", &["value:int"], slice(lines_for_suppliers_keys, lines_for_suppliers_keys__n), |r: &i64, o: &mut String| {
+            o.push_str(&(*r).to_string());
+        });
+        rec_rows("apply", "lines_for_suppliers_rows", &["l_orderkey:int", "l_partkey:int", "l_suppkey:int", "l_quantity:dec2", "l_extendedprice:dec2", "l_discount:dec2"], slice(lines_for_suppliers_rows, lines_for_suppliers_rows__n), |r: &LineIn, o: &mut String| {
+            o.push_str(&(r.l_orderkey).to_string()); o.push(',');
+            o.push_str(&(r.l_partkey).to_string()); o.push(',');
+            o.push_str(&(r.l_suppkey).to_string()); o.push(',');
+            o.push_str(&(r.l_quantity).to_string()); o.push(',');
+            o.push_str(&(r.l_extendedprice).to_string()); o.push(',');
+            o.push_str(&(r.l_discount).to_string());
+        });
         rec_rows("apply", "partsupp_for_parts_keys", &["value:int"], slice(partsupp_for_parts_keys, partsupp_for_parts_keys__n), |r: &i64, o: &mut String| {
             o.push_str(&(*r).to_string());
         });
@@ -631,7 +718,7 @@ pub unsafe extern "C" fn tpchq9vgens_prepare_apply(st: *const QStore, b: *const 
             ptr::null_mut()
         };
     }
-    match prepare_apply(&*st, &*b, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), slice(part_delta, part_delta__n), slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n), slice(lines_for_orders_keys, lines_for_orders_keys__n), slice(lines_for_orders_rows, lines_for_orders_rows__n), slice(lines_for_parts_keys, lines_for_parts_keys__n), slice(lines_for_parts_rows, lines_for_parts_rows__n), slice(partsupp_for_parts_keys, partsupp_for_parts_keys__n), slice(partsupp_for_parts_rows, partsupp_for_parts_rows__n), slice(orders_for_keys_keys, orders_for_keys_keys__n), slice(orders_for_keys_rows, orders_for_keys_rows__n), Ghost::assume_new()) {
+    match prepare_apply(&*st, &*b, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(orders_delta, orders_delta__n), &part_delta__v, slice(partsupp_delta, partsupp_delta__n), slice(supplier_delta, supplier_delta__n), slice(lines_for_orders_keys, lines_for_orders_keys__n), slice(lines_for_orders_rows, lines_for_orders_rows__n), slice(lines_for_parts_keys, lines_for_parts_keys__n), slice(lines_for_parts_rows, lines_for_parts_rows__n), slice(lines_for_suppliers_keys, lines_for_suppliers_keys__n), slice(lines_for_suppliers_rows, lines_for_suppliers_rows__n), slice(partsupp_for_parts_keys, partsupp_for_parts_keys__n), slice(partsupp_for_parts_rows, partsupp_for_parts_rows__n), slice(orders_for_keys_keys, orders_for_keys_keys__n), slice(orders_for_keys_rows, orders_for_keys_rows__n)) {
         Ok(p) => {
             if !err.is_null() {
                 *err = 0;
@@ -651,17 +738,19 @@ pub unsafe extern "C" fn tpchq9vgens_prepare_apply(st: *const QStore, b: *const 
 /// that version; its state is invalid if the kernel cannot build it.  NULL
 /// only if no version can follow the newest.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq9vgens_prepare_build(st: *const QStore, green_parts__n: usize, green_parts: *const GreenPartIn, order_dates__n: usize, order_dates: *const OrderIn, supplier_nations__n: usize, supplier_nations: *const SupplierIn, nation_names__n: usize, nation_names__n_nationkey: *const i64, nation_names__n_name: *const u8, nation_names__n_name__off: *const usize, active_partsupp__n: usize, active_partsupp: *const PartsuppIn, active_lines__n: usize, active_lines: *const LineIn) -> *mut QPrepared {
+pub unsafe extern "C" fn tpchq9vgens_prepare_build(st: *const QStore, all_parts__n: usize, all_parts__p_partkey: *const i64, all_parts__p_name: *const u8, all_parts__p_name__off: *const usize, all_orders__n: usize, all_orders: *const OrderIn, supplier_nations__n: usize, supplier_nations: *const SupplierIn, nation_names__n: usize, nation_names__n_nationkey: *const i64, nation_names__n_name: *const u8, nation_names__n_name__off: *const usize, all_partsupp__n: usize, all_partsupp: *const PartsuppIn, all_lines__n: usize, all_lines: *const LineIn) -> *mut QPrepared {
     let e = (*st).newest();
     if e == u64::MAX {
         return ptr::null_mut();
     }
+    let all_parts__v: Vec<PartIn> = (0..all_parts__n).map(|i| PartIn { p_partkey: *all_parts__p_partkey.add(i), p_name: text(all_parts__p_name, all_parts__p_name__off, i) }).collect();
     let nation_names__v: Vec<NationIn> = (0..nation_names__n).map(|i| NationIn { n_nationkey: *nation_names__n_nationkey.add(i), n_name: text(nation_names__n_name, nation_names__n_name__off, i) }).collect();
     if rec_on() {
-        rec_rows("build", "green_parts", &["p_partkey:int"], slice(green_parts, green_parts__n), |r: &GreenPartIn, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string());
+        rec_rows("build", "all_parts", &["p_partkey:int", "p_name:text"], &all_parts__v, |r: &PartIn, o: &mut String| {
+            o.push_str(&(r.p_partkey).to_string()); o.push(',');
+            rec_text(&r.p_name, o);
         });
-        rec_rows("build", "order_dates", &["o_orderkey:int", "o_orderdate:date"], slice(order_dates, order_dates__n), |r: &OrderIn, o: &mut String| {
+        rec_rows("build", "all_orders", &["o_orderkey:int", "o_orderdate:date"], slice(all_orders, all_orders__n), |r: &OrderIn, o: &mut String| {
             o.push_str(&(r.o_orderkey).to_string()); o.push(',');
             o.push_str(&(r.o_orderdate).to_string());
         });
@@ -673,12 +762,12 @@ pub unsafe extern "C" fn tpchq9vgens_prepare_build(st: *const QStore, green_part
             o.push_str(&(r.n_nationkey).to_string()); o.push(',');
             rec_text(&r.n_name, o);
         });
-        rec_rows("build", "active_partsupp", &["ps_partkey:int", "ps_suppkey:int", "ps_supplycost:dec2"], slice(active_partsupp, active_partsupp__n), |r: &PartsuppIn, o: &mut String| {
+        rec_rows("build", "all_partsupp", &["ps_partkey:int", "ps_suppkey:int", "ps_supplycost:dec2"], slice(all_partsupp, all_partsupp__n), |r: &PartsuppIn, o: &mut String| {
             o.push_str(&(r.ps_partkey).to_string()); o.push(',');
             o.push_str(&(r.ps_suppkey).to_string()); o.push(',');
             o.push_str(&(r.ps_supplycost).to_string());
         });
-        rec_rows("build", "active_lines", &["l_orderkey:int", "l_partkey:int", "l_suppkey:int", "l_quantity:dec2", "l_extendedprice:dec2", "l_discount:dec2"], slice(active_lines, active_lines__n), |r: &LineIn, o: &mut String| {
+        rec_rows("build", "all_lines", &["l_orderkey:int", "l_partkey:int", "l_suppkey:int", "l_quantity:dec2", "l_extendedprice:dec2", "l_discount:dec2"], slice(all_lines, all_lines__n), |r: &LineIn, o: &mut String| {
             o.push_str(&(r.l_orderkey).to_string()); o.push(',');
             o.push_str(&(r.l_partkey).to_string()); o.push(',');
             o.push_str(&(r.l_suppkey).to_string()); o.push(',');
@@ -688,7 +777,7 @@ pub unsafe extern "C" fn tpchq9vgens_prepare_build(st: *const QStore, green_part
         });
         return ptr::null_mut();
     }
-    Box::into_raw(Box::new(prepare_build(&*st, e, slice(green_parts, green_parts__n), slice(order_dates, order_dates__n), slice(supplier_nations, supplier_nations__n), nation_names__v, slice(active_partsupp, active_partsupp__n), slice(active_lines, active_lines__n))))
+    Box::into_raw(Box::new(prepare_build(&*st, e, all_parts__v, slice(all_orders, all_orders__n), slice(supplier_nations, supplier_nations__n), nation_names__v, slice(all_partsupp, all_partsupp__n), slice(all_lines, all_lines__n))))
 }
 
 /// The next version with an invalid state (NULL: none can follow the newest).

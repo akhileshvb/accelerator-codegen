@@ -12,3 +12,5 @@ pub mod output;
 pub mod facts;
 pub mod join;
 pub mod bag_proofs;
+pub mod recs;
+pub mod dense;

@@ -106,7 +106,21 @@ struct BuildInputs {
   Regions regions;
   std::vector<tpchq5vgen_lineitem_input> lines;
 
+  // The row count of a table, only to size the buffers once (a wrong count
+  // is harmless: the vectors still grow).
+  static std::size_t CountRows(kit::Host &host, const char *sql) {
+    std::size_t count = 0;
+    host.Query(sql, [&](const core::AuxRow &row) {
+      const int64_t value = kit::I64(row, 0, 0);
+      count = value > 0 ? static_cast<std::size_t>(value) : 0;
+    });
+    return count;
+  }
+
   explicit BuildInputs(kit::Host &host) {
+    customers.reserve(CountRows(host, "SELECT count(*) FROM customer;"));
+    orders.reserve(CountRows(host, "SELECT count(*) FROM orders;"));
+    suppliers.reserve(CountRows(host, "SELECT count(*) FROM supplier;"));
     host.Query(kCustomersSql, [&](const core::AuxRow &row) {
       customers.push_back(Customer(row));
     });

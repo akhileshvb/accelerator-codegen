@@ -6,13 +6,14 @@ use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::dimensions::*;
 use crate::model::maxima_valid;
+use crate::paged::*;
+use crate::customers::*;
 
 verus! {
 
 pub open spec fn shape(dimensions: Dimensions) -> bool {
-    &&& customer_index_valid(dimensions.customers)
+    &&& customer_shape(dimensions)
     &&& nation_index_valid(dimensions.nations)
-    &&& maxima_valid(dimensions.customer_totals, dimensions.customer_maxima)
     &&& maxima_valid(dimensions.nation_totals, dimensions.nation_maxima)
 }
 
@@ -271,12 +272,11 @@ pub proof fn lemma_nation_capture_sum(index: &Index<Index<Nation>>, rows: Seq<Na
 pub fn install_customer_leaf(dimensions: &mut Dimensions, values: &Index<Customer>) -> (result: bool)
     requires shape(*old(dimensions)),
     ensures result ==> shape(*final(dimensions)),
-        result ==> forall|row: CustomerRow| #[trigger] customer_count(final(dimensions).customers, row)
-            == customer_count(old(dimensions).customers, row) + customer_leaf_sum(values.entries(), customer_eq(row)),
-        result ==> forall|key: int| #[trigger] total_at(final(dimensions).customer_totals, key)
-            == total_at(old(dimensions).customer_totals, key) + customer_leaf_sum(values.entries(), customer_key_weight(key)),
-        forall|row: NationRow| #[trigger] nation_count(final(dimensions).nations, row) == nation_count(old(dimensions).nations, row),
-        forall|key: int| #[trigger] total_at(final(dimensions).nation_totals, key) == total_at(old(dimensions).nation_totals, key),
+        result ==> forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(final(dimensions).customers, weight)
+            == table_sum(old(dimensions).customers, weight) + customer_leaf_sum(values.entries(), weight),
+        final(dimensions).nations == old(dimensions).nations,
+        final(dimensions).nation_totals == old(dimensions).nation_totals,
+        final(dimensions).nation_maxima == old(dimensions).nation_maxima,
 {
     let ghost before = *dimensions;
     let ghost entries = values.entries();
@@ -285,12 +285,10 @@ pub fn install_customer_leaf(dimensions: &mut Dimensions, values: &Index<Custome
     loop
         invariant shape(*dimensions), before == *old(dimensions), entries == values.entries(),
             0 <= processed <= entries.len(), cursor.remaining() == entries.skip(processed),
-            forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row)
-                == customer_count(before.customers, row) + customer_leaf_sum(entries.take(processed), customer_eq(row)),
-            forall|key: int| #[trigger] total_at(dimensions.customer_totals, key)
-                == total_at(before.customer_totals, key) + customer_leaf_sum(entries.take(processed), customer_key_weight(key)),
-            forall|row: NationRow| #[trigger] nation_count(dimensions.nations, row) == nation_count(before.nations, row),
-            forall|key: int| #[trigger] total_at(dimensions.nation_totals, key) == total_at(before.nation_totals, key),
+            forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(dimensions.customers, weight)
+                == table_sum(before.customers, weight) + customer_leaf_sum(entries.take(processed), weight),
+            dimensions.nations == before.nations, dimensions.nation_totals == before.nation_totals,
+            dimensions.nation_maxima == before.nation_maxima,
         decreases cursor.remaining().len(),
     {
         let (_, value) = match cursor.next() {
@@ -301,15 +299,11 @@ pub fn install_customer_leaf(dimensions: &mut Dimensions, values: &Index<Custome
             },
         };
         proof { assert(*value == entries[processed].1); }
-        if !dimensions.edit_customer(&*value.row, value.count) { return false; }
+        if !dimensions.edit_customer(&value.row, value.count) { return false; }
         proof {
-            assert forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row)
-                == customer_count(before.customers, row) + customer_leaf_sum(entries.take(processed + 1), customer_eq(row)) by {
-                lemma_sum_take(entries, processed, customer_weight(customer_eq(row)));
-            }
-            assert forall|key: int| #[trigger] total_at(dimensions.customer_totals, key)
-                == total_at(before.customer_totals, key) + customer_leaf_sum(entries.take(processed + 1), customer_key_weight(key)) by {
-                lemma_sum_take(entries, processed, customer_weight(customer_key_weight(key)));
+            assert forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(dimensions.customers, weight)
+                == table_sum(before.customers, weight) + customer_leaf_sum(entries.take(processed + 1), weight) by {
+                lemma_sum_take(entries, processed, customer_weight(weight));
             }
             processed = processed + 1;
         }
@@ -323,8 +317,7 @@ pub fn install_nation_leaf(dimensions: &mut Dimensions, values: &Index<Nation>) 
             == nation_count(old(dimensions).nations, row) + nation_leaf_sum(values.entries(), nation_eq(row)),
         result ==> forall|key: int| #[trigger] total_at(final(dimensions).nation_totals, key)
             == total_at(old(dimensions).nation_totals, key) + nation_leaf_sum(values.entries(), nation_key_weight(key)),
-        forall|row: CustomerRow| #[trigger] customer_count(final(dimensions).customers, row) == customer_count(old(dimensions).customers, row),
-        forall|key: int| #[trigger] total_at(final(dimensions).customer_totals, key) == total_at(old(dimensions).customer_totals, key),
+        final(dimensions).customers == old(dimensions).customers, final(dimensions).customer_max == old(dimensions).customer_max,
 {
     let ghost before = *dimensions;
     let ghost entries = values.entries();
@@ -337,8 +330,7 @@ pub fn install_nation_leaf(dimensions: &mut Dimensions, values: &Index<Nation>) 
                 == nation_count(before.nations, row) + nation_leaf_sum(entries.take(processed), nation_eq(row)),
             forall|key: int| #[trigger] total_at(dimensions.nation_totals, key)
                 == total_at(before.nation_totals, key) + nation_leaf_sum(entries.take(processed), nation_key_weight(key)),
-            forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row) == customer_count(before.customers, row),
-            forall|key: int| #[trigger] total_at(dimensions.customer_totals, key) == total_at(before.customer_totals, key),
+            dimensions.customers == before.customers, dimensions.customer_max == before.customer_max,
         decreases cursor.remaining().len(),
     {
         let (_, value) = match cursor.next() {
@@ -367,12 +359,11 @@ pub fn install_nation_leaf(dimensions: &mut Dimensions, values: &Index<Nation>) 
 pub fn install_customers(dimensions: &mut Dimensions, changes: &Index<Index<Customer>>) -> (result: bool)
     requires shape(*old(dimensions)),
     ensures result ==> shape(*final(dimensions)),
-        result ==> forall|row: CustomerRow| #[trigger] customer_count(final(dimensions).customers, row)
-            == customer_count(old(dimensions).customers, row) + customer_index_sum(changes.entries(), customer_eq(row)),
-        result ==> forall|key: int| #[trigger] total_at(final(dimensions).customer_totals, key)
-            == total_at(old(dimensions).customer_totals, key) + customer_index_sum(changes.entries(), customer_key_weight(key)),
-        forall|row: NationRow| #[trigger] nation_count(final(dimensions).nations, row) == nation_count(old(dimensions).nations, row),
-        forall|key: int| #[trigger] total_at(final(dimensions).nation_totals, key) == total_at(old(dimensions).nation_totals, key),
+        result ==> forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(final(dimensions).customers, weight)
+            == table_sum(old(dimensions).customers, weight) + customer_index_sum(changes.entries(), weight),
+        final(dimensions).nations == old(dimensions).nations,
+        final(dimensions).nation_totals == old(dimensions).nation_totals,
+        final(dimensions).nation_maxima == old(dimensions).nation_maxima,
 {
     let ghost before = *dimensions;
     let ghost entries = changes.entries();
@@ -381,12 +372,10 @@ pub fn install_customers(dimensions: &mut Dimensions, changes: &Index<Index<Cust
     loop
         invariant shape(*dimensions), before == *old(dimensions), entries == changes.entries(),
             0 <= processed <= entries.len(), cursor.remaining() == entries.skip(processed),
-            forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row)
-                == customer_count(before.customers, row) + customer_index_sum(entries.take(processed), customer_eq(row)),
-            forall|key: int| #[trigger] total_at(dimensions.customer_totals, key)
-                == total_at(before.customer_totals, key) + customer_index_sum(entries.take(processed), customer_key_weight(key)),
-            forall|row: NationRow| #[trigger] nation_count(dimensions.nations, row) == nation_count(before.nations, row),
-            forall|key: int| #[trigger] total_at(dimensions.nation_totals, key) == total_at(before.nation_totals, key),
+            forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(dimensions.customers, weight)
+                == table_sum(before.customers, weight) + customer_index_sum(entries.take(processed), weight),
+            dimensions.nations == before.nations, dimensions.nation_totals == before.nation_totals,
+            dimensions.nation_maxima == before.nation_maxima,
         decreases cursor.remaining().len(),
     {
         let (_, values) = match cursor.next() {
@@ -399,13 +388,9 @@ pub fn install_customers(dimensions: &mut Dimensions, changes: &Index<Index<Cust
         proof { assert(*values == entries[processed].1); }
         if !install_customer_leaf(dimensions, &*values) { return false; }
         proof {
-            assert forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row)
-                == customer_count(before.customers, row) + customer_index_sum(entries.take(processed + 1), customer_eq(row)) by {
-                lemma_sum_take(entries, processed, customer_outer_weight(customer_eq(row)));
-            }
-            assert forall|key: int| #[trigger] total_at(dimensions.customer_totals, key)
-                == total_at(before.customer_totals, key) + customer_index_sum(entries.take(processed + 1), customer_key_weight(key)) by {
-                lemma_sum_take(entries, processed, customer_outer_weight(customer_key_weight(key)));
+            assert forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(dimensions.customers, weight)
+                == table_sum(before.customers, weight) + customer_index_sum(entries.take(processed + 1), weight) by {
+                lemma_sum_take(entries, processed, customer_outer_weight(weight));
             }
             processed = processed + 1;
         }
@@ -419,8 +404,7 @@ pub fn install_nations(dimensions: &mut Dimensions, changes: &Index<Index<Nation
             == nation_count(old(dimensions).nations, row) + nation_index_sum(changes.entries(), nation_eq(row)),
         result ==> forall|key: int| #[trigger] total_at(final(dimensions).nation_totals, key)
             == total_at(old(dimensions).nation_totals, key) + nation_index_sum(changes.entries(), nation_key_weight(key)),
-        forall|row: CustomerRow| #[trigger] customer_count(final(dimensions).customers, row) == customer_count(old(dimensions).customers, row),
-        forall|key: int| #[trigger] total_at(final(dimensions).customer_totals, key) == total_at(old(dimensions).customer_totals, key),
+        final(dimensions).customers == old(dimensions).customers, final(dimensions).customer_max == old(dimensions).customer_max,
 {
     let ghost before = *dimensions;
     let ghost entries = changes.entries();
@@ -433,8 +417,7 @@ pub fn install_nations(dimensions: &mut Dimensions, changes: &Index<Index<Nation
                 == nation_count(before.nations, row) + nation_index_sum(entries.take(processed), nation_eq(row)),
             forall|key: int| #[trigger] total_at(dimensions.nation_totals, key)
                 == total_at(before.nation_totals, key) + nation_index_sum(entries.take(processed), nation_key_weight(key)),
-            forall|row: CustomerRow| #[trigger] customer_count(dimensions.customers, row) == customer_count(before.customers, row),
-            forall|key: int| #[trigger] total_at(dimensions.customer_totals, key) == total_at(before.customer_totals, key),
+            dimensions.customers == before.customers, dimensions.customer_max == before.customer_max,
         decreases cursor.remaining().len(),
     {
         let (_, values) = match cursor.next() {
@@ -464,28 +447,22 @@ pub proof fn lemma_dimensions_capture(before: Db, after: Db, previous: Dimension
     requires crate::model::dimensions_valid(before, previous), shape(next),
         bag_step(before.customer, after.customer, customer_delta_seq_view(customers)),
         bag_step(before.nation, after.nation, nation_delta_seq_view(nations)),
-        forall|row: CustomerRow| #[trigger] customer_count(next.customers, row) == customer_count(previous.customers, row)
-            + sum(customers, |delta: CustomerDelta| if customer_input_view(delta.row) == row { delta.sign as int } else { 0 }),
+        forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(next.customers, weight) == table_sum(previous.customers, weight)
+            + sum(customers, |delta: CustomerDelta| delta.sign as int * weight(customer_input_view(delta.row))),
         forall|row: NationRow| #[trigger] nation_count(next.nations, row) == nation_count(previous.nations, row)
             + sum(nations, |delta: NationDelta| if nation_input_view(delta.row) == row { delta.sign as int } else { 0 }),
-        forall|key: int| #[trigger] total_at(next.customer_totals, key) == total_at(previous.customer_totals, key)
-            + sum(customers, |delta: CustomerDelta| if delta.row.c_custkey == key { delta.sign as int } else { 0 }),
         forall|key: int| #[trigger] total_at(next.nation_totals, key) == total_at(previous.nation_totals, key)
             + sum(nations, |delta: NationDelta| if delta.row.n_nationkey == key { delta.sign as int } else { 0 }),
     ensures crate::model::dimensions_valid(after, next),
 {
     reveal(crate::model::dimensions_valid);
-    assert forall|row: CustomerRow| #[trigger] customer_count(next.customers, row)
-        == sum(after.customer, customer_eq(row)) by {
-        let weight = customer_eq(row);
+    assert forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(next.customers, weight) == sum(after.customer, weight) by {
         assert(sum(after.customer, weight) == sum(before.customer, weight)
             + sum(customer_delta_seq_view(customers), |entry: (CustomerRow, int)| entry.1 * weight(entry.0)));
         lemma_sum_map(customers, |delta: CustomerDelta| (customer_input_view(delta.row), delta.sign as int),
             |entry: (CustomerRow, int)| entry.1 * weight(entry.0),
-            |delta: CustomerDelta| if customer_input_view(delta.row) == row { delta.sign as int } else { 0 });
-        lemma_sum_ext_all(before.customer, weight, |value: CustomerRow| if value == row { 1int } else { 0int });
-        lemma_sum_ext_all(after.customer, weight, |value: CustomerRow| if value == row { 1int } else { 0int });
-        assert(customer_count(previous.customers, row) == sum(before.customer, |value: CustomerRow| if value == row { 1int } else { 0int }));
+            |delta: CustomerDelta| delta.sign as int * weight(customer_input_view(delta.row)));
+        assert(table_sum(previous.customers, weight) == sum(before.customer, weight));
     }
     assert forall|row: NationRow| #[trigger] nation_count(next.nations, row)
         == sum(after.nation, nation_eq(row)) by {
@@ -498,18 +475,6 @@ pub proof fn lemma_dimensions_capture(before: Db, after: Db, previous: Dimension
         lemma_sum_ext_all(before.nation, weight, |value: NationRow| if value == row { 1int } else { 0int });
         lemma_sum_ext_all(after.nation, weight, |value: NationRow| if value == row { 1int } else { 0int });
         assert(nation_count(previous.nations, row) == sum(before.nation, |value: NationRow| if value == row { 1int } else { 0int }));
-    }
-    assert forall|key: int| #[trigger] total_at(next.customer_totals, key)
-        == sum(after.customer, |row: CustomerRow| if row.c_custkey == key { 1int } else { 0int }) by {
-        let weight = customer_key_weight(key);
-        assert(sum(after.customer, weight) == sum(before.customer, weight)
-            + sum(customer_delta_seq_view(customers), |entry: (CustomerRow, int)| entry.1 * weight(entry.0)));
-        lemma_sum_map(customers, |delta: CustomerDelta| (customer_input_view(delta.row), delta.sign as int),
-            |entry: (CustomerRow, int)| entry.1 * weight(entry.0),
-            |delta: CustomerDelta| if delta.row.c_custkey == key { delta.sign as int } else { 0 });
-        lemma_sum_ext_all(before.customer, weight, |row: CustomerRow| if row.c_custkey == key { 1int } else { 0int });
-        lemma_sum_ext_all(after.customer, weight, |row: CustomerRow| if row.c_custkey == key { 1int } else { 0int });
-        assert(total_at(previous.customer_totals, key) == sum(before.customer, |row: CustomerRow| if row.c_custkey == key { 1int } else { 0int }));
     }
     assert forall|key: int| #[trigger] total_at(next.nation_totals, key)
         == sum(after.nation, |row: NationRow| if row.n_nationkey == key { 1int } else { 0int }) by {

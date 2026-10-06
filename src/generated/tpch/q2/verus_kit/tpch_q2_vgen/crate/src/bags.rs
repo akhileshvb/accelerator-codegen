@@ -10,7 +10,7 @@ verus! {
 pub fn copy_bytes(source: &[u8]) -> (result: Vec<u8>)
     ensures result@ == source@,
 {
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(source.len());
     let mut index = 0;
     while index < source.len()
         invariant index <= source.len(), result@ == source@.take(index as int),
@@ -38,18 +38,18 @@ pub fn compare_bytes(left: &[u8], right: &[u8]) -> (result: i8)
 }
 
 impl BagRow for BrassPartScan {
-    type V = (int, Seq<u8>, int);
+    type V = crate::gen_spec::PartRow;
     open spec fn rv(&self) -> Self::V { brass_part_scan_view(*self) }
     fn same(&self, other: &Self) -> (result: bool)
         ensures result == (self.rv() == other.rv()),
     {
         self.p_partkey == other.p_partkey && self.p_size == other.p_size &&
-            compare_bytes(&self.p_mfgr, &other.p_mfgr) == 0
+            compare_bytes(&self.p_mfgr, &other.p_mfgr) == 0 && compare_bytes(&self.p_type, &other.p_type) == 0
     }
     fn dup(&self) -> (result: Self)
         ensures result.rv() == self.rv(),
     {
-        BrassPartScan { p_partkey: self.p_partkey, p_size: self.p_size, p_mfgr: copy_bytes(&self.p_mfgr) }
+        BrassPartScan { p_partkey: self.p_partkey, p_size: self.p_size, p_mfgr: copy_bytes(&self.p_mfgr), p_type: copy_bytes(&self.p_type) }
     }
 }
 

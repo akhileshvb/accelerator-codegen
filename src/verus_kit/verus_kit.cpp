@@ -1,6 +1,7 @@
 // The generic host kit for Verus accelerators (see verus_kit.hpp).
 #include "accelerator_codegen/verus/verus_kit.hpp"
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
+#include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -220,6 +221,7 @@ private:
 
   // status: 0 state (returned), 1 invalid, 2 pending, 3 not visible.
   std::shared_ptr<const KitImage> Resolve(core::Version at, int32_t &status) const {
+    const core::StoreResolveTimer timer;
     if (Fault() == "ignore_snapshot")
       at = 0;
     const void *s = nullptr;
@@ -504,6 +506,7 @@ private:
 
   // status: 0 state (returned), 1 invalid, 2 pending, 3 not visible.
   std::shared_ptr<const KitImage> Resolve(core::Version at, int32_t &status) const {
+    const core::StoreResolveTimer timer;
     if (Fault() == "ignore_snapshot")
       at = 0;
     const void *s = nullptr;

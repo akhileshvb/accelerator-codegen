@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from accel_pipeline.verus import params as qparams
 from accel_pipeline.verus.context import VerusContext
 
 GEN_FILES = ("gen_spec.rs", "gen_obligations.rs", "gen_world.rs", "gen_ffi.rs")
@@ -543,8 +544,11 @@ def runner_exe(ctx: VerusContext, runner: Path | None = None) -> tuple[str, dict
 
 
 def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus_global", fault: str = "",
-            timeout: float = 1800, runner: Path | None = None) -> dict[str, Any]:
-    env = runner_env(ctx, ACCEL_AUX_STORE=store, ACCEL_VERUS_KIT_FAULT=fault)
+            timeout: float = 1800, runner: Path | None = None, draw: qparams.Draw | None = None,
+            draw_mode: str = "replace") -> dict[str, Any]:
+    """`draw`: random parameter tuples from the domain (params.py); `replace` makes them the run's parameter
+    sets (bench, profile), `extra` adds them to the frozen tests' (differential, snapshots)."""
+    env = runner_env(ctx, ACCEL_AUX_STORE=store, ACCEL_VERUS_KIT_FAULT=fault, **qparams.runner_env(draw, draw_mode))
     exe, extra = runner_exe(ctx, runner)  # a frozen copy: its own kernel library first
     env.update(extra)
     # the shared binary only before this pipeline's first build (shared lock: never under a relink)
@@ -558,6 +562,7 @@ def _runner(ctx: VerusContext, args: list[str], *, store: str = "verus_global", 
     if not data:
         data = {"error": _tail(proc.stderr or proc.stdout or f"exit {proc.returncode}", 4000)}
     data["exit"] = proc.returncode
+    data.update(qparams.summary(draw))
     return data
 
 
@@ -574,19 +579,43 @@ def validate_tests(ctx: VerusContext) -> dict[str, Any]:
     return r
 
 
+RANDOM_PARAMS_MARK = "-- random parameter sets drawn from the domain when the tests were frozen"
+
+
+def add_random_params(ctx: VerusContext) -> dict[str, Any]:
+    """Append several random parameter tuples from the query's domain to tests/params.sql (once, before the
+    tests are frozen), so the frozen tests cover the domain and not only the values the tests agent chose.
+    The seed is recorded in the artifacts."""
+    path = tests_dir(ctx) / "params.sql"
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if RANDOM_PARAMS_MARK in text:
+        return {"added": 0}
+    draw = qparams.new_draw(ctx, "frozen_tests", sets=int(ctx.setting("gates.frozen_param_sets", 8)))
+    if draw is None:
+        return {"added": 0}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text.rstrip("\n") + ("\n" if text.strip() else "") + RANDOM_PARAMS_MARK + "\n"
+                    + "\n".join(draw.sets) + "\n", encoding="utf-8")
+    return {"added": len(draw.sets), "seed": draw.seed}
+
+
 def differential(ctx: VerusContext, *, store: str = "verus_global", fault: str = "") -> dict[str, Any]:
+    """The frozen tests, plus a fresh random draw of parameter tuples from the domain on every run."""
     db = db_copy(ctx, "test", f"diff_{store}_{fault.replace(':', '_') or 'none'}")
     every = str(ctx.setting("gates.differential_every", 10))
-    r = _runner(ctx, ["differential", str(db), ctx.accel_id, str(tests_dir(ctx)), every], store=store, fault=fault)
+    draw = qparams.new_draw(ctx, "differential", sets=int(ctx.setting("gates.random_param_sets", 6)))
+    r = _runner(ctx, ["differential", str(db), ctx.accel_id, str(tests_dir(ctx)), every], store=store, fault=fault,
+                draw=draw, draw_mode="extra")
     r["ok"] = r.get("exit") == 0 and "error" not in r
     return r
 
 
 def snapshots(ctx: VerusContext, *, store: str = "verus_global", fault: str = "") -> dict[str, Any]:
     db = db_copy(ctx, "test", f"snap_{store}_{fault or 'none'}")
+    draw = qparams.new_draw(ctx, "snapshots", sets=int(ctx.setting("gates.random_param_sets", 6)))
     r = _runner(ctx, ["snapshots", str(db), ctx.accel_id, str(tests_dir(ctx)),
                       str(ctx.setting("gates.snapshot_writes", 200)), str(ctx.setting("gates.snapshot_readers", 4)),
-                      "1"], store=store, fault=fault)
+                      "1"], store=store, fault=fault, draw=draw, draw_mode="extra")
     r["ok"] = r.get("exit") == 0 and "error" not in r
     return r
 
@@ -789,7 +818,11 @@ def cost_check(ctx: VerusContext) -> dict[str, Any]:
 
 def bench(ctx: VerusContext, mixes: list[float], *, store: str = "verus_global", tag: str = "bench",
           reps: int | None = None, ops: int | None = None, runner: Path | None = None,
-          timeout: float | None = None) -> dict[str, Any]:
+          timeout: float | None = None, draw: qparams.Draw | None = None) -> dict[str, Any]:
+    """`draw`: the random parameter tuples to time.  None: a fresh draw (a paired comparison passes
+    one draw to both sides, so the pair sees the same parameters)."""
+    if draw is None:
+        draw = qparams.new_draw(ctx, tag)
     if reps is None and ops is None:
         reps, ops = bench_size(ctx, mixes)
     cfg = ctx.setting("optimization.bench", {}) or {}
@@ -799,7 +832,7 @@ def bench(ctx: VerusContext, mixes: list[float], *, store: str = "verus_global",
             db = db_copy(ctx, "bench", tag)  # inside the lock: no pipeline waits holding a 300 MB copy
             r = _runner(ctx, ["bench", str(db), ctx.accel_id, str(tests_dir(ctx)), str(reps or cfg.get("reps", 5)),
                               ",".join(str(m) for m in mixes), str(ops or cfg.get("ops", 200))], store=store,
-                        timeout=timeout or float(ctx.setting("bench_timeout_sec", 1200)), runner=runner)
+                        timeout=timeout or float(ctx.setting("bench_timeout_sec", 1200)), runner=runner, draw=draw)
     finally:
         drop_db(db)
     r["ok"] = r.get("exit") == 0 and "error" not in r
@@ -828,6 +861,8 @@ def profile(ctx: VerusContext, mixes: list[float] | None = None) -> dict[str, An
     accelerator). The build is a one-time cost and is not sampled: perf starts
     paused and the runner enables it after the build."""
     out: dict[str, Any] = {"ok": True, "note": "steady state only (build excluded); shares are per axis"}
+    draw = qparams.new_draw(ctx, "profile")  # one fresh random draw for both axes
+    out.update(qparams.summary(draw))
     phases = {"reads": ("reads", "3", "0", int(ctx.setting("optimization.profile_read_reps", 300))),
               "maintenance": ("writes", "1", "1.0", int(ctx.setting("optimization.profile_write_ops", 300)))}
     for axis, (phase, reps, mix, n) in phases.items():
@@ -835,16 +870,16 @@ def profile(ctx: VerusContext, mixes: list[float] | None = None) -> dict[str, An
             reps, ops = str(n), "1"
         else:
             ops = str(n)
-        r = _profile_phase(ctx, axis, phase, reps, mix, ops)
+        r = _profile_phase(ctx, axis, phase, reps, mix, ops, draw)
         if axis == "maintenance" and r.get("ok"):
-            r.update(_write_overhead(ctx))
+            r.update(_write_overhead(ctx, draw=draw))
         out[axis] = r
         if not r.get("ok"):
             out["ok"] = False
     return out
 
 
-def _write_overhead(ctx: VerusContext, ops: int = 50) -> dict[str, Any]:
+def _write_overhead(ctx: VerusContext, ops: int = 50, draw: qparams.Draw | None = None) -> dict[str, Any]:
     """What the accelerator adds per write: the same writes plain vs applied
     through it (the engine executing the write itself is in both)."""
     db = db_copy(ctx, "bench", "profile_overhead")
@@ -852,7 +887,8 @@ def _write_overhead(ctx: VerusContext, ops: int = 50) -> dict[str, Any]:
         with file_lock(bench_lock(ctx)):
             exe, extra = runner_exe(ctx)
             p = _run([exe, "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), "1", "1.0", str(ops)],
-                     env=runner_env(ctx, ACCEL_AUX_STORE="verus_global", VERUS_KIT_BENCH_PHASE="writes", **extra),
+                     env=runner_env(ctx, ACCEL_AUX_STORE="verus_global", VERUS_KIT_BENCH_PHASE="writes",
+                                    **qparams.runner_env(draw, "replace"), **extra),
                      timeout=3600)
     finally:
         drop_db(db)
@@ -867,7 +903,8 @@ def _write_overhead(ctx: VerusContext, ops: int = 50) -> dict[str, Any]:
                              "the rest is the engine executing the write (not removable)"}
 
 
-def _profile_phase(ctx: VerusContext, axis: str, phase: str, reps: str, mix: str, ops: str) -> dict[str, Any]:
+def _profile_phase(ctx: VerusContext, axis: str, phase: str, reps: str, mix: str, ops: str,
+                   draw: qparams.Draw | None = None) -> dict[str, Any]:
     db = db_copy(ctx, "bench", f"profile_{axis}")
     run_dir = Path(ctx.run_dir)
     data = run_dir / f"perf_{axis}.data"
@@ -878,7 +915,7 @@ def _profile_phase(ctx: VerusContext, axis: str, phase: str, reps: str, mix: str
     exe, extra = runner_exe(ctx)
     args = [exe, "bench", str(db), ctx.accel_id, str(tests_dir(ctx)), reps, mix, ops]
     env = runner_env(ctx, ACCEL_AUX_STORE="verus_global", VERUS_KIT_ACCEL_ONLY="1", VERUS_KIT_BENCH_PHASE=phase,
-                     VERUS_KIT_PERF_CTL=str(ctl), VERUS_KIT_PERF_ACK=str(ack), **extra)
+                     VERUS_KIT_PERF_CTL=str(ctl), VERUS_KIT_PERF_ACK=str(ack), **qparams.runner_env(draw, "replace"), **extra)
     try:
         with file_lock(bench_lock(ctx)):
             rec = _run(["perf", "record", "-F", "1999", "-g", "-D", "-1", "--control", f"fifo:{ctl},{ack}",

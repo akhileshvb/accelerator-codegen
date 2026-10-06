@@ -37,13 +37,13 @@ impl State {
 
 #[verifier::rlimit(20)]
 pub fn build(
-    eligible_parts: Vec<PartInput>,
+    parts_rows: Vec<PartInput>,
     edges: &[EdgeInput],
     blockers: &[BlockerInput],
     Ghost(db): Ghost<Db>,
 ) -> (r: Option<State>)
     requires
-        scan_eligible_parts_ok(db, eligible_parts@),
+        scan_parts_ok(db, parts_rows@),
         scan_edges_ok(db, edges@),
         scan_blockers_ok(db, blockers@),
     ensures
@@ -52,25 +52,26 @@ pub fn build(
     hide(total);
     hide(counts_valid);
     hide(ranks_valid);
+    let vocab = crate::vocab::new_vocab();
     let mut parts: Parts = Index::new();
     let mut index = 0;
     let mut processed: Ghost<int> = Ghost(0);
-    while index < eligible_parts.len()
-        invariant index <= eligible_parts.len(), processed@ == index as int, parts_keys_valid(parts),
+    while index < parts_rows.len()
+        invariant index <= parts_rows.len(), processed@ == index as int, parts_keys_valid(parts), vocab.ok(),
             forall|part: int, key: verus_prooflib::ordered::KeyView|
-                #[trigger] part_at(parts, part, key) == part_input_sum(eligible_parts@.take(processed@), part, key),
-        decreases eligible_parts.len() - index,
+                #[trigger] part_at(parts, part, key) == part_input_sum(parts_rows@.take(processed@), part, key),
+        decreases parts_rows.len() - index,
     {
-        if !bump_part(&mut parts, &eligible_parts[index], 1) { return None; }
-        proof { lemma_parts_prefix(eligible_parts@, processed@); }
+        if !bump_part(&vocab, &mut parts, &parts_rows[index], 1) { return None; }
+        proof { lemma_parts_prefix(parts_rows@, processed@); }
         index += 1;
         processed = Ghost(index as int);
     }
     proof {
-        assert(eligible_parts@.take(processed@) =~= eligible_parts@);
+        assert(parts_rows@.take(processed@) =~= parts_rows@);
         assert forall|part: int, key: verus_prooflib::ordered::KeyView|
             #[trigger] part_at(parts, part, key) == part_database_sum(db, part, key) by {
-            lemma_parts_scan(db, eligible_parts@, part, key);
+            lemma_parts_scan(db, parts_rows@, part, key);
         }
     }
     let mut edge_map: Edges = Index::new();
@@ -258,7 +259,7 @@ pub fn build(
 pub fn execute(
     s: &State,
     p1: &[u8],
-    p2: i64,
+    p2: &[u8],
     p3: i64,
     p4: i64,
     p5: i64,
@@ -266,21 +267,24 @@ pub fn execute(
     p7: i64,
     p8: i64,
     p9: i64,
+    p10: i64,
 ) -> (r: Option<Vec<(Vec<u8>, Vec<u8>, i64, i64)>>)
     ensures
-        r matches Some(out) ==> query_result(s.db(), params(p1@, p2 as int, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int), out_view(out@)),
+        r matches Some(out) ==> query_result(s.db(), params(p1@, p2@, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int, p10 as int), out_view(out@)),
 {
     proof { use_type_invariant(s); }
-    let sizes = [p2, p3, p4, p5, p6, p7, p8, p9];
-    let cells = match crate::output::read(&s.ranks, p1, &sizes, Ghost(s.counts)) { Some(cells) => cells, None => return None };
-    let out = match crate::output_validation::materialize(&cells, Ghost(s.counts), Ghost(p1@), Ghost(sizes@)) {
+    let sizes = [p3, p4, p5, p6, p7, p8, p9, p10];
+    let vocab = crate::vocab::new_vocab();
+    let mut vis = crate::output::new_vis(&vocab, p1, p2);
+    let cells = match crate::output::read(&s.ranks, &mut vis, &vocab, p1, p2, &sizes, Ghost(s.counts)) { Some(cells) => cells, None => return None };
+    let out = match crate::output_validation::materialize(&vocab, &cells, Ghost(s.counts), Ghost(p1@), Ghost(p2@), Ghost(sizes@)) {
         Some(out) => out,
         None => return None,
     };
-    if !crate::output_validation::validate(&s.counts, &s.ranks, &out, p1, &sizes) { return None; }
     proof {
+        crate::output_validation::lemma_output_model(s.counts, s.ranks, out_view(out@), cells@, p1@, p2@, sizes@);
         crate::semantic_proofs::lemma_execute_result(s.db(), s.counts,
-            params(p1@, p2 as int, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int), out_view(out@));
+            params(p1@, p2@, p3 as int, p4 as int, p5 as int, p6 as int, p7 as int, p8 as int, p9 as int, p10 as int), out_view(out@));
     }
     Some(out)
 }

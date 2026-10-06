@@ -369,7 +369,8 @@ fn build_data(
         crate::dimensions::lemma_nation_scan(nations, nations_by_region, dictionary, nation_dictionary, nation_rows, db);
         crate::dimensions::lemma_region_scan(regions, dictionary, region_rows, db);
     }
-    let mut base_work = Work::new(&Table::empty(nations.keys().len()));
+    let nation_count = nations.keys().len();
+    let mut base_work = Work::new(&Table::empty(nation_count.checked_mul(nation_count)?.checked_mul(16)?));
     index = 0;
     let ghost line_rows = lines@;
     while index < lines.len()
@@ -430,9 +431,9 @@ fn build_data(
     }
     let customer_routes = customer_routes.finish();
     let supplier_routes = supplier_routes.finish();
-    let mut totals = Work::new(&empty);
-    let mut numerators = Work::new(&empty);
     let base_keys = base.keys();
+    let mut totals = Work::new(&Table::empty(base_keys.len().checked_mul(4)?));
+    let mut numerators = Work::new(&Table::empty(base_keys.len().checked_mul(64)?));
     index = 0;
     proof { reveal(crate::routing::routed_effect); }
     while index < base_keys.len()

@@ -3,6 +3,7 @@
 #![allow(unused_imports)]
 
 pub mod gen_spec;
+pub mod vocab;
 pub mod gen_obligations;
 pub mod kernel;
 pub mod gen_world;

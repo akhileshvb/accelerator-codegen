@@ -1,3 +1,4 @@
+use crate::packed::{self, Packed, PackedCursor};
 use vstd::prelude::*;
 use verus_common::sums::{sum, lemma_sum_take};
 use verus_prooflib::ordered::{Index, Key, KeyView};
@@ -25,11 +26,11 @@ pub open spec fn profile_row_measure(row: (KeyView, Moment), part: Option<i64>, 
     if part.is_none() || row.0 == numeric_key(part.unwrap() as int) { moment_measure(row.1, value) } else { 0 }
 }
 
-pub open spec fn profile_measure(groups: Index<Moment>, part: Option<i64>, value: bool) -> int {
+pub open spec fn profile_measure(groups: Packed, part: Option<i64>, value: bool) -> int {
     sum(groups.entries(), |row: (KeyView, Moment)| profile_row_measure(row, part, value))
 }
 
-pub open spec fn profile_keys_ok(groups: Index<Moment>) -> bool {
+pub open spec fn profile_keys_ok(groups: Packed) -> bool {
     groups.wf() && forall|key: KeyView| (#[trigger] groups.at(key)).is_some() ==> numeric(key)
 }
 
@@ -63,7 +64,7 @@ pub proof fn lemma_profile_part(profiles: Profiles, supplier: KeyView, part: i64
     if supplier.1 == Seq::<u8>::empty() {
         if let Some(groups) = profiles.at(supplier) {
             let weight = |row: (KeyView, Moment)| moment_measure(row.1, value);
-            verus_prooflib::ordered::lemma_key_contribution(&groups, numeric_key(part as int), weight);
+            packed::lemma_key_contribution(&groups, numeric_key(part as int), weight);
             assert((|row: (KeyView, Moment)| profile_row_measure(row, Some(part), value))
                 =~= (|row: (KeyView, Moment)| if row.0 == numeric_key(part as int) { weight(row) } else { 0 }));
             reveal(verus_prooflib::ordered::contribution);
@@ -164,7 +165,7 @@ pub proof fn lemma_inventory_total(data: Data, db: Db, nation: i64, value: bool)
     assert forall|number: int| #[trigger] verus_prooflib::class_total(inventory.groups.entries(), left_project, left_weight, number)
         == verus_prooflib::class_total(db.partsupp, right_project, right_weight, number) by {
         let key = numeric_key(number);
-        verus_prooflib::ordered::lemma_key_contribution(&inventory.groups, key, left_weight);
+        packed::lemma_key_contribution(&inventory.groups, key, left_weight);
         reveal(verus_prooflib::class_total);
         reveal(verus_prooflib::ordered::contribution);
         let selected = |row: PartsuppRow| if right_project(row) == number { right_weight(row) } else { 0 };
@@ -188,7 +189,7 @@ pub proof fn lemma_inventory_total(data: Data, db: Db, nation: i64, value: bool)
                 assert(selected =~= (|row: PartsuppRow| if row.ps_partkey == part { s_count(db, row.ps_suppkey, nation as int) } else { 0 }));
             }
             if inventory.groups.at(key).is_none() { assert(moment_at(inventory.groups, part as int) == zero_moment()); }
-            assert(verus_prooflib::ordered::contribution(inventory.groups, key, left_weight)
+            assert(packed::contribution(inventory.groups, key, left_weight)
                 == moment_measure(moment_at(inventory.groups, part as int), value));
             assert(sum(db.partsupp, selected) == moment_measure(moment_at(inventory.groups, part as int), value));
         } else {
@@ -197,7 +198,7 @@ pub proof fn lemma_inventory_total(data: Data, db: Db, nation: i64, value: bool)
                 assert(i64::MIN <= right_project(db.partsupp[position]) <= i64::MAX);
             }
             verus_common::sums::lemma_sum_zero(db.partsupp, selected);
-            assert(verus_prooflib::ordered::contribution(inventory.groups, key, left_weight) == 0);
+            assert(packed::contribution(inventory.groups, key, left_weight) == 0);
         }
     }
     let one = |key: int| 1int;
@@ -237,7 +238,7 @@ pub proof fn lemma_indexed_inventories(data: Data, db: Db)
     }
 }
 
-pub fn add_profile_inventory(data: &mut Data, nation: i64, groups: &Index<Moment>, weight: i128) -> (result: bool)
+pub fn add_profile_inventory(data: &mut Data, nation: i64, groups: &Packed, weight: i128) -> (result: bool)
     requires old(data).structures_valid(), profile_keys_ok(*groups),
     ensures final(data).structures_valid(), same_dimensions(*old(data), *final(data)),
         forall|key: KeyView| (#[trigger] old(data).names.at(key)).is_none() ==> final(data).names.at(key).is_none(),

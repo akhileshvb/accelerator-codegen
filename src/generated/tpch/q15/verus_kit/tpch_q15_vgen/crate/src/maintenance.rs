@@ -11,7 +11,7 @@ use crate::values::add;
 
 verus! {
 #[derive(Clone, Copy)]
-pub struct Change { pub date: i32, pub count: i128, pub revenue: i128 }
+pub struct Change { pub revenue: i64, pub date: i32, pub count: i32 }
 pub open spec fn changes_shape(days: Seq<Change>, bin: int) -> bool {
     days.len() <= 256 &&
     (forall|position: int| 0 <= position < days.len() ==> bucket((#[trigger] days[position]).date as int) == bin) &&
@@ -293,9 +293,10 @@ pub fn update_changes(mut days: Vec<Change>, date: i32, count_delta: i128, reven
         decreases days.len() - position,
     { position += 1; }
     if position < days.len() && days[position].date == date {
-        let count = match add(days[position].count, count_delta) { Some(value) => value, None => return None };
-        let revenue = match add(days[position].revenue, revenue_delta) { Some(value) => value, None => return None };
-        let value = Change { date, count, revenue };
+        let count = match add(days[position].count as i128, count_delta) { Some(value) => value, None => return None };
+        let revenue = match add(days[position].revenue as i128, revenue_delta) { Some(value) => value, None => return None };
+        if count < i32::MIN as i128 || count > i32::MAX as i128 || revenue < i64::MIN as i128 || revenue > i64::MAX as i128 { return None; }
+        let value = Change { date, count: count as i32, revenue: revenue as i64 };
         proof {
             assert forall|other: i32| #[trigger] changes_count(before.update(position as int, value), other) == changes_count(before, other) +
                 if other == date { count_delta as int } else { 0int } by {
@@ -310,7 +311,8 @@ pub fn update_changes(mut days: Vec<Change>, date: i32, count_delta: i128, reven
         days.set(position, value);
     } else {
         if days.len() >= 256 { return None; }
-        let value = Change { date, count: count_delta, revenue: revenue_delta };
+        if count_delta < i32::MIN as i128 || count_delta > i32::MAX as i128 || revenue_delta < i64::MIN as i128 || revenue_delta > i64::MAX as i128 { return None; }
+        let value = Change { date, count: count_delta as i32, revenue: revenue_delta as i64 };
         days.insert(position, value);
         proof {
             assert(days@.remove(position as int) =~= before);
@@ -363,7 +365,7 @@ pub fn merge_profile(previous: &Option<Arc<BucketProfile>>, changes: &Vec<Change
     let old_length = match previous { Some(value) => value.days.len(), None => 0 };
     let mut old_position = 0;
     let mut change_position = 0;
-    let mut days = Vec::new();
+    let mut days = Vec::with_capacity(old_length + changes.len());
     let mut count = 0i128;
     let mut revenue = 0i128;
     while old_position < old_length || change_position < changes.len()
@@ -397,7 +399,7 @@ pub fn merge_profile(previous: &Option<Arc<BucketProfile>>, changes: &Vec<Change
                     if change_position >= changes.len() || day.shipdate <= changes[change_position].date {
                         date = day.shipdate;
                         day_count = day.count as i128;
-                        day_revenue = day.revenue;
+                        day_revenue = day.revenue as i128;
                         old_position += 1;
                     } else { date = changes[change_position].date; }
                 },
@@ -405,11 +407,11 @@ pub fn merge_profile(previous: &Option<Arc<BucketProfile>>, changes: &Vec<Change
             }
         } else { date = changes[change_position].date; }
         if change_position < changes.len() && changes[change_position].date == date {
-            day_count = match add(day_count, changes[change_position].count) { Some(value) => value, None => return None };
-            day_revenue = match add(day_revenue, changes[change_position].revenue) { Some(value) => value, None => return None };
+            day_count = match add(day_count, changes[change_position].count as i128) { Some(value) => value, None => return None };
+            day_revenue = match add(day_revenue, changes[change_position].revenue as i128) { Some(value) => value, None => return None };
             change_position += 1;
         }
-        if day_count < 0 || day_count > u64::MAX as i128 { return None; }
+        if day_count < 0 || day_count > u32::MAX as i128 || day_revenue < i64::MIN as i128 || day_revenue > i64::MAX as i128 { return None; }
         proof {
             assert(old_before <= old_position <= old_before + 1);
             assert(change_before <= change_position <= change_before + 1);
@@ -451,9 +453,9 @@ pub fn merge_profile(previous: &Option<Arc<BucketProfile>>, changes: &Vec<Change
             count = match add(count, day_count) { Some(value) => value, None => return None };
             revenue = match add(revenue, day_revenue) { Some(value) => value, None => return None };
             proof {
-                lemma_sum_push(days@, Day { shipdate: date, count: day_count as u64, revenue: day_revenue }, |day: Day| day.count as int);
-                lemma_sum_push(days@, Day { shipdate: date, count: day_count as u64, revenue: day_revenue }, |day: Day| day.revenue as int);
-                let value = Day { shipdate: date, count: day_count as u64, revenue: day_revenue };
+                lemma_sum_push(days@, Day { shipdate: date, count: day_count as u32, revenue: day_revenue as i64 }, |day: Day| day.count as int);
+                lemma_sum_push(days@, Day { shipdate: date, count: day_count as u32, revenue: day_revenue as i64 }, |day: Day| day.revenue as int);
+                let value = Day { shipdate: date, count: day_count as u32, revenue: day_revenue as i64 };
                 assert forall|query: int| #[trigger] days_count(days@.push(value), query) == days_count(days@, query) + (if date as int == query { day_count as int } else { 0int }) by {
                     lemma_sum_push(days@, value, |day: Day| if day.shipdate as int == query { day.count as int } else { 0int });
                 }
@@ -461,7 +463,7 @@ pub fn merge_profile(previous: &Option<Arc<BucketProfile>>, changes: &Vec<Change
                     lemma_sum_push(days@, value, |day: Day| if day.shipdate as int == query { day.revenue as int } else { 0int });
                 }
             }
-            days.push(Day { shipdate: date, count: day_count as u64, revenue: day_revenue });
+            days.push(Day { shipdate: date, count: day_count as u32, revenue: day_revenue as i64 });
             proof {
                 assert forall|left: int, right: int| #![trigger days@[left], days@[right]] 0 <= left < right < days.len() implies days@[left].shipdate < days@[right].shipdate by {
                     if right == output_before.len() { assert(days@[left] == output_before[left]); }

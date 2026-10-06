@@ -1,7 +1,9 @@
 use vstd::prelude::*;
 use verus_common::bytes::*;
 use verus_common::sums::*;
-use verus_prooflib::ordered::{Cursor, Key, KeyView, Index, ordered_rows};
+use verus_prooflib::ordered::{Cursor, Key, KeyView, Index, ordered_rows, key_lt};
+use crate::paged::{Paged, PageCursor, entry_sorted, Ent};
+use crate::rank_ent::*;
 use verus_prooflib::IntegerTripleMap;
 use crate::kernel::State;
 use crate::columns::*;
@@ -16,13 +18,13 @@ use crate::read_proofs::*;
 verus! {
 
 pub struct Stream {
-    cursor: Cursor<()>,
-    head: Key,
+    cursor: PageCursor<RankEnt>,
+    head: RankEnt,
 }
 
 spec fn stream_has(stream: Stream, rank: KeyView) -> bool {
-    stream.head.view() == rank || (exists|position: int| #![trigger stream.cursor.remaining()[position]]
-        0 <= position < stream.cursor.remaining().len() && stream.cursor.remaining()[position].0 == rank)
+    stream.head.kv() == rank || (exists|position: int| #![trigger stream.cursor.remaining()[position]]
+        0 <= position < stream.cursor.remaining().len() && stream.cursor.remaining()[position].kv() == rank)
 }
 
 spec fn pending(streams: Seq<Stream>, rank: KeyView) -> bool {
@@ -30,31 +32,61 @@ spec fn pending(streams: Seq<Stream>, rank: KeyView) -> bool {
 }
 
 spec fn stream_ordered(stream: Stream) -> bool {
-    ordered_rows(stream.cursor.remaining()) && (forall|position: int| #![trigger stream.cursor.remaining()[position]]
-        0 <= position < stream.cursor.remaining().len() ==> stream.head.number <= stream.cursor.remaining()[position].0.0)
+    &&& stream.cursor.well_formed()
+    &&& entry_sorted(stream.cursor.remaining())
+    &&& forall|position: int| #![trigger stream.cursor.remaining()[position]]
+        0 <= position < stream.cursor.remaining().len() ==> key_lt(stream.head.kv(), stream.cursor.remaining()[position].kv())
 }
 
-fn open_stream(index: &Index<()>) -> (result: Option<Stream>)
+/// A stream's head holds the largest bound of what is still to come.
+proof fn lemma_upper_of(entry: RankEnt, rank: KeyView)
+    requires entry.kv() == rank || key_lt(entry.kv(), rank),
+    ensures -1 - entry.upper as int <= rank.0,
+{}
+
+fn open_stream(index: &Paged<RankEnt>) -> (result: Option<Stream>)
     requires index.wf(),
     ensures result matches Some(stream) ==> stream_ordered(stream),
         forall|rank: KeyView| #![trigger index.at(rank)] index.at(rank).is_some() ==> result.is_some() && stream_has(result.unwrap(), rank),
 {
     proof { index.model(); }
     let mut cursor = index.cursor();
-    if let Some((head, unit)) = cursor.next() {
+    if let Some(head) = cursor.next() {
         let stream = Stream { cursor, head };
         proof {
+            let rows = index.entries();
+            assert(stream.cursor.remaining() == rows.skip(1));
+            assert(stream.head == rows[0]);
+            assert forall|first: int, last: int| #![trigger stream.cursor.remaining()[first], stream.cursor.remaining()[last]]
+                0 <= first < last < stream.cursor.remaining().len() implies key_lt(stream.cursor.remaining()[first].kv(), stream.cursor.remaining()[last].kv()) by {
+                assert(stream.cursor.remaining()[first] == rows[first + 1]);
+                assert(stream.cursor.remaining()[last] == rows[last + 1]);
+            }
             assert forall|position: int| #![trigger stream.cursor.remaining()[position]]
-                0 <= position < stream.cursor.remaining().len() implies stream.head.number <= stream.cursor.remaining()[position].0.0 by {
-                assert(verus_prooflib::ordered::key_lt(index.entries()[0].0, index.entries()[position + 1].0));
+                0 <= position < stream.cursor.remaining().len() implies key_lt(stream.head.kv(), stream.cursor.remaining()[position].kv()) by {
+                assert(stream.cursor.remaining()[position] == rows[position + 1]);
             }
             assert forall|rank: KeyView| #![trigger index.at(rank)] index.at(rank).is_some() implies stream_has(stream, rank) by {
-                let source = choose|source: int| #![trigger index.entries()[source]] 0 <= source < index.entries().len() && index.entries()[source].0 == rank;
-                if source > 0 { assert(stream.cursor.remaining()[source - 1].0 == rank); }
+                assert(index.has_key(rank));
+                let entry = index.pick(rank);
+                assert(index.holds(entry) && entry.kv() == rank);
+                assert(rows.contains(entry));
+                let at = choose|at: int| 0 <= at < rows.len() && rows[at] == entry;
+                if at > 0 { assert(stream.cursor.remaining()[at - 1] == rows[at]); }
             }
         }
         Some(stream)
-    } else { None }
+    } else {
+        proof {
+            let rows = index.entries();
+            assert forall|rank: KeyView| #![trigger index.at(rank)] index.at(rank).is_some() implies false by {
+                assert(index.has_key(rank));
+                let entry = index.pick(rank);
+                assert(rows.contains(entry));
+            }
+        }
+        None
+    }
 }
 
 fn advance(mut stream: Stream) -> (result: Option<Stream>)
@@ -62,25 +94,43 @@ fn advance(mut stream: Stream) -> (result: Option<Stream>)
     ensures result matches Some(next) ==> stream_ordered(next)
         && next.cursor.remaining().len() + 1 == stream.cursor.remaining().len(),
         forall|rank: KeyView| #![trigger stream_has(stream, rank)]
-            stream_has(stream, rank) && rank != stream.head.view() ==> result.is_some() && stream_has(result.unwrap(), rank),
+            stream_has(stream, rank) && rank != stream.head.kv() ==> result.is_some() && stream_has(result.unwrap(), rank),
 {
     let ghost original = stream;
-    if let Some((head, unit)) = stream.cursor.next() {
+    if let Some(head) = stream.cursor.next() {
         stream.head = head;
         proof {
+            let old_rows = original.cursor.remaining();
+            assert(stream.cursor.remaining() == old_rows.skip(1));
+            assert(head == old_rows[0]);
+            assert forall|first: int, last: int| #![trigger stream.cursor.remaining()[first], stream.cursor.remaining()[last]]
+                0 <= first < last < stream.cursor.remaining().len() implies key_lt(stream.cursor.remaining()[first].kv(), stream.cursor.remaining()[last].kv()) by {
+                assert(stream.cursor.remaining()[first] == old_rows[first + 1]);
+                assert(stream.cursor.remaining()[last] == old_rows[last + 1]);
+            }
             assert forall|position: int| #![trigger stream.cursor.remaining()[position]]
-                0 <= position < stream.cursor.remaining().len() implies stream.head.number <= stream.cursor.remaining()[position].0.0 by {
-                assert(verus_prooflib::ordered::key_lt(original.cursor.remaining()[0].0, original.cursor.remaining()[position + 1].0));
+                0 <= position < stream.cursor.remaining().len() implies key_lt(stream.head.kv(), stream.cursor.remaining()[position].kv()) by {
+                assert(stream.cursor.remaining()[position] == old_rows[position + 1]);
+                assert(key_lt(old_rows[0].kv(), old_rows[position + 1].kv()));
             }
             assert forall|rank: KeyView| #![trigger stream_has(original, rank)]
-                stream_has(original, rank) && rank != original.head.view() implies stream_has(stream, rank) by {
-                let source = choose|source: int| #![trigger original.cursor.remaining()[source]]
-                    0 <= source < original.cursor.remaining().len() && original.cursor.remaining()[source].0 == rank;
-                if source > 0 { assert(stream.cursor.remaining()[source - 1].0 == rank); }
+                stream_has(original, rank) && rank != original.head.kv() implies stream_has(stream, rank) by {
+                let source = choose|source: int| #![trigger old_rows[source]]
+                    0 <= source < old_rows.len() && old_rows[source].kv() == rank;
+                if source > 0 { assert(stream.cursor.remaining()[source - 1].kv() == rank); }
             }
         }
         Some(stream)
-    } else { None }
+    } else {
+        proof {
+            assert forall|rank: KeyView| #![trigger stream_has(original, rank)]
+                stream_has(original, rank) && rank != original.head.kv() implies false by {
+                let source = choose|source: int| #![trigger original.cursor.remaining()[source]]
+                    0 <= source < original.cursor.remaining().len() && original.cursor.remaining()[source].kv() == rank;
+            }
+        }
+        None
+    }
 }
 
 proof fn lemma_pending_remove(streams: Seq<Stream>, position: int, rank: KeyView)
@@ -297,28 +347,29 @@ pub fn evaluate(state: &State, segment: &[u8], date: i32, id: GroupId) -> (resul
 {
     state.facts();
     let page = match state.pages.get(&Key::number(page_id(id.key))) { Some(page) => page, None => return None };
-    let position = group_start(&page.groups, segment, id);
+    let position = group_start_packed(&page.groups, segment, id);
     if position >= page.groups.len() { return None; }
-    let group = &page.groups[position];
+    let group_value = page.groups.get(position);
+    let group = &group_value;
     if group.id.key != id.key || group.id.date != id.date || group.id.priority != id.priority
         || !bytes_eq_exec(segment, &group.segment) { return None; }
     let mut count: i128 = 0;
     let mut revenue: i128 = 0;
-    let mut ship_index = ships_start(&page.ships, id.key);
+    let mut ship_index = ships_start_packed(&page.ships, id.key);
     proof {
         let prefix = (*page.ships)@.take(ship_index as int);
         lemma_sum_zero(prefix, shipment_weight(id.key as int, date as int, 0));
         lemma_sum_zero(prefix, shipment_weight(id.key as int, date as int, 1));
     }
-    while ship_index < page.ships.len() && page.ships[ship_index].key == id.key
-        invariant ship_index <= page.ships.len(), ships_sorted((*page.ships)@), count >= 0,
+    while ship_index < page.ships.len() && page.ships.get(ship_index).key == id.key
+        invariant ship_index <= (*page.ships)@.len(), ships_sorted((*page.ships)@), count >= 0,
             forall|position: int| #![trigger (*page.ships)@[position]] 0 <= position < (*page.ships)@.len() ==> (*page.ships)@[position].count > 0,
             count as int == shipment_suffix((*page.ships)@.take(ship_index as int), id.key as int, date as int, 0),
             revenue as int == shipment_suffix((*page.ships)@.take(ship_index as int), id.key as int, date as int, 1),
             forall|position: int| #![trigger (*page.ships)@[position]] ship_index <= position < (*page.ships)@.len() ==> (*page.ships)@[position].key >= id.key,
-        decreases page.ships.len() - ship_index,
+        decreases (*page.ships)@.len() - ship_index,
     {
-        let ship = page.ships[ship_index];
+        let ship = page.ships.get(ship_index);
         if ship.date > date {
             count = match add(count, ship.count as i128) { Some(value) => value, None => return None };
             revenue = match add(revenue, ship.revenue) { Some(value) => value, None => return None };
@@ -443,7 +494,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
     let mut level: i64 = 0;
     while level <= 26
         invariant 0 <= level <= 27, 0 <= offset < 67108864,
-            offset as int == ((date as int - i32::MIN as int) / 64) / pow2(level as int),
+            offset as int == ((date as int - i32::MIN as int) / 128) / pow2(level as int),
             state_ok(state.customers, state.pages, state.ranks, state.db()),
             forall|position: int| #![trigger streams@[position]] 0 <= position < streams@.len() ==> stream_ordered(streams@[position]),
             forall|ancestor: int, rank: KeyView| #![trigger state.ranks.at((ancestor_node(date as int, ancestor), segment@)), pending(streams@, rank)]
@@ -467,7 +518,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
         }
         proof {
             verus_prooflib::lemma_dyadic_width_bounds(level as int);
-            vstd::arithmetic::div_mod::lemma_div_denominator((date as int - i32::MIN as int) / 64, pow2(level as int), 2);
+            vstd::arithmetic::div_mod::lemma_div_denominator((date as int - i32::MIN as int) / 128, pow2(level as int), 2);
         }
         offset = offset / 2;
         level += 1;
@@ -506,13 +557,13 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
         let mut index = 1;
         while index < streams.len()
             invariant index <= streams.len(), best < streams.len(),
-                forall|position: int| #![trigger streams@[position]] 0 <= position < index ==> streams@[best as int].head.number <= streams@[position].head.number,
+                forall|position: int| #![trigger streams@[position]] 0 <= position < index ==> streams@[best as int].head.upper >= streams@[position].head.upper,
             decreases streams.len() - index,
         {
-            if streams[index].head.number < streams[best].head.number { best = index; }
+            if streams[index].head.upper > streams[best].head.upper { best = index; }
             index += 1;
         }
-        let bound = -(streams[best].head.number as i128);
+        let bound = streams[best].head.upper as i128;
         if result.len() == 10 && bound < i64::MAX as i128 && bound < result[9].1 {
             proof {
                 assert forall|row: OutRow| #![trigger row_ok(state.db(), params(segment@, date as int), row)]
@@ -523,11 +574,14 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
                         let rank = group_rank(group);
                         let source = choose|source: int| #![trigger streams@[source]] 0 <= source < streams@.len() && stream_has(streams@[source], rank);
                         let chosen = streams@[source];
-                        if chosen.head.view() != rank {
+                        if chosen.head.kv() != rank {
                             let position = choose|position: int| #![trigger chosen.cursor.remaining()[position]]
-                                0 <= position < chosen.cursor.remaining().len() && chosen.cursor.remaining()[position].0 == rank;
+                                0 <= position < chosen.cursor.remaining().len() && chosen.cursor.remaining()[position].kv() == rank;
+                            assert(key_lt(chosen.head.kv(), rank));
                         }
-                        assert(streams@[best as int].head.number <= rank.0);
+                        lemma_upper_of(chosen.head, rank);
+                        assert(streams@[best as int].head.upper >= chosen.head.upper);
+                        assert(rank.0 == -1 - (if group.bound >= i64::MAX { i64::MAX as int } else { group.bound as int }));
                         assert(row.revenue < result@[9].1);
                     }
                 }
@@ -541,7 +595,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
         proof {
             lemma_sum_remove(previous_streams, best as int, |entry: Stream| entry.cursor.remaining().len() as int + 1);
         }
-        let id = match decode(&stream.head.text) { Some(id) => id, None => return None };
+        let id = decode_word(stream.head.word);
         let visited_key = (id.key, id.date as i64, id.priority);
         if !visited.contains_key(&visited_key) {
             if !visit(state, segment, date, id, &mut visited, &mut result) { return None; }
@@ -557,7 +611,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
         }
         proof {
             assert forall|rank: KeyView| #![trigger pending(streams@, rank)]
-                pending(previous_streams, rank) && rank != previous_stream.head.view() implies pending(streams@, rank) by {
+                pending(previous_streams, rank) && rank != previous_stream.head.kv() implies pending(streams@, rank) by {
                 lemma_pending_remove(previous_streams, best as int, rank);
                 if next_stream.is_some() {
                     lemma_pending_push(remaining_streams, next_stream.unwrap(), rank);
@@ -569,7 +623,7 @@ pub fn read(state: &State, segment: &[u8], date: i32) -> (result: Option<Vec<(i6
                 lemma_candidate_info(state.customers, state.pages, state.ranks, state.db(), segment@, date, row);
                 let group = selected_group(state.pages, segment@, row);
                 let rank = group_rank(group);
-                if rank == previous_stream.head.view() {
+                if rank == previous_stream.head.kv() {
                     lemma_group_identity(group.id, id);
                     assert(visited@.contains_key(visited_key));
                 }

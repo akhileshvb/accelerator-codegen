@@ -77,17 +77,19 @@ pub struct FfiResult {
 
 /// Build from the scans: a state, or NULL (the host then answers with SQL).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq13vgen_build(customers__n: usize, customers: *const CustomerScan, qualifying_orders__n: usize, qualifying_orders: *const QualifyingOrderScan) -> *mut State {
+pub unsafe extern "C" fn tpchq13vgen_build(customers__n: usize, customers: *const CustomerScan, orders__n: usize, orders__o_custkey: *const i64, orders__o_comment: *const u8, orders__o_comment__off: *const usize) -> *mut State {
+    let orders__v: Vec<OrderScan> = (0..orders__n).map(|i| OrderScan { o_custkey: *orders__o_custkey.add(i), o_comment: text(orders__o_comment, orders__o_comment__off, i) }).collect();
     if rec_on() {
         rec_rows("build", "customers", &["c_custkey:int"], slice(customers, customers__n), |r: &CustomerScan, o: &mut String| {
             o.push_str(&(r.c_custkey).to_string());
         });
-        rec_rows("build", "qualifying_orders", &["o_custkey:int"], slice(qualifying_orders, qualifying_orders__n), |r: &QualifyingOrderScan, o: &mut String| {
-            o.push_str(&(r.o_custkey).to_string());
+        rec_rows("build", "orders", &["o_custkey:int", "o_comment:text"], &orders__v, |r: &OrderScan, o: &mut String| {
+            o.push_str(&(r.o_custkey).to_string()); o.push(',');
+            rec_text(&r.o_comment, o);
         });
         return ptr::null_mut();
     }
-    match ob_build(slice(customers, customers__n), slice(qualifying_orders, qualifying_orders__n), Ghost::assume_new()) {
+    match ob_build(slice(customers, customers__n), orders__v, Ghost::assume_new()) {
         Some(s) => Box::into_raw(Box::new(s)),
         None => ptr::null_mut(),
     }
@@ -104,15 +106,16 @@ pub unsafe extern "C" fn tpchq13vgen_free(s: *mut State) {
 /// Apply one transaction: the new state (the input is unchanged), or NULL
 /// with *err set (the host then rebuilds).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq13vgen_apply(s: *const State, customer_delta__n: usize, customer_delta: *const CustomerDelta, orders_delta__n: usize, orders_delta: *const OrderDelta, err: *mut i32) -> *mut State {
+pub unsafe extern "C" fn tpchq13vgen_apply(s: *const State, customer_delta__n: usize, customer_delta: *const CustomerDelta, orders_delta__n: usize, orders_delta__o_custkey: *const i64, orders_delta__o_comment: *const u8, orders_delta__o_comment__off: *const usize, orders_delta__sign: *const i64, err: *mut i32) -> *mut State {
+    let orders_delta__v: Vec<OrderDelta> = (0..orders_delta__n).map(|i| OrderDelta { o_custkey: *orders_delta__o_custkey.add(i), o_comment: text(orders_delta__o_comment, orders_delta__o_comment__off, i), sign: *orders_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("apply", "customer_delta", &["row.c_custkey:int", "sign:int"], slice(customer_delta, customer_delta__n), |r: &CustomerDelta, o: &mut String| {
             o.push_str(&(r.row.c_custkey).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "orders_delta", &["o_custkey:int", "qualifies:bool", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrderDelta, o: &mut String| {
+        rec_rows("apply", "orders_delta", &["o_custkey:int", "o_comment:text", "sign:int"], &orders_delta__v, |r: &OrderDelta, o: &mut String| {
             o.push_str(&(r.o_custkey).to_string()); o.push(',');
-            o.push_str(&(r.qualifies).to_string()); o.push(',');
+            rec_text(&r.o_comment, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         return {
@@ -122,7 +125,7 @@ pub unsafe extern "C" fn tpchq13vgen_apply(s: *const State, customer_delta__n: u
             ptr::null_mut()
         };
     }
-    match ob_apply(&*s, slice(customer_delta, customer_delta__n), slice(orders_delta, orders_delta__n), Ghost::assume_new(), Ghost::assume_new()) {
+    match ob_apply(&*s, slice(customer_delta, customer_delta__n), &orders_delta__v, Ghost::assume_new(), Ghost::assume_new()) {
         Ok(s2) => {
             if !err.is_null() {
                 *err = 0;
@@ -140,8 +143,8 @@ pub unsafe extern "C" fn tpchq13vgen_apply(s: *const State, customer_delta__n: u
 
 /// The query's answer on the state, or NULL (the host then answers with SQL).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq13vgen_execute(s: *const State) -> *mut FfiResult {
-    match ob_execute(&*s) {
+pub unsafe extern "C" fn tpchq13vgen_execute(s: *const State, p1: *const u8, p1__len: usize) -> *mut FfiResult {
+    match ob_execute(&*s, slice(p1, p1__len)) {
         Some(rows) => Box::into_raw(Box::new(FfiResult { rows })),
         None => ptr::null_mut(),
     }
@@ -225,15 +228,16 @@ pub unsafe extern "C" fn tpchq13vgens_base_free(b: *mut QBase) {
 /// The next version from the base and one commit's inputs (as for apply);
 /// NULL with *err set if the kernel cannot apply them (the host rebuilds).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq13vgens_prepare_apply(st: *const QStore, b: *const QBase, customer_delta__n: usize, customer_delta: *const CustomerDelta, orders_delta__n: usize, orders_delta: *const OrderDelta, err: *mut i32) -> *mut QPrepared {
+pub unsafe extern "C" fn tpchq13vgens_prepare_apply(st: *const QStore, b: *const QBase, customer_delta__n: usize, customer_delta: *const CustomerDelta, orders_delta__n: usize, orders_delta__o_custkey: *const i64, orders_delta__o_comment: *const u8, orders_delta__o_comment__off: *const usize, orders_delta__sign: *const i64, err: *mut i32) -> *mut QPrepared {
+    let orders_delta__v: Vec<OrderDelta> = (0..orders_delta__n).map(|i| OrderDelta { o_custkey: *orders_delta__o_custkey.add(i), o_comment: text(orders_delta__o_comment, orders_delta__o_comment__off, i), sign: *orders_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("apply", "customer_delta", &["row.c_custkey:int", "sign:int"], slice(customer_delta, customer_delta__n), |r: &CustomerDelta, o: &mut String| {
             o.push_str(&(r.row.c_custkey).to_string()); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "orders_delta", &["o_custkey:int", "qualifies:bool", "sign:int"], slice(orders_delta, orders_delta__n), |r: &OrderDelta, o: &mut String| {
+        rec_rows("apply", "orders_delta", &["o_custkey:int", "o_comment:text", "sign:int"], &orders_delta__v, |r: &OrderDelta, o: &mut String| {
             o.push_str(&(r.o_custkey).to_string()); o.push(',');
-            o.push_str(&(r.qualifies).to_string()); o.push(',');
+            rec_text(&r.o_comment, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         return {
@@ -243,7 +247,7 @@ pub unsafe extern "C" fn tpchq13vgens_prepare_apply(st: *const QStore, b: *const
             ptr::null_mut()
         };
     }
-    match prepare_apply(&*st, &*b, slice(customer_delta, customer_delta__n), slice(orders_delta, orders_delta__n), Ghost::assume_new()) {
+    match prepare_apply(&*st, &*b, slice(customer_delta, customer_delta__n), &orders_delta__v, Ghost::assume_new()) {
         Ok(p) => {
             if !err.is_null() {
                 *err = 0;
@@ -263,21 +267,23 @@ pub unsafe extern "C" fn tpchq13vgens_prepare_apply(st: *const QStore, b: *const
 /// that version; its state is invalid if the kernel cannot build it.  NULL
 /// only if no version can follow the newest.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq13vgens_prepare_build(st: *const QStore, customers__n: usize, customers: *const CustomerScan, qualifying_orders__n: usize, qualifying_orders: *const QualifyingOrderScan) -> *mut QPrepared {
+pub unsafe extern "C" fn tpchq13vgens_prepare_build(st: *const QStore, customers__n: usize, customers: *const CustomerScan, orders__n: usize, orders__o_custkey: *const i64, orders__o_comment: *const u8, orders__o_comment__off: *const usize) -> *mut QPrepared {
     let e = (*st).newest();
     if e == u64::MAX {
         return ptr::null_mut();
     }
+    let orders__v: Vec<OrderScan> = (0..orders__n).map(|i| OrderScan { o_custkey: *orders__o_custkey.add(i), o_comment: text(orders__o_comment, orders__o_comment__off, i) }).collect();
     if rec_on() {
         rec_rows("build", "customers", &["c_custkey:int"], slice(customers, customers__n), |r: &CustomerScan, o: &mut String| {
             o.push_str(&(r.c_custkey).to_string());
         });
-        rec_rows("build", "qualifying_orders", &["o_custkey:int"], slice(qualifying_orders, qualifying_orders__n), |r: &QualifyingOrderScan, o: &mut String| {
-            o.push_str(&(r.o_custkey).to_string());
+        rec_rows("build", "orders", &["o_custkey:int", "o_comment:text"], &orders__v, |r: &OrderScan, o: &mut String| {
+            o.push_str(&(r.o_custkey).to_string()); o.push(',');
+            rec_text(&r.o_comment, o);
         });
         return ptr::null_mut();
     }
-    Box::into_raw(Box::new(prepare_build(&*st, e, slice(customers, customers__n), slice(qualifying_orders, qualifying_orders__n))))
+    Box::into_raw(Box::new(prepare_build(&*st, e, slice(customers, customers__n), orders__v)))
 }
 
 /// The next version with an invalid state (NULL: none can follow the newest).

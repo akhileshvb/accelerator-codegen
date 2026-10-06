@@ -1,4 +1,7 @@
 use vstd::prelude::*;
+use crate::custs::Custs;
+use crate::paged::{Paged, PageCursor, entry_sorted, Ent};
+use crate::rank_ent::*;
 use verus_common::order::*;
 use verus_common::sums::*;
 use verus_prooflib::ordered::{Index, KeyView};
@@ -106,7 +109,7 @@ pub proof fn lemma_top_result(db: Db, parameters: Params, rows: Seq<(i64, i128, 
 }
 
 pub open spec fn ancestor_node(date: int, level: int) -> int {
-    level * 67108864 + ((date - i32::MIN as int) / 64) / pow2(level)
+    level * 67108864 + ((date - i32::MIN as int) / 128) / pow2(level)
 }
 
 pub open spec fn candidate_present(pages: Index<Page>, segment: Seq<u8>, row: OutRow, group: GroupCell) -> bool {
@@ -121,7 +124,7 @@ pub closed spec fn selected_group(pages: Index<Page>, segment: Seq<u8>, row: Out
     choose|group: GroupCell| #[trigger] candidate_present(pages, segment, row, group)
 }
 
-pub proof fn lemma_candidate_info(customers: Index<CustomerCell>, pages: Index<Page>, ranks: Index<Index<()>>,
+pub proof fn lemma_candidate_info(customers: Custs, pages: Index<Page>, ranks: Index<Paged<RankEnt>>,
     db: Db, segment: Seq<u8>, date: i32, row: OutRow)
     requires state_ok(customers, pages, ranks, db), row_ok(db, params(segment, date as int), row),
     ensures {
@@ -186,9 +189,9 @@ pub proof fn lemma_group_ancestor(group: GroupCell, date: i32)
     ensures exists|level: int| #![trigger covers(group, ancestor_node(date as int, level))]
         0 <= level <= 26 && covers(group, ancestor_node(date as int, level)),
 {
-    let first = (group.id.date as int + 1 - i32::MIN as int) / 64;
-    let end = (group.last_ship.unwrap() as int - 1 - i32::MIN as int) / 64 + 1;
-    let point = (date as int - i32::MIN as int) / 64;
+    let first = (group.id.date as int + 1 - i32::MIN as int) / 128;
+    let end = (group.last_ship.unwrap() as int - 1 - i32::MIN as int) / 128 + 1;
+    let point = (date as int - i32::MIN as int) / 128;
     verus_prooflib::lemma_dyadic_width_bounds(0);
     verus_prooflib::lemma_dyadic_width_bounds(26);
     verus_prooflib::lemma_dyadic_ancestor(first, end, point, 0, 26);

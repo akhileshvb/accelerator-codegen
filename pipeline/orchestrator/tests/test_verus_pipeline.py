@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -374,3 +375,121 @@ def test_stalled_fix_rounds_get_a_second_opinion(monkeypatch: pytest.MonkeyPatch
     assert calls == [("verus_kernel", "S1", False)] * 3 + [("verus_kernel", "S1", True), ("verus_kernel", "S1", False)]
     from accel_pipeline.verus.tools import stage_tools
     assert "verus_verify" in stage_tools("verus_kernel_advisor")
+
+
+# ───────────────────────────── random parameters ─────────────────────────────
+
+
+def _pctx(tmp: Path, query: int = 21, sql: str = "SELECT 1 WHERE x = $1") -> VerusContext:
+    ctx = _ctx(tmp)
+    ctx.query = query
+    ctx.repo_root = str(REPO)
+    q = tmp / "q.sql"
+    q.write_text(sql)
+    ctx.query_sql = str(q)
+    return ctx
+
+
+def test_draw_seeds_differ_and_are_recorded(tmp_path):
+    from accel_pipeline.verus import params as qp
+
+    ctx = _pctx(tmp_path)
+    draws = [qp.new_draw(ctx, "bench") for _ in range(4)]
+    assert len({d.seed for d in draws}) == 4
+    for d in draws:
+        rec = json.loads(d.record.read_text())
+        assert rec["seed"] == d.seed and rec["sets"] == d.sets
+        assert d.path.read_text().strip().splitlines() == d.sets
+
+
+def test_draw_replays_with_its_seed_and_stays_in_domain(tmp_path):
+    from accel_pipeline.verus import params as qp
+
+    ctx = _pctx(tmp_path)
+    a = qp.new_draw(ctx, "a", seed=123)
+    b = qp.new_draw(ctx, "b", seed=123)
+    assert a.sets == b.sets
+    nations = {"ALGERIA", "ARGENTINA", "BRAZIL", "CANADA", "EGYPT", "ETHIOPIA", "FRANCE", "GERMANY", "INDIA",
+               "INDONESIA", "IRAN", "IRAQ", "JAPAN", "JORDAN", "KENYA", "MOROCCO", "MOZAMBIQUE", "PERU", "CHINA",
+               "ROMANIA", "SAUDI ARABIA", "VIETNAM", "RUSSIA", "UNITED KINGDOM", "UNITED STATES"}
+    for _ in range(5):
+        for t in qp.new_draw(ctx, "c").sets:
+            assert qp.split_tuple(t)[0].strip("'") in nations  # q21: one nation
+
+
+def test_draw_arity_matches_the_query(tmp_path):
+    from accel_pipeline.verus import params as qp
+
+    ctx = _pctx(tmp_path, query=12, sql="... $1 $2 $3 $4")
+    for t in qp.new_draw(ctx, "x").sets:
+        assert len(qp.split_tuple(t)) == 4
+    assert qp.split_tuple("'A, B', DATE '1995-01-01', 0.05") == ["'A, B'", "DATE '1995-01-01'", "0.05"]
+    assert qp.split_tuple("'it''s, ok', 3") == ["'it''s, ok'", "3"]
+
+
+def test_no_parameters_no_draw(tmp_path):
+    from accel_pipeline.verus import params as qp
+
+    assert qp.new_draw(_pctx(tmp_path, sql="SELECT 1"), "x") is None
+
+
+def test_check_query_rejects_literal_like(tmp_path):
+    from accel_pipeline.verus import params as qp
+
+    # q2's type pattern left as a literal: fewer $n than its domain
+    ctx = _pctx(tmp_path / "a", query=2, sql="SELECT 1 WHERE p_type LIKE '%BRASS' AND s = $1 AND r = $2")
+    assert "literal" in qp.check_query(ctx)
+    # a literal the benchmark fixes (q16's complaints pattern) is not a substitution parameter
+    q16 = ("SELECT 1 WHERE p_brand <> $1 AND p_type NOT LIKE $2 AND p_size IN ($3, $4, $5, $6, $7, $8, $9, $10) "
+           "AND s_comment LIKE '%Customer%Complaints%'")
+    assert qp.check_query(_pctx(tmp_path / "d", query=16, sql=q16)) == ""
+    ctx = _pctx(tmp_path / "b", query=21, sql="SELECT 1 WHERE n = $1 AND p LIKE $2")
+    assert "parameters" in qp.check_query(ctx)  # q21's domain has one parameter
+    assert qp.check_query(_pctx(tmp_path / "c", query=21)) == ""
+
+
+def test_paired_bench_shares_one_draw_and_new_decisions_differ(tmp_path, monkeypatch):
+    from accel_pipeline.verus import stages
+    from accel_pipeline.verus import params as qp
+
+    ctx = _pctx(tmp_path)
+    seen = []
+
+    def fake_bench(c, mixes, tag="", runner=None, draw=None, **kw):
+        seen.append((tag, runner, draw.seed))
+        return {"ok": True, "read_speedup": 2.0 if runner == "cand" else 1.0, "mixes": []}
+
+    monkeypatch.setattr(stages.actions, "bench", fake_bench)
+
+    class R:  # the parts of Run that _paired_bench uses
+        pass
+
+    r = R()
+    r.ctx = ctx
+    first = stages._paired_bench(r, "attempt_1", "best", "cand")
+    second = stages._paired_bench(r, "attempt_2", "best", "cand")
+    seeds1 = {s for t, _, s in seen if t.startswith("attempt_1")}
+    seeds2 = {s for t, _, s in seen if t.startswith("attempt_2")}
+    assert len(seen) == 12 and len(seeds1) == 1 and len(seeds2) == 1 and seeds1 != seeds2
+    assert first["param_seed"] in seeds1 and second["param_seed"] in seeds2
+    assert (Path(ctx.art) / "param_draws").is_dir()
+
+
+def test_random_params_added_once_to_frozen_tests(tmp_path):
+    ctx = _pctx(tmp_path)
+    (Path(ctx.ws) / "tests").mkdir(parents=True)
+    (Path(ctx.ws) / "tests" / "params.sql").write_text("'FRANCE'\n")
+    r1 = actions.add_random_params(ctx)
+    text = (Path(ctx.ws) / "tests" / "params.sql").read_text()
+    assert r1["added"] > 0 and text.startswith("'FRANCE'\n") and actions.RANDOM_PARAMS_MARK in text
+    assert actions.add_random_params(ctx) == {"added": 0}
+    assert (Path(ctx.ws) / "tests" / "params.sql").read_text() == text
+
+
+def test_runner_env_modes(tmp_path):
+    from accel_pipeline.verus import params as qp
+
+    d = qp.new_draw(_pctx(tmp_path), "x")
+    assert "VERUS_KIT_PARAMS_FILE" in qp.runner_env(d, "replace")
+    assert "VERUS_KIT_EXTRA_PARAMS_FILE" in qp.runner_env(d, "extra")
+    assert qp.runner_env(None, "replace") == {}

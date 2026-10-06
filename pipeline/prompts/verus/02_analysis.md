@@ -7,6 +7,17 @@ faster than running the SQL. Read `query/`, `spec/gen_spec.rs`,
 `contracts/inputs_language.md`, `contracts/scale_principles.md`,
 `contracts/verus_kernel.md` and the playbook.
 
+**Every parameter is a runtime parameter.** Every TPC-H substitution
+parameter (spec 2.4) of the query is a `$n` parameter in `query/query.sql`,
+including LIKE patterns (a color, a word pair, a type syllable or prefix) and
+numeric factors (Q11's fraction). The kit must answer correctly and
+efficiently for ANY value in the parameter's TPC-H domain. A design
+specialized to one value (e.g. only the parts of one color, one nation, one
+pattern, one fraction) is not allowed. Its benchmarks and tests draw fresh
+random values from the domain on every run, which you cannot see ahead of
+time. The kernel may decline (host falls back to SQL) only for values outside
+the TPC-H domain; declines count against it.
+
 Decide:
 
 1. **The aux-state family**: what is materialized, keyed by what, so a query
@@ -25,7 +36,11 @@ Decide:
    rescans, and one delta per table (lossy where you can drop columns or text).
 4. **Complexity notes** (guidance, see scale_principles): state size, build,
    per-write maintenance and per-query read cost as rough formulas of table
-   sizes and distinct keys; integer widths at SF3000.
+   sizes and distinct keys; integer widths at SF3000. For the state, give
+   each structure's entry layout, its real bytes per entry (with the
+   overheads `scale_principles` lists) and its entry count, and total them
+   at SF20 for the steady state and for the build peak, against the
+   per-accelerator budget there.
 5. If you cache the final answer, justify it (small, cheap to maintain
    locally, large speedup).
 6. **How it will be proved** (`contracts/proof_method.md`): the invariant as

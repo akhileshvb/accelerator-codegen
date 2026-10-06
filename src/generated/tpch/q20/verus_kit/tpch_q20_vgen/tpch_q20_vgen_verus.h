@@ -21,10 +21,6 @@ typedef struct tpchq20vgens_base tpchq20vgens_base;
 typedef struct tpchq20vgens_prepared tpchq20vgens_prepared;
 
 typedef struct {
-  int64_t p_partkey;
-} tpchq20vgen_qualifying_part_input;
-
-typedef struct {
   int64_t ps_partkey;
   int64_t ps_suppkey;
   int64_t ps_availqty;
@@ -38,12 +34,6 @@ typedef struct {
 } tpchq20vgen_shipment_input;
 
 typedef struct {
-  int64_t p_partkey;
-  uint8_t is_qualifying;
-  int64_t sign;
-} tpchq20vgen_part_delta;
-
-typedef struct {
   tpchq20vgen_stock_input row;
   int64_t sign;
 } tpchq20vgen_partsupp_delta;
@@ -54,25 +44,25 @@ typedef struct {
 } tpchq20vgen_lineitem_delta;
 
 /* Build from the scans: a state, or NULL (the host then answers with SQL). */
-tpchq20vgen_state *tpchq20vgen_build(size_t qualifying_parts__n, const tpchq20vgen_qualifying_part_input *qualifying_parts, size_t stocks__n, const tpchq20vgen_stock_input *stocks, size_t shipments__n, const tpchq20vgen_shipment_input *shipments, size_t suppliers__n, const int64_t *suppliers__s_suppkey, const uint8_t *suppliers__s_name, const size_t *suppliers__s_name__off, const uint8_t *suppliers__s_address, const size_t *suppliers__s_address__off, const int64_t *suppliers__s_nationkey, size_t nations__n, const int64_t *nations__n_nationkey, const uint8_t *nations__n_name, const size_t *nations__n_name__off);
+tpchq20vgen_state *tpchq20vgen_build(size_t parts__n, const int64_t *parts__p_partkey, const uint8_t *parts__p_name, const size_t *parts__p_name__off, size_t stocks__n, const tpchq20vgen_stock_input *stocks, size_t shipments__n, const tpchq20vgen_shipment_input *shipments, size_t suppliers__n, const int64_t *suppliers__s_suppkey, const uint8_t *suppliers__s_name, const size_t *suppliers__s_name__off, const uint8_t *suppliers__s_address, const size_t *suppliers__s_address__off, const int64_t *suppliers__s_nationkey, size_t nations__n, const int64_t *nations__n_nationkey, const uint8_t *nations__n_name, const size_t *nations__n_name__off);
 
 /* Free a state from build / apply. */
 void tpchq20vgen_free(tpchq20vgen_state *s);
 
 /* The keys to rescan for apply: writes up to cap of them into out and
    returns how many there are (call again with more room if that is more). */
-size_t tpchq20vgen_rescan_stocks_for_parts_keys(const tpchq20vgen_state *s, size_t lineitem_delta__n, const tpchq20vgen_lineitem_delta *lineitem_delta, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t part_delta__n, const tpchq20vgen_part_delta *part_delta, size_t partsupp_delta__n, const tpchq20vgen_partsupp_delta *partsupp_delta, size_t supplier_delta__n, const int64_t *supplier_delta__row__s_suppkey, const uint8_t *supplier_delta__row__s_name, const size_t *supplier_delta__row__s_name__off, const uint8_t *supplier_delta__row__s_address, const size_t *supplier_delta__row__s_address__off, const int64_t *supplier_delta__row__s_nationkey, const int64_t *supplier_delta__sign, int64_t *out, size_t cap);
+size_t tpchq20vgen_rescan_stocks_for_parts_keys(const tpchq20vgen_state *s, size_t lineitem_delta__n, const tpchq20vgen_lineitem_delta *lineitem_delta, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t part_delta__n, const int64_t *part_delta__row__p_partkey, const uint8_t *part_delta__row__p_name, const size_t *part_delta__row__p_name__off, const int64_t *part_delta__sign, size_t partsupp_delta__n, const tpchq20vgen_partsupp_delta *partsupp_delta, size_t supplier_delta__n, const int64_t *supplier_delta__row__s_suppkey, const uint8_t *supplier_delta__row__s_name, const size_t *supplier_delta__row__s_name__off, const uint8_t *supplier_delta__row__s_address, const size_t *supplier_delta__row__s_address__off, const int64_t *supplier_delta__row__s_nationkey, const int64_t *supplier_delta__sign, int64_t *out, size_t cap);
 
 /* The keys to rescan for apply: writes up to cap of them into out and
    returns how many there are (call again with more room if that is more). */
-size_t tpchq20vgen_rescan_shipments_for_parts_keys(const tpchq20vgen_state *s, size_t lineitem_delta__n, const tpchq20vgen_lineitem_delta *lineitem_delta, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t part_delta__n, const tpchq20vgen_part_delta *part_delta, size_t partsupp_delta__n, const tpchq20vgen_partsupp_delta *partsupp_delta, size_t supplier_delta__n, const int64_t *supplier_delta__row__s_suppkey, const uint8_t *supplier_delta__row__s_name, const size_t *supplier_delta__row__s_name__off, const uint8_t *supplier_delta__row__s_address, const size_t *supplier_delta__row__s_address__off, const int64_t *supplier_delta__row__s_nationkey, const int64_t *supplier_delta__sign, int64_t *out, size_t cap);
+size_t tpchq20vgen_rescan_shipments_for_parts_keys(const tpchq20vgen_state *s, size_t lineitem_delta__n, const tpchq20vgen_lineitem_delta *lineitem_delta, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t part_delta__n, const int64_t *part_delta__row__p_partkey, const uint8_t *part_delta__row__p_name, const size_t *part_delta__row__p_name__off, const int64_t *part_delta__sign, size_t partsupp_delta__n, const tpchq20vgen_partsupp_delta *partsupp_delta, size_t supplier_delta__n, const int64_t *supplier_delta__row__s_suppkey, const uint8_t *supplier_delta__row__s_name, const size_t *supplier_delta__row__s_name__off, const uint8_t *supplier_delta__row__s_address, const size_t *supplier_delta__row__s_address__off, const int64_t *supplier_delta__row__s_nationkey, const int64_t *supplier_delta__sign, int64_t *out, size_t cap);
 
 /* Apply one transaction: the new state (the input is unchanged), or NULL
    with *err set (the host then rebuilds). */
-tpchq20vgen_state *tpchq20vgen_apply(const tpchq20vgen_state *s, size_t lineitem_delta__n, const tpchq20vgen_lineitem_delta *lineitem_delta, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t part_delta__n, const tpchq20vgen_part_delta *part_delta, size_t partsupp_delta__n, const tpchq20vgen_partsupp_delta *partsupp_delta, size_t supplier_delta__n, const int64_t *supplier_delta__row__s_suppkey, const uint8_t *supplier_delta__row__s_name, const size_t *supplier_delta__row__s_name__off, const uint8_t *supplier_delta__row__s_address, const size_t *supplier_delta__row__s_address__off, const int64_t *supplier_delta__row__s_nationkey, const int64_t *supplier_delta__sign, size_t stocks_for_parts_keys__n, const int64_t *stocks_for_parts_keys, size_t stocks_for_parts_rows__n, const tpchq20vgen_stock_input *stocks_for_parts_rows, size_t shipments_for_parts_keys__n, const int64_t *shipments_for_parts_keys, size_t shipments_for_parts_rows__n, const tpchq20vgen_shipment_input *shipments_for_parts_rows, int32_t *err);
+tpchq20vgen_state *tpchq20vgen_apply(const tpchq20vgen_state *s, size_t lineitem_delta__n, const tpchq20vgen_lineitem_delta *lineitem_delta, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t part_delta__n, const int64_t *part_delta__row__p_partkey, const uint8_t *part_delta__row__p_name, const size_t *part_delta__row__p_name__off, const int64_t *part_delta__sign, size_t partsupp_delta__n, const tpchq20vgen_partsupp_delta *partsupp_delta, size_t supplier_delta__n, const int64_t *supplier_delta__row__s_suppkey, const uint8_t *supplier_delta__row__s_name, const size_t *supplier_delta__row__s_name__off, const uint8_t *supplier_delta__row__s_address, const size_t *supplier_delta__row__s_address__off, const int64_t *supplier_delta__row__s_nationkey, const int64_t *supplier_delta__sign, size_t stocks_for_parts_keys__n, const int64_t *stocks_for_parts_keys, size_t stocks_for_parts_rows__n, const tpchq20vgen_stock_input *stocks_for_parts_rows, size_t shipments_for_parts_keys__n, const int64_t *shipments_for_parts_keys, size_t shipments_for_parts_rows__n, const tpchq20vgen_shipment_input *shipments_for_parts_rows, int32_t *err);
 
 /* The query's answer on the state, or NULL (the host then answers with SQL). */
-tpchq20vgen_result *tpchq20vgen_execute(const tpchq20vgen_state *s, int32_t p1, const uint8_t *p2, size_t p2__len, int32_t p3);
+tpchq20vgen_result *tpchq20vgen_execute(const tpchq20vgen_state *s, int32_t p1, const uint8_t *p2, size_t p2__len, const uint8_t *p3, size_t p3__len, int32_t p4);
 
 /* How many rows the answer has. */
 size_t tpchq20vgen_result_len(const tpchq20vgen_result *r);
@@ -104,12 +94,12 @@ void tpchq20vgens_base_free(tpchq20vgens_base *b);
 
 /* The next version from the base and one commit's inputs (as for apply);
    NULL with *err set if the kernel cannot apply them (the host rebuilds). */
-tpchq20vgens_prepared *tpchq20vgens_prepare_apply(const tpchq20vgens_store *st, const tpchq20vgens_base *b, size_t lineitem_delta__n, const tpchq20vgen_lineitem_delta *lineitem_delta, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t part_delta__n, const tpchq20vgen_part_delta *part_delta, size_t partsupp_delta__n, const tpchq20vgen_partsupp_delta *partsupp_delta, size_t supplier_delta__n, const int64_t *supplier_delta__row__s_suppkey, const uint8_t *supplier_delta__row__s_name, const size_t *supplier_delta__row__s_name__off, const uint8_t *supplier_delta__row__s_address, const size_t *supplier_delta__row__s_address__off, const int64_t *supplier_delta__row__s_nationkey, const int64_t *supplier_delta__sign, size_t stocks_for_parts_keys__n, const int64_t *stocks_for_parts_keys, size_t stocks_for_parts_rows__n, const tpchq20vgen_stock_input *stocks_for_parts_rows, size_t shipments_for_parts_keys__n, const int64_t *shipments_for_parts_keys, size_t shipments_for_parts_rows__n, const tpchq20vgen_shipment_input *shipments_for_parts_rows, int32_t *err);
+tpchq20vgens_prepared *tpchq20vgens_prepare_apply(const tpchq20vgens_store *st, const tpchq20vgens_base *b, size_t lineitem_delta__n, const tpchq20vgen_lineitem_delta *lineitem_delta, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t part_delta__n, const int64_t *part_delta__row__p_partkey, const uint8_t *part_delta__row__p_name, const size_t *part_delta__row__p_name__off, const int64_t *part_delta__sign, size_t partsupp_delta__n, const tpchq20vgen_partsupp_delta *partsupp_delta, size_t supplier_delta__n, const int64_t *supplier_delta__row__s_suppkey, const uint8_t *supplier_delta__row__s_name, const size_t *supplier_delta__row__s_name__off, const uint8_t *supplier_delta__row__s_address, const size_t *supplier_delta__row__s_address__off, const int64_t *supplier_delta__row__s_nationkey, const int64_t *supplier_delta__sign, size_t stocks_for_parts_keys__n, const int64_t *stocks_for_parts_keys, size_t stocks_for_parts_rows__n, const tpchq20vgen_stock_input *stocks_for_parts_rows, size_t shipments_for_parts_keys__n, const int64_t *shipments_for_parts_keys, size_t shipments_for_parts_rows__n, const tpchq20vgen_shipment_input *shipments_for_parts_rows, int32_t *err);
 
 /* The next version built from scans (as for build) of the database as of
    that version; its state is invalid if the kernel cannot build it.  NULL
    only if no version can follow the newest. */
-tpchq20vgens_prepared *tpchq20vgens_prepare_build(const tpchq20vgens_store *st, size_t qualifying_parts__n, const tpchq20vgen_qualifying_part_input *qualifying_parts, size_t stocks__n, const tpchq20vgen_stock_input *stocks, size_t shipments__n, const tpchq20vgen_shipment_input *shipments, size_t suppliers__n, const int64_t *suppliers__s_suppkey, const uint8_t *suppliers__s_name, const size_t *suppliers__s_name__off, const uint8_t *suppliers__s_address, const size_t *suppliers__s_address__off, const int64_t *suppliers__s_nationkey, size_t nations__n, const int64_t *nations__n_nationkey, const uint8_t *nations__n_name, const size_t *nations__n_name__off);
+tpchq20vgens_prepared *tpchq20vgens_prepare_build(const tpchq20vgens_store *st, size_t parts__n, const int64_t *parts__p_partkey, const uint8_t *parts__p_name, const size_t *parts__p_name__off, size_t stocks__n, const tpchq20vgen_stock_input *stocks, size_t shipments__n, const tpchq20vgen_shipment_input *shipments, size_t suppliers__n, const int64_t *suppliers__s_suppkey, const uint8_t *suppliers__s_name, const size_t *suppliers__s_name__off, const uint8_t *suppliers__s_address, const size_t *suppliers__s_address__off, const int64_t *suppliers__s_nationkey, size_t nations__n, const int64_t *nations__n_nationkey, const uint8_t *nations__n_name, const size_t *nations__n_name__off);
 
 /* The next version with an invalid state (NULL: none can follow the newest). */
 tpchq20vgens_prepared *tpchq20vgens_prepare_invalid(const tpchq20vgens_store *st);

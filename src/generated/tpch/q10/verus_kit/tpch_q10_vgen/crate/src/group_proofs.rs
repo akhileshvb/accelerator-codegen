@@ -7,6 +7,8 @@ use crate::dimensions::*;
 use crate::output::{Group, group_key_view};
 use crate::values::*;
 use crate::encoding::*;
+use crate::paged::*;
+use crate::customers::*;
 
 verus! {
 
@@ -48,14 +50,12 @@ pub open spec fn nation_group_sum(dimensions: Dimensions, customer: CustomerRow,
     }
 }
 
-pub open spec fn customer_group_weight(dimensions: Dimensions, key: KeyView) -> spec_fn((KeyView, Customer)) -> int {
-    |entry: (KeyView, Customer)| entry.1.count as int * nation_group_sum(dimensions, customer_input_view(*entry.1.row), key)
+pub open spec fn customer_group_weight(dimensions: Dimensions, key: KeyView) -> spec_fn(Customer) -> int {
+    |variant: Customer| variant.count as int * nation_group_sum(dimensions, customer_input_view(*variant.row), key)
 }
 
 pub open spec fn joined_group_sum(dimensions: Dimensions, customer: int, key: KeyView) -> int {
-    match dimensions.customers.at((customer, Seq::empty())) {
-        Some(customers) => sum(customers.entries(), customer_group_weight(dimensions, key)), None => 0int,
-    }
+    sum(variants_at(dimensions.customers, customer), customer_group_weight(dimensions, key))
 }
 
 pub proof fn lemma_group_key_same(left: OutRow, right: OutRow)
@@ -89,56 +89,49 @@ pub proof fn lemma_group_key_same(left: OutRow, right: OutRow)
 }
 
 pub proof fn lemma_joined_multiplicity(db: Db, dimensions: Dimensions, group: OutRow)
-    requires crate::model::dimensions_valid(db, dimensions), dimensions.customers.wf(), dimensions.nations.wf(),
+    requires crate::model::dimensions_valid(db, dimensions), dimensions.nations.wf(),
         i64::MIN <= group.c_acctbal <= i64::MAX,
     ensures joined_group_sum(dimensions, group.c_custkey, output_group_key(group))
         == crate::query_semantics::dimension_multiplicity(db, group),
 {
     crate::dimension_query::lemma_indexed_dimension_multiplicity(db, dimensions, group);
     reveal(crate::model::dimensions_valid);
-    match dimensions.customers.at((group.c_custkey, Seq::empty())) {
-        Some(customers) => {
-            customers.model();
-            let folded = customer_group_weight(dimensions, output_group_key(group));
-            let indexed = crate::dimension_updates::customer_weight(crate::dimension_query::indexed_dimension_weight(dimensions, group));
-            assert forall|position: int| #![trigger customers.entries()[position]] 0 <= position < customers.entries().len()
-                implies folded(customers.entries()[position]) == indexed(customers.entries()[position]) by {
-                let entry = customers.entries()[position];
-                assert(customers.at(entry.0).is_some());
-                let customer = customer_input_view(*entry.1.row);
-                match dimensions.nations.at((customer.c_nationkey, Seq::empty())) {
-                    Some(nations) => {
-                        nations.model();
-                        let weights = nation_group_weight(customer, output_group_key(group));
-                        let names = crate::dimension_updates::nation_weight(crate::dimension_query::nation_name_weight(group.n_name));
-                        assert forall|nation_position: int| #![trigger nations.entries()[nation_position]]
-                            0 <= nation_position < nations.entries().len() implies weights(nations.entries()[nation_position])
-                                == if crate::query_semantics::customer_matches(customer, group) { names(nations.entries()[nation_position]) } else { 0int } by {
-                            let nation = nation_input_view(*nations.entries()[nation_position].1.row);
-                            let columns = OutRow { c_custkey: customer.c_custkey, c_name: customer.c_name, revenue: 0int,
-                                c_acctbal: customer.c_acctbal, c_phone: customer.c_phone, n_name: nation.n_name,
-                                c_address: customer.c_address, c_comment: customer.c_comment };
-                            assert(output_group_key(columns) == group_key_view(customer, nation));
-                            if output_group_key(columns) == output_group_key(group) {
-                                lemma_group_key_same(columns, group);
-                            }
-                        }
-                        if crate::query_semantics::customer_matches(customer, group) {
-                            lemma_sum_ext(nations.entries(), weights, names);
-                        } else { lemma_sum_zero(nations.entries(), weights); }
-                    },
-                    None => {},
+    let variants = variants_at(dimensions.customers, group.c_custkey);
+    let folded = customer_group_weight(dimensions, output_group_key(group));
+    let indexed = variant_weight(crate::dimension_query::indexed_dimension_weight(dimensions, group));
+    assert forall|position: int| #![trigger variants[position]] 0 <= position < variants.len()
+        implies folded(variants[position]) == indexed(variants[position]) by {
+        let customer = customer_input_view(*variants[position].row);
+        match dimensions.nations.at((customer.c_nationkey, Seq::empty())) {
+            Some(nations) => {
+                nations.model();
+                let weights = nation_group_weight(customer, output_group_key(group));
+                let names = crate::dimension_updates::nation_weight(crate::dimension_query::nation_name_weight(group.n_name));
+                assert forall|nation_position: int| #![trigger nations.entries()[nation_position]]
+                    0 <= nation_position < nations.entries().len() implies weights(nations.entries()[nation_position])
+                        == if crate::query_semantics::customer_matches(customer, group) { names(nations.entries()[nation_position]) } else { 0int } by {
+                    let nation = nation_input_view(*nations.entries()[nation_position].1.row);
+                    let columns = OutRow { c_custkey: customer.c_custkey, c_name: customer.c_name, revenue: 0int,
+                        c_acctbal: customer.c_acctbal, c_phone: customer.c_phone, n_name: nation.n_name,
+                        c_address: customer.c_address, c_comment: customer.c_comment };
+                    assert(output_group_key(columns) == group_key_view(customer, nation));
+                    if output_group_key(columns) == output_group_key(group) {
+                        lemma_group_key_same(columns, group);
+                    }
                 }
-            }
-            lemma_sum_ext(customers.entries(), folded, indexed);
-        },
-        None => {},
+                if crate::query_semantics::customer_matches(customer, group) {
+                    lemma_sum_ext(nations.entries(), weights, names);
+                } else { lemma_sum_zero(nations.entries(), weights); }
+            },
+            None => {},
+        }
     }
+    lemma_sum_ext(variants, folded, indexed);
 }
 
 pub proof fn lemma_coalesced_candidate(db: Db, parameters: Params, dimensions: Dimensions,
     groups: Index<Group>, candidate: crate::output::Candidate, customer: i64, moments: Moments)
-    requires crate::model::dimensions_valid(db, dimensions), dimensions.customers.wf(), dimensions.nations.wf(),
+    requires crate::model::dimensions_valid(db, dimensions), dimensions.nations.wf(),
         groups_valid(groups, customer as int),
         forall|key: KeyView| #[trigger] group_total(groups, key) == joined_group_sum(dimensions, customer as int, key),
         groups.at(output_group_key(candidate.view())) == Some(*candidate.group),
@@ -157,12 +150,12 @@ pub proof fn lemma_coalesced_candidate(db: Db, parameters: Params, dimensions: D
 }
 
 pub proof fn lemma_singleton_candidate(db: Db, parameters: Params, dimensions: Dimensions,
-    customers: &Index<Customer>, nations: &Index<Nation>, cust: &Customer, nation: &Nation,
+    nations: &Index<Nation>, cust: &Customer, nation: &Nation,
     candidate: crate::output::Candidate, moments: Moments)
-    requires crate::model::dimensions_valid(db, dimensions), dimensions.customers.wf(), dimensions.nations.wf(),
-        dimensions.customers.at((customer_input_view(*cust.row).c_custkey, Seq::empty())) == Some(*customers),
+    requires crate::model::dimensions_valid(db, dimensions), dimensions.nations.wf(),
+        variants_at(dimensions.customers, customer_input_view(*cust.row).c_custkey).len() == 1,
+        variants_at(dimensions.customers, customer_input_view(*cust.row).c_custkey)[0] == *cust,
         dimensions.nations.at((customer_input_view(*cust.row).c_nationkey, Seq::empty())) == Some(*nations),
-        customers.entries().len() == 1, customers.entries()[0].1 == *cust,
         nations.entries().len() == 1, nations.entries()[0].1 == *nation,
         customer_input_view(*candidate.group.customer) == customer_input_view(*cust.row),
         nation_input_view(*candidate.group.nation) == nation_input_view(*nation.row),
@@ -175,12 +168,13 @@ pub proof fn lemma_singleton_candidate(db: Db, parameters: Params, dimensions: D
 {
     let row = candidate.view();
     crate::dimension_query::lemma_indexed_dimension_multiplicity(db, dimensions, row);
-    let customer_weight = crate::dimension_updates::customer_weight(crate::dimension_query::indexed_dimension_weight(dimensions, row));
+    let customer_weight = variant_weight(crate::dimension_query::indexed_dimension_weight(dimensions, row));
     let nation_weight = crate::dimension_updates::nation_weight(crate::dimension_query::nation_name_weight(row.n_name));
-    assert(customers.entries() =~= seq![customers.entries()[0]]);
+    let variants = variants_at(dimensions.customers, cust.row.c_custkey as int);
+    assert(variants =~= seq![variants[0]]);
     assert(nations.entries() =~= seq![nations.entries()[0]]);
     lemma_sum_singleton(nations.entries()[0], nation_weight);
-    lemma_sum_singleton(customers.entries()[0], customer_weight);
+    lemma_sum_singleton(variants[0], customer_weight);
     assert(crate::query_semantics::dimension_multiplicity(db, row) == cust.count as int * nation.count as int);
     assert(cust.count as int * nation.count as int > 0) by (nonlinear_arith)
         requires cust.count > 0, nation.count > 0;

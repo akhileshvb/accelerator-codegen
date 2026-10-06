@@ -1,6 +1,7 @@
 #include "tpch_q2_vgen_verus.h"
 #include "accelerator_codegen/verus/verus_kit.hpp"
 
+#include <malloc.h>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -10,28 +11,27 @@ namespace {
 namespace kit = accelerator_codegen::verus_kit;
 namespace core = accelerator_codegen::aux_state::core;
 
-constexpr char kQuerySql[] = R"SQL(-- TPC-H Q2 (catalog text), :part_size as $1, :region_name as $2, LIMIT 100. The part_type_pattern ('%BRASS') stays a literal: sql2verus takes only a literal LIKE pattern.
+constexpr char kQuerySql[] = R"SQL(-- TPC-H Q2 (catalog text), :part_size as $1, :part_type_pattern ('%' || type) as $2, :region_name as $3, LIMIT 100.
 SELECT s_acctbal, s_name, n_name, p_partkey, p_mfgr, s_address, s_phone, s_comment
 FROM part, supplier, partsupp, nation, region
 WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND p_size = $1
-  AND p_type LIKE '%BRASS' AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey
-  AND r_name = $2
+  AND p_type LIKE $2 AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey
+  AND r_name = $3
   AND ps_supplycost = (SELECT MIN(ps_supplycost) FROM partsupp, supplier, nation, region
                        WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND s_nationkey = n_nationkey
-                         AND n_regionkey = r_regionkey AND r_name = $2)
+                         AND n_regionkey = r_regionkey AND r_name = $3)
 ORDER BY s_acctbal DESC, n_name, s_name, p_partkey
 LIMIT 100
 )SQL";
 
-constexpr char kBrassPartsSql[] = R"SQL(SELECT p_partkey, p_mfgr, p_size
-  FROM part
-  WHERE p_type LIKE '%BRASS';)SQL";
+constexpr char kBrassPartsSql[] = R"SQL(SELECT p_partkey, p_mfgr, p_size, p_type
+  FROM part;)SQL";
 
 constexpr char kBrassPartsuppSql[] = R"SQL(SELECT ps_partkey, ps_suppkey, ps_supplycost
   FROM partsupp
   WHERE EXISTS (
     SELECT p_partkey FROM part
-    WHERE p_partkey = ps_partkey AND p_type LIKE '%BRASS'
+    WHERE p_partkey = ps_partkey
   );)SQL";
 
 constexpr char kSuppliersSql[] = R"SQL(SELECT s_suppkey, s_name, s_address, s_nationkey, s_phone,
@@ -46,17 +46,20 @@ struct Parts {
   std::vector<int64_t> partkey;
   kit::TextColumn mfgr;
   std::vector<int64_t> size;
+  kit::TextColumn type;
 
   void Reserve(std::size_t count) {
     partkey.reserve(count);
     mfgr.off.reserve(count + 1);
     size.reserve(count);
+    type.off.reserve(count + 1);
   }
 
   void Push(const core::AuxRow &row) {
     partkey.push_back(kit::I64(row, 0, 0));
     mfgr.Push(kit::Text(row, 1));
     size.push_back(kit::I64(row, 2, 0));
+    type.Push(kit::Text(row, 3));
   }
 };
 
@@ -153,7 +156,8 @@ struct ScanInputs {
   template <typename Function> auto Call(Function function) const {
     return function(
         parts.partkey.size(), parts.partkey.data(), parts.mfgr.bytes.data(),
-        parts.mfgr.off.data(), parts.size.data(), partsupp.size(), partsupp.data(),
+        parts.mfgr.off.data(), parts.size.data(), parts.type.bytes.data(),
+        parts.type.off.data(), partsupp.size(), partsupp.data(),
         suppliers.suppkey.size(), suppliers.suppkey.data(), suppliers.name.bytes.data(),
         suppliers.name.off.data(), suppliers.address.bytes.data(), suppliers.address.off.data(),
         suppliers.nationkey.data(), suppliers.phone.bytes.data(), suppliers.phone.off.data(),
@@ -249,13 +253,18 @@ struct RescanInputs {
     return function(
         part_keys.size(), part_keys.data(), parts.partkey.size(), parts.partkey.data(),
         parts.mfgr.bytes.data(), parts.mfgr.off.data(), parts.size.data(),
-        partsupp_keys.size(), partsupp_keys.data(), partsupp.size(), partsupp.data());
+        parts.type.bytes.data(), parts.type.off.data(), partsupp_keys.size(), partsupp_keys.data(), partsupp.size(), partsupp.data());
   }
 };
 
 void *Build(kit::Host &host) {
-  const ScanInputs scans(host);
-  return scans.Call(tpchq2vgen_build);
+  void *state = nullptr;
+  {
+    const ScanInputs scans(host);
+    state = scans.Call(tpchq2vgen_build);
+  }
+  malloc_trim(0);
+  return state;
 }
 
 void FreeState(void *state) {
@@ -263,10 +272,15 @@ void FreeState(void *state) {
 }
 
 void *PrepareBuild(const void *store, kit::Host &host) {
-  const ScanInputs scans(host);
-  return scans.Call([&](auto... args) {
-    return tpchq2vgens_prepare_build(static_cast<const tpchq2vgens_store *>(store), args...);
-  });
+  void *state = nullptr;
+  {
+    const ScanInputs scans(host);
+    state = scans.Call([&](auto... args) {
+      return tpchq2vgens_prepare_build(static_cast<const tpchq2vgens_store *>(store), args...);
+    });
+  }
+  malloc_trim(0);
+  return state;
 }
 
 void *Apply(const void *state, const kit::Changes &changes, kit::Host &host, int32_t *err) {
@@ -308,12 +322,15 @@ core::AuxValue ResultText(const tpchq2vgen_result *result, std::size_t index,
 bool Execute(const void *state, const core::QueryArguments &args,
              std::vector<core::AuxRow> &out) {
   int64_t part_size = 0;
+  std::string type_pattern;
   std::string region_name;
-  if (!kit::ArgI64(args, 0, 0, part_size) || !kit::ArgText(args, 1, region_name)) {
+  if (!kit::ArgI64(args, 0, 0, part_size) || !kit::ArgText(args, 1, type_pattern) ||
+      !kit::ArgText(args, 2, region_name)) {
     return false;
   }
   std::unique_ptr<tpchq2vgen_result, decltype(&tpchq2vgen_result_free)> result(
       tpchq2vgen_execute(static_cast<const tpchq2vgen_state *>(state), part_size,
+                         reinterpret_cast<const uint8_t *>(type_pattern.data()), type_pattern.size(),
                          reinterpret_cast<const uint8_t *>(region_name.data()), region_name.size()),
       tpchq2vgen_result_free);
   if (!result) {
@@ -355,7 +372,7 @@ const kit::Glue kGlue = {
      {"supplier", {"s_suppkey", "s_name", "s_address", "s_nationkey", "s_phone", "s_acctbal", "s_comment"}},
      {"nation", {"n_nationkey", "n_name", "n_regionkey"}},
      {"region", {"r_regionkey", "r_name"}}},
-    {kit::Kind::Int, kit::Kind::Text},
+    {kit::Kind::Int, kit::Kind::Text, kit::Kind::Text},
     Build, FreeState, Apply, Execute, PrepareApply, PrepareBuild,
     kit::StoreOps{
         []() -> void * { return tpchq2vgens_new(); },

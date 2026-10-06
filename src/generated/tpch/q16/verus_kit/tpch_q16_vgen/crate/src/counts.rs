@@ -6,22 +6,14 @@ use crate::model::*;
 use verus_common::sums::*;
 use crate::encoding::*;
 use crate::rank_proofs::*;
+use crate::vocab::*;
 
 verus! {
 
 pub fn copy_bytes(bytes: &[u8]) -> (out: Vec<u8>)
     ensures out@ == bytes@,
 {
-    let mut out = Vec::new();
-    let mut index = 0;
-    while index < bytes.len()
-        invariant index <= bytes.len(), out@ == bytes@.take(index as int),
-        decreases bytes.len() - index,
-    {
-        out.push(bytes[index]);
-        index += 1;
-    }
-    out
+    vstd::slice::slice_to_vec(bytes)
 }
 
 pub fn append_escaped(out: &mut Vec<u8>, bytes: &[u8])
@@ -56,7 +48,8 @@ pub fn append_escaped(out: &mut Vec<u8>, bytes: &[u8])
     }
 }
 
-pub fn make_group(row: &PartInput) -> (group: Arc<Group>)
+pub fn make_group(vocab: &Vocab, row: &PartInput) -> (group: Arc<Group>)
+    requires vocab.ok(),
     ensures group.key() == group_key(row.p_brand@, row.p_type@, row.p_size as int),
         group.valid(),
 {
@@ -69,6 +62,8 @@ pub fn make_group(row: &PartInput) -> (group: Arc<Group>)
         brand: Arc::new(copy_bytes(row.p_brand.as_slice())),
         kind: Arc::new(copy_bytes(row.p_type.as_slice())),
         size: row.p_size,
+        brand_id: brand_code_exec(vocab, row.p_brand.as_slice()),
+        kind_id: type_code_exec(vocab, row.p_type.as_slice()),
         identity,
         order: Key::text(text),
     })
@@ -108,7 +103,7 @@ pub fn share_counts(source: &Counts) -> (out: Counts)
     proof {
         verus_prooflib::lemma_ordered_equal(source, &out);
         assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] out.at(key).is_some() implies
-            out.at(key).unwrap().group.valid() && out.at(key).unwrap().group.key() == key by {
+            out.at(key).unwrap().group.valid() && out.at(key).unwrap().group.key() == key && out.at(key).unwrap().consistent() by {
             assert(source.at(key) == out.at(key));
         }
         if positive_counts(*source) {
@@ -167,34 +162,6 @@ pub fn share_integers(source: &Index<i64>) -> (out: Index<i64>)
     out
 }
 
-pub fn is_eligible(kind: &[u8]) -> (ok: bool)
-    ensures ok == eligible(kind@),
-{
-    let prefix = [b'S', b'M', b'A', b'L', b'L', b' ', b'B', b'R', b'U', b'S', b'H', b'E', b'D'];
-    proof { lemma_brushed_like(kind@); }
-    if kind.len() < prefix.len() { return true; }
-    let mut index = 0;
-    while index < prefix.len()
-        invariant index <= prefix.len(), kind.len() >= prefix.len(), prefix@ == brushed_prefix(),
-            eligible(kind@) == (kind@.take(13) != brushed_prefix()),
-            kind@.take(index as int) == prefix@.take(index as int),
-        decreases prefix.len() - index,
-    {
-        if kind[index] != prefix[index] {
-            proof {
-                assert(kind@.take(13)[index as int] != brushed_prefix()[index as int]);
-            }
-            return true;
-        }
-        index += 1;
-    }
-    proof {
-        assert(index == 13);
-        assert(kind@.take(13) == brushed_prefix());
-    }
-    false
-}
-
 pub fn add(left: i64, right: i64) -> (out: Option<i64>)
     ensures out matches Some(value) ==> value as int == left as int + right as int,
 {
@@ -246,18 +213,17 @@ pub fn bump_group(map: &mut Counts, group: Arc<Group>, change: i64) -> (ok: bool
     let before = match map.get(&key) { Some(value) => value.count, None => 0 };
     let after = match add(before, change) { Some(value) => value, None => return false };
     if after == 0 { map.remove(&key); }
-    else { map.put(key, Arc::new(Cell { group, count: after })); }
+    else { map.put(key, Arc::new(Cell::new(group, after))); }
     true
 }
 
-pub fn bump_part(parts: &mut Parts, row: &PartInput, change: i64) -> (ok: bool)
-    requires parts_keys_valid(*parts),
+pub fn bump_part(vocab: &Vocab, parts: &mut Parts, row: &PartInput, change: i64) -> (ok: bool)
+    requires parts_keys_valid(*parts), vocab.ok(),
     ensures parts_keys_valid(*final(parts)),
         ok ==> forall|part: int, query: verus_prooflib::ordered::KeyView|
         #[trigger] part_at(*final(parts), part, query) == part_at(*old(parts), part, query)
             + part_weight(part_input_view(*row), part, query) * change as int,
 {
-    if !is_eligible(row.p_type.as_slice()) { return true; }
     let initial = Ghost(*parts);
     let part_key = Key::number(row.p_partkey);
     let mut groups = match parts.get(&part_key) {
@@ -267,7 +233,7 @@ pub fn bump_part(parts: &mut Parts, row: &PartInput, change: i64) -> (ok: bool)
             proof {
                 verus_prooflib::lemma_ordered_equal(&*value, &copy);
                 assert forall|key: verus_prooflib::ordered::KeyView| #[trigger] copy.at(key).is_some() implies
-                    copy.at(key).unwrap().group.valid() && copy.at(key).unwrap().group.key() == key by {
+                    copy.at(key).unwrap().group.valid() && copy.at(key).unwrap().group.key() == key && copy.at(key).unwrap().consistent() by {
                     assert(value.at(key) == copy.at(key));
                 }
                 assert(cell_keys_valid(copy));
@@ -282,7 +248,7 @@ pub fn bump_part(parts: &mut Parts, row: &PartInput, change: i64) -> (ok: bool)
         assert forall|query: verus_prooflib::ordered::KeyView| #[trigger] count_at(groups, query)
             == part_at(initial@, row.p_partkey as int, query) by {}
     }
-    let group = make_group(row);
+    let group = make_group(vocab, row);
     if !bump_group(&mut groups, group, change) { return false; }
     let updated = Ghost(groups);
     proof { groups.map_model(); }
@@ -788,7 +754,7 @@ pub fn update_total(counts: &mut Counts, ranks: &mut Ranks, group: Arc<Group>, c
     if after > 0 {
         let rank = group.order.with_number(-after);
         let kind = Key::composite(-after, copy_bytes(group.kind.as_slice()));
-        let cell = Arc::new(Cell { group, count: after });
+        let cell = Arc::new(Cell::new(group, after));
         stream.put(kind, cell.clone());
         size_rows.put(rank, cell.clone());
         proof {

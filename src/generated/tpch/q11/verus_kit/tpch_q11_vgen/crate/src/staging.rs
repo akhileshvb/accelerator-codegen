@@ -1,3 +1,4 @@
+use crate::packed::{self, Packed, PackedCursor};
 use vstd::prelude::*;
 use verus_common::sums::{sum, lemma_sum_take};
 use verus_prooflib::ordered::{Index, KeyView};
@@ -9,17 +10,17 @@ use crate::values::{scale, Moment};
 
 verus! {
 
-pub proof fn lemma_part_finish(groups: Index<Moment>, target: i64, nation: i64, part: i64, value: bool, factor: int, selected: spec_fn((KeyView, Moment)) -> int)
+pub proof fn lemma_part_finish(groups: Packed, target: i64, nation: i64, part: i64, value: bool, factor: int, selected: spec_fn((KeyView, Moment)) -> int)
     requires groups.wf(), forall|row: (KeyView, Moment)| #[trigger] selected(row)
         == if nation == target && row.0 == numeric_key(part as int) { moment_measure(row.1, value) * factor } else { 0 },
     ensures sum(groups.entries(), selected) == if nation == target { moment_measure(moment_at(groups, part as int), value) * factor } else { 0 },
 {
     if nation == target {
-        verus_prooflib::lemma_ordered_selected_weight(&groups, numeric_key(part as int), |row: (KeyView, Moment)| moment_measure(row.1, value), factor, selected);
+        packed::lemma_selected_weight(&groups, numeric_key(part as int), |row: (KeyView, Moment)| moment_measure(row.1, value), factor, selected);
     } else { verus_common::sums::lemma_sum_zero(groups.entries(), selected); }
 }
 
-pub fn weighted_parts(target: &mut Profiles, nation: i64, groups: &Index<Moment>, factor: i128) -> (result: bool)
+pub fn weighted_parts(target: &mut Profiles, nation: i64, groups: &Packed, factor: i128) -> (result: bool)
     requires profile_layout(*old(target)), crate::construction::profile_keys_ok(*groups),
     ensures profile_layout(*final(target)),
         result ==> forall|query: i64, part: i64, value: bool| #[trigger] profile_cell(*final(target), query, part, value)
@@ -56,7 +57,7 @@ pub fn weighted_parts(target: &mut Profiles, nation: i64, groups: &Index<Moment>
         proof { groups.model(); assert(numeric(part.view())); }
         let weighted = match scale(*moment, factor) { Some(weighted) => weighted, None => return false };
         let ghost previous = *target;
-        if !add_profile(target, nation, part.number, weighted, true) { return false; }
+        if !add_profile(target, nation, part.number, weighted, true, 8) { return false; }
         proof {
             assert forall|query: i64, selected_part: i64, value: bool| #[trigger] profile_cell(*target, query, selected_part, value)
                 == profile_cell(initial, query, selected_part, value) + sum(groups.entries().take(processed@ + 1), |row: (KeyView, Moment)|
@@ -122,7 +123,7 @@ pub fn linked_part(target: &mut Profiles, part: i64, change: Moment, links: &Ind
         proof { links.model(); assert(numeric(nation.view())); }
         let weighted = match scale(change, *multiplicity) { Some(weighted) => weighted, None => return false };
         let ghost previous = *target;
-        if !add_profile(target, nation.number, part, weighted, true) { return false; }
+        if !add_profile(target, nation.number, part, weighted, true, 8) { return false; }
         proof {
             assert forall|query: i64, selected_part: i64, value: bool| #[trigger] profile_cell(*target, query, selected_part, value)
                 == profile_cell(initial, query, selected_part, value) + sum(links.entries().take(processed@ + 1), |row: (KeyView, i128)|
@@ -141,7 +142,7 @@ pub fn linked_part(target: &mut Profiles, part: i64, change: Moment, links: &Ind
     }
 }
 
-pub fn supplier_group(target: &mut Profiles, groups: &Index<Moment>, links: &Index<i128>) -> (result: bool)
+pub fn supplier_group(target: &mut Profiles, groups: &Packed, links: &Index<i128>) -> (result: bool)
     requires profile_layout(*old(target)), crate::construction::profile_keys_ok(*groups), links.wf(),
         forall|key: KeyView| (#[trigger] links.at(key)).is_some() ==> numeric(key),
     ensures profile_layout(*final(target)),

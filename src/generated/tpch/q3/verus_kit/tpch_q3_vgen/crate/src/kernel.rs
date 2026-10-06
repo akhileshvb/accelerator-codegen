@@ -1,5 +1,8 @@
 #![allow(unused_imports)]
 use vstd::prelude::*;
+use crate::custs::Custs;
+use crate::paged::{Paged, PageCursor, entry_sorted, Ent};
+use crate::rank_ent::*;
 use verus_common::rat::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
@@ -9,9 +12,9 @@ use crate::model::*;
 verus! {
 
 pub struct State {
-    pub(crate) customers: Index<CustomerCell>,
+    pub(crate) customers: Custs,
     pub(crate) pages: Index<Page>,
-    pub(crate) ranks: Index<Index<()>>,
+    pub(crate) ranks: Index<Paged<RankEnt>>,
     pub(crate) database: Ghost<Db>,
 }
 
@@ -31,7 +34,7 @@ impl State {
         proof { use_type_invariant(self); }
     }
 
-    pub(crate) fn from_parts(customers: Index<CustomerCell>, pages: Index<Page>, ranks: Index<Index<()>>, Ghost(db): Ghost<Db>) -> (result: Self)
+    pub(crate) fn from_parts(customers: Custs, pages: Index<Page>, ranks: Index<Paged<RankEnt>>, Ghost(db): Ghost<Db>) -> (result: Self)
         requires state_ok(customers, pages, ranks, db),
         ensures result.db() == db,
     {

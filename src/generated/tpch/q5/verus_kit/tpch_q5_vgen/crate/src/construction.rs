@@ -15,7 +15,16 @@ pub fn customers(rows: &[CustomerInput], Ghost(db): Ghost<Db>) -> (out: Option<T
     proof {
         verus_prooflib::lemma_scan_property(customer_input_seq_view(rows@), db.customer, |row: CustomerRow| customer_representable(row));
     }
-    let mut bucket = Bucket::new();
+    let mut hints = count_hints();
+    let mut hint_index = 0;
+    while hint_index < rows.len()
+        invariant hint_index <= rows.len(), hints@.len() == 1048576,
+        decreases rows.len() - hint_index,
+    {
+        bump_hint(&mut hints, rows[hint_index].c_custkey);
+        hint_index += 1;
+    }
+    let mut bucket = Builder::with_counts(&hints);
     let mut index = 0;
     let mut processed: Ghost<int> = Ghost(0int);
     while index < rows.len()
@@ -36,7 +45,7 @@ pub fn customers(rows: &[CustomerInput], Ghost(db): Ghost<Db>) -> (out: Option<T
         index += 1;
         processed = Ghost(index as int);
     }
-    let table = freeze(bucket);
+    let table = bucket.freeze();
     proof {
         assert(rows@.take(rows@.len() as int) =~= rows@);
         assert forall|key: i64, nation: i64, day: i32| #[trigger] table.at(key, nation, day) ==
@@ -146,7 +155,16 @@ pub fn suppliers(rows: &[SupplierInput], Ghost(db): Ghost<Db>) -> (out: Option<T
     proof {
         verus_prooflib::lemma_scan_property(supplier_input_seq_view(rows@), db.supplier, |row: SupplierRow| supplier_representable(row));
     }
-    let mut bucket = Bucket::new();
+    let mut hints = count_hints();
+    let mut hint_index = 0;
+    while hint_index < rows.len()
+        invariant hint_index <= rows.len(), hints@.len() == 1048576,
+        decreases rows.len() - hint_index,
+    {
+        bump_hint(&mut hints, rows[hint_index].s_suppkey);
+        hint_index += 1;
+    }
+    let mut bucket = Builder::with_counts(&hints);
     let mut index = 0;
     let mut processed: Ghost<int> = Ghost(0int);
     while index < rows.len()
@@ -167,7 +185,7 @@ pub fn suppliers(rows: &[SupplierInput], Ghost(db): Ghost<Db>) -> (out: Option<T
         index += 1;
         processed = Ghost(index as int);
     }
-    let table = freeze(bucket);
+    let table = bucket.freeze();
     proof {
         assert(rows@.take(rows@.len() as int) =~= rows@);
         assert forall|key: i64, nation: i64, day: i32| #[trigger] table.at(key, nation, day) ==
@@ -193,8 +211,19 @@ pub fn orders(rows: &[OrdersInput], Ghost(db): Ghost<Db>) -> (out: Option<(Table
         forall|position: int| 0 <= position < db.orders.len() ==> #[trigger] order_representable(db.orders[position]),
 {
     proof { verus_prooflib::lemma_scan_property(orders_input_seq_view(rows@), db.orders, |row: OrdersRow| order_representable(row)); }
-    let mut order_rows = Bucket::new();
-    let mut reverse_rows = Bucket::new();
+    let mut order_hints = count_hints();
+    let mut reverse_hints = count_hints();
+    let mut hint_index = 0;
+    while hint_index < rows.len()
+        invariant hint_index <= rows.len(), order_hints@.len() == 1048576, reverse_hints@.len() == 1048576,
+        decreases rows.len() - hint_index,
+    {
+        bump_hint(&mut order_hints, rows[hint_index].o_orderkey);
+        bump_hint(&mut reverse_hints, rows[hint_index].o_custkey);
+        hint_index += 1;
+    }
+    let mut order_rows = Builder::with_counts(&order_hints);
+    let mut reverse_rows = Builder::with_counts(&reverse_hints);
     let mut index = 0;
     let mut processed: Ghost<int> = Ghost(0int);
     while index < rows.len()
@@ -226,8 +255,8 @@ pub fn orders(rows: &[OrdersInput], Ghost(db): Ghost<Db>) -> (out: Option<(Table
         index += 1;
         processed = Ghost(index as int);
     }
-    let orders = freeze(order_rows);
-    let reverse = freeze(reverse_rows);
+    let orders = order_rows.freeze();
+    let reverse = reverse_rows.freeze();
     proof {
         assert(rows@.take(rows@.len() as int) =~= rows@);
         assert forall|key: i64, customer: i64, day: i32| #[trigger] orders.at(key, customer, day) ==
@@ -292,7 +321,7 @@ pub fn profiles(customers: &Table, orders: &Table, suppliers: &Table,
         index += 1;
         processed = Ghost(index as int);
     }
-    let table = freeze(bucket);
+    let table = match freeze(bucket) { Some(table) => table, None => return None };
     proof {
         assert(rows@.take(rows@.len() as int) =~= rows@);
         assert forall|nation: i64, sub: i64, day: i32| #[trigger] table.at(nation, sub, day) ==

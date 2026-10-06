@@ -1,10 +1,14 @@
 use vstd::prelude::*;
+use crate::custs::Custs;
+use crate::paged::{Paged, PageCursor, entry_sorted, Ent};
+use crate::rank_ent::*;
 use verus_common::sums::*;
 use verus_common::rel::*;
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::values::group_bytes;
 use crate::model::*;
+use crate::packed::{group_equiv, groups_equiv};
 use verus_prooflib::ordered::Index;
 use verus_prooflib::{class_total, lemma_equal_classes};
 
@@ -15,9 +19,9 @@ pub proof fn lemma_work_scan(db: Db, customers: Seq<CustomerInput>, orders: Seq<
     requires scan_customers_ok(db, customers), scan_orders_ok(db, orders), scan_shipments_ok(db, shipments),
         work.contains_key(number), work_page_shape(work[number], number as int),
         forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger scratch_order_at(work, key, customer, date, priority)]
-            scratch_order_at(work, key, customer, date, priority) == order_prefix(orders, key, customer, date, priority),
+            key as int / 256 == number as int ==> scratch_order_at(work, key, customer, date, priority) == order_prefix(orders, key, customer, date, priority),
         forall|key: i64, date: i32, kind: int| #![trigger scratch_ship_at(work, key, date, kind)]
-            0 <= kind <= 2 ==> scratch_ship_at(work, key, date, kind) == ship_prefix(shipments, key, date, kind),
+            key as int / 256 == number as int && 0 <= kind <= 2 ==> scratch_ship_at(work, key, date, kind) == ship_prefix(shipments, key, date, kind),
     ensures work_database_ok(work[number], number as int, db),
 {
     crate::input_proofs::lemma_scan_domains(db, customers, orders, shipments);
@@ -62,7 +66,7 @@ pub proof fn lemma_work_scan(db: Db, customers: Seq<CustomerInput>, orders: Seq<
     }
 }
 
-pub proof fn lemma_work_join(work: PageWork, number: int, customers: Index<CustomerCell>, db: Db,
+pub proof fn lemma_work_join(work: PageWork, number: int, customers: Custs, db: Db,
     segment: Seq<u8>, key: int, date: int, priority: int)
     requires work_database_ok(work, number, db), customer_database_ok(customers, db),
     ensures column_join(work.orders@, customers, segment, key, date, priority)
@@ -219,7 +223,68 @@ pub proof fn lemma_work_last(work: PageWork, number: int, db: Db, key: int, last
     }
 }
 
-pub proof fn lemma_page_publication(page: Page, work: PageWork, number: int, customers: Index<CustomerCell>, db: Db)
+pub proof fn lemma_column_weight_equiv(left: Seq<GroupCell>, right: Seq<GroupCell>, segment: Seq<u8>, key: int, date: int, priority: int)
+    requires groups_equiv(left, right),
+    ensures column_weight(left, segment, key, date, priority) == column_weight(right, segment, key, date, priority),
+    decreases left.len(),
+{
+    if left.len() > 0 {
+        let left_prefix = left.drop_last();
+        let right_prefix = right.drop_last();
+        assert(groups_equiv(left_prefix, right_prefix)) by {
+            assert forall|index: int| #![trigger left_prefix[index]] 0 <= index < left_prefix.len() implies group_equiv(left_prefix[index], right_prefix[index]) by {
+                assert(left_prefix[index] == left[index]);
+                assert(right_prefix[index] == right[index]);
+            }
+        }
+        lemma_column_weight_equiv(left_prefix, right_prefix, segment, key, date, priority);
+        let measure = column_measure(segment, key, date, priority);
+        lemma_sum_push(left_prefix, left.last(), measure);
+        lemma_sum_push(right_prefix, right.last(), measure);
+        assert(left =~= left_prefix.push(left.last()));
+        assert(right =~= right_prefix.push(right.last()));
+        assert(group_equiv(left.last(), right.last()));
+    }
+}
+
+pub proof fn lemma_page_publication_equiv(page: Page, groups: Seq<GroupCell>, work: PageWork, number: int, customers: Custs, db: Db)
+    requires work_database_ok(work, number, db), customer_database_ok(customers, db),
+        (*page.orders)@ == work.orders@, (*page.ships)@ == work.ships@,
+        groups_equiv((*page.groups)@, groups), groups_sorted(groups),
+        forall|position: int| #![trigger groups[position]] 0 <= position < groups.len() ==> {
+            let group = groups[position];
+            &&& group.weight > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
+            &&& exists|source: int| #![trigger work.orders@[source]] 0 <= source < work.orders@.len()
+                && work.orders@[source].key == group.id.key
+        },
+        forall|segment: Seq<u8>, key: int, date: int, priority: int| #![trigger column_weight(groups, segment, key, date, priority)]
+            column_weight(groups, segment, key, date, priority) == column_join(work.orders@, customers, segment, key, date, priority),
+    ensures page_database_ok(page, number, db),
+{
+    let view = (*page.groups)@;
+    assert forall|left: int, right: int| #![trigger view[left], view[right]] 0 <= left < right < view.len() implies group_lt(view[left], view[right]) by {
+        assert(group_equiv(view[left], groups[left]) && group_equiv(view[right], groups[right]));
+        assert(group_lt(groups[left], groups[right]));
+    }
+    assert forall|position: int| #![trigger view[position]] 0 <= position < view.len() implies {
+        let group = view[position];
+        &&& group.weight > 0 && group.bound >= 0 && group_ship_ok(group, work.ships@)
+        &&& exists|source: int| #![trigger work.orders@[source]] 0 <= source < work.orders@.len()
+            && work.orders@[source].key == group.id.key
+    } by {
+        assert(group_equiv(view[position], groups[position]));
+        let source = choose|source: int| #![trigger work.orders@[source]] 0 <= source < work.orders@.len()
+            && work.orders@[source].key == groups[position].id.key;
+        assert(work.orders@[source].key == view[position].id.key);
+    }
+    assert forall|segment: Seq<u8>, key: int, date: int, priority: int| #![trigger column_weight(view, segment, key, date, priority)]
+        column_weight(view, segment, key, date, priority) == column_join(work.orders@, customers, segment, key, date, priority) by {
+        lemma_column_weight_equiv(view, groups, segment, key, date, priority);
+    }
+    lemma_page_publication(page, work, number, customers, db);
+}
+
+pub proof fn lemma_page_publication(page: Page, work: PageWork, number: int, customers: Custs, db: Db)
     requires work_database_ok(work, number, db), customer_database_ok(customers, db),
         (*page.orders)@ == work.orders@, (*page.ships)@ == work.ships@, groups_sorted((*page.groups)@),
         forall|position: int| #![trigger (*page.groups)@[position]] 0 <= position < (*page.groups)@.len() ==> {
@@ -281,7 +346,7 @@ pub proof fn lemma_page_group_unique(pages: Index<Page>, db: Db, left_key: verus
     assert(left_position == right_position);
 }
 
-pub proof fn lemma_rank_publication(pages: Index<Page>, ranks: Index<Index<()>>, groups: Seq<GroupCell>, db: Db)
+pub proof fn lemma_rank_publication(pages: Index<Page>, ranks: Index<Paged<RankEnt>>, groups: Seq<GroupCell>, db: Db)
     requires ranks_wf(ranks), groups_in_pages(pages, groups),
         forall|target: verus_prooflib::ordered::KeyView| #![trigger pages.at(target)] pages.at(target).is_some() ==>
             target.1.len() == 0 && page_shape(pages.at(target).unwrap(), target.0, db),
@@ -515,7 +580,7 @@ pub open spec fn order_row_projection(row: OrdersRow) -> (int, int, int, int) {
     (row.o_orderkey, row.o_custkey, row.o_orderdate, row.o_shippriority)
 }
 
-pub proof fn lemma_page_reverse(customers: Index<CustomerCell>, pages: Index<Page>, ranks: Index<Index<()>>,
+pub proof fn lemma_page_reverse(customers: Custs, pages: Index<Page>, ranks: Index<Paged<RankEnt>>,
     db: Db, page: &Page, number: int, customer: i64, key: i64)
     requires state_ok(customers, pages, ranks, db), pages.at((number, Seq::empty())) == Some(*page),
     ensures sum((*page.orders)@, |row: OrderCell| if row.key == key && row.customer == customer { row.count as int } else { 0 })
@@ -559,7 +624,7 @@ pub proof fn lemma_page_reverse(customers: Index<CustomerCell>, pages: Index<Pag
     } else { lemma_sum_zero(db.orders, right_weight); }
 }
 
-pub proof fn lemma_missing_page_reverse(customers: Index<CustomerCell>, pages: Index<Page>, ranks: Index<Index<()>>,
+pub proof fn lemma_missing_page_reverse(customers: Custs, pages: Index<Page>, ranks: Index<Paged<RankEnt>>,
     db: Db, number: int, customer: i64, key: i64)
     requires state_ok(customers, pages, ranks, db), pages.at((number, Seq::empty())).is_none(),
         key as int / 256 == number,
@@ -579,7 +644,7 @@ pub proof fn lemma_missing_page_reverse(customers: Index<CustomerCell>, pages: I
     lemma_sum_zero(db.orders, weight);
 }
 
-pub proof fn lemma_shipment_suffix(customers: Index<CustomerCell>, pages: Index<Page>, ranks: Index<Index<()>>,
+pub proof fn lemma_shipment_suffix(customers: Custs, pages: Index<Page>, ranks: Index<Paged<RankEnt>>,
     db: Db, page: &Page, number: int, key: int, cutoff: int, kind: int)
     requires state_ok(customers, pages, ranks, db), pages.at((number, Seq::empty())) == Some(*page),
         key / 256 == number, 0 <= kind <= 1,
@@ -622,7 +687,7 @@ pub proof fn lemma_shipment_suffix(customers: Index<CustomerCell>, pages: Index<
     lemma_sum_ext_all(db.lineitem, right_weight, |row: LineitemRow| if row.l_orderkey == key && row.l_shipdate > cutoff { line_measure(row, kind) } else { 0int });
 }
 
-pub proof fn lemma_group_weight(customers: Index<CustomerCell>, pages: Index<Page>, ranks: Index<Index<()>>,
+pub proof fn lemma_group_weight(customers: Custs, pages: Index<Page>, ranks: Index<Paged<RankEnt>>,
     db: Db, page: &Page, number: int, position: int)
     requires state_ok(customers, pages, ranks, db), pages.at((number, Seq::empty())) == Some(*page),
         0 <= position < (*page.groups)@.len(),

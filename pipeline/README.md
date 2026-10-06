@@ -209,6 +209,20 @@ and runner (`tests/verification/verus_kit/verus_kit_runner.cpp`); DuckDB only fo
 A run's output lives in the query's directory: `src/generated/<bench>/q<N>/verus_kit/<crate>/`
 (glue + C header; the kernel crate in `crate/`), registered through the kit's registry.
 
+Parameters: every TPC-H substitution parameter (spec 2.4: LIKE patterns and
+Q11's fraction included) is a runtime `$n` parameter of the kit (preflight
+rejects a query SQL with a literal LIKE pattern or fewer `$n` than the domain
+has). Their domains are `benchmarks/compare/gen_tpch_params.py` (its `verus`
+argument lists), called by `verus/params.py`. Every benchmark, profile and
+gate run draws fresh random tuples there with a new `os.urandom` seed
+(`verus_kit_runner` reads them from `VERUS_KIT_PARAMS_FILE` for bench/profile,
+`VERUS_KIT_EXTRA_PARAMS_FILE` for differential/snapshots); the seed and tuples
+are written to `<artifacts>/param_draws/` and into the run's result JSON, and
+are not shown to the agent beforehand. A paired decision (best vs candidate)
+shares one draw across both sides and all rounds; each decision, baseline and
+audit takes a new one. The frozen `tests/params.sql` also gets random domain
+tuples when it is frozen.
+
 Smoke test without an LLM: `ACCEL_VERUS_REPLAY=<dir>` replays agent steps from
 files (`verus/agent.py`); `config/workloads/tpch_q21_verus_smoke.yaml` is a short run.
 

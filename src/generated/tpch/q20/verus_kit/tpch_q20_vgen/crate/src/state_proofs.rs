@@ -23,45 +23,19 @@ pub proof fn lemma_database_prefix_weight(db: Db, part: i64, supplier: i64, date
     lemma_sum_ext_all(db.lineitem,
         |row: LineitemRow| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate <= date { if quantity { row.l_quantity } else { 1int } } else { 0int }, weight);
 }
-pub proof fn lemma_build_domain(db: Db, parts: Seq<QualifyingPartInput>, stocks: Seq<StockInput>, shipments: Seq<ShipmentInput>, suppliers: Seq<SupplierInput>, nations: Seq<NationInput>)
-    requires scan_qualifying_parts_ok(db, parts), scan_stocks_ok(db, stocks), scan_shipments_ok(db, shipments),
+pub proof fn lemma_build_domain(db: Db, parts: Seq<PartInput>, stocks: Seq<StockInput>, shipments: Seq<ShipmentInput>, suppliers: Seq<SupplierInput>, nations: Seq<NationInput>)
+    requires scan_parts_ok(db, parts), scan_stocks_ok(db, stocks), scan_shipments_ok(db, shipments),
         scan_suppliers_ok(db, suppliers), scan_nations_ok(db, nations),
     ensures domain_valid(db),
 {
     lemma_scan_property(supplier_input_seq_view(suppliers), db.supplier,
         |row: SupplierRow| machine_key(row.s_suppkey) && machine_key(row.s_nationkey));
     lemma_scan_property(nation_input_seq_view(nations), db.nation, |row: NationRow| machine_key(row.n_nationkey));
-    let keep_part = |row: PartRow| like_match(row.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%']);
-    let project_part = |row: PartRow| row.p_partkey;
-    assert forall|weight: spec_fn(int) -> int| #[trigger] sum(qualifying_part_input_seq_view(parts), weight) == sum(db.part, |row: PartRow| if keep_part(row) { weight(project_part(row)) } else { 0 }) by {
-        lemma_sum_ext_all(db.part, |row: PartRow| if keep_part(row) { weight(project_part(row)) } else { 0 },
-            |row: PartRow| if like_match(row.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%']) { weight(row.p_partkey) } else { 0 });
-    }
-    lemma_projected_scan_property(qualifying_part_input_seq_view(parts), db.part, keep_part, project_part, |key: int| machine_key(key));
-    let keep_stock = |row: PartsuppRow| scan_stocks_exists_1(db, row);
-    let keep_ship = |row: LineitemRow| scan_shipments_exists_1(db, row);
-    let project_stock = |row: PartsuppRow| row;
-    let project_ship = |row: LineitemRow| row;
-    assert forall|weight: spec_fn(PartsuppRow) -> int| #[trigger] sum(stock_input_seq_view(stocks), weight) == sum(db.partsupp, |row: PartsuppRow| if keep_stock(row) { weight(project_stock(row)) } else { 0 }) by {
-        lemma_sum_ext_all(db.partsupp, |row: PartsuppRow| if keep_stock(row) { weight(project_stock(row)) } else { 0 },
-            |row: PartsuppRow| if scan_stocks_exists_1(db, row) { weight(row) } else { 0 });
-    }
-    assert forall|weight: spec_fn(LineitemRow) -> int| #[trigger] sum(shipment_input_seq_view(shipments), weight) == sum(db.lineitem, |row: LineitemRow| if keep_ship(row) { weight(project_ship(row)) } else { 0 }) by {
-        lemma_sum_ext_all(db.lineitem, |row: LineitemRow| if keep_ship(row) { weight(project_ship(row)) } else { 0 },
-            |row: LineitemRow| if scan_shipments_exists_1(db, row) { weight(row) } else { 0 });
-    }
-    lemma_projected_scan_property(stock_input_seq_view(stocks), db.partsupp, keep_stock, project_stock,
+    lemma_scan_property(part_input_seq_view(parts), db.part, |row: PartRow| machine_key(row.p_partkey));
+    lemma_scan_property(stock_input_seq_view(stocks), db.partsupp,
         |row: PartsuppRow| machine_key(row.ps_partkey) && machine_key(row.ps_suppkey));
-    lemma_projected_scan_property(shipment_input_seq_view(shipments), db.lineitem, keep_ship, project_ship,
+    lemma_scan_property(shipment_input_seq_view(shipments), db.lineitem,
         |row: LineitemRow| machine_key(row.l_partkey) && machine_key(row.l_suppkey));
-    assert forall|index: int| #![trigger db.partsupp[index]] 0 <= index < db.partsupp.len() && eligible(db, db.partsupp[index].ps_partkey) > 0 implies
-        machine_key(db.partsupp[index].ps_partkey) && machine_key(db.partsupp[index].ps_suppkey) by {
-        crate::semantic_proofs::lemma_stock_exists(db, db.partsupp[index]);
-    }
-    assert forall|index: int| #![trigger db.lineitem[index]] 0 <= index < db.lineitem.len() && eligible(db, db.lineitem[index].l_partkey) > 0 implies
-        machine_key(db.lineitem[index].l_partkey) && machine_key(db.lineitem[index].l_suppkey) by {
-        crate::semantic_proofs::lemma_shipment_exists(db, db.lineitem[index]);
-    }
 }
 pub proof fn lemma_supplier_build(db: Db, state: Suppliers, rows: Seq<SupplierInput>)
     requires db.supplier == supplier_input_seq_view(rows), suppliers_positive(state),
@@ -89,6 +63,21 @@ pub proof fn lemma_nation_build(db: Db, state: Nations, rows: Seq<NationInput>)
         let direct = |row: NationInput| if row.n_name@ == name && row.n_nationkey == key { 1int } else { 0int };
         lemma_sum_map(rows, |row: NationInput| nation_input_view(row), weight, direct);
         assert(nation_count(state, name, key) == sum(rows, direct));
+    }
+}
+pub proof fn lemma_names_build(db: Db, state: PartNames, rows: Seq<PartInput>)
+    requires scan_parts_ok(db, rows), names_positive(state),
+        forall|key: i64, name: Seq<u8>| #[trigger] name_count(state, key, name) ==
+            sum(rows, |row: PartInput| if row.p_partkey == key && row.p_name@ == name { 1 } else { 0 }),
+    ensures names_correct(db, state),
+{
+    assert forall|key: i64, name: Seq<u8>| #[trigger] name_count(state, key, name) ==
+        sum(db.part, |row: PartRow| if row.p_partkey == key && row.p_name == name { 1 } else { 0 }) by {
+        let weight = |row: PartRow| if row.p_partkey == key && row.p_name == name { 1int } else { 0int };
+        let direct = |row: PartInput| if row.p_partkey == key && row.p_name@ == name { 1int } else { 0int };
+        lemma_sum_map(rows, |row: PartInput| part_input_view(row), weight, direct);
+        assert(sum(part_input_seq_view(rows), weight) == sum(db.part, weight));
+        assert(name_count(state, key, name) == sum(rows, direct));
     }
 }
 pub proof fn lemma_build_part(db: Db, key: i64, source: PartWork, part: &Part, stocks: Seq<StockInput>, shipments: Seq<ShipmentInput>)
@@ -180,22 +169,22 @@ pub proof fn lemma_stock_support_lookup(part: &Part, supplier: i64)
     lemma_unique_key_lookup(part.pairs@, supplier);
     if stock_support(part.pairs@, supplier) {
         let index = choose|index: int| #![trigger part.pairs@[index]] 0 <= index < part.pairs@.len() && part.pairs@[index].0 == supplier && part.pairs@[index].1.stocks@.len() > 0;
-        assert(pair_lookup(part.pairs@, supplier) == Some(*part.pairs@[index].1));
+        assert(pair_lookup(part.pairs@, supplier) == Some(part.pairs@[index].1));
     }
     if let Some(pair) = pair_lookup(part.pairs@, supplier) {
         let index = choose|index: int| #![trigger part.pairs@[index]] 0 <= index < part.pairs@.len() && part.pairs@[index].0 == supplier;
-        assert(pair == *part.pairs@[index].1);
+        assert(pair == part.pairs@[index].1);
     }
 }
-pub proof fn lemma_state_meaning(db: Db, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations)
+pub proof fn lemma_state_meaning(db: Db, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations, names: PartNames)
     requires forall|key: i64| #![trigger parts.lookup(key)] part_correct(db, key, parts.lookup(key)),
-        parts.well_formed(), directory.well_formed(), suppliers.well_formed(), nations.well_formed(),
+        parts.well_formed(), directory.well_formed(), suppliers.well_formed(), nations.well_formed(), names.well_formed(), names_correct(db, names),
         directory_matches(parts, directory), suppliers_positive(suppliers), nations_positive(nations),
         forall|nation: i64, supplier: i64, name: Seq<u8>, address: Seq<u8>| #[trigger] supplier_count(suppliers, nation, supplier, name, address) ==
             sum(db.supplier, |row: SupplierRow| if row.s_nationkey == nation && row.s_suppkey == supplier && row.s_name == name && row.s_address == address { 1 } else { 0 }),
         forall|name: Seq<u8>, key: i64| #[trigger] nation_count(nations, name, key) ==
             sum(db.nation, |row: NationRow| if row.n_name == name && row.n_nationkey == key { 1 } else { 0 }),
-    ensures meaning(db, parts, directory, suppliers, nations),
+    ensures meaning(db, parts, directory, suppliers, nations, names),
 {
     assert forall|key: i64| #![trigger part_count(parts, key)] part_count(parts, key) == eligible(db, key as int) by {
         assert(part_correct(db, key, parts.lookup(key)));
@@ -217,7 +206,7 @@ pub proof fn lemma_state_meaning(db: Db, parts: Table<Part>, directory: Table<Ve
             if let Some(pair) = pair_lookup(data.pairs@, supplier) {
                 lemma_unique_key_lookup(data.pairs@, supplier);
                 let index = choose|index: int| #![trigger data.pairs@[index]] 0 <= index < data.pairs@.len() && data.pairs@[index].0 == supplier;
-                assert(pair == *data.pairs@[index].1);
+                assert(pair == data.pairs@[index].1);
                 assert forall|value: int| #![trigger stored_stock(pair, value)] stored_stock(pair, value) == stock_count(db, part as int, supplier as int, value) by {
                     assert(part_stock(data.pairs@, supplier, value) == stock_count(db, part as int, supplier as int, value));
                 }
@@ -258,10 +247,6 @@ pub proof fn lemma_state_meaning(db: Db, parts: Table<Part>, directory: Table<Ve
             }
         }
     }
-    assert forall|supplier: i64, part: i64| #![trigger directory_contains(directory, supplier, part)] directory_contains(directory, supplier, part) ==
-        match pair_of(parts, part, supplier) { Some(pair) => pair.stocks@.len() > 0, None => false } by {
-        if let Some(data) = parts.lookup(part) { lemma_stock_support_lookup(&data, supplier); }
-    }
 }
 pub proof fn lemma_daily_empty(db: Db, part: i64, supplier: i64, date: int)
     requires daily_count(db, part as int, supplier as int, date) == 0,
@@ -274,16 +259,16 @@ pub proof fn lemma_daily_empty(db: Db, part: i64, supplier: i64, date: int)
     }
     lemma_sum_zero(db.lineitem, quantity);
 }
-pub proof fn lemma_meaning_components(db: Db, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations)
-    requires meaning(db, parts, directory, suppliers, nations),
-    ensures parts_shape(parts), directory_matches(parts, directory), supplier_correct(db, suppliers), nation_correct(db, nations),
+pub proof fn lemma_meaning_components(db: Db, parts: Table<Part>, directory: Table<Vec<i64>>, suppliers: Suppliers, nations: Nations, names: PartNames)
+    requires meaning(db, parts, directory, suppliers, nations, names),
+    ensures parts_shape(parts), directory_matches(parts, directory), supplier_correct(db, suppliers), nation_correct(db, nations), names_correct(db, names),
         forall|key: i64| #![trigger parts.lookup(key)] part_correct(db, key, parts.lookup(key)),
 {
     assert forall|key: i64| #![trigger parts.lookup(key)] part_correct(db, key, parts.lookup(key)) by {
         assert(part_count(parts, key) == eligible(db, key as int));
         if let Some(data) = parts.lookup(key) {
             assert forall|index: int| #![trigger data.pairs@[index]] 0 <= index < data.pairs@.len() implies
-                pair_valid(*data.pairs@[index].1) && (data.pairs@[index].1.stocks@.len() > 0 || data.pairs@[index].1.ship@.len() > 0) by {
+                pair_valid(data.pairs@[index].1) && (data.pairs@[index].1.stocks@.len() > 0 || data.pairs@[index].1.ship@.len() > 0) by {
                 lemma_pair_at(parts, key, data.pairs@[index].0, &data, index);
             }
             assert forall|supplier: i64, value: int| #![trigger part_stock(data.pairs@, supplier, value)] part_stock(data.pairs@, supplier, value) == stock_count(db, key as int, supplier as int, value) by {
@@ -303,10 +288,6 @@ pub proof fn lemma_meaning_components(db: Db, parts: Table<Part>, directory: Tab
                 }
             }
         }
-    }
-    assert forall|supplier: i64, key: i64| #![trigger directory_contains(directory, supplier, key)] directory_contains(directory, supplier, key) ==
-        match parts.lookup(key) { Some(data) => stock_support(data.pairs@, supplier), None => false } by {
-        if let Some(data) = parts.lookup(key) { lemma_stock_support_lookup(&data, supplier); }
     }
 }
 }

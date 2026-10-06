@@ -29,12 +29,6 @@ pub(crate) proof fn lemma_nation_point(state: State, key: i64, row: NationRow)
         |value: NationRow| if value == row && value.n_nationkey == key as int { 1int } else { 0int });
 }
 
-pub(crate) proof fn lemma_part_point(state: State, key: i64, size: i64, mfgr: Seq<u8>)
-    requires state.meaning(), state.db() == state.database@,
-    ensures part_amount(state.parts, key, size, mfgr) == sum(state.db().part,
-        |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1int } else { 0int }),
-{}
-
 pub(crate) proof fn lemma_supplier_weight(state: State, key: i64, weight: spec_fn(SupplierRow) -> int)
     requires state.meaning(), state.db() == state.database@,
     ensures index_weight(state.suppliers, key, weight) ==
@@ -127,19 +121,7 @@ pub(crate) proof fn lemma_nation_weight(state: State, key: i64, weight: spec_fn(
     }
 }
 
-pub open spec fn manufacturer_bag(parts: Directory<PartBucket>, key: i64, size: i64) -> Option<std::sync::Arc<Bag<BrassPartScan>>> {
-    match parts.lookup(key) {
-        None => None, Some(part) => (*part).sizes.lookup(size),
-    }
-}
-
-pub open spec fn manufacturer_weight(parts: Directory<PartBucket>, key: i64, size: i64, weight: spec_fn(Seq<u8>) -> int) -> int {
-    match manufacturer_bag(parts, key, size) {
-        None => 0int, Some(bag) => (*bag).weight(|row: (int, Seq<u8>, int)| weight(row.1)),
-    }
-}
-
-pub proof fn lemma_brass_entries(entries: Seq<Counted<BrassPartScan>>, weight: spec_fn((int, Seq<u8>, int)) -> int,
+pub proof fn lemma_brass_entries(entries: Seq<Counted<BrassPartScan>>, weight: spec_fn(PartRow) -> int,
     raw: spec_fn(Counted<BrassPartScan>) -> int)
     requires forall|entry: Counted<BrassPartScan>| #[trigger] raw(entry) == entry.count as int * weight((*entry.row).rv()),
     ensures weighted_entries(entries, weight) == sum(entries, raw),
@@ -208,60 +190,5 @@ pub(crate) proof fn lemma_quote_weight(state: State, key: i64, weight: spec_fn(P
     }
 }
 
-pub(crate) proof fn lemma_manufacturer_weight(state: State, key: i64, size: i64, weight: spec_fn(Seq<u8>) -> int)
-    requires state.meaning(), state.db() == state.database@,
-    ensures manufacturer_weight(state.parts, key, size, weight) == sum(state.db().part,
-        |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { weight(row.p_mfgr) } else { 0int }),
-{
-    let db = state.db();
-    if manufacturer_bag(state.parts, key, size) is Some {
-        let bag = manufacturer_bag(state.parts, key, size)->0;
-        let left_project = |row: PartRow| row.p_mfgr;
-        let right_project = |entry: Counted<BrassPartScan>| (*entry.row).p_mfgr@;
-        let left_count = |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int };
-        let right_count = |entry: Counted<BrassPartScan>| entry.count as int;
-        assert forall|mfgr: Seq<u8>| #[trigger] class_total(db.part, left_project, left_count, mfgr) ==
-            class_total((*bag).entries@, right_project, right_count, mfgr) by {
-            reveal(class_total);
-            lemma_sum_ext_all(db.part,
-                |row: PartRow| if left_project(row) == mfgr { left_count(row) } else { 0int },
-                |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1int } else { 0int });
-            lemma_sum_ext_all((*bag).entries@,
-                |entry: Counted<BrassPartScan>| if right_project(entry) == mfgr { right_count(entry) } else { 0int },
-                |entry: Counted<BrassPartScan>| entry.count as int * if (*entry.row).p_mfgr@ == mfgr { 1int } else { 0int });
-            assert(part_amount(state.parts, key, size, mfgr) == sum(db.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1int } else { 0int }));
-            assert((*bag).weight(|row: (int, Seq<u8>, int)| if row.1 == mfgr { 1int } else { 0int }) ==
-                weighted_entries((*bag).entries@, |row: (int, Seq<u8>, int)| if row.1 == mfgr { 1int } else { 0int }));
-            lemma_sum_ext_all((*bag).entries@,
-                |entry: Counted<BrassPartScan>| if right_project(entry) == mfgr { right_count(entry) } else { 0int },
-                |entry: Counted<BrassPartScan>| entry.count as int * (if (*entry.row).rv().1 == mfgr { 1int } else { 0int }));
-            lemma_brass_entries((*bag).entries@, |row: (int, Seq<u8>, int)| if row.1 == mfgr { 1int } else { 0int },
-                |entry: Counted<BrassPartScan>| if right_project(entry) == mfgr { right_count(entry) } else { 0int });
-            assert(class_total((*bag).entries@, right_project, right_count, mfgr) == part_amount(state.parts, key, size, mfgr));
-        }
-        lemma_equal_classes(db.part, (*bag).entries@, left_project, right_project, left_count, right_count, weight);
-        lemma_sum_ext_all(db.part, |row: PartRow| left_count(row) * weight(left_project(row)),
-            |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { weight(row.p_mfgr) } else { 0int });
-        lemma_sum_ext_all((*bag).entries@, |entry: Counted<BrassPartScan>| right_count(entry) * weight(right_project(entry)),
-            |entry: Counted<BrassPartScan>| entry.count as int * weight((*entry.row).rv().1));
-        assert((*bag).weight(|row: (int, Seq<u8>, int)| weight(row.1)) == weighted_entries((*bag).entries@, |row: (int, Seq<u8>, int)| weight(row.1)));
-        lemma_brass_entries((*bag).entries@, |row: (int, Seq<u8>, int)| weight(row.1),
-            |entry: Counted<BrassPartScan>| right_count(entry) * weight(right_project(entry)));
-        assert(manufacturer_weight(state.parts, key, size, weight) == sum((*bag).entries@,
-            |entry: Counted<BrassPartScan>| right_count(entry) * weight(right_project(entry))));
-    } else {
-        assert forall|index: int| 0 <= index < db.part.len() implies
-            !brass(#[trigger] db.part[index]) || db.part[index].p_partkey != key as int || db.part[index].p_size != size as int by {
-            let row = db.part[index];
-            if brass(row) && row.p_partkey == key as int && row.p_size == size as int {
-                let count = |value: PartRow| if brass(value) && value.p_partkey == key as int && value.p_size == size as int && value.p_mfgr == row.p_mfgr { 1int } else { 0int };
-                lemma_part_point(state, key, size, row.p_mfgr);
-                assert(part_amount(state.parts, key, size, row.p_mfgr) == sum(db.part, count));
-                lemma_sum_pos(db.part, count, index);
-            }
-        }
-        lemma_sum_zero(db.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { weight(row.p_mfgr) } else { 0int });
-    }
-}
 
 }

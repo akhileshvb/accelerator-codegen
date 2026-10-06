@@ -51,7 +51,7 @@ pub proof fn lemma_no_aggregate(db: Db, parameters: Params)
 }
 
 pub proof fn lemma_empty_interval(db: Db, parameters: Params)
-    requires parameters.p1 >= parameters.p3,
+    requires parameters.p1 >= parameters.p4,
     ensures query_result(db, parameters, Seq::empty()),
 {
     let inputs = db.lineitem.map_values(|row: LineitemRow| agg_lineitem_tuples_1(db, parameters, row));
@@ -66,17 +66,17 @@ pub proof fn lemma_empty_interval(db: Db, parameters: Params)
 }
 
 pub proof fn lemma_absent_nation(db: Db, nations: Nations, parameters: Params)
-    requires domain_valid(db), nations.lookup(crate::profiles::name_hash(parameters.p2) as i64).is_none(),
-        forall|key: i64| #![trigger nation_count(nations, parameters.p2, key)]
-            nation_count(nations, parameters.p2, key) == sum(db.nation, |row: NationRow| if row.n_name == parameters.p2 && row.n_nationkey == key { 1 } else { 0 }),
+    requires domain_valid(db), nations.lookup(crate::profiles::name_hash(parameters.p3) as i64).is_none(),
+        forall|key: i64| #![trigger nation_count(nations, parameters.p3, key)]
+            nation_count(nations, parameters.p3, key) == sum(db.nation, |row: NationRow| if row.n_name == parameters.p3 && row.n_nationkey == key { 1 } else { 0 }),
     ensures query_result(db, parameters, Seq::empty()),
 {
     assert forall|index: int| #![trigger db.nation[index]] 0 <= index < db.nation.len()
-        implies db.nation[index].n_name != parameters.p2 by {
-        if db.nation[index].n_name == parameters.p2 {
+        implies db.nation[index].n_name != parameters.p3 by {
+        if db.nation[index].n_name == parameters.p3 {
             let key = db.nation[index].n_nationkey as i64;
-            let weight = |row: NationRow| if row.n_name == parameters.p2 && row.n_nationkey == key { 1int } else { 0int };
-            assert(nation_count(nations, parameters.p2, key) == 0);
+            let weight = |row: NationRow| if row.n_name == parameters.p3 && row.n_nationkey == key { 1int } else { 0int };
+            assert(nation_count(nations, parameters.p3, key) == 0);
             assert(key as int == db.nation[index].n_nationkey);
             lemma_sum_pos(db.nation, weight, index);
             assert(false);

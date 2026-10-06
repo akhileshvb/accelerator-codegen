@@ -13,6 +13,11 @@ use crate::query_proofs::*;
 use crate::read_proofs::*;
 use crate::update_proofs::*;
 use verus_common::sums::sum;
+use verus_common::sums::lemma_sum_nonzero_witness;
+use verus_common::sums::lemma_sum_pos;
+use crate::profile_proofs::pair_lookup;
+use verus_common::sums::bag_step;
+use verus_common::sqlfns::like_match;
 use verus_common::sums::lemma_sum_take;
 use verus_prooflib::{lemma_unique_push, lemma_push_membership};
 
@@ -26,12 +31,13 @@ pub struct Data {
     stock_pairs: Table<Vec<i64>>,
     suppliers: Suppliers,
     nations: Nations,
+    names: PartNames,
 }
 impl State {
     pub closed spec fn db(self) -> Db { self.db@ }
     #[verifier::type_invariant]
     pub closed spec fn valid(self) -> bool {
-        meaning(self.db@, self.data.parts, self.data.stock_pairs, self.data.suppliers, self.data.nations)
+        meaning(self.db@, self.data.parts, self.data.stock_pairs, self.data.suppliers, self.data.nations, self.data.names)
             && domain_valid(self.db@)
     }
 }
@@ -141,225 +147,136 @@ pub fn shipment_change(work: &mut HashMap<i64, PartWork>, row: &ShipmentInput, s
     }
     true
 }
-pub fn directory_edit(directory: &mut Table<Vec<i64>>, supplier: i64, part: i64, present: bool)
-    requires directory_unique(*old(directory)),
-    ensures directory_unique(*final(directory)),
-        forall|other_supplier: i64, other_part: i64| #![trigger directory_contains(*final(directory), other_supplier, other_part)]
-            directory_contains(*final(directory), other_supplier, other_part) ==
-                if other_supplier == supplier && other_part == part { present } else { directory_contains(*old(directory), other_supplier, other_part) },
-{
-    let ghost previous = *directory;
-    let mut keys = match directory.get(supplier) { Some(value) => copy_i64(&value), None => Vec::new() };
-    let ghost before = keys@;
-    let mut index = 0;
-    while index < keys.len() && keys[index] != part
-        invariant index <= keys.len(), keys@ == before,
-            forall|offset: int| #![trigger before[offset]] 0 <= offset < index ==> before[offset] != part,
-        decreases keys.len() - index,
-    {
-        index += 1;
-    }
-    if present && index == keys.len() {
-        proof { assert(!keys@.contains(part)); verus_prooflib::lemma_unique_push(keys@, part); lemma_push_membership(keys@, part); }
-        keys.push(part);
-    }
-    if !present && index < keys.len() {
-        proof { verus_prooflib::lemma_unique_remove(keys@, index as int); }
-        keys.remove(index);
-        proof {
-            assert forall|probe: i64| #[trigger] keys@.contains(probe) <==> before.contains(probe) && probe != part by {
-                if keys@.contains(probe) {
-                    let position = choose|position: int| #![trigger keys@[position]] 0 <= position < keys@.len() && keys@[position] == probe;
-                    let source = if position < index { position } else { position + 1 };
-                    assert(keys@[position] == before[source]);
-                    assert(source != index);
-                }
-                if before.contains(probe) && probe != part {
-                    let source = choose|source: int| #![trigger before[source]] 0 <= source < before.len() && before[source] == probe;
-                    let position = if source < index { source } else { source - 1 };
-                    assert(keys@[position] == before[source]);
-                }
-            }
-        }
-    }
-    let ghost updated = keys@;
-    if keys.len() == 0 { directory.put(supplier, None); } else { directory.put(supplier, Some(Arc::new(keys))); }
-    proof {
-        assert forall|other_supplier: i64, other_part: i64| #![trigger directory_contains(*directory, other_supplier, other_part)]
-            directory_contains(*directory, other_supplier, other_part) ==
-                if other_supplier == supplier && other_part == part { present } else { directory_contains(previous, other_supplier, other_part) } by {
-            if other_supplier == supplier { assert(directory_contains(*directory, supplier, other_part) == updated.contains(other_part)); }
-        }
-    }
-}
 fn publish_part(state: &mut Data, key: i64, part: Option<Part>)
-    requires directory_unique(old(state).stock_pairs),
     ensures final(state).parts.lookup(key) == part,
         forall|other: i64| #![trigger final(state).parts.lookup(other)] other != key ==>
             final(state).parts.lookup(other) == old(state).parts.lookup(other),
-        final(state).suppliers == old(state).suppliers, final(state).nations == old(state).nations,
-        directory_unique(final(state).stock_pairs),
-        directory_matches(old(state).parts, old(state).stock_pairs) ==> directory_matches(final(state).parts, final(state).stock_pairs),
+        final(state).suppliers == old(state).suppliers, final(state).nations == old(state).nations, final(state).names == old(state).names,
+        final(state).stock_pairs == old(state).stock_pairs,
 {
-    let ghost previous_parts = state.parts;
-    let ghost previous_suppliers = state.suppliers;
-    let ghost previous_nations = state.nations;
-    let ghost previous_directory = state.stock_pairs;
-    if let Some(data) = state.parts.get(key) {
-        let mut index = 0;
-        while index < data.pairs.len()
-            invariant index <= data.pairs.len(), state.parts == previous_parts, state.suppliers == previous_suppliers, state.nations == previous_nations,
-                directory_unique(state.stock_pairs),
-                forall|supplier: i64| #![trigger directory_contains(state.stock_pairs, supplier, key)]
-                    directory_contains(state.stock_pairs, supplier, key) ==
-                        (directory_contains(previous_directory, supplier, key) && !stock_support(data.pairs@.take(index as int), supplier)),
-                forall|supplier: i64, other: i64| #![trigger directory_contains(state.stock_pairs, supplier, other)] other != key ==>
-                    directory_contains(state.stock_pairs, supplier, other) == directory_contains(previous_directory, supplier, other),
-            decreases data.pairs.len() - index,
-        {
-            let ghost before = state.stock_pairs;
-            if data.pairs[index].1.stocks.len() > 0 { directory_edit(&mut state.stock_pairs, data.pairs[index].0, key, false); }
-            proof {
-                assert forall|supplier: i64| #![trigger directory_contains(state.stock_pairs, supplier, key)]
-                    directory_contains(state.stock_pairs, supplier, key) ==
-                        (directory_contains(previous_directory, supplier, key) && !stock_support(data.pairs@.take(index as int + 1), supplier)) by {
-                    lemma_stock_support_step(data.pairs@, index as int, supplier);
-                    assert(directory_contains(before, supplier, key) == (directory_contains(previous_directory, supplier, key) && !stock_support(data.pairs@.take(index as int), supplier)));
-                }
-            }
-            index += 1;
-        }
-        proof { assert(data.pairs@.take(data.pairs.len() as int) =~= data.pairs@); }
-    }
-    proof {
-        if directory_matches(previous_parts, previous_directory) {
-            assert forall|supplier: i64| !#[trigger] directory_contains(state.stock_pairs, supplier, key) by {
-                if let Some(data) = previous_parts.lookup(key) {
-                    assert(directory_contains(previous_directory, supplier, key) == stock_support(data.pairs@, supplier));
-                }
-            }
-        }
-    }
     match part {
         None => state.parts.put(key, None),
-        Some(data) => {
-            let mut index = 0;
-            while index < data.pairs.len()
-                invariant index <= data.pairs.len(), state.parts == previous_parts, state.suppliers == previous_suppliers, state.nations == previous_nations,
-                    directory_unique(state.stock_pairs),
-                    directory_matches(previous_parts, previous_directory) ==> forall|supplier: i64| #![trigger directory_contains(state.stock_pairs, supplier, key)]
-                        directory_contains(state.stock_pairs, supplier, key) == stock_support(data.pairs@.take(index as int), supplier),
-                    forall|supplier: i64, other: i64| #![trigger directory_contains(state.stock_pairs, supplier, other)] other != key ==>
-                        directory_contains(state.stock_pairs, supplier, other) == directory_contains(previous_directory, supplier, other),
-                decreases data.pairs.len() - index,
-            {
-                let ghost before = state.stock_pairs;
-                if data.pairs[index].1.stocks.len() > 0 { directory_edit(&mut state.stock_pairs, data.pairs[index].0, key, true); }
-                proof {
-                    if directory_matches(previous_parts, previous_directory) {
-                        assert forall|supplier: i64| #![trigger directory_contains(state.stock_pairs, supplier, key)]
-                            directory_contains(state.stock_pairs, supplier, key) == stock_support(data.pairs@.take(index as int + 1), supplier) by {
-                            lemma_stock_support_step(data.pairs@, index as int, supplier);
-                            assert(directory_contains(before, supplier, key) == stock_support(data.pairs@.take(index as int), supplier));
-                        }
-                    }
-                }
-                index += 1;
-            }
-            proof { assert(data.pairs@.take(data.pairs.len() as int) =~= data.pairs@); }
-            state.parts.put(key, Some(Arc::new(data)));
-        },
+        Some(data) => state.parts.put(key, Some(Arc::new(data))),
     }
 }
 pub fn build(
-    qualifying_parts: &[QualifyingPartInput], stocks: &[StockInput], shipments: &[ShipmentInput],
+    parts: Vec<PartInput>, stocks: &[StockInput], shipments: &[ShipmentInput],
     suppliers: Vec<SupplierInput>, nations: Vec<NationInput>, Ghost(db): Ghost<Db>,
 ) -> (result: Option<State>)
-    requires scan_qualifying_parts_ok(db, qualifying_parts@), scan_stocks_ok(db, stocks@),
+    requires scan_parts_ok(db, parts@), scan_stocks_ok(db, stocks@),
         scan_shipments_ok(db, shipments@), scan_suppliers_ok(db, suppliers@), scan_nations_ok(db, nations@),
     ensures result matches Some(state) ==> state.db() == db,
 {
-    let mut state = Data { parts: Table::new(), stock_pairs: Table::new(), suppliers: Table::new(), nations: Table::new() };
+    let mut state = Data { parts: Table::new(), stock_pairs: Table::new(), suppliers: Table::new(), nations: Table::new(), names: Table::new() };
     let ghost initial_parts = state.parts;
     let ghost initial_directory = state.stock_pairs;
     let ghost initial_suppliers = state.suppliers;
     let ghost initial_nations = state.nations;
+    let ghost initial_names = state.names;
     let ghost projected = crate::semantic_proofs::scan_db(db, stocks@, shipments@, suppliers@, nations@);
     proof {
-        crate::state_proofs::lemma_build_domain(db, qualifying_parts@, stocks@, shipments@, suppliers@, nations@);
-        assert(dimensions_empty(initial_suppliers, initial_nations));
+        crate::state_proofs::lemma_build_domain(db, parts@, stocks@, shipments@, suppliers@, nations@);
+        assert(dimensions_empty(initial_suppliers, initial_nations, initial_names));
     }
-    let mut work: HashMap<i64, PartWork> = HashMap::new(); let mut keys = Vec::new(); let mut index = 0;
-    while index < qualifying_parts.len()
-        invariant index <= qualifying_parts.len(), work@.dom() == keys@.to_set(), keys@.no_duplicates(),
-            domain_valid(db), dimensions_empty(initial_suppliers, initial_nations),
-            work_shape(work@), state.parts == initial_parts, state.stock_pairs == initial_directory,
+    let mut chunk: u64 = 0;
+    while chunk < 16
+        invariant chunk <= 16, domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names),
             projected == crate::semantic_proofs::scan_db(db, stocks@, shipments@, suppliers@, nations@),
-            state.suppliers == initial_suppliers, state.nations == initial_nations,
-            scan_qualifying_parts_ok(db, qualifying_parts@),
-            forall|key: i64| #[trigger] part_count(state.parts, key) == 0,
+            scan_parts_ok(db, parts@),
+            directory_matches(state.parts, state.stock_pairs),
+            state.suppliers == initial_suppliers, state.nations == initial_nations, state.names == initial_names,
+            forall|key: i64| #![trigger state.parts.lookup(key)] chunk_of(key) < chunk as int ==>
+                part_correct(projected, key, state.parts.lookup(key)),
+            forall|key: i64| #![trigger state.parts.lookup(key)] chunk_of(key) >= chunk as int ==> state.parts.lookup(key).is_none(),
+            forall|key: i64| #![trigger part_count(state.parts, key)] part_count(state.parts, key)
+                == if chunk_of(key) < chunk as int { eligible(db, key as int) } else { 0 },
+        decreases 16 - chunk,
+    {
+    let ghost chunk_parts = state.parts;
+    let ghost chunk_directory = state.stock_pairs;
+    let mut work: HashMap<i64, PartWork> = HashMap::new(); let mut keys = Vec::new(); let mut index = 0;
+    while index < parts.len()
+        invariant index <= parts.len(), work@.dom() == keys@.to_set(), keys@.no_duplicates(), chunk < 16,
+            domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names),
+            work_shape(work@), state.parts == chunk_parts, state.stock_pairs == chunk_directory,
+            projected == crate::semantic_proofs::scan_db(db, stocks@, shipments@, suppliers@, nations@),
+            state.suppliers == initial_suppliers, state.nations == initial_nations, state.names == initial_names,
+            scan_parts_ok(db, parts@),
             forall|key: i64| #![trigger work_part_count(work@, key)]
-                work_part_count(work@, key) == sum(qualifying_parts@.take(index as int), |row: QualifyingPartInput| if row.p_partkey == key { 1 } else { 0 }),
+                work_part_count(work@, key) == if chunk_of(key) == chunk as int { sum(parts@.take(index as int), |row: PartInput| if row.p_partkey == key { 1 } else { 0 }) } else { 0 },
             forall|key: i64| #![trigger work@[key]] work@.contains_key(key) ==>
                 work@[key].pairs@.is_empty() && work@[key].original@.is_empty(),
-        decreases qualifying_parts.len() - index,
+            forall|key: i64| #![trigger keys@.contains(key)] keys@.contains(key) ==> chunk_of(key) == chunk as int,
+        decreases parts.len() - index,
     {
         let ghost processed = index as int;
         let ghost before = work@;
         let ghost support = keys@;
-        let key = qualifying_parts[index].p_partkey;
-        let mut part = match work.remove(&key) {
-            Some(value) => value,
-            None => {
-                proof { lemma_unique_push(keys@, key); lemma_push_membership(keys@, key); }
-                keys.push(key); PartWork::new(0)
-            },
-        };
-        proof { assert(part.count as int == work_part_count(before, key)); }
-        let count = match add(part.count, 1) { Some(value) => value, None => return None };
-        part.count = count;
-        let ghost replacement = part;
-        let ghost remaining = work@;
-        work.insert(key, part);
-        proof {
-            assert(remaining == before.remove(key));
-            assert(work@ == remaining.insert(key, replacement));
-            assert(work_part_count(work@, key) == work_part_count(before, key) + 1);
-            assert forall|other: i64| #[trigger] work@.contains_key(other) == keys@.contains(other) by {
-                assert(work@.contains_key(other) == (before.contains_key(other) || other == key));
-                if before.contains_key(key) { assert(keys@ == support); }
-                else { assert(keys@ == support.push(key)); }
+        let key = parts[index].p_partkey;
+        if (key as u64) % 16 == chunk {
+            let mut part = match work.remove(&key) {
+                Some(value) => value,
+                None => {
+                    proof { lemma_unique_push(keys@, key); lemma_push_membership(keys@, key); }
+                    keys.push(key); PartWork::new(0)
+                },
+            };
+            proof { assert(part.count as int == work_part_count(before, key)); assert(chunk_of(key) == chunk as int); }
+            let count = match add(part.count, 1) { Some(value) => value, None => return None };
+            part.count = count;
+            let ghost replacement = part;
+            let ghost remaining = work@;
+            work.insert(key, part);
+            proof {
+                assert(remaining == before.remove(key));
+                assert(work@ == remaining.insert(key, replacement));
+                assert(work_part_count(work@, key) == work_part_count(before, key) + 1);
+                assert forall|other: i64| #[trigger] work@.contains_key(other) == keys@.contains(other) by {
+                    assert(work@.contains_key(other) == (before.contains_key(other) || other == key));
+                    if before.contains_key(key) { assert(keys@ == support); }
+                    else { assert(keys@ == support.push(key)); }
+                }
+                assert(work@.dom() =~= keys@.to_set());
+                assert forall|other: i64| #![trigger keys@.contains(other)] keys@.contains(other) implies chunk_of(other) == chunk as int by {
+                    if before.contains_key(key) { assert(keys@ == support); } else { assert(keys@ == support.push(key)); }
+                }
+                assert forall|other: i64| #![trigger work_part_count(work@, other)]
+                    work_part_count(work@, other) == if chunk_of(other) == chunk as int { sum(parts@.take(index as int + 1), |row: PartInput| if row.p_partkey == other { 1 } else { 0 }) } else { 0 } by {
+                    lemma_sum_take(parts@, index as int, |row: PartInput| if row.p_partkey == other { 1 } else { 0 });
+                    if other != key {
+                        assert(work_part_count(work@, other) == work_part_count(before, other));
+                    }
+                }
             }
-            assert(work@.dom() =~= keys@.to_set());
-            assert forall|other: i64| #![trigger work_part_count(work@, other)]
-                work_part_count(work@, other) == sum(qualifying_parts@.take(index as int + 1), |row: QualifyingPartInput| if row.p_partkey == other { 1 } else { 0 }) by {
-                lemma_sum_take(qualifying_parts@, index as int, |row: QualifyingPartInput| if row.p_partkey == other { 1 } else { 0 });
-                if other != key {
-                    assert(work_part_count(work@, other) == work_part_count(before, other));
-                    assert(work_part_count(before, other) == sum(qualifying_parts@.take(index as int), |row: QualifyingPartInput| if row.p_partkey == other { 1 } else { 0 }));
+        } else {
+            proof {
+                assert forall|other: i64| #![trigger work_part_count(work@, other)]
+                    work_part_count(work@, other) == if chunk_of(other) == chunk as int { sum(parts@.take(index as int + 1), |row: PartInput| if row.p_partkey == other { 1 } else { 0 }) } else { 0 } by {
+                    lemma_sum_take(parts@, index as int, |row: PartInput| if row.p_partkey == other { 1 } else { 0 });
+                    if chunk_of(other) == chunk as int { assert(other != key); }
                 }
             }
         }
         index += 1;
     }
     proof {
-        assert(qualifying_parts@.take(qualifying_parts.len() as int) =~= qualifying_parts@);
-        assert forall|key: i64| #![trigger work_part_count(work@, key)] work_part_count(work@, key) == eligible(db, key as int) by {
-            crate::semantic_proofs::lemma_build_part_count(db, qualifying_parts@, key as int);
+        assert(parts@.take(parts.len() as int) =~= parts@);
+        assert forall|key: i64| #![trigger work_part_count(work@, key)] work_part_count(work@, key) == if chunk_of(key) == chunk as int { eligible(db, key as int) } else { 0 } by {
+            crate::semantic_proofs::lemma_build_part_count(db, parts@, key as int);
         }
     }
     let mut index = 0;
     while index < stocks.len()
-        invariant index <= stocks.len(), empty_originals(work@),
-            domain_valid(db), dimensions_empty(initial_suppliers, initial_nations),
-            work_shape(work@), state.parts == initial_parts, state.stock_pairs == initial_directory,
+        invariant index <= stocks.len(), empty_originals(work@), chunk < 16,
+            forall|key: i64| #![trigger keys@.contains(key)] keys@.contains(key) ==> chunk_of(key) == chunk as int,
+            domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names),
+            work_shape(work@), state.parts == chunk_parts, state.stock_pairs == chunk_directory,
             projected == crate::semantic_proofs::scan_db(db, stocks@, shipments@, suppliers@, nations@),
-            state.suppliers == initial_suppliers, state.nations == initial_nations,
+            state.suppliers == initial_suppliers, state.nations == initial_nations, state.names == initial_names,
             work@.dom() == keys@.to_set(), keys@.no_duplicates(),
-            forall|key: i64| #[trigger] part_count(state.parts, key) == 0,
-            forall|key: i64| #![trigger work_part_count(work@, key)] work_part_count(work@, key) == eligible(db, key as int),
+            forall|key: i64| #![trigger work_part_count(work@, key)] work_part_count(work@, key) == if chunk_of(key) == chunk as int { eligible(db, key as int) } else { 0 },
             forall|part: i64, supplier: i64, value: int| #![trigger work_stock_count(work@, part, supplier, value)]
-                work_stock_count(work@, part, supplier, value) == sum(stocks@.take(index as int), |row: StockInput| if row.ps_partkey == part && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 }),
+                chunk_of(part) == chunk as int && eligible(db, part as int) > 0 ==> work_stock_count(work@, part, supplier, value) == sum(stocks@.take(index as int), |row: StockInput| if row.ps_partkey == part && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 }),
             forall|part: i64, supplier: i64, date: int| #![trigger work_day_count(work@, part, supplier, date)]
                 work_day_count(work@, part, supplier, date) == 0 && work_day_quantity(work@, part, supplier, date) == 0,
             forall|part: i64, supplier: i64, date: int| #![trigger work_day_quantity(work@, part, supplier, date)]
@@ -367,11 +284,21 @@ pub fn build(
         decreases stocks.len() - index,
     {
         let ghost processed = index as int;
-        if !stock_change(&mut work, &stocks[index], 1) { return None; }
+        let present = (stocks[index].ps_partkey as u64) % 16 == chunk && work.contains_key(&stocks[index].ps_partkey);
+        if present { if !stock_change(&mut work, &stocks[index], 1) { return None; } }
         proof {
+            if !present {
+                assert(work_part_count(work@, stocks@[index as int].ps_partkey) == 0) by {
+                    if chunk_of(stocks@[index as int].ps_partkey) == chunk as int { assert(!work@.contains_key(stocks@[index as int].ps_partkey)); }
+                }
+            }
             assert forall|part: i64, supplier: i64, value: int| #![trigger work_stock_count(work@, part, supplier, value)]
-                work_stock_count(work@, part, supplier, value) == sum(stocks@.take(index as int + 1), |row: StockInput| if row.ps_partkey == part && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 }) by {
+                chunk_of(part) == chunk as int && eligible(db, part as int) > 0 ==> work_stock_count(work@, part, supplier, value) == sum(stocks@.take(index as int + 1), |row: StockInput| if row.ps_partkey == part && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 }) by {
                 lemma_sum_take(stocks@, index as int, |row: StockInput| if row.ps_partkey == part && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 });
+                if !present && chunk_of(part) == chunk as int && eligible(db, part as int) > 0 {
+                    assert(work_part_count(work@, part) == eligible(db, part as int));
+                    assert(part != stocks@[index as int].ps_partkey);
+                }
             }
         }
         index += 1;
@@ -379,32 +306,46 @@ pub fn build(
     let mut index = 0;
     proof { assert(stocks@.take(stocks.len() as int) =~= stocks@); }
     while index < shipments.len()
-        invariant index <= shipments.len(), empty_originals(work@),
-            domain_valid(db), dimensions_empty(initial_suppliers, initial_nations),
-            work_shape(work@), state.parts == initial_parts, state.stock_pairs == initial_directory,
+        invariant index <= shipments.len(), empty_originals(work@), chunk < 16,
+            forall|key: i64| #![trigger keys@.contains(key)] keys@.contains(key) ==> chunk_of(key) == chunk as int,
+            domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names),
+            work_shape(work@), state.parts == chunk_parts, state.stock_pairs == chunk_directory,
             projected == crate::semantic_proofs::scan_db(db, stocks@, shipments@, suppliers@, nations@),
-            state.suppliers == initial_suppliers, state.nations == initial_nations,
+            state.suppliers == initial_suppliers, state.nations == initial_nations, state.names == initial_names,
             forall|part: i64, supplier: i64, value: int| #![trigger work_stock_count(work@, part, supplier, value)]
-                work_stock_count(work@, part, supplier, value) == sum(stocks@, |row: StockInput| if row.ps_partkey == part && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 }),
+                chunk_of(part) == chunk as int && eligible(db, part as int) > 0 ==> work_stock_count(work@, part, supplier, value) == sum(stocks@, |row: StockInput| if row.ps_partkey == part && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 }),
             work@.dom() == keys@.to_set(), keys@.no_duplicates(),
-            forall|key: i64| #[trigger] part_count(state.parts, key) == 0,
-            forall|key: i64| #![trigger work_part_count(work@, key)] work_part_count(work@, key) == eligible(db, key as int),
+            forall|key: i64| #![trigger work_part_count(work@, key)] work_part_count(work@, key) == if chunk_of(key) == chunk as int { eligible(db, key as int) } else { 0 },
             forall|part: i64, supplier: i64, date: int| #![trigger work_day_count(work@, part, supplier, date)]
-                work_day_count(work@, part, supplier, date) == sum(shipments@.take(index as int), |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { 1 } else { 0 }),
+                chunk_of(part) == chunk as int && eligible(db, part as int) > 0 ==> work_day_count(work@, part, supplier, date) == sum(shipments@.take(index as int), |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { 1 } else { 0 }),
             forall|part: i64, supplier: i64, date: int| #![trigger work_day_quantity(work@, part, supplier, date)]
-                work_day_quantity(work@, part, supplier, date) == sum(shipments@.take(index as int), |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { row.l_quantity as int } else { 0 }),
+                chunk_of(part) == chunk as int && eligible(db, part as int) > 0 ==> work_day_quantity(work@, part, supplier, date) == sum(shipments@.take(index as int), |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { row.l_quantity as int } else { 0 }),
         decreases shipments.len() - index,
     {
         let ghost processed = index as int;
-        if !shipment_change(&mut work, &shipments[index], 1) { return None; }
+        let present = (shipments[index].l_partkey as u64) % 16 == chunk && work.contains_key(&shipments[index].l_partkey);
+        if present { if !shipment_change(&mut work, &shipments[index], 1) { return None; } }
         proof {
+            if !present {
+                assert(work_part_count(work@, shipments@[index as int].l_partkey) == 0) by {
+                    if chunk_of(shipments@[index as int].l_partkey) == chunk as int { assert(!work@.contains_key(shipments@[index as int].l_partkey)); }
+                }
+            }
             assert forall|part: i64, supplier: i64, date: int| #![trigger work_day_count(work@, part, supplier, date)]
-                work_day_count(work@, part, supplier, date) == sum(shipments@.take(index as int + 1), |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { 1 } else { 0 }) by {
+                chunk_of(part) == chunk as int && eligible(db, part as int) > 0 ==> work_day_count(work@, part, supplier, date) == sum(shipments@.take(index as int + 1), |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { 1 } else { 0 }) by {
                 lemma_sum_take(shipments@, index as int, |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { 1 } else { 0 });
+                if !present && chunk_of(part) == chunk as int && eligible(db, part as int) > 0 {
+                    assert(work_part_count(work@, part) == eligible(db, part as int));
+                    assert(part != shipments@[index as int].l_partkey);
+                }
             }
             assert forall|part: i64, supplier: i64, date: int| #![trigger work_day_quantity(work@, part, supplier, date)]
-                work_day_quantity(work@, part, supplier, date) == sum(shipments@.take(index as int + 1), |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { row.l_quantity as int } else { 0 }) by {
+                chunk_of(part) == chunk as int && eligible(db, part as int) > 0 ==> work_day_quantity(work@, part, supplier, date) == sum(shipments@.take(index as int + 1), |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { row.l_quantity as int } else { 0 }) by {
                 lemma_sum_take(shipments@, index as int, |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { row.l_quantity as int } else { 0 });
+                if !present && chunk_of(part) == chunk as int && eligible(db, part as int) > 0 {
+                    assert(work_part_count(work@, part) == eligible(db, part as int));
+                    assert(part != shipments@[index as int].l_partkey);
+                }
             }
         }
         index += 1;
@@ -414,36 +355,36 @@ pub fn build(
     proof {
         assert(shipments@.take(shipments.len() as int) =~= shipments@);
         assert forall|part: i64, supplier: i64, date: int| #![trigger work_day_count(built, part, supplier, date)]
-            work_day_count(built, part, supplier, date) == sum(shipments@, |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { 1 } else { 0 })
+            chunk_of(part) == chunk as int && eligible(db, part as int) > 0 ==> work_day_count(built, part, supplier, date) == sum(shipments@, |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { 1 } else { 0 })
             && work_day_quantity(built, part, supplier, date) == sum(shipments@, |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { row.l_quantity as int } else { 0 }) by {
-            assert(work_day_quantity(built, part, supplier, date) == sum(shipments@, |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { row.l_quantity as int } else { 0 }));
         }
         keys@.to_set_ensures();
-        assert forall|key: i64| #![trigger keys@.contains(key)] !keys@.contains(key) implies eligible(db, key as int) == 0 by {
+        assert forall|key: i64| #![trigger keys@.contains(key)] !keys@.contains(key) && chunk_of(key) == chunk as int implies eligible(db, key as int) == 0 by {
             assert(!work@.contains_key(key));
             assert(work_part_count(work@, key) == eligible(db, key as int));
         }
     }
     while index < keys.len()
-        invariant index <= keys.len(), keys@.no_duplicates(),
-            domain_valid(db), dimensions_empty(initial_suppliers, initial_nations),
+        invariant index <= keys.len(), keys@.no_duplicates(), chunk < 16,
+            domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names),
             work@ == built.remove_keys(keys@.take(index as int).to_set()), work_shape(built),
             projected == crate::semantic_proofs::scan_db(db, stocks@, shipments@, suppliers@, nations@),
             directory_matches(state.parts, state.stock_pairs),
-            state.suppliers == initial_suppliers, state.nations == initial_nations,
-            forall|key: i64| #![trigger state.parts.lookup(key)] keys@.take(index as int).contains(key) ==>
+            state.suppliers == initial_suppliers, state.nations == initial_nations, state.names == initial_names,
+            forall|key: i64| #![trigger keys@.contains(key)] keys@.contains(key) ==> chunk_of(key) == chunk as int,
+            forall|key: i64| #![trigger state.parts.lookup(key)] chunk_of(key) < chunk as int || keys@.take(index as int).contains(key) ==>
                 part_correct(projected, key, state.parts.lookup(key)),
-            forall|key: i64| #![trigger state.parts.lookup(key)] !keys@.take(index as int).contains(key) ==> state.parts.lookup(key).is_none(),
+            forall|key: i64| #![trigger state.parts.lookup(key)] chunk_of(key) >= chunk as int && !keys@.take(index as int).contains(key) ==> state.parts.lookup(key).is_none(),
             forall|part: i64, supplier: i64, value: int| #![trigger work_stock_count(built, part, supplier, value)]
-                work_stock_count(built, part, supplier, value) == sum(stocks@, |row: StockInput| if row.ps_partkey == part && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 }),
+                chunk_of(part) == chunk as int && eligible(db, part as int) > 0 ==> work_stock_count(built, part, supplier, value) == sum(stocks@, |row: StockInput| if row.ps_partkey == part && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 }),
             forall|part: i64, supplier: i64, date: int| #![trigger work_day_count(built, part, supplier, date)]
-                work_day_count(built, part, supplier, date) == sum(shipments@, |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { 1 } else { 0 })
+                chunk_of(part) == chunk as int && eligible(db, part as int) > 0 ==> work_day_count(built, part, supplier, date) == sum(shipments@, |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { 1 } else { 0 })
                 && work_day_quantity(built, part, supplier, date) == sum(shipments@, |row: ShipmentInput| if row.l_partkey == part && row.l_suppkey == supplier && row.l_shipdate == date { row.l_quantity as int } else { 0 }),
-            forall|key: i64| #![trigger keys@.contains(key)] !keys@.contains(key) ==> eligible(db, key as int) == 0,
+            forall|key: i64| #![trigger keys@.contains(key)] !keys@.contains(key) && chunk_of(key) == chunk as int ==> eligible(db, key as int) == 0,
             forall|key: i64| #![trigger work_part_count(work@, key)] work_part_count(work@, key)
-                == if keys@.take(index as int).contains(key) { 0 } else { eligible(db, key as int) },
+                == if keys@.take(index as int).contains(key) { 0 } else if chunk_of(key) == chunk as int { eligible(db, key as int) } else { 0 },
             forall|key: i64| #![trigger part_count(state.parts, key)] part_count(state.parts, key)
-                == if keys@.take(index as int).contains(key) { eligible(db, key as int) } else { 0 },
+                == if keys@.take(index as int).contains(key) || chunk_of(key) < chunk as int { eligible(db, key as int) } else { 0 },
         decreases keys.len() - index,
     {
         let key = keys[index];
@@ -451,6 +392,8 @@ pub fn build(
         let ghost previous_parts = state.parts;
         proof {
             verus_prooflib::lemma_prefix_fresh(keys@, index as int);
+            assert(keys@.contains(key));
+            assert(chunk_of(key) == chunk as int);
             assert(work_part_count(previous_work, key) == eligible(db, key as int));
         }
         let raw = match work.remove(&key) { Some(value) => value, None => return None };
@@ -458,6 +401,8 @@ pub fn build(
         proof { assert(raw.count as int == eligible(db, key as int)); }
         let part = match raw.finish() { Some(value) => value, None => return None };
         proof {
+            assert(part.count > 0 && part.count == source.count);
+            assert(eligible(db, key as int) > 0);
             assert(source == built[key]);
             assert forall|supplier: i64, value: int| #![trigger source.stock_for(supplier, value)] source.stock_for(supplier, value) ==
                 sum(stocks@, |row: StockInput| if row.ps_partkey == key && row.ps_suppkey == supplier && row.ps_availqty == value { 1 } else { 0 }) by {
@@ -470,6 +415,7 @@ pub fn build(
                 assert(source.day_for(supplier, date, false) == work_day_count(built, key, supplier, date));
                 assert(source.day_for(supplier, date, true) == work_day_quantity(built, key, supplier, date));
                 assert(work_day_count(built, key, supplier, date) == sum(shipments@, |row: ShipmentInput| if row.l_partkey == key && row.l_suppkey == supplier && row.l_shipdate == date { 1 } else { 0 }));
+                assert(work_day_quantity(built, key, supplier, date) == sum(shipments@, |row: ShipmentInput| if row.l_partkey == key && row.l_suppkey == supplier && row.l_shipdate == date { row.l_quantity as int } else { 0 }));
             }
             crate::state_proofs::lemma_build_part(projected, key, source, &part, stocks@, shipments@);
         }
@@ -480,29 +426,59 @@ pub fn build(
             verus_prooflib::lemma_push_to_set(keys@.take(index as int), key);
             assert(work@ =~= built.remove_keys(keys@.take(index as int + 1).to_set()));
             assert forall|other: i64| #![trigger work_part_count(work@, other)] work_part_count(work@, other)
-                == if keys@.take(index as int + 1).contains(other) { 0 } else { eligible(db, other as int) } by {
-                assert(work_part_count(previous_work, other) == if keys@.take(index as int).contains(other) { 0 } else { eligible(db, other as int) });
+                == if keys@.take(index as int + 1).contains(other) { 0 } else if chunk_of(other) == chunk as int { eligible(db, other as int) } else { 0 } by {
+                assert(work_part_count(previous_work, other) == if keys@.take(index as int).contains(other) { 0 } else if chunk_of(other) == chunk as int { eligible(db, other as int) } else { 0 });
             }
             assert forall|other: i64| #![trigger part_count(state.parts, other)] part_count(state.parts, other)
-                == if keys@.take(index as int + 1).contains(other) { eligible(db, other as int) } else { 0 } by {
-                assert(part_count(previous_parts, other) == if keys@.take(index as int).contains(other) { eligible(db, other as int) } else { 0 });
+                == if keys@.take(index as int + 1).contains(other) || chunk_of(other) < chunk as int { eligible(db, other as int) } else { 0 } by {
+                assert(part_count(previous_parts, other) == if keys@.take(index as int).contains(other) || chunk_of(other) < chunk as int { eligible(db, other as int) } else { 0 });
+            }
+            assert forall|other: i64| #![trigger state.parts.lookup(other)] chunk_of(other) < chunk as int || keys@.take(index as int + 1).contains(other) implies
+                part_correct(projected, other, state.parts.lookup(other)) by {
+                if other != key { assert(state.parts.lookup(other) == previous_parts.lookup(other)); }
+            }
+            assert forall|other: i64| #![trigger state.parts.lookup(other)] chunk_of(other) >= chunk as int && !keys@.take(index as int + 1).contains(other) implies
+                state.parts.lookup(other).is_none() by {
+                assert(other != key);
+                assert(state.parts.lookup(other) == previous_parts.lookup(other));
             }
         }
         index += 1;
     }
     proof {
         assert(keys@.take(keys.len() as int) =~= keys@);
+        assert forall|key: i64| #![trigger state.parts.lookup(key)] chunk_of(key) < chunk as int + 1 implies
+            part_correct(projected, key, state.parts.lookup(key)) by {
+            if chunk_of(key) == chunk as int && !keys@.contains(key) {
+                assert(eligible(db, key as int) == 0);
+                assert(state.parts.lookup(key).is_none());
+            }
+        }
+        assert forall|key: i64| #![trigger state.parts.lookup(key)] chunk_of(key) >= chunk as int + 1 implies state.parts.lookup(key).is_none() by {
+            assert(!keys@.contains(key));
+        }
+        assert forall|key: i64| #![trigger part_count(state.parts, key)] part_count(state.parts, key)
+            == if chunk_of(key) < chunk as int + 1 { eligible(db, key as int) } else { 0 } by {
+            if chunk_of(key) == chunk as int && !keys@.contains(key) { assert(eligible(db, key as int) == 0); }
+        }
+    }
+    chunk += 1;
+    }
+    proof {
         assert forall|key: i64| #![trigger part_count(state.parts, key)] part_count(state.parts, key) == eligible(db, key as int) by {
-            if !keys@.contains(key) { assert(eligible(db, key as int) == 0); }
+            assert(chunk_of(key) < 16);
+        }
+        assert forall|key: i64| #![trigger state.parts.lookup(key)] part_correct(projected, key, state.parts.lookup(key)) by {
+            assert(chunk_of(key) < 16);
         }
     }
     let ghost finished_parts = state.parts;
     let ghost finished_directory = state.stock_pairs;
     let mut supplier_work = SupplierWork::new(); let mut index = 0;
     while index < suppliers.len() invariant index <= suppliers.len(), state.parts == finished_parts,
-        domain_valid(db), dimensions_empty(initial_suppliers, initial_nations),
+        domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names),
         projected == crate::semantic_proofs::scan_db(db, stocks@, shipments@, suppliers@, nations@),
-        supplier_work.shape(), state.stock_pairs == finished_directory, state.suppliers == initial_suppliers, state.nations == initial_nations,
+        supplier_work.shape(), state.stock_pairs == finished_directory, state.suppliers == initial_suppliers, state.nations == initial_nations, state.names == initial_names,
         directory_matches(state.parts, state.stock_pairs),
         forall|key: i64| #![trigger state.parts.lookup(key)] part_correct(projected, key, state.parts.lookup(key)),
         forall|key: i64| #![trigger part_count(state.parts, key)] part_count(state.parts, key) == eligible(db, key as int),
@@ -531,7 +507,7 @@ pub fn build(
     let ghost finished_suppliers = state.suppliers;
     let mut nation_work = NationWork::new(); let mut index = 0;
     while index < nations.len() invariant index <= nations.len(), state.parts == finished_parts, nation_work.shape(),
-        domain_valid(db), dimensions_empty(initial_suppliers, initial_nations), nation_work.hashes(), state.nations == initial_nations,
+        domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names), nation_work.hashes(), state.nations == initial_nations, state.names == initial_names,
         nations_positive(state.nations),
         projected == crate::semantic_proofs::scan_db(db, stocks@, shipments@, suppliers@, nations@),
         state.suppliers == finished_suppliers, supplier_correct(projected, state.suppliers),
@@ -557,93 +533,355 @@ pub fn build(
     }
     proof { assert(nations@.take(nations.len() as int) =~= nations@); }
     if !nation_work.publish(&mut state.nations) { return None; }
-    proof {
-        crate::state_proofs::lemma_nation_build(projected, state.nations, nations@);
-        use_type_invariant(&state.parts);
-        use_type_invariant(&state.stock_pairs);
-        use_type_invariant(&state.suppliers);
-        use_type_invariant(&state.nations);
-        state.parts.reveal_well_formed();
-        state.stock_pairs.reveal_well_formed();
-        state.suppliers.reveal_well_formed();
-        state.nations.reveal_well_formed();
-        crate::state_proofs::lemma_state_meaning(projected, state.parts, state.stock_pairs, state.suppliers, state.nations);
-        crate::semantic_proofs::lemma_build_meaning(db, stocks@, shipments@, suppliers@, nations@, state.parts, state.stock_pairs, state.suppliers, state.nations);
-    }
-    Some(State { db: Ghost(db), data: state })
-}
-fn qualifies(state: &Data, supplier: i64, start: i32, end: i32) -> (result: Option<bool>)
-    ensures read_shape(state.parts) ==> (result matches Some(value) ==>
-        value == cached_supplier_passes(state.parts, state.stock_pairs, supplier, start as int, end as int)),
-{
-    let keys = match state.stock_pairs.get(supplier) { Some(value) => value, None => return Some(false) };
-    let mut index = 0;
-    while index < keys.len()
-        invariant index <= keys.len(), state.stock_pairs.lookup(supplier) == Some(*keys),
-            read_shape(state.parts) ==> forall|offset: int| #![trigger keys@[offset]] 0 <= offset < index ==>
-                !cached_part_passes(state.parts, keys@[offset], supplier, start as int, end as int),
-        decreases keys.len() - index,
+    proof { crate::state_proofs::lemma_nation_build(projected, state.nations, nations@); }
+    let ghost finished_nations = state.nations;
+    let mut name_work = NameWork::new(); let mut index = 0;
+    proof { assert(names_positive(initial_names)); }
+    while index < parts.len() invariant index <= parts.len(), state.parts == finished_parts, name_work.shape(), names_positive(state.names),
+        domain_valid(db), dimensions_empty(initial_suppliers, initial_nations, initial_names), state.names == initial_names,
+        nations_positive(state.nations), state.nations == finished_nations, nation_correct(projected, state.nations),
+        projected == crate::semantic_proofs::scan_db(db, stocks@, shipments@, suppliers@, nations@),
+        state.suppliers == finished_suppliers, supplier_correct(projected, state.suppliers),
+        state.stock_pairs == finished_directory, directory_matches(state.parts, state.stock_pairs),
+        forall|key: i64| #![trigger state.parts.lookup(key)] part_correct(projected, key, state.parts.lookup(key)),
+        forall|key: i64| #![trigger part_count(state.parts, key)] part_count(state.parts, key) == eligible(db, key as int),
+        forall|key: i64, name: Seq<u8>| #![trigger name_work.count(initial_names, key, name)] name_work.count(initial_names, key, name) ==
+            sum(parts@.take(index as int), |row: PartInput| if row.p_partkey == key && row.p_name@ == name { 1 } else { 0 }),
+        decreases parts.len() - index,
     {
-        let part = match state.parts.get(keys[index]) { Some(value) => value, None => return None };
-        let mut pair_index = 0;
-        while pair_index < part.pairs.len() && part.pairs[pair_index].0 != supplier
-            invariant pair_index <= part.pairs.len(),
-                state.parts.lookup(keys@[index as int]) == Some(*part), index < keys.len(),
-                state.stock_pairs.lookup(supplier) == Some(*keys),
-                forall|offset: int| #![trigger part.pairs@[offset]] 0 <= offset < pair_index ==> part.pairs@[offset].0 != supplier,
-            decreases part.pairs.len() - pair_index,
-        {
-            pair_index += 1;
-        }
-        if pair_index == part.pairs.len() { return None; }
-        let pair = &*part.pairs[pair_index].1;
+        let ghost previous = name_work;
+        if !name_work.change(&state.names, &parts[index], 1) { return None; }
         proof {
-            if read_shape(state.parts) {
-                lemma_pair_at(state.parts, keys@[index as int], supplier, &*part, pair_index as int);
-                assert(pair_of(state.parts, keys@[index as int], supplier) == Some(*pair));
-                assert(pair_valid(*pair));
-            }
-        }
-        if pair.stocks.len() == 0 { return None; }
-        let lower = prefix(pair, start); let upper = prefix(pair, end);
-        let count = match sub(upper.0, lower.0) { Some(value) => value, None => return None };
-        let quantity = match sub(upper.1, lower.1) { Some(value) => value, None => return None };
-        let maximum = pair.stocks[pair.stocks.len() - 1].value as i128;
-        let threshold = match mul(maximum, 200) { Some(value) => value, None => return None };
-        if count > 0 && threshold > quantity {
-            proof {
-                if read_shape(state.parts) {
-                    assert(cached_part_passes(state.parts, keys@[index as int], supplier, start as int, end as int));
-                    assert(state.stock_pairs.lookup(supplier) == Some(*keys));
-                    assert(keys@.contains(keys@[index as int]));
-                    assert(directory_contains(state.stock_pairs, supplier, keys@[index as int]));
-                    assert(cached_supplier_passes(state.parts, state.stock_pairs, supplier, start as int, end as int));
-                }
-            }
-            return Some(true);
-        }
-        proof {
-            if read_shape(state.parts) {
-                assert(!cached_part_passes(state.parts, keys@[index as int], supplier, start as int, end as int));
+            assert forall|key: i64, name: Seq<u8>| #![trigger name_work.count(initial_names, key, name)] name_work.count(initial_names, key, name) ==
+                sum(parts@.take(index as int + 1), |row: PartInput| if row.p_partkey == key && row.p_name@ == name { 1 } else { 0 }) by {
+                let weight = |row: PartInput| if row.p_partkey == key && row.p_name@ == name { 1int } else { 0int };
+                assert(previous.count(initial_names, key, name) == sum(parts@.take(index as int), weight));
+                lemma_sum_take(parts@, index as int, weight);
             }
         }
         index += 1;
     }
+    proof { assert(parts@.take(parts.len() as int) =~= parts@); }
+    if !name_work.publish(&mut state.names) { return None; }
     proof {
-        if read_shape(state.parts) && cached_supplier_passes(state.parts, state.stock_pairs, supplier, start as int, end as int) {
-            let part = choose|part: i64| #![trigger cached_part_passes(state.parts, part, supplier, start as int, end as int)]
-                directory_contains(state.stock_pairs, supplier, part) && cached_part_passes(state.parts, part, supplier, start as int, end as int);
-            assert(directory_contains(state.stock_pairs, supplier, part) && cached_part_passes(state.parts, part, supplier, start as int, end as int));
-            assert(keys@.contains(part));
-            let offset = choose|offset: int| #![trigger keys@[offset]] 0 <= offset < keys@.len() && keys@[offset] == part;
-            assert(0 <= offset < keys@.len() && keys@[offset] == part);
-            assert(!cached_part_passes(state.parts, part, supplier, start as int, end as int));
+        crate::state_proofs::lemma_names_build(db, state.names, parts@);
+        use_type_invariant(&state.parts);
+        use_type_invariant(&state.stock_pairs);
+        use_type_invariant(&state.suppliers);
+        use_type_invariant(&state.nations);
+        use_type_invariant(&state.names);
+        state.parts.reveal_well_formed();
+        state.stock_pairs.reveal_well_formed();
+        state.suppliers.reveal_well_formed();
+        state.nations.reveal_well_formed();
+        state.names.reveal_well_formed();
+        crate::state_proofs::lemma_state_meaning(projected, state.parts, state.stock_pairs, state.suppliers, state.nations, state.names);
+        crate::semantic_proofs::lemma_build_meaning(db, stocks@, shipments@, suppliers@, nations@, state.parts, state.stock_pairs, state.suppliers, state.nations, state.names);
+    }
+    Some(State { db: Ghost(db), data: state })
+}
+fn is_prefix_pattern(pattern: &[u8]) -> (result: bool)
+    ensures result == prefix_pattern(pattern@),
+{
+    if pattern.len() == 0 || pattern[pattern.len() - 1] != 37 { return false; }
+    let mut index = 0;
+    while index + 1 < pattern.len()
+        invariant index + 1 <= pattern.len() || index == 0, pattern.len() >= 1, pattern[pattern.len() - 1 as int] == 37u8,
+            forall|i: int| #![trigger pattern@[i]] 0 <= i < index ==> pattern@[i] != 37u8 && pattern@[i] != 95u8,
+        decreases pattern.len() - index,
+    {
+        if pattern[index] == 37 || pattern[index] == 95 { return false; }
+        index += 1;
+    }
+    true
+}
+fn row_matches(name: &[u8], pattern: &[u8], literal_prefix: bool) -> (result: bool)
+    requires literal_prefix ==> prefix_pattern(pattern@),
+    ensures result == like_match(name@, pattern@),
+{
+    if !literal_prefix { return verus_prooflib::like_match_exec(name, pattern); }
+    proof { lemma_like_prefix_pattern(name@, pattern@); }
+    let n = pattern.len() - 1;
+    if name.len() < n { return false; }
+    let mut index = 0;
+    while index < n
+        invariant index <= n, n + 1 == pattern.len(), name.len() >= n, prefix_pattern(pattern@),
+            like_match(name@, pattern@) == (name@.len() + 1 >= pattern@.len() && name@.subrange(0, n as int) =~= pattern@.subrange(0, n as int)),
+            forall|i: int| #![trigger name@[i]] 0 <= i < index ==> name@[i] == pattern@[i],
+        decreases n - index,
+    {
+        if name[index] != pattern[index] {
+            proof {
+                assert(name@.subrange(0, n as int)[index as int] == name@[index as int]);
+                assert(pattern@.subrange(0, n as int)[index as int] == pattern@[index as int]);
+                assert(name@.subrange(0, n as int) != pattern@.subrange(0, n as int)) by {
+                    if name@.subrange(0, n as int) == pattern@.subrange(0, n as int) {
+                        assert(name@.subrange(0, n as int)[index as int] == pattern@.subrange(0, n as int)[index as int]);
+                    }
+                }
+            }
+            return false;
+        }
+        index += 1;
+    }
+    proof { assert(name@.subrange(0, n as int) =~= pattern@.subrange(0, n as int)); }
+    true
+}
+/// Appends to `cands` the key of every row of one names slot whose name matches the pattern.
+fn scan_slot(names: &PartNames, slot: i64, pattern: &[u8], literal_prefix: bool, cands: &mut Vec<i64>)
+    requires names_positive(*names), literal_prefix ==> prefix_pattern(pattern@),
+        forall|key: i64| #![trigger old(cands)@.contains(key)] old(cands)@.contains(key) ==> names_match(*names, key, pattern@),
+    ensures forall|key: i64| #![trigger final(cands)@.contains(key)] final(cands)@.contains(key) ==> names_match(*names, key, pattern@),
+        forall|key: i64| #![trigger old(cands)@.contains(key)] old(cands)@.contains(key) ==> final(cands)@.contains(key),
+        forall|key: i64, name: Seq<u8>| #![trigger name_count(*names, key, name)]
+            name_slot(key, name) == slot && name_count(*names, key, name) > 0 && like_match(name, pattern@) ==> final(cands)@.contains(key),
+{
+    let ghost before = cands@;
+    if let Some(rows) = names.get_ref(slot) {
+        let mut index = 0;
+        while index < rows.len()
+            invariant index <= rows.len(), names.lookup(slot) == Some(*rows), names_positive(*names), literal_prefix ==> prefix_pattern(pattern@),
+                forall|key: i64| #![trigger cands@.contains(key)] cands@.contains(key) ==> names_match(*names, key, pattern@),
+                forall|offset: int| #![trigger rows@[offset]] 0 <= offset < index && like_match(rows@[offset].name@, pattern@) ==> cands@.contains(rows@[offset].key),
+                forall|key: i64| #![trigger cands@.contains(key)] before.contains(key) ==> cands@.contains(key),
+            decreases rows.len() - index,
+        {
+            if row_matches(rows[index].name.as_slice(), pattern, literal_prefix) {
+                let ghost row = rows@[index as int];
+                proof {
+                    let whole = *rows;
+                    assert(names.lookup(slot) == Some(whole));
+                    assert(rows@ == whole@);
+                    lemma_names_row(*names, slot, whole, index as int);
+                    assert(name_slot(row.key, row.name@) == slot);
+                    assert(name_count(*names, row.key, row.name@) > 0) by {
+                        let name = row.name@;
+                        let w = |item: NationVariant| if item.name@ == name && item.key == row.key { item.count as int } else { 0int };
+                        assert forall|j: int| 0 <= j < whole@.len() implies w(#[trigger] whole@[j]) >= 0 by { lemma_names_row(*names, slot, whole, j); }
+                        lemma_sum_pos(whole@, w, index as int);
+                        lemma_nation_measure_weight(whole@, name, row.key, w);
+                    }
+                    assert(names_match(*names, row.key, pattern@));
+                }
+                let ghost previous = cands@;
+                cands.push(rows[index].key);
+                proof {
+                    assert(cands@ =~= previous.push(row.key));
+                    assert(cands@ == previous.push(row.key));
+                    verus_prooflib::lemma_push_membership(previous, row.key);
+                    assert forall|key: i64| #![trigger cands@.contains(key)] cands@.contains(key) implies names_match(*names, key, pattern@) by {
+                        if key != row.key { assert(previous.contains(key)); }
+                    }
+                    assert(cands@.contains(row.key));
+                    assert forall|key: i64| #![trigger cands@.contains(key)] before.contains(key) implies cands@.contains(key) by {
+                        assert(previous.contains(key) ==> cands@.contains(key));
+                    }
+                }
+            }
+            index += 1;
+        }
+        proof {
+            assert forall|key: i64, name: Seq<u8>| #![trigger name_count(*names, key, name)]
+                name_slot(key, name) == slot && name_count(*names, key, name) > 0 && like_match(name, pattern@) implies cands@.contains(key) by {
+                let w = |item: NationVariant| if item.name@ == name && item.key == key { item.count as int } else { 0int };
+                lemma_nation_measure_weight(rows@, name, key, w);
+                let j = lemma_sum_nonzero_witness(rows@, w);
+                assert(rows@[j].name@ == name && rows@[j].key == key);
+                assert(like_match(rows@[j].name@, pattern@));
+            }
+        }
+    } else {
+        proof {
+            assert forall|key: i64, name: Seq<u8>| #![trigger name_count(*names, key, name)]
+                name_slot(key, name) == slot && name_count(*names, key, name) > 0 && like_match(name, pattern@) implies cands@.contains(key) by {
+                assert(names.lookup(slot).is_none());
+                assert(false);
+            }
         }
     }
-    Some(false)
 }
-pub open spec fn qualification_cache(cache: Map<i64, bool>, parts: Table<Part>, directory: Table<Vec<i64>>, start: int, end: int) -> bool {
-    forall|key: i64| #![trigger cache[key]] cache.contains_key(key) ==> cache[key] == cached_supplier_passes(parts, directory, key, start, end)
+/// Candidate part keys for a pattern: every part whose stored name matches.  A pattern that starts with three
+/// literal bytes only needs the 1024 slots that share those bytes; any other pattern scans every slot.
+fn candidates(names: &PartNames, pattern: &[u8]) -> (result: Vec<i64>)
+    requires names_positive(*names),
+    ensures
+        (forall|key: i64| #![trigger names_match(*names, key, pattern@)] names_match(*names, key, pattern@) ==> result@.contains(key))
+        && (forall|key: i64| #![trigger result@.contains(key)] result@.contains(key) ==> names_match(*names, key, pattern@)),
+{
+    let mut cands: Vec<i64> = Vec::new();
+    let literal_prefix = is_prefix_pattern(pattern);
+    if pattern.len() >= 3 && pattern[0] != 37 && pattern[0] != 95 && pattern[1] != 37 && pattern[1] != 95
+        && pattern[2] != 37 && pattern[2] != 95 {
+        proof { assert(pattern_literal3(pattern@)); }
+        let base = name_slot_exec(0, pattern);
+        proof { assert(base as int == name_code(pattern@) * 1024 + key_low(0)); assert(key_low(0) == 0); lemma_slot_split(0, pattern@); }
+        let mut low: i64 = 0;
+        while low < 1024
+            invariant 0 <= low <= 1024, base as int == name_code(pattern@) * 1024, pattern_literal3(pattern@), names_positive(*names),
+                literal_prefix == prefix_pattern(pattern@),
+                forall|key: i64| #![trigger cands@.contains(key)] cands@.contains(key) ==> names_match(*names, key, pattern@),
+                forall|key: i64, name: Seq<u8>| #![trigger name_count(*names, key, name)]
+                    key_low(key) < low && name_count(*names, key, name) > 0 && like_match(name, pattern@) ==> cands@.contains(key),
+            decreases 1024 - low,
+        {
+            let ghost before = cands@;
+            let slot = base + low;
+            scan_slot(names, slot, pattern, literal_prefix, &mut cands);
+            proof {
+                assert forall|key: i64, name: Seq<u8>| #![trigger name_count(*names, key, name)]
+                    key_low(key) < low + 1 && name_count(*names, key, name) > 0 && like_match(name, pattern@) implies cands@.contains(key) by {
+                    if key_low(key) == low {
+                        lemma_like_prefix(name, pattern@);
+                        lemma_slot_split(key, name);
+                        assert(name_slot(key, name) == slot);
+                    } else {
+                        assert(before.contains(key));
+                    }
+                }
+            }
+            low += 1;
+        }
+        proof {
+            assert forall|key: i64| #![trigger names_match(*names, key, pattern@)] names_match(*names, key, pattern@) implies cands@.contains(key) by {
+                let name = choose|name: Seq<u8>| #![trigger name_count(*names, key, name)] name_count(*names, key, name) > 0 && like_match(name, pattern@);
+                lemma_slot_split(key, name);
+                assert(key_low(key) < 1024);
+            }
+        }
+    } else {
+        let slots = names.keys();
+        let mut position = 0;
+        while position < slots.len()
+            invariant position <= slots.len(), names_positive(*names), literal_prefix == prefix_pattern(pattern@),
+                forall|slot: i64| #![trigger names.lookup(slot)] slots@.contains(slot) == names.lookup(slot).is_some(),
+                forall|key: i64| #![trigger cands@.contains(key)] cands@.contains(key) ==> names_match(*names, key, pattern@),
+                forall|key: i64, name: Seq<u8>| #![trigger name_count(*names, key, name)]
+                    slots@.take(position as int).contains(name_slot(key, name)) && name_count(*names, key, name) > 0 && like_match(name, pattern@) ==> cands@.contains(key),
+            decreases slots.len() - position,
+        {
+            let ghost before = cands@;
+            scan_slot(names, slots[position], pattern, literal_prefix, &mut cands);
+            proof {
+                assert(slots@.take(position as int + 1) =~= slots@.take(position as int).push(slots@[position as int]));
+                verus_prooflib::lemma_push_membership(slots@.take(position as int), slots@[position as int]);
+                assert forall|key: i64, name: Seq<u8>| #![trigger name_count(*names, key, name)]
+                    slots@.take(position as int + 1).contains(name_slot(key, name)) && name_count(*names, key, name) > 0 && like_match(name, pattern@) implies cands@.contains(key) by {
+                    if name_slot(key, name) != slots@[position as int] { assert(slots@.take(position as int).contains(name_slot(key, name))); assert(before.contains(key)); }
+                }
+            }
+            position += 1;
+        }
+        proof {
+            assert(slots@.take(slots.len() as int) =~= slots@);
+            assert forall|key: i64| #![trigger names_match(*names, key, pattern@)] names_match(*names, key, pattern@) implies cands@.contains(key) by {
+                let name = choose|name: Seq<u8>| #![trigger name_count(*names, key, name)] name_count(*names, key, name) > 0 && like_match(name, pattern@);
+                assert(names.lookup(name_slot(key, name)).is_some());
+                assert(slots@.contains(name_slot(key, name)));
+            }
+        }
+    }
+    cands
+}
+fn pair_passes(pair: &Pair, start: i32, end: i32) -> (result: Option<bool>)
+    requires pair_valid(*pair),
+    ensures result matches Some(value) ==> value == cached_pair_passes(*pair, start as int, end as int),
+{
+    if pair.stocks.len() == 0 { return Some(false); }
+    let lower = prefix(pair, start); let upper = prefix(pair, end);
+    let count = match sub(upper.0, lower.0) { Some(value) => value, None => return None };
+    let quantity = match sub(upper.1, lower.1) { Some(value) => value, None => return None };
+    let maximum = pair.stocks[pair.stocks.len() - 1].value as i128;
+    let threshold = match mul(maximum, 200) { Some(value) => value, None => return None };
+    Some(count > 0 && threshold > quantity)
+}
+/// For each supplier key of the bucket: does any candidate part have a qualifying (part, supplier) pair?
+fn bucket_qualified(state: &Data, keys: &Vec<i64>, cands: &Vec<i64>, start: i32, end: i32) -> (result: Option<HashMap<i64, bool>>)
+    requires read_shape(state.parts),
+    ensures result matches Some(found) ==> found@.dom() == keys@.to_set()
+        && forall|supplier: i64| #![trigger found@[supplier]] keys@.contains(supplier) ==>
+            found@[supplier] == any_cand_passes(state.parts, cands@, supplier, start as int, end as int),
+{
+    let mut found: HashMap<i64, bool> = HashMap::new();
+    let mut k = 0;
+    while k < keys.len()
+        invariant k <= keys.len(), found@.dom() == keys@.take(k as int).to_set(),
+            forall|supplier: i64| #![trigger found@[supplier]] found@.contains_key(supplier) ==> !found@[supplier],
+        decreases keys.len() - k,
+    {
+        proof {
+            verus_prooflib::lemma_push_to_set(keys@.take(k as int), keys@[k as int]);
+            assert(keys@.take(k as int + 1) =~= keys@.take(k as int).push(keys@[k as int]));
+        }
+        found.insert(keys[k], false);
+        k += 1;
+    }
+    proof { assert(keys@.take(keys.len() as int) =~= keys@); keys@.to_set_ensures(); }
+    let mut ci = 0;
+    while ci < cands.len()
+        invariant ci <= cands.len(), read_shape(state.parts), found@.dom() == keys@.to_set(),
+            forall|supplier: i64| #![trigger found@[supplier]] found@.contains_key(supplier) ==>
+                found@[supplier] == exists|j: int| #![trigger cands@[j]] 0 <= j < ci
+                    && cached_part_passes(state.parts, cands@[j], supplier, start as int, end as int),
+        decreases cands.len() - ci,
+    {
+        let part_key = cands[ci];
+        let ghost previous = found@;
+        if let Some(part) = state.parts.get_ref(part_key) {
+            let mut pi = 0;
+            while pi < part.pairs.len()
+                invariant pi <= part.pairs.len(), read_shape(state.parts), state.parts.lookup(part_key) == Some(*part),
+                    found@.dom() == previous.dom(), previous.dom() == keys@.to_set(),
+                    forall|supplier: i64| #![trigger found@[supplier]] found@.contains_key(supplier) ==>
+                        (found@[supplier] ==> previous[supplier] || cached_part_passes(state.parts, part_key, supplier, start as int, end as int)),
+                    forall|supplier: i64| #![trigger found@[supplier]] found@.contains_key(supplier) ==> (previous[supplier] ==> found@[supplier]),
+                    forall|supplier: i64, idx: int| #![trigger part.pairs@[idx], found@[supplier]] found@.contains_key(supplier) && 0 <= idx < pi
+                        && part.pairs@[idx].0 == supplier && cached_part_passes(state.parts, part_key, supplier, start as int, end as int) ==> found@[supplier],
+                decreases part.pairs.len() - pi,
+            {
+                let supplier = part.pairs[pi].0;
+                let open = match found.get(&supplier) { Some(value) => !*value, None => false };
+                if open {
+                    let pair = &part.pairs[pi].1;
+                    proof {
+                        lemma_pair_at(state.parts, part_key, supplier, &*part, pi as int);
+                        assert(pair_of(state.parts, part_key, supplier) == Some(*pair));
+                        assert(pair_valid(*pair));
+                    }
+                    let passes = match pair_passes(pair, start, end) { Some(value) => value, None => return None };
+                    if passes { found.insert(supplier, true); }
+                }
+                pi += 1;
+            }
+            proof {
+                assert forall|supplier: i64| #![trigger found@[supplier]] found@.contains_key(supplier) implies
+                    found@[supplier] == (previous[supplier] || cached_part_passes(state.parts, part_key, supplier, start as int, end as int)) by {
+                    if cached_part_passes(state.parts, part_key, supplier, start as int, end as int) {
+                        let data = state.parts.lookup(part_key).unwrap();
+                        assert(pair_lookup(data.pairs@, supplier).is_some());
+                        let idx = choose|idx: int| #![trigger data.pairs@[idx]] 0 <= idx < data.pairs@.len() && data.pairs@[idx].0 == supplier;
+                        assert(part.pairs@[idx].0 == supplier);
+                    }
+                }
+            }
+        } else {
+            proof {
+                assert forall|supplier: i64| #![trigger found@[supplier]] found@.contains_key(supplier) implies
+                    found@[supplier] == (previous[supplier] || cached_part_passes(state.parts, part_key, supplier, start as int, end as int)) by {
+                    assert(!cached_part_passes(state.parts, part_key, supplier, start as int, end as int));
+                }
+            }
+        }
+        proof {
+            assert forall|supplier: i64| #![trigger found@[supplier]] found@.contains_key(supplier) implies
+                found@[supplier] == exists|j: int| #![trigger cands@[j]] 0 <= j < ci + 1
+                    && cached_part_passes(state.parts, cands@[j], supplier, start as int, end as int) by {
+                assert(previous.contains_key(supplier));
+                if cached_part_passes(state.parts, part_key, supplier, start as int, end as int) { assert(cands@[ci as int] == part_key); }
+            }
+        }
+        ci += 1;
+    }
+    Some(found)
 }
 fn emit_rows(out: &mut Vec<(Vec<u8>, Vec<u8>)>, rows: &Vec<SupplierVariant>, factor: i128) -> (result: bool)
     ensures result ==> forall|weight: spec_fn(OutRow) -> int| #[trigger] verus_common::sums::sum(out_view(final(out)@), weight) ==
@@ -713,12 +951,13 @@ fn emit_rows(out: &mut Vec<(Vec<u8>, Vec<u8>)>, rows: &Vec<SupplierVariant>, fac
     proof { assert(rows@.take(rows.len() as int) =~= rows@); }
     true
 }
-fn emit_bucket(state: &State, bucket: &Table<Vec<SupplierVariant>>, nation: i64, factor: i128, start: i32, end: i32,
-    Ghost(parameters): Ghost<Params>, qualified: &mut HashMap<i64, bool>, out: &mut Vec<(Vec<u8>, Vec<u8>)>) -> (result: bool)
-    requires parameters.p1 == start, parameters.p3 == end, start < end,
+fn emit_bucket(state: &State, bucket: &Table<Vec<SupplierVariant>>, nation: i64, factor: i128, start: i32, end: i32, pattern: &[u8],
+    Ghost(parameters): Ghost<Params>, cands: &Vec<i64>, out: &mut Vec<(Vec<u8>, Vec<u8>)>) -> (result: bool)
+    requires parameters.p1 == start, parameters.p4 == end, parameters.p2 == pattern@, start < end,
         state.data.suppliers.lookup(nation) == Some(*bucket),
-        qualification_cache(old(qualified)@, state.data.parts, state.data.stock_pairs, start as int, end as int),
-    ensures qualification_cache(final(qualified)@, state.data.parts, state.data.stock_pairs, start as int, end as int),
+        forall|key: i64| #![trigger names_match(state.data.names, key, pattern@)] names_match(state.data.names, key, pattern@) ==> cands@.contains(key),
+        forall|key: i64| #![trigger cands@.contains(key)] cands@.contains(key) ==> names_match(state.data.names, key, pattern@),
+    ensures
         result ==> forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(final(out)@), weight) ==
             sum(out_view(old(out)@), weight) + factor as int * nation_weight(state.db(), parameters, nation as int, weight),
 {
@@ -726,27 +965,32 @@ fn emit_bucket(state: &State, bucket: &Table<Vec<SupplierVariant>>, nation: i64,
     let ghost db = state.db();
     let ghost initial = out_view(out@);
     let keys = bucket.keys();
+    proof {
+        assert(read_shape(state.data.parts));
+    }
+    let qualified = match bucket_qualified(&state.data, &keys, cands, start, end) { Some(value) => value, None => return false };
     let mut index = 0;
     while index < keys.len()
         invariant index <= keys.len(), keys@.no_duplicates(),
+            qualified@.dom() == keys@.to_set(),
+            forall|supplier: i64| #![trigger qualified@[supplier]] keys@.contains(supplier) ==>
+                qualified@[supplier] == any_cand_passes(state.data.parts, cands@, supplier, start as int, end as int),
+            forall|key: i64| #![trigger names_match(state.data.names, key, pattern@)] names_match(state.data.names, key, pattern@) ==> cands@.contains(key),
+            forall|key: i64| #![trigger cands@.contains(key)] cands@.contains(key) ==> names_match(state.data.names, key, pattern@),
             forall|key: i64| #![trigger bucket.lookup(key)] keys@.contains(key) == bucket.lookup(key).is_some(),
-            meaning(db, state.data.parts, state.data.stock_pairs, state.data.suppliers, state.data.nations), domain_valid(db), db == state.db(),
-            state.data.suppliers.lookup(nation) == Some(*bucket), parameters.p1 == start, parameters.p3 == end, start < end,
-            qualification_cache(qualified@, state.data.parts, state.data.stock_pairs, start as int, end as int),
+            meaning(db, state.data.parts, state.data.stock_pairs, state.data.suppliers, state.data.nations, state.data.names), domain_valid(db), db == state.db(),
+            state.data.suppliers.lookup(nation) == Some(*bucket), parameters.p1 == start, parameters.p4 == end, parameters.p2 == pattern@, start < end,
             forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(initial, weight)
-                + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, *bucket, keys@.take(index as int), parameters, weight),
+                + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight),
         decreases keys.len() - index,
     {
         let key = keys[index];
-        let valid = match qualified.get(&key) {
-            Some(value) => *value,
-            None => {
-                let value = match qualifies(&state.data, key, start, end) { Some(value) => value, None => return false };
-                qualified.insert(key, value); value
-            },
-        };
+        proof { keys@.to_set_ensures(); assert(keys@.contains(key)); }
+        let valid = match qualified.get(&key) { Some(value) => *value, None => return false };
         let ghost before = out_view(out@);
-        proof { assert(valid == cached_supplier_passes(state.data.parts, state.data.stock_pairs, key, parameters.p1, parameters.p3)); }
+        proof {
+            lemma_cands_equiv(db, state.data.parts, state.data.stock_pairs, state.data.suppliers, state.data.nations, state.data.names, cands@, key, start as int, end as int, pattern@);
+            assert(valid == cached_supplier_passes(state.data.parts, state.data.stock_pairs, state.data.names, key, parameters.p1, parameters.p4, parameters.p2)); }
         if valid {
             let rows = match bucket.get(key) { Some(value) => value, None => return false };
             if !emit_rows(out, &rows, factor) { return false; }
@@ -758,13 +1002,13 @@ fn emit_bucket(state: &State, bucket: &Table<Vec<SupplierVariant>>, nation: i64,
         }
         proof {
             assert forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(initial, weight)
-                + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, *bucket, keys@.take(index as int + 1), parameters, weight) by {
-                let term = |key: i64| if cached_supplier_passes(state.data.parts, state.data.stock_pairs, key, parameters.p1, parameters.p3) { variant_weight(bucket_rows(*bucket, key), weight) } else { 0int };
+                + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int + 1), parameters, weight) by {
+                let term = |key: i64| if cached_supplier_passes(state.data.parts, state.data.stock_pairs, state.data.names, key, parameters.p1, parameters.p4, parameters.p2) { variant_weight(bucket_rows(*bucket, key), weight) } else { 0int };
                 lemma_sum_take(keys@, index as int, term);
-                lemma_bucket_take(state.data.parts, state.data.stock_pairs, *bucket, keys@, index as int, parameters, weight);
+                lemma_bucket_take(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@, index as int, parameters, weight);
                 assert(sum(out_view(out@), weight) == sum(before, weight) + factor as int * term(key));
-                assert(sum(before, weight) == sum(initial, weight) + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, *bucket, keys@.take(index as int), parameters, weight));
-                verus_prooflib::lemma_scalar_distribute(bucket_weight(state.data.parts, state.data.stock_pairs, *bucket, keys@.take(index as int), parameters, weight), term(key), factor as int);
+                assert(sum(before, weight) == sum(initial, weight) + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight));
+                verus_prooflib::lemma_scalar_distribute(bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@.take(index as int), parameters, weight), term(key), factor as int);
             }
         }
         index += 1;
@@ -772,22 +1016,22 @@ fn emit_bucket(state: &State, bucket: &Table<Vec<SupplierVariant>>, nation: i64,
     proof {
         assert(keys@.take(keys.len() as int) =~= keys@);
         assert forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == sum(initial, weight) + factor as int * nation_weight(db, parameters, nation as int, weight) by {
-            lemma_bucket(db, parameters, state.data.parts, state.data.stock_pairs, state.data.suppliers, state.data.nations, nation, *bucket, keys@, weight);
-            assert(sum(out_view(out@), weight) == sum(initial, weight) + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, *bucket, keys@, parameters, weight));
+            lemma_bucket(db, parameters, state.data.parts, state.data.stock_pairs, state.data.suppliers, state.data.nations, state.data.names, nation, *bucket, keys@, weight);
+            assert(sum(out_view(out@), weight) == sum(initial, weight) + factor as int * bucket_weight(state.data.parts, state.data.stock_pairs, state.data.names, *bucket, keys@, parameters, weight));
         }
     }
     true
 }
-pub fn execute(state: &State, p1: i32, p2: &[u8], p3: i32) -> (result: Option<Vec<(Vec<u8>, Vec<u8>)>>)
-    ensures result matches Some(out) ==> query_result(state.db(), params(p1 as int, p2@, p3 as int), out_view(out@)),
+pub fn execute(state: &State, p1: i32, p2: &[u8], p3: &[u8], p4: i32) -> (result: Option<Vec<(Vec<u8>, Vec<u8>)>>)
+    ensures result matches Some(out) ==> query_result(state.db(), params(p1 as int, p2@, p3@, p4 as int), out_view(out@)),
 {
     let ghost db = state.db();
-    let ghost parameters = params(p1 as int, p2@, p3 as int);
+    let ghost parameters = params(p1 as int, p2@, p3@, p4 as int);
     proof { use_type_invariant(state); }
     let owner = state;
     let state = &owner.data;
     let mut out = Vec::new();
-    if p1 >= p3 {
+    if p1 >= p4 {
         proof {
             lemma_empty_interval(db, parameters);
             assert(out_view(out@) =~= Seq::<OutRow>::empty());
@@ -795,7 +1039,7 @@ pub fn execute(state: &State, p1: i32, p2: &[u8], p3: i32) -> (result: Option<Ve
         }
         return Some(out);
     }
-    let nations = match state.nations.get(hash(p2)) {
+    let nations = match state.nations.get(hash(p3)) {
         Some(value) => value,
         None => {
             proof {
@@ -806,20 +1050,23 @@ pub fn execute(state: &State, p1: i32, p2: &[u8], p3: i32) -> (result: Option<Ve
             return Some(out);
         },
     };
-    let mut qualified: HashMap<i64, bool> = HashMap::new(); let mut nation_index = 0;
+    proof { assert(names_correct(db, state.names)); }
+    let cands = candidates(&state.names, p2);
+    let mut nation_index = 0;
     while nation_index < nations.len()
-        invariant nation_index <= nations.len(), *state == owner.data, db == owner.db(), parameters == params(p1 as int, p2@, p3 as int), p1 < p3,
-            meaning(db, state.parts, state.stock_pairs, state.suppliers, state.nations), domain_valid(db),
-            state.nations.lookup(name_hash(p2@) as i64) == Some(*nations),
-            qualification_cache(qualified@, state.parts, state.stock_pairs, p1 as int, p3 as int),
+        invariant nation_index <= nations.len(), *state == owner.data, db == owner.db(), parameters == params(p1 as int, p2@, p3@, p4 as int), p1 < p4,
+            meaning(db, state.parts, state.stock_pairs, state.suppliers, state.nations, state.names), domain_valid(db),
+            state.nations.lookup(name_hash(p3@) as i64) == Some(*nations),
+            forall|key: i64| #![trigger names_match(state.names, key, p2@)] names_match(state.names, key, p2@) ==> cands@.contains(key),
+            forall|key: i64| #![trigger cands@.contains(key)] cands@.contains(key) ==> names_match(state.names, key, p2@),
             forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == nation_output_weight(db, parameters, nations@.take(nation_index as int), weight),
         decreases nations.len() - nation_index,
     {
         let nation = &nations[nation_index];
         let ghost before = out_view(out@);
-        if compare(&nation.name, p2) == 0 {
+        if compare(&nation.name, p3) == 0 {
             if let Some(bucket) = state.suppliers.get(nation.key) {
-                if !emit_bucket(owner, &bucket, nation.key, nation.count, p1, p3, Ghost(parameters), &mut qualified, &mut out) { return None; }
+                if !emit_bucket(owner, &bucket, nation.key, nation.count, p1, p4, p2, Ghost(parameters), &cands, &mut out) { return None; }
             } else {
                 proof {
                     assert forall|weight: spec_fn(OutRow) -> int| #[trigger] nation_weight(db, parameters, nation.key as int, weight) == 0 by {
@@ -830,10 +1077,10 @@ pub fn execute(state: &State, p1: i32, p2: &[u8], p3: i32) -> (result: Option<Ve
         }
         proof {
             assert forall|weight: spec_fn(OutRow) -> int| #[trigger] sum(out_view(out@), weight) == nation_output_weight(db, parameters, nations@.take(nation_index as int + 1), weight) by {
-                let term = |row: NationVariant| if row.name@ == parameters.p2 { row.count as int * nation_weight(db, parameters, row.key as int, weight) } else { 0int };
+                let term = |row: NationVariant| if row.name@ == parameters.p3 { row.count as int * nation_weight(db, parameters, row.key as int, weight) } else { 0int };
                 lemma_sum_take(nations@, nation_index as int, term);
                 assert(sum(before, weight) == nation_output_weight(db, parameters, nations@.take(nation_index as int), weight));
-                if nation.name@ == p2@ {
+                if nation.name@ == p3@ {
                     if state.suppliers.lookup(nation.key).is_none() { assert(nation_weight(db, parameters, nation.key as int, weight) == 0); }
                 }
             }
@@ -864,9 +1111,9 @@ pub fn contains(keys: &[i64], key: i64) -> (result: bool)
     }
     false
 }
-fn part_changes(state: &Data, deltas: &[PartDelta]) -> (result: Option<(HashMap<i64, i128>, Vec<i64>)>)
+fn part_changes(state: &Data, deltas: &Vec<PartDelta>) -> (result: Option<(HashMap<i64, i128>, Vec<i64>)>)
     ensures result matches Some(data) ==> data.1@.no_duplicates() && data.0@.dom() == data.1@.to_set()
-        && data.1@.to_set() == deltas@.map_values(|row: PartDelta| row.p_partkey).to_set()
+        && data.1@.to_set() == deltas@.map_values(|row: PartDelta| row.row.p_partkey).to_set()
         && forall|key: i64| #![trigger coalesced_part_count(state.parts, data.0@, key)]
             coalesced_part_count(state.parts, data.0@, key) == part_count(state.parts, key)
                 + sum(deltas@, crate::semantic_proofs::part_capture_weight(key as int)),
@@ -874,7 +1121,7 @@ fn part_changes(state: &Data, deltas: &[PartDelta]) -> (result: Option<(HashMap<
     let mut counts: HashMap<i64, i128> = HashMap::new(); let mut keys: Vec<i64> = Vec::new(); let mut index = 0;
     while index < deltas.len()
         invariant index <= deltas.len(), keys@.no_duplicates(), counts@.dom() == keys@.to_set(),
-            keys@.to_set() == deltas@.take(index as int).map_values(|row: PartDelta| row.p_partkey).to_set(),
+            keys@.to_set() == deltas@.take(index as int).map_values(|row: PartDelta| row.row.p_partkey).to_set(),
             forall|key: i64| #![trigger coalesced_part_count(state.parts, counts@, key)]
                 coalesced_part_count(state.parts, counts@, key) == part_count(state.parts, key)
                     + sum(deltas@.take(index as int), crate::semantic_proofs::part_capture_weight(key as int)),
@@ -883,7 +1130,7 @@ fn part_changes(state: &Data, deltas: &[PartDelta]) -> (result: Option<(HashMap<
         let ghost processed = index as int;
         let ghost previous = counts@;
         let ghost support = keys@;
-        let row = deltas[index]; let key = row.p_partkey;
+        let row = &deltas[index]; let key = row.row.p_partkey;
         let before = match counts.remove(&key) {
             Some(value) => value,
             None => {
@@ -897,7 +1144,7 @@ fn part_changes(state: &Data, deltas: &[PartDelta]) -> (result: Option<(HashMap<
             },
         };
         proof { assert(before as int == coalesced_part_count(state.parts, previous, key)); }
-        let change = if row.is_qualifying != 0 { row.sign as i128 } else { 0 };
+        let change = row.sign as i128;
         let after = match add(before, change) { Some(value) => value, None => return None };
         counts.insert(key, after);
         proof {
@@ -907,8 +1154,8 @@ fn part_changes(state: &Data, deltas: &[PartDelta]) -> (result: Option<(HashMap<
                 assert(previous.dom().insert(key) == previous.dom());
             } else { assert(keys@ == support.push(key)); }
             assert(counts@.dom() =~= keys@.to_set());
-            let processed_keys = deltas@.take(index as int).map_values(|row: PartDelta| row.p_partkey);
-            assert(deltas@.take(index as int + 1).map_values(|row: PartDelta| row.p_partkey) =~= processed_keys.push(key));
+            let processed_keys = deltas@.take(index as int).map_values(|row: PartDelta| row.row.p_partkey);
+            assert(deltas@.take(index as int + 1).map_values(|row: PartDelta| row.row.p_partkey) =~= processed_keys.push(key));
             verus_prooflib::lemma_push_to_set(processed_keys, key);
             assert(keys@.to_set() == processed_keys.push(key).to_set());
             assert forall|other: i64| #![trigger coalesced_part_count(state.parts, counts@, other)]
@@ -925,7 +1172,7 @@ fn part_changes(state: &Data, deltas: &[PartDelta]) -> (result: Option<(HashMap<
     proof { assert(deltas@.take(deltas.len() as int) =~= deltas@); }
     Some((counts, keys))
 }
-pub fn activation_keys(state: &Data, part_delta: &[PartDelta]) -> Vec<i64> {
+pub fn activation_keys(state: &Data, part_delta: &Vec<PartDelta>) -> Vec<i64> {
     let (counts, keys) = match part_changes(state, part_delta) { Some(value) => value, None => return Vec::new() };
     let mut result = Vec::new(); let mut index = 0;
     while index < keys.len() decreases keys.len() - index, {
@@ -938,11 +1185,11 @@ pub fn activation_keys(state: &Data, part_delta: &[PartDelta]) -> Vec<i64> {
     result
 }
 pub fn rescan_stocks_for_parts_keys(
-    state: &State, lineitem_delta: &[LineitemDelta], nation_delta: &Vec<NationDelta>, part_delta: &[PartDelta],
+    state: &State, lineitem_delta: &[LineitemDelta], nation_delta: &Vec<NationDelta>, part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta], supplier_delta: &Vec<SupplierDelta>,
 ) -> Vec<i64> { activation_keys(&state.data, part_delta) }
 pub fn rescan_shipments_for_parts_keys(
-    state: &State, lineitem_delta: &[LineitemDelta], nation_delta: &Vec<NationDelta>, part_delta: &[PartDelta],
+    state: &State, lineitem_delta: &[LineitemDelta], nation_delta: &Vec<NationDelta>, part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta], supplier_delta: &Vec<SupplierDelta>,
 ) -> Vec<i64> { activation_keys(&state.data, part_delta) }
 fn touch(state: &Data, key: i64, counts: &HashMap<i64, i128>, work: &mut HashMap<i64, PartWork>, keys: &mut Vec<i64>) -> (result: bool)
@@ -1014,14 +1261,13 @@ fn touch(state: &Data, key: i64, counts: &HashMap<i64, i128>, work: &mut HashMap
     true
 }
 pub fn apply(
-    state: &State, lineitem_delta: &[LineitemDelta], nation_delta: &Vec<NationDelta>, part_delta: &[PartDelta],
+    state: &State, lineitem_delta: &[LineitemDelta], nation_delta: &Vec<NationDelta>, part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta], supplier_delta: &Vec<SupplierDelta>,
     stocks_for_parts_keys: &[i64], stocks_for_parts_rows: &[StockInput],
     shipments_for_parts_keys: &[i64], shipments_for_parts_rows: &[ShipmentInput],
-    Ghost(part_full): Ghost<Seq<(PartRow, int)>>, Ghost(db2): Ghost<Db>,
+    Ghost(db2): Ghost<Db>,
 ) -> (result: Result<State, u32>)
-    requires part_delta_ok(part_delta@, part_full),
-        capture_ok(state.db(), db2, lineitem_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), part_full, partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
+    requires capture_ok(state.db(), db2, lineitem_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
         rescan_stocks_for_parts_ok(db2, stocks_for_parts_keys@, stocks_for_parts_rows@),
         rescan_shipments_for_parts_ok(db2, shipments_for_parts_keys@, shipments_for_parts_rows@),
     ensures result matches Ok(next) ==> next.db() == db2,
@@ -1031,20 +1277,16 @@ pub fn apply(
     let state = &state.data;
     let (counts, changed) = match part_changes(state, part_delta) { Some(value) => value, None => return Err(1) };
     proof {
-        crate::semantic_proofs::lemma_coalesced_after(previous_db, db2, part_delta@, part_full, state.parts, counts@);
-        crate::state_proofs::lemma_meaning_components(previous_db, state.parts, state.stock_pairs, state.suppliers, state.nations);
+        crate::semantic_proofs::lemma_coalesced_after(previous_db, db2, part_delta@, state.parts, counts@);
+        crate::state_proofs::lemma_meaning_components(previous_db, state.parts, state.stock_pairs, state.suppliers, state.nations, state.names);
     }
     let mut work = HashMap::new(); let mut keys = Vec::new(); let mut activated: HashMap<i64, bool> = HashMap::new();
-    let mut next = Data { parts: state.parts.share(), stock_pairs: state.stock_pairs.share(), suppliers: state.suppliers.share(), nations: state.nations.share() };
+    let mut next = Data { parts: state.parts.share(), stock_pairs: state.stock_pairs.share(), suppliers: state.suppliers.share(), nations: state.nations.share(), names: state.names.share() };
     let ghost initial_suppliers = next.suppliers;
     let ghost initial_nations = next.nations;
+    let ghost initial_names = next.names;
     proof {
-        lemma_dimensions_share(previous_db, state.suppliers, state.nations, initial_suppliers, initial_nations);
-        assert forall|supplier: i64, key: i64| #[trigger] directory_contains(next.stock_pairs, supplier, key) == match next.parts.lookup(key) { Some(part) => stock_support(part.pairs@, supplier), None => false } by {
-            assert(next.parts.lookup(key) == state.parts.lookup(key));
-            assert(next.stock_pairs.lookup(supplier) == state.stock_pairs.lookup(supplier));
-            assert(directory_contains(state.stock_pairs, supplier, key) == match state.parts.lookup(key) { Some(part) => stock_support(part.pairs@, supplier), None => false });
-        }
+        lemma_dimensions_share(previous_db, state.suppliers, state.nations, state.names, initial_suppliers, initial_nations, initial_names);
     }
     let mut index = 0;
     proof {
@@ -1055,17 +1297,16 @@ pub fn apply(
     }
     while index < changed.len()
         invariant index <= changed.len(), changed@.no_duplicates(), counts@.dom() == changed@.to_set(), directory_unique(next.stock_pairs),
-            meaning(previous_db, state.parts, state.stock_pairs, state.suppliers, state.nations), domain_valid(previous_db), parts_shape(state.parts),
+            meaning(previous_db, state.parts, state.stock_pairs, state.suppliers, state.nations, state.names), domain_valid(previous_db), parts_shape(state.parts),
             forall|key: i64| #![trigger state.parts.lookup(key)] part_correct(previous_db, key, state.parts.lookup(key)),
-            next.suppliers == initial_suppliers, next.nations == initial_nations,
-            supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations),
+            next.suppliers == initial_suppliers, next.nations == initial_nations, next.names == initial_names,
+            supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations), names_correct(previous_db, initial_names),
             directory_matches(next.parts, next.stock_pairs),
             forall|key: i64| #[trigger] next.parts.lookup(key) == if changed@.take(index as int).contains(key) && eligible(db2, key as int) == 0 { None } else { state.parts.lookup(key) },
             forall|key: i64| #![trigger work@.contains_key(key)] changed@.take(index as int).contains(key) && eligible(db2, key as int) > 0 ==> work@.contains_key(key),
             forall|part: i64, supplier: i64, value: int| #[trigger] combined_stock(work@, state.parts, part, supplier, value) == combined_stock(Map::empty(), state.parts, part, supplier, value),
             forall|part: i64, supplier: i64, date: int, quantity: bool| #[trigger] combined_day(work@, state.parts, part, supplier, date, quantity) == combined_day(Map::empty(), state.parts, part, supplier, date, quantity),
-            part_delta_ok(part_delta@, part_full),
-            capture_ok(previous_db, db2, lineitem_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), part_full, partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
+            capture_ok(previous_db, db2, lineitem_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
             rescan_stocks_for_parts_ok(db2, stocks_for_parts_keys@, stocks_for_parts_rows@), rescan_shipments_for_parts_ok(db2, shipments_for_parts_keys@, shipments_for_parts_rows@),
             work_ready(work@, keys@, state.parts, counts@),
             forall|key: i64| #![trigger coalesced_part_count(state.parts, counts@, key)] coalesced_part_count(state.parts, counts@, key) == eligible(db2, key as int),
@@ -1115,7 +1356,7 @@ pub fn apply(
             assert(changed@.contains(key));
             assert(activated@.contains_key(key));
         }
-        crate::update_proofs::lemma_apply_domain(previous_db, db2, part_delta@, part_full, partsupp_delta@, lineitem_delta@, supplier_delta@, nation_delta@,
+        crate::update_proofs::lemma_apply_domain(previous_db, db2, part_delta@, partsupp_delta@, lineitem_delta@, supplier_delta@, nation_delta@,
             stocks_for_parts_keys@, stocks_for_parts_rows@, shipments_for_parts_keys@, shipments_for_parts_rows@);
     }
     let ghost facts = FactUpdate { before: previous_db, after: db2, parts: state.parts, counts: counts@, activated: activated@,
@@ -1152,12 +1393,12 @@ pub fn apply(
     }
     let mut index = 0;
     while index < stocks_for_parts_rows.len() invariant index <= stocks_for_parts_rows.len(), directory_unique(next.stock_pairs), domain_valid(db2),
-        supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations),
+        supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations), names_correct(previous_db, initial_names),
         facts.before == previous_db, facts.supplier_delta == supplier_delta@, facts.nation_delta == nation_delta@,
         facts.valid(), facts.parts == state.parts, facts.counts == counts@, facts.activated == activated@, facts.after == db2,
         facts.stocks == stocks_for_parts_rows@, facts.ships == shipments_for_parts_rows@, facts.stock_delta == partsupp_delta@, facts.ship_delta == lineitem_delta@,
         facts.progress(work@, index as int, 0, 0, 0), facts.coverage(work@, 0, 0),
-        next.suppliers == initial_suppliers, next.nations == initial_nations, directory_matches(next.parts, next.stock_pairs),
+        next.suppliers == initial_suppliers, next.nations == initial_nations, next.names == initial_names, directory_matches(next.parts, next.stock_pairs),
         forall|key: i64| #[trigger] next.parts.lookup(key) == if eligible(db2, key as int) == 0 { None } else { state.parts.lookup(key) },
         parts_shape(state.parts), work_ready(work@, keys@, state.parts, counts@), decreases stocks_for_parts_rows.len() - index, {
         let ghost processed = index as int;
@@ -1181,12 +1422,12 @@ pub fn apply(
     }
     let mut index = 0;
     while index < shipments_for_parts_rows.len() invariant index <= shipments_for_parts_rows.len(), directory_unique(next.stock_pairs), domain_valid(db2),
-        supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations),
+        supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations), names_correct(previous_db, initial_names),
         facts.before == previous_db, facts.supplier_delta == supplier_delta@, facts.nation_delta == nation_delta@,
         facts.valid(), facts.parts == state.parts, facts.counts == counts@, facts.activated == activated@, facts.after == db2,
         facts.stocks == stocks_for_parts_rows@, facts.ships == shipments_for_parts_rows@, facts.stock_delta == partsupp_delta@, facts.ship_delta == lineitem_delta@,
         facts.progress(work@, facts.stocks.len() as int, index as int, 0, 0), facts.coverage(work@, 0, 0),
-        next.suppliers == initial_suppliers, next.nations == initial_nations, directory_matches(next.parts, next.stock_pairs),
+        next.suppliers == initial_suppliers, next.nations == initial_nations, next.names == initial_names, directory_matches(next.parts, next.stock_pairs),
         forall|key: i64| #[trigger] next.parts.lookup(key) == if eligible(db2, key as int) == 0 { None } else { state.parts.lookup(key) },
         parts_shape(state.parts), work_ready(work@, keys@, state.parts, counts@), decreases shipments_for_parts_rows.len() - index, {
         let ghost processed = index as int;
@@ -1212,12 +1453,12 @@ pub fn apply(
     }
     let mut index = 0;
     while index < partsupp_delta.len() invariant index <= partsupp_delta.len(), directory_unique(next.stock_pairs), domain_valid(db2),
-        supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations),
+        supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations), names_correct(previous_db, initial_names),
         facts.before == previous_db, facts.supplier_delta == supplier_delta@, facts.nation_delta == nation_delta@,
         facts.valid(), facts.parts == state.parts, facts.counts == counts@, facts.activated == activated@, facts.after == db2,
         facts.stocks == stocks_for_parts_rows@, facts.ships == shipments_for_parts_rows@, facts.stock_delta == partsupp_delta@, facts.ship_delta == lineitem_delta@,
         facts.progress(work@, facts.stocks.len() as int, facts.ships.len() as int, index as int, 0), facts.coverage(work@, index as int, 0),
-        next.suppliers == initial_suppliers, next.nations == initial_nations, directory_matches(next.parts, next.stock_pairs),
+        next.suppliers == initial_suppliers, next.nations == initial_nations, next.names == initial_names, directory_matches(next.parts, next.stock_pairs),
         forall|key: i64| #[trigger] next.parts.lookup(key) == if eligible(db2, key as int) == 0 { None } else { state.parts.lookup(key) },
         parts_shape(state.parts), work_ready(work@, keys@, state.parts, counts@), decreases partsupp_delta.len() - index, {
         let ghost processed = index as int;
@@ -1248,12 +1489,12 @@ pub fn apply(
     }
     let mut index = 0;
     while index < lineitem_delta.len() invariant index <= lineitem_delta.len(), directory_unique(next.stock_pairs), domain_valid(db2),
-        supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations),
+        supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations), names_correct(previous_db, initial_names),
         facts.before == previous_db, facts.supplier_delta == supplier_delta@, facts.nation_delta == nation_delta@,
         facts.valid(), facts.parts == state.parts, facts.counts == counts@, facts.activated == activated@, facts.after == db2,
         facts.stocks == stocks_for_parts_rows@, facts.ships == shipments_for_parts_rows@, facts.stock_delta == partsupp_delta@, facts.ship_delta == lineitem_delta@,
         facts.progress(work@, facts.stocks.len() as int, facts.ships.len() as int, facts.stock_delta.len() as int, index as int), facts.coverage(work@, facts.stock_delta.len() as int, index as int),
-        next.suppliers == initial_suppliers, next.nations == initial_nations, directory_matches(next.parts, next.stock_pairs),
+        next.suppliers == initial_suppliers, next.nations == initial_nations, next.names == initial_names, directory_matches(next.parts, next.stock_pairs),
         forall|key: i64| #[trigger] next.parts.lookup(key) == if eligible(db2, key as int) == 0 { None } else { state.parts.lookup(key) },
         parts_shape(state.parts), work_ready(work@, keys@, state.parts, counts@), decreases lineitem_delta.len() - index, {
         let ghost processed = index as int;
@@ -1299,8 +1540,8 @@ pub fn apply(
         invariant index <= keys.len(), directory_matches(next.parts, next.stock_pairs), domain_valid(db2),
             facts.valid(), facts.after == db2, facts.before == previous_db, facts.supplier_delta == supplier_delta@, facts.nation_delta == nation_delta@, work_ready(built, keys@, facts.parts, facts.counts),
             facts.progress(built, facts.stocks.len() as int, facts.ships.len() as int, facts.stock_delta.len() as int, facts.ship_delta.len() as int),
-            supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations),
-            next.suppliers == initial_suppliers, next.nations == initial_nations,
+            supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations), names_correct(previous_db, initial_names),
+            next.suppliers == initial_suppliers, next.nations == initial_nations, next.names == initial_names,
             work@ == built.remove_keys(keys@.take(index as int).to_set()),
             forall|key: i64| #![trigger next.parts.lookup(key)] !built.contains_key(key) || keys@.take(index as int).contains(key) ==> part_correct(db2, key, next.parts.lookup(key)),
         decreases keys.len() - index,
@@ -1342,10 +1583,10 @@ pub fn apply(
     while index < supplier_delta.len()
         invariant index <= supplier_delta.len(), supplier_work.shape(), domain_valid(db2),
             facts.valid(), facts.after == db2, facts.before == previous_db, facts.supplier_delta == supplier_delta@, facts.nation_delta == nation_delta@,
-            supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations),
+            supplier_correct(previous_db, initial_suppliers), nation_correct(previous_db, initial_nations), names_correct(previous_db, initial_names),
             next.parts == finished_parts, next.stock_pairs == finished_directory, directory_matches(next.parts, next.stock_pairs),
             forall|key: i64| #![trigger next.parts.lookup(key)] part_correct(db2, key, next.parts.lookup(key)),
-            next.suppliers == initial_suppliers, next.nations == initial_nations,
+            next.suppliers == initial_suppliers, next.nations == initial_nations, next.names == initial_names,
             forall|nation: i64, supplier: i64, name: Seq<u8>, address: Seq<u8>| #[trigger] supplier_work.count(initial_suppliers, nation, supplier, name, address) == supplier_count(initial_suppliers, nation, supplier, name, address)
                 + sum(supplier_delta@.take(index as int), supplier_delta_weight(nation, supplier, name, address)),
         decreases supplier_delta.len() - index,
@@ -1373,7 +1614,7 @@ pub fn apply(
     while index < nation_delta.len()
         invariant index <= nation_delta.len(), nation_work.shape(), nation_work.hashes(), domain_valid(db2),
             facts.valid(), facts.after == db2, facts.before == previous_db, facts.nation_delta == nation_delta@,
-            nation_correct(previous_db, initial_nations), next.nations == initial_nations,
+            nation_correct(previous_db, initial_nations), names_correct(previous_db, initial_names), next.nations == initial_nations, next.names == initial_names,
             next.parts == finished_parts, next.stock_pairs == finished_directory, directory_matches(next.parts, next.stock_pairs),
             forall|key: i64| #![trigger next.parts.lookup(key)] part_correct(db2, key, next.parts.lookup(key)),
             next.suppliers == finished_suppliers, supplier_correct(db2, next.suppliers),
@@ -1396,13 +1637,44 @@ pub fn apply(
     let ghost nation_source = nation_work;
     proof { assert(nation_delta@.take(nation_delta.len() as int) =~= nation_delta@); }
     if !nation_work.publish(&mut next.nations) { return Err(17); }
+    proof { lemma_nation_updated(previous_db, db2, initial_nations, next.nations, nation_delta@); }
+    let ghost finished_nations = next.nations;
+    let mut name_work = NameWork::new(); let mut index = 0;
+    while index < part_delta.len()
+        invariant index <= part_delta.len(), name_work.shape(), domain_valid(db2),
+            names_correct(previous_db, initial_names), next.names == initial_names,
+            bag_step(previous_db.part, db2.part, part_delta_seq_view(part_delta@)),
+            next.parts == finished_parts, next.stock_pairs == finished_directory, directory_matches(next.parts, next.stock_pairs),
+            forall|key: i64| #![trigger next.parts.lookup(key)] part_correct(db2, key, next.parts.lookup(key)),
+            next.suppliers == finished_suppliers, supplier_correct(db2, next.suppliers),
+            next.nations == finished_nations, nation_correct(db2, next.nations),
+            forall|key: i64, name: Seq<u8>| #[trigger] name_work.count(initial_names, key, name) == name_count(initial_names, key, name)
+                + sum(part_delta@.take(index as int), name_delta_weight(key, name)),
+        decreases part_delta.len() - index,
+    {
+        let ghost previous = name_work;
+        let delta = &part_delta[index];
+        if !name_work.change(&next.names, &delta.row, delta.sign as i128) { return Err(18); }
+        proof {
+            assert forall|key: i64, name: Seq<u8>| #[trigger] name_work.count(initial_names, key, name) == name_count(initial_names, key, name)
+                + sum(part_delta@.take(index as int + 1), name_delta_weight(key, name)) by {
+                lemma_sum_take(part_delta@, index as int, name_delta_weight(key, name));
+                assert(previous.count(initial_names, key, name) == name_count(initial_names, key, name) + sum(part_delta@.take(index as int), name_delta_weight(key, name)));
+            }
+        }
+        index += 1;
+    }
+    let ghost name_source = name_work;
+    proof { assert(part_delta@.take(part_delta.len() as int) =~= part_delta@); }
+    if !name_work.publish(&mut next.names) { return Err(19); }
     proof {
-        lemma_nation_updated(previous_db, db2, initial_nations, next.nations, nation_delta@);
+        lemma_names_updated(previous_db, db2, initial_names, next.names, part_delta@);
+        use_type_invariant(&next.names); next.names.reveal_well_formed();
         use_type_invariant(&next.parts); next.parts.reveal_well_formed();
         use_type_invariant(&next.stock_pairs); next.stock_pairs.reveal_well_formed();
         use_type_invariant(&next.suppliers); next.suppliers.reveal_well_formed();
         use_type_invariant(&next.nations); next.nations.reveal_well_formed();
-        crate::state_proofs::lemma_state_meaning(db2, next.parts, next.stock_pairs, next.suppliers, next.nations);
+        crate::state_proofs::lemma_state_meaning(db2, next.parts, next.stock_pairs, next.suppliers, next.nations, next.names);
     }
     Ok(State { db: Ghost(db2), data: next })
 }

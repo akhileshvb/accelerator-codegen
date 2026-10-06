@@ -25,10 +25,6 @@ typedef struct {
 } tpchq13vgen_customer_scan;
 
 typedef struct {
-  int64_t o_custkey;
-} tpchq13vgen_qualifying_order_scan;
-
-typedef struct {
   int64_t c_custkey;
 } tpchq13vgen_customer_input;
 
@@ -37,24 +33,18 @@ typedef struct {
   int64_t sign;
 } tpchq13vgen_customer_delta;
 
-typedef struct {
-  int64_t o_custkey;
-  uint8_t qualifies;
-  int64_t sign;
-} tpchq13vgen_order_delta;
-
 /* Build from the scans: a state, or NULL (the host then answers with SQL). */
-tpchq13vgen_state *tpchq13vgen_build(size_t customers__n, const tpchq13vgen_customer_scan *customers, size_t qualifying_orders__n, const tpchq13vgen_qualifying_order_scan *qualifying_orders);
+tpchq13vgen_state *tpchq13vgen_build(size_t customers__n, const tpchq13vgen_customer_scan *customers, size_t orders__n, const int64_t *orders__o_custkey, const uint8_t *orders__o_comment, const size_t *orders__o_comment__off);
 
 /* Free a state from build / apply. */
 void tpchq13vgen_free(tpchq13vgen_state *s);
 
 /* Apply one transaction: the new state (the input is unchanged), or NULL
    with *err set (the host then rebuilds). */
-tpchq13vgen_state *tpchq13vgen_apply(const tpchq13vgen_state *s, size_t customer_delta__n, const tpchq13vgen_customer_delta *customer_delta, size_t orders_delta__n, const tpchq13vgen_order_delta *orders_delta, int32_t *err);
+tpchq13vgen_state *tpchq13vgen_apply(const tpchq13vgen_state *s, size_t customer_delta__n, const tpchq13vgen_customer_delta *customer_delta, size_t orders_delta__n, const int64_t *orders_delta__o_custkey, const uint8_t *orders_delta__o_comment, const size_t *orders_delta__o_comment__off, const int64_t *orders_delta__sign, int32_t *err);
 
 /* The query's answer on the state, or NULL (the host then answers with SQL). */
-tpchq13vgen_result *tpchq13vgen_execute(const tpchq13vgen_state *s);
+tpchq13vgen_result *tpchq13vgen_execute(const tpchq13vgen_state *s, const uint8_t *p1, size_t p1__len);
 
 /* How many rows the answer has. */
 size_t tpchq13vgen_result_len(const tpchq13vgen_result *r);
@@ -86,12 +76,12 @@ void tpchq13vgens_base_free(tpchq13vgens_base *b);
 
 /* The next version from the base and one commit's inputs (as for apply);
    NULL with *err set if the kernel cannot apply them (the host rebuilds). */
-tpchq13vgens_prepared *tpchq13vgens_prepare_apply(const tpchq13vgens_store *st, const tpchq13vgens_base *b, size_t customer_delta__n, const tpchq13vgen_customer_delta *customer_delta, size_t orders_delta__n, const tpchq13vgen_order_delta *orders_delta, int32_t *err);
+tpchq13vgens_prepared *tpchq13vgens_prepare_apply(const tpchq13vgens_store *st, const tpchq13vgens_base *b, size_t customer_delta__n, const tpchq13vgen_customer_delta *customer_delta, size_t orders_delta__n, const int64_t *orders_delta__o_custkey, const uint8_t *orders_delta__o_comment, const size_t *orders_delta__o_comment__off, const int64_t *orders_delta__sign, int32_t *err);
 
 /* The next version built from scans (as for build) of the database as of
    that version; its state is invalid if the kernel cannot build it.  NULL
    only if no version can follow the newest. */
-tpchq13vgens_prepared *tpchq13vgens_prepare_build(const tpchq13vgens_store *st, size_t customers__n, const tpchq13vgen_customer_scan *customers, size_t qualifying_orders__n, const tpchq13vgen_qualifying_order_scan *qualifying_orders);
+tpchq13vgens_prepared *tpchq13vgens_prepare_build(const tpchq13vgens_store *st, size_t customers__n, const tpchq13vgen_customer_scan *customers, size_t orders__n, const int64_t *orders__o_custkey, const uint8_t *orders__o_comment, const size_t *orders__o_comment__off);
 
 /* The next version with an invalid state (NULL: none can follow the newest). */
 tpchq13vgens_prepared *tpchq13vgens_prepare_invalid(const tpchq13vgens_store *st);

@@ -1,15 +1,21 @@
 use vstd::prelude::*;
+use verus_prooflib::like_match_exec;
 use std::sync::Arc;
 use verus_common::rel::{flat, min_of};
 use crate::gen_spec::*;
 use crate::gen_obligations::*;
 use crate::bags::*;
 use crate::model::*;
-use crate::maintenance::region_slice;
+use crate::maintenance::{region_slice, index_positive};
 use crate::storage::*;
 use crate::semantics::*;
 use crate::selection::*;
 use crate::enumeration::*;
+use crate::fast_proofs::*;
+use crate::skip_proofs::*;
+use crate::minimum_proofs::lemma_regions_nonnegative;
+use verus_common::sqlfns::like_match;
+use crate::parts::*;
 use verus_common::order::nondesc;
 
 verus! {
@@ -256,9 +262,9 @@ pub proof fn lemma_supported_cost_step(entries: Seq<Counted<BrassPartsuppScan>>,
     } else { assert(flat(prefix.drop_last()) + Seq::<int>::empty() =~= flat(prefix.drop_last())); }
 }
 
-pub fn minimum(quotes: &Bag<BrassPartsuppScan>, suppliers: &Directory<Bag<SupplierScan>>,
+pub fn minimum(quotes: &Bag<BrassPartsuppScan>, flat: &Vec<crate::flat::SInfo>, suppliers: &Directory<Bag<SupplierScan>>,
     nations: &Directory<Bag<NationScan>>, regions: &Directory<Count>) -> (result: Option<i64>)
-    requires suppliers.valid(), nations.valid(), regions.valid(),
+    requires suppliers.valid(), nations.valid(), regions.valid(), crate::flat::flat_ok(flat@, *suppliers), index_positive(*suppliers),
     ensures
         result == if supported_costs(*quotes, *suppliers, *nations, *regions).len() == 0 { None }
             else { Some(min_of(supported_costs(*quotes, *suppliers, *nations, *regions)) as i64) },
@@ -267,14 +273,14 @@ pub fn minimum(quotes: &Bag<BrassPartsuppScan>, suppliers: &Directory<Bag<Suppli
     let mut quote_index = 0;
     while quote_index < quotes.entries.len()
         invariant
-            quote_index <= quotes.entries.len(), suppliers.valid(), nations.valid(), regions.valid(),
+            quote_index <= quotes.entries.len(), suppliers.valid(), nations.valid(), regions.valid(), crate::flat::flat_ok(flat@, *suppliers), index_positive(*suppliers),
             (result is None) == (supported_costs_entries(quotes.entries@.take(quote_index as int), *suppliers, *nations, *regions).len() == 0),
             result matches Some(cost) ==> cost as int == min_of(supported_costs_entries(quotes.entries@.take(quote_index as int), *suppliers, *nations, *regions)),
         decreases quotes.entries.len() - quote_index,
     {
         let quote = &quotes.entries[quote_index];
         let ghost previous = supported_costs_entries(quotes.entries@.take(quote_index as int), *suppliers, *nations, *regions);
-        if quote.count > 0 && has_quote_support(&quote.row, suppliers, nations, regions) {
+        if quote.count > 0 && crate::flat::has_quote_support_flat(&quote.row, flat, suppliers, nations, regions) {
             match result {
                 None => { result = Some(quote.row.ps_supplycost); },
                 Some(cost) => { if quote.row.ps_supplycost < cost { result = Some(quote.row.ps_supplycost); } },
@@ -297,102 +303,190 @@ pub fn minimum(quotes: &Bag<BrassPartsuppScan>, suppliers: &Directory<Bag<Suppli
     result
 }
 
-pub fn enumerate(s: &State, size: i64, name: &[u8]) -> (result: Vec<Output>)
-    ensures query_result(s.db(), params(size as int, name@), out_view(result@)),
+
+
+pub fn enumerate(s: &State, size: i64, pat: &[u8], name: &[u8]) -> (result: Vec<Output>)
+    ensures query_result(s.db(), params(size as int, pat@, name@), out_view(result@)),
 {
     proof { use_type_invariant(s); s.database_witness(); }
     let regions = match region_slice(&s.regions, name) {
         None => {
             let empty: Vec<Output> = Vec::new();
-            proof { lemma_region_absent(s.db(), s.regions, name@); lemma_no_region_result(s.db(), size as int, name@); }
+            proof { lemma_region_absent(s.db(), s.regions, name@); lemma_no_region_result(s.db(), size as int, pat@, name@); }
             proof { assert(out_view(empty@) =~= Seq::<OutRow>::empty()); }
             return empty;
         },
         Some(slice) => slice,
     };
-    let slice = match s.sizes.get(size) {
-        None => {
-            let empty: Vec<Output> = Vec::new();
-            proof { lemma_size_absent(s.db(), s.sizes, size); lemma_no_size_result(s.db(), size as int, name@); }
-            proof { assert(out_view(empty@) =~= Seq::<OutRow>::empty()); }
-            return empty;
-        },
-        Some(slice) => slice,
-    };
-    let keys = slice.entries();
+    proof {
+        assert(s.meaning());
+        assert(s.parts.meaning(s.db()));
+        lemma_regions_nonnegative(*s, regions, name@);
+        assert forall|index: int| 0 <= index < s.db().part.len() implies fits_i64((#[trigger] s.db().part[index]).p_size) && fits_i64(s.db().part[index].p_partkey) by {
+            assert(retained(s.db().part[index]));
+        }
+    }
+    let dict = &*s.parts.dict;
+    // the pattern, once for every distinct string
+    let mut ok: Vec<bool> = Vec::new();
+    let mut ti = 0;
+    while ti < dict.strings.len()
+        invariant ti <= dict.strings.len(), ok@.len() == ti, (*s.parts.dict).valid(), s.db() == s.database@, dict == &*s.parts.dict, s.db() == s.database@, db_fits(s.db()), s.parts.meaning(s.db()), forall|region: i64| #[trigger] count_at(regions, region) == region_amount(s.regions, name@, region),
+            forall|j: int| 0 <= j < ti ==> #[trigger] ok@[j] == like_match(s.parts.dtext(j), pat@),
+        decreases dict.strings.len() - ti,
+    {
+        let matched = like_match_exec(&dict.strings[ti], pat);
+        proof { assert(matched == like_match(s.parts.dtext(ti as int), pat@)); }
+        let ghost before_ok = ok@;
+        ok.push(matched);
+        proof {
+            assert forall|j: int| 0 <= j < ti + 1 implies #[trigger] ok@[j] == like_match(s.parts.dtext(j), pat@) by {
+                if j < ti as int { assert(ok@[j] == before_ok[j]); }
+            }
+        }
+        ti += 1;
+    }
     let mut best: Vec<Candidate> = Vec::new();
     let mut enumeration: Ghost<Seq<OutRow>> = Ghost(Seq::empty());
     let mut ordered_enumeration: Ghost<Seq<OutRow>> = Ghost(Seq::empty());
-    let mut key_index = 0;
-    while key_index < keys.len()
-        invariant key_index <= keys.len(), best.len() <= 100, s.meaning(), regions.valid(), nondesc(candidate_rows(best@), ext_order()),
+    let ghost dl = s.parts.dl();
+    proof { assert(types_outputs(*s, regions, size, pat@, 0) =~= Seq::<OutRow>::empty()); }
+    let mut ti = 0;
+    while ti < dict.strings.len()
+        invariant ti <= dict.strings.len(), ok@.len() == dict.strings.len(), dict.strings@.len() == dl, (*s.parts.dict).valid(), s.meaning(), regions.valid(), dict == &*s.parts.dict, dl == s.parts.dl(),
+            s.db() == s.database@, db_fits(s.db()), s.parts.meaning(s.db()), forall|region: i64| #[trigger] count_at(regions, region) == region_amount(s.regions, name@, region),
+            best.len() <= 100, nondesc(candidate_rows(best@), ext_order()),
             nondesc(ordered_enumeration@, ext_order()), candidate_rows(best@) == limit_rows(ordered_enumeration@, 100),
             ordered_enumeration@.to_multiset() == enumeration@.to_multiset(),
-            enumeration@ == index_outputs(keys@.take(key_index as int), *s, size, regions),
-        decreases keys.len() - key_index,
+            forall|j: int| 0 <= j < ok@.len() ==> #[trigger] ok@[j] == like_match(s.parts.dtext(j), pat@),
+            enumeration@ == types_outputs(*s, regions, size, pat@, ti as int),
+        decreases dict.strings.len() - ti,
     {
-        let key = keys[key_index].0;
-        let ghost key_start = enumeration@;
-        if let Some(part) = s.parts.get(key) {
-            if let Some(parts) = part.sizes.get(size) {
+        let ghost type_start = enumeration@;
+        if ok[ti] {
+            let rows = s.parts.tl.get((size, ti as i64, 0));
+            let ghost all_rows = tl_rows(s.parts, size, ti as int);
+            proof { s.parts.tl.lemma_shaped_valid(); }
+            let mut j = 0;
+            while j < rows.len()
+                invariant j <= rows.len(), (*rows)@ == all_rows, all_rows == tl_rows(s.parts, size, ti as int), ti < dict.strings.len(),
+                    ok@.len() == dict.strings.len(), dict.strings@.len() == dl, (*s.parts.dict).valid(), s.meaning(), regions.valid(), dict == &*s.parts.dict, dl == s.parts.dl(),
+                    s.db() == s.database@, db_fits(s.db()), s.parts.meaning(s.db()), forall|region: i64| #[trigger] count_at(regions, region) == region_amount(s.regions, name@, region),
+                    ok@[ti as int] == like_match(s.parts.dtext(ti as int), pat@),
+                    best.len() <= 100, nondesc(candidate_rows(best@), ext_order()),
+                    nondesc(ordered_enumeration@, ext_order()), candidate_rows(best@) == limit_rows(ordered_enumeration@, 100),
+                    ordered_enumeration@.to_multiset() == enumeration@.to_multiset(),
+                    enumeration@ == type_start + cell_outputs(*s, regions, size, ti as int, all_rows.take(j as int)),
+                decreases rows.len() - j,
+            {
+                let cell = rows[j];
+                let ghost cell_start = enumeration@;
+                proof { assert(cell_start == type_start + cell_outputs(*s, regions, size, ti as int, all_rows.take(j as int))); }
+                proof {
+                    assert(s.parts.meaning(s.db()));
+                    assert(0 <= ti as int && (ti as int) < s.parts.dl());
+                    assert(0 <= j as int && (j as int) < tl_rows(s.parts, size, ti as int).len());
+                    lemma_tl_cell_facts(s.db(), s.parts, size, ti as int, j as int);
+                    assert(cell == all_rows[j as int]);
+                }
+                let key = cell.first;
+                let mfgr_id = cell.second as usize;
+                proof { assert(mfgr_id as int == cell.second as int); assert(mfgr_id < dict.strings.len()); }
+                let part_row = Arc::new(BrassPartScan {
+                    p_partkey: key, p_mfgr: copy_bytes(&dict.strings[mfgr_id]), p_size: size, p_type: copy_bytes(&dict.strings[ti]),
+                });
+                let pe = Counted { row: part_row, count: cell.count };
+                let ghost cnt = cell_cnt(s.parts, size, ti as int, cell);
+                let ghost pcs = seq![cnt];
+                proof {
+                    assert((*pe.row).rv() == cnt.row);
+                    assert(pents_positive(pcs));
+                    assert(cell_output(*s, regions, size, ti as int)(cell) == key_output_p(*s, key, pcs, regions));
+                }
                 if let Some(quotes) = s.quotes.get(key) {
-                    if let Some(cost) = minimum(&quotes, &s.suppliers, &s.nations, &regions) {
+                    if let Some(cost) = minimum(&quotes, &s.sflat, &s.suppliers, &s.nations, &regions) {
                         let mut quote_index = 0;
                         while quote_index < quotes.entries.len()
                             invariant quote_index <= quotes.entries.len(), best.len() <= 100, s.meaning(), regions.valid(), nondesc(candidate_rows(best@), ext_order()),
                                 nondesc(ordered_enumeration@, ext_order()), candidate_rows(best@) == limit_rows(ordered_enumeration@, 100),
                                 ordered_enumeration@.to_multiset() == enumeration@.to_multiset(),
-                                enumeration@ == key_start + quote_outputs(quotes.entries@.take(quote_index as int), parts.entries@, cost, s.suppliers, s.nations, regions),
-                                parts.valid(), quotes.valid(),
+                                enumeration@ == cell_start + quote_outputs(quotes.entries@.take(quote_index as int), pcs, cost, s.suppliers, s.nations, regions),
+                                pents_positive(pcs), quotes.valid(), pcs.len() == 1, pe.count == pcs[0].count, (*pe.row).rv() == pcs[0].row,
                             decreases quotes.entries.len() - quote_index,
                         {
                             let quote = &quotes.entries[quote_index];
                             let ghost quote_start = enumeration@;
-                            proof { assert(quote_start == key_start + quote_outputs(quotes.entries@.take(quote_index as int), parts.entries@, cost, s.suppliers, s.nations, regions)); }
+                            proof { assert(quote_start == cell_start + quote_outputs(quotes.entries@.take(quote_index as int), pcs, cost, s.suppliers, s.nations, regions)); }
                             if quote.row.ps_supplycost == cost {
-                                if let Some(suppliers) = s.suppliers.get(quote.row.ps_suppkey) {
+                                let skip = crate::flat::skip_quote(&best, &s.sflat, &s.suppliers, quote.row.ps_suppkey);
+                                if skip {
+                                    proof {
+                                        let block = quote_output(*quote, pcs, cost, s.suppliers, s.nations, regions);
+                                        let bag = s.suppliers.lookup(quote.row.ps_suppkey)->0;
+                                        let a = (*(*bag).entries@[0].row).s_acctbal as int;
+                                        assert forall|i: int| 0 <= i < (*bag).entries@.len() implies (*(#[trigger] (*bag).entries@[i]).row).s_acctbal as int == a by {
+                                            assert(i == 0);
+                                        }
+                                        lemma_quote_output_acctbal(*quote, pcs, cost, s.suppliers, s.nations, regions, a);
+                                        assert(candidate_rows(best@)[99].s_acctbal == (*best@[99].supplier).s_acctbal as int);
+                                        assert forall|i: int| 0 <= i < block.len() implies ext_lt(limit_rows(ordered_enumeration@, 100)[99], #[trigger] block[i]) by {
+                                            assert(block[i].s_acctbal == a);
+                                        }
+                                    }
+                                    let ghost block = quote_output(*quote, pcs, cost, s.suppliers, s.nations, regions);
+                                    let ghost previous_enumeration = enumeration@;
+                                    let ghost previous_ordered = ordered_enumeration@;
+                                    let ghost skipped = lemma_skip_block(previous_ordered, block);
+                                    enumeration = Ghost(previous_enumeration + block);
+                                    ordered_enumeration = Ghost(skipped);
+                                    proof {
+                                        verus_common::sums::lemma_to_multiset_concat(previous_enumeration, block);
+                                        verus_common::sums::lemma_to_multiset_concat(previous_ordered, block);
+                                        assert(enumeration@ == quote_start + block);
+                                    }
+                                } else if let Some(suppliers) = s.suppliers.get(quote.row.ps_suppkey) {
                                     let mut supplier_index = 0;
                                     while supplier_index < suppliers.entries.len()
                                         invariant supplier_index <= suppliers.entries.len(), best.len() <= 100, s.meaning(), regions.valid(), nondesc(candidate_rows(best@), ext_order()),
                                             nondesc(ordered_enumeration@, ext_order()), candidate_rows(best@) == limit_rows(ordered_enumeration@, 100),
                                             ordered_enumeration@.to_multiset() == enumeration@.to_multiset(),
-                                            enumeration@ == quote_start + supplier_outputs(suppliers.entries@.take(supplier_index as int), parts.entries@, *quote, s.nations, regions),
-                                            parts.valid(), quotes.valid(), suppliers.valid(), quote.count > 0,
+                                            enumeration@ == quote_start + supplier_outputs(suppliers.entries@.take(supplier_index as int), pcs, *quote, s.nations, regions),
+                                            pents_positive(pcs), quotes.valid(), suppliers.valid(), quote.count > 0, pcs.len() == 1, pe.count == pcs[0].count, (*pe.row).rv() == pcs[0].row,
                                         decreases suppliers.entries.len() - supplier_index,
                                     {
                                         let supplier = &suppliers.entries[supplier_index];
                                         let ghost supplier_start = enumeration@;
-                                        proof { assert(supplier_start == quote_start + supplier_outputs(suppliers.entries@.take(supplier_index as int), parts.entries@, *quote, s.nations, regions)); }
+                                        proof { assert(supplier_start == quote_start + supplier_outputs(suppliers.entries@.take(supplier_index as int), pcs, *quote, s.nations, regions)); }
                                         if let Some(nations) = s.nations.get(supplier.row.s_nationkey) {
                                             let mut nation_index = 0;
                                             while nation_index < nations.entries.len()
                                                 invariant nation_index <= nations.entries.len(), best.len() <= 100, s.meaning(), regions.valid(), nondesc(candidate_rows(best@), ext_order()),
                                                     nondesc(ordered_enumeration@, ext_order()), candidate_rows(best@) == limit_rows(ordered_enumeration@, 100),
                                                     ordered_enumeration@.to_multiset() == enumeration@.to_multiset(),
-                                                    enumeration@ == supplier_start + nation_outputs(nations.entries@.take(nation_index as int), parts.entries@, *quote, *supplier, regions),
-                                                    parts.valid(), quotes.valid(), nations.valid(), quote.count > 0, supplier.count > 0,
+                                                    enumeration@ == supplier_start + nation_outputs(nations.entries@.take(nation_index as int), pcs, *quote, *supplier, regions),
+                                                    pents_positive(pcs), quotes.valid(), nations.valid(), quote.count > 0, supplier.count > 0, pcs.len() == 1, pe.count == pcs[0].count, (*pe.row).rv() == pcs[0].row,
                                                 decreases nations.entries.len() - nation_index,
                                             {
                                                 let nation = &nations.entries[nation_index];
                                                 let ghost nation_start = enumeration@;
-                                                proof { assert(nation_start == supplier_start + nation_outputs(nations.entries@.take(nation_index as int), parts.entries@, *quote, *supplier, regions)); }
+                                                proof { assert(nation_start == supplier_start + nation_outputs(nations.entries@.take(nation_index as int), pcs, *quote, *supplier, regions)); }
                                                 if let Some(region) = regions.get(nation.row.n_regionkey) {
                                                     if region.value > 0 {
-                                                    let mut part_index = 0;
-                                                    while part_index < parts.entries.len()
-                                                        invariant part_index <= parts.entries.len(), best.len() <= 100, s.meaning(), regions.valid(), nondesc(candidate_rows(best@), ext_order()),
+                                                    let mut part_index: usize = 0;
+                                                    while part_index < 1
+                                                        invariant part_index <= 1, best.len() <= 100, s.meaning(), regions.valid(), nondesc(candidate_rows(best@), ext_order()),
                                                             nondesc(ordered_enumeration@, ext_order()), candidate_rows(best@) == limit_rows(ordered_enumeration@, 100),
                                                             ordered_enumeration@.to_multiset() == enumeration@.to_multiset(),
-                                                            enumeration@ == nation_start + part_outputs(parts.entries@.take(part_index as int), *quote, *supplier, *nation, region.value),
-                                                            parts.valid(), quotes.valid(), quote.count > 0, supplier.count > 0, nation.count > 0, region.value > 0,
-                                                        decreases parts.entries.len() - part_index,
+                                                            enumeration@ == nation_start + part_outputs(pcs.take(part_index as int), *quote, *supplier, *nation, region.value),
+                                                            pents_positive(pcs), quotes.valid(), quote.count > 0, supplier.count > 0, nation.count > 0, region.value > 0, pcs.len() == 1, pe.count == pcs[0].count, (*pe.row).rv() == pcs[0].row,
+                                                        decreases 1 - part_index,
                                                     {
-                                                        let part = &parts.entries[part_index];
+                                                        let part = &pe;
                                                         let candidate = Candidate { part: Arc::clone(&part.row), supplier: Arc::clone(&supplier.row), nation: Arc::clone(&nation.row) };
                                                         let ghost multiplicity = part.count as int * quote.count as int * supplier.count as int * nation.count as int * region.value as int;
                                                         let ghost previous_ordered = ordered_enumeration@;
                                                         let ghost previous_enumeration = enumeration@;
-                                                        proof { assert(previous_enumeration == nation_start + part_outputs(parts.entries@.take(part_index as int), *quote, *supplier, *nation, region.value)); }
+                                                        proof { assert(previous_enumeration == nation_start + part_outputs(pcs.take(part_index as int), *quote, *supplier, *nation, region.value)); }
                                                         let ghost previous_best = candidate_rows(best@);
                                                         let first_copies = capped_product(part.count, quote.count);
                                                         let second_copies = capped_product(first_copies, supplier.count);
@@ -422,29 +516,30 @@ pub fn enumerate(s: &State, size: i64, name: &[u8]) -> (result: Vec<Output>)
                                                         enumeration = Ghost(previous_enumeration + copies_of(candidate.view(), multiplicity as nat));
                                                         ordered_enumeration = Ghost(repeat_sorted(previous_ordered, candidate.view(), multiplicity as nat));
                                                         proof {
-                                                            lemma_part_outputs_step(parts.entries@, part_index as int, *quote, *supplier, *nation, region.value);
-                                                            assert(candidate.view() == projected_output(*part.row, *supplier.row, *nation.row));
-                                                            assert(part_output(parts.entries@[part_index as int], *quote, *supplier, *nation, region.value) == copies_of(candidate.view(), multiplicity as nat));
-                                                            assert(enumeration@ =~= nation_start + part_outputs(parts.entries@.take(part_index as int + 1), *quote, *supplier, *nation, region.value));
+                                                            assert(pcs.len() == 1); assert((part_index as int) < 1); assert(0 <= part_index as int);
+                                                            lemma_part_outputs_step(pcs, part_index as int, *quote, *supplier, *nation, region.value);
+                                                            assert(candidate.view() == projected_output(pcs[part_index as int].row, *supplier.row, *nation.row));
+                                                            assert(part_output(pcs[part_index as int], *quote, *supplier, *nation, region.value) == copies_of(candidate.view(), multiplicity as nat));
+                                                            assert(enumeration@ =~= nation_start + part_outputs(pcs.take(part_index as int + 1), *quote, *supplier, *nation, region.value));
                                                         }
                                                         part_index += 1;
                                                     }
-                                                    proof { assert(parts.entries@.take(part_index as int) =~= parts.entries@); }
+                                                    proof { assert(pcs.take(part_index as int) =~= pcs); }
                                                     }
                                                 }
                                                 proof {
-                                                    assert(enumeration@ == nation_start + nation_output(*nation, parts.entries@, *quote, *supplier, regions));
-                                                    lemma_nation_outputs_step(nations.entries@, nation_index as int, parts.entries@, *quote, *supplier, regions);
-                                                    assert(enumeration@ =~= supplier_start + nation_outputs(nations.entries@.take(nation_index as int + 1), parts.entries@, *quote, *supplier, regions));
+                                                    assert(enumeration@ == nation_start + nation_output(*nation, pcs, *quote, *supplier, regions));
+                                                    lemma_nation_outputs_step(nations.entries@, nation_index as int, pcs, *quote, *supplier, regions);
+                                                    assert(enumeration@ =~= supplier_start + nation_outputs(nations.entries@.take(nation_index as int + 1), pcs, *quote, *supplier, regions));
                                                 }
                                                 nation_index += 1;
                                             }
                                             proof { assert(nations.entries@.take(nation_index as int) =~= nations.entries@); }
                                         }
                                         proof {
-                                            assert(enumeration@ == supplier_start + supplier_output(*supplier, parts.entries@, *quote, s.nations, regions));
-                                            lemma_supplier_outputs_step(suppliers.entries@, supplier_index as int, parts.entries@, *quote, s.nations, regions);
-                                            assert(enumeration@ =~= quote_start + supplier_outputs(suppliers.entries@.take(supplier_index as int + 1), parts.entries@, *quote, s.nations, regions));
+                                            assert(enumeration@ == supplier_start + supplier_output(*supplier, pcs, *quote, s.nations, regions));
+                                            lemma_supplier_outputs_step(suppliers.entries@, supplier_index as int, pcs, *quote, s.nations, regions);
+                                            assert(enumeration@ =~= quote_start + supplier_outputs(suppliers.entries@.take(supplier_index as int + 1), pcs, *quote, s.nations, regions));
                                         }
                                         supplier_index += 1;
                                     }
@@ -452,37 +547,50 @@ pub fn enumerate(s: &State, size: i64, name: &[u8]) -> (result: Vec<Output>)
                                 }
                             }
                             proof {
-                                assert(enumeration@ == quote_start + quote_output(*quote, parts.entries@, cost, s.suppliers, s.nations, regions));
-                                lemma_quote_outputs_step(quotes.entries@, quote_index as int, parts.entries@, cost, s.suppliers, s.nations, regions);
-                                assert(enumeration@ =~= key_start + quote_outputs(quotes.entries@.take(quote_index as int + 1), parts.entries@, cost, s.suppliers, s.nations, regions));
+                                assert(enumeration@ == quote_start + quote_output(*quote, pcs, cost, s.suppliers, s.nations, regions));
+                                lemma_quote_outputs_step(quotes.entries@, quote_index as int, pcs, cost, s.suppliers, s.nations, regions);
+                                assert(enumeration@ =~= cell_start + quote_outputs(quotes.entries@.take(quote_index as int + 1), pcs, cost, s.suppliers, s.nations, regions));
                             }
                             quote_index += 1;
                         }
                         proof { assert(quotes.entries@.take(quote_index as int) =~= quotes.entries@); }
                     }
                 }
+                proof {
+                    assert(enumeration@ == cell_start + key_output_p(*s, key, pcs, regions));
+                    lemma_cell_outputs_step(*s, regions, size, ti as int, all_rows, j as int);
+                    assert(cell_output(*s, regions, size, ti as int)(cell) == key_output_p(*s, key, pcs, regions));
+                    assert(cell == all_rows[j as int]);
+                    assert(cell_output(*s, regions, size, ti as int)(all_rows[j as int]) == key_output_p(*s, key, pcs, regions));
+                    assert(cell_start == type_start + cell_outputs(*s, regions, size, ti as int, all_rows.take(j as int)));
+                    assert((type_start + cell_outputs(*s, regions, size, ti as int, all_rows.take(j as int))) + key_output_p(*s, key, pcs, regions) =~=
+                        type_start + (cell_outputs(*s, regions, size, ti as int, all_rows.take(j as int)) + key_output_p(*s, key, pcs, regions)));
+                    assert(enumeration@ == type_start + cell_outputs(*s, regions, size, ti as int, all_rows.take(j as int + 1)));
+                }
+                j += 1;
             }
+            proof {
+                assert(all_rows.take(j as int) =~= all_rows);
+                assert(type_outputs(*s, regions, size, pat@, ti as int) == cell_outputs(*s, regions, size, ti as int, all_rows));
+            }
+        } else {
+            proof { assert(type_outputs(*s, regions, size, pat@, ti as int) =~= Seq::<OutRow>::empty()); }
         }
         proof {
-            assert(enumeration@ == key_start + key_output(*s, key, size, regions));
-            lemma_index_outputs_step(keys@, key_index as int, *s, size, regions);
+            assert(enumeration@ == type_start + type_outputs(*s, regions, size, pat@, ti as int));
+            lemma_types_outputs_step(*s, regions, size, pat@, ti as int);
         }
-        key_index += 1;
+        ti += 1;
     }
     proof {
-        assert(keys@.take(key_index as int) =~= keys@);
-        assert(enumeration@ == index_outputs(keys@, *s, size, regions));
+        assert(ti == dl);
         assert forall|first: int, second: int| 0 <= first < second < ordered_enumeration@.len() implies
             !row_lt(#[trigger] ordered_enumeration@[second], #[trigger] ordered_enumeration@[first]) by {
             lemma_row_lt_ext(ordered_enumeration@[second], ordered_enumeration@[first]);
         }
-        assert forall|key: i64| #[trigger] size_count(s.sizes, size, key) != 0 implies entry_keys(keys@).contains(key) by {
-            assert(count_at(*slice, key) == size_count(s.sizes, size, key));
-            assert(slice.lookup(key) is Some);
-        }
-        crate::query_proofs::lemma_index_output_bag(*s, size, name@, keys@, regions);
-        assert(enumeration@.to_multiset() == rows(s.db(), params(size as int, name@)).to_multiset());
-        assert(full_result(s.db(), params(size as int, name@), ordered_enumeration@));
+        lemma_types_outputs_bag(*s, size, name@, pat@, regions);
+        assert(enumeration@.to_multiset() == rows(s.db(), params(size as int, pat@, name@)).to_multiset());
+        assert(full_result(s.db(), params(size as int, pat@, name@), ordered_enumeration@));
     }
     let mut result = Vec::new();
     let mut offset = 0;
@@ -490,7 +598,7 @@ pub fn enumerate(s: &State, size: i64, name: &[u8]) -> (result: Vec<Output>)
         invariant offset <= best.len(), result.len() == offset,
             out_view(result@) == candidate_rows(best@).take(offset as int),
             candidate_rows(best@) == limit_rows(ordered_enumeration@, 100),
-            full_result(s.db(), params(size as int, name@), ordered_enumeration@),
+            full_result(s.db(), params(size as int, pat@, name@), ordered_enumeration@),
         decreases best.len() - offset,
     {
         result.push(best[offset].hydrate());

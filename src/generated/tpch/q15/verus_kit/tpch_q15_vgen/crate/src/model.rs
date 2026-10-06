@@ -5,7 +5,7 @@ use crate::gen_spec::*;
 
 verus! {
 #[derive(Clone, Copy)]
-pub struct Day { pub shipdate: i32, pub count: u64, pub revenue: i128 }
+pub struct Day { pub revenue: i64, pub shipdate: i32, pub count: u32 }
 pub struct BucketProfile { pub count: u64, pub revenue: i128, pub days: Vec<Day> }
 pub struct Variant {
     pub name: Vec<u8>, pub address: Vec<u8>, pub phone: Vec<u8>, pub count: u64,

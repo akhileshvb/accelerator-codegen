@@ -68,8 +68,17 @@ struct ShipmentRescan {
   ShipmentRows rows;
 };
 
+// Row count of a table, to size the scan buffers exactly (a growing vector would
+// hold up to twice the rows while it reallocates).
+size_t CountRows(kit::Host &host, const char *sql) {
+  int64_t count = 0;
+  host.Query(sql, [&](const core::AuxRow &row) { count = kit::I64(row, 0, 0); });
+  return count > 0 ? static_cast<size_t>(count) : 0;
+}
+
 CustomerRows ReadCustomers(kit::Host &host) {
   CustomerRows customers;
+  customers.c_custkey.reserve(CountRows(host, "SELECT COUNT(*) FROM customer;"));
   host.Query(kCustomersSql, [&](const core::AuxRow &row) {
     customers.c_custkey.push_back(kit::I64(row, 0, 0));
     customers.c_mktsegment.Push(kit::Text(row, 1));
@@ -79,6 +88,7 @@ CustomerRows ReadCustomers(kit::Host &host) {
 
 OrderRows ReadOrders(kit::Host &host) {
   OrderRows orders;
+  orders.rows.reserve(CountRows(host, "SELECT COUNT(*) FROM orders;"));
   host.Query(kOrdersSql, [&](const core::AuxRow &row) {
     orders.rows.push_back({
         kit::I64(row, 0, 0),
@@ -92,6 +102,7 @@ OrderRows ReadOrders(kit::Host &host) {
 
 ShipmentRows ReadShipments(kit::Host &host) {
   ShipmentRows shipments;
+  shipments.rows.reserve(CountRows(host, "SELECT COUNT(*) FROM lineitem;"));
   host.Query(kShipmentsSql, [&](const core::AuxRow &row) {
     shipments.rows.push_back({
         kit::I64(row, 0, 0),

@@ -51,7 +51,7 @@ pub proof fn lemma_counts_step_positive(before: Counts, after: Counts, group: Ar
     ensures positive_counts(after),
 {
     assert forall|key: KeyView| #[trigger] after.at(key).is_some() implies
-        after.at(key).unwrap().count > 0 && after.at(key).unwrap().group.valid() && after.at(key).unwrap().group.key() == key by {
+        after.at(key).unwrap().count > 0 && after.at(key).unwrap().group.valid() && after.at(key).unwrap().group.key() == key && after.at(key).unwrap().consistent() by {
         if key == group.key() { assert(count > 0); }
         else { assert(before.at(key).is_some()); }
     }
@@ -59,7 +59,7 @@ pub proof fn lemma_counts_step_positive(before: Counts, after: Counts, group: Ar
 
 pub open spec fn count_step(before: Counts, after: Counts, group: Arc<Group>, count: i64) -> bool {
     forall|key: KeyView| #[trigger] after.at(key) == if key == group.key() {
-        if count > 0 { Some(Cell { group, count }) } else { None }
+        if count > 0 { Some(Cell::of(group, count)) } else { None }
     } else { before.at(key) }
 }
 
@@ -150,7 +150,7 @@ pub proof fn lemma_ranks_equal(before: &Ranks, after: &Ranks, old_counts: Counts
 
 pub open spec fn stream_step(before: Counts, after: Counts, group: Arc<Group>, previous: i64, next: i64, brand: Option<Seq<u8>>) -> bool {
     forall|key: KeyView| #[trigger] after.at(key) ==
-        if next > 0 && key == stream_key(*group, next as int, brand) { Some(Cell { group, count: next }) }
+        if next > 0 && key == stream_key(*group, next as int, brand) { Some(Cell::of(group, next)) }
         else if previous > 0 && key == stream_key(*group, previous as int, brand) { None }
         else { before.at(key) }
 }
@@ -228,7 +228,7 @@ pub proof fn lemma_stream_update(before: Counts, after: Counts, old_counts: Coun
     } by {
         let cell = after.at(key).unwrap();
         if next > 0 && key == stream_key(*group, next as int, brand) {
-            assert(cell == Cell { group, count: next });
+            assert(cell == Cell::of(group, next));
         } else {
             assert(before.at(key) == Some(cell));
             assert(old_counts.at(cell.group.key()) == Some(cell));
@@ -249,7 +249,7 @@ pub proof fn lemma_stream_update(before: Counts, after: Counts, old_counts: Coun
         let cell = counts.at(key).unwrap();
         if key == group.key() {
             assert(next > 0);
-            assert(cell == Cell { group, count: next });
+            assert(cell == Cell::of(group, next));
         } else {
             assert(old_counts.at(key) == Some(cell));
             assert(cell.group.key() == key && cell.group.valid());
@@ -291,7 +291,7 @@ pub proof fn lemma_stream_unchanged(rows: Counts, old_counts: Counts, counts: Co
         rows.at(stream_key(*counts.at(key).unwrap().group, counts.at(key).unwrap().count as int, brand)) == counts.at(key) by {
         if key == group.key() {
             assert(next > 0);
-            assert(counts.at(key).unwrap() == Cell { group, count: next });
+            assert(counts.at(key).unwrap() == Cell::of(group, next));
             assert(false);
         }
         assert(old_counts.at(key) == counts.at(key));
@@ -335,7 +335,7 @@ pub proof fn lemma_brands_update(before: Index<BrandRanks>, after: Index<BrandRa
             assert(stream.entries().len() > 0);
         } else {
             if key == group.key() {
-                assert(cell == Cell { group, count: next });
+                assert(cell == Cell::of(group, next));
                 assert(false);
             }
             assert(old_counts.at(key) == Some(cell));
@@ -390,7 +390,7 @@ pub proof fn lemma_size_unchanged(rows: SizeRanks, old_counts: Counts, counts: C
     assert forall|key: KeyView| #[trigger] counts.at(key).is_some() && counts.at(key).unwrap().group.size == size implies
         rows.brands.at((0int, (*counts.at(key).unwrap().group.brand)@)).is_some() by {
         if key == group.key() {
-            assert(counts.at(key).unwrap() == Cell { group, count: next });
+            assert(counts.at(key).unwrap() == Cell::of(group, next));
             assert(false);
         }
         assert(old_counts.at(key) == counts.at(key));
@@ -432,7 +432,7 @@ pub proof fn lemma_ranks_update(before: Ranks, after: Ranks, old_counts: Counts,
             assert(rows.brands.entries().len() > 0);
         } else {
             if key == group.key() {
-                assert(cell == Cell { group, count: next });
+                assert(cell == Cell::of(group, next));
                 assert(false);
             }
             assert(old_counts.at(key) == Some(cell));

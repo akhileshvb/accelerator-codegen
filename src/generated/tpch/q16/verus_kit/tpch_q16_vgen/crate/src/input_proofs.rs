@@ -165,15 +165,11 @@ pub proof fn lemma_blockers_rescan(db: Db, keys: Seq<i64>, rows: Seq<BlockerInpu
 }
 
 pub proof fn lemma_parts_scan(db: Db, rows: Seq<PartInput>, part: int, key: KeyView)
-    requires scan_eligible_parts_ok(db, rows),
+    requires scan_parts_ok(db, rows),
     ensures part_input_sum(rows, part, key) == part_database_sum(db, part, key),
 {
     let weight = |row: PartRow| part_weight(row, part, key);
-    let selected = |row: PartRow| if !like_match(row.p_type,
-        seq![b'S', b'M', b'A', b'L', b'L', b' ', b'B', b'R', b'U', b'S', b'H', b'E', b'D', b'%']) { weight(row) } else { 0int };
-    assert(sum(part_input_seq_view(rows), weight) == sum(db.part, selected));
-    assert forall|row: PartRow| #[trigger] selected(row) == weight(row) by {}
-    lemma_sum_ext_all(db.part, selected, weight);
+    assert(sum(part_input_seq_view(rows), weight) == sum(db.part, weight));
 }
 
 pub proof fn lemma_edges_scan(db: Db, rows: Seq<EdgeInput>, supplier: int, part: int)

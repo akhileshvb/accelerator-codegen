@@ -2,18 +2,28 @@ use vstd::prelude::*;
 use std::sync::Arc;
 use verus_prooflib::ordered::{Key, Index};
 use crate::values::*;
+use crate::paged::*;
+use crate::ents::*;
 
 verus! {
 
-pub struct Rank {
-    pub customer: i64,
-    pub moments: Arc<Moments>,
+pub struct Slice {
+    pub cells: Paged<CellEnt>,
+    pub ranks: Paged<RankEnt>,
 }
 
-pub struct Slice {
-    pub cells: Index<Moments>,
-    pub ranks: Index<Rank>,
+pub open spec fn cell_moments(cell: CellEnt) -> Moments {
+    Moments { count: cell.count as i128, revenue: cell.revenue as i128, upper: cell.upper as i128 }
 }
+
+pub open spec fn cell_at(cells: Paged<CellEnt>, customer: int) -> Moments {
+    match cells.at((customer, Seq::<u8>::empty())) {
+        Some(cell) => cell_moments(cell),
+        None => Moments { count: 0, revenue: 0, upper: 0 },
+    }
+}
+
+pub open spec fn rank_of(cell: CellEnt) -> RankEnt { RankEnt { upper: cell.upper, customer: cell.customer } }
 
 pub struct Periods {
     pub months: Index<Slice>,
@@ -50,21 +60,20 @@ impl Periods {
 impl Slice {
     pub fn new() -> (result: Self)
         ensures result.valid(), result.cells.wf(), result.ranks.wf(),
-            forall|key: (int, Seq<u8>)| #[trigger] result.cells.at(key) == None,
-            forall|key: (int, Seq<u8>)| #[trigger] result.ranks.at(key) == None,
-    { Self { cells: Index::new(), ranks: Index::new() } }
+            forall|key: (int, Seq<u8>)| #[trigger] result.cells.at(key) == None::<CellEnt>,
+            forall|key: (int, Seq<u8>)| #[trigger] result.ranks.at(key) == None::<RankEnt>,
+    { Self { cells: Paged::new(), ranks: Paged::new() } }
+
     pub fn share(&self) -> (result: Self)
-        ensures result.cells.tree() == self.cells.tree(), result.ranks.tree() == self.ranks.tree(),
-            self.valid() ==> result.valid(),
-            result.cells.wf(), result.ranks.wf(),
+        requires self.valid(),
+        ensures result.valid(),
+            forall|key: (int, Seq<u8>)| #[trigger] result.cells.at(key) == self.cells.at(key),
+            forall|key: (int, Seq<u8>)| #[trigger] result.ranks.at(key) == self.ranks.at(key),
     {
         let result = Self { cells: self.cells.share(), ranks: self.ranks.share() };
         proof {
-            assert forall|key: (int, Seq<u8>)| #[trigger] result.cells.at(key) == self.cells.at(key) by {}
-            assert forall|key: (int, Seq<u8>)| #[trigger] result.ranks.at(key) == self.ranks.at(key) by {}
-            if self.valid() {
-                assert(result.valid());
-            }
+            assert(result.cells.wf() && result.ranks.wf());
+            assert(result.valid());
         }
         result
     }
@@ -72,26 +81,24 @@ impl Slice {
     pub open spec fn valid(self) -> bool {
         &&& self.cells.wf() && self.ranks.wf()
         &&& forall|key: (int, Seq<u8>)| #[trigger] self.cells.at(key).is_some() ==> {
-            let value = self.cells.at(key).unwrap();
-            &&& key.1 == Seq::<u8>::empty()
-            &&& i64::MIN <= key.0 <= i64::MAX
-            &&& value.count > 0 && value.upper >= 0 && value.revenue <= value.upper
-            &&& self.ranks.at(rank_view(value.upper as int, key.0)).is_some()
-            &&& self.ranks.at(rank_view(value.upper as int, key.0)).unwrap().customer as int == key.0
-            &&& *self.ranks.at(rank_view(value.upper as int, key.0)).unwrap().moments == value
+            let cell = self.cells.at(key).unwrap();
+            &&& cell.count > 0 && cell.upper >= 0 && cell.revenue <= cell.upper
+            &&& self.ranks.at(rank_of(cell).kv()) == Some(rank_of(cell))
         }
         &&& forall|key: (int, Seq<u8>)| #[trigger] self.ranks.at(key).is_some() ==> {
             let rank = self.ranks.at(key).unwrap();
-            &&& rank.moments.upper >= 0
-            &&& key == rank_view(rank.moments.upper as int, rank.customer as int)
-            &&& self.cells.at((rank.customer as int, Seq::empty())) == Some(*rank.moments)
+            &&& rank.upper >= 0
+            &&& match self.cells.at((rank.customer as int, Seq::<u8>::empty())) {
+                Some(cell) => cell.upper == rank.upper,
+                None => false,
+            }
         }
     }
 }
 
 pub open spec fn slice_at(slices: Index<Slice>, day: int, customer: int) -> Moments {
     match slices.at((day, Seq::empty())) {
-        Some(slice) => moment_at(slice.cells, customer),
+        Some(slice) => cell_at(slice.cells, customer),
         None => Moments { count: 0, revenue: 0, upper: 0 },
     }
 }
@@ -99,12 +106,122 @@ pub open spec fn slice_at(slices: Index<Slice>, day: int, customer: int) -> Mome
 pub open spec fn slices_valid(slices: Index<Slice>) -> bool {
     forall|key: (int, Seq<u8>)| #[trigger] slices.at(key).is_some() ==> {
         &&& key.1 == Seq::<u8>::empty()
-        &&& slices.at(key).unwrap().cells.entries().len() > 0
+        &&& slices.at(key).unwrap().cells.nonempty()
         &&& slices.at(key).unwrap().valid()
     }
 }
 
-#[verifier::rlimit(30)]
+pub fn probe_cell(customer: i64) -> (result: CellEnt)
+    ensures result.customer == customer, result.kv() == (customer as int, Seq::<u8>::empty()),
+{ CellEnt { customer, count: 0, revenue: 0, upper: 0 } }
+
+pub proof fn lemma_cell_key(cells: Paged<CellEnt>, key: (int, Seq<u8>))
+    requires cells.wf(), cells.at(key).is_some(),
+    ensures cells.at(key).unwrap().kv() == key, key == (cells.at(key).unwrap().customer as int, Seq::<u8>::empty()),
+{
+    lemma_at(cells, key, cells.at(key).unwrap());
+}
+
+pub proof fn lemma_rank_key(ranks: Paged<RankEnt>, key: (int, Seq<u8>))
+    requires ranks.wf(), ranks.at(key).is_some(),
+    ensures ranks.at(key).unwrap().kv() == key,
+{
+    lemma_at(ranks, key, ranks.at(key).unwrap());
+}
+
+pub proof fn lemma_edit_valid(before: Slice, after: Slice, customer: i64, old: Moments, next: Moments, ranks_removed: Paged<RankEnt>)
+    requires before.valid(), old == cell_at(before.cells, customer as int),
+        next.count >= 0, next.upper >= 0, next.revenue <= next.upper,
+        next.count == 0 ==> next.revenue == 0 && next.upper == 0,
+        next.count <= u32::MAX as i128, next.upper <= i64::MAX as i128, next.revenue >= i64::MIN as i128,
+        after.cells.wf(), after.ranks.wf(), ranks_removed.wf(),
+        forall|query: (int, Seq<u8>)| #![trigger ranks_removed.at(query)] ranks_removed.at(query)
+            == if old.count > 0 && query == (RankEnt { upper: old.upper as i64, customer }).kv() { None } else { before.ranks.at(query) },
+        forall|query: (int, Seq<u8>)| #![trigger after.cells.at(query)] after.cells.at(query)
+            == if query == (customer as int, Seq::<u8>::empty()) {
+                if next.count == 0 { None }
+                else { Some(CellEnt { customer, count: next.count as u32, revenue: next.revenue as i64, upper: next.upper as i64 }) }
+            } else { before.cells.at(query) },
+        forall|query: (int, Seq<u8>)| #![trigger after.ranks.at(query)] after.ranks.at(query)
+            == if next.count > 0 && query == (RankEnt { upper: next.upper as i64, customer }).kv() { Some(RankEnt { upper: next.upper as i64, customer }) }
+            else { ranks_removed.at(query) },
+    ensures after.valid(), cell_at(after.cells, customer as int) == next,
+        forall|target: int| target != customer as int ==> #[trigger] cell_at(after.cells, target) == cell_at(before.cells, target),
+{
+    let ckey = (customer as int, Seq::<u8>::empty());
+    let new_cell = CellEnt { customer, count: next.count as u32, revenue: next.revenue as i64, upper: next.upper as i64 };
+    let new_rank = RankEnt { upper: next.upper as i64, customer };
+    let old_rank = RankEnt { upper: old.upper as i64, customer };
+    // the old cell, when present, is the one counted in `old`
+    if old.count > 0 {
+        lemma_cell_key(before.cells, ckey);
+        assert(before.cells.at(ckey).is_some());
+        let cell = before.cells.at(ckey).unwrap();
+        assert(cell_moments(cell) == old);
+        assert(rank_of(cell) == old_rank);
+        assert(before.ranks.at(old_rank.kv()) == Some(old_rank));
+    }
+    assert forall|target: int| target != customer as int implies #[trigger] cell_at(after.cells, target) == cell_at(before.cells, target) by {
+        assert(after.cells.at((target, Seq::<u8>::empty())) == before.cells.at((target, Seq::<u8>::empty())));
+    }
+    assert(cell_at(after.cells, customer as int) == next);
+    assert forall|key: (int, Seq<u8>)| #[trigger] after.cells.at(key).is_some() implies {
+        let cell = after.cells.at(key).unwrap();
+        &&& cell.count > 0 && cell.upper >= 0 && cell.revenue <= cell.upper
+        &&& after.ranks.at(rank_of(cell).kv()) == Some(rank_of(cell))
+    } by {
+        let cell = after.cells.at(key).unwrap();
+        if key == ckey {
+            assert(cell == new_cell);
+            assert(rank_of(cell) == new_rank);
+        } else {
+            lemma_cell_key(before.cells, key);
+            assert(before.cells.at(key) == Some(cell));
+            assert(cell.customer != customer);
+            let rank = rank_of(cell);
+            assert(before.ranks.at(rank.kv()) == Some(rank));
+            lemma_rank_order(rank, old_rank);
+            lemma_rank_order(rank, new_rank);
+            assert(rank.kv() != old_rank.kv());
+            assert(rank.kv() != new_rank.kv());
+            assert(ranks_removed.at(rank.kv()) == before.ranks.at(rank.kv()));
+        }
+    }
+    assert forall|key: (int, Seq<u8>)| #[trigger] after.ranks.at(key).is_some() implies {
+        let rank = after.ranks.at(key).unwrap();
+        &&& rank.upper >= 0
+        &&& match after.cells.at((rank.customer as int, Seq::<u8>::empty())) {
+            Some(cell) => cell.upper == rank.upper,
+            None => false,
+        }
+    } by {
+        let rank = after.ranks.at(key).unwrap();
+        lemma_rank_key(after.ranks, key);
+        if next.count > 0 && key == new_rank.kv() {
+            assert(rank == new_rank);
+            assert(after.cells.at(ckey) == Some(new_cell));
+        } else {
+            assert(ranks_removed.at(key) == Some(rank));
+            assert(!(old.count > 0 && key == old_rank.kv()));
+            assert(before.ranks.at(key) == Some(rank));
+            assert(rank.upper >= 0);
+            let rkey = (rank.customer as int, Seq::<u8>::empty());
+            assert(match before.cells.at(rkey) { Some(cell) => cell.upper == rank.upper, None => false });
+            if rank.customer == customer {
+                // it would be the old rank
+                let cell = before.cells.at(ckey).unwrap();
+                lemma_cell_key(before.cells, ckey);
+                assert(cell_moments(cell) == old);
+                assert(old.count > 0);
+                assert(rank == old_rank);
+                assert(false);
+            }
+            assert(after.cells.at(rkey) == before.cells.at(rkey));
+        }
+    }
+}
+
+#[verifier::rlimit(60)]
 pub fn edit_slice(slices: &mut Index<Slice>, day: i64, customer: i64, change: Moments) -> (result: bool)
     requires slices_valid(*old(slices)),
     ensures result ==> slices_valid(*final(slices)),
@@ -120,69 +237,44 @@ pub fn edit_slice(slices: &mut Index<Slice>, day: i64, customer: i64, change: Mo
             let shared = value.share();
             proof {
                 assert(before.at(key.view()) == Some(*value));
-                assert forall|target: int| #[trigger] moment_at(shared.cells, target)
-                    == slice_at(before, day as int, target) by {}
+                assert(value.valid());
+                assert forall|target: int| #[trigger] cell_at(shared.cells, target) == slice_at(before, day as int, target) by {}
             }
             shared
         },
         None => Slice::new(),
     };
     let ghost before_slice = slice;
-    let old = get_moments(&slice.cells, customer);
+    let probe = probe_cell(customer);
+    let old_cell = slice.cells.get(&probe);
+    let old = match old_cell {
+        Some(cell) => Moments { count: cell.count as i128, revenue: cell.revenue as i128, upper: cell.upper as i128 },
+        None => Moments::zero(),
+    };
     proof {
         assert(slice.valid());
+        assert(old == cell_at(slice.cells, customer as int));
         assert(old.upper >= 0);
-        assert forall|target: int| #[trigger] moment_at(slice.cells, target)
+        assert forall|target: int| #[trigger] cell_at(slice.cells, target)
             == slice_at(before, day as int, target) by {}
     }
     let next = match old.add(change) { Some(value) => value, None => return false };
     if next.count < 0 || next.upper < 0 || next.revenue > next.upper { return false; }
     if next.count == 0 && !next.is_zero() { return false; }
-    if old.count > 0 { slice.ranks.remove(&rank_key(old.upper, customer)); }
-    if next.count == 0 { slice.cells.remove(&Key::number(customer)); }
+    if next.count > u32::MAX as i128 || next.upper > i64::MAX as i128 || next.revenue < i64::MIN as i128 { return false; }
+    let ghost old_rank = RankEnt { upper: old.upper as i64, customer };
+    let new_cell = CellEnt { customer, count: next.count as u32, revenue: next.revenue as i64, upper: next.upper as i64 };
+    let new_rank = RankEnt { upper: next.upper as i64, customer };
+    let ghost ranks_before = slice.ranks;
+    if old.count > 0 { slice.ranks.remove(&RankEnt { upper: old.upper as i64, customer }); }
+    let ghost ranks_removed = slice.ranks;
+    if next.count == 0 { slice.cells.remove(&probe); }
     else {
-        let moments = Arc::new(next);
-        slice.cells.put(Key::number(customer), moments.clone());
-        slice.ranks.put(rank_key(next.upper, customer), Arc::new(Rank { customer, moments }));
+        slice.cells.put(new_cell);
+        slice.ranks.put(new_rank);
     }
     proof {
-        slice.cells.model();
-        assert forall|cell_key: (int, Seq<u8>)| #[trigger] slice.cells.at(cell_key).is_some() implies {
-            let value = slice.cells.at(cell_key).unwrap();
-            &&& cell_key.1 == Seq::<u8>::empty()
-            &&& i64::MIN <= cell_key.0 <= i64::MAX
-            &&& value.count > 0 && value.upper >= 0 && value.revenue <= value.upper
-            &&& slice.ranks.at(rank_view(value.upper as int, cell_key.0)).is_some()
-            &&& slice.ranks.at(rank_view(value.upper as int, cell_key.0)).unwrap().customer as int == cell_key.0
-            &&& *slice.ranks.at(rank_view(value.upper as int, cell_key.0)).unwrap().moments == value
-        } by {
-            if cell_key != (customer as int, Seq::empty()) {
-                let value = slice.cells.at(cell_key).unwrap();
-                assert(before_slice.cells.at(cell_key) == Some(value));
-                if rank_view(value.upper as int, cell_key.0) == rank_view(old.upper as int, customer as int) {
-                    crate::key_facts::lemma_rank_key_injective(value.upper, cell_key.0 as i64, old.upper, customer);
-                }
-                if rank_view(value.upper as int, cell_key.0) == rank_view(next.upper as int, customer as int) {
-                    crate::key_facts::lemma_rank_key_injective(value.upper, cell_key.0 as i64, next.upper, customer);
-                }
-            }
-        }
-        assert forall|rank_key: (int, Seq<u8>)| #[trigger] slice.ranks.at(rank_key).is_some() implies {
-            let rank = slice.ranks.at(rank_key).unwrap();
-            &&& rank.moments.upper >= 0
-            &&& rank_key == rank_view(rank.moments.upper as int, rank.customer as int)
-            &&& slice.cells.at((rank.customer as int, Seq::empty())) == Some(*rank.moments)
-        } by {
-            if next.count == 0 || rank_key != rank_view(next.upper as int, customer as int) {
-                let rank = slice.ranks.at(rank_key).unwrap();
-                assert(before_slice.ranks.at(rank_key) == Some(rank));
-                if rank.customer == customer {
-                    assert(before_slice.cells.at((customer as int, Seq::empty())) == Some(*rank.moments));
-                    assert(*rank.moments == old);
-                }
-            }
-        }
-        assert(slice.valid());
+        lemma_edit_valid(before_slice, slice, customer, old, next, ranks_removed);
     }
     if slice.cells.is_empty() { slices.remove(&key); }
     else { slices.put(key, Arc::new(slice)); }
@@ -194,9 +286,9 @@ pub fn edit_slice(slices: &mut Index<Slice>, day: i64, customer: i64, change: Mo
                     + if target_day == day && target_customer == customer { change.component(component) } else { 0 } by {
             if target_day == day {
                 if target_customer == customer {
-                    assert(moment_at(slice.cells, target_customer) == next);
+                    assert(cell_at(slice.cells, target_customer) == next);
                 } else {
-                    assert(moment_at(slice.cells, target_customer) == moment_at(before_slice.cells, target_customer));
+                    assert(cell_at(slice.cells, target_customer) == cell_at(before_slice.cells, target_customer));
                 }
             }
         }

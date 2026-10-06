@@ -77,12 +77,14 @@ pub struct FfiResult {
 
 /// Build from the scans: a state, or NULL (the host then answers with SQL).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq20vgen_build(qualifying_parts__n: usize, qualifying_parts: *const QualifyingPartInput, stocks__n: usize, stocks: *const StockInput, shipments__n: usize, shipments: *const ShipmentInput, suppliers__n: usize, suppliers__s_suppkey: *const i64, suppliers__s_name: *const u8, suppliers__s_name__off: *const usize, suppliers__s_address: *const u8, suppliers__s_address__off: *const usize, suppliers__s_nationkey: *const i64, nations__n: usize, nations__n_nationkey: *const i64, nations__n_name: *const u8, nations__n_name__off: *const usize) -> *mut State {
+pub unsafe extern "C" fn tpchq20vgen_build(parts__n: usize, parts__p_partkey: *const i64, parts__p_name: *const u8, parts__p_name__off: *const usize, stocks__n: usize, stocks: *const StockInput, shipments__n: usize, shipments: *const ShipmentInput, suppliers__n: usize, suppliers__s_suppkey: *const i64, suppliers__s_name: *const u8, suppliers__s_name__off: *const usize, suppliers__s_address: *const u8, suppliers__s_address__off: *const usize, suppliers__s_nationkey: *const i64, nations__n: usize, nations__n_nationkey: *const i64, nations__n_name: *const u8, nations__n_name__off: *const usize) -> *mut State {
+    let parts__v: Vec<PartInput> = (0..parts__n).map(|i| PartInput { p_partkey: *parts__p_partkey.add(i), p_name: text(parts__p_name, parts__p_name__off, i) }).collect();
     let suppliers__v: Vec<SupplierInput> = (0..suppliers__n).map(|i| SupplierInput { s_suppkey: *suppliers__s_suppkey.add(i), s_name: text(suppliers__s_name, suppliers__s_name__off, i), s_address: text(suppliers__s_address, suppliers__s_address__off, i), s_nationkey: *suppliers__s_nationkey.add(i) }).collect();
     let nations__v: Vec<NationInput> = (0..nations__n).map(|i| NationInput { n_nationkey: *nations__n_nationkey.add(i), n_name: text(nations__n_name, nations__n_name__off, i) }).collect();
     if rec_on() {
-        rec_rows("build", "qualifying_parts", &["p_partkey:int"], slice(qualifying_parts, qualifying_parts__n), |r: &QualifyingPartInput, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string());
+        rec_rows("build", "parts", &["p_partkey:int", "p_name:text"], &parts__v, |r: &PartInput, o: &mut String| {
+            o.push_str(&(r.p_partkey).to_string()); o.push(',');
+            rec_text(&r.p_name, o);
         });
         rec_rows("build", "stocks", &["ps_partkey:int", "ps_suppkey:int", "ps_availqty:int"], slice(stocks, stocks__n), |r: &StockInput, o: &mut String| {
             o.push_str(&(r.ps_partkey).to_string()); o.push(',');
@@ -107,7 +109,7 @@ pub unsafe extern "C" fn tpchq20vgen_build(qualifying_parts__n: usize, qualifyin
         });
         return ptr::null_mut();
     }
-    match ob_build(slice(qualifying_parts, qualifying_parts__n), slice(stocks, stocks__n), slice(shipments, shipments__n), suppliers__v, nations__v, Ghost::assume_new()) {
+    match ob_build(parts__v, slice(stocks, stocks__n), slice(shipments, shipments__n), suppliers__v, nations__v, Ghost::assume_new()) {
         Some(s) => Box::into_raw(Box::new(s)),
         None => ptr::null_mut(),
     }
@@ -124,8 +126,9 @@ pub unsafe extern "C" fn tpchq20vgen_free(s: *mut State) {
 /// The keys to rescan for apply: writes up to cap of them into out and
 /// returns how many there are (call again with more room if that is more).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq20vgen_rescan_stocks_for_parts_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineitemDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, part_delta__n: usize, part_delta: *const PartDelta, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta__row__s_suppkey: *const i64, supplier_delta__row__s_name: *const u8, supplier_delta__row__s_name__off: *const usize, supplier_delta__row__s_address: *const u8, supplier_delta__row__s_address__off: *const usize, supplier_delta__row__s_nationkey: *const i64, supplier_delta__sign: *const i64, out: *mut i64, cap: usize) -> usize {
+pub unsafe extern "C" fn tpchq20vgen_rescan_stocks_for_parts_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineitemDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, part_delta__n: usize, part_delta__row__p_partkey: *const i64, part_delta__row__p_name: *const u8, part_delta__row__p_name__off: *const usize, part_delta__sign: *const i64, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta__row__s_suppkey: *const i64, supplier_delta__row__s_name: *const u8, supplier_delta__row__s_name__off: *const usize, supplier_delta__row__s_address: *const u8, supplier_delta__row__s_address__off: *const usize, supplier_delta__row__s_nationkey: *const i64, supplier_delta__sign: *const i64, out: *mut i64, cap: usize) -> usize {
     let nation_delta__v: Vec<NationDelta> = (0..nation_delta__n).map(|i| NationDelta { row: NationInput { n_nationkey: *nation_delta__row__n_nationkey.add(i), n_name: text(nation_delta__row__n_name, nation_delta__row__n_name__off, i) }, sign: *nation_delta__sign.add(i) }).collect();
+    let part_delta__v: Vec<PartDelta> = (0..part_delta__n).map(|i| PartDelta { row: PartInput { p_partkey: *part_delta__row__p_partkey.add(i), p_name: text(part_delta__row__p_name, part_delta__row__p_name__off, i) }, sign: *part_delta__sign.add(i) }).collect();
     let supplier_delta__v: Vec<SupplierDelta> = (0..supplier_delta__n).map(|i| SupplierDelta { row: SupplierInput { s_suppkey: *supplier_delta__row__s_suppkey.add(i), s_name: text(supplier_delta__row__s_name, supplier_delta__row__s_name__off, i), s_address: text(supplier_delta__row__s_address, supplier_delta__row__s_address__off, i), s_nationkey: *supplier_delta__row__s_nationkey.add(i) }, sign: *supplier_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("rescan_keys", "lineitem_delta", &["row.l_partkey:int", "row.l_suppkey:int", "row.l_quantity:dec2", "row.l_shipdate:date", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LineitemDelta, o: &mut String| {
@@ -140,9 +143,9 @@ pub unsafe extern "C" fn tpchq20vgen_rescan_stocks_for_parts_keys(s: *const Stat
             rec_text(&r.row.n_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("rescan_keys", "part_delta", &["p_partkey:int", "is_qualifying:bool", "sign:int"], slice(part_delta, part_delta__n), |r: &PartDelta, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string()); o.push(',');
-            o.push_str(&(r.is_qualifying).to_string()); o.push(',');
+        rec_rows("rescan_keys", "part_delta", &["row.p_partkey:int", "row.p_name:text", "sign:int"], &part_delta__v, |r: &PartDelta, o: &mut String| {
+            o.push_str(&(r.row.p_partkey).to_string()); o.push(',');
+            rec_text(&r.row.p_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         rec_rows("rescan_keys", "partsupp_delta", &["row.ps_partkey:int", "row.ps_suppkey:int", "row.ps_availqty:int", "sign:int"], slice(partsupp_delta, partsupp_delta__n), |r: &PartsuppDelta, o: &mut String| {
@@ -166,7 +169,7 @@ pub unsafe extern "C" fn tpchq20vgen_rescan_stocks_for_parts_keys(s: *const Stat
             ks.len()
         };
     }
-    let keys = ob_rescan_stocks_for_parts_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(part_delta, part_delta__n), slice(partsupp_delta, partsupp_delta__n), &supplier_delta__v);
+    let keys = ob_rescan_stocks_for_parts_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, &part_delta__v, slice(partsupp_delta, partsupp_delta__n), &supplier_delta__v);
     for (i, k) in keys.iter().take(cap).enumerate() {
         *out.add(i) = *k;
     }
@@ -176,8 +179,9 @@ pub unsafe extern "C" fn tpchq20vgen_rescan_stocks_for_parts_keys(s: *const Stat
 /// The keys to rescan for apply: writes up to cap of them into out and
 /// returns how many there are (call again with more room if that is more).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq20vgen_rescan_shipments_for_parts_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineitemDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, part_delta__n: usize, part_delta: *const PartDelta, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta__row__s_suppkey: *const i64, supplier_delta__row__s_name: *const u8, supplier_delta__row__s_name__off: *const usize, supplier_delta__row__s_address: *const u8, supplier_delta__row__s_address__off: *const usize, supplier_delta__row__s_nationkey: *const i64, supplier_delta__sign: *const i64, out: *mut i64, cap: usize) -> usize {
+pub unsafe extern "C" fn tpchq20vgen_rescan_shipments_for_parts_keys(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineitemDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, part_delta__n: usize, part_delta__row__p_partkey: *const i64, part_delta__row__p_name: *const u8, part_delta__row__p_name__off: *const usize, part_delta__sign: *const i64, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta__row__s_suppkey: *const i64, supplier_delta__row__s_name: *const u8, supplier_delta__row__s_name__off: *const usize, supplier_delta__row__s_address: *const u8, supplier_delta__row__s_address__off: *const usize, supplier_delta__row__s_nationkey: *const i64, supplier_delta__sign: *const i64, out: *mut i64, cap: usize) -> usize {
     let nation_delta__v: Vec<NationDelta> = (0..nation_delta__n).map(|i| NationDelta { row: NationInput { n_nationkey: *nation_delta__row__n_nationkey.add(i), n_name: text(nation_delta__row__n_name, nation_delta__row__n_name__off, i) }, sign: *nation_delta__sign.add(i) }).collect();
+    let part_delta__v: Vec<PartDelta> = (0..part_delta__n).map(|i| PartDelta { row: PartInput { p_partkey: *part_delta__row__p_partkey.add(i), p_name: text(part_delta__row__p_name, part_delta__row__p_name__off, i) }, sign: *part_delta__sign.add(i) }).collect();
     let supplier_delta__v: Vec<SupplierDelta> = (0..supplier_delta__n).map(|i| SupplierDelta { row: SupplierInput { s_suppkey: *supplier_delta__row__s_suppkey.add(i), s_name: text(supplier_delta__row__s_name, supplier_delta__row__s_name__off, i), s_address: text(supplier_delta__row__s_address, supplier_delta__row__s_address__off, i), s_nationkey: *supplier_delta__row__s_nationkey.add(i) }, sign: *supplier_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("rescan_keys", "lineitem_delta", &["row.l_partkey:int", "row.l_suppkey:int", "row.l_quantity:dec2", "row.l_shipdate:date", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LineitemDelta, o: &mut String| {
@@ -192,9 +196,9 @@ pub unsafe extern "C" fn tpchq20vgen_rescan_shipments_for_parts_keys(s: *const S
             rec_text(&r.row.n_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("rescan_keys", "part_delta", &["p_partkey:int", "is_qualifying:bool", "sign:int"], slice(part_delta, part_delta__n), |r: &PartDelta, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string()); o.push(',');
-            o.push_str(&(r.is_qualifying).to_string()); o.push(',');
+        rec_rows("rescan_keys", "part_delta", &["row.p_partkey:int", "row.p_name:text", "sign:int"], &part_delta__v, |r: &PartDelta, o: &mut String| {
+            o.push_str(&(r.row.p_partkey).to_string()); o.push(',');
+            rec_text(&r.row.p_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         rec_rows("rescan_keys", "partsupp_delta", &["row.ps_partkey:int", "row.ps_suppkey:int", "row.ps_availqty:int", "sign:int"], slice(partsupp_delta, partsupp_delta__n), |r: &PartsuppDelta, o: &mut String| {
@@ -218,7 +222,7 @@ pub unsafe extern "C" fn tpchq20vgen_rescan_shipments_for_parts_keys(s: *const S
             ks.len()
         };
     }
-    let keys = ob_rescan_shipments_for_parts_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(part_delta, part_delta__n), slice(partsupp_delta, partsupp_delta__n), &supplier_delta__v);
+    let keys = ob_rescan_shipments_for_parts_keys(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, &part_delta__v, slice(partsupp_delta, partsupp_delta__n), &supplier_delta__v);
     for (i, k) in keys.iter().take(cap).enumerate() {
         *out.add(i) = *k;
     }
@@ -228,8 +232,9 @@ pub unsafe extern "C" fn tpchq20vgen_rescan_shipments_for_parts_keys(s: *const S
 /// Apply one transaction: the new state (the input is unchanged), or NULL
 /// with *err set (the host then rebuilds).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq20vgen_apply(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineitemDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, part_delta__n: usize, part_delta: *const PartDelta, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta__row__s_suppkey: *const i64, supplier_delta__row__s_name: *const u8, supplier_delta__row__s_name__off: *const usize, supplier_delta__row__s_address: *const u8, supplier_delta__row__s_address__off: *const usize, supplier_delta__row__s_nationkey: *const i64, supplier_delta__sign: *const i64, stocks_for_parts_keys__n: usize, stocks_for_parts_keys: *const i64, stocks_for_parts_rows__n: usize, stocks_for_parts_rows: *const StockInput, shipments_for_parts_keys__n: usize, shipments_for_parts_keys: *const i64, shipments_for_parts_rows__n: usize, shipments_for_parts_rows: *const ShipmentInput, err: *mut i32) -> *mut State {
+pub unsafe extern "C" fn tpchq20vgen_apply(s: *const State, lineitem_delta__n: usize, lineitem_delta: *const LineitemDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, part_delta__n: usize, part_delta__row__p_partkey: *const i64, part_delta__row__p_name: *const u8, part_delta__row__p_name__off: *const usize, part_delta__sign: *const i64, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta__row__s_suppkey: *const i64, supplier_delta__row__s_name: *const u8, supplier_delta__row__s_name__off: *const usize, supplier_delta__row__s_address: *const u8, supplier_delta__row__s_address__off: *const usize, supplier_delta__row__s_nationkey: *const i64, supplier_delta__sign: *const i64, stocks_for_parts_keys__n: usize, stocks_for_parts_keys: *const i64, stocks_for_parts_rows__n: usize, stocks_for_parts_rows: *const StockInput, shipments_for_parts_keys__n: usize, shipments_for_parts_keys: *const i64, shipments_for_parts_rows__n: usize, shipments_for_parts_rows: *const ShipmentInput, err: *mut i32) -> *mut State {
     let nation_delta__v: Vec<NationDelta> = (0..nation_delta__n).map(|i| NationDelta { row: NationInput { n_nationkey: *nation_delta__row__n_nationkey.add(i), n_name: text(nation_delta__row__n_name, nation_delta__row__n_name__off, i) }, sign: *nation_delta__sign.add(i) }).collect();
+    let part_delta__v: Vec<PartDelta> = (0..part_delta__n).map(|i| PartDelta { row: PartInput { p_partkey: *part_delta__row__p_partkey.add(i), p_name: text(part_delta__row__p_name, part_delta__row__p_name__off, i) }, sign: *part_delta__sign.add(i) }).collect();
     let supplier_delta__v: Vec<SupplierDelta> = (0..supplier_delta__n).map(|i| SupplierDelta { row: SupplierInput { s_suppkey: *supplier_delta__row__s_suppkey.add(i), s_name: text(supplier_delta__row__s_name, supplier_delta__row__s_name__off, i), s_address: text(supplier_delta__row__s_address, supplier_delta__row__s_address__off, i), s_nationkey: *supplier_delta__row__s_nationkey.add(i) }, sign: *supplier_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("apply", "lineitem_delta", &["row.l_partkey:int", "row.l_suppkey:int", "row.l_quantity:dec2", "row.l_shipdate:date", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LineitemDelta, o: &mut String| {
@@ -244,9 +249,9 @@ pub unsafe extern "C" fn tpchq20vgen_apply(s: *const State, lineitem_delta__n: u
             rec_text(&r.row.n_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "part_delta", &["p_partkey:int", "is_qualifying:bool", "sign:int"], slice(part_delta, part_delta__n), |r: &PartDelta, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string()); o.push(',');
-            o.push_str(&(r.is_qualifying).to_string()); o.push(',');
+        rec_rows("apply", "part_delta", &["row.p_partkey:int", "row.p_name:text", "sign:int"], &part_delta__v, |r: &PartDelta, o: &mut String| {
+            o.push_str(&(r.row.p_partkey).to_string()); o.push(',');
+            rec_text(&r.row.p_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         rec_rows("apply", "partsupp_delta", &["row.ps_partkey:int", "row.ps_suppkey:int", "row.ps_availqty:int", "sign:int"], slice(partsupp_delta, partsupp_delta__n), |r: &PartsuppDelta, o: &mut String| {
@@ -286,7 +291,7 @@ pub unsafe extern "C" fn tpchq20vgen_apply(s: *const State, lineitem_delta__n: u
             ptr::null_mut()
         };
     }
-    match ob_apply(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(part_delta, part_delta__n), slice(partsupp_delta, partsupp_delta__n), &supplier_delta__v, slice(stocks_for_parts_keys, stocks_for_parts_keys__n), slice(stocks_for_parts_rows, stocks_for_parts_rows__n), slice(shipments_for_parts_keys, shipments_for_parts_keys__n), slice(shipments_for_parts_rows, shipments_for_parts_rows__n), Ghost::assume_new(), Ghost::assume_new()) {
+    match ob_apply(&*s, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, &part_delta__v, slice(partsupp_delta, partsupp_delta__n), &supplier_delta__v, slice(stocks_for_parts_keys, stocks_for_parts_keys__n), slice(stocks_for_parts_rows, stocks_for_parts_rows__n), slice(shipments_for_parts_keys, shipments_for_parts_keys__n), slice(shipments_for_parts_rows, shipments_for_parts_rows__n), Ghost::assume_new()) {
         Ok(s2) => {
             if !err.is_null() {
                 *err = 0;
@@ -304,8 +309,8 @@ pub unsafe extern "C" fn tpchq20vgen_apply(s: *const State, lineitem_delta__n: u
 
 /// The query's answer on the state, or NULL (the host then answers with SQL).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq20vgen_execute(s: *const State, p1: i32, p2: *const u8, p2__len: usize, p3: i32) -> *mut FfiResult {
-    match ob_execute(&*s, p1, slice(p2, p2__len), p3) {
+pub unsafe extern "C" fn tpchq20vgen_execute(s: *const State, p1: i32, p2: *const u8, p2__len: usize, p3: *const u8, p3__len: usize, p4: i32) -> *mut FfiResult {
+    match ob_execute(&*s, p1, slice(p2, p2__len), slice(p3, p3__len), p4) {
         Some(rows) => Box::into_raw(Box::new(FfiResult { rows })),
         None => ptr::null_mut(),
     }
@@ -391,8 +396,9 @@ pub unsafe extern "C" fn tpchq20vgens_base_free(b: *mut QBase) {
 /// The next version from the base and one commit's inputs (as for apply);
 /// NULL with *err set if the kernel cannot apply them (the host rebuilds).
 #[no_mangle]
-pub unsafe extern "C" fn tpchq20vgens_prepare_apply(st: *const QStore, b: *const QBase, lineitem_delta__n: usize, lineitem_delta: *const LineitemDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, part_delta__n: usize, part_delta: *const PartDelta, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta__row__s_suppkey: *const i64, supplier_delta__row__s_name: *const u8, supplier_delta__row__s_name__off: *const usize, supplier_delta__row__s_address: *const u8, supplier_delta__row__s_address__off: *const usize, supplier_delta__row__s_nationkey: *const i64, supplier_delta__sign: *const i64, stocks_for_parts_keys__n: usize, stocks_for_parts_keys: *const i64, stocks_for_parts_rows__n: usize, stocks_for_parts_rows: *const StockInput, shipments_for_parts_keys__n: usize, shipments_for_parts_keys: *const i64, shipments_for_parts_rows__n: usize, shipments_for_parts_rows: *const ShipmentInput, err: *mut i32) -> *mut QPrepared {
+pub unsafe extern "C" fn tpchq20vgens_prepare_apply(st: *const QStore, b: *const QBase, lineitem_delta__n: usize, lineitem_delta: *const LineitemDelta, nation_delta__n: usize, nation_delta__row__n_nationkey: *const i64, nation_delta__row__n_name: *const u8, nation_delta__row__n_name__off: *const usize, nation_delta__sign: *const i64, part_delta__n: usize, part_delta__row__p_partkey: *const i64, part_delta__row__p_name: *const u8, part_delta__row__p_name__off: *const usize, part_delta__sign: *const i64, partsupp_delta__n: usize, partsupp_delta: *const PartsuppDelta, supplier_delta__n: usize, supplier_delta__row__s_suppkey: *const i64, supplier_delta__row__s_name: *const u8, supplier_delta__row__s_name__off: *const usize, supplier_delta__row__s_address: *const u8, supplier_delta__row__s_address__off: *const usize, supplier_delta__row__s_nationkey: *const i64, supplier_delta__sign: *const i64, stocks_for_parts_keys__n: usize, stocks_for_parts_keys: *const i64, stocks_for_parts_rows__n: usize, stocks_for_parts_rows: *const StockInput, shipments_for_parts_keys__n: usize, shipments_for_parts_keys: *const i64, shipments_for_parts_rows__n: usize, shipments_for_parts_rows: *const ShipmentInput, err: *mut i32) -> *mut QPrepared {
     let nation_delta__v: Vec<NationDelta> = (0..nation_delta__n).map(|i| NationDelta { row: NationInput { n_nationkey: *nation_delta__row__n_nationkey.add(i), n_name: text(nation_delta__row__n_name, nation_delta__row__n_name__off, i) }, sign: *nation_delta__sign.add(i) }).collect();
+    let part_delta__v: Vec<PartDelta> = (0..part_delta__n).map(|i| PartDelta { row: PartInput { p_partkey: *part_delta__row__p_partkey.add(i), p_name: text(part_delta__row__p_name, part_delta__row__p_name__off, i) }, sign: *part_delta__sign.add(i) }).collect();
     let supplier_delta__v: Vec<SupplierDelta> = (0..supplier_delta__n).map(|i| SupplierDelta { row: SupplierInput { s_suppkey: *supplier_delta__row__s_suppkey.add(i), s_name: text(supplier_delta__row__s_name, supplier_delta__row__s_name__off, i), s_address: text(supplier_delta__row__s_address, supplier_delta__row__s_address__off, i), s_nationkey: *supplier_delta__row__s_nationkey.add(i) }, sign: *supplier_delta__sign.add(i) }).collect();
     if rec_on() {
         rec_rows("apply", "lineitem_delta", &["row.l_partkey:int", "row.l_suppkey:int", "row.l_quantity:dec2", "row.l_shipdate:date", "sign:int"], slice(lineitem_delta, lineitem_delta__n), |r: &LineitemDelta, o: &mut String| {
@@ -407,9 +413,9 @@ pub unsafe extern "C" fn tpchq20vgens_prepare_apply(st: *const QStore, b: *const
             rec_text(&r.row.n_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
-        rec_rows("apply", "part_delta", &["p_partkey:int", "is_qualifying:bool", "sign:int"], slice(part_delta, part_delta__n), |r: &PartDelta, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string()); o.push(',');
-            o.push_str(&(r.is_qualifying).to_string()); o.push(',');
+        rec_rows("apply", "part_delta", &["row.p_partkey:int", "row.p_name:text", "sign:int"], &part_delta__v, |r: &PartDelta, o: &mut String| {
+            o.push_str(&(r.row.p_partkey).to_string()); o.push(',');
+            rec_text(&r.row.p_name, o); o.push(',');
             o.push_str(&(r.sign).to_string());
         });
         rec_rows("apply", "partsupp_delta", &["row.ps_partkey:int", "row.ps_suppkey:int", "row.ps_availqty:int", "sign:int"], slice(partsupp_delta, partsupp_delta__n), |r: &PartsuppDelta, o: &mut String| {
@@ -449,7 +455,7 @@ pub unsafe extern "C" fn tpchq20vgens_prepare_apply(st: *const QStore, b: *const
             ptr::null_mut()
         };
     }
-    match prepare_apply(&*st, &*b, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, slice(part_delta, part_delta__n), slice(partsupp_delta, partsupp_delta__n), &supplier_delta__v, slice(stocks_for_parts_keys, stocks_for_parts_keys__n), slice(stocks_for_parts_rows, stocks_for_parts_rows__n), slice(shipments_for_parts_keys, shipments_for_parts_keys__n), slice(shipments_for_parts_rows, shipments_for_parts_rows__n), Ghost::assume_new()) {
+    match prepare_apply(&*st, &*b, slice(lineitem_delta, lineitem_delta__n), &nation_delta__v, &part_delta__v, slice(partsupp_delta, partsupp_delta__n), &supplier_delta__v, slice(stocks_for_parts_keys, stocks_for_parts_keys__n), slice(stocks_for_parts_rows, stocks_for_parts_rows__n), slice(shipments_for_parts_keys, shipments_for_parts_keys__n), slice(shipments_for_parts_rows, shipments_for_parts_rows__n)) {
         Ok(p) => {
             if !err.is_null() {
                 *err = 0;
@@ -469,16 +475,18 @@ pub unsafe extern "C" fn tpchq20vgens_prepare_apply(st: *const QStore, b: *const
 /// that version; its state is invalid if the kernel cannot build it.  NULL
 /// only if no version can follow the newest.
 #[no_mangle]
-pub unsafe extern "C" fn tpchq20vgens_prepare_build(st: *const QStore, qualifying_parts__n: usize, qualifying_parts: *const QualifyingPartInput, stocks__n: usize, stocks: *const StockInput, shipments__n: usize, shipments: *const ShipmentInput, suppliers__n: usize, suppliers__s_suppkey: *const i64, suppliers__s_name: *const u8, suppliers__s_name__off: *const usize, suppliers__s_address: *const u8, suppliers__s_address__off: *const usize, suppliers__s_nationkey: *const i64, nations__n: usize, nations__n_nationkey: *const i64, nations__n_name: *const u8, nations__n_name__off: *const usize) -> *mut QPrepared {
+pub unsafe extern "C" fn tpchq20vgens_prepare_build(st: *const QStore, parts__n: usize, parts__p_partkey: *const i64, parts__p_name: *const u8, parts__p_name__off: *const usize, stocks__n: usize, stocks: *const StockInput, shipments__n: usize, shipments: *const ShipmentInput, suppliers__n: usize, suppliers__s_suppkey: *const i64, suppliers__s_name: *const u8, suppliers__s_name__off: *const usize, suppliers__s_address: *const u8, suppliers__s_address__off: *const usize, suppliers__s_nationkey: *const i64, nations__n: usize, nations__n_nationkey: *const i64, nations__n_name: *const u8, nations__n_name__off: *const usize) -> *mut QPrepared {
     let e = (*st).newest();
     if e == u64::MAX {
         return ptr::null_mut();
     }
+    let parts__v: Vec<PartInput> = (0..parts__n).map(|i| PartInput { p_partkey: *parts__p_partkey.add(i), p_name: text(parts__p_name, parts__p_name__off, i) }).collect();
     let suppliers__v: Vec<SupplierInput> = (0..suppliers__n).map(|i| SupplierInput { s_suppkey: *suppliers__s_suppkey.add(i), s_name: text(suppliers__s_name, suppliers__s_name__off, i), s_address: text(suppliers__s_address, suppliers__s_address__off, i), s_nationkey: *suppliers__s_nationkey.add(i) }).collect();
     let nations__v: Vec<NationInput> = (0..nations__n).map(|i| NationInput { n_nationkey: *nations__n_nationkey.add(i), n_name: text(nations__n_name, nations__n_name__off, i) }).collect();
     if rec_on() {
-        rec_rows("build", "qualifying_parts", &["p_partkey:int"], slice(qualifying_parts, qualifying_parts__n), |r: &QualifyingPartInput, o: &mut String| {
-            o.push_str(&(r.p_partkey).to_string());
+        rec_rows("build", "parts", &["p_partkey:int", "p_name:text"], &parts__v, |r: &PartInput, o: &mut String| {
+            o.push_str(&(r.p_partkey).to_string()); o.push(',');
+            rec_text(&r.p_name, o);
         });
         rec_rows("build", "stocks", &["ps_partkey:int", "ps_suppkey:int", "ps_availqty:int"], slice(stocks, stocks__n), |r: &StockInput, o: &mut String| {
             o.push_str(&(r.ps_partkey).to_string()); o.push(',');
@@ -503,7 +511,7 @@ pub unsafe extern "C" fn tpchq20vgens_prepare_build(st: *const QStore, qualifyin
         });
         return ptr::null_mut();
     }
-    Box::into_raw(Box::new(prepare_build(&*st, e, slice(qualifying_parts, qualifying_parts__n), slice(stocks, stocks__n), slice(shipments, shipments__n), suppliers__v, nations__v)))
+    Box::into_raw(Box::new(prepare_build(&*st, e, parts__v, slice(stocks, stocks__n), slice(shipments, shipments__n), suppliers__v, nations__v)))
 }
 
 /// The next version with an invalid state (NULL: none can follow the newest).

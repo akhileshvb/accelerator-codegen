@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+use crate::custs::Custs;
 use vstd::seq_lib::*;
 use vstd::hash_map::HashMapWithView;
 use std::sync::Arc;
@@ -14,13 +15,13 @@ use verus_common::sums::*;
 
 verus! {
 
-pub open spec fn customer_phase(work: Map<i64, CustomerCell>, before: Index<CustomerCell>, db: Db) -> bool {
+pub open spec fn customer_phase(work: Map<i64, CustomerCell>, before: Custs, db: Db) -> bool {
     forall|customer: i64, segment: Seq<u8>| #![trigger customer_overlay(work, before, customer, segment)]
         customer_overlay(work, before, customer, segment) == customer_sum(db, customer as int, segment)
 }
 
 pub proof fn lemma_customer_frame(before: Map<i64, CustomerCell>, after: Map<i64, CustomerCell>,
-    base: Index<CustomerCell>, db: Db, key: i64, cell: CustomerCell)
+    base: Custs, db: Db, key: i64, cell: CustomerCell)
     requires customer_phase(before, base, db), after == before.insert(key, cell),
         forall|segment: Seq<u8>| #![trigger segment_count(cell.segments@, segment)]
             segment_count(cell.segments@, segment) == customer_overlay(before, base, key, segment),
@@ -32,8 +33,8 @@ pub proof fn lemma_customer_frame(before: Map<i64, CustomerCell>, after: Map<i64
     }
 }
 
-pub fn publish_changes(mut work: HashMapWithView<i64, CustomerCell>, keys: &Vec<i64>, before: &Index<CustomerCell>)
-    -> (result: Result<Index<CustomerCell>, u32>)
+pub fn publish_changes(mut work: HashMapWithView<i64, CustomerCell>, keys: &Vec<i64>, before: &Custs)
+    -> (result: Result<Custs, u32>)
     requires before.wf(), keys@.no_duplicates(), keys@.to_set() == work@.dom(),
         forall|key: i64| #![trigger work@[key]] work@.contains_key(key) ==> signed_customer_shape(work@[key]),
         forall|target: verus_prooflib::ordered::KeyView| #![trigger before.at(target)]
@@ -58,7 +59,7 @@ pub fn publish_changes(mut work: HashMapWithView<i64, CustomerCell>, keys: &Vec<
     let mut after = before.share();
     proof {
         assert forall|target: verus_prooflib::ordered::KeyView| #![trigger after.at(target)] after.at(target) == before.at(target) by {
-            assert(after.tree() == before.tree());
+            
         }
     }
     let mut position = 0;
@@ -86,8 +87,8 @@ pub fn publish_changes(mut work: HashMapWithView<i64, CustomerCell>, keys: &Vec<
         let cell = match work.remove(&key) { Some(cell) => cell, None => return Err(1) };
         proof { assert(cell == original[key]); }
         if !valid_customer(&cell) { return Err(3); }
-        if cell.segments.len() == 0 && cell.orders.len() == 0 { after.remove(&Key::number(key)); }
-        else { after.put(Key::number(key), Arc::new(cell)); }
+        if cell.segments.len() == 0 && cell.orders.len() == 0 { after.remove(key); }
+        else { after.put(key, Arc::new(cell)); }
         proof {
             assert(keys@.take(position as int + 1) =~= keys@.take(position as int).push(key));
             verus_prooflib::lemma_push_membership(keys@.take(position as int), key);
@@ -214,8 +215,8 @@ pub fn key_set(keys: &[i64]) -> (result: HashMapWithView<i64, ()>)
 }
 
 pub fn take_customer(work: &mut HashMapWithView<i64, CustomerCell>, keys: &mut Vec<i64>,
-    before: &Index<CustomerCell>, key: i64) -> (result: CustomerCell)
-    requires
+    before: &Custs, key: i64) -> (result: CustomerCell)
+    requires before.wf(),
         old(keys)@.no_duplicates(), old(keys)@.to_set() == old(work)@.dom(),
         forall|target: i64| #![trigger old(work)@[target]] old(work)@.dom().contains(target) ==> signed_customer_shape(old(work)@[target]),
         forall|target: verus_prooflib::ordered::KeyView| #![trigger before.at(target)] before.at(target).is_some() ==> customer_shape(before.at(target).unwrap()),
@@ -235,7 +236,7 @@ pub fn take_customer(work: &mut HashMapWithView<i64, CustomerCell>, keys: &mut V
                 verus_prooflib::lemma_push_to_set(keys@, key);
             }
             keys.push(key);
-            match before.get(&Key::number(key)) {
+            match before.get(key) {
                 Some(cell) => copy_customer(&cell),
                 None => empty_customer(),
             }
@@ -324,7 +325,8 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
         }
         let mut cell = take_customer(&mut customers_work, &mut customer_keys, &state.customers, key);
         let ghost previous_cell = cell;
-        if !segment_change(&mut cell, &delta.row.c_mktsegment, delta.sign) { return Err(2); }
+        let name = Arc::new(copy_bytes(&delta.row.c_mktsegment));
+        if !segment_change(&mut cell, &name, delta.sign) { return Err(2); }
         customers_work.insert(key, cell);
         proof {
             assert(customers_work@ == previous_work.insert(key, cell));
@@ -426,7 +428,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
         if let Some(page) = state.pages.get(&Key::number(page_key)) {
             let mut row_index = 0;
             while row_index < page.orders.len()
-                invariant row_index <= page.orders.len(), page_shape(*page, page_key as int, state.db()), work_page_shape(work, page_key as int),
+                invariant row_index <= (*page.orders)@.len(), page_shape(*page, page_key as int, state.db()), work_page_shape(work, page_key as int),
                     customer_phase(customers_work@, state.customers, db2),
                     customer_keys@.no_duplicates(), customer_keys@.to_set() == customers_work@.dom(),
                     state_ok(state.customers, state.pages, state.ranks, state.db()),
@@ -441,12 +443,12 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                     forall|position: int, pending: int| #![trigger work.orders@[position], (*page.orders)@[pending]]
                         0 <= position < work.orders@.len() && row_index <= pending < (*page.orders)@.len() ==>
                             order_lt(work.orders@[position], (*page.orders)@[pending]),
-                decreases page.orders.len() - row_index,
+                decreases (*page.orders)@.len() - row_index,
             {
                 let ghost processed = row_index as int;
                 let ghost before_orders = work.orders@;
                 let ghost before_customers = customers_work@;
-                let row = page.orders[row_index];
+                let row = page.orders.get(row_index);
                 if fact_set.contains_key(&row.key) {
                     let mut customer = take_customer(&mut customers_work, &mut customer_keys, &state.customers, row.customer);
                     let ghost previous_customer = customer;
@@ -511,7 +513,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
             let ghost completed_customers = customers_work@;
             row_index = 0;
             while row_index < page.ships.len()
-                invariant row_index <= page.ships.len(), page_shape(*page, page_key as int, state.db()), work_page_shape(work, page_key as int),
+                invariant row_index <= (*page.ships)@.len(), page_shape(*page, page_key as int, state.db()), work_page_shape(work, page_key as int),
                     customers_work@ == completed_customers,
                     forall|key: i64, customer: i64, date: i32, priority: i64| #![trigger order_count(work.orders@, key as int, customer as int, date as int, priority as int)]
                         order_count(work.orders@, key as int, customer as int, date as int, priority as int) ==
@@ -522,11 +524,11 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
                     forall|position: int, pending: int| #![trigger work.ships@[position], (*page.ships)@[pending]]
                         0 <= position < work.ships@.len() && row_index <= pending < (*page.ships)@.len() ==>
                             ship_lt(work.ships@[position], (*page.ships)@[pending]),
-                decreases page.ships.len() - row_index,
+                decreases (*page.ships)@.len() - row_index,
             {
                 let ghost processed = row_index as int;
                 let ghost before_ships = work.ships@;
-                let row = page.ships[row_index];
+                let row = page.ships.get(row_index);
                 if !fact_set.contains_key(&row.key) {
                     let ghost before = work.ships@;
                     proof {
@@ -913,7 +915,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
         decreases changed_customer_keys.len() - index,
     {
         let customer_key = changed_customer_keys[index];
-        if let Some(customer) = customers.get(&Key::number(customer_key)) {
+        if let Some(customer) = customers.get(customer_key) {
             let mut order_index = 0;
             while order_index < customer.orders.len()
                 invariant order_index <= customer.orders.len(), affected_keys@.no_duplicates(), affected_keys@.to_set() == affected@.dom(),
@@ -1037,7 +1039,7 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
         let work = match pages_work.get(&key) {
             Some(work) => PageWork { orders: copy_orders(&work.orders), ships: copy_ships(&work.ships) },
             None => match old_page {
-                Some(page) => PageWork { orders: copy_orders(&page.orders), ships: copy_ships(&page.ships) },
+                Some(page) => PageWork { orders: page.orders.to_vec(), ships: page.ships.to_vec() },
                 None => empty_page(),
             },
         };
@@ -1054,8 +1056,11 @@ pub fn maintain(state: &State, customer_delta: &Vec<CustomerDelta>,
         }
         let groups = match crate::construction::make_groups(&work, &customers) { Some(groups) => groups, None => return Err(2) };
         let ghost completed_work = work;
-        let page = Page { orders: Arc::new(work.orders), ships: Arc::new(work.ships), groups: Arc::new(groups) };
-        proof { crate::semantics::lemma_page_publication(page, completed_work, key as int, customers, db2); }
+        let packed_orders = match crate::packed::PackedOrders::pack(&work.orders, key) { Some(value) => value, None => return Err(2) };
+        let packed_ships = match crate::packed::PackedShips::pack(&work.ships, key) { Some(value) => value, None => return Err(2) };
+        let packed_groups = match crate::packed::PackedGroups::pack(&groups, key) { Some(value) => value, None => return Err(2) };
+        let page = Page { orders: Arc::new(packed_orders), ships: Arc::new(packed_ships), groups: Arc::new(packed_groups) };
+        proof { crate::semantics::lemma_page_publication_equiv(page, groups@, completed_work, key as int, customers, db2); }
         let ghost previous = pages;
         let ghost pending = crate::maintenance_proofs::page_numbers(selected_page_keys@.skip(index as int));
         crate::maintenance_ranks::publish_page(&mut pages, &mut ranks, key, page);

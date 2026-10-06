@@ -2,6 +2,9 @@
 #include "accelerator_codegen/verus/verus_kit.hpp"
 
 #include <cstdint>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <cstddef>
 #include <string>
 #include <utility>
@@ -125,9 +128,11 @@ SupplierDelta ReadSupplierDelta(const std::vector<Change> &changes) {
 }
 
 void *Build(Host &h) {
+  void *state = nullptr;
+  {
   LineInput lines = ReadLines(h);
   SupplierInput suppliers = ReadSuppliers(h);
-  return tpchq15vgen_build(
+  state = tpchq15vgen_build(
       lines.rows.size(),
       lines.rows.data(),
       suppliers.suppkey.size(),
@@ -138,6 +143,12 @@ void *Build(Host &h) {
       suppliers.address.off.data(),
       suppliers.phone.bytes.data(),
       suppliers.phone.off.data());
+  }
+#if defined(__GLIBC__)
+  // the scan rows and the build's scratch are gone; give their pages back
+  malloc_trim(0);
+#endif
+  return state;
 }
 
 void FreeState(void *state) {

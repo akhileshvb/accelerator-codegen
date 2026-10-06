@@ -6,6 +6,8 @@ use crate::gen_spec::{CustomerRow, NationRow};
 use crate::gen_obligations::{CustomerInput, NationInput, customer_input_view, nation_input_view};
 use crate::values::*;
 use crate::key_facts::lemma_customer_key_injective;
+use crate::paged::*;
+use crate::customers::*;
 
 verus! {
 
@@ -20,12 +22,17 @@ pub struct Nation {
 }
 
 pub struct Dimensions {
-    pub customers: Index<Index<Customer>>,
+    pub customers: Paged<CustEnt>,
+    pub customer_max: i128,
     pub nations: Index<Index<Nation>>,
-    pub customer_totals: Index<i128>,
     pub nation_totals: Index<i128>,
-    pub customer_maxima: Index<i128>,
     pub nation_maxima: Index<i128>,
+}
+
+/// The customer part of the dimensions is well formed.
+pub open spec fn customer_shape(dimensions: Dimensions) -> bool {
+    &&& table_valid(dimensions.customers)
+    &&& table_bounded(dimensions.customers, dimensions.customer_max as int)
 }
 
 pub open spec fn customer_ref_view(row: &CustomerInput) -> CustomerRow { customer_input_view(*row) }
@@ -334,71 +341,77 @@ pub fn edit_total(totals: &mut Index<i128>, maxima: &mut Index<i128>, key: i64, 
 
 impl Dimensions {
     pub fn new() -> (result: Self)
-        ensures customer_index_valid(result.customers), nation_index_valid(result.nations),
-            crate::model::maxima_valid(result.customer_totals, result.customer_maxima),
+        ensures customer_shape(result), no_customers(result.customers), result.customers.entries() == Seq::<CustEnt>::empty(),
+            nation_index_valid(result.nations),
             crate::model::maxima_valid(result.nation_totals, result.nation_maxima),
-            forall|key: int| #[trigger] total_at(result.customer_totals, key) == 0,
             forall|key: int| #[trigger] total_at(result.nation_totals, key) == 0,
-            forall|row: CustomerRow| #[trigger] customer_count(result.customers, row) == 0,
             forall|row: NationRow| #[trigger] nation_count(result.nations, row) == 0,
     {
-        Self { customers: Index::new(), nations: Index::new(), customer_totals: Index::new(),
-            nation_totals: Index::new(), customer_maxima: Index::new(), nation_maxima: Index::new() }
+        let result = Self { customers: Paged::new(), customer_max: 0, nations: Index::new(),
+            nation_totals: Index::new(), nation_maxima: Index::new() };
+        proof {
+            assert(table_valid(result.customers));
+            assert(table_bounded(result.customers, 0));
+        }
+        result
     }
 
     pub fn share(&self) -> (result: Self)
-        ensures result.customers.tree() == self.customers.tree(), result.nations.tree() == self.nations.tree(),
-            result.customer_totals.tree() == self.customer_totals.tree(), result.nation_totals.tree() == self.nation_totals.tree(),
-            result.customer_maxima.tree() == self.customer_maxima.tree(), result.nation_maxima.tree() == self.nation_maxima.tree(),
-            crate::model::maxima_valid(self.customer_totals, self.customer_maxima)
-                ==> crate::model::maxima_valid(result.customer_totals, result.customer_maxima),
+        requires self.customers.wf(),
+        ensures result.customers.entries() == self.customers.entries(),
+            forall|key: (int, Seq<u8>)| #[trigger] result.customers.at(key) == self.customers.at(key),
+            result.customers.wf(), result.customer_max == self.customer_max,
+            customer_shape(*self) ==> customer_shape(result),
+            result.nations.tree() == self.nations.tree(),
+            result.nation_totals.tree() == self.nation_totals.tree(),
+            result.nation_maxima.tree() == self.nation_maxima.tree(),
             crate::model::maxima_valid(self.nation_totals, self.nation_maxima)
                 ==> crate::model::maxima_valid(result.nation_totals, result.nation_maxima),
     {
-        let result = Self { customers: self.customers.share(), nations: self.nations.share(),
-            customer_totals: self.customer_totals.share(), nation_totals: self.nation_totals.share(),
-            customer_maxima: self.customer_maxima.share(), nation_maxima: self.nation_maxima.share() };
+        let result = Self { customers: self.customers.share(), customer_max: self.customer_max, nations: self.nations.share(),
+            nation_totals: self.nation_totals.share(), nation_maxima: self.nation_maxima.share() };
         proof {
-            assert forall|key: (int, Seq<u8>)| #[trigger] result.customer_totals.at(key) == self.customer_totals.at(key) by {}
             assert forall|key: (int, Seq<u8>)| #[trigger] result.nation_totals.at(key) == self.nation_totals.at(key) by {}
-            assert forall|key: (int, Seq<u8>)| #[trigger] result.customer_maxima.at(key) == self.customer_maxima.at(key) by {}
             assert forall|key: (int, Seq<u8>)| #[trigger] result.nation_maxima.at(key) == self.nation_maxima.at(key) by {}
-            if crate::model::maxima_valid(self.customer_totals, self.customer_maxima) {
-                crate::model::lemma_maxima_equal(self.customer_totals, self.customer_maxima, result.customer_totals, result.customer_maxima);
-            }
             if crate::model::maxima_valid(self.nation_totals, self.nation_maxima) {
                 crate::model::lemma_maxima_equal(self.nation_totals, self.nation_maxima, result.nation_totals, result.nation_maxima);
+            }
+            if customer_shape(*self) {
+                assert forall|key: (int, Seq<u8>)| #[trigger] result.customers.at(key).is_some() implies
+                    variants_count(result.customers.at(key).unwrap().variants@) <= result.customer_max as int by {
+                    assert(self.customers.at(key) == result.customers.at(key));
+                }
             }
         }
         result
     }
 
-    pub fn edit_customer(&mut self, row: &CustomerInput, change: i128) -> (result: bool)
-        requires customer_index_valid(old(self).customers),
-            crate::model::maxima_valid(old(self).customer_totals, old(self).customer_maxima),
-        ensures result ==> customer_index_valid(final(self).customers),
-            result ==> forall|target: CustomerRow| #[trigger] customer_count(final(self).customers, target)
-                == customer_count(old(self).customers, target) + if target == customer_input_view(*row) { change as int } else { 0 },
-            final(self).nations.tree() == old(self).nations.tree(),
-            nation_index_valid(old(self).nations) ==> nation_index_valid(final(self).nations),
-            forall|target: NationRow| #[trigger] nation_count(final(self).nations, target) == nation_count(old(self).nations, target),
-            result ==> crate::model::maxima_valid(final(self).customer_totals, final(self).customer_maxima),
-            result ==> forall|key: int| #[trigger] total_at(final(self).customer_totals, key)
-                == total_at(old(self).customer_totals, key) + if key == row.c_custkey { change as int } else { 0 },
-            final(self).nation_totals.tree() == old(self).nation_totals.tree(),
-            final(self).nation_maxima.tree() == old(self).nation_maxima.tree(),
-            crate::model::maxima_valid(old(self).nation_totals, old(self).nation_maxima)
-                ==> crate::model::maxima_valid(final(self).nation_totals, final(self).nation_maxima),
-            forall|key: int| #[trigger] total_at(final(self).nation_totals, key) == total_at(old(self).nation_totals, key),
+    pub fn edit_customer(&mut self, row: &Arc<CustomerInput>, change: i128) -> (result: bool)
+        requires customer_shape(*old(self)),
+        ensures result ==> customer_shape(*final(self)),
+            result ==> forall|weight: spec_fn(CustomerRow) -> int| #[trigger] table_sum(final(self).customers, weight)
+                == table_sum(old(self).customers, weight) + change as int * weight(customer_input_view(**row)),
+            final(self).nations == old(self).nations,
+            final(self).nation_totals == old(self).nation_totals,
+            final(self).nation_maxima == old(self).nation_maxima,
     {
-        let old = match self.customers.get(&Key::number(row.c_custkey)) {
-            Some(inner) => match inner.get(&customer_key(row)) { Some(value) => value.count, None => 0i128 },
-            None => 0i128,
-        };
-        let next = match old.checked_add(change) { Some(value) => value, None => return false };
-        if next < 0 { return false; }
-        change_customer(&mut self.customers, row, change)
-            && edit_total(&mut self.customer_totals, &mut self.customer_maxima, row.c_custkey, change)
+        let ghost before = *self;
+        if !edit_table(&mut self.customers, row, change) { return false; }
+        let total = match custkey_total(&self.customers, row.c_custkey) { Some(value) => value, None => return false };
+        if total > self.customer_max { self.customer_max = total; }
+        proof {
+            let ckey = (row.c_custkey as int, Seq::<u8>::empty());
+            assert forall|key: (int, Seq<u8>)| #[trigger] self.customers.at(key).is_some() implies
+                variants_count(self.customers.at(key).unwrap().variants@) <= self.customer_max as int by {
+                if key == ckey {
+                    assert(self.customers.at(key).unwrap().variants@ == variants_at(self.customers, row.c_custkey as int));
+                } else {
+                    assert(self.customers.at(key) == before.customers.at(key));
+                }
+            }
+            assert(table_bounded(self.customers, self.customer_max as int));
+        }
+        true
     }
 
     pub fn edit_nation(&mut self, row: &NationInput, change: i128) -> (result: bool)
@@ -407,17 +420,10 @@ impl Dimensions {
         ensures result ==> nation_index_valid(final(self).nations),
             result ==> forall|target: NationRow| #[trigger] nation_count(final(self).nations, target)
                 == nation_count(old(self).nations, target) + if target == nation_input_view(*row) { change as int } else { 0 },
-            final(self).customers.tree() == old(self).customers.tree(),
-            customer_index_valid(old(self).customers) ==> customer_index_valid(final(self).customers),
-            forall|target: CustomerRow| #[trigger] customer_count(final(self).customers, target) == customer_count(old(self).customers, target),
+            final(self).customers == old(self).customers, final(self).customer_max == old(self).customer_max,
             result ==> crate::model::maxima_valid(final(self).nation_totals, final(self).nation_maxima),
             result ==> forall|key: int| #[trigger] total_at(final(self).nation_totals, key)
                 == total_at(old(self).nation_totals, key) + if key == row.n_nationkey { change as int } else { 0 },
-            final(self).customer_totals.tree() == old(self).customer_totals.tree(),
-            final(self).customer_maxima.tree() == old(self).customer_maxima.tree(),
-            crate::model::maxima_valid(old(self).customer_totals, old(self).customer_maxima)
-                ==> crate::model::maxima_valid(final(self).customer_totals, final(self).customer_maxima),
-            forall|key: int| #[trigger] total_at(final(self).customer_totals, key) == total_at(old(self).customer_totals, key),
     {
         let old = match self.nations.get(&Key::number(row.n_nationkey)) {
             Some(inner) => match inner.get(&Key::text(copy_bytes(row.n_name.as_slice()))) {

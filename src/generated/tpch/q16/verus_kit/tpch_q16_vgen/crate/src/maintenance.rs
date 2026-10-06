@@ -42,16 +42,17 @@ pub fn changes(part: &Vec<PartDelta>, edge: &[EdgeDelta], supplier: &[SupplierDe
             == sum(supplier@, |row: SupplierDelta| if row.s_suppkey == supplier_key && row.is_blocker != 0 { row.sign as int } else { 0 }))
     ),
 {
+    let vocab = crate::vocab::new_vocab();
     let mut parts = Index::new();
     let mut index = 0;
     let mut processed: Ghost<int> = Ghost(0);
     while index < part.len()
-        invariant index <= part.len(), processed@ == index as int, parts_keys_valid(parts),
+        invariant index <= part.len(), processed@ == index as int, parts_keys_valid(parts), vocab.ok(),
             forall|part_key: int, group: verus_prooflib::ordered::KeyView|
                 #[trigger] part_at(parts, part_key, group) == part_delta_sum(part@.take(processed@), part_key, group),
         decreases part.len() - index,
     {
-        if !bump_part(&mut parts, &part[index].row, part[index].sign) { return None; }
+        if !bump_part(&vocab, &mut parts, &part[index].row, part[index].sign) { return None; }
         proof { lemma_part_delta_prefix(part@, processed@); }
         index += 1;
         processed = Ghost(index as int);
@@ -712,6 +713,7 @@ pub fn collect_changes(old_parts: &Parts, old_edges: &Edges, old_blockers: &Inde
     }
 }
 
+#[verifier::rlimit(40)]
 pub fn publish_changes(source: &Counts, base_ranks: &Ranks, group_changes: &Counts) -> (out: Result<(Counts, Ranks), u32>)
     requires cell_keys_valid(*source), cell_keys_valid(*group_changes),
     ensures out matches Ok(state) ==> cell_keys_valid(state.0),
@@ -990,12 +992,13 @@ pub fn maintain(counts: &Counts, ranks: &Ranks, changes: &Changes,
             assert(integer_at(supplied_neighbors, (part, Seq::<u8>::empty())) > 0);
         }
     }
+    let vocab = crate::vocab::new_vocab();
     let mut new_parts = Index::new();
     index = 0;
     processed = Ghost(0);
     while index < parts_for_neighbors_rows.len()
         invariant index <= parts_for_neighbors_rows.len(), processed@ == index as int,
-            parts_keys_valid(new_parts), key_set(neighbors),
+            parts_keys_valid(new_parts), vocab.ok(), key_set(neighbors),
             affected_valid(*changes, db2, suppliers), scoped_edges(new_edges, db2, suppliers),
             forall|part: int| #[trigger] neighbors.at((part, Seq::<u8>::empty())).is_some() ==> seq_view_i64(parts_for_neighbors_keys@).contains(part),
             forall|part: int, key: verus_prooflib::ordered::KeyView| #[trigger] part_at(new_parts, part, key)
@@ -1004,7 +1007,7 @@ pub fn maintain(counts: &Counts, ranks: &Ranks, changes: &Changes,
         decreases parts_for_neighbors_rows.len() - index,
     {
         let row = &parts_for_neighbors_rows[index];
-        if neighbors.get(&Key::number(row.p_partkey)).is_some() && !bump_part(&mut new_parts, row, 1) { return Err(4); }
+        if neighbors.get(&Key::number(row.p_partkey)).is_some() && !bump_part(&vocab, &mut new_parts, row, 1) { return Err(4); }
         proof {
             assert forall|part: int, key: verus_prooflib::ordered::KeyView| #[trigger] part_at(new_parts, part, key)
                 == sum(part_input_seq_view(parts_for_neighbors_rows@.take(processed@ + 1)), |row: PartRow|

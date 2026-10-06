@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+use std::sync::Arc;
 use verus_common::sums::*;
 use verus_common::sqlfns::like_match;
 use verus_common::rel::flat;
@@ -8,14 +9,15 @@ use crate::model::*;
 use crate::maintenance::*;
 use crate::bags::*;
 use crate::storage::*;
+use crate::parts::*;
 
 verus! {
 
-pub(crate) proof fn lemma_state_indexes_meaning(db: Db, parts: Directory<PartBucket>, sizes: Directory<Directory<Count>>,
+pub(crate) proof fn lemma_state_indexes_meaning(db: Db, parts: Parts,
     quotes: Directory<Bag<BrassPartsuppScan>>, suppliers: Directory<Bag<SupplierScan>>, nations: Directory<Bag<NationScan>>,
-    regions: Directory<RegionBucket>)
-    requires supported_db(db), part_indexes_meaning(db, parts, sizes),
-        quotes.valid(), index_positive(quotes), index_nonempty(quotes), index_routed(quotes, quote_routing(parts)),
+    regions: Directory<RegionBucket>, sflat: Arc<Vec<crate::flat::SInfo>>)
+    requires supported_db(db), parts.meaning(db), crate::flat::flat_ok((*sflat)@, suppliers),
+        quotes.valid(), index_positive(quotes), index_nonempty(quotes), index_routed(quotes, quote_routing(db)),
         suppliers.valid(), index_positive(suppliers), index_routed(suppliers, supplier_routing()),
         nations.valid(), index_positive(nations), index_routed(nations, nation_routing()),
         regions_valid(regions), regions_positive(regions),
@@ -27,17 +29,17 @@ pub(crate) proof fn lemma_state_indexes_meaning(db: Db, parts: Directory<PartBuc
             sum(db.nation, |value: NationRow| if value == row && value.n_nationkey == key as int { 1int } else { 0int }),
         forall|name: Seq<u8>, key: i64| #[trigger] region_amount(regions, name, key) ==
             sum(db.region, |row: RegionRow| if row.r_name == name && row.r_regionkey == key as int { 1int } else { 0int }),
-    ensures state_meaning(db, parts, sizes, quotes, suppliers, nations, regions),
+    ensures state_meaning(db, parts, quotes, suppliers, nations, regions, sflat),
 {
     lemma_dimension_database_counts(db, suppliers, nations);
     assert forall|key: i64| match #[trigger] quotes.lookup(key) {
         None => true,
-        Some(bag) => (*bag).valid() && (*bag).entries@.len() > 0 && part_support(parts, key) > 0 &&
+        Some(bag) => (*bag).valid() && (*bag).entries@.len() > 0 && eligible(db, key) > 0 &&
             forall|index: int| 0 <= index < (*bag).entries@.len() ==> (*((#[trigger] (*bag).entries@[index]).row)).ps_partkey == key,
     } by {
         if quotes.lookup(key) is Some {
             let bag = quotes.lookup(key)->0;
-            assert(quote_routing(parts)(key, (*(*bag).entries@[0].row).rv()));
+            assert(quote_routing(db)(key, (*(*bag).entries@[0].row).rv()));
         }
     }
 }
@@ -46,8 +48,7 @@ pub(crate) proof fn lemma_state_indexes_meaning(db: Db, parts: Directory<PartBuc
 pub(crate) proof fn lemma_apply_representable(before: State, after: Db, touched: Seq<i64>,
     part_delta: Seq<PartKeyDelta>, part_full: Seq<(PartRow, int)>, partsupp_delta: Seq<PartsuppDelta>,
     supplier_delta: Seq<SupplierDelta>, nation_delta: Seq<NationDelta>, region_delta: Seq<RegionDelta>,
-    part_keys: Seq<i64>, part_rows: Seq<BrassPartScan>, quote_keys: Seq<i64>, quote_rows: Seq<BrassPartsuppScan>,
-    parts: Directory<PartBucket>)
+    part_keys: Seq<i64>, part_rows: Seq<BrassPartScan>, quote_keys: Seq<i64>, quote_rows: Seq<BrassPartsuppScan>)
     requires before.meaning(), before.db() == before.database@,
         part_delta_ok(part_delta, part_full),
         capture_ok(before.db(), after, nation_delta_seq_view(nation_delta), part_full,
@@ -56,8 +57,7 @@ pub(crate) proof fn lemma_apply_representable(before: State, after: Db, touched:
         rescan_brass_partsupp_after_ok(after, quote_keys, quote_rows),
         forall|key: i64| #[trigger] touched.contains(key) == part_delta.map_values(|delta: PartKeyDelta| delta.p_partkey).contains(key),
         forall|key: i64| #[trigger] touched.contains(key) ==> part_keys.contains(key) && quote_keys.contains(key),
-        forall|key: i64| #[trigger] part_support(parts, key) == eligible(after, key),
-        forall|key: i64| !touched.contains(key) ==> #[trigger] part_support(parts, key) == part_support(before.parts, key),
+        forall|key: i64| !touched.contains(key) ==> #[trigger] eligible(after, key) == eligible(before.db(), key),
     ensures supported_db(after),
 {
     let supplier_property = |row: SupplierRow| fits_i64(row.s_suppkey) && fits_i64(row.s_nationkey) && fits_i64(row.s_acctbal);
@@ -76,8 +76,8 @@ pub(crate) proof fn lemma_apply_representable(before: State, after: Db, touched:
         assert(seq_view_i64(part_keys)[part_position] == value);
         assert(seq_view_i64(quote_keys)[quote_position] == value);
     }
-    let bad_part = |row: (int, Seq<u8>, int)| if fits_i64(row.0) && fits_i64(row.2) { 0int } else { 1int };
-    let outside_part = |row: PartRow| if brass(row) && !seq_view_i64(touched).contains(row.p_partkey) { bad_part((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int };
+    let bad_part = |row: PartRow| if fits_i64(row.p_partkey) && fits_i64(row.p_size) { 0int } else { 1int };
+    let outside_part = |row: PartRow| if retained(row) && !seq_view_i64(touched).contains(row.p_partkey) { bad_part(row) } else { 0int };
     lemma_sum_zero(before.db().part, outside_part);
     assert forall|position: int| 0 <= position < part_full.len() implies
         (#[trigger] part_full[position]).1 * outside_part(part_full[position].0) == 0 by {
@@ -93,16 +93,16 @@ pub(crate) proof fn lemma_apply_representable(before: State, after: Db, touched:
     lemma_sum_zero(part_full, |change: (PartRow, int)| change.1 * outside_part(change.0));
     assert(sum(after.part, outside_part) == 0);
     lemma_sum_zero(brass_part_scan_seq_view(part_rows), bad_part);
-    let rescanned_part = |row: PartRow| if like_match(row.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S']) && seq_view_i64(part_keys).contains(row.p_partkey) {
-        bad_part((row.p_partkey, row.p_mfgr, row.p_size))
+    let rescanned_part = |row: PartRow| if seq_view_i64(part_keys).contains(row.p_partkey) {
+        bad_part(row)
     } else { 0int };
     assert(sum(after.part, rescanned_part) == 0);
     assert forall|position: int| 0 <= position < after.part.len() implies {
         let row = #[trigger] after.part[position];
-        brass(row) ==> fits_i64(row.p_partkey) && fits_i64(row.p_size)
+        retained(row) ==> fits_i64(row.p_partkey) && fits_i64(row.p_size)
     } by {
         let row = after.part[position];
-        if brass(row) && bad_part((row.p_partkey, row.p_mfgr, row.p_size)) != 0 {
+        if retained(row) && bad_part(row) != 0 {
             if seq_view_i64(touched).contains(row.p_partkey) { lemma_sum_pos(after.part, rescanned_part, position); }
             else { lemma_sum_pos(after.part, outside_part, position); }
         }
@@ -122,7 +122,7 @@ pub(crate) proof fn lemma_apply_representable(before: State, after: Db, touched:
         let row = after.partsupp[position];
         if scan_brass_partsupp_exists_1(after, row) && bad_quote(row) != 0 {
             let witness = choose|witness: int| 0 <= witness < after.part.len() &&
-                (#[trigger] after.part[witness]).p_partkey == row.ps_partkey && brass(after.part[witness]);
+                (#[trigger] after.part[witness]).p_partkey == row.ps_partkey && retained(after.part[witness]);
             assert(fits_i64(row.ps_partkey));
             let key = row.ps_partkey as i64;
             assert(key as int == row.ps_partkey);
@@ -139,9 +139,6 @@ pub(crate) proof fn lemma_apply_representable(before: State, after: Db, touched:
                 lemma_eligible_exists(after, key);
                 lemma_eligible_exists(before.db(), key);
                 assert(eligible(after, key) > 0);
-                assert(part_support(parts, key) == eligible(after, key));
-                assert(part_support(before.parts, key) == eligible(before.db(), key));
-                assert(part_support(parts, key) == part_support(before.parts, key));
                 assert(eligible(before.db(), key) == eligible(after, key));
                 assert(scan_brass_partsupp_exists_1(before.db(), row));
                 lemma_sum_pos(after.partsupp, outside_quote, position);
@@ -269,19 +266,18 @@ pub proof fn lemma_quote_rescan_count(db: Db, keys: Seq<i64>, scanned: Seq<Brass
 }
 
 pub(crate) proof fn lemma_quotes_transfer(before: State, after: Db, touched: Seq<i64>, keys: Seq<i64>, scanned: Seq<BrassPartsuppScan>,
-    deltas: Seq<PartsuppDelta>, parts: Directory<PartBucket>, rebuilt: Directory<Bag<BrassPartsuppScan>>,
+    deltas: Seq<PartsuppDelta>, rebuilt: Directory<Bag<BrassPartsuppScan>>,
     changes: Directory<Bag<BrassPartsuppScan>>, quotes: Directory<Bag<BrassPartsuppScan>>)
     requires
         before.meaning(), before.db() == before.database@,
         bag_step(before.db().partsupp, after.partsupp, partsupp_delta_seq_view(deltas)),
         rescan_brass_partsupp_after_ok(after, keys, scanned),
         forall|key: i64| #[trigger] touched.contains(key) ==> keys.contains(key),
-        forall|key: i64| #[trigger] part_support(parts, key) == eligible(after, key),
-        forall|key: i64| !touched.contains(key) ==> #[trigger] part_support(parts, key) == part_support(before.parts, key),
+        forall|key: i64| !touched.contains(key) ==> #[trigger] eligible(before.db(), key) == eligible(after, key),
         forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(rebuilt, key, supplier, cost) == if touched.contains(key) {
             sum(scanned, |row: BrassPartsuppScan| if row.ps_partkey == key && row.ps_suppkey as int == supplier && row.ps_supplycost as int == cost { 1int } else { 0int })
         } else { quote_amount(before.quotes, key, supplier, cost) },
-        forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(changes, key, supplier, cost) == if !touched.contains(key) && part_support(parts, key) > 0 {
+        forall|key: i64, supplier: int, cost: int| #[trigger] quote_amount(changes, key, supplier, cost) == if !touched.contains(key) && eligible(after, key) > 0 {
             sum(deltas, |delta: PartsuppDelta| if delta.row.ps_partkey == key && delta.row.ps_suppkey as int == supplier && delta.row.ps_supplycost as int == cost { delta.sign as int } else { 0int })
         } else { 0int },
         forall|key: i64, weight: spec_fn(PartsuppRow) -> int| #[trigger] index_weight(quotes, key, weight) == index_weight(rebuilt, key, weight) + index_weight(changes, key, weight),
@@ -293,7 +289,7 @@ pub(crate) proof fn lemma_quotes_transfer(before: State, after: Db, touched: Seq
         let local_weight = |row: PartsuppRow| if row.ps_suppkey == supplier && row.ps_supplycost == cost { 1int } else { 0int };
         assert(index_weight(quotes, key, local_weight) == index_weight(rebuilt, key, local_weight) + index_weight(changes, key, local_weight));
         assert(quote_amount(quotes, key, supplier, cost) == quote_amount(rebuilt, key, supplier, cost) + quote_amount(changes, key, supplier, cost));
-        assert(quote_amount(changes, key, supplier, cost) == if !touched.contains(key) && part_support(parts, key) > 0 {
+        assert(quote_amount(changes, key, supplier, cost) == if !touched.contains(key) && eligible(after, key) > 0 {
             sum(deltas, |delta: PartsuppDelta| if delta.row.ps_partkey == key && delta.row.ps_suppkey as int == supplier && delta.row.ps_supplycost as int == cost { delta.sign as int } else { 0int })
         } else { 0int });
         assert(quote_amount(rebuilt, key, supplier, cost) == if touched.contains(key) {
@@ -319,27 +315,26 @@ pub(crate) proof fn lemma_quotes_transfer(before: State, after: Db, touched: Seq
 
 pub proof fn lemma_part_update_weight(before: Db, after: Db, deltas: Seq<PartKeyDelta>,
     changes: Seq<(PartRow, int)>, touched: Seq<i64>, keys: Seq<i64>, scanned: Seq<BrassPartScan>,
-    key: i64, weight: spec_fn((int, Seq<u8>, int)) -> int)
+    key: i64, weight: spec_fn(PartRow) -> int)
     requires
         part_delta_ok(deltas, changes),
         bag_step(before.part, after.part, changes),
         rescan_brass_parts_after_ok(after, keys, scanned),
         forall|probe: i64| #[trigger] touched.contains(probe) == deltas.map_values(|delta: PartKeyDelta| delta.p_partkey).contains(probe),
         touched.contains(key) ==> keys.contains(key),
-        forall|row: (int, Seq<u8>, int)| row.0 != key as int ==> #[trigger] weight(row) == 0,
+        forall|row: PartRow| row.p_partkey != key as int ==> #[trigger] weight(row) == 0,
     ensures
         (if touched.contains(key) { sum(brass_part_scan_seq_view(scanned), weight) }
-         else { sum(before.part, |row: PartRow| if brass(row) { weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int }) }) ==
-        sum(after.part, |row: PartRow| if brass(row) { weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int }),
+         else { sum(before.part, |row: PartRow| if retained(row) { weight(row) } else { 0int }) }) ==
+        sum(after.part, |row: PartRow| if retained(row) { weight(row) } else { 0int }),
 {
-    let source = |row: PartRow| if brass(row) { weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int };
+    let source = |row: PartRow| if retained(row) { weight(row) } else { 0int };
     if touched.contains(key) {
         assert(seq_view_i64(keys).contains(key as int)) by {
             let position = choose|position: int| 0 <= position < keys.len() && #[trigger] keys[position] == key;
             assert(seq_view_i64(keys)[position] == key as int);
         }
-        let restricted = |row: PartRow| if like_match(row.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S']) &&
-            seq_view_i64(keys).contains(row.p_partkey) { weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int };
+        let restricted = |row: PartRow| if seq_view_i64(keys).contains(row.p_partkey) { weight(row) } else { 0int };
         assert(sum(brass_part_scan_seq_view(scanned), weight) == sum(after.part, restricted));
         lemma_sum_ext_all(after.part, restricted, source);
     } else {
@@ -355,64 +350,94 @@ pub proof fn lemma_part_update_weight(before: Db, after: Db, deltas: Seq<PartKey
     }
 }
 
-pub(crate) proof fn lemma_part_indexes_transfer(before: State, after: Db, deltas: Seq<PartKeyDelta>,
-    changes: Seq<(PartRow, int)>, touched: Seq<i64>, keys: Seq<i64>, scanned: Seq<BrassPartScan>,
-    parts: crate::storage::Directory<PartBucket>, sizes: crate::storage::Directory<crate::storage::Directory<Count>>)
+/// Rows of untouched part keys keep their count.
+pub proof fn lemma_eligible_untouched(before: Db, after: Db, deltas: Seq<PartKeyDelta>,
+    changes: Seq<(PartRow, int)>, touched: Seq<i64>, keys: Seq<i64>, scanned: Seq<BrassPartScan>, key: i64)
+    requires
+        part_delta_ok(deltas, changes), bag_step(before.part, after.part, changes),
+        rescan_brass_parts_after_ok(after, keys, scanned),
+        forall|probe: i64| #[trigger] touched.contains(probe) == deltas.map_values(|delta: PartKeyDelta| delta.p_partkey).contains(probe),
+        forall|probe: i64| #[trigger] touched.contains(probe) ==> keys.contains(probe),
+        !touched.contains(key),
+    ensures eligible(after, key) == eligible(before, key),
+{
+    let weight = |row: PartRow| if row.p_partkey == key as int { 1int } else { 0int };
+    lemma_part_update_weight(before, after, deltas, changes, touched, keys, scanned, key, weight);
+    lemma_sum_ext_all(before.part,
+        |row: PartRow| if retained(row) { weight(row) } else { 0int },
+        |row: PartRow| if row.p_partkey == key as int && retained(row) { 1int } else { 0int });
+    lemma_sum_ext_all(after.part,
+        |row: PartRow| if retained(row) { weight(row) } else { 0int },
+        |row: PartRow| if row.p_partkey == key as int && retained(row) { 1int } else { 0int });
+}
+
+#[verifier::rlimit(40)]
+pub(crate) proof fn lemma_parts_transfer(before: State, after: Db, deltas: Seq<PartKeyDelta>,
+    changes: Seq<(PartRow, int)>, touched: Seq<i64>, keys: Seq<i64>, scanned: Seq<BrassPartScan>, ps: Parts)
     requires
         before.meaning(), before.db() == before.database@,
         part_delta_ok(deltas, changes), bag_step(before.db().part, after.part, changes),
-        rescan_brass_parts_after_ok(after, keys, scanned), parts_valid(parts), sizes_valid(sizes),
+        rescan_brass_parts_after_ok(after, keys, scanned),
         forall|probe: i64| #[trigger] touched.contains(probe) == deltas.map_values(|delta: PartKeyDelta| delta.p_partkey).contains(probe),
         forall|probe: i64| #[trigger] touched.contains(probe) ==> keys.contains(probe),
-        forall|key: i64, size: i64| #[trigger] part_size_total(parts, key, size) == size_count(sizes, size, key),
-        forall|key: i64| #[trigger] part_support(parts, key) == if touched.contains(key) {
-            sum(scanned, |row: BrassPartScan| if row.p_partkey == key { 1int } else { 0int })
-        } else { part_support(before.parts, key) },
-        forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(parts, key, size, mfgr) == if touched.contains(key) {
-            sum(scanned, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int })
-        } else { part_amount(before.parts, key, size, mfgr) },
-        forall|size: i64, key: i64| #[trigger] size_count(sizes, size, key) == if touched.contains(key) {
-            sum(scanned, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1int } else { 0int })
-        } else { size_count(before.sizes, size, key) },
-    ensures part_indexes_meaning(after, parts, sizes),
+        ps.structure_ok(),
+        forall|key: i64, size: i64, target: PartRow| #[trigger] ps.amount(key, size, target) == if touched.contains(key) {
+            part_scan_amount(scanned, key, size, target)
+        } else { before.parts.amount(key, size, target) },
+        forall|index: int| 0 <= index < scanned.len() ==>
+            ps.dict_has((#[trigger] scanned[index]).p_mfgr@) && ps.dict_has(scanned[index].p_type@),
+        forall|text: Seq<u8>| before.parts.dict_has(text) ==> #[trigger] ps.dict_has(text),
+    ensures ps.meaning(after),
 {
-    assert forall|key: i64| #[trigger] part_support(parts, key) == eligible(after, key) by {
-        let weight = |row: (int, Seq<u8>, int)| if row.0 == key as int { 1int } else { 0int };
+    assert forall|key: i64, size: i64, target: PartRow| #[trigger] ps.amount(key, size, target) == db_amount(after, key, size, target) by {
+        let weight = |row: PartRow| if row.p_partkey == key as int && row.p_size == size as int && row == target { 1int } else { 0int };
         lemma_part_update_weight(before.db(), after, deltas, changes, touched, keys, scanned, key, weight);
         lemma_sum_map(scanned, |row: BrassPartScan| brass_part_scan_view(row), weight,
-            |row: BrassPartScan| if row.p_partkey == key { 1int } else { 0int });
+            |row: BrassPartScan| part_scan_weight(row, key, size, target));
         lemma_sum_ext_all(before.db().part,
-            |row: PartRow| if brass(row) { weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int },
-            |row: PartRow| if row.p_partkey == key as int && brass(row) { 1int } else { 0int });
+            |row: PartRow| if retained(row) { weight(row) } else { 0int }, amount_weight(key, size, target));
         lemma_sum_ext_all(after.part,
-            |row: PartRow| if brass(row) { weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int },
-            |row: PartRow| if row.p_partkey == key as int && brass(row) { 1int } else { 0int });
+            |row: PartRow| if retained(row) { weight(row) } else { 0int }, amount_weight(key, size, target));
+        assert(before.parts.amount(key, size, target) == db_amount(before.db(), key, size, target));
     }
-    assert forall|key: i64, size: i64, mfgr: Seq<u8>| #[trigger] part_amount(parts, key, size, mfgr) ==
-        sum(after.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1int } else { 0int }) by {
-        let weight = |row: (int, Seq<u8>, int)| if row.0 == key as int && row.2 == size as int && row.1 == mfgr { 1int } else { 0int };
-        lemma_part_update_weight(before.db(), after, deltas, changes, touched, keys, scanned, key, weight);
-        lemma_sum_map(scanned, |row: BrassPartScan| brass_part_scan_view(row), weight,
-            |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int });
-        lemma_sum_ext_all(before.db().part,
-            |row: PartRow| if brass(row) { weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int },
-            |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1int } else { 0int });
-        lemma_sum_ext_all(after.part,
-            |row: PartRow| if brass(row) { weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int },
-            |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1int } else { 0int });
+    // every row of the new database has its strings in the dictionary
+    let covered = |row: PartRow| if ps.dict_has(row.p_mfgr) && ps.dict_has(row.p_type) { 0int } else { 1int };
+    assert forall|index: int| 0 <= index < brass_part_scan_seq_view(scanned).len() implies
+        covered(#[trigger] brass_part_scan_seq_view(scanned)[index]) == 0 by {
+        assert(brass_part_scan_seq_view(scanned)[index] == brass_part_scan_view(scanned[index]));
+        assert(ps.dict_has(scanned[index].p_mfgr@) && ps.dict_has(scanned[index].p_type@));
     }
-    assert forall|size: i64, key: i64| #[trigger] size_count(sizes, size, key) ==
-        sum(after.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int }) by {
-        let weight = |row: (int, Seq<u8>, int)| if row.0 == key as int && row.2 == size as int { 1int } else { 0int };
-        lemma_part_update_weight(before.db(), after, deltas, changes, touched, keys, scanned, key, weight);
-        lemma_sum_map(scanned, |row: BrassPartScan| brass_part_scan_view(row), weight,
-            |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1int } else { 0int });
-        lemma_sum_ext_all(before.db().part,
-            |row: PartRow| if brass(row) { weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int },
-            |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int });
-        lemma_sum_ext_all(after.part,
-            |row: PartRow| if brass(row) { weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int },
-            |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int });
+    lemma_sum_zero(brass_part_scan_seq_view(scanned), covered);
+    let restricted = |row: PartRow| if seq_view_i64(keys).contains(row.p_partkey) { covered(row) } else { 0int };
+    assert(sum(brass_part_scan_seq_view(scanned), covered) == sum(after.part, restricted));
+    let outside = |row: PartRow| if !seq_view_i64(keys).contains(row.p_partkey) { covered(row) } else { 0int };
+    assert forall|index: int| 0 <= index < before.db().part.len() implies outside(#[trigger] before.db().part[index]) == 0 by {
+        let row = before.db().part[index];
+        assert(before.parts.dict_has(row.p_mfgr) && before.parts.dict_has(row.p_type));
+    }
+    lemma_sum_zero(before.db().part, outside);
+    assert forall|position: int| 0 <= position < changes.len() implies
+        (#[trigger] changes[position]).1 * outside(changes[position].0) == 0 by {
+        let key = deltas[position].p_partkey;
+        assert(deltas.map_values(|delta: PartKeyDelta| delta.p_partkey)[position] == key);
+        assert(deltas.map_values(|delta: PartKeyDelta| delta.p_partkey).contains(key));
+        assert(touched.contains(key));
+        assert(keys.contains(key));
+        assert(deltas[position].p_partkey as int == changes[position].0.p_partkey);
+        let witness = choose|witness: int| 0 <= witness < keys.len() && #[trigger] keys[witness] == key;
+        assert(seq_view_i64(keys)[witness] == changes[position].0.p_partkey);
+        assert(seq_view_i64(keys).contains(changes[position].0.p_partkey));
+    }
+    lemma_sum_zero(changes, |change: (PartRow, int)| change.1 * outside(change.0));
+    assert(sum(after.part, outside) == sum(before.db().part, outside) + sum(changes, |change: (PartRow, int)| change.1 * outside(change.0)));
+    assert forall|index: int| 0 <= index < after.part.len() implies
+        ps.dict_has((#[trigger] after.part[index]).p_mfgr) && ps.dict_has(after.part[index].p_type) by {
+        let row = after.part[index];
+        if !(ps.dict_has(row.p_mfgr) && ps.dict_has(row.p_type)) {
+            assert(covered(row) == 1);
+            if seq_view_i64(keys).contains(row.p_partkey) { lemma_sum_pos(after.part, restricted, index); }
+            else { lemma_sum_pos(after.part, outside, index); }
+        }
     }
 }
 
@@ -422,16 +447,15 @@ pub proof fn lemma_scan_representable(db: Db, parts: Seq<BrassPartScan>, quotes:
         scan_suppliers_ok(db, suppliers), scan_nations_ok(db, nations), scan_regions_ok(db, regions),
     ensures supported_db(db),
 {
-    let part_weight = |row: (int, Seq<u8>, int)| if fits_i64(row.0) && fits_i64(row.2) { 0int } else { 1int };
+    let part_weight = |row: PartRow| if fits_i64(row.p_partkey) && fits_i64(row.p_size) { 0int } else { 1int };
     lemma_sum_zero(brass_part_scan_seq_view(parts), part_weight);
-    let part_source = |row: PartRow| if brass(row) { part_weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int };
-    let generated_source = |row: PartRow| if like_match(row.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S']) { part_weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int };
-    assert(sum(brass_part_scan_seq_view(parts), part_weight) == sum(db.part, generated_source));
-    lemma_sum_ext_all(db.part, generated_source, part_source);
+    let part_source = |row: PartRow| if retained(row) { part_weight(row) } else { 0int };
+    assert(sum(brass_part_scan_seq_view(parts), part_weight) == sum(db.part, part_weight));
+    lemma_sum_ext_all(db.part, part_weight, part_source);
     assert(sum(db.part, part_source) == 0);
     assert forall|index: int| 0 <= index < db.part.len() implies {
         let row = #[trigger] db.part[index];
-        brass(row) ==> fits_i64(row.p_partkey) && fits_i64(row.p_size)
+        retained(row) ==> fits_i64(row.p_partkey) && fits_i64(row.p_size)
     } by {
         if part_source(db.part[index]) != 0 { lemma_sum_pos(db.part, part_source, index); }
     }
@@ -474,46 +498,46 @@ pub proof fn lemma_scan_representable(db: Db, parts: Seq<BrassPartScan>, quotes:
 pub proof fn lemma_eligible_exists(db: Db, key: i64)
     ensures eligible(db, key) >= 0,
         (eligible(db, key) > 0) == (exists|index: int| 0 <= index < db.part.len() &&
-            (#[trigger] db.part[index]).p_partkey == key as int && brass(db.part[index])),
+            (#[trigger] db.part[index]).p_partkey == key as int && retained(db.part[index])),
 {
-    let weight = |row: PartRow| if row.p_partkey == key as int && brass(row) { 1int } else { 0int };
+    let weight = |row: PartRow| if row.p_partkey == key as int && retained(row) { 1int } else { 0int };
     lemma_sum_nonneg(db.part, weight);
     if eligible(db, key) > 0 {
         let witness = lemma_sum_nonzero_witness(db.part, weight);
-        assert(db.part[witness].p_partkey == key as int && brass(db.part[witness]));
+        assert(db.part[witness].p_partkey == key as int && retained(db.part[witness]));
     } else {
         assert forall|index: int| 0 <= index < db.part.len() implies
-            (#[trigger] db.part[index]).p_partkey != key as int || !brass(db.part[index]) by {
+            (#[trigger] db.part[index]).p_partkey != key as int || !retained(db.part[index]) by {
             if weight(db.part[index]) > 0 { lemma_sum_pos(db.part, weight, index); }
         }
     }
 }
 
-pub proof fn lemma_part_scan_counts(db: Db, rows: Seq<BrassPartScan>, key: i64, size: i64, mfgr: Seq<u8>)
+pub proof fn lemma_part_scan_counts(db: Db, rows: Seq<BrassPartScan>, key: i64, size: i64, target: PartRow)
     requires scan_brass_parts_ok(db, rows),
     ensures
         sum(rows, |row: BrassPartScan| if row.p_partkey == key { 1int } else { 0int }) == eligible(db, key),
-        sum(rows, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int }) ==
-            sum(db.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1int } else { 0int }),
+        sum(rows, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && brass_part_scan_view(row) == target { 1int } else { 0int }) ==
+            sum(db.part, |row: PartRow| if retained(row) && row.p_partkey == key as int && row.p_size == size as int && row == target { 1int } else { 0int }),
         sum(rows, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1int } else { 0int }) ==
-            sum(db.part, |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int }),
+            sum(db.part, |row: PartRow| if retained(row) && row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int }),
 {
     let projection = |row: BrassPartScan| brass_part_scan_view(row);
-    let support = |row: (int, Seq<u8>, int)| if row.0 == key as int { 1int } else { 0int };
+    let support = |row: PartRow| if row.p_partkey == key as int { 1int } else { 0int };
     lemma_sum_map(rows, projection, support, |row: BrassPartScan| if row.p_partkey == key { 1int } else { 0int });
-    assert(sum(brass_part_scan_seq_view(rows), support) == sum(db.part, |row: PartRow| if like_match(row.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S']) { support((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int }));
-    lemma_sum_ext_all(db.part, |row: PartRow| if like_match(row.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S']) { support((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int },
-        |row: PartRow| if row.p_partkey == key as int && brass(row) { 1int } else { 0int });
-    let amount = |row: (int, Seq<u8>, int)| if row.0 == key as int && row.2 == size as int && row.1 == mfgr { 1int } else { 0int };
-    lemma_sum_map(rows, projection, amount, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1int } else { 0int });
-    assert(sum(brass_part_scan_seq_view(rows), amount) == sum(db.part, |row: PartRow| if like_match(row.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S']) { amount((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int }));
-    lemma_sum_ext_all(db.part, |row: PartRow| if like_match(row.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S']) { amount((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int },
-        |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1int } else { 0int });
-    let sized = |row: (int, Seq<u8>, int)| if row.0 == key as int && row.2 == size as int { 1int } else { 0int };
+    assert(sum(brass_part_scan_seq_view(rows), support) == sum(db.part, support));
+    lemma_sum_ext_all(db.part, support,
+        |row: PartRow| if row.p_partkey == key as int && retained(row) { 1int } else { 0int });
+    let amount = |row: PartRow| if row.p_partkey == key as int && row.p_size == size as int && row == target { 1int } else { 0int };
+    lemma_sum_map(rows, projection, amount, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size && brass_part_scan_view(row) == target { 1int } else { 0int });
+    assert(sum(brass_part_scan_seq_view(rows), amount) == sum(db.part, amount));
+    lemma_sum_ext_all(db.part, amount,
+        |row: PartRow| if retained(row) && row.p_partkey == key as int && row.p_size == size as int && row == target { 1int } else { 0int });
+    let sized = |row: PartRow| if row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int };
     lemma_sum_map(rows, projection, sized, |row: BrassPartScan| if row.p_partkey == key && row.p_size == size { 1int } else { 0int });
-    assert(sum(brass_part_scan_seq_view(rows), sized) == sum(db.part, |row: PartRow| if like_match(row.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S']) { sized((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int }));
-    lemma_sum_ext_all(db.part, |row: PartRow| if like_match(row.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S']) { sized((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int },
-        |row: PartRow| if brass(row) && row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int });
+    assert(sum(brass_part_scan_seq_view(rows), sized) == sum(db.part, sized));
+    lemma_sum_ext_all(db.part, sized,
+        |row: PartRow| if retained(row) && row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int });
 }
 
 pub proof fn lemma_quote_scan_count(db: Db, rows: Seq<BrassPartsuppScan>, key: i64, supplier: int, cost: int)
@@ -534,33 +558,32 @@ pub proof fn lemma_quote_scan_count(db: Db, rows: Seq<BrassPartsuppScan>, key: i
     }
 }
 
-pub open spec fn part_scan_weight(row: BrassPartScan, key: i64, size: i64, mfgr: Seq<u8>) -> int {
-    if row.p_partkey == key && row.p_size == size && row.p_mfgr@ == mfgr { 1 } else { 0 }
+pub open spec fn part_scan_weight(row: BrassPartScan, key: i64, size: i64, target: PartRow) -> int {
+    if row.p_partkey == key && row.p_size == size && brass_part_scan_view(row) == target { 1 } else { 0 }
 }
 
-pub open spec fn part_scan_amount(rows: Seq<BrassPartScan>, key: i64, size: i64, mfgr: Seq<u8>) -> int {
-    sum(rows, |row: BrassPartScan| part_scan_weight(row, key, size, mfgr))
+pub open spec fn part_scan_amount(rows: Seq<BrassPartScan>, key: i64, size: i64, target: PartRow) -> int {
+    sum(rows, |row: BrassPartScan| part_scan_weight(row, key, size, target))
 }
 
-pub open spec fn part_database_weight(row: PartRow, key: i64, size: i64, mfgr: Seq<u8>) -> int {
-    if brass(row) && row.p_partkey == key as int && row.p_size == size as int && row.p_mfgr == mfgr { 1 } else { 0 }
+pub open spec fn part_database_weight(row: PartRow, key: i64, size: i64, target: PartRow) -> int {
+    if retained(row) && row.p_partkey == key as int && row.p_size == size as int && row == target { 1 } else { 0 }
 }
 
-pub open spec fn part_database_amount(db: Db, key: i64, size: i64, mfgr: Seq<u8>) -> int {
-    sum(db.part, |row: PartRow| part_database_weight(row, key, size, mfgr))
+pub open spec fn part_database_amount(db: Db, key: i64, size: i64, target: PartRow) -> int {
+    sum(db.part, |row: PartRow| part_database_weight(row, key, size, target))
 }
 
-pub proof fn lemma_part_amount_transfer(db: Db, rows: Seq<BrassPartScan>, key: i64, size: i64, mfgr: Seq<u8>, amount: int)
+pub proof fn lemma_part_amount_transfer(db: Db, rows: Seq<BrassPartScan>, key: i64, size: i64, target: PartRow, amount: int)
     requires scan_brass_parts_ok(db, rows),
-        amount == part_scan_amount(rows, key, size, mfgr),
-    ensures amount == part_database_amount(db, key, size, mfgr),
+        amount == part_scan_amount(rows, key, size, target),
+    ensures amount == part_database_amount(db, key, size, target),
 {
-    let weight = |row: (int, Seq<u8>, int)| if row.0 == key as int && row.2 == size as int && row.1 == mfgr { 1int } else { 0int };
+    let weight = |row: PartRow| if row.p_partkey == key as int && row.p_size == size as int && row == target { 1int } else { 0int };
     lemma_sum_map(rows, |row: BrassPartScan| brass_part_scan_view(row), weight,
-        |row: BrassPartScan| part_scan_weight(row, key, size, mfgr));
-    let source_weight = |row: PartRow| if like_match(row.p_type, seq![b'%', b'B', b'R', b'A', b'S', b'S']) { weight((row.p_partkey, row.p_mfgr, row.p_size)) } else { 0int };
-    assert(sum(brass_part_scan_seq_view(rows), weight) == sum(db.part, source_weight));
-    lemma_sum_ext_all(db.part, source_weight, |row: PartRow| part_database_weight(row, key, size, mfgr));
+        |row: BrassPartScan| part_scan_weight(row, key, size, target));
+    assert(sum(brass_part_scan_seq_view(rows), weight) == sum(db.part, weight));
+    lemma_sum_ext_all(db.part, weight, |row: PartRow| part_database_weight(row, key, size, target));
 }
 
 pub proof fn lemma_empty_tuple_flat(children: Seq<Seq<Tuple>>)
@@ -611,36 +634,18 @@ pub proof fn lemma_no_query_tuples(db: Db, parameters: Params)
     assert(full_result(db, parameters, Seq::empty()));
 }
 
-pub proof fn lemma_no_region_result(db: Db, size: int, name: Seq<u8>)
+pub proof fn lemma_no_region_result(db: Db, size: int, pat: Seq<u8>, name: Seq<u8>)
     requires forall|index: int| 0 <= index < db.region.len() ==> (#[trigger] db.region[index]).r_name != name,
-    ensures query_result(db, params(size, name), Seq::empty()),
+    ensures query_result(db, params(size, pat, name), Seq::empty()),
 {
-    lemma_no_query_tuples(db, params(size, name));
+    lemma_no_query_tuples(db, params(size, pat, name));
 }
 
-pub proof fn lemma_no_size_result(db: Db, size: int, name: Seq<u8>)
-    requires forall|index: int| 0 <= index < db.part.len() ==> !brass(#[trigger] db.part[index]) || db.part[index].p_size != size,
-    ensures query_result(db, params(size, name), Seq::empty()),
+pub proof fn lemma_no_size_result(db: Db, size: int, pat: Seq<u8>, name: Seq<u8>)
+    requires forall|index: int| 0 <= index < db.part.len() ==> !retained(#[trigger] db.part[index]) || db.part[index].p_size != size,
+    ensures query_result(db, params(size, pat, name), Seq::empty()),
 {
-    lemma_no_query_tuples(db, params(size, name));
-}
-
-pub proof fn lemma_size_absent(db: Db, sizes: crate::storage::Directory<crate::storage::Directory<Count>>, size: i64)
-    requires supported_db(db), sizes.lookup(size) is None,
-        forall|key: i64| #[trigger] size_count(sizes, size, key) == sum(db.part, |row: PartRow|
-            if brass(row) && row.p_partkey == key as int && row.p_size == size as int { 1int } else { 0int }),
-    ensures forall|index: int| 0 <= index < db.part.len() ==> !brass(#[trigger] db.part[index]) || db.part[index].p_size != size as int,
-{
-    assert forall|index: int| 0 <= index < db.part.len() implies !brass(#[trigger] db.part[index]) || db.part[index].p_size != size as int by {
-        let row = db.part[index];
-        if brass(row) && row.p_size == size as int {
-            let key = row.p_partkey as i64;
-            assert(key as int == row.p_partkey);
-            let weight = |entry: PartRow| if brass(entry) && entry.p_partkey == key as int && entry.p_size == size as int { 1int } else { 0int };
-            assert(sum(db.part, weight) == size_count(sizes, size, key));
-            lemma_sum_pos(db.part, weight, index);
-        }
-    }
+    lemma_no_query_tuples(db, params(size, pat, name));
 }
 
 pub proof fn lemma_region_absent(db: Db, regions: crate::storage::Directory<RegionBucket>, name: Seq<u8>)
@@ -658,6 +663,56 @@ pub proof fn lemma_region_absent(db: Db, regions: crate::storage::Directory<Regi
             let weight = |entry: RegionRow| if entry.r_name == name && entry.r_regionkey == key as int { 1int } else { 0int };
             assert(sum(db.region, weight) == region_amount(regions, name, key));
             lemma_sum_pos(db.region, weight, index);
+        }
+    }
+}
+
+
+pub proof fn lemma_build_parts_meaning(db: Db, rows: Seq<BrassPartScan>, ps: Parts)
+    requires scan_brass_parts_ok(db, rows), ps.structure_ok(),
+        forall|key: i64, size: i64, target: PartRow| #[trigger] ps.amount(key, size, target) == part_scan_amount(rows, key, size, target),
+        forall|j: int| 0 <= j < rows.len() ==> ps.dict_has((#[trigger] rows[j]).p_mfgr@) && ps.dict_has(rows[j].p_type@),
+    ensures ps.meaning(db),
+{
+    assert forall|key: i64, size: i64, target: PartRow| #[trigger] ps.amount(key, size, target) == db_amount(db, key, size, target) by {
+        lemma_part_amount_transfer(db, rows, key, size, target, ps.amount(key, size, target));
+        lemma_sum_ext_all(db.part, |row: PartRow| part_database_weight(row, key, size, target), amount_weight(key, size, target));
+    }
+    let covered = |row: PartRow| if ps.dict_has(row.p_mfgr) && ps.dict_has(row.p_type) { 0int } else { 1int };
+    assert forall|index: int| 0 <= index < brass_part_scan_seq_view(rows).len() implies
+        covered(#[trigger] brass_part_scan_seq_view(rows)[index]) == 0 by {
+        assert(brass_part_scan_seq_view(rows)[index] == brass_part_scan_view(rows[index]));
+    }
+    lemma_sum_zero(brass_part_scan_seq_view(rows), covered);
+    assert(sum(db.part, covered) == 0);
+    assert forall|index: int| 0 <= index < db.part.len() implies
+        ps.dict_has((#[trigger] db.part[index]).p_mfgr) && ps.dict_has(db.part[index].p_type) by {
+        if !(ps.dict_has(db.part[index].p_mfgr) && ps.dict_has(db.part[index].p_type)) {
+            lemma_sum_pos(db.part, covered, index);
+        }
+    }
+}
+
+
+pub open spec fn routing_after(touched: Seq<i64>, before: Db, after: Db) -> spec_fn(i64, PartsuppRow) -> bool {
+    |key: i64, row: PartsuppRow| row.ps_partkey == key as int && (if touched.contains(key) { eligible(after, key) > 0 } else { eligible(before, key) > 0 })
+}
+
+pub proof fn lemma_routing_after(touched: Seq<i64>, before: Db, after: Db, quotes: Directory<Bag<BrassPartsuppScan>>)
+    requires index_routed(quotes, routing_after(touched, before, after)),
+        forall|key: i64| !touched.contains(key) ==> #[trigger] eligible(before, key) == eligible(after, key),
+    ensures index_routed(quotes, quote_routing(after)),
+{
+    assert forall|key: i64| match #[trigger] quotes.lookup(key) {
+        None => true,
+        Some(bag) => forall|index: int| 0 <= index < (*bag).entries@.len() ==>
+            quote_routing(after)(key, (*((#[trigger] (*bag).entries@[index]).row)).rv()),
+    } by {
+        if let Some(bag) = quotes.lookup(key) {
+            assert forall|index: int| 0 <= index < (*bag).entries@.len() implies
+                quote_routing(after)(key, (*((#[trigger] (*bag).entries@[index]).row)).rv()) by {
+                assert(routing_after(touched, before, after)(key, (*(*bag).entries@[index].row).rv()));
+            }
         }
     }
 }

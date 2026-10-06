@@ -11,7 +11,7 @@ verus! {
 
 pub proof fn lemma_part_group_weight(row: PartRow, part: int, brand: Seq<u8>, kind: Seq<u8>, size: int)
     ensures part_weight(row, part, group_key(brand, kind, size)) ==
-        if row.p_partkey == part && row.p_brand == brand && row.p_type == kind && row.p_size == size && eligible(row.p_type) { 1int } else { 0int },
+        if row.p_partkey == part && row.p_brand == brand && row.p_type == kind && row.p_size == size { 1int } else { 0int },
 {
     if group_key(row.p_brand, row.p_type, row.p_size) == group_key(brand, kind, size) {
         lemma_group_text_identity(row.p_brand, row.p_type, brand, kind);
@@ -33,7 +33,7 @@ pub proof fn lemma_join_support(parts: Parts, edges: Edges, db: Db, supplier: in
     ensures supplier_join(parts, edges, supplier, group_key(brand, kind, size)) == support(db, supplier, brand, kind, size),
 {
     let key = group_key(brand, kind, size);
-    let matching = |row: PartRow| row.p_brand == brand && row.p_type == kind && row.p_size == size && eligible(row.p_type);
+    let matching = |row: PartRow| row.p_brand == brand && row.p_type == kind && row.p_size == size;
     let target = |row: PartRow| support_term(db, supplier, brand, kind, size, row);
     if edges.at((supplier, Seq::empty())).is_some() {
         let neighborhood = edges.at((supplier, Seq::empty())).unwrap();
@@ -55,9 +55,22 @@ pub proof fn lemma_join_support(parts: Parts, edges: Edges, db: Db, supplier: in
             }
             lemma_sum_scale(db.part, raw, scaled, edge.1 as int);
             assert(edge_at(edges, supplier, edge.0.0) == edge.1 as int);
+            assert(part_database_sum(db, edge.0.0, key) == sum(db.part, raw));
+            assert(horizontal(edge) == sum(db.part, scaled));
             if edge.1 != 0 {
                 assert(part_at(parts, edge.0.0, key) == part_database_sum(db, edge.0.0, key));
             }
+            assert(original(edge) == edge.1 as int * part_at(parts, edge.0.0, key));
+            assert(sum(db.part, scaled) == edge.1 as int * sum(db.part, raw));
+            if edge.1 == 0 {
+                let a = sum(db.part, raw);
+                let b = part_at(parts, edge.0.0, key);
+                assert(edge.1 as int * a == 0) by(nonlinear_arith) requires edge.1 == 0;
+                assert(edge.1 as int * b == 0) by(nonlinear_arith) requires edge.1 == 0;
+            } else {
+                assert(part_at(parts, edge.0.0, key) == sum(db.part, raw));
+            }
+            assert(horizontal(edge) == original(edge));
         }
         lemma_sum_ext(neighborhood.entries(), horizontal, original);
         assert forall|row: PartRow| #[trigger] vertical(row) == target(row) by {

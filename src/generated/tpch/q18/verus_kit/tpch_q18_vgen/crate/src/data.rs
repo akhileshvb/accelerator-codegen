@@ -64,7 +64,20 @@ impl OrderData {
             out.shape() == self.shape(), out.wf() == self.wf(),
             forall|person: int, day: int, total: int| #[trigger] out.multiplicity(person, day, total) == self.multiplicity(person, day, total),
     {
-        let mut variants = Vec::new();
+        self.copy_room(0)
+    }
+
+    /// Copy with the variant vector sized exactly `len + extra` (Vec growth would
+    /// otherwise allocate four 48-byte slots for the usual single variant).
+    pub fn copy_room(&self, extra: usize) -> (out: Self)
+        requires extra <= 1,
+        ensures out.count == self.count, out.quantity == self.quantity,
+            out.variants@ == self.variants@, out.slot == self.slot,
+            out.shape() == self.shape(), out.wf() == self.wf(),
+            forall|person: int, day: int, total: int| #[trigger] out.multiplicity(person, day, total) == self.multiplicity(person, day, total),
+    {
+        let room = if self.variants.len() < 1000000 { self.variants.len() + extra } else { self.variants.len() };
+        let mut variants = Vec::with_capacity(room);
         let mut index = 0usize;
         while index < self.variants.len()
             invariant index <= self.variants.len(), variants@ == self.variants@.take(index as int),
@@ -73,6 +86,7 @@ impl OrderData {
             variants.push(self.variants[index]);
             index += 1;
         }
+        proof { assert(self.variants@.take(self.variants.len() as int) =~= self.variants@); }
         OrderData { count: self.count, quantity: self.quantity, variants, slot: self.slot }
     }
 
@@ -152,14 +166,24 @@ impl CustomerData {
 
     pub fn empty() -> (out: Self)
         ensures out.names@ == Seq::<NameVariant>::empty(),
-    { CustomerData { names: Vec::new() } }
+    { CustomerData { names: Vec::with_capacity(1) } }
 
     pub fn copy(&self) -> (out: Self)
         ensures out.names@ == self.names@,
             out.shape() == self.shape(), out.wf() == self.wf(),
             forall|name: Seq<u8>| #[trigger] out.multiplicity(name) == self.multiplicity(name),
     {
-        let mut names = Vec::new();
+        self.copy_room(0)
+    }
+
+    pub fn copy_room(&self, extra: usize) -> (out: Self)
+        requires extra <= 1,
+        ensures out.names@ == self.names@,
+            out.shape() == self.shape(), out.wf() == self.wf(),
+            forall|name: Seq<u8>| #[trigger] out.multiplicity(name) == self.multiplicity(name),
+    {
+        let room = if self.names.len() < 1000000 { self.names.len() + extra } else { self.names.len() };
+        let mut names = Vec::with_capacity(room);
         let mut index = 0usize;
         while index < self.names.len()
             invariant index <= self.names.len(), names@ == self.names@.take(index as int),
@@ -168,6 +192,7 @@ impl CustomerData {
             names.push(NameVariant { name: Arc::clone(&self.names[index].name), count: self.names[index].count });
             index += 1;
         }
+        proof { assert(self.names@.take(self.names.len() as int) =~= self.names@); }
         CustomerData { names }
     }
 
@@ -278,7 +303,7 @@ pub fn change_order(editor: &mut Editor<OrderData>, key: i64, customer: i64, dat
                 if other == key && person == customer && day == date && total == price { sign as int } else { 0 },
 {
     proof { assert(order_shape(editor.at(key as i128))); }
-    let mut value = match editor.get(key as i128) { Some(row) => row.copy(), None => OrderData::empty() };
+    let mut value = match editor.get(key as i128) { Some(row) => row.copy_room(1), None => OrderData::empty() };
     proof {
         if valid_orders(*old(editor)) {
             if let Some(row) = old(editor).at(key as i128) { assert(row.wf()); }
@@ -370,7 +395,7 @@ pub fn change_customer(editor: &mut Editor<CustomerData>, key: i64, name: &Vec<u
             customer_count(old(editor).at(other), bytes) + if other == key && bytes == name@ { sign as int } else { 0 },
 {
     proof { assert(customer_shape(editor.at(key as i128))); }
-    let mut value = match editor.get(key as i128) { Some(row) => row.copy(), None => CustomerData::empty() };
+    let mut value = match editor.get(key as i128) { Some(row) => row.copy_room(1), None => CustomerData::empty() };
     proof {
         if valid_customers(*old(editor)) {
             if let Some(row) = old(editor).at(key as i128) { assert(row.wf()); }

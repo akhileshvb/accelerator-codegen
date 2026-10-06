@@ -53,7 +53,7 @@ void tpchq11vgen_free(tpchq11vgen_state *s);
 tpchq11vgen_state *tpchq11vgen_apply(const tpchq11vgen_state *s, size_t nation_delta__n, const int64_t *nation_delta__row__n_nationkey, const uint8_t *nation_delta__row__n_name, const size_t *nation_delta__row__n_name__off, const int64_t *nation_delta__sign, size_t partsupp_delta__n, const tpchq11vgen_partsupp_delta *partsupp_delta, size_t supplier_delta__n, const tpchq11vgen_supplier_delta *supplier_delta, int32_t *err);
 
 /* The query's answer on the state, or NULL (the host then answers with SQL). */
-tpchq11vgen_result *tpchq11vgen_execute(const tpchq11vgen_state *s, const uint8_t *p1, size_t p1__len);
+tpchq11vgen_result *tpchq11vgen_execute(const tpchq11vgen_state *s, const uint8_t *p1, size_t p1__len, int64_t p2);
 
 /* How many rows the answer has. */
 size_t tpchq11vgen_result_len(const tpchq11vgen_result *r);

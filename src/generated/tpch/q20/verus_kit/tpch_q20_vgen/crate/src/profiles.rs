@@ -7,19 +7,27 @@ use crate::profile_proofs::*;
 
 verus! {
 #[derive(Clone, Copy)]
-pub struct StockCell { pub value: i64, pub count: i128 }
+pub struct StockCell { pub value: i64, pub count: i32 }
 #[derive(Clone, Copy)]
-pub struct Prefix { pub date: i32, pub count: i128, pub quantity: i128 }
+pub struct Prefix { pub date: i32, pub count: i32, pub quantity: i64 }
 #[derive(Clone, Copy)]
 pub struct Daily { pub date: i32, pub count: i128, pub quantity: i128 }
 pub struct Pair { pub stocks: Vec<StockCell>, pub ship: Vec<Prefix> }
-pub struct Part { pub count: i128, pub pairs: Vec<(i64, Arc<Pair>)> }
+pub struct Part { pub count: i128, pub pairs: Vec<(i64, Pair)> }
 pub struct PairWork { pub stocks: Vec<StockCell>, pub days: HashMap<i32, Daily>, pub dates: Vec<i32> }
-pub struct PartWork { pub count: i128, pub pairs: HashMap<i64, PairWork>, pub original: HashMap<i64, Arc<Pair>>, pub keys: Vec<i64> }
+pub struct PartWork { pub count: i128, pub pairs: HashMap<i64, PairWork>, pub original: HashMap<i64, Pair>, pub keys: Vec<i64> }
 
 pub fn add(left: i128, right: i128) -> (result: Option<i128>)
     ensures result matches Some(value) ==> value as int == left as int + right as int,
 { left.checked_add(right) }
+pub fn add_small(left: i32, right: i128) -> (result: Option<i32>)
+    ensures result matches Some(value) ==> value as int == left as int + right as int,
+{
+    match (left as i128).checked_add(right) {
+        Some(total) => if total >= i32::MIN as i128 && total <= i32::MAX as i128 { Some(total as i32) } else { None },
+        None => None,
+    }
+}
 pub fn sub(left: i128, right: i128) -> (result: Option<i128>)
     ensures result matches Some(value) ==> value as int == left as int - right as int,
 { left.checked_sub(right) }
@@ -183,8 +191,8 @@ impl PairWork {
             decreases pair.ship.len() - index,
         {
             let cell = pair.ship[index];
-            let daily_count = match sub(cell.count, count) { Some(value) => value, None => return None };
-            let daily_quantity = match sub(cell.quantity, quantity) { Some(value) => value, None => return None };
+            let daily_count = match sub(cell.count as i128, count) { Some(value) => value, None => return None };
+            let daily_quantity = match sub(cell.quantity as i128, quantity) { Some(value) => value, None => return None };
             let day = Daily { date: cell.date, count: daily_count, quantity: daily_quantity };
             let ghost previous = result.days@;
             proof {
@@ -205,7 +213,7 @@ impl PairWork {
                 }
             }
             result.days.insert(cell.date, day);
-            result.dates.push(cell.date); count = cell.count; quantity = cell.quantity; index += 1;
+            result.dates.push(cell.date); count = cell.count as i128; quantity = cell.quantity as i128; index += 1;
             proof {
                 assert(pair.ship@.take(index as int) =~= pair.ship@.take(index as int - 1).push(cell));
                 assert(result.dates@ =~= pair.ship@.take(index as int).map_values(|cell: Prefix| cell.date));
@@ -244,7 +252,7 @@ impl PairWork {
             index += 1;
         }
         if index < self.stocks.len() && self.stocks[index].value == value {
-            let count = match add(self.stocks[index].count, sign) { Some(value) => value, None => return false };
+            let count = match add_small(self.stocks[index].count, sign) { Some(value) => value, None => return false };
             let cell = StockCell { value, count };
             self.stocks.set(index, cell);
             proof {
@@ -262,7 +270,8 @@ impl PairWork {
                 }
             }
         } else {
-            let cell = StockCell { value, count: sign };
+            if sign < i32::MIN as i128 || sign > i32::MAX as i128 { return false; }
+            let cell = StockCell { value, count: sign as i32 };
             proof {
                 if old(self).shape() {
                     assert forall|offset: int| #![trigger before[offset]] index <= offset < before.len() implies value < before[offset].value by {
@@ -347,7 +356,7 @@ impl PairWork {
                     crate::model::stored_day_quantity(pair, date) == day_measure(self.days@, date, true))),
     {
         let mut work = self;
-        let mut stocks: Vec<StockCell> = Vec::new(); let mut index = 0;
+        let mut stocks: Vec<StockCell> = Vec::with_capacity(work.stocks.len()); let mut index = 0;
         while index < work.stocks.len()
             invariant index <= work.stocks.len(), work.stocks@ == self.stocks@,
                 work.days@ == self.days@, work.dates@ == self.dates@,
@@ -390,7 +399,7 @@ impl PairWork {
         }
         proof { assert(self.stocks@.take(self.stocks@.len() as int) =~= self.stocks@); }
         let sorted = sort_dates(&work.dates);
-        let mut ship: Vec<Prefix> = Vec::new(); let mut count: i128 = 0; let mut quantity: i128 = 0; let mut index = 0;
+        let mut ship: Vec<Prefix> = Vec::with_capacity(sorted.len()); let mut count: i128 = 0; let mut quantity: i128 = 0; let mut index = 0;
         while index < sorted.len()
             invariant index <= sorted.len(),
                 forall|value: int| #![trigger stock_measure(stocks@, value)] stock_measure(stocks@, value) == self.stock_count(value),
@@ -429,7 +438,8 @@ impl PairWork {
             if day.count > 0 {
                 count = match add(count, day.count) { Some(value) => value, None => return None };
                 quantity = match add(quantity, day.quantity) { Some(value) => value, None => return None };
-                let cell = Prefix { date: day.date, count, quantity };
+                if count > i32::MAX as i128 || quantity > i64::MAX as i128 || quantity < i64::MIN as i128 { return None; }
+                let cell = Prefix { date: day.date, count: count as i32, quantity: quantity as i64 };
                 proof {
                     if self.shape() {
                         assert forall|offset: int| #![trigger ship@[offset]] 0 <= offset < ship@.len() implies ship@[offset].date < day.date by {
@@ -500,7 +510,7 @@ impl PartWork {
     pub open spec fn cells_valid(self) -> bool {
         &&& self.pairs@.dom().disjoint(self.original@.dom())
         &&& forall|key: i64| #![trigger self.pairs@[key]] self.pairs@.contains_key(key) ==> self.pairs@[key].shape()
-        &&& forall|key: i64| #![trigger self.original@[key]] self.original@.contains_key(key) ==> crate::model::pair_valid(*self.original@[key])
+        &&& forall|key: i64| #![trigger self.original@[key]] self.original@.contains_key(key) ==> crate::model::pair_valid(self.original@[key])
             && (self.original@[key].stocks@.len() > 0 || self.original@[key].ship@.len() > 0)
     }
     pub open spec fn shape(self) -> bool {
@@ -514,7 +524,7 @@ impl PartWork {
     }
     pub fn new(count: i128) -> (result: Self)
         ensures result.count == count, result.pairs@ == Map::<i64, PairWork>::empty(),
-            result.original@ == Map::<i64, Arc<Pair>>::empty(), result.keys@.len() == 0,
+            result.original@ == Map::<i64, Pair>::empty(), result.keys@.len() == 0,
             result.shape(),
     {
         let result = Self { count, pairs: HashMap::new(), original: HashMap::new(), keys: Vec::new() };
@@ -530,36 +540,36 @@ impl PartWork {
         let mut result = Self::new(part.count); let mut index = 0;
         while index < part.pairs.len()
             invariant result.count == part.count, index <= part.pairs.len(), result.pairs@.is_empty(),
-                result.keys@ == part.pairs@.take(index as int).map_values(|entry: (i64, Arc<Pair>)| entry.0),
+                result.keys@ == part.pairs@.take(index as int).map_values(|entry: (i64, Pair)| entry.0),
                 part_shape(*part) ==> result.keys@.no_duplicates() && result.original@.dom() == result.keys@.to_set(),
                 part_shape(*part) ==> forall|offset: int| #![trigger part.pairs@[offset]] 0 <= offset < index ==>
-                    result.original@.contains_key(part.pairs@[offset].0) && result.original@[part.pairs@[offset].0] == part.pairs@[offset].1,
+                    result.original@.contains_key(part.pairs@[offset].0) && crate::model::same_pair(result.original@[part.pairs@[offset].0], part.pairs@[offset].1),
             decreases part.pairs.len() - index,
         {
             proof {
                 if part_shape(*part) {
-                    let source_keys = part.pairs@.map_values(|entry: (i64, Arc<Pair>)| entry.0);
+                    let source_keys = part.pairs@.map_values(|entry: (i64, Pair)| entry.0);
                     verus_prooflib::lemma_prefix_fresh(source_keys, index as int);
                     assert(result.keys@ =~= source_keys.take(index as int));
                     verus_prooflib::lemma_unique_push(result.keys@, part.pairs@[index as int].0);
                     verus_prooflib::lemma_push_to_set(result.keys@, part.pairs@[index as int].0);
                 }
             }
-            result.keys.push(part.pairs[index].0); result.original.insert(part.pairs[index].0, Arc::clone(&part.pairs[index].1)); index += 1;
-            proof { assert(result.keys@ =~= part.pairs@.take(index as int).map_values(|entry: (i64, Arc<Pair>)| entry.0)); }
+            result.keys.push(part.pairs[index].0); result.original.insert(part.pairs[index].0, copy_pair(&part.pairs[index].1)); index += 1;
+            proof { assert(result.keys@ =~= part.pairs@.take(index as int).map_values(|entry: (i64, Pair)| entry.0)); }
         }
         proof {
             assert(part.pairs@.take(part.pairs.len() as int) =~= part.pairs@);
             if part_shape(*part) {
                 result.keys@.to_set_ensures();
                 assert forall|key: i64| #![trigger result.original@[key]] result.original@.contains_key(key) implies
-                    crate::model::pair_valid(*result.original@[key])
+                    crate::model::pair_valid(result.original@[key])
                         && (result.original@[key].stocks@.len() > 0 || result.original@[key].ship@.len() > 0) by {
                     assert(result.keys@.contains(key));
                     let offset = choose|offset: int| #![trigger result.keys@[offset]] 0 <= offset < result.keys@.len() && result.keys@[offset] == key;
                     assert(0 <= offset < result.keys@.len() && result.keys@[offset] == key);
                     assert(part.pairs@[offset].0 == key);
-                    assert(result.original@[key] == part.pairs@[offset].1);
+                    assert(crate::model::same_pair(result.original@[key], part.pairs@[offset].1)); crate::model::lemma_same_pair(result.original@[key], part.pairs@[offset].1);
                 }
                 assert(result.pairs@.dom() =~= Set::<i64>::empty());
                 assert(result.pairs@.dom().disjoint(result.original@.dom()));
@@ -570,7 +580,7 @@ impl PartWork {
                     if result.original@.contains_key(key) {
                         let offset = choose|offset: int| #![trigger part.pairs@[offset]] 0 <= offset < part.pairs@.len() && part.pairs@[offset].0 == key;
                         assert(0 <= offset < part.pairs@.len() && part.pairs@[offset].0 == key);
-                        assert(result.original@[key] == part.pairs@[offset].1);
+                        assert(crate::model::same_pair(result.original@[key], part.pairs@[offset].1)); crate::model::lemma_same_pair(result.original@[key], part.pairs@[offset].1);
                     }
                 }
                 assert forall|key: i64, date: int, quantity: bool| #![trigger result.day_for(key, date, quantity)] result.day_for(key, date, quantity) == part_day(part.pairs@, key, date, quantity) by {
@@ -578,7 +588,7 @@ impl PartWork {
                     if result.original@.contains_key(key) {
                         let offset = choose|offset: int| #![trigger part.pairs@[offset]] 0 <= offset < part.pairs@.len() && part.pairs@[offset].0 == key;
                         assert(0 <= offset < part.pairs@.len() && part.pairs@[offset].0 == key);
-                        assert(result.original@[key] == part.pairs@[offset].1);
+                        assert(crate::model::same_pair(result.original@[key], part.pairs@[offset].1)); crate::model::lemma_same_pair(result.original@[key], part.pairs@[offset].1);
                     }
                 }
             }
@@ -657,14 +667,14 @@ impl PartWork {
     {
         let mut work = self;
         if work.count <= 0 { return None; }
-        let mut pairs: Vec<(i64, Arc<Pair>)> = Vec::new(); let mut index = 0;
+        let mut pairs: Vec<(i64, Pair)> = Vec::new(); let mut index = 0;
         while index < work.keys.len()
             invariant work.count == self.count, work.count > 0, index <= work.keys.len(), work.keys@ == self.keys@,
                 self.shape() ==> work.cells_valid() && self.keys@.no_duplicates()
-                    && pairs@.map_values(|entry: (i64, Arc<Pair>)| entry.0).no_duplicates(),
+                    && pairs@.map_values(|entry: (i64, Pair)| entry.0).no_duplicates(),
                 self.shape() ==> forall|offset: int| #![trigger pairs@[offset]] 0 <= offset < pairs@.len() ==>
                     self.keys@.take(index as int).contains(pairs@[offset].0)
-                        && crate::model::pair_valid(*pairs@[offset].1)
+                        && crate::model::pair_valid(pairs@[offset].1)
                         && (pairs@[offset].1.stocks@.len() > 0 || pairs@[offset].1.ship@.len() > 0),
                 self.shape() ==> forall|key: i64, value: int| #![trigger work.stock_for(key, value)] work.stock_for(key, value)
                     == if self.keys@.take(index as int).contains(key) { 0 } else { self.stock_for(key, value) },
@@ -699,7 +709,7 @@ impl PartWork {
                             }
                         }
                     }
-                    if pair.stocks.len() > 0 || pair.ship.len() > 0 { Some(Arc::new(pair)) }
+                    if pair.stocks.len() > 0 || pair.ship.len() > 0 { Some(pair) }
                     else {
                         proof {
                             if self.shape() {
@@ -720,10 +730,10 @@ impl PartWork {
                 let ghost retained = pair;
                 proof {
                     if self.shape() {
-                        assert(crate::model::pair_valid(*pair));
+                        assert(crate::model::pair_valid(pair));
                         assert(pair.stocks@.len() > 0 || pair.ship@.len() > 0);
-                        assert(!pairs@.map_values(|entry: (i64, Arc<Pair>)| entry.0).contains(key)) by {
-                            let keys = pairs@.map_values(|entry: (i64, Arc<Pair>)| entry.0);
+                        assert(!pairs@.map_values(|entry: (i64, Pair)| entry.0).contains(key)) by {
+                            let keys = pairs@.map_values(|entry: (i64, Pair)| entry.0);
                             if keys.contains(key) {
                                 let offset = choose|offset: int| #![trigger keys[offset]] 0 <= offset < keys.len() && keys[offset] == key;
                                 assert(0 <= offset < keys.len() && keys[offset] == key);
@@ -826,7 +836,12 @@ pub fn prefix(pair: &Pair, date: i32) -> (result: (i128, i128))
             crate::model::lemma_before_cut(pair, date as int, low as int);
         }
     }
-    if low == 0 { (0, 0) } else { let cell = pair.ship[low - 1]; (cell.count, cell.quantity) }
+    if low == 0 { (0, 0) } else { let cell = pair.ship[low - 1]; (cell.count as i128, cell.quantity as i128) }
+}
+pub fn copy_pair(source: &Pair) -> (result: Pair)
+    ensures result.stocks@ == source.stocks@, result.ship@ == source.ship@,
+{
+    Pair { stocks: source.stocks.clone(), ship: source.ship.clone() }
 }
 pub fn copy_bytes(source: &Vec<u8>) -> (result: Vec<u8>)
     ensures result@ == source@,

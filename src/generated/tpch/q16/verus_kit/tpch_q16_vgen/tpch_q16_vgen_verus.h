@@ -41,7 +41,7 @@ typedef struct {
 } tpchq16vgen_supplier_delta;
 
 /* Build from the scans: a state, or NULL (the host then answers with SQL). */
-tpchq16vgen_state *tpchq16vgen_build(size_t eligible_parts__n, const int64_t *eligible_parts__p_partkey, const uint8_t *eligible_parts__p_brand, const size_t *eligible_parts__p_brand__off, const uint8_t *eligible_parts__p_type, const size_t *eligible_parts__p_type__off, const int64_t *eligible_parts__p_size, size_t edges__n, const tpchq16vgen_edge_input *edges, size_t blockers__n, const tpchq16vgen_blocker_input *blockers);
+tpchq16vgen_state *tpchq16vgen_build(size_t parts__n, const int64_t *parts__p_partkey, const uint8_t *parts__p_brand, const size_t *parts__p_brand__off, const uint8_t *parts__p_type, const size_t *parts__p_type__off, const int64_t *parts__p_size, size_t edges__n, const tpchq16vgen_edge_input *edges, size_t blockers__n, const tpchq16vgen_blocker_input *blockers);
 
 /* Free a state from build / apply. */
 void tpchq16vgen_free(tpchq16vgen_state *s);
@@ -67,7 +67,7 @@ size_t tpchq16vgen_rescan_blockers_for_suppliers_keys(const tpchq16vgen_state *s
 tpchq16vgen_state *tpchq16vgen_apply(const tpchq16vgen_state *s, size_t part_delta__n, const int64_t *part_delta__row__p_partkey, const uint8_t *part_delta__row__p_brand, const size_t *part_delta__row__p_brand__off, const uint8_t *part_delta__row__p_type, const size_t *part_delta__row__p_type__off, const int64_t *part_delta__row__p_size, const int64_t *part_delta__sign, size_t partsupp_delta__n, const tpchq16vgen_edge_delta *partsupp_delta, size_t supplier_delta__n, const tpchq16vgen_supplier_delta *supplier_delta, size_t edges_for_parts_keys__n, const int64_t *edges_for_parts_keys, size_t edges_for_parts_rows__n, const tpchq16vgen_edge_input *edges_for_parts_rows, size_t edges_for_suppliers_keys__n, const int64_t *edges_for_suppliers_keys, size_t edges_for_suppliers_rows__n, const tpchq16vgen_edge_input *edges_for_suppliers_rows, size_t parts_for_neighbors_keys__n, const int64_t *parts_for_neighbors_keys, size_t parts_for_neighbors_rows__n, const int64_t *parts_for_neighbors_rows__p_partkey, const uint8_t *parts_for_neighbors_rows__p_brand, const size_t *parts_for_neighbors_rows__p_brand__off, const uint8_t *parts_for_neighbors_rows__p_type, const size_t *parts_for_neighbors_rows__p_type__off, const int64_t *parts_for_neighbors_rows__p_size, size_t blockers_for_suppliers_keys__n, const int64_t *blockers_for_suppliers_keys, size_t blockers_for_suppliers_rows__n, const tpchq16vgen_blocker_input *blockers_for_suppliers_rows, int32_t *err);
 
 /* The query's answer on the state, or NULL (the host then answers with SQL). */
-tpchq16vgen_result *tpchq16vgen_execute(const tpchq16vgen_state *s, const uint8_t *p1, size_t p1__len, int64_t p2, int64_t p3, int64_t p4, int64_t p5, int64_t p6, int64_t p7, int64_t p8, int64_t p9);
+tpchq16vgen_result *tpchq16vgen_execute(const tpchq16vgen_state *s, const uint8_t *p1, size_t p1__len, const uint8_t *p2, size_t p2__len, int64_t p3, int64_t p4, int64_t p5, int64_t p6, int64_t p7, int64_t p8, int64_t p9, int64_t p10);
 
 /* How many rows the answer has. */
 size_t tpchq16vgen_result_len(const tpchq16vgen_result *r);
@@ -110,7 +110,7 @@ tpchq16vgens_prepared *tpchq16vgens_prepare_apply(const tpchq16vgens_store *st, 
 /* The next version built from scans (as for build) of the database as of
    that version; its state is invalid if the kernel cannot build it.  NULL
    only if no version can follow the newest. */
-tpchq16vgens_prepared *tpchq16vgens_prepare_build(const tpchq16vgens_store *st, size_t eligible_parts__n, const int64_t *eligible_parts__p_partkey, const uint8_t *eligible_parts__p_brand, const size_t *eligible_parts__p_brand__off, const uint8_t *eligible_parts__p_type, const size_t *eligible_parts__p_type__off, const int64_t *eligible_parts__p_size, size_t edges__n, const tpchq16vgen_edge_input *edges, size_t blockers__n, const tpchq16vgen_blocker_input *blockers);
+tpchq16vgens_prepared *tpchq16vgens_prepare_build(const tpchq16vgens_store *st, size_t parts__n, const int64_t *parts__p_partkey, const uint8_t *parts__p_brand, const size_t *parts__p_brand__off, const uint8_t *parts__p_type, const size_t *parts__p_type__off, const int64_t *parts__p_size, size_t edges__n, const tpchq16vgen_edge_input *edges, size_t blockers__n, const tpchq16vgen_blocker_input *blockers);
 
 /* The next version with an invalid state (NULL: none can follow the newest). */
 tpchq16vgens_prepared *tpchq16vgens_prepare_invalid(const tpchq16vgens_store *st);

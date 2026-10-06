@@ -7,19 +7,16 @@
 // behind crate::kernel; the host calls only the ob_* functions below.
 //
 // Kernel inputs:
-//   -- Build only parameter-independent qualifying part neighborhoods.
-//   scan qualifying_parts AS QualifyingPartInput:
-//     SELECT p_partkey FROM part WHERE p_name LIKE 'gainsboro%';
+//   -- Parameter-independent inputs: every part (the name pattern is applied at read time),
+//   -- every partsupp and lineitem row (windows and pattern are applied at read time).
+//   scan parts AS PartInput:
+//     SELECT p_partkey, p_name FROM part;
 //   
 //   scan stocks AS StockInput:
-//     SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp
-//     WHERE EXISTS (SELECT p_partkey FROM part
-//                   WHERE p_partkey = ps_partkey AND p_name LIKE 'gainsboro%');
+//     SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp;
 //   
 //   scan shipments AS ShipmentInput:
-//     SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem
-//     WHERE EXISTS (SELECT p_partkey FROM part
-//                   WHERE p_partkey = l_partkey AND p_name LIKE 'gainsboro%');
+//     SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem;
 //   
 //   scan suppliers AS SupplierInput:
 //     SELECT s_suppkey, s_name, s_address, s_nationkey FROM supplier;
@@ -27,7 +24,7 @@
 //   scan nations AS NationInput:
 //     SELECT n_nationkey, n_name FROM nation;
 //   
-//   -- Post-transaction rows for parts whose qualifying count becomes positive.
+//   -- Post-transaction rows for parts whose count becomes positive.
 //   -- Keep these broader than the build scans; apply checks key coverage.
 //   rescan stocks_for_parts AS StockInput KEYS ps_partkey:
 //     SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp;
@@ -35,8 +32,8 @@
 //   rescan shipments_for_parts AS ShipmentInput KEYS l_partkey:
 //     SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem;
 //   
-//   delta part AS PartDelta:
-//     SELECT p_partkey, p_name LIKE 'gainsboro%' AS is_qualifying FROM part;
+//   delta part AS PartDelta OF PartInput:
+//     SELECT p_partkey, p_name FROM part;
 //   
 //   delta partsupp AS PartsuppDelta OF StockInput:
 //     SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp;
@@ -65,20 +62,23 @@ verus! {
 
 // ── Runtime rows and their views ──
 
-/// Runtime row: scan qualifying_parts.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct QualifyingPartInput {
+/// Runtime row: scan parts; delta part.
+pub struct PartInput {
     /// part.p_partkey (integer)
     pub p_partkey: i64,
+    /// part.p_name (text bytes)
+    pub p_name: Vec<u8>,
 }
 
-pub open spec fn qualifying_part_input_view(r: QualifyingPartInput) -> int {
-    r.p_partkey as int
+pub open spec fn part_input_view(r: PartInput) -> PartRow {
+    PartRow {
+        p_partkey: r.p_partkey as int,
+        p_name: r.p_name@,
+    }
 }
 
-pub open spec fn qualifying_part_input_seq_view(s: Seq<QualifyingPartInput>) -> Seq<int> {
-    s.map_values(|r: QualifyingPartInput| qualifying_part_input_view(r))
+pub open spec fn part_input_seq_view(s: Seq<PartInput>) -> Seq<PartRow> {
+    s.map_values(|r: PartInput| part_input_view(r))
 }
 
 /// Runtime row: scan stocks; rescan stocks_for_parts; delta partsupp.
@@ -182,8 +182,8 @@ pub open spec fn seq_view_i64(s: Seq<i64>) -> Seq<int> {
 
 // ── Parameters and result ──
 
-pub open spec fn params(p1: int, p2: Seq<u8>, p3: int) -> Params {
-    Params { p1, p2, p3 }
+pub open spec fn params(p1: int, p2: Seq<u8>, p3: Seq<u8>, p4: int) -> Params {
+    Params { p1, p2, p3, p4 }
 }
 
 pub open spec fn out_view(o: Seq<(Vec<u8>, Vec<u8>)>) -> Seq<OutRow> {
@@ -192,52 +192,19 @@ pub open spec fn out_view(o: Seq<(Vec<u8>, Vec<u8>)>) -> Seq<OutRow> {
 
 // ── Scan and capture contracts ──
 
-/// scan qualifying_parts: SELECT p_partkey FROM part WHERE p_name LIKE 'gainsboro%'
-pub open spec fn scan_qualifying_parts_ok(db: Db, rows: Seq<QualifyingPartInput>) -> bool {
-    forall|f: spec_fn(int) -> int| #[trigger] sum(qualifying_part_input_seq_view(rows), f) == sum(
-        db.part,
-        |part: PartRow| if like_match(part.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%']) { f(part.p_partkey) } else { 0 },
-    )
+/// scan parts: SELECT p_partkey, p_name FROM part
+pub open spec fn scan_parts_ok(db: Db, rows: Seq<PartInput>) -> bool {
+    forall|f: spec_fn(PartRow) -> int| #[trigger] sum(part_input_seq_view(rows), f) == sum(db.part, f)
 }
 
-/// The WHERE clause of EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) AND part.p_name LIKE Utf8("gainsboro%") <- Projection: part.p_partkey)
-pub open spec fn scan_stocks_exists_1_where(partsupp: PartsuppRow, part: PartRow) -> bool {
-    &&& part.p_partkey == partsupp.ps_partkey
-    &&& like_match(part.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%'])
-}
-
-/// EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(partsupp.ps_partkey) AND part.p_name LIKE Utf8("gainsboro%") <- Projection: part.p_partkey)
-pub open spec fn scan_stocks_exists_1(db: Db, partsupp: PartsuppRow) -> bool {
-    exists|i_part: int| #![trigger db.part[i_part]]
-        0 <= i_part < db.part.len() && scan_stocks_exists_1_where(partsupp, db.part[i_part])
-}
-
-/// scan stocks: SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp WHERE EXISTS (SELECT p_partkey FROM part WHERE p_partkey = ps_partkey AND p_name LIKE 'gainsboro%')
+/// scan stocks: SELECT ps_partkey, ps_suppkey, ps_availqty FROM partsupp
 pub open spec fn scan_stocks_ok(db: Db, rows: Seq<StockInput>) -> bool {
-    forall|f: spec_fn(PartsuppRow) -> int| #[trigger] sum(stock_input_seq_view(rows), f) == sum(
-        db.partsupp,
-        |partsupp: PartsuppRow| if scan_stocks_exists_1(db, partsupp) { f(partsupp) } else { 0 },
-    )
+    forall|f: spec_fn(PartsuppRow) -> int| #[trigger] sum(stock_input_seq_view(rows), f) == sum(db.partsupp, f)
 }
 
-/// The WHERE clause of EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(lineitem.l_partkey) AND part.p_name LIKE Utf8("gainsboro%") <- Projection: part.p_partkey)
-pub open spec fn scan_shipments_exists_1_where(lineitem: LineitemRow, part: PartRow) -> bool {
-    &&& part.p_partkey == lineitem.l_partkey
-    &&& like_match(part.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%'])
-}
-
-/// EXISTS (TableScan: part <- Filter: part.p_partkey = outer_ref(lineitem.l_partkey) AND part.p_name LIKE Utf8("gainsboro%") <- Projection: part.p_partkey)
-pub open spec fn scan_shipments_exists_1(db: Db, lineitem: LineitemRow) -> bool {
-    exists|i_part: int| #![trigger db.part[i_part]]
-        0 <= i_part < db.part.len() && scan_shipments_exists_1_where(lineitem, db.part[i_part])
-}
-
-/// scan shipments: SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem WHERE EXISTS (SELECT p_partkey FROM part WHERE p_partkey = l_partkey AND p_name LIKE 'gainsboro%')
+/// scan shipments: SELECT l_partkey, l_suppkey, l_quantity, l_shipdate FROM lineitem
 pub open spec fn scan_shipments_ok(db: Db, rows: Seq<ShipmentInput>) -> bool {
-    forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(shipment_input_seq_view(rows), f) == sum(
-        db.lineitem,
-        |lineitem: LineitemRow| if scan_shipments_exists_1(db, lineitem) { f(lineitem) } else { 0 },
-    )
+    forall|f: spec_fn(LineitemRow) -> int| #[trigger] sum(shipment_input_seq_view(rows), f) == sum(db.lineitem, f)
 }
 
 /// scan suppliers: SELECT s_suppkey, s_name, s_address, s_nationkey FROM supplier
@@ -268,24 +235,14 @@ pub open spec fn rescan_shipments_for_parts_ok(db: Db, keys: Seq<i64>, rows: Seq
     )
 }
 
-/// delta part (lossy): SELECT p_partkey, p_name LIKE 'gainsboro%' AS is_qualifying FROM part
-#[repr(C)]
-#[derive(Clone, Copy)]
+/// delta part: a changed `part` row and its sign (+1 insert, -1 delete).
 pub struct PartDelta {
-    pub p_partkey: i64,
-    pub is_qualifying: u8,
+    pub row: PartInput,
     pub sign: i64,
 }
 
-/// delta part: each runtime delta is the projection of the full changed row.
-pub open spec fn part_delta_ok(d: Seq<PartDelta>, full: Seq<(PartRow, int)>) -> bool {
-    &&& d.len() == full.len()
-    &&& forall|i: int| #![trigger d[i]] 0 <= i < d.len() ==> {
-        let part = full[i].0;
-        &&& d[i].p_partkey as int == part.p_partkey
-        &&& (d[i].is_qualifying != 0) == like_match(part.p_name, seq![b'g', b'a', b'i', b'n', b's', b'b', b'o', b'r', b'o', b'%'])
-        &&& d[i].sign as int == full[i].1
-    }
+pub open spec fn part_delta_seq_view(s: Seq<PartDelta>) -> Seq<(PartRow, int)> {
+    s.map_values(|d: PartDelta| (part_input_view(d.row), d.sign as int))
 }
 
 /// delta partsupp: a changed `partsupp` row and its sign (+1 insert, -1 delete).
@@ -345,7 +302,7 @@ pub open spec fn capture_ok(db: Db, db2: Db, lineitem: Seq<(LineitemRow, int)>, 
 
 /// Build: a state for db, or None (the host then answers with SQL).
 pub fn ob_build(
-    qualifying_parts: &[QualifyingPartInput],
+    parts: Vec<PartInput>,
     stocks: &[StockInput],
     shipments: &[ShipmentInput],
     suppliers: Vec<SupplierInput>,
@@ -353,7 +310,7 @@ pub fn ob_build(
     Ghost(db): Ghost<Db>,
 ) -> (r: Option<State>)
     requires
-        scan_qualifying_parts_ok(db, qualifying_parts@),
+        scan_parts_ok(db, parts@),
         scan_stocks_ok(db, stocks@),
         scan_shipments_ok(db, shipments@),
         scan_suppliers_ok(db, suppliers@),
@@ -361,7 +318,7 @@ pub fn ob_build(
     ensures
         r matches Some(s) ==> s.db() == db,
 {
-    kernel::build(qualifying_parts, stocks, shipments, suppliers, nations, Ghost(db))
+    kernel::build(parts, stocks, shipments, suppliers, nations, Ghost(db))
 }
 
 /// Execute: the query's answer on s.db(), or None (the host then answers with SQL).
@@ -369,12 +326,13 @@ pub fn ob_execute(
     s: &State,
     p1: i32,
     p2: &[u8],
-    p3: i32,
+    p3: &[u8],
+    p4: i32,
 ) -> (r: Option<Vec<(Vec<u8>, Vec<u8>)>>)
     ensures
-        r matches Some(out) ==> query_result(s.db(), params(p1 as int, p2@, p3 as int), out_view(out@)),
+        r matches Some(out) ==> query_result(s.db(), params(p1 as int, p2@, p3@, p4 as int), out_view(out@)),
 {
-    kernel::execute(s, p1, p2, p3)
+    kernel::execute(s, p1, p2, p3, p4)
 }
 
 /// The keys whose rows the host rescans (rescan stocks_for_parts) for apply.  No contract:
@@ -383,7 +341,7 @@ pub fn ob_rescan_stocks_for_parts_keys(
     s: &State,
     lineitem_delta: &[LineitemDelta],
     nation_delta: &Vec<NationDelta>,
-    part_delta: &[PartDelta],
+    part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &Vec<SupplierDelta>,
 ) -> (r: Vec<i64>)
@@ -397,7 +355,7 @@ pub fn ob_rescan_shipments_for_parts_keys(
     s: &State,
     lineitem_delta: &[LineitemDelta],
     nation_delta: &Vec<NationDelta>,
-    part_delta: &[PartDelta],
+    part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &Vec<SupplierDelta>,
 ) -> (r: Vec<i64>)
@@ -410,25 +368,23 @@ pub fn ob_apply(
     s: &State,
     lineitem_delta: &[LineitemDelta],
     nation_delta: &Vec<NationDelta>,
-    part_delta: &[PartDelta],
+    part_delta: &Vec<PartDelta>,
     partsupp_delta: &[PartsuppDelta],
     supplier_delta: &Vec<SupplierDelta>,
     stocks_for_parts_keys: &[i64],
     stocks_for_parts_rows: &[StockInput],
     shipments_for_parts_keys: &[i64],
     shipments_for_parts_rows: &[ShipmentInput],
-    Ghost(part_full): Ghost<Seq<(PartRow, int)>>,
     Ghost(db2): Ghost<Db>,
 ) -> (r: Result<State, u32>)
     requires
-        part_delta_ok(part_delta@, part_full),
-        capture_ok(s.db(), db2, lineitem_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), part_full, partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
+        capture_ok(s.db(), db2, lineitem_delta_seq_view(lineitem_delta@), nation_delta_seq_view(nation_delta@), part_delta_seq_view(part_delta@), partsupp_delta_seq_view(partsupp_delta@), supplier_delta_seq_view(supplier_delta@)),
         rescan_stocks_for_parts_ok(db2, stocks_for_parts_keys@, stocks_for_parts_rows@),
         rescan_shipments_for_parts_ok(db2, shipments_for_parts_keys@, shipments_for_parts_rows@),
     ensures
         r matches Ok(s2) ==> s2.db() == db2,
 {
-    kernel::apply(s, lineitem_delta, nation_delta, part_delta, partsupp_delta, supplier_delta, stocks_for_parts_keys, stocks_for_parts_rows, shipments_for_parts_keys, shipments_for_parts_rows, Ghost(part_full), Ghost(db2))
+    kernel::apply(s, lineitem_delta, nation_delta, part_delta, partsupp_delta, supplier_delta, stocks_for_parts_keys, stocks_for_parts_rows, shipments_for_parts_keys, shipments_for_parts_rows, Ghost(db2))
 }
 
 } // verus!

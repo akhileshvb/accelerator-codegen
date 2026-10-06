@@ -168,13 +168,14 @@ pub fn sentinel_key() -> (result: Key)
     Key::composite(i64::MAX, bytes)
 }
 
-pub fn threshold(total: i128) -> (result: i128)
-    ensures result as int * 10000 > total as int,
-        (result as int - 1) * 10000 <= total as int,
+pub fn threshold(total: i128, fraction: i64) -> (result: Option<i128>)
+    ensures result matches Some(cutoff) ==> cutoff as int * 1000000000 > total as int * fraction as int
+        && (cutoff as int - 1) * 1000000000 <= total as int * fraction as int,
 {
-    let quotient = total / 10000;
-    let remainder = total % 10000;
-    if remainder < 0 { quotient } else { quotient + 1 }
+    let product = match total.checked_mul(fraction as i128) { Some(product) => product, None => return None };
+    let quotient = product / 1000000000;
+    let remainder = product % 1000000000;
+    if remainder < 0 { Some(quotient) } else { Some(quotient + 1) }
 }
 
 }
