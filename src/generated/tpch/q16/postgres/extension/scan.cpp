@@ -87,38 +87,25 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace {
 
 void ExecutePostgresTpchQ16(FunctionCallInfo fcinfo) {
-  detail::Q16Runtime().Execute(
-      core::QueryArguments{{core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(0))),
-                            core::AuxValue::Of(
-                                core::AuxType::String,
-                                detail::TextDatum(PG_GETARG_DATUM(1))),
-                            core::AuxValue::Of(
-                                core::AuxType::Int64,
-                                static_cast<int64_t>(PG_GETARG_INT32(2))),
-                            core::AuxValue::Of(
-                                core::AuxType::Int64,
-                                static_cast<int64_t>(PG_GETARG_INT32(3))),
-                            core::AuxValue::Of(
-                                core::AuxType::Int64,
-                                static_cast<int64_t>(PG_GETARG_INT32(4))),
-                            core::AuxValue::Of(
-                                core::AuxType::Int64,
-                                static_cast<int64_t>(PG_GETARG_INT32(5))),
-                            core::AuxValue::Of(
-                                core::AuxType::Int64,
-                                static_cast<int64_t>(PG_GETARG_INT32(6))),
-                            core::AuxValue::Of(
-                                core::AuxType::Int64,
-                                static_cast<int64_t>(PG_GETARG_INT32(7))),
-                            core::AuxValue::Of(
-                                core::AuxType::Int64,
-                                static_cast<int64_t>(PG_GETARG_INT32(8))),
-                            core::AuxValue::Of(
-                                core::AuxType::Int64,
-                                static_cast<int64_t>(PG_GETARG_INT32(9)))}},
-      fcinfo);
+  // The SQL function is not STRICT: a NULL argument reaches the module as a
+  // NULL AuxValue (brand / pattern: the predicate is never true; a size item
+  // simply drops out of the IN list).
+  const auto text_arg = [&](int index) {
+    return PG_ARGISNULL(index)
+               ? core::AuxValue::Null(core::AuxType::String)
+               : core::AuxValue::Of(core::AuxType::String,
+                                    detail::TextDatum(PG_GETARG_DATUM(index)));
+  };
+  core::QueryArguments arguments;
+  arguments.values.push_back(text_arg(0));
+  arguments.values.push_back(text_arg(1));
+  for (int index = 2; index < 10; ++index)
+    arguments.values.push_back(
+        PG_ARGISNULL(index)
+            ? core::AuxValue::Null(core::AuxType::Int64)
+            : core::AuxValue::Of(core::AuxType::Int64,
+                                 static_cast<int64_t>(PG_GETARG_INT32(index))));
+  detail::Q16Runtime().Execute(arguments, fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{
