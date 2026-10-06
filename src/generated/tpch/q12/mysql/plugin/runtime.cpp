@@ -23,18 +23,26 @@ namespace scans {
 void ScanTpchQ12Orders(
     const std::function<void(const query::TpchQ12OrderInput &)> &consumer) {
   ScanTypedTuples(
-      "SELECT o_orderkey, o_orderpriority FROM orders",
+      "SELECT o_orderkey, o_orderpriority, "
+      "CASE WHEN o_orderpriority IS NULL THEN 1 ELSE 0 END "
+      "FROM orders WHERE o_orderkey IS NOT NULL",
       [&](const std::vector<std::string> &cols) {
         consumer({TypedInt(cols, 0),
-                  TypedText(cols, 1)});
+                  TypedText(cols, 1),
+                  TypedInt(cols, 2) != 0});
       });
 }
 
-void ScanTpchQ12Lineitems(
+// Lineitems that can contribute: non-NULL key / shipmode, commit < receipt,
+// ship < commit (NULL dates fail the comparisons).  `where` narrows further.
+void ScanTpchQ12QualifyingLineitems(
+    const std::string &where,
     const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
   ScanTypedTuples(
       "SELECT l_orderkey, l_shipmode, l_commitdate, l_receiptdate, l_shipdate "
-      "FROM lineitem",
+      "FROM lineitem WHERE l_orderkey IS NOT NULL AND l_shipmode IS NOT NULL "
+      "AND l_commitdate < l_receiptdate AND l_shipdate < l_commitdate" +
+          where,
       [&](const std::vector<std::string> &cols) {
         consumer({TypedInt(cols, 0),
                   TypedText(cols, 1),
@@ -42,6 +50,25 @@ void ScanTpchQ12Lineitems(
                   TypedDate(cols, 3),
                   TypedDate(cols, 4)});
       });
+}
+
+void ScanTpchQ12Lineitems(
+    const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
+  ScanTpchQ12QualifyingLineitems("", consumer);
+}
+
+// Index lookup of the qualifying lineitems of some orders.
+void LookupTpchQ12LineitemsByOrder(
+    const std::vector<int64_t> &orderkeys,
+    const std::function<void(const query::TpchQ12LineitemInput &)> &consumer) {
+  constexpr std::size_t kBatch = 4096;
+  for (std::size_t from = 0; from < orderkeys.size(); from += kBatch) {
+    const std::vector<int64_t> batch(
+        orderkeys.begin() + from,
+        orderkeys.begin() + std::min(orderkeys.size(), from + kBatch));
+    ScanTpchQ12QualifyingLineitems(
+        " AND " + KeyListPredicate("l_orderkey", batch), consumer);
+  }
 }
 
 } // namespace scans
@@ -57,6 +84,12 @@ public:
       const std::function<void(const query::TpchQ12LineitemInput &)> &consumer)
       override {
     scans::ScanTpchQ12Lineitems(consumer);
+  }
+  void LookupLineitemsByOrder(
+      const std::vector<int64_t> &orderkeys,
+      const std::function<void(const query::TpchQ12LineitemInput &)> &consumer)
+      override {
+    scans::LookupTpchQ12LineitemsByOrder(orderkeys, consumer);
   }
 };
 

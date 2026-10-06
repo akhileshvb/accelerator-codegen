@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -11,21 +10,50 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/dense_id_array.hpp"
+#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/core/wide_key_cow_array.hpp"
 #include "tpch/q12/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
+
+// ---------------------------------------------------------------------------
+// State layout (published as three images; a write batch copies directories /
+// shard pointers and clones only the chunks and shards it touches).
+//
+//   kOrderPriorities  priority class per orderkey: WideKeyCowArray<uint8_t>,
+//                     1 B per key slot (TPC-H keys are ~25% dense => ~4 B per
+//                     order: 0.6 GB at SF100, 6 GB at SF1000; the old
+//                     DenseIdArray + whole-array copy per write batch was the
+//                     same size but copied up to 268 MB per batch).
+//   kCells            per (receipt day, shipmode): lineitem counts joined with
+//                     an existing order, split high / low / total.  Only
+//                     qualifying lineitems (commit < receipt, ship < commit)
+//                     are counted: ~2.5K days x 7 modes = ~20K cells (~1 MB),
+//                     independent of SF.
+//   kSide             shipmode dictionary.
+// Execute reads 2 x 366 cells: O(1) in the data size.
+// ---------------------------------------------------------------------------
+struct TpchQ12Parts {
+  static constexpr core::PartitionId kOrderPriorities =
+      core::TpchQ12Layout::kOrderPriorities;
+  static constexpr core::PartitionId kCells = 1;
+  static constexpr core::PartitionId kSide = 2;
+};
 
 struct TpchQ12Config {
   core::TableId orders_table = 0;
   core::TableId lineitem_table = 0;
 };
 
+// An order with a NULL o_orderkey can never join and is not delivered.
 struct TpchQ12OrderInput {
   int64_t key = 0;
   std::string orderpriority;
+  bool priority_is_null = false;
 };
 
+// Only qualifying lineitems are delivered by the scans (non-NULL orderkey and
+// shipmode, commit < receipt, ship < commit); the module re-checks anyway.
 struct TpchQ12LineitemInput {
   int64_t orderkey = 0;
   std::string shipmode;
@@ -41,48 +69,64 @@ public:
       const std::function<void(const TpchQ12OrderInput &)> &) = 0;
   virtual void ScanLineitems(
       const std::function<void(const TpchQ12LineitemInput &)> &) = 0;
-  virtual void ScanLineitemsForReceiptDays(
-      const std::set<int32_t> &receipt_days,
+  // Qualifying lineitems of the given orders, as the database stands now
+  // (including this transaction's writes).  Backends override this with an
+  // index lookup; the default filters a full scan.
+  virtual void LookupLineitemsByOrder(
+      const std::vector<int64_t> &orderkeys,
       const std::function<void(const TpchQ12LineitemInput &)> &consumer) {
-    if (receipt_days.empty())
+    if (orderkeys.empty())
       return;
+    const std::set<int64_t> wanted(orderkeys.begin(), orderkeys.end());
     ScanLineitems([&](const TpchQ12LineitemInput &input) {
-      if (receipt_days.count(input.receiptdate_days))
+      if (wanted.count(input.orderkey))
         consumer(input);
     });
   }
 };
 
 enum class TpchQ12PriorityClass : uint8_t {
-  Absent = 0,
-  High = 1,
-  Low = 2,
-  Neither = 3,
+  Absent = 0,   // no order row for the key
+  High = 1,     // '1-URGENT' / '2-HIGH'
+  Low = 2,      // any other non-NULL priority
+  Neither = 3,  // NULL priority: joins, but is neither high nor low
 };
 
-struct TpchQ12DayShipmodeStats {
-  int64_t high_line_count = 0;
-  int64_t low_line_count = 0;
+struct TpchQ12Counts {
+  int64_t high = 0;
+  int64_t low = 0;
+  int64_t rows = 0;  // joined qualifying lineitems (also those counted in neither)
+
+  bool operator==(const TpchQ12Counts &o) const {
+    return high == o.high && low == o.low && rows == o.rows;
+  }
+  TpchQ12Counts &operator+=(const TpchQ12Counts &o) {
+    high += o.high;
+    low += o.low;
+    rows += o.rows;
+    return *this;
+  }
 };
 
 struct TpchQ12State {
-  core::DenseIdArray<uint8_t> order_priorities;
-  std::map<int32_t, std::unordered_map<std::string, TpchQ12DayShipmodeStats>>
-      day_partitions;
+  core::WideKeyCowArray<uint8_t, 16> order_class;
+  // key = receipt_day * 2^24 + shipmode id.
+  core::ShardedCowHashMap<TpchQ12Counts, 6> cells;
+  std::vector<std::string> shipmodes;
+  std::unordered_map<std::string, uint32_t> shipmode_ids;
 
   TpchQ12PriorityClass PriorityOf(int64_t orderkey) const {
-    return static_cast<TpchQ12PriorityClass>(order_priorities.Get(orderkey));
+    return static_cast<TpchQ12PriorityClass>(order_class.Get(orderkey));
   }
   void SetPriority(int64_t orderkey, TpchQ12PriorityClass priority) {
-    order_priorities.Set(orderkey, static_cast<uint8_t>(priority));
+    order_class.Set(orderkey, static_cast<uint8_t>(priority));
   }
 };
 
-enum class TpchQ12ImageKind : uint8_t { OrderPriorities, Day };
+enum class TpchQ12ImageKind : uint8_t { OrderPriorities, Cells, Side };
 
 struct TpchQ12StateImage {
   TpchQ12ImageKind kind = TpchQ12ImageKind::OrderPriorities;
-  int32_t receipt_day = 0;
   std::shared_ptr<const TpchQ12State> state;
 };
 
@@ -90,7 +134,6 @@ struct TpchQ12LineitemDelta {
   int64_t orderkey = 0;
   int32_t receipt_day = 0;
   std::string shipmode;
-  TpchQ12PriorityClass priority = TpchQ12PriorityClass::Absent;
   int8_t sign = 0;
 };
 
@@ -100,23 +143,20 @@ struct TpchQ12OrderDelta {
   int8_t sign = 0; // +1 insert, -1 delete
 };
 
-std::vector<uint8_t> EncodeTpchQ12OrderPriorities(const TpchQ12State &);
-std::vector<uint8_t> EncodeTpchQ12Day(int32_t receipt_day, const TpchQ12State &);
-bool DecodeTpchQ12OrderPriorities(const std::vector<uint8_t> &, TpchQ12State &);
-bool DecodeTpchQ12Day(const std::vector<uint8_t> &, int32_t receipt_day,
-                      TpchQ12State &);
-bool FindTpchQ12OrderPriority(const std::vector<uint8_t> &, int64_t orderkey,
-                              TpchQ12PriorityClass &);
-
-TpchQ12PriorityClass TpchQ12ClassifyPriority(const std::string &priority);
+TpchQ12PriorityClass TpchQ12ClassifyPriority(const std::string &priority,
+                                             bool is_null = false);
 bool TpchQ12LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days,
                               int32_t shipdate_days);
 int32_t TpchQ12DaysFromYmd(int32_t year, unsigned month, unsigned day);
-int32_t TpchQ12AddMonths(int32_t days_since_epoch, int32_t months);
+int64_t TpchQ12AddMonths(int64_t days_since_epoch, int64_t months);
 
-void TpchQ12FinalizeAndEmit(const TpchQ12State &state, int32_t start_days,
-                            int32_t end_days, const std::string &shipmode1,
-                            const std::string &shipmode2, core::AuxRowSink &sink);
+// One result group: a shipmode with at least one joined qualifying lineitem.
+struct TpchQ12Group {
+  std::string shipmode;
+  TpchQ12Counts counts;
+};
+void TpchQ12FinalizeAndEmit(std::vector<TpchQ12Group> groups,
+                            core::AuxRowSink &sink);
 
 class TpchQ12TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -167,11 +207,9 @@ public:
 
 private:
   TpchQ12State BuildState(core::AuxEngineServices &) const;
-  bool LoadState(core::AuxEngineServices &, TpchQ12State &, int32_t start_days,
-                 int32_t end_days) const;
-  void EmitResult(const TpchQ12State &, int32_t start_days, int32_t end_days,
-                  const std::string &shipmode1, const std::string &shipmode2,
-                  core::AuxRowSink &) const;
+  // Groups for shipmode IN (mode1, mode2) and receipt day in [start, end).
+  static std::vector<TpchQ12Group>
+  Answer(const TpchQ12State &cells_and_side, const core::QueryArguments &);
 
   TpchQ12Config config;
   TpchQ12InitialScan *initial_scan = nullptr;

@@ -3,50 +3,42 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
-#include <unordered_map>
 #include <vector>
+
+#include "accelerator_codegen/stateful/core/pg_numeric.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
-void TpchQ5FinalizeAndEmit(
-    const std::unordered_map<int32_t, std::string> &nation_name,
-    const std::unordered_map<int32_t, int32_t> &nation_region,
-    int32_t target_regionkey,
-    const std::unordered_map<int32_t, int64_t> &revenue_by_nation,
-    core::AuxRowSink &sink) {
-  sink.Begin({{{"n_name", core::AuxType::String, false},
+void TpchQ5FinalizeAndEmit(std::vector<TpchQ5Group> groups,
+                           core::AuxRowSink &sink) {
+  sink.Begin({{{"n_name", core::AuxType::String, true},
                {"revenue", core::AuxType::ScaledDecimal, false}}});
 
-  std::vector<std::pair<std::string, int64_t>> rows;
-  for (const auto &[nationkey, revenue] : revenue_by_nation) {
-    if (revenue == 0)
-      continue;
-    auto region_it = nation_region.find(nationkey);
-    if (region_it == nation_region.end() ||
-        region_it->second != target_regionkey)
-      continue;
-    auto name_it = nation_name.find(nationkey);
-    if (name_it == nation_name.end())
-      continue;
-    rows.emplace_back(name_it->second, revenue);
-  }
-
-  // Base Q5 sorts by revenue descending, tie-break not specified in the
-  // kernel (stable order depends on nationkey iteration). Use revenue
-  // descending then name ascending for deterministic, SQL-compatible output.
-  std::sort(rows.begin(), rows.end(),
-            [](const std::pair<std::string, int64_t> &a,
-               const std::pair<std::string, int64_t> &b) {
-              if (a.second != b.second)
-                return a.second > b.second;
-              return a.first < b.first;
+  // ORDER BY revenue DESC; ties are unspecified in SQL, so use name ascending
+  // (NULL name last) for deterministic output.
+  std::sort(groups.begin(), groups.end(),
+            [](const TpchQ5Group &a, const TpchQ5Group &b) {
+              if (a.revenue != b.revenue)
+                return a.revenue > b.revenue;
+              if (a.name_is_null != b.name_is_null)
+                return b.name_is_null;
+              return a.name < b.name;
             });
 
-  for (const auto &row : rows) {
+  for (const auto &group : groups) {
+    // Revenue is exact at scale 4; it is emitted as a scaled integer when it
+    // fits in 64 bits and as exact decimal text otherwise.
+    const bool fits = group.revenue >= INT64_MIN && group.revenue <= INT64_MAX;
     sink.WriteRow(
-        {{core::AuxValue::Of(core::AuxType::String, row.first),
-          core::AuxValue::Of(core::AuxType::ScaledDecimal,
-                             core::ScaledDecimal{row.second, 4})}});
+        {{group.name_is_null
+              ? core::AuxValue::Null(core::AuxType::String)
+              : core::AuxValue::Of(core::AuxType::String, group.name),
+          fits ? core::AuxValue::Of(
+                     core::AuxType::ScaledDecimal,
+                     core::ScaledDecimal{static_cast<int64_t>(group.revenue), 4})
+               : core::AuxValue::Of(
+                     core::AuxType::String,
+                     pg_numeric::ToText(group.revenue, 4))}});
   }
   sink.End();
 }
