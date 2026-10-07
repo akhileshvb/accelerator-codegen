@@ -10,3 +10,4 @@ pub mod rat;
 pub mod order;
 pub mod rel;
 pub mod sqlfns;
+pub mod perm;

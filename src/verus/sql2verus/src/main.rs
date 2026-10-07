@@ -564,6 +564,8 @@ fn table_row(t: &str) -> String {
     format!("{}Row", camel(&sanitize(t)))
 }
 
+mod perm;
+
 // ── relations, binders, frames ────────────────────────────────────────────
 #[derive(Clone, Debug)]
 struct RelInfo {
@@ -698,6 +700,7 @@ struct Tr<'a> {
     counters: HashMap<&'static str, usize>,
     notes: BTreeSet<String>,
     pfx: String, // prefix of subquery helper names (obligations)
+    perm: perm::Perm,
 }
 
 impl<'a> Tr<'a> {
@@ -1770,6 +1773,7 @@ impl<'a> Tr<'a> {
         writeln!(w, "        {} && {name}_where({})", ranges.join(" && "), args.join(", ")).unwrap();
         writeln!(w, "}}\n").unwrap();
         self.items.push(w);
+        self.perm_exists(&name, &f.outer, &bs, wdb, up, &conds);
         let pa = if up { ", params" } else { "" };
         Ok(format!("{name}(db{pa}{})", self.sub_args(&f.outer, ctx)))
     }
@@ -1799,6 +1803,7 @@ impl<'a> Tr<'a> {
         writeln!(w, "        0 <= i < {rows}.len() && {}", cmp.code).unwrap();
         writeln!(w, "}}\n").unwrap();
         self.items.push(w);
+        self.perm_in(&name, &b, verus_ty(x.ty), &cmp.code);
         self.frame().uses_params = true;
         Ok(format!("{name}(db, params{}, {})", self.sub_args(&b.outer, ctx), x.code))
     }
@@ -1808,6 +1813,7 @@ impl<'a> Tr<'a> {
         if x.ty == Ty::Rat || x.approx.is_some() {
             bail!("ALL / ANY with a fractional / computed-float value");
         }
+        self.perm.unsupported("ALL / ANY subquery");
         let k = self.fresh("quant");
         let name = format!("{}quant_{k}", self.pfx);
         let b = self.sub_block(&sq.subquery, format!("{name}_"))?;
@@ -1861,6 +1867,11 @@ impl<'a> Tr<'a> {
         writeln!(w, "    {name}_row_of(db, params{}).{}", b.outer_args(), col.field).unwrap();
         writeln!(w, "}}\n").unwrap();
         self.items.push(w);
+        {
+            let outer: perm::Args = b.outer.iter().map(|x| (x.var.clone(), x.vty())).collect();
+            let call = format!("{name}_value(db, params{})", b.outer_args());
+            self.perm.lemma(&format!("{name}_value"), "", &outer, perm::Kind::Eq, &call, &format!("{name}_row_of("), "");
+        }
         let ty = col.val.ty;
         let (code, den, guard) = match (col.nullable, ty == Ty::Rat) {
             (true, true) => (format!("{call}->0.num"), Some(format!("{call}->0.den")), Some(format!("{call} is Some"))),
@@ -1869,6 +1880,71 @@ impl<'a> Tr<'a> {
             (false, false) => (call.clone(), None, None),
         };
         Ok(Val { den, guard, char_col: col.val.char_col, ..Val::atom(code, ty) })
+    }
+
+    /// Permutation lemma for EXISTS over one FROM item.
+    fn perm_exists(&mut self, name: &str, outer: &[Binder], bs: &[Binder], wdb: bool, up: bool, conds: &[String]) {
+        if bs.len() != 1 {
+            self.perm.unsupported("EXISTS over a join of several FROM items");
+            return;
+        }
+        let o: perm::Args = outer.iter().map(|b| (b.var.clone(), b.vty())).collect();
+        let ov = perm::vals(&o);
+        let b0 = &bs[0];
+        let r = b0.row();
+        let s1 = b0.seq();
+        let s2 = perm::to_db2(&s1);
+        let sep = |db: &str| -> String {
+            let mut v = vec![];
+            if wdb {
+                v.push(db.to_string());
+            }
+            if up {
+                v.push("params".to_string());
+            }
+            if v.is_empty() { String::new() } else { format!("{}, ", v.join(", ")) }
+        };
+        let wh = |db: &str, x: &str| format!("{name}_where({}{}{x})", sep(db), o.iter().map(|(n, _)| format!("{n}, ")).collect::<String>());
+        let ex = |db: &str| format!("{name}({db}{}{ov})", if up { ", params" } else { "" });
+        if wdb {
+            let mut a = o.clone();
+            a.push((b0.var.clone(), r.clone()));
+            let call = wh("db", &b0.var);
+            self.perm.lemma(&format!("{name}_where"), "", &a, perm::Kind::Eq, &call, &conds.join(" "), "");
+        }
+        let (ex1, ex2) = (ex("db"), ex("db2"));
+        let mut body = String::new();
+        use std::fmt::Write;
+        writeln!(body, "        if {ex1} {{").unwrap();
+        writeln!(body, "            let i = choose|i: int| 0 <= i < {s1}.len() && {};", wh("db", &format!("{s1}[i]"))).unwrap();
+        writeln!(body, "            assert({s1}.contains({s1}[i]));\n            lemma_bag_eq_contains({s1}, {s2}, {s1}[i]);").unwrap();
+        writeln!(body, "            let j = choose|j: int| 0 <= j < {s2}.len() && {s2}[j] == {s1}[i];").unwrap();
+        writeln!(body, "            assert(0 <= j < {s2}.len() && {});\n            assert({ex2});\n        }}", wh("db2", &format!("{s2}[j]"))).unwrap();
+        let rev = perm::swap(&body);
+        body.push_str(&rev);
+        self.perm.lemma(name, "", &o, perm::Kind::Eq, &ex1, &format!("{name}_where( {s1}"), &body);
+    }
+
+    /// Permutation lemma for x IN (subquery).
+    fn perm_in(&mut self, name: &str, b: &Block, xty: &str, cmp: &str) {
+        let mut a: perm::Args = b.outer.iter().map(|x| (x.var.clone(), x.vty())).collect();
+        a.push(("x".into(), xty.to_string()));
+        let oa = b.outer_args();
+        let r1 = format!("{name}_rows(db, params{oa})");
+        let r2 = perm::to_db2(&r1);
+        let c1 = cmp.to_string();
+        let c2 = perm::to_db2(cmp).replace("[i]", "[j]");
+        let call = format!("{name}(db, params{oa}, x)");
+        let mut body = String::new();
+        use std::fmt::Write;
+        writeln!(body, "        if {call} {{").unwrap();
+        writeln!(body, "            let i = choose|i: int| 0 <= i < {r1}.len() && {c1};").unwrap();
+        writeln!(body, "            assert({r1}.contains({r1}[i]));\n            lemma_bag_eq_contains({r1}, {r2}, {r1}[i]);").unwrap();
+        writeln!(body, "            let j = choose|j: int| 0 <= j < {r2}.len() && {r2}[j] == {r1}[i];").unwrap();
+        writeln!(body, "            assert(0 <= j < {r2}.len() && {c2});\n            assert({});\n        }}", perm::to_db2(&call)).unwrap();
+        let rev = perm::swap(&body);
+        body.push_str(&rev);
+        self.perm.lemma(name, "", &a, perm::Kind::Eq, &call, &format!("{name}_rows( {cmp}"), &body);
     }
 
     /// A derived table (FROM (SELECT ...) AS alias, or a CTE): its rows.
@@ -1899,6 +1975,7 @@ impl<'a> Tr<'a> {
         writeln!(w, "/// The rows of derived table {alias} (a bag).").unwrap();
         writeln!(w, "pub open spec fn {}(db: Db, params: Params) -> Seq<{}> {{\n    {base}_rows(db, params)\n}}\n", info.func, info.row).unwrap();
         self.items.push(w);
+        self.perm.lemma(&info.func, "", &vec![], perm::Kind::Bag, &format!("{}(db, params)", info.func), &format!("{base}_rows("), "");
         self.rels.insert(key, info.clone());
         Ok(info)
     }
@@ -2040,6 +2117,11 @@ impl<'a> Tr<'a> {
                             verus_ty(v.ty),
                             v.code
                         ));
+                        {
+                            let mut a: perm::Args = outer0.iter().map(|b| (b.var.clone(), b.vty())).collect();
+                            a.push(("t".into(), tuple.clone()));
+                            self.perm.lemma(&kf, "", &a, perm::Kind::Eq, &format!("{kf}(db, params{outer_args}, t)"), &v.code, "");
+                        }
                         Val { code: format!("{kf}(db, params{outer_args}, t)"), ..v }
                     };
                     keys.push((gname, v));
@@ -2156,6 +2238,7 @@ impl<'a> Tr<'a> {
     }
 
     fn emit_block(&mut self, b: &Block, where_: &[String], top: bool) {
+        self.perm.block(b, where_, top);
         if let Some(body) = &b.union_rows {
             let p = &b.prefix;
             let row = if top { "OutRow".to_string() } else { format!("{}Row", camel(p.trim_end_matches('_'))) };
@@ -2617,7 +2700,7 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
     }
     writeln!(w, "#![allow(unused_imports)]").unwrap();
     writeln!(w, "use vstd::prelude::*;").unwrap();
-    for m in ["bytes", "order", "rat", "rel", "sqlfns", "sums"] {
+    for m in ["bytes", "order", "perm", "rat", "rel", "sqlfns", "sums"] {
         writeln!(w, "use verus_common::{m}::*;").unwrap();
     }
     writeln!(w, "\nverus! {{\n").unwrap();
@@ -2786,6 +2869,8 @@ fn print(tr: &Tr, top: &Top, sql: &str, src_name: &str) -> String {
         writeln!(w, "}}\n").unwrap();
     }
     print_facts(w, top, approx, &defined);
+    let tables: Vec<String> = tr.used.keys().map(|t| table_field(t)).collect();
+    tr.perm.print(w, &tables, top, &defined);
     writeln!(w, "}} // verus!").unwrap();
     o
 }
@@ -3173,6 +3258,7 @@ async fn run() -> Res<()> {
         counters: HashMap::new(),
         notes: BTreeSet::new(),
         pfx: String::new(),
+        perm: perm::Perm::default(),
     };
     let top = translate(&mut tr, &plan)?;
     let src_name = std::path::Path::new(&query_path).file_name().unwrap().to_string_lossy().to_string();

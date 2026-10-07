@@ -28,6 +28,7 @@
 use vstd::prelude::*;
 use verus_common::bytes::*;
 use verus_common::order::*;
+use verus_common::perm::*;
 use verus_common::rat::*;
 use verus_common::rel::*;
 use verus_common::sqlfns::*;
@@ -529,6 +530,718 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
     lemma_answer_ok(db, params);
     if query_result(db, params, out) {
         lemma_full_result_unique(db, params, out);
+    }
+}
+
+// ── Permutation invariance (verified by Verus, not trusted) ──────────────────
+// A table is a bag: the answers do not depend on the order of any table's rows.
+
+/// db2 holds the same bag of rows as db in every table.
+pub open spec fn db_perm(db: Db, db2: Db) -> bool {
+    &&& bag_eq(db.customer, db2.customer)
+    &&& bag_eq(db.lineitem, db2.lineitem)
+    &&& bag_eq(db.nation, db2.nation)
+    &&& bag_eq(db.orders, db2.orders)
+    &&& bag_eq(db.supplier, db2.supplier)
+}
+
+proof fn lemma_perm_shipping_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow, lineitem: LineitemRow, orders: OrdersRow, customer: CustomerRow, n1: NationRow, n2: NationRow| #[trigger] shipping_where_clause(db, params, supplier, lineitem, orders, customer, n1, n2) == shipping_where_clause(db2, params, supplier, lineitem, orders, customer, n1, n2),
+{
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    assert forall|supplier: SupplierRow, lineitem: LineitemRow, orders: OrdersRow, customer: CustomerRow, n1: NationRow, n2: NationRow| #[trigger] shipping_where_clause(db, params, supplier, lineitem, orders, customer, n1, n2) == shipping_where_clause(db2, params, supplier, lineitem, orders, customer, n1, n2) by {
+    }
+}
+
+proof fn lemma_perm_shipping_tuples_6(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow, lineitem: LineitemRow, orders: OrdersRow, customer: CustomerRow, n1: NationRow, n2: NationRow| #[trigger] bag_eq(shipping_tuples_6(db, params, supplier, lineitem, orders, customer, n1, n2), shipping_tuples_6(db2, params, supplier, lineitem, orders, customer, n1, n2)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_shipping_where_clause(db, db2, params);
+    assert forall|supplier: SupplierRow, lineitem: LineitemRow, orders: OrdersRow, customer: CustomerRow, n1: NationRow, n2: NationRow| #[trigger] bag_eq(shipping_tuples_6(db, params, supplier, lineitem, orders, customer, n1, n2), shipping_tuples_6(db2, params, supplier, lineitem, orders, customer, n1, n2)) by {
+        assert(shipping_tuples_6(db, params, supplier, lineitem, orders, customer, n1, n2) == shipping_tuples_6(db2, params, supplier, lineitem, orders, customer, n1, n2));
+    }
+}
+
+proof fn lemma_perm_shipping_tuples_5(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow, lineitem: LineitemRow, orders: OrdersRow, customer: CustomerRow, n1: NationRow| #[trigger] bag_eq(shipping_tuples_5(db, params, supplier, lineitem, orders, customer, n1), shipping_tuples_5(db2, params, supplier, lineitem, orders, customer, n1)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_shipping_tuples_6(db, db2, params);
+    assert forall|supplier: SupplierRow, lineitem: LineitemRow, orders: OrdersRow, customer: CustomerRow, n1: NationRow| #[trigger] bag_eq(shipping_tuples_5(db, params, supplier, lineitem, orders, customer, n1), shipping_tuples_5(db2, params, supplier, lineitem, orders, customer, n1)) by {
+        let g1 = |n2: NationRow| shipping_tuples_6(db, params, supplier, lineitem, orders, customer, n1, n2);
+        let g2 = |n2: NationRow| shipping_tuples_6(db2, params, supplier, lineitem, orders, customer, n1, n2);
+        assert forall|a: NationRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.nation, db2.nation, g1, g2);
+    }
+}
+
+proof fn lemma_perm_shipping_tuples_4(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow, lineitem: LineitemRow, orders: OrdersRow, customer: CustomerRow| #[trigger] bag_eq(shipping_tuples_4(db, params, supplier, lineitem, orders, customer), shipping_tuples_4(db2, params, supplier, lineitem, orders, customer)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_shipping_tuples_5(db, db2, params);
+    assert forall|supplier: SupplierRow, lineitem: LineitemRow, orders: OrdersRow, customer: CustomerRow| #[trigger] bag_eq(shipping_tuples_4(db, params, supplier, lineitem, orders, customer), shipping_tuples_4(db2, params, supplier, lineitem, orders, customer)) by {
+        let g1 = |n1: NationRow| shipping_tuples_5(db, params, supplier, lineitem, orders, customer, n1);
+        let g2 = |n1: NationRow| shipping_tuples_5(db2, params, supplier, lineitem, orders, customer, n1);
+        assert forall|a: NationRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.nation, db2.nation, g1, g2);
+    }
+}
+
+proof fn lemma_perm_shipping_tuples_3(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow, lineitem: LineitemRow, orders: OrdersRow| #[trigger] bag_eq(shipping_tuples_3(db, params, supplier, lineitem, orders), shipping_tuples_3(db2, params, supplier, lineitem, orders)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_shipping_tuples_4(db, db2, params);
+    assert forall|supplier: SupplierRow, lineitem: LineitemRow, orders: OrdersRow| #[trigger] bag_eq(shipping_tuples_3(db, params, supplier, lineitem, orders), shipping_tuples_3(db2, params, supplier, lineitem, orders)) by {
+        let g1 = |customer: CustomerRow| shipping_tuples_4(db, params, supplier, lineitem, orders, customer);
+        let g2 = |customer: CustomerRow| shipping_tuples_4(db2, params, supplier, lineitem, orders, customer);
+        assert forall|a: CustomerRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.customer, db2.customer, g1, g2);
+    }
+}
+
+proof fn lemma_perm_shipping_tuples_2(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow, lineitem: LineitemRow| #[trigger] bag_eq(shipping_tuples_2(db, params, supplier, lineitem), shipping_tuples_2(db2, params, supplier, lineitem)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_shipping_tuples_3(db, db2, params);
+    assert forall|supplier: SupplierRow, lineitem: LineitemRow| #[trigger] bag_eq(shipping_tuples_2(db, params, supplier, lineitem), shipping_tuples_2(db2, params, supplier, lineitem)) by {
+        let g1 = |orders: OrdersRow| shipping_tuples_3(db, params, supplier, lineitem, orders);
+        let g2 = |orders: OrdersRow| shipping_tuples_3(db2, params, supplier, lineitem, orders);
+        assert forall|a: OrdersRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.orders, db2.orders, g1, g2);
+    }
+}
+
+proof fn lemma_perm_shipping_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow| #[trigger] bag_eq(shipping_tuples_1(db, params, supplier), shipping_tuples_1(db2, params, supplier)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_shipping_tuples_2(db, db2, params);
+    assert forall|supplier: SupplierRow| #[trigger] bag_eq(shipping_tuples_1(db, params, supplier), shipping_tuples_1(db2, params, supplier)) by {
+        let g1 = |lineitem: LineitemRow| shipping_tuples_2(db, params, supplier, lineitem);
+        let g2 = |lineitem: LineitemRow| shipping_tuples_2(db2, params, supplier, lineitem);
+        assert forall|a: LineitemRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.lineitem, db2.lineitem, g1, g2);
+    }
+}
+
+proof fn lemma_perm_shipping_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(shipping_tuples(db, params), shipping_tuples(db2, params)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_shipping_tuples_1(db, db2, params);
+        let g1 = |supplier: SupplierRow| shipping_tuples_1(db, params, supplier);
+        let g2 = |supplier: SupplierRow| shipping_tuples_1(db2, params, supplier);
+        assert forall|a: SupplierRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.supplier, db2.supplier, g1, g2);
+}
+
+proof fn lemma_perm_shipping_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(shipping_rows(db, params), shipping_rows(db2, params)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_shipping_tuples(db, db2, params);
+        assert(bag_eq(shipping_tuples(db, params), shipping_tuples(db2, params)));
+        let f1 = |t: ShippingTuple| ShippingRow { supp_nation: t.n1.n_name, cust_nation: t.n2.n_name, l_year: civil_year(t.lineitem.l_shipdate), volume: t.lineitem.l_extendedprice * (100 - t.lineitem.l_discount) };
+        let f2 = |t: ShippingTuple| ShippingRow { supp_nation: t.n1.n_name, cust_nation: t.n2.n_name, l_year: civil_year(t.lineitem.l_shipdate), volume: t.lineitem.l_extendedprice * (100 - t.lineitem.l_discount) };
+        assert forall|a: ShippingTuple| #[trigger] f1(a) == f2(a) by {}
+        lemma_bag_eq_map(shipping_tuples(db, params), shipping_tuples(db2, params), f1, f2);
+}
+
+proof fn lemma_perm_rel_shipping(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(rel_shipping(db, params), rel_shipping(db2, params)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_shipping_rows(db, db2, params);
+}
+
+proof fn lemma_perm_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|shipping: ShippingRow| #[trigger] where_clause(db, params, shipping) == where_clause(db2, params, shipping),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    assert forall|shipping: ShippingRow| #[trigger] where_clause(db, params, shipping) == where_clause(db2, params, shipping) by {
+    }
+}
+
+proof fn lemma_perm_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|shipping: ShippingRow| #[trigger] bag_eq(tuples_1(db, params, shipping), tuples_1(db2, params, shipping)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_where_clause(db, db2, params);
+    assert forall|shipping: ShippingRow| #[trigger] bag_eq(tuples_1(db, params, shipping), tuples_1(db2, params, shipping)) by {
+        assert(tuples_1(db, params, shipping) == tuples_1(db2, params, shipping));
+    }
+}
+
+proof fn lemma_perm_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(tuples(db, params), tuples(db2, params)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_rel_shipping(db, db2, params);
+    lemma_perm_tuples_1(db, db2, params);
+        let g1 = |shipping: ShippingRow| tuples_1(db, params, shipping);
+        let g2 = |shipping: ShippingRow| tuples_1(db2, params, shipping);
+        assert forall|a: ShippingRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(rel_shipping(db, params), rel_shipping(db2, params), g1, g2);
+}
+
+proof fn lemma_perm_group_sum(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_supp_nation: Seq<u8>, g_cust_nation: Seq<u8>, g_l_year: int, f: spec_fn(Tuple) -> int| #[trigger] group_sum(db, params, g_supp_nation, g_cust_nation, g_l_year, f) == group_sum(db2, params, g_supp_nation, g_cust_nation, g_l_year, f),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples(db, db2, params);
+    assert forall|g_supp_nation: Seq<u8>, g_cust_nation: Seq<u8>, g_l_year: int, f: spec_fn(Tuple) -> int| #[trigger] group_sum(db, params, g_supp_nation, g_cust_nation, g_l_year, f) == group_sum(db2, params, g_supp_nation, g_cust_nation, g_l_year, f) by {
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        let c1 = |t: Tuple| if t.shipping.supp_nation == g_supp_nation && t.shipping.cust_nation == g_cust_nation && t.shipping.l_year == g_l_year { f(t) } else { 0 };
+        let c2 = |t: Tuple| if t.shipping.supp_nation == g_supp_nation && t.shipping.cust_nation == g_cust_nation && t.shipping.l_year == g_l_year { f(t) } else { 0 };
+        assert forall|a: Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(tuples(db, params), tuples(db2, params), c1);
+        lemma_sum_ext_all(tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_group_count(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_supp_nation: Seq<u8>, g_cust_nation: Seq<u8>, g_l_year: int| #[trigger] group_count(db, params, g_supp_nation, g_cust_nation, g_l_year) == group_count(db2, params, g_supp_nation, g_cust_nation, g_l_year),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples(db, db2, params);
+    assert forall|g_supp_nation: Seq<u8>, g_cust_nation: Seq<u8>, g_l_year: int| #[trigger] group_count(db, params, g_supp_nation, g_cust_nation, g_l_year) == group_count(db2, params, g_supp_nation, g_cust_nation, g_l_year) by {
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        let c1 = |t: Tuple| if t.shipping.supp_nation == g_supp_nation && t.shipping.cust_nation == g_cust_nation && t.shipping.l_year == g_l_year { 1int } else { 0 };
+        let c2 = |t: Tuple| if t.shipping.supp_nation == g_supp_nation && t.shipping.cust_nation == g_cust_nation && t.shipping.l_year == g_l_year { 1int } else { 0 };
+        assert forall|a: Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(tuples(db, params), tuples(db2, params), c1);
+        lemma_sum_ext_all(tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_row_of(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_supp_nation: Seq<u8>, g_cust_nation: Seq<u8>, g_l_year: int| #[trigger] row_of(db, params, g_supp_nation, g_cust_nation, g_l_year) == row_of(db2, params, g_supp_nation, g_cust_nation, g_l_year),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_group_sum(db, db2, params);
+    assert forall|g_supp_nation: Seq<u8>, g_cust_nation: Seq<u8>, g_l_year: int| #[trigger] row_of(db, params, g_supp_nation, g_cust_nation, g_l_year) == row_of(db2, params, g_supp_nation, g_cust_nation, g_l_year) by {
+    }
+}
+
+proof fn lemma_perm_having(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_supp_nation: Seq<u8>, g_cust_nation: Seq<u8>, g_l_year: int| #[trigger] having(db, params, g_supp_nation, g_cust_nation, g_l_year) == having(db2, params, g_supp_nation, g_cust_nation, g_l_year),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(rows);
+    hide(row_ok);
+
+    assert forall|g_supp_nation: Seq<u8>, g_cust_nation: Seq<u8>, g_l_year: int| #[trigger] having(db, params, g_supp_nation, g_cust_nation, g_l_year) == having(db2, params, g_supp_nation, g_cust_nation, g_l_year) by {
+    }
+}
+
+proof fn lemma_perm_rows_keys(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(dedup(map_where(tuples(db, params), |t: Tuple| having(db, params, t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year), |t: Tuple| (t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year))), dedup(map_where(tuples(db2, params), |t: Tuple| having(db2, params, t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year), |t: Tuple| (t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year)))),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_tuples(db, db2, params);
+    lemma_perm_having(db, db2, params);
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        let keep1 = |t: Tuple| having(db, params, t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year);
+        let keep2 = |t: Tuple| having(db2, params, t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year);
+        let kf1 = |t: Tuple| (t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year);
+        let kf2 = |t: Tuple| (t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year);
+        assert forall|a: Tuple| #[trigger] keep1(a) == keep2(a) by {}
+        assert forall|a: Tuple| #[trigger] kf1(a) == kf2(a) by {}
+        lemma_bag_eq_map_where(tuples(db, params), tuples(db2, params), keep1, keep2, kf1, kf2);
+        lemma_bag_eq_dedup(map_where(tuples(db, params), keep1, kf1), map_where(tuples(db2, params), keep2, kf2));
+}
+
+proof fn lemma_perm_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(rows(db, params), rows(db2, params)),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(row_ok);
+    lemma_perm_row_of(db, db2, params);
+    lemma_perm_rows_keys(db, db2, params);
+        let rf1 = |k: (Seq<u8>, Seq<u8>, int)| row_of(db, params, k.0, k.1, k.2);
+        let rf2 = |k: (Seq<u8>, Seq<u8>, int)| row_of(db2, params, k.0, k.1, k.2);
+        assert forall|k: (Seq<u8>, Seq<u8>, int)| #[trigger] rf1(k) == rf2(k) by {}
+        assert(bag_eq(dedup(map_where(tuples(db, params), |t: Tuple| having(db, params, t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year), |t: Tuple| (t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year))), dedup(map_where(tuples(db2, params), |t: Tuple| having(db2, params, t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year), |t: Tuple| (t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year)))));
+        lemma_bag_eq_map(dedup(map_where(tuples(db, params), |t: Tuple| having(db, params, t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year), |t: Tuple| (t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year))), dedup(map_where(tuples(db2, params), |t: Tuple| having(db2, params, t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year), |t: Tuple| (t.shipping.supp_nation, t.shipping.cust_nation, t.shipping.l_year))), rf1, rf2);
+}
+
+proof fn lemma_perm_row_ok(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|r: OutRow| #[trigger] row_ok(db, params, r) == row_ok(db2, params, r),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+
+    lemma_perm_group_sum(db, db2, params);
+    lemma_perm_group_count(db, db2, params);
+    lemma_perm_having(db, db2, params);
+    assert forall|r: OutRow| #[trigger] row_ok(db, params, r) == row_ok(db2, params, r) by {
+    }
+}
+
+proof fn lemma_full_result_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+        full_result(db, params, out),
+    ensures
+        full_result(db2, params, out),
+{
+    hide(shipping_where_clause);
+    hide(shipping_tuples_6);
+    hide(shipping_tuples_5);
+    hide(shipping_tuples_4);
+    hide(shipping_tuples_3);
+    hide(shipping_tuples_2);
+    hide(shipping_tuples_1);
+    hide(shipping_tuples);
+    hide(shipping_rows);
+    hide(rel_shipping);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_group_count(db, db2, params);
+    lemma_perm_having(db, db2, params);
+    lemma_perm_row_ok(db, db2, params);
+    assert forall|i: int| 0 <= i < out.len() implies row_ok(db2, params, #[trigger] out[i]) by {
+        assert(row_ok(db, params, out[i]) == row_ok(db2, params, out[i]));
+    }
+    assert forall|g_supp_nation: Seq<u8>, g_cust_nation: Seq<u8>, g_l_year: int| #[trigger] group_count(db2, params, g_supp_nation, g_cust_nation, g_l_year) > 0 && having(db2, params, g_supp_nation, g_cust_nation, g_l_year) implies exists|i: int| 0 <= i < out.len() && (#[trigger] out[i]).supp_nation == g_supp_nation && out[i].cust_nation == g_cust_nation && out[i].l_year == g_l_year by {
+        assert(group_count(db, params, g_supp_nation, g_cust_nation, g_l_year) == group_count(db2, params, g_supp_nation, g_cust_nation, g_l_year));
+        assert(having(db, params, g_supp_nation, g_cust_nation, g_l_year) == having(db2, params, g_supp_nation, g_cust_nation, g_l_year));
+    }
+}
+
+/// The query accepts the same answers for any reordering of the tables.
+pub proof fn lemma_query_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+    ensures
+        query_result(db, params, out) <==> query_result(db2, params, out),
+{
+    assert(db_perm(db2, db));
+    if query_result(db, params, out) {
+        lemma_full_result_perm(db, db2, params, out);
+    }
+    if query_result(db2, params, out) {
+        lemma_full_result_perm(db2, db, params, out);
     }
 }
 

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <climits>
 #include <cstdint>
 #include <string_view>
 #include <functional>
@@ -195,12 +197,24 @@ struct TpchQ20Base {
     int32_t date = 0;
     int32_t qty = 0;
   };
-  struct PsEntry {
+  // One partsupp row in the nation-major pair index.
+  struct PairEntry {
+    uint32_t rank = 0; // the part's index in the sorted name arrays
+    int32_t suppkey = 0;
+    uint32_t series_idx = kNoSeries;
+    int32_t availqty = 0; // kWideAvail: the value is in avail_wide
+  };
+  // A partsupp row of a part with no base name (no part row at build time).
+  struct OrphanPair {
+    int64_t partkey = 0;
     int64_t availqty = 0;
     int32_t suppkey = 0;
     uint32_t series_idx = kNoSeries;
   };
   static constexpr uint32_t kNoSeries = 0xFFFFFFFFu;
+  static constexpr uint32_t kNoRank = 0xFFFFFFFFu;
+  static constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
+  static constexpr int32_t kWideAvail = INT32_MIN;
 
   // (partkey << 20 | suppkey) sorted; CSR over series_entries.
   std::vector<uint64_t> series_key;
@@ -209,17 +223,32 @@ struct TpchQ20Base {
   // Pairs whose quantities do not fit Entry::qty (idx -> entries).
   std::unordered_map<uint32_t, std::vector<TpchQ20DateQuantity>> series_wide;
 
-  // partsupp CSR by partkey (dense).
-  std::vector<uint32_t> ps_off; // max_partkey + 2
-  std::vector<PsEntry> ps;
+  // Partsupp pairs, nation-major: sorted by (slot of the supplier's nation,
+  // part-name rank, suppkey), CSR per slot.  A read walks one name-rank range
+  // per target nation, i.e. only pairs passing both the part-name and the
+  // nation filter, sequentially.  The last slot holds pairs whose supplier has
+  // no base row.  A part with several base names has its pairs once per name.
+  std::vector<PairEntry> pairs;
+  std::vector<uint32_t> slot_off; // slots + 1
+  std::unordered_map<int32_t, uint32_t> nation_slot; // base nationkey -> slot
+  std::unordered_map<uint64_t, int64_t> avail_wide;  // pair key -> availqty
+  std::vector<OrphanPair> orphan_pairs; // sorted by (partkey, suppkey)
 
   // part names sorted bytewise; parallel partkey array.
   std::string name_arena;
   std::vector<uint32_t> name_off; // n + 1
   std::vector<int64_t> name_partkey;
+  std::vector<uint32_t> part_rank; // dense by partkey: first rank, or kNoRank
+  std::unordered_map<int64_t, uint32_t> sparse_rank; // keys past part_rank
+  // Further ranks of partkeys with several base names (normally empty).
+  std::unordered_map<int64_t, std::vector<uint32_t>> extra_ranks;
 
-  // suppliers
-  std::unordered_map<int64_t, TpchQ20SupplierRecord> suppliers;
+  // suppliers: records sorted by (name, suppkey), so a supplier's index is
+  // its name rank and output in name order reads them in memory order.
+  std::vector<TpchQ20SupplierRecord> supplier_records;
+  std::vector<int64_t> supplier_keys; // parallel to supplier_records
+  std::vector<uint32_t> supp_rank;    // dense by suppkey: rank, or kNoRank
+  std::unordered_map<int64_t, uint32_t> sparse_supp_rank; // keys past supp_rank
   std::vector<int32_t> supp_nation; // dense by suppkey, -1 = absent
 
   // nations
@@ -233,6 +262,60 @@ struct TpchQ20Base {
   std::string_view PartName(std::size_t i) const {
     return std::string_view(name_arena.data() + name_off[i],
                             name_off[i + 1] - name_off[i]);
+  }
+  uint32_t RankOf(int64_t partkey) const {
+    if (partkey >= 0 && static_cast<std::size_t>(partkey) < part_rank.size())
+      return part_rank[static_cast<std::size_t>(partkey)];
+    if (sparse_rank.empty())
+      return kNoRank;
+    const auto it = sparse_rank.find(partkey);
+    return it == sparse_rank.end() ? kNoRank : it->second;
+  }
+  std::size_t SlotCount() const {
+    return slot_off.empty() ? 0 : slot_off.size() - 1;
+  }
+  uint32_t NoNationSlot() const {
+    return static_cast<uint32_t>(SlotCount()) - 1;
+  }
+  uint32_t SlotOfNation(int32_t nationkey) const {
+    const auto it = nation_slot.find(nationkey);
+    return it == nation_slot.end() ? kNoSlot : it->second;
+  }
+  // The supplier's nation in the base image (-1 when it has no base row).
+  int32_t BaseNation(int64_t suppkey) const;
+  uint32_t SupplierRank(int64_t suppkey) const {
+    if (suppkey >= 0 && static_cast<std::size_t>(suppkey) < supp_rank.size())
+      return supp_rank[static_cast<std::size_t>(suppkey)];
+    if (sparse_supp_rank.empty())
+      return kNoRank;
+    const auto it = sparse_supp_rank.find(suppkey);
+    return it == sparse_supp_rank.end() ? kNoRank : it->second;
+  }
+  const TpchQ20SupplierRecord *BaseSupplier(int64_t suppkey) const {
+    const uint32_t rank = SupplierRank(suppkey);
+    return rank == kNoRank ? nullptr : &supplier_records[rank];
+  }
+  // [begin, end) of the pairs of `slot` with rank in [rank_lo, rank_hi).
+  std::pair<std::size_t, std::size_t> RankRange(uint32_t slot, uint32_t rank_lo,
+                                                uint32_t rank_hi) const;
+  int64_t Avail(const PairEntry &e) const;
+  // Every base partsupp row of `partkey`, once: f(suppkey, availqty, series_idx).
+  template <typename F> void ForEachBasePair(int64_t partkey, F &&f) const {
+    const uint32_t rank = RankOf(partkey);
+    if (rank == kNoRank) {
+      auto it = std::lower_bound(
+          orphan_pairs.begin(), orphan_pairs.end(), partkey,
+          [](const OrphanPair &p, int64_t k) { return p.partkey < k; });
+      for (; it != orphan_pairs.end() && it->partkey == partkey; ++it)
+        f(static_cast<int64_t>(it->suppkey), it->availqty, it->series_idx);
+      return;
+    }
+    for (uint32_t slot = 0; slot < SlotCount(); ++slot) {
+      const auto [b, e] = RankRange(slot, rank, rank + 1);
+      for (std::size_t i = b; i < e; ++i)
+        f(static_cast<int64_t>(pairs[i].suppkey), Avail(pairs[i]),
+          pairs[i].series_idx);
+    }
   }
 };
 
@@ -271,6 +354,8 @@ struct TpchQ20State {
   // Effective-state helpers (overlay first, then base).
   int32_t SupplierNation(int64_t suppkey) const; // -1 when absent
   bool FindSupplier(int64_t suppkey, TpchQ20SupplierRecord &out) const;
+  // The effective record (overlay first), or nullptr; valid with the state.
+  const TpchQ20SupplierRecord *SupplierRecord(int64_t suppkey) const;
   // Window sum for a pair; returns whether any lineitem in the window.
   bool PairWindowSum(uint64_t pair_key, int32_t lo, int32_t hi,
                      int64_t &sum) const;

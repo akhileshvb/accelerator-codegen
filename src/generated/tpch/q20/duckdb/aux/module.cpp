@@ -21,7 +21,7 @@ using core::ByteReader;
 using core::ByteWriter;
 
 constexpr uint32_t kStateMagic = 0x51323053; // Q20S
-constexpr uint32_t kVersion = 2;
+constexpr uint32_t kVersion = 3;
 
 // Calendar helpers (proleptic Gregorian; days since 1970-01-01).
 int64_t DaysFromCivil(int64_t y, unsigned m, unsigned d) {
@@ -122,9 +122,19 @@ bool DateCell(const core::AuxRow &row, std::size_t index, int32_t &days) {
   return true;
 }
 
+// (partkey, suppkey) packed 32/32: exact (no collisions) for every key pair
+// PairKeyFits accepts -- TPC-H stays far inside it at any scale factor.
+inline bool PairKeyFits(int64_t partkey, int64_t suppkey) {
+  return partkey >= 0 && partkey <= INT64_C(0xFFFFFFFF) && suppkey >= 0 &&
+         suppkey <= std::numeric_limits<int32_t>::max();
+}
 inline uint64_t MakePairKey(int64_t partkey, int64_t suppkey) {
-  return (static_cast<uint64_t>(partkey) << 20) |
-         static_cast<uint64_t>(suppkey);
+  return (static_cast<uint64_t>(partkey) << 32) |
+         static_cast<uint64_t>(static_cast<uint32_t>(suppkey));
+}
+inline void RequirePairKey(int64_t partkey, int64_t suppkey) {
+  if (!PairKeyFits(partkey, suppkey))
+    throw std::runtime_error("TPC-H Q20 aux: (partkey, suppkey) out of range");
 }
 
 core::InvalidationPlan All() {
@@ -158,34 +168,31 @@ bool AvailQtyGreaterThanHalfSum(int64_t availqty, int64_t sum_qty_raw) {
 #endif
 }
 
+// SQL LIKE ('%': any run, '_': one byte), iterative: on a mismatch it
+// resumes after the last '%' one byte further on, so it is never exponential.
 bool SqlLikeAt(const char *text, std::size_t text_len, const char *pattern,
                std::size_t pattern_len, std::size_t text_pos,
                std::size_t pattern_pos) {
-  while (pattern_pos < pattern_len) {
-    const char ch = pattern[pattern_pos];
-    if (ch == '%') {
-      if (pattern_pos + 1 == pattern_len)
-        return true;
-      for (std::size_t start = text_pos; start <= text_len; ++start) {
-        if (SqlLikeAt(text, text_len, pattern, pattern_len, start,
-                      pattern_pos + 1))
-          return true;
-      }
-      return false;
-    }
-    if (ch == '_') {
-      if (text_pos >= text_len)
-        return false;
+  std::size_t star = std::string::npos, star_text = 0;
+  while (text_pos < text_len) {
+    if (pattern_pos < pattern_len && pattern[pattern_pos] == '%') {
+      star = pattern_pos++;
+      star_text = text_pos;
+    } else if (pattern_pos < pattern_len &&
+               (pattern[pattern_pos] == '_' ||
+                pattern[pattern_pos] == text[text_pos])) {
       ++text_pos;
       ++pattern_pos;
-      continue;
-    }
-    if (text_pos >= text_len || text[text_pos] != ch)
+    } else if (star != std::string::npos) {
+      pattern_pos = star + 1;
+      text_pos = ++star_text;
+    } else {
       return false;
-    ++text_pos;
-    ++pattern_pos;
+    }
   }
-  return text_pos == text_len;
+  while (pattern_pos < pattern_len && pattern[pattern_pos] == '%')
+    ++pattern_pos;
+  return pattern_pos == pattern_len;
 }
 
 bool SqlLike(const std::string &text, const std::string &pattern) {
@@ -228,8 +235,12 @@ bool ReadSupplier(const core::AuxRow &row, int64_t &suppkey, std::string &name,
 }
 
 // ── Base builder ────────────────────────────────────────────────────────────
-constexpr int64_t kMaxPartkey = int64_t{1} << 28;
-constexpr int64_t kMaxDenseSupplier = int64_t{1} << 22;
+// Dense key-indexed arrays cover keys below max(kMinDense, 4 x row count);
+// larger keys live in hash maps, so sparse keys never blow up memory.
+constexpr int64_t kMinDense = int64_t{1} << 20;
+int64_t DenseLimit(std::size_t rows) {
+  return std::max<int64_t>(kMinDense, 4 * static_cast<int64_t>(rows));
+}
 
 class BaseBuilder {
 public:
@@ -254,15 +265,12 @@ public:
   void AddPartsupp(int64_t partkey, int64_t suppkey, int64_t availqty) {
     if (partkey < 0 || suppkey < 0)
       return;
-    if (partkey >= kMaxPartkey)
-      throw std::runtime_error("TPC-H Q20 aux: partkey out of range");
-    auto &ps_off = base->ps_off;
-    while (ps_off.size() <= static_cast<std::size_t>(partkey))
-      ps_off.push_back(static_cast<uint32_t>(base->ps.size()));
-    TpchQ20Base::PsEntry e;
+    RequirePairKey(partkey, suppkey);
+    PsRow e;
+    e.partkey = partkey;
     e.availqty = availqty;
     e.suppkey = static_cast<int32_t>(suppkey);
-    base->ps.push_back(e);
+    ps.push_back(e);
   }
 
   void AddPart(int64_t key, const char *name, std::size_t len) {
@@ -277,7 +285,7 @@ public:
                    int32_t nationkey) {
     if (key < 0)
       return;
-    base->suppliers[key] = {std::move(name), std::move(address), nationkey};
+    suppliers[key] = {std::move(name), std::move(address), nationkey};
   }
 
   void AddNation(int32_t key, const std::string &name) {
@@ -289,31 +297,27 @@ public:
 
   std::shared_ptr<const TpchQ20Base> Finish() {
     CloseSeries();
-    // partsupp offsets + series index resolution (both sides sorted).
-    base->ps_off.push_back(static_cast<uint32_t>(base->ps.size()));
+    // series index resolution (both sides sorted by pair key).
     {
       const auto &keys = base->series_key;
       std::size_t j = 0;
-      for (std::size_t part = 0; part + 1 < base->ps_off.size(); ++part) {
-        for (uint32_t i = base->ps_off[part]; i < base->ps_off[part + 1]; ++i) {
-          auto &e = base->ps[i];
-          const uint64_t key =
-              MakePairKey(static_cast<int64_t>(part), e.suppkey);
-          while (j < keys.size() && keys[j] < key)
-            ++j;
-          if (j < keys.size() && keys[j] == key) {
-            e.series_idx = static_cast<uint32_t>(j);
-          } else {
-            const auto it = std::lower_bound(keys.begin(), keys.end(), key);
-            e.series_idx = (it != keys.end() && *it == key)
-                               ? static_cast<uint32_t>(it - keys.begin())
-                               : TpchQ20Base::kNoSeries;
-          }
+      for (auto &e : ps) {
+        const uint64_t key = MakePairKey(e.partkey, e.suppkey);
+        while (j < keys.size() && keys[j] < key)
+          ++j;
+        if (j < keys.size() && keys[j] == key) {
+          e.series_idx = static_cast<uint32_t>(j);
+        } else {
+          const auto it = std::lower_bound(keys.begin(), keys.end(), key);
+          e.series_idx = (it != keys.end() && *it == key)
+                             ? static_cast<uint32_t>(it - keys.begin())
+                             : TpchQ20Base::kNoSeries;
         }
       }
     }
     FinishNames();
     FinishSuppliers();
+    FinishPairs();
     return std::move(base);
   }
 
@@ -323,6 +327,92 @@ private:
     uint64_t off;
     uint32_t len;
   };
+  struct PsRow {
+    int64_t partkey = 0;
+    int64_t availqty = 0;
+    int32_t suppkey = 0;
+    uint32_t series_idx = TpchQ20Base::kNoSeries;
+  };
+
+  // Lays the partsupp rows out nation-major (see TpchQ20Base::pairs): one
+  // entry per (row, base name of its part), bucketed by the supplier's slot,
+  // then each slot sorted by (rank, suppkey).
+  void FinishPairs() {
+    auto &b = *base;
+    // Slots: one per distinct base nation of a supplier, then "no supplier".
+    std::vector<int32_t> slot_nations;
+    for (const auto &rec : b.supplier_records)
+      if (b.nation_slot.emplace(rec.nationkey, 0).second)
+        slot_nations.push_back(rec.nationkey);
+    std::sort(slot_nations.begin(), slot_nations.end());
+    for (std::size_t s = 0; s < slot_nations.size(); ++s)
+      b.nation_slot[slot_nations[s]] = static_cast<uint32_t>(s);
+    const std::size_t slots = slot_nations.size() + 1;
+    const auto no_supplier = static_cast<uint32_t>(slots - 1);
+    std::vector<uint32_t> dense_slot(b.supp_nation.size(), no_supplier);
+    for (std::size_t r = 0; r < b.supplier_keys.size(); ++r)
+      if (static_cast<std::size_t>(b.supplier_keys[r]) < dense_slot.size())
+        dense_slot[static_cast<std::size_t>(b.supplier_keys[r])] =
+            b.nation_slot.at(b.supplier_records[r].nationkey);
+    const auto slot_of = [&](int32_t suppkey) -> uint32_t {
+      if (static_cast<std::size_t>(suppkey) < dense_slot.size())
+        return dense_slot[static_cast<std::size_t>(suppkey)];
+      const auto *rec = b.BaseSupplier(suppkey);
+      return rec ? b.nation_slot.at(rec->nationkey) : no_supplier;
+    };
+    // f(rank) for every base name of the part; false when it has none.
+    const auto for_each_rank = [&](int64_t partkey, auto &&f) {
+      const uint32_t first = b.RankOf(partkey);
+      if (first == TpchQ20Base::kNoRank)
+        return false;
+      f(first);
+      if (!b.extra_ranks.empty()) {
+        const auto it = b.extra_ranks.find(partkey);
+        if (it != b.extra_ranks.end())
+          for (const uint32_t r : it->second)
+            f(r);
+      }
+      return true;
+    };
+
+    std::vector<std::size_t> count(slots + 1, 0);
+    for (const auto &row : ps) {
+      const uint32_t slot = slot_of(row.suppkey);
+      if (!for_each_rank(row.partkey, [&](uint32_t) { ++count[slot + 1]; }))
+        b.orphan_pairs.push_back(
+            {row.partkey, row.availqty, row.suppkey, row.series_idx});
+    }
+    for (std::size_t s = 1; s <= slots; ++s)
+      count[s] += count[s - 1];
+    if (count[slots] > std::numeric_limits<uint32_t>::max())
+      throw std::runtime_error("TPC-H Q20 aux: too many partsupp pairs");
+    b.slot_off.assign(count.begin(), count.end());
+    b.pairs.resize(count[slots]);
+    for (const auto &row : ps) {
+      const uint32_t slot = slot_of(row.suppkey);
+      for_each_rank(row.partkey, [&](uint32_t rank) {
+        auto &e = b.pairs[count[slot]++];
+        e.rank = rank;
+        e.suppkey = row.suppkey;
+        e.series_idx = row.series_idx;
+        if (row.availqty > std::numeric_limits<int32_t>::min() &&
+            row.availqty <= std::numeric_limits<int32_t>::max()) {
+          e.availqty = static_cast<int32_t>(row.availqty);
+        } else {
+          e.availqty = TpchQ20Base::kWideAvail;
+          b.avail_wide[MakePairKey(row.partkey, row.suppkey)] = row.availqty;
+        }
+      });
+    }
+    ps.clear();
+    ps.shrink_to_fit();
+    for (std::size_t s = 0; s < slots; ++s)
+      std::sort(b.pairs.begin() + static_cast<std::ptrdiff_t>(b.slot_off[s]),
+                b.pairs.begin() + static_cast<std::ptrdiff_t>(b.slot_off[s + 1]),
+                [](const TpchQ20Base::PairEntry &x, const TpchQ20Base::PairEntry &y) {
+                  return x.rank != y.rank ? x.rank < y.rank : x.suppkey < y.suppkey;
+                });
+  }
 
   void CloseSeries() {
     if (!has_cur)
@@ -373,6 +463,28 @@ private:
       base->name_off.push_back(static_cast<uint32_t>(base->name_arena.size()));
       base->name_partkey.push_back(n.key);
     }
+    const int64_t dense = DenseLimit(names.size());
+    int64_t max_key = -1;
+    for (const auto &n : names)
+      if (n.key < dense)
+        max_key = std::max(max_key, n.key);
+    base->part_rank.assign(static_cast<std::size_t>(max_key + 1),
+                           TpchQ20Base::kNoRank);
+    for (std::size_t r = 0; r < names.size(); ++r) {
+      const int64_t key = names[r].key;
+      const auto rank = static_cast<uint32_t>(r);
+      bool first = false;
+      if (key < dense) {
+        auto &slot = base->part_rank[static_cast<std::size_t>(key)];
+        first = slot == TpchQ20Base::kNoRank;
+        if (first)
+          slot = rank;
+      } else {
+        first = base->sparse_rank.emplace(key, rank).second;
+      }
+      if (!first)
+        base->extra_ranks[key].push_back(rank);
+    }
     names.clear();
     names.shrink_to_fit();
     arena.clear();
@@ -380,17 +492,41 @@ private:
   }
 
   void FinishSuppliers() {
-    int64_t max_key = -1;
-    for (const auto &[key, rec] : base->suppliers) {
-      (void)rec;
-      if (key < kMaxDenseSupplier)
-        max_key = std::max(max_key, key);
+    auto &b = *base;
+    std::vector<std::pair<int64_t, TpchQ20SupplierRecord>> rows(
+        std::make_move_iterator(suppliers.begin()),
+        std::make_move_iterator(suppliers.end()));
+    suppliers.clear();
+    std::sort(rows.begin(), rows.end(), [](const auto &x, const auto &y) {
+      return x.second.name != y.second.name ? x.second.name < y.second.name
+                                            : x.first < y.first;
+    });
+    b.supplier_keys.reserve(rows.size());
+    b.supplier_records.reserve(rows.size());
+    for (auto &[key, rec] : rows) {
+      b.supplier_keys.push_back(key);
+      b.supplier_records.push_back(std::move(rec));
     }
-    base->supp_nation.assign(static_cast<std::size_t>(max_key + 1), -1);
-    for (const auto &[key, rec] : base->suppliers)
-      if (key <= max_key)
-        base->supp_nation[static_cast<std::size_t>(key)] = rec.nationkey;
+    const int64_t dense = DenseLimit(rows.size());
+    int64_t max_key = -1;
+    for (const int64_t key : b.supplier_keys)
+      if (key < dense)
+        max_key = std::max(max_key, key);
+    b.supp_nation.assign(static_cast<std::size_t>(max_key + 1), -1);
+    b.supp_rank.assign(static_cast<std::size_t>(max_key + 1),
+                       TpchQ20Base::kNoRank);
+    for (std::size_t r = 0; r < b.supplier_keys.size(); ++r) {
+      const int64_t key = b.supplier_keys[r];
+      if (key <= max_key) {
+        b.supp_nation[static_cast<std::size_t>(key)] =
+            b.supplier_records[r].nationkey;
+        b.supp_rank[static_cast<std::size_t>(key)] = static_cast<uint32_t>(r);
+      } else {
+        b.sparse_supp_rank[key] = static_cast<uint32_t>(r);
+      }
+    }
   }
+
 
   std::shared_ptr<TpchQ20Base> base;
   std::vector<TpchQ20DateQuantity> cur;
@@ -398,6 +534,9 @@ private:
   bool has_cur = false;
   std::vector<NameRef> names;
   std::string arena;
+  std::unordered_map<int64_t, TpchQ20SupplierRecord> suppliers;
+  // partsupp rows in (partkey, suppkey) order; consumed by FinishPairs.
+  std::vector<PsRow> ps;
 };
 
 } // namespace
@@ -442,20 +581,45 @@ bool TpchQ20Base::WindowSum(uint32_t idx, int32_t lo, int32_t hi,
   return has;
 }
 
+int32_t TpchQ20Base::BaseNation(int64_t suppkey) const {
+  if (suppkey >= 0 && static_cast<std::size_t>(suppkey) < supp_nation.size())
+    return supp_nation[static_cast<std::size_t>(suppkey)];
+  const auto *rec = BaseSupplier(suppkey);
+  return rec ? rec->nationkey : -1;
+}
+
+std::pair<std::size_t, std::size_t>
+TpchQ20Base::RankRange(uint32_t slot, uint32_t rank_lo, uint32_t rank_hi) const {
+  const PairEntry *first = pairs.data() + slot_off[slot];
+  const PairEntry *last = pairs.data() + slot_off[slot + 1];
+  const auto by_rank = [](const PairEntry &e, uint32_t r) { return e.rank < r; };
+  const PairEntry *b = std::lower_bound(first, last, rank_lo, by_rank);
+  const PairEntry *e = std::lower_bound(b, last, rank_hi, by_rank);
+  return {static_cast<std::size_t>(b - pairs.data()),
+          static_cast<std::size_t>(e - pairs.data())};
+}
+
+int64_t TpchQ20Base::Avail(const PairEntry &e) const {
+  if (e.availqty != kWideAvail)
+    return e.availqty;
+  return avail_wide.at(MakePairKey(name_partkey[e.rank], e.suppkey));
+}
+
 int32_t TpchQ20State::SupplierNation(int64_t suppkey) const {
   if (!suppliers.Empty()) {
     if (const auto *ov = suppliers.Find(static_cast<uint64_t>(suppkey)))
       return ov->present ? ov->record.nationkey : -1;
   }
-  if (suppkey >= 0 &&
-      static_cast<std::size_t>(suppkey) < base->supp_nation.size())
-    return base->supp_nation[static_cast<std::size_t>(suppkey)];
-  if (suppkey >= kMaxDenseSupplier) {
-    const auto it = base->suppliers.find(suppkey);
-    if (it != base->suppliers.end())
-      return it->second.nationkey;
+  return base->BaseNation(suppkey);
+}
+
+const TpchQ20SupplierRecord *
+TpchQ20State::SupplierRecord(int64_t suppkey) const {
+  if (!suppliers.Empty()) {
+    if (const auto *ov = suppliers.Find(static_cast<uint64_t>(suppkey)))
+      return ov->present ? &ov->record : nullptr;
   }
-  return -1;
+  return base->BaseSupplier(suppkey);
 }
 
 bool TpchQ20State::FindSupplier(int64_t suppkey,
@@ -468,10 +632,10 @@ bool TpchQ20State::FindSupplier(int64_t suppkey,
       return true;
     }
   }
-  const auto it = base->suppliers.find(suppkey);
-  if (it == base->suppliers.end())
+  const auto *rec = base->BaseSupplier(suppkey);
+  if (!rec)
     return false;
-  out = it->second;
+  out = *rec;
   return true;
 }
 
@@ -565,13 +729,16 @@ std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state) {
     int64_t part, supp, avail;
   };
   std::vector<PsRow> ps_rows;
-  for (std::size_t part = 0; part + 1 < base.ps_off.size(); ++part) {
-    if (state.partsupps.Find(part))
+  for (const auto &e : base.pairs) {
+    const int64_t part = base.name_partkey[e.rank];
+    // A part with several names has its pairs once per name: keep one copy.
+    if (base.RankOf(part) != e.rank || state.partsupps.Find(part))
       continue;
-    for (uint32_t i = base.ps_off[part]; i < base.ps_off[part + 1]; ++i)
-      ps_rows.push_back({static_cast<int64_t>(part), base.ps[i].suppkey,
-                         base.ps[i].availqty});
+    ps_rows.push_back({part, e.suppkey, base.Avail(e)});
   }
+  for (const auto &p : base.orphan_pairs)
+    if (!state.partsupps.Find(p.partkey))
+      ps_rows.push_back({p.partkey, p.suppkey, p.availqty});
   state.partsupps.ForEach([&](uint64_t part, const auto &list) {
     for (const auto &p : list)
       ps_rows.push_back({static_cast<int64_t>(part), p.suppkey, p.availqty});
@@ -605,8 +772,9 @@ std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state) {
   }
 
   // suppliers (merged)
-  std::map<int64_t, TpchQ20SupplierRecord> supp_rows(base.suppliers.begin(),
-                                                     base.suppliers.end());
+  std::map<int64_t, TpchQ20SupplierRecord> supp_rows;
+  for (std::size_t r = 0; r < base.supplier_keys.size(); ++r)
+    supp_rows[base.supplier_keys[r]] = base.supplier_records[r];
   state.suppliers.ForEach([&](uint64_t k, const TpchQ20SupplierOverlay &ov) {
     if (ov.present)
       supp_rows[static_cast<int64_t>(k)] = ov.record;
@@ -810,7 +978,7 @@ void TpchQ20Module::AccumulateMutation(const core::MutationBatch &mutation,
       int32_t shipdate = 0;
       int64_t partkey = 0, suppkey = 0, quantity = 0;
       if (!ReadLineitem(row, shipdate, partkey, suppkey, quantity) ||
-          partkey < 0 || suppkey < 0) {
+          !PairKeyFits(partkey, suppkey)) {
         buffer.MarkRebuild();
         return;
       }
@@ -842,8 +1010,8 @@ void TpchQ20Module::AccumulateMutation(const core::MutationBatch &mutation,
   if (mutation.table == config.partsupp_table) {
     auto add = [&](const core::AuxRow &row, int8_t sign) {
       int64_t partkey = 0, suppkey = 0, availqty = 0;
-      if (!ReadPartsupp(row, partkey, suppkey, availqty) || partkey < 0 ||
-          suppkey < 0) {
+      if (!ReadPartsupp(row, partkey, suppkey, availqty) ||
+          !PairKeyFits(partkey, suppkey)) {
         buffer.MarkRebuild();
         return;
       }
@@ -1087,11 +1255,10 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
     auto &list = next->partsupps.Mutable(static_cast<uint64_t>(delta.partkey),
                                          &inserted);
     if (inserted) {
-      const std::size_t part = static_cast<std::size_t>(delta.partkey);
-      if (part + 1 < base.ps_off.size()) {
-        for (uint32_t i = base.ps_off[part]; i < base.ps_off[part + 1]; ++i)
-          list.push_back({base.ps[i].suppkey, base.ps[i].availqty});
-      }
+      base.ForEachBasePair(delta.partkey,
+                           [&](int64_t suppkey, int64_t availqty, uint32_t) {
+                             list.push_back({suppkey, availqty});
+                           });
     }
     const auto it = std::find_if(
         list.begin(), list.end(),
@@ -1248,6 +1415,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
       [&](int64_t partkey, int64_t suppkey, int32_t date, int64_t qty) {
         if (partkey < 0 || suppkey < 0)
           return;
+        RequirePairKey(partkey, suppkey);
         builder.AddSeriesRow(MakePairKey(partkey, suppkey), date, qty);
       });
   if (!ordered_series) {
@@ -1260,6 +1428,7 @@ TpchQ20Module::BuildState(core::AuxEngineServices &services) const {
     initial_scan->ScanLineitems([&](const TpchQ20LineitemInput &input) {
       if (input.partkey < 0 || input.suppkey < 0)
         return;
+      RequirePairKey(input.partkey, input.suppkey);
       rows.push_back({MakePairKey(input.partkey, input.suppkey),
                       input.shipdate_days, input.quantity_raw});
     });
@@ -1352,73 +1521,68 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
     return false;
   };
 
-  // Exact trailing-'%' prefix matching is a contiguous range of the sorted
-  // name array; any other pattern goes through SqlLike.
-  const bool trailing_percent_only =
-      !part_name_pattern.empty() && part_name_pattern.back() == '%' &&
-      part_name_pattern.find('%') == part_name_pattern.size() - 1 &&
-      part_name_pattern.find('_') == std::string::npos;
-  const std::string prefix =
-      trailing_percent_only
-          ? part_name_pattern.substr(0, part_name_pattern.size() - 1)
-          : std::string();
+  // The literal text before the first wildcard bounds a contiguous range of
+  // the sorted base names [rank_lo, rank_hi).  A pattern that is exactly that
+  // literal plus '%' (the TPC-H form) needs no further test; any other is
+  // tested only on the ranks a read actually visits.
+  const std::size_t wild = part_name_pattern.find_first_of("%_");
+  const std::string prefix = part_name_pattern.substr(0, wild);
+  const bool prefix_only = wild != std::string::npos &&
+                           wild + 1 == part_name_pattern.size() &&
+                           part_name_pattern[wild] == '%';
+  const auto has_prefix = [&](std::string_view name) {
+    return name.size() >= prefix.size() &&
+           std::memcmp(name.data(), prefix.data(), prefix.size()) == 0;
+  };
   const auto matches = [&](const char *name, std::size_t len) {
-    if (trailing_percent_only)
-      return len >= prefix.size() &&
-             std::memcmp(name, prefix.data(), prefix.size()) == 0;
+    if (prefix_only)
+      return has_prefix(std::string_view(name, len));
     return SqlLikeAt(name, len, part_name_pattern.data(),
                      part_name_pattern.size(), 0, 0);
   };
-
-  // Qualifying partkeys: base names (minus parts overridden in the overlay)
-  // plus live overlay names.
-  std::vector<int64_t> partkeys;
   const std::size_t name_count = base.name_partkey.size();
-  const bool overlay_parts = !state.parts.Empty();
-  const auto take_base = [&](std::size_t i) {
-    const int64_t key = base.name_partkey[i];
-    if (overlay_parts && state.parts.Find(static_cast<uint64_t>(key)))
-      return;
-    partkeys.push_back(key);
+  std::size_t lo = 0, hi = name_count;
+  while (lo < hi) { // first name >= prefix
+    const std::size_t mid = lo + (hi - lo) / 2;
+    if (base.PartName(mid) < std::string_view(prefix))
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  const auto rank_lo = static_cast<uint32_t>(lo);
+  hi = name_count;
+  while (lo < hi) { // first name past the names starting with prefix
+    const std::size_t mid = lo + (hi - lo) / 2;
+    if (has_prefix(base.PartName(mid)))
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  const auto rank_hi = static_cast<uint32_t>(lo);
+  const auto rank_ok = [&](uint32_t rank) {
+    if (prefix_only)
+      return true;
+    const auto name = base.PartName(rank);
+    return matches(name.data(), name.size());
   };
-  if (trailing_percent_only) {
-    std::size_t lo = 0, hi = name_count;
-    while (lo < hi) { // first name >= prefix
-      const std::size_t mid = lo + (hi - lo) / 2;
-      if (base.PartName(mid) < std::string_view(prefix))
-        lo = mid + 1;
-      else
-        hi = mid;
-    }
-    for (std::size_t i = lo; i < name_count; ++i) {
-      const auto name = base.PartName(i);
-      if (!matches(name.data(), name.size()))
-        break;
-      take_base(i);
-    }
-  } else {
-    for (std::size_t i = 0; i < name_count; ++i) {
-      const auto name = base.PartName(i);
-      if (matches(name.data(), name.size()))
-        take_base(i);
-    }
-  }
-  if (overlay_parts) {
-    state.parts.ForEach([&](uint64_t key, const TpchQ20PartOverlay &ov) {
-      if (ov.present && matches(ov.name.data(), ov.name.size()))
-        partkeys.push_back(static_cast<int64_t>(key));
-    });
-  }
 
+  const bool overlay_parts = !state.parts.Empty();
   const bool overlay_ps = !state.partsupps.Empty();
   const bool overlay_series = !state.series.Empty();
+  const bool overlay_suppliers = !state.suppliers.Empty();
+  // A part whose name or partsupp list changed since the base is evaluated
+  // from the overlays (pass 2), never from its base pairs.
+  const auto part_changed = [&](int64_t partkey) {
+    const auto k = static_cast<uint64_t>(partkey);
+    return (overlay_parts && state.parts.Find(k)) ||
+           (overlay_ps && state.partsupps.Find(k));
+  };
   std::vector<int64_t> qualifying_suppkeys;
 
-  const auto consider = [&](int64_t partkey, int64_t suppkey, int64_t availqty,
+  // The pair qualifies when it has lineitems in the window and availqty
+  // exceeds half their quantity.  The supplier's nation is checked by caller.
+  const auto evaluate = [&](int64_t partkey, int64_t suppkey, int64_t availqty,
                             uint32_t series_idx, bool resolve_idx) {
-    // Supplier nation first: only ~1/25 of pairs reach the lineitem series.
-    if (!is_target(state.SupplierNation(suppkey)))
-      return;
     const uint64_t pair_key = MakePairKey(partkey, suppkey);
     int64_t sum = 0;
     bool has = false;
@@ -1444,35 +1608,121 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
       qualifying_suppkeys.push_back(suppkey);
   };
 
-  constexpr std::size_t kAhead = 16;
-  const std::size_t n = partkeys.size();
-  const std::size_t ps_off_size = base.ps_off.size();
-  for (std::size_t i = 0; i < n; ++i) {
-    if (i + kAhead < n) {
-      const uint64_t k = static_cast<uint64_t>(partkeys[i + kAhead]);
-      if (k + 1 < ps_off_size)
-        __builtin_prefetch(&base.ps_off[k]);
+  // Walks base pairs of `slot` in the name range; `keep` filters suppkeys.
+  const auto walk_slot = [&](uint32_t slot, auto &&keep) {
+    const auto [b, e] = base.RankRange(slot, rank_lo, rank_hi);
+    constexpr std::size_t kAhead = 16;
+    const auto *pairs = base.pairs.data();
+    for (std::size_t i = b; i < e; ++i) {
+      if (i + kAhead < e && pairs[i + kAhead].series_idx != TpchQ20Base::kNoSeries)
+        __builtin_prefetch(&base.series_off[pairs[i + kAhead].series_idx]);
+      if (i + kAhead / 2 < e &&
+          pairs[i + kAhead / 2].series_idx != TpchQ20Base::kNoSeries)
+        __builtin_prefetch(base.series_entries.data() +
+                           base.series_off[pairs[i + kAhead / 2].series_idx]);
+      const auto &p = pairs[i];
+      if (!keep(p.suppkey) || !rank_ok(p.rank))
+        continue;
+      const int64_t partkey = base.name_partkey[p.rank];
+      if ((overlay_parts || overlay_ps) && part_changed(partkey))
+        continue;
+      evaluate(partkey, p.suppkey, base.Avail(p), p.series_idx, false);
     }
-    if (i + kAhead / 2 < n) {
-      const uint64_t k = static_cast<uint64_t>(partkeys[i + kAhead / 2]);
-      if (k + 1 < ps_off_size)
-        __builtin_prefetch(base.ps.data() + base.ps_off[k]);
-    }
-    const int64_t partkey = partkeys[i];
-    const std::vector<TpchQ20PsPair> *ps_ov =
-        overlay_ps ? state.partsupps.Find(static_cast<uint64_t>(partkey))
-                   : nullptr;
-    if (ps_ov) {
-      for (const auto &p : *ps_ov)
-        consider(partkey, p.suppkey, p.availqty, TpchQ20Base::kNoSeries, true);
+  };
+
+  // 1. Base pairs whose supplier's base nation is a target nation (minus
+  //    suppliers since moved out or deleted).
+  for (const int32_t nationkey : nation_keys) {
+    const uint32_t slot = base.SlotOfNation(nationkey);
+    if (slot == TpchQ20Base::kNoSlot)
       continue;
+    if (overlay_suppliers)
+      walk_slot(slot, [&](int32_t suppkey) {
+        return is_target(state.SupplierNation(suppkey));
+      });
+    else
+      walk_slot(slot, [](int32_t) { return true; });
+  }
+
+  // 2. Parts whose name or partsupp list changed since the base.
+  if (overlay_parts || overlay_ps) {
+    std::vector<int64_t> changed;
+    state.parts.ForEach([&](uint64_t k, const TpchQ20PartOverlay &) {
+      changed.push_back(static_cast<int64_t>(k));
+    });
+    state.partsupps.ForEach([&](uint64_t k, const auto &) {
+      changed.push_back(static_cast<int64_t>(k));
+    });
+    std::sort(changed.begin(), changed.end());
+    changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
+    for (const int64_t partkey : changed) {
+      bool name_ok = false;
+      if (const auto *ov = state.parts.Find(static_cast<uint64_t>(partkey))) {
+        name_ok = ov->present && matches(ov->name.data(), ov->name.size());
+      } else if (const uint32_t r = base.RankOf(partkey);
+                 r != TpchQ20Base::kNoRank) {
+        const auto name = base.PartName(r);
+        name_ok = matches(name.data(), name.size());
+        if (!name_ok) {
+          const auto extra = base.extra_ranks.find(partkey);
+          if (extra != base.extra_ranks.end())
+            for (const uint32_t er : extra->second) {
+              const auto n = base.PartName(er);
+              name_ok = name_ok || matches(n.data(), n.size());
+            }
+        }
+      }
+      if (!name_ok)
+        continue;
+      const auto consider = [&](int64_t suppkey, int64_t availqty,
+                                uint32_t series_idx, bool resolve_idx) {
+        if (is_target(state.SupplierNation(suppkey)))
+          evaluate(partkey, suppkey, availqty, series_idx, resolve_idx);
+      };
+      if (const auto *list =
+              overlay_ps ? state.partsupps.Find(static_cast<uint64_t>(partkey))
+                         : nullptr) {
+        for (const auto &p : *list)
+          consider(p.suppkey, p.availqty, TpchQ20Base::kNoSeries, true);
+      } else {
+        base.ForEachBasePair(partkey, [&](int64_t suppkey, int64_t availqty,
+                                          uint32_t series_idx) {
+          consider(suppkey, availqty, series_idx, false);
+        });
+      }
     }
-    const uint64_t k = static_cast<uint64_t>(partkey);
-    if (k + 1 >= ps_off_size)
-      continue;
-    for (uint32_t j = base.ps_off[k]; j < base.ps_off[k + 1]; ++j) {
-      const auto &e = base.ps[j];
-      consider(partkey, e.suppkey, e.availqty, e.series_idx, false);
+  }
+
+  // 3. Suppliers now in a target nation whose base nation is not (moved, or
+  //    new): their base pairs sit in their base nation's slot.
+  if (overlay_suppliers) {
+    std::vector<std::pair<uint32_t, int32_t>> moved; // (base slot, suppkey)
+    state.suppliers.ForEach([&](uint64_t k, const TpchQ20SupplierOverlay &ov) {
+      if (!ov.present || !is_target(ov.record.nationkey))
+        return;
+      const auto suppkey = static_cast<int64_t>(k);
+      const int32_t base_nation = base.BaseNation(suppkey);
+      const bool in_base = base_nation >= 0 ||
+                           base.BaseSupplier(suppkey) != nullptr;
+      if (in_base && is_target(base_nation))
+        return; // already walked in pass 1
+      const uint32_t slot =
+          in_base ? base.SlotOfNation(base_nation) : base.NoNationSlot();
+      if (slot != TpchQ20Base::kNoSlot)
+        moved.emplace_back(slot, static_cast<int32_t>(suppkey));
+    });
+    std::sort(moved.begin(), moved.end());
+    for (std::size_t i = 0; i < moved.size();) {
+      std::size_t j = i;
+      while (j < moved.size() && moved[j].first == moved[i].first)
+        ++j;
+      walk_slot(moved[i].first, [&](int32_t suppkey) {
+        return std::binary_search(
+            moved.begin() + static_cast<std::ptrdiff_t>(i),
+            moved.begin() + static_cast<std::ptrdiff_t>(j),
+            std::pair<uint32_t, int32_t>{moved[i].first, suppkey});
+      });
+      i = j;
     }
   }
 
@@ -1481,31 +1731,55 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
       std::unique(qualifying_suppkeys.begin(), qualifying_suppkeys.end()),
       qualifying_suppkeys.end());
 
-  std::vector<TpchQ20OutputRow> output_rows;
+  // Output in name order.  A base supplier's name rank is its index in the
+  // name-sorted records, so without supplier changes this sorts integers and
+  // reads the records in memory order; a changed supplier (overlay record,
+  // no rank) compares by name, after base suppliers of an equal name.
+  struct OutRow {
+    const TpchQ20SupplierRecord *rec;
+    uint32_t rank; // kNoRank: overlay record
+  };
+  std::vector<OutRow> output_rows;
   output_rows.reserve(qualifying_suppkeys.size());
   for (const auto suppkey : qualifying_suppkeys) {
-    TpchQ20SupplierRecord supplier;
-    if (!state.FindSupplier(suppkey, supplier))
-      continue;
-    if (!is_target(supplier.nationkey))
-      continue;
-    output_rows.push_back(
-        {std::move(supplier.name), std::move(supplier.address)});
+    const TpchQ20SupplierOverlay *ov =
+        overlay_suppliers ? state.suppliers.Find(static_cast<uint64_t>(suppkey))
+                          : nullptr;
+    OutRow row{nullptr, TpchQ20Base::kNoRank};
+    if (ov) {
+      if (ov->present)
+        row.rec = &ov->record;
+    } else {
+      row.rank = base.SupplierRank(suppkey);
+      if (row.rank != TpchQ20Base::kNoRank)
+        row.rec = &base.supplier_records[row.rank];
+    }
+    if (row.rec && is_target(row.rec->nationkey))
+      output_rows.push_back(row);
   }
-
   std::sort(output_rows.begin(), output_rows.end(),
-            [](const TpchQ20OutputRow &a, const TpchQ20OutputRow &b) {
-              return a.name < b.name;
+            [](const OutRow &a, const OutRow &b) {
+              constexpr uint32_t kNone = TpchQ20Base::kNoRank;
+              if (a.rank != kNone && b.rank != kNone)
+                return a.rank < b.rank;
+              const int c = a.rec->name.compare(b.rec->name);
+              if (c != 0)
+                return c < 0;
+              return a.rank != kNone && b.rank == kNone;
             });
 
   sink.Begin(core::OutputSchema{});
+  // One two-cell row buffer for every row: its strings keep their capacity.
+  core::AuxRow out;
+  out.values.resize(2);
+  for (auto &cell : out.values) {
+    cell.type = core::AuxType::String;
+    cell.is_null = false;
+    cell.payload = std::string();
+  }
   for (const auto &row : output_rows) {
-    core::AuxRow out;
-    out.values.reserve(2);
-    out.values.push_back(
-        core::AuxValue::Of(core::AuxType::String, row.name));
-    out.values.push_back(
-        core::AuxValue::Of(core::AuxType::String, row.address));
+    std::get<std::string>(out.values[0].payload).assign(row.rec->name);
+    std::get<std::string>(out.values[1].payload).assign(row.rec->address);
     sink.WriteRow(out);
   }
   sink.End();

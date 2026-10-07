@@ -25,6 +25,7 @@
 use vstd::prelude::*;
 use verus_common::bytes::*;
 use verus_common::order::*;
+use verus_common::perm::*;
 use verus_common::rat::*;
 use verus_common::rel::*;
 use verus_common::sqlfns::*;
@@ -475,6 +476,816 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
         query_result(db, params, answer(db, params)),
 {
     lemma_answer_ok(db, params);
+}
+
+// ── Permutation invariance (verified by Verus, not trusted) ──────────────────
+// A table is a bag: the answers do not depend on the order of any table's rows.
+
+/// db2 holds the same bag of rows as db in every table.
+pub open spec fn db_perm(db: Db, db2: Db) -> bool {
+    &&& bag_eq(db.nation, db2.nation)
+    &&& bag_eq(db.partsupp, db2.partsupp)
+    &&& bag_eq(db.supplier, db2.supplier)
+}
+
+proof fn lemma_perm_scalar_1_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|partsupp_2: PartsuppRow, supplier_2: SupplierRow, nation_2: NationRow| #[trigger] scalar_1_where_clause(db, params, partsupp_2, supplier_2, nation_2) == scalar_1_where_clause(db2, params, partsupp_2, supplier_2, nation_2),
+{
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    assert forall|partsupp_2: PartsuppRow, supplier_2: SupplierRow, nation_2: NationRow| #[trigger] scalar_1_where_clause(db, params, partsupp_2, supplier_2, nation_2) == scalar_1_where_clause(db2, params, partsupp_2, supplier_2, nation_2) by {
+    }
+}
+
+proof fn lemma_perm_scalar_1_tuples_3(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|partsupp_2: PartsuppRow, supplier_2: SupplierRow, nation_2: NationRow| #[trigger] bag_eq(scalar_1_tuples_3(db, params, partsupp_2, supplier_2, nation_2), scalar_1_tuples_3(db2, params, partsupp_2, supplier_2, nation_2)),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_scalar_1_where_clause(db, db2, params);
+    assert forall|partsupp_2: PartsuppRow, supplier_2: SupplierRow, nation_2: NationRow| #[trigger] bag_eq(scalar_1_tuples_3(db, params, partsupp_2, supplier_2, nation_2), scalar_1_tuples_3(db2, params, partsupp_2, supplier_2, nation_2)) by {
+        assert(scalar_1_tuples_3(db, params, partsupp_2, supplier_2, nation_2) == scalar_1_tuples_3(db2, params, partsupp_2, supplier_2, nation_2));
+    }
+}
+
+proof fn lemma_perm_scalar_1_tuples_2(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|partsupp_2: PartsuppRow, supplier_2: SupplierRow| #[trigger] bag_eq(scalar_1_tuples_2(db, params, partsupp_2, supplier_2), scalar_1_tuples_2(db2, params, partsupp_2, supplier_2)),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_scalar_1_tuples_3(db, db2, params);
+    assert forall|partsupp_2: PartsuppRow, supplier_2: SupplierRow| #[trigger] bag_eq(scalar_1_tuples_2(db, params, partsupp_2, supplier_2), scalar_1_tuples_2(db2, params, partsupp_2, supplier_2)) by {
+        let g1 = |nation_2: NationRow| scalar_1_tuples_3(db, params, partsupp_2, supplier_2, nation_2);
+        let g2 = |nation_2: NationRow| scalar_1_tuples_3(db2, params, partsupp_2, supplier_2, nation_2);
+        assert forall|a: NationRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.nation, db2.nation, g1, g2);
+    }
+}
+
+proof fn lemma_perm_scalar_1_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|partsupp_2: PartsuppRow| #[trigger] bag_eq(scalar_1_tuples_1(db, params, partsupp_2), scalar_1_tuples_1(db2, params, partsupp_2)),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_scalar_1_tuples_2(db, db2, params);
+    assert forall|partsupp_2: PartsuppRow| #[trigger] bag_eq(scalar_1_tuples_1(db, params, partsupp_2), scalar_1_tuples_1(db2, params, partsupp_2)) by {
+        let g1 = |supplier_2: SupplierRow| scalar_1_tuples_2(db, params, partsupp_2, supplier_2);
+        let g2 = |supplier_2: SupplierRow| scalar_1_tuples_2(db2, params, partsupp_2, supplier_2);
+        assert forall|a: SupplierRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.supplier, db2.supplier, g1, g2);
+    }
+}
+
+proof fn lemma_perm_scalar_1_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(scalar_1_tuples(db, params), scalar_1_tuples(db2, params)),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_scalar_1_tuples_1(db, db2, params);
+        let g1 = |partsupp_2: PartsuppRow| scalar_1_tuples_1(db, params, partsupp_2);
+        let g2 = |partsupp_2: PartsuppRow| scalar_1_tuples_1(db2, params, partsupp_2);
+        assert forall|a: PartsuppRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.partsupp, db2.partsupp, g1, g2);
+}
+
+proof fn lemma_perm_scalar_1_group_sum(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|f: spec_fn(Scalar1Tuple) -> int| #[trigger] scalar_1_group_sum(db, params, f) == scalar_1_group_sum(db2, params, f),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_scalar_1_tuples(db, db2, params);
+    assert forall|f: spec_fn(Scalar1Tuple) -> int| #[trigger] scalar_1_group_sum(db, params, f) == scalar_1_group_sum(db2, params, f) by {
+        assert(bag_eq(scalar_1_tuples(db, params), scalar_1_tuples(db2, params)));
+        lemma_sum_perm(scalar_1_tuples(db, params), scalar_1_tuples(db2, params), f);
+    }
+}
+
+proof fn lemma_perm_scalar_1_group_count(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        scalar_1_group_count(db, params) == scalar_1_group_count(db2, params),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_scalar_1_tuples(db, db2, params);
+        assert(bag_eq(scalar_1_tuples(db, params), scalar_1_tuples(db2, params)));
+        lemma_bag_eq_len(scalar_1_tuples(db, params), scalar_1_tuples(db2, params));
+}
+
+proof fn lemma_perm_scalar_1_row_of(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        scalar_1_row_of(db, params) == scalar_1_row_of(db2, params),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_scalar_1_group_sum(db, db2, params);
+    lemma_perm_scalar_1_group_count(db, db2, params);
+}
+
+proof fn lemma_perm_scalar_1_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(scalar_1_rows(db, params), scalar_1_rows(db2, params)),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_scalar_1_row_of(db, db2, params);
+        assert(scalar_1_rows(db, params) == scalar_1_rows(db2, params));
+}
+
+proof fn lemma_perm_scalar_1_value(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        scalar_1_value(db, params) == scalar_1_value(db2, params),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_scalar_1_row_of(db, db2, params);
+}
+
+proof fn lemma_perm_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|partsupp: PartsuppRow, supplier: SupplierRow, nation: NationRow| #[trigger] where_clause(db, params, partsupp, supplier, nation) == where_clause(db2, params, partsupp, supplier, nation),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    assert forall|partsupp: PartsuppRow, supplier: SupplierRow, nation: NationRow| #[trigger] where_clause(db, params, partsupp, supplier, nation) == where_clause(db2, params, partsupp, supplier, nation) by {
+    }
+}
+
+proof fn lemma_perm_tuples_3(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|partsupp: PartsuppRow, supplier: SupplierRow, nation: NationRow| #[trigger] bag_eq(tuples_3(db, params, partsupp, supplier, nation), tuples_3(db2, params, partsupp, supplier, nation)),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_where_clause(db, db2, params);
+    assert forall|partsupp: PartsuppRow, supplier: SupplierRow, nation: NationRow| #[trigger] bag_eq(tuples_3(db, params, partsupp, supplier, nation), tuples_3(db2, params, partsupp, supplier, nation)) by {
+        assert(tuples_3(db, params, partsupp, supplier, nation) == tuples_3(db2, params, partsupp, supplier, nation));
+    }
+}
+
+proof fn lemma_perm_tuples_2(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|partsupp: PartsuppRow, supplier: SupplierRow| #[trigger] bag_eq(tuples_2(db, params, partsupp, supplier), tuples_2(db2, params, partsupp, supplier)),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples_3(db, db2, params);
+    assert forall|partsupp: PartsuppRow, supplier: SupplierRow| #[trigger] bag_eq(tuples_2(db, params, partsupp, supplier), tuples_2(db2, params, partsupp, supplier)) by {
+        let g1 = |nation: NationRow| tuples_3(db, params, partsupp, supplier, nation);
+        let g2 = |nation: NationRow| tuples_3(db2, params, partsupp, supplier, nation);
+        assert forall|a: NationRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.nation, db2.nation, g1, g2);
+    }
+}
+
+proof fn lemma_perm_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|partsupp: PartsuppRow| #[trigger] bag_eq(tuples_1(db, params, partsupp), tuples_1(db2, params, partsupp)),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples_2(db, db2, params);
+    assert forall|partsupp: PartsuppRow| #[trigger] bag_eq(tuples_1(db, params, partsupp), tuples_1(db2, params, partsupp)) by {
+        let g1 = |supplier: SupplierRow| tuples_2(db, params, partsupp, supplier);
+        let g2 = |supplier: SupplierRow| tuples_2(db2, params, partsupp, supplier);
+        assert forall|a: SupplierRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.supplier, db2.supplier, g1, g2);
+    }
+}
+
+proof fn lemma_perm_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(tuples(db, params), tuples(db2, params)),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_tuples_1(db, db2, params);
+        let g1 = |partsupp: PartsuppRow| tuples_1(db, params, partsupp);
+        let g2 = |partsupp: PartsuppRow| tuples_1(db2, params, partsupp);
+        assert forall|a: PartsuppRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.partsupp, db2.partsupp, g1, g2);
+}
+
+proof fn lemma_perm_group_sum(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_ps_partkey: int, f: spec_fn(Tuple) -> int| #[trigger] group_sum(db, params, g_ps_partkey, f) == group_sum(db2, params, g_ps_partkey, f),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples(db, db2, params);
+    assert forall|g_ps_partkey: int, f: spec_fn(Tuple) -> int| #[trigger] group_sum(db, params, g_ps_partkey, f) == group_sum(db2, params, g_ps_partkey, f) by {
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        let c1 = |t: Tuple| if t.partsupp.ps_partkey == g_ps_partkey { f(t) } else { 0 };
+        let c2 = |t: Tuple| if t.partsupp.ps_partkey == g_ps_partkey { f(t) } else { 0 };
+        assert forall|a: Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(tuples(db, params), tuples(db2, params), c1);
+        lemma_sum_ext_all(tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_group_count(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_ps_partkey: int| #[trigger] group_count(db, params, g_ps_partkey) == group_count(db2, params, g_ps_partkey),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples(db, db2, params);
+    assert forall|g_ps_partkey: int| #[trigger] group_count(db, params, g_ps_partkey) == group_count(db2, params, g_ps_partkey) by {
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        let c1 = |t: Tuple| if t.partsupp.ps_partkey == g_ps_partkey { 1int } else { 0 };
+        let c2 = |t: Tuple| if t.partsupp.ps_partkey == g_ps_partkey { 1int } else { 0 };
+        assert forall|a: Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(tuples(db, params), tuples(db2, params), c1);
+        lemma_sum_ext_all(tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_row_of(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_ps_partkey: int| #[trigger] row_of(db, params, g_ps_partkey) == row_of(db2, params, g_ps_partkey),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_scalar_1_value(db, db2, params);
+    lemma_perm_group_sum(db, db2, params);
+    assert forall|g_ps_partkey: int| #[trigger] row_of(db, params, g_ps_partkey) == row_of(db2, params, g_ps_partkey) by {
+    }
+}
+
+proof fn lemma_perm_having(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_ps_partkey: int| #[trigger] having(db, params, g_ps_partkey) == having(db2, params, g_ps_partkey),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_scalar_1_value(db, db2, params);
+    lemma_perm_group_sum(db, db2, params);
+    assert forall|g_ps_partkey: int| #[trigger] having(db, params, g_ps_partkey) == having(db2, params, g_ps_partkey) by {
+    }
+}
+
+proof fn lemma_perm_rows_keys(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(dedup(map_where(tuples(db, params), |t: Tuple| having(db, params, t.partsupp.ps_partkey), |t: Tuple| t.partsupp.ps_partkey)), dedup(map_where(tuples(db2, params), |t: Tuple| having(db2, params, t.partsupp.ps_partkey), |t: Tuple| t.partsupp.ps_partkey))),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_tuples(db, db2, params);
+    lemma_perm_having(db, db2, params);
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        let keep1 = |t: Tuple| having(db, params, t.partsupp.ps_partkey);
+        let keep2 = |t: Tuple| having(db2, params, t.partsupp.ps_partkey);
+        let kf1 = |t: Tuple| t.partsupp.ps_partkey;
+        let kf2 = |t: Tuple| t.partsupp.ps_partkey;
+        assert forall|a: Tuple| #[trigger] keep1(a) == keep2(a) by {}
+        assert forall|a: Tuple| #[trigger] kf1(a) == kf2(a) by {}
+        lemma_bag_eq_map_where(tuples(db, params), tuples(db2, params), keep1, keep2, kf1, kf2);
+        lemma_bag_eq_dedup(map_where(tuples(db, params), keep1, kf1), map_where(tuples(db2, params), keep2, kf2));
+}
+
+proof fn lemma_perm_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(rows(db, params), rows(db2, params)),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(row_ok);
+    lemma_perm_row_of(db, db2, params);
+    lemma_perm_rows_keys(db, db2, params);
+        let rf1 = |k: int| row_of(db, params, k);
+        let rf2 = |k: int| row_of(db2, params, k);
+        assert forall|k: int| #[trigger] rf1(k) == rf2(k) by {}
+        assert(bag_eq(dedup(map_where(tuples(db, params), |t: Tuple| having(db, params, t.partsupp.ps_partkey), |t: Tuple| t.partsupp.ps_partkey)), dedup(map_where(tuples(db2, params), |t: Tuple| having(db2, params, t.partsupp.ps_partkey), |t: Tuple| t.partsupp.ps_partkey))));
+        lemma_bag_eq_map(dedup(map_where(tuples(db, params), |t: Tuple| having(db, params, t.partsupp.ps_partkey), |t: Tuple| t.partsupp.ps_partkey)), dedup(map_where(tuples(db2, params), |t: Tuple| having(db2, params, t.partsupp.ps_partkey), |t: Tuple| t.partsupp.ps_partkey)), rf1, rf2);
+}
+
+proof fn lemma_perm_row_ok(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|r: OutRow| #[trigger] row_ok(db, params, r) == row_ok(db2, params, r),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+
+    lemma_perm_scalar_1_value(db, db2, params);
+    lemma_perm_group_sum(db, db2, params);
+    lemma_perm_group_count(db, db2, params);
+    lemma_perm_having(db, db2, params);
+    assert forall|r: OutRow| #[trigger] row_ok(db, params, r) == row_ok(db2, params, r) by {
+    }
+}
+
+proof fn lemma_full_result_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+        full_result(db, params, out),
+    ensures
+        full_result(db2, params, out),
+{
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_3);
+    hide(scalar_1_tuples_2);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_group_count(db, db2, params);
+    lemma_perm_having(db, db2, params);
+    lemma_perm_row_ok(db, db2, params);
+    assert forall|i: int| 0 <= i < out.len() implies row_ok(db2, params, #[trigger] out[i]) by {
+        assert(row_ok(db, params, out[i]) == row_ok(db2, params, out[i]));
+    }
+    assert forall|g_ps_partkey: int| #[trigger] group_count(db2, params, g_ps_partkey) > 0 && having(db2, params, g_ps_partkey) implies exists|i: int| 0 <= i < out.len() && (#[trigger] out[i]).ps_partkey == g_ps_partkey by {
+        assert(group_count(db, params, g_ps_partkey) == group_count(db2, params, g_ps_partkey));
+        assert(having(db, params, g_ps_partkey) == having(db2, params, g_ps_partkey));
+    }
+}
+
+/// The query accepts the same answers for any reordering of the tables.
+pub proof fn lemma_query_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+    ensures
+        query_result(db, params, out) <==> query_result(db2, params, out),
+{
+    assert(db_perm(db2, db));
+    if query_result(db, params, out) {
+        lemma_full_result_perm(db, db2, params, out);
+    }
+    if query_result(db2, params, out) {
+        lemma_full_result_perm(db2, db, params, out);
+    }
 }
 
 } // verus!

@@ -27,6 +27,7 @@
 use vstd::prelude::*;
 use verus_common::bytes::*;
 use verus_common::order::*;
+use verus_common::perm::*;
 use verus_common::rat::*;
 use verus_common::rel::*;
 use verus_common::sqlfns::*;
@@ -436,6 +437,1551 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
         query_result(db, params, answer(db, params)),
 {
     lemma_answer_ok(db, params);
+}
+
+// ── Permutation invariance (verified by Verus, not trusted) ──────────────────
+// A table is a bag: the answers do not depend on the order of any table's rows.
+
+/// db2 holds the same bag of rows as db in every table.
+pub open spec fn db_perm(db: Db, db2: Db) -> bool {
+    &&& bag_eq(db.lineitem, db2.lineitem)
+    &&& bag_eq(db.supplier, db2.supplier)
+}
+
+proof fn lemma_perm_revenue0_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|lineitem: LineitemRow| #[trigger] revenue0_where_clause(db, params, lineitem) == revenue0_where_clause(db2, params, lineitem),
+{
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    assert forall|lineitem: LineitemRow| #[trigger] revenue0_where_clause(db, params, lineitem) == revenue0_where_clause(db2, params, lineitem) by {
+    }
+}
+
+proof fn lemma_perm_revenue0_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|lineitem: LineitemRow| #[trigger] bag_eq(revenue0_tuples_1(db, params, lineitem), revenue0_tuples_1(db2, params, lineitem)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_revenue0_where_clause(db, db2, params);
+    assert forall|lineitem: LineitemRow| #[trigger] bag_eq(revenue0_tuples_1(db, params, lineitem), revenue0_tuples_1(db2, params, lineitem)) by {
+        assert(revenue0_tuples_1(db, params, lineitem) == revenue0_tuples_1(db2, params, lineitem));
+    }
+}
+
+proof fn lemma_perm_revenue0_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(revenue0_tuples(db, params), revenue0_tuples(db2, params)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_revenue0_tuples_1(db, db2, params);
+        let g1 = |lineitem: LineitemRow| revenue0_tuples_1(db, params, lineitem);
+        let g2 = |lineitem: LineitemRow| revenue0_tuples_1(db2, params, lineitem);
+        assert forall|a: LineitemRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.lineitem, db2.lineitem, g1, g2);
+}
+
+proof fn lemma_perm_revenue0_group_sum(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_suppkey: int, f: spec_fn(Revenue0Tuple) -> int| #[trigger] revenue0_group_sum(db, params, g_l_suppkey, f) == revenue0_group_sum(db2, params, g_l_suppkey, f),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_revenue0_tuples(db, db2, params);
+    assert forall|g_l_suppkey: int, f: spec_fn(Revenue0Tuple) -> int| #[trigger] revenue0_group_sum(db, params, g_l_suppkey, f) == revenue0_group_sum(db2, params, g_l_suppkey, f) by {
+        assert(bag_eq(revenue0_tuples(db, params), revenue0_tuples(db2, params)));
+        let c1 = |t: Revenue0Tuple| if t.lineitem.l_suppkey == g_l_suppkey { f(t) } else { 0 };
+        let c2 = |t: Revenue0Tuple| if t.lineitem.l_suppkey == g_l_suppkey { f(t) } else { 0 };
+        assert forall|a: Revenue0Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(revenue0_tuples(db, params), revenue0_tuples(db2, params), c1);
+        lemma_sum_ext_all(revenue0_tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_revenue0_group_count(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_suppkey: int| #[trigger] revenue0_group_count(db, params, g_l_suppkey) == revenue0_group_count(db2, params, g_l_suppkey),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_revenue0_tuples(db, db2, params);
+    assert forall|g_l_suppkey: int| #[trigger] revenue0_group_count(db, params, g_l_suppkey) == revenue0_group_count(db2, params, g_l_suppkey) by {
+        assert(bag_eq(revenue0_tuples(db, params), revenue0_tuples(db2, params)));
+        let c1 = |t: Revenue0Tuple| if t.lineitem.l_suppkey == g_l_suppkey { 1int } else { 0 };
+        let c2 = |t: Revenue0Tuple| if t.lineitem.l_suppkey == g_l_suppkey { 1int } else { 0 };
+        assert forall|a: Revenue0Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(revenue0_tuples(db, params), revenue0_tuples(db2, params), c1);
+        lemma_sum_ext_all(revenue0_tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_revenue0_row_of(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_suppkey: int| #[trigger] revenue0_row_of(db, params, g_l_suppkey) == revenue0_row_of(db2, params, g_l_suppkey),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_revenue0_group_sum(db, db2, params);
+    assert forall|g_l_suppkey: int| #[trigger] revenue0_row_of(db, params, g_l_suppkey) == revenue0_row_of(db2, params, g_l_suppkey) by {
+    }
+}
+
+proof fn lemma_perm_revenue0_having(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_suppkey: int| #[trigger] revenue0_having(db, params, g_l_suppkey) == revenue0_having(db2, params, g_l_suppkey),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    assert forall|g_l_suppkey: int| #[trigger] revenue0_having(db, params, g_l_suppkey) == revenue0_having(db2, params, g_l_suppkey) by {
+    }
+}
+
+proof fn lemma_perm_revenue0_rows_keys(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(dedup(map_where(revenue0_tuples(db, params), |t: Revenue0Tuple| revenue0_having(db, params, t.lineitem.l_suppkey), |t: Revenue0Tuple| t.lineitem.l_suppkey)), dedup(map_where(revenue0_tuples(db2, params), |t: Revenue0Tuple| revenue0_having(db2, params, t.lineitem.l_suppkey), |t: Revenue0Tuple| t.lineitem.l_suppkey))),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_revenue0_tuples(db, db2, params);
+    lemma_perm_revenue0_having(db, db2, params);
+        assert(bag_eq(revenue0_tuples(db, params), revenue0_tuples(db2, params)));
+        let keep1 = |t: Revenue0Tuple| revenue0_having(db, params, t.lineitem.l_suppkey);
+        let keep2 = |t: Revenue0Tuple| revenue0_having(db2, params, t.lineitem.l_suppkey);
+        let kf1 = |t: Revenue0Tuple| t.lineitem.l_suppkey;
+        let kf2 = |t: Revenue0Tuple| t.lineitem.l_suppkey;
+        assert forall|a: Revenue0Tuple| #[trigger] keep1(a) == keep2(a) by {}
+        assert forall|a: Revenue0Tuple| #[trigger] kf1(a) == kf2(a) by {}
+        lemma_bag_eq_map_where(revenue0_tuples(db, params), revenue0_tuples(db2, params), keep1, keep2, kf1, kf2);
+        lemma_bag_eq_dedup(map_where(revenue0_tuples(db, params), keep1, kf1), map_where(revenue0_tuples(db2, params), keep2, kf2));
+}
+
+proof fn lemma_perm_revenue0_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(revenue0_rows(db, params), revenue0_rows(db2, params)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_revenue0_row_of(db, db2, params);
+    lemma_perm_revenue0_rows_keys(db, db2, params);
+        let rf1 = |k: int| revenue0_row_of(db, params, k);
+        let rf2 = |k: int| revenue0_row_of(db2, params, k);
+        assert forall|k: int| #[trigger] rf1(k) == rf2(k) by {}
+        assert(bag_eq(dedup(map_where(revenue0_tuples(db, params), |t: Revenue0Tuple| revenue0_having(db, params, t.lineitem.l_suppkey), |t: Revenue0Tuple| t.lineitem.l_suppkey)), dedup(map_where(revenue0_tuples(db2, params), |t: Revenue0Tuple| revenue0_having(db2, params, t.lineitem.l_suppkey), |t: Revenue0Tuple| t.lineitem.l_suppkey))));
+        lemma_bag_eq_map(dedup(map_where(revenue0_tuples(db, params), |t: Revenue0Tuple| revenue0_having(db, params, t.lineitem.l_suppkey), |t: Revenue0Tuple| t.lineitem.l_suppkey)), dedup(map_where(revenue0_tuples(db2, params), |t: Revenue0Tuple| revenue0_having(db2, params, t.lineitem.l_suppkey), |t: Revenue0Tuple| t.lineitem.l_suppkey)), rf1, rf2);
+}
+
+proof fn lemma_perm_rel_revenue0(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(rel_revenue0(db, params), rel_revenue0(db2, params)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_revenue0_rows(db, db2, params);
+}
+
+proof fn lemma_perm_revenue1_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|lineitem_2: LineitemRow| #[trigger] revenue1_where_clause(db, params, lineitem_2) == revenue1_where_clause(db2, params, lineitem_2),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    assert forall|lineitem_2: LineitemRow| #[trigger] revenue1_where_clause(db, params, lineitem_2) == revenue1_where_clause(db2, params, lineitem_2) by {
+    }
+}
+
+proof fn lemma_perm_revenue1_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|lineitem_2: LineitemRow| #[trigger] bag_eq(revenue1_tuples_1(db, params, lineitem_2), revenue1_tuples_1(db2, params, lineitem_2)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_revenue1_where_clause(db, db2, params);
+    assert forall|lineitem_2: LineitemRow| #[trigger] bag_eq(revenue1_tuples_1(db, params, lineitem_2), revenue1_tuples_1(db2, params, lineitem_2)) by {
+        assert(revenue1_tuples_1(db, params, lineitem_2) == revenue1_tuples_1(db2, params, lineitem_2));
+    }
+}
+
+proof fn lemma_perm_revenue1_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(revenue1_tuples(db, params), revenue1_tuples(db2, params)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_revenue1_tuples_1(db, db2, params);
+        let g1 = |lineitem_2: LineitemRow| revenue1_tuples_1(db, params, lineitem_2);
+        let g2 = |lineitem_2: LineitemRow| revenue1_tuples_1(db2, params, lineitem_2);
+        assert forall|a: LineitemRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.lineitem, db2.lineitem, g1, g2);
+}
+
+proof fn lemma_perm_revenue1_group_sum(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_suppkey: int, f: spec_fn(Revenue1Tuple) -> int| #[trigger] revenue1_group_sum(db, params, g_l_suppkey, f) == revenue1_group_sum(db2, params, g_l_suppkey, f),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_revenue1_tuples(db, db2, params);
+    assert forall|g_l_suppkey: int, f: spec_fn(Revenue1Tuple) -> int| #[trigger] revenue1_group_sum(db, params, g_l_suppkey, f) == revenue1_group_sum(db2, params, g_l_suppkey, f) by {
+        assert(bag_eq(revenue1_tuples(db, params), revenue1_tuples(db2, params)));
+        let c1 = |t: Revenue1Tuple| if t.lineitem_2.l_suppkey == g_l_suppkey { f(t) } else { 0 };
+        let c2 = |t: Revenue1Tuple| if t.lineitem_2.l_suppkey == g_l_suppkey { f(t) } else { 0 };
+        assert forall|a: Revenue1Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(revenue1_tuples(db, params), revenue1_tuples(db2, params), c1);
+        lemma_sum_ext_all(revenue1_tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_revenue1_group_count(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_suppkey: int| #[trigger] revenue1_group_count(db, params, g_l_suppkey) == revenue1_group_count(db2, params, g_l_suppkey),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_revenue1_tuples(db, db2, params);
+    assert forall|g_l_suppkey: int| #[trigger] revenue1_group_count(db, params, g_l_suppkey) == revenue1_group_count(db2, params, g_l_suppkey) by {
+        assert(bag_eq(revenue1_tuples(db, params), revenue1_tuples(db2, params)));
+        let c1 = |t: Revenue1Tuple| if t.lineitem_2.l_suppkey == g_l_suppkey { 1int } else { 0 };
+        let c2 = |t: Revenue1Tuple| if t.lineitem_2.l_suppkey == g_l_suppkey { 1int } else { 0 };
+        assert forall|a: Revenue1Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(revenue1_tuples(db, params), revenue1_tuples(db2, params), c1);
+        lemma_sum_ext_all(revenue1_tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_revenue1_row_of(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_suppkey: int| #[trigger] revenue1_row_of(db, params, g_l_suppkey) == revenue1_row_of(db2, params, g_l_suppkey),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_revenue1_group_sum(db, db2, params);
+    assert forall|g_l_suppkey: int| #[trigger] revenue1_row_of(db, params, g_l_suppkey) == revenue1_row_of(db2, params, g_l_suppkey) by {
+    }
+}
+
+proof fn lemma_perm_revenue1_having(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_suppkey: int| #[trigger] revenue1_having(db, params, g_l_suppkey) == revenue1_having(db2, params, g_l_suppkey),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    assert forall|g_l_suppkey: int| #[trigger] revenue1_having(db, params, g_l_suppkey) == revenue1_having(db2, params, g_l_suppkey) by {
+    }
+}
+
+proof fn lemma_perm_revenue1_rows_keys(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(dedup(map_where(revenue1_tuples(db, params), |t: Revenue1Tuple| revenue1_having(db, params, t.lineitem_2.l_suppkey), |t: Revenue1Tuple| t.lineitem_2.l_suppkey)), dedup(map_where(revenue1_tuples(db2, params), |t: Revenue1Tuple| revenue1_having(db2, params, t.lineitem_2.l_suppkey), |t: Revenue1Tuple| t.lineitem_2.l_suppkey))),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_revenue1_tuples(db, db2, params);
+    lemma_perm_revenue1_having(db, db2, params);
+        assert(bag_eq(revenue1_tuples(db, params), revenue1_tuples(db2, params)));
+        let keep1 = |t: Revenue1Tuple| revenue1_having(db, params, t.lineitem_2.l_suppkey);
+        let keep2 = |t: Revenue1Tuple| revenue1_having(db2, params, t.lineitem_2.l_suppkey);
+        let kf1 = |t: Revenue1Tuple| t.lineitem_2.l_suppkey;
+        let kf2 = |t: Revenue1Tuple| t.lineitem_2.l_suppkey;
+        assert forall|a: Revenue1Tuple| #[trigger] keep1(a) == keep2(a) by {}
+        assert forall|a: Revenue1Tuple| #[trigger] kf1(a) == kf2(a) by {}
+        lemma_bag_eq_map_where(revenue1_tuples(db, params), revenue1_tuples(db2, params), keep1, keep2, kf1, kf2);
+        lemma_bag_eq_dedup(map_where(revenue1_tuples(db, params), keep1, kf1), map_where(revenue1_tuples(db2, params), keep2, kf2));
+}
+
+proof fn lemma_perm_revenue1_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(revenue1_rows(db, params), revenue1_rows(db2, params)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_revenue1_row_of(db, db2, params);
+    lemma_perm_revenue1_rows_keys(db, db2, params);
+        let rf1 = |k: int| revenue1_row_of(db, params, k);
+        let rf2 = |k: int| revenue1_row_of(db2, params, k);
+        assert forall|k: int| #[trigger] rf1(k) == rf2(k) by {}
+        assert(bag_eq(dedup(map_where(revenue1_tuples(db, params), |t: Revenue1Tuple| revenue1_having(db, params, t.lineitem_2.l_suppkey), |t: Revenue1Tuple| t.lineitem_2.l_suppkey)), dedup(map_where(revenue1_tuples(db2, params), |t: Revenue1Tuple| revenue1_having(db2, params, t.lineitem_2.l_suppkey), |t: Revenue1Tuple| t.lineitem_2.l_suppkey))));
+        lemma_bag_eq_map(dedup(map_where(revenue1_tuples(db, params), |t: Revenue1Tuple| revenue1_having(db, params, t.lineitem_2.l_suppkey), |t: Revenue1Tuple| t.lineitem_2.l_suppkey)), dedup(map_where(revenue1_tuples(db2, params), |t: Revenue1Tuple| revenue1_having(db2, params, t.lineitem_2.l_suppkey), |t: Revenue1Tuple| t.lineitem_2.l_suppkey)), rf1, rf2);
+}
+
+proof fn lemma_perm_rel_revenue1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(rel_revenue1(db, params), rel_revenue1(db2, params)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_revenue1_rows(db, db2, params);
+}
+
+proof fn lemma_perm_scalar_1_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|revenue1: Revenue1Row| #[trigger] scalar_1_where_clause(db, params, revenue1) == scalar_1_where_clause(db2, params, revenue1),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    assert forall|revenue1: Revenue1Row| #[trigger] scalar_1_where_clause(db, params, revenue1) == scalar_1_where_clause(db2, params, revenue1) by {
+    }
+}
+
+proof fn lemma_perm_scalar_1_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|revenue1: Revenue1Row| #[trigger] bag_eq(scalar_1_tuples_1(db, params, revenue1), scalar_1_tuples_1(db2, params, revenue1)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_scalar_1_where_clause(db, db2, params);
+    assert forall|revenue1: Revenue1Row| #[trigger] bag_eq(scalar_1_tuples_1(db, params, revenue1), scalar_1_tuples_1(db2, params, revenue1)) by {
+        assert(scalar_1_tuples_1(db, params, revenue1) == scalar_1_tuples_1(db2, params, revenue1));
+    }
+}
+
+proof fn lemma_perm_scalar_1_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(scalar_1_tuples(db, params), scalar_1_tuples(db2, params)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_rel_revenue1(db, db2, params);
+    lemma_perm_scalar_1_tuples_1(db, db2, params);
+        let g1 = |revenue1: Revenue1Row| scalar_1_tuples_1(db, params, revenue1);
+        let g2 = |revenue1: Revenue1Row| scalar_1_tuples_1(db2, params, revenue1);
+        assert forall|a: Revenue1Row| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(rel_revenue1(db, params), rel_revenue1(db2, params), g1, g2);
+}
+
+proof fn lemma_perm_scalar_1_group_sum(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|f: spec_fn(Scalar1Tuple) -> int| #[trigger] scalar_1_group_sum(db, params, f) == scalar_1_group_sum(db2, params, f),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_scalar_1_tuples(db, db2, params);
+    assert forall|f: spec_fn(Scalar1Tuple) -> int| #[trigger] scalar_1_group_sum(db, params, f) == scalar_1_group_sum(db2, params, f) by {
+        assert(bag_eq(scalar_1_tuples(db, params), scalar_1_tuples(db2, params)));
+        lemma_sum_perm(scalar_1_tuples(db, params), scalar_1_tuples(db2, params), f);
+    }
+}
+
+proof fn lemma_perm_scalar_1_group_count(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        scalar_1_group_count(db, params) == scalar_1_group_count(db2, params),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_scalar_1_tuples(db, db2, params);
+        assert(bag_eq(scalar_1_tuples(db, params), scalar_1_tuples(db2, params)));
+        lemma_bag_eq_len(scalar_1_tuples(db, params), scalar_1_tuples(db2, params));
+}
+
+proof fn lemma_perm_scalar_1_group_max_of(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|f: spec_fn(Scalar1Tuple) -> int| #[trigger] max_of(scalar_1_group_vals(db, params, f)) == max_of(scalar_1_group_vals(db2, params, f)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_scalar_1_tuples(db, db2, params);
+    assert forall|f: spec_fn(Scalar1Tuple) -> int| #[trigger] max_of(scalar_1_group_vals(db, params, f)) == max_of(scalar_1_group_vals(db2, params, f)) by {
+        assert(bag_eq(scalar_1_tuples(db, params), scalar_1_tuples(db2, params)));
+        lemma_bag_eq_map(scalar_1_tuples(db, params), scalar_1_tuples(db2, params), f, f);
+        lemma_max_of_perm(scalar_1_group_vals(db, params, f), scalar_1_group_vals(db2, params, f));
+    }
+}
+
+proof fn lemma_perm_scalar_1_row_of(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        scalar_1_row_of(db, params) == scalar_1_row_of(db2, params),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_scalar_1_group_count(db, db2, params);
+    lemma_perm_scalar_1_group_max_of(db, db2, params);
+}
+
+proof fn lemma_perm_scalar_1_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(scalar_1_rows(db, params), scalar_1_rows(db2, params)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_scalar_1_row_of(db, db2, params);
+        assert(scalar_1_rows(db, params) == scalar_1_rows(db2, params));
+}
+
+proof fn lemma_perm_scalar_1_value(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        scalar_1_value(db, params) == scalar_1_value(db2, params),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_scalar_1_row_of(db, db2, params);
+}
+
+proof fn lemma_perm_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow, revenue0: Revenue0Row| #[trigger] where_clause(db, params, supplier, revenue0) == where_clause(db2, params, supplier, revenue0),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_scalar_1_value(db, db2, params);
+    assert forall|supplier: SupplierRow, revenue0: Revenue0Row| #[trigger] where_clause(db, params, supplier, revenue0) == where_clause(db2, params, supplier, revenue0) by {
+    }
+}
+
+proof fn lemma_perm_tuples_2(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow, revenue0: Revenue0Row| #[trigger] bag_eq(tuples_2(db, params, supplier, revenue0), tuples_2(db2, params, supplier, revenue0)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_where_clause(db, db2, params);
+    assert forall|supplier: SupplierRow, revenue0: Revenue0Row| #[trigger] bag_eq(tuples_2(db, params, supplier, revenue0), tuples_2(db2, params, supplier, revenue0)) by {
+        assert(tuples_2(db, params, supplier, revenue0) == tuples_2(db2, params, supplier, revenue0));
+    }
+}
+
+proof fn lemma_perm_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow| #[trigger] bag_eq(tuples_1(db, params, supplier), tuples_1(db2, params, supplier)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_rel_revenue0(db, db2, params);
+    lemma_perm_tuples_2(db, db2, params);
+    assert forall|supplier: SupplierRow| #[trigger] bag_eq(tuples_1(db, params, supplier), tuples_1(db2, params, supplier)) by {
+        let g1 = |revenue0: Revenue0Row| tuples_2(db, params, supplier, revenue0);
+        let g2 = |revenue0: Revenue0Row| tuples_2(db2, params, supplier, revenue0);
+        assert forall|a: Revenue0Row| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(rel_revenue0(db, params), rel_revenue0(db2, params), g1, g2);
+    }
+}
+
+proof fn lemma_perm_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(tuples(db, params), tuples(db2, params)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(rows);
+    lemma_perm_tuples_1(db, db2, params);
+        let g1 = |supplier: SupplierRow| tuples_1(db, params, supplier);
+        let g2 = |supplier: SupplierRow| tuples_1(db2, params, supplier);
+        assert forall|a: SupplierRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.supplier, db2.supplier, g1, g2);
+}
+
+proof fn lemma_perm_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(rows(db, params), rows(db2, params)),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    lemma_perm_tuples(db, db2, params);
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        let f1 = |t: Tuple| OutRow { s_suppkey: t.supplier.s_suppkey, s_name: t.supplier.s_name, s_address: t.supplier.s_address, s_phone: t.supplier.s_phone, total_revenue: t.revenue0.total_revenue };
+        let f2 = |t: Tuple| OutRow { s_suppkey: t.supplier.s_suppkey, s_name: t.supplier.s_name, s_address: t.supplier.s_address, s_phone: t.supplier.s_phone, total_revenue: t.revenue0.total_revenue };
+        assert forall|a: Tuple| #[trigger] f1(a) == f2(a) by {}
+        lemma_bag_eq_map(tuples(db, params), tuples(db2, params), f1, f2);
+}
+
+proof fn lemma_full_result_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+        full_result(db, params, out),
+    ensures
+        full_result(db2, params, out),
+{
+    hide(revenue0_where_clause);
+    hide(revenue0_tuples_1);
+    hide(revenue0_tuples);
+    hide(revenue0_group_sum);
+    hide(revenue0_group_count);
+    hide(revenue0_row_of);
+    hide(revenue0_having);
+    hide(revenue0_rows);
+    hide(rel_revenue0);
+    hide(revenue1_where_clause);
+    hide(revenue1_tuples_1);
+    hide(revenue1_tuples);
+    hide(revenue1_group_sum);
+    hide(revenue1_group_count);
+    hide(revenue1_row_of);
+    hide(revenue1_having);
+    hide(revenue1_rows);
+    hide(rel_revenue1);
+    hide(scalar_1_where_clause);
+    hide(scalar_1_tuples_1);
+    hide(scalar_1_tuples);
+    hide(scalar_1_group_sum);
+    hide(scalar_1_group_count);
+    hide(scalar_1_row_of);
+    hide(scalar_1_rows);
+    hide(scalar_1_value);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_tuples(db, db2, params);
+    lemma_perm_rows(db, db2, params);
+    assert(bag_eq(rows(db, params), rows(db2, params)));
+}
+
+/// The query accepts the same answers for any reordering of the tables.
+pub proof fn lemma_query_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+    ensures
+        query_result(db, params, out) <==> query_result(db2, params, out),
+{
+    assert(db_perm(db2, db));
+    if query_result(db, params, out) {
+        lemma_full_result_perm(db, db2, params, out);
+    }
+    if query_result(db2, params, out) {
+        lemma_full_result_perm(db2, db, params, out);
+    }
 }
 
 } // verus!
