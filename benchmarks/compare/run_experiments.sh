@@ -15,7 +15,7 @@ cd "$ROOT"
 MODE=${1:?mode: read | writerate | plots}
 OUT=${2:?out root, e.g. benchmarks/compare/results/final_$(date +%Y%m%d)}
 REPEATS=${REPEATS:-3}
-DB=${DB:-/flash1/akhilvb/tpch/tpch_sf20.duckdb}
+DB=${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}
 SF=${SF:-20}
 BIN=${BIN:-$ROOT/build-verus-duckdb/aux_compare}
 CAP=${CAP:-64G}                       # memory cap of each experiment process tree

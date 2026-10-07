@@ -23,7 +23,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DB="${DB:-/flash1/akhilvb/tpch/tpch_sf20.duckdb}"
+DB="${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}"
 WORK="${WORK:-/flash1/akhilvb/tpch/work}"
 OUT="${OUT:-${ROOT}/benchmarks/verus/results/sf20_$(date +%Y%m%d_%H%M%S)}"
 QUERIES="${QUERIES:-$(seq -s ' ' 1 22)}"

@@ -16,7 +16,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DB="${DB:-/flash1/akhilvb/tpch/tpch_sf20.duckdb}"
+DB="${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}"
 WORK="${WORK:-/flash1/akhilvb/tpch/work}"
 QUERIES="${QUERIES:-$(seq -s ' ' 1 22)}"
 CALIBRATOR="${CALIBRATOR:-${ROOT}/build-verus-duckdb/calibrate_shared_aux_cost_model}"
