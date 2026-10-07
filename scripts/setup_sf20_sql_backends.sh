@@ -10,11 +10,21 @@
 #
 # Things that decide whether the comparison is fair or even valid:
 #  * Postgres: the container from start_accel_pg_test.sh uses shared_buffers=256MB and autovacuum=off.  At SF20
-#    give the base DBMS a real cache (ACCEL_PG_SHARED_BUFFERS=16GB, ACCEL_PG_SHM_SIZE=20g) before running.
-#  * MySQL:    innodb_buffer_pool_size defaults to 128MB; set it (e.g. 24G) in the container's server args.
-#              The accelerator plugin reads the database name from the SERVER's environment, so the container
-#              must run with TPCH_MYSQL_DB=$MYSQL_DB (default accel_mysql_test otherwise), and its text columns
-#              must compare bytewise (utf8mb4_0900_bin): this script creates the database that way.
+#    give the base DBMS a real cache, keep the data off a small root disk, and build the extension in it:
+#      ACCEL_PG_CONTAINER=accel_pg_sf20 PG_PORT=5436 ACCEL_PG_DATA=/big/disk/pg/data \
+#      ACCEL_PG_SHARED_BUFFERS=16GB ACCEL_PG_SHM_SIZE=20g \
+#      ACCEL_PG_EXTRA_ARGS="-c max_wal_size=32GB -c checkpoint_timeout=30min -c maintenance_work_mem=4GB" \
+#        bash scripts/start_accel_pg_test.sh
+#      ACCEL_PG_CONTAINER=accel_pg_sf20 bash scripts/build_accel_postgres_extension.sh
+#  * MySQL:    innodb_buffer_pool_size defaults to 128MB; set it.  The plugin scans the database named by the server's
+#              MYSQL_DATABASE (or mysql_accel_set_scan_database, which run_sql_backend.py calls on every accelerator
+#              connection).  The per-query modules follow MySQL's DEFAULT collation (case-insensitive), so this script
+#              creates the database with the default collation; do not use a _bin one.
+#      ACCEL_MYSQL_CONTAINER=accel_mysql_sf20 MYSQL_TCP_PORT=3320 ACCEL_MYSQL_VOLUME=/big/disk/mysql/data \
+#      MYSQL_DATABASE=tpch_sf20 \
+#      ACCEL_MYSQL_EXTRA_ARGS="--innodb-buffer-pool-size=24G --innodb-redo-log-capacity=8G --max-allowed-packet=256M" \
+#        bash scripts/start_accel_mysql_test.sh
+#      ACCEL_MYSQL_CONTAINER=accel_mysql_sf20 TPCH_MYSQL_DB=tpch_sf20 bash scripts/build_accel_mysql_plugin.sh
 #  * Both engines get the same indexes (PKs + the usual FK/date indexes); the baseline is not handicapped.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,16 +66,16 @@ postgres)
   echo "indexes $(date +%T)"
   psql_ -d "$PG_DB" -f "$ROOT/scripts/postgres_tpch_indexes.sql"
   psql_ -d "$PG_DB" -c "LOAD '$PG_SO'" -f "$ROOT/scripts/postgres_register_tpch_all.sql"
-  psql_ -d "$PG_DB" -f "$ROOT/scripts/postgres_accel_mutation_triggers.sql"
+  psql_ -d "$PG_DB" -f "$ROOT/scripts/postgres_tpch_mutation_triggers.sql"   # per-table capture triggers (ids 1..8)
   psql_ -d "$PG_DB" -Atc "SELECT 'lineitem', COUNT(*) FROM lineitem" \
     -c "SELECT 'accelerators', COUNT(*) FROM pg_proc WHERE proname LIKE 'accel_tpch_q%_aux'" \
     -c "SELECT 'triggers', COUNT(*) FROM pg_trigger WHERE NOT tgisinternal"
   ;;
 mysql)
-  have=$(docker exec "$MYSQL_CONTAINER" printenv TPCH_MYSQL_DB 2>/dev/null || true)
-  [ "$have" = "$MYSQL_DB" ] || { echo "container $MYSQL_CONTAINER runs with TPCH_MYSQL_DB='$have', need '$MYSQL_DB'" \
-    "(the plugin scans that database): start a container with -e TPCH_MYSQL_DB=$MYSQL_DB" >&2; exit 1; }
-  mysql_ -e "DROP DATABASE IF EXISTS \`$MYSQL_DB\`; CREATE DATABASE \`$MYSQL_DB\` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"
+  have=$(docker exec "$MYSQL_CONTAINER" printenv MYSQL_DATABASE 2>/dev/null || true)
+  [ "$have" = "$MYSQL_DB" ] || echo "note: container $MYSQL_CONTAINER has MYSQL_DATABASE='$have' (not '$MYSQL_DB'); the plugin's scan" \
+    "database then comes from mysql_accel_set_scan_database, which run_sql_backend.py calls" >&2
+  mysql_ -e "DROP DATABASE IF EXISTS \`$MYSQL_DB\`; CREATE DATABASE \`$MYSQL_DB\`"   # default collation (utf8mb4_0900_ai_ci)
   mysql_ "$MYSQL_DB" < "$ROOT/scripts/mysql_tpch_schema.sql"
   "$ROOT/scripts/mysql_register_functions.sh" | grep -v '^--' | grep -v '^$' | while IFS= read -r line; do
     [[ "$line" == INSTALL* ]] && { mysql_ -e "$line" || true; continue; }

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Start/recreate accel_pg_test (Postgres 17) with source mounts for extension builds.
+# ACCEL_PG_EXTRA_ARGS: more server arguments (e.g. "-c maintenance_work_mem=4GB"), after the defaults so they win.
 # Defaults: portable cache under $HOME/.cache/accel_pg (override with ACCEL_PG_DATA / ACCEL_PG_BUILD).
 set -euo pipefail
 
@@ -41,6 +42,7 @@ docker run -d --name "$NAME" \
   -c maintenance_work_mem=256MB \
   -c max_wal_size=2GB \
   -c autovacuum=off \
+  ${ACCEL_PG_EXTRA_ARGS:-} \
   >/dev/null
 
 for _ in $(seq 1 90); do

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Start/recreate accel_mysql_test (MySQL 8.4) with source mounts for plugin builds.
+# ACCEL_MYSQL_EXTRA_ARGS: more mysqld arguments (e.g. "--innodb-buffer-pool-size=24G").  ACCEL_MYSQL_VOLUME may be a
+# host path (bind mount), to keep the data off the Docker volume disk.
 # Defaults: portable cache under $HOME/.cache/accel_mysql (override with ACCEL_MYSQL_DATA / ACCEL_MYSQL_BUILD).
 set -euo pipefail
 
@@ -39,7 +41,7 @@ docker run -d --name "$NAME" \
   -v "${DUCKDB_ROOT}:/accel-duckdb:ro" \
   -v "${BUILD_DIR}:/accel-build" \
   "${IMAGE}" \
-  --local-infile=1 \
+  --local-infile=1 ${ACCEL_MYSQL_EXTRA_ARGS:-} \
   >/dev/null
 
 for _ in $(seq 1 120); do
