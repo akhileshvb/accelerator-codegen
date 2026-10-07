@@ -266,6 +266,20 @@ std::size_t RfBatchOrders() {
   return static_cast<std::size_t>(n);
 }
 
+// ACCEL_RF_DIR=<dir>: use the TPC-H update sets that the official `dbgen -s SF -U N` wrote there
+// (orders.tbl.uK, lineitem.tbl.uK, delete.K, K = 1..N) for the RF1 / RF2 commits, instead of cloning orders.
+// Commit 2K-1 is RF1 of set K (insert its orders and lineitems), commit 2K is RF2 of set K (delete its orders
+// and their lineitems), the order of the specification.  ACCEL_RF_BATCH_ORDERS=B then uses only the first B
+// orders of each set (default: the whole set, 1500 x SF orders = 0.1% of the orders).
+std::string RfDir() {
+  const char *v = std::getenv("ACCEL_RF_DIR");
+  return v && *v ? std::string(v) : std::string();
+}
+std::size_t RfSetOrders() { // 0: the whole set
+  const char *v = std::getenv("ACCEL_RF_BATCH_ORDERS");
+  return v && *v ? static_cast<std::size_t>(std::max<long>(1, std::strtol(v, nullptr, 10))) : 0;
+}
+
 // ACCEL_RF_ONLY=1: the write stream is RF2 / RF1 only (no dimension point writes).
 bool RfOnly() {
   const char *v = std::getenv("ACCEL_RF_ONLY");
@@ -273,8 +287,10 @@ bool RfOnly() {
 }
 
 // ACCEL_DIM_AFTER_RF=1: every RF1 / RF2 commit is followed by one point write of each kind that changes
-// the tables RF leaves alone (part, partsupp, supplier, nation, region; Q2, Q11, Q16 read only those),
-// unpaced: the writer's rate is the rate of the refreshes.
+// the tables RF leaves alone (supplier update, part delete + insert, supplier delete + insert, partsupp update;
+// Q2, Q11, Q16 read only part / partsupp / supplier / nation / region), unpaced: the writer's rate is the
+// rate of the refreshes.  (Nation and region writes are left out: they rebuild many accelerators and the
+// tables are static in practice.)
 bool DimAfterRf() {
   const char *v = std::getenv("ACCEL_DIM_AFTER_RF");
   return v && *v && std::string(v) != "0";
@@ -285,14 +301,16 @@ class Writes {
 public:
   // batch: orders per RF1 / RF2 commit (1: the mini-chunk).  Dimension point writes are always one row.
   Writes(duckdb::Connection &c, std::size_t max_writes, uint64_t seed, std::size_t batch = 1)
-      : rng(seed), batch(std::max<std::size_t>(batch, 1)), rf_only(RfOnly()), dim_after_rf(DimAfterRf()) {
+      : rng(seed), batch(std::max<std::size_t>(batch, 1)), rf_only(RfOnly()), dim_after_rf(DimAfterRf()),
+        use_sets(!RfDir().empty()), set_orders(RfSetOrders()) {
     const auto n = std::to_string((max_writes + 16) * this->batch);
     low_orders = Keys(c, "SELECT o_orderkey FROM orders ORDER BY o_orderkey LIMIT " + n);
     template_orders = Keys(c, "SELECT o_orderkey FROM orders ORDER BY o_orderkey DESC LIMIT 1000");
     // large orders (TPC-H Q18's "large volume customer" orders): every fourth
     // RF1 clones one, so writes also change answers that only such orders reach
-    large_orders = Keys(c, "SELECT l_orderkey FROM lineitem GROUP BY l_orderkey HAVING sum(l_quantity) > 300 "
-                           "ORDER BY l_orderkey DESC LIMIT 200");
+    if (!use_sets)
+      large_orders = Keys(c, "SELECT l_orderkey FROM lineitem GROUP BY l_orderkey HAVING sum(l_quantity) > 300 "
+                             "ORDER BY l_orderkey DESC LIMIT 200");
     mid_orders = Keys(c, "SELECT o_orderkey FROM orders ORDER BY o_orderkey LIMIT " + n +
                              " OFFSET (SELECT count(*) // 2 FROM orders)");
     const auto dims = std::to_string(dim_after_rf ? max_writes + 16 : max_writes / 5 + 16);
@@ -306,11 +324,26 @@ public:
                         " OFFSET (SELECT count(*) // 3 FROM customer)");
     mid_parts = Keys(c, "SELECT p_partkey FROM part ORDER BY p_partkey LIMIT " + dims +
                             " OFFSET (SELECT count(*) // 2 FROM part)");
-    nations = Keys(c, "SELECT n_nationkey FROM nation ORDER BY n_nationkey");
-    regions = Keys(c, "SELECT r_regionkey FROM region ORDER BY r_regionkey");
     next_order = Keys(c, "SELECT max(o_orderkey) FROM orders")[0] + 1;
     next_part = Keys(c, "SELECT max(p_partkey) FROM part")[0] + 1;
+    // new keys are max + 1, and the accelerators pack TPC-H keys into 32 bits: a database holding keys of a
+    // different magnitude (left by other tests) would make every insert fail inside an accelerator
+    Require(next_order < 2000000000 && next_part < 2000000000, "orders / part keys above 2e9: the database is not plain "
+            "TPC-H (polluted by earlier tests?); use a clean copy");
     next_supp = Keys(c, "SELECT max(s_suppkey) FROM supplier")[0] + 1;
+    if (use_sets)
+      LoadRfSets(c, max_writes);
+  }
+
+  bool UsesSets() const { return use_sets; }
+  std::size_t SetsLoaded() const { return sets_loaded; }
+  // JSON fragment (no braces): where the RF1 / RF2 data came from
+  std::string RfInfoJson() const {
+    if (!use_sets)
+      return "\"rf_source\":\"clone\"";
+    return "\"rf_source\":\"tpch_update_sets\",\"rf_sets_loaded\":" + std::to_string(sets_loaded) +
+           ",\"rf_orders_per_set\":" + std::to_string(set_orders_total) + ",\"rf_orders_used\":" +
+           std::to_string(set_orders ? std::min(set_orders, set_orders_total) : set_orders_total);
   }
 
   std::pair<std::string, std::string> Next() {
@@ -325,6 +358,8 @@ public:
       if (!(rf_only || i % 5 != 4))
         dim_kind = static_cast<int>(dim++ % 9);
     }
+    if (dim_kind < 0 && use_sets)
+      return NextRfFromSets();
     if (dim_kind < 0) { // refresh: RF2 / RF1 alternating (ACCEL_RF_ONLY: no point writes)
       if (rf++ % 2 == 0) {
         if (batch == 1) {
@@ -396,12 +431,6 @@ public:
     case 7:
       return {"lineitem update", "UPDATE lineitem SET l_quantity = l_quantity + 1, l_discount = 0.04 "
                                  "WHERE l_orderkey = " + s(Take(mid_orders, mid_order_at))};
-    case 9:
-      return {"nation update", "UPDATE nation SET n_comment = reverse(n_comment) WHERE n_nationkey = " +
-                                   s(nations[nation_at++ % nations.size()])};
-    case 10:
-      return {"region update", "UPDATE region SET r_comment = reverse(r_comment) WHERE r_regionkey = " +
-                                   s(regions[region_at++ % regions.size()])};
     default:
       return {"orders update", std::string("UPDATE orders SET o_comment = o_comment || ' unusual accounts', "
                                            "o_orderpriority = '") + priorities[rng() % 5] +
@@ -413,8 +442,69 @@ public:
   bool NextIsPaced() const { return !dim_after_rf || seq % (1 + sizeof(kRfDimKinds) / sizeof(kRfDimKinds[0])) == 0; }
 
 private:
-  // supplier update, part delete, part insert, supplier delete, supplier insert, partsupp update, nation update, region update
-  static constexpr int kRfDimKinds[] = {0, 2, 3, 4, 5, 6, 9, 10};
+  // Stage every update set the run can use (at most max_writes / 2 + 2) in tables of the working database, with the
+  // schema of the base tables: rf_o_K (orders), rf_l_K (lineitem), rf_d_K (the keys RF2 deletes).
+  void LoadRfSets(duckdb::Connection &c, std::size_t max_writes) {
+    const std::string dir = RfDir();
+    const auto exists = [&](const std::string &f) { return std::ifstream(f).good(); };
+    const auto columns = [&](const std::string &table) {
+      auto r = c.Query("SELECT column_name, data_type FROM duckdb_columns() WHERE table_name = '" + table +
+                       "' ORDER BY column_index");
+      Require(r && !r->HasError() && r->RowCount() > 0, "no columns of " + table);
+      std::vector<std::pair<std::string, std::string>> cols;
+      for (duckdb::idx_t i = 0; i < r->RowCount(); ++i)
+        cols.emplace_back(r->GetValue(0, i).ToString(), r->GetValue(1, i).ToString());
+      return cols;
+    };
+    // the .tbl files end every line with '|': one extra (empty) column
+    const auto stage = [&](const std::string &name, const std::string &file,
+                           const std::vector<std::pair<std::string, std::string>> &cols) {
+      std::string sel, rc;
+      for (std::size_t j = 0; j < cols.size() + 1; ++j) {
+        rc += (j ? "," : "") + std::string("'c") + std::to_string(j) + "':'VARCHAR'";
+        if (j < cols.size())
+          sel += (j ? ", " : "") + std::string("CAST(c") + std::to_string(j) + " AS " + cols[j].second + ") AS " + cols[j].first;
+      }
+      auto r = c.Query("CREATE OR REPLACE TABLE " + name + " AS SELECT " + sel + " FROM read_csv('" + file +
+                       "', delim='|', header=false, columns={" + rc + "})");
+      Require(r && !r->HasError(), r ? r->GetError() : "staging " + name);
+    };
+    const auto orders_cols = columns("orders"), lineitem_cols = columns("lineitem");
+    const std::size_t want = max_writes / 2 + 2;
+    while (sets_loaded < want && exists(dir + "/orders.tbl.u" + std::to_string(sets_loaded + 1)) &&
+           exists(dir + "/lineitem.tbl.u" + std::to_string(sets_loaded + 1)) &&
+           exists(dir + "/delete." + std::to_string(sets_loaded + 1))) {
+      const auto k = std::to_string(++sets_loaded);
+      stage("rf_o_" + k, dir + "/orders.tbl.u" + k, orders_cols);
+      stage("rf_l_" + k, dir + "/lineitem.tbl.u" + k, lineitem_cols);
+      stage("rf_d_" + k, dir + "/delete." + k, {{"k", "BIGINT"}});
+    }
+    Require(sets_loaded > 0, "no TPC-H update sets in " + dir + " (scripts/gen_tpch_refresh_sets.sh)");
+    set_orders_total = Keys(c, "SELECT count(*) FROM rf_o_1")[0];
+  }
+
+  // RF1 of set K for commit 2K-1, RF2 of set K for commit 2K.
+  std::pair<std::string, std::string> NextRfFromSets() {
+    const auto idx = rf++;
+    const auto set = idx / 2 + 1;
+    Require(set <= sets_loaded, "TPC-H update sets exhausted after " + std::to_string(sets_loaded) +
+                                     " (generate more with dbgen -U, or lower the rates / seconds)");
+    const auto k = std::to_string(set);
+    const auto lim = std::to_string(set_orders);
+    if (idx % 2 == 0) { // RF1: insert the orders of set K and their lineitems
+      if (!set_orders)
+        return {"rf1", "INSERT INTO orders SELECT * FROM rf_o_" + k + "; INSERT INTO lineitem SELECT * FROM rf_l_" + k};
+      const std::string keys = "SELECT o_orderkey FROM rf_o_" + k + " ORDER BY o_orderkey LIMIT " + lim;
+      return {"rf1", "INSERT INTO orders SELECT * FROM rf_o_" + k + " WHERE o_orderkey IN (" + keys +
+                         "); INSERT INTO lineitem SELECT * FROM rf_l_" + k + " WHERE l_orderkey IN (" + keys + ")"};
+    }
+    // RF2: delete the orders listed in delete.K, with their lineitems
+    const std::string keys = set_orders ? "SELECT k FROM rf_d_" + k + " ORDER BY k LIMIT " + lim : "SELECT k FROM rf_d_" + k;
+    return {"rf2", "DELETE FROM lineitem WHERE l_orderkey IN (" + keys + "); DELETE FROM orders WHERE o_orderkey IN (" + keys + ")"};
+  }
+
+  // supplier update, part delete, part insert, supplier delete, supplier insert, partsupp update
+  static constexpr int kRfDimKinds[] = {0, 2, 3, 4, 5, 6};
   static std::vector<int64_t> Keys(duckdb::Connection &c, const std::string &sql) {
     auto r = c.Query(sql);
     Require(r && !r->HasError(), r ? r->GetError() : sql);
@@ -433,8 +523,9 @@ private:
   std::size_t batch;
   bool rf_only;
   bool dim_after_rf;
-  std::vector<int64_t> nations, regions;
-  std::size_t nation_at = 0, region_at = 0;
+  bool use_sets;
+  std::size_t set_orders; // orders used from each update set (0: all)
+  std::size_t sets_loaded = 0, set_orders_total = 0;
   std::vector<int64_t> low_orders, template_orders, large_orders, mid_orders, low_parts, template_parts, low_supps, template_supps,
       mid_supps, custs, mid_parts;
   std::size_t low_at = 0, mid_order_at = 0, low_part_at = 0, low_supp_at = 0, mid_supp_at = 0, cust_at = 0,
@@ -650,7 +741,7 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
             << ",\"read_p50_us\":" << Percentile(latencies, 0.5) << ",\"read_p95_us\":" << Percentile(latencies, 0.95)
             << ",\"read_p99_us\":" << Percentile(latencies, 0.99) << ",\"read_errors\":" << read_errors
             << ",\"read_error_example\":" << Json(read_error_example.substr(0, 300))
-            << ",\"rf_batch_orders\":" << RfBatchOrders() << ",\"rf_only\":" << (RfOnly() ? "true" : "false") << ",\"dim_after_rf\":" << (DimAfterRf() ? "true" : "false") << ",\"writes_per_sec_target\":" << writes_per_sec << ",\"writes\":" << measured_writes
+            << ",\"rf_batch_orders\":" << RfBatchOrders() << "," << writes.RfInfoJson() << ",\"rf_only\":" << (RfOnly() ? "true" : "false") << ",\"dim_after_rf\":" << (DimAfterRf() ? "true" : "false") << ",\"writes_per_sec_target\":" << writes_per_sec << ",\"writes\":" << measured_writes
             << ",\"writes_per_sec\":" << measured_writes / seconds << ",\"commit_p50_us\":" << Percentile(commit_us, 0.5)
             << ",\"commit_p99_us\":" << Percentile(commit_us, 0.99)
             << ",\"writes_total\":" << total_writes << ",\"max_commit_us\":" << max_commit_us << ",\"write_errors\":" << write_errors
@@ -732,6 +823,16 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
   if (const char *mc = std::getenv("ACCEL_WRITE_MAX_COMMITS"); mc && *mc) // calibration: the run ends after N commits
     pool_writes = std::min(pool_writes, std::strtod(mc, nullptr));
   Writes writes(qc, static_cast<std::size_t>(pool_writes) + 32 * rates.size() * reps, seed, RfBatchOrders());
+  if (writes.UsesSets()) { // fail now, not hours in, if the runs need more update sets than were generated
+    double commits = 0;
+    for (const double w : rates)
+      if (w > 0)
+        commits += (w * (seconds + warmup) + 2) * reps;
+    Require(2 * writes.SetsLoaded() >= commits, "the runs need about " + std::to_string(static_cast<long>(commits)) +
+                                                    " RF commits but only " + std::to_string(writes.SetsLoaded()) +
+                                                    " update sets (2 commits each) are available: generate more "
+                                                    "(scripts/gen_tpch_refresh_sets.sh) or shorten the runs");
+  }
   std::vector<std::unique_ptr<DuckdbRuntime>> runtimes;
   std::vector<DuckdbRuntime *> live;
   std::string builds = "{", build_rss = "{";
@@ -986,7 +1087,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
             << ",\"rss_mb_end\":" << RssMb().first << ",\"rss_mb_peak\":" << RssMb().second << ",\"reads\":" << reads << ",\"qps\":" << reads / seconds
             << ",\"read_total_us\":" << read_total_us << ",\"read_errors\":" << read_errors
             << ",\"read_error_example\":" << Json(read_error_example.substr(0, 300))
-            << ",\"rf_batch_orders\":" << RfBatchOrders() << ",\"rf_only\":" << (RfOnly() ? "true" : "false") << ",\"dim_after_rf\":" << (DimAfterRf() ? "true" : "false") << ",\"writes_per_sec_target\":" << writes_per_sec << ",\"writes\":" << measured_writes
+            << ",\"rf_batch_orders\":" << RfBatchOrders() << "," << writes.RfInfoJson() << ",\"rf_only\":" << (RfOnly() ? "true" : "false") << ",\"dim_after_rf\":" << (DimAfterRf() ? "true" : "false") << ",\"writes_per_sec_target\":" << writes_per_sec << ",\"writes\":" << measured_writes
             << ",\"writes_total\":" << total_writes << ",\"writes_per_sec\":" << measured_writes / seconds
             << ",\"commit_p50_us\":" << Percentile(commit_us, 0.5) << ",\"commit_p99_us\":" << Percentile(commit_us, 0.99)
             << ",\"commit_total_us\":" << commit_total_us << ",\"max_commit_us\":" << max_commit_us

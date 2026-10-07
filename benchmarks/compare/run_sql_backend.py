@@ -143,6 +143,12 @@ class Db:
                                      autocommit=True, local_infile=False, read_timeout=int(a.query_timeout) + 600)
             self.cur = self.c.cursor()
             self.cur.execute("SET SESSION sql_mode = CONCAT(@@sql_mode, ',PIPES_AS_CONCAT')")
+            if accel:  # the plugin scans this database to build / rebuild state (a process-wide setting)
+                try:
+                    self.cur.execute("SELECT mysql_accel_set_scan_database(%s)", (a.db,))
+                    self.cur.fetchall()
+                except Exception:  # noqa: BLE001  (a plugin without the UDF reads MYSQL_DATABASE)
+                    pass
         self.set_timeout(a.query_timeout)
 
     def set_timeout(self, s):
@@ -225,7 +231,8 @@ def mysql_trigger_statements():
     text = open(MYSQL_TRIGGER_SQL).read()
     out = []
     for stmt in text.split("//"):
-        stmt = "\n".join(l for l in stmt.splitlines() if not l.strip().upper().startswith("DELIMITER")).strip()
+        stmt = "\n".join(l for l in stmt.splitlines()
+                         if not l.strip().upper().startswith("DELIMITER") and not l.lstrip().startswith("--")).strip()
         if stmt:
             out.append(stmt)
     return out
@@ -322,8 +329,12 @@ class Stream:
     """Deterministic, reversible TPC-H writes.  next() -> (kind, tables, prepare) where prepare()
     builds the rows outside the timed commit and returns apply(db) (run inside the transaction)."""
 
-    def __init__(self, db, commits, batch, seed, rf_only=False, dim_after_rf=False):
+    def __init__(self, db, commits, batch, seed, rf_only=False, dim_after_rf=False, rf_dir=None, set_orders=0):
         self.rng = random.Random(seed)
+        self.rf_dir = rf_dir          # TPC-H update sets (dbgen -U): RF1 / RF2 from them instead of cloning orders
+        self.set_orders = set_orders  # orders used from each set (0: all)
+        self.rf_orders_used = 0
+        self._set = (None, None, None, None)
         self.rf_only = rf_only
         self.dim_after_rf = dim_after_rf
         self.batch = batch
@@ -336,9 +347,9 @@ class Stream:
                             f"OFFSET {(db.query('SELECT COUNT(*) FROM orders')[0][0][0]) // 2}")
         self.template_orders = k("SELECT o_orderkey FROM orders ORDER BY o_orderkey DESC LIMIT 1000")
         # large-volume orders (Q18): every fourth RF1 order clones one (a full lineitem scan; cached per process)
-        self.large_orders = _cached(db, "large_orders",
-                                    "SELECT l_orderkey FROM lineitem GROUP BY l_orderkey HAVING SUM(l_quantity) > 300 "
-                                    "ORDER BY l_orderkey DESC LIMIT 200", k)
+        self.large_orders = [] if rf_dir else _cached(
+            db, "large_orders", "SELECT l_orderkey FROM lineitem GROUP BY l_orderkey HAVING SUM(l_quantity) > 300 "
+                                "ORDER BY l_orderkey DESC LIMIT 200", k)
         self.low_parts = k(f"SELECT p_partkey FROM part ORDER BY p_partkey LIMIT {dims}")
         self.mid_parts = k(f"SELECT p_partkey FROM part ORDER BY p_partkey LIMIT {dims} "
                            f"OFFSET {(db.query('SELECT COUNT(*) FROM part')[0][0][0]) // 2}")
@@ -359,6 +370,10 @@ class Stream:
         self.next_order = k("SELECT MAX(o_orderkey) FROM orders")[0] + 1
         self.next_part = k("SELECT MAX(p_partkey) FROM part")[0] + 1
         self.next_supp = k("SELECT MAX(s_suppkey) FROM supplier")[0] + 1
+        # new keys are max + 1 and the accelerators pack TPC-H keys into 32 bits: a database holding keys of a
+        # different magnitude (left by other tests) would make every insert fail inside an accelerator
+        assert max(self.next_order, self.next_part, self.next_supp) < 2_000_000_000, \
+            "a key above 2e9: the database is not plain TPC-H (polluted by earlier tests?); use a clean one"
         self.at = {}
         self.tmpl = {}  # template key -> cached rows
         self.seq = self.rf = self.rf1 = self.dim = 0
@@ -384,10 +399,11 @@ class Stream:
         return not self.dim_after_rf or self.seq % (1 + len(self.rf_dims())) == 0
 
     def rf_dims(self):
-        """The point writes that follow each refresh (dim_after_rf): every kind that changes the tables
-        RF leaves alone (part, partsupp, supplier, nation, region: all Q2, Q11, Q16 read)."""
+        """The point writes that follow each refresh (dim_after_rf): the kinds that change the tables RF leaves
+        alone (part, partsupp, supplier: all Q2, Q11, Q16 read them).  Nation and region writes are left out: they
+        rebuild many accelerators and the tables are static in practice."""
         return [self.supplier_update, self.part_delete, self.part_insert, self.supplier_delete,
-                self.supplier_insert, self.partsupp_update, self.nation_update, self.region_update]
+                self.supplier_insert, self.partsupp_update]
 
     def next(self, db):
         i = self.seq
@@ -402,6 +418,10 @@ class Stream:
             return [self.supplier_update, self.customer_update, self.part_delete, self.part_insert, self.supplier_delete,
                     self.supplier_insert, self.partsupp_update, self.lineitem_update, self.orders_update,
                     self.nation_update, self.region_update][d % 11](db)
+        if self.rf_dir:  # the specification's order: RF1 of set K, then RF2 of set K
+            idx = self.rf
+            self.rf += 1
+            return self.rf1_set(db, idx // 2 + 1) if idx % 2 == 0 else self.rf2_set(db, idx // 2 + 1)
         if self.rf % 2 == 0:
             self.rf += 1
             return self.rf2(db)
@@ -409,8 +429,8 @@ class Stream:
         return self.rf1_(db)
 
     # --- refresh -------------------------------------------------------------------------
-    def rf2(self, db):
-        keys = [self.take("low_orders", self.low_orders) for _ in range(self.batch)]
+    def rf2(self, db, keys=None):
+        keys = keys or [self.take("low_orders", self.low_orders) for _ in range(self.batch)]
         orders, lineitems = db.select_in("orders", "o_orderkey", keys), db.select_in("lineitem", "l_orderkey", keys)
 
         def apply(d):
@@ -421,6 +441,45 @@ class Stream:
         self.written["orders"] += 1
         self.written["lineitem"] += 1
         return "rf2", apply
+
+    # --- refresh from the TPC-H update sets (official dbgen -U output) --------------------------
+    def load_set(self, n):
+        """(orders rows, lineitem rows, delete keys) of update set n, as read from the files (cells stay strings:
+        the databases cast them to the column types); only the last set is kept in memory."""
+        if self._set[0] != n:
+            def tbl(name):
+                path = os.path.join(self.rf_dir, name)
+                assert os.path.exists(path), f"TPC-H update set {n} missing: {path} (scripts/gen_tpch_refresh_sets.sh)"
+                with open(path) as f:
+                    return [tuple(line.rstrip("\n").split("|")[:-1]) for line in f]  # every line ends with '|'
+            orders, lineitems = tbl(f"orders.tbl.u{n}"), tbl(f"lineitem.tbl.u{n}")
+            deletes = [int(r[0]) for r in tbl(f"delete.{n}")]
+            self._set = (n, orders, lineitems, deletes)
+        return self._set[1:]
+
+    def rf1_set(self, db, n):
+        orders, lineitems, _ = self.load_set(n)
+        if self.set_orders:
+            orders = orders[:self.set_orders]
+            keep = {r[0] for r in orders}
+            lineitems = [r for r in lineitems if r[0] in keep]
+        keys = [int(r[0]) for r in orders]
+        self.rf_orders_used = len(orders)
+
+        def apply(d):
+            d.insert_rows("orders", orders)
+            d.insert_rows("lineitem", lineitems)
+            return len(orders) + len(lineitems)
+        self.redelete += [("lineitem", "l_orderkey", keys), ("orders", "o_orderkey", keys)]
+        self.written["orders"] += 1
+        self.written["lineitem"] += 1
+        return "rf1", apply
+
+    def rf2_set(self, db, n):
+        deletes = self.load_set(n)[2]
+        keys = deletes[:self.set_orders] if self.set_orders else deletes
+        self.rf_orders_used = len(keys)
+        return self.rf2(db, keys)
 
     def rf1_(self, db):
         orders, lineitems, keys = [], [], []
@@ -739,7 +798,8 @@ def run_one(a, system, rate, rep, seed, spec):
     fp0 = fingerprint(ctl)
     commits = int((a.warmup + a.seconds) * (200 if rate < 0 else rate) * 1.3) + 8
     commits = min(commits, a.max_commits, a.max_write_commits or a.max_commits)
-    stream = Stream(ctl, commits, a.batch_orders, seed, a.rf_only, a.dim_after_rf)
+    stream = Stream(ctl, commits, 1 if a.rf_dir else a.batch_orders, seed, a.rf_only, a.dim_after_rf,
+                    a.rf_dir, a.batch_orders or 0 if a.rf_dir else 0)
     one = [next(c for c in cases if c[0] == q) for q in a.queries]  # one case per query, for the checks
     before = {}
     if system == "accel":
@@ -789,10 +849,12 @@ def run_one(a, system, rate, rep, seed, spec):
     ctl.close()
     ok = [r for r in reads if r[3] == "ok"]
     expected_tables = (set(TABLES) if not (a.rf_only or a.dim_after_rf) else
-                       {"orders", "lineitem", "part", "partsupp", "supplier", "nation", "region"} if a.dim_after_rf
+                       {"orders", "lineitem", "part", "partsupp", "supplier"} if a.dim_after_rf
                        else {"orders", "lineitem"})
     res = {"mode": "writerate", "backend": a.backend, "system": system, "rate_target": rate, "rep": rep, "seed": seed,
-           "sf": a.sf, "batch_orders": a.batch_orders, "readers": a.readers, "seconds": a.seconds, "warmup": a.warmup,
+           "sf": a.sf, "batch_orders": a.batch_orders,
+           "rf_source": "tpch_update_sets" if a.rf_dir else "clone", "rf_dir": a.rf_dir,
+           "rf_orders_used": stream.rf_orders_used or a.batch_orders, "readers": a.readers, "seconds": a.seconds, "warmup": a.warmup,
            "queries": a.queries, "sets_per_query": a.sets, "prime_s": t_prime, "triggers_on": triggers,
            "qps": len(ok) / a.seconds, "reads": len(reads), "timeouts": sum(1 for r in reads if r[3] == "timeout"),
            "read_errors": sum(1 for r in reads if r[3].startswith("error")),
@@ -829,7 +891,7 @@ def cmd_writerate(a):
         for k, seed, spec in reps:
             order = ["base", "accel"] if k % 2 == 0 else ["accel", "base"]  # alternate, so drift cancels
             for system in order:
-                print(f"{rate_name(rate)} rep {k} {system} (batch {a.batch_orders} orders, {a.readers} readers) "
+                print(f"{rate_name(rate)} rep {k} {system} (RF: {'update sets, ' + (str(a.batch_orders) if a.batch_orders else 'whole sets') if a.rf_dir else str(a.batch_orders) + ' cloned orders'}, {a.readers} readers) "
                       f"{time.strftime('%T')}", flush=True)
                 r = run_one(a, system, rate, k, seed, spec)
                 d = os.path.join(a.out, rate_name(rate), f"rep{k}")
@@ -916,14 +978,20 @@ def main():
     w = sub.choices["writerate"]
     w.add_argument("--readers", type=int, default=8)
     w.add_argument("--rates", default="1 5 20", help="writer commits/s (list; -1 uncapped; 0 no writes)")
-    w.add_argument("--batch-orders", type=int, default=1, help="orders per RF1 / RF2 commit")
+    w.add_argument("--batch-orders", type=int, default=None,
+                   help="orders per RF1 / RF2 commit.  With --rf-dir: only the first B orders of each update set (default: "
+                        "the whole set, 1500 x SF orders).  Without it: cloned orders per commit (default 1)")
+    w.add_argument("--rf-dir", default=os.environ.get("RF_DIR") or None,
+                   help="directory of TPC-H update sets written by `dbgen -s SF -U N` (orders.tbl.uK, lineitem.tbl.uK, "
+                        "delete.K): RF1 of set K inserts its orders, RF2 of set K deletes the listed ones, the "
+                        "specification's refresh functions (default: $RF_DIR)")
     w.add_argument("--seconds", type=float, default=60)
     w.add_argument("--warmup", type=float, default=5)
     w.add_argument("--max-commits", type=int, default=3000)
     w.add_argument("--rf-only", action="store_true", help="the writer commits RF1 / RF2 only (no point writes)")
     w.add_argument("--dim-after-rf", action="store_true",
-                   help="every RF commit is followed by one point write of each kind on part / partsupp / supplier / "
-                        "nation / region (the tables RF leaves alone), unpaced")
+                   help="every RF commit is followed by one point write of each kind on part / partsupp / supplier "
+                        "(supplier update, part and supplier delete + insert, partsupp update), unpaced")
     w.add_argument("--max-write-commits", type=int, default=0, help="end the run after this many commits (calibration)")
     w.add_argument("--check-timeout", type=float, default=120, help="seconds, per baseline query of the final check")
     w.add_argument("--check-base", action="store_true", help="also run the final check in base runs (answers only)")
@@ -935,6 +1003,8 @@ def main():
     if a.mode == "summary":
         return cmd_summary(a)
     a.queries = [int(x) for x in a.queries.replace(",", " ").split()]
+    if a.mode == "writerate" and not a.rf_dir and a.batch_orders is None:
+        a.batch_orders = 1  # clone mode: the old one-order mini-chunk
     pg = a.backend == "postgres"
     a.port = a.port or int(os.environ.get("PG_PORT" if pg else "MYSQL_TCP_PORT", 5434 if pg else 3307))
     a.user = a.user or os.environ.get("PGUSER" if pg else "MYSQL_USER", "postgres" if pg else "root")

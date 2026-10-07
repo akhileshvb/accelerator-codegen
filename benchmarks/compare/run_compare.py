@@ -450,9 +450,14 @@ def main():
                    help="rotate: each reader cycles over the accelerators; pinned: --readers per accelerator")
     m.add_argument("--warmup", type=float, default=5)
     for w in (c, m):
-        w.add_argument("--batch-orders", type=int, default=1,
-                       help="orders per RF1 / RF2 commit (default 1, the mini-chunk; the TPC-H refresh functions "
-                            "move 1500 x SF orders each); exported as ACCEL_RF_BATCH_ORDERS and recorded in every result")
+        w.add_argument("--batch-orders", type=int, default=None,
+                       help="orders per RF1 / RF2 commit.  With --rf-dir: use only the first B orders of each update "
+                            "set (default: the whole set, 1500 x SF orders).  Without it: clone B orders per commit "
+                            "(default 1, the old mini-chunk).  Exported as ACCEL_RF_BATCH_ORDERS, recorded in every result")
+        w.add_argument("--rf-dir", default=None,
+                       help="directory of TPC-H update sets written by `dbgen -s SF -U N` (orders.tbl.uK, lineitem.tbl.uK, "
+                            "delete.K): RF1 of set K inserts its orders, RF2 of set K deletes the listed ones (the "
+                            "refresh functions of the specification).  Exported as ACCEL_RF_DIR")
     for w in (c, m):
         w.add_argument("--rf-only", action="store_true", help="the writer commits RF1 / RF2 only (no point writes); "
                        "exported as ACCEL_RF_ONLY")
@@ -472,6 +477,8 @@ def main():
         os.environ["ACCEL_DIM_AFTER_RF"] = "1"
     if getattr(a, "rf_only", False):
         os.environ["ACCEL_RF_ONLY"] = "1"
+    if getattr(a, "rf_dir", None):
+        os.environ["ACCEL_RF_DIR"] = os.path.abspath(a.rf_dir)
     if getattr(a, "batch_orders", None):
         os.environ["ACCEL_RF_BATCH_ORDERS"] = str(a.batch_orders)
     a.queries = [int(x) for x in a.queries.replace(",", " ").split()]
