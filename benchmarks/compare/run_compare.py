@@ -449,11 +449,31 @@ def main():
     m.add_argument("--reader-mode", choices=("rotate", "pinned"), default="rotate",
                    help="rotate: each reader cycles over the accelerators; pinned: --readers per accelerator")
     m.add_argument("--warmup", type=float, default=5)
+    for w in (c, m):
+        w.add_argument("--batch-orders", type=int, default=1,
+                       help="orders per RF1 / RF2 commit (default 1, the mini-chunk; the TPC-H refresh functions "
+                            "move 1500 x SF orders each); exported as ACCEL_RF_BATCH_ORDERS and recorded in every result")
+    for w in (c, m):
+        w.add_argument("--rf-only", action="store_true", help="the writer commits RF1 / RF2 only (no point writes); "
+                       "exported as ACCEL_RF_ONLY")
+        w.add_argument("--dim-after-rf", action="store_true",
+                       help="every RF commit is followed by one point write of each kind on part / partsupp / supplier / "
+                            "nation / region (the tables RF leaves alone), unpaced; exported as ACCEL_DIM_AFTER_RF")
+        w.add_argument("--max-write-commits", type=int, default=0,
+                       help="end the run after this many commits (calibration; exported as ACCEL_WRITE_MAX_COMMITS)")
     s = sub.add_parser("summary")
     s.add_argument("out")
     a = ap.parse_args()
     if a.mode == "summary":
         return summary(a.out)
+    if getattr(a, "max_write_commits", 0):
+        os.environ["ACCEL_WRITE_MAX_COMMITS"] = str(a.max_write_commits)
+    if getattr(a, "dim_after_rf", False):
+        os.environ["ACCEL_DIM_AFTER_RF"] = "1"
+    if getattr(a, "rf_only", False):
+        os.environ["ACCEL_RF_ONLY"] = "1"
+    if getattr(a, "batch_orders", None):
+        os.environ["ACCEL_RF_BATCH_ORDERS"] = str(a.batch_orders)
     a.queries = [int(x) for x in a.queries.replace(",", " ").split()]
     a.systems = a.systems.replace(",", " ").split()
     assert all(s in SYSTEMS for s in a.systems), f"systems: {list(SYSTEMS)}"

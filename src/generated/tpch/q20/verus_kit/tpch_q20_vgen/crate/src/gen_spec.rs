@@ -30,6 +30,7 @@
 use vstd::prelude::*;
 use verus_common::bytes::*;
 use verus_common::order::*;
+use verus_common::perm::*;
 use verus_common::rat::*;
 use verus_common::rel::*;
 use verus_common::sqlfns::*;
@@ -423,6 +424,1079 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
         query_result(db, params, answer(db, params)),
 {
     lemma_answer_ok(db, params);
+}
+
+// ── Permutation invariance (verified by Verus, not trusted) ──────────────────
+// A table is a bag: the answers do not depend on the order of any table's rows.
+
+/// db2 holds the same bag of rows as db in every table.
+pub open spec fn db_perm(db: Db, db2: Db) -> bool {
+    &&& bag_eq(db.lineitem, db2.lineitem)
+    &&& bag_eq(db.nation, db2.nation)
+    &&& bag_eq(db.part, db2.part)
+    &&& bag_eq(db.partsupp, db2.partsupp)
+    &&& bag_eq(db.supplier, db2.supplier)
+}
+
+proof fn lemma_perm_agg_lineitem_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|lineitem: LineitemRow| #[trigger] agg_lineitem_where_clause(db, params, lineitem) == agg_lineitem_where_clause(db2, params, lineitem),
+{
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    assert forall|lineitem: LineitemRow| #[trigger] agg_lineitem_where_clause(db, params, lineitem) == agg_lineitem_where_clause(db2, params, lineitem) by {
+    }
+}
+
+proof fn lemma_perm_agg_lineitem_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|lineitem: LineitemRow| #[trigger] bag_eq(agg_lineitem_tuples_1(db, params, lineitem), agg_lineitem_tuples_1(db2, params, lineitem)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_agg_lineitem_where_clause(db, db2, params);
+    assert forall|lineitem: LineitemRow| #[trigger] bag_eq(agg_lineitem_tuples_1(db, params, lineitem), agg_lineitem_tuples_1(db2, params, lineitem)) by {
+        assert(agg_lineitem_tuples_1(db, params, lineitem) == agg_lineitem_tuples_1(db2, params, lineitem));
+    }
+}
+
+proof fn lemma_perm_agg_lineitem_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(agg_lineitem_tuples(db, params), agg_lineitem_tuples(db2, params)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_agg_lineitem_tuples_1(db, db2, params);
+        let g1 = |lineitem: LineitemRow| agg_lineitem_tuples_1(db, params, lineitem);
+        let g2 = |lineitem: LineitemRow| agg_lineitem_tuples_1(db2, params, lineitem);
+        assert forall|a: LineitemRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.lineitem, db2.lineitem, g1, g2);
+}
+
+proof fn lemma_perm_agg_lineitem_group_sum(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_partkey: int, g_l_suppkey: int, f: spec_fn(AggLineitemTuple) -> int| #[trigger] agg_lineitem_group_sum(db, params, g_l_partkey, g_l_suppkey, f) == agg_lineitem_group_sum(db2, params, g_l_partkey, g_l_suppkey, f),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_agg_lineitem_tuples(db, db2, params);
+    assert forall|g_l_partkey: int, g_l_suppkey: int, f: spec_fn(AggLineitemTuple) -> int| #[trigger] agg_lineitem_group_sum(db, params, g_l_partkey, g_l_suppkey, f) == agg_lineitem_group_sum(db2, params, g_l_partkey, g_l_suppkey, f) by {
+        assert(bag_eq(agg_lineitem_tuples(db, params), agg_lineitem_tuples(db2, params)));
+        let c1 = |t: AggLineitemTuple| if t.lineitem.l_partkey == g_l_partkey && t.lineitem.l_suppkey == g_l_suppkey { f(t) } else { 0 };
+        let c2 = |t: AggLineitemTuple| if t.lineitem.l_partkey == g_l_partkey && t.lineitem.l_suppkey == g_l_suppkey { f(t) } else { 0 };
+        assert forall|a: AggLineitemTuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(agg_lineitem_tuples(db, params), agg_lineitem_tuples(db2, params), c1);
+        lemma_sum_ext_all(agg_lineitem_tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_agg_lineitem_group_count(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_partkey: int, g_l_suppkey: int| #[trigger] agg_lineitem_group_count(db, params, g_l_partkey, g_l_suppkey) == agg_lineitem_group_count(db2, params, g_l_partkey, g_l_suppkey),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_agg_lineitem_tuples(db, db2, params);
+    assert forall|g_l_partkey: int, g_l_suppkey: int| #[trigger] agg_lineitem_group_count(db, params, g_l_partkey, g_l_suppkey) == agg_lineitem_group_count(db2, params, g_l_partkey, g_l_suppkey) by {
+        assert(bag_eq(agg_lineitem_tuples(db, params), agg_lineitem_tuples(db2, params)));
+        let c1 = |t: AggLineitemTuple| if t.lineitem.l_partkey == g_l_partkey && t.lineitem.l_suppkey == g_l_suppkey { 1int } else { 0 };
+        let c2 = |t: AggLineitemTuple| if t.lineitem.l_partkey == g_l_partkey && t.lineitem.l_suppkey == g_l_suppkey { 1int } else { 0 };
+        assert forall|a: AggLineitemTuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(agg_lineitem_tuples(db, params), agg_lineitem_tuples(db2, params), c1);
+        lemma_sum_ext_all(agg_lineitem_tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_agg_lineitem_row_of(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_partkey: int, g_l_suppkey: int| #[trigger] agg_lineitem_row_of(db, params, g_l_partkey, g_l_suppkey) == agg_lineitem_row_of(db2, params, g_l_partkey, g_l_suppkey),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_agg_lineitem_group_sum(db, db2, params);
+    assert forall|g_l_partkey: int, g_l_suppkey: int| #[trigger] agg_lineitem_row_of(db, params, g_l_partkey, g_l_suppkey) == agg_lineitem_row_of(db2, params, g_l_partkey, g_l_suppkey) by {
+    }
+}
+
+proof fn lemma_perm_agg_lineitem_having(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_partkey: int, g_l_suppkey: int| #[trigger] agg_lineitem_having(db, params, g_l_partkey, g_l_suppkey) == agg_lineitem_having(db2, params, g_l_partkey, g_l_suppkey),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    assert forall|g_l_partkey: int, g_l_suppkey: int| #[trigger] agg_lineitem_having(db, params, g_l_partkey, g_l_suppkey) == agg_lineitem_having(db2, params, g_l_partkey, g_l_suppkey) by {
+    }
+}
+
+proof fn lemma_perm_agg_lineitem_rows_keys(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(dedup(map_where(agg_lineitem_tuples(db, params), |t: AggLineitemTuple| agg_lineitem_having(db, params, t.lineitem.l_partkey, t.lineitem.l_suppkey), |t: AggLineitemTuple| (t.lineitem.l_partkey, t.lineitem.l_suppkey))), dedup(map_where(agg_lineitem_tuples(db2, params), |t: AggLineitemTuple| agg_lineitem_having(db2, params, t.lineitem.l_partkey, t.lineitem.l_suppkey), |t: AggLineitemTuple| (t.lineitem.l_partkey, t.lineitem.l_suppkey)))),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_agg_lineitem_tuples(db, db2, params);
+    lemma_perm_agg_lineitem_having(db, db2, params);
+        assert(bag_eq(agg_lineitem_tuples(db, params), agg_lineitem_tuples(db2, params)));
+        let keep1 = |t: AggLineitemTuple| agg_lineitem_having(db, params, t.lineitem.l_partkey, t.lineitem.l_suppkey);
+        let keep2 = |t: AggLineitemTuple| agg_lineitem_having(db2, params, t.lineitem.l_partkey, t.lineitem.l_suppkey);
+        let kf1 = |t: AggLineitemTuple| (t.lineitem.l_partkey, t.lineitem.l_suppkey);
+        let kf2 = |t: AggLineitemTuple| (t.lineitem.l_partkey, t.lineitem.l_suppkey);
+        assert forall|a: AggLineitemTuple| #[trigger] keep1(a) == keep2(a) by {}
+        assert forall|a: AggLineitemTuple| #[trigger] kf1(a) == kf2(a) by {}
+        lemma_bag_eq_map_where(agg_lineitem_tuples(db, params), agg_lineitem_tuples(db2, params), keep1, keep2, kf1, kf2);
+        lemma_bag_eq_dedup(map_where(agg_lineitem_tuples(db, params), keep1, kf1), map_where(agg_lineitem_tuples(db2, params), keep2, kf2));
+}
+
+proof fn lemma_perm_agg_lineitem_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(agg_lineitem_rows(db, params), agg_lineitem_rows(db2, params)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_agg_lineitem_row_of(db, db2, params);
+    lemma_perm_agg_lineitem_rows_keys(db, db2, params);
+        let rf1 = |k: (int, int)| agg_lineitem_row_of(db, params, k.0, k.1);
+        let rf2 = |k: (int, int)| agg_lineitem_row_of(db2, params, k.0, k.1);
+        assert forall|k: (int, int)| #[trigger] rf1(k) == rf2(k) by {}
+        assert(bag_eq(dedup(map_where(agg_lineitem_tuples(db, params), |t: AggLineitemTuple| agg_lineitem_having(db, params, t.lineitem.l_partkey, t.lineitem.l_suppkey), |t: AggLineitemTuple| (t.lineitem.l_partkey, t.lineitem.l_suppkey))), dedup(map_where(agg_lineitem_tuples(db2, params), |t: AggLineitemTuple| agg_lineitem_having(db2, params, t.lineitem.l_partkey, t.lineitem.l_suppkey), |t: AggLineitemTuple| (t.lineitem.l_partkey, t.lineitem.l_suppkey)))));
+        lemma_bag_eq_map(dedup(map_where(agg_lineitem_tuples(db, params), |t: AggLineitemTuple| agg_lineitem_having(db, params, t.lineitem.l_partkey, t.lineitem.l_suppkey), |t: AggLineitemTuple| (t.lineitem.l_partkey, t.lineitem.l_suppkey))), dedup(map_where(agg_lineitem_tuples(db2, params), |t: AggLineitemTuple| agg_lineitem_having(db2, params, t.lineitem.l_partkey, t.lineitem.l_suppkey), |t: AggLineitemTuple| (t.lineitem.l_partkey, t.lineitem.l_suppkey))), rf1, rf2);
+}
+
+proof fn lemma_perm_rel_agg_lineitem(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(rel_agg_lineitem(db, params), rel_agg_lineitem(db2, params)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_agg_lineitem_rows(db, db2, params);
+}
+
+proof fn lemma_perm_in_2_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|part: PartRow| #[trigger] in_2_where_clause(db, params, part) == in_2_where_clause(db2, params, part),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    assert forall|part: PartRow| #[trigger] in_2_where_clause(db, params, part) == in_2_where_clause(db2, params, part) by {
+    }
+}
+
+proof fn lemma_perm_in_2_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|part: PartRow| #[trigger] bag_eq(in_2_tuples_1(db, params, part), in_2_tuples_1(db2, params, part)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_in_2_where_clause(db, db2, params);
+    assert forall|part: PartRow| #[trigger] bag_eq(in_2_tuples_1(db, params, part), in_2_tuples_1(db2, params, part)) by {
+        assert(in_2_tuples_1(db, params, part) == in_2_tuples_1(db2, params, part));
+    }
+}
+
+proof fn lemma_perm_in_2_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(in_2_tuples(db, params), in_2_tuples(db2, params)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_in_2_tuples_1(db, db2, params);
+        let g1 = |part: PartRow| in_2_tuples_1(db, params, part);
+        let g2 = |part: PartRow| in_2_tuples_1(db2, params, part);
+        assert forall|a: PartRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.part, db2.part, g1, g2);
+}
+
+proof fn lemma_perm_in_2_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(in_2_rows(db, params), in_2_rows(db2, params)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_in_2_tuples(db, db2, params);
+        assert(bag_eq(in_2_tuples(db, params), in_2_tuples(db2, params)));
+        let f1 = |t: In2Tuple| In2Row { p_partkey: t.part.p_partkey };
+        let f2 = |t: In2Tuple| In2Row { p_partkey: t.part.p_partkey };
+        assert forall|a: In2Tuple| #[trigger] f1(a) == f2(a) by {}
+        lemma_bag_eq_map(in_2_tuples(db, params), in_2_tuples(db2, params), f1, f2);
+}
+
+proof fn lemma_perm_in_2(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|x: int| #[trigger] in_2(db, params, x) == in_2(db2, params, x),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_in_2_rows(db, db2, params);
+    assert forall|x: int| #[trigger] in_2(db, params, x) == in_2(db2, params, x) by {
+        if in_2(db, params, x) {
+            let i = choose|i: int| 0 <= i < in_2_rows(db, params).len() && x == in_2_rows(db, params)[i].p_partkey;
+            assert(in_2_rows(db, params).contains(in_2_rows(db, params)[i]));
+            lemma_bag_eq_contains(in_2_rows(db, params), in_2_rows(db2, params), in_2_rows(db, params)[i]);
+            let j = choose|j: int| 0 <= j < in_2_rows(db2, params).len() && in_2_rows(db2, params)[j] == in_2_rows(db, params)[i];
+            assert(0 <= j < in_2_rows(db2, params).len() && x == in_2_rows(db2, params)[j].p_partkey);
+            assert(in_2(db2, params, x));
+        }
+        if in_2(db2, params, x) {
+            let i = choose|i: int| 0 <= i < in_2_rows(db2, params).len() && x == in_2_rows(db2, params)[i].p_partkey;
+            assert(in_2_rows(db2, params).contains(in_2_rows(db2, params)[i]));
+            lemma_bag_eq_contains(in_2_rows(db2, params), in_2_rows(db, params), in_2_rows(db2, params)[i]);
+            let j = choose|j: int| 0 <= j < in_2_rows(db, params).len() && in_2_rows(db, params)[j] == in_2_rows(db2, params)[i];
+            assert(0 <= j < in_2_rows(db, params).len() && x == in_2_rows(db, params)[j].p_partkey);
+            assert(in_2(db, params, x));
+        }
+    }
+}
+
+proof fn lemma_perm_in_1_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|partsupp: PartsuppRow, agg_lineitem: AggLineitemRow| #[trigger] in_1_where_clause(db, params, partsupp, agg_lineitem) == in_1_where_clause(db2, params, partsupp, agg_lineitem),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_in_2(db, db2, params);
+    assert forall|partsupp: PartsuppRow, agg_lineitem: AggLineitemRow| #[trigger] in_1_where_clause(db, params, partsupp, agg_lineitem) == in_1_where_clause(db2, params, partsupp, agg_lineitem) by {
+    }
+}
+
+proof fn lemma_perm_in_1_tuples_2(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|partsupp: PartsuppRow, agg_lineitem: AggLineitemRow| #[trigger] bag_eq(in_1_tuples_2(db, params, partsupp, agg_lineitem), in_1_tuples_2(db2, params, partsupp, agg_lineitem)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_in_1_where_clause(db, db2, params);
+    assert forall|partsupp: PartsuppRow, agg_lineitem: AggLineitemRow| #[trigger] bag_eq(in_1_tuples_2(db, params, partsupp, agg_lineitem), in_1_tuples_2(db2, params, partsupp, agg_lineitem)) by {
+        assert(in_1_tuples_2(db, params, partsupp, agg_lineitem) == in_1_tuples_2(db2, params, partsupp, agg_lineitem));
+    }
+}
+
+proof fn lemma_perm_in_1_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|partsupp: PartsuppRow| #[trigger] bag_eq(in_1_tuples_1(db, params, partsupp), in_1_tuples_1(db2, params, partsupp)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_rel_agg_lineitem(db, db2, params);
+    lemma_perm_in_1_tuples_2(db, db2, params);
+    assert forall|partsupp: PartsuppRow| #[trigger] bag_eq(in_1_tuples_1(db, params, partsupp), in_1_tuples_1(db2, params, partsupp)) by {
+        let g1 = |agg_lineitem: AggLineitemRow| in_1_tuples_2(db, params, partsupp, agg_lineitem);
+        let g2 = |agg_lineitem: AggLineitemRow| in_1_tuples_2(db2, params, partsupp, agg_lineitem);
+        assert forall|a: AggLineitemRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(rel_agg_lineitem(db, params), rel_agg_lineitem(db2, params), g1, g2);
+    }
+}
+
+proof fn lemma_perm_in_1_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(in_1_tuples(db, params), in_1_tuples(db2, params)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_in_1_tuples_1(db, db2, params);
+        let g1 = |partsupp: PartsuppRow| in_1_tuples_1(db, params, partsupp);
+        let g2 = |partsupp: PartsuppRow| in_1_tuples_1(db2, params, partsupp);
+        assert forall|a: PartsuppRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.partsupp, db2.partsupp, g1, g2);
+}
+
+proof fn lemma_perm_in_1_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(in_1_rows(db, params), in_1_rows(db2, params)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_in_1_tuples(db, db2, params);
+        assert(bag_eq(in_1_tuples(db, params), in_1_tuples(db2, params)));
+        let f1 = |t: In1Tuple| In1Row { ps_suppkey: t.partsupp.ps_suppkey };
+        let f2 = |t: In1Tuple| In1Row { ps_suppkey: t.partsupp.ps_suppkey };
+        assert forall|a: In1Tuple| #[trigger] f1(a) == f2(a) by {}
+        lemma_bag_eq_map(in_1_tuples(db, params), in_1_tuples(db2, params), f1, f2);
+}
+
+proof fn lemma_perm_in_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|x: int| #[trigger] in_1(db, params, x) == in_1(db2, params, x),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_in_1_rows(db, db2, params);
+    assert forall|x: int| #[trigger] in_1(db, params, x) == in_1(db2, params, x) by {
+        if in_1(db, params, x) {
+            let i = choose|i: int| 0 <= i < in_1_rows(db, params).len() && x == in_1_rows(db, params)[i].ps_suppkey;
+            assert(in_1_rows(db, params).contains(in_1_rows(db, params)[i]));
+            lemma_bag_eq_contains(in_1_rows(db, params), in_1_rows(db2, params), in_1_rows(db, params)[i]);
+            let j = choose|j: int| 0 <= j < in_1_rows(db2, params).len() && in_1_rows(db2, params)[j] == in_1_rows(db, params)[i];
+            assert(0 <= j < in_1_rows(db2, params).len() && x == in_1_rows(db2, params)[j].ps_suppkey);
+            assert(in_1(db2, params, x));
+        }
+        if in_1(db2, params, x) {
+            let i = choose|i: int| 0 <= i < in_1_rows(db2, params).len() && x == in_1_rows(db2, params)[i].ps_suppkey;
+            assert(in_1_rows(db2, params).contains(in_1_rows(db2, params)[i]));
+            lemma_bag_eq_contains(in_1_rows(db2, params), in_1_rows(db, params), in_1_rows(db2, params)[i]);
+            let j = choose|j: int| 0 <= j < in_1_rows(db, params).len() && in_1_rows(db, params)[j] == in_1_rows(db2, params)[i];
+            assert(0 <= j < in_1_rows(db, params).len() && x == in_1_rows(db, params)[j].ps_suppkey);
+            assert(in_1(db, params, x));
+        }
+    }
+}
+
+proof fn lemma_perm_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow, nation: NationRow| #[trigger] where_clause(db, params, supplier, nation) == where_clause(db2, params, supplier, nation),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_in_1(db, db2, params);
+    assert forall|supplier: SupplierRow, nation: NationRow| #[trigger] where_clause(db, params, supplier, nation) == where_clause(db2, params, supplier, nation) by {
+    }
+}
+
+proof fn lemma_perm_tuples_2(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow, nation: NationRow| #[trigger] bag_eq(tuples_2(db, params, supplier, nation), tuples_2(db2, params, supplier, nation)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_where_clause(db, db2, params);
+    assert forall|supplier: SupplierRow, nation: NationRow| #[trigger] bag_eq(tuples_2(db, params, supplier, nation), tuples_2(db2, params, supplier, nation)) by {
+        assert(tuples_2(db, params, supplier, nation) == tuples_2(db2, params, supplier, nation));
+    }
+}
+
+proof fn lemma_perm_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|supplier: SupplierRow| #[trigger] bag_eq(tuples_1(db, params, supplier), tuples_1(db2, params, supplier)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples);
+    hide(rows);
+
+    lemma_perm_tuples_2(db, db2, params);
+    assert forall|supplier: SupplierRow| #[trigger] bag_eq(tuples_1(db, params, supplier), tuples_1(db2, params, supplier)) by {
+        let g1 = |nation: NationRow| tuples_2(db, params, supplier, nation);
+        let g2 = |nation: NationRow| tuples_2(db2, params, supplier, nation);
+        assert forall|a: NationRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.nation, db2.nation, g1, g2);
+    }
+}
+
+proof fn lemma_perm_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(tuples(db, params), tuples(db2, params)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(rows);
+    lemma_perm_tuples_1(db, db2, params);
+        let g1 = |supplier: SupplierRow| tuples_1(db, params, supplier);
+        let g2 = |supplier: SupplierRow| tuples_1(db2, params, supplier);
+        assert forall|a: SupplierRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.supplier, db2.supplier, g1, g2);
+}
+
+proof fn lemma_perm_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(rows(db, params), rows(db2, params)),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    lemma_perm_tuples(db, db2, params);
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        let f1 = |t: Tuple| OutRow { s_name: t.supplier.s_name, s_address: t.supplier.s_address };
+        let f2 = |t: Tuple| OutRow { s_name: t.supplier.s_name, s_address: t.supplier.s_address };
+        assert forall|a: Tuple| #[trigger] f1(a) == f2(a) by {}
+        lemma_bag_eq_map(tuples(db, params), tuples(db2, params), f1, f2);
+}
+
+proof fn lemma_full_result_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+        full_result(db, params, out),
+    ensures
+        full_result(db2, params, out),
+{
+    hide(agg_lineitem_where_clause);
+    hide(agg_lineitem_tuples_1);
+    hide(agg_lineitem_tuples);
+    hide(agg_lineitem_group_sum);
+    hide(agg_lineitem_group_count);
+    hide(agg_lineitem_row_of);
+    hide(agg_lineitem_having);
+    hide(agg_lineitem_rows);
+    hide(rel_agg_lineitem);
+    hide(in_2_where_clause);
+    hide(in_2_tuples_1);
+    hide(in_2_tuples);
+    hide(in_2_rows);
+    hide(in_2);
+    hide(in_1_where_clause);
+    hide(in_1_tuples_2);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(rows);
+    lemma_perm_tuples(db, db2, params);
+    lemma_perm_rows(db, db2, params);
+    assert(bag_eq(rows(db, params), rows(db2, params)));
+}
+
+/// The query accepts the same answers for any reordering of the tables.
+pub proof fn lemma_query_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+    ensures
+        query_result(db, params, out) <==> query_result(db2, params, out),
+{
+    assert(db_perm(db2, db));
+    if query_result(db, params, out) {
+        lemma_full_result_perm(db, db2, params, out);
+    }
+    if query_result(db2, params, out) {
+        lemma_full_result_perm(db2, db, params, out);
+    }
 }
 
 } // verus!

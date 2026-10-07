@@ -42,6 +42,7 @@
 use vstd::prelude::*;
 use verus_common::bytes::*;
 use verus_common::order::*;
+use verus_common::perm::*;
 use verus_common::rat::*;
 use verus_common::rel::*;
 use verus_common::sqlfns::*;
@@ -208,6 +209,238 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
         }
     }
     assert(full_result(db, params, r));
+}
+
+// ── Permutation invariance (verified by Verus, not trusted) ──────────────────
+// A table is a bag: the answers do not depend on the order of any table's rows.
+
+/// db2 holds the same bag of rows as db in every table.
+pub open spec fn db_perm(db: Db, db2: Db) -> bool {
+    &&& bag_eq(db.lineitem, db2.lineitem)
+    &&& bag_eq(db.part, db2.part)
+}
+
+proof fn lemma_perm_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|lineitem: LineitemRow, part: PartRow| #[trigger] where_clause(db, params, lineitem, part) == where_clause(db2, params, lineitem, part),
+{
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(rows);
+    hide(row_ok);
+
+    assert forall|lineitem: LineitemRow, part: PartRow| #[trigger] where_clause(db, params, lineitem, part) == where_clause(db2, params, lineitem, part) by {
+    }
+}
+
+proof fn lemma_perm_tuples_2(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|lineitem: LineitemRow, part: PartRow| #[trigger] bag_eq(tuples_2(db, params, lineitem, part), tuples_2(db2, params, lineitem, part)),
+{
+    hide(where_clause);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_where_clause(db, db2, params);
+    assert forall|lineitem: LineitemRow, part: PartRow| #[trigger] bag_eq(tuples_2(db, params, lineitem, part), tuples_2(db2, params, lineitem, part)) by {
+        assert(tuples_2(db, params, lineitem, part) == tuples_2(db2, params, lineitem, part));
+    }
+}
+
+proof fn lemma_perm_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|lineitem: LineitemRow| #[trigger] bag_eq(tuples_1(db, params, lineitem), tuples_1(db2, params, lineitem)),
+{
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples_2(db, db2, params);
+    assert forall|lineitem: LineitemRow| #[trigger] bag_eq(tuples_1(db, params, lineitem), tuples_1(db2, params, lineitem)) by {
+        let g1 = |part: PartRow| tuples_2(db, params, lineitem, part);
+        let g2 = |part: PartRow| tuples_2(db2, params, lineitem, part);
+        assert forall|a: PartRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.part, db2.part, g1, g2);
+    }
+}
+
+proof fn lemma_perm_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(tuples(db, params), tuples(db2, params)),
+{
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_tuples_1(db, db2, params);
+        let g1 = |lineitem: LineitemRow| tuples_1(db, params, lineitem);
+        let g2 = |lineitem: LineitemRow| tuples_1(db2, params, lineitem);
+        assert forall|a: LineitemRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.lineitem, db2.lineitem, g1, g2);
+}
+
+proof fn lemma_perm_group_sum(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|f: spec_fn(Tuple) -> int| #[trigger] group_sum(db, params, f) == group_sum(db2, params, f),
+{
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_count);
+    hide(row_of);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples(db, db2, params);
+    assert forall|f: spec_fn(Tuple) -> int| #[trigger] group_sum(db, params, f) == group_sum(db2, params, f) by {
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        lemma_sum_perm(tuples(db, params), tuples(db2, params), f);
+    }
+}
+
+proof fn lemma_perm_group_count(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        group_count(db, params) == group_count(db2, params),
+{
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(row_of);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_tuples(db, db2, params);
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        lemma_bag_eq_len(tuples(db, params), tuples(db2, params));
+}
+
+proof fn lemma_perm_row_of(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        row_of(db, params) == row_of(db2, params),
+{
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_group_sum(db, db2, params);
+    lemma_perm_group_count(db, db2, params);
+}
+
+proof fn lemma_perm_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(rows(db, params), rows(db2, params)),
+{
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(row_ok);
+    lemma_perm_row_of(db, db2, params);
+        assert(rows(db, params) == rows(db2, params));
+}
+
+proof fn lemma_perm_row_ok(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|r: OutRow| #[trigger] row_ok(db, params, r) == row_ok(db2, params, r),
+{
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(rows);
+
+    lemma_perm_group_sum(db, db2, params);
+    lemma_perm_group_count(db, db2, params);
+    assert forall|r: OutRow| #[trigger] row_ok(db, params, r) == row_ok(db2, params, r) by {
+    }
+}
+
+proof fn lemma_full_result_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+        full_result(db, params, out),
+    ensures
+        full_result(db2, params, out),
+{
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_rows(db, db2, params);
+    lemma_perm_row_ok(db, db2, params);
+    lemma_bag_eq_len(rows(db, params), rows(db2, params));
+    assert forall|i: int| 0 <= i < out.len() implies row_ok(db2, params, #[trigger] out[i]) by {
+        assert(row_ok(db, params, out[i]) == row_ok(db2, params, out[i]));
+    }
+}
+
+/// The query accepts the same answers for any reordering of the tables.
+pub proof fn lemma_query_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+    ensures
+        query_result(db, params, out) <==> query_result(db2, params, out),
+{
+    assert(db_perm(db2, db));
+    if query_result(db, params, out) {
+        lemma_full_result_perm(db, db2, params, out);
+    }
+    if query_result(db2, params, out) {
+        lemma_full_result_perm(db2, db, params, out);
+    }
 }
 
 } // verus!

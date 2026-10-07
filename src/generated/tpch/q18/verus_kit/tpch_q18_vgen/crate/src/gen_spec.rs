@@ -21,6 +21,7 @@
 use vstd::prelude::*;
 use verus_common::bytes::*;
 use verus_common::order::*;
+use verus_common::perm::*;
 use verus_common::rat::*;
 use verus_common::rel::*;
 use verus_common::sqlfns::*;
@@ -486,6 +487,827 @@ pub proof fn lemma_query_result_iff(db: Db, params: Params, out: Seq<OutRow>)
         query_result(db, params, answer(db, params)),
 {
     lemma_answer_ok(db, params);
+}
+
+// ── Permutation invariance (verified by Verus, not trusted) ──────────────────
+// A table is a bag: the answers do not depend on the order of any table's rows.
+
+/// db2 holds the same bag of rows as db in every table.
+pub open spec fn db_perm(db: Db, db2: Db) -> bool {
+    &&& bag_eq(db.customer, db2.customer)
+    &&& bag_eq(db.lineitem, db2.lineitem)
+    &&& bag_eq(db.orders, db2.orders)
+}
+
+proof fn lemma_perm_in_1_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|lineitem_2: LineitemRow| #[trigger] in_1_where_clause(db, params, lineitem_2) == in_1_where_clause(db2, params, lineitem_2),
+{
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    assert forall|lineitem_2: LineitemRow| #[trigger] in_1_where_clause(db, params, lineitem_2) == in_1_where_clause(db2, params, lineitem_2) by {
+    }
+}
+
+proof fn lemma_perm_in_1_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|lineitem_2: LineitemRow| #[trigger] bag_eq(in_1_tuples_1(db, params, lineitem_2), in_1_tuples_1(db2, params, lineitem_2)),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_in_1_where_clause(db, db2, params);
+    assert forall|lineitem_2: LineitemRow| #[trigger] bag_eq(in_1_tuples_1(db, params, lineitem_2), in_1_tuples_1(db2, params, lineitem_2)) by {
+        assert(in_1_tuples_1(db, params, lineitem_2) == in_1_tuples_1(db2, params, lineitem_2));
+    }
+}
+
+proof fn lemma_perm_in_1_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(in_1_tuples(db, params), in_1_tuples(db2, params)),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_in_1_tuples_1(db, db2, params);
+        let g1 = |lineitem_2: LineitemRow| in_1_tuples_1(db, params, lineitem_2);
+        let g2 = |lineitem_2: LineitemRow| in_1_tuples_1(db2, params, lineitem_2);
+        assert forall|a: LineitemRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.lineitem, db2.lineitem, g1, g2);
+}
+
+proof fn lemma_perm_in_1_group_sum(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_orderkey: int, f: spec_fn(In1Tuple) -> int| #[trigger] in_1_group_sum(db, params, g_l_orderkey, f) == in_1_group_sum(db2, params, g_l_orderkey, f),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_in_1_tuples(db, db2, params);
+    assert forall|g_l_orderkey: int, f: spec_fn(In1Tuple) -> int| #[trigger] in_1_group_sum(db, params, g_l_orderkey, f) == in_1_group_sum(db2, params, g_l_orderkey, f) by {
+        assert(bag_eq(in_1_tuples(db, params), in_1_tuples(db2, params)));
+        let c1 = |t: In1Tuple| if t.lineitem_2.l_orderkey == g_l_orderkey { f(t) } else { 0 };
+        let c2 = |t: In1Tuple| if t.lineitem_2.l_orderkey == g_l_orderkey { f(t) } else { 0 };
+        assert forall|a: In1Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(in_1_tuples(db, params), in_1_tuples(db2, params), c1);
+        lemma_sum_ext_all(in_1_tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_in_1_group_count(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_orderkey: int| #[trigger] in_1_group_count(db, params, g_l_orderkey) == in_1_group_count(db2, params, g_l_orderkey),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_in_1_tuples(db, db2, params);
+    assert forall|g_l_orderkey: int| #[trigger] in_1_group_count(db, params, g_l_orderkey) == in_1_group_count(db2, params, g_l_orderkey) by {
+        assert(bag_eq(in_1_tuples(db, params), in_1_tuples(db2, params)));
+        let c1 = |t: In1Tuple| if t.lineitem_2.l_orderkey == g_l_orderkey { 1int } else { 0 };
+        let c2 = |t: In1Tuple| if t.lineitem_2.l_orderkey == g_l_orderkey { 1int } else { 0 };
+        assert forall|a: In1Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(in_1_tuples(db, params), in_1_tuples(db2, params), c1);
+        lemma_sum_ext_all(in_1_tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_in_1_row_of(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_orderkey: int| #[trigger] in_1_row_of(db, params, g_l_orderkey) == in_1_row_of(db2, params, g_l_orderkey),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_in_1_group_sum(db, db2, params);
+    assert forall|g_l_orderkey: int| #[trigger] in_1_row_of(db, params, g_l_orderkey) == in_1_row_of(db2, params, g_l_orderkey) by {
+    }
+}
+
+proof fn lemma_perm_in_1_having(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_l_orderkey: int| #[trigger] in_1_having(db, params, g_l_orderkey) == in_1_having(db2, params, g_l_orderkey),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_in_1_group_sum(db, db2, params);
+    assert forall|g_l_orderkey: int| #[trigger] in_1_having(db, params, g_l_orderkey) == in_1_having(db2, params, g_l_orderkey) by {
+    }
+}
+
+proof fn lemma_perm_in_1_rows_keys(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(dedup(map_where(in_1_tuples(db, params), |t: In1Tuple| in_1_having(db, params, t.lineitem_2.l_orderkey), |t: In1Tuple| t.lineitem_2.l_orderkey)), dedup(map_where(in_1_tuples(db2, params), |t: In1Tuple| in_1_having(db2, params, t.lineitem_2.l_orderkey), |t: In1Tuple| t.lineitem_2.l_orderkey))),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_in_1_tuples(db, db2, params);
+    lemma_perm_in_1_having(db, db2, params);
+        assert(bag_eq(in_1_tuples(db, params), in_1_tuples(db2, params)));
+        let keep1 = |t: In1Tuple| in_1_having(db, params, t.lineitem_2.l_orderkey);
+        let keep2 = |t: In1Tuple| in_1_having(db2, params, t.lineitem_2.l_orderkey);
+        let kf1 = |t: In1Tuple| t.lineitem_2.l_orderkey;
+        let kf2 = |t: In1Tuple| t.lineitem_2.l_orderkey;
+        assert forall|a: In1Tuple| #[trigger] keep1(a) == keep2(a) by {}
+        assert forall|a: In1Tuple| #[trigger] kf1(a) == kf2(a) by {}
+        lemma_bag_eq_map_where(in_1_tuples(db, params), in_1_tuples(db2, params), keep1, keep2, kf1, kf2);
+        lemma_bag_eq_dedup(map_where(in_1_tuples(db, params), keep1, kf1), map_where(in_1_tuples(db2, params), keep2, kf2));
+}
+
+proof fn lemma_perm_in_1_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(in_1_rows(db, params), in_1_rows(db2, params)),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_in_1_row_of(db, db2, params);
+    lemma_perm_in_1_rows_keys(db, db2, params);
+        let rf1 = |k: int| in_1_row_of(db, params, k);
+        let rf2 = |k: int| in_1_row_of(db2, params, k);
+        assert forall|k: int| #[trigger] rf1(k) == rf2(k) by {}
+        assert(bag_eq(dedup(map_where(in_1_tuples(db, params), |t: In1Tuple| in_1_having(db, params, t.lineitem_2.l_orderkey), |t: In1Tuple| t.lineitem_2.l_orderkey)), dedup(map_where(in_1_tuples(db2, params), |t: In1Tuple| in_1_having(db2, params, t.lineitem_2.l_orderkey), |t: In1Tuple| t.lineitem_2.l_orderkey))));
+        lemma_bag_eq_map(dedup(map_where(in_1_tuples(db, params), |t: In1Tuple| in_1_having(db, params, t.lineitem_2.l_orderkey), |t: In1Tuple| t.lineitem_2.l_orderkey)), dedup(map_where(in_1_tuples(db2, params), |t: In1Tuple| in_1_having(db2, params, t.lineitem_2.l_orderkey), |t: In1Tuple| t.lineitem_2.l_orderkey)), rf1, rf2);
+}
+
+proof fn lemma_perm_in_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|x: int| #[trigger] in_1(db, params, x) == in_1(db2, params, x),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_in_1_rows(db, db2, params);
+    assert forall|x: int| #[trigger] in_1(db, params, x) == in_1(db2, params, x) by {
+        if in_1(db, params, x) {
+            let i = choose|i: int| 0 <= i < in_1_rows(db, params).len() && x == in_1_rows(db, params)[i].l_orderkey;
+            assert(in_1_rows(db, params).contains(in_1_rows(db, params)[i]));
+            lemma_bag_eq_contains(in_1_rows(db, params), in_1_rows(db2, params), in_1_rows(db, params)[i]);
+            let j = choose|j: int| 0 <= j < in_1_rows(db2, params).len() && in_1_rows(db2, params)[j] == in_1_rows(db, params)[i];
+            assert(0 <= j < in_1_rows(db2, params).len() && x == in_1_rows(db2, params)[j].l_orderkey);
+            assert(in_1(db2, params, x));
+        }
+        if in_1(db2, params, x) {
+            let i = choose|i: int| 0 <= i < in_1_rows(db2, params).len() && x == in_1_rows(db2, params)[i].l_orderkey;
+            assert(in_1_rows(db2, params).contains(in_1_rows(db2, params)[i]));
+            lemma_bag_eq_contains(in_1_rows(db2, params), in_1_rows(db, params), in_1_rows(db2, params)[i]);
+            let j = choose|j: int| 0 <= j < in_1_rows(db, params).len() && in_1_rows(db, params)[j] == in_1_rows(db2, params)[i];
+            assert(0 <= j < in_1_rows(db, params).len() && x == in_1_rows(db, params)[j].l_orderkey);
+            assert(in_1(db, params, x));
+        }
+    }
+}
+
+proof fn lemma_perm_where_clause(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|customer: CustomerRow, orders: OrdersRow, lineitem: LineitemRow| #[trigger] where_clause(db, params, customer, orders, lineitem) == where_clause(db2, params, customer, orders, lineitem),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_in_1(db, db2, params);
+    assert forall|customer: CustomerRow, orders: OrdersRow, lineitem: LineitemRow| #[trigger] where_clause(db, params, customer, orders, lineitem) == where_clause(db2, params, customer, orders, lineitem) by {
+    }
+}
+
+proof fn lemma_perm_tuples_3(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|customer: CustomerRow, orders: OrdersRow, lineitem: LineitemRow| #[trigger] bag_eq(tuples_3(db, params, customer, orders, lineitem), tuples_3(db2, params, customer, orders, lineitem)),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_where_clause(db, db2, params);
+    assert forall|customer: CustomerRow, orders: OrdersRow, lineitem: LineitemRow| #[trigger] bag_eq(tuples_3(db, params, customer, orders, lineitem), tuples_3(db2, params, customer, orders, lineitem)) by {
+        assert(tuples_3(db, params, customer, orders, lineitem) == tuples_3(db2, params, customer, orders, lineitem));
+    }
+}
+
+proof fn lemma_perm_tuples_2(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|customer: CustomerRow, orders: OrdersRow| #[trigger] bag_eq(tuples_2(db, params, customer, orders), tuples_2(db2, params, customer, orders)),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples_3(db, db2, params);
+    assert forall|customer: CustomerRow, orders: OrdersRow| #[trigger] bag_eq(tuples_2(db, params, customer, orders), tuples_2(db2, params, customer, orders)) by {
+        let g1 = |lineitem: LineitemRow| tuples_3(db, params, customer, orders, lineitem);
+        let g2 = |lineitem: LineitemRow| tuples_3(db2, params, customer, orders, lineitem);
+        assert forall|a: LineitemRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.lineitem, db2.lineitem, g1, g2);
+    }
+}
+
+proof fn lemma_perm_tuples_1(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|customer: CustomerRow| #[trigger] bag_eq(tuples_1(db, params, customer), tuples_1(db2, params, customer)),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples_2(db, db2, params);
+    assert forall|customer: CustomerRow| #[trigger] bag_eq(tuples_1(db, params, customer), tuples_1(db2, params, customer)) by {
+        let g1 = |orders: OrdersRow| tuples_2(db, params, customer, orders);
+        let g2 = |orders: OrdersRow| tuples_2(db2, params, customer, orders);
+        assert forall|a: OrdersRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.orders, db2.orders, g1, g2);
+    }
+}
+
+proof fn lemma_perm_tuples(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(tuples(db, params), tuples(db2, params)),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_tuples_1(db, db2, params);
+        let g1 = |customer: CustomerRow| tuples_1(db, params, customer);
+        let g2 = |customer: CustomerRow| tuples_1(db2, params, customer);
+        assert forall|a: CustomerRow| #[trigger] bag_eq(g1(a), g2(a)) by {}
+        lemma_bag_eq_flat_map(db.customer, db2.customer, g1, g2);
+}
+
+proof fn lemma_perm_group_sum(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_c_name: Seq<u8>, g_c_custkey: int, g_o_orderkey: int, g_o_orderdate: int, g_o_totalprice: int, f: spec_fn(Tuple) -> int| #[trigger] group_sum(db, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice, f) == group_sum(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice, f),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples(db, db2, params);
+    assert forall|g_c_name: Seq<u8>, g_c_custkey: int, g_o_orderkey: int, g_o_orderdate: int, g_o_totalprice: int, f: spec_fn(Tuple) -> int| #[trigger] group_sum(db, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice, f) == group_sum(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice, f) by {
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        let c1 = |t: Tuple| if t.customer.c_name == g_c_name && t.customer.c_custkey == g_c_custkey && t.orders.o_orderkey == g_o_orderkey && t.orders.o_orderdate == g_o_orderdate && t.orders.o_totalprice == g_o_totalprice { f(t) } else { 0 };
+        let c2 = |t: Tuple| if t.customer.c_name == g_c_name && t.customer.c_custkey == g_c_custkey && t.orders.o_orderkey == g_o_orderkey && t.orders.o_orderdate == g_o_orderdate && t.orders.o_totalprice == g_o_totalprice { f(t) } else { 0 };
+        assert forall|a: Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(tuples(db, params), tuples(db2, params), c1);
+        lemma_sum_ext_all(tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_group_count(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_c_name: Seq<u8>, g_c_custkey: int, g_o_orderkey: int, g_o_orderdate: int, g_o_totalprice: int| #[trigger] group_count(db, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) == group_count(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_tuples(db, db2, params);
+    assert forall|g_c_name: Seq<u8>, g_c_custkey: int, g_o_orderkey: int, g_o_orderdate: int, g_o_totalprice: int| #[trigger] group_count(db, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) == group_count(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) by {
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        let c1 = |t: Tuple| if t.customer.c_name == g_c_name && t.customer.c_custkey == g_c_custkey && t.orders.o_orderkey == g_o_orderkey && t.orders.o_orderdate == g_o_orderdate && t.orders.o_totalprice == g_o_totalprice { 1int } else { 0 };
+        let c2 = |t: Tuple| if t.customer.c_name == g_c_name && t.customer.c_custkey == g_c_custkey && t.orders.o_orderkey == g_o_orderkey && t.orders.o_orderdate == g_o_orderdate && t.orders.o_totalprice == g_o_totalprice { 1int } else { 0 };
+        assert forall|a: Tuple| #[trigger] c1(a) == c2(a) by {}
+        lemma_sum_perm(tuples(db, params), tuples(db2, params), c1);
+        lemma_sum_ext_all(tuples(db2, params), c1, c2);
+    }
+}
+
+proof fn lemma_perm_row_of(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_c_name: Seq<u8>, g_c_custkey: int, g_o_orderkey: int, g_o_orderdate: int, g_o_totalprice: int| #[trigger] row_of(db, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) == row_of(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+
+    lemma_perm_group_sum(db, db2, params);
+    assert forall|g_c_name: Seq<u8>, g_c_custkey: int, g_o_orderkey: int, g_o_orderdate: int, g_o_totalprice: int| #[trigger] row_of(db, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) == row_of(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) by {
+    }
+}
+
+proof fn lemma_perm_having(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|g_c_name: Seq<u8>, g_c_custkey: int, g_o_orderkey: int, g_o_orderdate: int, g_o_totalprice: int| #[trigger] having(db, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) == having(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(rows);
+    hide(row_ok);
+
+    assert forall|g_c_name: Seq<u8>, g_c_custkey: int, g_o_orderkey: int, g_o_orderdate: int, g_o_totalprice: int| #[trigger] having(db, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) == having(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) by {
+    }
+}
+
+proof fn lemma_perm_rows_keys(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(dedup(map_where(tuples(db, params), |t: Tuple| having(db, params, t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice), |t: Tuple| (t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice))), dedup(map_where(tuples(db2, params), |t: Tuple| having(db2, params, t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice), |t: Tuple| (t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice)))),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_tuples(db, db2, params);
+    lemma_perm_having(db, db2, params);
+        assert(bag_eq(tuples(db, params), tuples(db2, params)));
+        let keep1 = |t: Tuple| having(db, params, t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice);
+        let keep2 = |t: Tuple| having(db2, params, t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice);
+        let kf1 = |t: Tuple| (t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice);
+        let kf2 = |t: Tuple| (t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice);
+        assert forall|a: Tuple| #[trigger] keep1(a) == keep2(a) by {}
+        assert forall|a: Tuple| #[trigger] kf1(a) == kf2(a) by {}
+        lemma_bag_eq_map_where(tuples(db, params), tuples(db2, params), keep1, keep2, kf1, kf2);
+        lemma_bag_eq_dedup(map_where(tuples(db, params), keep1, kf1), map_where(tuples(db2, params), keep2, kf2));
+}
+
+proof fn lemma_perm_rows(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        bag_eq(rows(db, params), rows(db2, params)),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(row_ok);
+    lemma_perm_row_of(db, db2, params);
+    lemma_perm_rows_keys(db, db2, params);
+        let rf1 = |k: (Seq<u8>, int, int, int, int)| row_of(db, params, k.0, k.1, k.2, k.3, k.4);
+        let rf2 = |k: (Seq<u8>, int, int, int, int)| row_of(db2, params, k.0, k.1, k.2, k.3, k.4);
+        assert forall|k: (Seq<u8>, int, int, int, int)| #[trigger] rf1(k) == rf2(k) by {}
+        assert(bag_eq(dedup(map_where(tuples(db, params), |t: Tuple| having(db, params, t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice), |t: Tuple| (t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice))), dedup(map_where(tuples(db2, params), |t: Tuple| having(db2, params, t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice), |t: Tuple| (t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice)))));
+        lemma_bag_eq_map(dedup(map_where(tuples(db, params), |t: Tuple| having(db, params, t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice), |t: Tuple| (t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice))), dedup(map_where(tuples(db2, params), |t: Tuple| having(db2, params, t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice), |t: Tuple| (t.customer.c_name, t.customer.c_custkey, t.orders.o_orderkey, t.orders.o_orderdate, t.orders.o_totalprice))), rf1, rf2);
+}
+
+proof fn lemma_perm_row_ok(db: Db, db2: Db, params: Params)
+    requires
+        db_perm(db, db2),
+    ensures
+        forall|r: OutRow| #[trigger] row_ok(db, params, r) == row_ok(db2, params, r),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+
+    lemma_perm_group_sum(db, db2, params);
+    lemma_perm_group_count(db, db2, params);
+    lemma_perm_having(db, db2, params);
+    assert forall|r: OutRow| #[trigger] row_ok(db, params, r) == row_ok(db2, params, r) by {
+    }
+}
+
+proof fn lemma_full_result_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+        full_result(db, params, out),
+    ensures
+        full_result(db2, params, out),
+{
+    hide(in_1_where_clause);
+    hide(in_1_tuples_1);
+    hide(in_1_tuples);
+    hide(in_1_group_sum);
+    hide(in_1_group_count);
+    hide(in_1_row_of);
+    hide(in_1_having);
+    hide(in_1_rows);
+    hide(in_1);
+    hide(where_clause);
+    hide(tuples_3);
+    hide(tuples_2);
+    hide(tuples_1);
+    hide(tuples);
+    hide(group_sum);
+    hide(group_count);
+    hide(row_of);
+    hide(having);
+    hide(rows);
+    hide(row_ok);
+    lemma_perm_group_count(db, db2, params);
+    lemma_perm_having(db, db2, params);
+    lemma_perm_row_ok(db, db2, params);
+    assert forall|i: int| 0 <= i < out.len() implies row_ok(db2, params, #[trigger] out[i]) by {
+        assert(row_ok(db, params, out[i]) == row_ok(db2, params, out[i]));
+    }
+    assert forall|g_c_name: Seq<u8>, g_c_custkey: int, g_o_orderkey: int, g_o_orderdate: int, g_o_totalprice: int| #[trigger] group_count(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) > 0 && having(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) implies exists|i: int| 0 <= i < out.len() && (#[trigger] out[i]).c_name == g_c_name && out[i].c_custkey == g_c_custkey && out[i].o_orderkey == g_o_orderkey && out[i].o_orderdate == g_o_orderdate && out[i].o_totalprice == g_o_totalprice by {
+        assert(group_count(db, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) == group_count(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice));
+        assert(having(db, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice) == having(db2, params, g_c_name, g_c_custkey, g_o_orderkey, g_o_orderdate, g_o_totalprice));
+    }
+}
+
+/// The query accepts the same answers for any reordering of the tables.
+pub proof fn lemma_query_perm(db: Db, db2: Db, params: Params, out: Seq<OutRow>)
+    requires
+        db_perm(db, db2),
+    ensures
+        query_result(db, params, out) <==> query_result(db2, params, out),
+{
+    assert(db_perm(db2, db));
+    if query_result(db, params, out) {
+        lemma_full_result_perm(db, db2, params, out);
+    }
+    if query_result(db2, params, out) {
+        lemma_full_result_perm(db2, db, params, out);
+    }
 }
 
 } // verus!
