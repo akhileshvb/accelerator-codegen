@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:20",
+ "function": "accel_tpch_q20_aux",
+ "store": "cpp",
+ "build_ms": 17023.3,
+ "state_mb": 2106.23,
+ "rss_mb_settled_before": 65.9375,
+ "rss_mb_settled_after": 2172.17,
+ "rss_mb_peak_build": 8597.35,
+ "speedup_geomean": 30.104497700987046,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "DATE '1993-01-01', 'sandy%', 'GERMANY'",
+   "base_us": 273583.203,
+   "accel_us": 9061.652,
+   "base_rows": 3639,
+   "accel_rows": 3639,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'orange%', 'CHINA'",
+   "base_us": 269769.798,
+   "accel_us": 8937.066,
+   "base_rows": 3552,
+   "accel_rows": 3552,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'pink%', 'KENYA'",
+   "base_us": 274667.466,
+   "accel_us": 9076.104,
+   "base_rows": 3607,
+   "accel_rows": 3607,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'violet%', 'UNITED KINGDOM'",
+   "base_us": 271277.68,
+   "accel_us": 9045.961,
+   "base_rows": 3600,
+   "accel_rows": 3600,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'snow%', 'VIETNAM'",
+   "base_us": 272248.719,
+   "accel_us": 9174.383,
+   "base_rows": 3562,
+   "accel_rows": 3562,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'burnished%', 'ETHIOPIA'",
+   "base_us": 270781.982,
+   "accel_us": 9076.675,
+   "base_rows": 3508,
+   "accel_rows": 3508,
+   "match": true
+  },
+  {
+   "args": "DATE '1997-01-01', 'rosy%', 'UNITED STATES'",
+   "base_us": 271904.699,
+   "accel_us": 9157.912,
+   "base_rows": 3688,
+   "accel_rows": 3688,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'cream%', 'SAUDI ARABIA'",
+   "base_us": 275140.274,
+   "accel_us": 8866.512,
+   "base_rows": 3541,
+   "accel_rows": 3541,
+   "match": true
+  }
+ ],
+ "wall_s": 58.6,
+ "query": 20,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 3605954649,
+ "note": "",
+ "counts_cover_all_draws": true
+}

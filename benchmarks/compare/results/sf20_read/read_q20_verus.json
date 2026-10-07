@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "accel": "tpch_q20_vgen",
+ "function": "accel_tpch_q20_vgen",
+ "store": "verus",
+ "build_ms": 7780.62,
+ "speedup_geomean": 8.89099,
+ "mismatches": 0,
+ "hits": 48,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "DATE '1993-01-01', 'UNITED KINGDOM', DATE '1994-01-01'",
+   "base_us": 334999.003,
+   "accel_us": 33481.457,
+   "base_rows": 3624,
+   "accel_rows": 3624,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'BRAZIL', DATE '1995-01-01'",
+   "base_us": 294002.922,
+   "accel_us": 34185.055,
+   "base_rows": 3539,
+   "accel_rows": 3539,
+   "match": true
+  },
+  {
+   "args": "DATE '1993-01-01', 'ALGERIA', DATE '1994-01-01'",
+   "base_us": 290604.286,
+   "accel_us": 32734.699,
+   "base_rows": 3591,
+   "accel_rows": 3591,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'INDONESIA', DATE '1995-01-01'",
+   "base_us": 313592.1,
+   "accel_us": 34412.438,
+   "base_rows": 3615,
+   "accel_rows": 3615,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'CHINA', DATE '1997-01-01'",
+   "base_us": 283296.773,
+   "accel_us": 31654.24,
+   "base_rows": 3481,
+   "accel_rows": 3481,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'ETHIOPIA', DATE '1997-01-01'",
+   "base_us": 298167.029,
+   "accel_us": 33390.191,
+   "base_rows": 3488,
+   "accel_rows": 3488,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'UNITED KINGDOM', DATE '1997-01-01'",
+   "base_us": 284869.53,
+   "accel_us": 33223.786,
+   "base_rows": 3603,
+   "accel_rows": 3603,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'IRAN', DATE '1997-01-01'",
+   "base_us": 288271.702,
+   "accel_us": 35216.511,
+   "base_rows": 3606,
+   "accel_rows": 3606,
+   "match": true
+  }
+ ],
+ "wall_s": 24.2,
+ "query": 20,
+ "system": "verus",
+ "note": "part name prefix fixed to 'gainsboro%' (Verus literal)"
+}

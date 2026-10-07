@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:17",
+ "function": "accel_tpch_q17_aux",
+ "store": "cpp",
+ "build_ms": 86070.2,
+ "state_mb": 3226.94,
+ "rss_mb_settled_before": 61.7227,
+ "rss_mb_settled_after": 3288.66,
+ "rss_mb_peak_build": 10882.4,
+ "speedup_geomean": 2316.0019745494114,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#41', 'WRAP JAR'",
+   "base_us": 1074031.752,
+   "accel_us": 483.805,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#44', 'LG BAG'",
+   "base_us": 1048654.035,
+   "accel_us": 470.272,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#22', 'SM BAG'",
+   "base_us": 1046270.848,
+   "accel_us": 429.626,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#41', 'LG BOX'",
+   "base_us": 1066522.121,
+   "accel_us": 485.38,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#15', 'SM PACK'",
+   "base_us": 1052554.067,
+   "accel_us": 423.076,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#44', 'SM PKG'",
+   "base_us": 1059278.122,
+   "accel_us": 436.323,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#23', 'LG DRUM'",
+   "base_us": 1049206.376,
+   "accel_us": 460.85,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#15', 'JUMBO CASE'",
+   "base_us": 1050229.65,
+   "accel_us": 462.14,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 241.9,
+ "query": 17,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 2762249456,
+ "note": "",
+ "counts_cover_all_draws": true
+}

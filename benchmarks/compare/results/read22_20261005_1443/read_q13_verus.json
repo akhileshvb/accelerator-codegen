@@ -1,0 +1,29 @@
+{
+ "mode": "read",
+ "accel": "tpch_q13_vgen",
+ "function": "accel_tpch_q13_vgen",
+ "store": "verus",
+ "build_ms": 10913.1,
+ "state_mb": 716.359,
+ "rss_mb_settled_before": 49.3125,
+ "rss_mb_settled_after": 765.672,
+ "rss_mb_peak_build": 1452.29,
+ "speedup_geomean": 1041.18,
+ "mismatches": 0,
+ "hits": 6,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "",
+   "base_us": 489229.314,
+   "accel_us": 469.879,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  }
+ ],
+ "wall_s": 14.5,
+ "query": 13,
+ "system": "verus",
+ "note": "pattern fixed to '%unusual%accounts%' (Verus literal)"
+}

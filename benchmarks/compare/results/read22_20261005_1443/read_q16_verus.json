@@ -1,0 +1,85 @@
+{
+ "mode": "read",
+ "accel": "tpch_q16_vgen",
+ "function": "accel_tpch_q16_vgen",
+ "store": "verus",
+ "build_ms": 183929,
+ "state_mb": 747.629,
+ "rss_mb_settled_before": 65.75,
+ "rss_mb_settled_after": 813.379,
+ "rss_mb_peak_build": 9130.91,
+ "speedup_geomean": 1.57498,
+ "mismatches": 0,
+ "hits": 48,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#22', 14, 37, 9, 17, 26, 33, 5, 22",
+   "base_us": 188169.505,
+   "accel_us": 112084.973,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#14', 26, 18, 50, 11, 3, 10, 5, 6",
+   "base_us": 180917.938,
+   "accel_us": 112584.862,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#33', 3, 36, 33, 40, 20, 45, 21, 32",
+   "base_us": 178295.262,
+   "accel_us": 113666.374,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#15', 21, 33, 35, 15, 29, 19, 31, 17",
+   "base_us": 179917.176,
+   "accel_us": 113516.343,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#22', 8, 6, 29, 28, 16, 24, 32, 15",
+   "base_us": 168789.103,
+   "accel_us": 113854.305,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#15', 31, 20, 46, 2, 41, 17, 42, 27",
+   "base_us": 176760.945,
+   "accel_us": 114876.062,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#55', 19, 6, 42, 23, 12, 16, 5, 40",
+   "base_us": 178114.235,
+   "accel_us": 115488.056,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#42', 47, 9, 41, 46, 39, 2, 8, 10",
+   "base_us": 183870.2,
+   "accel_us": 114587.967,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  }
+ ],
+ "wall_s": 200.0,
+ "query": 16,
+ "system": "verus",
+ "note": "type prefix fixed to 'SMALL BRUSHED%' (Verus literal)"
+}

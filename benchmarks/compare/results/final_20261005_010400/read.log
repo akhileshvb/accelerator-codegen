@@ -1,0 +1,113 @@
+read q1 cpp 01:04:01
+  build 0.4s  speedup(geomean) 582.3x  mismatches 0  hits 48 fallbacks 0
+read q1 verus 01:04:16
+  build 141.5s  speedup(geomean) 537.1x  mismatches 0  hits 48 fallbacks 0
+read q2 cpp 01:06:52
+  build 8.8s  speedup(geomean) 191.8x  mismatches 0  hits 48 fallbacks 0
+read q2 verus 01:07:09
+  build 21.6s  speedup(geomean) 2.1x  mismatches 0  hits 48 fallbacks 0
+read q3 cpp 01:07:42
+  build 71.0s  speedup(geomean) 278.6x  mismatches 0  hits 48 fallbacks 0
+read q3 verus 01:09:02
+  build 524.9s  speedup(geomean) 139.8x  mismatches 0  hits 48 fallbacks 0
+read q4 cpp 01:17:57
+  build 31.3s  speedup(geomean) 343.2x  mismatches 0  hits 48 fallbacks 0
+read q4 verus 01:18:37
+  build 67.8s  speedup(geomean) 347.3x  mismatches 0  hits 48 fallbacks 0
+read q5 cpp 01:19:54
+  build 59.2s  speedup(geomean) 367.2x  mismatches 0  hits 48 fallbacks 0
+read q5 verus 01:21:03
+  build 86.0s  speedup(geomean) 305.2x  mismatches 0  hits 48 fallbacks 0
+read q6 cpp 01:22:40
+  build 0.8s  speedup(geomean) 107.2x  mismatches 0  hits 48 fallbacks 0
+read q6 verus 01:22:43
+  build 77.1s  speedup(geomean) 59.5x  mismatches 0  hits 48 fallbacks 0
+read q7 cpp 01:24:03
+  build 7.1s  speedup(geomean) 273.7x  mismatches 0  hits 48 fallbacks 0
+read q7 verus 01:24:17
+  build 67.6s  speedup(geomean) 283.4x  mismatches 0  hits 48 fallbacks 0
+read q8 cpp 01:25:32
+  build 67.1s  speedup(geomean) 495.0x  mismatches 0  hits 48 fallbacks 0
+read q8 verus 01:26:49
+  build 467.6s  speedup(geomean) 441.2x  mismatches 0  hits 48 fallbacks 0
+read q9 cpp 01:34:48
+  build 108.5s  speedup(geomean) 1035.1x  mismatches 0  hits 6 fallbacks 0
+read q9 verus 01:36:44
+  build 31.4s  speedup(geomean) 839.4x  mismatches 0  hits 6 fallbacks 0
+read q10 cpp 01:37:19
+  build 11.0s  speedup(geomean) 471.8x  mismatches 0  hits 48 fallbacks 0
+read q10 verus 01:37:44
+  build 599.4s  speedup(geomean) 6.9x  mismatches 0  hits 48 fallbacks 0
+read q11 cpp 01:48:06
+  build 19.7s  speedup(geomean) 94.8x  mismatches 0  hits 48 fallbacks 0
+read q11 verus 01:48:31
+  build 226.1s  speedup(geomean) 106.8x  mismatches 0  hits 48 fallbacks 0
+read q12 cpp 01:52:21
+  build 52.2s  speedup(geomean) 246.4x  mismatches 0  hits 48 fallbacks 0
+read q12 verus 01:53:19
+  build 19.5s  speedup(geomean) 217.2x  mismatches 0  hits 48 fallbacks 0
+read q13 cpp 01:53:45
+  build 22.6s  speedup(geomean) 1019.4x  mismatches 0  hits 6 fallbacks 0
+read q13 verus 01:54:12
+  build 10.4s  speedup(geomean) 1013.7x  mismatches 0  hits 6 fallbacks 0
+read q14 cpp 01:54:25
+  build 1.3s  speedup(geomean) 228.9x  mismatches 0  hits 48 fallbacks 0
+read q14 verus 01:54:32
+  build 740.2s  speedup(geomean) 220.5x  mismatches 0  hits 48 fallbacks 0
+read q15 cpp 02:06:57
+  build 16.8s  speedup(geomean) 190.2x  mismatches 0  hits 48 fallbacks 0
+read q15 verus 02:07:19
+  build 129.0s  speedup(geomean) 0.5x  mismatches 0  hits 48 fallbacks 0
+read q16 cpp 02:09:43
+  build 6.4s  speedup(geomean) 37.6x  mismatches 0  hits 48 fallbacks 0
+read q16 verus 02:09:59
+  build 184.1s  speedup(geomean) 1.6x  mismatches 0  hits 48 fallbacks 0
+read q17 cpp 02:13:20
+  build 85.6s  speedup(geomean) 2341.6x  mismatches 0  hits 48 fallbacks 0
+read q17 verus 02:15:40
+  build 124.9s  speedup(geomean) 2294.9x  mismatches 0  hits 48 fallbacks 0
+read q18 cpp 02:18:37
+  build 1.5s  speedup(geomean) 715.4x  mismatches 0  hits 24 fallbacks 0
+read q18 verus 02:18:49
+  build 165.2s  speedup(geomean) 343.6x  mismatches 0  hits 24 fallbacks 0
+read q19 cpp 02:21:45
+  build 1.9s  speedup(geomean) 478.6x  mismatches 0  hits 48 fallbacks 0
+read q19 verus 02:21:57
+  build 1.5s  speedup(geomean) 351.3x  mismatches 0  hits 48 fallbacks 0
+read q20 cpp 02:22:09
+  build 17.2s  speedup(geomean) 30.3x  mismatches 0  hits 48 fallbacks 0
+read q20 verus 02:22:41
+  build 6.2s  speedup(geomean) 9.3x  mismatches 0  hits 48 fallbacks 0
+read q21 cpp 02:23:02
+  build 6.2s  speedup(geomean) 822.1x  mismatches 0  hits 48 fallbacks 0
+read q21 verus 02:23:31
+  build 29.8s  speedup(geomean) 164.2x  mismatches 0  hits 48 fallbacks 0
+read q22 cpp 02:24:24
+  build 2.5s  speedup(geomean) 323.9x  mismatches 0  hits 48 fallbacks 0
+read q22 verus 02:24:34
+  build 541.3s  speedup(geomean) 129.1x  mismatches 0  hits 48 fallbacks 0
+
+read-only: speedup over DuckDB (geomean over parameter sets), build seconds
+   q        cpp      verus  cpp build  verus build  notes
+   1     582.3x     537.1x        0.4        141.5  
+   2     191.8x       2.1x        8.8         21.6  
+   3     278.6x     139.8x       71.0        524.9  
+   4     343.2x     347.3x       31.3         67.8  
+   5     367.2x     305.2x       59.2         86.0  
+   6     107.2x      59.5x        0.8         77.1  
+   7     273.7x     283.4x        7.1         67.6  
+   8     495.0x     441.2x       67.1        467.6  
+   9    1035.1x     839.4x      108.5         31.4  
+  10     471.8x       6.9x       11.0        599.4  
+  11      94.8x     106.8x       19.7        226.1  
+  12     246.4x     217.2x       52.2         19.5  
+  13    1019.4x    1013.7x       22.6         10.4  
+  14     228.9x     220.5x        1.3        740.2  
+  15     190.2x       0.5x       16.8        129.0  
+  16      37.6x       1.6x        6.4        184.1  
+  17    2341.6x    2294.9x       85.6        124.9  
+  18     715.4x     343.6x        1.5        165.2  
+  19     478.6x     351.3x        1.9          1.5  
+  20      30.3x       9.3x       17.2          6.2  
+  21     822.1x     164.2x        6.2         29.8  
+  22     323.9x     129.1x        2.5        541.3  

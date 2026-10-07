@@ -1,0 +1,6 @@
+out=/home/akhilvb/accelerator-codegen/benchmarks/compare/results/final_20261005_010400 readers=8 seconds=60 wps=5 multi_seconds=120 start=Mon Oct  5 01:04:00 AM EDT 2026
+=== read start 01:04:00
+=== read exit 0 02:33:44
+=== concurrent start 02:33:44
+=== concurrent exit 0 05:21:45
+=== multi start 05:21:45

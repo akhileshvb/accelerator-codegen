@@ -1,0 +1,167 @@
+{
+ "mode": "multi",
+ "phase": "accel",
+ "accelerators": 11,
+ "store": "cpp",
+ "readers": 8,
+ "seconds": 120,
+ "build_ms": 240106,
+ "build_ms_by_accel": {
+  "tpch:2": 8982.924727,
+  "tpch:4": 32075.853862,
+  "tpch:6": 798.572501,
+  "tpch:7": 6654.29018,
+  "tpch:11": 19553.146276,
+  "tpch:12": 56360.284383,
+  "tpch:13": 24138.096149,
+  "tpch:14": 1310.067647,
+  "tpch:17": 84440.12584,
+  "tpch:19": 1918.303865,
+  "tpch:22": 3874.642055
+ },
+ "reads": 1851485,
+ "qps": 15429,
+ "read_errors": 0,
+ "read_error_example": "",
+ "writes_per_sec_target": 5,
+ "writes": 593,
+ "writes_total": 618,
+ "writes_per_sec": 4.94167,
+ "commit_p50_us": 28136.5,
+ "commit_p99_us": 187682,
+ "max_commit_us": 1968320.0,
+ "write_errors": 0,
+ "write_error_example": "",
+ "write_kinds": {
+  "customer update": 14,
+  "lineitem update": 13,
+  "orders update": 13,
+  "part delete": 14,
+  "part insert": 14,
+  "partsupp update": 13,
+  "rf1": 186,
+  "rf1 large order": 61,
+  "rf2": 248,
+  "supplier delete": 14,
+  "supplier insert": 14,
+  "supplier update": 14
+ },
+ "hits": 1854392,
+ "fallbacks": 0,
+ "per_accel": [
+  {
+   "accel": "tpch:2",
+   "reads": 168316,
+   "read_p50_us": 741.94,
+   "read_p99_us": 1330.53,
+   "read_max_us": 122741.572,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:4",
+   "reads": 168316,
+   "read_p50_us": 433.33,
+   "read_p99_us": 3343.416,
+   "read_max_us": 36977.454,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:6",
+   "reads": 168316,
+   "read_p50_us": 424.278,
+   "read_p99_us": 694.317,
+   "read_max_us": 41127.854,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:7",
+   "reads": 168316,
+   "read_p50_us": 463.295,
+   "read_p99_us": 767.4,
+   "read_max_us": 60802.471,
+   "answers_changed": 7,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:11",
+   "reads": 168317,
+   "read_p50_us": 394.806,
+   "read_p99_us": 618.433,
+   "read_max_us": 48016.815,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:12",
+   "reads": 168317,
+   "read_p50_us": 470.605,
+   "read_p99_us": 3436.793,
+   "read_max_us": 83885.825,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:13",
+   "reads": 168317,
+   "read_p50_us": 382.318,
+   "read_p99_us": 2300.134,
+   "read_max_us": 40759.752,
+   "answers_changed": 1,
+   "cases": 1
+  },
+  {
+   "accel": "tpch:14",
+   "reads": 168315,
+   "read_p50_us": 378.977,
+   "read_p99_us": 1609.542,
+   "read_max_us": 98406.343,
+   "answers_changed": 7,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:17",
+   "reads": 168315,
+   "read_p50_us": 356.792,
+   "read_p99_us": 3874.484,
+   "read_max_us": 12690.822,
+   "answers_changed": 3,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:19",
+   "reads": 168322,
+   "read_p50_us": 388.854,
+   "read_p99_us": 662.699,
+   "read_max_us": 2840184.132,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:22",
+   "reads": 168318,
+   "read_p50_us": 447.632,
+   "read_p99_us": 2019.583,
+   "read_max_us": 1230968.912,
+   "answers_changed": 7,
+   "cases": 8
+  }
+ ],
+ "wall_s": 410.9,
+ "system": "cpp",
+ "queries": [
+  2,
+  4,
+  6,
+  7,
+  11,
+  12,
+  13,
+  14,
+  17,
+  19,
+  22
+ ]
+}

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:13",
+ "function": "accel_tpch_q13_aux",
+ "store": "cpp",
+ "build_ms": 14790.2,
+ "state_mb": 2971.31,
+ "rss_mb_settled_before": 65.9062,
+ "rss_mb_settled_after": 3037.22,
+ "rss_mb_peak_build": 3564.43,
+ "speedup_geomean": 1170.8930193390331,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'%special%deposits%'",
+   "base_us": 493138.037,
+   "accel_us": 422.334,
+   "base_rows": 44,
+   "accel_rows": 44,
+   "match": true
+  },
+  {
+   "args": "'%express%accounts%'",
+   "base_us": 501537.904,
+   "accel_us": 428.894,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  },
+  {
+   "args": "'%pending%requests%'",
+   "base_us": 479774.152,
+   "accel_us": 409.702,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  },
+  {
+   "args": "'%express%deposits%'",
+   "base_us": 501315.701,
+   "accel_us": 420.998,
+   "base_rows": 44,
+   "accel_rows": 44,
+   "match": true
+  },
+  {
+   "args": "'%special%accounts%'",
+   "base_us": 501327.733,
+   "accel_us": 412.958,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  },
+  {
+   "args": "'%pending%accounts%'",
+   "base_us": 487587.537,
+   "accel_us": 435.951,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  },
+  {
+   "args": "'%express%requests%'",
+   "base_us": 501095.062,
+   "accel_us": 425.189,
+   "base_rows": 44,
+   "accel_rows": 44,
+   "match": true
+  },
+  {
+   "args": "'%pending%deposits%'",
+   "base_us": 491439.076,
+   "accel_us": 423.806,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  }
+ ],
+ "wall_s": 87.2,
+ "query": 13,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 3605954650,
+ "note": "",
+ "counts_cover_all_draws": true
+}

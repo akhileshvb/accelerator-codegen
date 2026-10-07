@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q3_vgen",
+ "function": "accel_tpch_q3_vgen",
+ "store": "verus",
+ "build_ms": 393297,
+ "state_mb": 4652,
+ "rss_mb_settled_before": 63.3828,
+ "rss_mb_settled_after": 4715.38,
+ "rss_mb_peak_build": 10947.1,
+ "speedup_geomean": 121.35415851256994,
+ "mismatches": 0,
+ "hits": 144,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'HOUSEHOLD', DATE '1995-03-26'",
+   "base_us": 187101.764,
+   "accel_us": 1260.152,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'BUILDING', DATE '1995-03-01'",
+   "base_us": 171276.165,
+   "accel_us": 1187.042,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'AUTOMOBILE', DATE '1995-03-25'",
+   "base_us": 161869.79,
+   "accel_us": 1292.146,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'FURNITURE', DATE '1995-03-18'",
+   "base_us": 163411.893,
+   "accel_us": 1594.447,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'FURNITURE', DATE '1995-03-26'",
+   "base_us": 161297.396,
+   "accel_us": 1624.5,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'FURNITURE', DATE '1995-03-27'",
+   "base_us": 161793.831,
+   "accel_us": 1196.843,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'BUILDING', DATE '1995-03-04'",
+   "base_us": 163144.002,
+   "accel_us": 1342.122,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'BUILDING', DATE '1995-03-08'",
+   "base_us": 160862.437,
+   "accel_us": 1534.767,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  }
+ ],
+ "wall_s": 417.8,
+ "query": 3,
+ "system": "verus",
+ "rep": 0,
+ "seed": 3605954648,
+ "note": "",
+ "counts_cover_all_draws": true
+}

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:7",
+ "function": "accel_tpch_q7_aux",
+ "store": "cpp",
+ "build_ms": 6878.25,
+ "state_mb": 1124.56,
+ "rss_mb_settled_before": 63.6641,
+ "rss_mb_settled_after": 1188.22,
+ "rss_mb_peak_build": 4626.25,
+ "speedup_geomean": 272.042838901374,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'EGYPT', 'ROMANIA'",
+   "base_us": 132777.082,
+   "accel_us": 497.225,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'BRAZIL', 'INDIA'",
+   "base_us": 134411.687,
+   "accel_us": 507.688,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'ALGERIA', 'MOZAMBIQUE'",
+   "base_us": 134511.506,
+   "accel_us": 509.874,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'UNITED STATES', 'ETHIOPIA'",
+   "base_us": 138712.062,
+   "accel_us": 499.166,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'ROMANIA', 'UNITED STATES'",
+   "base_us": 140673.107,
+   "accel_us": 494.675,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'KENYA', 'MOZAMBIQUE'",
+   "base_us": 135235.377,
+   "accel_us": 479.826,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'ETHIOPIA', 'PERU'",
+   "base_us": 135515.737,
+   "accel_us": 485.364,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'KENYA', 'INDONESIA'",
+   "base_us": 134138.744,
+   "accel_us": 518.623,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  }
+ ],
+ "wall_s": 27.2,
+ "query": 7,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 3605954649,
+ "note": "",
+ "counts_cover_all_draws": true
+}

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q17_vgen",
+ "function": "accel_tpch_q17_vgen",
+ "store": "verus",
+ "build_ms": 123941,
+ "state_mb": 1764.36,
+ "rss_mb_settled_before": 67.668,
+ "rss_mb_settled_after": 1832.03,
+ "rss_mb_peak_build": 7248.61,
+ "speedup_geomean": 2391.8630539053456,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#52', 'LG BAG'",
+   "base_us": 1056685.093,
+   "accel_us": 421.884,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#52', 'JUMBO JAR'",
+   "base_us": 1055988.156,
+   "accel_us": 435.854,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#32', 'SM CASE'",
+   "base_us": 1047233.781,
+   "accel_us": 443.653,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#52', 'JUMBO BOX'",
+   "base_us": 1040990.35,
+   "accel_us": 431.618,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#23', 'SM JAR'",
+   "base_us": 1045335.225,
+   "accel_us": 425.803,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#15', 'JUMBO BOX'",
+   "base_us": 1040412.173,
+   "accel_us": 461.029,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#11', 'SM PACK'",
+   "base_us": 1040157.79,
+   "accel_us": 440.859,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#13', 'LG JAR'",
+   "base_us": 1041985.719,
+   "accel_us": 439.251,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 277.1,
+ "query": 17,
+ "system": "verus",
+ "rep": 2,
+ "seed": 3605954650,
+ "note": "",
+ "counts_cover_all_draws": true
+}

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:8",
+ "function": "accel_tpch_q8_aux",
+ "store": "cpp",
+ "build_ms": 66112,
+ "state_mb": 1314.3,
+ "rss_mb_settled_before": 61.6758,
+ "rss_mb_settled_after": 1375.98,
+ "rss_mb_peak_build": 2844.27,
+ "speedup_geomean": 489.3670759256524,
+ "mismatches": 0,
+ "hits": 144,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'CANADA', 'AMERICA', 'LARGE BRUSHED BRASS'",
+   "base_us": 210898.121,
+   "accel_us": 416.095,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'ETHIOPIA', 'AFRICA', 'LARGE BRUSHED BRASS'",
+   "base_us": 211823.921,
+   "accel_us": 398.917,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'INDONESIA', 'ASIA', 'STANDARD POLISHED COPPER'",
+   "base_us": 203719.87,
+   "accel_us": 399.167,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'RUSSIA', 'EUROPE', 'STANDARD POLISHED STEEL'",
+   "base_us": 205100.035,
+   "accel_us": 415.924,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'BRAZIL', 'AMERICA', 'LARGE BURNISHED STEEL'",
+   "base_us": 205590.379,
+   "accel_us": 443.415,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'CANADA', 'AMERICA', 'LARGE ANODIZED COPPER'",
+   "base_us": 202157.834,
+   "accel_us": 432.742,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'VIETNAM', 'ASIA', 'STANDARD BRUSHED BRASS'",
+   "base_us": 197780.105,
+   "accel_us": 426.924,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'JAPAN', 'ASIA', 'SMALL BRUSHED BRASS'",
+   "base_us": 199974.865,
+   "accel_us": 413.225,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 95.4,
+ "query": 8,
+ "system": "cpp",
+ "rep": 0,
+ "seed": 3605954648,
+ "note": "",
+ "counts_cover_all_draws": true
+}

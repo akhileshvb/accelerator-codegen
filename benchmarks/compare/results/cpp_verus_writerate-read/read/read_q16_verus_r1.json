@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q16_vgen",
+ "function": "accel_tpch_q16_vgen",
+ "store": "verus",
+ "build_ms": 189410,
+ "state_mb": 791.5,
+ "rss_mb_settled_before": 67.6836,
+ "rss_mb_settled_after": 859.184,
+ "rss_mb_peak_build": 9345.58,
+ "speedup_geomean": 2.6015827511808847,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#31', 'SMALL PLATED%', 10, 27, 41, 50, 33, 49, 19, 32",
+   "base_us": 178172.739,
+   "accel_us": 68923.405,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#24', 'STANDARD PLATED%', 8, 41, 1, 31, 9, 22, 46, 43",
+   "base_us": 178397.182,
+   "accel_us": 68103.026,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#34', 'LARGE POLISHED%', 50, 36, 11, 1, 42, 13, 49, 38",
+   "base_us": 178958.004,
+   "accel_us": 68165.249,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#35', 'ECONOMY PLATED%', 35, 50, 24, 39, 4, 37, 9, 20",
+   "base_us": 176940.606,
+   "accel_us": 67629.294,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#11', 'PROMO BURNISHED%', 6, 50, 22, 2, 37, 45, 9, 18",
+   "base_us": 175607.499,
+   "accel_us": 67115.846,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#12', 'LARGE BURNISHED%', 22, 4, 26, 9, 23, 12, 49, 28",
+   "base_us": 179667.485,
+   "accel_us": 70841.824,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#31', 'MEDIUM PLATED%', 34, 7, 29, 13, 44, 17, 47, 2",
+   "base_us": 178185.951,
+   "accel_us": 68478.747,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  },
+  {
+   "args": "'Brand#15', 'MEDIUM ANODIZED%', 7, 15, 17, 29, 10, 42, 30, 49",
+   "base_us": 181468.437,
+   "accel_us": 69453.192,
+   "base_rows": 27840,
+   "accel_rows": 27840,
+   "match": true
+  }
+ ],
+ "wall_s": 229.5,
+ "query": 16,
+ "system": "verus",
+ "rep": 1,
+ "seed": 3605954649,
+ "note": "",
+ "counts_cover_all_draws": true
+}

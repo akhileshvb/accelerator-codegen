@@ -1,0 +1,48 @@
+{
+ "mode": "cycle",
+ "phase": "base",
+ "accel": "tpch:8",
+ "build_ms": 0.0,
+ "rss_mb_after_build": 0.0,
+ "pairs": 1,
+ "burst": 16,
+ "rf_source": "tpch_update_sets",
+ "rf_sets_loaded": 5,
+ "rf_orders_per_set": 30000,
+ "rf_orders_used": 30000,
+ "before": {
+  "first_read_us": 305218.022,
+  "read_p50_us": 212165.851,
+  "read_p99_us": 305218.022,
+  "read_mean_us": 220914.788,
+  "reads": 16
+ },
+ "writes": [
+  {
+   "kind": "rf1",
+   "commit_us": 498158.572,
+   "first_read_us": 240771.571,
+   "read_p50_us": 204574.764,
+   "read_p99_us": 240771.571,
+   "read_mean_us": 208991.092937,
+   "reads": 16
+  },
+  {
+   "kind": "rf2",
+   "commit_us": 14844.663,
+   "first_read_us": 213170.081,
+   "read_p50_us": 201740.128,
+   "read_p99_us": 221193.192,
+   "read_mean_us": 203876.8075,
+   "reads": 16
+  }
+ ],
+ "mismatches": 0,
+ "wall_s": 19.3,
+ "query": 8,
+ "system": "base",
+ "rep": 0,
+ "seed": 2249872636,
+ "sf": 20.0,
+ "threads": null
+}

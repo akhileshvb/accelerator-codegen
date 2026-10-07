@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:3",
+ "function": "accel_tpch_q3_aux",
+ "store": "cpp",
+ "build_ms": 70479.2,
+ "state_mb": 2974.73,
+ "rss_mb_settled_before": 61.625,
+ "rss_mb_settled_after": 3036.35,
+ "rss_mb_peak_build": 5837.84,
+ "speedup_geomean": 277.0042866305259,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'HOUSEHOLD', DATE '1995-03-19'",
+   "base_us": 163714.122,
+   "accel_us": 580.216,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'FURNITURE', DATE '1995-03-27'",
+   "base_us": 162184.546,
+   "accel_us": 568.407,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'MACHINERY', DATE '1995-03-14'",
+   "base_us": 162974.467,
+   "accel_us": 591.344,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'BUILDING', DATE '1995-03-16'",
+   "base_us": 164133.015,
+   "accel_us": 603.33,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'FURNITURE', DATE '1995-03-05'",
+   "base_us": 161623.039,
+   "accel_us": 577.541,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'BUILDING', DATE '1995-03-23'",
+   "base_us": 162626.934,
+   "accel_us": 588.317,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'AUTOMOBILE', DATE '1995-03-16'",
+   "base_us": 161900.696,
+   "accel_us": 594.38,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  },
+  {
+   "args": "'HOUSEHOLD', DATE '1995-03-08'",
+   "base_us": 161358.366,
+   "accel_us": 592.042,
+   "base_rows": 10,
+   "accel_rows": 10,
+   "match": true
+  }
+ ],
+ "wall_s": 94.9,
+ "query": 3,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 3605954649,
+ "note": "",
+ "counts_cover_all_draws": true
+}

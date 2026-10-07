@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:20",
+ "function": "accel_tpch_q20_aux",
+ "store": "cpp",
+ "build_ms": 18860.7,
+ "state_mb": 2102.09,
+ "rss_mb_settled_before": 61.6953,
+ "rss_mb_settled_after": 2163.79,
+ "rss_mb_peak_build": 8792.88,
+ "speedup_geomean": 101.33316606973416,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "DATE '1996-01-01', 'plum%', 'MOROCCO'",
+   "base_us": 272567.085,
+   "accel_us": 2751.02,
+   "base_rows": 3632,
+   "accel_rows": 3632,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'red%', 'CHINA'",
+   "base_us": 276759.0,
+   "accel_us": 2638.224,
+   "base_rows": 3561,
+   "accel_rows": 3561,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'light%', 'ROMANIA'",
+   "base_us": 276182.237,
+   "accel_us": 2744.75,
+   "base_rows": 3653,
+   "accel_rows": 3653,
+   "match": true
+  },
+  {
+   "args": "DATE '1997-01-01', 'blue%', 'GERMANY'",
+   "base_us": 273130.596,
+   "accel_us": 2808.801,
+   "base_rows": 3624,
+   "accel_rows": 3624,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'sky%', 'UNITED KINGDOM'",
+   "base_us": 274392.579,
+   "accel_us": 2780.91,
+   "base_rows": 3650,
+   "accel_rows": 3650,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'azure%', 'VIETNAM'",
+   "base_us": 274696.498,
+   "accel_us": 2690.88,
+   "base_rows": 3504,
+   "accel_rows": 3504,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'beige%', 'ARGENTINA'",
+   "base_us": 275935.306,
+   "accel_us": 2663.234,
+   "base_rows": 3633,
+   "accel_rows": 3633,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'ghost%', 'ROMANIA'",
+   "base_us": 276666.444,
+   "accel_us": 2641.179,
+   "base_rows": 3542,
+   "accel_rows": 3542,
+   "match": true
+  }
+ ],
+ "wall_s": 59.9,
+ "query": 20,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 2762249457,
+ "note": "",
+ "counts_cover_all_draws": true
+}

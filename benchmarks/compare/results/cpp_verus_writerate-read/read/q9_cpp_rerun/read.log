@@ -1,0 +1,1 @@
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare read /flash1/akhilvb/tpch/tpch_sf20.duckdb tpch:9 tpch_q9_vgen /flash1/akhilvb/tpch/work/cases_q9_cpp_all.tsv 5

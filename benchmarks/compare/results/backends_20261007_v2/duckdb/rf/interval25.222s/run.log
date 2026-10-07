@@ -1,0 +1,43 @@
+Running as unit: run-p1683471-i14269062.scope; invocation ID: 06511bbe3b814204b232958f55008fa0
+parameter draws: 3 repetition(s) x 4 sets, seeds 2121043458..2121043460
+multi base (22 accelerators, rotate readers, rates wps0.039648, 3 repetition(s)) 01:39:20
+  cost models: config/qN_aux_cost_model_sf20.json (SF20 calibration)
+  build 0s
+  wps0.039648 rep 0: qps 4  writes 28 (0.3/s of 0.039648) commit p50 11.6ms p99 927.6ms max 974ms  errors read 0 write 0
+  wps0.039648 rep 1: qps 4  writes 28 (0.3/s of 0.039648) commit p50 12.9ms p99 1155.3ms max 1155ms  errors read 0 write 0
+  wps0.039648 rep 2: qps 4  writes 28 (0.3/s of 0.039648) commit p50 18.1ms p99 1758.0ms max 1758ms  errors read 0 write 0
+multi cpp (22 accelerators, rotate readers, rates wps0.039648, 3 repetition(s)) 01:47:00
+  cost models: config/qN_aux_cost_model_sf20.json (SF20 calibration)
+  build 587s
+  wps0.039648 rep 0: qps 1216  writes 27 (0.3/s of 0.039648) commit p50 223.6ms p99 34592.8ms max 34593ms  errors read 0 write 0
+  wps0.039648 rep 1: qps 1445  writes 27 (0.3/s of 0.039648) commit p50 294.7ms p99 35481.9ms max 35482ms  errors read 0 write 0
+  wps0.039648 rep 2: qps 1328  writes 27 (0.3/s of 0.039648) commit p50 328.2ms p99 36768.9ms max 36769ms  errors read 0 write 0
+
+=== wps0.039648
+
+multi-accelerator (one process, one writer maintaining all): per-query read p50 ms, median [min-max] over 3 repetition(s) with different parameter draws
+   q                     base                      cpp
+   1   357.26 [353.79-369.88]         0.34 [0.33-0.34]
+   2   192.71 [171.22-236.19]         0.47 [0.47-0.48]
+   3   341.69 [330.38-378.05]         0.34 [0.33-0.35]
+   4   368.76 [343.98-377.43]         0.28 [0.27-0.28]
+   5   423.26 [359.39-461.10]         0.31 [0.30-0.31]
+   6      72.15 [64.78-74.03]         0.29 [0.29-0.30]
+   7   285.51 [182.80-346.51]         0.32 [0.31-0.32]
+   8   425.84 [418.08-433.72]         0.25 [0.25-0.25]
+   9 1674.05 [1080.44-1807.87]         0.28 [0.28-0.28]
+  10   529.20 [500.82-551.26]         0.35 [0.35-0.36]
+  11      68.22 [57.70-91.11]         0.99 [0.98-1.00]
+  12   263.54 [241.46-269.66]         0.31 [0.31-0.32]
+  13   846.53 [841.90-981.53]         0.23 [0.23-0.24]
+  14   269.47 [234.26-322.30]         0.23 [0.23-0.24]
+  15   201.24 [177.82-221.05]         0.30 [0.29-0.30]
+  16   348.10 [246.23-429.05]         4.87 [4.86-4.91]
+  17 7496.03 [6785.37-12401.03]         0.24 [0.24-0.24]
+  18 2715.41 [1497.03-3100.85]         0.53 [0.52-0.54]
+  19   301.59 [296.60-311.74]         0.25 [0.25-0.25]
+  20   753.41 [702.04-762.81]         5.41 [5.00-5.50]
+  21 1219.10 [1142.33-1397.38]         0.31 [0.31-0.32]
+  22   216.86 [180.79-255.90]         0.29 [0.29-0.30]
+totals base: qps 4 [4-4], writes/s 0.3 [0.3-0.3], commit p50 ms 12.9 [11.6-18.1], p99 ms 1155.3 [927.6-1758.0]
+totals cpp: qps 1328 [1216-1445], writes/s 0.3 [0.3-0.3], commit p50 ms 294.7 [223.6-328.2], p99 ms 35481.9 [34592.8-36768.9]

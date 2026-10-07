@@ -1,0 +1,85 @@
+{
+ "mode": "read",
+ "accel": "tpch_q17_vgen",
+ "function": "accel_tpch_q17_vgen",
+ "store": "verus",
+ "build_ms": 132825,
+ "state_mb": 1758.11,
+ "rss_mb_settled_before": 65.7266,
+ "rss_mb_settled_after": 1823.84,
+ "rss_mb_peak_build": 7237.48,
+ "speedup_geomean": 2395.71,
+ "mismatches": 0,
+ "hits": 48,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#14', 'SM BAG'",
+   "base_us": 1103662.934,
+   "accel_us": 384.46,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#55', 'MED CAN'",
+   "base_us": 1066043.977,
+   "accel_us": 377.472,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#35', 'MED JAR'",
+   "base_us": 1096669.601,
+   "accel_us": 385.357,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#23', 'MED BAG'",
+   "base_us": 1054403.539,
+   "accel_us": 443.326,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#23', 'MED PACK'",
+   "base_us": 1047872.716,
+   "accel_us": 547.853,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#54', 'LG CAN'",
+   "base_us": 1171953.228,
+   "accel_us": 529.597,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#15', 'MED PKG'",
+   "base_us": 1181285.72,
+   "accel_us": 508.772,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#15', 'SM CAN'",
+   "base_us": 1194031.896,
+   "accel_us": 593.417,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 187.8,
+ "query": 17,
+ "system": "verus",
+ "note": ""
+}

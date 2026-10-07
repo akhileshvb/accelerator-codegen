@@ -1,0 +1,155 @@
+{
+ "mode": "multi",
+ "phase": "base",
+ "accelerators": 11,
+ "store": "none",
+ "readers": 8,
+ "seconds": 120,
+ "build_ms": 0,
+ "build_ms_by_accel": {},
+ "reads": 596,
+ "qps": 4.96667,
+ "read_errors": 0,
+ "read_error_example": "",
+ "writes_per_sec_target": 5,
+ "writes": 600,
+ "writes_total": 625,
+ "writes_per_sec": 5,
+ "commit_p50_us": 20242,
+ "commit_p99_us": 208363,
+ "max_commit_us": 385297,
+ "write_errors": 0,
+ "write_error_example": "",
+ "write_kinds": {
+  "customer update": 14,
+  "lineitem update": 14,
+  "orders update": 13,
+  "part delete": 14,
+  "part insert": 14,
+  "partsupp update": 14,
+  "rf1": 188,
+  "rf1 large order": 62,
+  "rf2": 250,
+  "supplier delete": 14,
+  "supplier insert": 14,
+  "supplier update": 14
+ },
+ "hits": 0,
+ "fallbacks": 0,
+ "per_accel": [
+  {
+   "accel": "tpch:2",
+   "reads": 56,
+   "read_p50_us": 657297.73,
+   "read_p99_us": 1305864.223,
+   "read_max_us": 1391965.908,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:4",
+   "reads": 55,
+   "read_p50_us": 1428833.853,
+   "read_p99_us": 5800136.428,
+   "read_max_us": 7390970.598,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:6",
+   "reads": 55,
+   "read_p50_us": 275752.453,
+   "read_p99_us": 2588194.357,
+   "read_max_us": 2623802.161,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:7",
+   "reads": 53,
+   "read_p50_us": 1123481.184,
+   "read_p99_us": 5544025.364,
+   "read_max_us": 6021421.118,
+   "answers_changed": 7,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:11",
+   "reads": 53,
+   "read_p50_us": 311873.66,
+   "read_p99_us": 1172194.186,
+   "read_max_us": 1295051.38,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:12",
+   "reads": 53,
+   "read_p50_us": 787422.198,
+   "read_p99_us": 3495035.38,
+   "read_max_us": 4299313.276,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:13",
+   "reads": 52,
+   "read_p50_us": 1864001.978,
+   "read_p99_us": 5886244.122,
+   "read_max_us": 9237640.992,
+   "answers_changed": 1,
+   "cases": 1
+  },
+  {
+   "accel": "tpch:14",
+   "reads": 53,
+   "read_p50_us": 857994.092,
+   "read_p99_us": 3136227.261,
+   "read_max_us": 3143823.345,
+   "answers_changed": 7,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:17",
+   "reads": 53,
+   "read_p50_us": 2553789.981,
+   "read_p99_us": 15090214.802,
+   "read_max_us": 22018419.029,
+   "answers_changed": 3,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:19",
+   "reads": 57,
+   "read_p50_us": 1229267.805,
+   "read_p99_us": 8770265.006,
+   "read_max_us": 8880266.376,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:22",
+   "reads": 56,
+   "read_p50_us": 1076291.098,
+   "read_p99_us": 3828869.408,
+   "read_max_us": 3842238.693,
+   "answers_changed": 7,
+   "cases": 8
+  }
+ ],
+ "wall_s": 165.4,
+ "system": "base",
+ "queries": [
+  2,
+  4,
+  6,
+  7,
+  11,
+  12,
+  13,
+  14,
+  17,
+  19,
+  22
+ ]
+}

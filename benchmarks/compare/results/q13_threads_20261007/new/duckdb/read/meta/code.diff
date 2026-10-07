@@ -1,0 +1,40 @@
+diff --git a/src/generated/tpch/q13/duckdb/aux/module.cpp b/src/generated/tpch/q13/duckdb/aux/module.cpp
+index ab0b3ac..fe0af83 100644
+--- a/src/generated/tpch/q13/duckdb/aux/module.cpp
++++ b/src/generated/tpch/q13/duckdb/aux/module.cpp
+@@ -767,7 +767,7 @@ struct LocalIntern {
+ // the token index, then trim the shard's vectors to size.
+ void BulkFinish(Mut &m) {
+   const std::size_t np = m.st.patterns.size();
+-  const unsigned nt = QThreads();
++  const unsigned nt = 1;
+   SharedVocab shared;
+   shared.v = *m.st.vocab;
+   std::vector<std::vector<int32_t>> dfs(nt);
+@@ -826,7 +826,7 @@ void BulkFinish(Mut &m) {
+ // Histograms (tracked patterns and the no-match base) from the customer arrays.
+ void RecomputeHist(Mut &m) {
+   const std::size_t np = m.st.patterns.size();
+-  const unsigned nt = QThreads();
++  const unsigned nt = 1;
+   std::vector<std::vector<std::vector<int64_t>>> part(
+       nt, std::vector<std::vector<int64_t>>(np + 1));
+   ParRange(kTpchQ13Shards, 64, nt,
+@@ -1108,7 +1108,7 @@ void QueryShard(const TpchQ13State &st, std::size_t s, const TpchQ13Like &like,
+ }
+ 
+ // Exact answer for a pattern that is not tracked: the base histogram adjusted
+-// only for customers that own matching orders.  Read-only, parallel over shards.
++// only for customers that own matching orders.  Read-only, single-threaded like the other reads.
+ std::vector<TpchQ13OutputRow> EvalUntracked(const TpchQ13State &st,
+                                             const std::string &pattern) {
+   TpchQ13Like like;
+@@ -1131,7 +1131,7 @@ std::vector<TpchQ13OutputRow> EvalUntracked(const TpchQ13State &st,
+   const bool anchored_scan = !like.anchor.empty() && !like.parts.empty() &&
+                              like.parts.front().text.empty() &&
+                              like.parts.back().text.empty() && like.has_pct;
+-  const unsigned nt = st.live_orders < 300000 ? 1 : QThreads();
++  const unsigned nt = 1;
+   std::vector<std::vector<int64_t>> deltas(nt);
+   ParRange(kTpchQ13Shards, 16, nt,
+            [&](unsigned tid, std::size_t b, std::size_t e) {

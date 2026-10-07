@@ -1,0 +1,647 @@
+diff --git a/benchmarks/compare/aux_compare.cpp b/benchmarks/compare/aux_compare.cpp
+index 9e0599d..ac2d482 100644
+--- a/benchmarks/compare/aux_compare.cpp
++++ b/benchmarks/compare/aux_compare.cpp
+@@ -534,11 +534,22 @@ private:
+   uint64_t seq = 0, rf = 0, rf1 = 0, dim = 0;
+ };
+ 
++// ACCEL_COMPARE_DUCKDB_THREADS=N: DuckDB's thread count (default: its own, all cores).  A process-wide setting: it
++// limits the baseline queries and also the base-table scans the accelerators' builds and maintenance run through
++// DuckDB.  (The accelerators' own read kernels are single-threaded, except Q13's; ACCEL_Q13_THREADS caps that.)
++void ApplyDuckdbThreads(duckdb::Connection &c) {
++  if (const char *n = std::getenv("ACCEL_COMPARE_DUCKDB_THREADS"); n && *n) {
++    auto r = c.Query(std::string("SET threads = ") + n);
++    Require(r && !r->HasError(), r ? r->GetError() : "SET threads");
++  }
++}
++
+ int Read(const std::string &path, const std::string &id, const std::string &base_kit,
+          const std::vector<Case> &cases, int reps) {
+   duckdb::DuckDB db(path);
+   duckdb::Connection wc(db), qc(db);
+   accelerator_codegen::RegisterAcceleratorFunctions(qc);
++  ApplyDuckdbThreads(qc);
+   const auto *glue = kit::Find(base_kit);
+   Require(glue != nullptr, "no baseline kit " + base_kit);
+   const auto fn = FunctionFor(id);
+@@ -598,6 +609,7 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
+   duckdb::DuckDB db(path);
+   duckdb::Connection wc(db), qc(db);
+   accelerator_codegen::RegisterAcceleratorFunctions(qc);
++  ApplyDuckdbThreads(qc);
+   const auto *glue = kit::Find(base_kit);
+   Require(glue != nullptr, "no baseline kit " + base_kit);
+   // answers before the run (to count the cases whose answer the writes change)
+@@ -767,6 +779,44 @@ std::string KindsJson(const std::map<std::string, uint64_t> &m) {
+   return j + "}";
+ }
+ 
++// What the maintenance policy chose per commit for one accelerator (DuckdbRuntime::WriteAllTiming::action: NoOp,
++// ApplyDelta, RebuildPartition, RebuildAll, InvalidateAndRebuildOnRead), with the time its PRE_COMMIT took.
++struct ActionStat {
++  uint64_t n = 0;
++  double total_us = 0, max_us = 0;
++};
++std::string ActionsJson(const std::map<std::string, ActionStat> &m) {
++  std::string j = "{";
++  for (const auto &[k, v] : m)
++    j += (j.size() > 1 ? "," : "") + Json(k) + ":{\"n\":" + std::to_string(v.n) + ",\"mean_us\":" +
++         std::to_string(v.n ? v.total_us / static_cast<double>(v.n) : 0.0) + ",\"max_us\":" + std::to_string(v.max_us) + "}";
++  return j + "}";
++}
++// The policy's decision per accelerator and write kind, means over the writes: what it saw (rows, partitions), what it
++// predicted each option would cost, and what the maintenance actually took.
++struct DecisionStat {
++  uint64_t n = 0;
++  double rows = 0, partitions = 0, pred_delta = 0, pred_partition = 0, pred_all = 0, pred_invalidate = 0, actual = 0;
++};
++std::string DecisionsJson(const std::map<std::string, DecisionStat> &m) {
++  std::string j = "{";
++  for (const auto &[kind, d] : m) {
++    const double n = static_cast<double>(std::max<uint64_t>(d.n, 1));
++    j += (j.size() > 1 ? "," : "") + Json(kind) + ":{\"n\":" + std::to_string(d.n) + ",\"rows_touched\":" + std::to_string(d.rows / n) +
++         ",\"partitions\":" + std::to_string(d.partitions / n) + ",\"pred_apply_delta_us\":" + std::to_string(d.pred_delta / n) +
++         ",\"pred_rebuild_partition_us\":" + std::to_string(d.pred_partition / n) + ",\"pred_rebuild_all_us\":" +
++         std::to_string(d.pred_all / n) + ",\"pred_invalidate_us\":" + std::to_string(d.pred_invalidate / n) +
++         ",\"actual_us\":" + std::to_string(d.actual / n) + "}";
++  }
++  return j + "}";
++}
++std::string ActionsByKindJson(const std::map<std::string, std::map<std::string, uint64_t>> &m) {
++  std::string j = "{";
++  for (const auto &[kind, actions] : m)
++    j += (j.size() > 1 ? "," : "") + Json(kind) + ":" + KindsJson(actions);
++  return j + "}";
++}
++
+ double Mean(const std::vector<double> &v) {
+   double sum = 0;
+   for (const double x : v)
+@@ -810,6 +860,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
+   duckdb::DuckDB db(path);
+   duckdb::Connection wc(db), qc(db);
+   accelerator_codegen::RegisterAcceleratorFunctions(qc);
++  ApplyDuckdbThreads(qc);
+   // ACCEL_COMPARE_DUCKDB_MEMORY: cap DuckDB's buffer cache (default: 80% of
+   // RAM), so many accelerators' state and the cache fit in one process
+   if (const char *limit = std::getenv("ACCEL_COMPARE_DUCKDB_MEMORY")) {
+@@ -937,6 +988,9 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
+   std::vector<double> pre_commit_sum(specs.size(), 0), install_sum(specs.size(), 0), pre_commit_max(specs.size(), 0);
+   std::vector<uint64_t> maintained(specs.size(), 0);
+   std::vector<std::map<std::string, uint64_t>> maintained_by_kind(specs.size()); // write kind -> writes
++  std::vector<std::map<std::string, ActionStat>> action_stats(specs.size());     // maintenance action -> count, time
++  std::vector<std::map<std::string, DecisionStat>> decision_stats(specs.size()); // write kind -> the policy's decision
++  std::vector<std::map<std::string, std::map<std::string, uint64_t>>> actions_by_kind(specs.size()); // kind -> action -> n
+   std::map<std::string, uint64_t> accels_maintained_hist; // writes by how many accelerators they maintained
+   uint64_t writes_maintaining_none = 0;
+   double max_commit_us = 0;
+@@ -990,6 +1044,25 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
+         int n = 0;
+         for (std::size_t q = 0; q < specs.size(); ++q) {
+           const auto &a = timing.action[q];
++          if (a != "none") {
++            auto &st = action_stats[q][a];
++            ++st.n;
++            st.total_us += timing.pre_commit_us[q];
++            st.max_us = std::max(st.max_us, timing.pre_commit_us[q]);
++            actions_by_kind[q][kind][a]++;
++            if (a != "NoOp") {
++              const auto &d = timing.decision[q];
++              auto &ds = decision_stats[q][kind];
++              ++ds.n;
++              ds.rows += static_cast<double>(d.rows_touched);
++              ds.partitions += static_cast<double>(d.affected_partition_count);
++              ds.pred_delta += d.predicted_apply_delta_us;
++              ds.pred_partition += d.predicted_rebuild_partition_us;
++              ds.pred_all += d.predicted_rebuild_all_us;
++              ds.pred_invalidate += d.predicted_invalidate_us;
++              ds.actual += timing.pre_commit_us[q];
++            }
++          }
+           if (a != "none" && a != "NoOp") {
+             ++maintained[q];
+             maintained_by_kind[q][kind]++;
+@@ -1051,6 +1124,9 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
+            ",\"reads_waited_over_1ms\":" + std::to_string(waited) +
+            (accel ? ",\"maintained_writes\":" + std::to_string(maintained[q]) +
+                         ",\"maintained_by_kind\":" + KindsJson(maintained_by_kind[q]) +
++                        ",\"actions\":" + ActionsJson(action_stats[q]) +
++                        ",\"actions_by_kind\":" + ActionsByKindJson(actions_by_kind[q]) +
++                        ",\"decisions_by_kind\":" + DecisionsJson(decision_stats[q]) +
+                         ",\"pre_commit_mean_us\":" + std::to_string(pre_commit_sum[q] / n_measured) +
+                         ",\"pre_commit_max_us\":" + std::to_string(pre_commit_max[q]) +
+                         ",\"install_mean_us\":" + std::to_string(install_sum[q] / n_measured)
+@@ -1102,6 +1178,110 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
+ 
+ } // namespace
+ 
++// aux_compare cycle <db> <accel_id> <baseline_kit> <cases.tsv> <phase> <pairs> <burst> [seed=1]
++// One accelerator alone in the process (as in `read`) and the TPC-H refresh functions applied one commit at a time:
++// RF1 of update set 1, RF2 of set 1, RF1 of set 2, ... (<pairs> pairs; ACCEL_RF_DIR and ACCEL_RF_ONLY=1 are required).
++// After a first burst before any write, and after every commit, <burst> reads of the query (the cases in turn) are
++// timed.  phase=base: plain SQL commits, baseline reads.  phase=accel: the commits go through the accelerator's runtime
++// (capture, maintenance, install), the reads call the accelerator, and after every burst the first case is also
++// answered by the baseline and compared.  Per commit: its time (and where it went), the action the policy chose with
++// the cost it predicted for each option, the first read after it and the burst's latencies.  Nothing here knows an
++// interval: the speedup at any write interval is computed from these pieces (plot_cycle.py).
++int Cycle(const std::string &path, const std::string &id, const std::string &base_kit, const std::vector<Case> &cases,
++          const std::string &phase, int pairs, int burst, uint64_t seed) {
++  Require(phase == "accel" || phase == "base", "phase must be accel or base");
++  const bool accel = phase == "accel";
++  duckdb::DuckDB db(path);
++  duckdb::Connection wc(db), qc(db);
++  accelerator_codegen::RegisterAcceleratorFunctions(qc);
++  ApplyDuckdbThreads(qc);
++  if (const char *limit = std::getenv("ACCEL_COMPARE_DUCKDB_MEMORY"); limit && *limit) {
++    auto r = qc.Query(std::string("SET memory_limit = '") + limit + "'");
++    Require(r && !r->HasError(), r ? r->GetError() : "memory_limit");
++  }
++  const auto *glue = kit::Find(base_kit);
++  Require(glue != nullptr, "no baseline kit " + base_kit);
++  const auto fn = accel ? FunctionFor(id) : std::string();
++  Writes writes(qc, static_cast<std::size_t>(2 * pairs + 4), seed, RfBatchOrders());
++  Require(writes.UsesSets(), "cycle needs the TPC-H update sets (ACCEL_RF_DIR)");
++  std::unique_ptr<DuckdbRuntime> rt;
++  double build_ms = 0, rss_after = 0;
++  if (accel) {
++    rt = std::make_unique<DuckdbRuntime>(wc, EntryFor(id), 10.0);
++    rt->EnableMutationCapture();
++    const auto b0 = Clock::now();
++    rt->Build();
++    build_ms = Us(b0, Clock::now()) / 1000;
++    rss_after = RssMb().second;
++  }
++  std::size_t next_case = 0;
++  const auto run_burst = [&](std::vector<double> &lat) {
++    for (int j = 0; j < burst; ++j) {
++      const auto &cs = cases[next_case++ % cases.size()];
++      const auto t0 = Clock::now();
++      if (accel)
++        RunAccel(qc, fn, cs.accel_args);
++      else
++        RunBaseline(qc, glue->query_sql, cs.base_args);
++      lat.push_back(Us(t0, Clock::now()));
++    }
++  };
++  const auto burst_json = [](const std::vector<double> &lat) {
++    return "\"first_read_us\":" + std::to_string(lat.empty() ? 0.0 : lat.front()) + ",\"read_p50_us\":" +
++           std::to_string(Percentile(lat, 0.5)) + ",\"read_p99_us\":" + std::to_string(Percentile(lat, 0.99)) +
++           ",\"read_mean_us\":" + std::to_string(Mean(lat)) + ",\"reads\":" + std::to_string(lat.size());
++  };
++  std::vector<double> pre;
++  run_burst(pre);
++  std::string out = "{\"mode\":\"cycle\",\"phase\":" + Json(phase) + ",\"accel\":" + Json(id) + ",\"build_ms\":" +
++                    std::to_string(build_ms) + ",\"rss_mb_after_build\":" + std::to_string(rss_after) + ",\"pairs\":" +
++                    std::to_string(pairs) + ",\"burst\":" + std::to_string(burst) + "," + writes.RfInfoJson() +
++                    ",\"before\":{" + burst_json(pre) + "},\"writes\":[";
++  int mismatches = 0;
++  for (int w = 0; w < 2 * pairs; ++w) {
++    const auto [kind, sql] = writes.Next();
++    DuckdbRuntime::WriteAllTiming timing;
++    const auto t0 = Clock::now();
++    if (accel) {
++      DuckdbRuntime::ApplyWriteAll({rt.get()}, sql, &timing);
++    } else {
++      auto res = wc.Query("BEGIN; " + sql + "; COMMIT;");
++      if (res && res->HasError()) {
++        wc.Query("ROLLBACK");
++        throw std::runtime_error(res->GetError());
++      }
++    }
++    const double commit_us = Us(t0, Clock::now());
++    std::vector<double> lat;
++    run_burst(lat);
++    std::string extra;
++    if (accel) {
++      auto base = RunBaseline(qc, glue->query_sql, cases[0].base_args);
++      auto acc = RunAccel(qc, fn, cases[0].accel_args);
++      auto bs = Canon(*base), as = Canon(*acc);
++      std::sort(bs.begin(), bs.end());
++      std::sort(as.begin(), as.end());
++      const bool match = bs == as;
++      mismatches += match ? 0 : 1;
++      const auto &d = timing.decision.empty() ? core::MaintenanceDecisionLogEntry{} : timing.decision[0];
++      extra = ",\"match\":" + std::string(match ? "true" : "false") + ",\"statement_us\":" + std::to_string(timing.statement_us) +
++              ",\"pre_commit_us\":" + std::to_string(timing.pre_commit_us.empty() ? 0.0 : timing.pre_commit_us[0]) +
++              ",\"engine_commit_us\":" + std::to_string(timing.engine_commit_us) + ",\"install_us\":" +
++              std::to_string(timing.commit_us.empty() ? 0.0 : timing.commit_us[0]) + ",\"action\":" +
++              Json(timing.action.empty() ? "none" : timing.action[0]) + ",\"rows_touched\":" + std::to_string(d.rows_touched) +
++              ",\"partitions\":" + std::to_string(d.affected_partition_count) + ",\"pred_apply_delta_us\":" +
++              std::to_string(d.predicted_apply_delta_us) + ",\"pred_rebuild_partition_us\":" +
++              std::to_string(d.predicted_rebuild_partition_us) + ",\"pred_rebuild_all_us\":" + std::to_string(d.predicted_rebuild_all_us) +
++              ",\"pred_invalidate_us\":" + std::to_string(d.predicted_invalidate_us);
++    }
++    out += std::string(w ? "," : "") + "{\"kind\":" + Json(kind) + ",\"commit_us\":" + std::to_string(commit_us) + "," +
++           burst_json(lat) + extra + "}";
++  }
++  out += "],\"mismatches\":" + std::to_string(mismatches) + "}";
++  std::cout << out << std::endl;
++  return 0;
++}
++
+ int main(int argc, char **argv) {
+   try {
+     Require(argc >= 6, "usage: aux_compare read|concurrent|multi <db> ...");
+@@ -1121,6 +1301,11 @@ int main(int argc, char **argv) {
+     const auto cases = ReadCases(argv[5]);
+     if (mode == "read")
+       return Read(argv[2], argv[3], argv[4], cases, argc > 6 ? std::stoi(argv[6]) : 5);
++    if (mode == "cycle") {
++      Require(argc >= 9, "cycle: <db> <accel_id> <baseline_kit> <cases.tsv> <phase> <pairs> <burst> [seed]");
++      return Cycle(argv[2], argv[3], argv[4], cases, argv[6], std::stoi(argv[7]), std::stoi(argv[8]),
++                   argc > 9 ? std::stoull(argv[9]) : 1);
++    }
+     if (mode == "concurrent") {
+       Require(argc >= 10, "concurrent: <phase> <readers> <seconds> <writes_per_sec> [seed] [warmup_sec]");
+       return Concurrent(argv[2], argv[3], argv[4], cases, argv[6], std::stoi(argv[7]), std::stod(argv[8]),
+diff --git a/benchmarks/compare/run_backends.sh b/benchmarks/compare/run_backends.sh
+index 4f78e65..c35b724 100755
+--- a/benchmarks/compare/run_backends.sh
++++ b/benchmarks/compare/run_backends.sh
+@@ -4,6 +4,7 @@
+ #   bash benchmarks/compare/run_backends.sh read      <out_root>   # 1. read-only, single-threaded
+ #   bash benchmarks/compare/run_backends.sh calibrate <out_root>   # writer-only: how long does one RF commit take?
+ #   bash benchmarks/compare/run_backends.sh rf        <out_root>   # 2. concurrent RF writer + readers
++#   bash benchmarks/compare/run_backends.sh cycle     <out_root>   # 3. per-query workload speedup per write interval (DuckDB)
+ #   bash benchmarks/compare/run_backends.sh summary   <out_root>
+ #
+ # BACKENDS="duckdb postgres mysql" (default all three; they run one after another, never together).
+@@ -24,13 +25,20 @@
+ #             (INTERVAL_MULT).  Base DBMS (no capture) vs accelerator on the same schedule; N_COMMITS (4) RF
+ #             commits are measured per point.
+ #
++# cycle:      (DuckDB only) the overnight experiment: per query, ONE accelerator alone in its process; the TPC-H refresh
++#             functions applied one commit at a time from the real update sets (PAIRS pairs of RF1 / RF2, default 2), a
++#             burst of BURST reads (default 200) after every commit, on a base run (plain SQL, DuckDB reads) and an accelerator
++#             run (maintenance by the policy with the query's SF20 cost model), per repetition.  plot_cycle.py then computes
++#             each query's workload speedup at CYCLE_INTERVALS (seconds, default "300 120 60") and writes
++#             <out>/duckdb/cycle/cycle_speedup.{png,csv}.  DUCKDB_THREADS=N: DuckDB (and Q13) use N threads.
++#
+ # Every experiment repeats with fresh TPC-H parameter draws (REPEATS, default 3; the same draw for base and
+ # accel within a repetition; seeds in <dir>/seeds.json); report median [min-max].
+ #
+ # Env:  SF (20)  REPEATS (3)  READERS (8)  BACKENDS  INTERVAL_MULT ("1 2 4")  N_COMMITS (4)
+ #   RF_DIR (/flash1/akhilvb/tpch/refresh_sf<SF>)   the update sets; BATCH_ORDERS (default: whole sets) uses only the
+ #   first B orders of each set
+-#   duckdb:    DB (/flash1/akhilvb/tpch/tpch_sf20.duckdb)  WORK  BIN (build-verus-duckdb/aux_compare)  CAP (96G)
++#   duckdb:    DB (../accelerator-codegen-duckdb/tpch_sf20.duckdb)  WORK (/flash1/akhilvb/tpch/work: the per-run copies)  BIN (build-verus-duckdb/aux_compare)  CAP (96G)
+ #   postgres:  PG_PORT (5434)  PG_DB (accel_tpch_sf20)    PGUSER / PGPASSWORD
+ #   mysql:     MYSQL_TCP_PORT (3307)  MYSQL_DB (tpch_sf20)  MYSQL_USER / MYSQL_PWD
+ #   postgres/mysql: QUERY_TIMEOUT (1800 s per baseline query; timeouts are reported, not fatal)
+@@ -38,14 +46,14 @@
+ set -uo pipefail
+ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ cd "$ROOT"
+-MODE=${1:?mode: read | calibrate | rf | summary}
++MODE=${1:?mode: read | calibrate | rf | cycle | summary}
+ OUT=${2:?out root, e.g. benchmarks/compare/results/backends_$(date +%Y%m%d)}
+ BACKENDS=${BACKENDS:-duckdb postgres mysql}
+ SF=${SF:-20}
+ REPEATS=${REPEATS:-3}
+ READERS=${READERS:-8}
+ PYTHON=${PYTHON:-python3}
+-DB=${DB:-/flash1/akhilvb/tpch/tpch_sf20.duckdb}
++DB=${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}
+ BIN=${BIN:-$ROOT/build-verus-duckdb/aux_compare}
+ CAP=${CAP:-96G}   # a commit that rebuilds state keeps old and new copies alive; 64G may be too tight
+ PG_DB=${PG_DB:-accel_tpch_sf20}
+@@ -56,6 +64,7 @@ RF_DIR=${RF_DIR:-/flash1/akhilvb/tpch/refresh_sf${SF}}
+ BATCH_ORDERS=${BATCH_ORDERS:-}   # empty: whole update sets (1500 x SF orders)
+ INTERVAL_MULT=${INTERVAL_MULT:-"1 2 4"}
+ N_COMMITS=${N_COMMITS:-4}
++PAIRS_CYC=${PAIRS:-2}
+ # readers' queries (RF1/RF2 change orders and lineitem, which all but Q2, Q11, Q16 read; the point writes
+ # after each RF commit cover those three)
+ QUERIES=${QUERIES:-"$(seq -s ' ' 1 22)"}
+@@ -151,6 +160,16 @@ rf)
+     done
+   done
+   ;;
++cycle)
++  need_rf_sets
++  D=$OUT/duckdb/cycle; mkdir -p "$D"; meta "$D" "$@"
++  echo "=== cycle duckdb: $(echo $QUERIES | wc -w) queries x $REPEATS repetition(s), $PAIRS_CYC RF pairs, burst ${BURST:-200} $(date +%T)"
++  capped $PYTHON benchmarks/compare/run_compare.py cycle --db "$DB" --sf "$SF" --bin "$BIN" --out "$D" --queries "$QUERIES" \
++    --repeats "$REPEATS" --sets 8 --pairs "$PAIRS_CYC" --burst "${BURST:-200}" --rf-dir "$RF_DIR" \
++    ${BATCH_ORDERS:+--batch-orders "$BATCH_ORDERS"} ${DUCKDB_THREADS:+--duckdb-threads "$DUCKDB_THREADS"} \
++    --duckdb-memory "${DUCKDB_MEM:-8GB}" 2>&1 | tee "$D/run.log"
++  $PYTHON benchmarks/compare/plot_cycle.py "$D" --intervals ${CYCLE_INTERVALS:-300 120 60} 2>&1 | tee "$D/plot.log"
++  ;;
+ summary)
+   for b in $BACKENDS; do
+     [ -d "$OUT/$b/read" ] && [ "$b" = duckdb ] && $PYTHON benchmarks/compare/run_compare.py summary "$OUT/$b/read"
+@@ -165,5 +184,5 @@ summary)
+     done
+   done
+   ;;
+-*) echo "mode: read | calibrate | rf | summary"; exit 2 ;;
++*) echo "mode: read | calibrate | rf | cycle | summary"; exit 2 ;;
+ esac
+diff --git a/benchmarks/compare/run_compare.py b/benchmarks/compare/run_compare.py
+index d7c8700..e19eccb 100644
+--- a/benchmarks/compare/run_compare.py
++++ b/benchmarks/compare/run_compare.py
+@@ -31,13 +31,14 @@ their answers are compared as sets and may report a row-count mismatch.
+   python3 benchmarks/compare/run_compare.py concurrent --readers 8 --seconds 60 --wps 5
+   python3 benchmarks/compare/run_compare.py multi --readers 8 --seconds 120 --wps 5
+   python3 benchmarks/compare/run_compare.py summary <out_dir>
+-Env defaults: DB=/flash1/akhilvb/tpch/tpch_sf20.duckdb  WORK=/flash1/akhilvb/tpch/work
++Env defaults: DB=<repo>/../accelerator-codegen-duckdb/tpch_sf20.duckdb  WORK=/flash1/akhilvb/tpch/work (each run works on a copy of DB in WORK)
+ """
+ import argparse
+ import json
+ import math
+ import os
+ import shutil
++import statistics
+ import subprocess
+ import sys
+ import time
+@@ -232,9 +233,19 @@ def cmd_multi(a):
+         print(f"multi {name} ({len(a.queries)} accelerators, {a.reader_mode} readers, rates "
+               f"{' '.join(rate_name(w) for w in rates)}, {a.repeats} repetition(s)) {time.strftime('%T')}", flush=True)
+         env = env_for(system, a.queries[0])
+-        env.pop("ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL", None)  # one process, many accelerators: defaults
++        env.pop("ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL", None)  # one process, many accelerators: no single model file
++        # each accelerator's runtime then picks config/q<N>_aux_cost_model_sf20.json when ACCEL_AUX_BENCH_DB_LABEL is
++        # tpch_sf20 (the models calibrated at this scale), else the default small-scale config/q<N>_aux_cost_model.json
++        label = os.environ.get("ACCEL_AUX_BENCH_DB_LABEL") or ("tpch_sf20" if a.sf == 20 else "")
++        if label:
++            env["ACCEL_AUX_BENCH_DB_LABEL"] = label
++        print(f"  cost models: {'config/qN_aux_cost_model_sf20.json (SF20 calibration)' if label == 'tpch_sf20' else 'config/qN_aux_cost_model.json (default)'}",
++              flush=True)
+         if a.duckdb_memory:
+             env["ACCEL_COMPARE_DUCKDB_MEMORY"] = a.duckdb_memory
++        if a.duckdb_threads:
++            env["ACCEL_COMPARE_DUCKDB_THREADS"] = str(a.duckdb_threads)
++            env["ACCEL_Q13_THREADS"] = str(a.duckdb_threads)  # Q13's read kernel is the one multi-threaded accelerator
+         n = len(rates) * a.repeats
+         rs = run([a.bin, "multi", db, phase, spec_path, str(a.readers), str(a.seconds), ",".join(f"{w:g}" for w in rates),
+                   str(reps[0][1]), str(a.warmup), a.reader_mode], env, log, a.timeout, lines=n)
+@@ -256,6 +267,48 @@ def cmd_multi(a):
+         summary(d)
+ 
+ 
++def cmd_cycle(a):
++    """Per query, ONE accelerator alone in its own process (as `read`), the TPC-H refresh functions applied one commit at
++    a time (RF1 of update set 1, RF2 of set 1, RF1 of set 2, ...), a burst of reads of the query after every commit.
++    Two runs per query and repetition on fresh copies of the database: base (plain SQL commits, DuckDB reads) and accel
++    (commits through the accelerator: capture, maintenance, install; accelerator reads, answers checked against DuckDB).
++    The speedup at any write interval is computed from the measured pieces by plot_cycle.py; results are one JSON per
++    (query, system, repetition): <out>/cycle_q<N>_<base|accel>_r<k>.json."""
++    log = os.path.join(a.out, "cycle.log")
++    reps = draws(a)
++    for k, seed, spec in reps:
++        for q in a.queries:
++            accel_id, base_kit = ids(q, "cpp")
++            cfile = cases_file(a.work, q, "cpp", spec[str(q)], k)
++            ncases = len(spec[str(q)]["sets"])
++            for phase in ("base", "accel"):
++                db = fresh_copy(a.db, a.work, f"cmp_cycle_{phase}.duckdb")
++                env = env_for("cpp", q)  # this query's SF20 cost model (ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL)
++                env["ACCEL_COMPARE_DUCKDB_MEMORY"] = a.duckdb_memory
++                if a.duckdb_threads:
++                    env["ACCEL_COMPARE_DUCKDB_THREADS"] = str(a.duckdb_threads)
++                    env["ACCEL_Q13_THREADS"] = str(a.duckdb_threads)
++                burst = 2 * ncases if phase == "base" else a.burst  # baseline reads are slow, and need no profile
++                r = run([a.bin, "cycle", db, accel_id, base_kit, cfile, phase, str(a.pairs), str(burst), str(seed)],
++                        env, log, a.timeout)
++                drop(db)
++                r = dict(r, query=q, system=phase, rep=k, seed=seed, sf=a.sf, threads=a.duckdb_threads)
++                with open(os.path.join(a.out, f"cycle_q{q}_{phase}_r{k}.json"), "w") as f:
++                    json.dump(r, f, indent=1)
++                if "error" in r:
++                    print(f"rep {k} q{q:>2} {phase}: ERROR {r['error']}", flush=True)
++                elif phase == "base":
++                    w = r["writes"]
++                    print(f"rep {k} q{q:>2} base : commits " + " ".join(f"{x['kind']} {x['commit_us'] / 1e6:.2f}s" for x in w) +
++                          f" | DuckDB read p50 {statistics.median(x['read_p50_us'] for x in w) / 1e3:.1f}ms", flush=True)
++                else:
++                    w = r["writes"]
++                    print(f"rep {k} q{q:>2} accel: build {r['build_ms'] / 1e3:.0f}s | " +
++                          " ".join(f"{x['kind']} {x['commit_us'] / 1e6:.1f}s({x['action']})" for x in w) +
++                          f" | read p50 {statistics.median(x['read_p50_us'] for x in w) / 1e3:.2f}ms | mismatches {r['mismatches']}",
++                          flush=True)
++
++
+ def line_read(r):
+     if "error" in r:
+         return "ERROR " + r["error"]
+@@ -416,9 +469,9 @@ def summary(out):
+ def main():
+     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+     sub = ap.add_subparsers(dest="mode", required=True)
+-    for mode in ("read", "concurrent", "multi"):
++    for mode in ("read", "concurrent", "multi", "cycle"):
+         p = sub.add_parser(mode)
+-        p.add_argument("--db", default=os.environ.get("DB", "/flash1/akhilvb/tpch/tpch_sf20.duckdb"))
++        p.add_argument("--db", default=os.environ.get("DB", os.path.join(ROOT, "..", "accelerator-codegen-duckdb", "tpch_sf20.duckdb")))
+         p.add_argument("--work", default=os.environ.get("WORK", "/flash1/akhilvb/tpch/work"))
+         p.add_argument("--out", default=os.path.join(ROOT, "benchmarks", "compare", "results",
+                                                      f"{mode}_{time.strftime('%Y%m%d_%H%M%S')}"))
+@@ -445,6 +498,9 @@ def main():
+     m.add_argument("--seconds", type=float, default=120)
+     m.add_argument("--wps", default="5", help="writer target(s), writes per second: one rate or a list "
+                    "(\"5 10 20 40 -1\"; -1 uncapped); the accelerators are built once per system")
++    m.add_argument("--duckdb-threads", type=int, default=None,
++                   help="DuckDB's thread count (process-wide: the baseline queries and the accelerators' build / maintenance "
++                        "scans) and Q13's read threads; default: all cores")
+     m.add_argument("--duckdb-memory", default="16GB", help="DuckDB memory_limit in the multi process ('' for DuckDB's default)")
+     m.add_argument("--reader-mode", choices=("rotate", "pinned"), default="rotate",
+                    help="rotate: each reader cycles over the accelerators; pinned: --readers per accelerator")
+@@ -466,11 +522,20 @@ def main():
+                             "nation / region (the tables RF leaves alone), unpaced; exported as ACCEL_DIM_AFTER_RF")
+         w.add_argument("--max-write-commits", type=int, default=0,
+                        help="end the run after this many commits (calibration; exported as ACCEL_WRITE_MAX_COMMITS)")
++    y = sub.choices["cycle"]
++    y.add_argument("--pairs", type=int, default=2, help="RF1+RF2 pairs (update sets 1..N) per run")
++    y.add_argument("--burst", type=int, default=200, help="timed reads of the query after every commit (accelerator run)")
++    y.add_argument("--rf-dir", default=None, required=True, help="the TPC-H update sets written by dbgen -U")
++    y.add_argument("--batch-orders", type=int, default=None, help="use only the first B orders of each update set")
++    y.add_argument("--duckdb-threads", type=int, default=None, help="DuckDB's thread count (and Q13's read threads)")
++    y.add_argument("--duckdb-memory", default="8GB", help="DuckDB memory_limit")
+     s = sub.add_parser("summary")
+     s.add_argument("out")
+     a = ap.parse_args()
+     if a.mode == "summary":
+         return summary(a.out)
++    if a.mode == "cycle":
++        os.environ["ACCEL_RF_ONLY"] = "1"  # the write stream is the refresh functions alone
+     if getattr(a, "max_write_commits", 0):
+         os.environ["ACCEL_WRITE_MAX_COMMITS"] = str(a.max_write_commits)
+     if getattr(a, "dim_after_rf", False):
+@@ -487,7 +552,7 @@ def main():
+     assert os.path.exists(a.bin), f"no {a.bin} (cmake --build build-verus-duckdb --target aux_compare)"
+     assert os.path.exists(a.db), f"no database {a.db}"
+     os.makedirs(a.work, exist_ok=True)
+-    {"read": cmd_read, "concurrent": cmd_concurrent, "multi": cmd_multi}[a.mode](a)
++    {"read": cmd_read, "concurrent": cmd_concurrent, "multi": cmd_multi, "cycle": cmd_cycle}[a.mode](a)
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/include/accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp b/include/accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp
+index e70057b..a8de084 100644
+--- a/include/accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp
++++ b/include/accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp
+@@ -10,6 +10,7 @@
+ #include <vector>
+ 
+ #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
++#include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
+ #include "accelerator_codegen/stateful/core/aux_store_diagnostics.hpp"
+ #include "accelerator_codegen/stateful/core/aux_registry.hpp"
+ #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
+@@ -123,6 +124,7 @@ public:
+     double statement_us = 0;               // the write's statements
+     std::vector<double> pre_commit_us;     // each runtime's PRE_COMMIT (its maintenance)
+     std::vector<std::string> action;       // each runtime's staged maintenance action
++    std::vector<core::MaintenanceDecisionLogEntry> decision; // and the policy's decision: predicted cost of each option
+     double engine_commit_us = 0;           // the engine's commit
+     std::vector<double> commit_us;         // each runtime's COMMIT (its install)
+   };
+diff --git a/scripts/gen_tpch_refresh_sets.sh b/scripts/gen_tpch_refresh_sets.sh
+index 86d962c..1241622 100755
+--- a/scripts/gen_tpch_refresh_sets.sh
++++ b/scripts/gen_tpch_refresh_sets.sh
+@@ -20,7 +20,7 @@ SF=${1:-20}
+ N=${2:-40}
+ OUT=${3:-/flash1/akhilvb/tpch/refresh_sf${SF}}
+ DBGEN_SRC=${DBGEN_SRC:-/flash1/akhilvb/tpch/dbgen_src}
+-DB=${DB:-/flash1/akhilvb/tpch/tpch_sf${SF}.duckdb}
++DB=${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf${SF}.duckdb}
+ PYTHON=${PYTHON:-python3}
+ 
+ [ -f "$DBGEN_SRC/dists.dss" ] || { echo "no dbgen source tree at $DBGEN_SRC (set DBGEN_SRC)" >&2; exit 1; }
+diff --git a/scripts/setup_sf20_sql_backends.sh b/scripts/setup_sf20_sql_backends.sh
+index 7236afd..eb9fbde 100755
+--- a/scripts/setup_sf20_sql_backends.sh
++++ b/scripts/setup_sf20_sql_backends.sh
+@@ -29,7 +29,7 @@
+ set -euo pipefail
+ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ MODE=${1:?export | postgres | mysql}
+-SRC=${SRC:-/flash1/akhilvb/tpch/tpch_sf20.duckdb}
++SRC=${SRC:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}
+ STAGE=${STAGE:-/flash1/akhilvb/tpch/csv_sf20}
+ DUCKDB_BIN=${DUCKDB_BIN:-$ROOT/../accelerator-codegen-duckdb/build/release/duckdb}
+ PYTHON=${PYTHON:-python3}
+diff --git a/scripts/validate_tpch_refresh_sets.py b/scripts/validate_tpch_refresh_sets.py
+index fed3756..bd768b5 100755
+--- a/scripts/validate_tpch_refresh_sets.py
++++ b/scripts/validate_tpch_refresh_sets.py
+@@ -3,7 +3,7 @@
+ the delete keys exist, the insert keys do not, no key is deleted or inserted twice across sets, and every set has
+ the same size.  Exit status 1 if any check fails.  Needs the duckdb module.
+ 
+-  python3 scripts/validate_tpch_refresh_sets.py --db /flash1/akhilvb/tpch/tpch_sf20.duckdb --dir /flash1/akhilvb/tpch/refresh_sf20 --sets 40
++  python3 scripts/validate_tpch_refresh_sets.py --db ../accelerator-codegen-duckdb/tpch_sf20.duckdb --dir /flash1/akhilvb/tpch/refresh_sf20 --sets 40
+ """
+ import argparse
+ import sys
+diff --git a/src/generated/tpch/q8/duckdb/aux/module.cpp b/src/generated/tpch/q8/duckdb/aux/module.cpp
+index 2647fbb..d0e7ccd 100644
+--- a/src/generated/tpch/q8/duckdb/aux/module.cpp
++++ b/src/generated/tpch/q8/duckdb/aux/module.cpp
+@@ -1152,6 +1152,42 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
+   if (any_heavy && !initial_scan)
+     return Rebuild();
+   for (int kind = 0; kind < 4; ++kind) {
++    if (kind == 3) {
++      // Orders: every heavy order's lineitems in one batched scan, not one query
++      // per order.  The cells are order-independent sums; the per-order row
++      // counts are settled after the scan (they only touch dims fields the
++      // cell lookups do not read).
++      std::vector<int64_t> keys;
++      keys.reserve(heavy_orders.size());
++      for (const int64_t key : heavy_orders)
++        if (!scan_skip.count(key))
++          keys.push_back(key);
++      if (keys.empty())
++        continue;
++      std::unordered_map<int64_t, std::size_t> rows_of;
++      rows_of.reserve(keys.size());
++      const auto consume_order = [&](const TpchQ8LineitemInput &row) {
++        ++rows_of[row.orderkey];
++        const int64_t vol =
++            ComputeVolumeRaw(row.extendedprice_raw, row.discount_raw);
++        AddCell(false, row.partkey, row.orderkey, row.suppkey, vol);
++        AddCell(true, row.partkey, row.orderkey, row.suppkey, -vol);
++      };
++      if (!initial_scan->ScanLineitemsOfOrders(keys, consume_order) || failed)
++        return Rebuild();
++      for (const int64_t key : keys) {
++        const auto it = rows_of.find(key);
++        const std::size_t rows = it == rows_of.end() ? 0 : it->second;
++        if (rows > 0 && !dims->order_info.Find(key)) {
++          // Deleted while lineitems remain: remember so a re-insert is scanned.
++          EnsureMutableDims();
++          mutable_dims->deleted_orders.insert(key);
++        } else if (dims->order_info.Find(key)) {
++          scanned_lines[key] = static_cast<int32_t>(rows);
++        }
++      }
++      continue;
++    }
+     const std::size_t n = kind < 3 ? heavy[kind].size() : heavy_orders.size();
+     for (std::size_t ci = 0; ci < n; ++ci) {
+       const int64_t key = kind < 3 ? heavy[kind][ci].key : heavy_orders[ci];
+diff --git a/src/generated/tpch/q8/duckdb/aux/module.hpp b/src/generated/tpch/q8/duckdb/aux/module.hpp
+index eedca5b..d780836 100644
+--- a/src/generated/tpch/q8/duckdb/aux/module.hpp
++++ b/src/generated/tpch/q8/duckdb/aux/module.hpp
+@@ -120,6 +120,17 @@ public:
+                                        const LineitemConsumer &) {
+     (void)custkey; return false;
+   }
++  // The current lineitem rows of every order in `orderkeys`, in as few scans as
++  // the source can manage (a refresh touches tens of thousands of orders, and
++  // one query per order is what made the delta cost as much as a rebuild).
++  // The default asks one order at a time.
++  virtual bool ScanLineitemsOfOrders(const std::vector<int64_t> &orderkeys,
++                                     const LineitemConsumer &consumer) {
++    for (const int64_t orderkey : orderkeys)
++      if (!ScanLineitemsOfOrder(orderkey, consumer))
++        return false;
++    return true;
++  }
+ };
+ 
+ // ── Cube key ────────────────────────────────────────────────────────────────
+diff --git a/src/generated/tpch/q8/duckdb/aux/register.cpp b/src/generated/tpch/q8/duckdb/aux/register.cpp
+index e98e160..21d0b85 100644
+--- a/src/generated/tpch/q8/duckdb/aux/register.cpp
++++ b/src/generated/tpch/q8/duckdb/aux/register.cpp
+@@ -263,6 +263,20 @@ struct TpchQ8Scan : TpchQ8InitialScan {
+         "FROM lineitem l WHERE l.l_orderkey = " + std::to_string(orderkey),
+         consumer);
+   }
++  bool ScanLineitemsOfOrders(const std::vector<int64_t> &orderkeys,
++                             const LineitemConsumer &consumer) override {
++    // One scan per chunk of keys instead of one query per order.
++    constexpr std::size_t kChunk = 10000;
++    for (std::size_t begin = 0; begin < orderkeys.size(); begin += kChunk) {
++      const std::size_t end = std::min(orderkeys.size(), begin + kChunk);
++      std::string list;
++      for (std::size_t i = begin; i < end; ++i)
++        list += (i > begin ? "," : "") + std::to_string(orderkeys[i]);
++      ScanLineitemsWhere("FROM lineitem l WHERE l.l_orderkey IN (" + list + ")",
++                         consumer);
++    }
++    return true;
++  }
+   bool ScanLineitemsOfSupplier(int64_t suppkey,
+                                const LineitemConsumer &consumer) override {
+     return ScanLineitemsWhere(
+diff --git a/src/runtime/duckdb/duckdb_runtime.cpp b/src/runtime/duckdb/duckdb_runtime.cpp
+index 3f70190..b2a24aa 100644
+--- a/src/runtime/duckdb/duckdb_runtime.cpp
++++ b/src/runtime/duckdb/duckdb_runtime.cpp
+@@ -885,6 +885,7 @@ void DuckdbRuntime::ApplyWriteAll(const std::vector<DuckdbRuntime *> &runtimes,
+         timing->pre_commit_us.push_back(us(t0, TimingClock::now()));
+         const auto d = core::LastMaintenanceDecision();
+         timing->action.push_back(d ? maintenance::MaintenanceActionName(d->staged_action) : "none");
++        timing->decision.push_back(d ? *d : core::MaintenanceDecisionLogEntry{});
+       }
+     }
+     t0 = TimingClock::now();

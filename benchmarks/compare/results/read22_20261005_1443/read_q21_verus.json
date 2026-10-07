@@ -1,0 +1,85 @@
+{
+ "mode": "read",
+ "accel": "tpch_q21_vgen",
+ "function": "accel_tpch_q21_vgen",
+ "store": "verus",
+ "build_ms": 41377.2,
+ "state_mb": 801.617,
+ "rss_mb_settled_before": 73.7148,
+ "rss_mb_settled_after": 875.332,
+ "rss_mb_peak_build": 14039.5,
+ "speedup_geomean": 173.323,
+ "mismatches": 0,
+ "hits": 48,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'CHINA'",
+   "base_us": 457106.159,
+   "accel_us": 2699.907,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'UNITED KINGDOM'",
+   "base_us": 461230.949,
+   "accel_us": 2787.601,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'SAUDI ARABIA'",
+   "base_us": 454148.301,
+   "accel_us": 2744.769,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'INDIA'",
+   "base_us": 461035.212,
+   "accel_us": 2762.381,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'JAPAN'",
+   "base_us": 491352.42,
+   "accel_us": 2729.068,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'BRAZIL'",
+   "base_us": 486323.752,
+   "accel_us": 2715.725,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'KENYA'",
+   "base_us": 503628.143,
+   "accel_us": 2817.643,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "'RUSSIA'",
+   "base_us": 502684.406,
+   "accel_us": 2751.566,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  }
+ ],
+ "wall_s": 65.3,
+ "query": 21,
+ "system": "verus",
+ "note": ""
+}

@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "accel": "tpch_q8_vgen",
+ "function": "accel_tpch_q8_vgen",
+ "store": "verus",
+ "build_ms": 474923,
+ "speedup_geomean": 438.07,
+ "mismatches": 0,
+ "hits": 48,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'UNITED STATES', 'AMERICA', 'SMALL BURNISHED BRASS'",
+   "base_us": 219788.35,
+   "accel_us": 495.9,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'SAUDI ARABIA', 'MIDDLE EAST', 'LARGE POLISHED STEEL'",
+   "base_us": 216474.076,
+   "accel_us": 476.173,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'ROMANIA', 'EUROPE', 'SMALL BURNISHED TIN'",
+   "base_us": 212778.425,
+   "accel_us": 502.535,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'RUSSIA', 'EUROPE', 'LARGE BURNISHED TIN'",
+   "base_us": 212856.294,
+   "accel_us": 482.973,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'CHINA', 'ASIA', 'PROMO ANODIZED COPPER'",
+   "base_us": 211627.183,
+   "accel_us": 477.756,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'SAUDI ARABIA', 'MIDDLE EAST', 'SMALL PLATED TIN'",
+   "base_us": 210952.529,
+   "accel_us": 471.817,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'FRANCE', 'EUROPE', 'PROMO ANODIZED BRASS'",
+   "base_us": 211457.454,
+   "accel_us": 493.989,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'CHINA', 'ASIA', 'STANDARD PLATED STEEL'",
+   "base_us": 209158.677,
+   "accel_us": 491.575,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 486.4,
+ "query": 8,
+ "system": "verus",
+ "note": ""
+}

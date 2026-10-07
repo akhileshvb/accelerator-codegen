@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "accel": "tpch:11",
+ "function": "accel_tpch_q11_aux",
+ "store": "cpp",
+ "build_ms": 20049.6,
+ "speedup_geomean": 94.1421,
+ "mismatches": 0,
+ "hits": 48,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'ALGERIA', 0.0001",
+   "base_us": 52847.018,
+   "accel_us": 491.745,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "'INDONESIA', 0.0001",
+   "base_us": 52013.152,
+   "accel_us": 493.786,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "'UNITED KINGDOM', 0.0001",
+   "base_us": 54147.872,
+   "accel_us": 607.667,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "'VIETNAM', 0.0001",
+   "base_us": 58389.904,
+   "accel_us": 697.233,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "'BRAZIL', 0.0001",
+   "base_us": 60773.872,
+   "accel_us": 747.037,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "'SAUDI ARABIA', 0.0001",
+   "base_us": 58574.823,
+   "accel_us": 761.738,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "'ROMANIA', 0.0001",
+   "base_us": 55031.364,
+   "accel_us": 498.546,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  },
+  {
+   "args": "'MOROCCO', 0.0001",
+   "base_us": 53377.188,
+   "accel_us": 504.662,
+   "base_rows": 0,
+   "accel_rows": 0,
+   "match": true
+  }
+ ],
+ "wall_s": 25.4,
+ "query": 11,
+ "system": "cpp",
+ "note": "fraction fixed to 0.0001 (Verus literal; spec: 0.0001/SF)"
+}

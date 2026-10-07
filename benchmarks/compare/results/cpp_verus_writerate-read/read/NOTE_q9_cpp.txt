@@ -1,0 +1,9 @@
+2026-10-05 23:05: read_q9_cpp_r{0,1,2}.json in this run are INVALID (8/8 mismatches, 0 rows).
+gen_tpch_params.py passed the C++ Q9 accelerator the LIKE pattern '%color%' instead of the
+bare color it expects ('color'); fixed in gen_tpch_params.py at 23:05 (Verus Q9 was right).
+Re-run with the same seeds (paired with Verus Q9) after the write-rate sweep:
+  python3 benchmarks/compare/run_compare.py read --queries 9 --systems cpp --seed 3605954648 \
+    --repeats 3 --sets 8 --reps 5 --out <this dir>
+
+2026-10-06 04:40: re-run done with the same seeds (results/.../read/q9_cpp_rerun/, colors paired with
+Verus Q9, 0 mismatches); its read_q9_cpp_r*.json replace the invalid ones (kept in q9_cpp_invalid/).

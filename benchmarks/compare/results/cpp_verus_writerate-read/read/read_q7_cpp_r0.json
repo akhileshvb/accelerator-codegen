@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:7",
+ "function": "accel_tpch_q7_aux",
+ "store": "cpp",
+ "build_ms": 6878.25,
+ "state_mb": 1124.56,
+ "rss_mb_settled_before": 63.6641,
+ "rss_mb_settled_after": 1188.22,
+ "rss_mb_peak_build": 4626.25,
+ "speedup_geomean": 272.5730636321734,
+ "mismatches": 0,
+ "hits": 144,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'SAUDI ARABIA', 'MOROCCO'",
+   "base_us": 146403.345,
+   "accel_us": 562.814,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'IRAN', 'JAPAN'",
+   "base_us": 136241.151,
+   "accel_us": 498.978,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'ALGERIA', 'RUSSIA'",
+   "base_us": 137425.575,
+   "accel_us": 495.679,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'ROMANIA', 'ALGERIA'",
+   "base_us": 136034.402,
+   "accel_us": 494.995,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'CANADA', 'GERMANY'",
+   "base_us": 133627.815,
+   "accel_us": 484.002,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'SAUDI ARABIA', 'JORDAN'",
+   "base_us": 133296.189,
+   "accel_us": 488.247,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'ETHIOPIA', 'UNITED KINGDOM'",
+   "base_us": 140404.268,
+   "accel_us": 508.281,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'JAPAN', 'ARGENTINA'",
+   "base_us": 134723.586,
+   "accel_us": 498.21,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  }
+ ],
+ "wall_s": 27.2,
+ "query": 7,
+ "system": "cpp",
+ "rep": 0,
+ "seed": 3605954648,
+ "note": "",
+ "counts_cover_all_draws": true
+}

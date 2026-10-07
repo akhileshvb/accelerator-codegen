@@ -1,0 +1,25 @@
+    PID USER     %CPU %MEM     ELAPSED COMMAND
+1450727 akhilvb   8.5  0.9    03:06:13 MainThread
+1451256 akhilvb   8.2  0.5    03:06:06 cpptools
+1453629 akhilvb   1.6  0.2    03:04:35 claude
+1450717 akhilvb   1.2  0.0    03:06:13 sshd-session
+1452344 akhilvb   1.1  0.9    03:05:48 MainThread
+1556062 akhilvb   1.1  0.2       22:40 claude
+1485765 akhilvb   0.7  0.2    02:13:17 claude
+ 614852 999       0.6  0.6  4-10:35:01 mysqld
+2021954 999       0.5 16.3 21-12:40:54 mysqld
+1173669 999       0.5  2.4  6-08:25:55 mysqld
+ 525115 akhilvb   0.5  0.0  8-01:44:05 MainThread
+ 525039 akhilvb   0.3  0.3  8-01:44:06 MainThread
+      1 root      0.2  0.0 28-10:44:08 systemd
+1450773 akhilvb   0.1  0.2    03:06:11 MainThread
+   1031 root      0.1  0.0 28-10:42:33 containerd
+ 525164 akhilvb   0.1  0.0  8-01:44:04 copilot-runtime
+   1068 root      0.1  0.2 28-10:42:33 dockerd
+1327154 root      0.0  0.0    05:08:28 kworker/0:2-events
+1541925 root      0.0  0.0       46:02 kworker/u163:0-events_unbound
+    581 root      0.0  0.1 28-10:44:03 systemd-journal
+1452212 akhilvb   0.0  0.0    03:05:49 codex
+1181797 root      0.0  0.0 25-00:54:16 docker-proxy
+1452853 akhilvb   0.0  0.0    03:05:29 cpptools-srv2
+    275 root      0.0  0.0 28-10:44:08 kcompactd0

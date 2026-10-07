@@ -1,0 +1,115 @@
+Running as unit: run-p3043256-i11469948.scope; invocation ID: 537a26ba70b9454180c1f935c0486fdd
+read q1 cpp 14:43:35
+  build 0.4s  state 0.44GB  speedup(geomean) 581.5x  mismatches 0  hits 48 fallbacks 0
+read q1 verus 14:43:50
+  build 156.3s  state 0.39GB  speedup(geomean) 685.7x  mismatches 0  hits 48 fallbacks 0
+read q2 cpp 14:46:51
+  build 12.2s  state 1.22GB  speedup(geomean) 108.7x  mismatches 0  hits 48 fallbacks 0
+read q2 verus 14:47:08
+  build 24.5s  state 2.16GB  speedup(geomean) 1.9x  mismatches 0  hits 48 fallbacks 0
+read q3 cpp 14:47:44
+  build 75.0s  state 2.92GB  speedup(geomean) 278.7x  mismatches 0  hits 48 fallbacks 0
+read q3 verus 14:49:09
+  build 535.8s  state 28.41GB  speedup(geomean) 143.5x  mismatches 0  hits 48 fallbacks 0
+read q4 cpp 14:58:15
+  build 33.8s  state 1.15GB  speedup(geomean) 330.0x  mismatches 0  hits 48 fallbacks 0
+read q4 verus 14:58:58
+  build 68.5s  state 0.45GB  speedup(geomean) 327.0x  mismatches 0  hits 48 fallbacks 0
+read q5 cpp 15:00:15
+  build 65.3s  state 1.52GB  speedup(geomean) 352.0x  mismatches 0  hits 48 fallbacks 0
+read q5 verus 15:01:31
+  build 35.4s  state 2.59GB  speedup(geomean) 325.0x  mismatches 0  hits 48 fallbacks 0
+read q6 cpp 15:02:16
+  build 0.8s  state 0.48GB  speedup(geomean) 107.2x  mismatches 0  hits 48 fallbacks 0
+read q6 verus 15:02:20
+  build 81.7s  state 0.45GB  speedup(geomean) 59.3x  mismatches 0  hits 48 fallbacks 0
+read q7 cpp 15:03:45
+  build 7.2s  state 1.10GB  speedup(geomean) 275.8x  mismatches 0  hits 48 fallbacks 0
+read q7 verus 15:03:59
+  build 71.8s  state 5.09GB  speedup(geomean) 275.8x  mismatches 0  hits 48 fallbacks 0
+read q8 cpp 15:05:18
+  build 68.6s  state 1.29GB  speedup(geomean) 454.3x  mismatches 0  hits 48 fallbacks 0
+read q8 verus 15:06:37
+  build 555.9s  state 18.57GB  speedup(geomean) 538.3x  mismatches 0  hits 48 fallbacks 0
+read q9 cpp 15:16:11
+  build 130.7s  state 4.72GB  speedup(geomean) 1040.5x  mismatches 0  hits 6 fallbacks 0
+read q9 verus 15:18:30
+  build 43.4s  state 2.46GB  speedup(geomean) 867.5x  mismatches 0  hits 6 fallbacks 0
+read q10 cpp 15:19:17
+  build 13.4s  state 2.10GB  speedup(geomean) 482.7x  mismatches 0  hits 48 fallbacks 0
+read q10 verus 15:19:46
+  build 557.8s  state 4.14GB  speedup(geomean) 6.3x  mismatches 0  hits 48 fallbacks 0
+read q11 cpp 15:29:25
+  build 22.3s  state 2.22GB  speedup(geomean) 82.0x  mismatches 0  hits 48 fallbacks 0
+read q11 verus 15:29:53
+  build 237.6s  state 9.74GB  speedup(geomean) 98.4x  mismatches 0  hits 48 fallbacks 0
+read q12 cpp 15:33:54
+  build 56.1s  state 0.70GB  speedup(geomean) 230.5x  mismatches 0  hits 48 fallbacks 0
+read q12 verus 15:34:56
+  build 21.2s  state 0.39GB  speedup(geomean) 216.6x  mismatches 0  hits 48 fallbacks 0
+read q13 cpp 15:35:24
+  build 26.9s  state 2.57GB  speedup(geomean) 1065.3x  mismatches 0  hits 6 fallbacks 0
+read q13 verus 15:35:55
+  build 10.9s  state 0.70GB  speedup(geomean) 1041.2x  mismatches 0  hits 6 fallbacks 0
+read q14 cpp 15:36:09
+  build 1.3s  state 0.43GB  speedup(geomean) 230.3x  mismatches 0  hits 48 fallbacks 0
+read q14 verus 15:36:16
+  build 1131.5s  state 0.43GB  speedup(geomean) 277.1x  mismatches 0  hits 48 fallbacks 0
+read q15 cpp 15:55:16
+  build 27.2s  state 0.64GB  speedup(geomean) 194.7x  mismatches 0  hits 48 fallbacks 0
+read q15 verus 15:55:51
+  build 209.3s  state 6.90GB  speedup(geomean) 0.5x  mismatches 0  hits 48 fallbacks 0
+read q16 cpp 15:59:37
+  build 8.9s  state 0.71GB  speedup(geomean) 31.8x  mismatches 0  hits 48 fallbacks 0
+read q16 verus 15:59:56
+  build 183.9s  state 0.73GB  speedup(geomean) 1.6x  mismatches 0  hits 48 fallbacks 0
+read q17 cpp 16:03:16
+  build 86.4s  state 3.16GB  speedup(geomean) 2382.2x  mismatches 0  hits 48 fallbacks 0
+read q17 verus 16:05:38
+  build 132.8s  state 1.72GB  speedup(geomean) 2395.7x  mismatches 0  hits 48 fallbacks 0
+read q18 cpp 16:08:45
+  build 1.9s  state 0.46GB  speedup(geomean) 725.8x  mismatches 0  hits 24 fallbacks 0
+read q18 verus 16:09:01
+  build 237.5s  state 13.08GB  speedup(geomean) 415.2x  mismatches 0  hits 24 fallbacks 0
+read q19 cpp 16:13:17
+  build 2.7s  state 0.55GB  speedup(geomean) 656.5x  mismatches 0  hits 48 fallbacks 0
+read q19 verus 16:13:37
+  build 2.3s  state 0.47GB  speedup(geomean) 390.8x  mismatches 0  hits 48 fallbacks 0
+read q20 cpp 16:13:53
+  build 17.9s  state 2.05GB  speedup(geomean) 30.9x  mismatches 0  hits 48 fallbacks 0
+read q20 verus 16:14:26
+  build 7.1s  state 0.85GB  speedup(geomean) 9.0x  mismatches 0  hits 48 fallbacks 0
+read q21 cpp 16:14:49
+  build 7.4s  state 0.76GB  speedup(geomean) 1123.1x  mismatches 0  hits 48 fallbacks 0
+read q21 verus 16:15:27
+  build 41.4s  state 0.78GB  speedup(geomean) 173.3x  mismatches 0  hits 48 fallbacks 0
+read q22 cpp 16:16:32
+  build 3.1s  state 0.49GB  speedup(geomean) 322.6x  mismatches 0  hits 48 fallbacks 0
+read q22 verus 16:16:43
+  build 587.9s  state 1.53GB  speedup(geomean) 136.9x  mismatches 0  hits 48 fallbacks 0
+
+read-only: speedup over DuckDB (geomean over parameter sets), build seconds, state GB
+   q        cpp      verus  cpp build  verus build  cpp GB  verus GB  notes
+   1     581.5x     685.7x        0.4        156.3    0.44      0.39  
+   2     108.7x       1.9x       12.2         24.5    1.22      2.16  
+   3     278.7x     143.5x       75.0        535.8    2.92     28.41  
+   4     330.0x     327.0x       33.8         68.5    1.15      0.45  
+   5     352.0x     325.0x       65.3         35.4    1.52      2.59  
+   6     107.2x      59.3x        0.8         81.7    0.48      0.45  
+   7     275.8x     275.8x        7.2         71.8    1.10      5.09  
+   8     454.3x     538.3x       68.6        555.9    1.29     18.57  
+   9    1040.5x     867.5x      130.7         43.4    4.72      2.46  
+  10     482.7x       6.3x       13.4        557.8    2.10      4.14  
+  11      82.0x      98.4x       22.3        237.6    2.22      9.74  
+  12     230.5x     216.6x       56.1         21.2    0.70      0.39  
+  13    1065.3x    1041.2x       26.9         10.9    2.57      0.70  
+  14     230.3x     277.1x        1.3       1131.5    0.43      0.43  
+  15     194.7x       0.5x       27.2        209.3    0.64      6.90  
+  16      31.8x       1.6x        8.9        183.9    0.71      0.73  
+  17    2382.2x    2395.7x       86.4        132.8    3.16      1.72  
+  18     725.8x     415.2x        1.9        237.5    0.46     13.08  
+  19     656.5x     390.8x        2.7          2.3    0.55      0.47  
+  20      30.9x       9.0x       17.9          7.1    2.05      0.85  
+  21    1123.1x     173.3x        7.4         41.4    0.76      0.78  
+  22     322.6x     136.9x        3.1        587.9    0.49      1.53  
+total state: cpp 31.7 GB, verus 102.1 GB

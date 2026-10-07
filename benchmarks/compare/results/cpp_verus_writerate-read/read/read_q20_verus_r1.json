@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q20_vgen",
+ "function": "accel_tpch_q20_vgen",
+ "store": "verus",
+ "build_ms": 212051,
+ "state_mb": 5092.96,
+ "rss_mb_settled_before": 67.6914,
+ "rss_mb_settled_after": 5160.66,
+ "rss_mb_peak_build": 11357.8,
+ "speedup_geomean": 3.8786014765993486,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "DATE '1993-01-01', 'sandy%', 'GERMANY', DATE '1994-01-01'",
+   "base_us": 273499.824,
+   "accel_us": 69313.692,
+   "base_rows": 3639,
+   "accel_rows": 3639,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'orange%', 'CHINA', DATE '1997-01-01'",
+   "base_us": 272742.921,
+   "accel_us": 69141.891,
+   "base_rows": 3552,
+   "accel_rows": 3552,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'pink%', 'KENYA', DATE '1995-01-01'",
+   "base_us": 271540.891,
+   "accel_us": 69829.779,
+   "base_rows": 3607,
+   "accel_rows": 3607,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'violet%', 'UNITED KINGDOM', DATE '1997-01-01'",
+   "base_us": 272671.787,
+   "accel_us": 70216.687,
+   "base_rows": 3600,
+   "accel_rows": 3600,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'snow%', 'VIETNAM', DATE '1996-01-01'",
+   "base_us": 274087.774,
+   "accel_us": 71095.003,
+   "base_rows": 3562,
+   "accel_rows": 3562,
+   "match": true
+  },
+  {
+   "args": "DATE '1996-01-01', 'burnished%', 'ETHIOPIA', DATE '1997-01-01'",
+   "base_us": 272509.12,
+   "accel_us": 72600.162,
+   "base_rows": 3508,
+   "accel_rows": 3508,
+   "match": true
+  },
+  {
+   "args": "DATE '1997-01-01', 'rosy%', 'UNITED STATES', DATE '1998-01-01'",
+   "base_us": 271311.776,
+   "accel_us": 72295.884,
+   "base_rows": 3688,
+   "accel_rows": 3688,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'cream%', 'SAUDI ARABIA', DATE '1995-01-01'",
+   "base_us": 277278.795,
+   "accel_us": 69104.956,
+   "base_rows": 3541,
+   "accel_rows": 3541,
+   "match": true
+  }
+ ],
+ "wall_s": 262.5,
+ "query": 20,
+ "system": "verus",
+ "rep": 1,
+ "seed": 3605954649,
+ "note": "",
+ "counts_cover_all_draws": true
+}

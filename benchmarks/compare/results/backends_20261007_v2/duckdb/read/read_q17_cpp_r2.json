@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:17",
+ "function": "accel_tpch_q17_aux",
+ "store": "cpp",
+ "build_ms": 86070.2,
+ "state_mb": 3226.94,
+ "rss_mb_settled_before": 61.7227,
+ "rss_mb_settled_after": 3288.66,
+ "rss_mb_peak_build": 10882.4,
+ "speedup_geomean": 2305.071101094282,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'Brand#53', 'SM PKG'",
+   "base_us": 1052590.95,
+   "accel_us": 475.173,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#13', 'JUMBO PKG'",
+   "base_us": 1043785.327,
+   "accel_us": 475.953,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#24', 'LG DRUM'",
+   "base_us": 1045907.817,
+   "accel_us": 473.161,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#55', 'MED JAR'",
+   "base_us": 1054315.719,
+   "accel_us": 429.969,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#15', 'WRAP PACK'",
+   "base_us": 1060620.109,
+   "accel_us": 446.793,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#54', 'LG PACK'",
+   "base_us": 1050736.528,
+   "accel_us": 441.929,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#41', 'MED DRUM'",
+   "base_us": 1059538.146,
+   "accel_us": 466.863,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  },
+  {
+   "args": "'Brand#35', 'JUMBO PACK'",
+   "base_us": 1052457.342,
+   "accel_us": 445.374,
+   "base_rows": 1,
+   "accel_rows": 1,
+   "match": true
+  }
+ ],
+ "wall_s": 241.9,
+ "query": 17,
+ "system": "cpp",
+ "rep": 2,
+ "seed": 2762249457,
+ "note": "",
+ "counts_cover_all_draws": true
+}

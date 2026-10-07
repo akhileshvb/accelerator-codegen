@@ -1,0 +1,415 @@
+ M CMakeLists.txt
+ M benchmarks/compare/aux_compare.cpp
+ M benchmarks/compare/gen_tpch_params.py
+ M benchmarks/compare/run_compare.py
+ D benchmarks/duckdb/q1_verus_bench.cpp
+ D benchmarks/duckdb/q21_verus_bench.cpp
+ D benchmarks/mysql/q21_verus_bench.py
+ D benchmarks/postgres/q21_verus_bench.py
+ D benchmarks/q1_verus_bench_pg_mysql.py
+ M cmake/MySQLAdapter.cmake
+ M cmake/PostgresAdapter.cmake
+ M include/accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp
+ M include/accelerator_codegen/stateful/core/README.md
+ M include/accelerator_codegen/stateful/core/aux_execute_stats.hpp
+ D include/accelerator_codegen/verus/q1_verus.h
+ D include/accelerator_codegen/verus/q21_verus.h
+ M pipeline/README.md
+ M pipeline/config/verus.yaml
+ M pipeline/orchestrator/accel_pipeline/verus/actions.py
+ M pipeline/orchestrator/accel_pipeline/verus/stages.py
+ M pipeline/orchestrator/tests/test_verus_pipeline.py
+ M pipeline/prompts/verus/02_analysis.md
+ M pipeline/prompts/verus/02b_critic.md
+ M pipeline/prompts/verus/03_tests.md
+ M pipeline/prompts/verus/05_opt_worker.md
+ M pipeline/prompts/verus/contracts/scale_principles.md
+ D scripts/build_q1_verus.sh
+ D scripts/build_q21_verus.sh
+ D scripts/gen_verus_specs.sh
+ M scripts/make_verus_clean_tree.sh
+ D scripts/postgres_register_tpch_q1_verus.sql
+ D scripts/postgres_register_tpch_q21_verus.sql
+ M scripts/run_duckdb_registry_checks.sh
+ M src/generated/tpch/q1/duckdb/aux/finalize.cpp
+ M src/generated/tpch/q1/duckdb/aux/finalize.hpp
+ M src/generated/tpch/q1/duckdb/aux/module.cpp
+ M src/generated/tpch/q1/duckdb/aux/module.hpp
+ D src/generated/tpch/q1/duckdb/verus/package.cpp
+ D src/generated/tpch/q1/duckdb/verus/register.cpp
+ D src/generated/tpch/q1/mysql/verus/entry.cpp
+ D src/generated/tpch/q1/postgres/verus/entry.cpp
+ M src/generated/tpch/q10/duckdb/aux/finalize.cpp
+ M src/generated/tpch/q10/duckdb/aux/module.cpp
+ M src/generated/tpch/q10/duckdb/aux/module.hpp
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/completeness.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/dimension_query.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/dimension_updates.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/dimensions.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/facts.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/group_proofs.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/kernel.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/lib.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/maintenance.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/maintenance_proofs.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/model.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/output.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/query_proofs.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/read_proofs.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/scan_proofs.rs
+ M src/generated/tpch/q10/verus_kit/tpch_q10_vgen/glue.cpp
+ M src/generated/tpch/q11/duckdb/aux/module.cpp
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/construction.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/gen_ffi.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/gen_obligations.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/gen_spec.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/inventory.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/join_proofs.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/kernel.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/lib.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/maintenance.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/model.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/name_updates.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/names.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/semantics.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/staging.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/values.rs
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/glue.cpp
+ M src/generated/tpch/q11/verus_kit/tpch_q11_vgen/tpch_q11_vgen_verus.h
+ M src/generated/tpch/q12/duckdb/aux/finalize.cpp
+ M src/generated/tpch/q12/duckdb/aux/module.cpp
+ M src/generated/tpch/q12/duckdb/aux/module.hpp
+ M src/generated/tpch/q12/duckdb/aux/register.cpp
+ M src/generated/tpch/q13/duckdb/aux/module.cpp
+ M src/generated/tpch/q13/duckdb/aux/module.hpp
+ M src/generated/tpch/q13/duckdb/aux/register.cpp
+ M src/generated/tpch/q13/verus_kit/tpch_q13_vgen/crate/src/facts.rs
+ M src/generated/tpch/q13/verus_kit/tpch_q13_vgen/crate/src/gen_ffi.rs
+ M src/generated/tpch/q13/verus_kit/tpch_q13_vgen/crate/src/gen_obligations.rs
+ M src/generated/tpch/q13/verus_kit/tpch_q13_vgen/crate/src/gen_spec.rs
+ M src/generated/tpch/q13/verus_kit/tpch_q13_vgen/crate/src/gen_world.rs
+ M src/generated/tpch/q13/verus_kit/tpch_q13_vgen/crate/src/join.rs
+ M src/generated/tpch/q13/verus_kit/tpch_q13_vgen/crate/src/kernel.rs
+ M src/generated/tpch/q13/verus_kit/tpch_q13_vgen/crate/src/lib.rs
+ M src/generated/tpch/q13/verus_kit/tpch_q13_vgen/glue.cpp
+ M src/generated/tpch/q13/verus_kit/tpch_q13_vgen/tpch_q13_vgen_verus.h
+ M src/generated/tpch/q14/duckdb/aux/module.cpp
+ M src/generated/tpch/q14/duckdb/aux/module.hpp
+ M src/generated/tpch/q15/duckdb/aux/module.cpp
+ M src/generated/tpch/q15/duckdb/aux/module.hpp
+ M src/generated/tpch/q15/verus_kit/tpch_q15_vgen/crate/src/maintenance.rs
+ M src/generated/tpch/q15/verus_kit/tpch_q15_vgen/crate/src/model.rs
+ M src/generated/tpch/q15/verus_kit/tpch_q15_vgen/crate/src/output.rs
+ M src/generated/tpch/q15/verus_kit/tpch_q15_vgen/glue.cpp
+ M src/generated/tpch/q16/duckdb/aux/module.cpp
+ M src/generated/tpch/q16/duckdb/aux/module.hpp
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/build_semantics.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/counts.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/gen_ffi.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/gen_obligations.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/gen_spec.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/gen_world.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/input_proofs.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/kernel.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/lib.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/maintenance.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/model.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/output.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/output_proofs.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/output_validation.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/query_semantics.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/rank_proofs.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/semantic_proofs.rs
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/glue.cpp
+ M src/generated/tpch/q16/verus_kit/tpch_q16_vgen/tpch_q16_vgen_verus.h
+ M src/generated/tpch/q17/duckdb/aux/module.cpp
+ M src/generated/tpch/q17/duckdb/aux/module.hpp
+ M src/generated/tpch/q18/duckdb/aux/module.cpp
+ M src/generated/tpch/q18/duckdb/aux/module.hpp
+ M src/generated/tpch/q18/verus_kit/tpch_q18_vgen/crate/src/data.rs
+ M src/generated/tpch/q18/verus_kit/tpch_q18_vgen/crate/src/kernel.rs
+ M src/generated/tpch/q18/verus_kit/tpch_q18_vgen/crate/src/pages.rs
+ M src/generated/tpch/q19/duckdb/aux/module.cpp
+ M src/generated/tpch/q19/duckdb/aux/module.hpp
+ M src/generated/tpch/q19/duckdb/aux/register.cpp
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/bags.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/enumeration.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/enumeration_proofs.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/gen_ffi.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/gen_obligations.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/gen_spec.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/kernel.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/key_proofs.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/lib.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/maintenance.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/minimum_proofs.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/model.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/output.rs
+ D src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/query_proofs.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/query_transfer.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/relational.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/result_proofs.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/semantics.rs
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/glue.cpp
+ M src/generated/tpch/q2/verus_kit/tpch_q2_vgen/tpch_q2_vgen_verus.h
+ M src/generated/tpch/q20/duckdb/aux/module.cpp
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/dimensions.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/gen_ffi.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/gen_obligations.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/gen_spec.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/gen_world.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/kernel.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/model.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/predicate_proofs.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/profile_proofs.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/profiles.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/query_proofs.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/read_proofs.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/semantic_proofs.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/state_proofs.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/storage.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/crate/src/update_proofs.rs
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/glue.cpp
+ M src/generated/tpch/q20/verus_kit/tpch_q20_vgen/tpch_q20_vgen_verus.h
+ M src/generated/tpch/q21/duckdb/aux/module.cpp
+ M src/generated/tpch/q21/duckdb/aux/module.hpp
+ M src/generated/tpch/q21/duckdb/aux/register.cpp
+ D src/generated/tpch/q21/mysql/plugin/verus_runtime.cpp
+ D src/generated/tpch/q21/mysql/plugin/verus_udf.cpp
+ M src/generated/tpch/q21/postgres/extension/functions.cpp
+ M src/generated/tpch/q21/postgres/extension/scan.cpp
+ D src/generated/tpch/q21/verus/duckdb_register.cpp
+ D src/generated/tpch/q21/verus/module.cpp
+ D src/generated/tpch/q21/verus/module.hpp
+ D src/generated/tpch/q21/verus/store.cpp
+ D src/generated/tpch/q21/verus/store.hpp
+ D src/generated/tpch/q21/verus_kit/q21/gen_glue.cpp
+ D src/generated/tpch/q21/verus_kit/q21/q21_verus.h
+ M src/generated/tpch/q3/duckdb/aux/module.cpp
+ M src/generated/tpch/q3/duckdb/aux/module.hpp
+ M src/generated/tpch/q3/duckdb/aux/register.cpp
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/columns.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/construction.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/kernel.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/lib.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/maintenance.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/maintenance_proofs.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/maintenance_ranks.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/model.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/output.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/ranks.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/read_proofs.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/semantics.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/values.rs
+ M src/generated/tpch/q3/verus_kit/tpch_q3_vgen/glue.cpp
+ M src/generated/tpch/q4/duckdb/aux/module.cpp
+ M src/generated/tpch/q4/duckdb/aux/module.hpp
+ M src/generated/tpch/q5/duckdb/aux/finalize.cpp
+ M src/generated/tpch/q5/duckdb/aux/module.cpp
+ M src/generated/tpch/q5/duckdb/aux/module.hpp
+ M src/generated/tpch/q5/duckdb/aux/register.cpp
+ M src/generated/tpch/q5/verus_kit/tpch_q5_vgen/crate/src/construction.rs
+ M src/generated/tpch/q5/verus_kit/tpch_q5_vgen/crate/src/maintenance.rs
+ M src/generated/tpch/q5/verus_kit/tpch_q5_vgen/crate/src/output.rs
+ M src/generated/tpch/q5/verus_kit/tpch_q5_vgen/crate/src/storage.rs
+ M src/generated/tpch/q5/verus_kit/tpch_q5_vgen/glue.cpp
+ M src/generated/tpch/q6/duckdb/aux/finalize.cpp
+ M src/generated/tpch/q6/duckdb/aux/finalize.hpp
+ M src/generated/tpch/q6/duckdb/aux/module.cpp
+ M src/generated/tpch/q6/duckdb/aux/module.hpp
+ M src/generated/tpch/q7/duckdb/aux/module.cpp
+ M src/generated/tpch/q7/duckdb/aux/module.hpp
+ M src/generated/tpch/q7/duckdb/aux/register.cpp
+ M src/generated/tpch/q8/duckdb/aux/module.cpp
+ M src/generated/tpch/q8/duckdb/aux/module.hpp
+ M src/generated/tpch/q8/duckdb/aux/register.cpp
+ M src/generated/tpch/q8/verus_kit/tpch_q8_vgen/crate/src/kernel.rs
+ M src/generated/tpch/q8/verus_kit/tpch_q8_vgen/crate/src/table.rs
+ M src/generated/tpch/q9/duckdb/aux/module.cpp
+ M src/generated/tpch/q9/duckdb/aux/module.hpp
+ M src/generated/tpch/q9/duckdb/aux/register.cpp
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/aggregate.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/construction.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/database.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/dimensions.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/gen_ffi.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/gen_obligations.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/gen_spec.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/gen_world.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/kernel.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/lib.rs
+ D src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/maintenance.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/meaning.rs
+ D src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/order_updates.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/output.rs
+ D src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/part_updates.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/query_proofs.rs
+ D src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/summary_updates.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/values.rs
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/glue.cpp
+ M src/generated/tpch/q9/verus_kit/tpch_q9_vgen/tpch_q9_vgen_verus.h
+ M src/harness/differential.cpp
+ M src/runtime/duckdb/duckdb_runtime.cpp
+ M src/stateful/core/aux_execute_stats.cpp
+ M src/stateful/duckdb/duckdb_aux_table_functions.cpp
+ M src/stateful/state/versioned_aux_store.cpp
+ M src/verus/prooflib/src/lib.rs
+ D src/verus/q1/src/bridge.rs
+ D src/verus/q1/src/ffi.rs
+ D src/verus/q1/src/gen_spec.rs
+ D src/verus/q1/src/kernel.rs
+ D src/verus/q1/src/lib.rs
+ D src/verus/q21/src/bridge.rs
+ D src/verus/q21/src/build.rs
+ D src/verus/q21/src/ents.rs
+ D src/verus/q21/src/execute.rs
+ D src/verus/q21/src/gen_ffi.rs
+ D src/verus/q21/src/gen_obligations.rs
+ D src/verus/q21/src/gen_spec.rs
+ D src/verus/q21/src/gen_world.rs
+ D src/verus/q21/src/kernel.rs
+ D src/verus/q21/src/lib.rs
+ D src/verus/q21/src/maint.rs
+ D src/verus/q21/src/orderspec.rs
+ D src/verus/q21/src/state.rs
+ M src/verus/sql2verus/queries/q11.sql
+ M src/verus/sql2verus/queries/q13.sql
+ M src/verus/sql2verus/queries/q16.sql
+ M src/verus/sql2verus/queries/q2.sql
+ M src/verus/sql2verus/queries/q20.sql
+ M src/verus/sql2verus/queries/q9.sql
+ M src/verus/sql2verus/src/main.rs
+ M src/verus/sql2verus/tests/misc/expected.txt
+ M src/verus_kit/verus_kit.cpp
+ D tests/verification/q1verus/README.md
+ D tests/verification/q21verus/q21_verus_duckdb_fuzz.cpp
+ D tests/verification/q21verus/q21_verus_duckdb_snapshots.cpp
+ D tests/verification/q21verus/q21_verus_mysql_stress.py
+ D tests/verification/q21verus/q21_verus_stress.py
+ D tests/verification/verus_kit/q21_spec/params.sql
+ D tests/verification/verus_kit/q21_spec/txns/000.sql
+ D tests/verification/verus_kit/q21_spec/txns/001.sql
+ D tests/verification/verus_kit/q21_spec/txns/002.sql
+ D tests/verification/verus_kit/q21_spec/txns/003.sql
+ D tests/verification/verus_kit/q21_spec/txns/004.sql
+ D tests/verification/verus_kit/q21_spec/txns/005.sql
+ D tests/verification/verus_kit/q21_spec/txns/006.sql
+ D tests/verification/verus_kit/q21_spec/txns/007.sql
+ D tests/verification/verus_kit/q21_spec/txns/008.sql
+ D tests/verification/verus_kit/q21_spec/txns/009.sql
+ D tests/verification/verus_kit/q21_spec/txns/010.sql
+ D tests/verification/verus_kit/q21_spec/txns/011.sql
+ D tests/verification/verus_kit/q21_spec/txns/012.sql
+ D tests/verification/verus_kit/q21_spec/txns/013.sql
+ D tests/verification/verus_kit/q21_spec/txns/014.sql
+ D tests/verification/verus_kit/q21_spec/txns/015.sql
+ D tests/verification/verus_kit/q21_spec/txns/016.sql
+ D tests/verification/verus_kit/q21_spec/txns/017.sql
+ D tests/verification/verus_kit/q21_spec/txns/018.sql
+ D tests/verification/verus_kit/q21_spec/txns/019.sql
+ D tests/verification/verus_kit/q21_spec/txns/020.sql
+ D tests/verification/verus_kit/q21_spec/txns/021.sql
+ D tests/verification/verus_kit/q21_spec/txns/022.sql
+ D tests/verification/verus_kit/q21_spec/txns/023.sql
+ D tests/verification/verus_kit/q21_spec/txns/024.sql
+ D tests/verification/verus_kit/q21_spec/txns/025.sql
+ D tests/verification/verus_kit/q21_spec/txns/026.sql
+ D tests/verification/verus_kit/q21_spec/txns/027.sql
+ D tests/verification/verus_kit/q21_spec/txns/028.sql
+ D tests/verification/verus_kit/q21_spec/txns/029.sql
+ D tests/verification/verus_kit/q21_spec/txns/030.sql
+ D tests/verification/verus_kit/q21_spec/txns/031.sql
+ D tests/verification/verus_kit/q21_spec/txns/032.sql
+ D tests/verification/verus_kit/q21_spec/txns/033.sql
+ D tests/verification/verus_kit/q21_spec/txns/034.sql
+ D tests/verification/verus_kit/q21_spec/txns/035.sql
+ D tests/verification/verus_kit/q21_spec/txns/036.sql
+ D tests/verification/verus_kit/q21_spec/txns/037.sql
+ D tests/verification/verus_kit/q21_spec/txns/038.sql
+ D tests/verification/verus_kit/q21_spec/txns/039.sql
+ D tests/verification/verus_kit/q21_spec/txns/040.sql
+ D tests/verification/verus_kit/q21_spec/txns/041.sql
+ D tests/verification/verus_kit/q21_spec/txns/042.sql
+ D tests/verification/verus_kit/q21_spec/txns/043.sql
+ D tests/verification/verus_kit/q21_spec/txns/044.sql
+ M tests/verification/verus_kit/verus_kit_runner.cpp
+?? .verus_fix_build.lock
+?? .verus_sf20.lock
+?? benchmarks/compare/plot_results.py
+?? benchmarks/compare/plot_wps_sweep.py
+?? benchmarks/compare/results/
+?? benchmarks/compare/run_all.sh
+?? benchmarks/compare/run_experiments.sh
+?? build-hostpath
+?? build-q10fix
+?? build-q11fix
+?? build-q11param
+?? build-q13cpp
+?? build-q13param
+?? build-q15fix
+?? build-q16fix
+?? build-q16param
+?? build-q18fix
+?? build-q20param
+?? build-q2param
+?? build-q3fix
+?? build-q8fix
+?? build-q9param
+?? build-verus-q10fix
+?? build-verus-q11fix
+?? build-verus-q11param
+?? build-verus-q13param
+?? build-verus-q15fix
+?? build-verus-q16fix
+?? build-verus-q16param
+?? build-verus-q18fix
+?? build-verus-q20param
+?? build-verus-q2param
+?? build-verus-q3fix
+?? build-verus-q8fix
+?? build-verus-q9param
+?? pipeline/orchestrator/accel_pipeline/verus/params.py
+?? src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/customers.rs
+?? src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/ents.rs
+?? src/generated/tpch/q10/verus_kit/tpch_q10_vgen/crate/src/paged.rs
+?? src/generated/tpch/q11/verus_kit/tpch_q11_vgen/crate/src/packed.rs
+?? src/generated/tpch/q13/verus_kit/tpch_q13_vgen/crate/src/dense.rs
+?? src/generated/tpch/q13/verus_kit/tpch_q13_vgen/crate/src/recs.rs
+?? src/generated/tpch/q16/verus_kit/tpch_q16_vgen/crate/src/vocab.rs
+?? src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/dict.rs
+?? src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/fast_proofs.rs
+?? src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/flat.rs
+?? src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/parts.rs
+?? src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/parts_exec.rs
+?? src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/skip_proofs.rs
+?? src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/table.rs
+?? src/generated/tpch/q2/verus_kit/tpch_q2_vgen/crate/src/typecache.rs
+?? src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/custs.rs
+?? src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/packed.rs
+?? src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/paged.rs
+?? src/generated/tpch/q3/verus_kit/tpch_q3_vgen/crate/src/rank_ent.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/applydiff.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/applyspec.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/build2.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/buildparts.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/events.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/exec.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/finish.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/maskupdate.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/orders.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/pairupdate.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/patterns.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/readside.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/rollup.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/rows.rs
+?? src/generated/tpch/q9/verus_kit/tpch_q9_vgen/crate/src/yw.rs
+?? src/generated/verus_kit/
+?? src/verus/prooflib/src/like.rs
+?? src/verus/sql2verus/tests/misc/m51.sql
+?? src/verus/sql2verus/tests/misc/m52.sql
+?? src/verus/sql2verus/tests/misc/m53.sql
+?? src/verus/sql2verus/tests/misc/m54.sql
+?? tpch_q10_vgen_verus.long-type-1294015983115150772.txt
+?? tpch_q10_vgen_verus.long-type-6792998382788381352.txt
+?? tpch_q20_vgen_verus.long-type-10396714117859784048.txt
+?? vgcore.3318140

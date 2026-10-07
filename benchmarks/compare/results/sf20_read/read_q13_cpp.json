@@ -1,0 +1,25 @@
+{
+ "mode": "read",
+ "accel": "tpch:13",
+ "function": "accel_tpch_q13_aux",
+ "store": "cpp",
+ "build_ms": 26234.9,
+ "speedup_geomean": 937.814,
+ "mismatches": 0,
+ "hits": 6,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'%unusual%accounts%'",
+   "base_us": 470499.593,
+   "accel_us": 501.698,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  }
+ ],
+ "wall_s": 30.0,
+ "query": 13,
+ "system": "cpp",
+ "note": "pattern fixed to '%unusual%accounts%' (Verus literal)"
+}

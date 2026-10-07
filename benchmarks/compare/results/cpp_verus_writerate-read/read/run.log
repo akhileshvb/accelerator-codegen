@@ -1,0 +1,205 @@
+Running as unit: run-p4122554-i12558625.scope; invocation ID: 5f5e2006727e4b5886041626bdb0c4cb
+parameter draws: 3 repetition(s) x 8 sets, seeds 3605954648..3605954650
+read q1 cpp (3 draws) 22:26:03
+  rep 0: build 0.4s  state 0.44GB  speedup(geomean) 572.8x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 0.4s  state 0.44GB  speedup(geomean) 574.7x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 0.4s  state 0.44GB  speedup(geomean) 586.4x  mismatches 0  hits 0 fallbacks 0
+read q1 verus (3 draws) 22:26:47
+  rep 0: build 145.5s  state 0.39GB  speedup(geomean) 519.8x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 145.5s  state 0.39GB  speedup(geomean) 516.0x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 145.5s  state 0.39GB  speedup(geomean) 510.4x  mismatches 0  hits 0 fallbacks 0
+read q2 cpp (3 draws) 22:29:55
+  rep 0: build 8.8s  state 1.22GB  speedup(geomean) 168.5x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 8.8s  state 1.22GB  speedup(geomean) 180.7x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 8.8s  state 1.22GB  speedup(geomean) 174.1x  mismatches 0  hits 0 fallbacks 0
+read q2 verus (3 draws) 22:30:26
+  rep 0: build 144.9s  state 2.41GB  speedup(geomean) 5.1x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 144.9s  state 2.41GB  speedup(geomean) 5.2x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 144.9s  state 2.41GB  speedup(geomean) 5.2x  mismatches 0  hits 0 fallbacks 0
+read q3 cpp (3 draws) 22:33:19
+  rep 0: build 70.5s  state 2.91GB  speedup(geomean) 287.5x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 70.5s  state 2.91GB  speedup(geomean) 277.0x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 70.5s  state 2.91GB  speedup(geomean) 271.4x  mismatches 0  hits 0 fallbacks 0
+read q3 verus (3 draws) 22:34:54
+  rep 0: build 393.3s  state 4.54GB  speedup(geomean) 121.4x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 393.3s  state 4.54GB  speedup(geomean) 128.0x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 393.3s  state 4.54GB  speedup(geomean) 141.3x  mismatches 0  hits 0 fallbacks 0
+read q4 cpp (3 draws) 22:41:52
+  rep 0: build 31.3s  state 1.15GB  speedup(geomean) 340.3x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 31.3s  state 1.15GB  speedup(geomean) 325.8x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 31.3s  state 1.15GB  speedup(geomean) 321.0x  mismatches 0  hits 0 fallbacks 0
+read q4 verus (3 draws) 22:42:49
+  rep 0: build 67.9s  state 0.45GB  speedup(geomean) 351.0x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 67.9s  state 0.45GB  speedup(geomean) 339.5x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 67.9s  state 0.45GB  speedup(geomean) 328.5x  mismatches 0  hits 0 fallbacks 0
+read q5 cpp (3 draws) 22:44:21
+  rep 0: build 57.2s  state 1.50GB  speedup(geomean) 356.9x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 57.2s  state 1.50GB  speedup(geomean) 360.2x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 57.2s  state 1.50GB  speedup(geomean) 348.6x  mismatches 0  hits 0 fallbacks 0
+read q5 verus (3 draws) 22:45:46
+  rep 0: build 34.7s  state 2.56GB  speedup(geomean) 316.8x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 34.7s  state 2.56GB  speedup(geomean) 317.2x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 34.7s  state 2.56GB  speedup(geomean) 311.9x  mismatches 0  hits 0 fallbacks 0
+read q6 cpp (3 draws) 22:46:49
+  rep 0: build 0.8s  state 0.48GB  speedup(geomean) 107.1x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 0.8s  state 0.48GB  speedup(geomean) 105.4x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 0.8s  state 0.48GB  speedup(geomean) 105.9x  mismatches 0  hits 0 fallbacks 0
+read q6 verus (3 draws) 22:46:57
+  rep 0: build 76.8s  state 0.46GB  speedup(geomean) 62.8x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 76.8s  state 0.46GB  speedup(geomean) 52.8x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 76.8s  state 0.46GB  speedup(geomean) 53.6x  mismatches 0  hits 0 fallbacks 0
+read q7 cpp (3 draws) 22:48:21
+  rep 0: build 6.9s  state 1.10GB  speedup(geomean) 272.6x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 6.9s  state 1.10GB  speedup(geomean) 272.0x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 6.9s  state 1.10GB  speedup(geomean) 270.2x  mismatches 0  hits 0 fallbacks 0
+read q7 verus (3 draws) 22:48:49
+  rep 0: build 68.3s  state 5.12GB  speedup(geomean) 276.8x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 68.3s  state 5.12GB  speedup(geomean) 282.7x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 68.3s  state 5.12GB  speedup(geomean) 279.6x  mismatches 0  hits 0 fallbacks 0
+read q8 cpp (3 draws) 22:50:17
+  rep 0: build 66.1s  state 1.28GB  speedup(geomean) 489.4x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 66.1s  state 1.28GB  speedup(geomean) 450.0x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 66.1s  state 1.28GB  speedup(geomean) 446.3x  mismatches 0  hits 0 fallbacks 0
+read q8 verus (3 draws) 22:51:53
+  rep 0: build 164.4s  state 2.06GB  speedup(geomean) 474.4x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 164.4s  state 2.06GB  speedup(geomean) 443.8x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 164.4s  state 2.06GB  speedup(geomean) 437.8x  mismatches 0  hits 0 fallbacks 0
+read q9 cpp (3 draws) 22:55:07
+  rep 0: build 106.8s  state 4.71GB  speedup(geomean) 1.4x  mismatches 8  hits 144 fallbacks 0
+  rep 1: build 106.8s  state 4.71GB  speedup(geomean) 1.4x  mismatches 8  hits 0 fallbacks 0
+  rep 2: build 106.8s  state 4.71GB  speedup(geomean) 1.4x  mismatches 8  hits 0 fallbacks 0
+read q9 verus (3 draws) 22:59:08
+  rep 0: build 454.4s  state 2.44GB  speedup(geomean) 655.0x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 454.4s  state 2.44GB  speedup(geomean) 656.7x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 454.4s  state 2.44GB  speedup(geomean) 649.7x  mismatches 0  hits 0 fallbacks 0
+read q10 cpp (3 draws) 23:08:02
+  rep 0: build 10.9s  state 2.09GB  speedup(geomean) 459.8x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 10.9s  state 2.09GB  speedup(geomean) 460.5x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 10.9s  state 2.09GB  speedup(geomean) 474.1x  mismatches 0  hits 0 fallbacks 0
+read q10 verus (3 draws) 23:08:53
+  rep 0: build 530.2s  state 4.14GB  speedup(geomean) 12.7x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 530.2s  state 4.14GB  speedup(geomean) 23.3x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 530.2s  state 4.14GB  speedup(geomean) 12.7x  mismatches 0  hits 0 fallbacks 0
+read q11 cpp (3 draws) 23:18:38
+  rep 0: build 19.7s  state 2.21GB  speedup(geomean) 58.8x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 19.7s  state 2.21GB  speedup(geomean) 57.8x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 19.7s  state 2.21GB  speedup(geomean) 54.5x  mismatches 0  hits 0 fallbacks 0
+read q11 verus (3 draws) 23:19:14
+  rep 0: build 197.6s  state 2.89GB  speedup(geomean) 8.1x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 197.6s  state 2.89GB  speedup(geomean) 9.2x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 197.6s  state 2.89GB  speedup(geomean) 11.2x  mismatches 0  hits 0 fallbacks 0
+read q12 cpp (3 draws) 23:22:46
+  rep 0: build 52.6s  state 0.70GB  speedup(geomean) 241.6x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 52.6s  state 0.70GB  speedup(geomean) 244.2x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 52.6s  state 0.70GB  speedup(geomean) 237.8x  mismatches 0  hits 0 fallbacks 0
+read q12 verus (3 draws) 23:23:57
+  rep 0: build 19.4s  state 0.40GB  speedup(geomean) 217.1x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 19.4s  state 0.40GB  speedup(geomean) 212.5x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 19.4s  state 0.40GB  speedup(geomean) 210.7x  mismatches 0  hits 0 fallbacks 0
+read q13 cpp (3 draws) 23:24:34
+  rep 0: build 14.8s  state 2.90GB  speedup(geomean) 1196.4x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 14.8s  state 2.90GB  speedup(geomean) 1197.8x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 14.8s  state 2.90GB  speedup(geomean) 1170.9x  mismatches 0  hits 0 fallbacks 0
+read q13 verus (3 draws) 23:26:01
+  rep 0: build 57.6s  state 0.54GB  speedup(geomean) 1064.8x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 57.6s  state 0.54GB  speedup(geomean) 1073.5x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 57.6s  state 0.54GB  speedup(geomean) 1078.4x  mismatches 0  hits 0 fallbacks 0
+read q14 cpp (3 draws) 23:28:11
+  rep 0: build 1.3s  state 0.43GB  speedup(geomean) 227.3x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 1.3s  state 0.43GB  speedup(geomean) 219.7x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 1.3s  state 0.43GB  speedup(geomean) 220.2x  mismatches 0  hits 0 fallbacks 0
+read q14 verus (3 draws) 23:28:27
+  rep 0: build 747.8s  state 0.39GB  speedup(geomean) 221.9x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 747.8s  state 0.39GB  speedup(geomean) 212.2x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 747.8s  state 0.39GB  speedup(geomean) 210.0x  mismatches 0  hits 0 fallbacks 0
+read q15 cpp (3 draws) 23:41:09
+  rep 0: build 16.8s  state 0.64GB  speedup(geomean) 188.5x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 16.8s  state 0.64GB  speedup(geomean) 193.8x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 16.8s  state 0.64GB  speedup(geomean) 191.3x  mismatches 0  hits 0 fallbacks 0
+read q15 verus (3 draws) 23:41:40
+  rep 0: build 111.0s  state 3.82GB  speedup(geomean) 0.6x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 111.0s  state 3.82GB  speedup(geomean) 0.6x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 111.0s  state 3.82GB  speedup(geomean) 0.6x  mismatches 0  hits 0 fallbacks 0
+read q16 cpp (3 draws) 23:44:11
+  rep 0: build 6.6s  state 0.72GB  speedup(geomean) 34.1x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 6.6s  state 0.72GB  speedup(geomean) 39.0x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 6.6s  state 0.72GB  speedup(geomean) 34.2x  mismatches 0  hits 0 fallbacks 0
+read q16 verus (3 draws) 23:44:45
+  rep 0: build 189.4s  state 0.77GB  speedup(geomean) 2.6x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 189.4s  state 0.77GB  speedup(geomean) 2.6x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 189.4s  state 0.77GB  speedup(geomean) 2.6x  mismatches 0  hits 0 fallbacks 0
+read q17 cpp (3 draws) 23:48:35
+  rep 0: build 84.8s  state 3.14GB  speedup(geomean) 2324.7x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 84.8s  state 3.14GB  speedup(geomean) 2319.0x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 84.8s  state 3.14GB  speedup(geomean) 2374.6x  mismatches 0  hits 0 fallbacks 0
+read q17 verus (3 draws) 23:52:35
+  rep 0: build 123.9s  state 1.72GB  speedup(geomean) 2329.2x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 123.9s  state 1.72GB  speedup(geomean) 2363.5x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 123.9s  state 1.72GB  speedup(geomean) 2391.9x  mismatches 0  hits 0 fallbacks 0
+read q18 cpp (3 draws) 23:57:12
+  rep 0: build 1.5s  state 0.46GB  speedup(geomean) 727.2x  mismatches 0  hits 72 fallbacks 0
+  rep 1: build 1.5s  state 0.46GB  speedup(geomean) 700.0x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 1.5s  state 0.46GB  speedup(geomean) 702.8x  mismatches 0  hits 0 fallbacks 0
+read q18 verus (3 draws) 23:57:44
+  rep 0: build 174.9s  state 8.78GB  speedup(geomean) 350.8x  mismatches 0  hits 72 fallbacks 0
+  rep 1: build 174.9s  state 8.78GB  speedup(geomean) 345.3x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 174.9s  state 8.78GB  speedup(geomean) 330.9x  mismatches 0  hits 0 fallbacks 0
+read q19 cpp (3 draws) 00:01:10
+  rep 0: build 2.1s  state 0.55GB  speedup(geomean) 460.2x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 2.1s  state 0.55GB  speedup(geomean) 473.5x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 2.1s  state 0.55GB  speedup(geomean) 475.0x  mismatches 0  hits 0 fallbacks 0
+read q19 verus (3 draws) 00:01:42
+  rep 0: build 1.7s  state 0.50GB  speedup(geomean) 349.3x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 1.7s  state 0.50GB  speedup(geomean) 354.7x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 1.7s  state 0.50GB  speedup(geomean) 360.9x  mismatches 0  hits 0 fallbacks 0
+read q20 cpp (3 draws) 00:02:14
+  rep 0: build 17.0s  state 2.06GB  speedup(geomean) 30.2x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 17.0s  state 2.06GB  speedup(geomean) 30.1x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 17.0s  state 2.06GB  speedup(geomean) 30.0x  mismatches 0  hits 0 fallbacks 0
+read q20 verus (3 draws) 00:03:12
+  rep 0: build 212.1s  state 4.97GB  speedup(geomean) 3.9x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 212.1s  state 4.97GB  speedup(geomean) 3.9x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 212.1s  state 4.97GB  speedup(geomean) 3.9x  mismatches 0  hits 0 fallbacks 0
+read q21 cpp (3 draws) 00:07:35
+  rep 0: build 6.2s  state 0.77GB  speedup(geomean) 836.2x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 6.2s  state 0.77GB  speedup(geomean) 830.5x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 6.2s  state 0.77GB  speedup(geomean) 833.2x  mismatches 0  hits 0 fallbacks 0
+read q21 verus (3 draws) 00:08:46
+  rep 0: build 29.8s  state 0.85GB  speedup(geomean) 164.6x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 29.8s  state 0.85GB  speedup(geomean) 160.0x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 29.8s  state 0.85GB  speedup(geomean) 161.4x  mismatches 0  hits 0 fallbacks 0
+read q22 cpp (3 draws) 00:10:21
+  rep 0: build 2.5s  state 0.48GB  speedup(geomean) 341.2x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 2.5s  state 0.48GB  speedup(geomean) 339.2x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 2.5s  state 0.48GB  speedup(geomean) 328.1x  mismatches 0  hits 0 fallbacks 0
+read q22 verus (3 draws) 00:10:46
+  rep 0: build 511.8s  state 1.53GB  speedup(geomean) 152.1x  mismatches 0  hits 144 fallbacks 0
+  rep 1: build 511.8s  state 1.53GB  speedup(geomean) 150.8x  mismatches 0  hits 0 fallbacks 0
+  rep 2: build 511.8s  state 1.53GB  speedup(geomean) 147.1x  mismatches 0  hits 0 fallbacks 0
+
+read-only: speedup over DuckDB (geomean over a draw's parameter sets), median [min-max] over 3 repetition(s) with different parameter draws; build s and state GB medians
+   q                    cpp                  verus  cpp build  verus build  cpp GB  verus GB  notes
+   1 574.7x [572.8x-586.4x] 516.0x [510.4x-519.8x]        0.4        145.5    0.44      0.39  
+   2 174.1x [168.5x-180.7x]       5.2x [5.1x-5.2x]        8.8        144.9    1.22      2.41  
+   3 277.0x [271.4x-287.5x] 128.0x [121.4x-141.3x]       70.5        393.3    2.91      4.54  
+   4 325.8x [321.0x-340.3x] 339.5x [328.5x-351.0x]       31.3         67.9    1.15      0.45  
+   5 356.9x [348.6x-360.2x] 316.8x [311.9x-317.2x]       57.2         34.7    1.50      2.56  
+   6 105.9x [105.4x-107.1x]    53.6x [52.8x-62.8x]        0.8         76.8    0.48      0.46  
+   7 272.0x [270.2x-272.6x] 279.6x [276.8x-282.7x]        6.9         68.3    1.10      5.12  
+   8 450.0x [446.3x-489.4x] 443.8x [437.8x-474.4x]       66.1        164.4    1.28      2.06  
+   9       1.4x [1.4x-1.4x] 655.0x [649.7x-656.7x]      106.8        454.4    4.71      2.44  cpp: 24 mismatch
+  10 460.5x [459.8x-474.1x]    12.7x [12.7x-23.3x]       10.9        530.2    2.09      4.14  
+  11    57.8x [54.5x-58.8x]      9.2x [8.1x-11.2x]       19.7        197.6    2.21      2.89  
+  12 241.6x [237.8x-244.2x] 212.5x [210.7x-217.1x]       52.6         19.4    0.70      0.40  
+  13 1196.4x [1170.9x-1197.8x] 1073.5x [1064.8x-1078.4x]       14.8         57.6    2.90      0.54  
+  14 220.2x [219.7x-227.3x] 212.2x [210.0x-221.9x]        1.3        747.8    0.43      0.39  
+  15 191.3x [188.5x-193.8x]       0.6x [0.6x-0.6x]       16.8        111.0    0.64      3.82  
+  16    34.2x [34.1x-39.0x]       2.6x [2.6x-2.6x]        6.6        189.4    0.72      0.77  
+  17 2324.7x [2319.0x-2374.6x] 2363.5x [2329.2x-2391.9x]       84.8        123.9    3.14      1.72  
+  18 702.8x [700.0x-727.2x] 345.3x [330.9x-350.8x]        1.5        174.9    0.46      8.78  
+  19 473.5x [460.2x-475.0x] 354.7x [349.3x-360.9x]        2.1          1.7    0.55      0.50  
+  20    30.1x [30.0x-30.2x]       3.9x [3.9x-3.9x]       17.0        212.1    2.06      4.97  
+  21 833.2x [830.5x-836.2x] 161.4x [160.0x-164.6x]        6.2         29.8    0.77      0.85  
+  22 339.2x [328.1x-341.2x] 150.8x [147.1x-152.1x]        2.5        511.8    0.48      1.53  
+cpp: geomean speedup over queries, per repetition: 224x [221x-224x]
+verus: geomean speedup over queries, per repetition: 96x [96x-99x]

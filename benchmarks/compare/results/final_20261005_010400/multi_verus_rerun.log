@@ -1,0 +1,26 @@
+multi base (17 accelerators) 05:43:33
+  qps 6  writes 600 (625 incl. warmup)  commit p50 18.8ms p99 200.0ms max 379ms  build 0s  errors read 0 write 0
+multi verus (17 accelerators) 05:46:30
+  ERROR exit -15 (see /home/akhilvb/accelerator-codegen/benchmarks/compare/results/final_20261005_010400/multi_verus_rerun/multi.log)
+
+multi-accelerator (one process, one writer maintaining all): per-query read p50 / p99 ms
+  verus: ERROR exit -15 (see /home/akhilvb/accelerator-codegen/benchmarks/compare/results/final_20261005_010400/multi_verus_rerun/multi.log)
+   q             base
+   1 706.02 / 3073.61
+   2 464.48 / 1206.63
+   4 1146.53 / 3869.11
+   5 941.99 / 4743.78
+   6 247.11 / 1751.07
+   7 905.19 / 5564.76
+   8 877.14 / 2478.39
+  10 1401.17 / 5918.94
+  11 322.55 / 1081.27
+  12 575.88 / 2658.41
+  13 2663.69 / 8894.58
+  14 742.78 / 4287.22
+  15 491.03 / 3376.78
+  18 2676.53 / 6915.30
+  19 941.00 / 4778.60
+  21 3086.72 / 9826.80
+  22 753.76 / 2537.02
+totals: base: 6 qps, commit p50 18.8ms p99 200.0ms max 379ms

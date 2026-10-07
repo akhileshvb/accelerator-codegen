@@ -1,0 +1,215 @@
+{
+ "mode": "multi",
+ "phase": "base",
+ "accelerators": 17,
+ "store": "none",
+ "readers": 8,
+ "seconds": 120,
+ "build_ms": 0,
+ "build_ms_by_accel": {},
+ "reads": 694,
+ "qps": 5.78333,
+ "read_errors": 0,
+ "read_error_example": "",
+ "writes_per_sec_target": 5,
+ "writes": 600,
+ "writes_total": 625,
+ "writes_per_sec": 5,
+ "commit_p50_us": 19226.2,
+ "commit_p99_us": 193982,
+ "max_commit_us": 387690,
+ "write_errors": 0,
+ "write_error_example": "",
+ "write_kinds": {
+  "customer update": 14,
+  "lineitem update": 14,
+  "orders update": 13,
+  "part delete": 14,
+  "part insert": 14,
+  "partsupp update": 14,
+  "rf1": 188,
+  "rf1 large order": 62,
+  "rf2": 250,
+  "supplier delete": 14,
+  "supplier insert": 14,
+  "supplier update": 14
+ },
+ "hits": 0,
+ "fallbacks": 0,
+ "per_accel": [
+  {
+   "accel": "tpch:1",
+   "reads": 41,
+   "read_p50_us": 736858.271,
+   "read_p99_us": 4315651.358,
+   "read_max_us": 4315651.358,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:2",
+   "reads": 40,
+   "read_p50_us": 487707.576,
+   "read_p99_us": 1487212.55,
+   "read_max_us": 1487212.55,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:4",
+   "reads": 40,
+   "read_p50_us": 1053258.817,
+   "read_p99_us": 3304197.508,
+   "read_max_us": 3304197.508,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:5",
+   "reads": 40,
+   "read_p50_us": 952267.162,
+   "read_p99_us": 7556571.858,
+   "read_max_us": 7556571.858,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:6",
+   "reads": 41,
+   "read_p50_us": 206178.938,
+   "read_p99_us": 2134222.233,
+   "read_max_us": 2134222.233,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:7",
+   "reads": 40,
+   "read_p50_us": 764695.431,
+   "read_p99_us": 4027777.504,
+   "read_max_us": 4027777.504,
+   "answers_changed": 7,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:8",
+   "reads": 40,
+   "read_p50_us": 844854.648,
+   "read_p99_us": 4451320.982,
+   "read_max_us": 4451320.982,
+   "answers_changed": 2,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:10",
+   "reads": 39,
+   "read_p50_us": 1441874.251,
+   "read_p99_us": 4104180.467,
+   "read_max_us": 4104180.467,
+   "answers_changed": 3,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:11",
+   "reads": 42,
+   "read_p50_us": 303132.159,
+   "read_p99_us": 1119043.48,
+   "read_max_us": 1119043.48,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:12",
+   "reads": 42,
+   "read_p50_us": 524055.85,
+   "read_p99_us": 5166306.584,
+   "read_max_us": 5166306.584,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:13",
+   "reads": 41,
+   "read_p50_us": 1777848.868,
+   "read_p99_us": 4680137.652,
+   "read_max_us": 4680137.652,
+   "answers_changed": 1,
+   "cases": 1
+  },
+  {
+   "accel": "tpch:14",
+   "reads": 41,
+   "read_p50_us": 786068.873,
+   "read_p99_us": 4018467.227,
+   "read_max_us": 4018467.227,
+   "answers_changed": 7,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:15",
+   "reads": 42,
+   "read_p50_us": 498244.648,
+   "read_p99_us": 3404269.886,
+   "read_max_us": 3404269.886,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:18",
+   "reads": 42,
+   "read_p50_us": 2897792.473,
+   "read_p99_us": 9116754.578,
+   "read_max_us": 9116754.578,
+   "answers_changed": 4,
+   "cases": 4
+  },
+  {
+   "accel": "tpch:19",
+   "reads": 41,
+   "read_p50_us": 953550.832,
+   "read_p99_us": 9366685.857,
+   "read_max_us": 9366685.857,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:21",
+   "reads": 41,
+   "read_p50_us": 3134205.928,
+   "read_p99_us": 9243488.158,
+   "read_max_us": 9243488.158,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:22",
+   "reads": 41,
+   "read_p50_us": 805212.912,
+   "read_p99_us": 2513551.502,
+   "read_max_us": 2513551.502,
+   "answers_changed": 7,
+   "cases": 8
+  }
+ ],
+ "wall_s": 174.4,
+ "system": "base",
+ "queries": [
+  1,
+  2,
+  4,
+  5,
+  6,
+  7,
+  8,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  18,
+  19,
+  21,
+  22
+ ]
+}

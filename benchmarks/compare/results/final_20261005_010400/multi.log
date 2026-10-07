@@ -1,0 +1,5 @@
+multi base (17 accelerators) 05:21:47
+  qps 6  writes 600 (625 incl. warmup)  commit p50 19.2ms p99 194.0ms max 388ms  build 0s  errors read 0 write 0
+multi cpp (17 accelerators) 05:24:44
+  qps 14247  writes 590 (615 incl. warmup)  commit p50 30.2ms p99 237.9ms max 2428ms  build 310s  errors read 0 write 0
+multi verus (17 accelerators) 05:32:55

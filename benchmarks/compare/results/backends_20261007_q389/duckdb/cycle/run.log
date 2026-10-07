@@ -1,0 +1,8 @@
+Running as unit: run-p1647015-i14215145.scope; invocation ID: d756deec3ac1411385c5b428f14df50b
+parameter draws: 1 repetition(s) x 8 sets, seeds 2249872636..2249872636
+rep 0 q 3 base : commits rf1 0.49s rf2 0.01s | DuckDB read p50 163.7ms
+rep 0 q 3 accel: build 69s | rf1 1.4s(ApplyDelta) rf2 1.7s(ApplyDelta) | read p50 0.92ms | mismatches 0
+rep 0 q 8 base : commits rf1 0.50s rf2 0.01s | DuckDB read p50 203.2ms
+rep 0 q 8 accel: build 68s | rf1 1.3s(ApplyDelta) rf2 1.0s(ApplyDelta) | read p50 0.23ms | mismatches 0
+rep 0 q 9 base : commits rf1 0.43s rf2 0.01s | DuckDB read p50 536.7ms
+rep 0 q 9 accel: build 113s | rf1 7.1s(ApplyDelta) rf2 3.6s(ApplyDelta) | read p50 0.31ms | mismatches 0

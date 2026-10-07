@@ -1,0 +1,25 @@
+{
+ "mode": "read",
+ "accel": "tpch_q13_vgen",
+ "function": "accel_tpch_q13_vgen",
+ "store": "verus",
+ "build_ms": 10731.9,
+ "speedup_geomean": 1022.99,
+ "mismatches": 0,
+ "hits": 6,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "",
+   "base_us": 475000.773,
+   "accel_us": 464.328,
+   "base_rows": 45,
+   "accel_rows": 45,
+   "match": true
+  }
+ ],
+ "wall_s": 14.3,
+ "query": 13,
+ "system": "verus",
+ "note": "pattern fixed to '%unusual%accounts%' (Verus literal)"
+}

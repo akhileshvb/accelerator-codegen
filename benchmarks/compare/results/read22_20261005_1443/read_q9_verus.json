@@ -1,0 +1,29 @@
+{
+ "mode": "read",
+ "accel": "tpch_q9_vgen",
+ "function": "accel_tpch_q9_vgen",
+ "store": "verus",
+ "build_ms": 43371.9,
+ "state_mb": 2523.25,
+ "rss_mb_settled_before": 58.3086,
+ "rss_mb_settled_after": 2581.55,
+ "rss_mb_peak_build": 11098.3,
+ "speedup_geomean": 867.49,
+ "mismatches": 0,
+ "hits": 6,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "",
+   "base_us": 573013.867,
+   "accel_us": 660.542,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  }
+ ],
+ "wall_s": 48.0,
+ "query": 9,
+ "system": "verus",
+ "note": "color fixed to 'green' (Verus literal)"
+}

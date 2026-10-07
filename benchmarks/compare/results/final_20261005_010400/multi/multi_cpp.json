@@ -1,0 +1,233 @@
+{
+ "mode": "multi",
+ "phase": "accel",
+ "accelerators": 17,
+ "store": "cpp",
+ "readers": 8,
+ "seconds": 120,
+ "build_ms": 309577,
+ "build_ms_by_accel": {
+  "tpch:1": 403.547303,
+  "tpch:2": 8774.141533,
+  "tpch:4": 30260.23184,
+  "tpch:5": 59377.236223,
+  "tpch:6": 793.666155,
+  "tpch:7": 6593.292662,
+  "tpch:8": 64895.954046,
+  "tpch:10": 10735.882098,
+  "tpch:11": 19177.437225,
+  "tpch:12": 53173.396763,
+  "tpch:13": 22650.075279,
+  "tpch:14": 1296.68786,
+  "tpch:15": 18720.227892,
+  "tpch:18": 1554.034942,
+  "tpch:19": 1833.855648,
+  "tpch:21": 6362.342214,
+  "tpch:22": 2974.757432
+ },
+ "reads": 1709659,
+ "qps": 14247.2,
+ "read_errors": 0,
+ "read_error_example": "",
+ "writes_per_sec_target": 5,
+ "writes": 590,
+ "writes_total": 615,
+ "writes_per_sec": 4.91667,
+ "commit_p50_us": 30229.1,
+ "commit_p99_us": 237864,
+ "max_commit_us": 2427520.0,
+ "write_errors": 0,
+ "write_error_example": "",
+ "write_kinds": {
+  "customer update": 14,
+  "lineitem update": 13,
+  "orders update": 13,
+  "part delete": 14,
+  "part insert": 14,
+  "partsupp update": 13,
+  "rf1": 185,
+  "rf1 large order": 61,
+  "rf2": 246,
+  "supplier delete": 14,
+  "supplier insert": 14,
+  "supplier update": 14
+ },
+ "hits": 1710120,
+ "fallbacks": 0,
+ "per_accel": [
+  {
+   "accel": "tpch:1",
+   "reads": 100571,
+   "read_p50_us": 495.846,
+   "read_p99_us": 9866.714,
+   "read_max_us": 20516.311,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:2",
+   "reads": 100570,
+   "read_p50_us": 701.671,
+   "read_p99_us": 1340.326,
+   "read_max_us": 210314.27,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:4",
+   "reads": 100570,
+   "read_p50_us": 407.323,
+   "read_p99_us": 1450.306,
+   "read_max_us": 22315.24,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:5",
+   "reads": 100569,
+   "read_p50_us": 405.596,
+   "read_p99_us": 672.683,
+   "read_max_us": 54868.087,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:6",
+   "reads": 100567,
+   "read_p50_us": 394.285,
+   "read_p99_us": 645.801,
+   "read_max_us": 20065.949,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:7",
+   "reads": 100566,
+   "read_p50_us": 433.142,
+   "read_p99_us": 736.802,
+   "read_max_us": 54914.498,
+   "answers_changed": 7,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:8",
+   "reads": 100565,
+   "read_p50_us": 370.419,
+   "read_p99_us": 632.842,
+   "read_max_us": 55143.516,
+   "answers_changed": 2,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:10",
+   "reads": 100564,
+   "read_p50_us": 542.691,
+   "read_p99_us": 910.2,
+   "read_max_us": 18314.157,
+   "answers_changed": 3,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:11",
+   "reads": 100564,
+   "read_p50_us": 371.323,
+   "read_p99_us": 607.233,
+   "read_max_us": 12598.231,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:12",
+   "reads": 100563,
+   "read_p50_us": 439.017,
+   "read_p99_us": 2014.951,
+   "read_max_us": 24102.459,
+   "answers_changed": 8,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:13",
+   "reads": 100564,
+   "read_p50_us": 356.564,
+   "read_p99_us": 2434.474,
+   "read_max_us": 22522.447,
+   "answers_changed": 1,
+   "cases": 1
+  },
+  {
+   "accel": "tpch:14",
+   "reads": 100571,
+   "read_p50_us": 350.66,
+   "read_p99_us": 1816.603,
+   "read_max_us": 1299732.41,
+   "answers_changed": 7,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:15",
+   "reads": 100571,
+   "read_p50_us": 439.506,
+   "read_p99_us": 757.67,
+   "read_max_us": 2361452.398,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:18",
+   "reads": 100571,
+   "read_p50_us": 769.714,
+   "read_p99_us": 1491.422,
+   "read_max_us": 4231348.609,
+   "answers_changed": 4,
+   "cases": 4
+  },
+  {
+   "accel": "tpch:19",
+   "reads": 100571,
+   "read_p50_us": 371.527,
+   "read_p99_us": 606.712,
+   "read_max_us": 308341.082,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:21",
+   "reads": 100571,
+   "read_p50_us": 404.597,
+   "read_p99_us": 671.908,
+   "read_max_us": 3436640.716,
+   "answers_changed": 0,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:22",
+   "reads": 100571,
+   "read_p50_us": 413.432,
+   "read_p99_us": 690.128,
+   "read_max_us": 653272.256,
+   "answers_changed": 7,
+   "cases": 8
+  }
+ ],
+ "wall_s": 489.0,
+ "system": "cpp",
+ "queries": [
+  1,
+  2,
+  4,
+  5,
+  6,
+  7,
+  8,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  18,
+  19,
+  21,
+  22
+ ]
+}

@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "accel": "tpch_q22_vgen",
+ "function": "accel_tpch_q22_vgen",
+ "store": "verus",
+ "build_ms": 652391,
+ "speedup_geomean": 122.119,
+ "mismatches": 0,
+ "hits": 48,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'30', '21', '18', '15', '11', '14', '31'",
+   "base_us": 157960.458,
+   "accel_us": 1271.952,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'27', '25', '24', '23', '29', '17', '34'",
+   "base_us": 183141.773,
+   "accel_us": 1596.747,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'27', '14', '19', '21', '25', '34', '10'",
+   "base_us": 158204.283,
+   "accel_us": 1213.724,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'24', '22', '18', '17', '34', '28', '11'",
+   "base_us": 176484.703,
+   "accel_us": 1699.71,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'28', '16', '12', '11', '30', '15', '14'",
+   "base_us": 163674.833,
+   "accel_us": 1268.167,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'27', '13', '34', '28', '22', '31', '14'",
+   "base_us": 148716.154,
+   "accel_us": 1186.685,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'29', '31', '23', '19', '33', '21', '18'",
+   "base_us": 173834.704,
+   "accel_us": 1388.665,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  },
+  {
+   "args": "'28', '18', '20', '17', '14', '33', '34'",
+   "base_us": 174481.206,
+   "accel_us": 1376.894,
+   "base_rows": 7,
+   "accel_rows": 7,
+   "match": true
+  }
+ ],
+ "wall_s": 660.9,
+ "query": 22,
+ "system": "verus",
+ "note": ""
+}

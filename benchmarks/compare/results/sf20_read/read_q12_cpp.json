@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "accel": "tpch:12",
+ "function": "accel_tpch_q12_aux",
+ "store": "cpp",
+ "build_ms": 53395,
+ "speedup_geomean": 246.541,
+ "mismatches": 0,
+ "hits": 48,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'AIR', 'TRUCK', DATE '1994-01-01'",
+   "base_us": 129825.166,
+   "accel_us": 509.947,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'REG AIR', 'SHIP', DATE '1993-01-01'",
+   "base_us": 120428.192,
+   "accel_us": 504.475,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'REG AIR', 'MAIL', DATE '1996-01-01'",
+   "base_us": 123216.0,
+   "accel_us": 492.841,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'MAIL', 'RAIL', DATE '1995-01-01'",
+   "base_us": 125615.198,
+   "accel_us": 505.321,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'TRUCK', 'MAIL', DATE '1995-01-01'",
+   "base_us": 126454.217,
+   "accel_us": 489.713,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'TRUCK', 'RAIL', DATE '1994-01-01'",
+   "base_us": 123056.634,
+   "accel_us": 502.856,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'RAIL', 'SHIP', DATE '1997-01-01'",
+   "base_us": 123034.624,
+   "accel_us": 531.071,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  },
+  {
+   "args": "'SHIP', 'MAIL', DATE '1996-01-01'",
+   "base_us": 124863.568,
+   "accel_us": 505.828,
+   "base_rows": 2,
+   "accel_rows": 2,
+   "match": true
+  }
+ ],
+ "wall_s": 59.8,
+ "query": 12,
+ "system": "cpp",
+ "note": ""
+}

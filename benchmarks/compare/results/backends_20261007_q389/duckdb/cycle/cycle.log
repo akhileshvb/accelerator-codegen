@@ -1,0 +1,6 @@
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare cycle /flash1/akhilvb/tpch/work_cycle/cmp_cycle_base.duckdb tpch:3 tpch_q3_vgen /flash1/akhilvb/tpch/work_cycle/cases_q3_cpp_r0.tsv base 1 16 2249872636
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare cycle /flash1/akhilvb/tpch/work_cycle/cmp_cycle_accel.duckdb tpch:3 tpch_q3_vgen /flash1/akhilvb/tpch/work_cycle/cases_q3_cpp_r0.tsv accel 1 50 2249872636
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare cycle /flash1/akhilvb/tpch/work_cycle/cmp_cycle_base.duckdb tpch:8 tpch_q8_vgen /flash1/akhilvb/tpch/work_cycle/cases_q8_cpp_r0.tsv base 1 16 2249872636
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare cycle /flash1/akhilvb/tpch/work_cycle/cmp_cycle_accel.duckdb tpch:8 tpch_q8_vgen /flash1/akhilvb/tpch/work_cycle/cases_q8_cpp_r0.tsv accel 1 50 2249872636
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare cycle /flash1/akhilvb/tpch/work_cycle/cmp_cycle_base.duckdb tpch:9 tpch_q9_vgen /flash1/akhilvb/tpch/work_cycle/cases_q9_cpp_r0.tsv base 1 16 2249872636
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare cycle /flash1/akhilvb/tpch/work_cycle/cmp_cycle_accel.duckdb tpch:9 tpch_q9_vgen /flash1/akhilvb/tpch/work_cycle/cases_q9_cpp_r0.tsv accel 1 50 2249872636

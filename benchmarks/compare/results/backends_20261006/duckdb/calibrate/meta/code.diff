@@ -1,0 +1,83 @@
+diff --git a/benchmarks/compare/run_backends.sh b/benchmarks/compare/run_backends.sh
+index 4f78e65..e90aaf1 100755
+--- a/benchmarks/compare/run_backends.sh
++++ b/benchmarks/compare/run_backends.sh
+@@ -30,7 +30,7 @@
+ # Env:  SF (20)  REPEATS (3)  READERS (8)  BACKENDS  INTERVAL_MULT ("1 2 4")  N_COMMITS (4)
+ #   RF_DIR (/flash1/akhilvb/tpch/refresh_sf<SF>)   the update sets; BATCH_ORDERS (default: whole sets) uses only the
+ #   first B orders of each set
+-#   duckdb:    DB (/flash1/akhilvb/tpch/tpch_sf20.duckdb)  WORK  BIN (build-verus-duckdb/aux_compare)  CAP (96G)
++#   duckdb:    DB (../accelerator-codegen-duckdb/tpch_sf20.duckdb)  WORK (/flash1/akhilvb/tpch/work: the per-run copies)  BIN (build-verus-duckdb/aux_compare)  CAP (96G)
+ #   postgres:  PG_PORT (5434)  PG_DB (accel_tpch_sf20)    PGUSER / PGPASSWORD
+ #   mysql:     MYSQL_TCP_PORT (3307)  MYSQL_DB (tpch_sf20)  MYSQL_USER / MYSQL_PWD
+ #   postgres/mysql: QUERY_TIMEOUT (1800 s per baseline query; timeouts are reported, not fatal)
+@@ -45,7 +45,7 @@ SF=${SF:-20}
+ REPEATS=${REPEATS:-3}
+ READERS=${READERS:-8}
+ PYTHON=${PYTHON:-python3}
+-DB=${DB:-/flash1/akhilvb/tpch/tpch_sf20.duckdb}
++DB=${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}
+ BIN=${BIN:-$ROOT/build-verus-duckdb/aux_compare}
+ CAP=${CAP:-96G}   # a commit that rebuilds state keeps old and new copies alive; 64G may be too tight
+ PG_DB=${PG_DB:-accel_tpch_sf20}
+diff --git a/benchmarks/compare/run_compare.py b/benchmarks/compare/run_compare.py
+index d7c8700..8632319 100644
+--- a/benchmarks/compare/run_compare.py
++++ b/benchmarks/compare/run_compare.py
+@@ -31,7 +31,7 @@ their answers are compared as sets and may report a row-count mismatch.
+   python3 benchmarks/compare/run_compare.py concurrent --readers 8 --seconds 60 --wps 5
+   python3 benchmarks/compare/run_compare.py multi --readers 8 --seconds 120 --wps 5
+   python3 benchmarks/compare/run_compare.py summary <out_dir>
+-Env defaults: DB=/flash1/akhilvb/tpch/tpch_sf20.duckdb  WORK=/flash1/akhilvb/tpch/work
++Env defaults: DB=<repo>/../accelerator-codegen-duckdb/tpch_sf20.duckdb  WORK=/flash1/akhilvb/tpch/work (each run works on a copy of DB in WORK)
+ """
+ import argparse
+ import json
+@@ -418,7 +418,7 @@ def main():
+     sub = ap.add_subparsers(dest="mode", required=True)
+     for mode in ("read", "concurrent", "multi"):
+         p = sub.add_parser(mode)
+-        p.add_argument("--db", default=os.environ.get("DB", "/flash1/akhilvb/tpch/tpch_sf20.duckdb"))
++        p.add_argument("--db", default=os.environ.get("DB", os.path.join(ROOT, "..", "accelerator-codegen-duckdb", "tpch_sf20.duckdb")))
+         p.add_argument("--work", default=os.environ.get("WORK", "/flash1/akhilvb/tpch/work"))
+         p.add_argument("--out", default=os.path.join(ROOT, "benchmarks", "compare", "results",
+                                                      f"{mode}_{time.strftime('%Y%m%d_%H%M%S')}"))
+diff --git a/scripts/gen_tpch_refresh_sets.sh b/scripts/gen_tpch_refresh_sets.sh
+index 86d962c..1241622 100755
+--- a/scripts/gen_tpch_refresh_sets.sh
++++ b/scripts/gen_tpch_refresh_sets.sh
+@@ -20,7 +20,7 @@ SF=${1:-20}
+ N=${2:-40}
+ OUT=${3:-/flash1/akhilvb/tpch/refresh_sf${SF}}
+ DBGEN_SRC=${DBGEN_SRC:-/flash1/akhilvb/tpch/dbgen_src}
+-DB=${DB:-/flash1/akhilvb/tpch/tpch_sf${SF}.duckdb}
++DB=${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf${SF}.duckdb}
+ PYTHON=${PYTHON:-python3}
+ 
+ [ -f "$DBGEN_SRC/dists.dss" ] || { echo "no dbgen source tree at $DBGEN_SRC (set DBGEN_SRC)" >&2; exit 1; }
+diff --git a/scripts/setup_sf20_sql_backends.sh b/scripts/setup_sf20_sql_backends.sh
+index 7236afd..eb9fbde 100755
+--- a/scripts/setup_sf20_sql_backends.sh
++++ b/scripts/setup_sf20_sql_backends.sh
+@@ -29,7 +29,7 @@
+ set -euo pipefail
+ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ MODE=${1:?export | postgres | mysql}
+-SRC=${SRC:-/flash1/akhilvb/tpch/tpch_sf20.duckdb}
++SRC=${SRC:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}
+ STAGE=${STAGE:-/flash1/akhilvb/tpch/csv_sf20}
+ DUCKDB_BIN=${DUCKDB_BIN:-$ROOT/../accelerator-codegen-duckdb/build/release/duckdb}
+ PYTHON=${PYTHON:-python3}
+diff --git a/scripts/validate_tpch_refresh_sets.py b/scripts/validate_tpch_refresh_sets.py
+index fed3756..bd768b5 100755
+--- a/scripts/validate_tpch_refresh_sets.py
++++ b/scripts/validate_tpch_refresh_sets.py
+@@ -3,7 +3,7 @@
+ the delete keys exist, the insert keys do not, no key is deleted or inserted twice across sets, and every set has
+ the same size.  Exit status 1 if any check fails.  Needs the duckdb module.
+ 
+-  python3 scripts/validate_tpch_refresh_sets.py --db /flash1/akhilvb/tpch/tpch_sf20.duckdb --dir /flash1/akhilvb/tpch/refresh_sf20 --sets 40
++  python3 scripts/validate_tpch_refresh_sets.py --db ../accelerator-codegen-duckdb/tpch_sf20.duckdb --dir /flash1/akhilvb/tpch/refresh_sf20 --sets 40
+ """
+ import argparse
+ import sys

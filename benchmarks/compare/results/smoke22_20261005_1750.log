@@ -1,0 +1,30 @@
+Running as unit: run-p3161641-i11508584.scope; invocation ID: 28b95ff6dca74ad6929d801710fe0da5
+multi base (17 accelerators, rotate readers, rates wps40) 17:59:24
+  build 0s
+      wps40: qps 5  writes 1008 (33.6/s of 40) commit p50 14.9ms p99 115.8ms max 236ms  errors read 0 write 0
+multi verus (17 accelerators, rotate readers, rates wps40) 18:00:50
+      wps40: ERROR exit -15 (see benchmarks/compare/results/smoke22_20261005_1750/multi.log)
+
+=== wps40
+
+multi-accelerator (one process, one writer maintaining all): per-query read p50 / p99 ms
+  verus: ERROR exit -15 (see benchmarks/compare/results/smoke22_20261005_1750/multi.log)
+   q             base
+   1  568.62 / 777.17
+   2  391.08 / 499.50
+   4  662.29 / 874.26
+   5  571.84 / 751.50
+   6  150.74 / 251.51
+   7  501.90 / 710.37
+   8  610.40 / 773.12
+  10 815.63 / 1596.93
+  11  199.19 / 515.36
+  12  427.02 / 715.58
+  13 1341.43 / 3140.34
+  14 642.60 / 1058.80
+  15  311.94 / 692.21
+  18 1352.75 / 4910.00
+  19 556.76 / 1357.30
+  21 2057.01 / 2344.06
+  22  299.76 / 586.47
+totals: base: 5 qps, commit p50 14.9ms p99 115.8ms max 236ms

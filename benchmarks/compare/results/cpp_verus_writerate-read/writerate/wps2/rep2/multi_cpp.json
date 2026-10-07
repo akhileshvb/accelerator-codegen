@@ -1,0 +1,1756 @@
+{
+ "mode": "multi",
+ "phase": "accel",
+ "accelerators": 22,
+ "store": "cpp",
+ "reader_mode": "rotate",
+ "readers": 8,
+ "reader_threads": 8,
+ "seconds": 60,
+ "build_ms": 586939,
+ "build_ms_by_accel": {
+  "tpch:1": 446.00177,
+  "tpch:2": 8462.697866,
+  "tpch:3": 68506.005475,
+  "tpch:4": 30799.397365,
+  "tpch:5": 58638.682651,
+  "tpch:6": 812.126876,
+  "tpch:7": 6547.140691,
+  "tpch:8": 65220.988782,
+  "tpch:9": 109545.770287,
+  "tpch:10": 11116.150758,
+  "tpch:11": 19040.751933,
+  "tpch:12": 54246.943372,
+  "tpch:13": 14835.724659,
+  "tpch:14": 1238.751238,
+  "tpch:15": 15918.313088,
+  "tpch:16": 6397.78954,
+  "tpch:17": 84015.932394,
+  "tpch:18": 1633.541288,
+  "tpch:19": 1949.609132,
+  "tpch:20": 16986.752484,
+  "tpch:21": 7356.367238,
+  "tpch:22": 3223.235635
+ },
+ "rss_mb_after_build": {
+  "tpch:1": [
+   2695.886719,
+   2719.679688
+  ],
+  "tpch:2": [
+   3761.792969,
+   3833.324219
+  ],
+  "tpch:3": [
+   6750.027344,
+   8806.9375
+  ],
+  "tpch:4": [
+   7965.707031,
+   8806.9375
+  ],
+  "tpch:5": [
+   9277.988281,
+   9277.988281
+  ],
+  "tpch:6": [
+   10783.734375,
+   10838.398438
+  ],
+  "tpch:7": [
+   9949.34375,
+   11822.058594
+  ],
+  "tpch:8": [
+   11081.15625,
+   11822.058594
+  ],
+  "tpch:9": [
+   13891.855469,
+   17645.425781
+  ],
+  "tpch:10": [
+   16355.691406,
+   17645.425781
+  ],
+  "tpch:11": [
+   18238.164062,
+   18238.164062
+  ],
+  "tpch:12": [
+   19219.796875,
+   19223.554688
+  ],
+  "tpch:13": [
+   21628.25,
+   21628.25
+  ],
+  "tpch:14": [
+   22004.773438,
+   22007.90625
+  ],
+  "tpch:15": [
+   26296.027344,
+   27091.347656
+  ],
+  "tpch:16": [
+   26330.238281,
+   27091.347656
+  ],
+  "tpch:17": [
+   24335.089844,
+   28332.292969
+  ],
+  "tpch:18": [
+   24801.035156,
+   28332.292969
+  ],
+  "tpch:19": [
+   25320.230469,
+   28332.292969
+  ],
+  "tpch:20": [
+   31740.890625,
+   32089.316406
+  ],
+  "tpch:21": [
+   25646.039062,
+   32089.316406
+  ],
+  "tpch:22": [
+   26897.316406,
+   32089.316406
+  ]
+ },
+ "rss_mb_end": 29228.9,
+ "rss_mb_peak": 33088.1,
+ "reads": 310566,
+ "qps": 5176.1,
+ "read_total_us": 479719000.0,
+ "read_errors": 0,
+ "read_error_example": "",
+ "writes_per_sec_target": 2,
+ "writes": 120,
+ "writes_total": 130,
+ "writes_per_sec": 2,
+ "commit_p50_us": 54500.9,
+ "commit_p99_us": 368885,
+ "commit_total_us": 7310320.0,
+ "max_commit_us": 435895,
+ "write_errors": 0,
+ "write_error_example": "",
+ "write_kinds": {
+  "customer update": 3,
+  "lineitem update": 3,
+  "orders update": 3,
+  "part delete": 3,
+  "part insert": 2,
+  "partsupp update": 3,
+  "rf1": 39,
+  "rf1 large order": 13,
+  "rf2": 52,
+  "supplier delete": 3,
+  "supplier insert": 3,
+  "supplier update": 3
+ },
+ "commit_breakdown_mean_us": {
+  "statement": 9013.88705,
+  "pre_commit_all": 21474.122892,
+  "engine_commit": 1313.518283,
+  "install_all": 29070.95065
+ },
+ "writes_by_accels_maintained": {
+  "10": 6,
+  "11": 1,
+  "12": 1,
+  "14": 1,
+  "16": 57,
+  "17": 35,
+  "18": 11,
+  "19": 1,
+  "3": 3,
+  "4": 9,
+  "9": 5
+ },
+ "writes_maintaining_none": 0,
+ "write_log": [
+  [
+   6.8e-05,
+   "rf1 large order",
+   55610.586,
+   18298.489,
+   23881.312,
+   17
+  ],
+  [
+   0.500067,
+   "partsupp update",
+   36305.504,
+   5912.868,
+   25321.577,
+   4
+  ],
+  [
+   1.000096,
+   "rf2",
+   54500.879,
+   19699.665,
+   27529.691,
+   17
+  ],
+  [
+   1.500081,
+   "rf1",
+   63764.897,
+   18439.229,
+   30346.192,
+   17
+  ],
+  [
+   2.000088,
+   "rf2",
+   58045.526,
+   14057.036,
+   35423.074,
+   17
+  ],
+  [
+   2.500077,
+   "rf1",
+   48897.649,
+   16460.811,
+   20268.188,
+   18
+  ],
+  [
+   3.000073,
+   "lineitem update",
+   44014.533,
+   6832.772,
+   31017.626,
+   11
+  ],
+  [
+   3.500082,
+   "rf2",
+   69939.033,
+   20720.218,
+   40912.762,
+   16
+  ],
+  [
+   4.000083,
+   "rf1",
+   33813.722,
+   8861.575,
+   13677.419,
+   16
+  ],
+  [
+   4.500067,
+   "rf2",
+   78380.438,
+   24749.632,
+   47614.228,
+   16
+  ],
+  [
+   5.000083,
+   "rf1 large order",
+   48437.422,
+   18726.366,
+   13228.8,
+   17
+  ],
+  [
+   5.500064,
+   "orders update",
+   19924.424,
+   3654.255,
+   12843.881,
+   4
+  ],
+  [
+   6.000087,
+   "rf2",
+   56392.663,
+   11173.973,
+   37565.387,
+   17
+  ],
+  [
+   6.50008,
+   "rf1",
+   62009.26,
+   20356.824,
+   28774.917,
+   18
+  ],
+  [
+   7.000076,
+   "rf2",
+   70150.802,
+   18600.349,
+   42717.113,
+   16
+  ],
+  [
+   7.500076,
+   "rf1",
+   52398.786,
+   15576.887,
+   24422.624,
+   16
+  ],
+  [
+   8.000081,
+   "supplier update",
+   6969.758,
+   1573.623,
+   1068.128,
+   3
+  ],
+  [
+   8.500093,
+   "rf2",
+   38727.865,
+   7282.293,
+   24282.545,
+   16
+  ],
+  [
+   9.000078,
+   "rf1",
+   50428.999,
+   9718.538,
+   16177.662,
+   16
+  ],
+  [
+   9.500084,
+   "rf2",
+   49929.482,
+   16595.316,
+   26881.47,
+   16
+  ],
+  [
+   10.000065,
+   "rf1 large order",
+   55667.862,
+   18734.498,
+   21460.73,
+   19
+  ],
+  [
+   10.500078,
+   "customer update",
+   16678.18,
+   12343.977,
+   566.238,
+   4
+  ],
+  [
+   11.000067,
+   "rf2",
+   64998.134,
+   19009.565,
+   37588.755,
+   16
+  ],
+  [
+   11.500083,
+   "rf1",
+   52138.876,
+   11918.461,
+   27648.363,
+   16
+  ],
+  [
+   12.000068,
+   "rf2",
+   64631.405,
+   20152.668,
+   36515.289,
+   17
+  ],
+  [
+   12.500077,
+   "rf1",
+   44837.602,
+   13252.32,
+   19707.686,
+   17
+  ],
+  [
+   13.000079,
+   "part delete",
+   56924.765,
+   28756.422,
+   23557.137,
+   9
+  ],
+  [
+   13.500082,
+   "rf2",
+   56910.323,
+   18916.992,
+   30691.93,
+   17
+  ],
+  [
+   14.000085,
+   "rf1",
+   49619.19,
+   7614.489,
+   30056.401,
+   16
+  ],
+  [
+   14.500078,
+   "rf2",
+   60338.72,
+   12183.938,
+   39561.471,
+   16
+  ],
+  [
+   15.000077,
+   "rf1 large order",
+   83307.542,
+   25158.361,
+   39846.564,
+   18
+  ],
+  [
+   15.500161,
+   "part insert",
+   23672.17,
+   7619.295,
+   8091.361,
+   9
+  ],
+  [
+   16.000075,
+   "rf2",
+   38682.906,
+   13938.617,
+   17821.559,
+   16
+  ],
+  [
+   16.500074,
+   "rf1",
+   72683.379,
+   17144.454,
+   41949.837,
+   16
+  ],
+  [
+   17.000077,
+   "rf2",
+   51455.272,
+   10524.122,
+   33947.034,
+   16
+  ],
+  [
+   17.500075,
+   "rf1",
+   37086.876,
+   7377.017,
+   16186.57,
+   16
+  ],
+  [
+   18.000076,
+   "supplier delete",
+   373840.474,
+   259097.183,
+   95177.944,
+   10
+  ],
+  [
+   18.500078,
+   "rf2",
+   56612.716,
+   15317.578,
+   34987.736,
+   16
+  ],
+  [
+   19.000082,
+   "rf1",
+   57208.888,
+   17712.331,
+   20837.216,
+   16
+  ],
+  [
+   19.50008,
+   "rf2",
+   54566.348,
+   12316.375,
+   34206.946,
+   16
+  ],
+  [
+   20.000079,
+   "rf1 large order",
+   57658.135,
+   18688.926,
+   23801.712,
+   17
+  ],
+  [
+   20.500067,
+   "supplier insert",
+   222210.788,
+   146654.196,
+   41537.217,
+   10
+  ],
+  [
+   21.000077,
+   "rf2",
+   115881.134,
+   18739.023,
+   89096.18,
+   18
+  ],
+  [
+   21.500081,
+   "rf1",
+   49704.106,
+   14236.269,
+   23203.498,
+   16
+  ],
+  [
+   22.000063,
+   "rf2",
+   40680.006,
+   15425.306,
+   19546.384,
+   16
+  ],
+  [
+   22.500087,
+   "rf1",
+   46513.089,
+   12367.058,
+   23719.301,
+   18
+  ],
+  [
+   23.000065,
+   "partsupp update",
+   28875.731,
+   6035.434,
+   19628.41,
+   4
+  ],
+  [
+   23.500075,
+   "rf2",
+   54096.033,
+   13986.022,
+   33068.589,
+   16
+  ],
+  [
+   24.000084,
+   "rf1",
+   67249.216,
+   21683.516,
+   32421.911,
+   16
+  ],
+  [
+   24.500076,
+   "rf2",
+   57225.602,
+   14708.706,
+   33635.798,
+   16
+  ],
+  [
+   25.000085,
+   "rf1 large order",
+   73690.663,
+   29987.428,
+   28837.344,
+   17
+  ],
+  [
+   25.500078,
+   "lineitem update",
+   48701.275,
+   17119.727,
+   24529.951,
+   14
+  ],
+  [
+   26.000076,
+   "rf2",
+   59625.0,
+   16586.181,
+   36771.053,
+   16
+  ],
+  [
+   26.500076,
+   "rf1",
+   47622.558,
+   9639.756,
+   25622.253,
+   16
+  ],
+  [
+   27.000078,
+   "rf2",
+   74413.122,
+   22371.865,
+   45009.599,
+   16
+  ],
+  [
+   27.500092,
+   "rf1",
+   31714.256,
+   6301.174,
+   13416.131,
+   17
+  ],
+  [
+   28.000064,
+   "orders update",
+   14491.019,
+   3731.554,
+   7336.772,
+   4
+  ],
+  [
+   28.500068,
+   "rf2",
+   52388.076,
+   14162.105,
+   31275.773,
+   17
+  ],
+  [
+   29.000077,
+   "rf1",
+   71522.534,
+   14538.049,
+   44758.562,
+   18
+  ],
+  [
+   29.50007,
+   "rf2",
+   59237.094,
+   24693.989,
+   26704.237,
+   17
+  ],
+  [
+   30.00008,
+   "rf1 large order",
+   72651.219,
+   26348.808,
+   32380.196,
+   17
+  ],
+  [
+   30.50008,
+   "supplier update",
+   7447.955,
+   1612.397,
+   1175.683,
+   3
+  ],
+  [
+   31.000087,
+   "rf2",
+   53011.133,
+   15339.567,
+   31073.941,
+   16
+  ],
+  [
+   31.500067,
+   "rf1",
+   35482.005,
+   8383.114,
+   17305.199,
+   16
+  ],
+  [
+   32.000077,
+   "rf2",
+   47638.716,
+   14740.548,
+   26440.145,
+   16
+  ],
+  [
+   32.500081,
+   "rf1",
+   50992.591,
+   8428.519,
+   32211.639,
+   16
+  ],
+  [
+   33.000078,
+   "customer update",
+   18637.422,
+   12859.742,
+   328.238,
+   4
+  ],
+  [
+   33.500074,
+   "rf2",
+   40101.307,
+   15495.758,
+   17538.866,
+   17
+  ],
+  [
+   34.000078,
+   "rf1",
+   51037.672,
+   9898.837,
+   29413.447,
+   16
+  ],
+  [
+   34.500075,
+   "rf2",
+   45300.821,
+   10573.266,
+   28105.691,
+   16
+  ],
+  [
+   35.000081,
+   "rf1 large order",
+   55505.211,
+   16225.693,
+   23313.486,
+   18
+  ],
+  [
+   35.500075,
+   "part delete",
+   60055.469,
+   29906.895,
+   24269.325,
+   9
+  ],
+  [
+   36.000077,
+   "rf2",
+   39390.195,
+   14678.334,
+   17521.048,
+   16
+  ],
+  [
+   36.500071,
+   "rf1",
+   65102.593,
+   17331.013,
+   35175.226,
+   17
+  ],
+  [
+   37.000083,
+   "rf2",
+   60733.231,
+   21530.487,
+   32554.024,
+   16
+  ],
+  [
+   37.500074,
+   "rf1",
+   67479.547,
+   21390.566,
+   30910.17,
+   17
+  ],
+  [
+   38.000098,
+   "part insert",
+   53439.01,
+   11464.922,
+   33278.011,
+   9
+  ],
+  [
+   38.500095,
+   "rf2",
+   46562.027,
+   14145.149,
+   25333.213,
+   16
+  ],
+  [
+   39.000078,
+   "rf1",
+   67831.779,
+   14518.376,
+   40156.34,
+   17
+  ],
+  [
+   39.500076,
+   "rf2",
+   31971.411,
+   9986.917,
+   13627.413,
+   17
+  ],
+  [
+   40.000071,
+   "rf1 large order",
+   54747.258,
+   18125.153,
+   23637.156,
+   17
+  ],
+  [
+   40.500072,
+   "supplier delete",
+   368885.21,
+   259586.063,
+   84460.496,
+   10
+  ],
+  [
+   41.000085,
+   "rf2",
+   52817.548,
+   11838.929,
+   29251.804,
+   16
+  ],
+  [
+   41.500082,
+   "rf1",
+   43498.369,
+   9445.944,
+   21743.68,
+   17
+  ],
+  [
+   42.000066,
+   "rf2",
+   51697.636,
+   12974.463,
+   30790.907,
+   16
+  ],
+  [
+   42.500084,
+   "rf1",
+   71372.864,
+   25387.163,
+   31414.209,
+   16
+  ],
+  [
+   43.000084,
+   "supplier insert",
+   273373.252,
+   140439.023,
+   100475.157,
+   10
+  ],
+  [
+   43.500076,
+   "rf2",
+   47506.976,
+   15778.452,
+   20997.851,
+   16
+  ],
+  [
+   44.000077,
+   "rf1",
+   45828.859,
+   11105.807,
+   22305.019,
+   16
+  ],
+  [
+   44.500074,
+   "rf2",
+   51658.189,
+   16420.137,
+   28792.155,
+   17
+  ],
+  [
+   45.000078,
+   "rf1 large order",
+   84473.915,
+   26068.081,
+   44497.203,
+   17
+  ],
+  [
+   45.500094,
+   "partsupp update",
+   22916.929,
+   5372.892,
+   12653.121,
+   4
+  ],
+  [
+   46.000076,
+   "rf2",
+   49207.511,
+   19203.859,
+   22946.161,
+   18
+  ],
+  [
+   46.500083,
+   "rf1",
+   64281.768,
+   20087.074,
+   31559.423,
+   17
+  ],
+  [
+   47.000146,
+   "rf2",
+   63606.755,
+   12637.56,
+   42879.975,
+   16
+  ],
+  [
+   47.500068,
+   "rf1",
+   61163.078,
+   21659.855,
+   24958.897,
+   16
+  ],
+  [
+   48.000071,
+   "lineitem update",
+   42537.999,
+   5874.29,
+   32640.873,
+   12
+  ],
+  [
+   48.500081,
+   "rf2",
+   66328.269,
+   16410.552,
+   41018.06,
+   16
+  ],
+  [
+   49.00008,
+   "rf1",
+   57420.047,
+   19537.572,
+   22636.368,
+   16
+  ],
+  [
+   49.50009,
+   "rf2",
+   56445.145,
+   18403.303,
+   30156.322,
+   16
+  ],
+  [
+   50.00008,
+   "rf1 large order",
+   65326.583,
+   18537.961,
+   31274.372,
+   18
+  ],
+  [
+   50.500068,
+   "orders update",
+   20592.801,
+   4177.363,
+   11115.144,
+   4
+  ],
+  [
+   51.000083,
+   "rf2",
+   33712.2,
+   10497.938,
+   17088.22,
+   17
+  ],
+  [
+   51.500075,
+   "rf1",
+   62117.037,
+   16203.367,
+   33682.41,
+   17
+  ],
+  [
+   52.000089,
+   "rf2",
+   68589.573,
+   14138.542,
+   45735.062,
+   16
+  ],
+  [
+   52.500104,
+   "rf1",
+   68526.776,
+   17329.274,
+   35140.155,
+   16
+  ],
+  [
+   53.000087,
+   "supplier update",
+   7265.951,
+   1519.502,
+   958.547,
+   3
+  ],
+  [
+   53.500077,
+   "rf2",
+   49128.068,
+   15252.655,
+   18886.187,
+   16
+  ],
+  [
+   54.000084,
+   "rf1",
+   42912.961,
+   13788.967,
+   19326.904,
+   16
+  ],
+  [
+   54.500101,
+   "rf2",
+   61721.559,
+   16607.939,
+   38507.243,
+   16
+  ],
+  [
+   55.000083,
+   "rf1 large order",
+   92435.667,
+   25584.151,
+   48478.758,
+   18
+  ],
+  [
+   55.500076,
+   "customer update",
+   19746.416,
+   15112.279,
+   162.165,
+   4
+  ],
+  [
+   56.000088,
+   "rf2",
+   32470.046,
+   12637.815,
+   13421.101,
+   16
+  ],
+  [
+   56.500065,
+   "rf1",
+   67597.691,
+   19047.113,
+   35598.683,
+   18
+  ],
+  [
+   57.000071,
+   "rf2",
+   63991.285,
+   14169.009,
+   42305.635,
+   16
+  ],
+  [
+   57.500077,
+   "rf1",
+   59448.484,
+   22506.313,
+   20889.07,
+   17
+  ],
+  [
+   58.000072,
+   "part delete",
+   75017.606,
+   35169.108,
+   33835.733,
+   9
+  ],
+  [
+   58.500082,
+   "rf2",
+   69852.0,
+   20719.876,
+   39811.583,
+   17
+  ],
+  [
+   59.000077,
+   "rf1",
+   53372.183,
+   20894.419,
+   20883.51,
+   16
+  ],
+  [
+   59.500089,
+   "rf2",
+   52357.286,
+   13750.41,
+   31205.42,
+   16
+  ]
+ ],
+ "hits": 333816,
+ "fallbacks": 0,
+ "rep": 2,
+ "per_accel": [
+  {
+   "accel": "tpch:1",
+   "reads": 14117,
+   "read_p50_us": 346.227,
+   "read_p99_us": 16313.455,
+   "read_max_us": 35579.96,
+   "read_mean_us": 784.560641,
+   "store_wait_mean_us": 392.329185,
+   "store_wait_p99_us": 15673.558,
+   "store_wait_max_us": 35179.878,
+   "reads_waited_over_1ms": 389,
+   "maintained_writes": 107,
+   "maintained_by_kind": {
+    "lineitem update": 3,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52
+   },
+   "pre_commit_mean_us": 116.641733,
+   "pre_commit_max_us": 280.484,
+   "install_mean_us": 5013.541425,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:2",
+   "reads": 14117,
+   "read_p50_us": 495.336,
+   "read_p99_us": 1159.219,
+   "read_max_us": 240065.373,
+   "read_mean_us": 947.452538,
+   "store_wait_mean_us": 389.126295,
+   "store_wait_p99_us": 1.692,
+   "store_wait_max_us": 239409.331,
+   "reads_waited_over_1ms": 60,
+   "maintained_writes": 17,
+   "maintained_by_kind": {
+    "part delete": 3,
+    "part insert": 2,
+    "partsupp update": 3,
+    "supplier delete": 3,
+    "supplier insert": 3,
+    "supplier update": 3
+   },
+   "pre_commit_mean_us": 671.627917,
+   "pre_commit_max_us": 19385.34,
+   "install_mean_us": 475.785442,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:3",
+   "reads": 14117,
+   "read_p50_us": 350.448,
+   "read_p99_us": 1746.009,
+   "read_max_us": 32326.449,
+   "read_mean_us": 443.791954,
+   "store_wait_mean_us": 49.483572,
+   "store_wait_p99_us": 1291.948,
+   "store_wait_max_us": 31842.513,
+   "reads_waited_over_1ms": 191,
+   "maintained_writes": 113,
+   "maintained_by_kind": {
+    "customer update": 3,
+    "lineitem update": 3,
+    "orders update": 3,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52
+   },
+   "pre_commit_mean_us": 533.9727,
+   "pre_commit_max_us": 14763.968,
+   "install_mean_us": 129.283667,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:4",
+   "reads": 14117,
+   "read_p50_us": 282.698,
+   "read_p99_us": 520.117,
+   "read_max_us": 28967.091,
+   "read_mean_us": 319.764246,
+   "store_wait_mean_us": 11.255735,
+   "store_wait_p99_us": 1.508,
+   "store_wait_max_us": 28374.086,
+   "reads_waited_over_1ms": 7,
+   "maintained_writes": 110,
+   "maintained_by_kind": {
+    "lineitem update": 3,
+    "orders update": 3,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52
+   },
+   "pre_commit_mean_us": 86.260117,
+   "pre_commit_max_us": 162.297,
+   "install_mean_us": 48.23365,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:5",
+   "reads": 14117,
+   "read_p50_us": 307.73,
+   "read_p99_us": 543.6,
+   "read_max_us": 24477.858,
+   "read_mean_us": 340.285515,
+   "store_wait_mean_us": 7.81231,
+   "store_wait_p99_us": 1.542,
+   "store_wait_max_us": 13553.111,
+   "reads_waited_over_1ms": 12,
+   "maintained_writes": 113,
+   "maintained_by_kind": {
+    "lineitem update": 3,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52,
+    "supplier delete": 3,
+    "supplier insert": 3
+   },
+   "pre_commit_mean_us": 1025.765683,
+   "pre_commit_max_us": 46730.219,
+   "install_mean_us": 255.659567,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:6",
+   "reads": 14117,
+   "read_p50_us": 302.053,
+   "read_p99_us": 518.683,
+   "read_max_us": 29879.29,
+   "read_mean_us": 335.418901,
+   "store_wait_mean_us": 13.613777,
+   "store_wait_p99_us": 1.464,
+   "store_wait_max_us": 29382.9,
+   "reads_waited_over_1ms": 13,
+   "maintained_writes": 107,
+   "maintained_by_kind": {
+    "lineitem update": 3,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52
+   },
+   "pre_commit_mean_us": 32.540225,
+   "pre_commit_max_us": 76.68,
+   "install_mean_us": 80.293675,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:7",
+   "reads": 14117,
+   "read_p50_us": 321.491,
+   "read_p99_us": 617.675,
+   "read_max_us": 138132.069,
+   "read_mean_us": 372.81644,
+   "store_wait_mean_us": 28.492859,
+   "store_wait_p99_us": 1.634,
+   "store_wait_max_us": 137571.649,
+   "reads_waited_over_1ms": 7,
+   "maintained_writes": 111,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52,
+    "supplier delete": 3,
+    "supplier insert": 3
+   },
+   "pre_commit_mean_us": 1137.886575,
+   "pre_commit_max_us": 64125.475,
+   "install_mean_us": 64.193617,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:8",
+   "reads": 14117,
+   "read_p50_us": 259.683,
+   "read_p99_us": 491.932,
+   "read_max_us": 38397.527,
+   "read_mean_us": 292.821564,
+   "store_wait_mean_us": 10.732221,
+   "store_wait_p99_us": 1.491,
+   "store_wait_max_us": 38020.666,
+   "reads_waited_over_1ms": 5,
+   "maintained_writes": 124,
+   "maintained_by_kind": {
+    "customer update": 3,
+    "lineitem update": 3,
+    "part delete": 3,
+    "part insert": 2,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52,
+    "supplier delete": 3,
+    "supplier insert": 3,
+    "supplier update": 3
+   },
+   "pre_commit_mean_us": 863.398692,
+   "pre_commit_max_us": 30077.323,
+   "install_mean_us": 75.187758,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:9",
+   "reads": 14117,
+   "read_p50_us": 282.863,
+   "read_p99_us": 3154.074,
+   "read_max_us": 11739.264,
+   "read_mean_us": 394.669852,
+   "store_wait_mean_us": 64.365591,
+   "store_wait_p99_us": 2674.392,
+   "store_wait_max_us": 10872.18,
+   "reads_waited_over_1ms": 338,
+   "maintained_writes": 124,
+   "maintained_by_kind": {
+    "lineitem update": 3,
+    "orders update": 3,
+    "part delete": 3,
+    "part insert": 2,
+    "partsupp update": 3,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52,
+    "supplier delete": 3,
+    "supplier insert": 3
+   },
+   "pre_commit_mean_us": 9153.503583,
+   "pre_commit_max_us": 84681.167,
+   "install_mean_us": 10559.804725,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:10",
+   "reads": 14117,
+   "read_p50_us": 364.648,
+   "read_p99_us": 1100.244,
+   "read_max_us": 67137.14,
+   "read_mean_us": 471.86103,
+   "store_wait_mean_us": 56.285915,
+   "store_wait_p99_us": 2.02,
+   "store_wait_max_us": 66741.355,
+   "reads_waited_over_1ms": 96,
+   "maintained_writes": 38,
+   "maintained_by_kind": {
+    "customer update": 3,
+    "lineitem update": 1,
+    "rf1": 17,
+    "rf1 large order": 4,
+    "rf2": 13
+   },
+   "pre_commit_mean_us": 1375.24625,
+   "pre_commit_max_us": 5184.784,
+   "install_mean_us": 63.3077,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:11",
+   "reads": 14117,
+   "read_p50_us": 1033.693,
+   "read_p99_us": 3678.124,
+   "read_max_us": 67051.775,
+   "read_mean_us": 1426.846165,
+   "store_wait_mean_us": 74.434923,
+   "store_wait_p99_us": 1.329,
+   "store_wait_max_us": 64132.083,
+   "reads_waited_over_1ms": 47,
+   "maintained_writes": 14,
+   "maintained_by_kind": {
+    "part delete": 3,
+    "part insert": 2,
+    "partsupp update": 3,
+    "supplier delete": 3,
+    "supplier insert": 3
+   },
+   "pre_commit_mean_us": 1149.369983,
+   "pre_commit_max_us": 30122.139,
+   "install_mean_us": 592.021933,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:12",
+   "reads": 14117,
+   "read_p50_us": 317.841,
+   "read_p99_us": 7949.101,
+   "read_max_us": 19523.454,
+   "read_mean_us": 535.303553,
+   "store_wait_mean_us": 167.888346,
+   "store_wait_p99_us": 6675.593,
+   "store_wait_max_us": 19131.018,
+   "reads_waited_over_1ms": 368,
+   "maintained_writes": 105,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52
+   },
+   "pre_commit_mean_us": 92.295142,
+   "pre_commit_max_us": 244.703,
+   "install_mean_us": 4339.206075,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:13",
+   "reads": 14117,
+   "read_p50_us": 240.202,
+   "read_p99_us": 2330.733,
+   "read_max_us": 6280.165,
+   "read_mean_us": 313.929227,
+   "store_wait_mean_us": 39.710224,
+   "store_wait_p99_us": 1636.153,
+   "store_wait_max_us": 5934.128,
+   "reads_waited_over_1ms": 249,
+   "maintained_writes": 107,
+   "maintained_by_kind": {
+    "orders update": 3,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52
+   },
+   "pre_commit_mean_us": 2763.52715,
+   "pre_commit_max_us": 5252.78,
+   "install_mean_us": 1617.6781,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:14",
+   "reads": 14117,
+   "read_p50_us": 241.986,
+   "read_p99_us": 2836.849,
+   "read_max_us": 26920.688,
+   "read_mean_us": 333.565441,
+   "store_wait_mean_us": 57.316201,
+   "store_wait_p99_us": 2403.737,
+   "store_wait_max_us": 26536.842,
+   "reads_waited_over_1ms": 289,
+   "maintained_writes": 112,
+   "maintained_by_kind": {
+    "lineitem update": 3,
+    "part delete": 3,
+    "part insert": 2,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52
+   },
+   "pre_commit_mean_us": 370.521708,
+   "pre_commit_max_us": 13366.106,
+   "install_mean_us": 75.802108,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:15",
+   "reads": 14117,
+   "read_p50_us": 303.908,
+   "read_p99_us": 643.087,
+   "read_max_us": 12600.22,
+   "read_mean_us": 356.789103,
+   "store_wait_mean_us": 14.472293,
+   "store_wait_p99_us": 1.434,
+   "store_wait_max_us": 12056.78,
+   "reads_waited_over_1ms": 20,
+   "maintained_writes": 113,
+   "maintained_by_kind": {
+    "lineitem update": 3,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52,
+    "supplier delete": 3,
+    "supplier insert": 3
+   },
+   "pre_commit_mean_us": 545.111667,
+   "pre_commit_max_us": 1209.771,
+   "install_mean_us": 259.229208,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:16",
+   "reads": 14115,
+   "read_p50_us": 5128.663,
+   "read_p99_us": 20050.563,
+   "read_max_us": 29530.516,
+   "read_mean_us": 6530.8398,
+   "store_wait_mean_us": 4.464154,
+   "store_wait_p99_us": 1.542,
+   "store_wait_max_us": 2201.56,
+   "reads_waited_over_1ms": 28,
+   "maintained_writes": 11,
+   "maintained_by_kind": {
+    "part delete": 3,
+    "part insert": 2,
+    "supplier delete": 3,
+    "supplier insert": 3
+   },
+   "pre_commit_mean_us": 388.325867,
+   "pre_commit_max_us": 11499.74,
+   "install_mean_us": 405.506475,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:17",
+   "reads": 14116,
+   "read_p50_us": 251.178,
+   "read_p99_us": 478.648,
+   "read_max_us": 29902.663,
+   "read_mean_us": 290.995463,
+   "store_wait_mean_us": 18.01374,
+   "store_wait_p99_us": 1.549,
+   "store_wait_max_us": 29619.035,
+   "reads_waited_over_1ms": 14,
+   "maintained_writes": 112,
+   "maintained_by_kind": {
+    "lineitem update": 3,
+    "part delete": 3,
+    "part insert": 2,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52
+   },
+   "pre_commit_mean_us": 402.474233,
+   "pre_commit_max_us": 1016.878,
+   "install_mean_us": 4695.854067,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:18",
+   "reads": 14116,
+   "read_p50_us": 549.706,
+   "read_p99_us": 1322.725,
+   "read_max_us": 4088.875,
+   "read_mean_us": 615.083345,
+   "store_wait_mean_us": 1.642401,
+   "store_wait_p99_us": 1.502,
+   "store_wait_max_us": 2744.434,
+   "reads_waited_over_1ms": 5,
+   "maintained_writes": 13,
+   "maintained_by_kind": {
+    "rf1 large order": 13
+   },
+   "pre_commit_mean_us": 451.077633,
+   "pre_commit_max_us": 4716.29,
+   "install_mean_us": 115.236442,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 4
+  },
+  {
+   "accel": "tpch:19",
+   "reads": 14116,
+   "read_p50_us": 260.895,
+   "read_p99_us": 551.389,
+   "read_max_us": 31829.862,
+   "read_mean_us": 294.083577,
+   "store_wait_mean_us": 7.013084,
+   "store_wait_p99_us": 1.414,
+   "store_wait_max_us": 31541.13,
+   "reads_waited_over_1ms": 23,
+   "maintained_writes": 19,
+   "maintained_by_kind": {
+    "lineitem update": 1,
+    "part delete": 3,
+    "part insert": 2,
+    "rf1": 5,
+    "rf1 large order": 2,
+    "rf2": 6
+   },
+   "pre_commit_mean_us": 18.845125,
+   "pre_commit_max_us": 161.624,
+   "install_mean_us": 7.271117,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:20",
+   "reads": 14113,
+   "read_p50_us": 14892.514,
+   "read_p99_us": 40895.305,
+   "read_max_us": 58472.298,
+   "read_mean_us": 17406.945328,
+   "store_wait_mean_us": 14.384813,
+   "store_wait_p99_us": 1.768,
+   "store_wait_max_us": 39369.466,
+   "reads_waited_over_1ms": 30,
+   "maintained_writes": 124,
+   "maintained_by_kind": {
+    "lineitem update": 3,
+    "part delete": 3,
+    "part insert": 2,
+    "partsupp update": 3,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52,
+    "supplier delete": 3,
+    "supplier insert": 3,
+    "supplier update": 3
+   },
+   "pre_commit_mean_us": 83.076617,
+   "pre_commit_max_us": 479.135,
+   "install_mean_us": 53.166792,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:21",
+   "reads": 14118,
+   "read_p50_us": 325.171,
+   "read_p99_us": 23197.639,
+   "read_max_us": 83780.82,
+   "read_mean_us": 848.156647,
+   "store_wait_mean_us": 466.037566,
+   "store_wait_p99_us": 22317.677,
+   "store_wait_max_us": 83425.308,
+   "reads_waited_over_1ms": 278,
+   "maintained_writes": 110,
+   "maintained_by_kind": {
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52,
+    "supplier delete": 3,
+    "supplier insert": 3
+   },
+   "pre_commit_mean_us": 78.230133,
+   "pre_commit_max_us": 1253.395,
+   "install_mean_us": 67.462183,
+   "answers_changed": 0,
+   "answers_checked": 1,
+   "cases": 8
+  },
+  {
+   "accel": "tpch:22",
+   "reads": 14117,
+   "read_p50_us": 299.882,
+   "read_p99_us": 584.413,
+   "read_max_us": 23600.581,
+   "read_mean_us": 331.578413,
+   "store_wait_mean_us": 6.17298,
+   "store_wait_p99_us": 1.462,
+   "store_wait_max_us": 23074.755,
+   "reads_waited_over_1ms": 4,
+   "maintained_writes": 107,
+   "maintained_by_kind": {
+    "customer update": 3,
+    "rf1": 39,
+    "rf1 large order": 13,
+    "rf2": 52
+   },
+   "pre_commit_mean_us": 134.424158,
+   "pre_commit_max_us": 329.804,
+   "install_mean_us": 77.224925,
+   "answers_changed": 1,
+   "answers_checked": 1,
+   "cases": 8
+  }
+ ],
+ "wall_s": 2006.2,
+ "system": "cpp",
+ "queries": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19,
+  20,
+  21,
+  22
+ ],
+ "rate": "wps2",
+ "seed": 2223425022
+}

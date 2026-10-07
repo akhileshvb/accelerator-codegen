@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "accel": "tpch_q7_vgen",
+ "function": "accel_tpch_q7_vgen",
+ "store": "verus",
+ "build_ms": 69329.5,
+ "speedup_geomean": 280.744,
+ "mismatches": 0,
+ "hits": 48,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'CHINA', 'PERU'",
+   "base_us": 153397.171,
+   "accel_us": 477.379,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'ROMANIA', 'UNITED KINGDOM'",
+   "base_us": 141799.712,
+   "accel_us": 486.955,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'INDONESIA', 'RUSSIA'",
+   "base_us": 136005.761,
+   "accel_us": 518.168,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'ROMANIA', 'MOROCCO'",
+   "base_us": 138632.408,
+   "accel_us": 512.121,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'MOROCCO', 'INDIA'",
+   "base_us": 139102.74,
+   "accel_us": 469.627,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'INDONESIA', 'IRAN'",
+   "base_us": 136658.888,
+   "accel_us": 490.79,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'JAPAN', 'RUSSIA'",
+   "base_us": 137881.046,
+   "accel_us": 507.322,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "'SAUDI ARABIA', 'GERMANY'",
+   "base_us": 137910.184,
+   "accel_us": 532.567,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  }
+ ],
+ "wall_s": 76.6,
+ "query": 7,
+ "system": "verus",
+ "note": ""
+}

@@ -1,0 +1,158 @@
+concurrent q1 base 21:22:57
+  qps 3.4  p50 1170.53ms p99 14031.80ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 15.17ms p99 187.06ms max 232.2ms
+concurrent q1 cpp 21:24:16
+  qps 16737.2  p50 0.44ms p99 0.84ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 10.02ms p99 104.45ms max 124.4ms  invalidating 267  maint {'ApplyDelta': 267, 'none': 58}  hits 1059448 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q1 verus 21:25:29
+  qps 16330.6  p50 0.47ms p99 0.74ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 12.15ms p99 36.49ms max 51.6ms  invalidating 267  maint {'ApplyDelta': 267, 'none': 58}  hits 1033307 fallbacks 0  slowest commit: supplier insert: none
+concurrent q2 base 21:29:04
+  qps 37.0  p50 203.45ms p99 377.70ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 14.34ms p99 121.66ms max 167.3ms
+concurrent q2 cpp 21:30:19
+  qps 11647.3  p50 0.60ms p99 1.34ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 9.25ms p99 60.29ms max 75.6ms  invalidating 43  maint {'ApplyDelta': 43, 'none': 282}  hits 753913 fallbacks 0  slowest commit: supplier insert: ApplyDelta
+concurrent q2 verus 21:31:40
+  qps 85.6  p50 93.43ms p99 98.49ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 6.60ms p99 64.42ms max 78.8ms  invalidating 43  maint {'ApplyDelta': 43, 'none': 282}  hits 5684 fallbacks 0  slowest commit: part insert: ApplyDelta
+concurrent q3 base 21:33:16
+  qps 7.3  p50 837.61ms p99 4617.73ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 19.05ms p99 174.57ms max 184.6ms
+concurrent q3 cpp 21:34:28
+  qps 17881.3  p50 0.44ms p99 0.64ms  writes 0 (0.0/s; 10 incl. warmup) commit p50 0.00ms p99 0.00ms max 95511.8ms  invalidating 9  maint {'ApplyDelta': 8, 'RebuildAll': 1, 'none': 1}  hits 1726856 fallbacks 0  slowest commit: customer update: RebuildAll
+concurrent q3 verus 21:37:20
+  qps 8824.6  p50 0.81ms p99 1.79ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 19.64ms p99 60.69ms max 138.0ms  invalidating 282  maint {'ApplyDelta': 282, 'none': 43}  hits 565332 fallbacks 0  slowest commit: customer update: ApplyDelta
+concurrent q4 base 21:47:33
+  qps 8.0  p50 811.41ms p99 2766.11ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 17.96ms p99 179.37ms max 346.4ms
+concurrent q4 cpp 21:48:49
+  qps 19232.9  p50 0.41ms p99 0.61ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 7.24ms p99 38.74ms max 65.5ms  invalidating 274  maint {'ApplyDelta': 274, 'none': 51}  hits 1232163 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q4 verus 21:50:46
+  qps 17401.5  p50 0.45ms p99 0.67ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 13.37ms p99 38.74ms max 46.8ms  invalidating 274  maint {'ApplyDelta': 274, 'none': 51}  hits 1133747 fallbacks 0  slowest commit: supplier insert: none
+concurrent q5 base 21:53:27
+  qps 6.1  p50 990.28ms p99 5140.83ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 19.65ms p99 149.86ms max 208.5ms
+concurrent q5 cpp 21:54:40
+  qps 17354.9  p50 0.45ms p99 0.69ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 7.78ms p99 56.76ms max 70.7ms  invalidating 281  maint {'ApplyDelta': 281, 'NoOp': 23, 'none': 21}  hits 1114886 fallbacks 0  slowest commit: supplier delete: ApplyDelta
+concurrent q5 verus 21:57:08
+  qps 14308.0  p50 0.54ms p99 0.85ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 11.56ms p99 55.07ms max 72.5ms  invalidating 304  maint {'ApplyDelta': 304, 'none': 21}  hits 929838 fallbacks 0  slowest commit: supplier delete: ApplyDelta
+concurrent q6 base 22:00:03
+  qps 19.1  p50 213.98ms p99 2693.85ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 17.44ms p99 200.02ms max 371.9ms
+concurrent q6 cpp 22:01:18
+  qps 19180.6  p50 0.41ms p99 0.61ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 8.53ms p99 38.55ms max 51.0ms  invalidating 267  maint {'ApplyDelta': 267, 'none': 58}  hits 1246602 fallbacks 0  slowest commit: part insert: none
+concurrent q6 verus 22:02:28
+  qps 10876.7  p50 0.68ms p99 1.26ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 7.23ms p99 34.91ms max 50.0ms  invalidating 267  maint {'ApplyDelta': 267, 'none': 58}  hits 706829 fallbacks 0  slowest commit: supplier insert: none
+concurrent q7 base 22:05:16
+  qps 8.2  p50 687.42ms p99 4445.47ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 18.12ms p99 185.56ms max 371.6ms
+concurrent q7 cpp 22:06:31
+  qps 17972.1  p50 0.44ms p99 0.66ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 8.54ms p99 83.10ms max 98.6ms  invalidating 276  maint {'ApplyDelta': 276, 'NoOp': 28, 'none': 21}  hits 1155533 fallbacks 0  slowest commit: supplier delete: ApplyDelta
+concurrent q7 verus 22:07:50
+  qps 16512.9  p50 0.47ms p99 0.74ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 21.94ms p99 52.00ms max 108.4ms  invalidating 304  maint {'ApplyDelta': 304, 'none': 21}  hits 1066929 fallbacks 0  slowest commit: supplier update: ApplyDelta
+concurrent q8 base 22:10:25
+  qps 7.9  p50 815.08ms p99 2890.12ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 16.44ms p99 178.30ms max 258.1ms
+concurrent q8 cpp 22:11:42
+  qps 19331.7  p50 0.41ms p99 0.64ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 12.66ms p99 54.56ms max 74.8ms  invalidating 311  maint {'ApplyDelta': 311, 'NoOp': 7, 'none': 7}  hits 1244916 fallbacks 0  slowest commit: supplier delete: ApplyDelta
+concurrent q8 verus 22:14:33
+  qps 20252.0  p50 0.38ms p99 0.65ms  writes 230 (3.8/s; 246 incl. warmup) commit p50 14.96ms p99 869.36ms max 1079.9ms  invalidating 241  maint {'ApplyDelta': 241, 'none': 5}  hits 1302486 fallbacks 0  slowest commit: rf2: ApplyDelta
+concurrent q9 base 22:23:47
+  qps 1.6  p50 2919.99ms p99 22685.90ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 16.83ms p99 143.79ms max 223.1ms
+concurrent q9 cpp 22:24:59
+  qps 16686.7  p50 0.45ms p99 0.81ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 35.12ms p99 225.74ms max 418.0ms  invalidating 309  maint {'ApplyDelta': 309, 'NoOp': 8, 'none': 8}  hits 1017712 fallbacks 0  slowest commit: supplier delete: ApplyDelta
+concurrent q9 verus 22:28:01
+  qps 12921.3  p50 0.53ms p99 1.38ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 13.59ms p99 43.88ms max 73.4ms  invalidating 317  maint {'ApplyDelta': 317, 'none': 8}  hits 792029 fallbacks 0  slowest commit: supplier insert: ApplyDelta
+concurrent q10 base 22:29:42
+  qps 4.0  p50 1331.93ms p99 7731.54ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 18.90ms p99 144.83ms max 232.3ms
+concurrent q10 cpp 22:30:59
+  qps 312.6  p50 24.95ms p99 39.35ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 10.66ms p99 40.60ms max 44.9ms  invalidating 121  maint {'ApplyDelta': 121, 'NoOp': 161, 'none': 43}  hits 19756 fallbacks 0  slowest commit: supplier insert: none
+concurrent q10 verus 22:32:31
+  qps 42.8  p50 204.76ms p99 365.19ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 11.35ms p99 27.61ms max 345.4ms  invalidating 282  maint {'ApplyDelta': 282, 'none': 43}  hits 2836 fallbacks 0  slowest commit: rf2: ApplyDelta
+concurrent q11 base 22:43:50
+  qps 52.9  p50 105.58ms p99 637.99ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 16.59ms p99 130.85ms max 200.9ms
+concurrent q11 cpp 22:45:03
+  qps 21704.5  p50 0.36ms p99 0.52ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 10.25ms p99 140.12ms max 146.6ms  invalidating 35  maint {'ApplyDelta': 35, 'NoOp': 8, 'none': 282}  hits 1409381 fallbacks 0  slowest commit: supplier insert: ApplyDelta
+concurrent q11 verus 22:46:39
+  qps 22231.8  p50 0.36ms p99 0.50ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 7.09ms p99 43.96ms max 57.1ms  invalidating 43  maint {'ApplyDelta': 43, 'none': 282}  hits 1445286 fallbacks 0  slowest commit: supplier insert: ApplyDelta
+concurrent q12 base 22:51:37
+  qps 9.3  p50 542.03ms p99 4950.58ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 16.12ms p99 196.04ms max 309.0ms
+concurrent q12 cpp 22:52:52
+  qps 19127.6  p50 0.41ms p99 0.59ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 9.62ms p99 38.87ms max 63.4ms  invalidating 267  maint {'ApplyDelta': 267, 'NoOp': 7, 'none': 51}  hits 1226385 fallbacks 0  slowest commit: supplier insert: none
+concurrent q12 verus 22:54:53
+  qps 15598.9  p50 0.48ms p99 0.80ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 13.97ms p99 36.47ms max 59.6ms  invalidating 274  maint {'ApplyDelta': 274, 'none': 51}  hits 1020203 fallbacks 0  slowest commit: supplier insert: none
+concurrent q13 base 22:56:27
+  qps 2.2  p50 2368.91ms p99 16733.80ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 21.23ms p99 186.16ms max 215.7ms
+concurrent q13 cpp 22:57:38
+  qps 21137.7  p50 0.37ms p99 0.55ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 10.70ms p99 53.70ms max 98.2ms  invalidating 267  maint {'ApplyDelta': 267, 'NoOp': 8, 'none': 50}  hits 1309504 fallbacks 0  slowest commit: supplier update: none
+concurrent q13 verus 22:59:11
+  qps 17858.2  p50 0.43ms p99 0.72ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 6.77ms p99 39.46ms max 84.0ms  invalidating 275  maint {'ApplyDelta': 275, 'none': 50}  hits 1113379 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q14 base 23:00:35
+  qps 11.1  p50 537.47ms p99 3046.36ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 18.88ms p99 184.39ms max 258.1ms
+concurrent q14 cpp 23:01:45
+  qps 22424.1  p50 0.35ms p99 0.51ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 7.56ms p99 38.34ms max 66.9ms  invalidating 281  maint {'ApplyDelta': 281, 'none': 44}  hits 1441539 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q14 verus 23:03:01
+  qps 16442.6  p50 0.39ms p99 3.16ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 12.66ms p99 31.16ms max 72.1ms  invalidating 281  maint {'ApplyDelta': 281, 'none': 44}  hits 1070438 fallbacks 0  slowest commit: supplier insert: none
+concurrent q15 base 23:18:17
+  qps 9.7  p50 762.01ms p99 1693.82ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 22.94ms p99 207.77ms max 250.1ms
+concurrent q15 cpp 23:19:34
+  qps 13782.3  p50 0.47ms p99 3.37ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 9.96ms p99 35.41ms max 87.6ms  invalidating 281  maint {'ApplyDelta': 281, 'NoOp': 8, 'none': 36}  hits 870860 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q15 verus 23:21:17
+  qps 31.1  p50 232.37ms p99 471.18ms  writes 286 (4.8/s; 311 incl. warmup) commit p50 8.25ms p99 69.17ms max 3383.3ms  invalidating 277  maint {'ApplyDelta': 277, 'none': 34}  hits 2068 fallbacks 0  slowest commit: rf2: ApplyDelta
+concurrent q16 base 23:26:07
+  qps 9.3  p50 689.42ms p99 2496.14ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 21.88ms p99 137.80ms max 206.5ms
+concurrent q16 cpp 23:27:20
+  qps 482.1  p50 12.98ms p99 61.80ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 8.76ms p99 100.24ms max 119.0ms  invalidating 28  maint {'ApplyDelta': 28, 'NoOp': 15, 'none': 282}  hits 30961 fallbacks 0  slowest commit: supplier insert: ApplyDelta
+concurrent q16 verus 23:28:47
+  qps 82.1  p50 85.22ms p99 294.21ms  writes 0 (0.0/s; 15 incl. warmup) commit p50 0.00ms p99 0.00ms max 525948.0ms  invalidating 2  maint {'ApplyDelta': 1, 'RebuildAll': 1, 'none': 13}  hits 40553 fallbacks 0  slowest commit: part delete: RebuildAll
+concurrent q17 base 23:41:51
+  qps 0.7  p50 5504.83ms p99 16458.90ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 27.17ms p99 325.72ms max 503.8ms
+concurrent q17 cpp 23:43:29
+  qps 20553.2  p50 0.36ms p99 0.68ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 14.39ms p99 160.59ms max 334.5ms  invalidating 281  maint {'ApplyDelta': 281, 'none': 44}  hits 1235155 fallbacks 0  slowest commit: supplier insert: none
+concurrent q17 verus 23:46:49
+  qps 11228.9  p50 0.40ms p99 5.60ms  writes 286 (4.8/s; 289 incl. warmup) commit p50 105.62ms p99 596.84ms max 2492.7ms  invalidating 251  maint {'ApplyDelta': 251, 'none': 38}  hits 674327 fallbacks 0  slowest commit: rf2: ApplyDelta
+concurrent q18 base 23:51:56
+  qps 1.4  p50 5338.60ms p99 6342.15ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 20.03ms p99 193.10ms max 418.2ms
+concurrent q18 cpp 23:53:16
+  qps 7191.7  p50 0.84ms p99 4.37ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 10.88ms p99 61.90ms max 154.7ms  invalidating 0  maint {'NoOp': 282, 'none': 43}  hits 431518 fallbacks 0  slowest commit: supplier insert: none
+concurrent q18 verus 23:54:36
+  qps 6163.3  p50 1.09ms p99 4.44ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 10.45ms p99 34.37ms max 49.9ms  invalidating 282  maint {'ApplyDelta': 282, 'none': 43}  hits 412718 fallbacks 0  slowest commit: supplier insert: none
+concurrent q19 base 00:01:01
+  qps 3.8  p50 1407.03ms p99 12506.60ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 24.97ms p99 188.85ms max 256.0ms
+concurrent q19 cpp 00:02:18
+  qps 15683.2  p50 0.41ms p99 3.26ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 8.99ms p99 41.53ms max 79.9ms  invalidating 46  maint {'ApplyDelta': 46, 'NoOp': 235, 'none': 44}  hits 996592 fallbacks 0  slowest commit: rf1: NoOp
+concurrent q19 verus 00:03:41
+  qps 11455.0  p50 0.58ms p99 3.48ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 9.16ms p99 37.49ms max 72.8ms  invalidating 281  maint {'ApplyDelta': 281, 'none': 44}  hits 735365 fallbacks 0  slowest commit: supplier insert: none
+concurrent q20 base 00:05:03
+  qps 3.1  p50 1538.73ms p99 9956.44ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 22.87ms p99 199.84ms max 476.2ms
+concurrent q20 cpp 00:06:28
+  qps 573.6  p50 12.69ms p99 31.71ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 7.57ms p99 36.49ms max 77.4ms  invalidating 310  maint {'ApplyDelta': 310, 'none': 15}  hits 36109 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q20 verus 00:08:17
+  qps 228.6  p50 32.02ms p99 91.82ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 11.23ms p99 76.89ms max 101.5ms  invalidating 310  maint {'ApplyDelta': 310, 'none': 15}  hits 14648 fallbacks 0  slowest commit: rf2: ApplyDelta
+concurrent q21 base 00:09:42
+  qps 2.0  p50 3381.09ms p99 7435.83ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 18.89ms p99 194.61ms max 202.2ms
+concurrent q21 cpp 00:11:00
+  qps 16382.4  p50 0.47ms p99 0.84ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 8.97ms p99 62.42ms max 79.2ms  invalidating 274  maint {'ApplyDelta': 274, 'NoOp': 22, 'none': 29}  hits 1013328 fallbacks 0  slowest commit: rf2: ApplyDelta
+concurrent q21 verus 00:12:25
+  qps 3254.2  p50 2.22ms p99 5.49ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 11.12ms p99 32.99ms max 51.3ms  invalidating 296  maint {'ApplyDelta': 296, 'none': 29}  hits 200598 fallbacks 0  slowest commit: rf1: ApplyDelta
+concurrent q22 base 00:14:19
+  qps 12.9  p50 551.30ms p99 1359.16ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 18.00ms p99 138.67ms max 202.7ms
+concurrent q22 cpp 00:15:35
+  qps 18249.2  p50 0.42ms p99 0.92ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 7.12ms p99 31.05ms max 38.6ms  invalidating 268  maint {'ApplyDelta': 268, 'NoOp': 7, 'none': 50}  hits 1187567 fallbacks 0  slowest commit: rf2: ApplyDelta
+concurrent q22 verus 00:16:53
+  qps 10276.8  p50 0.73ms p99 1.32ms  writes 300 (5.0/s; 325 incl. warmup) commit p50 7.37ms p99 36.64ms max 57.2ms  invalidating 275  maint {'ApplyDelta': 275, 'none': 50}  hits 661872 fallbacks 0  slowest commit: rf1: ApplyDelta
+
+concurrent readers + writer: reader QPS (p99 ms), commit p50 ms (slowest commit s), invalidating writes (whole run)
+   q         base qps          cpp qps        verus qps     cpp commit   verus commit  cpp inv  verus inv
+   1      3 (14031.8)      16737 (0.8)      16331 (0.7)    10.02 (0.1)    12.15 (0.1)      267        267
+   2       37 (377.7)      11647 (1.3)        86 (98.5)     9.25 (0.1)     6.60 (0.1)       43         43
+   3       7 (4617.7)      17881 (0.6)       8825 (1.8)    0.00 (95.5)    19.64 (0.1)        9        282
+   4       8 (2766.1)      19233 (0.6)      17402 (0.7)     7.24 (0.1)    13.37 (0.0)      274        274
+   5       6 (5140.8)      17355 (0.7)      14308 (0.9)     7.78 (0.1)    11.56 (0.1)      281        304
+   6      19 (2693.8)      19181 (0.6)      10877 (1.3)     8.53 (0.1)     7.23 (0.0)      267        267
+   7       8 (4445.5)      17972 (0.7)      16513 (0.7)     8.54 (0.1)    21.94 (0.1)      276        304
+   8       8 (2890.1)      19332 (0.6)      20252 (0.6)    12.66 (0.1)    14.96 (1.1)      311        241
+   9      2 (22685.9)      16687 (0.8)      12921 (1.4)    35.12 (0.4)    13.59 (0.1)      309        317
+  10       4 (7731.5)       313 (39.4)       43 (365.2)    10.66 (0.0)    11.35 (0.3)      121        282
+  11       53 (638.0)      21704 (0.5)      22232 (0.5)    10.25 (0.1)     7.09 (0.1)       35         43
+  12       9 (4950.6)      19128 (0.6)      15599 (0.8)     9.62 (0.1)    13.97 (0.1)      267        274
+  13      2 (16733.8)      21138 (0.5)      17858 (0.7)    10.70 (0.1)     6.77 (0.1)      267        275
+  14      11 (3046.4)      22424 (0.5)      16443 (3.2)     7.56 (0.1)    12.66 (0.1)      281        281
+  15      10 (1693.8)      13782 (3.4)       31 (471.2)     9.96 (0.1)     8.25 (3.4)      281        277
+  16       9 (2496.1)       482 (61.8)       82 (294.2)     8.76 (0.1)   0.00 (525.9)       28          2
+  17      1 (16458.9)      20553 (0.7)      11229 (5.6)    14.39 (0.3)   105.62 (2.5)      281        251
+  18       1 (6342.1)       7192 (4.4)       6163 (4.4)    10.88 (0.2)    10.45 (0.0)        0        282
+  19      4 (12506.6)      15683 (3.3)      11455 (3.5)     8.99 (0.1)     9.16 (0.1)       46        281
+  20       3 (9956.4)       574 (31.7)       229 (91.8)     7.57 (0.1)    11.23 (0.1)      310        310
+  21       2 (7435.8)      16382 (0.8)       3254 (5.5)     8.97 (0.1)    11.12 (0.1)      274        296
+  22      13 (1359.2)      18249 (0.9)      10277 (1.3)     7.12 (0.0)     7.37 (0.1)      268        275
+NOT INVALIDATED (no write made the accelerator maintain): q18 cpp

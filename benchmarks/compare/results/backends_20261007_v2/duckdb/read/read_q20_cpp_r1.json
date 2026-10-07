@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:20",
+ "function": "accel_tpch_q20_aux",
+ "store": "cpp",
+ "build_ms": 18860.7,
+ "state_mb": 2102.09,
+ "rss_mb_settled_before": 61.6953,
+ "rss_mb_settled_after": 2163.79,
+ "rss_mb_peak_build": 8792.88,
+ "speedup_geomean": 101.36620050824887,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "DATE '1995-01-01', 'dodger%', 'KENYA'",
+   "base_us": 273962.914,
+   "accel_us": 2701.195,
+   "base_rows": 3550,
+   "accel_rows": 3550,
+   "match": true
+  },
+  {
+   "args": "DATE '1993-01-01', 'violet%', 'INDONESIA'",
+   "base_us": 278853.264,
+   "accel_us": 2663.889,
+   "base_rows": 3602,
+   "accel_rows": 3602,
+   "match": true
+  },
+  {
+   "args": "DATE '1997-01-01', 'misty%', 'BRAZIL'",
+   "base_us": 273102.629,
+   "accel_us": 2741.822,
+   "base_rows": 3567,
+   "accel_rows": 3567,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'misty%', 'CANADA'",
+   "base_us": 275055.646,
+   "accel_us": 2709.555,
+   "base_rows": 3587,
+   "accel_rows": 3587,
+   "match": true
+  },
+  {
+   "args": "DATE '1997-01-01', 'spring%', 'INDIA'",
+   "base_us": 271673.423,
+   "accel_us": 2884.586,
+   "base_rows": 3670,
+   "accel_rows": 3670,
+   "match": true
+  },
+  {
+   "args": "DATE '1994-01-01', 'purple%', 'ROMANIA'",
+   "base_us": 274684.304,
+   "accel_us": 2659.931,
+   "base_rows": 3597,
+   "accel_rows": 3597,
+   "match": true
+  },
+  {
+   "args": "DATE '1993-01-01', 'floral%', 'ROMANIA'",
+   "base_us": 276453.516,
+   "accel_us": 2628.536,
+   "base_rows": 3606,
+   "accel_rows": 3606,
+   "match": true
+  },
+  {
+   "args": "DATE '1995-01-01', 'dodger%', 'RUSSIA'",
+   "base_us": 276771.401,
+   "accel_us": 2726.565,
+   "base_rows": 3569,
+   "accel_rows": 3569,
+   "match": true
+  }
+ ],
+ "wall_s": 59.9,
+ "query": 20,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 2762249456,
+ "note": "",
+ "counts_cover_all_draws": true
+}

@@ -1,0 +1,3 @@
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare read /flash1/akhilvb/tpch/tpch_sf20.duckdb tpch_q11_vgen tpch_q11_vgen /flash1/akhilvb/tpch/work/cases_q11_verus.tsv 5
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare read /flash1/akhilvb/tpch/tpch_sf20.duckdb tpch_q15_vgen tpch_q15_vgen /flash1/akhilvb/tpch/work/cases_q15_verus.tsv 5
+$ /home/akhilvb/accelerator-codegen/build-verus-duckdb/aux_compare read /flash1/akhilvb/tpch/tpch_sf20.duckdb tpch_q18_vgen tpch_q18_vgen /flash1/akhilvb/tpch/work/cases_q18_verus.tsv 5

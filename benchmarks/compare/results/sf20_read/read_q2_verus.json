@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "accel": "tpch_q2_vgen",
+ "function": "accel_tpch_q2_vgen",
+ "store": "verus",
+ "build_ms": 21994,
+ "speedup_geomean": 2.14172,
+ "mismatches": 0,
+ "hits": 48,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "48, 'AMERICA'",
+   "base_us": 186511.783,
+   "accel_us": 83820.38,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "31, 'AMERICA'",
+   "base_us": 174518.538,
+   "accel_us": 69459.841,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "26, 'MIDDLE EAST'",
+   "base_us": 160991.883,
+   "accel_us": 84301.708,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "24, 'AMERICA'",
+   "base_us": 163740.453,
+   "accel_us": 70906.991,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "14, 'AFRICA'",
+   "base_us": 166228.847,
+   "accel_us": 69847.698,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "16, 'AMERICA'",
+   "base_us": 159134.93,
+   "accel_us": 85137.334,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "18, 'EUROPE'",
+   "base_us": 164643.444,
+   "accel_us": 82150.706,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  },
+  {
+   "args": "17, 'AMERICA'",
+   "base_us": 173216.026,
+   "accel_us": 86005.403,
+   "base_rows": 100,
+   "accel_rows": 100,
+   "match": true
+  }
+ ],
+ "wall_s": 34.1,
+ "query": 2,
+ "system": "verus",
+ "note": "type pattern fixed to '%BRASS' (Verus literal)"
+}

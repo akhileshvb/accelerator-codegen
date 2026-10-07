@@ -1,0 +1,23 @@
+{
+ "error": "exit -15 (see /home/akhilvb/accelerator-codegen/benchmarks/compare/results/final_20261005_010400/multi_verus_rerun/multi.log)",
+ "system": "verus",
+ "queries": [
+  1,
+  2,
+  4,
+  5,
+  6,
+  7,
+  8,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  18,
+  19,
+  21,
+  22
+ ]
+}

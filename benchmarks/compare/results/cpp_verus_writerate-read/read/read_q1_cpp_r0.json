@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:1",
+ "function": "accel_tpch_q1_aux",
+ "store": "cpp",
+ "build_ms": 425.25,
+ "state_mb": 454.023,
+ "rss_mb_settled_before": 61.6133,
+ "rss_mb_settled_after": 515.637,
+ "rss_mb_peak_build": 1521.07,
+ "speedup_geomean": 572.7517409038805,
+ "mismatches": 0,
+ "hits": 144,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "113",
+   "base_us": 285469.313,
+   "accel_us": 511.337,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "82",
+   "base_us": 297275.43,
+   "accel_us": 493.96,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "95",
+   "base_us": 297084.232,
+   "accel_us": 546.17,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "89",
+   "base_us": 296987.228,
+   "accel_us": 487.12,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "102",
+   "base_us": 295390.088,
+   "accel_us": 510.249,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "61",
+   "base_us": 297436.462,
+   "accel_us": 510.92,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "111",
+   "base_us": 295812.106,
+   "accel_us": 553.262,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  },
+  {
+   "args": "70",
+   "base_us": 297553.576,
+   "accel_us": 515.878,
+   "base_rows": 4,
+   "accel_rows": 4,
+   "match": true
+  }
+ ],
+ "wall_s": 43.7,
+ "query": 1,
+ "system": "cpp",
+ "rep": 0,
+ "seed": 3605954648,
+ "note": "",
+ "counts_cover_all_draws": true
+}

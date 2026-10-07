@@ -1,0 +1,146 @@
+diff --git a/benchmarks/compare/aux_compare.cpp b/benchmarks/compare/aux_compare.cpp
+index 9e0599d..847b358 100644
+--- a/benchmarks/compare/aux_compare.cpp
++++ b/benchmarks/compare/aux_compare.cpp
+@@ -767,6 +767,26 @@ std::string KindsJson(const std::map<std::string, uint64_t> &m) {
+   return j + "}";
+ }
+ 
++// What the maintenance policy chose per commit for one accelerator (DuckdbRuntime::WriteAllTiming::action: NoOp,
++// ApplyDelta, RebuildPartition, RebuildAll, InvalidateAndRebuildOnRead), with the time its PRE_COMMIT took.
++struct ActionStat {
++  uint64_t n = 0;
++  double total_us = 0, max_us = 0;
++};
++std::string ActionsJson(const std::map<std::string, ActionStat> &m) {
++  std::string j = "{";
++  for (const auto &[k, v] : m)
++    j += (j.size() > 1 ? "," : "") + Json(k) + ":{\"n\":" + std::to_string(v.n) + ",\"mean_us\":" +
++         std::to_string(v.n ? v.total_us / static_cast<double>(v.n) : 0.0) + ",\"max_us\":" + std::to_string(v.max_us) + "}";
++  return j + "}";
++}
++std::string ActionsByKindJson(const std::map<std::string, std::map<std::string, uint64_t>> &m) {
++  std::string j = "{";
++  for (const auto &[kind, actions] : m)
++    j += (j.size() > 1 ? "," : "") + Json(kind) + ":" + KindsJson(actions);
++  return j + "}";
++}
++
+ double Mean(const std::vector<double> &v) {
+   double sum = 0;
+   for (const double x : v)
+@@ -937,6 +957,8 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
+   std::vector<double> pre_commit_sum(specs.size(), 0), install_sum(specs.size(), 0), pre_commit_max(specs.size(), 0);
+   std::vector<uint64_t> maintained(specs.size(), 0);
+   std::vector<std::map<std::string, uint64_t>> maintained_by_kind(specs.size()); // write kind -> writes
++  std::vector<std::map<std::string, ActionStat>> action_stats(specs.size());     // maintenance action -> count, time
++  std::vector<std::map<std::string, std::map<std::string, uint64_t>>> actions_by_kind(specs.size()); // kind -> action -> n
+   std::map<std::string, uint64_t> accels_maintained_hist; // writes by how many accelerators they maintained
+   uint64_t writes_maintaining_none = 0;
+   double max_commit_us = 0;
+@@ -990,6 +1012,13 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
+         int n = 0;
+         for (std::size_t q = 0; q < specs.size(); ++q) {
+           const auto &a = timing.action[q];
++          if (a != "none") {
++            auto &st = action_stats[q][a];
++            ++st.n;
++            st.total_us += timing.pre_commit_us[q];
++            st.max_us = std::max(st.max_us, timing.pre_commit_us[q]);
++            actions_by_kind[q][kind][a]++;
++          }
+           if (a != "none" && a != "NoOp") {
+             ++maintained[q];
+             maintained_by_kind[q][kind]++;
+@@ -1051,6 +1080,8 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
+            ",\"reads_waited_over_1ms\":" + std::to_string(waited) +
+            (accel ? ",\"maintained_writes\":" + std::to_string(maintained[q]) +
+                         ",\"maintained_by_kind\":" + KindsJson(maintained_by_kind[q]) +
++                        ",\"actions\":" + ActionsJson(action_stats[q]) +
++                        ",\"actions_by_kind\":" + ActionsByKindJson(actions_by_kind[q]) +
+                         ",\"pre_commit_mean_us\":" + std::to_string(pre_commit_sum[q] / n_measured) +
+                         ",\"pre_commit_max_us\":" + std::to_string(pre_commit_max[q]) +
+                         ",\"install_mean_us\":" + std::to_string(install_sum[q] / n_measured)
+diff --git a/benchmarks/compare/run_backends.sh b/benchmarks/compare/run_backends.sh
+index 4f78e65..e90aaf1 100755
+--- a/benchmarks/compare/run_backends.sh
++++ b/benchmarks/compare/run_backends.sh
+@@ -30,7 +30,7 @@
+ # Env:  SF (20)  REPEATS (3)  READERS (8)  BACKENDS  INTERVAL_MULT ("1 2 4")  N_COMMITS (4)
+ #   RF_DIR (/flash1/akhilvb/tpch/refresh_sf<SF>)   the update sets; BATCH_ORDERS (default: whole sets) uses only the
+ #   first B orders of each set
+-#   duckdb:    DB (/flash1/akhilvb/tpch/tpch_sf20.duckdb)  WORK  BIN (build-verus-duckdb/aux_compare)  CAP (96G)
++#   duckdb:    DB (../accelerator-codegen-duckdb/tpch_sf20.duckdb)  WORK (/flash1/akhilvb/tpch/work: the per-run copies)  BIN (build-verus-duckdb/aux_compare)  CAP (96G)
+ #   postgres:  PG_PORT (5434)  PG_DB (accel_tpch_sf20)    PGUSER / PGPASSWORD
+ #   mysql:     MYSQL_TCP_PORT (3307)  MYSQL_DB (tpch_sf20)  MYSQL_USER / MYSQL_PWD
+ #   postgres/mysql: QUERY_TIMEOUT (1800 s per baseline query; timeouts are reported, not fatal)
+@@ -45,7 +45,7 @@ SF=${SF:-20}
+ REPEATS=${REPEATS:-3}
+ READERS=${READERS:-8}
+ PYTHON=${PYTHON:-python3}
+-DB=${DB:-/flash1/akhilvb/tpch/tpch_sf20.duckdb}
++DB=${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}
+ BIN=${BIN:-$ROOT/build-verus-duckdb/aux_compare}
+ CAP=${CAP:-96G}   # a commit that rebuilds state keeps old and new copies alive; 64G may be too tight
+ PG_DB=${PG_DB:-accel_tpch_sf20}
+diff --git a/benchmarks/compare/run_compare.py b/benchmarks/compare/run_compare.py
+index d7c8700..8632319 100644
+--- a/benchmarks/compare/run_compare.py
++++ b/benchmarks/compare/run_compare.py
+@@ -31,7 +31,7 @@ their answers are compared as sets and may report a row-count mismatch.
+   python3 benchmarks/compare/run_compare.py concurrent --readers 8 --seconds 60 --wps 5
+   python3 benchmarks/compare/run_compare.py multi --readers 8 --seconds 120 --wps 5
+   python3 benchmarks/compare/run_compare.py summary <out_dir>
+-Env defaults: DB=/flash1/akhilvb/tpch/tpch_sf20.duckdb  WORK=/flash1/akhilvb/tpch/work
++Env defaults: DB=<repo>/../accelerator-codegen-duckdb/tpch_sf20.duckdb  WORK=/flash1/akhilvb/tpch/work (each run works on a copy of DB in WORK)
+ """
+ import argparse
+ import json
+@@ -418,7 +418,7 @@ def main():
+     sub = ap.add_subparsers(dest="mode", required=True)
+     for mode in ("read", "concurrent", "multi"):
+         p = sub.add_parser(mode)
+-        p.add_argument("--db", default=os.environ.get("DB", "/flash1/akhilvb/tpch/tpch_sf20.duckdb"))
++        p.add_argument("--db", default=os.environ.get("DB", os.path.join(ROOT, "..", "accelerator-codegen-duckdb", "tpch_sf20.duckdb")))
+         p.add_argument("--work", default=os.environ.get("WORK", "/flash1/akhilvb/tpch/work"))
+         p.add_argument("--out", default=os.path.join(ROOT, "benchmarks", "compare", "results",
+                                                      f"{mode}_{time.strftime('%Y%m%d_%H%M%S')}"))
+diff --git a/scripts/gen_tpch_refresh_sets.sh b/scripts/gen_tpch_refresh_sets.sh
+index 86d962c..1241622 100755
+--- a/scripts/gen_tpch_refresh_sets.sh
++++ b/scripts/gen_tpch_refresh_sets.sh
+@@ -20,7 +20,7 @@ SF=${1:-20}
+ N=${2:-40}
+ OUT=${3:-/flash1/akhilvb/tpch/refresh_sf${SF}}
+ DBGEN_SRC=${DBGEN_SRC:-/flash1/akhilvb/tpch/dbgen_src}
+-DB=${DB:-/flash1/akhilvb/tpch/tpch_sf${SF}.duckdb}
++DB=${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf${SF}.duckdb}
+ PYTHON=${PYTHON:-python3}
+ 
+ [ -f "$DBGEN_SRC/dists.dss" ] || { echo "no dbgen source tree at $DBGEN_SRC (set DBGEN_SRC)" >&2; exit 1; }
+diff --git a/scripts/setup_sf20_sql_backends.sh b/scripts/setup_sf20_sql_backends.sh
+index 7236afd..eb9fbde 100755
+--- a/scripts/setup_sf20_sql_backends.sh
++++ b/scripts/setup_sf20_sql_backends.sh
+@@ -29,7 +29,7 @@
+ set -euo pipefail
+ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ MODE=${1:?export | postgres | mysql}
+-SRC=${SRC:-/flash1/akhilvb/tpch/tpch_sf20.duckdb}
++SRC=${SRC:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}
+ STAGE=${STAGE:-/flash1/akhilvb/tpch/csv_sf20}
+ DUCKDB_BIN=${DUCKDB_BIN:-$ROOT/../accelerator-codegen-duckdb/build/release/duckdb}
+ PYTHON=${PYTHON:-python3}
+diff --git a/scripts/validate_tpch_refresh_sets.py b/scripts/validate_tpch_refresh_sets.py
+index fed3756..bd768b5 100755
+--- a/scripts/validate_tpch_refresh_sets.py
++++ b/scripts/validate_tpch_refresh_sets.py
+@@ -3,7 +3,7 @@
+ the delete keys exist, the insert keys do not, no key is deleted or inserted twice across sets, and every set has
+ the same size.  Exit status 1 if any check fails.  Needs the duckdb module.
+ 
+-  python3 scripts/validate_tpch_refresh_sets.py --db /flash1/akhilvb/tpch/tpch_sf20.duckdb --dir /flash1/akhilvb/tpch/refresh_sf20 --sets 40
++  python3 scripts/validate_tpch_refresh_sets.py --db ../accelerator-codegen-duckdb/tpch_sf20.duckdb --dir /flash1/akhilvb/tpch/refresh_sf20 --sets 40
+ """
+ import argparse
+ import sys

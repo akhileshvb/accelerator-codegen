@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch_q11_vgen",
+ "function": "accel_tpch_q11_vgen",
+ "store": "verus",
+ "build_ms": 197565,
+ "state_mb": 2957.88,
+ "rss_mb_settled_before": 63.3633,
+ "rss_mb_settled_after": 3021.24,
+ "rss_mb_peak_build": 3523.89,
+ "speedup_geomean": 11.194660793354126,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'RUSSIA', 0.000005",
+   "base_us": 67722.532,
+   "accel_us": 6723.94,
+   "base_rows": 19752,
+   "accel_rows": 19752,
+   "match": true
+  },
+  {
+   "args": "'CANADA', 0.000005",
+   "base_us": 72731.558,
+   "accel_us": 6002.668,
+   "base_rows": 17826,
+   "accel_rows": 17826,
+   "match": true
+  },
+  {
+   "args": "'MOROCCO', 0.000005",
+   "base_us": 67273.677,
+   "accel_us": 6074.761,
+   "base_rows": 18062,
+   "accel_rows": 18062,
+   "match": true
+  },
+  {
+   "args": "'CHINA', 0.000005",
+   "base_us": 68534.409,
+   "accel_us": 6474.343,
+   "base_rows": 18913,
+   "accel_rows": 18913,
+   "match": true
+  },
+  {
+   "args": "'IRAN', 0.000005",
+   "base_us": 66904.89,
+   "accel_us": 6118.978,
+   "base_rows": 17955,
+   "accel_rows": 17955,
+   "match": true
+  },
+  {
+   "args": "'VIETNAM', 0.000005",
+   "base_us": 69644.003,
+   "accel_us": 6171.046,
+   "base_rows": 18812,
+   "accel_rows": 18812,
+   "match": true
+  },
+  {
+   "args": "'GERMANY', 0.000005",
+   "base_us": 70368.271,
+   "accel_us": 5832.989,
+   "base_rows": 17880,
+   "accel_rows": 17880,
+   "match": true
+  },
+  {
+   "args": "'EGYPT', 0.000005",
+   "base_us": 67680.294,
+   "accel_us": 5843.61,
+   "base_rows": 17693,
+   "accel_rows": 17693,
+   "match": true
+  }
+ ],
+ "wall_s": 211.7,
+ "query": 11,
+ "system": "verus",
+ "rep": 2,
+ "seed": 3605954650,
+ "note": "",
+ "counts_cover_all_draws": true
+}

@@ -1,0 +1,88 @@
+{
+ "mode": "read",
+ "accel": "tpch:11",
+ "function": "accel_tpch_q11_aux",
+ "store": "cpp",
+ "build_ms": 20185.9,
+ "state_mb": 2268.8,
+ "rss_mb_settled_before": 61.6445,
+ "rss_mb_settled_after": 2330.45,
+ "rss_mb_peak_build": 2374.39,
+ "speedup_geomean": 50.843328383205446,
+ "mismatches": 0,
+ "hits": 0,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'BRAZIL', 0.000005",
+   "base_us": 68419.187,
+   "accel_us": 1507.89,
+   "base_rows": 18885,
+   "accel_rows": 18885,
+   "match": true
+  },
+  {
+   "args": "'IRAN', 0.000005",
+   "base_us": 74918.888,
+   "accel_us": 1620.701,
+   "base_rows": 17955,
+   "accel_rows": 17955,
+   "match": true
+  },
+  {
+   "args": "'IRAQ', 0.000005",
+   "base_us": 67834.712,
+   "accel_us": 1081.282,
+   "base_rows": 18199,
+   "accel_rows": 18199,
+   "match": true
+  },
+  {
+   "args": "'ARGENTINA', 0.000005",
+   "base_us": 67349.754,
+   "accel_us": 1089.565,
+   "base_rows": 18615,
+   "accel_rows": 18615,
+   "match": true
+  },
+  {
+   "args": "'INDIA', 0.000005",
+   "base_us": 65487.935,
+   "accel_us": 1062.726,
+   "base_rows": 17673,
+   "accel_rows": 17673,
+   "match": true
+  },
+  {
+   "args": "'PERU', 0.000005",
+   "base_us": 69848.431,
+   "accel_us": 1076.666,
+   "base_rows": 18283,
+   "accel_rows": 18283,
+   "match": true
+  },
+  {
+   "args": "'VIETNAM', 0.000005",
+   "base_us": 49812.072,
+   "accel_us": 1566.703,
+   "base_rows": 18812,
+   "accel_rows": 18812,
+   "match": true
+  },
+  {
+   "args": "'JAPAN', 0.000005",
+   "base_us": 74950.011,
+   "accel_us": 1735.226,
+   "base_rows": 18284,
+   "accel_rows": 18284,
+   "match": true
+  }
+ ],
+ "wall_s": 36.1,
+ "query": 11,
+ "system": "cpp",
+ "rep": 1,
+ "seed": 2762249456,
+ "note": "",
+ "counts_cover_all_draws": true
+}

@@ -1,0 +1,25 @@
+{
+ "mode": "read",
+ "accel": "tpch:9",
+ "function": "accel_tpch_q9_aux",
+ "store": "cpp",
+ "build_ms": 120184,
+ "speedup_geomean": 935.184,
+ "mismatches": 0,
+ "hits": 6,
+ "fallbacks": 0,
+ "cases": [
+  {
+   "args": "'green'",
+   "base_us": 543328.66,
+   "accel_us": 580.986,
+   "base_rows": 175,
+   "accel_rows": 175,
+   "match": true
+  }
+ ],
+ "wall_s": 127.6,
+ "query": 9,
+ "system": "cpp",
+ "note": "color fixed to 'green' (Verus literal)"
+}

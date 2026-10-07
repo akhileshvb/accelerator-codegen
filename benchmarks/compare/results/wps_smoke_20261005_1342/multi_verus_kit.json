@@ -1,0 +1,24 @@
+{
+ "error": "exit -15 (see benchmarks/compare/results/wps_smoke_20261005_1342/multi.log)",
+ "system": "verus_kit",
+ "queries": [
+  1,
+  2,
+  4,
+  5,
+  6,
+  7,
+  8,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  18,
+  19,
+  21,
+  22
+ ],
+ "rate": "wps40"
+}

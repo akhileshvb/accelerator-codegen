@@ -1,0 +1,53 @@
+{
+ "mode": "concurrent",
+ "phase": "accel",
+ "accel": "tpch_q16_vgen",
+ "store": "verus",
+ "readers": 8,
+ "seconds": 60,
+ "build_ms": 247678,
+ "reads": 4925,
+ "qps": 82.0833,
+ "read_p50_us": 85220.6,
+ "read_p95_us": 162260,
+ "read_p99_us": 294215,
+ "read_errors": 0,
+ "read_error_example": "",
+ "writes_per_sec_target": 5,
+ "writes": 0,
+ "writes_per_sec": 0,
+ "commit_p50_us": 0,
+ "commit_p99_us": 0,
+ "writes_total": 15,
+ "max_commit_us": 525948000.0,
+ "write_errors": 0,
+ "write_error_example": "",
+ "write_kinds": {
+  "customer update": 1,
+  "part delete": 1,
+  "rf1": 6,
+  "rf2": 6,
+  "supplier update": 1
+ },
+ "maintenance": {
+  "ApplyDelta": 1,
+  "RebuildAll": 1,
+  "none": 13
+ },
+ "maintenance_by_kind": {
+  "customer update: none": 1,
+  "part delete: RebuildAll": 1,
+  "rf1: none": 6,
+  "rf2: none": 6,
+  "supplier update: ApplyDelta": 1
+ },
+ "slowest_commit": "part delete: RebuildAll",
+ "invalidating_writes": 2,
+ "answers_changed": 0,
+ "cases": 8,
+ "hits": 40553,
+ "fallbacks": 0,
+ "wall_s": 781.6,
+ "query": 16,
+ "system": "verus"
+}
