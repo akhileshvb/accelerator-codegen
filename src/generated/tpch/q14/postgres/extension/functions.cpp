@@ -10,13 +10,6 @@ extern "C" {
 
 extern "C" {
 
-PG_FUNCTION_INFO_V1(AcceleratorCodegenBaseTpchQ14);
-Datum AcceleratorCodegenBaseTpchQ14(PG_FUNCTION_ARGS) {
-  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresQuery(
-      "tpch", 14, accelerator_codegen::aux_state::engine::postgres::kPostgresVariantBase, fcinfo);
-  PG_RETURN_NULL();
-}
-
 PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ14);
 Datum AcceleratorCodegenAuxTpchQ14(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresQuery(
@@ -33,12 +26,6 @@ namespace {
 constexpr char kFunctionsSql[] = R"SQL(
 DROP TYPE IF EXISTS accel_tpch_q14_row CASCADE;
 CREATE TYPE accel_tpch_q14_row AS (promo_revenue double precision);
-
-DROP FUNCTION IF EXISTS accel_tpch_q14 CASCADE;
-CREATE FUNCTION accel_tpch_q14(date)
-RETURNS SETOF accel_tpch_q14_row
-AS 'accelerator_codegen_pg', 'AcceleratorCodegenBaseTpchQ14'
-LANGUAGE C;
 
 DROP FUNCTION IF EXISTS accel_tpch_q14_aux CASCADE;
 CREATE FUNCTION accel_tpch_q14_aux(date)

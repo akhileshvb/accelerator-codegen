@@ -10,13 +10,6 @@ extern "C" {
 
 extern "C" {
 
-PG_FUNCTION_INFO_V1(AcceleratorCodegenBaseTpchQ15);
-Datum AcceleratorCodegenBaseTpchQ15(PG_FUNCTION_ARGS) {
-  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresQuery(
-      "tpch", 15, accelerator_codegen::aux_state::engine::postgres::kPostgresVariantBase, fcinfo);
-  PG_RETURN_NULL();
-}
-
 PG_FUNCTION_INFO_V1(AcceleratorCodegenAuxTpchQ15);
 Datum AcceleratorCodegenAuxTpchQ15(PG_FUNCTION_ARGS) {
   accelerator_codegen::aux_state::engine::postgres::ExecutePostgresQuery(
@@ -31,18 +24,6 @@ namespace {
 
 // Executed by accel_postgres_register_queries().
 constexpr char kFunctionsSql[] = R"SQL(
-DROP FUNCTION IF EXISTS accel_tpch_q15 CASCADE;
-CREATE FUNCTION accel_tpch_q15(date)
-RETURNS TABLE (
-  s_suppkey bigint,
-  s_name text,
-  s_address text,
-  s_phone text,
-  total_revenue numeric
-)
-AS 'accelerator_codegen_pg', 'AcceleratorCodegenBaseTpchQ15'
-LANGUAGE C;
-
 DROP FUNCTION IF EXISTS accel_tpch_q15_aux CASCADE;
 CREATE FUNCTION accel_tpch_q15_aux(date)
 RETURNS TABLE (

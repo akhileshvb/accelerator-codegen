@@ -17,13 +17,6 @@ Datum AcceleratorCodegenAuxTpchQ9(PG_FUNCTION_ARGS) {
   PG_RETURN_NULL();
 }
 
-PG_FUNCTION_INFO_V1(AcceleratorCodegenBaseTpchQ9);
-Datum AcceleratorCodegenBaseTpchQ9(PG_FUNCTION_ARGS) {
-  accelerator_codegen::aux_state::engine::postgres::ExecutePostgresQuery(
-      "tpch", 9, accelerator_codegen::aux_state::engine::postgres::kPostgresVariantBase, fcinfo);
-  PG_RETURN_NULL();
-}
-
 } // extern "C"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
@@ -31,16 +24,6 @@ namespace {
 
 // Executed by accel_postgres_register_queries().
 constexpr char kFunctionsSql[] = R"SQL(
-DROP FUNCTION IF EXISTS accel_tpch_q9 CASCADE;
-CREATE FUNCTION accel_tpch_q9(text)
-RETURNS TABLE (
-  nation text,
-  o_year bigint,
-  sum_profit numeric
-)
-AS 'accelerator_codegen_pg', 'AcceleratorCodegenBaseTpchQ9'
-LANGUAGE C;
-
 DROP FUNCTION IF EXISTS accel_tpch_q9_aux CASCADE;
 CREATE FUNCTION accel_tpch_q9_aux(text)
 RETURNS TABLE (
