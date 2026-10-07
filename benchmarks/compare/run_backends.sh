@@ -4,6 +4,7 @@
 #   bash benchmarks/compare/run_backends.sh read      <out_root>   # 1. read-only, single-threaded
 #   bash benchmarks/compare/run_backends.sh calibrate <out_root>   # writer-only: how long does one RF commit take?
 #   bash benchmarks/compare/run_backends.sh rf        <out_root>   # 2. concurrent RF writer + readers
+#   bash benchmarks/compare/run_backends.sh cycle     <out_root>   # 3. per-query workload speedup per write interval (DuckDB)
 #   bash benchmarks/compare/run_backends.sh summary   <out_root>
 #
 # BACKENDS="duckdb postgres mysql" (default all three; they run one after another, never together).
@@ -24,13 +25,20 @@
 #             (INTERVAL_MULT).  Base DBMS (no capture) vs accelerator on the same schedule; N_COMMITS (4) RF
 #             commits are measured per point.
 #
+# cycle:      (DuckDB only) the overnight experiment: per query, ONE accelerator alone in its process; the TPC-H refresh
+#             functions applied one commit at a time from the real update sets (PAIRS pairs of RF1 / RF2, default 4), a
+#             burst of BURST reads (default 200) after every commit, on a base run (plain SQL, DuckDB reads) and an accelerator
+#             run (maintenance by the policy with the query's SF20 cost model), per repetition.  plot_cycle.py then computes
+#             each query's workload speedup at CYCLE_INTERVALS (seconds, default "300 120 60") and writes
+#             <out>/duckdb/cycle/cycle_speedup.{png,csv}.  DUCKDB_THREADS=N: DuckDB (and Q13) use N threads.
+#
 # Every experiment repeats with fresh TPC-H parameter draws (REPEATS, default 3; the same draw for base and
 # accel within a repetition; seeds in <dir>/seeds.json); report median [min-max].
 #
 # Env:  SF (20)  REPEATS (3)  READERS (8)  BACKENDS  INTERVAL_MULT ("1 2 4")  N_COMMITS (4)
 #   RF_DIR (/flash1/akhilvb/tpch/refresh_sf<SF>)   the update sets; BATCH_ORDERS (default: whole sets) uses only the
 #   first B orders of each set
-#   duckdb:    DB (/flash1/akhilvb/tpch/tpch_sf20.duckdb)  WORK  BIN (build-verus-duckdb/aux_compare)  CAP (96G)
+#   duckdb:    DB (../accelerator-codegen-duckdb/tpch_sf20.duckdb)  WORK (/flash1/akhilvb/tpch/work: the per-run copies)  BIN (build-verus-duckdb/aux_compare)  CAP (96G)
 #   postgres:  PG_PORT (5434)  PG_DB (accel_tpch_sf20)    PGUSER / PGPASSWORD
 #   mysql:     MYSQL_TCP_PORT (3307)  MYSQL_DB (tpch_sf20)  MYSQL_USER / MYSQL_PWD
 #   postgres/mysql: QUERY_TIMEOUT (1800 s per baseline query; timeouts are reported, not fatal)
@@ -38,14 +46,14 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
-MODE=${1:?mode: read | calibrate | rf | summary}
+MODE=${1:?mode: read | calibrate | rf | cycle | summary}
 OUT=${2:?out root, e.g. benchmarks/compare/results/backends_$(date +%Y%m%d)}
 BACKENDS=${BACKENDS:-duckdb postgres mysql}
 SF=${SF:-20}
 REPEATS=${REPEATS:-3}
 READERS=${READERS:-8}
 PYTHON=${PYTHON:-python3}
-DB=${DB:-/flash1/akhilvb/tpch/tpch_sf20.duckdb}
+DB=${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}
 BIN=${BIN:-$ROOT/build-verus-duckdb/aux_compare}
 CAP=${CAP:-96G}   # a commit that rebuilds state keeps old and new copies alive; 64G may be too tight
 PG_DB=${PG_DB:-accel_tpch_sf20}
@@ -56,6 +64,7 @@ RF_DIR=${RF_DIR:-/flash1/akhilvb/tpch/refresh_sf${SF}}
 BATCH_ORDERS=${BATCH_ORDERS:-}   # empty: whole update sets (1500 x SF orders)
 INTERVAL_MULT=${INTERVAL_MULT:-"1 2 4"}
 N_COMMITS=${N_COMMITS:-4}
+PAIRS_CYC=${PAIRS:-4}   # RF1+RF2 pairs per cycle run: enough commits to include periodic compactions (Q20: every 3-4)
 # readers' queries (RF1/RF2 change orders and lineitem, which all but Q2, Q11, Q16 read; the point writes
 # after each RF commit cover those three)
 QUERIES=${QUERIES:-"$(seq -s ' ' 1 22)"}
@@ -151,6 +160,16 @@ rf)
     done
   done
   ;;
+cycle)
+  need_rf_sets
+  D=$OUT/duckdb/cycle; mkdir -p "$D"; meta "$D" "$@"
+  echo "=== cycle duckdb: $(echo $QUERIES | wc -w) queries x $REPEATS repetition(s), $PAIRS_CYC RF pairs, burst ${BURST:-200} $(date +%T)"
+  capped $PYTHON benchmarks/compare/run_compare.py cycle --db "$DB" --sf "$SF" --bin "$BIN" --out "$D" --queries "$QUERIES" \
+    --repeats "$REPEATS" --sets 8 --pairs "$PAIRS_CYC" --burst "${BURST:-200}" --rf-dir "$RF_DIR" \
+    ${BATCH_ORDERS:+--batch-orders "$BATCH_ORDERS"} ${DUCKDB_THREADS:+--duckdb-threads "$DUCKDB_THREADS"} \
+    --duckdb-memory "${DUCKDB_MEM:-8GB}" 2>&1 | tee "$D/run.log"
+  $PYTHON benchmarks/compare/plot_cycle.py "$D" --intervals ${CYCLE_INTERVALS:-300 120 60} 2>&1 | tee "$D/plot.log"
+  ;;
 summary)
   for b in $BACKENDS; do
     [ -d "$OUT/$b/read" ] && [ "$b" = duckdb ] && $PYTHON benchmarks/compare/run_compare.py summary "$OUT/$b/read"
@@ -165,5 +184,5 @@ summary)
     done
   done
   ;;
-*) echo "mode: read | calibrate | rf | summary"; exit 2 ;;
+*) echo "mode: read | calibrate | rf | cycle | summary"; exit 2 ;;
 esac

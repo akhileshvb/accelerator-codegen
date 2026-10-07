@@ -120,6 +120,17 @@ public:
                                        const LineitemConsumer &) {
     (void)custkey; return false;
   }
+  // The current lineitem rows of every order in `orderkeys`, in as few scans as
+  // the source can manage (a refresh touches tens of thousands of orders, and
+  // one query per order is what made the delta cost as much as a rebuild).
+  // The default asks one order at a time.
+  virtual bool ScanLineitemsOfOrders(const std::vector<int64_t> &orderkeys,
+                                     const LineitemConsumer &consumer) {
+    for (const int64_t orderkey : orderkeys)
+      if (!ScanLineitemsOfOrder(orderkey, consumer))
+        return false;
+    return true;
+  }
 };
 
 // ── Cube key ────────────────────────────────────────────────────────────────

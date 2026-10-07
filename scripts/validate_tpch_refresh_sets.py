@@ -3,7 +3,7 @@
 the delete keys exist, the insert keys do not, no key is deleted or inserted twice across sets, and every set has
 the same size.  Exit status 1 if any check fails.  Needs the duckdb module.
 
-  python3 scripts/validate_tpch_refresh_sets.py --db /flash1/akhilvb/tpch/tpch_sf20.duckdb --dir /flash1/akhilvb/tpch/refresh_sf20 --sets 40
+  python3 scripts/validate_tpch_refresh_sets.py --db ../accelerator-codegen-duckdb/tpch_sf20.duckdb --dir /flash1/akhilvb/tpch/refresh_sf20 --sets 40
 """
 import argparse
 import sys

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_calibration.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 #include "accelerator_codegen/stateful/core/aux_store_diagnostics.hpp"
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/core/aux_txn_buffer.hpp"
@@ -123,6 +124,7 @@ public:
     double statement_us = 0;               // the write's statements
     std::vector<double> pre_commit_us;     // each runtime's PRE_COMMIT (its maintenance)
     std::vector<std::string> action;       // each runtime's staged maintenance action
+    std::vector<core::MaintenanceDecisionLogEntry> decision; // and the policy's decision: predicted cost of each option
     double engine_commit_us = 0;           // the engine's commit
     std::vector<double> commit_us;         // each runtime's COMMIT (its install)
   };

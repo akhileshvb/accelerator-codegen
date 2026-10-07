@@ -20,7 +20,7 @@ SF=${1:-20}
 N=${2:-40}
 OUT=${3:-/flash1/akhilvb/tpch/refresh_sf${SF}}
 DBGEN_SRC=${DBGEN_SRC:-/flash1/akhilvb/tpch/dbgen_src}
-DB=${DB:-/flash1/akhilvb/tpch/tpch_sf${SF}.duckdb}
+DB=${DB:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf${SF}.duckdb}
 PYTHON=${PYTHON:-python3}
 
 [ -f "$DBGEN_SRC/dists.dss" ] || { echo "no dbgen source tree at $DBGEN_SRC (set DBGEN_SRC)" >&2; exit 1; }

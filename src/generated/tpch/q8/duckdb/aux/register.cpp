@@ -263,6 +263,20 @@ struct TpchQ8Scan : TpchQ8InitialScan {
         "FROM lineitem l WHERE l.l_orderkey = " + std::to_string(orderkey),
         consumer);
   }
+  bool ScanLineitemsOfOrders(const std::vector<int64_t> &orderkeys,
+                             const LineitemConsumer &consumer) override {
+    // One scan per chunk of keys instead of one query per order.
+    constexpr std::size_t kChunk = 10000;
+    for (std::size_t begin = 0; begin < orderkeys.size(); begin += kChunk) {
+      const std::size_t end = std::min(orderkeys.size(), begin + kChunk);
+      std::string list;
+      for (std::size_t i = begin; i < end; ++i)
+        list += (i > begin ? "," : "") + std::to_string(orderkeys[i]);
+      ScanLineitemsWhere("FROM lineitem l WHERE l.l_orderkey IN (" + list + ")",
+                         consumer);
+    }
+    return true;
+  }
   bool ScanLineitemsOfSupplier(int64_t suppkey,
                                const LineitemConsumer &consumer) override {
     return ScanLineitemsWhere(

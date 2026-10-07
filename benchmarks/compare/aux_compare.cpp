@@ -534,11 +534,22 @@ private:
   uint64_t seq = 0, rf = 0, rf1 = 0, dim = 0;
 };
 
+// ACCEL_COMPARE_DUCKDB_THREADS=N: DuckDB's thread count (default: its own, all cores).  A process-wide setting: it
+// limits the baseline queries and also the base-table scans the accelerators' builds and maintenance run through
+// DuckDB.  (The accelerators' own read kernels are single-threaded, except Q13's; ACCEL_Q13_THREADS caps that.)
+void ApplyDuckdbThreads(duckdb::Connection &c) {
+  if (const char *n = std::getenv("ACCEL_COMPARE_DUCKDB_THREADS"); n && *n) {
+    auto r = c.Query(std::string("SET threads = ") + n);
+    Require(r && !r->HasError(), r ? r->GetError() : "SET threads");
+  }
+}
+
 int Read(const std::string &path, const std::string &id, const std::string &base_kit,
          const std::vector<Case> &cases, int reps) {
   duckdb::DuckDB db(path);
   duckdb::Connection wc(db), qc(db);
   accelerator_codegen::RegisterAcceleratorFunctions(qc);
+  ApplyDuckdbThreads(qc);
   const auto *glue = kit::Find(base_kit);
   Require(glue != nullptr, "no baseline kit " + base_kit);
   const auto fn = FunctionFor(id);
@@ -598,6 +609,7 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
   duckdb::DuckDB db(path);
   duckdb::Connection wc(db), qc(db);
   accelerator_codegen::RegisterAcceleratorFunctions(qc);
+  ApplyDuckdbThreads(qc);
   const auto *glue = kit::Find(base_kit);
   Require(glue != nullptr, "no baseline kit " + base_kit);
   // answers before the run (to count the cases whose answer the writes change)
@@ -767,6 +779,44 @@ std::string KindsJson(const std::map<std::string, uint64_t> &m) {
   return j + "}";
 }
 
+// What the maintenance policy chose per commit for one accelerator (DuckdbRuntime::WriteAllTiming::action: NoOp,
+// ApplyDelta, RebuildPartition, RebuildAll, InvalidateAndRebuildOnRead), with the time its PRE_COMMIT took.
+struct ActionStat {
+  uint64_t n = 0;
+  double total_us = 0, max_us = 0;
+};
+std::string ActionsJson(const std::map<std::string, ActionStat> &m) {
+  std::string j = "{";
+  for (const auto &[k, v] : m)
+    j += (j.size() > 1 ? "," : "") + Json(k) + ":{\"n\":" + std::to_string(v.n) + ",\"mean_us\":" +
+         std::to_string(v.n ? v.total_us / static_cast<double>(v.n) : 0.0) + ",\"max_us\":" + std::to_string(v.max_us) + "}";
+  return j + "}";
+}
+// The policy's decision per accelerator and write kind, means over the writes: what it saw (rows, partitions), what it
+// predicted each option would cost, and what the maintenance actually took.
+struct DecisionStat {
+  uint64_t n = 0;
+  double rows = 0, partitions = 0, pred_delta = 0, pred_partition = 0, pred_all = 0, pred_invalidate = 0, actual = 0;
+};
+std::string DecisionsJson(const std::map<std::string, DecisionStat> &m) {
+  std::string j = "{";
+  for (const auto &[kind, d] : m) {
+    const double n = static_cast<double>(std::max<uint64_t>(d.n, 1));
+    j += (j.size() > 1 ? "," : "") + Json(kind) + ":{\"n\":" + std::to_string(d.n) + ",\"rows_touched\":" + std::to_string(d.rows / n) +
+         ",\"partitions\":" + std::to_string(d.partitions / n) + ",\"pred_apply_delta_us\":" + std::to_string(d.pred_delta / n) +
+         ",\"pred_rebuild_partition_us\":" + std::to_string(d.pred_partition / n) + ",\"pred_rebuild_all_us\":" +
+         std::to_string(d.pred_all / n) + ",\"pred_invalidate_us\":" + std::to_string(d.pred_invalidate / n) +
+         ",\"actual_us\":" + std::to_string(d.actual / n) + "}";
+  }
+  return j + "}";
+}
+std::string ActionsByKindJson(const std::map<std::string, std::map<std::string, uint64_t>> &m) {
+  std::string j = "{";
+  for (const auto &[kind, actions] : m)
+    j += (j.size() > 1 ? "," : "") + Json(kind) + ":" + KindsJson(actions);
+  return j + "}";
+}
+
 double Mean(const std::vector<double> &v) {
   double sum = 0;
   for (const double x : v)
@@ -810,6 +860,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
   duckdb::DuckDB db(path);
   duckdb::Connection wc(db), qc(db);
   accelerator_codegen::RegisterAcceleratorFunctions(qc);
+  ApplyDuckdbThreads(qc);
   // ACCEL_COMPARE_DUCKDB_MEMORY: cap DuckDB's buffer cache (default: 80% of
   // RAM), so many accelerators' state and the cache fit in one process
   if (const char *limit = std::getenv("ACCEL_COMPARE_DUCKDB_MEMORY")) {
@@ -937,6 +988,9 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
   std::vector<double> pre_commit_sum(specs.size(), 0), install_sum(specs.size(), 0), pre_commit_max(specs.size(), 0);
   std::vector<uint64_t> maintained(specs.size(), 0);
   std::vector<std::map<std::string, uint64_t>> maintained_by_kind(specs.size()); // write kind -> writes
+  std::vector<std::map<std::string, ActionStat>> action_stats(specs.size());     // maintenance action -> count, time
+  std::vector<std::map<std::string, DecisionStat>> decision_stats(specs.size()); // write kind -> the policy's decision
+  std::vector<std::map<std::string, std::map<std::string, uint64_t>>> actions_by_kind(specs.size()); // kind -> action -> n
   std::map<std::string, uint64_t> accels_maintained_hist; // writes by how many accelerators they maintained
   uint64_t writes_maintaining_none = 0;
   double max_commit_us = 0;
@@ -990,6 +1044,25 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
         int n = 0;
         for (std::size_t q = 0; q < specs.size(); ++q) {
           const auto &a = timing.action[q];
+          if (a != "none") {
+            auto &st = action_stats[q][a];
+            ++st.n;
+            st.total_us += timing.pre_commit_us[q];
+            st.max_us = std::max(st.max_us, timing.pre_commit_us[q]);
+            actions_by_kind[q][kind][a]++;
+            if (a != "NoOp") {
+              const auto &d = timing.decision[q];
+              auto &ds = decision_stats[q][kind];
+              ++ds.n;
+              ds.rows += static_cast<double>(d.rows_touched);
+              ds.partitions += static_cast<double>(d.affected_partition_count);
+              ds.pred_delta += d.predicted_apply_delta_us;
+              ds.pred_partition += d.predicted_rebuild_partition_us;
+              ds.pred_all += d.predicted_rebuild_all_us;
+              ds.pred_invalidate += d.predicted_invalidate_us;
+              ds.actual += timing.pre_commit_us[q];
+            }
+          }
           if (a != "none" && a != "NoOp") {
             ++maintained[q];
             maintained_by_kind[q][kind]++;
@@ -1051,6 +1124,9 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
            ",\"reads_waited_over_1ms\":" + std::to_string(waited) +
            (accel ? ",\"maintained_writes\":" + std::to_string(maintained[q]) +
                         ",\"maintained_by_kind\":" + KindsJson(maintained_by_kind[q]) +
+                        ",\"actions\":" + ActionsJson(action_stats[q]) +
+                        ",\"actions_by_kind\":" + ActionsByKindJson(actions_by_kind[q]) +
+                        ",\"decisions_by_kind\":" + DecisionsJson(decision_stats[q]) +
                         ",\"pre_commit_mean_us\":" + std::to_string(pre_commit_sum[q] / n_measured) +
                         ",\"pre_commit_max_us\":" + std::to_string(pre_commit_max[q]) +
                         ",\"install_mean_us\":" + std::to_string(install_sum[q] / n_measured)
@@ -1102,6 +1178,122 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
 
 } // namespace
 
+// aux_compare cycle <db> <accel_id> <baseline_kit> <cases.tsv> <phase> <pairs> <burst> [seed=1]
+// One accelerator alone in the process (as in `read`) and the TPC-H refresh functions applied one commit at a time:
+// RF1 of update set 1, RF2 of set 1, RF1 of set 2, ... (<pairs> pairs), each followed by the point writes of the concurrent run
+// (ACCEL_RF_DIR and ACCEL_DIM_AFTER_RF=1 are required: a slot = an RF commit + its point writes).
+// After a first burst before any write, and after every commit, <burst> reads of the query (the cases in turn) are
+// timed.  phase=base: plain SQL commits, baseline reads.  phase=accel: the commits go through the accelerator's runtime
+// (capture, maintenance, install), the reads call the accelerator, and after every burst the first case is also
+// answered by the baseline and compared.  Per commit: its time (and where it went), the action the policy chose with
+// the cost it predicted for each option, the first read after it and the burst's latencies.  Nothing here knows an
+// interval: the speedup at any write interval is computed from these pieces (plot_cycle.py).
+int Cycle(const std::string &path, const std::string &id, const std::string &base_kit, const std::vector<Case> &cases,
+          const std::string &phase, int pairs, int burst, uint64_t seed) {
+  Require(phase == "accel" || phase == "base", "phase must be accel or base");
+  const bool accel = phase == "accel";
+  duckdb::DuckDB db(path);
+  duckdb::Connection wc(db), qc(db);
+  accelerator_codegen::RegisterAcceleratorFunctions(qc);
+  ApplyDuckdbThreads(qc);
+  if (const char *limit = std::getenv("ACCEL_COMPARE_DUCKDB_MEMORY"); limit && *limit) {
+    auto r = qc.Query(std::string("SET memory_limit = '") + limit + "'");
+    Require(r && !r->HasError(), r ? r->GetError() : "memory_limit");
+  }
+  const auto *glue = kit::Find(base_kit);
+  Require(glue != nullptr, "no baseline kit " + base_kit);
+  const auto fn = accel ? FunctionFor(id) : std::string();
+  Writes writes(qc, static_cast<std::size_t>(2 * pairs + 4), seed, RfBatchOrders());
+  Require(writes.UsesSets(), "cycle needs the TPC-H update sets (ACCEL_RF_DIR)");
+  std::unique_ptr<DuckdbRuntime> rt;
+  double build_ms = 0, rss_after = 0;
+  if (accel) {
+    rt = std::make_unique<DuckdbRuntime>(wc, EntryFor(id), 10.0);
+    rt->EnableMutationCapture();
+    const auto b0 = Clock::now();
+    rt->Build();
+    build_ms = Us(b0, Clock::now()) / 1000;
+    rss_after = RssMb().second;
+  }
+  std::size_t next_case = 0;
+  const auto run_burst = [&](std::vector<double> &lat, int count) {
+    for (int j = 0; j < count; ++j) {
+      const auto &cs = cases[next_case++ % cases.size()];
+      const auto t0 = Clock::now();
+      if (accel)
+        RunAccel(qc, fn, cs.accel_args);
+      else
+        RunBaseline(qc, glue->query_sql, cs.base_args);
+      lat.push_back(Us(t0, Clock::now()));
+    }
+  };
+  const auto burst_json = [](const std::vector<double> &lat) {
+    return "\"first_read_us\":" + std::to_string(lat.empty() ? 0.0 : lat.front()) + ",\"read_p50_us\":" +
+           std::to_string(Percentile(lat, 0.5)) + ",\"read_p99_us\":" + std::to_string(Percentile(lat, 0.99)) +
+           ",\"read_mean_us\":" + std::to_string(Mean(lat)) + ",\"reads\":" + std::to_string(lat.size());
+  };
+  std::vector<double> pre;
+  run_burst(pre, burst);
+  std::string out = "{\"mode\":\"cycle\",\"phase\":" + Json(phase) + ",\"accel\":" + Json(id) + ",\"build_ms\":" +
+                    std::to_string(build_ms) + ",\"rss_mb_after_build\":" + std::to_string(rss_after) + ",\"pairs\":" +
+                    std::to_string(pairs) + ",\"burst\":" + std::to_string(burst) + "," + writes.RfInfoJson() +
+                    ",\"before\":{" + burst_json(pre) + "},\"writes\":[";
+  int mismatches = 0;
+  // A slot is one refresh: an RF commit followed by the point writes of ACCEL_DIM_AFTER_RF (the same stream as the concurrent
+  // run).  2 * pairs slots: RF1 + its point writes, RF2 + its point writes, ...  A slot ends when the next write is an RF.
+  for (int slots = 0, w = 0; slots < 2 * pairs; ++w) {
+    const auto [kind, sql] = writes.Next();
+    DuckdbRuntime::WriteAllTiming timing;
+    const auto t0 = Clock::now();
+    if (accel) {
+      DuckdbRuntime::ApplyWriteAll({rt.get()}, sql, &timing);
+    } else {
+      auto res = wc.Query("BEGIN; " + sql + "; COMMIT;");
+      if (res && res->HasError()) {
+        wc.Query("ROLLBACK");
+        throw std::runtime_error(res->GetError());
+      }
+    }
+    const double commit_us = Us(t0, Clock::now());
+    const bool is_rf = kind.rfind("rf", 0) == 0;
+    const bool slot_end = writes.NextIsPaced();
+    // reads after every commit (a lazily rebuilt state shows on the first); a full burst after an RF commit, 3 after a
+    // point write (the baseline: none, its reads are slow and a point write does not change them)
+    std::vector<double> lat;
+    run_burst(lat, is_rf ? burst : (accel ? std::min(burst, 3) : 0));
+    std::string extra;
+    if (accel) {
+      const auto &d = timing.decision.empty() ? core::MaintenanceDecisionLogEntry{} : timing.decision[0];
+      if (is_rf || slot_end) { // answers against the baseline after the RF commit and at the end of every slot
+        auto base = RunBaseline(qc, glue->query_sql, cases[0].base_args);
+        auto acc = RunAccel(qc, fn, cases[0].accel_args);
+        auto bs = Canon(*base), as = Canon(*acc);
+        std::sort(bs.begin(), bs.end());
+        std::sort(as.begin(), as.end());
+        const bool match = bs == as;
+        mismatches += match ? 0 : 1;
+        extra += ",\"match\":" + std::string(match ? "true" : "false");
+      }
+      extra += ",\"statement_us\":" + std::to_string(timing.statement_us) +
+               ",\"pre_commit_us\":" + std::to_string(timing.pre_commit_us.empty() ? 0.0 : timing.pre_commit_us[0]) +
+               ",\"engine_commit_us\":" + std::to_string(timing.engine_commit_us) + ",\"install_us\":" +
+               std::to_string(timing.commit_us.empty() ? 0.0 : timing.commit_us[0]) + ",\"action\":" +
+               Json(timing.action.empty() ? "none" : timing.action[0]) + ",\"rows_touched\":" + std::to_string(d.rows_touched) +
+               ",\"partitions\":" + std::to_string(d.affected_partition_count) + ",\"pred_apply_delta_us\":" +
+               std::to_string(d.predicted_apply_delta_us) + ",\"pred_rebuild_partition_us\":" +
+               std::to_string(d.predicted_rebuild_partition_us) + ",\"pred_rebuild_all_us\":" + std::to_string(d.predicted_rebuild_all_us) +
+               ",\"pred_invalidate_us\":" + std::to_string(d.predicted_invalidate_us);
+    }
+    out += std::string(w ? "," : "") + "{\"kind\":" + Json(kind) + ",\"slot_end\":" + (slot_end ? "true" : "false") +
+           ",\"commit_us\":" + std::to_string(commit_us) + "," + burst_json(lat) + extra + "}";
+    if (slot_end)
+      ++slots;
+  }
+  out += "],\"mismatches\":" + std::to_string(mismatches) + "}";
+  std::cout << out << std::endl;
+  return 0;
+}
+
 int main(int argc, char **argv) {
   try {
     Require(argc >= 6, "usage: aux_compare read|concurrent|multi <db> ...");
@@ -1121,6 +1313,11 @@ int main(int argc, char **argv) {
     const auto cases = ReadCases(argv[5]);
     if (mode == "read")
       return Read(argv[2], argv[3], argv[4], cases, argc > 6 ? std::stoi(argv[6]) : 5);
+    if (mode == "cycle") {
+      Require(argc >= 9, "cycle: <db> <accel_id> <baseline_kit> <cases.tsv> <phase> <pairs> <burst> [seed]");
+      return Cycle(argv[2], argv[3], argv[4], cases, argv[6], std::stoi(argv[7]), std::stoi(argv[8]),
+                   argc > 9 ? std::stoull(argv[9]) : 1);
+    }
     if (mode == "concurrent") {
       Require(argc >= 10, "concurrent: <phase> <readers> <seconds> <writes_per_sec> [seed] [warmup_sec]");
       return Concurrent(argv[2], argv[3], argv[4], cases, argv[6], std::stoi(argv[7]), std::stod(argv[8]),

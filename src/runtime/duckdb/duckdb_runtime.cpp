@@ -885,6 +885,7 @@ void DuckdbRuntime::ApplyWriteAll(const std::vector<DuckdbRuntime *> &runtimes, 
         timing->pre_commit_us.push_back(us(t0, TimingClock::now()));
         const auto d = core::LastMaintenanceDecision();
         timing->action.push_back(d ? maintenance::MaintenanceActionName(d->staged_action) : "none");
+        timing->decision.push_back(d ? *d : core::MaintenanceDecisionLogEntry{});
       }
     }
     t0 = TimingClock::now();

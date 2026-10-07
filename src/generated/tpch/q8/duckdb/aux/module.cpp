@@ -1152,6 +1152,42 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
   if (any_heavy && !initial_scan)
     return Rebuild();
   for (int kind = 0; kind < 4; ++kind) {
+    if (kind == 3) {
+      // Orders: every heavy order's lineitems in one batched scan, not one query
+      // per order.  The cells are order-independent sums; the per-order row
+      // counts are settled after the scan (they only touch dims fields the
+      // cell lookups do not read).
+      std::vector<int64_t> keys;
+      keys.reserve(heavy_orders.size());
+      for (const int64_t key : heavy_orders)
+        if (!scan_skip.count(key))
+          keys.push_back(key);
+      if (keys.empty())
+        continue;
+      std::unordered_map<int64_t, std::size_t> rows_of;
+      rows_of.reserve(keys.size());
+      const auto consume_order = [&](const TpchQ8LineitemInput &row) {
+        ++rows_of[row.orderkey];
+        const int64_t vol =
+            ComputeVolumeRaw(row.extendedprice_raw, row.discount_raw);
+        AddCell(false, row.partkey, row.orderkey, row.suppkey, vol);
+        AddCell(true, row.partkey, row.orderkey, row.suppkey, -vol);
+      };
+      if (!initial_scan->ScanLineitemsOfOrders(keys, consume_order) || failed)
+        return Rebuild();
+      for (const int64_t key : keys) {
+        const auto it = rows_of.find(key);
+        const std::size_t rows = it == rows_of.end() ? 0 : it->second;
+        if (rows > 0 && !dims->order_info.Find(key)) {
+          // Deleted while lineitems remain: remember so a re-insert is scanned.
+          EnsureMutableDims();
+          mutable_dims->deleted_orders.insert(key);
+        } else if (dims->order_info.Find(key)) {
+          scanned_lines[key] = static_cast<int32_t>(rows);
+        }
+      }
+      continue;
+    }
     const std::size_t n = kind < 3 ? heavy[kind].size() : heavy_orders.size();
     for (std::size_t ci = 0; ci < n; ++ci) {
       const int64_t key = kind < 3 ? heavy[kind][ci].key : heavy_orders[ci];

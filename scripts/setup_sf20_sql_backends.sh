@@ -29,7 +29,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE=${1:?export | postgres | mysql}
-SRC=${SRC:-/flash1/akhilvb/tpch/tpch_sf20.duckdb}
+SRC=${SRC:-${ROOT}/../accelerator-codegen-duckdb/tpch_sf20.duckdb}
 STAGE=${STAGE:-/flash1/akhilvb/tpch/csv_sf20}
 DUCKDB_BIN=${DUCKDB_BIN:-$ROOT/../accelerator-codegen-duckdb/build/release/duckdb}
 PYTHON=${PYTHON:-python3}
