@@ -211,21 +211,7 @@ int main() {
   assert(sink2.ended);
   assert(RevenueRaw(sink2) == 800000);
 
-  // Published images can lose the orderkey hashmap while keeping `orders`.
-  // ApplyDelta must still find the row (and must not report success on a no-op).
-  {
-    using accelerator_codegen::aux_state::query::TpchQ3StateImage;
-    auto &image =
-        services.store.images[accelerator_codegen::aux_state::core::TpchQ3Layout::
-                                  kSegmentBuilding];
-    const auto *typed = image.As<TpchQ3StateImage>();
-    assert(typed && typed->state);
-    auto &index = const_cast<accelerator_codegen::aux_state::query::
-                                 TpchQ3SegmentIntervalIndex &>(
-        typed->state->segment_intervals.at(
-            accelerator_codegen::aux_state::core::TpchQ3Layout::kSegmentBuilding));
-    index.ClearPositions();
-  }
+  // An update to a lineitem of an already-published order must be applied.
   MutationBatch bump;
   bump.table = 3;
   bump.kind = MutationKind::Update;

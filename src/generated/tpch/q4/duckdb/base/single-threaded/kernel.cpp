@@ -1,4 +1,5 @@
 #include "tpch/q4/duckdb/base/query.hpp"
+#include "tpch/q4/duckdb/base/simd_mark.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -249,6 +250,11 @@ public:
 
 	uint64_t *Words() {
 		return words.data();
+	}
+
+	//! Overflow-only insert: never resizes the bitmap (safe while a raw words pointer is held).
+	void InsertOverflow(int64_t orderkey) {
+		overflow.insert(orderkey);
 	}
 
 	uint8_t *Bytes() {
@@ -726,6 +732,15 @@ void Q4Kernel::ConsumeLineitemFlatHot(duckdb::DataChunk &input) {
 	const bool branchless = state->config.branchless && inline_bitmap;
 	const auto capacity_words = set.CapacityWords();
 	const auto byte_capacity = set.ByteCapacity();
+
+	// Production path: branch-free SIMD predicate + bitmap marking.
+	if (!profile && inline_bitmap && !run_mode && !use_bytes && !skip_consec && !word_batch && !twopass &&
+	    !branchless) {
+		q4simd::MarkLess(orderkeys, reinterpret_cast<const int32_t *>(commitdates),
+		                 reinterpret_cast<const int32_t *>(receiptdates), count, set.Words(), capacity_words * 64,
+		                 [&](int64_t key) { set.InsertOverflow(key); });
+		return;
+	}
 
 	auto record_qual = [&]() {
 		if (profile) {

@@ -7,7 +7,6 @@
 #include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "tpch/q1/duckdb/base/query.hpp"
-#include "tpch/q1/duckdb/base/fused.hpp"
 #include "tpch/q3/duckdb/base/query.hpp"
 #include "tpch/q4/duckdb/base/query.hpp"
 #include "tpch/q9/duckdb/base/query.hpp"
@@ -443,10 +442,7 @@ void PrintEnvBanner() {
 	std::cerr << "ACCEL_BENCH_ITERS=" << EnvOrUnset("ACCEL_BENCH_ITERS") << "\n";
 	std::cerr << "ACCEL_BENCH_SESSION=" << EnvOrUnset("ACCEL_BENCH_SESSION") << "\n";
 	std::cerr << "DUCKDB_BITPACKING_NATIVE_FILTER=" << EnvOrUnset("DUCKDB_BITPACKING_NATIVE_FILTER") << "\n";
-	std::cerr << "production: Q1FusedScan=" << accelerator_codegen::Q1FusedScanEnabled()
-	          << " Q1Aligned=" << accelerator_codegen::Q1FusedAlignedPayloadEnabled()
-	          << " Q1DirectIndex=" << accelerator_codegen::Q1FusedDirectIndexEnabled()
-	          << " Q4LineitemFused=" << accelerator_codegen::Q4LineitemFusedScanEnabled() << "\n";
+	std::cerr << "production: Q4LineitemFused=" << accelerator_codegen::Q4LineitemFusedScanEnabled() << "\n";
 	std::cerr << "note: kernel ACCEL_* toggles are compile-time gated (-DACCEL_EXPERIMENTAL_Q*_OPTS)\n";
 }
 
@@ -777,11 +773,6 @@ int main(int argc, char **argv) {
 		const auto filters = SplitCommaSeparated(GetEnvString("ACCEL_BENCH_FILTER"));
 		Require(warmup_iterations >= 3, "ACCEL_BENCH_WARMUP must be >= 3");
 		Require(measured_iterations >= 5, "ACCEL_BENCH_ITERS must be >= 5");
-		Require(accelerator_codegen::Q1FusedScanEnabled(), "production Q1 path must enable fused scan");
-		Require(accelerator_codegen::Q1FusedAlignedPayloadEnabled(),
-		        "production Q1 path must enable aligned payload");
-		Require(accelerator_codegen::Q1FusedDirectIndexEnabled(),
-		        "production Q1 path must enable direct index");
 		Require(!accelerator_codegen::Q4LineitemFusedScanEnabled(),
 		        "production Q4 path must leave lineitem fused off");
 		Require(GetEnvString("DUCKDB_BITPACKING_NATIVE_FILTER").empty() ||

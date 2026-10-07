@@ -1,4 +1,5 @@
 #include "tpch/q5/duckdb/base/query.hpp"
+#include "tpch/q5/duckdb/base/q5_fast.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -19,7 +20,7 @@ constexpr uint8_t kRevenueDecimalWidth = 38;
 constexpr uint8_t kRevenueDecimalScale = 4;
 constexpr duckdb::idx_t kOutputBatchSize = 64;
 constexpr int32_t kAbsentNation = -1;
-constexpr int64_t kAbsentCustomer = 0;
+constexpr uint8_t kAbsentOrderNation = 255;
 constexpr int64_t kDefaultCustomerCapacity = 150001;
 constexpr int64_t kDefaultSupplierCapacity = 10001;
 constexpr int64_t kDefaultOrderCapacity = 6000001;
@@ -140,6 +141,14 @@ public:
 		return key >= 0 && key < capacity;
 	}
 
+	const ValueT *Data() const {
+		return values.data();
+	}
+
+	int64_t Capacity() const {
+		return capacity;
+	}
+
 private:
 	void EnsureCapacity(int64_t new_capacity) {
 		if (new_capacity <= capacity) {
@@ -169,11 +178,11 @@ public:
 	explicit Q5Kernel(Q5Parameters params_p, Q5ProfileCounters *profile_p = nullptr)
 	    : params(std::move(params_p)), profile(profile_p), config(),
 	      customer_nations(kDefaultCustomerCapacity), supplier_nations(kDefaultSupplierCapacity),
-	      order_customers(kDefaultOrderCapacity) {
+	      order_nations(kDefaultOrderCapacity) {
 		if (config.dense_state) {
 			customer_nations.WarmInitialize();
 			supplier_nations.WarmInitialize();
-			order_customers.WarmInitialize();
+			order_nations.WarmInitialize();
 			nation_names.resize(kMaxNationSlots);
 			qualifying_nations.assign(kMaxNationSlots, false);
 			revenue_by_nation.assign(kMaxNationSlots, 0);
@@ -447,10 +456,11 @@ private:
 					continue;
 				}
 				const auto custkey = custkeys[row];
-				if (customer_nations.Load(custkey) == kAbsentNation) {
+				const auto cust_nation = customer_nations.Load(custkey);
+				if (cust_nation == kAbsentNation) {
 					continue;
 				}
-				order_customers.Store(orderkeys[row], custkey);
+				order_nations.Store(orderkeys[row], static_cast<uint8_t>(cust_nation));
 			}
 			return;
 		}
@@ -480,21 +490,22 @@ private:
 				continue;
 			}
 			const auto custkey = custkeys[custkey_index];
-			if (customer_nations.Load(custkey) == kAbsentNation) {
+			const auto cust_nation = customer_nations.Load(custkey);
+			if (cust_nation == kAbsentNation) {
 				continue;
 			}
-			order_customers.Store(orderkeys[orderkey_index], custkey);
+			order_nations.Store(orderkeys[orderkey_index], static_cast<uint8_t>(cust_nation));
 		}
 	}
 
 	bool ProcessLineitemRow(int64_t orderkey, int64_t suppkey, int64_t extendedprice_raw, int64_t discount_raw) {
-		const auto custkey = order_customers.Load(orderkey);
-		if (custkey == kAbsentCustomer) {
+		const auto stored_nation = order_nations.Load(orderkey);
+		if (stored_nation == kAbsentOrderNation) {
 			return false;
 		}
-		const auto cust_nation = customer_nations.Load(custkey);
+		const int32_t cust_nation = stored_nation;
 		const auto supp_nation = supplier_nations.Load(suppkey);
-		if (cust_nation == kAbsentNation || supp_nation == kAbsentNation || cust_nation != supp_nation) {
+		if (supp_nation == kAbsentNation || cust_nation != supp_nation) {
 			return false;
 		}
 		if (cust_nation < 0 || cust_nation >= kMaxNationSlots) {
@@ -529,8 +540,22 @@ private:
 			auto suppkeys = duckdb::FlatVector::GetData<int64_t>(suppkey_vector);
 			auto extendedprices = duckdb::FlatVector::GetData<int64_t>(extendedprice_vector);
 			auto discounts = duckdb::FlatVector::GetData<int64_t>(discount_vector);
-			for (duckdb::idx_t row = 0; row < input.size(); row++) {
-				(void)ProcessLineitemRow(orderkeys[row], suppkeys[row], extendedprices[row], discounts[row]);
+			if (!order_bitmap_ready) {
+				order_bitmap.Build(order_nations.Data(), static_cast<size_t>(order_nations.Capacity()),
+				                   kAbsentOrderNation);
+				order_bitmap_ready = true;
+			}
+			const duckdb::idx_t total = input.size();
+			for (duckdb::idx_t off = 0; off < total; off += q5fast::kBlock) {
+				const auto cnt = std::min<duckdb::idx_t>(q5fast::kBlock, total - off);
+				alignas(64) uint32_t sel[q5fast::kBlock + simd::kSelSlack];
+				const auto m = q5fast::SelectInBitmap(
+				    orderkeys + off, cnt, order_bitmap.Words(), order_bitmap.Bits(), sel,
+				    [&](int64_t key) { return order_nations.Load(key) != kAbsentOrderNation; });
+				for (size_t j = 0; j < m; j++) {
+					const auto r = off + sel[j];
+					(void)ProcessLineitemRow(orderkeys[r], suppkeys[r], extendedprices[r], discounts[r]);
+				}
 			}
 			return;
 		}
@@ -623,7 +648,9 @@ private:
 	std::vector<std::string> nation_names;
 	DenseKeyStore<int32_t, kAbsentNation> customer_nations;
 	DenseKeyStore<int32_t, kAbsentNation> supplier_nations;
-	DenseKeyStore<int64_t, kAbsentCustomer> order_customers;
+	DenseKeyStore<uint8_t, kAbsentOrderNation> order_nations;
+	q5fast::ByteBitmap order_bitmap;
+	bool order_bitmap_ready = false;
 	std::vector<q5_acc_t> revenue_by_nation;
 	std::vector<bool> has_revenue_by_nation;
 	std::vector<Q5OutputRow> output_rows;

@@ -71,7 +71,7 @@ std::string ReferenceQ1(int day_offset) {
 }
 
 std::string ParallelQ1(int day_offset) {
-	return "SELECT * FROM accel_tpch_q3_parallel(" + std::to_string(day_offset) + ")";
+	return "SELECT * FROM accel_tpch_q1_parallel(" + std::to_string(day_offset) + ")";
 }
 
 void RunCase(duckdb::Connection &connection, const std::string &label, int day_offset,

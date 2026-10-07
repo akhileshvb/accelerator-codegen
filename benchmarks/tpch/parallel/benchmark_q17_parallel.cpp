@@ -226,7 +226,7 @@ int main(int argc, char **argv) {
 		};
 
 		if (nonzero_only) {
-			for (const auto &entry : accelerator_codegen::test_support::kQ17NonzeroManifest) {
+			for (const auto &entry : accelerator_codegen::test_support::kQ37NonzeroManifest) {
 				run_entry(entry);
 			}
 		} else {

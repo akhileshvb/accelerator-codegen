@@ -1,4 +1,5 @@
 #include "tpch/q12/duckdb/base/query.hpp"
+#include "tpch/q12/duckdb/base/simd_lineitem.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -244,6 +245,12 @@ public:
 		}
 		const auto it = overflow.find(orderkey);
 		return it == overflow.end() ? PriorityClass::Absent : it->second;
+	}
+
+	inline void PrefetchProbe(int64_t orderkey) const {
+		if (orderkey >= 0 && static_cast<size_t>(orderkey) < capacity) {
+			ACCEL_PREFETCH(classes.data() + orderkey);
+		}
 	}
 
 	inline PriorityClass ProbeNonNegUnchecked(uint64_t orderkey) const {
@@ -512,6 +519,33 @@ private:
 		}
 
 		const auto classify_start = Clock::now();
+		if (!profile && order_priority.UsesDense() && priority_sel.data() &&
+		    count <= STANDARD_VECTOR_SIZE) {
+			uint8_t lut[q12simd::kLutBytes];
+			if (q12simd::BuildSlotLut(priority_sel.data(), count, lut, [&](uint32_t idx) {
+				    if (!priority_validity.AllValid() && !priority_validity.RowIsValidUnsafe(idx)) {
+					    return static_cast<uint8_t>(PriorityClass::Neither);
+				    }
+				    return static_cast<uint8_t>(ClassifyPriority(priorities[idx]));
+			    })) {
+				// Non-profiling fast path: LUT-classified priorities stored branch-free into the dense array.
+				auto *dense = order_priority.Data();
+				auto dense_capacity = order_priority.Capacity();
+				const uint32_t *psel = priority_sel.data();
+				for (duckdb::idx_t row = 0; row < count; row++) {
+					const auto orderkey = orderkeys[row];
+					const auto cls = lut[psel[row]];
+					if (ACCEL_LIKELY(static_cast<uint64_t>(orderkey) < dense_capacity)) {
+						dense[orderkey] = cls;
+					} else {
+						StorePriority(orderkey, static_cast<PriorityClass>(cls));
+						dense = order_priority.Data(); // the store may have grown the array
+						dense_capacity = order_priority.Capacity();
+					}
+				}
+				return;
+			}
+		}
 		PriorityClass class_cache[STANDARD_VECTOR_SIZE];
 		// Dictionary children for TPC-H priorities are tiny; classify selected child indices on demand.
 		bool class_valid[STANDARD_VECTOR_SIZE] = {};
@@ -743,6 +777,36 @@ private:
 		if (profile) {
 			profile->lineitem_scan_decode_ns +=
 			    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - decode_start).count();
+		}
+
+		if (!profile && orderkey_validity.AllValid() && commit_validity.AllValid() && receipt_validity.AllValid() &&
+		    ship_validity.AllValid() && orderkey_sel.data() && shipmode_sel.data() &&
+		    commit_sel.data() && receipt_sel.data() && ship_sel.data() && count <= STANDARD_VECTOR_SIZE) {
+			uint8_t lut[q12simd::kLutBytes];
+			if (q12simd::BuildSlotLut(shipmode_sel.data(), count, lut, [&](uint32_t idx) {
+				    // NULL shipmode (e.g. the dictionary's reserved NULL entry) never matches: row dropped.
+				    if (!shipmode_validity.AllValid() && !shipmode_validity.RowIsValidUnsafe(idx)) {
+					    return static_cast<uint8_t>(ShipModeSlot::Neither);
+				    }
+				    return static_cast<uint8_t>(
+				        ClassifyShipMode(shipmodes[idx], params.shipmode1, params.shipmode2, modes_equal));
+			    })) {
+				int64_t survivor_keys[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+				uint8_t survivor_slots[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+				const auto survivors = q12simd::FilterDict(
+				    orderkey_sel.data(), shipmode_sel.data(), commit_sel.data(), receipt_sel.data(), ship_sel.data(),
+				    count, orderkeys, lut, reinterpret_cast<const int32_t *>(commitdates),
+				    reinterpret_cast<const int32_t *>(receiptdates), reinterpret_cast<const int32_t *>(shipdates),
+				    params.start_date.days, params.end_date.days, !skip_receipt_residual, survivor_keys,
+				    survivor_slots);
+				for (size_t i = 0; i < survivors; i++) {
+					order_priority.PrefetchProbe(survivor_keys[i]);
+				}
+				for (size_t i = 0; i < survivors; i++) {
+					ProbeAndAggregate(survivor_keys[i], static_cast<ShipModeSlot>(survivor_slots[i]));
+				}
+				return;
+			}
 		}
 
 		if (shared_sel && orderkey_validity.AllValid() && shipmode_validity.AllValid() && commit_validity.AllValid() &&

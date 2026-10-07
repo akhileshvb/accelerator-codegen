@@ -1,6 +1,5 @@
 #include "accelerator_codegen/runtime/duckdb/query_runtime.hpp"
 #include "tpch/q1/duckdb/base/query.hpp"
-#include "tpch/q1/duckdb/base/fused.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -29,7 +28,7 @@ QueryBindResult BindQ1ParallelPackage(duckdb::ClientContext &, duckdb::TableFunc
 
 	QueryBindResult result;
 	result.query_parameters = std::make_unique<Q1Parameters>(parameters);
-	result.input_scans.push_back(CreateQ1ScanSpec(parameters));
+	result.input_scans.push_back(CreateQ1ScanSpec(parameters, /*push_shipdate_filter=*/false));
 	result.output_schema.names = {"l_returnflag", "l_linestatus", "sum_qty",      "sum_base_price", "sum_disc_price",
 	                              "sum_charge",    "avg_qty",       "avg_price", "avg_disc",       "count_order"};
 	result.output_schema.types = {

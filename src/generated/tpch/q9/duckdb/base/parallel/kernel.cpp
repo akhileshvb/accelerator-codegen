@@ -1,6 +1,7 @@
 #include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "tpch/q9/duckdb/base/query.hpp"
+#include "tpch/q9/duckdb/base/q9_fast.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -159,31 +160,27 @@ uint64_t PackPartsuppKey(int64_t partkey, int64_t suppkey) {
 class OrderYearStore {
 public:
 	OrderYearStore() {
-		EnsureCapacity(kDefaultOrderCapacity);
+		years.Reserve(kDefaultOrderCapacity);
 	}
 
 	void ReserveAtLeast(int64_t min_capacity) {
-		EnsureCapacity(min_capacity);
+		years.Reserve(min_capacity);
 	}
 
 	void Insert(int64_t orderkey, int64_t year) {
-		if (orderkey >= 0 && orderkey < capacity) {
-			dense_years[static_cast<size_t>(orderkey)] = static_cast<int16_t>(year);
-			return;
-		}
-		if (orderkey >= capacity && orderkey <= 1'000'000'000) {
-			EnsureCapacity(orderkey + 1);
-			dense_years[static_cast<size_t>(orderkey)] = static_cast<int16_t>(year);
-			return;
-		}
-		overflow[orderkey] = year;
+		years.Insert(orderkey, year);
 	}
 
+	//! Concurrent-safe for distinct keys: touches only the dense byte of `orderkey` or the worker-local map.
 	void InsertDenseNoGrow(int64_t orderkey, int64_t year,
 	                       std::unordered_map<int64_t, int64_t> &local_overflow_map) {
-		if (orderkey >= 0 && orderkey < capacity) {
-			dense_years[static_cast<size_t>(orderkey)] = static_cast<int16_t>(year);
-			return;
+		if (static_cast<uint64_t>(orderkey) < static_cast<uint64_t>(years.Capacity())) {
+			const int64_t rel = year - (q9fast::YearCoder::kBase - 1);
+			if (rel >= 1 && rel <= q9fast::YearCoder::kYears) {
+				years.SetCode(orderkey, static_cast<uint8_t>(rel));
+				return;
+			}
+			years.SetCode(orderkey, q9fast::OrderYears::kOther);
 		}
 		local_overflow_map[orderkey] = year;
 	}
@@ -195,43 +192,10 @@ public:
 	}
 
 	bool Lookup(int64_t orderkey, int64_t &year_out) const {
-		if (orderkey >= 0 && orderkey < capacity) {
-			const auto year = dense_years[static_cast<size_t>(orderkey)];
-			if (year != kAbsentYear) {
-				year_out = year;
-				return true;
-			}
-			return false;
-		}
-		auto it = overflow.find(orderkey);
-		if (it == overflow.end()) {
-			return false;
-		}
-		year_out = it->second;
-		return true;
+		return years.Lookup(orderkey, year_out);
 	}
 
-private:
-	void EnsureCapacity(int64_t new_capacity) {
-		if (new_capacity <= capacity) {
-			return;
-		}
-		int64_t target = new_capacity;
-		if (capacity > 0) {
-			const int64_t doubled = capacity > (std::numeric_limits<int64_t>::max() / 2)
-			                            ? std::numeric_limits<int64_t>::max()
-			                            : capacity * 2;
-			if (doubled > target) {
-				target = doubled;
-			}
-		}
-		dense_years.resize(static_cast<size_t>(target), kAbsentYear);
-		capacity = target;
-	}
-
-	int64_t capacity = 0;
-	std::vector<int16_t> dense_years;
-	std::unordered_map<int64_t, int64_t> overflow;
+	q9fast::OrderYears years;
 };
 
 class PartMembership {
@@ -295,6 +259,14 @@ public:
 
 	bool Empty() const {
 		return count == 0;
+	}
+
+	const uint32_t *Words32() const {
+		return reinterpret_cast<const uint32_t *>(bits.data());
+	}
+
+	uint64_t BitCapacityBits() const {
+		return static_cast<uint64_t>(bits.size()) * 64;
 	}
 
 private:
@@ -481,7 +453,8 @@ public:
 		supplier_nations.ReserveAtLeast(kSf10SupplierCapacity); // SF10: 100k keys; cheap vs orders map
 		std::unordered_map<int32_t, std::string> nation_names;
 		OrderYearStore order_years;
-		std::unordered_map<uint64_t, int64_t> packed_partsupp_costs;
+		q9fast::FlatU64Map packed_partsupp_costs;
+		const q9fast::YearCoder year_coder;
 
 		int64_t part_ns = 0;
 		int64_t supplier_ns = 0;
@@ -594,6 +567,34 @@ public:
 			RunParallelChunkScan(context, *bound_inputs[3], worker_count,
 			                     [&](duckdb::idx_t worker_id, duckdb::DataChunk &input) {
 				                     auto &local_overflow = order_overflows[worker_id].value;
+				                     if (IsFlatAllValid(input.data[Q9OrdersChunkLayout::ORDERKEY_INDEX]) &&
+				                         IsFlatAllValid(input.data[Q9OrdersChunkLayout::ORDERDATE_INDEX])) {
+					                     const auto *keys = duckdb::FlatVector::GetData<int64_t>(
+					                         input.data[Q9OrdersChunkLayout::ORDERKEY_INDEX]);
+					                     const auto *days = duckdb::FlatVector::GetData<int32_t>(
+					                         input.data[Q9OrdersChunkLayout::ORDERDATE_INDEX]);
+					                     const duckdb::idx_t total = input.size();
+					                     const auto capacity = static_cast<uint64_t>(order_years.years.Capacity());
+					                     for (duckdb::idx_t off = 0; off < total; off += q9fast::kBlock) {
+						                     const auto cnt = std::min<duckdb::idx_t>(q9fast::kBlock, total - off);
+						                     alignas(64) uint8_t codes[q9fast::kBlock + 64];
+						                     year_coder.FillCodes(days + off, cnt, codes);
+						                     for (duckdb::idx_t r = 0; r < cnt; r++) {
+							                     const int64_t key = keys[off + r];
+							                     const uint8_t code = codes[r];
+							                     if (ACCEL_LIKELY(code != 255 && static_cast<uint64_t>(key) < capacity)) {
+								                     order_years.years.SetCode(key, code);
+							                     } else {
+								                     order_years.InsertDenseNoGrow(
+								                         key,
+								                         static_cast<int64_t>(duckdb::Date::ExtractYear(
+								                             duckdb::date_t(days[off + r]))),
+								                         local_overflow);
+							                     }
+						                     }
+					                     }
+					                     return;
+				                     }
 				                     duckdb::UnifiedVectorFormat orderkey_format;
 				                     duckdb::UnifiedVectorFormat orderdate_format;
 				                     input.data[Q9OrdersChunkLayout::ORDERKEY_INDEX].ToUnifiedFormat(input.size(),
@@ -627,10 +628,34 @@ public:
 
 		if (!selected_parts.Empty()) {
 			const auto partsupp_t0 = clock::now();
-			std::vector<CacheLinePadded<std::unordered_map<uint64_t, int64_t>>> partsupp_workers(worker_count);
+			std::vector<CacheLinePadded<q9fast::FlatU64Map>> partsupp_workers(worker_count);
 			RunParallelChunkScan(context, *bound_inputs[4], worker_count,
 			                     [&](duckdb::idx_t worker_id, duckdb::DataChunk &input) {
 				                     auto &local_costs = partsupp_workers[worker_id].value;
+				                     if (IsFlatAllValid(input.data[Q9PartsuppChunkLayout::PARTKEY_INDEX]) &&
+				                         IsFlatAllValid(input.data[Q9PartsuppChunkLayout::SUPPKEY_INDEX]) &&
+				                         IsFlatAllValid(input.data[Q9PartsuppChunkLayout::SUPPLYCOST_INDEX])) {
+					                     const auto *pk = duckdb::FlatVector::GetData<int64_t>(
+					                         input.data[Q9PartsuppChunkLayout::PARTKEY_INDEX]);
+					                     const auto *sk = duckdb::FlatVector::GetData<int64_t>(
+					                         input.data[Q9PartsuppChunkLayout::SUPPKEY_INDEX]);
+					                     const auto *cost = duckdb::FlatVector::GetData<int64_t>(
+					                         input.data[Q9PartsuppChunkLayout::SUPPLYCOST_INDEX]);
+					                     const duckdb::idx_t total = input.size();
+					                     for (duckdb::idx_t off = 0; off < total; off += q9fast::kBlock) {
+						                     const auto cnt = std::min<duckdb::idx_t>(q9fast::kBlock, total - off);
+						                     alignas(64) uint32_t sel[q9fast::kBlock + simd::kSelSlack];
+						                     const auto m = q9fast::SelectInBitmap(
+						                         pk + off, cnt, selected_parts.Words32(),
+						                         selected_parts.BitCapacityBits(), sel,
+						                         [&](int64_t key) { return selected_parts.Contains(key); });
+						                     for (size_t j = 0; j < m; j++) {
+							                     const auto r = off + sel[j];
+							                     local_costs.Insert(PackPartsuppKey(pk[r], sk[r]), cost[r]);
+						                     }
+					                     }
+					                     return;
+				                     }
 				                     duckdb::UnifiedVectorFormat partkey_format;
 				                     duckdb::UnifiedVectorFormat suppkey_format;
 				                     duckdb::UnifiedVectorFormat supplycost_format;
@@ -660,14 +685,12 @@ public:
 					                     if (!selected_parts.Contains(partkey)) {
 						                     continue;
 					                     }
-					                     local_costs[PackPartsuppKey(partkey, suppkeys[suppkey_index])] =
-					                         supplycosts[supplycost_index];
+					                     local_costs.Insert(PackPartsuppKey(partkey, suppkeys[suppkey_index]),
+					                                        supplycosts[supplycost_index]);
 				                     }
 			                     });
 			for (const auto &w : partsupp_workers) {
-				for (const auto &entry : w.value) {
-					packed_partsupp_costs[entry.first] = entry.second;
-				}
+				packed_partsupp_costs.MergeFrom(w.value);
 			}
 			partsupp_ns =
 			    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - partsupp_t0).count();
@@ -675,7 +698,7 @@ public:
 
 		this->nation_names = std::move(nation_names);
 
-		if (selected_parts.Empty() || packed_partsupp_costs.empty()) {
+		if (selected_parts.Empty() || packed_partsupp_costs.Empty()) {
 			if (const char *env = std::getenv("ACCEL_PARALLEL_PROFILE"); env && env[0] == '1') {
 				std::cerr << "q9_parallel_profile part_ns=" << part_ns << " supplier_ns=" << supplier_ns
 				          << " nation_ns=" << nation_ns << " orders_ns=" << orders_ns
@@ -700,11 +723,28 @@ public:
 			if (!order_years.Lookup(orderkey, year)) {
 				return;
 			}
-			auto it = packed_partsupp_costs.find(PackPartsuppKey(partkey, suppkey));
-			if (it == packed_partsupp_costs.end()) {
+			const int64_t *cost = packed_partsupp_costs.Find(PackPartsuppKey(partkey, suppkey));
+			if (!cost) {
 				return;
 			}
-			agg.Add(nationkey, year, extendedprice_raw, discount_raw, it->second, quantity_raw);
+			agg.Add(nationkey, year, extendedprice_raw, discount_raw, *cost, quantity_raw);
+		};
+		// Same probe, for rows already known to be in the selected-part set.
+		auto probe_row_after_part = [&](ProfitAggregator &agg, int64_t partkey, int64_t suppkey, int64_t orderkey,
+		                                int64_t quantity_raw, int64_t extendedprice_raw, int64_t discount_raw) {
+			int32_t nationkey = 0;
+			if (!supplier_nations.Lookup(suppkey, nationkey)) {
+				return;
+			}
+			int64_t year = 0;
+			if (!order_years.Lookup(orderkey, year)) {
+				return;
+			}
+			const int64_t *cost = packed_partsupp_costs.Find(PackPartsuppKey(partkey, suppkey));
+			if (!cost) {
+				return;
+			}
+			agg.Add(nationkey, year, extendedprice_raw, discount_raw, *cost, quantity_raw);
 		};
 
 		{
@@ -730,9 +770,24 @@ public:
 					                         input.data[Q9LineitemChunkLayout::EXTENDEDPRICE_INDEX]);
 					                     auto *discounts = duckdb::FlatVector::GetData<int64_t>(
 					                         input.data[Q9LineitemChunkLayout::DISCOUNT_INDEX]);
-					                     for (duckdb::idx_t row = 0; row < input.size(); row++) {
-						                     probe_row(agg, partkeys[row], suppkeys[row], orderkeys[row],
-						                               quantities[row], extendedprices[row], discounts[row]);
+					                     const duckdb::idx_t total = input.size();
+					                     for (duckdb::idx_t off = 0; off < total; off += q9fast::kBlock) {
+						                     const auto cnt = std::min<duckdb::idx_t>(q9fast::kBlock, total - off);
+						                     alignas(64) uint32_t sel[q9fast::kBlock + simd::kSelSlack];
+						                     const auto m = q9fast::SelectInBitmap(
+						                         partkeys + off, cnt, selected_parts.Words32(),
+						                         selected_parts.BitCapacityBits(), sel,
+						                         [&](int64_t key) { return selected_parts.Contains(key); });
+						                     for (size_t j = 0; j < m; j++) {
+							                     const auto r = off + sel[j];
+							                     packed_partsupp_costs.Prefetch(PackPartsuppKey(partkeys[r], suppkeys[r]));
+							                     order_years.years.Prefetch(orderkeys[r]);
+						                     }
+						                     for (size_t j = 0; j < m; j++) {
+							                     const auto r = off + sel[j];
+							                     probe_row_after_part(agg, partkeys[r], suppkeys[r], orderkeys[r],
+							                                          quantities[r], extendedprices[r], discounts[r]);
+						                     }
 					                     }
 					                     return;
 				                     }

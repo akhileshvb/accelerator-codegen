@@ -23,9 +23,8 @@ QueryBindResult BindQ17ParallelPackage(duckdb::ClientContext &, duckdb::TableFun
 
 	QueryBindResult result;
 	result.query_parameters = std::make_unique<Q17Parameters>(parameters);
-	result.input_scans.push_back(CreateQ17LineitemAggScanSpec(parameters));
 	result.input_scans.push_back(CreateQ17PartScanSpec(parameters));
-	result.input_scans.push_back(CreateQ17LineitemProbeScanSpec(parameters));
+	result.input_scans.push_back(CreateQ17LineitemScanSpec(parameters));
 	result.output_schema.names = {"avg_yearly"};
 	result.output_schema.types = {duckdb::LogicalType::DOUBLE};
 	return result;

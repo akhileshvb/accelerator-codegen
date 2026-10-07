@@ -54,20 +54,7 @@ Q6Parameters BindQ6Parameters(duckdb::ClientContext &context, const duckdb::vect
     return parameters;
 }
 
-duckdb::vector<NativeFilterSpec> CreateQ6Filters(const Q6Parameters &parameters) {
-    return {
-        {"l_shipdate", duckdb::ExpressionType::COMPARE_GREATERTHANOREQUALTO, duckdb::Value::DATE(parameters.start_date)},
-        {"l_shipdate", duckdb::ExpressionType::COMPARE_LESSTHAN, duckdb::Value::DATE(parameters.end_date)},
-        {"l_discount", duckdb::ExpressionType::COMPARE_GREATERTHANOREQUALTO,
-         duckdb::Value::DECIMAL(parameters.discount_lower_raw, kLineitemDecimalWidth, kLineitemDecimalScale)},
-        {"l_discount", duckdb::ExpressionType::COMPARE_LESSTHANOREQUALTO,
-         duckdb::Value::DECIMAL(parameters.discount_upper_raw, kLineitemDecimalWidth, kLineitemDecimalScale)},
-        {"l_quantity", duckdb::ExpressionType::COMPARE_LESSTHAN,
-         duckdb::Value::DECIMAL(parameters.quantity_upper_raw, kLineitemDecimalWidth, kLineitemDecimalScale)},
-    };
-}
-
-NativeScanSpec CreateQ6ScanSpec(const Q6Parameters &parameters) {
+NativeScanSpec CreateQ6ScanSpec(const Q6Parameters &) {
     NativeScanSpec scan_spec;
     scan_spec.table_name = "lineitem";
     scan_spec.projected_columns = {
@@ -76,7 +63,8 @@ NativeScanSpec CreateQ6ScanSpec(const Q6Parameters &parameters) {
         {"l_quantity", "quantity", duckdb::LogicalType::DECIMAL(15, 2), duckdb::PhysicalType::INT64},
         {"l_extendedprice", "extendedprice", duckdb::LogicalType::DECIMAL(15, 2), duckdb::PhysicalType::INT64},
     };
-    scan_spec.filters = CreateQ6Filters(parameters);
+    // No predicates are pushed down: the kernel evaluates all five Q6 predicates with SIMD selection vectors.
+    // (DuckDB's filtered scan was measurably slower than a plain scan + vectorized filter.)
     return scan_spec;
 }
 

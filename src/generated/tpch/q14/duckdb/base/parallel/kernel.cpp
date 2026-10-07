@@ -2,10 +2,13 @@
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "tpch/q14/duckdb/base/query.hpp"
 
+#include "accelerator_codegen/runtime/simd.hpp"
+
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "duckdb/common/exception.hpp"
@@ -33,6 +36,11 @@ enum class PromoClass : uint8_t {
 	NonPromo = 1,
 	Promo = 2,
 };
+
+bool IsFlatAllValid(duckdb::Vector &vector) {
+	return vector.GetVectorType() == duckdb::VectorType::FLAT_VECTOR &&
+	       duckdb::FlatVector::Validity(vector).AllValid();
+}
 
 bool IsPromoType(const duckdb::string_t &value) {
 	static constexpr const char kPromo[] = "PROMO";
@@ -78,6 +86,23 @@ public:
 			EnsureCapacity(key + 1);
 		}
 		classes[key] = static_cast<uint8_t>(promo);
+	}
+
+	//! Ensure the dense array covers keys [0, size) (called before concurrent dense stores).
+	void Reserve(size_t size) {
+		if (size > classes.size() && size <= 1'000'000'000) {
+			classes.resize(size, static_cast<uint8_t>(PromoClass::Absent));
+			capacity = classes.size();
+		}
+	}
+
+	//! Concurrent-safe for distinct keys: writes the dense slot if in range, otherwise returns false.
+	bool StoreDenseIfInRange(int64_t partkey, PromoClass promo) {
+		if (partkey < 0 || static_cast<size_t>(partkey) >= capacity) {
+			return false;
+		}
+		classes[static_cast<size_t>(partkey)] = static_cast<uint8_t>(promo);
+		return true;
 	}
 
 	PromoClass Probe(int64_t partkey) const {
@@ -130,32 +155,62 @@ struct Q14WorkerAgg {
 	bool saw_contribution = false;
 };
 
-void BuildPartPromoStore(duckdb::ClientContext &context, const duckdb::FunctionData &part_bind,
-                         PartPromoStore &store) {
-	auto source = CreateNativeChunkSource(context, part_bind);
-	while (source->Next()) {
-		auto &chunk = source->Chunk();
-		auto &partkey_vector = chunk.data[Q14PartChunkLayout::PARTKEY_INDEX];
-		auto &type_vector = chunk.data[Q14PartChunkLayout::TYPE_INDEX];
+struct PartWorker {
+	std::vector<std::pair<int64_t, PromoClass>> overflow;
+};
 
-		duckdb::UnifiedVectorFormat partkey_format;
-		duckdb::UnifiedVectorFormat type_format;
-		partkey_vector.ToUnifiedFormat(chunk.size(), partkey_format);
-		type_vector.ToUnifiedFormat(chunk.size(), type_format);
-		auto partkeys = duckdb::UnifiedVectorFormat::GetData<int64_t>(partkey_format);
-		auto types = duckdb::UnifiedVectorFormat::GetData<duckdb::string_t>(type_format);
+//! Classify one part chunk and write the dense class array directly (p_partkey is the primary key, so
+//! workers write disjoint slots); keys outside the dense range are collected per worker and stored serially.
+void ConsumePartChunk(duckdb::DataChunk &chunk, PartPromoStore &store, PartWorker &worker) {
+	auto &partkey_vector = chunk.data[Q14PartChunkLayout::PARTKEY_INDEX];
+	auto &type_vector = chunk.data[Q14PartChunkLayout::TYPE_INDEX];
 
-		for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
-			const auto partkey_index = partkey_format.sel->get_index(row);
-			const auto type_index = type_format.sel->get_index(row);
-			if (!partkey_format.validity.AllValid() && !partkey_format.validity.RowIsValidUnsafe(partkey_index)) {
-				continue;
-			}
-			PromoClass promo = PromoClass::NonPromo;
-			if (type_format.validity.AllValid() || type_format.validity.RowIsValidUnsafe(type_index)) {
+	duckdb::UnifiedVectorFormat partkey_format;
+	duckdb::UnifiedVectorFormat type_format;
+	partkey_vector.ToUnifiedFormat(chunk.size(), partkey_format);
+	type_vector.ToUnifiedFormat(chunk.size(), type_format);
+	auto partkeys = duckdb::UnifiedVectorFormat::GetData<int64_t>(partkey_format);
+	auto types = duckdb::UnifiedVectorFormat::GetData<duckdb::string_t>(type_format);
+
+	// p_type is dictionary-compressed: classify each distinct dictionary entry once per chunk.
+	constexpr duckdb::idx_t kCache = STANDARD_VECTOR_SIZE;
+	uint8_t class_cache[kCache];
+	std::memset(class_cache, 0, sizeof(class_cache));
+
+	for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
+		const auto partkey_index = partkey_format.sel->get_index(row);
+		const auto type_index = type_format.sel->get_index(row);
+		if (!partkey_format.validity.AllValid() && !partkey_format.validity.RowIsValidUnsafe(partkey_index)) {
+			continue;
+		}
+		PromoClass promo = PromoClass::NonPromo;
+		if (type_format.validity.AllValid() || type_format.validity.RowIsValidUnsafe(type_index)) {
+			if (type_index < kCache && class_cache[type_index] != 0) {
+				promo = static_cast<PromoClass>(class_cache[type_index]);
+			} else {
 				promo = IsPromoType(types[type_index]) ? PromoClass::Promo : PromoClass::NonPromo;
+				if (type_index < kCache) {
+					class_cache[type_index] = static_cast<uint8_t>(promo);
+				}
 			}
-			store.Store(partkeys[partkey_index], promo);
+		}
+		const auto partkey = partkeys[partkey_index];
+		if (!store.StoreDenseIfInRange(partkey, promo)) {
+			worker.overflow.emplace_back(partkey, promo);
+		}
+	}
+}
+
+void BuildPartPromoStore(duckdb::ClientContext &context, const duckdb::FunctionData &part_bind,
+                         PartPromoStore &store, duckdb::idx_t worker_count) {
+	store.Reserve(static_cast<size_t>(GetNativeScanTableRowCount(context, part_bind)) + 1);
+	std::vector<CacheLinePadded<PartWorker>> workers(worker_count);
+	RunParallelChunkScan(context, part_bind, worker_count, [&](duckdb::idx_t worker_id, duckdb::DataChunk &chunk) {
+		ConsumePartChunk(chunk, store, workers[worker_id].value);
+	});
+	for (auto &worker : workers) {
+		for (const auto &entry : worker.value.overflow) {
+			store.Store(entry.first, entry.second);
 		}
 	}
 }
@@ -166,6 +221,40 @@ void AccumulateLineitemChunk(duckdb::DataChunk &chunk, const Q14Parameters &para
 	auto &price_vector = chunk.data[Q14LineitemChunkLayout::EXTENDEDPRICE_INDEX];
 	auto &discount_vector = chunk.data[Q14LineitemChunkLayout::DISCOUNT_INDEX];
 	auto &shipdate_vector = chunk.data[Q14LineitemChunkLayout::SHIPDATE_INDEX];
+
+	// Fast path: flat, all-valid chunk.  The shipdate window is evaluated with a SIMD selection vector (the
+	// scan does not push it down); only the survivors probe the part table.
+	if (IsFlatAllValid(partkey_vector) && IsFlatAllValid(price_vector) && IsFlatAllValid(discount_vector) &&
+	    IsFlatAllValid(shipdate_vector) && chunk.size() <= STANDARD_VECTOR_SIZE &&
+	    params.end_date.days != std::numeric_limits<int32_t>::min()) {
+		const auto *partkeys = duckdb::FlatVector::GetData<int64_t>(partkey_vector);
+		const auto *prices = duckdb::FlatVector::GetData<int64_t>(price_vector);
+		const auto *discounts = duckdb::FlatVector::GetData<int64_t>(discount_vector);
+		const auto *shipdates = reinterpret_cast<const int32_t *>(duckdb::FlatVector::GetData(shipdate_vector));
+		uint32_t sel[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+		const size_t m =
+		    simd::SelectBetweenI32(shipdates, chunk.size(), params.start_date.days, params.end_date.days - 1, sel);
+		for (size_t k = 0; k < m; k++) {
+			const uint32_t row = sel[k];
+			const auto partkey = partkeys[row];
+			PromoClass promo;
+			if (store.CanProbeUnchecked(partkey)) {
+				promo = store.ProbeNonNegUnchecked(static_cast<uint64_t>(partkey));
+			} else {
+				promo = store.Probe(partkey);
+			}
+			if (promo == PromoClass::Absent) {
+				continue;
+			}
+			const auto revenue = DiscountedRevenueRaw(prices[row], discounts[row]);
+			agg.total_revenue += revenue;
+			agg.saw_contribution = true;
+			if (promo == PromoClass::Promo) {
+				agg.promo_revenue += revenue;
+			}
+		}
+		return;
+	}
 
 	duckdb::UnifiedVectorFormat partkey_format;
 	duckdb::UnifiedVectorFormat price_format;
@@ -228,11 +317,11 @@ public:
 			throw duckdb::InternalException("Q14 parallel expects bound part and lineitem scans");
 		}
 
+		const auto worker_count = ParallelWorkerCount(context);
 		PartPromoStore part_promo;
-		BuildPartPromoStore(context, *bound_inputs[0], part_promo);
+		BuildPartPromoStore(context, *bound_inputs[0], part_promo, worker_count);
 		// Freeze: part_promo is not mutated after this point; workers only probe.
 
-		const auto worker_count = ParallelWorkerCount(context);
 		std::vector<CacheLinePadded<Q14WorkerAgg>> workers(worker_count);
 
 		RunParallelChunkScan(context, *bound_inputs[1], worker_count,

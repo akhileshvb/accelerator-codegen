@@ -2,6 +2,7 @@
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "accelerator_codegen/runtime/parallel/parallel_runtime.hpp"
 #include "tpch/q19/duckdb/base/query.hpp"
+#include "tpch/q19/duckdb/base/q19_fast.hpp"
 
 #include <array>
 #include <chrono>
@@ -125,6 +126,14 @@ public:
 
 	uint8_t ProbeNonNegUnchecked(uint64_t partkey) const {
 		return branch_masks[partkey];
+	}
+
+	const uint8_t *Table() const {
+		return branch_masks.data();
+	}
+
+	uint64_t TableSize() const {
+		return capacity;
 	}
 
 	void ReserveAtLeast(int64_t max_partkey) {
@@ -368,9 +377,19 @@ void AccumulateLineitemChunk(duckdb::DataChunk &chunk, const Q19ProbeState &stat
 		auto discounts = duckdb::FlatVector::GetData<int64_t>(discount_vector);
 		auto shipmodes = duckdb::FlatVector::GetData<duckdb::string_t>(shipmode_vector);
 		auto shipinstructs = duckdb::FlatVector::GetData<duckdb::string_t>(shipinstruct_vector);
-		for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
-			(void)ProcessLineitemRow(state, agg, partkeys[row], quantities[row], extendedprices[row], discounts[row],
-			                         shipmodes[row], shipinstructs[row]);
+		const duckdb::idx_t total = chunk.size();
+		for (duckdb::idx_t off = 0; off < total; off += q19fast::kBlock) {
+			const auto cnt = std::min<duckdb::idx_t>(q19fast::kBlock, total - off);
+			alignas(64) uint32_t sel[q19fast::kBlock + simd::kSelSlack];
+			const auto m = q19fast::SelectNonZeroBytes(partkeys + off, cnt, state.part_branches.Table(),
+			                                           state.part_branches.TableSize(), sel, [&](int64_t key) {
+				                                           return state.part_branches.Probe(key) != 0;
+			                                           });
+			for (size_t j = 0; j < m; j++) {
+				const auto row = off + sel[j];
+				(void)ProcessLineitemRow(state, agg, partkeys[row], quantities[row], extendedprices[row],
+				                         discounts[row], shipmodes[row], shipinstructs[row]);
+			}
 		}
 		return;
 	}

@@ -60,7 +60,7 @@ Q15Parameters MakeQ15Parameters(duckdb::date_t start_date) {
 	return parameters;
 }
 
-NativeScanSpec CreateQ15LineitemScanSpec(const Q15Parameters &parameters) {
+NativeScanSpec CreateQ15LineitemScanSpec(const Q15Parameters &) {
 	NativeScanSpec scan_spec;
 	scan_spec.table_name = "lineitem";
 	scan_spec.projected_columns = {
@@ -69,11 +69,8 @@ NativeScanSpec CreateQ15LineitemScanSpec(const Q15Parameters &parameters) {
 	    {"l_extendedprice", "extendedprice", duckdb::LogicalType::DECIMAL(15, 2), duckdb::PhysicalType::INT64},
 	    {"l_discount", "discount", duckdb::LogicalType::DECIMAL(15, 2), duckdb::PhysicalType::INT64},
 	};
-	scan_spec.filters = {
-	    {"l_shipdate", duckdb::ExpressionType::COMPARE_GREATERTHANOREQUALTO,
-	     duckdb::Value::DATE(parameters.start_date)},
-	    {"l_shipdate", duckdb::ExpressionType::COMPARE_LESSTHAN, duckdb::Value::DATE(parameters.end_date)},
-	};
+	// No predicates are pushed down: the kernel applies the shipdate range with a SIMD selection vector
+	// (cheaper than DuckDB's filtered scan).
 	return scan_spec;
 }
 

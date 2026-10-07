@@ -45,6 +45,7 @@ struct Q10LineitemChunkLayout {
 	static constexpr duckdb::idx_t ORDERKEY_INDEX = 0;
 	static constexpr duckdb::idx_t EXTENDEDPRICE_INDEX = 1;
 	static constexpr duckdb::idx_t DISCOUNT_INDEX = 2;
+	static constexpr duckdb::idx_t RETURNFLAG_INDEX = 3;
 };
 
 struct Q10CustomerChunkLayout {

@@ -1,6 +1,7 @@
 #include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "tpch/q13/duckdb/base/query.hpp"
+#include "tpch/q13/duckdb/base/like2.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -74,51 +75,7 @@ bool SqlLike(const duckdb::string_t &text, const std::string &pattern) {
 	return SqlLikeAt(text.GetData(), text.GetSize(), pattern.data(), pattern.size(), 0, 0);
 }
 
-struct TwoPartLikeMatcher {
-	std::string part1;
-	std::string part2;
-	bool enabled = false;
-
-	explicit TwoPartLikeMatcher(const std::string &pattern) {
-		if (pattern.size() < 4 || pattern.front() != '%' || pattern.back() != '%') {
-			return;
-		}
-		const auto first_end = pattern.find('%', 1);
-		if (first_end == std::string::npos || first_end == 1) {
-			return;
-		}
-		const auto second_start = first_end + 1;
-		const auto second_end = pattern.find('%', second_start);
-		if (second_end == std::string::npos || second_end == second_start) {
-			return;
-		}
-		if (pattern.find('%', second_end + 1) != std::string::npos) {
-			return;
-		}
-		part1 = pattern.substr(1, first_end - 1);
-		part2 = pattern.substr(second_start, second_end - second_start);
-		enabled = !part1.empty() && !part2.empty();
-	}
-
-	bool Matches(const duckdb::string_t &text) const {
-		if (!enabled) {
-			return false;
-		}
-		const std::string_view haystack(text.GetData(), text.GetSize());
-		size_t pos = 0;
-		while (pos + part1.size() <= haystack.size()) {
-			const auto found = haystack.find(part1, pos);
-			if (found == std::string_view::npos) {
-				return false;
-			}
-			if (haystack.find(part2, found + part1.size()) != std::string_view::npos) {
-				return true;
-			}
-			pos = found + 1;
-		}
-		return false;
-	}
-};
+using q13::TwoPartLikeMatcher;
 
 struct Q13OutputRow {
 	int64_t order_count = 0;
@@ -297,7 +254,7 @@ bool CommentDisqualifies(const duckdb::string_t &comment, const TwoPartLikeMatch
 		profile->comments_inspected += 1;
 		profile->comment_bytes_inspected += comment.GetSize();
 	}
-	return matcher.enabled ? matcher.Matches(comment) : SqlLike(comment, fallback_pattern);
+	return matcher.enabled ? matcher.Matches(comment.GetData(), comment.GetSize()) : SqlLike(comment, fallback_pattern);
 }
 
 void ProcessQualifyingOrder(int64_t custkey, Q13WorkerAgg &agg, Q13ParallelProfile *profile) {

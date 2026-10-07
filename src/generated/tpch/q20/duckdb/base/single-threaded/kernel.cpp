@@ -1,4 +1,5 @@
 #include "tpch/q20/duckdb/base/query.hpp"
+#include "tpch/q20/duckdb/base/q20_common.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -220,14 +221,28 @@ private:
 		auto partkeys = GetFastPathData<int64_t>(partkey_vector);
 		auto suppkeys = GetFastPathData<int64_t>(suppkey_vector);
 		auto quantities = GetFastPathData<int64_t>(quantity_vector);
+		if (partkey_vector.GetVectorType() == duckdb::VectorType::FLAT_VECTOR && qualifying_parts.SimdUsable() &&
+		    suppkey_vector.GetVectorType() == duckdb::VectorType::FLAT_VECTOR &&
+		    quantity_vector.GetVectorType() == duckdb::VectorType::FLAT_VECTOR) {
+			if (sel_buf.size() < count + simd::kSelSlack) {
+				sel_buf.resize(count + simd::kSelSlack);
+			}
+			const size_t picked =
+			    q20::SelectFlagged(qualifying_parts.Data(), qualifying_parts.Size(), partkeys, count, sel_buf.data());
+			for (size_t k = 0; k < picked; k++) {
+				const uint32_t row = sel_buf[k];
+				quantity_by_part_supplier.Add(partkeys[row], suppkeys[row], quantities[row]);
+			}
+			return;
+		}
 		for (duckdb::idx_t row = 0; row < count; row++) {
 			const auto partkey = partkeys[GetFastPathIndex(partkey_vector, row)];
-			if (qualifying_parts.find(partkey) == qualifying_parts.end()) {
+			if (!qualifying_parts.Contains(partkey)) {
 				continue;
 			}
 			const auto suppkey = suppkeys[GetFastPathIndex(suppkey_vector, row)];
 			const auto quantity = quantities[GetFastPathIndex(quantity_vector, row)];
-			quantity_by_part_supplier[MakeAggKey(partkey, suppkey)] += quantity;
+			quantity_by_part_supplier.Add(partkey, suppkey, quantity);
 		}
 	}
 
@@ -268,11 +283,11 @@ private:
 				continue;
 			}
 			const auto partkey = partkeys[partkey_index];
-			if (qualifying_parts.find(partkey) == qualifying_parts.end()) {
+			if (!qualifying_parts.Contains(partkey)) {
 				continue;
 			}
 			const auto suppkey = suppkeys[suppkey_index];
-			quantity_by_part_supplier[MakeAggKey(partkey, suppkey)] += quantities[quantity_index];
+			quantity_by_part_supplier.Add(partkey, suppkey, quantities[quantity_index]);
 		}
 	}
 
@@ -287,7 +302,7 @@ private:
 				if (!PartNameMatches(names[row])) {
 					continue;
 				}
-				qualifying_parts.insert(partkeys[row]);
+				qualifying_parts.Insert(partkeys[row]);
 			}
 			return;
 		}
@@ -310,7 +325,7 @@ private:
 			if (!PartNameMatches(name)) {
 				continue;
 			}
-			qualifying_parts.insert(partkeys[partkey_index]);
+			qualifying_parts.Insert(partkeys[partkey_index]);
 		}
 	}
 
@@ -323,17 +338,29 @@ private:
 			auto partkeys = duckdb::FlatVector::GetData<int64_t>(partkey_vector);
 			auto suppkeys = duckdb::FlatVector::GetData<int64_t>(suppkey_vector);
 			auto availqtys = duckdb::FlatVector::GetData<int64_t>(availqty_vector);
-			for (duckdb::idx_t row = 0; row < count; row++) {
+			if (sel_buf.size() < count + simd::kSelSlack) {
+				sel_buf.resize(count + simd::kSelSlack);
+			}
+			const bool simd_ok = qualifying_parts.SimdUsable();
+			size_t picked = 0;
+			if (simd_ok) {
+				picked = q20::SelectFlagged(qualifying_parts.Data(), qualifying_parts.Size(), partkeys, count,
+				                            sel_buf.data());
+			} else {
+				for (duckdb::idx_t row = 0; row < count; row++) {
+					sel_buf[picked] = static_cast<uint32_t>(row);
+					picked += qualifying_parts.Contains(partkeys[row]);
+				}
+			}
+			for (size_t k = 0; k < picked; k++) {
+				const uint32_t row = sel_buf[k];
 				const auto partkey = partkeys[row];
-				if (qualifying_parts.find(partkey) == qualifying_parts.end()) {
-					continue;
-				}
 				const auto suppkey = suppkeys[row];
-				const auto agg_it = quantity_by_part_supplier.find(MakeAggKey(partkey, suppkey));
-				if (agg_it == quantity_by_part_supplier.end()) {
+				const int64_t *sum = quantity_by_part_supplier.Find(partkey, suppkey);
+				if (sum == nullptr) {
 					continue;
 				}
-				if (!AvailQtyGreaterThanHalfSum(availqtys[row], agg_it->second)) {
+				if (!AvailQtyGreaterThanHalfSum(availqtys[row], *sum)) {
 					continue;
 				}
 				qualifying_suppliers.insert(suppkey);
@@ -361,15 +388,15 @@ private:
 				continue;
 			}
 			const auto partkey = partkeys[partkey_index];
-			if (qualifying_parts.find(partkey) == qualifying_parts.end()) {
+			if (!qualifying_parts.Contains(partkey)) {
 				continue;
 			}
 			const auto suppkey = suppkeys[suppkey_index];
-			const auto agg_it = quantity_by_part_supplier.find(MakeAggKey(partkey, suppkey));
-			if (agg_it == quantity_by_part_supplier.end()) {
+			const int64_t *agg_sum = quantity_by_part_supplier.Find(partkey, suppkey);
+			if (agg_sum == nullptr) {
 				continue;
 			}
-			if (!AvailQtyGreaterThanHalfSum(availqtys[availqty_index], agg_it->second)) {
+			if (!AvailQtyGreaterThanHalfSum(availqtys[availqty_index], *agg_sum)) {
 				continue;
 			}
 			qualifying_suppliers.insert(suppkey);
@@ -411,8 +438,9 @@ private:
 	Q20RuntimeConfig config;
 	PrefixLikeMatcher part_name_matcher;
 	std::string fallback_part_name_pattern;
-	std::unordered_map<uint64_t, int64_t> quantity_by_part_supplier;
-	std::unordered_set<int64_t> qualifying_parts;
+	q20::AggTable quantity_by_part_supplier;
+	q20::PartFlags qualifying_parts;
+	std::vector<uint32_t> sel_buf;
 	std::unordered_set<int64_t> qualifying_suppliers;
 	std::unordered_map<int64_t, SupplierRow> suppliers;
 	std::vector<Q20OutputRow> output_rows;

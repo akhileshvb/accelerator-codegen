@@ -104,6 +104,28 @@ if(ACCEL_AUX_COPTS)
     set_property(SOURCE ${_accel_cpp_aux_srcs} APPEND PROPERTY COMPILE_OPTIONS ${ACCEL_AUX_COPTS})
 endif()
 
+# Stateless base kernels (duckdb/base/{single-threaded,parallel}) use SIMD
+# intrinsics guarded by __AVX512F__ / __AVX2__ with scalar fallbacks, so they need
+# the target ISA enabled to take the vector paths.  Default -march=native;
+# -DACCEL_STATELESS_COPTS= (empty) builds the portable scalar fallbacks.
+set(ACCEL_STATELESS_COPTS "-march=native" CACHE STRING "extra compile options for the stateless base kernel sources")
+function(accel_apply_stateless_copts)
+    if(NOT ACCEL_STATELESS_COPTS)
+        return()
+    endif()
+    set(_srcs "")
+    foreach(_src IN LISTS ARGN)
+        if(_src MATCHES "/duckdb/base/")
+            list(APPEND _srcs "${_src}")
+        endif()
+    endforeach()
+    if(_srcs)
+        separate_arguments(_opts UNIX_COMMAND "${ACCEL_STATELESS_COPTS}")
+        set_property(SOURCE ${_srcs} APPEND PROPERTY COMPILE_OPTIONS ${_opts})
+    endif()
+endfunction()
+accel_apply_stateless_copts(${ACCEL_GENERATED_SOURCES})
+
 target_include_directories(accelerator_codegen
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -231,6 +253,7 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 		# Q3 shared __int128 revenue CAS uses libatomic (__atomic_*_16).
 		target_link_libraries(accelerator_codegen PRIVATE atomic)
 		accel_collect_generated_parallel_sources(ACCEL_GENERATED_PARALLEL_SOURCES)
+		accel_apply_stateless_copts(${ACCEL_GENERATED_PARALLEL_SOURCES})
 		target_sources(accelerator_codegen PRIVATE
 			src/runtime/parallel/parallel_runtime.cpp
 			${ACCEL_GENERATED_PARALLEL_SOURCES}
@@ -1063,6 +1086,17 @@ set_target_properties(accelerator_codegen test_registration test_tpch_q6 test_tp
 )
 
 if(ACCEL_ENABLE_PARALLEL_TPCH)
+	# Single-threaded + parallel stateless kernels vs reference SQL, all 22 queries.
+	add_executable(stateless_matrix
+		benchmarks/tpch/stateless_matrix.cpp
+	)
+	target_link_libraries(stateless_matrix PRIVATE accelerator_codegen duckdb_sibling)
+	target_include_directories(stateless_matrix PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+	set_target_properties(stateless_matrix PROPERTIES
+		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
+		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
+	)
+
 	add_executable(test_tpch_parallel
 		tests/parallel/test_tpch_parallel.cpp
 	)

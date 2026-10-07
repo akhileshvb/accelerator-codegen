@@ -2,6 +2,7 @@
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "accelerator_codegen/runtime/parallel/parallel_runtime.hpp"
 #include "tpch/q5/duckdb/base/query.hpp"
+#include "tpch/q5/duckdb/base/q5_fast.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -196,6 +197,24 @@ public:
 		return values[key];
 	}
 
+	const ValueT *Data() const {
+		return values.data();
+	}
+
+	int64_t Capacity() const {
+		return capacity;
+	}
+
+	//! Store into the dense array without growing; returns false when the key is outside it.  Safe to call
+	//! concurrently for distinct keys.
+	bool TryStoreDense(int64_t key, ValueT value) {
+		if (static_cast<uint64_t>(key) < static_cast<uint64_t>(capacity)) {
+			values[static_cast<size_t>(key)] = value;
+			return true;
+		}
+		return false;
+	}
+
 	void MergeFrom(const DenseKeyStore &other) {
 		if (!other.initialized) {
 			return;
@@ -264,6 +283,7 @@ struct Q5FrozenState {
 	DenseKeyStore<int32_t, kAbsentNation> customer_nations {kDefaultCustomerCapacity};
 	DenseKeyStore<int32_t, kAbsentNation> supplier_nations {kDefaultSupplierCapacity};
 	DenseKeyStore<uint8_t, kAbsentOrderNation> order_nations {1};
+	q5fast::ByteBitmap order_bitmap;
 
 	bool has_qualifying_nations() const {
 		for (const auto flag : qualifying_nations) {
@@ -454,8 +474,9 @@ void ConsumeSupplierChunk(duckdb::DataChunk &chunk, const Q5FrozenState &state,
 	}
 }
 
+template <class StoreFn>
 void ConsumeOrdersChunk(duckdb::DataChunk &chunk, const Q5Parameters &params, const Q5FrozenState &state,
-                        DenseKeyStore<uint8_t, kAbsentOrderNation> &order_nations, Q5ParallelProfile *profile) {
+                        StoreFn &&store_order, Q5ParallelProfile *profile) {
 	if (!state.has_qualifying_nations()) {
 		return;
 	}
@@ -487,7 +508,7 @@ void ConsumeOrdersChunk(duckdb::DataChunk &chunk, const Q5Parameters &params, co
 			if (profile) {
 				profile->orders_customer_survivors++;
 			}
-			order_nations.Store(orderkeys[row], static_cast<uint8_t>(nationkey));
+			store_order(orderkeys[row], static_cast<uint8_t>(nationkey));
 		}
 		return;
 	}
@@ -527,7 +548,7 @@ void ConsumeOrdersChunk(duckdb::DataChunk &chunk, const Q5Parameters &params, co
 		if (profile) {
 			profile->orders_customer_survivors++;
 		}
-		order_nations.Store(orderkeys[orderkey_index], static_cast<uint8_t>(nationkey));
+		store_order(orderkeys[orderkey_index], static_cast<uint8_t>(nationkey));
 	}
 }
 
@@ -650,10 +671,29 @@ void BuildQ5FrozenState(duckdb::ClientContext &context, const Q5Parameters &para
 
 	{
 		const auto t0 = clock::now();
-		auto orders_source = CreateNativeChunkSource(context, *bound_inputs[4]);
-		while (orders_source->Next()) {
-			ConsumeOrdersChunk(orders_source->Chunk(), params, state, state.order_nations, profile);
+		// Parallel build: workers write distinct dense bytes; keys outside the dense array are
+		// collected per worker and merged serially afterwards.
+		const auto build_workers = ParallelWorkerCount(context);
+		std::vector<CacheLinePadded<std::vector<std::pair<int64_t, uint8_t>>>> extra(build_workers);
+		RunParallelChunkScan(context, *bound_inputs[4], build_workers,
+		                     [&](duckdb::idx_t worker_id, duckdb::DataChunk &chunk) {
+			                     auto &local_extra = extra[worker_id].value;
+			                     ConsumeOrdersChunk(
+			                         chunk, params, state,
+			                         [&](int64_t orderkey, uint8_t nation) {
+				                         if (!state.order_nations.TryStoreDense(orderkey, nation)) {
+					                         local_extra.emplace_back(orderkey, nation);
+				                         }
+			                         },
+			                         nullptr);
+		                     });
+		for (const auto &local_extra : extra) {
+			for (const auto &entry : local_extra.value) {
+				state.order_nations.Store(entry.first, entry.second);
+			}
 		}
+		state.order_bitmap.Build(state.order_nations.Data(), static_cast<size_t>(state.order_nations.Capacity()),
+		                         kAbsentOrderNation);
 		if (profile) {
 			profile->orders_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - t0).count();
 			profile->order_dense_bytes = state.order_nations.DenseBytes();
@@ -683,28 +723,37 @@ void AccumulateLineitemChunk(duckdb::DataChunk &chunk, const Q5FrozenState &stat
 		auto suppkeys = duckdb::FlatVector::GetData<int64_t>(suppkey_vector);
 		auto extendedprices = duckdb::FlatVector::GetData<int64_t>(extendedprice_vector);
 		auto discounts = duckdb::FlatVector::GetData<int64_t>(discount_vector);
-		for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
-			const auto cust_nation = LoadOrderNation(state.order_nations, orderkeys[row]);
-			if (cust_nation == kAbsentNation) {
-				continue;
-			}
-			if (profile) {
-				profile->lineitem_order_hits++;
-			}
-			const auto supp_nation = state.supplier_nations.Load(suppkeys[row]);
-			if (supp_nation == kAbsentNation || supp_nation != cust_nation) {
-				continue;
-			}
-			if (profile) {
-				profile->lineitem_supplier_hits++;
-				profile->lineitem_same_nation++;
-			}
-			if (cust_nation < 0 || cust_nation >= kMaxNationSlots) {
-				continue;
-			}
-			AddLineitemRevenue(agg, cust_nation, extendedprices[row], discounts[row]);
-			if (profile) {
-				profile->lineitem_revenue_contribs++;
+		const duckdb::idx_t total = chunk.size();
+		for (duckdb::idx_t off = 0; off < total; off += q5fast::kBlock) {
+			const auto cnt = std::min<duckdb::idx_t>(q5fast::kBlock, total - off);
+			alignas(64) uint32_t sel[q5fast::kBlock + simd::kSelSlack];
+			const auto m = q5fast::SelectInBitmap(
+			    orderkeys + off, cnt, state.order_bitmap.Words(), state.order_bitmap.Bits(), sel,
+			    [&](int64_t key) { return LoadOrderNation(state.order_nations, key) != kAbsentNation; });
+			for (size_t j = 0; j < m; j++) {
+				const auto row = off + sel[j];
+				const auto cust_nation = LoadOrderNation(state.order_nations, orderkeys[row]);
+				if (cust_nation == kAbsentNation) {
+					continue;
+				}
+				if (profile) {
+					profile->lineitem_order_hits++;
+				}
+				const auto supp_nation = state.supplier_nations.Load(suppkeys[row]);
+				if (supp_nation == kAbsentNation || supp_nation != cust_nation) {
+					continue;
+				}
+				if (profile) {
+					profile->lineitem_supplier_hits++;
+					profile->lineitem_same_nation++;
+				}
+				if (cust_nation < 0 || cust_nation >= kMaxNationSlots) {
+					continue;
+				}
+				AddLineitemRevenue(agg, cust_nation, extendedprices[row], discounts[row]);
+				if (profile) {
+					profile->lineitem_revenue_contribs++;
+				}
 			}
 		}
 		return;

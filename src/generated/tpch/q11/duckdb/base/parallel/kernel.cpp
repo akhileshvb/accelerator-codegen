@@ -1,6 +1,7 @@
 #include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "tpch/q11/duckdb/base/query.hpp"
+#include "tpch/q11/duckdb/base/q11_common.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -20,38 +21,6 @@ namespace accelerator_codegen {
 namespace {
 
 constexpr duckdb::idx_t kOutputBatchSize = 64;
-constexpr int64_t kDefaultSupplierCapacity = 10001;
-constexpr int64_t kDefaultPartCapacity = 200001;
-
-#if defined(__SIZEOF_INT128__)
-using q11_acc_t = __int128_t;
-
-duckdb::hugeint_t FromAccumulator(q11_acc_t value) {
-	return duckdb::hugeint_t(static_cast<int64_t>(value >> 64), static_cast<uint64_t>(value));
-}
-
-void AddValue(q11_acc_t &accumulator, int64_t supplycost_raw, int64_t availqty) {
-	accumulator += static_cast<q11_acc_t>(supplycost_raw) * static_cast<q11_acc_t>(availqty);
-}
-#else
-using q11_acc_t = duckdb::hugeint_t;
-
-duckdb::hugeint_t FromAccumulator(const q11_acc_t &value) {
-	return value;
-}
-
-void AddValue(q11_acc_t &accumulator, int64_t supplycost_raw, int64_t availqty) {
-	duckdb::hugeint_t cost_value;
-	duckdb::hugeint_t qty_value;
-	duckdb::hugeint_t product_value;
-	if (!duckdb::Hugeint::TryConvert(supplycost_raw, cost_value) ||
-	    !duckdb::Hugeint::TryConvert(availqty, qty_value) ||
-	    !duckdb::Hugeint::TryMultiply(cost_value, qty_value, product_value) ||
-	    !duckdb::Hugeint::TryAddInPlace(accumulator, product_value)) {
-		throw duckdb::OutOfRangeException("Overflow while accumulating Q11 value");
-	}
-}
-#endif
 
 bool Q11ProfileEnabled() {
 	if (const char *env = std::getenv("ACCEL_PARALLEL_PROFILE"); env && env[0] == '1') {
@@ -72,101 +41,45 @@ bool IsDictionaryOverFlat(duckdb::Vector &vector) {
 	return duckdb::DictionaryVector::Child(vector).GetVectorType() == duckdb::VectorType::FLAT_VECTOR;
 }
 
-struct Q11OutputRow {
-	int64_t partkey = 0;
-	duckdb::hugeint_t value;
-};
-
-bool BetterOutputRow(const Q11OutputRow &lhs, const Q11OutputRow &rhs) {
-	if (duckdb::Hugeint::GreaterThan(lhs.value, rhs.value)) {
-		return true;
-	}
-	if (duckdb::Hugeint::GreaterThan(rhs.value, lhs.value)) {
-		return false;
-	}
-	return lhs.partkey < rhs.partkey;
-}
-
-bool ValueGreaterThan(const duckdb::hugeint_t &lhs, const duckdb::Value &rhs) {
-	const auto lhs_value = duckdb::Value::DECIMAL(lhs, 38, 2);
-	return lhs_value > rhs;
-}
-
-bool ValueGreaterThanThreshold(q11_acc_t part_acc, q11_acc_t total_acc, double fraction,
-                               const duckdb::Value &threshold_value) {
-#if defined(__SIZEOF_INT128__)
-	// Safe necessary-condition reject for the standard TPC-H SF1 fraction (0.0001).
-	if (fraction == 0.0001 && part_acc * 10000 <= total_acc) {
-		return false;
-	}
-#endif
-	return ValueGreaterThan(FromAccumulator(part_acc), threshold_value);
-}
-
-duckdb::Value ComputeThreshold(const duckdb::hugeint_t &total_value, double fraction) {
-	const auto total_decimal = duckdb::Value::DECIMAL(total_value, 38, 2);
-	const auto total_as_double = total_decimal.DefaultCastAs(duckdb::LogicalType::DOUBLE).GetValue<double>();
-	return duckdb::Value::DOUBLE(total_as_double * fraction);
-}
-
 struct Q11FrozenState {
-	std::vector<uint8_t> supplier_qualifying;
-	bool has_qualifying_suppliers = false;
-
-	void EnsureSupplierCapacity(int64_t suppkey) {
-		if (suppkey < 0) {
-			return;
-		}
-		const auto required = static_cast<size_t>(suppkey) + 1;
-		if (required <= supplier_qualifying.size()) {
-			return;
-		}
-		size_t target = required;
-		if (!supplier_qualifying.empty()) {
-			const size_t doubled = supplier_qualifying.size() * 2;
-			if (doubled > target) {
-				target = doubled;
-			}
-		} else {
-			target = std::max(target, static_cast<size_t>(kDefaultSupplierCapacity));
-		}
-		supplier_qualifying.resize(target, 0);
+	q11::SupplierMap map;
+	bool has_qualifying_suppliers() const {
+		return map.any;
 	}
-
 	void MarkSupplierQualifying(int64_t suppkey) {
-		EnsureSupplierCapacity(suppkey);
-		supplier_qualifying[static_cast<size_t>(suppkey)] = 1;
-		has_qualifying_suppliers = true;
+		map.Mark(suppkey);
 	}
-
 	bool SupplierQualifies(int64_t suppkey) const {
-		if (suppkey < 0 || static_cast<size_t>(suppkey) >= supplier_qualifying.size()) {
-			return false;
-		}
-		return supplier_qualifying[static_cast<size_t>(suppkey)] != 0;
+		return map.Qualifies(suppkey);
 	}
-
 	size_t SupplierStateBytes() const {
-		return supplier_qualifying.size();
+		return map.flags.size();
 	}
 };
 
 struct Q11PartContribution {
-	int32_t partkey = 0;
-	int64_t supplycost_raw = 0;
-	int64_t availqty = 0;
+	int64_t partkey = 0;
+	int64_t product = 0;
 };
 
 struct Q11WorkerAgg {
 	std::vector<Q11PartContribution> contributions;
-	q11_acc_t total_value = 0;
+	std::vector<std::pair<int64_t, q11::acc_t>> overflow; // contributions whose product exceeds int64
+	std::vector<uint32_t> sel;
+	q11::WideSum total;
 	bool has_total_value = false;
 
-	void AddPartValue(int64_t partkey, int64_t supplycost_raw, int64_t availqty) {
-		contributions.push_back(
-		    Q11PartContribution {static_cast<int32_t>(partkey), supplycost_raw, availqty});
-		AddValue(total_value, supplycost_raw, availqty);
+	inline void AddPartValue(int64_t partkey, int64_t supplycost_raw, int64_t availqty) {
 		has_total_value = true;
+		int64_t prod;
+		if (ACCEL_UNLIKELY(__builtin_mul_overflow(supplycost_raw, availqty, &prod))) {
+			const q11::acc_t wide = static_cast<q11::acc_t>(supplycost_raw) * static_cast<q11::acc_t>(availqty);
+			overflow.emplace_back(partkey, wide);
+			total.spill += wide;
+			return;
+		}
+		total.AddProduct(prod);
+		contributions.push_back(Q11PartContribution {partkey, prod});
 	}
 
 	size_t ContributionBytes() const {
@@ -338,7 +251,7 @@ void BuildSupplierState(duckdb::ClientContext &context, const duckdb::FunctionDa
 
 void AccumulatePartsuppChunk(duckdb::DataChunk &chunk, const Q11FrozenState &state, Q11WorkerAgg &agg,
                              Q11ParallelProfile *profile) {
-	if (!state.has_qualifying_suppliers) {
+	if (!state.has_qualifying_suppliers()) {
 		return;
 	}
 	if (profile) {
@@ -354,24 +267,23 @@ void AccumulatePartsuppChunk(duckdb::DataChunk &chunk, const Q11FrozenState &sta
 		if (IsFlatAllValid(partkey_vector) && IsFlatAllValid(availqty_vector) && IsFlatAllValid(supplycost_vector)) {
 			if (profile) {
 				profile->partsupp_flat_rows += chunk.size();
+				profile->partsupp_supplier_probes += chunk.size();
 			}
 			auto partkeys = duckdb::FlatVector::GetData<int64_t>(partkey_vector);
 			auto availqtys = duckdb::FlatVector::GetData<int64_t>(availqty_vector);
 			auto supplycosts = duckdb::FlatVector::GetData<int64_t>(supplycost_vector);
-			for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
-				if (profile) {
-					profile->partsupp_supplier_probes += 1;
-				}
-				if (!state.SupplierQualifies(suppkeys[row])) {
-					continue;
-				}
-				if (profile) {
-					profile->partsupp_supplier_hits += 1;
-					profile->supplycost_decoded += 1;
-					profile->availqty_decoded += 1;
-					profile->value_contributions += 1;
-				}
+			const size_t n = chunk.size();
+			if (agg.sel.size() < n + simd::kSelSlack) {
+				agg.sel.resize(n + simd::kSelSlack);
+			}
+			const size_t count = q11::SelectQualifying(state.map, suppkeys, n, agg.sel.data());
+			for (size_t k = 0; k < count; k++) {
+				const uint32_t row = agg.sel[k];
 				agg.AddPartValue(partkeys[row], supplycosts[row], availqtys[row]);
+			}
+			if (profile) {
+				profile->partsupp_supplier_hits += count;
+				profile->value_contributions += count;
 			}
 			return;
 		}
@@ -517,9 +429,9 @@ void AccumulatePartsuppChunk(duckdb::DataChunk &chunk, const Q11FrozenState &sta
 	}
 }
 
-void MergeWorkerAggs(const std::vector<CacheLinePadded<Q11WorkerAgg>> &workers, std::vector<q11_acc_t> &merged_values,
-                     std::vector<uint8_t> &merged_has_value, std::vector<int64_t> &merged_touched, q11_acc_t &total_value,
-                     bool &has_total_value, Q11ParallelProfile *profile) {
+void MergeWorkerAggs(const std::vector<CacheLinePadded<Q11WorkerAgg>> &workers, q11::PartSums &merged_values,
+                     std::vector<uint8_t> &merged_has_value, std::vector<int64_t> &merged_touched,
+                     q11::WideSum &total_value, bool &has_total_value, Q11ParallelProfile *profile) {
 	int64_t max_partkey = 0;
 	size_t contribution_count = 0;
 	for (const auto &worker : workers) {
@@ -527,40 +439,45 @@ void MergeWorkerAggs(const std::vector<CacheLinePadded<Q11WorkerAgg>> &workers, 
 		for (const auto &contribution : worker.value.contributions) {
 			max_partkey = std::max<int64_t>(max_partkey, contribution.partkey);
 		}
+		for (const auto &entry : worker.value.overflow) {
+			max_partkey = std::max<int64_t>(max_partkey, entry.first);
+		}
 	}
-	if (max_partkey < 0) {
-		return;
-	}
-	const auto merged_capacity = std::max<int64_t>(max_partkey + 1, kDefaultPartCapacity);
-	merged_values.assign(static_cast<size_t>(merged_capacity), 0);
-	merged_has_value.assign(static_cast<size_t>(merged_capacity), 0);
+	const auto merged_capacity = static_cast<size_t>(std::max<int64_t>(max_partkey + 1, 200001));
+	merged_values.lo.assign(merged_capacity, 0);
+	merged_has_value.assign(merged_capacity, 0);
 	merged_touched.clear();
 	merged_touched.reserve(std::min<size_t>(contribution_count, 65536));
 
 	for (const auto &worker : workers) {
 		if (worker.value.has_total_value) {
-#if defined(__SIZEOF_INT128__)
-			total_value += worker.value.total_value;
-#else
-			if (!has_total_value) {
-				total_value = worker.value.total_value;
-			} else if (!duckdb::Hugeint::TryAddInPlace(total_value, worker.value.total_value)) {
-				throw duckdb::OutOfRangeException("Overflow while merging Q11 total value");
-			}
-#endif
+			total_value.spill += worker.value.total.Get();
 			has_total_value = true;
 		}
 		for (const auto &contribution : worker.value.contributions) {
-			const auto partkey = static_cast<int64_t>(contribution.partkey);
-			const auto index = static_cast<size_t>(partkey);
+			if (contribution.partkey < 0) {
+				continue;
+			}
+			const auto index = static_cast<size_t>(contribution.partkey);
 			if (profile) {
 				profile->merge_entries += 1;
 			}
 			if (!merged_has_value[index]) {
 				merged_has_value[index] = 1;
-				merged_touched.push_back(partkey);
+				merged_touched.push_back(contribution.partkey);
 			}
-			AddValue(merged_values[index], contribution.supplycost_raw, contribution.availqty);
+			merged_values.AddProduct(index, contribution.product);
+		}
+		for (const auto &entry : worker.value.overflow) {
+			if (entry.first < 0) {
+				continue;
+			}
+			const auto index = static_cast<size_t>(entry.first);
+			if (!merged_has_value[index]) {
+				merged_has_value[index] = 1;
+				merged_touched.push_back(entry.first);
+			}
+			merged_values.spill[entry.first] += entry.second;
 		}
 	}
 }
@@ -647,46 +564,41 @@ public:
 			}
 		}
 
-		std::vector<q11_acc_t> merged_values;
+		q11::PartSums merged_values;
 		std::vector<uint8_t> merged_has_value;
 		std::vector<int64_t> merged_touched;
-		q11_acc_t total_value = 0;
+		q11::WideSum total_value;
 		bool has_total_value = false;
 		const auto merge_t0 = clock::now();
 		MergeWorkerAggs(workers, merged_values, merged_has_value, merged_touched, total_value, has_total_value,
 		                profile_enabled ? &profile : nullptr);
 		profile.merge_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - merge_t0).count();
 		profile.distinct_touched_parts = merged_touched.size();
-		profile.part_domain_size = merged_values.size();
+		profile.part_domain_size = merged_values.lo.size();
 
 		output_rows.clear();
 		if (has_total_value) {
 			const auto threshold_t0 = clock::now();
-			const auto threshold_value = ComputeThreshold(FromAccumulator(total_value), params.fraction);
+			const q11::acc_t total_acc = total_value.Get();
+			const q11::ThresholdTest test(total_acc, params.fraction);
 			profile.threshold_ns =
 			    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - threshold_t0).count();
 
 			const auto qualify_t0 = clock::now();
 			output_rows.reserve(merged_touched.size());
 			for (const auto partkey : merged_touched) {
-				if (partkey < 0 || static_cast<size_t>(partkey) >= merged_values.size()) {
+				const auto part_acc = merged_values.Get(static_cast<size_t>(partkey));
+				if (!test.Passes(part_acc)) {
 					continue;
 				}
-				const auto part_acc = merged_values[static_cast<size_t>(partkey)];
-				if (!ValueGreaterThanThreshold(part_acc, total_value, params.fraction, threshold_value)) {
-					continue;
-				}
-				Q11OutputRow row;
-				row.partkey = partkey;
-				row.value = FromAccumulator(part_acc);
-				output_rows.push_back(std::move(row));
+				output_rows.push_back(q11::OutputRow {partkey, part_acc});
 			}
 			profile.qualify_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - qualify_t0).count();
 			profile.qualifying_part_count = output_rows.size();
 			profile.output_candidates = output_rows.size();
 
 			const auto sort_t0 = clock::now();
-			std::sort(output_rows.begin(), output_rows.end(), BetterOutputRow);
+			std::sort(output_rows.begin(), output_rows.end(), q11::BetterOutputRow);
 			profile.sort_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - sort_t0).count();
 		}
 
@@ -707,10 +619,12 @@ public:
 		}
 		const duckdb::idx_t remaining = output_rows.size() - output_offset;
 		const duckdb::idx_t count = std::min<duckdb::idx_t>(remaining, kOutputBatchSize);
+		auto keys = duckdb::FlatVector::GetData<int64_t>(output.data[0]);
+		auto values = duckdb::FlatVector::GetData<duckdb::hugeint_t>(output.data[1]);
 		for (duckdb::idx_t row = 0; row < count; row++) {
 			const auto &entry = output_rows[output_offset + row];
-			output.SetValue(0, row, duckdb::Value::BIGINT(entry.partkey));
-			output.SetValue(1, row, duckdb::Value::DECIMAL(entry.value, 38, 2));
+			keys[row] = entry.partkey;
+			values[row] = q11::ToHugeint(entry.value);
 		}
 		output.SetCardinality(count);
 		output_offset += count;
@@ -719,7 +633,7 @@ public:
 
 private:
 	Q11Parameters params;
-	std::vector<Q11OutputRow> output_rows;
+	std::vector<q11::OutputRow> output_rows;
 	duckdb::idx_t output_offset = 0;
 	bool finalized = false;
 };

@@ -195,29 +195,32 @@ void WithTransaction(duckdb::Connection &connection, Callback &&callback) {
 	}
 }
 
-accelerator_codegen::TpchQ3ProfileCounters ProfileExecution(
-	duckdb::Connection &connection, const accelerator_codegen::test_support::Q3ManifestEntry &entry) {
-	accelerator_codegen::TpchQ3ProfileCounters counters;
+struct Q3BenchProfile {
+	accelerator_codegen::Q3ProfileCounters kernel;
+	int64_t customer_scan_us = 0;
+	int64_t customer_consume_us = 0;
+	int64_t orders_scan_us = 0;
+	int64_t orders_consume_us = 0;
+	int64_t lineitem_scan_us = 0;
+};
+
+Q3BenchProfile ProfileExecution(duckdb::Connection &connection,
+                                const accelerator_codegen::test_support::Q3ManifestEntry &entry) {
+	Q3BenchProfile profile;
 	WithTransaction(connection, [&](duckdb::ClientContext &context) {
-		accelerator_codegen::TpchQ3Parameters parameters;
+		accelerator_codegen::Q3Parameters parameters;
 		parameters.market_segment = entry.market_segment;
 		parameters.cutoff_date = duckdb::Date::FromString(entry.cutoff_date);
-		parameters.customer_row_estimate = accelerator_codegen::GetNativeScanTableRowCount(
-		    context, accelerator_codegen::CreateTpchQ3CustomerScanSpec(parameters));
-		parameters.orders_row_estimate = accelerator_codegen::GetNativeScanTableRowCount(
-		    context, accelerator_codegen::CreateTpchQ3OrdersScanSpec(parameters));
-		parameters.lineitem_row_estimate = accelerator_codegen::GetNativeScanTableRowCount(
-		    context, accelerator_codegen::CreateTpchQ3LineitemScanSpec(parameters));
 
-		auto customer_scan = accelerator_codegen::BindNativeScan(
-		    context, accelerator_codegen::CreateTpchQ3CustomerScanSpec(parameters));
-		auto orders_scan = accelerator_codegen::BindNativeScan(
-		    context, accelerator_codegen::CreateTpchQ3OrdersScanSpec(parameters));
-		auto lineitem_scan = accelerator_codegen::BindNativeScan(
-		    context, accelerator_codegen::CreateTpchQ3LineitemScanSpec(parameters));
-		auto kernel = accelerator_codegen::CreateTpchQ3ProfilingKernel(parameters, counters);
+		auto customer_scan =
+		    accelerator_codegen::BindNativeScan(context, accelerator_codegen::CreateQ3CustomerScanSpec(parameters));
+		auto orders_scan =
+		    accelerator_codegen::BindNativeScan(context, accelerator_codegen::CreateQ3OrdersScanSpec(parameters));
+		auto lineitem_scan =
+		    accelerator_codegen::BindNativeScan(context, accelerator_codegen::CreateQ3LineitemScanSpec(parameters));
+		auto kernel = accelerator_codegen::CreateQ3ProfilingKernel(parameters, profile.kernel);
 
-		auto drain = [&](accelerator_codegen::TpchQ3InputId input_id, const duckdb::FunctionData &scan,
+		auto drain = [&](accelerator_codegen::Q3InputId input_id, const duckdb::FunctionData &scan,
 		                 int64_t &scan_us, int64_t *consume_us) {
 			auto source = accelerator_codegen::CreateNativeChunkSource(context, scan);
 			while (true) {
@@ -235,11 +238,11 @@ accelerator_codegen::TpchQ3ProfileCounters ProfileExecution(
 				}
 			}
 		};
-		drain(accelerator_codegen::TpchQ3InputId::CUSTOMER, *customer_scan, counters.customer_scan_us,
-		      &counters.customer_consume_us);
-		drain(accelerator_codegen::TpchQ3InputId::ORDERS, *orders_scan, counters.orders_scan_us,
-		      &counters.orders_consume_us);
-		drain(accelerator_codegen::TpchQ3InputId::LINEITEM, *lineitem_scan, counters.lineitem_scan_us, nullptr);
+		drain(accelerator_codegen::Q3InputId::CUSTOMER, *customer_scan, profile.customer_scan_us,
+		      &profile.customer_consume_us);
+		drain(accelerator_codegen::Q3InputId::ORDERS, *orders_scan, profile.orders_scan_us,
+		      &profile.orders_consume_us);
+		drain(accelerator_codegen::Q3InputId::LINEITEM, *lineitem_scan, profile.lineitem_scan_us, nullptr);
 		kernel->Finalize();
 		duckdb::DataChunk output;
 		output.Initialize(context, {duckdb::LogicalType::BIGINT, duckdb::LogicalType::DECIMAL(38, 4),
@@ -248,20 +251,18 @@ accelerator_codegen::TpchQ3ProfileCounters ProfileExecution(
 			output.Reset();
 		}
 	});
-	return counters;
+	return profile;
 }
 
-void PrintCounters(const accelerator_codegen::TpchQ3ProfileCounters &counters) {
-	std::cout << ',' << counters.customer_rows_scanned << ',' << counters.eligible_customers << ','
-	          << counters.customer_generic_fallback_rows << ',' << counters.customer_scan_us << ','
-	          << counters.customer_consume_us << ',' << counters.orders_pre_rows << ','
-	          << counters.customer_membership_hits << ',' << counters.groups_interned << ','
-	          << counters.dense_vs_overflow_probes << ',' << counters.orders_scan_us << ','
-	          << counters.orders_consume_us << ',' << counters.lineitem_pre_rows << ','
-	          << counters.order_probe_hits << ',' << counters.order_probe_misses << ','
-	          << counters.generic_fallback_rows << ',' << counters.lineitem_scan_us << ','
-	          << counters.num_aggregate_us << ',' << counters.nonempty_groups << ','
-	          << counters.finalize_topk_us << ',' << counters.emit_us;
+void PrintCounters(const Q3BenchProfile &profile) {
+	const auto &k = profile.kernel;
+	std::cout << ',' << k.customer.total_rows << ',' << k.qualifying_customers << ','
+	          << k.customer.generic_fallback_rows << ',' << profile.customer_scan_us << ','
+	          << profile.customer_consume_us << ',' << k.orders.total_rows << ',' << k.qualifying_orders << ','
+	          << k.orders.generic_fallback_rows << ',' << profile.orders_scan_us << ','
+	          << profile.orders_consume_us << ',' << k.lineitem.total_rows << ',' << k.qualifying_lineitems << ','
+	          << k.lineitem.generic_fallback_rows << ',' << profile.lineitem_scan_us << ','
+	          << k.lineitem_consume_ns / 1000 << ',' << k.aggregated_orders << ',' << k.finalize_ns / 1000;
 }
 
 } // namespace
@@ -279,11 +280,10 @@ int main() {
 
 		std::cout << "label,reference_mean_us,reference_median_us,reference_mad_us,"
 		             "accelerator_mean_us,accelerator_median_us,accelerator_mad_us,speedup_median,"
-		             "customer_rows_scanned,eligible_customers,customer_generic_fallback_rows,customer_scan_us,"
-		             "customer_consume_us,orders_pre_rows,customer_membership_hits,groups_interned,"
-		             "dense_vs_overflow_probes,orders_scan_us,orders_consume_us,lineitem_pre_rows,"
-		             "order_probe_hits,order_probe_misses,generic_fallback_rows,lineitem_scan_us,num_aggregate_us,"
-		             "nonempty_groups,finalize_topk_us,emit_us\n";
+		             "customer_rows,qualifying_customers,customer_generic_fallback_rows,customer_scan_us,"
+		             "customer_consume_us,orders_rows,qualifying_orders,orders_generic_fallback_rows,orders_scan_us,"
+		             "orders_consume_us,lineitem_rows,qualifying_lineitems,lineitem_generic_fallback_rows,"
+		             "lineitem_scan_us,lineitem_consume_us,aggregated_orders,finalize_us\n";
 
 		int row_count = 0;
 		double reference_median_sum = 0.0;

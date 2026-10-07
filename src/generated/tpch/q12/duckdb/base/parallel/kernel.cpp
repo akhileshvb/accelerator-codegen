@@ -1,5 +1,6 @@
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "tpch/q12/duckdb/base/query.hpp"
+#include "tpch/q12/duckdb/base/simd_lineitem.hpp"
 
 #include <algorithm>
 #include <array>
@@ -151,6 +152,12 @@ public:
 		return it == overflow.end() ? PriorityClass::Absent : it->second;
 	}
 
+	void PrefetchProbe(int64_t orderkey) const {
+		if (orderkey >= 0 && static_cast<size_t>(orderkey) < capacity) {
+			ACCEL_PREFETCH(classes.data() + orderkey);
+		}
+	}
+
 	bool CanProbeUnchecked(int64_t orderkey) const {
 		return orderkey >= 0 && static_cast<size_t>(orderkey) < capacity;
 	}
@@ -206,6 +213,21 @@ void ConsumeOrdersChunkParallel(OrderPriorityStore &store, duckdb::DataChunk &in
 		auto &priority_child = duckdb::DictionaryVector::Child(priority_vector);
 		auto priorities = duckdb::FlatVector::GetData<duckdb::string_t>(priority_child);
 		auto &priority_validity = duckdb::FlatVector::Validity(priority_child);
+		if (priority_sel.data() && input.size() <= STANDARD_VECTOR_SIZE) {
+			uint8_t lut[q12simd::kLutBytes];
+			if (q12simd::BuildSlotLut(priority_sel.data(), input.size(), lut, [&](uint32_t idx) {
+				    if (!priority_validity.AllValid() && !priority_validity.RowIsValidUnsafe(idx)) {
+					    return static_cast<uint8_t>(PriorityClass::Neither);
+				    }
+				    return static_cast<uint8_t>(ClassifyPriority(priorities[idx]));
+			    })) {
+				const uint32_t *psel = priority_sel.data();
+				for (duckdb::idx_t row = 0; row < input.size(); row++) {
+					store.StoreDenseNoGrow(orderkeys[row], static_cast<PriorityClass>(lut[psel[row]]), local_overflow);
+				}
+				return;
+			}
+		}
 		PriorityClass class_cache[STANDARD_VECTOR_SIZE];
 		bool class_valid[STANDARD_VECTOR_SIZE] = {};
 		for (duckdb::idx_t row = 0; row < input.size(); row++) {
@@ -393,6 +415,38 @@ void ConsumeLineitemChunk(const OrderPriorityStore &store, const Q12Parameters &
 		auto &commit_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(commit_vector));
 		auto &receipt_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(receipt_vector));
 		auto &ship_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(ship_vector));
+		if (orderkey_validity.AllValid() && commit_validity.AllValid() && receipt_validity.AllValid() &&
+		    ship_validity.AllValid() && orderkey_sel.data() && shipmode_sel.data() && commit_sel.data() &&
+		    receipt_sel.data() && ship_sel.data() && input.size() <= STANDARD_VECTOR_SIZE) {
+			const auto count = input.size();
+			uint8_t lut[q12simd::kLutBytes];
+			if (q12simd::BuildSlotLut(shipmode_sel.data(), count, lut, [&](uint32_t idx) {
+				    // NULL shipmode (e.g. the dictionary's reserved NULL entry) never matches: row dropped.
+				    if (!shipmode_validity.AllValid() && !shipmode_validity.RowIsValidUnsafe(idx)) {
+					    return static_cast<uint8_t>(ShipModeSlot::Neither);
+				    }
+				    return static_cast<uint8_t>(
+				        ClassifyShipMode(shipmodes[idx], params.shipmode1, params.shipmode2, modes_equal));
+			    })) {
+				int64_t survivor_keys[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+				uint8_t survivor_slots[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+				const auto survivors = q12simd::FilterDict(
+				    orderkey_sel.data(), shipmode_sel.data(), commit_sel.data(), receipt_sel.data(), ship_sel.data(),
+				    count, orderkeys, lut, reinterpret_cast<const int32_t *>(commitdates),
+				    reinterpret_cast<const int32_t *>(receiptdates), reinterpret_cast<const int32_t *>(shipdates),
+				    params.start_date.days, params.end_date.days, !skip_receipt_residual, survivor_keys,
+				    survivor_slots);
+				for (size_t i = 0; i < survivors; i++) {
+					store.PrefetchProbe(survivor_keys[i]);
+				}
+				for (size_t i = 0; i < survivors; i++) {
+					ProbeAndAggregate(store, fixed_slots, survivor_keys[i],
+					                  static_cast<ShipModeSlot>(survivor_slots[i]));
+				}
+				return;
+			}
+		}
+
 		ShipModeSlot shipmode_cache[STANDARD_VECTOR_SIZE];
 		bool shipmode_cache_valid[STANDARD_VECTOR_SIZE] = {};
 

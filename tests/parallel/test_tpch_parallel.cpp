@@ -220,11 +220,11 @@ void RunSf1Suite(duckdb::Connection &connection, const std::vector<int> &thread_
 			              parallel_sql);
 		}
 
-		for (int i = 0; i < seed_limit && i < static_cast<int>(accelerator_codegen::test_support::kQ3Manifest.size());
+		for (int i = 0; i < seed_limit && i < static_cast<int>(accelerator_codegen::test_support::kQ1Manifest.size());
 		     i++) {
-			const auto &e = accelerator_codegen::test_support::kQ3Manifest[i];
-			const auto single_sql = "SELECT * FROM accel_tpch_q3(" + std::to_string(e.day_offset) + ")";
-			const auto parallel_sql = "SELECT * FROM accel_tpch_q3_parallel(" + std::to_string(e.day_offset) + ")";
+			const auto &e = accelerator_codegen::test_support::kQ1Manifest[i];
+			const auto single_sql = "SELECT * FROM accel_tpch_q1(" + std::to_string(e.day_offset) + ")";
+			const auto parallel_sql = "SELECT * FROM accel_tpch_q1_parallel(" + std::to_string(e.day_offset) + ")";
 			CompareSingleVsParallel(connection, std::string(e.label) + " t=" + std::to_string(threads), single_sql,
 			                        parallel_sql);
 		}
@@ -257,8 +257,8 @@ void RunSf1Suite(duckdb::Connection &connection, const std::vector<int> &thread_
 			                        parallel_sql);
 		}
 
-		for (int i = 0; i < 5 && i < static_cast<int>(accelerator_codegen::test_support::kQ32Manifest.size()); i++) {
-			const auto &e = accelerator_codegen::test_support::kQ32Manifest[i];
+		for (int i = 0; i < 5 && i < static_cast<int>(accelerator_codegen::test_support::kQ12Manifest.size()); i++) {
+			const auto &e = accelerator_codegen::test_support::kQ12Manifest[i];
 			const auto single_sql = std::string("SELECT * FROM accel_tpch_q12('") + EscapeLiteral(e.shipmode1) +
 			                        "', '" + EscapeLiteral(e.shipmode2) + "', DATE '" + e.start_date + "')";
 			const auto parallel_sql = std::string("SELECT * FROM accel_tpch_q12_parallel('") +
@@ -416,11 +416,11 @@ void RunSf1Suite(duckdb::Connection &connection, const std::vector<int> &thread_
 void RunSf10Suite(duckdb::Connection &connection) {
 	const std::vector<int> thread_counts = {1, 4, 8};
 	Require(!accelerator_codegen::test_support::kQ6Manifest.empty(), "empty Q6 manifest");
-	Require(!accelerator_codegen::test_support::kQ3Manifest.empty(), "empty Q1 manifest");
+	Require(!accelerator_codegen::test_support::kQ1Manifest.empty(), "empty Q1 manifest");
 	Require(!accelerator_codegen::test_support::kQ3Manifest.empty(), "empty Q3 manifest");
 	Require(!accelerator_codegen::test_support::kQ4Manifest.empty(), "empty Q4 manifest");
 	Require(!accelerator_codegen::test_support::kQ9Manifest.empty(), "empty Q9 manifest");
-	Require(!accelerator_codegen::test_support::kQ32Manifest.empty(), "empty Q12 manifest");
+	Require(!accelerator_codegen::test_support::kQ12Manifest.empty(), "empty Q12 manifest");
 	Require(!accelerator_codegen::test_support::kQ14Manifest.empty(), "empty Q14 manifest");
 	Require(!accelerator_codegen::test_support::kQ35Manifest.empty(), "empty Q15 manifest");
 	Require(!accelerator_codegen::test_support::kQ37Manifest.empty(), "empty Q17 manifest");
@@ -439,11 +439,11 @@ void RunSf10Suite(duckdb::Connection &connection) {
 	Require(!accelerator_codegen::test_support::kQ21Manifest.empty(), "empty Q21 manifest");
 
 	const auto &q6 = accelerator_codegen::test_support::kQ6Manifest[0];
-	const auto &q1 = accelerator_codegen::test_support::kQ3Manifest[0];
+	const auto &q1 = accelerator_codegen::test_support::kQ1Manifest[0];
 	const auto &q3 = accelerator_codegen::test_support::kQ3Manifest[0];
 	const auto &q4 = accelerator_codegen::test_support::kQ4Manifest[0];
 	const auto &q9 = accelerator_codegen::test_support::kQ9Manifest[0];
-	const auto &q12 = accelerator_codegen::test_support::kQ32Manifest[0];
+	const auto &q12 = accelerator_codegen::test_support::kQ12Manifest[0];
 	const auto &q14 = accelerator_codegen::test_support::kQ14Manifest[0];
 	const auto &q15 = accelerator_codegen::test_support::kQ35Manifest[0];
 	const auto &q17 = accelerator_codegen::test_support::kQ37Manifest[0];
@@ -474,8 +474,8 @@ void RunSf10Suite(duckdb::Connection &connection) {
 		        ", " + q6.quantity + ")");
 
 		CompareSingleVsParallel(connection, std::string(q1.label) + " sf10" + tlabel,
-		                        "SELECT * FROM accel_tpch_q3(" + std::to_string(q1.day_offset) + ")",
-		                        "SELECT * FROM accel_tpch_q3_parallel(" + std::to_string(q1.day_offset) + ")");
+		                        "SELECT * FROM accel_tpch_q1(" + std::to_string(q1.day_offset) + ")",
+		                        "SELECT * FROM accel_tpch_q1_parallel(" + std::to_string(q1.day_offset) + ")");
 
 		CompareSingleVsParallel(connection, std::string(q3.label) + " sf10" + tlabel,
 		                        std::string("SELECT * FROM accel_tpch_q3('") + EscapeLiteral(q3.market_segment) +

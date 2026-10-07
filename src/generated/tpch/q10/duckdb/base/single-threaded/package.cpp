@@ -117,9 +117,7 @@ NativeScanSpec CreateQ10LineitemScanSpec(const Q10Parameters &) {
 	    {"l_orderkey", "orderkey", duckdb::LogicalType::BIGINT, duckdb::PhysicalType::INT64},
 	    {"l_extendedprice", "extendedprice", duckdb::LogicalType::DECIMAL(15, 2), duckdb::PhysicalType::INT64},
 	    {"l_discount", "discount", duckdb::LogicalType::DECIMAL(15, 2), duckdb::PhysicalType::INT64},
-	};
-	scan_spec.filters = {
-	    {"l_returnflag", duckdb::ExpressionType::COMPARE_EQUAL, duckdb::Value("R")},
+	    {"l_returnflag", "returnflag", duckdb::LogicalType::VARCHAR, duckdb::PhysicalType::VARCHAR},
 	};
 	return scan_spec;
 }

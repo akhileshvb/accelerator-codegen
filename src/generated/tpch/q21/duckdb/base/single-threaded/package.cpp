@@ -88,7 +88,6 @@ NativeScanSpec CreateQ21OrdersScanSpec(const Q21Parameters &) {
 	scan_spec.table_name = "orders";
 	scan_spec.projected_columns = {
 	    {"o_orderkey", "orderkey", duckdb::LogicalType::BIGINT, duckdb::PhysicalType::INT64},
-	    {"o_orderstatus", "orderstatus", duckdb::LogicalType::VARCHAR, duckdb::PhysicalType::VARCHAR},
 	};
 	scan_spec.filters = {
 	    {"o_orderstatus", duckdb::ExpressionType::COMPARE_EQUAL, duckdb::Value("F")},

@@ -1,4 +1,5 @@
 #include "tpch/q2/duckdb/base/query.hpp"
+#include "tpch/q2/duckdb/base/q2_common.hpp"
 
 #include <algorithm>
 #include <array>
@@ -173,6 +174,14 @@ public:
 		return suppkey >= 0 && suppkey < capacity && has_data[static_cast<size_t>(suppkey)] != 0;
 	}
 
+	const uint8_t *HasDataFlags() const {
+		return has_data.data();
+	}
+
+	size_t HasDataSize() const {
+		return has_data.size();
+	}
+
 	int32_t NationKey(int64_t suppkey) const {
 		return nationkeys[static_cast<size_t>(suppkey)];
 	}
@@ -206,6 +215,7 @@ private:
 		nationkeys.resize(target_size, 0);
 		acctbals.resize(target_size, 0);
 		has_data.resize(target_size, 0);
+		has_data.reserve(target_size + 8); // vector gathers over-read up to 3 bytes
 		capacity = target;
 	}
 
@@ -244,6 +254,14 @@ public:
 		return it == mfgr_by_part.end() ? nullptr : &it->second;
 	}
 
+	const uint8_t *FlagData() const {
+		return flags.data();
+	}
+
+	size_t FlagSize() const {
+		return flags.size();
+	}
+
 	bool Empty() const {
 		return mfgr_by_part.empty();
 	}
@@ -263,6 +281,7 @@ private:
 			}
 		}
 		flags.resize(target, 0);
+		flags.reserve(target + 8); // vector gathers over-read up to 3 bytes
 	}
 
 	std::vector<uint8_t> flags;
@@ -315,7 +334,18 @@ public:
 			duckdb::idx_t match_count = 0;
 			const bool identity = sel.data() == nullptr;
 
-			if (IsFlatAllValid(partkey_vec) && IsFlatAllValid(suppkey_vec) && scan_count >= count) {
+			if (identity && IsFlatAllValid(partkey_vec) && IsFlatAllValid(suppkey_vec) && scan_count >= count) {
+				auto partkeys = duckdb::FlatVector::GetData<int64_t>(partkey_vec);
+				auto suppkeys = duckdb::FlatVector::GetData<int64_t>(suppkey_vec);
+				uint32_t picked[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+				const size_t picked_count = q2::SelectBothFlagged(
+				    qualifying_parts.FlagData(), qualifying_parts.FlagSize(), partkeys, supplier_store.HasDataFlags(),
+				    supplier_store.HasDataSize(), suppkeys, count, picked);
+				for (size_t k = 0; k < picked_count; k++) {
+					const auto vector_index = static_cast<duckdb::idx_t>(picked[k]);
+					survivors[match_count++] = PartsuppSurvivor {vector_index, partkeys[vector_index], suppkeys[vector_index]};
+				}
+			} else if (IsFlatAllValid(partkey_vec) && IsFlatAllValid(suppkey_vec) && scan_count >= count) {
 				auto partkeys = duckdb::FlatVector::GetData<int64_t>(partkey_vec);
 				auto suppkeys = duckdb::FlatVector::GetData<int64_t>(suppkey_vec);
 				for (duckdb::idx_t row = 0; row < count; row++) {
@@ -359,6 +389,8 @@ public:
 			}
 
 			if (match_count == 0) {
+				// Every non-filter projected column must be advanced (Select or Skip) for each vector.
+				row_group.SkipProjectedColumn(scan_state, kPartsuppSupplycostScanIndex);
 				return duckdb::FilteredScanConsumerResult::CONTINUE;
 			}
 
@@ -457,6 +489,9 @@ public:
 			}
 
 			if (match_count == 0) {
+				for (const auto payload_index : kPayloadScanIndices) {
+					row_group.SkipProjectedColumn(scan_state, payload_index);
+				}
 				return duckdb::FilteredScanConsumerResult::CONTINUE;
 			}
 

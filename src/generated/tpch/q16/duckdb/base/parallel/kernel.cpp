@@ -1,6 +1,7 @@
 #include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "tpch/q16/duckdb/base/query.hpp"
+#include "tpch/q16/duckdb/base/q16_common.hpp"
 
 #include <algorithm>
 #include <array>
@@ -240,50 +241,12 @@ struct PrefixLikeMatcher {
 	}
 };
 
-class StringInterner {
-public:
-	uint16_t Intern(const duckdb::string_t &value) {
-		const std::string_view probe(value.GetData(), value.GetSize());
-		for (uint16_t id = 0; id < values.size(); id++) {
-			const auto &stored = values[id];
-			if (stored.size() == probe.size() && std::memcmp(stored.data(), probe.data(), probe.size()) == 0) {
-				return id;
-			}
-		}
-		const uint16_t id = static_cast<uint16_t>(values.size());
-		values.emplace_back(probe);
-		return id;
-	}
-
-	const std::string &Get(uint16_t id) const {
-		return values[id];
-	}
-
-private:
-	std::vector<std::string> values;
-};
+using q16::StringInterner;
 
 struct PartGroup {
-	std::string brand;
-	std::string type;
+	uint32_t brand_id = 0;
+	uint32_t type_id = 0;
 	int32_t size = 0;
-};
-
-struct CompactGroupKey {
-	uint16_t brand_id = 0;
-	uint16_t type_id = 0;
-	int32_t size = 0;
-
-	bool operator==(const CompactGroupKey &other) const {
-		return brand_id == other.brand_id && type_id == other.type_id && size == other.size;
-	}
-};
-
-struct CompactGroupKeyHash {
-	size_t operator()(const CompactGroupKey &key) const {
-		return (static_cast<size_t>(key.brand_id) << 32) ^ (static_cast<size_t>(key.type_id) << 16) ^
-		       static_cast<size_t>(key.size);
-	}
 };
 
 struct GroupSuppPair {
@@ -291,37 +254,17 @@ struct GroupSuppPair {
 	int32_t suppkey = 0;
 };
 
-struct Q16OutputRow {
-	std::string brand;
-	std::string type;
-	int32_t size = 0;
-	int64_t supplier_cnt = 0;
-};
-
-bool BetterOutputRow(const Q16OutputRow &lhs, const Q16OutputRow &rhs) {
-	if (lhs.supplier_cnt != rhs.supplier_cnt) {
-		return lhs.supplier_cnt > rhs.supplier_cnt;
-	}
-	if (lhs.brand != rhs.brand) {
-		return lhs.brand < rhs.brand;
-	}
-	if (lhs.type != rhs.type) {
-		return lhs.type < rhs.type;
-	}
-	return lhs.size < rhs.size;
-}
-
 struct Q16FrozenState {
 	const Q16Parameters &params;
 	TwoPartLikeMatcher complaint_matcher;
 	PrefixLikeMatcher type_prefix_matcher;
 	StringInterner brand_intern;
 	StringInterner type_intern;
-	std::array<uint8_t, kMaxPartSize + 1> allowed_sizes {};
+	std::array<uint8_t, 64> allowed_sizes {};
 	std::vector<uint8_t> excluded_suppliers;
 	std::vector<int32_t> part_group_slot;
 	std::vector<PartGroup> groups;
-	std::unordered_map<CompactGroupKey, int32_t, CompactGroupKeyHash> group_index;
+	q16::KeyTable group_index;
 	bool has_qualifying_parts = false;
 
 	explicit Q16FrozenState(const Q16Parameters &params_p)
@@ -333,6 +276,7 @@ struct Q16FrozenState {
 			}
 		}
 		excluded_suppliers.assign(static_cast<size_t>(kDefaultSupplierCapacity), 0);
+		excluded_suppliers.reserve(static_cast<size_t>(kDefaultSupplierCapacity) + 8);
 		part_group_slot.assign(static_cast<size_t>(kDefaultPartCapacity), 0);
 	}
 
@@ -354,6 +298,7 @@ struct Q16FrozenState {
 			target = std::max(target, static_cast<size_t>(kDefaultSupplierCapacity));
 		}
 		excluded_suppliers.resize(target, 0);
+		excluded_suppliers.reserve(target + 8); // vector gathers over-read up to 3 bytes
 	}
 
 	void EnsurePartCapacity(int64_t partkey) {
@@ -409,22 +354,21 @@ struct Q16FrozenState {
 		return allowed_sizes[static_cast<size_t>(size)] != 0;
 	}
 
-	int32_t GetOrCreateGroupId(uint16_t brand_id, uint16_t type_id, int32_t size) {
-		const CompactGroupKey key {brand_id, type_id, size};
-		const auto existing = group_index.find(key);
-		if (existing != group_index.end()) {
-			return existing->second;
+	int32_t GetOrCreateGroupId(const std::string &brand, const std::string &type, int32_t size) {
+		const uint32_t brand_id = brand_intern.Intern(brand.data(), brand.size());
+		const uint32_t type_id = type_intern.Intern(type.data(), type.size());
+		const uint64_t key = q16::GroupKey(brand_id, type_id, size);
+		const int32_t existing = group_index.Find(key);
+		if (existing >= 0) {
+			return existing;
 		}
 		const int32_t group_id = static_cast<int32_t>(groups.size());
-		groups.push_back(PartGroup {brand_intern.Get(brand_id), type_intern.Get(type_id), size});
-		group_index.emplace(key, group_id);
+		groups.push_back(PartGroup {brand_id, type_id, size});
+		group_index.Insert(key, group_id);
 		return group_id;
 	}
 
-	void QualifyPart(int64_t partkey, const duckdb::string_t &brand_value, const duckdb::string_t &type_value,
-	                 int32_t size) {
-		const auto group_id =
-		    GetOrCreateGroupId(brand_intern.Intern(brand_value), type_intern.Intern(type_value), size);
+	void SetPartGroup(int64_t partkey, int32_t group_id) {
 		EnsurePartCapacity(partkey);
 		part_group_slot[static_cast<size_t>(partkey)] = group_id + 1;
 		has_qualifying_parts = true;
@@ -529,160 +473,109 @@ void BuildSupplierState(duckdb::ClientContext &context, const duckdb::FunctionDa
 	}
 }
 
+struct Q16PartWorker {
+	StringInterner brand_intern;
+	StringInterner type_intern;
+	q16::KeyTable group_index;
+	std::vector<PartGroup> groups;
+	std::vector<std::pair<int64_t, int32_t>> parts; // (partkey, local group id)
+	std::vector<uint32_t> sel;
+
+	int32_t GroupId(const duckdb::string_t &brand, const duckdb::string_t &type, int32_t size) {
+		const uint32_t brand_id = brand_intern.Intern(brand);
+		const uint32_t type_id = type_intern.Intern(type);
+		const uint64_t key = q16::GroupKey(brand_id, type_id, size);
+		const int32_t existing = group_index.Find(key);
+		if (existing >= 0) {
+			return existing;
+		}
+		const int32_t group_id = static_cast<int32_t>(groups.size());
+		groups.push_back(PartGroup {brand_id, type_id, size});
+		group_index.Insert(key, group_id);
+		return group_id;
+	}
+
+	bool Reject(const Q16FrozenState &state, const duckdb::string_t &brand, const duckdb::string_t &type) const {
+		return StringEquals(brand, state.params.brand) || state.TypeMatchesExcludedPrefix(type);
+	}
+};
+
+void ConsumePartChunk(duckdb::DataChunk &chunk, const Q16FrozenState &state, Q16PartWorker &worker) {
+	auto &partkey_vector = chunk.data[Q16PartChunkLayout::PARTKEY_INDEX];
+	auto &brand_vector = chunk.data[Q16PartChunkLayout::BRAND_INDEX];
+	auto &type_vector = chunk.data[Q16PartChunkLayout::TYPE_INDEX];
+	auto &size_vector = chunk.data[Q16PartChunkLayout::SIZE_INDEX];
+	const size_t n = chunk.size();
+	if (IsFlatAllValid(partkey_vector) && IsFlatAllValid(brand_vector) && IsFlatAllValid(type_vector) &&
+	    IsFlatAllValid(size_vector)) {
+		auto partkeys = duckdb::FlatVector::GetData<int64_t>(partkey_vector);
+		auto brands = duckdb::FlatVector::GetData<duckdb::string_t>(brand_vector);
+		auto types = duckdb::FlatVector::GetData<duckdb::string_t>(type_vector);
+		auto sizes = duckdb::FlatVector::GetData<int32_t>(size_vector);
+		if (worker.sel.size() < n + simd::kSelSlack) {
+			worker.sel.resize(n + simd::kSelSlack);
+		}
+		const size_t picked = q16::SelectAllowedSizes(state.allowed_sizes.data(), sizes, n, worker.sel.data());
+		for (size_t k = 0; k < picked; k++) {
+			const uint32_t row = worker.sel[k];
+			if (worker.Reject(state, brands[row], types[row])) {
+				continue;
+			}
+			worker.parts.emplace_back(partkeys[row], worker.GroupId(brands[row], types[row], sizes[row]));
+		}
+		return;
+	}
+	duckdb::UnifiedVectorFormat partkey_format;
+	duckdb::UnifiedVectorFormat brand_format;
+	duckdb::UnifiedVectorFormat type_format;
+	duckdb::UnifiedVectorFormat size_format;
+	partkey_vector.ToUnifiedFormat(n, partkey_format);
+	brand_vector.ToUnifiedFormat(n, brand_format);
+	type_vector.ToUnifiedFormat(n, type_format);
+	size_vector.ToUnifiedFormat(n, size_format);
+	auto partkeys = duckdb::UnifiedVectorFormat::GetData<int64_t>(partkey_format);
+	auto brands = duckdb::UnifiedVectorFormat::GetData<duckdb::string_t>(brand_format);
+	auto types = duckdb::UnifiedVectorFormat::GetData<duckdb::string_t>(type_format);
+	auto sizes = duckdb::UnifiedVectorFormat::GetData<int32_t>(size_format);
+	for (duckdb::idx_t row = 0; row < n; row++) {
+		const auto pi = partkey_format.sel->get_index(row);
+		const auto bi = brand_format.sel->get_index(row);
+		const auto ti = type_format.sel->get_index(row);
+		const auto si = size_format.sel->get_index(row);
+		if (!partkey_format.validity.RowIsValid(pi) || !brand_format.validity.RowIsValid(bi) ||
+		    !type_format.validity.RowIsValid(ti) || !size_format.validity.RowIsValid(si)) {
+			continue;
+		}
+		if (!state.SizeAllowed(sizes[si]) || worker.Reject(state, brands[bi], types[ti])) {
+			continue;
+		}
+		worker.parts.emplace_back(partkeys[pi], worker.GroupId(brands[bi], types[ti], sizes[si]));
+	}
+}
+
 void BuildPartState(duckdb::ClientContext &context, const duckdb::FunctionData &part_bind, Q16FrozenState &state,
-                    Q16ParallelProfile *profile) {
-	auto source = CreateNativeChunkSource(context, part_bind);
-	while (source->Next()) {
-		auto &chunk = source->Chunk();
+                    duckdb::idx_t worker_count, Q16ParallelProfile *profile) {
+	std::vector<CacheLinePadded<Q16PartWorker>> workers(worker_count);
+	RunParallelChunkScan(context, part_bind, worker_count, [&](duckdb::idx_t worker_id, duckdb::DataChunk &chunk) {
+		ConsumePartChunk(chunk, state, workers[worker_id].value);
+	});
+	// Deterministic merge in worker order; group numbering never reaches the output (rows are
+	// fully ordered by count, brand, type, size).
+	for (auto &worker : workers) {
+		auto &w = worker.value;
+		std::vector<int32_t> global_ids(w.groups.size());
+		for (size_t g = 0; g < w.groups.size(); g++) {
+			global_ids[g] = state.GetOrCreateGroupId(w.brand_intern.Get(w.groups[g].brand_id),
+			                                         w.type_intern.Get(w.groups[g].type_id), w.groups[g].size);
+		}
+		for (const auto &part : w.parts) {
+			if (part.first < 0) {
+				continue;
+			}
+			state.SetPartGroup(part.first, global_ids[static_cast<size_t>(part.second)]);
+		}
 		if (profile) {
-			profile->parts_scanned += chunk.size();
-		}
-		auto &partkey_vector = chunk.data[Q16PartChunkLayout::PARTKEY_INDEX];
-		auto &brand_vector = chunk.data[Q16PartChunkLayout::BRAND_INDEX];
-		auto &type_vector = chunk.data[Q16PartChunkLayout::TYPE_INDEX];
-		auto &size_vector = chunk.data[Q16PartChunkLayout::SIZE_INDEX];
-
-		if (IsFlatAllValid(partkey_vector) && IsFlatAllValid(brand_vector) && IsFlatAllValid(type_vector) &&
-		    IsFlatAllValid(size_vector)) {
-			if (profile) {
-				profile->part_flat_rows += chunk.size();
-			}
-			auto partkeys = duckdb::FlatVector::GetData<int64_t>(partkey_vector);
-			auto brands = duckdb::FlatVector::GetData<duckdb::string_t>(brand_vector);
-			auto types = duckdb::FlatVector::GetData<duckdb::string_t>(type_vector);
-			auto sizes = duckdb::FlatVector::GetData<int32_t>(size_vector);
-			for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
-				if (!state.SizeAllowed(sizes[row])) {
-					if (profile) {
-						profile->parts_rejected_size += 1;
-					}
-					continue;
-				}
-				if (StringEquals(brands[row], state.params.brand)) {
-					if (profile) {
-						profile->parts_rejected_brand += 1;
-					}
-					continue;
-				}
-				if (state.TypeMatchesExcludedPrefix(types[row])) {
-					if (profile) {
-						profile->parts_rejected_type += 1;
-					}
-					continue;
-				}
-				state.QualifyPart(partkeys[row], brands[row], types[row], sizes[row]);
-				if (profile) {
-					profile->parts_qualifying += 1;
-				}
-			}
-			continue;
-		}
-
-		if (IsDictionaryOverFlat(partkey_vector) && IsDictionaryOverFlat(brand_vector) &&
-		    IsDictionaryOverFlat(type_vector) && IsDictionaryOverFlat(size_vector)) {
-			if (profile) {
-				profile->part_dict_rows += chunk.size();
-			}
-			auto &partkey_sel = duckdb::DictionaryVector::SelVector(partkey_vector);
-			auto &brand_sel = duckdb::DictionaryVector::SelVector(brand_vector);
-			auto &type_sel = duckdb::DictionaryVector::SelVector(type_vector);
-			auto &size_sel = duckdb::DictionaryVector::SelVector(size_vector);
-			auto partkeys = duckdb::FlatVector::GetData<int64_t>(duckdb::DictionaryVector::Child(partkey_vector));
-			auto brands = duckdb::FlatVector::GetData<duckdb::string_t>(duckdb::DictionaryVector::Child(brand_vector));
-			auto types = duckdb::FlatVector::GetData<duckdb::string_t>(duckdb::DictionaryVector::Child(type_vector));
-			auto sizes = duckdb::FlatVector::GetData<int32_t>(duckdb::DictionaryVector::Child(size_vector));
-			auto &partkey_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(partkey_vector));
-			auto &brand_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(brand_vector));
-			auto &type_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(type_vector));
-			auto &size_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(size_vector));
-			for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
-				const auto partkey_index = partkey_sel.get_index(row);
-				const auto brand_index = brand_sel.get_index(row);
-				const auto type_index = type_sel.get_index(row);
-				const auto size_index = size_sel.get_index(row);
-				if (!partkey_validity.RowIsValid(partkey_index) || !brand_validity.RowIsValid(brand_index) ||
-				    !type_validity.RowIsValid(type_index) || !size_validity.RowIsValid(size_index)) {
-					if (profile) {
-						profile->part_fallback_rows += 1;
-					}
-					continue;
-				}
-				const auto size = sizes[size_index];
-				if (!state.SizeAllowed(size)) {
-					if (profile) {
-						profile->parts_rejected_size += 1;
-					}
-					continue;
-				}
-				if (StringEquals(brands[brand_index], state.params.brand)) {
-					if (profile) {
-						profile->parts_rejected_brand += 1;
-					}
-					continue;
-				}
-				if (state.TypeMatchesExcludedPrefix(types[type_index])) {
-					if (profile) {
-						profile->parts_rejected_type += 1;
-					}
-					continue;
-				}
-				state.QualifyPart(partkeys[partkey_index], brands[brand_index], types[type_index], size);
-				if (profile) {
-					profile->parts_qualifying += 1;
-				}
-			}
-			continue;
-		}
-
-		if (profile) {
-			profile->part_fallback_rows += chunk.size();
-		}
-		duckdb::UnifiedVectorFormat partkey_format;
-		duckdb::UnifiedVectorFormat brand_format;
-		duckdb::UnifiedVectorFormat type_format;
-		duckdb::UnifiedVectorFormat size_format;
-		partkey_vector.ToUnifiedFormat(chunk.size(), partkey_format);
-		brand_vector.ToUnifiedFormat(chunk.size(), brand_format);
-		type_vector.ToUnifiedFormat(chunk.size(), type_format);
-		size_vector.ToUnifiedFormat(chunk.size(), size_format);
-		auto partkeys = duckdb::UnifiedVectorFormat::GetData<int64_t>(partkey_format);
-		auto brands = duckdb::UnifiedVectorFormat::GetData<duckdb::string_t>(brand_format);
-		auto types = duckdb::UnifiedVectorFormat::GetData<duckdb::string_t>(type_format);
-		auto sizes = duckdb::UnifiedVectorFormat::GetData<int32_t>(size_format);
-		for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
-			const auto partkey_index = partkey_format.sel->get_index(row);
-			const auto brand_index = brand_format.sel->get_index(row);
-			const auto type_index = type_format.sel->get_index(row);
-			const auto size_index = size_format.sel->get_index(row);
-			if ((!partkey_format.validity.AllValid() && !partkey_format.validity.RowIsValidUnsafe(partkey_index)) ||
-			    (!brand_format.validity.AllValid() && !brand_format.validity.RowIsValidUnsafe(brand_index)) ||
-			    (!type_format.validity.AllValid() && !type_format.validity.RowIsValidUnsafe(type_index)) ||
-			    (!size_format.validity.AllValid() && !size_format.validity.RowIsValidUnsafe(size_index))) {
-				continue;
-			}
-			const auto size = sizes[size_index];
-			if (!state.SizeAllowed(size)) {
-				if (profile) {
-					profile->parts_rejected_size += 1;
-				}
-				continue;
-			}
-			if (StringEquals(brands[brand_index], state.params.brand)) {
-				if (profile) {
-					profile->parts_rejected_brand += 1;
-				}
-				continue;
-			}
-			if (state.TypeMatchesExcludedPrefix(types[type_index])) {
-				if (profile) {
-					profile->parts_rejected_type += 1;
-				}
-				continue;
-			}
-			state.QualifyPart(partkeys[partkey_index], brands[brand_index], types[type_index], size);
-			if (profile) {
-				profile->parts_qualifying += 1;
-			}
+			profile->parts_qualifying += w.parts.size();
 		}
 	}
 }
@@ -737,8 +630,29 @@ void AccumulatePartsuppChunk(duckdb::DataChunk &chunk, const Q16FrozenState &sta
 		}
 		auto partkeys = duckdb::FlatVector::GetData<int64_t>(partkey_vector);
 		auto suppkeys = duckdb::FlatVector::GetData<int64_t>(suppkey_vector);
-		for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
-			TryEmitPartsuppPair(partkeys[row], suppkeys[row], state, part_capacity, group_supplier_pairs, profile);
+		uint32_t picked[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+		duckdb::idx_t remaining = chunk.size();
+		while (remaining > 0) {
+			const duckdb::idx_t step = std::min<duckdb::idx_t>(remaining, STANDARD_VECTOR_SIZE);
+			const size_t count = q16::SelectPartsuppHits(state.part_group_slot.data(), state.part_group_slot.size(),
+			                                             partkeys, state.excluded_suppliers.data(),
+			                                             state.excluded_suppliers.size(), suppkeys, step, picked);
+			for (size_t k = 0; k < count; k++) {
+				const uint32_t row = picked[k];
+				const int64_t suppkey = suppkeys[row];
+				if (suppkey < 0 || suppkey > std::numeric_limits<int32_t>::max()) {
+					continue;
+				}
+				group_supplier_pairs.push_back(
+				    GroupSuppPair {state.part_group_slot[static_cast<size_t>(partkeys[row])] - 1,
+				                   static_cast<int32_t>(suppkey)});
+			}
+			if (profile) {
+				profile->raw_pairs += count;
+			}
+			partkeys += step;
+			suppkeys += step;
+			remaining -= step;
 		}
 		return;
 	}
@@ -791,7 +705,7 @@ void AccumulatePartsuppChunk(duckdb::DataChunk &chunk, const Q16FrozenState &sta
 }
 
 void FinalizeGroupCounts(const Q16FrozenState &state, std::vector<GroupSuppPair> &group_supplier_pairs,
-                         std::vector<Q16OutputRow> &output_rows, Q16ParallelProfile *profile) {
+                         std::vector<q16::OutRow> &output_rows, Q16ParallelProfile *profile) {
 	const auto group_count = state.groups.size();
 	std::vector<int64_t> group_counts(group_count, 0);
 	if (!group_supplier_pairs.empty()) {
@@ -851,18 +765,17 @@ void FinalizeGroupCounts(const Q16FrozenState &state, std::vector<GroupSuppPair>
 
 	output_rows.clear();
 	output_rows.reserve(state.groups.size());
+	const auto brand_rank = q16::LexRanks(state.brand_intern);
+	const auto type_rank = q16::LexRanks(state.type_intern);
 	for (size_t group_id = 0; group_id < state.groups.size(); group_id++) {
 		if (group_counts[group_id] == 0) {
 			continue;
 		}
-		Q16OutputRow row;
-		row.brand = state.groups[group_id].brand;
-		row.type = state.groups[group_id].type;
-		row.size = state.groups[group_id].size;
-		row.supplier_cnt = group_counts[group_id];
-		output_rows.push_back(std::move(row));
+		const auto &g = state.groups[group_id];
+		output_rows.push_back(q16::OutRow {brand_rank[g.brand_id], type_rank[g.type_id], g.size,
+		                                   group_counts[group_id], static_cast<uint32_t>(group_id)});
 	}
-	std::sort(output_rows.begin(), output_rows.end(), BetterOutputRow);
+	std::sort(output_rows.begin(), output_rows.end(), q16::BetterOutRow);
 }
 
 class Q16ParallelKernel final : public ParallelKernelInstance {
@@ -888,7 +801,8 @@ public:
 		    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - supplier_t0).count();
 
 		const auto part_t0 = clock::now();
-		BuildPartState(context, *bound_inputs[1], frozen, profile_enabled ? &profile : nullptr);
+		const auto part_worker_count = ParallelWorkerCount(context);
+		BuildPartState(context, *bound_inputs[1], frozen, part_worker_count, profile_enabled ? &profile : nullptr);
 		profile.part_build_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - part_t0).count();
 		profile.group_count = frozen.groups.size();
 
@@ -949,6 +863,9 @@ public:
 
 		const auto distinct_t0 = clock::now();
 		FinalizeGroupCounts(frozen, merged, output_rows, profile_enabled ? &profile : nullptr);
+		out_groups = std::move(frozen.groups);
+		out_brands = std::move(frozen.brand_intern);
+		out_types = std::move(frozen.type_intern);
 		profile.distinct_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - distinct_t0).count();
 
 		const auto output_t0 = clock::now();
@@ -971,12 +888,17 @@ public:
 		}
 		const duckdb::idx_t remaining = output_rows.size() - output_offset;
 		const duckdb::idx_t count = std::min<duckdb::idx_t>(remaining, kOutputBatchSize);
+		auto brands = duckdb::FlatVector::GetData<duckdb::string_t>(output.data[0]);
+		auto types = duckdb::FlatVector::GetData<duckdb::string_t>(output.data[1]);
+		auto sizes = duckdb::FlatVector::GetData<int32_t>(output.data[2]);
+		auto cnts = duckdb::FlatVector::GetData<int64_t>(output.data[3]);
 		for (duckdb::idx_t row = 0; row < count; row++) {
 			const auto &entry = output_rows[output_offset + row];
-			output.SetValue(0, row, duckdb::Value(entry.brand));
-			output.SetValue(1, row, duckdb::Value(entry.type));
-			output.SetValue(2, row, duckdb::Value::INTEGER(entry.size));
-			output.SetValue(3, row, duckdb::Value::BIGINT(entry.supplier_cnt));
+			const auto &g = out_groups[entry.group_id];
+			q16::WriteString(output.data[0], brands, row, out_brands.Get(g.brand_id));
+			q16::WriteString(output.data[1], types, row, out_types.Get(g.type_id));
+			sizes[row] = entry.size;
+			cnts[row] = entry.supplier_cnt;
 		}
 		output.SetCardinality(count);
 		output_offset += count;
@@ -985,7 +907,10 @@ public:
 
 private:
 	Q16Parameters params;
-	std::vector<Q16OutputRow> output_rows;
+	std::vector<q16::OutRow> output_rows;
+	std::vector<PartGroup> out_groups;
+	StringInterner out_brands;
+	StringInterner out_types;
 	duckdb::idx_t output_offset = 0;
 	bool finalized = false;
 };

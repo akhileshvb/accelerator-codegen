@@ -1,3 +1,4 @@
+#include "tpch/q15/duckdb/base/q15_revenue.hpp"
 #include "tpch/q15/duckdb/base/query.hpp"
 
 #include <algorithm>
@@ -17,54 +18,6 @@ namespace {
 constexpr uint8_t kRevenueDecimalWidth = 38;
 constexpr uint8_t kRevenueDecimalScale = 4;
 constexpr duckdb::idx_t kOutputBatchSize = 64;
-constexpr int64_t kDefaultSupplierCapacity = 10001;
-
-#if defined(__SIZEOF_INT128__)
-using q15_acc_t = __int128_t;
-
-duckdb::hugeint_t FromAccumulator(q15_acc_t value) {
-	return duckdb::hugeint_t(static_cast<int64_t>(value >> 64), static_cast<uint64_t>(value));
-}
-
-void AddRevenue(q15_acc_t &accumulator, int64_t extendedprice_raw, int64_t discount_raw) {
-	accumulator += static_cast<q15_acc_t>(extendedprice_raw) * static_cast<q15_acc_t>(100 - discount_raw);
-}
-#else
-using q15_acc_t = duckdb::hugeint_t;
-
-duckdb::hugeint_t FromAccumulator(const q15_acc_t &value) {
-	return value;
-}
-
-void AddRevenue(q15_acc_t &accumulator, int64_t extendedprice_raw, int64_t discount_raw) {
-	duckdb::hugeint_t price_value;
-	duckdb::hugeint_t factor_value;
-	duckdb::hugeint_t product_value;
-	if (!duckdb::Hugeint::TryConvert(extendedprice_raw, price_value) ||
-	    !duckdb::Hugeint::TryConvert(static_cast<int64_t>(100 - discount_raw), factor_value) ||
-	    !duckdb::Hugeint::TryMultiply(price_value, factor_value, product_value) ||
-	    !duckdb::Hugeint::TryAddInPlace(accumulator, product_value)) {
-		throw duckdb::OutOfRangeException("Overflow while accumulating Q15 revenue");
-	}
-}
-#endif
-
-struct Q15RuntimeConfig {
-	bool lineitem_flat_fast = true;
-	bool lineitem_dict_fast = true;
-};
-
-bool IsFlatAllValid(duckdb::Vector &vector) {
-	return vector.GetVectorType() == duckdb::VectorType::FLAT_VECTOR &&
-	       duckdb::FlatVector::Validity(vector).AllValid();
-}
-
-bool IsDictionaryOverFlat(duckdb::Vector &vector) {
-	if (vector.GetVectorType() != duckdb::VectorType::DICTIONARY_VECTOR) {
-		return false;
-	}
-	return duckdb::DictionaryVector::Child(vector).GetVectorType() == duckdb::VectorType::FLAT_VECTOR;
-}
 
 struct SupplierRow {
 	std::string name;
@@ -90,17 +43,13 @@ std::string ReadString(const duckdb::string_t &value) {
 
 class Q15Kernel final : public KernelInstance {
 public:
-	explicit Q15Kernel(Q15Parameters params_p) : params(std::move(params_p)), config() {
-		revenue_by_supplier.assign(static_cast<size_t>(kDefaultSupplierCapacity), 0);
-		has_revenue_by_supplier.assign(static_cast<size_t>(kDefaultSupplierCapacity), false);
-		supplier_capacity = kDefaultSupplierCapacity;
-		active_suppkeys.reserve(4096);
+	explicit Q15Kernel(Q15Parameters params_p) : params(std::move(params_p)) {
 	}
 
 	void ConsumeInput(duckdb::idx_t input_id, duckdb::DataChunk &input) override {
 		switch (static_cast<Q15InputId>(input_id)) {
 		case Q15InputId::LINEITEM:
-			ConsumeLineitem(input);
+			aggregator.Consume(input, params);
 			return;
 		case Q15InputId::SUPPLIER:
 			ConsumeSupplier(input);
@@ -112,13 +61,11 @@ public:
 	}
 
 	void Finalize() override {
+		const auto &store = aggregator.Store();
 		duckdb::hugeint_t max_revenue;
 		bool has_max_revenue = false;
-		for (const auto suppkey : active_suppkeys) {
-			if (suppkey < 0 || static_cast<uint64_t>(suppkey) >= static_cast<uint64_t>(supplier_capacity)) {
-				continue;
-			}
-			const auto revenue = FromAccumulator(revenue_by_supplier[static_cast<size_t>(suppkey)]);
+		for (const auto suppkey : store.Active()) {
+			const auto revenue = q15::ToHugeint(store.Revenue(suppkey));
 			if (!has_max_revenue || duckdb::Hugeint::GreaterThan(revenue, max_revenue)) {
 				max_revenue = revenue;
 				has_max_revenue = true;
@@ -126,34 +73,27 @@ public:
 		}
 
 		output_rows.clear();
-		if (!has_max_revenue) {
-			output_offset = 0;
-			finalized = true;
-			return;
+		if (has_max_revenue) {
+			output_rows.reserve(store.Active().size());
+			for (const auto suppkey : store.Active()) {
+				const auto revenue = q15::ToHugeint(store.Revenue(suppkey));
+				if (!duckdb::Hugeint::Equals(revenue, max_revenue)) {
+					continue;
+				}
+				const auto supplier_it = suppliers.find(suppkey);
+				if (supplier_it == suppliers.end()) {
+					continue;
+				}
+				Q15OutputRow row;
+				row.suppkey = suppkey;
+				row.name = supplier_it->second.name;
+				row.address = supplier_it->second.address;
+				row.phone = supplier_it->second.phone;
+				row.revenue = revenue;
+				output_rows.push_back(std::move(row));
+			}
+			std::sort(output_rows.begin(), output_rows.end(), BetterOutputRow);
 		}
-
-		output_rows.reserve(active_suppkeys.size());
-		for (const auto suppkey : active_suppkeys) {
-			if (suppkey < 0 || static_cast<uint64_t>(suppkey) >= static_cast<uint64_t>(supplier_capacity)) {
-				continue;
-			}
-			const auto revenue = FromAccumulator(revenue_by_supplier[static_cast<size_t>(suppkey)]);
-			if (!duckdb::Hugeint::Equals(revenue, max_revenue)) {
-				continue;
-			}
-			const auto supplier_it = suppliers.find(suppkey);
-			if (supplier_it == suppliers.end()) {
-				continue;
-			}
-			Q15OutputRow row;
-			row.suppkey = suppkey;
-			row.name = supplier_it->second.name;
-			row.address = supplier_it->second.address;
-			row.phone = supplier_it->second.phone;
-			row.revenue = revenue;
-			output_rows.push_back(std::move(row));
-		}
-		std::sort(output_rows.begin(), output_rows.end(), BetterOutputRow);
 		output_offset = 0;
 		finalized = true;
 	}
@@ -178,108 +118,6 @@ public:
 	}
 
 private:
-	void EnsureSupplierCapacity(int64_t suppkey) {
-		if (suppkey < 0) {
-			return;
-		}
-		const auto required = suppkey + 1;
-		if (required <= supplier_capacity) {
-			return;
-		}
-		int64_t target = required;
-		if (supplier_capacity > 0) {
-			const int64_t doubled = supplier_capacity > (std::numeric_limits<int64_t>::max() / 2)
-			                              ? std::numeric_limits<int64_t>::max()
-			                              : supplier_capacity * 2;
-			if (doubled > target) {
-				target = doubled;
-			}
-		}
-		revenue_by_supplier.resize(static_cast<size_t>(target), 0);
-		has_revenue_by_supplier.resize(static_cast<size_t>(target), false);
-		supplier_capacity = target;
-	}
-
-	void AccumulateRevenue(int64_t suppkey, int64_t extendedprice_raw, int64_t discount_raw) {
-		if (suppkey < 0) {
-			return;
-		}
-		EnsureSupplierCapacity(suppkey);
-		const auto index = static_cast<size_t>(suppkey);
-		if (!has_revenue_by_supplier[index]) {
-			has_revenue_by_supplier[index] = true;
-			active_suppkeys.push_back(suppkey);
-		}
-		AddRevenue(revenue_by_supplier[index], extendedprice_raw, discount_raw);
-	}
-
-	void ConsumeLineitem(duckdb::DataChunk &input) {
-		auto &suppkey_vector = input.data[Q15LineitemChunkLayout::SUPPKEY_INDEX];
-		auto &extendedprice_vector = input.data[Q15LineitemChunkLayout::EXTENDEDPRICE_INDEX];
-		auto &discount_vector = input.data[Q15LineitemChunkLayout::DISCOUNT_INDEX];
-
-		if (config.lineitem_flat_fast && IsFlatAllValid(suppkey_vector) && IsFlatAllValid(extendedprice_vector) &&
-		    IsFlatAllValid(discount_vector)) {
-			auto suppkeys = duckdb::FlatVector::GetData<int64_t>(suppkey_vector);
-			auto extendedprices = duckdb::FlatVector::GetData<int64_t>(extendedprice_vector);
-			auto discounts = duckdb::FlatVector::GetData<int64_t>(discount_vector);
-			for (duckdb::idx_t row = 0; row < input.size(); row++) {
-				AccumulateRevenue(suppkeys[row], extendedprices[row], discounts[row]);
-			}
-			return;
-		}
-
-		if (config.lineitem_dict_fast && IsDictionaryOverFlat(suppkey_vector) &&
-		    IsDictionaryOverFlat(extendedprice_vector) && IsDictionaryOverFlat(discount_vector)) {
-			auto &suppkey_sel = duckdb::DictionaryVector::SelVector(suppkey_vector);
-			auto &extendedprice_sel = duckdb::DictionaryVector::SelVector(extendedprice_vector);
-			auto &discount_sel = duckdb::DictionaryVector::SelVector(discount_vector);
-			auto suppkeys = duckdb::FlatVector::GetData<int64_t>(duckdb::DictionaryVector::Child(suppkey_vector));
-			auto extendedprices =
-			    duckdb::FlatVector::GetData<int64_t>(duckdb::DictionaryVector::Child(extendedprice_vector));
-			auto discounts = duckdb::FlatVector::GetData<int64_t>(duckdb::DictionaryVector::Child(discount_vector));
-			auto &suppkey_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(suppkey_vector));
-			auto &extendedprice_validity =
-			    duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(extendedprice_vector));
-			auto &discount_validity = duckdb::FlatVector::Validity(duckdb::DictionaryVector::Child(discount_vector));
-			for (duckdb::idx_t row = 0; row < input.size(); row++) {
-				const auto suppkey_index = suppkey_sel.get_index(row);
-				const auto extendedprice_index = extendedprice_sel.get_index(row);
-				const auto discount_index = discount_sel.get_index(row);
-				if (!suppkey_validity.RowIsValid(suppkey_index) || !extendedprice_validity.RowIsValid(extendedprice_index) ||
-				    !discount_validity.RowIsValid(discount_index)) {
-					continue;
-				}
-				AccumulateRevenue(suppkeys[suppkey_index], extendedprices[extendedprice_index],
-				                  discounts[discount_index]);
-			}
-			return;
-		}
-
-		duckdb::UnifiedVectorFormat suppkey_format;
-		duckdb::UnifiedVectorFormat extendedprice_format;
-		duckdb::UnifiedVectorFormat discount_format;
-		suppkey_vector.ToUnifiedFormat(input.size(), suppkey_format);
-		extendedprice_vector.ToUnifiedFormat(input.size(), extendedprice_format);
-		discount_vector.ToUnifiedFormat(input.size(), discount_format);
-		auto suppkeys = duckdb::UnifiedVectorFormat::GetData<int64_t>(suppkey_format);
-		auto extendedprices = duckdb::UnifiedVectorFormat::GetData<int64_t>(extendedprice_format);
-		auto discounts = duckdb::UnifiedVectorFormat::GetData<int64_t>(discount_format);
-
-		for (duckdb::idx_t row = 0; row < input.size(); row++) {
-			const auto suppkey_index = suppkey_format.sel->get_index(row);
-			const auto extendedprice_index = extendedprice_format.sel->get_index(row);
-			const auto discount_index = discount_format.sel->get_index(row);
-			if ((!suppkey_format.validity.AllValid() && !suppkey_format.validity.RowIsValidUnsafe(suppkey_index)) ||
-			    (!extendedprice_format.validity.AllValid() &&
-			     !extendedprice_format.validity.RowIsValidUnsafe(extendedprice_index)) ||
-			    (!discount_format.validity.AllValid() && !discount_format.validity.RowIsValidUnsafe(discount_index))) {
-				continue;
-			}
-			AccumulateRevenue(suppkeys[suppkey_index], extendedprices[extendedprice_index], discounts[discount_index]);
-		}
-	}
-
 	void ConsumeSupplier(duckdb::DataChunk &input) {
 		duckdb::UnifiedVectorFormat suppkey_format;
 		duckdb::UnifiedVectorFormat name_format;
@@ -303,8 +141,7 @@ private:
 				continue;
 			}
 			const auto suppkey = suppkeys[suppkey_index];
-			if (suppkey < 0 || static_cast<uint64_t>(suppkey) >= static_cast<uint64_t>(supplier_capacity) ||
-			    !has_revenue_by_supplier[static_cast<size_t>(suppkey)]) {
+			if (!aggregator.Store().Has(suppkey)) {
 				continue;
 			}
 			SupplierRow supplier;
@@ -319,11 +156,7 @@ private:
 	}
 
 	Q15Parameters params;
-	Q15RuntimeConfig config;
-	int64_t supplier_capacity = 0;
-	std::vector<q15_acc_t> revenue_by_supplier;
-	std::vector<bool> has_revenue_by_supplier;
-	std::vector<int64_t> active_suppkeys;
+	q15::ChunkAggregator aggregator;
 	std::unordered_map<int64_t, SupplierRow> suppliers;
 	std::vector<Q15OutputRow> output_rows;
 	duckdb::idx_t output_offset = 0;

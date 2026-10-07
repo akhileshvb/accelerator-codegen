@@ -1,4 +1,5 @@
 #include "tpch/q19/duckdb/base/query.hpp"
+#include "tpch/q19/duckdb/base/q19_fast.hpp"
 
 #include <array>
 #include <chrono>
@@ -241,6 +242,14 @@ public:
 		return branch_masks[partkey];
 	}
 
+	const uint8_t *Table() const {
+		return branch_masks.data();
+	}
+
+	uint64_t TableSize() const {
+		return use_dense ? capacity : 0;
+	}
+
 	duckdb::idx_t Cardinality() const {
 		return stored_count + overflow.size();
 	}
@@ -331,6 +340,9 @@ public:
 		if (!has_revenue) {
 			output.SetValue(0, 0, duckdb::Value(duckdb::LogicalType::DECIMAL(38, 4)));
 		} else {
+#if defined(__SIZEOF_INT128__)
+			revenue_sum = AccToHugeint(revenue_acc);
+#endif
 			output.SetValue(0, 0, duckdb::Value::DECIMAL(revenue_sum, 38, 4));
 		}
 		emitted = true;
@@ -497,14 +509,8 @@ private:
 #if defined(__SIZEOF_INT128__)
 		const AccT contribution =
 		    static_cast<AccT>(extendedprice_raw) * static_cast<AccT>(100 - discount_raw);
-		if (has_revenue) {
-			AccT lhs = (static_cast<AccT>(revenue_sum.upper) << 64) + revenue_sum.lower;
-			lhs += contribution;
-			revenue_sum = AccToHugeint(lhs);
-		} else {
-			revenue_sum = AccToHugeint(contribution);
-			has_revenue = true;
-		}
+		revenue_acc += contribution;
+		has_revenue = true;
 #else
 		duckdb::hugeint_t price_value;
 		duckdb::hugeint_t factor_value;
@@ -578,9 +584,27 @@ private:
 			auto discounts = duckdb::FlatVector::GetData<int64_t>(discount_vector);
 			auto shipmodes = duckdb::FlatVector::GetData<duckdb::string_t>(shipmode_vector);
 			auto shipinstructs = duckdb::FlatVector::GetData<duckdb::string_t>(shipinstruct_vector);
-			for (duckdb::idx_t row = 0; row < input.size(); row++) {
-				(void)ProcessLineitemRow(partkeys[row], quantities[row], extendedprices[row], discounts[row],
-				                         shipmodes[row], shipinstructs[row]);
+			const duckdb::idx_t total = input.size();
+			for (duckdb::idx_t off = 0; off < total; off += q19fast::kBlock) {
+				const auto cnt = std::min<duckdb::idx_t>(q19fast::kBlock, total - off);
+				alignas(64) uint32_t sel[q19fast::kBlock + simd::kSelSlack];
+				// Rows whose part has no matching branch can never contribute; the profile counters for
+				// those rows (shipmode/shipinstruct/part-miss rejects) are only kept in profiling mode.
+				if (profile) {
+					for (duckdb::idx_t row = off; row < off + cnt; row++) {
+						(void)ProcessLineitemRow(partkeys[row], quantities[row], extendedprices[row],
+						                         discounts[row], shipmodes[row], shipinstructs[row]);
+					}
+					continue;
+				}
+				const auto m = q19fast::SelectNonZeroBytes(
+				    partkeys + off, cnt, part_branches.Table(), part_branches.TableSize(), sel,
+				    [&](int64_t key) { return part_branches.Probe(key) != 0; });
+				for (size_t j = 0; j < m; j++) {
+					const auto row = off + sel[j];
+					(void)ProcessLineitemRow(partkeys[row], quantities[row], extendedprices[row], discounts[row],
+					                         shipmodes[row], shipinstructs[row]);
+				}
 			}
 			if (profile) {
 				profile->lineitem_probe_ns +=
@@ -708,6 +732,9 @@ private:
 	PartBranchStore part_branches;
 	std::array<BranchBounds, 3> branches_;
 	duckdb::hugeint_t revenue_sum = duckdb::Hugeint::Convert(0);
+#if defined(__SIZEOF_INT128__)
+	AccT revenue_acc = 0;
+#endif
 	bool has_revenue = false;
 	bool finalized = false;
 	bool emitted = false;

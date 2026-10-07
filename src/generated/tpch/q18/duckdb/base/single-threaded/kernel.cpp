@@ -1,3 +1,4 @@
+#include "tpch/q18/duckdb/base/agg.hpp"
 #include "tpch/q18/duckdb/base/query.hpp"
 
 #include <algorithm>
@@ -19,6 +20,7 @@ namespace {
 constexpr duckdb::idx_t kOutputBatchSize = 64;
 constexpr int64_t kDefaultOrderCapacity = 6000001;
 constexpr int64_t kDefaultCustomerCapacity = 150001;
+constexpr int64_t kMaxDenseCustkey = int64_t {1} << 26;
 
 struct Q18RuntimeConfig {
 	bool lineitem_flat_fast = true;
@@ -71,8 +73,8 @@ public:
 	explicit Q18Kernel(Q18Parameters params_p, Q18ProfileCounters *profile_p = nullptr)
 	    : params(std::move(params_p)), profile(profile_p), config() {
 		quantity_threshold_raw = params.quantity_threshold * 100;
-		order_quantity_totals.assign(static_cast<size_t>(kDefaultOrderCapacity), 0);
-		order_qualifying.assign(static_cast<size_t>(kDefaultOrderCapacity), 0);
+		agg_cfg = q18agg::Config::Make(quantity_threshold_raw);
+		totals.Init(static_cast<size_t>(kDefaultOrderCapacity));
 		if (profile) {
 			profile->used_dense_state = true;
 		}
@@ -99,12 +101,8 @@ public:
 	void Finalize() override {
 		output_rows.clear();
 		output_rows.reserve(orders.size());
-		const auto order_capacity = static_cast<int64_t>(order_quantity_totals.size());
 		for (const auto &entry : orders) {
 			const auto orderkey = entry.first;
-			if (orderkey < 0 || orderkey >= order_capacity) {
-				continue;
-			}
 			if (!IsQualifyingOrder(orderkey)) {
 				continue;
 			}
@@ -122,7 +120,7 @@ public:
 			row.orderkey = orderkey;
 			row.orderdate = metadata.orderdate;
 			row.totalprice = metadata.totalprice;
-			row.quantity_sum = duckdb::hugeint_t(order_quantity_totals[static_cast<size_t>(orderkey)]);
+			row.quantity_sum = duckdb::hugeint_t(resolved.totals.at(orderkey));
 			output_rows.push_back(std::move(row));
 		}
 		std::sort(output_rows.begin(), output_rows.end(), BetterOutputRow);
@@ -151,27 +149,6 @@ public:
 	}
 
 private:
-	void EnsureOrderCapacity(int64_t orderkey) {
-		if (orderkey < 0) {
-			return;
-		}
-		const auto required = static_cast<size_t>(orderkey) + 1;
-		if (required <= order_quantity_totals.size()) {
-			return;
-		}
-		size_t target = required;
-		if (!order_quantity_totals.empty()) {
-			const size_t doubled = order_quantity_totals.size() * 2;
-			if (doubled > target) {
-				target = doubled;
-			}
-		} else {
-			target = std::max(target, static_cast<size_t>(kDefaultOrderCapacity));
-		}
-		order_quantity_totals.resize(target, 0);
-		order_qualifying.resize(target, 0);
-	}
-
 	void EnsureCustomerCapacity(int64_t custkey) {
 		if (custkey < 0) {
 			return;
@@ -196,25 +173,38 @@ private:
 		if (qualifying_orders_ready) {
 			return;
 		}
-		for (int64_t orderkey = 0; orderkey < static_cast<int64_t>(order_quantity_totals.size()); orderkey++) {
-			if (order_quantity_totals[static_cast<size_t>(orderkey)] > quantity_threshold_raw) {
-				order_qualifying[static_cast<size_t>(orderkey)] = 1;
-				has_qualifying_orders = true;
-			}
-		}
+		resolved = q18agg::Resolve(totals, quantity_threshold_raw, {&agg});
+		qualifying.Build(resolved.keys);
+		has_qualifying_orders = !resolved.keys.empty();
 		qualifying_orders_ready = true;
 	}
 
 	bool IsQualifyingOrder(int64_t orderkey) const {
-		if (orderkey < 0 || static_cast<size_t>(orderkey) >= order_qualifying.size()) {
-			return false;
-		}
-		return order_qualifying[static_cast<size_t>(orderkey)] != 0;
+		return qualifying.Contains(orderkey);
 	}
 
 	void AddOrderQuantity(int64_t orderkey, int64_t quantity_raw) {
-		EnsureOrderCapacity(orderkey);
-		order_quantity_totals[static_cast<size_t>(orderkey)] += quantity_raw;
+		q18agg::AddRow<false, true>(totals, agg_cfg, agg, orderkey, quantity_raw);
+	}
+
+	void NeedCustkey(int64_t custkey) {
+		if (custkey >= 0 && custkey < kMaxDenseCustkey) {
+			if (static_cast<size_t>(custkey) >= needed_custkeys.size()) {
+				needed_custkeys.resize(std::max(static_cast<size_t>(custkey) + 1, needed_custkeys.size() * 2), 0);
+			}
+			needed_custkeys[static_cast<size_t>(custkey)] = 1;
+			any_needed = true;
+			return;
+		}
+		needed_custkeys_overflow.insert(custkey);
+		any_needed = true;
+	}
+
+	bool IsCustkeyNeeded(int64_t custkey) const {
+		if (custkey >= 0 && custkey < kMaxDenseCustkey) {
+			return static_cast<size_t>(custkey) < needed_custkeys.size() && needed_custkeys[static_cast<size_t>(custkey)];
+		}
+		return needed_custkeys_overflow.find(custkey) != needed_custkeys_overflow.end();
 	}
 
 	void ConsumeLineitemAgg(duckdb::DataChunk &input) {
@@ -230,9 +220,7 @@ private:
 			}
 			auto orderkeys = duckdb::FlatVector::GetData<int64_t>(orderkey_vector);
 			auto quantities = duckdb::FlatVector::GetData<int64_t>(quantity_vector);
-			for (duckdb::idx_t row = 0; row < input.size(); row++) {
-				AddOrderQuantity(orderkeys[row], quantities[row]);
-			}
+			q18agg::AggregateChunk<false, true>(totals, agg_cfg, agg, orderkeys, quantities, input.size());
 			return;
 		}
 
@@ -301,16 +289,16 @@ private:
 			auto custkeys = duckdb::FlatVector::GetData<int64_t>(custkey_vector);
 			auto orderdates = duckdb::FlatVector::GetData<int32_t>(orderdate_vector);
 			auto totalprices = duckdb::FlatVector::GetData<int64_t>(totalprice_vector);
-			for (duckdb::idx_t row = 0; row < input.size(); row++) {
+			uint32_t hits[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+			const auto hit_count = qualifying.Select(orderkeys, input.size(), hits);
+			for (size_t h = 0; h < hit_count; h++) {
+				const auto row = hits[h];
 				const auto orderkey = orderkeys[row];
-				if (!IsQualifyingOrder(orderkey)) {
-					continue;
-				}
 				OrderMetadata metadata;
 				metadata.custkey = custkeys[row];
 				metadata.orderdate = duckdb::date_t(orderdates[row]);
 				metadata.totalprice = duckdb::hugeint_t(totalprices[row]);
-				needed_custkeys.insert(metadata.custkey);
+				NeedCustkey(metadata.custkey);
 				orders.emplace(orderkey, std::move(metadata));
 				if (profile) {
 					profile->orders_rows_matched += 1;
@@ -356,7 +344,7 @@ private:
 				metadata.custkey = custkeys[custkey_index];
 				metadata.orderdate = duckdb::date_t(orderdates[orderdate_index]);
 				metadata.totalprice = duckdb::hugeint_t(totalprices[totalprice_index]);
-				needed_custkeys.insert(metadata.custkey);
+				NeedCustkey(metadata.custkey);
 				orders.emplace(orderkey, std::move(metadata));
 				if (profile) {
 					profile->orders_rows_matched += 1;
@@ -400,7 +388,7 @@ private:
 			metadata.custkey = custkeys[custkey_index];
 			metadata.orderdate = duckdb::date_t(orderdates[orderdate_index]);
 			metadata.totalprice = duckdb::hugeint_t(totalprices[totalprice_index]);
-			needed_custkeys.insert(metadata.custkey);
+			NeedCustkey(metadata.custkey);
 			orders.emplace(orderkey, std::move(metadata));
 			if (profile) {
 				profile->orders_rows_matched += 1;
@@ -409,7 +397,7 @@ private:
 	}
 
 	void ConsumeCustomer(duckdb::DataChunk &input) {
-		if (needed_custkeys.empty()) {
+		if (!any_needed) {
 			return;
 		}
 		if (profile) {
@@ -426,7 +414,7 @@ private:
 			auto names = duckdb::FlatVector::GetData<duckdb::string_t>(name_vector);
 			for (duckdb::idx_t row = 0; row < input.size(); row++) {
 				const auto custkey = custkeys[row];
-				if (needed_custkeys.find(custkey) == needed_custkeys.end()) {
+				if (!IsCustkeyNeeded(custkey)) {
 					continue;
 				}
 				EnsureCustomerCapacity(custkey);
@@ -460,7 +448,7 @@ private:
 					continue;
 				}
 				const auto custkey = custkeys[custkey_index];
-				if (needed_custkeys.find(custkey) == needed_custkeys.end()) {
+				if (!IsCustkeyNeeded(custkey)) {
 					continue;
 				}
 				EnsureCustomerCapacity(custkey);
@@ -491,7 +479,7 @@ private:
 				continue;
 			}
 			const auto custkey = custkeys[custkey_index];
-			if (needed_custkeys.find(custkey) == needed_custkeys.end()) {
+			if (!IsCustkeyNeeded(custkey)) {
 				continue;
 			}
 			EnsureCustomerCapacity(custkey);
@@ -508,9 +496,14 @@ private:
 	Q18ProfileCounters *profile;
 	Q18RuntimeConfig config;
 	int64_t quantity_threshold_raw = 0;
-	std::vector<int64_t> order_quantity_totals;
-	std::vector<uint8_t> order_qualifying;
-	std::unordered_set<int64_t> needed_custkeys;
+	q18agg::Config agg_cfg;
+	q18agg::TotalsArray totals;
+	q18agg::WorkerAgg agg;
+	q18agg::Resolved resolved;
+	q18agg::KeyBitmap qualifying;
+	std::vector<uint8_t> needed_custkeys;
+	std::unordered_set<int64_t> needed_custkeys_overflow;
+	bool any_needed = false;
 	std::vector<std::string> customer_names;
 	std::unordered_map<int64_t, OrderMetadata> orders;
 	bool qualifying_orders_ready = false;

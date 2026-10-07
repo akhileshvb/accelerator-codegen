@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -35,6 +36,15 @@ std::string ReadFile(const std::string &path) {
 	std::ostringstream buffer;
 	buffer << input.rdbuf();
 	return buffer.str();
+}
+
+// The generated Q10 instances omit the spec's LIMIT 20; add it to the reference.
+std::string ReferenceQ10Sql(const std::string &path) {
+	auto sql = ReadFile(path);
+	while (!sql.empty() && (sql.back() == ';' || std::isspace(static_cast<unsigned char>(sql.back())))) {
+		sql.pop_back();
+	}
+	return sql + "\nLIMIT 20";
 }
 
 std::vector<std::string> MaterializeOrderedRows(duckdb::MaterializedQueryResult &result) {
@@ -121,7 +131,7 @@ int main() {
 			accelerator_codegen::RegisterAcceleratorFunctions(connection);
 			connection.Query("PRAGMA threads=1");
 			for (const auto &entry : accelerator_codegen::test_support::kQ10Manifest) {
-				RequireEqualResults(connection, entry.label, ReadFile(entry.sql_path),
+				RequireEqualResults(connection, entry.label, ReferenceQ10Sql(entry.sql_path),
 				                    AcceleratorQ10Sql(entry.start_date));
 			}
 		}

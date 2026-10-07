@@ -1,6 +1,7 @@
 #include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "tpch/q2/duckdb/base/query.hpp"
+#include "tpch/q2/duckdb/base/q2_common.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -300,6 +301,14 @@ public:
 		return it == mfgr_by_part.end() ? nullptr : &it->second;
 	}
 
+	const uint8_t *FlagData() const {
+		return flags.data();
+	}
+
+	size_t FlagSize() const {
+		return flags.size();
+	}
+
 	bool Empty() const {
 		return mfgr_by_part.empty();
 	}
@@ -326,6 +335,7 @@ private:
 			}
 		}
 		flags.resize(target, 0);
+		flags.reserve(target + 8); // vector gathers over-read up to 3 bytes
 	}
 
 	std::vector<uint8_t> flags;
@@ -353,6 +363,14 @@ public:
 
 	bool HasData(int64_t suppkey) const {
 		return suppkey >= 0 && suppkey < capacity && has_data[static_cast<size_t>(suppkey)] != 0;
+	}
+
+	const uint8_t *HasDataFlags() const {
+		return has_data.data();
+	}
+
+	size_t HasDataSize() const {
+		return has_data.size();
 	}
 
 	int32_t NationKey(int64_t suppkey) const {
@@ -400,6 +418,7 @@ private:
 		nationkeys.resize(target_size, 0);
 		acctbals.resize(target_size, 0);
 		has_data.resize(target_size, 0);
+		has_data.reserve(target_size + 8); // vector gathers over-read up to 3 bytes
 		capacity = target;
 	}
 
@@ -673,27 +692,26 @@ void AccumulatePartsuppChunk(duckdb::DataChunk &chunk, const Q2FrozenState &stat
 		auto partkeys = duckdb::FlatVector::GetData<int64_t>(partkey_vector);
 		auto suppkeys = duckdb::FlatVector::GetData<int64_t>(suppkey_vector);
 		auto supplycosts = duckdb::FlatVector::GetData<int64_t>(supplycost_vector);
-		for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
+		uint32_t picked[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+		duckdb::idx_t n = chunk.size();
+		while (n > 0) {
+			const duckdb::idx_t step = std::min<duckdb::idx_t>(n, STANDARD_VECTOR_SIZE);
+			const size_t picked_count = q2::SelectBothFlagged(
+			    state.qualifying_parts.FlagData(), state.qualifying_parts.FlagSize(), partkeys,
+			    state.supplier_store.HasDataFlags(), state.supplier_store.HasDataSize(), suppkeys, step, picked);
 			if (profile) {
-				profile->partsupp_rows_scanned++;
+				profile->partsupp_rows_scanned += step;
+				profile->rows_qualifying_both += picked_count;
+				profile->min_consider_calls += picked_count;
 			}
-			const auto partkey = partkeys[row];
-			if (!state.qualifying_parts.Contains(partkey)) {
-				continue;
+			for (size_t k = 0; k < picked_count; k++) {
+				const uint32_t row = picked[k];
+				agg.Consider(partkeys[row], suppkeys[row], supplycosts[row]);
 			}
-			if (profile) {
-				profile->rows_qualifying_part++;
-			}
-			const auto suppkey = suppkeys[row];
-			if (!state.supplier_store.HasData(suppkey)) {
-				continue;
-			}
-			if (profile) {
-				profile->rows_qualifying_supplier++;
-				profile->rows_qualifying_both++;
-				profile->min_consider_calls++;
-			}
-			agg.Consider(partkey, suppkey, supplycosts[row]);
+			partkeys += step;
+			suppkeys += step;
+			supplycosts += step;
+			n -= step;
 		}
 		return;
 	}

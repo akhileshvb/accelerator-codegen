@@ -1,10 +1,8 @@
 #include "accelerator_codegen/runtime/duckdb/query_runtime.hpp"
 #include "tpch/q1/duckdb/base/query.hpp"
-#include "tpch/q1/duckdb/base/fused.hpp"
 
 #include <cstdint>
 #include <memory>
-#include <stdexcept>
 
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/function/function_set.hpp"
@@ -40,7 +38,7 @@ Q1Parameters MakeQ1Parameters(int32_t day_offset) {
     return parameters;
 }
 
-NativeScanSpec CreateQ1ScanSpec(const Q1Parameters &parameters) {
+NativeScanSpec CreateQ1ScanSpec(const Q1Parameters &parameters, bool push_shipdate_filter) {
     NativeScanSpec scan_spec;
     scan_spec.table_name = "lineitem";
     scan_spec.projected_columns = {
@@ -53,9 +51,12 @@ NativeScanSpec CreateQ1ScanSpec(const Q1Parameters &parameters) {
         {"l_returnflag", "returnflag", duckdb::LogicalType::VARCHAR, duckdb::PhysicalType::VARCHAR},
         {"l_linestatus", "linestatus", duckdb::LogicalType::VARCHAR, duckdb::PhysicalType::VARCHAR},
     };
-    scan_spec.filters = {
-        {"l_shipdate", duckdb::ExpressionType::COMPARE_LESSTHANOREQUALTO, duckdb::Value::DATE(parameters.cutoff_date)},
-    };
+    if (push_shipdate_filter) {
+        scan_spec.filters = {
+            {"l_shipdate", duckdb::ExpressionType::COMPARE_LESSTHANOREQUALTO,
+             duckdb::Value::DATE(parameters.cutoff_date)},
+        };
+    }
     return scan_spec;
 }
 
@@ -66,7 +67,7 @@ QueryBindResult BindQ1Package(duckdb::ClientContext &, duckdb::TableFunctionBind
 
     QueryBindResult result;
     result.query_parameters = std::make_unique<Q1Parameters>(parameters);
-    result.input_scans.push_back(CreateQ1ScanSpec(parameters));
+    result.input_scans.push_back(CreateQ1ScanSpec(parameters, /*push_shipdate_filter=*/false));
     result.output_schema.names = {"l_returnflag", "l_linestatus", "sum_qty", "sum_base_price", "sum_disc_price",
                                   "sum_charge", "avg_qty", "avg_price", "avg_disc", "count_order"};
     result.output_schema.types = {
@@ -87,25 +88,7 @@ QueryBindResult BindQ1Package(duckdb::ClientContext &, duckdb::TableFunctionBind
 duckdb::unique_ptr<KernelInstance> CreateQ1KernelInstance(const QueryParameters &parameters,
                                                           const QueryKernelFactoryData *) {
     auto &q1_parameters = dynamic_cast<const Q1Parameters &>(parameters);
-    return CreateQ1FusedKernel(q1_parameters);
-}
-
-} // namespace
-
-namespace {
-
-duckdb::unique_ptr<KernelInstance> CreateQ1FusedKernelInstance(const QueryParameters &parameters,
-                                                               const QueryKernelFactoryData *) {
-	// Q1 always uses the fused ScanFilteredConsumer kernel.
-	return duckdb::make_uniq<Q1FusedKernel>(dynamic_cast<const Q1Parameters &>(parameters));
-}
-
-void RunQ1FusedScan(duckdb::ClientContext &context, KernelInstance &kernel,
-                    const duckdb::vector<duckdb::unique_ptr<duckdb::FunctionData>> &bound_inputs) {
-	if (bound_inputs.size() != 1) {
-		throw std::runtime_error("Q1 fused scan expects exactly one bound input");
-	}
-	dynamic_cast<Q1FusedKernel &>(kernel).RunFusedScan(context, *bound_inputs[0]);
+    return CreateQ1Kernel(q1_parameters);
 }
 
 } // namespace
@@ -119,8 +102,6 @@ duckdb::TableFunctionSet CreateTpchQ1FunctionSet() {
     };
     package.bind_query = BindQ1Package;
     package.create_kernel = CreateQ1KernelInstance;
-    package.create_fused_kernel = CreateQ1FusedKernelInstance;
-    package.fused_scan = RunQ1FusedScan;
     return CreateRuntimeBackedFunctionSet(package);
 }
 

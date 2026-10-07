@@ -1,4 +1,5 @@
 #include "tpch/q16/duckdb/base/query.hpp"
+#include "tpch/q16/duckdb/base/q16_common.hpp"
 
 #include <algorithm>
 #include <array>
@@ -164,83 +165,13 @@ struct PrefixLikeMatcher {
 	}
 };
 
-class StringInterner {
-public:
-	uint16_t Intern(const duckdb::string_t &value) {
-		const std::string_view probe(value.GetData(), value.GetSize());
-		for (uint16_t id = 0; id < values.size(); id++) {
-			const auto &stored = values[id];
-			if (stored.size() == probe.size() && std::memcmp(stored.data(), probe.data(), probe.size()) == 0) {
-				return id;
-			}
-		}
-		const uint16_t id = static_cast<uint16_t>(values.size());
-		values.emplace_back(probe);
-		return id;
-	}
-
-	const std::string &Get(uint16_t id) const {
-		return values[id];
-	}
-
-private:
-	std::vector<std::string> values;
-};
+using q16::StringInterner;
 
 struct PartGroup {
-	std::string brand;
-	std::string type;
+	uint32_t brand_id = 0;
+	uint32_t type_id = 0;
 	int32_t size = 0;
 };
-
-struct CompactGroupKey {
-	uint16_t brand_id = 0;
-	uint16_t type_id = 0;
-	int32_t size = 0;
-
-	bool operator==(const CompactGroupKey &other) const {
-		return brand_id == other.brand_id && type_id == other.type_id && size == other.size;
-	}
-};
-
-struct CompactGroupKeyHash {
-	size_t operator()(const CompactGroupKey &key) const {
-		return (static_cast<size_t>(key.brand_id) << 32) ^ (static_cast<size_t>(key.type_id) << 16) ^
-		       static_cast<size_t>(key.size);
-	}
-};
-
-struct GroupSuppPair {
-	int32_t group_id = 0;
-	int32_t suppkey = 0;
-};
-
-struct Q16OutputRow {
-	std::string brand;
-	std::string type;
-	int32_t size = 0;
-	int64_t supplier_cnt = 0;
-};
-
-bool BetterOutputRow(const Q16OutputRow &lhs, const Q16OutputRow &rhs) {
-	if (lhs.supplier_cnt != rhs.supplier_cnt) {
-		return lhs.supplier_cnt > rhs.supplier_cnt;
-	}
-	if (lhs.brand != rhs.brand) {
-		return lhs.brand < rhs.brand;
-	}
-	if (lhs.type != rhs.type) {
-		return lhs.type < rhs.type;
-	}
-	return lhs.size < rhs.size;
-}
-
-bool LessGroupSuppPair(const GroupSuppPair &lhs, const GroupSuppPair &rhs) {
-	if (lhs.group_id != rhs.group_id) {
-		return lhs.group_id < rhs.group_id;
-	}
-	return lhs.suppkey < rhs.suppkey;
-}
 
 class Q16Kernel final : public KernelInstance {
 public:
@@ -254,8 +185,9 @@ public:
 			}
 		}
 		excluded_suppliers.assign(static_cast<size_t>(kDefaultSupplierCapacity), 0);
+		excluded_suppliers.reserve(static_cast<size_t>(kDefaultSupplierCapacity) + 8);
 		part_group_slot.assign(static_cast<size_t>(kDefaultPartCapacity), 0);
-		group_supplier_pairs.reserve(1 << 20);
+		group_supplier_pairs.reserve(1 << 18);
 		if (profile) {
 			profile->used_dense_state = true;
 		}
@@ -290,37 +222,22 @@ public:
 
 	void Finalize() override {
 		std::vector<int64_t> group_counts(groups.size(), 0);
-		if (!group_supplier_pairs.empty()) {
-			std::sort(group_supplier_pairs.begin(), group_supplier_pairs.end(), LessGroupSuppPair);
-			for (size_t index = 0; index < group_supplier_pairs.size();) {
-				const auto group_id = static_cast<size_t>(group_supplier_pairs[index].group_id);
-				if (group_id < group_counts.size()) {
-					group_counts[group_id] += 1;
-				}
-				const auto current_group = group_supplier_pairs[index].group_id;
-				const auto current_suppkey = group_supplier_pairs[index].suppkey;
-				index += 1;
-				while (index < group_supplier_pairs.size() && group_supplier_pairs[index].group_id == current_group &&
-				       group_supplier_pairs[index].suppkey == current_suppkey) {
-					index += 1;
-				}
-			}
-		}
+		q16::CountDistinctPerGroup(group_supplier_pairs, group_counts);
+		group_supplier_pairs.clear();
 
+		const auto brand_rank = q16::LexRanks(brand_intern);
+		const auto type_rank = q16::LexRanks(type_intern);
 		output_rows.clear();
 		output_rows.reserve(groups.size());
 		for (size_t group_id = 0; group_id < groups.size(); group_id++) {
 			if (group_counts[group_id] == 0) {
 				continue;
 			}
-			Q16OutputRow row;
-			row.brand = groups[group_id].brand;
-			row.type = groups[group_id].type;
-			row.size = groups[group_id].size;
-			row.supplier_cnt = group_counts[group_id];
-			output_rows.push_back(std::move(row));
+			const auto &g = groups[group_id];
+			output_rows.push_back(q16::OutRow {brand_rank[g.brand_id], type_rank[g.type_id], g.size,
+			                                   group_counts[group_id], static_cast<uint32_t>(group_id)});
 		}
-		std::sort(output_rows.begin(), output_rows.end(), BetterOutputRow);
+		std::sort(output_rows.begin(), output_rows.end(), q16::BetterOutRow);
 		output_offset = 0;
 		finalized = true;
 	}
@@ -331,12 +248,17 @@ public:
 		}
 		const duckdb::idx_t remaining = output_rows.size() - output_offset;
 		const duckdb::idx_t count = std::min<duckdb::idx_t>(remaining, kOutputBatchSize);
+		auto brands = duckdb::FlatVector::GetData<duckdb::string_t>(output.data[0]);
+		auto types = duckdb::FlatVector::GetData<duckdb::string_t>(output.data[1]);
+		auto sizes = duckdb::FlatVector::GetData<int32_t>(output.data[2]);
+		auto cnts = duckdb::FlatVector::GetData<int64_t>(output.data[3]);
 		for (duckdb::idx_t row = 0; row < count; row++) {
 			const auto &entry = output_rows[output_offset + row];
-			output.SetValue(0, row, duckdb::Value(entry.brand));
-			output.SetValue(1, row, duckdb::Value(entry.type));
-			output.SetValue(2, row, duckdb::Value::INTEGER(entry.size));
-			output.SetValue(3, row, duckdb::Value::BIGINT(entry.supplier_cnt));
+			const auto &g = groups[entry.group_id];
+			q16::WriteString(output.data[0], brands, row, brand_intern.Get(g.brand_id));
+			q16::WriteString(output.data[1], types, row, type_intern.Get(g.type_id));
+			sizes[row] = entry.size;
+			cnts[row] = entry.supplier_cnt;
 		}
 		output.SetCardinality(count);
 		output_offset += count;
@@ -362,6 +284,7 @@ private:
 			target = std::max(target, static_cast<size_t>(kDefaultSupplierCapacity));
 		}
 		excluded_suppliers.resize(target, 0);
+		excluded_suppliers.reserve(target + 8); // vector gathers over-read up to 3 bytes
 	}
 
 	void EnsurePartCapacity(int64_t partkey) {
@@ -417,15 +340,15 @@ private:
 		return allowed_sizes[static_cast<size_t>(size)] != 0;
 	}
 
-	int32_t GetOrCreateGroupId(uint16_t brand_id, uint16_t type_id, int32_t size) {
-		const CompactGroupKey key {brand_id, type_id, size};
-		const auto existing = group_index.find(key);
-		if (existing != group_index.end()) {
-			return existing->second;
+	int32_t GetOrCreateGroupId(uint32_t brand_id, uint32_t type_id, int32_t size) {
+		const uint64_t key = q16::GroupKey(brand_id, type_id, size);
+		const int32_t existing = group_index.Find(key);
+		if (existing >= 0) {
+			return existing;
 		}
 		const int32_t group_id = static_cast<int32_t>(groups.size());
-		groups.push_back(PartGroup {brand_intern.Get(brand_id), type_intern.Get(type_id), size});
-		group_index.emplace(key, group_id);
+		groups.push_back(PartGroup {brand_id, type_id, size});
+		group_index.Insert(key, group_id);
 		return group_id;
 	}
 
@@ -433,7 +356,8 @@ private:
 		if (suppkey < 0 || suppkey > std::numeric_limits<int32_t>::max()) {
 			return;
 		}
-		group_supplier_pairs.push_back(GroupSuppPair {group_id, static_cast<int32_t>(suppkey)});
+		group_supplier_pairs.push_back((static_cast<uint64_t>(static_cast<uint32_t>(group_id)) << 32) |
+		                               static_cast<uint32_t>(suppkey));
 		if (profile) {
 			profile->partsupp_rows_matched += 1;
 		}
@@ -549,10 +473,12 @@ private:
 			auto brands = duckdb::FlatVector::GetData<duckdb::string_t>(brand_vector);
 			auto types = duckdb::FlatVector::GetData<duckdb::string_t>(type_vector);
 			auto sizes = duckdb::FlatVector::GetData<int32_t>(size_vector);
-			for (duckdb::idx_t row = 0; row < input.size(); row++) {
-				if (!SizeAllowed(sizes[row])) {
-					continue;
-				}
+			if (sel_buf.size() < input.size() + simd::kSelSlack) {
+				sel_buf.resize(input.size() + simd::kSelSlack);
+			}
+			const size_t picked = q16::SelectAllowedSizes(allowed_sizes.data(), sizes, input.size(), sel_buf.data());
+			for (size_t k = 0; k < picked; k++) {
+				const duckdb::idx_t row = sel_buf[k];
 				if (StringEquals(brands[row], params.brand)) {
 					continue;
 				}
@@ -665,20 +591,16 @@ private:
 			}
 			auto partkeys = duckdb::FlatVector::GetData<int64_t>(partkey_vector);
 			auto suppkeys = duckdb::FlatVector::GetData<int64_t>(suppkey_vector);
-			for (duckdb::idx_t row = 0; row < input.size(); row++) {
-				const auto partkey = partkeys[row];
-				if (partkey < 0 || partkey >= part_capacity) {
-					continue;
-				}
-				const auto group_slot = part_group_slot[static_cast<size_t>(partkey)];
-				if (group_slot == 0) {
-					continue;
-				}
-				const auto suppkey = suppkeys[row];
-				if (IsExcludedSupplier(suppkey)) {
-					continue;
-				}
-				RecordGroupSupplier(group_slot - 1, suppkey);
+			if (sel_buf.size() < input.size() + simd::kSelSlack) {
+				sel_buf.resize(input.size() + simd::kSelSlack);
+			}
+			const size_t picked =
+			    q16::SelectPartsuppHits(part_group_slot.data(), part_group_slot.size(), partkeys,
+			                            excluded_suppliers.data(), excluded_suppliers.size(), suppkeys, input.size(),
+			                            sel_buf.data());
+			for (size_t k = 0; k < picked; k++) {
+				const uint32_t row = sel_buf[k];
+				RecordGroupSupplier(part_group_slot[static_cast<size_t>(partkeys[row])] - 1, suppkeys[row]);
 			}
 			return;
 		}
@@ -758,14 +680,15 @@ private:
 	PrefixLikeMatcher type_prefix_matcher;
 	StringInterner brand_intern;
 	StringInterner type_intern;
-	std::array<uint8_t, kMaxPartSize + 1> allowed_sizes {};
+	std::array<uint8_t, 64> allowed_sizes {};
 	std::vector<uint8_t> excluded_suppliers;
 	std::vector<int32_t> part_group_slot;
 	std::vector<PartGroup> groups;
-	std::unordered_map<CompactGroupKey, int32_t, CompactGroupKeyHash> group_index;
-	std::vector<GroupSuppPair> group_supplier_pairs;
+	q16::KeyTable group_index;
+	std::vector<uint64_t> group_supplier_pairs;
+	std::vector<uint32_t> sel_buf;
 	bool has_qualifying_parts = false;
-	std::vector<Q16OutputRow> output_rows;
+	std::vector<q16::OutRow> output_rows;
 	duckdb::idx_t output_offset = 0;
 	bool finalized = false;
 };

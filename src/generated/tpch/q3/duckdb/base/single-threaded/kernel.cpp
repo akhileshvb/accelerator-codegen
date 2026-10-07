@@ -1,3 +1,4 @@
+#include "tpch/q3/duckdb/base/bitmap_select.hpp"
 #include "tpch/q3/duckdb/base/query.hpp"
 
 #include <algorithm>
@@ -281,6 +282,16 @@ public:
 		return hash_set.find(custkey) != hash_set.end();
 	}
 
+	//! Positions i in [0, n) whose key keys[idx ? idx[i] : i] is a member (dense bitmap only; the
+	//! caller must check HasOverflow() == false first).
+	size_t SelectMembers(const int64_t *keys, const uint32_t *idx, size_t n, uint32_t *out) const {
+		return q3simd::SelectBits(keys, idx, n, bits.data(), static_cast<uint64_t>(capacity), out);
+	}
+
+	bool HasOverflow() const {
+		return !hash_set.empty();
+	}
+
 	duckdb::idx_t MemoryBytes() const {
 		return bits.size() * sizeof(uint64_t) + hash_set.size() * (sizeof(int64_t) + sizeof(void *) * 2);
 	}
@@ -317,30 +328,16 @@ private:
 	std::unordered_set<int64_t> hash_set;
 };
 
-// OrderStore supports three storage strategies:
-//   * hash only          (use_dense == false)
-//   * parallel dense     (use_dense && !use_slot_map): full-domain arrays + present/has_revenue bitmaps
-//   * slot map           (use_dense && use_slot_map): orderkey->slot map + compact per-slot arrays
-// Negative or absurdly large keys spill into the overflow hash_map.
-// Dense capacity grows geometrically so larger scale factors need no retuning.
-// Slot map absent sentinel: default -1 (memset 0xFF); ACCEL_Q3_SLOT_ABSENT0 uses 0 with stored slot+1.
+// OrderStore: qualifying orders are kept as a dense presence bitmap over the orderkey domain
+// (750 KB at SF1, L2 resident) plus, once the orders phase is complete (Seal), compact per-order
+// arrays indexed by the key's rank in the bitmap (prefix popcounts).  Lineitem probes first test
+// the bitmap -- a cheap, cache-resident filter that rejects most rows -- and only qualifying rows
+// compute a rank and touch the revenue arrays.  Negative or absurdly large keys spill into the
+// overflow hash_map.  Dense capacity grows geometrically so larger scale factors need no retuning.
 class OrderStore {
 public:
-	OrderStore(bool use_dense_p, bool use_slot_map_p, bool slot_absent0_p = false, bool slot_reserve_p = false)
-	    : use_dense(use_dense_p), use_slot_map(use_dense_p && use_slot_map_p),
-	      slot_absent0(use_dense_p && use_slot_map_p && slot_absent0_p),
-	      slot_reserve(use_dense_p && use_slot_map_p && slot_reserve_p) {
-		// Capacity init deferred to WarmInitialize so profiling can time EnsureCapacity.
+	explicit OrderStore(bool use_dense_p) : use_dense(use_dense_p) {
 	}
-
-	~OrderStore() {
-		FreeSlotOfKey();
-	}
-
-	OrderStore(const OrderStore &) = delete;
-	OrderStore &operator=(const OrderStore &) = delete;
-	OrderStore(OrderStore &&) = delete;
-	OrderStore &operator=(OrderStore &&) = delete;
 
 	void SetProfile(Q3ProfileCounters *profile_p) {
 		profile = profile_p;
@@ -350,240 +347,92 @@ public:
 		if (profile_p) {
 			profile = profile_p;
 		}
-		if (!use_dense) {
-			return;
-		}
-		Clock::time_point start;
-		const bool time_init = profile && use_slot_map;
-		if (time_init) {
-			start = Clock::now();
-		}
-		EnsureCapacity(kDefaultOrderCapacity);
-		if (use_slot_map && slot_reserve) {
-			constexpr size_t kReserve = 200000;
-			slot_orderkeys.reserve(kReserve);
-			slot_orderdates.reserve(kReserve);
-			slot_shippriorities.reserve(kReserve);
-			slot_revenues.reserve(kReserve);
-			slot_has_revenue.reserve(kReserve);
-			touched_slots.reserve(kReserve);
-		}
-		if (time_init) {
-			profile->slot_map_init_ns +=
-			    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count();
-			profile->slot_map_pages_est =
-			    static_cast<duckdb::idx_t>(capacity) * sizeof(int32_t) / 4096;
+		if (use_dense) {
+			EnsureCapacity(kDefaultOrderCapacity);
 		}
 	}
 
 	void UpsertOrder(int64_t orderkey, duckdb::date_t orderdate, int32_t shippriority) {
-		if (!use_dense || orderkey < 0) {
+		if (!use_dense || orderkey < 0 || orderkey > 1'000'000'000) {
 			auto &state = hash_map[orderkey];
 			state.orderdate = orderdate;
 			state.shippriority = shippriority;
 			return;
 		}
+		if (sealed) {
+			throw duckdb::InternalException("Q3 orders arrived after lineitem started");
+		}
 		if (orderkey >= capacity) {
-			// Scale-free: grow dense for normal keys; overflow only absurd outliers.
-			if (orderkey > 1'000'000'000) {
-				auto &state = hash_map[orderkey];
-				state.orderdate = orderdate;
-				state.shippriority = shippriority;
-				return;
-			}
 			EnsureCapacity(orderkey + 1);
 		}
-		if (use_slot_map) {
-			const auto key_idx = static_cast<size_t>(orderkey);
-			const auto existing = slot_of_key[key_idx];
-			if (slot_absent0) {
-				if (existing != 0) {
-					const auto slot = static_cast<size_t>(existing - 1);
-					slot_orderdates[slot] = orderdate;
-					slot_shippriorities[slot] = shippriority;
-					return;
-				}
-				const auto new_slot = static_cast<int32_t>(slot_orderkeys.size());
-				slot_of_key[key_idx] = new_slot + 1;
-				slot_orderkeys.push_back(orderkey);
-				slot_orderdates.push_back(orderdate);
-				slot_shippriorities.push_back(shippriority);
-				slot_revenues.push_back(q3_acc_t{});
-				slot_has_revenue.push_back(0);
-				if (profile) {
-					profile->slot_allocs += 1;
-				}
-				return;
-			}
-			if (existing >= 0) {
-				const auto slot = static_cast<size_t>(existing);
-				slot_orderdates[slot] = orderdate;
-				slot_shippriorities[slot] = shippriority;
-				return;
-			}
-			const auto new_slot = static_cast<int32_t>(slot_orderkeys.size());
-			slot_of_key[key_idx] = new_slot;
-			slot_orderkeys.push_back(orderkey);
-			slot_orderdates.push_back(orderdate);
-			slot_shippriorities.push_back(shippriority);
-			slot_revenues.push_back(q3_acc_t{});
-			slot_has_revenue.push_back(0);
-			if (profile) {
-				profile->slot_allocs += 1;
-			}
+		const auto idx = static_cast<size_t>(orderkey);
+		present_bits[idx >> 6] |= uint64_t(1) << (idx & 63);
+		pending.push_back(PendingOrder {orderkey, orderdate, shippriority});
+	}
+
+	//! Build rank prefixes and the compact per-order arrays.  Called once, before the first lineitem row.
+	void Seal() {
+		if (sealed) {
 			return;
 		}
+		sealed = true;
+		rank_prefix.resize(present_bits.size() + 1);
+		uint32_t running = 0;
+		for (size_t w = 0; w < present_bits.size(); w++) {
+			rank_prefix[w] = running;
+			running += static_cast<uint32_t>(__builtin_popcountll(present_bits[w]));
+		}
+		rank_prefix[present_bits.size()] = running;
+		slot_orderkeys.assign(running, 0);
+		slot_orderdates.assign(running, duckdb::date_t());
+		slot_shippriorities.assign(running, 0);
+		slot_revenues.assign(running, q3_acc_t {});
+		slot_has_revenue.assign(running, 0);
+		for (const auto &order : pending) { // later upserts of the same key win
+			const auto slot = Rank(order.orderkey);
+			slot_orderkeys[slot] = order.orderkey;
+			slot_orderdates[slot] = order.orderdate;
+			slot_shippriorities[slot] = order.shippriority;
+		}
+		pending.clear();
+		pending.shrink_to_fit();
+	}
+
+	bool IsSealed() const {
+		return sealed;
+	}
+
+	//! Positions i in [0, n) (ascending) whose key keys[idx ? idx[i] : i] is a qualifying dense order.
+	size_t SelectQualifying(const int64_t *keys, const uint32_t *idx, size_t n, uint32_t *out) const {
+		return q3simd::SelectBits(keys, idx, n, present_bits.data(), static_cast<uint64_t>(capacity), out);
+	}
+
+	bool HasOverflow() const {
+		return !hash_map.empty();
+	}
+
+	size_t Rank(int64_t orderkey) const {
 		const auto idx = static_cast<size_t>(orderkey);
 		const auto word = idx >> 6;
-		const auto bit = uint64_t(1) << (idx & 63);
-		present_bits[word] |= bit;
-		orderdates[idx] = orderdate;
-		shippriorities[idx] = shippriority;
+		const uint64_t below = present_bits[word] & ((uint64_t(1) << (idx & 63)) - 1);
+		return rank_prefix[word] + static_cast<size_t>(__builtin_popcountll(below));
 	}
 
-	OrderState *FindMutable(int64_t orderkey) {
-		if (!use_dense || orderkey < 0 || orderkey >= capacity) {
-			auto it = hash_map.find(orderkey);
-			return it == hash_map.end() ? nullptr : &it->second;
-		}
-		// Dense paths use parallel/compact arrays; callers use the specialized add paths instead.
-		return nullptr;
-	}
-
-	bool ContainsDense(int64_t orderkey) const {
-		if (orderkey < 0 || orderkey >= capacity) {
-			return false;
-		}
-		const auto idx = static_cast<size_t>(orderkey);
-		return (present_bits[idx >> 6] & (uint64_t(1) << (idx & 63))) != 0;
-	}
-
-	void AddRevenueDense(int64_t orderkey, int64_t extendedprice_raw, int64_t discount_raw) {
-		const auto idx = static_cast<size_t>(orderkey);
-		const auto word = idx >> 6;
-		const auto bit = uint64_t(1) << (idx & 63);
-		if ((has_revenue_bits[word] & bit) == 0) {
-			revenues[idx] = 0;
-			has_revenue_bits[word] |= bit;
-			touched.push_back(orderkey);
-		}
-		AddRevenue(revenues[idx], extendedprice_raw, discount_raw);
-	}
-
-	void AddRevenueHash(int64_t orderkey, int64_t extendedprice_raw, int64_t discount_raw) {
-		auto it = hash_map.find(orderkey);
-		if (it == hash_map.end()) {
-			return;
-		}
-		AddRevenue(it->second.revenue, extendedprice_raw, discount_raw);
-		it->second.has_revenue = true;
-	}
-
-	// Reports whether an orderkey qualifies (was inserted during the orders phase). When the slot
-	// map is active and the key hit a compact slot, *out_slot is set to that slot (>= 0); otherwise
-	// *out_slot is -1 and per-key add paths must be used.
-	bool ProbeQualifies(int64_t orderkey, int32_t *out_slot) {
-		*out_slot = -1;
-		if (use_dense && orderkey >= 0 && orderkey < capacity) {
-			if (use_slot_map) {
-				const auto stored = slot_of_key[static_cast<size_t>(orderkey)];
-				if (slot_absent0) {
-					if (stored == 0) {
-						return false;
-					}
-					*out_slot = stored - 1;
-					return true;
-				}
-				if (stored < 0) {
-					return false;
-				}
-				*out_slot = stored;
-				return true;
-			}
-			return ContainsDense(orderkey);
-		}
-		return hash_map.find(orderkey) != hash_map.end();
-	}
-
-	void AddRevenueBySlot(int32_t slot, int64_t extendedprice_raw, int64_t discount_raw) {
-		const auto s = static_cast<size_t>(slot);
-		if (slot_has_revenue[s] == 0) {
-			slot_revenues[s] = 0;
-			slot_has_revenue[s] = 1;
-			touched_slots.push_back(slot);
-		}
-		AddRevenue(slot_revenues[s], extendedprice_raw, discount_raw);
-	}
-
-	void AddRevenueByKey(int64_t orderkey, int64_t extendedprice_raw, int64_t discount_raw) {
-		ProbeAndAddRevenue(orderkey, extendedprice_raw, discount_raw);
-	}
-
-	void AddAccumulatedBySlot(int32_t slot, q3_acc_t amount) {
-		const auto s = static_cast<size_t>(slot);
-		if (slot_has_revenue[s] == 0) {
-			slot_revenues[s] = 0;
-			slot_has_revenue[s] = 1;
-			touched_slots.push_back(slot);
-		}
-		AddAccumulated(slot_revenues[s], amount);
-	}
-
-	void AddAccumulatedByKey(int64_t orderkey, q3_acc_t amount) {
-		if (use_dense && orderkey >= 0 && orderkey < capacity) {
-			if (use_slot_map) {
-				const auto stored = slot_of_key[static_cast<size_t>(orderkey)];
-				if (slot_absent0) {
-					if (stored != 0) {
-						AddAccumulatedBySlot(stored - 1, amount);
-					}
-					return;
-				}
-				if (stored >= 0) {
-					AddAccumulatedBySlot(stored, amount);
-				}
-				return;
-			}
-			const auto idx = static_cast<size_t>(orderkey);
-			const auto word = idx >> 6;
-			const auto bit = uint64_t(1) << (idx & 63);
-			if ((has_revenue_bits[word] & bit) == 0) {
-				revenues[idx] = 0;
-				has_revenue_bits[word] |= bit;
-				touched.push_back(orderkey);
-			}
-			AddAccumulated(revenues[idx], amount);
-			return;
-		}
-		auto it = hash_map.find(orderkey);
-		if (it == hash_map.end()) {
-			return;
-		}
-		AddAccumulated(it->second.revenue, amount);
-		it->second.has_revenue = true;
+	//! Add a lineitem to a bitmap-qualified dense order (caller verified membership via SelectQualifying).
+	void AddRevenueRanked(int64_t orderkey, int64_t extendedprice_raw, int64_t discount_raw) {
+		const auto slot = Rank(orderkey);
+		slot_has_revenue[slot] = 1;
+		AddRevenue(slot_revenues[slot], extendedprice_raw, discount_raw);
 	}
 
 	bool ProbeAndAddRevenue(int64_t orderkey, int64_t extendedprice_raw, int64_t discount_raw) {
 		if (use_dense && orderkey >= 0 && orderkey < capacity) {
-			if (use_slot_map) {
-				const auto stored = slot_of_key[static_cast<size_t>(orderkey)];
-				if (slot_absent0) {
-					if (stored == 0) {
-						return false;
-					}
-					AddRevenueBySlot(stored - 1, extendedprice_raw, discount_raw);
-					return true;
-				}
-				if (stored < 0) {
-					return false;
-				}
-				AddRevenueBySlot(stored, extendedprice_raw, discount_raw);
-				return true;
-			}
-			if (!ContainsDense(orderkey)) {
+			Seal();
+			const auto idx = static_cast<size_t>(orderkey);
+			if ((present_bits[idx >> 6] & (uint64_t(1) << (idx & 63))) == 0) {
 				return false;
 			}
-			AddRevenueDense(orderkey, extendedprice_raw, discount_raw);
+			AddRevenueRanked(orderkey, extendedprice_raw, discount_raw);
 			return true;
 		}
 		auto it = hash_map.find(orderkey);
@@ -597,26 +446,16 @@ public:
 
 	template <class Emit>
 	void ForEachWithRevenue(Emit &&emit) const {
-		if (use_dense && use_slot_map) {
-			for (const auto slot : touched_slots) {
-				const auto s = static_cast<size_t>(slot);
-				Q3OutputRow row;
-				row.orderkey = slot_orderkeys[s];
-				row.revenue = FromAccumulator(slot_revenues[s]);
-				row.orderdate = slot_orderdates[s];
-				row.shippriority = slot_shippriorities[s];
-				emit(row);
+		for (size_t s = 0; s < slot_has_revenue.size(); s++) {
+			if (!slot_has_revenue[s]) {
+				continue;
 			}
-		} else if (use_dense) {
-			for (const auto orderkey : touched) {
-				const auto idx = static_cast<size_t>(orderkey);
-				Q3OutputRow row;
-				row.orderkey = orderkey;
-				row.revenue = FromAccumulator(revenues[idx]);
-				row.orderdate = orderdates[idx];
-				row.shippriority = shippriorities[idx];
-				emit(row);
-			}
+			Q3OutputRow row;
+			row.orderkey = slot_orderkeys[s];
+			row.revenue = FromAccumulator(slot_revenues[s]);
+			row.orderdate = slot_orderdates[s];
+			row.shippriority = slot_shippriorities[s];
+			emit(row);
 		}
 		for (const auto &entry : hash_map) {
 			if (!entry.second.has_revenue) {
@@ -632,7 +471,10 @@ public:
 	}
 
 	duckdb::idx_t TouchedCount() const {
-		duckdb::idx_t count = use_slot_map ? touched_slots.size() : touched.size();
+		duckdb::idx_t count = 0;
+		for (auto flag : slot_has_revenue) {
+			count += flag ? 1 : 0;
+		}
 		for (const auto &entry : hash_map) {
 			count += entry.second.has_revenue ? 1 : 0;
 		}
@@ -640,35 +482,14 @@ public:
 	}
 
 	duckdb::idx_t SlotCount() const {
-		return use_slot_map ? slot_orderkeys.size() : 0;
+		return slot_orderkeys.size();
 	}
 
 	duckdb::idx_t MemoryBytes() const {
-		duckdb::idx_t bytes = hash_map.size() * (sizeof(int64_t) + sizeof(OrderState) + sizeof(void *) * 2);
-		if (use_slot_map) {
-			if (slot_of_key) {
-				bytes += static_cast<duckdb::idx_t>(capacity) * sizeof(int32_t);
-			}
-			bytes += slot_revenues.size() * sizeof(q3_acc_t);
-			bytes += slot_orderdates.size() * sizeof(duckdb::date_t);
-			bytes += slot_shippriorities.size() * sizeof(int32_t);
-			bytes += slot_orderkeys.size() * sizeof(int64_t);
-			bytes += slot_has_revenue.size() * sizeof(uint8_t);
-			bytes += touched_slots.size() * sizeof(int32_t);
-			return bytes;
-		}
-		bytes += present_bits.size() * sizeof(uint64_t) + has_revenue_bits.size() * sizeof(uint64_t) +
-		         touched.size() * sizeof(int64_t);
-		if (orderdates) {
-			bytes += static_cast<duckdb::idx_t>(capacity) * sizeof(duckdb::date_t);
-		}
-		if (shippriorities) {
-			bytes += static_cast<duckdb::idx_t>(capacity) * sizeof(int32_t);
-		}
-		if (revenues) {
-			bytes += static_cast<duckdb::idx_t>(capacity) * sizeof(q3_acc_t);
-		}
-		return bytes;
+		return present_bits.size() * sizeof(uint64_t) + rank_prefix.size() * sizeof(uint32_t) +
+		       slot_revenues.size() * sizeof(q3_acc_t) + slot_orderdates.size() * sizeof(duckdb::date_t) +
+		       slot_shippriorities.size() * sizeof(int32_t) + slot_orderkeys.size() * sizeof(int64_t) +
+		       hash_map.size() * (sizeof(int64_t) + sizeof(OrderState) + sizeof(void *) * 2);
 	}
 
 	duckdb::idx_t OverflowCount() const {
@@ -679,22 +500,12 @@ public:
 		return use_dense;
 	}
 
-	bool UsingSlotMap() const {
-		return use_slot_map;
-	}
-
 private:
-	void FreeSlotOfKey() {
-		if (!slot_of_key) {
-			return;
-		}
-		if (slot_of_key_calloc) {
-			std::free(slot_of_key);
-		} else {
-			delete[] slot_of_key;
-		}
-		slot_of_key = nullptr;
-	}
+	struct PendingOrder {
+		int64_t orderkey;
+		duckdb::date_t orderdate;
+		int32_t shippriority;
+	};
 
 	void EnsureCapacity(int64_t new_capacity) {
 		if (new_capacity <= capacity) {
@@ -710,111 +521,36 @@ private:
 			}
 		}
 		const auto words = static_cast<size_t>((target + 63) / 64);
-		const auto rounded = static_cast<int64_t>(words) * 64;
-
-		if (use_slot_map) {
-			if (slot_absent0) {
-				auto *new_map =
-				    static_cast<int32_t *>(std::calloc(static_cast<size_t>(rounded), sizeof(int32_t)));
-				if (!new_map) {
-					throw duckdb::OutOfMemoryException("Q3 slot map calloc failed");
-				}
-				if (capacity > 0) {
-					std::memcpy(new_map, slot_of_key, static_cast<size_t>(capacity) * sizeof(int32_t));
-				}
-				FreeSlotOfKey();
-				slot_of_key = new_map;
-				slot_of_key_calloc = true;
-				capacity = rounded;
-				if (profile) {
-					profile->slot_map_pages_est =
-					    static_cast<duckdb::idx_t>(capacity) * sizeof(int32_t) / 4096;
-				}
-				return;
-			}
-			auto *new_map = new int32_t[static_cast<size_t>(rounded)];
-			if (capacity > 0) {
-				std::memcpy(new_map, slot_of_key, static_cast<size_t>(capacity) * sizeof(int32_t));
-			}
-			// Sentinel -1 for absent keys: 0xFF bytes form -1 for int32_t two's complement.
-			std::memset(new_map + capacity, 0xFF, static_cast<size_t>(rounded - capacity) * sizeof(int32_t));
-			FreeSlotOfKey();
-			slot_of_key = new_map;
-			slot_of_key_calloc = false;
-			capacity = rounded;
-			if (profile) {
-				profile->slot_map_pages_est =
-				    static_cast<duckdb::idx_t>(capacity) * sizeof(int32_t) / 4096;
-			}
-			return;
-		}
-
 		present_bits.resize(words, 0);
-		has_revenue_bits.resize(words, 0);
-
-		auto new_dates = std::unique_ptr<duckdb::date_t[]>(new duckdb::date_t[rounded]);
-		auto new_prios = std::unique_ptr<int32_t[]>(new int32_t[rounded]);
-		auto new_revs = std::unique_ptr<q3_acc_t[]>(new q3_acc_t[rounded]);
-		if (capacity > 0) {
-			std::memcpy(new_dates.get(), orderdates.get(), static_cast<size_t>(capacity) * sizeof(duckdb::date_t));
-			std::memcpy(new_prios.get(), shippriorities.get(), static_cast<size_t>(capacity) * sizeof(int32_t));
-			std::memcpy(new_revs.get(), revenues.get(), static_cast<size_t>(capacity) * sizeof(q3_acc_t));
-		}
-		orderdates = std::move(new_dates);
-		shippriorities = std::move(new_prios);
-		revenues = std::move(new_revs);
-		capacity = rounded;
+		capacity = static_cast<int64_t>(words) * 64;
 	}
 
 	bool use_dense;
-	bool use_slot_map;
-	bool slot_absent0 = false;
-	bool slot_reserve = false;
+	bool sealed = false;
 	int64_t capacity = 0;
 	Q3ProfileCounters *profile = nullptr;
 
-	// Parallel dense storage (use_slot_map == false).
 	std::vector<uint64_t> present_bits;
-	std::vector<uint64_t> has_revenue_bits;
-	std::unique_ptr<duckdb::date_t[]> orderdates;
-	std::unique_ptr<int32_t[]> shippriorities;
-	std::unique_ptr<q3_acc_t[]> revenues;
-	std::vector<int64_t> touched;
-
-	// Slot map storage (use_slot_map == true).
-	int32_t *slot_of_key = nullptr;
-	bool slot_of_key_calloc = false;
-	std::vector<q3_acc_t> slot_revenues;          // hot: written during lineitem phase
-	std::vector<duckdb::date_t> slot_orderdates;  // cold: written in orders phase, read in finalize
-	std::vector<int32_t> slot_shippriorities;     // cold
-	std::vector<int64_t> slot_orderkeys;          // for finalize output
+	std::vector<uint32_t> rank_prefix;
+	std::vector<PendingOrder> pending;
+	std::vector<q3_acc_t> slot_revenues;
+	std::vector<duckdb::date_t> slot_orderdates;
+	std::vector<int32_t> slot_shippriorities;
+	std::vector<int64_t> slot_orderkeys;
 	std::vector<uint8_t> slot_has_revenue;
-	std::vector<int32_t> touched_slots;
 
-	// Overflow for negative / far out-of-range keys (shared by all modes).
+	// Overflow for negative / far out-of-range keys.
 	std::unordered_map<int64_t, OrderState> hash_map;
 };
 
 enum class Q3PathKind : uint8_t { Flat = 0, Dict = 1, Generic = 2 };
-
-// Cross-chunk run state for the run-cache experiment. A run is a maximal sequence of
-// shipdate-qualifying lineitem rows that share the same l_orderkey. The store is probed once per
-// run and the run's summed revenue is written back a single time when the run is flushed.
-struct LineitemRunState {
-	bool active = false;
-	int64_t orderkey = 0;
-	bool qualifies = false;
-	int32_t slot = -1; // >= 0 if slot map hit
-	q3_acc_t local_revenue = {};
-	duckdb::idx_t rows_in_run = 0;
-};
 
 class Q3Kernel final : public KernelInstance {
 public:
 	explicit Q3Kernel(Q3Parameters params_p, Q3ProfileCounters *profile_p = nullptr)
 	    : params(std::move(params_p)), profile(profile_p), config(LoadQ3Config()),
 	      customers(config.dense_customers),
-	      orders(config.dense_orders, config.slot_map, config.slot_absent0, config.slot_reserve) {
+	      orders(config.dense_orders) {
 		orders.SetProfile(profile);
 		orders.WarmInitialize(profile);
 		if (profile) {
@@ -870,9 +606,6 @@ public:
 	void Finalize() override {
 		if (finalized) {
 			return;
-		}
-		if (config.run_cache) {
-			FlushRun();
 		}
 		Clock::time_point start;
 		if (profile) {
@@ -986,74 +719,12 @@ private:
 	}
 
 	void ProcessLineitemRow(int64_t orderkey, int64_t extendedprice_raw, int64_t discount_raw) {
-		if (!config.run_cache) {
-			if (orders.ProbeAndAddRevenue(orderkey, extendedprice_raw, discount_raw)) {
-				if (profile) {
-					profile->qualifying_lineitems += 1;
-					profile->aggregate_writes += 1;
-				}
-			}
-			return;
-		}
-
-		if (run_state.active && run_state.orderkey == orderkey) {
-			if (run_state.qualifies) {
-				AddRevenue(run_state.local_revenue, extendedprice_raw, discount_raw);
-				if (profile) {
-					profile->qualifying_lineitems += 1;
-				}
-			}
-			run_state.rows_in_run += 1;
-			if (profile) {
-				profile->order_probes_avoided += 1;
-			}
-			return;
-		}
-
-		FlushRun();
-
-		int32_t slot = -1;
-		const bool qualifies = orders.ProbeQualifies(orderkey, &slot);
-		if (profile) {
-			profile->order_probes += 1;
-		}
-		run_state.active = true;
-		run_state.orderkey = orderkey;
-		run_state.qualifies = qualifies;
-		run_state.slot = slot;
-		run_state.local_revenue = q3_acc_t{};
-		run_state.rows_in_run = 1;
-		if (qualifies) {
-			AddRevenue(run_state.local_revenue, extendedprice_raw, discount_raw);
+		if (orders.ProbeAndAddRevenue(orderkey, extendedprice_raw, discount_raw)) {
 			if (profile) {
 				profile->qualifying_lineitems += 1;
-			}
-		}
-	}
-
-	void FlushRun() {
-		if (!run_state.active) {
-			return;
-		}
-		if (profile) {
-			profile->order_runs += 1;
-			profile->order_run_rows += run_state.rows_in_run;
-		}
-		if (run_state.qualifies && run_state.rows_in_run > 0) {
-			if (run_state.slot >= 0) {
-				orders.AddAccumulatedBySlot(run_state.slot, run_state.local_revenue);
-			} else {
-				orders.AddAccumulatedByKey(run_state.orderkey, run_state.local_revenue);
-			}
-			if (profile) {
 				profile->aggregate_writes += 1;
 			}
 		}
-		run_state.active = false;
-		run_state.qualifies = false;
-		run_state.slot = -1;
-		run_state.local_revenue = q3_acc_t{};
-		run_state.rows_in_run = 0;
 	}
 
 	void ConsumeCustomer(duckdb::DataChunk &input) {
@@ -1234,7 +905,24 @@ private:
 		}
 		duckdb::idx_t local_qual = 0;
 
-		if (shared_sel) {
+		if (shared_sel && customers.UsingDense() && !customers.HasOverflow() && orders.UsingDense()) {
+			// SIMD bitmap probe of the customer segment, then upsert only the qualifying orders.
+			const uint32_t *sel = shared_sel->data();
+			uint32_t hits[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+			const auto hit_count = customers.SelectMembers(custkeys, sel, input.size(), hits);
+			const int32_t ship_const_val = ship_const ? shippriorities[0] : 0;
+			for (size_t h = 0; h < hit_count; h++) {
+				const auto row = hits[h];
+				const auto idx = sel ? sel[row] : row;
+				if (!skip_date && !(orderdates[idx] < params.cutoff_date)) {
+					continue;
+				}
+				const auto shippriority =
+				    ship_const ? ship_const_val : shippriorities[GetFastPathIndex(shippriority_vector, row)];
+				orders.UpsertOrder(orderkeys[idx], orderdates[idx], shippriority);
+				local_qual += 1;
+			}
+		} else if (shared_sel) {
 			const int32_t ship_const_val = ship_const ? shippriorities[0] : 0;
 			for (duckdb::idx_t row = 0; row < input.size(); row++) {
 				const auto idx = shared_sel->get_index(row);
@@ -1357,6 +1045,31 @@ private:
 			}
 		}
 
+		const bool all_flat = shipdate_vector.GetVectorType() == duckdb::VectorType::FLAT_VECTOR &&
+		                      orderkey_vector.GetVectorType() == duckdb::VectorType::FLAT_VECTOR &&
+		                      extendedprice_vector.GetVectorType() == duckdb::VectorType::FLAT_VECTOR &&
+		                      discount_vector.GetVectorType() == duckdb::VectorType::FLAT_VECTOR;
+		if ((shared_sel || all_flat) && orders.UsingDense() && !orders.HasOverflow()) {
+			// SIMD probe of the qualifying-order bitmap (cache resident); only hits touch the revenue arrays.
+			orders.Seal();
+			const uint32_t *sel = shared_sel ? shared_sel->data() : nullptr;
+			uint32_t hits[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+			const auto hit_count = orders.SelectQualifying(orderkeys, sel, input.size(), hits);
+			for (size_t h = 0; h < hit_count; h++) {
+				const auto row = hits[h];
+				const auto idx = sel ? sel[row] : row;
+				if (!skip_shipdate && !(shipdates[idx] > params.cutoff_date)) {
+					continue;
+				}
+				orders.AddRevenueRanked(orderkeys[idx], extendedprices[idx], discounts[idx]);
+			}
+			if (profile) {
+				profile->qualifying_lineitems += hit_count;
+				profile->aggregate_writes += hit_count;
+			}
+			return;
+		}
+
 		if (shared_sel) {
 			for (duckdb::idx_t row = 0; row < input.size(); row++) {
 				const auto idx = shared_sel->get_index(row);
@@ -1428,7 +1141,6 @@ private:
 	Q3RuntimeConfig config;
 	CustomerMembership customers;
 	OrderStore orders;
-	LineitemRunState run_state;
 	std::vector<Q3OutputRow> ordered_rows;
 	duckdb::idx_t output_offset = 0;
 	bool finalized = false;

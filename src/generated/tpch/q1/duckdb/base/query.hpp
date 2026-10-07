@@ -38,6 +38,11 @@ struct Q1LineitemChunkLayout {
 };
 
 Q1Parameters MakeQ1Parameters(int32_t day_offset);
-NativeScanSpec CreateQ1ScanSpec(const Q1Parameters &parameters);
+//! push_shipdate_filter=false drops the l_shipdate <= cutoff NativeFilterSpec: the single-threaded kernel then
+//! applies the predicate itself with SIMD (much cheaper than DuckDB's filtered scan, since ~98% of rows qualify);
+//! the parallel kernel uses the pushed filter (RunParallelFilteredScan).
+NativeScanSpec CreateQ1ScanSpec(const Q1Parameters &parameters, bool push_shipdate_filter = true);
+duckdb::unique_ptr<KernelInstance> CreateQ1Kernel(const Q1Parameters &parameters);
+duckdb::unique_ptr<KernelInstance> CreateQ1ParallelKernel(const Q1Parameters &parameters);
 
 } // namespace accelerator_codegen

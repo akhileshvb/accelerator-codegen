@@ -1,5 +1,6 @@
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "tpch/q4/duckdb/base/query.hpp"
+#include "tpch/q4/duckdb/base/simd_mark.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -60,6 +61,19 @@ public:
 			return true;
 		}
 		return overflow.find(orderkey) != overflow.end();
+	}
+
+	uint64_t *Words() {
+		return words.data();
+	}
+
+	uint64_t CapacityBits() const {
+		return words.size() * 64;
+	}
+
+	//! Overflow-only insert: never resizes the bitmap (safe while a raw words pointer is held).
+	void InsertOverflow(int64_t orderkey) {
+		overflow.insert(orderkey);
 	}
 
 	void OrFrom(const QualifyingOrderKeySet &other) {
@@ -149,11 +163,10 @@ public:
 				                     auto commitdates = duckdb::FlatVector::GetData<duckdb::date_t>(commitdate_vector);
 				                     auto receiptdates =
 				                         duckdb::FlatVector::GetData<duckdb::date_t>(receiptdate_vector);
-				                     for (duckdb::idx_t row = 0; row < input.size(); row++) {
-					                     if (commitdates[row] < receiptdates[row]) {
-						                     local.Insert(orderkeys[row]);
-					                     }
-				                     }
+				                     q4simd::MarkLess(orderkeys, reinterpret_cast<const int32_t *>(commitdates),
+				                                      reinterpret_cast<const int32_t *>(receiptdates), input.size(),
+				                                      local.Words(), local.CapacityBits(),
+				                                      [&](int64_t key) { local.InsertOverflow(key); });
 				                     return;
 			                     }
 

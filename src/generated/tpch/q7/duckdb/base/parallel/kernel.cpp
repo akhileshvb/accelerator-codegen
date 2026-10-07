@@ -2,6 +2,7 @@
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "accelerator_codegen/runtime/parallel/parallel_runtime.hpp"
 #include "tpch/q7/duckdb/base/query.hpp"
+#include "tpch/q7/duckdb/base/q7_fast.hpp"
 
 #include <algorithm>
 #include <array>
@@ -231,6 +232,24 @@ public:
 		return values[key];
 	}
 
+	const ValueT *Data() const {
+		return values.data();
+	}
+
+	int64_t Capacity() const {
+		return capacity;
+	}
+
+	//! Store into the dense array without growing; false when the key lies outside it.  Safe to call
+	//! concurrently for distinct keys.
+	bool TryStoreDense(int64_t key, ValueT value) {
+		if (static_cast<uint64_t>(key) < static_cast<uint64_t>(capacity)) {
+			values[static_cast<size_t>(key)] = value;
+			return true;
+		}
+		return false;
+	}
+
 	size_t DenseBytes() const {
 		return initialized ? values.size() * sizeof(ValueT) : 0;
 	}
@@ -265,6 +284,7 @@ struct Q7FrozenState {
 	DenseKeyStore<uint8_t, kAbsentNationClass> customer_class {kDefaultCustomerCapacity};
 	DenseKeyStore<uint8_t, kAbsentNationClass> supplier_class {kDefaultSupplierCapacity};
 	DenseKeyStore<uint8_t, kAbsentNationClass> order_cust_class {1};
+	q7fast::ByteBitmap order_bitmap;
 	duckdb::date_t shipdate_start {};
 	duckdb::date_t shipdate_end {};
 	duckdb::date_t year_1996_start {};
@@ -554,8 +574,9 @@ void ConsumeSupplierChunk(duckdb::DataChunk &chunk, const Q7FrozenState &state,
 	}
 }
 
-void ConsumeOrdersChunk(duckdb::DataChunk &chunk, const Q7FrozenState &state,
-                        DenseKeyStore<uint8_t, kAbsentNationClass> &order_cust_class, Q7ParallelProfile *profile) {
+template <class StoreFn>
+void ConsumeOrdersChunk(duckdb::DataChunk &chunk, const Q7FrozenState &state, StoreFn &&store_order,
+                        Q7ParallelProfile *profile) {
 	if (!state.has_qualifying_nations()) {
 		return;
 	}
@@ -575,7 +596,7 @@ void ConsumeOrdersChunk(duckdb::DataChunk &chunk, const Q7FrozenState &state,
 			if (profile) {
 				profile->orders_qualified++;
 			}
-			order_cust_class.Store(orderkeys[row], cust_class);
+			store_order(orderkeys[row], cust_class);
 		}
 		return;
 	}
@@ -602,7 +623,7 @@ void ConsumeOrdersChunk(duckdb::DataChunk &chunk, const Q7FrozenState &state,
 		if (profile) {
 			profile->orders_qualified++;
 		}
-		order_cust_class.Store(orderkeys[orderkey_index], cust_class);
+		store_order(orderkeys[orderkey_index], cust_class);
 	}
 }
 
@@ -662,10 +683,26 @@ void BuildQ7FrozenState(duckdb::ClientContext &context, const Q7Parameters &para
 	{
 		const auto t0 = clock::now();
 		Q7ParallelProfile *orders_profile = build_worker_count == 1 ? profile : nullptr;
+		std::vector<CacheLinePadded<std::vector<std::pair<int64_t, uint8_t>>>> extra(build_worker_count);
 		RunParallelChunkScan(context, *bound_inputs[3], build_worker_count,
-		                     [&](duckdb::idx_t, duckdb::DataChunk &chunk) {
-			                     ConsumeOrdersChunk(chunk, state, state.order_cust_class, orders_profile);
+		                     [&](duckdb::idx_t worker_id, duckdb::DataChunk &chunk) {
+			                     auto &local_extra = extra[worker_id].value;
+			                     ConsumeOrdersChunk(
+			                         chunk, state,
+			                         [&](int64_t orderkey, uint8_t cls) {
+				                         if (!state.order_cust_class.TryStoreDense(orderkey, cls)) {
+					                         local_extra.emplace_back(orderkey, cls);
+				                         }
+			                         },
+			                         orders_profile);
 		                     });
+		for (const auto &local_extra : extra) {
+			for (const auto &entry : local_extra.value) {
+				state.order_cust_class.Store(entry.first, entry.second);
+			}
+		}
+		state.order_bitmap.Build(state.order_cust_class.Data(),
+		                         static_cast<size_t>(state.order_cust_class.Capacity()), kAbsentNationClass);
 		if (profile) {
 			profile->orders_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - t0).count();
 			profile->order_dense_bytes = state.order_cust_class.DenseBytes();
@@ -697,14 +734,23 @@ void AccumulateLineitemChunk(duckdb::DataChunk &chunk, const Q7FrozenState &stat
 		auto shipdates = duckdb::FlatVector::GetData<duckdb::date_t>(shipdate_vector);
 		auto extendedprices = duckdb::FlatVector::GetData<int64_t>(extendedprice_vector);
 		auto discounts = duckdb::FlatVector::GetData<int64_t>(discount_vector);
-		for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
-			const int slot = ProbeLineitemSurvivor(state, orderkeys[row], suppkeys[row], shipdates[row], profile);
-			if (slot < 0) {
-				continue;
-			}
-			AddRevenue(agg, slot, extendedprices[row], discounts[row]);
-			if (profile) {
-				profile->lineitem_revenue_contribs++;
+		const duckdb::idx_t total = chunk.size();
+		for (duckdb::idx_t off = 0; off < total; off += q7fast::kBlock) {
+			const auto cnt = std::min<duckdb::idx_t>(q7fast::kBlock, total - off);
+			alignas(64) uint32_t sel[q7fast::kBlock + simd::kSelSlack];
+			const auto m = q7fast::SelectInBitmap(
+			    orderkeys + off, cnt, state.order_bitmap.Words(), state.order_bitmap.Bits(), sel,
+			    [&](int64_t key) { return state.order_cust_class.Load(key) != kAbsentNationClass; });
+			for (size_t j = 0; j < m; j++) {
+				const auto row = off + sel[j];
+				const int slot = ProbeLineitemSurvivor(state, orderkeys[row], suppkeys[row], shipdates[row], profile);
+				if (slot < 0) {
+					continue;
+				}
+				AddRevenue(agg, slot, extendedprices[row], discounts[row]);
+				if (profile) {
+					profile->lineitem_revenue_contribs++;
+				}
 			}
 		}
 		return;

@@ -2,6 +2,7 @@
 #include "accelerator_codegen/runtime/parallel/parallel_kernel.hpp"
 #include "accelerator_codegen/runtime/parallel/parallel_runtime.hpp"
 #include "tpch/q20/duckdb/base/query.hpp"
+#include "tpch/q20/duckdb/base/q20_common.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -186,74 +187,13 @@ bool IsFlatAllValid(duckdb::Vector &vector) {
 
 constexpr int64_t kDefaultPartCapacity = 200001;
 
-class QualifyingPartBitmap {
-public:
-	QualifyingPartBitmap() {
-		const auto words = static_cast<size_t>((kDefaultPartCapacity + 63) / 64);
-		bits.assign(words, 0);
-		bit_capacity = static_cast<int64_t>(words) * 64;
-	}
-
-	void Insert(int64_t partkey) {
-		++count;
-		if (partkey < 0 || partkey > 1'000'000'000) {
-			overflow.insert(partkey);
-			return;
-		}
-		if (partkey >= bit_capacity) {
-			int64_t target = partkey + 1;
-			if (bit_capacity > 0) {
-				const int64_t doubled = bit_capacity > (std::numeric_limits<int64_t>::max() / 2)
-				                            ? std::numeric_limits<int64_t>::max()
-				                            : bit_capacity * 2;
-				if (doubled > target) {
-					target = doubled;
-				}
-			}
-			const auto words = static_cast<size_t>((target + 63) / 64);
-			bits.resize(words, 0);
-			bit_capacity = static_cast<int64_t>(words) * 64;
-		}
-		bits[static_cast<size_t>(partkey) >> 6] |= (uint64_t {1} << (partkey & 63));
-	}
-
-	void MergeFrom(const QualifyingPartBitmap &other) {
-		if (other.bit_capacity > bit_capacity) {
-			const auto words = static_cast<size_t>((other.bit_capacity + 63) / 64);
-			bits.resize(words, 0);
-			bit_capacity = static_cast<int64_t>(words) * 64;
-		}
-		const auto word_count = std::min(bits.size(), other.bits.size());
-		for (size_t i = 0; i < word_count; i++) {
-			bits[i] |= other.bits[i];
-		}
-		overflow.insert(other.overflow.begin(), other.overflow.end());
-		count += other.count;
-	}
-
-	bool Contains(int64_t partkey) const {
-		if (partkey >= 0 && partkey < bit_capacity) {
-			return (bits[static_cast<size_t>(partkey) >> 6] >> (partkey & 63)) & 1ULL;
-		}
-		return overflow.find(partkey) != overflow.end();
-	}
-
-	bool Empty() const {
-		return count == 0;
-	}
-
-private:
-	int64_t bit_capacity = 0;
-	duckdb::idx_t count = 0;
-	std::vector<uint64_t> bits;
-	std::unordered_set<int64_t> overflow;
-};
+using QualifyingPartBitmap = q20::PartFlags;
 
 struct Q20FrozenState {
 	PrefixLikeMatcher part_name_matcher;
 	std::string fallback_part_name_pattern;
 	QualifyingPartBitmap qualifying_parts;
-	std::unordered_map<uint64_t, int64_t> quantity_by_part_supplier;
+	q20::AggTable quantity_by_part_supplier;
 
 	explicit Q20FrozenState(const Q20Parameters &params)
 	    : part_name_matcher(params.part_name_pattern), fallback_part_name_pattern(params.part_name_pattern) {
@@ -345,7 +285,7 @@ void BuildNationSupplierIndex(duckdb::ClientContext &context, const duckdb::Func
 }
 
 void AccumulateLineitemChunk(duckdb::DataChunk &chunk, const Q20FrozenState &state,
-                             std::unordered_map<uint64_t, int64_t> &quantity_by_part_supplier, size_t &accepted_rows) {
+                             q20::AggTable &quantity_by_part_supplier, size_t &accepted_rows) {
 	if (state.qualifying_parts.Empty()) {
 		return;
 	}
@@ -356,13 +296,29 @@ void AccumulateLineitemChunk(duckdb::DataChunk &chunk, const Q20FrozenState &sta
 		auto partkeys = duckdb::FlatVector::GetData<int64_t>(partkey_vector);
 		auto suppkeys = duckdb::FlatVector::GetData<int64_t>(suppkey_vector);
 		auto quantities = duckdb::FlatVector::GetData<int64_t>(quantity_vector);
-		for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
-			const auto partkey = partkeys[row];
-			if (!state.qualifying_parts.Contains(partkey)) {
-				continue;
+		uint32_t picked[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+		duckdb::idx_t remaining = chunk.size();
+		while (remaining > 0) {
+			const duckdb::idx_t step = std::min<duckdb::idx_t>(remaining, STANDARD_VECTOR_SIZE);
+			size_t count = 0;
+			if (state.qualifying_parts.SimdUsable()) {
+				count = q20::SelectFlagged(state.qualifying_parts.Data(), state.qualifying_parts.Size(), partkeys, step,
+				                           picked);
+			} else {
+				for (duckdb::idx_t row = 0; row < step; row++) {
+					picked[count] = static_cast<uint32_t>(row);
+					count += state.qualifying_parts.Contains(partkeys[row]);
+				}
 			}
-			quantity_by_part_supplier[MakeAggKey(partkey, suppkeys[row])] += quantities[row];
-			accepted_rows++;
+			for (size_t k = 0; k < count; k++) {
+				const uint32_t row = picked[k];
+				quantity_by_part_supplier.Add(partkeys[row], suppkeys[row], quantities[row]);
+			}
+			accepted_rows += count;
+			partkeys += step;
+			suppkeys += step;
+			quantities += step;
+			remaining -= step;
 		}
 		return;
 	}
@@ -391,16 +347,13 @@ void AccumulateLineitemChunk(duckdb::DataChunk &chunk, const Q20FrozenState &sta
 			continue;
 		}
 		const auto suppkey = suppkeys[suppkey_index];
-		quantity_by_part_supplier[MakeAggKey(partkey, suppkey)] += quantities[quantity_index];
+		quantity_by_part_supplier.Add(partkey, suppkey, quantities[quantity_index]);
 		accepted_rows++;
 	}
 }
 
-void MergeQuantityMaps(std::unordered_map<uint64_t, int64_t> &global,
-                       const std::unordered_map<uint64_t, int64_t> &local) {
-	for (const auto &entry : local) {
-		global[entry.first] += entry.second;
-	}
+void MergeQuantityMaps(q20::AggTable &global, const q20::AggTable &local) {
+	global.MergeFrom(local);
 }
 
 void ProcessPartsuppChunkFlat(duckdb::DataChunk &chunk, const Q20FrozenState &state,
@@ -411,33 +364,49 @@ void ProcessPartsuppChunkFlat(duckdb::DataChunk &chunk, const Q20FrozenState &st
 	auto availqtys = duckdb::FlatVector::GetData<int64_t>(chunk.data[Q20PartsuppChunkLayout::AVAILQTY_INDEX]);
 	stats.flat_chunks++;
 
-	for (duckdb::idx_t row = 0; row < chunk.size(); row++) {
-		stats.rows_scanned++;
-		const auto partkey = partkeys[row];
-		if (!state.qualifying_parts.Contains(partkey)) {
-			continue;
+	uint32_t picked[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+	duckdb::idx_t remaining = chunk.size();
+	while (remaining > 0) {
+		const duckdb::idx_t step = std::min<duckdb::idx_t>(remaining, STANDARD_VECTOR_SIZE);
+		size_t count = 0;
+		if (state.qualifying_parts.SimdUsable()) {
+			count = q20::SelectFlagged(state.qualifying_parts.Data(), state.qualifying_parts.Size(), partkeys, step,
+			                           picked);
+		} else {
+			for (duckdb::idx_t row = 0; row < step; row++) {
+				picked[count] = static_cast<uint32_t>(row);
+				count += state.qualifying_parts.Contains(partkeys[row]);
+			}
 		}
-		stats.after_part_filter++;
+		stats.rows_scanned += step;
+		stats.after_part_filter += count;
+		for (size_t k = 0; k < count; k++) {
+			const uint32_t row = picked[k];
+			const auto partkey = partkeys[row];
+			const auto suppkey = suppkeys[row];
+			const auto compact = nation_suppliers.ToCompact(suppkey);
+			if (compact < 0) {
+				continue;
+			}
+			stats.after_nation_filter++;
 
-		const auto suppkey = suppkeys[row];
-		const auto compact = nation_suppliers.ToCompact(suppkey);
-		if (compact < 0) {
-			continue;
-		}
-		stats.after_nation_filter++;
+			stats.qty_probes++;
+			const int64_t *agg_sum = state.quantity_by_part_supplier.Find(partkey, suppkey);
+			if (agg_sum == nullptr) {
+				continue;
+			}
+			stats.qty_hits++;
 
-		stats.qty_probes++;
-		const auto agg_it = state.quantity_by_part_supplier.find(MakeAggKey(partkey, suppkey));
-		if (agg_it == state.quantity_by_part_supplier.end()) {
-			continue;
+			if (!AvailQtyGreaterThanHalfSum(availqtys[row], *agg_sum)) {
+				continue;
+			}
+			stats.after_threshold++;
+			qualifying_flags[static_cast<size_t>(compact)] = 1;
 		}
-		stats.qty_hits++;
-
-		if (!AvailQtyGreaterThanHalfSum(availqtys[row], agg_it->second)) {
-			continue;
-		}
-		stats.after_threshold++;
-		qualifying_flags[static_cast<size_t>(compact)] = 1;
+		partkeys += step;
+		suppkeys += step;
+		availqtys += step;
+		remaining -= step;
 	}
 }
 
@@ -478,13 +447,13 @@ void ProcessPartsuppChunkGeneric(duckdb::DataChunk &chunk, const Q20FrozenState 
 		stats.after_nation_filter++;
 
 		stats.qty_probes++;
-		const auto agg_it = state.quantity_by_part_supplier.find(MakeAggKey(partkey, suppkey));
-		if (agg_it == state.quantity_by_part_supplier.end()) {
+		const int64_t *agg_sum = state.quantity_by_part_supplier.Find(partkey, suppkey);
+		if (agg_sum == nullptr) {
 			continue;
 		}
 		stats.qty_hits++;
 
-		if (!AvailQtyGreaterThanHalfSum(availqtys[availqty_index], agg_it->second)) {
+		if (!AvailQtyGreaterThanHalfSum(availqtys[availqty_index], *agg_sum)) {
 			continue;
 		}
 		stats.after_threshold++;
@@ -617,7 +586,7 @@ public:
 		    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - nation_t0).count();
 		profile.nation_supplier_count = static_cast<size_t>(nation_suppliers.compact_count());
 		profile.worker_count = static_cast<size_t>(worker_count);
-		std::vector<CacheLinePadded<std::unordered_map<uint64_t, int64_t>>> workers(worker_count);
+		std::vector<CacheLinePadded<q20::AggTable>> workers(worker_count);
 
 		const auto lineitem_t0 = clock::now();
 		std::atomic<size_t> accepted_lineitems {0};
@@ -633,12 +602,12 @@ public:
 
 		const auto merge_t0 = clock::now();
 		for (const auto &worker : workers) {
-			profile.worker_local_map_entries += worker.value.size();
+			profile.worker_local_map_entries += worker.value.Size();
 			MergeQuantityMaps(frozen.quantity_by_part_supplier, worker.value);
 		}
 		profile.merge_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - merge_t0).count();
-		profile.distinct_qty_keys = frozen.quantity_by_part_supplier.size();
-		profile.quantity_map_buckets = frozen.quantity_by_part_supplier.bucket_count();
+		profile.distinct_qty_keys = frozen.quantity_by_part_supplier.Size();
+		profile.quantity_map_buckets = 0;
 
 		std::vector<uint8_t> qualifying_flags;
 		BuildQualifyingSuppliersParallel(context, *bound_inputs[2], frozen, nation_suppliers, qualifying_flags,

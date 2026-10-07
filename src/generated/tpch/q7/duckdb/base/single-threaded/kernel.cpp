@@ -1,4 +1,5 @@
 #include "tpch/q7/duckdb/base/query.hpp"
+#include "tpch/q7/duckdb/base/q7_fast.hpp"
 
 #include <algorithm>
 #include <array>
@@ -146,6 +147,14 @@ public:
 		}
 		const auto it = overflow.find(key);
 		return it == overflow.end() ? AbsentValue : it->second;
+	}
+
+	const ValueT *Data() const {
+		return values.data();
+	}
+
+	int64_t Capacity() const {
+		return capacity;
 	}
 
 private:
@@ -524,9 +533,23 @@ private:
 			auto shipdates = duckdb::FlatVector::GetData<duckdb::date_t>(shipdate_vector);
 			auto extendedprices = duckdb::FlatVector::GetData<int64_t>(extendedprice_vector);
 			auto discounts = duckdb::FlatVector::GetData<int64_t>(discount_vector);
-			for (duckdb::idx_t row = 0; row < input.size(); row++) {
-				(void)ProcessLineitemRow(orderkeys[row], suppkeys[row], shipdates[row], extendedprices[row],
-				                         discounts[row]);
+			if (!order_bitmap_ready) {
+				order_bitmap.Build(order_cust_class.Data(), static_cast<size_t>(order_cust_class.Capacity()),
+				                   kAbsentOrderCustClass);
+				order_bitmap_ready = true;
+			}
+			const duckdb::idx_t total = input.size();
+			for (duckdb::idx_t off = 0; off < total; off += q7fast::kBlock) {
+				const auto cnt = std::min<duckdb::idx_t>(q7fast::kBlock, total - off);
+				alignas(64) uint32_t sel[q7fast::kBlock + simd::kSelSlack];
+				const auto m = q7fast::SelectInBitmap(
+				    orderkeys + off, cnt, order_bitmap.Words(), order_bitmap.Bits(), sel,
+				    [&](int64_t key) { return order_cust_class.Load(key) != kAbsentOrderCustClass; });
+				for (size_t j = 0; j < m; j++) {
+					const auto r = off + sel[j];
+					(void)ProcessLineitemRow(orderkeys[r], suppkeys[r], shipdates[r], extendedprices[r],
+					                         discounts[r]);
+				}
 			}
 			return;
 		}
@@ -628,6 +651,8 @@ private:
 	DenseKeyStore<int32_t, kAbsentNation> customer_nations;
 	DenseKeyStore<int32_t, kAbsentNation> supplier_nations;
 	DenseKeyStore<uint8_t, kAbsentOrderCustClass> order_cust_class;
+	q7fast::ByteBitmap order_bitmap;
+	bool order_bitmap_ready = false;
 	const duckdb::date_t year_1996_start = duckdb::Date::FromString("1996-01-01");
 	std::array<q7_acc_t, kMaxGroupSlots> group_revenue {};
 	std::array<bool, kMaxGroupSlots> group_has_revenue {};

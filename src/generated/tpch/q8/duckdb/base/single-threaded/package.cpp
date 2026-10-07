@@ -1,5 +1,6 @@
 #include "accelerator_codegen/runtime/duckdb/query_runtime.hpp"
 #include "tpch/q8/duckdb/base/query.hpp"
+#include "tpch/q8/duckdb/base/q8_bind.hpp"
 
 #include <memory>
 #include <stdexcept>
@@ -27,66 +28,9 @@ Q8Parameters BindQ8Parameters(const duckdb::vector<duckdb::Value> &inputs) {
 	                        inputs[2].GetValue<std::string>());
 }
 
-int32_t ResolveNationKey(duckdb::ClientContext &context, const std::string &nation_name) {
-	duckdb::Connection connection(*context.db);
-	std::ostringstream sql;
-	sql << "SELECT DISTINCT n_nationkey FROM nation WHERE n_name = '"
-	    << duckdb::StringUtil::Replace(nation_name, "'", "''") << "'";
-	auto result = connection.Query(sql.str());
-	if (result->HasError()) {
-		throw duckdb::BinderException("failed to resolve nation name \"%s\": %s", nation_name, result->GetError());
-	}
-	auto &materialized = result->Cast<duckdb::MaterializedQueryResult>();
-	if (materialized.RowCount() != 1) {
-		throw duckdb::BinderException("nation name \"%s\" did not resolve to exactly one nation key", nation_name);
-	}
-	return materialized.GetValue(0, 0).GetValue<int32_t>();
-}
-
-void ResolvePartKeys(duckdb::ClientContext &context, const std::string &part_type, std::vector<int64_t> &part_keys) {
-	part_keys.clear();
-	duckdb::Connection connection(*context.db);
-	std::ostringstream sql;
-	sql << "SELECT p_partkey FROM part WHERE p_type LIKE '%"
-	    << duckdb::StringUtil::Replace(part_type, "'", "''") << "'";
-	auto result = connection.Query(sql.str());
-	if (result->HasError()) {
-		throw duckdb::BinderException("failed to resolve part keys for type suffix \"%s\": %s", part_type,
-		                              result->GetError());
-	}
-	auto &materialized = result->Cast<duckdb::MaterializedQueryResult>();
-	part_keys.reserve(materialized.RowCount());
-	for (duckdb::idx_t row = 0; row < materialized.RowCount(); row++) {
-		part_keys.push_back(materialized.GetValue(0, row).GetValue<int64_t>());
-	}
-}
-
-void FillRegionNations(duckdb::ClientContext &context, const std::string &region_name,
-                       std::array<bool, 25> &region_nations) {
-	region_nations.fill(false);
-	duckdb::Connection connection(*context.db);
-	std::ostringstream sql;
-	sql << "SELECT n_nationkey FROM nation n JOIN region r ON n.n_regionkey = r.r_regionkey WHERE r.r_name = '"
-	    << duckdb::StringUtil::Replace(region_name, "'", "''") << "'";
-	auto result = connection.Query(sql.str());
-	if (result->HasError()) {
-		throw duckdb::BinderException("failed to resolve region nations for \"%s\": %s", region_name,
-		                              result->GetError());
-	}
-	auto &materialized = result->Cast<duckdb::MaterializedQueryResult>();
-	for (duckdb::idx_t row = 0; row < materialized.RowCount(); row++) {
-		const auto nationkey = materialized.GetValue(0, row).GetValue<int32_t>();
-		if (nationkey >= 0 && nationkey < static_cast<int32_t>(region_nations.size())) {
-			region_nations[static_cast<size_t>(nationkey)] = true;
-		}
-	}
-}
-
 QueryBindResult BindQ8Package(duckdb::ClientContext &context, duckdb::TableFunctionBindInput &input) {
 	auto parameters = BindQ8Parameters(input.inputs);
-	parameters.target_nationkey = ResolveNationKey(context, parameters.nation_name);
-	FillRegionNations(context, parameters.region_name, parameters.region_nations);
-	ResolvePartKeys(context, parameters.part_type, parameters.bind_part_keys);
+	ResolveQ8BindParameters(context, parameters);
 
 	QueryBindResult result;
 	result.query_parameters = std::make_unique<Q8Parameters>(parameters);

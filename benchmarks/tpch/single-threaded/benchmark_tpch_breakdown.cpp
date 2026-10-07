@@ -1,7 +1,6 @@
 #include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "tpch/q1/duckdb/base/query.hpp"
-#include "tpch/q1/duckdb/base/fused.hpp"
 #include "tpch/q6/duckdb/base/query.hpp"
 #include "test_support/q1_manifest.hpp"
 #include "test_support/q6_manifest.hpp"
@@ -601,69 +600,33 @@ StageRunResult RunQ1ReadChecksum(duckdb::Connection &connection, const accelerat
     return result;
 }
 
-StageRunResult RunQ1FusedNative(duckdb::Connection &connection, const accelerator_codegen::Q1Parameters &parameters);
-
 StageRunResult RunQ1FullNative(duckdb::Connection &connection, const accelerator_codegen::Q1Parameters &parameters) {
-    // Production Q1 path is fused ScanFilteredConsumer (chunk ConsumeInput kernel removed).
-    return RunQ1FusedNative(connection, parameters);
-}
-
-StageRunResult RunQ1FusedNative(duckdb::Connection &connection, const accelerator_codegen::Q1Parameters &parameters) {
     StageRunResult result;
     WithTransaction(connection, [&](duckdb::ClientContext &context) {
         const auto setup_start = Clock::now();
-        auto scan = accelerator_codegen::BindNativeScan(context, accelerator_codegen::CreateQ1ScanSpec(parameters));
-        auto fused = duckdb::make_uniq<accelerator_codegen::Q1FusedKernel>(parameters);
+        auto scan = accelerator_codegen::BindNativeScan(context, accelerator_codegen::CreateQ1ScanSpec(parameters, false));
+        auto source = accelerator_codegen::CreateNativeChunkSource(context, *scan);
+        auto kernel = accelerator_codegen::CreateQ1Kernel(parameters);
         result.setup_us = ElapsedUs(setup_start, Clock::now());
 
-        const auto scan_start = Clock::now();
-        fused->RunFusedScan(context, *scan);
-        const auto &diag = fused->Diagnostics();
-        // Map fused timers into existing CSV columns:
-        // scan_us ~= payload Select, kernel_us ~= aggregate,
-        // predicate_us ~= MVCC+filter wall outside select/agg,
-        // checksum_us carries residual_checks (must be 0), chunks carries chunks_materialized (must be 0).
-        result.scan_us = static_cast<double>(diag.payload_decode_ns) / 1000.0;
-        result.kernel_us = static_cast<double>(diag.aggregate_ns) / 1000.0;
-        result.predicate_us = ElapsedUs(scan_start, Clock::now()) - result.scan_us - result.kernel_us;
-        result.chunks = diag.chunks_materialized;
-        result.rows = diag.qualifying_rows;
-        result.qualifying_rows = diag.qualifying_rows;
-        result.checksum_us = static_cast<double>(diag.residual_checks);
-
-        Require(diag.residual_checks == 0, "fused path must not perform residual shipdate checks");
-        Require(diag.chunks_materialized == 0, "fused path must not materialize aggregation DataChunks");
-        Require(diag.used_fused_path, "fused path diagnostics not marked used");
-
-        // Stash path mix into unused-looking fields for CSV readers: output_rows already used;
-        // print path mix on stderr once when ACCEL_Q1_FUSED_LAYOUT_LOG=1.
-        if (std::getenv("ACCEL_Q1_FUSED_LAYOUT_LOG") && *std::getenv("ACCEL_Q1_FUSED_LAYOUT_LOG") == '1') {
-            const auto &L = diag.layouts;
-            std::cerr << "fused_layout vectors=" << L.vectors_inspected
-                      << " qty_dict=" << L.qty_dictionary << " qty_flat=" << L.qty_flat
-                      << " rf_dict=" << L.rf_dictionary << " ls_dict=" << L.ls_dictionary
-                      << " shared_sel_ptr=" << L.numeric_shared_sel_ptr
-                      << " shared_sel_vals=" << L.numeric_shared_sel_values
-                      << " divergent_sel=" << L.numeric_divergent_sel
-                      << " dominant_eligible=" << L.dominant_eligible << " flat_eligible=" << L.flat_eligible
-                      << " fixed_slot_vecs=" << diag.fixed_slot_vectors
-                      << " flat_vecs=" << diag.flat_fast_vectors
-                      << " scalar_vecs=" << diag.scalar_fallback_vectors
-                      << " aligned=" << (diag.used_aligned_payload ? 1 : 0)
-                      << " aligned_vecs=" << diag.aligned_payload_vectors
-                      << " aligned_fixed_vecs=" << diag.aligned_fixed_slot_vectors
-                      << " identity_vecs=" << diag.aligned_identity_filter_vectors
-                      << " nested_vecs=" << diag.aligned_nested_index_vectors
-                      << " compose_vecs=" << diag.aligned_compose_sel_vectors
-                      << " payload_decode_us=" << (diag.payload_decode_ns / 1000.0)
-                      << " aggregate_us=" << (diag.aggregate_ns / 1000.0)
-                      << " sel_compose_us=" << (diag.sel_compose_ns / 1000.0)
-                      << " sel_index_us=" << (diag.sel_index_ns / 1000.0)
-                      << " agg_update_us=" << (diag.agg_update_ns / 1000.0) << "\n";
+        while (true) {
+            const auto scan_start = Clock::now();
+            const auto has_next = source->Next();
+            result.scan_us += ElapsedUs(scan_start, Clock::now());
+            if (!has_next) {
+                break;
+            }
+            auto &chunk = source->Chunk();
+            result.chunks++;
+            result.rows += chunk.size();
+            result.qualifying_rows += chunk.size();
+            const auto kernel_start = Clock::now();
+            kernel->ConsumeInput(0, chunk);
+            result.kernel_us += ElapsedUs(kernel_start, Clock::now());
         }
 
         const auto merge_start = Clock::now();
-        fused->Finalize();
+        kernel->Finalize();
         result.merge_us += ElapsedUs(merge_start, Clock::now());
 
         duckdb::DataChunk output;
@@ -673,7 +636,7 @@ StageRunResult RunQ1FusedNative(duckdb::Connection &connection, const accelerato
                            duckdb::LogicalType::DECIMAL(38, 6), duckdb::LogicalType::DOUBLE,
                            duckdb::LogicalType::DOUBLE, duckdb::LogicalType::DOUBLE, duckdb::LogicalType::BIGINT});
         const auto output_start = Clock::now();
-        while (fused->ProduceOutput(output)) {
+        while (kernel->ProduceOutput(output)) {
             result.output_rows += output.size();
             for (duckdb::idx_t row = 0; row < output.size(); row++) {
                 for (duckdb::idx_t col = 0; col < output.ColumnCount(); col++) {
@@ -876,15 +839,6 @@ int main() {
             PrintStageRow("q1", entry.label, "full_accelerator_native",
                           BenchmarkStage(warmup_iterations, measured_iterations,
                                          [&]() { return RunQ1FullNative(connection, parameters); }));
-            // Direct fused native stages (bypass SQL UDF). Ablation of scalar vs fixed-slot vs
-            // aligned requires -DACCEL_EXPERIMENTAL_Q1_OPTS; in production builds all three call
-            // the same hardcoded fused+aligned+direct-index path — keep one representative label.
-            PrintStageRow("q1", entry.label, "full_accelerator_fused_aligned_direct",
-                          BenchmarkStage(warmup_iterations, measured_iterations,
-                                         [&]() { return RunQ1FusedNative(connection, parameters); }));
-            // accelerator_sql already exercises the production fused SQL path (hardcoded on).
-            // Removed obsolete accelerator_sql_fused_* rows that setenv'd ACCEL_Q1_* toggles —
-            // those env vars are ignored unless built with ACCEL_EXPERIMENTAL_Q1_OPTS.
         }
 
         for (const auto &entry : accelerator_codegen::test_support::kQ6Manifest) {

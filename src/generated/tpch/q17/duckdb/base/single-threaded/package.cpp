@@ -24,9 +24,8 @@ QueryBindResult BindQ17Package(duckdb::ClientContext &, duckdb::TableFunctionBin
 
 	QueryBindResult result;
 	result.query_parameters = std::make_unique<Q17Parameters>(parameters);
-	result.input_scans.push_back(CreateQ17LineitemAggScanSpec(parameters));
 	result.input_scans.push_back(CreateQ17PartScanSpec(parameters));
-	result.input_scans.push_back(CreateQ17LineitemProbeScanSpec(parameters));
+	result.input_scans.push_back(CreateQ17LineitemScanSpec(parameters));
 	result.output_schema.names = {"avg_yearly"};
 	result.output_schema.types = {duckdb::LogicalType::DOUBLE};
 	return result;
@@ -47,16 +46,6 @@ Q17Parameters MakeQ17Parameters(const std::string &brand, const std::string &con
 	return parameters;
 }
 
-NativeScanSpec CreateQ17LineitemAggScanSpec(const Q17Parameters &) {
-	NativeScanSpec scan_spec;
-	scan_spec.table_name = "lineitem";
-	scan_spec.projected_columns = {
-	    {"l_partkey", "partkey", duckdb::LogicalType::BIGINT, duckdb::PhysicalType::INT64},
-	    {"l_quantity", "quantity", duckdb::LogicalType::DECIMAL(15, 2), duckdb::PhysicalType::INT64},
-	};
-	return scan_spec;
-}
-
 NativeScanSpec CreateQ17PartScanSpec(const Q17Parameters &) {
 	NativeScanSpec scan_spec;
 	scan_spec.table_name = "part";
@@ -68,7 +57,7 @@ NativeScanSpec CreateQ17PartScanSpec(const Q17Parameters &) {
 	return scan_spec;
 }
 
-NativeScanSpec CreateQ17LineitemProbeScanSpec(const Q17Parameters &) {
+NativeScanSpec CreateQ17LineitemScanSpec(const Q17Parameters &) {
 	NativeScanSpec scan_spec;
 	scan_spec.table_name = "lineitem";
 	scan_spec.projected_columns = {

@@ -1,5 +1,7 @@
 #include "tpch/q14/duckdb/base/query.hpp"
 
+#include "accelerator_codegen/runtime/simd.hpp"
+
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -59,7 +61,7 @@ Q14RuntimeConfig ReadQ14RuntimeConfig() {
 	config.dense_part = ReadBoolEnv("ACCEL_Q14_DENSE_PART", true);
 	config.part_dict_fast = ReadBoolEnv("ACCEL_Q14_PART_DICT_FAST", true);
 	config.lineitem_dict_fast = ReadBoolEnv("ACCEL_Q14_LINEITEM_DICT_FAST", true);
-	config.skip_base_date_residual = ReadBoolEnv("ACCEL_Q14_SKIP_BASE_DATE_RESIDUAL", false);
+	// skip_base_date_residual stays false: the scan no longer pushes the shipdate window down.
 #endif
 	return config;
 }
@@ -609,8 +611,7 @@ private:
 				profile->lineitem_scan_decode_ns +=
 				    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - decode_start).count();
 			}
-			ProcessAlignedLineitem(partkeys, nullptr, prices, nullptr, discounts, nullptr, shipdates, nullptr,
-			                       input.size(), /*require_date_residual=*/true);
+			ProcessFlatLineitemSimd(partkeys, prices, discounts, shipdates, input.size());
 			return;
 		}
 
@@ -719,6 +720,42 @@ private:
 			}
 			ProcessLineitemRow(partkeys[partkey_index], prices[price_index], discounts[discount_index],
 			                   shipdates[shipdate_index], true);
+		}
+	}
+
+	//! Flat, all-valid chunk: the l_shipdate window is evaluated here with a SIMD selection vector (the scan
+	//! does not push it down), then only the survivors probe the part table.
+	void ProcessFlatLineitemSimd(const int64_t *partkeys, const int64_t *prices, const int64_t *discounts,
+	                             const duckdb::date_t *shipdates, duckdb::idx_t count) {
+		if (params.end_date.days == std::numeric_limits<int32_t>::min() || count > STANDARD_VECTOR_SIZE) {
+			ProcessAlignedLineitem(partkeys, nullptr, prices, nullptr, discounts, nullptr, shipdates, nullptr, count,
+			                       /*require_date_residual=*/true);
+			return;
+		}
+		uint32_t sel[STANDARD_VECTOR_SIZE + simd::kSelSlack];
+		const size_t m = simd::SelectBetweenI32(reinterpret_cast<const int32_t *>(shipdates), count,
+		                                        params.start_date.days, params.end_date.days - 1, sel);
+		if (profile) {
+			profile->date_survivors += m;
+		}
+		for (size_t k = 0; k < m; k++) {
+			const uint32_t row = sel[k];
+			const auto partkey = partkeys[row];
+			PromoClass promo;
+			if (part_promo.CanProbeUnchecked(partkey)) {
+				promo = part_promo.ProbeNonNegUnchecked(static_cast<uint64_t>(partkey));
+			} else {
+				promo = part_promo.Probe(partkey);
+			}
+			if (promo == PromoClass::Absent) {
+				continue;
+			}
+			const auto revenue = DiscountedRevenueRaw(prices[row], discounts[row]);
+			total_revenue_raw += revenue;
+			saw_contribution = true;
+			if (promo == PromoClass::Promo) {
+				promo_revenue_raw += revenue;
+			}
 		}
 	}
 
@@ -867,11 +904,8 @@ bool Q14LineitemDictFastEnabled() {
 }
 
 bool Q14SkipBaseDateResidualEnabled() {
-#ifdef ACCEL_EXPERIMENTAL_Q14_OPTS
-	return ReadBoolEnv("ACCEL_Q14_SKIP_BASE_DATE_RESIDUAL", false);
-#else
+	// The shipdate window is not pushed down any more, so the residual check can never be skipped.
 	return false;
-#endif
 }
 
 duckdb::unique_ptr<KernelInstance> CreateQ14Kernel(const Q14Parameters &params) {

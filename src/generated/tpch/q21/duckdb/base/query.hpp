@@ -33,7 +33,6 @@ struct Q21SupplierChunkLayout {
 
 struct Q21OrdersChunkLayout {
 	static constexpr duckdb::idx_t ORDERKEY_INDEX = 0;
-	static constexpr duckdb::idx_t ORDERSTATUS_INDEX = 1;
 };
 
 struct Q21LineitemChunkLayout {

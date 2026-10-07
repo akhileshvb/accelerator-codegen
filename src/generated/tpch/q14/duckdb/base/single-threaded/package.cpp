@@ -66,7 +66,7 @@ NativeScanSpec CreateQ14PartScanSpec(const Q14Parameters &) {
 	return scan_spec;
 }
 
-NativeScanSpec CreateQ14LineitemScanSpec(const Q14Parameters &parameters) {
+NativeScanSpec CreateQ14LineitemScanSpec(const Q14Parameters &) {
 	NativeScanSpec scan_spec;
 	scan_spec.table_name = "lineitem";
 	scan_spec.projected_columns = {
@@ -75,12 +75,8 @@ NativeScanSpec CreateQ14LineitemScanSpec(const Q14Parameters &parameters) {
 	    {"l_discount", "discount", duckdb::LogicalType::DECIMAL(15, 2), duckdb::PhysicalType::INT64},
 	    {"l_shipdate", "shipdate", duckdb::LogicalType::DATE, duckdb::PhysicalType::INT32},
 	};
-	// Push the half-open ship-date window; residual re-check remains for txn-local FLAT vectors.
-	scan_spec.filters = {
-	    {"l_shipdate", duckdb::ExpressionType::COMPARE_GREATERTHANOREQUALTO,
-	     duckdb::Value::DATE(parameters.start_date)},
-	    {"l_shipdate", duckdb::ExpressionType::COMPARE_LESSTHAN, duckdb::Value::DATE(parameters.end_date)},
-	};
+	// No predicates are pushed down: the kernels apply the half-open ship-date window with a SIMD selection
+	// vector (cheaper than DuckDB's filtered scan, whose output is also non-flat).
 	return scan_spec;
 }
 
