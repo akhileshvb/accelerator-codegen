@@ -4,14 +4,37 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <unordered_set>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/string_blob.hpp"
 #include "sec_edgar/q1/layout.hpp"
 
+namespace duckdb {
+class Connection;
+class DataChunk;
+}
+
 namespace accelerator_codegen::aux_state::query {
+
+// SEC EDGAR Q1:
+//   SELECT stmt, rfile, COUNT(*) cnt, COUNT(DISTINCT adsh) num_filings,
+//          AVG(line) avg_line_num
+//   FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC
+// The query has no parameters; the state is therefore parameter independent.
+//
+// State: per (stmt, rfile) group the row count, the line sum / non-null count
+// (AVG) and a refcount per distinct adsh (COUNT(DISTINCT adsh) = number of
+// non-zero refcounts, so inserts AND deletes are exact). Accessions are
+// dictionary-encoded: a canonical accession "DDDDDDDDDD-DD-DDDDDD" is an exact
+// bijection to an integer key (not a hash: no collisions), any other string
+// is interned in a string dictionary; both map to a dense 64-bit id.
+//
+// Mutation row contract (compact pre row): [stmt, rfile, adsh, line].
 
 struct SecEdgarQ1Config {
   core::TableId pre_table = 0;
@@ -24,6 +47,8 @@ struct SecEdgarQ1PreInput {
   bool stmt_is_null = false;
   std::string adsh;
   int32_t line = 0;
+  bool adsh_is_null = false;
+  bool line_is_null = false;
 };
 
 class SecEdgarQ1InitialScan {
@@ -31,101 +56,205 @@ public:
   virtual ~SecEdgarQ1InitialScan() = default;
   virtual void ScanPre(
       const std::function<void(const SecEdgarQ1PreInput &)> &) const = 0;
+  // Optional fast path: stream (stmt VARCHAR, rfile VARCHAR, adsh VARCHAR,
+  // line INTEGER) DataChunks. Returns false when unsupported (ScanPre is used).
+  virtual bool
+  ScanPreChunks(const std::function<void(::duckdb::DataChunk &)> &) const {
+    return false;
+  }
 };
 
-struct SecEdgarQ1GroupKey {
+namespace q1 {
+
+using Int128 = __int128;
+using Id = uint64_t; // dense accession id (dictionary rank at build, then append order)
+
+constexpr unsigned kPageBits = 9; // 512 refcounts per copy-on-write chunk
+constexpr uint32_t kPageSize = 1u << kPageBits;
+constexpr uint8_t kEscape = 0xFF; // low byte 255: the exact count lives in `ext`
+constexpr Id kNoId = ~Id(0);
+// Accession keys: canonical accessions are < 10^18 < 2^60; bit 63 tags an
+// index into the "other" (non-canonical) string dictionary.
+constexpr uint64_t kOtherKeyBit = uint64_t(1) << 63;
+
+// Refcounts of (group, accession id), copy-on-write in 512-slot chunks so that
+// a maintenance step copies O(touched chunks), not O(state). A count below 255
+// is stored in one byte; a count of 255 or more stores 255 in `low` and the
+// exact 64-bit count in `ext` (chunks of `ext` exist only where such counts
+// occur). Both arrays are core::ChunkedCowArray.
+struct GroupRefs {
+  core::ChunkedCowArray<uint8_t, kPageBits> low;
+  core::ChunkedCowArray<uint64_t, kPageBits> ext;
+
+  uint64_t Get(Id id) const;
+  // Sets the exact count (>= 0).
+  void Set(Id id, uint64_t count);
+  uint64_t MemoryBytes() const;
+};
+
+struct GroupData {
   std::string stmt;
   std::string rfile;
   bool rfile_is_null = false;
-
-  bool operator==(const SecEdgarQ1GroupKey &other) const {
-    return rfile_is_null == other.rfile_is_null && stmt == other.stmt &&
-           rfile == other.rfile;
-  }
-  bool operator!=(const SecEdgarQ1GroupKey &other) const {
-    return !(*this == other);
-  }
-  bool operator<(const SecEdgarQ1GroupKey &other) const {
-    if (stmt != other.stmt) {
-      return stmt < other.stmt;
-    }
-    if (rfile_is_null != other.rfile_is_null) {
-      return rfile_is_null;
-    }
-    return rfile < other.rfile;
-  }
-};
-
-struct SecEdgarQ1GroupKeyHash {
-  std::size_t operator()(const SecEdgarQ1GroupKey &key) const noexcept;
-};
-
-struct SecEdgarQ1GroupAggregate {
   int64_t cnt = 0;
-  int64_t line_sum = 0;
-  std::unordered_set<std::string> distinct_adsh;
+  Int128 line_sum = 0; // exact (DuckDB sums INTEGER into a HUGEINT)
+  int64_t line_cnt = 0; // non-null lines (AVG denominator)
+  int64_t distinct = 0; // COUNT(DISTINCT adsh)
+  std::shared_ptr<const GroupRefs> refs;
 };
 
-struct SecEdgarQ1OutputRow {
+// Sorted accession keys; the id of keys[i] is i unless `ids` is non-empty.
+struct DictBase {
+  std::vector<uint64_t> keys; // sorted
+  std::vector<Id> ids;        // parallel to keys; EMPTY == identity (id == index)
+  Id IdAt(std::size_t index) const { return ids.empty() ? Id(index) : ids[index]; }
+};
+
+// Non-canonical accession strings -> index. Append-only (an index is never
+// reused). An immutable base plus a small copy-on-write overlay; the overlay is
+// merged into a new base once it outgrows a fraction of the base.
+class OtherIds {
+public:
+  static constexpr uint64_t kNone = ~uint64_t(0);
+  uint64_t Find(std::string_view text) const;
+  uint64_t Intern(std::string_view text); // existing or new index
+  uint64_t size() const;
+  uint64_t MemoryBytes() const;
+  // Visits (text, index) in index order.
+  void ForEach(const std::function<void(std::string_view, uint64_t)> &fn) const;
+
+private:
+  std::shared_ptr<const core::StringDict> base_;
+  std::shared_ptr<const std::vector<std::string>> overlay_;
+};
+
+struct State {
+  std::vector<GroupData> groups;
+  std::shared_ptr<const DictBase> dict;
+  // Ids created since the last compaction, sorted by key (copy-on-write).
+  std::shared_ptr<const std::vector<std::pair<uint64_t, Id>>> overlay;
+  OtherIds others;
+  Id next_id = 0;
+  Id ids_at_build = 0;
+
+  Id FindId(uint64_t key) const;
+  Id GetOrCreateId(uint64_t key);
+  int FindGroup(const std::string &stmt, const std::string &rfile,
+                bool rfile_is_null) const;
+  int GetOrCreateGroup(const std::string &stmt, const std::string &rfile,
+                       bool rfile_is_null);
+  void CompactDictionary();
+  uint64_t MemoryBytes() const;
+};
+
+struct OutputRow {
   std::string stmt;
   std::string rfile;
   bool rfile_is_null = false;
   int64_t cnt = 0;
   int64_t num_filings = 0;
   double avg_line_num = 0.0;
+  bool avg_is_null = false;
 };
 
-struct SecEdgarQ1State {
-  std::vector<SecEdgarQ1GroupKey> group_keys;
-  std::vector<SecEdgarQ1GroupAggregate> aggregates;
+// AVG(INTEGER) exactly as DuckDB finalizes it: long double division of the
+// exact sum by the count, rounded to double.
+double AvgLine(Int128 sum, int64_t count);
+
+std::vector<OutputRow> BuildOutput(const State &);
+std::vector<uint8_t> Encode(const State &);
+bool Decode(const std::vector<uint8_t> &, State &);
+
+// Incremental build used by Build()/ExecuteFallback (single and parallel).
+class Builder {
+public:
+  Builder();
+  ~Builder();
+  Builder(Builder &&) noexcept;
+  Builder &operator=(Builder &&) noexcept;
+
+  void ConsumeChunk(::duckdb::DataChunk &chunk);
+  void ConsumeRow(const SecEdgarQ1PreInput &row);
+  void Merge(Builder &&other);
+  State Finish();
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> impl;
 };
 
-enum class SecEdgarQ1ImageKind : uint8_t {
-  GroupKeys,
-  GroupAggregates,
-};
+} // namespace q1
+
+using SecEdgarQ1State = q1::State;
+using SecEdgarQ1OutputRow = q1::OutputRow;
+
+// DuckDB helper for SecEdgarQ1InitialScan::ScanPreChunks: streams (stmt, rfile,
+// adsh, line) straight from table storage (no result materialization/copy).
+// Begins/ends a transaction on `connection` only when none is active.
+bool ScanSecEdgarQ1PreNative(
+    ::duckdb::Connection &connection,
+    const std::function<void(::duckdb::DataChunk &)> &consumer);
 
 struct SecEdgarQ1StateImage {
-  SecEdgarQ1ImageKind kind = SecEdgarQ1ImageKind::GroupKeys;
   std::shared_ptr<const SecEdgarQ1State> state;
 };
 
-std::vector<uint8_t> EncodeSecEdgarQ1GroupKeys(const SecEdgarQ1State &);
-std::vector<uint8_t> EncodeSecEdgarQ1GroupAggregates(const SecEdgarQ1State &);
-
-bool DecodeSecEdgarQ1GroupKeys(const std::vector<uint8_t> &, SecEdgarQ1State &);
-bool DecodeSecEdgarQ1GroupAggregates(const std::vector<uint8_t> &,
-                                     SecEdgarQ1State &);
-
+std::vector<uint8_t> EncodeSecEdgarQ1State(const SecEdgarQ1State &);
+bool DecodeSecEdgarQ1State(const std::vector<uint8_t> &, SecEdgarQ1State &);
 std::vector<SecEdgarQ1OutputRow> BuildSecEdgarQ1Output(const SecEdgarQ1State &);
 
 class SecEdgarQ1TxnBuffer final : public core::AuxTxnBuffer {
 public:
-  struct PreDelta {
-    SecEdgarQ1GroupKey group;
-    std::string adsh;
-    int32_t line = 0;
-    int8_t sign = 0;
-    bool relevant = false;
+  struct LocalGroup {
+    std::string stmt;
+    std::string rfile;
+    bool rfile_is_null = false;
+  };
+  // Signed contribution of one or more base rows to one (group, adsh key).
+  struct Delta {
+    uint32_t group = 0; // index into Groups()
+    uint64_t key = 0;   // adsh key; ignored when d_refc == 0
+    int32_t d_cnt = 0;
+    int32_t d_refc = 0;
+    int32_t d_line_cnt = 0;
+    int64_t d_line_sum = 0;
   };
 
   bool HasPendingChanges() const override;
   void Clear() override;
 
   bool RequiresRebuild() const;
-  const std::vector<PreDelta> &Deltas() const;
   void MarkRebuild();
-  void AddDelta(PreDelta delta);
+  const std::vector<Delta> &Deltas() const { return deltas; }
+  const std::vector<LocalGroup> &Groups() const { return groups; }
+  const std::vector<std::string> &OtherAdsh() const { return others; }
+
+  uint32_t InternGroup(const std::string &stmt, const std::string &rfile,
+                       bool rfile_is_null);
+  uint64_t InternAdsh(const std::string &adsh);
+  void AddDelta(const Delta &delta);
 
 private:
   bool pending = false;
   bool requires_rebuild = false;
-  std::vector<PreDelta> deltas;
+  std::vector<Delta> deltas;
+  std::vector<LocalGroup> groups;
+  std::unordered_map<std::string, uint32_t> group_index;
+  std::vector<std::string> others;
+  std::unordered_map<std::string, uint32_t> other_index;
 };
+
+// Applies a staged buffer to `state` in place. Returns false when the deltas
+// are inconsistent with the state (caller must rebuild).
+bool ApplySecEdgarQ1Deltas(SecEdgarQ1State &state,
+                           const SecEdgarQ1TxnBuffer &buffer);
 
 class SecEdgarQ1Module final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = core::SecEdgarQ1Layout::kAccelerator;
+  // The whole state is one immutable image.
+  static constexpr core::PartitionId kStatePartition =
+      core::SecEdgarQ1Layout::kState;
 
   explicit SecEdgarQ1Module(SecEdgarQ1Config config,
                             SecEdgarQ1InitialScan *initial_scan = nullptr)
@@ -152,11 +281,20 @@ public:
   void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
                        core::AuxRowSink &) override;
 
-private:
-  SecEdgarQ1State BuildState(core::AuxEngineServices &) const;
-  bool LoadState(core::AuxEngineServices &, SecEdgarQ1State &) const;
-  void EmitOutput(const SecEdgarQ1State &, core::AuxRowSink &) const;
+  // Shared by the parallel module: stage using this module's delta logic and
+  // publish under `accelerator_id`.
+  core::StagedMaintenanceOutcome
+  StageForAccelerator(core::AuxEngineServices &, core::AuxTxnBuffer &,
+                      const char *accelerator_id);
+  // `accelerator_id` null: this module's own id.
+  std::shared_ptr<const SecEdgarQ1State>
+  LoadState(core::AuxEngineServices &, core::Version *version = nullptr,
+            const char *accelerator_id = nullptr) const;
+  static void EmitOutput(const SecEdgarQ1State &, core::AuxRowSink &);
 
+  SecEdgarQ1State BuildState(core::AuxEngineServices &) const;
+
+private:
   SecEdgarQ1Config config;
   SecEdgarQ1InitialScan *initial_scan = nullptr;
 };

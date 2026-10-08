@@ -5,6 +5,8 @@
 
 namespace accelerator_codegen::aux_state::query {
 
+// Same state and incremental maintenance as SecEdgarQ1Module; only the initial
+// build/fallback scan runs in parallel (per-worker builders merged at the end).
 class SecEdgarQ1ParallelModule final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = core::SecEdgarQ1Layout::kParallelAccelerator;
@@ -44,8 +46,6 @@ public:
 
 private:
   SecEdgarQ1State BuildState(core::AuxEngineServices &) const;
-  void EmitOutput(const SecEdgarQ1State &, core::AuxRowSink &) const;
-  void EmitState(const SecEdgarQ1State &, core::StateBuilder &) const;
 
   SecEdgarQ1Module inner_;
   SecEdgarQ1InitialScan *initial_scan = nullptr;
