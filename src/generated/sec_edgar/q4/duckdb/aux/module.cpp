@@ -1,724 +1,644 @@
 #include "sec_edgar/q4/duckdb/aux/module.hpp"
-#include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include <limits>
-#include <set>
 #include <stdexcept>
-#include <utility>
-#include "sec_edgar/q4/layout.hpp"
+#include <unordered_map>
+#include <unordered_set>
+
+#include "accelerator_codegen/stateful/core/byte_stream.hpp"
+#include "sec_edgar/q4/duckdb/aux/state_ops.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
 using core::ByteWriter;
 
-constexpr uint32_t kFormatVersion = 1;
-constexpr uint32_t kSicCohortMagic = 0x43345151;        // Q4SC
-constexpr uint32_t kPreEqBridgeMagic = 0x50345151;      // Q4PB
-constexpr uint32_t kTagTlabelMagic = 0x54345151;        // Q4TT
-constexpr uint32_t kGroupAggregateMagic = 0x41345151;   // Q4AG
+constexpr uint32_t kFormatVersion = 2;
+constexpr uint32_t kSicCohortMagic = 0x43345151;      // Q4SC
+constexpr uint32_t kPreEqBridgeMagic = 0x50345151;    // Q4PB
+constexpr uint32_t kTagTlabelMagic = 0x54345151;      // Q4TT
+constexpr uint32_t kGroupAggregateMagic = 0x41345151; // Q4AG
 constexpr int32_t kSicMin = 4000;
 constexpr int32_t kSicMax = 4999;
-constexpr int32_t kMinDistinctCik = 2;
-constexpr std::size_t kOutputLimit = 500;
+// Above these sizes a rebuild from the base tables is cheaper than patching.
+constexpr size_t kMaxStructuralKeys = 4096;
+constexpr size_t kMaxDeltas = 8u << 20;
 
+enum class Cell { Ok, Null, Bad };
 
-bool ReadString(const core::AuxRow &row, std::size_t index, std::string &value) {
-  if (index >= row.values.size() || row.values[index].is_null ||
-      !std::holds_alternative<std::string>(row.values[index].payload)) {
-    return false;
-  }
-  value = std::get<std::string>(row.values[index].payload);
-  return true;
-}
-
-bool ReadDouble(const core::AuxRow &row, std::size_t index, double &value,
-                bool &is_null) {
+Cell GetString(const core::AuxRow &row, size_t index, std::string_view &out) {
   if (index >= row.values.size()) {
-    return false;
+    return Cell::Bad;
   }
   const auto &cell = row.values[index];
   if (cell.is_null) {
-    is_null = true;
-    return true;
+    return Cell::Null;
   }
-  is_null = false;
-  if (std::holds_alternative<double>(cell.payload)) {
-    value = std::get<double>(cell.payload);
-    return true;
+  const auto *s = std::get_if<std::string>(&cell.payload);
+  if (!s) {
+    return Cell::Bad;
   }
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    value = static_cast<double>(std::get<int64_t>(cell.payload));
-    return true;
-  }
-  return false;
+  out = *s;
+  return Cell::Ok;
 }
 
-bool ReadInt32(const core::AuxRow &row, std::size_t index, int32_t &value) {
-  if (index >= row.values.size() || row.values[index].is_null) {
-    return false;
+Cell GetDouble(const core::AuxRow &row, size_t index, double &out) {
+  if (index >= row.values.size()) {
+    return Cell::Bad;
   }
   const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    const auto raw = std::get<int64_t>(cell.payload);
-    if (raw < std::numeric_limits<int32_t>::min() ||
-        raw > std::numeric_limits<int32_t>::max()) {
-      return false;
+  if (cell.is_null) {
+    return Cell::Null;
+  }
+  if (const auto *d = std::get_if<double>(&cell.payload)) {
+    out = *d;
+    return Cell::Ok;
+  }
+  if (const auto *i = std::get_if<int64_t>(&cell.payload)) {
+    out = static_cast<double>(*i);
+    return Cell::Ok;
+  }
+  return Cell::Bad;
+}
+
+bool Intersects(const std::vector<core::ColumnId> &updated,
+                std::initializer_list<core::ColumnId> watched) {
+  if (updated.empty()) {
+    return true; // unknown => assume relevant
+  }
+  for (const auto column : updated) {
+    for (const auto w : watched) {
+      if (column == w) return true;
     }
-    value = static_cast<int32_t>(raw);
-    return true;
   }
   return false;
 }
 
-bool SicInRange(int32_t sic) { return sic >= kSicMin && sic <= kSicMax; }
-
-uint32_t FindGroup(const std::vector<SecEdgarQ4GroupKey> &groups,
-                   const SecEdgarQ4GroupKey &key) {
-  const auto it = std::lower_bound(groups.begin(), groups.end(), key);
-  if (it == groups.end() || *it != key) {
-    return std::numeric_limits<uint32_t>::max();
-  }
-  return static_cast<uint32_t>(it - groups.begin());
-}
-
-uint32_t InternTlabel(SecEdgarQ4State &state, const std::string &tlabel) {
-  const auto it = std::find(state.tlabels.begin(), state.tlabels.end(), tlabel);
-  if (it != state.tlabels.end()) {
-    return static_cast<uint32_t>(it - state.tlabels.begin());
-  }
-  const uint32_t id = static_cast<uint32_t>(state.tlabels.size());
-  state.tlabels.push_back(tlabel);
-  return id;
-}
-
-uint32_t InternTagVersion(SecEdgarQ4State &state,
-                          const SecEdgarQ4TagVersionKey &key,
-                          uint32_t tlabel_id) {
-  const auto it = state.tag_version_index.find(key);
-  if (it != state.tag_version_index.end()) {
-    return it->second;
-  }
-  const uint32_t id = static_cast<uint32_t>(state.tag_versions.size());
-  state.tag_versions.push_back(key);
-  state.tag_version_index.emplace(key, id);
-  state.tlabel_ids_by_tag_version.push_back(tlabel_id);
-  return id;
-}
-
-uint32_t InternGroup(SecEdgarQ4State &state, int32_t sic, uint32_t tlabel_id) {
-  const SecEdgarQ4GroupKey key{sic, tlabel_id};
-  for (uint32_t id = 0; id < state.group_keys.size(); ++id) {
-    if (state.group_keys[id] == key) {
-      return id;
-    }
-  }
-  const uint32_t id = static_cast<uint32_t>(state.group_keys.size());
-  state.group_keys.push_back(key);
-  state.aggregates.push_back({});
-  if (state.cik_bit_word_count > 0) {
-    state.aggregates.back().cik_bits.assign(state.cik_bit_word_count, 0);
-  }
-  return id;
-}
-
-void EnsureCikBitCapacity(SecEdgarQ4GroupAggregate &group,
-                            uint32_t cik_bit_word_count) {
-  if (group.cik_bits.size() != cik_bit_word_count) {
-    group.cik_bits.assign(cik_bit_word_count, 0);
-  }
-}
-
-void AccumulateGroup(SecEdgarQ4GroupAggregate &group, uint32_t cik_dense_id,
-                     uint32_t cik_bit_word_count, uint32_t cik_dense_count,
-                     double value, uint32_t multiplicity) {
-  EnsureCikBitCapacity(group, cik_bit_word_count);
-  const auto delta_sum = value * static_cast<double>(multiplicity);
-  group.sum += delta_sum;
-  group.count += static_cast<int64_t>(multiplicity);
-  if (cik_bit_word_count > 0 && cik_dense_id < cik_dense_count) {
-    const auto word = cik_dense_id >> 6;
-    const auto bit = cik_dense_id & 63U;
-    const auto mask = uint64_t(1) << bit;
-    if ((group.cik_bits[word] & mask) == 0) {
-      group.cik_bits[word] |= mask;
-      group.distinct_cik_count++;
-    }
-  }
-}
-
-void ApplyNumContribution(SecEdgarQ4State &state, const std::string &adsh,
-                          const SecEdgarQ4TagVersionKey &tag_version,
-                          double value, int8_t sign) {
-  const auto sub_it = state.sub_lookup.find(adsh);
-  if (sub_it == state.sub_lookup.end()) {
-    return;
-  }
-  const auto tag_it = state.tag_version_index.find(tag_version);
-  if (tag_it == state.tag_version_index.end()) {
-    return;
-  }
-  const auto pre_adsh_it = state.pre_by_adsh.find(adsh);
-  if (pre_adsh_it == state.pre_by_adsh.end()) {
-    return;
-  }
-  const auto pre_entry_it = pre_adsh_it->second.find(tag_it->second);
-  if (pre_entry_it == pre_adsh_it->second.end() ||
-      pre_entry_it->second.multiplicity == 0) {
-    return;
-  }
-  const auto &resolved = pre_entry_it->second;
-  if (resolved.group_id >= state.aggregates.size()) {
-    return;
-  }
-  const auto scaled_value = static_cast<double>(sign) * value;
-  AccumulateGroup(state.aggregates[resolved.group_id], resolved.cik_dense_id,
-                  state.cik_bit_word_count, state.cik_dense_count, scaled_value,
-                  resolved.multiplicity);
-}
-
-void BuildSubLookup(SecEdgarQ4State &state,
-                    const SecEdgarQ4InitialScan *initial_scan) {
-  initial_scan->ScanSub([&](const SecEdgarQ4SubInput &input) {
-    if (!SicInRange(input.sic)) {
-      return;
-    }
-    auto &info = state.sub_lookup[input.adsh];
-    info.cik = input.cik;
-    info.sic = input.sic;
-    if (state.cik_dense_index.find(input.cik) == state.cik_dense_index.end()) {
-      state.cik_dense_index[input.cik] = state.cik_dense_count++;
-    }
-    info.cik_dense_id = state.cik_dense_index[input.cik];
-  });
-  state.cik_bit_word_count =
-      state.cik_dense_count == 0 ? 0 : (state.cik_dense_count + 63U) / 64U;
-}
-
-void BuildTagLookup(SecEdgarQ4State &state,
-                    const SecEdgarQ4InitialScan *initial_scan) {
-  // Only keep tag/tlabel entries that can appear in the SIC+EQ bridge.
-  // Storing the full abstract=0 tag table (~1M rows on SF3) dominates aux RSS.
-  std::set<SecEdgarQ4TagVersionKey> needed;
-  initial_scan->ScanPre([&](const SecEdgarQ4PreInput &input) {
-    if (input.stmt != "EQ") {
-      return;
-    }
-    if (state.sub_lookup.find(input.adsh) == state.sub_lookup.end()) {
-      return;
-    }
-    needed.insert({input.tag, input.version});
-  });
-  initial_scan->ScanTag([&](const SecEdgarQ4TagInput &input) {
-    if (input.abstract_flag != 0) {
-      return;
-    }
-    if (needed.find({input.tag, input.version}) == needed.end()) {
-      return;
-    }
-    const uint32_t tlabel_id = InternTlabel(state, input.tlabel);
-    InternTagVersion(state, {input.tag, input.version}, tlabel_id);
-  });
-}
-
-void BuildPreBridge(SecEdgarQ4State &state,
-                    const SecEdgarQ4InitialScan *initial_scan) {
-  initial_scan->ScanPre([&](const SecEdgarQ4PreInput &input) {
-    if (input.stmt != "EQ") {
-      return;
-    }
-    const auto sub_it = state.sub_lookup.find(input.adsh);
-    if (sub_it == state.sub_lookup.end()) {
-      return;
-    }
-    const auto tag_it =
-        state.tag_version_index.find({input.tag, input.version});
-    if (tag_it == state.tag_version_index.end()) {
-      return;
-    }
-    const uint32_t tlabel_id = state.tlabel_ids_by_tag_version[tag_it->second];
-    const uint32_t group_id =
-        InternGroup(state, sub_it->second.sic, tlabel_id);
-    auto &resolved = state.pre_by_adsh[input.adsh][tag_it->second];
-    resolved.group_id = group_id;
-    resolved.cik_dense_id = sub_it->second.cik_dense_id;
-    resolved.multiplicity++;
-  });
-}
-
-void BuildAggregates(SecEdgarQ4State &state,
-                     const SecEdgarQ4InitialScan *initial_scan) {
-  initial_scan->ScanNum([&](const SecEdgarQ4NumInput &input) {
-    if (input.uom != "USD" || input.value_is_null) {
-      return;
-    }
-    ApplyNumContribution(state, input.adsh, {input.tag, input.version},
-                         input.value, 1);
-  });
+const SecEdgarQ4StateImage *AsImage(const core::StateImage &image,
+                                    SecEdgarQ4ImageKind kind) {
+  const auto *payload = image.As<SecEdgarQ4StateImage>();
+  return payload && payload->kind == kind && payload->state ? payload : nullptr;
 }
 
 std::shared_ptr<const SecEdgarQ4StateImage>
-MakeStateImage(SecEdgarQ4ImageKind kind,
-               const std::shared_ptr<const SecEdgarQ4State> &state) {
+MakeImage(SecEdgarQ4ImageKind kind, const SecEdgarQ4State &full) {
+  auto state = std::make_shared<SecEdgarQ4State>();
+  switch (kind) {
+  case SecEdgarQ4ImageKind::SicCohort:
+    state->cohort = full.cohort;
+    break;
+  case SecEdgarQ4ImageKind::PreEqBridge:
+    state->bridge = full.bridge;
+    break;
+  case SecEdgarQ4ImageKind::TagTlabel:
+    state->labels = full.labels;
+    break;
+  case SecEdgarQ4ImageKind::GroupAggregates:
+    state->groups = full.groups;
+    break;
+  }
   auto image = std::make_shared<SecEdgarQ4StateImage>();
   image->kind = kind;
-  image->state = state;
+  image->state = std::move(state);
   return image;
-}
-
-const SecEdgarQ4StateImage *AsQ4Image(const core::StateImage &image,
-                                      SecEdgarQ4ImageKind kind) {
-  const auto *payload = image.As<SecEdgarQ4StateImage>();
-  return payload && payload->kind == kind && payload->state ? payload
-                                                              : nullptr;
-}
-
-void EmitStateImages(const SecEdgarQ4State &state,
-                     core::StateBuilder &builder) {
-  const auto typed_state = std::make_shared<const SecEdgarQ4State>(state);
-  builder.Write(core::StateImage::Make(
-      core::SecEdgarQ4Layout::kAccelerator, core::SecEdgarQ4Layout::kSicCohort,
-      0, MakeStateImage(SecEdgarQ4ImageKind::SicCohort, typed_state)));
-  builder.Write(core::StateImage::Make(
-      core::SecEdgarQ4Layout::kAccelerator,
-      core::SecEdgarQ4Layout::kPreEqBridge, 0,
-      MakeStateImage(SecEdgarQ4ImageKind::PreEqBridge, typed_state)));
-  builder.Write(core::StateImage::Make(
-      core::SecEdgarQ4Layout::kAccelerator, core::SecEdgarQ4Layout::kTagTlabel,
-      0, MakeStateImage(SecEdgarQ4ImageKind::TagTlabel, typed_state)));
-  builder.Write(core::StateImage::Make(
-      core::SecEdgarQ4Layout::kAccelerator,
-      core::SecEdgarQ4Layout::kGroupAggregates, 0,
-      MakeStateImage(SecEdgarQ4ImageKind::GroupAggregates, typed_state)));
-  builder.Finish();
 }
 
 core::InvalidationPlan AllPartitions() {
   core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
+  plan.scope = ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
   return plan;
 }
 
-core::InvalidationPlan AggregatePartitions() {
-  core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
-  plan.partitions.insert(
-      static_cast<::accelerator_codegen::aux_state::PartitionKey>(
-          core::SecEdgarQ4Layout::kGroupAggregates));
-  return plan;
+void PutVar(ByteWriter &w, uint64_t v) {
+  while (v >= 0x80) {
+    w.U8(static_cast<uint8_t>(v | 0x80));
+    v >>= 7;
+  }
+  w.U8(static_cast<uint8_t>(v));
+}
+
+void PutDict(ByteWriter &w, const SecEdgarQ4StrDict &dict) {
+  PutVar(w, dict.Size());
+  for (uint32_t i = 0; i < dict.Size(); ++i) {
+    const auto s = dict.Get(i);
+    PutVar(w, s.size());
+    w.bytes.insert(w.bytes.end(), s.begin(), s.end());
+  }
+}
+
+std::string Join(std::string_view a, std::string_view b) {
+  std::string out;
+  out.reserve(a.size() + b.size() + 1);
+  out.append(a);
+  out.push_back('\0');
+  out.append(b);
+  return out;
+}
+
+bool FilterMatches(const SecEdgarQ4BridgeFilter &f, const std::string &adsh,
+                   const std::string &tag, const std::string &version,
+                   const std::unordered_set<std::string> &adsh_set,
+                   const std::unordered_set<std::string> &tv_set,
+                   const std::unordered_set<std::string> &key_set) {
+  if (f.all) return true;
+  if (adsh_set.count(adsh)) return true;
+  if (tv_set.count(Join(tag, version))) return true;
+  if (key_set.count(Join(adsh, Join(tag, version)))) return true;
+  return false;
 }
 
 } // namespace
 
-std::size_t SecEdgarQ4TagVersionKeyHash::operator()(
-    const SecEdgarQ4TagVersionKey &key) const noexcept {
-  return std::hash<std::string>{}(key.tag) ^
-         (std::hash<std::string>{}(key.version) << 1);
+// ------------------------------------------------------------ default scan
+
+void SecEdgarQ4InitialScan::ScanBridge(
+    const SecEdgarQ4BridgeFilter &filter,
+    const std::function<void(const SecEdgarQ4BridgeRow &)> &consumer) const {
+  std::unordered_set<std::string> adsh_set(filter.adsh.begin(), filter.adsh.end());
+  std::unordered_set<std::string> tv_set;
+  std::unordered_set<std::string> key_set;
+  for (const auto &tv : filter.tag_versions) tv_set.insert(Join(tv.first, tv.second));
+  for (const auto &k : filter.keys) key_set.insert(Join(k.adsh, Join(k.tag, k.version)));
+
+  struct SubInfo {
+    int32_t cik;
+    int32_t sic;
+    bool cik_null;
+  };
+  std::unordered_map<std::string, SubInfo> subs;
+  ScanSub([&](const SecEdgarQ4SubInput &s) {
+    if (s.sic >= kSicMin && s.sic <= kSicMax) {
+      subs[s.adsh] = {s.cik, s.sic, s.cik_null};
+    }
+  });
+  struct TagInfo {
+    std::string tlabel;
+    bool tlabel_null;
+  };
+  std::unordered_map<std::string, TagInfo> tags; // tag\0version -> label
+  ScanTag([&](const SecEdgarQ4TagInput &t) {
+    if (t.abstract_flag == 0) {
+      tags[Join(t.tag, t.version)] = {t.tlabel, t.tlabel_null};
+    }
+  });
+  struct Acc {
+    SecEdgarQ4BridgeRow row;
+  };
+  std::unordered_map<std::string, SecEdgarQ4BridgeRow> keys; // adsh\0tag\0version
+  ScanPre([&](const SecEdgarQ4PreInput &p) {
+    if (p.stmt != "EQ") return;
+    const auto sub = subs.find(p.adsh);
+    if (sub == subs.end()) return;
+    const auto tag = tags.find(Join(p.tag, p.version));
+    if (tag == tags.end()) return;
+    if (!FilterMatches(filter, p.adsh, p.tag, p.version, adsh_set, tv_set, key_set)) return;
+    auto &row = keys[Join(p.adsh, Join(p.tag, p.version))];
+    if (row.mult == 0) {
+      row.adsh = p.adsh;
+      row.tag = p.tag;
+      row.version = p.version;
+      row.cik = sub->second.cik;
+      row.cik_null = sub->second.cik_null;
+      row.sic = sub->second.sic;
+      row.tlabel = tag->second.tlabel;
+      row.tlabel_null = tag->second.tlabel_null;
+    }
+    ++row.mult;
+  });
+  if (filter.include_num) {
+    ScanNum([&](const SecEdgarQ4NumInput &n) {
+      if (n.uom != "USD" || n.value_is_null) return;
+      const auto it = keys.find(Join(n.adsh, Join(n.tag, n.version)));
+      if (it == keys.end()) return;
+      Q4DDAdd(it->second.ns, it->second.ns_lo, n.value);
+      it->second.nc += 1;
+    });
+  }
+  for (const auto &kv : keys) {
+    consumer(kv.second);
+  }
 }
 
-std::size_t SecEdgarQ4GroupKeyHash::operator()(
-    const SecEdgarQ4GroupKey &key) const noexcept {
-  return (static_cast<std::size_t>(key.sic) << 32) ^ key.tlabel_id;
+// -------------------------------------------------------------- state build
+
+SecEdgarQ4State SecEdgarQ4StateFromBridgeRows(
+    const std::vector<SecEdgarQ4BridgeRow> &rows) {
+  q4::Flat flat;
+  for (const auto &row : rows) {
+    flat.AddRow(row);
+  }
+  return q4::FlatToState(flat, 1);
 }
+
+uint32_t SecEdgarQ4FindEntry(const SecEdgarQ4State &state, std::string_view adsh,
+                             std::string_view tag, std::string_view version) {
+  if (!state.cohort || !state.bridge) return kQ4None;
+  const uint32_t a = state.cohort->adsh.Find(adsh);
+  if (a == kQ4None) return kQ4None;
+  const uint32_t tv = state.bridge->tv_dict->Find(Join(tag, version));
+  if (tv == kQ4None) return kQ4None;
+  return state.bridge->Lookup(a, tv);
+}
+
+std::vector<SecEdgarQ4OutputRow> BuildSecEdgarQ4Output(const SecEdgarQ4State &state) {
+  std::vector<SecEdgarQ4OutputRow> out;
+  if (!state.groups) return out;
+  const auto result = q4::ComputeResult(*state.groups);
+  for (const auto &r : result->rows) {
+    SecEdgarQ4OutputRow row;
+    row.sic = r.sic;
+    row.tlabel_null = r.tl == kQ4None;
+    if (!row.tlabel_null) row.tlabel = std::string(state.groups->labels->tlabels.Get(r.tl));
+    row.num_companies = r.distinct;
+    row.total_value = r.total;
+    row.avg_value = r.avg;
+    out.push_back(std::move(row));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- encodings
 
 std::vector<uint8_t> EncodeSecEdgarQ4SicCohort(const SecEdgarQ4State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kSicCohortMagic, kFormatVersion, static_cast<uint32_t>(state.sub_lookup.size()));
-  writer.U32(state.cik_dense_count);
-  writer.U32(state.cik_bit_word_count);
-  std::vector<std::pair<std::string, SecEdgarQ4SubInfo>> entries(
-      state.sub_lookup.begin(), state.sub_lookup.end());
-  std::sort(entries.begin(), entries.end(),
-            [](const auto &lhs, const auto &rhs) {
-              return lhs.first < rhs.first;
-            });
-  for (const auto &entry : entries) {
-    writer.String(entry.first);
-    writer.I32(entry.second.cik);
-    writer.I32(entry.second.sic);
-    writer.U32(entry.second.cik_dense_id);
-  }
-  return std::move(writer.bytes);
+  ByteWriter w;
+  const auto &c = *state.cohort;
+  core::WriteImageHeader(w, kSicCohortMagic, kFormatVersion, c.adsh.Size());
+  PutDict(w, c.adsh);
+  PutVar(w, c.ciks.size());
+  for (const auto cik : c.ciks) w.I32(cik);
+  for (const auto id : c.cik_id) PutVar(w, id == kQ4None ? 0 : id + 1ull);
+  return std::move(w.bytes);
 }
 
 std::vector<uint8_t> EncodeSecEdgarQ4PreEqBridge(const SecEdgarQ4State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kPreEqBridgeMagic, kFormatVersion, static_cast<uint32_t>(state.pre_by_adsh.size()));
-  std::vector<std::pair<std::string,
-                        std::unordered_map<uint32_t, SecEdgarQ4ResolvedPreTriple>>>
-      entries(state.pre_by_adsh.begin(), state.pre_by_adsh.end());
-  std::sort(entries.begin(), entries.end(),
-            [](const auto &lhs, const auto &rhs) {
-              return lhs.first < rhs.first;
-            });
-  for (const auto &entry : entries) {
-    writer.String(entry.first);
-    writer.U32(static_cast<uint32_t>(entry.second.size()));
-    std::vector<std::pair<uint32_t, SecEdgarQ4ResolvedPreTriple>> triples(
-        entry.second.begin(), entry.second.end());
-    std::sort(triples.begin(), triples.end(),
-              [](const auto &lhs, const auto &rhs) {
-                return lhs.first < rhs.first;
-              });
-    for (const auto &triple : triples) {
-      writer.U32(triple.first);
-      writer.U32(triple.second.group_id);
-      writer.U32(triple.second.cik_dense_id);
-      writer.U32(triple.second.multiplicity);
+  ByteWriter w;
+  const auto &b = *state.bridge;
+  core::WriteImageHeader(w, kPreEqBridgeMagic, kFormatVersion, b.entry_count);
+  PutDict(w, *b.tv_dict);
+  for (const auto tl : *b.tv_tl) PutVar(w, tl == kQ4None ? 0 : tl + 1ull);
+  for (uint32_t id = 0; id < b.entry_count; ++id) {
+    const auto &e = b.At(id);
+    PutVar(w, e.adsh_id);
+    PutVar(w, e.tv_id);
+    PutVar(w, e.group);
+    PutVar(w, e.mult);
+    PutVar(w, static_cast<uint64_t>(e.nc));
+    if (e.nc != 0) {
+      w.Double(e.ns_hi);
+      w.U8(e.ns_lo != 0.0);
+      if (e.ns_lo != 0.0) w.Double(e.ns_lo);
     }
   }
-  return std::move(writer.bytes);
+  return std::move(w.bytes);
 }
 
 std::vector<uint8_t> EncodeSecEdgarQ4TagTlabel(const SecEdgarQ4State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kTagTlabelMagic, kFormatVersion, static_cast<uint32_t>(state.tag_versions.size()));
-  writer.U32(static_cast<uint32_t>(state.tlabels.size()));
-  for (const auto &tlabel : state.tlabels) {
-    writer.String(tlabel);
-  }
-  for (const auto &key : state.tag_versions) {
-    writer.String(key.tag);
-    writer.String(key.version);
-  }
-  for (const auto tlabel_id : state.tlabel_ids_by_tag_version) {
-    writer.U32(tlabel_id);
-  }
-  return std::move(writer.bytes);
+  ByteWriter w;
+  core::WriteImageHeader(w, kTagTlabelMagic, kFormatVersion, state.labels->tlabels.Size());
+  PutDict(w, state.labels->tlabels);
+  return std::move(w.bytes);
 }
 
-std::vector<uint8_t>
-EncodeSecEdgarQ4GroupAggregates(const SecEdgarQ4State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kGroupAggregateMagic, kFormatVersion, static_cast<uint32_t>(state.group_keys.size()));
-  for (const auto &key : state.group_keys) {
-    writer.I32(key.sic);
-    writer.U32(key.tlabel_id);
-  }
-  for (const auto &aggregate : state.aggregates) {
-    writer.I64(aggregate.count);
-    writer.Double(aggregate.sum);
-    writer.U32(aggregate.distinct_cik_count);
-    writer.U32(static_cast<uint32_t>(aggregate.cik_bits.size()));
-    for (const auto word : aggregate.cik_bits) {
-      writer.U64(word);
+std::vector<uint8_t> EncodeSecEdgarQ4GroupAggregates(const SecEdgarQ4State &state) {
+  ByteWriter w;
+  const auto &g = *state.groups;
+  core::WriteImageHeader(w, kGroupAggregateMagic, kFormatVersion, g.group_count);
+  for (uint32_t id = 0; id < g.group_count; ++id) {
+    const auto &sh = *g.gshards[id / kQ4GroupShardSize];
+    const uint32_t i = id % kQ4GroupShardSize;
+    PutVar(w, static_cast<uint64_t>(sh.sic[i]));
+    PutVar(w, sh.tl[i] == kQ4None ? 0 : sh.tl[i] + 1ull);
+    PutVar(w, static_cast<uint64_t>(sh.count[i]));
+    PutVar(w, sh.distinct[i]);
+    if (sh.count[i] != 0) {
+      w.Double(sh.sum_hi[i]);
+      w.U8(sh.sum_lo[i] != 0.0);
+      if (sh.sum_lo[i] != 0.0) w.Double(sh.sum_lo[i]);
     }
   }
-  return std::move(writer.bytes);
+  uint32_t pairs = 0;
+  g.pairs.ForEach([&](int64_t, const int64_t &count) { pairs += count != 0; });
+  w.U32(pairs);
+  g.pairs.ForEach([&](int64_t key, const int64_t &count) {
+    if (count == 0) return;
+    PutVar(w, static_cast<uint64_t>(key) >> 32);
+    PutVar(w, static_cast<uint64_t>(key) & 0xffffffffu);
+    PutVar(w, static_cast<uint64_t>(count));
+  });
+  return std::move(w.bytes);
 }
 
-bool DecodeSecEdgarQ4SicCohort(const std::vector<uint8_t> &bytes,
-                                 SecEdgarQ4State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kSicCohortMagic, kFormatVersion, count) ||
-      !reader.U32(state.cik_dense_count) ||
-      !reader.U32(state.cik_bit_word_count)) {
-    return false;
+uint64_t SecEdgarQ4ResidentBytes(const SecEdgarQ4State &state, SecEdgarQ4ImageKind kind) {
+  switch (kind) {
+  case SecEdgarQ4ImageKind::SicCohort:
+    return state.cohort ? state.cohort->Bytes() : 0;
+  case SecEdgarQ4ImageKind::PreEqBridge:
+    return state.bridge ? state.bridge->Bytes() : 0;
+  case SecEdgarQ4ImageKind::TagTlabel:
+    return state.labels ? state.labels->Bytes() : 0;
+  case SecEdgarQ4ImageKind::GroupAggregates:
+    return state.groups ? state.groups->Bytes() : 0;
   }
-  state.sub_lookup.clear();
-  state.cik_dense_index.clear();
-  for (uint32_t i = 0; i < count; ++i) {
-    std::string adsh;
-    SecEdgarQ4SubInfo info;
-    if (!reader.String(adsh) || !reader.I32(info.cik) || !reader.I32(info.sic) ||
-        !reader.U32(info.cik_dense_id)) {
-      return false;
-    }
-    state.sub_lookup.emplace(std::move(adsh), info);
-    state.cik_dense_index[info.cik] = info.cik_dense_id;
-  }
-  return reader.offset == bytes.size();
+  return 0;
 }
 
-bool DecodeSecEdgarQ4PreEqBridge(const std::vector<uint8_t> &bytes,
-                                   SecEdgarQ4State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kPreEqBridgeMagic, kFormatVersion, count)) {
-    return false;
-  }
-  state.pre_by_adsh.clear();
-  for (uint32_t i = 0; i < count; ++i) {
-    std::string adsh;
-    uint32_t triple_count = 0;
-    if (!reader.String(adsh) || !reader.U32(triple_count)) {
-      return false;
-    }
-    auto &entries = state.pre_by_adsh[adsh];
-    for (uint32_t j = 0; j < triple_count; ++j) {
-      uint32_t tag_version_id = 0;
-      SecEdgarQ4ResolvedPreTriple triple;
-      if (!reader.U32(tag_version_id) || !reader.U32(triple.group_id) ||
-          !reader.U32(triple.cik_dense_id) ||
-          !reader.U32(triple.multiplicity)) {
-        return false;
-      }
-      entries.emplace(tag_version_id, triple);
-    }
-  }
-  return reader.offset == bytes.size();
-}
-
-bool DecodeSecEdgarQ4TagTlabel(const std::vector<uint8_t> &bytes,
-                                 SecEdgarQ4State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  uint32_t tlabel_count = 0;
-  if (!core::ReadImageHeader(reader, kTagTlabelMagic, kFormatVersion, count) || !reader.U32(tlabel_count)) {
-    return false;
-  }
-  state.tlabels.clear();
-  state.tlabels.resize(tlabel_count);
-  for (uint32_t i = 0; i < tlabel_count; ++i) {
-    if (!reader.String(state.tlabels[i])) {
-      return false;
-    }
-  }
-  state.tag_versions.clear();
-  state.tag_version_index.clear();
-  state.tlabel_ids_by_tag_version.clear();
-  state.tag_versions.reserve(count);
-  state.tlabel_ids_by_tag_version.reserve(count);
-  for (uint32_t i = 0; i < count; ++i) {
-    SecEdgarQ4TagVersionKey key;
-    if (!reader.String(key.tag) || !reader.String(key.version)) {
-      return false;
-    }
-    state.tag_version_index.emplace(key,
-                                  static_cast<uint32_t>(state.tag_versions.size()));
-    state.tag_versions.push_back(std::move(key));
-  }
-  for (uint32_t i = 0; i < count; ++i) {
-    uint32_t tlabel_id = 0;
-    if (!reader.U32(tlabel_id)) {
-      return false;
-    }
-    state.tlabel_ids_by_tag_version.push_back(tlabel_id);
-  }
-  return reader.offset == bytes.size() &&
-         state.tag_versions.size() == state.tlabel_ids_by_tag_version.size() &&
-         std::is_sorted(state.tag_versions.begin(), state.tag_versions.end());
-}
-
-bool DecodeSecEdgarQ4GroupAggregates(const std::vector<uint8_t> &bytes,
-                                       SecEdgarQ4State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kGroupAggregateMagic, kFormatVersion, count)) {
-    return false;
-  }
-  state.group_keys.clear();
-  state.group_keys.reserve(count);
-  for (uint32_t i = 0; i < count; ++i) {
-    SecEdgarQ4GroupKey key;
-    if (!reader.I32(key.sic) || !reader.U32(key.tlabel_id)) {
-      return false;
-    }
-    state.group_keys.push_back(key);
-  }
-  state.aggregates.clear();
-  state.aggregates.resize(count);
-  for (auto &aggregate : state.aggregates) {
-    uint32_t bit_count = 0;
-    if (!reader.I64(aggregate.count) || !reader.Double(aggregate.sum) ||
-        !reader.U32(aggregate.distinct_cik_count) || !reader.U32(bit_count)) {
-      return false;
-    }
-    aggregate.cik_bits.resize(bit_count);
-    for (uint32_t i = 0; i < bit_count; ++i) {
-      if (!reader.U64(aggregate.cik_bits[i])) {
-        return false;
-      }
-    }
-  }
-  return reader.offset == bytes.size() &&
-         std::is_sorted(state.group_keys.begin(), state.group_keys.end());
-}
-
-std::vector<SecEdgarQ4OutputRow>
-BuildSecEdgarQ4Output(const SecEdgarQ4State &state) {
-  std::vector<uint32_t> candidates;
-  for (uint32_t id = 0;
-       id < state.aggregates.size() && id < state.group_keys.size(); ++id) {
-    const auto &aggregate = state.aggregates[id];
-    if (aggregate.count > 0 &&
-        static_cast<int64_t>(aggregate.distinct_cik_count) >= kMinDistinctCik) {
-      candidates.push_back(id);
-    }
-  }
-  const auto compare = [&](uint32_t lhs, uint32_t rhs) {
-    const auto &left = state.aggregates[lhs];
-    const auto &right = state.aggregates[rhs];
-    if (left.sum != right.sum) {
-      return left.sum > right.sum;
-    }
-    const auto &left_key = state.group_keys[lhs];
-    const auto &right_key = state.group_keys[rhs];
-    if (left_key.sic != right_key.sic) {
-      return left_key.sic < right_key.sic;
-    }
-    const auto left_tlabel = left_key.tlabel_id < state.tlabels.size()
-                                 ? state.tlabels[left_key.tlabel_id]
-                                 : std::string();
-    const auto right_tlabel = right_key.tlabel_id < state.tlabels.size()
-                                  ? state.tlabels[right_key.tlabel_id]
-                                  : std::string();
-    return left_tlabel < right_tlabel;
-  };
-  if (candidates.size() > kOutputLimit) {
-    std::partial_sort(candidates.begin(),
-                      candidates.begin() + static_cast<ptrdiff_t>(kOutputLimit),
-                      candidates.end(), compare);
-    candidates.resize(kOutputLimit);
-  } else {
-    std::sort(candidates.begin(), candidates.end(), compare);
-  }
-  std::vector<SecEdgarQ4OutputRow> output;
-  output.reserve(candidates.size());
-  for (const auto id : candidates) {
-    const auto &key = state.group_keys[id];
-    const auto &aggregate = state.aggregates[id];
-    SecEdgarQ4OutputRow row;
-    row.sic = key.sic;
-    row.tlabel = key.tlabel_id < state.tlabels.size()
-                     ? state.tlabels[key.tlabel_id]
-                     : std::string();
-    row.stmt = "EQ";
-    row.num_companies = static_cast<int64_t>(aggregate.distinct_cik_count);
-    row.total_value = aggregate.sum;
-    row.avg_value = aggregate.count > 0
-                        ? aggregate.sum / static_cast<double>(aggregate.count)
-                        : 0.0;
-    output.push_back(std::move(row));
-  }
-  return output;
-}
+// ------------------------------------------------------------- txn buffer
 
 bool SecEdgarQ4TxnBuffer::HasPendingChanges() const { return pending; }
 
 void SecEdgarQ4TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
+  arena.clear();
   deltas.clear();
+  dirty_adsh.clear();
+  dirty_tv.clear();
+  dirty_keys.clear();
 }
 
 bool SecEdgarQ4TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
 
-const std::vector<SecEdgarQ4TxnBuffer::NumDelta> &
-SecEdgarQ4TxnBuffer::Deltas() const {
-  return deltas;
-}
-
 void SecEdgarQ4TxnBuffer::MarkRebuild() {
   pending = true;
   requires_rebuild = true;
+  arena.clear();
   deltas.clear();
+  dirty_adsh.clear();
+  dirty_tv.clear();
+  dirty_keys.clear();
 }
 
-void SecEdgarQ4TxnBuffer::AddDelta(NumDelta delta) {
+void SecEdgarQ4TxnBuffer::AddNumDelta(std::string_view adsh, std::string_view tag,
+                                      std::string_view version, double value,
+                                      int8_t sign) {
+  if (requires_rebuild) return;
   pending = true;
-  if (delta.relevant) {
-    deltas.push_back(std::move(delta));
-  }
+  NumDelta d;
+  d.off = static_cast<uint32_t>(arena.size());
+  d.adsh_len = static_cast<uint32_t>(adsh.size());
+  d.tag_len = static_cast<uint32_t>(tag.size());
+  d.version_len = static_cast<uint32_t>(version.size());
+  d.value = value;
+  d.sign = sign;
+  arena.append(adsh);
+  arena.append(tag);
+  arena.append(version);
+  deltas.push_back(d);
 }
+
+void SecEdgarQ4TxnBuffer::AddDirtyAdsh(std::string adsh) {
+  if (requires_rebuild) return;
+  pending = true;
+  dirty_adsh.push_back(std::move(adsh));
+}
+
+void SecEdgarQ4TxnBuffer::AddDirtyTagVersion(std::string tag, std::string version) {
+  if (requires_rebuild) return;
+  pending = true;
+  dirty_tv.emplace_back(std::move(tag), std::move(version));
+}
+
+void SecEdgarQ4TxnBuffer::AddDirtyKey(std::string adsh, std::string tag,
+                                      std::string version) {
+  if (requires_rebuild) return;
+  pending = true;
+  dirty_keys.push_back({std::move(adsh), std::move(tag), std::move(version)});
+}
+
+// ------------------------------------------------------------------ module
 
 core::AcceleratorId SecEdgarQ4Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> SecEdgarQ4Module::Dependencies() const {
-  return {{config.num_table, {0, 1, 2, 3, 4}},
-          {config.sub_table, {0, 1, 2}},
-          {config.tag_table, {0, 1, 2, 3}},
-          {config.pre_table, {0, 1, 2, 3}}};
+  return {{config.num_table, {kQ4NumAdsh, kQ4NumTag, kQ4NumVersion, kQ4NumUom, kQ4NumValue}},
+          {config.sub_table, {kQ4SubAdsh, kQ4SubCik, kQ4SubSic}},
+          {config.tag_table, {kQ4TagTag, kQ4TagVersion, kQ4TagAbstract, kQ4TagTlabel}},
+          {config.pre_table, {kQ4PreAdsh, kQ4PreStmt, kQ4PreTag, kQ4PreVersion}}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> SecEdgarQ4Module::CreateTxnBuffer() const {
   return std::make_unique<SecEdgarQ4TxnBuffer>();
 }
 
+std::vector<core::StateImage>
+SecEdgarQ4Module::MakeImages(const SecEdgarQ4State &state,
+                             const core::Version versions[4]) const {
+  const auto id = Id();
+  std::vector<core::StateImage> images;
+  images.push_back(core::StateImage::Make(
+      id, core::SecEdgarQ4Layout::kSicCohort, versions[0],
+      MakeImage(SecEdgarQ4ImageKind::SicCohort, state)));
+  images.push_back(core::StateImage::Make(
+      id, core::SecEdgarQ4Layout::kPreEqBridge, versions[1],
+      MakeImage(SecEdgarQ4ImageKind::PreEqBridge, state)));
+  images.push_back(core::StateImage::Make(
+      id, core::SecEdgarQ4Layout::kTagTlabel, versions[2],
+      MakeImage(SecEdgarQ4ImageKind::TagTlabel, state)));
+  images.push_back(core::StateImage::Make(
+      id, core::SecEdgarQ4Layout::kGroupAggregates, versions[3],
+      MakeImage(SecEdgarQ4ImageKind::GroupAggregates, state)));
+  return images;
+}
+
 void SecEdgarQ4Module::Build(core::AuxEngineServices &services,
                              core::StateBuilder &builder) {
-  EmitStateImages(BuildState(services), builder);
+  const auto state = BuildState(services);
+  const core::Version versions[4] = {0, 0, 0, 0};
+  for (auto &image : MakeImages(state, versions)) {
+    builder.Write(std::move(image));
+  }
+  builder.Finish();
+}
+
+SecEdgarQ4State SecEdgarQ4Module::BuildState(core::AuxEngineServices &) const {
+  if (!initial_scan) {
+    throw std::logic_error("SEC EDGAR Q4 requires a typed initial scan source");
+  }
+  q4::Flat flat;
+  SecEdgarQ4BridgeFilter filter;
+  initial_scan->ScanBridge(filter, [&](const SecEdgarQ4BridgeRow &row) {
+    flat.AddRow(row);
+  });
+  return q4::FlatToState(flat, 1);
 }
 
 core::InvalidationPlan
-SecEdgarQ4Module::InterpretMutation(const core::MutationBatch &mutation) const {
-  if (mutation.table == config.sub_table || mutation.table == config.tag_table ||
-      mutation.table == config.pre_table) {
-    return AllPartitions();
-  }
-  if (mutation.table != config.num_table) {
-    return {};
-  }
-  if (mutation.kind == core::MutationKind::Update &&
-      !mutation.updated_columns.empty()) {
-    bool relevant = false;
-    for (const auto column : mutation.updated_columns) {
-      // Physical num.value is column 7; key/filter cols are 0..4.
-      if (column == 7 || column <= 4) {
-        relevant = true;
-        break;
-      }
-    }
-    if (!relevant) {
-      return {};
-    }
-  }
-  return AggregatePartitions();
+SecEdgarQ4Module::InterpretMutation(const core::MutationBatch &) const {
+  // All relevant mutations are staged incrementally through the txn buffer
+  // (or force a rebuild from there); nothing needs eager invalidation.
+  return {};
 }
 
-void SecEdgarQ4Module::AccumulateMutation(
-    const core::MutationBatch &mutation, core::AuxEngineServices &,
-    core::AuxTxnBuffer &base_buffer) {
+void SecEdgarQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
+                                          core::AuxEngineServices &,
+                                          core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<SecEdgarQ4TxnBuffer &>(base_buffer);
-  if (mutation.table != config.num_table) {
-    if (mutation.table == config.sub_table || mutation.table == config.tag_table ||
-        mutation.table == config.pre_table) {
-      buffer.MarkRebuild();
+  const bool is_update = mutation.kind == core::MutationKind::Update;
+  if (is_update && mutation.old_rows.size() != mutation.new_rows.size()) {
+    buffer.MarkRebuild();
+    return;
+  }
+
+  // Row accessors per mutation kind: each (row, sign) pair is one table row
+  // that disappears (-1, old image) or appears (+1, new image).
+  std::vector<std::pair<const core::AuxRow *, int8_t>> rows;
+  if (mutation.kind != core::MutationKind::Insert) {
+    for (const auto &r : mutation.old_rows) rows.emplace_back(&r, int8_t(-1));
+  }
+  if (mutation.kind != core::MutationKind::Delete) {
+    for (const auto &r : mutation.new_rows) rows.emplace_back(&r, int8_t(+1));
+  }
+
+  if (mutation.table == config.num_table) {
+    if (is_update &&
+        !Intersects(mutation.updated_columns,
+                    {kQ4NumAdsh, kQ4NumTag, kQ4NumVersion, kQ4NumUom, kQ4NumValue})) {
+      return;
+    }
+    for (const auto &[row, sign] : rows) {
+      std::string_view adsh, tag, version, uom;
+      double value = 0.0;
+      const Cell a = GetString(*row, kQ4NumAdsh, adsh);
+      const Cell t = GetString(*row, kQ4NumTag, tag);
+      const Cell v = GetString(*row, kQ4NumVersion, version);
+      const Cell u = GetString(*row, kQ4NumUom, uom);
+      const Cell x = GetDouble(*row, kQ4NumValue, value);
+      if (a == Cell::Bad || t == Cell::Bad || v == Cell::Bad || u == Cell::Bad ||
+          x == Cell::Bad) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (a == Cell::Null || t == Cell::Null || v == Cell::Null ||
+          u == Cell::Null || x == Cell::Null || uom != "USD") {
+        continue; // cannot join / filtered out
+      }
+      if (!std::isfinite(value)) {
+        buffer.MarkRebuild(); // inf/NaN cannot be subtracted back out
+        return;
+      }
+      buffer.AddNumDelta(adsh, tag, version, value, sign);
     }
     return;
   }
-  auto add = [&](const core::AuxRow &row, int8_t sign) {
-    SecEdgarQ4NumInput parsed;
-    if (!ReadString(row, 0, parsed.adsh) || !ReadString(row, 1, parsed.tag) ||
-        !ReadString(row, 2, parsed.version) ||
-        !ReadDouble(row, 7, parsed.value, parsed.value_is_null) ||
-        !ReadString(row, 5, parsed.uom)) {
-      buffer.MarkRebuild();
+
+  if (mutation.table == config.sub_table) {
+    if (is_update && !Intersects(mutation.updated_columns, {kQ4SubAdsh, kQ4SubCik, kQ4SubSic})) {
       return;
     }
-    const bool relevant = parsed.uom == "USD" && !parsed.value_is_null;
-    buffer.AddDelta({std::move(parsed.adsh),
-                     {std::move(parsed.tag), std::move(parsed.version)},
-                     parsed.value, sign, relevant});
-  };
-  switch (mutation.kind) {
-  case core::MutationKind::Insert:
-    for (const auto &row : mutation.new_rows) {
-      add(row, 1);
+    for (const auto &[row, sign] : rows) {
+      (void)sign;
+      std::string_view adsh;
+      const Cell a = GetString(*row, kQ4SubAdsh, adsh);
+      if (a == Cell::Bad) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (a == Cell::Ok) buffer.AddDirtyAdsh(std::string(adsh));
     }
-    break;
-  case core::MutationKind::Delete:
-    for (const auto &row : mutation.old_rows) {
-      add(row, -1);
-    }
-    break;
-  case core::MutationKind::Update:
-    if (mutation.old_rows.size() != mutation.new_rows.size()) {
-      buffer.MarkRebuild();
-      return;
-    }
-    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-      add(mutation.old_rows[i], -1);
-      add(mutation.new_rows[i], 1);
-    }
-    break;
+    return;
   }
+
+  if (mutation.table == config.tag_table) {
+    if (is_update && !Intersects(mutation.updated_columns,
+                                 {kQ4TagTag, kQ4TagVersion, kQ4TagAbstract, kQ4TagTlabel})) {
+      return;
+    }
+    for (const auto &[row, sign] : rows) {
+      (void)sign;
+      std::string_view tag, version;
+      const Cell t = GetString(*row, kQ4TagTag, tag);
+      const Cell v = GetString(*row, kQ4TagVersion, version);
+      if (t == Cell::Bad || v == Cell::Bad) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (t == Cell::Ok && v == Cell::Ok) {
+        buffer.AddDirtyTagVersion(std::string(tag), std::string(version));
+      }
+    }
+    return;
+  }
+
+  if (mutation.table == config.pre_table) {
+    if (is_update && !Intersects(mutation.updated_columns,
+                                 {kQ4PreAdsh, kQ4PreStmt, kQ4PreTag, kQ4PreVersion})) {
+      return;
+    }
+    for (const auto &[row, sign] : rows) {
+      (void)sign;
+      std::string_view adsh, stmt, tag, version;
+      const Cell a = GetString(*row, kQ4PreAdsh, adsh);
+      const Cell s = GetString(*row, kQ4PreStmt, stmt);
+      const Cell t = GetString(*row, kQ4PreTag, tag);
+      const Cell v = GetString(*row, kQ4PreVersion, version);
+      if (a == Cell::Bad || s == Cell::Bad || t == Cell::Bad || v == Cell::Bad) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (a != Cell::Ok || t != Cell::Ok || v != Cell::Ok) continue; // cannot join
+      if (s == Cell::Null || stmt != "EQ") continue; // not part of the bridge
+      buffer.AddDirtyKey(std::string(adsh), std::string(tag), std::string(version));
+    }
+    return;
+  }
+}
+
+core::StagedMaintenanceOutcome
+SecEdgarQ4Module::RebuildOutcome(core::AuxEngineServices &services, const char *why) const {
+  (void)why;
+  core::StagedMaintenanceOutcome outcome;
+  const auto decision = services.ChooseMaintenance(
+      {0, 0, false, false, true, true, false, core::MaintenanceAction::NoOp,
+       services.ExpectedQueriesBeforeNextWrite()});
+  outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
+                       ? core::MaintenanceAction::RebuildAll
+                       : decision.action;
+  outcome.invalidations = AllPartitions();
+  outcome.pending_rebuild = outcome.invalidations;
+  return outcome;
+}
+
+bool SecEdgarQ4Module::ReadState(core::AuxEngineServices &services,
+                                 SecEdgarQ4State &state,
+                                 core::Version versions[4]) const {
+  const auto snapshot = services.StateStore().ReadPartitions(
+      services.CurrentVisibility(),
+      {core::SecEdgarQ4Layout::kSicCohort, core::SecEdgarQ4Layout::kPreEqBridge,
+       core::SecEdgarQ4Layout::kTagTlabel, core::SecEdgarQ4Layout::kGroupAggregates});
+  bool have[4] = {false, false, false, false};
+  for (const auto &image : snapshot.partitions) {
+    if (const auto *t = AsImage(image, SecEdgarQ4ImageKind::SicCohort);
+        t && image.partition == core::SecEdgarQ4Layout::kSicCohort && t->state->cohort) {
+      state.cohort = t->state->cohort;
+      versions[0] = image.version;
+      have[0] = true;
+    } else if (const auto *t2 = AsImage(image, SecEdgarQ4ImageKind::PreEqBridge);
+               t2 && image.partition == core::SecEdgarQ4Layout::kPreEqBridge &&
+               t2->state->bridge) {
+      state.bridge = t2->state->bridge;
+      versions[1] = image.version;
+      have[1] = true;
+    } else if (const auto *t3 = AsImage(image, SecEdgarQ4ImageKind::TagTlabel);
+               t3 && image.partition == core::SecEdgarQ4Layout::kTagTlabel &&
+               t3->state->labels) {
+      state.labels = t3->state->labels;
+      versions[2] = image.version;
+      have[2] = true;
+    } else if (const auto *t4 = AsImage(image, SecEdgarQ4ImageKind::GroupAggregates);
+               t4 && image.partition == core::SecEdgarQ4Layout::kGroupAggregates &&
+               t4->state->groups) {
+      state.groups = t4->state->groups;
+      versions[3] = image.version;
+      have[3] = true;
+    }
+  }
+  return have[0] && have[1] && have[2] && have[3] &&
+         state.bridge->generation == state.groups->generation &&
+         state.groups->labels == state.labels;
 }
 
 core::StagedMaintenanceOutcome
@@ -728,100 +648,139 @@ SecEdgarQ4Module::StageMaintenance(core::AuxEngineServices &services,
   auto &buffer = dynamic_cast<SecEdgarQ4TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
   if (buffer.RequiresRebuild()) {
-    const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
-         services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = AllPartitions();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
+    return RebuildOutcome(services, "buffer marked rebuild");
   }
-  if (buffer.Deltas().empty()) {
-    return outcome;
+  if (!buffer.HasStructural() && buffer.Deltas().empty()) {
+    return outcome; // nothing relevant changed
   }
 
-  const auto decision = services.ChooseMaintenance(
-      {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, false, true,
-       false, false, core::MaintenanceAction::NoOp,
-       services.ExpectedQueriesBeforeNextWrite()});
-  if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = AllPartitions();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
-  }
-
-  const auto visibility = services.CurrentVisibility();
-  const auto snapshot = services.StateStore().ReadPartitions(
-      visibility, {core::SecEdgarQ4Layout::kSicCohort,
-                   core::SecEdgarQ4Layout::kPreEqBridge,
-                   core::SecEdgarQ4Layout::kTagTlabel,
-                   core::SecEdgarQ4Layout::kGroupAggregates});
   SecEdgarQ4State state;
-  core::Version aggregate_version = 0;
-  bool have_cohort = false;
-  bool have_bridge = false;
-  bool have_tags = false;
-  bool have_aggregates = false;
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == core::SecEdgarQ4Layout::kSicCohort) {
-      const auto *typed = AsQ4Image(image, SecEdgarQ4ImageKind::SicCohort);
-      if (typed) {
-        state.sub_lookup = typed->state->sub_lookup;
-        state.cik_dense_index = typed->state->cik_dense_index;
-        state.cik_dense_count = typed->state->cik_dense_count;
-        state.cik_bit_word_count = typed->state->cik_bit_word_count;
-        have_cohort = true;
-      }
-    } else if (image.partition == core::SecEdgarQ4Layout::kPreEqBridge) {
-      const auto *typed = AsQ4Image(image, SecEdgarQ4ImageKind::PreEqBridge);
-      if (typed) {
-        state.pre_by_adsh = typed->state->pre_by_adsh;
-        have_bridge = true;
-      }
-    } else if (image.partition == core::SecEdgarQ4Layout::kTagTlabel) {
-      const auto *typed = AsQ4Image(image, SecEdgarQ4ImageKind::TagTlabel);
-      if (typed) {
-        state.tag_versions = typed->state->tag_versions;
-        state.tag_version_index = typed->state->tag_version_index;
-        state.tlabels = typed->state->tlabels;
-        state.tlabel_ids_by_tag_version = typed->state->tlabel_ids_by_tag_version;
-        have_tags = true;
-      }
-    } else if (image.partition == core::SecEdgarQ4Layout::kGroupAggregates) {
-      const auto *typed =
-          AsQ4Image(image, SecEdgarQ4ImageKind::GroupAggregates);
-      if (typed) {
-        state.group_keys = typed->state->group_keys;
-        state.aggregates = typed->state->aggregates;
-        have_aggregates = true;
-      }
-      aggregate_version = image.version;
-    }
-  }
-  if (!have_cohort || !have_bridge || !have_tags || !have_aggregates ||
-      state.group_keys.size() != state.aggregates.size()) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = AllPartitions();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
+  core::Version versions[4] = {0, 0, 0, 0};
+  if (!ReadState(services, state, versions) || buffer.Deltas().size() > kMaxDeltas) {
+    return RebuildOutcome(services, "state not readable / too many deltas");
   }
 
-  for (const auto &delta : buffer.Deltas()) {
-    ApplyNumContribution(state, delta.adsh, delta.tag_version, delta.value,
-                         delta.sign);
+  const bool structural = buffer.HasStructural();
+  std::unordered_set<std::string> sub_adsh;
+  std::unordered_set<std::string> tv_set;
+  std::unordered_set<std::string> key_set;
+  if (structural) {
+    auto &da = buffer.dirty_adsh;
+    std::sort(da.begin(), da.end());
+    da.erase(std::unique(da.begin(), da.end()), da.end());
+    auto &dt = buffer.dirty_tv;
+    std::sort(dt.begin(), dt.end());
+    dt.erase(std::unique(dt.begin(), dt.end()), dt.end());
+    auto &dk = buffer.dirty_keys;
+    std::sort(dk.begin(), dk.end(), [](const auto &a, const auto &b) {
+      return std::tie(a.adsh, a.tag, a.version) < std::tie(b.adsh, b.tag, b.version);
+    });
+    dk.erase(std::unique(dk.begin(), dk.end(),
+                         [](const auto &a, const auto &b) {
+                           return a.adsh == b.adsh && a.tag == b.tag &&
+                                  a.version == b.version;
+                         }),
+             dk.end());
+    if (!initial_scan || da.size() + dt.size() + dk.size() > kMaxStructuralKeys) {
+      return RebuildOutcome(services, "too many structural keys or no scan");
+    }
+    for (const auto &a : da) sub_adsh.insert(a);
+    for (const auto &t : dt) tv_set.insert(Join(t.first, t.second));
+    for (const auto &k : dk) key_set.insert(Join(k.adsh, Join(k.tag, k.version)));
+
+    SecEdgarQ4BridgeFilter filter;
+    filter.all = false;
+    filter.include_num = true;
+    filter.adsh = da;
+    filter.tag_versions = dt;
+    filter.keys = dk;
+    std::vector<SecEdgarQ4BridgeRow> rows;
+    try {
+      initial_scan->ScanBridge(filter, [&](const SecEdgarQ4BridgeRow &row) {
+        rows.push_back(row);
+      });
+    } catch (const std::exception &) {
+      return RebuildOutcome(services, "scan failed");
+    }
+
+    q4::Flat flat;
+    q4::StateToFlat(state, flat);
+    // Remove every existing entry the dirty keys can touch.
+    std::vector<char> adsh_mark(flat.cohort.adsh.Size(), 0);
+    for (const auto &a : da) {
+      const uint32_t id = flat.cohort.adsh.Find(a);
+      if (id != kQ4None) adsh_mark[id] = 1;
+    }
+    std::vector<char> tv_mark(flat.tv.Size(), 0);
+    for (const auto &t : dt) {
+      const uint32_t id = flat.tv.Find(Join(t.first, t.second));
+      if (id != kQ4None) tv_mark[id] = 1;
+    }
+    std::vector<uint32_t> victims;
+    for (uint32_t i = 0; i < flat.entries.size(); ++i) {
+      const auto &e = flat.entries[i];
+      if (e.mult != 0 && (adsh_mark[e.adsh_id] || tv_mark[e.tv_id])) victims.push_back(i);
+    }
+    for (const auto &k : dk) {
+      const uint32_t a = flat.cohort.adsh.Find(k.adsh);
+      const uint32_t t = flat.tv.Find(Join(k.tag, k.version));
+      if (a == kQ4None || t == kQ4None) continue;
+      if (const uint32_t *idx = flat.entry_index.Find(
+              static_cast<int64_t>((static_cast<uint64_t>(a) << 32) | t))) {
+        victims.push_back(*idx);
+      }
+    }
+    std::sort(victims.begin(), victims.end());
+    victims.erase(std::unique(victims.begin(), victims.end()), victims.end());
+    for (const auto idx : victims) flat.RemoveEntry(idx);
+    for (const auto &row : rows) flat.AddRow(row);
+    if (flat.bad) {
+      return RebuildOutcome(services, "remove/add invariant broke (flat.bad)");
+    }
+    state = q4::FlatToState(flat, state.bridge->generation + 1);
+  }
+
+  if (!buffer.Deltas().empty()) {
+    q4::CowApplier applier(state);
+    // Inserts before deletes: the final counts are non-negative, so applying
+    // all +1 deltas first keeps every intermediate count non-negative even when
+    // one batch removes and re-adds the same logical row.
+    for (const int8_t pass_sign : {int8_t(1), int8_t(-1)}) {
+      for (const auto &d : buffer.Deltas()) {
+        if (d.sign != pass_sign) continue;
+        const auto adsh = buffer.Adsh(d);
+        const auto tag = buffer.Tag(d);
+        const auto version = buffer.Version(d);
+        if (structural) {
+          // The re-read of a dirty key already reflects this transaction's num
+          // rows; applying the delta on top would double count them.
+          const std::string adsh_s(adsh);
+          if (sub_adsh.count(adsh_s) || tv_set.count(Join(tag, version)) ||
+              key_set.count(Join(adsh, Join(tag, version)))) {
+            continue;
+          }
+        }
+        if (!applier.Apply(adsh, tag, version, d.value, d.sign)) {
+          return RebuildOutcome(services, "delta inconsistent with state");
+        }
+      }
+    }
+    state = applier.Finish();
   }
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.expected_version = 0;
-  const auto typed_state = std::make_shared<const SecEdgarQ4State>(state);
-  outcome.updates.push_back(core::StateImage::Make(
-      core::SecEdgarQ4Layout::kAccelerator,
-      core::SecEdgarQ4Layout::kGroupAggregates, aggregate_version,
-      MakeStateImage(SecEdgarQ4ImageKind::GroupAggregates, typed_state)));
+  const auto id = Id();
+  if (structural) {
+    outcome.updates = MakeImages(state, versions);
+  } else {
+    outcome.updates.push_back(core::StateImage::Make(
+        id, core::SecEdgarQ4Layout::kPreEqBridge, versions[1],
+        MakeImage(SecEdgarQ4ImageKind::PreEqBridge, state)));
+    outcome.updates.push_back(core::StateImage::Make(
+        id, core::SecEdgarQ4Layout::kGroupAggregates, versions[3],
+        MakeImage(SecEdgarQ4ImageKind::GroupAggregates, state)));
+  }
   return outcome;
 }
 
@@ -832,128 +791,49 @@ bool SecEdgarQ4Module::CheckValidity(core::AuxEngineServices &services,
       .IsValid();
 }
 
+void SecEdgarQ4Module::EmitGroups(const SecEdgarQ4Groups &groups,
+                                  core::AuxRowSink &sink) const {
+  std::shared_ptr<const SecEdgarQ4Result> result;
+  {
+    std::lock_guard<std::mutex> lock(groups.cache_mutex);
+    if (!groups.cache) {
+      groups.cache = q4::ComputeResult(groups);
+    }
+    result = groups.cache;
+  }
+  sink.Begin({{{"sic", core::AuxType::Int64, false},
+               {"tlabel", core::AuxType::String, true},
+               {"stmt", core::AuxType::String, false},
+               {"num_companies", core::AuxType::Int64, false},
+               {"total_value", core::AuxType::Double, false},
+               {"avg_value", core::AuxType::Double, false}}});
+  for (const auto &row : result->aux_rows) {
+    sink.WriteRow(row);
+  }
+  sink.End();
+}
+
 void SecEdgarQ4Module::Execute(core::AuxEngineServices &services,
                                const core::QueryArguments &arguments,
                                core::AuxRowSink &sink) {
   const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(),
-      {core::SecEdgarQ4Layout::kTagTlabel,
-       core::SecEdgarQ4Layout::kGroupAggregates});
-  SecEdgarQ4State state;
-  bool have_tags = false;
-  bool have_aggregates = false;
+      services.CurrentVisibility(), {core::SecEdgarQ4Layout::kGroupAggregates});
   for (const auto &image : snapshot.partitions) {
-    if (image.partition == core::SecEdgarQ4Layout::kTagTlabel) {
-      const auto *typed = AsQ4Image(image, SecEdgarQ4ImageKind::TagTlabel);
-      if (typed) {
-        state.tag_versions = typed->state->tag_versions;
-        state.tlabel_ids_by_tag_version = typed->state->tlabel_ids_by_tag_version;
-        state.tlabels = typed->state->tlabels;
-        have_tags = true;
-      }
-    } else if (image.partition == core::SecEdgarQ4Layout::kGroupAggregates) {
-      const auto *typed =
-          AsQ4Image(image, SecEdgarQ4ImageKind::GroupAggregates);
-      if (typed) {
-        state.group_keys = typed->state->group_keys;
-        state.aggregates = typed->state->aggregates;
-        have_aggregates = true;
-      }
+    if (image.partition != core::SecEdgarQ4Layout::kGroupAggregates) continue;
+    const auto *typed = AsImage(image, SecEdgarQ4ImageKind::GroupAggregates);
+    if (typed && typed->state->groups) {
+      EmitGroups(*typed->state->groups, sink);
+      return;
     }
   }
-  if (!snapshot.available || !have_tags || !have_aggregates ||
-      state.group_keys.size() != state.aggregates.size()) {
-    ExecuteFallback(services, arguments, sink);
-    return;
-  }
-  EmitOutput(state, sink);
+  ExecuteFallback(services, arguments, sink);
 }
 
 void SecEdgarQ4Module::ExecuteFallback(core::AuxEngineServices &services,
                                        const core::QueryArguments &,
                                        core::AuxRowSink &sink) {
-  EmitOutput(BuildState(services), sink);
-}
-
-SecEdgarQ4State
-SecEdgarQ4Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
-  SecEdgarQ4State state;
-  if (!initial_scan) {
-    throw std::logic_error(
-        "SEC EDGAR Q4 requires a typed initial scan source");
-  }
-  BuildSubLookup(state, initial_scan);
-  BuildTagLookup(state, initial_scan);
-  BuildPreBridge(state, initial_scan);
-  BuildAggregates(state, initial_scan);
-  return state;
-}
-
-bool SecEdgarQ4Module::LoadState(core::AuxEngineServices &services,
-                                 SecEdgarQ4State &state) const {
-  const auto snapshot =
-      services.StateStore().Read(services.CurrentVisibility());
-  bool cohort = false;
-  bool bridge = false;
-  bool tags = false;
-  bool aggregates = false;
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == core::SecEdgarQ4Layout::kSicCohort) {
-      const auto *typed = AsQ4Image(image, SecEdgarQ4ImageKind::SicCohort);
-      if (typed) {
-        state.sub_lookup = typed->state->sub_lookup;
-        state.cik_dense_index = typed->state->cik_dense_index;
-        state.cik_dense_count = typed->state->cik_dense_count;
-        state.cik_bit_word_count = typed->state->cik_bit_word_count;
-        cohort = true;
-      }
-    } else if (image.partition == core::SecEdgarQ4Layout::kPreEqBridge) {
-      const auto *typed = AsQ4Image(image, SecEdgarQ4ImageKind::PreEqBridge);
-      if (typed) {
-        state.pre_by_adsh = typed->state->pre_by_adsh;
-        bridge = true;
-      }
-    } else if (image.partition == core::SecEdgarQ4Layout::kTagTlabel) {
-      const auto *typed = AsQ4Image(image, SecEdgarQ4ImageKind::TagTlabel);
-      if (typed) {
-        state.tag_versions = typed->state->tag_versions;
-        state.tag_version_index = typed->state->tag_version_index;
-        state.tlabels = typed->state->tlabels;
-        state.tlabel_ids_by_tag_version = typed->state->tlabel_ids_by_tag_version;
-        tags = true;
-      }
-    } else if (image.partition == core::SecEdgarQ4Layout::kGroupAggregates) {
-      const auto *typed =
-          AsQ4Image(image, SecEdgarQ4ImageKind::GroupAggregates);
-      if (typed) {
-        state.group_keys = typed->state->group_keys;
-        state.aggregates = typed->state->aggregates;
-        aggregates = true;
-      }
-    }
-  }
-  return cohort && bridge && tags && aggregates &&
-         state.group_keys.size() == state.aggregates.size();
-}
-
-void SecEdgarQ4Module::EmitOutput(const SecEdgarQ4State &state,
-                                  core::AuxRowSink &sink) const {
-  sink.Begin({{{"sic", core::AuxType::Int64, false},
-               {"tlabel", core::AuxType::String, false},
-               {"stmt", core::AuxType::String, false},
-               {"num_companies", core::AuxType::Int64, false},
-               {"total_value", core::AuxType::Double, false},
-               {"avg_value", core::AuxType::Double, false}}});
-  for (const auto &row : BuildSecEdgarQ4Output(state)) {
-    sink.WriteRow({{core::AuxValue::Of(core::AuxType::Int64, static_cast<int64_t>(row.sic)),
-                    core::AuxValue::Of(core::AuxType::String, row.tlabel),
-                    core::AuxValue::Of(core::AuxType::String, row.stmt),
-                    core::AuxValue::Of(core::AuxType::Int64, row.num_companies),
-                    core::AuxValue::Of(core::AuxType::Double, row.total_value),
-                    core::AuxValue::Of(core::AuxType::Double, row.avg_value)}});
-  }
-  sink.End();
+  const auto state = BuildState(services);
+  EmitGroups(*state.groups, sink);
 }
 
 } // namespace accelerator_codegen::aux_state::query

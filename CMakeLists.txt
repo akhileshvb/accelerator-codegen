@@ -525,6 +525,21 @@ target_link_libraries(benchmark_shared_duckdb_write_interval
         duckdb_sibling
 )
 
+add_executable(test_sec_edgar_q4_duckdb_differential
+    tests/aux_state/test_sec_edgar_q4_duckdb_differential.cpp
+)
+
+target_link_libraries(test_sec_edgar_q4_duckdb_differential
+    PRIVATE
+        accelerator_codegen
+        duckdb_sibling
+)
+
+target_include_directories(test_sec_edgar_q4_duckdb_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+if(ACCEL_ENABLE_PARALLEL_AUX)
+    target_compile_definitions(test_sec_edgar_q4_duckdb_differential PRIVATE ACCEL_ENABLE_PARALLEL_AUX)
+endif()
+
 add_executable(measure_shared_sec_edgar_aux_memory
     benchmarks/aux_state/measure_shared_sec_edgar_aux_memory.cpp
 )
