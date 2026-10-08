@@ -2286,3 +2286,18 @@ if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
         endif()
     endif()
 endif()
+
+# SEC EDGAR Q2 aux: differential test (maintenance matrix, random parameters).
+accel_add_shared_interface_test(test_sec_edgar_q2_differential
+	tests/aux_state/test_sec_edgar_q2_differential.cpp)
+
+# SEC EDGAR Q2 aux: read-only + write-rate sweep (aux vs plain DuckDB).
+add_executable(benchmark_sec_edgar_q2_sweep
+	benchmarks/aux_state/benchmark_sec_edgar_q2_sweep.cpp)
+target_link_libraries(benchmark_sec_edgar_q2_sweep PRIVATE accelerator_codegen duckdb_sibling)
+add_executable(measure_sec_edgar_q2_state
+	benchmarks/aux_state/measure_sec_edgar_q2_state.cpp)
+target_link_libraries(measure_sec_edgar_q2_state PRIVATE accelerator_codegen duckdb_sibling)
+add_executable(check_sec_edgar_q2_params
+	benchmarks/aux_state/check_sec_edgar_q2_params.cpp)
+target_link_libraries(check_sec_edgar_q2_params PRIVATE accelerator_codegen duckdb_sibling)
