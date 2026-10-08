@@ -101,25 +101,38 @@ using namespace scan;
 
 struct SecEdgarQ3Scan : SecEdgarQ3InitialScan {
   explicit SecEdgarQ3Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanNum(
-      const std::function<void(const SecEdgarQ3NumInput &)> &consumer) override {
-    ScanQuery(connection, "SELECT adsh, uom, value FROM num",
+  // Pushes the uom/value filter and the per-adsh aggregation into DuckDB (one
+  // parallel GROUP BY over num) instead of streaming every num row through C++.
+  void ScanNumAggregates(
+      const std::function<void(const SecEdgarQ3NumAggInput &)> &consumer) override {
+    ScanQuery(connection,
+              "SELECT adsh, SUM(value), COUNT(*) FROM num "
+              "WHERE uom = 'USD' AND value IS NOT NULL AND adsh IS NOT NULL "
+              "GROUP BY adsh",
               [&](auto &result, ::duckdb::idx_t row) {
-                const auto value = result.GetValue(2, row);
                 consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          value.IsNull() ? 0.0 : std::stod(value.ToString()),
-                          value.IsNull()});
+                          result.GetValue(1, row).template GetValue<double>(),
+                          result.GetValue(2, row).template GetValue<int64_t>()});
               });
   }
   void ScanSub(
       const std::function<void(const SecEdgarQ3SubInput &)> &consumer) override {
     ScanQuery(connection, "SELECT adsh, name, cik, fy FROM sub",
               [&](auto &result, ::duckdb::idx_t row) {
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          static_cast<int32_t>(SafeInt32(result.GetValue(2, row))),
-                          static_cast<int32_t>(SafeInt32(result.GetValue(3, row)))});
+                SecEdgarQ3SubInput input;
+                input.adsh = result.GetValue(0, row).ToString();
+                const auto name = result.GetValue(1, row);
+                input.name_is_null = name.IsNull();
+                if (!input.name_is_null) {
+                  input.name = name.ToString();
+                }
+                const auto cik = result.GetValue(2, row);
+                input.cik_is_null = cik.IsNull();
+                input.cik = input.cik_is_null ? 0 : SafeInt32(cik);
+                const auto fy = result.GetValue(3, row);
+                input.fy_is_null = fy.IsNull();
+                input.fy = input.fy_is_null ? 0 : SafeInt32(fy);
+                consumer(input);
               });
   }
   ::duckdb::Connection &connection;

@@ -416,6 +416,22 @@ accel_add_shared_interface_test(test_shared_tpch_q14 tests/aux_state/test_shared
 accel_add_shared_interface_test(test_shared_sec_edgar_q1 tests/aux_state/test_shared_sec_edgar_q1.cpp)
 accel_add_shared_interface_test(test_shared_sec_edgar_q2 tests/aux_state/test_shared_sec_edgar_q2.cpp)
 accel_add_shared_interface_test(test_shared_sec_edgar_q3 tests/aux_state/test_shared_sec_edgar_q3.cpp)
+
+# Q3: randomized differential test of the aux accelerator vs plain DuckDB SQL
+# (in-memory synthetic data, production DDL; no external database needed).
+add_executable(test_sec_edgar_q3_differential tests/aux_state/test_sec_edgar_q3_differential.cpp)
+target_link_libraries(test_sec_edgar_q3_differential PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(test_sec_edgar_q3_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+if(ACCEL_ENABLE_PARALLEL_AUX)
+    target_compile_definitions(test_sec_edgar_q3_differential PRIVATE ACCEL_ENABLE_PARALLEL_AUX)
+endif()
+if(BUILD_TESTING)
+    add_test(NAME test_sec_edgar_q3_differential
+             COMMAND test_sec_edgar_q3_differential 300 3
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+add_executable(bench_sec_edgar_q3_aux benchmarks/aux_state/bench_sec_edgar_q3_aux.cpp)
+target_link_libraries(bench_sec_edgar_q3_aux PRIVATE accelerator_codegen duckdb_sibling)
 accel_add_shared_interface_test(test_shared_sec_edgar_q4 tests/aux_state/test_shared_sec_edgar_q4.cpp)
 accel_add_shared_interface_test(test_shared_sec_edgar_q6 tests/aux_state/test_shared_sec_edgar_q6.cpp)
 accel_add_shared_interface_test(test_shared_sec_edgar_q24 tests/aux_state/test_shared_q24.cpp)
