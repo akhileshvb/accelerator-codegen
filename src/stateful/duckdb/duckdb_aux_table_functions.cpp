@@ -517,6 +517,23 @@ void RegisterRegisteredAuxFunctions(::duckdb::Catalog &catalog,
     Require(entry != nullptr, "aux query " + query->accelerator_id + " has no catalog entry");
     ::duckdb::vector<::duckdb::LogicalType> types(query->argument_types.begin(),
                                                  query->argument_types.end());
+    if (!query->overload_argument_types.empty()) {
+      ::duckdb::TableFunctionSet set(query->table_function);
+      const auto add = [&](::duckdb::vector<::duckdb::LogicalType> signature) {
+        ::duckdb::TableFunction function(query->table_function, std::move(signature), AuxExecute,
+                                         AuxBind, AuxInitGlobal, AuxInitLocal);
+        function.function_info = ::duckdb::make_shared_ptr<AuxFunctionInfo>(*entry);
+        set.AddFunction(std::move(function));
+      };
+      add(std::move(types));
+      for (const auto &overload : query->overload_argument_types) {
+        add(::duckdb::vector<::duckdb::LogicalType>(overload.begin(), overload.end()));
+      }
+      ::duckdb::CreateTableFunctionInfo info(std::move(set));
+      info.on_conflict = ::duckdb::OnCreateConflict::IGNORE_ON_CONFLICT;
+      catalog.CreateTableFunction(context, info);
+      continue;
+    }
     RegisterAuxFunction(catalog, context, *entry, query->table_function.c_str(), std::move(types));
   }
   // Verus accelerators registered through the host kit (generated glue).
