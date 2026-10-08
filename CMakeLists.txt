@@ -2229,3 +2229,6 @@ target_link_libraries(benchmark_sec_edgar_q2_sweep PRIVATE accelerator_codegen d
 add_executable(measure_sec_edgar_q2_state
 	benchmarks/aux_state/measure_sec_edgar_q2_state.cpp)
 target_link_libraries(measure_sec_edgar_q2_state PRIVATE accelerator_codegen duckdb_sibling)
+add_executable(check_sec_edgar_q2_params
+	benchmarks/aux_state/check_sec_edgar_q2_params.cpp)
+target_link_libraries(check_sec_edgar_q2_params PRIVATE accelerator_codegen duckdb_sibling)
