@@ -2,6 +2,7 @@
 // Registers the catalog entry (SQL, probes, benchmark arguments), the
 // table function accel_sec_edgar_q6_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
+#include "sec_edgar/q6/duckdb/aux/duckdb_scan.hpp"
 #include "sec_edgar/q6/duckdb/aux/module.hpp"
 #include "sec_edgar/q6/duckdb/aux/parallel/module.hpp"
 #include "sec_edgar/q6/layout.hpp"
@@ -35,7 +36,20 @@ using sec_edgar_probes::BuildSecNumRowidProbe;
 
 SharedProbe BuildSecEdgarQ6Probe(::duckdb::MaterializedQueryResult &result,
                                  ::duckdb::idx_t row) {
-  return BuildSecNumRowidProbe(result, row, 1);
+  // The shared probe carries the physical num row; the module is delivered
+  // the columns it projects (SecEdgarQ6Columns::kNumAttnums).
+  auto probe = BuildSecNumRowidProbe(result, row, 1);
+  const auto project = [](const core::AuxRow &full) {
+    core::AuxRow out;
+    for (const auto attnum : query::SecEdgarQ6Columns::kNumAttnums) {
+      out.values.push_back(full.values.at(static_cast<std::size_t>(attnum)));
+    }
+    return out;
+  };
+  probe.old_row = project(probe.old_row);
+  probe.new_row = project(probe.new_row);
+  probe.updated_columns = {query::SecEdgarQ6Columns::kNumValue};
+  return probe;
 }
 
 const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{6,
@@ -91,44 +105,13 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
-struct SecEdgarQ6Scan : SecEdgarQ6InitialScan {
-  explicit SecEdgarQ6Scan(::duckdb::Connection &connection) : connection(connection) {}
-  void ScanNum(
-      const std::function<void(const SecEdgarQ6NumInput &)> &consumer) override {
-    ScanQuery(connection, "SELECT adsh, tag, version, uom, value FROM num",
-              [&](auto &result, ::duckdb::idx_t row) {
-                const auto value = result.GetValue(4, row);
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          result.GetValue(2, row).ToString(),
-                          result.GetValue(3, row).ToString(),
-                          value.IsNull() ? 0.0 : std::stod(value.ToString()),
-                          value.IsNull()});
-              });
-  }
-  void ScanSub(
-      const std::function<void(const SecEdgarQ6SubInput &)> &consumer) override {
-    ScanQuery(connection, "SELECT adsh, name, fy FROM sub",
-              [&](auto &result, ::duckdb::idx_t row) {
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          static_cast<int32_t>(SafeInt32(result.GetValue(2, row)))});
-              });
-  }
-  void ScanPre(
-      const std::function<void(const SecEdgarQ6PreInput &)> &consumer) override {
-    ScanQuery(connection,
-              "SELECT adsh, tag, version, stmt, plabel FROM pre",
-              [&](auto &result, ::duckdb::idx_t row) {
-                consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).ToString(),
-                          result.GetValue(2, row).ToString(),
-                          result.GetValue(3, row).ToString(),
-                          result.GetValue(4, row).ToString()});
-              });
-  }
-  ::duckdb::Connection &connection;
-};
+using SecEdgarQ6Scan = query::SecEdgarQ6DuckdbScan;
+
+// The tables engine capture watches for the module (columns per
+// SecEdgarQ6Columns).
+CaptureTableList CaptureTables(const SecEdgarQ6Config &c) {
+  return {{"num", c.num_table}, {"sub", c.sub_table}, {"pre", c.pre_table}};
+}
 
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ6Layout::kAccelerator,
@@ -136,7 +119,7 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     {},
     [](::duckdb::Connection &connection) {
       const SecEdgarQ6Config c{1, 2, 3};
-      return MakeBinding<SecEdgarQ6Scan, SecEdgarQ6Module>(connection, CaptureTableList{}, c);
+      return MakeBinding<SecEdgarQ6Scan, SecEdgarQ6Module>(connection, CaptureTables(c), c);
     }}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
@@ -146,7 +129,7 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     {},
     [](::duckdb::Connection &connection) {
       const SecEdgarQ6Config c{1, 2, 3};
-      return MakeBinding<SecEdgarQ6Scan, SecEdgarQ6ParallelModule>(connection, CaptureTableList{}, c);
+      return MakeBinding<SecEdgarQ6Scan, SecEdgarQ6ParallelModule>(connection, CaptureTables(c), c);
     }}};
 #endif
 

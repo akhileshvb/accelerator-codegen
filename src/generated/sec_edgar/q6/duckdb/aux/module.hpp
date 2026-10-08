@@ -4,20 +4,37 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "sec_edgar/q6/layout.hpp"
+#include "sec_edgar/q6/duckdb/aux/state.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
+// Table ids are assigned by the engine adapter (num=1, sub=2, pre=3).
 struct SecEdgarQ6Config {
   core::TableId num_table = 0;
   core::TableId sub_table = 0;
   core::TableId pre_table = 0;
+};
+
+// Column positions inside the captured mutation rows. The module projects
+// the columns it reads (TableDependency::mutation_attnums = the physical
+// attribute numbers below), so a captured AuxRow holds exactly these, in this
+// order.
+struct SecEdgarQ6Columns {
+  // num(adsh=0, tag=1, version=2, uom=5, value=7)
+  static constexpr core::ColumnId kNumAdsh = 0, kNumTag = 1, kNumVersion = 2,
+                                  kNumUom = 3, kNumValue = 4;
+  // sub(adsh=0, name=2, fy=10)
+  static constexpr core::ColumnId kSubAdsh = 0, kSubName = 1, kSubFy = 2;
+  // pre(adsh=0, stmt=3, tag=6, version=7, plabel=8)
+  static constexpr core::ColumnId kPreAdsh = 0, kPreStmt = 1, kPreTag = 2,
+                                  kPreVersion = 3, kPrePlabel = 4;
+  static constexpr int32_t kNumAttnums[] = {0, 1, 2, 5, 7};
+  static constexpr int32_t kSubAttnums[] = {0, 2, 10};
+  static constexpr int32_t kPreAttnums[] = {0, 3, 6, 7, 8};
 };
 
 struct SecEdgarQ6NumInput {
@@ -33,6 +50,8 @@ struct SecEdgarQ6SubInput {
   std::string adsh;
   std::string name;
   int32_t fy = 0;
+  bool name_is_null = false;
+  bool fy_is_null = false;
 };
 
 struct SecEdgarQ6PreInput {
@@ -41,8 +60,39 @@ struct SecEdgarQ6PreInput {
   std::string version;
   std::string stmt;
   std::string plabel;
+  bool plabel_is_null = false;
 };
 
+struct SecEdgarQ6GroupAggregateInput {
+  std::string name;
+  std::string tag;
+  std::string plabel;
+  bool name_is_null = false;
+  bool plabel_is_null = false;
+  double sum = 0.0;
+  int64_t count = 0;
+};
+
+// Post-transaction state of one adsh, read from the base tables:
+//   in_cohort/name: sub row with fy = 2023, pre: its stmt = 'IS' rows grouped
+//   by (tag, version, plabel) with multiplicity, nums: USD non-NULL value sums
+//   and counts per (tag, version).
+struct SecEdgarQ6AdshSnapshot {
+  bool in_cohort = false;
+  std::string name;
+  bool name_is_null = false;
+  std::vector<SecEdgarQ6PreEntry> pre;
+  std::vector<SecEdgarQ6NumSum> nums;
+};
+
+// Initial-scan contract.
+//   * ScanSub / ScanPre / ScanNum may be pre-filtered by the implementation to
+//     the rows the query can use (sub.fy = 2023, pre.stmt = 'IS' within that
+//     cohort, num.uom = 'USD' and value IS NOT NULL). Consumers re-check every
+//     predicate, so an unfiltered scan is equally valid.
+//   * ScanGroupAggregates is an optional fast path: the engine computes
+//     (name, tag, plabel) -> (SUM(value), COUNT(*)) of the query body without
+//     the final ORDER/LIMIT. Return false when unsupported.
 class SecEdgarQ6InitialScan {
 public:
   virtual ~SecEdgarQ6InitialScan() = default;
@@ -52,108 +102,93 @@ public:
       const std::function<void(const SecEdgarQ6SubInput &)> &) = 0;
   virtual void ScanPre(
       const std::function<void(const SecEdgarQ6PreInput &)> &) = 0;
-};
-
-struct SecEdgarQ6PreKey {
-  std::string adsh;
-  std::string tag;
-  std::string version;
-
-  bool operator==(const SecEdgarQ6PreKey &other) const {
-    return adsh == other.adsh && tag == other.tag && version == other.version;
+  virtual bool ScanGroupAggregates(
+      const std::function<void(const SecEdgarQ6GroupAggregateInput &)> &) {
+    return false;
+  }
+  // Optional: targeted per-adsh lookups used by incremental sub/pre
+  // maintenance. Return false when unsupported (the module then rebuilds).
+  virtual bool LoadAdshSnapshots(const std::vector<std::string> &,
+                                 std::vector<SecEdgarQ6AdshSnapshot> &) {
+    return false;
   }
 };
 
-struct SecEdgarQ6PreKeyHash {
-  std::size_t operator()(const SecEdgarQ6PreKey &key) const noexcept;
-};
-
-struct SecEdgarQ6GroupKey {
-  std::string name;
-  std::string tag;
-  std::string plabel;
-
-  bool operator==(const SecEdgarQ6GroupKey &other) const {
-    return name == other.name && tag == other.tag && plabel == other.plabel;
-  }
-  bool operator<(const SecEdgarQ6GroupKey &other) const {
-    return name < other.name || (name == other.name && (tag < other.tag ||
-                                                        (tag == other.tag &&
-                                                         plabel < other.plabel)));
-  }
-};
-
-struct SecEdgarQ6GroupKeyHash {
-  std::size_t operator()(const SecEdgarQ6GroupKey &key) const noexcept;
-};
-
-struct SecEdgarQ6Aggregate {
-  double sum = 0.0;
-  int64_t count = 0;
-};
-
-struct SecEdgarQ6OutputRow {
-  std::string name;
-  std::string stmt = "IS";
-  std::string tag;
-  std::string plabel;
-  double total_value = 0.0;
-  int64_t cnt = 0;
-};
-
-struct SecEdgarQ6State {
-  std::unordered_map<std::string, std::string> adsh_to_name;
-  std::unordered_map<SecEdgarQ6PreKey, std::vector<std::string>, SecEdgarQ6PreKeyHash>
-      pre_plabels;
-  std::unordered_map<SecEdgarQ6GroupKey, SecEdgarQ6Aggregate, SecEdgarQ6GroupKeyHash>
-      aggregates;
-};
-
-enum class SecEdgarQ6ImageKind : uint8_t {
-  Fy2023Cohort,
-  PreIsBridge,
-  GroupAggregates,
-};
-
+// Published image: the whole (immutable) state lives in the aggregate
+// partition so a single atomic publish moves structure, aggregates and top
+// cache together.
 struct SecEdgarQ6StateImage {
-  SecEdgarQ6ImageKind kind = SecEdgarQ6ImageKind::Fy2023Cohort;
   std::shared_ptr<const SecEdgarQ6State> state;
 };
 
-std::vector<uint8_t> EncodeSecEdgarQ6Fy2023Cohort(const SecEdgarQ6State &);
-std::vector<uint8_t> EncodeSecEdgarQ6PreIsBridge(const SecEdgarQ6State &);
-std::vector<uint8_t> EncodeSecEdgarQ6GroupAggregates(const SecEdgarQ6State &);
-
-bool DecodeSecEdgarQ6Fy2023Cohort(const std::vector<uint8_t> &, SecEdgarQ6State &);
-bool DecodeSecEdgarQ6PreIsBridge(const std::vector<uint8_t> &, SecEdgarQ6State &);
-bool DecodeSecEdgarQ6GroupAggregates(const std::vector<uint8_t> &, SecEdgarQ6State &);
-
-std::vector<SecEdgarQ6OutputRow> BuildSecEdgarQ6Output(const SecEdgarQ6State &);
-
+// Compact, arena-backed transaction buffer.
 class SecEdgarQ6TxnBuffer final : public core::AuxTxnBuffer {
 public:
   struct NumDelta {
-    SecEdgarQ6PreKey membership;
+    uint32_t offset = 0; // into the arena: adsh | tag | version
+    uint32_t adsh_len = 0;
+    uint32_t tag_len = 0;
+    uint32_t version_len = 0;
     double value = 0.0;
     int8_t sign = 0;
-    bool relevant = false;
+  };
+  struct SubChange {
+    std::string adsh;
+    std::string name;
+    bool name_is_null = false;
+    int8_t sign = 0;
+  };
+  struct PreChange {
+    std::string adsh;
+    std::string tag;
+    std::string version;
+    std::string plabel;
+    bool plabel_is_null = false;
+    int8_t sign = 0;
   };
 
-  bool HasPendingChanges() const override;
+  bool HasPendingChanges() const override { return pending_; }
   void Clear() override;
 
-  bool RequiresRebuild() const;
-  const std::vector<NumDelta> &Deltas() const;
-  void MarkRebuild();
-  void AddDelta(NumDelta delta);
+  bool RequiresRebuild() const { return requires_rebuild_; }
+  void MarkRebuild() {
+    pending_ = true;
+    requires_rebuild_ = true;
+  }
+  void AddNumDelta(std::string_view adsh, std::string_view tag,
+                   std::string_view version, double value, int8_t sign);
+  void AddSubChange(SubChange change) {
+    pending_ = true;
+    sub_changes_.push_back(std::move(change));
+  }
+  void AddPreChange(PreChange change) {
+    pending_ = true;
+    pre_changes_.push_back(std::move(change));
+  }
+
+  const std::vector<NumDelta> &NumDeltas() const { return num_deltas_; }
+  std::string_view Adsh(const NumDelta &d) const {
+    return {arena_.data() + d.offset, d.adsh_len};
+  }
+  std::string_view Tag(const NumDelta &d) const {
+    return {arena_.data() + d.offset + d.adsh_len, d.tag_len};
+  }
+  std::string_view Version(const NumDelta &d) const {
+    return {arena_.data() + d.offset + d.adsh_len + d.tag_len, d.version_len};
+  }
+  const std::vector<SubChange> &SubChanges() const { return sub_changes_; }
+  const std::vector<PreChange> &PreChanges() const { return pre_changes_; }
 
 private:
-  bool pending = false;
-  bool requires_rebuild = false;
-  std::vector<NumDelta> deltas;
+  bool pending_ = false;
+  bool requires_rebuild_ = false;
+  std::vector<char> arena_;
+  std::vector<NumDelta> num_deltas_;
+  std::vector<SubChange> sub_changes_;
+  std::vector<PreChange> pre_changes_;
 };
 
-class SecEdgarQ6Module final : public core::AuxQueryModule {
+class SecEdgarQ6Module : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = core::SecEdgarQ6Layout::kAccelerator;
 
@@ -182,9 +217,13 @@ public:
   void ExecuteFallback(core::AuxEngineServices &, const core::QueryArguments &,
                        core::AuxRowSink &) override;
 
+  // Fresh state from the initial-scan source (also used by the fallback path).
+  std::shared_ptr<const SecEdgarQ6State> BuildState() const;
+
 private:
-  SecEdgarQ6State BuildState(core::AuxEngineServices &) const;
-  void EmitOutput(const SecEdgarQ6State &, core::AuxRowSink &) const;
+  void EmitState(const SecEdgarQ6State &, core::AuxRowSink &) const;
+  std::shared_ptr<const SecEdgarQ6State>
+  LoadPublishedState(core::AuxEngineServices &, core::Version *version) const;
 
   SecEdgarQ6Config config;
   SecEdgarQ6InitialScan *initial_scan = nullptr;

@@ -8,16 +8,15 @@
 
 namespace accelerator_codegen::aux_state::core {
 
+// One partition holds the whole (immutable, copy-on-write) state: the join
+// structure, the aggregates and the top-K cache move together in a single
+// atomic publish.
 struct SecEdgarQ6Layout {
   static constexpr const char *kAccelerator = "sec_edgar_q6";
   static constexpr const char *kParallelAccelerator = "sec_edgar_q6_aux_parallel";
-  static constexpr PartitionId kFy2023Cohort = 0;
-  static constexpr PartitionId kPreIsBridge = 1;
-  static constexpr PartitionId kGroupAggregates = 2;
+  static constexpr PartitionId kState = 0;
 
-  static constexpr std::array<PartitionId, 3> Partitions() {
-    return {kFy2023Cohort, kPreIsBridge, kGroupAggregates};
-  }
+  static constexpr std::array<PartitionId, 1> Partitions() { return {kState}; }
 };
 
 } // namespace accelerator_codegen::aux_state::core

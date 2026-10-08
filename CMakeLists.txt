@@ -418,6 +418,30 @@ accel_add_shared_interface_test(test_shared_sec_edgar_q2 tests/aux_state/test_sh
 accel_add_shared_interface_test(test_shared_sec_edgar_q3 tests/aux_state/test_shared_sec_edgar_q3.cpp)
 accel_add_shared_interface_test(test_shared_sec_edgar_q4 tests/aux_state/test_shared_sec_edgar_q4.cpp)
 accel_add_shared_interface_test(test_shared_sec_edgar_q6 tests/aux_state/test_shared_sec_edgar_q6.cpp)
+add_executable(bench_q6_maintenance benchmarks/sec_edgar/bench_q6_maintenance.cpp)
+target_link_libraries(bench_q6_maintenance PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(bench_q6_maintenance PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+add_executable(bench_q6_structural benchmarks/sec_edgar/bench_q6_structural.cpp)
+target_link_libraries(bench_q6_structural PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(bench_q6_structural PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+add_executable(measure_q6_aux_heap benchmarks/sec_edgar/measure_q6_aux_heap.cpp)
+target_link_libraries(measure_q6_aux_heap PRIVATE accelerator_codegen duckdb_sibling)
+target_include_directories(measure_q6_aux_heap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+accel_add_shared_interface_test(test_sec_edgar_q6_state tests/aux_state/test_sec_edgar_q6_state.cpp)
+accel_add_shared_interface_test(test_sec_edgar_q6_differential tests/aux_state/test_sec_edgar_q6_differential.cpp)
+if(BUILD_TESTING)
+    # The differential tests read config/*.json relative to the source root.
+    set_tests_properties(test_sec_edgar_q6_state_unit_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    set_tests_properties(test_sec_edgar_q6_differential_unit_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    foreach(_q6_case IN ITEMS "synthetic;11;400" "synthetic;12;400;parallel" "synthetic-large;13;250")
+        list(GET _q6_case 0 _q6_mode)
+        list(GET _q6_case 1 _q6_seed)
+        string(REPLACE ";" "_" _q6_name "${_q6_case}")
+        add_test(NAME sec_edgar_q6_differential_${_q6_name}
+                 COMMAND test_sec_edgar_q6_differential ${_q6_case}
+                 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endforeach()
+endif()
 accel_add_shared_interface_test(test_shared_sec_edgar_q24 tests/aux_state/test_shared_q24.cpp)
 
 add_executable(test_shared_incremental_differential
