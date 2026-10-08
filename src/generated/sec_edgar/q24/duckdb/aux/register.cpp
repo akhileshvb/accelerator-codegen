@@ -266,6 +266,50 @@ struct SecEdgarQ24Scan : SecEdgarQ24InitialScan {
     return true;
   }
 
+  bool LoadTripleStates(const std::vector<SecEdgarQ24TripleKey> &keys,
+                        std::vector<SecEdgarQ24TripleState> &out) override {
+    out.assign(keys.size(), {});
+    if (keys.empty()) return true;
+    const auto quote = [](const std::string &s) {
+      std::string q = "'";
+      for (const char c : s) {
+        if (c == '\'') q += "''";
+        else q += c;
+      }
+      return q + "'";
+    };
+    std::string values;
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+      if (i) values += ",";
+      values += "(" + std::to_string(i) + "," + quote(keys[i].adsh) + "," +
+                quote(keys[i].tag) + "," + quote(keys[i].version) + ")";
+    }
+    const std::string k = "(VALUES " + values + ") k(i, a, t, v)";
+    // Each lookup sees the committing transaction's own writes.
+    ScanQuery(connection,
+              "SELECT k.i, COUNT(p.adsh)::BIGINT FROM " + k +
+                  " LEFT JOIN pre p ON p.adsh = k.a AND p.tag = k.t AND "
+                  "p.version = k.v GROUP BY k.i",
+              [&](auto &result, ::duckdb::idx_t row) {
+                out[static_cast<std::size_t>(result.GetValue(0, row).template GetValue<int64_t>())]
+                    .pre_rows = result.GetValue(1, row).template GetValue<int64_t>();
+              });
+    ScanQuery(connection,
+              "SELECT k.i, COUNT(*)::BIGINT, SUM(n.value)::DOUBLE FROM " + k +
+                  " JOIN num n ON n.adsh = k.a AND n.tag = k.t AND "
+                  "n.version = k.v WHERE n.uom = '" + std::string(kSecEdgarQ24Uom) +
+                  "' AND n.ddate BETWEEN " + std::to_string(kSecEdgarQ24FirstDate) +
+                  " AND " + std::to_string(kSecEdgarQ24LastDate) +
+                  " AND n.value IS NOT NULL GROUP BY k.i",
+              [&](auto &result, ::duckdb::idx_t row) {
+                auto &s = out[static_cast<std::size_t>(
+                    result.GetValue(0, row).template GetValue<int64_t>())];
+                s.num_rows = result.GetValue(1, row).template GetValue<int64_t>();
+                s.num_sum = result.GetValue(2, row).template GetValue<double>();
+              });
+    return true;
+  }
+
 private:
   template <typename Consumer>
   void NativeScan(const NativeScanSpec &spec, Consumer &&consume) {

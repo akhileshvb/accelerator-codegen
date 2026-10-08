@@ -79,7 +79,7 @@ public:
     if (!slots_.empty()) __builtin_prefetch(&slots_[SlotOf(hash)]);
   }
   std::string_view Get(uint32_t id) const {
-    return {arena_.data() + offs_[id], offs_[id + 1] - offs_[id]};
+    return {arena_.data() + offs_[id], static_cast<std::size_t>(offs_[id + 1] - offs_[id])};
   }
   uint32_t size() const { return static_cast<uint32_t>(offs_.size() - 1); }
   std::size_t Bytes() const;
@@ -87,7 +87,7 @@ public:
   void ShrinkToFit();
   // Serialization-free accessors used by the footprint encoder.
   const std::vector<char> &arena() const { return arena_; }
-  const std::vector<uint32_t> &offsets() const { return offs_; }
+  const std::vector<uint64_t> &offsets() const { return offs_; }
   const std::vector<uint64_t> &slots() const { return slots_; }
 
 private:
@@ -96,7 +96,7 @@ private:
     return static_cast<std::size_t>(((hash & 0xFFFFFFFFull) * slots_.size()) >> 32);
   }
   std::vector<char> arena_;
-  std::vector<uint32_t> offs_{0};
+  std::vector<uint64_t> offs_{0};
   std::vector<uint64_t> slots_; // (hash high 32 bits << 32) | (id + 1)
 };
 
@@ -159,7 +159,7 @@ struct Q24PreBase {
   //   256 <= id < 64Ki CSR of sorted unique u16 ids per adsh
   //   id >= 64Ki       CSR of sorted unique u32 ids per adsh
   std::vector<uint64_t> bits256;            // 4 words per adsh
-  std::vector<uint32_t> off16, off32;       // adsh.size()+1 each
+  std::vector<uint64_t> off16, off32;       // adsh.size()+1 each (64-bit)
   std::vector<uint16_t> ids16;
   std::vector<uint32_t> ids32;
   uint64_t triple_count = 0;
@@ -177,7 +177,8 @@ struct Q24PreBase {
 std::shared_ptr<const Q24PreBase> BuildQ24PreBase(std::vector<Q24RawPre> &parts);
 
 struct Q24PreOverlay {
-  std::unordered_set<std::string> keys; // encoded triples inserted after build
+  std::unordered_set<std::string> keys;    // encoded triples inserted after build (not in base)
+  std::unordered_set<std::string> removed; // encoded base triples deleted after build
   std::size_t Bytes() const;
 };
 

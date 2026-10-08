@@ -189,5 +189,47 @@ int main(int argc, char **argv) {
     Exec(con, probe3.restore_sql);
     Report("read right after write (module)", Summarize(rw));
   }
+
+  // Pre DELETE / re-INSERT of one existing row (incremental: the triple is
+  // resolved by a targeted table lookup at Stage). Times aux maintenance only.
+  if (writes > 0) {
+    const int pre_n = std::getenv("Q24_PRE_WRITES") ? std::atoi(std::getenv("Q24_PRE_WRITES")) : 20;
+    std::vector<double> del, ins;
+    for (int i = 0; i < pre_n; ++i) {
+      auto r = con.Query("SELECT rowid, adsh, tag, version FROM pre OFFSET " +
+                         std::to_string(1000 + i * 99991) + " LIMIT 1");
+      if (!r || r->HasError() || r->RowCount() == 0) break;
+      const auto rowid = r->GetValue(0, 0).ToString();
+      const auto a = r->GetValue(1, 0).ToString();
+      const auto t = r->GetValue(2, 0).ToString();
+      const auto v = r->GetValue(3, 0).ToString();
+      auto q = [](const std::string &x) {
+        std::string o = "'";
+        for (char c : x) o += c == '\'' ? std::string("''") : std::string(1, c);
+        return o + "'";
+      };
+      accelerator_codegen::aux_state::core::AuxRow aux{
+          {accelerator_codegen::aux_state::core::AuxValue::Of(accelerator_codegen::aux_state::core::AuxType::String, a),
+           accelerator_codegen::aux_state::core::AuxValue::Of(accelerator_codegen::aux_state::core::AuxType::String, t),
+           accelerator_codegen::aux_state::core::AuxValue::Of(accelerator_codegen::aux_state::core::AuxType::String, v)}};
+      Exec(con, "DELETE FROM pre WHERE rowid = " + rowid);
+      accelerator_codegen::aux_state::core::MutationBatch m;
+      m.table = 102;
+      m.kind = accelerator_codegen::aux_state::core::MutationKind::Delete;
+      m.old_rows = {aux};
+      t0 = Clock::now();
+      runtime.ApplyMutationBatch(m);
+      del.push_back(Us(t0));
+      Exec(con, "INSERT INTO pre (adsh, tag, version) VALUES (" + q(a) + "," + q(t) + "," + q(v) + ")");
+      m.kind = accelerator_codegen::aux_state::core::MutationKind::Insert;
+      m.old_rows.clear();
+      m.new_rows = {aux};
+      t0 = Clock::now();
+      runtime.ApplyMutationBatch(m);
+      ins.push_back(Us(t0));
+    }
+    Report("write: pre DELETE aux maint.", Summarize(del));
+    Report("write: pre INSERT aux maint.", Summarize(ins));
+  }
   return 0;
 }

@@ -70,7 +70,7 @@ uint32_t Q24StringDict::Find(const char *data, uint32_t size,
     if (s == 0) return kNone;
     if ((s & kTagMask) == tag) {
       const uint32_t id = static_cast<uint32_t>(s) - 1;
-      const uint32_t len = offs_[id + 1] - offs_[id];
+      const uint64_t len = offs_[id + 1] - offs_[id];
       if (len == size &&
           (size == 0 || std::memcmp(arena_.data() + offs_[id], data, size) == 0))
         return id;
@@ -91,18 +91,19 @@ uint32_t Q24StringDict::FindOrAdd(const char *data, uint32_t size,
     if (s == 0) break;
     if ((s & kTagMask) == tag) {
       const uint32_t id = static_cast<uint32_t>(s) - 1;
-      const uint32_t len = offs_[id + 1] - offs_[id];
+      const uint64_t len = offs_[id + 1] - offs_[id];
       if (len == size &&
           (size == 0 || std::memcmp(arena_.data() + offs_[id], data, size) == 0))
         return id;
     }
   }
-  if (arena_.size() + size >= std::numeric_limits<uint32_t>::max() - 1 ||
-      this->size() >= std::numeric_limits<uint32_t>::max() - 2)
-    throw std::length_error("Q24 string dictionary overflow");
+  // Ids are dense u32 indexes (exact, never hashed); the arena and its
+  // offsets are 64-bit, so only > 4G distinct strings can overflow.
+  if (this->size() >= std::numeric_limits<uint32_t>::max() - 2)
+    throw std::length_error("Q24 string dictionary id overflow");
   const uint32_t id = this->size();
   arena_.insert(arena_.end(), data, data + size);
-  offs_.push_back(static_cast<uint32_t>(arena_.size()));
+  offs_.push_back(arena_.size());
   slots_[i] = tag | (static_cast<uint64_t>(id) + 1);
   return id;
 }
@@ -119,7 +120,7 @@ void Q24StringDict::Rehash(std::size_t new_slot_count) {
 }
 
 std::size_t Q24StringDict::Bytes() const {
-  return arena_.capacity() + offs_.capacity() * sizeof(uint32_t) +
+  return arena_.capacity() + offs_.capacity() * sizeof(uint64_t) +
          slots_.capacity() * sizeof(uint64_t);
 }
 
@@ -159,6 +160,8 @@ uint32_t Q24PairIndex::FindOrAdd(uint64_t key) {
     if (s == 0) break;
     if (pairs_[s - 1] == key) return s - 1;
   }
+  if (pairs_.size() >= std::numeric_limits<uint32_t>::max() - 2)
+    throw std::length_error("Q24 pair index id overflow");
   pairs_.push_back(key);
   slots_[i] = static_cast<uint32_t>(pairs_.size());
   return static_cast<uint32_t>(pairs_.size() - 1);
@@ -278,8 +281,6 @@ BuildQ24PreBase(std::vector<Q24RawPre> &parts) {
   }
 
   const std::size_t n = g.rows.size() / 3;
-  if (n >= std::numeric_limits<uint32_t>::max())
-    throw std::length_error("Q24 pre row count overflow");
   base->adsh = std::move(g.adsh);
   base->tag = std::move(g.tag);
   base->version = std::move(g.version);
@@ -295,7 +296,7 @@ BuildQ24PreBase(std::vector<Q24RawPre> &parts) {
   // Renumber pairs by descending frequency so common pairs get small ids.
   {
     const std::size_t pair_count = base->pairs.size();
-    std::vector<uint32_t> freq(pair_count, 0);
+    std::vector<uint64_t> freq(pair_count, 0);
     for (std::size_t r = 0; r < n; ++r) freq[pair_of[r]]++;
     std::vector<uint32_t> order(pair_count);
     for (std::size_t i = 0; i < pair_count; ++i) order[i] = static_cast<uint32_t>(i);
@@ -322,18 +323,18 @@ BuildQ24PreBase(std::vector<Q24RawPre> &parts) {
     }
   }
   const auto build_tier = [&](uint32_t lo, uint32_t hi, auto &out,
-                              std::vector<uint32_t> &offsets) {
+                              std::vector<uint64_t> &offsets) {
     using T = typename std::decay_t<decltype(out)>::value_type;
     offsets.assign(static_cast<std::size_t>(adsh_count) + 1, 0);
     for (std::size_t r = 0; r < n; ++r)
       if (pair_of[r] >= lo && pair_of[r] < hi) offsets[g.rows[r * 3] + 1]++;
     for (uint32_t a = 0; a < adsh_count; ++a) offsets[a + 1] += offsets[a];
     out.assign(offsets[adsh_count], T());
-    std::vector<uint32_t> cursor(offsets.begin(), offsets.end() - 1);
+    std::vector<uint64_t> cursor(offsets.begin(), offsets.end() - 1);
     for (std::size_t r = 0; r < n; ++r)
       if (pair_of[r] >= lo && pair_of[r] < hi)
         out[cursor[g.rows[r * 3]]++] = static_cast<T>(pair_of[r]);
-    std::vector<uint32_t> compact(offsets.size(), 0);
+    std::vector<uint64_t> compact(offsets.size(), 0);
     std::size_t w = 0;
     for (uint32_t a = 0; a < adsh_count; ++a) {
       T *b = out.data() + offsets[a];
@@ -343,7 +344,7 @@ BuildQ24PreBase(std::vector<Q24RawPre> &parts) {
       const std::size_t len = static_cast<std::size_t>(e - b);
       if (out.data() + w != b) std::memmove(out.data() + w, b, len * sizeof(T));
       w += len;
-      compact[a + 1] = static_cast<uint32_t>(w);
+      compact[a + 1] = w;
     }
     out.resize(w);
     out.shrink_to_fit();
@@ -565,19 +566,22 @@ void Q24PreBase::ContainsBatch(const Q24Str *a, const Q24Str *t,
 
 std::size_t Q24PreBase::Bytes() const {
   return adsh.Bytes() + tag.Bytes() + version.Bytes() + pairs.Bytes() +
-         bits256.capacity() * 8 + (off16.capacity() + off32.capacity()) * 4 +
+         bits256.capacity() * 8 + (off16.capacity() + off32.capacity()) * 8 +
          ids16.capacity() * 2 + ids32.capacity() * 4;
 }
 
 std::size_t Q24PreOverlay::Bytes() const {
   std::size_t total = 0;
   for (const auto &k : keys) total += k.capacity() + 48;
+  for (const auto &k : removed) total += k.capacity() + 48;
   return total;
 }
 
 bool Q24PreState::Contains(const Q24Str &a, const Q24Str &t, const Q24Str &v,
                            const std::string &key) const {
   if (a.null || t.null || v.null) return false;
+  if (overlay && !overlay->removed.empty() && overlay->removed.count(key) != 0)
+    return false; // tombstone: the triple was deleted from the base
   if (base && base->Contains(a, t, v)) return true;
   return overlay && !overlay->keys.empty() && overlay->keys.count(key) != 0;
 }

@@ -221,17 +221,17 @@ inline MutationBatch RandomWrite(Gen &g, std::vector<NumRow> &num_tbl, std::vect
     }
     return PB(MutationKind::Insert, {}, rows);
   }
-  case 11: { // pre delete (rebuild)
+  case 11: { // pre delete (incremental: touched triples resolved from the tables)
     std::vector<PreRow> rows;
     if (!pre_tbl.empty()) {
       const int idx = g.R(static_cast<int>(pre_tbl.size()));
       rows.push_back(pre_tbl[idx]);
       pre_tbl.erase(pre_tbl.begin() + idx);
     }
-    expect_incremental = rows.empty();
+    (void)expect_incremental;
     return PB(MutationKind::Delete, rows, {});
   }
-  case 12: { // pre key update (rebuild)
+  case 12: { // pre key update (incremental, as delete)
     std::vector<PreRow> olds, news;
     if (!pre_tbl.empty()) {
       const int idx = g.R(static_cast<int>(pre_tbl.size()));
@@ -239,7 +239,7 @@ inline MutationBatch RandomWrite(Gen &g, std::vector<NumRow> &num_tbl, std::vect
       pre_tbl[idx] = g.Pre();
       news.push_back(pre_tbl[idx]);
     }
-    expect_incremental = olds.empty();
+    (void)expect_incremental;
     return PB(MutationKind::Update, olds, news, {1});
   }
   default: { // insert rows copying an existing key to hit the same group

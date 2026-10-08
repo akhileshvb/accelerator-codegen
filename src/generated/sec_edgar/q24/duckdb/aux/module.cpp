@@ -9,6 +9,7 @@
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -308,10 +309,9 @@ core::InvalidationPlan SecEdgarQ24Module::InterpretMutation(
     if (mutation.kind == core::MutationKind::Update &&
         !UpdateTouches(mutation, PreColumnRelevant))
       return {};
-    // Only inserts maintain incrementally; the rest may fall back to rebuild.
-    return mutation.kind == core::MutationKind::Insert
-               ? PartitionSet(true, true)
-               : AllPartitions();
+    // Insert / delete / key update all maintain incrementally (deletes and
+    // re-keys resolve the touched triples from the base tables at Stage).
+    return PartitionSet(true, true);
   }
   if (mutation.table != config.num_table) return {};
   if (mutation.kind == core::MutationKind::Update &&
@@ -331,9 +331,30 @@ void SecEdgarQ24Module::AccumulateMutation(
         !UpdateTouches(mutation, PreColumnRelevant))
       return;
     if (mutation.kind != core::MutationKind::Insert) {
-      // Removing a pre triple can turn matched num rows into orphans whose
-      // values are not kept; recompute from the base tables.
-      buffer.MarkRebuild();
+      // Removing / re-keying a pre triple can turn matched num rows into
+      // orphans; the triple is resolved from the base tables at Stage.
+      const auto touch = [&](const core::AuxRow &row) {
+        Q24Str a, t, v;
+        if (ReadStr(row, kPreAdsh, a) != Parse::Ok ||
+            ReadStr(row, kPreTag, t) != Parse::Ok ||
+            ReadStr(row, kPreVersion, v) != Parse::Ok) {
+          buffer.MarkRebuild();
+          return;
+        }
+        if (a.null || t.null || v.null) return; // can never match a num row
+        SecEdgarQ24TxnBuffer::Op op;
+        op.kind = SecEdgarQ24TxnBuffer::Op::Kind::PreTouch;
+        op.key = MakeKey(a, t, v);
+        buffer.AddOp(std::move(op));
+      };
+      for (const auto &row : mutation.old_rows) touch(row);
+      if (mutation.kind == core::MutationKind::Update) {
+        if (mutation.old_rows.size() != mutation.new_rows.size()) {
+          buffer.MarkRebuild();
+          return;
+        }
+        for (const auto &row : mutation.new_rows) touch(row);
+      }
       return;
     }
     for (const auto &row : mutation.new_rows) {
@@ -461,6 +482,34 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
     return out;
   }
 
+  // Triples whose pre rows were deleted / re-keyed are resolved from the base
+  // tables (post-transaction truth); every other op on them is subsumed.
+  std::unordered_set<std::string> touched;
+  for (const auto &op : ops)
+    if (op.kind == SecEdgarQ24TxnBuffer::Op::Kind::PreTouch) touched.insert(op.key);
+  std::vector<std::string> touched_keys;
+  std::vector<SecEdgarQ24TripleState> touched_states;
+  if (!touched.empty()) {
+    if (touched.size() > kMaxTouchedTriples || !initial_scan)
+      return rebuild_outcome(true);
+    std::vector<SecEdgarQ24TripleKey> lookups;
+    for (const auto &key : touched) {
+      std::size_t off = 0;
+      const Q24Str a = Q24ReadComponent(key, off);
+      const Q24Str t = Q24ReadComponent(key, off);
+      const Q24Str v = Q24ReadComponent(key, off);
+      touched_keys.push_back(key);
+      lookups.push_back({std::string(a.View()), std::string(t.View()),
+                         std::string(v.View())});
+    }
+    if (!initial_scan->LoadTripleStates(lookups, touched_states) ||
+        touched_states.size() != lookups.size())
+      return rebuild_outcome(true);
+    for (const auto &s : touched_states)
+      if (!std::isfinite(s.num_sum) || s.pre_rows < 0 || s.num_rows < 0)
+        return rebuild_outcome(true);
+  }
+
   // Replay the transaction's ops in order against copy-on-write views.
   Q24AccMapTxn orphans(groups->orphans);
   Q24AccMapTxn group_map(groups->groups);
@@ -469,12 +518,39 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
 
   const auto in_pre = [&](const Q24Str &a, const Q24Str &t, const Q24Str &v,
                           const std::string &key) {
+    const Q24PreOverlay *ov = new_overlay ? new_overlay.get() : pre->overlay.get();
+    if (ov && ov->removed.count(key) != 0) return false; // tombstone
     if (pre->base->Contains(a, t, v)) return true;
-    if (new_overlay) return new_overlay->keys.count(key) != 0;
-    return pre->overlay && pre->overlay->keys.count(key) != 0;
+    return ov && ov->keys.count(key) != 0;
+  };
+  const auto mutable_overlay = [&]() -> Q24PreOverlay & {
+    if (!new_overlay) {
+      new_overlay = std::make_shared<Q24PreOverlay>();
+      if (pre->overlay) *new_overlay = *pre->overlay;
+    }
+    return *new_overlay;
+  };
+  // Removes the orphan accumulators of `key` (now matched by a pre row).
+  // False: inconsistent state (caller rebuilds).
+  const auto retract_orphan = [&](const std::string &key,
+                                  std::size_t group_off) {
+    const Q24Acc *orphan = orphans.Find(key);
+    if (!orphan) return true;
+    const Q24Acc removed = *orphan;
+    const std::string gkey = key.substr(group_off);
+    Q24Acc *g = group_map.Find(gkey);
+    if (!g || g->cnt < removed.cnt) return false;
+    g->cnt -= removed.cnt;
+    g->Add(-removed.sum);
+    g->Add(-removed.comp);
+    const bool empty = g->cnt == 0;
+    orphans.Erase(key);
+    if (empty) group_map.Erase(gkey);
+    return true;
   };
 
   for (const auto &op : ops) {
+    if (!touched.empty() && touched.count(op.key) != 0) continue; // resolved below
     std::size_t off = 0;
     const Q24Str a = Q24ReadComponent(op.key, off);
     const std::size_t group_off = off;
@@ -482,25 +558,12 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
     const Q24Str v = Q24ReadComponent(op.key, off);
     if (op.kind == SecEdgarQ24TxnBuffer::Op::Kind::PreInsert) {
       if (in_pre(a, t, v, op.key)) continue;
-      if (!new_overlay) {
-        new_overlay = std::make_shared<Q24PreOverlay>();
-        if (pre->overlay) new_overlay->keys = pre->overlay->keys;
-      }
-      new_overlay->keys.insert(op.key);
-      if (new_overlay->keys.size() > kMaxOverlayKeys) return fallback();
+      auto &ov = mutable_overlay();
+      if (pre->base->Contains(a, t, v)) ov.removed.erase(op.key);
+      else ov.keys.insert(op.key);
+      if (ov.keys.size() + ov.removed.size() > kMaxOverlayKeys) return fallback();
       // Orphans of this triple now match a pre row: retract them.
-      if (const Q24Acc *orphan = orphans.Find(op.key)) {
-        const Q24Acc removed = *orphan;
-        const std::string gkey = op.key.substr(group_off);
-        Q24Acc *g = group_map.Find(gkey);
-        if (!g || g->cnt < removed.cnt) return fallback();
-        g->cnt -= removed.cnt;
-        g->Add(-removed.sum);
-        g->Add(-removed.comp);
-        const bool empty = g->cnt == 0;
-        orphans.Erase(op.key);
-        if (empty) group_map.Erase(gkey);
-      }
+      if (!retract_orphan(op.key, group_off)) return fallback();
       continue;
     }
     // Num row contribution.
@@ -524,6 +587,41 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
       g->Add(-op.value);
       if (o->cnt == 0) orphans.Erase(op.key);
       if (g->cnt == 0) group_map.Erase(gkey);
+    }
+  }
+
+  // Triples resolved from the tables: membership and orphans are set to the
+  // post-transaction truth.
+  for (std::size_t i = 0; i < touched_keys.size(); ++i) {
+    const std::string &key = touched_keys[i];
+    const auto &st = touched_states[i];
+    std::size_t off = 0;
+    const Q24Str a = Q24ReadComponent(key, off);
+    const std::size_t group_off = off;
+    const Q24Str t = Q24ReadComponent(key, off);
+    const Q24Str v = Q24ReadComponent(key, off);
+    const bool present = st.pre_rows > 0;
+    if (present != in_pre(a, t, v, key)) {
+      auto &ov = mutable_overlay();
+      const bool in_base = pre->base->Contains(a, t, v);
+      if (present) {
+        if (in_base) ov.removed.erase(key);
+        else ov.keys.insert(key);
+      } else {
+        if (in_base) ov.removed.insert(key);
+        else ov.keys.erase(key);
+      }
+      if (ov.keys.size() + ov.removed.size() > kMaxOverlayKeys) return fallback();
+    }
+    if (!retract_orphan(key, group_off)) return fallback();
+    if (!present && st.num_rows > 0) {
+      auto &o = orphans.GetOrCreate(key);
+      o.cnt = st.num_rows;
+      o.Add(st.num_sum);
+      auto &g = group_map.GetOrCreate(key.substr(group_off));
+      g.cnt += st.num_rows;
+      g.Add(st.num_sum);
+      if (!std::isfinite(g.Total())) return fallback();
     }
   }
 
@@ -670,7 +768,7 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
                  "(triples=%llu, adsh=%u tags=%u versions=%u pairs=%zu orphans=%zu groups=%zu)\n",
                  b.adsh.Bytes(), b.tag.Bytes(), b.version.Bytes(), b.pairs.Bytes(),
                  b.bits256.capacity() * 8, b.ids16.capacity() * 2, b.ids32.capacity() * 4,
-                 (b.off16.capacity() + b.off32.capacity()) * 4,
+                 (b.off16.capacity() + b.off32.capacity()) * 8,
                  state.groups->Bytes(), state.pre->Bytes() + state.groups->Bytes(),
                  static_cast<unsigned long long>(b.triple_count), b.adsh.size(),
                  b.tag.size(), b.version.size(), b.pairs.size(),

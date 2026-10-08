@@ -89,6 +89,27 @@ public:
     for (const auto &r : pre)
       if (r.adsh && r.tag && r.version) c({*r.adsh, *r.tag, *r.version});
   }
+  // Targeted lookup (not a rescan): post-transaction truth per triple.
+  bool LoadTripleStates(const std::vector<SecEdgarQ24TripleKey> &keys,
+                        std::vector<SecEdgarQ24TripleState> &out) override {
+    if (!use_triple_lookup) return false;
+    out.assign(keys.size(), {});
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+      for (const auto &r : pre)
+        if (r.adsh && r.tag && r.version && *r.adsh == keys[i].adsh &&
+            *r.tag == keys[i].tag && *r.version == keys[i].version)
+          out[i].pre_rows++;
+      for (const auto &r : num)
+        if (r.adsh && r.tag && r.version && *r.adsh == keys[i].adsh &&
+            *r.tag == keys[i].tag && *r.version == keys[i].version && r.uom &&
+            *r.uom == "USD" && r.ddate && *r.ddate >= 20230101 &&
+            *r.ddate <= 20231231 && r.value) {
+          out[i].num_rows++;
+          out[i].num_sum += *r.value;
+        }
+    }
+    return true;
+  }
   bool ScanQualifyingNumBatches(
       const std::function<void(const SecEdgarQ24NumBatch &)> &c) override {
     if (!use_batches) return false;
@@ -144,6 +165,7 @@ public:
   std::vector<NumRow> num;
   std::vector<PreRow> pre;
   bool use_batches = true;
+  bool use_triple_lookup = true;
   int scans = 0;
 };
 
@@ -338,6 +360,26 @@ void TestEdgeCases() {
     f.services.pre.pop_back();
     f.Txn({PreBatch(MutationKind::Delete, {{"a0", "T", "v"}}, {})});
     f.Check("last pre delete");
+    assert(f.services.scans == scans); // pre deletes never rescan
+    // Same txn: delete the (absent) triple's pre row and touch its num rows.
+    f.services.pre.push_back({"a0", "T", "v"});
+    f.Txn({PreBatch(MutationKind::Insert, {}, {f.services.pre.back()})});
+    f.Check("re-insert pre");
+    f.services.pre.pop_back();
+    NumRow extra{"a0", "T", "v", 20230601, 0, "USD", "", 7.0};
+    f.services.num.push_back(extra);
+    f.Txn({PreBatch(MutationKind::Delete, {{"a0", "T", "v"}}, {}),
+           NumBatch(MutationKind::Insert, {}, {extra})});
+    f.Check("pre delete + num insert same txn");
+    assert(f.services.scans == scans);
+    // Without the lookup hook, pre deletes fall back to a rebuild (exact).
+    f.services.use_triple_lookup = false;
+    f.services.pre.push_back({"a0", "T", "v"});
+    f.Txn({PreBatch(MutationKind::Insert, {}, {f.services.pre.back()})});
+    f.services.pre.pop_back();
+    f.Txn({PreBatch(MutationKind::Delete, {{"a0", "T", "v"}}, {})});
+    f.Check("pre delete without lookup hook");
+    assert(f.services.scans > scans);
   }
   // Non-finite values: maintained via rebuild, still exact.
   {

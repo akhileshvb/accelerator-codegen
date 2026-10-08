@@ -56,6 +56,21 @@ struct SecEdgarQ24PreBatch {
   const Q24Str *version = nullptr;
 };
 
+// Post-transaction truth for one (adsh, tag, version) triple, read from the
+// base tables: the number of pre rows with this triple, and the qualifying
+// num rows (uom = USD, ddate in range, value IS NOT NULL) with this triple.
+struct SecEdgarQ24TripleKey {
+  std::string adsh;
+  std::string tag;
+  std::string version;
+};
+
+struct SecEdgarQ24TripleState {
+  int64_t pre_rows = 0;
+  int64_t num_rows = 0;
+  double num_sum = 0.0;
+};
+
 class SecEdgarQ24InitialScan {
 public:
   virtual ~SecEdgarQ24InitialScan() = default;
@@ -75,6 +90,14 @@ public:
   }
   virtual bool ScanPreBatches(
       const std::function<void(const SecEdgarQ24PreBatch &)> &) {
+    return false;
+  }
+  // Optional: targeted lookups used by incremental pre DELETE / key UPDATE
+  // (a removed pre triple can turn matched num rows into orphans, whose values
+  // were not kept). Must see the committing transaction's own writes. Return
+  // false when unsupported (the module then rebuilds).
+  virtual bool LoadTripleStates(const std::vector<SecEdgarQ24TripleKey> &,
+                                std::vector<SecEdgarQ24TripleState> &) {
     return false;
   }
 };
@@ -120,7 +143,9 @@ BuildSecEdgarQ24Output(const SecEdgarQ24State &);
 class SecEdgarQ24TxnBuffer final : public core::AuxTxnBuffer {
 public:
   struct Op {
-    enum class Kind : uint8_t { Num, PreInsert } kind = Kind::Num;
+    // PreTouch: a pre row with this triple was deleted / re-keyed; the
+    // triple is resolved from the base tables at Stage.
+    enum class Kind : uint8_t { Num, PreInsert, PreTouch } kind = Kind::Num;
     int8_t sign = 0;
     double value = 0.0;
     // enc(adsh) enc(tag) enc(version)
@@ -146,6 +171,9 @@ public:
   // Maximum number of pre triples kept in the post-build overlay before a
   // rebuild folds them into the immutable base.
   static constexpr std::size_t kMaxOverlayKeys = 8192;
+  // Maximum distinct triples one transaction may resolve through table lookups
+  // (pre DELETE / key UPDATE) before falling back to a rebuild.
+  static constexpr std::size_t kMaxTouchedTriples = 256;
 
   explicit SecEdgarQ24Module(SecEdgarQ24Config config,
                              SecEdgarQ24InitialScan *initial_scan = nullptr)
