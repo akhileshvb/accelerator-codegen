@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <map>
 #include <optional>
 #include <random>
@@ -94,6 +95,8 @@ inline std::string Q(const std::optional<std::string> &s) { return s ? Q(*s) : "
 inline std::string Q(const std::optional<int32_t> &v) { return v ? std::to_string(*v) : "NULL"; }
 inline std::string Q(const std::optional<double> &v) {
   if (!v) return "NULL";
+  if (std::isnan(*v)) return "CAST('NaN' AS DOUBLE)";
+  if (std::isinf(*v)) return *v > 0 ? "CAST('Infinity' AS DOUBLE)" : "CAST('-Infinity' AS DOUBLE)";
   char buf[64];
   std::snprintf(buf, sizeof(buf), "%.17g", *v);
   std::string s = buf;
@@ -178,7 +181,9 @@ inline std::vector<OutRow> Oracle(const Db &db) {
                    static_cast<long double>(acc.sum), static_cast<long double>(acc.sum / acc.count)});
   }
   std::sort(out.begin(), out.end(), [](const OutRow &a, const OutRow &b) {
-    if (a.total != b.total) return a.total > b.total;
+    const bool an = std::isnan(a.total), bn = std::isnan(b.total);
+    if (an != bn) return an; // NaN sorts as the largest value (DuckDB)
+    if (!an && a.total != b.total) return a.total > b.total;
     if (a.sic != b.sic) return a.sic < b.sic;
     return a.tlabel < b.tlabel; // NULL first (matches the module)
   });
@@ -191,6 +196,8 @@ struct Config {
   enum class Flavor { Narrow, Wide, Limit } flavor = Flavor::Narrow;
   bool big_values = true;      // include 1e12-scale values (mock test only)
   bool unique_sums = false;    // fine-grained values so group totals never tie
+  bool wide_keys = false;      // cik values spread over the whole int32 range (negative, huge)
+  bool nonfinite = false;      // +-inf / NaN / 1e300-scale values in num.value
   int adsh = 70, tags = 30, versions = 2, tlabels = 6, ciks = 12, num_rows = 4000, pre_rows = 900;
   std::vector<int> sics;
 };
@@ -211,7 +218,22 @@ struct Model {
 
   int Int(int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); }
   bool Coin(double p) { return std::uniform_real_distribution<double>(0, 1)(rng) < p; }
+  // Distinct n give distinct ciks; with wide_keys they cover the int32 range.
+  int32_t Cik(int n) const {
+    if (!cfg.wide_keys) return 100 + n;
+    return static_cast<int32_t>(static_cast<uint32_t>(n + 1) * 0x9E3779B1u);
+  }
   double Value() {
+    if (cfg.nonfinite && Coin(0.03)) {
+      switch (Int(0, 5)) {
+      case 0: return std::numeric_limits<double>::infinity();
+      case 1: return -std::numeric_limits<double>::infinity();
+      case 2: return std::numeric_limits<double>::quiet_NaN();
+      case 3: return 1e300 * Int(1, 9);
+      case 4: return -1e300 * Int(1, 9);
+      default: return 5e-324 * Int(1, 99); // subnormal
+      }
+    }
     if (cfg.unique_sums) {
       return static_cast<double>(Int(-2000000000, 2000000000)) * 1e-6;
     }
@@ -272,11 +294,11 @@ struct Model {
     for (int a = 0; a < cfg.adsh; ++a) {
       SubRow s;
       s.adsh = Adsh(a);
-      s.cik = Coin(0.04) ? std::nullopt : std::optional<int32_t>(100 + Int(0, cfg.ciks - 1));
+      s.cik = Coin(0.04) ? std::nullopt : std::optional<int32_t>(Cik(Int(0, cfg.ciks - 1)));
       s.sic = Coin(0.04) ? std::nullopt : std::optional<int32_t>(PickSic());
       s.name = "n";
       if (limit) {
-        s.cik = 1000 + a;
+        s.cik = Cik(1000 + a);
         s.sic = 4000 + a / 2;
       }
       db.sub.push_back(s);
@@ -509,7 +531,7 @@ struct Model {
         SubRow s;
         s.adsh = Adsh(Int(0, cfg.adsh + 15));
         if (exists(s.adsh)) return false;
-        s.cik = Coin(0.05) ? std::nullopt : std::optional<int32_t>(100 + Int(0, cfg.ciks + 2));
+        s.cik = Coin(0.05) ? std::nullopt : std::optional<int32_t>(Cik(Int(0, cfg.ciks + 2)));
         s.sic = Coin(0.05) ? std::nullopt : std::optional<int32_t>(PickSic());
         s.name = "n";
         db.sub.push_back(s);
@@ -535,7 +557,7 @@ struct Model {
           set = "sic = " + Q(row.sic);
           break;
         case 1:
-          row.cik = Coin(0.1) ? std::nullopt : std::optional<int32_t>(100 + Int(0, cfg.ciks + 2));
+          row.cik = Coin(0.1) ? std::nullopt : std::optional<int32_t>(Cik(Int(0, cfg.ciks + 2)));
           b.updated_columns = {1};
           set = "cik = " + Q(row.cik);
           break;

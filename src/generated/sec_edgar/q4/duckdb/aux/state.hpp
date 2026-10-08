@@ -80,6 +80,11 @@ struct SecEdgarQ4DD {
 
 inline void Q4DDAdd(double &hi, double &lo, double x) {
   const double s = hi + x;
+  if (!std::isfinite(s)) { // inf / NaN / overflow: IEEE result, no error term
+    hi = s;
+    lo = 0.0;
+    return;
+  }
   const double bb = s - hi;
   const double err = (hi - (s - bb)) + (x - bb);
   const double l = lo + err;
@@ -97,6 +102,10 @@ inline void Q4DDAddScaled(double &hi, double &lo, double x, double m) {
     Q4DDAdd(hi, lo, -x);
   } else {
     const double p = x * m;
+    if (!std::isfinite(p)) {
+      Q4DDAdd(hi, lo, p);
+      return;
+    }
     const double e = std::fma(x, m, -p);
     Q4DDAdd(hi, lo, p);
     Q4DDAdd(hi, lo, e);

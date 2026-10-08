@@ -213,6 +213,8 @@ int RunSynthetic(int seeds, int steps, bool parallel) {
     auto cfg = q4gen::MakeConfig(seed, limit_case);
     cfg.big_values = false;   // keep cancellation noise below the 1e-6 comparison
     cfg.unique_sums = true;   // no exact ties => ORDER BY is deterministic
+    cfg.wide_keys = seed % 2 == 1;                  // negative / huge cik values
+    cfg.nonfinite = !limit_case && seed % 3 != 0;   // inf, NaN, 1e300, subnormals
     q4gen::Model model(static_cast<uint64_t>(seed) * 104729, cfg);
     duckdb::DuckDB db(nullptr);
     duckdb::Connection con(db);
@@ -255,7 +257,7 @@ int RunSynthetic(int seeds, int steps, bool parallel) {
     total_rebuilds += rebuilt;
     std::cerr << "synthetic seed " << seed << (parallel ? " (parallel)" : "") << ": " << steps
               << " txns ok (avg_result_rows=" << result_rows / steps << " incremental=" << incremental << " rebuilds=" << rebuilt << ")\n";
-    Require(rebuilt <= steps / 20, "too many rebuilds");
+    Require(rebuilt <= (cfg.nonfinite ? steps / 2 : steps / 20), "too many rebuilds");
   }
   return total_rebuilds;
 }

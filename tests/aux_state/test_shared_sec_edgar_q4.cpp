@@ -132,6 +132,8 @@ public:
 };
 
 bool Close(long double a, long double b) {
+  if (std::isnan(a) || std::isnan(b)) return std::isnan(a) && std::isnan(b);
+  if (std::isinf(a) || std::isinf(b)) return a == b;
   const long double scale = std::max<long double>({1.0L, std::fabsl(a), std::fabsl(b)});
   return std::fabsl(a - b) <= scale * 1e-9L;
 }
@@ -199,7 +201,10 @@ int main(int argc, char **argv) {
 
   for (int seed = 1; seed <= seeds + 1; ++seed) {
     const bool limit_case = seed == seeds + 1; // > 500 qualifying groups
-    q4gen::Model model(static_cast<uint64_t>(seed) * 7919, q4gen::MakeConfig(seed, limit_case));
+    auto config = q4gen::MakeConfig(seed, limit_case);
+    config.wide_keys = seed % 2 == 1;                       // negative / huge cik values
+    config.nonfinite = !limit_case && seed % 3 != 0;        // inf, NaN, 1e300, subnormals
+    q4gen::Model model(static_cast<uint64_t>(seed) * 7919, config);
     model.Init();
     Db &db = model.db;
 
@@ -256,7 +261,8 @@ int main(int argc, char **argv) {
               << " rebuilds=" << rebuilt << " initial_builds=" << builds_after_initial
               << " avg_result_rows=" << result_rows_total / steps << ")\n";
     // Everything except parse failures / oversized batches stays incremental.
-    assert(rebuilt <= steps / 20);
+    // Non-finite data (inf/NaN cannot be subtracted back out) legitimately rebuilds.
+    assert(rebuilt <= (config.nonfinite ? steps / 2 : steps / 20));
   }
 
 // ---- targeted: pre/sub/tag/num edge cases against the oracle

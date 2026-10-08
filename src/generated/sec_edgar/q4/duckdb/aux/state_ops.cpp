@@ -62,6 +62,9 @@ void Flat::PairAdd(uint32_t group, uint32_t cik_id, int64_t delta) {
 void Flat::Contribute(const SecEdgarQ4Entry &e, int sign) {
   auto &g = groups[e.group];
   const double m = static_cast<double>(e.mult) * sign;
+  if (sign < 0 && (!std::isfinite(e.ns_hi) || !std::isfinite(g.hi))) {
+    bad = true; // an inf/NaN contribution cannot be subtracted back out
+  }
   Q4DDAddScaled(g.hi, g.lo, e.ns_hi, m);
   Q4DDAddScaled(g.hi, g.lo, e.ns_lo, m);
   const int64_t rows = static_cast<int64_t>(e.mult) * e.nc * sign;
@@ -289,6 +292,9 @@ bool CowApplier::Apply(std::string_view adsh, std::string_view tag,
     gshard = std::make_shared<SecEdgarQ4GroupShard>(*groups.gshards[gs]);
   }
   const double m = static_cast<double>(e.mult) * sign;
+  if (!std::isfinite(gshard->sum_hi[gi])) {
+    return false; // non-finite group sum: only a rebuild can change it back
+  }
   Q4DDAddScaled(gshard->sum_hi[gi], gshard->sum_lo[gi], value, m);
   const int64_t rows = static_cast<int64_t>(e.mult) * sign;
   gshard->count[gi] += rows;
