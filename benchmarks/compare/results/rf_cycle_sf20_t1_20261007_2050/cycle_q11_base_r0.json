@@ -1,0 +1,170 @@
+{
+ "mode": "cycle",
+ "phase": "base",
+ "accel": "tpch:11",
+ "build_ms": 0.0,
+ "rss_mb_after_build": 0.0,
+ "pairs": 1,
+ "burst": 8,
+ "rf_source": "tpch_update_sets",
+ "rf_sets_loaded": 5,
+ "rf_orders_per_set": 30000,
+ "rf_orders_used": 30000,
+ "before": {
+  "first_read_us": 322462.156,
+  "read_p50_us": 262731.432,
+  "read_p99_us": 322462.156,
+  "read_mean_us": 262606.68825,
+  "reads": 8
+ },
+ "writes": [
+  {
+   "kind": "rf1",
+   "slot_end": false,
+   "commit_us": 284792.472,
+   "first_read_us": 243771.876,
+   "read_p50_us": 242502.618,
+   "read_p99_us": 250467.054,
+   "read_mean_us": 243268.165625,
+   "reads": 8
+  },
+  {
+   "kind": "supplier update",
+   "slot_end": false,
+   "commit_us": 2065.021,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  },
+  {
+   "kind": "part delete",
+   "slot_end": false,
+   "commit_us": 1341.581,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  },
+  {
+   "kind": "part insert",
+   "slot_end": false,
+   "commit_us": 2929.553,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  },
+  {
+   "kind": "supplier delete",
+   "slot_end": false,
+   "commit_us": 22191.182,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  },
+  {
+   "kind": "supplier insert",
+   "slot_end": false,
+   "commit_us": 46160.246,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  },
+  {
+   "kind": "partsupp update",
+   "slot_end": true,
+   "commit_us": 1128.369,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  },
+  {
+   "kind": "rf2",
+   "slot_end": false,
+   "commit_us": 15427.578,
+   "first_read_us": 251167.174,
+   "read_p50_us": 251167.174,
+   "read_p99_us": 260589.6,
+   "read_mean_us": 251270.163125,
+   "reads": 8
+  },
+  {
+   "kind": "supplier update",
+   "slot_end": false,
+   "commit_us": 1512.021,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  },
+  {
+   "kind": "part delete",
+   "slot_end": false,
+   "commit_us": 1290.898,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  },
+  {
+   "kind": "part insert",
+   "slot_end": false,
+   "commit_us": 1952.178,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  },
+  {
+   "kind": "supplier delete",
+   "slot_end": false,
+   "commit_us": 21176.47,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  },
+  {
+   "kind": "supplier insert",
+   "slot_end": false,
+   "commit_us": 29969.086,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  },
+  {
+   "kind": "partsupp update",
+   "slot_end": true,
+   "commit_us": 1078.244,
+   "first_read_us": 0.0,
+   "read_p50_us": 0.0,
+   "read_p99_us": 0.0,
+   "read_mean_us": 0.0,
+   "reads": 0
+  }
+ ],
+ "mismatches": 0,
+ "wall_s": 15.0,
+ "query": 11,
+ "system": "base",
+ "rep": 0,
+ "seed": 2933534807,
+ "sf": 20.0,
+ "threads": 1
+}

@@ -60,6 +60,17 @@ std::string SharedCostModelConfigPath(SharedWorkloadKind workload, int query_id)
   const char *db_label = std::getenv("ACCEL_AUX_BENCH_DB_LABEL");
   const bool sf20 = db_label && std::string(db_label) == "tpch_sf20";
   if (workload == SharedWorkloadKind::Tpch) {
+    // ACCEL_AUX_COST_MODEL_DIR: a directory of per-query models (e.g. config/verus for the Verus kits), searched
+    // first with the same names; a query it has no model for falls back to config/
+    if (const char *dir = std::getenv("ACCEL_AUX_COST_MODEL_DIR"); dir && *dir) {
+      const auto stem = std::string(dir) + "/q" + std::to_string(query_id) + "_aux_cost_model";
+      if (sf20 && std::filesystem::exists(stem + "_sf20.json")) {
+        return stem + "_sf20.json";
+      }
+      if (std::filesystem::exists(stem + ".json")) {
+        return stem + ".json";
+      }
+    }
     if (sf20) {
       const auto sf20_path =
           "config/q" + std::to_string(query_id) + "_aux_cost_model_sf20.json";

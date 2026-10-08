@@ -534,11 +534,42 @@ private:
   uint64_t seq = 0, rf = 0, rf1 = 0, dim = 0;
 };
 
+// One plain-SQL write transaction (the baseline's commit): the statements of `sql` one by one in a single
+// transaction, so each INSERT / UPDATE / DELETE reports its row count; returns the rows touched.
+uint64_t PlainWrite(duckdb::Connection &c, const std::string &sql) {
+  c.BeginTransaction();
+  uint64_t rows = 0;
+  try {
+    for (auto &statement : c.ExtractStatements(sql)) {
+      auto r = c.Query(std::move(statement));
+      if (!r || r->HasError())
+        throw std::runtime_error(r ? r->GetError() : "null result");
+      if (r->ColumnCount() == 1 && r->RowCount() == 1 && r->names[0] == "Count")
+        rows += static_cast<uint64_t>(r->GetValue(0, 0).GetValue<int64_t>());
+    }
+  } catch (...) {
+    if (c.HasActiveTransaction())
+      c.Rollback();
+    throw;
+  }
+  c.Commit();
+  return rows;
+}
+
 // ACCEL_COMPARE_DUCKDB_THREADS=N: DuckDB's thread count (default: its own, all cores).  A process-wide setting: it
 // limits the baseline queries and also the base-table scans the accelerators' builds and maintenance run through
-// DuckDB.  (The accelerators' own read kernels are single-threaded, except Q13's; ACCEL_Q13_THREADS caps that.)
+// DuckDB.  (The accelerators' own read kernels are all single-threaded.)
 void ApplyDuckdbThreads(duckdb::Connection &c) {
   if (const char *n = std::getenv("ACCEL_COMPARE_DUCKDB_THREADS"); n && *n) {
+    auto r = c.Query(std::string("SET threads = ") + n);
+    Require(r && !r->HasError(), r ? r->GetError() : "SET threads");
+  }
+}
+
+// ACCEL_COMPARE_DUCKDB_BUILD_THREADS=N (multi): DuckDB's thread count while the accelerators are built, outside the
+// measured runs; ACCEL_COMPARE_DUCKDB_THREADS applies again once they are built.
+void ApplyDuckdbBuildThreads(duckdb::Connection &c) {
+  if (const char *n = std::getenv("ACCEL_COMPARE_DUCKDB_BUILD_THREADS"); n && *n) {
     auto r = c.Query(std::string("SET threads = ") + n);
     Require(r && !r->HasError(), r ? r->GetError() : "SET threads");
   }
@@ -599,6 +630,8 @@ int Read(const std::string &path, const std::string &id, const std::string &base
             << ",\"cases\":" << per << "]}" << std::endl;
   return 0;
 }
+
+double Mean(const std::vector<double> &v); // defined below
 
 int Concurrent(const std::string &path, const std::string &id, const std::string &base_kit,
                const std::vector<Case> &cases, const std::string &phase, int readers, double seconds,
@@ -671,32 +704,35 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
   }
   // the writer: this thread
   std::vector<double> commit_us;
-  std::map<std::string, uint64_t> maintenance, write_kinds, maintenance_by_kind;
+  std::map<std::string, uint64_t> maintenance, write_kinds, maintenance_by_kind, rows_by_kind;
   std::string slowest; // the slowest commit's write kind and maintenance action
   double slowest_us = 0;
-  uint64_t write_errors = 0, measured_writes = 0, total_writes = 0;
+  uint64_t write_errors = 0, measured_writes = 0, total_writes = 0, measured_rows = 0, total_rows = 0,
+           measured_slots = 0;
   double max_commit_us = 0;
   std::string write_error_example;
   if (writes_per_sec > 0) {
+    // writes_per_sec paces refresh SLOTS: with ACCEL_DIM_AFTER_RF a slot is an RF commit plus the point writes
+    // after it (unpaced, completed after the deadline), otherwise every write is a slot
     const auto interval = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / writes_per_sec));
     auto next = start;
-    while (Clock::now() < deadline) {
-      std::this_thread::sleep_until(next);
-      next = std::max(next + interval, Clock::now()); // open loop, but no catch-up burst after a slow commit
-      if (Clock::now() >= deadline)
-        break;
+    while (Clock::now() < deadline || !writes.NextIsPaced()) {
+      const bool slot_start = writes.NextIsPaced();
+      if (slot_start) {
+        std::this_thread::sleep_until(next);
+        next = std::max(next + interval, Clock::now()); // open loop, but no catch-up burst after a slow commit
+        if (Clock::now() >= deadline)
+          break;
+      }
       const auto [kind, sql] = writes.Next();
       const auto t0 = Clock::now();
       core::ClearMaintenanceDecisionLog();
+      uint64_t rows = 0;
       try {
         if (accel) {
-          rt->ApplyWrite(sql);
+          rows = rt->ApplyWrite(sql);
         } else {
-          auto res = wc.Query("BEGIN; " + sql + "; COMMIT;");
-          if (res && res->HasError()) {
-            wc.Query("ROLLBACK");
-            throw std::runtime_error(res->GetError());
-          }
+          rows = PlainWrite(wc, sql);
         }
       } catch (const std::exception &e) {
         if (++write_errors == 1)
@@ -704,6 +740,12 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
         continue;
       }
       const auto t1 = Clock::now();
+      total_rows += rows;
+      rows_by_kind[kind] += rows;
+      if (slot_start && t0 >= measure_from)
+        ++measured_slots;
+      if (t0 >= measure_from)
+        measured_rows += rows;
       // every write (warmup too) counts for what the writes did to the state;
       // latency and rate only over the measured window
       ++total_writes;
@@ -746,18 +788,26 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
   }
   for (const auto &[k, v] : write_kinds)
     kjson += (kjson.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(v);
+  std::string rjson = "{"; // rows touched per write kind (the whole run)
+  for (const auto &[k, v] : rows_by_kind)
+    rjson += (rjson.size() > 1 ? "," : "") + Json(k) + ":" + std::to_string(v);
   std::cout << "{\"mode\":\"concurrent\",\"phase\":" << Json(phase) << ",\"accel\":" << Json(id)
             << ",\"store\":" << Json(!accel ? "none" : rt->UsesVerusStore() ? "verus" : "cpp")
             << ",\"readers\":" << readers << ",\"seconds\":" << seconds << ",\"build_ms\":" << build_ms
             << ",\"reads\":" << latencies.size() << ",\"qps\":" << latencies.size() / seconds
             << ",\"read_p50_us\":" << Percentile(latencies, 0.5) << ",\"read_p95_us\":" << Percentile(latencies, 0.95)
-            << ",\"read_p99_us\":" << Percentile(latencies, 0.99) << ",\"read_errors\":" << read_errors
+            << ",\"read_p99_us\":" << Percentile(latencies, 0.99) << ",\"read_mean_us\":" << Mean(latencies)
+            << ",\"read_errors\":" << read_errors
             << ",\"read_error_example\":" << Json(read_error_example.substr(0, 300))
             << ",\"rf_batch_orders\":" << RfBatchOrders() << "," << writes.RfInfoJson() << ",\"rf_only\":" << (RfOnly() ? "true" : "false") << ",\"dim_after_rf\":" << (DimAfterRf() ? "true" : "false") << ",\"writes_per_sec_target\":" << writes_per_sec << ",\"writes\":" << measured_writes
-            << ",\"writes_per_sec\":" << measured_writes / seconds << ",\"commit_p50_us\":" << Percentile(commit_us, 0.5)
-            << ",\"commit_p99_us\":" << Percentile(commit_us, 0.99)
+            << ",\"writes_per_sec\":" << measured_writes / seconds << ",\"slots\":" << measured_slots
+            << ",\"slots_per_sec\":" << measured_slots / seconds << ",\"rows_touched\":" << measured_rows
+            << ",\"rows_touched_per_sec\":" << measured_rows / seconds << ",\"rows_touched_total\":" << total_rows
+            << ",\"commit_p50_us\":" << Percentile(commit_us, 0.5)
+            << ",\"commit_p99_us\":" << Percentile(commit_us, 0.99) << ",\"commit_mean_us\":" << Mean(commit_us)
+            << ",\"commit_sum_us\":" << Mean(commit_us) * static_cast<double>(commit_us.size())
             << ",\"writes_total\":" << total_writes << ",\"max_commit_us\":" << max_commit_us << ",\"write_errors\":" << write_errors
-            << ",\"write_error_example\":" << Json(write_error_example.substr(0, 300)) << ",\"write_kinds\":" << kjson
+            << ",\"write_error_example\":" << Json(write_error_example.substr(0, 300)) << ",\"write_kinds\":" << kjson << "},\"rows_by_kind\":" << rjson
             << "},\"maintenance\":" << mjson << "},\"maintenance_by_kind\":" << bjson
             << "},\"slowest_commit\":" << Json(slowest) << ",\"invalidating_writes\":" << invalidating
             << ",\"answers_changed\":" << changed << ",\"cases\":" << cases.size() << ",\"hits\":" << counts.hit
@@ -889,6 +939,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
   std::string builds = "{", build_rss = "{";
   double build_ms_total = 0;
   if (accel) {
+    ApplyDuckdbBuildThreads(qc);
     for (auto &m : specs) {
       m.fn = FunctionFor(m.id);
       runtimes.push_back(std::make_unique<DuckdbRuntime>(wc, EntryFor(m.id), 10.0));
@@ -906,6 +957,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
                 << peak / 1024 << " GB)" << std::endl;
       live.push_back(runtimes.back().get());
     }
+    ApplyDuckdbThreads(qc);
   }
   builds += "}";
   build_rss += "}";

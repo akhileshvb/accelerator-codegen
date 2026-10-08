@@ -1,0 +1,12 @@
+parameter draws: 3 repetition(s) x 8 sets, seeds 694380215..694380217
+concurrent q1 base rep 0 21:47:51
+  qps 1.7  p50 4663.55ms p99 4735.03ms  writes 28 (0.1/s; 35 incl. warmup) commit p50 2.77ms p99 400.64ms max 400.6ms  slots 4 (0.0167/s) rows touched 600883 (2504/s)
+concurrent q1 cpp rep 0 21:54:15
+  qps 33408.3  p50 0.24ms p99 0.28ms  writes 28 (0.1/s; 35 incl. warmup) commit p50 2.09ms p99 652.09ms max 652.1ms  slots 4 (0.0167/s) rows touched 600883 (2504/s)  invalidating 5  maint {'ApplyDelta': 5, 'none': 30}  hits 9877064 fallbacks 0  slowest commit: rf2: ApplyDelta
+concurrent q2 base rep 0 22:00:43
+  qps 21.0  p50 379.74ms p99 393.73ms  writes 28 (0.1/s; 35 incl. warmup) commit p50 2.59ms p99 383.93ms max 383.9ms  slots 4 (0.0167/s) rows touched 600883 (2504/s)
+concurrent q2 cpp rep 0 22:06:07
+  qps 24784.5  p50 0.32ms p99 0.37ms  writes 28 (0.1/s; 35 incl. warmup) commit p50 4.94ms p99 418.21ms max 418.2ms  slots 4 (0.0167/s) rows touched 600883 (2504/s)  invalidating 30  maint {'ApplyDelta': 30, 'none': 5}  hits 7429904 fallbacks 0  slowest commit: rf1: none
+concurrent q3 base rep 0 22:11:40
+  qps 3.3  p50 2412.47ms p99 2456.36ms  writes 28 (0.1/s; 35 incl. warmup) commit p50 3.62ms p99 393.22ms max 393.2ms  slots 4 (0.0167/s) rows touched 600883 (2504/s)
+concurrent q3 cpp rep 0 22:17:34

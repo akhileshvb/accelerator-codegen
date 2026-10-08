@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -33,7 +34,7 @@ bool IsFlatAllValid(duckdb::Vector &vector) {
 class QualifyingOrderKeySet {
 public:
 	QualifyingOrderKeySet() {
-		EnsureCapacity(6000000);
+		EnsureCapacity(1 << 20);
 	}
 
 	void Insert(int64_t orderkey) {
@@ -48,19 +49,24 @@ public:
 		words[key >> 6] |= (uint64_t {1} << (key & 63));
 	}
 
+	//! Grow the bitmap so that key max_key is addressable (doubling; amortized linear).
+	void EnsureForKey(uint64_t max_key) {
+		EnsureCapacity(max_key);
+	}
+
 	bool Contains(int64_t orderkey) const {
 		if (orderkey < 0) {
-			return overflow.find(orderkey) != overflow.end();
+			return !overflow.empty() && overflow.find(orderkey) != overflow.end();
 		}
 		const auto key = static_cast<uint64_t>(orderkey);
 		const auto word_index = key >> 6;
 		if (word_index >= words.size()) {
-			return overflow.find(orderkey) != overflow.end();
+			return !overflow.empty() && overflow.find(orderkey) != overflow.end();
 		}
 		if ((words[word_index] & (uint64_t {1} << (key & 63))) != 0) {
 			return true;
 		}
-		return overflow.find(orderkey) != overflow.end();
+		return !overflow.empty() && overflow.find(orderkey) != overflow.end();
 	}
 
 	uint64_t *Words() {
@@ -87,6 +93,38 @@ public:
 	}
 
 	//! Bitmap word storage bytes (excludes overflow set).
+	//! Cheap parallel merge: each thread ORs a disjoint word range across all sources.
+	template <class Workers>
+	void MergeParallel(const Workers &sources, std::size_t thread_count) {
+		std::size_t max_words = words.size();
+		for (const auto &w : sources) {
+			max_words = std::max(max_words, w.value.words.size());
+			overflow.insert(w.value.overflow.begin(), w.value.overflow.end());
+		}
+		words.resize(max_words, 0);
+		thread_count = std::max<std::size_t>(1, std::min(thread_count, max_words / 16384 + 1));
+		auto run = [&](std::size_t t) {
+			const std::size_t lo = max_words * t / thread_count;
+			const std::size_t hi = max_words * (t + 1) / thread_count;
+			uint64_t *dst = words.data();
+			for (const auto &w : sources) {
+				const std::size_t end = std::min(hi, w.value.words.size());
+				const uint64_t *src = w.value.words.data();
+				for (std::size_t i = lo; i < end; i++) {
+					dst[i] |= src[i];
+				}
+			}
+		};
+		std::vector<std::thread> threads;
+		for (std::size_t t = 1; t < thread_count; t++) {
+			threads.emplace_back(run, t);
+		}
+		run(0);
+		for (auto &th : threads) {
+			th.join();
+		}
+	}
+
 	size_t BitmapBytes() const {
 		return words.size() * sizeof(uint64_t);
 	}
@@ -163,6 +201,7 @@ public:
 				                     auto commitdates = duckdb::FlatVector::GetData<duckdb::date_t>(commitdate_vector);
 				                     auto receiptdates =
 				                         duckdb::FlatVector::GetData<duckdb::date_t>(receiptdate_vector);
+				                     local.EnsureForKey(q4simd::MaxDenseKey(orderkeys, input.size(), 1'000'000'000));
 				                     q4simd::MarkLess(orderkeys, reinterpret_cast<const int32_t *>(commitdates),
 				                                      reinterpret_cast<const int32_t *>(receiptdates), input.size(),
 				                                      local.Words(), local.CapacityBits(),
@@ -209,9 +248,7 @@ public:
 
 		const auto or_t0 = clock::now();
 		QualifyingOrderKeySet qualifying_orderkeys;
-		for (const auto &w : lineitem_workers) {
-			qualifying_orderkeys.OrFrom(w.value);
-		}
+		qualifying_orderkeys.MergeParallel(lineitem_workers, worker_count);
 		profile_or_reduce_ns =
 		    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - or_t0).count();
 

@@ -192,29 +192,43 @@ public:
 		words[orderkey >> 6] |= (uint64_t {1} << (orderkey & 63));
 	}
 
+	//! Grow the dense storage so that key max_key is addressable (doubling; amortized linear).
+	void EnsureForKey(uint64_t max_key) {
+		if (use_overflow_only) {
+			return;
+		}
+		if (storage == Storage::Bytes) {
+			if (max_key >= byte_capacity) {
+				EnsureByteCapacity(max_key);
+			}
+		} else if ((max_key >> 6) >= capacity_words) {
+			EnsureCapacity(max_key);
+		}
+	}
+
 	bool Contains(int64_t orderkey) const {
 		if (orderkey < 0) {
-			return overflow.find(orderkey) != overflow.end();
+			return !overflow.empty() && overflow.find(orderkey) != overflow.end();
 		}
 		const auto key = static_cast<uint64_t>(orderkey);
 		if (storage == Storage::Bytes) {
 			if (key < byte_capacity && bytes[key]) {
 				return true;
 			}
-			return overflow.find(orderkey) != overflow.end();
+			return !overflow.empty() && overflow.find(orderkey) != overflow.end();
 		}
 		if (use_overflow_only) {
-			return overflow.find(orderkey) != overflow.end();
+			return !overflow.empty() && overflow.find(orderkey) != overflow.end();
 		}
 		const auto word_index = key >> 6;
 		if (word_index >= words.size()) {
-			return overflow.find(orderkey) != overflow.end();
+			return !overflow.empty() && overflow.find(orderkey) != overflow.end();
 		}
 		const auto mask = uint64_t {1} << (key & 63);
 		if ((words[word_index] & mask) != 0) {
 			return true;
 		}
-		return overflow.find(orderkey) != overflow.end();
+		return !overflow.empty() && overflow.find(orderkey) != overflow.end();
 	}
 
 	duckdb::idx_t Size() const {
@@ -730,6 +744,7 @@ void Q4Kernel::ConsumeLineitemFlatHot(duckdb::DataChunk &input) {
 	const bool word_batch = state->config.word_batch && inline_bitmap;
 	const bool twopass = state->config.twopass;
 	const bool branchless = state->config.branchless && inline_bitmap;
+	set.EnsureForKey(q4simd::MaxDenseKey(orderkeys, count, 1'000'000'000));
 	const auto capacity_words = set.CapacityWords();
 	const auto byte_capacity = set.ByteCapacity();
 

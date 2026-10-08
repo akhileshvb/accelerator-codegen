@@ -1,0 +1,2 @@
+out=/home/akhilvb/accelerator-codegen/benchmarks/compare/results/rf_interval_sf20_20261007_214749 sf=20 intervals=[60 30 15 10 5] readers=8 systems=cpp repeats=3 sets=8 seed=694380215 rf_sets=40 start=Wed Oct  7 09:47:49 PM EDT 2026
+=== T=60s (wps=0.016666666666666666, 240s per run) start 21:47:49

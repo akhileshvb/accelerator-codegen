@@ -10,6 +10,18 @@
 namespace accelerator_codegen {
 namespace q4simd {
 
+//! Largest key in [0, max_dense_key] among keys[0..n) (0 if none): used to grow dense structures
+//! to the real key range before marking.  Out-of-range/negative keys are ignored (overflow path).
+inline uint64_t MaxDenseKey(const int64_t *ACCEL_RESTRICT keys, std::size_t n, uint64_t max_dense_key) {
+	uint64_t best = 0;
+	for (std::size_t i = 0; i < n; i++) {
+		const uint64_t k = static_cast<uint64_t>(keys[i]);
+		const uint64_t v = k <= max_dense_key ? k : 0;
+		best = v > best ? v : best;
+	}
+	return best;
+}
+
 //! words must hold at least limit_keys bits.  Keys outside [0, limit_keys) of qualifying rows are
 //! handed to slow(key) (overflow path); non-qualifying rows are ignored whatever their key.
 template <class SlowFn>

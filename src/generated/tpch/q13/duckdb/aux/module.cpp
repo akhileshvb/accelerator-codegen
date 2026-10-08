@@ -4,8 +4,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
-#include <thread>
 #include <functional>
 #include <cctype>
 #include <cstdlib>
@@ -207,66 +205,13 @@ const char *SegFind(const char *t, std::size_t n, const TpchQ13Like::Seg &s) {
   return nullptr;
 }
 
-// ── Parallel helpers ────────────────────────────────────────────────────────
-unsigned QThreads() {
-  if (const char *v = std::getenv("ACCEL_Q13_THREADS")) {
-    const long x = std::atol(v);
-    if (x >= 1)
-      return static_cast<unsigned>(x);
-  }
-  static const unsigned hw = std::max(
-      1u, std::min(32u, std::thread::hardware_concurrency()
-                            ? std::thread::hardware_concurrency()
-                            : 4u));
-  return hw;
-}
-
-// Extra worker threads in flight across all queries: concurrent readers share
-// one budget instead of each spawning a full set (which would oversubscribe the
-// machine and slow writers).  A query running alone gets all it wants; otherwise it takes half of what is free.
-std::atomic<int> g_extra_threads{0};
-
-unsigned AcquireExtra(unsigned want) {
-  const int cap = static_cast<int>(QThreads()) - 1;
-  int cur = g_extra_threads.load(std::memory_order_relaxed);
-  for (;;) {
-    const int free = cap - cur;
-    // alone: everything wanted; when others are running: half of what is free
-    const int share = cur == 0 ? free : (free + 1) / 2;
-    const int take = std::min<int>(static_cast<int>(want), share);
-    if (take <= 0)
-      return 0;
-    if (g_extra_threads.compare_exchange_weak(cur, cur + take))
-      return static_cast<unsigned>(take);
-  }
-}
-
-// f(tid, begin, end) over [0, n) in chunks claimed from a shared counter.  `nt`
-// is the most threads wanted; tid < nt is passed, so per-thread slots are sized nt.
+// f(0, begin, end) over [0, n) in `chunk`-sized pieces, on the calling thread
+// (the Q13 aux reads and maintenance are single-threaded like the other
+// accelerators; per-thread slots sized `nt` = 1 are indexed by the 0).
 template <class F>
-void ParRange(std::size_t n, std::size_t chunk, unsigned nt, F &&f) {
-  std::atomic<std::size_t> next{0};
-  auto worker = [&](unsigned tid) {
-    for (;;) {
-      const std::size_t b = next.fetch_add(chunk);
-      if (b >= n)
-        break;
-      f(tid, b, std::min(n, b + chunk));
-    }
-  };
-  const unsigned extra = nt > 1 ? AcquireExtra(nt - 1) : 0;
-  if (extra == 0) {
-    worker(0);
-    return;
-  }
-  std::vector<std::thread> threads;
-  threads.reserve(extra);
-  for (unsigned t = 1; t <= extra; ++t)
-    threads.emplace_back(worker, t);
-  worker(0);
-  for (auto &t : threads)
-    t.join();
-  g_extra_threads.fetch_sub(static_cast<int>(extra));
+void ForChunks(std::size_t n, std::size_t chunk, F &&f) {
+  for (std::size_t b = 0; b < n; b += chunk)
+    f(0u, b, std::min(n, b + chunk));
 }
 
 void HistAdd(std::vector<int64_t> &h, int64_t eff, int64_t delta) {
@@ -771,7 +716,7 @@ void BulkFinish(Mut &m) {
   SharedVocab shared;
   shared.v = *m.st.vocab;
   std::vector<std::vector<int32_t>> dfs(nt);
-  ParRange(kTpchQ13Shards, 32, nt,
+  ForChunks(kTpchQ13Shards, 32,
            [&](unsigned tid, std::size_t b, std::size_t e) {
              std::vector<uint64_t> mask;
              LocalIntern intern{&shared, {}};
@@ -829,7 +774,7 @@ void RecomputeHist(Mut &m) {
   const unsigned nt = 1;
   std::vector<std::vector<std::vector<int64_t>>> part(
       nt, std::vector<std::vector<int64_t>>(np + 1));
-  ParRange(kTpchQ13Shards, 64, nt,
+  ForChunks(kTpchQ13Shards, 64,
            [&](unsigned tid, std::size_t b, std::size_t e) {
              auto &h = part[tid];
              for (std::size_t s = b; s < e; ++s) {
@@ -1133,7 +1078,7 @@ std::vector<TpchQ13OutputRow> EvalUntracked(const TpchQ13State &st,
                              like.parts.back().text.empty() && like.has_pct;
   const unsigned nt = 1;
   std::vector<std::vector<int64_t>> deltas(nt);
-  ParRange(kTpchQ13Shards, 16, nt,
+  ForChunks(kTpchQ13Shards, 16,
            [&](unsigned tid, std::size_t b, std::size_t e) {
              thread_local std::vector<int32_t> m;
              thread_local std::vector<uint32_t> touched;

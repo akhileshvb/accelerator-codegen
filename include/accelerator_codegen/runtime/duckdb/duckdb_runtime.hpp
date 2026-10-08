@@ -113,7 +113,8 @@ public:
   void CommitWrite();
   void RollbackWrite();
   // One captured write transaction running `sql` (rolled back on error).
-  void ApplyWrite(const std::string &sql);
+  // Returns the rows its INSERT / UPDATE / DELETE statements touched.
+  uint64_t ApplyWrite(const std::string &sql);
   // One engine transaction running `sql` that maintains every runtime in
   // `runtimes` (all on the same connection, capture enabled): each one's
   // PRE_COMMIT, the engine commit, then each one's COMMIT -- the commit of a

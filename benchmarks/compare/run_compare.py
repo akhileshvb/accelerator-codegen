@@ -4,7 +4,8 @@
   read        per query and system: build time, then per TPC-H parameter set the
               median latency of the accelerator and of DuckDB, and whether the
               answers agree.  Systems: cpp (accel_tpch_qN, the C++ store),
-              verus (accel_tpch_qN_vgen, ACCEL_AUX_STORE=verus_global).
+              verus (accel_tpch_qN_vgen, ACCEL_AUX_STORE=verus_global),
+              verus_cpp (accel_tpch_qN_vgen on the C++ store, ACCEL_AUX_STORE=cpp).
   concurrent  per query: R reader threads (closed loop over the parameter sets)
               and one writer at W writes/s, three runs on fresh copies of the
               database: base (DuckDB, plain SQL writes), cpp, verus.  The writer
@@ -46,8 +47,10 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HERE = os.path.join(ROOT, "benchmarks", "compare")
 # verus: the one Verus world store for every accelerator; verus_kit: the same
-# kits, each on its own Verus store (the control for the global store's cost)
-SYSTEMS = {"cpp": {}, "verus": {"ACCEL_AUX_STORE": "verus_global"}, "verus_kit": {"ACCEL_AUX_STORE": "verus"}}
+# kits, each on its own Verus store (the control for the global store's cost);
+# verus_cpp: the same kits on the C++ store protocol (one lock per accelerator)
+SYSTEMS = {"cpp": {}, "verus": {"ACCEL_AUX_STORE": "verus_global"}, "verus_kit": {"ACCEL_AUX_STORE": "verus"},
+           "verus_cpp": {"ACCEL_AUX_STORE": "cpp"}}
 
 
 def params(sets, seed, sf=20):
@@ -234,18 +237,20 @@ def cmd_multi(a):
               f"{' '.join(rate_name(w) for w in rates)}, {a.repeats} repetition(s)) {time.strftime('%T')}", flush=True)
         env = env_for(system, a.queries[0])
         env.pop("ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL", None)  # one process, many accelerators: no single model file
+        if system.startswith("verus"):  # the Verus kits' own models (config/verus/qN_*), as env_for picks per query
+            env["ACCEL_AUX_COST_MODEL_DIR"] = os.path.join(ROOT, "config", "verus")
         # each accelerator's runtime then picks config/q<N>_aux_cost_model_sf20.json when ACCEL_AUX_BENCH_DB_LABEL is
         # tpch_sf20 (the models calibrated at this scale), else the default small-scale config/q<N>_aux_cost_model.json
         label = os.environ.get("ACCEL_AUX_BENCH_DB_LABEL") or ("tpch_sf20" if a.sf == 20 else "")
         if label:
             env["ACCEL_AUX_BENCH_DB_LABEL"] = label
-        print(f"  cost models: {'config/qN_aux_cost_model_sf20.json (SF20 calibration)' if label == 'tpch_sf20' else 'config/qN_aux_cost_model.json (default)'}",
+        cdir = "config/verus/" if system.startswith("verus") else "config/"
+        print(f"  cost models: {cdir + 'qN_aux_cost_model_sf20.json (SF20)' if label == 'tpch_sf20' else cdir + 'qN_aux_cost_model.json (default)'}",
               flush=True)
         if a.duckdb_memory:
             env["ACCEL_COMPARE_DUCKDB_MEMORY"] = a.duckdb_memory
         if a.duckdb_threads:
             env["ACCEL_COMPARE_DUCKDB_THREADS"] = str(a.duckdb_threads)
-            env["ACCEL_Q13_THREADS"] = str(a.duckdb_threads)  # Q13's read kernel is the one multi-threaded accelerator
         n = len(rates) * a.repeats
         rs = run([a.bin, "multi", db, phase, spec_path, str(a.readers), str(a.seconds), ",".join(f"{w:g}" for w in rates),
                   str(reps[0][1]), str(a.warmup), a.reader_mode], env, log, a.timeout, lines=n)
@@ -287,7 +292,6 @@ def cmd_cycle(a):
                 env["ACCEL_COMPARE_DUCKDB_MEMORY"] = a.duckdb_memory
                 if a.duckdb_threads:
                     env["ACCEL_COMPARE_DUCKDB_THREADS"] = str(a.duckdb_threads)
-                    env["ACCEL_Q13_THREADS"] = str(a.duckdb_threads)
                 burst = 2 * ncases if phase == "base" else a.burst  # baseline reads are slow, and need no profile
                 r = run([a.bin, "cycle", db, accel_id, base_kit, cfile, phase, str(a.pairs), str(burst), str(seed)],
                         env, log, a.timeout)
@@ -326,6 +330,8 @@ def line_conc(r):
          f"writes {r['writes']} ({r['writes_per_sec']:.1f}/s; {r.get('writes_total', '?')} incl. warmup) "
          f"commit p50 {r['commit_p50_us'] / 1000:.2f}ms p99 {r['commit_p99_us'] / 1000:.2f}ms "
          f"max {r.get('max_commit_us', 0) / 1000:.1f}ms")
+    if "rows_touched_per_sec" in r:
+        s += f"  slots {r['slots']} ({r['slots_per_sec']:.3g}/s) rows touched {r['rows_touched']} ({r['rows_touched_per_sec']:.0f}/s)"
     if r["phase"] == "accel":
         s += (f"  invalidating {r['invalidating_writes']}  maint {r['maintenance']}  "
               f"hits {r['hits']} fallbacks {r['fallbacks']}  slowest commit: {r.get('slowest_commit', '?')}")
@@ -356,7 +362,7 @@ def load_multi(out):
                    and os.path.isdir(os.path.join(out, d))), key=lambda d: int(d.rsplit("rep", 1)[1])) or [out]
     runs = {}
     for d in dirs:
-        for name in ("base", "cpp", "verus_kit", "verus"):
+        for name in ("base", "cpp", "verus_cpp", "verus_kit", "verus"):
             p = os.path.join(d, f"multi_{name}.json")
             if os.path.exists(p):
                 runs.setdefault(name, []).append(json.load(open(p)))
@@ -503,7 +509,7 @@ def main():
                    "(\"5 10 20 40 -1\"; -1 uncapped); the accelerators are built once per system")
     m.add_argument("--duckdb-threads", type=int, default=None,
                    help="DuckDB's thread count (process-wide: the baseline queries and the accelerators' build / maintenance "
-                        "scans) and Q13's read threads; default: all cores")
+                        "scans); the accelerators' read kernels are single-threaded; default: all cores")
     m.add_argument("--duckdb-memory", default="16GB", help="DuckDB memory_limit in the multi process ('' for DuckDB's default)")
     m.add_argument("--reader-mode", choices=("rotate", "pinned"), default="rotate",
                    help="rotate: each reader cycles over the accelerators; pinned: --readers per accelerator")
@@ -530,7 +536,7 @@ def main():
     y.add_argument("--burst", type=int, default=200, help="timed reads of the query after every commit (accelerator run)")
     y.add_argument("--rf-dir", default=None, required=True, help="the TPC-H update sets written by dbgen -U")
     y.add_argument("--batch-orders", type=int, default=None, help="use only the first B orders of each update set")
-    y.add_argument("--duckdb-threads", type=int, default=None, help="DuckDB's thread count (and Q13's read threads)")
+    y.add_argument("--duckdb-threads", type=int, default=None, help="DuckDB's thread count (the accelerators' read kernels are single-threaded)")
     y.add_argument("--duckdb-memory", default="8GB", help="DuckDB memory_limit")
     s = sub.add_parser("summary")
     s.add_argument("out")

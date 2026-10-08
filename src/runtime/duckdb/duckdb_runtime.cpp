@@ -830,14 +830,26 @@ void DuckdbRuntime::OnCapturedMutation(const ::duckdb::TableMutationEvent &event
 
 void DuckdbRuntime::BeginWrite() { connection_.BeginTransaction(); }
 
-void DuckdbRuntime::ApplyWrite(const std::string &sql) {
+uint64_t DuckdbRuntime::ApplyWrite(const std::string &sql) {
   BeginWrite();
-  auto result = connection_.Query(sql);
-  if (!result || result->HasError()) {
+  // statement by statement (one transaction), so each INSERT / UPDATE / DELETE reports its row count
+  uint64_t rows = 0;
+  try {
+    for (auto &statement : connection_.ExtractStatements(sql)) {
+      auto result = connection_.Query(std::move(statement));
+      if (!result || result->HasError()) {
+        throw std::runtime_error(sql + ": " + (result ? result->GetError() : "null result"));
+      }
+      if (result->ColumnCount() == 1 && result->RowCount() == 1 && result->names[0] == "Count") {
+        rows += static_cast<uint64_t>(result->GetValue(0, 0).GetValue<int64_t>());
+      }
+    }
+  } catch (...) {
     RollbackWrite();
-    throw std::runtime_error(sql + ": " + (result ? result->GetError() : "null result"));
+    throw;
   }
   CommitWrite();
+  return rows;
 }
 
 void DuckdbRuntime::ApplyWriteAll(const std::vector<DuckdbRuntime *> &runtimes, const std::string &sql,
