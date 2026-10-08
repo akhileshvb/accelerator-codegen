@@ -143,7 +143,7 @@ void CheckState(const SecEdgarQ6State &state, const Model &m, const std::string 
             ctx + ": top cache order");
   }
   uint64_t active = 0;
-  for (uint32_t g = 0; g < state.structure->GroupCount(); ++g) active += state.Count(g) != 0;
+  for (uint32_t g = 0; g < state.structure.GroupCount(); ++g) active += state.Count(g) != 0;
   Require(active == state.active_groups, ctx + ": active_groups");
 }
 
@@ -184,14 +184,11 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
     std::map<std::tuple<std::string, std::string, std::string>, int> keys;
     for (auto &p : m.pre) keys[{p.adsh, p.tag, p.version}]++;
     for (auto &[k, n] : keys) {
-      Require(SecEdgarQ6Resolve(*structure, std::get<0>(k), std::get<1>(k), std::get<2>(k)) !=
-                  SecEdgarQ6Structure::kNoPayload,
+      Require(SecEdgarQ6Resolve(structure, std::get<0>(k), std::get<1>(k), std::get<2>(k)).Found(),
               "bridge hit expected");
     }
-    Require(SecEdgarQ6Resolve(*structure, "ORPHAN", "Tag1", "v1") == SecEdgarQ6Structure::kNoPayload,
-            "orphan must not resolve");
-    Require(SecEdgarQ6Resolve(*structure, "ADSH0", "nope", "v1") == SecEdgarQ6Structure::kNoPayload,
-            "unknown tag");
+    Require(!SecEdgarQ6Resolve(structure, "ORPHAN", "Tag1", "v1").Found(), "orphan must not resolve");
+    Require(!SecEdgarQ6Resolve(structure, "ADSH0", "nope", "v1").Found(), "unknown tag");
   }
 
   auto state = std::make_shared<SecEdgarQ6State>(SecEdgarQ6MakeEmptyState(structure));
@@ -221,11 +218,11 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
     for (auto &r : rows) refs.push_back({r.adsh, r.tag, r.version, r.value, sign});
     std::vector<SecEdgarQ6GroupDelta> deltas;
     if (refs.size() == 1) {
-      SecEdgarQ6ExpandPayload(*state->structure,
-                              SecEdgarQ6Resolve(*state->structure, refs[0].adsh, refs[0].tag, refs[0].version),
-                              refs[0].value, sign, deltas);
+      SecEdgarQ6ExpandPayload(
+          SecEdgarQ6Resolve(state->structure, refs[0].adsh, refs[0].tag, refs[0].version),
+          refs[0].value, sign, deltas);
     } else {
-      SecEdgarQ6ResolveBatch(*state->structure, refs.data(), refs.size(), deltas);
+      SecEdgarQ6ResolveBatch(state->structure, refs.data(), refs.size(), deltas);
     }
     auto next = SecEdgarQ6ApplyDeltas(*state, deltas);
     if (next) state = std::make_shared<SecEdgarQ6State>(*next);
@@ -249,7 +246,7 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
     apply(rows, +1, "initial load");
   }
   for (int round = 0; round < rounds; ++round) {
-    const int kind = static_cast<int>(rng() % 8);
+    const int kind = static_cast<int>(rng() % 11);
     std::vector<Model::NumRow> rows;
     if (kind <= 3) { // small insert
       for (size_t i = 0, n = 1 + rng() % 3; i < n; ++i) rows.push_back(random_num());
@@ -275,6 +272,74 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
         rows.push_back(n);
         apply(rows, +1, "round " + std::to_string(round) + " head bump");
       }
+    } else if (kind >= 8) { // structural edit of 1-3 adsh (sub / pre change)
+      std::vector<SecEdgarQ6AdshEdit> edits;
+      std::set<std::string> picked;
+      for (size_t i = 0, n = 1 + rng() % 3; i < n; ++i) {
+        const std::string adsh = "ADSH" + std::to_string(rng() % (adsh_count + 3));
+        if (!picked.insert(adsh).second) continue;
+        // 0 rename, 1 exit / enter cohort, 2 add pre row, 3 drop pre rows, 4 relabel
+        const int op = static_cast<int>(rng() % 5);
+        const bool in = m.cohort.count(adsh) != 0;
+        const std::string new_name = name_pool[rng() % name_pool.size()];
+        if (op == 0 || (op == 1 && !in)) {
+          m.cohort[adsh] = new_name;
+        } else if (op == 1) {
+          m.cohort.erase(adsh);
+        } else if (op == 2) {
+          m.pre.push_back({adsh, tag_pool[rng() % tag_pool.size()], version_pool[rng() % version_pool.size()],
+                           plabel_pool[rng() % plabel_pool.size()]});
+        } else if (op == 3) {
+          const auto cut = std::remove_if(m.pre.begin(), m.pre.end(), [&](const Model::PreRow &p) {
+            return p.adsh == adsh && rng() % 2;
+          });
+          m.pre.erase(cut, m.pre.end());
+        } else {
+          for (auto &p : m.pre)
+            if (p.adsh == adsh && rng() % 2) p.plabel = plabel_pool[rng() % plabel_pool.size()];
+        }
+        // pre-edit truth was in `state`; num sums did not change.
+        SecEdgarQ6AdshEdit edit;
+        edit.adsh = adsh;
+        edit.new_cohort = m.cohort.count(adsh) != 0;
+        if (edit.new_cohort) {
+          const std::string &nm = m.cohort.at(adsh);
+          edit.name_is_null = nm == kNull;
+          if (!edit.name_is_null) edit.name = nm;
+        }
+        std::map<std::tuple<std::string, std::string, std::string>, uint32_t> pm;
+        for (const auto &p : m.pre)
+          if (p.adsh == adsh) pm[{p.tag, p.version, p.plabel}]++;
+        for (const auto &[k, mult] : pm) {
+          SecEdgarQ6PreEntry pe;
+          pe.tag = std::get<0>(k);
+          pe.version = std::get<1>(k);
+          pe.plabel_is_null = std::get<2>(k) == kNull;
+          if (!pe.plabel_is_null) pe.plabel = std::get<2>(k);
+          pe.mult = mult;
+          edit.pre.push_back(std::move(pe));
+        }
+        std::map<std::pair<std::string, std::string>, SecEdgarQ6NumSum> ns;
+        for (const auto &nrow : m.nums) {
+          if (nrow.adsh != adsh) continue;
+          auto &e = ns[{nrow.tag, nrow.version}];
+          e.tag = nrow.tag;
+          e.version = nrow.version;
+          e.sum += nrow.value;
+          e.cnt += 1;
+        }
+        for (auto &[k, v] : ns) edit.new_nums.push_back(v);
+        edits.push_back(std::move(edit));
+      }
+      // old nums are the same sums, but they were filed under the OLD bridge:
+      // the module passes the pre-transaction sums, which equal new_nums here.
+      for (auto &e : edits) e.old_nums = e.new_nums;
+      std::vector<SecEdgarQ6GroupDelta> extra;
+      bool overflow = false;
+      auto next = SecEdgarQ6ApplyEdits(*state, edits, extra, &overflow);
+      Require(next && !overflow, "edit applied");
+      state = std::make_shared<SecEdgarQ6State>(*next);
+      CheckState(*state, m, "round " + std::to_string(round) + " structural edit");
     } else { // big batch (> kIncrementalTouchedMax groups) or big delete
       const bool del = rng() % 2 && m.nums.size() > 3000;
       if (del) {
@@ -303,7 +368,7 @@ void TestSimdMatchesScalar(Rng &rng) {
     SecEdgarQ6ForceScalar(scalar);
     Rng r(42);
     auto state = SecEdgarQ6MakeEmptyState(structure);
-    for (uint32_t g = 0; g < structure->GroupCount(); ++g)
+    for (uint32_t g = 0; g < structure.GroupCount(); ++g)
       if (r() % 3) SecEdgarQ6SetGroup(state, g, static_cast<double>(r() % 1000) - 200.0, 1 + r() % 5);
     SecEdgarQ6Rescan(state);
     return state;
@@ -315,6 +380,42 @@ void TestSimdMatchesScalar(Rng &rng) {
   (void)rng;
 }
 
+// Non-dyadic values: sums must not depend on the order writes arrive in, and
+// adding then removing a value must restore the sum bit for bit.
+void TestSumExactness() {
+  SecEdgarQ6StructureBuilder builder;
+  for (const char *a : {"A", "B"}) {
+    builder.AddCohort(a, std::string("N") + a, false);
+    builder.AddPre(a, "T", "v", "P", false);
+  }
+  auto state = std::make_shared<SecEdgarQ6State>(SecEdgarQ6MakeEmptyState(builder.Finish()));
+  SecEdgarQ6Rescan(*state);
+  const double vals[] = {0.1, 0.2, 0.3, 1e-3, 1e12 + 0.7, 3.14159, -2.718281828};
+  const auto apply = [&](const char *adsh, double v, int sign) {
+    std::vector<SecEdgarQ6GroupDelta> d;
+    SecEdgarQ6ExpandPayload(SecEdgarQ6Resolve(state->structure, adsh, "T", "v"), v, sign, d);
+    bool overflow = false;
+    auto next = SecEdgarQ6ApplyDeltas(*state, d, &overflow);
+    Require(!overflow, "no overflow");
+    if (next) state = std::make_shared<SecEdgarQ6State>(*next);
+  };
+  const size_t n = sizeof vals / sizeof *vals;
+  for (size_t i = 0; i < n; ++i) apply("A", vals[i], +1);
+  for (size_t i = n; i-- > 0;) apply("B", vals[i], +1);
+  auto rows = SecEdgarQ6TopRows(*state);
+  Require(rows.size() == 2, "twin rows");
+  Require(rows[0].total_value == rows[1].total_value, "twin groups tie bit for bit");
+  Require(rows[0].name == "NA" && rows[1].name == "NB", "tie broken by name");
+  const double before = rows[0].total_value;
+  apply("A", 0.7, +1);
+  apply("A", 0.7, -1);
+  rows = SecEdgarQ6TopRows(*state);
+  Require(rows[0].total_value == before && rows[0].name == "NA", "add/remove restores the sum");
+  for (size_t i = 0; i < n; ++i) apply("A", vals[i], -1);
+  rows = SecEdgarQ6TopRows(*state);
+  Require(rows.size() == 1 && rows[0].name == "NB", "A emptied");
+}
+
 } // namespace
 
 int main() {
@@ -322,6 +423,7 @@ int main() {
   std::cout << "avx2=" << SecEdgarQ6UsesAvx2() << "\n";
   TestStringPool(rng);
   TestSimdMatchesScalar(rng);
+  TestSumExactness();
   // small: complete-mode cache; large: sampled rescan + incremental maintenance
   RunScenario(rng, 30, 6, 5, 4, 300, 150, false);
   RunScenario(rng, 30, 6, 5, 4, 300, 150, true);

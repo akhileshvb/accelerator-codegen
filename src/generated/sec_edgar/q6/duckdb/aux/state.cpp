@@ -36,6 +36,16 @@ bool UseAvx2() {
   return CpuHasAvx2() && !g_force_scalar.load(std::memory_order_relaxed);
 }
 
+inline uint32_t Load32(const char *p) noexcept {
+  uint32_t v;
+  std::memcpy(&v, p, sizeof v);
+  return v;
+}
+
+inline void Append32(std::string &out, uint32_t v) {
+  out.append(reinterpret_cast<const char *>(&v), sizeof v);
+}
+
 inline int CmpSum(double a, double b) noexcept {
   if (a == b) {
     return 0;
@@ -58,29 +68,29 @@ inline int CmpSum(double a, double b) noexcept {
 inline bool AtLeast(double sum, double lb) noexcept { return !(sum < lb); }
 
 // ---------------------------------------------------------------------------
-// tv-run search
+// tv-run search over unaligned little-endian u32 arrays inside a run record.
 // ---------------------------------------------------------------------------
-size_t FindTvScalar(const uint32_t *a, size_t n, uint32_t key) noexcept {
+size_t FindTvScalar(const char *a, size_t n, uint32_t key) noexcept {
   size_t lo = 0, hi = n;
   while (lo < hi) {
     const size_t mid = lo + ((hi - lo) >> 1);
-    if (a[mid] < key) {
+    if (Load32(a + 4 * mid) < key) {
       lo = mid + 1;
     } else {
       hi = mid;
     }
   }
-  return (lo < n && a[lo] == key) ? lo : n;
+  return (lo < n && Load32(a + 4 * lo) == key) ? lo : n;
 }
 
 #ifdef ACCEL_Q6_X86
-__attribute__((target("avx2"))) size_t FindTvAvx2(const uint32_t *a, size_t n,
+__attribute__((target("avx2"))) size_t FindTvAvx2(const char *a, size_t n,
                                                    uint32_t key) noexcept {
   const __m256i k = _mm256_set1_epi32(static_cast<int>(key));
   size_t i = 0;
   for (; i + 8 <= n; i += 8) {
     const __m256i v =
-        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(a + i));
+        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(a + 4 * i));
     const int m = _mm256_movemask_ps(
         _mm256_castsi256_ps(_mm256_cmpeq_epi32(v, k)));
     if (m) {
@@ -88,7 +98,7 @@ __attribute__((target("avx2"))) size_t FindTvAvx2(const uint32_t *a, size_t n,
     }
   }
   for (; i < n; ++i) {
-    if (a[i] == key) {
+    if (Load32(a + 4 * i) == key) {
       return i;
     }
   }
@@ -96,7 +106,7 @@ __attribute__((target("avx2"))) size_t FindTvAvx2(const uint32_t *a, size_t n,
 }
 #endif
 
-inline size_t FindTv(const uint32_t *a, size_t n, uint32_t key) noexcept {
+inline size_t FindTv(const char *a, size_t n, uint32_t key) noexcept {
 #ifdef ACCEL_Q6_X86
   if (n <= 64 && UseAvx2()) {
     return FindTvAvx2(a, n, key);
@@ -110,13 +120,20 @@ inline size_t FindTv(const uint32_t *a, size_t n, uint32_t key) noexcept {
 // ---------------------------------------------------------------------------
 void CollectScalar(const SecEdgarQ6State &state, double lb,
                    std::vector<uint32_t> &out) {
-  const uint32_t groups = state.structure->GroupCount();
-  for (uint32_t c = 0; c < state.chunks.size(); ++c) {
-    const auto &chunk = *state.chunks[c];
+  const uint32_t groups = state.structure.GroupCount();
+  for (uint32_t c = 0; c < state.cnt.NumChunks(); ++c) {
     const uint32_t base = c << kQ6ChunkShift;
+    if (base >= groups) {
+      break;
+    }
+    const auto *cnt = state.cnt.ChunkAt(c);
+    const auto *sum = state.sum_hi.ChunkAt(c);
+    if (!cnt || !sum) {
+      continue;
+    }
     const uint32_t n = std::min<uint32_t>(kQ6ChunkSize, groups - base);
     for (uint32_t i = 0; i < n; ++i) {
-      if (chunk.cnt[i] != 0 && AtLeast(chunk.sum[i], lb)) {
+      if ((*cnt)[i] != 0 && AtLeast((*sum)[i], lb)) {
         out.push_back(base + i);
       }
     }
@@ -127,23 +144,32 @@ void CollectScalar(const SecEdgarQ6State &state, double lb,
 __attribute__((target("avx2"))) void CollectAvx2(const SecEdgarQ6State &state,
                                                   double lb,
                                                   std::vector<uint32_t> &out) {
-  const uint32_t groups = state.structure->GroupCount();
+  const uint32_t groups = state.structure.GroupCount();
   const __m256d lbv = _mm256_set1_pd(lb);
   const __m256i zero = _mm256_setzero_si256();
-  for (uint32_t c = 0; c < state.chunks.size(); ++c) {
-    const auto &chunk = *state.chunks[c];
+  for (uint32_t c = 0; c < state.cnt.NumChunks(); ++c) {
     const uint32_t base = c << kQ6ChunkShift;
+    if (base >= groups) {
+      break;
+    }
+    const auto *cnt_chunk = state.cnt.ChunkAt(c);
+    const auto *sum_chunk = state.sum_hi.ChunkAt(c);
+    if (!cnt_chunk || !sum_chunk) {
+      continue;
+    }
+    const double *sum = sum_chunk->data();
+    const int64_t *cnt = cnt_chunk->data();
     const uint32_t n = std::min<uint32_t>(kQ6ChunkSize, groups - base);
     uint32_t i = 0;
     for (; i + 4 <= n; i += 4) {
-      const __m256d s = _mm256_loadu_pd(chunk.sum + i);
+      const __m256d s = _mm256_loadu_pd(sum + i);
       // _CMP_NLT_UQ: !(s < lb), true for NaN
       const int keep_sum =
           _mm256_movemask_pd(_mm256_cmp_pd(s, lbv, _CMP_NLT_UQ));
-      const __m256i cnt =
-          _mm256_loadu_si256(reinterpret_cast<const __m256i *>(chunk.cnt + i));
+      const __m256i cn =
+          _mm256_loadu_si256(reinterpret_cast<const __m256i *>(cnt + i));
       const int inactive = _mm256_movemask_pd(
-          _mm256_castsi256_pd(_mm256_cmpeq_epi64(cnt, zero)));
+          _mm256_castsi256_pd(_mm256_cmpeq_epi64(cn, zero)));
       int mask = keep_sum & ~inactive & 0xF;
       while (mask) {
         const int j = __builtin_ctz(static_cast<unsigned>(mask));
@@ -152,7 +178,7 @@ __attribute__((target("avx2"))) void CollectAvx2(const SecEdgarQ6State &state,
       }
     }
     for (; i < n; ++i) {
-      if (chunk.cnt[i] != 0 && AtLeast(chunk.sum[i], lb)) {
+      if (cnt[i] != 0 && AtLeast(sum[i], lb)) {
         out.push_back(base + i);
       }
     }
@@ -173,9 +199,11 @@ void Collect(const SecEdgarQ6State &state, double lb,
 
 uint64_t CountActiveScalar(const SecEdgarQ6State &state) {
   uint64_t active = 0;
-  for (const auto &chunk : state.chunks) {
-    for (uint32_t i = 0; i < kQ6ChunkSize; ++i) {
-      active += chunk->cnt[i] != 0;
+  for (uint32_t c = 0; c < state.cnt.NumChunks(); ++c) {
+    if (const auto *chunk = state.cnt.ChunkAt(c)) {
+      for (const int64_t v : *chunk) {
+        active += v != 0;
+      }
     }
   }
   return active;
@@ -184,25 +212,30 @@ uint64_t CountActiveScalar(const SecEdgarQ6State &state) {
 #ifdef ACCEL_Q6_X86
 __attribute__((target("avx2"))) uint64_t CountActiveAvx2(
     const SecEdgarQ6State &state) {
-  uint64_t inactive = 0;
+  uint64_t active = 0;
   const __m256i zero = _mm256_setzero_si256();
-  for (const auto &chunk : state.chunks) {
+  for (uint32_t c = 0; c < state.cnt.NumChunks(); ++c) {
+    const auto *chunk = state.cnt.ChunkAt(c);
+    if (!chunk) {
+      continue;
+    }
+    const int64_t *cnt = chunk->data();
+    uint64_t inactive = 0;
     for (uint32_t i = 0; i < kQ6ChunkSize; i += 4) {
-      const __m256i cnt =
-          _mm256_load_si256(reinterpret_cast<const __m256i *>(chunk->cnt + i));
+      const __m256i v =
+          _mm256_loadu_si256(reinterpret_cast<const __m256i *>(cnt + i));
       inactive += static_cast<uint64_t>(__builtin_popcount(
           static_cast<unsigned>(_mm256_movemask_pd(
-              _mm256_castsi256_pd(_mm256_cmpeq_epi64(cnt, zero))))));
+              _mm256_castsi256_pd(_mm256_cmpeq_epi64(v, zero))))));
     }
+    active += kQ6ChunkSize - inactive;
   }
-  const uint64_t total =
-      static_cast<uint64_t>(state.chunks.size()) * kQ6ChunkSize;
-  return total - inactive;
+  return active;
 }
 #endif
 
 uint64_t CountActive(const SecEdgarQ6State &state) {
-  // Padding slots past GroupCount() always have cnt == 0.
+  // Slots past GroupCount() always have cnt == 0.
 #ifdef ACCEL_Q6_X86
   if (UseAvx2()) {
     return CountActiveAvx2(state);
@@ -211,11 +244,68 @@ uint64_t CountActive(const SecEdgarQ6State &state) {
   return CountActiveScalar(state);
 }
 
-std::shared_ptr<SecEdgarQ6AggChunk> NewChunk() {
-  return std::shared_ptr<SecEdgarQ6AggChunk>(new SecEdgarQ6AggChunk());
+inline uint64_t GroupHash(uint32_t n, uint32_t t, uint32_t p) noexcept {
+  uint64_t h = (static_cast<uint64_t>(n) + 1) * 0x9E3779B97F4A7C15ULL ^
+               (static_cast<uint64_t>(t) + 0x7F4A7C15ULL) * 0xC2B2AE3D27D4EB4FULL ^
+               (static_cast<uint64_t>(p) + 1) * 0x165667B19E3779F9ULL;
+  h ^= h >> 32;
+  h *= 0xD6E8FEB86659FD93ULL;
+  h ^= h >> 32;
+  return h;
+}
+
+// value * mult as an exact double-double (mult is a small integer).
+inline SecEdgarQ6Sum MulExact(double v, double m) noexcept {
+  const double p = v * m;
+  if (!std::isfinite(p)) {
+    return {p, 0.0};
+  }
+  return {p, std::fma(v, m, -p)};
+}
+
+// Expands a payload against the trailer of its run (words after the entries).
+// `sum`/`cnt` are already signed.
+void ExpandGeneric(const char *trailer, uint32_t payload, SecEdgarQ6Sum sum,
+                   int64_t cnt, std::vector<SecEdgarQ6GroupDelta> &out) {
+  if (payload == SecEdgarQ6Structure::kNoPayload) {
+    return;
+  }
+  if ((payload & SecEdgarQ6Structure::kMultiFlag) == 0) {
+    out.push_back({payload, sum, cnt});
+    return;
+  }
+  const char *block = trailer + 4ull * (payload & ~SecEdgarQ6Structure::kMultiFlag);
+  const uint32_t k = Load32(block);
+  for (uint32_t i = 0; i < k; ++i) {
+    const uint32_t gid = Load32(block + 4ull * (1 + 2 * i));
+    const uint32_t mult = Load32(block + 4ull * (2 + 2 * i));
+    const SecEdgarQ6Sum hi_part = MulExact(sum.hi, static_cast<double>(mult));
+    out.push_back({gid,
+                   SecEdgarQ6SumAdd(hi_part, {sum.lo * static_cast<double>(mult), 0.0}),
+                   cnt * static_cast<int64_t>(mult)});
+  }
+}
+
+inline const char *TrailerOf(std::string_view run) noexcept {
+  return run.data() + 4 + 8ull * Load32(run.data());
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Double-double
+// ---------------------------------------------------------------------------
+SecEdgarQ6Sum SecEdgarQ6SumAdd(SecEdgarQ6Sum a, SecEdgarQ6Sum b) noexcept {
+  const double s = a.hi + b.hi;
+  if (!std::isfinite(s)) {
+    return {s, 0.0};
+  }
+  const double bb = s - a.hi;
+  double e = (a.hi - (s - bb)) + (b.hi - bb);
+  e += a.lo + b.lo;
+  const double hi = s + e;
+  return {hi, e - (hi - s)};
+}
 
 // ---------------------------------------------------------------------------
 // String pool
@@ -244,69 +334,41 @@ uint64_t SecEdgarQ6StringPool::Hash(const char *p, size_t n) noexcept {
 }
 
 uint32_t SecEdgarQ6StringPool::FindHashed(uint64_t hash,
-                                          std::string_view s) const noexcept {
-  if (table_.empty()) {
-    return 0;
-  }
-  const uint32_t tag = static_cast<uint32_t>(hash >> 32);
-  for (uint64_t idx = hash & mask_;; idx = (idx + 1) & mask_) {
-    const uint64_t e = table_[idx];
-    if (e == 0) {
+                                          std::string_view s) const {
+  for (uint64_t key = hash;; ++key) {
+    const uint32_t *id = index_.Find(static_cast<int64_t>(key));
+    if (!id) {
       return 0;
     }
-    if (static_cast<uint32_t>(e >> 32) == tag) {
-      const uint32_t id = static_cast<uint32_t>(e);
-      if (View(id) == s) {
-        return id;
-      }
+    if (View(*id) == s) {
+      return *id;
     }
-  }
-}
-
-void SecEdgarQ6StringPool::Grow() {
-  const size_t new_size = table_.empty() ? 64 : table_.size() * 2;
-  table_.assign(new_size, 0);
-  mask_ = new_size - 1;
-  for (uint32_t id = 1; id <= Count(); ++id) {
-    const uint64_t h = Hash(View(id));
-    uint64_t idx = h & mask_;
-    while (table_[idx] != 0) {
-      idx = (idx + 1) & mask_;
-    }
-    table_[idx] = (h & 0xFFFFFFFF00000000ULL) | id;
   }
 }
 
 uint32_t SecEdgarQ6StringPool::Intern(std::string_view s) {
-  const uint64_t h = Hash(s);
-  if (const uint32_t found = FindHashed(h, s)) {
-    return found;
+  const uint64_t hash = Hash(s);
+  uint64_t key = hash;
+  for (;; ++key) {
+    const uint32_t *id = index_.Find(static_cast<int64_t>(key));
+    if (!id) {
+      break;
+    }
+    if (View(*id) == s) {
+      return *id;
+    }
   }
-  if ((static_cast<size_t>(Count()) + 1) * 2 > table_.size()) {
-    Grow();
+  if (count_ >= 0xFFFFFFFEu) {
+    throw std::length_error("SEC EDGAR Q6 string pool id space exhausted");
   }
-  if (data_.size() + s.size() > 0xFFFFFFF0ULL) {
-    throw std::length_error("SEC EDGAR Q6 string pool overflow");
-  }
-  data_.insert(data_.end(), s.begin(), s.end());
-  offs_.push_back(static_cast<uint32_t>(data_.size()));
-  const uint32_t id = Count();
-  uint64_t idx = h & mask_;
-  while (table_[idx] != 0) {
-    idx = (idx + 1) & mask_;
-  }
-  table_[idx] = (h & 0xFFFFFFFF00000000ULL) | id;
+  const uint32_t id = ++count_;
+  strings_.Set(id, s);
+  index_.Upsert(static_cast<int64_t>(key), id);
   return id;
 }
 
-size_t SecEdgarQ6StringPool::Bytes() const noexcept {
-  return data_.capacity() + offs_.capacity() * sizeof(uint32_t) +
-         table_.capacity() * sizeof(uint64_t);
-}
-
-void SecEdgarQ6StringPool::ShrinkToFit() {
-  data_.shrink_to_fit();
-  offs_.shrink_to_fit();
+size_t SecEdgarQ6StringPool::Bytes() const {
+  return strings_.MemoryBytes() + index_.memory_bytes();
 }
 
 SecEdgarQ6TagVersionKey::SecEdgarQ6TagVersionKey(std::string_view tag,
@@ -331,95 +393,73 @@ SecEdgarQ6TagVersionKey::SecEdgarQ6TagVersionKey(std::string_view tag,
 // ---------------------------------------------------------------------------
 // Structure
 // ---------------------------------------------------------------------------
-uint32_t SecEdgarQ6Structure::Lookup(uint32_t adsh_id,
-                                     uint32_t tv_id) const noexcept {
-  const uint32_t begin = csr_off[adsh_id];
-  const uint32_t end = csr_off[adsh_id + 1];
-  const size_t n = end - begin;
-  const size_t idx = FindTv(csr_tv.data() + begin, n, tv_id);
-  return idx == n ? kNoPayload : csr_pay[begin + idx];
-}
-
-namespace {
-inline uint64_t GroupHash(uint32_t n, uint32_t t, uint32_t p) noexcept {
-  uint64_t h = (static_cast<uint64_t>(n) + 1) * 0x9E3779B97F4A7C15ULL ^
-               (static_cast<uint64_t>(t) + 0x7F4A7C15ULL) * 0xC2B2AE3D27D4EB4FULL ^
-               (static_cast<uint64_t>(p) + 1) * 0x165667B19E3779F9ULL;
-  h ^= h >> 32;
-  h *= 0xD6E8FEB86659FD93ULL;
-  h ^= h >> 32;
-  return h;
-}
-} // namespace
-
-void SecEdgarQ6Structure::RebuildGroupIndex() {
-  size_t size = 16;
-  while (size < static_cast<size_t>(g_name.size()) * 2 + 2) size <<= 1;
-  group_index.assign(size, 0);
-  const size_t mask = size - 1;
-  for (uint32_t g = 0; g < g_name.size(); ++g) {
-    size_t idx = GroupHash(g_name[g], g_tag[g], g_plabel[g]) & mask;
-    while (group_index[idx] != 0) idx = (idx + 1) & mask;
-    group_index[idx] = g + 1;
+SecEdgarQ6Hit SecEdgarQ6Structure::Lookup(uint32_t adsh_id,
+                                          uint32_t tv_id) const {
+  std::string_view run;
+  if (!runs.Get(adsh_id, run) || run.size() < 4) {
+    return {};
   }
+  const size_t n = Load32(run.data());
+  const char *tv = run.data() + 4;
+  const size_t idx = FindTv(tv, n, tv_id);
+  if (idx == n) {
+    return {};
+  }
+  return {run, Load32(tv + 4 * n + 4 * idx)};
 }
 
 uint32_t SecEdgarQ6Structure::FindGroup(uint32_t name_id, uint32_t tag_id,
-                                        uint32_t plabel_id) const noexcept {
-  if (group_index.empty()) return kNoPayload;
-  const size_t mask = group_index.size() - 1;
-  for (size_t idx = GroupHash(name_id, tag_id, plabel_id) & mask;;
-       idx = (idx + 1) & mask) {
-    const uint32_t e = group_index[idx];
-    if (e == 0) return kNoPayload;
-    const uint32_t g = e - 1;
-    if (g_name[g] == name_id && g_tag[g] == tag_id && g_plabel[g] == plabel_id) return g;
+                                        uint32_t plabel_id) const {
+  for (uint64_t key = GroupHash(name_id, tag_id, plabel_id);; ++key) {
+    const uint32_t *gid = group_index.Find(static_cast<int64_t>(key));
+    if (!gid) {
+      return kNoPayload;
+    }
+    const SecEdgarQ6Group g = groups.Get(*gid);
+    if (g.name == name_id && g.tag == tag_id && g.plabel == plabel_id) {
+      return *gid;
+    }
   }
 }
 
 uint32_t SecEdgarQ6Structure::FindOrAddGroup(uint32_t name_id, uint32_t tag_id,
                                              uint32_t plabel_id) {
-  if (const uint32_t g = FindGroup(name_id, tag_id, plabel_id); g != kNoPayload) return g;
-  if (g_name.size() + 1 >= kMultiFlag) throw std::length_error("SEC EDGAR Q6 too many groups");
-  g_name.push_back(name_id);
-  g_tag.push_back(tag_id);
-  g_plabel.push_back(plabel_id);
-  const uint32_t gid = static_cast<uint32_t>(g_name.size() - 1);
-  if ((g_name.size() + 1) * 2 > group_index.size()) {
-    RebuildGroupIndex();
-  } else {
-    const size_t mask = group_index.size() - 1;
-    size_t idx = GroupHash(name_id, tag_id, plabel_id) & mask;
-    while (group_index[idx] != 0) idx = (idx + 1) & mask;
-    group_index[idx] = gid + 1;
+  uint64_t key = GroupHash(name_id, tag_id, plabel_id);
+  for (;; ++key) {
+    const uint32_t *gid = group_index.Find(static_cast<int64_t>(key));
+    if (!gid) {
+      break;
+    }
+    const SecEdgarQ6Group g = groups.Get(*gid);
+    if (g.name == name_id && g.tag == tag_id && g.plabel == plabel_id) {
+      return *gid;
+    }
   }
+  if (group_count >= kMaxGroups) {
+    throw std::length_error("SEC EDGAR Q6 group id space exhausted");
+  }
+  const uint32_t gid = group_count++;
+  groups.Mutable(gid) = {name_id, tag_id, plabel_id};
+  group_index.Upsert(static_cast<int64_t>(key), gid);
   return gid;
 }
 
-size_t SecEdgarQ6Structure::Bytes() const noexcept {
-  size_t total = adshs.Bytes() + names.Bytes() + tags.Bytes() + tvs.Bytes() +
-                 plabels.Bytes();
-  const auto vec = [](const std::vector<uint32_t> &v) {
-    return v.capacity() * sizeof(uint32_t);
-  };
-  total += vec(adsh_name) + vec(tv_tag) + vec(csr_off) + vec(csr_tv) +
-           vec(csr_pay) + vec(multi) + vec(g_name) + vec(g_tag) + vec(g_plabel) + vec(group_index);
-  return total + sizeof(*this);
+size_t SecEdgarQ6Structure::Bytes() const {
+  return adshs.Bytes() + names.Bytes() + tags.Bytes() + tvs.Bytes() +
+         plabels.Bytes() + adsh_name.MemoryBytes() + tv_tag.MemoryBytes() +
+         runs.MemoryBytes() + groups.MemoryBytes() + group_index.memory_bytes() +
+         sizeof(*this);
 }
 
 void SecEdgarQ6StructureBuilder::AddCohort(std::string_view adsh,
                                            std::string_view name,
                                            bool name_is_null) {
-  const uint32_t before = s_->adshs.Count();
-  const uint32_t id = s_->adshs.Intern(adsh);
+  const uint32_t before = s_.adshs.Count();
+  const uint32_t id = s_.adshs.Intern(adsh);
   if (id <= before) {
     return; // duplicate adsh: keep the first
   }
-  if (s_->adsh_name.empty()) {
-    s_->adsh_name.push_back(0);
-  }
-  s_->adsh_name.resize(static_cast<size_t>(id) + 1);
-  s_->adsh_name[id] = name_is_null ? 0 : s_->names.Intern(name);
+  s_.adsh_name.Set(id, name_is_null ? 0 : s_.names.Intern(name));
 }
 
 void SecEdgarQ6StructureBuilder::AddPre(std::string_view adsh,
@@ -427,167 +467,113 @@ void SecEdgarQ6StructureBuilder::AddPre(std::string_view adsh,
                                         std::string_view version,
                                         std::string_view plabel,
                                         bool plabel_is_null) {
-  const uint32_t adsh_id = s_->adshs.Find(adsh);
+  const uint32_t adsh_id = s_.adshs.Find(adsh);
   if (adsh_id == 0) {
     return;
   }
-  const uint32_t tag_id = s_->tags.Intern(tag);
+  const uint32_t tag_id = s_.tags.Intern(tag);
   const SecEdgarQ6TagVersionKey key(tag, version);
-  const uint32_t before = s_->tvs.Count();
-  const uint32_t tv_id = s_->tvs.Intern(key.View());
-  if (s_->tv_tag.empty()) {
-    s_->tv_tag.push_back(0);
-  }
+  const uint32_t before = s_.tvs.Count();
+  const uint32_t tv_id = s_.tvs.Intern(key.View());
   if (tv_id > before) {
-    s_->tv_tag.resize(static_cast<size_t>(tv_id) + 1);
-    s_->tv_tag[tv_id] = tag_id;
+    s_.tv_tag.Set(tv_id, tag_id);
   }
-  const uint32_t plabel_id = plabel_is_null ? 0 : s_->plabels.Intern(plabel);
+  const uint32_t plabel_id = plabel_is_null ? 0 : s_.plabels.Intern(plabel);
   entries_.push_back({adsh_id, tv_id, plabel_id});
 }
 
-std::shared_ptr<const SecEdgarQ6Structure> SecEdgarQ6StructureBuilder::Finish() {
-  auto &s = *s_;
-  if (s.adsh_name.empty()) {
-    s.adsh_name.push_back(0);
-  }
-  if (s.tv_tag.empty()) {
-    s.tv_tag.push_back(0);
-  }
+SecEdgarQ6Structure SecEdgarQ6StructureBuilder::Finish() {
+  auto &s = s_;
   std::sort(entries_.begin(), entries_.end(), [](const Entry &a, const Entry &b) {
     if (a.adsh != b.adsh) return a.adsh < b.adsh;
     if (a.tv != b.tv) return a.tv < b.tv;
     return a.plabel < b.plabel;
   });
 
-  struct Unique {
-    uint32_t adsh, tv, plabel, mult, gid;
-  };
-  std::vector<Unique> uniq;
-  uniq.reserve(entries_.size());
-  for (const auto &e : entries_) {
-    if (!uniq.empty() && uniq.back().adsh == e.adsh && uniq.back().tv == e.tv &&
-        uniq.back().plabel == e.plabel) {
-      ++uniq.back().mult;
-    } else {
-      uniq.push_back({e.adsh, e.tv, e.plabel, 1, 0});
+  // One run per adsh: entries sorted by tv; a (adsh, tv) with one label and
+  // multiplicity 1 stores the group id, anything else a trailer block.
+  std::string record;
+  std::vector<uint32_t> tvs, pays, trailer;
+  size_t i = 0;
+  while (i < entries_.size()) {
+    const uint32_t adsh = entries_[i].adsh;
+    const uint32_t name_id = s.adsh_name.Get(adsh);
+    tvs.clear();
+    pays.clear();
+    trailer.clear();
+    while (i < entries_.size() && entries_[i].adsh == adsh) {
+      const uint32_t tv = entries_[i].tv;
+      // labels of this (adsh, tv) with multiplicities
+      size_t j = i;
+      size_t distinct = 0;
+      uint32_t first_gid = 0, first_mult = 0;
+      const size_t trailer_start = trailer.size();
+      trailer.push_back(0); // k placeholder (dropped for single payloads)
+      while (j < entries_.size() && entries_[j].adsh == adsh &&
+             entries_[j].tv == tv) {
+        size_t m = j;
+        while (m < entries_.size() && entries_[m].adsh == adsh &&
+               entries_[m].tv == tv && entries_[m].plabel == entries_[j].plabel) {
+          ++m;
+        }
+        const uint32_t gid = s.FindOrAddGroup(
+            name_id, s.tv_tag.Get(tv), entries_[j].plabel);
+        const uint32_t mult = static_cast<uint32_t>(m - j);
+        if (distinct == 0) {
+          first_gid = gid;
+          first_mult = mult;
+        }
+        trailer.push_back(gid);
+        trailer.push_back(mult);
+        ++distinct;
+        j = m;
+      }
+      tvs.push_back(tv);
+      if (distinct == 1 && first_mult == 1) {
+        trailer.resize(trailer_start);
+        pays.push_back(first_gid);
+      } else {
+        trailer[trailer_start] = static_cast<uint32_t>(distinct);
+        pays.push_back(SecEdgarQ6Structure::kMultiFlag |
+                       static_cast<uint32_t>(trailer_start));
+      }
+      i = j;
     }
+    record.clear();
+    Append32(record, static_cast<uint32_t>(tvs.size()));
+    record.append(reinterpret_cast<const char *>(tvs.data()), 4 * tvs.size());
+    record.append(reinterpret_cast<const char *>(pays.data()), 4 * pays.size());
+    record.append(reinterpret_cast<const char *>(trailer.data()), 4 * trailer.size());
+    s.runs.Set(adsh, record);
   }
   entries_.clear();
   entries_.shrink_to_fit();
-
-  struct GroupKey {
-    uint32_t name, tag, plabel, uidx;
-  };
-  std::vector<GroupKey> keys(uniq.size());
-  for (uint32_t i = 0; i < uniq.size(); ++i) {
-    keys[i] = {s.adsh_name[uniq[i].adsh], s.tv_tag[uniq[i].tv], uniq[i].plabel, i};
-  }
-  std::sort(keys.begin(), keys.end(), [](const GroupKey &a, const GroupKey &b) {
-    if (a.name != b.name) return a.name < b.name;
-    if (a.tag != b.tag) return a.tag < b.tag;
-    return a.plabel < b.plabel;
-  });
-  for (size_t i = 0; i < keys.size(); ++i) {
-    if (i == 0 || keys[i].name != keys[i - 1].name ||
-        keys[i].tag != keys[i - 1].tag || keys[i].plabel != keys[i - 1].plabel) {
-      s.g_name.push_back(keys[i].name);
-      s.g_tag.push_back(keys[i].tag);
-      s.g_plabel.push_back(keys[i].plabel);
-    }
-    uniq[keys[i].uidx].gid = static_cast<uint32_t>(s.g_name.size() - 1);
-  }
-  keys.clear();
-  keys.shrink_to_fit();
-  if (s.g_name.size() >= SecEdgarQ6Structure::kMultiFlag) {
-    throw std::length_error("SEC EDGAR Q6 too many groups");
-  }
-
-  const uint32_t adsh_count = s.adshs.Count();
-  s.csr_off.assign(static_cast<size_t>(adsh_count) + 2, 0);
-  s.csr_tv.reserve(uniq.size());
-  s.csr_pay.reserve(uniq.size());
-  size_t i = 0;
-  while (i < uniq.size()) {
-    size_t j = i + 1;
-    while (j < uniq.size() && uniq[j].adsh == uniq[i].adsh &&
-           uniq[j].tv == uniq[i].tv) {
-      ++j;
-    }
-    uint32_t payload;
-    if (j - i == 1 && uniq[i].mult == 1) {
-      payload = uniq[i].gid;
-    } else {
-      if (s.multi.size() >= SecEdgarQ6Structure::kMultiFlag) {
-        throw std::length_error("SEC EDGAR Q6 multi table overflow");
-      }
-      payload = SecEdgarQ6Structure::kMultiFlag |
-                static_cast<uint32_t>(s.multi.size());
-      s.multi.push_back(static_cast<uint32_t>(j - i));
-      for (size_t k = i; k < j; ++k) {
-        s.multi.push_back(uniq[k].gid);
-        s.multi.push_back(uniq[k].mult);
-      }
-    }
-    s.csr_tv.push_back(uniq[i].tv);
-    s.csr_pay.push_back(payload);
-    ++s.csr_off[uniq[i].adsh + 1];
-    i = j;
-  }
-  // csr_off[a + 1] currently holds the count of adsh a; prefix-sum into starts.
-  for (uint32_t a = 1; a <= adsh_count + 1; ++a) {
-    s.csr_off[a] += s.csr_off[a - 1];
-  }
-  // After the prefix sum csr_off[a] is the start of adsh a (csr_off[1] == 0)
-  // and csr_off[a + 1] its end.
-
-  s.RebuildGroupIndex();
-  s.base_group_count = static_cast<uint32_t>(s.g_name.size());
-  s.base_multi_size = static_cast<uint32_t>(s.multi.size());
-  s.adshs.ShrinkToFit();
-  s.names.ShrinkToFit();
-  s.tags.ShrinkToFit();
-  s.tvs.ShrinkToFit();
-  s.plabels.ShrinkToFit();
-  s.adsh_name.shrink_to_fit();
-  s.tv_tag.shrink_to_fit();
-  s.csr_tv.shrink_to_fit();
-  s.csr_pay.shrink_to_fit();
-  s.multi.shrink_to_fit();
-  s.g_name.shrink_to_fit();
-  s.g_tag.shrink_to_fit();
-  s.g_plabel.shrink_to_fit();
-  return std::shared_ptr<const SecEdgarQ6Structure>(std::move(s_));
+  s.base_group_count = s.group_count;
+  s.adshs.Shrink();
+  s.names.Shrink();
+  s.tags.Shrink();
+  s.tvs.Shrink();
+  s.plabels.Shrink();
+  s.runs.Shrink();
+  return std::move(s_);
 }
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-size_t SecEdgarQ6State::Bytes() const noexcept {
-  size_t total = sizeof(*this);
-  if (structure) {
-    total += structure->Bytes();
-  }
-  total += chunks.capacity() * sizeof(chunks[0]);
-  total += chunks.size() * sizeof(SecEdgarQ6AggChunk);
-  total += top.gids.capacity() * sizeof(uint32_t);
-  return total;
+size_t SecEdgarQ6State::Bytes() const {
+  return sizeof(*this) + structure.Bytes() + sum_hi.MemoryBytes() +
+         sum_lo.MemoryBytes() + cnt.MemoryBytes() +
+         top.gids.capacity() * sizeof(uint32_t);
 }
 
 bool SecEdgarQ6State::TopUsable() const noexcept {
   return top.complete || top.gids.size() >= kQ6OutputLimit;
 }
 
-SecEdgarQ6State SecEdgarQ6MakeEmptyState(
-    std::shared_ptr<const SecEdgarQ6Structure> structure) {
+SecEdgarQ6State SecEdgarQ6MakeEmptyState(SecEdgarQ6Structure structure) {
   SecEdgarQ6State state;
-  const uint32_t groups = structure->GroupCount();
   state.structure = std::move(structure);
-  const size_t chunks = (static_cast<size_t>(groups) + kQ6ChunkMask) >> kQ6ChunkShift;
-  state.chunks.reserve(chunks);
-  for (size_t i = 0; i < chunks; ++i) {
-    state.chunks.push_back(NewChunk());
-  }
   state.top.complete = true;
   state.top.lower_bound = -std::numeric_limits<double>::infinity();
   return state;
@@ -595,40 +581,44 @@ SecEdgarQ6State SecEdgarQ6MakeEmptyState(
 
 void SecEdgarQ6SetGroup(SecEdgarQ6State &state, uint32_t gid, double sum,
                         int64_t cnt) {
-  // The chunk was created by SecEdgarQ6MakeEmptyState and is uniquely owned
-  // while the state is being built.
-  auto *chunk = const_cast<SecEdgarQ6AggChunk *>(
-      state.chunks[gid >> kQ6ChunkShift].get());
-  chunk->sum[gid & kQ6ChunkMask] = sum;
-  chunk->cnt[gid & kQ6ChunkMask] = cnt;
+  state.sum_hi.Mutable(gid) = sum;
+  state.sum_lo.Mutable(gid) = 0.0;
+  state.cnt.Mutable(gid) = cnt;
 }
 
-bool SecEdgarQ6GroupBefore(const SecEdgarQ6State &state, uint32_t a, uint32_t b) {
+namespace {
+// Output order: sum DESC, name, tag, plabel (NULL name / plabel last). The
+// sums come from `sa`/`sb`, the strings from `s`.
+bool GroupBeforeWith(const SecEdgarQ6Structure &s, double sa, double sb,
+                     uint32_t a, uint32_t b) {
   if (a == b) {
     return false;
   }
-  const int c = CmpSum(state.Sum(a), state.Sum(b));
+  const int c = CmpSum(sa, sb);
   if (c != 0) {
     return c > 0;
   }
-  const auto &s = *state.structure;
-  const uint32_t na = s.g_name[a], nb = s.g_name[b];
-  if (na != nb) {
-    if (na == 0) return false; // NULL sorts last
-    if (nb == 0) return true;
-    return s.names.View(na) < s.names.View(nb);
+  const SecEdgarQ6Group ga = s.groups.Get(a);
+  const SecEdgarQ6Group gb = s.groups.Get(b);
+  if (ga.name != gb.name) {
+    if (ga.name == 0) return false; // NULL sorts last
+    if (gb.name == 0) return true;
+    return s.names.View(ga.name) < s.names.View(gb.name);
   }
-  const uint32_t ta = s.g_tag[a], tb = s.g_tag[b];
-  if (ta != tb) {
-    return s.tags.View(ta) < s.tags.View(tb);
+  if (ga.tag != gb.tag) {
+    return s.tags.View(ga.tag) < s.tags.View(gb.tag);
   }
-  const uint32_t pa = s.g_plabel[a], pb = s.g_plabel[b];
-  if (pa != pb) {
-    if (pa == 0) return false;
-    if (pb == 0) return true;
-    return s.plabels.View(pa) < s.plabels.View(pb);
+  if (ga.plabel != gb.plabel) {
+    if (ga.plabel == 0) return false;
+    if (gb.plabel == 0) return true;
+    return s.plabels.View(ga.plabel) < s.plabels.View(gb.plabel);
   }
   return false;
+}
+} // namespace
+
+bool SecEdgarQ6GroupBefore(const SecEdgarQ6State &state, uint32_t a, uint32_t b) {
+  return GroupBeforeWith(state.structure, state.Sum(a), state.Sum(b), a, b);
 }
 
 void SecEdgarQ6CollectAtLeast(const SecEdgarQ6State &state, double lb,
@@ -655,7 +645,7 @@ double SelectThreshold(const std::vector<double> &sums_in, size_t rank_from_top)
 } // namespace
 
 void SecEdgarQ6Rescan(SecEdgarQ6State &state) {
-  const uint32_t groups = state.structure->GroupCount();
+  const uint32_t groups = state.structure.GroupCount();
   state.active_groups = CountActive(state);
   auto &top = state.top;
   top.gids.clear();
@@ -723,95 +713,36 @@ void SecEdgarQ6Rescan(SecEdgarQ6State &state) {
 // ---------------------------------------------------------------------------
 // Resolution
 // ---------------------------------------------------------------------------
-uint32_t SecEdgarQ6Resolve(const SecEdgarQ6Structure &s, std::string_view adsh,
-                           std::string_view tag, std::string_view version) {
+SecEdgarQ6Hit SecEdgarQ6Resolve(const SecEdgarQ6Structure &s, std::string_view adsh,
+                                std::string_view tag, std::string_view version) {
   const uint32_t adsh_id = s.adshs.Find(adsh);
   if (adsh_id == 0) {
-    return SecEdgarQ6Structure::kNoPayload;
+    return {};
   }
   const SecEdgarQ6TagVersionKey key(tag, version);
   const uint32_t tv_id = s.tvs.Find(key.View());
   if (tv_id == 0) {
-    return SecEdgarQ6Structure::kNoPayload;
+    return {};
   }
   return s.Lookup(adsh_id, tv_id);
 }
 
-void SecEdgarQ6ExpandPayload(const SecEdgarQ6Structure &s, uint32_t payload,
-                             double value, int64_t sign,
+void SecEdgarQ6ExpandPayload(const SecEdgarQ6Hit &hit, double value, int64_t sign,
                              std::vector<SecEdgarQ6GroupDelta> &out) {
-  if (payload == SecEdgarQ6Structure::kNoPayload) {
+  if (!hit.Found()) {
     return;
   }
-  const double signed_value = static_cast<double>(sign) * value;
-  if ((payload & SecEdgarQ6Structure::kMultiFlag) == 0) {
-    out.push_back({payload, signed_value, sign});
-    return;
-  }
-  const uint32_t *block = s.multi.data() + (payload & ~SecEdgarQ6Structure::kMultiFlag);
-  const uint32_t k = block[0];
-  for (uint32_t i = 0; i < k; ++i) {
-    const uint32_t gid = block[1 + 2 * i];
-    const uint32_t mult = block[2 + 2 * i];
-    out.push_back({gid, signed_value * static_cast<double>(mult),
-                   sign * static_cast<int64_t>(mult)});
-  }
+  ExpandGeneric(TrailerOf(hit.run), hit.payload,
+                SecEdgarQ6Sum{static_cast<double>(sign) * value, 0.0}, sign, out);
 }
 
 void SecEdgarQ6ResolveBatch(const SecEdgarQ6Structure &s,
                             const SecEdgarQ6NumRef *refs, size_t n,
                             std::vector<SecEdgarQ6GroupDelta> &out) {
-  constexpr size_t kBlock = 32;
-  uint64_t ha[kBlock], ht[kBlock];
-  uint32_t adsh_id[kBlock], tv_id[kBlock], begin[kBlock], end[kBlock];
-  for (size_t base = 0; base < n; base += kBlock) {
-    const size_t m = std::min(kBlock, n - base);
-    // A: hash + prefetch pool slots.
-    for (size_t i = 0; i < m; ++i) {
-      const auto &r = refs[base + i];
-      ha[i] = SecEdgarQ6StringPool::Hash(r.adsh);
-      s.adshs.Prefetch(ha[i]);
-      ht[i] = SecEdgarQ6TagVersionKey(r.tag, r.version).Hash();
-      s.tvs.Prefetch(ht[i]);
-    }
-    // B: resolve ids; prefetch the CSR offsets.
-    for (size_t i = 0; i < m; ++i) {
-      const auto &r = refs[base + i];
-      adsh_id[i] = s.adshs.FindHashed(ha[i], r.adsh);
-      if (adsh_id[i] == 0) {
-        tv_id[i] = 0;
-        continue;
-      }
-      const SecEdgarQ6TagVersionKey key(r.tag, r.version);
-      tv_id[i] = s.tvs.FindHashed(ht[i], key.View());
-      if (tv_id[i] != 0) {
-        __builtin_prefetch(&s.csr_off[adsh_id[i]]);
-      }
-    }
-    // C: read run bounds; prefetch the run.
-    for (size_t i = 0; i < m; ++i) {
-      if (adsh_id[i] == 0 || tv_id[i] == 0) {
-        begin[i] = end[i] = 0;
-        continue;
-      }
-      begin[i] = s.csr_off[adsh_id[i]];
-      end[i] = s.csr_off[adsh_id[i] + 1];
-      __builtin_prefetch(&s.csr_tv[begin[i]]);
-      __builtin_prefetch(&s.csr_pay[begin[i]]);
-    }
-    // D: find tv in the run, expand.
-    for (size_t i = 0; i < m; ++i) {
-      if (begin[i] == end[i]) {
-        continue;
-      }
-      const size_t len = end[i] - begin[i];
-      const size_t idx = FindTv(s.csr_tv.data() + begin[i], len, tv_id[i]);
-      if (idx == len) {
-        continue;
-      }
-      SecEdgarQ6ExpandPayload(s, s.csr_pay[begin[i] + idx], refs[base + i].value,
-                              refs[base + i].sign, out);
-    }
+  for (size_t i = 0; i < n; ++i) {
+    const auto &r = refs[i];
+    SecEdgarQ6ExpandPayload(SecEdgarQ6Resolve(s, r.adsh, r.tag, r.version),
+                            r.value, r.sign, out);
   }
 }
 
@@ -820,7 +751,8 @@ void SecEdgarQ6ResolveBatch(const SecEdgarQ6Structure &s,
 // ---------------------------------------------------------------------------
 std::shared_ptr<const SecEdgarQ6State>
 SecEdgarQ6ApplyDeltas(const SecEdgarQ6State &old_state,
-                      std::vector<SecEdgarQ6GroupDelta> &deltas) {
+                      std::vector<SecEdgarQ6GroupDelta> &deltas,
+                      bool *overflow) {
   if (deltas.empty()) {
     return nullptr;
   }
@@ -833,10 +765,10 @@ SecEdgarQ6ApplyDeltas(const SecEdgarQ6State &old_state,
     SecEdgarQ6GroupDelta merged = deltas[i];
     size_t j = i + 1;
     for (; j < deltas.size() && deltas[j].gid == merged.gid; ++j) {
-      merged.sum += deltas[j].sum;
+      merged.sum = SecEdgarQ6SumAdd(merged.sum, deltas[j].sum);
       merged.cnt += deltas[j].cnt;
     }
-    if (merged.sum != 0.0 || merged.cnt != 0) {
+    if (merged.sum.hi != 0.0 || merged.sum.lo != 0.0 || merged.cnt != 0) {
       deltas[m++] = merged;
     }
     i = j;
@@ -846,11 +778,8 @@ SecEdgarQ6ApplyDeltas(const SecEdgarQ6State &old_state,
     return nullptr;
   }
 
-  auto next = std::make_shared<SecEdgarQ6State>();
-  next->structure = old_state.structure;
-  next->chunks = old_state.chunks;
-  next->active_groups = old_state.active_groups;
-  next->top = old_state.top;
+  auto next = std::make_shared<SecEdgarQ6State>(old_state); // shares chunks
+  const SecEdgarQ6Structure &structure = next->structure;
 
   bool rescan = deltas.size() > kIncrementalTouchedMax;
   auto &gids = next->top.gids;
@@ -863,7 +792,8 @@ SecEdgarQ6ApplyDeltas(const SecEdgarQ6State &old_state,
       if (old_state.Count(d.gid) != 0 && AtLeast(old_state.Sum(d.gid), lb)) {
         const auto it = std::lower_bound(
             gids.begin(), gids.end(), d.gid, [&](uint32_t x, uint32_t y) {
-              return SecEdgarQ6GroupBefore(old_state, x, y);
+              return GroupBeforeWith(structure, old_state.Sum(x),
+                                     old_state.Sum(y), x, y);
             });
         if (it == gids.end() || *it != d.gid) {
           rescan = true; // invariant violated: be safe
@@ -874,24 +804,26 @@ SecEdgarQ6ApplyDeltas(const SecEdgarQ6State &old_state,
     }
   }
 
-  // Apply phase: clone each touched chunk once.
-  SecEdgarQ6AggChunk *cur = nullptr;
-  uint32_t cur_index = std::numeric_limits<uint32_t>::max();
+  // Apply phase: each touched chunk is cloned once (on first write).
   for (const auto &d : deltas) {
-    const uint32_t ci = d.gid >> kQ6ChunkShift;
-    if (ci != cur_index) {
-      auto clone = std::shared_ptr<SecEdgarQ6AggChunk>(
-          new SecEdgarQ6AggChunk(*old_state.chunks[ci]));
-      cur = clone.get();
-      next->chunks[ci] = std::move(clone);
-      cur_index = ci;
+    double &hi = next->sum_hi.Mutable(d.gid);
+    double &lo = next->sum_lo.Mutable(d.gid);
+    int64_t &cnt = next->cnt.Mutable(d.gid);
+    const bool was_active = cnt != 0;
+    const bool was_finite = std::isfinite(hi);
+    cnt += d.cnt;
+    if (cnt == 0) {
+      hi = lo = 0.0;
+    } else {
+      const SecEdgarQ6Sum r = SecEdgarQ6SumAdd({hi, lo}, d.sum);
+      hi = r.hi;
+      lo = r.lo;
+      if (overflow && was_finite && std::isfinite(d.sum.hi) &&
+          !std::isfinite(hi)) {
+        *overflow = true;
+      }
     }
-    const uint32_t slot = d.gid & kQ6ChunkMask;
-    const bool was_active = cur->cnt[slot] != 0;
-    cur->cnt[slot] += d.cnt;
-    cur->sum[slot] = cur->cnt[slot] == 0 ? 0.0 : cur->sum[slot] + d.sum;
-    const bool is_active = cur->cnt[slot] != 0;
-    next->active_groups += static_cast<uint64_t>(is_active) -
+    next->active_groups += static_cast<uint64_t>(cnt != 0) -
                            static_cast<uint64_t>(was_active);
   }
 
@@ -900,7 +832,7 @@ SecEdgarQ6ApplyDeltas(const SecEdgarQ6State &old_state,
       if (next->Count(d.gid) != 0 && AtLeast(next->Sum(d.gid), lb)) {
         const auto it = std::lower_bound(
             gids.begin(), gids.end(), d.gid, [&](uint32_t x, uint32_t y) {
-              return SecEdgarQ6GroupBefore(*next, x, y);
+              return GroupBeforeWith(structure, next->Sum(x), next->Sum(y), x, y);
             });
         gids.insert(it, d.gid);
       }
@@ -925,174 +857,148 @@ std::vector<SecEdgarQ6OutputRow> SecEdgarQ6TopRows(const SecEdgarQ6State &state,
     SecEdgarQ6Rescan(scratch);
     src = &scratch;
   }
-  const auto &s = *src->structure;
+  const auto &s = src->structure;
   const size_t n = std::min(limit, src->top.gids.size());
   std::vector<SecEdgarQ6OutputRow> rows;
   rows.reserve(n);
   for (size_t i = 0; i < n; ++i) {
-    const uint32_t g = src->top.gids[i];
+    const uint32_t gid = src->top.gids[i];
+    const SecEdgarQ6Group g = s.groups.Get(gid);
     SecEdgarQ6OutputRow row;
-    if (s.g_name[g] == 0) {
+    if (g.name == 0) {
       row.name_is_null = true;
     } else {
-      row.name = std::string(s.names.View(s.g_name[g]));
+      row.name = std::string(s.names.View(g.name));
     }
-    row.tag = std::string(s.tags.View(s.g_tag[g]));
-    if (s.g_plabel[g] == 0) {
+    row.tag = std::string(s.tags.View(g.tag));
+    if (g.plabel == 0) {
       row.plabel_is_null = true;
     } else {
-      row.plabel = std::string(s.plabels.View(s.g_plabel[g]));
+      row.plabel = std::string(s.plabels.View(g.plabel));
     }
-    row.total_value = src->Sum(g);
-    row.cnt = src->Count(g);
+    row.total_value = src->Sum(gid);
+    row.cnt = src->Count(gid);
     rows.push_back(std::move(row));
   }
   return rows;
 }
 
-
 // ---------------------------------------------------------------------------
 // Structural edits
 // ---------------------------------------------------------------------------
-namespace {
-void ExpandAgg(const SecEdgarQ6Structure &s, uint32_t payload, double sum, int64_t cnt,
-               int sign, std::vector<SecEdgarQ6GroupDelta> &out) {
-  if (payload == SecEdgarQ6Structure::kNoPayload) return;
-  const double ss = static_cast<double>(sign) * sum;
-  const int64_t sc = static_cast<int64_t>(sign) * cnt;
-  if ((payload & SecEdgarQ6Structure::kMultiFlag) == 0) {
-    out.push_back({payload, ss, sc});
-    return;
-  }
-  const uint32_t *block = s.multi.data() + (payload & ~SecEdgarQ6Structure::kMultiFlag);
-  for (uint32_t i = 0; i < block[0]; ++i) {
-    const double mult = block[2 + 2 * i];
-    out.push_back({block[1 + 2 * i], ss * mult, sc * static_cast<int64_t>(block[2 + 2 * i])});
-  }
-}
-} // namespace
-
 std::shared_ptr<const SecEdgarQ6State>
 SecEdgarQ6ApplyEdits(const SecEdgarQ6State &old_state,
                      const std::vector<SecEdgarQ6AdshEdit> &edits,
-                     std::vector<SecEdgarQ6GroupDelta> &extra) {
-  const SecEdgarQ6Structure &os = *old_state.structure;
-  auto s = std::make_shared<SecEdgarQ6Structure>(os);
+                     std::vector<SecEdgarQ6GroupDelta> &extra, bool *overflow) {
+  const SecEdgarQ6Structure &os = old_state.structure;
+  // A copy shares every chunk / shard with old_state; the edits below clone
+  // only what they touch.
+  auto base = std::make_shared<SecEdgarQ6State>(old_state);
+  SecEdgarQ6Structure &s = base->structure;
   std::vector<SecEdgarQ6GroupDelta> deltas = std::move(extra);
-  using Run = std::vector<std::pair<uint32_t, uint32_t>>; // (tv, payload)
-  std::vector<std::pair<uint32_t, Run>> runs;
+
+  struct Entry {
+    uint32_t tv, gid, mult;
+  };
+  std::string record;
 
   for (const auto &edit : edits) {
     // Old contributions (old structure, pre-transaction sums).
     const uint32_t old_id = os.adshs.Find(edit.adsh);
-    if (old_id != 0 && os.adsh_name[old_id] != SecEdgarQ6Structure::kNotCohort) {
+    if (old_id != 0 && os.adsh_name.Get(old_id) != SecEdgarQ6Structure::kNotCohort) {
       for (const auto &n : edit.old_nums) {
-        const uint32_t tv = os.tvs.Find(SecEdgarQ6TagVersionKey(n.tag, n.version).View());
+        const uint32_t tv =
+            os.tvs.Find(SecEdgarQ6TagVersionKey(n.tag, n.version).View());
         if (tv == 0) continue;
-        ExpandAgg(os, os.Lookup(old_id, tv), n.sum, n.cnt, -1, deltas);
+        const SecEdgarQ6Hit hit = os.Lookup(old_id, tv);
+        if (!hit.Found()) continue;
+        ExpandGeneric(TrailerOf(hit.run), hit.payload, SecEdgarQ6Sum{-n.sum, -n.sum_lo},
+                      -n.cnt, deltas);
       }
     }
-    uint32_t id = s->adshs.Find(edit.adsh);
-    Run run;
-    if (edit.new_cohort) {
-      if (id == 0) {
-        id = s->adshs.Intern(edit.adsh);
-        s->adsh_name.resize(static_cast<size_t>(id) + 1, 0);
+    uint32_t id = s.adshs.Find(edit.adsh);
+    if (!edit.new_cohort) {
+      if (id != 0) {
+        s.adsh_name.Set(id, SecEdgarQ6Structure::kNotCohort);
+        s.runs.Erase(id);
       }
-      const uint32_t name_id = edit.name_is_null ? 0 : s->names.Intern(edit.name);
-      s->adsh_name[id] = name_id;
-      struct E { uint32_t tv, gid, mult; };
-      std::vector<E> es;
-      for (const auto &pe : edit.pre) {
-        const uint32_t tag_id = s->tags.Intern(pe.tag);
-        const SecEdgarQ6TagVersionKey key(pe.tag, pe.version);
-        const uint32_t before = s->tvs.Count();
-        const uint32_t tv = s->tvs.Intern(key.View());
-        if (tv > before) {
-          s->tv_tag.resize(static_cast<size_t>(tv) + 1, 0);
-          s->tv_tag[tv] = tag_id;
-        }
-        const uint32_t plabel_id = pe.plabel_is_null ? 0 : s->plabels.Intern(pe.plabel);
-        es.push_back({tv, s->FindOrAddGroup(name_id, tag_id, plabel_id), pe.mult});
+      continue;
+    }
+    if (id == 0) {
+      id = s.adshs.Intern(edit.adsh);
+    }
+    const uint32_t name_id = edit.name_is_null ? 0 : s.names.Intern(edit.name);
+    s.adsh_name.Set(id, name_id);
+
+    std::vector<Entry> es;
+    for (const auto &pe : edit.pre) {
+      const uint32_t tag_id = s.tags.Intern(pe.tag);
+      const SecEdgarQ6TagVersionKey key(pe.tag, pe.version);
+      const uint32_t before = s.tvs.Count();
+      const uint32_t tv = s.tvs.Intern(key.View());
+      if (tv > before) {
+        s.tv_tag.Set(tv, tag_id);
       }
-      std::sort(es.begin(), es.end(), [](const E &a, const E &b) {
-        return a.tv != b.tv ? a.tv < b.tv : a.gid < b.gid;
-      });
-      for (size_t i = 0; i < es.size();) {
-        size_t j = i;
-        std::vector<std::pair<uint32_t, uint32_t>> gm; // (gid, mult)
-        while (j < es.size() && es[j].tv == es[i].tv) {
-          if (!gm.empty() && gm.back().first == es[j].gid) gm.back().second += es[j].mult;
-          else gm.emplace_back(es[j].gid, es[j].mult);
-          ++j;
-        }
-        uint32_t payload;
-        if (gm.size() == 1 && gm[0].second == 1) {
-          payload = gm[0].first;
+      const uint32_t plabel_id = pe.plabel_is_null ? 0 : s.plabels.Intern(pe.plabel);
+      es.push_back({tv, s.FindOrAddGroup(name_id, tag_id, plabel_id), pe.mult});
+    }
+    std::sort(es.begin(), es.end(), [](const Entry &a, const Entry &b) {
+      return a.tv != b.tv ? a.tv < b.tv : a.gid < b.gid;
+    });
+    std::vector<uint32_t> tvs, pays, trailer;
+    for (size_t i = 0; i < es.size();) {
+      size_t j = i;
+      std::vector<std::pair<uint32_t, uint32_t>> gm; // (gid, mult)
+      while (j < es.size() && es[j].tv == es[i].tv) {
+        if (!gm.empty() && gm.back().first == es[j].gid) {
+          gm.back().second += es[j].mult;
         } else {
-          payload = SecEdgarQ6Structure::kMultiFlag | static_cast<uint32_t>(s->multi.size());
-          s->multi.push_back(static_cast<uint32_t>(gm.size()));
-          for (auto &[g, m] : gm) {
-            s->multi.push_back(g);
-            s->multi.push_back(m);
-          }
+          gm.emplace_back(es[j].gid, es[j].mult);
         }
-        run.emplace_back(es[i].tv, payload);
-        i = j;
+        ++j;
       }
-      for (const auto &n : edit.new_nums) {
-        const uint32_t tv = s->tvs.Find(SecEdgarQ6TagVersionKey(n.tag, n.version).View());
-        if (tv == 0) continue;
-        const auto it = std::lower_bound(run.begin(), run.end(), tv,
-                                         [](const auto &r, uint32_t v) { return r.first < v; });
-        if (it == run.end() || it->first != tv) continue;
-        ExpandAgg(*s, it->second, n.sum, n.cnt, +1, deltas);
+      uint32_t payload;
+      if (gm.size() == 1 && gm[0].second == 1) {
+        payload = gm[0].first;
+      } else {
+        payload = SecEdgarQ6Structure::kMultiFlag | static_cast<uint32_t>(trailer.size());
+        trailer.push_back(static_cast<uint32_t>(gm.size()));
+        for (const auto &[g, m] : gm) {
+          trailer.push_back(g);
+          trailer.push_back(m);
+        }
       }
-    } else if (id != 0) {
-      s->adsh_name[id] = SecEdgarQ6Structure::kNotCohort;
+      tvs.push_back(es[i].tv);
+      pays.push_back(payload);
+      i = j;
     }
-    if (id != 0) runs.emplace_back(id, std::move(run));
-  }
-
-  if (s->GroupCount() > s->base_group_count + s->base_group_count / 2 + 4096 ||
-      s->multi.size() > static_cast<size_t>(s->base_multi_size) * 2 + 4096) {
-    return nullptr; // too much accumulated garbage: let the caller rebuild
-  }
-
-  // Rebuild the CSR in one pass.
-  std::sort(runs.begin(), runs.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-  const uint32_t n_adsh = s->adshs.Count();
-  const uint32_t old_n = os.adshs.Count();
-  std::vector<uint32_t> off(static_cast<size_t>(n_adsh) + 2, 0), tvv, pay;
-  tvv.reserve(os.csr_tv.size() + 64);
-  pay.reserve(os.csr_pay.size() + 64);
-  size_t ri = 0;
-  for (uint32_t a = 1; a <= n_adsh; ++a) {
-    off[a] = static_cast<uint32_t>(tvv.size());
-    if (ri < runs.size() && runs[ri].first == a) {
-      for (const auto &[tv, p] : runs[ri].second) {
-        tvv.push_back(tv);
-        pay.push_back(p);
-      }
-      ++ri;
-    } else if (a <= old_n) {
-      tvv.insert(tvv.end(), os.csr_tv.begin() + os.csr_off[a], os.csr_tv.begin() + os.csr_off[a + 1]);
-      pay.insert(pay.end(), os.csr_pay.begin() + os.csr_off[a], os.csr_pay.begin() + os.csr_off[a + 1]);
+    // New contributions from the run being installed.
+    for (const auto &n : edit.new_nums) {
+      const uint32_t tv =
+          s.tvs.Find(SecEdgarQ6TagVersionKey(n.tag, n.version).View());
+      if (tv == 0) continue;
+      const auto it = std::lower_bound(tvs.begin(), tvs.end(), tv);
+      if (it == tvs.end() || *it != tv) continue;
+      const uint32_t payload = pays[static_cast<size_t>(it - tvs.begin())];
+      ExpandGeneric(reinterpret_cast<const char *>(trailer.data()), payload,
+                    SecEdgarQ6Sum{n.sum, n.sum_lo}, n.cnt, deltas);
+    }
+    if (tvs.empty()) {
+      s.runs.Erase(id);
+    } else {
+      record.clear();
+      Append32(record, static_cast<uint32_t>(tvs.size()));
+      record.append(reinterpret_cast<const char *>(tvs.data()), 4 * tvs.size());
+      record.append(reinterpret_cast<const char *>(pays.data()), 4 * pays.size());
+      record.append(reinterpret_cast<const char *>(trailer.data()), 4 * trailer.size());
+      s.runs.Set(id, record);
     }
   }
-  off[n_adsh + 1] = static_cast<uint32_t>(tvv.size());
-  s->csr_off = std::move(off);
-  s->csr_tv = std::move(tvv);
-  s->csr_pay = std::move(pay);
 
-  auto base = std::make_shared<SecEdgarQ6State>();
-  base->structure = s;
-  base->chunks = old_state.chunks;
-  const size_t want = (static_cast<size_t>(s->GroupCount()) + kQ6ChunkMask) >> kQ6ChunkShift;
-  while (base->chunks.size() < want) base->chunks.push_back(NewChunk());
-  base->active_groups = old_state.active_groups;
-  base->top = old_state.top;
-  auto next = SecEdgarQ6ApplyDeltas(*base, deltas);
+  if (s.group_count > s.base_group_count + s.base_group_count / 2 + 4096) {
+    return nullptr; // too many unused groups accumulated: let the caller rebuild
+  }
+  auto next = SecEdgarQ6ApplyDeltas(*base, deltas, overflow);
   return next ? next : std::shared_ptr<const SecEdgarQ6State>(base);
 }
 

@@ -108,6 +108,10 @@ struct CollectBuilder final : core::StateBuilder {
   bool finished = false;
 };
 
+// A fresh build per step is only affordable on small data (override with
+// ACCEL_Q6_FRESH_CHECK=0/1).
+bool g_fresh_check = true;
+
 // ---------------------------------------------------------------------------
 // Harness: DuckDB + coordinator + backend + state store + module.
 // ---------------------------------------------------------------------------
@@ -156,9 +160,37 @@ public:
     Require(module_->CheckValidity(backend_, {}),
             "aux state not valid after " + context);
     try {
+      CheckAgainstFreshBuild();
       harness::CompareAuxRowsToBase(connection_, entry_, Execute());
     } catch (const std::exception &e) {
       throw std::runtime_error(std::string(e.what()) + " [after " + context + "]");
+    }
+  }
+
+  // The incrementally maintained state must answer exactly like a state built
+  // from scratch over the same tables (same groups, same bits).
+  void CheckAgainstFreshBuild() {
+    if (!g_fresh_check) return;
+    const auto fresh = q::SecEdgarQ6TopRows(*std::static_pointer_cast<q::SecEdgarQ6Module>(module_)->BuildState());
+    const auto got = Execute();
+    Require(got.size() == fresh.size(), "fresh build row count " + std::to_string(fresh.size()) +
+                                            " vs maintained " + std::to_string(got.size()));
+    for (std::size_t i = 0; i < fresh.size(); ++i) {
+      const auto &r = got[i].values;
+      const bool name_ok = fresh[i].name_is_null ? r[0].is_null
+                                                 : (!r[0].is_null && std::get<std::string>(r[0].payload) == fresh[i].name);
+      const bool plabel_ok = fresh[i].plabel_is_null ? r[3].is_null
+                                                     : (!r[3].is_null && std::get<std::string>(r[3].payload) == fresh[i].plabel);
+      Require(name_ok && plabel_ok && std::get<std::string>(r[2].payload) == fresh[i].tag &&
+                  std::get<int64_t>(r[5].payload) == fresh[i].cnt,
+              "maintained state differs from a fresh build at row " + std::to_string(i) + " fresh=(" +
+                  fresh[i].name + "," + fresh[i].tag + "," + fresh[i].plabel + "," + std::to_string(fresh[i].cnt) +
+                  "," + std::to_string(fresh[i].total_value) + ") got=(" +
+                  (r[0].is_null ? "NULL" : std::get<std::string>(r[0].payload)) + "," +
+                  std::get<std::string>(r[2].payload) + "," +
+                  (r[3].is_null ? "NULL" : std::get<std::string>(r[3].payload)) + "," +
+                  std::to_string(std::get<int64_t>(r[5].payload)) + "," +
+                  std::to_string(std::get<double>(r[4].payload)) + ")");
     }
   }
 
@@ -851,6 +883,8 @@ int main(int argc, char **argv) {
     int ops = argc > 3 ? std::stoi(argv[3]) : 300;
     const bool parallel = argc > 4 && std::string(argv[4]) == "parallel";
     const bool real = mode != "synthetic" && mode != "synthetic-large";
+    g_fresh_check = mode == "synthetic";
+    if (const char *e = std::getenv("ACCEL_Q6_FRESH_CHECK")) g_fresh_check = e[0] == '1';
 
     std::unique_ptr<duckdb::DuckDB> database;
     if (real) {

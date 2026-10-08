@@ -209,10 +209,12 @@ std::shared_ptr<const SecEdgarQ6State> SecEdgarQ6Module::BuildState() const {
       builder.AddPre(in.adsh, in.tag, in.version, in.plabel, in.plabel_is_null);
     }
   });
-  auto structure = builder.Finish();
-  auto state = std::make_shared<SecEdgarQ6State>(SecEdgarQ6MakeEmptyState(structure));
+  auto state = std::make_shared<SecEdgarQ6State>(
+      SecEdgarQ6MakeEmptyState(builder.Finish()));
+  const SecEdgarQ6Structure &structure = state->structure;
 
-  // Fast path: the engine aggregates num x pre x sub itself.
+  // Fast path: the engine aggregates num x pre x sub itself (its own sums are
+  // the base values, bit for bit).
   bool failed = false;
   const bool supported = initial_scan->ScanGroupAggregates(
       [&](const SecEdgarQ6GroupAggregateInput &g) {
@@ -221,22 +223,22 @@ std::shared_ptr<const SecEdgarQ6State> SecEdgarQ6Module::BuildState() const {
         }
         uint32_t name_id = 0;
         if (!g.name_is_null) {
-          name_id = structure->names.Find(g.name);
+          name_id = structure.names.Find(g.name);
           if (name_id == 0) {
             failed = true;
             return;
           }
         }
-        const uint32_t tag_id = structure->tags.Find(g.tag);
+        const uint32_t tag_id = structure.tags.Find(g.tag);
         uint32_t plabel_id = 0;
         if (!g.plabel_is_null) {
-          plabel_id = structure->plabels.Find(g.plabel);
+          plabel_id = structure.plabels.Find(g.plabel);
           if (plabel_id == 0) {
             failed = true;
             return;
           }
         }
-        const uint32_t gid = structure->FindGroup(name_id, tag_id, plabel_id);
+        const uint32_t gid = structure.FindGroup(name_id, tag_id, plabel_id);
         if (tag_id == 0 || gid == SecEdgarQ6Structure::kNoPayload) {
           failed = true;
           return;
@@ -245,30 +247,27 @@ std::shared_ptr<const SecEdgarQ6State> SecEdgarQ6Module::BuildState() const {
       });
   if (!supported || failed) {
     // Generic path: stream num and resolve every contribution through the
-    // bridge.
-    *state = SecEdgarQ6MakeEmptyState(structure);
-    std::vector<double> sums(structure->GroupCount(), 0.0);
-    std::vector<int64_t> counts(structure->GroupCount(), 0);
+    // bridge. Sums are accumulated as double-doubles (order independent).
+    *state = SecEdgarQ6MakeEmptyState(std::move(state->structure));
+    const SecEdgarQ6Structure &st = state->structure;
+    std::vector<SecEdgarQ6Sum> sums(st.GroupCount());
+    std::vector<int64_t> counts(st.GroupCount(), 0);
     std::vector<SecEdgarQ6GroupDelta> scratch;
     initial_scan->ScanNum([&](const SecEdgarQ6NumInput &in) {
       if (in.value_is_null || in.uom != kUsd) {
         return;
       }
-      const uint32_t payload =
-          SecEdgarQ6Resolve(*structure, in.adsh, in.tag, in.version);
-      if (payload == SecEdgarQ6Structure::kNoPayload) {
-        return;
-      }
       scratch.clear();
-      SecEdgarQ6ExpandPayload(*structure, payload, in.value, 1, scratch);
+      SecEdgarQ6ExpandPayload(SecEdgarQ6Resolve(st, in.adsh, in.tag, in.version),
+                              in.value, 1, scratch);
       for (const auto &d : scratch) {
-        sums[d.gid] += d.sum;
+        sums[d.gid] = SecEdgarQ6SumAdd(sums[d.gid], d.sum);
         counts[d.gid] += d.cnt;
       }
     });
-    for (uint32_t g = 0; g < structure->GroupCount(); ++g) {
+    for (uint32_t g = 0; g < st.GroupCount(); ++g) {
       if (counts[g] != 0) {
-        SecEdgarQ6SetGroup(*state, g, sums[g], counts[g]);
+        SecEdgarQ6SetGroup(*state, g, sums[g].hi, counts[g]);
       }
     }
   }
@@ -377,6 +376,11 @@ void SecEdgarQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
           c_version == Cell::Null || c_uom == Cell::Null ||
           c_value == Cell::Null || uom != kUsd) {
         continue; // cannot join / filtered out
+      }
+      if (!std::isfinite(value)) {
+        // inf / NaN cannot be removed from a sum again: rebuild.
+        buffer.MarkRebuild();
+        return;
       }
       buffer.AddNumDelta(adsh, tag, version, value, sign);
     }
@@ -497,8 +501,14 @@ void SecEdgarQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
 std::shared_ptr<const SecEdgarQ6State>
 SecEdgarQ6Module::LoadPublishedState(core::AuxEngineServices &services,
                                      core::Version *version) const {
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {kStatePartition});
+  // Validity and the state's handle in one linearized observation.
+  thread_local std::vector<core::PartitionId> wanted(1);
+  wanted[0] = kStatePartition;
+  const auto snapshot = services.StateStore().ReadHitPartitions(
+      services.CurrentVisibility(), {Id(), {}}, wanted);
+  if (!snapshot.available) {
+    return nullptr;
+  }
   for (const auto &image : snapshot.partitions) {
     if (image.partition != kStatePartition) {
       continue;
@@ -548,7 +558,7 @@ SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
     affected.insert(change.adsh);
   }
   for (const auto &change : buffer.PreChanges()) {
-    if (affected.count(change.adsh) || state->structure->IsCohort(change.adsh)) {
+    if (affected.count(change.adsh) || state->structure.IsCohort(change.adsh)) {
       affected.insert(change.adsh);
     }
   }
@@ -587,7 +597,10 @@ SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
       auto &entry = txn[key];
       entry.tag = std::string(buffer.Tag(d));
       entry.version = std::string(buffer.Version(d));
-      entry.sum += static_cast<double>(d.sign) * d.value;
+      const auto added = SecEdgarQ6SumAdd(
+          {entry.sum, entry.sum_lo}, {static_cast<double>(d.sign) * d.value, 0.0});
+      entry.sum = added.hi;
+      entry.sum_lo = added.lo;
       entry.cnt += d.sign;
     }
     std::vector<SecEdgarQ6AdshEdit> edits(adshs.size());
@@ -615,7 +628,10 @@ SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
         auto &entry = old_map[key];
         entry.tag = delta.tag;
         entry.version = delta.version;
-        entry.sum -= delta.sum;
+        const auto reduced = SecEdgarQ6SumAdd({entry.sum, entry.sum_lo},
+                                              {-delta.sum, -delta.sum_lo});
+        entry.sum = reduced.hi;
+        entry.sum_lo = reduced.lo;
         entry.cnt -= delta.cnt;
       }
       for (auto &[key, n] : old_map) {
@@ -623,9 +639,15 @@ SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
       }
     }
     std::vector<SecEdgarQ6GroupDelta> group_deltas;
-    SecEdgarQ6ResolveBatch(*state->structure, refs.data(), refs.size(), group_deltas);
-    auto next = SecEdgarQ6ApplyEdits(*state, edits, group_deltas);
-    if (!next) {
+    SecEdgarQ6ResolveBatch(state->structure, refs.data(), refs.size(), group_deltas);
+    bool overflow = false;
+    std::shared_ptr<const SecEdgarQ6State> next;
+    try {
+      next = SecEdgarQ6ApplyEdits(*state, edits, group_deltas, &overflow);
+    } catch (const std::length_error &) {
+      return RebuildOutcome(); // id space exhausted: a fresh build compacts
+    }
+    if (!next || overflow) {
       return RebuildOutcome();
     }
     outcome.action = core::MaintenanceAction::ApplyDelta;
@@ -658,14 +680,17 @@ SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
   if (refs.size() == 1) {
     const auto &r = refs[0];
     SecEdgarQ6ExpandPayload(
-        *state->structure,
-        SecEdgarQ6Resolve(*state->structure, r.adsh, r.tag, r.version), r.value,
+        SecEdgarQ6Resolve(state->structure, r.adsh, r.tag, r.version), r.value,
         r.sign, group_deltas);
   } else {
-    SecEdgarQ6ResolveBatch(*state->structure, refs.data(), refs.size(),
+    SecEdgarQ6ResolveBatch(state->structure, refs.data(), refs.size(),
                            group_deltas);
   }
-  auto next = SecEdgarQ6ApplyDeltas(*state, group_deltas);
+  bool overflow = false;
+  auto next = SecEdgarQ6ApplyDeltas(*state, group_deltas, &overflow);
+  if (overflow) {
+    return RebuildOutcome(); // a sum left the double range: not removable exactly
+  }
   if (!next) {
     return outcome; // none of the rows reach the result
   }
