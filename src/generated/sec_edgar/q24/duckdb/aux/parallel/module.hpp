@@ -1,17 +1,18 @@
 #pragma once
 
 #include "sec_edgar/q24/duckdb/aux/module.hpp"
-#include "sec_edgar/q24/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
+// Same incremental maintenance as the serial module (state and ApplyDelta are
+// shared); only Build / fallback use the multi-threaded native table scans.
 class SecEdgarQ24ParallelModule final : public core::AuxQueryModule {
 public:
   static constexpr const char *kId = core::SecEdgarQ24Layout::kParallelAccelerator;
 
   explicit SecEdgarQ24ParallelModule(SecEdgarQ24Config config,
                                      SecEdgarQ24InitialScan *initial_scan = nullptr)
-      : inner_(config, initial_scan), initial_scan(initial_scan) {}
+      : inner_(config, initial_scan) {}
 
   core::AcceleratorId Id() const override { return kId; }
   std::vector<core::TableDependency> Dependencies() const override {
@@ -41,11 +42,8 @@ public:
 
 private:
   SecEdgarQ24State BuildState(core::AuxEngineServices &) const;
-  void EmitOutput(const SecEdgarQ24State &, core::AuxRowSink &) const;
-  void EmitState(const SecEdgarQ24State &, core::StateBuilder &) const;
 
   SecEdgarQ24Module inner_;
-  SecEdgarQ24InitialScan *initial_scan = nullptr;
 };
 
 } // namespace accelerator_codegen::aux_state::query

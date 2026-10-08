@@ -8,8 +8,11 @@
 #include "sec_edgar/duckdb_probes.hpp"
 #include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
+#include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
+#include "sec_edgar/q24/duckdb/base/query.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <cstdlib>
 #include <functional>
@@ -86,6 +89,66 @@ namespace query = accelerator_codegen::aux_state::query;
 using namespace accelerator_codegen::aux_state::query;
 using namespace scan;
 
+// Streams a SELECT of (VARCHAR, VARCHAR, VARCHAR[, DOUBLE]) as column-oriented
+// batches of string views, avoiding per-cell Value construction.
+template <typename Consumer>
+void StreamQ24Columns(::duckdb::Connection &connection, const std::string &sql,
+                      bool with_value, Consumer &&consume) {
+  auto result = ScanConnection(connection).SendQuery(sql);
+  Require(result != nullptr && !result->HasError(),
+          result ? result->GetError() : "DuckDB scan returned null");
+  std::vector<Q24Str> strings[3];
+  std::vector<double> values;
+  ::duckdb::UnifiedVectorFormat formats[4];
+  while (true) {
+    auto chunk = result->Fetch();
+    if (!chunk || chunk->size() == 0) {
+      break;
+    }
+    const auto n = chunk->size();
+    for (int c = 0; c < 3; ++c) {
+      chunk->data[c].ToUnifiedFormat(n, formats[c]);
+      const auto *data =
+          ::duckdb::UnifiedVectorFormat::GetData<::duckdb::string_t>(formats[c]);
+      strings[c].resize(n);
+      for (::duckdb::idx_t i = 0; i < n; ++i) {
+        const auto idx = formats[c].sel->get_index(i);
+        if (!formats[c].validity.RowIsValid(idx)) {
+          strings[c][i] = Q24Str::Null();
+        } else {
+          strings[c][i] = Q24Str::Of(data[idx].GetData(), data[idx].GetSize());
+        }
+      }
+    }
+    if (with_value) {
+      chunk->data[3].ToUnifiedFormat(n, formats[3]);
+      const auto *data = ::duckdb::UnifiedVectorFormat::GetData<double>(formats[3]);
+      values.resize(n);
+      for (::duckdb::idx_t i = 0; i < n; ++i) {
+        values[i] = data[formats[3].sel->get_index(i)];
+      }
+    }
+    consume(static_cast<std::size_t>(n), strings[0].data(), strings[1].data(),
+            strings[2].data(), values.data());
+  }
+  Require(!result->HasError(), result->GetError());
+}
+
+template <typename T> struct ChunkColumn;
+template <> struct ChunkColumn<::duckdb::string_t> {
+  ::duckdb::UnifiedVectorFormat fmt;
+  const ::duckdb::string_t *data = nullptr;
+  void Init(::duckdb::Vector &vec, ::duckdb::idx_t n) {
+    vec.ToUnifiedFormat(n, fmt);
+    data = ::duckdb::UnifiedVectorFormat::GetData<::duckdb::string_t>(fmt);
+  }
+  Q24Str At(::duckdb::idx_t i) const {
+    const auto idx = fmt.sel->get_index(i);
+    if (!fmt.validity.RowIsValid(idx)) return Q24Str::Null();
+    return Q24Str::Of(data[idx].GetData(), data[idx].GetSize());
+  }
+};
+
 struct SecEdgarQ24Scan : SecEdgarQ24InitialScan {
   explicit SecEdgarQ24Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanNum(
@@ -112,6 +175,163 @@ struct SecEdgarQ24Scan : SecEdgarQ24InitialScan {
                           result.GetValue(2, row).ToString()});
               });
   }
+  bool ScanQualifyingNumBatches(
+      const std::function<void(const SecEdgarQ24NumBatch &)> &consumer) override {
+    bool delivered = false;
+    try {
+      std::vector<Q24Str> a, t, v;
+      std::vector<double> value;
+      NativeScan(CreateSecEdgarQ24NumScanSpec(), [&](::duckdb::DataChunk &chunk) {
+        delivered = true;
+        const auto n = chunk.size();
+        ChunkColumn<::duckdb::string_t> ca, ct, cv, cu;
+        ca.Init(chunk.data[0], n);
+        ct.Init(chunk.data[1], n);
+        cv.Init(chunk.data[2], n);
+        cu.Init(chunk.data[4], n);
+        ::duckdb::UnifiedVectorFormat value_fmt, date_fmt;
+        chunk.data[3].ToUnifiedFormat(n, value_fmt);
+        chunk.data[5].ToUnifiedFormat(n, date_fmt);
+        const auto *values = ::duckdb::UnifiedVectorFormat::GetData<double>(value_fmt);
+        const auto *dates = ::duckdb::UnifiedVectorFormat::GetData<int32_t>(date_fmt);
+        a.resize(n); t.resize(n); v.resize(n); value.resize(n);
+        std::size_t out = 0;
+        for (::duckdb::idx_t i = 0; i < n; ++i) {
+          // Pushed-down storage filters are re-checked (cheap, keeps the
+          // contract exact even if a scan only applies them partially).
+          const auto vi = value_fmt.sel->get_index(i);
+          const auto di = date_fmt.sel->get_index(i);
+          if (!value_fmt.validity.RowIsValid(vi) || !date_fmt.validity.RowIsValid(di) ||
+              dates[di] < kSecEdgarQ24FirstDate || dates[di] > kSecEdgarQ24LastDate)
+            continue;
+          const Q24Str uom = cu.At(i);
+          if (uom.null || uom.size != std::strlen(kSecEdgarQ24Uom) ||
+              std::memcmp(uom.data, kSecEdgarQ24Uom, uom.size) != 0)
+            continue;
+          a[out] = ca.At(i);
+          t[out] = ct.At(i);
+          v[out] = cv.At(i);
+          value[out] = values[vi];
+          ++out;
+        }
+        if (out > 0) consumer({out, a.data(), t.data(), v.data(), value.data()});
+      });
+      return true;
+    } catch (const std::exception &) {
+      if (delivered) throw;
+    }
+    // Native scan unavailable (e.g. unexpected column types): SQL streaming.
+    const std::string sql =
+        "SELECT adsh, tag, version, value FROM num WHERE uom = '" +
+        std::string(kSecEdgarQ24Uom) + "' AND ddate BETWEEN " +
+        std::to_string(kSecEdgarQ24FirstDate) + " AND " +
+        std::to_string(kSecEdgarQ24LastDate) + " AND value IS NOT NULL";
+    StreamQ24Columns(connection, sql, /*with_value=*/true,
+                     [&](std::size_t n, const Q24Str *a, const Q24Str *t,
+                         const Q24Str *v, const double *value) {
+                       consumer({n, a, t, v, value});
+                     });
+    return true;
+  }
+  bool ScanPreBatches(
+      const std::function<void(const SecEdgarQ24PreBatch &)> &consumer) override {
+    bool delivered = false;
+    try {
+      std::vector<Q24Str> a, t, v;
+      NativeScan(CreateSecEdgarQ24PreScanSpec(), [&](::duckdb::DataChunk &chunk) {
+        delivered = true;
+        const auto n = chunk.size();
+        ChunkColumn<::duckdb::string_t> ca, ct, cv;
+        ca.Init(chunk.data[0], n);
+        ct.Init(chunk.data[1], n);
+        cv.Init(chunk.data[2], n);
+        a.resize(n); t.resize(n); v.resize(n);
+        for (::duckdb::idx_t i = 0; i < n; ++i) {
+          a[i] = ca.At(i);
+          t[i] = ct.At(i);
+          v[i] = cv.At(i);
+        }
+        consumer({static_cast<std::size_t>(n), a.data(), t.data(), v.data()});
+      });
+      return true;
+    } catch (const std::exception &) {
+      if (delivered) throw;
+    }
+    StreamQ24Columns(connection, "SELECT adsh, tag, version FROM pre",
+                     /*with_value=*/false,
+                     [&](std::size_t n, const Q24Str *a, const Q24Str *t,
+                         const Q24Str *v, const double *) {
+                       consumer({n, a, t, v});
+                     });
+    return true;
+  }
+
+  bool LoadTripleStates(const std::vector<SecEdgarQ24TripleKey> &keys,
+                        std::vector<SecEdgarQ24TripleState> &out) override {
+    out.assign(keys.size(), {});
+    if (keys.empty()) return true;
+    const auto quote = [](const std::string &s) {
+      std::string q = "'";
+      for (const char c : s) {
+        if (c == '\'') q += "''";
+        else q += c;
+      }
+      return q + "'";
+    };
+    std::string values;
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+      if (i) values += ",";
+      values += "(" + std::to_string(i) + "," + quote(keys[i].adsh) + "," +
+                quote(keys[i].tag) + "," + quote(keys[i].version) + ")";
+    }
+    const std::string k = "(VALUES " + values + ") k(i, a, t, v)";
+    // Each lookup sees the committing transaction's own writes.
+    ScanQuery(connection,
+              "SELECT k.i, COUNT(p.adsh)::BIGINT FROM " + k +
+                  " LEFT JOIN pre p ON p.adsh = k.a AND p.tag = k.t AND "
+                  "p.version = k.v GROUP BY k.i",
+              [&](auto &result, ::duckdb::idx_t row) {
+                out[static_cast<std::size_t>(result.GetValue(0, row).template GetValue<int64_t>())]
+                    .pre_rows = result.GetValue(1, row).template GetValue<int64_t>();
+              });
+    ScanQuery(connection,
+              "SELECT k.i, COUNT(*)::BIGINT, SUM(n.value)::DOUBLE FROM " + k +
+                  " JOIN num n ON n.adsh = k.a AND n.tag = k.t AND "
+                  "n.version = k.v WHERE n.uom = '" + std::string(kSecEdgarQ24Uom) +
+                  "' AND n.ddate BETWEEN " + std::to_string(kSecEdgarQ24FirstDate) +
+                  " AND " + std::to_string(kSecEdgarQ24LastDate) +
+                  " AND n.value IS NOT NULL GROUP BY k.i",
+              [&](auto &result, ::duckdb::idx_t row) {
+                auto &s = out[static_cast<std::size_t>(
+                    result.GetValue(0, row).template GetValue<int64_t>())];
+                s.num_rows = result.GetValue(1, row).template GetValue<int64_t>();
+                s.num_sum = result.GetValue(2, row).template GetValue<double>();
+              });
+    return true;
+  }
+
+private:
+  template <typename Consumer>
+  void NativeScan(const NativeScanSpec &spec, Consumer &&consume) {
+    auto &context = *ScanConnection(connection).context;
+    const bool started = !context.transaction.HasActiveTransaction();
+    if (started) {
+      context.transaction.BeginTransaction();
+    }
+    try {
+      ScanNativeBaseTable(context, spec, consume);
+      if (started) {
+        context.transaction.Commit();
+      }
+    } catch (...) {
+      if (started && context.transaction.HasActiveTransaction()) {
+        context.transaction.Rollback(nullptr);
+      }
+      throw;
+    }
+  }
+
+public:
   ::duckdb::Connection &connection;
 };
 
