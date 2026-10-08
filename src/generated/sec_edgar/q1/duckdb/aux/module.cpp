@@ -1,274 +1,163 @@
 #include "sec_edgar/q1/duckdb/aux/module.hpp"
-#include "accelerator_codegen/stateful/core/byte_stream.hpp"
+
+#include "sec_edgar/q1/duckdb/aux/adsh_key.hpp"
 
 #include <algorithm>
 #include <cstring>
 #include <limits>
-#include <set>
 #include <stdexcept>
 #include <utility>
-#include "sec_edgar/q1/layout.hpp"
+#include <variant>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-using core::ByteReader;
-using core::ByteWriter;
+using q1::Id;
+using q1::kNoId;
+using q1::kOtherKeyBit;
 
-constexpr uint32_t kFormatVersion = 1;
-constexpr uint32_t kGroupKeyMagic = 0x51314151;      // Q1AK
-constexpr uint32_t kGroupAggregateMagic = 0x47314151; // Q1AG
+// ---------------------------------------------------------------------------
+// Mutation row parsing (compact pre row: stmt, rfile, adsh, line)
+// ---------------------------------------------------------------------------
 
-
-bool ReadString(const core::AuxRow &row, std::size_t index, std::string &value,
-                bool &is_null) {
-  if (index >= row.values.size()) {
-    return false;
-  }
-  const auto &cell = row.values[index];
-  if (cell.is_null) {
-    is_null = true;
-    value.clear();
-    return true;
-  }
-  is_null = false;
-  if (!std::holds_alternative<std::string>(cell.payload)) {
-    return false;
-  }
-  value = std::get<std::string>(cell.payload);
-  return true;
-}
-
-bool ReadInt32(const core::AuxRow &row, std::size_t index, int32_t &value) {
-  if (index >= row.values.size() || row.values[index].is_null) {
-    return false;
-  }
-  const auto &cell = row.values[index];
-  if (std::holds_alternative<int64_t>(cell.payload)) {
-    const auto raw = std::get<int64_t>(cell.payload);
-    if (raw < std::numeric_limits<int32_t>::min() ||
-        raw > std::numeric_limits<int32_t>::max()) {
-      return false;
-    }
-    value = static_cast<int32_t>(raw);
-    return true;
-  }
-  return false;
-}
-
-struct PreRow {
-  SecEdgarQ1GroupKey group;
-  std::string adsh;
+struct RowView {
+  bool relevant = false; // stmt IS NOT NULL
+  const std::string *stmt = nullptr;
+  const std::string *rfile = nullptr;
+  const std::string *adsh = nullptr;
+  bool rfile_null = false;
+  bool adsh_null = false;
+  bool line_null = false;
   int32_t line = 0;
-  bool relevant = false;
 };
 
-bool ReadPreRow(const core::AuxRow &row, PreRow &result) {
-  bool stmt_is_null = false;
-  bool rfile_is_null = false;
-  bool adsh_is_null = false;
-  if (!ReadString(row, 0, result.group.stmt, stmt_is_null) ||
-      !ReadString(row, 1, result.group.rfile, rfile_is_null) ||
-      !ReadString(row, 2, result.adsh, adsh_is_null) ||
-      !ReadInt32(row, 3, result.line)) {
+bool ReadString(const core::AuxValue &cell, const std::string *&value,
+                bool &is_null) {
+  if (cell.is_null) {
+    value = nullptr;
+    is_null = true;
+    return true;
+  }
+  const auto *s = std::get_if<std::string>(&cell.payload);
+  if (!s) {
     return false;
   }
-  result.group.rfile_is_null = rfile_is_null;
-  result.relevant = !stmt_is_null;
+  value = s;
+  is_null = false;
   return true;
 }
 
-uint32_t FindGroup(const std::vector<SecEdgarQ1GroupKey> &groups,
-                   const SecEdgarQ1GroupKey &key) {
-  const auto it = std::lower_bound(groups.begin(), groups.end(), key);
-  if (it == groups.end() || *it != key) {
-    return std::numeric_limits<uint32_t>::max();
+bool ReadRow(const core::AuxRow &row, RowView &view) {
+  if (row.values.size() < 4) {
+    return false;
   }
-  return static_cast<uint32_t>(it - groups.begin());
+  bool stmt_null = false;
+  if (!ReadString(row.values[0], view.stmt, stmt_null) ||
+      !ReadString(row.values[1], view.rfile, view.rfile_null) ||
+      !ReadString(row.values[2], view.adsh, view.adsh_null)) {
+    return false;
+  }
+  const auto &line = row.values[3];
+  if (line.is_null) {
+    view.line_null = true;
+    view.line = 0;
+  } else {
+    const auto *raw = std::get_if<int64_t>(&line.payload);
+    if (!raw || *raw < std::numeric_limits<int32_t>::min() ||
+        *raw > std::numeric_limits<int32_t>::max()) {
+      return false;
+    }
+    view.line_null = false;
+    view.line = static_cast<int32_t>(*raw);
+  }
+  view.relevant = !stmt_null;
+  return true;
 }
 
-void ApplyRow(SecEdgarQ1GroupAggregate &aggregate, int32_t line,
-              const std::string &adsh, int8_t sign) {
-  aggregate.cnt += sign;
-  aggregate.line_sum += sign * static_cast<int64_t>(line);
-  if (adsh.empty()) {
+bool SameGroupAndAdsh(const RowView &a, const RowView &b) {
+  if (a.rfile_null != b.rfile_null || a.adsh_null != b.adsh_null ||
+      *a.stmt != *b.stmt) {
+    return false;
+  }
+  if (!a.rfile_null && *a.rfile != *b.rfile) {
+    return false;
+  }
+  return a.adsh_null || *a.adsh == *b.adsh;
+}
+
+void AddRow(SecEdgarQ1TxnBuffer &buffer, const RowView &row, int32_t sign) {
+  if (!row.relevant) {
     return;
   }
-  if (sign > 0) {
-    aggregate.distinct_adsh.insert(adsh);
-  } else if (sign < 0) {
-    aggregate.distinct_adsh.erase(adsh);
+  SecEdgarQ1TxnBuffer::Delta delta;
+  delta.group = buffer.InternGroup(*row.stmt, row.rfile_null ? std::string() : *row.rfile,
+                                   row.rfile_null);
+  delta.d_cnt = sign;
+  if (!row.adsh_null) {
+    delta.key = buffer.InternAdsh(*row.adsh);
+    delta.d_refc = sign;
   }
+  if (!row.line_null) {
+    delta.d_line_cnt = sign;
+    delta.d_line_sum = static_cast<int64_t>(sign) * row.line;
+  }
+  buffer.AddDelta(delta);
 }
+
+// Update whose group/adsh did not change: only the line aggregate moves.
+void AddLineOnly(SecEdgarQ1TxnBuffer &buffer, const RowView &old_row,
+                 const RowView &new_row) {
+  const int32_t d_cnt = (new_row.line_null ? 0 : 1) - (old_row.line_null ? 0 : 1);
+  const int64_t d_sum = (new_row.line_null ? 0 : int64_t(new_row.line)) -
+                        (old_row.line_null ? 0 : int64_t(old_row.line));
+  if (d_cnt == 0 && d_sum == 0) {
+    return;
+  }
+  SecEdgarQ1TxnBuffer::Delta delta;
+  delta.group = buffer.InternGroup(*new_row.stmt,
+                                   new_row.rfile_null ? std::string() : *new_row.rfile,
+                                   new_row.rfile_null);
+  delta.d_line_cnt = d_cnt;
+  delta.d_line_sum = d_sum;
+  buffer.AddDelta(delta);
+}
+
+// ---------------------------------------------------------------------------
+// Images
+// ---------------------------------------------------------------------------
 
 std::shared_ptr<const SecEdgarQ1StateImage>
-MakeStateImage(SecEdgarQ1ImageKind kind,
-               const std::shared_ptr<const SecEdgarQ1State> &state) {
+MakeImage(std::shared_ptr<const SecEdgarQ1State> state) {
   auto image = std::make_shared<SecEdgarQ1StateImage>();
-  image->kind = kind;
-  image->state = state;
+  image->state = std::move(state);
   return image;
-}
-
-const SecEdgarQ1StateImage *AsQ1Image(const core::StateImage &image,
-                                      SecEdgarQ1ImageKind kind) {
-  const auto *payload = image.As<SecEdgarQ1StateImage>();
-  return payload && payload->kind == kind && payload->state ? payload
-                                                              : nullptr;
-}
-
-void EmitStateImages(const SecEdgarQ1State &state, core::StateBuilder &builder) {
-  const auto typed_state = std::make_shared<const SecEdgarQ1State>(state);
-  builder.Write(core::StateImage::Make(
-      core::SecEdgarQ1Layout::kAccelerator, core::SecEdgarQ1Layout::kGroupKeys,
-      0, MakeStateImage(SecEdgarQ1ImageKind::GroupKeys, typed_state)));
-  builder.Write(core::StateImage::Make(
-      core::SecEdgarQ1Layout::kAccelerator,
-      core::SecEdgarQ1Layout::kGroupAggregates, 0,
-      MakeStateImage(SecEdgarQ1ImageKind::GroupAggregates, typed_state)));
-  builder.Finish();
 }
 
 core::InvalidationPlan AllPartitions() {
   core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
+  plan.scope = ::accelerator_codegen::aux_state::InvalidationScope::AllPartitions;
   return plan;
 }
 
-core::InvalidationPlan AggregatePartitions() {
+core::InvalidationPlan NoInvalidation() {
   core::InvalidationPlan plan;
-  plan.scope =
-      ::accelerator_codegen::aux_state::InvalidationScope::PartitionSet;
-  plan.partitions.insert(
-      static_cast<::accelerator_codegen::aux_state::PartitionKey>(
-          core::SecEdgarQ1Layout::kGroupAggregates));
+  plan.scope = ::accelerator_codegen::aux_state::InvalidationScope::None;
   return plan;
+}
+
+core::StagedMaintenanceOutcome RebuildOutcome(core::MaintenanceAction action) {
+  core::StagedMaintenanceOutcome outcome;
+  outcome.action = action;
+  outcome.invalidations = AllPartitions();
+  outcome.pending_rebuild = outcome.invalidations;
+  return outcome;
 }
 
 } // namespace
 
-std::size_t SecEdgarQ1GroupKeyHash::operator()(
-    const SecEdgarQ1GroupKey &key) const noexcept {
-  return std::hash<std::string>{}(key.stmt) ^
-         (std::hash<std::string>{}(key.rfile) << 1) ^
-         (key.rfile_is_null ? 0x9e3779b9UL : 0UL);
-}
-
-std::vector<uint8_t> EncodeSecEdgarQ1GroupKeys(const SecEdgarQ1State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kGroupKeyMagic, kFormatVersion, static_cast<uint32_t>(state.group_keys.size()));
-  for (const auto &key : state.group_keys) {
-    writer.String(key.stmt);
-    writer.U8(key.rfile_is_null ? 1 : 0);
-    writer.String(key.rfile);
-  }
-  return std::move(writer.bytes);
-}
-
-std::vector<uint8_t>
-EncodeSecEdgarQ1GroupAggregates(const SecEdgarQ1State &state) {
-  ByteWriter writer;
-  core::WriteImageHeader(writer, kGroupAggregateMagic, kFormatVersion, static_cast<uint32_t>(state.aggregates.size()));
-  for (const auto &aggregate : state.aggregates) {
-    writer.I64(aggregate.cnt);
-    writer.I64(aggregate.line_sum);
-    writer.U32(static_cast<uint32_t>(aggregate.distinct_adsh.size()));
-    std::vector<std::string> adshs(aggregate.distinct_adsh.begin(),
-                                   aggregate.distinct_adsh.end());
-    std::sort(adshs.begin(), adshs.end());
-    for (const auto &adsh : adshs) {
-      writer.String(adsh);
-    }
-  }
-  return std::move(writer.bytes);
-}
-
-bool DecodeSecEdgarQ1GroupKeys(const std::vector<uint8_t> &bytes,
-                                 SecEdgarQ1State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kGroupKeyMagic, kFormatVersion, count)) {
-    return false;
-  }
-  state.group_keys.clear();
-  state.group_keys.reserve(count);
-  for (uint32_t i = 0; i < count; ++i) {
-    SecEdgarQ1GroupKey key;
-    uint8_t rfile_is_null = 0;
-    if (!reader.String(key.stmt) || !reader.U8(rfile_is_null) ||
-        !reader.String(key.rfile)) {
-      return false;
-    }
-    key.rfile_is_null = rfile_is_null != 0;
-    state.group_keys.push_back(std::move(key));
-  }
-  return reader.offset == bytes.size() &&
-         std::is_sorted(state.group_keys.begin(), state.group_keys.end());
-}
-
-bool DecodeSecEdgarQ1GroupAggregates(const std::vector<uint8_t> &bytes,
-                                     SecEdgarQ1State &state) {
-  ByteReader reader{bytes};
-  uint32_t count = 0;
-  if (!core::ReadImageHeader(reader, kGroupAggregateMagic, kFormatVersion, count)) {
-    return false;
-  }
-  state.aggregates.clear();
-  state.aggregates.resize(count);
-  for (auto &aggregate : state.aggregates) {
-    uint32_t adsh_count = 0;
-    if (!reader.I64(aggregate.cnt) || !reader.I64(aggregate.line_sum) ||
-        !reader.U32(adsh_count)) {
-      return false;
-    }
-    aggregate.distinct_adsh.clear();
-    for (uint32_t i = 0; i < adsh_count; ++i) {
-      std::string adsh;
-      if (!reader.String(adsh)) {
-        return false;
-      }
-      aggregate.distinct_adsh.insert(std::move(adsh));
-    }
-  }
-  return reader.offset == bytes.size();
-}
-
-std::vector<SecEdgarQ1OutputRow>
-BuildSecEdgarQ1Output(const SecEdgarQ1State &state) {
-  std::vector<SecEdgarQ1OutputRow> output;
-  output.reserve(state.group_keys.size());
-  for (std::size_t i = 0; i < state.group_keys.size(); ++i) {
-    if (i >= state.aggregates.size() || state.aggregates[i].cnt <= 0) {
-      continue;
-    }
-    const auto &key = state.group_keys[i];
-    const auto &aggregate = state.aggregates[i];
-    SecEdgarQ1OutputRow row;
-    row.stmt = key.stmt;
-    row.rfile = key.rfile;
-    row.rfile_is_null = key.rfile_is_null;
-    row.cnt = aggregate.cnt;
-    row.num_filings = static_cast<int64_t>(aggregate.distinct_adsh.size());
-    if (aggregate.cnt > 0) {
-      row.avg_line_num =
-          static_cast<double>(aggregate.line_sum) /
-          static_cast<double>(aggregate.cnt);
-    }
-    output.push_back(std::move(row));
-  }
-  std::sort(output.begin(), output.end(),
-            [](const SecEdgarQ1OutputRow &lhs, const SecEdgarQ1OutputRow &rhs) {
-              if (lhs.cnt != rhs.cnt) {
-                return lhs.cnt > rhs.cnt;
-              }
-              if (lhs.stmt != rhs.stmt) {
-                return lhs.stmt < rhs.stmt;
-              }
-              return lhs.rfile < rhs.rfile;
-            });
-  return output;
-}
+// ---------------------------------------------------------------------------
+// Txn buffer
+// ---------------------------------------------------------------------------
 
 bool SecEdgarQ1TxnBuffer::HasPendingChanges() const { return pending; }
 
@@ -276,14 +165,13 @@ void SecEdgarQ1TxnBuffer::Clear() {
   pending = false;
   requires_rebuild = false;
   deltas.clear();
+  groups.clear();
+  group_index.clear();
+  others.clear();
+  other_index.clear();
 }
 
 bool SecEdgarQ1TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
-
-const std::vector<SecEdgarQ1TxnBuffer::PreDelta> &
-SecEdgarQ1TxnBuffer::Deltas() const {
-  return deltas;
-}
 
 void SecEdgarQ1TxnBuffer::MarkRebuild() {
   pending = true;
@@ -291,12 +179,159 @@ void SecEdgarQ1TxnBuffer::MarkRebuild() {
   deltas.clear();
 }
 
-void SecEdgarQ1TxnBuffer::AddDelta(PreDelta delta) {
-  pending = true;
-  if (delta.relevant) {
-    deltas.push_back(std::move(delta));
+uint32_t SecEdgarQ1TxnBuffer::InternGroup(const std::string &stmt,
+                                          const std::string &rfile,
+                                          bool rfile_is_null) {
+  std::string name = std::to_string(stmt.size());
+  name.push_back(':');
+  name += stmt;
+  name.push_back(rfile_is_null ? '\1' : '\2');
+  if (!rfile_is_null) {
+    name += rfile;
   }
+  const auto it = group_index.find(name);
+  if (it != group_index.end()) {
+    return it->second;
+  }
+  groups.push_back({stmt, rfile_is_null ? std::string() : rfile, rfile_is_null});
+  const auto index = static_cast<uint32_t>(groups.size() - 1);
+  group_index.emplace(std::move(name), index);
+  return index;
 }
+
+uint64_t SecEdgarQ1TxnBuffer::InternAdsh(const std::string &adsh) {
+  uint64_t key = 0;
+  if (q1::ParseAdshKey(adsh.data(), adsh.size(), key)) {
+    return key;
+  }
+  const auto it = other_index.find(adsh);
+  if (it != other_index.end()) {
+    return kOtherKeyBit | it->second;
+  }
+  others.push_back(adsh);
+  other_index.emplace(adsh, static_cast<uint32_t>(others.size() - 1));
+  return kOtherKeyBit | (others.size() - 1);
+}
+
+void SecEdgarQ1TxnBuffer::AddDelta(const Delta &delta) {
+  pending = true;
+  deltas.push_back(delta);
+}
+
+// ---------------------------------------------------------------------------
+// Delta application (copy-on-write)
+// ---------------------------------------------------------------------------
+
+bool ApplySecEdgarQ1Deltas(SecEdgarQ1State &state,
+                           const SecEdgarQ1TxnBuffer &buffer) {
+  const auto &local_groups = buffer.Groups();
+  std::vector<int> gmap(local_groups.size());
+  for (std::size_t i = 0; i < local_groups.size(); ++i) {
+    gmap[i] = state.GetOrCreateGroup(local_groups[i].stmt, local_groups[i].rfile,
+                                     local_groups[i].rfile_is_null);
+  }
+  // 1) group aggregates
+  for (const auto &d : buffer.Deltas()) {
+    auto &g = state.groups[static_cast<std::size_t>(gmap[d.group])];
+    g.cnt += d.d_cnt;
+    g.line_sum += d.d_line_sum;
+    g.line_cnt += d.d_line_cnt;
+  }
+  for (const int gi : gmap) {
+    const auto &g = state.groups[static_cast<std::size_t>(gi)];
+    if (g.cnt < 0 || g.line_cnt < 0 || g.line_cnt > g.cnt) {
+      return false;
+    }
+  }
+
+  // 2) accession refcounts
+  struct RefEntry {
+    Id group;
+    Id id;
+    int32_t delta;
+  };
+  std::vector<RefEntry> entries;
+  std::vector<uint64_t> other_key_cache(buffer.OtherAdsh().size(), 0);
+  std::vector<uint8_t> other_key_ready(buffer.OtherAdsh().size(), 0);
+  bool have_last = false;
+  bool last_created = false;
+  uint64_t last_key = 0;
+  Id last_id = kNoId;
+  for (const auto &d : buffer.Deltas()) {
+    if (d.d_refc == 0) {
+      continue;
+    }
+    uint64_t key = d.key;
+    if (key & kOtherKeyBit) {
+      const auto local = static_cast<std::size_t>(key & ~kOtherKeyBit);
+      if (!other_key_ready[local]) {
+        // A delete of a non-canonical accession we never saw interns it here
+        // (harmless: `state` is discarded when the delete then fails below).
+        other_key_cache[local] =
+            kOtherKeyBit | state.others.Intern(buffer.OtherAdsh()[local]);
+        other_key_ready[local] = 1;
+      }
+      key = other_key_cache[local];
+    }
+    // Consecutive rows of one filing share the accession: skip the lookup.
+    Id id;
+    if (have_last && key == last_key && (d.d_refc < 0 || last_created)) {
+      id = last_id;
+    } else {
+      id = d.d_refc > 0 ? state.GetOrCreateId(key) : state.FindId(key);
+      last_key = key;
+      last_id = id;
+      last_created = d.d_refc > 0;
+      have_last = true;
+    }
+    if (id == kNoId) {
+      return false; // delete of an accession we never saw
+    }
+    entries.push_back({static_cast<Id>(gmap[d.group]), id, d.d_refc});
+  }
+  std::sort(entries.begin(), entries.end(), [](const RefEntry &l, const RefEntry &r) {
+    return l.group != r.group ? l.group < r.group : l.id < r.id;
+  });
+
+  std::size_t i = 0;
+  while (i < entries.size()) {
+    const Id group = entries[i].group;
+    auto &g = state.groups[static_cast<std::size_t>(group)];
+    // Copy the group's two chunk directories; every untouched chunk is shared.
+    auto refs = g.refs ? std::make_shared<q1::GroupRefs>(*g.refs) : std::make_shared<q1::GroupRefs>();
+    int64_t distinct = g.distinct;
+    while (i < entries.size() && entries[i].group == group) {
+      const Id id = entries[i].id;
+      int64_t delta = 0;
+      for (; i < entries.size() && entries[i].group == group && entries[i].id == id; ++i) {
+        delta += entries[i].delta;
+      }
+      if (delta == 0) {
+        continue;
+      }
+      const uint64_t old_count = refs->Get(id);
+      if (delta < 0 && old_count < static_cast<uint64_t>(-delta)) {
+        return false; // underflow: the state is not what the writes assume
+      }
+      const uint64_t updated = static_cast<uint64_t>(static_cast<int64_t>(old_count) + delta);
+      refs->Set(id, updated);
+      distinct += (updated > 0) - (old_count > 0);
+    }
+    g.distinct = distinct;
+    g.refs = std::move(refs);
+  }
+
+  // Reclaim dictionary growth from churned accessions by rebuilding.
+  const Id grown = state.next_id - state.ids_at_build;
+  if (grown > std::max<Id>(65536u, state.ids_at_build)) {
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Module
+// ---------------------------------------------------------------------------
 
 core::AcceleratorId SecEdgarQ1Module::Id() const { return kId; }
 
@@ -308,162 +343,161 @@ std::unique_ptr<core::AuxTxnBuffer> SecEdgarQ1Module::CreateTxnBuffer() const {
   return std::make_unique<SecEdgarQ1TxnBuffer>();
 }
 
+SecEdgarQ1State
+SecEdgarQ1Module::BuildState(core::AuxEngineServices &) const {
+  if (!initial_scan) {
+    throw std::logic_error("SEC EDGAR Q1 requires a typed initial scan source");
+  }
+  q1::Builder builder;
+  const bool chunked = initial_scan->ScanPreChunks(
+      [&](::duckdb::DataChunk &chunk) { builder.ConsumeChunk(chunk); });
+  if (!chunked) {
+    initial_scan->ScanPre(
+        [&](const SecEdgarQ1PreInput &input) { builder.ConsumeRow(input); });
+  }
+  return builder.Finish();
+}
+
 void SecEdgarQ1Module::Build(core::AuxEngineServices &services,
                              core::StateBuilder &builder) {
-  EmitStateImages(BuildState(services), builder);
+  auto state = std::make_shared<const SecEdgarQ1State>(BuildState(services));
+  builder.Write(core::StateImage::Make(kId, kStatePartition, 0,
+                                       MakeImage(std::move(state))));
+  builder.Finish();
 }
 
 core::InvalidationPlan
-SecEdgarQ1Module::InterpretMutation(const core::MutationBatch &mutation) const {
-  if (mutation.table != config.pre_table) {
-    return {};
-  }
-  if (mutation.kind == core::MutationKind::Update &&
-      !mutation.updated_columns.empty()) {
-    bool relevant = false;
-    for (const auto column : mutation.updated_columns) {
-      if (column <= 3) {
-        relevant = true;
-        break;
-      }
-    }
-    if (!relevant) {
-      return {};
-    }
-    for (const auto column : mutation.updated_columns) {
-      if (column == 0 || column == 1) {
-        return AllPartitions();
-      }
-    }
-  }
-  return AggregatePartitions();
+SecEdgarQ1Module::InterpretMutation(const core::MutationBatch &) const {
+  // Every INSERT/DELETE/UPDATE on pre is maintained incrementally from the
+  // transaction buffer (StageMaintenance falls back to a rebuild when it
+  // cannot), so no lazy invalidation is requested here.
+  return NoInvalidation();
 }
 
-void SecEdgarQ1Module::AccumulateMutation(
-    const core::MutationBatch &mutation, core::AuxEngineServices &,
-    core::AuxTxnBuffer &base_buffer) {
-  auto &buffer = dynamic_cast<SecEdgarQ1TxnBuffer &>(base_buffer);
-  if (mutation.table != config.pre_table) {
-    return;
+void SecEdgarQ1Module::AccumulateMutation(const core::MutationBatch &mutation,
+                                          core::AuxEngineServices &,
+                                          core::AuxTxnBuffer &base_buffer) {
+  auto &buffer = static_cast<SecEdgarQ1TxnBuffer &>(base_buffer);
+  if (mutation.table != config.pre_table || buffer.RequiresRebuild()) {
+    return; // a pending rebuild supersedes any deltas
   }
-  auto add = [&](const core::AuxRow &row, int8_t sign) {
-    PreRow parsed;
-    if (!ReadPreRow(row, parsed)) {
-      buffer.MarkRebuild();
-      return;
-    }
-    buffer.AddDelta({std::move(parsed.group), std::move(parsed.adsh),
-                     parsed.line, sign, parsed.relevant});
-  };
+  RowView view;
   switch (mutation.kind) {
   case core::MutationKind::Insert:
     for (const auto &row : mutation.new_rows) {
-      add(row, 1);
+      if (!ReadRow(row, view)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      AddRow(buffer, view, 1);
     }
     break;
   case core::MutationKind::Delete:
     for (const auto &row : mutation.old_rows) {
-      add(row, -1);
+      if (!ReadRow(row, view)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      AddRow(buffer, view, -1);
     }
     break;
-  case core::MutationKind::Update:
+  case core::MutationKind::Update: {
     if (mutation.old_rows.size() != mutation.new_rows.size()) {
       buffer.MarkRebuild();
       return;
     }
+    RowView old_view;
     for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-      add(mutation.old_rows[i], -1);
-      add(mutation.new_rows[i], 1);
+      if (!ReadRow(mutation.old_rows[i], old_view) ||
+          !ReadRow(mutation.new_rows[i], view)) {
+        buffer.MarkRebuild();
+        return;
+      }
+      if (old_view.relevant && view.relevant && SameGroupAndAdsh(old_view, view)) {
+        AddLineOnly(buffer, old_view, view);
+      } else {
+        AddRow(buffer, old_view, -1);
+        AddRow(buffer, view, 1);
+      }
     }
     break;
   }
+  }
+}
+
+std::shared_ptr<const SecEdgarQ1State>
+SecEdgarQ1Module::LoadState(core::AuxEngineServices &services,
+                            core::Version *version,
+                            const char *accelerator_id) const {
+  thread_local std::vector<core::PartitionId> wanted(1);
+  wanted[0] = kStatePartition;
+  // One observation: whole-state validity plus the immutable image handle.
+  const auto snapshot = services.StateStore().ReadHitPartitions(
+      services.CurrentVisibility(), core::QueryKey{core::AcceleratorId(accelerator_id ? accelerator_id : kId), {}}, wanted);
+  if (!snapshot.available) {
+    return nullptr;
+  }
+  for (const auto &image : snapshot.partitions) {
+    if (image.partition != kStatePartition) {
+      continue;
+    }
+    const auto *typed = image.As<SecEdgarQ1StateImage>();
+    if (typed && typed->state) {
+      if (version) {
+        *version = image.version;
+      }
+      return typed->state;
+    }
+  }
+  return nullptr;
 }
 
 core::StagedMaintenanceOutcome
-SecEdgarQ1Module::StageMaintenance(core::AuxEngineServices &services,
-                                   const core::InvalidationPlan &,
-                                   core::AuxTxnBuffer &base_buffer) {
-  auto &buffer = dynamic_cast<SecEdgarQ1TxnBuffer &>(base_buffer);
-  core::StagedMaintenanceOutcome outcome;
+SecEdgarQ1Module::StageForAccelerator(core::AuxEngineServices &services,
+                                      core::AuxTxnBuffer &base_buffer,
+                                      const char *accelerator_id) {
+  auto &buffer = static_cast<SecEdgarQ1TxnBuffer &>(base_buffer);
   if (buffer.RequiresRebuild()) {
     const auto decision = services.ChooseMaintenance(
-        {0, 0, false, false, true, true, false,
-         core::MaintenanceAction::NoOp,
+        {0, 0, false, false, true, true, false, core::MaintenanceAction::NoOp,
          services.ExpectedQueriesBeforeNextWrite()});
-    outcome.action = decision.action == core::MaintenanceAction::ApplyDelta
-                         ? core::MaintenanceAction::RebuildAll
-                         : decision.action;
-    outcome.invalidations = AllPartitions();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
+    return RebuildOutcome(decision.action == core::MaintenanceAction::ApplyDelta
+                              ? core::MaintenanceAction::RebuildAll
+                              : decision.action);
   }
   if (buffer.Deltas().empty()) {
-    return outcome;
+    return {};
   }
-
   const auto decision = services.ChooseMaintenance(
       {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, false, true,
        false, false, core::MaintenanceAction::NoOp,
        services.ExpectedQueriesBeforeNextWrite()});
   if (decision.action != core::MaintenanceAction::ApplyDelta) {
-    outcome.action = decision.action;
-    outcome.invalidations = AllPartitions();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
+    return RebuildOutcome(decision.action);
   }
-
-  const auto visibility = services.CurrentVisibility();
-  const auto snapshot = services.StateStore().ReadPartitions(
-      visibility, {core::SecEdgarQ1Layout::kGroupKeys,
-                   core::SecEdgarQ1Layout::kGroupAggregates});
-  SecEdgarQ1State state;
-  core::Version aggregate_version = 0;
-  bool have_keys = false;
-  bool have_aggregates = false;
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == core::SecEdgarQ1Layout::kGroupKeys) {
-      const auto *typed = AsQ1Image(image, SecEdgarQ1ImageKind::GroupKeys);
-      if (typed) {
-        state.group_keys = typed->state->group_keys;
-        have_keys = true;
-      }
-    } else if (image.partition == core::SecEdgarQ1Layout::kGroupAggregates) {
-      const auto *typed =
-          AsQ1Image(image, SecEdgarQ1ImageKind::GroupAggregates);
-      if (typed) {
-        state.aggregates = typed->state->aggregates;
-        have_aggregates = true;
-      }
-      aggregate_version = image.version;
-    }
+  core::Version version = 0;
+  const auto current = LoadState(services, &version, accelerator_id);
+  if (!current) {
+    return RebuildOutcome(core::MaintenanceAction::RebuildAll);
   }
-  if (!have_keys || !have_aggregates ||
-      state.aggregates.size() != state.group_keys.size()) {
-    outcome.action = core::MaintenanceAction::RebuildAll;
-    outcome.invalidations = AllPartitions();
-    outcome.pending_rebuild = outcome.invalidations;
-    return outcome;
+  SecEdgarQ1State next = *current; // O(groups + overlay); pages are shared
+  if (!ApplySecEdgarQ1Deltas(next, buffer)) {
+    return RebuildOutcome(core::MaintenanceAction::RebuildAll);
   }
-
-  for (const auto &delta : buffer.Deltas()) {
-    const auto group = FindGroup(state.group_keys, delta.group);
-    if (group == std::numeric_limits<uint32_t>::max()) {
-      outcome.action = core::MaintenanceAction::RebuildAll;
-      outcome.invalidations = AllPartitions();
-      outcome.pending_rebuild = outcome.invalidations;
-      return outcome;
-    }
-    ApplyRow(state.aggregates[group], delta.line, delta.adsh, delta.sign);
-  }
-
+  core::StagedMaintenanceOutcome outcome;
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.expected_version = 0;
-  const auto typed_state = std::make_shared<const SecEdgarQ1State>(state);
   outcome.updates.push_back(core::StateImage::Make(
-      core::SecEdgarQ1Layout::kAccelerator,
-      core::SecEdgarQ1Layout::kGroupAggregates, aggregate_version,
-      MakeStateImage(SecEdgarQ1ImageKind::GroupAggregates, typed_state)));
+      accelerator_id, kStatePartition, version,
+      MakeImage(std::make_shared<const SecEdgarQ1State>(std::move(next)))));
   return outcome;
+}
+
+core::StagedMaintenanceOutcome
+SecEdgarQ1Module::StageMaintenance(core::AuxEngineServices &services,
+                                   const core::InvalidationPlan &,
+                                   core::AuxTxnBuffer &buffer) {
+  return StageForAccelerator(services, buffer, kId);
 }
 
 bool SecEdgarQ1Module::CheckValidity(core::AuxEngineServices &services,
@@ -476,116 +510,18 @@ bool SecEdgarQ1Module::CheckValidity(core::AuxEngineServices &services,
 void SecEdgarQ1Module::Execute(core::AuxEngineServices &services,
                                const core::QueryArguments &arguments,
                                core::AuxRowSink &sink) {
-  const auto snapshot = services.StateStore().ReadPartitions(
-      services.CurrentVisibility(), {core::SecEdgarQ1Layout::kGroupKeys,
-                                     core::SecEdgarQ1Layout::kGroupAggregates});
-  SecEdgarQ1State state;
-  bool have_keys = false;
-  bool have_aggregates = false;
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == core::SecEdgarQ1Layout::kGroupKeys) {
-      const auto *typed = AsQ1Image(image, SecEdgarQ1ImageKind::GroupKeys);
-      if (typed) {
-        state.group_keys = typed->state->group_keys;
-        have_keys = true;
-      }
-    } else if (image.partition == core::SecEdgarQ1Layout::kGroupAggregates) {
-      const auto *typed =
-          AsQ1Image(image, SecEdgarQ1ImageKind::GroupAggregates);
-      if (typed) {
-        state.aggregates = typed->state->aggregates;
-        have_aggregates = true;
-      }
-    }
-  }
-  if (!snapshot.available || !have_keys || !have_aggregates ||
-      state.group_keys.size() != state.aggregates.size()) {
+  const auto state = LoadState(services);
+  if (!state) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitOutput(state, sink);
+  EmitOutput(*state, sink);
 }
 
 void SecEdgarQ1Module::ExecuteFallback(core::AuxEngineServices &services,
                                        const core::QueryArguments &,
                                        core::AuxRowSink &sink) {
   EmitOutput(BuildState(services), sink);
-}
-
-SecEdgarQ1State
-SecEdgarQ1Module::BuildState(core::AuxEngineServices &services) const {
-  (void)services;
-  SecEdgarQ1State state;
-  if (!initial_scan) {
-    throw std::logic_error(
-        "SEC EDGAR Q1 requires a typed initial scan source");
-  }
-  std::set<SecEdgarQ1GroupKey> groups;
-  initial_scan->ScanPre([&](const SecEdgarQ1PreInput &input) {
-    if (input.stmt_is_null) {
-      return;
-    }
-    groups.insert({input.stmt, input.rfile, input.rfile_is_null});
-  });
-  state.group_keys.assign(groups.begin(), groups.end());
-  state.aggregates.resize(state.group_keys.size());
-  initial_scan->ScanPre([&](const SecEdgarQ1PreInput &input) {
-    if (input.stmt_is_null) {
-      return;
-    }
-    const auto group =
-        FindGroup(state.group_keys, {input.stmt, input.rfile, input.rfile_is_null});
-    if (group != std::numeric_limits<uint32_t>::max()) {
-      ApplyRow(state.aggregates[group], input.line, input.adsh, 1);
-    }
-  });
-  return state;
-}
-
-bool SecEdgarQ1Module::LoadState(core::AuxEngineServices &services,
-                                 SecEdgarQ1State &state) const {
-  const auto snapshot =
-      services.StateStore().Read(services.CurrentVisibility());
-  bool keys = false;
-  bool aggregates = false;
-  for (const auto &image : snapshot.partitions) {
-    if (image.partition == core::SecEdgarQ1Layout::kGroupKeys) {
-      const auto *typed = AsQ1Image(image, SecEdgarQ1ImageKind::GroupKeys);
-      if (typed) {
-        state.group_keys = typed->state->group_keys;
-        keys = true;
-      }
-    } else if (image.partition == core::SecEdgarQ1Layout::kGroupAggregates) {
-      const auto *typed =
-          AsQ1Image(image, SecEdgarQ1ImageKind::GroupAggregates);
-      if (typed) {
-        state.aggregates = typed->state->aggregates;
-        aggregates = true;
-      }
-    }
-  }
-  return keys && aggregates &&
-         state.group_keys.size() == state.aggregates.size();
-}
-
-void SecEdgarQ1Module::EmitOutput(const SecEdgarQ1State &state,
-                                  core::AuxRowSink &sink) const {
-  sink.Begin({{{"stmt", core::AuxType::String, false},
-               {"rfile", core::AuxType::String, true},
-               {"cnt", core::AuxType::Int64, false},
-               {"num_filings", core::AuxType::Int64, false},
-               {"avg_line_num", core::AuxType::Double, false}}});
-  for (const auto &row : BuildSecEdgarQ1Output(state)) {
-    sink.WriteRow(
-        {{core::AuxValue::Of(core::AuxType::String, row.stmt),
-          row.rfile_is_null
-              ? core::AuxValue::Null(core::AuxType::String)
-              : core::AuxValue::Of(core::AuxType::String, row.rfile),
-          core::AuxValue::Of(core::AuxType::Int64, row.cnt),
-          core::AuxValue::Of(core::AuxType::Int64, row.num_filings),
-          core::AuxValue::Of(core::AuxType::Double, row.avg_line_num)}});
-  }
-  sink.End();
 }
 
 } // namespace accelerator_codegen::aux_state::query

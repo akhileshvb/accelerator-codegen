@@ -31,33 +31,31 @@ namespace core = accelerator_codegen::aux_state::core;
 namespace query = accelerator_codegen::aux_state::query;
 using namespace catalog_values;
 
+// Q1 probe: a *repeatable, additive* point update keyed by rowid.
+// A probe keyed on the row's original values matches no row after its first
+// application, and a +1 on `line` moves AVG(line) by ~3e-7, below the 6-digit
+// result fingerprint. `line + 1000` is observable in avg_line_num, and
+// old_row/new_row (a +1000 shift) describe the SQL effect exactly on every
+// application.
 SharedProbe BuildSecEdgarQ1Probe(::duckdb::MaterializedQueryResult &result,
                                  ::duckdb::idx_t row) {
-  const auto adsh = result.GetValue(0, row).ToString();
-  const auto line = result.GetValue(1, row).ToString();
-  const auto stmt = result.GetValue(2, row).ToString();
-  const auto rfile = result.GetValue(3, row).ToString();
+  constexpr int64_t kLineShift = 1000;
+  const auto rowid = result.GetValue(4, row).ToString();
   const int64_t original = SafeInt64(result.GetValue(1, row));
-  const auto stmt_sql = SqlLiteral(stmt);
-  const auto rfile_sql = SqlLiteral(rfile);
-  const auto adsh_sql = SqlLiteral(adsh);
   SharedProbe probe;
   probe.table = 1;
   probe.kind = core::MutationKind::Update;
   probe.updated_columns = {3};
-  probe.write_delta = 1.0;
+  probe.write_delta = static_cast<double>(kLineShift);
   probe.current_value = static_cast<double>(original);
   probe.old_row = {{Text(result.GetValue(2, row)), Text(result.GetValue(3, row)),
                     Text(result.GetValue(0, row)), Int(result.GetValue(1, row))}};
   probe.new_row = probe.old_row;
-  probe.new_row.values[3] = Int(original + 1);
-  probe.update_sql = "UPDATE pre SET line = line + 1 WHERE adsh = " + adsh_sql +
-                     " AND line = " + line + " AND stmt = " + stmt_sql +
-                     " AND rfile = " + rfile_sql;
+  probe.new_row.values[3] = Int(original + kLineShift);
+  probe.update_sql = "UPDATE pre SET line = line + " + std::to_string(kLineShift) +
+                     " WHERE rowid = " + rowid;
   probe.restore_sql = "UPDATE pre SET line = " + std::to_string(original) +
-                      " WHERE adsh = " + adsh_sql + " AND line = " +
-                      std::to_string(original + 1) + " AND stmt = " + stmt_sql +
-                      " AND rfile = " + rfile_sql;
+                      " WHERE rowid = " + rowid;
   return probe;
 }
 
@@ -71,8 +69,8 @@ const SharedQueryRegistrar kEntry{SharedQueryCatalogEntry{1,
      "SELECT * FROM accel_sec_edgar_q1_aux()",
      "SELECT * FROM accel_sec_edgar_q1()",
      "SELECT * FROM accel_sec_edgar_q1_aux()",
-     "SELECT adsh, line, stmt, rfile FROM pre WHERE stmt IS NOT NULL "
-     "ORDER BY adsh, line LIMIT 1",
+     "SELECT adsh, line, stmt, rfile, rowid FROM pre WHERE stmt IS NOT NULL "
+     "AND line IS NOT NULL LIMIT 1",
      {},
      1,
      false,
@@ -94,16 +92,28 @@ struct SecEdgarQ1Scan : SecEdgarQ1InitialScan {
   explicit SecEdgarQ1Scan(::duckdb::Connection &connection) : connection(connection) {}
   void ScanPre(
       const std::function<void(const SecEdgarQ1PreInput &)> &consumer) const override {
-    ScanQuery(connection, "SELECT stmt, rfile, adsh, line FROM pre",
-              [&](auto &result, ::duckdb::idx_t row) {
-                const auto stmt = result.GetValue(0, row);
-                const auto rfile = result.GetValue(1, row);
-                consumer({stmt.IsNull() ? std::string() : stmt.ToString(),
-                          rfile.IsNull() ? std::string() : rfile.ToString(),
-                          rfile.IsNull(), stmt.IsNull(),
-                          result.GetValue(2, row).ToString(),
-                          static_cast<int32_t>(SafeInt32(result.GetValue(3, row)))});
-              });
+    ScanQueryStreaming(
+        connection, "SELECT stmt, rfile, adsh, line FROM pre",
+        [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t row) {
+          const auto stmt = ChunkValue(chunk, 0, row);
+          const auto rfile = ChunkValue(chunk, 1, row);
+          const auto adsh = ChunkValue(chunk, 2, row);
+          const auto line = ChunkValue(chunk, 3, row);
+          SecEdgarQ1PreInput input;
+          input.stmt_is_null = stmt.IsNull();
+          input.stmt = stmt.IsNull() ? std::string() : stmt.ToString();
+          input.rfile_is_null = rfile.IsNull();
+          input.rfile = rfile.IsNull() ? std::string() : rfile.ToString();
+          input.adsh_is_null = adsh.IsNull();
+          input.adsh = adsh.IsNull() ? std::string() : adsh.ToString();
+          input.line_is_null = line.IsNull();
+          input.line = line.IsNull() ? 0 : static_cast<int32_t>(SafeInt32(line));
+          consumer(input);
+        });
+  }
+  bool ScanPreChunks(
+      const std::function<void(::duckdb::DataChunk &)> &consumer) const override {
+    return ScanSecEdgarQ1PreNative(connection, consumer);
   }
   ::duckdb::Connection &connection;
 };
