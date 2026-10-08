@@ -15,6 +15,7 @@
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "catalog/query_catalog.hpp"
+#include "sec_edgar/q1/duckdb/aux/module.hpp"
 #include "duckdb.hpp"
 
 namespace catalog = accelerator_codegen::aux_state::engine;
@@ -85,6 +86,15 @@ int main(int argc, char **argv) {
   }
   runtime.Build();
   std::cout << "footprint_bytes=" << runtime.AuxStateFootprintBytes() << "\n";
+  {
+    // Size of the state as a serialized image, and its heap size.
+    namespace q1 = accelerator_codegen::aux_state::query::q1;
+    q1::Builder builder;
+    accelerator_codegen::aux_state::query::ScanSecEdgarQ1PreNative(
+        c, [&](duckdb::DataChunk &chunk) { builder.ConsumeChunk(chunk); });
+    const auto state = builder.Finish();
+    std::cout << "encoded_state_bytes=" << q1::Encode(state).size() << " heap_bytes=" << state.MemoryBytes() << "\n";
+  }
 
   {
     std::vector<double> s;
