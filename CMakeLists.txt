@@ -419,6 +419,12 @@ accel_add_shared_interface_test(test_shared_sec_edgar_q3 tests/aux_state/test_sh
 accel_add_shared_interface_test(test_shared_sec_edgar_q4 tests/aux_state/test_shared_sec_edgar_q4.cpp)
 accel_add_shared_interface_test(test_shared_sec_edgar_q6 tests/aux_state/test_shared_sec_edgar_q6.cpp)
 accel_add_shared_interface_test(test_shared_sec_edgar_q24 tests/aux_state/test_shared_q24.cpp)
+accel_add_shared_interface_test(test_sec_edgar_q24_duckdb_differential tests/aux_state/test_sec_edgar_q24_duckdb_differential.cpp)
+
+add_executable(benchmark_sec_edgar_q24_micro
+    benchmarks/aux_state/benchmark_sec_edgar_q24_micro.cpp
+)
+target_link_libraries(benchmark_sec_edgar_q24_micro PRIVATE accelerator_codegen duckdb_sibling)
 
 add_executable(test_shared_incremental_differential
     tests/aux_state/test_shared_incremental_differential.cpp
