@@ -14,7 +14,10 @@
 //   * AdshIndex: for every adsh seen in num (USD, non-null value) or sub:
 //     (sum, row count, group id or -1 when the filing is not in the fy=2022
 //     cohort).  Keeping filings that are *not* in the cohort makes sub
-//     INSERT/DELETE/UPDATE (including fy moves) fully incremental.
+//     INSERT/DELETE/UPDATE (including fy moves) fully incremental.  Entries
+//     with no rows and no cohort membership are dropped.
+//   * Sums are double-double (sum + comp), so add/remove cycles do not drift;
+//     counts are 64 bit.
 //   * GroupDir: dictionary of (name, cik) groups and distinct ciks.
 //   * Totals: per-group and per-cik (sum, row count) in SoA chunks, plus a
 //     lazily computed, cached top-100 result.
@@ -27,11 +30,15 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
+#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
 #include "sec_edgar/q3/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -80,57 +87,91 @@ struct SecEdgarQ3OutputRow {
 // ---- adsh index -----------------------------------------------------------
 
 struct SecEdgarQ3Entry {
-  uint64_t key = 0;   // packed adsh (see SecEdgarQ3PackAdsh) or overflow id
-  double sum = 0.0;   // SUM(value) of qualifying num rows
-  int32_t cnt = 0;    // number of qualifying num rows
+  double sum = 0.0;   // SUM(value) of qualifying num rows (rounded value)
+  double comp = 0.0;  // compensation: exact sum = sum + comp (double-double)
+  int64_t cnt = 0;    // number of qualifying num rows
   int32_t group = -1; // group id when sub.fy = 2022 for this adsh, else -1
 };
 
-struct SecEdgarQ3Shard {
-  std::vector<SecEdgarQ3Entry> entries; // sorted by key
-};
-
-// Two-level fan-out (16 x 16 leaf shards): a delta clones one top array, one
-// mid array and the touched leaf shard instead of 256 shared pointers.
-inline constexpr std::size_t kSecEdgarQ3Fanout = 16;
+// Keys are 64-bit: an adsh of the SEC pattern "0000000000-00-000000" packs
+// into 60 bits; every other string gets an id from the overflow dictionary
+// (key = overflow bit | id). Both are exact (no hash collisions).
 inline constexpr uint64_t kSecEdgarQ3OverflowBit = 1ULL << 63;
-
-using SecEdgarQ3OverflowMap = std::unordered_map<std::string, uint32_t>;
-
-struct SecEdgarQ3IndexMid {
-  std::array<std::shared_ptr<const SecEdgarQ3Shard>, kSecEdgarQ3Fanout> shards;
-};
-
-struct SecEdgarQ3AdshIndex {
-  std::array<std::shared_ptr<const SecEdgarQ3IndexMid>, kSecEdgarQ3Fanout> mids;
-  // adsh strings that do not match the SEC "0000000000-00-000000" pattern.
-  std::shared_ptr<const SecEdgarQ3OverflowMap> overflow;
-  uint64_t entry_count = 0;
-};
 
 // Packs 'DDDDDDDDDD-DD-DDDDDD' into a 60 bit key; false for any other string.
 bool SecEdgarQ3PackAdsh(const char *data, std::size_t size, uint64_t &key);
 
-// ---- groups / totals ------------------------------------------------------
-
-struct SecEdgarQ3GroupDir {
-  std::string name_pool;
-  std::vector<uint32_t> name_off{0};   // groups + 1 offsets into name_pool
-  std::vector<uint8_t> group_flags;    // bit0 name NULL, bit1 cik NULL
-  std::vector<int32_t> group_cik;
-  std::vector<uint32_t> group_cik_id;  // index into cik_value
-  std::vector<int32_t> cik_value;
-  std::vector<uint8_t> cik_is_null;
-
-  std::size_t GroupCount() const { return group_flags.size(); }
-  std::size_t CikCount() const { return cik_value.size(); }
+// Interned non-conforming adsh strings (copy-on-write, hash chains verified
+// against the stored string).
+struct SecEdgarQ3OverflowDict {
+  core::ChunkedBlobMap strings;                   // id -> adsh bytes
+  core::ShardedCowHashMap<uint32_t, 6> by_hash;   // hash -> newest id + 1
+  core::ChunkedCowArray<uint32_t, 10> next;       // id -> older id + 1
+  uint32_t count = 0;
 };
 
-inline constexpr std::size_t kSecEdgarQ3AggChunk = 512;
+// Hash index key -> entry. The entries live in 2^(top_bits+mid_bits) leaves
+// (FlatHashMap) reached through a two-level directory so that a delta clones
+// one top array, one mid array and the touched leaves. The leaf count is
+// sized from the entry count at build (about 2k entries per leaf).
+using SecEdgarQ3Leaf = core::FlatHashMap<SecEdgarQ3Entry>;
 
+struct SecEdgarQ3IndexMid {
+  std::vector<std::shared_ptr<const SecEdgarQ3Leaf>> leaves;
+};
+
+struct SecEdgarQ3AdshIndex {
+  uint32_t top_bits = 0;
+  uint32_t mid_bits = 0;
+  std::vector<std::shared_ptr<const SecEdgarQ3IndexMid>> tops;
+  SecEdgarQ3OverflowDict overflow;
+  uint64_t entry_count = 0;
+};
+
+// ---- groups / totals ------------------------------------------------------
+
+struct SecEdgarQ3GroupMeta {
+  int32_t cik = 0;
+  uint32_t cik_id = 0;  // index into cik_meta
+  uint32_t next = 0;    // older group with the same hash + 1
+  uint8_t flags = 0;    // bit0 name NULL, bit1 cik NULL
+};
+
+struct SecEdgarQ3CikMeta {
+  int32_t value = 0;
+  uint8_t is_null = 0;
+};
+
+// Dictionary of (name, cik) groups (append only) and distinct ciks.
+struct SecEdgarQ3GroupDir {
+  core::ChunkedBlobMap names;                       // group -> name (absent: NULL)
+  core::ChunkedCowArray<SecEdgarQ3GroupMeta, 10> meta;
+  core::ChunkedCowArray<SecEdgarQ3CikMeta, 10> cik_meta;
+  core::ShardedCowHashMap<uint32_t, 10> by_hash;    // hash(name, cik) -> newest group + 1
+  core::ShardedCowHashMap<uint32_t, 8> cik_ids;     // cik (NULL: INT64_MIN) -> cik id + 1
+  uint32_t group_count = 0;
+  uint32_t cik_count = 0;
+
+  std::size_t GroupCount() const { return group_count; }
+  std::size_t CikCount() const { return cik_count; }
+  bool NameIsNull(uint32_t g) const { return (meta.Get(g).flags & 1) != 0; }
+  bool CikIsNull(uint32_t g) const { return (meta.Get(g).flags & 2) != 0; }
+  int32_t Cik(uint32_t g) const { return meta.Get(g).cik; }
+  std::string_view Name(uint32_t g) const {
+    std::string_view v;
+    names.Get(g, v);
+    return v;
+  }
+};
+
+inline constexpr std::size_t kSecEdgarQ3AggChunk = 256;
+
+// Structure of arrays so the kernels stream sums and counts. `comp` is the
+// compensation term of the (sum, comp) double-double accumulator.
 struct alignas(64) SecEdgarQ3AggChunkData {
   double sum[kSecEdgarQ3AggChunk];
-  int32_t cnt[kSecEdgarQ3AggChunk];
+  double comp[kSecEdgarQ3AggChunk];
+  int64_t cnt[kSecEdgarQ3AggChunk];
 };
 
 struct SecEdgarQ3AggArray {

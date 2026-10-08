@@ -797,10 +797,53 @@ void TestKernels() {
   }
 }
 
+// Add/remove cycles must not drift: a huge value inserted and deleted again
+// would wipe out the low bits of a plain double running sum.
+void TestNoDrift(bool parallel) {
+  Harness h(parallel ? "sec_edgar_q3_aux_parallel" : "sec_edgar_q3", parallel);
+  SubM a;
+  a.adsh = "0000000001-22-000001";
+  a.name = "Alpha";
+  a.cik = 1;
+  a.fy = 2022;
+  SubM b = a;
+  b.adsh = "0000000002-22-000002";
+  b.name = "Beta";
+  b.cik = 2;
+  h.tables.sub[a.adsh] = a;
+  h.tables.sub[b.adsh] = b;
+  NumM na;
+  na.adsh = a.adsh;
+  na.value = 9000.5;
+  NumM nb;
+  nb.adsh = b.adsh;
+  nb.value = 1000.25;
+  h.tables.num.push_back(na);
+  h.tables.num.push_back(nb);
+  h.Build();
+  std::mt19937 rng(5);
+  for (int i = 0; i < 400; ++i) {
+    NumM extra;
+    extra.adsh = (i % 2) ? a.adsh : b.adsh;
+    extra.value = (1e16 + static_cast<double>(rng() % 100000)) * ((i % 3) ? 1.0 : -1.0) +
+                  static_cast<double>(rng() % 1000) / 7.0;
+    h.Mutate(kNumTable, MutationKind::Insert, {}, {NumRowOf(extra)});
+    h.Commit();
+    h.Mutate(kNumTable, MutationKind::Delete, {NumRowOf(extra)}, {});
+    h.Commit();
+  }
+  h.Verify("after add/remove cycles");
+  const auto rows = h.Run();
+  Check(rows.size() == 1 && std::get<double>(rows[0].values[2].payload) == 9000.5,
+        "no drift after add/remove cycles");
+}
+
 } // namespace
 
 int main() {
   TestKernels();
+  TestNoDrift(false);
+  TestNoDrift(true);
   TestDirected(false);
   TestDirected(true);
   const int iterations = std::getenv("ACCEL_Q3_TEST_ITERS")

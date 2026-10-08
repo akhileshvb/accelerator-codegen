@@ -70,10 +70,10 @@ int RunKernels() {
   const uint32_t n = 8251;
   SecEdgarQ3AggArray array;
   array.size = n;
-  for (uint32_t c = 0; c < (n + 511) / 512; ++c) {
+  for (uint32_t c = 0; c < (n + kSecEdgarQ3AggChunk - 1) / kSecEdgarQ3AggChunk; ++c) {
     auto chunk = std::make_shared<SecEdgarQ3AggChunkData>();
     std::memset(chunk.get(), 0, sizeof(*chunk));
-    for (uint32_t i = 0; i < 512 && c * 512 + i < n; ++i) {
+    for (uint32_t i = 0; i < kSecEdgarQ3AggChunk && c * kSecEdgarQ3AggChunk + i < n; ++i) {
       chunk->cnt[i] = 1 + rng() % 50;
       chunk->sum[i] = std::exp(std::uniform_real_distribution<double>(0, 14)(rng));
     }
