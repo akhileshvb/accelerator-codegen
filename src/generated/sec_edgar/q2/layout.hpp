@@ -11,13 +11,10 @@ namespace accelerator_codegen::aux_state::core {
 struct SecEdgarQ2Layout {
   static constexpr const char *kAccelerator = "sec_edgar_q2";
   static constexpr const char *kParallelAccelerator = "sec_edgar_q2_aux_parallel";
-  static constexpr PartitionId kMaxPureMap = 0;
-  static constexpr PartitionId kFy2022Cohort = 1;
-  static constexpr PartitionId kCandidates = 2;
+  // One partition: the whole state (groups, dictionaries, per-adsh sub info).
+  static constexpr PartitionId kState = 0;
 
-  static constexpr std::array<PartitionId, 3> Partitions() {
-    return {kMaxPureMap, kFy2022Cohort, kCandidates};
-  }
+  static constexpr std::array<PartitionId, 1> Partitions() { return {kState}; }
 };
 
 } // namespace accelerator_codegen::aux_state::core
