@@ -13,6 +13,9 @@ ulimit -c 0   # a crashing child must not write a core dump to the root disk
 #   HOSTBUILD           DuckDB host build dir containing benchmark_shared_duckdb_write_interval
 #   DUCK_SRC            source DuckDB file (default /home/akhilvb/accelerator-codegen-duckdb/sec_edgar_sf3.duckdb)
 #   WORK_ROOT           tmpfs dir for DuckDB copies (default /tmp)
+#   DUCK_CHECKPOINT_THRESHOLD  DuckDB checkpoint_threshold for base AND accelerated
+#                       mode (default 1TB: no automatic checkpoint inside a timed
+#                       commit; "" keeps DuckDB's 16 MiB default)
 #   PG_SCRIPTS          dir with start/stop/build_pg_ext scripts (default /home/akhilvb/accel-wt/pg)
 #   PG_PORT_BASE        instance for query q uses PG_PORT_BASE+q (default 55460)
 #   PG_NAME_PREFIX      instance name prefix (default sw)
@@ -32,6 +35,7 @@ SWEEP_QUERIES="${SWEEP_QUERIES:-1 2 3 4 6 24}"
 ACCEL_SWEEP_PARAM_SEED="${ACCEL_SWEEP_PARAM_SEED:-1}"
 ACCEL_SWEEP_CHECK_SETS="${ACCEL_SWEEP_CHECK_SETS:-4}"
 WORK_ROOT="${WORK_ROOT:-/tmp}"
+DUCK_CHECKPOINT_THRESHOLD="${DUCK_CHECKPOINT_THRESHOLD-1TB}"
 RESULTS_ROOT="${RESULTS_ROOT:-$SWEEP_DIR/results}"
 
 # slowest first for Postgres so the 4-wide pool stays busy
@@ -63,6 +67,7 @@ duck_q() {
             ACCEL_SHARED_SWEEP_READS=$SWEEP_READS ACCEL_SHARED_SWEEP_READER_QPS=$SWEEP_QPS \
             ACCEL_SWEEP_PARAMS=$mode ACCEL_SWEEP_PARAM_FILE="$draws" \
             ACCEL_BENCH_THREADS=1 ACCEL_DUCKDB_ROOT="$DUCK_ROOT" \
+            ACCEL_DUCKDB_CHECKPOINT_THRESHOLD="$DUCK_CHECKPOINT_THRESHOLD" \
             "$HOSTBUILD/benchmark_shared_duckdb_write_interval" sec_edgar "$q" "$db" "$iv") \
             >> "$OUT/duckdb_q$q.log" 2>&1; then
         log "duckdb q$q interval=$iv params=$mode done"
@@ -108,7 +113,7 @@ wps_to_intervals() { local w; for w in $1; do python3 -c "print(repr(1.0/$w))"; 
 # run_all "<duck intervals>" "<pg intervals csv>" "<param modes>"
 run_all() {
   export -f duck_q pg_q log
-  export SWEEP_DIR REPO HOSTBUILD DUCK_SRC DUCK_ROOT PG_SCRIPTS PG_PORT_BASE PG_NAME_PREFIX \
+  export SWEEP_DIR REPO HOSTBUILD DUCK_SRC DUCK_ROOT DUCK_CHECKPOINT_THRESHOLD PG_SCRIPTS PG_PORT_BASE PG_NAME_PREFIX \
          SWEEP_READS SWEEP_QPS ACCEL_SWEEP_PARAM_SEED ACCEL_SWEEP_CHECK_SETS
   local d="$1" p="$2" m="$3" pids=()
   if [[ -z "${SKIP_DUCKDB:-}" ]]; then

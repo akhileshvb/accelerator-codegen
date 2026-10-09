@@ -1,6 +1,10 @@
 // GENERATED BACKEND
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
 
+#include <cctype>
+#include <cstdlib>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "accelerator_codegen/runtime/catalog/shared_query_engine.hpp"
@@ -33,6 +37,38 @@ void RegisterBaseFunctionSet(TableFunctionSetFactory factory) {
 	BaseFunctionSets().push_back(factory);
 }
 
+namespace {
+
+// Opt-in DuckDB settings for benchmark processes, applied by every connection
+// that registers the accelerator functions -- the base and the accelerated
+// mode of a benchmark alike, so both run on the same engine configuration.
+//
+//   ACCEL_DUCKDB_CHECKPOINT_THRESHOLD=<size>   SET checkpoint_threshold
+//
+// With DuckDB's default (16 MiB) the commit of a multi-row UPDATE of a few
+// thousand scattered num rows triggers an automatic checkpoint (1.4-1.8 s on
+// SEC-EDGAR SF3); a larger threshold defers it to the database's close. The
+// write itself (its rows, WAL record and durability) is unchanged.
+void ApplyEngineSettingsFromEnvironment(duckdb::Connection &connection) {
+    const char *threshold = std::getenv("ACCEL_DUCKDB_CHECKPOINT_THRESHOLD");
+    if (!threshold || !*threshold) {
+        return;
+    }
+    for (const char *c = threshold; *c; ++c) {
+        if (!std::isalnum(static_cast<unsigned char>(*c)) && *c != '.' && *c != ' ') {
+            throw std::invalid_argument("ACCEL_DUCKDB_CHECKPOINT_THRESHOLD: not a size: " +
+                                        std::string(threshold));
+        }
+    }
+    auto result = connection.Query(std::string("SET checkpoint_threshold = '") + threshold + "'");
+    if (!result || result->HasError()) {
+        throw std::runtime_error("SET checkpoint_threshold failed: " +
+                                 (result ? result->GetError() : std::string("null result")));
+    }
+}
+
+} // namespace
+
 void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
     auto &context = *connection.context;
     auto &catalog = duckdb::Catalog::GetSystemCatalog(context);
@@ -58,6 +94,7 @@ void RegisterAcceleratorFunctions(duckdb::Connection &connection) {
         }
         throw;
     }
+    ApplyEngineSettingsFromEnvironment(connection);
 }
 
 } // namespace accelerator_codegen
