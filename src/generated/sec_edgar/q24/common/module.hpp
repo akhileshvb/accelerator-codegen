@@ -53,6 +53,8 @@ struct SecEdgarQ24NumBatch {
   const Q24Str *tag = nullptr;
   const Q24Str *version = nullptr;
   const double *value = nullptr;
+  const Q24Str *uom = nullptr;   // may hold NULLs (such rows are skipped)
+  const int32_t *ddate = nullptr; // never NULL in a delivered row
 };
 
 struct SecEdgarQ24PreBatch {
@@ -63,18 +65,25 @@ struct SecEdgarQ24PreBatch {
 };
 
 // Post-transaction truth for one (adsh, tag, version) triple, read from the
-// base tables: the number of pre rows with this triple, and the qualifying
-// num rows (uom = USD, ddate in range, value IS NOT NULL) with this triple.
+// base tables: the number of pre rows with this triple, and its num rows with
+// value IS NOT NULL, uom IS NOT NULL and a bucketable ddate, aggregated per
+// (year, uom) bucket (year = floor(ddate / 10000), see Q24DdateYear).
 struct SecEdgarQ24TripleKey {
   std::string adsh;
   std::string tag;
   std::string version;
 };
 
-struct SecEdgarQ24TripleState {
-  int64_t pre_rows = 0;
+struct SecEdgarQ24TripleBucket {
+  int32_t year = 0;
+  std::string uom;
   int64_t num_rows = 0;
   double num_sum = 0.0;
+};
+
+struct SecEdgarQ24TripleState {
+  int64_t pre_rows = 0;
+  std::vector<SecEdgarQ24TripleBucket> buckets;
 };
 
 class SecEdgarQ24InitialScan {
@@ -87,9 +96,10 @@ public:
       const std::function<void(const SecEdgarQ24PreInput &)> &) = 0;
 
   // Optional fast paths. Return false when unsupported (module falls back to
-  // the row-at-a-time scans). ScanQualifyingNumBatches must deliver exactly
-  // the num rows with uom = kSecEdgarQ24Uom, ddate in
-  // [kSecEdgarQ24FirstDate, kSecEdgarQ24LastDate] and value IS NOT NULL.
+  // the row-at-a-time scans). ScanQualifyingNumBatches must deliver every num
+  // row with value IS NOT NULL and ddate IS NOT NULL (it may also drop rows
+  // whose uom is NULL or whose ddate is not bucketable, and rows that have a
+  // pre match); the module filters the rest itself.
   virtual bool ScanQualifyingNumBatches(
       const std::function<void(const SecEdgarQ24NumBatch &)> &) {
     return false;
@@ -153,6 +163,8 @@ public:
     // triple is resolved from the base tables at Stage.
     enum class Kind : uint8_t { Num, PreInsert, PreTouch } kind = Kind::Num;
     int8_t sign = 0;
+    int32_t year = 0;   // Num ops: bucket of the row
+    std::string uom;
     double value = 0.0;
     // enc(adsh) enc(tag) enc(version)
     std::string key;
@@ -215,7 +227,13 @@ public:
   static void EmitStateImages(const char *accelerator,
                               const SecEdgarQ24State &state,
                               core::StateBuilder &builder);
-  static void EmitOutput(const Q24GroupState &groups, core::AuxRowSink &sink);
+  // Writes the top-100 rows of the (year, uom) bucket `bucket_key` (empty
+  // key = empty result).
+  static void EmitOutput(const Q24GroupState &groups,
+                         const std::string &bucket_key, core::AuxRowSink &sink);
+  // Maps the table function arguments () / (year BIGINT, uom VARCHAR) to a
+  // bucket key. False: the result is empty (NULL or non-matching argument).
+  static bool ParseArguments(const core::QueryArguments &, std::string &bucket_key);
   // Reads the published aggregates image; false when absent/invalid.
   bool LoadGroups(core::AuxEngineServices &,
                   std::shared_ptr<const Q24GroupState> &) const;

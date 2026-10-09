@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -63,42 +64,42 @@ Parse ReadDouble(const core::AuxRow &row, std::size_t index, double &value,
   return Parse::Unsupported;
 }
 
-// ddate is an INTEGER column (YYYYMMDD). Values outside int32 cannot lie in
-// the query's range, so they parse as "out of range" rather than failing.
-Parse ReadDdate(const core::AuxRow &row, std::size_t index, bool &in_range) {
+// ddate is an INTEGER column (YYYYMMDD). NULL and values that fall in no year
+// bucket can never satisfy any parameterised range, so they parse as
+// "not bucketable" rather than failing.
+Parse ReadDdate(const core::AuxRow &row, std::size_t index, bool &bucketable,
+                int32_t &year) {
   if (index >= row.values.size()) return Parse::Unsupported;
   const auto &cell = row.values[index];
   if (cell.is_null) {
-    in_range = false;
+    bucketable = false;
     return Parse::Ok;
   }
   if (const auto *i = std::get_if<int64_t>(&cell.payload)) {
-    in_range = *i >= kSecEdgarQ24FirstDate && *i <= kSecEdgarQ24LastDate;
+    bucketable = Q24DdateYear(*i, year);
     return Parse::Ok;
   }
   return Parse::Unsupported;
 }
 
 struct NumRow {
-  Q24Str adsh, tag, version;
+  Q24Str adsh, tag, version, uom;
   double value = 0.0;
+  int32_t year = 0;
   bool relevant = false;
 };
 
 Parse ParseNum(const core::AuxRow &row, NumRow &out) {
-  Q24Str uom;
-  bool in_range = false;
+  bool bucketable = false;
   bool value_null = true;
   if (ReadStr(row, kNumAdsh, out.adsh) != Parse::Ok ||
       ReadStr(row, kNumTag, out.tag) != Parse::Ok ||
       ReadStr(row, kNumVersion, out.version) != Parse::Ok ||
-      ReadStr(row, kNumUom, uom) != Parse::Ok ||
-      ReadDdate(row, kNumDdate, in_range) != Parse::Ok ||
+      ReadStr(row, kNumUom, out.uom) != Parse::Ok ||
+      ReadDdate(row, kNumDdate, bucketable, out.year) != Parse::Ok ||
       ReadDouble(row, kNumValue, out.value, value_null) != Parse::Ok)
     return Parse::Unsupported;
-  out.relevant = in_range && !value_null && !uom.null &&
-                 uom.size == std::strlen(kSecEdgarQ24Uom) &&
-                 std::memcmp(uom.data, kSecEdgarQ24Uom, uom.size) == 0;
+  out.relevant = bucketable && !value_null && !out.uom.null;
   return Parse::Ok;
 }
 
@@ -177,6 +178,21 @@ void PutDict(std::vector<uint8_t> &out, const Q24StringDict &d) {
   PutRaw(out, d.offsets().data(), d.offsets().size());
 }
 
+void PutOrphanMap(std::vector<uint8_t> &out, const Q24OrphanMap &m) {
+  m.ForEach([&](const std::string &key, const Q24OrphanEntry &entry) {
+    const uint32_t n = static_cast<uint32_t>(key.size());
+    PutRaw(out, &n, 1);
+    PutRaw(out, key.data(), key.size());
+    for (const auto &b : entry) {
+      PutRaw(out, &b.year, 1);
+      PutRaw(out, b.uom.data(), b.uom.size());
+      PutRaw(out, &b.acc.cnt, 1);
+      PutRaw(out, &b.acc.sum, 1);
+      PutRaw(out, &b.acc.comp, 1);
+    }
+  });
+}
+
 void PutAccMap(std::vector<uint8_t> &out, const Q24AccMap &m) {
   m.ForEach([&](const std::string &key, const Q24Acc &acc) {
     const uint32_t n = static_cast<uint32_t>(key.size());
@@ -218,7 +234,7 @@ std::vector<uint8_t> EncodeSecEdgarQ24TagVersions(const SecEdgarQ24State &) {
 std::vector<uint8_t> EncodeSecEdgarQ24Aggregates(const SecEdgarQ24State &s) {
   std::vector<uint8_t> out;
   if (!s.groups) return out;
-  PutAccMap(out, s.groups->orphans);
+  PutOrphanMap(out, s.groups->orphans);
   PutAccMap(out, s.groups->groups);
   return out;
 }
@@ -227,7 +243,11 @@ std::vector<SecEdgarQ24OutputRow>
 BuildSecEdgarQ24Output(const SecEdgarQ24State &state) {
   std::vector<SecEdgarQ24OutputRow> rows;
   if (!state.groups) return rows;
-  for (const auto &r : state.groups->Result())
+  // The default parameter values' bucket.
+  const std::string bucket = Q24BucketKey(
+      static_cast<int32_t>(kSecEdgarQ24DefaultYear),
+      Q24Str::Of(kSecEdgarQ24DefaultUom, std::strlen(kSecEdgarQ24DefaultUom)));
+  for (const auto &r : *state.groups->Result(bucket))
     rows.push_back({r.tag, r.version, r.tag_null, r.version_null, r.count,
                     r.total});
   return rows;
@@ -391,6 +411,8 @@ void SecEdgarQ24Module::AccumulateMutation(
     SecEdgarQ24TxnBuffer::Op op;
     op.kind = SecEdgarQ24TxnBuffer::Op::Kind::Num;
     op.sign = sign;
+    op.year = parsed.year;
+    op.uom.assign(parsed.uom.data, parsed.uom.size);
     op.value = parsed.value;
     op.key = MakeKey(parsed.adsh, parsed.tag, parsed.version);
     buffer.AddOp(std::move(op));
@@ -507,16 +529,29 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
     if (!initial_scan->LoadTripleStates(lookups, touched_states) ||
         touched_states.size() != lookups.size())
       return rebuild_outcome(true);
-    for (const auto &s : touched_states)
-      if (!std::isfinite(s.num_sum) || s.pre_rows < 0 || s.num_rows < 0)
-        return rebuild_outcome(true);
+    for (const auto &s : touched_states) {
+      if (s.pre_rows < 0) return rebuild_outcome(true);
+      for (const auto &b : s.buckets)
+        if (!std::isfinite(b.num_sum) || b.num_rows < 0)
+          return rebuild_outcome(true);
+    }
   }
 
   // Replay the transaction's ops in order against copy-on-write views.
-  Q24AccMapTxn orphans(groups->orphans);
+  Q24OrphanMapTxn orphans(groups->orphans);
   Q24AccMapTxn group_map(groups->groups);
   std::shared_ptr<Q24PreOverlay> new_overlay;
+  // Group keys / bucket keys whose accumulators changed.
+  std::unordered_set<std::string> touched_groups;
+  std::unordered_set<std::string> touched_buckets;
   const auto fallback = [&] { return rebuild_outcome(true); };
+  const auto bucket_of = [](int32_t year, const std::string &uom) {
+    return Q24BucketKey(year, Q24Str::Of(uom));
+  };
+  const auto note = [&](const std::string &bkey, const std::string &gkey) {
+    touched_groups.insert(gkey);
+    touched_buckets.insert(bkey);
+  };
 
   const auto in_pre = [&](const Q24Str &a, const Q24Str &t, const Q24Str &v,
                           const std::string &key) {
@@ -532,23 +567,32 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
     }
     return *new_overlay;
   };
-  // Removes the orphan accumulators of `key` (now matched by a pre row).
-  // False: inconsistent state (caller rebuilds).
+  // Removes the orphan accumulators of `key` (now matched by a pre row), in
+  // every (year, uom) bucket. False: inconsistent state (caller rebuilds).
   const auto retract_orphan = [&](const std::string &key,
                                   std::size_t group_off) {
-    const Q24Acc *orphan = orphans.Find(key);
-    if (!orphan) return true;
-    const Q24Acc removed = *orphan;
-    const std::string gkey = key.substr(group_off);
-    Q24Acc *g = group_map.Find(gkey);
-    if (!g || g->cnt < removed.cnt) return false;
-    g->cnt -= removed.cnt;
-    g->Add(-removed.sum);
-    g->Add(-removed.comp);
-    const bool empty = g->cnt == 0;
+    const Q24OrphanEntry *entry = orphans.FindConst(key);
+    if (!entry) return true;
+    const Q24OrphanEntry removed_entry = *entry; // Erase invalidates it
+    for (const auto &removed : removed_entry) {
+      const std::string bkey = bucket_of(removed.year, removed.uom);
+      const std::string gkey = bkey + key.substr(group_off);
+      Q24Acc *g = group_map.Find(gkey);
+      if (!g || g->cnt < removed.acc.cnt) return false;
+      g->cnt -= removed.acc.cnt;
+      g->Add(-removed.acc.sum);
+      g->Add(-removed.acc.comp);
+      if (g->cnt == 0) group_map.Erase(gkey);
+      note(bkey, gkey);
+    }
     orphans.Erase(key);
-    if (empty) group_map.Erase(gkey);
     return true;
+  };
+  const auto find_bucket = [](Q24OrphanEntry &entry, int32_t year,
+                              const std::string &uom) -> Q24OrphanBucket * {
+    for (auto &b : entry)
+      if (b.year == year && b.uom == uom) return &b;
+    return nullptr;
   };
 
   for (const auto &op : ops) {
@@ -570,26 +614,39 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
     }
     // Num row contribution.
     if (in_pre(a, t, v, op.key)) continue; // matched: not in the anti-join
-    const std::string gkey = op.key.substr(group_off);
+    const std::string bkey = bucket_of(op.year, op.uom);
+    const std::string gkey = bkey + op.key.substr(group_off);
     if (op.sign > 0) {
-      auto &o = orphans.GetOrCreate(op.key);
-      o.cnt++;
-      o.Add(op.value);
+      auto &entry = orphans.GetOrCreate(op.key);
+      Q24OrphanBucket *o = find_bucket(entry, op.year, op.uom);
+      if (!o) {
+        entry.push_back({op.year, op.uom, Q24Acc()});
+        o = &entry.back();
+      }
+      o->acc.cnt++;
+      o->acc.Add(op.value);
       auto &g = group_map.GetOrCreate(gkey);
       g.cnt++;
       g.Add(op.value);
       if (!std::isfinite(g.Total())) return fallback();
     } else {
-      Q24Acc *o = orphans.Find(op.key);
+      const Q24OrphanEntry *probe = orphans.FindConst(op.key);
+      if (!probe) return fallback();
+      Q24OrphanEntry *entry = orphans.Find(op.key);
+      Q24OrphanBucket *o = find_bucket(*entry, op.year, op.uom);
       Q24Acc *g = group_map.Find(gkey);
-      if (!o || !g || o->cnt <= 0 || g->cnt <= 0) return fallback();
-      o->cnt--;
-      o->Add(-op.value);
+      if (!o || !g || o->acc.cnt <= 0 || g->cnt <= 0) return fallback();
+      o->acc.cnt--;
+      o->acc.Add(-op.value);
       g->cnt--;
       g->Add(-op.value);
-      if (o->cnt == 0) orphans.Erase(op.key);
+      if (o->acc.cnt == 0) {
+        entry->erase(entry->begin() + (o - entry->data()));
+        if (entry->empty()) orphans.Erase(op.key);
+      }
       if (g->cnt == 0) group_map.Erase(gkey);
     }
+    note(bkey, gkey);
   }
 
   // Triples resolved from the tables: membership and orphans are set to the
@@ -616,15 +673,51 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
       if (ov.keys.size() + ov.removed.size() > kMaxOverlayKeys) return fallback();
     }
     if (!retract_orphan(key, group_off)) return fallback();
-    if (!present && st.num_rows > 0) {
-      auto &o = orphans.GetOrCreate(key);
-      o.cnt = st.num_rows;
-      o.Add(st.num_sum);
-      auto &g = group_map.GetOrCreate(key.substr(group_off));
-      g.cnt += st.num_rows;
-      g.Add(st.num_sum);
-      if (!std::isfinite(g.Total())) return fallback();
+    if (!present) {
+      for (const auto &tb : st.buckets) {
+        if (tb.num_rows <= 0) continue;
+        const std::string bkey = bucket_of(tb.year, tb.uom);
+        const std::string gkey = bkey + key.substr(group_off);
+        auto &entry = orphans.GetOrCreate(key);
+        Q24OrphanBucket *o = find_bucket(entry, tb.year, tb.uom);
+        if (!o) {
+          entry.push_back({tb.year, tb.uom, Q24Acc()});
+          o = &entry.back();
+        }
+        o->acc.cnt += tb.num_rows;
+        o->acc.Add(tb.num_sum);
+        auto &g = group_map.GetOrCreate(gkey);
+        g.cnt += tb.num_rows;
+        g.Add(tb.num_sum);
+        if (!std::isfinite(g.Total())) return fallback();
+        note(bkey, gkey);
+      }
     }
+  }
+
+  // Heavy sets (groups passing HAVING) of the touched buckets.
+  Q24HeavyMap heavy = groups->heavy;
+  std::unordered_set<std::string> heavy_copied;
+  for (const auto &gkey : touched_groups) {
+    const std::size_t bsz = 4 + Q24ComponentSize(gkey, 4);
+    const std::string bkey = gkey.substr(0, bsz);
+    const Q24Acc *g = group_map.FindConst(gkey);
+    const bool want = g && g->cnt >= kSecEdgarQ24MinimumCount;
+    const auto it = heavy.find(bkey);
+    const bool have = it != heavy.end() && it->second && it->second->count(gkey) != 0;
+    if (want == have) continue;
+    if (heavy_copied.insert(bkey).second) {
+      auto copy = it != heavy.end() && it->second ? std::make_shared<Q24HeavySet>(*it->second)
+                                                  : std::make_shared<Q24HeavySet>();
+      heavy[bkey] = copy;
+    }
+    auto &set = const_cast<Q24HeavySet &>(*heavy[bkey]);
+    if (want) set.insert(gkey);
+    else set.erase(gkey);
+  }
+  for (const auto &bkey : heavy_copied) {
+    const auto it = heavy.find(bkey);
+    if (it != heavy.end() && it->second->empty()) heavy.erase(it);
   }
 
   const bool groups_changed = orphans.dirty() || group_map.dirty();
@@ -636,6 +729,8 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
     auto next = std::make_shared<Q24GroupState>();
     next->orphans = orphans.Finish();
     next->groups = group_map.Finish();
+    next->heavy = std::move(heavy);
+    next->InheritResults(*groups, touched_buckets);
     auto st = std::make_shared<SecEdgarQ24State>();
     st->groups = std::move(next);
     outcome.updates.push_back(core::StateImage::Make(
@@ -653,6 +748,47 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
         MakeImage(SecEdgarQ24ImageKind::PreMembership, st)));
   }
   return outcome;
+}
+
+bool SecEdgarQ24Module::ParseArguments(const core::QueryArguments &args,
+                                       std::string &bucket_key) {
+  int64_t year = kSecEdgarQ24DefaultYear;
+  Q24Str uom = Q24Str::Of(kSecEdgarQ24DefaultUom, std::strlen(kSecEdgarQ24DefaultUom));
+  std::string uom_storage;
+  if (!args.values.empty()) {
+    if (args.values.size() != 2)
+      throw std::invalid_argument(
+          "sec_edgar q24 aux expects () or (year BIGINT, uom VARCHAR)");
+    const auto &y = args.values[0];
+    const auto &u = args.values[1];
+    if (y.is_null || u.is_null) return false; // NULL never compares equal
+    if (const auto *i = std::get_if<int64_t>(&y.payload)) {
+      year = *i;
+    } else if (const auto *ui = std::get_if<uint64_t>(&y.payload)) {
+      if (*ui > static_cast<uint64_t>(INT32_MAX)) return false;
+      year = static_cast<int64_t>(*ui);
+    } else if (const auto *d = std::get_if<double>(&y.payload)) {
+      if (!(*d == std::floor(*d)) || !(std::fabs(*d) < 9.0e18)) return false;
+      year = static_cast<int64_t>(*d);
+    } else if (const auto *s = std::get_if<std::string>(&y.payload)) {
+      char *end = nullptr;
+      errno = 0;
+      const long long v = std::strtoll(s->c_str(), &end, 10);
+      if (end == s->c_str() || *end != '\0' || errno == ERANGE) return false;
+      year = v;
+    } else {
+      throw std::invalid_argument("sec_edgar q24 aux: unsupported year argument");
+    }
+    const auto *us = std::get_if<std::string>(&u.payload);
+    if (!us) throw std::invalid_argument("sec_edgar q24 aux: uom must be a string");
+    uom_storage = *us;
+    uom = Q24Str::Of(uom_storage);
+  }
+  // ddate is an INTEGER: no row can lie in the window of a year whose
+  // bucket does not fit int32 (this also bounds Y*10000+1231 in 64 bits).
+  if (year < INT32_MIN || year > INT32_MAX) return false;
+  bucket_key = Q24BucketKey(static_cast<int32_t>(year), uom);
+  return true;
 }
 
 bool SecEdgarQ24Module::CheckValidity(core::AuxEngineServices &services,
@@ -683,19 +819,29 @@ bool SecEdgarQ24Module::LoadGroups(
 void SecEdgarQ24Module::Execute(core::AuxEngineServices &services,
                                 const core::QueryArguments &arguments,
                                 core::AuxRowSink &sink) {
+  std::string bucket;
+  if (!ParseArguments(arguments, bucket)) {
+    EmitOutput(Q24GroupState(), std::string(), sink);
+    return;
+  }
   std::shared_ptr<const Q24GroupState> groups;
   if (!LoadGroups(services, groups)) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitOutput(*groups, sink);
+  EmitOutput(*groups, bucket, sink);
 }
 
 void SecEdgarQ24Module::ExecuteFallback(core::AuxEngineServices &services,
-                                        const core::QueryArguments &,
+                                        const core::QueryArguments &arguments,
                                         core::AuxRowSink &sink) {
+  std::string bucket;
+  if (!ParseArguments(arguments, bucket)) {
+    EmitOutput(Q24GroupState(), std::string(), sink);
+    return;
+  }
   const auto state = BuildState(services);
-  EmitOutput(*state.groups, sink);
+  EmitOutput(*state.groups, bucket, sink);
 }
 
 SecEdgarQ24State
@@ -744,17 +890,19 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
         } timer{trace, probe_ms, probe_start};
         hits.resize(b.count);
         base.ContainsBatch(b.adsh, b.tag, b.version, b.count, hits.data());
-        for (std::size_t i = 0; i < b.count; ++i)
-          if (!hits[i]) orphans.Add(b.adsh[i], b.tag[i], b.version[i], b.value[i]);
+        for (std::size_t i = 0; i < b.count; ++i) {
+          int32_t year;
+          if (hits[i] || b.uom[i].null || !Q24DdateYear(b.ddate[i], year)) continue;
+          orphans.Add(b.adsh[i], b.tag[i], b.version[i], year, b.uom[i], b.value[i]);
+        }
       });
   if (!fast_num) {
     initial_scan->ScanNum([&](const SecEdgarQ24NumInput &in) {
-      if (in.uom != kSecEdgarQ24Uom || in.value_is_null ||
-          in.ddate < kSecEdgarQ24FirstDate || in.ddate > kSecEdgarQ24LastDate)
-        return;
+      int32_t year;
+      if (in.value_is_null || !Q24DdateYear(in.ddate, year)) return;
       const auto a = Q24Str::Of(in.adsh), t = Q24Str::Of(in.tag),
                  v = Q24Str::Of(in.version);
-      if (!base.Contains(a, t, v)) orphans.Add(a, t, v, in.value);
+      if (!base.Contains(a, t, v)) orphans.Add(a, t, v, year, Q24Str::Of(in.uom), in.value);
     });
   }
   if (trace) std::fprintf(stderr, "[q24 build]   of which probe callback  %8.1f ms\n", probe_ms);
@@ -780,22 +928,26 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
 }
 
 void SecEdgarQ24Module::EmitOutput(const Q24GroupState &groups,
+                                   const std::string &bucket_key,
                                    core::AuxRowSink &sink) {
   sink.Begin({{{"tag", core::AuxType::String, false},
                {"version", core::AuxType::String, false},
                {"cnt", core::AuxType::Int64, false},
                {"total", core::AuxType::Double, false}}});
-  // The top-k rows are derived lazily (once per published state) from the
-  // maintained group accumulators and are not persisted separately.
-  for (const auto &row : groups.Result()) {
-    sink.WriteRow(
-        {{row.tag_null ? core::AuxValue::Null(core::AuxType::String)
-                       : core::AuxValue::Of(core::AuxType::String, row.tag),
-          row.version_null
-              ? core::AuxValue::Null(core::AuxType::String)
-              : core::AuxValue::Of(core::AuxType::String, row.version),
-          core::AuxValue::Of(core::AuxType::Int64, row.count),
-          core::AuxValue::Of(core::AuxType::Double, row.total)}});
+  // The top-k rows of a bucket are derived lazily (once per published state
+  // and bucket) from the maintained group accumulators.
+  if (!bucket_key.empty()) {
+    const auto rows = groups.Result(bucket_key);
+    for (const auto &row : *rows) {
+      sink.WriteRow(
+          {{row.tag_null ? core::AuxValue::Null(core::AuxType::String)
+                         : core::AuxValue::Of(core::AuxType::String, row.tag),
+            row.version_null
+                ? core::AuxValue::Null(core::AuxType::String)
+                : core::AuxValue::Of(core::AuxType::String, row.version),
+            core::AuxValue::Of(core::AuxType::Int64, row.count),
+            core::AuxValue::Of(core::AuxType::Double, row.total)}});
+    }
   }
   sink.End();
 }

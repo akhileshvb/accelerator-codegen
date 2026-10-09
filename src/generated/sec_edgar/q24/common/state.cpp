@@ -622,72 +622,14 @@ Q24Str Q24ReadComponent(const std::string &key, std::size_t &offset) {
   return s;
 }
 
-// ── sharded accumulator map ────────────────────────────────────────────────
+// ── buckets ────────────────────────────────────────────────────────────────
 
-Q24AccMap::Q24AccMap(std::size_t shard_count)
-    : shards_(NextPow2(std::max<std::size_t>(1, shard_count))) {}
-
-const Q24Acc *Q24AccMap::Find(const std::string &key) const {
-  if (shards_.empty()) return nullptr;
-  const auto &shard = shards_[ShardOf(key)];
-  if (!shard) return nullptr;
-  const auto it = shard->find(key);
-  return it == shard->end() ? nullptr : &it->second;
-}
-
-std::size_t Q24AccMap::Bytes() const {
-  std::size_t total = shards_.capacity() * sizeof(shards_[0]);
-  for (const auto &shard : shards_) {
-    if (!shard) continue;
-    total += sizeof(Shard) + shard->bucket_count() * sizeof(void *);
-    for (const auto &e : *shard) total += e.first.capacity() + 32 + sizeof(Q24Acc);
-  }
-  return total;
-}
-
-Q24AccMapTxn::Q24AccMapTxn(const Q24AccMap &base)
-    : map_(base), owned_(base.shards_.size()) {}
-
-Q24AccMap::Shard &Q24AccMapTxn::Mutable(std::size_t shard) {
-  if (!owned_[shard]) {
-    owned_[shard] = map_.shards_[shard]
-                        ? std::make_shared<Q24AccMap::Shard>(*map_.shards_[shard])
-                        : std::make_shared<Q24AccMap::Shard>();
-    map_.shards_[shard] = owned_[shard];
-  }
-  return *owned_[shard];
-}
-
-Q24Acc *Q24AccMapTxn::Find(const std::string &key) {
-  const auto &shard = map_.shards_[map_.ShardOf(key)];
-  if (!shard) return nullptr;
-  const auto it = shard->find(key);
-  if (it == shard->end()) return nullptr;
-  // Hand out a mutable pointer: clone the shard first.
-  auto &mutable_shard = Mutable(map_.ShardOf(key));
-  dirty_ = true;
-  return &mutable_shard.find(key)->second;
-}
-
-Q24Acc &Q24AccMapTxn::GetOrCreate(const std::string &key) {
-  auto &shard = Mutable(map_.ShardOf(key));
-  dirty_ = true;
-  const auto result = shard.emplace(key, Q24Acc());
-  if (result.second) map_.size_++;
-  return result.first->second;
-}
-
-void Q24AccMapTxn::Erase(const std::string &key) {
-  const std::size_t s = map_.ShardOf(key);
-  if (!map_.shards_[s] || map_.shards_[s]->count(key) == 0) return;
-  auto &shard = Mutable(s);
-  dirty_ = true;
-  map_.size_ -= shard.erase(key);
-}
-
-Q24AccMap Q24AccMapTxn::Finish() {
-  owned_.clear();
-  return std::move(map_);
+std::string Q24BucketKey(int32_t year, const Q24Str &uom) {
+  std::string key;
+  key.reserve(9 + uom.size);
+  key.append(reinterpret_cast<const char *>(&year), 4);
+  Q24AppendComponent(key, uom);
+  return key;
 }
 
 // ── group state ────────────────────────────────────────────────────────────
@@ -697,6 +639,7 @@ namespace {
 struct Candidate {
   int64_t cnt;
   const std::string *key;
+  std::size_t tag_off;
 };
 
 int CompareStr(const Q24Str &a, const Q24Str &b) {
@@ -708,15 +651,27 @@ int CompareStr(const Q24Str &a, const Q24Str &b) {
 
 } // namespace
 
-const std::vector<Q24OutputRow> &Q24GroupState::Result() const {
-  std::call_once(once_, [this] {
+std::shared_ptr<const std::vector<Q24OutputRow>>
+Q24GroupState::Result(const std::string &bucket_key) const {
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    const auto it = cache_.find(bucket_key);
+    if (it != cache_.end()) return it->second;
+  }
+  auto rows = std::make_shared<std::vector<Q24OutputRow>>();
+  const auto heavy_it = heavy.find(bucket_key);
+  if (heavy_it != heavy.end() && heavy_it->second) {
+    const std::size_t tag_off = bucket_key.size();
     std::vector<Candidate> cands;
-    groups.ForEach([&](const std::string &key, const Q24Acc &acc) {
-      if (acc.cnt >= kSecEdgarQ24MinimumCount) cands.push_back({acc.cnt, &key});
-    });
+    cands.reserve(heavy_it->second->size());
+    for (const auto &gkey : *heavy_it->second) {
+      const Q24Acc *acc = groups.Find(gkey);
+      if (acc && acc->cnt >= kSecEdgarQ24MinimumCount)
+        cands.push_back({acc->cnt, &gkey, tag_off});
+    }
     const auto less = [](const Candidate &l, const Candidate &r) {
       if (l.cnt != r.cnt) return l.cnt > r.cnt;
-      std::size_t lo = 0, ro = 0;
+      std::size_t lo = l.tag_off, ro = r.tag_off;
       const Q24Str lt = Q24ReadComponent(*l.key, lo);
       const Q24Str rt = Q24ReadComponent(*r.key, ro);
       if (const int c = CompareStr(lt, rt)) return c < 0;
@@ -731,9 +686,9 @@ const std::vector<Q24OutputRow> &Q24GroupState::Result() const {
     } else {
       std::sort(cands.begin(), cands.end(), less);
     }
-    result_.reserve(cands.size());
+    rows->reserve(cands.size());
     for (const auto &c : cands) {
-      std::size_t off = 0;
+      std::size_t off = c.tag_off;
       const Q24Str t = Q24ReadComponent(*c.key, off);
       const Q24Str v = Q24ReadComponent(*c.key, off);
       Q24OutputRow row;
@@ -743,53 +698,107 @@ const std::vector<Q24OutputRow> &Q24GroupState::Result() const {
       if (!v.null) row.version.assign(v.data, v.size);
       row.count = c.cnt;
       row.total = groups.Find(*c.key)->Total();
-      result_.push_back(std::move(row));
+      rows->push_back(std::move(row));
     }
-  });
-  return result_;
+  }
+  std::lock_guard<std::mutex> lock(mu_);
+  const auto inserted = cache_.emplace(bucket_key, rows);
+  return inserted.first->second;
 }
 
-std::size_t Q24GroupState::Bytes() const { return orphans.Bytes() + groups.Bytes(); }
+void Q24GroupState::InheritResults(
+    const Q24GroupState &prev, const std::unordered_set<std::string> &touched) {
+  std::scoped_lock lock(mu_, prev.mu_);
+  for (const auto &entry : prev.cache_)
+    if (touched.count(entry.first) == 0) cache_.emplace(entry.first, entry.second);
+}
 
-std::shared_ptr<const Q24GroupState> MakeQ24GroupState(
-    const std::unordered_map<std::string, Q24Acc> &orphans) {
+std::size_t Q24GroupState::Bytes() const {
+  std::size_t total = orphans.Bytes() + groups.Bytes();
+  for (const auto &h : heavy) {
+    total += h.first.capacity() + 64;
+    if (h.second)
+      for (const auto &k : *h.second) total += k.capacity() + 48;
+  }
+  return total;
+}
+
+std::shared_ptr<const Q24GroupState>
+MakeQ24GroupState(const std::unordered_map<std::string, Q24OrphanEntry> &orphans) {
   auto state = std::make_shared<Q24GroupState>();
   std::size_t shards = 64;
   while (shards < 65536 && shards * 4 < orphans.size()) shards <<= 1;
-  Q24AccMapTxn orphan_txn{Q24AccMap(shards)};
+  Q24OrphanMapTxn orphan_txn{Q24OrphanMap(shards)};
   Q24AccMapTxn group_txn{Q24AccMap(shards)};
   for (const auto &entry : orphans) {
-    if (entry.second.cnt <= 0) continue;
-    orphan_txn.GetOrCreate(entry.first) = entry.second;
-    std::size_t off = Q24ComponentSize(entry.first, 0);
-    const std::string gkey = entry.first.substr(off);
-    auto &g = group_txn.GetOrCreate(gkey);
-    g.cnt += entry.second.cnt;
-    g.Add(entry.second.sum);
-    g.Add(entry.second.comp);
+    Q24OrphanEntry kept;
+    const std::size_t tv_off = Q24ComponentSize(entry.first, 0);
+    for (const auto &b : entry.second) {
+      if (b.acc.cnt <= 0) continue;
+      kept.push_back(b);
+      const std::string gkey = Q24BucketKey(b.year, Q24Str::Of(b.uom)) +
+                               entry.first.substr(tv_off);
+      auto &g = group_txn.GetOrCreate(gkey);
+      g.cnt += b.acc.cnt;
+      g.Add(b.acc.sum);
+      g.Add(b.acc.comp);
+    }
+    if (!kept.empty()) orphan_txn.GetOrCreate(entry.first) = std::move(kept);
   }
-  state->orphans = orphan_txn.Finish();
   state->groups = group_txn.Finish();
+  state->orphans = orphan_txn.Finish();
+  std::unordered_map<std::string, std::shared_ptr<Q24HeavySet>> heavy;
+  state->groups.ForEach([&](const std::string &gkey, const Q24Acc &acc) {
+    if (acc.cnt < kSecEdgarQ24MinimumCount) return;
+    std::size_t off = 4;
+    off += Q24ComponentSize(gkey, 4);
+    auto &set = heavy[gkey.substr(0, off)];
+    if (!set) set = std::make_shared<Q24HeavySet>();
+    set->insert(gkey);
+  });
+  for (auto &h : heavy) state->heavy.emplace(h.first, std::move(h.second));
   return state;
 }
 
 void Q24OrphanAccumulator::Add(const Q24Str &a, const Q24Str &t,
-                               const Q24Str &v, double value) {
+                               const Q24Str &v, int32_t year, const Q24Str &uom,
+                               double value) {
   scratch_.clear();
   Q24AppendComponent(scratch_, a);
   Q24AppendComponent(scratch_, t);
   Q24AppendComponent(scratch_, v);
-  auto &acc = orphans_[scratch_];
-  acc.cnt++;
-  acc.Add(value);
+  auto &entry = orphans_[scratch_];
+  for (auto &b : entry) {
+    if (b.year == year && b.uom.size() == uom.size &&
+        std::memcmp(b.uom.data(), uom.data, uom.size) == 0) {
+      b.acc.cnt++;
+      b.acc.Add(value);
+      return;
+    }
+  }
+  Q24OrphanBucket b;
+  b.year = year;
+  b.uom.assign(uom.data, uom.size);
+  b.acc.cnt = 1;
+  b.acc.Add(value);
+  entry.push_back(std::move(b));
 }
 
 void Q24OrphanAccumulator::MergeFrom(Q24OrphanAccumulator &other) {
-  for (auto &entry : other.orphans_) {
-    auto &acc = orphans_[entry.first];
-    acc.cnt += entry.second.cnt;
-    acc.Add(entry.second.sum);
-    acc.Add(entry.second.comp);
+  for (auto &src : other.orphans_) {
+    auto &dst = orphans_[src.first];
+    for (auto &sb : src.second) {
+      Q24OrphanBucket *hit = nullptr;
+      for (auto &db : dst)
+        if (db.year == sb.year && db.uom == sb.uom) hit = &db;
+      if (!hit) {
+        dst.push_back(sb);
+        continue;
+      }
+      hit->acc.cnt += sb.acc.cnt;
+      hit->acc.Add(sb.acc.sum);
+      hit->acc.Add(sb.acc.comp);
+    }
   }
   other.orphans_.clear();
 }

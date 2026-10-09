@@ -1,4 +1,6 @@
-// GENERATED BACKEND — PostgreSQL SQL function for SEC-EDGAR Q24 (module only).
+// GENERATED BACKEND — PostgreSQL SQL functions for SEC-EDGAR Q24 (module only).
+//   accel_sec_edgar_q24_aux()                    defaults (2023, 'USD')
+//   accel_sec_edgar_q24_aux(year bigint, uom text)
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
 extern "C" {
@@ -26,8 +28,18 @@ namespace {
 
 // Executed by accel_postgres_register_queries(). Same SQL name as DuckDB.
 constexpr char kFunctionsSql[] = R"SQL(
-DROP FUNCTION IF EXISTS accel_sec_edgar_q24_aux CASCADE;
+DROP FUNCTION IF EXISTS accel_sec_edgar_q24_aux() CASCADE;
+DROP FUNCTION IF EXISTS accel_sec_edgar_q24_aux(bigint, text) CASCADE;
 CREATE FUNCTION accel_sec_edgar_q24_aux()
+RETURNS TABLE (
+  tag text,
+  version text,
+  cnt bigint,
+  total double precision
+)
+AS 'accelerator_codegen_pg', 'AcceleratorCodegenAuxSecEdgarQ24'
+LANGUAGE C;
+CREATE FUNCTION accel_sec_edgar_q24_aux(bigint, text)
 RETURNS TABLE (
   tag text,
   version text,

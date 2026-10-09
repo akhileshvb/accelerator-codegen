@@ -12,14 +12,20 @@
 //       the real database (pre insert/delete on a live orphan triple, new
 //       group creation, filter moves) plus the generic harness differential.
 //
-// Q24 has no template parameters (all constants are literals in the query), so
-// "parameter sweeps" are covered by randomizing the data around every literal
-// boundary: uom 'USD'/'usd'/'EUR'/NULL, ddate on and around 20230101/20231231,
-// per-group counts around the HAVING > 10 threshold.
+// Q24 takes (year, uom): accel_sec_edgar_q24_aux(year BIGINT, uom VARCHAR).
+// Every comparison of the synthetic runs also draws random (year, uom) pairs
+// (benchmark domain plus edges: NULLs, unknown uom, years 0 / 2017 / 2025 /
+// huge) and compares them with the plain query bound to them; the data is
+// randomized around the boundaries of every year window (ddate with month/day
+// outside 101..1231, year 0 and negative years) and the HAVING > 10 threshold.
+//   Q24_SWEEP=1 test_sec_edgar_q24_duckdb_differential <db_copy> [threads]
+//       Parameter sweep over the benchmark domain on a real database: build
+//       time, accelerator vs plain latency, exactness for every combination.
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -27,6 +33,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -233,9 +240,59 @@ void CompareResults(duckdb::Connection &con, const std::string &label,
   }
 }
 
-void CheckAll(World &w, const std::string &label) {
+// Q24 with its two parameters bound: n.uom = :uom, n.ddate BETWEEN
+// :year*10000+101 AND :year*10000+1231 (HAVING / LIMIT fixed). A NULL parameter
+// yields the empty result in SQL. Years beyond +-10^9 would overflow BIGINT in
+// the reference; no INTEGER ddate can lie there, so they compare as 10^9.
+std::string ParamBaseSql(std::optional<int64_t> year, const OptStr &uom) {
+  int64_t y = year ? *year : 0;
+  if (y > 1000000000LL) y = 1000000000LL;
+  if (y < -1000000000LL) y = -1000000000LL;
+  const std::string ys = year ? std::to_string(y) : "NULL";
+  return "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total "
+         "FROM num n LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version "
+         "AND n.adsh = p.adsh WHERE n.uom = " + Lit(uom) +
+         " AND n.ddate BETWEEN " + ys + "::BIGINT*10000+101 AND " + ys +
+         "::BIGINT*10000+1231 AND n.value IS NOT NULL AND p.adsh IS NULL "
+         "GROUP BY n.tag, n.version HAVING COUNT(*) > 10 ORDER BY cnt DESC "
+         "LIMIT 100";
+}
+
+std::string ParamAuxSql(const std::string &aux_sql, std::optional<int64_t> year,
+                        const OptStr &uom) {
+  std::string sql = aux_sql;
+  const auto pos = sql.rfind("()");
+  Require(pos != std::string::npos, "aux sql has no empty argument list");
+  return sql.substr(0, pos) + "(" +
+         (year ? std::to_string(*year) : std::string("NULL")) + "::BIGINT, " +
+         (uom ? Lit(uom) : std::string("NULL")) + "::VARCHAR)" + sql.substr(pos + 2);
+}
+
+int g_param_nonempty = 0, g_param_total = 0;
+
+void CheckParams(World &w, const std::string &label, std::optional<int64_t> year,
+                 const OptStr &uom) {
+  const std::string l = label + " [year=" + (year ? std::to_string(*year) : "NULL") +
+                        " uom=" + (uom ? *uom : "NULL") + "]";
+  CompareResults(w.con, l, ParamBaseSql(year, uom),
+                 ParamAuxSql(w.entry->duckdb_aux_sql, year, uom));
+  ++g_param_total;
+  auto r = w.con.Query(ParamBaseSql(year, uom));
+  if (r && !r->HasError() && r->Cast<duckdb::MaterializedQueryResult>().RowCount() > 0)
+    ++g_param_nonempty;
+}
+
+void CheckAll(World &w, const std::string &label, Gen *g = nullptr) {
   const std::string aux_sql = w.entry->duckdb_aux_sql;
   CompareResults(w.con, label + " [table function]", w.entry->base_sql, aux_sql);
+  if (g) {
+    for (int i = 0; i < 2; ++i) {
+      const auto [year, uom] = g->Params();
+      CheckParams(w, label, year, uom);
+    }
+    // Hot buckets hold the HAVING > 10 groups of the synthetic data.
+    CheckParams(w, label, g->R(2) ? 2023 : 2024, OptStr(g->R(3) ? "USD" : "EUR"));
+  }
   // Module-level Execute on the same published state.
   const auto rows = w.runtime->ExecuteCollect();
   auto base = w.con.Query(w.entry->base_sql);
@@ -269,13 +326,13 @@ void ReplayToSql(World &w, const MutationBatch &m, const Typed &t) {
 void RunSynthetic(uint64_t seed, bool nulls, int steps) {
   World w;
   Gen g(seed, nulls);
-  for (int i = 0; i < 900; ++i) w.num.push_back(g.Num());
+  for (int i = 0; i < 2500; ++i) w.num.push_back(g.Num());
   for (int i = 0; i < 150; ++i) w.pre.push_back(g.Pre());
   w.InsertNum(w.num);
   w.InsertPre(w.pre);
   w.runtime = std::make_unique<DuckdbRuntime>(w.con, *w.entry, 10.0);
   w.runtime->Build();
-  CheckAll(w, "initial");
+  CheckAll(w, "initial", &g);
 
   int applied = 0;
   for (int step = 0; step < steps; ++step) {
@@ -288,7 +345,7 @@ void RunSynthetic(uint64_t seed, bool nulls, int steps) {
     w.runtime->ApplyMutationBatch(m);
     applied++;
     CheckAll(w, "seed " + std::to_string(seed) + " step " + std::to_string(step) +
-                    " kind " + std::to_string(kind));
+                    " kind " + std::to_string(kind), &g);
   }
   // Bulk statements beyond the ApplyDelta row cap (rebuild path).
   {
@@ -301,7 +358,7 @@ void RunSynthetic(uint64_t seed, bool nulls, int steps) {
     m.kind = MutationKind::Insert;
     for (const auto &r : rows) m.new_rows.push_back(ToAux(r));
     w.runtime->ApplyMutationBatch(m);
-    CheckAll(w, "bulk insert");
+    CheckAll(w, "bulk insert", &g);
     Exec(w.con, "DELETE FROM num WHERE qtrs = 3");
     MutationBatch d;
     d.table = 101;
@@ -313,16 +370,75 @@ void RunSynthetic(uint64_t seed, bool nulls, int steps) {
     }
     w.num = keep;
     w.runtime->ApplyMutationBatch(d);
-    CheckAll(w, "bulk delete");
+    CheckAll(w, "bulk delete", &g);
   }
   std::cout << "synthetic seed " << seed << " nulls=" << nulls << ": " << applied
             << " writes verified\n";
+}
+
+// Parameter sweep over the benchmark domain plus edges on a real database.
+int RunSweep(const std::string &db_path, int threads) {
+  using Clock = std::chrono::steady_clock;
+  const auto ms = [](Clock::time_point t0) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+  };
+  duckdb::DuckDB db(db_path.c_str());
+  duckdb::Connection con(db);
+  accelerator_codegen::RegisterAcceleratorFunctions(con);
+  Exec(con, "PRAGMA threads=" + std::to_string(threads));
+  const auto &entry = std::getenv("Q24_PARALLEL") ? catalog::LookupSharedQueryParallel("sec_edgar", 24)
+                                                   : catalog::LookupSharedQuery("sec_edgar", 24);
+  DuckdbRuntime runtime(con, entry, 10.0);
+  auto t0 = Clock::now();
+  runtime.Build();
+  std::cout << "build: " << ms(t0) << " ms (threads=" << threads << ")\n";
+  std::vector<std::pair<std::optional<int64_t>, OptStr>> combos;
+  for (const int64_t y : {2019, 2020, 2021, 2022, 2023, 2024})
+    for (const char *u : {"USD", "shares", "pure", "CAD", "CNY", "EUR", "no_such_uom"})
+      combos.push_back({y, std::string(u)});
+  for (const int64_t y : std::initializer_list<int64_t>{2017, 2025, 0, -1, 4000000000000000000LL})
+    for (const char *u : {"USD", "shares"}) combos.push_back({y, std::string(u)});
+  combos.push_back({std::nullopt, std::string("USD")});
+  combos.push_back({int64_t{2023}, std::nullopt});
+  combos.push_back({std::nullopt, std::nullopt});
+  const std::string aux_base = entry.duckdb_aux_sql;
+  int nonempty = 0;
+  double aux_sum = 0, aux_max = 0, plain_sum = 0;
+  for (const auto &[year, uom] : combos) {
+    const std::string label = "sweep year=" + (year ? std::to_string(*year) : std::string("NULL")) +
+                              " uom=" + (uom ? *uom : std::string("NULL"));
+    const std::string aux_sql = ParamAuxSql(aux_base, year, uom);
+    Exec(con, aux_sql); // warm
+    const auto ta = Clock::now();
+    constexpr int kReps = 20;
+    for (int i = 0; i < kReps; ++i) Exec(con, aux_sql);
+    const double aux_ms = ms(ta) / kReps;
+    const auto tp = Clock::now();
+    auto want = con.Query(ParamBaseSql(year, uom));
+    const double plain_ms = ms(tp);
+    Require(want && !want->HasError(), label + ": reference failed");
+    const auto rows = want->Cast<duckdb::MaterializedQueryResult>().RowCount();
+    nonempty += rows > 0;
+    CompareResults(con, label, ParamBaseSql(year, uom), aux_sql);
+    aux_sum += aux_ms;
+    aux_max = std::max(aux_max, aux_ms);
+    plain_sum += plain_ms;
+    std::printf("  %-34s rows=%3zu accel=%8.3f ms plain=%9.1f ms\n", label.c_str(),
+                static_cast<std::size_t>(rows), aux_ms, plain_ms);
+  }
+  std::printf("sweep ok: %zu combinations (%d non-empty); accel mean %.3f ms max %.3f ms; "
+              "plain mean %.1f ms\n",
+              combos.size(), nonempty, aux_sum / combos.size(), aux_max,
+              plain_sum / combos.size());
+  return 0;
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
   try {
+    if (std::getenv("Q24_SWEEP") && argc >= 2)
+      return RunSweep(argv[1], argc > 2 ? std::atoi(argv[2]) : 12);
     const int seeds = std::getenv("Q24_SEEDS") ? std::atoi(std::getenv("Q24_SEEDS")) : 3;
     const int steps = std::getenv("Q24_STEPS") ? std::atoi(std::getenv("Q24_STEPS")) : 120;
     for (int s = 1; s <= seeds; ++s) {
@@ -351,6 +467,12 @@ int main(int argc, char **argv) {
       runtime.Build();
       auto check = [&](const std::string &label) {
         CompareResults(con, label, entry.base_sql, "SELECT * FROM accel_sec_edgar_q24_aux()");
+        for (const auto &[y, u] : std::vector<std::pair<int64_t, std::string>>{
+                 {2022, "USD"}, {2023, "shares"}, {2024, "USD"}, {2021, "pure"}, {2023, "EUR"}})
+          CompareResults(con, label + " " + std::to_string(y) + "/" + u,
+                         ParamBaseSql(y, u),
+                         "SELECT * FROM accel_sec_edgar_q24_aux(" + std::to_string(y) +
+                             ", '" + u + "')");
         harness::RequireSharedMatchesBase(con, runtime, entry);
         std::cerr << "  ok: " << label << "\n";
       };
@@ -441,6 +563,9 @@ int main(int argc, char **argv) {
       runtime.ApplyMutationBatch(nd);
       check("real num delete (group disappears)");
     }
+    std::cout << "parameter comparisons: " << g_param_total << " (" << g_param_nonempty
+              << " non-empty)\n";
+    Require(g_param_nonempty > 20, "parameter checks never reached a populated bucket");
     std::cout << "test_sec_edgar_q24_duckdb_differential PASS\n";
     return 0;
   } catch (const std::exception &ex) {

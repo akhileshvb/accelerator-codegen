@@ -63,6 +63,16 @@ NativeScanSpec CreateSecEdgarQ24NumScanSpec() {
 	return scan_spec;
 }
 
+// Aux build scan: every num row with a non-NULL value; uom and ddate are
+// not filtered because the state is keyed by (year, uom).
+NativeScanSpec CreateSecEdgarQ24AuxNumScanSpec() {
+	NativeScanSpec scan_spec = CreateSecEdgarQ24NumScanSpec();
+	scan_spec.filters = {
+	    {"value", duckdb::ExpressionType::OPERATOR_IS_NOT_NULL, duckdb::Value()},
+	};
+	return scan_spec;
+}
+
 NativeScanSpec CreateSecEdgarQ24NumFusedScanSpec() {
 	NativeScanSpec scan_spec;
 	scan_spec.table_name = "num";
