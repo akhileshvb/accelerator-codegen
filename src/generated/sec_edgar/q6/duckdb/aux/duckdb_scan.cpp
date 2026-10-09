@@ -5,7 +5,9 @@
 #include <string>
 
 #include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
+#include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "duckdb.hpp"
+#include "duckdb/main/client_context.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -59,7 +61,180 @@ std::string InList(const std::vector<std::string> &values) {
   return out + ")";
 }
 
+// Native storage scan of `table` inside the connection's transaction (or a
+// private one).
+template <typename Consumer>
+void NativeScan(::duckdb::Connection &connection_p, const char *table,
+                std::initializer_list<std::pair<const char *, ::duckdb::LogicalType>> columns,
+                Consumer &&consume) {
+  auto &context = *engine::duckdb::scan::ScanConnection(connection_p).context;
+  NativeScanSpec spec;
+  spec.table_name = table;
+  for (const auto &column : columns) {
+    spec.projected_columns.push_back(NativeColumnSpec{
+        column.first, column.first, column.second, column.second.InternalType()});
+  }
+  const bool started = !context.transaction.HasActiveTransaction();
+  if (started) {
+    context.transaction.BeginTransaction();
+  }
+  try {
+    ScanNativeBaseTable(context, spec, consume);
+    if (started) {
+      context.transaction.Commit();
+    }
+  } catch (...) {
+    if (started && context.transaction.HasActiveTransaction()) {
+      context.transaction.Rollback(nullptr);
+    }
+    throw;
+  }
+}
+
+// A VARCHAR vector as a SecEdgarQ6StrColumn. Dictionary vectors (dictionary
+// compressed storage) are passed through with their codes; the dictionary id
+// DuckDB assigns per dictionary becomes the column's token.
+class StrColumnAdapter {
+public:
+  void Load(::duckdb::Vector &vector, ::duckdb::idx_t n, SecEdgarQ6StrColumn &out) {
+    out = SecEdgarQ6StrColumn{};
+    if (vector.GetVectorType() == ::duckdb::VectorType::DICTIONARY_VECTOR) {
+      auto &child = ::duckdb::DictionaryVector::Child(vector);
+      const auto size = ::duckdb::DictionaryVector::DictionarySize(vector);
+      if (child.GetVectorType() == ::duckdb::VectorType::FLAT_VECTOR &&
+          size.IsValid() && size.GetIndex() > 0 &&
+          size.GetIndex() < 0xFFFFFFFFull) {
+        const auto &sel = ::duckdb::DictionaryVector::SelVector(vector);
+        codes_.resize(n);
+        for (::duckdb::idx_t i = 0; i < n; ++i) {
+          codes_[i] = static_cast<uint32_t>(sel.get_index(i));
+        }
+        dict_.data = ::duckdb::FlatVector::GetData<::duckdb::string_t>(child);
+        dict_.validity = &::duckdb::FlatVector::Validity(child);
+        const auto &id = ::duckdb::DictionaryVector::DictionaryId(vector);
+        if (id.empty()) {
+          token_ = 0;
+          last_id_.clear();
+        } else if (id != last_id_ || token_ == 0) {
+          last_id_ = id;
+          token_ = ++next_token_;
+        }
+        out.codes = codes_.data();
+        out.dict = &dict_;
+        out.dict_get = &DictGet;
+        out.dict_size = static_cast<uint32_t>(size.GetIndex());
+        out.dict_token = token_;
+        return;
+      }
+    }
+    ::duckdb::UnifiedVectorFormat fmt;
+    vector.ToUnifiedFormat(n, fmt);
+    const auto *data = ::duckdb::UnifiedVectorFormat::GetData<::duckdb::string_t>(fmt);
+    flat_.resize(n);
+    for (::duckdb::idx_t i = 0; i < n; ++i) {
+      const auto idx = fmt.sel->get_index(i);
+      if (fmt.validity.RowIsValid(idx)) {
+        flat_[i] = {data[idx].GetData(), static_cast<uint32_t>(data[idx].GetSize())};
+      } else {
+        flat_[i] = {};
+      }
+    }
+    out.flat = flat_.data();
+  }
+
+private:
+  struct Dict {
+    const ::duckdb::string_t *data = nullptr;
+    const ::duckdb::ValidityMask *validity = nullptr;
+  };
+  static SecEdgarQ6Str DictGet(const void *p, uint32_t code) {
+    const auto &d = *static_cast<const Dict *>(p);
+    if (!d.validity->RowIsValid(code)) {
+      return {};
+    }
+    const auto &s = d.data[code];
+    return {s.GetData(), static_cast<uint32_t>(s.GetSize())};
+  }
+
+  std::vector<uint32_t> codes_;
+  std::vector<SecEdgarQ6Str> flat_;
+  Dict dict_;
+  std::string last_id_;
+  uint64_t token_ = 0;
+  static inline uint64_t next_token_ = 0; // tokens unique across adapters
+};
+
 } // namespace
+
+bool SecEdgarQ6DuckdbScan::ScanPreBatches(
+    const std::function<void(const SecEdgarQ6PreBatch &)> &consumer) {
+  if (!engine::duckdb::scan::ScanConnection(connection).context) {
+    return false;
+  }
+  StrColumnAdapter adsh, tag, version, stmt, plabel;
+  const auto varchar = ::duckdb::LogicalType::VARCHAR;
+  NativeScan(connection, "pre",
+             {{"adsh", varchar}, {"tag", varchar}, {"version", varchar},
+              {"stmt", varchar}, {"plabel", varchar}},
+             [&](::duckdb::DataChunk &chunk) {
+               const auto n = chunk.size();
+               if (n == 0) {
+                 return;
+               }
+               SecEdgarQ6PreBatch batch;
+               batch.rows = n;
+               adsh.Load(chunk.data[0], n, batch.adsh);
+               tag.Load(chunk.data[1], n, batch.tag);
+               version.Load(chunk.data[2], n, batch.version);
+               stmt.Load(chunk.data[3], n, batch.stmt);
+               plabel.Load(chunk.data[4], n, batch.plabel);
+               consumer(batch);
+             });
+  return true;
+}
+
+bool SecEdgarQ6DuckdbScan::ScanNumBatches(
+    const std::function<void(const SecEdgarQ6NumBatch &)> &consumer) {
+  if (!engine::duckdb::scan::ScanConnection(connection).context) {
+    return false;
+  }
+  StrColumnAdapter adsh, tag, version, uom;
+  std::vector<double> values;
+  std::vector<uint8_t> valid;
+  const auto varchar = ::duckdb::LogicalType::VARCHAR;
+  NativeScan(connection, "num",
+             {{"adsh", varchar}, {"tag", varchar}, {"version", varchar},
+              {"uom", varchar}, {"value", ::duckdb::LogicalType::DOUBLE}},
+             [&](::duckdb::DataChunk &chunk) {
+               const auto n = chunk.size();
+               if (n == 0) {
+                 return;
+               }
+               SecEdgarQ6NumBatch batch;
+               batch.rows = n;
+               adsh.Load(chunk.data[0], n, batch.adsh);
+               tag.Load(chunk.data[1], n, batch.tag);
+               version.Load(chunk.data[2], n, batch.version);
+               uom.Load(chunk.data[3], n, batch.uom);
+               ::duckdb::UnifiedVectorFormat fmt;
+               chunk.data[4].ToUnifiedFormat(n, fmt);
+               const auto *data = ::duckdb::UnifiedVectorFormat::GetData<double>(fmt);
+               values.resize(n);
+               valid.resize(n);
+               bool all_valid = true;
+               for (::duckdb::idx_t i = 0; i < n; ++i) {
+                 const auto idx = fmt.sel->get_index(i);
+                 const bool ok = fmt.validity.RowIsValid(idx);
+                 values[i] = ok ? data[idx] : 0.0;
+                 valid[i] = ok ? 1 : 0;
+                 all_valid &= ok;
+               }
+               batch.value = values.data();
+               batch.value_valid = all_valid ? nullptr : valid.data();
+               consumer(batch);
+             });
+  return true;
+}
 
 bool SecEdgarQ6DuckdbScan::LoadAdshSnapshots(
     const std::vector<std::string> &adshs, std::vector<SecEdgarQ6AdshSnapshot> &out) {

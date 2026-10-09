@@ -89,6 +89,37 @@ struct SecEdgarQ6AdshSnapshot {
   std::vector<SecEdgarQ6NumSum> nums;
 };
 
+// Columnar scan batches (the build fast path). A string cell with data ==
+// nullptr is NULL. A column is either flat (`flat[row]`) or dictionary
+// encoded (`codes[row]` into a dictionary of `dict_size` entries read through
+// `dict_get`); a non-zero `dict_token` names the dictionary within one scan,
+// so per-code results may be cached across batches with the same token.
+struct SecEdgarQ6Str {
+  const char *data = nullptr;
+  uint32_t size = 0;
+};
+struct SecEdgarQ6StrColumn {
+  const SecEdgarQ6Str *flat = nullptr;
+  const uint32_t *codes = nullptr;
+  const void *dict = nullptr;
+  SecEdgarQ6Str (*dict_get)(const void *dict, uint32_t code) = nullptr;
+  uint32_t dict_size = 0;
+  uint64_t dict_token = 0;
+  SecEdgarQ6Str At(size_t row) const {
+    return codes ? dict_get(dict, codes[row]) : flat[row];
+  }
+};
+struct SecEdgarQ6PreBatch {
+  size_t rows = 0;
+  SecEdgarQ6StrColumn adsh, tag, version, stmt, plabel;
+};
+struct SecEdgarQ6NumBatch {
+  size_t rows = 0;
+  SecEdgarQ6StrColumn adsh, tag, version, uom;
+  const double *value = nullptr;
+  const uint8_t *value_valid = nullptr; // nullptr: every value is non-NULL
+};
+
 // Initial-scan contract.
 //   * ScanSub / ScanPre / ScanNum may be pre-filtered by the implementation to
 //     the rows the query can use (sub.fy IS NOT NULL, pre rows of those adsh
@@ -98,9 +129,18 @@ struct SecEdgarQ6AdshSnapshot {
 //     (fy, name, stmt, tag, plabel, uom) -> (SUM(value), COUNT(*)) of the query
 //     body without the parameters and the final ORDER/LIMIT. Return false when
 //     unsupported.
+//   * ScanPreBatches / ScanNumBatches are the preferred fast path: every row
+//     of the table (no pre-filtering needed) as columnar batches. Return false
+//     when unsupported (before delivering any batch).
 class SecEdgarQ6InitialScan {
 public:
   virtual ~SecEdgarQ6InitialScan() = default;
+  virtual bool ScanPreBatches(const std::function<void(const SecEdgarQ6PreBatch &)> &) {
+    return false;
+  }
+  virtual bool ScanNumBatches(const std::function<void(const SecEdgarQ6NumBatch &)> &) {
+    return false;
+  }
   virtual void ScanNum(
       const std::function<void(const SecEdgarQ6NumInput &)> &) = 0;
   virtual void ScanSub(
@@ -136,7 +176,9 @@ public:
     uint32_t version_len = 0;
     uint32_t uom_len = 0;
     double value = 0.0;
+    double old_value = 0.0; // pair: the row's value before an update
     int8_t sign = 0;
+    bool pair = false; // value update of one row: +value, -old_value, count 0
   };
   struct SubChange {
     std::string adsh;
@@ -165,6 +207,11 @@ public:
   void AddNumDelta(std::string_view adsh, std::string_view tag,
                    std::string_view version, std::string_view uom, double value,
                    int8_t sign);
+  // An update that keeps the row's join / filter keys and changes its value.
+  void AddNumPair(std::string_view adsh, std::string_view tag,
+                  std::string_view version, std::string_view uom, double value,
+                  double old_value);
+  void ReserveArena(size_t bytes) { arena_.reserve(arena_.size() + bytes); }
   void AddSubChange(SubChange change) {
     pending_ = true;
     sub_changes_.push_back(std::move(change));
