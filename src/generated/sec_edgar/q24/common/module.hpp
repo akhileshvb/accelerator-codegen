@@ -108,6 +108,15 @@ public:
       const std::function<void(const SecEdgarQ24PreBatch &)> &) {
     return false;
   }
+  // Optional: as ScanQualifyingNumBatches, but delivers only the rows whose
+  // (adsh, tag, version) is NOT in `pre` (the anti-join's survivors); the
+  // engine tests membership itself (e.g. on dictionary ids cached per
+  // compressed-storage dictionary instead of hashing every row's strings).
+  virtual bool ScanNumOrphans(
+      const Q24PreBase &,
+      const std::function<void(const SecEdgarQ24NumBatch &)> &) {
+    return false;
+  }
   // Optional: targeted lookups used by incremental pre DELETE / key UPDATE
   // (a removed pre triple can turn matched num rows into orphans, whose values
   // were not kept). Must see the committing transaction's own writes. Return
@@ -192,6 +201,9 @@ public:
   // Maximum distinct triples one transaction may resolve through table lookups
   // (pre DELETE / key UPDATE) before falling back to a rebuild.
   static constexpr std::size_t kMaxTouchedTriples = 256;
+  // A num batch at least this large is pre-filtered against the published
+  // pre membership (one pipelined probe) before its rows are keyed.
+  static constexpr std::size_t kMatchFilterMinRows = 1;
 
   explicit SecEdgarQ24Module(SecEdgarQ24Config config,
                              SecEdgarQ24InitialScan *initial_scan = nullptr)

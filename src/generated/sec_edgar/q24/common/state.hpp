@@ -170,6 +170,10 @@ struct Q24PreBase {
   // whole batch so independent cache misses overlap.
   void ContainsBatch(const Q24Str *a, const Q24Str *t, const Q24Str *v,
                      std::size_t n, uint8_t *out) const;
+  // The same test on dictionary ids already resolved against adsh / tag /
+  // version (Q24StringDict::kNone = the string is not in pre: no match).
+  void ContainsIdsBatch(const uint32_t *aid, const uint32_t *tid,
+                        const uint32_t *vid, std::size_t n, uint8_t *out) const;
   std::size_t Bytes() const;
 };
 
