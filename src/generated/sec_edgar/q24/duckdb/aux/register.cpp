@@ -332,11 +332,15 @@ struct SecEdgarQ24Scan : SecEdgarQ24InitialScan {
         if (out > 0)
           consumer({out, a.data(), t.data(), v.data(), value.data(), u.data(), ddate.data()});
       });
-      if (std::getenv("ACCEL_Q24_TRACE"))
-        std::fprintf(stderr, "[q24 build] dict rows a=%llu/%llu/%llu t=%llu/%llu/%llu v=%llu/%llu/%llu\n",
-                     (unsigned long long)adsh_ids.dict_rows, (unsigned long long)adsh_ids.other_rows, (unsigned long long)adsh_ids.dict_other_rows,
-                     (unsigned long long)tag_ids.dict_rows, (unsigned long long)tag_ids.other_rows, (unsigned long long)tag_ids.dict_other_rows,
-                     (unsigned long long)version_ids.dict_rows, (unsigned long long)version_ids.other_rows, (unsigned long long)version_ids.dict_other_rows);
+      if (std::getenv("ACCEL_Q24_TRACE")) {
+        for (const auto *c : {&adsh_ids, &tag_ids, &version_ids})
+          std::fprintf(stderr,
+                       "[q24 build] ids: dict rows %llu (entry lookups %llu), other rows %llu "
+                       "(lookups %llu, unshared dictionaries %llu)\n",
+                       (unsigned long long)c->dict_rows, (unsigned long long)c->entry_lookups,
+                       (unsigned long long)c->other_rows, (unsigned long long)c->row_lookups,
+                       (unsigned long long)c->dict_other_rows);
+      }
       return true;
     } catch (const std::exception &) {
       if (delivered) throw;

@@ -55,6 +55,7 @@ public:
               m = validity.RowIsValid(k) ? lookup(data[k].GetData(), static_cast<uint32_t>(data[k].GetSize()))
                                          : null_id_;
               map[k] = m;
+              ++entry_lookups;
             }
             out[i] = m;
           }
@@ -85,6 +86,7 @@ public:
         continue;
       }
       last_id = lookup(p, sz);
+      ++row_lookups;
       last_ptr = p;
       last_size = sz;
       have_last = true;
@@ -92,7 +94,11 @@ public:
     }
   }
 
+  // Diagnostics: rows served from a cached dictionary / by the per-row path
+  // (of which DICTIONARY vectors without a reusable dictionary), and the
+  // lookups each path made.
   uint64_t dict_rows = 0, other_rows = 0, dict_other_rows = 0;
+  uint64_t entry_lookups = 0, row_lookups = 0;
 
 private:
   uint32_t null_id_;
