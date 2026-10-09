@@ -52,19 +52,29 @@ bool SecEdgarQ24ParallelModule::CheckValidity(core::AuxEngineServices &services,
 void SecEdgarQ24ParallelModule::Execute(core::AuxEngineServices &services,
                                         const core::QueryArguments &arguments,
                                         core::AuxRowSink &sink) {
+  std::string bucket;
+  if (!SecEdgarQ24Module::ParseArguments(arguments, bucket)) {
+    SecEdgarQ24Module::EmitOutput(Q24GroupState(), std::string(), sink);
+    return;
+  }
   std::shared_ptr<const Q24GroupState> groups;
   if (!inner_.LoadGroups(services, groups)) {
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  SecEdgarQ24Module::EmitOutput(*groups, sink);
+  SecEdgarQ24Module::EmitOutput(*groups, bucket, sink);
 }
 
 void SecEdgarQ24ParallelModule::ExecuteFallback(core::AuxEngineServices &services,
-                                                const core::QueryArguments &,
+                                                const core::QueryArguments &arguments,
                                                 core::AuxRowSink &sink) {
+  std::string bucket;
+  if (!SecEdgarQ24Module::ParseArguments(arguments, bucket)) {
+    SecEdgarQ24Module::EmitOutput(Q24GroupState(), std::string(), sink);
+    return;
+  }
   const auto state = BuildState(services);
-  SecEdgarQ24Module::EmitOutput(*state.groups, sink);
+  SecEdgarQ24Module::EmitOutput(*state.groups, bucket, sink);
 }
 
 SecEdgarQ24State
@@ -94,7 +104,7 @@ SecEdgarQ24ParallelModule::BuildState(core::AuxEngineServices &services) const {
   // 2. qualifying num rows without a pre match (read-only probes per worker).
   std::vector<Q24OrphanAccumulator> accs(workers);
   ScanSecEdgarParallel(
-      services, CreateSecEdgarQ24NumScanSpec(),
+      services, CreateSecEdgarQ24AuxNumScanSpec(),
       [&](duckdb::idx_t worker, duckdb::DataChunk &chunk) {
         const auto n = chunk.size();
         ChunkStrings a, t, v, uom;
@@ -116,13 +126,12 @@ SecEdgarQ24ParallelModule::BuildState(core::AuxEngineServices &services) const {
           if (!value_fmt.validity.RowIsValid(vi) ||
               !date_fmt.validity.RowIsValid(di))
             continue;
-          if (dates[di] < kSecEdgarQ24FirstDate || dates[di] > kSecEdgarQ24LastDate)
-            continue;
+          int32_t year;
+          if (!Q24DdateYear(dates[di], year)) continue;
           const Q24Str u = uom.At(i);
-          if (u.null || u.size != 3 || std::memcmp(u.data, kSecEdgarQ24Uom, 3) != 0)
-            continue;
+          if (u.null) continue;
           const Q24Str as = a.At(i), ts = t.At(i), vs = v.At(i);
-          if (!base.Contains(as, ts, vs)) acc.Add(as, ts, vs, values[vi]);
+          if (!base.Contains(as, ts, vs)) acc.Add(as, ts, vs, year, u, values[vi]);
         }
       });
   for (std::size_t w = 1; w < workers; ++w) accs[0].MergeFrom(accs[w]);

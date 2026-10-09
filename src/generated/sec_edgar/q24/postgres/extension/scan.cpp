@@ -124,12 +124,11 @@ std::string SqlLiteral(const std::string &s) {
   return q + "'";
 }
 
-std::string QualifyingNumPredicate() {
-  return std::string("uom = '") + query::kSecEdgarQ24Uom +
-         "' AND ddate BETWEEN " + std::to_string(query::kSecEdgarQ24FirstDate) +
-         " AND " + std::to_string(query::kSecEdgarQ24LastDate) +
-         " AND value IS NOT NULL";
-}
+// num rows that can appear in some (year, uom) result: value, uom and ddate
+// NOT NULL and ddate with month/day in [101, 1231] (see Q24DdateYear).
+const char *kBucketablePredicate =
+    "value IS NOT NULL AND uom IS NOT NULL AND ddate IS NOT NULL AND "
+    "((ddate::bigint % 10000) + 10000) % 10000 BETWEEN 101 AND 1231";
 
 class SecEdgarQ24Scan final : public query::SecEdgarQ24InitialScan {
 public:
@@ -156,29 +155,39 @@ public:
                     });
   }
 
-  // Exactly the qualifying num rows; the filter runs in the executor.
+  // The bucketable num rows without a pre match (the anti-join runs in the
+  // executor; the module's own probe then finds nothing to filter). Rows with
+  // a NULL key component never match pre and are kept, as in the base query.
   bool ScanQualifyingNumBatches(
       const std::function<void(const query::SecEdgarQ24NumBatch &)> &consumer)
       override {
-    std::vector<query::Q24Str> a, t, v;
+    std::vector<query::Q24Str> a, t, v, u;
     std::vector<double> value;
+    std::vector<int32_t> ddate;
     StrReader reader;
-    ScanChunks("SELECT adsh, tag, version, value FROM num WHERE " +
-                   QualifyingNumPredicate(),
+    ScanChunks(std::string("SELECT adsh, tag, version, value, uom, ddate FROM num n WHERE ") +
+                   kBucketablePredicate +
+                   " AND NOT EXISTS (SELECT 1 FROM pre p WHERE p.adsh = n.adsh AND "
+                   "p.tag = n.tag AND p.version = n.version)",
                [&](SPITupleTable *table, TupleDesc desc, std::size_t n) {
                  reader.Reset();
                  a.resize(n);
                  t.resize(n);
                  v.resize(n);
+                 u.resize(n);
                  value.resize(n);
+                 ddate.resize(n);
                  for (std::size_t i = 0; i < n; ++i) {
                    HeapTuple tuple = table->vals[i];
                    a[i] = reader.At(tuple, desc, 0);
                    t[i] = reader.At(tuple, desc, 1);
                    v[i] = reader.At(tuple, desc, 2);
                    value[i] = DoubleAt(tuple, desc, 3);
+                   u[i] = reader.At(tuple, desc, 4);
+                   ddate[i] = static_cast<int32_t>(TypedInt(tuple, desc, 5));
                  }
-                 consumer({n, a.data(), t.data(), v.data(), value.data()});
+                 consumer({n, a.data(), t.data(), v.data(), value.data(),
+                           u.data(), ddate.data()});
                });
     return true;
   }
@@ -220,19 +229,22 @@ public:
       values += "(" + std::to_string(i) + "," + SqlLiteral(keys[i].adsh) + "," +
                 SqlLiteral(keys[i].tag) + "," + SqlLiteral(keys[i].version) + ")";
     }
+    // One row per (key, bucket): the pre row count repeats on each; a key
+    // without num rows yields a single row with NULL bucket columns.
     const std::string sql =
-        "SELECT k.i, "
-        "(SELECT count(*) FROM pre p WHERE p.adsh = k.a AND p.tag = k.t AND "
-        "p.version = k.v), x.c, x.s "
+        "SELECT k.i, (SELECT count(*) FROM pre p WHERE p.adsh = k.a AND "
+        "p.tag = k.t AND p.version = k.v), x.y, x.u, x.c, x.s "
         "FROM (VALUES " + values + ") k(i, a, t, v) "
-        "CROSS JOIN LATERAL (SELECT count(*) AS c, sum(n.value) AS s FROM num n "
-        "WHERE n.adsh = k.a AND n.tag = k.t AND n.version = k.v AND n.uom = '" +
-        std::string(query::kSecEdgarQ24Uom) + "' AND n.ddate BETWEEN " +
-        std::to_string(query::kSecEdgarQ24FirstDate) + " AND " +
-        std::to_string(query::kSecEdgarQ24LastDate) +
-        " AND n.value IS NOT NULL) x";
+        "LEFT JOIN LATERAL (SELECT (q.dd - q.r) / 10000 AS y, q.u, count(*) AS c, "
+        "sum(q.val) AS s FROM (SELECT n.ddate::bigint AS dd, "
+        "((n.ddate::bigint % 10000) + 10000) % 10000 AS r, n.uom AS u, "
+        "n.value AS val FROM num n WHERE n.adsh = k.a AND n.tag = k.t AND "
+        "n.version = k.v AND n.value IS NOT NULL AND n.uom IS NOT NULL AND "
+        "n.ddate IS NOT NULL) q WHERE q.r BETWEEN 101 AND 1231 "
+        "GROUP BY 1, 2) x ON true";
     ScanChunksAfterOwnWrites(
         sql, [&](SPITupleTable *table, TupleDesc desc, std::size_t n) {
+          StrReader reader;
           for (std::size_t r = 0; r < n; ++r) {
             HeapTuple tuple = table->vals[r];
             const auto index = static_cast<std::size_t>(TypedInt(tuple, desc, 0));
@@ -240,8 +252,17 @@ public:
               throw std::runtime_error("SEC-EDGAR Q24: bad triple lookup index");
             auto &state = out[index];
             state.pre_rows = TypedInt(tuple, desc, 1);
-            state.num_rows = TypedInt(tuple, desc, 2);
-            state.num_sum = DoubleAt(tuple, desc, 3);
+            bool is_null = false;
+            SPI_getbinval(tuple, desc, 6, &is_null); // x.c
+            if (is_null)
+              continue;
+            query::SecEdgarQ24TripleBucket b;
+            b.year = static_cast<int32_t>(TypedInt(tuple, desc, 2));
+            const query::Q24Str uom = reader.At(tuple, desc, 3);
+            b.uom.assign(uom.data, uom.size);
+            b.num_rows = TypedInt(tuple, desc, 4);
+            b.num_sum = DoubleAt(tuple, desc, 5);
+            state.buckets.push_back(std::move(b));
           }
         });
     return true;
@@ -270,7 +291,20 @@ Q24Runtime() {
 namespace {
 
 void ExecutePostgresSecEdgarQ24(FunctionCallInfo fcinfo) {
-  detail::Q24Runtime().Execute(core::QueryArguments{}, fcinfo);
+  // accel_sec_edgar_q24_aux() uses the defaults (2023, 'USD'); the two-argument
+  // overload is not STRICT: a NULL argument reaches the module as NULL.
+  core::QueryArguments arguments;
+  if (PG_NARGS() >= 2) {
+    arguments.values.push_back(
+        PG_ARGISNULL(0) ? core::AuxValue::Null(core::AuxType::Int64)
+                        : core::AuxValue::Of(core::AuxType::Int64,
+                                             static_cast<int64_t>(PG_GETARG_INT64(0))));
+    arguments.values.push_back(
+        PG_ARGISNULL(1) ? core::AuxValue::Null(core::AuxType::String)
+                        : core::AuxValue::Of(core::AuxType::String,
+                                             detail::TextDatum(PG_GETARG_DATUM(1))));
+  }
+  detail::Q24Runtime().Execute(arguments, fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{

@@ -20,6 +20,7 @@
 //                sharded copy-on-write map so a maintenance step copies only
 //                the touched shards. Only these rows can reach the result.
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -35,9 +36,8 @@
 namespace accelerator_codegen::aux_state::query {
 
 // Query constants (the query has no template parameters).
-inline constexpr const char *kSecEdgarQ24Uom = "USD";
-inline constexpr int32_t kSecEdgarQ24FirstDate = 20230101;
-inline constexpr int32_t kSecEdgarQ24LastDate = 20231231;
+inline constexpr int64_t kSecEdgarQ24DefaultYear = 2023;
+inline constexpr const char *kSecEdgarQ24DefaultUom = "USD";
 inline constexpr int64_t kSecEdgarQ24MinimumCount = 11; // HAVING COUNT(*) > 10
 inline constexpr std::size_t kSecEdgarQ24OutputLimit = 100;
 
@@ -218,17 +218,67 @@ struct Q24Acc {
   double Total() const { return sum + comp; }
 };
 
-class Q24AccMapTxn;
+// Per-(tag, version) result of one (year, uom) bucket.
+struct Q24OutputRow {
+  std::string tag, version;
+  bool tag_null = false, version_null = false;
+  int64_t count = 0;
+  double total = 0.0;
+};
 
-// Sharded copy-on-write map<string, Q24Acc>.
-class Q24AccMap {
+// ── buckets ────────────────────────────────────────────────────────────────
+// ddate is an INTEGER YYYYMMDD. `ddate BETWEEN Y*10000+101 AND Y*10000+1231`
+// holds exactly when floor(ddate/10000) = Y and ddate mod 10000 is in
+// [101, 1231]; every other value (month/day out of range, NULL) can never
+// satisfy the predicate for any Y and is dropped from the state.
+inline bool Q24DdateYear(int64_t ddate, int32_t &year) {
+  if (ddate < INT32_MIN || ddate > INT32_MAX) return false;
+  int64_t y = ddate / 10000;
+  int64_t rem = ddate - y * 10000;
+  if (rem < 0) {
+    rem += 10000;
+    --y;
+  }
+  if (rem < 101 || rem > 1231) return false;
+  year = static_cast<int32_t>(y);
+  return true;
+}
+
+// Bucket key = year (4 bytes) + enc(uom). Group key = bucket key + enc(tag)
+// enc(version). Orphan key = enc(adsh) enc(tag) enc(version).
+std::string Q24BucketKey(int32_t year, const Q24Str &uom);
+
+// Sharded copy-on-write hash map: a maintenance step copies only the shards
+// it touches.
+template <typename V> class Q24ShardedMapTxn;
+
+template <typename V> class Q24ShardedMap {
 public:
-  using Shard = std::unordered_map<std::string, Q24Acc>;
-  Q24AccMap() = default;
-  explicit Q24AccMap(std::size_t shard_count);
-  const Q24Acc *Find(const std::string &key) const;
+  using Shard = std::unordered_map<std::string, V>;
+  Q24ShardedMap() = default;
+  explicit Q24ShardedMap(std::size_t shard_count) {
+    std::size_t n = 1;
+    while (n < std::max<std::size_t>(1, shard_count)) n <<= 1;
+    shards_.resize(n);
+  }
+  const V *Find(const std::string &key) const {
+    if (shards_.empty()) return nullptr;
+    const auto &shard = shards_[ShardOf(key)];
+    if (!shard) return nullptr;
+    const auto it = shard->find(key);
+    return it == shard->end() ? nullptr : &it->second;
+  }
   std::size_t size() const { return size_; }
-  std::size_t Bytes() const;
+  std::size_t Bytes() const {
+    std::size_t total = shards_.capacity() * sizeof(shards_[0]);
+    for (const auto &shard : shards_) {
+      if (!shard) continue;
+      total += sizeof(Shard) + shard->bucket_count() * sizeof(void *);
+      for (const auto &e : *shard)
+        total += e.first.capacity() + 32 + sizeof(V) + Q24ExtraBytes(e.second);
+    }
+    return total;
+  }
   template <typename F> void ForEach(F &&f) const {
     for (const auto &shard : shards_) {
       if (!shard) continue;
@@ -238,7 +288,7 @@ public:
   std::size_t shard_count() const { return shards_.size(); }
 
 private:
-  friend class Q24AccMapTxn;
+  friend class Q24ShardedMapTxn<V>;
   std::size_t ShardOf(const std::string &key) const {
     return static_cast<std::size_t>(Q24HashBytes(key.data(), key.size())) &
            (shards_.size() - 1);
@@ -248,60 +298,118 @@ private:
 };
 
 // Mutating view that clones a shard on first write.
-class Q24AccMapTxn {
+template <typename V> class Q24ShardedMapTxn {
 public:
-  explicit Q24AccMapTxn(const Q24AccMap &base);
-  Q24Acc *Find(const std::string &key);
-  Q24Acc &GetOrCreate(const std::string &key);
-  void Erase(const std::string &key);
-  Q24AccMap Finish();
+  explicit Q24ShardedMapTxn(const Q24ShardedMap<V> &base)
+      : map_(base), owned_(base.shards_.size()) {}
+  // Read-only lookup (does not clone the shard or mark the txn dirty).
+  const V *FindConst(const std::string &key) const { return map_.Find(key); }
+  V *Find(const std::string &key) {
+    const std::size_t s = map_.ShardOf(key);
+    const auto &shard = map_.shards_[s];
+    if (!shard || shard->find(key) == shard->end()) return nullptr;
+    auto &mutable_shard = Mutable(s);
+    dirty_ = true;
+    return &mutable_shard.find(key)->second;
+  }
+  V &GetOrCreate(const std::string &key) {
+    auto &shard = Mutable(map_.ShardOf(key));
+    dirty_ = true;
+    const auto result = shard.emplace(key, V());
+    if (result.second) map_.size_++;
+    return result.first->second;
+  }
+  void Erase(const std::string &key) {
+    const std::size_t s = map_.ShardOf(key);
+    if (!map_.shards_[s] || map_.shards_[s]->count(key) == 0) return;
+    auto &shard = Mutable(s);
+    dirty_ = true;
+    map_.size_ -= shard.erase(key);
+  }
+  Q24ShardedMap<V> Finish() {
+    owned_.clear();
+    return std::move(map_);
+  }
   bool dirty() const { return dirty_; }
 
 private:
-  Q24AccMap::Shard &Mutable(std::size_t shard);
-  Q24AccMap map_;
-  std::vector<std::shared_ptr<Q24AccMap::Shard>> owned_;
+  typename Q24ShardedMap<V>::Shard &Mutable(std::size_t shard) {
+    if (!owned_[shard]) {
+      owned_[shard] =
+          map_.shards_[shard]
+              ? std::make_shared<typename Q24ShardedMap<V>::Shard>(*map_.shards_[shard])
+              : std::make_shared<typename Q24ShardedMap<V>::Shard>();
+      map_.shards_[shard] = owned_[shard];
+    }
+    return *owned_[shard];
+  }
+  Q24ShardedMap<V> map_;
+  std::vector<std::shared_ptr<typename Q24ShardedMap<V>::Shard>> owned_;
   bool dirty_ = false;
 };
 
-struct Q24OutputRow {
-  std::string tag, version;
-  bool tag_null = false, version_null = false;
-  int64_t count = 0;
-  double total = 0.0;
+inline std::size_t Q24ExtraBytes(const Q24Acc &) { return 0; }
+
+// One (year, uom) slice of an orphan triple's accumulators.
+struct Q24OrphanBucket {
+  int32_t year = 0;
+  std::string uom;
+  Q24Acc acc;
 };
+using Q24OrphanEntry = std::vector<Q24OrphanBucket>;
+inline std::size_t Q24ExtraBytes(const Q24OrphanEntry &e) {
+  std::size_t n = e.capacity() * sizeof(Q24OrphanBucket);
+  for (const auto &b : e) n += b.uom.capacity();
+  return n;
+}
+
+using Q24AccMap = Q24ShardedMap<Q24Acc>;
+using Q24AccMapTxn = Q24ShardedMapTxn<Q24Acc>;
+using Q24OrphanMap = Q24ShardedMap<Q24OrphanEntry>;
+using Q24OrphanMapTxn = Q24ShardedMapTxn<Q24OrphanEntry>;
+
+// bucket key -> group keys (bucket key + enc(tag) enc(version)) whose count
+// passes HAVING COUNT(*) > 10. Per-bucket sets are shared between states.
+using Q24HeavySet = std::unordered_set<std::string>;
+using Q24HeavyMap = std::unordered_map<std::string, std::shared_ptr<const Q24HeavySet>>;
 
 struct Q24GroupState {
-  Q24AccMap orphans; // key = enc(adsh,tag,version)
-  Q24AccMap groups;  // key = enc(tag,version)
+  Q24OrphanMap orphans; // key = enc(adsh,tag,version): per (year, uom) accumulators
+  Q24AccMap groups;     // key = group key (see above)
+  Q24HeavyMap heavy;
 
-  // Top-k result, computed lazily once per published state.
-  const std::vector<Q24OutputRow> &Result() const;
+  // Top-100 of one (year, uom) bucket (HAVING + ORDER BY cnt DESC), computed
+  // lazily from the bucket's heavy set and cached per published state.
+  std::shared_ptr<const std::vector<Q24OutputRow>>
+  Result(const std::string &bucket_key) const;
+  // Carries cached results of every bucket not in `touched` over from the
+  // previous state (the maintenance step did not change them).
+  void InheritResults(const Q24GroupState &prev,
+                      const std::unordered_set<std::string> &touched);
   std::size_t Bytes() const;
 
 private:
-  mutable std::once_flag once_;
-  mutable std::vector<Q24OutputRow> result_;
+  mutable std::mutex mu_;
+  mutable std::unordered_map<std::string,
+                             std::shared_ptr<const std::vector<Q24OutputRow>>>
+      cache_;
 };
 
 // Worker-local accumulation of orphan rows during Build.
 class Q24OrphanAccumulator {
 public:
-  void Add(const Q24Str &a, const Q24Str &t, const Q24Str &v, double value);
+  void Add(const Q24Str &a, const Q24Str &t, const Q24Str &v, int32_t year,
+           const Q24Str &uom, double value);
   void MergeFrom(Q24OrphanAccumulator &other);
   std::size_t size() const { return orphans_.size(); }
   std::shared_ptr<const Q24GroupState> Finish();
-  // For tests / diagnostics.
-  const std::unordered_map<std::string, Q24Acc> &orphans() const {
-    return orphans_;
-  }
 
 private:
-  std::unordered_map<std::string, Q24Acc> orphans_;
+  std::unordered_map<std::string, Q24OrphanEntry> orphans_;
   std::string scratch_;
 };
 
-std::shared_ptr<const Q24GroupState> MakeQ24GroupState(
-    const std::unordered_map<std::string, Q24Acc> &orphans);
+std::shared_ptr<const Q24GroupState>
+MakeQ24GroupState(const std::unordered_map<std::string, Q24OrphanEntry> &orphans);
 
 } // namespace accelerator_codegen::aux_state::query

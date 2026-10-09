@@ -179,9 +179,10 @@ struct SecEdgarQ24Scan : SecEdgarQ24InitialScan {
       const std::function<void(const SecEdgarQ24NumBatch &)> &consumer) override {
     bool delivered = false;
     try {
-      std::vector<Q24Str> a, t, v;
+      std::vector<Q24Str> a, t, v, u;
       std::vector<double> value;
-      NativeScan(CreateSecEdgarQ24NumScanSpec(), [&](::duckdb::DataChunk &chunk) {
+      std::vector<int32_t> ddate;
+      NativeScan(CreateSecEdgarQ24AuxNumScanSpec(), [&](::duckdb::DataChunk &chunk) {
         delivered = true;
         const auto n = chunk.size();
         ChunkColumn<::duckdb::string_t> ca, ct, cv, cu;
@@ -194,43 +195,73 @@ struct SecEdgarQ24Scan : SecEdgarQ24InitialScan {
         chunk.data[5].ToUnifiedFormat(n, date_fmt);
         const auto *values = ::duckdb::UnifiedVectorFormat::GetData<double>(value_fmt);
         const auto *dates = ::duckdb::UnifiedVectorFormat::GetData<int32_t>(date_fmt);
-        a.resize(n); t.resize(n); v.resize(n); value.resize(n);
+        a.resize(n); t.resize(n); v.resize(n); u.resize(n); value.resize(n);
+        ddate.resize(n);
         std::size_t out = 0;
         for (::duckdb::idx_t i = 0; i < n; ++i) {
           // Pushed-down storage filters are re-checked (cheap, keeps the
           // contract exact even if a scan only applies them partially).
           const auto vi = value_fmt.sel->get_index(i);
           const auto di = date_fmt.sel->get_index(i);
-          if (!value_fmt.validity.RowIsValid(vi) || !date_fmt.validity.RowIsValid(di) ||
-              dates[di] < kSecEdgarQ24FirstDate || dates[di] > kSecEdgarQ24LastDate)
+          if (!value_fmt.validity.RowIsValid(vi) || !date_fmt.validity.RowIsValid(di))
             continue;
+          int32_t year;
+          if (!Q24DdateYear(dates[di], year)) continue; // in no year bucket
           const Q24Str uom = cu.At(i);
-          if (uom.null || uom.size != std::strlen(kSecEdgarQ24Uom) ||
-              std::memcmp(uom.data, kSecEdgarQ24Uom, uom.size) != 0)
-            continue;
+          if (uom.null) continue;
+          u[out] = uom;
+          ddate[out] = dates[di];
           a[out] = ca.At(i);
           t[out] = ct.At(i);
           v[out] = cv.At(i);
           value[out] = values[vi];
           ++out;
         }
-        if (out > 0) consumer({out, a.data(), t.data(), v.data(), value.data()});
+        if (out > 0)
+          consumer({out, a.data(), t.data(), v.data(), value.data(), u.data(),
+                    ddate.data()});
       });
       return true;
     } catch (const std::exception &) {
       if (delivered) throw;
     }
     // Native scan unavailable (e.g. unexpected column types): SQL streaming.
-    const std::string sql =
-        "SELECT adsh, tag, version, value FROM num WHERE uom = '" +
-        std::string(kSecEdgarQ24Uom) + "' AND ddate BETWEEN " +
-        std::to_string(kSecEdgarQ24FirstDate) + " AND " +
-        std::to_string(kSecEdgarQ24LastDate) + " AND value IS NOT NULL";
-    StreamQ24Columns(connection, sql, /*with_value=*/true,
-                     [&](std::size_t n, const Q24Str *a, const Q24Str *t,
-                         const Q24Str *v, const double *value) {
-                       consumer({n, a, t, v, value});
-                     });
+    std::vector<Q24Str> a, t, v, u;
+    std::vector<double> value;
+    std::vector<int32_t> ddate;
+    auto result = ScanConnection(connection).SendQuery(
+        "SELECT adsh, tag, version, value, uom, ddate FROM num WHERE value IS NOT NULL "
+        "AND uom IS NOT NULL AND ddate IS NOT NULL");
+    Require(result != nullptr && !result->HasError(),
+            result ? result->GetError() : "DuckDB scan returned null");
+    while (true) {
+      auto chunk = result->Fetch();
+      if (!chunk || chunk->size() == 0) break;
+      const auto n = chunk->size();
+      ChunkColumn<::duckdb::string_t> ca, ct, cv, cu;
+      ca.Init(chunk->data[0], n);
+      ct.Init(chunk->data[1], n);
+      cv.Init(chunk->data[2], n);
+      cu.Init(chunk->data[4], n);
+      ::duckdb::UnifiedVectorFormat value_fmt, date_fmt;
+      chunk->data[3].ToUnifiedFormat(n, value_fmt);
+      chunk->data[5].ToUnifiedFormat(n, date_fmt);
+      const auto *values = ::duckdb::UnifiedVectorFormat::GetData<double>(value_fmt);
+      const auto *dates = ::duckdb::UnifiedVectorFormat::GetData<int32_t>(date_fmt);
+      a.resize(n); t.resize(n); v.resize(n); u.resize(n); value.resize(n);
+      ddate.resize(n);
+      for (::duckdb::idx_t i = 0; i < n; ++i) {
+        a[i] = ca.At(i);
+        t[i] = ct.At(i);
+        v[i] = cv.At(i);
+        u[i] = cu.At(i);
+        value[i] = values[value_fmt.sel->get_index(i)];
+        ddate[i] = dates[date_fmt.sel->get_index(i)];
+      }
+      consumer({static_cast<std::size_t>(n), a.data(), t.data(), v.data(),
+                value.data(), u.data(), ddate.data()});
+    }
+    Require(!result->HasError(), result->GetError());
     return true;
   }
   bool ScanPreBatches(
@@ -294,18 +325,24 @@ struct SecEdgarQ24Scan : SecEdgarQ24InitialScan {
                 out[static_cast<std::size_t>(result.GetValue(0, row).template GetValue<int64_t>())]
                     .pre_rows = result.GetValue(1, row).template GetValue<int64_t>();
               });
+    // Per (year, uom) bucket: year = floor(ddate / 10000), month/day in
+    // [101, 1231] (see Q24DdateYear). Computed in BIGINT to avoid overflow.
     ScanQuery(connection,
-              "SELECT k.i, COUNT(*)::BIGINT, SUM(n.value)::DOUBLE FROM " + k +
+              "SELECT i, uom, (dd - r) // 10000 AS y, COUNT(*)::BIGINT, SUM(value)::DOUBLE FROM ("
+              "SELECT k.i AS i, n.uom AS uom, n.ddate::BIGINT AS dd, "
+              "((n.ddate::BIGINT % 10000) + 10000) % 10000 AS r, n.value AS value FROM " + k +
                   " JOIN num n ON n.adsh = k.a AND n.tag = k.t AND "
-                  "n.version = k.v WHERE n.uom = '" + std::string(kSecEdgarQ24Uom) +
-                  "' AND n.ddate BETWEEN " + std::to_string(kSecEdgarQ24FirstDate) +
-                  " AND " + std::to_string(kSecEdgarQ24LastDate) +
-                  " AND n.value IS NOT NULL GROUP BY k.i",
+                  "n.version = k.v WHERE n.uom IS NOT NULL AND n.ddate IS NOT NULL "
+                  "AND n.value IS NOT NULL) WHERE r BETWEEN 101 AND 1231 GROUP BY i, uom, y",
               [&](auto &result, ::duckdb::idx_t row) {
                 auto &s = out[static_cast<std::size_t>(
                     result.GetValue(0, row).template GetValue<int64_t>())];
-                s.num_rows = result.GetValue(1, row).template GetValue<int64_t>();
-                s.num_sum = result.GetValue(2, row).template GetValue<double>();
+                SecEdgarQ24TripleBucket b;
+                b.uom = result.GetValue(1, row).ToString();
+                b.year = static_cast<int32_t>(result.GetValue(2, row).template GetValue<int64_t>());
+                b.num_rows = result.GetValue(3, row).template GetValue<int64_t>();
+                b.num_sum = result.GetValue(4, row).template GetValue<double>();
+                s.buckets.push_back(std::move(b));
               });
     return true;
   }
@@ -335,6 +372,11 @@ public:
   ::duckdb::Connection &connection;
 };
 
+// accel_sec_edgar_q24_aux() uses the defaults (2023, 'USD');
+// accel_sec_edgar_q24_aux(year BIGINT, uom VARCHAR) binds the query's parameters.
+const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
+    {::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR}};
+
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ24Layout::kAccelerator,
     "accel_sec_edgar_q24_aux",
@@ -342,7 +384,8 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ24Config c{101, 102};
       return MakeBinding<SecEdgarQ24Scan, SecEdgarQ24Module>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 const AuxQueryRegistrar kParallelQuery{AuxQuery{
@@ -352,7 +395,8 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ24Config c{101, 102};
       return MakeBinding<SecEdgarQ24Scan, SecEdgarQ24ParallelModule>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 #endif
 
 } // namespace
