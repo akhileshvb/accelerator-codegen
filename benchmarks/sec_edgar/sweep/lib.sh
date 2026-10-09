@@ -118,7 +118,7 @@ run_all() {
     ( printf '%s\n' $(pg_order) | xargs -P "$PG_PARALLEL" -I{} bash -c "pg_q {} '$p' '$m'"; log "ALL POSTGRES DONE" ) &
   fi
   wait
-  rmdir "$WORK" 2>/dev/null
+  rm -f "$WORK"/draws_q*.tsv; rmdir "$WORK" 2>/dev/null
   python3 -I "$SWEEP_DIR/summarize.py" "$OUT" > "$OUT/summary.txt" 2>&1
   log "COMPLETE; summary: $OUT/summary.md"
 }
