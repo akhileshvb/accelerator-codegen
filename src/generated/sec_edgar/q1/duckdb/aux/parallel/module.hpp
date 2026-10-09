@@ -1,6 +1,6 @@
 #pragma once
 
-#include "sec_edgar/q1/duckdb/aux/module.hpp"
+#include "sec_edgar/q1/common/module.hpp"
 #include "sec_edgar/q1/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {

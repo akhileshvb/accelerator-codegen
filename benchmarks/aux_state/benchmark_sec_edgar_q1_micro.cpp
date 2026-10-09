@@ -15,7 +15,8 @@
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "catalog/query_catalog.hpp"
-#include "sec_edgar/q1/duckdb/aux/module.hpp"
+#include "sec_edgar/q1/common/module.hpp"
+#include "sec_edgar/q1/duckdb/aux/native_scan.hpp"
 #include "duckdb.hpp"
 
 namespace catalog = accelerator_codegen::aux_state::engine;

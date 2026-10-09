@@ -1,4 +1,4 @@
-#include "sec_edgar/q1/duckdb/aux/module.hpp"
+#include "sec_edgar/q1/duckdb/aux/native_scan.hpp"
 
 #include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "accelerator_codegen/runtime/native_scan.hpp"

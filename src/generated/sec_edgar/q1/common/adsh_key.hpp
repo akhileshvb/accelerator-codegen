@@ -10,10 +10,6 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace duckdb {
-struct string_t;
-}
-
 namespace accelerator_codegen::aux_state::query::q1 {
 
 constexpr uint64_t kInvalidAdshKey = ~uint64_t(0);
@@ -24,15 +20,16 @@ bool ParseAdshKeyScalar(const char *s, std::size_t len, uint64_t &key);
 // Dispatching single-value parse (SIMD when available).
 bool ParseAdshKey(const char *s, std::size_t len, uint64_t &key);
 
-// Batch parse of `count` string_t values; out_keys[i] = kInvalidAdshKey when the
+// Engine-neutral batch parse. `at(ctx, index, data, len)` yields value `index`
+// (sel ? sel[i] : i for output slot i); out_keys[i] = kInvalidAdshKey when the
 // value is not in canonical form (caller falls back to string interning).
-// `sel` (optional) maps output slot -> input index.
-void ParseAdshKeyBatch(const duckdb::string_t *values, const uint32_t *sel,
-                       std::size_t count, uint64_t *out_keys);
+using AdshAccessor = void (*)(const void *ctx, std::size_t index, const char *&data, std::size_t &len);
+void ParseAdshKeyBatchFn(const void *ctx, AdshAccessor at, const uint32_t *sel, std::size_t count,
+                         uint64_t *out_keys);
+// Forces the scalar kernel (tests).
+void ParseAdshKeyBatchScalarFn(const void *ctx, AdshAccessor at, const uint32_t *sel, std::size_t count,
+                               uint64_t *out_keys);
 
-// For tests: force the scalar / SIMD path.
 bool AdshKeySimdAvailable();
-void ParseAdshKeyBatchScalar(const duckdb::string_t *values, const uint32_t *sel,
-                             std::size_t count, uint64_t *out_keys);
 
 } // namespace accelerator_codegen::aux_state::query::q1

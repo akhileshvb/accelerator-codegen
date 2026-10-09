@@ -95,7 +95,7 @@ set(ACCEL_AUX_COPTS "" CACHE STRING "extra compile options for the C++ aux modul
 if(ACCEL_AUX_COPTS)
     set(_accel_cpp_aux_srcs "")
     foreach(_src IN LISTS ACCEL_GENERATED_SOURCES)
-        if(_src MATCHES "/duckdb/aux/[^/]+\\.cpp$")
+        if(_src MATCHES "/(duckdb/aux|common)/[^/]+\\.cpp$")
             list(APPEND _accel_cpp_aux_srcs "${_src}")
         endif()
     endforeach()

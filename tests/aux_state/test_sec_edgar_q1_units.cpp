@@ -14,8 +14,9 @@
 #include <vector>
 
 #include "duckdb/common/types/string_type.hpp"
-#include "sec_edgar/q1/duckdb/aux/adsh_key.hpp"
-#include "sec_edgar/q1/duckdb/aux/module.hpp"
+#include "sec_edgar/q1/common/adsh_key.hpp"
+#include "sec_edgar/q1/duckdb/aux/duckdb_adsh_key.hpp"
+#include "sec_edgar/q1/common/module.hpp"
 
 using namespace accelerator_codegen::aux_state::query;
 

@@ -1,11 +1,9 @@
-#include "sec_edgar/q1/duckdb/aux/module.hpp"
+#include "sec_edgar/q1/common/module.hpp"
 
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
-#include "sec_edgar/q1/duckdb/aux/adsh_key.hpp"
+#include "sec_edgar/q1/common/adsh_key.hpp"
 
-#include "duckdb/common/types/data_chunk.hpp"
-#include "duckdb/common/types/string_type.hpp"
-#include "duckdb/common/types/vector.hpp"
+#include "sec_edgar/q1/common/builder_impl.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -433,277 +431,58 @@ double AvgLine(Int128 sum, int64_t count) {
 // Builder
 // ---------------------------------------------------------------------------
 
-struct Builder::Impl {
-	struct G {
-		std::string stmt;
-		std::string rfile;
-		bool rfile_null = false;
-		int64_t cnt = 0;
-		Int128 line_sum = 0;
-		int64_t line_cnt = 0;
-		std::vector<uint32_t> counts; // by builder-local adsh id
-	};
-
-	static constexpr uint64_t kEmpty = ~uint64_t(0);
-	static constexpr uint64_t kMaxLocalIds = 0xFFFFFFFEull;
-
-	std::vector<G> groups;
-	std::unordered_map<std::string, int> group_index;
-	std::vector<uint64_t> table_keys;
-	std::vector<uint32_t> table_ids;
-	std::vector<uint64_t> id_keys;
-	core::StringDict others;
-	std::size_t mask = 0;
-
-	// chunk scratch
-	struct Run {
-		uint32_t start, len, si, ri, ai;
-	};
-	std::vector<Run> runs;
-	std::vector<uint32_t> adsh_sel;
-	std::vector<uint64_t> adsh_keys;
-
-	Impl() {
-		Rehash(1u << 12);
-	}
-
-	void Rehash(std::size_t capacity) {
-		std::vector<uint64_t> old_keys = std::move(table_keys);
-		std::vector<uint32_t> old_ids = std::move(table_ids);
-		table_keys.assign(capacity, kEmpty);
-		table_ids.assign(capacity, 0);
-		mask = capacity - 1;
-		for (std::size_t i = 0; i < old_keys.size(); ++i) {
-			if (old_keys[i] != kEmpty) {
-				Insert(old_keys[i], old_ids[i]);
-			}
-		}
-	}
-
-	static inline std::size_t Hash(uint64_t key) {
-		return static_cast<std::size_t>((key * 0x9E3779B97F4A7C15ULL) >> 20);
-	}
-
-	inline void Insert(uint64_t key, uint32_t id) {
-		std::size_t pos = Hash(key) & mask;
-		while (table_keys[pos] != kEmpty) {
-			pos = (pos + 1) & mask;
-		}
-		table_keys[pos] = key;
-		table_ids[pos] = id;
-	}
-
-	inline uint32_t IdFor(uint64_t key) {
-		std::size_t pos = Hash(key) & mask;
-		while (true) {
-			const uint64_t k = table_keys[pos];
-			if (k == key) {
-				return table_ids[pos];
-			}
-			if (k == kEmpty) {
-				break;
-			}
-			pos = (pos + 1) & mask;
-		}
-		if (id_keys.size() >= kMaxLocalIds) {
-			throw std::overflow_error("sec_edgar q1: more than 2^32-2 distinct accession values in one build");
-		}
-		const uint32_t id = static_cast<uint32_t>(id_keys.size());
-		id_keys.push_back(key);
-		table_keys[pos] = key;
-		table_ids[pos] = id;
-		if (id_keys.size() * 2 > table_keys.size()) {
-			Rehash(table_keys.size() * 2);
-		}
-		return id;
-	}
-
-	uint64_t OtherKey(const char *data, std::size_t size) {
-		return kOtherKeyBit | others.Intern(std::string_view(data, size));
-	}
-
-	static std::string GroupName(const char *stmt, std::size_t stmt_len, const char *rfile, std::size_t rfile_len,
-	                             bool rfile_null) {
-		std::string name = std::to_string(stmt_len);
-		name.push_back(':');
-		name.append(stmt, stmt_len);
-		name.push_back(rfile_null ? '\1' : '\2');
-		if (!rfile_null) {
-			name.append(rfile, rfile_len);
-		}
-		return name;
-	}
-
-	int GroupFor(const char *stmt, std::size_t stmt_len, const char *rfile, std::size_t rfile_len, bool rfile_null) {
-		auto name = GroupName(stmt, stmt_len, rfile, rfile_len, rfile_null);
-		const auto it = group_index.find(name);
-		if (it != group_index.end()) {
-			return it->second;
-		}
-		G g;
-		g.stmt.assign(stmt, stmt_len);
-		if (!rfile_null) {
-			g.rfile.assign(rfile, rfile_len);
-		}
-		g.rfile_null = rfile_null;
-		groups.push_back(std::move(g));
-		const int index = static_cast<int>(groups.size() - 1);
-		group_index.emplace(std::move(name), index);
-		return index;
-	}
-
-	inline void Bump(G &g, uint32_t id, uint64_t by = 1) {
-		if (id >= g.counts.size()) {
-			g.counts.resize(std::max<std::size_t>(id + 1, g.counts.size() + g.counts.size() / 2 + 1024), 0);
-		}
-		const uint64_t sum = uint64_t(g.counts[id]) + by;
-		if (sum > 0xFFFFFFFFull) {
-			throw std::overflow_error("sec_edgar q1: more than 2^32-1 rows for one (group, accession) in one build");
-		}
-		g.counts[id] = static_cast<uint32_t>(sum);
-	}
-};
-
 Builder::Builder() : impl(new Impl()) {
 }
 Builder::~Builder() = default;
 Builder::Builder(Builder &&) noexcept = default;
 Builder &Builder::operator=(Builder &&) noexcept = default;
 
-void Builder::ConsumeChunk(::duckdb::DataChunk &chunk) {
-	using namespace ::duckdb;
-	auto &im = *impl;
-	const idx_t n = chunk.size();
-	if (n == 0) {
-		return;
-	}
-	UnifiedVectorFormat u_stmt, u_rfile, u_adsh, u_line;
-	chunk.data[0].ToUnifiedFormat(n, u_stmt);
-	chunk.data[1].ToUnifiedFormat(n, u_rfile);
-	chunk.data[2].ToUnifiedFormat(n, u_adsh);
-	chunk.data[3].ToUnifiedFormat(n, u_line);
-	const auto *stmt_data = UnifiedVectorFormat::GetData<string_t>(u_stmt);
-	const auto *rfile_data = UnifiedVectorFormat::GetData<string_t>(u_rfile);
-	const auto *adsh_data = UnifiedVectorFormat::GetData<string_t>(u_adsh);
-	const auto *line_data = UnifiedVectorFormat::GetData<int32_t>(u_line);
-	const bool line_all_valid = u_line.validity.AllValid();
-
-	// Pass 1: split the chunk into runs of rows that share (stmt, rfile, adsh)
-	// *vector positions*. Storage hands out dictionary vectors with long runs
-	// (about 12 rows per accession), so per-run work (group lookup, adsh
-	// parse, hash probe) is amortized over the run.
-	auto &runs = im.runs;
-	runs.clear();
-	{
-		idx_t ps = u_stmt.sel->get_index(0), pr = u_rfile.sel->get_index(0), pa = u_adsh.sel->get_index(0);
-		uint32_t start = 0;
-		for (idx_t i = 1; i < n; ++i) {
-			const idx_t si = u_stmt.sel->get_index(i);
-			const idx_t ri = u_rfile.sel->get_index(i);
-			const idx_t ai = u_adsh.sel->get_index(i);
-			if (si != ps || ri != pr || ai != pa) {
-				runs.push_back({start, static_cast<uint32_t>(i - start), static_cast<uint32_t>(ps),
-				                static_cast<uint32_t>(pr), static_cast<uint32_t>(pa)});
-				start = static_cast<uint32_t>(i);
-				ps = si;
-				pr = ri;
-				pa = ai;
-			}
-		}
-		runs.push_back({start, static_cast<uint32_t>(n - start), static_cast<uint32_t>(ps), static_cast<uint32_t>(pr),
-		                static_cast<uint32_t>(pa)});
-	}
-
-	// Pass 2: SIMD-parse the accession of every run that counts (stmt and adsh
-	// non-null) in one batch.
-	im.adsh_sel.clear();
-	for (const auto &run : runs) {
-		if (u_stmt.validity.RowIsValid(run.si) && u_adsh.validity.RowIsValid(run.ai)) {
-			im.adsh_sel.push_back(run.ai);
-		}
-	}
-	im.adsh_keys.resize(im.adsh_sel.size());
-	ParseAdshKeyBatch(adsh_data, im.adsh_sel.data(), im.adsh_sel.size(), im.adsh_keys.data());
-
-	// Pass 3: aggregate runs.
-	std::size_t kp = 0;
-	Impl::G *g = nullptr;
-	idx_t gs = ~idx_t(0), gr = ~idx_t(0);
-	uint64_t last_key = kInvalidAdshKey;
-	uint32_t last_id = 0;
-	for (const auto &run : runs) {
-		if (!u_stmt.validity.RowIsValid(run.si)) {
-			continue;
-		}
-		const bool rfile_null = !u_rfile.validity.RowIsValid(run.ri);
-		if (g == nullptr || run.si != gs || run.ri != gr) {
-			const string_t &stmt = stmt_data[run.si];
-			const string_t rfile = rfile_null ? string_t() : rfile_data[run.ri];
-			const bool same = g != nullptr && g->rfile_null == rfile_null && g->stmt.size() == stmt.GetSize() &&
-			                  std::memcmp(g->stmt.data(), stmt.GetData(), stmt.GetSize()) == 0 &&
-			                  (rfile_null || (g->rfile.size() == rfile.GetSize() &&
-			                                  std::memcmp(g->rfile.data(), rfile.GetData(), rfile.GetSize()) == 0));
-			if (!same) {
-				const int gi = im.GroupFor(stmt.GetData(), stmt.GetSize(), rfile.GetData(), rfile.GetSize(), rfile_null);
-				g = &im.groups[static_cast<std::size_t>(gi)];
-			}
-			gs = run.si;
-			gr = run.ri;
-		}
-		g->cnt += run.len;
-		const uint32_t end = run.start + run.len;
-		if (line_all_valid) {
-			int64_t sum = 0;
-			for (uint32_t i = run.start; i < end; ++i) {
-				sum += line_data[u_line.sel->get_index(i)];
-			}
-			g->line_sum += sum;
-			g->line_cnt += run.len;
-		} else {
-			for (uint32_t i = run.start; i < end; ++i) {
-				const idx_t li = u_line.sel->get_index(i);
-				if (u_line.validity.RowIsValid(li)) {
-					g->line_sum += line_data[li];
-					g->line_cnt++;
-				}
-			}
-		}
-		if (!u_adsh.validity.RowIsValid(run.ai)) {
-			continue;
-		}
-		uint64_t key = im.adsh_keys[kp++];
-		if (key == kInvalidAdshKey) {
-			const string_t &adsh = adsh_data[run.ai];
-			key = im.OtherKey(adsh.GetData(), adsh.GetSize());
-		}
-		if (key != last_key) {
-			last_key = key;
-			last_id = im.IdFor(key);
-		}
-		im.Bump(*g, last_id, run.len);
-	}
+void Builder::ConsumeRow(const SecEdgarQ1PreInput &row) {
+	ConsumeRowView(row.stmt.data(), row.stmt.size(), row.stmt_is_null, row.rfile.data(), row.rfile.size(),
+	               row.rfile_is_null, row.adsh.data(), row.adsh.size(), row.adsh_is_null, row.line,
+	               row.line_is_null);
 }
 
-void Builder::ConsumeRow(const SecEdgarQ1PreInput &row) {
+void Builder::ConsumeRowView(const char *stmt, std::size_t stmt_len, bool stmt_null, const char *rfile,
+                             std::size_t rfile_len, bool rfile_null, const char *adsh, std::size_t adsh_len,
+                             bool adsh_null, int32_t line, bool line_null) {
 	auto &im = *impl;
-	if (row.stmt_is_null) {
+	if (stmt_null) {
 		return;
 	}
-	const int gi = im.GroupFor(row.stmt.data(), row.stmt.size(), row.rfile.data(), row.rfile.size(), row.rfile_is_null);
-	auto &g = im.groups[static_cast<std::size_t>(gi)];
-	g.cnt++;
-	if (!row.line_is_null) {
-		g.line_sum += row.line;
-		g.line_cnt++;
+	Impl::G *g = im.memo_group >= 0 ? &im.groups[static_cast<std::size_t>(im.memo_group)] : nullptr;
+	if (g == nullptr || g->rfile_null != rfile_null || g->stmt.size() != stmt_len ||
+	    std::memcmp(g->stmt.data(), stmt, stmt_len) != 0 ||
+	    (!rfile_null && (g->rfile.size() != rfile_len || std::memcmp(g->rfile.data(), rfile, rfile_len) != 0))) {
+		im.memo_group = im.GroupFor(stmt, stmt_len, rfile, rfile_len, rfile_null);
+		g = &im.groups[static_cast<std::size_t>(im.memo_group)];
 	}
-	if (row.adsh_is_null) {
+	g->cnt++;
+	if (!line_null) {
+		g->line_sum += line;
+		g->line_cnt++;
+	}
+	if (adsh_null) {
 		return;
 	}
-	uint64_t key = 0;
-	if (!ParseAdshKey(row.adsh.data(), row.adsh.size(), key)) {
-		key = im.OtherKey(row.adsh.data(), row.adsh.size());
+	uint32_t id;
+	if (adsh_len == im.memo_adsh_len && std::memcmp(adsh, im.memo_adsh, adsh_len) == 0) {
+		id = im.memo_id; // consecutive rows of one filing
+	} else {
+		uint64_t key = 0;
+		if (!ParseAdshKey(adsh, adsh_len, key)) {
+			key = im.OtherKey(adsh, adsh_len);
+		}
+		id = im.IdFor(key);
+		if (adsh_len <= Impl::kMemoAdshMax) {
+			std::memcpy(im.memo_adsh, adsh, adsh_len);
+			im.memo_adsh_len = adsh_len;
+			im.memo_id = id;
+		} else {
+			im.memo_adsh_len = ~std::size_t(0);
+		}
 	}
-	im.Bump(g, im.IdFor(key));
+	im.Bump(*g, id);
 }
 
 void Builder::Merge(Builder &&other_builder) {
