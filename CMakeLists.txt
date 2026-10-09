@@ -2301,3 +2301,6 @@ target_link_libraries(measure_sec_edgar_q2_state PRIVATE accelerator_codegen duc
 add_executable(check_sec_edgar_q2_params
 	benchmarks/aux_state/check_sec_edgar_q2_params.cpp)
 target_link_libraries(check_sec_edgar_q2_params PRIVATE accelerator_codegen duckdb_sibling)
+
+# SEC-EDGAR Q2 PostgreSQL client tests (libpq only).
+include(cmake/PostgresSecEdgarQ2Tests.cmake)
