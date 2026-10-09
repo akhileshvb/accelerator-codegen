@@ -80,6 +80,29 @@ std::string AdshAnyPredicate(const char *column,
   return sql + "}'::text[])";
 }
 
+// SPI_execute (not a cursor) so the planner may parallelize the big build
+// join; the result is the aggregated groups, far smaller than num.
+template <typename Callback>
+void RunQuery(const std::string &sql, Callback &&callback) {
+  ++t_table_scans;
+  if (SPI_connect() != SPI_OK_CONNECT)
+    throw std::runtime_error("SPI_connect failed");
+  if (SPI_execute(sql.c_str(), true, 0) != SPI_OK_SELECT) {
+    SPI_finish();
+    throw std::runtime_error("sec_edgar q6 scan failed");
+  }
+  try {
+    SPITupleTable *table = SPI_tuptable;
+    if (table)
+      for (uint64 i = 0; i < SPI_processed; ++i)
+        callback(table->vals[i], table->tupdesc);
+  } catch (...) {
+    SPI_finish();
+    throw;
+  }
+  SPI_finish();
+}
+
 } // namespace scans
 
 class SecEdgarQ6PgScan final : public query::SecEdgarQ6InitialScan {
@@ -103,7 +126,7 @@ public:
 
   void ScanSub(const std::function<void(const query::SecEdgarQ6SubInput &)>
                    &consumer) override {
-    ScanTypedTuples(
+    scans::RunQuery(
         "SELECT adsh, name FROM sub WHERE fy = 2023",
         [&](HeapTuple tuple, TupleDesc desc) {
           query::SecEdgarQ6SubInput in;
@@ -117,7 +140,7 @@ public:
 
   void ScanPre(const std::function<void(const query::SecEdgarQ6PreInput &)>
                    &consumer) override {
-    ScanTypedTuples(
+    scans::RunQuery(
         "SELECT p.adsh, p.tag, p.version, p.stmt, p.plabel FROM pre p "
         "WHERE p.stmt = 'IS' AND p.tag IS NOT NULL AND p.version IS NOT NULL "
         "AND p.adsh IN (SELECT adsh FROM sub WHERE fy = 2023)",
@@ -135,7 +158,7 @@ public:
   bool ScanGroupAggregates(
       const std::function<void(const query::SecEdgarQ6GroupAggregateInput &)>
           &consumer) override {
-    ScanTypedTuples(
+    scans::RunQuery(
         "SELECT s.name, n.tag, p.plabel, SUM(n.value)::float8, COUNT(*) "
         "FROM num n JOIN sub s ON n.adsh = s.adsh "
         "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
