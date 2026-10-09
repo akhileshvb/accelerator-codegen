@@ -2301,3 +2301,18 @@ target_link_libraries(measure_sec_edgar_q2_state PRIVATE accelerator_codegen duc
 add_executable(check_sec_edgar_q2_params
 	benchmarks/aux_state/check_sec_edgar_q2_params.cpp)
 target_link_libraries(check_sec_edgar_q2_params PRIVATE accelerator_codegen duckdb_sibling)
+
+# ---------------------------------------------------------------------------
+# SEC-EDGAR Q4 PostgreSQL differential (psql client only; no server SDK needed
+# to build it, a running server with the extension installed to run it).
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_postgres_sec_edgar_q4_differential.cpp")
+    add_executable(test_postgres_sec_edgar_q4_differential
+        tests/aux_state/test_postgres_sec_edgar_q4_differential.cpp)
+    target_include_directories(test_postgres_sec_edgar_q4_differential PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_compile_definitions(test_postgres_sec_edgar_q4_differential PRIVATE
+        ACCEL_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
