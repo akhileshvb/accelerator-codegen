@@ -327,11 +327,17 @@ void RunConcurrent(int seconds) {
         // Seed the accelerator in this session so its own commits maintain the state.
         if (t == 0) c.Query(kAccelSql);
         while (!stop) {
-          c.Query("BEGIN");
-          for (int i = 0, n = 1 + (int)g.R(3); i < n; ++i) c.Query(g.Statement());
-          if (t == 0 && g.R(3) == 0) c.Query(kAccelSql);
-          c.Query(g.R(4) ? "COMMIT" : "ROLLBACK");
-          ++writes;
+          try {
+            c.Query("BEGIN");
+            for (int i = 0, n = 1 + (int)g.R(3); i < n; ++i) c.Query(g.Statement());
+            if (t == 0 && g.R(3) == 0) c.Query(kAccelSql);
+            c.Query(g.R(4) ? "COMMIT" : "ROLLBACK");
+            ++writes;
+          } catch (const std::exception &e) {
+            // Writers contend on the same rows: a deadlock aborts the transaction, nothing else may fail.
+            if (std::string(e.what()).find("deadlock") == std::string::npos) throw;
+            c.TryExec("ROLLBACK");
+          }
         }
       } catch (const std::exception &e) { fail(std::string("writer: ") + e.what()); }
     });
