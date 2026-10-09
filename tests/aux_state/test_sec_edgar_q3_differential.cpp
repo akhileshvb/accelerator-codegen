@@ -245,6 +245,57 @@ struct Fixture {
     return sql;
   }
 
+  // ORDER BY total DESC leaves the order of equal totals (e.g. several groups
+  // at +inf) unspecified in SQL, so rows are compared as ordered totals plus,
+  // within each run of equal totals, the multiset of (name, cik) keys.
+  void CompareParamRows(const std::string &sql, const std::vector<core::AuxRow> &got) {
+    auto result = connection.Query(sql);
+    Require(result && !result->HasError(), result ? result->GetError() : "reference failed");
+    Require(result->RowCount() == got.size(),
+            "row count sql=" + std::to_string(result->RowCount()) +
+                " aux=" + std::to_string(got.size()));
+    const auto same_total = [](double x, double y) {
+      if (std::isnan(x) || std::isnan(y)) {
+        return std::isnan(x) && std::isnan(y);
+      }
+      if (std::isinf(x) || std::isinf(y)) {
+        return x == y;
+      }
+      return std::fabs(x - y) <= 1e-9 * std::max(1.0, std::fabs(x));
+    };
+    const auto sql_key = [&](duckdb::idx_t r) {
+      const auto name = result->GetValue(0, r), cik = result->GetValue(1, r);
+      return (name.IsNull() ? std::string("\x01NULL") : name.ToString()) + "|" +
+             (cik.IsNull() ? std::string("NULL") : cik.ToString());
+    };
+    const auto aux_key = [&](std::size_t r) {
+      const auto &v = got[r].values;
+      return (v[0].is_null ? std::string("\x01NULL") : std::get<std::string>(v[0].payload)) + "|" +
+             (v[1].is_null ? std::string("NULL") : std::to_string(std::get<int64_t>(v[1].payload)));
+    };
+    for (duckdb::idx_t r = 0; r < result->RowCount();) {
+      duckdb::idx_t end = r + 1;
+      const double total = result->GetValue(2, r).GetValue<double>();
+      for (; end < result->RowCount() &&
+             same_total(total, result->GetValue(2, end).GetValue<double>());
+           ++end) {
+      }
+      std::vector<std::string> want_keys, got_keys;
+      for (duckdb::idx_t i = r; i < end; ++i) {
+        Require(same_total(result->GetValue(2, i).GetValue<double>(),
+                           std::get<double>(got[i].values[2].payload)),
+                "total mismatch at row " + std::to_string(i));
+        want_keys.push_back(sql_key(i));
+        got_keys.push_back(aux_key(i));
+      }
+      std::sort(want_keys.begin(), want_keys.end());
+      std::sort(got_keys.begin(), got_keys.end());
+      Require(want_keys == got_keys, "group mismatch in rows " + std::to_string(r) + ".." +
+                                         std::to_string(end));
+      r = end;
+    }
+  }
+
   void VerifyParams(Gen &gen) {
     static const std::vector<int64_t> fys = {2021, 2022, 2022, 2023, 2024, 2019, 2025, 0,
                                              -1, 2147483647};
@@ -263,7 +314,7 @@ struct Fixture {
     try {
       auto rows = runtime.ExecuteCollect(args);
       param_nonempty += rows.empty() ? 0 : 1;
-      harness::CompareAuxRowsToSql(connection, entry, sql, rows);
+      CompareParamRows(sql, rows);
     } catch (const std::exception &e) {
       throw std::runtime_error("params fy=" + (fy_null ? std::string("NULL") : std::to_string(fy)) +
                                " uom=" + (uom_null ? std::string("NULL") : Q(uom)) + ": " +
