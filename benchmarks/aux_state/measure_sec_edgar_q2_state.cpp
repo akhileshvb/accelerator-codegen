@@ -35,6 +35,9 @@ int main(int argc, char **argv) {
   if (const char *m = std::getenv("Q2_MAX_UOM_ROWS")) {
     cfg.max_uom_rows = std::strtoull(m, nullptr, 10);
   }
+  if (const char *m = std::getenv("Q2_BUILD_THREADS")) {
+    cfg.build_threads = static_cast<unsigned>(std::strtoul(m, nullptr, 10));
+  }
   SecEdgarQ2Module module(cfg, &scan);
   const auto t0 = Clock::now();
   const auto state = module.BuildState();
@@ -53,12 +56,17 @@ int main(int argc, char **argv) {
             << " covered_uoms=" << covered << "/" << state->uoms->names.size()
             << " groups=" << groups << " adsh=" << state->adsh.Size()
             << " tags=" << state->tag.Size() << "\n";
+  std::cout << "base_bytes=" << state->base->HeapBytes() << " base_groups=" << state->base->n
+            << " escaped_counts=" << state->base->e_pos.size()
+            << " dict_adsh=" << state->adsh.HeapBytes() << " dict_tag=" << state->tag.HeapBytes()
+            << " fy=" << state->fy.MemoryBytes() << " names=" << state->names.MemoryBytes() << "\n";
   struct Draw {
     int64_t fy;
     const char *uom;
   };
   const Draw draws[] = {{2022, "pure"}, {2023, "pure"}, {2012, "pure"},
-                        {2021, "pure"}, {2022, "EUR"},  {2022, "none"}};
+                        {2021, "pure"}, {2022, "EUR"},  {2022, "none"},
+                        {2022, "USD"},  {2021, "USD"}, {2012, "USD"}, {2022, "shares"}};
   for (const auto &d : draws) {
     std::vector<SecEdgarQ2OutputRow> rows;
     FinalizeSecEdgarQ2(*state, d.fy, d.uom, rows);

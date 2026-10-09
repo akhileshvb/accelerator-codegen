@@ -2344,3 +2344,6 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND
     target_compile_definitions(test_postgres_sec_edgar_q4_differential PRIVATE
         ACCEL_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
+
+# SEC-EDGAR Q2 PostgreSQL client tests (libpq only).
+include(cmake/PostgresSecEdgarQ2Tests.cmake)

@@ -1,6 +1,11 @@
 #include "sec_edgar/q2/duckdb/aux/duckdb_scan.hpp"
 
+#include <condition_variable>
+#include <deque>
+#include <exception>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
 #include <unordered_set>
 
@@ -166,6 +171,130 @@ void SecEdgarQ2DuckdbScan::ScanNumValueCounts(
                        value.Get(r), static_cast<uint64_t>(rows.Get(r))});
            }
          });
+}
+
+bool SecEdgarQ2DuckdbScan::ScanNumKeys(
+    const std::vector<std::string> &uoms,
+    const std::function<void(std::string_view)> &adsh_fn,
+    const std::function<void(std::string_view)> &tag_fn) {
+  if (uoms.empty()) {
+    return true;
+  }
+  const std::string where = " FROM num WHERE value IS NOT NULL AND adsh IS NOT NULL AND "
+                            "tag IS NOT NULL AND uom IN (" +
+                            QuoteList(uoms) + ")";
+  for (int which = 0; which < 2; ++which) {
+    const auto &fn = which == 0 ? adsh_fn : tag_fn;
+    Stream(connection, std::string("SELECT DISTINCT ") + (which == 0 ? "adsh" : "tag") + where,
+           [&](DataChunk &chunk) {
+             Col<string_t> col;
+             col.Init(chunk, 0);
+             for (idx_t r = 0; r < chunk.size(); ++r) {
+               fn(View(col.Get(r)));
+             }
+           });
+  }
+  return true;
+}
+
+bool SecEdgarQ2DuckdbScan::ScanNumValueCountsParallel(
+    const std::vector<std::string> &uoms, unsigned threads,
+    const std::function<void(unsigned, const SecEdgarQ2ValueCountRow *, size_t)> &batch) {
+  if (uoms.empty()) {
+    return true;
+  }
+  auto result = scan::ScanConnection(connection).Query(
+      "SELECT adsh, tag, uom, value, count(*) FROM num WHERE value IS NOT "
+      "NULL AND adsh IS NOT NULL AND tag IS NOT NULL AND uom IN (" +
+      QuoteList(uoms) + ") GROUP BY adsh, tag, uom, value");
+  if (!result || result->HasError()) {
+    throw std::runtime_error("sec_edgar q2 scan failed: " +
+                             (result ? result->GetError() : std::string("null")));
+  }
+  using ChunkPtr = ::duckdb::unique_ptr<DataChunk>;
+  std::mutex mu;
+  std::condition_variable cv_pop, cv_push;
+  std::deque<ChunkPtr> queue;
+  bool closed = false;
+  std::exception_ptr error;
+  const size_t max_queue = static_cast<size_t>(threads) * 2;
+  std::vector<std::thread> workers;
+  for (unsigned w = 0; w < threads; ++w) {
+    workers.emplace_back([&, w] {
+      std::vector<SecEdgarQ2ValueCountRow> rows;
+      while (true) {
+        ChunkPtr chunk;
+        {
+          std::unique_lock<std::mutex> lock(mu);
+          cv_pop.wait(lock, [&] { return closed || !queue.empty(); });
+          if (queue.empty()) {
+            return;
+          }
+          chunk = std::move(queue.front());
+          queue.pop_front();
+        }
+        cv_push.notify_one();
+        try {
+          Col<string_t> adsh, tag, uom;
+          Col<double> value;
+          Col<int64_t> counts;
+          adsh.Init(*chunk, 0);
+          tag.Init(*chunk, 1);
+          uom.Init(*chunk, 2);
+          value.Init(*chunk, 3);
+          counts.Init(*chunk, 4);
+          rows.clear();
+          for (idx_t r = 0; r < chunk->size(); ++r) {
+            rows.push_back({View(adsh.Get(r)), View(tag.Get(r)), View(uom.Get(r)),
+                            value.Get(r), static_cast<uint64_t>(counts.Get(r))});
+          }
+          batch(w, rows.data(), rows.size());
+        } catch (...) {
+          std::lock_guard<std::mutex> lock(mu);
+          if (!error) {
+            error = std::current_exception();
+          }
+        }
+      }
+    });
+  }
+  std::exception_ptr fetch_error;
+  try {
+    while (true) {
+      auto chunk = result->Fetch();
+      if (!chunk || chunk->size() == 0) {
+        break;
+      }
+      std::unique_lock<std::mutex> lock(mu);
+      cv_push.wait(lock, [&] { return queue.size() < max_queue || error; });
+      if (error) {
+        break;
+      }
+      queue.push_back(std::move(chunk));
+      lock.unlock();
+      cv_pop.notify_one();
+    }
+  } catch (...) {
+    fetch_error = std::current_exception();
+  }
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    closed = true;
+  }
+  cv_pop.notify_all();
+  for (auto &t : workers) {
+    t.join();
+  }
+  if (fetch_error) {
+    std::rethrow_exception(fetch_error);
+  }
+  if (error) {
+    std::rethrow_exception(error);
+  }
+  if (result->HasError()) {
+    throw std::runtime_error("sec_edgar q2 scan failed: " + result->GetError());
+  }
+  return true;
 }
 
 void SecEdgarQ2DuckdbScan::LookupNumValueCounts(

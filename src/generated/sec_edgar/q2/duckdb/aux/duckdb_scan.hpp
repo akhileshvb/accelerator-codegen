@@ -22,6 +22,13 @@ public:
   void ScanNumValueCounts(
       const std::vector<std::string> &uoms,
       const std::function<void(const SecEdgarQ2ValueCountRow &)> &consumer) override;
+  bool ScanNumKeys(const std::vector<std::string> &uoms,
+                   const std::function<void(std::string_view)> &adsh,
+                   const std::function<void(std::string_view)> &tag) override;
+  bool ScanNumValueCountsParallel(
+      const std::vector<std::string> &uoms, unsigned threads,
+      const std::function<void(unsigned, const SecEdgarQ2ValueCountRow *, size_t)> &batch)
+      override;
   void LookupNumValueCounts(
       const std::string &uom,
       const std::vector<std::pair<std::string, std::string>> &groups,
