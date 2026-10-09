@@ -238,6 +238,7 @@ int RunSynthetic(int seeds, int steps) {
     cfg.unique_sums = true;
     cfg.wide_keys = seed % 2 == 1;
     cfg.nonfinite = !limit_case && seed % 3 != 0;
+    cfg.huge_values = false; // PostgreSQL's SUM raises "overflow" where the module would return inf
     q4gen::Model model(static_cast<uint64_t>(seed) * 104729, cfg);
 
     Run(Psql(admin_db, "-v ON_ERROR_STOP=1 -q -c " +

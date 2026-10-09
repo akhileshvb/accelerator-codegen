@@ -198,6 +198,7 @@ struct Config {
   bool unique_sums = false;    // fine-grained values so group totals never tie
   bool wide_keys = false;      // cik values spread over the whole int32 range (negative, huge)
   bool nonfinite = false;      // +-inf / NaN / 1e300-scale values in num.value
+  bool huge_values = true;     // 1e300-scale values (PostgreSQL's SUM raises overflow errors on them)
   int adsh = 70, tags = 30, versions = 2, tlabels = 6, ciks = 12, num_rows = 4000, pre_rows = 900;
   std::vector<int> sics;
 };
@@ -229,8 +230,8 @@ struct Model {
       case 0: return std::numeric_limits<double>::infinity();
       case 1: return -std::numeric_limits<double>::infinity();
       case 2: return std::numeric_limits<double>::quiet_NaN();
-      case 3: return 1e300 * Int(1, 9);
-      case 4: return -1e300 * Int(1, 9);
+      case 3: return cfg.huge_values ? 1e300 * Int(1, 9) : 1e30 * Int(1, 9);
+      case 4: return cfg.huge_values ? -1e300 * Int(1, 9) : -1e30 * Int(1, 9);
       default: return 5e-324 * Int(1, 99); // subnormal
       }
     }
