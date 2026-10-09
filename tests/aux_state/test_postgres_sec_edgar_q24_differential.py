@@ -19,6 +19,11 @@ Phases
            then real writes: a rolled-back transaction, a committed value
            update and a committed pre delete of the top group (restored)
 
+Every comparison also draws random (year, uom) parameters (the benchmark domain
+plus edges: NULLs, unknown uom, years 0 / 2017 / 2025 / huge) and compares
+accel_sec_edgar_q24_aux(year, uom) with the plain query bound to them.
+--sweep runs a parameter sweep on an existing (SF3) database.
+
 The reference is the plain query (benchmarks/sec_edgar/queries/q24.sql) with a
 deterministic tie-break appended to ORDER BY (cnt DESC leaves ties unordered;
 the aux result breaks them by tag, version in byte order, NULLs first).
@@ -53,6 +58,35 @@ PLAIN_SQL = (
     "n.version COLLATE \"C\" NULLS FIRST LIMIT 100"
 )
 NULLTXT = "<NULL>"
+YEARS = [2019, 2020, 2021, 2022, 2023, 2024]
+UOMS = ["USD", "shares", "pure", "CAD", "CNY", "EUR"]
+# Buckets that hold HAVING > 10 groups in the synthetic data.
+HOT = [(2023, "USD"), (2024, "USD"), (2023, "EUR"), (2022, "shares"), (2024, "EUR"),
+       (2019, "pure")]
+
+
+def plain_sql(year, uom):
+    """q24 with :year / :uom bound; a huge year (BIGINT overflow in the
+    reference) is clamped: no INTEGER ddate lies there, both are empty."""
+    if year is not None:
+        year = max(-10 ** 9, min(10 ** 9, year))
+    ys = "NULL" if year is None else str(year)
+    return (
+        "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total "
+        "FROM num n LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND "
+        "n.adsh = p.adsh "
+        "WHERE n.uom = %s AND n.ddate BETWEEN %s::bigint*10000+101 AND %s::bigint*10000+1231 "
+        "AND n.value IS NOT NULL AND p.adsh IS NULL "
+        "GROUP BY n.tag, n.version HAVING COUNT(*) > 10 "
+        "ORDER BY cnt DESC, n.tag COLLATE \"C\" NULLS FIRST, "
+        "n.version COLLATE \"C\" NULLS FIRST LIMIT 100"
+    ) % (lit(uom), ys, ys)
+
+
+def accel_sql(year, uom):
+    ys = "NULL::bigint" if year is None else "%d::bigint" % year
+    us = "NULL::text" if uom is None else lit(uom) + "::text"
+    return "SELECT tag, version, cnt, total FROM accel_sec_edgar_q24_aux(%s, %s)" % (ys, us)
 
 
 class Fail(Exception):
@@ -64,6 +98,7 @@ class Session:
 
     def __init__(self, db, name):
         self.name = name
+        self.db = db
         env = dict(os.environ)
         self.p = subprocess.Popen(
             ["psql", "-X", "-q", "-A", "-t", "-F", "|", "-d", db,
@@ -127,11 +162,25 @@ class Checker:
         self.max_rows = 0
         self.limit_hits = 0
         self.empty = 0
+        self.param_compares = 0
+        self.param_nonempty = 0
+
+    gen = None  # set by main(): enables random parameter comparisons
 
     def compare(self, sess, ctx, exp=None):
-        got = sess.rows(ACCEL_SQL)
+        self.compare_params(sess, ctx, None, None, exp, default=True)
+        if self.gen is not None and exp is None:
+            for year, uom in self.gen.params(2):
+                self.compare_params(sess, ctx, year, uom)
+
+    def compare_params(self, sess, ctx, year, uom, exp=None, default=False):
+        got = sess.rows(ACCEL_SQL if default else accel_sql(year, uom))
         if exp is None:
-            exp = sess.rows(PLAIN_SQL)
+            exp = sess.rows(PLAIN_SQL if default else plain_sql(year, uom))
+        if not default:
+            ctx = "%s [year=%s uom=%s]" % (ctx, year, uom)
+            self.param_compares += 1
+            self.param_nonempty += len(exp) > 0
         self.compares += 1
         self.max_rows = max(self.max_rows, len(exp))
         self.limit_hits += len(exp) == 100
@@ -153,7 +202,11 @@ class Checker:
 ADSH = ["0001-23-%06d" % i for i in range(12)]
 TAGS = ["Tag%02d" % i for i in range(36)] + ["O'Brien", "Back\\slash", "Ünï|x"[:3]]
 VERS = ["us-gaap/2022", "us-gaap/2023", "ifrs/2023"]
-DATES = [20221231, 20230101, 20230102, 20230615, 20231230, 20231231, 20240101]
+DATES = [20221231, 20230101, 20230102, 20230615, 20231230, 20231231, 20240101,
+         20240615, 20241231, 20220630, 20190315, 20200101, 20210930, 20250102,
+         # month/day outside every year window, year-0 and negative-year buckets
+         20230100, 20231232, 20230000, 20221300, 201, -9000, 0]
+DATE_WEIGHTS = [3, 2, 1, 3, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
 
 
 def lit(s):
@@ -173,6 +226,39 @@ class Gen:
     def pick(self, seq, null_p=0.0):
         return None if self.r.random() < null_p else self.r.choice(seq)
 
+    def date(self, null_p=0.03):
+        if self.r.random() < null_p:
+            return None
+        return self.r.choices(DATES, DATE_WEIGHTS)[0]
+
+    def uom(self):
+        return self.r.choices(
+            ["USD", "EUR", "shares", "pure", "CAD", "CNY", "usd", "GBP", None],
+            [55, 12, 8, 6, 4, 3, 4, 4, 2])[0]
+
+    def params(self, k):
+        """k random (year, uom) pairs: hot buckets, the domain and the edges."""
+        out = []
+        for _ in range(k):
+            x = self.r.random()
+            if x < 0.55:
+                out.append(self.r.choice(HOT))
+                continue
+            y = self.r.choice(YEARS)
+            e = self.r.random()
+            if e < 0.06:
+                y = None
+            elif e < 0.12:
+                y = self.r.choice([2017, 2025, 0, -1, 201 // 10000, 4 * 10 ** 18, -(4 * 10 ** 18)])
+            u = self.r.choice(UOMS)
+            e = self.r.random()
+            if e < 0.04:
+                u = None
+            elif e < 0.1:
+                u = "nosuchuom"
+            out.append((y, u))
+        return out
+
     def value(self):
         k = self.r.random()
         if k < 0.06:
@@ -188,11 +274,9 @@ class Gen:
         return self.r.randrange(10 ** 6) * 1e-3
 
     def num_row(self, tags=TAGS, uom_usd_p=0.8):
-        u = self.r.random()
-        uom = "USD" if u < uom_usd_p else ("EUR" if u < 0.9 else
-                                           ("usd" if u < 0.96 else None))
+        uom = self.uom()
         return (self.pick(ADSH), self.pick(tags, 0.02), self.pick(VERS, 0.01),
-                self.pick(DATES, 0.03), self.r.randrange(4), uom,
+                self.date(), self.r.randrange(4), uom,
                 self.pick(["", "x"]), self.value())
 
     def pre_row(self):
@@ -252,7 +336,7 @@ def rand_where_num(g):
     if k == 2:
         return "adsh = %s AND tag = %s" % (lit(g.pick(ADSH)), lit(g.pick(TAGS)))
     if k == 3:
-        return "uom = 'USD' AND ddate = %d" % g.pick(DATES)
+        return "uom = 'USD' AND ddate = %d" % g.pick([d for d in DATES if d is not None])
     if k == 4:
         return "value IS NULL"
     return "random() < 0.01"
@@ -290,7 +374,7 @@ def random_write(g):
         return "num_upd_key", ("UPDATE num SET %s = %s WHERE " % (col, val)) + ctid_sub(
             "num", rand_where_num(g), kk)
     if kind == 5:
-        col, val = g.r.choice([("ddate", ilit(g.pick(DATES))), ("uom", "'USD'"),
+        col, val = g.r.choice([("ddate", ilit(g.date())), ("uom", lit(g.uom())),
                                ("uom", "'GBP'"), ("ddate", "NULL"), ("uom", "NULL")])
         return "num_upd_filter", ("UPDATE num SET %s = %s WHERE " % (col, val)) + ctid_sub(
             "num", rand_where_num(g), kk)
@@ -320,7 +404,8 @@ def random_write(g):
         return "num_upd_bulk", ("UPDATE num SET value = value + 1 WHERE random() < 0.05")
     if kind == 15:  # insert num rows into an existing group as USD / in range
         r = g.num_row()
-        r = (r[0], r[1], r[2], 20230601, r[4], "USD", r[6], float(g.r.randrange(100)))
+        year, uom = g.r.choice(HOT)
+        r = (r[0], r[1], r[2], year * 10000 + 601, r[4], uom, r[6], float(g.r.randrange(100)))
         return "num_ins_group", num_insert([r] * (1 + g.r.randrange(12)))
     return "mixed_stmt", ("WITH d AS (DELETE FROM pre WHERE %s RETURNING adsh,tag,version) "
                           "INSERT INTO num(adsh,tag,version,ddate,qtrs,uom,coreg,value) "
@@ -336,6 +421,8 @@ def edges_phase(sa, sb, chk, g):
         chk.compare(sb, ctx + " (other backend)")
 
     chk.compare(sa, "initial build")
+    for y, u in HOT:
+        chk.compare_params(sa, "initial build", y, u)
     chk.compare(sb, "initial build (other backend)")
     ed = "EdgeTag"
     base = lambda n, d=20230601, u="USD", v=3.25: num_insert(
@@ -354,6 +441,32 @@ def edges_phase(sa, sb, chk, g):
          "edge: ddate same")
     step("UPDATE num SET uom = 'usd' WHERE tag='EdgeTag' AND ddate = 20231231", "edge: uom case")
     step("UPDATE num SET value = NULL WHERE tag='EdgeTag' AND ddate = 20230101", "edge: value NULL")
+    # Other (year, uom) buckets: HAVING edge per bucket, bucket moves, odd dates.
+    for y, u in ((2024, "EUR"), (2019, "CNY"), (0, "USD"), (-1, "USD")):
+        d = y * 10000 + 601
+        step(num_insert([(ADSH[3], "ParamTag", "v1", d, 0, u, "", 2.0 + i) for i in range(10)]),
+             "param: 10 rows %s/%d" % (u, y))
+        chk.compare_params(sa, "param edge", y, u)
+        step(num_insert([(ADSH[3], "ParamTag", "v1", d, 0, u, "", 9.0)]), "param: 11 rows %s/%d" % (u, y))
+        chk.compare_params(sa, "param edge", y, u)
+        chk.compare_params(sb, "param edge (other backend)", y, u)
+    step("UPDATE num SET ddate = 20240100 WHERE tag='ParamTag' AND uom='EUR'", "param: ddate to no bucket")
+    chk.compare_params(sa, "param edge", 2024, "EUR")
+    step("UPDATE num SET ddate = 20240631 WHERE tag='ParamTag' AND uom='CNY'", "param: odd but in-window ddate")
+    chk.compare_params(sa, "param edge", 2024, "CNY")
+    step("UPDATE num SET uom = 'USD' WHERE tag='ParamTag' AND uom='CNY'", "param: uom move")
+    chk.compare_params(sa, "param edge", 2019, "CNY")
+    chk.compare_params(sa, "param edge", 2019, "USD")
+    step(pre_insert([(ADSH[3], "ParamTag", "v1")]), "param: pre insert hides all buckets")
+    for y, u in ((2024, "EUR"), (0, "USD"), (-1, "USD")):
+        chk.compare_params(sa, "param edge", y, u)
+    step("DELETE FROM pre WHERE tag='ParamTag'", "param: pre delete restores all buckets")
+    for y, u in ((2024, "EUR"), (0, "USD"), (-1, "USD"), (2019, "USD")):
+        chk.compare_params(sa, "param edge", y, u)
+    step("DELETE FROM num WHERE tag='ParamTag'", "param cleanup")
+    for y, u in ((None, "USD"), (2023, None), (None, None), (4 * 10 ** 18, "USD"),
+                 (-(4 * 10 ** 18), "USD"), (2023, "nosuchuom"), (2025, "USD"), (2017, "USD")):
+        chk.compare_params(sa, "param null/edge", y, u)
     # pre match removes the whole triple from the anti-join; deleting restores it.
     step(pre_insert([(ADSH[0], ed, "v1")]), "edge: pre insert matches")
     step("DELETE FROM pre WHERE tag='EdgeTag'", "edge: pre delete restores")
@@ -489,15 +602,83 @@ def existing_db_phase(sa, sb, chk, g):
     # (The +0.5 on five top-group rows is left in place: no row identity to undo it.)
 
 
+def sweep_phase(sa, chk, g, n):
+    """Read-only parameter sweep on a loaded (SF3) database. The accelerator
+    answers every (year, uom) from one state; the plain query (about 100 s at
+    SF3) is evaluated on parallel backends for the sampled pairs."""
+    import threading
+    combos = [(2023, "USD"), (2024, "USD"), (2022, "USD"), (2023, "shares"),
+              (2019, "pure"), (2021, "CAD"), (2020, "CNY"), (2024, "EUR"),
+              (2025, "USD"), (None, "USD"), (2023, None), (2023, "nosuchuom")]
+    rnd = random.Random(7)
+    pool = [(y, u) for y in YEARS for u in UOMS if (y, u) not in combos]
+    rnd.shuffle(pool)
+    combos = (combos + pool)[:n]
+    t0 = time.time()
+    reads = {}
+    for y, u in combos:  # first call builds the state; the rest are reads
+        t1 = time.time()
+        reads[(y, u)] = sa.rows(accel_sql(y, u))
+        print("  sweep: accel (%s, %s) -> %d rows in %.1f ms" %
+              (y, u, len(reads[(y, u)]), (time.time() - t1) * 1000), flush=True)
+    refs = {}
+    lock = threading.Lock()
+    work = list(combos)
+
+    def worker(idx):
+        s = Session(os.environ.get("Q24_SWEEP_DB", sa.db), "plain%d" % idx)
+        try:
+            s.run("SET max_parallel_workers_per_gather = 2")
+            while True:
+                with lock:
+                    if not work:
+                        return
+                    y, u = work.pop()
+                t1 = time.time()
+                rows = s.rows(plain_sql(y, u))
+                with lock:
+                    refs[(y, u)] = rows
+                print("  sweep: plain (%s, %s) %.1fs" % (y, u, time.time() - t1), flush=True)
+        finally:
+            s.close()
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    bad = 0
+    for (y, u) in combos:
+        got, exp = reads[(y, u)], refs[(y, u)]
+        ok = len(got) == len(exp) and all(
+            len(a) == 4 and a[:3] == b[:3] and close_total(a[3], b[3])
+            for a, b in zip(got, exp))
+        # re-read after the plain query: same answer
+        chk.compares += 1
+        chk.param_compares += 1
+        chk.param_nonempty += len(exp) > 0
+        if not ok:
+            bad += 1
+            print("  SWEEP MISMATCH (%s, %s): accel %d rows, plain %d rows\n  %s\n  %s" %
+                  (y, u, len(got), len(exp), got[:4], exp[:4]))
+    if bad:
+        raise Fail("%d sweep mismatches" % bad)
+    print("sweep ok: %d combinations in %.0fs" % (len(combos), time.time() - t0))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--existing-db")
     ap.add_argument("--steps", type=int, default=int(os.environ.get("Q24_STEPS", "300")))
     ap.add_argument("--seed", type=int, default=int(os.environ.get("Q24_SEED", "20240101")))
     ap.add_argument("--create-only", action="store_true")
+    ap.add_argument("--sweep", type=int, default=0,
+                    help="with --existing-db: compare N sampled (year, uom) "
+                         "parameter pairs against plain SQL (read-only)")
     args = ap.parse_args()
     g = Gen(args.seed)
     chk = Checker()
+    chk.gen = None if args.existing_db else g
     db = args.existing_db or os.environ.get("Q24_PG_DB", "q24_diff")
     admin = Session("postgres", "admin")
     sessions = []
@@ -511,7 +692,9 @@ def main():
                 return 0
         sa, sb = Session(db, "A"), Session(db, "B")
         sessions += [sa, sb]
-        if args.existing_db:
+        if args.existing_db and args.sweep:
+            sweep_phase(sa, chk, g, args.sweep)
+        elif args.existing_db:
             existing_db_phase(sa, sb, chk, g)
         else:
             edges_phase(sa, sb, chk, g)
@@ -519,8 +702,10 @@ def main():
             random_phase(sa, sb, chk, g, args.steps)
         counts = sa.run("SELECT accel_postgres_get_execute_counts()")
         print("execute counts [A]: %s" % counts)
-        print("PASS: %d compares, max result rows %d, %d at LIMIT, %d empty" %
-              (chk.compares, chk.max_rows, chk.limit_hits, chk.empty))
+        print("PASS: %d compares (%d parameterised, %d non-empty), max result rows %d, "
+              "%d at LIMIT, %d empty" %
+              (chk.compares, chk.param_compares, chk.param_nonempty, chk.max_rows,
+               chk.limit_hits, chk.empty))
         return 0
     except Fail as e:
         print("FAIL:", e)

@@ -58,6 +58,10 @@ constexpr std::array<const char *, 12> kAdsh = {
 constexpr std::array<const char *, 5> kTags = {"Rev", "Cost", "Assets", "Cash", "Debt"};
 constexpr std::array<const char *, 3> kVers = {"us-gaap/2023", "us-gaap/2024", "custom"};
 
+// Parameter domain of the parameterised accelerator (plus edges).
+constexpr std::array<int64_t, 6> kYears = {2019, 2020, 2021, 2022, 2023, 2024};
+constexpr std::array<const char *, 6> kUoms = {"USD", "shares", "pure", "CAD", "CNY", "EUR"};
+
 struct Gen {
   std::mt19937_64 rng;
   bool nulls;
@@ -67,16 +71,60 @@ struct Gen {
     if (nulls && R(40) == 0) return std::nullopt;
     return std::string(pool[R(n)]);
   }
+  // ddate: mostly 2023/2024, some other years, a few month/day values that lie
+  // in no year's window (exactly the rows the state must keep out of buckets).
+  int64_t Date() {
+    static const int64_t md[] = {101, 615, 1231, 731, 301, 1031};
+    const int p = R(100);
+    if (p < 3) {
+      static const int64_t odd[] = {20230100, 20231232, 20230000, 20240000, 20221300, 0, 99991231, 201, -9000};
+      return odd[R(9)];
+    }
+    int64_t y;
+    const int q = R(100);
+    if (q < 50) y = 2023;
+    else if (q < 75) y = 2024;
+    else if (q < 85) y = 2022;
+    else if (q < 93) y = 2019 + R(3);
+    else y = 2025 + R(2);
+    return y * 10000 + md[R(6)];
+  }
+  OptStr Uom() {
+    const int p = R(100);
+    if (p < 55) return std::string("USD");
+    if (p < 70) return std::string("EUR");
+    if (p < 80) return std::string("shares");
+    if (p < 88) return std::string("pure");
+    if (p < 94) return std::string("CAD");
+    if (p < 97) return std::string("usd");
+    return std::string("XYZ");
+  }
+  // A random (year, uom) query: the domain plus edges.
+  std::pair<std::optional<int64_t>, OptStr> Params() {
+    const int p = R(100);
+    std::optional<int64_t> y;
+    if (p < 5) y = std::nullopt;
+    else if (p < 10) y = int64_t{2017};
+    else if (p < 15) y = int64_t{2025};
+    else if (p < 18) y = int64_t{0};
+    else if (p < 20) y = int64_t{4000000000000000000LL};
+    else if (p < 22) y = int64_t{-1};
+    else y = kYears[R(6)];
+    OptStr u;
+    const int q = R(100);
+    if (q < 4) u = std::nullopt;
+    else if (q < 10) u = std::string("unknown_uom");
+    else u = std::string(kUoms[R(6)]);
+    return {y, u};
+  }
   NumRow Num() {
     NumRow r;
     r.adsh = Pick(kAdsh.data(), kAdsh.size());
     r.tag = Pick(kTags.data(), 3 + R(3));
     r.version = Pick(kVers.data(), 2 + R(2));
-    static const int64_t dates[] = {20221231, 20230101, 20230615, 20231231, 20240101};
-    r.ddate = dates[R(5)];
+    r.ddate = Date();
     r.qtrs = R(4);
-    const int u = R(10);
-    r.uom = u < 8 ? OptStr("USD") : (u == 8 ? OptStr("EUR") : OptStr("usd"));
+    r.uom = Uom();
     if (nulls && R(30) == 0) r.uom = std::nullopt;
     if (nulls && R(30) == 0) r.ddate = std::nullopt;
     r.coreg = R(2) ? "" : "x";
@@ -189,11 +237,10 @@ inline MutationBatch RandomWrite(Gen &g, std::vector<NumRow> &num_tbl, std::vect
       olds.push_back(num_tbl[idx]);
       ColumnId col;
       if (g.R(2)) {
-        static const int64_t dates[] = {20221231, 20230101, 20230615, 20231231, 20240101};
-        num_tbl[idx].ddate = dates[g.R(5)];
+        num_tbl[idx].ddate = g.Date();
         col = 3;
       } else {
-        num_tbl[idx].uom = g.R(2) ? OptStr("USD") : OptStr("GBP");
+        num_tbl[idx].uom = g.Uom();
         col = 5;
       }
       news.push_back(num_tbl[idx]);
@@ -247,8 +294,7 @@ inline MutationBatch RandomWrite(Gen &g, std::vector<NumRow> &num_tbl, std::vect
     if (!num_tbl.empty()) {
       NumRow r = num_tbl[g.R(static_cast<int>(num_tbl.size()))];
       r.value = static_cast<double>(g.R(1000));
-      r.uom = "USD";
-      r.ddate = 20230601;
+      if (g.R(2)) { r.uom = "USD"; r.ddate = 20230601; }
       rows.push_back(r);
       num_tbl.push_back(r);
     }

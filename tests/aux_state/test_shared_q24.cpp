@@ -38,22 +38,32 @@ namespace {
 
 using namespace q24test;
 
+// Parameter checks (non-default (year, uom)) that returned at least one row:
+// proves the random checks reach populated buckets, not only empty ones.
+int g_param_nonempty = 0, g_param_total = 0;
+
 struct Expected {
   std::optional<std::string> tag, version;
   int64_t cnt;
   double total;
 };
 
-// Brute-force evaluation of the query text (tie-break: tag, version asc).
+// Brute-force evaluation of the query text for (year, uom) (tie-break: tag,
+// version asc). `year` NULL / `uom` NULL give the empty result like SQL.
 std::vector<Expected> Oracle(const std::vector<NumRow> &num,
-                             const std::vector<PreRow> &pre) {
+                             const std::vector<PreRow> &pre,
+                             std::optional<int64_t> year = 2023,
+                             OptStr uom_param = std::string("USD")) {
+  if (!year || !uom_param) return {};
+  const __int128 lo = static_cast<__int128>(*year) * 10000 + 101;
+  const __int128 hi = static_cast<__int128>(*year) * 10000 + 1231;
   std::set<std::tuple<std::string, std::string, std::string>> p;
   for (const auto &r : pre)
     if (r.adsh && r.tag && r.version) p.insert({*r.adsh, *r.tag, *r.version});
   std::map<std::pair<OptStr, OptStr>, std::pair<int64_t, long double>> groups;
   for (const auto &r : num) {
-    if (!(r.uom && *r.uom == "USD" && r.ddate && *r.ddate >= 20230101 &&
-          *r.ddate <= 20231231 && r.value))
+    if (!(r.uom && *r.uom == *uom_param && r.ddate && *r.ddate >= lo &&
+          *r.ddate <= hi && r.value))
       continue;
     if (r.adsh && r.tag && r.version && p.count({*r.adsh, *r.tag, *r.version}))
       continue;
@@ -102,10 +112,18 @@ public:
       for (const auto &r : num)
         if (r.adsh && r.tag && r.version && *r.adsh == keys[i].adsh &&
             *r.tag == keys[i].tag && *r.version == keys[i].version && r.uom &&
-            *r.uom == "USD" && r.ddate && *r.ddate >= 20230101 &&
-            *r.ddate <= 20231231 && r.value) {
-          out[i].num_rows++;
-          out[i].num_sum += *r.value;
+            r.ddate && r.value) {
+          int32_t year;
+          if (!Q24DdateYear(*r.ddate, year)) continue;
+          SecEdgarQ24TripleBucket *b = nullptr;
+          for (auto &x : out[i].buckets)
+            if (x.year == year && x.uom == *r.uom) b = &x;
+          if (!b) {
+            out[i].buckets.push_back({year, *r.uom, 0, 0.0});
+            b = &out[i].buckets.back();
+          }
+          b->num_rows++;
+          b->num_sum += *r.value;
         }
     }
     return true;
@@ -115,19 +133,22 @@ public:
     if (!use_batches) return false;
     scans++;
     // Deliver in small batches to exercise batch boundaries.
-    std::vector<Q24Str> a, t, v;
+    std::vector<Q24Str> a, t, v, u;
     std::vector<double> val;
+    std::vector<int32_t> dd;
     auto flush = [&] {
       if (a.empty()) return;
-      c({a.size(), a.data(), t.data(), v.data(), val.data()});
-      a.clear(); t.clear(); v.clear(); val.clear();
+      c({a.size(), a.data(), t.data(), v.data(), val.data(), u.data(), dd.data()});
+      a.clear(); t.clear(); v.clear(); val.clear(); u.clear(); dd.clear();
     };
     auto S = [](const OptStr &s) { return s ? Q24Str::Of(*s) : Q24Str::Null(); };
     for (const auto &r : num) {
-      if (!(r.uom && *r.uom == "USD" && r.ddate && *r.ddate >= 20230101 &&
-            *r.ddate <= 20231231 && r.value))
-        continue;
+      // Contract: value and ddate NOT NULL (uom may be NULL; the module skips it).
+      if (!(r.ddate && r.value)) continue;
+      if (*r.ddate < INT32_MIN || *r.ddate > INT32_MAX) continue;
       a.push_back(S(r.adsh)); t.push_back(S(r.tag)); v.push_back(S(r.version));
+      u.push_back(S(r.uom));
+      dd.push_back(static_cast<int32_t>(*r.ddate));
       val.push_back(*r.value);
       if (a.size() == 7) flush();
     }
@@ -205,14 +226,42 @@ struct Fixture {
     assert(b.finished);
     services.store.Install(std::move(b.images), "sec_edgar_q24");
   }
-  void Check(const char *what) {
+  // Defaults, plus `extra` random (year, uom) parameter pairs (drawn by `g`).
+  void Check(const char *what, Gen *g = nullptr, int extra = 0) {
+    CheckParams(what, std::nullopt, std::nullopt, true);
+    for (int i = 0; g && i < extra; ++i) {
+      const auto [year, uom] = g->Params();
+      CheckParams(what, year, uom, false);
+    }
+    if (g) {
+      // Hot buckets are where HAVING > 10 groups live: always cover one.
+      CheckParams(what, g->R(2) ? 2023 : 2024, OptStr(g->R(3) ? "USD" : "EUR"), false);
+    }
+  }
+  void CheckParams(const char *what, std::optional<int64_t> year, OptStr uom,
+                   bool defaults) {
     Sink sink;
-    module->Execute(services, {}, sink);
+    QueryArguments args;
+    if (!defaults) {
+      args.values.push_back(year ? AuxValue::Of(AuxType::Int64, *year)
+                                 : AuxValue::Null(AuxType::Int64));
+      args.values.push_back(uom ? AuxValue::Of(AuxType::String, *uom)
+                                : AuxValue::Null(AuxType::String));
+    }
+    const int scans_before = services.scans;
+    module->Execute(services, args, sink);
     assert(sink.ended);
-    const auto expected = Oracle(services.num, services.pre);
+    assert(services.scans == scans_before); // answered from state alone
+    const auto expected = defaults ? Oracle(services.num, services.pre)
+                                   : Oracle(services.num, services.pre, year, uom);
+    if (!defaults) {
+      ++g_param_total;
+      if (!expected.empty()) ++g_param_nonempty;
+    }
     if (sink.rows.size() != expected.size()) {
-      std::cerr << "FAIL(" << what << "): rows " << sink.rows.size() << " vs "
-                << expected.size() << "\n";
+      std::cerr << "FAIL(" << what << "): year=" << (year ? std::to_string(*year) : "NULL")
+                << " uom=" << (uom ? *uom : "NULL") << " rows " << sink.rows.size()
+                << " vs " << expected.size() << "\n";
       std::abort();
     }
     for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -231,7 +280,8 @@ struct Fixture {
       if (!tag_ok || !ver_ok || cnt != e.cnt ||
           !(std::abs(total - e.total) <= scale * 1e-9 ||
             (std::isinf(total) && total == e.total))) {
-        std::cerr << "FAIL(" << what << "): row " << i << " got cnt=" << cnt
+        std::cerr << "FAIL(" << what << "): year=" << (year ? std::to_string(*year) : "NULL")
+                  << " uom=" << (uom ? *uom : "NULL") << " row " << i << " got cnt=" << cnt
                   << " total=" << total << " expected cnt=" << e.cnt
                   << " total=" << e.total << "\n";
         std::abort();
@@ -253,11 +303,11 @@ void RunRandom(uint64_t seed, bool nulls, bool batches, int steps) {
   Fixture f;
   Gen g(seed, nulls);
   f.services.use_batches = batches;
-  for (int i = 0; i < 700; ++i) f.services.num.push_back(g.Num());
+  for (int i = 0; i < 3000; ++i) f.services.num.push_back(g.Num());
   for (int i = 0; i < 120; ++i) f.services.pre.push_back(g.Pre());
   f.Build();
   assert(f.module->CheckValidity(f.services, {}));
-  f.Check("initial build");
+  f.Check("initial build", &g, 8);
 
   int incremental = 0, rebuilt = 0;
   for (int step = 0; step < steps; ++step) {
@@ -294,7 +344,8 @@ void RunRandom(uint64_t seed, bool nulls, bool batches, int steps) {
       }
     }
     assert(f.module->CheckValidity(f.services, {}));
-    f.Check(("seed " + std::to_string(seed) + " step " + std::to_string(step)).c_str());
+    f.Check(("seed " + std::to_string(seed) + " step " + std::to_string(step)).c_str(),
+            &g, 3);
   }
   std::cout << "seed " << seed << " nulls=" << nulls << " batches=" << batches
             << ": " << incremental << " incremental, " << rebuilt
@@ -543,6 +594,9 @@ int main(int argc, char **argv) {
     assert(f.services.scans > scans);
     f.Check("bulk insert");
   }
+  std::cout << "parameter checks: " << g_param_total << " (" << g_param_nonempty
+            << " with rows)\n";
+  assert(g_param_nonempty > 100);
   std::cout << "test_shared_sec_edgar_q24 PASS\n";
   return 0;
 }
