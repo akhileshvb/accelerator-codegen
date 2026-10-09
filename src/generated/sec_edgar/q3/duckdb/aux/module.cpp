@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
@@ -11,6 +12,8 @@
 #include <string_view>
 #include <unordered_map>
 #include <stdexcept>
+#include <functional>
+#include <variant>
 #include <utility>
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -26,7 +29,6 @@ using core::ByteWriter;
 constexpr uint32_t kFormatVersion = 2;
 constexpr uint32_t kStateMagic = 0x53303351; // Q30S
 constexpr uint32_t kIndexMagic = 0x49303351; // Q30I
-constexpr int32_t kTargetFy = 2022;
 constexpr std::size_t kOutputLimit = 100;
 
 // ---------------------------------------------------------------------------
@@ -68,8 +70,9 @@ bool ReadIntCell(const core::AuxValue &cell, int32_t &value) {
 
 struct NumRow {
   const std::string *adsh = nullptr;
+  const std::string *uom = nullptr;
   double value = 0.0;
-  bool relevant = false; // adsh non-null, uom = 'USD', value non-null
+  bool relevant = false; // adsh, uom and value non-null
 };
 
 // num layout (see catalog MakeNumTableAuxRow): 0 adsh, 5 uom, 7 value
@@ -99,7 +102,8 @@ bool ReadNumRow(const core::AuxRow &row, const std::vector<core::ColumnId> &pos,
     return false;
   }
   out.adsh = &std::get<std::string>(adsh.payload);
-  out.relevant = std::get<std::string>(uom.payload) == "USD";
+  out.uom = &std::get<std::string>(uom.payload);
+  out.relevant = true;
   return true;
 }
 
@@ -108,7 +112,8 @@ struct SubRow {
   const std::string *name = nullptr; // null when NULL
   int32_t cik = 0;
   bool cik_null = false;
-  bool in_cohort = false; // fy = 2022
+  bool tracked = false; // fy non-NULL: the filing can match some fy
+  int32_t fy = 0;
 };
 
 // sub layout: 0 adsh, 1 name, 2 cik, 3 fy
@@ -137,14 +142,13 @@ bool ReadSubRow(const core::AuxRow &row, const std::vector<core::ColumnId> &pos,
   if (!cik.is_null && !ReadIntCell(cik, out.cik)) {
     return false;
   }
-  int32_t fy_value = 0;
   if (fy.is_null) {
-    out.in_cohort = false;
+    out.tracked = false;
   } else {
-    if (!ReadIntCell(fy, fy_value)) {
+    if (!ReadIntCell(fy, out.fy)) {
       return false;
     }
-    out.in_cohort = fy_value == kTargetFy;
+    out.tracked = true;
   }
   return true;
 }
@@ -269,7 +273,8 @@ private:
 
 class IndexWork {
 public:
-  explicit IndexWork(const SecEdgarQ3AdshIndex *base) : overflow(base ? &base->overflow : nullptr) {
+  explicit IndexWork(const SecEdgarQ3AdshIndex *base, bool bulk = false)
+      : bulk(bulk), overflow(base ? &base->overflow : nullptr) {
     if (base && !base->tops.empty()) {
       top_bits = base->top_bits;
       mid_bits = base->mid_bits;
@@ -317,6 +322,7 @@ public:
     if (auto *e = Find(key)) {
       return e;
     }
+    MaybeGrow(bulk ? kLeafTarget : 4 * kLeafTarget);
     auto *leaf = OwnLeaf(LeafOf(key));
     ++entry_count;
     return leaf->Insert(static_cast<int64_t>(key), SecEdgarQ3Entry{}).first;
@@ -331,10 +337,7 @@ public:
 
   // Bulk loading on a fresh index (grows the leaf count as entries arrive).
   void BulkAdd(uint64_t key, double sum, int64_t cnt) {
-    if (entry_count >= (static_cast<uint64_t>(kLeafTarget) << top_bits << mid_bits) &&
-        top_bits + mid_bits < kMaxIndexBits) {
-      Repartition(top_bits + mid_bits + 1);
-    }
+    MaybeGrow(kLeafTarget);
     SecEdgarQ3Entry entry;
     entry.sum = sum;
     entry.cnt = cnt;
@@ -359,6 +362,14 @@ public:
   }
 
 private:
+  // Doubles the leaf count once the average leaf exceeds `target` entries.
+  void MaybeGrow(std::size_t target) {
+    if (entry_count >= (static_cast<uint64_t>(target) << top_bits << mid_bits) &&
+        top_bits + mid_bits < kMaxIndexBits) {
+      Repartition(top_bits + mid_bits + 1);
+    }
+  }
+
   void Init(uint32_t bits) {
     mid_bits = bits / 2;
     top_bits = bits - mid_bits;
@@ -427,9 +438,62 @@ private:
   std::vector<std::shared_ptr<const SecEdgarQ3IndexMid>> tops;
   std::vector<std::shared_ptr<SecEdgarQ3IndexMid>> owned_tops;
   std::unordered_map<std::size_t, std::vector<bool>> owned_leaves;
+  bool bulk = false;
   OverflowWork overflow;
   uint64_t entry_count = 0;
 };
+
+// Read-only lookups on a published index.
+const SecEdgarQ3Entry *IndexFind(const SecEdgarQ3AdshIndex &index, uint64_t key) {
+  const std::size_t bits = index.top_bits + index.mid_bits;
+  const auto leaf = static_cast<std::size_t>(Mix64(key + 0x2545F4914F6CDD1DULL) >> (64 - bits));
+  const auto &mid = *index.tops[leaf >> index.mid_bits];
+  return mid.leaves[leaf & ((std::size_t{1} << index.mid_bits) - 1)]->Find(
+      static_cast<int64_t>(key));
+}
+
+bool OverflowFind(const SecEdgarQ3OverflowDict &dict, const char *data,
+                  std::size_t size, uint32_t &id) {
+  OverflowWork work(&dict);
+  return work.Find(data, size, id);
+}
+
+// Key of `adsh` in `index` (false when an overflow string is unknown there).
+bool ResolveConst(const SecEdgarQ3AdshIndex &index, const std::string &adsh,
+                  uint64_t &key) {
+  if (SecEdgarQ3PackAdsh(adsh.data(), adsh.size(), key)) {
+    return true;
+  }
+  uint32_t id;
+  if (!OverflowFind(index.overflow, adsh.data(), adsh.size(), id)) {
+    return false;
+  }
+  key = kSecEdgarQ3OverflowBit | id;
+  return true;
+}
+
+// Key of an entry key of `from` in `to`.
+bool TranslateKey(const SecEdgarQ3AdshIndex &from, uint64_t key,
+                  const SecEdgarQ3AdshIndex &to, uint64_t &out) {
+  if (!(key & kSecEdgarQ3OverflowBit)) {
+    out = key;
+    return true;
+  }
+  std::string_view s;
+  from.overflow.strings.Get(static_cast<uint32_t>(key & ~kSecEdgarQ3OverflowBit), s);
+  return ResolveConst(to, std::string(s), out);
+}
+
+template <typename Fn>
+void ForEachEntry(const SecEdgarQ3AdshIndex &index, Fn &&fn) {
+  for (const auto &mid : index.tops) {
+    for (const auto &leaf : mid->leaves) {
+      for (auto e : static_cast<const SecEdgarQ3Leaf &>(*leaf)) {
+        fn(static_cast<uint64_t>(e.first), e.second);
+      }
+    }
+  }
+}
 
 class AggWork {
 public:
@@ -458,6 +522,7 @@ public:
 
   // Adds the double-double (hi + lo) to the sum and dcnt to the row count.
   void Add(uint32_t idx, TwoD d, int64_t dcnt) {
+    Grow(idx + 1);
     const auto c = idx / kSecEdgarQ3AggChunk;
     const auto i = idx % kSecEdgarQ3AggChunk;
     if (!owned[c]) {
@@ -544,8 +609,7 @@ public:
   }
 
   // Finds or creates the (name, cik) group; grows the aggregate arrays.
-  uint32_t FindOrAddGroup(const std::string *name, bool cik_null, int32_t cik,
-                          AggWork &groups, AggWork &ciks) {
+  uint32_t FindOrAddGroup(const std::string *name, bool cik_null, int32_t cik) {
     uint32_t group;
     if (Lookup(name, cik_null, cik, group)) {
       return group;
@@ -566,7 +630,6 @@ public:
       cik_id = dir.cik_count++;
       dir.cik_meta.Set(cik_id, {cik_null ? 0 : cik, static_cast<uint8_t>(cik_null ? 1 : 0)});
       dir.cik_ids.Upsert(cik_key, cik_id + 1);
-      ciks.Grow(cik_id + 1);
     }
     group = dir.group_count++;
     if (name) {
@@ -580,7 +643,6 @@ public:
     meta.flags = static_cast<uint8_t>((name == nullptr ? 1 : 0) | (cik_null ? 2 : 0));
     dir.meta.Set(group, meta);
     head = group + 1;
-    groups.Grow(group + 1);
     return group;
   }
 
@@ -599,33 +661,135 @@ private:
   std::shared_ptr<SecEdgarQ3GroupDir> cloned;
 };
 
-class Work {
-public:
-  explicit Work(const SecEdgarQ3State *base)
-      : index(base && base->index ? base->index.get() : nullptr),
-        dir(base && base->totals ? base->totals->dir
-                                 : std::shared_ptr<const SecEdgarQ3GroupDir>()),
-        groups(base && base->totals ? &base->totals->groups : nullptr),
-        ciks(base && base->totals ? &base->totals->ciks : nullptr) {}
+// The adsh of an op / scan row: a packed key, or (overflow) the string.
+struct KeyRef {
+  uint64_t key = 0;
+  const std::string *str = nullptr; // non-null iff the adsh does not pack
+};
 
-  IndexWork index;
-  DirWork dir;
+KeyRef MakeRef(const std::string &adsh) {
+  KeyRef ref;
+  if (!SecEdgarQ3PackAdsh(adsh.data(), adsh.size(), ref.key)) {
+    ref.str = &adsh;
+  }
+  return ref;
+}
+
+bool ResolveIn(IndexWork &index, const KeyRef &ref, bool create, uint64_t &key) {
+  if (!ref.str) {
+    key = ref.key;
+    return true;
+  }
+  return index.ResolveKey(*ref.str, create, key);
+}
+
+// Working copy of one cohort's aggregates.
+struct CohortWork {
+  explicit CohortWork(const SecEdgarQ3Totals *base)
+      : groups(base ? &base->groups : nullptr), ciks(base ? &base->ciks : nullptr) {}
   AggWork groups;
   AggWork ciks;
+};
 
-  void Propagate(uint32_t group, TwoD d, int64_t dcnt) {
-    groups.Add(group, d, dcnt);
-    ciks.Add(dir.CikIdOfGroup(group), d, dcnt);
+class Work {
+public:
+  // `bulk`: a from-scratch build (indexes are sized for bulk loading).
+  explicit Work(const SecEdgarQ3State *base, bool bulk = false)
+      : subs(base ? base->subs.get() : nullptr, bulk),
+        dir(base ? base->dir : std::shared_ptr<const SecEdgarQ3GroupDir>()),
+        bulk(bulk) {
+    if (base) {
+      dict = base->uom_dict;
+      base_uoms = base->uom_index;
+      if (base->cohorts) {
+        std::lock_guard<std::mutex> lock(base->cohorts->mutex);
+        base_cohorts = base->cohorts->items;
+      }
+    }
+    uoms.resize(base_uoms.size());
+    for (const auto &item : base_cohorts) {
+      base_cohort_map.emplace(item.first, item.second);
+    }
   }
 
-  // dsum / dcnt: change of the filing's qualifying-row aggregate.
-  bool ApplyNum(uint64_t key, double dsum, int64_t dcnt) {
-    auto *entry = index.Find(key);
+  IndexWork subs;
+  DirWork dir;
+
+  bool UomId(const std::string &name, bool create, uint32_t &id) {
+    if (dict) {
+      const auto it = dict->ids.find(name);
+      if (it != dict->ids.end()) {
+        id = it->second;
+        return true;
+      }
+    }
+    if (!create) {
+      return false;
+    }
+    if (!own_dict) {
+      own_dict = dict ? std::make_shared<SecEdgarQ3UomDict>(*dict)
+                      : std::make_shared<SecEdgarQ3UomDict>();
+      dict = own_dict;
+    }
+    id = static_cast<uint32_t>(own_dict->names.size());
+    own_dict->names.push_back(name);
+    own_dict->ids.emplace(name, id);
+    base_uoms.push_back(nullptr);
+    uoms.emplace_back();
+    Uom(id);
+    return true;
+  }
+
+  IndexWork &Uom(uint32_t id) {
+    if (!uoms[id]) {
+      uoms[id] = std::make_unique<IndexWork>(base_uoms[id].get(), bulk);
+    }
+    return *uoms[id];
+  }
+
+  void ForEachCohortOfFy(int32_t fy, const std::function<bool(uint64_t)> &fn) {
+    for (const auto &item : base_cohorts) {
+      if (static_cast<int32_t>(item.first >> 32) == fy && !fn(item.first)) {
+        return;
+      }
+    }
+  }
+
+  CohortWork *Cohort(uint64_t ckey) {
+    const auto live_it = live.find(ckey);
+    if (live_it != live.end()) {
+      return live_it->second.get();
+    }
+    const auto base_it = base_cohort_map.find(ckey);
+    if (base_it == base_cohort_map.end()) {
+      return nullptr;
+    }
+    return live.emplace(ckey, std::make_unique<CohortWork>(base_it->second.get()))
+        .first->second.get();
+  }
+
+  void Propagate(CohortWork &cohort, uint32_t group, TwoD d, int64_t dcnt) {
+    cohort.groups.Add(group, d, dcnt);
+    cohort.ciks.Add(dir.CikIdOfGroup(group), d, dcnt);
+  }
+
+  // d / dcnt: change of the (filing, uom) aggregate.
+  bool ApplyNum(const KeyRef &ref, const std::string &uom, TwoD d, int64_t dcnt) {
+    uint32_t uid;
+    if (!UomId(uom, dcnt > 0, uid)) {
+      return false; // delete / value update of an untracked unit
+    }
+    IndexWork &ui = Uom(uid);
+    uint64_t ukey;
+    if (!ResolveIn(ui, ref, dcnt > 0, ukey)) {
+      return false;
+    }
+    auto *entry = ui.Find(ukey);
     if (!entry) {
       if (dcnt <= 0) {
         return false; // delete / value update of an untracked filing
       }
-      entry = index.FindOrCreate(key);
+      entry = ui.FindOrCreate(ukey);
     } else if (dcnt == 0 && entry->cnt == 0) {
       return false;
     }
@@ -635,78 +799,180 @@ public:
     if (entry->cnt < 0) {
       return false;
     }
-    DdAdd(entry->sum, entry->comp, dsum, 0.0);
+    DdAdd(entry->sum, entry->comp, d.hi, d.lo);
     if (entry->cnt == 0) {
       entry->sum = 0.0;
       entry->comp = 0.0;
     }
-    const int32_t group = entry->group;
-    if (group >= 0) {
-      // NaN / inf contributions cannot be subtracted back out of the group
-      // and cik sums: let a rebuild recompute them.
-      if (!std::isfinite(old_sum) || !std::isfinite(entry->sum)) {
-        return false;
+    const double new_sum = entry->sum;
+    const double new_comp = entry->comp;
+    const bool drop = entry->cnt == 0;
+    uint64_t skey;
+    if (ResolveIn(subs, ref, false, skey)) {
+      const auto *sub = subs.Peek(skey);
+      if (sub && sub->group >= 0) {
+        if (CohortWork *cohort = Cohort(SecEdgarQ3CohortKey(sub->fy, uid))) {
+          // NaN / inf contributions cannot be subtracted back out of the
+          // group and cik sums: let a rebuild recompute them.
+          if (!std::isfinite(old_sum) || !std::isfinite(new_sum)) {
+            return false;
+          }
+          // effective change = new - old as a double-double
+          const TwoD diff = TwoSum(new_sum, -old_sum);
+          Propagate(*cohort, static_cast<uint32_t>(sub->group),
+                    {diff.hi, diff.lo + (new_comp - old_comp)}, dcnt);
+        }
       }
-      // effective change = new - old as a double-double
-      const TwoD diff = TwoSum(entry->sum, -old_sum);
-      Propagate(static_cast<uint32_t>(group),
-                {diff.hi, diff.lo + (entry->comp - old_comp)}, dcnt);
-    } else if (entry->cnt == 0) {
-      index.Erase(key);
     }
-    return !groups.corrupt && !ciks.corrupt;
+    if (drop) {
+      ui.Erase(ukey);
+    }
+    return Healthy();
   }
 
-  bool AddMember(uint64_t key, const std::string *name, bool cik_null,
-                 int32_t cik) {
-    auto *entry = index.FindOrCreate(key);
+  bool AddSub(const KeyRef &ref, const std::string *name, bool cik_null,
+              int32_t cik, int32_t fy) {
+    uint64_t skey;
+    ResolveIn(subs, ref, true, skey);
+    auto *entry = subs.FindOrCreate(skey);
     if (entry->group >= 0) {
-      return false; // duplicate sub.adsh in the cohort
+      return false; // duplicate sub.adsh
     }
-    const double sum = entry->sum;
-    const double comp = entry->comp;
-    const int64_t cnt = entry->cnt;
-    const uint32_t group = dir.FindOrAddGroup(name, cik_null, cik, groups, ciks);
-    // FindOrAddGroup does not touch the index, the pointer is still valid.
+    const uint32_t group = dir.FindOrAddGroup(name, cik_null, cik);
     entry->group = static_cast<int32_t>(group);
-    if (cnt != 0) {
-      Propagate(group, {sum, comp}, cnt);
-    }
-    return !groups.corrupt && !ciks.corrupt;
+    entry->fy = fy;
+    bool ok = true;
+    ForEachCohortOfFy(fy, [&](uint64_t ckey) {
+      IndexWork &ui = Uom(static_cast<uint32_t>(ckey));
+      uint64_t ukey;
+      if (!ResolveIn(ui, ref, false, ukey)) {
+        return true;
+      }
+      const auto *ue = ui.Peek(ukey);
+      if (!ue || ue->cnt == 0) {
+        return true;
+      }
+      Propagate(*Cohort(ckey), group, {ue->sum, ue->comp}, ue->cnt);
+      return true;
+    });
+    return ok && Healthy();
   }
 
-  bool RemoveMember(uint64_t key) {
-    auto *entry = index.Find(key);
+  bool RemoveSub(const KeyRef &ref) {
+    uint64_t skey;
+    if (!ResolveIn(subs, ref, false, skey)) {
+      return false;
+    }
+    const auto *entry = subs.Peek(skey);
     if (!entry || entry->group < 0) {
       return false;
     }
     const auto group = static_cast<uint32_t>(entry->group);
-    const double sum = entry->sum;
-    const double comp = entry->comp;
-    const int64_t cnt = entry->cnt;
-    if (!std::isfinite(sum)) {
-      return false; // cannot subtract NaN / inf from the group sums
+    const int32_t fy = entry->fy;
+    bool ok = true;
+    ForEachCohortOfFy(fy, [&](uint64_t ckey) {
+      IndexWork &ui = Uom(static_cast<uint32_t>(ckey));
+      uint64_t ukey;
+      if (!ResolveIn(ui, ref, false, ukey)) {
+        return true;
+      }
+      const auto *ue = ui.Peek(ukey);
+      if (!ue || ue->cnt == 0) {
+        return true;
+      }
+      if (!std::isfinite(ue->sum)) {
+        ok = false; // cannot subtract NaN / inf from the group sums
+        return false;
+      }
+      Propagate(*Cohort(ckey), group, {-ue->sum, -ue->comp}, -ue->cnt);
+      return true;
+    });
+    if (!ok) {
+      return false;
     }
-    entry->group = -1;
-    if (cnt != 0) {
-      Propagate(group, {-sum, -comp}, -cnt);
-    } else {
-      index.Erase(key);
+    subs.Erase(skey);
+    return Healthy();
+  }
+
+  bool Healthy() const {
+    for (const auto &[key, cohort] : live) {
+      if (cohort->groups.corrupt || cohort->ciks.corrupt) {
+        return false;
+      }
     }
-    return !groups.corrupt && !ciks.corrupt;
+    return true;
   }
 
   std::shared_ptr<const SecEdgarQ3State> Finish() {
-    auto totals = std::make_shared<SecEdgarQ3Totals>();
-    totals->dir = dir.Finish();
-    totals->groups = groups.Finish();
-    totals->ciks = ciks.Finish();
     auto state = std::make_shared<SecEdgarQ3State>();
-    state->index = index.Finish();
-    state->totals = std::move(totals);
+    state->subs = subs.Finish();
+    state->uom_dict = dict ? std::shared_ptr<const SecEdgarQ3UomDict>(dict)
+                           : std::make_shared<SecEdgarQ3UomDict>();
+    state->uom_index.resize(uoms.size());
+    for (std::size_t i = 0; i < uoms.size(); ++i) {
+      state->uom_index[i] = uoms[i] ? uoms[i]->Finish() : base_uoms[i];
+    }
+    state->dir = dir.Finish();
+    state->cohorts = std::make_shared<SecEdgarQ3CohortCache>();
+    for (const auto &item : base_cohorts) {
+      const auto live_it = live.find(item.first);
+      if (live_it == live.end()) {
+        state->cohorts->items.push_back(item);
+        continue;
+      }
+      auto totals = std::make_shared<SecEdgarQ3Totals>();
+      totals->dir = state->dir;
+      totals->groups = live_it->second->groups.Finish();
+      totals->ciks = live_it->second->ciks.Finish();
+      state->cohorts->items.emplace_back(item.first, std::move(totals));
+    }
     return state;
   }
+
+private:
+  bool bulk = false;
+  std::shared_ptr<const SecEdgarQ3UomDict> dict;
+  std::shared_ptr<SecEdgarQ3UomDict> own_dict;
+  std::vector<std::shared_ptr<const SecEdgarQ3AdshIndex>> base_uoms;
+  std::vector<std::unique_ptr<IndexWork>> uoms;
+  std::vector<std::pair<uint64_t, std::shared_ptr<const SecEdgarQ3Totals>>> base_cohorts;
+  std::unordered_map<uint64_t, std::shared_ptr<const SecEdgarQ3Totals>> base_cohort_map;
+  std::unordered_map<uint64_t, std::unique_ptr<CohortWork>> live;
 };
+
+// Builds the cohort of (fy, uom id) from the indexes.
+std::shared_ptr<const SecEdgarQ3Totals>
+MaterializeCohort(const SecEdgarQ3State &state, int32_t fy, uint32_t uid) {
+  AggWork groups(nullptr);
+  AggWork ciks(nullptr);
+  const auto &dir = *state.dir;
+  groups.Grow(static_cast<uint32_t>(dir.GroupCount()));
+  ciks.Grow(static_cast<uint32_t>(dir.CikCount()));
+  if (uid < state.uom_index.size() && state.uom_index[uid]) {
+    const SecEdgarQ3AdshIndex &ui = *state.uom_index[uid];
+    ForEachEntry(ui, [&](uint64_t key, const SecEdgarQ3Entry &e) {
+      if (e.cnt <= 0) {
+        return;
+      }
+      uint64_t skey;
+      if (!TranslateKey(ui, key, *state.subs, skey)) {
+        return;
+      }
+      const auto *sub = IndexFind(*state.subs, skey);
+      if (!sub || sub->group < 0 || sub->fy != fy) {
+        return;
+      }
+      const auto group = static_cast<uint32_t>(sub->group);
+      groups.Add(group, {e.sum, e.comp}, e.cnt);
+      ciks.Add(dir.meta.Get(group).cik_id, {e.sum, e.comp}, e.cnt);
+    });
+  }
+  auto totals = std::make_shared<SecEdgarQ3Totals>();
+  totals->dir = state.dir;
+  totals->groups = groups.Finish();
+  totals->ciks = ciks.Finish();
+  return totals;
+}
 
 // ---------------------------------------------------------------------------
 // Images / plans
@@ -723,8 +989,9 @@ MakeStateImage(const std::shared_ptr<const SecEdgarQ3State> &state) {
 const SecEdgarQ3StateImage *AsQ3Image(const core::StateImage &image) {
   const auto *payload = image.As<SecEdgarQ3StateImage>();
   return payload && payload->kind == SecEdgarQ3ImageKind::CikTotals &&
-                 payload->state && payload->state->index &&
-                 payload->state->totals
+                 payload->state && payload->state->subs &&
+                 payload->state->dir && payload->state->uom_dict &&
+                 payload->state->cohorts
              ? payload
              : nullptr;
 }
@@ -1027,14 +1294,55 @@ SecEdgarQ3Totals::OutputRows() const {
   return output_rows;
 }
 
+std::shared_ptr<const SecEdgarQ3Totals>
+SecEdgarQ3CohortFor(const SecEdgarQ3State &state, int64_t fy,
+                    const std::string &uom) {
+  if (fy < std::numeric_limits<int32_t>::min() ||
+      fy > std::numeric_limits<int32_t>::max() || !state.uom_dict ||
+      !state.cohorts) {
+    return nullptr; // no INTEGER fiscal year can equal it
+  }
+  const auto it = state.uom_dict->ids.find(uom);
+  if (it == state.uom_dict->ids.end()) {
+    return nullptr; // no num row has this unit
+  }
+  const uint64_t key = SecEdgarQ3CohortKey(static_cast<int32_t>(fy), it->second);
+  auto &cache = *state.cohorts;
+  {
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    for (std::size_t i = 0; i < cache.items.size(); ++i) {
+      if (cache.items[i].first == key) {
+        auto hit = cache.items[i];
+        cache.items.erase(cache.items.begin() + static_cast<std::ptrdiff_t>(i));
+        cache.items.push_back(hit);
+        return hit.second;
+      }
+    }
+  }
+  auto built = MaterializeCohort(state, static_cast<int32_t>(fy), it->second);
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  for (const auto &item : cache.items) {
+    if (item.first == key) {
+      return item.second; // another reader was faster
+    }
+  }
+  cache.items.emplace_back(key, built);
+  if (cache.items.size() > kSecEdgarQ3MaxCohorts) {
+    cache.items.erase(cache.items.begin());
+  }
+  return built;
+}
+
 std::vector<SecEdgarQ3OutputRow>
-BuildSecEdgarQ3Output(const SecEdgarQ3State &state) {
+BuildSecEdgarQ3Output(const SecEdgarQ3State &state, int64_t fy,
+                      const std::string &uom) {
   std::vector<SecEdgarQ3OutputRow> rows;
-  if (!state.totals) {
+  const auto totals = SecEdgarQ3CohortFor(state, fy, uom);
+  if (!totals) {
     return rows;
   }
-  const auto result = state.totals->Result();
-  const auto &dir = *state.totals->dir;
+  const auto result = totals->Result();
+  const auto &dir = *totals->dir;
   rows.reserve(result->rows.size());
   for (const auto &row : result->rows) {
     SecEdgarQ3OutputRow out;
@@ -1077,28 +1385,31 @@ void PutSum(ByteWriter &w, double v) {
 }
 
 // Compact serialization: keys sorted + delta varint, sums/counts/groups varint.
-void EncodeIndex(const SecEdgarQ3AdshIndex &index, ByteWriter &writer) {
+// `sub`: sub index entries (group, fy); else num index entries (sum, cnt).
+void EncodeIndex(const SecEdgarQ3AdshIndex &index, ByteWriter &writer, bool sub) {
   core::WriteImageHeader(writer, kIndexMagic, kFormatVersion,
                          static_cast<uint32_t>(index.entry_count));
   std::vector<std::pair<uint64_t, SecEdgarQ3Entry>> all;
   all.reserve(index.entry_count);
-  for (const auto &mid : index.tops) {
-    for (const auto &leaf : mid->leaves) {
-      for (auto e : static_cast<const SecEdgarQ3Leaf &>(*leaf)) {
-        all.emplace_back(static_cast<uint64_t>(e.first), e.second);
-      }
-    }
-  }
+  ForEachEntry(index, [&](uint64_t key, const SecEdgarQ3Entry &e) {
+    all.emplace_back(key, e);
+  });
   std::sort(all.begin(), all.end(),
             [](const auto &a, const auto &b) { return a.first < b.first; });
   uint64_t prev = 0;
   for (const auto &[key, entry] : all) {
     PutVarint(writer, key - prev);
     prev = key;
-    PutSum(writer, entry.sum);
-    PutSum(writer, entry.comp);
-    PutVarint(writer, static_cast<uint64_t>(entry.cnt));
-    PutVarint(writer, static_cast<uint64_t>(entry.group + 1));
+    if (sub) {
+      PutVarint(writer, static_cast<uint64_t>(entry.group + 1));
+      const auto zz = (static_cast<uint64_t>(static_cast<int64_t>(entry.fy)) << 1) ^
+                      static_cast<uint64_t>(static_cast<int64_t>(entry.fy) >> 63);
+      PutVarint(writer, zz);
+    } else {
+      PutSum(writer, entry.sum);
+      PutSum(writer, entry.comp);
+      PutVarint(writer, static_cast<uint64_t>(entry.cnt));
+    }
   }
   writer.U32(index.overflow.count);
   for (uint32_t id = 0; id < index.overflow.count; ++id) {
@@ -1109,8 +1420,34 @@ void EncodeIndex(const SecEdgarQ3AdshIndex &index, ByteWriter &writer) {
   }
 }
 
-void EncodeTotals(const SecEdgarQ3Totals &totals, ByteWriter &writer) {
-  const auto &dir = *totals.dir;
+void EncodeIndexes(const SecEdgarQ3State &state, ByteWriter &writer) {
+  if (state.subs) {
+    EncodeIndex(*state.subs, writer, /*sub=*/true);
+  }
+  if (state.uom_dict) {
+    writer.U32(static_cast<uint32_t>(state.uom_dict->names.size()));
+    for (const auto &name : state.uom_dict->names) {
+      writer.String(name);
+    }
+  }
+  for (const auto &index : state.uom_index) {
+    if (index) {
+      EncodeIndex(*index, writer, /*sub=*/false);
+    }
+  }
+}
+
+void EncodeAgg(const SecEdgarQ3AggArray &array, ByteWriter &writer) {
+  for (uint32_t idx = 0; idx < array.size; ++idx) {
+    const auto &chunk = *array.chunks[idx / kSecEdgarQ3AggChunk];
+    const auto i = idx % kSecEdgarQ3AggChunk;
+    PutSum(writer, chunk.sum[i]);
+    PutSum(writer, chunk.comp[i]);
+    PutVarint(writer, static_cast<uint64_t>(chunk.cnt[i]));
+  }
+}
+
+void EncodeDir(const SecEdgarQ3GroupDir &dir, ByteWriter &writer) {
   core::WriteImageHeader(writer, kStateMagic, kFormatVersion,
                          static_cast<uint32_t>(dir.GroupCount()));
   writer.U32(static_cast<uint32_t>(dir.CikCount()));
@@ -1126,62 +1463,74 @@ void EncodeTotals(const SecEdgarQ3Totals &totals, ByteWriter &writer) {
     writer.U8(meta.is_null);
     writer.I32(meta.value);
   }
-  auto write_agg = [&](const SecEdgarQ3AggArray &array) {
-    for (uint32_t idx = 0; idx < array.size; ++idx) {
-      const auto &chunk = *array.chunks[idx / kSecEdgarQ3AggChunk];
-      const auto i = idx % kSecEdgarQ3AggChunk;
-      PutSum(writer, chunk.sum[i]);
-      PutSum(writer, chunk.comp[i]);
-      PutVarint(writer, static_cast<uint64_t>(chunk.cnt[i]));
-    }
-  };
-  write_agg(totals.groups);
-  write_agg(totals.ciks);
 }
 
 } // namespace
 
 std::vector<uint8_t> EncodeSecEdgarQ3Fy2022Cohort(const SecEdgarQ3State &state) {
   ByteWriter writer;
-  if (state.index) {
-    EncodeIndex(*state.index, writer);
-  }
+  EncodeIndexes(state, writer);
   return std::move(writer.bytes);
 }
 
 std::vector<uint8_t> EncodeSecEdgarQ3CikTotals(const SecEdgarQ3State &state) {
   ByteWriter writer;
-  if (state.index) {
-    EncodeIndex(*state.index, writer);
+  EncodeIndexes(state, writer);
+  if (state.dir) {
+    EncodeDir(*state.dir, writer);
   }
-  if (state.totals) {
-    EncodeTotals(*state.totals, writer);
+  if (state.cohorts) {
+    std::lock_guard<std::mutex> lock(state.cohorts->mutex);
+    for (const auto &[key, totals] : state.cohorts->items) {
+      writer.U32(static_cast<uint32_t>(key >> 32));
+      writer.U32(static_cast<uint32_t>(key));
+      EncodeAgg(totals->groups, writer);
+      EncodeAgg(totals->ciks, writer);
+    }
   }
   return std::move(writer.bytes);
 }
 
+namespace {
+
+uint64_t IndexResidentBytes(const SecEdgarQ3AdshIndex &index) {
+  uint64_t bytes = sizeof(SecEdgarQ3AdshIndex);
+  for (const auto &mid : index.tops) {
+    bytes += sizeof(SecEdgarQ3IndexMid) + 32 +
+             mid->leaves.capacity() * sizeof(mid->leaves[0]);
+    for (const auto &leaf : mid->leaves) {
+      bytes += sizeof(SecEdgarQ3Leaf) + 32 + leaf->memory_bytes();
+    }
+  }
+  const auto &ov = index.overflow;
+  return bytes + ov.strings.MemoryBytes() + ov.by_hash.memory_bytes() +
+         ov.next.MemoryBytes();
+}
+
+} // namespace
+
 uint64_t SecEdgarQ3ResidentBytes(const SecEdgarQ3State &state) {
   uint64_t bytes = 0;
-  if (state.index) {
-    bytes += sizeof(SecEdgarQ3AdshIndex);
-    for (const auto &mid : state.index->tops) {
-      bytes += sizeof(SecEdgarQ3IndexMid) + 32 +
-               mid->leaves.capacity() * sizeof(mid->leaves[0]);
-      for (const auto &leaf : mid->leaves) {
-        bytes += sizeof(SecEdgarQ3Leaf) + 32 + leaf->memory_bytes();
-      }
-    }
-    const auto &ov = state.index->overflow;
-    bytes += ov.strings.MemoryBytes() + ov.by_hash.memory_bytes() + ov.next.MemoryBytes();
+  if (state.subs) {
+    bytes += IndexResidentBytes(*state.subs);
   }
-  if (state.totals) {
-    const auto &dir = *state.totals->dir;
+  for (const auto &index : state.uom_index) {
+    if (index) {
+      bytes += IndexResidentBytes(*index);
+    }
+  }
+  if (state.dir) {
+    const auto &dir = *state.dir;
     bytes += sizeof(dir) + dir.names.MemoryBytes() + dir.meta.MemoryBytes() +
              dir.cik_meta.MemoryBytes() + dir.by_hash.memory_bytes() +
              dir.cik_ids.memory_bytes();
-    bytes += (state.totals->groups.chunks.size() +
-              state.totals->ciks.chunks.size()) *
-             (sizeof(SecEdgarQ3AggChunkData) + 16);
+  }
+  if (state.cohorts) {
+    std::lock_guard<std::mutex> lock(state.cohorts->mutex);
+    for (const auto &item : state.cohorts->items) {
+      bytes += (item.second->groups.chunks.size() + item.second->ciks.chunks.size()) *
+               (sizeof(SecEdgarQ3AggChunkData) + 16);
+    }
   }
   return bytes;
 }
@@ -1197,6 +1546,7 @@ void SecEdgarQ3TxnBuffer::Clear() {
   requires_rebuild = false;
   ops.clear();
   strings.clear();
+  uom_strings.clear();
 }
 
 bool SecEdgarQ3TxnBuffer::RequiresRebuild() const { return requires_rebuild; }
@@ -1206,6 +1556,7 @@ void SecEdgarQ3TxnBuffer::MarkRebuild() {
   requires_rebuild = true;
   ops.clear();
   strings.clear();
+  uom_strings.clear();
 }
 
 void SecEdgarQ3TxnBuffer::AddOp(Op op) {
@@ -1218,6 +1569,16 @@ void SecEdgarQ3TxnBuffer::AddOp(Op op) {
 uint32_t SecEdgarQ3TxnBuffer::InternString(std::string value) {
   strings.push_back(std::move(value));
   return static_cast<uint32_t>(strings.size() - 1);
+}
+
+uint32_t SecEdgarQ3TxnBuffer::InternUom(const std::string &uom) {
+  const auto it = uom_strings.find(uom);
+  if (it != uom_strings.end()) {
+    return it->second;
+  }
+  const uint32_t idx = InternString(uom);
+  uom_strings.emplace(uom, idx);
+  return idx;
 }
 
 uint64_t SecEdgarQ3TxnBuffer::KeyFor(const std::string &adsh) {
@@ -1283,6 +1644,7 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
       op.kind = OpKind::Num;
       op.sign = static_cast<int8_t>(sign);
       op.key = buffer.KeyFor(*row.adsh);
+      op.uom_idx = buffer.InternUom(*row.uom);
       op.value = sign * row.value;
       buffer.AddOp(op);
     };
@@ -1343,13 +1705,17 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
           return;
         }
         if (old_row.relevant && new_row.relevant &&
-            *old_row.adsh == *new_row.adsh) {
-          // value-only change: one lookup, no row-count change
+            *old_row.adsh == *new_row.adsh && *old_row.uom == *new_row.uom) {
+          // value-only change: one lookup, no row-count change; the exact
+          // difference is carried as a double-double
           Op op;
           op.kind = OpKind::Num;
           op.sign = 0;
           op.key = buffer.KeyFor(*new_row.adsh);
-          op.value = new_row.value - old_row.value;
+          op.uom_idx = buffer.InternUom(*new_row.uom);
+          const TwoD diff = TwoSum(new_row.value, -old_row.value);
+          op.value = diff.hi;
+          op.value_lo = diff.lo;
           buffer.AddOp(op);
           continue;
         }
@@ -1383,6 +1749,7 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
     op.kind = OpKind::SubAdd;
     op.key = buffer.KeyFor(*row.adsh);
     op.cik = row.cik;
+    op.fy = row.fy;
     op.flags = static_cast<uint8_t>((row.name == nullptr ? 1 : 0) |
                                     (row.cik_null ? 2 : 0));
     if (row.name) {
@@ -1398,7 +1765,7 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
         buffer.MarkRebuild();
         return;
       }
-      if (row.in_cohort) {
+      if (row.tracked) {
         add_op(row);
       }
     }
@@ -1410,7 +1777,7 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
         buffer.MarkRebuild();
         return;
       }
-      if (row.in_cohort) {
+      if (row.tracked) {
         remove_op(row);
       }
     }
@@ -1428,20 +1795,20 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
         buffer.MarkRebuild();
         return;
       }
-      if (!old_row.in_cohort && !new_row.in_cohort) {
+      if (!old_row.tracked && !new_row.tracked) {
         continue;
       }
-      if (old_row.in_cohort && new_row.in_cohort &&
+      if (old_row.tracked && new_row.tracked && old_row.fy == new_row.fy &&
           *old_row.adsh == *new_row.adsh && old_row.cik_null == new_row.cik_null &&
           (old_row.cik_null || old_row.cik == new_row.cik) &&
           (old_row.name == nullptr) == (new_row.name == nullptr) &&
           (old_row.name == nullptr || *old_row.name == *new_row.name)) {
         continue; // nothing observable changed
       }
-      if (old_row.in_cohort) {
+      if (old_row.tracked) {
         remove_op(old_row);
       }
-      if (new_row.in_cohort) {
+      if (new_row.tracked) {
         add_op(new_row);
       }
     }
@@ -1496,25 +1863,23 @@ SecEdgarQ3Module::StageMaintenance(core::AuxEngineServices &services,
   using OpKind = SecEdgarQ3TxnBuffer::OpKind;
   const auto &strings = buffer.Strings();
   for (const auto &op : buffer.Ops()) {
-    uint64_t key = op.key;
-    if (key & kSecEdgarQ3OverflowBit) {
-      const auto local = static_cast<std::size_t>(key & ~kSecEdgarQ3OverflowBit);
-      if (!work.index.ResolveKey(strings[local], /*create=*/true, key)) {
-        return RebuildOutcome(MaintenanceAction::RebuildAll);
-      }
+    KeyRef ref;
+    ref.key = op.key;
+    if (op.key & kSecEdgarQ3OverflowBit) {
+      ref.str = &strings[static_cast<std::size_t>(op.key & ~kSecEdgarQ3OverflowBit)];
     }
     bool ok = true;
     switch (op.kind) {
     case OpKind::Num:
-      ok = work.ApplyNum(key, op.value, op.sign);
+      ok = work.ApplyNum(ref, strings[op.uom_idx], {op.value, op.value_lo}, op.sign);
       break;
     case OpKind::SubRemove:
-      ok = work.RemoveMember(key);
+      ok = work.RemoveSub(ref);
       break;
     case OpKind::SubAdd: {
       const bool name_null = (op.flags & 1) != 0;
-      ok = work.AddMember(key, name_null ? nullptr : &strings[op.name_idx],
-                          (op.flags & 2) != 0, op.cik);
+      ok = work.AddSub(ref, name_null ? nullptr : &strings[op.name_idx],
+                       (op.flags & 2) != 0, op.cik, op.fy);
       break;
     }
     }
@@ -1538,9 +1903,75 @@ bool SecEdgarQ3Module::CheckValidity(core::AuxEngineServices &services,
       .IsValid();
 }
 
+namespace {
+
+struct QueryParams {
+  bool is_null = false;
+  int64_t fy = kSecEdgarQ3DefaultFy;
+  std::string uom = kSecEdgarQ3DefaultUom;
+};
+
+QueryParams ParseArguments(const core::QueryArguments &args) {
+  QueryParams p;
+  if (args.values.empty()) {
+    return p;
+  }
+  if (args.values.size() != 2) {
+    throw std::invalid_argument(
+        "sec_edgar q3 aux expects () or (fy BIGINT, uom VARCHAR)");
+  }
+  const auto &fy = args.values[0];
+  const auto &uom = args.values[1];
+  if (fy.is_null || uom.is_null) {
+    p.is_null = true; // a comparison with NULL is never true: empty result
+    return p;
+  }
+  if (std::holds_alternative<int64_t>(fy.payload)) {
+    p.fy = std::get<int64_t>(fy.payload);
+  } else if (std::holds_alternative<uint64_t>(fy.payload)) {
+    const uint64_t v = std::get<uint64_t>(fy.payload);
+    if (v > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      p.is_null = true; // no fiscal year (INTEGER) can equal it
+      return p;
+    }
+    p.fy = static_cast<int64_t>(v);
+  } else if (std::holds_alternative<double>(fy.payload)) {
+    const double v = std::get<double>(fy.payload);
+    if (!(v == std::floor(v)) || !(std::fabs(v) < 9.0e18)) {
+      p.is_null = true; // fractional / out of range: equals no integer fy
+      return p;
+    }
+    p.fy = static_cast<int64_t>(v);
+  } else if (std::holds_alternative<std::string>(fy.payload)) {
+    const std::string &text = std::get<std::string>(fy.payload);
+    char *end = nullptr;
+    errno = 0;
+    const long long v = std::strtoll(text.c_str(), &end, 10);
+    if (end == text.c_str() || *end != '\0' || errno == ERANGE) {
+      p.is_null = true; // not an int64: equals no fiscal year
+      return p;
+    }
+    p.fy = v;
+  } else {
+    throw std::invalid_argument("sec_edgar q3 aux: unsupported fy argument");
+  }
+  if (!std::holds_alternative<std::string>(uom.payload)) {
+    throw std::invalid_argument("sec_edgar q3 aux: uom must be a string");
+  }
+  p.uom = std::get<std::string>(uom.payload);
+  return p;
+}
+
+} // namespace
+
 void SecEdgarQ3Module::Execute(core::AuxEngineServices &services,
                                const core::QueryArguments &arguments,
                                core::AuxRowSink &sink) {
+  const QueryParams params = ParseArguments(arguments);
+  if (params.is_null) {
+    EmitRows(sink, nullptr);
+    return;
+  }
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), {kStatePartition});
   if (snapshot.available) {
@@ -1549,7 +1980,7 @@ void SecEdgarQ3Module::Execute(core::AuxEngineServices &services,
         continue;
       }
       if (const auto *typed = AsQ3Image(image)) {
-        EmitOutput(*typed->state, sink);
+        EmitOutput(*typed->state, params.fy, params.uom, sink);
         return;
       }
     }
@@ -1558,9 +1989,14 @@ void SecEdgarQ3Module::Execute(core::AuxEngineServices &services,
 }
 
 void SecEdgarQ3Module::ExecuteFallback(core::AuxEngineServices &services,
-                                       const core::QueryArguments &,
+                                       const core::QueryArguments &arguments,
                                        core::AuxRowSink &sink) {
-  EmitOutput(BuildState(services), sink);
+  const QueryParams params = ParseArguments(arguments);
+  if (params.is_null) {
+    EmitRows(sink, nullptr);
+    return;
+  }
+  EmitOutput(BuildState(services), params.fy, params.uom, sink);
 }
 
 SecEdgarQ3State
@@ -1568,44 +2004,54 @@ SecEdgarQ3Module::BuildState(core::AuxEngineServices &) const {
   if (!initial_scan) {
     throw std::logic_error("SEC EDGAR Q3 requires a typed initial scan source");
   }
-  Work work(nullptr);
+  Work work(nullptr, /*bulk=*/true);
   initial_scan->ScanNumAggregates([&](const SecEdgarQ3NumAggInput &input) {
     if (input.count <= 0) {
       return;
     }
+    uint32_t uid;
+    work.UomId(input.uom, /*create=*/true, uid);
+    IndexWork &ui = work.Uom(uid);
     uint64_t key = 0;
-    if (!work.index.ResolveKey(input.adsh, /*create=*/true, key)) {
+    if (!ResolveIn(ui, MakeRef(input.adsh), /*create=*/true, key)) {
       return;
     }
-    work.index.BulkAdd(key, input.sum, input.count);
+    ui.BulkAdd(key, input.sum, input.count);
   });
   initial_scan->ScanSub([&](const SecEdgarQ3SubInput &input) {
-    if (input.fy_is_null || input.fy != kTargetFy) {
+    if (input.fy_is_null) {
       return;
     }
-    uint64_t key = 0;
-    if (!work.index.ResolveKey(input.adsh, /*create=*/true, key)) {
-      return;
-    }
-    if (!work.AddMember(key, input.name_is_null ? nullptr : &input.name,
-                        input.cik_is_null, input.cik)) {
-      throw std::runtime_error("SEC EDGAR Q3: duplicate sub.adsh in cohort");
+    if (!work.AddSub(MakeRef(input.adsh), input.name_is_null ? nullptr : &input.name,
+                     input.cik_is_null, input.cik, input.fy)) {
+      throw std::runtime_error("SEC EDGAR Q3: duplicate sub.adsh");
     }
   });
   const auto state = work.Finish();
+  // The defaults are served without a first-read build.
+  SecEdgarQ3CohortFor(*state, kSecEdgarQ3DefaultFy, kSecEdgarQ3DefaultUom);
   return *state;
 }
 
-void SecEdgarQ3Module::EmitOutput(const SecEdgarQ3State &state,
-                                  core::AuxRowSink &sink) const {
+void SecEdgarQ3Module::EmitRows(
+    core::AuxRowSink &sink,
+    const std::shared_ptr<const std::vector<core::AuxRow>> &rows) const {
   sink.Begin({{{"name", core::AuxType::String, true},
                {"cik", core::AuxType::Int64, true},
                {"total_value", core::AuxType::Double, false}}});
-  const auto rows = state.totals->OutputRows();
-  for (const auto &row : *rows) {
-    sink.WriteRow(row);
+  if (rows) {
+    for (const auto &row : *rows) {
+      sink.WriteRow(row);
+    }
   }
   sink.End();
+}
+
+void SecEdgarQ3Module::EmitOutput(const SecEdgarQ3State &state, int64_t fy,
+                                  const std::string &uom,
+                                  core::AuxRowSink &sink) const {
+  const auto totals = SecEdgarQ3CohortFor(state, fy, uom);
+  EmitRows(sink, totals ? totals->OutputRows() : nullptr);
 }
 
 } // namespace accelerator_codegen::aux_state::query

@@ -2347,3 +2347,8 @@ endif()
 
 # SEC-EDGAR Q2 PostgreSQL client tests (libpq only).
 include(cmake/PostgresSecEdgarQ2Tests.cmake)
+
+# Q3 parameter sweep (accel_sec_edgar_q3_aux(fy, uom)) against plain SQL on a real database.
+add_executable(check_sec_edgar_q3_params
+	benchmarks/aux_state/check_sec_edgar_q3_params.cpp)
+target_link_libraries(check_sec_edgar_q3_params PRIVATE accelerator_codegen duckdb_sibling)

@@ -115,7 +115,13 @@ struct Tables {
   // `ambiguous` receives groups whose total is numerically indistinguishable
   // from the HAVING threshold (floating point noise decides those in any
   // engine, e.g. a single group that is the whole cik).
-  std::vector<Expected> Query(std::vector<Expected> *ambiguous = nullptr) const {
+  std::vector<Expected> Query(std::vector<Expected> *ambiguous = nullptr,
+                              int64_t want_fy = 2022,
+                              const std::string &want_uom = "USD",
+                              bool null_arg = false) const {
+    if (null_arg) {
+      return {}; // a comparison with NULL is never true
+    }
     struct GroupKey {
       std::string name;
       bool name_null;
@@ -129,11 +135,11 @@ struct Tables {
     std::map<GroupKey, long double> groups;
     std::map<std::pair<bool, int>, long double> ciks;
     for (const auto &n : num) {
-      if (n.adsh_null || n.uom_null || n.uom != "USD" || n.value_null) {
+      if (n.adsh_null || n.uom_null || n.uom != want_uom || n.value_null) {
         continue;
       }
       const auto it = sub.find(n.adsh);
-      if (it == sub.end() || it->second.fy_null || it->second.fy != 2022) {
+      if (it == sub.end() || it->second.fy_null || it->second.fy != want_fy) {
         continue;
       }
       const auto &s = it->second;
@@ -184,17 +190,17 @@ public:
   void ScanNumAggregates(
       const std::function<void(const SecEdgarQ3NumAggInput &)> &consumer) override {
     ++num_scans;
-    std::map<std::string, std::pair<double, int64_t>> agg;
+    std::map<std::pair<std::string, std::string>, std::pair<double, int64_t>> agg;
     for (const auto &n : tables.num) {
-      if (n.adsh_null || n.uom_null || n.uom != "USD" || n.value_null) {
+      if (n.adsh_null || n.uom_null || n.value_null) {
         continue;
       }
-      auto &a = agg[n.adsh];
+      auto &a = agg[{n.adsh, n.uom}];
       a.first += n.value;
       a.second += 1;
     }
-    for (const auto &[adsh, a] : agg) {
-      consumer({adsh, a.first, a.second});
+    for (const auto &[key, a] : agg) {
+      consumer({key.first, key.second, a.first, a.second});
     }
   }
 
@@ -275,17 +281,42 @@ struct Harness {
     coordinator.OnMutation(batch);
   }
 
-  std::vector<AuxRow> Run() {
+  std::vector<AuxRow> Run(const QueryArguments &args = {}) {
     Sink sink;
-    module->Execute(services, {}, sink);
+    module->Execute(services, args, sink);
     Check(sink.ended, "sink ended");
     return std::move(sink.rows);
   }
 
+  // Every verify checks the defaults and a few (fy, uom) drawn from the
+  // parameter domain plus edge values (NULL arguments included).
   void Verify(const std::string &context) {
-    auto got_rows = Run();
+    VerifyParams(context, 2022, "USD", false, true);
+    static std::mt19937 param_rng(12345);
+    static const int64_t fys[] = {2021, 2022, 2023, 2024, 2019, 2025, 0, 2022, 2022};
+    static const char *uoms[] = {"USD", "shares", "pure", "CAD", "CNY", "EUR",
+                                 "nonexistent", "USD", "USD", "usd", ""};
+    for (int i = 0; i < 3; ++i) {
+      const auto fy = fys[param_rng() % (sizeof fys / sizeof *fys)];
+      const std::string uom = uoms[param_rng() % (sizeof uoms / sizeof *uoms)];
+      const bool null_arg = param_rng() % 25 == 0;
+      VerifyParams(context, fy, uom, null_arg, false);
+    }
+  }
+
+  void VerifyParams(const std::string &context_in, int64_t fy,
+                    const std::string &uom, bool null_arg, bool defaults) {
+    const std::string context = context_in + " [fy=" + std::to_string(fy) +
+                                " uom=" + uom + (null_arg ? " NULL" : "") + "]";
+    QueryArguments args;
+    if (!defaults) {
+      args.values.push_back(null_arg ? AuxValue::Null(AuxType::Int64)
+                                     : Int(fy));
+      args.values.push_back(AuxValue::Of(AuxType::String, uom));
+    }
+    auto got_rows = Run(args);
     std::vector<Expected> ambiguous;
-    auto want = tables.Query(&ambiguous);
+    auto want = tables.Query(&ambiguous, fy, uom, null_arg);
     ++g_verifies;
     g_nonempty += want.empty() ? 0 : 1;
     auto is_ambiguous = [&](const std::string &name, bool name_null, int64_t cik,
@@ -386,8 +417,8 @@ struct Gen {
     NumM n;
     n.adsh = adsh_pool[Int(0, static_cast<int>(adsh_pool.size()) - 1)];
     n.adsh_null = Int(0, 40) == 0;
-    const char *uoms[] = {"USD", "USD", "USD", "USD", "EUR", "pure", "shares"};
-    n.uom = uoms[Int(0, 6)];
+    const char *uoms[] = {"USD", "USD", "USD", "USD", "EUR", "pure", "shares", "CAD", "CNY"};
+    n.uom = uoms[Int(0, 8)];
     n.uom_null = Int(0, 40) == 0;
     n.value_null = Int(0, 12) == 0;
     n.value = Value();
@@ -401,8 +432,8 @@ struct Gen {
     s.name_null = Int(0, 30) == 0;
     s.cik = 100 + Int(0, 11);
     s.cik_null = Int(0, 40) == 0;
-    const int fys[] = {2022, 2022, 2022, 2021, 2023};
-    s.fy = fys[Int(0, 4)];
+    const int fys[] = {2022, 2022, 2022, 2021, 2023, 2024};
+    s.fy = fys[Int(0, 5)];
     s.fy_null = Int(0, 30) == 0;
     return s;
   }
@@ -490,7 +521,8 @@ void RunRandom(bool parallel, uint32_t seed, int iterations,
         auto old_row = NumRowOf(h.tables.num[idx]);
         std::vector<ColumnId> cols;
         if (gen.Int(0, 1)) {
-          h.tables.num[idx].uom = gen.Int(0, 1) ? "USD" : "EUR";
+          const char *to[] = {"USD", "EUR", "shares", "CAD"};
+          h.tables.num[idx].uom = to[gen.Int(0, 3)];
           h.tables.num[idx].uom_null = gen.Int(0, 15) == 0;
           cols.push_back(5);
         }
@@ -748,11 +780,11 @@ void TestDirected(bool parallel) {
     NumM n;
     n.adsh = "0000000001-22-000001";
     n.value = std::numeric_limits<double>::infinity();
-    n.uom = "EUR"; // irrelevant row: must not trigger anything
+    n.uom = "EUR"; // non-finite rows cannot be maintained: rebuild, still exact
     h.tables.num.push_back(n);
     h.Mutate(kNumTable, MutationKind::Insert, {}, {NumRowOf(n)});
     h.Commit();
-    h.Verify("irrelevant inf row");
+    h.Verify("inf row of another unit");
   }
 }
 
