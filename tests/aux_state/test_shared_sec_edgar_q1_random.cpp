@@ -27,7 +27,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/duckdb/duckdb_state_store.hpp"
-#include "sec_edgar/q1/duckdb/aux/module.hpp"
+#include "sec_edgar/q1/common/module.hpp"
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 #include "sec_edgar/q1/duckdb/aux/parallel/module.hpp"
 #endif

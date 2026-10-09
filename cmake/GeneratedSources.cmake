@@ -27,6 +27,10 @@ function(accel_collect_generated_sources OUT_VAR)
     set(_patterns
         "src/generated/*/q*/${_engine}/aux/*.cpp"
     )
+    # Engine-neutral per-query code shared by every engine's aux module
+    # (src/generated/{bench}/q{N}/common/*.cpp).
+    list(APPEND _patterns
+        "src/generated/*/q*/common/*.cpp")
     # Base kernels are optional; collect them when present for this engine.
     list(APPEND _patterns
         "src/generated/*/q*/${_engine}/base/single-threaded/*.cpp")

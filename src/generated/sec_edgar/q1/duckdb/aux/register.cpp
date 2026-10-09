@@ -2,7 +2,8 @@
 // Registers the catalog entry (SQL, probes, benchmark arguments), the
 // table function accel_sec_edgar_q1_aux and the module's binding: its config, the
 // tables engine capture watches, and the InitialScan over DuckDB SQL.
-#include "sec_edgar/q1/duckdb/aux/module.hpp"
+#include "sec_edgar/q1/common/module.hpp"
+#include "sec_edgar/q1/duckdb/aux/native_scan.hpp"
 #include "sec_edgar/q1/duckdb/aux/parallel/module.hpp"
 #include "sec_edgar/q1/layout.hpp"
 #include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
@@ -114,6 +115,10 @@ struct SecEdgarQ1Scan : SecEdgarQ1InitialScan {
   bool ScanPreChunks(
       const std::function<void(::duckdb::DataChunk &)> &consumer) const override {
     return ScanSecEdgarQ1PreNative(connection, consumer);
+  }
+  bool ScanPreInto(q1::Builder &builder) const override {
+    return ScanSecEdgarQ1PreNative(
+        connection, [&](::duckdb::DataChunk &chunk) { builder.ConsumeChunk(chunk); });
   }
   ::duckdb::Connection &connection;
 };

@@ -1,6 +1,4 @@
-#include "sec_edgar/q1/duckdb/aux/adsh_key.hpp"
-
-#include "duckdb/common/types/string_type.hpp"
+#include "sec_edgar/q1/common/adsh_key.hpp"
 
 #include <cstring>
 
@@ -76,19 +74,21 @@ __attribute__((target("ssse3,sse4.1"))) inline bool ParseAdshKeySse(const char *
 	return true;
 }
 
-__attribute__((target("ssse3,sse4.1"))) void ParseBatchSse(const duckdb::string_t *values, const uint32_t *sel,
+__attribute__((target("ssse3,sse4.1"))) void ParseBatchSse(const void *ctx, AdshAccessor at, const uint32_t *sel,
                                                             std::size_t count, uint64_t *out) {
 	constexpr std::size_t kPrefetchDistance = 16;
 	for (std::size_t i = 0; i < count; ++i) {
+		const char *data = nullptr;
+		std::size_t len = 0;
 		if (i + kPrefetchDistance < count) {
-			const auto &ahead = values[sel ? sel[i + kPrefetchDistance] : i + kPrefetchDistance];
-			if (!ahead.IsInlined()) {
-				__builtin_prefetch(ahead.GetData(), 0, 1);
+			at(ctx, sel ? sel[i + kPrefetchDistance] : i + kPrefetchDistance, data, len);
+			if (len >= 16) {
+				__builtin_prefetch(data, 0, 1);
 			}
 		}
-		const auto &value = values[sel ? sel[i] : i];
+		at(ctx, sel ? sel[i] : i, data, len);
 		uint64_t key = 0;
-		if (value.GetSize() == kAdshLen && ParseAdshKeySse(value.GetData(), key)) {
+		if (len == kAdshLen && ParseAdshKeySse(data, key)) {
 			out[i] = key;
 		} else {
 			out[i] = kInvalidAdshKey;
@@ -113,23 +113,26 @@ bool AdshKeySimdAvailable() {
 #endif
 }
 
-void ParseAdshKeyBatchScalar(const duckdb::string_t *values, const uint32_t *sel, std::size_t count,
-                             uint64_t *out_keys) {
+void ParseAdshKeyBatchScalarFn(const void *ctx, AdshAccessor at, const uint32_t *sel, std::size_t count,
+                               uint64_t *out_keys) {
 	for (std::size_t i = 0; i < count; ++i) {
-		const auto &value = values[sel ? sel[i] : i];
+		const char *data = nullptr;
+		std::size_t len = 0;
+		at(ctx, sel ? sel[i] : i, data, len);
 		uint64_t key = 0;
-		out_keys[i] = ParseAdshKeyScalar(value.GetData(), value.GetSize(), key) ? key : kInvalidAdshKey;
+		out_keys[i] = ParseAdshKeyScalar(data, len, key) ? key : kInvalidAdshKey;
 	}
 }
 
-void ParseAdshKeyBatch(const duckdb::string_t *values, const uint32_t *sel, std::size_t count, uint64_t *out_keys) {
+void ParseAdshKeyBatchFn(const void *ctx, AdshAccessor at, const uint32_t *sel, std::size_t count,
+                         uint64_t *out_keys) {
 #ifdef Q1_HAVE_X86_SIMD
 	if (AdshKeySimdAvailable()) {
-		ParseBatchSse(values, sel, count, out_keys);
+		ParseBatchSse(ctx, at, sel, count, out_keys);
 		return;
 	}
 #endif
-	ParseAdshKeyBatchScalar(values, sel, count, out_keys);
+	ParseAdshKeyBatchScalarFn(ctx, at, sel, count, out_keys);
 }
 
 bool ParseAdshKey(const char *s, std::size_t len, uint64_t &key) {

@@ -38,7 +38,18 @@ namespace accelerator_codegen::aux_state::query {
 
 struct SecEdgarQ1Config {
   core::TableId pre_table = 0;
+  // Postgres: physical (0-based) attribute numbers of pre.{stmt, rfile, adsh,
+  // line}, in the order of the compact mutation row. Empty (DuckDB): the engine
+  // projects the compact row itself.
+  std::vector<int32_t> pre_attnums;
+  // Postgres: AVG(line) is numeric (exact, at PostgreSQL's result scale);
+  // otherwise it is a double as DuckDB computes it.
+  bool numeric_avg = false;
 };
+
+namespace q1 {
+class Builder;
+}
 
 struct SecEdgarQ1PreInput {
   std::string stmt;
@@ -62,6 +73,10 @@ public:
   ScanPreChunks(const std::function<void(::duckdb::DataChunk &)> &) const {
     return false;
   }
+  // Optional engine-native fast path: feeds the whole table to `builder`
+  // (q1::Builder::ConsumeChunk / ConsumeRowView). Returns false when
+  // unsupported (ScanPre is used).
+  virtual bool ScanPreInto(q1::Builder &) const { return false; }
 };
 
 namespace q1 {
@@ -155,6 +170,8 @@ struct OutputRow {
   int64_t num_filings = 0;
   double avg_line_num = 0.0;
   bool avg_is_null = false;
+  Int128 line_sum = 0; // exact AVG numerator
+  int64_t line_cnt = 0; // AVG denominator
 };
 
 // AVG(INTEGER) exactly as DuckDB finalizes it: long double division of the
@@ -173,8 +190,16 @@ public:
   Builder(Builder &&) noexcept;
   Builder &operator=(Builder &&) noexcept;
 
+  // DuckDB only (defined in duckdb/aux/chunk_builder.cpp).
   void ConsumeChunk(::duckdb::DataChunk &chunk);
   void ConsumeRow(const SecEdgarQ1PreInput &row);
+  // Zero-copy row: the views need to stay valid for the call only. Consecutive
+  // rows of one (group, accession) reuse the previous lookups. A NULL stmt row
+  // is ignored; a NULL adsh/rfile/line passes a null pointer / flag.
+  void ConsumeRowView(const char *stmt, std::size_t stmt_len, bool stmt_null,
+                      const char *rfile, std::size_t rfile_len, bool rfile_null,
+                      const char *adsh, std::size_t adsh_len, bool adsh_null,
+                      int32_t line, bool line_null);
   void Merge(Builder &&other);
   State Finish();
 
@@ -187,13 +212,6 @@ private:
 
 using SecEdgarQ1State = q1::State;
 using SecEdgarQ1OutputRow = q1::OutputRow;
-
-// DuckDB helper for SecEdgarQ1InitialScan::ScanPreChunks: streams (stmt, rfile,
-// adsh, line) straight from table storage (no result materialization/copy).
-// Begins/ends a transaction on `connection` only when none is active.
-bool ScanSecEdgarQ1PreNative(
-    ::duckdb::Connection &connection,
-    const std::function<void(::duckdb::DataChunk &)> &consumer);
 
 struct SecEdgarQ1StateImage {
   std::shared_ptr<const SecEdgarQ1State> state;
@@ -291,10 +309,16 @@ public:
   LoadState(core::AuxEngineServices &, core::Version *version = nullptr,
             const char *accelerator_id = nullptr) const;
   static void EmitOutput(const SecEdgarQ1State &, core::AuxRowSink &);
+  // Postgres flavour: AVG(line) as exact numeric text.
+  static void EmitOutputNumeric(const SecEdgarQ1State &, core::AuxRowSink &);
 
   SecEdgarQ1State BuildState(core::AuxEngineServices &) const;
 
 private:
+  void Emit(const SecEdgarQ1State &state, core::AuxRowSink &sink) const {
+    config.numeric_avg ? EmitOutputNumeric(state, sink) : EmitOutput(state, sink);
+  }
+
   SecEdgarQ1Config config;
   SecEdgarQ1InitialScan *initial_scan = nullptr;
 };

@@ -1,6 +1,6 @@
-#include "sec_edgar/q1/duckdb/aux/module.hpp"
+#include "sec_edgar/q1/common/module.hpp"
 
-#include "sec_edgar/q1/duckdb/aux/adsh_key.hpp"
+#include "sec_edgar/q1/common/adsh_key.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -336,7 +336,7 @@ bool ApplySecEdgarQ1Deltas(SecEdgarQ1State &state,
 core::AcceleratorId SecEdgarQ1Module::Id() const { return kId; }
 
 std::vector<core::TableDependency> SecEdgarQ1Module::Dependencies() const {
-  return {{config.pre_table, {0, 1, 2, 3}}};
+  return {{config.pre_table, {0, 1, 2, 3}, config.pre_attnums}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> SecEdgarQ1Module::CreateTxnBuffer() const {
@@ -349,9 +349,7 @@ SecEdgarQ1Module::BuildState(core::AuxEngineServices &) const {
     throw std::logic_error("SEC EDGAR Q1 requires a typed initial scan source");
   }
   q1::Builder builder;
-  const bool chunked = initial_scan->ScanPreChunks(
-      [&](::duckdb::DataChunk &chunk) { builder.ConsumeChunk(chunk); });
-  if (!chunked) {
+  if (!initial_scan->ScanPreInto(builder)) {
     initial_scan->ScanPre(
         [&](const SecEdgarQ1PreInput &input) { builder.ConsumeRow(input); });
   }
@@ -515,13 +513,13 @@ void SecEdgarQ1Module::Execute(core::AuxEngineServices &services,
     ExecuteFallback(services, arguments, sink);
     return;
   }
-  EmitOutput(*state, sink);
+  Emit(*state, sink);
 }
 
 void SecEdgarQ1Module::ExecuteFallback(core::AuxEngineServices &services,
                                        const core::QueryArguments &,
                                        core::AuxRowSink &sink) {
-  EmitOutput(BuildState(services), sink);
+  Emit(BuildState(services), sink);
 }
 
 } // namespace accelerator_codegen::aux_state::query
