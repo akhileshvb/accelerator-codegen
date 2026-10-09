@@ -1,10 +1,21 @@
 #include "sec_edgar/q4/duckdb/aux/duckdb_scan.hpp"
 
+#include <chrono>
+#include <x86intrin.h>
+#include <cstdio>
+#include <cstdlib>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
+#include <vector>
 
+#include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
+#include "accelerator_codegen/runtime/native_scan.hpp"
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
+#include "sec_edgar/q4/common/aux/state_ops.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
@@ -45,7 +56,410 @@ std::string Str(const ::duckdb::UnifiedVectorFormat &f, ::duckdb::idx_t row) {
   return Data<::duckdb::string_t>(f)[idx].GetString();
 }
 
+constexpr uint32_t kSamePrev = 0xFFFFFFFDu;
+
+inline std::string_view View(const ::duckdb::string_t &s) {
+  return std::string_view(s.GetData(), s.GetSize());
+}
+
+// Maps a VARCHAR vector to ids with a batch resolver
+// resolve(const std::string_view *, size_t n, uint32_t *out).  A dictionary
+// vector (dictionary-compressed storage segment) is resolved once per
+// dictionary entry: the ids are cached by the dictionary buffer, which is kept
+// alive so that its address cannot be reused.  Flat vectors resolve each run of
+// equal values once.  The strings of one chunk are resolved as one batch.
+class IdColumn {
+public:
+  template <typename Resolve>
+  void Map(::duckdb::Vector &vec, ::duckdb::idx_t n, Resolve &&resolve, uint32_t *out) {
+    using ::duckdb::VectorType;
+    views_.clear();
+    where_.clear();
+    switch (vec.GetVectorType()) {
+    case VectorType::CONSTANT_VECTOR: {
+      uint32_t id = kQ4None;
+      if (!::duckdb::ConstantVector::IsNull(vec)) {
+        const auto v = View(::duckdb::ConstantVector::GetData<::duckdb::string_t>(vec)[0]);
+        resolve(&v, 1, &id);
+      }
+      for (::duckdb::idx_t i = 0; i < n; ++i) out[i] = id;
+      return;
+    }
+    case VectorType::DICTIONARY_VECTOR: {
+      auto &child = ::duckdb::DictionaryVector::Child(vec);
+      const auto size = ::duckdb::DictionaryVector::DictionarySize(vec);
+      if (child.GetVectorType() != VectorType::FLAT_VECTOR || !size.IsValid()) break;
+      auto aux = vec.GetAuxiliary();
+      if (!aux) break;
+      if (aux.get() != key_) {
+        // A new segment dictionary: resolve all of its entries as one batch.
+        holder_ = aux;
+        key_ = aux.get();
+        const auto dict_size = size.GetIndex();
+        ids_.assign(dict_size, kQ4None);
+        const auto *data = ::duckdb::FlatVector::GetData<::duckdb::string_t>(child);
+        const auto &valid = ::duckdb::FlatVector::Validity(child);
+        for (::duckdb::idx_t idx = 0; idx < dict_size; ++idx) {
+          if (!valid.RowIsValid(idx)) continue;
+          where_.push_back(static_cast<uint32_t>(idx));
+          views_.push_back(View(data[idx]));
+        }
+        RunBatch(resolve);
+        for (size_t k = 0; k < where_.size(); ++k) ids_[where_[k]] = res_[k];
+      }
+      const auto &sel = ::duckdb::DictionaryVector::SelVector(vec);
+      const uint32_t *ids = ids_.data();
+      for (::duckdb::idx_t i = 0; i < n; ++i) out[i] = ids[sel.get_index(i)];
+      return;
+    }
+    case VectorType::FLAT_VECTOR: {
+      const auto *data = ::duckdb::FlatVector::GetData<::duckdb::string_t>(vec);
+      const auto &valid = ::duckdb::FlatVector::Validity(vec);
+      for (::duckdb::idx_t i = 0; i < n; ++i) {
+        if (!valid.RowIsValid(i)) {
+          out[i] = kQ4None;
+        } else if (i > 0 && valid.RowIsValid(i - 1) && data[i] == data[i - 1]) {
+          out[i] = kSamePrev;
+        } else {
+          where_.push_back(static_cast<uint32_t>(i));
+          views_.push_back(View(data[i]));
+        }
+      }
+      RunBatch(resolve);
+      for (size_t k = 0; k < where_.size(); ++k) out[where_[k]] = res_[k];
+      for (::duckdb::idx_t i = 1; i < n; ++i) {
+        if (out[i] == kSamePrev) out[i] = out[i - 1];
+      }
+      return;
+    }
+    default:
+      break;
+    }
+    ::duckdb::UnifiedVectorFormat f;
+    vec.ToUnifiedFormat(n, f);
+    const auto *data = Data<::duckdb::string_t>(f);
+    for (::duckdb::idx_t i = 0; i < n; ++i) {
+      const auto idx = f.sel->get_index(i);
+      if (!f.validity.RowIsValid(idx)) {
+        out[i] = kQ4None;
+      } else {
+        where_.push_back(static_cast<uint32_t>(i));
+        views_.push_back(View(data[idx]));
+      }
+    }
+    RunBatch(resolve);
+    for (size_t k = 0; k < where_.size(); ++k) out[where_[k]] = res_[k];
+  }
+
+private:
+  template <typename R> void RunBatch(R &&resolve) {
+    res_.resize(views_.size());
+    if (!views_.empty()) resolve(views_.data(), views_.size(), res_.data());
+  }
+
+  ::duckdb::buffer_ptr<::duckdb::VectorBuffer> holder_;
+  const void *key_ = nullptr;
+  std::vector<uint32_t> ids_;
+  std::vector<std::string_view> views_;
+  std::vector<uint32_t> where_, res_;
+};
+
+enum class Col { Str, Dbl, Int };
+NativeScanSpec Spec(const char *table, std::initializer_list<std::pair<const char *, Col>> cols) {
+  NativeScanSpec spec;
+  spec.table_name = table;
+  for (const auto &c : cols) {
+    switch (c.second) {
+    case Col::Dbl:
+      spec.projected_columns.push_back(
+          {c.first, c.first, ::duckdb::LogicalType::DOUBLE, ::duckdb::PhysicalType::DOUBLE});
+      break;
+    case Col::Int:
+      spec.projected_columns.push_back(
+          {c.first, c.first, ::duckdb::LogicalType::INTEGER, ::duckdb::PhysicalType::INT32});
+      break;
+    case Col::Str:
+      spec.projected_columns.push_back(
+          {c.first, c.first, ::duckdb::LogicalType::VARCHAR, ::duckdb::PhysicalType::VARCHAR});
+      break;
+    }
+  }
+  return spec;
+}
+
+std::string InList(const std::vector<std::string> &values) {
+  std::string out;
+  for (size_t i = 0; i < values.size(); ++i) {
+    out += (i ? "," : "") + Lit(values[i]);
+  }
+  return out;
+}
+
+// Runs fn inside the connection's transaction (one is opened when none is).
+template <typename Fn> void InTransaction(::duckdb::Connection &connection, Fn &&fn) {
+  const bool started = !connection.HasActiveTransaction();
+  if (started) connection.BeginTransaction();
+  try {
+    fn();
+    if (started) connection.Commit();
+  } catch (...) {
+    if (started && connection.HasActiveTransaction()) connection.Rollback();
+    throw;
+  }
+}
+
 } // namespace
+
+bool SecEdgarQ4DuckDbScan::BuildFull(q4::Builder &b) const {
+  if (!connection.context) return false;
+  auto &context = *connection.context;
+  auto t0 = std::chrono::steady_clock::now();
+  const auto lap = [&](const char *what) {
+    if (!std::getenv("Q4_BUILD_PROFILE")) return;
+    const auto now = std::chrono::steady_clock::now();
+    fprintf(stderr, "q4 build %s: %.1f ms\n", what, std::chrono::duration<double, std::milli>(now - t0).count());
+    t0 = now;
+  };
+  InTransaction(connection, [&] {
+    StreamQuery(connection, "SELECT adsh, cik, sic FROM sub WHERE sic IS NOT NULL AND adsh IS NOT NULL",
+                [&](::duckdb::DataChunk &chunk) {
+                  ::duckdb::UnifiedVectorFormat a, c, s;
+                  chunk.data[0].ToUnifiedFormat(chunk.size(), a);
+                  chunk.data[1].ToUnifiedFormat(chunk.size(), c);
+                  chunk.data[2].ToUnifiedFormat(chunk.size(), s);
+                  for (::duckdb::idx_t r = 0; r < chunk.size(); ++r) {
+                    const auto &as = Data<::duckdb::string_t>(a)[a.sel->get_index(r)];
+                    const auto ci = c.sel->get_index(r);
+                    const bool cik_null = !c.validity.RowIsValid(ci);
+                    b.AddSub(std::string_view(as.GetData(), as.GetSize()), cik_null,
+                             cik_null ? 0 : Data<int32_t>(c)[ci], Data<int32_t>(s)[s.sel->get_index(r)]);
+                  }
+                });
+    lap("sub");
+    {
+      const auto spec = Spec("tag", {{"tag", Col::Str}, {"version", Col::Str}, {"abstract", Col::Int}, {"tlabel", Col::Str}});
+      b.ReserveTags(GetNativeScanTableRowCount(context, spec));
+      std::vector<std::string_view> tv(STANDARD_VECTOR_SIZE), vv(STANDARD_VECTOR_SIZE), lv(STANDARD_VECTOR_SIZE);
+      std::vector<uint8_t> lnull(STANDARD_VECTOR_SIZE);
+      ScanNativeBaseTable(context, spec, [&](::duckdb::DataChunk &chunk) {
+        const auto n = chunk.size();
+        ::duckdb::UnifiedVectorFormat t, v, ab, tl;
+        chunk.data[0].ToUnifiedFormat(n, t);
+        chunk.data[1].ToUnifiedFormat(n, v);
+        chunk.data[2].ToUnifiedFormat(n, ab);
+        chunk.data[3].ToUnifiedFormat(n, tl);
+        size_t k = 0;
+        for (::duckdb::idx_t r = 0; r < n; ++r) {
+          const auto ti = t.sel->get_index(r), vi = v.sel->get_index(r), ai = ab.sel->get_index(r),
+                     li = tl.sel->get_index(r);
+          if (!t.validity.RowIsValid(ti) || !v.validity.RowIsValid(vi) || !ab.validity.RowIsValid(ai) ||
+              Data<int32_t>(ab)[ai] != 0) {
+            continue; // t.abstract = 0 is false / the key cannot join
+          }
+          tv[k] = View(Data<::duckdb::string_t>(t)[ti]);
+          vv[k] = View(Data<::duckdb::string_t>(v)[vi]);
+          lnull[k] = !tl.validity.RowIsValid(li);
+          lv[k] = lnull[k] ? std::string_view() : View(Data<::duckdb::string_t>(tl)[li]);
+          ++k;
+        }
+        b.AddTags(tv.data(), vv.data(), lv.data(), lnull.data(), k);
+      });
+    }
+    lap("tag");
+    const auto adsh_id = [&](const std::string_view *v, size_t k, uint32_t *o) { b.AdshIds(v, k, o); };
+    const auto tag_id = [&](const std::string_view *v, size_t k, uint32_t *o) { b.TagIds(v, k, o); };
+    const auto ver_id = [&](const std::string_view *v, size_t k, uint32_t *o) { b.VerIds(v, k, o); };
+    const auto stmt_id = [&](const std::string_view *v, size_t k, uint32_t *o) {
+      for (size_t i = 0; i < k; ++i) o[i] = b.StmtId(v[i].data(), v[i].size());
+    };
+    const auto uom_id = [&](const std::string_view *v, size_t k, uint32_t *o) {
+      for (size_t i = 0; i < k; ++i) o[i] = b.UomId(v[i].data(), v[i].size());
+    };
+    std::vector<uint32_t> ia(STANDARD_VECTOR_SIZE), it(STANDARD_VECTOR_SIZE), iv(STANDARD_VECTOR_SIZE),
+        ix(STANDARD_VECTOR_SIZE);
+    std::vector<double> xs(STANDARD_VECTOR_SIZE);
+    {
+      const auto spec =
+          Spec("pre", {{"adsh", Col::Str}, {"tag", Col::Str}, {"version", Col::Str}, {"stmt", Col::Str}});
+      b.BeginPre(GetNativeScanTableRowCount(context, spec));
+      IdColumn ca, ct, cv, cs;
+      ScanNativeBaseTable(context, spec, [&](::duckdb::DataChunk &chunk) {
+        const auto n = chunk.size();
+        ca.Map(chunk.data[0], n, adsh_id, ia.data());
+        ct.Map(chunk.data[1], n, tag_id, it.data());
+        cv.Map(chunk.data[2], n, ver_id, iv.data());
+        cs.Map(chunk.data[3], n, stmt_id, ix.data());
+        b.AddPre(ia.data(), it.data(), iv.data(), ix.data(), n);
+      });
+      lap("pre");
+    }
+    {
+      const auto spec = Spec("num", {{"adsh", Col::Str},
+                                     {"tag", Col::Str},
+                                     {"version", Col::Str},
+                                     {"uom", Col::Str},
+                                     {"value", Col::Dbl}});
+      IdColumn ca, ct, cv, cu;
+      uint64_t cyc[5] = {0, 0, 0, 0, 0};
+      ScanNativeBaseTable(context, spec, [&](::duckdb::DataChunk &chunk) {
+        const auto n = chunk.size();
+        uint64_t c0 = __rdtsc();
+        ca.Map(chunk.data[0], n, adsh_id, ia.data());
+        uint64_t c1 = __rdtsc(); cyc[0] += c1 - c0;
+        ct.Map(chunk.data[1], n, tag_id, it.data());
+        uint64_t c2 = __rdtsc(); cyc[1] += c2 - c1;
+        cv.Map(chunk.data[2], n, ver_id, iv.data());
+        uint64_t c3 = __rdtsc(); cyc[2] += c3 - c2;
+        cu.Map(chunk.data[3], n, uom_id, ix.data());
+        uint64_t c4 = __rdtsc(); cyc[3] += c4 - c3;
+        ::duckdb::UnifiedVectorFormat f;
+        chunk.data[4].ToUnifiedFormat(n, f);
+        const double *x = Data<double>(f);
+        for (::duckdb::idx_t i = 0; i < n; ++i) {
+          const auto idx = f.sel->get_index(i);
+          if (f.validity.RowIsValid(idx)) {
+            xs[i] = x[idx];
+          } else {
+            ix[i] = kQ4None; // value IS NULL: no contribution
+          }
+        }
+        uint64_t c5 = __rdtsc();
+        b.AddNum(ia.data(), it.data(), iv.data(), ix.data(), xs.data(), n);
+        cyc[4] += __rdtsc() - c5;
+      });
+      lap("num");
+      if (std::getenv("Q4_BUILD_PROFILE")) fprintf(stderr, "num Mcyc adsh=%lu tag=%lu ver=%lu uom=%lu add=%lu\n", cyc[0]/1000000, cyc[1]/1000000, cyc[2]/1000000, cyc[3]/1000000, cyc[4]/1000000);
+    }
+  });
+  return true;
+}
+
+void SecEdgarQ4DuckDbScan::ScanDirty(const SecEdgarQ4BridgeFilter &filter,
+                                     SecEdgarQ4DirtyRows &out) const {
+  const auto restrict_to = [&](const std::string &a) -> std::string {
+    if (filter.all) return std::string();
+    std::string any;
+    if (!filter.adsh.empty()) {
+      any += a + ".adsh IN (" + InList(filter.adsh) + ")";
+    }
+    if (!filter.tag_versions.empty()) {
+      if (!any.empty()) any += " OR ";
+      any += "(" + a + ".tag, " + a + ".version) IN (";
+      for (size_t i = 0; i < filter.tag_versions.size(); ++i) {
+        any += (i ? ",(" : "(") + Lit(filter.tag_versions[i].first) + "," +
+               Lit(filter.tag_versions[i].second) + ")";
+      }
+      any += ")";
+    }
+    if (!filter.keys.empty()) {
+      if (!any.empty()) any += " OR ";
+      any += "(" + a + ".adsh, " + a + ".tag, " + a + ".version) IN (";
+      for (size_t i = 0; i < filter.keys.size(); ++i) {
+        any += (i ? ",(" : "(") + Lit(filter.keys[i].adsh) + "," + Lit(filter.keys[i].tag) + "," +
+               Lit(filter.keys[i].version) + ")";
+      }
+      any += ")";
+    }
+    if (any.empty()) any = "FALSE";
+    return " AND (" + any + ")";
+  };
+  std::unordered_set<std::string> need_adsh(filter.adsh.begin(), filter.adsh.end());
+  std::set<std::pair<std::string, std::string>> need_tv(filter.tag_versions.begin(),
+                                                        filter.tag_versions.end());
+  for (const auto &k : filter.keys) {
+    need_adsh.insert(k.adsh);
+    need_tv.emplace(k.tag, k.version);
+  }
+  StreamQuery(connection,
+              "SELECT p.adsh, p.tag, p.version, p.stmt FROM pre p WHERE p.stmt IS NOT NULL "
+              "AND p.adsh IS NOT NULL AND p.tag IS NOT NULL AND p.version IS NOT NULL" +
+                  restrict_to("p"),
+              [&](::duckdb::DataChunk &chunk) {
+                ::duckdb::UnifiedVectorFormat a, t, v, s;
+                chunk.data[0].ToUnifiedFormat(chunk.size(), a);
+                chunk.data[1].ToUnifiedFormat(chunk.size(), t);
+                chunk.data[2].ToUnifiedFormat(chunk.size(), v);
+                chunk.data[3].ToUnifiedFormat(chunk.size(), s);
+                for (::duckdb::idx_t r = 0; r < chunk.size(); ++r) {
+                  out.pres.push_back({Str(a, r), Str(t, r), Str(v, r), Str(s, r)});
+                  need_adsh.insert(out.pres.back().adsh);
+                  need_tv.emplace(out.pres.back().tag, out.pres.back().version);
+                }
+              });
+  StreamQuery(connection,
+              "SELECT n.adsh, n.tag, n.version, n.uom, CAST(n.value AS DOUBLE) FROM num n "
+              "WHERE n.uom IS NOT NULL AND n.value IS NOT NULL AND n.adsh IS NOT NULL "
+              "AND n.tag IS NOT NULL AND n.version IS NOT NULL" +
+                  restrict_to("n"),
+              [&](::duckdb::DataChunk &chunk) {
+                ::duckdb::UnifiedVectorFormat a, t, v, u, x;
+                chunk.data[0].ToUnifiedFormat(chunk.size(), a);
+                chunk.data[1].ToUnifiedFormat(chunk.size(), t);
+                chunk.data[2].ToUnifiedFormat(chunk.size(), v);
+                chunk.data[3].ToUnifiedFormat(chunk.size(), u);
+                chunk.data[4].ToUnifiedFormat(chunk.size(), x);
+                for (::duckdb::idx_t r = 0; r < chunk.size(); ++r) {
+                  SecEdgarQ4NumInput in;
+                  in.adsh = Str(a, r);
+                  in.tag = Str(t, r);
+                  in.version = Str(v, r);
+                  in.uom = Str(u, r);
+                  in.value = Data<double>(x)[x.sel->get_index(r)];
+                  in.value_is_null = false;
+                  out.nums.push_back(std::move(in));
+                }
+              });
+  constexpr size_t kMaxInList = 2048;
+  if (!need_adsh.empty()) {
+    std::string sql = "SELECT adsh, cik, sic FROM sub WHERE sic IS NOT NULL AND adsh IS NOT NULL";
+    if (need_adsh.size() <= kMaxInList) {
+      sql += " AND adsh IN (" + InList(std::vector<std::string>(need_adsh.begin(), need_adsh.end())) + ")";
+    }
+    StreamQuery(connection, sql, [&](::duckdb::DataChunk &chunk) {
+      ::duckdb::UnifiedVectorFormat a, c, s;
+      chunk.data[0].ToUnifiedFormat(chunk.size(), a);
+      chunk.data[1].ToUnifiedFormat(chunk.size(), c);
+      chunk.data[2].ToUnifiedFormat(chunk.size(), s);
+      for (::duckdb::idx_t r = 0; r < chunk.size(); ++r) {
+        SecEdgarQ4SubInput in;
+        in.adsh = Str(a, r);
+        const auto ci = c.sel->get_index(r);
+        in.cik_null = !c.validity.RowIsValid(ci);
+        in.cik = in.cik_null ? 0 : Data<int32_t>(c)[ci];
+        in.sic = Data<int32_t>(s)[s.sel->get_index(r)];
+        out.subs.push_back(std::move(in));
+      }
+    });
+  }
+  if (!need_tv.empty()) {
+    std::string sql = "SELECT t.tag, t.version, t.tlabel FROM tag t WHERE t.abstract = 0 "
+                      "AND t.tag IS NOT NULL AND t.version IS NOT NULL";
+    if (need_tv.size() <= kMaxInList) {
+      sql += " AND (t.tag, t.version) IN (";
+      size_t i = 0;
+      for (const auto &tv : need_tv) {
+        sql += (i++ ? ",(" : "(") + Lit(tv.first) + "," + Lit(tv.second) + ")";
+      }
+      sql += ")";
+    }
+    StreamQuery(connection, sql, [&](::duckdb::DataChunk &chunk) {
+      ::duckdb::UnifiedVectorFormat t, v, tl;
+      chunk.data[0].ToUnifiedFormat(chunk.size(), t);
+      chunk.data[1].ToUnifiedFormat(chunk.size(), v);
+      chunk.data[2].ToUnifiedFormat(chunk.size(), tl);
+      for (::duckdb::idx_t r = 0; r < chunk.size(); ++r) {
+        SecEdgarQ4TagInput in;
+        in.tag = Str(t, r);
+        in.version = Str(v, r);
+        in.abstract_flag = 0;
+        const auto li = tl.sel->get_index(r);
+        in.tlabel_null = !tl.validity.RowIsValid(li);
+        if (!in.tlabel_null) in.tlabel = Str(tl, r);
+        out.tags.push_back(std::move(in));
+      }
+    });
+  }
+}
 
 void SecEdgarQ4DuckDbScan::ScanSub(
     const std::function<void(const SecEdgarQ4SubInput &)> &consumer) const {

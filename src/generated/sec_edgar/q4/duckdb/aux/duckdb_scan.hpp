@@ -5,9 +5,9 @@
 
 namespace accelerator_codegen::aux_state::query {
 
-// DuckDB-backed initial scan for Q4.  ScanBridge pushes the pre/sub/tag/num
-// join down into the database (one streamed result of ~65K rows on SF3)
-// instead of materializing the 39M-row num table row by row.
+// DuckDB-backed initial scan for Q4.  The full build streams pre and num
+// straight from table storage into q4::Builder; structural maintenance reads
+// only the rows of the dirty keys (ScanDirty).
 class SecEdgarQ4DuckDbScan : public SecEdgarQ4InitialScan {
 public:
   explicit SecEdgarQ4DuckDbScan(::duckdb::Connection &connection)
@@ -19,6 +19,10 @@ public:
   void ScanNum(const std::function<void(const SecEdgarQ4NumInput &)> &) const override;
   void ScanBridge(const SecEdgarQ4BridgeFilter &,
                   const std::function<void(const SecEdgarQ4BridgeRow &)> &) const override;
+  void ScanDirty(const SecEdgarQ4BridgeFilter &, SecEdgarQ4DirtyRows &) const override;
+  // sub / tag through SQL, then ONE native storage scan of pre and of num
+  // (dictionary-coded strings are mapped to ids once per dictionary entry).
+  bool BuildFull(q4::Builder &) const override;
 
   ::duckdb::Connection &connection;
 };
