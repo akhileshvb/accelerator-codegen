@@ -11,68 +11,83 @@
 
 namespace accelerator_codegen::aux_state::query::q4 {
 
-// Mutable, flat working representation used to build a state from scratch and
-// to apply structural (sub/tag/pre) maintenance.  Not on the num hot path.
-struct Flat {
-  struct Group {
-    int32_t sic = 0;
-    uint32_t tl = kQ4None;
-    double hi = 0.0, lo = 0.0;
-    int64_t count = 0;
-    uint32_t distinct = 0;
-  };
-
-  SecEdgarQ4Cohort cohort;
-  core::FlatHashMap<uint32_t> cik_index;
-  SecEdgarQ4StrDict tv;
-  std::vector<uint32_t> tv_tl;
-  SecEdgarQ4StrDict tlabels;
-  std::vector<SecEdgarQ4Entry> entries;
-  core::FlatHashMap<uint32_t> entry_index; // (adsh id << 32 | tv id) -> entry
-  std::vector<Group> groups;
-  core::FlatHashMap<uint32_t> group_index; // (sic << 32 | tlabel id) -> group
-  core::FlatHashMap<int64_t> pairs;        // Q4PairKey(group, cik id) -> rows
-  bool bad = false; // an invariant broke: caller must rebuild from scratch
-
-  uint32_t GroupFor(int32_t sic, uint32_t tl);
-  void PairAdd(uint32_t group, uint32_t cik_id, int64_t delta);
-  void Contribute(const SecEdgarQ4Entry &e, int sign);
-  void AddRow(const SecEdgarQ4BridgeRow &row);
-  void RemoveEntry(uint32_t idx);
-};
-
-void StateToFlat(const SecEdgarQ4State &state, Flat &flat);
-SecEdgarQ4State FlatToState(Flat &flat, uint64_t generation);
-
-// Copy-on-write application of num deltas on top of a published state.  Only
-// the shards that a delta touches are cloned.
-class CowApplier {
+// Copy-on-write writer: starts from a published state (or an empty one) and
+// produces the next version.  Every container it touches is cloned lazily and
+// only as far as the touched shard / chunk, so a write costs O(touched).
+class Writer {
 public:
-  explicit CowApplier(const SecEdgarQ4State &base);
-  // false => state is inconsistent with the delta (caller rebuilds).
-  bool Apply(std::string_view adsh, std::string_view tag,
-             std::string_view version, double value, int sign);
+  // base == nullptr starts from an empty state (full build).
+  explicit Writer(const SecEdgarQ4State *base);
+
+  // One num row appears (sign=+1) / disappears (sign=-1).  false => the state
+  // is inconsistent with the delta (caller rebuilds from the base tables).
+  bool ApplyNum(std::string_view adsh, std::string_view tag, std::string_view version,
+                std::string_view uom, double value, int sign);
+
+  // Structural maintenance: drop every record the dirty filings / tags / keys
+  // can touch (finds them by one pass over the record maps), then AddRow the
+  // restricted re-read.  false => invariant broke, caller rebuilds.
+  bool RemoveDirty(const std::vector<std::string> &adsh,
+                   const std::vector<std::pair<std::string, std::string>> &tag_versions,
+                   const std::vector<SecEdgarQ4BridgeFilter::Key> &keys);
+  bool AddRow(const SecEdgarQ4BridgeRow &row);
+
+  bool bad() const { return bad_; }
   // Finishes the batch.  The returned state shares every untouched chunk.
   SecEdgarQ4State Finish();
 
 private:
-  SecEdgarQ4State base_;
-  const SecEdgarQ4Cohort &cohort;
-  const SecEdgarQ4Bridge &bridge;
-  const SecEdgarQ4Groups &groups;
-  // Private copy-on-write views: the first write to a chunk/shard clones it.
-  SecEdgarQ4EntryArray entries;
-  SecEdgarQ4PairMap pairs;
-  std::vector<std::shared_ptr<SecEdgarQ4GroupShard>> new_g;
-  std::string scratch;
+  using Shard = SecEdgarQ4GroupShard;
+
+  SecEdgarQ4Cohort &MutCohort();
+  SecEdgarQ4StrDict &MutTvDict();
+  std::vector<uint32_t> &MutTvTl();
+  SecEdgarQ4StrDict &MutTlabels();
+  SecEdgarQ4Sud &MutSud();
+  const SecEdgarQ4Cohort &Coh() const { return mut_cohort_ ? *mut_cohort_ : *cohort_; }
+  Shard &MutShard(uint32_t gid);
+  const Shard &ConstShard(uint32_t gid) const;
+  uint32_t GroupFor(uint32_t sic_id, uint32_t tl, uint32_t stmt, uint32_t uom);
+  // group += mult * (hi + lo); rows joined rows for the cik.
+  bool Contribute(uint32_t gid, uint32_t cik_id, double hi, double lo, double mult,
+                  int64_t rows, bool removing);
+  uint32_t TvFind(std::string_view tag, std::string_view version);
+
+  std::shared_ptr<const SecEdgarQ4Cohort> cohort_;
+  std::shared_ptr<const SecEdgarQ4StrDict> tv_dict_;
+  std::shared_ptr<const std::vector<uint32_t>> tv_tl_;
+  std::shared_ptr<const SecEdgarQ4Sud> sud_;
+  std::shared_ptr<const SecEdgarQ4Labels> labels_;
+  std::shared_ptr<const SecEdgarQ4Groups> base_groups_;
+  std::shared_ptr<SecEdgarQ4Cohort> mut_cohort_;
+  std::shared_ptr<SecEdgarQ4StrDict> mut_tv_dict_;
+  std::shared_ptr<std::vector<uint32_t>> mut_tv_tl_;
+  std::shared_ptr<SecEdgarQ4Sud> mut_sud_;
+  std::shared_ptr<SecEdgarQ4Labels> mut_labels_;
+
+  SecEdgarQ4PreMap pre_;
+  SecEdgarQ4NumMap num_;
+  SecEdgarQ4PairMap pairs_;
+  SecEdgarQ4GroupIndex gindex_;
+  std::vector<std::shared_ptr<Shard>> own_;
+  std::vector<std::shared_ptr<const Shard>> shards_;
+  uint32_t group_count_ = 0;
+  uint64_t generation_ = 0;
+  bool bad_ = false;
+  std::string scratch_;
 };
 
+// Resolves the 4 parameters; ids are kQ4None when the value is unknown.
 std::shared_ptr<const SecEdgarQ4Result>
-ComputeResult(const SecEdgarQ4Groups &groups);
+ComputeResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params);
+
+// Cached ComputeResult (per published version).
+std::shared_ptr<const SecEdgarQ4Result>
+CachedResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params);
 
 // Candidate filter used by ComputeResult (exposed for tests/benchmarks):
-// appends the ids of groups with distinct >= 2 and count > 0.
-void CollectCandidates(const SecEdgarQ4Groups &groups,
+// appends the ids of groups with distinct >= 2 matching the parameters.
+void CollectCandidates(const SecEdgarQ4Groups &groups, int32_t lo, int32_t hi, uint32_t su,
                        std::vector<uint32_t> &out, bool allow_simd = true);
 
 } // namespace accelerator_codegen::aux_state::query::q4

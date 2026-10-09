@@ -2,29 +2,32 @@
 
 // Compact, copy-on-write state for the SEC-EDGAR Q4 auxiliary accelerator.
 //
-// Query semantics (see benchmarks/sec_edgar/queries/q4.sql):
+// Query semantics (see benchmarks/sec_edgar/queries/q4.sql), parameterized:
 //   SELECT s.sic, t.tlabel, p.stmt, COUNT(DISTINCT s.cik), SUM(n.value), AVG(n.value)
 //   FROM num n JOIN sub s JOIN tag t JOIN pre p
-//   WHERE n.uom='USD' AND p.stmt='EQ' AND s.sic BETWEEN 4000 AND 4999
+//   WHERE n.uom = :uom AND p.stmt = :stmt AND s.sic BETWEEN :sic_lo AND :sic_hi
 //     AND n.value IS NOT NULL AND t.abstract=0
 //   GROUP BY s.sic, t.tlabel, p.stmt HAVING COUNT(DISTINCT s.cik) >= 2
 //   ORDER BY total_value DESC LIMIT 500
 //
-// State model.  A "bridge entry" is one distinct (adsh, tag, version) key that
-//   * has >= 1 pre row with stmt='EQ'                (mult = number of such rows)
-//   * whose adsh is a sub row with sic in [4000,4999]
-//   * whose (tag,version) is a tag row with abstract=0
-// and carries the running aggregate of the qualifying num rows for the key
-// (ns = SUM(value), nc = COUNT(value) over uom='USD' AND value IS NOT NULL).
-// Every joined result row is one (num row x pre row), so the contribution of an
-// entry to its group (sic, tlabel) is: sum += mult*ns, count += mult*nc, and
-// every joined row increments the (group, cik) reference count that backs
-// COUNT(DISTINCT cik).  A num-row insert/delete/update is then O(1): look up
-// the entry and adjust ns/nc, the group aggregate and one refcount.
+// State model.  The query groups by (sic, tlabel) *within* one (stmt, uom), so
+// every parameter value is answered by a read-time filter over per-group
+// aggregates keyed by (sic, tlabel, stmt, uom):
+//   * pre map  (adsh, tv, stmt)       -> mult  = number of pre rows (stmt IS NOT NULL)
+//                                        whose adsh is a sub row with sic IS NOT NULL
+//                                        and whose (tag, version) is a tag with abstract=0
+//   * num map  (adsh, tv, stmt, uom)  -> running SUM / COUNT of the non-NULL num
+//                                        values (double-double) and the group id
+//   * groups   (sic, tl, stmt, uom)   -> sum, count, COUNT(DISTINCT cik) (backed by a
+//                                        (group, cik) -> joined-row refcount map)
+// A num write touches the stmts that have a pre record for its key (<= a few)
+// and is O(1) per stmt; sub/tag/pre writes remove and re-add the affected
+// records from a restricted re-read of the base tables.  No filter on sic, stmt
+// or uom is baked into the state; a read scans the compact group columns
+// (AVX2 compare of distinct/sic/stmt-uom) and takes the top 500.
 //
-// Everything that a num write touches lives in fixed-size shards that are
-// shared between published versions via shared_ptr; a write clones only the
-// shards it touches (tens of KB) instead of the whole state.
+// All big containers are shared between published versions (shared_ptr /
+// copy-on-write shards); a write clones only the shards it touches.
 
 #include <algorithm>
 #include <cmath>
@@ -196,66 +199,72 @@ private:
   std::vector<uint32_t> table;
 };
 
-// One row per distinct sub.adsh that owns at least one bridge entry.
+// sub.adsh -> (cik id, sic id) for every filing the state has seen with a
+// non-NULL sic.  Shared between versions; replaced (copied) by structural writes.
 struct SecEdgarQ4Cohort {
   SecEdgarQ4StrDict adsh;
   std::vector<uint32_t> cik_id; // per adsh id, kQ4None when cik IS NULL
+  std::vector<uint32_t> sic_id; // per adsh id
   std::vector<int32_t> ciks;    // cik value per cik id
-  uint64_t Bytes() const { return adsh.Bytes() + cik_id.size() * 4 + ciks.size() * 4; }
+  std::vector<int32_t> sics;    // sic value per sic id
+  core::FlatHashMap<uint32_t> cik_index; // cik value -> id
+  core::FlatHashMap<uint32_t> sic_index; // sic value -> id
+  uint64_t Bytes() const {
+    return adsh.Bytes() + cik_id.size() * 8 + ciks.size() * 4 + sics.size() * 4 +
+           cik_index.memory_bytes() + sic_index.memory_bytes();
+  }
 };
 
-struct SecEdgarQ4Entry {
-  double ns_hi = 0.0;
-  double ns_lo = 0.0;
-  uint32_t adsh_id = 0;
-  uint32_t tv_id = 0;
-  uint32_t group = 0;
-  uint32_t mult = 0;  // 0 => dead slot (only exists transiently while rebuilding)
-  int64_t nc = 0;     // qualifying num rows for this key
+// stmt / uom dictionaries (ids are stable and append-only).
+struct SecEdgarQ4Sud {
+  SecEdgarQ4StrDict stmts;
+  SecEdgarQ4StrDict uoms;
+  uint64_t Bytes() const { return stmts.Bytes() + uoms.Bytes(); }
 };
 
-inline constexpr unsigned kQ4EntryShardBits = 10;
-inline constexpr uint32_t kQ4EntryShardSize = 1u << kQ4EntryShardBits;
-using SecEdgarQ4EntryArray = core::ChunkedCowArray<SecEdgarQ4Entry, kQ4EntryShardBits>;
+// Record key limits (see Q4RecKey / Q4GroupKey).
+inline constexpr uint32_t kQ4MaxAdsh = 1u << 22;
+inline constexpr uint32_t kQ4MaxTv = 1u << 24;
+inline constexpr uint32_t kQ4MaxStmt = 64;
+inline constexpr uint32_t kQ4MaxUom = 1023;
+inline constexpr uint32_t kQ4MaxSic = 4096;
+inline constexpr uint32_t kQ4MaxTl = 0xFFFFFFu; // 0xFFFFFF encodes NULL
+
+inline int64_t Q4RecKey(uint32_t adsh, uint32_t tv, uint32_t stmt, uint32_t uom) {
+  return static_cast<int64_t>((static_cast<uint64_t>(adsh) << 42) |
+                              (static_cast<uint64_t>(tv) << 18) |
+                              (static_cast<uint64_t>(stmt) << 10) | uom);
+}
+inline int64_t Q4GroupKey(uint32_t sic_id, uint32_t tl, uint32_t stmt, uint32_t uom) {
+  const uint64_t t = tl == kQ4None ? kQ4MaxTl : tl;
+  return static_cast<int64_t>((static_cast<uint64_t>(sic_id) << 40) | (t << 16) |
+                              (static_cast<uint64_t>(stmt) << 10) | uom);
+}
+
+struct SecEdgarQ4NumRec {
+  double hi = 0.0;
+  double lo = 0.0;
+  uint32_t nc = 0;    // non-NULL num values of this (adsh, tv, uom); 0 => absent
+  uint32_t group = 0; // group id of (sic, tl, stmt, uom)
+};
+
+inline constexpr unsigned kQ4RecShardBits = 12;
+using SecEdgarQ4PreMap = core::ShardedCowHashMap<uint32_t, kQ4RecShardBits>;
+using SecEdgarQ4NumMap = core::ShardedCowHashMap<SecEdgarQ4NumRec, kQ4RecShardBits>;
 
 struct SecEdgarQ4Bridge {
-  SecEdgarQ4Bridge() = default;
-  std::shared_ptr<const SecEdgarQ4StrDict> tv_dict;       // "tag\0version"
-  std::shared_ptr<const std::vector<uint32_t>> tv_tl;     // tlabel id per tv (kQ4None = NULL)
-  std::shared_ptr<const std::vector<uint32_t>> index;     // open addressing: entry id
-  SecEdgarQ4EntryArray entries;  // copy-on-write chunks of 1024 entries
-  uint32_t entry_count = 0;
+  std::shared_ptr<const SecEdgarQ4StrDict> tv_dict;   // "tag\0version"
+  std::shared_ptr<const std::vector<uint32_t>> tv_tl; // tlabel id per tv (kQ4None = NULL)
+  std::shared_ptr<const SecEdgarQ4Sud> sud;
+  SecEdgarQ4PreMap pre;
+  SecEdgarQ4NumMap num;
   uint64_t generation = 0;
 
-  const SecEdgarQ4Entry &At(uint32_t id) const {
-    return *entries.Find(id);
-  }
-  static uint64_t KeyHash(uint32_t adsh_id, uint32_t tv_id) {
-    return Q4Mix((static_cast<uint64_t>(adsh_id) << 32) | tv_id);
-  }
-  uint32_t Lookup(uint32_t adsh_id, uint32_t tv_id) const {
-    if (!index || index->empty()) {
-      return kQ4None;
-    }
-    const auto &idx = *index;
-    const size_t mask = idx.size() - 1;
-    for (size_t i = static_cast<size_t>(KeyHash(adsh_id, tv_id)) & mask;;
-         i = (i + 1) & mask) {
-      const uint32_t id = idx[i];
-      if (id == kQ4None) {
-        return kQ4None;
-      }
-      const auto &en = At(id);
-      if (en.adsh_id == adsh_id && en.tv_id == tv_id) {
-        return id;
-      }
-    }
-  }
   uint64_t Bytes() const {
-    uint64_t b = entry_count * sizeof(SecEdgarQ4Entry);
+    uint64_t b = pre.memory_bytes() + num.memory_bytes();
     if (tv_dict) b += tv_dict->Bytes();
     if (tv_tl) b += tv_tl->size() * 4;
-    if (index) b += index->size() * 4;
+    if (sud) b += sud->Bytes();
     return b;
   }
 };
@@ -267,8 +276,8 @@ struct SecEdgarQ4Labels {
 
 inline constexpr uint32_t kQ4GroupShardSize = 256;
 
-// Structure-of-arrays so the top-500 candidate filter (distinct >= 2) runs as
-// a contiguous (AVX2) scan over `distinct`; a write clones one 256-group shard.
+// Structure-of-arrays so the read-time candidate filter runs as a contiguous
+// (AVX2) scan; a write clones one 256-group shard.
 struct alignas(32) SecEdgarQ4GroupShard {
   double sum_hi[kQ4GroupShardSize] = {};
   double sum_lo[kQ4GroupShardSize] = {};
@@ -276,16 +285,24 @@ struct alignas(32) SecEdgarQ4GroupShard {
   uint32_t distinct[kQ4GroupShardSize] = {};
   int32_t sic[kQ4GroupShardSize] = {};
   uint32_t tl[kQ4GroupShardSize] = {};
+  uint32_t su[kQ4GroupShardSize] = {}; // stmt id << 16 | uom id; 0xFFFFFFFF = unused slot
 };
 
-// (group, cik id) -> number of joined rows, as one copy-on-write sharded hash
-// map (4096 shards: a write clones only the shards it touches).  The key is
-// the exact pair (group id << 32 | cik id); zero counts are inert.
 inline constexpr unsigned kQ4PairShardBits = 12;
 using SecEdgarQ4PairMap = core::ShardedCowHashMap<int64_t, kQ4PairShardBits>;
 inline int64_t Q4PairKey(uint32_t group, uint32_t cik_id) {
   return static_cast<int64_t>((static_cast<uint64_t>(group) << 32) | cik_id);
 }
+using SecEdgarQ4GroupIndex = core::ShardedCowHashMap<uint32_t, 10>;
+
+// Query parameters resolved against the dictionaries.
+struct SecEdgarQ4Params {
+  int32_t sic_lo = 4000;
+  int32_t sic_hi = 4999;
+  std::string stmt = "EQ";
+  std::string uom = "USD";
+  bool empty = false; // NULL argument / empty range
+};
 
 struct SecEdgarQ4ResultRow {
   int32_t sic = 0;
@@ -304,23 +321,35 @@ struct SecEdgarQ4Result {
 struct SecEdgarQ4Groups {
   SecEdgarQ4Groups() = default;
   SecEdgarQ4Groups(const SecEdgarQ4Groups &other)
-      : labels(other.labels), gshards(other.gshards), group_count(other.group_count),
-        pairs(other.pairs), generation(other.generation) {}
+      : labels(other.labels), sud(other.sud), gshards(other.gshards),
+        group_count(other.group_count), gindex(other.gindex), pairs(other.pairs),
+        generation(other.generation) {}
   SecEdgarQ4Groups &operator=(const SecEdgarQ4Groups &) = delete;
 
   std::shared_ptr<const SecEdgarQ4Labels> labels;
+  std::shared_ptr<const SecEdgarQ4Sud> sud;
   std::vector<std::shared_ptr<const SecEdgarQ4GroupShard>> gshards;
   uint32_t group_count = 0;
-  SecEdgarQ4PairMap pairs;
+  SecEdgarQ4GroupIndex gindex; // Q4GroupKey -> group id
+  SecEdgarQ4PairMap pairs;     // Q4PairKey(group, cik id) -> joined rows
   uint64_t generation = 0;
 
-  // Lazily computed top-500 (valid for exactly this immutable object).
+  // Small per-version cache of recent parameter combinations (valid for
+  // exactly this immutable object).
+  struct CacheKey {
+    int32_t lo, hi;
+    std::string stmt, uom;
+    bool operator==(const CacheKey &o) const {
+      return lo == o.lo && hi == o.hi && stmt == o.stmt && uom == o.uom;
+    }
+  };
   mutable std::mutex cache_mutex;
-  mutable std::shared_ptr<const SecEdgarQ4Result> cache;
+  mutable std::vector<std::pair<CacheKey, std::shared_ptr<const SecEdgarQ4Result>>> cache;
+  mutable size_t cache_next = 0;
 
   uint64_t Bytes() const {
     uint64_t b = gshards.size() * sizeof(SecEdgarQ4GroupShard);
-    b += pairs.memory_bytes();
+    b += pairs.memory_bytes() + gindex.memory_bytes();
     if (labels) b += labels->Bytes();
     return b;
   }

@@ -123,7 +123,7 @@ public:
   void ScanPre(const std::function<void(const query::SecEdgarQ4PreInput &)> &consumer)
       const override {
     ScanTypedTuples(
-        "SELECT adsh, tag, version, stmt FROM pre WHERE stmt = 'EQ' AND adsh IS NOT NULL "
+        "SELECT adsh, tag, version, stmt FROM pre WHERE stmt IS NOT NULL AND adsh IS NOT NULL "
         "AND tag IS NOT NULL AND version IS NOT NULL",
         [&](HeapTuple tuple, TupleDesc tuple_desc) {
           consumer({TypedText(tuple, tuple_desc, 0), TypedText(tuple, tuple_desc, 1),
@@ -133,7 +133,7 @@ public:
   void ScanNum(const std::function<void(const query::SecEdgarQ4NumInput &)> &consumer)
       const override {
     ScanTypedTuples(
-        "SELECT adsh, tag, version, uom, value FROM num WHERE uom = 'USD' AND value IS NOT NULL "
+        "SELECT adsh, tag, version, uom, value FROM num WHERE uom IS NOT NULL AND value IS NOT NULL "
         "AND adsh IS NOT NULL AND tag IS NOT NULL AND version IS NOT NULL",
         [&](HeapTuple tuple, TupleDesc tuple_desc) {
           query::SecEdgarQ4NumInput in;
@@ -150,11 +150,13 @@ public:
   void ScanBridge(const query::SecEdgarQ4BridgeFilter &filter,
                   const std::function<void(const query::SecEdgarQ4BridgeRow &)> &consumer)
       const override {
+    // No predicate on stmt, uom or sic: the state keeps every group.
     const std::string pre_base =
-        "p.stmt = 'EQ' AND p.adsh IS NOT NULL AND p.tag IS NOT NULL AND p.version IS NOT NULL";
+        "p.stmt IS NOT NULL AND p.adsh IS NOT NULL AND p.tag IS NOT NULL AND "
+        "p.version IS NOT NULL";
     std::string src;
     if (filter.all) {
-      src = "SELECT p.adsh, p.tag, p.version FROM pre p WHERE " + pre_base;
+      src = "SELECT p.adsh, p.tag, p.version, p.stmt FROM pre p WHERE " + pre_base;
     } else {
       // One index-friendly branch per kind of dirty key; UNION on the row id
       // makes a pre row matched by several branches count once.
@@ -164,7 +166,7 @@ public:
         for (std::size_t i = 0; i < filter.adsh.size(); ++i) {
           list += (i ? "," : "") + Lit(filter.adsh[i]);
         }
-        branches.push_back("SELECT p.ctid AS rid, p.adsh, p.tag, p.version FROM pre p WHERE " +
+        branches.push_back("SELECT p.ctid AS rid, p.adsh, p.tag, p.version, p.stmt FROM pre p WHERE " +
                            pre_base + " AND p.adsh = ANY(ARRAY[" + list + "]::text[])");
       }
       if (!filter.tag_versions.empty()) {
@@ -174,7 +176,7 @@ public:
                   Lit(filter.tag_versions[i].second) + ")";
         }
         branches.push_back(
-            "SELECT p.ctid AS rid, p.adsh, p.tag, p.version FROM pre p JOIN (VALUES " + list +
+            "SELECT p.ctid AS rid, p.adsh, p.tag, p.version, p.stmt FROM pre p JOIN (VALUES " + list +
             ") AS k(tag, version) ON p.tag = k.tag AND p.version = k.version WHERE " + pre_base);
       }
       if (!filter.keys.empty()) {
@@ -184,7 +186,7 @@ public:
                   "," + Lit(filter.keys[i].version) + ")";
         }
         branches.push_back(
-            "SELECT p.ctid AS rid, p.adsh, p.tag, p.version FROM pre p JOIN (VALUES " + list +
+            "SELECT p.ctid AS rid, p.adsh, p.tag, p.version, p.stmt FROM pre p JOIN (VALUES " + list +
             ") AS k(adsh, tag, version) ON p.adsh = k.adsh AND p.tag = k.tag AND "
             "p.version = k.version WHERE " + pre_base);
       }
@@ -193,37 +195,49 @@ public:
       for (std::size_t i = 0; i < branches.size(); ++i) {
         u += (i ? " UNION " : "") + branches[i];
       }
-      src = "SELECT adsh, tag, version FROM (" + u + ") u";
+      src = "SELECT adsh, tag, version, stmt FROM (" + u + ") u";
     }
     std::string sql =
-        "WITH pe AS (SELECT adsh, tag, version, COUNT(*) AS mult FROM (" + src +
-        ") x GROUP BY adsh, tag, version) "
-        "SELECT pe.adsh, pe.tag, pe.version, pe.mult::int8, s.cik, s.sic, t.tlabel, ";
-    if (filter.include_num) {
-      sql += "COALESCE(SUM(n.value), 0)::float8, COUNT(n.value)::int8 ";
-    } else {
-      sql += "0::float8, 0::int8 ";
-    }
-    sql += "FROM pe JOIN sub s ON s.adsh = pe.adsh AND s.sic BETWEEN 4000 AND 4999 "
+        "WITH pe AS (SELECT adsh, tag, version, stmt, COUNT(*) AS mult FROM (" + src +
+        ") x GROUP BY adsh, tag, version, stmt) "
+        "SELECT pe.adsh, pe.tag, pe.version, pe.stmt, pe.mult::int8, s.cik, s.sic, t.tlabel, "
+        "n.uom, n.ns, n.nc ";
+    sql += "FROM pe JOIN sub s ON s.adsh = pe.adsh AND s.sic IS NOT NULL "
            "JOIN tag t ON t.tag = pe.tag AND t.version = pe.version AND t.abstract = 0 ";
-    if (filter.include_num) {
-      sql += "LEFT JOIN num n ON n.adsh = pe.adsh AND n.tag = pe.tag AND "
-             "n.version = pe.version AND n.uom = 'USD' AND n.value IS NOT NULL "
-             "GROUP BY pe.adsh, pe.tag, pe.version, pe.mult, s.cik, s.sic, t.tlabel";
+    if (filter.all) {
+      sql += "LEFT JOIN (SELECT adsh, tag, version, uom, SUM(value)::float8 AS ns, "
+             "COUNT(value)::int8 AS nc FROM num WHERE uom IS NOT NULL AND value IS NOT NULL "
+             "GROUP BY adsh, tag, version, uom) n ON n.adsh = pe.adsh AND n.tag = pe.tag AND "
+             "n.version = pe.version";
+    } else {
+      // A handful of keys: probe num by (adsh, tag, version) per pre key.
+      sql = "WITH pe AS (SELECT adsh, tag, version, stmt, COUNT(*) AS mult FROM (" + src +
+            ") x GROUP BY adsh, tag, version, stmt) "
+            "SELECT pe.adsh, pe.tag, pe.version, pe.stmt, pe.mult::int8, s.cik, s.sic, t.tlabel, "
+            "n.uom, n.ns, n.nc FROM pe JOIN sub s ON s.adsh = pe.adsh AND s.sic IS NOT NULL "
+            "JOIN tag t ON t.tag = pe.tag AND t.version = pe.version AND t.abstract = 0 "
+            "LEFT JOIN LATERAL (SELECT uom, SUM(value)::float8 AS ns, COUNT(value)::int8 AS nc "
+            "FROM num WHERE adsh = pe.adsh AND tag = pe.tag AND version = pe.version AND "
+            "uom IS NOT NULL AND value IS NOT NULL GROUP BY uom) n ON true";
     }
     const auto row = [&](HeapTuple tuple, TupleDesc tuple_desc) {
       query::SecEdgarQ4BridgeRow r;
       r.adsh = TypedText(tuple, tuple_desc, 0);
       r.tag = TypedText(tuple, tuple_desc, 1);
       r.version = TypedText(tuple, tuple_desc, 2);
-      r.mult = static_cast<uint32_t>(TypedInt(tuple, tuple_desc, 3));
-      r.cik_null = IsNullAt(tuple, tuple_desc, 4);
-      r.cik = r.cik_null ? 0 : static_cast<int32_t>(TypedInt(tuple, tuple_desc, 4));
-      r.sic = static_cast<int32_t>(TypedInt(tuple, tuple_desc, 5));
-      r.tlabel_null = IsNullAt(tuple, tuple_desc, 6);
-      if (!r.tlabel_null) r.tlabel = TypedText(tuple, tuple_desc, 6);
-      r.ns = Float8At(tuple, tuple_desc, 7);
-      r.nc = TypedInt(tuple, tuple_desc, 8);
+      r.stmt = TypedText(tuple, tuple_desc, 3);
+      r.mult = static_cast<uint32_t>(TypedInt(tuple, tuple_desc, 4));
+      r.cik_null = IsNullAt(tuple, tuple_desc, 5);
+      r.cik = r.cik_null ? 0 : static_cast<int32_t>(TypedInt(tuple, tuple_desc, 5));
+      r.sic = static_cast<int32_t>(TypedInt(tuple, tuple_desc, 6));
+      r.tlabel_null = IsNullAt(tuple, tuple_desc, 7);
+      if (!r.tlabel_null) r.tlabel = TypedText(tuple, tuple_desc, 7);
+      r.has_num = !IsNullAt(tuple, tuple_desc, 8);
+      if (r.has_num) {
+        r.uom = TypedText(tuple, tuple_desc, 8);
+        r.ns = Float8At(tuple, tuple_desc, 9);
+        r.nc = TypedInt(tuple, tuple_desc, 10);
+      }
       consumer(r);
     };
     if (filter.all) {
@@ -248,7 +262,24 @@ Runtime<query::SecEdgarQ4Module, query::SecEdgarQ4Config, SecEdgarQ4PgScan> &Q4R
 namespace {
 
 void ExecutePostgresSecEdgarQ4(FunctionCallInfo fcinfo) {
-  detail::Q4Runtime().Execute(core::QueryArguments{}, fcinfo);
+  // accel_sec_edgar_q4_aux() uses the template defaults; the four-argument
+  // overload is not STRICT: a NULL argument reaches the module as NULL.
+  core::QueryArguments arguments;
+  if (PG_NARGS() >= 4) {
+    for (int i = 0; i < 2; ++i) {
+      arguments.values.push_back(
+          PG_ARGISNULL(i) ? core::AuxValue::Null(core::AuxType::Int64)
+                          : core::AuxValue::Of(core::AuxType::Int64,
+                                               static_cast<int64_t>(PG_GETARG_INT32(i))));
+    }
+    for (int i = 2; i < 4; ++i) {
+      arguments.values.push_back(
+          PG_ARGISNULL(i) ? core::AuxValue::Null(core::AuxType::String)
+                          : core::AuxValue::Of(core::AuxType::String,
+                                               detail::TextDatum(PG_GETARG_DATUM(i))));
+    }
+  }
+  detail::Q4Runtime().Execute(arguments, fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(
