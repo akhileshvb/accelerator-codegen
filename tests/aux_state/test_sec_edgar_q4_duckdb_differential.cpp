@@ -2,6 +2,7 @@
 //
 //   test_sec_edgar_q4_duckdb_differential synthetic [seeds] [steps] [parallel]
 //   test_sec_edgar_q4_duckdb_differential file <db_copy> [ops] [parallel]
+//   test_sec_edgar_q4_duckdb_differential sweep <db_copy> [random_ranges] [parallel]
 //
 // synthetic: random in-memory tables (NULL keys, boundary sics, duplicate pre
 //   rows, ...), random multi-mutation transactions over num/sub/tag/pre
@@ -12,14 +13,18 @@
 // file: the same invariants on a (writable copy of a) real SEC-EDGAR database
 //   with hand-picked, high-impact writes.
 //
-// Q4 has no template parameters: every constant in q4.sql is a literal, so
-// the module state is parameter independent.  The data-domain edge values of
-// those literals (sic 3999/4000/4999/5000, uom USD/usd/EUR, stmt EQ/NULL,
+// Q4 takes (sic_lo, sic_hi, stmt, uom): the state keeps every (sic, tlabel,
+// stmt, uom) group, so after every transaction the default read AND three
+// random-parameter reads (SIC divisions, random/inverted/edge ranges, NULLs,
+// stmt/uom incl. unknown values) are compared with plain SQL.  The data-domain
+// edge values (sic 3999/4000/4999/5000, uom USD/usd/EUR/shares, stmt EQ/NULL,
 // abstract 0/1/NULL, tlabel NULL) are covered by the generator.
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <cmath>
+#include <map>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -174,8 +179,15 @@ struct Env {
     Builder builder;
     module->Build(backend, builder);
     Require(builder.finished, "build did not finish");
+    state_bytes = 0;
+    for (const auto &image : builder.images) {
+      if (const auto *typed = image.As<accelerator_codegen::aux_state::query::SecEdgarQ4StateImage>()) {
+        state_bytes += accelerator_codegen::aux_state::query::SecEdgarQ4ResidentBytes(*typed->state, typed->kind);
+      }
+    }
     store.Install(std::move(builder.images), accelerator);
   }
+  uint64_t state_bytes = 0;
 
   std::vector<core::AuxRow> Execute() {
     Require(module->CheckValidity(backend, {}), "state must be valid (served incrementally)");
@@ -184,13 +196,50 @@ struct Env {
     return std::move(sink.rows);
   }
 
+  // The parameterized read against plain SQL with the same parameters.
+  void ComparePerParams(const q4gen::Params &params, const std::string &what, int step) {
+    Require(module->CheckValidity(backend, {}), "state must be valid (served incrementally)");
+    MaterializeSink sink;
+    module->Execute(backend, q4gen::ToQueryArgs(params), sink);
+    try {
+      harness::CompareAuxRowsToSql(con, *entry, q4gen::BaseSql(params), sink.rows);
+    } catch (const std::exception &e) {
+      std::cerr << "FAIL step " << step << " (" << what << ") params(" << q4gen::ArgsSql(params)
+                << "): " << e.what() << '\n';
+      std::abort();
+    }
+    param_rows += sink.rows.size();
+    ++param_checks;
+  }
+  size_t param_rows = 0;
+  int param_checks = 0;
+
   void Compare(const std::string &what, int step) {
     const auto rows = Execute();
     try {
-      harness::CompareAuxRowsToBase(con, *entry, rows);
+      harness::CompareAuxRowsToSql(con, *entry, q4gen::BaseSql(q4gen::Params{}), rows);
     } catch (const std::exception &e) {
       std::cerr << "FAIL step " << step << " (" << what << "): " << e.what() << '\n';
+      Dump(rows, q4gen::BaseSql(q4gen::Params{}));
       std::abort();
+    }
+  }
+
+  void Dump(const std::vector<core::AuxRow> &rows, const std::string &sql) {
+    auto fmt = [](const core::AuxRow &r) {
+      std::string out;
+      for (const auto &v : r.values) {
+        if (v.is_null) out += "NULL|";
+        else if (auto *i = std::get_if<int64_t>(&v.payload)) out += std::to_string(*i) + "|";
+        else if (auto *d = std::get_if<double>(&v.payload)) out += std::to_string(*d) + "|";
+        else out += std::get<std::string>(v.payload) + "|";
+      }
+      return out;
+    };
+    const auto want = Fetch(con, sql);
+    for (size_t i = 0; i < 8 && (i < rows.size() || i < want.size()); ++i) {
+      std::cerr << "  accel: " << (i < rows.size() ? fmt(rows[i]) : "-") << "\n  base:  "
+                << (i < want.size() ? fmt(want[i]) : "-") << '\n';
     }
   }
 
@@ -224,6 +273,7 @@ int RunSynthetic(int seeds, int steps, bool parallel) {
     Env env(con, parallel);
     env.Build();
     env.Compare("initial", 0);
+    for (int k = 0; k < 12; ++k) env.ComparePerParams(q4gen::RandomParams(model), "initial", 0);
     if (limit_case) {
       Require(env.Execute().size() == 500, "LIMIT 500 must truncate");
     }
@@ -253,10 +303,14 @@ int RunSynthetic(int seeds, int steps, bool parallel) {
       (*env.builds > builds_before ? rebuilt : incremental)++;
       env.Compare(rollback ? "rollback" : model.last_what, step);
       result_rows += env.Execute().size();
+      for (int k = 0; k < 3; ++k) {
+        env.ComparePerParams(q4gen::RandomParams(model), rollback ? "rollback" : model.last_what, step);
+      }
     }
     total_rebuilds += rebuilt;
     std::cerr << "synthetic seed " << seed << (parallel ? " (parallel)" : "") << ": " << steps
-              << " txns ok (avg_result_rows=" << result_rows / steps << " incremental=" << incremental << " rebuilds=" << rebuilt << ")\n";
+              << " txns ok (param_checks=" << env.param_checks << " avg_param_rows="
+              << env.param_rows / std::max(1, env.param_checks) << " avg_result_rows=" << result_rows / steps << " incremental=" << incremental << " rebuilds=" << rebuilt << ")\n";
     Require(rebuilt <= (cfg.nonfinite ? steps / 2 : steps / 20), "too many rebuilds");
   }
   return total_rebuilds;
@@ -285,6 +339,8 @@ struct WriteOp {
   std::string new_select; // post-image (may be empty)
 };
 
+q4gen::Params g_round_params; // parameters of the current file-mode round (non-default)
+
 void ApplyOp(Env &env, const WriteOp &op, int step) {
   auto &con = env.con;
   core::MutationBatch batch;
@@ -301,6 +357,7 @@ void ApplyOp(Env &env, const WriteOp &op, int step) {
   env.coordinator.Commit();
   const auto t0 = Clock::now();
   env.Compare(op.name, step);
+  env.ComparePerParams(g_round_params, op.name, step);
   std::cerr << "  " << op.name << ": ok (verify " << Ms(t0) << " ms)\n";
 }
 
@@ -325,12 +382,29 @@ int RunFile(const std::string &path, int ops, bool parallel) {
   auto q = [](const std::string &v) { return q4gen::Q(v); };
 
   int step = 0;
+  // Round r exercises another (stmt, uom, sic range) than the defaults.
+  struct Cell {
+    const char *stmt, *uom;
+    int lo, hi;
+  };
+  static const Cell kCells[] = {{"EQ", "USD", 4000, 4999}, {"BS", "USD", 1000, 3999},
+                                {"CF", "USD", 5000, 9999}, {"IS", "shares", 100, 9999},
+                                {"EQ", "shares", 4000, 4999}, {"BS", "USD", 4000, 4999}};
   for (int round = 0; round < ops; ++round) {
-    // A qualifying num row (cohort sic, USD, bridge key present).
+    const Cell &cell = kCells[round % 6];
+    const std::string st = std::string("'") + cell.stmt + "'", um = std::string("'") + cell.uom + "'";
+    const std::string in_range = "BETWEEN " + std::to_string(cell.lo) + " AND " + std::to_string(cell.hi);
+    g_round_params.lo = cell.lo;
+    g_round_params.hi = cell.hi;
+    g_round_params.stmt = std::string(cell.stmt);
+    g_round_params.uom = std::string(cell.uom);
+    std::cerr << "round " << round << ": " << cell.stmt << "/" << cell.uom << " sic " << cell.lo << ".."
+              << cell.hi << "\n";
+    // A qualifying num row (cohort sic, uom, bridge key present).
     const auto num = pick(
         "SELECT n.rowid, n.adsh, n.tag, n.version FROM num n JOIN pre p ON n.adsh=p.adsh AND "
-        "n.tag=p.tag AND n.version=p.version AND p.stmt='EQ' JOIN sub s ON s.adsh=n.adsh AND "
-        "s.sic BETWEEN 4000 AND 4999 WHERE n.uom='USD' AND n.value IS NOT NULL USING SAMPLE reservoir(200 ROWS) REPEATABLE (" + std::to_string(round * 4 + 1) + ")");
+        "n.tag=p.tag AND n.version=p.version AND p.stmt=" + st + " JOIN sub s ON s.adsh=n.adsh AND "
+        "s.sic " + in_range + " WHERE n.uom=" + um + " AND n.value IS NOT NULL USING SAMPLE reservoir(200 ROWS) REPEATABLE (" + std::to_string(round * 4 + 1) + ")");
     const std::string rid = std::to_string(std::get<int64_t>(num.values[0].payload));
     const auto where = " FROM num WHERE rowid = " + rid;
     // value update
@@ -350,12 +424,12 @@ int RunFile(const std::string &path, int ops, bool parallel) {
                   "SELECT * FROM num WHERE rowid = (SELECT max(rowid) FROM num)"}, ++step);
 
     // sub moves into / out of the sic range
-    const auto sub = pick("SELECT adsh FROM sub WHERE sic BETWEEN 4000 AND 4999 USING SAMPLE reservoir(50 ROWS) REPEATABLE (" + std::to_string(round * 4 + 2) + ")");
+    const auto sub = pick("SELECT adsh FROM sub WHERE sic " + in_range + " USING SAMPLE reservoir(50 ROWS) REPEATABLE (" + std::to_string(round * 4 + 2) + ")");
     const std::string sw = " FROM sub WHERE adsh = " + q(s(sub, 0));
     ApplyOp(env, {"sub sic out of range", 2, core::MutationKind::Update, {3}, "SELECT *" + sw,
-                  {"UPDATE sub SET sic = 5000 WHERE adsh = " + q(s(sub, 0))}, "SELECT *" + sw}, ++step);
+                  {"UPDATE sub SET sic = " + std::to_string(cell.hi + 1) + " WHERE adsh = " + q(s(sub, 0))}, "SELECT *" + sw}, ++step);
     ApplyOp(env, {"sub sic back in range", 2, core::MutationKind::Update, {3}, "SELECT *" + sw,
-                  {"UPDATE sub SET sic = 4999 WHERE adsh = " + q(s(sub, 0))}, "SELECT *" + sw}, ++step);
+                  {"UPDATE sub SET sic = " + std::to_string(cell.hi) + " WHERE adsh = " + q(s(sub, 0))}, "SELECT *" + sw}, ++step);
     ApplyOp(env, {"sub cik change", 2, core::MutationKind::Update, {1}, "SELECT *" + sw,
                   {"UPDATE sub SET cik = cik + 1000000 WHERE adsh = " + q(s(sub, 0))}, "SELECT *" + sw}, ++step);
     const auto sub_row = SqlRow(con, "SELECT *" + sw);
@@ -366,8 +440,8 @@ int RunFile(const std::string &path, int ops, bool parallel) {
 
     // tag abstract flip / tlabel change on a tag used by the cohort
     const auto tag = pick(
-        "SELECT p.tag, p.version FROM pre p JOIN sub s ON s.adsh=p.adsh AND s.sic BETWEEN 4000 AND 4999 "
-        "JOIN tag t ON t.tag=p.tag AND t.version=p.version AND t.abstract=0 WHERE p.stmt='EQ' USING SAMPLE reservoir(100 ROWS) REPEATABLE (" + std::to_string(round * 4 + 3) + ")");
+        "SELECT p.tag, p.version FROM pre p JOIN sub s ON s.adsh=p.adsh AND s.sic " + in_range + " "
+        "JOIN tag t ON t.tag=p.tag AND t.version=p.version AND t.abstract=0 WHERE p.stmt=" + st + " USING SAMPLE reservoir(100 ROWS) REPEATABLE (" + std::to_string(round * 4 + 3) + ")");
     const std::string tw = " FROM tag WHERE tag = " + q(s(tag, 0)) + " AND version = " + q(s(tag, 1));
     ApplyOp(env, {"tag abstract flip", 3, core::MutationKind::Update, {3}, "SELECT *" + tw,
                   {"UPDATE tag SET abstract = 1" + std::string(" WHERE tag = ") + q(s(tag, 0)) +
@@ -380,8 +454,8 @@ int RunFile(const std::string &path, int ops, bool parallel) {
                    " AND version = " + q(s(tag, 1))}, "SELECT *" + tw}, ++step);
 
     // pre: duplicate an EQ row (multiplicity 2), then drop one copy
-    const auto pre = pick("SELECT p.rowid FROM pre p JOIN sub s ON s.adsh=p.adsh AND s.sic BETWEEN 4000 AND 4999 "
-                          "WHERE p.stmt='EQ' USING SAMPLE reservoir(100 ROWS) REPEATABLE (" + std::to_string(round * 4 + 3) + ")");
+    const auto pre = pick("SELECT p.rowid FROM pre p JOIN sub s ON s.adsh=p.adsh AND s.sic " + in_range + " "
+                          "WHERE p.stmt=" + st + " USING SAMPLE reservoir(100 ROWS) REPEATABLE (" + std::to_string(round * 4 + 3) + ")");
     const std::string prid = std::to_string(std::get<int64_t>(pre.values[0].payload));
     const auto pre_row = SqlRow(con, "SELECT * FROM pre WHERE rowid = " + prid);
     const auto pre_key = Fetch(con, "SELECT adsh, tag, version FROM pre WHERE rowid = " + prid)[0];
@@ -399,6 +473,169 @@ int RunFile(const std::string &path, int ops, bool parallel) {
   return *env.builds - 1;
 }
 
+// Order-insensitive comparison for real data: groups whose totals agree only to
+// floating-point rounding (e.g. the same EPS values summed in another order)
+// may swap places in plain SQL, so rows are matched by (sic, tlabel).  When
+// LIMIT 500 truncates, groups at the cut may differ only if their totals tie
+// with the last returned row.
+std::string CompareLoose(const std::vector<core::AuxRow> &want, const std::vector<core::AuxRow> &got) {
+  using Key = std::pair<int64_t, std::string>;
+  const auto key_of = [](const core::AuxRow &r) {
+    return Key{std::get<int64_t>(r.values[0].payload),
+               r.values[1].is_null ? std::string("\x01NULL") : std::get<std::string>(r.values[1].payload)};
+  };
+  const auto num = [](const core::AuxValue &v) {
+    if (const auto *i = std::get_if<int64_t>(&v.payload)) return static_cast<double>(*i);
+    return std::get<double>(v.payload);
+  };
+  const auto close = [](double a, double b) {
+    if (std::isnan(a) || std::isnan(b)) return std::isnan(a) && std::isnan(b);
+    if (std::isinf(a) || std::isinf(b)) return a == b;
+    return std::fabs(a - b) <= 1e-9 * std::max({1.0, std::fabs(a), std::fabs(b)});
+  };
+  std::map<Key, const core::AuxRow *> w, g;
+  for (const auto &r : want) w[key_of(r)] = &r;
+  for (const auto &r : got) g[key_of(r)] = &r;
+  if (want.size() != got.size()) {
+    return "row count want=" + std::to_string(want.size()) + " got=" + std::to_string(got.size());
+  }
+  const bool truncated = want.size() == 500;
+  const double cut = want.empty() ? 0.0 : num(want.back().values[4]);
+  for (const auto &[k, row] : w) {
+    const auto it = g.find(k);
+    if (it == g.end()) {
+      if (truncated && close(num(row->values[4]), cut)) continue;
+      return "missing group sic=" + std::to_string(k.first) + " tlabel=" + k.second;
+    }
+    const auto &a = *row, &b = *it->second;
+    if (std::get<std::string>(a.values[2].payload) != std::get<std::string>(b.values[2].payload) ||
+        num(a.values[3]) != num(b.values[3]) || !close(num(a.values[4]), num(b.values[4])) ||
+        !close(num(a.values[5]), num(b.values[5]))) {
+      return "value mismatch sic=" + std::to_string(k.first) + " tlabel=" + k.second;
+    }
+  }
+  return "";
+}
+
+// ------------------------------------------------------------ SF3 sweep
+// Parameter sweep on a (writable copy of a) real database.  The oracle is the
+// 4-way join of q4.sql materialized once without the three parameter
+// predicates (`j`); every combination is then plain SQL over `j`, which is the
+// same query semantics at a fraction of the cost.  A sample of combinations is
+// also compared with the unmaterialized q4.sql.
+int RunSweep(const std::string &path, int random_ranges, bool parallel) {
+  duckdb::DuckDB db(path.c_str());
+  duckdb::Connection con(db);
+  Exec(con, "PRAGMA threads=12");
+  Env env(con, parallel);
+  auto t0 = Clock::now();
+  env.Build();
+  std::cerr << "build: " << Ms(t0) << " ms, resident state " << env.state_bytes / 1048576.0 << " MiB\n";
+  t0 = Clock::now();
+  Exec(con, "CREATE TEMP TABLE j AS SELECT s.sic AS sic, t.tlabel AS tlabel, p.stmt AS stmt, "
+            "n.uom AS uom, s.cik AS cik, n.value AS value FROM num n JOIN sub s ON n.adsh = s.adsh "
+            "JOIN tag t ON n.tag = t.tag AND n.version = t.version "
+            "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
+            "WHERE n.value IS NOT NULL AND t.abstract = 0");
+  std::cerr << "materialized join: " << Ms(t0) << " ms\n";
+  const auto oracle_sql = [](const q4gen::Params &p) {
+    if (!p.lo || !p.hi || !p.stmt || !p.uom) return q4gen::BaseSql(p); // NULL -> trivially empty
+    return std::string("SELECT sic, tlabel, stmt, COUNT(DISTINCT cik) AS num_companies, "
+                       "SUM(value) AS total_value, AVG(value) AS avg_value FROM j WHERE uom = ") +
+           q4gen::Q(*p.uom) + " AND stmt = " + q4gen::Q(*p.stmt) + " AND sic BETWEEN " +
+           std::to_string(*p.lo) + " AND " + std::to_string(*p.hi) +
+           " GROUP BY sic, tlabel, stmt HAVING COUNT(DISTINCT cik) >= 2 "
+           "ORDER BY total_value DESC, sic, tlabel NULLS FIRST LIMIT 500";
+  };
+  env.Compare("default vs q4.sql", 0);
+
+  static const int kDiv[10][2] = {{100, 999},   {1000, 1499}, {1500, 1799}, {2000, 3999},
+                                  {4000, 4999}, {5000, 5199}, {5200, 5999}, {6000, 6799},
+                                  {7000, 8999}, {9000, 9999}};
+  static const char *kStmts[] = {"BS", "IS", "CF", "EQ", "CI", "ZZ"};
+  static const char *kUoms[] = {"USD", "shares", "pure", "CAD", "CNY", "EUR"};
+  int checked = 0, nonempty = 0;
+  double aux_ms = 0, sql_ms = 0, max_aux_ms = 0;
+  const auto check = [&](const q4gen::Params &p, bool vs_real) {
+    MaterializeSink sink;
+    auto a0 = Clock::now();
+    env.module->Execute(env.backend, q4gen::ToQueryArgs(p), sink);
+    const double am = Ms(a0);
+    aux_ms += am;
+    max_aux_ms = std::max(max_aux_ms, am);
+    auto s0 = Clock::now();
+    try {
+      const auto want = Fetch(con, oracle_sql(p));
+      sql_ms += Ms(s0);
+      std::string diff = CompareLoose(want, sink.rows);
+      if (diff.empty() && vs_real) diff = CompareLoose(Fetch(con, q4gen::BaseSql(p)), sink.rows);
+      if (!diff.empty()) throw std::runtime_error(diff);
+    } catch (const std::exception &e) {
+      std::cerr << "MISMATCH params(" << q4gen::ArgsSql(p) << "): " << e.what() << '\n';
+      std::exit(1);
+    }
+    ++checked;
+    nonempty += !sink.rows.empty();
+  };
+  int idx = 0;
+  for (const auto &d : kDiv) {
+    for (const char *st : kStmts) {
+      for (const char *um : kUoms) {
+        q4gen::Params p;
+        p.lo = d[0];
+        p.hi = d[1];
+        p.stmt = std::string(st);
+        p.uom = std::string(um);
+        check(p, idx++ % 40 == 0);
+      }
+    }
+  }
+  std::mt19937_64 rng(7);
+  for (int k = 0; k < random_ranges; ++k) {
+    q4gen::Params p;
+    int64_t a = static_cast<int64_t>(rng() % 10000), b = static_cast<int64_t>(rng() % 10000);
+    if (k % 7 != 0 && a > b) std::swap(a, b); // some inverted
+    p.lo = a;
+    p.hi = b;
+    p.stmt = std::string(kStmts[rng() % 5]);
+    p.uom = std::string(kUoms[rng() % 6]);
+    check(p, k % 25 == 0);
+  }
+  // Edge values / NULLs.
+  const int64_t edges[] = {INT32_MIN, -1, 0, 3999, 4000, 4999, 5000, INT32_MAX};
+  for (const int64_t lo : edges) {
+    for (const int64_t hi : edges) {
+      q4gen::Params p;
+      p.lo = lo;
+      p.hi = hi;
+      check(p, false);
+    }
+  }
+  {
+    q4gen::Params p;
+    p.lo.reset();
+    check(p, false);
+    p = q4gen::Params{};
+    p.stmt.reset();
+    check(p, false);
+    p = q4gen::Params{};
+    p.uom.reset();
+    check(p, false);
+  }
+  // Wide ranges on the biggest groups, also against the real q4.sql.
+  for (const char *st : {"BS", "CF", "IS"}) {
+    q4gen::Params p;
+    p.lo = INT32_MIN;
+    p.hi = INT32_MAX;
+    p.stmt = std::string(st);
+    check(p, true);
+  }
+  std::cerr << "sweep ok: " << checked << " combinations (" << nonempty << " non-empty), aux avg "
+            << aux_ms / checked << " ms (max " << max_aux_ms << " ms), join-table SQL avg "
+            << sql_ms / checked << " ms\n";
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -414,6 +651,9 @@ int main(int argc, char **argv) {
       Require(argc > 2, "usage: file <db_copy> [ops] [parallel]");
       const int ops = argc > 3 && std::isdigit(argv[3][0]) ? std::atoi(argv[3]) : 3;
       RunFile(argv[2], ops, parallel);
+    } else if (mode == "sweep") {
+      Require(argc > 2, "usage: sweep <db_copy> [random_ranges] [parallel]");
+      RunSweep(argv[2], argc > 3 && std::isdigit(argv[3][0]) ? std::atoi(argv[3]) : 120, parallel);
     } else if (mode == "harness") {
       // The generic shared harness (probe-based incremental + adversarial writes).
       const auto &entry = engine::LookupSharedQuery("sec_edgar", 4);

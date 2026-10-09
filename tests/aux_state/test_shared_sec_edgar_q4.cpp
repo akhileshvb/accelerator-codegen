@@ -151,12 +151,25 @@ std::string Describe(const std::vector<OutRow> &rows, size_t n = 3) {
   return out;
 }
 
+QueryArguments ToArgs(const q4gen::Params &p) {
+  QueryArguments a;
+  a.values.push_back(p.lo ? AuxValue::Of(AuxType::Int64, *p.lo) : AuxValue::Null(AuxType::Int64));
+  a.values.push_back(p.hi ? AuxValue::Of(AuxType::Int64, *p.hi) : AuxValue::Null(AuxType::Int64));
+  a.values.push_back(p.stmt ? AuxValue::Of(AuxType::String, *p.stmt) : AuxValue::Null(AuxType::String));
+  a.values.push_back(p.uom ? AuxValue::Of(AuxType::String, *p.uom) : AuxValue::Null(AuxType::String));
+  return a;
+}
+
 void Check(CountingModule &module, Services &services, const Db &db, const char *what,
-           int step) {
+           int step, const q4gen::Params &params = q4gen::Params{}, bool explicit_args = false) {
   Sink sink;
-  module.Execute(services, {}, sink);
+  if (explicit_args) {
+    module.Execute(services, ToArgs(params), sink);
+  } else {
+    module.Execute(services, {}, sink);
+  }
   assert(sink.ended);
-  const auto expected = Oracle(db);
+  const auto expected = Oracle(db, params);
   bool ok = sink.rows.size() == expected.size();
   std::string detail = "rows expected=" + std::to_string(expected.size()) +
                        " actual=" + std::to_string(sink.rows.size());
@@ -171,7 +184,7 @@ void Check(CountingModule &module, Services &services, const Db &db, const char 
     const auto avg = std::get<double>(row.values[5].payload);
     if (sic != expected[i].sic || tl != expected[i].tlabel || companies != expected[i].companies ||
         !Close(total, expected[i].total) || !Close(avg, expected[i].avg) ||
-        std::get<std::string>(row.values[2].payload) != "EQ") {
+        std::get<std::string>(row.values[2].payload) != *params.stmt) {
       ok = false;
       detail = "mismatch at row " + std::to_string(i) + " expected " + Describe({expected[i]}, 1) +
                " got sic=" + std::to_string(sic) + " tl=" + (tl_null ? "NULL" : *tl) +
@@ -223,14 +236,17 @@ int main(int argc, char **argv) {
     const int builds_after_initial = module->builds;
     assert(module->CheckValidity(services, {}));
     Check(*module, services, db, "initial", 0);
+    for (int k = 0; k < 12; ++k) {
+      Check(*module, services, db, "initial-params", 0, q4gen::RandomParams(model), true);
+    }
     if (limit_case) {
       Sink big;
       module->Execute(services, {}, big);
       assert(big.rows.size() == 500 && "LIMIT 500 must truncate a >500 group result");
     }
 
-    int incremental = 0, rebuilt = 0;
-    size_t result_rows_total = 0;
+    int incremental = 0, rebuilt = 0, param_checks = 0;
+    size_t result_rows_total = 0, param_rows_total = 0;
     for (int step = 1; step <= steps; ++step) {
       const Db snapshot = db;
       const int64_t rid_snapshot = model.next_rid;
@@ -256,10 +272,18 @@ int main(int argc, char **argv) {
       assert(module->CheckValidity(services, {}));
       Check(*module, services, db, model.last_what, step);
       result_rows_total += Oracle(db).size();
+      // Random parameters (sic ranges, stmt, uom, NULLs) against the same state.
+      for (int k = 0; k < 3; ++k) {
+        const auto params = q4gen::RandomParams(model);
+        Check(*module, services, db, model.last_what, step, params, true);
+        param_rows_total += Oracle(db, params).size();
+        ++param_checks;
+      }
     }
     std::cerr << "seed " << seed << ": " << steps << " txns ok (incremental=" << incremental
               << " rebuilds=" << rebuilt << " initial_builds=" << builds_after_initial
-              << " avg_result_rows=" << result_rows_total / steps << ")\n";
+              << " avg_result_rows=" << result_rows_total / steps << " param_checks=" << param_checks
+              << " avg_param_rows=" << param_rows_total / std::max(1, param_checks) << ")\n";
     // Everything except parse failures / oversized batches stays incremental.
     // Non-finite data (inf/NaN cannot be subtracted back out) legitimately rebuilds.
     assert(rebuilt <= (config.nonfinite ? steps / 2 : steps / 20));
