@@ -126,6 +126,23 @@ function(accel_apply_stateless_copts)
 endfunction()
 accel_apply_stateless_copts(${ACCEL_GENERATED_SOURCES})
 
+# SEC-EDGAR accelerators (shared state, DuckDB aux, Postgres aux/extension) are
+# always compiled for this machine's CPU, so every loop can use AVX-512/AVX2/BMI,
+# not just the hand-written kernels behind __builtin_cpu_supports. Source
+# properties are directory-scoped, so this also reaches accelerator_codegen_pg.
+# The DuckDB base kernels already get ACCEL_STATELESS_COPTS. The library becomes
+# CPU-specific; -DACCEL_SEC_EDGAR_COPTS= (empty) restores the portable build.
+set(ACCEL_SEC_EDGAR_COPTS "-march=native" CACHE STRING "extra compile options for the SEC-EDGAR accelerator sources")
+if(ACCEL_SEC_EDGAR_COPTS)
+    file(GLOB_RECURSE _accel_sec_edgar_srcs CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/sec_edgar/*.cpp")
+    list(FILTER _accel_sec_edgar_srcs EXCLUDE REGEX "/duckdb/base/")
+    if(_accel_sec_edgar_srcs)
+        separate_arguments(_opts UNIX_COMMAND "${ACCEL_SEC_EDGAR_COPTS}")
+        set_property(SOURCE ${_accel_sec_edgar_srcs} APPEND PROPERTY COMPILE_OPTIONS ${_opts})
+    endif()
+endif()
+
 target_include_directories(accelerator_codegen
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
