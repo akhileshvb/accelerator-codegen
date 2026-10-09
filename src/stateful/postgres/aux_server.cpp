@@ -71,6 +71,7 @@ int g_idle_exit_s = 0;          // worker exits after this much idleness (0: nev
 
 bool g_in_server = false;
 bool g_log_decisions = false;
+bool g_build_tuning = true;
 
 constexpr int kMaxClients = 256;
 constexpr int kMaxRuntimes = 64;
@@ -944,6 +945,11 @@ void DefineGucs() {
       "accel.log_decisions",
       "Log each accelerator's hit / rebuild / fallback decision (diagnostics).",
       nullptr, &g_log_decisions, false, PGC_USERSET, 0, nullptr, nullptr, nullptr);
+  DefineCustomBoolVariable(
+      "accel.build_tuning",
+      "Plan the one-off state build with in-memory hash joins (work_mem, no "
+      "nested loop / merge joins, no JIT) instead of the session settings.",
+      nullptr, &g_build_tuning, true, PGC_USERSET, 0, nullptr, nullptr, nullptr);
   DefineCustomIntVariable(
       "accel.shared_timeout_ms",
       "How long a query waits for the shared state worker before it answers "
@@ -965,6 +971,7 @@ void DefineGucs() {
 
 bool InServer() { return g_in_server; }
 bool LogDecisions() { return g_log_decisions; }
+bool BuildTuning() { return g_build_tuning; }
 bool SharedEnabled() { return g_shared_state && !g_in_server; }
 
 void RegisterServerRuntime(ServerRuntime *runtime) {

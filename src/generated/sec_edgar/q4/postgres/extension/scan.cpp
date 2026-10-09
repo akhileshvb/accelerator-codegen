@@ -252,7 +252,8 @@ Runtime<query::SecEdgarQ4Module, query::SecEdgarQ4Config, SecEdgarQ4PgScan> &Q4R
   static Runtime<query::SecEdgarQ4Module, query::SecEdgarQ4Config, SecEdgarQ4PgScan> runtime(
       "ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q4_COST_MODEL",
       "config/sec_edgar_q4_aux_cost_model.json", core::SecEdgarQ4Layout::kAccelerator,
-      query::SecEdgarQ4Config{kSecEdgarNum, kSecEdgarSub, kSecEdgarTag, kSecEdgarPre});
+      query::SecEdgarQ4Config{kSecEdgarNum, kSecEdgarSub, kSecEdgarTag, kSecEdgarPre},
+      {}, /*tune_build=*/true);
   return runtime;
 }
 
