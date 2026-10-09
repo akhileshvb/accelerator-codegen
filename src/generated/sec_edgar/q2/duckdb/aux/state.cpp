@@ -192,8 +192,12 @@ void Q2GroupTable::Put(const Q2Group &g) {
     ents[e] = g;
     return;
   }
+  Append(g);
+}
+
+void Q2GroupTable::Append(const Q2Group &g) {
   if ((ents.size() + 1) * 2 > slots.size()) {
-    const size_t cap = NextPow2((ents.size() + 1) * 4);
+    const size_t cap = NextPow2((ents.size() + 1) * 2);
     slots.assign(cap, 0);
     const size_t mask = cap - 1;
     for (uint32_t i = 0; i < ents.size(); ++i) {
@@ -239,9 +243,8 @@ std::shared_ptr<const Q2Base> Q2Base::Build(std::vector<Q2Group> &&groups,
   base->k1.resize(n);
   base->adsh.resize(n);
   base->tag.resize(n);
-  base->c0.resize(n);
-  base->c1.resize(n);
-  base->trunc.resize(n);
+  base->c0b.resize(n);
+  base->c1b.resize(n);
   base->uom_start.assign(uom_count + 1, 0);
   for (uint32_t i = 0; i < n; ++i) {
     const Q2Group &g = groups[i];
@@ -249,22 +252,29 @@ std::shared_ptr<const Q2Base> Q2Base::Build(std::vector<Q2Group> &&groups,
     base->k1[i] = g.k1;
     base->adsh[i] = g.adsh;
     base->tag[i] = g.tag;
-    base->c0[i] = g.c0;
-    base->c1[i] = g.c1;
-    base->trunc[i] = g.trunc ? 1 : 0;
+    const bool esc0 = g.c0 >= Q2Base::kC0Esc;
+    const bool esc1 = g.c1 >= Q2Base::kC1Esc;
+    base->c0b[i] = esc0 ? Q2Base::kC0Esc : static_cast<uint8_t>(g.c0);
+    base->c1b[i] = static_cast<uint8_t>((esc1 ? Q2Base::kC1Esc : g.c1) |
+                                        (g.trunc ? Q2Base::kTruncBit : 0));
+    if (esc0 || esc1) {
+      base->e_pos.push_back(i);
+      base->e_c0.push_back(g.c0);
+      base->e_c1.push_back(g.c1);
+    }
     ++base->uom_start[g.uom + 1];
   }
+  std::vector<Q2Group>().swap(groups); // release the 40-byte rows before the index
   for (uint32_t u = 0; u < uom_count; ++u) {
     base->uom_start[u + 1] += base->uom_start[u];
   }
-  const size_t cap = NextPow2(static_cast<size_t>(n) * 2);
+  const size_t cap = std::max<size_t>(8, static_cast<size_t>(n) * 10 / 7 + 1);
   base->slots.assign(cap, 0);
-  base->mask = static_cast<uint32_t>(cap - 1);
   for (uint32_t u = 0; u < uom_count; ++u) {
     for (uint32_t i = base->uom_start[u]; i < base->uom_start[u + 1]; ++i) {
-      size_t pos = Q2GroupHash(u, base->adsh[i], base->tag[i]) & base->mask;
+      size_t pos = base->SlotOf(Q2GroupHash(u, base->adsh[i], base->tag[i]));
       while (base->slots[pos] != 0) {
-        pos = (pos + 1) & base->mask;
+        pos = pos + 1 == cap ? 0 : pos + 1;
       }
       base->slots[pos] = i + 1;
     }
@@ -278,7 +288,7 @@ int32_t Q2Base::Find(uint32_t uom, uint32_t adsh_id, uint32_t tag_id) const {
   if (begin == end) {
     return -1;
   }
-  size_t pos = Q2GroupHash(uom, adsh_id, tag_id) & mask;
+  size_t pos = SlotOf(Q2GroupHash(uom, adsh_id, tag_id));
   while (true) {
     const uint32_t v = slots[pos];
     if (v == 0) {
@@ -288,27 +298,58 @@ int32_t Q2Base::Find(uint32_t uom, uint32_t adsh_id, uint32_t tag_id) const {
     if (i >= begin && i < end && adsh[i] == adsh_id && tag[i] == tag_id) {
       return static_cast<int32_t>(i);
     }
-    pos = (pos + 1) & mask;
+    pos = pos + 1 == slots.size() ? 0 : pos + 1;
+  }
+}
+
+uint32_t Q2Base::EscapedC0(uint32_t i) const {
+  const auto it = std::lower_bound(e_pos.begin(), e_pos.end(), i);
+  return e_c0[static_cast<size_t>(it - e_pos.begin())];
+}
+
+void Q2Base::Fill(Q2Group &g, uint32_t i, size_t e) const {
+  g.k0 = k0[i];
+  g.k1 = k1[i];
+  g.adsh = adsh[i];
+  g.tag = tag[i];
+  const bool esc = (c0b[i] == kC0Esc || (c1b[i] & ~kTruncBit) == kC1Esc);
+  g.c0 = c0b[i];
+  g.c1 = c1b[i] & ~kTruncBit;
+  g.trunc = (c1b[i] & kTruncBit) != 0;
+  if (esc) {
+    g.c0 = e_c0[e];
+    g.c1 = e_c1[e];
   }
 }
 
 Q2Group Q2Base::Get(uint32_t i, uint32_t uom) const {
   Q2Group g;
-  g.k0 = k0[i];
-  g.k1 = k1[i];
   g.uom = uom;
-  g.adsh = adsh[i];
-  g.tag = tag[i];
-  g.c0 = c0[i];
-  g.c1 = c1[i];
-  g.trunc = trunc[i] != 0;
+  size_t e = 0;
+  if (c0b[i] == kC0Esc || (c1b[i] & ~kTruncBit) == kC1Esc) {
+    e = static_cast<size_t>(std::lower_bound(e_pos.begin(), e_pos.end(), i) - e_pos.begin());
+  }
+  Fill(g, i, e);
+  return g;
+}
+
+Q2Group Q2Base::GetSeq(uint32_t i, uint32_t uom, size_t &ec) const {
+  Q2Group g;
+  g.uom = uom;
+  if (c0b[i] == kC0Esc || (c1b[i] & ~kTruncBit) == kC1Esc) {
+    while (ec < e_pos.size() && e_pos[ec] < i) {
+      ++ec;
+    }
+  }
+  Fill(g, i, ec);
   return g;
 }
 
 size_t Q2Base::HeapBytes() const {
   return k0.capacity() * 8 + k1.capacity() * 8 + adsh.capacity() * 4 +
-         tag.capacity() * 4 + c0.capacity() * 4 + c1.capacity() * 4 +
-         trunc.capacity() + uom_start.capacity() * 4 + slots.capacity() * 4;
+         tag.capacity() * 4 + c0b.capacity() + c1b.capacity() +
+         (e_pos.capacity() + e_c0.capacity() + e_c1.capacity()) * 4 +
+         uom_start.capacity() * 4 + slots.capacity() * 4;
 }
 
 // ------------------------------------------------------------ Q2Overlay
@@ -360,9 +401,10 @@ bool SecEdgarQ2State::NeedsCompaction(size_t limit) const {
 
 std::vector<Q2Group> SecEdgarQ2State::LiveGroups(uint32_t uom) const {
   std::vector<Q2Group> groups;
+  size_t xc = 0;
   for (uint32_t i = base->SliceBegin(uom); i < base->SliceEnd(uom); ++i) {
     if (!ov.IsDead(i)) {
-      groups.push_back(base->Get(i, uom));
+      groups.push_back(base->GetSeq(i, uom, xc));
     }
   }
   for (const auto &g : ov.table.ents) {
@@ -376,10 +418,11 @@ std::vector<Q2Group> SecEdgarQ2State::LiveGroups(uint32_t uom) const {
 void SecEdgarQ2State::Compact() {
   std::vector<Q2Group> groups;
   groups.reserve(base->n + ov.table.ents.size());
+  size_t xc = 0;
   for (uint32_t u = 0; u < base->UomCount(); ++u) {
     for (uint32_t i = base->uom_start[u]; i < base->uom_start[u + 1]; ++i) {
       if (!ov.IsDead(i)) {
-        groups.push_back(base->Get(i, u));
+        groups.push_back(base->GetSeq(i, u, xc));
       }
     }
   }

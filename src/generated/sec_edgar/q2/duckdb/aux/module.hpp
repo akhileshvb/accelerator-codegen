@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -29,12 +30,12 @@ constexpr core::ColumnId kQ2NumAdsh = 0, kQ2NumTag = 1, kQ2NumUom = 5,
                          kQ2NumValue = 7;
 constexpr core::ColumnId kQ2SubAdsh = 0, kQ2SubName = 2, kQ2SubFy = 10;
 
-// A unit of measure with more non-NULL rows than this is not materialised
-// (the default uom is always materialised): it is answered by the exact SQL
-// path.  On SF3 400000 covers 199 of the 201 units (all but USD and shares)
-// in 17.6 MB of heap; covering every unit costs 442 MB (see the q2 report).
-// SecEdgarQ2Config::max_uom_rows overrides it.
-constexpr uint64_t kSecEdgarQ2DefaultMaxUomRows = 400000;
+// Every unit of measure is materialised by default, so Execute never runs
+// SQL for any (fy, uom).  SecEdgarQ2Config::max_uom_rows is an explicit
+// opt-out: a unit with more non-NULL rows than the limit is not materialised
+// and is answered by the exact SQL path (the default unit is always kept).
+constexpr uint64_t kSecEdgarQ2DefaultMaxUomRows =
+    std::numeric_limits<uint64_t>::max();
 
 struct SecEdgarQ2Config {
   core::TableId num_table = 0;
@@ -42,6 +43,10 @@ struct SecEdgarQ2Config {
   uint64_t max_uom_rows = kSecEdgarQ2DefaultMaxUomRows;
   // Overlay entries before it is compacted into a new base (0: automatic).
   uint64_t overlay_limit = 0;
+  // Worker threads of the initial build when the scan source supports a
+  // parallel scan: 1 = the serial path, 0 = automatic (hardware threads, at
+  // most 16).
+  unsigned build_threads = 1;
 };
 
 struct SecEdgarQ2NumInput {
@@ -105,6 +110,19 @@ public:
   virtual void LookupSub(
       const std::vector<std::string> &adshs,
       const std::function<void(const SecEdgarQ2SubInput &)> &);
+  // Optional parallel build support (default: unsupported, return false).
+  // ScanNumKeys reports every distinct adsh and tag of the same rows
+  // ScanNumValueCounts returns, so the caller can build read-only
+  // dictionaries.  ScanNumValueCountsParallel reports those rows in batches
+  // that `threads` workers consume concurrently (`worker` is 0..threads-1; the
+  // views are valid during the call only).
+  virtual bool ScanNumKeys(const std::vector<std::string> &uoms,
+                           const std::function<void(std::string_view)> &adsh,
+                           const std::function<void(std::string_view)> &tag);
+  virtual bool ScanNumValueCountsParallel(
+      const std::vector<std::string> &uoms, unsigned threads,
+      const std::function<void(unsigned worker, const SecEdgarQ2ValueCountRow *rows,
+                               size_t n)> &batch);
   // Full answer of the query (ordered, LIMIT applied) straight from the base
   // tables.  Used for uoms the aux state does not materialise and whenever
   // the aux state is unavailable.

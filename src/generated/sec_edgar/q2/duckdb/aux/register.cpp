@@ -110,7 +110,8 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     std::string("accel_") + core::SecEdgarQ2Layout::kAccelerator + "_aux_parallel",
     {},
     [](::duckdb::Connection &connection) {
-      const SecEdgarQ2Config c{1, 2};
+      SecEdgarQ2Config c{1, 2};
+      c.build_threads = 0; // parallel variant: automatic worker count
       return MakeBinding<SecEdgarQ2Scan, SecEdgarQ2ParallelModule>(connection, CaptureTableList{}, c);
     },
     kOverloads}};

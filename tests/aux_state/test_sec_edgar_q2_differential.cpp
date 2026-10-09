@@ -324,15 +324,19 @@ struct Harness {
         parallel ? SecEdgarQ2ParallelModule::kId : SecEdgarQ2Module::kId);
     scan = std::make_unique<SecEdgarQ2DuckdbScan>(con);
     // Test knobs: Q2_TEST_OVERLAY_LIMIT forces compactions on small data,
-    // Q2_TEST_MAX_UOM_ROWS materialises every unit of measure (default: the
-    // 10000-row limit, so the large unit "USD" takes the exact SQL path).
+    // Q2_TEST_MAX_UOM_ROWS=N is the opt-out limit (default: every unit of
+    // measure is materialised; N=10000 sends the large unit "USD" to SQL).
     SecEdgarQ2Config cfg{1, 2};
-    cfg.max_uom_rows = 10000; // the seed's large unit "USD" is then uncovered
     if (const char *v = std::getenv("Q2_TEST_OVERLAY_LIMIT")) {
       cfg.overlay_limit = std::strtoull(v, nullptr, 10);
     }
     if (const char *v = std::getenv("Q2_TEST_MAX_UOM_ROWS")) {
       cfg.max_uom_rows = std::strtoull(v, nullptr, 10);
+    }
+    if (const char *v = std::getenv("Q2_TEST_BUILD_THREADS")) {
+      cfg.build_threads = static_cast<unsigned>(std::strtoul(v, nullptr, 10));
+    } else if (parallel) {
+      cfg.build_threads = 4; // exercise the parallel build
     }
     if (parallel) {
       module = std::make_shared<SecEdgarQ2ParallelModule>(cfg, scan.get());
@@ -699,6 +703,7 @@ void RandomTransaction(Harness &h, Gen &g, int &rollbacks) {
 void RunRandomized(uint64_t seed, int steps, bool parallel) {
   Gen g(seed);
   Harness h(parallel);
+  const uint64_t direct_before = SecEdgarQ2GlobalStats().direct_reads.load();
   Seed(h, g, 150, 26000);
   h.Build();
   h.VerifyRandom(g, "initial", 12);
@@ -712,6 +717,10 @@ void RunRandomized(uint64_t seed, int steps, bool parallel) {
   h.Build();
   h.VerifyRandom(g, "rebuilt", 20);
   const auto &st = SecEdgarQ2GlobalStats();
+  if (!std::getenv("Q2_TEST_MAX_UOM_ROWS") && st.direct_reads.load() != direct_before) {
+    std::cerr << "FAIL: SQL fallback used although every uom is materialised\n";
+    std::exit(1);
+  }
   std::cout << "  stats: apply_delta=" << st.apply_delta << " rebuild=" << st.rebuild
             << " lost_lookups=" << st.lost_group_lookups
             << " new_adsh_lookups=" << st.new_adsh_lookups
@@ -747,6 +756,55 @@ void TestBogusStream(uint64_t seed) {
   }
   h.VerifyRandom(g, "bogus", 20);
   std::cout << "bogus stream ok\n";
+}
+
+// Groups whose row counts exceed the base's one-byte count encoding (>= 127 /
+// >= 255 identical values) survive build, deletes, inserts and compaction.
+void TestLargeCounts(uint64_t seed, bool parallel) {
+  Gen g(seed);
+  Harness h(parallel);
+  g.adshs.push_back(g.NewAdsh());
+  g.adshs.push_back(g.NewAdsh());
+  Exec(h.con, "INSERT INTO sub (adsh, cik, name, fy) VALUES (" + Quote(g.adshs[0]) +
+                  ", 1, 'Big', 2022), (" + Quote(g.adshs[1]) + ", 1, 'Small', 2022)");
+  const auto insert = [&](const std::string &adsh, const char *value, int rows) {
+    std::string values;
+    for (int i = 0; i < rows; ++i) {
+      values += std::string(i ? "," : "") + "(" + Quote(adsh) + ",'T','v',20220101,4,'USD',NULL," +
+                value + ",NULL)";
+    }
+    Exec(h.con, "INSERT INTO num VALUES " + values);
+  };
+  insert(g.adshs[0], "5.0", 300);
+  insert(g.adshs[0], "3.0", 130);
+  insert(g.adshs[0], "1.0", 2);
+  insert(g.adshs[1], "5.0", 127);
+  insert(g.adshs[1], "4.0", 126);
+  h.Build();
+  h.VerifyRandom(g, "large initial", 6);
+  h.Verify("large 2022 USD", false, 2022, false, "USD");
+  for (int round = 0; round < 6; ++round) {
+    h.con.BeginTransaction();
+    core::MutationBatch batch;
+    batch.table = 1;
+    batch.kind = (round % 2 == 0) ? core::MutationKind::Delete : core::MutationKind::Insert;
+    if (batch.kind == core::MutationKind::Delete) {
+      const std::string where =
+          "rowid IN (SELECT rowid FROM num WHERE value = 5.0 USING SAMPLE " +
+          std::to_string(60 + round * 40) + " ROWS)";
+      batch.old_rows = NumRowsById(h.con, where);
+      Exec(h.con, "DELETE FROM num WHERE " + where);
+    } else {
+      insert(g.adshs[round % 2], "5.0", 70);
+      batch.new_rows = NumRowsById(h.con, "rowid >= (SELECT max(rowid) - 69 FROM num)");
+    }
+    h.Capture(batch);
+    h.Commit();
+    h.Verify("large round " + std::to_string(round), false, 2022, false, "USD");
+  }
+  h.Build();
+  h.Verify("large rebuilt", false, 2022, false, "USD");
+  std::cout << "large counts ok\n";
 }
 
 void TestCodec(uint64_t seed) {
@@ -869,6 +927,8 @@ int main(int argc, char **argv) {
   TestBogusStream(seed);
   RunRandomized(seed, steps, false);
   RunRandomized(seed + 1000, steps / 2, true);
+  TestLargeCounts(seed, false);
+  TestLargeCounts(seed, true);
   TestTableFunctions(seed, false);
   TestTableFunctions(seed, true);
   std::cout << "ALL OK\n";

@@ -10,9 +10,9 @@
 //
 // The state is independent of the fiscal-year parameter F (the fy filter is
 // applied at read time through a per-adsh fy array) and covers the uom
-// parameter U for every "covered" unit of measure (see SecEdgarQ2Config::
-// max_uom_rows: a unit above the row limit is not materialised and is answered
-// by the module's exact SQL path instead).
+// parameter U for every "covered" unit of measure (all of them by default; see
+// SecEdgarQ2Config::max_uom_rows for the opt-out that leaves big units to the
+// module's exact SQL path).
 //
 // Per (uom, adsh, tag) group we keep the top-2 distinct values with exact row
 // counts plus a truncation flag.  That is enough to maintain MAX under
@@ -136,29 +136,57 @@ struct Q2GroupTable {
   int32_t Find(uint32_t uom, uint32_t adsh_id, uint32_t tag_id) const;
   // Upsert.
   void Put(const Q2Group &g);
+  // Insert a group known to be absent (one probe instead of two).
+  void Append(const Q2Group &g);
   size_t HeapBytes() const { return ents.capacity() * sizeof(Q2Group) + slots.capacity() * 4; }
 };
 
 // Immutable base: all groups sorted by (uom, k0 desc, adsh, tag) with a hash
 // index; `uom_start[u] .. uom_start[u + 1]` is the slice of unit of measure u.
+//
+// Compact layout (about 31 bytes per group instead of 49): counts are one byte
+// each -- `c0b` (255 = escape) and `c1b` (low 7 bits = count, 127 = escape,
+// bit 7 = trunc) -- with the exact 32-bit counts of the rare escaped groups in
+// a position-sorted side table.  The hash index is a linear-probe table at
+// load factor ~0.7 addressed by fast range reduction (not a power of two).
 struct Q2Base {
+  static constexpr uint8_t kC0Esc = 255;
+  static constexpr uint8_t kC1Esc = 127;
+  static constexpr uint8_t kTruncBit = 128;
+
   uint32_t n = 0;
   std::vector<int64_t> k0, k1;
-  std::vector<uint32_t> adsh, tag, c0, c1;
-  std::vector<uint8_t> trunc;
+  std::vector<uint32_t> adsh, tag;
+  std::vector<uint8_t> c0b, c1b;
+  // Escaped counts, ascending by position.
+  std::vector<uint32_t> e_pos, e_c0, e_c1;
   std::vector<uint32_t> uom_start{0};
   std::vector<uint32_t> slots; // position + 1, 0 = empty
-  uint32_t mask = 0;
 
   uint32_t UomCount() const { return static_cast<uint32_t>(uom_start.size() - 1); }
   uint32_t SliceBegin(uint32_t uom) const { return uom < UomCount() ? uom_start[uom] : n; }
   uint32_t SliceEnd(uint32_t uom) const { return uom < UomCount() ? uom_start[uom + 1] : n; }
+  size_t SlotOf(uint64_t hash) const {
+    return static_cast<size_t>(((hash >> 32) * static_cast<uint64_t>(slots.size())) >> 32);
+  }
+  // Exact row count of the top value at position i.
+  uint32_t C0(uint32_t i) const {
+    const uint8_t b = c0b[i];
+    return b != kC0Esc ? b : EscapedC0(i);
+  }
+  uint32_t EscapedC0(uint32_t i) const;
   int32_t Find(uint32_t uom, uint32_t adsh_id, uint32_t tag_id) const;
   Q2Group Get(uint32_t i, uint32_t uom) const;
+  // Sequential variant: positions must be passed in ascending order, `ec` is
+  // the caller's cursor into the escape table (start at 0).
+  Q2Group GetSeq(uint32_t i, uint32_t uom, size_t &ec) const;
   size_t HeapBytes() const;
   // Throws std::length_error beyond 2^32-2 groups.
   static std::shared_ptr<const Q2Base> Build(std::vector<Q2Group> &&groups,
                                              uint32_t uom_count);
+
+private:
+  void Fill(Q2Group &g, uint32_t i, size_t e) const;
 };
 
 // Groups changed since the base was built.  Copies share the dead bitmap's

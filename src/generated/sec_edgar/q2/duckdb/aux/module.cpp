@@ -1,6 +1,8 @@
 #include "sec_edgar/q2/duckdb/aux/module.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -9,12 +11,27 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
+
+struct BuildTrace {
+  bool on = std::getenv("ACCEL_Q2_BUILD_TRACE") != nullptr;
+  std::chrono::steady_clock::time_point t = std::chrono::steady_clock::now();
+  void Mark(const char *what) {
+    if (!on) {
+      return;
+    }
+    const auto n = std::chrono::steady_clock::now();
+    std::fprintf(stderr, "q2 build: %-24s %8.1f ms\n", what,
+                 std::chrono::duration<double, std::milli>(n - t).count());
+    t = n;
+  }
+};
 
 // ------------------------------------------------------------ row parsing
 
@@ -210,7 +227,20 @@ struct Reader {
   }
 };
 
-constexpr uint64_t kMagic = 0x32533251; // "Q2S2"
+constexpr uint64_t kMagic = 0x33533251; // "Q2S3"
+
+// The order-preserving key is an involution of the IEEE bits.  Doubles that
+// are whole numbers (most monetary values) have long runs of zero low bytes;
+// those are not stored (their count `tz` goes into the group's flag byte).
+inline uint64_t KeyBits(int64_t key) {
+  return static_cast<uint64_t>(key ^ ((key >> 63) & std::numeric_limits<int64_t>::max()));
+}
+inline unsigned KeyZeroBytes(uint64_t bits) { return bits == 0 ? 8u : unsigned(__builtin_ctzll(bits)) / 8u; }
+void PutKeyTail(std::vector<uint8_t> &out, uint64_t bits, unsigned tz) {
+  for (unsigned s = tz * 8; s < 64; s += 8) {
+    out.push_back(static_cast<uint8_t>(bits >> s));
+  }
+}
 
 // ------------------------------------------------------------ misc helpers
 
@@ -409,6 +439,19 @@ void SecEdgarQ2InitialScan::LookupSub(
   });
 }
 
+bool SecEdgarQ2InitialScan::ScanNumKeys(
+    const std::vector<std::string> &,
+    const std::function<void(std::string_view)> &,
+    const std::function<void(std::string_view)> &) {
+  return false;
+}
+
+bool SecEdgarQ2InitialScan::ScanNumValueCountsParallel(
+    const std::vector<std::string> &, unsigned,
+    const std::function<void(unsigned, const SecEdgarQ2ValueCountRow *, size_t)> &) {
+  return false;
+}
+
 void SecEdgarQ2InitialScan::ExecuteDirect(
     int64_t fy, const std::string &uom,
     const std::function<void(const SecEdgarQ2DirectRow &)> &consumer) {
@@ -511,9 +554,11 @@ std::vector<uint8_t> EncodeSecEdgarQ2State(const SecEdgarQ2State &state) {
       core::PutVarint(out, g.adsh - prev_adsh);
       prev_adsh = g.adsh;
       core::PutVarint(out, g.tag);
-      PutRaw64(out, static_cast<uint64_t>(g.k0));
+      const uint64_t bits0 = KeyBits(g.k0);
+      const unsigned tz = KeyZeroBytes(bits0);
+      out.push_back(static_cast<uint8_t>((g.c1 > 0 ? 1 : 0) | (g.trunc ? 2 : 0) | (tz << 2)));
+      PutKeyTail(out, bits0, tz);
       core::PutVarint(out, g.c0);
-      out.push_back(static_cast<uint8_t>((g.c1 > 0 ? 1 : 0) | (g.trunc ? 2 : 0)));
       if (g.c1 > 0) {
         PutRaw64(out, static_cast<uint64_t>(g.k1));
         core::PutVarint(out, g.c1);
@@ -574,9 +619,17 @@ bool DecodeSecEdgarQ2State(const std::vector<uint8_t> &bytes,
       prev_adsh += static_cast<uint32_t>(r.Var());
       g.adsh = prev_adsh;
       g.tag = static_cast<uint32_t>(r.Var());
-      g.k0 = static_cast<int64_t>(r.Raw64());
-      g.c0 = static_cast<uint32_t>(r.Var());
       const uint8_t flags = r.U8();
+      const unsigned tz = (flags >> 2) & 15u;
+      if (tz > 8) {
+        return false;
+      }
+      uint64_t bits0 = 0;
+      for (unsigned sh = tz * 8; sh < 64; sh += 8) {
+        bits0 |= static_cast<uint64_t>(r.U8()) << sh;
+      }
+      g.k0 = static_cast<int64_t>(KeyBits(static_cast<int64_t>(bits0)));
+      g.c0 = static_cast<uint32_t>(r.Var());
       g.trunc = (flags & 2) != 0;
       if (flags & 1) {
         g.k1 = static_cast<int64_t>(r.Raw64());
@@ -782,10 +835,119 @@ void SecEdgarQ2Module::AccumulateMutation(const core::MutationBatch &mutation,
 
 // ----------------------------------------------------------------- build
 
+namespace {
+
+// Parallel aggregation of the initial scan.  Phase 1 builds read-only
+// dictionaries from the distinct keys; phase 2 converts batches (on `threads`
+// workers) into compact records bucketed by group hash; phase 3 merges each
+// bucket into its own group table, one thread per bucket.  Returns false when
+// the scan source does not support it or a row refers to a key the first phase
+// did not see (a concurrent write): the caller then runs the serial path.
+struct BuildRec {
+  int64_t key;
+  uint32_t uom, adsh, tag, cnt;
+};
+
+bool BuildGroupsParallel(SecEdgarQ2InitialScan &scan, const std::vector<std::string> &covered,
+                         const Q2UomDir &dir, SecEdgarQ2State &state, unsigned threads,
+                         Q2GroupTable &out) {
+  if (!scan.ScanNumKeys(
+          covered, [&](std::string_view a) { state.adsh.GetOrAdd(a); },
+          [&](std::string_view t) { state.tag.GetOrAdd(t); })) {
+    return false;
+  }
+  state.adsh.Compact();
+  state.tag.Compact();
+  BuildTrace trace;
+  const unsigned parts = threads;
+  std::vector<std::vector<std::vector<BuildRec>>> buckets(
+      threads, std::vector<std::vector<BuildRec>>(parts));
+  std::atomic<bool> bad{false};
+  if (!scan.ScanNumValueCountsParallel(
+          covered, threads,
+          [&](unsigned worker, const SecEdgarQ2ValueCountRow *rows, size_t n) {
+            auto &mine = buckets[worker];
+            for (size_t i = 0; i < n; ++i) {
+              const auto &row = rows[i];
+              const uint32_t ui = dir.names.Find(row.uom);
+              if (ui == core::StringDict::kNone || dir.excluded[ui]) {
+                bad.store(true, std::memory_order_relaxed);
+                continue;
+              }
+              const uint32_t a = state.adsh.Find(row.adsh);
+              const uint32_t t = state.tag.Find(row.tag);
+              if (a == kQ2None || t == kQ2None) {
+                bad.store(true, std::memory_order_relaxed);
+                continue;
+              }
+              const size_t p = (Q2GroupHash(ui, a, t) >> 40) % parts;
+              mine[p].push_back({Q2ValueKey(row.value), ui, a, t,
+                                 static_cast<uint32_t>(std::min<uint64_t>(row.rows, 0xFFFFFFFFu))});
+              if (row.rows > 0xFFFFFFFFu) {
+                bad.store(true, std::memory_order_relaxed);
+              }
+            }
+          })) {
+    return false;
+  }
+  trace.Mark(" par: scan+convert");
+  if (bad.load()) {
+    return false;
+  }
+  std::vector<Q2GroupTable> tables(parts);
+  std::atomic<bool> overflow{false};
+  std::vector<std::thread> pool;
+  for (unsigned p = 0; p < parts; ++p) {
+    pool.emplace_back([&, p] {
+      Q2GroupTable &acc = tables[p];
+      for (unsigned w = 0; w < threads; ++w) {
+        for (const BuildRec &r : buckets[w][p]) {
+          const int32_t e = acc.Find(r.uom, r.adsh, r.tag);
+          if (e >= 0) {
+            if (!Q2GroupInsert(acc.ents[e], r.key, r.cnt)) {
+              overflow.store(true);
+            }
+            continue;
+          }
+          Q2Group g;
+          g.uom = r.uom;
+          g.adsh = r.adsh;
+          g.tag = r.tag;
+          if (!Q2GroupInsert(g, r.key, r.cnt)) {
+            overflow.store(true);
+          }
+          acc.Append(g);
+        }
+        std::vector<BuildRec>().swap(buckets[w][p]);
+      }
+      std::vector<uint32_t>().swap(acc.slots);
+    });
+  }
+  for (auto &t : pool) {
+    t.join();
+  }
+  if (overflow.load()) {
+    ThrowCountOverflow();
+  }
+  size_t total = 0;
+  for (const auto &t : tables) {
+    total += t.ents.size();
+  }
+  out.ents.reserve(total);
+  for (auto &t : tables) {
+    out.ents.insert(out.ents.end(), t.ents.begin(), t.ents.end());
+    std::vector<Q2Group>().swap(t.ents);
+  }
+  return true;
+}
+
+} // namespace
+
 std::shared_ptr<const SecEdgarQ2State> SecEdgarQ2Module::BuildState() const {
   if (!initial_scan) {
     throw std::logic_error("SEC EDGAR Q2 requires a typed initial scan source");
   }
+  BuildTrace trace;
   // 1. Decide which units of measure are materialised.
   std::vector<std::pair<std::string, uint64_t>> counts;
   initial_scan->ScanUomRowCounts([&](const std::string &uom, uint64_t rows) {
@@ -803,10 +965,23 @@ std::shared_ptr<const SecEdgarQ2State> SecEdgarQ2Module::BuildState() const {
     }
   }
 
+  trace.Mark("uom counts");
   // 2. Aggregate (group -> top-2 values) for the covered units.
   auto state = std::make_shared<SecEdgarQ2State>();
   Q2GroupTable acc;
-  if (!covered.empty()) {
+  unsigned threads = config.build_threads;
+  if (threads == 0) {
+    threads = std::min(16u, std::max(1u, std::thread::hardware_concurrency()));
+  }
+  bool parallel_done = false;
+  if (!covered.empty() && threads > 1) {
+    parallel_done = BuildGroupsParallel(*initial_scan, covered, *dir, *state, threads, acc);
+    if (!parallel_done) {
+      state = std::make_shared<SecEdgarQ2State>(); // unsupported or inconsistent: serial
+      acc = Q2GroupTable();
+    }
+  }
+  if (!covered.empty() && !parallel_done) {
     initial_scan->ScanNumValueCounts(
         covered, [&](const SecEdgarQ2ValueCountRow &row) {
           const uint32_t ui = dir->names.Find(row.uom);
@@ -816,24 +991,23 @@ std::shared_ptr<const SecEdgarQ2State> SecEdgarQ2Module::BuildState() const {
           const uint32_t a = state->adsh.GetOrAdd(row.adsh);
           const uint32_t t = state->tag.GetOrAdd(row.tag);
           const int32_t e = acc.Find(ui, a, t);
-          Q2Group g;
           if (e >= 0) {
-            g = acc.ents[e];
-          } else {
-            g.uom = ui;
-            g.adsh = a;
-            g.tag = t;
+            if (!Q2GroupInsert(acc.ents[e], Q2ValueKey(row.value), row.rows)) {
+              ThrowCountOverflow();
+            }
+            return;
           }
+          Q2Group g;
+          g.uom = ui;
+          g.adsh = a;
+          g.tag = t;
           if (!Q2GroupInsert(g, Q2ValueKey(row.value), row.rows)) {
             ThrowCountOverflow();
           }
-          if (e >= 0) {
-            acc.ents[e] = g;
-          } else {
-            acc.Put(g);
-          }
+          acc.Append(g);
         });
   }
+  trace.Mark("aggregate");
   state->adsh.Compact();
   state->tag.Compact();
 
@@ -845,12 +1019,14 @@ std::shared_ptr<const SecEdgarQ2State> SecEdgarQ2Module::BuildState() const {
     }
   });
   state->names.Shrink();
+  trace.Mark("sub scan");
 
   // 4. Sorted base.
   acc.slots = std::vector<uint32_t>();
   const uint32_t uom_count = static_cast<uint32_t>(dir->names.size());
   state->base = Q2Base::Build(std::move(acc.ents), uom_count);
   state->uoms = std::move(dir);
+  trace.Mark("base build");
   return state;
 }
 

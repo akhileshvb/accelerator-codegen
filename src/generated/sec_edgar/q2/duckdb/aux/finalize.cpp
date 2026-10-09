@@ -101,8 +101,9 @@ bool FinalizeSecEdgarQ2Views(const SecEdgarQ2State &state, int64_t fy,
           return;
         }
       }
-      cands.push_back({key, adsh[i], b.tag[i], b.c0[i], {}, false});
-      base_total += b.c0[i];
+      const uint32_t cnt = b.C0(i);
+      cands.push_back({key, adsh[i], b.tag[i], cnt, {}, false});
+      base_total += cnt;
     };
     // Note: an AVX2 gather variant of this loop was measured 2.5x slower than
     // the scalar loop on the target CPU (gathers are microcoded), so the scan
