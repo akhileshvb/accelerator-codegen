@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "accelerator_codegen/harness/differential.hpp"
+#include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "catalog/query_catalog.hpp"
@@ -132,7 +133,8 @@ struct ParamDraw {
   std::string base_sql, call_sql;
 };
 
-std::vector<ParamDraw> LoadChecks(const char *path) {
+// The #check draws (checks = true) or the read draws before them.
+std::vector<ParamDraw> LoadChecks(const char *path, bool want_checks = true) {
   std::vector<ParamDraw> out;
   if (!path || !*path)
     return out;
@@ -147,10 +149,11 @@ std::vector<ParamDraw> LoadChecks(const char *path) {
     }
     if (line.empty() || line[0] == '#')
       continue;
+    if (checks != want_checks)
+      continue;
     const auto tab = line.find('\t');
     out.push_back({line.substr(0, tab), line.substr(tab + 1)});
   }
-  (void)checks;
   return out;
 }
 
@@ -237,9 +240,18 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 2; ++i) {
       t = Clock::now();
       Q(connection, entry.duckdb_aux_sql);
-      std::cout << "q" << query << " aux_read_us=" << Us(t) << "\n";
+      std::cout << "q" << query << " aux_read_us=" << Us(t) << " ("
+                << core::FormatAuxExecuteCounts(core::ReadAuxExecuteCounts()) << ")\n";
     }
 
+    // Accelerator latency of each read draw (ACCEL_SWEEP_PARAM_FILE), twice.
+    for (const auto &d : LoadChecks(std::getenv("ACCEL_SWEEP_PARAM_FILE"), false)) {
+      for (int i = 0; i < 2; ++i) {
+        t = Clock::now();
+        Q(connection, d.call_sql);
+        std::cout << "q" << query << " draw_read_us=" << Us(t) << " " << d.call_sql << "\n";
+      }
+    }
     std::unordered_set<int64_t> used;
     int seed = 1000 + query;
     std::cout << "query,rows,batch,make_us,base_update_us,base_commit_us,apply_us,apply_us_per_row,read_us\n";
