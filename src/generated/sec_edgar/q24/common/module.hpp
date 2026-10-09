@@ -108,6 +108,11 @@ public:
       const std::function<void(const SecEdgarQ24PreBatch &)> &) {
     return false;
   }
+  // Optional: ingests every pre row with non-NULL (adsh, tag, version) into
+  // `raw` (dictionary ids via FindOrAdd, appended to raw.rows as triples),
+  // resolving each distinct string of a storage dictionary once. False when
+  // unsupported (nothing ingested).
+  virtual bool ScanPreIds(Q24RawPre &) { return false; }
   // Optional: as ScanQualifyingNumBatches, but delivers only the rows whose
   // (adsh, tag, version) is NOT in `pre` (the anti-join's survivors); the
   // engine tests membership itself (e.g. on dictionary ids cached per

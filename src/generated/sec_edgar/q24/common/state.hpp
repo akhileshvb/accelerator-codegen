@@ -71,6 +71,10 @@ public:
     return Find(data, size, Q24HashBytes(data, size));
   }
   uint32_t Find(const char *data, uint32_t size, uint64_t hash) const;
+  // out[i] = Find(data[i], size[i]) for i < n (null data: kNone); hashes and
+  // slot prefetches for the whole batch first, so the cache misses overlap.
+  void FindBatch(const char *const *data, const uint32_t *size, std::size_t n,
+                 uint32_t *out) const;
   uint32_t FindOrAdd(const char *data, uint32_t size) {
     return FindOrAdd(data, size, Q24HashBytes(data, size));
   }

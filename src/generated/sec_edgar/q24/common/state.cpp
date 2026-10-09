@@ -78,6 +78,19 @@ uint32_t Q24StringDict::Find(const char *data, uint32_t size,
   }
 }
 
+void Q24StringDict::FindBatch(const char *const *data, const uint32_t *size,
+                              std::size_t n, uint32_t *out) const {
+  thread_local std::vector<uint64_t> hashes;
+  hashes.resize(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!data[i]) continue;
+    hashes[i] = Q24HashBytes(data[i], size[i]);
+    Prefetch(hashes[i]);
+  }
+  for (std::size_t i = 0; i < n; ++i)
+    out[i] = data[i] ? Find(data[i], size[i], hashes[i]) : kNone;
+}
+
 uint32_t Q24StringDict::FindOrAdd(const char *data, uint32_t size,
                                   uint64_t hash) {
   // Keep load <= 50% while growing; ShrinkToFit tightens it afterwards.

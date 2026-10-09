@@ -931,6 +931,7 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
   std::vector<Q24RawPre> parts(1);
   Q24RawPre &raw = parts[0];
   const bool fast_pre =
+      initial_scan->ScanPreIds(raw) ||
       initial_scan->ScanPreBatches([&](const SecEdgarQ24PreBatch &b) {
         raw.AddBatch(b.adsh, b.tag, b.version, b.count);
       });

@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "duckdb/common/types/string_type.hpp"
@@ -22,6 +23,8 @@
 namespace accelerator_codegen {
 
 class DictionaryIdCache {
+  struct NoBatch {};
+
 public:
   static constexpr uint32_t kUnresolved = 0xFFFFFFFEu;
 
@@ -33,6 +36,16 @@ public:
   // kUnresolved.
   template <typename Lookup>
   void Resolve(::duckdb::Vector &vec, ::duckdb::idx_t n, Lookup &&lookup, uint32_t *out) {
+    Resolve(vec, n, lookup, NoBatch(), out);
+  }
+
+  // As Resolve, but a new storage dictionary is resolved whole, up front, by
+  // `batch(const ::duckdb::string_t *entries, const ::duckdb::ValidityMask &,
+  // idx_t count, uint32_t *ids)` (which can overlap the lookups' cache misses;
+  // NULL entries must get null_id).
+  template <typename Lookup, typename Batch>
+  void Resolve(::duckdb::Vector &vec, ::duckdb::idx_t n, Lookup &&lookup, Batch &&batch,
+               uint32_t *out) {
     using namespace ::duckdb;
     if (vec.GetVectorType() == VectorType::DICTIONARY_VECTOR) {
       const auto size = DictionaryVector::DictionarySize(vec);
@@ -43,6 +56,11 @@ public:
           if (id != dict_id_) {
             dict_id_ = id;
             map_.assign(size.GetIndex(), kUnresolved);
+            if constexpr (!std::is_same_v<std::decay_t<Batch>, NoBatch>) {
+              batch(FlatVector::GetData<string_t>(child), FlatVector::Validity(child),
+                    size.GetIndex(), map_.data());
+              entry_lookups += size.GetIndex();
+            }
           }
           const auto &sel = DictionaryVector::SelVector(vec);
           const auto *data = FlatVector::GetData<string_t>(child);
