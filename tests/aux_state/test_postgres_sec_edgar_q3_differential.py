@@ -101,6 +101,10 @@ class Rand:
     def exec(self, sql, args=None):
         with self.conn.cursor() as cur:
             cur.execute(sql, args)
+            if os.environ.get("Q3_TRACE"):
+                print("  SQL", cur.query.decode()[:200], "rows", cur.rowcount)
+        if os.environ.get("Q3_FINE") and self.conn.autocommit:
+            compare(self.conn, "after: " + sql[:80] + str(args)[:80])
 
     def adsh(self):
         return self.rnd.choice(self.filings)
@@ -211,6 +215,8 @@ def random_mode():
     for step in range(steps):
         mode = rnd.random()
         label = "seed=%d step=%d" % (seed, step)
+        if os.environ.get("Q3_TRACE"):
+            print("STEP", step, "txn" if mode >= 0.55 else "auto")
         if mode < 0.55:  # autocommit statement(s)
             for _ in range(rnd.randint(1, 3)):
                 R.op()
@@ -220,23 +226,30 @@ def random_mode():
             try:
                 for _ in range(rnd.randint(1, 5)):
                     R.op()
+                    if os.environ.get("Q3_SPLIT"):
+                        writer.commit(); writer.autocommit = True
+                        compare(writer, label + " split"); writer.autocommit = False
                     if rnd.random() < 0.3:
                         compare(writer, label + " in-txn")  # own uncommitted writes
                 if rnd.random() < 0.2:
                     with writer.cursor() as cur:
                         cur.execute("SAVEPOINT sp")
+                        if os.environ.get("Q3_TRACE"): print("  SAVEPOINT")
                     for _ in range(rnd.randint(1, 3)):
                         R.op()
                     if rnd.random() < 0.6:
                         with writer.cursor() as cur:
                             cur.execute("ROLLBACK TO SAVEPOINT sp")
+                            if os.environ.get("Q3_TRACE"): print("  ROLLBACK TO SP")
                         stats["savepoint"] += 1
                 if rnd.random() < 0.3:
+                    if os.environ.get("Q3_TRACE"): print("  ROLLBACK")
                     writer.rollback()
                     stats["rollback"] += 1
                     # the generator's filing list may have drifted; resync
                     R.filings[:] = [r[0] for r in fetch_txn(writer)]
                 else:
+                    if os.environ.get("Q3_TRACE"): print("  COMMIT")
                     writer.commit()
                     stats["commit"] += 1
             except Exception:

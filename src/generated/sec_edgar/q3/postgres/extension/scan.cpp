@@ -73,7 +73,12 @@ Q3Runtime() {
       runtime("ACCELERATOR_CODEGEN_POSTGRES_SEC_EDGAR_Q3_COST_MODEL",
               "config/sec_edgar_q3_aux_cost_model.json",
               core::SecEdgarQ3Layout::kAccelerator,
-              query::SecEdgarQ3Config{kSecEdgarNum, kSecEdgarSub});
+              query::SecEdgarQ3Config{
+                  kSecEdgarNum, kSecEdgarSub,
+                  /* num attnums: adsh, uom, value */ {0, 5, 7},
+                  /* sub attnums: adsh, name, cik, fy */ {0, 2, 1, 10},
+                  /* positions in the projected rows */ {0, 1, 2},
+                  {0, 1, 2, 3}});
   return runtime;
 }
 
