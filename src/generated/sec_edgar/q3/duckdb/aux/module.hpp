@@ -228,6 +228,8 @@ struct SecEdgarQ3UomDict {
 };
 
 inline constexpr std::size_t kSecEdgarQ3MaxCohorts = 64;
+// Cohorts materialized at build (see SecEdgarQ3Module::BuildState).
+inline constexpr std::size_t kSecEdgarQ3PrebuiltCohorts = 24;
 inline constexpr int32_t kSecEdgarQ3DefaultFy = 2022;
 inline constexpr const char *kSecEdgarQ3DefaultUom = "USD";
 

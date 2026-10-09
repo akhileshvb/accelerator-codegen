@@ -343,7 +343,7 @@ core::InvalidationPlan SecEdgarQ24Module::InterpretMutation(
 }
 
 void SecEdgarQ24Module::AccumulateMutation(
-    const core::MutationBatch &mutation, core::AuxEngineServices &,
+    const core::MutationBatch &mutation, core::AuxEngineServices &services,
     core::AuxTxnBuffer &base_buffer) {
   auto &buffer = dynamic_cast<SecEdgarQ24TxnBuffer &>(base_buffer);
   if (buffer.RequiresRebuild()) return;
@@ -400,14 +400,82 @@ void SecEdgarQ24Module::AccumulateMutation(
       !UpdateTouches(mutation, NumColumnRelevant))
     return;
 
-  auto add = [&](const core::AuxRow &row, int8_t sign) {
-    NumRow parsed;
-    if (ParseNum(row, parsed) != Parse::Ok ||
-        (parsed.relevant && !std::isfinite(parsed.value))) {
-      buffer.MarkRebuild();
-      return;
+  // Rows whose (adsh, tag, version) has a pre match in the published state
+  // are not in the anti-join before or after this write: they need no op.
+  // Tested for the whole batch at once (pipelined probes); only the rest are
+  // keyed and buffered.  Safe within the transaction: a later pre delete /
+  // re-key of the triple resolves it from the tables at Stage (its ops are
+  // subsumed), and a later pre insert cannot unmatch it.  An earlier pre
+  // insert in this transaction is not in the published state, so the row is
+  // conservatively kept.
+  const std::size_t total_rows = mutation.old_rows.size() + mutation.new_rows.size();
+  thread_local std::vector<NumRow> parsed_rows;
+  thread_local std::vector<Q24Str> pa, pt, pv;
+  thread_local std::vector<uint8_t> matched;
+  parsed_rows.resize(total_rows);
+  matched.assign(total_rows, 0);
+  {
+    std::size_t k = 0;
+    for (const auto *rows : {&mutation.old_rows, &mutation.new_rows}) {
+      for (const auto &row : *rows) {
+        NumRow &parsed = parsed_rows[k++];
+        if (ParseNum(row, parsed) != Parse::Ok ||
+            (parsed.relevant && !std::isfinite(parsed.value))) {
+          buffer.MarkRebuild();
+          return;
+        }
+      }
     }
-    if (!parsed.relevant) return;
+    std::shared_ptr<const Q24PreState> pre;
+    if (total_rows >= kMatchFilterMinRows) {
+      const auto snapshot = services.StateStore().ReadPartitions(
+          services.CurrentVisibility(), {core::SecEdgarQ24Layout::kPreMembership});
+      for (const auto &image : snapshot.partitions)
+        if (image.partition == core::SecEdgarQ24Layout::kPreMembership)
+          if (const auto *s = AsState(image, SecEdgarQ24ImageKind::PreMembership)) pre = s->pre;
+    }
+    const bool overlay_empty =
+        pre && pre->base &&
+        (!pre->overlay || (pre->overlay->keys.empty() && pre->overlay->removed.empty()));
+    if (overlay_empty) {
+      // An update that keeps the key (e.g. SET value = ...) probes it once.
+      const std::size_t old_n = mutation.old_rows.size();
+      const bool paired = mutation.kind == core::MutationKind::Update &&
+                          old_n == mutation.new_rows.size();
+      const auto same = [](const Q24Str &x, const Q24Str &y) {
+        return x.null == y.null && x.size == y.size &&
+               (x.size == 0 || std::memcmp(x.data, y.data, x.size) == 0);
+      };
+      thread_local std::vector<uint32_t> probe_of;
+      thread_local std::vector<uint8_t> probe_hit;
+      probe_of.resize(total_rows);
+      pa.clear();
+      pt.clear();
+      pv.clear();
+      for (std::size_t i = 0; i < total_rows; ++i) {
+        const NumRow &r = parsed_rows[i];
+        if (paired && i >= old_n) {
+          const NumRow &o = parsed_rows[i - old_n];
+          if (same(o.adsh, r.adsh) && same(o.tag, r.tag) && same(o.version, r.version)) {
+            probe_of[i] = probe_of[i - old_n];
+            continue;
+          }
+        }
+        probe_of[i] = static_cast<uint32_t>(pa.size());
+        pa.push_back(r.adsh);
+        pt.push_back(r.tag);
+        pv.push_back(r.version);
+      }
+      probe_hit.resize(pa.size());
+      pre->base->ContainsBatch(pa.data(), pt.data(), pv.data(), pa.size(), probe_hit.data());
+      for (std::size_t i = 0; i < total_rows; ++i) matched[i] = probe_hit[probe_of[i]];
+    }
+  }
+  // parsed_rows / matched: old rows first, then new rows.
+  const std::size_t new_base = mutation.old_rows.size();
+  auto add = [&](std::size_t index, int8_t sign) {
+    const NumRow &parsed = parsed_rows[index];
+    if (!parsed.relevant || matched[index]) return;
     SecEdgarQ24TxnBuffer::Op op;
     op.kind = SecEdgarQ24TxnBuffer::Op::Kind::Num;
     op.sign = sign;
@@ -419,10 +487,10 @@ void SecEdgarQ24Module::AccumulateMutation(
   };
   switch (mutation.kind) {
   case core::MutationKind::Insert:
-    for (const auto &row : mutation.new_rows) add(row, 1);
+    for (std::size_t i = 0; i < mutation.new_rows.size(); ++i) add(new_base + i, 1);
     break;
   case core::MutationKind::Delete:
-    for (const auto &row : mutation.old_rows) add(row, -1);
+    for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) add(i, -1);
     break;
   case core::MutationKind::Update:
     if (mutation.old_rows.size() != mutation.new_rows.size()) {
@@ -430,8 +498,8 @@ void SecEdgarQ24Module::AccumulateMutation(
       return;
     }
     for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
-      add(mutation.old_rows[i], -1);
-      add(mutation.new_rows[i], 1);
+      add(i, -1);
+      add(new_base + i, 1);
     }
     break;
   }
@@ -863,6 +931,7 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
   std::vector<Q24RawPre> parts(1);
   Q24RawPre &raw = parts[0];
   const bool fast_pre =
+      initial_scan->ScanPreIds(raw) ||
       initial_scan->ScanPreBatches([&](const SecEdgarQ24PreBatch &b) {
         raw.AddBatch(b.adsh, b.tag, b.version, b.count);
       });
@@ -881,7 +950,15 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
   Q24OrphanAccumulator orphans;
   std::vector<uint8_t> hits;
   double probe_ms = 0;
-  const bool fast_num = initial_scan->ScanQualifyingNumBatches(
+  const bool orphan_scan = initial_scan->ScanNumOrphans(
+      base, [&](const SecEdgarQ24NumBatch &b) {
+        for (std::size_t i = 0; i < b.count; ++i) {
+          int32_t year;
+          if (b.uom[i].null || !Q24DdateYear(b.ddate[i], year)) continue;
+          orphans.Add(b.adsh[i], b.tag[i], b.version[i], year, b.uom[i], b.value[i]);
+        }
+      });
+  const bool fast_num = orphan_scan || initial_scan->ScanQualifyingNumBatches(
       [&](const SecEdgarQ24NumBatch &b) {
         const auto probe_start = std::chrono::steady_clock::now();
         struct Timer {

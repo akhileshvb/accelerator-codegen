@@ -78,6 +78,19 @@ uint32_t Q24StringDict::Find(const char *data, uint32_t size,
   }
 }
 
+void Q24StringDict::FindBatch(const char *const *data, const uint32_t *size,
+                              std::size_t n, uint32_t *out) const {
+  thread_local std::vector<uint64_t> hashes;
+  hashes.resize(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!data[i]) continue;
+    hashes[i] = Q24HashBytes(data[i], size[i]);
+    Prefetch(hashes[i]);
+  }
+  for (std::size_t i = 0; i < n; ++i)
+    out[i] = data[i] ? Find(data[i], size[i], hashes[i]) : kNone;
+}
+
 uint32_t Q24StringDict::FindOrAdd(const char *data, uint32_t size,
                                   uint64_t hash) {
   // Keep load <= 50% while growing; ShrinkToFit tightens it afterwards.
@@ -561,6 +574,47 @@ void Q24PreBase::ContainsBatch(const Q24Str *a, const Q24Str *t,
                              static_cast<uint16_t>(w.pid));
     else
       out[i] = SliceContains(ids32.data() + off32[w.aid], ids32.data() + off32[w.aid + 1], w.pid);
+  }
+}
+
+void Q24PreBase::ContainsIdsBatch(const uint32_t *aid, const uint32_t *tid,
+                                  const uint32_t *vid, std::size_t n,
+                                  uint8_t *out) const {
+  thread_local std::vector<uint32_t> pid;
+  pid.resize(n);
+  // Stage 1: pair key; prefetch its slot.
+  for (std::size_t i = 0; i < n; ++i) {
+    if (aid[i] == Q24StringDict::kNone || tid[i] == Q24StringDict::kNone ||
+        vid[i] == Q24StringDict::kNone)
+      continue;
+    pairs.Prefetch((static_cast<uint64_t>(tid[i]) << 32) | vid[i]);
+  }
+  // Stage 2: pair id; prefetch the membership slice.
+  for (std::size_t i = 0; i < n; ++i) {
+    pid[i] = Q24PairIndex::kNone;
+    if (aid[i] == Q24StringDict::kNone || tid[i] == Q24StringDict::kNone ||
+        vid[i] == Q24StringDict::kNone)
+      continue;
+    const uint32_t p = pairs.Find((static_cast<uint64_t>(tid[i]) << 32) | vid[i]);
+    pid[i] = p;
+    if (p == Q24PairIndex::kNone) continue;
+    if (p < 256) __builtin_prefetch(bits256.data() + static_cast<std::size_t>(aid[i]) * 4);
+    else if (p < 65536) __builtin_prefetch(ids16.data() + off16[aid[i]]);
+    else __builtin_prefetch(ids32.data() + off32[aid[i]]);
+  }
+  // Stage 3: slice search.
+  for (std::size_t i = 0; i < n; ++i) {
+    const uint32_t p = pid[i];
+    out[i] = 0;
+    if (p == Q24PairIndex::kNone) continue;
+    const uint32_t a = aid[i];
+    if (p < 256)
+      out[i] = (bits256[static_cast<std::size_t>(a) * 4 + (p >> 6)] >> (p & 63)) & 1;
+    else if (p < 65536)
+      out[i] = SliceContains(ids16.data() + off16[a], ids16.data() + off16[a + 1],
+                             static_cast<uint16_t>(p));
+    else
+      out[i] = SliceContains(ids32.data() + off32[a], ids32.data() + off32[a + 1], p);
   }
 }
 

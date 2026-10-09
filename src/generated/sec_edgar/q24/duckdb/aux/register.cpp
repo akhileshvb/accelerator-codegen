@@ -8,6 +8,7 @@
 #include "sec_edgar/duckdb_probes.hpp"
 #include "accelerator_codegen/runtime/duckdb/aux_query_registry.hpp"
 #include "catalog/query_catalog.hpp"
+#include "accelerator_codegen/runtime/duckdb/dictionary_id_cache.hpp"
 #include "accelerator_codegen/runtime/duckdb/duckdb_scan_adapter.hpp"
 #include "sec_edgar/q24/duckdb/base/query.hpp"
 
@@ -264,6 +265,147 @@ struct SecEdgarQ24Scan : SecEdgarQ24InitialScan {
     Require(!result->HasError(), result->GetError());
     return true;
   }
+  bool ScanNumOrphans(
+      const Q24PreBase &base,
+      const std::function<void(const SecEdgarQ24NumBatch &)> &consumer) override {
+    bool delivered = false;
+    try {
+      // Membership is tested on pre's dictionary ids, resolved once per
+      // storage-dictionary entry (DictionaryIdCache), not per row.
+      DictionaryIdCache adsh_ids(Q24StringDict::kNone), tag_ids(Q24StringDict::kNone),
+          version_ids(Q24StringDict::kNone);
+      const auto find_in = [](const Q24StringDict &dict) {
+        return [&dict](const char *data, uint32_t size) { return dict.Find(data, size); };
+      };
+      const auto find_adsh = find_in(base.adsh);
+      const auto find_tag = find_in(base.tag);
+      const auto find_version = find_in(base.version);
+      // A new storage dictionary is resolved whole with pipelined lookups.
+      std::vector<const char *> entry_data;
+      std::vector<uint32_t> entry_size;
+      const auto batch_in = [&entry_data, &entry_size](const Q24StringDict &dict) {
+        return [&dict, &entry_data, &entry_size](const ::duckdb::string_t *entries,
+                                                 const ::duckdb::ValidityMask &validity,
+                                                 ::duckdb::idx_t count, uint32_t *ids) {
+          entry_data.resize(count);
+          entry_size.resize(count);
+          for (::duckdb::idx_t k = 0; k < count; ++k) {
+            const bool valid = validity.RowIsValid(k);
+            entry_data[k] = valid ? entries[k].GetData() : nullptr;
+            entry_size[k] = valid ? static_cast<uint32_t>(entries[k].GetSize()) : 0;
+          }
+          dict.FindBatch(entry_data.data(), entry_size.data(), count, ids);
+        };
+      };
+      const auto batch_adsh = batch_in(base.adsh);
+      const auto batch_tag = batch_in(base.tag);
+      const auto batch_version = batch_in(base.version);
+      std::vector<uint32_t> aid(STANDARD_VECTOR_SIZE), tid(STANDARD_VECTOR_SIZE),
+          vid(STANDARD_VECTOR_SIZE);
+      std::vector<uint8_t> hit(STANDARD_VECTOR_SIZE);
+      std::vector<Q24Str> a, t, v, u;
+      std::vector<double> value;
+      std::vector<int32_t> ddate;
+      NativeScan(CreateSecEdgarQ24AuxNumScanSpec(), [&](::duckdb::DataChunk &chunk) {
+        delivered = true;
+        const auto n = chunk.size();
+        if (n == 0) return;
+        if (aid.size() < n) {
+          aid.resize(n); tid.resize(n); vid.resize(n); hit.resize(n);
+        }
+        adsh_ids.Resolve(chunk.data[0], n, find_adsh, batch_adsh, aid.data());
+        tag_ids.Resolve(chunk.data[1], n, find_tag, batch_tag, tid.data());
+        version_ids.Resolve(chunk.data[2], n, find_version, batch_version, vid.data());
+        base.ContainsIdsBatch(aid.data(), tid.data(), vid.data(), n, hit.data());
+        std::size_t misses = 0;
+        for (::duckdb::idx_t i = 0; i < n; ++i) misses += hit[i] == 0;
+        if (misses == 0) return;
+        ChunkColumn<::duckdb::string_t> ca, ct, cv, cu;
+        ca.Init(chunk.data[0], n);
+        ct.Init(chunk.data[1], n);
+        cv.Init(chunk.data[2], n);
+        cu.Init(chunk.data[4], n);
+        ::duckdb::UnifiedVectorFormat value_fmt, date_fmt;
+        chunk.data[3].ToUnifiedFormat(n, value_fmt);
+        chunk.data[5].ToUnifiedFormat(n, date_fmt);
+        const auto *values = ::duckdb::UnifiedVectorFormat::GetData<double>(value_fmt);
+        const auto *dates = ::duckdb::UnifiedVectorFormat::GetData<int32_t>(date_fmt);
+        a.resize(misses); t.resize(misses); v.resize(misses); u.resize(misses);
+        value.resize(misses); ddate.resize(misses);
+        std::size_t out = 0;
+        for (::duckdb::idx_t i = 0; i < n; ++i) {
+          if (hit[i]) continue;
+          const auto vi = value_fmt.sel->get_index(i);
+          const auto di = date_fmt.sel->get_index(i);
+          if (!value_fmt.validity.RowIsValid(vi) || !date_fmt.validity.RowIsValid(di))
+            continue;
+          const Q24Str uom = cu.At(i);
+          if (uom.null) continue;
+          u[out] = uom;
+          ddate[out] = dates[di];
+          a[out] = ca.At(i);
+          t[out] = ct.At(i);
+          v[out] = cv.At(i);
+          value[out] = values[vi];
+          ++out;
+        }
+        if (out > 0)
+          consumer({out, a.data(), t.data(), v.data(), value.data(), u.data(), ddate.data()});
+      });
+      if (std::getenv("ACCEL_Q24_TRACE")) {
+        for (const auto *c : {&adsh_ids, &tag_ids, &version_ids})
+          std::fprintf(stderr,
+                       "[q24 build] ids: dict rows %llu (entry lookups %llu), other rows %llu "
+                       "(lookups %llu, unshared dictionaries %llu)\n",
+                       (unsigned long long)c->dict_rows, (unsigned long long)c->entry_lookups,
+                       (unsigned long long)c->other_rows, (unsigned long long)c->row_lookups,
+                       (unsigned long long)c->dict_other_rows);
+      }
+      return true;
+    } catch (const std::exception &) {
+      if (delivered) throw;
+    }
+    return false;
+  }
+
+  bool ScanPreIds(Q24RawPre &raw) override {
+    if (!raw.rows.empty()) return false;
+    try {
+      DictionaryIdCache adsh_ids(Q24StringDict::kNone), tag_ids(Q24StringDict::kNone),
+          version_ids(Q24StringDict::kNone);
+      const auto add_to = [](Q24StringDict &dict) {
+        return [&dict](const char *data, uint32_t size) { return dict.FindOrAdd(data, size); };
+      };
+      const auto add_adsh = add_to(raw.adsh);
+      const auto add_tag = add_to(raw.tag);
+      const auto add_version = add_to(raw.version);
+      std::vector<uint32_t> aid(STANDARD_VECTOR_SIZE), tid(STANDARD_VECTOR_SIZE),
+          vid(STANDARD_VECTOR_SIZE);
+      NativeScan(CreateSecEdgarQ24PreScanSpec(), [&](::duckdb::DataChunk &chunk) {
+        const auto n = chunk.size();
+        if (aid.size() < n) {
+          aid.resize(n); tid.resize(n); vid.resize(n);
+        }
+        adsh_ids.Resolve(chunk.data[0], n, add_adsh, aid.data());
+        tag_ids.Resolve(chunk.data[1], n, add_tag, tid.data());
+        version_ids.Resolve(chunk.data[2], n, add_version, vid.data());
+        for (::duckdb::idx_t i = 0; i < n; ++i) {
+          // A pre row with a NULL join key can never match a num row.
+          if (aid[i] == Q24StringDict::kNone || tid[i] == Q24StringDict::kNone ||
+              vid[i] == Q24StringDict::kNone)
+            continue;
+          raw.rows.push_back(aid[i]);
+          raw.rows.push_back(tid[i]);
+          raw.rows.push_back(vid[i]);
+        }
+      });
+      return true;
+    } catch (const std::exception &) {
+      if (!raw.rows.empty() || raw.adsh.size() || raw.tag.size() || raw.version.size()) throw;
+    }
+    return false;
+  }
+
   bool ScanPreBatches(
       const std::function<void(const SecEdgarQ24PreBatch &)> &consumer) override {
     bool delivered = false;

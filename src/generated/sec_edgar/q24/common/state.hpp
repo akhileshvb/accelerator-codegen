@@ -71,6 +71,10 @@ public:
     return Find(data, size, Q24HashBytes(data, size));
   }
   uint32_t Find(const char *data, uint32_t size, uint64_t hash) const;
+  // out[i] = Find(data[i], size[i]) for i < n (null data: kNone); hashes and
+  // slot prefetches for the whole batch first, so the cache misses overlap.
+  void FindBatch(const char *const *data, const uint32_t *size, std::size_t n,
+                 uint32_t *out) const;
   uint32_t FindOrAdd(const char *data, uint32_t size) {
     return FindOrAdd(data, size, Q24HashBytes(data, size));
   }
@@ -170,6 +174,10 @@ struct Q24PreBase {
   // whole batch so independent cache misses overlap.
   void ContainsBatch(const Q24Str *a, const Q24Str *t, const Q24Str *v,
                      std::size_t n, uint8_t *out) const;
+  // The same test on dictionary ids already resolved against adsh / tag /
+  // version (Q24StringDict::kNone = the string is not in pre: no match).
+  void ContainsIdsBatch(const uint32_t *aid, const uint32_t *tid,
+                        const uint32_t *vid, std::size_t n, uint8_t *out) const;
   std::size_t Bytes() const;
 };
 

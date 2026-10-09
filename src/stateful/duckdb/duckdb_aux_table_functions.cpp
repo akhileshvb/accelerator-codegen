@@ -291,16 +291,15 @@ AuxBind(::duckdb::ClientContext &context, ::duckdb::TableFunctionBindInput &inpu
     return_types = probe->types;
     names = probe->names;
   } else {
-    auto base_result = connection.Query(entry.base_sql);
-    Require(base_result != nullptr && !base_result->HasError(),
-            base_result ? base_result->GetError() : "failed to infer aux schema");
-    auto &base = base_result->Cast<::duckdb::MaterializedQueryResult>();
-    return_types.reserve(base.ColumnCount());
-    names.reserve(base.ColumnCount());
-    for (::duckdb::idx_t column = 0; column < base.ColumnCount(); ++column) {
-      return_types.push_back(base.types[column]);
-      names.push_back(base.names[column]);
-    }
+    // The schema of the prepared (not executed) base SQL: running it here
+    // would cost a full base query on the first accelerator call.
+    auto prepared = connection.Prepare(entry.base_sql);
+    Require(prepared != nullptr && !prepared->HasError(),
+            prepared ? prepared->GetError() : "failed to infer aux schema");
+    const auto &types = prepared->GetTypes();
+    const auto &column_names = prepared->GetNames();
+    return_types.assign(types.begin(), types.end());
+    names.assign(column_names.begin(), column_names.end());
   }
   {
     std::unique_lock<std::shared_mutex> lock(schema_mutex);
