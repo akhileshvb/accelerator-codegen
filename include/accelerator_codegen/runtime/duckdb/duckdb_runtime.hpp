@@ -68,6 +68,11 @@ public:
   // bulk row fanout (used by phased cost-model experiments).
   void ApplyBatch(std::vector<SharedProbe> &probes);
 
+  // One write transaction running `sql` (one set-based statement touching
+  // many rows) whose effect `mutation` describes: the accelerator receives
+  // every changed row as that one batch (write-frequency benches).
+  void ApplyBatchWrite(const std::string &sql, const core::MutationBatch &mutation);
+
   // Mini-chunk TPC-H RF1/RF2 (orders+lineitem insert/delete). Alternating
   // chunks keep DBs from unbounded growth while exercising I/D maintenance.
   // Point-update Apply(SharedProbe) remains the default sweep write path.

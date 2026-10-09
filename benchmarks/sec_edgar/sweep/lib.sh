@@ -7,6 +7,8 @@ ulimit -c 0   # a crashing child must not write a core dump to the root disk
 #   SWEEP_QUERIES       space-separated query numbers (default "1 2 3 4 6 24")
 #   ACCEL_SWEEP_PARAM_SEED   seed of the random draws (default 1)
 #   ACCEL_SWEEP_CHECK_SETS   drawn sets for the end-of-run correctness check (default 4)
+#   ACCEL_SWEEP_CHECK_AT     Postgres: check at "all" write rates (default) or the "lightest"
+#   ACCEL_BATCH_VERIFY_SAMPLE  DuckDB: invalidating candidates checked one by one (default 4)
 #   PG_PARALLEL         max concurrent Postgres instances (tmpfs budget: ~11 GB each; default 4)
 #   DUCK_PARALLEL       max concurrent DuckDB copies (default 6)
 #   RESULTS_ROOT        where results-<ts> dirs go (default <repo>/benchmarks/sec_edgar/sweep/results)
