@@ -3,24 +3,29 @@
 // SEC-EDGAR Q3 auxiliary state (single partition, immutable snapshots).
 //
 //   SELECT s.name, s.cik, SUM(n.value) FROM num n JOIN sub s USING (adsh)
-//   WHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL
+//   WHERE n.uom = :uom AND s.fy = :fy AND n.value IS NOT NULL
 //   GROUP BY s.name, s.cik HAVING SUM(n.value) > (AVG of per-cik sums)
 //   ORDER BY 3 DESC LIMIT 100
 //
-// The query has no template parameters (uom / fy are literals), so the state
-// is parameter independent.
+// Parameters: accel_sec_edgar_q3_aux() = (fy 2022, uom 'USD');
+// accel_sec_edgar_q3_aux(fy BIGINT, uom VARCHAR) answers any (fy, uom) exactly.
 //
 // State (all pieces are copy-on-write so a delta touches O(rows) memory):
-//   * AdshIndex: for every adsh seen in num (USD, non-null value) or sub:
-//     (sum, row count, group id or -1 when the filing is not in the fy=2022
-//     cohort).  Keeping filings that are *not* in the cohort makes sub
-//     INSERT/DELETE/UPDATE (including fy moves) fully incremental.  Entries
-//     with no rows and no cohort membership are dropped.
-//   * Sums are double-double (sum + comp), so add/remove cycles do not drift;
-//     counts are 64 bit.
-//   * GroupDir: dictionary of (name, cik) groups and distinct ciks.
-//   * Totals: per-group and per-cik (sum, row count) in SoA chunks, plus a
-//     lazily computed, cached top-100 result.
+//   * Sub index: adsh -> (group id of (name, cik), fy) for every sub row with a
+//     non-NULL fy and a non-NULL adsh.
+//   * Num indexes, one per unit of measure (uom dictionary): adsh -> (sum,
+//     row count) over the rows with that uom and a non-NULL value.  Sums are
+//     double-double (sum + comp), so add/remove cycles do not drift; counts
+//     are 64 bit.
+//   * GroupDir: dictionary of (name, cik) groups and distinct ciks (append only).
+//   * Cohorts: per-(fy, uom) per-group and per-cik (sum, row count) in SoA
+//     chunks plus a lazily computed, cached top-100 result.  A cohort is built
+//     from the two indexes on first use (and for the defaults at build time),
+//     kept in a bounded per-version cache, and repaired incrementally by every
+//     delta (a num row touches the one cohort (fy of its filing, its uom); a
+//     sub change touches the cohorts of its fy).  Evicted / unseen cohorts are
+//     rebuilt from the indexes, so any (fy, uom) is answered exactly from
+//     state.
 // Group / cik existence is driven by row counts, so a group whose last row is
 // deleted disappears exactly like in the SQL result.
 
@@ -57,9 +62,10 @@ struct SecEdgarQ3Config {
   std::vector<core::ColumnId> sub_pos = {0, 1, 2, 3};
 };
 
-// Per-adsh aggregate of num rows with uom = 'USD' AND value IS NOT NULL.
+// Per-(adsh, uom) aggregate of num rows with value IS NOT NULL.
 struct SecEdgarQ3NumAggInput {
   std::string adsh;
+  std::string uom;
   double sum = 0.0;
   int64_t count = 0;
 };
@@ -77,8 +83,8 @@ struct SecEdgarQ3SubInput {
 class SecEdgarQ3InitialScan {
 public:
   virtual ~SecEdgarQ3InitialScan() = default;
-  // One callback per distinct adsh: SUM(value), COUNT(*) over
-  // uom = 'USD' AND value IS NOT NULL (GROUP BY adsh).
+  // One callback per distinct (adsh, uom): SUM(value), COUNT(*) over
+  // value IS NOT NULL (GROUP BY adsh, uom); adsh and uom non-NULL.
   virtual void ScanNumAggregates(
       const std::function<void(const SecEdgarQ3NumAggInput &)> &) = 0;
   virtual void
@@ -95,11 +101,13 @@ struct SecEdgarQ3OutputRow {
 
 // ---- adsh index -----------------------------------------------------------
 
+// Entry of a num index (sum / comp / cnt) or of the sub index (group / fy).
 struct SecEdgarQ3Entry {
   double sum = 0.0;   // SUM(value) of qualifying num rows (rounded value)
   double comp = 0.0;  // compensation: exact sum = sum + comp (double-double)
   int64_t cnt = 0;    // number of qualifying num rows
-  int32_t group = -1; // group id when sub.fy = 2022 for this adsh, else -1
+  int32_t group = -1; // sub index: group id of the filing (-1: num index)
+  int32_t fy = 0;     // sub index: the filing's fiscal year
 };
 
 // Keys are 64-bit: an adsh of the SEC pattern "0000000000-00-000000" packs
@@ -196,6 +204,7 @@ struct SecEdgarQ3Result {
   std::vector<Row> rows; // final top-100 in output order
 };
 
+// One cohort: the per-group / per-cik aggregates of a (fy, uom) pair.
 struct SecEdgarQ3Totals {
   std::shared_ptr<const SecEdgarQ3GroupDir> dir;
   SecEdgarQ3AggArray groups;
@@ -212,9 +221,34 @@ private:
   mutable std::shared_ptr<const std::vector<core::AuxRow>> output_rows;
 };
 
+// Unit-of-measure dictionary (append only; ids index State::uom_index).
+struct SecEdgarQ3UomDict {
+  std::vector<std::string> names;
+  std::unordered_map<std::string, uint32_t> ids;
+};
+
+inline constexpr std::size_t kSecEdgarQ3MaxCohorts = 64;
+inline constexpr int32_t kSecEdgarQ3DefaultFy = 2022;
+inline constexpr const char *kSecEdgarQ3DefaultUom = "USD";
+
+inline uint64_t SecEdgarQ3CohortKey(int32_t fy, uint32_t uom_id) {
+  return (static_cast<uint64_t>(static_cast<uint32_t>(fy)) << 32) | uom_id;
+}
+
+// Cohorts materialized for one state version (bounded, oldest evicted first,
+// a hit moves a cohort to the back).  The per-version cache is the only
+// mutable part of a state; a delta copies it and repairs the copies.
+struct SecEdgarQ3CohortCache {
+  std::mutex mutex;
+  std::vector<std::pair<uint64_t, std::shared_ptr<const SecEdgarQ3Totals>>> items;
+};
+
 struct SecEdgarQ3State {
-  std::shared_ptr<const SecEdgarQ3AdshIndex> index;
-  std::shared_ptr<const SecEdgarQ3Totals> totals;
+  std::shared_ptr<const SecEdgarQ3AdshIndex> subs;
+  std::shared_ptr<const SecEdgarQ3UomDict> uom_dict;
+  std::vector<std::shared_ptr<const SecEdgarQ3AdshIndex>> uom_index;
+  std::shared_ptr<const SecEdgarQ3GroupDir> dir;
+  std::shared_ptr<SecEdgarQ3CohortCache> cohorts;
 };
 
 enum class SecEdgarQ3ImageKind : uint8_t {
@@ -235,8 +269,15 @@ std::vector<uint8_t> EncodeSecEdgarQ3CikTotals(const SecEdgarQ3State &);
 // Approximate resident bytes (vectors' capacity, chunk storage, dictionaries).
 uint64_t SecEdgarQ3ResidentBytes(const SecEdgarQ3State &);
 
-// Computes the final answer (top 100) from a state.
-std::vector<SecEdgarQ3OutputRow> BuildSecEdgarQ3Output(const SecEdgarQ3State &);
+// The cohort of (fy, uom), materialized from the indexes on first use; null
+// when no row can match (unknown uom, fy outside INTEGER).
+std::shared_ptr<const SecEdgarQ3Totals>
+SecEdgarQ3CohortFor(const SecEdgarQ3State &, int64_t fy, const std::string &uom);
+
+// Computes the final answer (top 100) for (fy, uom) from a state.
+std::vector<SecEdgarQ3OutputRow>
+BuildSecEdgarQ3Output(const SecEdgarQ3State &, int64_t fy = kSecEdgarQ3DefaultFy,
+                      const std::string &uom = kSecEdgarQ3DefaultUom);
 
 // Scalar / SIMD kernels (exposed for tests and microbenchmarks).
 struct SecEdgarQ3Kernels {
@@ -266,9 +307,12 @@ public:
     int8_t sign = 1;       // Num only: row-count delta (-1, 0, +1)
     uint8_t flags = 0;     // SubAdd: bit0 name NULL, bit1 cik NULL
     uint64_t key = 0;      // packed adsh, or overflow bit | local string index
-    double value = 0.0;    // Num only: delta of SUM(value)
+    double value = 0.0;    // Num only: delta of SUM(value), high part
+    double value_lo = 0.0; // Num only: low part (exact double-double delta)
     int32_t cik = 0;       // SubAdd only
+    int32_t fy = 0;        // SubAdd only
     uint32_t name_idx = 0; // SubAdd only: index into strings
+    uint32_t uom_idx = 0;  // Num only: index into strings
   };
 
   bool HasPendingChanges() const override;
@@ -278,6 +322,7 @@ public:
   void MarkRebuild();
   void AddOp(Op op);
   uint32_t InternString(std::string value);
+  uint32_t InternUom(const std::string &uom);
   uint64_t KeyFor(const std::string &adsh);
 
   const std::vector<Op> &Ops() const { return ops; }
@@ -288,6 +333,7 @@ private:
   bool requires_rebuild = false;
   std::vector<Op> ops;
   std::vector<std::string> strings;
+  std::unordered_map<std::string, uint32_t> uom_strings;
 };
 
 class SecEdgarQ3Module : public core::AuxQueryModule {
@@ -328,7 +374,10 @@ public:
   SecEdgarQ3State BuildState(core::AuxEngineServices &) const;
 
 protected:
-  void EmitOutput(const SecEdgarQ3State &, core::AuxRowSink &) const;
+  void EmitOutput(const SecEdgarQ3State &, int64_t fy, const std::string &uom,
+                  core::AuxRowSink &) const;
+  void EmitRows(core::AuxRowSink &,
+                const std::shared_ptr<const std::vector<core::AuxRow>> &) const;
 
   SecEdgarQ3Config config;
   SecEdgarQ3InitialScan *initial_scan = nullptr;

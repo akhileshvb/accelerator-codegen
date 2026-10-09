@@ -24,21 +24,23 @@ bool IsNullAt(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
 
 class SecEdgarQ3PgScan final : public query::SecEdgarQ3InitialScan {
 public:
-  // The uom/value filter and the per-adsh aggregation run in the server (one
-  // GROUP BY, parallel-capable); only one row per filing reaches the process.
+  // The value filter and the per-(adsh, uom) aggregation run in the server
+  // (one GROUP BY, parallel-capable); only one row per filing and unit
+  // reaches the process.
   void ScanNumAggregates(
       const std::function<void(const query::SecEdgarQ3NumAggInput &)> &consumer)
       override {
     ScanTypedTuples(
-        "SELECT adsh, SUM(value)::float8, COUNT(*) FROM num "
-        "WHERE uom = 'USD' AND value IS NOT NULL AND adsh IS NOT NULL "
-        "GROUP BY adsh",
+        "SELECT adsh, uom, SUM(value)::float8, COUNT(*) FROM num "
+        "WHERE value IS NOT NULL AND adsh IS NOT NULL AND uom IS NOT NULL "
+        "GROUP BY adsh, uom",
         [&](HeapTuple tuple, TupleDesc tuple_desc) {
           bool sum_null = false;
           query::SecEdgarQ3NumAggInput input;
           input.adsh = TypedText(tuple, tuple_desc, 0);
-          input.sum = TypedDouble(tuple, tuple_desc, 1, sum_null);
-          input.count = TypedInt(tuple, tuple_desc, 2);
+          input.uom = TypedText(tuple, tuple_desc, 1);
+          input.sum = TypedDouble(tuple, tuple_desc, 2, sum_null);
+          input.count = TypedInt(tuple, tuple_desc, 3);
           consumer(input);
         });
   }
@@ -88,7 +90,20 @@ Q3Runtime() {
 namespace {
 
 void ExecutePostgresSecEdgarQ3(FunctionCallInfo fcinfo) {
-  detail::Q3Runtime().Execute(core::QueryArguments{}, fcinfo);
+  // accel_sec_edgar_q3_aux() uses the defaults; the two-argument overload is
+  // not STRICT: a NULL argument reaches the module as NULL.
+  core::QueryArguments arguments;
+  if (PG_NARGS() >= 2) {
+    arguments.values.push_back(
+        PG_ARGISNULL(0) ? core::AuxValue::Null(core::AuxType::Int64)
+                        : core::AuxValue::Of(core::AuxType::Int64,
+                                             static_cast<int64_t>(PG_GETARG_INT64(0))));
+    arguments.values.push_back(
+        PG_ARGISNULL(1) ? core::AuxValue::Null(core::AuxType::String)
+                        : core::AuxValue::Of(core::AuxType::String,
+                                             detail::TextDatum(PG_GETARG_DATUM(1))));
+  }
+  detail::Q3Runtime().Execute(arguments, fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{

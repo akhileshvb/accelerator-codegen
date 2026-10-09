@@ -101,18 +101,20 @@ using namespace scan;
 
 struct SecEdgarQ3Scan : SecEdgarQ3InitialScan {
   explicit SecEdgarQ3Scan(::duckdb::Connection &connection) : connection(connection) {}
-  // Pushes the uom/value filter and the per-adsh aggregation into DuckDB (one
-  // parallel GROUP BY over num) instead of streaming every num row through C++.
+  // Pushes the value filter and the per-(adsh, uom) aggregation into DuckDB
+  // (one parallel GROUP BY over num) instead of streaming every num row
+  // through C++.
   void ScanNumAggregates(
       const std::function<void(const SecEdgarQ3NumAggInput &)> &consumer) override {
     ScanQuery(connection,
-              "SELECT adsh, SUM(value), COUNT(*) FROM num "
-              "WHERE uom = 'USD' AND value IS NOT NULL AND adsh IS NOT NULL "
-              "GROUP BY adsh",
+              "SELECT adsh, uom, SUM(value), COUNT(*) FROM num "
+              "WHERE value IS NOT NULL AND adsh IS NOT NULL AND uom IS NOT NULL "
+              "GROUP BY adsh, uom",
               [&](auto &result, ::duckdb::idx_t row) {
                 consumer({result.GetValue(0, row).ToString(),
-                          result.GetValue(1, row).template GetValue<double>(),
-                          result.GetValue(2, row).template GetValue<int64_t>()});
+                          result.GetValue(1, row).ToString(),
+                          result.GetValue(2, row).template GetValue<double>(),
+                          result.GetValue(3, row).template GetValue<int64_t>()});
               });
   }
   void ScanSub(
@@ -138,6 +140,11 @@ struct SecEdgarQ3Scan : SecEdgarQ3InitialScan {
   ::duckdb::Connection &connection;
 };
 
+// accel_sec_edgar_q3_aux() uses the defaults (fy 2022, uom 'USD');
+// accel_sec_edgar_q3_aux(fy BIGINT, uom VARCHAR) answers any (fy, uom).
+const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
+    {::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR}};
+
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ3Layout::kAccelerator,
     "accel_sec_edgar_q3_aux",
@@ -145,7 +152,8 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ3Config c{1, 2};
       return MakeBinding<SecEdgarQ3Scan, SecEdgarQ3Module>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 const AuxQueryRegistrar kParallelQuery{AuxQuery{
@@ -155,7 +163,8 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ3Config c{1, 2};
       return MakeBinding<SecEdgarQ3Scan, SecEdgarQ3ParallelModule>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 #endif
 
 } // namespace

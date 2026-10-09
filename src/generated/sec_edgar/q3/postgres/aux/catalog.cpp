@@ -24,7 +24,7 @@ const PostgresQueryCatalogRegistrar kRegistrar(PostgresSharedQueryCatalogEntry
         /* accelerator_sql */
         "SELECT * FROM accel_sec_edgar_q3_aux()",
         /* aux_sql */
-        "SELECT * FROM accel_sec_edgar_q3_aux()",
+        "SELECT * FROM accel_sec_edgar_q3_aux(2022, 'USD')",
     }
 );
 
