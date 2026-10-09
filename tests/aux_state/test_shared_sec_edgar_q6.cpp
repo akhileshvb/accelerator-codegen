@@ -293,8 +293,12 @@ int main() {
     module->Execute(services, {}, s);
     assert(s.rows.size() == 3);
   }
-  // 7. pre update of a non-IS row for a non-cohort adsh: no rebuild
+  // 7. pre insert for an adsh that is not in the cohort: no maintenance (the
+  //    state is valid again after a fresh build)
   {
+    Builder rebuilt;
+    module->Build(services, rebuilt);
+    services.store.InstallBuild(std::move(rebuilt.images));
     MutationBatch m;
     m.table = 3;
     m.kind = MutationKind::Insert;
@@ -316,6 +320,43 @@ int main() {
     Sink s;
     module->Execute(services, {}, s);
     assert(s.rows.size() == 3);
+  }
+  // 9. parameters: any (fy, stmt, uom) is answered from the same state.
+  {
+    const auto args = [](AuxValue fy, AuxValue stmt, AuxValue uom) {
+      QueryArguments a;
+      a.values = {std::move(fy), std::move(stmt), std::move(uom)};
+      return a;
+    };
+    Sink s;
+    module->Execute(services, args(I(2022), S("IS"), S("USD")), s);
+    assert(s.rows.empty()); // adsh-2 moved to 2023 in step 5
+    Sink s2;
+    module->Execute(services, args(I(2023), S("IS"), S("USD")), s2);
+    assert(s2.rows.size() == 3);
+    Sink s3;
+    module->Execute(services, args(I(2023), S("BS"), S("USD")), s3);
+    assert(s3.rows.empty());
+    Sink s4;
+    module->Execute(services, args(I(2023), S("IS"), S("shares")), s4);
+    assert(s4.rows.empty());
+    Sink s5;
+    module->Execute(services, args(AuxValue::Null(AuxType::Int64), S("IS"), S("USD")), s5);
+    assert(s5.rows.empty() && s5.ended);
+    // a num row in another uom and a BS label appear incrementally
+    MutationBatch m;
+    m.table = 1;
+    m.kind = MutationKind::Insert;
+    m.new_rows = {Num("adsh-1", "Revenues", "v1", 7.0, "CAD")};
+    services.num.push_back(m.new_rows.front());
+    commit(m);
+    Sink s6;
+    module->Execute(services, args(I(2023), S("IS"), S("CAD")), s6);
+    assert(s6.rows.size() == 2);
+    RequireRow(s6, 0, "Acme Corp", 7.0, 1);
+    Sink s7;
+    module->Execute(services, {}, s7);
+    assert(s7.rows.size() == 3);
   }
   return 0;
 }

@@ -113,6 +113,13 @@ CaptureTableList CaptureTables(const SecEdgarQ6Config &c) {
   return {{"num", c.num_table}, {"sub", c.sub_table}, {"pre", c.pre_table}};
 }
 
+// accel_sec_edgar_q6_aux() uses the defaults (2023, 'IS', 'USD');
+// accel_sec_edgar_q6_aux(fy BIGINT, stmt VARCHAR, uom VARCHAR) answers any values
+// from the same state.
+const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
+    {::duckdb::LogicalType::BIGINT, ::duckdb::LogicalType::VARCHAR,
+     ::duckdb::LogicalType::VARCHAR}};
+
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ6Layout::kAccelerator,
     "accel_sec_edgar_q6_aux",
@@ -120,7 +127,8 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ6Config c{1, 2, 3};
       return MakeBinding<SecEdgarQ6Scan, SecEdgarQ6Module>(connection, CaptureTables(c), c);
-    }}};
+    },
+    kOverloads}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 const AuxQueryRegistrar kParallelQuery{AuxQuery{
@@ -130,7 +138,8 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ6Config c{1, 2, 3};
       return MakeBinding<SecEdgarQ6Scan, SecEdgarQ6ParallelModule>(connection, CaptureTables(c), c);
-    }}};
+    },
+    kOverloads}};
 #endif
 
 } // namespace

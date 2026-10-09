@@ -6,12 +6,13 @@
 // filter columns, multi-table transactions, aborted transactions and bulk
 // batches, and compares the aux answer with plain DuckDB SQL after each step.
 //
-// Q6 has no template parameters (the literals fy=2023 / uom='USD' / stmt='IS'
-// are part of the query text), so the "parameter" axis is covered by
-// randomizing the DATA around those predicate literals: neighbouring fiscal
-// years, NULL fy, look-alike units ('usd', 'USD ', 'EUR'), look-alike
-// statements ('is', 'BS'), NULL/empty labels and names, exact ties,
-// duplicates and orphan keys.
+// Q6 is parameterized by (fy, stmt, uom) (defaults 2023, 'IS', 'USD'). After
+// every step the default answer AND several random parameter triples (the
+// benchmark domain plus edges: NULL, unknown, look-alike values) are compared
+// with plain DuckDB SQL and with a state built from scratch. The DATA is
+// randomized around the parameters too: neighbouring fiscal years, NULL fy,
+// look-alike units ('usd', 'USD ', 'EUR'), look-alike statements ('is', 'BS'),
+// NULL/empty labels and names, exact ties, duplicates and orphan keys.
 //
 // usage: test_sec_edgar_q6_differential [synthetic|synthetic-large|<db_path>]
 //        [seed] [ops] [parallel]
@@ -111,6 +112,8 @@ struct CollectBuilder final : core::StateBuilder {
 // A fresh build per step is only affordable on small data (override with
 // ACCEL_Q6_FRESH_CHECK=0/1).
 bool g_fresh_check = true;
+// Random parameter triples compared per step (ACCEL_Q6_PARAM_CHECKS).
+int g_param_checks = 3;
 
 // ---------------------------------------------------------------------------
 // Harness: DuckDB + coordinator + backend + state store + module.
@@ -150,29 +153,93 @@ public:
     store_.Install(std::move(builder.images), module_->Id());
   }
 
-  std::vector<AuxRow> Execute() {
+  std::vector<AuxRow> Execute(const core::QueryArguments &args = {}) {
     CollectSink sink;
-    module_->Execute(backend_, {}, sink);
+    module_->Execute(backend_, args, sink);
     return std::move(sink.rows);
+  }
+
+  struct Params {
+    bool fy_null = false;
+    int64_t fy = 2023;
+    bool stmt_null = false;
+    std::string stmt = "IS";
+    bool uom_null = false;
+    std::string uom = "USD";
+    core::QueryArguments Args() const {
+      core::QueryArguments a;
+      a.values.push_back(fy_null ? AuxValue::Null(core::AuxType::Int64)
+                                 : AuxValue::Of(core::AuxType::Int64, fy));
+      a.values.push_back(stmt_null ? AuxValue::Null(core::AuxType::String)
+                                   : AuxValue::Of(core::AuxType::String, stmt));
+      a.values.push_back(uom_null ? AuxValue::Null(core::AuxType::String)
+                                  : AuxValue::Of(core::AuxType::String, uom));
+      return a;
+    }
+    static std::string Quote(const std::string &v) {
+      std::string out = "'";
+      for (char c : v) out += c == '\'' ? std::string("''") : std::string(1, c);
+      return out + "'";
+    }
+    std::string Sql() const {
+      return "SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value) AS total_value, COUNT(*) AS cnt "
+             "FROM num n JOIN sub s ON n.adsh = s.adsh "
+             "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
+             "WHERE n.uom = " + (uom_null ? std::string("NULL") : Quote(uom)) +
+             " AND p.stmt = " + (stmt_null ? std::string("NULL") : Quote(stmt)) +
+             " AND s.fy = " + (fy_null ? std::string("NULL") : std::to_string(fy)) +
+             " AND n.value IS NOT NULL GROUP BY s.name, p.stmt, n.tag, p.plabel "
+             "ORDER BY total_value DESC, s.name, n.tag, p.plabel LIMIT 200";
+    }
+    std::string Text() const {
+      return "(" + (fy_null ? std::string("NULL") : std::to_string(fy)) + "," +
+             (stmt_null ? std::string("NULL") : stmt) + "," + (uom_null ? std::string("NULL") : uom) + ")";
+    }
+  };
+  std::mt19937_64 param_rng_{0x5EED};
+  Params RandomParams() {
+    static const int64_t fys[] = {2021, 2022, 2023, 2023, 2024, 2019, 2025, 0};
+    static const char *stmts[] = {"BS", "IS", "IS", "CF", "EQ", "CI", "ZZ", "is"};
+    static const char *uoms[] = {"USD", "USD", "shares", "pure", "CAD", "CNY", "EUR", "zz", "usd"};
+    Params p;
+    auto pick = [&](size_t n) { return static_cast<size_t>(param_rng_() % n); };
+    if (pick(14) == 0) p.fy_null = true; else p.fy = fys[pick(sizeof fys / sizeof *fys)];
+    if (pick(14) == 0) p.stmt_null = true; else p.stmt = stmts[pick(sizeof stmts / sizeof *stmts)];
+    if (pick(14) == 0) p.uom_null = true; else p.uom = uoms[pick(sizeof uoms / sizeof *uoms)];
+    return p;
   }
 
   void CheckAgainstBase(const std::string &context) {
     Require(module_->CheckValidity(backend_, {}),
             "aux state not valid after " + context);
+    std::string at = "default";
     try {
-      CheckAgainstFreshBuild();
-      harness::CompareAuxRowsToBase(connection_, entry_, Execute());
+      std::vector<Params> params{Params{}};
+      for (int i = 0; i < g_param_checks; ++i) params.push_back(RandomParams());
+      std::shared_ptr<const q::SecEdgarQ6State> fresh;
+      if (g_fresh_check) {
+        fresh = std::static_pointer_cast<q::SecEdgarQ6Module>(module_)->BuildState();
+      }
+      for (const auto &p : params) {
+        at = p.Text();
+        const auto got = Execute(p.Args());
+        if (fresh) CheckAgainstFresh(*fresh, p, got);
+        harness::CompareAuxRowsToSql(connection_, entry_, p.Sql(), got);
+      }
     } catch (const std::exception &e) {
-      throw std::runtime_error(std::string(e.what()) + " [after " + context + "]");
+      throw std::runtime_error(std::string(e.what()) + " [params " + at + " after " + context + "]");
     }
   }
 
   // The incrementally maintained state must answer exactly like a state built
   // from scratch over the same tables (same groups, same bits).
-  void CheckAgainstFreshBuild() {
-    if (!g_fresh_check) return;
-    const auto fresh = q::SecEdgarQ6TopRows(*std::static_pointer_cast<q::SecEdgarQ6Module>(module_)->BuildState());
-    const auto got = Execute();
+  void CheckAgainstFresh(const q::SecEdgarQ6State &state, const Params &p,
+                         const std::vector<AuxRow> &got) {
+    if (p.fy_null || p.stmt_null || p.uom_null) {
+      Require(got.empty(), "a NULL parameter must give an empty result");
+      return;
+    }
+    const auto fresh = q::SecEdgarQ6TopRows(state, p.fy, p.stmt, p.uom);
     Require(got.size() == fresh.size(), "fresh build row count " + std::to_string(fresh.size()) +
                                             " vs maintained " + std::to_string(got.size()));
     for (std::size_t i = 0; i < fresh.size(); ++i) {
@@ -182,6 +249,7 @@ public:
       const bool plabel_ok = fresh[i].plabel_is_null ? r[3].is_null
                                                      : (!r[3].is_null && std::get<std::string>(r[3].payload) == fresh[i].plabel);
       Require(name_ok && plabel_ok && std::get<std::string>(r[2].payload) == fresh[i].tag &&
+                  std::get<std::string>(r[1].payload) == p.stmt &&
                   std::get<int64_t>(r[5].payload) == fresh[i].cnt,
               "maintained state differs from a fresh build at row " + std::to_string(i) + " fresh=(" +
                   fresh[i].name + "," + fresh[i].tag + "," + fresh[i].plabel + "," + std::to_string(fresh[i].cnt) +
@@ -401,7 +469,8 @@ public:
     return Value::DOUBLE(kExact[Rand(sizeof kExact / sizeof *kExact)]);
   }
   Value NumUom() {
-    static const char *k[] = {"USD", "USD", "USD", "USD", "USD", "EUR", "usd", "USD ", "", "CAD"};
+    static const char *k[] = {"USD", "USD", "USD", "USD", "USD", "EUR", "usd", "USD ", "", "CAD",
+                              "shares", "shares", "pure", "CNY"};
     if (Chance(0.04)) return Value(duckdb::LogicalType::VARCHAR);
     return Value(k[Rand(sizeof k / sizeof *k)]);
   }
@@ -410,7 +479,7 @@ public:
     return Value(Pick(pool));
   }
   Value Fy() {
-    static const int k[] = {2023, 2023, 2023, 2023, 2022, 2024, 2023, 2021, 2025};
+    static const int k[] = {2023, 2023, 2023, 2023, 2022, 2024, 2023, 2021, 2025, 2022, 2024, 2019, 0};
     if (Chance(0.04)) return Value(duckdb::LogicalType::INTEGER);
     return Value::INTEGER(k[Rand(sizeof k / sizeof *k)]);
   }
@@ -885,6 +954,7 @@ int main(int argc, char **argv) {
     const bool real = mode != "synthetic" && mode != "synthetic-large";
     g_fresh_check = mode == "synthetic";
     if (const char *e = std::getenv("ACCEL_Q6_FRESH_CHECK")) g_fresh_check = e[0] == '1';
+    if (const char *e = std::getenv("ACCEL_Q6_PARAM_CHECKS")) g_param_checks = std::atoi(e);
 
     std::unique_ptr<duckdb::DuckDB> database;
     if (real) {

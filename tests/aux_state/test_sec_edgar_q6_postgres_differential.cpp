@@ -1,6 +1,8 @@
 // PostgreSQL differential / check / benchmark for the SEC EDGAR Q6 aux
-// accelerator (accel_sec_edgar_q6_aux()) against plain PostgreSQL SQL
-// (benchmarks/sec_edgar/queries/q6.sql).
+// accelerator (accel_sec_edgar_q6_aux() and accel_sec_edgar_q6_aux(fy, stmt,
+// uom)) against plain PostgreSQL SQL (benchmarks/sec_edgar/queries/q6.sql with
+// the three parameters substituted). Every comparison also draws random
+// parameters (benchmark domain plus edges: NULL, unknown, look-alike values).
 //
 // Talks to a running server through libpq only (the accelerator lives in the
 // server's accelerator_codegen_postgres module, installed by the pg helper
@@ -21,6 +23,10 @@
 //       then committed + rolled-back writes of every kind, each undone, with a
 //       match after every step (sums compared to a relative 1e-9: plain
 //       SUM(float8) is order dependent).
+//   sweep [db] [percent=100]
+//       The full (fy, stmt, uom) domain (fy 2021..2024 x BS/IS/CF/EQ/CI x
+//       USD/shares/pure/CAD/CNY/EUR, sampled by `percent`) plus edge values on
+//       the full data of `db` against plain SQL; also times the reads.
 //   bench [db]
 //       Read p50 (accel vs plain SQL), build time and write overhead.
 //
@@ -59,6 +65,25 @@ const char *kBaseSql =
     "GROUP BY s.name, p.stmt, n.tag, p.plabel "
     "ORDER BY total_value DESC, s.name, n.tag, p.plabel LIMIT 200";
 const char *kAccelSql = "SELECT * FROM accel_sec_edgar_q6_aux()";
+
+struct Params {
+  std::string fy = "2023";      // SQL literal ("NULL" allowed)
+  std::string stmt = "'IS'";    // SQL literal
+  std::string uom = "'USD'";    // SQL literal
+  std::string AccelSql() const {
+    return "SELECT * FROM accel_sec_edgar_q6_aux(" + (fy == "NULL" ? std::string("NULL::bigint") : fy + "::bigint") +
+           "," + stmt + "::text," + uom + "::text)";
+  }
+  std::string BaseSql() const {
+    return "SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value) AS total_value, COUNT(*) AS cnt "
+           "FROM num n JOIN sub s ON n.adsh = s.adsh "
+           "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
+           "WHERE n.uom = " + uom + " AND p.stmt = " + stmt + " AND s.fy = " + fy +
+           " AND n.value IS NOT NULL GROUP BY s.name, p.stmt, n.tag, p.plabel "
+           "ORDER BY total_value DESC, s.name, n.tag, p.plabel LIMIT 200";
+  }
+  std::string Text() const { return "(" + fy + "," + stmt + "," + uom + ")"; }
+};
 
 [[noreturn]] void Fail(const std::string &msg) {
   std::cerr << "FAIL: " << msg << std::endl;
@@ -137,7 +162,56 @@ std::string Show(const Rows &rows, std::size_t limit = 8) {
   return o.str();
 }
 
+bool Equal(const Rows &a, const Rows &b, double rel_tol, std::string *why);
+
+// Plain SUM(float8) depends on the summation order (the aux sums are
+// order-independent double-doubles): groups whose sums agree to rel_tol may be
+// ordered differently. Inside such a tie cluster the multiset of rows must
+// agree (the cluster cut by LIMIT 200 only for its sums).
+bool EqualTolerant(const Rows &a, const Rows &b, double rel_tol, std::string *why) {
+  if (a.size() != b.size()) return Equal(a, b, rel_tol, why);
+  const auto num = [](const Row &r) { return std::strtod(r[4]->c_str(), nullptr); };
+  const auto close = [&](double x, double y) {
+    return x == y || std::fabs(x - y) <= rel_tol * std::max(std::fabs(x), std::fabs(y));
+  };
+  const auto key = [](const Row &r) {
+    std::string k;
+    for (std::size_t c : {0, 1, 2, 3, 5}) k += (r[c] ? *r[c] : std::string("\x01NULL")) + '\x02';
+    return k;
+  };
+  for (std::size_t i = 0; i < b.size();) {
+    std::size_t j = i + 1;
+    while (j < b.size() && close(num(b[j]), num(b[i]))) ++j;
+    std::vector<std::string> ka, kb;
+    for (std::size_t k = i; k < j; ++k) {
+      if (!close(num(a[k]), num(b[k]))) {
+        *why = "sum at row " + std::to_string(k);
+        return false;
+      }
+      ka.push_back(key(a[k]));
+      kb.push_back(key(b[k]));
+    }
+    if (j < b.size() || b.size() < 200) {
+      std::sort(ka.begin(), ka.end());
+      std::sort(kb.begin(), kb.end());
+      if (ka != kb) {
+        *why = "rows differ in tie cluster starting at " + std::to_string(i);
+        return false;
+      }
+    }
+    i = j;
+  }
+  return true;
+}
+
 bool Equal(const Rows &a, const Rows &b, double rel_tol, std::string *why) {
+  if (rel_tol > 0 && a.size() == b.size() && !a.empty() && a[0].size() == 6) {
+    bool exact = true;
+    for (std::size_t i = 0; exact && i < a.size(); ++i)
+      for (std::size_t c = 0; c < 6; ++c)
+        if (c != 4 && a[i][c] != b[i][c]) exact = false;
+    if (!exact) return EqualTolerant(a, b, rel_tol, why);
+  }
   if (a.size() != b.size()) {
     *why = "row count " + std::to_string(a.size()) + " vs " + std::to_string(b.size());
     return false;
@@ -166,14 +240,34 @@ struct Checker {
   double rel_tol = 0.0;
   long checks = 0;
   std::string last_ops;
-  void Check(Conn &c, const std::string &where) {
-    Rows accel = c.Exec(kAccelSql), base = c.Exec(kBaseSql);
+  std::mt19937_64 param_rng{0x5EED};
+  int param_checks = 2; // random parameter triples per Check
+  Params RandomParams() {
+    static const char *fys[] = {"2021", "2022", "2023", "2023", "2024", "2019", "2025", "0", "NULL"};
+    static const char *stmts[] = {"'BS'", "'IS'", "'IS'", "'CF'", "'EQ'", "'CI'", "'ZZ'", "'is'", "NULL"};
+    static const char *uoms[] = {"'USD'", "'USD'", "'shares'", "'pure'", "'CAD'", "'CNY'", "'EUR'", "'zz'", "'usd'", "NULL"};
+    Params p;
+    p.fy = fys[param_rng() % (sizeof fys / sizeof *fys)];
+    p.stmt = stmts[param_rng() % (sizeof stmts / sizeof *stmts)];
+    p.uom = uoms[param_rng() % (sizeof uoms / sizeof *uoms)];
+    return p;
+  }
+  void CheckOne(Conn &c, const std::string &where, const std::string &accel_sql,
+                const std::string &base_sql, const std::string &params) {
+    Rows accel = c.Exec(accel_sql), base = c.Exec(base_sql);
     std::string why;
     ++checks;
     if (!Equal(accel, base, rel_tol, &why)) {
-      std::cerr << "MISMATCH at " << where << ": " << why << "\nrecent ops:\n"
+      std::cerr << "MISMATCH at " << where << " params " << params << ": " << why << "\nrecent ops:\n"
                 << last_ops << "accel:\n" << Show(accel) << "base:\n" << Show(base);
       std::exit(1);
+    }
+  }
+  void Check(Conn &c, const std::string &where) {
+    CheckOne(c, where, kAccelSql, kBaseSql, "default");
+    for (int i = 0; i < param_checks; ++i) {
+      const Params p = RandomParams();
+      CheckOne(c, where, p.AccelSql(), p.BaseSql(), p.Text());
     }
   }
   void Note(const std::string &op) {
@@ -200,15 +294,15 @@ public:
   std::string Version() { return Q(Pick(versions_)); }
   std::string Uom() {
     static const std::vector<std::string> u = {"'USD'", "'USD'", "'USD'", "'USD'", "'usd'",
-                                               "'USD '", "'EUR'", "NULL"};
+                                               "'USD '", "'EUR'", "NULL", "'shares'", "'pure'", "'CAD'", "'CNY'"};
     return Pick(u);
   }
   std::string Stmt() {
-    static const std::vector<std::string> s = {"'IS'", "'IS'", "'IS'", "'BS'", "'is'", "'CF'", "NULL"};
+    static const std::vector<std::string> s = {"'IS'", "'IS'", "'IS'", "'BS'", "'is'", "'CF'", "NULL", "'EQ'", "'CI'"};
     return Pick(s);
   }
   std::string Fy() {
-    static const std::vector<std::string> f = {"2023", "2023", "2023", "2022", "2024", "NULL"};
+    static const std::vector<std::string> f = {"2023", "2023", "2023", "2022", "2024", "NULL", "2021", "2019", "0"};
     return Pick(f);
   }
   std::string Name() {
@@ -521,6 +615,70 @@ int RunSf3(const std::string &db) {
   return 0;
 }
 
+int RunSweep(const std::string &db, int percent) {
+  Conn a(db);
+  Checker chk;
+  chk.rel_tol = 1e-9;
+  auto t = std::chrono::steady_clock::now();
+  a.Exec(kAccelSql); // builds the state
+  std::cout << "build_s=" << Seconds(t) << "\n";
+  std::vector<Params> cases;
+  for (const char *f : {"2021", "2022", "2023", "2024"})
+    for (const char *st : {"'BS'", "'IS'", "'CF'", "'EQ'", "'CI'"})
+      for (const char *u : {"'USD'", "'shares'", "'pure'", "'CAD'", "'CNY'", "'EUR'"}) {
+        Params p;
+        p.fy = f;
+        p.stmt = st;
+        p.uom = u;
+        cases.push_back(p);
+      }
+  std::mt19937_64 rng(7);
+  if (percent < 100) {
+    std::shuffle(cases.begin(), cases.end(), rng);
+    cases.resize(std::max<std::size_t>(1, cases.size() * percent / 100));
+  }
+  auto edge = [&](const char *f, const char *st, const char *u) {
+    Params p;
+    p.fy = f;
+    p.stmt = st;
+    p.uom = u;
+    cases.push_back(p);
+  };
+  for (const char *f : {"2019", "2025", "0", "-1", "2147483648", "NULL"}) edge(f, "'IS'", "'USD'");
+  edge("2023", "'ZZ'", "'USD'");
+  edge("2023", "'is'", "'USD'");
+  edge("2023", "NULL", "'USD'");
+  edge("2023", "'IS'", "'zz'");
+  edge("2023", "'IS'", "'usd'");
+  edge("2023", "'IS'", "NULL");
+  edge("2022", "'BS'", "'us''d'");
+  std::vector<double> aux_ms, base_ms;
+  long nonempty = 0;
+  for (const auto &p : cases) {
+    t = std::chrono::steady_clock::now();
+    Rows accel = a.Exec(p.AccelSql());
+    aux_ms.push_back(Seconds(t) * 1e3);
+    t = std::chrono::steady_clock::now();
+    Rows base = a.Exec(p.BaseSql());
+    base_ms.push_back(Seconds(t) * 1e3);
+    nonempty += !base.empty();
+    std::string why;
+    ++chk.checks;
+    if (!Equal(accel, base, chk.rel_tol, &why)) {
+      std::cerr << "MISMATCH params " << p.Text() << ": " << why << "\naccel:\n" << Show(accel) << "base:\n"
+                << Show(base);
+      return 1;
+    }
+  }
+  std::sort(aux_ms.begin(), aux_ms.end());
+  std::sort(base_ms.begin(), base_ms.end());
+  std::cout << "PASS sweep checked=" << chk.checks << " nonempty=" << nonempty << " aux_p50_ms="
+            << aux_ms[aux_ms.size() / 2] << " aux_max_ms=" << aux_ms.back()
+            << " base_p50_ms=" << base_ms[base_ms.size() / 2] << "\n";
+  std::cout << "execute counts: " << a.Scalar("SELECT accel_postgres_get_execute_counts()") << "\n";
+  return 0;
+}
+
 double Median(std::vector<double> v) {
   std::sort(v.begin(), v.end());
   return v.empty() ? 0 : v[v.size() / 2];
@@ -625,6 +783,7 @@ int main(int argc, char **argv) {
                         argc > 3 ? std::atoi(argv[3]) : 300);
   if (mode == "sf3") return RunSf3(argc > 2 ? argv[2] : "sec_edgar");
   if (mode == "bench") return RunBench(argc > 2 ? argv[2] : "sec_edgar");
-  std::cerr << "usage: test_sec_edgar_q6_postgres_differential synthetic [seed] [steps] | sf3 [db] | bench [db]\n";
+  if (mode == "sweep") return RunSweep(argc > 2 ? argv[2] : "sec_edgar", argc > 3 ? std::atoi(argv[3]) : 100);
+  std::cerr << "usage: test_sec_edgar_q6_postgres_differential synthetic [seed] [steps] | sf3 [db] | sweep [db] [percent] | bench [db]\n";
   return 2;
 }

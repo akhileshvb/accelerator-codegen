@@ -67,32 +67,37 @@ bool SecEdgarQ6DuckdbScan::LoadAdshSnapshots(
   std::map<std::string, std::size_t> index;
   for (std::size_t i = 0; i < adshs.size(); ++i) index[adshs[i]] = i;
   const std::string list = InList(adshs);
-  StreamQuery(connection, "SELECT adsh, name FROM sub WHERE fy = 2023 AND adsh IN " + list,
+  StreamQuery(connection,
+              "SELECT adsh, name, fy FROM sub WHERE fy IS NOT NULL AND adsh IN " + list,
               [&](::duckdb::DataChunk &chunk) {
                 StringColumn adsh(chunk, 0), name(chunk, 1);
+                const auto *fy = ::duckdb::FlatVector::GetData<int32_t>(chunk.data[2]);
                 for (::duckdb::idx_t row = 0; row < chunk.size(); ++row) {
                   auto it = index.find(adsh.Get(row));
                   if (it == index.end()) continue;
                   auto &snap = out[it->second];
                   snap.in_cohort = true;
+                  snap.fy = fy[row];
                   snap.name_is_null = name.IsNull(row);
                   snap.name = name.Get(row);
                 }
               });
   StreamQuery(
       connection,
-      "SELECT adsh, tag, version, plabel, COUNT(*)::BIGINT FROM pre WHERE stmt = 'IS' "
-      "AND tag IS NOT NULL AND version IS NOT NULL AND adsh IN " + list +
-          " GROUP BY adsh, tag, version, plabel",
+      "SELECT adsh, tag, version, stmt, plabel, COUNT(*)::BIGINT FROM pre WHERE "
+      "stmt IS NOT NULL AND tag IS NOT NULL AND version IS NOT NULL AND adsh IN " +
+          list + " GROUP BY adsh, tag, version, stmt, plabel",
       [&](::duckdb::DataChunk &chunk) {
-        StringColumn adsh(chunk, 0), tag(chunk, 1), version(chunk, 2), plabel(chunk, 3);
-        const auto *count = ::duckdb::FlatVector::GetData<int64_t>(chunk.data[4]);
+        StringColumn adsh(chunk, 0), tag(chunk, 1), version(chunk, 2), stmt(chunk, 3),
+            plabel(chunk, 4);
+        const auto *count = ::duckdb::FlatVector::GetData<int64_t>(chunk.data[5]);
         for (::duckdb::idx_t row = 0; row < chunk.size(); ++row) {
           auto it = index.find(adsh.Get(row));
           if (it == index.end()) continue;
           SecEdgarQ6PreEntry entry;
           entry.tag = tag.Get(row);
           entry.version = version.Get(row);
+          entry.stmt = stmt.Get(row);
           entry.plabel_is_null = plabel.IsNull(row);
           entry.plabel = plabel.Get(row);
           entry.mult = static_cast<uint32_t>(count[row]);
@@ -101,18 +106,19 @@ bool SecEdgarQ6DuckdbScan::LoadAdshSnapshots(
       });
   StreamQuery(
       connection,
-      "SELECT adsh, tag, version, SUM(value)::DOUBLE, COUNT(*)::BIGINT FROM num "
-      "WHERE uom = 'USD' AND value IS NOT NULL AND adsh IN " + list +
-          " GROUP BY adsh, tag, version",
+      "SELECT adsh, tag, version, uom, SUM(value)::DOUBLE, COUNT(*)::BIGINT FROM num "
+      "WHERE uom IS NOT NULL AND value IS NOT NULL AND adsh IN " + list +
+          " GROUP BY adsh, tag, version, uom",
       [&](::duckdb::DataChunk &chunk) {
-        StringColumn adsh(chunk, 0), tag(chunk, 1), version(chunk, 2);
-        const auto *sum = ::duckdb::FlatVector::GetData<double>(chunk.data[3]);
-        const auto *count = ::duckdb::FlatVector::GetData<int64_t>(chunk.data[4]);
+        StringColumn adsh(chunk, 0), tag(chunk, 1), version(chunk, 2), uom(chunk, 3);
+        const auto *sum = ::duckdb::FlatVector::GetData<double>(chunk.data[4]);
+        const auto *count = ::duckdb::FlatVector::GetData<int64_t>(chunk.data[5]);
         for (::duckdb::idx_t row = 0; row < chunk.size(); ++row) {
           if (tag.IsNull(row) || version.IsNull(row)) continue;
           auto it = index.find(adsh.Get(row));
           if (it == index.end()) continue;
-          out[it->second].nums.push_back({tag.Get(row), version.Get(row), sum[row], count[row]});
+          out[it->second].nums.push_back(
+              {tag.Get(row), version.Get(row), uom.Get(row), sum[row], count[row]});
         }
       });
   return true;
@@ -120,11 +126,9 @@ bool SecEdgarQ6DuckdbScan::LoadAdshSnapshots(
 
 void SecEdgarQ6DuckdbScan::ScanNum(
     const std::function<void(const SecEdgarQ6NumInput &)> &consumer) {
-  // Only USD facts with a value can contribute (pre-filter; the module
-  // re-checks).
   StreamQuery(connection,
               "SELECT adsh, tag, version, uom, value FROM num "
-              "WHERE uom = 'USD' AND value IS NOT NULL",
+              "WHERE uom IS NOT NULL AND value IS NOT NULL",
               [&](::duckdb::DataChunk &chunk) {
                 StringColumn adsh(chunk, 0), tag(chunk, 1), version(chunk, 2),
                     uom(chunk, 3);
@@ -150,16 +154,16 @@ void SecEdgarQ6DuckdbScan::ScanNum(
 
 void SecEdgarQ6DuckdbScan::ScanSub(
     const std::function<void(const SecEdgarQ6SubInput &)> &consumer) {
-  // fy = 2023 cohort only (pre-filter; the module re-checks).
-  StreamQuery(connection, "SELECT adsh, name FROM sub WHERE fy = 2023",
+  StreamQuery(connection, "SELECT adsh, name, fy FROM sub WHERE fy IS NOT NULL",
               [&](::duckdb::DataChunk &chunk) {
                 StringColumn adsh(chunk, 0), name(chunk, 1);
+                const auto *fy = ::duckdb::FlatVector::GetData<int32_t>(chunk.data[2]);
                 SecEdgarQ6SubInput input;
-                input.fy = 2023;
                 for (::duckdb::idx_t row = 0; row < chunk.size(); ++row) {
                   if (adsh.IsNull(row)) {
                     continue;
                   }
+                  input.fy = fy[row];
                   input.adsh = adsh.Get(row);
                   input.name_is_null = name.IsNull(row);
                   input.name = name.Get(row);
@@ -170,12 +174,11 @@ void SecEdgarQ6DuckdbScan::ScanSub(
 
 void SecEdgarQ6DuckdbScan::ScanPre(
     const std::function<void(const SecEdgarQ6PreInput &)> &consumer) {
-  // IS rows of the fy = 2023 cohort only (pre-filter; the module re-checks).
   StreamQuery(
       connection,
       "SELECT p.adsh, p.tag, p.version, p.stmt, p.plabel FROM pre p "
-      "WHERE p.stmt = 'IS' AND p.tag IS NOT NULL AND p.version IS NOT NULL AND "
-      "p.adsh IN (SELECT adsh FROM sub WHERE fy = 2023)",
+      "WHERE p.stmt IS NOT NULL AND p.tag IS NOT NULL AND p.version IS NOT NULL AND "
+      "p.adsh IN (SELECT adsh FROM sub WHERE fy IS NOT NULL)",
       [&](::duckdb::DataChunk &chunk) {
         StringColumn adsh(chunk, 0), tag(chunk, 1), version(chunk, 2),
             stmt(chunk, 3), plabel(chunk, 4);
@@ -196,22 +199,28 @@ bool SecEdgarQ6DuckdbScan::ScanGroupAggregates(
     const std::function<void(const SecEdgarQ6GroupAggregateInput &)> &consumer) {
   StreamQuery(
       connection,
-      "SELECT s.name, n.tag, p.plabel, SUM(n.value)::DOUBLE, COUNT(*)::BIGINT "
+      "SELECT s.fy, s.name, p.stmt, n.tag, p.plabel, n.uom, SUM(n.value)::DOUBLE, "
+      "COUNT(*)::BIGINT "
       "FROM num n JOIN sub s ON n.adsh = s.adsh "
       "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-      "WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 "
-      "AND n.value IS NOT NULL GROUP BY s.name, n.tag, p.plabel",
+      "WHERE n.uom IS NOT NULL AND p.stmt IS NOT NULL AND s.fy IS NOT NULL "
+      "AND n.value IS NOT NULL GROUP BY s.fy, s.name, p.stmt, n.tag, p.plabel, n.uom",
       [&](::duckdb::DataChunk &chunk) {
-        StringColumn name(chunk, 0), tag(chunk, 1), plabel(chunk, 2);
-        const auto *sum = ::duckdb::FlatVector::GetData<double>(chunk.data[3]);
-        const auto *count = ::duckdb::FlatVector::GetData<int64_t>(chunk.data[4]);
+        const auto *fy = ::duckdb::FlatVector::GetData<int32_t>(chunk.data[0]);
+        StringColumn name(chunk, 1), stmt(chunk, 2), tag(chunk, 3), plabel(chunk, 4),
+            uom(chunk, 5);
+        const auto *sum = ::duckdb::FlatVector::GetData<double>(chunk.data[6]);
+        const auto *count = ::duckdb::FlatVector::GetData<int64_t>(chunk.data[7]);
         SecEdgarQ6GroupAggregateInput input;
         for (::duckdb::idx_t row = 0; row < chunk.size(); ++row) {
+          input.fy = fy[row];
           input.name_is_null = name.IsNull(row);
           input.name = name.Get(row);
+          input.stmt = stmt.Get(row);
           input.tag = tag.Get(row);
           input.plabel_is_null = plabel.IsNull(row);
           input.plabel = plabel.Get(row);
+          input.uom = uom.Get(row);
           input.sum = sum[row];
           input.count = count[row];
           consumer(input);

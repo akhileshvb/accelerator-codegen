@@ -64,6 +64,9 @@ struct SecEdgarQ6PreInput {
 };
 
 struct SecEdgarQ6GroupAggregateInput {
+  int32_t fy = 0;
+  std::string stmt;
+  std::string uom;
   std::string name;
   std::string tag;
   std::string plabel;
@@ -74,11 +77,12 @@ struct SecEdgarQ6GroupAggregateInput {
 };
 
 // Post-transaction state of one adsh, read from the base tables:
-//   in_cohort/name: sub row with fy = 2023, pre: its stmt = 'IS' rows grouped
-//   by (tag, version, plabel) with multiplicity, nums: USD non-NULL value sums
-//   and counts per (tag, version).
+//   in_cohort/fy/name: sub row with a non-NULL fy, pre: its rows (stmt, tag,
+//   version non-NULL) grouped by (tag, version, stmt, plabel) with
+//   multiplicity, nums: non-NULL value sums and counts per (tag, version, uom).
 struct SecEdgarQ6AdshSnapshot {
   bool in_cohort = false;
+  int32_t fy = 0;
   std::string name;
   bool name_is_null = false;
   std::vector<SecEdgarQ6PreEntry> pre;
@@ -87,12 +91,13 @@ struct SecEdgarQ6AdshSnapshot {
 
 // Initial-scan contract.
 //   * ScanSub / ScanPre / ScanNum may be pre-filtered by the implementation to
-//     the rows the query can use (sub.fy = 2023, pre.stmt = 'IS' within that
-//     cohort, num.uom = 'USD' and value IS NOT NULL). Consumers re-check every
-//     predicate, so an unfiltered scan is equally valid.
+//     the rows the query can use (sub.fy IS NOT NULL, pre rows of those adsh
+//     with stmt / tag / version NOT NULL, num rows with uom and value NOT
+//     NULL). Consumers re-check every predicate.
 //   * ScanGroupAggregates is an optional fast path: the engine computes
-//     (name, tag, plabel) -> (SUM(value), COUNT(*)) of the query body without
-//     the final ORDER/LIMIT. Return false when unsupported.
+//     (fy, name, stmt, tag, plabel, uom) -> (SUM(value), COUNT(*)) of the query
+//     body without the parameters and the final ORDER/LIMIT. Return false when
+//     unsupported.
 class SecEdgarQ6InitialScan {
 public:
   virtual ~SecEdgarQ6InitialScan() = default;
@@ -129,6 +134,7 @@ public:
     uint32_t adsh_len = 0;
     uint32_t tag_len = 0;
     uint32_t version_len = 0;
+    uint32_t uom_len = 0;
     double value = 0.0;
     int8_t sign = 0;
   };
@@ -142,6 +148,7 @@ public:
     std::string adsh;
     std::string tag;
     std::string version;
+    std::string stmt;
     std::string plabel;
     bool plabel_is_null = false;
     int8_t sign = 0;
@@ -156,7 +163,8 @@ public:
     requires_rebuild_ = true;
   }
   void AddNumDelta(std::string_view adsh, std::string_view tag,
-                   std::string_view version, double value, int8_t sign);
+                   std::string_view version, std::string_view uom, double value,
+                   int8_t sign);
   void AddSubChange(SubChange change) {
     pending_ = true;
     sub_changes_.push_back(std::move(change));
@@ -175,6 +183,10 @@ public:
   }
   std::string_view Version(const NumDelta &d) const {
     return {arena_.data() + d.offset + d.adsh_len + d.tag_len, d.version_len};
+  }
+  std::string_view Uom(const NumDelta &d) const {
+    return {arena_.data() + d.offset + d.adsh_len + d.tag_len + d.version_len,
+            d.uom_len};
   }
   const std::vector<SubChange> &SubChanges() const { return sub_changes_; }
   const std::vector<PreChange> &PreChanges() const { return pre_changes_; }
@@ -221,7 +233,7 @@ public:
   std::shared_ptr<const SecEdgarQ6State> BuildState() const;
 
 private:
-  void EmitState(const SecEdgarQ6State &, core::AuxRowSink &) const;
+  void EmitRows(const std::vector<SecEdgarQ6OutputRow> &, core::AuxRowSink &) const;
   std::shared_ptr<const SecEdgarQ6State>
   LoadPublishedState(core::AuxEngineServices &, core::Version *version) const;
 

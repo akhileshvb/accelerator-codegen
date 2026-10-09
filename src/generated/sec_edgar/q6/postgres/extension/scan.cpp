@@ -111,7 +111,7 @@ public:
                    &consumer) override {
     ScanTypedTuples(
         "SELECT adsh, tag, version, uom, value FROM num "
-        "WHERE uom = 'USD' AND value IS NOT NULL",
+        "WHERE uom IS NOT NULL AND value IS NOT NULL",
         [&](HeapTuple tuple, TupleDesc desc) {
           query::SecEdgarQ6NumInput in;
           if (!scans::FastText(tuple, desc, 0, in.adsh) ||
@@ -127,13 +127,13 @@ public:
   void ScanSub(const std::function<void(const query::SecEdgarQ6SubInput &)>
                    &consumer) override {
     scans::RunQuery(
-        "SELECT adsh, name FROM sub WHERE fy = 2023",
+        "SELECT adsh, name, fy FROM sub WHERE fy IS NOT NULL",
         [&](HeapTuple tuple, TupleDesc desc) {
           query::SecEdgarQ6SubInput in;
-          in.fy = 2023;
           if (!scans::FastText(tuple, desc, 0, in.adsh))
             return;
           in.name_is_null = !scans::FastText(tuple, desc, 1, in.name);
+          in.fy = static_cast<int32_t>(TypedInt(tuple, desc, 2));
           consumer(in);
         });
   }
@@ -142,8 +142,8 @@ public:
                    &consumer) override {
     scans::RunQuery(
         "SELECT p.adsh, p.tag, p.version, p.stmt, p.plabel FROM pre p "
-        "WHERE p.stmt = 'IS' AND p.tag IS NOT NULL AND p.version IS NOT NULL "
-        "AND p.adsh IN (SELECT adsh FROM sub WHERE fy = 2023)",
+        "WHERE p.stmt IS NOT NULL AND p.tag IS NOT NULL AND p.version IS NOT NULL "
+        "AND p.adsh IN (SELECT adsh FROM sub WHERE fy IS NOT NULL)",
         [&](HeapTuple tuple, TupleDesc desc) {
           query::SecEdgarQ6PreInput in;
           scans::FastText(tuple, desc, 0, in.adsh);
@@ -155,25 +155,57 @@ public:
         });
   }
 
+  // Two aggregate queries (fiscal-year ranges of about half the sub rows
+  // each): SPI materializes a whole result, and all years together are
+  // millions of groups, while every query scans num once (parallel plans).
   bool ScanGroupAggregates(
       const std::function<void(const query::SecEdgarQ6GroupAggregateInput &)>
           &consumer) override {
-    scans::RunQuery(
-        "SELECT s.name, n.tag, p.plabel, SUM(n.value)::float8, COUNT(*) "
-        "FROM num n JOIN sub s ON n.adsh = s.adsh "
-        "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-        "WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 "
-        "AND n.value IS NOT NULL GROUP BY s.name, n.tag, p.plabel",
-        [&](HeapTuple tuple, TupleDesc desc) {
-          query::SecEdgarQ6GroupAggregateInput in;
-          in.name_is_null = !scans::FastText(tuple, desc, 0, in.name);
-          scans::FastText(tuple, desc, 1, in.tag);
-          in.plabel_is_null = !scans::FastText(tuple, desc, 2, in.plabel);
-          bool null_sum = false;
-          in.sum = scans::FastDouble(tuple, desc, 3, null_sum);
-          in.count = TypedInt(tuple, desc, 4);
-          consumer(in);
-        });
+    std::vector<std::pair<int64_t, int64_t>> fys; // fy, sub rows
+    int64_t total = 0;
+    scans::RunQuery("SELECT fy, COUNT(*) FROM sub WHERE fy IS NOT NULL GROUP BY fy ORDER BY fy",
+                    [&](HeapTuple tuple, TupleDesc desc) {
+                      fys.emplace_back(TypedInt(tuple, desc, 0), TypedInt(tuple, desc, 1));
+                      total += fys.back().second;
+                    });
+    std::vector<std::pair<int64_t, int64_t>> ranges;
+    int64_t lo = 0, acc = 0;
+    bool open = false;
+    for (std::size_t i = 0; i < fys.size(); ++i) {
+      if (!open) {
+        lo = fys[i].first;
+        open = true;
+        acc = 0;
+      }
+      acc += fys[i].second;
+      if (acc * 2 >= total || i + 1 == fys.size()) {
+        ranges.emplace_back(lo, fys[i].first);
+        open = false;
+      }
+    }
+    for (const auto &[from, to] : ranges) {
+      scans::RunQuery(
+          "SELECT s.fy, s.name, p.stmt, n.tag, p.plabel, n.uom, SUM(n.value)::float8, "
+          "COUNT(*) FROM num n JOIN sub s ON n.adsh = s.adsh "
+          "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
+          "WHERE n.uom IS NOT NULL AND p.stmt IS NOT NULL AND s.fy BETWEEN " +
+              std::to_string(from) + " AND " + std::to_string(to) +
+              " AND n.value IS NOT NULL "
+              "GROUP BY s.fy, s.name, p.stmt, n.tag, p.plabel, n.uom",
+          [&](HeapTuple tuple, TupleDesc desc) {
+            query::SecEdgarQ6GroupAggregateInput in;
+            in.fy = static_cast<int32_t>(TypedInt(tuple, desc, 0));
+            in.name_is_null = !scans::FastText(tuple, desc, 1, in.name);
+            scans::FastText(tuple, desc, 2, in.stmt);
+            scans::FastText(tuple, desc, 3, in.tag);
+            in.plabel_is_null = !scans::FastText(tuple, desc, 4, in.plabel);
+            scans::FastText(tuple, desc, 5, in.uom);
+            bool null_sum = false;
+            in.sum = scans::FastDouble(tuple, desc, 6, null_sum);
+            in.count = TypedInt(tuple, desc, 7);
+            consumer(in);
+          });
+    }
     return true;
   }
 
@@ -187,7 +219,7 @@ public:
     for (std::size_t i = 0; i < adshs.size(); ++i)
       index[adshs[i]] = i;
     ScanTypedTuplesAfterOwnWrites(
-        "SELECT adsh, name FROM sub WHERE fy = 2023 AND " +
+        "SELECT adsh, name, fy FROM sub WHERE fy IS NOT NULL AND " +
             scans::AdshAnyPredicate("adsh", adshs),
         [&](HeapTuple tuple, TupleDesc desc) {
           std::string adsh, name;
@@ -199,14 +231,15 @@ public:
             return;
           auto &snap = out[it->second];
           snap.in_cohort = true;
+          snap.fy = static_cast<int32_t>(TypedInt(tuple, desc, 2));
           snap.name_is_null = !name_ok;
           snap.name = std::move(name);
         });
     ScanTypedTuplesAfterOwnWrites(
-        "SELECT adsh, tag, version, plabel, COUNT(*) FROM pre WHERE stmt = 'IS' "
-        "AND tag IS NOT NULL AND version IS NOT NULL AND " +
+        "SELECT adsh, tag, version, stmt, plabel, COUNT(*) FROM pre WHERE "
+        "stmt IS NOT NULL AND tag IS NOT NULL AND version IS NOT NULL AND " +
             scans::AdshAnyPredicate("adsh", adshs) +
-            " GROUP BY adsh, tag, version, plabel",
+            " GROUP BY adsh, tag, version, stmt, plabel",
         [&](HeapTuple tuple, TupleDesc desc) {
           std::string adsh;
           query::SecEdgarQ6PreEntry entry;
@@ -214,29 +247,31 @@ public:
             return;
           scans::FastText(tuple, desc, 1, entry.tag);
           scans::FastText(tuple, desc, 2, entry.version);
-          entry.plabel_is_null = !scans::FastText(tuple, desc, 3, entry.plabel);
-          entry.mult = static_cast<uint32_t>(TypedInt(tuple, desc, 4));
+          scans::FastText(tuple, desc, 3, entry.stmt);
+          entry.plabel_is_null = !scans::FastText(tuple, desc, 4, entry.plabel);
+          entry.mult = static_cast<uint32_t>(TypedInt(tuple, desc, 5));
           const auto it = index.find(adsh);
           if (it != index.end())
             out[it->second].pre.push_back(std::move(entry));
         });
     ScanTypedTuplesAfterOwnWrites(
-        "SELECT adsh, tag, version, SUM(value)::float8, COUNT(*) FROM num "
-        "WHERE uom = 'USD' AND value IS NOT NULL AND " +
+        "SELECT adsh, tag, version, uom, SUM(value)::float8, COUNT(*) FROM num "
+        "WHERE uom IS NOT NULL AND value IS NOT NULL AND " +
             scans::AdshAnyPredicate("adsh", adshs) +
-            " GROUP BY adsh, tag, version",
+            " GROUP BY adsh, tag, version, uom",
         [&](HeapTuple tuple, TupleDesc desc) {
-          std::string adsh, tag, version;
+          std::string adsh, tag, version, uom;
           if (!scans::FastText(tuple, desc, 0, adsh) ||
               !scans::FastText(tuple, desc, 1, tag) ||
-              !scans::FastText(tuple, desc, 2, version))
+              !scans::FastText(tuple, desc, 2, version) ||
+              !scans::FastText(tuple, desc, 3, uom))
             return;
           bool null_sum = false;
-          const double sum = scans::FastDouble(tuple, desc, 3, null_sum);
-          const int64_t count = TypedInt(tuple, desc, 4);
+          const double sum = scans::FastDouble(tuple, desc, 4, null_sum);
+          const int64_t count = TypedInt(tuple, desc, 5);
           const auto it = index.find(adsh);
           if (it != index.end())
-            out[it->second].nums.push_back({tag, version, sum, count});
+            out[it->second].nums.push_back({tag, version, uom, sum, count});
         });
     return true;
   }
@@ -261,7 +296,22 @@ Q6Runtime() {
 namespace {
 
 void ExecutePostgresSecEdgarQ6(FunctionCallInfo fcinfo) {
-  detail::Q6Runtime().Execute(core::QueryArguments{}, fcinfo);
+  // accel_sec_edgar_q6_aux() uses the defaults; the three-argument overload is
+  // not STRICT: a NULL argument reaches the module as NULL.
+  core::QueryArguments arguments;
+  if (PG_NARGS() >= 3) {
+    arguments.values.push_back(
+        PG_ARGISNULL(0) ? core::AuxValue::Null(core::AuxType::Int64)
+                        : core::AuxValue::Of(core::AuxType::Int64,
+                                             static_cast<int64_t>(PG_GETARG_INT64(0))));
+    for (int i = 1; i <= 2; ++i) {
+      arguments.values.push_back(
+          PG_ARGISNULL(i) ? core::AuxValue::Null(core::AuxType::String)
+                          : core::AuxValue::Of(core::AuxType::String,
+                                               detail::TextDatum(PG_GETARG_DATUM(i))));
+    }
+  }
+  detail::Q6Runtime().Execute(arguments, fcinfo);
 }
 
 const PostgresQueryExecutorRegistrar kAuxRegistrar(PostgresQueryExecutor{

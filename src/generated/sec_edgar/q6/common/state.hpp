@@ -1,49 +1,54 @@
 #pragma once
 
-// SEC-EDGAR Q6 aux state.
+// SEC-EDGAR Q6 aux state (parameterized by fy, stmt, uom).
 //
 //   SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value), COUNT(*)
 //   FROM num n JOIN sub s ON n.adsh = s.adsh
 //              JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version
-//   WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 AND n.value IS NOT NULL
+//   WHERE n.uom = :uom AND p.stmt = :stmt AND s.fy = :fy AND n.value IS NOT NULL
 //   GROUP BY s.name, p.stmt, n.tag, p.plabel
 //   ORDER BY total_value DESC, s.name, n.tag, p.plabel LIMIT 200
+//
+// The state answers every (fy, stmt, uom): groups are keyed by
+// (name, tag, plabel, combo) where combo = (fy, stmt, uom) is interned in a
+// small table; each combo has its own top cache.
 //
 // Everything below is copy-on-write: copying a State copies directories
 // (pointers); a write clones only the 1024-key chunks / hash shards it
 // touches, so a num write, a sub/pre write of a few adsh and a publish are all
 // O(touched), never O(state).
 //
-//   Structure (core primitives)
-//     - five interned string pools (adsh = fy 2023 cohort, name, tag,
-//       (tag,version), plabel): ChunkedBlobMap id -> bytes plus a
-//       ShardedCowHashMap hash -> id (exact: collisions probe and compare).
-//     - adsh_name / tv_tag: ChunkedCowArray<uint32_t> columns.
+//   Structure
+//     - seven interned string pools (adsh, name, tag, (tag,version), plabel,
+//       stmt, uom): ChunkedBlobMap id -> bytes plus a ShardedCowHashMap
+//       hash -> id (exact: collisions probe and compare).
+//     - adsh_name / adsh_fy / tv_tag: ChunkedCowArray<uint32_t> columns. An
+//       adsh is in the cohort when its sub row has a non-NULL fy.
 //     - runs: ChunkedBlobMap adsh_id -> the adsh's bridge run
-//         [u32 n][u32 tv * n (sorted)][u32 payload * n][u32 multi trailer...]
-//       (8 B per pre entry). A payload is the group id, or kMultiFlag | word
-//       offset of a [k, gid0, mult0, ...] block in the run's own trailer (the
-//       rare multi-label / duplicate-row case), so a run is self-contained and
-//       rewritten whole when its adsh changes.
-//     - groups: ChunkedCowArray<{name,tag,plabel}> (append-only, ids stable)
-//       and a hash index.
-//   Aggregates: ChunkedCowArray columns sum_hi, sum_lo, cnt (1024 groups per
-//     chunk). A sum is a double-double (hi + lo, error-free additions), so
-//     adding and later removing a value restores the sum exactly and the order
-//     of writes does not change it; the answer is hi.
-//   Top cache: output-ordered ids of every active group whose sum >= a lower
-//     bound, so the 200-row answer is a prefix read.
+//         [u32 n][u32 tv * n][u32 stmt * n][u32 plabel * n]
+//       one entry per pre row (stmt, tag, version non-NULL), sorted by
+//       (tv, stmt, plabel); duplicate rows are repeated entries.
+//     - groups: ChunkedCowArray<{name,tag,plabel}> + group_combo (append-only,
+//       ids stable) and a hash index. A num contribution (adsh, tag, version,
+//       uom) fans out to one group per matching run entry:
+//       (adsh name, tag, plabel, combo(adsh fy, entry stmt, uom)).
+//   Aggregates: ChunkedCowArray columns sum_hi, sum_lo, cnt. A sum is a
+//     double-double (hi + lo, error-free additions), so adding and later
+//     removing a value restores the sum exactly and the order of writes does
+//     not change it; the answer is hi.
+//   Top caches (one per combo): output-ordered ids of every active group of the
+//     combo whose sum >= a lower bound, so a 200-row answer is a prefix read.
 //
-// Id widths: pool ids and group ids are dense 32-bit counters (a pool holds up
-// to 2^32-2 strings, groups up to 2^31-1), checked on every allocation (a
-// std::length_error, never a silent wrap). Offsets inside blob chunks are
-// per-chunk; counts and sums are 64-bit.
+// Id widths: pool ids and group ids are dense 32-bit counters, checked on every
+// allocation (a std::length_error, never a silent wrap).
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <map>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
@@ -107,12 +112,30 @@ struct SecEdgarQ6Group {
   uint32_t plabel = 0; // 0 = NULL
 };
 
-// A bridge hit: the adsh's run (see the layout above) and the payload found in
-// it. `run` stays valid while the Structure it came from is not mutated.
+// (fy, stmt, uom) of a group; stmt / uom are pool ids.
+struct SecEdgarQ6ComboKey {
+  int32_t fy = 0;
+  uint32_t stmt = 0;
+  uint32_t uom = 0;
+  bool operator<(const SecEdgarQ6ComboKey &o) const {
+    return std::tie(fy, stmt, uom) < std::tie(o.fy, o.stmt, o.uom);
+  }
+};
+struct SecEdgarQ6Combos {
+  std::vector<SecEdgarQ6ComboKey> keys;
+  std::map<SecEdgarQ6ComboKey, uint32_t> index;
+};
+
+// A bridge hit: the adsh's run (see the layout above) and the entries of one tv.
 struct SecEdgarQ6Hit {
   std::string_view run;
-  uint32_t payload = 0xFFFFFFFFu;
-  bool Found() const noexcept { return payload != 0xFFFFFFFFu; }
+  uint32_t adsh_id = 0;
+  uint32_t tag_id = 0;
+  uint32_t first = 0;
+  uint32_t count = 0;
+  bool Found() const noexcept { return count != 0; }
+  uint32_t Stmt(uint32_t i) const noexcept;
+  uint32_t Plabel(uint32_t i) const noexcept;
 };
 
 // ---------------------------------------------------------------------------
@@ -120,34 +143,45 @@ struct SecEdgarQ6Hit {
 // ---------------------------------------------------------------------------
 struct SecEdgarQ6Structure {
   static constexpr uint32_t kNoPayload = 0xFFFFFFFFu;
-  static constexpr uint32_t kMultiFlag = 0x80000000u;
   static constexpr uint32_t kMaxGroups = 0x7FFFFFFFu;
   static constexpr uint32_t kNotCohort = 0xFFFFFFFFu; // adsh_name of an exited adsh
 
-  SecEdgarQ6StringPool adshs; // cohort only (fy = 2023), plus exited ids
+  SecEdgarQ6StringPool adshs;
   SecEdgarQ6StringPool names;
   SecEdgarQ6StringPool tags;
   SecEdgarQ6StringPool tvs;
   SecEdgarQ6StringPool plabels;
+  SecEdgarQ6StringPool stmts;
+  SecEdgarQ6StringPool uoms;
 
   core::ChunkedCowArray<uint32_t, 12> adsh_name; // [adsh_id] -> name_id (0 = NULL)
+  core::ChunkedCowArray<uint32_t, 12> adsh_fy;   // [adsh_id] -> fy (int32 bits)
   core::ChunkedCowArray<uint32_t, 12> tv_tag;    // [tv_id]   -> tag_id
   core::ChunkedBlobMap runs;                      // [adsh_id] -> bridge run
 
   core::ChunkedCowArray<SecEdgarQ6Group, 10> groups; // append-only
+  core::ChunkedCowArray<uint32_t, 10> group_combo;
   core::ShardedCowHashMap<uint32_t, 8> group_index;  // hash(+probe) -> gid
+  std::shared_ptr<const SecEdgarQ6Combos> combos =
+      std::make_shared<const SecEdgarQ6Combos>();
   uint32_t group_count = 0;
   uint32_t base_group_count = 0; // groups at the last full build
 
   uint32_t GroupCount() const noexcept { return group_count; }
+  uint32_t ComboCount() const noexcept {
+    return static_cast<uint32_t>(combos->keys.size());
+  }
   uint32_t AdshCount() const noexcept { return adshs.Count(); }
 
-  // The bridge entry for (adsh_id, tv_id), or an empty Hit.
+  // The bridge entries for (adsh_id, tv_id), or an empty Hit.
   SecEdgarQ6Hit Lookup(uint32_t adsh_id, uint32_t tv_id) const;
-  // Group id for (name, tag, plabel) ids or kNoPayload.
-  uint32_t FindGroup(uint32_t name_id, uint32_t tag_id,
-                     uint32_t plabel_id) const;
-  uint32_t FindOrAddGroup(uint32_t name_id, uint32_t tag_id, uint32_t plabel_id);
+  uint32_t FindCombo(int32_t fy, uint32_t stmt, uint32_t uom) const;
+  uint32_t FindOrAddCombo(int32_t fy, uint32_t stmt, uint32_t uom);
+  // Group id for the key or kNoPayload.
+  uint32_t FindGroup(uint32_t name_id, uint32_t tag_id, uint32_t plabel_id,
+                     uint32_t combo) const;
+  uint32_t FindOrAddGroup(uint32_t name_id, uint32_t tag_id, uint32_t plabel_id,
+                          uint32_t combo);
   bool IsCohort(std::string_view adsh) const {
     const uint32_t id = adshs.Find(adsh);
     return id != 0 && adsh_name.Get(id) != kNotCohort;
@@ -157,18 +191,19 @@ struct SecEdgarQ6Structure {
 
 class SecEdgarQ6StructureBuilder {
 public:
-  // Rows are expected pre-filtered (fy = 2023 / stmt = 'IS'); duplicate adsh
-  // keep the first name.
-  void AddCohort(std::string_view adsh, std::string_view name, bool name_is_null);
+  // Duplicate adsh keep the first row. Rows with a NULL fy are not passed.
+  void AddCohort(std::string_view adsh, int32_t fy, std::string_view name,
+                 bool name_is_null);
   // Ignored when the adsh is not in the cohort.
   void AddPre(std::string_view adsh, std::string_view tag, std::string_view version,
-              std::string_view plabel, bool plabel_is_null);
+              std::string_view stmt, std::string_view plabel, bool plabel_is_null);
   SecEdgarQ6Structure Finish();
 
 private:
   struct Entry {
     uint32_t adsh;
     uint32_t tv;
+    uint32_t stmt;
     uint32_t plabel;
   };
   SecEdgarQ6Structure s_;
@@ -185,7 +220,7 @@ struct SecEdgarQ6Sum {
 SecEdgarQ6Sum SecEdgarQ6SumAdd(SecEdgarQ6Sum a, SecEdgarQ6Sum b) noexcept;
 
 // ---------------------------------------------------------------------------
-// Copy-on-write aggregates + top cache.
+// Copy-on-write aggregates + per-combo top caches.
 // ---------------------------------------------------------------------------
 constexpr uint32_t kQ6ChunkShift = 10;
 constexpr uint32_t kQ6ChunkSize = 1u << kQ6ChunkShift;
@@ -193,10 +228,12 @@ constexpr uint32_t kQ6ChunkMask = kQ6ChunkSize - 1;
 constexpr size_t kQ6OutputLimit = 200;
 
 struct SecEdgarQ6TopCache {
-  // Output-ordered ids of exactly { active groups g : !(sum[g] < lower_bound) }.
+  // Output-ordered ids of exactly { active groups g of the combo :
+  // !(sum[g] < lower_bound) }.
   std::vector<uint32_t> gids;
   double lower_bound = 0.0;
   bool complete = true; // lower_bound == -inf: gids holds every active group
+  uint32_t base_size = 0; // size right after the last rescan
 };
 
 struct SecEdgarQ6State {
@@ -205,12 +242,13 @@ struct SecEdgarQ6State {
   core::ChunkedCowArray<double, kQ6ChunkShift> sum_lo;
   core::ChunkedCowArray<int64_t, kQ6ChunkShift> cnt;
   uint64_t active_groups = 0;
-  SecEdgarQ6TopCache top;
+  std::vector<std::shared_ptr<const SecEdgarQ6TopCache>> tops; // by combo id
 
   double Sum(uint32_t gid) const { return sum_hi.Get(gid); }
   int64_t Count(uint32_t gid) const { return cnt.Get(gid); }
   size_t Bytes() const; // heap bytes owned by this version (+structure)
-  bool TopUsable() const noexcept; // top answers LIMIT 200 without a rescan
+  bool TopUsable(uint32_t combo) const noexcept;
+  const SecEdgarQ6TopCache &Top(uint32_t combo) const { return *tops[combo]; }
 };
 
 struct SecEdgarQ6GroupDelta {
@@ -222,7 +260,7 @@ struct SecEdgarQ6GroupDelta {
 struct SecEdgarQ6OutputRow {
   std::string name;
   bool name_is_null = false;
-  std::string stmt = "IS";
+  std::string stmt;
   std::string tag;
   std::string plabel;
   bool plabel_is_null = false;
@@ -230,7 +268,7 @@ struct SecEdgarQ6OutputRow {
   int64_t cnt = 0;
 };
 
-// Zeroed aggregates over `structure` (no top cache yet; call SecEdgarQ6Rescan).
+// Zeroed aggregates over `structure` (call SecEdgarQ6Rescan afterwards).
 SecEdgarQ6State SecEdgarQ6MakeEmptyState(SecEdgarQ6Structure structure);
 
 // Writes absolute (sum, count) for a group while building. Call
@@ -238,31 +276,34 @@ SecEdgarQ6State SecEdgarQ6MakeEmptyState(SecEdgarQ6Structure structure);
 void SecEdgarQ6SetGroup(SecEdgarQ6State &state, uint32_t gid, double sum,
                         int64_t cnt);
 
-// Recompute active_groups and the top cache from scratch.
+// Recompute active_groups and every combo's top cache from scratch.
 void SecEdgarQ6Rescan(SecEdgarQ6State &state);
+// Recompute one combo's top cache (one pass over the groups).
+void SecEdgarQ6RescanCombo(SecEdgarQ6State &state, uint32_t combo);
 
-// Output-order comparator used for ordering and tie-breaks.
+// Output-order comparator used for ordering and tie-breaks (same combo).
 bool SecEdgarQ6GroupBefore(const SecEdgarQ6State &state, uint32_t a, uint32_t b);
 
 // Resolve one num contribution (adsh, tag, version) -> its bridge hit.
 SecEdgarQ6Hit SecEdgarQ6Resolve(const SecEdgarQ6Structure &s, std::string_view adsh,
                                 std::string_view tag, std::string_view version);
 
-// Expand a hit into group deltas for `value` x `sign`.
-void SecEdgarQ6ExpandPayload(const SecEdgarQ6Hit &hit, double value, int64_t sign,
-                             std::vector<SecEdgarQ6GroupDelta> &out);
+// Expand a hit for one uom into group deltas for sum x sign (creates the
+// missing groups / combos in `s`).
+void SecEdgarQ6ExpandHit(SecEdgarQ6Structure &s, const SecEdgarQ6Hit &hit,
+                         uint32_t uom_id, SecEdgarQ6Sum sum, int64_t cnt,
+                         std::vector<SecEdgarQ6GroupDelta> &out);
 
-// Batched resolve (hashes first, then lookups).
 struct SecEdgarQ6NumRef {
-  std::string_view adsh, tag, version;
+  std::string_view adsh, tag, version, uom;
   double value;
   int64_t sign;
 };
-void SecEdgarQ6ResolveBatch(const SecEdgarQ6Structure &s,
-                            const SecEdgarQ6NumRef *refs, size_t n,
-                            std::vector<SecEdgarQ6GroupDelta> &out);
+// Resolves every ref against `s`, creating missing groups.
+void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs,
+                            size_t n, std::vector<SecEdgarQ6GroupDelta> &out);
 
-// Merge deltas by gid, apply them copy-on-write and maintain the top cache.
+// Merge deltas by gid, apply them copy-on-write and maintain the top caches.
 // Returns nullptr when `deltas` is empty after merging (nothing changes).
 // `overflow` is set when a finite sum would leave the double range (the
 // caller then rebuilds: removing such a contribution again is not exact).
@@ -271,21 +312,35 @@ SecEdgarQ6ApplyDeltas(const SecEdgarQ6State &old_state,
                       std::vector<SecEdgarQ6GroupDelta> &deltas,
                       bool *overflow = nullptr);
 
-// First `limit` rows of the answer (uses the top cache when usable).
-std::vector<SecEdgarQ6OutputRow> SecEdgarQ6TopRows(const SecEdgarQ6State &state,
-                                                   size_t limit = kQ6OutputLimit);
+// num inserts / deletes: resolves the refs (creating groups) and applies them.
+// `overflow` is also set when too many unused groups accumulated (rebuild).
+std::shared_ptr<const SecEdgarQ6State>
+SecEdgarQ6ApplyNums(const SecEdgarQ6State &old_state, const SecEdgarQ6NumRef *refs,
+                    size_t n, bool *overflow = nullptr);
+
+// Rows of the answer for one combo, or {} when the (fy, stmt, uom) is not in the
+// state. `stmt` fills the stmt column.
+std::vector<SecEdgarQ6OutputRow>
+SecEdgarQ6TopRows(const SecEdgarQ6State &state, int64_t fy, std::string_view stmt,
+                  std::string_view uom, size_t limit = kQ6OutputLimit);
+std::vector<SecEdgarQ6OutputRow>
+SecEdgarQ6TopRowsOfCombo(const SecEdgarQ6State &state, uint32_t combo,
+                         std::string_view stmt, size_t limit = kQ6OutputLimit);
+// Combo id for the parameter values or kNoPayload.
+uint32_t SecEdgarQ6FindComboFor(const SecEdgarQ6Structure &s, int64_t fy,
+                                std::string_view stmt, std::string_view uom);
 
 // ---------------------------------------------------------------------------
-// Incremental structural edits (sub cohort/name changes, pre IS rows).
+// Incremental structural edits (sub cohort/name/fy changes, pre rows).
 // ---------------------------------------------------------------------------
 struct SecEdgarQ6NumSum {
-  std::string tag, version;
+  std::string tag, version, uom;
   double sum = 0.0;
   int64_t cnt = 0;
   double sum_lo = 0.0; // the sum is sum + sum_lo as a double-double
 };
 struct SecEdgarQ6PreEntry {
-  std::string tag, version, plabel;
+  std::string tag, version, stmt, plabel;
   bool plabel_is_null = false;
   uint32_t mult = 1;
 };
@@ -293,31 +348,32 @@ struct SecEdgarQ6PreEntry {
 struct SecEdgarQ6AdshEdit {
   std::string adsh;
   bool new_cohort = false;
+  int32_t fy = 0;
   std::string name;
   bool name_is_null = false;
-  std::vector<SecEdgarQ6PreEntry> pre;       // IS rows (new state)
-  std::vector<SecEdgarQ6NumSum> old_nums;    // USD sums before the txn
-  std::vector<SecEdgarQ6NumSum> new_nums;    // USD sums after the txn
+  std::vector<SecEdgarQ6PreEntry> pre;       // all stmt rows (new state)
+  std::vector<SecEdgarQ6NumSum> old_nums;    // sums before the txn
+  std::vector<SecEdgarQ6NumSum> new_nums;    // sums after the txn
 };
 
-// Edits a copy of the structure (only the touched chunks / shards are cloned:
-// the affected adsh's bridge runs, pool tails, new groups), moves the affected
-// adsh's contributions and applies `extra` group deltas, returning the next
-// state. Returns nullptr when the edit cannot be applied safely (group
-// garbage limit); the caller then rebuilds.
+// Edits a copy of the structure (only the touched chunks / shards are cloned),
+// moves the affected adsh's contributions and applies the num refs of the other
+// adsh, returning the next state. Returns nullptr when the edit cannot be
+// applied safely (group garbage limit, inconsistent old state); the caller
+// then rebuilds.
 std::shared_ptr<const SecEdgarQ6State>
 SecEdgarQ6ApplyEdits(const SecEdgarQ6State &old_state,
                      const std::vector<SecEdgarQ6AdshEdit> &edits,
-                     std::vector<SecEdgarQ6GroupDelta> &extra,
+                     const std::vector<SecEdgarQ6NumRef> &other_refs,
                      bool *overflow = nullptr);
 
 // Dispatch introspection for tests/benchmarks.
 bool SecEdgarQ6UsesAvx2();
 void SecEdgarQ6ForceScalar(bool force);
 
-// Test hook: all ids of active groups with !(sum < lb), unsorted, using the
-// SIMD path when available (or scalar when forced).
-void SecEdgarQ6CollectAtLeast(const SecEdgarQ6State &state, double lb,
-                              std::vector<uint32_t> &out);
+// Test hook: all ids of active groups of `combo` with !(sum < lb), unsorted,
+// using the SIMD path when available (or scalar when forced).
+void SecEdgarQ6CollectAtLeast(const SecEdgarQ6State &state, uint32_t combo,
+                              double lb, std::vector<uint32_t> &out);
 
 } // namespace accelerator_codegen::aux_state::query
