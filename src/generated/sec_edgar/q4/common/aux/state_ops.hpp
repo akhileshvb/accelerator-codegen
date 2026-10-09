@@ -6,8 +6,8 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
-#include "sec_edgar/q4/duckdb/aux/module.hpp"
-#include "sec_edgar/q4/duckdb/aux/state.hpp"
+#include "sec_edgar/q4/common/aux/module.hpp"
+#include "sec_edgar/q4/common/aux/state.hpp"
 
 namespace accelerator_codegen::aux_state::query::q4 {
 

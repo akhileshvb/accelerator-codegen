@@ -9,7 +9,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "sec_edgar/q4/layout.hpp"
-#include "sec_edgar/q4/duckdb/aux/state.hpp"
+#include "sec_edgar/q4/common/aux/state.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 

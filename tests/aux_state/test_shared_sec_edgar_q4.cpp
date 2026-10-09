@@ -27,7 +27,7 @@
 #include "accelerator_codegen/stateful/core/aux_maintenance_policy.hpp"
 #include "accelerator_codegen/stateful/core/aux_registry.hpp"
 #include "accelerator_codegen/stateful/duckdb/duckdb_state_store.hpp"
-#include "sec_edgar/q4/duckdb/aux/module.hpp"
+#include "sec_edgar/q4/common/aux/module.hpp"
 #include "test_support/sec_edgar_q4_txn_gen.hpp"
 
 using namespace accelerator_codegen::aux_state::core;

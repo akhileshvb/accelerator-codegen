@@ -35,7 +35,7 @@
 #include "catalog/query_catalog.hpp"
 #include "duckdb.hpp"
 #include "sec_edgar/q4/duckdb/aux/duckdb_scan.hpp"
-#include "sec_edgar/q4/duckdb/aux/module.hpp"
+#include "sec_edgar/q4/common/aux/module.hpp"
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 #include "sec_edgar/q4/duckdb/aux/parallel/module.hpp"
 #endif
