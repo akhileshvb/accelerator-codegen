@@ -53,13 +53,17 @@ void TestStringPool(Rng &rng) {
 }
 
 struct Model {
-  std::map<std::string, std::string> cohort; // adsh -> name ("\x01NULL" == NULL)
+  struct Cohort {
+    std::string name; // kNull == NULL
+    int32_t fy;
+  };
+  std::map<std::string, Cohort> cohort;
   struct PreRow {
-    std::string adsh, tag, version, plabel; // "\x01NULL" plabel == NULL
+    std::string adsh, tag, version, stmt, plabel; // "\x01NULL" plabel == NULL
   };
   std::vector<PreRow> pre;
   struct NumRow {
-    std::string adsh, tag, version;
+    std::string adsh, tag, version, uom;
     double value;
   };
   std::vector<NumRow> nums;
@@ -70,19 +74,22 @@ struct Expected {
   double sum = 0;
   int64_t cnt = 0;
 };
+using Combo = std::tuple<int32_t, std::string, std::string>; // fy, stmt, uom
 using GroupKey = std::tuple<std::string, std::string, std::string>; // name, tag, plabel
 
-std::map<GroupKey, Expected> Naive(const Model &m) {
-  std::map<std::tuple<std::string, std::string, std::string>, std::vector<std::string>> bridge;
+std::map<Combo, std::map<GroupKey, Expected>> Naive(const Model &m) {
+  std::map<std::tuple<std::string, std::string, std::string>,
+           std::vector<std::pair<std::string, std::string>>> bridge;
   for (const auto &p : m.pre) {
-    if (m.cohort.count(p.adsh)) bridge[{p.adsh, p.tag, p.version}].push_back(p.plabel);
+    if (m.cohort.count(p.adsh)) bridge[{p.adsh, p.tag, p.version}].emplace_back(p.stmt, p.plabel);
   }
-  std::map<GroupKey, Expected> out;
+  std::map<Combo, std::map<GroupKey, Expected>> out;
   for (const auto &n : m.nums) {
     auto it = bridge.find({n.adsh, n.tag, n.version});
     if (it == bridge.end()) continue;
-    for (const auto &plabel : it->second) {
-      auto &e = out[{m.cohort.at(n.adsh), n.tag, plabel}];
+    const auto &c = m.cohort.at(n.adsh);
+    for (const auto &[stmt, plabel] : it->second) {
+      auto &e = out[{c.fy, stmt, n.uom}][{c.name, n.tag, plabel}];
       e.sum += n.value;
       e.cnt += 1;
     }
@@ -96,8 +103,7 @@ bool NameLess(const std::string &a, const std::string &b) {
   return a < b;
 }
 
-std::vector<std::tuple<GroupKey, Expected>> NaiveTop(const Model &m) {
-  auto agg = Naive(m);
+std::vector<std::tuple<GroupKey, Expected>> NaiveTop(const std::map<GroupKey, Expected> &agg) {
   std::vector<std::tuple<GroupKey, Expected>> rows;
   for (auto &[k, e] : agg)
     if (e.cnt != 0) rows.emplace_back(k, e);
@@ -113,34 +119,71 @@ std::vector<std::tuple<GroupKey, Expected>> NaiveTop(const Model &m) {
   return rows;
 }
 
-void CheckState(const SecEdgarQ6State &state, const Model &m, const std::string &ctx) {
-  const auto expected = NaiveTop(m);
-  const auto rows = SecEdgarQ6TopRows(state);
+const char *const kStmts[] = {"IS", "BS", "CF"};
+const char *const kUoms[] = {"USD", "shares", "pure"};
+const int32_t kFys[] = {2022, 2023, 2024};
+
+void CheckCombo(const SecEdgarQ6State &state, const std::map<GroupKey, Expected> *agg,
+                int32_t fy, const std::string &stmt, const std::string &uom, const std::string &ctx) {
+  const auto expected = agg ? NaiveTop(*agg) : std::vector<std::tuple<GroupKey, Expected>>{};
+  const auto rows = SecEdgarQ6TopRows(state, fy, stmt, uom);
+  if (rows.size() != expected.size()) {
+    for (const auto &[key, e] : expected) {
+      bool found = false;
+      for (const auto &r : rows)
+        found |= (r.name_is_null ? kNull : r.name) == std::get<0>(key) && r.tag == std::get<1>(key) &&
+                 (r.plabel_is_null ? kNull : r.plabel) == std::get<2>(key);
+      if (!found) {
+        const auto &st = state.structure;
+        for (uint32_t c = 0; c < st.ComboCount(); ++c) {
+          const auto g = st.FindGroup(st.names.Find(std::get<0>(key)), st.tags.Find(std::get<1>(key)), 0, c);
+          if (g != SecEdgarQ6Structure::kNoPayload)
+            std::cerr << "  group in combo " << c << " fy=" << st.combos->keys[c].fy << " stmt="
+                      << st.stmts.View(st.combos->keys[c].stmt) << " uom=" << st.uoms.View(st.combos->keys[c].uom)
+                      << " gid=" << g << " sum=" << state.Sum(g) << " cnt=" << state.Count(g) << "\n";
+        }
+      }
+      if (!found)
+        std::cerr << "missing (" << std::get<0>(key) << "," << std::get<1>(key) << "," << std::get<2>(key)
+                  << ") sum=" << e.sum << " cnt=" << e.cnt << "\n";
+    }
+  }
   Require(rows.size() == expected.size(),
-          ctx + ": row count " + std::to_string(rows.size()) + " vs " + std::to_string(expected.size()));
+          ctx + " (" + std::to_string(fy) + "," + stmt + "," + uom + "): row count " + std::to_string(rows.size()) + " vs " + std::to_string(expected.size()));
   for (size_t i = 0; i < rows.size(); ++i) {
     const auto &[key, e] = expected[i];
     const std::string name = rows[i].name_is_null ? kNull : rows[i].name;
     const std::string plabel = rows[i].plabel_is_null ? kNull : rows[i].plabel;
-    const double tol = 0.0;
-    Require(name == std::get<0>(key) && rows[i].tag == std::get<1>(key) &&
-                plabel == std::get<2>(key) && rows[i].cnt == e.cnt &&
-                std::fabs(rows[i].total_value - e.sum) <= tol,
+    Require(name == std::get<0>(key) && rows[i].tag == std::get<1>(key) && rows[i].stmt == stmt &&
+                plabel == std::get<2>(key) && rows[i].cnt == e.cnt && rows[i].total_value == e.sum,
             ctx + ": mismatch at row " + std::to_string(i) + " got(" + name + "," + rows[i].tag + "," + plabel + "," +
                 std::to_string(rows[i].cnt) + "," + std::to_string(rows[i].total_value) + ") want(" +
                 std::get<0>(key) + "," + std::get<1>(key) + "," + std::get<2>(key) + "," + std::to_string(e.cnt) + "," +
                 std::to_string(e.sum) + ")");
   }
-  // Cache invariant: exactly the active groups with !(sum < lb), sorted.
-  std::vector<uint32_t> all;
-  SecEdgarQ6CollectAtLeast(state, state.top.lower_bound, all);
-  std::vector<uint32_t> cached = state.top.gids;
-  std::sort(cached.begin(), cached.end());
-  std::sort(all.begin(), all.end());
-  Require(cached == all, ctx + ": top cache is not the exact >= lb set");
-  for (size_t i = 1; i < state.top.gids.size(); ++i) {
-    Require(!SecEdgarQ6GroupBefore(state, state.top.gids[i], state.top.gids[i - 1]),
-            ctx + ": top cache order");
+}
+
+void CheckState(const SecEdgarQ6State &state, const Model &m, const std::string &ctx) {
+  const auto naive = Naive(m);
+  // every populated combo plus a few absent ones, with random-ish edge values
+  for (const auto &[combo, agg] : naive)
+    CheckCombo(state, &agg, std::get<0>(combo), std::get<1>(combo), std::get<2>(combo), ctx);
+  CheckCombo(state, nullptr, 2019, "IS", "USD", ctx);
+  CheckCombo(state, nullptr, 2023, "ZZ", "USD", ctx);
+  CheckCombo(state, nullptr, 2023, "IS", "EUR", ctx);
+  CheckCombo(state, nullptr, int64_t(1) << 40, "IS", "USD", ctx);
+  // Cache invariant per combo: exactly the active groups with !(sum < lb), sorted.
+  for (uint32_t c = 0; c < state.structure.ComboCount(); ++c) {
+    const auto &top = state.Top(c);
+    std::vector<uint32_t> all;
+    SecEdgarQ6CollectAtLeast(state, c, top.lower_bound, all);
+    std::vector<uint32_t> cached = top.gids;
+    std::sort(cached.begin(), cached.end());
+    std::sort(all.begin(), all.end());
+    Require(cached == all, ctx + ": top cache is not the exact >= lb set");
+    for (size_t i = 1; i < top.gids.size(); ++i) {
+      Require(!SecEdgarQ6GroupBefore(state, top.gids[i], top.gids[i - 1]), ctx + ": top cache order");
+    }
   }
   uint64_t active = 0;
   for (uint32_t g = 0; g < state.structure.GroupCount(); ++g) active += state.Count(g) != 0;
@@ -156,36 +199,38 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
   for (int i = 0; i < names; ++i) name_pool.push_back(i == 0 ? "" : i == 1 ? kNull : "Name" + std::to_string(i));
   for (int i = 0; i < tags; ++i) tag_pool.push_back(i == 0 ? "" : "Tag" + std::to_string(i));
   for (int i = 0; i < plabels; ++i) plabel_pool.push_back(i == 0 ? kNull : i == 1 ? "" : "PL" + std::to_string(i));
+  const auto rnd_stmt = [&]() { return std::string(kStmts[rng() % 3]); };
+  const auto rnd_uom = [&]() { return std::string(kUoms[rng() % 3]); };
 
   SecEdgarQ6StructureBuilder builder;
   for (int i = 0; i < adsh_count; ++i) {
     const std::string adsh = "ADSH" + std::to_string(i);
     const std::string &name = name_pool[rng() % name_pool.size()];
-    m.cohort.emplace(adsh, name);
-    builder.AddCohort(adsh, name == kNull ? "" : name, name == kNull);
-    if (rng() % 7 == 0) builder.AddCohort(adsh, "other", false); // duplicate: ignored
+    const int32_t fy = kFys[rng() % 3];
+    m.cohort.emplace(adsh, Model::Cohort{name, fy});
+    builder.AddCohort(adsh, fy, name == kNull ? "" : name, name == kNull);
+    if (rng() % 7 == 0) builder.AddCohort(adsh, 1999, "other", false); // duplicate: ignored
     const int pre_rows = 1 + static_cast<int>(rng() % 25);
     for (int k = 0; k < pre_rows; ++k) {
       Model::PreRow p{adsh, tag_pool[rng() % tag_pool.size()], version_pool[rng() % version_pool.size()],
-                      plabel_pool[rng() % plabel_pool.size()]};
+                      rnd_stmt(), plabel_pool[rng() % plabel_pool.size()]};
       m.pre.push_back(p);
-      builder.AddPre(p.adsh, p.tag, p.version, p.plabel == kNull ? "" : p.plabel, p.plabel == kNull);
+      builder.AddPre(p.adsh, p.tag, p.version, p.stmt, p.plabel == kNull ? "" : p.plabel, p.plabel == kNull);
       if (rng() % 5 == 0) { // duplicate row (multiplicity 2)
         m.pre.push_back(p);
-        builder.AddPre(p.adsh, p.tag, p.version, p.plabel == kNull ? "" : p.plabel, p.plabel == kNull);
+        builder.AddPre(p.adsh, p.tag, p.version, p.stmt, p.plabel == kNull ? "" : p.plabel, p.plabel == kNull);
       }
     }
   }
   // orphan pre rows (not in cohort) are ignored by the builder.
-  builder.AddPre("ORPHAN", "Tag1", "v1", "x", false);
+  builder.AddPre("ORPHAN", "Tag1", "v1", "IS", "x", false);
   auto structure = builder.Finish();
-  // payload check against the naive bridge
   {
     std::map<std::tuple<std::string, std::string, std::string>, int> keys;
     for (auto &p : m.pre) keys[{p.adsh, p.tag, p.version}]++;
     for (auto &[k, n] : keys) {
-      Require(SecEdgarQ6Resolve(structure, std::get<0>(k), std::get<1>(k), std::get<2>(k)).Found(),
-              "bridge hit expected");
+      const auto hit = SecEdgarQ6Resolve(structure, std::get<0>(k), std::get<1>(k), std::get<2>(k));
+      Require(hit.Found() && static_cast<int>(hit.count) == n, "bridge hit expected");
     }
     Require(!SecEdgarQ6Resolve(structure, "ORPHAN", "Tag1", "v1").Found(), "orphan must not resolve");
     Require(!SecEdgarQ6Resolve(structure, "ADSH0", "nope", "v1").Found(), "unknown tag");
@@ -199,10 +244,10 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
     Model::NumRow n;
     if (!m.pre.empty() && rng() % 10 < 8) {
       const auto &p = m.pre[rng() % m.pre.size()];
-      n = {p.adsh, p.tag, p.version, 0};
+      n = {p.adsh, p.tag, p.version, rnd_uom(), 0};
     } else {
       n = {"ADSH" + std::to_string(rng() % (adsh_count + 5)), tag_pool[rng() % tag_pool.size()],
-           version_pool[rng() % version_pool.size()], 0};
+           version_pool[rng() % version_pool.size()], rnd_uom(), 0};
     }
     static const double kv[] = {0, 1, 2, 3, 5, 10, 100, 1000, -1, -5, 0.5, 1e9, -1e9, 7};
     // dyadic rationals keep every sum exact, so ordering never depends on the
@@ -212,26 +257,19 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
     return n;
   };
 
-  // initial load as one big batch
   auto apply = [&](const std::vector<Model::NumRow> &rows, int sign, const std::string &ctx) {
     std::vector<SecEdgarQ6NumRef> refs;
-    for (auto &r : rows) refs.push_back({r.adsh, r.tag, r.version, r.value, sign});
-    std::vector<SecEdgarQ6GroupDelta> deltas;
-    if (refs.size() == 1) {
-      SecEdgarQ6ExpandPayload(
-          SecEdgarQ6Resolve(state->structure, refs[0].adsh, refs[0].tag, refs[0].version),
-          refs[0].value, sign, deltas);
-    } else {
-      SecEdgarQ6ResolveBatch(state->structure, refs.data(), refs.size(), deltas);
-    }
-    auto next = SecEdgarQ6ApplyDeltas(*state, deltas);
+    for (auto &r : rows) refs.push_back({r.adsh, r.tag, r.version, r.uom, r.value, sign});
+    bool overflow = false;
+    auto next = SecEdgarQ6ApplyNums(*state, refs.data(), refs.size(), &overflow);
     if (next) state = std::make_shared<SecEdgarQ6State>(*next);
     if (sign > 0) {
       for (auto &r : rows) m.nums.push_back(r);
     } else {
       for (auto &r : rows) {
         auto it = std::find_if(m.nums.begin(), m.nums.end(), [&](const Model::NumRow &x) {
-          return x.adsh == r.adsh && x.tag == r.tag && x.version == r.version && x.value == r.value;
+          return x.adsh == r.adsh && x.tag == r.tag && x.version == r.version && x.uom == r.uom &&
+                 x.value == r.value;
         });
         Require(it != m.nums.end(), "model delete");
         m.nums.erase(it);
@@ -244,7 +282,11 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
     std::vector<Model::NumRow> rows;
     for (int i = 0; i < nums; ++i) rows.push_back(random_num());
     apply(rows, +1, "initial load");
+    state->structure.base_group_count = state->structure.group_count; // as a full build does
   }
+  const auto key_of = [](const Model::NumRow &a) {
+    return std::tie(a.adsh, a.tag, a.version, a.uom, a.value);
+  };
   for (int round = 0; round < rounds; ++round) {
     const int kind = static_cast<int>(rng() % 11);
     std::vector<Model::NumRow> rows;
@@ -254,19 +296,13 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
     } else if (kind <= 5 && !m.nums.empty()) { // small delete
       for (size_t i = 0, n = 1 + rng() % 3; i < n && !m.nums.empty(); ++i)
         rows.push_back(m.nums[rng() % m.nums.size()]);
-      // dedupe so each model row is removed at most once
-      std::sort(rows.begin(), rows.end(), [](const auto &a, const auto &b) {
-        return std::tie(a.adsh, a.tag, a.version, a.value) < std::tie(b.adsh, b.tag, b.version, b.value);
-      });
-      rows.erase(std::unique(rows.begin(), rows.end(), [](const auto &a, const auto &b) {
-                   return std::tie(a.adsh, a.tag, a.version, a.value) == std::tie(b.adsh, b.tag, b.version, b.value);
-                 }),
+      std::sort(rows.begin(), rows.end(), [&](const auto &a, const auto &b) { return key_of(a) < key_of(b); });
+      rows.erase(std::unique(rows.begin(), rows.end(),
+                             [&](const auto &a, const auto &b) { return key_of(a) == key_of(b); }),
                  rows.end());
       apply(rows, -1, "round " + std::to_string(round) + " small delete");
-    } else if (kind == 6) { // value bump on the current best group (stress cache head)
-      const auto top = SecEdgarQ6TopRows(*state, 1);
-      if (!top.empty() && !m.pre.empty()) {
-        // add a big row on a random existing key (changes ordering near the head)
+    } else if (kind == 6) { // value bump near the head of some combo
+      if (!m.pre.empty()) {
         auto n = random_num();
         n.value = 1e10 * static_cast<double>(1 + rng() % 3);
         rows.push_back(n);
@@ -278,65 +314,83 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
       for (size_t i = 0, n = 1 + rng() % 3; i < n; ++i) {
         const std::string adsh = "ADSH" + std::to_string(rng() % (adsh_count + 3));
         if (!picked.insert(adsh).second) continue;
-        // 0 rename, 1 exit / enter cohort, 2 add pre row, 3 drop pre rows, 4 relabel
-        const int op = static_cast<int>(rng() % 5);
+        // 0 rename, 1 exit / enter cohort, 2 add pre row, 3 drop pre rows, 4 relabel, 5 fy move, 6 restmt
+        const int op = static_cast<int>(rng() % 7);
         const bool in = m.cohort.count(adsh) != 0;
         const std::string new_name = name_pool[rng() % name_pool.size()];
         if (op == 0 || (op == 1 && !in)) {
-          m.cohort[adsh] = new_name;
+          m.cohort[adsh] = {new_name, kFys[rng() % 3]};
         } else if (op == 1) {
           m.cohort.erase(adsh);
         } else if (op == 2) {
           m.pre.push_back({adsh, tag_pool[rng() % tag_pool.size()], version_pool[rng() % version_pool.size()],
-                           plabel_pool[rng() % plabel_pool.size()]});
+                           rnd_stmt(), plabel_pool[rng() % plabel_pool.size()]});
         } else if (op == 3) {
           const auto cut = std::remove_if(m.pre.begin(), m.pre.end(), [&](const Model::PreRow &p) {
             return p.adsh == adsh && rng() % 2;
           });
           m.pre.erase(cut, m.pre.end());
-        } else {
+        } else if (op == 4) {
           for (auto &p : m.pre)
             if (p.adsh == adsh && rng() % 2) p.plabel = plabel_pool[rng() % plabel_pool.size()];
+        } else if (op == 5) {
+          if (in) m.cohort[adsh].fy = kFys[rng() % 3];
+        } else {
+          for (auto &p : m.pre)
+            if (p.adsh == adsh && rng() % 2) p.stmt = rnd_stmt();
         }
-        // pre-edit truth was in `state`; num sums did not change.
         SecEdgarQ6AdshEdit edit;
         edit.adsh = adsh;
         edit.new_cohort = m.cohort.count(adsh) != 0;
         if (edit.new_cohort) {
-          const std::string &nm = m.cohort.at(adsh);
-          edit.name_is_null = nm == kNull;
-          if (!edit.name_is_null) edit.name = nm;
+          const auto &c = m.cohort.at(adsh);
+          edit.fy = c.fy;
+          edit.name_is_null = c.name == kNull;
+          if (!edit.name_is_null) edit.name = c.name;
         }
-        std::map<std::tuple<std::string, std::string, std::string>, uint32_t> pm;
+        std::map<std::tuple<std::string, std::string, std::string, std::string>, uint32_t> pm;
         for (const auto &p : m.pre)
-          if (p.adsh == adsh) pm[{p.tag, p.version, p.plabel}]++;
+          if (p.adsh == adsh) pm[{p.tag, p.version, p.stmt, p.plabel}]++;
         for (const auto &[k, mult] : pm) {
           SecEdgarQ6PreEntry pe;
           pe.tag = std::get<0>(k);
           pe.version = std::get<1>(k);
-          pe.plabel_is_null = std::get<2>(k) == kNull;
-          if (!pe.plabel_is_null) pe.plabel = std::get<2>(k);
+          pe.stmt = std::get<2>(k);
+          pe.plabel_is_null = std::get<3>(k) == kNull;
+          if (!pe.plabel_is_null) pe.plabel = std::get<3>(k);
           pe.mult = mult;
           edit.pre.push_back(std::move(pe));
         }
-        std::map<std::pair<std::string, std::string>, SecEdgarQ6NumSum> ns;
+        std::map<std::tuple<std::string, std::string, std::string>, SecEdgarQ6NumSum> ns;
         for (const auto &nrow : m.nums) {
           if (nrow.adsh != adsh) continue;
-          auto &e = ns[{nrow.tag, nrow.version}];
+          auto &e = ns[{nrow.tag, nrow.version, nrow.uom}];
           e.tag = nrow.tag;
           e.version = nrow.version;
+          e.uom = nrow.uom;
           e.sum += nrow.value;
           e.cnt += 1;
         }
         for (auto &[k, v] : ns) edit.new_nums.push_back(v);
         edits.push_back(std::move(edit));
       }
-      // old nums are the same sums, but they were filed under the OLD bridge:
-      // the module passes the pre-transaction sums, which equal new_nums here.
+      // old nums are the same sums, but they were filed under the OLD bridge.
       for (auto &e : edits) e.old_nums = e.new_nums;
-      std::vector<SecEdgarQ6GroupDelta> extra;
+      // a few num writes of other adsh ride along
+      std::vector<SecEdgarQ6NumRef> other;
+      std::vector<Model::NumRow> extra;
+      extra.reserve(4); // the refs hold views into these rows
+      for (size_t i = 0, n = rng() % 3; i < n; ++i) {
+        auto nrow = random_num();
+        if (picked.count(nrow.adsh)) continue;
+        extra.push_back(nrow);
+        other.push_back({extra.back().adsh, extra.back().tag, extra.back().version, extra.back().uom,
+                         extra.back().value, 1});
+      }
+      // old_nums must describe the state BEFORE the extra rows (they never touch picked adsh)
+      for (auto &x : extra) m.nums.push_back(x);
       bool overflow = false;
-      auto next = SecEdgarQ6ApplyEdits(*state, edits, extra, &overflow);
+      auto next = SecEdgarQ6ApplyEdits(*state, edits, other, &overflow);
       Require(next && !overflow, "edit applied");
       state = std::make_shared<SecEdgarQ6State>(*next);
       CheckState(*state, m, "round " + std::to_string(round) + " structural edit");
@@ -356,27 +410,51 @@ void RunScenario(Rng &rng, int adsh_count, int names, int tags, int plabels, int
 }
 
 void TestSimdMatchesScalar(Rng &rng) {
-  // Same deltas through both dispatch modes must yield identical caches.
+  // The same writes through both dispatch modes must yield identical caches.
   SecEdgarQ6StructureBuilder builder;
   for (int i = 0; i < 500; ++i) {
-    builder.AddCohort("A" + std::to_string(i), "N" + std::to_string(i % 40), false);
+    builder.AddCohort("A" + std::to_string(i), 2023 + i % 2, "N" + std::to_string(i % 40), false);
     for (int k = 0; k < 30; ++k)
-      builder.AddPre("A" + std::to_string(i), "T" + std::to_string(k), "v", "P" + std::to_string(k % 5), false);
+      builder.AddPre("A" + std::to_string(i), "T" + std::to_string(k), "v", k % 4 ? "IS" : "BS",
+                     "P" + std::to_string(k % 5), false);
   }
   auto structure = builder.Finish();
   auto make = [&](bool scalar) {
     SecEdgarQ6ForceScalar(scalar);
     Rng r(42);
-    auto state = SecEdgarQ6MakeEmptyState(structure);
-    for (uint32_t g = 0; g < structure.GroupCount(); ++g)
-      if (r() % 3) SecEdgarQ6SetGroup(state, g, static_cast<double>(r() % 1000) - 200.0, 1 + r() % 5);
-    SecEdgarQ6Rescan(state);
-    return state;
+    auto state = std::make_shared<SecEdgarQ6State>(SecEdgarQ6MakeEmptyState(structure));
+    std::vector<std::string> keep;
+    std::vector<SecEdgarQ6NumRef> refs;
+    std::vector<std::string> store;
+    store.reserve(500 * 30 * 3);
+    for (int i = 0; i < 500; ++i)
+      for (int k = 0; k < 30; ++k)
+        if (r() % 3) {
+          store.push_back("A" + std::to_string(i));
+          store.push_back("T" + std::to_string(k));
+          refs.push_back({store[store.size() - 2], store.back(), "v", "USD",
+                          static_cast<double>(r() % 1000) - 200.0, 1});
+          // refs hold views into `store`: fix up after the loop
+        }
+    // re-point views (vector growth moved the strings)
+    size_t at = 0;
+    for (auto &ref : refs) {
+      ref.adsh = store[at];
+      ref.tag = store[at + 1];
+      at += 2;
+    }
+    auto next = SecEdgarQ6ApplyNums(*state, refs.data(), refs.size());
+    Require(next != nullptr, "simd test applied");
+    auto out = std::make_shared<SecEdgarQ6State>(*next);
+    SecEdgarQ6Rescan(*out);
+    return out;
   };
   const auto a = make(true);
   const auto b = make(false);
   SecEdgarQ6ForceScalar(false);
-  Require(a.top.gids == b.top.gids && a.active_groups == b.active_groups, "scalar/simd rescan equal");
+  Require(a->active_groups == b->active_groups && a->tops.size() == b->tops.size(), "scalar/simd shape");
+  for (size_t c = 0; c < a->tops.size(); ++c)
+    Require(a->tops[c]->gids == b->tops[c]->gids, "scalar/simd rescan equal");
   (void)rng;
 }
 
@@ -385,35 +463,38 @@ void TestSimdMatchesScalar(Rng &rng) {
 void TestSumExactness() {
   SecEdgarQ6StructureBuilder builder;
   for (const char *a : {"A", "B"}) {
-    builder.AddCohort(a, std::string("N") + a, false);
-    builder.AddPre(a, "T", "v", "P", false);
+    builder.AddCohort(a, 2023, std::string("N") + a, false);
+    builder.AddPre(a, "T", "v", "IS", "P", false);
   }
   auto state = std::make_shared<SecEdgarQ6State>(SecEdgarQ6MakeEmptyState(builder.Finish()));
   SecEdgarQ6Rescan(*state);
   const double vals[] = {0.1, 0.2, 0.3, 1e-3, 1e12 + 0.7, 3.14159, -2.718281828};
   const auto apply = [&](const char *adsh, double v, int sign) {
-    std::vector<SecEdgarQ6GroupDelta> d;
-    SecEdgarQ6ExpandPayload(SecEdgarQ6Resolve(state->structure, adsh, "T", "v"), v, sign, d);
+    const SecEdgarQ6NumRef ref{adsh, "T", "v", "USD", v, sign};
     bool overflow = false;
-    auto next = SecEdgarQ6ApplyDeltas(*state, d, &overflow);
+    auto next = SecEdgarQ6ApplyNums(*state, &ref, 1, &overflow);
     Require(!overflow, "no overflow");
     if (next) state = std::make_shared<SecEdgarQ6State>(*next);
   };
   const size_t n = sizeof vals / sizeof *vals;
   for (size_t i = 0; i < n; ++i) apply("A", vals[i], +1);
   for (size_t i = n; i-- > 0;) apply("B", vals[i], +1);
-  auto rows = SecEdgarQ6TopRows(*state);
+  auto rows = SecEdgarQ6TopRows(*state, 2023, "IS", "USD");
   Require(rows.size() == 2, "twin rows");
   Require(rows[0].total_value == rows[1].total_value, "twin groups tie bit for bit");
   Require(rows[0].name == "NA" && rows[1].name == "NB", "tie broken by name");
   const double before = rows[0].total_value;
   apply("A", 0.7, +1);
   apply("A", 0.7, -1);
-  rows = SecEdgarQ6TopRows(*state);
+  rows = SecEdgarQ6TopRows(*state, 2023, "IS", "USD");
   Require(rows[0].total_value == before && rows[0].name == "NA", "add/remove restores the sum");
   for (size_t i = 0; i < n; ++i) apply("A", vals[i], -1);
-  rows = SecEdgarQ6TopRows(*state);
+  rows = SecEdgarQ6TopRows(*state, 2023, "IS", "USD");
   Require(rows.size() == 1 && rows[0].name == "NB", "A emptied");
+  Require(SecEdgarQ6TopRows(*state, 2022, "IS", "USD").empty() &&
+              SecEdgarQ6TopRows(*state, 2023, "BS", "USD").empty() &&
+              SecEdgarQ6TopRows(*state, 2023, "IS", "EUR").empty(),
+          "other parameters are empty");
 }
 
 } // namespace

@@ -1,4 +1,6 @@
 // GENERATED BACKEND — PostgreSQL SQL functions for SEC EDGAR Q6 (module only).
+//   accel_sec_edgar_q6_aux()                        the defaults (2023, 'IS', 'USD')
+//   accel_sec_edgar_q6_aux(fy bigint, stmt text, uom text)
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
 extern "C" {
@@ -30,8 +32,13 @@ CREATE TYPE accel_sec_edgar_q6_row AS (
   name text, stmt text, tag text, plabel text,
   total_value double precision, cnt bigint);
 
-DROP FUNCTION IF EXISTS accel_sec_edgar_q6_aux CASCADE;
+DROP FUNCTION IF EXISTS accel_sec_edgar_q6_aux() CASCADE;
+DROP FUNCTION IF EXISTS accel_sec_edgar_q6_aux(bigint, text, text) CASCADE;
 CREATE FUNCTION accel_sec_edgar_q6_aux()
+RETURNS SETOF accel_sec_edgar_q6_row
+AS 'accelerator_codegen_pg', 'AcceleratorCodegenAuxSecEdgarQ6'
+LANGUAGE C;
+CREATE FUNCTION accel_sec_edgar_q6_aux(bigint, text, text)
 RETURNS SETOF accel_sec_edgar_q6_row
 AS 'accelerator_codegen_pg', 'AcceleratorCodegenAuxSecEdgarQ6'
 LANGUAGE C;
