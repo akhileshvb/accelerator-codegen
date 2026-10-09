@@ -1784,6 +1784,23 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
         add_test(NAME postgres_tpch_differential COMMAND test_postgres_tpch_differential)
     endif()
 
+    # SEC EDGAR Q1 on PostgreSQL: differential (random / concurrent / sf3) and benchmark.
+    # Plain libpq clients; they need the extension installed in the target database.
+    foreach(_sec_q1_target IN ITEMS test_postgres_sec_edgar_q1_differential benchmark_postgres_sec_edgar_q1)
+        if(_sec_q1_target STREQUAL "test_postgres_sec_edgar_q1_differential")
+            set(_sec_q1_src tests/aux_state/test_postgres_sec_edgar_q1_differential.cpp)
+        else()
+            set(_sec_q1_src benchmarks/postgres/benchmark_postgres_sec_edgar_q1.cpp)
+        endif()
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_sec_q1_src}")
+            add_executable(${_sec_q1_target} ${_sec_q1_src})
+            find_library(LIBPQ_SEC_Q1_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+            find_package(Threads REQUIRED)
+            target_link_libraries(${_sec_q1_target} PRIVATE ${LIBPQ_SEC_Q1_LIB} Threads::Threads)
+            target_include_directories(${_sec_q1_target} PRIVATE ${ACCEL_PG_INCLUDEDIR})
+        endif()
+    endforeach()
+
     # Shared PG SQL-vs-accel bench used by baseline / speedup / profile digests.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/postgres/benchmark_postgres_tpch_aux.cpp")
         add_executable(benchmark_postgres_tpch_aux
