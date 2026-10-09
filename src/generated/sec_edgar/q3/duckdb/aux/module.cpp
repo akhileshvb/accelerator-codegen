@@ -2018,18 +2018,51 @@ SecEdgarQ3Module::BuildState(core::AuxEngineServices &) const {
     }
     ui.BulkAdd(key, input.sum, input.count);
   });
+  std::unordered_map<int32_t, uint64_t> fy_filings;
   initial_scan->ScanSub([&](const SecEdgarQ3SubInput &input) {
     if (input.fy_is_null) {
       return;
     }
+    ++fy_filings[input.fy];
     if (!work.AddSub(MakeRef(input.adsh), input.name_is_null ? nullptr : &input.name,
                      input.cik_is_null, input.cik, input.fy)) {
       throw std::runtime_error("SEC EDGAR Q3: duplicate sub.adsh");
     }
   });
   const auto state = work.Finish();
-  // The defaults are served without a first-read build.
+  // Cohorts of the common parameters are served without a first-read build:
+  // the defaults, then every (fy, uom) of the fiscal years holding >= 2% of
+  // the filings and the units of measure with the most filings (data-driven,
+  // bounded by kSecEdgarQ3PrebuiltCohorts; any other pair is still built on
+  // first use). Each costs one pass over its unit's adsh index (~ms).
+  std::vector<std::pair<uint64_t, int32_t>> fys;
+  uint64_t filings = 0;
+  for (const auto &[fy, n] : fy_filings) {
+    filings += n;
+  }
+  for (const auto &[fy, n] : fy_filings) {
+    if (n * 50 >= filings) {
+      fys.emplace_back(n, fy);
+    }
+  }
+  std::sort(fys.rbegin(), fys.rend());
+  std::vector<std::pair<uint64_t, uint32_t>> uoms;
+  for (uint32_t uid = 0; uid < state->uom_index.size(); ++uid) {
+    if (state->uom_index[uid]) {
+      uoms.emplace_back(state->uom_index[uid]->entry_count, uid);
+    }
+  }
+  std::sort(uoms.rbegin(), uoms.rend());
   SecEdgarQ3CohortFor(*state, kSecEdgarQ3DefaultFy, kSecEdgarQ3DefaultUom);
+  if (!fys.empty()) {
+    const std::size_t uom_take =
+        std::min(uoms.size(), std::max<std::size_t>(1, kSecEdgarQ3PrebuiltCohorts / fys.size()));
+    for (std::size_t u = 0; u < uom_take; ++u) {
+      for (const auto &fy : fys) {
+        SecEdgarQ3CohortFor(*state, fy.second, state->uom_dict->names[uoms[u].second]);
+      }
+    }
+  }
   return *state;
 }
 
