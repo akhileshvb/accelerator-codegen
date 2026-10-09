@@ -579,6 +579,11 @@ target_link_libraries(benchmark_shared_duckdb_write_interval
         duckdb_sibling
 )
 
+add_executable(bench_sec_edgar_batch_apply
+    benchmarks/aux_state/bench_sec_edgar_batch_apply.cpp
+)
+target_link_libraries(bench_sec_edgar_batch_apply PRIVATE accelerator_codegen duckdb_sibling)
+
 add_executable(test_sec_edgar_q4_duckdb_differential
     tests/aux_state/test_sec_edgar_q4_duckdb_differential.cpp
 )
