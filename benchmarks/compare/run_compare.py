@@ -50,7 +50,8 @@ HERE = os.path.join(ROOT, "benchmarks", "compare")
 # kits, each on its own Verus store (the control for the global store's cost);
 # verus_cpp: the same kits on the C++ store protocol (one lock per accelerator)
 SYSTEMS = {"cpp": {}, "verus": {"ACCEL_AUX_STORE": "verus_global"}, "verus_kit": {"ACCEL_AUX_STORE": "verus"},
-           "verus_cpp": {"ACCEL_AUX_STORE": "cpp"}}
+           "verus_cpp": {"ACCEL_AUX_STORE": "cpp"}, "stateless": {}}
+# stateless: the query's stateless kernel (accel_tpch_qN, no maintained state); concurrent and multi modes
 
 
 def params(sets, seed, sf=20):
@@ -78,7 +79,7 @@ def cases_file(work, q, system, spec, rep=0):
     path = os.path.join(work, f"cases_q{q}_{system}_r{rep}.tsv")
     with open(path, "w") as f:
         for s in spec["sets"]:
-            f.write((s["cpp"] if system == "cpp" else s["verus"]) + "\t" + s["verus"] + "\n")
+            f.write((s["cpp"] if system in ("cpp", "stateless") else s["verus"]) + "\t" + s["verus"] + "\n")
     return path
 
 
@@ -131,7 +132,7 @@ def drop(path):
 
 
 def ids(q, system):
-    return (f"tpch:{q}" if system == "cpp" else f"tpch_q{q}_vgen"), f"tpch_q{q}_vgen"
+    return (f"tpch:{q}" if system in ("cpp", "stateless") else f"tpch_q{q}_vgen"), f"tpch_q{q}_vgen"
 
 
 def cmd_read(a):
@@ -176,7 +177,7 @@ def cmd_read(a):
 
 def cmd_concurrent(a):
     log = os.path.join(a.out, "concurrent.log")
-    phases = [("base", "base")] + [(s, "accel") for s in a.systems]
+    phases = [("base", "base")] * (not a.no_base) + [(s, "stateless" if s == "stateless" else "accel") for s in a.systems]
     for k, seed, spec in draws(a):
         for q in a.queries:
             for name, phase in phases:
@@ -221,7 +222,8 @@ def cmd_multi(a):
     log = os.path.join(a.out, "multi.log")
     rates = [float(x) for x in str(a.wps).replace(",", " ").split()]
     reps = draws(a)
-    for name, phase in [("base", "base")] + [(s, "accel") for s in a.systems]:
+    for name, phase in [("base", "base")] * (not a.no_base) + [(s, "stateless" if s == "stateless" else "accel")
+                                                                 for s in a.systems]:
         system = "cpp" if name == "base" else name
         lines = []
         for q in a.queries:
@@ -502,6 +504,8 @@ def main():
     c.add_argument("--seconds", type=float, default=60)
     c.add_argument("--wps", type=float, default=5, help="writer target, writes per second")
     c.add_argument("--warmup", type=float, default=5)
+    c.add_argument("--no-base", action="store_true",
+                   help="skip the DuckDB baseline runs (pair with an earlier run's, same --seed and settings)")
     m = sub.choices["multi"]
     m.add_argument("--readers", type=int, default=8)
     m.add_argument("--seconds", type=float, default=120)
@@ -514,6 +518,8 @@ def main():
     m.add_argument("--reader-mode", choices=("rotate", "pinned"), default="rotate",
                    help="rotate: each reader cycles over the accelerators; pinned: --readers per accelerator")
     m.add_argument("--warmup", type=float, default=5)
+    m.add_argument("--no-base", action="store_true",
+                   help="skip the DuckDB baseline run (pair with an earlier run's, same --seed and settings)")
     for w in (c, m):
         w.add_argument("--batch-orders", type=int, default=None,
                        help="orders per RF1 / RF2 commit.  With --rf-dir: use only the first B orders of each update "

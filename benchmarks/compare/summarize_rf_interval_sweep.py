@@ -15,6 +15,8 @@ the reads the DuckDB run completed (N) plus the shared refresh stream:
 """
 import csv
 import glob
+
+from workload import workload_speedup
 import json
 import math
 import os
@@ -61,11 +63,7 @@ def main():
             for s, r in sorted(sysmap.items()):
                 target = 1.0 / T
                 speed = (r["qps"] / base["qps"]) if (base and s != "base" and base["qps"] > 0) else None
-                wl = None
-                if speed is not None and "read_mean_us" in r and "read_mean_us" in base:
-                    n = base["reads"]
-                    den = n * r["read_mean_us"] + r.get("commit_sum_us", 0)
-                    wl = (n * base["read_mean_us"] + base.get("commit_sum_us", 0)) / den if den > 0 else None
+                wl = workload_speedup(base, r) if speed is not None else None
                 keeps = r.get("slots_per_sec", 0) >= 0.9 * target
                 w.writerow({"interval_s": T, "query": q, "rep": k, "system": s, "reader_qps": r["qps"],
                             "read_speedup_vs_duckdb": speed, "workload_speedup_vs_duckdb": wl,

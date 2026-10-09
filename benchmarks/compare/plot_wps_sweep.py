@@ -12,12 +12,7 @@ bars their min..max.  Writes
   3. read latency p99, median over the accelerators
   4. time readers spent in the store waiting for the state (lock, pending commit),
      mean per read over all accelerators
-  5. workload speedup over DuckDB: the time each system needs for one fixed
-     workload -- the reads (per accelerator) and writes the C++ run completed in
-     its measured window -- at that system's mean read and commit latencies:
-     sum_q reads_cpp(q) * mean_read(q) + writes_cpp * mean_commit.
-     It ignores concurrency (readers overlap each other and the writer), so it
-     compares cost per unit of work, not wall time.
+  5. workload speedup over DuckDB (workload.py: the reads the DuckDB run completed + each system's commit time)
 """
 import json
 import os
@@ -25,6 +20,8 @@ import statistics
 import sys
 
 import matplotlib
+
+from workload import key, workload_speedup  # noqa: F401 (key: imported from here by other plots)
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -73,22 +70,6 @@ def errplot(ax, xs, stats, **kw):
                 yerr=[[s[0] - s[1] for _, s in pts], [s[2] - s[0] for _, s in pts]], capsize=3, **kw)
 
 
-def key(r):
-    return r["accel"].replace("_vgen", "").split(":")[-1].replace("tpch_q", "")
-
-
-def workload_us(r, ref):
-    per = {key(p): p for p in r["per_accel"]}
-    t = 0.0
-    for p in ref["per_accel"]:
-        q = per.get(key(p))
-        if q is None or not q["reads"] or "read_mean_us" not in q or "commit_total_us" not in r:
-            return None
-        t += p["reads"] * q["read_mean_us"]
-    mean_commit = r["commit_total_us"] / max(r["writes"], 1)
-    return t + ref["writes"] * mean_commit
-
-
 def main():
     out = sys.argv[1]
     runs = load(out)
@@ -128,11 +109,9 @@ def main():
         for _, n, rs in pts:
             vals = []
             for r in rs:  # paired with the same repetition's C++ and DuckDB runs
-                ref = next((c for c in runs[n].get("cpp", []) if c.get("rep") == r.get("rep")), None)
                 base = next((b for b in runs[n].get("base", []) if b.get("rep") == r.get("rep")), None)
-                if ref and base and s != "base":
-                    tb, ts = workload_us(base, ref), workload_us(r, ref)
-                    vals.append(tb / ts if tb and ts else None)
+                if base and s != "base":
+                    vals.append(workload_speedup(base, r))
             sp.append(stat(vals))
         if s != "base":
             errplot(ax[4], x, sp, fmt="o-", color=color, label=label)

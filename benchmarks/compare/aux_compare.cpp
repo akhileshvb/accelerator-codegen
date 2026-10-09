@@ -250,6 +250,12 @@ std::string FunctionFor(const std::string &id) {
   return sql.substr(at, end - at);
 }
 
+// The stateless kernel of catalog query tpch:<N>: accel_tpch_q<N>.
+std::string StatelessFunctionFor(const std::string &id) {
+  Require(id.rfind("tpch:", 0) == 0, id + ": the stateless kernels are registered for tpch:<N> only");
+  return "accel_tpch_q" + id.substr(5);
+}
+
 std::unique_ptr<duckdb::MaterializedQueryResult> RunAccel(duckdb::Connection &c, const std::string &fn,
                                                           const std::string &args) {
   auto r = c.Query("SELECT * FROM " + fn + "(" + args + ")");
@@ -636,9 +642,12 @@ double Mean(const std::vector<double> &v); // defined below
 int Concurrent(const std::string &path, const std::string &id, const std::string &base_kit,
                const std::vector<Case> &cases, const std::string &phase, int readers, double seconds,
                double writes_per_sec, uint64_t seed, double warmup) {
-  Require(phase == "accel" || phase == "base", "phase must be accel or base");
+  Require(phase == "accel" || phase == "base" || phase == "stateless", "phase must be accel, base or stateless");
   const bool accel = phase == "accel";
-  const auto fn = accel ? FunctionFor(id) : std::string();
+  // stateless: the query's stateless kernel (accel_tpch_qN, single-threaded) reading the base tables, no maintained
+  // state, so its commits are plain SQL ones as in the base phase
+  const bool stateless = phase == "stateless";
+  const auto fn = accel ? FunctionFor(id) : stateless ? StatelessFunctionFor(id) : std::string();
   duckdb::DuckDB db(path);
   duckdb::Connection wc(db), qc(db);
   accelerator_codegen::RegisterAcceleratorFunctions(qc);
@@ -649,6 +658,13 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
   std::vector<std::vector<std::string>> before;
   for (const auto &c : cases)
     before.push_back(Canon(*RunBaseline(qc, glue->query_sql, c.base_args)));
+  if (stateless) // the kernel must answer every case as the baseline does before it is timed
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+      auto a = Canon(*RunAccel(qc, fn, cases[i].accel_args)), b = before[i];
+      std::sort(a.begin(), a.end());
+      std::sort(b.begin(), b.end());
+      Require(a == b, fn + "(" + cases[i].accel_args + "): answer differs from the baseline");
+    }
   const std::size_t max_writes = static_cast<std::size_t>(writes_per_sec * (seconds + warmup) * 1.2) + 32;
   Writes writes(qc, max_writes, seed, RfBatchOrders());
   std::unique_ptr<DuckdbRuntime> rt;
@@ -682,7 +698,7 @@ int Concurrent(const std::string &path, const std::string &id, const std::string
         const auto &cs = cases[i % cases.size()];
         const auto t0 = Clock::now();
         try {
-          if (accel)
+          if (accel || stateless)
             RunAccel(c, fn, cs.accel_args);
           else
             RunBaseline(c, glue->query_sql, cs.base_args);
@@ -877,10 +893,13 @@ double Mean(const std::vector<double> &v) {
 int Multi(const std::string &path, const std::string &phase, const std::string &spec_path, int readers,
           double seconds, const std::vector<double> &rates, uint64_t seed, double warmup,
           const std::string &reader_mode) {
-  Require(phase == "accel" || phase == "base", "phase must be accel or base");
+  Require(phase == "accel" || phase == "base" || phase == "stateless", "phase must be accel, base or stateless");
   Require(reader_mode == "rotate" || reader_mode == "pinned", "reader mode must be rotate or pinned");
   const bool pinned = reader_mode == "pinned";
   const bool accel = phase == "accel";
+  // stateless: every query's stateless kernel (accel_tpch_qN, single-threaded), no maintained state, so the commits
+  // are plain SQL ones as in the base phase
+  const bool stateless = phase == "stateless";
   std::vector<MultiSpec> specs;
   {
     std::ifstream in(spec_path);
@@ -974,6 +993,18 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
   for (std::size_t q = 0; q < specs.size(); ++q)
     if (!specs[q].cases.empty())
       before[q].push_back(Canon(*RunBaseline(qc, specs[q].glue->query_sql, specs[q].cases[0].base_args)));
+  if (stateless) // every kernel must answer every case of every repetition as the baseline does before it is timed
+    for (auto &m : specs) {
+      m.fn = StatelessFunctionFor(m.id);
+      for (const auto &rep : m.rep_cases)
+        for (const auto &cs : rep) {
+          auto x = Canon(*RunAccel(qc, m.fn, cs.accel_args));
+          auto y = Canon(*RunBaseline(qc, m.glue->query_sql, cs.base_args));
+          std::sort(x.begin(), x.end());
+          std::sort(y.begin(), y.end());
+          Require(x == y, m.fn + "(" + cs.accel_args + "): answer differs from the baseline");
+        }
+    }
   core::ResetAuxExecuteCounts();
 
   std::atomic<bool> stop{false};
@@ -1005,7 +1036,7 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
         const double w0 = core::ThreadStoreResolveMicros();
         const auto t0 = Clock::now();
         try {
-          if (accel)
+          if (accel || stateless)
             RunAccel(c, m.fn, cs.accel_args);
           else
             RunBaseline(c, m.glue->query_sql, cs.base_args);
