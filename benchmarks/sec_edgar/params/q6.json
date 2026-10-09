@@ -1,0 +1,43 @@
+{
+  "query": 6,
+  "function": "accel_sec_edgar_q6_aux",
+  "sql_template": "SELECT s.name, p.stmt, n.tag, p.plabel,\n       SUM(n.value) AS total_value, COUNT(*) AS cnt\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version\nWHERE n.uom = :uom AND p.stmt = :stmt AND s.fy = :fy\n  AND n.value IS NOT NULL\nGROUP BY s.name, p.stmt, n.tag, p.plabel\nORDER BY total_value DESC, s.name, n.tag, p.plabel\nLIMIT 200",
+  "params": [
+    {
+      "name": "fy",
+      "type": "BIGINT",
+      "default": 2023,
+      "domain": [
+        2021,
+        2022,
+        2023,
+        2024
+      ]
+    },
+    {
+      "name": "stmt",
+      "type": "VARCHAR",
+      "default": "IS",
+      "domain": [
+        "BS",
+        "IS",
+        "CF",
+        "EQ",
+        "CI"
+      ]
+    },
+    {
+      "name": "uom",
+      "type": "VARCHAR",
+      "default": "USD",
+      "domain": [
+        "USD",
+        "shares",
+        "pure",
+        "CAD",
+        "CNY",
+        "EUR"
+      ]
+    }
+  ]
+}

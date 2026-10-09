@@ -1,0 +1,31 @@
+{
+  "query": 3,
+  "function": "accel_sec_edgar_q3_aux",
+  "sql_template": "SELECT s.name, s.cik, SUM(n.value) AS total_value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nWHERE n.uom = :uom AND s.fy = :fy AND n.value IS NOT NULL\nGROUP BY s.name, s.cik\nHAVING SUM(n.value) > (\n    SELECT AVG(sub_total) FROM (\n        SELECT SUM(n2.value) AS sub_total\n        FROM num n2\n        JOIN sub s2 ON n2.adsh = s2.adsh\n        WHERE n2.uom = :uom AND s2.fy = :fy AND n2.value IS NOT NULL\n        GROUP BY s2.cik\n    ) avg_sub\n)\nORDER BY total_value DESC\nLIMIT 100",
+  "params": [
+    {
+      "name": "fy",
+      "type": "BIGINT",
+      "default": 2022,
+      "domain": [
+        2021,
+        2022,
+        2023,
+        2024
+      ]
+    },
+    {
+      "name": "uom",
+      "type": "VARCHAR",
+      "default": "USD",
+      "domain": [
+        "USD",
+        "shares",
+        "pure",
+        "CAD",
+        "CNY",
+        "EUR"
+      ]
+    }
+  ]
+}

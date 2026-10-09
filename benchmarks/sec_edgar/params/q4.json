@@ -1,0 +1,88 @@
+{
+  "query": 4,
+  "function": "accel_sec_edgar_q4_aux",
+  "sql_template": "SELECT s.sic, t.tlabel, p.stmt,\n       COUNT(DISTINCT s.cik) AS num_companies,\n       SUM(n.value) AS total_value,\n       AVG(n.value) AS avg_value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN tag t ON n.tag = t.tag AND n.version = t.version\nJOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version\nWHERE n.uom = :uom AND p.stmt = :stmt\n  AND s.sic BETWEEN :sic_lo AND :sic_hi\n  AND n.value IS NOT NULL AND t.abstract = 0\nGROUP BY s.sic, t.tlabel, p.stmt\nHAVING COUNT(DISTINCT s.cik) >= 2\nORDER BY total_value DESC\nLIMIT 500",
+  "params": [
+    {
+      "name": "sic_lo",
+      "type": "INTEGER",
+      "default": 4000,
+      "domain": "joint:sic_lo,sic_hi"
+    },
+    {
+      "name": "sic_hi",
+      "type": "INTEGER",
+      "default": 4999,
+      "domain": "joint:sic_lo,sic_hi"
+    },
+    {
+      "name": "stmt",
+      "type": "VARCHAR",
+      "default": "EQ",
+      "domain": [
+        "BS",
+        "IS",
+        "CF",
+        "EQ",
+        "CI"
+      ]
+    },
+    {
+      "name": "uom",
+      "type": "VARCHAR",
+      "default": "USD",
+      "domain": [
+        "USD",
+        "shares",
+        "pure",
+        "CAD",
+        "CNY",
+        "EUR"
+      ]
+    }
+  ],
+  "joint_domains": {
+    "sic_lo,sic_hi": [
+      [
+        100,
+        999
+      ],
+      [
+        1000,
+        1499
+      ],
+      [
+        1500,
+        1799
+      ],
+      [
+        2000,
+        3999
+      ],
+      [
+        4000,
+        4999
+      ],
+      [
+        5000,
+        5199
+      ],
+      [
+        5200,
+        5999
+      ],
+      [
+        6000,
+        6799
+      ],
+      [
+        7000,
+        8999
+      ],
+      [
+        9000,
+        9999
+      ]
+    ]
+  }
+}

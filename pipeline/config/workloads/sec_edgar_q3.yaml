@@ -3,7 +3,9 @@ query_number: 3
 engine_name: duckdb
 query_id: "3"
 reference_sql_path: benchmarks/sec_edgar/queries/q3.sql
-parameters: []
+parameters:   # spec: benchmarks/sec_edgar/params/q3.json (zero-arg function = defaults)
+  - {name: fy, type: BIGINT, default: 2022, domain: [2021, 2022, 2023, 2024]}
+  - {name: uom, type: VARCHAR, default: "USD", domain: ["USD", "shares", "pure", "CAD", "CNY", "EUR"]}
 output_schema:
   - {name: name, type: VARCHAR}
   - {name: cik, type: INTEGER}

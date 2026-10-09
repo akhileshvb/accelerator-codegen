@@ -1,0 +1,31 @@
+{
+  "query": 2,
+  "function": "accel_sec_edgar_q2_aux",
+  "sql_template": "SELECT s.name, n.tag, n.value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN (\n    SELECT adsh, tag, MAX(value) AS max_value\n    FROM num\n    WHERE uom = :uom AND value IS NOT NULL\n    GROUP BY adsh, tag\n) m ON n.adsh = m.adsh AND n.tag = m.tag AND n.value = m.max_value\nWHERE n.uom = :uom AND s.fy = :fy AND n.value IS NOT NULL\nORDER BY n.value DESC, s.name, n.tag\nLIMIT 100",
+  "params": [
+    {
+      "name": "fy",
+      "type": "BIGINT",
+      "default": 2022,
+      "domain": [
+        2021,
+        2022,
+        2023,
+        2024
+      ]
+    },
+    {
+      "name": "uom",
+      "type": "VARCHAR",
+      "default": "pure",
+      "domain": [
+        "USD",
+        "shares",
+        "pure",
+        "CAD",
+        "CNY",
+        "EUR"
+      ]
+    }
+  ]
+}

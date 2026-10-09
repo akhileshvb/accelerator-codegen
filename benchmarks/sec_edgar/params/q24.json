@@ -1,0 +1,33 @@
+{
+  "query": 24,
+  "function": "accel_sec_edgar_q24_aux",
+  "sql_template": "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total\nFROM num n\nLEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND n.adsh = p.adsh\nWHERE n.uom = :uom AND n.ddate BETWEEN :year*10000+101 AND :year*10000+1231\n  AND n.value IS NOT NULL\n  AND p.adsh IS NULL\nGROUP BY n.tag, n.version\nHAVING COUNT(*) > 10\nORDER BY cnt DESC\nLIMIT 100",
+  "params": [
+    {
+      "name": "year",
+      "type": "BIGINT",
+      "default": 2023,
+      "domain": [
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024
+      ]
+    },
+    {
+      "name": "uom",
+      "type": "VARCHAR",
+      "default": "USD",
+      "domain": [
+        "USD",
+        "shares",
+        "pure",
+        "CAD",
+        "CNY",
+        "EUR"
+      ]
+    }
+  ]
+}
