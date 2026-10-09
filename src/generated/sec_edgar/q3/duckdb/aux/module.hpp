@@ -46,6 +46,15 @@ namespace accelerator_codegen::aux_state::query {
 struct SecEdgarQ3Config {
   core::TableId num_table = 0;
   core::TableId sub_table = 0;
+  // Where the module finds its columns in a captured row: num (adsh, uom,
+  // value), sub (adsh, name, cik, fy). Default: positions in the full row of
+  // the DuckDB catalog layout; an engine that captures a projection (the
+  // PostgreSQL binding) lists the physical attnums to project and the
+  // positions in the projected row.
+  std::vector<int32_t> num_attnums;
+  std::vector<int32_t> sub_attnums;
+  std::vector<core::ColumnId> num_pos = {0, 5, 7};
+  std::vector<core::ColumnId> sub_pos = {0, 1, 2, 3};
 };
 
 // Per-adsh aggregate of num rows with uom = 'USD' AND value IS NOT NULL.

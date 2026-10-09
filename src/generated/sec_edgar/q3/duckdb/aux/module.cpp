@@ -73,13 +73,15 @@ struct NumRow {
 };
 
 // num layout (see catalog MakeNumTableAuxRow): 0 adsh, 5 uom, 7 value
-bool ReadNumRow(const core::AuxRow &row, NumRow &out) {
-  if (row.values.size() < 8) {
+bool ReadNumRow(const core::AuxRow &row, const std::vector<core::ColumnId> &pos,
+                NumRow &out) {
+  const auto width = *std::max_element(pos.begin(), pos.end()) + 1;
+  if (row.values.size() < static_cast<std::size_t>(width)) {
     return false;
   }
-  const auto &adsh = row.values[0];
-  const auto &uom = row.values[5];
-  const auto &value = row.values[7];
+  const auto &adsh = row.values[pos[0]];
+  const auto &uom = row.values[pos[1]];
+  const auto &value = row.values[pos[2]];
   out.relevant = false;
   if (adsh.is_null || uom.is_null || value.is_null) {
     // Cells that can never qualify; still require sane payload types for the
@@ -110,14 +112,16 @@ struct SubRow {
 };
 
 // sub layout: 0 adsh, 1 name, 2 cik, 3 fy
-bool ReadSubRow(const core::AuxRow &row, SubRow &out) {
-  if (row.values.size() < 4) {
+bool ReadSubRow(const core::AuxRow &row, const std::vector<core::ColumnId> &pos,
+                SubRow &out) {
+  const auto width = *std::max_element(pos.begin(), pos.end()) + 1;
+  if (row.values.size() < static_cast<std::size_t>(width)) {
     return false;
   }
-  const auto &adsh = row.values[0];
-  const auto &name = row.values[1];
-  const auto &cik = row.values[2];
-  const auto &fy = row.values[3];
+  const auto &adsh = row.values[pos[0]];
+  const auto &name = row.values[pos[1]];
+  const auto &cik = row.values[pos[2]];
+  const auto &fy = row.values[pos[3]];
   if (adsh.is_null || !std::holds_alternative<std::string>(adsh.payload)) {
     return false;
   }
@@ -741,7 +745,7 @@ core::StagedMaintenanceOutcome RebuildOutcome(core::MaintenanceAction action) {
 }
 
 bool UpdateTouches(const core::MutationBatch &mutation,
-                   std::initializer_list<core::ColumnId> columns) {
+                   const std::vector<core::ColumnId> &columns) {
   if (mutation.kind != core::MutationKind::Update ||
       mutation.updated_columns.empty()) {
     return true;
@@ -1229,7 +1233,8 @@ uint64_t SecEdgarQ3TxnBuffer::KeyFor(const std::string &adsh) {
 // ---------------------------------------------------------------------------
 
 std::vector<core::TableDependency> SecEdgarQ3Module::Dependencies() const {
-  return {{config.num_table, {0, 5, 7}}, {config.sub_table, {0, 1, 2, 3}}};
+  return {{config.num_table, config.num_pos, config.num_attnums},
+          {config.sub_table, config.sub_pos, config.sub_attnums}};
 }
 
 std::unique_ptr<core::AuxTxnBuffer> SecEdgarQ3Module::CreateTxnBuffer() const {
@@ -1248,13 +1253,13 @@ void SecEdgarQ3Module::Build(core::AuxEngineServices &services,
 core::InvalidationPlan
 SecEdgarQ3Module::InterpretMutation(const core::MutationBatch &mutation) const {
   if (mutation.table == config.num_table) {
-    if (!UpdateTouches(mutation, {0, 5, 7})) {
+    if (!UpdateTouches(mutation, config.num_pos)) {
       return {};
     }
     return AllPartitions();
   }
   if (mutation.table == config.sub_table) {
-    if (!UpdateTouches(mutation, {0, 1, 2, 3})) {
+    if (!UpdateTouches(mutation, config.sub_pos)) {
       return {};
     }
     return AllPartitions();
@@ -1270,7 +1275,7 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
   using OpKind = SecEdgarQ3TxnBuffer::OpKind;
 
   if (mutation.table == config.num_table) {
-    if (!UpdateTouches(mutation, {0, 5, 7})) {
+    if (!UpdateTouches(mutation, config.num_pos)) {
       return;
     }
     auto num_op = [&](const NumRow &row, int sign) {
@@ -1292,7 +1297,7 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
     case core::MutationKind::Insert:
       for (const auto &raw : mutation.new_rows) {
         NumRow row;
-        if (!ReadNumRow(raw, row)) {
+        if (!ReadNumRow(raw, config.num_pos, row)) {
           buffer.MarkRebuild();
           return;
         }
@@ -1308,7 +1313,7 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
     case core::MutationKind::Delete:
       for (const auto &raw : mutation.old_rows) {
         NumRow row;
-        if (!ReadNumRow(raw, row)) {
+        if (!ReadNumRow(raw, config.num_pos, row)) {
           buffer.MarkRebuild();
           return;
         }
@@ -1329,8 +1334,8 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
       for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
         NumRow old_row;
         NumRow new_row;
-        if (!ReadNumRow(mutation.old_rows[i], old_row) ||
-            !ReadNumRow(mutation.new_rows[i], new_row)) {
+        if (!ReadNumRow(mutation.old_rows[i], config.num_pos, old_row) ||
+            !ReadNumRow(mutation.new_rows[i], config.num_pos, new_row)) {
           buffer.MarkRebuild();
           return;
         }
@@ -1364,7 +1369,7 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
   if (mutation.table != config.sub_table) {
     return;
   }
-  if (!UpdateTouches(mutation, {0, 1, 2, 3})) {
+  if (!UpdateTouches(mutation, config.sub_pos)) {
     return;
   }
   auto remove_op = [&](const SubRow &row) {
@@ -1389,7 +1394,7 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
   case core::MutationKind::Insert:
     for (const auto &raw : mutation.new_rows) {
       SubRow row;
-      if (!ReadSubRow(raw, row)) {
+      if (!ReadSubRow(raw, config.sub_pos, row)) {
         buffer.MarkRebuild();
         return;
       }
@@ -1401,7 +1406,7 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
   case core::MutationKind::Delete:
     for (const auto &raw : mutation.old_rows) {
       SubRow row;
-      if (!ReadSubRow(raw, row)) {
+      if (!ReadSubRow(raw, config.sub_pos, row)) {
         buffer.MarkRebuild();
         return;
       }
@@ -1418,8 +1423,8 @@ void SecEdgarQ3Module::AccumulateMutation(const core::MutationBatch &mutation,
     for (std::size_t i = 0; i < mutation.old_rows.size(); ++i) {
       SubRow old_row;
       SubRow new_row;
-      if (!ReadSubRow(mutation.old_rows[i], old_row) ||
-          !ReadSubRow(mutation.new_rows[i], new_row)) {
+      if (!ReadSubRow(mutation.old_rows[i], config.sub_pos, old_row) ||
+          !ReadSubRow(mutation.new_rows[i], config.sub_pos, new_row)) {
         buffer.MarkRebuild();
         return;
       }
