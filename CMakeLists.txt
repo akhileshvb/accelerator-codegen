@@ -1689,6 +1689,17 @@ accel_add_aux_state_query(
 	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
 )
 
+# SEC EDGAR Q6 on PostgreSQL: libpq-only differential / SF3 check / benchmark
+# against a running server (see the file header for modes).
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_sec_edgar_q6_postgres_differential.cpp")
+    find_library(_Q6_PG_LIBPQ pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+    add_executable(test_sec_edgar_q6_postgres_differential
+        tests/aux_state/test_sec_edgar_q6_postgres_differential.cpp)
+    target_link_libraries(test_sec_edgar_q6_postgres_differential PRIVATE ${_Q6_PG_LIBPQ})
+    target_include_directories(test_sec_edgar_q6_postgres_differential PRIVATE ${ACCEL_PG_INCLUDEDIR})
+endif()
+
 # ---------------------------------------------------------------------------
 # PostgreSQL TPC-H differential harness
 # ---------------------------------------------------------------------------
