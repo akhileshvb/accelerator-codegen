@@ -1,6 +1,7 @@
 #include "sec_edgar/q4/common/aux/module.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cerrno>
@@ -296,9 +297,45 @@ uint64_t SecEdgarQ4ResidentBytes(const SecEdgarQ4State &state, SecEdgarQ4ImageKi
   case SecEdgarQ4ImageKind::TagTlabel:
     return state.labels ? state.labels->Bytes() : 0;
   case SecEdgarQ4ImageKind::GroupAggregates:
-    return state.groups ? state.groups->Bytes() : 0;
+    return state.groups ? state.groups->Bytes() + (state.groups->sud ? state.groups->sud->Bytes() : 0)
+                        : 0;
   }
   return 0;
+}
+
+void SecEdgarQ4InitialScan::ScanDirty(const SecEdgarQ4BridgeFilter &filter,
+                                      SecEdgarQ4DirtyRows &out) const {
+  std::unordered_set<std::string> adsh_set(filter.adsh.begin(), filter.adsh.end());
+  std::unordered_set<std::string> tv_set;
+  std::unordered_set<std::string> key_set;
+  for (const auto &tv : filter.tag_versions) tv_set.insert(Join(tv.first, tv.second));
+  for (const auto &k : filter.keys) key_set.insert(Join(k.adsh, Join(k.tag, k.version)));
+  std::unordered_set<std::string> need_adsh(adsh_set), need_tv(tv_set);
+  for (const auto &k : filter.keys) {
+    need_adsh.insert(k.adsh);
+    need_tv.insert(Join(k.tag, k.version));
+  }
+  const auto match = [&](const std::string &a, const std::string &t, const std::string &v) {
+    if (filter.all) return true;
+    return adsh_set.count(a) != 0 || tv_set.count(Join(t, v)) != 0 ||
+           key_set.count(Join(a, Join(t, v))) != 0;
+  };
+  ScanPre([&](const SecEdgarQ4PreInput &p) {
+    if (!match(p.adsh, p.tag, p.version)) return;
+    out.pres.push_back(p);
+    need_adsh.insert(p.adsh);
+    need_tv.insert(Join(p.tag, p.version));
+  });
+  ScanNum([&](const SecEdgarQ4NumInput &n) {
+    if (n.value_is_null || !match(n.adsh, n.tag, n.version)) return;
+    out.nums.push_back(n);
+  });
+  ScanSub([&](const SecEdgarQ4SubInput &s) {
+    if (filter.all || need_adsh.count(s.adsh)) out.subs.push_back(s);
+  });
+  ScanTag([&](const SecEdgarQ4TagInput &t) {
+    if (filter.all || need_tv.count(Join(t.tag, t.version))) out.tags.push_back(t);
+  });
 }
 
 // ------------------------------------------------------------- txn buffer
@@ -333,7 +370,7 @@ void SecEdgarQ4TxnBuffer::AddNumDelta(std::string_view adsh, std::string_view ta
   if (requires_rebuild) return;
   pending = true;
   NumDelta d;
-  d.off = static_cast<uint32_t>(arena.size());
+  d.off = arena.size();
   d.adsh_len = static_cast<uint32_t>(adsh.size());
   d.tag_len = static_cast<uint32_t>(tag.size());
   d.version_len = static_cast<uint32_t>(version.size());
@@ -345,6 +382,13 @@ void SecEdgarQ4TxnBuffer::AddNumDelta(std::string_view adsh, std::string_view ta
   arena.append(version);
   arena.append(uom);
   deltas.push_back(d);
+}
+
+void SecEdgarQ4TxnBuffer::AddNumUpdate(std::string_view adsh, std::string_view tag,
+                                       std::string_view version, std::string_view uom,
+                                       double old_value, double new_value) {
+  AddNumDelta(adsh, tag, version, uom, old_value, 0);
+  if (!requires_rebuild) deltas.back().value_new = new_value;
 }
 
 void SecEdgarQ4TxnBuffer::AddDirtyAdsh(std::string adsh) {
@@ -403,7 +447,12 @@ SecEdgarQ4Module::MakeImages(const SecEdgarQ4State &state,
 
 void SecEdgarQ4Module::Build(core::AuxEngineServices &services,
                              core::StateBuilder &builder) {
+  const auto t0 = std::chrono::steady_clock::now();
   const auto state = BuildState(services);
+  if (std::getenv("Q4_BUILD_PROFILE")) {
+    fprintf(stderr, "q4 BuildState total: %.1f ms\n",
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  }
   const core::Version versions[4] = {0, 0, 0, 0};
   for (auto &image : MakeImages(state, versions)) {
     builder.Write(std::move(image));
@@ -415,14 +464,12 @@ SecEdgarQ4State SecEdgarQ4Module::BuildState(core::AuxEngineServices &) const {
   if (!initial_scan) {
     throw std::logic_error("SEC EDGAR Q4 requires a typed initial scan source");
   }
-  q4::Writer writer(nullptr);
-  SecEdgarQ4BridgeFilter filter;
-  initial_scan->ScanBridge(filter, [&](const SecEdgarQ4BridgeRow &row) {
-    if (!writer.AddRow(row)) {
-      throw std::runtime_error("sec_edgar q4: state build failed (key space or duplicate key)");
-    }
-  });
-  return writer.Finish();
+  q4::Builder builder;
+  if (!initial_scan->BuildFull(builder)) {
+    SecEdgarQ4BridgeFilter filter;
+    initial_scan->ScanBridge(filter, [&](const SecEdgarQ4BridgeRow &row) { builder.AddBridgeRow(row); });
+  }
+  return builder.Finish();
 }
 
 core::InvalidationPlan
@@ -432,9 +479,25 @@ SecEdgarQ4Module::InterpretMutation(const core::MutationBatch &) const {
   return {};
 }
 
+namespace {
+struct Q4ApplyTimer {
+  const char *what;
+  std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+  explicit Q4ApplyTimer(const char *w) : what(w) {}
+  ~Q4ApplyTimer() {
+    static const bool on = std::getenv("Q4_APPLY_PROFILE") != nullptr;
+    if (on) {
+      fprintf(stderr, "q4 %s: %.1f us\n", what,
+              std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count());
+    }
+  }
+};
+} // namespace
+
 void SecEdgarQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
                                           core::AuxEngineServices &,
                                           core::AuxTxnBuffer &base_buffer) {
+  Q4ApplyTimer timer("accumulate");
   auto &buffer = dynamic_cast<SecEdgarQ4TxnBuffer &>(base_buffer);
   const bool is_update = mutation.kind == core::MutationKind::Update;
   if (is_update && mutation.old_rows.size() != mutation.new_rows.size()) {
@@ -458,28 +521,50 @@ void SecEdgarQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
                     {kQ4NumAdsh, kQ4NumTag, kQ4NumVersion, kQ4NumUom, kQ4NumValue})) {
       return;
     }
-    for (const auto &[row, sign] : rows) {
+    struct NumCells {
       std::string_view adsh, tag, version, uom;
       double value = 0.0;
-      const Cell a = GetString(*row, kQ4NumAdsh, adsh);
-      const Cell t = GetString(*row, kQ4NumTag, tag);
-      const Cell v = GetString(*row, kQ4NumVersion, version);
-      const Cell u = GetString(*row, kQ4NumUom, uom);
-      const Cell x = GetDouble(*row, kQ4NumValue, value);
-      if (a == Cell::Bad || t == Cell::Bad || v == Cell::Bad || u == Cell::Bad ||
-          x == Cell::Bad) {
+      bool usable = false; // every column non-NULL
+    };
+    // false => the row is malformed (rebuild)
+    const auto read = [&](const core::AuxRow &row, NumCells &c) {
+      const Cell a = GetString(row, kQ4NumAdsh, c.adsh);
+      const Cell t = GetString(row, kQ4NumTag, c.tag);
+      const Cell v = GetString(row, kQ4NumVersion, c.version);
+      const Cell u = GetString(row, kQ4NumUom, c.uom);
+      const Cell x = GetDouble(row, kQ4NumValue, c.value);
+      if (a == Cell::Bad || t == Cell::Bad || v == Cell::Bad || u == Cell::Bad || x == Cell::Bad) {
+        return false;
+      }
+      c.usable = a == Cell::Ok && t == Cell::Ok && v == Cell::Ok && u == Cell::Ok && x == Cell::Ok;
+      return !c.usable || std::isfinite(c.value); // inf/NaN cannot be subtracted back out
+    };
+    if (is_update) {
+      // An UPDATE row keeps its key in the common case (value changes): one
+      // paired delta, one copy of the key.
+      for (size_t i = 0; i < mutation.new_rows.size(); ++i) {
+        NumCells o, n;
+        if (!read(mutation.old_rows[i], o) || !read(mutation.new_rows[i], n)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        if (o.usable && n.usable && o.adsh == n.adsh && o.tag == n.tag && o.version == n.version &&
+            o.uom == n.uom) {
+          buffer.AddNumUpdate(o.adsh, o.tag, o.version, o.uom, o.value, n.value);
+          continue;
+        }
+        if (o.usable) buffer.AddNumDelta(o.adsh, o.tag, o.version, o.uom, o.value, -1);
+        if (n.usable) buffer.AddNumDelta(n.adsh, n.tag, n.version, n.uom, n.value, +1);
+      }
+      return;
+    }
+    for (const auto &[row, sign] : rows) {
+      NumCells c;
+      if (!read(*row, c)) {
         buffer.MarkRebuild();
         return;
       }
-      if (a == Cell::Null || t == Cell::Null || v == Cell::Null ||
-          u == Cell::Null || x == Cell::Null) {
-        continue; // cannot join / filtered out
-      }
-      if (!std::isfinite(value)) {
-        buffer.MarkRebuild(); // inf/NaN cannot be subtracted back out
-        return;
-      }
-      buffer.AddNumDelta(adsh, tag, version, uom, value, sign);
+      if (c.usable) buffer.AddNumDelta(c.adsh, c.tag, c.version, c.uom, c.value, sign);
     }
     return;
   }
@@ -568,42 +653,45 @@ bool SecEdgarQ4Module::ReadState(core::AuxEngineServices &services,
       services.CurrentVisibility(),
       {core::SecEdgarQ4Layout::kSicCohort, core::SecEdgarQ4Layout::kPreEqBridge,
        core::SecEdgarQ4Layout::kTagTlabel, core::SecEdgarQ4Layout::kGroupAggregates});
-  bool have[4] = {false, false, false, false};
+  bool have = false;
   for (const auto &image : snapshot.partitions) {
-    if (const auto *t = AsImage(image, SecEdgarQ4ImageKind::SicCohort);
-        t && image.partition == core::SecEdgarQ4Layout::kSicCohort && t->state->cohort) {
-      state.cohort = t->state->cohort;
+    switch (image.partition) {
+    case core::SecEdgarQ4Layout::kSicCohort:
       versions[0] = image.version;
-      have[0] = true;
-    } else if (const auto *t2 = AsImage(image, SecEdgarQ4ImageKind::PreEqBridge);
-               t2 && image.partition == core::SecEdgarQ4Layout::kPreEqBridge &&
-               t2->state->bridge) {
-      state.bridge = t2->state->bridge;
+      break;
+    case core::SecEdgarQ4Layout::kPreEqBridge:
       versions[1] = image.version;
-      have[1] = true;
-    } else if (const auto *t3 = AsImage(image, SecEdgarQ4ImageKind::TagTlabel);
-               t3 && image.partition == core::SecEdgarQ4Layout::kTagTlabel &&
-               t3->state->labels) {
-      state.labels = t3->state->labels;
+      break;
+    case core::SecEdgarQ4Layout::kTagTlabel:
       versions[2] = image.version;
-      have[2] = true;
-    } else if (const auto *t4 = AsImage(image, SecEdgarQ4ImageKind::GroupAggregates);
-               t4 && image.partition == core::SecEdgarQ4Layout::kGroupAggregates &&
-               t4->state->groups) {
-      state.groups = t4->state->groups;
-      versions[3] = image.version;
-      have[3] = true;
+      break;
+    case core::SecEdgarQ4Layout::kGroupAggregates:
+      if (const auto *t = AsImage(image, SecEdgarQ4ImageKind::GroupAggregates)) {
+        // The groups of a version carry the cohort / bridge / labels they were
+        // built with, so this one image is a consistent snapshot.
+        const auto &g = t->state->groups;
+        if (g->cohort && g->bridge && g->labels && g->sud && g->su_slot && g->pairs && g->gindex) {
+          state.groups = g;
+          state.cohort = g->cohort;
+          state.bridge = g->bridge;
+          state.labels = g->labels;
+          versions[3] = image.version;
+          have = true;
+        }
+      }
+      break;
+    default:
+      break;
     }
   }
-  return have[0] && have[1] && have[2] && have[3] &&
-         state.bridge->generation == state.groups->generation &&
-         state.groups->labels == state.labels && state.groups->sud == state.bridge->sud;
+  return have;
 }
 
 core::StagedMaintenanceOutcome
 SecEdgarQ4Module::StageMaintenance(core::AuxEngineServices &services,
                                    const core::InvalidationPlan &,
                                    core::AuxTxnBuffer &base_buffer) {
+  Q4ApplyTimer timer("stage");
   auto &buffer = dynamic_cast<SecEdgarQ4TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
   if (buffer.RequiresRebuild()) {
@@ -620,108 +708,58 @@ SecEdgarQ4Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   const bool structural = buffer.HasStructural();
-  std::unordered_set<std::string> sub_adsh;
-  std::unordered_set<std::string> tv_set;
-  std::unordered_set<std::string> key_set;
-  if (structural) {
-    auto &da = buffer.dirty_adsh;
-    std::sort(da.begin(), da.end());
-    da.erase(std::unique(da.begin(), da.end()), da.end());
-    auto &dt = buffer.dirty_tv;
-    std::sort(dt.begin(), dt.end());
-    dt.erase(std::unique(dt.begin(), dt.end()), dt.end());
-    auto &dk = buffer.dirty_keys;
-    std::sort(dk.begin(), dk.end(), [](const auto &a, const auto &b) {
-      return std::tie(a.adsh, a.tag, a.version) < std::tie(b.adsh, b.tag, b.version);
-    });
-    dk.erase(std::unique(dk.begin(), dk.end(),
-                         [](const auto &a, const auto &b) {
-                           return a.adsh == b.adsh && a.tag == b.tag &&
-                                  a.version == b.version;
-                         }),
-             dk.end());
-    if (!initial_scan || da.size() + dt.size() + dk.size() > kMaxStructuralKeys) {
-      return RebuildOutcome(services, "too many structural keys or no scan");
-    }
-    for (const auto &a : da) sub_adsh.insert(a);
-    for (const auto &t : dt) tv_set.insert(Join(t.first, t.second));
-    for (const auto &k : dk) key_set.insert(Join(k.adsh, Join(k.tag, k.version)));
-
-    SecEdgarQ4BridgeFilter filter;
-    filter.all = false;
-    filter.adsh = da;
-    filter.tag_versions = dt;
-    filter.keys = dk;
-    std::vector<SecEdgarQ4BridgeRow> rows;
-    try {
-      initial_scan->ScanBridge(filter, [&](const SecEdgarQ4BridgeRow &row) {
-        rows.push_back(row);
+  std::unordered_set<std::string> structural_keys;
+  try {
+    q4::Writer writer(state);
+    if (structural) {
+      auto &da = buffer.dirty_adsh;
+      std::sort(da.begin(), da.end());
+      da.erase(std::unique(da.begin(), da.end()), da.end());
+      auto &dt = buffer.dirty_tv;
+      std::sort(dt.begin(), dt.end());
+      dt.erase(std::unique(dt.begin(), dt.end()), dt.end());
+      auto &dk = buffer.dirty_keys;
+      std::sort(dk.begin(), dk.end(), [](const auto &a, const auto &b) {
+        return std::tie(a.adsh, a.tag, a.version) < std::tie(b.adsh, b.tag, b.version);
       });
-    } catch (const std::exception &) {
-      return RebuildOutcome(services, "scan failed");
-    }
-
-    q4::Writer writer(&state);
-    // Remove every record the dirty keys can touch, then add the re-read rows.
-    try {
-      if (!writer.RemoveDirty(da, dt, dk)) {
-        return RebuildOutcome(services, "remove invariant broke");
+      dk.erase(std::unique(dk.begin(), dk.end(),
+                           [](const auto &a, const auto &b) {
+                             return a.adsh == b.adsh && a.tag == b.tag && a.version == b.version;
+                           }),
+               dk.end());
+      if (!initial_scan || da.size() + dt.size() + dk.size() > kMaxStructuralKeys) {
+        return RebuildOutcome(services, "too many structural keys or no scan");
       }
-      for (const auto &row : rows) {
-        if (!writer.AddRow(row)) {
-          return RebuildOutcome(services, "add failed");
-        }
+      SecEdgarQ4BridgeFilter filter;
+      filter.all = false;
+      filter.adsh = da;
+      filter.tag_versions = dt;
+      filter.keys = dk;
+      SecEdgarQ4DirtyRows rows;
+      initial_scan->ScanDirty(filter, rows);
+      // Remove the old contribution of every affected key, add the current one.
+      if (!writer.ApplyStructural(rows, buffer, structural_keys)) {
+        return RebuildOutcome(services, "structural apply failed");
       }
-    } catch (const std::exception &) {
-      return RebuildOutcome(services, "structural apply failed");
     }
+    // The num deltas of the structurally re-read keys are already reflected.
+    Q4ApplyTimer t_deltas("deltas");
+    if (!writer.ApplyNumDeltas(buffer, structural ? &structural_keys : nullptr)) {
+      return RebuildOutcome(services, "delta inconsistent with state");
+    }
+    const bool full = writer.StructureChanged();
     state = writer.Finish();
-  }
-
-  if (!buffer.Deltas().empty()) {
-    q4::Writer applier(&state);
-    // Inserts before deletes: the final counts are non-negative, so applying
-    // all +1 deltas first keeps every intermediate count non-negative even when
-    // one batch removes and re-adds the same logical row.
-    try {
-      for (const int8_t pass_sign : {int8_t(1), int8_t(-1)}) {
-        for (const auto &d : buffer.Deltas()) {
-          if (d.sign != pass_sign) continue;
-          const auto adsh = buffer.Adsh(d);
-          const auto tag = buffer.Tag(d);
-          const auto version = buffer.Version(d);
-          if (structural) {
-            // The re-read of a dirty key already reflects this transaction's num
-            // rows; applying the delta on top would double count them.
-            const std::string adsh_s(adsh);
-            if (sub_adsh.count(adsh_s) || tv_set.count(Join(tag, version)) ||
-                key_set.count(Join(adsh, Join(tag, version)))) {
-              continue;
-            }
-          }
-          if (!applier.ApplyNum(adsh, tag, version, buffer.Uom(d), d.value, d.sign)) {
-            return RebuildOutcome(services, "delta inconsistent with state");
-          }
-        }
-      }
-    } catch (const std::exception &) {
-      return RebuildOutcome(services, "delta apply failed");
+    outcome.action = core::MaintenanceAction::ApplyDelta;
+    outcome.expected_version = 0;
+    if (full) {
+      outcome.updates = MakeImages(state, versions);
+    } else {
+      outcome.updates.push_back(core::StateImage::Make(
+          Id(), core::SecEdgarQ4Layout::kGroupAggregates, versions[3],
+          MakeImage(SecEdgarQ4ImageKind::GroupAggregates, state)));
     }
-    state = applier.Finish();
-  }
-
-  outcome.action = core::MaintenanceAction::ApplyDelta;
-  outcome.expected_version = 0;
-  const auto id = Id();
-  if (structural) {
-    outcome.updates = MakeImages(state, versions);
-  } else {
-    outcome.updates.push_back(core::StateImage::Make(
-        id, core::SecEdgarQ4Layout::kPreEqBridge, versions[1],
-        MakeImage(SecEdgarQ4ImageKind::PreEqBridge, state)));
-    outcome.updates.push_back(core::StateImage::Make(
-        id, core::SecEdgarQ4Layout::kGroupAggregates, versions[3],
-        MakeImage(SecEdgarQ4ImageKind::GroupAggregates, state)));
+  } catch (const std::exception &) {
+    return RebuildOutcome(services, "apply failed");
   }
   return outcome;
 }
@@ -736,6 +774,7 @@ bool SecEdgarQ4Module::CheckValidity(core::AuxEngineServices &services,
 void SecEdgarQ4Module::EmitGroups(const SecEdgarQ4Groups &groups,
                                   const SecEdgarQ4Params &params,
                                   core::AuxRowSink &sink) const {
+  Q4ApplyTimer timer("emit");
   const auto result = q4::CachedResult(groups, params);
   sink.Begin({{{"sic", core::AuxType::Int64, false},
                {"tlabel", core::AuxType::String, true},
@@ -743,8 +782,28 @@ void SecEdgarQ4Module::EmitGroups(const SecEdgarQ4Groups &groups,
                {"num_companies", core::AuxType::Int64, false},
                {"total_value", core::AuxType::Double, false},
                {"avg_value", core::AuxType::Double, false}}});
-  for (const auto &row : result->aux_rows) {
-    sink.WriteRow(row);
+  // One row object reused for every output row (no per-row allocation).
+  core::AuxRow out;
+  out.values.reserve(6);
+  out.values.push_back(core::AuxValue::Of(core::AuxType::Int64, int64_t{0}));
+  out.values.push_back(core::AuxValue::Of(core::AuxType::String, std::string()));
+  out.values.push_back(core::AuxValue::Of(core::AuxType::String, params.stmt));
+  out.values.push_back(core::AuxValue::Of(core::AuxType::Int64, int64_t{0}));
+  out.values.push_back(core::AuxValue::Of(core::AuxType::Double, 0.0));
+  out.values.push_back(core::AuxValue::Of(core::AuxType::Double, 0.0));
+  const auto &tls = groups.labels->tlabels;
+  for (const auto &row : result->rows) {
+    std::get<int64_t>(out.values[0].payload) = row.sic;
+    if (row.tl == kQ4None) {
+      out.values[1].is_null = true;
+    } else {
+      out.values[1].is_null = false;
+      std::get<std::string>(out.values[1].payload).assign(tls.Get(row.tl));
+    }
+    std::get<int64_t>(out.values[3].payload) = row.distinct;
+    std::get<double>(out.values[4].payload) = row.total;
+    std::get<double>(out.values[5].payload) = row.avg;
+    sink.WriteRow(out);
   }
   sink.End();
 }
@@ -752,6 +811,7 @@ void SecEdgarQ4Module::EmitGroups(const SecEdgarQ4Groups &groups,
 void SecEdgarQ4Module::Execute(core::AuxEngineServices &services,
                                const core::QueryArguments &arguments,
                                core::AuxRowSink &sink) {
+  Q4ApplyTimer timer("execute");
   const SecEdgarQ4Params params = ParseArguments(arguments);
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), {core::SecEdgarQ4Layout::kGroupAggregates});

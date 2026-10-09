@@ -67,12 +67,12 @@ int main(int argc, char **argv) {
     const auto &st = state->structure;
     const auto mb = [](size_t b) { return static_cast<double>(b) / (1024.0 * 1024.0); };
     std::cout << "breakdown_mb adsh=" << mb(st.adshs.Bytes()) << " name=" << mb(st.names.Bytes())
-              << " tag=" << mb(st.tags.Bytes()) << " tv=" << mb(st.tvs.Bytes())
+              << " tag=" << mb(st.tags.Bytes()) << " version=" << mb(st.versions.Bytes()) << " tv_index=" << mb(st.tv_index.memory_bytes())
               << " plabel=" << mb(st.plabels.Bytes()) << " runs=" << mb(st.runs.MemoryBytes())
               << " groups=" << mb(st.groups.MemoryBytes() + st.group_combo.MemoryBytes()) << " group_index=" << mb(st.group_index.memory_bytes())
-              << " agg=" << mb(state->sum_hi.MemoryBytes() + state->sum_lo.MemoryBytes() + state->cnt.MemoryBytes())
+              << " agg=" << mb(state->aggs.Bytes())
               << " stmts=" << st.stmts.Count() << " uoms=" << st.uoms.Count() << " combos=" << st.ComboCount()
-              << " counts: adsh=" << st.adshs.Count() << " tv=" << st.tvs.Count() << " plabel="
+              << " counts: adsh=" << st.adshs.Count() << " tv=" << st.TvCount() << " plabel="
               << st.plabels.Count() << " groups=" << st.GroupCount() << "\n";
     std::cout << "heap_before_mb=" << before << " heap_after_build_mb=" << after
               << " aux_heap_mb=" << (after - before)

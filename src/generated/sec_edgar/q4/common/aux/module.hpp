@@ -99,6 +99,19 @@ struct SecEdgarQ4BridgeFilter {
   std::vector<Key> keys;                                      // exact keys
 };
 
+// The current base rows of the keys a structural write can touch (see
+// SecEdgarQ4InitialScan::ScanDirty).
+struct SecEdgarQ4DirtyRows {
+  std::vector<SecEdgarQ4SubInput> subs; // sub rows with sic IS NOT NULL (at least the needed adsh)
+  std::vector<SecEdgarQ4TagInput> tags; // tag rows (any abstract; at least the needed tag/version)
+  std::vector<SecEdgarQ4PreInput> pres; // pre rows (no NULL column) matching the filter
+  std::vector<SecEdgarQ4NumInput> nums; // num rows (no NULL column) matching the filter
+};
+
+namespace q4 {
+class Builder;
+}
+
 class SecEdgarQ4InitialScan {
 public:
   virtual ~SecEdgarQ4InitialScan() = default;
@@ -116,6 +129,20 @@ public:
   virtual void
   ScanBridge(const SecEdgarQ4BridgeFilter &filter,
              const std::function<void(const SecEdgarQ4BridgeRow &)> &consumer) const;
+  // Structural maintenance input: every pre / num row (no NULL key column, num
+  // value not NULL) whose adsh is in filter.adsh, whose (tag, version) is in
+  // filter.tag_versions or whose key is in filter.keys, plus the sub rows
+  // (sic IS NOT NULL) and tag rows of the adsh / (tag, version) of those rows,
+  // of filter.adsh / filter.tag_versions and of filter.keys (extra rows are
+  // fine).  The default implementation filters the four table scans above.
+  virtual void ScanDirty(const SecEdgarQ4BridgeFilter &filter, SecEdgarQ4DirtyRows &out) const;
+  // Full build straight from the base tables into `builder` (one pass over
+  // pre and num).  false => not supported; the module then builds from
+  // ScanBridge (the join runs in the database).
+  virtual bool BuildFull(q4::Builder &builder) const {
+    (void)builder;
+    return false;
+  }
 };
 
 enum class SecEdgarQ4ImageKind : uint8_t {
@@ -136,14 +163,24 @@ uint64_t SecEdgarQ4ResidentBytes(const SecEdgarQ4State &, SecEdgarQ4ImageKind);
 class SecEdgarQ4TxnBuffer final : public core::AuxTxnBuffer {
 public:
   struct NumDelta {
-    uint32_t off = 0; // into arena: adsh | tag | version
+    uint64_t off = 0; // into arena: adsh | tag | version | uom
     uint32_t adsh_len = 0;
     uint32_t tag_len = 0;
     uint32_t version_len = 0;
     uint32_t uom_len = 0;
-    double value = 0.0;
-    int8_t sign = 0;
+    double value = 0.0;     // the row's value; for an update pair the old value
+    double value_new = 0.0; // update pair only: the new value
+    int8_t sign = 0;        // +1 row appears, -1 row disappears, 0 update pair
   };
+  // fn(sign, value) for each signed row of `d` (an update pair is -old, +new).
+  template <typename F> static void ForEachSigned(const NumDelta &d, F &&fn) {
+    if (d.sign == 0) {
+      fn(-1, d.value);
+      fn(+1, d.value_new);
+    } else {
+      fn(static_cast<int>(d.sign), d.value);
+    }
+  }
 
   bool HasPendingChanges() const override;
   void Clear() override;
@@ -153,6 +190,9 @@ public:
   void AddNumDelta(std::string_view adsh, std::string_view tag,
                    std::string_view version, std::string_view uom, double value,
                    int8_t sign);
+  // One row's value changes (same adsh, tag, version, uom; both values non-NULL).
+  void AddNumUpdate(std::string_view adsh, std::string_view tag, std::string_view version,
+                    std::string_view uom, double old_value, double new_value);
   void AddDirtyAdsh(std::string adsh);
   void AddDirtyTagVersion(std::string tag, std::string version);
   void AddDirtyKey(std::string adsh, std::string tag, std::string version);

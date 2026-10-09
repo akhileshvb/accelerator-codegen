@@ -31,6 +31,9 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <tuple>
+
+#include <unistd.h>
 
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
@@ -915,6 +918,109 @@ void TestTableFunctions(uint64_t seed, bool parallel) {
   std::cout << "table functions " << (parallel ? "(parallel) " : "") << "ok\n";
 }
 
+// The native storage scan (dictionary / FSST / constant vectors, deleted rows,
+// uncommitted rows of the open transaction) must build exactly the state the
+// SQL GROUP BY path builds.  Run on a checkpointed file database so the
+// string columns are dictionary-compressed.
+class SqlOnlyScan final : public SecEdgarQ2DuckdbScan {
+public:
+  using SecEdgarQ2DuckdbScan::SecEdgarQ2DuckdbScan;
+  bool ScanNumIds(SecEdgarQ2KeyMap &, const std::function<void(const SecEdgarQ2IdBatch &)> &) override {
+    return false;
+  }
+};
+
+using GroupMap = std::map<std::tuple<std::string, std::string, std::string>,
+                          std::tuple<int64_t, int64_t, uint32_t, uint32_t, bool>>;
+
+GroupMap Groups(const SecEdgarQ2State &s) {
+  GroupMap out;
+  for (uint32_t u = 0; u < s.uoms->names.size(); ++u) {
+    for (const auto &g : s.LiveGroups(u)) {
+      out[{std::string(s.uoms->names.Get(u)), std::string(s.adsh.Get(g.adsh)),
+           std::string(s.tag.Get(g.tag))}] = {g.k0, g.c1 ? g.k1 : 0, g.c0, g.c1, g.trunc};
+    }
+  }
+  return out;
+}
+
+void TestNativeScan(uint64_t seed) {
+  const std::string path = "/tmp/accel_q2_native_scan_test_" + std::to_string(::getpid()) + ".duckdb";
+  std::remove(path.c_str());
+  std::remove((path + ".wal").c_str());
+  {
+    duckdb::DuckDB db(path);
+    duckdb::Connection con(db);
+    Exec(con, kSchema);
+    const std::string s = std::to_string(seed % 1000);
+    // 600 filings (a few non-canonical accession numbers), 4000 tags, 6 units,
+    // NULLs in every key column and in value, many duplicate values.
+    Exec(con, "INSERT INTO sub (adsh, cik, name, fy) SELECT CASE WHEN i % 97 = 0 THEN 'odd-' || i "
+              "ELSE printf('%010d-22-%06d', 1000000 + i % 50, i) END, 1, "
+              "CASE WHEN i % 13 = 0 THEN NULL ELSE 'Co ' || (i % 41) END, "
+              "CASE WHEN i % 11 = 0 THEN NULL ELSE 2020 + i % 4 END FROM range(600) t(i)");
+    Exec(con, "CREATE TEMP TABLE ids AS SELECT row_number() OVER () - 1 AS k, adsh FROM sub");
+    Exec(con,
+         "INSERT INTO num (adsh, tag, version, ddate, qtrs, uom, coreg, value) "
+         "SELECT CASE WHEN h % 251 = 0 THEN NULL ELSE ids.adsh END, "
+         "CASE WHEN h % 263 = 0 THEN NULL ELSE 'Tag' || ((h // 7) % 4000) END, 'v', 20220101, 4, "
+         "CASE WHEN h % 271 = 0 THEN NULL ELSE list_extract(['pure','USD','USD','shares','EUR','x''y'], "
+         "((h // 3) % 6 + 1)::BIGINT) END, "
+         "NULL, CASE WHEN h % 17 = 0 THEN NULL WHEN h % 5 = 0 THEN 1.0 ELSE ((h * 7919) % 1000) / 4.0 - 50 END "
+         "FROM (SELECT (hash(i + " + s + ") % 1000003)::BIGINT AS h, i FROM range(300000) t(i)) r "
+         "JOIN ids ON ids.k = r.h % 600 ORDER BY r.i");
+    Exec(con, "CHECKPOINT");
+    // Deleted rows inside compressed segments, then uncommitted local rows.
+    Exec(con, "DELETE FROM num WHERE value BETWEEN 10 AND 12");
+    Exec(con, "CHECKPOINT");
+    auto info = con.Query("SELECT count(*) FROM pragma_storage_info('num') WHERE column_name = 'tag' "
+                          "AND compression = 'Dictionary'");
+    Require(info && !info->HasError() && info->GetValue(0, 0).GetValue<int64_t>() > 0,
+            "test data is dictionary-compressed");
+    Exec(con, "BEGIN");
+    Exec(con, "INSERT INTO num (adsh, tag, version, ddate, qtrs, uom, coreg, value) "
+              "SELECT ids.adsh, 'Local' || (i % 10), 'v', 1, 1, 'pure', NULL, i "
+              "FROM range(5000) t(i) JOIN ids ON ids.k = i % 600");
+    Exec(con, "UPDATE num SET value = value + 1000 WHERE uom = 'EUR' AND value < 0");
+
+    SecEdgarQ2Config cfg{1, 2};
+    SecEdgarQ2DuckdbScan native(con);
+    SqlOnlyScan sql(con);
+    SecEdgarQ2Module mn(cfg, &native), ms(cfg, &sql);
+    const auto a = mn.BuildState();
+    const auto b = ms.BuildState();
+    const GroupMap ga = Groups(*a), gb = Groups(*b);
+    Require(ga.size() > 1000, "native scan built groups");
+    Require(ga == gb, "native scan state == SQL path state (" + std::to_string(ga.size()) +
+                          " vs " + std::to_string(gb.size()) + " groups)");
+    for (const char *uom : {"pure", "USD", "EUR", "x'y", "shares", "none"}) {
+      for (int64_t fy : {2020, 2021, 2022, 2023}) {
+        std::vector<SecEdgarQ2OutputRow> ra, rb;
+        Require(FinalizeSecEdgarQ2(*a, fy, uom, ra) && FinalizeSecEdgarQ2(*b, fy, uom, rb),
+                "covered");
+        Require(ra.size() == rb.size(), "native / SQL answers differ");
+        for (size_t i = 0; i < ra.size(); ++i) {
+          Require(ra[i].name == rb[i].name && ra[i].name_is_null == rb[i].name_is_null &&
+                      ra[i].tag == rb[i].tag && SameDouble(ra[i].value, rb[i].value),
+                  "native / SQL answer row differs");
+        }
+      }
+    }
+    // The opt-out keeps its meaning on the native path.
+    SecEdgarQ2Config small = cfg;
+    small.max_uom_rows = 10000;
+    SecEdgarQ2Module mx(small, &native);
+    const auto x = mx.BuildState();
+    std::vector<SecEdgarQ2OutputRow> rx;
+    Require(!FinalizeSecEdgarQ2(*x, 2022, "USD", rx), "USD is excluded by max_uom_rows");
+    Require(FinalizeSecEdgarQ2(*x, 2022, "pure", rx), "default unit stays covered");
+    Exec(con, "ROLLBACK");
+  }
+  std::remove(path.c_str());
+  std::remove((path + ".wal").c_str());
+  std::cout << "native scan ok\n";
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -931,6 +1037,7 @@ int main(int argc, char **argv) {
   TestLargeCounts(seed, true);
   TestTableFunctions(seed, false);
   TestTableFunctions(seed, true);
+  TestNativeScan(seed);
   std::cout << "ALL OK\n";
   return 0;
 }

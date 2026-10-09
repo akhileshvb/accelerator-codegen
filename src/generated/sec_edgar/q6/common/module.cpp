@@ -1,6 +1,10 @@
 #include "sec_edgar/q6/common/module.hpp"
 
+#include "sec_edgar/q6/common/build.hpp"
+
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
@@ -15,6 +19,19 @@
 
 namespace accelerator_codegen::aux_state::query {
 namespace {
+
+struct DebugTimer {
+  const char *what;
+  std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+  explicit DebugTimer(const char *w) : what(w) {}
+  ~DebugTimer() {
+    static const bool on = std::getenv("ACCEL_Q6_APPLY_STATS") != nullptr;
+    if (on) {
+      std::fprintf(stderr, "q6apply %s %.1fus\n", what,
+                   std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count());
+    }
+  }
+};
 
 constexpr int64_t kDefaultFy = 2023;
 constexpr std::string_view kDefaultStmt = "IS";
@@ -172,6 +189,14 @@ void SecEdgarQ6TxnBuffer::AddNumDelta(std::string_view adsh, std::string_view ta
   num_deltas_.push_back(d);
 }
 
+void SecEdgarQ6TxnBuffer::AddNumPair(std::string_view adsh, std::string_view tag,
+                                     std::string_view version, std::string_view uom,
+                                     double value, double old_value) {
+  AddNumDelta(adsh, tag, version, uom, value, 1);
+  num_deltas_.back().old_value = old_value;
+  num_deltas_.back().pair = true;
+}
+
 // ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
@@ -198,25 +223,92 @@ std::unique_ptr<core::AuxTxnBuffer> SecEdgarQ6Module::CreateTxnBuffer() const {
   return std::make_unique<SecEdgarQ6TxnBuffer>();
 }
 
-std::shared_ptr<const SecEdgarQ6State> SecEdgarQ6Module::BuildState() const {
-  if (!initial_scan) {
-    throw std::logic_error("SEC EDGAR Q6 requires a typed initial scan source");
-  }
-  SecEdgarQ6StructureBuilder builder;
-  initial_scan->ScanSub([&](const SecEdgarQ6SubInput &in) {
+namespace {
+
+// Feeds the builder from the row-at-a-time scan callbacks (one-row batches).
+void FeedPreRows(SecEdgarQ6InitialScan &scan, SecEdgarQ6Builder &builder) {
+  scan.ScanPre([&](const SecEdgarQ6PreInput &in) {
+    SecEdgarQ6Str cells[5] = {
+        {in.adsh.data(), static_cast<uint32_t>(in.adsh.size())},
+        {in.tag.data(), static_cast<uint32_t>(in.tag.size())},
+        {in.version.data(), static_cast<uint32_t>(in.version.size())},
+        {in.stmt.data(), static_cast<uint32_t>(in.stmt.size())},
+        {in.plabel_is_null ? nullptr : in.plabel.data(),
+         static_cast<uint32_t>(in.plabel.size())}};
+    SecEdgarQ6PreBatch batch;
+    batch.rows = 1;
+    batch.adsh.flat = &cells[0];
+    batch.tag.flat = &cells[1];
+    batch.version.flat = &cells[2];
+    batch.stmt.flat = &cells[3];
+    batch.plabel.flat = &cells[4];
+    builder.AddPreBatch(batch);
+  });
+}
+
+void FeedNumRows(SecEdgarQ6InitialScan &scan, SecEdgarQ6Builder &builder) {
+  scan.ScanNum([&](const SecEdgarQ6NumInput &in) {
+    SecEdgarQ6Str cells[4] = {
+        {in.adsh.data(), static_cast<uint32_t>(in.adsh.size())},
+        {in.tag.data(), static_cast<uint32_t>(in.tag.size())},
+        {in.version.data(), static_cast<uint32_t>(in.version.size())},
+        {in.uom.data(), static_cast<uint32_t>(in.uom.size())}};
+    const uint8_t valid = in.value_is_null ? 0 : 1;
+    SecEdgarQ6NumBatch batch;
+    batch.rows = 1;
+    batch.adsh.flat = &cells[0];
+    batch.tag.flat = &cells[1];
+    batch.version.flat = &cells[2];
+    batch.uom.flat = &cells[3];
+    batch.value = &in.value;
+    batch.value_valid = &valid;
+    builder.AddNumBatch(batch);
+  });
+}
+
+void FeedSub(SecEdgarQ6InitialScan &scan, SecEdgarQ6Builder &builder) {
+  scan.ScanSub([&](const SecEdgarQ6SubInput &in) {
     if (!in.fy_is_null) {
       builder.AddCohort(in.adsh, in.fy, in.name, in.name_is_null);
     }
   });
+}
+
+} // namespace
+
+std::shared_ptr<const SecEdgarQ6State> SecEdgarQ6Module::BuildState() const {
+  if (!initial_scan) {
+    throw std::logic_error("SEC EDGAR Q6 requires a typed initial scan source");
+  }
+  {
+    // Fast path: one pass over each base table (columnar batches).
+    SecEdgarQ6Builder builder;
+    FeedSub(*initial_scan, builder);
+    if (initial_scan->ScanPreBatches(
+            [&](const SecEdgarQ6PreBatch &batch) { builder.AddPreBatch(batch); })) {
+      builder.FinishPre();
+      if (!initial_scan->ScanNumBatches(
+              [&](const SecEdgarQ6NumBatch &batch) { builder.AddNumBatch(batch); })) {
+        FeedNumRows(*initial_scan, builder);
+      }
+      return builder.Finish();
+    }
+  }
+
+  SecEdgarQ6StructureBuilder structure_builder;
+  initial_scan->ScanSub([&](const SecEdgarQ6SubInput &in) {
+    if (!in.fy_is_null) {
+      structure_builder.AddCohort(in.adsh, in.fy, in.name, in.name_is_null);
+    }
+  });
   initial_scan->ScanPre([&](const SecEdgarQ6PreInput &in) {
-    builder.AddPre(in.adsh, in.tag, in.version, in.stmt, in.plabel,
-                   in.plabel_is_null);
+    structure_builder.AddPre(in.adsh, in.tag, in.version, in.stmt, in.plabel,
+                             in.plabel_is_null);
   });
   auto state = std::make_shared<SecEdgarQ6State>(
-      SecEdgarQ6MakeEmptyState(builder.Finish()));
+      SecEdgarQ6MakeEmptyState(structure_builder.Finish()));
 
-  // Fast path: the engine aggregates num x pre x sub itself (its own sums are
-  // the base values, bit for bit).
+  // Engine-side aggregation (e.g. Postgres): its own sums are the base values.
   bool failed = false;
   const bool supported = initial_scan->ScanGroupAggregates(
       [&](const SecEdgarQ6GroupAggregateInput &g) {
@@ -245,54 +337,19 @@ std::shared_ptr<const SecEdgarQ6State> SecEdgarQ6Module::BuildState() const {
             *state, structure.FindOrAddGroup(name_id, tag_id, plabel_id, combo),
             g.sum, g.count);
       });
-  if (!supported || failed) {
-    // Generic path: stream num and resolve every contribution through the
-    // bridge. Sums are accumulated as double-doubles (order independent).
-    // drop the groups of the failed fast path: restart from the bare structure
-    builder = SecEdgarQ6StructureBuilder();
-    initial_scan->ScanSub([&](const SecEdgarQ6SubInput &in) {
-      if (!in.fy_is_null) {
-        builder.AddCohort(in.adsh, in.fy, in.name, in.name_is_null);
-      }
-    });
-    initial_scan->ScanPre([&](const SecEdgarQ6PreInput &in) {
-      builder.AddPre(in.adsh, in.tag, in.version, in.stmt, in.plabel,
-                     in.plabel_is_null);
-    });
-    *state = SecEdgarQ6MakeEmptyState(builder.Finish());
-    auto &st = state->structure;
-    std::vector<SecEdgarQ6Sum> sums;
-    std::vector<int64_t> counts;
-    std::vector<SecEdgarQ6GroupDelta> scratch;
-    initial_scan->ScanNum([&](const SecEdgarQ6NumInput &in) {
-      if (in.value_is_null) {
-        return;
-      }
-      const SecEdgarQ6Hit hit = SecEdgarQ6Resolve(st, in.adsh, in.tag, in.version);
-      if (!hit.Found()) {
-        return;
-      }
-      scratch.clear();
-      SecEdgarQ6ExpandHit(st, hit, st.uoms.Intern(in.uom), {in.value, 0.0}, 1,
-                          scratch);
-      if (st.GroupCount() > sums.size()) {
-        sums.resize(st.GroupCount());
-        counts.resize(st.GroupCount(), 0);
-      }
-      for (const auto &d : scratch) {
-        sums[d.gid] = SecEdgarQ6SumAdd(sums[d.gid], d.sum);
-        counts[d.gid] += d.cnt;
-      }
-    });
-    for (uint32_t g = 0; g < st.GroupCount(); ++g) {
-      if (counts[g] != 0) {
-        SecEdgarQ6SetGroup(*state, g, sums[g].hi, counts[g]);
-      }
-    }
+  if (supported && !failed) {
+    state->structure.base_group_count = state->structure.group_count;
+    SecEdgarQ6Rescan(*state);
+    return state;
   }
-  state->structure.base_group_count = state->structure.group_count;
-  SecEdgarQ6Rescan(*state);
-  return state;
+  // Generic path: row-at-a-time scans through the bulk builder (double-double
+  // sums, order independent).
+  SecEdgarQ6Builder builder;
+  FeedSub(*initial_scan, builder);
+  FeedPreRows(*initial_scan, builder);
+  builder.FinishPre();
+  FeedNumRows(*initial_scan, builder);
+  return builder.Finish();
 }
 
 void SecEdgarQ6Module::Build(core::AuxEngineServices &,
@@ -330,6 +387,7 @@ SecEdgarQ6Module::InterpretMutation(const core::MutationBatch &mutation) const {
 void SecEdgarQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
                                           core::AuxEngineServices &,
                                           core::AuxTxnBuffer &base_buffer) {
+  DebugTimer dt("accumulate");
   auto &buffer = static_cast<SecEdgarQ6TxnBuffer &>(base_buffer);
   const bool is_num = mutation.table == config.num_table;
   const bool is_sub = mutation.table == config.sub_table;
@@ -379,30 +437,93 @@ void SecEdgarQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
   }
 
   if (is_num) {
-    for (const auto &[row, sign] : rows) {
+    struct NumParsed {
       std::string_view adsh, tag, version, uom;
       double value = 0.0;
-      const Cell c_adsh = GetString(*row, Cols::kNumAdsh, adsh);
-      const Cell c_tag = GetString(*row, Cols::kNumTag, tag);
-      const Cell c_version = GetString(*row, Cols::kNumVersion, version);
-      const Cell c_uom = GetString(*row, Cols::kNumUom, uom);
-      const Cell c_value = GetDouble(*row, Cols::kNumValue, value);
+      bool valid = false; // joins and passes the value / uom filters
+    };
+    // false: malformed row or non-finite value (rebuild).
+    const auto parse = [](const core::AuxRow &row, NumParsed &p) {
+      const Cell c_adsh = GetString(row, Cols::kNumAdsh, p.adsh);
+      const Cell c_tag = GetString(row, Cols::kNumTag, p.tag);
+      const Cell c_version = GetString(row, Cols::kNumVersion, p.version);
+      const Cell c_uom = GetString(row, Cols::kNumUom, p.uom);
+      const Cell c_value = GetDouble(row, Cols::kNumValue, p.value);
       if (c_adsh == Cell::Bad || c_tag == Cell::Bad || c_version == Cell::Bad ||
           c_uom == Cell::Bad || c_value == Cell::Bad) {
+        return false;
+      }
+      p.valid = c_adsh == Cell::Ok && c_tag == Cell::Ok && c_version == Cell::Ok &&
+                c_uom == Cell::Ok && c_value == Cell::Ok;
+      // inf / NaN cannot be removed from a sum again: rebuild.
+      return !p.valid || std::isfinite(p.value);
+    };
+    buffer.ReserveArena(rows.size() * 64);
+    // Row images are scattered heap objects: fetch them a few rows ahead.
+    const auto prefetch_row = [&](std::size_t k) {
+      if (k < rows.size()) {
+        const auto &values = rows[k].first->values;
+        const char *p = reinterpret_cast<const char *>(values.data());
+        const std::size_t bytes = values.size() * sizeof(values[0]);
+        for (std::size_t off = 0; off < bytes; off += 64) {
+          __builtin_prefetch(p + off);
+        }
+      }
+    };
+    const auto prefetch_strings = [&](std::size_t k) {
+      if (k < rows.size()) {
+        for (const auto &cell : rows[k].first->values) {
+          if (const auto *text = std::get_if<std::string>(&cell.payload)) {
+            __builtin_prefetch(text->data());
+          }
+        }
+      }
+    };
+    constexpr std::size_t kRowsAhead = 16;
+    if (mutation.kind == core::MutationKind::Update) {
+      for (std::size_t i = 0; i + 1 < rows.size(); i += 2) {
+        prefetch_row(i + 2 * kRowsAhead);
+        prefetch_row(i + 2 * kRowsAhead + 1);
+        prefetch_strings(i + kRowsAhead);
+        prefetch_strings(i + kRowsAhead + 1);
+        NumParsed before, after;
+        if (!parse(*rows[i].first, before) || !parse(*rows[i + 1].first, after)) {
+          buffer.MarkRebuild();
+          return;
+        }
+        if (before.valid && after.valid && before.adsh == after.adsh &&
+            before.tag == after.tag && before.version == after.version &&
+            before.uom == after.uom) {
+          if (before.value != after.value ||
+              std::signbit(before.value) != std::signbit(after.value)) {
+            buffer.AddNumPair(after.adsh, after.tag, after.version, after.uom,
+                              after.value, before.value);
+          }
+          continue;
+        }
+        if (before.valid) {
+          buffer.AddNumDelta(before.adsh, before.tag, before.version, before.uom,
+                             before.value, -1);
+        }
+        if (after.valid) {
+          buffer.AddNumDelta(after.adsh, after.tag, after.version, after.uom,
+                             after.value, 1);
+        }
+      }
+      return;
+    }
+    for (std::size_t k = 0; k < rows.size(); ++k) {
+      prefetch_row(k + 2 * kRowsAhead);
+      prefetch_strings(k + kRowsAhead);
+      const auto &[row, sign] = rows[k];
+      NumParsed p;
+      if (!parse(*row, p)) {
         buffer.MarkRebuild();
         return;
       }
-      if (c_adsh == Cell::Null || c_tag == Cell::Null ||
-          c_version == Cell::Null || c_uom == Cell::Null ||
-          c_value == Cell::Null) {
-        continue; // cannot join / filtered out
+      if (p.valid) {
+        buffer.AddNumDelta(p.adsh, p.tag, p.version, p.uom, p.value, sign);
       }
-      if (!std::isfinite(value)) {
-        // inf / NaN cannot be removed from a sum again: rebuild.
-        buffer.MarkRebuild();
-        return;
-      }
-      buffer.AddNumDelta(adsh, tag, version, uom, value, sign);
     }
     return;
   }
@@ -553,6 +674,7 @@ core::StagedMaintenanceOutcome
 SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
                                    const core::InvalidationPlan &,
                                    core::AuxTxnBuffer &base_buffer) {
+  DebugTimer dt("stage");
   auto &buffer = static_cast<SecEdgarQ6TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
   if (!buffer.HasPendingChanges()) {
@@ -623,18 +745,21 @@ SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
       const std::string adsh(buffer.Adsh(d));
       if (!affected.count(adsh)) {
         refs.push_back({buffer.Adsh(d), buffer.Tag(d), buffer.Version(d),
-                        buffer.Uom(d), d.value, d.sign});
+                        buffer.Uom(d), d.value, d.sign, d.old_value, d.pair});
         continue;
       }
       auto &entry = txn[num_key(adsh, buffer.Tag(d), buffer.Version(d), buffer.Uom(d))];
       entry.tag = std::string(buffer.Tag(d));
       entry.version = std::string(buffer.Version(d));
       entry.uom = std::string(buffer.Uom(d));
-      const auto added = SecEdgarQ6SumAdd(
+      auto added = SecEdgarQ6SumAdd(
           {entry.sum, entry.sum_lo}, {static_cast<double>(d.sign) * d.value, 0.0});
+      if (d.pair) {
+        added = SecEdgarQ6SumAdd(added, {-d.old_value, 0.0});
+      }
       entry.sum = added.hi;
       entry.sum_lo = added.lo;
-      entry.cnt += d.sign;
+      entry.cnt += d.pair ? 0 : d.sign;
     }
     std::vector<SecEdgarQ6AdshEdit> edits(adshs.size());
     for (std::size_t i = 0; i < adshs.size(); ++i) {
@@ -701,10 +826,11 @@ SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
   refs.reserve(deltas.size());
   for (const auto &d : deltas) {
     refs.push_back({buffer.Adsh(d), buffer.Tag(d), buffer.Version(d),
-                    buffer.Uom(d), d.value, d.sign});
+                    buffer.Uom(d), d.value, d.sign, d.old_value, d.pair});
   }
   bool overflow = false;
   std::shared_ptr<const SecEdgarQ6State> next;
+  DebugTimer dt2("applynums");
   try {
     next = SecEdgarQ6ApplyNums(*state, refs.data(), refs.size(), &overflow);
   } catch (const std::length_error &) {

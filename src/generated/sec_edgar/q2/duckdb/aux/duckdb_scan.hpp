@@ -6,8 +6,9 @@
 namespace accelerator_codegen::aux_state::query {
 
 // DuckDB implementation of the Q2 data-access interface.  Every method is a
-// single columnar SQL statement on the caller's connection (so it sees the
-// caller's open transaction, including uncommitted writes during PreCommit).
+// single columnar SQL statement or a native table scan on the caller's
+// connection (so it sees the caller's open transaction, including uncommitted
+// writes during PreCommit).
 class SecEdgarQ2DuckdbScan : public SecEdgarQ2InitialScan {
 public:
   explicit SecEdgarQ2DuckdbScan(::duckdb::Connection &connection_p)
@@ -22,13 +23,10 @@ public:
   void ScanNumValueCounts(
       const std::vector<std::string> &uoms,
       const std::function<void(const SecEdgarQ2ValueCountRow &)> &consumer) override;
-  bool ScanNumKeys(const std::vector<std::string> &uoms,
-                   const std::function<void(std::string_view)> &adsh,
-                   const std::function<void(std::string_view)> &tag) override;
-  bool ScanNumValueCountsParallel(
-      const std::vector<std::string> &uoms, unsigned threads,
-      const std::function<void(unsigned, const SecEdgarQ2ValueCountRow *, size_t)> &batch)
-      override;
+  // Native storage scan of num (no SQL, no GROUP BY): dictionary-compressed
+  // string columns are mapped to ids once per dictionary entry.
+  bool ScanNumIds(SecEdgarQ2KeyMap &keys,
+                  const std::function<void(const SecEdgarQ2IdBatch &)> &batch) override;
   void LookupNumValueCounts(
       const std::string &uom,
       const std::vector<std::pair<std::string, std::string>> &groups,

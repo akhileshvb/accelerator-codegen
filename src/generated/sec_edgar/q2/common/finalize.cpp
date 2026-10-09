@@ -36,8 +36,9 @@ bool FinalizeSecEdgarQ2Views(const SecEdgarQ2State &state, int64_t fy,
   if (dir.excluded[ui]) {
     return false;
   }
-  if (fy == kQ2NoFy) {
-    return true;
+  const Q2Slice *slice = state.Slice(ui);
+  if (fy == kQ2NoFy || slice == nullptr) {
+    return true; // no fiscal year / no group of this unit yet
   }
   constexpr uint64_t kLimit = kSecEdgarQ2ResultLimit;
   constexpr unsigned kShift = 12;
@@ -61,9 +62,14 @@ bool FinalizeSecEdgarQ2Views(const SecEdgarQ2State &state, int64_t fy,
   thread_local std::vector<Cand> cands;
   ov_c.clear();
   cands.clear();
-  for (const auto &e : state.ov.table.ents) {
-    if (e.uom == ui && e.c0 != 0 && fy_of(e.adsh) == fy) {
-      ov_c.push_back({e.k0, e.adsh, e.tag, e.c0, {}, false});
+  for (const auto &shard : slice->shards) {
+    if (!shard) {
+      continue;
+    }
+    for (const auto &e : shard->ents) {
+      if (e.c0 != 0 && fy_of(e.adsh) == fy) {
+        ov_c.push_back({e.k0, e.adsh, e.tag, e.c0, {}, false});
+      }
     }
   }
   std::sort(ov_c.begin(), ov_c.end(),
@@ -71,8 +77,8 @@ bool FinalizeSecEdgarQ2Views(const SecEdgarQ2State &state, int64_t fy,
 
   uint64_t base_total = 0;
   {
-    const Q2Base &b = *state.base;
-    const uint32_t end = b.SliceEnd(ui);
+    const Q2Base &b = *slice->base;
+    const uint32_t end = b.n;
     const int64_t *k0 = b.k0.data();
     const uint32_t *adsh = b.adsh.data();
     size_t ov_ptr = 0;
@@ -80,10 +86,10 @@ bool FinalizeSecEdgarQ2Views(const SecEdgarQ2State &state, int64_t fy,
     int64_t cur = 0;
     bool have_cur = false;
     bool done = false;
-    const bool any_dead = state.ov.dead_count != 0;
+    const bool any_dead = slice->dead_count != 0;
     // Called for every matching (fy) base entry in descending key order.
     const auto accept = [&](uint32_t i) {
-      if (any_dead && state.ov.IsDead(i)) {
+      if (any_dead && slice->IsDead(i)) {
         return;
       }
       const int64_t key = k0[i];
@@ -108,7 +114,7 @@ bool FinalizeSecEdgarQ2Views(const SecEdgarQ2State &state, int64_t fy,
     // Note: an AVX2 gather variant of this loop was measured 2.5x slower than
     // the scalar loop on the target CPU (gathers are microcoded), so the scan
     // stays scalar.
-    for (uint32_t i = b.SliceBegin(ui); i < end && !done; ++i) {
+    for (uint32_t i = 0; i < end && !done; ++i) {
       if (fy_of(adsh[i]) == fy) {
         accept(i);
       }
