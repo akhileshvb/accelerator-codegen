@@ -56,8 +56,16 @@ int main(int argc, char **argv) {
             << " covered_uoms=" << covered << "/" << state->uoms->names.size()
             << " groups=" << groups << " adsh=" << state->adsh.Size()
             << " tags=" << state->tag.Size() << "\n";
-  std::cout << "base_bytes=" << state->base->HeapBytes() << " base_groups=" << state->base->n
-            << " escaped_counts=" << state->base->e_pos.size()
+  uint64_t base_bytes = 0, base_groups = 0, escaped = 0;
+  for (const auto &slice : state->slices) {
+    if (slice) {
+      base_bytes += slice->base->HeapBytes();
+      base_groups += slice->base->n;
+      escaped += slice->base->e_pos.size();
+    }
+  }
+  std::cout << "base_bytes=" << base_bytes << " base_groups=" << base_groups
+            << " escaped_counts=" << escaped
             << " dict_adsh=" << state->adsh.HeapBytes() << " dict_tag=" << state->tag.HeapBytes()
             << " fy=" << state->fy.MemoryBytes() << " names=" << state->names.MemoryBytes() << "\n";
   struct Draw {

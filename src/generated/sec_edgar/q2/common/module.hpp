@@ -43,9 +43,8 @@ struct SecEdgarQ2Config {
   uint64_t max_uom_rows = kSecEdgarQ2DefaultMaxUomRows;
   // Overlay entries before it is compacted into a new base (0: automatic).
   uint64_t overlay_limit = 0;
-  // Worker threads of the initial build when the scan source supports a
-  // parallel scan: 1 = the serial path, 0 = automatic (hardware threads, at
-  // most 16).
+  // Kept for configuration compatibility: the build is single-threaded (one
+  // native scan feeding prefetched hash aggregation), whatever the value.
   unsigned build_threads = 1;
 };
 
@@ -81,6 +80,24 @@ struct SecEdgarQ2DirectRow {
   double value = 0.0;
 };
 
+// Maps the key strings of the build scan to dictionary ids.
+class SecEdgarQ2KeyMap {
+public:
+  virtual ~SecEdgarQ2KeyMap() = default;
+  virtual uint32_t Uom(std::string_view uom) = 0;
+  virtual uint32_t Adsh(std::string_view adsh) = 0;
+  virtual uint32_t Tag(std::string_view tag) = 0;
+};
+
+// A batch of num rows as ids (see SecEdgarQ2InitialScan::ScanNumIds).
+struct SecEdgarQ2IdBatch {
+  size_t n = 0;
+  const uint32_t *uom = nullptr;
+  const uint32_t *adsh = nullptr;
+  const uint32_t *tag = nullptr;
+  const int64_t *key = nullptr; // Q2ValueKey(value)
+};
+
 // Data access for build / maintenance look-ups / uncovered-parameter path.
 // ScanNum and ScanSub are the only mandatory entry points; every other method
 // has a (slow, correct) default derived from them so unit-test fakes keep
@@ -110,19 +127,13 @@ public:
   virtual void LookupSub(
       const std::vector<std::string> &adshs,
       const std::function<void(const SecEdgarQ2SubInput &)> &);
-  // Optional parallel build support (default: unsupported, return false).
-  // ScanNumKeys reports every distinct adsh and tag of the same rows
-  // ScanNumValueCounts returns, so the caller can build read-only
-  // dictionaries.  ScanNumValueCountsParallel reports those rows in batches
-  // that `threads` workers consume concurrently (`worker` is 0..threads-1; the
-  // views are valid during the call only).
-  virtual bool ScanNumKeys(const std::vector<std::string> &uoms,
-                           const std::function<void(std::string_view)> &adsh,
-                           const std::function<void(std::string_view)> &tag);
-  virtual bool ScanNumValueCountsParallel(
-      const std::vector<std::string> &uoms, unsigned threads,
-      const std::function<void(unsigned worker, const SecEdgarQ2ValueCountRow *rows,
-                               size_t n)> &batch);
+  // Optional fast build path (default: unsupported, return false).  One pass
+  // over the num rows with non-NULL adsh, tag, uom and value; each row is
+  // reported as dictionary ids (obtained from `keys`, which the scan may call
+  // once per distinct string it sees) and its order-preserving value key.
+  virtual bool ScanNumIds(
+      SecEdgarQ2KeyMap &keys,
+      const std::function<void(const SecEdgarQ2IdBatch &)> &batch);
   // Full answer of the query (ordered, LIMIT applied) straight from the base
   // tables.  Used for uoms the aux state does not materialise and whenever
   // the aux state is unavailable.
@@ -203,6 +214,9 @@ public:
   void MarkRebuild();
   void AddNum(std::string_view adsh, std::string_view tag, std::string_view uom,
               int64_t key, int8_t sign);
+  // A value change of one row: the strings are stored once for both deltas.
+  void AddNumMove(std::string_view adsh, std::string_view tag, std::string_view uom,
+                  int64_t old_key, int64_t new_key);
   void AddSub(SubDelta delta);
   uint64_t NextBatch() { return ++batch_counter; }
   const std::vector<NumDelta> &Nums() const { return nums; }
