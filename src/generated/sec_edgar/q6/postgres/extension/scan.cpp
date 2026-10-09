@@ -286,7 +286,8 @@ Q6Runtime() {
               "config/sec_edgar_q6_aux_cost_model.json",
               core::SecEdgarQ6Layout::kAccelerator,
               query::SecEdgarQ6Config{kNumTable, kSubTable, kPreTable},
-              {{"sub", "name"}, {"num", "tag"}, {"pre", "plabel"}});
+              {{"sub", "name"}, {"num", "tag"}, {"pre", "plabel"}},
+              /*tune_build=*/true);
   return runtime;
 }
 
