@@ -155,36 +155,54 @@ public:
         });
   }
 
-  // One aggregate query per fiscal year: SPI materializes a whole result, and
-  // all years together are tens of millions of groups.
+  // Two aggregate queries (fiscal-year ranges of about half the sub rows
+  // each): SPI materializes a whole result, and all years together are
+  // millions of groups, while every query scans num once (parallel plans).
   bool ScanGroupAggregates(
       const std::function<void(const query::SecEdgarQ6GroupAggregateInput &)>
           &consumer) override {
-    std::vector<int64_t> fys;
-    scans::RunQuery("SELECT DISTINCT fy FROM sub WHERE fy IS NOT NULL ORDER BY fy",
+    std::vector<std::pair<int64_t, int64_t>> fys; // fy, sub rows
+    int64_t total = 0;
+    scans::RunQuery("SELECT fy, COUNT(*) FROM sub WHERE fy IS NOT NULL GROUP BY fy ORDER BY fy",
                     [&](HeapTuple tuple, TupleDesc desc) {
-                      fys.push_back(TypedInt(tuple, desc, 0));
+                      fys.emplace_back(TypedInt(tuple, desc, 0), TypedInt(tuple, desc, 1));
+                      total += fys.back().second;
                     });
-    for (const int64_t fy : fys) {
+    std::vector<std::pair<int64_t, int64_t>> ranges;
+    int64_t lo = 0, acc = 0;
+    bool open = false;
+    for (std::size_t i = 0; i < fys.size(); ++i) {
+      if (!open) {
+        lo = fys[i].first;
+        open = true;
+        acc = 0;
+      }
+      acc += fys[i].second;
+      if (acc * 2 >= total || i + 1 == fys.size()) {
+        ranges.emplace_back(lo, fys[i].first);
+        open = false;
+      }
+    }
+    for (const auto &[from, to] : ranges) {
       scans::RunQuery(
-          "SELECT s.name, p.stmt, n.tag, p.plabel, n.uom, SUM(n.value)::float8, "
+          "SELECT s.fy, s.name, p.stmt, n.tag, p.plabel, n.uom, SUM(n.value)::float8, "
           "COUNT(*) FROM num n JOIN sub s ON n.adsh = s.adsh "
           "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
-          "WHERE n.uom IS NOT NULL AND p.stmt IS NOT NULL AND s.fy = " +
-              std::to_string(fy) +
+          "WHERE n.uom IS NOT NULL AND p.stmt IS NOT NULL AND s.fy BETWEEN " +
+              std::to_string(from) + " AND " + std::to_string(to) +
               " AND n.value IS NOT NULL "
-              "GROUP BY s.name, p.stmt, n.tag, p.plabel, n.uom",
+              "GROUP BY s.fy, s.name, p.stmt, n.tag, p.plabel, n.uom",
           [&](HeapTuple tuple, TupleDesc desc) {
             query::SecEdgarQ6GroupAggregateInput in;
-            in.fy = static_cast<int32_t>(fy);
-            in.name_is_null = !scans::FastText(tuple, desc, 0, in.name);
-            scans::FastText(tuple, desc, 1, in.stmt);
-            scans::FastText(tuple, desc, 2, in.tag);
-            in.plabel_is_null = !scans::FastText(tuple, desc, 3, in.plabel);
-            scans::FastText(tuple, desc, 4, in.uom);
+            in.fy = static_cast<int32_t>(TypedInt(tuple, desc, 0));
+            in.name_is_null = !scans::FastText(tuple, desc, 1, in.name);
+            scans::FastText(tuple, desc, 2, in.stmt);
+            scans::FastText(tuple, desc, 3, in.tag);
+            in.plabel_is_null = !scans::FastText(tuple, desc, 4, in.plabel);
+            scans::FastText(tuple, desc, 5, in.uom);
             bool null_sum = false;
-            in.sum = scans::FastDouble(tuple, desc, 5, null_sum);
-            in.count = TypedInt(tuple, desc, 6);
+            in.sum = scans::FastDouble(tuple, desc, 6, null_sum);
+            in.count = TypedInt(tuple, desc, 7);
             consumer(in);
           });
     }

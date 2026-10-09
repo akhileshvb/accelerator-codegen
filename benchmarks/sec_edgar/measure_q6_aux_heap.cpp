@@ -57,7 +57,7 @@ int main(int argc, char **argv) {
       std::vector<double> us;
       for (int i = 0; i < 2000; ++i) {
         const auto t = std::chrono::steady_clock::now();
-        const auto r = q::SecEdgarQ6TopRows(*state);
+        const auto r = q::SecEdgarQ6TopRows(*state, 2023, "IS", "USD");
         us.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t).count());
         if (r.size() != 200) return 1;
       }
@@ -69,8 +69,9 @@ int main(int argc, char **argv) {
     std::cout << "breakdown_mb adsh=" << mb(st.adshs.Bytes()) << " name=" << mb(st.names.Bytes())
               << " tag=" << mb(st.tags.Bytes()) << " tv=" << mb(st.tvs.Bytes())
               << " plabel=" << mb(st.plabels.Bytes()) << " runs=" << mb(st.runs.MemoryBytes())
-              << " groups=" << mb(st.groups.MemoryBytes()) << " group_index=" << mb(st.group_index.memory_bytes())
+              << " groups=" << mb(st.groups.MemoryBytes() + st.group_combo.MemoryBytes()) << " group_index=" << mb(st.group_index.memory_bytes())
               << " agg=" << mb(state->sum_hi.MemoryBytes() + state->sum_lo.MemoryBytes() + state->cnt.MemoryBytes())
+              << " stmts=" << st.stmts.Count() << " uoms=" << st.uoms.Count() << " combos=" << st.ComboCount()
               << " counts: adsh=" << st.adshs.Count() << " tv=" << st.tvs.Count() << " plabel="
               << st.plabels.Count() << " groups=" << st.GroupCount() << "\n";
     std::cout << "heap_before_mb=" << before << " heap_after_build_mb=" << after

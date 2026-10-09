@@ -2329,6 +2329,10 @@ target_link_libraries(measure_sec_edgar_q2_state PRIVATE accelerator_codegen duc
 add_executable(check_sec_edgar_q2_params
 	benchmarks/aux_state/check_sec_edgar_q2_params.cpp)
 target_link_libraries(check_sec_edgar_q2_params PRIVATE accelerator_codegen duckdb_sibling)
+# SEC EDGAR Q6 aux: (fy, stmt, uom) parameter sweep against plain SQL.
+add_executable(check_sec_edgar_q6_params
+	benchmarks/aux_state/check_sec_edgar_q6_params.cpp)
+target_link_libraries(check_sec_edgar_q6_params PRIVATE accelerator_codegen duckdb_sibling)
 
 # ---------------------------------------------------------------------------
 # SEC-EDGAR Q4 PostgreSQL differential (psql client only; no server SDK needed
