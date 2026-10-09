@@ -201,14 +201,13 @@ void CheckLabel(const std::map<std::string, std::vector<std::string>> &blocks,
 }
 
 // -------------------------------------------------------------- bootstrap
+// Scratch database: the extension (installed by pg/build_pg_ext.sh) and the
+// generic capture-trigger helper.
 void InstallExtension(const std::string &db) {
-  const std::string dir = std::string(ACCEL_SRC_DIR) + "/scripts/";
-  Run(Psql(db, "-v ON_ERROR_STOP=1 -q -f " + ShellQuote(dir + "postgres_register_tpch_all.sql")));
-}
-void InstallTriggers(const std::string &db) {
-  const std::string dir = std::string(ACCEL_SRC_DIR) + "/scripts/";
+  Run(Psql(db, "-v ON_ERROR_STOP=1 -q -c " +
+                   ShellQuote("CREATE EXTENSION IF NOT EXISTS accelerator_codegen_postgres")));
   Run(Psql(db, "-v ON_ERROR_STOP=1 -q -f " +
-                   ShellQuote(dir + "postgres_sec_edgar_q4_mutation_triggers.sql")));
+                   ShellQuote(std::string(ACCEL_SRC_DIR) + "/scripts/postgres_accel_mutation_triggers.sql")));
 }
 
 std::string PgSql(std::string sql) {
@@ -251,7 +250,11 @@ int RunSynthetic(int seeds, int steps) {
     std::string script = "SET client_min_messages = warning;\n";
     for (const auto &sql : model.Init()) script += PgSql(sql) + ";\n";
     script += "ANALYZE;\n";
-    script += "\\ir " + std::string(ACCEL_SRC_DIR) + "/scripts/postgres_sec_edgar_q4_mutation_triggers.sql\n";
+    // Fixed SEC-EDGAR capture ids (as in the template database): sub=1 num=2 pre=3 tag=4.
+    script += "SELECT create_accel_mutation_triggers('sub','1','accel_codegen_sec_edgar'),"
+              " create_accel_mutation_triggers('num','2','accel_codegen_sec_edgar'),"
+              " create_accel_mutation_triggers('pre','3','accel_codegen_sec_edgar'),"
+              " create_accel_mutation_triggers('tag','4','accel_codegen_sec_edgar');\n";
     EmitCompare(script, "initial", ref_sql);
     std::vector<std::string> labels{"initial"};
     int rollbacks = 0, in_txn_reads = 0;
@@ -310,8 +313,6 @@ int RunSynthetic(int seeds, int steps) {
 int RunFile(int rounds) {
   const std::string db = Env("PGDATABASE", "postgres");
   const std::string ref_sql = ReferenceSql();
-  InstallExtension(db);
-  InstallTriggers(db);
   std::string script = "SET client_min_messages = warning;\n";
   std::vector<std::string> labels;
   auto check = [&](const std::string &label) {

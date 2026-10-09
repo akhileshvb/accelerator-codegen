@@ -20,12 +20,12 @@ namespace accelerator_codegen::aux_state::engine::postgres {
 namespace detail {
 namespace {
 
-// Table ids the capture triggers pass (scripts/postgres_sec_edgar_q4_mutation_triggers.sql)
-// and the module names in Dependencies(): same ids as the DuckDB binding.
-constexpr core::TableId kSecEdgarNum = 1;
-constexpr core::TableId kSecEdgarSub = 2;
-constexpr core::TableId kSecEdgarTag = 3;
-constexpr core::TableId kSecEdgarPre = 4;
+// Fixed capture-trigger table ids shared by every SEC-EDGAR PostgreSQL query
+// (the trigger argument): sub=1 num=2 pre=3 tag=4.  Differs from the DuckDB binding.
+constexpr core::TableId kSecEdgarSub = 1;
+constexpr core::TableId kSecEdgarNum = 2;
+constexpr core::TableId kSecEdgarPre = 3;
+constexpr core::TableId kSecEdgarTag = 4;
 
 bool IsNullAt(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
   bool is_null = false;
