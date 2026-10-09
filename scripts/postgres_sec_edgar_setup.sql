@@ -22,8 +22,7 @@ ALTER TABLE pre ALTER COLUMN plabel TYPE VARCHAR(1024) COLLATE "C";
 
 CREATE INDEX IF NOT EXISTS num_adsh_tag_version_idx ON num (adsh, tag, version);
 CREATE INDEX IF NOT EXISTS pre_adsh_tag_version_idx ON pre (adsh, tag, version);
-CREATE INDEX IF NOT EXISTS accel_q4_pre_tag ON pre (tag, version)
-    WHERE stmt = 'EQ' AND adsh IS NOT NULL AND tag IS NOT NULL AND version IS NOT NULL;
+CREATE INDEX IF NOT EXISTS accel_q4_pre_tag ON pre (tag, version);
 
 ANALYZE sub;
 ANALYZE num;

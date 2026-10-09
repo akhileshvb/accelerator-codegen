@@ -103,6 +103,12 @@ using namespace scan;
 // materializing num row by row.
 using SecEdgarQ4Scan = query::SecEdgarQ4DuckDbScan;
 
+// accel_sec_edgar_q4_aux() = the template defaults (4000, 4999, 'EQ', 'USD');
+// accel_sec_edgar_q4_aux(sic_lo, sic_hi, stmt, uom) answers any parameters.
+const std::vector<std::vector<::duckdb::LogicalType>> kOverloads{
+    {::duckdb::LogicalType::INTEGER, ::duckdb::LogicalType::INTEGER,
+     ::duckdb::LogicalType::VARCHAR, ::duckdb::LogicalType::VARCHAR}};
+
 const AuxQueryRegistrar kQuery{AuxQuery{
     core::SecEdgarQ4Layout::kAccelerator,
     "accel_sec_edgar_q4_aux",
@@ -110,7 +116,8 @@ const AuxQueryRegistrar kQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ4Config c{1, 2, 3, 4};
       return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4Module>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 
 #ifdef ACCEL_ENABLE_PARALLEL_AUX
 const AuxQueryRegistrar kParallelQuery{AuxQuery{
@@ -120,7 +127,8 @@ const AuxQueryRegistrar kParallelQuery{AuxQuery{
     [](::duckdb::Connection &connection) {
       const SecEdgarQ4Config c{1, 2, 3, 4};
       return MakeBinding<SecEdgarQ4Scan, SecEdgarQ4ParallelModule>(connection, CaptureTableList{}, c);
-    }}};
+    },
+    kOverloads}};
 #endif
 
 } // namespace

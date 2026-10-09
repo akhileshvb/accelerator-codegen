@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdint>
+#include <climits>
 #include <limits>
 #include <map>
 #include <optional>
@@ -142,14 +144,53 @@ struct OutRow {
   long double avg;
 };
 
-inline std::vector<OutRow> Oracle(const Db &db) {
+// Query parameters (q4.sql with BETWEEN :lo AND :hi, p.stmt = :stmt, n.uom = :uom).
+// A nullopt behaves as SQL NULL: the result is empty.
+struct Params {
+  std::optional<int64_t> lo = 4000, hi = 4999;
+  std::optional<std::string> stmt = std::string("EQ"), uom = std::string("USD");
+};
+inline std::string Lit(const std::optional<int64_t> &v, bool as_int) {
+  if (!v) return as_int ? "CAST(NULL AS INTEGER)" : "NULL";
+  return "CAST(" + std::to_string(*v) + " AS INTEGER)";
+}
+inline std::string Lit(const std::optional<std::string> &v) {
+  return v ? Q(*v) : "CAST(NULL AS VARCHAR)";
+}
+// "lo, hi, 'stmt', 'uom'" as table-function arguments.
+inline std::string ArgsSql(const Params &p) {
+  return Lit(p.lo, true) + ", " + Lit(p.hi, true) + ", " + Lit(p.stmt) + ", " + Lit(p.uom);
+}
+inline accelerator_codegen::aux_state::core::QueryArguments ToQueryArgs(const Params &p) {
+  accelerator_codegen::aux_state::core::QueryArguments a;
+  a.values.push_back(p.lo ? AuxValue::Of(AuxType::Int64, *p.lo) : AuxValue::Null(AuxType::Int64));
+  a.values.push_back(p.hi ? AuxValue::Of(AuxType::Int64, *p.hi) : AuxValue::Null(AuxType::Int64));
+  a.values.push_back(p.stmt ? AuxValue::Of(AuxType::String, *p.stmt) : AuxValue::Null(AuxType::String));
+  a.values.push_back(p.uom ? AuxValue::Of(AuxType::String, *p.uom) : AuxValue::Null(AuxType::String));
+  return a;
+}
+// Plain-SQL q4.sql with the parameters inlined.
+inline std::string BaseSql(const Params &p) {
+  return "SELECT s.sic, t.tlabel, p.stmt, COUNT(DISTINCT s.cik) AS num_companies, "
+         "SUM(n.value) AS total_value, AVG(n.value) AS avg_value FROM num n "
+         "JOIN sub s ON n.adsh = s.adsh JOIN tag t ON n.tag = t.tag AND n.version = t.version "
+         "JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
+         "WHERE n.uom = " + Lit(p.uom) + " AND p.stmt = " + Lit(p.stmt) +
+         " AND s.sic BETWEEN " + Lit(p.lo, true) + " AND " + Lit(p.hi, true) +
+         " AND n.value IS NOT NULL AND t.abstract = 0 GROUP BY s.sic, t.tlabel, p.stmt "
+         "HAVING COUNT(DISTINCT s.cik) >= 2 "
+         "ORDER BY total_value DESC, s.sic, t.tlabel NULLS FIRST LIMIT 500";
+}
+
+inline std::vector<OutRow> Oracle(const Db &db, const Params &params = Params{}) {
+  if (!params.lo || !params.hi || !params.stmt || !params.uom) return {};
   std::map<std::string, const SubRow *> subs;
   for (const auto &s : db.sub) subs[s.adsh] = &s;
   std::map<std::pair<std::string, std::string>, const TagRow *> tags;
   for (const auto &t : db.tag) tags[{t.tag, t.version}] = &t;
   std::map<std::tuple<std::string, std::string, std::string>, int> pre_eq;
   for (const auto &p : db.pre) {
-    if (p.adsh && p.tag && p.version && p.stmt && *p.stmt == "EQ") ++pre_eq[{*p.adsh, *p.tag, *p.version}];
+    if (p.adsh && p.tag && p.version && p.stmt && *p.stmt == *params.stmt) ++pre_eq[{*p.adsh, *p.tag, *p.version}];
   }
   struct Acc {
     __float128 sum = 0; // quad precision: exact enough for 1e12-scale cancellation
@@ -158,11 +199,11 @@ inline std::vector<OutRow> Oracle(const Db &db) {
   };
   std::map<std::pair<int32_t, std::optional<std::string>>, Acc> groups;
   for (const auto &n : db.num) {
-    if (!n.adsh || !n.tag || !n.version || !n.uom || !n.value || *n.uom != "USD") continue;
+    if (!n.adsh || !n.tag || !n.version || !n.uom || !n.value || *n.uom != *params.uom) continue;
     const auto sit = subs.find(*n.adsh);
     if (sit == subs.end()) continue;
     const SubRow &s = *sit->second;
-    if (!s.sic || *s.sic < 4000 || *s.sic > 4999) continue;
+    if (!s.sic || *s.sic < *params.lo || *s.sic > *params.hi) continue;
     const auto tit = tags.find({*n.tag, *n.version});
     if (tit == tags.end()) continue;
     const TagRow &t = *tit->second;
@@ -252,15 +293,24 @@ struct Model {
   std::string Version(int n) const { return n == 0 ? "us-gaap/2020" : "us-gaap/2021"; }
   int PickSic() { return cfg.sics[static_cast<size_t>(Int(0, static_cast<int>(cfg.sics.size()) - 1))]; }
 
+  // stmt / uom pools: the parameter domain of the benchmarks plus near misses.
+  std::optional<std::string> RandomStmt() {
+    static const char *kStmts[] = {"EQ", "EQ", "EQ", "EQ", "BS", "IS", "CF", "CI", "UN"};
+    const int s = Int(0, 9);
+    return s == 9 ? std::nullopt : std::optional<std::string>(kStmts[s]);
+  }
+  std::string RandomUom() {
+    static const char *kUoms[] = {"USD", "USD", "USD", "USD", "USD", "EUR", "usd",
+                                  "shares", "shares", "pure", "CAD", "CNY"};
+    return kUoms[Int(0, 11)];
+  }
+
   PreRow RandomPre() {
     PreRow p;
     p.adsh = Adsh(Int(0, cfg.adsh - 1));
     p.tag = Tag(Int(0, cfg.tags - 1));
     p.version = Version(Int(0, cfg.versions - 1));
-    const int s = Int(0, 9);
-    p.stmt = s < 6 ? std::optional<std::string>("EQ")
-             : s < 9 ? std::optional<std::string>("BS")
-                     : std::nullopt;
+    p.stmt = RandomStmt();
     p.line = Int(0, 50);
     p.rid = next_rid++;
     return p;
@@ -273,7 +323,7 @@ struct Model {
     if (hint_adsh && Coin(0.7)) n.adsh = hint_adsh;
     if (hint_tag && Coin(0.7)) n.tag = hint_tag;
     if (hint_version && Coin(0.7)) n.version = hint_version;
-    n.uom = Coin(0.2) ? std::optional<std::string>(Coin(0.5) ? "EUR" : "usd") : std::optional<std::string>("USD");
+    n.uom = Coin(0.02) ? std::nullopt : std::optional<std::string>(RandomUom());
     n.value = Coin(0.04) ? std::nullopt : std::optional<double>(Value());
     n.ddate = Int(2019, 2023);
     n.rid = next_rid++;
@@ -445,7 +495,7 @@ struct Model {
             b.updated_columns = {7};
             set = "value = " + Q(row.value);
           } else if (col == 5) {
-            row.uom = Coin(0.5) ? "USD" : "EUR";
+            row.uom = RandomUom();
             b.updated_columns = {5};
             set = "uom = " + Q(row.uom);
           } else if (col == 6) {
@@ -492,7 +542,7 @@ struct Model {
         std::string set;
         switch (Int(0, 4)) {
         case 0:
-          row.stmt = Coin(0.6) ? "EQ" : "IS";
+          row.stmt = RandomStmt();
           b.updated_columns = {3};
           set = "stmt = " + Q(row.stmt);
           break;
@@ -624,23 +674,77 @@ struct Model {
   }
 };
 
+// Random parameters over the benchmark domain (the 10 SIC divisions, random
+// ranges, edge values, NULLs, inverted ranges), stmt in {BS,IS,CF,EQ,CI,unknown}
+// and uom in {USD,shares,pure,CAD,CNY,EUR,...}.
+inline Params RandomParams(Model &m) {
+  static const int kDiv[10][2] = {{100, 999},   {1000, 1499}, {1500, 1799}, {2000, 3999},
+                                  {4000, 4999}, {5000, 5199}, {5200, 5999}, {6000, 6799},
+                                  {7000, 8999}, {9000, 9999}};
+  static const char *kStmts[] = {"BS", "IS", "CF", "EQ", "CI", "ZZ", "eq", ""};
+  static const char *kUoms[] = {"USD", "shares", "pure", "CAD", "CNY", "EUR", "usd", "ZZ", ""};
+  static const int64_t kEdge[] = {INT32_MIN, INT32_MIN + 1, -1, 0, 1, 3999, 4000, 4001, 4999, 5000,
+                                  9999, 10000, INT32_MAX - 1, INT32_MAX};
+  Params p;
+  const int mode = m.Int(0, 9);
+  const auto pick_sic = [&]() -> int64_t {
+    return m.cfg.sics.empty() ? 4000 : m.cfg.sics[static_cast<size_t>(m.Int(0, static_cast<int>(m.cfg.sics.size()) - 1))];
+  };
+  if (mode <= 1) { // the defaults
+  } else if (mode <= 4) {
+    const int d = m.Int(0, 9);
+    p.lo = kDiv[d][0];
+    p.hi = kDiv[d][1];
+  } else if (mode == 5) {
+    p.lo = m.Int(0, 10000);
+    p.hi = m.Int(0, 10000); // may be inverted
+  } else if (mode == 6) {
+    int64_t a = pick_sic(), b = pick_sic();
+    if (a > b) std::swap(a, b);
+    p.lo = a;
+    p.hi = b;
+  } else if (mode == 7) {
+    p.lo = kEdge[m.Int(0, 13)];
+    p.hi = kEdge[m.Int(0, 13)];
+  } else if (mode == 8) {
+    p.lo = p.hi = pick_sic();
+  } else {
+    p.lo = INT32_MIN; // the full domain
+    p.hi = INT32_MAX;
+  }
+  if (m.Coin(0.02)) p.lo.reset();
+  if (m.Coin(0.02)) p.hi.reset();
+  if (m.Coin(0.55)) {
+    p.stmt = m.Coin(0.03) ? std::nullopt : std::optional<std::string>(kStmts[m.Int(0, 7)]);
+  }
+  if (m.Coin(0.55)) {
+    p.uom = m.Coin(0.03) ? std::nullopt : std::optional<std::string>(kUoms[m.Int(0, 8)]);
+  }
+  return p;
+}
+
 inline Config MakeConfig(int index, bool limit_case) {
   Config c;
   const bool wide = !limit_case && index % 2 == 0;
   c.flavor = limit_case ? Config::Flavor::Limit : wide ? Config::Flavor::Wide : Config::Flavor::Narrow;
   c.adsh = limit_case ? 1400 : wide ? 400 : 70;
-  c.tags = limit_case ? 2 : wide ? 60 : 30;
-  c.tlabels = limit_case ? 2 : wide ? 14 : 6;
+  c.tags = limit_case ? 2 : wide ? 30 : 14;
+  c.tlabels = limit_case ? 2 : wide ? 5 : 3;
   c.ciks = limit_case ? 1400 : wide ? 60 : 12;
-  c.num_rows = limit_case ? 2800 : wide ? 14000 : 4000;
-  c.pre_rows = limit_case ? 0 : wide ? 6000 : 900;
+  c.num_rows = limit_case ? 2800 : wide ? 14000 : 8000;
+  c.pre_rows = limit_case ? 0 : wide ? 6000 : 3000;
   if (limit_case) {
     for (int i = 0; i < 700; ++i) c.sics.push_back(4000 + i);
   } else if (wide) {
-    for (int i = 0; i < 120; ++i) c.sics.push_back(3990 + i * 9); // spans the range edges
+    for (int i = 0; i < 40; ++i) c.sics.push_back(3990 + i * 27); // spans the range edges
     c.sics.insert(c.sics.end(), {4000, 4999, 5000, 3999});
   } else {
     c.sics = {3999, 4000, 4001, 4100, 4999, 5000, 4500};
+  }
+  if (!limit_case) { // SIC division edges
+    c.sics.insert(c.sics.end(), {100, 999, 1000, 1499, 1500, 1799, 2000, 3998, 5001, 5199, 5200,
+                                 5999, 6000, 6799, 7000, 8999, 9000, 9999, 1234});
+    if (!wide) c.sics.resize(std::min<size_t>(c.sics.size(), 13)); // keep narrow data dense
   }
   return c;
 }

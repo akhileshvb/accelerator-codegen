@@ -67,18 +67,24 @@ struct SecEdgarQ4NumInput {
   bool value_is_null = true;
 };
 
-// One bridge key as seen in the base tables (post-write state).
+// One (adsh, tag, version, stmt, uom) bridge record as seen in the base tables
+// (post-write state).  A pre key without any qualifying num row is reported once
+// with has_num=false.  Filters on stmt / uom / sic are NOT applied: the state
+// keeps every stmt and uom and every sic that is not NULL.
 struct SecEdgarQ4BridgeRow {
   std::string adsh;
   std::string tag;
   std::string version;
-  uint32_t mult = 0;  // pre rows with stmt='EQ' for the key
+  std::string stmt;
+  uint32_t mult = 0;  // pre rows with this stmt for the key
   bool cik_null = false;
   int32_t cik = 0;
   int32_t sic = 0;
   bool tlabel_null = false;
   std::string tlabel;
-  double ns = 0.0;    // SUM(value) over uom='USD' AND value IS NOT NULL
+  bool has_num = false;
+  std::string uom;    // valid when has_num
+  double ns = 0.0;    // SUM(value) over this uom's non-NULL values
   double ns_lo = 0.0; // optional low-order part of ns (double-double)
   int64_t nc = 0;     // COUNT(value) over the same rows
 };
@@ -88,7 +94,6 @@ struct SecEdgarQ4BridgeFilter {
     std::string adsh, tag, version;
   };
   bool all = true;          // everything (build)
-  bool include_num = true;  // fill ns/nc (false: engine fills them in later)
   std::vector<std::string> adsh;                              // every key of these filings
   std::vector<std::pair<std::string, std::string>> tag_versions; // every key of these tags
   std::vector<Key> keys;                                      // exact keys
@@ -125,27 +130,8 @@ struct SecEdgarQ4StateImage {
   std::shared_ptr<const SecEdgarQ4State> state;
 };
 
-// Compact serialized forms (used for footprint accounting).
-std::vector<uint8_t> EncodeSecEdgarQ4SicCohort(const SecEdgarQ4State &);
-std::vector<uint8_t> EncodeSecEdgarQ4PreEqBridge(const SecEdgarQ4State &);
-std::vector<uint8_t> EncodeSecEdgarQ4TagTlabel(const SecEdgarQ4State &);
-std::vector<uint8_t> EncodeSecEdgarQ4GroupAggregates(const SecEdgarQ4State &);
-
 // Resident bytes of the in-memory image (what the process actually holds).
 uint64_t SecEdgarQ4ResidentBytes(const SecEdgarQ4State &, SecEdgarQ4ImageKind);
-
-struct SecEdgarQ4OutputRow {
-  int32_t sic = 0;
-  bool tlabel_null = false;
-  std::string tlabel;
-  std::string stmt = "EQ";
-  int64_t num_companies = 0;
-  double total_value = 0.0;
-  double avg_value = 0.0;
-};
-
-// Top-500 groups (same ordering the module emits), for tests and tools.
-std::vector<SecEdgarQ4OutputRow> BuildSecEdgarQ4Output(const SecEdgarQ4State &);
 
 class SecEdgarQ4TxnBuffer final : public core::AuxTxnBuffer {
 public:
@@ -154,6 +140,7 @@ public:
     uint32_t adsh_len = 0;
     uint32_t tag_len = 0;
     uint32_t version_len = 0;
+    uint32_t uom_len = 0;
     double value = 0.0;
     int8_t sign = 0;
   };
@@ -164,7 +151,8 @@ public:
   bool RequiresRebuild() const;
   void MarkRebuild();
   void AddNumDelta(std::string_view adsh, std::string_view tag,
-                   std::string_view version, double value, int8_t sign);
+                   std::string_view version, std::string_view uom, double value,
+                   int8_t sign);
   void AddDirtyAdsh(std::string adsh);
   void AddDirtyTagVersion(std::string tag, std::string version);
   void AddDirtyKey(std::string adsh, std::string tag, std::string version);
@@ -180,6 +168,10 @@ public:
   std::string_view Version(const NumDelta &d) const {
     return std::string_view(arena.data() + d.off + d.adsh_len + d.tag_len,
                             d.version_len);
+  }
+  std::string_view Uom(const NumDelta &d) const {
+    return std::string_view(arena.data() + d.off + d.adsh_len + d.tag_len + d.version_len,
+                            d.uom_len);
   }
   bool HasStructural() const {
     return !dirty_adsh.empty() || !dirty_tv.empty() || !dirty_keys.empty();
@@ -240,14 +232,8 @@ private:
                                                 const char *why) const;
   bool ReadState(core::AuxEngineServices &, SecEdgarQ4State &,
                  core::Version versions[4]) const;
-  void EmitGroups(const SecEdgarQ4Groups &, core::AuxRowSink &) const;
+  void EmitGroups(const SecEdgarQ4Groups &, const SecEdgarQ4Params &,
+                  core::AuxRowSink &) const;
 };
-
-// Exposed for the parallel module / tests.
-SecEdgarQ4State SecEdgarQ4StateFromBridgeRows(
-    const std::vector<SecEdgarQ4BridgeRow> &rows);
-// Finds the entry for (adsh, tag, version); returns kQ4None when absent.
-uint32_t SecEdgarQ4FindEntry(const SecEdgarQ4State &, std::string_view adsh,
-                             std::string_view tag, std::string_view version);
 
 } // namespace accelerator_codegen::aux_state::query

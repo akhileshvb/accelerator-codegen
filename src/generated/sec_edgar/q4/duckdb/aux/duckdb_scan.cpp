@@ -92,7 +92,7 @@ void SecEdgarQ4DuckDbScan::ScanTag(
 void SecEdgarQ4DuckDbScan::ScanPre(
     const std::function<void(const SecEdgarQ4PreInput &)> &consumer) const {
   StreamQuery(connection,
-              "SELECT adsh, tag, version, stmt FROM pre WHERE stmt = 'EQ' AND adsh IS NOT NULL "
+              "SELECT adsh, tag, version, stmt FROM pre WHERE stmt IS NOT NULL AND adsh IS NOT NULL "
               "AND tag IS NOT NULL AND version IS NOT NULL",
               [&](::duckdb::DataChunk &chunk) {
                 ::duckdb::UnifiedVectorFormat a, t, v, s;
@@ -109,7 +109,7 @@ void SecEdgarQ4DuckDbScan::ScanPre(
 void SecEdgarQ4DuckDbScan::ScanNum(
     const std::function<void(const SecEdgarQ4NumInput &)> &consumer) const {
   StreamQuery(connection,
-              "SELECT adsh, tag, version, uom, value FROM num WHERE uom = 'USD' "
+              "SELECT adsh, tag, version, uom, value FROM num WHERE uom IS NOT NULL "
               "AND value IS NOT NULL AND adsh IS NOT NULL AND tag IS NOT NULL "
               "AND version IS NOT NULL",
               [&](::duckdb::DataChunk &chunk) {
@@ -135,12 +135,12 @@ void SecEdgarQ4DuckDbScan::ScanNum(
 void SecEdgarQ4DuckDbScan::ScanBridge(
     const SecEdgarQ4BridgeFilter &filter,
     const std::function<void(const SecEdgarQ4BridgeRow &)> &consumer) const {
-  std::string pre_filter = "p.stmt = 'EQ' AND p.adsh IS NOT NULL AND p.tag IS NOT NULL "
-                           "AND p.version IS NOT NULL";
-  if (!filter.all) {
+  // Restriction on (adsh, tag, version) for alias `a` (pre or num).
+  const auto restrict_to = [&](const std::string &a) -> std::string {
+    if (filter.all) return std::string();
     std::string any;
     if (!filter.adsh.empty()) {
-      any += "p.adsh IN (";
+      any += a + ".adsh IN (";
       for (size_t i = 0; i < filter.adsh.size(); ++i) {
         any += (i ? "," : "") + Lit(filter.adsh[i]);
       }
@@ -148,7 +148,7 @@ void SecEdgarQ4DuckDbScan::ScanBridge(
     }
     if (!filter.tag_versions.empty()) {
       if (!any.empty()) any += " OR ";
-      any += "(p.tag, p.version) IN (";
+      any += "(" + a + ".tag, " + a + ".version) IN (";
       for (size_t i = 0; i < filter.tag_versions.size(); ++i) {
         any += (i ? ",(" : "(") + Lit(filter.tag_versions[i].first) + "," +
                Lit(filter.tag_versions[i].second) + ")";
@@ -157,52 +157,53 @@ void SecEdgarQ4DuckDbScan::ScanBridge(
     }
     if (!filter.keys.empty()) {
       if (!any.empty()) any += " OR ";
-      any += "(p.adsh, p.tag, p.version) IN (";
+      any += "(" + a + ".adsh, " + a + ".tag, " + a + ".version) IN (";
       for (size_t i = 0; i < filter.keys.size(); ++i) {
         any += (i ? ",(" : "(") + Lit(filter.keys[i].adsh) + "," +
                Lit(filter.keys[i].tag) + "," + Lit(filter.keys[i].version) + ")";
       }
       any += ")";
     }
-    if (any.empty()) {
-      return; // nothing requested
-    }
-    pre_filter += " AND (" + any + ")";
+    return " AND (" + any + ")";
+  };
+  if (!filter.all && filter.adsh.empty() && filter.tag_versions.empty() && filter.keys.empty()) {
+    return; // nothing requested
   }
-  std::string sql =
-      "WITH pe AS (SELECT p.adsh, p.tag, p.version, COUNT(*) AS mult FROM pre p WHERE " +
-      pre_filter + " GROUP BY p.adsh, p.tag, p.version) "
-      "SELECT pe.adsh, pe.tag, pe.version, CAST(pe.mult AS BIGINT), "
-      "CAST(s.cik AS INTEGER), CAST(s.sic AS INTEGER), t.tlabel, ";
-  if (filter.include_num) {
-    sql += "CAST(COALESCE(SUM(n.value), 0) AS DOUBLE), CAST(COUNT(n.value) AS BIGINT) ";
-  } else {
-    sql += "CAST(0 AS DOUBLE), CAST(0 AS BIGINT) ";
-  }
-  sql += "FROM pe JOIN sub s ON s.adsh = pe.adsh AND s.sic BETWEEN 4000 AND 4999 "
-         "JOIN tag t ON t.tag = pe.tag AND t.version = pe.version AND t.abstract = 0 ";
-  if (filter.include_num) {
-    sql += "LEFT JOIN num n ON n.adsh = pe.adsh AND n.tag = pe.tag AND "
-           "n.version = pe.version AND n.uom = 'USD' AND n.value IS NOT NULL "
-           "GROUP BY pe.adsh, pe.tag, pe.version, pe.mult, s.cik, s.sic, t.tlabel";
-  }
+  // No predicate on stmt, uom or sic: the state keeps every group.
+  const std::string sql =
+      "WITH pe AS (SELECT p.adsh, p.tag, p.version, p.stmt, COUNT(*) AS mult FROM pre p "
+      "WHERE p.stmt IS NOT NULL AND p.adsh IS NOT NULL AND p.tag IS NOT NULL "
+      "AND p.version IS NOT NULL" + restrict_to("p") +
+      " GROUP BY p.adsh, p.tag, p.version, p.stmt), "
+      "nu AS (SELECT n.adsh, n.tag, n.version, n.uom, SUM(n.value) AS ns, "
+      "COUNT(n.value) AS nc FROM num n WHERE n.uom IS NOT NULL AND n.value IS NOT NULL" +
+      restrict_to("n") + " GROUP BY n.adsh, n.tag, n.version, n.uom) "
+      "SELECT pe.adsh, pe.tag, pe.version, pe.stmt, CAST(pe.mult AS BIGINT), "
+      "CAST(s.cik AS INTEGER), CAST(s.sic AS INTEGER), t.tlabel, nu.uom, "
+      "CAST(nu.ns AS DOUBLE), CAST(nu.nc AS BIGINT) "
+      "FROM pe JOIN sub s ON s.adsh = pe.adsh AND s.sic IS NOT NULL "
+      "JOIN tag t ON t.tag = pe.tag AND t.version = pe.version AND t.abstract = 0 "
+      "LEFT JOIN nu ON nu.adsh = pe.adsh AND nu.tag = pe.tag AND nu.version = pe.version";
   StreamQuery(connection, sql, [&](::duckdb::DataChunk &chunk) {
-    ::duckdb::UnifiedVectorFormat a, t, v, m, c, s, tl, ns, nc;
+    ::duckdb::UnifiedVectorFormat a, t, v, st, m, c, s, tl, u, ns, nc;
     const auto n = chunk.size();
     chunk.data[0].ToUnifiedFormat(n, a);
     chunk.data[1].ToUnifiedFormat(n, t);
     chunk.data[2].ToUnifiedFormat(n, v);
-    chunk.data[3].ToUnifiedFormat(n, m);
-    chunk.data[4].ToUnifiedFormat(n, c);
-    chunk.data[5].ToUnifiedFormat(n, s);
-    chunk.data[6].ToUnifiedFormat(n, tl);
-    chunk.data[7].ToUnifiedFormat(n, ns);
-    chunk.data[8].ToUnifiedFormat(n, nc);
+    chunk.data[3].ToUnifiedFormat(n, st);
+    chunk.data[4].ToUnifiedFormat(n, m);
+    chunk.data[5].ToUnifiedFormat(n, c);
+    chunk.data[6].ToUnifiedFormat(n, s);
+    chunk.data[7].ToUnifiedFormat(n, tl);
+    chunk.data[8].ToUnifiedFormat(n, u);
+    chunk.data[9].ToUnifiedFormat(n, ns);
+    chunk.data[10].ToUnifiedFormat(n, nc);
     for (::duckdb::idx_t r = 0; r < n; ++r) {
       SecEdgarQ4BridgeRow row;
       row.adsh = Str(a, r);
       row.tag = Str(t, r);
       row.version = Str(v, r);
+      row.stmt = Str(st, r);
       row.mult = static_cast<uint32_t>(Data<int64_t>(m)[m.sel->get_index(r)]);
       const auto ci = c.sel->get_index(r);
       row.cik_null = !c.validity.RowIsValid(ci);
@@ -211,8 +212,13 @@ void SecEdgarQ4DuckDbScan::ScanBridge(
       const auto li = tl.sel->get_index(r);
       row.tlabel_null = !tl.validity.RowIsValid(li);
       if (!row.tlabel_null) row.tlabel = Str(tl, r);
-      row.ns = Data<double>(ns)[ns.sel->get_index(r)];
-      row.nc = Data<int64_t>(nc)[nc.sel->get_index(r)];
+      const auto ui = u.sel->get_index(r);
+      row.has_num = u.validity.RowIsValid(ui);
+      if (row.has_num) {
+        row.uom = Str(u, r);
+        row.ns = Data<double>(ns)[ns.sel->get_index(r)];
+        row.nc = Data<int64_t>(nc)[nc.sel->get_index(r)];
+      }
       consumer(row);
     }
   });
