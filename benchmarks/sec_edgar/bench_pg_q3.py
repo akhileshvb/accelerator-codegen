@@ -16,7 +16,7 @@ ACC = "SELECT * FROM accel_sec_edgar_q3_aux()"
 def conn():
     c = psycopg2.connect(host=os.environ.get("PGHOST", "127.0.0.1"), port=int(os.environ.get("PGPORT", "55403")),
                          user=os.environ.get("PGUSER", "postgres"), password=os.environ.get("PGPASSWORD", "postgres"),
-                         dbname=os.environ.get("PGDATABASE", "postgres"))
+                         dbname=os.environ.get("PGDATABASE", "sec_edgar"))
     c.autocommit = True
     return c
 

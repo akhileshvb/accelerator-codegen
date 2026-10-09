@@ -29,7 +29,7 @@ def connect(search_path=None):
                          port=int(os.environ.get("PGPORT", "55403")),
                          user=os.environ.get("PGUSER", "postgres"),
                          password=os.environ.get("PGPASSWORD", "postgres"),
-                         dbname=os.environ.get("PGDATABASE", "postgres"))
+                         dbname=os.environ.get("PGDATABASE", "sec_edgar"))
     c.autocommit = True
     if search_path:
         with c.cursor() as cur:
@@ -267,8 +267,8 @@ def install_triggers(conn):
     # session search_path (q3diff first) resolves it to the schema copy.
     with conn.cursor() as cur:
         cur.execute("SET search_path = q3diff, public")
-        cur.execute("SELECT create_accel_mutation_triggers('num', '1', 'accel_codegen_sec_edgar_t')")
-        cur.execute("SELECT create_accel_mutation_triggers('sub', '2', 'accel_codegen_sec_edgar_t')")
+        cur.execute("SELECT create_accel_mutation_triggers('num', '2', 'accel_codegen_sec_edgar_t')")
+        cur.execute("SELECT create_accel_mutation_triggers('sub', '1', 'accel_codegen_sec_edgar_t')")
 
 
 if __name__ == "__main__":
