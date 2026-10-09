@@ -65,7 +65,7 @@ double Ms(Clock::time_point since) {
 void Require(bool ok, const std::string &what) {
   if (!ok) {
     std::cerr << "FAIL: " << what << '\n';
-    std::abort();
+    std::exit(1);
   }
 }
 
@@ -206,7 +206,7 @@ struct Env {
     } catch (const std::exception &e) {
       std::cerr << "FAIL step " << step << " (" << what << ") params(" << q4gen::ArgsSql(params)
                 << "): " << e.what() << '\n';
-      std::abort();
+      std::exit(1);
     }
     param_rows += sink.rows.size();
     ++param_checks;
@@ -221,7 +221,7 @@ struct Env {
     } catch (const std::exception &e) {
       std::cerr << "FAIL step " << step << " (" << what << "): " << e.what() << '\n';
       Dump(rows, q4gen::BaseSql(q4gen::Params{}));
-      std::abort();
+      std::exit(1);
     }
   }
 
