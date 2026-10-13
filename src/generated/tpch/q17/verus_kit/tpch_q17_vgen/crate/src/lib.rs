@@ -8,6 +8,7 @@ pub mod kernel;
 pub mod gen_world;
 pub mod gen_ffi;
 pub mod storage;
+pub mod ordering;
 pub mod model;
 pub mod aggregation;
 pub mod maintenance;

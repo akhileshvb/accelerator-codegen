@@ -137,6 +137,22 @@ pub proof fn lemma_month_range(db: Db, lower: int, upper: int, customer: int, co
     reveal(fact_range);
 }
 
+/// A window of three whole months is one slice of the quarters shifted by `grain`'s offset.
+pub proof fn lemma_shifted_quarter(db: Db, grain: int, month: int, quarter: int, customer: int, component: int)
+    requires (grain == 2 && 3 * quarter == month) || (grain == 4 && 3 * quarter == month + 1) || (grain == 5 && 3 * quarter == month + 2),
+    ensures fact_range(db, 1, month, month + 3, customer, component) == fact_range(db, grain, quarter, quarter + 1, customer, component),
+{
+    let months = fact_range_weight(db, 1, month, month + 3, customer, component);
+    let quarters = fact_range_weight(db, grain, quarter, quarter + 1, customer, component);
+    assert forall|order: OrdersRow| #[trigger] months(order) == quarters(order) by {
+        let value = month_of(order.o_orderdate);
+        assert(period_of(order.o_orderdate, grain) == (value + (if grain == 2 { 0int } else if grain == 4 { 1int } else { 2int })) / 3);
+        assert((month <= value < month + 3) == (quarter <= period_of(order.o_orderdate, grain) < quarter + 1));
+    }
+    lemma_sum_ext_all(db.orders, months, quarters);
+    reveal(fact_range);
+}
+
 pub proof fn lemma_window_range(db: Db, parameters: Params, customer: int, component: int)
     ensures fact_range(db, 0, parameters.p1, parameters.p2, customer, component)
         == window_fact(db, parameters, customer, component),

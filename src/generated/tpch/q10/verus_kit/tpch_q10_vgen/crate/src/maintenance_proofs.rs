@@ -63,7 +63,7 @@ pub proof fn lemma_patch_capture(before: Db, after: Db, keys: &Index<()>, patche
 }
 
 pub proof fn lemma_patch_bounds(patches: &Patches, day: int, customer: int, grain: int, component: int)
-    requires patches.wf(), patches_valid(*patches), 0 <= grain <= 3,
+    requires patches.wf(), patches_valid(*patches), 0 <= grain <= 5,
         day < period_of(i32::MIN as int, grain) || day > period_of(i32::MAX as int, grain),
     ensures patch_rows_sum(patches.entries(), day, customer, grain, component) == 0,
 {
@@ -79,7 +79,7 @@ pub proof fn lemma_patch_bounds(patches: &Patches, day: int, customer: int, grai
 }
 
 pub proof fn lemma_updated_facts(before: Db, after: Db, previous: Index<Slice>, next: Index<Slice>, patches: &Patches, grain: int)
-    requires 0 <= grain <= 3, facts_valid(before, previous, grain), slices_valid(next), patches.wf(), patches_valid(*patches),
+    requires 0 <= grain <= 5, facts_valid(before, previous, grain), slices_valid(next), patches.wf(), patches_valid(*patches),
         forall|day: int, customer: int, component: int| #[trigger] slice_at(next, day, customer).component(component)
             == slice_at(previous, day, customer).component(component) + patch_rows_sum(patches.entries(), day, customer, grain, component),
         forall|day: int, customer: int, component: int| #[trigger] patch_rows_sum(patches.entries(), day, customer, grain, component)

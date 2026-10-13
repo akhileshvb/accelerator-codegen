@@ -105,18 +105,22 @@ pub open spec fn period_of(day: int, grain: int) -> int {
     if grain == 0 { day }
     else if grain == 1 { month_of(day) }
     else if grain == 2 { month_of(day) / 3 }
-    else { month_of(day) / 12 }
+    else if grain == 3 { month_of(day) / 12 }
+    // quarters offset by one and by two months: every window of three whole months is one of their slices
+    else if grain == 4 { (month_of(day) + 1) / 3 }
+    else { (month_of(day) + 2) / 3 }
 }
 
 pub fn period_key(day: i64, grain: u8) -> (result: i64)
-    requires i32::MIN <= day <= i32::MAX, 0 <= grain <= 3,
+    requires i32::MIN <= day <= i32::MAX, 0 <= grain <= 5,
     ensures result as int == period_of(day as int, grain as int),
         i32::MIN <= result <= i32::MAX,
 {
     if grain == 0 { day }
     else {
         let month = month_key(day);
-        if grain == 1 { month } else if grain == 2 { floor_div(month, 3) } else { floor_div(month, 12) }
+        if grain == 1 { month } else if grain == 2 { floor_div(month, 3) } else if grain == 3 { floor_div(month, 12) }
+        else if grain == 4 { floor_div(month + 1, 3) } else { floor_div(month + 2, 3) }
     }
 }
 

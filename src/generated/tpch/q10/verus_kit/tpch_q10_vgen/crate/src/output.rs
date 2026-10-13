@@ -280,81 +280,42 @@ pub fn add_fact_range(result: &mut Vec<ReadSlice>, slices: &Index<Slice>, lower:
     }
 }
 
-pub fn add_quarters(result: &mut Vec<ReadSlice>, periods: &Periods, lower: i64, upper: i64, Ghost(db): Ghost<Db>)
-    requires i32::MIN <= lower <= upper <= i32::MAX, read_slices_valid(old(result)@), fresh_slices(old(result)@),
-        slices_valid(periods.quarters), slices_valid(periods.years),
-        facts_valid(db, periods.quarters, 2), facts_valid(db, periods.years, 3),
+pub fn add_three_months(result: &mut Vec<ReadSlice>, periods: &Periods, first: i64, Ghost(db): Ghost<Db>)
+    requires i32::MIN <= first <= i32::MAX, read_slices_valid(old(result)@), fresh_slices(old(result)@),
+        slices_valid(periods.quarters), slices_valid(periods.quarters1), slices_valid(periods.quarters2),
+        facts_valid(db, periods.quarters, 2), facts_valid(db, periods.quarters1, 4), facts_valid(db, periods.quarters2, 5),
     ensures read_slices_valid(final(result)@), fresh_slices(final(result)@),
         forall|customer: int, component: int| #[trigger] read_moment_sum(final(result)@, customer, component)
             == read_moment_sum(old(result)@, customer, component)
-                + crate::read_proofs::fact_range(db, 2, lower as int, upper as int, customer, component),
+                + crate::read_proofs::fact_range(db, 1, first as int, first as int + 3, customer, component),
 {
-    let ghost original = result@;
-    let first_year = floor_div(lower + 3, 4);
-    let last_year = floor_div(upper, 4);
-    if first_year >= last_year {
-        add_fact_range(result, &periods.quarters, lower, upper, Ghost(db), Ghost(2int));
+    let remainder = first - floor_div(first, 3) * 3;
+    let offset: i64 = if remainder == 0 { 0 } else if remainder == 1 { 2 } else { 1 };
+    let quarter = floor_div(first + offset, 3);
+    proof { assert(3 * quarter as int == first as int + offset as int); }
+    if offset == 0 {
+        add_fact_range(result, &periods.quarters, quarter, quarter + 1, Ghost(db), Ghost(2int));
+    } else if offset == 1 {
+        add_fact_range(result, &periods.quarters1, quarter, quarter + 1, Ghost(db), Ghost(4int));
     } else {
-        add_fact_range(result, &periods.quarters, lower, first_year * 4, Ghost(db), Ghost(2int));
-        let ghost first = result@;
-        add_fact_range(result, &periods.years, first_year, last_year, Ghost(db), Ghost(3int));
-        let ghost middle = result@;
-        add_fact_range(result, &periods.quarters, last_year * 4, upper, Ghost(db), Ghost(2int));
-        proof {
-            assert forall|customer: int, component: int| #[trigger] read_moment_sum(result@, customer, component)
-                == read_moment_sum(original, customer, component)
-                    + crate::read_proofs::fact_range(db, 2, lower as int, upper as int, customer, component) by {
-                assert(read_moment_sum(first, customer, component) == read_moment_sum(original, customer, component)
-                    + crate::read_proofs::fact_range(db, 2, lower as int, first_year as int * 4, customer, component));
-                assert(read_moment_sum(middle, customer, component) == read_moment_sum(first, customer, component)
-                    + crate::read_proofs::fact_range(db, 3, first_year as int, last_year as int, customer, component));
-                assert(read_moment_sum(result@, customer, component) == read_moment_sum(middle, customer, component)
-                    + crate::read_proofs::fact_range(db, 2, last_year as int * 4, upper as int, customer, component));
-                crate::read_proofs::lemma_fact_cover(db, 2, lower as int, first_year as int, last_year as int, upper as int, customer, component);
-            }
+        add_fact_range(result, &periods.quarters2, quarter, quarter + 1, Ghost(db), Ghost(5int));
+    }
+    proof {
+        assert forall|customer: int, component: int| #[trigger] read_moment_sum(result@, customer, component)
+            == read_moment_sum(old(result)@, customer, component)
+                + crate::read_proofs::fact_range(db, 1, first as int, first as int + 3, customer, component) by {
+            crate::read_proofs::lemma_shifted_quarter(db, if offset == 0 { 2int } else if offset == 1 { 4int } else { 5int },
+                first as int, quarter as int, customer, component);
         }
     }
 }
 
-pub fn add_months(result: &mut Vec<ReadSlice>, periods: &Periods, lower: i64, upper: i64, Ghost(db): Ghost<Db>)
-    requires i32::MIN <= lower <= upper <= i32::MAX, read_slices_valid(old(result)@), fresh_slices(old(result)@),
-        slices_valid(periods.months), slices_valid(periods.quarters), slices_valid(periods.years),
-        facts_valid(db, periods.months, 1), facts_valid(db, periods.quarters, 2), facts_valid(db, periods.years, 3),
-    ensures read_slices_valid(final(result)@), fresh_slices(final(result)@),
-        forall|customer: int, component: int| #[trigger] read_moment_sum(final(result)@, customer, component)
-            == read_moment_sum(old(result)@, customer, component)
-                + crate::read_proofs::fact_range(db, 1, lower as int, upper as int, customer, component),
-{
-    let ghost original = result@;
-    let first_quarter = floor_div(lower + 2, 3);
-    let last_quarter = floor_div(upper, 3);
-    if first_quarter >= last_quarter {
-        add_fact_range(result, &periods.months, lower, upper, Ghost(db), Ghost(1int));
-    } else {
-        add_fact_range(result, &periods.months, lower, first_quarter * 3, Ghost(db), Ghost(1int));
-        let ghost first = result@;
-        add_quarters(result, periods, first_quarter, last_quarter, Ghost(db));
-        let ghost middle = result@;
-        add_fact_range(result, &periods.months, last_quarter * 3, upper, Ghost(db), Ghost(1int));
-        proof {
-            assert forall|customer: int, component: int| #[trigger] read_moment_sum(result@, customer, component)
-                == read_moment_sum(original, customer, component)
-                    + crate::read_proofs::fact_range(db, 1, lower as int, upper as int, customer, component) by {
-                assert(read_moment_sum(first, customer, component) == read_moment_sum(original, customer, component)
-                    + crate::read_proofs::fact_range(db, 1, lower as int, first_quarter as int * 3, customer, component));
-                assert(read_moment_sum(middle, customer, component) == read_moment_sum(first, customer, component)
-                    + crate::read_proofs::fact_range(db, 2, first_quarter as int, last_quarter as int, customer, component));
-                assert(read_moment_sum(result@, customer, component) == read_moment_sum(middle, customer, component)
-                    + crate::read_proofs::fact_range(db, 1, last_quarter as int * 3, upper as int, customer, component));
-                crate::read_proofs::lemma_fact_cover(db, 1, lower as int, first_quarter as int, last_quarter as int, upper as int, customer, component);
-            }
-        }
-    }
-}
-
+#[verifier::rlimit(80)]
 pub fn selected_slices(days: &Index<Slice>, periods: &Periods, lower: i32, upper: i32, Ghost(db): Ghost<Db>) -> (result: Vec<ReadSlice>)
-    requires slices_valid(*days), slices_valid(periods.months), slices_valid(periods.quarters), slices_valid(periods.years),
-        facts_valid(db, *days, 0), facts_valid(db, periods.months, 1), facts_valid(db, periods.quarters, 2), facts_valid(db, periods.years, 3),
+    requires slices_valid(*days), slices_valid(periods.quarters),
+        slices_valid(periods.quarters1), slices_valid(periods.quarters2),
+        facts_valid(db, *days, 0), facts_valid(db, periods.quarters, 2),
+        facts_valid(db, periods.quarters1, 4), facts_valid(db, periods.quarters2, 5),
     ensures read_slices_valid(result@), fresh_slices(result@),
         lower < upper ==> forall|customer: int, component: int| #[trigger] read_moment_sum(result@, customer, component)
             == crate::query_semantics::window_fact(db, params(lower as int, upper as int), customer, component),
@@ -365,16 +326,37 @@ pub fn selected_slices(days: &Index<Slice>, periods: &Periods, lower: i32, upper
     let end = upper as i64;
     let start_month = month_key(start);
     let end_month = month_key(end);
+    if start_month + 3 == end_month && first_day(start_month) == start && first_day(end_month) == end {
+        // three whole months (the shape of the TPC-H window): one slice of one of the three quarter grains
+        proof { crate::calendar_proofs::lemma_month_start_order(start_month as int, end_month as int); }
+        add_three_months(&mut result, periods, start_month, Ghost(db));
+        proof {
+            assert forall|customer: int, component: int| #[trigger] read_moment_sum(result@, customer, component)
+                == crate::query_semantics::window_fact(db, params(lower as int, upper as int), customer, component) by {
+                crate::read_proofs::lemma_month_range(db, start_month as int, end_month as int, customer, component);
+                crate::read_proofs::lemma_window_range(db, params(lower as int, upper as int), customer, component);
+            }
+        }
+        return result;
+    }
+    // otherwise: the whole quarters inside the window from the quarter grain, the rest day by day
     let first_month = if first_day(start_month) == start { start_month } else { start_month + 1 };
-    if first_month >= end_month {
+    let first_quarter = floor_div(first_month + 2, 3);
+    let last_quarter = floor_div(end_month, 3);
+    if first_month >= end_month || first_quarter >= last_quarter {
         add_fact_range(&mut result, days, start, end, Ghost(db), Ghost(0int));
     } else {
-        proof { crate::calendar_proofs::lemma_day_cover_bounds(start as int, end as int); }
-        let first_date = first_day(first_month);
-        let last_date = first_day(end_month);
+        proof {
+            crate::calendar_proofs::lemma_day_cover_bounds(start as int, end as int);
+            crate::calendar_proofs::lemma_month_start_order(first_month as int, first_quarter as int * 3);
+            crate::calendar_proofs::lemma_month_start_order(first_quarter as int * 3, last_quarter as int * 3);
+            crate::calendar_proofs::lemma_month_start_order(last_quarter as int * 3, end_month as int);
+        }
+        let first_date = first_day(first_quarter * 3);
+        let last_date = first_day(last_quarter * 3);
         add_fact_range(&mut result, days, start, first_date, Ghost(db), Ghost(0int));
         let ghost first = result@;
-        add_months(&mut result, periods, first_month, end_month, Ghost(db));
+        add_fact_range(&mut result, &periods.quarters, first_quarter, last_quarter, Ghost(db), Ghost(2int));
         let ghost middle = result@;
         add_fact_range(&mut result, days, last_date, end, Ghost(db), Ghost(0int));
         proof {
@@ -383,10 +365,11 @@ pub fn selected_slices(days: &Index<Slice>, periods: &Periods, lower: i32, upper
                 assert(read_moment_sum(first, customer, component)
                     == crate::read_proofs::fact_range(db, 0, start as int, first_date as int, customer, component));
                 assert(read_moment_sum(middle, customer, component) == read_moment_sum(first, customer, component)
-                    + crate::read_proofs::fact_range(db, 1, first_month as int, end_month as int, customer, component));
+                    + crate::read_proofs::fact_range(db, 2, first_quarter as int, last_quarter as int, customer, component));
                 assert(read_moment_sum(result@, customer, component) == read_moment_sum(middle, customer, component)
                     + crate::read_proofs::fact_range(db, 0, last_date as int, end as int, customer, component));
-                crate::read_proofs::lemma_month_range(db, first_month as int, end_month as int, customer, component);
+                crate::read_proofs::lemma_range_coarsen(db, 1, first_quarter as int, last_quarter as int, customer, component);
+                crate::read_proofs::lemma_month_range(db, first_quarter as int * 3, last_quarter as int * 3, customer, component);
                 crate::read_proofs::lemma_range_split(db, 0, start as int, first_date as int, end as int, customer, component);
                 crate::read_proofs::lemma_range_split(db, 0, first_date as int, last_date as int, end as int, customer, component);
             }
@@ -1010,16 +993,17 @@ pub fn output_rows(top: &Vec<Candidate>) -> (result: Vec<OutputRow>)
 #[verifier::rlimit(100)]
 pub fn run(days: &Index<Slice>, periods: &Periods, dimensions: &Dimensions, lower: i32, upper: i32,
     Ghost(db): Ghost<Db>) -> (result: Option<Vec<OutputRow>>)
-    requires facts_valid(db, *days, 0), facts_valid(db, periods.months, 1),
-        facts_valid(db, periods.quarters, 2), facts_valid(db, periods.years, 3),
+    requires facts_valid(db, *days, 0),
+        facts_valid(db, periods.quarters, 2),
+        facts_valid(db, periods.quarters1, 4), facts_valid(db, periods.quarters2, 5),
         dimensions_valid(db, *dimensions),
     ensures result matches Some(out) ==> query_result(db, params(lower as int, upper as int), out_view(out@)),
 {
     proof {
         lemma_facts_shape(db, *days, 0);
-        lemma_facts_shape(db, periods.months, 1);
         lemma_facts_shape(db, periods.quarters, 2);
-        lemma_facts_shape(db, periods.years, 3);
+        lemma_facts_shape(db, periods.quarters1, 4);
+        lemma_facts_shape(db, periods.quarters2, 5);
         lemma_dimensions_shape(db, *dimensions);
         reveal(dimensions_valid);
         lemma_maxima_ranked_values(dimensions.nation_totals, dimensions.nation_maxima);

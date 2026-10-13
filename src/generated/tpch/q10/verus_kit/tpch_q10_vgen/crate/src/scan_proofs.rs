@@ -247,7 +247,7 @@ pub proof fn lemma_scanned_facts(db: Db, orders: Seq<OrderInput>, rows: Seq<Retu
 }
 
 pub proof fn lemma_scanned_bounds(orders: Seq<OrderInput>, rows: Seq<ReturnedLineInput>, day: int, customer: int, grain: int, component: int)
-    requires 0 <= grain <= 3,
+    requires 0 <= grain <= 5,
         day < period_of(i32::MIN as int, grain) || day > period_of(i32::MAX as int, grain),
     ensures scanned_fact_sum(orders, rows, day, customer, grain, component) == 0,
 {
@@ -261,7 +261,7 @@ pub proof fn lemma_scanned_bounds(orders: Seq<OrderInput>, rows: Seq<ReturnedLin
 }
 
 pub proof fn lemma_facts_from_scans(db: Db, slices: Index<Slice>, orders: Seq<OrderInput>, rows: Seq<ReturnedLineInput>, grain: int)
-    requires scan_orders_ok(db, orders), scan_returned_lines_ok(db, rows), 0 <= grain <= 3,
+    requires scan_orders_ok(db, orders), scan_returned_lines_ok(db, rows), 0 <= grain <= 5,
         slices_valid(slices),
         forall|day: int, customer: int, component: int|
             #[trigger] slice_at(slices, day, customer).component(component)

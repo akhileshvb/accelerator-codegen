@@ -512,8 +512,8 @@ pub fn touched_keys(delta: &[LineKeyDelta]) -> (result: Vec<i64>)
     ensures result@.no_duplicates(), forall|index: int| #![trigger delta@[index]]
         0 <= index < delta@.len() ==> result@.contains(delta@[index].l_partkey),
 {
-    let mut seen: HashMap<i64, bool> = HashMap::new();
-    let mut keys = Vec::new();
+    let mut seen: HashMap<i64, bool> = HashMap::with_capacity(delta.len());
+    let mut keys = Vec::with_capacity(delta.len());
     let mut index = 0;
     let mut processed = Ghost(0int);
     while index < delta.len()

@@ -19,6 +19,13 @@ pub proof fn lemma_route(span: nat, slot: nat)
         requires span > 1, slot < span, span == 16 * (span / 16);
 }
 
+/// Allocation size for an overlay rebuilt from `len` entries plus one (a hint only).
+pub fn capacity_hint(len: usize) -> (result: usize)
+{ if len < 32 { len + 1 } else { 33 } }
+
+pub fn sum_hint(a: usize, b: usize) -> (result: usize)
+{ match a.checked_add(b) { Some(value) => value, None => a } }
+
 pub struct Bucket<Value> {
     pub base: Arc<HashMap<i64, Arc<Value>>>,
     pub keys: Arc<Vec<i64>>,
@@ -63,8 +70,8 @@ impl<Value> Bucket<Value> {
                 match value { Some(payload) => Some(*payload), None => None }
             } else { self.lookup(other) },
     {
-        let mut overlay: HashMap<i64, Option<Arc<Value>>> = HashMap::new();
-        let mut overlay_keys: Vec<i64> = Vec::new();
+        let mut overlay: HashMap<i64, Option<Arc<Value>>> = HashMap::with_capacity(capacity_hint(self.overlay_keys.len()));
+        let mut overlay_keys: Vec<i64> = Vec::with_capacity(capacity_hint(self.overlay_keys.len()));
         let mut index = 0;
         while index < self.overlay_keys.len()
             invariant index <= self.overlay_keys.len(), self.wf(),
@@ -115,8 +122,8 @@ impl<Value> Bucket<Value> {
             } else { self.lookup(other) } by {}
         }
         if updated.overlay_keys.len() < 32 { return updated; }
-        let mut base: HashMap<i64, Arc<Value>> = HashMap::new();
-        let mut keys: Vec<i64> = Vec::new();
+        let mut base: HashMap<i64, Arc<Value>> = HashMap::with_capacity(sum_hint(updated.keys.len(), updated.overlay_keys.len()));
+        let mut keys: Vec<i64> = Vec::with_capacity(sum_hint(updated.keys.len(), updated.overlay_keys.len()));
         index = 0;
         while index < updated.keys.len()
             invariant index <= updated.keys.len(), updated.wf(),
@@ -257,7 +264,7 @@ impl<Value> Page<Value> {
                 let target = slot / width;
                 proof { assert(children@[target as int].wf(width as nat)); }
                 let replacement = Arc::new(children[target].replace(width, slot % width, key, value));
-                let mut copied = Vec::new();
+                let mut copied = Vec::with_capacity(16);
                 let mut index = 0;
                 while index < children.len()
                     invariant index <= children.len(), children.len() == 16,

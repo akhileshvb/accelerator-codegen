@@ -924,7 +924,7 @@ pub fn merge_moment_patch(target: &mut Index<Moments>, source: &Index<Moments>) 
 }
 
 pub fn coarsen_patches(patches: &Patches, grain: u8) -> (result: Option<Patches>)
-    requires patches_valid(*patches), 0 <= grain <= 3,
+    requires patches_valid(*patches), 0 <= grain <= 5,
     ensures result matches Some(coarse) ==> patches_valid(coarse),
         result matches Some(coarse) ==> forall|day: int, customer: int, component: int|
             #[trigger] patch_at(coarse, day, customer).component(component)
@@ -941,7 +941,7 @@ pub fn coarsen_patches(patches: &Patches, grain: u8) -> (result: Option<Patches>
     let ghost processed = 0int;
     let mut outer = patches.cursor();
     loop
-        invariant patches_valid(*patches), patches_valid(coarse), 0 <= grain <= 3,
+        invariant patches_valid(*patches), patches_valid(coarse), 0 <= grain <= 5,
             patches.wf(), entries == patches.entries(),
             0 <= processed <= entries.len(), outer.remaining() == entries.skip(processed),
             forall|position: int| #![trigger entries[position]]
@@ -1024,17 +1024,22 @@ pub fn install_slice_patches(slices: &mut Index<Slice>, day: i64, customers: &In
     let ghost before = *slices;
     let ghost entries = customers.entries();
     let ghost processed = 0int;
+    // edit the slice in place and store it once
+    let key = Key::number(day);
+    let mut slice = take_slice(&*slices, &key, Ghost(day as int));
+    let ghost start = slice;
+    proof { assert(entries.take(0) =~= Seq::<((int, Seq<u8>), Moments)>::empty()); }
     let mut cursor = customers.cursor();
     loop
-        invariant slices_valid(*slices), before == *old(slices),
+        invariant slices_valid(*slices), *slices == before, before == *old(slices), slice.valid(), start.valid(),
+            key.view() == (day as int, Seq::<u8>::empty()),
+            forall|target: int| #[trigger] cell_at(start.cells, target) == slice_at(before, day as int, target),
             customers.wf(), moment_index_valid(*customers), entries == customers.entries(),
             0 <= processed <= entries.len(), cursor.remaining() == entries.skip(processed),
             forall|position: int| #![trigger entries[position]]
                 0 <= position < entries.len() ==> customers.at(entries[position].0) == Some(entries[position].1),
-            forall|target_day: int, customer: int, component: int|
-                #[trigger] slice_at(*slices, target_day, customer).component(component)
-                    == slice_at(before, target_day, customer).component(component)
-                        + if target_day == day { moment_rows_sum(entries.take(processed), customer, component) } else { 0 },
+            forall|target: int, component: int| #[trigger] cell_at(slice.cells, target).component(component)
+                == cell_at(start.cells, target).component(component) + moment_rows_sum(entries.take(processed), target, component),
         decreases cursor.remaining().len(),
     {
         let (customer, change) = match cursor.next() {
@@ -1043,11 +1048,21 @@ pub fn install_slice_patches(slices: &mut Index<Slice>, day: i64, customers: &In
                 proof {
                     assert(processed == entries.len());
                     assert(entries.take(processed) =~= entries);
+                    assert forall|target: int, component: int| #[trigger] cell_at(slice.cells, target).component(component)
+                        == cell_at(start.cells, target).component(component) + moment_at(*customers, target).component(component) by {
+                        lemma_moment_rows(customers, target, component);
+                    }
+                }
+                let ghost final_slice = slice;
+                put_slice(slices, key, slice, Ghost(day as int));
+                proof {
                     assert forall|target_day: int, customer: int, component: int|
                         #[trigger] slice_at(*slices, target_day, customer).component(component)
                             == slice_at(before, target_day, customer).component(component)
                                 + if target_day == day { moment_at(*customers, customer).component(component) } else { 0 } by {
-                        lemma_moment_rows(customers, customer, component);
+                        if target_day == day {
+                            assert(cell_at(final_slice.cells, customer) == slice_at(*slices, day as int, customer));
+                        }
                     }
                 }
                 return true;
@@ -1058,12 +1073,10 @@ pub fn install_slice_patches(slices: &mut Index<Slice>, day: i64, customers: &In
             assert(customers.at(customer.view()).is_some());
             assert(customer.view().1 == Seq::<u8>::empty());
         }
-        if !edit_slice(slices, day, customer.number, *change) { return false; }
+        if !edit_cell(&mut slice, customer.number, *change) { return false; }
         proof {
-            assert forall|target_day: int, target: int, component: int|
-                #[trigger] slice_at(*slices, target_day, target).component(component)
-                    == slice_at(before, target_day, target).component(component)
-                        + if target_day == day { moment_rows_sum(entries.take(processed + 1), target, component) } else { 0 } by {
+            assert forall|target: int, component: int| #[trigger] cell_at(slice.cells, target).component(component)
+                == cell_at(start.cells, target).component(component) + moment_rows_sum(entries.take(processed + 1), target, component) by {
                 verus_common::sums::lemma_sum_take(entries, processed, moment_row_weight(target, component));
             }
             processed = processed + 1;
@@ -1133,22 +1146,24 @@ pub fn install_patches(slices: &mut Index<Slice>, patches: &Patches) -> (result:
 }
 
 pub fn apply_patches(days: &mut Index<Slice>, periods: &mut Periods, patches: &Patches) -> (result: bool)
-    requires slices_valid(*old(days)), slices_valid(old(periods).months),
-        slices_valid(old(periods).quarters), slices_valid(old(periods).years), patches_valid(*patches),
-    ensures result ==> slices_valid(*final(days)), result ==> slices_valid(final(periods).months),
-        result ==> slices_valid(final(periods).quarters), result ==> slices_valid(final(periods).years),
+    requires slices_valid(*old(days)),
+        slices_valid(old(periods).quarters), patches_valid(*patches),
+        slices_valid(old(periods).quarters1), slices_valid(old(periods).quarters2),
+    ensures result ==> slices_valid(*final(days)),
+        result ==> slices_valid(final(periods).quarters),
+        result ==> slices_valid(final(periods).quarters1), result ==> slices_valid(final(periods).quarters2),
         result ==> forall|day: int, customer: int, component: int|
             #[trigger] slice_at(*final(days), day, customer).component(component)
                 == slice_at(*old(days), day, customer).component(component) + patch_at(*patches, day, customer).component(component),
         result ==> forall|day: int, customer: int, component: int|
-            #[trigger] slice_at(final(periods).months, day, customer).component(component)
-                == slice_at(old(periods).months, day, customer).component(component) + patch_rows_sum(patches.entries(), day, customer, 1, component),
-        result ==> forall|day: int, customer: int, component: int|
             #[trigger] slice_at(final(periods).quarters, day, customer).component(component)
                 == slice_at(old(periods).quarters, day, customer).component(component) + patch_rows_sum(patches.entries(), day, customer, 2, component),
         result ==> forall|day: int, customer: int, component: int|
-            #[trigger] slice_at(final(periods).years, day, customer).component(component)
-                == slice_at(old(periods).years, day, customer).component(component) + patch_rows_sum(patches.entries(), day, customer, 3, component),
+            #[trigger] slice_at(final(periods).quarters1, day, customer).component(component)
+                == slice_at(old(periods).quarters1, day, customer).component(component) + patch_rows_sum(patches.entries(), day, customer, 4, component),
+        result ==> forall|day: int, customer: int, component: int|
+            #[trigger] slice_at(final(periods).quarters2, day, customer).component(component)
+                == slice_at(old(periods).quarters2, day, customer).component(component) + patch_rows_sum(patches.entries(), day, customer, 5, component),
 {
     if patches.is_empty() {
         let snapshot = patches.share();
@@ -1162,12 +1177,12 @@ pub fn apply_patches(days: &mut Index<Slice>, periods: &mut Periods, patches: &P
         return true;
     }
     if !install_patches(days, patches) { return false; }
-    let months = match coarsen_patches(patches, 1) { Some(value) => value, None => return false };
-    if !install_patches(&mut periods.months, &months) { return false; }
     let quarters = match coarsen_patches(patches, 2) { Some(value) => value, None => return false };
     if !install_patches(&mut periods.quarters, &quarters) { return false; }
-    let years = match coarsen_patches(patches, 3) { Some(value) => value, None => return false };
-    install_patches(&mut periods.years, &years)
+    let quarters1 = match coarsen_patches(patches, 4) { Some(value) => value, None => return false };
+    if !install_patches(&mut periods.quarters1, &quarters1) { return false; }
+    let quarters2 = match coarsen_patches(patches, 5) { Some(value) => value, None => return false };
+    install_patches(&mut periods.quarters2, &quarters2)
 }
 
 #[verifier::rlimit(20)]

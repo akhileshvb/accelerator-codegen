@@ -26,32 +26,36 @@ pub open spec fn cell_at(cells: Paged<CellEnt>, customer: int) -> Moments {
 pub open spec fn rank_of(cell: CellEnt) -> RankEnt { RankEnt { upper: cell.upper, customer: cell.customer } }
 
 pub struct Periods {
-    pub months: Index<Slice>,
     pub quarters: Index<Slice>,
-    pub years: Index<Slice>,
+    /// quarters shifted by one and by two months (grains 4 and 5): any window of three whole months is a slice of one of the three quarter grains
+    pub quarters1: Index<Slice>,
+    pub quarters2: Index<Slice>,
 }
 
 impl Periods {
     pub fn new() -> (result: Self)
-        ensures slices_valid(result.months), slices_valid(result.quarters), slices_valid(result.years),
-            forall|key: (int, Seq<u8>)| #[trigger] result.months.at(key) == None,
+        ensures slices_valid(result.quarters),
+            slices_valid(result.quarters1), slices_valid(result.quarters2),
+            forall|key: (int, Seq<u8>)| #[trigger] result.quarters1.at(key) == None,
+            forall|key: (int, Seq<u8>)| #[trigger] result.quarters2.at(key) == None,
             forall|key: (int, Seq<u8>)| #[trigger] result.quarters.at(key) == None,
-            forall|key: (int, Seq<u8>)| #[trigger] result.years.at(key) == None,
     {
-        Self { months: Index::new(), quarters: Index::new(), years: Index::new() }
+        Self { quarters: Index::new(), quarters1: Index::new(), quarters2: Index::new() }
     }
 
     pub fn share(&self) -> (result: Self)
-        ensures result.months.tree() == self.months.tree(), result.quarters.tree() == self.quarters.tree(), result.years.tree() == self.years.tree(),
-            slices_valid(self.months) ==> slices_valid(result.months),
+        ensures result.quarters.tree() == self.quarters.tree(),
+            result.quarters1.tree() == self.quarters1.tree(), result.quarters2.tree() == self.quarters2.tree(),
+            slices_valid(self.quarters1) ==> slices_valid(result.quarters1),
+            slices_valid(self.quarters2) ==> slices_valid(result.quarters2),
             slices_valid(self.quarters) ==> slices_valid(result.quarters),
-            slices_valid(self.years) ==> slices_valid(result.years),
     {
-        let result = Self { months: self.months.share(), quarters: self.quarters.share(), years: self.years.share() };
+        let result = Self { quarters: self.quarters.share(),
+            quarters1: self.quarters1.share(), quarters2: self.quarters2.share() };
         proof {
-            assert forall|key: (int, Seq<u8>)| #[trigger] result.months.at(key) == self.months.at(key) by {}
             assert forall|key: (int, Seq<u8>)| #[trigger] result.quarters.at(key) == self.quarters.at(key) by {}
-            assert forall|key: (int, Seq<u8>)| #[trigger] result.years.at(key) == self.years.at(key) by {}
+            assert forall|key: (int, Seq<u8>)| #[trigger] result.quarters1.at(key) == self.quarters1.at(key) by {}
+            assert forall|key: (int, Seq<u8>)| #[trigger] result.quarters2.at(key) == self.quarters2.at(key) by {}
         }
         result
     }
@@ -221,6 +225,51 @@ pub proof fn lemma_edit_valid(before: Slice, after: Slice, customer: i64, old: M
     }
 }
 
+/// Add `change` to one customer's cell of a slice (and move its rank entry).
+#[verifier::rlimit(60)]
+pub fn edit_cell(slice: &mut Slice, customer: i64, change: Moments) -> (result: bool)
+    requires old(slice).valid(),
+    ensures result ==> final(slice).valid(),
+        result ==> forall|target: int, component: int| #[trigger] cell_at(final(slice).cells, target).component(component)
+            == cell_at(old(slice).cells, target).component(component)
+                + if target == customer as int { change.component(component) } else { 0 },
+{
+    let ghost before_slice = *slice;
+    let probe = probe_cell(customer);
+    let old_cell = slice.cells.get(&probe);
+    let old = match old_cell {
+        Some(cell) => Moments { count: cell.count as i128, revenue: cell.revenue as i128, upper: cell.upper as i128 },
+        None => Moments::zero(),
+    };
+    proof {
+        assert(slice.valid());
+        assert(old == cell_at(slice.cells, customer as int));
+        assert(old.upper >= 0);
+    }
+    let next = match old.add(change) { Some(value) => value, None => return false };
+    if next.count < 0 || next.upper < 0 || next.revenue > next.upper { return false; }
+    if next.count == 0 && !next.is_zero() { return false; }
+    if next.count > u32::MAX as i128 || next.upper > i64::MAX as i128 || next.revenue < i64::MIN as i128 { return false; }
+    let new_cell = CellEnt { customer, count: next.count as u32, revenue: next.revenue as i64, upper: next.upper as i64 };
+    let new_rank = RankEnt { upper: next.upper as i64, customer };
+    if old.count > 0 { slice.ranks.remove(&RankEnt { upper: old.upper as i64, customer }); }
+    let ghost ranks_removed = slice.ranks;
+    if next.count == 0 { slice.cells.remove(&probe); }
+    else {
+        slice.cells.put(new_cell);
+        slice.ranks.put(new_rank);
+    }
+    proof {
+        lemma_edit_valid(before_slice, *slice, customer, old, next, ranks_removed);
+        assert forall|target: int, component: int| #[trigger] cell_at(slice.cells, target).component(component)
+            == cell_at(before_slice.cells, target).component(component)
+                + if target == customer as int { change.component(component) } else { 0 } by {
+            if target == customer as int { assert(cell_at(slice.cells, target) == next); }
+        }
+    }
+    true
+}
+
 #[verifier::rlimit(60)]
 pub fn edit_slice(slices: &mut Index<Slice>, day: i64, customer: i64, change: Moments) -> (result: bool)
     requires slices_valid(*old(slices)),
@@ -232,52 +281,10 @@ pub fn edit_slice(slices: &mut Index<Slice>, day: i64, customer: i64, change: Mo
 {
     let ghost before = *slices;
     let key = Key::number(day);
-    let mut slice = match slices.get(&key) {
-        Some(value) => {
-            let shared = value.share();
-            proof {
-                assert(before.at(key.view()) == Some(*value));
-                assert(value.valid());
-                assert forall|target: int| #[trigger] cell_at(shared.cells, target) == slice_at(before, day as int, target) by {}
-            }
-            shared
-        },
-        None => Slice::new(),
-    };
+    let mut slice = take_slice(slices, &key, Ghost(day as int));
     let ghost before_slice = slice;
-    let probe = probe_cell(customer);
-    let old_cell = slice.cells.get(&probe);
-    let old = match old_cell {
-        Some(cell) => Moments { count: cell.count as i128, revenue: cell.revenue as i128, upper: cell.upper as i128 },
-        None => Moments::zero(),
-    };
-    proof {
-        assert(slice.valid());
-        assert(old == cell_at(slice.cells, customer as int));
-        assert(old.upper >= 0);
-        assert forall|target: int| #[trigger] cell_at(slice.cells, target)
-            == slice_at(before, day as int, target) by {}
-    }
-    let next = match old.add(change) { Some(value) => value, None => return false };
-    if next.count < 0 || next.upper < 0 || next.revenue > next.upper { return false; }
-    if next.count == 0 && !next.is_zero() { return false; }
-    if next.count > u32::MAX as i128 || next.upper > i64::MAX as i128 || next.revenue < i64::MIN as i128 { return false; }
-    let ghost old_rank = RankEnt { upper: old.upper as i64, customer };
-    let new_cell = CellEnt { customer, count: next.count as u32, revenue: next.revenue as i64, upper: next.upper as i64 };
-    let new_rank = RankEnt { upper: next.upper as i64, customer };
-    let ghost ranks_before = slice.ranks;
-    if old.count > 0 { slice.ranks.remove(&RankEnt { upper: old.upper as i64, customer }); }
-    let ghost ranks_removed = slice.ranks;
-    if next.count == 0 { slice.cells.remove(&probe); }
-    else {
-        slice.cells.put(new_cell);
-        slice.ranks.put(new_rank);
-    }
-    proof {
-        lemma_edit_valid(before_slice, slice, customer, old, next, ranks_removed);
-    }
-    if slice.cells.is_empty() { slices.remove(&key); }
-    else { slices.put(key, Arc::new(slice)); }
+    if !edit_cell(&mut slice, customer, change) { return false; }
+    put_slice(slices, key, slice, Ghost(day as int));
     proof {
         assert(slices_valid(*slices));
         assert forall|target_day: int, target_customer: int, component: int|
@@ -285,15 +292,42 @@ pub fn edit_slice(slices: &mut Index<Slice>, day: i64, customer: i64, change: Mo
                 == slice_at(before, target_day, target_customer).component(component)
                     + if target_day == day && target_customer == customer { change.component(component) } else { 0 } by {
             if target_day == day {
-                if target_customer == customer {
-                    assert(cell_at(slice.cells, target_customer) == next);
-                } else {
-                    assert(cell_at(slice.cells, target_customer) == cell_at(before_slice.cells, target_customer));
-                }
+                assert(cell_at(before_slice.cells, target_customer) == slice_at(before, day as int, target_customer));
             }
         }
     }
     true
+}
+
+/// The slice at `key` (a shared copy), or a new one.
+pub fn take_slice(slices: &Index<Slice>, key: &Key, Ghost(day): Ghost<int>) -> (slice: Slice)
+    requires slices_valid(*slices), key.view() == (day, Seq::<u8>::empty()),
+    ensures slice.valid(),
+        forall|target: int| #[trigger] cell_at(slice.cells, target) == slice_at(*slices, day, target),
+{
+    match slices.get(key) {
+        Some(value) => {
+            let shared = value.share();
+            proof {
+                assert(slices.at(key.view()) == Some(*value));
+                assert(value.valid());
+                assert forall|target: int| #[trigger] cell_at(shared.cells, target) == slice_at(*slices, day, target) by {}
+            }
+            shared
+        },
+        None => Slice::new(),
+    }
+}
+
+/// Store the slice back (an empty one removes the key).
+pub fn put_slice(slices: &mut Index<Slice>, key: Key, slice: Slice, Ghost(day): Ghost<int>)
+    requires slices_valid(*old(slices)), slice.valid(), key.view() == (day, Seq::<u8>::empty()),
+    ensures slices_valid(*final(slices)),
+        forall|target_day: int, target: int| #[trigger] slice_at(*final(slices), target_day, target)
+            == if target_day == day { cell_at(slice.cells, target) } else { slice_at(*old(slices), target_day, target) },
+{
+    if slice.cells.is_empty() { slices.remove(&key); }
+    else { slices.put(key, Arc::new(slice)); }
 }
 
 }

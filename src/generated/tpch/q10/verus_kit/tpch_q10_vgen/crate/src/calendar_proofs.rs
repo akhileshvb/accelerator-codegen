@@ -75,7 +75,7 @@ pub proof fn lemma_month_order(left: int, right: int)
 }
 
 pub proof fn lemma_period_bounds(day: int, grain: int)
-    requires i32::MIN <= day <= i32::MAX, 0 <= grain <= 3,
+    requires i32::MIN <= day <= i32::MAX, 0 <= grain <= 5,
     ensures period_of(i32::MIN as int, grain) <= period_of(day, grain) <= period_of(i32::MAX as int, grain),
 {
     lemma_month_order(i32::MIN as int, day);

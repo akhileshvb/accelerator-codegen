@@ -27,9 +27,9 @@ impl State {
     #[verifier::type_invariant]
     pub closed spec fn valid(self) -> bool {
         &&& facts_valid(self.db(), self.days, 0)
-        &&& facts_valid(self.db(), self.periods.months, 1)
         &&& facts_valid(self.db(), self.periods.quarters, 2)
-        &&& facts_valid(self.db(), self.periods.years, 3)
+        &&& facts_valid(self.db(), self.periods.quarters1, 4)
+        &&& facts_valid(self.db(), self.periods.quarters2, 5)
         &&& dimensions_valid(self.db(), self.dimensions)
     }
 }
@@ -38,8 +38,9 @@ impl State {
 pub fn build_facts(orders: &[OrderInput], returned_lines: &[ReturnedLineInput], Ghost(db): Ghost<Db>)
     -> (result: Option<(Index<Slice>, Periods)>)
     requires scan_orders_ok(db, orders@), scan_returned_lines_ok(db, returned_lines@),
-    ensures result matches Some((days, periods)) ==> facts_valid(db, days, 0) && facts_valid(db, periods.months, 1)
-        && facts_valid(db, periods.quarters, 2) && facts_valid(db, periods.years, 3),
+    ensures result matches Some((days, periods)) ==> facts_valid(db, days, 0)
+        && facts_valid(db, periods.quarters, 2)
+        && facts_valid(db, periods.quarters1, 4) && facts_valid(db, periods.quarters2, 5),
 {
     let lines = match scan_lines(returned_lines) { Some(value) => value, None => return None };
     let mut days = Index::new();
@@ -47,17 +48,18 @@ pub fn build_facts(orders: &[OrderInput], returned_lines: &[ReturnedLineInput], 
     let mut start = 0usize;
     while start < orders.len()
         invariant start <= orders.len(),
-            slices_valid(days), slices_valid(periods.months), slices_valid(periods.quarters), slices_valid(periods.years),
+            slices_valid(days), slices_valid(periods.quarters),
+            slices_valid(periods.quarters1), slices_valid(periods.quarters2),
             forall|key: i64, component: int| #[trigger] hash_moment_at(lines@, key).component(component)
                 == scanned_line_sum(returned_lines@, key as int, component),
             forall|day: int, customer: int, component: int| #[trigger] slice_at(days, day, customer).component(component)
                 == scanned_fact_sum(orders@.take(start as int), returned_lines@, day, customer, 0, component),
-            forall|day: int, customer: int, component: int| #[trigger] slice_at(periods.months, day, customer).component(component)
-                == scanned_fact_sum(orders@.take(start as int), returned_lines@, day, customer, 1, component),
             forall|day: int, customer: int, component: int| #[trigger] slice_at(periods.quarters, day, customer).component(component)
                 == scanned_fact_sum(orders@.take(start as int), returned_lines@, day, customer, 2, component),
-            forall|day: int, customer: int, component: int| #[trigger] slice_at(periods.years, day, customer).component(component)
-                == scanned_fact_sum(orders@.take(start as int), returned_lines@, day, customer, 3, component),
+            forall|day: int, customer: int, component: int| #[trigger] slice_at(periods.quarters1, day, customer).component(component)
+                == scanned_fact_sum(orders@.take(start as int), returned_lines@, day, customer, 4, component),
+            forall|day: int, customer: int, component: int| #[trigger] slice_at(periods.quarters2, day, customer).component(component)
+                == scanned_fact_sum(orders@.take(start as int), returned_lines@, day, customer, 5, component),
         decreases orders.len() - start,
     {
         let end = if orders.len() - start > 262144 { start + 262144 } else { orders.len() };
@@ -70,17 +72,17 @@ pub fn build_facts(orders: &[OrderInput], returned_lines: &[ReturnedLineInput], 
                 == scanned_fact_sum(orders@.take(end as int), returned_lines@, day, customer, 0, component) by {
                 lemma_scanned_fact_split(orders@, returned_lines@, start as int, end as int, day, customer, 0, component);
             }
-            assert forall|day: int, customer: int, component: int| #[trigger] slice_at(periods.months, day, customer).component(component)
-                == scanned_fact_sum(orders@.take(end as int), returned_lines@, day, customer, 1, component) by {
-                lemma_scanned_fact_split(orders@, returned_lines@, start as int, end as int, day, customer, 1, component);
-            }
             assert forall|day: int, customer: int, component: int| #[trigger] slice_at(periods.quarters, day, customer).component(component)
                 == scanned_fact_sum(orders@.take(end as int), returned_lines@, day, customer, 2, component) by {
                 lemma_scanned_fact_split(orders@, returned_lines@, start as int, end as int, day, customer, 2, component);
             }
-            assert forall|day: int, customer: int, component: int| #[trigger] slice_at(periods.years, day, customer).component(component)
-                == scanned_fact_sum(orders@.take(end as int), returned_lines@, day, customer, 3, component) by {
-                lemma_scanned_fact_split(orders@, returned_lines@, start as int, end as int, day, customer, 3, component);
+            assert forall|day: int, customer: int, component: int| #[trigger] slice_at(periods.quarters1, day, customer).component(component)
+                == scanned_fact_sum(orders@.take(end as int), returned_lines@, day, customer, 4, component) by {
+                lemma_scanned_fact_split(orders@, returned_lines@, start as int, end as int, day, customer, 4, component);
+            }
+            assert forall|day: int, customer: int, component: int| #[trigger] slice_at(periods.quarters2, day, customer).component(component)
+                == scanned_fact_sum(orders@.take(end as int), returned_lines@, day, customer, 5, component) by {
+                lemma_scanned_fact_split(orders@, returned_lines@, start as int, end as int, day, customer, 5, component);
             }
         }
         start = end;
@@ -88,9 +90,9 @@ pub fn build_facts(orders: &[OrderInput], returned_lines: &[ReturnedLineInput], 
     proof {
         assert(orders@.take(start as int) =~= orders@);
         crate::scan_proofs::lemma_facts_from_scans(db, days, orders@, returned_lines@, 0);
-        crate::scan_proofs::lemma_facts_from_scans(db, periods.months, orders@, returned_lines@, 1);
         crate::scan_proofs::lemma_facts_from_scans(db, periods.quarters, orders@, returned_lines@, 2);
-        crate::scan_proofs::lemma_facts_from_scans(db, periods.years, orders@, returned_lines@, 3);
+        crate::scan_proofs::lemma_facts_from_scans(db, periods.quarters1, orders@, returned_lines@, 4);
+        crate::scan_proofs::lemma_facts_from_scans(db, periods.quarters2, orders@, returned_lines@, 5);
     }
     Some((days, periods))
 }
@@ -218,9 +220,9 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, lineitem_delta:
         use_type_invariant(state);
         reveal(State::valid);
         lemma_facts_shape(state.db(), state.days, 0);
-        lemma_facts_shape(state.db(), state.periods.months, 1);
         lemma_facts_shape(state.db(), state.periods.quarters, 2);
-        lemma_facts_shape(state.db(), state.periods.years, 3);
+        lemma_facts_shape(state.db(), state.periods.quarters1, 4);
+        lemma_facts_shape(state.db(), state.periods.quarters2, 5);
         lemma_dimensions_shape(state.db(), state.dimensions);
     }
     let order_changes = match collect_order_changes(orders_delta) { Some(value) => value, None => return Err(1) };
@@ -255,17 +257,17 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, lineitem_delta:
     proof {
         assert forall|key: (int, Seq<u8>)| #[trigger] days.at(key) == state.days.at(key) by {}
         assert(slices_valid(days));
-        assert(slices_valid(periods.months));
         assert(slices_valid(periods.quarters));
-        assert(slices_valid(periods.years));
+        assert(slices_valid(periods.quarters1));
+        assert(slices_valid(periods.quarters2));
         assert forall|key: (int, Seq<u8>)| #[trigger] dimensions.nations.at(key) == state.dimensions.nations.at(key) by {}
         assert(customer_shape(dimensions));
         assert(nation_index_valid(dimensions.nations));
         assert(maxima_valid(dimensions.nation_totals, dimensions.nation_maxima));
         lemma_facts_equal(state.db(), state.days, days, 0);
-        lemma_facts_equal(state.db(), state.periods.months, periods.months, 1);
         lemma_facts_equal(state.db(), state.periods.quarters, periods.quarters, 2);
-        lemma_facts_equal(state.db(), state.periods.years, periods.years, 3);
+        lemma_facts_equal(state.db(), state.periods.quarters1, periods.quarters1, 4);
+        lemma_facts_equal(state.db(), state.periods.quarters2, periods.quarters2, 5);
         lemma_dimensions_equal(state.db(), state.dimensions, dimensions);
     }
     let ghost previous_days = days;
@@ -274,9 +276,9 @@ pub fn apply(state: &State, customer_delta: &Vec<CustomerDelta>, lineitem_delta:
     if !apply_patches(&mut days, &mut periods, &patches) { return Err(3); }
     proof {
         crate::maintenance_proofs::lemma_updated_facts(state.db(), db2, previous_days, days, &patches, 0);
-        crate::maintenance_proofs::lemma_updated_facts(state.db(), db2, previous_periods.months, periods.months, &patches, 1);
         crate::maintenance_proofs::lemma_updated_facts(state.db(), db2, previous_periods.quarters, periods.quarters, &patches, 2);
-        crate::maintenance_proofs::lemma_updated_facts(state.db(), db2, previous_periods.years, periods.years, &patches, 3);
+        crate::maintenance_proofs::lemma_updated_facts(state.db(), db2, previous_periods.quarters1, periods.quarters1, &patches, 4);
+        crate::maintenance_proofs::lemma_updated_facts(state.db(), db2, previous_periods.quarters2, periods.quarters2, &patches, 5);
     }
     if !apply_dimensions(&mut dimensions, customer_delta, nation_delta) { return Err(3); }
     proof {

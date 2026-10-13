@@ -9,6 +9,7 @@ use crate::model::*;
 use crate::storage::*;
 use crate::query_proofs::*;
 use crate::semantics::*;
+use crate::ordering::*;
 use crate::maintenance_semantics::*;
 use verus_common::sums::*;
 
@@ -167,7 +168,12 @@ pub fn apply(state: &State, lineitem_delta: &[LineKeyDelta], part_delta: &Vec<Pa
 {
     proof { use_type_invariant(state); }
     let touched = touched_keys(lineitem_delta);
-    let mut supplied: HashMap<i64, bool> = HashMap::new();
+    proof { assert(state.lines.wf()); }
+    let touched = crate::ordering::by_slot(&touched, state.lines.span);
+    proof {
+        assert forall|index: int| #![trigger lineitem_delta@[index]] 0 <= index < lineitem_delta@.len() implies touched@.contains(lineitem_delta@[index].l_partkey) by {}
+    }
+    let mut supplied: HashMap<i64, bool> = HashMap::with_capacity(lines_for_parts_keys.len());
     let mut index = 0;
     while index < lines_for_parts_keys.len()
         invariant index <= lines_for_parts_keys.len(),
