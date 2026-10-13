@@ -233,27 +233,27 @@ private:
 struct DenseI32 {
   static constexpr int64_t kMaxKey = int64_t(1) << 27;
   std::vector<int32_t> v;
-  template <class M> void Fill(const M &m, int64_t max_key) {
+  template <class M> void Fill(M &m, int64_t max_key) {
     if (max_key < 0 || max_key > kMaxKey)
       return;
     v.assign(static_cast<std::size_t>(max_key) + 1, kAbsent);
-    m.ForEach([&](int64_t k, int32_t val) {
-      if (k >= 0 && k <= max_key)
-        v[static_cast<std::size_t>(k)] = val;
+    m.ForEach([&](const TpchQ8SmallMap::Element &e) {
+      if (e.key >= 0 && e.key <= max_key)
+        v[static_cast<std::size_t>(e.key)] = e.value;
     });
   }
   template <class M>
-  bool Get(const M &m, int64_t k, int32_t &out) const {
+  bool Get(M &m, int64_t k, int32_t &out) const {
     if (!v.empty()) {
       if (k < 0 || k >= static_cast<int64_t>(v.size()))
         return false;
       out = v[static_cast<std::size_t>(k)];
       return out != kAbsent;
     }
-    const int32_t *p = m.Find(k);
+    const auto *p = m.Find(k);
     if (!p)
       return false;
-    out = *p;
+    out = p->value;
     return true;
   }
 };
@@ -352,26 +352,26 @@ std::vector<uint8_t> EncodeTpchQ8AnnualCube(const TpchQ8State &state) {
       writer.I32(nk);
   }
   // Reverse maps for maintenance
-  writer.U32(static_cast<uint32_t>(d.part_key_to_type.Size()));
-  d.part_key_to_type.ForEach([&](int64_t pk, int32_t ti) {
-    writer.I64(pk);
-    writer.String(d.dict->part_types[static_cast<std::size_t>(ti)]);
+  writer.U32(static_cast<uint32_t>(d.part_key_to_type.size()));
+  d.part_key_to_type.ForEach([&](const TpchQ8SmallMap::Element &e) {
+    writer.I64(e.key);
+    writer.String(d.dict->part_types[static_cast<std::size_t>(e.value)]);
   });
-  writer.U32(static_cast<uint32_t>(d.suppkey_to_nation.Size()));
-  d.suppkey_to_nation.ForEach([&](int64_t sk, int32_t nk) {
-    writer.I64(sk);
-    writer.I32(nk);
+  writer.U32(static_cast<uint32_t>(d.suppkey_to_nation.size()));
+  d.suppkey_to_nation.ForEach([&](const TpchQ8SmallMap::Element &e) {
+    writer.I64(e.key);
+    writer.I32(e.value);
   });
-  writer.U32(static_cast<uint32_t>(d.custkey_to_nation.Size()));
-  d.custkey_to_nation.ForEach([&](int64_t ck, int32_t nk) {
-    writer.I64(ck);
-    writer.I32(nk);
+  writer.U32(static_cast<uint32_t>(d.custkey_to_nation.size()));
+  d.custkey_to_nation.ForEach([&](const TpchQ8SmallMap::Element &e) {
+    writer.I64(e.key);
+    writer.I32(e.value);
   });
-  writer.U32(static_cast<uint32_t>(d.order_info.Size()));
-  d.order_info.ForEach([&](int64_t ok, const TpchQ8Dimensions::OrderInfo &oi) {
-    writer.I64(ok);
-    writer.I64(oi.custkey);
-    writer.I32(oi.orderdate_days);
+  writer.U32(static_cast<uint32_t>(d.order_info.size()));
+  d.order_info.ForEach([&](const TpchQ8OrderMap::Element &e) {
+    writer.I64(e.key);
+    writer.I64(e.value.custkey);
+    writer.I32(e.value.orderdate_days);
   });
   return std::move(writer.bytes);
 }
@@ -469,6 +469,9 @@ bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
   uint32_t pkt_count = 0;
   if (!reader.U32(pkt_count))
     return false;
+  // Bulk load; a repeated key keeps its last value.
+  TpchQ8SmallMap::Builder part_b, supp_b, cust_b;
+  TpchQ8OrderMap::Builder order_b;
   for (uint32_t i = 0; i < pkt_count; ++i) {
     int64_t pk = 0;
     std::string pt;
@@ -477,7 +480,7 @@ bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
     const auto it = d.dict->part_type_to_index.find(pt);
     if (it == d.dict->part_type_to_index.end())
       return false;
-    d.part_key_to_type.Set(pk, it->second);
+    part_b.Add({pk, it->second});
   }
 
   uint32_t skn_count = 0;
@@ -488,7 +491,7 @@ bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
     int32_t nk = 0;
     if (!reader.I64(sk) || !reader.I32(nk))
       return false;
-    d.suppkey_to_nation.Set(sk, nk);
+    supp_b.Add({sk, nk});
   }
 
   uint32_t ckn_count = 0;
@@ -499,7 +502,7 @@ bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
     int32_t nk = 0;
     if (!reader.I64(ck) || !reader.I32(nk))
       return false;
-    d.custkey_to_nation.Set(ck, nk);
+    cust_b.Add({ck, nk});
   }
 
   uint32_t oi_count = 0;
@@ -510,8 +513,17 @@ bool DecodeTpchQ8AnnualCube(const std::vector<uint8_t> &bytes,
     TpchQ8Dimensions::OrderInfo oi;
     if (!reader.I64(ok) || !reader.I64(oi.custkey) || !reader.I32(oi.orderdate_days))
       return false;
-    d.order_info.Set(ok, oi);
+    order_b.Add({ok, oi});
   }
+
+  part_b.SortDedupe();
+  supp_b.SortDedupe();
+  cust_b.SortDedupe();
+  order_b.SortDedupe();
+  d.part_key_to_type = part_b.Finish();
+  d.suppkey_to_nation = supp_b.Finish();
+  d.custkey_to_nation = cust_b.Finish();
+  d.order_info = order_b.Finish();
 
   state.nat_dim = nat_dim;
   state.pages.clear();
@@ -928,12 +940,35 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
   // pointer tables) at most once per commit, and only when a write needs it.
   const TpchQ8Dimensions *dims = new_state->dims.get();
   std::shared_ptr<TpchQ8Dimensions> mutable_dims;
+  // Writers over the dimension maps (created with mutable_dims; they clone
+  // each touched shard once and are published into mutable_dims at the end).
+  std::optional<TpchQ8SmallMap::Txn> part_tx, supp_tx, cust_tx;
+  std::optional<TpchQ8OrderMap::Txn> order_tx;
   auto EnsureMutableDims = [&]() {
     if (!mutable_dims) {
       mutable_dims = std::make_shared<TpchQ8Dimensions>(*dims);
       new_state->dims = mutable_dims;
       dims = mutable_dims.get();
+      part_tx.emplace(dims->part_key_to_type);
+      supp_tx.emplace(dims->suppkey_to_nation);
+      cust_tx.emplace(dims->custkey_to_nation);
+      order_tx.emplace(dims->order_info);
     }
+  };
+  // Current (new-view) lookups: through the writers once they exist.
+  auto NewPart = [&](int64_t k) {
+    return TpchQ8Val(part_tx ? part_tx->Find(k) : dims->part_key_to_type.Find(k));
+  };
+  auto NewSupp = [&](int64_t k) {
+    return TpchQ8Val(supp_tx ? supp_tx->Find(k)
+                             : dims->suppkey_to_nation.Find(k));
+  };
+  auto NewCust = [&](int64_t k) {
+    return TpchQ8Val(cust_tx ? cust_tx->Find(k)
+                             : dims->custkey_to_nation.Find(k));
+  };
+  auto NewOrder = [&](int64_t k) {
+    return TpchQ8Val(order_tx ? order_tx->Find(k) : dims->order_info.Find(k));
   };
   bool dict_cloned = false;
   auto TypeIndex = [&](const std::string &type) -> int32_t {
@@ -994,14 +1029,14 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
     if (ov != buffer.OrderInfoOverlay().end())
       oi = &ov->second;
     else
-      oi = old_dims->order_info.Find(delta.orderkey);
+      oi = TpchQ8Val(old_dims->order_info.Find(delta.orderkey));
     if (oi && oi->custkey > old_dims->cust_build_max)
       dref[2].insert(oi->custkey);
   }
 
   // ── Phase 1: apply dimension changes, classify them ────────────────────
   for (const auto &[key, net] : buffer.PartNet()) {
-    const int32_t *cur = dims->part_key_to_type.Find(key);
+    const int32_t *cur = NewPart(key);
     Chg c{key, cur != nullptr, cur ? *cur : 0, net.present, 0};
     if (net.present)
       c.new_val = TypeIndex(net.type);
@@ -1013,16 +1048,15 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
       heavy[0].push_back(c);
     EnsureMutableDims();
     if (c.new_present)
-      mutable_dims->part_key_to_type.Set(key, c.new_val);
+      part_tx->Upsert({key, c.new_val});
     else
-      mutable_dims->part_key_to_type.Erase(key);
+      part_tx->Erase(key);
   }
   auto ApplyNationNet = [&](const std::unordered_map<int64_t, TpchQ8DimNet> &nets,
                             int kind, int64_t build_max,
                             const std::unordered_set<int64_t> &ref_set) {
     for (const auto &[key, net] : nets) {
-      const auto &map = kind == 1 ? dims->suppkey_to_nation : dims->custkey_to_nation;
-      const int32_t *cur = map.Find(key);
+      const int32_t *cur = kind == 1 ? NewSupp(key) : NewCust(key);
       Chg c{key, cur != nullptr, cur ? *cur : 0, net.present,
             net.present ? net.nationkey : 0};
       if (c.old_present == c.new_present &&
@@ -1033,12 +1067,11 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
       if (!fresh)
         heavy[kind].push_back(c);
       EnsureMutableDims();
-      auto &mm = kind == 1 ? mutable_dims->suppkey_to_nation
-                           : mutable_dims->custkey_to_nation;
+      auto &mm = kind == 1 ? supp_tx : cust_tx;
       if (c.new_present)
-        mm.Set(key, c.new_val);
+        mm->Upsert({key, c.new_val});
       else
-        mm.Erase(key);
+        mm->Erase(key);
     }
   };
   ApplyNationNet(buffer.SupplierNet(), 1, old_dims->supp_build_max,
@@ -1056,7 +1089,7 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
       const auto ov = buffer.OrderInfoOverlay().find(okey);
       const bool new_present = ov != buffer.OrderInfoOverlay().end() &&
                                !buffer.OrderErase().count(okey);
-      const auto *cur = old_dims->order_info.Find(okey);
+      const auto *cur = TpchQ8Val(old_dims->order_info.Find(okey));
       const bool same = (cur != nullptr) == new_present &&
                         (!new_present ||
                          (cur->custkey == ov->second.custkey &&
@@ -1080,10 +1113,10 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
       if (new_present) {
         TpchQ8Dimensions::OrderInfo ni = ov->second;
         ni.lines = cur ? cur->lines : (fresh ? 0 : -1);
-        mutable_dims->order_info.Set(okey, ni);
+        order_tx->Upsert({okey, ni});
         mutable_dims->deleted_orders.erase(okey);
       } else {
-        mutable_dims->order_info.Erase(okey);
+        order_tx->Erase(okey);
       }
     }
   }
@@ -1099,16 +1132,20 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
   // Old view: heavy entities as before the transaction; everything else as
   // in the new dims (identical unless fresh).
   auto OldPart = [&](int64_t k) {
-    return (hk[0].count(k) ? old_dims.get() : dims)->part_key_to_type.Find(k);
+    return hk[0].count(k) ? TpchQ8Val(old_dims->part_key_to_type.Find(k))
+                          : NewPart(k);
   };
   auto OldSupp = [&](int64_t k) {
-    return (hk[1].count(k) ? old_dims.get() : dims)->suppkey_to_nation.Find(k);
+    return hk[1].count(k) ? TpchQ8Val(old_dims->suppkey_to_nation.Find(k))
+                          : NewSupp(k);
   };
   auto OldCust = [&](int64_t k) {
-    return (hk[2].count(k) ? old_dims.get() : dims)->custkey_to_nation.Find(k);
+    return hk[2].count(k) ? TpchQ8Val(old_dims->custkey_to_nation.Find(k))
+                          : NewCust(k);
   };
   auto OldOrder = [&](int64_t k) {
-    return (hk[3].count(k) ? old_dims.get() : dims)->order_info.Find(k);
+    return hk[3].count(k) ? TpchQ8Val(old_dims->order_info.Find(k))
+                          : NewOrder(k);
   };
 
   // Cell of a lineitem in the old (use_old) or new view.
@@ -1116,17 +1153,16 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
   auto CellOf = [&](bool use_old, int64_t partkey, int64_t orderkey,
                     int64_t suppkey, int &yi, int32_t &pt, int32_t &cs,
                     int32_t &ss) -> int {
-    const auto *oi = use_old ? OldOrder(orderkey) : dims->order_info.Find(orderkey);
+    const auto *oi = use_old ? OldOrder(orderkey) : NewOrder(orderkey);
     if (!oi)
       return 0;
     const int32_t year = OrderDateToYear(oi->orderdate_days);
     if (year != 1995 && year != 1996)
       return 0;
     yi = year - 1995;
-    const int32_t *pp = use_old ? OldPart(partkey) : dims->part_key_to_type.Find(partkey);
-    const int32_t *sp = use_old ? OldSupp(suppkey) : dims->suppkey_to_nation.Find(suppkey);
-    const int32_t *cp = use_old ? OldCust(oi->custkey)
-                                : dims->custkey_to_nation.Find(oi->custkey);
+    const int32_t *pp = use_old ? OldPart(partkey) : NewPart(partkey);
+    const int32_t *sp = use_old ? OldSupp(suppkey) : NewSupp(suppkey);
+    const int32_t *cp = use_old ? OldCust(oi->custkey) : NewCust(oi->custkey);
     if (!pp || !sp || !cp)
       return 0;
     pt = *pp;
@@ -1178,11 +1214,11 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
       for (const int64_t key : keys) {
         const auto it = rows_of.find(key);
         const std::size_t rows = it == rows_of.end() ? 0 : it->second;
-        if (rows > 0 && !dims->order_info.Find(key)) {
+        if (rows > 0 && !NewOrder(key)) {
           // Deleted while lineitems remain: remember so a re-insert is scanned.
           EnsureMutableDims();
           mutable_dims->deleted_orders.insert(key);
-        } else if (dims->order_info.Find(key)) {
+        } else if (NewOrder(key)) {
           scanned_lines[key] = static_cast<int32_t>(rows);
         }
       }
@@ -1222,11 +1258,11 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
       if (!ok || failed)
         return Rebuild();
       if (kind == 3) {
-        if (rows > 0 && !dims->order_info.Find(key)) {
+        if (rows > 0 && !NewOrder(key)) {
           // Deleted while lineitems remain: remember so a re-insert is scanned.
           EnsureMutableDims();
           mutable_dims->deleted_orders.insert(key);
-        } else if (dims->order_info.Find(key)) {
+        } else if (NewOrder(key)) {
           scanned_lines[key] = static_cast<int32_t>(rows);
         }
       }
@@ -1275,20 +1311,27 @@ TpchQ8Module::StageMaintenance(core::AuxEngineServices &services,
   // Keep the per-order line counts exact.
   for (const auto &sc : scanned_lines) {
     EnsureMutableDims();
-    if (auto *e = mutable_dims->order_info.FindMutable(sc.first))
+    if (auto *e = TpchQ8ValMut(order_tx->Mutable(sc.first)))
       e->lines = sc.second;
   }
   for (const auto &ds : dsum) {
     if (ds.second == 0 || scanned_lines.count(ds.first))
       continue;
-    const auto *cur = dims->order_info.Find(ds.first);
+    const auto *cur = NewOrder(ds.first);
     if (!cur || cur->lines < 0)
       continue;
     EnsureMutableDims();
-    auto *e = mutable_dims->order_info.FindMutable(ds.first);
+    auto *e = TpchQ8ValMut(order_tx->Mutable(ds.first));
     e->lines += ds.second;
     if (e->lines < 0)
       e->lines = -1;
+  }
+
+  if (mutable_dims) {
+    mutable_dims->part_key_to_type = part_tx->Finish();
+    mutable_dims->suppkey_to_nation = supp_tx->Finish();
+    mutable_dims->custkey_to_nation = cust_tx->Finish();
+    mutable_dims->order_info = order_tx->Finish();
   }
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
@@ -1377,6 +1420,8 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   (void)services;
   TpchQ8State state;
   TpchQ8Dimensions dims;
+  TpchQ8SmallMap::Builder part_b, supp_b, cust_b;
+  TpchQ8OrderMap::Builder order_b;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q8 aux requires a typed initial scan source");
 
@@ -1391,7 +1436,7 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
                .first;
       dims.dict->part_types.push_back(input.type);
     }
-    dims.part_key_to_type.Append(input.key, ti->second);
+    part_b.Add({input.key, ti->second});
     dims.part_build_max = std::max(dims.part_build_max, input.key);
   });
 
@@ -1399,7 +1444,7 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   initial_scan->ScanSuppliers([&](const TpchQ8SupplierInput &input) {
     if (input.key <= 0)
       return;
-    dims.suppkey_to_nation.Append(input.key, input.nationkey);
+    supp_b.Add({input.key, input.nationkey});
     dims.supp_build_max = std::max(dims.supp_build_max, input.key);
     max_nation = std::max(max_nation, input.nationkey);
   });
@@ -1407,7 +1452,7 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   initial_scan->ScanCustomers([&](const TpchQ8CustomerInput &input) {
     if (input.key <= 0)
       return;
-    dims.custkey_to_nation.Append(input.key, input.nationkey);
+    cust_b.Add({input.key, input.nationkey});
     dims.cust_build_max = std::max(dims.cust_build_max, input.key);
     max_nation = std::max(max_nation, input.nationkey);
   });
@@ -1415,9 +1460,7 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   initial_scan->ScanOrders([&](const TpchQ8OrdersInput &input) {
     if (input.key <= 0)
       return;
-    dims.order_info.Append(
-        input.key,
-        TpchQ8Dimensions::OrderInfo{input.custkey, input.orderdate_days, 0});
+    order_b.Add({input.key, TpchQ8OrderInfo{input.custkey, input.orderdate_days, 0}});
     dims.order_build_max = std::max(dims.order_build_max, input.key);
   });
 
@@ -1438,16 +1481,16 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
   });
 
   state.nat_dim = max_nation + 1;
-  dims.part_key_to_type.Seal();
-  dims.suppkey_to_nation.Seal();
-  dims.custkey_to_nation.Seal();
-  dims.order_info.Seal();
+  part_b.SortDedupe();
+  supp_b.SortDedupe();
+  cust_b.SortDedupe();
+  order_b.SortDedupe();
 
   // Dense key->value arrays make the per-lineitem lookups O(1) array reads.
   DenseI32 part_dense, supp_dense, cust_dense;
-  part_dense.Fill(dims.part_key_to_type, dims.part_build_max);
-  supp_dense.Fill(dims.suppkey_to_nation, dims.supp_build_max);
-  cust_dense.Fill(dims.custkey_to_nation, dims.cust_build_max);
+  part_dense.Fill(part_b, dims.part_build_max);
+  supp_dense.Fill(supp_b, dims.supp_build_max);
+  cust_dense.Fill(cust_b, dims.cust_build_max);
 
   {
     CubeEditor editor(state);
@@ -1455,18 +1498,18 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
       if (input.orderkey <= 0)
         return;
       // Count every lineitem row of an order (exact per-order line count).
-      auto *oi = dims.order_info.FindMutable(input.orderkey);
+      auto *oi = TpchQ8ValMut(order_b.Find(input.orderkey));
       if (!oi)
         return;
       ++oi->lines;
       if (input.partkey <= 0 || input.suppkey <= 0)
         return;
       int32_t pt_idx = 0, snk = 0, cnk = 0;
-      if (!part_dense.Get(dims.part_key_to_type, input.partkey, pt_idx))
+      if (!part_dense.Get(part_b, input.partkey, pt_idx))
         return;
-      if (!cust_dense.Get(dims.custkey_to_nation, oi->custkey, cnk))
+      if (!cust_dense.Get(cust_b, oi->custkey, cnk))
         return;
-      if (!supp_dense.Get(dims.suppkey_to_nation, input.suppkey, snk))
+      if (!supp_dense.Get(supp_b, input.suppkey, snk))
         return;
       const int32_t year = OrderDateToYear(oi->orderdate_days);
       if (year != 1995 && year != 1996)
@@ -1480,6 +1523,11 @@ TpchQ8State TpchQ8Module::BuildState(core::AuxEngineServices &services) const {
                                   input.discount_raw));
     });
   }
+
+  dims.part_key_to_type = part_b.Finish();
+  dims.suppkey_to_nation = supp_b.Finish();
+  dims.custkey_to_nation = cust_b.Finish();
+  dims.order_info = order_b.Finish();
 
   // Keep reverse maps published. PostgreSQL PreCommit cannot safely run SPI
   // InitialScan lookups, and RF inserts/deletes need order/part/supplier

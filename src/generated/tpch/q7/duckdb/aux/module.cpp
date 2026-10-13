@@ -177,33 +177,30 @@ std::vector<uint8_t> EncodeTpchQ7Side(const TpchQ7State &state) {
   ByteWriter writer;
   core::WriteImageHeader(writer, kSideMagic, kSideVersion,
                          static_cast<uint32_t>(state.nation_names.size() +
-                                               state.supplier_nations.Size() +
-                                               state.customer_nations.Size() +
-                                               state.order_custkeys.Size()));
+                                               state.supplier_nations.size() +
+                                               state.customer_nations.size() +
+                                               state.order_custkeys.size()));
   writer.U32(static_cast<uint32_t>(state.nation_names.size()));
   for (const auto &[nk, name] : state.nation_names) {
     writer.I32(nk);
     writer.String(name);
   }
-  writer.U32(static_cast<uint32_t>(state.supplier_nations.Size()));
-  state.supplier_nations.ForEach(
-      [&](int64_t sk, const TpchQ7NationCount &v) {
-        writer.I64(sk);
-        writer.I32(v.nation);
-        writer.I32(v.window_count);
+  const auto write_nc = [&](const TpchQ7Map<TpchQ7NationCount> &m) {
+    writer.U32(static_cast<uint32_t>(m.size()));
+    m.ForEach([&](const TpchQ7Map<TpchQ7NationCount>::Element &e) {
+      writer.I64(e.key);
+      writer.I32(e.value.nation);
+      writer.I32(e.value.window_count);
+    });
+  };
+  write_nc(state.supplier_nations);
+  write_nc(state.customer_nations);
+  writer.U32(static_cast<uint32_t>(state.order_custkeys.size()));
+  state.order_custkeys.ForEach(
+      [&](const TpchQ7Map<TpchQ7OrderCust>::Element &e) {
+        writer.I64(e.key);
+        writer.I64(e.value.custkey);
       });
-  writer.U32(static_cast<uint32_t>(state.customer_nations.Size()));
-  state.customer_nations.ForEach(
-      [&](int64_t ck, const TpchQ7NationCount &v) {
-        writer.I64(ck);
-        writer.I32(v.nation);
-        writer.I32(v.window_count);
-      });
-  writer.U32(static_cast<uint32_t>(state.order_custkeys.Size()));
-  state.order_custkeys.ForEach([&](int64_t ok, const TpchQ7OrderCust &v) {
-    writer.I64(ok);
-    writer.I64(v.custkey);
-  });
   return std::move(writer.bytes);
 }
 
@@ -246,46 +243,46 @@ bool DecodeTpchQ7Side(const std::vector<uint8_t> &bytes, TpchQ7State &state) {
       return false;
     state.nation_names.emplace(nk, std::move(name));
   }
-  const auto read_nc = [&](PagedMap<TpchQ7NationCount> &out) {
+  const auto read_nc = [&](TpchQ7Map<TpchQ7NationCount> &out) {
     uint32_t n = 0;
     if (!reader.U32(n))
       return false;
-    PagedMap<TpchQ7NationCount>::Builder builder(n);
+    TpchQ7Map<TpchQ7NationCount>::Builder builder(n);
     for (uint32_t i = 0; i < n; ++i) {
       int64_t k = 0;
       TpchQ7NationCount v;
       if (!reader.I64(k) || !reader.I32(v.nation) ||
           !reader.I32(v.window_count))
         return false;
-      builder.Add(k, v);
+      builder.Add({k, v});
     }
     builder.Sort();
-    out = builder.Freeze();
+    out = builder.Finish();
     return true;
   };
   if (!read_nc(state.supplier_nations) || !read_nc(state.customer_nations))
     return false;
   if (!reader.U32(count))
     return false;
-  PagedMap<TpchQ7OrderCust>::Builder orders(count);
+  TpchQ7Map<TpchQ7OrderCust>::Builder orders(count);
   for (uint32_t i = 0; i < count; ++i) {
     int64_t ok = 0;
     TpchQ7OrderCust v;
     if (!reader.I64(ok) || !reader.I64(v.custkey))
       return false;
-    orders.Add(ok, v);
+    orders.Add({ok, v});
   }
   orders.Sort();
-  state.order_custkeys = orders.Freeze();
+  state.order_custkeys = orders.Finish();
   for (const auto &[nk, name] : state.nation_names)
     state.num_nation_slots = std::max(state.num_nation_slots, nk + 1);
   const auto widen = [&](const TpchQ7NationCount &v) {
     state.num_nation_slots = std::max(state.num_nation_slots, v.nation + 1);
   };
   state.supplier_nations.ForEach(
-      [&](int64_t, const TpchQ7NationCount &v) { widen(v); });
+      [&](const TpchQ7Map<TpchQ7NationCount>::Element &e) { widen(e.value); });
   state.customer_nations.ForEach(
-      [&](int64_t, const TpchQ7NationCount &v) { widen(v); });
+      [&](const TpchQ7Map<TpchQ7NationCount>::Element &e) { widen(e.value); });
   return reader.offset == bytes.size();
 }
 
@@ -586,21 +583,17 @@ void TpchQ7Module::AccumulateMutation(const core::MutationBatch &mutation,
 
 namespace {
 
-// Read-through overlay over an immutable PagedMap: changes accumulate here and
-// are applied with PagedMap::With (copying only touched pages) at the end.
+// Read-through writer over an immutable TpchQ7Map: changes go to a Txn (which
+// copies only touched shards) and are published with Finish at the end.
 template <class V> struct Overlay {
-  const PagedMap<V> &base;
-  std::unordered_map<int64_t, std::optional<V>> changes;
-  explicit Overlay(const PagedMap<V> &b) : base(b) {}
+  typename TpchQ7Map<V>::Txn txn;
+  explicit Overlay(const TpchQ7Map<V> &b) : txn(b) {}
   std::optional<V> Get(int64_t key) const {
-    const auto it = changes.find(key);
-    if (it != changes.end())
-      return it->second;
-    const V *p = base.Find(key);
-    return p ? std::optional<V>(*p) : std::nullopt;
+    const auto *e = txn.Find(key);
+    return e ? std::optional<V>(e->value) : std::nullopt;
   }
-  void Set(int64_t key, const V &v) { changes[key] = v; }
-  void Erase(int64_t key) { changes[key] = std::nullopt; }
+  void Set(int64_t key, const V &v) { txn.Upsert({key, v}); }
+  void Erase(int64_t key) { txn.Erase(key); }
 };
 
 } // namespace
@@ -882,21 +875,18 @@ TpchQ7Module::StageMaintenance(core::AuxEngineServices &services,
   if (rebuild)
     return rebuild_all();
 
-  const bool side_changed = !supp.changes.empty() || !cust.changes.empty() ||
-                            !ords.changes.empty();
+  const bool side_changed = supp.txn.Dirty() || cust.txn.Dirty() ||
+                            ords.txn.Dirty();
   if (side_changed) {
     auto new_side = std::make_shared<TpchQ7State>();
     new_side->nation_names = side.nation_names;
     new_side->num_nation_slots = side.num_nation_slots;
-    new_side->supplier_nations = supp.changes.empty()
-                                     ? side.supplier_nations
-                                     : side.supplier_nations.With(supp.changes);
-    new_side->customer_nations = cust.changes.empty()
-                                     ? side.customer_nations
-                                     : side.customer_nations.With(cust.changes);
-    new_side->order_custkeys = ords.changes.empty()
-                                   ? side.order_custkeys
-                                   : side.order_custkeys.With(ords.changes);
+    new_side->supplier_nations = supp.txn.Dirty() ? supp.txn.Finish()
+                                 : side.supplier_nations;
+    new_side->customer_nations = cust.txn.Dirty() ? cust.txn.Finish()
+                                 : side.customer_nations;
+    new_side->order_custkeys = ords.txn.Dirty() ? ords.txn.Finish()
+                               : side.order_custkeys;
     outcome.updates.push_back(core::StateImage::Make(
         core::TpchQ7Layout::kAccelerator,
         core::TpchQ7Layout::kSidePartition, side_version,
@@ -1039,7 +1029,7 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
 
   // Scan into a flat vector first so the page table is sized from the actual
   // row count (no hard-coded scale-factor constants).
-  using NcEntry = PagedMap<TpchQ7NationCount>::Entry;
+  using NcEntry = TpchQ7Map<TpchQ7NationCount>::Element;
   std::vector<NcEntry> supplier_rows, customer_rows;
   {
     CustomTimer timer("scan_suppliers");
@@ -1069,40 +1059,40 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
   state.revenue_1995.assign(grid, 0);
   state.revenue_1996.assign(grid, 0);
 
-  PagedMap<TpchQ7NationCount>::Builder supp_b(supplier_rows.size());
+  TpchQ7Map<TpchQ7NationCount>::Builder supp_b(supplier_rows.size());
   for (const auto &e : supplier_rows)
-    supp_b.Add(e.key, e.val);
+    supp_b.Add(e);
   std::vector<NcEntry>().swap(supplier_rows);
   supp_b.Sort();
-  PagedMap<TpchQ7NationCount>::Builder cust_b(customer_rows.size());
+  TpchQ7Map<TpchQ7NationCount>::Builder cust_b(customer_rows.size());
   for (const auto &e : customer_rows)
-    cust_b.Add(e.key, e.val);
+    cust_b.Add(e);
   std::vector<NcEntry>().swap(customer_rows);
   cust_b.Sort();
 
-  using OEntry = PagedMap<TpchQ7OrderCust>::Entry;
+  using OEntry = TpchQ7Map<TpchQ7OrderCust>::Element;
   {
     CustomTimer timer("scan_orders");
     std::vector<OEntry> tmp;
     int64_t expected = initial_scan->CountOrders();
-    std::unique_ptr<PagedMap<TpchQ7OrderCust>::Builder> ob;
+    std::unique_ptr<TpchQ7Map<TpchQ7OrderCust>::Builder> ob;
     if (expected >= 0)
-      ob = std::make_unique<PagedMap<TpchQ7OrderCust>::Builder>(
+      ob = std::make_unique<TpchQ7Map<TpchQ7OrderCust>::Builder>(
           static_cast<std::size_t>(expected));
     initial_scan->ScanOrders([&](const TpchQ7OrderInput &input) {
       if (ob)
-        ob->Add(input.key, {input.custkey});
+        ob->Add({input.key, {input.custkey}});
       else
         tmp.push_back({input.key, {input.custkey}});
       ++order_count;
     });
     if (!ob) {
-      ob = std::make_unique<PagedMap<TpchQ7OrderCust>::Builder>(tmp.size());
+      ob = std::make_unique<TpchQ7Map<TpchQ7OrderCust>::Builder>(tmp.size());
       for (const auto &e : tmp)
-        ob->Add(e.key, e.val);
+        ob->Add(e);
     }
     ob->Sort();
-    state.order_custkeys = ob->Freeze();
+    state.order_custkeys = ob->Finish();
     if (profile)
       timer.Emit(order_count, 0);
   }
@@ -1133,13 +1123,13 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
           ++lineitem_valid;
         },
         [&](int64_t key, int64_t n) {
-          if (auto *v = supp_b.FindMut(key))
+          if (auto *v = TpchQ7ValMut(supp_b.Find(key)))
             v->window_count = static_cast<int32_t>(n);
           else
             supp_orphans[key] += n;
         },
         [&](int64_t key, int64_t n) {
-          if (auto *v = cust_b.FindMut(key))
+          if (auto *v = TpchQ7ValMut(cust_b.Find(key)))
             v->window_count = static_cast<int32_t>(n);
           else
             cust_orphans[key] += n;
@@ -1151,15 +1141,15 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
         ++lineitem_count;
         if (input.shipdate_days < lo || input.shipdate_days > hi)
           return;
-        auto *supp_v = supp_b.FindMut(input.suppkey);
+        auto *supp_v = TpchQ7ValMut(supp_b.Find(input.suppkey));
         if (supp_v)
           ++supp_v->window_count;
         else
           ++supp_orphans[input.suppkey];
-        const auto *order_v = state.order_custkeys.Find(input.orderkey);
+        const auto *order_v = TpchQ7Val(state.order_custkeys.Find(input.orderkey));
         if (!order_v)
           return;
-        auto *cust_v = cust_b.FindMut(order_v->custkey);
+        auto *cust_v = TpchQ7ValMut(cust_b.Find(order_v->custkey));
         if (cust_v)
           ++cust_v->window_count;
         else
@@ -1176,16 +1166,16 @@ TpchQ7State TpchQ7Module::BuildState(core::AuxEngineServices &services) const {
       });
     }
     for (const auto &[k, n] : supp_orphans)
-      supp_b.Add(k, {-1, static_cast<int32_t>(n)});
+      supp_b.Add({k, {-1, static_cast<int32_t>(n)}});
     for (const auto &[k, n] : cust_orphans)
-      cust_b.Add(k, {-1, static_cast<int32_t>(n)});
+      cust_b.Add({k, {-1, static_cast<int32_t>(n)}});
     supp_b.Sort();
     cust_b.Sort();
     if (profile)
       timer.Emit(lineitem_count, lineitem_valid);
   }
-  state.supplier_nations = supp_b.Freeze();
-  state.customer_nations = cust_b.Freeze();
+  state.supplier_nations = supp_b.Finish();
+  state.customer_nations = cust_b.Finish();
   return state;
 }
 

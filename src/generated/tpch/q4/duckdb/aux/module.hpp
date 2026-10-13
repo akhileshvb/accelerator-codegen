@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/sharded_sorted_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -53,23 +54,13 @@ struct TpchQ4OrderInfo {
   int64_t qualifying_count = 0;
 };
 
-// Order eligibility index: a two-level (256 x 256) sharded table of immutable,
-// key-sorted leaves.  A published index is never mutated; a write copies the
-// top array (256 shared_ptrs), the touched mid arrays (256 shared_ptrs each)
-// and the touched leaves (a few hundred entries each) -- see
-// TpchQ4EligTxn.  A null pointer denotes an empty mid/leaf.
-struct TpchQ4EligEntry {
-  int64_t key = 0;
-  TpchQ4OrderInfo info;
-};
-using TpchQ4EligLeaf = std::vector<TpchQ4EligEntry>;
-struct TpchQ4EligMid {
-  std::array<std::shared_ptr<const TpchQ4EligLeaf>, 256> leaves;
-};
-struct TpchQ4EligIndex {
-  std::array<std::shared_ptr<const TpchQ4EligMid>, 256> mids;
-  const TpchQ4OrderInfo *Find(int64_t key) const;
-};
+// Order eligibility index: a persistent (copy-on-write) orderkey -> order
+// info map (core::ShardedSortedMap, 2^16 shards = 256 x 256, key-sorted
+// leaves).  A published index is never mutated; a write copies the top array,
+// the touched mid arrays and the touched leaves (a few hundred entries each).
+using TpchQ4EligIndex =
+    core::ShardedSortedKvMap<int64_t, TpchQ4OrderInfo,
+                             core::ShardedSortedMapHash<int64_t>, 16, 8>;
 
 // Tree counts are stored flat: node n, priority p at tree[n * tree_stride + p]
 // (tree has 2 * tree_size nodes).

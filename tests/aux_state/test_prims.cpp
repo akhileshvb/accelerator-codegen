@@ -26,6 +26,7 @@
 #include "accelerator_codegen/stateful/prims/radix_range_tree.hpp"
 #include "accelerator_codegen/stateful/prims/sharded_cow_map.hpp"
 #include "accelerator_codegen/stateful/prims/sharded_cow_open_map.hpp"
+#include "accelerator_codegen/stateful/prims/sharded_sorted_map.hpp"
 #include "accelerator_codegen/stateful/prims/sorted_count_sum.hpp"
 #include "accelerator_codegen/stateful/prims/sql_date.hpp"
 #include "accelerator_codegen/stateful/prims/sql_like.hpp"
@@ -1211,6 +1212,244 @@ static void TestShardedCowMap() {
   CHECK(w.dirty());
   Map after = w.Finish();
   CHECK(after.Find("zz-new-key") && cur.Find("zz-new-key") == nullptr && after.size() == cur.size() + 1);
+// ---- ShardedSortedMap ------------------------------------------------------
+namespace {
+struct SsmRec {
+  uint32_t key = 0;
+  uint16_t a = 0;
+  int64_t b = 0;
+  bool operator==(const SsmRec &o) const {
+    return key == o.key && a == o.a && b == o.b;
+  }
+};
+struct SsmRecKey {
+  const uint32_t &operator()(const SsmRec &r) const { return r.key; }
+};
+struct SsmPair {
+  int32_t x = 0, y = 0;
+  bool operator<(const SsmPair &o) const {
+    return x != o.x ? x < o.x : y < o.y;
+  }
+};
+struct SsmPairHash {
+  uint64_t operator()(const SsmPair &p) const {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(p.x)) << 32) ^
+           static_cast<uint32_t>(p.y);
+  }
+};
+// Run fn(0..n-1) in reverse to prove Finish does not depend on task order.
+struct ReversePar {
+  template <class F> void operator()(std::size_t n, const F &fn) const {
+    for (std::size_t i = n; i-- > 0;)
+      fn(i);
+  }
+};
+
+template <class Map, class RefMap, class Cmp>
+void SsmCheckEqual(const Map &m, const RefMap &ref, Cmp same) {
+  CHECK(m.size() == ref.size());
+  std::size_t seen = 0;
+  m.ForEach([&](const auto &e) {
+    ++seen;
+    (void)e;
+  });
+  CHECK(seen == ref.size());
+  for (const auto &kv : ref) {
+    const auto *e = m.Find(kv.first);
+    CHECK(e != nullptr && same(*e, kv.second));
+  }
+}
+} // namespace
+
+static void TestShardedSortedMap() {
+  // Rec-keyed map, small geometry so shards and mids are shared/cloned a lot.
+  using M = ShardedSortedMap<uint32_t, SsmRec, SsmRecKey,
+                             ShardedSortedMapHash<uint32_t>, 6, 2>;
+  {
+    M empty;
+    CHECK(empty.Find(5) == nullptr && empty.size() == 0 && empty.empty());
+    M::Txn tx(empty);
+    CHECK(!tx.Dirty() && tx.Find(1) == nullptr && !tx.Erase(1) &&
+          tx.Mutable(1) == nullptr);
+    M same = tx.Finish();
+    CHECK(same.size() == 0 && same.Find(1) == nullptr);
+    M::Txn tx2(empty);
+    tx2.Upsert({7, 1, 2});
+    CHECK(tx2.Dirty() && tx2.Find(7) && tx2.Find(7)->b == 2);
+    M one = tx2.Finish(ReversePar{});
+    CHECK(one.size() == 1 && one.Find(7)->a == 1 && empty.Find(7) == nullptr);
+    M::Txn tx3(one);
+    CHECK(tx3.Erase(7) && tx3.Find(7) == nullptr);
+    M none = tx3.Finish();
+    CHECK(none.size() == 0 && none.Find(7) == nullptr && one.Find(7) != nullptr);
+  }
+
+  std::mt19937_64 rng(2024);
+  struct Version {
+    M map;
+    std::map<uint32_t, SsmRec> ref;
+  };
+  std::vector<Version> versions(1);
+  for (int round = 0; round < 3000; ++round) {
+    const Version &base = versions[rng() % versions.size()];
+    Version next;
+    next.ref = base.ref;
+    M::Txn tx(base.map);
+    const int ops = 1 + static_cast<int>(rng() % 40);
+    for (int i = 0; i < ops; ++i) {
+      const uint32_t key = static_cast<uint32_t>(rng() % 700);
+      switch (rng() % 4) {
+      case 0:
+      case 1: {
+        SsmRec r{key, static_cast<uint16_t>(rng()), static_cast<int64_t>(rng())};
+        tx.Upsert(r);
+        next.ref[key] = r;
+        break;
+      }
+      case 2: {
+        const bool had = next.ref.erase(key) > 0;
+        CHECK(tx.Erase(key) == had);
+        break;
+      }
+      default: {
+        SsmRec *p = tx.Mutable(key);
+        auto it = next.ref.find(key);
+        CHECK((p != nullptr) == (it != next.ref.end()));
+        if (p) {
+          p->b += 11;
+          it->second.b += 11;
+        }
+      }
+      }
+      const auto *f = tx.Find(key);
+      auto it = next.ref.find(key);
+      CHECK((f != nullptr) == (it != next.ref.end()) && (!f || *f == it->second));
+      CHECK(tx.size() == next.ref.size());
+    }
+    next.map = (round & 1) ? tx.Finish() : tx.Finish(ReversePar{});
+    versions.push_back(std::move(next));
+    if (versions.size() > 40)
+      versions.erase(versions.begin() + 1 + rng() % 39);
+    // Every retained version must be exactly its own reference (isolation).
+    if (round % 50 == 0 || round > 2990)
+      for (const auto &v : versions)
+        SsmCheckEqual(v.map, v.ref,
+                      [](const SsmRec &a, const SsmRec &b) { return a == b; });
+  }
+  // Absent keys stay absent in every version.
+  for (const auto &v : versions)
+    for (uint32_t k = 700; k < 760; ++k)
+      CHECK(v.map.Find(k) == nullptr);
+
+  // Structural sharing: a one-key edit leaves other shards shared (memory of
+  // the two versions together is far below two full copies).
+  {
+    M::Builder b;
+    for (uint32_t k = 0; k < 4000; ++k)
+      b.Add({k, 0, static_cast<int64_t>(k)});
+    b.Sort();
+    M big = b.Finish();
+    M::Txn tx(big);
+    tx.Upsert({5, 1, -5});
+    M edited = tx.Finish();
+    CHECK(big.Find(5)->b == 5 && edited.Find(5)->b == -5);
+    CHECK(big.Find(6) == edited.Find(6)); // untouched shard shared by pointer
+    CHECK(big.MemoryBytes() > 4000 * sizeof(SsmRec) &&
+          big.MemoryBytes() < 4000 * sizeof(SsmRec) * 3);
+  }
+
+  // Builder: unsorted input, adaptive geometry, mutation before Finish.
+  for (std::size_t n : {std::size_t(0), std::size_t(1), std::size_t(300),
+                        std::size_t(20000)}) {
+    using KV = ShardedSortedKvMap<int64_t, int64_t>;
+    KV::Builder b(n);
+    std::map<int64_t, int64_t> ref;
+    std::vector<int64_t> keys;
+    for (std::size_t i = 0; i < n; ++i)
+      keys.push_back(static_cast<int64_t>(i * 7919) - 5000); // negatives too
+    std::shuffle(keys.begin(), keys.end(), rng);
+    for (int64_t k : keys) {
+      b.Add({k, k * 3});
+      ref[k] = k * 3;
+    }
+    b.Sort();
+    if (n > 0) {
+      CHECK(b.Find(keys[0]) != nullptr && b.Find(1234567891) == nullptr);
+      b.Find(keys[0])->value += 1;
+      ref[keys[0]] += 1;
+      std::size_t visited = 0;
+      b.ForEach([&](KV::Element &) { ++visited; });
+      CHECK(visited == n);
+    }
+    KV m = b.Finish();
+    SsmCheckEqual(m, ref, [](const KeyedValue<int64_t, int64_t> &e, int64_t v) {
+      return e.value == v;
+    });
+    CHECK(m.shard_bits() <= 18);
+    if (n <= 300)
+      CHECK(m.shard_bits() <= 1);
+    // Edit through a Txn on the adaptive geometry too.
+    KV::Txn tx(m);
+    for (int i = 0; i < 200; ++i) {
+      const int64_t k = static_cast<int64_t>(rng() % 30000) - 5000;
+      if (rng() & 1) {
+        tx.Upsert({k, -k});
+        ref[k] = -k;
+      } else {
+        tx.Erase(k);
+        ref.erase(k);
+      }
+    }
+    KV m2 = tx.Finish();
+    SsmCheckEqual(m2, ref, [](const KeyedValue<int64_t, int64_t> &e, int64_t v) {
+      return e.value == v;
+    });
+  }
+
+  // SortDedupe: last added wins.
+  {
+    using KV = ShardedSortedKvMap<uint32_t, int>;
+    KV::Builder b;
+    b.Add({3, 1});
+    b.Add({9, 5});
+    b.Add({3, 2});
+    b.Add({3, 3});
+    b.SortDedupe();
+    KV m = b.Finish();
+    CHECK(m.size() == 2 && m.Find(3)->value == 3 && m.Find(9)->value == 5);
+  }
+
+  // Custom key type, hash and order (descending), one-level geometry.
+  {
+    struct DescLess {
+      bool operator()(const SsmPair &a, const SsmPair &b) const { return b < a; }
+    };
+    using PM = ShardedSortedKvMap<SsmPair, int, SsmPairHash, 4, 4, DescLess>;
+    std::map<std::pair<int, int>, int> ref;
+    PM cur;
+    for (int round = 0; round < 300; ++round) {
+      PM::Txn tx(cur);
+      for (int i = 0; i < 20; ++i) {
+        SsmPair k{static_cast<int32_t>(rng() % 20) - 10,
+                  static_cast<int32_t>(rng() % 20) - 10};
+        if (rng() % 3) {
+          tx.Upsert({k, round});
+          ref[{k.x, k.y}] = round;
+        } else {
+          tx.Erase(k);
+          ref.erase({k.x, k.y});
+        }
+      }
+      PM old = cur;
+      cur = tx.Finish();
+      CHECK(cur.size() == ref.size());
+      for (const auto &kv : ref) {
+        const auto *e = cur.Find({kv.first.first, kv.first.second});
+        CHECK(e && e->value == kv.second);
+      }
+      (void)old;
+    }
+  }
 }
 
 int main() {
@@ -1235,6 +1474,7 @@ int main() {
   TestShardedCowOpenMap();
   TestCowBox();
   TestShardedCowMap();
+  TestShardedSortedMap();
   std::puts("test_prims: PASS");
   return 0;
 }

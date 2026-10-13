@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/sharded_sorted_map.hpp"
 #include "tpch/q5/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -96,183 +97,22 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// Persistent (copy-on-write) containers.  A published image is never mutated:
-// writes copy the 256-entry top array, the touched 256-entry mid arrays and the
+// Persistent (copy-on-write) key -> record maps (core::ShardedSortedMap,
+// 2^17 shards: 1024 top slots x 128 leaves per mid).  A published image is
+// never mutated: writes copy the top array, the touched mid arrays and the
 // touched leaves (a few hundred entries), everything else stays shared.
 // ---------------------------------------------------------------------------
-template <typename V> struct TpchQ5Entry {
-  int64_t key = 0;
-  V val{};
-};
+template <typename V>
+using TpchQ5ShardIndex =
+    core::ShardedSortedKvMap<int64_t, V, core::ShardedSortedMapHash<int64_t>, 17, 7>;
 
-// 2^17 shards: 1024 top slots x 128 leaves per mid.
-constexpr uint32_t kTpchQ5TopSlots = 1024;
-constexpr uint32_t kTpchQ5MidLeaves = 128;
-constexpr uint32_t kTpchQ5MidBits = 7;
-constexpr uint32_t kTpchQ5ShardCount = kTpchQ5TopSlots * kTpchQ5MidLeaves;
-
-inline uint32_t TpchQ5ShardOf(int64_t key) {
-  const uint64_t h = static_cast<uint64_t>(key) * 0x9E3779B97F4A7C15ULL;
-  return static_cast<uint32_t>(h >> 47);
+// Records are stored as {key, value} elements; Find returns the element.
+template <typename E> inline const auto *TpchQ5Val(const E *e) {
+  return e ? &e->value : nullptr;
 }
-
-template <typename V> struct TpchQ5ShardIndex {
-  using Entry = TpchQ5Entry<V>;
-  using Leaf = std::vector<Entry>;
-  struct Mid {
-    std::array<std::shared_ptr<const Leaf>, kTpchQ5MidLeaves> leaves;
-  };
-  std::array<std::shared_ptr<const Mid>, kTpchQ5TopSlots> mids;
-
-  static const Entry *FindIn(const Leaf *leaf, int64_t key) {
-    if (!leaf)
-      return nullptr;
-    auto it = std::lower_bound(
-        leaf->begin(), leaf->end(), key,
-        [](const Entry &e, int64_t k) { return e.key < k; });
-    return (it != leaf->end() && it->key == key) ? &*it : nullptr;
-  }
-  const V *Find(int64_t key) const {
-    const auto shard = TpchQ5ShardOf(key);
-    const auto &mid = mids[shard >> kTpchQ5MidBits];
-    if (!mid)
-      return nullptr;
-    const auto *e = FindIn(mid->leaves[shard & (kTpchQ5MidLeaves - 1)].get(), key);
-    return e ? &e->val : nullptr;
-  }
-};
-
-// Copy-on-write writer over a published index.
-template <typename V> class TpchQ5ShardTxn {
-public:
-  using Index = TpchQ5ShardIndex<V>;
-  using Entry = typename Index::Entry;
-  using Leaf = typename Index::Leaf;
-  using Mid = typename Index::Mid;
-
-  explicit TpchQ5ShardTxn(const Index &base) : base_(base) {}
-
-  const V *Find(int64_t key) const {
-    return Lookup(TpchQ5ShardOf(key), key);
-  }
-  void Set(int64_t key, const V &val) {
-    auto &leaf = Mutable(TpchQ5ShardOf(key));
-    auto it = std::lower_bound(
-        leaf.begin(), leaf.end(), key,
-        [](const Entry &e, int64_t k) { return e.key < k; });
-    if (it != leaf.end() && it->key == key)
-      it->val = val;
-    else
-      leaf.insert(it, Entry{key, val});
-  }
-  void Erase(int64_t key) {
-    const auto shard = TpchQ5ShardOf(key);
-    if (!Lookup(shard, key))
-      return;
-    auto &leaf = Mutable(shard);
-    auto it = std::lower_bound(
-        leaf.begin(), leaf.end(), key,
-        [](const Entry &e, int64_t k) { return e.key < k; });
-    if (it != leaf.end() && it->key == key)
-      leaf.erase(it);
-  }
-  bool Dirty() const { return !leaves_.empty(); }
-  Index Finish() {
-    Index out = base_;
-    std::unordered_map<uint32_t, std::shared_ptr<Mid>> mids;
-    mids.reserve(leaves_.size());
-    for (auto &entry : leaves_) {
-      const uint32_t hi = entry.first >> kTpchQ5MidBits;
-      const uint32_t lo = entry.first & (kTpchQ5MidLeaves - 1);
-      auto &mid = mids[hi];
-      if (!mid)
-        mid = base_.mids[hi] ? std::make_shared<Mid>(*base_.mids[hi])
-                             : std::make_shared<Mid>();
-      if (entry.second->empty())
-        mid->leaves[lo] = nullptr;
-      else
-        mid->leaves[lo] = std::move(entry.second);
-    }
-    for (auto &entry : mids)
-      out.mids[entry.first] = std::move(entry.second);
-    leaves_.clear();
-    return out;
-  }
-
-private:
-  const Leaf *Current(uint32_t shard) const {
-    auto it = leaves_.find(shard);
-    if (it != leaves_.end())
-      return it->second.get();
-    const auto &mid = base_.mids[shard >> kTpchQ5MidBits];
-    return mid ? mid->leaves[shard & (kTpchQ5MidLeaves - 1)].get() : nullptr;
-  }
-  const V *Lookup(uint32_t shard, int64_t key) const {
-    const auto *e = Index::FindIn(Current(shard), key);
-    return e ? &e->val : nullptr;
-  }
-  Leaf &Mutable(uint32_t shard) {
-    auto it = leaves_.find(shard);
-    if (it != leaves_.end())
-      return *it->second;
-    const auto *cur = Current(shard);
-    auto copy = cur ? std::make_shared<Leaf>(*cur) : std::make_shared<Leaf>();
-    return *leaves_.emplace(shard, std::move(copy)).first->second;
-  }
-
-  const Index &base_;
-  std::unordered_map<uint32_t, std::shared_ptr<Leaf>> leaves_;
-};
-
-// Bulk builder (initial build): unsorted append, then Sort(), mutable Find(),
-// Finish() moves the shards into an immutable index.
-template <typename V> class TpchQ5ShardBuilder {
-public:
-  using Index = TpchQ5ShardIndex<V>;
-  using Entry = typename Index::Entry;
-  using Leaf = typename Index::Leaf;
-
-  TpchQ5ShardBuilder() : shards_(kTpchQ5ShardCount) {}
-  void Add(int64_t key, const V &val) {
-    shards_[TpchQ5ShardOf(key)].push_back(Entry{key, val});
-  }
-  void Sort() {
-    for (auto &shard : shards_)
-      std::sort(shard.begin(), shard.end(),
-                [](const Entry &a, const Entry &b) { return a.key < b.key; });
-  }
-  V *Find(int64_t key) {
-    auto &shard = shards_[TpchQ5ShardOf(key)];
-    auto it = std::lower_bound(
-        shard.begin(), shard.end(), key,
-        [](const Entry &e, int64_t k) { return e.key < k; });
-    return (it != shard.end() && it->key == key) ? &it->val : nullptr;
-  }
-  template <typename F> void ForEach(F &&f) {
-    for (auto &shard : shards_)
-      for (auto &e : shard)
-        f(e);
-  }
-  Index Finish() {
-    Index index;
-    for (uint32_t hi = 0; hi < kTpchQ5TopSlots; ++hi) {
-      std::shared_ptr<typename Index::Mid> mid;
-      for (uint32_t lo = 0; lo < kTpchQ5MidLeaves; ++lo) {
-        auto &shard = shards_[(hi << kTpchQ5MidBits) | lo];
-        if (shard.empty())
-          continue;
-        if (!mid)
-          mid = std::make_shared<typename Index::Mid>();
-        mid->leaves[lo] = std::make_shared<const Leaf>(std::move(shard));
-      }
-      index.mids[hi] = std::move(mid);
-    }
-    return index;
-  }
-
-private:
-  std::vector<Leaf> shards_;
-};
+template <typename E> inline auto *TpchQ5ValMut(E *e) {
+  return e ? &e->value : nullptr;
+}
 
 // Per-order record. Exists only for orders whose customer exists.
 // `rev` is the revenue (scale 4) this order currently contributes to the tree
