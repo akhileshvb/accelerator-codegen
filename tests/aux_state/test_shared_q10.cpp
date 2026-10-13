@@ -237,7 +237,7 @@ int main() {
   coordinator.OnMutation(customer_update);
   coordinator.PreCommit();
   coordinator.Commit();
-  assert(!module.CheckValidity(
+  assert(module.CheckValidity(
       services, QueryArguments{{AuxValue::Of(
                     AuxType::Date, AuxDate{TpchQ10MonthStartDays(199306)})}}));
   RequireResult(module, services, 1140000);
@@ -252,7 +252,7 @@ int main() {
   coordinator.OnMutation(bulk_lineitems);
   coordinator.PreCommit();
   coordinator.Commit();
-  assert(!module.CheckValidity(
+  assert(module.CheckValidity(
       services, QueryArguments{{AuxValue::Of(
                     AuxType::Date, AuxDate{TpchQ10MonthStartDays(199306)})}}));
   RequireResult(module, services, 1140000 + 1025 * 950000);

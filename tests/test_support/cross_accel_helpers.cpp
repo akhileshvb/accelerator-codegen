@@ -286,7 +286,7 @@ std::string TpchReferenceSql(int query_num) {
 		       "l2.l_suppkey <> l1.l_suppkey) AND NOT EXISTS (SELECT * FROM lineitem l3 "
 		       "WHERE l3.l_orderkey = l1.l_orderkey AND l3.l_suppkey <> l1.l_suppkey AND "
 		       "l3.l_receiptdate > l3.l_commitdate) AND s_nationkey = n_nationkey AND "
-		       "n_name = 'SAUDI ARABIA' GROUP BY s_name ORDER BY numwait DESC, s_name";
+		       "n_name = 'SAUDI ARABIA' GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100";
 	default:
 		throw std::runtime_error("unsupported TPC-H query for reference SQL: " + std::to_string(query_num));
 	}
@@ -692,14 +692,6 @@ std::vector<int> CrossAccelTestQueries() {
 		return queries;
 	}
 	return CrossAccelAllQueries();
-}
-
-std::vector<int> CrossAccelQueriesIncludingTarget(int target_query) {
-	auto queries = CrossAccelAllQueries();
-	if (std::find(queries.begin(), queries.end(), target_query) == queries.end()) {
-		queries.push_back(target_query);
-	}
-	return queries;
 }
 
 void BuildCrossAccelAux(duckdb::Connection &connection, int query_num) {

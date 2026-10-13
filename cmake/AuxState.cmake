@@ -61,12 +61,6 @@ function(accel_add_aux_state_query)
     target_sources(${AUX_LIBRARY_TARGET} PRIVATE ${_aux_sources})
 endfunction()
 
-function(accel_add_aux_state_benchmarks)
-    # Legacy per-query aux benchmarks were removed with the shared aux-state
-    # interface. Use benchmarks/aux_state/benchmark_shared_duckdb_write_interval.cpp
-    # and the per-query benchmark_*_aux targets under benchmarks/<workload>/ instead.
-endfunction()
-
 function(accel_add_aux_cost_model_calibrator)
     set(oneValueArgs BENCHMARK QUERY_NUM)
     cmake_parse_arguments(CAL "" "${oneValueArgs}" "" ${ARGN})

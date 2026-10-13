@@ -207,7 +207,7 @@ int main() {
   coordinator.OnMutation(bulk);
   coordinator.PreCommit();
   coordinator.Commit();
-  assert(!module.CheckValidity(services, QueryArguments{{Date(start_date)}}));
+  assert(module.CheckValidity(services, QueryArguments{{Date(start_date)}}));
   RequireRevenue(module, services, start_date, 72000 + 1025 * 60000);
   return 0;
 }
