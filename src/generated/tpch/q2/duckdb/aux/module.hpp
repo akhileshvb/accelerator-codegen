@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -110,37 +111,17 @@ struct TpchQ2TypeDict {
   }
 };
 
-// Copy-on-write paged dense vector.  Pages are shared between state versions
-// through shared_ptr; Mut() clones a page only if it is still shared with a
-// published version (use_count() != 1).  Mut() must only be used on a
-// working (unpublished) copy that is held by a single thread; published
-// images are never mutated.
-template <typename T, unsigned kBits> class TpchQ2Paged {
-public:
-  static constexpr std::size_t kPage = std::size_t{1} << kBits;
-  using Page = std::vector<T>;
+// Copy-on-write paged dense vector: pages are shared between state versions
+// through the primitive; unallocated pages read as absent. Mutate only a
+// working (unpublished) copy held by a single thread; published images are
+// never mutated.
+template <typename T, unsigned kBits>
+using TpchQ2Paged = core::ChunkedCowArray<T, kBits>;
 
-  std::size_t Capacity() const { return pages_.size() << kBits; }
-
-  const T *Find(std::size_t i) const {
-    const std::size_t p = i >> kBits;
-    if (p >= pages_.size())
-      return nullptr;
-    return &(*pages_[p])[i & (kPage - 1)];
-  }
-
-  T &Mut(std::size_t i) {
-    const std::size_t p = i >> kBits;
-    while (pages_.size() <= p)
-      pages_.push_back(std::make_shared<const Page>(kPage));
-    if (pages_[p].use_count() != 1)
-      pages_[p] = std::make_shared<const Page>(*pages_[p]);
-    return const_cast<Page &>(*pages_[p])[i & (kPage - 1)];
-  }
-
-private:
-  std::vector<std::shared_ptr<const Page>> pages_;
-};
+// Slots covered by the allocated directory (valid keys are below this).
+template <typename A> std::size_t TpchQ2Capacity(const A &a) {
+  return a.NumChunks() * A::kChunkSize;
+}
 
 // Clone-if-shared helper for shared_ptr<const X> members of a working state.
 template <typename X> X &TpchQ2MutOf(std::shared_ptr<const X> &p) {
@@ -199,21 +180,21 @@ struct TpchQ2State {
   const TpchQ2SupplierInfo *FindSupplier(int64_t suppkey) const {
     if (!suppliers || suppkey < 0)
       return nullptr;
-    const auto *s = suppliers->Find(static_cast<std::size_t>(suppkey));
+    const auto *s = suppliers->Find(suppkey);
     return s && s->valid ? s : nullptr;
   }
 
   const TpchQ2PartInfo *FindPart(int64_t partkey) const {
     if (!parts || partkey < 0)
       return nullptr;
-    const auto *p = parts->Find(static_cast<std::size_t>(partkey));
+    const auto *p = parts->Find(partkey);
     return p && p->valid ? p : nullptr;
   }
 
   const std::vector<TpchQ2Offer> *FindOffers(int64_t partkey) const {
     if (!offers || partkey < 0)
       return nullptr;
-    return offers->Find(static_cast<std::size_t>(partkey));
+    return offers->Find(partkey);
   }
 
   const TpchQ2GroupList *FindGroup(int32_t size, int32_t region_key) const {

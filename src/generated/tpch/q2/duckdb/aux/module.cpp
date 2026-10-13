@@ -263,9 +263,9 @@ void BuildNationRank(TpchQ2State &st) {
 
 void AddOfferRaw(TpchQ2State &st, int64_t partkey, int64_t suppkey,
                  int64_t cost) {
-  TpchQ2MutOf(st.offers).Mut(static_cast<std::size_t>(partkey))
+  TpchQ2MutOf(st.offers).Mutable(partkey)
       .push_back({cost, static_cast<int32_t>(suppkey)});
-  TpchQ2MutOf(st.supp_parts).Mut(static_cast<std::size_t>(suppkey))
+  TpchQ2MutOf(st.supp_parts).Mutable(suppkey)
       .push_back(static_cast<int32_t>(partkey));
 }
 
@@ -273,10 +273,10 @@ void AddOfferRaw(TpchQ2State &st, int64_t partkey, int64_t suppkey,
 void BuildGroups(TpchQ2State &st) {
   std::unordered_map<int64_t, std::vector<TpchQ2Entry>> acc;
   std::vector<GroupEntry> tmp;
-  const std::size_t cap = st.parts->Capacity();
+  const std::size_t cap = TpchQ2Capacity(*st.parts);
   for (std::size_t k = 0; k < cap; ++k) {
-    const auto *p = st.parts->Find(k);
-    if (!p->valid)
+    const auto *p = st.parts->Find(static_cast<int64_t>(k));
+    if (!p || !p->valid)
       continue;
     tmp.clear();
     ComputeEntries(st, static_cast<int64_t>(k), tmp);
@@ -459,7 +459,7 @@ private:
       AddOfferRaw(st, d.partkey, d.suppkey, d.supplycost_raw);
     } else {
       auto &offs =
-          TpchQ2MutOf(st.offers).Mut(static_cast<std::size_t>(d.partkey));
+          TpchQ2MutOf(st.offers).Mutable(d.partkey);
       auto it = std::find_if(offs.begin(), offs.end(), [&](const TpchQ2Offer &o) {
         return o.suppkey == d.suppkey && o.cost_raw == d.supplycost_raw;
       });
@@ -469,7 +469,7 @@ private:
       }
       offs.erase(it);
       auto &sp =
-          TpchQ2MutOf(st.supp_parts).Mut(static_cast<std::size_t>(d.suppkey));
+          TpchQ2MutOf(st.supp_parts).Mutable(d.suppkey);
       const auto sit = std::find(sp.begin(), sp.end(),
                                  static_cast<int32_t>(d.partkey));
       if (sit != sp.end())
@@ -487,7 +487,7 @@ private:
       return;
     std::vector<GroupEntry> before, after;
     ComputeEntries(st, key, before);
-    auto &slot = TpchQ2MutOf(st.parts).Mut(static_cast<std::size_t>(key));
+    auto &slot = TpchQ2MutOf(st.parts).Mutable(key);
     if (in) {
       slot.mfgr = in->mfgr;
       slot.type_id = static_cast<int32_t>(InternType(in->type));
@@ -517,7 +517,7 @@ private:
     // list work at all.
     if (cur && in && cur->name == in->name && cur->nationkey == in->nationkey &&
         cur->acctbal_raw == in->acctbal_raw) {
-      auto &slot = TpchQ2MutOf(st.suppliers).Mut(static_cast<std::size_t>(key));
+      auto &slot = TpchQ2MutOf(st.suppliers).Mutable(key);
       slot = *in;
       slot.valid = true;
       return;
@@ -545,7 +545,7 @@ private:
       }
     }
     // 2. change the table.
-    auto &slot = TpchQ2MutOf(st.suppliers).Mut(static_cast<std::size_t>(key));
+    auto &slot = TpchQ2MutOf(st.suppliers).Mutable(key);
     if (in) {
       slot = *in;
       slot.valid = true;
@@ -587,15 +587,18 @@ std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &state) {
 
   // Suppliers / parts: valid slots only, preceded by their count.
   {
-    const std::size_t cap = state.suppliers->Capacity();
+    const std::size_t cap = TpchQ2Capacity(*state.suppliers);
     uint32_t valid = 0;
-    for (std::size_t key = 0; key < cap; ++key)
-      valid += state.suppliers->Find(key)->valid ? 1u : 0u;
+    for (std::size_t key = 0; key < cap; ++key) {
+      const auto *s = state.suppliers->Find(static_cast<int64_t>(key));
+      valid += s && s->valid ? 1u : 0u;
+    }
     writer.U32(valid);
     for (std::size_t key = 0; key < cap; ++key) {
-      const auto &supplier = *state.suppliers->Find(key);
-      if (!supplier.valid)
+      const auto *sp = state.suppliers->Find(static_cast<int64_t>(key));
+      if (!sp || !sp->valid)
         continue;
+      const auto &supplier = *sp;
       writer.I64(static_cast<int64_t>(key));
       writer.String(supplier.name);
       writer.String(supplier.address);
@@ -606,15 +609,19 @@ std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &state) {
     }
   }
   {
-    const std::size_t cap = state.parts->Capacity();
+    const std::size_t cap = TpchQ2Capacity(*state.parts);
     uint32_t valid = 0;
     for (std::size_t key = 0; key < cap; ++key)
-      valid += state.parts->Find(key)->valid ? 1u : 0u;
+      {
+      const auto *p = state.parts->Find(static_cast<int64_t>(key));
+      valid += p && p->valid ? 1u : 0u;
+    }
     writer.U32(valid);
     for (std::size_t key = 0; key < cap; ++key) {
-      const auto &part = *state.parts->Find(key);
-      if (!part.valid)
+      const auto *pp = state.parts->Find(static_cast<int64_t>(key));
+      if (!pp || !pp->valid)
         continue;
+      const auto &part = *pp;
       writer.I64(static_cast<int64_t>(key));
       writer.String(part.mfgr);
       writer.String(state.types->names[static_cast<std::size_t>(part.type_id)]);
@@ -625,13 +632,18 @@ std::vector<uint8_t> EncodeTpchQ2State(const TpchQ2State &state) {
   // Partsupp offers (the candidate lists and supplier->parts index are
   // derived and rebuilt on decode).
   {
-    const std::size_t cap = state.offers->Capacity();
+    const std::size_t cap = TpchQ2Capacity(*state.offers);
     uint32_t total = 0;
-    for (std::size_t key = 0; key < cap; ++key)
-      total += static_cast<uint32_t>(state.offers->Find(key)->size());
+    for (std::size_t key = 0; key < cap; ++key) {
+      const auto *o = state.offers->Find(static_cast<int64_t>(key));
+      total += o ? static_cast<uint32_t>(o->size()) : 0u;
+    }
     writer.U32(total);
     for (std::size_t key = 0; key < cap; ++key) {
-      for (const auto &o : *state.offers->Find(key)) {
+      const auto *list = state.offers->Find(static_cast<int64_t>(key));
+      if (!list)
+        continue;
+      for (const auto &o : *list) {
         writer.I64(static_cast<int64_t>(key));
         writer.I64(o.suppkey);
         writer.I64(o.cost_raw);
@@ -704,7 +716,7 @@ bool DecodeTpchQ2State(const std::vector<uint8_t> &bytes, TpchQ2State &state) {
       if (!AcceptDenseKey(key))
         return false;
       supplier.valid = true;
-      paged.Mut(static_cast<std::size_t>(key)) = std::move(supplier);
+      paged.Mutable(key) = std::move(supplier);
     }
   }
 
@@ -726,7 +738,7 @@ bool DecodeTpchQ2State(const std::vector<uint8_t> &bytes, TpchQ2State &state) {
       part.type_id = static_cast<int32_t>(types.Intern(type));
       part.size = size;
       part.valid = true;
-      paged.Mut(static_cast<std::size_t>(key)) = std::move(part);
+      paged.Mutable(key) = std::move(part);
     }
   }
   state.types = std::make_shared<const TpchQ2TypeDict>(std::move(types));
@@ -1215,7 +1227,7 @@ void TpchQ2Module::Execute(core::AuxEngineServices &services,
   EmitResult(*state, part_size, part_type_pattern, region_name, sink);
   if (profiling) {
     double dt = emit_timer->us();
-    int64_t part_count = (int64_t)(state->parts ? state->parts->Capacity() : 0);
+    int64_t part_count = (int64_t)(state->parts ? TpchQ2Capacity(*state->parts) : 0);
     EmitCustomProfile("execute_emit", dt, part_count, 0, 0);
   }
 }
@@ -1279,7 +1291,7 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
     initial_scan->ScanParts([&](const TpchQ2PartInput &input) {
       if (!AcceptDenseKey(input.key))
         return;
-      auto &slot = paged.Mut(static_cast<std::size_t>(input.key));
+      auto &slot = paged.Mutable(input.key);
       slot.mfgr = input.mfgr;
       slot.type_id = static_cast<int32_t>(types.Intern(input.type));
       slot.size = input.size;
@@ -1292,7 +1304,7 @@ TpchQ2Module::BuildState(core::AuxEngineServices &services) const {
     initial_scan->ScanSuppliers([&](const TpchQ2SupplierInput &input) {
       if (!AcceptDenseKey(input.key))
         return;
-      auto &slot = paged.Mut(static_cast<std::size_t>(input.key));
+      auto &slot = paged.Mutable(input.key);
       slot.name = input.name;
       slot.address = input.address;
       slot.nationkey = input.nationkey;
