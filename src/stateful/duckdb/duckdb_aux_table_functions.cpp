@@ -511,13 +511,18 @@ void AuxExecute(::duckdb::ClientContext &context, ::duckdb::TableFunctionInput &
   output.SetCardinality(count);
 }
 
+// One table function name; one TableFunction per signature (overloads share it).
 void RegisterAuxFunction(::duckdb::Catalog &catalog, ::duckdb::ClientContext &context,
-                         const SharedQueryCatalogEntry &entry, const char *function_name,
-                         ::duckdb::vector<::duckdb::LogicalType> argument_types) {
-  ::duckdb::TableFunction function(function_name, argument_types, AuxExecute, AuxBind,
-                                   AuxInitGlobal, AuxInitLocal);
-  function.function_info = ::duckdb::make_shared_ptr<AuxFunctionInfo>(entry);
-  ::duckdb::CreateTableFunctionInfo info(std::move(function));
+                         const SharedQueryCatalogEntry &entry, const std::string &function_name,
+                         std::vector<::duckdb::vector<::duckdb::LogicalType>> signatures) {
+  ::duckdb::TableFunctionSet set(function_name);
+  for (auto &signature : signatures) {
+    ::duckdb::TableFunction function(function_name, std::move(signature), AuxExecute, AuxBind,
+                                     AuxInitGlobal, AuxInitLocal);
+    function.function_info = ::duckdb::make_shared_ptr<AuxFunctionInfo>(entry);
+    set.AddFunction(std::move(function));
+  }
+  ::duckdb::CreateTableFunctionInfo info(std::move(set));
   info.on_conflict = ::duckdb::OnCreateConflict::IGNORE_ON_CONFLICT;
   catalog.CreateTableFunction(context, info);
 }
@@ -529,26 +534,11 @@ void RegisterRegisteredAuxFunctions(::duckdb::Catalog &catalog,
   for (const auto *query : duckdb::AuxQueries()) {
     const auto *entry = FindSharedQueryByAccelerator(query->accelerator_id);
     Require(entry != nullptr, "aux query " + query->accelerator_id + " has no catalog entry");
-    ::duckdb::vector<::duckdb::LogicalType> types(query->argument_types.begin(),
-                                                 query->argument_types.end());
-    if (!query->overload_argument_types.empty()) {
-      ::duckdb::TableFunctionSet set(query->table_function);
-      const auto add = [&](::duckdb::vector<::duckdb::LogicalType> signature) {
-        ::duckdb::TableFunction function(query->table_function, std::move(signature), AuxExecute,
-                                         AuxBind, AuxInitGlobal, AuxInitLocal);
-        function.function_info = ::duckdb::make_shared_ptr<AuxFunctionInfo>(*entry);
-        set.AddFunction(std::move(function));
-      };
-      add(std::move(types));
-      for (const auto &overload : query->overload_argument_types) {
-        add(::duckdb::vector<::duckdb::LogicalType>(overload.begin(), overload.end()));
-      }
-      ::duckdb::CreateTableFunctionInfo info(std::move(set));
-      info.on_conflict = ::duckdb::OnCreateConflict::IGNORE_ON_CONFLICT;
-      catalog.CreateTableFunction(context, info);
-      continue;
-    }
-    RegisterAuxFunction(catalog, context, *entry, query->table_function.c_str(), std::move(types));
+    std::vector<::duckdb::vector<::duckdb::LogicalType>> signatures;
+    signatures.emplace_back(query->argument_types.begin(), query->argument_types.end());
+    for (const auto &overload : query->overload_argument_types)
+      signatures.emplace_back(overload.begin(), overload.end());
+    RegisterAuxFunction(catalog, context, *entry, query->table_function, std::move(signatures));
   }
   // Verus accelerators registered through the host kit (generated glue).
   for (const auto *glue : verus_kit::All()) {
@@ -577,7 +567,9 @@ void RegisterRegisteredAuxFunctions(::duckdb::Catalog &catalog,
       }
     }
     const std::string name = std::string("accel_") + glue->id;
-    RegisterAuxFunction(catalog, context, *kit_entry, name.c_str(), std::move(types));
+    std::vector<::duckdb::vector<::duckdb::LogicalType>> signatures;
+    signatures.push_back(std::move(types));
+    RegisterAuxFunction(catalog, context, *kit_entry, name, std::move(signatures));
   }
 }
 
@@ -622,11 +614,5 @@ void RegisterDuckdbAuxTableFunctions(::duckdb::Connection &connection) {
     connection.Commit();
   }
 }
-
-#ifdef ACCEL_ENABLE_PARALLEL_AUX
-void RegisterDuckdbAuxParallelTableFunctions(::duckdb::Connection &connection) {
-  RegisterDuckdbAuxTableFunctions(connection);
-}
-#endif
 
 } // namespace accelerator_codegen::aux_state::engine
