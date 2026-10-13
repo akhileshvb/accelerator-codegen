@@ -64,7 +64,7 @@ core::VisibilityToken PostgresAuxBackend::CurrentVisibility() const {
   if (visibility) {
     return visibility();
   }
-  return EnsureSnapshotPin();
+  return PinTokenForActiveSnapshot();
 }
 
 core::AuxStateStore &PostgresAuxBackend::StateStore() { return state_store; }

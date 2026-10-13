@@ -7,11 +7,10 @@
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
 #include <chrono>
+#include <unordered_set>
 
 #include "postgres/engine_helpers.hpp"
 #include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
-
-#include <unordered_set>
 #include "accelerator_codegen/stateful/postgres/aux_server.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
@@ -238,7 +237,7 @@ public:
     // Every read in this statement: one aux state version.
     accelerator_codegen::aux_state::AuxReadScope one_version;
     // TokenForSnapshot: freeze (S, epoch) at the earliest UDF entry.
-    accelerator_codegen::aux_state::engine::postgres::ForcePinActiveSnapshot();
+    accelerator_codegen::aux_state::engine::postgres::PinTokenForActiveSnapshot();
 
     RequireCCollation();
     RequireMaterialize(fcinfo);
@@ -272,7 +271,6 @@ public:
         marker.own_commits.clear();
       }
     }
-    observed_mutations = accel_pg_get_observer_mutation_count();
     if (aux_server::LogDecisions()) {
       elog(LOG, "DBG %s hit=%d rebuilt=%d synced=%d built=%d S[xmin=%u xmax=%u xcnt=%u sub=%d] base[ok=%d xmax=%u run=%zu] own=%zu seq_ok=%d",
            accelerator.c_str(), (int)hit, (int)rebuilt, (int)marker.synced, (int)built,
@@ -741,7 +739,6 @@ private:
   SyncMarker marker;
   bool built = false;
   bool precommit_ok = false;
-  int observed_mutations = 0;
 };
 
 } // namespace detail

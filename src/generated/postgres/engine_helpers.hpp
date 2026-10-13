@@ -36,12 +36,6 @@
 #include "accelerator_codegen/stateful/postgres/snapshot_token.hpp"
 #include "accelerator_codegen/stateful/postgres/aux_mutation_epoch.hpp"
 
-// Declared in postgres_bridge.cpp (MODULE).
-extern "C" int accel_pg_get_observer_mutation_count();
-
-// xact + mutation registration uses the current substrate APIs
-// (SetPostgresActiveBackend / RegisterPostgresXactCallbacks).
-
 extern "C" {
 #include "postgres.h"
 #include "access/htup_details.h"
@@ -223,27 +217,6 @@ inline void StripCharPadding(std::string &text) {
   text.erase(text.find_last_not_of(' ') + 1);
 }
 
-// TypedText, except that a bpchar value loses its padding (bpchar comparisons
-// ignore trailing spaces, so this is the form they compare).
-inline std::string TypedCharText(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
-  std::string text = TypedText(tuple, tuple_desc, attribute);
-  if (TupleDescAttr(tuple_desc, attribute)->atttypid == BPCHAROID)
-    StripCharPadding(text);
-  return text;
-}
-
-// A captured value of table.column in the form TypedCharText scans deliver:
-// capture renders a bpchar padded, so a bpchar value loses its padding.
-// Unknown table or column: unchanged.
-inline void NormalizeCapturedText(const char *table, const char *column, std::string &text) {
-  const Oid relid = RelnameGetRelid(table);
-  if (!OidIsValid(relid))
-    return;
-  const AttrNumber attnum = get_attnum(relid, column);
-  if (attnum != InvalidAttrNumber && get_atttype(relid, attnum) == BPCHAROID)
-    StripCharPadding(text);
-}
-
 // `column = ANY('{k1,k2,...}'::bigint[])`, or FALSE for no keys.
 inline std::string KeyListPredicate(const char *column, const std::vector<int64_t> &keys) {
   if (keys.empty())
@@ -347,6 +320,38 @@ inline char TypedChar(HeapTuple tuple, TupleDesc tuple_desc, int attribute) {
 }
 
 } // namespace detail
+
+// A NULL text parameter makes the query's comparison NULL (no match): pass it
+// on as a NULL value.
+inline accelerator_codegen::aux_state::core::AuxValue TextArg(
+    FunctionCallInfo fcinfo, int index) {
+  namespace core = accelerator_codegen::aux_state::core;
+  return PG_ARGISNULL(index)
+             ? core::AuxValue::Null(core::AuxType::String)
+             : core::AuxValue::Of(core::AuxType::String,
+                                  detail::TextDatum(PG_GETARG_DATUM(index)));
+}
+
+// Exceptions must not leave the extension function (an uncaught C++ exception
+// would terminate the backend): report them as a SQL error.
+template <typename F> void RunOrReport(F &&run) {
+  std::string message;
+  bool division_by_zero = false;
+  try {
+    run();
+  } catch (const std::domain_error &e) {
+    message = e.what();
+    division_by_zero = true;
+  } catch (const std::exception &e) {
+    message = e.what();
+  }
+  if (!message.empty()) {
+    if (division_by_zero)
+      ereport(ERROR, (errcode(ERRCODE_DIVISION_BY_ZERO), errmsg("%s", message.c_str())));
+    ereport(ERROR, (errmsg("accelerator: %s", message.c_str())));
+  }
+}
+
 } // namespace accelerator_codegen::aux_state::engine::postgres
 
 #endif

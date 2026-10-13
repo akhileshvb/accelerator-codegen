@@ -37,16 +37,4 @@ void ClearSnapshotPins();
 // Register ExecutorStart_hook that pins when ActiveSnapshot is set. Idempotent.
 void RegisterSnapshotPinExecutorHook();
 
-// Earliest pin entry: identical to PinTokenForActiveSnapshot. Call at the
-// start of Runtime::Execute (before dirty/validity checks) so the freeze
-// happens as soon as the UDF body begins under the already-established S.
-inline core::VisibilityToken ForcePinActiveSnapshot() {
-  return PinTokenForActiveSnapshot();
-}
-
-// Alias used when a statement snapshot becomes active / is first observed.
-inline core::VisibilityToken EnsureSnapshotPin() {
-  return PinTokenForActiveSnapshot();
-}
-
 } // namespace accelerator_codegen::aux_state::engine::postgres

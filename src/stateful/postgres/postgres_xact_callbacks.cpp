@@ -5,7 +5,6 @@
 #include "accelerator_codegen/stateful/postgres/postgres_aux_backend.hpp"
 #include "accelerator_codegen/stateful/postgres/snapshot_token.hpp"
 
-#include <algorithm>
 #include <exception>
 #include <mutex>
 #include <vector>
@@ -19,7 +18,6 @@ extern "C" {
 namespace accelerator_codegen::aux_state::engine::postgres {
 namespace {
 
-static PostgresAuxBackend *g_active_backend = nullptr;
 static bool g_callbacks_registered = false;
 static std::mutex g_backends_mu;
 static std::vector<PostgresAuxBackend *> g_mutation_backends;
@@ -29,14 +27,7 @@ void XactCallbackBridge(XactEvent event, void *arg) {
   if (aux_server::InServer()) {
     return; // the state server's own transactions are not accelerator writes
   }
-  std::vector<PostgresAuxBackend *> backends;
-  {
-    std::lock_guard<std::mutex> lock(g_backends_mu);
-    backends = g_mutation_backends;
-  }
-  if (backends.empty() && g_active_backend) {
-    backends.push_back(g_active_backend);
-  }
+  const auto backends = RegisteredPostgresMutationBackends();
   switch (event) {
   case XACT_EVENT_PRE_PREPARE:
     aux_sync::CheckPrepareAllowed();
@@ -146,14 +137,7 @@ void SubXactCallbackBridge(SubXactEvent event, SubTransactionId my_subid,
   } else {
     aux_server::OnSubAbort(depth);
   }
-  std::vector<PostgresAuxBackend *> backends;
-  {
-    std::lock_guard<std::mutex> lock(g_backends_mu);
-    backends = g_mutation_backends;
-  }
-  if (backends.empty() && g_active_backend) {
-    backends.push_back(g_active_backend);
-  }
+  const auto backends = RegisteredPostgresMutationBackends();
   for (auto *backend : backends) {
     if (!backend) {
       continue;
@@ -194,10 +178,6 @@ bool RegisterPostgresBackendForMutations() {
   return first;
 }
 
-void SetPostgresActiveBackend(PostgresAuxBackend *backend) {
-  g_active_backend = backend;
-}
-
 void RegisterPostgresMutationBackend(PostgresAuxBackend *backend) {
   if (!backend)
     return;
@@ -207,57 +187,11 @@ void RegisterPostgresMutationBackend(PostgresAuxBackend *backend) {
       return;
   }
   g_mutation_backends.push_back(backend);
-  // Newest runtime is the default target for xact hooks (single-query benches).
-  g_active_backend = backend;
 }
-
-bool HasRegisteredPostgresMutationBackend() {
-  std::lock_guard<std::mutex> lock(g_backends_mu);
-  return !g_mutation_backends.empty() || g_active_backend != nullptr;
-}
-
-void UnregisterPostgresMutationBackend(PostgresAuxBackend *backend) {
-  std::lock_guard<std::mutex> lock(g_backends_mu);
-  g_mutation_backends.erase(
-      std::remove(g_mutation_backends.begin(), g_mutation_backends.end(),
-                  backend),
-      g_mutation_backends.end());
-  if (g_active_backend == backend) {
-    g_active_backend =
-        g_mutation_backends.empty() ? nullptr : g_mutation_backends.back();
-  }
-}
-
-void DispatchPostgresMutation(const core::MutationBatch &batch) {
-
-  std::vector<PostgresAuxBackend *> backends;
-  {
-    std::lock_guard<std::mutex> lock(g_backends_mu);
-    backends = g_mutation_backends;
-  }
-  if (backends.empty() && g_active_backend) {
-    backends.push_back(g_active_backend);
-  }
-  const int level = GetCurrentTransactionNestLevel();
-  const auto depth = static_cast<std::size_t>(level > 0 ? level - 1 : 0);
-  for (auto *backend : backends) {
-    if (backend) {
-      backend->CaptureMutationAtDepth(batch, depth);
-    }
-  }
-}
-
-PostgresAuxBackend *GetPostgresActiveBackend() { return g_active_backend; }
 
 std::vector<PostgresAuxBackend *> RegisteredPostgresMutationBackends() {
   std::lock_guard<std::mutex> lock(g_backends_mu);
-  if (!g_mutation_backends.empty()) {
-    return g_mutation_backends;
-  }
-  if (g_active_backend) {
-    return {g_active_backend};
-  }
-  return {};
+  return g_mutation_backends;
 }
 
 } // namespace accelerator_codegen::aux_state::engine::postgres

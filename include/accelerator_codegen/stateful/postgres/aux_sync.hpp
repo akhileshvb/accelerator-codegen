@@ -51,7 +51,6 @@ void RegisterWrite(core::TableId table);
 // dependency slot was truncated by its own transaction resyncs (rebuilds).
 void RegisterTruncate(core::TableId table);
 bool OwnTruncatedAnyOf(const std::vector<std::size_t> &slots);
-bool OwnRegistered(std::size_t slot);
 bool OwnRegisteredAny();
 bool OwnRegisteredAnyOf(const std::vector<std::size_t> &slots);
 
