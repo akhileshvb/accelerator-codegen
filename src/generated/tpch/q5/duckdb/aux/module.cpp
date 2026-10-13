@@ -715,9 +715,9 @@ TpchQ5Module::StageIncrementalMaintenance(
       return rebuild();
   }
 
-  TpchQ5ShardTxn<TpchQ5OrderRec> otx(side->orders);
-  TpchQ5ShardTxn<TpchQ5SuppRec> stx(side->supps);
-  TpchQ5ShardTxn<TpchQ5CustRec> ctx(side->custs);
+  TpchQ5ShardIndex<TpchQ5OrderRec>::Txn otx(side->orders);
+  TpchQ5ShardIndex<TpchQ5SuppRec>::Txn stx(side->supps);
+  TpchQ5ShardIndex<TpchQ5CustRec>::Txn ctx(side->custs);
   Q5TreeTxn ttx(*tree);
   using Kind = TpchQ5TxnBuffer::DimDelta::Kind;
 
@@ -735,14 +735,14 @@ TpchQ5Module::StageIncrementalMaintenance(
   // their revenue: rebuild in that (rare) case.
   for (const auto &d : buffer.CustomerMutations()) {
     if (d.kind == Kind::Insert) {
-      if (ctx.Find(d.key))
+      if (TpchQ5Val(ctx.Find(d.key)))
         return rebuild();
-      ctx.Set(d.key, TpchQ5CustRec{d.nationkey, 0});
+      ctx.Upsert({d.key, TpchQ5CustRec{d.nationkey, 0}});
     } else if (d.kind == Kind::UpdateNation) {
-      const auto *rec = ctx.Find(d.key);
+      const auto *rec = TpchQ5Val(ctx.Find(d.key));
       if (!rec || rec->order_count > 0)
         return rebuild();
-      ctx.Set(d.key, TpchQ5CustRec{d.nationkey, 0});
+      ctx.Upsert({d.key, TpchQ5CustRec{d.nationkey, 0}});
     }
   }
 
@@ -768,7 +768,7 @@ TpchQ5Module::StageIncrementalMaintenance(
     ok = initial_scan &&
          initial_scan->ScanLineitemsByOrder(
              orderkey, [&](const TpchQ5LineitemInput &li) {
-               const auto *supp = stx.Find(li.suppkey);
+               const auto *supp = TpchQ5Val(stx.Find(li.suppkey));
                if (supp && supp->present && supp->nationkey == nationkey)
                  rev += ComputeRevenueRaw(li.extended_price_raw, li.discount_raw);
              });
@@ -777,7 +777,7 @@ TpchQ5Module::StageIncrementalMaintenance(
 
   // Phase A2: order UPDATEs (same key removed and inserted).
   for (const auto key64 : updated) {
-    const auto *found = otx.Find(key64);
+    const auto *found = TpchQ5Val(otx.Find(key64));
     const TpchQ5TxnBuffer::OrderDelta *nd = nullptr;
     for (const auto &o : buffer.OrderMutations())
       if (o.sign > 0 && o.orderkey == key64)
@@ -791,12 +791,11 @@ TpchQ5Module::StageIncrementalMaintenance(
       if (col >= 0 && old_rec.rev != 0)
         ttx.Add(TpchQ5LeafNode(meta.tree_size, old_rec.ordinal), col,
                 -old_rec.rev);
-      if (const auto *oc = ctx.Find(old_rec.custkey))
-        ctx.Set(old_rec.custkey,
-                TpchQ5CustRec{oc->nationkey, oc->order_count - 1});
+      if (const auto *oc = TpchQ5Val(ctx.Find(old_rec.custkey)))
+        ctx.Upsert({old_rec.custkey, TpchQ5CustRec{oc->nationkey, oc->order_count - 1}});
       otx.Erase(key64);
     }
-    const auto *cust = ctx.Find(nd->custkey);
+    const auto *cust = TpchQ5Val(ctx.Find(nd->custkey));
     if (!cust) {
       dropped.insert(key64); // customer outside the join
       continue;
@@ -817,8 +816,8 @@ TpchQ5Module::StageIncrementalMaintenance(
       credit_order(nr, rev);
       recomputed.insert(key64);
     }
-    ctx.Set(nd->custkey, TpchQ5CustRec{cust->nationkey, cust->order_count + 1});
-    otx.Set(key64, nr);
+    ctx.Upsert({nd->custkey, TpchQ5CustRec{cust->nationkey, cust->order_count + 1}});
+    otx.Upsert({key64, nr});
   }
 
   // Phase A3: plain order inserts. Orders of unknown customers contribute
@@ -826,19 +825,17 @@ TpchQ5Module::StageIncrementalMaintenance(
   for (const auto &order : buffer.OrderMutations()) {
     if (order.sign < 0 || updated.count(order.orderkey))
       continue;
-    const auto *cust = ctx.Find(order.custkey);
+    const auto *cust = TpchQ5Val(ctx.Find(order.custkey));
     if (!cust)
       continue;
     const int32_t ord =
         TpchQ5DateOrdinal(order.orderdate_days, meta.min_orderdate_days);
     if (ord < 0 || ord >= static_cast<int32_t>(meta.tree_size))
       return rebuild(); // outside the tree's date range: re-derive bounds
-    if (otx.Find(order.orderkey))
+    if (TpchQ5Val(otx.Find(order.orderkey)))
       return rebuild();
-    otx.Set(order.orderkey,
-            TpchQ5OrderRec{cust->nationkey, ord, order.custkey, 0});
-    ctx.Set(order.custkey,
-            TpchQ5CustRec{cust->nationkey, cust->order_count + 1});
+    otx.Upsert({order.orderkey, TpchQ5OrderRec{cust->nationkey, ord, order.custkey, 0}});
+    ctx.Upsert({order.custkey, TpchQ5CustRec{cust->nationkey, cust->order_count + 1}});
   }
 
   // Phase B: lineitems. Credit a nation only when supplier nation equals
@@ -846,17 +843,17 @@ TpchQ5Module::StageIncrementalMaintenance(
   // an absent supplier only adjusts the supplier's reference count.
   bool unresolved = false;
   auto apply_row = [&](const TpchQ5LineitemInput &row, int64_t sign) {
-    const auto *supp = stx.Find(row.suppkey);
+    const auto *supp = TpchQ5Val(stx.Find(row.suppkey));
     TpchQ5SuppRec srec;
     if (supp)
       srec = *supp;
     else
       srec = TpchQ5SuppRec{0, 0, false};
     srec.line_count += static_cast<int32_t>(sign);
-    stx.Set(row.suppkey, srec);
+    stx.Upsert({row.suppkey, srec});
     if (dropped.count(row.orderkey) || recomputed.count(row.orderkey))
       return;
-    const auto *order = otx.Find(row.orderkey);
+    const auto *order = TpchQ5Val(otx.Find(row.orderkey));
     if (!order) {
       unresolved = true;
       return;
@@ -866,7 +863,7 @@ TpchQ5Module::StageIncrementalMaintenance(
     TpchQ5OrderRec orec = *order;
     credit_order(orec, sign * ComputeRevenueRaw(row.extended_price_raw,
                                                 row.discount_raw));
-    otx.Set(row.orderkey, orec);
+    otx.Upsert({row.orderkey, orec});
   };
   for (const auto &m : buffer.LineitemMutations()) {
     if (!m.is_insert)
@@ -881,7 +878,7 @@ TpchQ5Module::StageIncrementalMaintenance(
   for (const auto &order : buffer.OrderMutations()) {
     if (order.sign > 0 || updated.count(order.orderkey))
       continue;
-    const auto *rec = otx.Find(order.orderkey);
+    const auto *rec = TpchQ5Val(otx.Find(order.orderkey));
     if (!rec)
       continue;
     const TpchQ5OrderRec orec = *rec;
@@ -890,9 +887,8 @@ TpchQ5Module::StageIncrementalMaintenance(
       if (col >= 0)
         ttx.Add(TpchQ5LeafNode(meta.tree_size, orec.ordinal), col, -orec.rev);
     }
-    if (const auto *cust = ctx.Find(orec.custkey))
-      ctx.Set(orec.custkey,
-              TpchQ5CustRec{cust->nationkey, cust->order_count - 1});
+    if (const auto *cust = TpchQ5Val(ctx.Find(orec.custkey)))
+      ctx.Upsert({orec.custkey, TpchQ5CustRec{cust->nationkey, cust->order_count - 1}});
     otx.Erase(order.orderkey);
   }
 
@@ -900,7 +896,7 @@ TpchQ5Module::StageIncrementalMaintenance(
   for (const auto &d : buffer.CustomerMutations()) {
     if (d.kind != Kind::Delete)
       continue;
-    const auto *rec = ctx.Find(d.key);
+    const auto *rec = TpchQ5Val(ctx.Find(d.key));
     if (!rec || rec->order_count > 0)
       return rebuild();
     ctx.Erase(d.key);
@@ -912,7 +908,7 @@ TpchQ5Module::StageIncrementalMaintenance(
   // (A key with no lineitems needs no query.)
   auto adjust_supplier = [&](int64_t suppkey, bool has_old, int32_t old_nation,
                              bool has_new, int32_t new_nation) -> bool {
-    const auto *rec = stx.Find(suppkey);
+    const auto *rec = TpchQ5Val(stx.Find(suppkey));
     const int32_t lines = rec ? rec->line_count : 0;
     if (lines > 0) {
       std::vector<TpchQ5LineitemInput> rows;
@@ -922,7 +918,7 @@ TpchQ5Module::StageIncrementalMaintenance(
               [&](const TpchQ5LineitemInput &li) { rows.push_back(li); }))
         return false;
       for (const auto &li : rows) {
-        const auto *order = otx.Find(li.orderkey);
+        const auto *order = TpchQ5Val(otx.Find(li.orderkey));
         if (!order)
           continue; // no tracked order: contributed nothing
         TpchQ5OrderRec orec = *order;
@@ -932,19 +928,19 @@ TpchQ5Module::StageIncrementalMaintenance(
           credit_order(orec, -rev);
         if (has_new && orec.nationkey == new_nation)
           credit_order(orec, rev);
-        otx.Set(li.orderkey, orec);
+        otx.Upsert({li.orderkey, orec});
       }
     }
     if (has_new)
-      stx.Set(suppkey, TpchQ5SuppRec{new_nation, lines, true});
+      stx.Upsert({suppkey, TpchQ5SuppRec{new_nation, lines, true}});
     else if (lines > 0)
-      stx.Set(suppkey, TpchQ5SuppRec{0, lines, false});
+      stx.Upsert({suppkey, TpchQ5SuppRec{0, lines, false}});
     else
       stx.Erase(suppkey);
     return true;
   };
   for (const auto &d : buffer.SupplierMutations()) {
-    const auto *rec = stx.Find(d.key);
+    const auto *rec = TpchQ5Val(stx.Find(d.key));
     if (d.kind == Kind::Insert) {
       if (rec && rec->present)
         return rebuild(); // duplicate key
@@ -1141,19 +1137,19 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
 
   // Dimension and order lookups live in hash-sharded sorted vectors (no
   // 30M-entry node maps); they become the published persistent indexes.
-  TpchQ5ShardBuilder<TpchQ5CustRec> custs;
+  TpchQ5ShardIndex<TpchQ5CustRec>::Builder custs;
   initial_scan->ScanCustomers([&](const TpchQ5CustomerInput &input) {
-    custs.Add(input.custkey, TpchQ5CustRec{input.nationkey, 0});
+    custs.Add({input.custkey, TpchQ5CustRec{input.nationkey, 0}});
   });
   custs.Sort();
 
-  TpchQ5ShardBuilder<TpchQ5SuppRec> supps;
+  TpchQ5ShardIndex<TpchQ5SuppRec>::Builder supps;
   initial_scan->ScanSuppliers([&](const TpchQ5SupplierInput &input) {
-    supps.Add(input.suppkey, TpchQ5SuppRec{input.nationkey, 0});
+    supps.Add({input.suppkey, TpchQ5SuppRec{input.nationkey, 0}});
   });
   supps.Sort();
 
-  TpchQ5ShardBuilder<TpchQ5OrderRec> orders;
+  TpchQ5ShardIndex<TpchQ5OrderRec>::Builder orders;
   meta.min_orderdate_days = std::numeric_limits<int32_t>::max();
   meta.max_orderdate_days = std::numeric_limits<int32_t>::min();
   initial_scan->ScanOrders([&](const TpchQ5OrderInput &input) {
@@ -1161,14 +1157,13 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
       meta.min_orderdate_days = input.orderdate_days;
     if (input.orderdate_days > meta.max_orderdate_days)
       meta.max_orderdate_days = input.orderdate_days;
-    auto *cust = custs.Find(input.custkey);
+    auto *cust = TpchQ5ValMut(custs.Find(input.custkey));
     if (!cust)
       return;
     cust->order_count += 1;
     // `ordinal` temporarily holds the order date; rebased below.
-    orders.Add(input.orderkey,
-               TpchQ5OrderRec{cust->nationkey, input.orderdate_days,
-                              input.custkey, 0});
+    orders.Add({input.orderkey, TpchQ5OrderRec{cust->nationkey, input.orderdate_days,
+                              input.custkey, 0}});
   });
 
   if (meta.min_orderdate_days > meta.max_orderdate_days) {
@@ -1181,21 +1176,21 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
     num_days = 1;
   meta.tree_size = NextPowerOf2(static_cast<uint32_t>(num_days));
   const uint32_t tree_size = meta.tree_size;
-  orders.ForEach([&](TpchQ5ShardBuilder<TpchQ5OrderRec>::Entry &e) {
-    e.val.ordinal = TpchQ5DateOrdinal(e.val.ordinal, meta.min_orderdate_days);
+  orders.ForEach([&](TpchQ5ShardIndex<TpchQ5OrderRec>::Element &e) {
+    e.value.ordinal = TpchQ5DateOrdinal(e.value.ordinal, meta.min_orderdate_days);
   });
   orders.Sort();
 
   std::unordered_map<int64_t, int32_t> orphan_supp;
   std::vector<int64_t> flat(static_cast<std::size_t>(tree_size) * 2 * stride, 0);
   initial_scan->ScanLineitems([&](const TpchQ5LineitemInput &input) {
-    auto *supp = supps.Find(input.suppkey);
+    auto *supp = TpchQ5ValMut(supps.Find(input.suppkey));
     if (!supp) {
       ++orphan_supp[input.suppkey]; // lineitem of a supplier that does not exist
       return;
     }
     supp->line_count += 1;
-    auto *order = orders.Find(input.orderkey);
+    auto *order = TpchQ5ValMut(orders.Find(input.orderkey));
     if (!order || supp->nationkey != order->nationkey)
       return;
     const int32_t col = meta.NationColumn(order->nationkey);
@@ -1212,7 +1207,7 @@ TpchQ5State TpchQ5Module::BuildState(core::AuxEngineServices &services) const {
 
   if (!orphan_supp.empty()) {
     for (const auto &entry : orphan_supp)
-      supps.Add(entry.first, TpchQ5SuppRec{0, entry.second, false});
+      supps.Add({entry.first, TpchQ5SuppRec{0, entry.second, false}});
     supps.Sort();
   }
 
