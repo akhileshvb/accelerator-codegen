@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -106,57 +107,6 @@ struct TpchQ19PartDim {
 };
 
 
-// Copy-on-write hash map: 128 shards, each immutable once published. Copying
-// shares every shard; a mutation clones only the touched shard (once per
-// staged commit). Only the staging owner may mutate.
-template <typename V> class TpchQ19CowMap {
-public:
-  using Map = std::unordered_map<uint64_t, V>;
-  static constexpr std::size_t kShards = 128;
-  TpchQ19CowMap() = default;
-  TpchQ19CowMap(const TpchQ19CowMap &o) : shards(o.shards), count(o.count) {}
-  TpchQ19CowMap &operator=(const TpchQ19CowMap &o) {
-    shards = o.shards;
-    count = o.count;
-    owned.fill(false);
-    return *this;
-  }
-  const V *Find(uint64_t key) const {
-    const auto &shard = shards[ShardOf(key)];
-    if (!shard)
-      return nullptr;
-    const auto it = shard->find(key);
-    return it == shard->end() ? nullptr : &it->second;
-  }
-  V &Mutable(uint64_t key, bool *inserted = nullptr) {
-    auto &map = OwnedShard(ShardOf(key));
-    const auto res = map.try_emplace(key);
-    if (res.second)
-      ++count;
-    if (inserted)
-      *inserted = res.second;
-    return res.first->second;
-  }
-  std::size_t Size() const { return count; }
-  bool Empty() const { return count == 0; }
-
-private:
-  static std::size_t ShardOf(uint64_t key) {
-    return static_cast<std::size_t>((key * 0x9E3779B97F4A7C15ULL) >> 57);
-  }
-  Map &OwnedShard(std::size_t i) {
-    if (!shards[i])
-      shards[i] = std::make_shared<Map>();
-    else if (!owned[i])
-      shards[i] = std::make_shared<Map>(*shards[i]);
-    owned[i] = true;
-    return *shards[i];
-  }
-  std::array<std::shared_ptr<Map>, kShards> shards{};
-  std::array<bool, kShards> owned{};
-  std::size_t count = 0;
-};
-
 struct TpchQ19State {
   // ── Per-part index of qualifying lineitems ────────────────────────────────
   // For every partkey, the lineitems passing the part-independent filters
@@ -180,7 +130,7 @@ struct TpchQ19State {
     std::vector<IndexEnt32> ents;
   };
   std::shared_ptr<const IndexBase> index_base = std::make_shared<IndexBase>();
-  TpchQ19CowMap<std::vector<IndexEnt>> index_overlay;
+  core::ShardedCowHashMap<std::vector<IndexEnt>, 7> index_overlay;
   // Current entries of one part (merged view; empty when none).
   std::vector<IndexEnt> IndexEntries(int64_t partkey) const;
 
