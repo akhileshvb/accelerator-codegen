@@ -1,22 +1,45 @@
 {
-  "version": 1,
-  "aux_hit_us": 2000.0,
-  "fallback_us": 1000000.0,
-  "partition_rebuild_us": 8000000.0,
-  "full_rebuild_us": 8000000.0,
-  "first_query_blocking_us": 0.0,
-  "apply_delta_overhead_us": 5000.0,
-  "apply_delta_base_us": 0.0,
-  "apply_delta_per_row_us": 20.0,
-  "apply_delta_max_rows": 1048576,
-  "apply_delta_max_part_fanout": 512,
-  "invalidation_overhead_us": 1000.0,
-  "decision_margin_us": 50000.0,
-  "min_samples": 8,
-  "incremental_failure_prob": 0.01,
-  "interference_rebuild_per_query_us": 500857,
-  "interference_rebuild_scan_byte_us": 0,
-  "interference_delta_per_query_us": 254146,
-  "interference_invalidate_per_query_us": 63536.6,
-  "interference_query_slowdown_factor": 0.0108953
+ "version": 1,
+ "engine": "duckdb",
+ "accelerator": "tpch_q4",
+ "aux_hit_us": 1.201,
+ "fallback_us": 64738.9,
+ "partition_rebuild_us": 44817562.026,
+ "full_rebuild_us": 44817562.026,
+ "first_query_blocking_us": 2089350.0,
+ "apply_delta_overhead_us": 0.0,
+ "apply_delta_base_us": 0.0,
+ "apply_delta_per_row_us": 2.4267016303884006,
+ "apply_delta_part_lineitem_scan_us": 27000,
+ "apply_delta_max_rows": 1048576,
+ "apply_delta_max_part_fanout": 16,
+ "invalidation_overhead_us": 2096170.0,
+ "decision_margin_us": 1000,
+ "min_samples": 8,
+ "incremental_failure_prob": 0.01,
+ "interference_rebuild_per_query_us": 0,
+ "interference_rebuild_scan_byte_us": 0,
+ "interference_delta_per_query_us": 0,
+ "interference_invalidate_per_query_us": 0,
+ "interference_query_slowdown_factor": 0,
+ "calibration_build_initial_state_us": 2089350.0,
+ "calibration_apply_delta_base_us": 2196370.0,
+ "calibration_apply_delta_per_row_us": 2.84771,
+ "calibration_samples": 5,
+ "source": "scripts/calibrate_rf_cost_models.py 2026-10-12: TPC-H RF1/RF2 at SF20 (1 pairs), ApplyDelta forced; RebuildAll = the measured build time; other fields from config/q4_aux_cost_model.json",
+ "calibration_rf_apply_delta_us": [
+  272184.84,
+  242483.696
+ ],
+ "calibration_rf_rows_touched": [
+  105889,
+  106216
+ ],
+ "calibration_rf_rebuild_all_us": [
+  44817562.026
+ ],
+ "calibration_rf_mismatches": {
+  "ApplyDelta": 0,
+  "RebuildAll": 0
+ }
 }

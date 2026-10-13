@@ -1,0 +1,53 @@
+{
+ "version": 1,
+ "engine": "duckdb",
+ "accelerator": "tpch_q1",
+ "aux_hit_us": 1208.62,
+ "fallback_us": 23311.7,
+ "partition_rebuild_base_us": 7855.02,
+ "partition_rebuild_us": 73083.74100000001,
+ "full_rebuild_us": 73083.74100000001,
+ "first_query_blocking_us": 100389,
+ "apply_delta_overhead_us": 0.0,
+ "apply_delta_base_us": 0.0,
+ "apply_delta_per_row_us": 0.6909455322356757,
+ "apply_delta_part_lineitem_scan_us": 27000,
+ "apply_delta_max_rows": 1048576,
+ "apply_delta_max_part_fanout": 16,
+ "invalidation_overhead_us": 1200.38,
+ "decision_margin_us": 1000,
+ "min_samples": 8,
+ "incremental_failure_prob": 0.01,
+ "interference_rebuild_per_query_us": 0,
+ "interference_rebuild_scan_byte_us": 0,
+ "interference_delta_per_query_us": 0,
+ "interference_invalidate_per_query_us": 0,
+ "interference_query_slowdown_factor": 0,
+ "calibration_build_initial_state_us": 100389,
+ "calibration_apply_delta_base_us": 172.277,
+ "calibration_apply_delta_per_row_us": 0.710262,
+ "calibration_samples": 3,
+ "source": "scripts/calibrate_rf_cost_models.py 2026-10-12: TPC-H RF1/RF2 at SF1 (2 pairs), ApplyDelta and RebuildAll forced; other fields from config/q1_aux_cost_model.json",
+ "calibration_rf_apply_delta_us": [
+  4083.953,
+  4085.934,
+  3932.921,
+  4304.845
+ ],
+ "calibration_rf_rows_touched": [
+  5822,
+  6005,
+  6076,
+  5952
+ ],
+ "calibration_rf_rebuild_all_us": [
+  87956.775,
+  75606.909,
+  70560.573,
+  68899.684
+ ],
+ "calibration_rf_mismatches": {
+  "ApplyDelta": 0,
+  "RebuildAll": 0
+ }
+}

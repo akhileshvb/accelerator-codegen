@@ -1,0 +1,46 @@
+{
+ "version": 1,
+ "engine": "duckdb",
+ "accelerator": "tpch_q18",
+ "aux_hit_us": 4.135,
+ "fallback_us": 77320.4,
+ "partition_rebuild_us": 158015.3715,
+ "full_rebuild_us": 158015.3715,
+ "first_query_blocking_us": 156925,
+ "apply_delta_overhead_us": 0.0,
+ "apply_delta_base_us": 0.0,
+ "apply_delta_per_row_us": 0.08042825940860215,
+ "apply_delta_part_lineitem_scan_us": 27000,
+ "apply_delta_max_rows": 1048576,
+ "apply_delta_max_part_fanout": 16,
+ "invalidation_overhead_us": 196427,
+ "decision_margin_us": 1000,
+ "min_samples": 8,
+ "incremental_failure_prob": 0.01,
+ "interference_rebuild_per_query_us": 0,
+ "interference_rebuild_scan_byte_us": 0,
+ "interference_delta_per_query_us": 0,
+ "interference_invalidate_per_query_us": 0,
+ "interference_query_slowdown_factor": 0,
+ "calibration_build_initial_state_us": 156925,
+ "calibration_apply_delta_base_us": 192741,
+ "calibration_apply_delta_per_row_us": 13.7461,
+ "calibration_samples": 5,
+ "source": "scripts/calibrate_rf_cost_models.py 2026-10-12: TPC-H RF1/RF2 at SF1 (2 pairs), ApplyDelta and RebuildAll forced; other fields from config/q18_aux_cost_model.json",
+ "calibration_rf_apply_delta_us": [
+  478.709
+ ],
+ "calibration_rf_rows_touched": [
+  5952
+ ],
+ "calibration_rf_rebuild_all_us": [
+  146811.225,
+  171619.747,
+  158562.451,
+  157468.292
+ ],
+ "calibration_rf_mismatches": {
+  "ApplyDelta": 0,
+  "RebuildAll": 0
+ }
+}
