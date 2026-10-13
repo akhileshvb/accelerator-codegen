@@ -335,7 +335,8 @@ std::vector<SharedProbe> CollectInvalidatingSharedProbes(
   auto result = connection.Query(probe_sql);
   Require(result != nullptr && !result->HasError() && result->RowCount() >= 1,
           result ? ("invalidating probe select failed for Q" +
-                    std::to_string(entry.query_id) + ": " + result->GetError())
+                    std::to_string(entry.query_id) + ": " +
+                    (result->HasError() ? result->GetError() : std::string("returned 0 rows")))
                  : "invalidating probe select returned null");
   auto &materialized = result->Cast<::duckdb::MaterializedQueryResult>();
   std::vector<SharedProbe> probes;
