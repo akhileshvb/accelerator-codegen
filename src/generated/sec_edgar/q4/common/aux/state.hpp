@@ -45,6 +45,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_types.hpp"
 #include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/sharded_cow_open_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -263,184 +264,6 @@ private:
   std::vector<uint64_t> table;
 };
 
-// Copy-on-write sharded int64 -> V map.  2^kBits shards, each a linear-probing
-// table of {key, value} slots held by shared_ptr; the directory also caches
-// each shard's slot array and mask, so a lookup is one directory read (small,
-// cache-resident) plus one slot cache line, and can be prefetched
-// (FindBatch).  Copying the map copies the directory; the first write to a
-// shard in a copy clones only that shard.  Hold it by shared_ptr in the state
-// so that versions that do not modify it do not even copy the directory.
-// INT64_MIN is reserved (empty slot).
-template <typename V, unsigned kBits> class Q4CowMap {
-public:
-  struct Slot {
-    int64_t key;
-    V val;
-  };
-  static constexpr int64_t kEmptyKey = INT64_MIN;
-  static constexpr size_t kShards = size_t{1} << kBits;
-
-  Q4CowMap() : dir_(kShards) {}
-
-  static uint64_t Hash(int64_t key) { return Q4Fmix(static_cast<uint64_t>(key) + 1); }
-  // Top bits of the hash: the full build lays its key table out in the same
-  // order, so the shards are filled from a sequential pass.
-  static size_t ShardOf(int64_t key) { return static_cast<size_t>(Hash(key) >> (64 - kBits)); }
-
-  const V *FindHashed(int64_t key, uint64_t h) const {
-    const Dir &d = dir_[h >> (64 - kBits)];
-    if (!d.slots) return nullptr;
-    for (size_t j = h & d.mask;; j = (j + 1) & d.mask) {
-      const Slot &s = d.slots[j];
-      if (s.key == key) return &s.val;
-      if (s.key == kEmptyKey) return nullptr;
-    }
-  }
-  const V *Find(int64_t key) const { return FindHashed(key, Hash(key)); }
-  void Prefetch(uint64_t h) const {
-    const Dir &d = dir_[h >> (64 - kBits)];
-    if (d.slots) __builtin_prefetch(&d.slots[h & d.mask]);
-  }
-  // out[i] = Find(keys[i]), with the slot lines prefetched ahead.
-  void FindBatch(const int64_t *keys, size_t n, const V **out) const {
-    constexpr size_t kAhead = 16;
-    thread_local std::vector<uint64_t> hs;
-    if (hs.size() < n) hs.resize(n);
-    for (size_t i = 0; i < n; ++i) hs[i] = Hash(keys[i]);
-    for (size_t i = 0; i < n; ++i) {
-      if (i + kAhead < n) Prefetch(hs[i + kAhead]);
-      out[i] = FindHashed(keys[i], hs[i]);
-    }
-  }
-
-  V &Upsert(int64_t key, V value) {
-    const uint64_t h = Hash(key);
-    Dir &d = Mut(h >> (64 - kBits), 1);
-    size_t j = h & d.mask;
-    while (d.slots[j].key != key && d.slots[j].key != kEmptyKey) j = (j + 1) & d.mask;
-    if (d.slots[j].key == kEmptyKey) {
-      d.slots[j].key = key;
-      ++d.shard->size;
-    }
-    d.slots[j].val = std::move(value);
-    return d.slots[j].val;
-  }
-  V *FindMut(int64_t key) {
-    const uint64_t h = Hash(key);
-    if (!FindHashed(key, h)) return nullptr;
-    Dir &d = Mut(h >> (64 - kBits), 0);
-    size_t j = h & d.mask;
-    while (d.slots[j].key != key) j = (j + 1) & d.mask;
-    return &d.slots[j].val;
-  }
-  bool Erase(int64_t key) {
-    const uint64_t h = Hash(key);
-    if (!FindHashed(key, h)) return false;
-    Dir &d = Mut(h >> (64 - kBits), 0);
-    size_t hole = h & d.mask;
-    while (d.slots[hole].key != key) hole = (hole + 1) & d.mask;
-    // backward-shift deletion: no tombstones
-    for (size_t k = (hole + 1) & d.mask; d.slots[k].key != kEmptyKey; k = (k + 1) & d.mask) {
-      const size_t home = Hash(d.slots[k].key) & d.mask;
-      if (((k - home) & d.mask) >= ((k - hole) & d.mask)) {
-        d.slots[hole] = std::move(d.slots[k]);
-        hole = k;
-      }
-    }
-    d.slots[hole].key = kEmptyKey;
-    d.slots[hole].val = V{};
-    --d.shard->size;
-    return true;
-  }
-  size_t size() const {
-    size_t n = 0;
-    for (const auto &d : dir_) n += d.shard ? d.shard->size : 0;
-    return n;
-  }
-  size_t memory_bytes() const {
-    size_t n = dir_.capacity() * sizeof(Dir);
-    for (const auto &d : dir_) n += d.shard ? d.shard->slots.capacity() * sizeof(Slot) + sizeof(Shard) : 0;
-    return n;
-  }
-  template <typename F> void ForEach(F &&fn) const {
-    for (const auto &d : dir_) {
-      if (!d.slots) continue;
-      for (size_t j = 0; j <= d.mask; ++j) {
-        if (d.slots[j].key != kEmptyKey) fn(d.slots[j].key, d.slots[j].val);
-      }
-    }
-  }
-  // Loads `entries` (distinct keys, any order) into an empty map.
-  void BulkLoad(std::vector<std::pair<int64_t, V>> &entries) {
-    std::vector<std::vector<std::pair<int64_t, V>>> parts(kShards);
-    const size_t per = entries.size() / kShards + 8;
-    for (auto &p : parts) p.reserve(per + per / 4);
-    for (auto &e : entries) parts[ShardOf(e.first)].push_back(std::move(e));
-    std::vector<std::pair<int64_t, V>>().swap(entries);
-    BulkLoadParts(parts);
-  }
-  // Same, from entries already partitioned by ShardOf (parts.size() == kShards).
-  void BulkLoadParts(std::vector<std::vector<std::pair<int64_t, V>>> &parts) {
-    for (size_t s = 0; s < kShards; ++s) {
-      auto &part = parts[s];
-      if (part.empty()) continue;
-      size_t cap = 16;
-      while (cap * 3 < part.size() * 5) cap *= 2; // load <= 0.6
-      auto shard = std::make_shared<Shard>();
-      shard->slots.assign(cap, Slot{kEmptyKey, V{}});
-      Dir &d = dir_[s];
-      d.shard = std::move(shard);
-      d.slots = d.shard->slots.data();
-      d.mask = cap - 1;
-      for (auto &e : part) {
-        size_t j = Hash(e.first) & d.mask;
-        while (d.slots[j].key != kEmptyKey) j = (j + 1) & d.mask;
-        d.slots[j].key = e.first;
-        d.slots[j].val = std::move(e.second);
-      }
-      d.shard->size = part.size();
-      std::vector<std::pair<int64_t, V>>().swap(part);
-    }
-  }
-
-private:
-  struct Shard {
-    std::vector<Slot> slots; // power-of-two size
-    size_t size = 0;
-  };
-  struct Dir {
-    std::shared_ptr<Shard> shard;
-    Slot *slots = nullptr;
-    size_t mask = 0;
-  };
-
-  // Private (unshared) shard i with room for `extra` more keys.
-  Dir &Mut(size_t i, size_t extra) {
-    Dir &d = dir_[i];
-    if (!d.shard) {
-      d.shard = std::make_shared<Shard>();
-      d.shard->slots.assign(16, Slot{kEmptyKey, V{}});
-    } else if (d.shard.use_count() > 1) {
-      d.shard = std::make_shared<Shard>(*d.shard);
-    }
-    if ((d.shard->size + extra) * 4 > d.shard->slots.size() * 3) {
-      std::vector<Slot> old(std::move(d.shard->slots));
-      const size_t cap = old.size() * 2;
-      d.shard->slots.assign(cap, Slot{kEmptyKey, V{}});
-      for (auto &s : old) {
-        if (s.key == kEmptyKey) continue;
-        size_t j = Hash(s.key) & (cap - 1);
-        while (d.shard->slots[j].key != kEmptyKey) j = (j + 1) & (cap - 1);
-        d.shard->slots[j] = std::move(s);
-      }
-    }
-    d.slots = d.shard->slots.data();
-    d.mask = d.shard->slots.size() - 1;
-    return d;
-  }
-  std::vector<Dir> dir_;
-};
-
 // ------------------------------------------------------------------ limits
 // Key packing (see the *Key helpers below).
 inline constexpr unsigned kQ4IdBits = 21;
@@ -512,11 +335,11 @@ inline bool Q4PackStmts(const uint32_t *stmt, const uint32_t *mult, uint32_t n, 
   return true;
 }
 
-using SecEdgarQ4PreMap = Q4CowMap<SecEdgarQ4PreVal, 12>;
-using SecEdgarQ4PreOverflowMap = Q4CowMap<SecEdgarQ4PreOverflow, 4>;
-using SecEdgarQ4TagMap = Q4CowMap<uint32_t, 10>;    // Q4TagKey -> tlabel id (kQ4None = NULL)
-using SecEdgarQ4PairMap = Q4CowMap<int64_t, 13>;    // Q4PairKey -> joined rows
-using SecEdgarQ4GroupIndex = Q4CowMap<uint64_t, 10>; // Q4GroupKey -> gid
+using SecEdgarQ4PreMap = core::ShardedCowOpenMap<int64_t, SecEdgarQ4PreVal, 12>;
+using SecEdgarQ4PreOverflowMap = core::ShardedCowOpenMap<int64_t, SecEdgarQ4PreOverflow, 4>;
+using SecEdgarQ4TagMap = core::ShardedCowOpenMap<int64_t, uint32_t, 10>; // Q4TagKey -> tlabel id (kQ4None = NULL)
+using SecEdgarQ4PairMap = core::ShardedCowOpenMap<int64_t, int64_t, 13>; // Q4PairKey -> joined rows
+using SecEdgarQ4GroupIndex = core::ShardedCowOpenMap<int64_t, uint64_t, 10>; // Q4GroupKey -> gid
 
 // fn(stmt, mult) for every pre stmt of key `pk` with packed value `v`.
 template <typename F>

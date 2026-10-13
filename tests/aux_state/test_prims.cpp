@@ -23,6 +23,7 @@
 #include "accelerator_codegen/stateful/prims/keyed_string_column.hpp"
 #include "accelerator_codegen/stateful/prims/pg_numeric_div.hpp"
 #include "accelerator_codegen/stateful/prims/radix_range_tree.hpp"
+#include "accelerator_codegen/stateful/prims/sharded_cow_open_map.hpp"
 #include "accelerator_codegen/stateful/prims/sorted_count_sum.hpp"
 #include "accelerator_codegen/stateful/prims/sql_date.hpp"
 #include "accelerator_codegen/stateful/prims/sql_like.hpp"
@@ -934,6 +935,154 @@ static void TestPgNumericDiv() {
   CHECK(threw);
 }
 
+// Composite key with an explicit empty marker and a custom hash.
+struct OpenPairKey {
+  uint32_t a = 0, b = 0;
+  bool operator==(const OpenPairKey &o) const { return a == o.a && b == o.b; }
+};
+struct OpenPairTraits {
+  static uint64_t Hash(const OpenPairKey &k) {
+    uint64_t x = (uint64_t(k.a) << 32 | k.b) * 0x9E3779B97F4A7C15ULL;
+    x ^= x >> 29;
+    x *= 0xBF58476D1CE4E5B9ULL;
+    return x ^ (x >> 32);
+  }
+  static OpenPairKey Empty() { return {0xFFFFFFFFu, 0xFFFFFFFFu}; }
+};
+struct OpenPairHash {
+  size_t operator()(const OpenPairKey &k) const { return std::hash<uint64_t>()(uint64_t(k.a) << 32 | k.b); }
+};
+
+template <typename Map, typename Key, typename Ref, typename Gen>
+static void OpenMapRandomRun(uint64_t seed, int steps, Gen gen, size_t pool_size) {
+  std::mt19937_64 rng(seed);
+  std::vector<Key> pool;
+  for (size_t i = 0; i < pool_size; ++i) pool.push_back(gen(rng));
+  Map cur;
+  Ref ref;
+  std::vector<std::pair<Map, Ref>> snaps;
+  auto verify = [&](const Map &m, const Ref &r) {
+    CHECK(m.size() == r.size());
+    for (const Key &k : pool) {
+      const auto *v = m.Find(k);
+      auto it = r.find(k);
+      CHECK((v != nullptr) == (it != r.end()));
+      if (v) CHECK(*v == it->second);
+      CHECK(m.Contains(k) == (it != r.end()));
+    }
+    // FindBatch agrees with Find and tolerates duplicates.
+    std::vector<Key> ks(pool.begin(), pool.begin() + std::min<size_t>(pool.size(), 300));
+    ks.insert(ks.end(), ks.begin(), ks.begin() + 20);
+    std::vector<const uint64_t *> out(ks.size());
+    m.FindBatch(ks.data(), ks.size(), out.data());
+    for (size_t i = 0; i < ks.size(); ++i) CHECK(out[i] == m.Find(ks[i]));
+    size_t seen = 0;
+    m.ForEach([&](const Key &k, const uint64_t &v) {
+      auto it = r.find(k);
+      CHECK(it != r.end() && it->second == v);
+      ++seen;
+    });
+    CHECK(seen == r.size());
+  };
+  for (int step = 0; step < steps; ++step) {
+    const Key &k = pool[rng() % pool.size()];
+    switch (rng() % 7) {
+    case 0: case 1: case 2: { // Upsert (insert or overwrite)
+      const uint64_t v = rng();
+      cur.Upsert(k, v);
+      ref[k] = v;
+      break;
+    }
+    case 3: { // FindMut
+      uint64_t *p = cur.FindMut(k);
+      auto it = ref.find(k);
+      CHECK((p != nullptr) == (it != ref.end()));
+      if (p) {
+        *p += 1;
+        it->second += 1;
+      }
+      break;
+    }
+    case 4: CHECK(cur.Erase(k) == (ref.erase(k) == 1)); break;
+    case 5: CHECK(cur.UpsertHashed(k, Map::Hash(k), 7) == 7); ref[k] = 7; break;
+    default:
+      if (rng() % 40 == 0 && snaps.size() < 8) snaps.emplace_back(cur, ref); // publish
+    }
+    if (step % 4000 == 3999) {
+      verify(cur, ref);
+      for (auto &s : snaps) verify(s.first, s.second); // old versions are unchanged
+    }
+  }
+  verify(cur, ref);
+  for (auto &s : snaps) verify(s.first, s.second);
+  Ref r2 = ref;
+  for (auto &[k, v] : r2) CHECK(cur.Erase(k));
+  CHECK(cur.size() == 0);
+  for (const Key &k : pool) CHECK(cur.Find(k) == nullptr);
+}
+
+static void TestShardedCowOpenMap() {
+  using IntMap = ShardedCowOpenMap<int64_t, uint64_t, 4>;
+  auto gen_i = [](std::mt19937_64 &r) {
+    switch (r() % 4) {
+    case 0: return int64_t(r() % 64);
+    case 1: return -int64_t(r() % 64) - 1;
+    case 2: return int64_t(r());
+    default: return int64_t(r() % 5000);
+    }
+  };
+  OpenMapRandomRun<IntMap, int64_t, std::unordered_map<int64_t, uint64_t>>(1, 40000, gen_i, 3000);
+  OpenMapRandomRun<IntMap, int64_t, std::unordered_map<int64_t, uint64_t>>(2, 40000, gen_i, 200);
+  OpenMapRandomRun<ShardedCowOpenMap<int64_t, uint64_t, 1>, int64_t, std::unordered_map<int64_t, uint64_t>>(
+      3, 20000, gen_i, 1000); // two shards: long probe chains, many growths
+  auto gen_p = [](std::mt19937_64 &r) { return OpenPairKey{uint32_t(r() % 300), uint32_t(r() % 300)}; };
+  OpenMapRandomRun<ShardedCowOpenMap<OpenPairKey, uint64_t, 3, OpenPairTraits>, OpenPairKey,
+                   std::unordered_map<OpenPairKey, uint64_t, OpenPairHash>>(4, 40000, gen_p, 2500);
+  auto gen_u = [](std::mt19937_64 &r) { return uint32_t(r() % 100000); };
+  OpenMapRandomRun<ShardedCowOpenMap<uint32_t, uint64_t, 4>, uint32_t, std::unordered_map<uint32_t, uint64_t>>(
+      5, 20000, gen_u, 2000);
+
+  // The empty marker is configurable and the default marker is the type minimum.
+  CHECK(OpenMapIntTraits<int64_t>::Empty() == INT64_MIN);
+  CHECK(OpenMapIntTraits<uint64_t>::Empty() == UINT64_MAX);
+
+  // Copy shares shards: a write after publishing clones one shard, the old version keeps its data.
+  IntMap a;
+  for (int64_t k = 0; k < 5000; ++k) a.Upsert(k, uint64_t(k) * 3);
+  IntMap b = a;
+  b.Upsert(17, 1);
+  b.Erase(18);
+  CHECK(*a.Find(17) == 51 && a.Find(18) && *a.Find(18) == 54);
+  CHECK(*b.Find(17) == 1 && !b.Find(18));
+  CHECK(a.size() == 5000 && b.size() == 4999);
+
+  // Reserve + BulkLoad / BulkLoadParts match one-by-one inserts.
+  std::mt19937_64 rng(9);
+  std::vector<std::pair<int64_t, uint64_t>> es;
+  std::unordered_map<int64_t, uint64_t> ref;
+  while (es.size() < 20000) {
+    const int64_t k = int64_t(rng());
+    if (ref.emplace(k, rng()).second) es.emplace_back(k, ref[k]);
+  }
+  IntMap bulk, parted, reserved;
+  auto es2 = es;
+  bulk.BulkLoad(es2);
+  std::vector<std::vector<std::pair<int64_t, uint64_t>>> parts(IntMap::kShards);
+  for (auto &e : es) parts[IntMap::ShardOf(e.first)].push_back(e);
+  parted.BulkLoadParts(parts);
+  reserved.Reserve(es.size());
+  const size_t mem0 = reserved.memory_bytes();
+  for (auto &e : es) reserved.Upsert(e.first, e.second);
+  CHECK(reserved.memory_bytes() == mem0); // reserved: no rehash while loading
+  for (const IntMap *m : {&bulk, &parted, &reserved}) {
+    CHECK(m->size() == ref.size());
+    for (auto &[k, v] : ref) CHECK(m->Find(k) && *m->Find(k) == v);
+  }
+  // Bulk-loaded maps still accept writes and erases.
+  bulk.Upsert(5, 5);
+  CHECK(*bulk.Find(5) == 5 && bulk.Erase(es[0].first) && !bulk.Find(es[0].first));
+}
+
 int main() {
   TestDenseIdArray();
   TestCow();
@@ -953,6 +1102,7 @@ int main() {
   TestCowFenwick();
   TestDecimalText();
   TestPgNumericDiv();
+  TestShardedCowOpenMap();
   std::puts("test_prims: PASS");
   return 0;
 }
