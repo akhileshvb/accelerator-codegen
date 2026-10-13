@@ -1212,6 +1212,8 @@ static void TestShardedCowMap() {
   CHECK(w.dirty());
   Map after = w.Finish();
   CHECK(after.Find("zz-new-key") && cur.Find("zz-new-key") == nullptr && after.size() == cur.size() + 1);
+}
+
 // ---- ShardedSortedMap ------------------------------------------------------
 namespace {
 struct SsmRec {
