@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 3,
+ "rep": 2,
+ "seed": 991050525,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 11247.877293493275,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "segment": "AUTOMOBILE",
+    "date": "1995-03-30"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1682.85,
+   "match": true,
+   "rows": [
+    10,
+    10
+   ],
+   "base_us": 10411192.9445,
+   "accel_us": 916.829,
+   "speedup": 11355.654047265085
+  },
+  {
+   "params": {
+    "segment": "FURNITURE",
+    "date": "1995-03-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1589.172,
+   "match": true,
+   "rows": [
+    10,
+    10
+   ],
+   "base_us": 10386254.8955,
+   "accel_us": 942.252,
+   "speedup": 11022.799522314626
+  },
+  {
+   "params": {
+    "segment": "BUILDING",
+    "date": "1995-03-24"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1505.801,
+   "match": true,
+   "rows": [
+    10,
+    10
+   ],
+   "base_us": 10345231.4165,
+   "accel_us": 959.429,
+   "speedup": 10782.696183354892
+  },
+  {
+   "params": {
+    "segment": "FURNITURE",
+    "date": "1995-03-25"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1865.544,
+   "match": true,
+   "rows": [
+    10,
+    10
+   ],
+   "base_us": 10390447.947999999,
+   "accel_us": 876.16,
+   "speedup": 11859.07590850986
+  }
+ ]
+}

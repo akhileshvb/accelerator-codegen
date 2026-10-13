@@ -1,0 +1,2 @@
+query,native_median_ms,matview_median_ms,ivm_median_ms,aux_median_ms,aux_build_ms,ivm_build_ms,refresh_ms,ivm_status,matview_speedup_vs_native,ivm_speedup_vs_native,aux_speedup_vs_native,aux_speedup_vs_matview,aux_speedup_vs_ivm,ivm_speedup_vs_matview
+20,59729.55165000167,8576.12095598597,,97.35399298369884,258832.38258899655,,1231941.9544129632,unsupported,6.964634938866104,,613.5295514792383,88.0921335956089,,

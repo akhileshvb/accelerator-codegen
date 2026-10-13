@@ -1,0 +1,3 @@
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.016667 rep 0 mv (RF: update sets, whole sets, 8 readers) 20:11:55

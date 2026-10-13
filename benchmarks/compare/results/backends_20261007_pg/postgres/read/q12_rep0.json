@@ -1,0 +1,85 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 12,
+ "rep": 0,
+ "seed": 2716834049,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 9311.394122752203,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "shipmode1": "AIR",
+    "shipmode2": "REG AIR",
+    "date": "1996-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 25586638.609,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 1449441.953,
+   "accel_us": 165.976,
+   "speedup": 8732.84060948571
+  },
+  {
+   "params": {
+    "shipmode1": "MAIL",
+    "shipmode2": "TRUCK",
+    "date": "1995-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 684.411,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 1411715.554,
+   "accel_us": 143.192,
+   "speedup": 9858.899617297055
+  },
+  {
+   "params": {
+    "shipmode1": "TRUCK",
+    "shipmode2": "FOB",
+    "date": "1996-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 497.828,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 1410528.581,
+   "accel_us": 144.893,
+   "speedup": 9734.967051548383
+  },
+  {
+   "params": {
+    "shipmode1": "MAIL",
+    "shipmode2": "FOB",
+    "date": "1996-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 7895.941,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 1420776.316,
+   "accel_us": 158.411,
+   "speedup": 8968.924607508317
+  }
+ ]
+}

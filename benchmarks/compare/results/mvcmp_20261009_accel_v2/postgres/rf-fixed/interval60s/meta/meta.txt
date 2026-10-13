@@ -1,0 +1,25 @@
+date: 2026-10-09T22:42:53-04:00
+host: burton
+cmd: benchmarks/compare/run_backends.sh /home/akhilvb/accelerator-codegen/benchmarks/compare/results/mvcmp_20261009_accel_v2/postgres/rf-fixed/interval60s rf-fixed /home/akhilvb/accelerator-codegen/benchmarks/compare/results/mvcmp_20261009_accel_v2
+sf: 20 repeats: 1 readers: 8 backends: postgres rf_dir: /disk3/akhilvb_tpch/refresh_sf20 batch_orders: whole sets pg_shared: 1
+update sets: 40, orders in set 1: 30000
+interval_mult: 1 2 4 n_commits: 4 queries: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22
+git HEAD: 9f7a0cba91be131558c322c1802386e22618d98d
+uncommitted files: 19
+nproc: 80
+Model name:                              Intel(R) Xeon(R) Gold 6230 CPU @ 2.10GHz
+Thread(s) per core:                      2
+Socket(s):                               2
+NUMA node(s):                            2
+load: 4.57 6.64 5.12 2/8315 3003085
+               total        used        free      shared  buff/cache   available
+Mem:             376         138          51          25         216         238
+Swap:              0           0           0
+accel_pg_shard postgres:17 127.0.0.1:5437->5432/tcp
+shopping shopping_final_0712 25/tcp, 80/tcp, 88/tcp, 3306/tcp, 5432/tcp, 6379/tcp, 9000/tcp, 9200/tcp, 9300/tcp, 11211/tcp, 11300/tcp
+webagent-dev webagent-dev:ubuntu24.04 
+shopping-gateway alpine/socat 127.0.0.1:7770->7770/tcp
+accel_pg_sf20 postgres:17 127.0.0.1:5436->5432/tcp
+accel_pg_test postgres:17 127.0.0.1:5434->5432/tcp
+sbx-agent-20260916t211954z_estimate_cost_v1_openai_gpt-5.6-sol_5a00bb29_25f49cd3-huggingface__smolagents-783 81be37afc04b 
+pg_workers: 9 (per session, base and accel) seed: 35489017 phases: accel

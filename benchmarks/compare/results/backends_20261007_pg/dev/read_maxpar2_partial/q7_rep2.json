@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 7,
+ "rep": 2,
+ "seed": 991050525,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 9526.547667710174,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "nation1": "BRAZIL",
+    "nation2": "JAPAN"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1883.505,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 9982868.1505,
+   "accel_us": 1069.995,
+   "speedup": 9329.826915546335
+  },
+  {
+   "params": {
+    "nation1": "JORDAN",
+    "nation2": "UNITED KINGDOM"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1849.646,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 10015867.843,
+   "accel_us": 1052.641,
+   "speedup": 9514.98929169584
+  },
+  {
+   "params": {
+    "nation1": "GERMANY",
+    "nation2": "JORDAN"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1950.379,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 10043502.559500001,
+   "accel_us": 1076.387,
+   "speedup": 9330.754235697757
+  },
+  {
+   "params": {
+    "nation1": "CANADA",
+    "nation2": "MOROCCO"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1927.747,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 10038260.585,
+   "accel_us": 1009.52,
+   "speedup": 9943.59753645297
+  }
+ ]
+}

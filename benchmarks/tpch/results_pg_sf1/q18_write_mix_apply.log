@@ -1,0 +1,5 @@
+SELECT 1500000
+CREATE INDEX
+CREATE INDEX
+CREATE FUNCTION
+applied matview SQL for Q18 (accel_tpch_q18_matview) into accel_pg_test/accel_tpch_sf1

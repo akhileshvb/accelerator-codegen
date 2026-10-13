@@ -1,0 +1,121 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 16,
+ "rep": 0,
+ "seed": 991050523,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 35.02791870897075,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "brand": "Brand#21",
+    "type": "MEDIUM PLATED",
+    "sizes": [
+     11,
+     49,
+     9,
+     24,
+     32,
+     13,
+     8,
+     2
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 9492417.676,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 4072090.2785,
+   "accel_us": 118014.646,
+   "speedup": 34.5049569398361
+  },
+  {
+   "params": {
+    "brand": "Brand#43",
+    "type": "ECONOMY ANODIZED",
+    "sizes": [
+     27,
+     44,
+     15,
+     16,
+     3,
+     20,
+     31,
+     49
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 118922.725,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 4116999.9615,
+   "accel_us": 116517.424,
+   "speedup": 35.33377086589213
+  },
+  {
+   "params": {
+    "brand": "Brand#31",
+    "type": "MEDIUM BRUSHED",
+    "sizes": [
+     15,
+     19,
+     39,
+     10,
+     44,
+     33,
+     30,
+     20
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 118839.988,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 4062059.1500000004,
+   "accel_us": 116488.015,
+   "speedup": 34.87104789278108
+  },
+  {
+   "params": {
+    "brand": "Brand#13",
+    "type": "ECONOMY BURNISHED",
+    "sizes": [
+     36,
+     1,
+     11,
+     49,
+     6,
+     10,
+     34,
+     25
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 118581.654,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 4148516.2369999997,
+   "accel_us": 117157.997,
+   "speedup": 35.409586568811
+  }
+ ]
+}

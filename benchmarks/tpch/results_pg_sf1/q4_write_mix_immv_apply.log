@@ -1,0 +1,1 @@
+skipped IMMV for Q4: aggregate + EXISTS not supported together by pg_ivm

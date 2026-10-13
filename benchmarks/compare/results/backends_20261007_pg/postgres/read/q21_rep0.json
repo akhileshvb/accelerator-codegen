@@ -1,0 +1,77 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 21,
+ "rep": 0,
+ "seed": 2716834049,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 80.78323220289268,
+ "mismatches": 4,
+ "cases": [
+  {
+   "params": {
+    "nation": "KENYA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 67117365.124,
+   "match": false,
+   "rows": [
+    100,
+    7954
+   ],
+   "base_us": 3389838.154,
+   "accel_us": 39982.404,
+   "speedup": 84.78325000167574
+  },
+  {
+   "params": {
+    "nation": "IRAQ"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 42471.005,
+   "match": false,
+   "rows": [
+    100,
+    8041
+   ],
+   "base_us": 3275767.4685,
+   "accel_us": 41309.866,
+   "speedup": 79.29746052674196
+  },
+  {
+   "params": {
+    "nation": "VIETNAM"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 43074.388,
+   "match": false,
+   "rows": [
+    100,
+    7981
+   ],
+   "base_us": 3290049.2155,
+   "accel_us": 41092.324,
+   "speedup": 80.06481248176667
+  },
+  {
+   "params": {
+    "nation": "UNITED STATES"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 44124.524,
+   "match": false,
+   "rows": [
+    100,
+    8043
+   ],
+   "base_us": 3297239.6385,
+   "accel_us": 41675.099,
+   "speedup": 79.11773979229179
+  }
+ ]
+}

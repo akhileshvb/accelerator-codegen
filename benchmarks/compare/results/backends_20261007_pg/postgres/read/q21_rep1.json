@@ -1,0 +1,77 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 21,
+ "rep": 1,
+ "seed": 2716834050,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 85.78372141263483,
+ "mismatches": 4,
+ "cases": [
+  {
+   "params": {
+    "nation": "ARGENTINA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 43226.114,
+   "match": false,
+   "rows": [
+    100,
+    8008
+   ],
+   "base_us": 3345417.772,
+   "accel_us": 41969.087,
+   "speedup": 79.71147363772769
+  },
+  {
+   "params": {
+    "nation": "JORDAN"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 42510.165,
+   "match": false,
+   "rows": [
+    100,
+    7901
+   ],
+   "base_us": 3374220.6095000003,
+   "accel_us": 41986.922,
+   "speedup": 80.36360963778198
+  },
+  {
+   "params": {
+    "nation": "UNITED KINGDOM"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 55265.257,
+   "match": false,
+   "rows": [
+    100,
+    8023
+   ],
+   "base_us": 3358515.125,
+   "accel_us": 40292.618,
+   "speedup": 83.35311259744898
+  },
+  {
+   "params": {
+    "nation": "IRAQ"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 44349.599,
+   "match": false,
+   "rows": [
+    100,
+    8041
+   ],
+   "base_us": 3374415.1245,
+   "accel_us": 33272.166,
+   "speedup": 101.41855881880369
+  }
+ ]
+}

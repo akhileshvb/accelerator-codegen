@@ -1,0 +1,77 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 21,
+ "rep": 0,
+ "seed": 991050523,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 262.6160611507318,
+ "mismatches": 4,
+ "cases": [
+  {
+   "params": {
+    "nation": "JAPAN"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 65464282.118,
+   "match": false,
+   "rows": [
+    100,
+    8038
+   ],
+   "base_us": 10692893.827,
+   "accel_us": 37319.44,
+   "speedup": 286.52342658410737
+  },
+  {
+   "params": {
+    "nation": "UNITED KINGDOM"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 29344.813,
+   "match": false,
+   "rows": [
+    100,
+    8023
+   ],
+   "base_us": 10644237.530499998,
+   "accel_us": 37151.864,
+   "speedup": 286.50615028360346
+  },
+  {
+   "params": {
+    "nation": "IRAN"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 48709.073,
+   "match": false,
+   "rows": [
+    100,
+    8073
+   ],
+   "base_us": 10711148.791499998,
+   "accel_us": 45158.816,
+   "speedup": 237.18843274146067
+  },
+  {
+   "params": {
+    "nation": "VIETNAM"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 47864.345,
+   "match": false,
+   "rows": [
+    100,
+    7981
+   ],
+   "base_us": 10757663.3615,
+   "accel_us": 44037.272,
+   "speedup": 244.2854171688928
+  }
+ ]
+}

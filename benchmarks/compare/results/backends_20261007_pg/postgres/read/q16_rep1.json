@@ -1,0 +1,121 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 16,
+ "rep": 1,
+ "seed": 2716834050,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 101.16901373663487,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "brand": "Brand#34",
+    "type": "PROMO BURNISHED",
+    "sizes": [
+     48,
+     36,
+     33,
+     31,
+     42,
+     21,
+     27,
+     20
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 96621.18,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11231871.539,
+   "accel_us": 105083.27,
+   "speedup": 106.88543988971794
+  },
+  {
+   "params": {
+    "brand": "Brand#24",
+    "type": "SMALL BRUSHED",
+    "sizes": [
+     39,
+     36,
+     9,
+     22,
+     1,
+     40,
+     17,
+     29
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 57942.064,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11182724.6455,
+   "accel_us": 107567.145,
+   "speedup": 103.96041138304824
+  },
+  {
+   "params": {
+    "brand": "Brand#41",
+    "type": "PROMO ANODIZED",
+    "sizes": [
+     4,
+     13,
+     21,
+     37,
+     25,
+     36,
+     26,
+     45
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 59013.173,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11214831.204,
+   "accel_us": 119125.017,
+   "speedup": 94.14337547586666
+  },
+  {
+   "params": {
+    "brand": "Brand#33",
+    "type": "MEDIUM BRUSHED",
+    "sizes": [
+     1,
+     41,
+     22,
+     44,
+     19,
+     9,
+     14,
+     33
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 83678.862,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11191930.173999999,
+   "accel_us": 111761.245,
+   "speedup": 100.14142356771347
+  }
+ ]
+}

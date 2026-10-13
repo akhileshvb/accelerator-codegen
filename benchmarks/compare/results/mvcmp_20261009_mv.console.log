@@ -1,0 +1,10 @@
+# table parallel_workers now {'region': 9, 'nation': 9, 'customer': 9, 'supplier': 9, 'part': 9, 'partsupp': 9, 'orders': 9, 'lineitem': 9}
+=== rf-fixed postgres mv rep 0 interval=120s window=180s (min reads 3, max 900s) warmup=30s readers=8 seed=35489017 pg_workers=9 19:43:27
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.008333 rep 0 mv (RF: update sets, whole sets, 8 readers) 19:43:27
+   qps 4.3  read p50 56.3ms p99 31078.0ms  timeouts 0  RF commits 0 (0/s of 0.008333) of 0 commits  commit p50 0.0ms max 0ms  lag max 0.0s  rows/s 0 (RF 0)  errors read 0 write 0  refresh 0.0s in window (post-restore 22.4s)  final-check mismatches none  answers unchanged by writes [2, 3, 8, 10, 11, 15, 18, 19, 22]
+=== rf-fixed postgres mv rep 0 interval=60s window=180s (min reads 3, max 900s) warmup=30s readers=8 seed=35489017 pg_workers=9 20:11:55
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.016667 rep 0 mv (RF: update sets, whole sets, 8 readers) 20:11:55

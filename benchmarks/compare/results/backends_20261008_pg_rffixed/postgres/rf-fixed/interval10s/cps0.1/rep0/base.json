@@ -1,0 +1,303 @@
+{
+ "mode": "writerate",
+ "backend": "postgres",
+ "system": "base",
+ "rate_target": 0.1,
+ "rep": 0,
+ "seed": 35489017,
+ "sf": 20.0,
+ "batch_orders": null,
+ "rf_source": "tpch_update_sets",
+ "rf_dir": "/disk3/akhilvb_tpch/refresh_sf20",
+ "rf_orders_used": 30000,
+ "readers": 8,
+ "shared_state": true,
+ "seconds": 60.0,
+ "warmup": 5.0,
+ "queries": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19,
+  20,
+  21,
+  22
+ ],
+ "sets_per_query": 4,
+ "prime_s": 0.0,
+ "triggers_on": 0,
+ "qps": 0.6,
+ "reads": 36,
+ "timeouts": 0,
+ "read_errors": 0,
+ "read_p50_us": 5932845.765,
+ "read_p99_us": 43930400.333,
+ "per_query": {
+  "1": {
+   "reads": 3,
+   "p50_us": 16882491.436,
+   "p95_us": 17155378.531,
+   "p99_us": 17155378.531,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "2": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "3": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "4": {
+   "reads": 4,
+   "p50_us": 3878717.245,
+   "p95_us": 4235829.547,
+   "p99_us": 4235829.547,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "5": {
+   "reads": 4,
+   "p50_us": 4424548.294,
+   "p95_us": 5761721.965,
+   "p99_us": 5761721.965,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "6": {
+   "reads": 4,
+   "p50_us": 3554450.758,
+   "p95_us": 3582243.176,
+   "p99_us": 3582243.176,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "7": {
+   "reads": 6,
+   "p50_us": 6853807.469,
+   "p95_us": 8459291.582,
+   "p99_us": 8459291.582,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "8": {
+   "reads": 4,
+   "p50_us": 4140441.831,
+   "p95_us": 4603968.79,
+   "p99_us": 4603968.79,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "9": {
+   "reads": 1,
+   "p50_us": 41425184.386,
+   "p95_us": 41425184.386,
+   "p99_us": 41425184.386,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "10": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "11": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "12": {
+   "reads": 3,
+   "p50_us": 5604042.592,
+   "p95_us": 5932845.765,
+   "p99_us": 5932845.765,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "13": {
+   "reads": 1,
+   "p50_us": 43206953.053,
+   "p95_us": 43206953.053,
+   "p99_us": 43206953.053,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "14": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "15": {
+   "reads": 3,
+   "p50_us": 11221002.933,
+   "p95_us": 11267006.245,
+   "p99_us": 11267006.245,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "16": {
+   "reads": 1,
+   "p50_us": 17127795.869,
+   "p95_us": 17127795.869,
+   "p99_us": 17127795.869,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "17": {
+   "reads": 1,
+   "p50_us": 43930400.333,
+   "p95_us": 43930400.333,
+   "p99_us": 43930400.333,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "18": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "19": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "20": {
+   "reads": 1,
+   "p50_us": 42339520.106,
+   "p95_us": 42339520.106,
+   "p99_us": 42339520.106,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "21": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "22": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  }
+ },
+ "commits": 41,
+ "commits_total": 49,
+ "commit_rate": 0.6833333333333333,
+ "rf_commits": 5,
+ "rf_rate": 0.08333333333333333,
+ "write_errors": 0,
+ "commit_p50_us": 15053.3402338624,
+ "commit_p99_us": 14070924.275089055,
+ "commit_max_us": 14070924.275089055,
+ "writer_lag_p50_s": 0.0008925450965762138,
+ "writer_lag_max_s": 7.720437787938863,
+ "rows_per_commit": 18308.60975609756,
+ "rows_per_s": 12510.883333333333,
+ "rf_rows_per_s": 12493.566666666668,
+ "pg_workers": 9,
+ "worker_restart": "each",
+ "commit_us_by_kind": {
+  "rf1": {
+   "n": 4,
+   "p50": 14070924.275089055,
+   "max": 15879642.29285717
+  },
+  "supplier update": {
+   "n": 7,
+   "p50": 1879.75587323308,
+   "max": 184383.81096348166
+  },
+  "part delete": {
+   "n": 7,
+   "p50": 1002.0718909800053,
+   "max": 116996.26594781876
+  },
+  "part insert": {
+   "n": 7,
+   "p50": 6685.215979814529,
+   "max": 51494.85217407346
+  },
+  "supplier delete": {
+   "n": 7,
+   "p50": 11482.862289994955,
+   "max": 35582.72263035178
+  },
+  "supplier insert": {
+   "n": 7,
+   "p50": 12081.382796168327,
+   "max": 30415.51122441888
+  },
+  "partsupp update": {
+   "n": 7,
+   "p50": 2549.6878661215305,
+   "max": 56519.85201984644
+  },
+  "rf2": {
+   "n": 3,
+   "p50": 1292861.4160045981,
+   "max": 1362992.841284722
+  }
+ },
+ "tables_written": {
+  "region": 0,
+  "nation": 0,
+  "customer": 0,
+  "supplier": 21,
+  "part": 14,
+  "partsupp": 35,
+  "orders": 7,
+  "lineitem": 7
+ },
+ "tables_not_written": [],
+ "rf_only": false,
+ "dim_after_rf": true,
+ "final_check": {},
+ "restore_s": 23.11526795523241,
+ "restore_ok": true,
+ "shared_worker": null
+}

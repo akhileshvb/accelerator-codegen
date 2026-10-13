@@ -1,0 +1,25 @@
+    PID USER     %CPU %MEM     ELAPSED COMMAND
+1764110 root      1.7  0.0 20-17:57:48 dockerd
+3175193 akhilvb   1.3  0.0    07:49:35 claude
+3251360 akhilvb   1.2  0.0       00:02 bash
+3150434 akhilvb   1.1  0.0    10:57:28 claude
+2994593 root      1.1  0.0  8-15:54:54 docker-proxy
+3148908 akhilvb   0.7  0.1    10:58:55 MainThread
+3250718 999       0.5  0.0       00:56 postgres
+3150067 akhilvb   0.4  0.0    10:58:44 claude
+3149772 akhilvb   0.4  0.0    10:58:48 claude
+3146875 akhilvb   0.1  0.0    11:02:11 MainThread
+    522 root      0.1  0.0 28-22:43:33 kcompactd0
+    543 root      0.1  0.0 28-22:43:31 kswapd0
+    523 root      0.1  0.0 28-22:43:33 kcompactd1
+3250932 999       0.1  0.0       00:55 postgres
+   1352 root      0.1  0.0 28-22:43:25 containerd
+3147456 akhilvb   0.1  0.0    11:02:09 copilot-runtime
+3148931 akhilvb   0.1  0.0    10:58:54 MainThread
+    544 root      0.0  0.0 28-22:43:31 kswapd1
+3147160 akhilvb   0.0  0.0    11:02:09 MainThread
+3001842 root      0.0  0.0  8-15:52:25 kworker/0:2-mm_percpu_wq
+3247464 akhilvb   0.0  0.0       16:19 sshd-session
+3240341 root      0.0  0.0    01:00:58 kworker/u321:2-kvfree_rcu_reclaim
+3184151 root      0.0  0.0    07:11:37 kworker/u321:3-flush-8:32
+3250695 root      0.0  0.0       00:56 containerd-shim

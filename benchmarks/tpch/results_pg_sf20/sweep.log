@@ -1,0 +1,28 @@
+=== TPC-H SF20 Postgres matview vs aux sweep ===
+db=accel_tpch_sf20 queries=20,21,22 warmup=2 samples=5
+lineitem_rows=247806710
+=== ensure pg_ivm ===
+NOTICE:  extension "pg_ivm" already exists, skipping
+CREATE EXTENSION
+[pg_ivm] ready in accel_tpch_sf20
+=== Q20: apply matview ===
+=== Q20: apply IMMV (pg_ivm; may skip) ===
+=== Q20: bench native / matview / ivm / aux ===
+{
+  "query": 20,
+  "native_median_ms": 59729.55165000167,
+  "matview_median_ms": 8576.12095598597,
+  "ivm_median_ms": null,
+  "aux_median_ms": 97.35399298369884,
+  "aux_build_ms": 258832.38258899655,
+  "ivm_build_ms": null,
+  "refresh_ms": 1231941.9544129632,
+  "ivm_status": "unsupported",
+  "matview_speedup_vs_native": 6.964634938866104,
+  "ivm_speedup_vs_native": null,
+  "aux_speedup_vs_native": 613.5295514792383,
+  "aux_speedup_vs_matview": 88.0921335956089,
+  "aux_speedup_vs_ivm": null,
+  "ivm_speedup_vs_matview": null
+}
+=== Q21: apply matview ===

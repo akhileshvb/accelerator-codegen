@@ -1,0 +1,12 @@
+# query=3 benchmark=tpch suite=lineitem_only write_intervals_sec=0,60,30,10,5,2,1,0.5
+tpch_q3_aux_bench: sparse_build_keys=31 (ACCEL_Q3_BUILD_KEYS; not 155-cell ScanAll)
+tpch_q3_aux_bench: write_mode=rf rf_chunk_orders=1 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q3_aux_bench: build_threads=80 (ACCEL_DUCKDB_BUILD_THREADS; aux timed path stays threads=1)
+benchmark_tpch_q3_aux failed: Out of Memory Error: failed to allocate data of size 32.0 KiB (14.9 GiB/14.9 GiB used)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET preserve_insertion_order=false)
+* Increasing the memory limit (SET memory_limit='...GB')
+
+See also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads

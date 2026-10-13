@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 7,
+ "rep": 1,
+ "seed": 991050524,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 10170.019144128104,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "nation1": "JORDAN",
+    "nation2": "CANADA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1774.376,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 9946381.611,
+   "accel_us": 1002.04,
+   "speedup": 9926.132301105745
+  },
+  {
+   "params": {
+    "nation1": "KENYA",
+    "nation2": "INDIA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1789.752,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 9951575.004,
+   "accel_us": 923.72,
+   "speedup": 10773.367474992423
+  },
+  {
+   "params": {
+    "nation1": "JAPAN",
+    "nation2": "FRANCE"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1752.563,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 9949022.519,
+   "accel_us": 954.268,
+   "speedup": 10425.815933259839
+  },
+  {
+   "params": {
+    "nation1": "KENYA",
+    "nation2": "IRAN"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1873.033,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 9948011.877500001,
+   "accel_us": 1036.79,
+   "speedup": 9595.011407806789
+  }
+ ]
+}

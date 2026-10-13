@@ -1,0 +1,121 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 16,
+ "rep": 2,
+ "seed": 2716834051,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 98.21297195598784,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "brand": "Brand#41",
+    "type": "SMALL BURNISHED",
+    "sizes": [
+     41,
+     42,
+     9,
+     3,
+     23,
+     11,
+     49,
+     32
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 50646.863,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11371296.449000001,
+   "accel_us": 115073.371,
+   "speedup": 98.81779207632668
+  },
+  {
+   "params": {
+    "brand": "Brand#24",
+    "type": "LARGE POLISHED",
+    "sizes": [
+     50,
+     34,
+     8,
+     27,
+     48,
+     31,
+     35,
+     37
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 44520.816,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11363608.3055,
+   "accel_us": 115559.9,
+   "speedup": 98.3352210022681
+  },
+  {
+   "params": {
+    "brand": "Brand#42",
+    "type": "ECONOMY ANODIZED",
+    "sizes": [
+     29,
+     35,
+     14,
+     19,
+     8,
+     31,
+     28,
+     21
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 56508.89,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11358477.462,
+   "accel_us": 116334.425,
+   "speedup": 97.63642586448508
+  },
+  {
+   "params": {
+    "brand": "Brand#51",
+    "type": "SMALL ANODIZED",
+    "sizes": [
+     18,
+     17,
+     13,
+     47,
+     46,
+     36,
+     16,
+     39
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 47309.055,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11362163.6385,
+   "accel_us": 115862.193,
+   "speedup": 98.06618832512517
+  }
+ ]
+}

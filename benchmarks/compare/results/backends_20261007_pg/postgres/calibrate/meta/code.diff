@@ -1,0 +1,649 @@
+diff --git a/benchmarks/compare/run_backends.sh b/benchmarks/compare/run_backends.sh
+index 4f78e65..022a65f 100755
+--- a/benchmarks/compare/run_backends.sh
++++ b/benchmarks/compare/run_backends.sh
+@@ -32,6 +32,10 @@
+ #   first B orders of each set
+ #   duckdb:    DB (/flash1/akhilvb/tpch/tpch_sf20.duckdb)  WORK  BIN (build-verus-duckdb/aux_compare)  CAP (96G)
+ #   postgres:  PG_PORT (5434)  PG_DB (accel_tpch_sf20)    PGUSER / PGPASSWORD
++#              PG_SHARED (1): one copy of the accelerators in the extension's shared-state worker, maintained
++#              by the deltas each writer commit ships to it (accel.shared_state; the analogue of DuckDB's one
++#              process).  PG_SHARED=0: a copy per connection, which every other connection's write invalidates,
++#              so each reader rebuilds its copy in full on its next query.
+ #   mysql:     MYSQL_TCP_PORT (3307)  MYSQL_DB (tpch_sf20)  MYSQL_USER / MYSQL_PWD
+ #   postgres/mysql: QUERY_TIMEOUT (1800 s per baseline query; timeouts are reported, not fatal)
+ # Needs for postgres/mysql: pip install psycopg2-binary pymysql  (PYTHON=<venv python>).
+@@ -50,6 +54,7 @@ BIN=${BIN:-$ROOT/build-verus-duckdb/aux_compare}
+ CAP=${CAP:-96G}   # a commit that rebuilds state keeps old and new copies alive; 64G may be too tight
+ PG_DB=${PG_DB:-accel_tpch_sf20}
+ MYSQL_DB=${MYSQL_DB:-tpch_sf20}
++PG_SHARED=${PG_SHARED:-1}
+ export PG_PORT=${PG_PORT:-5434} MYSQL_TCP_PORT=${MYSQL_TCP_PORT:-3307}
+ QUERY_TIMEOUT=${QUERY_TIMEOUT:-1800}
+ RF_DIR=${RF_DIR:-/flash1/akhilvb/tpch/refresh_sf${SF}}
+@@ -70,7 +75,7 @@ meta() {  # what this ran on
+   local d=$1/meta; mkdir -p "$d"
+   {
+     echo "date: $(date -Is)"; echo "host: $(uname -n)"; echo "cmd: $0 $*"
+-    echo "sf: $SF repeats: $REPEATS readers: $READERS backends: $BACKENDS rf_dir: $RF_DIR batch_orders: ${BATCH_ORDERS:-whole sets}"
++    echo "sf: $SF repeats: $REPEATS readers: $READERS backends: $BACKENDS rf_dir: $RF_DIR batch_orders: ${BATCH_ORDERS:-whole sets} pg_shared: $PG_SHARED"
+     echo "update sets: $(ls "$RF_DIR"/delete.* 2>/dev/null | wc -l), orders in set 1: $(wc -l < "$RF_DIR/delete.1" 2>/dev/null)"
+     echo "interval_mult: $INTERVAL_MULT n_commits: $N_COMMITS queries: $QUERIES"
+     echo "git HEAD: $(git rev-parse HEAD)"; echo "uncommitted files: $(git status --short | wc -l)"
+@@ -86,7 +91,7 @@ meta() {  # what this ran on
+ 
+ sql_args() {
+   case $1 in
+-    postgres) echo "--backend postgres --db $PG_DB" ;;
++    postgres) echo "--backend postgres --db $PG_DB $([ "$PG_SHARED" = 1 ] && echo --shared-state)" ;;
+     mysql)    echo "--backend mysql --db $MYSQL_DB" ;;
+   esac
+ }
+diff --git a/benchmarks/compare/run_sql_backend.py b/benchmarks/compare/run_sql_backend.py
+index 0708111..68ee811 100644
+--- a/benchmarks/compare/run_sql_backend.py
++++ b/benchmarks/compare/run_sql_backend.py
+@@ -31,6 +31,13 @@ the baseline is the same TPC-H text with the same parameters as plain SQL.
+              "final check") and with those before the first write ("answer changed", i.e. which
+              queries the stream actually exercised).
+ 
++  --shared-state (Postgres): the accelerators live once, in the extension's per-database background
++             worker (accel.shared_state), instead of once per connection.  Each writer commit ships its
++             captured rows to the worker, which applies them as a delta before answering the next read;
++             per connection, every write by another connection forces a full rebuild in each reader.
++             The worker is restarted at the start of every run: base runs write with the capture
++             triggers off, which it cannot see.
++
+   summary    median [min-max] over repetitions of a writerate output directory.
+ 
+ Needs: pip install psycopg2-binary pymysql.
+@@ -136,6 +143,9 @@ class Db:
+             self.cur = self.c.cursor()
+             if accel:
+                 self.cur.execute(f"LOAD '{a.pg_so}'")
++                if a.shared_state:
++                    self.cur.execute("SET accel.shared_state = on")
++                    self.cur.execute(f"SET accel.shared_apply_timeout_ms = {int(a.apply_timeout * 1000)}")
+         else:
+             import pymysql
+             self.mod = pymysql
+@@ -264,6 +274,37 @@ def set_triggers(a, on):
+         db.close()
+ 
+ 
++def restart_shared_worker(a):
++    """Stop the shared-state worker (if any): the next accelerator call starts a fresh one, which builds from
++    the tables as they are now.  A worker that lived through writes with the capture triggers off would not
++    know it is stale."""
++    if a.backend != "postgres" or not a.shared_state:
++        return
++    db = Db(a, accel=True)
++    try:
++        db.execute("SELECT accel_postgres_stop_shared_worker()")
++        for _ in range(100):  # wait until it has exited (it restarts on demand)
++            db.execute("SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'accel aux server' AND datname = current_database()")
++            if db.cur.fetchone()[0] == 0:
++                break
++            time.sleep(0.1)
++    finally:
++        db.close()
++
++
++def shared_stats(a, db):
++    """The shared-state worker's counters (cumulative per database): requests, hits, rebuilds, declined,
++    errors, applies (commits shipped to it), synced (applied as a delta) / unsynced (not: the next read
++    rebuilds)."""
++    if a.backend != "postgres" or not a.shared_state:
++        return None
++    try:
++        rows, _ = db.query("SELECT accel_postgres_shared_stats()")
++        return {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", str(rows[0][0]))}
++    except Exception:  # noqa: BLE001
++        return None
++
++
+ # ---------------------------------------------------------------------------------------------
+ # answers
+ # ---------------------------------------------------------------------------------------------
+@@ -597,16 +638,18 @@ class Stream:
+ 
+     # --- undo ----------------------------------------------------------------------------
+     def restore(self, db):
+-        """Put the data back as it was before the stream (triggers, if on, maintain the accelerators)."""
+-        for table, cond, old in reversed(self.reupdate):
+-            cols = list(old)
+-            db.execute(f"UPDATE {table} SET " + ", ".join(f"{c} = %s" for c in cols) + f" WHERE {cond}",
+-                       [old[c] for c in cols])
++        """Put the data back as it was before the stream (triggers, if on, maintain the accelerators).
++        Updates are undone last: a row the stream updated and later deleted (a partsupp row of a deleted supplier)
++        comes back from reinsert with the updated values, and only then gets its old values."""
+         for table, col, keys in reversed(self.redelete):
+             db.delete_in(table, col, keys)
+         for table, rows in reversed(self.reinsert):
+             if rows:
+                 db.insert_rows(table, rows)
++        for table, cond, old in reversed(self.reupdate):
++            cols = list(old)
++            db.execute(f"UPDATE {table} SET " + ", ".join(f"{c} = %s" for c in cols) + f" WHERE {cond}",
++                       [old[c] for c in cols])
+ 
+ 
+ _pool_cache = {}
+@@ -662,6 +705,7 @@ def cmd_read(a):
+     os.makedirs(a.out, exist_ok=True)
+     reps = draws(a)
+     set_triggers(a, True)
++    restart_shared_worker(a)
+     db = Db(a, accel=True)
+     for k, seed, spec in reps:
+         for q in a.queries:
+@@ -685,7 +729,7 @@ def cmd_read(a):
+                     row["speedup"] = row["base_us"] / max(row["accel_us"], 1.0)
+                 results.append(row)
+             sp = [r["speedup"] for r in results if "speedup" in r]
+-            out = {"mode": "read", "backend": a.backend, "query": q, "rep": k, "seed": seed, "sf": a.sf,
++            out = {"mode": "read", "backend": a.backend, "query": q, "rep": k, "seed": seed, "sf": a.sf, "shared_state": a.shared_state,
+                    "speedup_geomean": math.exp(sum(map(math.log, sp)) / len(sp)) if sp else None,
+                    "mismatches": sum(1 for r in results if r.get("match") is False), "cases": results}
+             with open(os.path.join(a.out, f"q{q}_rep{k}.json"), "w") as f:
+@@ -793,6 +837,7 @@ def run_one(a, system, rate, rep, seed, spec):
+     triggers = set_triggers(a, system == "accel")
+     if (system == "accel") != (triggers > 0):
+         raise SystemExit(f"{system}: {triggers} enabled capture triggers (base needs none, accel needs them)")
++    restart_shared_worker(a)
+     ctr, stop, ready, t0 = Counters(), threading.Event(), [], [0.0]
+     ctl = Db(a, accel=system == "accel")
+     fp0 = fingerprint(ctl)
+@@ -813,6 +858,7 @@ def run_one(a, system, rate, rep, seed, spec):
+     while len(ready) < a.readers:
+         time.sleep(0.2)
+     t_prime = max(ready or [0.0])
++    stats0 = shared_stats(a, ctl) if system == "accel" else None
+     t0[0] = time.perf_counter()
+     if wt:
+         wt.start()
+@@ -821,6 +867,9 @@ def run_one(a, system, rate, rep, seed, spec):
+         time.sleep(0.2)
+         if a.max_write_commits and wt and len(ctr.commits) >= a.max_write_commits:
+             break
++        if wt and not wt.is_alive():  # the writer died (its error is printed): do not wait out the window
++            print("  WRITER THREAD EXITED before the window ended", flush=True)
++            break
+     stop.set()
+     for t in ts + ([wt] if wt else []):
+         t.join()
+@@ -837,6 +886,7 @@ def run_one(a, system, rate, rep, seed, spec):
+     by_kind = {}
+     for c in ctr.commits:
+         by_kind.setdefault(c[0], []).append(c[3])
++    stats1 = shared_stats(a, ctl) if system == "accel" else None
+     check = final_check(a, ctl, one, before) if system == "accel" or a.check_base else {}
+     t_r = time.perf_counter()
+     stream.restore(ctl)
+@@ -854,7 +904,7 @@ def run_one(a, system, rate, rep, seed, spec):
+     res = {"mode": "writerate", "backend": a.backend, "system": system, "rate_target": rate, "rep": rep, "seed": seed,
+            "sf": a.sf, "batch_orders": a.batch_orders,
+            "rf_source": "tpch_update_sets" if a.rf_dir else "clone", "rf_dir": a.rf_dir,
+-           "rf_orders_used": stream.rf_orders_used or a.batch_orders, "readers": a.readers, "seconds": a.seconds, "warmup": a.warmup,
++           "rf_orders_used": stream.rf_orders_used or a.batch_orders, "readers": a.readers, "shared_state": a.shared_state, "seconds": a.seconds, "warmup": a.warmup,
+            "queries": a.queries, "sets_per_query": a.sets, "prime_s": t_prime, "triggers_on": triggers,
+            "qps": len(ok) / a.seconds, "reads": len(reads), "timeouts": sum(1 for r in reads if r[3] == "timeout"),
+            "read_errors": sum(1 for r in reads if r[3].startswith("error")),
+@@ -871,7 +921,9 @@ def run_one(a, system, rate, rep, seed, spec):
+            "tables_written": stream.written, "tables_not_written": [t for t, n in stream.written.items()
+                                   if n == 0 and t in expected_tables],
+            "rf_only": a.rf_only, "dim_after_rf": a.dim_after_rf,
+-           "final_check": check, "restore_s": restore_s, "restore_ok": restore_ok}
++           "final_check": check, "restore_s": restore_s, "restore_ok": restore_ok,
++           "shared_worker": {k: stats1[k] - stats0.get(k, 0) for k in stats1 if k not in ("generation", "pid")}
++                            if stats0 and stats1 else None}
+     if system == "accel":
+         res["answers_changed"] = sorted(q for q, e in check.items() if e.get("changed"))
+         res["answers_unchanged"] = sorted(q for q, e in check.items() if e.get("changed") is False)
+@@ -922,6 +974,10 @@ def line(r):
+     if r["system"] == "accel":
+         s += (f"  final-check mismatches {r['final_mismatches'] or 'none'}  answers unchanged by writes "
+               f"{r['answers_unchanged'] or 'none'}")
++    if r.get("shared_worker"):
++        w = r["shared_worker"]
++        s += (f"  worker: applies {w.get('applies', 0)} as delta {w.get('synced', 0)} not {w.get('unsynced', 0)} "
++              f"rebuilds {w.get('rebuilds', 0)} declined {w.get('declined', 0)} errors {w.get('errors', 0)}")
+     if not r["restore_ok"]:
+         s += "  RESTORE FAILED"
+     if r["reads"] == 0:
+@@ -972,6 +1028,11 @@ def main():
+         p.add_argument("--repeats", type=int, default=3, help="repetitions, each with its own parameter draw")
+         p.add_argument("--sf", type=float, default=20)
+         p.add_argument("--query-timeout", type=float, default=1800, help="seconds, per baseline query (timeouts are reported)")
++        p.add_argument("--shared-state", action=argparse.BooleanOptionalAction, default=False,
++                       help="postgres: one shared copy of the accelerators in a background worker, maintained by "
++                            "deltas (accel.shared_state); default: a copy per connection, rebuilt after others' writes")
++        p.add_argument("--apply-timeout", type=float, default=600,
++                       help="seconds a committing writer waits for the shared worker's apply (--shared-state)")
+     r = sub.choices["read"]
+     r.add_argument("--reps", type=int, default=5, help="timed accelerator runs per parameter set")
+     r.add_argument("--base-reps", type=int, default=2, help="timed baseline runs per parameter set (after one warm run)")
+diff --git a/include/accelerator_codegen/stateful/postgres/aux_server.hpp b/include/accelerator_codegen/stateful/postgres/aux_server.hpp
+index 4c47c65..f654b1c 100644
+--- a/include/accelerator_codegen/stateful/postgres/aux_server.hpp
++++ b/include/accelerator_codegen/stateful/postgres/aux_server.hpp
+@@ -21,10 +21,17 @@
+ //           Nothing uncommitted ever reaches the worker, so aborts and dying
+ //           backends need no cleanup there.  The worker applies the batches
+ //           through the existing coordinator / module code, then advances the
+-//           sync marker.  Only a transaction with exactly one captured
+-//           statement for an accelerator is applied incrementally (the
+-//           module's lookups then see the same database as at statement time);
+-//           anything else, or any commit the worker did not apply, leaves the
++//           sync marker.  All of a transaction's captured statements for an
++//           accelerator are applied in order, under a snapshot taken right
++//           after the commit (the commit gate and the counters exclude any
++//           other write to its tables): module lookups therefore see the
++//           database as the whole transaction left it, not as each statement
++//           did.  That is what every TPC-H module expects: lookups in
++//           StageMaintenance run at pre-commit anyway, and those in
++//           AccumulateMutation (Q3, Q21) replace each touched order's record
++//           from a fresh read, so a later read of the same key wins.  A commit
++//           that is too large, poisoned by an aborted savepoint, or that the
++//           worker did not apply, leaves the
+ //           shared counters ahead of the worker's marker, so it stops serving
+ //           hits until it rebuilds.  Correctness rests on those counters, not
+ //           on message delivery.
+@@ -73,7 +80,7 @@ struct ApplyInfo {
+ struct ApplyEntry {
+   // Counter slots whose writes the capture examined for this accelerator.
+   std::vector<std::size_t> examined_slots;
+-  // At most one (a transaction with more is not shipped).
++  // In statement order.
+   std::vector<core::MutationBatch> batches;
+ };
+ 
+diff --git a/src/generated/postgres/engine_runtime.hpp b/src/generated/postgres/engine_runtime.hpp
+index 9b17c43..d1280e2 100644
+--- a/src/generated/postgres/engine_runtime.hpp
++++ b/src/generated/postgres/engine_runtime.hpp
+@@ -6,7 +6,10 @@
+ 
+ #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
+ 
++#include <chrono>
++
+ #include "postgres/engine_helpers.hpp"
++#include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
+ #include "accelerator_codegen/stateful/postgres/aux_server.hpp"
+ 
+ namespace accelerator_codegen::aux_state::engine::postgres {
+@@ -324,7 +327,7 @@ public:
+       marker.own_commits.clear();
+       srv::NoteApplyOutcome(false);
+     };
+-    if (!entry || entry->batches.size() > 1) {
++    if (!entry) {
+       return fail();
+     }
+     for (auto slot : dep_slots) {
+@@ -344,6 +347,21 @@ public:
+         return fail();
+       }
+     }
++    // One LOG line per apply: what the module chose and what it cost (the
++    // Postgres cost models are calibrated from these).
++    std::size_t rows = 0;
++    for (const auto &batch : entry->batches)
++      rows += batch.old_rows.size() + batch.new_rows.size();
++    core::ClearMaintenanceDecisionLog();
++    const auto started = std::chrono::steady_clock::now();
++    auto report = [&](const char *outcome) {
++      const double ms = std::chrono::duration<double, std::milli>(
++                            std::chrono::steady_clock::now() - started)
++                            .count();
++      elog(LOG, "accel apply %s: %s batches=%zu rows=%zu ms=%.1f %s",
++           accelerator.c_str(), outcome, entry->batches.size(), rows, ms,
++           core::FormatLastMaintenanceDecision().c_str());
++    };
+     try {
+       if (!entry->batches.empty()) {
+         for (const auto &batch : entry->batches) {
+@@ -352,19 +370,30 @@ public:
+         backend.OnPreCommit();
+         backend.OnCommit();
+       }
++    } catch (const std::exception &e) {
++      try {
++        backend.OnAbort();
++      } catch (...) {
++      }
++      store.ClearTransactionDirty();
++      report(e.what());
++      return fail();
+     } catch (...) {
+       try {
+         backend.OnAbort();
+       } catch (...) {
+       }
+       store.ClearTransactionDirty();
++      report("failed");
+       return fail();
+     }
+     std::vector<uint64_t> after;
+     auxsync::ReadSeq(dep_slots, after);
+     if (store.NeedsRebuild() || after != seq) {
++      report(store.NeedsRebuild() ? "invalidated" : "raced");
+       return fail();
+     }
++    report("applied");
+     marker.seq = seq;
+     marker.own_commits.push_back(info.xid);
+     if (marker.own_commits.size() >= kRebaseOwnCommits) {
+@@ -481,6 +510,7 @@ private:
+       return;
+     }
+     aux_server::BusyScope busy;
++    const auto started = std::chrono::steady_clock::now();
+     marker = SyncMarker{};
+     Snapshot fresh = GetLatestSnapshot();
+     auxsync::SnapMark base = auxsync::MarkOf(fresh);
+@@ -505,8 +535,12 @@ private:
+       marker.base = std::move(base);
+       marker.seq = std::move(before);
+     }
+-    elog(DEBUG1, "accelerator %s: rebuild (%s)", accelerator.c_str(),
+-         marker.synced ? "synced" : "unsynced");
++    elog(aux_server::InServer() ? LOG : DEBUG1,
++         "accel rebuild %s: %s ms=%.1f", accelerator.c_str(),
++         marker.synced ? "synced" : "unsynced",
++         std::chrono::duration<double, std::milli>(
++             std::chrono::steady_clock::now() - started)
++             .count());
+     if (!aux_server::InServer()) {
+       accelerator_codegen::aux_state::engine::postgres::
+           RegisterPostgresBackendForMutations();
+diff --git a/src/generated/tpch/q21/postgres/extension/scan.cpp b/src/generated/tpch/q21/postgres/extension/scan.cpp
+index bfac3da..e09744b 100644
+--- a/src/generated/tpch/q21/postgres/extension/scan.cpp
++++ b/src/generated/tpch/q21/postgres/extension/scan.cpp
+@@ -94,7 +94,12 @@ public:
+         [](const std::string &sql, auto &&row) {
+           ScanTypedTuplesAfterOwnWrites(sql, row);
+         },
+-        " AND " + KeyListPredicate("l_orderkey", orderkeys), consumer);
++        // The key list on both join sides: PostgreSQL does not carry an
++        // = ANY(...) across the join, and with it on lineitem only it hashes
++        // every fulfilled order (seconds per lookup at SF20).
++        " AND " + KeyListPredicate("l_orderkey", orderkeys) + " AND " +
++            KeyListPredicate("o_orderkey", orderkeys),
++        consumer);
+     return true;
+   }
+ };
+diff --git a/src/generated/tpch/q9/postgres/aux/module.cpp b/src/generated/tpch/q9/postgres/aux/module.cpp
+index 026a932..67cb05c 100644
+--- a/src/generated/tpch/q9/postgres/aux/module.cpp
++++ b/src/generated/tpch/q9/postgres/aux/module.cpp
+@@ -9,6 +9,7 @@
+ #include <limits>
+ #include <map>
+ #include <optional>
++#include <set>
+ #include <stdexcept>
+ #include <string>
+ #include <thread>
+@@ -242,6 +243,10 @@ std::shared_ptr<TpchQ9PartBlock> EncodeBlock(const EditBlock &edit) {
+   return block;
+ }
+ 
++// Orders, suppliers and parts whose join changes are re-counted through index
++// lookups of their lineitems; more than this (a bulk dimension update) rebuild.
++constexpr std::size_t kMaxJoinChangeKeys = 200000;
++
+ constexpr int64_t kBlockParts = static_cast<int64_t>(kParts);
+ static_assert((kBlockParts & (kBlockParts - 1)) == 0);
+ // Floor division / modulo by the (power of two) block size: exact for negative keys.
+@@ -615,10 +620,15 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
+   }
+   const TpchQ9State &old = *old_state;
+ 
+-  // A dimension row whose join value changes (order year, supplier nation,
+-  // supplycost) moves the profit of its existing lineitems between cells,
+-  // which the lineitem deltas cannot express: rebuild. Net effect per key
+-  // (old value in the published state vs. last value after the batch).
++  // Join changes: an order, supplier or partsupp row that appears, disappears
++  // or changes its join value (order year, supplier nation, supplycost) moves
++  // the lineitems that join it between cells or changes their profit (also
++  // lineitems this batch does not touch: a supplier deleted before or without
++  // its lineitems, an order re-inserted after them).  Those lineitems are looked
++  // up in the database as the transaction leaves it and re-counted in step 4.
++  // Net effect per key: the published state vs. the last value of the batch.
++  std::vector<int64_t> changed_orders, changed_suppliers, changed_parts;
++  std::set<std::pair<int64_t, int64_t>> changed_ps;
+   {
+     std::unordered_map<int64_t, std::optional<int32_t>> year_after;
+     for (const auto &d : buffer.OrderDeltas())
+@@ -629,24 +639,28 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
+     std::map<std::pair<int64_t, int64_t>, std::optional<int64_t>> cost_after;
+     for (const auto &d : buffer.PartsuppDeltas())
+       cost_after[{d.partkey, d.suppkey}] = d.sign > 0 ? std::optional<int64_t>(d.cost_raw) : std::nullopt;
+-    bool value_change = false;
+     for (const auto &[key, after] : year_after) {
+       int32_t before = 0;
+-      value_change |= after && old.LookupOrderYear(key, before) && before != *after;
++      const bool had = old.LookupOrderYear(key, before);
++      if (had != after.has_value() || (had && before != *after))
++        changed_orders.push_back(key);
+     }
+     for (const auto &[key, after] : nation_after) {
+       int32_t before = 0;
+-      value_change |= after && old.LookupSupplierNation(key, before) && before != *after;
++      const bool had = old.LookupSupplierNation(key, before);
++      if (had != after.has_value() || (had && before != *after))
++        changed_suppliers.push_back(key);
+     }
+     for (const auto &[key, after] : cost_after) {
+       int64_t before = 0;
+-      value_change |= after &&
+-                      BlockFindPs(old.FindBlock(key.first),
+-                                  SlotOf(key.first), key.second,
+-                                  before) &&
+-                      before != *after;
++      const bool had = BlockFindPs(old.FindBlock(key.first), SlotOf(key.first), key.second, before);
++      if (had != after.has_value() || (had && before != *after)) {
++        changed_ps.insert(key);
++        if (changed_parts.empty() || changed_parts.back() != key.first)
++          changed_parts.push_back(key.first);
++      }
+     }
+-    if (value_change) {
++    if (changed_orders.size() + changed_suppliers.size() + changed_parts.size() > kMaxJoinChangeKeys) {
+       core::FinishRebuildAll(outcome);
+       return outcome;
+     }
+@@ -700,7 +714,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
+     editor.For(d->partkey).AddCell(slot, updated->GroupFor(nationkey, year), -1, -profit);
+   }
+ 
+-  // 2. Dimension changes (value changes were ruled out above).
++  // 2. Dimension changes (the lineitems they move are re-counted in step 4).
+   for (const auto &d : buffer.SupplierDeltas()) {
+     if (d.sign > 0)
+       updated->SetSupplierNation(d.suppkey, d.nationkey);
+@@ -746,6 +760,58 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
+     ProfitRaw(d->extendedprice_raw, d->discount_raw, cost, d->quantity_raw, profit);
+     edit.AddCell(slot, updated->GroupFor(nationkey, year), 1, profit);
+   }
++
++  // 4. Join changes: every lineitem joining a changed order, supplier or
++  //    partsupp that was there before the batch and still is after it (not one
++  //    of the batch's own inserts, which step 3 counted against the new
++  //    dimensions; deleted ones left in step 1 against the old) leaves the cell
++  //    it was counted in (old dimensions, if it joined) and enters the one it
++  //    joins now (new dimensions, if any).
++  if (!changed_orders.empty() || !changed_suppliers.empty() || !changed_parts.empty()) {
++    std::map<std::pair<int64_t, int32_t>, TpchQ9LineitemInput> affected; // (orderkey, linenumber)
++    const auto collect = [&](const char *column, const std::vector<int64_t> &keys, bool by_part) {
++      if (keys.empty())
++        return true;
++      return initial_scan &&
++             initial_scan->LookupLineitems(column, keys, [&](const TpchQ9LineitemInput &l, int32_t line) {
++               if (!by_part || changed_ps.count({l.partkey, l.suppkey}))
++                 affected.emplace(std::make_pair(l.orderkey, line), l);
++             });
++    };
++    if (!collect("l_orderkey", changed_orders, false) ||
++        !collect("l_suppkey", changed_suppliers, false) ||
++        !collect("l_partkey", changed_parts, true)) {
++      core::FinishRebuildAll(outcome);
++      return outcome;
++    }
++    std::map<std::array<int64_t, 6>, std::size_t> own_inserts;
++    for (const auto *d : inserts)
++      ++own_inserts[{d->partkey, d->suppkey, d->orderkey, d->quantity_raw,
++                     d->extendedprice_raw, d->discount_raw}];
++    for (const auto &entry : affected) {
++      const TpchQ9LineitemInput &l = entry.second;
++      const auto own = own_inserts.find({l.partkey, l.suppkey, l.orderkey, l.quantity_raw,
++                                         l.extendedprice_raw, l.discount_raw});
++      if (own != own_inserts.end() && own->second > 0) {
++        --own->second;
++        continue;
++      }
++      const auto slot = SlotOf(l.partkey);
++      auto &edit = editor.For(l.partkey);
++      int32_t nationkey = 0, year = 0;
++      int64_t cost = 0, profit = 0;
++      if (old.LookupSupplierNation(l.suppkey, nationkey) && old.LookupOrderYear(l.orderkey, year) &&
++          BlockFindPs(old.FindBlock(l.partkey), slot, l.suppkey, cost)) {
++        ProfitRaw(l.extendedprice_raw, l.discount_raw, cost, l.quantity_raw, profit);
++        edit.AddCell(slot, updated->GroupFor(nationkey, year), -1, -profit);
++      }
++      if (updated->LookupSupplierNation(l.suppkey, nationkey) &&
++          updated->LookupOrderYear(l.orderkey, year) && edit.FindPs(slot, l.suppkey, cost)) {
++        ProfitRaw(l.extendedprice_raw, l.discount_raw, cost, l.quantity_raw, profit);
++        edit.AddCell(slot, updated->GroupFor(nationkey, year), 1, profit);
++      }
++    }
++  }
+   editor.Flush();
+ 
+   outcome.action = core::MaintenanceAction::ApplyDelta;
+diff --git a/src/generated/tpch/q9/postgres/aux/module.hpp b/src/generated/tpch/q9/postgres/aux/module.hpp
+index 8a4d02f..72688d3 100644
+--- a/src/generated/tpch/q9/postgres/aux/module.hpp
++++ b/src/generated/tpch/q9/postgres/aux/module.hpp
+@@ -110,6 +110,20 @@ public:
+     (void)consumer;
+     return false;
+   }
++
++  // Optional: the lineitems whose `column` (l_partkey, l_suppkey or
++  // l_orderkey, all indexed) is one of `keys`, as the transaction leaves the
++  // database (index lookups at pre-commit), with their l_linenumber; returns
++  // false when not supported (a join change then rebuilds).
++  virtual bool LookupLineitems(
++      const char *column, const std::vector<int64_t> &keys,
++      const std::function<void(const TpchQ9LineitemInput &, int32_t linenumber)>
++          &consumer) {
++    (void)column;
++    (void)keys;
++    (void)consumer;
++    return false;
++  }
+ };
+ 
+ // ── State ───────────────────────────────────────────────────────────────────
+diff --git a/src/generated/tpch/q9/postgres/extension/scan.cpp b/src/generated/tpch/q9/postgres/extension/scan.cpp
+index d9fd0eb..5b216bd 100644
+--- a/src/generated/tpch/q9/postgres/extension/scan.cpp
++++ b/src/generated/tpch/q9/postgres/extension/scan.cpp
+@@ -119,6 +119,39 @@ void ScanTpchQ9ProfitContributions(
+       });
+ }
+ 
++// Index lookup of the lineitems whose `column` (l_partkey, l_suppkey or
++// l_orderkey) is one of `keys`, as the transaction leaves the database (this
++// runs while staging maintenance at pre-commit).
++void LookupTpchQ9Lineitems(
++    const char *column, const std::vector<int64_t> &keys,
++    const std::function<void(const query::TpchQ9LineitemInput &, int32_t)>
++        &consumer) {
++  constexpr std::size_t kBatch = 4096;
++  for (std::size_t from = 0; from < keys.size(); from += kBatch) {
++    const std::vector<int64_t> batch(
++        keys.begin() + from,
++        keys.begin() + std::min(keys.size(), from + kBatch));
++    const std::string sql =
++        std::string("SELECT l_partkey, l_suppkey, l_orderkey, l_quantity, "
++                    "l_extendedprice, l_discount, l_linenumber FROM lineitem "
++                    "WHERE ") +
++        KeyListPredicate(column, batch) +
++        " AND l_partkey IS NOT NULL AND l_suppkey IS NOT NULL AND "
++        "l_orderkey IS NOT NULL AND l_quantity IS NOT NULL AND "
++        "l_extendedprice IS NOT NULL AND l_discount IS NOT NULL";
++    ScanTypedTuplesAfterOwnWrites(
++        sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
++          consumer({TypedInt(tuple, tuple_desc, 0),
++                    TypedInt(tuple, tuple_desc, 1),
++                    TypedInt(tuple, tuple_desc, 2),
++                    TypedDecimalRaw(tuple, tuple_desc, 3),
++                    TypedDecimalRaw(tuple, tuple_desc, 4),
++                    TypedDecimalRaw(tuple, tuple_desc, 5)},
++                   static_cast<int32_t>(TypedInt(tuple, tuple_desc, 6)));
++        });
++  }
++}
++
+ } // namespace scans
+ 
+ class TpchQ9Scan final : public query::TpchQ9InitialScan {
+@@ -159,6 +192,13 @@ public:
+     scans::ScanTpchQ9ProfitContributions(consumer);
+     return true;
+   }
++  bool LookupLineitems(
++      const char *column, const std::vector<int64_t> &keys,
++      const std::function<void(const query::TpchQ9LineitemInput &, int32_t)>
++          &consumer) override {
++    scans::LookupTpchQ9Lineitems(column, keys, consumer);
++    return true;
++  }
+ };
+ Runtime<query::TpchQ9Module, query::TpchQ9Config, TpchQ9Scan> &Q9Runtime() {
+   static Runtime<query::TpchQ9Module, query::TpchQ9Config, TpchQ9Scan>
+diff --git a/src/stateful/postgres/aux_server.cpp b/src/stateful/postgres/aux_server.cpp
+index 37562c3..affb598 100644
+--- a/src/stateful/postgres/aux_server.cpp
++++ b/src/stateful/postgres/aux_server.cpp
+@@ -1198,8 +1198,8 @@ void PrepareCommit() {
+       pg_atomic_read_u32(&shm->busy) != 0)
+     return;
+ 
+-  // Per accelerator: its batches in order; ship only when there is at most
+-  // one (see the design note) and nothing was poisoned.
++  // Per accelerator: its batches in statement order (see the design note);
++  // not shipped if a savepoint was poisoned or the batches are too large.
+   std::map<std::string, std::vector<const core::MutationBatch *>> per_key;
+   for (const auto &frame : g_stage.frames)
+     for (const auto &b : frame)
+@@ -1212,17 +1212,18 @@ void PrepareCommit() {
+       continue;
+     const auto it = per_key.find(key);
+     const std::size_t nbatches = it == per_key.end() ? 0 : it->second.size();
+-    if (nbatches > 1)
+-      continue;
+-    if (nbatches == 1 && RowCount(*it->second[0]) > kMaxShipRows)
++    std::size_t rows = 0;
++    for (std::size_t i = 0; i < nbatches; ++i)
++      rows += RowCount(*it->second[i]);
++    if (rows > kMaxShipRows)
+       continue;
+     payload.str(key);
+     payload.u32(static_cast<uint32_t>(kv.second.size()));
+     for (auto s : kv.second)
+       payload.u32(static_cast<uint32_t>(s));
+     payload.u32(static_cast<uint32_t>(nbatches));
+-    if (nbatches == 1)
+-      PutBatch(payload, *it->second[0]);
++    for (std::size_t i = 0; i < nbatches; ++i)
++      PutBatch(payload, *it->second[i]);
+     ++entries;
+   }
+   if (entries == 0)

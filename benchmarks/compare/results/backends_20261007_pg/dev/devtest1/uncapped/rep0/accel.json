@@ -1,0 +1,205 @@
+{
+ "mode": "writerate",
+ "backend": "postgres",
+ "system": "accel",
+ "rate_target": -1.0,
+ "rep": 0,
+ "seed": 3738036867,
+ "sf": 20.0,
+ "batch_orders": null,
+ "rf_source": "tpch_update_sets",
+ "rf_dir": "/disk3/akhilvb_tpch/refresh_sf20",
+ "rf_orders_used": 30000,
+ "readers": 2,
+ "shared_state": true,
+ "seconds": 86400.0,
+ "warmup": 0.0,
+ "queries": [
+  1,
+  2,
+  3,
+  9,
+  12,
+  21
+ ],
+ "sets_per_query": 1,
+ "prime_s": 0.10201861999999999,
+ "triggers_on": 32,
+ "qps": 0.00047453703703703704,
+ "reads": 41,
+ "timeouts": 0,
+ "read_errors": 0,
+ "read_p50_us": 20089.861,
+ "read_p99_us": 934445073.603,
+ "per_query": {
+  "1": {
+   "reads": 7,
+   "p50_us": 8505.536,
+   "p95_us": 14270.253,
+   "p99_us": 14270.253,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "2": {
+   "reads": 7,
+   "p50_us": 7602.708,
+   "p95_us": 8144.136,
+   "p99_us": 8144.136,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "3": {
+   "reads": 7,
+   "p50_us": 31631.51,
+   "p95_us": 153516668.057,
+   "p99_us": 153516668.057,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "9": {
+   "reads": 8,
+   "p50_us": 33497.105,
+   "p95_us": 934445073.603,
+   "p99_us": 934445073.603,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "12": {
+   "reads": 6,
+   "p50_us": 7483.999,
+   "p95_us": 169854.961,
+   "p99_us": 169854.961,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "21": {
+   "reads": 6,
+   "p50_us": 51326.219,
+   "p95_us": 67737.633,
+   "p99_us": 67737.633,
+   "timeouts": 0,
+   "errors": 0
+  }
+ },
+ "commits": 21,
+ "commits_total": 21,
+ "commit_rate": 0.00024305555555555555,
+ "rf_commits": 3,
+ "rf_rate": 3.472222222222222e-05,
+ "write_errors": 0,
+ "commit_p50_us": 1417.4249954521656,
+ "commit_p99_us": 183876141.41916856,
+ "commit_max_us": 183876141.41916856,
+ "writer_lag_p50_s": 0.00110140023753047,
+ "writer_lag_max_s": 186.8451780769974,
+ "rows_per_commit": 21503.380952380954,
+ "commit_us_by_kind": {
+  "rf1": {
+   "n": 2,
+   "p50": 183876141.41916856,
+   "max": 183876141.41916856
+  },
+  "supplier update": {
+   "n": 3,
+   "p50": 635.3640928864479,
+   "max": 2069.234848022461
+  },
+  "part delete": {
+   "n": 3,
+   "p50": 699.0758702158928,
+   "max": 1592.8437933325768
+  },
+  "part insert": {
+   "n": 3,
+   "p50": 1262.5111266970634,
+   "max": 2545.8126328885555
+  },
+  "supplier delete": {
+   "n": 3,
+   "p50": 949.4442492723465,
+   "max": 2110.7052452862263
+  },
+  "supplier insert": {
+   "n": 3,
+   "p50": 5396.394059062004,
+   "max": 11499.401181936264
+  },
+  "partsupp update": {
+   "n": 3,
+   "p50": 545.6083454191685,
+   "max": 1417.4249954521656
+  },
+  "rf2": {
+   "n": 1,
+   "p50": 643309.7431436181,
+   "max": 643309.7431436181
+  }
+ },
+ "tables_written": {
+  "region": 0,
+  "nation": 0,
+  "customer": 0,
+  "supplier": 9,
+  "part": 6,
+  "partsupp": 15,
+  "orders": 3,
+  "lineitem": 3
+ },
+ "tables_not_written": [],
+ "rf_only": false,
+ "dim_after_rf": true,
+ "final_check": {
+  "1": {
+   "accel": "timeout",
+   "base": "ok"
+  },
+  "2": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": false,
+   "match": true
+  },
+  "3": {
+   "accel": "timeout",
+   "base": "ok"
+  },
+  "9": {
+   "accel": "timeout",
+   "base": "ok"
+  },
+  "12": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "21": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": false
+  }
+ },
+ "restore_s": 282.09011392015964,
+ "restore_ok": true,
+ "shared_worker": {
+  "requests": 41,
+  "hits": 37,
+  "rebuilds": 0,
+  "declined": 3,
+  "errors": 0,
+  "applies": 1,
+  "synced": 4,
+  "unsynced": 1
+ },
+ "answers_changed": [
+  12,
+  21
+ ],
+ "answers_unchanged": [
+  2
+ ],
+ "final_mismatches": [
+  21
+ ]
+}

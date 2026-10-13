@@ -1,0 +1,11 @@
+{
+  "query": 2,
+  "native_median_ms": 133.76995094586164,
+  "matview_median_ms": 2.880900981836021,
+  "aux_median_ms": 0.9344150312244892,
+  "aux_build_ms": 554.6989139402285,
+  "refresh_ms": 3916.1377670243382,
+  "matview_speedup_vs_native": 46.43337337495334,
+  "aux_speedup_vs_native": 143.1590315607027,
+  "aux_speedup_vs_matview": 3.083106420131952
+}

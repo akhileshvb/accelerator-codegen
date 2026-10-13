@@ -1,0 +1,30 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 6,
+ "rep": 0,
+ "seed": 1831103379,
+ "sf": 20.0,
+ "speedup_geomean": 18159.79804549823,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "date": "1997-01-01",
+    "discount": 0.05,
+    "quantity": 24
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 128447110.967,
+   "match": true,
+   "rows": [
+    1,
+    1
+   ],
+   "base_us": 4534138.376,
+   "accel_us": 249.68,
+   "speedup": 18159.79804549824
+  }
+ ]
+}

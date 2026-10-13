@@ -1,0 +1,20 @@
+=== TPC-H SF20 RF mini-chunk aux sweep ===
+ACCEL_AUX_WRITE_MODE=rf
+ACCEL_TPCH_RF_CHUNK_ORDERS=30000
+QUERIES=14
+Note: point UPDATE sweeps still work via run_tpch_aux_sf20_sweep.sh (default write_mode=point).
+=== TPC-H SF20 aux write-interval sweep ===
+sf20_db=/home/akhilvb/accelerator-codegen/../accelerator-codegen-duckdb/tpch_sf20.duckdb
+queries=14
+mode=full
+preflight_free_disk_gb=166 preflight_mem_available_gb=367
+write_intervals_sec=0,300,120,60
+write_frequencies_pct=0
+bench_duration_sec=600
+=== building 1 aux benchmark targets ===
+[ 96%] Built target accelerator_codegen
+[100%] Built target benchmark_tpch_q14_aux
+=== SF20 aux sweep Q14 ===
+# query=14 benchmark=tpch suite=lineitem_only write_frequency_pct=0
+tpch_q14_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q14_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600

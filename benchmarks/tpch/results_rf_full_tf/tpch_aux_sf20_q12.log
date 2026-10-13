@@ -1,0 +1,36 @@
+# query=12 benchmark=tpch suite=lineitem_only write_frequency_pct=0
+tpch_q12_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q12_aux_bench: duckdb_ref uses JSON profile latency; accel queries use TF SQL path
+tpch_q12_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600
+tpch_q12_aux_bench: wrote row write_interval_sec=0 write_frequency_pct=0 num_queries=722174 writes=0 workload_speedup=5534.52
+tpch_q12_aux_bench: starting write_mode=rf write_interval_sec=300 measured_duration_sec=1500
+tpch_aux_bench: RF write begin seq=0 orders=30000 elapsed_sec=300
+tpch_aux_bench: RF write end seq=0 write_sec=108.608
+tpch_aux_bench: RF write begin seq=1 orders=30000 elapsed_sec=600
+tpch_aux_bench: RF write end seq=1 write_sec=258.301
+tpch_aux_bench: RF write begin seq=2 orders=30000 elapsed_sec=900
+tpch_aux_bench: RF write end seq=2 write_sec=107.95
+tpch_aux_bench: RF write begin seq=3 orders=30000 elapsed_sec=1200
+tpch_aux_bench: RF write end seq=3 write_sec=258.816
+tpch_q12_aux_bench: wrote row write_interval_sec=300 write_frequency_pct=0 num_queries=911223 writes=4 workload_speedup=2793.12
+tpch_q12_aux_bench: starting write_mode=rf write_interval_sec=120 measured_duration_sec=600
+tpch_aux_bench: RF write begin seq=0 orders=30000 elapsed_sec=120.001
+tpch_aux_bench: RF write end seq=0 write_sec=107.79
+tpch_aux_bench: RF write begin seq=1 orders=30000 elapsed_sec=240.001
+tpch_aux_bench: RF write end seq=1 write_sec=256.666
+tpch_q12_aux_bench: wrote row write_interval_sec=120 write_frequency_pct=0 num_queries=272467 writes=2 workload_speedup=2087.89
+tpch_q12_aux_bench: starting write_mode=rf write_interval_sec=60 measured_duration_sec=600
+tpch_aux_bench: RF write begin seq=0 orders=30000 elapsed_sec=60.0001
+tpch_aux_bench: RF write end seq=0 write_sec=107.491
+tpch_aux_bench: RF write begin seq=1 orders=30000 elapsed_sec=180
+tpch_aux_bench: RF write end seq=1 write_sec=260.919
+tpch_aux_bench: RF write begin seq=2 orders=30000 elapsed_sec=480
+tpch_aux_bench: RF write end seq=2 write_sec=107.527
+tpch_q12_aux_bench: wrote row write_interval_sec=60 write_frequency_pct=0 num_queries=144203 writes=3 workload_speedup=1104.96
+suite,write_mode,write_policy,locality,write_frequency_pct,write_interval_sec,measured_duration_sec,reader_qps,query_num,num_queries,writes_executed,duckdb_ref_query_median_us,base_kernel_median_us,base_write_median_us,accel_write_median_us,accel_hit_median_us,fallback_median_us,accel_hit_rate,fallback_rate,total_duckdb_query_us,total_accel_query_us,total_base_write_us,total_accel_write_us,duckdb_workload_us,accel_workload_us,workload_speedup,cold_start_workload_speedup,query_only_speedup,blended_query_speedup,cold_start_accel_workload_us,setup_full_build_ms,aux_state_bytes,valid_partitions,total_slots,validity_slots_scanned_median,validity_scan_us_median,partitions_read_per_query_median,state_bytes_read_median,store_execute_calls
+lineitem_only,rf,hybrid,global,0,0,600,939.689,12,722174,0,4597311.13,1994926.27,0.00,0.00,824.69,0.00,1.00,0.00,3320058570163.14,599881468.72,0.00,0.00,3320058570163.14,599881468.72,5534.52,4676.56,2419.00,2419.00,709936468.72,110055.00,720453177,2492,2492,2492.00,72.00,0.00,0,0
+lineitem_only,rf,hybrid,global,0,300.00,1500.00,939.69,12,911223,4,4597311.13,1994926.27,0.00,183418726.63,842.39,0.00,1.00,0.00,4189175642545.66,766145489.86,0.00,733674906.51,4189175642545.66,1499820396.37,2793.12,2602.17,2368.17,2368.17,1609875396.37,110055.00,720453177,2492,2492,2492.00,72.00,0.00,0,0
+lineitem_only,rf,hybrid,global,0,120.00,600.00,939.69,12,272467,2,4597311.13,1994926.27,0.00,182228272.62,860.28,0.00,1.00,0.00,1252615572475.11,235488123.93,0.00,364456545.25,1252615572475.11,599944669.18,2087.89,1764.25,2318.92,2318.92,709999669.18,110055.00,720453177,2492,2492,2492.00,72.00,0.00,0,0
+lineitem_only,rf,hybrid,global,0,60.00,600.00,939.69,12,144203,3,4597311.13,1994926.27,0.00,158645672.88,857.54,0.00,1.00,0.00,662946057312.00,124033777.65,0.00,475937018.65,662946057312.00,599970796.30,1104.96,933.69,2326.33,2326.33,710025796.30,110055.00,720453177,2492,2492,2492.00,72.00,0.00,0,0
+wrote /home/akhilvb/accelerator-codegen/build-release/q12_aux_bench_tpch_sf20/results.csv
+/home/akhilvb/accelerator-codegen/build-release/q12_aux_bench_tpch_sf20/results.csv

@@ -1,0 +1,7 @@
+NOTICE:  materialized view "accel_tpch_q6_matview" does not exist, skipping
+SELECT 1389300
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE FUNCTION
+applied matview SQL for Q6 (accel_tpch_q6_matview) into accel_pg_test/accel_tpch_sf3000
