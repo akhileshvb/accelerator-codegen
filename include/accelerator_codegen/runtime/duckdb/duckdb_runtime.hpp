@@ -133,8 +133,24 @@ public:
                             WriteAllTiming *timing = nullptr);
   // The module's calibration writes (core::CalibrationWrite).
   std::vector<core::CalibrationWrite> CalibrationWrites() const;
-  // A mutation event from the capture hook (called during the statement).
-  void OnCapturedMutation(const ::duckdb::TableMutationEvent &event);
+  // One captured mutation event with every value already converted (once, by
+  // the connection's capture hub) to the modules' AuxValue.  Row r's values
+  // are values[r * width .. (r + 1) * width); position i holds table column
+  // `columns[i]`.  For an Update the first `olds` positions are the old values
+  // of the watched columns and the rest the updated columns' new values.
+  struct CapturedEvent {
+    std::string table_name;
+    core::MutationKind kind = core::MutationKind::Insert;
+    std::vector<int32_t> updated_columns;
+    std::vector<int32_t> columns;
+    std::size_t rows = 0;
+    std::size_t width = 0;
+    std::size_t olds = 0;
+    std::vector<core::AuxValue> values;
+  };
+  // Delivers the event's projections to this runtime's backend (called by the
+  // capture hub during the statement).
+  void OnCapturedEvent(const CapturedEvent &event);
 
 private:
   void DisableMutationCapture();

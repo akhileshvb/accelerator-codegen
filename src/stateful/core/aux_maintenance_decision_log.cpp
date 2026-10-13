@@ -14,12 +14,32 @@ std::mutex &LogMutex() {
   return mutex;
 }
 
+thread_local MaintenanceDecisionLogEntry *t_thread_slot = nullptr;
+
 MaintenanceDecisionLogEntry &LogSlot() {
+  if (t_thread_slot)
+    return *t_thread_slot;
   static MaintenanceDecisionLogEntry entry;
   return entry;
 }
 
 } // namespace
+
+ScopedThreadMaintenanceDecisionLog::ScopedThreadMaintenanceDecisionLog() : previous_(t_thread_slot) {
+  t_thread_slot = &slot_;
+}
+
+ScopedThreadMaintenanceDecisionLog::~ScopedThreadMaintenanceDecisionLog() { t_thread_slot = previous_; }
+
+void SetGlobalMaintenanceDecision(const MaintenanceDecisionLogEntry &entry) {
+  auto *saved = t_thread_slot;
+  t_thread_slot = nullptr;
+  {
+    std::lock_guard<std::mutex> guard(LogMutex());
+    LogSlot() = entry;
+  }
+  t_thread_slot = saved;
+}
 
 void RecordCoordinatorMaintenanceUs(double us) {
   std::lock_guard<std::mutex> guard(LogMutex());

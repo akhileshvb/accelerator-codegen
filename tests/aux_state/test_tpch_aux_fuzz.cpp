@@ -77,7 +77,7 @@ std::string ComparisonError(duckdb::Connection &c, int q) {
 class TraceConsumer final : public duckdb::MutationConsumer {
 public:
   void OnTableMutation(duckdb::ClientContext &, const duckdb::TableMutationEvent &event) override {
-    std::cerr << "  [capture] " << event.table_name << " kind=" << int(event.kind) << " rows=" << event.rows.size()
+    std::cerr << "  [capture] " << event.table_name << " kind=" << int(event.kind) << " rows=" << event.row_count
               << " updated_cols=" << event.updated_columns.size() << "\n";
   }
 };

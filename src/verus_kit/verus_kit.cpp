@@ -776,14 +776,45 @@ public:
       return;
     }
     const auto image = ReadImage(services, services.CurrentVisibility());
-    std::vector<core::AuxRow> rows;
-    if (!image || !image->state || !glue.execute(image->state, arguments, rows)) {
+    if (!image || !image->state) {
+      ExecuteFallback(services, arguments, sink);
+      return;
+    }
+    if (glue.execute_into) {
+      // streamed: the glue emits (and may reuse) one row at a time
+      bool begun = false;
+      const RowFn emit = [&](const core::AuxRow &row) {
+        if (!begun) {
+          sink.Begin(core::OutputSchema{});
+          begun = true;
+        }
+        sink.WriteRow(row);
+      };
+      if (!glue.execute_into(image->state, arguments, emit)) {
+        ExecuteFallback(services, arguments, sink);
+        return;
+      }
+      if (!begun)
+        sink.Begin(core::OutputSchema{});
+      sink.End();
+      return;
+    }
+    // A reused vector keeps its capacity across reads on this thread.
+    thread_local std::vector<core::AuxRow> rows;
+    rows.clear();
+    if (!glue.execute(image->state, arguments, rows)) {
+      rows.clear();
       ExecuteFallback(services, arguments, sink);
       return;
     }
     sink.Begin(core::OutputSchema{});
-    for (const auto &row : rows)
+    // Free each row right after it is written (cache-warm) instead of one
+    // cold destruction pass over the whole answer afterwards.
+    for (auto &row : rows) {
       sink.WriteRow(row);
+      std::vector<core::AuxValue>().swap(row.values);
+    }
+    rows.clear();
     sink.End();
   }
 
@@ -1078,14 +1109,28 @@ void QueryKeys(Host &host, const std::string &sql_text, const std::string &key_c
   std::string sql = sql_text;
   while (!sql.empty() && (sql.back() == ';' || std::isspace(static_cast<unsigned char>(sql.back()))))
     sql.pop_back();
-  constexpr std::size_t kChunk = 4096;
-  for (std::size_t i = 0; i < keys.size(); i += kChunk) {
-    const std::vector<int64_t> chunk(keys.begin() + static_cast<std::ptrdiff_t>(i),
-                                     keys.begin() + static_cast<std::ptrdiff_t>(std::min(keys.size(), i + kChunk)));
-    host.Query("SELECT * FROM (" + sql + ") AS verus_kit_rescan WHERE " +
-                   host.KeyIn("verus_kit_rescan." + host.Quote(key_column), chunk),
-               row);
+  if (keys.empty())
+    return;
+  // Engines with a parameter path bind the list as one BIGINT[] value instead
+  // of parsing a literal of keys.size() constants.
+  if (host.QueryBigintList("SELECT verus_kit_rescan.* FROM (" + sql + ") AS verus_kit_rescan WHERE verus_kit_rescan." +
+                               host.Quote(key_column) + " IN (SELECT unnest($1::BIGINT[]))",
+                           keys, row))
+    return;
+  // One query regardless of key count: semi-join the subquery against the key list, so the base
+  // relation is scanned once (a chunked IN-list rescans it once per chunk). SEMI semantics keep
+  // "each matching row exactly once" even when `keys` has duplicates.
+  std::string list = "[";
+  list.reserve(keys.size() * 9 + 2);
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    if (i)
+      list += ',';
+    list += std::to_string(keys[i]);
   }
+  list += "]::BIGINT[]";
+  host.Query("SELECT verus_kit_rescan.* FROM (" + sql + ") AS verus_kit_rescan WHERE verus_kit_rescan." +
+                 host.Quote(key_column) + " IN (SELECT unnest(" + list + "))",
+             row);
 }
 
 // ---- registry ----

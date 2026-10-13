@@ -15,6 +15,7 @@
 // InitialScan implementations (SQL on the runtime's connection, value
 // decoding).  They are engine-level, not per query.
 
+#include <mutex>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -74,6 +75,14 @@ std::string OptionalBenchScanLimitSuffix(const char *env_name);
 // one (counted as a table scan either way).
 ::duckdb::Connection &ScanConnection(::duckdb::Connection &connection);
 
+// Serializes use of one connection across threads (ApplyWriteAll stages the
+// accelerators' maintenance in parallel, all on the writer's connection; a
+// DuckDB connection runs one query at a time and a streaming result dies when
+// another query runs on it). Hold it for a scan's whole duration, fetch loop
+// included. Recursive; a no-op (unowned lock) for a reader's private connection.
+using ScanLock = std::unique_lock<std::recursive_mutex>;
+ScanLock LockScan(::duckdb::Connection &connection);
+
 inline ::duckdb::Value ChunkValue(const ::duckdb::DataChunk &chunk, ::duckdb::idx_t col,
                                   ::duckdb::idx_t row) {
   return chunk.GetValue(col, row);
@@ -81,6 +90,7 @@ inline ::duckdb::Value ChunkValue(const ::duckdb::DataChunk &chunk, ::duckdb::id
 
 template <typename Callback>
 void ScanQuery(::duckdb::Connection &connection_p, const std::string &sql, Callback &&callback) {
+  auto lock = LockScan(connection_p);
   auto &connection = ScanConnection(connection_p);
   auto result = connection.Query(sql);
   Require(result != nullptr && !result->HasError(), result ? result->GetError() : "DuckDB scan returned null");
@@ -92,6 +102,7 @@ void ScanQuery(::duckdb::Connection &connection_p, const std::string &sql, Callb
 // Streaming scan for large SF builds: avoids materializing the full result.
 template <typename Callback>
 void ScanQueryStreaming(::duckdb::Connection &connection_p, const std::string &sql, Callback &&callback) {
+  auto lock = LockScan(connection_p);
   auto &connection = ScanConnection(connection_p);
   auto result = connection.SendQuery(sql);
   Require(result != nullptr && !result->HasError(), result ? result->GetError() : "DuckDB scan returned null");

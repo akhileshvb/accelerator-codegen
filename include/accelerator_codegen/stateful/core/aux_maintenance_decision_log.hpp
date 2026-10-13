@@ -29,6 +29,24 @@ struct MaintenanceDecisionLogEntry {
   bool valid = false;
 };
 
+// While alive on a thread, that thread's Record*/Last/Clear calls use a private
+// slot instead of the process-wide one (parallel PRE_COMMIT: each runtime's
+// decision stays its own). Not nestable across threads; same thread only.
+class ScopedThreadMaintenanceDecisionLog {
+public:
+  ScopedThreadMaintenanceDecisionLog();
+  ~ScopedThreadMaintenanceDecisionLog();
+  ScopedThreadMaintenanceDecisionLog(const ScopedThreadMaintenanceDecisionLog &) = delete;
+  ScopedThreadMaintenanceDecisionLog &operator=(const ScopedThreadMaintenanceDecisionLog &) = delete;
+
+private:
+  MaintenanceDecisionLogEntry slot_;
+  MaintenanceDecisionLogEntry *previous_;
+};
+
+// Overwrites the process-wide slot (what the last single-threaded decision would have left).
+void SetGlobalMaintenanceDecision(const MaintenanceDecisionLogEntry &entry);
+
 void RecordMaintenanceSelectorDecision(const MaintenanceDecisionLogEntry &entry);
 void RecordStagedMaintenanceAction(maintenance::MaintenanceAction action);
 void RecordMaintenanceActualCostUs(double actual_us);

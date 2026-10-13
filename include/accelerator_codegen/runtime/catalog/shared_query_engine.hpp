@@ -39,6 +39,10 @@ public:
 
 void RegisterDuckdbAuxTableFunctions(::duckdb::Connection &connection);
 
+// Infers and caches the accelerator table function's result schema (otherwise the
+// first query binding it plans the base SQL, ~1-4 ms). For DuckdbRuntime::Build.
+void PrimeAuxSchema(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry);
+
 // An accelerator's arguments from DuckDB values, typed as the table function
 // accel_<id>(...) types them (by the entry's argument types).
 core::QueryArguments AuxArgumentsFromValues(const SharedQueryCatalogEntry &entry,

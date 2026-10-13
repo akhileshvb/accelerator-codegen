@@ -253,43 +253,40 @@ std::string WithLiterals(const std::string &sql, const ::duckdb::vector<::duckdb
       value.payload);
 }
 
-::duckdb::unique_ptr<::duckdb::FunctionData>
-AuxBind(::duckdb::ClientContext &context, ::duckdb::TableFunctionBindInput &input,
-        ::duckdb::vector<::duckdb::LogicalType> &return_types,
-        ::duckdb::vector<::duckdb::string> &names) {
-  const auto &entry = input.info->Cast<AuxFunctionInfo>().entry;
+struct SchemaCache {
+  ::duckdb::vector<::duckdb::LogicalType> types;
+  ::duckdb::vector<::duckdb::string> names;
+};
+std::shared_mutex &SchemaMutex() {
+  static std::shared_mutex m;
+  return m;
+}
+std::unordered_map<std::string, SchemaCache> &SchemaMap() {
+  static std::unordered_map<std::string, SchemaCache> m;
+  return m;
+}
 
-  // Cache schema per accelerator so repeated SELECT * FROM accel_*_aux(...)
-  // does not re-run base_sql solely to infer column types.
-  struct SchemaCache {
-    ::duckdb::vector<::duckdb::LogicalType> types;
-    ::duckdb::vector<::duckdb::string> names;
-  };
-  static std::shared_mutex schema_mutex;
-  static std::unordered_map<std::string, SchemaCache> schemas;
-  {
-    std::shared_lock<std::shared_mutex> lock(schema_mutex);
-    const auto it = schemas.find(entry.accelerator_id ? entry.accelerator_id : "");
-    if (it != schemas.end()) {
-      return_types = it->second.types;
-      names = it->second.names;
-      return ::duckdb::make_uniq<AuxBindData>(entry, input.inputs, return_types,
-                                              names);
-    }
-  }
-
-  ::duckdb::Connection connection(*context.db);
+// The result schema of an accelerator's base query, without running it over the data.
+void InferAuxSchema(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry,
+                    const ::duckdb::vector<::duckdb::Value> &inputs,
+                    ::duckdb::vector<::duckdb::LogicalType> &return_types,
+                    ::duckdb::vector<::duckdb::string> &names) {
   if (std::string(entry.base_sql).find('$') != std::string::npos) {
     // Parameterized SQL (an entry built from a Verus kit glue): the schema from
     // running it with this call's values as literals, returning no rows. (Not by
     // preparing it with unbound parameters: a parameter whose type depends on its
     // value, e.g. `$2 - 0.01`, fails that and leaves this statement unbindable.)
-    auto probe = connection.Query("SELECT * FROM (" + WithLiterals(entry.base_sql, input.inputs) +
+    auto probe = connection.Query("SELECT * FROM (" + WithLiterals(entry.base_sql, inputs) +
                                   ") AS accel_schema LIMIT 0");
     Require(probe != nullptr && !probe->HasError(),
             probe ? probe->GetError() : "failed to infer aux schema");
     return_types = probe->types;
     names = probe->names;
+  } else if (auto prepared = connection.Prepare(entry.base_sql); prepared && !prepared->HasError()) {
+    // The schema from planning the query, without running it (running it costs a full
+    // base query on the accelerator's first read).
+    return_types = prepared->GetTypes();
+    names = prepared->GetNames();
   } else {
     auto base_result = connection.Query(entry.base_sql);
     Require(base_result != nullptr && !base_result->HasError(),
@@ -302,6 +299,31 @@ AuxBind(::duckdb::ClientContext &context, ::duckdb::TableFunctionBindInput &inpu
       names.push_back(base.names[column]);
     }
   }
+}
+
+::duckdb::unique_ptr<::duckdb::FunctionData>
+AuxBind(::duckdb::ClientContext &context, ::duckdb::TableFunctionBindInput &input,
+        ::duckdb::vector<::duckdb::LogicalType> &return_types,
+        ::duckdb::vector<::duckdb::string> &names) {
+  const auto &entry = input.info->Cast<AuxFunctionInfo>().entry;
+
+  // Cache schema per accelerator so repeated SELECT * FROM accel_*_aux(...)
+  // does not re-run base_sql solely to infer column types.
+  auto &schema_mutex = SchemaMutex();
+  auto &schemas = SchemaMap();
+  {
+    std::shared_lock<std::shared_mutex> lock(schema_mutex);
+    const auto it = schemas.find(entry.accelerator_id ? entry.accelerator_id : "");
+    if (it != schemas.end()) {
+      return_types = it->second.types;
+      names = it->second.names;
+      return ::duckdb::make_uniq<AuxBindData>(entry, input.inputs, return_types,
+                                              names);
+    }
+  }
+
+  ::duckdb::Connection connection(*context.db);
+  InferAuxSchema(connection, entry, input.inputs, return_types, names);
   {
     std::unique_lock<std::shared_mutex> lock(schema_mutex);
     schemas[entry.accelerator_id ? entry.accelerator_id : ""] =
@@ -556,6 +578,27 @@ void RegisterRegisteredAuxFunctions(::duckdb::Catalog &catalog,
 core::QueryArguments AuxArgumentsFromValues(const SharedQueryCatalogEntry &entry,
                                             const std::vector<::duckdb::Value> &values) {
   return BuildArguments(entry, ::duckdb::vector<::duckdb::Value>(values.begin(), values.end()));
+}
+
+void PrimeAuxSchema(::duckdb::Connection &connection, const SharedQueryCatalogEntry &entry) {
+  const std::string id = entry.accelerator_id ? entry.accelerator_id : "";
+  {
+    std::shared_lock<std::shared_mutex> lock(SchemaMutex());
+    if (SchemaMap().count(id))
+      return;
+  }
+  try {
+    ::duckdb::vector<::duckdb::Value> inputs;
+    for (const auto &v : entry.benchmark_arguments.values)
+      inputs.push_back(AuxValueToDuckdb(v));
+    ::duckdb::vector<::duckdb::LogicalType> types;
+    ::duckdb::vector<::duckdb::string> names;
+    InferAuxSchema(connection, entry, inputs, types, names);
+    std::unique_lock<std::shared_mutex> lock(SchemaMutex());
+    SchemaMap()[id] = SchemaCache{std::move(types), std::move(names)};
+  } catch (...) {
+    // left to the first bind
+  }
 }
 
 void RegisterDuckdbAuxTableFunctions(::duckdb::Connection &connection) {

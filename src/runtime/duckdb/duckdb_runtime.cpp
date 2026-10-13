@@ -2,8 +2,11 @@
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
 #include "accelerator_codegen/runtime/duckdb/tpch_rf.hpp"
 #include "accelerator_codegen/verus/verus_kit.hpp"
+#include "accelerator_codegen/runtime/catalog/shared_query_engine.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
+#include <chrono>
+#include <atomic>
 #include <cctype>
 #include <variant>
 #include "duckdb/main/attached_database.hpp"
@@ -27,6 +30,10 @@
 #include <memory>
 #include <algorithm>
 #include <mutex>
+#include <atomic>
+#include <exception>
+#include <thread>
+#include <vector>
 #include <shared_mutex>
 #include <optional>
 #include <set>
@@ -268,6 +275,22 @@ std::string OptionalBenchScanLimitSuffix(const char *env_name) {
   return ScanRedirect::current ? ScanRedirect::current->Connection() : connection;
 }
 
+ScanLock LockScan(::duckdb::Connection &connection) {
+  if (ScanRedirect::current)
+    return ScanLock();
+  static std::mutex map_mutex;
+  static std::unordered_map<const ::duckdb::Connection *, std::unique_ptr<std::recursive_mutex>> locks;
+  std::recursive_mutex *m;
+  {
+    std::lock_guard<std::mutex> g(map_mutex);
+    auto &slot = locks[&connection];
+    if (!slot)
+      slot = std::make_unique<std::recursive_mutex>();
+    m = slot.get();
+  }
+  return ScanLock(*m);
+}
+
 char FirstChar(const ::duckdb::Value &value) {
   if (value.IsNull()) {
     return '\0';
@@ -335,23 +358,175 @@ struct Builder final : core::StateBuilder {
 
 core::AuxValue CapturedValue(const ::duckdb::Value &value);
 
+// One column of a DataChunk, read in place (see DuckVerusHost::Query).
+struct ChunkColumn {
+  enum class Kind { Bool, Int8, Int16, Int32, Int64, Date, Float, Double, Dec16, Dec32, Dec64, Dec128, Varchar, Other };
+  Kind kind = Kind::Other;
+  int32_t scale = 0;
+  ::duckdb::UnifiedVectorFormat uvf;
+
+  void Init(::duckdb::DataChunk &chunk, ::duckdb::idx_t col) {
+    using ::duckdb::LogicalTypeId;
+    using ::duckdb::PhysicalType;
+    auto &vec = chunk.data[col];
+    const auto &type = vec.GetType();
+    kind = Kind::Other;
+    switch (type.id()) {
+    case LogicalTypeId::BOOLEAN: kind = Kind::Bool; break;
+    case LogicalTypeId::TINYINT: kind = Kind::Int8; break;
+    case LogicalTypeId::SMALLINT: kind = Kind::Int16; break;
+    case LogicalTypeId::INTEGER: kind = Kind::Int32; break;
+    case LogicalTypeId::BIGINT: kind = Kind::Int64; break;
+    case LogicalTypeId::DATE: kind = Kind::Date; break;
+    case LogicalTypeId::FLOAT: kind = Kind::Float; break;
+    case LogicalTypeId::DOUBLE: kind = Kind::Double; break;
+    case LogicalTypeId::VARCHAR: kind = Kind::Varchar; break;
+    case LogicalTypeId::DECIMAL:
+      scale = static_cast<int32_t>(::duckdb::DecimalType::GetScale(type));
+      switch (type.InternalType()) {
+      case PhysicalType::INT16: kind = Kind::Dec16; break;
+      case PhysicalType::INT32: kind = Kind::Dec32; break;
+      case PhysicalType::INT64: kind = Kind::Dec64; break;
+      case PhysicalType::INT128: kind = Kind::Dec128; break;
+      default: break;
+      }
+      break;
+    default: break;
+    }
+    if (kind != Kind::Other)
+      vec.ToUnifiedFormat(chunk.size(), uvf);
+  }
+
+  void Get(const ::duckdb::DataChunk &chunk, ::duckdb::idx_t col, ::duckdb::idx_t r, core::AuxValue &out) const {
+    using core::AuxType;
+    const auto i = uvf.sel->get_index(r);
+    const bool valid = kind == Kind::Other ? true : uvf.validity.RowIsValid(i);
+    const auto set = [&](AuxType t, auto v) {
+      out.type = t;
+      out.is_null = false;
+      out.payload = std::move(v);
+    };
+    const auto null = [&](AuxType t) {
+      out.type = t;
+      out.is_null = true;
+      out.payload = std::string();
+    };
+    switch (kind) {
+    case Kind::Bool:
+      return valid ? set(AuxType::Boolean, static_cast<bool>(::duckdb::UnifiedVectorFormat::GetData<bool>(uvf)[i]))
+                   : null(AuxType::Boolean);
+    case Kind::Int8:
+      return valid ? set(AuxType::Int64, static_cast<int64_t>(::duckdb::UnifiedVectorFormat::GetData<int8_t>(uvf)[i]))
+                   : null(AuxType::Int64);
+    case Kind::Int16:
+      return valid ? set(AuxType::Int64, static_cast<int64_t>(::duckdb::UnifiedVectorFormat::GetData<int16_t>(uvf)[i]))
+                   : null(AuxType::Int64);
+    case Kind::Int32:
+      return valid ? set(AuxType::Int64, static_cast<int64_t>(::duckdb::UnifiedVectorFormat::GetData<int32_t>(uvf)[i]))
+                   : null(AuxType::Int64);
+    case Kind::Int64:
+      return valid ? set(AuxType::Int64, static_cast<int64_t>(::duckdb::UnifiedVectorFormat::GetData<int64_t>(uvf)[i]))
+                   : null(AuxType::Int64);
+    case Kind::Date:
+      return valid ? set(AuxType::Date, core::AuxDate{::duckdb::UnifiedVectorFormat::GetData<::duckdb::date_t>(uvf)[i].days})
+                   : null(AuxType::Date);
+    case Kind::Float:
+      return valid ? set(AuxType::Double, static_cast<double>(::duckdb::UnifiedVectorFormat::GetData<float>(uvf)[i]))
+                   : null(AuxType::Double);
+    case Kind::Double:
+      return valid ? set(AuxType::Double, ::duckdb::UnifiedVectorFormat::GetData<double>(uvf)[i])
+                   : null(AuxType::Double);
+    case Kind::Dec16:
+      return valid ? set(AuxType::ScaledDecimal, core::ScaledDecimal{::duckdb::UnifiedVectorFormat::GetData<int16_t>(uvf)[i], scale})
+                   : null(AuxType::ScaledDecimal);
+    case Kind::Dec32:
+      return valid ? set(AuxType::ScaledDecimal, core::ScaledDecimal{::duckdb::UnifiedVectorFormat::GetData<int32_t>(uvf)[i], scale})
+                   : null(AuxType::ScaledDecimal);
+    case Kind::Dec64:
+      return valid ? set(AuxType::ScaledDecimal, core::ScaledDecimal{::duckdb::UnifiedVectorFormat::GetData<int64_t>(uvf)[i], scale})
+                   : null(AuxType::ScaledDecimal);
+    case Kind::Dec128: {
+      if (!valid)
+        return null(AuxType::ScaledDecimal);
+      const auto huge = ::duckdb::UnifiedVectorFormat::GetData<::duckdb::hugeint_t>(uvf)[i];
+      const bool fits = (huge.upper == 0 && static_cast<int64_t>(huge.lower) >= 0) ||
+                        (huge.upper == -1 && static_cast<int64_t>(huge.lower) < 0);
+      if (!fits) // beyond 64 bits: the boxed path's exact decimal text
+        out = CapturedValue(chunk.GetValue(col, r));
+      else
+        set(AuxType::ScaledDecimal, core::ScaledDecimal{static_cast<int64_t>(huge.lower), scale});
+      return;
+    }
+    case Kind::Varchar: {
+      if (!valid)
+        return null(AuxType::String);
+      const auto &str = ::duckdb::UnifiedVectorFormat::GetData<::duckdb::string_t>(uvf)[i];
+      return set(AuxType::String, std::string(str.GetData(), str.GetSize()));
+    }
+    case Kind::Other:
+      out = CapturedValue(chunk.GetValue(col, r));
+      return;
+    }
+  }
+};
+
 // The kit's engine services on a runtime's connection: SQL as the
 // connection's transaction sees it (a writer's own writes included).
 struct DuckVerusHost final : verus_kit::Host {
   explicit DuckVerusHost(::duckdb::Connection &connection_p) : connection(connection_p) {}
 
-  void Query(const std::string &sql, const verus_kit::RowFn &row) override {
-    ScanQueryStreaming(connection, sql, [&](const ::duckdb::DataChunk &chunk, ::duckdb::idx_t r) {
+  // Chunk at a time: each column is read through its UnifiedVectorFormat
+  // (flat, constant or dictionary), no Value boxing per cell. The produced
+  // AuxValues are exactly CapturedValue(chunk.GetValue(c, r)).
+  static void DeliverChunks(::duckdb::QueryResult &result, const verus_kit::RowFn &row) {
+    Require(!result.HasError(), result.GetError());
+    std::vector<ChunkColumn> columns;
+    while (true) {
+      auto chunk = result.Fetch();
+      if (!chunk || chunk->size() == 0)
+        break;
+      const auto n = chunk->size();
+      columns.resize(chunk->ColumnCount());
+      for (::duckdb::idx_t c = 0; c < columns.size(); ++c)
+        columns[c].Init(*chunk, c);
       core::AuxRow out;
-      out.values.reserve(chunk.ColumnCount());
-      for (::duckdb::idx_t c = 0; c < chunk.ColumnCount(); ++c)
-        out.values.push_back(CapturedValue(chunk.GetValue(c, r)));
-      row(out);
-    });
+      for (::duckdb::idx_t r = 0; r < n; ++r) {
+        out.values.resize(columns.size());
+        for (::duckdb::idx_t c = 0; c < columns.size(); ++c)
+          columns[c].Get(*chunk, c, r, out.values[c]);
+        row(out);
+      }
+    }
+    Require(!result.HasError(), result.GetError());
+  }
+
+  void Query(const std::string &sql, const verus_kit::RowFn &row) override {
+    auto lock = LockScan(connection);
+    auto result = ScanConnection(connection).SendQuery(sql);
+    Require(result != nullptr, "DuckDB scan returned null");
+    DeliverChunks(*result, row);
+  }
+
+  bool QueryBigintList(const std::string &sql, const std::vector<int64_t> &list,
+                       const verus_kit::RowFn &row) override {
+    auto lock = LockScan(connection);
+    auto stmt = ScanConnection(connection).Prepare(sql);
+    Require(stmt && !stmt->HasError(), stmt ? stmt->GetError() : "prepare failed: " + sql);
+    ::duckdb::vector<::duckdb::Value> items;
+    items.reserve(list.size());
+    for (auto v : list)
+      items.push_back(::duckdb::Value::BIGINT(v));
+    ::duckdb::vector<::duckdb::Value> values;
+    values.push_back(::duckdb::Value::LIST(::duckdb::LogicalType::BIGINT, std::move(items)));
+    auto result = stmt->Execute(values, /*allow_stream_result=*/true);
+    Require(result != nullptr, "query failed: " + sql);
+    DeliverChunks(*result, row);
+    return true;
   }
 
   void QueryParams(const std::string &sql, const std::vector<core::AuxValue> &params,
                    const verus_kit::RowFn &row) override {
+    auto scan_lock = LockScan(connection);
     auto stmt = ScanConnection(connection).Prepare(sql);
     Require(stmt && !stmt->HasError(), stmt ? stmt->GetError() : "prepare failed: " + sql);
     ::duckdb::vector<::duckdb::Value> values;
@@ -395,6 +570,7 @@ struct DuckVerusHost final : verus_kit::Host {
 
   std::vector<int32_t> Attnums(const std::string &table, const std::vector<std::string> &columns) override {
     std::vector<std::pair<std::string, int32_t>> cids;
+    auto scan_lock = LockScan(connection);
     auto result = ScanConnection(connection).Query("SELECT name, cid FROM pragma_table_info(" +
                                                    ::duckdb::KeywordHelper::WriteQuoted(table, '\'') + ")");
     Require(result && !result->HasError(), result ? result->GetError() : "table_info failed");
@@ -552,6 +728,7 @@ DuckDBStateStore::FloorProvider OldestSnapshotFloor(::duckdb::ClientContext &con
 // GetLastCommit() is not on the start-time scale for a database opened from a
 // file, so it cannot be used here.
 core::Version BuildEpoch(::duckdb::Connection &connection) {
+  auto scan_lock = LockScan(connection);
   if (connection.HasActiveTransaction()) {
     return DuckDBAuxBackend::SnapshotEpoch(*connection.context);
   }
@@ -646,17 +823,30 @@ AuxWatchedColumns &WatchedColumns(::duckdb::ClientContext &context) {
   return *entry;
 }
 
-// Forwards the connection's mutation events to one runtime.
-class AuxCaptureConsumer final : public ::duckdb::MutationConsumer {
+// One consumer per connection: converts each mutation event's values once and
+// hands the converted event to every runtime capturing on the connection, in
+// registration order.  Events can arrive from parallel sink threads, so the
+// runtime list is guarded and the conversion keeps no shared state.
+class AuxCaptureHub final : public ::duckdb::MutationConsumer {
 public:
-  explicit AuxCaptureConsumer(DuckdbRuntime *runtime_p) : runtime(runtime_p) {}
-  void OnTableMutation(::duckdb::ClientContext &,
-                       const ::duckdb::TableMutationEvent &event) override {
-    runtime->OnCapturedMutation(event);
+  static constexpr const char *kKey = "accel_aux_capture_hub";
+
+  void Add(DuckdbRuntime *runtime) {
+    std::lock_guard<std::mutex> lock(mutex);
+    runtimes.push_back(runtime);
+  }
+  // Returns true if no runtime is left.
+  bool Remove(DuckdbRuntime *runtime) {
+    std::lock_guard<std::mutex> lock(mutex);
+    runtimes.erase(std::remove(runtimes.begin(), runtimes.end(), runtime), runtimes.end());
+    return runtimes.empty();
   }
 
+  void OnTableMutation(::duckdb::ClientContext &, const ::duckdb::TableMutationEvent &event) override;
+
 private:
-  DuckdbRuntime *runtime;
+  std::mutex mutex;
+  std::vector<DuckdbRuntime *> runtimes;
 };
 
 // A captured DuckDB value as the modules read it (the same mapping as the
@@ -698,9 +888,187 @@ core::AuxValue CapturedValue(const ::duckdb::Value &value) {
     decimal.scale = static_cast<int32_t>(::duckdb::DecimalType::GetScale(value.type()));
     return core::AuxValue::Of(core::AuxType::ScaledDecimal, decimal);
   }
+  case LogicalTypeId::VARCHAR:
+    return value.IsNull() ? core::AuxValue::Null(core::AuxType::String)
+                          : core::AuxValue::Of(core::AuxType::String, ::duckdb::StringValue::Get(value));
   default:
     return value.IsNull() ? core::AuxValue::Null(core::AuxType::String)
                           : core::AuxValue::Of(core::AuxType::String, value.ToString());
+  }
+}
+
+// Converts column `col` of an event (`rows` rows, vector `vec`) into the row-major `out` (row stride `width`),
+// reading the vector's physical data directly. Produces the same AuxValue as CapturedValue(vec.GetValue(r)) for
+// every row; types without a direct path go through that.
+void CapturedColumn(::duckdb::Vector &vec, std::size_t rows, std::vector<core::AuxValue> &out,
+                    std::size_t width, std::size_t col) {
+  using ::duckdb::LogicalTypeId;
+  using ::duckdb::PhysicalType;
+  ::duckdb::UnifiedVectorFormat fmt;
+  vec.ToUnifiedFormat(rows, fmt);
+  const auto &type = vec.GetType();
+  auto at = [&](std::size_t r) -> core::AuxValue & { return out[r * width + col]; };
+  auto fill = [&](core::AuxType aux_type, auto &&get) {
+    for (std::size_t r = 0; r < rows; ++r) {
+      const auto idx = fmt.sel->get_index(r);
+      auto &dst = at(r);
+      dst.type = aux_type;
+      if (!fmt.validity.RowIsValid(idx)) {
+        dst.is_null = true;
+        continue;
+      }
+      dst.is_null = false;
+      dst.payload = get(idx);
+    }
+  };
+  auto fill_null = [&](core::AuxType aux_type) {
+    for (std::size_t r = 0; r < rows; ++r) {
+      auto &dst = at(r);
+      dst.type = aux_type;
+      dst.is_null = true;
+    }
+  };
+  switch (type.id()) {
+  case LogicalTypeId::BOOLEAN: {
+    const auto *data = ::duckdb::UnifiedVectorFormat::GetData<bool>(fmt);
+    fill(core::AuxType::Boolean, [&](::duckdb::idx_t i) -> bool { return data[i]; });
+    return;
+  }
+  case LogicalTypeId::TINYINT: {
+    const auto *data = ::duckdb::UnifiedVectorFormat::GetData<int8_t>(fmt);
+    fill(core::AuxType::Int64, [&](::duckdb::idx_t i) -> int64_t { return data[i]; });
+    return;
+  }
+  case LogicalTypeId::SMALLINT: {
+    const auto *data = ::duckdb::UnifiedVectorFormat::GetData<int16_t>(fmt);
+    fill(core::AuxType::Int64, [&](::duckdb::idx_t i) -> int64_t { return data[i]; });
+    return;
+  }
+  case LogicalTypeId::INTEGER: {
+    const auto *data = ::duckdb::UnifiedVectorFormat::GetData<int32_t>(fmt);
+    fill(core::AuxType::Int64, [&](::duckdb::idx_t i) -> int64_t { return data[i]; });
+    return;
+  }
+  case LogicalTypeId::BIGINT: {
+    const auto *data = ::duckdb::UnifiedVectorFormat::GetData<int64_t>(fmt);
+    fill(core::AuxType::Int64, [&](::duckdb::idx_t i) -> int64_t { return data[i]; });
+    return;
+  }
+  case LogicalTypeId::DATE: {
+    const auto *data = ::duckdb::UnifiedVectorFormat::GetData<::duckdb::date_t>(fmt);
+    fill(core::AuxType::Date, [&](::duckdb::idx_t i) { return core::AuxDate {::duckdb::Date::EpochDays(data[i])}; });
+    return;
+  }
+  case LogicalTypeId::FLOAT: {
+    const auto *data = ::duckdb::UnifiedVectorFormat::GetData<float>(fmt);
+    fill(core::AuxType::Double, [&](::duckdb::idx_t i) -> double { return static_cast<double>(data[i]); });
+    return;
+  }
+  case LogicalTypeId::DOUBLE: {
+    const auto *data = ::duckdb::UnifiedVectorFormat::GetData<double>(fmt);
+    fill(core::AuxType::Double, [&](::duckdb::idx_t i) -> double { return data[i]; });
+    return;
+  }
+  case LogicalTypeId::DECIMAL: {
+    const auto scale = static_cast<int32_t>(::duckdb::DecimalType::GetScale(type));
+    auto scaled = [&](int64_t raw) {
+      core::ScaledDecimal decimal;
+      decimal.value = raw;
+      decimal.scale = scale;
+      return decimal;
+    };
+    switch (type.InternalType()) {
+    case PhysicalType::INT16: {
+      const auto *data = ::duckdb::UnifiedVectorFormat::GetData<int16_t>(fmt);
+      fill(core::AuxType::ScaledDecimal, [&](::duckdb::idx_t i) { return scaled(data[i]); });
+      return;
+    }
+    case PhysicalType::INT32: {
+      const auto *data = ::duckdb::UnifiedVectorFormat::GetData<int32_t>(fmt);
+      fill(core::AuxType::ScaledDecimal, [&](::duckdb::idx_t i) { return scaled(data[i]); });
+      return;
+    }
+    case PhysicalType::INT64: {
+      const auto *data = ::duckdb::UnifiedVectorFormat::GetData<int64_t>(fmt);
+      fill(core::AuxType::ScaledDecimal, [&](::duckdb::idx_t i) { return scaled(data[i]); });
+      return;
+    }
+    case PhysicalType::INT128: {
+      const auto *data = ::duckdb::UnifiedVectorFormat::GetData<::duckdb::hugeint_t>(fmt);
+      for (std::size_t r = 0; r < rows; ++r) {
+        const auto idx = fmt.sel->get_index(r);
+        auto &dst = at(r);
+        if (!fmt.validity.RowIsValid(idx)) {
+          dst = core::AuxValue::Null(core::AuxType::ScaledDecimal);
+          continue;
+        }
+        const auto huge = data[idx];
+        const bool fits = (huge.upper == 0 && static_cast<int64_t>(huge.lower) >= 0) ||
+                          (huge.upper == -1 && static_cast<int64_t>(huge.lower) < 0);
+        if (fits) {
+          dst = core::AuxValue::Of(core::AuxType::ScaledDecimal, scaled(static_cast<int64_t>(huge.lower)));
+        } else { // beyond 64 bits: exact as decimal text, never via double
+          dst = CapturedValue(vec.GetValue(r));
+        }
+      }
+      return;
+    }
+    default:
+      break;
+    }
+    break;
+  }
+  case LogicalTypeId::VARCHAR: {
+    const auto *data = ::duckdb::UnifiedVectorFormat::GetData<::duckdb::string_t>(fmt);
+    fill(core::AuxType::String, [&](::duckdb::idx_t i) { return data[i].GetString(); });
+    return;
+  }
+  case LogicalTypeId::SQLNULL:
+    fill_null(core::AuxType::String);
+    return;
+  default:
+    break;
+  }
+  for (std::size_t r = 0; r < rows; ++r) {
+    at(r) = CapturedValue(vec.GetValue(r));
+  }
+}
+
+void AuxCaptureHub::OnTableMutation(::duckdb::ClientContext &, const ::duckdb::TableMutationEvent &event) {
+  if (event.row_count == 0) {
+    return;
+  }
+  std::vector<DuckdbRuntime *> targets;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    targets = runtimes;
+  }
+  if (targets.empty()) {
+    return;
+  }
+  DuckdbRuntime::CapturedEvent shared;
+  shared.table_name = event.table_name;
+  shared.kind = event.kind == ::duckdb::TableMutationKind::INSERT   ? core::MutationKind::Insert
+                : event.kind == ::duckdb::TableMutationKind::DELETE ? core::MutationKind::Delete
+                                                                    : core::MutationKind::Update;
+  shared.updated_columns.reserve(event.updated_columns.size());
+  for (const auto &u : event.updated_columns) {
+    shared.updated_columns.push_back(static_cast<int32_t>(u.index));
+  }
+  // Every row of an event has the same shape (see MutationRecorder).
+  shared.rows = event.row_count;
+  shared.width = event.columns.size();
+  shared.olds = shared.kind == core::MutationKind::Update ? event.old_count : shared.width;
+  shared.columns.reserve(shared.width);
+  for (const auto &c : event.columns) {
+    shared.columns.push_back(static_cast<int32_t>(c.index));
+  }
+  shared.values.resize(shared.rows * shared.width);
+  for (std::size_t c = 0; c < shared.width; ++c) {
+    CapturedColumn(*event.vectors[c], shared.rows, shared.values, shared.width, c);
+  }
+  for (auto *runtime : targets) {
+    runtime->OnCapturedEvent(shared);
   }
 }
 
@@ -719,8 +1087,7 @@ void DuckdbRuntime::EnableMutationCapture() {
       }
     }
   }
-  connection_.context->registered_state->GetOrCreate<AuxCaptureConsumer>(
-      std::string("accel_aux_capture:") + entry_.accelerator_id, this);
+  connection_.context->registered_state->GetOrCreate<AuxCaptureHub>(AuxCaptureHub::kKey)->Add(this);
   capture_enabled_ = true;
 }
 
@@ -728,8 +1095,11 @@ void DuckdbRuntime::DisableMutationCapture() {
   if (!capture_enabled_) {
     return;
   }
-  connection_.context->registered_state->Remove(std::string("accel_aux_capture:") +
-                                                entry_.accelerator_id);
+  if (auto hub = connection_.context->registered_state->Get<AuxCaptureHub>(AuxCaptureHub::kKey)) {
+    if (hub->Remove(this)) {
+      connection_.context->registered_state->Remove(AuxCaptureHub::kKey);
+    }
+  }
   auto &watched = WatchedColumns(*connection_.context);
   const auto tables = binding_->CaptureTables();
   for (const auto &dep : binding_->Module().Dependencies()) {
@@ -742,7 +1112,8 @@ void DuckdbRuntime::DisableMutationCapture() {
   capture_enabled_ = false;
 }
 
-void DuckdbRuntime::OnCapturedMutation(const ::duckdb::TableMutationEvent &event) {
+void DuckdbRuntime::OnCapturedEvent(const CapturedEvent &event) {
+  constexpr std::size_t kNone = static_cast<std::size_t>(-1);
   core::TableId table_id = 0;
   bool known = false;
   for (const auto &table : binding_->CaptureTables()) {
@@ -754,73 +1125,73 @@ void DuckdbRuntime::OnCapturedMutation(const ::duckdb::TableMutationEvent &event
   if (!known) {
     return;
   }
+  const bool is_update = event.kind == core::MutationKind::Update;
+  std::vector<std::size_t> old_pos, new_pos;
   for (const auto &dep : binding_->Module().Dependencies()) {
     if (dep.table != table_id || dep.mutation_attnums.empty()) {
       continue;
     }
+    const std::size_t n = dep.mutation_attnums.size();
     core::MutationBatch batch;
     batch.table = table_id;
-    batch.kind = event.kind == ::duckdb::TableMutationKind::INSERT   ? core::MutationKind::Insert
-                 : event.kind == ::duckdb::TableMutationKind::DELETE ? core::MutationKind::Delete
-                                                                     : core::MutationKind::Update;
-    if (batch.kind == core::MutationKind::Update) {
+    batch.kind = event.kind;
+    if (is_update) {
       // Delivered even when no captured column changed (see TryGetUpdateOldColumns):
       // the old and new projections then are equal -- a key-only delta's "touched".
-      for (std::size_t j = 0; j < dep.mutation_attnums.size(); ++j) {
-        for (const auto &u : event.updated_columns) {
-          if (static_cast<int32_t>(u.index) == dep.mutation_attnums[j]) {
+      for (std::size_t j = 0; j < n; ++j) {
+        for (auto u : event.updated_columns) {
+          if (u == dep.mutation_attnums[j]) {
             batch.updated_columns.push_back(static_cast<core::ColumnId>(j));
           }
         }
       }
     }
-    for (const auto &row : event.rows) {
-      // Old values first (watched columns), then the updated columns' new
-      // values: the new row is the old one with those replaced.
-      std::unordered_map<int32_t, const ::duckdb::Value *> old_values, new_values;
-      const std::size_t updated = event.updated_columns.size();
-      const std::size_t olds = row.values.size() - (batch.kind == core::MutationKind::Update ? updated : 0);
-      for (std::size_t i = 0; i < row.values.size(); ++i) {
-        const auto column = static_cast<int32_t>(row.values[i].column_index.index);
-        if (batch.kind == core::MutationKind::Update && i >= olds) {
-          new_values[column] = &row.values[i].value;
-        } else {
-          old_values[column] = &row.values[i].value;
+    // Position of each projected column among the event's values: the old
+    // values first (a later duplicate wins), then the updated columns' new
+    // values; the new row is the old one with those replaced.
+    old_pos.assign(n, kNone);
+    new_pos.assign(n, kNone);
+    for (std::size_t j = 0; j < n; ++j) {
+      for (std::size_t i = 0; i < event.width; ++i) {
+        if (event.columns[i] == dep.mutation_attnums[j]) {
+          (is_update && i >= event.olds ? new_pos : old_pos)[j] = i;
         }
       }
-      auto project = [&](bool use_new) {
-        core::AuxRow out;
-        out.values.reserve(dep.mutation_attnums.size());
-        for (auto attnum : dep.mutation_attnums) {
-          const ::duckdb::Value *v = nullptr;
-          if (use_new) {
-            auto it = new_values.find(attnum);
-            if (it != new_values.end()) {
-              v = it->second;
-            }
-          }
-          if (!v) {
-            auto it = old_values.find(attnum);
-            if (it != old_values.end()) {
-              v = it->second;
-            }
-          }
-          out.values.push_back(v ? CapturedValue(*v) : core::AuxValue::Null(core::AuxType::String));
+    }
+    auto project = [&](std::size_t r, bool use_new) {
+      core::AuxRow out;
+      out.values.reserve(n);
+      const core::AuxValue *base = event.values.data() + r * event.width;
+      for (std::size_t j = 0; j < n; ++j) {
+        std::size_t pos = use_new ? new_pos[j] : kNone;
+        if (pos == kNone) {
+          pos = old_pos[j];
         }
-        return out;
-      };
-      switch (batch.kind) {
-      case core::MutationKind::Insert:
-        batch.new_rows.push_back(project(false));
-        break;
-      case core::MutationKind::Delete:
-        batch.old_rows.push_back(project(false));
-        break;
-      case core::MutationKind::Update:
-        batch.old_rows.push_back(project(false));
-        batch.new_rows.push_back(project(true));
-        break;
+        out.values.push_back(pos == kNone ? core::AuxValue::Null(core::AuxType::String) : base[pos]);
       }
+      return out;
+    };
+    switch (event.kind) {
+    case core::MutationKind::Insert:
+      batch.new_rows.reserve(event.rows);
+      for (std::size_t r = 0; r < event.rows; ++r) {
+        batch.new_rows.push_back(project(r, false));
+      }
+      break;
+    case core::MutationKind::Delete:
+      batch.old_rows.reserve(event.rows);
+      for (std::size_t r = 0; r < event.rows; ++r) {
+        batch.old_rows.push_back(project(r, false));
+      }
+      break;
+    case core::MutationKind::Update:
+      batch.old_rows.reserve(event.rows);
+      batch.new_rows.reserve(event.rows);
+      for (std::size_t r = 0; r < event.rows; ++r) {
+        batch.old_rows.push_back(project(r, false));
+        batch.new_rows.push_back(project(r, true));
+      }
+      break;
     }
     if (!batch.old_rows.empty() || !batch.new_rows.empty()) {
       backend_.CaptureMutation(batch);
@@ -888,17 +1259,85 @@ void DuckdbRuntime::ApplyWriteAll(const std::vector<DuckdbRuntime *> &runtimes, 
   // coordinator's PRE_COMMIT, the engine commit, each one's COMMIT
   runtimes.front()->clock_->epoch = DuckDBAuxBackend::SnapshotEpoch(*connection.context) + 1;
   try {
-    for (auto *rt : runtimes) {
-      if (timing)
-        core::ClearMaintenanceDecisionLog();
-      t0 = TimingClock::now();
-      rt->coordinator_.PreCommit();
-      if (timing) {
-        timing->pre_commit_us.push_back(us(t0, TimingClock::now()));
-        const auto d = core::LastMaintenanceDecision();
-        timing->action.push_back(d ? maintenance::MaintenanceActionName(d->staged_action) : "none");
-        timing->decision.push_back(d ? *d : core::MaintenanceDecisionLogEntry{});
+    // PRE_COMMIT of every runtime. Each coordinator, backend, module and
+    // state store is its own; what they share is the writer's connection
+    // (every scan serializes on it, see scan::LockScan), the Verus world
+    // store (internally locked; WorldShared::Begin counts participants under
+    // its mutex) and the decision log (thread-local per runtime here).
+    // ACCEL_PRECOMMIT_THREADS=1 is the serial loop.
+    std::size_t threads = std::min<std::size_t>(runtimes.size(), std::max(1u, std::thread::hardware_concurrency()));
+    if (const char *env = std::getenv("ACCEL_PRECOMMIT_THREADS"); env && *env) {
+      const long parsed = std::strtol(env, nullptr, 10);
+      if (parsed > 0)
+        threads = std::min<std::size_t>(runtimes.size(), static_cast<std::size_t>(parsed));
+    }
+    if (threads <= 1) {
+      for (auto *rt : runtimes) {
+        if (timing)
+          core::ClearMaintenanceDecisionLog();
+        t0 = TimingClock::now();
+        rt->coordinator_.PreCommit();
+        if (timing) {
+          timing->pre_commit_us.push_back(us(t0, TimingClock::now()));
+          const auto d = core::LastMaintenanceDecision();
+          timing->action.push_back(d ? maintenance::MaintenanceActionName(d->staged_action) : "none");
+          timing->decision.push_back(d ? *d : core::MaintenanceDecisionLogEntry{});
+        }
       }
+    } else {
+      const std::size_t n = runtimes.size();
+      std::vector<double> pre_us(n, 0.0);
+      std::vector<std::optional<core::MaintenanceDecisionLogEntry>> decisions(n);
+      std::vector<std::exception_ptr> errors(n);
+      std::atomic<std::size_t> next{0};
+      std::atomic<bool> failed{false};
+      const auto work = [&] {
+        for (;;) {
+          const std::size_t i = next.fetch_add(1);
+          if (i >= n || failed.load())
+            return;
+          try {
+            core::ScopedThreadMaintenanceDecisionLog scoped_log;
+            const auto start = TimingClock::now();
+            runtimes[i]->coordinator_.PreCommit();
+            pre_us[i] = us(start, TimingClock::now());
+            decisions[i] = core::LastMaintenanceDecision();
+          } catch (...) {
+            errors[i] = std::current_exception();
+            failed = true;
+            return;
+          }
+        }
+      };
+      std::vector<std::thread> pool;
+      pool.reserve(threads - 1);
+      try {
+        for (std::size_t k = 1; k < threads; ++k)
+          pool.emplace_back(work);
+      } catch (...) {
+        failed = true; // could not start a thread: let the started ones finish, then abort
+        for (auto &t : pool)
+          t.join();
+        throw;
+      }
+      work();
+      for (auto &t : pool)
+        t.join();
+      for (auto &e : errors)
+        if (e)
+          std::rethrow_exception(e);
+      if (timing) {
+        for (std::size_t i = 0; i < n; ++i) {
+          const auto &d = decisions[i];
+          timing->pre_commit_us.push_back(pre_us[i]);
+          timing->action.push_back(d ? maintenance::MaintenanceActionName(d->staged_action) : "none");
+          timing->decision.push_back(d ? *d : core::MaintenanceDecisionLogEntry{});
+        }
+      }
+      // what the serial loop leaves in the process-wide log: the last runtime's
+      core::ClearMaintenanceDecisionLog();
+      if (decisions[n - 1])
+        core::SetGlobalMaintenanceDecision(*decisions[n - 1]);
     }
     t0 = TimingClock::now();
     connection.Commit();
@@ -908,12 +1347,76 @@ void DuckdbRuntime::ApplyWriteAll(const std::vector<DuckdbRuntime *> &runtimes, 
     abort_all();
     throw;
   }
-  for (auto *rt : runtimes) {
-    t0 = TimingClock::now();
-    rt->coordinator_.Commit();
-    if (timing)
-      timing->commit_us.push_back(us(t0, TimingClock::now()));
+  // COMMIT (install) of every runtime. The engine commit is already visible,
+  // so every runtime must run its install even if another throws: a skipped
+  // one would stay "pending" and block newest-snapshot readers forever. Each
+  // install touches only its own coordinator/store (FinishCommit appends one
+  // version to that accelerator's list and clears its pending flag); all
+  // installs publish at the same, already fixed, commit epoch, so install order
+  // is not observable. The Verus world store assembles its batch under its own
+  // mutex (last finisher installs). ACCEL_COMMIT_THREADS=1 is the serial loop.
+  const std::size_t n = runtimes.size();
+  std::size_t threads = std::min<std::size_t>(n, std::max(1u, std::thread::hardware_concurrency()));
+  for (const char *name : {"ACCEL_COMMIT_THREADS", "ACCEL_PRECOMMIT_THREADS"}) {
+    if (const char *env = std::getenv(name); env && *env) {
+      const long parsed = std::strtol(env, nullptr, 10);
+      if (parsed > 0) {
+        threads = std::min<std::size_t>(n, static_cast<std::size_t>(parsed));
+        break;
+      }
+    }
   }
+  if (threads <= 1) {
+    for (auto *rt : runtimes) {
+      t0 = TimingClock::now();
+      rt->coordinator_.Commit();
+      if (timing)
+        timing->commit_us.push_back(us(t0, TimingClock::now()));
+    }
+    return;
+  }
+  std::vector<double> commit_us(n, 0.0), maint_us(n, 0.0);
+  std::vector<std::exception_ptr> errors(n);
+  std::atomic<std::size_t> next{0};
+  const auto work = [&] {
+    for (;;) {
+      const std::size_t i = next.fetch_add(1);
+      if (i >= n)
+        return;
+      try {
+        core::ScopedThreadMaintenanceDecisionLog scoped_log;
+        const auto start = TimingClock::now();
+        runtimes[i]->coordinator_.Commit();
+        commit_us[i] = us(start, TimingClock::now());
+        if (const auto d = core::LastMaintenanceDecision())
+          maint_us[i] = d->maintenance_us;
+      } catch (...) {
+        errors[i] = std::current_exception();
+      }
+    }
+  };
+  std::vector<std::thread> pool;
+  pool.reserve(threads - 1);
+  try {
+    for (std::size_t k = 1; k < threads; ++k)
+      pool.emplace_back(work);
+  } catch (...) {
+    // could not start a thread: the ones started plus this thread still drain all work
+  }
+  work();
+  for (auto &t : pool)
+    t.join();
+  if (timing)
+    timing->commit_us.insert(timing->commit_us.end(), commit_us.begin(), commit_us.end());
+  // the process-wide log keeps what the serial loop leaves: the last staged runtime's
+  for (std::size_t i = n; i-- > 0;)
+    if (maint_us[i] > 0.0) {
+      core::RecordCoordinatorMaintenanceUs(maint_us[i]);
+      break;
+    }
+  for (auto &e : errors)
+    if (e)
+      std::rethrow_exception(e);
 }
 
 std::vector<core::CalibrationWrite> DuckdbRuntime::CalibrationWrites() const {
@@ -1033,6 +1536,9 @@ void DuckdbRuntime::Build(bool register_active) {
   }
   if (register_active) {
     RegisterActiveRuntime(this, connection_, entry_);
+    // Readable now: fill the table function's schema cache so the first read
+    // doesn't plan the base SQL.
+    ::accelerator_codegen::aux_state::engine::PrimeAuxSchema(connection_, entry_);
   }
 }
 

@@ -99,6 +99,10 @@ public:
   // Run `sql` with $1, $2, ... bound to `params`.
   virtual void QueryParams(const std::string &sql, const std::vector<core::AuxValue> &params,
                            const RowFn &row) = 0;
+  // Run `sql` with $1 bound to a BIGINT[] of `list` (no per-element parse
+  // cost). Returns false, without running anything, if the engine has no such
+  // path; QueryKeys then inlines the list as a literal.
+  virtual bool QueryBigintList(const std::string &, const std::vector<int64_t> &, const RowFn &) { return false; }
   // The engine's attribute numbers (0-based) of table.columns, by name.
   virtual std::vector<int32_t> Attnums(const std::string &table,
                                        const std::vector<std::string> &columns) = 0;
@@ -167,6 +171,13 @@ struct Glue {
   void *(*prepare_apply)(const void *store, const void *base, const Changes &, Host &, int32_t *err) = nullptr;
   void *(*prepare_build)(const void *store, Host &) = nullptr;
   StoreOps store = {};
+  // Optional streaming execute: calls `emit` once per answer row, in order,
+  // without building the answer as a std::vector<AuxRow>; the row passed to
+  // `emit` may be reused by the glue between calls (the sink copies cells out
+  // before returning).  Same false-means-fallback contract as `execute`, and
+  // false must be returned before the first emit.  When null the generic module
+  // uses `execute`.
+  bool (*execute_into)(const void *state, const core::QueryArguments &, const RowFn &emit) = nullptr;
 };
 
 void Register(const Glue *glue);

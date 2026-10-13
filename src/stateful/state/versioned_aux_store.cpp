@@ -6,13 +6,77 @@
 #include <charconv>
 #include <chrono>
 #include <cstdlib>
+#include <condition_variable>
+#include <deque>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <stdexcept>
 #include <utility>
 
 namespace accelerator_codegen::aux_state {
 
 namespace {
+// Superseded versions are destroyed off the commit's critical path: freeing a
+// large state image (hundreds of ms for a big rebuilt aggregate) must not
+// delay the writer that has already published its new version. One lazily
+// started worker releases the batches in order; the destructor drains it, so
+// nothing outlives the process. ACCEL_RECLAIM_ASYNC=0 destroys inline.
+class VersionReclaimer {
+public:
+  static VersionReclaimer &Instance() {
+    static VersionReclaimer instance;
+    return instance;
+  }
+  static bool Enabled() {
+    static const bool enabled = [] {
+      const char *env = std::getenv("ACCEL_RECLAIM_ASYNC");
+      return !(env && env[0] == '0');
+    }();
+    return enabled;
+  }
+  void Defer(std::shared_ptr<void> batch) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (!worker.joinable())
+        worker = std::thread([this] { Run(); });
+      queue.push_back(std::move(batch));
+    }
+    cv.notify_one();
+  }
+  ~VersionReclaimer() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      stop = true;
+    }
+    cv.notify_one();
+    if (worker.joinable())
+      worker.join();
+  }
+
+private:
+  void Run() {
+    std::unique_lock<std::mutex> lock(mutex);
+    for (;;) {
+      cv.wait(lock, [this] { return stop || !queue.empty(); });
+      if (queue.empty())
+        return; // stop and drained
+      auto batch = std::move(queue.front());
+      queue.pop_front();
+      lock.unlock();
+      batch.reset();
+      lock.lock();
+    }
+  }
+  std::mutex mutex;
+  std::condition_variable cv;
+  std::deque<std::shared_ptr<void>> queue;
+  std::thread worker;
+  bool stop = false;
+};
+
+
 
 // Readers wait for a pending publish (no timeout) unless
 // ACCEL_AUX_PENDING_WAIT_US bounds the wait.
@@ -617,6 +681,15 @@ void VersionedAuxStore::FinishCommit(const core::AcceleratorId &accelerator,
     accelerators[accelerator].pending = false;
   }
   pending_cv.notify_all();
+  if (VersionReclaimer::Enabled() && (!dropped.empty() || base_ref)) {
+    struct Garbage {
+      std::vector<StateVersion> versions;
+      std::shared_ptr<const PartitionSet> base;
+    };
+    built.reset();
+    VersionReclaimer::Instance().Defer(
+        std::make_shared<Garbage>(Garbage{std::move(dropped), std::move(base_ref)}));
+  }
 }
 
 void VersionedAuxStore::AbortCommit(const core::AcceleratorId &accelerator) {
