@@ -137,9 +137,12 @@ inline uint8_t PackTpchQ3Shippriority(int32_t shippriority) {
 // the touched 256-entry mid arrays and the touched leaves (a few hundred
 // entries); everything else stays shared.
 // ---------------------------------------------------------------------------
+constexpr uint32_t kTpchQ3ShardBits = 18;
+constexpr uint32_t kTpchQ3TopCount = 1u << (kTpchQ3ShardBits - 8);
+
 inline uint32_t TpchQ3ShardOf(uint32_t key) {
   return static_cast<uint32_t>((static_cast<uint64_t>(key) *
-                                0x9E3779B97F4A7C15ULL) >> 48);
+                                0x9E3779B97F4A7C15ULL) >> (64 - kTpchQ3ShardBits));
 }
 
 template <typename E> struct TpchQ3ShardIndex {
@@ -147,7 +150,7 @@ template <typename E> struct TpchQ3ShardIndex {
   struct Mid {
     std::array<std::shared_ptr<const Leaf>, 256> leaves;
   };
-  std::array<std::shared_ptr<const Mid>, 256> mids;
+  std::array<std::shared_ptr<const Mid>, kTpchQ3TopCount> mids;
 
   static const E *FindIn(const Leaf *leaf, uint32_t key) {
     if (!leaf)
@@ -209,21 +212,41 @@ public:
       leaf.erase(it);
   }
   bool Dirty() const { return !leaves_.empty(); }
-  Index Finish() {
-    std::unordered_map<uint32_t, std::shared_ptr<Mid>> mids;
-    for (auto &entry : leaves_) {
-      const uint32_t hi = entry.first >> 8, lo = entry.first & 255;
-      auto &mid = mids[hi];
-      if (!mid)
-        mid = top_.mids[hi] ? std::make_shared<Mid>(*top_.mids[hi])
-                            : std::make_shared<Mid>();
-      if (entry.second->empty())
-        mid->leaves[lo] = nullptr;
-      else
-        mid->leaves[lo] = std::move(entry.second);
+  // `parallel_for(n, fn)` runs fn(0..n) (possibly on several threads).
+  template <class ParallelFor> Index Finish(ParallelFor &&parallel_for) {
+    std::vector<uint32_t> his;
+    his.reserve(leaves_.size());
+    {
+      std::vector<uint8_t> seen(kTpchQ3TopCount, 0);
+      for (const auto &entry : leaves_) {
+        const uint32_t hi = entry.first >> 8;
+        if (!seen[hi]) {
+          seen[hi] = 1;
+          his.push_back(hi);
+        }
+      }
     }
-    for (auto &entry : mids)
-      top_.mids[entry.first] = std::move(entry.second);
+    std::vector<std::shared_ptr<Mid>> built(his.size());
+    // Each task owns one mid: it copies the old mid and swaps in the leaves
+    // written to it (leaves_ is only read here).
+    std::vector<std::vector<std::pair<uint32_t, std::shared_ptr<Leaf> *>>> by_hi(
+        kTpchQ3TopCount);
+    for (auto &entry : leaves_)
+      by_hi[entry.first >> 8].emplace_back(entry.first & 255, &entry.second);
+    parallel_for(his.size(), [&](std::size_t t) {
+      const uint32_t hi = his[t];
+      auto mid = top_.mids[hi] ? std::make_shared<Mid>(*top_.mids[hi])
+                               : std::make_shared<Mid>();
+      for (auto &lw : by_hi[hi]) {
+        if ((*lw.second)->empty())
+          mid->leaves[lw.first] = nullptr;
+        else
+          mid->leaves[lw.first] = std::move(*lw.second);
+      }
+      built[t] = std::move(mid);
+    });
+    for (std::size_t t = 0; t < his.size(); ++t)
+      top_.mids[his[t]] = std::move(built[t]);
     leaves_.clear();
     return std::move(top_);
   }
@@ -255,7 +278,7 @@ public:
   using Index = TpchQ3ShardIndex<E>;
   using Leaf = typename Index::Leaf;
 
-  TpchQ3ShardBuilder() : shards_(65536) {}
+  TpchQ3ShardBuilder() : shards_(std::size_t{1} << kTpchQ3ShardBits) {}
   void Add(const E &value) { shards_[TpchQ3ShardOf(value.key)].push_back(value); }
   void Sort() {
     for (auto &shard : shards_)
@@ -276,7 +299,7 @@ public:
   }
   Index Finish() {
     Index index;
-    for (uint32_t hi = 0; hi < 256; ++hi) {
+    for (uint32_t hi = 0; hi < kTpchQ3TopCount; ++hi) {
       std::shared_ptr<typename Index::Mid> mid;
       for (uint32_t lo = 0; lo < 256; ++lo) {
         auto &shard = shards_[(hi << 8) | lo];
@@ -336,8 +359,8 @@ struct TpchQ3Side {
 // bound cannot beat the current 10th result.
 // ---------------------------------------------------------------------------
 constexpr uint32_t kTpchQ3BinShift = 4;
-constexpr std::size_t kTpchQ3ChunkMax = 1024;
-constexpr std::size_t kTpchQ3ChunkTarget = 768;
+constexpr std::size_t kTpchQ3ChunkMax = 256;
+constexpr std::size_t kTpchQ3ChunkTarget = 128;
 
 struct TpchQ3Entry {
   int64_t bound = 0;

@@ -334,13 +334,226 @@ struct TpchQ20SupplierOverlay {
   TpchQ20SupplierRecord record;
 };
 
+// A pair's series as seen through the overlay layers.
+struct TpchQ20SeriesView {
+  const TpchQ20DateQuantity *data = nullptr;
+  std::size_t n = 0;
+  bool found = false; // false: the overlay has no entry (look in the base)
+  const TpchQ20DateQuantity *begin() const { return data; }
+  const TpchQ20DateQuantity *end() const { return data + n; }
+};
+
+// One immutable overlay layer: pair_key -> complete series (possibly empty,
+// which shadows the base), an open-addressing table over flat storage.
+class TpchQ20SeriesLayer {
+public:
+  class Builder {
+  public:
+    void Add(uint64_t key, const TpchQ20DateQuantity *d, std::size_t n) {
+      keys_.push_back(key);
+      off_.push_back(static_cast<uint32_t>(data_.size()));
+      data_.insert(data_.end(), d, d + n);
+    }
+    std::shared_ptr<const TpchQ20SeriesLayer> Finish() {
+      auto layer = std::make_shared<TpchQ20SeriesLayer>();
+      std::size_t cap = 16;
+      while (cap < keys_.size() * 2)
+        cap <<= 1;
+      layer->mask_ = cap - 1;
+      layer->table_.assign(cap, Slot{kEmpty, 0, 0});
+      off_.push_back(static_cast<uint32_t>(data_.size()));
+      for (std::size_t i = 0; i < keys_.size(); ++i) {
+        std::size_t h = Hash(keys_[i]) & layer->mask_;
+        while (layer->table_[h].key != kEmpty)
+          h = (h + 1) & layer->mask_;
+        layer->table_[h] = {keys_[i], off_[i], off_[i + 1] - off_[i]};
+      }
+      layer->count_ = keys_.size();
+      layer->key_ = std::move(keys_);
+      layer->off_ = std::move(off_);
+      layer->data_ = std::move(data_);
+      return layer;
+    }
+    void Reserve(std::size_t keys, std::size_t entries) {
+      keys_.reserve(keys);
+      off_.reserve(keys + 1);
+      data_.reserve(entries);
+    }
+
+  private:
+    std::vector<uint64_t> keys_;
+    std::vector<uint32_t> off_;
+    std::vector<TpchQ20DateQuantity> data_;
+  };
+
+  TpchQ20SeriesView Find(uint64_t key) const {
+    std::size_t h = Hash(key) & mask_;
+    for (;;) {
+      const Slot &sl = table_[h];
+      if (sl.key == key)
+        return {data_.data() + sl.off, static_cast<std::size_t>(sl.n), true};
+      if (sl.key == kEmpty)
+        return {};
+      h = (h + 1) & mask_;
+    }
+  }
+  // Two-stage software prefetch for a coming Find: the table slot, then (once
+  // the slot is cached) the series data it points to.
+  void PrefetchSlot(uint64_t key) const {
+    __builtin_prefetch(&table_[Hash(key) & mask_]);
+  }
+  void PrefetchData(uint64_t key) const {
+    std::size_t h = Hash(key) & mask_;
+    for (;;) {
+      const Slot &sl = table_[h];
+      if (sl.key == key) {
+        __builtin_prefetch(data_.data() + sl.off);
+        return;
+      }
+      if (sl.key == kEmpty)
+        return;
+      h = (h + 1) & mask_;
+    }
+  }
+  std::size_t Size() const { return count_; }
+  std::size_t EntryCount() const { return data_.size(); }
+  template <typename F> void ForEach(F &&f) const {
+    for (std::size_t i = 0; i < key_.size(); ++i)
+      f(key_[i], TpchQ20SeriesView{data_.data() + off_[i],
+                                   static_cast<std::size_t>(off_[i + 1] - off_[i]),
+                                   true});
+  }
+
+private:
+  static constexpr uint64_t kEmpty = ~0ULL;
+  static std::size_t Hash(uint64_t k) {
+    return static_cast<std::size_t>((k * 0x9E3779B97F4A7C15ULL) >> 20);
+  }
+  std::size_t mask_ = 0;
+  std::size_t count_ = 0;
+  struct Slot {
+    uint64_t key;
+    uint32_t off;
+    uint32_t n;
+  };
+  std::vector<Slot> table_;
+  std::vector<uint64_t> key_;
+  std::vector<uint32_t> off_;
+  std::vector<TpchQ20DateQuantity> data_;
+};
+
+// Persistent layered overlay of changed series (an LSM: newest layer first).
+// A commit adds one layer holding only the pairs it touched; adjacent layers
+// of comparable size are merged, so the work per commit is proportional to the
+// commit's changes (amortized, O(log) rewrites per entry) and the layer count
+// stays logarithmic in the overlay size.  Published states share layers.
+class TpchQ20SeriesOverlay {
+public:
+  TpchQ20SeriesView Find(uint64_t key) const {
+    if (filter_ && !FilterTest(key))
+      return {};
+    for (const auto &layer : layers_) {
+      const auto v = layer->Find(key);
+      if (v.found)
+        return v;
+    }
+    return {};
+  }
+  bool Empty() const { return layers_.empty(); }
+  void PrefetchSlot(uint64_t key) const {
+    if (!FilterTest(key))
+      return;
+    for (const auto &layer : layers_)
+      layer->PrefetchSlot(key);
+  }
+  void PrefetchData(uint64_t key) const {
+    if (!FilterTest(key))
+      return;
+    for (const auto &layer : layers_)
+      layer->PrefetchData(key);
+  }
+  std::size_t Size() const {
+    std::size_t n = 0;
+    for (const auto &layer : layers_)
+      n += layer->Size();
+    return n;
+  }
+  // Every overlaid key (may repeat across layers).
+  template <typename F> void ForEachKey(F &&f) const {
+    for (const auto &layer : layers_)
+      layer->ForEach([&](uint64_t k, const TpchQ20SeriesView &) { f(k); });
+  }
+  void Push(std::shared_ptr<const TpchQ20SeriesLayer> layer) {
+    AddToFilter(*layer);
+    layers_.insert(layers_.begin(), std::move(layer));
+    while (layers_.size() >= 2 &&
+           layers_[1]->Size() <= 2 * layers_[0]->Size()) {
+      auto merged = Merge(*layers_[0], *layers_[1]);
+      layers_.erase(layers_.begin());
+      layers_[0] = std::move(merged);
+    }
+  }
+
+private:
+  // One-hash bit filter over every overlaid key (~8+ bits per key, L2-sized
+  // for typical overlays): most reads probe keys the overlay does not hold.
+  static std::size_t FilterHash(uint64_t k) {
+    return static_cast<std::size_t>((k * 0xC2B2AE3D27D4EB4FULL) >> 17);
+  }
+  bool FilterTest(uint64_t key) const {
+    const std::size_t h = FilterHash(key) & filter_mask_;
+    return ((*filter_)[h >> 6] >> (h & 63)) & 1;
+  }
+  void AddToFilter(const TpchQ20SeriesLayer &layer) {
+    const std::size_t total = Size() + layer.Size();
+    std::size_t bits = filter_ ? filter_mask_ + 1 : 0;
+    std::shared_ptr<std::vector<uint64_t>> next;
+    if (bits == 0 || total * 8 > bits) {
+      bits = 1024;
+      while (bits < total * 16)
+        bits <<= 1;
+      next = std::make_shared<std::vector<uint64_t>>(bits / 64, 0);
+      filter_mask_ = bits - 1;
+      for (const auto &l : layers_)
+        l->ForEach([&](uint64_t k, const TpchQ20SeriesView &) {
+          const std::size_t h = FilterHash(k) & filter_mask_;
+          (*next)[h >> 6] |= 1ULL << (h & 63);
+        });
+    } else {
+      next = std::make_shared<std::vector<uint64_t>>(*filter_);
+    }
+    layer.ForEach([&](uint64_t k, const TpchQ20SeriesView &) {
+      const std::size_t h = FilterHash(k) & filter_mask_;
+      (*next)[h >> 6] |= 1ULL << (h & 63);
+    });
+    filter_ = std::move(next);
+  }
+  static std::shared_ptr<const TpchQ20SeriesLayer>
+  Merge(const TpchQ20SeriesLayer &newer, const TpchQ20SeriesLayer &older) {
+    TpchQ20SeriesLayer::Builder b;
+    b.Reserve(newer.Size() + older.Size(),
+              newer.EntryCount() + older.EntryCount());
+    newer.ForEach([&](uint64_t k, const TpchQ20SeriesView &v) {
+      b.Add(k, v.data, v.n);
+    });
+    older.ForEach([&](uint64_t k, const TpchQ20SeriesView &v) {
+      if (!newer.Find(k).found)
+        b.Add(k, v.data, v.n);
+    });
+    return b.Finish();
+  }
+  std::vector<std::shared_ptr<const TpchQ20SeriesLayer>> layers_;
+  std::shared_ptr<const std::vector<uint64_t>> filter_;
+  std::size_t filter_mask_ = 0;
+};
+
 // One published version: the shared immutable base plus small copy-on-write
 // overlays holding every pair / part / supplier changed since the base.
 struct TpchQ20State {
   std::shared_ptr<const TpchQ20Base> base;
   // pair_key -> complete current series (empty vector = no lineitems), sorted
   // by shipdate.
-  TpchQ20CowMap<std::vector<TpchQ20DateQuantity>> series;
+  TpchQ20SeriesOverlay series;
   // partkey -> complete current partsupp list (empty = none).
   TpchQ20CowMap<std::vector<TpchQ20PsPair>> partsupps;
   TpchQ20CowMap<TpchQ20PartOverlay> parts;

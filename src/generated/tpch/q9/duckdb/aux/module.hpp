@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <climits>
 #include <cstdint>
@@ -216,6 +217,94 @@ struct Q9PartRecord {
   std::vector<Q9ExtraAgg> extras;
 };
 
+// Part records of one profit slot, sorted by partkey. Records are shared_ptr'd
+// so copying a slot (every maintenance write copies each slot it touches out of
+// the published image) copies only pointers; Mutable() clones just the records
+// a write changes. Bulk mode (build) appends through a hash index; FinishBulk()
+// sorts and drops it.
+class Q9PartMap {
+public:
+  using Entry = std::pair<int64_t, std::shared_ptr<Q9PartRecord>>;
+
+  std::vector<Entry>::const_iterator begin() const { return entries.begin(); }
+  std::vector<Entry>::const_iterator end() const { return entries.end(); }
+  std::size_t size() const { return entries.size(); }
+  bool empty() const { return entries.empty(); }
+  void clear() {
+    entries.clear();
+    bulk_index.clear();
+  }
+
+  void BeginBulk() { bulk = true; }
+  void FinishBulk() {
+    if (!bulk)
+      return;
+    bulk = false;
+    bulk_index.clear();
+    bulk_index.rehash(0);
+    std::sort(entries.begin(), entries.end(),
+              [](const Entry &a, const Entry &b) { return a.first < b.first; });
+  }
+
+  const Q9PartRecord *Find(int64_t partkey) const {
+    const auto it = Lower(partkey);
+    return it != entries.end() && it->first == partkey ? it->second.get()
+                                                       : nullptr;
+  }
+  // The record for writing (cloned if a published image shares it); null if absent.
+  Q9PartRecord *Mutable(int64_t partkey) {
+    if (bulk) {
+      const auto it = bulk_index.find(partkey);
+      return it == bulk_index.end() ? nullptr : Own(entries[it->second].second);
+    }
+    const auto it = Lower(partkey);
+    return it != entries.end() && it->first == partkey ? Own(it->second)
+                                                       : nullptr;
+  }
+  // The record for writing, created empty if absent.
+  Q9PartRecord &Get(int64_t partkey) {
+    if (bulk) {
+      const auto [it, inserted] = bulk_index.emplace(partkey, entries.size());
+      if (inserted)
+        entries.emplace_back(partkey, std::make_shared<Q9PartRecord>());
+      return *Own(entries[it->second].second);
+    }
+    auto it = Lower(partkey);
+    if (it == entries.end() || it->first != partkey)
+      it = entries.insert(it, {partkey, std::make_shared<Q9PartRecord>()});
+    return *Own(it->second);
+  }
+  void Emplace(int64_t partkey, Q9PartRecord record) {
+    Get(partkey) = std::move(record);
+  }
+  void Erase(int64_t partkey) {
+    const auto it = Lower(partkey);
+    if (it != entries.end() && it->first == partkey)
+      entries.erase(it);
+  }
+
+private:
+  std::vector<Entry>::const_iterator Lower(int64_t partkey) const {
+    return std::lower_bound(
+        entries.begin(), entries.end(), partkey,
+        [](const Entry &e, int64_t k) { return e.first < k; });
+  }
+  std::vector<Entry>::iterator Lower(int64_t partkey) {
+    return std::lower_bound(
+        entries.begin(), entries.end(), partkey,
+        [](const Entry &e, int64_t k) { return e.first < k; });
+  }
+  static Q9PartRecord *Own(std::shared_ptr<Q9PartRecord> &rec) {
+    if (rec.use_count() > 1)
+      rec = std::make_shared<Q9PartRecord>(*rec);
+    return rec.get();
+  }
+
+  std::vector<Entry> entries;
+  bool bulk = false;
+  std::unordered_map<int64_t, std::size_t> bulk_index;
+};
+
 // ── Copy-on-write paged dense array ─────────────────────────────────────────
 // Pages are shared_ptr'd: copying the array copies only the page directory, and
 // Set() clones a page only when it is shared with a published image.
@@ -264,7 +353,7 @@ struct Q9TokenCube;
 // ── State structures ────────────────────────────────────────────────────────
 struct TpchQ9State {
   struct PartProfitPartition {
-    std::unordered_map<int64_t, Q9PartRecord> parts;
+    Q9PartMap parts;
   };
 
   // Internal partition slots (not published individually)
@@ -498,13 +587,20 @@ struct TpchQ9State {
   }
 
   Q9PartRecord &PartRecord(int64_t partkey) {
-    return GetPartition(partkey).parts[partkey];
+    return GetPartition(partkey).parts.Get(partkey);
   }
 
   const Q9PartRecord *FindPart(int64_t partkey) const {
-    const auto &partition = GetPartition(partkey);
-    auto it = partition.parts.find(partkey);
-    return it == partition.parts.end() ? nullptr : &it->second;
+    return GetPartition(partkey).parts.Find(partkey);
+  }
+
+  void BeginBulkParts() {
+    for (auto &partition : profit_partitions)
+      partition.parts.BeginBulk();
+  }
+  void FinishBulkParts() {
+    for (auto &partition : profit_partitions)
+      partition.parts.FinishBulk();
   }
 
   static Q9ProfitCell *FindCell(std::vector<Q9ProfitCell> &cells,
@@ -538,6 +634,28 @@ struct TpchQ9State {
                          int64_t rev, int64_t qty);
   // Add (sign=+1) / remove (sign=-1) one pair's contribution to the record's
   // cells and the token cube, resolving supplier nation / cost from `side`.
+  // Signed cell delta of one part, gathered during maintenance and netted
+  // before it is applied to the part's cells and the token cube.
+  struct CellDelta {
+    int64_t partkey;
+    int32_t nation;
+    int32_t year;
+    int64_t delta;
+  };
+  // One pair's per-year profit (rev - cost*qty) under its supplier's nation.
+  struct PairSnap {
+    int32_t nation = 0;
+    int64_t v[Q9Pair::kYears] = {};
+  };
+  // Fills `snap` if the pair currently contributes (part, supplier and partsupp
+  // exist); out-of-range-year extras are appended to extras_out scaled by sign.
+  static bool PairSnapshot(int64_t partkey, const Q9PartRecord &rec,
+                           int32_t suppkey, int sign, const TpchQ9State &side,
+                           PairSnap &snap, std::vector<CellDelta> &extras_out);
+  // Nets the gathered deltas per (part, nation, year) and applies them to the
+  // parts' cells (per slot, on up to `workers` threads) and to the cube.
+  void ApplyNetCellDeltas(std::vector<std::vector<CellDelta>> &chunks,
+                          std::size_t workers);
   void ApplyPairContribution(int64_t partkey, Q9PartRecord &rec,
                              const std::vector<std::string> &tokens,
                              int32_t suppkey, int sign,

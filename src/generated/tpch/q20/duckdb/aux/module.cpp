@@ -642,10 +642,10 @@ bool TpchQ20State::FindSupplier(int64_t suppkey,
 bool TpchQ20State::PairWindowSum(uint64_t pair_key, int32_t lo, int32_t hi,
                                  int64_t &sum) const {
   if (!series.Empty()) {
-    if (const auto *ov = series.Find(pair_key)) {
+    if (const auto ov = series.Find(pair_key); ov.found) {
       sum = 0;
       bool has = false;
-      for (const auto &e : *ov) {
+      for (const auto &e : ov) {
         if (e.shipdate_days < lo)
           continue;
         if (e.shipdate_days >= hi)
@@ -694,7 +694,7 @@ std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state) {
 
   // series (merged, ascending key)
   std::vector<uint64_t> keys(base.series_key.begin(), base.series_key.end());
-  state.series.ForEach([&](uint64_t k, const auto &) { keys.push_back(k); });
+  state.series.ForEachKey([&](uint64_t k) { keys.push_back(k); });
   std::sort(keys.begin(), keys.end());
   keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
   struct SeriesOut {
@@ -704,8 +704,8 @@ std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state) {
   std::vector<SeriesOut> series_out;
   for (const uint64_t k : keys) {
     std::vector<TpchQ20DateQuantity> entries;
-    if (const auto *ov = state.series.Find(k)) {
-      entries = *ov;
+    if (const auto ov = state.series.Find(k); ov.found) {
+      entries.assign(ov.begin(), ov.end());
     } else {
       const uint32_t idx = base.FindSeries(k);
       if (idx != TpchQ20Base::kNoSeries)
@@ -1203,49 +1203,70 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
     return outcome;
   }
 
-  // Overlay compaction: past this bound the cheapest exact "compaction" is a
-  // fresh bulk build (the overlays hold changes since the base image).
-  constexpr std::size_t kMaxOverlayWeight = 400000;
-  if (parent->OverlayWeight() + delta_count > kMaxOverlayWeight) {
+  // Backstop only: the series overlay is a layered LSM merged per commit
+  // (cost proportional to recent changes), so this bound is far above what
+  // RF streams reach; it exists to cap memory when the overlay approaches the
+  // size of the base image itself.
+  const std::size_t max_overlay_weight =
+      std::max<std::size_t>(4000000, parent->base->series_key.size() / 2);
+  if (parent->OverlayWeight() + delta_count > max_overlay_weight) {
     core::FinishRebuildAll(outcome);
     return outcome;
   }
 
-  // The staged state shares every overlay shard with its parent; only the
-  // shards touched below are cloned, so published versions stay immutable.
+  // The staged state shares every overlay layer/shard with its parent; the
+  // series changes below go into one new layer, and only touched partsupp /
+  // part / supplier shards are cloned, so published versions stay immutable.
   auto next = std::make_shared<TpchQ20State>(*parent);
   const TpchQ20Base &base = *next->base;
 
-  // Lineitem deltas: per-pair series, copied from base on first touch.
-  for (const auto &delta : buffer.LineitemDeltas()) {
-    const uint64_t pair_key = MakePairKey(delta.partkey, delta.suppkey);
-    bool inserted = false;
-    auto &series = next->series.Mutable(pair_key, &inserted);
-    if (inserted) {
-      const uint32_t idx = base.FindSeries(pair_key);
-      if (idx != TpchQ20Base::kNoSeries)
-        series = BaseSeriesCopy(base, idx);
-    }
-    if (delta.sign > 0) {
-      const auto pos = std::upper_bound(
-          series.begin(), series.end(), delta.shipdate_days,
-          [](int32_t d, const TpchQ20DateQuantity &e) {
-            return d < e.shipdate_days;
-          });
-      series.insert(pos, {delta.shipdate_days, delta.quantity_raw});
-    } else {
-      auto it = std::lower_bound(
-          series.begin(), series.end(), delta.shipdate_days,
-          [](const TpchQ20DateQuantity &e, int32_t d) {
-            return e.shipdate_days < d;
-          });
-      for (; it != series.end() && it->shipdate_days == delta.shipdate_days;
-           ++it) {
-        if (it->quantity_raw == delta.quantity_raw) {
-          series.erase(it);
-          break;
+  // Lineitem deltas: per-pair complete series, copied from the overlay (or
+  // base) on first touch, collected into one new overlay layer.
+  {
+    std::unordered_map<uint64_t, std::vector<TpchQ20DateQuantity>> touched;
+    touched.reserve(buffer.LineitemDeltas().size());
+    for (const auto &delta : buffer.LineitemDeltas()) {
+      const uint64_t pair_key = MakePairKey(delta.partkey, delta.suppkey);
+      auto [it0, inserted] = touched.try_emplace(pair_key);
+      auto &series = it0->second;
+      if (inserted) {
+        const auto cur = parent->series.Find(pair_key);
+        if (cur.found) {
+          series.assign(cur.begin(), cur.end());
+        } else {
+          const uint32_t idx = base.FindSeries(pair_key);
+          if (idx != TpchQ20Base::kNoSeries)
+            series = BaseSeriesCopy(base, idx);
         }
       }
+      if (delta.sign > 0) {
+        const auto pos = std::upper_bound(
+            series.begin(), series.end(), delta.shipdate_days,
+            [](int32_t d, const TpchQ20DateQuantity &e) {
+              return d < e.shipdate_days;
+            });
+        series.insert(pos, {delta.shipdate_days, delta.quantity_raw});
+      } else {
+        auto it = std::lower_bound(
+            series.begin(), series.end(), delta.shipdate_days,
+            [](const TpchQ20DateQuantity &e, int32_t d) {
+              return e.shipdate_days < d;
+            });
+        for (; it != series.end() && it->shipdate_days == delta.shipdate_days;
+             ++it) {
+          if (it->quantity_raw == delta.quantity_raw) {
+            series.erase(it);
+            break;
+          }
+        }
+      }
+    }
+    if (!touched.empty()) {
+      TpchQ20SeriesLayer::Builder builder;
+      builder.Reserve(touched.size(), touched.size() * 4);
+      for (const auto &[key, vec] : touched)
+        builder.Add(key, vec.data(), vec.size());
+      next->series.Push(builder.Finish());
     }
   }
 
@@ -1586,10 +1607,10 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
     const uint64_t pair_key = MakePairKey(partkey, suppkey);
     int64_t sum = 0;
     bool has = false;
-    const std::vector<TpchQ20DateQuantity> *ov =
-        overlay_series ? state.series.Find(pair_key) : nullptr;
-    if (ov) {
-      for (const auto &e : *ov) {
+    const TpchQ20SeriesView ov =
+        overlay_series ? state.series.Find(pair_key) : TpchQ20SeriesView{};
+    if (ov.found) {
+      for (const auto &e : ov) {
         if (e.shipdate_days < start_date_days)
           continue;
         if (e.shipdate_days >= end_date_days)
@@ -1620,6 +1641,16 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
           pairs[i + kAhead / 2].series_idx != TpchQ20Base::kNoSeries)
         __builtin_prefetch(base.series_entries.data() +
                            base.series_off[pairs[i + kAhead / 2].series_idx]);
+      if (overlay_series) {
+        if (i + kAhead < e) {
+          const auto &q = pairs[i + kAhead];
+          state.series.PrefetchSlot(MakePairKey(base.name_partkey[q.rank], q.suppkey));
+        }
+        if (i + kAhead / 2 < e) {
+          const auto &q = pairs[i + kAhead / 2];
+          state.series.PrefetchData(MakePairKey(base.name_partkey[q.rank], q.suppkey));
+        }
+      }
       const auto &p = pairs[i];
       if (!keep(p.suppkey) || !rank_ok(p.rank))
         continue;

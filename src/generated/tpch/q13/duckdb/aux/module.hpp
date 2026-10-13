@@ -120,16 +120,28 @@ struct TpchQ13Vocab {
   std::unordered_map<std::string, uint16_t> id;
 };
 
-// Orders (custkey, comment) of one shard.  Deleted orders are tombstoned and
-// the shard is compacted locally once more than half is dead.
-struct TpchQ13OrderShard {
+// A run of orders (custkey, comment) with its own blob and token index.
+// Order indices inside a segment (and in its postings) are segment-local.
+struct TpchQ13OrderSeg {
   std::vector<int64_t> custkey;
   std::vector<uint32_t> start;
   std::vector<uint32_t> len;
   std::string blob;
+  TpchQ13TokIndex ix;
+};
+
+// Orders of one shard = an immutable shared `base` segment (cloned never, only
+// shared between published versions) followed by a small per-version `tail`
+// segment of recently appended orders.  `alive` covers base then tail orders.
+// Deleted orders are tombstoned; the shard is compacted locally once more than
+// half is dead, and the tail is folded into the base when it grows large.
+struct TpchQ13OrderShard {
+  std::shared_ptr<const TpchQ13OrderSeg> base;  // may be null
+  TpchQ13OrderSeg tail;
   std::vector<uint8_t> alive;
   uint32_t dead = 0;
-  TpchQ13TokIndex ix;
+  std::size_t BaseSize() const { return base ? base->custkey.size() : 0; }
+  std::size_t Size() const { return BaseSize() + tail.custkey.size(); }
 };
 
 // Per-customer data of one shard, indexed by custkey >> bits.

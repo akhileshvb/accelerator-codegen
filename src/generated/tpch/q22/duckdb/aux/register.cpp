@@ -120,6 +120,7 @@ template <typename T> struct TypedCol {
 template <typename Callback>
 void ScanTypedChunks(::duckdb::Connection &connection_p, const std::string &sql,
                      Callback &&callback) {
+  auto scan_lock = LockScan(connection_p);
   auto &connection = ScanConnection(connection_p);
   auto result = connection.SendQuery(sql);
   if (!result || result->HasError())

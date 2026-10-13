@@ -133,6 +133,7 @@ struct TpchQ13Scan : TpchQ13InitialScan {
   // per row).
   void ScanOrdersView(const std::function<void(int64_t, const char *, std::size_t)>
                           &consumer) override {
+    auto scan_lock = LockScan(connection);
     auto &conn = ScanConnection(connection);
     auto result = conn.SendQuery(
         "SELECT o_custkey, o_comment FROM orders "

@@ -322,16 +322,23 @@ bool TokenizeOrder(const char *d, std::size_t n, Intern &intern,
 }
 
 template <class DfAdd>
-void ForgetIndex(TpchQ13TokIndex &ix, DfAdd &df_add) {
+void ForgetDf(const TpchQ13TokIndex &ix, DfAdd &df_add) {
   for (std::size_t k = 0; k < ix.toks.size(); ++k)
     df_add(ix.toks[k], -static_cast<int64_t>(ix.off[k + 1] - ix.off[k]));
+}
+
+template <class DfAdd>
+void ForgetIndex(TpchQ13TokIndex &ix, DfAdd &df_add) {
+  ForgetDf(ix, df_add);
   ix = TpchQ13TokIndex{};
 }
 
-// Indexes the orders [ix.covered, N) of a shard (all of it after a compaction):
-// merges their (token, order) pairs into the shard's postings.
+// Indexes the orders [ix.covered, N) of a segment (all of it after a
+// compaction): merges their (token, order) pairs into the segment's postings.
+// `alive` is the liveness of the segment's orders (dead ones are not indexed).
 template <class Intern, class DfAdd>
-void IndexShard(TpchQ13OrderShard &o, Intern &intern, DfAdd &df_add) {
+void IndexSeg(TpchQ13OrderSeg &o, const uint8_t *alive, Intern &intern,
+              DfAdd &df_add) {
   TpchQ13TokIndex &ix = o.ix;
   const std::size_t N = o.custkey.size();
   if (ix.disabled || ix.covered >= N)
@@ -344,7 +351,7 @@ void IndexShard(TpchQ13OrderShard &o, Intern &intern, DfAdd &df_add) {
   std::vector<uint32_t> keys;
   std::vector<uint16_t> ids;
   for (std::size_t j = ix.covered; j < N; ++j) {
-    if (!o.alive[j])
+    if (!alive[j])
       continue;
     if (!TokenizeOrder(o.blob.data() + o.start[j], o.len[j], intern, ids))
       ix.always.push_back(static_cast<uint16_t>(j));
@@ -387,6 +394,83 @@ void IndexShard(TpchQ13OrderShard &o, Intern &intern, DfAdd &df_add) {
   ix.ords.shrink_to_fit();
   ix.always.shrink_to_fit();
   ix.covered = static_cast<uint32_t>(N);
+}
+
+// Folds the (fully indexed) tail into the base: a new immutable segment with
+// the concatenated orders and the merged postings (no re-tokenizing).  The
+// shard's `alive` is unchanged (base orders then tail orders, same order).
+template <class DfAdd>
+void MergeTail(TpchQ13OrderShard &o, DfAdd &df_add) {
+  if (o.tail.custkey.empty())
+    return;
+  if (!o.base) {
+    o.base = std::make_shared<const TpchQ13OrderSeg>(std::move(o.tail));
+    o.tail = TpchQ13OrderSeg{};
+    return;
+  }
+  const TpchQ13OrderSeg &b = *o.base;
+  TpchQ13OrderSeg &t = o.tail;
+  auto n = std::make_shared<TpchQ13OrderSeg>();
+  const uint32_t nb = static_cast<uint32_t>(b.custkey.size());
+  const std::size_t total = b.custkey.size() + t.custkey.size();
+  n->custkey.reserve(total);
+  n->start.reserve(total);
+  n->len.reserve(total);
+  n->custkey.insert(n->custkey.end(), b.custkey.begin(), b.custkey.end());
+  n->custkey.insert(n->custkey.end(), t.custkey.begin(), t.custkey.end());
+  n->start.insert(n->start.end(), b.start.begin(), b.start.end());
+  const uint32_t boff = static_cast<uint32_t>(b.blob.size());
+  for (const uint32_t st : t.start)
+    n->start.push_back(st + boff);
+  n->len.insert(n->len.end(), b.len.begin(), b.len.end());
+  n->len.insert(n->len.end(), t.len.begin(), t.len.end());
+  n->blob.reserve(b.blob.size() + t.blob.size());
+  n->blob.append(b.blob);
+  n->blob.append(t.blob);
+  TpchQ13TokIndex &ix = n->ix;
+  if (b.ix.disabled || t.ix.disabled || total > kMaxIndexedOrders ||
+      b.ix.covered != b.custkey.size() || t.ix.covered != t.custkey.size()) {
+    ForgetDf(b.ix, df_add);
+    ForgetDf(t.ix, df_add);
+    ix.disabled = true;
+  } else {
+    const TpchQ13TokIndex &bi = b.ix, &ti = t.ix;
+    ix.ords.reserve(bi.ords.size() + ti.ords.size());
+    std::size_t i = 0, j = 0;
+    while (i < bi.toks.size() || j < ti.toks.size()) {
+      const bool hb = i < bi.toks.size(), ht = j < ti.toks.size();
+      const uint16_t tok = !ht || (hb && bi.toks[i] <= ti.toks[j]) ? bi.toks[i]
+                                                                  : ti.toks[j];
+      ix.toks.push_back(tok);
+      ix.off.push_back(static_cast<uint32_t>(ix.ords.size()));
+      if (hb && bi.toks[i] == tok) {
+        ix.ords.insert(ix.ords.end(), bi.ords.begin() + bi.off[i],
+                       bi.ords.begin() + bi.off[i + 1]);
+        ++i;
+      }
+      if (ht && ti.toks[j] == tok) {
+        for (uint32_t p = ti.off[j]; p < ti.off[j + 1]; ++p)
+          ix.ords.push_back(static_cast<uint16_t>(ti.ords[p] + nb));
+        ++j;
+      }
+    }
+    ix.off.push_back(static_cast<uint32_t>(ix.ords.size()));
+    ix.always = bi.always;
+    for (const uint16_t a : ti.always)
+      ix.always.push_back(static_cast<uint16_t>(a + nb));
+    ix.covered = static_cast<uint32_t>(total);
+  }
+  o.base = std::move(n);
+  o.tail = TpchQ13OrderSeg{};
+}
+
+// Tail orders needed before a tail is folded into the base (testing knob).
+std::size_t TailMergeMin() {
+  static const std::size_t v = [] {
+    const char *e = std::getenv("ACCEL_Q13_TAIL_MERGE_MIN");
+    return e ? static_cast<std::size_t>(std::atoll(e)) : std::size_t{16};
+  }();
+  return v;
 }
 
 // Mutable working copy of a state.  Only shards touched through O()/C() are
@@ -456,9 +540,15 @@ struct Mut {
     {  // index the orders appended since the shards were last indexed
       auto intern = [&](std::string_view t) { return Intern(t); };
       auto df_add = [&](uint16_t t, int64_t d) { DfAdd(t, d); };
-      for (std::size_t s = 0; s < kTpchQ13Shards; ++s)
-        if (mo[s])
-          IndexShard(*mo[s], intern, df_add);
+      for (std::size_t s = 0; s < kTpchQ13Shards; ++s) {
+        if (!mo[s])
+          continue;
+        TpchQ13OrderShard &o = *mo[s];
+        IndexSeg(o.tail, o.alive.data() + o.BaseSize(), intern, df_add);
+        const std::size_t tn = o.tail.custkey.size();
+        if (tn > 0 && (!o.base || (tn > TailMergeMin() && tn * 8 > o.BaseSize())))
+          MergeTail(o, df_add);
+      }
       if (vw)
         st.vocab = std::move(vw);
     }
@@ -487,24 +577,35 @@ void EnsureCust(TpchQ13CustShard &c, std::size_t lc, std::size_t np) {
       m.resize(c.total.size(), 0);
 }
 
+// Rewrites the live orders of base and tail into a fresh tail (no base); the
+// caller has forgotten the old indexes and Finish() re-indexes/folds the tail.
 void CompactOrders(TpchQ13OrderShard &o) {
-  TpchQ13OrderShard n;
-  const std::size_t live = o.custkey.size() - o.dead;
+  TpchQ13OrderSeg n;
+  std::vector<uint8_t> alive;
+  const std::size_t live = o.Size() - o.dead;
   n.custkey.reserve(live);
   n.start.reserve(live);
   n.len.reserve(live);
-  n.alive.reserve(live);
-  n.blob.reserve(o.blob.size() / 2 + 64);
-  for (std::size_t i = 0; i < o.custkey.size(); ++i) {
-    if (!o.alive[i])
-      continue;
-    n.custkey.push_back(o.custkey[i]);
-    n.start.push_back(static_cast<uint32_t>(n.blob.size()));
-    n.len.push_back(o.len[i]);
-    n.blob.append(o.blob, o.start[i], o.len[i]);
-    n.alive.push_back(1);
-  }
-  o = std::move(n);
+  alive.assign(live, 1);
+  n.blob.reserve(o.base ? o.base->blob.size() / 2 + o.tail.blob.size() + 64 : 64);
+  std::size_t g = 0;
+  auto take = [&](const TpchQ13OrderSeg &sg) {
+    for (std::size_t i = 0; i < sg.custkey.size(); ++i, ++g) {
+      if (!o.alive[g])
+        continue;
+      n.custkey.push_back(sg.custkey[i]);
+      n.start.push_back(static_cast<uint32_t>(n.blob.size()));
+      n.len.push_back(sg.len[i]);
+      n.blob.append(sg.blob, sg.start[i], sg.len[i]);
+    }
+  };
+  if (o.base)
+    take(*o.base);
+  take(o.tail);
+  o.base.reset();
+  o.tail = std::move(n);
+  o.alive = std::move(alive);
+  o.dead = 0;
 }
 
 // c_count is (#customer rows with this key) * (#non-matching orders): the LEFT
@@ -533,32 +634,41 @@ bool ApplyOrder(Mut &m, int64_t ck, std::string_view comment, int sign,
   TpchQ13OrderShard &o = m.O(s);
   m.st.live_orders += sign;
   if (sign > 0) {
-    o.custkey.push_back(ck);
-    o.start.push_back(static_cast<uint32_t>(o.blob.size()));
-    o.len.push_back(static_cast<uint32_t>(comment.size()));
-    o.blob.append(comment.data(), comment.size());
+    TpchQ13OrderSeg &t = o.tail;
+    t.custkey.push_back(ck);
+    t.start.push_back(static_cast<uint32_t>(t.blob.size()));
+    t.len.push_back(static_cast<uint32_t>(comment.size()));
+    t.blob.append(comment.data(), comment.size());
     o.alive.push_back(1);
   } else {
     bool found = false;
-    for (std::size_t i = o.custkey.size(); i > 0; --i) {
-      const std::size_t idx = i - 1;
-      if (!o.alive[idx] || o.custkey[idx] != ck || o.len[idx] != comment.size())
-        continue;
-      if (std::memcmp(o.blob.data() + o.start[idx], comment.data(),
-                      comment.size()) != 0)
-        continue;
-      o.alive[idx] = 0;
-      ++o.dead;
-      found = true;
-      break;
-    }
+    // Newest first: the tail, then the base.  `goff` = global index of sg[0].
+    auto find_in = [&](const TpchQ13OrderSeg &sg, std::size_t goff) {
+      const int64_t *ckv = sg.custkey.data();
+      for (std::size_t i = sg.custkey.size(); i > 0; --i) {
+        const std::size_t idx = i - 1;
+        if (ckv[idx] != ck || !o.alive[goff + idx] || sg.len[idx] != comment.size())
+          continue;
+        if (std::memcmp(sg.blob.data() + sg.start[idx], comment.data(),
+                        comment.size()) != 0)
+          continue;
+        o.alive[goff + idx] = 0;
+        ++o.dead;
+        return true;
+      }
+      return false;
+    };
+    found = find_in(o.tail, o.BaseSize()) ||
+            (o.base && find_in(*o.base, 0));
     if (!found) {
       m.st.live_orders -= sign;
       return false;
     }
-    if (o.dead > 32 && static_cast<std::size_t>(o.dead) * 2 > o.custkey.size()) {
+    if (o.dead > 32 && static_cast<std::size_t>(o.dead) * 2 > o.Size()) {
       auto df_add = [&](uint16_t t, int64_t d) { m.DfAdd(t, d); };
-      ForgetIndex(o.ix, df_add);
+      if (o.base)
+        ForgetDf(o.base->ix, df_add);
+      ForgetIndex(o.tail.ix, df_add);
       CompactOrders(o);  // re-indexed from scratch by Finish
     }
   }
@@ -605,7 +715,7 @@ bool ApplyCustomer(Mut &m, int64_t ck, int sign, Apply mode) {
 // needle byte compared at 32 positions per step over the whole shard blob; the
 // scan skips to the end of an order after its first hit.
 template <class F>
-void ForOrdersWithLit(const TpchQ13OrderShard &o, const std::string &lit,
+void ForOrdersWithLit(const TpchQ13OrderSeg &o, const std::string &lit,
                       F &&hit) {
   const char *b = o.blob.data();
   const std::size_t n = o.blob.size(), N = o.custkey.size(), m = lit.size();
@@ -727,10 +837,11 @@ void BulkFinish(Mut &m) {
                df[t] += static_cast<int32_t>(d);
              };
              for (std::size_t s = b; s < e; ++s) {
-               TpchQ13OrderShard *o = m.mo[s].get();
+               TpchQ13OrderShard *os = m.mo[s].get();
                TpchQ13CustShard *c = m.mc[s].get();
-               if (!o || !c)
+               if (!os || !c)
                  continue;
+               TpchQ13OrderSeg *o = &os->tail;  // initial load: all in the tail
                const std::size_t N = o->custkey.size();
                mask.assign(N, 0);
                const auto &lits = m.st.lits->lits;
@@ -740,7 +851,7 @@ void BulkFinish(Mut &m) {
                                   [&](std::size_t j) { mask[j] |= bit; });
                }
                for (std::size_t j = 0; j < N; ++j) {
-                 if (!o->alive[j])
+                 if (!os->alive[j])
                    continue;
                  const char *d = o->blob.data() + o->start[j];
                  const std::size_t lc = static_cast<std::size_t>(o->custkey[j]) >>
@@ -749,12 +860,13 @@ void BulkFinish(Mut &m) {
                    if (PatMatch(m.st.patterns[p], mask[j], d, o->len[j]))
                      ++c->match[p][lc];
                }
-               IndexShard(*o, intern, df_add);
+               IndexSeg(*o, os->alive.data(), intern, df_add);
                o->custkey.shrink_to_fit();
                o->start.shrink_to_fit();
                o->len.shrink_to_fit();
-               o->alive.shrink_to_fit();
+               os->alive.shrink_to_fit();
                o->blob.shrink_to_fit();
+               MergeTail(*os, df_add);
                c->total.shrink_to_fit();
                c->mult.shrink_to_fit();
                for (auto &v : c->match)
@@ -942,16 +1054,9 @@ bool PlanIndex(const TpchQ13State &st, const TpchQ13Like &like,
 
 // Customers owning matching orders of one shard: move them between buckets.
 // `m` is zero scratch (left zero), `touched` is empty scratch.
-void QueryShard(const TpchQ13State &st, std::size_t s, const TpchQ13Like &like,
-                bool anchored_scan, const IndexPlan *plan,
-                std::vector<int32_t> &m, std::vector<uint32_t> &touched,
-                std::vector<int64_t> &delta) {
-  const TpchQ13CustShard *c = st.cust[s].get();
-  const TpchQ13OrderShard *o = st.orders[s].get();
-  if (!c || !o)
-    return;
-  if (m.size() < c->total.size())
-    m.resize(c->total.size(), 0);
+void QuerySeg(const TpchQ13OrderSeg *o, const uint8_t *alive,
+              const TpchQ13Like &like, bool anchored_scan, const IndexPlan *plan,
+              std::vector<int32_t> &m, std::vector<uint32_t> &touched) {
   const char *blob = o->blob.data();
   auto count = [&](std::size_t j) {
     const uint32_t lc = static_cast<uint32_t>(
@@ -960,7 +1065,7 @@ void QueryShard(const TpchQ13State &st, std::size_t s, const TpchQ13Like &like,
       touched.push_back(lc);
   };
   auto check = [&](std::size_t j) {
-    if (o->alive[j] && like.Matches(blob + o->start[j], o->len[j]))
+    if (alive[j] && like.Matches(blob + o->start[j], o->len[j]))
       count(j);
   };
   const std::size_t N = o->custkey.size();
@@ -1004,7 +1109,7 @@ void QueryShard(const TpchQ13State &st, std::size_t s, const TpchQ13Like &like,
           const std::size_t j =
               w * 64 + static_cast<unsigned>(__builtin_ctzll(bits));
           bits &= bits - 1;
-          if (j < N && o->alive[j])
+          if (j < N && alive[j])
             count(j);
         }
         bits = alw[w];
@@ -1032,7 +1137,7 @@ void QueryShard(const TpchQ13State &st, std::size_t s, const TpchQ13Like &like,
     }
   } else if (anchored_scan && like.single_lit) {  // a hit is the match
     ForOrdersWithLit(*o, like.anchor, [&](std::size_t j) {
-      if (o->alive[j])
+      if (alive[j])
         count(j);
     });
   } else if (anchored_scan) {
@@ -1041,6 +1146,23 @@ void QueryShard(const TpchQ13State &st, std::size_t s, const TpchQ13Like &like,
     for (std::size_t j = 0; j < N; ++j)
       check(j);
   }
+}
+
+void QueryShard(const TpchQ13State &st, std::size_t s, const TpchQ13Like &like,
+                bool anchored_scan, const IndexPlan *plan,
+                std::vector<int32_t> &m, std::vector<uint32_t> &touched,
+                std::vector<int64_t> &delta) {
+  const TpchQ13CustShard *c = st.cust[s].get();
+  const TpchQ13OrderShard *o = st.orders[s].get();
+  if (!c || !o)
+    return;
+  if (m.size() < c->total.size())
+    m.resize(c->total.size(), 0);
+  if (o->base)
+    QuerySeg(o->base.get(), o->alive.data(), like, anchored_scan, plan, m,
+             touched);
+  QuerySeg(&o->tail, o->alive.data() + o->BaseSize(), like, anchored_scan, plan,
+           m, touched);
   for (const uint32_t lc : touched) {
     if (c->mult[lc] > 0) {
       const int64_t mult = c->mult[lc];
@@ -1230,7 +1352,7 @@ std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state) {
   uint64_t live_orders = 0;
   for (const auto &o : state.orders)
     if (o)
-      live_orders += o->custkey.size() - o->dead;
+      live_orders += o->Size() - o->dead;
   core::WriteImageHeader(writer, kCustomerMagic, kVersion,
                          static_cast<uint32_t>(live_orders));
 
@@ -1258,12 +1380,18 @@ std::vector<uint8_t> EncodeTpchQ13CustomerCounts(const TpchQ13State &state) {
   for (const auto &o : state.orders) {
     if (!o)
       continue;
-    for (std::size_t i = 0; i < o->custkey.size(); ++i) {
-      if (!o->alive[i])
-        continue;
-      writer.I64(o->custkey[i]);
-      writer.String(std::string(o->blob, o->start[i], o->len[i]));
-    }
+    std::size_t g = 0;
+    auto emit = [&](const TpchQ13OrderSeg &sg) {
+      for (std::size_t i = 0; i < sg.custkey.size(); ++i, ++g) {
+        if (!o->alive[g])
+          continue;
+        writer.I64(sg.custkey[i]);
+        writer.String(std::string(sg.blob, sg.start[i], sg.len[i]));
+      }
+    };
+    if (o->base)
+      emit(*o->base);
+    emit(o->tail);
   }
   return writer.bytes;
 }
@@ -1376,11 +1504,11 @@ TpchQ13State TpchQ13Module::BuildState(
           continue;
         if (z.orders > 0) {
           auto &o = m.O(z.shard);
-          o.custkey.reserve(z.orders);
-          o.start.reserve(z.orders);
-          o.len.reserve(z.orders);
+          o.tail.custkey.reserve(z.orders);
+          o.tail.start.reserve(z.orders);
+          o.tail.len.reserve(z.orders);
           o.alive.reserve(z.orders);
-          o.blob.reserve(z.comment_bytes);
+          o.tail.blob.reserve(z.comment_bytes);
         }
         auto &c = m.C(z.shard);
         const std::size_t slots = std::max<uint64_t>(z.cust_slots, 1);
@@ -1420,12 +1548,13 @@ TpchQ13State TpchQ13Module::BuildState(
   if (profiling) {
     uint64_t blob = 0, ids = 0, offs = 0, cust = 0, post = 0, tokoff = 0, matchb = 0;
     for (const auto &o : state.orders)
-      if (o) {
-        blob += o->blob.capacity();
-        ids += o->custkey.capacity() * 8 + o->start.capacity() * 4 +
-               o->len.capacity() * 4 + o->alive.capacity();
-        post += o->ix.ords.capacity() * 2 + o->ix.always.capacity() * 2;
-        tokoff += o->ix.toks.capacity() * 2 + o->ix.off.capacity() * 4;
+      if (o && o->base) {
+        const auto &b = *o->base;
+        blob += b.blob.capacity();
+        ids += b.custkey.capacity() * 8 + b.start.capacity() * 4 +
+               b.len.capacity() * 4 + o->alive.capacity();
+        post += b.ix.ords.capacity() * 2 + b.ix.always.capacity() * 2;
+        tokoff += b.ix.toks.capacity() * 2 + b.ix.off.capacity() * 4;
       }
     for (const auto &c : state.cust)
       if (c) {
@@ -1596,6 +1725,7 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
 
   // Copy-on-write: copies the shard pointer tables and clones only the shards
   // touched by the deltas; the published base is never mutated.
+  CustomTimer t_apply(CustomProfilingEnabled());
   Mut m(*base);
 
   for (const auto &delta : buffer.Deltas()) {
@@ -1609,11 +1739,16 @@ TpchQ13Module::StageMaintenance(core::AuxEngineServices &services,
     }
   }
 
+  const double apply_us = t_apply.us();
+  CustomTimer t_fin(CustomProfilingEnabled());
   outcome.action = core::MaintenanceAction::ApplyDelta;
   outcome.updates.push_back(core::StateImage::Make(
       kId, core::TpchQ13Layout::kCustomerCounts, existing_version,
       MakeStateImage(TpchQ13ImageKind::CustomerCounts,
                      std::make_shared<const TpchQ13State>(m.Finish()))));
+  EmitCustomProfile("maint_apply", apply_us,
+                    static_cast<int64_t>(buffer.Deltas().size()), 0, 0, 0);
+  EmitCustomProfile("maint_finish", t_fin.us(), 0, 0, 0, 0);
   return outcome;
 }
 

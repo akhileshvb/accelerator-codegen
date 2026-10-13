@@ -148,6 +148,7 @@ template <typename T> struct TypedCol {
 template <typename Callback>
 void ScanTypedChunks(::duckdb::Connection &connection_p, const std::string &sql,
                      Callback &&callback) {
+  auto scan_lock = LockScan(connection_p);
   auto &connection = ScanConnection(connection_p);
   auto result = connection.SendQuery(sql);
   if (!result || result->HasError())
@@ -261,6 +262,7 @@ struct TpchQ19Scan : TpchQ19InitialScan {
     return true;
   }
   bool LookupPart(int64_t partkey, TpchQ19PartInput &out) override {
+    auto scan_lock = LockScan(connection);
     auto result = ScanConnection(connection).Query(
         "SELECT p_brand, p_container, p_size FROM part WHERE p_partkey = " +
         std::to_string(partkey));

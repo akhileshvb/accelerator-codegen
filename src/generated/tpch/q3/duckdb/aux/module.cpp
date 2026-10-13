@@ -3,6 +3,8 @@
 #include "accelerator_codegen/stateful/core/byte_stream.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -216,23 +218,43 @@ MakeBinList(const std::vector<TpchQ3Entry> &sorted,
 }
 
 // Copy-on-write writer over a published segment: only the touched chunks (and
-// the chunk-pointer arrays of the touched bins) are copied.
+// the chunk-pointer arrays of the touched bins) are copied.  Bins are
+// independent, so after PrepareBin() (single-threaded) distinct bins may be
+// updated concurrently through TakeIn()/InsertIn().
 class Q3SegmentTxn {
 public:
+  struct Bin {
+    std::vector<std::shared_ptr<const TpchQ3Chunk>> chunks;
+    std::vector<char> owned;
+    // Separators: the last (bound, orderkey) of every chunk, contiguous so
+    // the chunk search does not chase chunk pointers.
+    std::vector<std::pair<int64_t, uint32_t>> lasts;
+    bool touched = false;
+    // Chunks are copied from the published list on first use, inside the
+    // task that owns the bin (so the O(chunks) copy runs in parallel).
+    const TpchQ3BinList *base_list = nullptr;
+    bool materialized = false;
+  };
+
   Q3SegmentTxn(core::PartitionId segment,
                std::shared_ptr<const TpchQ3Segment> base)
       : segment_(segment), base_(std::move(base)) {}
 
+  // The txn's working copy of a bin (nullptr: absent and !create).  Not
+  // thread-safe; the returned pointer stays valid for the txn's lifetime.
+  Bin *PrepareBin(uint16_t bin_id, bool create) {
+    return FindBin(bin_id, create);
+  }
+
   // Removes the entry; returns its per-shipdate revenue. False if absent.
-  bool Take(uint16_t orderdate, int64_t bound, uint32_t orderkey,
-            std::map<int32_t, int64_t> &day_revenue) {
-    Bin *bin = FindBin(BinOf(orderdate), false);
-    if (!bin)
+  static bool TakeIn(Bin &bin, uint16_t orderdate, int64_t bound,
+                     uint32_t orderkey, std::map<int32_t, int64_t> &day_revenue) {
+    (void)orderdate;
+    Materialize(bin);
+    const std::size_t ci = ChunkFor(bin, bound, orderkey);
+    if (ci >= bin.chunks.size())
       return false;
-    const std::size_t ci = ChunkFor(*bin, bound, orderkey);
-    if (ci >= bin->chunks.size())
-      return false;
-    const auto &chunk = *bin->chunks[ci];
+    const auto &chunk = *bin.chunks[ci];
     auto it = std::lower_bound(
         chunk.entries.begin(), chunk.entries.end(), 0,
         [&](const TpchQ3Entry &e, int) {
@@ -243,28 +265,33 @@ public:
       return false;
     day_revenue = DayRevenueOf(chunk, *it);
     const auto pos = it - chunk.entries.begin();
-    auto &mutable_chunk = Mutable(*bin, ci);
+    auto &mutable_chunk = Mutable(bin, ci);
     mutable_chunk.entries.erase(mutable_chunk.entries.begin() + pos);
     if (mutable_chunk.entries.empty()) {
-      bin->chunks.erase(bin->chunks.begin() + static_cast<std::ptrdiff_t>(ci));
-      bin->owned.erase(bin->owned.begin() + static_cast<std::ptrdiff_t>(ci));
+      bin.chunks.erase(bin.chunks.begin() + static_cast<std::ptrdiff_t>(ci));
+      bin.owned.erase(bin.owned.begin() + static_cast<std::ptrdiff_t>(ci));
+      bin.lasts.erase(bin.lasts.begin() + static_cast<std::ptrdiff_t>(ci));
+    } else if (static_cast<std::size_t>(pos) == mutable_chunk.entries.size()) {
+      const auto &last = mutable_chunk.entries.back();
+      bin.lasts[ci] = {last.bound, last.orderkey};
     }
-    dirty_ = true;
+    bin.touched = true;
     return true;
   }
 
-  void Insert(const TpchQ3Entry &entry_in,
-              const std::vector<TpchQ3ShipdateBucket> &buckets) {
-    Bin *bin = FindBin(BinOf(entry_in.orderdate), true);
-    std::size_t ci = ChunkFor(*bin, entry_in.bound, entry_in.orderkey);
-    if (bin->chunks.empty()) {
-      bin->chunks.push_back(std::make_shared<TpchQ3Chunk>());
-      bin->owned.push_back(1);
+  static void InsertIn(Bin &bin, const TpchQ3Entry &entry_in,
+                       const std::vector<TpchQ3ShipdateBucket> &buckets) {
+    Materialize(bin);
+    std::size_t ci = ChunkFor(bin, entry_in.bound, entry_in.orderkey);
+    if (bin.chunks.empty()) {
+      bin.chunks.push_back(std::make_shared<TpchQ3Chunk>());
+      bin.owned.push_back(1);
+      bin.lasts.emplace_back(0, 0);
       ci = 0;
-    } else if (ci >= bin->chunks.size()) {
-      ci = bin->chunks.size() - 1;
+    } else if (ci >= bin.chunks.size()) {
+      ci = bin.chunks.size() - 1;
     }
-    auto &chunk = Mutable(*bin, ci);
+    auto &chunk = Mutable(bin, ci);
     TpchQ3Entry entry = entry_in;
     entry.bucket_begin = static_cast<uint32_t>(chunk.pool.size());
     entry.bucket_count = static_cast<uint16_t>(buckets.size());
@@ -281,45 +308,74 @@ public:
       auto lo = MakeChunk(chunk.entries.data(), half, chunk.pool.data());
       auto hi = MakeChunk(chunk.entries.data() + half,
                           chunk.entries.size() - half, chunk.pool.data());
-      bin->chunks[ci] = std::move(lo);
-      bin->chunks.insert(bin->chunks.begin() + static_cast<std::ptrdiff_t>(ci) + 1,
-                         std::move(hi));
-      bin->owned[ci] = 1;
-      bin->owned.insert(bin->owned.begin() + static_cast<std::ptrdiff_t>(ci) + 1, 1);
+      bin.chunks[ci] = std::move(lo);
+      bin.chunks.insert(bin.chunks.begin() + static_cast<std::ptrdiff_t>(ci) + 1,
+                        std::move(hi));
+      bin.owned[ci] = 1;
+      bin.owned.insert(bin.owned.begin() + static_cast<std::ptrdiff_t>(ci) + 1, 1);
+      bin.lasts.insert(bin.lasts.begin() + static_cast<std::ptrdiff_t>(ci), {0, 0});
+      SetLast(bin, ci);
+      SetLast(bin, ci + 1);
+    } else {
+      SetLast(bin, ci);
     }
-    dirty_ = true;
+    bin.touched = true;
   }
 
-  bool Dirty() const { return dirty_; }
+  // Single-threaded convenience wrappers.
+  bool Take(uint16_t orderdate, int64_t bound, uint32_t orderkey,
+            std::map<int32_t, int64_t> &day_revenue) {
+    Bin *bin = FindBin(BinOf(orderdate), false);
+    return bin && TakeIn(*bin, orderdate, bound, orderkey, day_revenue);
+  }
+  void Insert(const TpchQ3Entry &entry,
+              const std::vector<TpchQ3ShipdateBucket> &buckets) {
+    InsertIn(*FindBin(BinOf(entry.orderdate), true), entry, buckets);
+  }
 
-  std::shared_ptr<const TpchQ3Segment> Finish() {
+  bool Dirty() const {
+    for (const auto &kv : bins_)
+      if (kv.second.touched)
+        return true;
+    return false;
+  }
+
+  // `parallel_for(n, fn)` runs fn(0..n) (possibly on several threads).
+  template <class ParallelFor>
+  std::shared_ptr<const TpchQ3Segment> Finish(ParallelFor &&parallel_for) {
     auto out = std::make_shared<TpchQ3Segment>();
     out->segment = segment_;
     if (base_)
       out->bins = base_->bins;
-    for (auto &[bin_id, bin] : bins_) {
-      if (bin.chunks.empty()) {
-        out->bins.erase(bin_id);
-        continue;
-      }
+    std::vector<std::pair<uint16_t, Bin *>> touched;
+    for (auto &[bin_id, bin] : bins_)
+      if (bin.touched)
+        touched.emplace_back(bin_id, &bin);
+    std::vector<std::shared_ptr<TpchQ3BinList>> lists(touched.size());
+    parallel_for(touched.size(), [&](std::size_t t) {
+      Bin &bin = *touched[t].second;
+      if (bin.chunks.empty())
+        return;
       auto list = std::make_shared<TpchQ3BinList>();
+      list->chunks.reserve(bin.chunks.size());
       for (std::size_t i = 0; i < bin.chunks.size(); ++i) {
         if (bin.owned[i])
           Seal(const_cast<TpchQ3Chunk &>(*bin.chunks[i]));
         list->max_maxship = std::max(list->max_maxship, bin.chunks[i]->max_maxship);
         list->chunks.push_back(bin.chunks[i]);
       }
-      out->bins[bin_id] = std::move(list);
+      lists[t] = std::move(list);
+    });
+    for (std::size_t t = 0; t < touched.size(); ++t) {
+      if (!lists[t])
+        out->bins.erase(touched[t].first);
+      else
+        out->bins[touched[t].first] = std::move(lists[t]);
     }
     return out;
   }
 
 private:
-  struct Bin {
-    std::vector<std::shared_ptr<const TpchQ3Chunk>> chunks;
-    std::vector<char> owned;
-  };
-
   Bin *FindBin(uint16_t bin_id, bool create) {
     auto it = bins_.find(bin_id);
     if (it != bins_.end())
@@ -327,22 +383,46 @@ private:
     Bin bin;
     if (base_) {
       auto base_it = base_->bins.find(bin_id);
-      if (base_it != base_->bins.end() && base_it->second)
-        bin.chunks = base_it->second->chunks;
+      if (base_it != base_->bins.end() && base_it->second &&
+          !base_it->second->chunks.empty())
+        bin.base_list = base_it->second.get();
     }
-    if (bin.chunks.empty() && !create)
+    if (!bin.base_list && !create)
       return nullptr;
-    bin.owned.assign(bin.chunks.size(), 0);
     return &bins_.emplace(bin_id, std::move(bin)).first->second;
+  }
+
+  static void Materialize(Bin &bin) {
+    if (bin.materialized)
+      return;
+    bin.materialized = true;
+    if (!bin.base_list)
+      return;
+    bin.chunks = bin.base_list->chunks;
+    bin.owned.assign(bin.chunks.size(), 0);
+    bin.lasts.resize(bin.chunks.size());
+    for (std::size_t i = 0; i < bin.chunks.size(); ++i) {
+      const auto &entries = bin.chunks[i]->entries;
+      bin.lasts[i] = entries.empty()
+                         ? std::pair<int64_t, uint32_t>{0, 0}
+                         : std::pair<int64_t, uint32_t>{entries.back().bound,
+                                                        entries.back().orderkey};
+    }
+  }
+
+  static void SetLast(Bin &bin, std::size_t ci) {
+    const auto &entries = bin.chunks[ci]->entries;
+    if (!entries.empty())
+      bin.lasts[ci] = {entries.back().bound, entries.back().orderkey};
   }
 
   // First chunk whose last entry does not sort before (bound, orderkey).
   static std::size_t ChunkFor(const Bin &bin, int64_t bound, uint32_t orderkey) {
-    std::size_t lo = 0, hi = bin.chunks.size();
+    std::size_t lo = 0, hi = bin.lasts.size();
     while (lo < hi) {
       const std::size_t mid = (lo + hi) / 2;
-      const auto &entries = bin.chunks[mid]->entries;
-      if (!entries.empty() && EntryBefore(entries.back(), bound, orderkey))
+      const auto &last = bin.lasts[mid];
+      if (last.first > bound || (last.first == bound && last.second < orderkey))
         lo = mid + 1;
       else
         hi = mid;
@@ -384,7 +464,6 @@ private:
   core::PartitionId segment_;
   std::shared_ptr<const TpchQ3Segment> base_;
   std::map<uint16_t, Bin> bins_;
-  bool dirty_ = false;
 };
 
 } // namespace
@@ -889,6 +968,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
   if (!side)
     return rebuild_all();
 
+
   TpchQ3ShardTxn<TpchQ3OrderRec> otx(side->orders);
   TpchQ3ShardTxn<TpchQ3CustRec> ctx(side->custs);
   std::map<core::PartitionId, Q3SegmentTxn> seg_txns;
@@ -959,102 +1039,308 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     segtx(rec.segment()).Insert(entry, buckets);
   };
 
-  // Order inserts / deletes by key. A key both deleted and inserted is an
-  // UPDATE: the order and its lineitems stay.
-  std::map<uint32_t, const TpchQ3OrderDelta *> inserted, deleted;
+  // ---- Order inserts / deletes / lineitem changes, per key -----------------
+  // A key both deleted and inserted is an UPDATE: the order and its lineitems
+  // stay.  Three steps: (A) a sequential pass over the sorted keys decides
+  // each key's fate against the side index; (B) the segment-index work is done
+  // bin-parallel (takes, then entry computation, then inserts: bins are
+  // independent copy-on-write units); (C) the side index is updated.
+  using OrderPtr = std::pair<uint32_t, const TpchQ3OrderDelta *>;
+  std::vector<OrderPtr> ins_v, del_v;
   for (const auto &delta : buffer.OrderDeltas()) {
     const auto key = static_cast<uint32_t>(delta.orderkey);
-    if (delta.sign > 0) {
-      if (!inserted.emplace(key, &delta).second)
-        return rebuild_all();
-    } else {
-      deleted.emplace(key, &delta);
+    (delta.sign > 0 ? ins_v : del_v).emplace_back(key, &delta);
+  }
+  auto by_key = [](const OrderPtr &a, const OrderPtr &b) { return a.first < b.first; };
+  std::stable_sort(ins_v.begin(), ins_v.end(), by_key);
+  std::stable_sort(del_v.begin(), del_v.end(), by_key);
+  for (std::size_t i = 1; i < ins_v.size(); ++i)
+    if (ins_v[i].first == ins_v[i - 1].first)
+      return rebuild_all(); // duplicate inserted key
+  // Net per-(key, day) revenue of the lineitem deltas, sorted by (key, day).
+  // Mutations usually arrive grouped by order: sort only when they do not.
+  struct Line {
+    uint32_t key;
+    int32_t day;
+    int64_t revenue;
+  };
+  std::vector<Line> lines;
+  lines.reserve(buffer.Deltas().size());
+  for (const auto &delta : buffer.Deltas())
+    lines.push_back({static_cast<uint32_t>(delta.orderkey), delta.shipdate_day,
+                     static_cast<int64_t>(delta.sign) * delta.revenue_raw});
+
+  const auto line_less = [](const Line &a, const Line &b) {
+    return a.key != b.key ? a.key < b.key : a.day < b.day;
+  };
+  if (!std::is_sorted(lines.begin(), lines.end(), line_less)) {
+    if (!std::is_sorted(lines.begin(), lines.end(),
+                        [](const Line &a, const Line &b) { return a.key < b.key; }))
+      std::stable_sort(lines.begin(), lines.end(),
+                       [](const Line &a, const Line &b) { return a.key < b.key; });
+    for (std::size_t i = 0; i < lines.size();) {
+      std::size_t j = i + 1;
+      while (j < lines.size() && lines[j].key == lines[i].key)
+        ++j;
+      std::sort(lines.begin() + static_cast<std::ptrdiff_t>(i),
+                lines.begin() + static_cast<std::ptrdiff_t>(j),
+                [](const Line &a, const Line &b) { return a.day < b.day; });
+      i = j;
     }
   }
-  std::map<uint32_t, std::map<int32_t, int64_t>> line_delta;
-  for (const auto &delta : buffer.Deltas()) {
-    auto &day = line_delta[static_cast<uint32_t>(delta.orderkey)];
-    day[delta.shipdate_day] += static_cast<int64_t>(delta.sign) * delta.revenue_raw;
+  {
+    std::size_t out = 0;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+      if (out > 0 && lines[out - 1].key == lines[i].key &&
+          lines[out - 1].day == lines[i].day)
+        lines[out - 1].revenue += lines[i].revenue;
+      else
+        lines[out++] = lines[i];
+    }
+    lines.resize(out);
   }
-  std::set<uint32_t> keys;
-  for (const auto &e : inserted)
-    keys.insert(e.first);
-  for (const auto &e : deleted)
-    keys.insert(e.first);
-  for (const auto &e : line_delta)
-    keys.insert(e.first);
 
-  for (const auto key : keys) {
-    const auto *found = otx.Find(key);
-    const bool had = found != nullptr;
+  const std::size_t workers = std::max<std::size_t>(
+      1, std::min<std::size_t>(services.WorkerCount(), 8));
+  // Runs fn(0..n) on up to `workers` threads.
+  auto parallel_for = [&](std::size_t n, auto &&fn) {
+    const std::size_t threads = std::min(workers, n);
+    if (threads <= 1) {
+      for (std::size_t i = 0; i < n; ++i)
+        fn(i);
+      return;
+    }
+    std::atomic<std::size_t> next{0};
+    auto body = [&]() {
+      for (;;) {
+        const std::size_t i = next.fetch_add(1);
+        if (i >= n)
+          return;
+        fn(i);
+      }
+    };
+    std::vector<std::thread> pool;
+    pool.reserve(threads - 1);
+    for (std::size_t t = 1; t < threads; ++t)
+      pool.emplace_back(body);
+    body();
+    for (auto &th : pool)
+      th.join();
+  };
+
+  struct Work {
+    uint32_t key = 0;
+    bool had = false;
+    bool take = false;   // remove the old index entry
+    bool exists = false; // the order is (still) tracked afterwards
+    bool place = false;  // an index entry was computed
     TpchQ3OrderRec old_rec;
-    if (had)
-      old_rec = *found;
-    const auto ins_it = inserted.find(key);
-    const auto del_it = deleted.find(key);
-    const bool is_ins = ins_it != inserted.end();
-    const bool is_del = del_it != deleted.end();
-    if (!had && !is_ins) {
-      // lineitem change / delete of an order outside every tracked segment
-      if (is_del)
-        adjust_orphans(del_it->second->custkey, -1);
-      continue;
-    }
-
-    // Remove the old index entry (if any) and recover its day revenues.
+    TpchQ3OrderRec rec;
+    uint32_t line_begin = 0, line_end = 0;
     std::map<int32_t, int64_t> day;
-    if (had && old_rec.indexed()) {
-      if (!segtx(old_rec.segment())
-               .Take(old_rec.orderdate, old_rec.bound, key, day))
-        return rebuild_all(); // index and side disagree
-    }
+    TpchQ3Entry entry;
+    std::vector<TpchQ3ShipdateBucket> buckets;
+    Q3SegmentTxn::Bin *take_bin = nullptr;
+    Q3SegmentTxn::Bin *put_bin = nullptr;
+  };
+  std::vector<Work> works;
+  works.reserve(ins_v.size() + del_v.size() + 16);
+  // Side-index lookups for every key, in parallel (the index is not written
+  // until step C, so published leaves are stable).
+  std::vector<uint32_t> all_keys;
+  all_keys.reserve(ins_v.size() + del_v.size() + lines.size());
+  for (const auto &e : ins_v)
+    all_keys.push_back(e.first);
+  for (const auto &e : del_v)
+    all_keys.push_back(e.first);
+  for (const auto &e : lines)
+    all_keys.push_back(e.key);
+  std::sort(all_keys.begin(), all_keys.end());
+  all_keys.erase(std::unique(all_keys.begin(), all_keys.end()), all_keys.end());
+  std::vector<const TpchQ3OrderRec *> found_recs(all_keys.size());
+  parallel_for((all_keys.size() + 1023) / 1024, [&](std::size_t r) {
+    const std::size_t end = std::min(all_keys.size(), (r + 1) * 1024);
+    for (std::size_t i = r * 1024; i < end; ++i)
+      found_recs[i] = otx.Find(all_keys[i]);
+  });
 
-    bool exists = false;
-    TpchQ3OrderRec rec = old_rec;
-    if (had && is_del && !is_ins) {
-      exists = false;
-    } else if (had && is_ins && !is_del) {
-      return rebuild_all(); // duplicate key
-    } else if (is_ins) {
-      // new order, or UPDATE of an existing one (possibly to another customer
-      // and hence segment: the entry is re-placed in the new segment)
-      const auto &d = *ins_it->second;
-      if (d.custkey < 0 ||
-          d.custkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
-        return rebuild_all();
+  {
+    std::size_t ki = 0;
+    std::size_t ii = 0, di = 0, li = 0;
+    while (ii < ins_v.size() || di < del_v.size() || li < lines.size()) {
+      uint32_t key = std::numeric_limits<uint32_t>::max();
+      if (ii < ins_v.size())
+        key = std::min(key, ins_v[ii].first);
+      if (di < del_v.size())
+        key = std::min(key, del_v[di].first);
+      if (li < lines.size())
+        key = std::min(key, lines[li].key);
+      const TpchQ3OrderDelta *ins = nullptr, *del = nullptr;
+      if (ii < ins_v.size() && ins_v[ii].first == key)
+        ins = ins_v[ii++].second;
+      if (di < del_v.size() && del_v[di].first == key) {
+        del = del_v[di].second; // first delete of a key wins
+        while (di < del_v.size() && del_v[di].first == key)
+          ++di;
       }
-      if (!had && is_del)
-        adjust_orphans(del_it->second->custkey, -1); // old row was untracked
-      const auto *cust = tracked_customer(d.custkey);
-      if (!cust) {
-        exists = false; // customer outside every tracked segment
-        adjust_orphans(d.custkey, 1);
-      } else {
-        rec.key = key;
-        rec.orderdate = PackTpchQ3Date(d.orderdate_days);
-        rec.shippriority = PackTpchQ3Shippriority(d.shippriority);
-        rec.seg_flags = cust->segment;
-        rec.bound = 0;
-        exists = true;
-      }
-    } else {
-      exists = true; // lineitem-only change of an existing order
-    }
+      uint32_t lbeg = static_cast<uint32_t>(li);
+      while (li < lines.size() && lines[li].key == key)
+        ++li;
+      const uint32_t lend = static_cast<uint32_t>(li);
 
-    if (exists) {
-      const auto ld = line_delta.find(key);
-      if (ld != line_delta.end()) {
-        for (const auto &entry : ld->second) {
-          day[entry.first] += entry.second;
-          if (day[entry.first] == 0)
-            day.erase(entry.first);
+      while (all_keys[ki] != key)
+        ++ki;
+      const auto *found = found_recs[ki];
+      const bool had = found != nullptr;
+      const bool is_ins = ins != nullptr, is_del = del != nullptr;
+      if (!had && !is_ins) {
+        // lineitem change / delete of an order outside every tracked segment
+        if (is_del)
+          adjust_orphans(del->custkey, -1);
+        continue;
+      }
+      Work w;
+      w.key = key;
+      w.had = had;
+      w.line_begin = lbeg;
+      w.line_end = lend;
+      if (had)
+        w.old_rec = *found;
+      w.rec = w.old_rec;
+      w.take = had && w.old_rec.indexed();
+      if (had && is_del && !is_ins) {
+        w.exists = false;
+      } else if (had && is_ins && !is_del) {
+        return rebuild_all(); // duplicate key
+      } else if (is_ins) {
+        // new order, or UPDATE of an existing one (possibly to another
+        // customer and hence segment: the entry is re-placed there)
+        const auto &d = *ins;
+        if (d.custkey < 0 ||
+            d.custkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+          return rebuild_all();
+        if (!had && is_del)
+          adjust_orphans(del->custkey, -1); // old row was untracked
+        const auto *cust = tracked_customer(d.custkey);
+        if (!cust) {
+          w.exists = false; // customer outside every tracked segment
+          adjust_orphans(d.custkey, 1);
+        } else {
+          w.rec.key = key;
+          w.rec.orderdate = PackTpchQ3Date(d.orderdate_days);
+          w.rec.shippriority = PackTpchQ3Shippriority(d.shippriority);
+          w.rec.seg_flags = cust->segment;
+          w.rec.bound = 0;
+          w.exists = true;
         }
+      } else {
+        w.exists = true; // lineitem-only change of an existing order
       }
-      place_order(rec, day);
-      otx.Set(rec);
-    } else if (had) {
-      otx.Erase(key);
+      if (w.take) {
+        w.take_bin = segtx(w.old_rec.segment())
+                         .PrepareBin(BinOf(w.old_rec.orderdate), false);
+        if (!w.take_bin)
+          return rebuild_all(); // index and side disagree
+      }
+      works.push_back(std::move(w));
     }
+  }
+
+
+  std::atomic<bool> inconsistent{false};
+
+  // (B1) Takes: one task per touched bin.
+  {
+    std::vector<std::pair<Q3SegmentTxn::Bin *, uint32_t>> order;
+    for (uint32_t i = 0; i < works.size(); ++i)
+      if (works[i].take)
+        order.emplace_back(works[i].take_bin, i);
+    std::sort(order.begin(), order.end());
+    std::vector<std::pair<std::size_t, std::size_t>> groups;
+    for (std::size_t i = 0; i < order.size();) {
+      std::size_t j = i + 1;
+      while (j < order.size() && order[j].first == order[i].first)
+        ++j;
+      groups.emplace_back(i, j);
+      i = j;
+    }
+    parallel_for(groups.size(), [&](std::size_t g) {
+      for (std::size_t i = groups[g].first; i < groups[g].second; ++i) {
+        auto &w = works[order[i].second];
+        if (!Q3SegmentTxn::TakeIn(*w.take_bin, w.old_rec.orderdate,
+                                  w.old_rec.bound, w.key, w.day))
+          inconsistent = true; // index and side disagree
+      }
+    });
+  }
+  if (inconsistent)
+    return rebuild_all();
+
+
+  // (B2) New entries; resolve the target bins (single-threaded).
+  constexpr std::size_t kRange = 256;
+  parallel_for((works.size() + kRange - 1) / kRange, [&](std::size_t r) {
+    const std::size_t end = std::min(works.size(), (r + 1) * kRange);
+    for (std::size_t i = r * kRange; i < end; ++i) {
+      auto &w = works[i];
+      if (!w.exists)
+        continue;
+      for (uint32_t l = w.line_begin; l < w.line_end; ++l) {
+        auto &v = w.day[lines[l].day];
+        v += lines[l].revenue;
+        if (v == 0)
+          w.day.erase(lines[l].day);
+      }
+      w.rec.seg_flags = static_cast<uint8_t>(w.rec.seg_flags & 0x7F);
+      w.rec.bound = 0;
+      if (w.day.empty())
+        continue;
+      FinalizeTpchQ3OrderSummary(w.buckets, w.day);
+      if (w.buckets.empty())
+        continue;
+      w.entry.bound = BoundOf(w.day);
+      w.entry.orderkey = w.rec.key;
+      w.entry.orderdate = w.rec.orderdate;
+      w.entry.shippriority = w.rec.shippriority;
+      w.rec.bound = w.entry.bound;
+      w.rec.seg_flags = static_cast<uint8_t>(w.rec.seg_flags | 0x80);
+      w.place = true;
+    }
+  });
+  for (auto &w : works)
+    if (w.place)
+      w.put_bin = segtx(w.rec.segment()).PrepareBin(BinOf(w.rec.orderdate), true);
+
+
+  // (B3) Inserts: one task per touched bin.
+  {
+    std::vector<std::pair<Q3SegmentTxn::Bin *, uint32_t>> order;
+    for (uint32_t i = 0; i < works.size(); ++i)
+      if (works[i].place)
+        order.emplace_back(works[i].put_bin, i);
+    std::sort(order.begin(), order.end());
+    std::vector<std::pair<std::size_t, std::size_t>> groups;
+    for (std::size_t i = 0; i < order.size();) {
+      std::size_t j = i + 1;
+      while (j < order.size() && order[j].first == order[i].first)
+        ++j;
+      groups.emplace_back(i, j);
+      i = j;
+    }
+    parallel_for(groups.size(), [&](std::size_t g) {
+      for (std::size_t i = groups[g].first; i < groups[g].second; ++i) {
+        auto &w = works[order[i].second];
+        Q3SegmentTxn::InsertIn(*w.put_bin, w.entry, w.buckets);
+      }
+    });
+  }
+
+  // (C) Side index.
+  for (auto &w : works) {
+    if (w.exists)
+      otx.Set(w.rec);
+    else if (w.had)
+      otx.Erase(w.key);
   }
 
   // Customer changes last, against the post-write tables: orders of the
@@ -1163,25 +1449,29 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
   if (!side_dirty && !seg_dirty)
     return outcome; // nothing in any tracked segment changed
 
+
   outcome.action = core::MaintenanceAction::ApplyDelta;
+
   for (auto &[segment, txn] : seg_txns) {
     if (!txn.Dirty())
       continue;
     const auto version = seg_version.count(segment) ? seg_version[segment] : 0;
     outcome.updates.push_back(core::StateImage::Make(
         core::TpchQ3Layout::kAccelerator, segment, version,
-        MakeSegmentIntervalImage(segment, txn.Finish())));
+        MakeSegmentIntervalImage(segment, txn.Finish(parallel_for))));
   }
+
   if (side_dirty) {
     auto new_side = std::make_shared<TpchQ3Side>();
-    new_side->orders = otx.Finish();
-    new_side->custs = ctx.Finish();
+    new_side->orders = otx.Finish(parallel_for);
+    new_side->custs = ctx.Finish(parallel_for);
     outcome.updates.push_back(core::StateImage::Make(
         core::TpchQ3Layout::kAccelerator, core::TpchQ3Layout::kOrderSegmentSide,
         side_version,
         MakeOrderSegmentSideImage(std::shared_ptr<const TpchQ3Side>(
             std::move(new_side)))));
   }
+
   return outcome;
 }
 
