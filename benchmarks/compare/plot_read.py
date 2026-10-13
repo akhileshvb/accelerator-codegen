@@ -10,19 +10,15 @@ the geomean over the queries (per repetition, then median/min..max).  Writes <re
 """
 import glob
 import json
-import math
 import os
 import re
-import statistics
 import sys
 
-import matplotlib
-
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-plt.rcParams.update({"font.size": 15, "axes.titlesize": 17, "axes.labelsize": 15, "xtick.labelsize": 14,
-                     "ytick.labelsize": 14, "legend.fontsize": 14})
+from plotlib import LARGE_FONTS, geomean, stat
+
+plt.rcParams.update(LARGE_FONTS)
 
 SYSTEMS = [("cpp", "C++", "#1e40af"), ("verus", "Verus", "#166534")]
 
@@ -36,15 +32,6 @@ def load(d):
             continue
         runs.setdefault(m.group(2), {}).setdefault(int(m.group(1)), {})[int(m.group(3))] = r["speedup_geomean"]
     return runs
-
-
-def stat(v):
-    v = sorted(v)
-    return statistics.median(v), v[0], v[-1]
-
-
-def geomean(v):
-    return math.exp(sum(math.log(x) for x in v) / len(v))
 
 
 def main():
