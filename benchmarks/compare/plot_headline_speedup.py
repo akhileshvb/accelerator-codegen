@@ -35,7 +35,7 @@ from plot_rf_multi_sweep import load, rep_of, rows_per_slot  # noqa: E402
 from workload import workload_speedup, workload_speedup_per_query  # noqa: E402
 
 RF_OUT = os.path.join(HERE, "results/rf_interval_multi_sf20_20261008_112014")
-# DuckDB and C++ from the sweep; Verus and stateless from run_headline_T15.sh (same draw and stream, --no-base)
+# DuckDB and C++ from the sweep; Verus and stateless from the run_rf_interval_sweep.sh header's recorded T15 command (same draw and stream, --no-base)
 RF_CONC = [os.path.join(HERE, "results/rf_interval_sf20_20261007_222743"),
            os.path.join(HERE, "results/rf_interval_sf20_T15_headline")]
 RF_DIR = "/flash1/akhilvb/tpch/refresh_sf20"

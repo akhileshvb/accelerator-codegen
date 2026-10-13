@@ -27,6 +27,22 @@
 # per accelerator) and the Verus kits on the one verified world store (one lock for all).  The REPEATS draws run in
 # the same process after one build, which happens with BUILD_THREADS DuckDB threads (default: all cores; outside
 # the measured runs).  Results: <out>/T<interval>s/rep<k>/multi_<system>.json, summary in <out>/T<interval>s.log.
+#
+# Recorded one-off follow-up runs (formerly run_headline_T15.sh / run_stateless_T60.sh; rebuild aux_compare first with
+# `cmake --build build-verus-duckdb --target aux_compare`, ACCEL_COMPARE_DUCKDB_THREADS=1 as above):
+#  * headline T=15s panel (plot_headline_speedup.py --interval 15): Verus (verus_global) + stateless kernels, concurrent
+#    mode, paired with the DuckDB/C++ runs of rf_interval_sf20_20261007_222743/T15s (same seed, --no-base), under
+#    systemd-run --user --scope -p MemoryMax=64G -p MemorySwapMax=0:
+#      python3 benchmarks/compare/run_compare.py concurrent --db ../accelerator-codegen-duckdb/tpch_sf20.duckdb --sf 20 \
+#        --work /flash1/akhilvb/tpch/work --rf-dir /flash1/akhilvb/tpch/refresh_sf20 --dim-after-rf \
+#        --systems "verus stateless" --no-base --queries "$(seq -s ' ' 1 22)" --readers 8 --seconds 60 \
+#        --wps 0.06666666666666667 --sets 8 --repeats 1 --seed 694380215 --out <out>/T15s
+#  * stateless kernels under the T=60s multi sweep (rf_interval_multi_sf20_20261008_112014/T60s, results land beside the
+#    other systems as rep<k>/multi_stateless.json; WORK=/flash1/akhilvb/tpch/work_stateless):
+#      python3 benchmarks/compare/run_compare.py multi --db ../accelerator-codegen-duckdb/tpch_sf20.duckdb --sf 20 \
+#        --rf-dir /flash1/akhilvb/tpch/refresh_sf20 --dim-after-rf --systems stateless --no-base --readers 8 \
+#        --seconds 240 --wps 0.016666666666666666 --sets 8 --repeats 3 --seed 267713173 --duckdb-memory 16GB \
+#        --out benchmarks/compare/results/rf_interval_multi_sf20_20261008_112014/T60s
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
