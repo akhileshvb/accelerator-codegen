@@ -307,102 +307,31 @@ target_link_libraries(test_registration
         duckdb_sibling
 )
 
-add_executable(test_tpch_q6
-    tests/single-threaded/test_tpch_q6.cpp
-)
+# Test / benchmark executable linking the library and DuckDB, with tests/ on
+# the include path.  Extra arguments are the sources.
+function(accel_add_duckdb_exe name)
+    add_executable(${name} ${ARGN})
+    target_link_libraries(${name} PRIVATE accelerator_codegen duckdb_sibling)
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+endfunction()
 
-target_link_libraries(test_tpch_q6
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
+# Same, for the multithreaded TPC-H variants (ACCEL_ENABLE_PARALLEL_TPCH).
+function(accel_add_parallel_tpch_exe name)
+    accel_add_duckdb_exe(${name} ${ARGN})
+    target_compile_definitions(${name} PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
+    set_target_properties(${name} PROPERTIES
+        BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
+        INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}")
+endfunction()
 
-target_include_directories(test_tpch_q6 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q1
-    tests/single-threaded/test_tpch_q1.cpp
-)
-
-target_link_libraries(test_tpch_q1
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q1 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q3
-    tests/single-threaded/test_tpch_q3.cpp
-)
-
-target_link_libraries(test_tpch_q3
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q4
-    tests/single-threaded/test_tpch_q4.cpp
-)
-
-target_link_libraries(test_tpch_q4
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q9
-    tests/single-threaded/test_tpch_q9.cpp
-)
-
-target_link_libraries(test_tpch_q9
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q9 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q12
-    tests/single-threaded/test_tpch_q12.cpp
-)
-
-target_link_libraries(test_tpch_q12
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q12 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q14
-    tests/single-threaded/test_tpch_q14.cpp
-)
-
-target_link_libraries(test_tpch_q14
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q14 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_shared_aux_state
-    tests/aux_state/test_shared_aux_state.cpp
-)
-
-target_link_libraries(test_shared_aux_state
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_shared_aux_state PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
+# Per-query TPC-H smoke tests (tests/single-threaded/test_tpch_q<N>.cpp) and
+# single-threaded benchmarks (benchmarks/tpch/single-threaded/benchmark_q<N>.cpp).
+set(ACCEL_TPCH_SMOKE_QS 6 1 3 4 9 12 14 17 19 5 7 10 11 13 16 18 22 15 21 20 8 2)
+set(ACCEL_TPCH_BENCH_QS 6 1 3 4 9 12 14 17 19 5 7 10 11 13 16 18 22)
+foreach(_q IN LISTS ACCEL_TPCH_SMOKE_QS)
+    accel_add_duckdb_exe(test_tpch_q${_q} tests/single-threaded/test_tpch_q${_q}.cpp)
+endforeach()
+accel_add_duckdb_exe(test_shared_aux_state tests/aux_state/test_shared_aux_state.cpp)
 add_executable(test_versioned_aux_state
     tests/aux_state/test_versioned_aux_state.cpp
 )
@@ -491,30 +420,8 @@ add_executable(benchmark_sec_edgar_q24_micro
 )
 target_link_libraries(benchmark_sec_edgar_q24_micro PRIVATE accelerator_codegen duckdb_sibling)
 
-add_executable(test_shared_incremental_differential
-    tests/aux_state/test_shared_incremental_differential.cpp
-)
-
-target_link_libraries(test_shared_incremental_differential
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_shared_incremental_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q18_shared_differential
-    tests/aux_state/test_tpch_q18_shared_differential.cpp
-)
-
-target_link_libraries(test_tpch_q18_shared_differential
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q18_shared_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
+accel_add_duckdb_exe(test_shared_incremental_differential tests/aux_state/test_shared_incremental_differential.cpp)
+accel_add_duckdb_exe(test_tpch_q18_shared_differential tests/aux_state/test_tpch_q18_shared_differential.cpp)
 # Generic test / bench runner for Verus accelerators of the host kit (needs no
 # particular accelerator: the Verus pipeline builds it in a tree with none).
 if(NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQL)
@@ -522,30 +429,8 @@ if(NOT ACCELERATOR_CODEGEN_BUILD_POSTGRES AND NOT ACCELERATOR_CODEGEN_BUILD_MYSQ
     target_link_libraries(verus_kit_runner PRIVATE accelerator_codegen duckdb_sibling)
 endif()
 
-add_executable(test_tpch_shared_differential
-    tests/aux_state/test_tpch_shared_differential.cpp
-)
-
-target_link_libraries(test_tpch_shared_differential
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_shared_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_shared_tpch_rf_differential
-    tests/aux_state/test_shared_tpch_rf_differential.cpp
-)
-
-target_link_libraries(test_shared_tpch_rf_differential
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_shared_tpch_rf_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
+accel_add_duckdb_exe(test_tpch_shared_differential tests/aux_state/test_tpch_shared_differential.cpp)
+accel_add_duckdb_exe(test_shared_tpch_rf_differential tests/aux_state/test_shared_tpch_rf_differential.cpp)
 add_executable(test_tpch_arg_variants_differential
     tests/aux_state/test_tpch_arg_variants_differential.cpp
     benchmarks/tpch/single-threaded/tpch_arg_variants.cpp
@@ -601,17 +486,7 @@ add_executable(bench_sec_edgar_batch_apply
 )
 target_link_libraries(bench_sec_edgar_batch_apply PRIVATE accelerator_codegen duckdb_sibling)
 
-add_executable(test_sec_edgar_q4_duckdb_differential
-    tests/aux_state/test_sec_edgar_q4_duckdb_differential.cpp
-)
-
-target_link_libraries(test_sec_edgar_q4_duckdb_differential
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_sec_edgar_q4_duckdb_differential PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+accel_add_duckdb_exe(test_sec_edgar_q4_duckdb_differential tests/aux_state/test_sec_edgar_q4_duckdb_differential.cpp)
 if(ACCEL_ENABLE_PARALLEL_AUX)
     target_compile_definitions(test_sec_edgar_q4_duckdb_differential PRIVATE ACCEL_ENABLE_PARALLEL_AUX)
 endif()
@@ -642,9 +517,9 @@ if(ACCEL_AUX_CALIBRATION)
     )
 
     set(_accel_tpch_calib_db
-        "${CMAKE_SOURCE_DIR}/../accelerator-codegen-duckdb/tpch_sf1.duckdb")
+        "${DUCKDB_ROOT}/tpch_sf1.duckdb")
     set(_accel_sec_calib_db
-        "${CMAKE_SOURCE_DIR}/../accelerator-codegen-duckdb/sec_edgar_sf3.duckdb")
+        "${DUCKDB_ROOT}/sec_edgar_sf3.duckdb")
     if(EXISTS "${_accel_tpch_calib_db}" AND EXISTS "${_accel_sec_calib_db}")
         if(ACCEL_CALIBRATE_AT_BUILD)
             add_custom_target(
@@ -671,114 +546,6 @@ if(ACCEL_AUX_CALIBRATION)
             "calibrate_shared_aux_cost_models skipped: full benchmark DBs not found")
     endif()
 endif()
-
-add_executable(test_tpch_q17
-    tests/single-threaded/test_tpch_q17.cpp
-)
-
-target_link_libraries(test_tpch_q17
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q17 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q19
-    tests/single-threaded/test_tpch_q19.cpp
-)
-
-target_link_libraries(test_tpch_q19
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q19 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q5
-    tests/single-threaded/test_tpch_q5.cpp
-)
-
-target_link_libraries(test_tpch_q5
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q5 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q7
-    tests/single-threaded/test_tpch_q7.cpp
-)
-
-target_link_libraries(test_tpch_q7
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q7 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q10
-    tests/single-threaded/test_tpch_q10.cpp
-)
-
-target_link_libraries(test_tpch_q10
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q10 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q11
-    tests/single-threaded/test_tpch_q11.cpp
-)
-
-target_link_libraries(test_tpch_q11
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q11 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q13
-    tests/single-threaded/test_tpch_q13.cpp
-)
-
-target_link_libraries(test_tpch_q13
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q13 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q16
-    tests/single-threaded/test_tpch_q16.cpp
-)
-
-target_link_libraries(test_tpch_q16
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q16 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q18
-    tests/single-threaded/test_tpch_q18.cpp
-)
-
-target_link_libraries(test_tpch_q18
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q18 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_cross_accel_correctness.cpp")
     foreach(_aux_gate_test IN ITEMS test_cross_accel_correctness test_cross_accel_isolation test_aux_multi_connection_stress)
@@ -823,318 +590,12 @@ add_executable(test_tpch_aux_fuzz
 target_link_libraries(test_tpch_aux_fuzz PRIVATE accelerator_codegen duckdb_sibling)
 target_include_directories(test_tpch_aux_fuzz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
-add_executable(test_tpch_q22
-    tests/single-threaded/test_tpch_q22.cpp
-)
-
-target_link_libraries(test_tpch_q22
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q22 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q15
-    tests/single-threaded/test_tpch_q15.cpp
-)
-
-target_link_libraries(test_tpch_q15
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q15 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q21
-    tests/single-threaded/test_tpch_q21.cpp
-)
-
-target_link_libraries(test_tpch_q21
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q21 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q20
-    tests/single-threaded/test_tpch_q20.cpp
-)
-
-target_link_libraries(test_tpch_q20
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q20 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q8
-    tests/single-threaded/test_tpch_q8.cpp
-)
-
-target_link_libraries(test_tpch_q8
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(test_tpch_q2
-    tests/single-threaded/test_tpch_q2.cpp
-)
-
-target_link_libraries(test_tpch_q2
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(test_tpch_q2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q6
-    benchmarks/tpch/single-threaded/benchmark_q6.cpp
-)
-
-target_link_libraries(benchmark_tpch_q6
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q6 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q1
-    benchmarks/tpch/single-threaded/benchmark_q1.cpp
-)
-
-target_link_libraries(benchmark_tpch_q1
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q1 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q3
-    benchmarks/tpch/single-threaded/benchmark_q3.cpp
-)
-
-target_link_libraries(benchmark_tpch_q3
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q4
-    benchmarks/tpch/single-threaded/benchmark_q4.cpp
-)
-
-target_link_libraries(benchmark_tpch_q4
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q9
-    benchmarks/tpch/single-threaded/benchmark_q9.cpp
-)
-
-target_link_libraries(benchmark_tpch_q9
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q9 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q12
-    benchmarks/tpch/single-threaded/benchmark_q12.cpp
-)
-
-target_link_libraries(benchmark_tpch_q12
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q12 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q14
-    benchmarks/tpch/single-threaded/benchmark_q14.cpp
-)
-
-target_link_libraries(benchmark_tpch_q14
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q14 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q17
-    benchmarks/tpch/single-threaded/benchmark_q17.cpp
-)
-
-target_link_libraries(benchmark_tpch_q17
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q17 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q19
-    benchmarks/tpch/single-threaded/benchmark_q19.cpp
-)
-
-target_link_libraries(benchmark_tpch_q19
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q19 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q5
-    benchmarks/tpch/single-threaded/benchmark_q5.cpp
-)
-
-target_link_libraries(benchmark_tpch_q5
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q5 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q7
-    benchmarks/tpch/single-threaded/benchmark_q7.cpp
-)
-
-target_link_libraries(benchmark_tpch_q7
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q7 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q10
-    benchmarks/tpch/single-threaded/benchmark_q10.cpp
-)
-
-target_link_libraries(benchmark_tpch_q10
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q10 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q11
-    benchmarks/tpch/single-threaded/benchmark_q11.cpp
-)
-
-target_link_libraries(benchmark_tpch_q11
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q11 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q13
-    benchmarks/tpch/single-threaded/benchmark_q13.cpp
-)
-
-target_link_libraries(benchmark_tpch_q13
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q13 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q16
-    benchmarks/tpch/single-threaded/benchmark_q16.cpp
-)
-
-target_link_libraries(benchmark_tpch_q16
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q16 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q18
-    benchmarks/tpch/single-threaded/benchmark_q18.cpp
-)
-
-target_link_libraries(benchmark_tpch_q18
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q18 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_q22
-    benchmarks/tpch/single-threaded/benchmark_q22.cpp
-)
-
-target_link_libraries(benchmark_tpch_q22
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_q22 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_stage_c
-    benchmarks/tpch/single-threaded/benchmark_stage_c.cpp
-)
-
-target_link_libraries(benchmark_tpch_stage_c
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_stage_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_breakdown
-    benchmarks/tpch/single-threaded/benchmark_tpch_breakdown.cpp
-)
-
-target_link_libraries(benchmark_tpch_breakdown
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_breakdown PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
-add_executable(benchmark_tpch_validated
-    benchmarks/tpch/single-threaded/benchmark_tpch_validated.cpp
-)
-
-target_link_libraries(benchmark_tpch_validated
-    PRIVATE
-        accelerator_codegen
-        duckdb_sibling
-)
-
-target_include_directories(benchmark_tpch_validated PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-
+foreach(_q IN LISTS ACCEL_TPCH_BENCH_QS)
+    accel_add_duckdb_exe(benchmark_tpch_q${_q} benchmarks/tpch/single-threaded/benchmark_q${_q}.cpp)
+endforeach()
+accel_add_duckdb_exe(benchmark_tpch_stage_c benchmarks/tpch/single-threaded/benchmark_stage_c.cpp)
+accel_add_duckdb_exe(benchmark_tpch_breakdown benchmarks/tpch/single-threaded/benchmark_tpch_breakdown.cpp)
+accel_add_duckdb_exe(benchmark_tpch_validated benchmarks/tpch/single-threaded/benchmark_tpch_validated.cpp)
 add_executable(benchmark_tpch_rf_delta_vs_rebuild
     benchmarks/tpch/single-threaded/benchmark_tpch_rf_delta_vs_rebuild.cpp
 )
@@ -1171,7 +632,14 @@ set_target_properties(benchmark_tpch_q20_phased_eval PROPERTIES
     INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 )
 
-set_target_properties(accelerator_codegen test_registration test_tpch_q6 test_tpch_q1 test_tpch_q3 test_tpch_q4 test_tpch_q9 test_tpch_q12 test_tpch_q14 test_tpch_q17 test_tpch_q19 test_tpch_q5 test_tpch_q7 test_tpch_q10 test_tpch_q11 test_tpch_q13 test_tpch_q16 test_tpch_q18 test_tpch_q22 test_tpch_q15 test_tpch_q21 test_tpch_q20 test_tpch_q8 test_tpch_q2 benchmark_tpch_q6 benchmark_tpch_q1 benchmark_tpch_q3 benchmark_tpch_q4 benchmark_tpch_q9 benchmark_tpch_q12 benchmark_tpch_q14 benchmark_tpch_q17 benchmark_tpch_q19 benchmark_tpch_q5 benchmark_tpch_q7 benchmark_tpch_q10 benchmark_tpch_q11 benchmark_tpch_q13 benchmark_tpch_q16 benchmark_tpch_q18 benchmark_tpch_q22 benchmark_tpch_stage_c benchmark_tpch_breakdown benchmark_tpch_validated PROPERTIES
+set(_accel_rpath_targets accelerator_codegen test_registration benchmark_tpch_stage_c benchmark_tpch_breakdown benchmark_tpch_validated)
+foreach(_q IN LISTS ACCEL_TPCH_SMOKE_QS)
+    list(APPEND _accel_rpath_targets test_tpch_q${_q})
+endforeach()
+foreach(_q IN LISTS ACCEL_TPCH_BENCH_QS)
+    list(APPEND _accel_rpath_targets benchmark_tpch_q${_q})
+endforeach()
+set_target_properties(${_accel_rpath_targets} PROPERTIES
     BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
     INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 )
@@ -1188,351 +656,19 @@ if(ACCEL_ENABLE_PARALLEL_TPCH)
 		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
 	)
 
-	add_executable(test_tpch_parallel
-		tests/parallel/test_tpch_parallel.cpp
-	)
-	target_link_libraries(test_tpch_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q20_semantics
-		tests/parallel/test_tpch_q20_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q20_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q20_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q20_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q20_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q21_semantics
-		tests/parallel/test_tpch_q21_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q21_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q21_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q21_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q21_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q22_semantics
-		tests/parallel/test_tpch_q22_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q22_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q22_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q22_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q22_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q10_semantics
-		tests/parallel/test_tpch_q10_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q10_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q10_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q10_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q10_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q17_semantics
-		tests/parallel/test_tpch_q17_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q17_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q17_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q17_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q17_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q18_semantics
-		tests/parallel/test_tpch_q18_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q18_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q18_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q18_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q18_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel/test_tpch_q3_semantics.cpp")
-	add_executable(test_tpch_q3_semantics
-		tests/parallel/test_tpch_q3_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q3_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q3_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q3_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q3_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-	endif()
-
-	add_executable(test_tpch_q5_semantics
-		tests/parallel/test_tpch_q5_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q5_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q5_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q5_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q5_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q7_semantics
-		tests/parallel/test_tpch_q7_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q7_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q7_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q7_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q7_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q8_semantics
-		tests/parallel/test_tpch_q8_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q8_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q8_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q8_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q8_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q11_semantics
-		tests/parallel/test_tpch_q11_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q11_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q11_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q11_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q11_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q13_semantics
-		tests/parallel/test_tpch_q13_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q13_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q13_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q13_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q13_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q1_semantics
-		tests/parallel/test_tpch_q1_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q1_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q1_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q1_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q1_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q16_semantics
-		tests/parallel/test_tpch_q16_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q16_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q16_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q16_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q16_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(test_tpch_q2_semantics
-		tests/parallel/test_tpch_q2_semantics.cpp
-	)
-	target_link_libraries(test_tpch_q2_semantics PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(test_tpch_q2_semantics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(test_tpch_q2_semantics PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(test_tpch_q2_semantics PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_q5_parallel
-		benchmarks/tpch/parallel/benchmark_q5_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q5_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q5_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q5_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q5_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_q7_parallel
-		benchmarks/tpch/parallel/benchmark_q7_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q7_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q7_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q7_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q7_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_q8_parallel
-		benchmarks/tpch/parallel/benchmark_q8_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q8_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q8_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q8_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q8_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_q1_parallel
-		benchmarks/tpch/parallel/benchmark_q1_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q1_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q1_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q1_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q1_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_q11_parallel
-		benchmarks/tpch/parallel/benchmark_q11_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q11_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q11_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q11_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q11_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_q13_parallel
-		benchmarks/tpch/parallel/benchmark_q13_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q13_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q13_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q13_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q13_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_q16_parallel
-		benchmarks/tpch/parallel/benchmark_q16_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q16_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q16_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q16_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q16_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_q2_parallel
-		benchmarks/tpch/parallel/benchmark_q2_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q2_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q2_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q2_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q2_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/parallel/benchmark_q3_parallel.cpp")
-	add_executable(benchmark_tpch_q3_parallel
-		benchmarks/tpch/parallel/benchmark_q3_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q3_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q3_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q3_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q3_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-	endif()
-
-	add_executable(benchmark_tpch_q18_parallel
-		benchmarks/tpch/parallel/benchmark_q18_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q18_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q18_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q18_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q18_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_q10_parallel
-		benchmarks/tpch/parallel/benchmark_q10_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q10_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q10_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q10_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q10_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_q17_parallel
-		benchmarks/tpch/parallel/benchmark_q17_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q17_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q17_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q17_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q17_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_q22_parallel
-		benchmarks/tpch/parallel/benchmark_q22_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_q22_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_q22_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_q22_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_q22_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_wave1_parallel
-		benchmarks/tpch/parallel/benchmark_wave1_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_wave1_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_wave1_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_wave1_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_wave1_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
-	add_executable(benchmark_tpch_wave5_parallel
-		benchmarks/tpch/parallel/benchmark_wave5_parallel.cpp
-	)
-	target_link_libraries(benchmark_tpch_wave5_parallel PRIVATE accelerator_codegen duckdb_sibling)
-	target_include_directories(benchmark_tpch_wave5_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-	target_compile_definitions(benchmark_tpch_wave5_parallel PRIVATE ACCEL_ENABLE_PARALLEL_TPCH)
-	set_target_properties(benchmark_tpch_wave5_parallel PROPERTIES
-		BUILD_RPATH "${DUCKDB_LIBRARY_DIR}"
-		INSTALL_RPATH "${DUCKDB_LIBRARY_DIR}"
-	)
-
+	accel_add_parallel_tpch_exe(test_tpch_parallel tests/parallel/test_tpch_parallel.cpp)
+	foreach(_q 20 21 22 10 17 18 3 5 7 8 11 13 1 16 2)
+		if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel/test_tpch_q${_q}_semantics.cpp")
+			accel_add_parallel_tpch_exe(test_tpch_q${_q}_semantics tests/parallel/test_tpch_q${_q}_semantics.cpp)
+		endif()
+	endforeach()
+	foreach(_q 5 7 8 1 11 13 16 2 3 18 10 17 22)
+		if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/parallel/benchmark_q${_q}_parallel.cpp")
+			accel_add_parallel_tpch_exe(benchmark_tpch_q${_q}_parallel benchmarks/tpch/parallel/benchmark_q${_q}_parallel.cpp)
+		endif()
+	endforeach()
+	accel_add_parallel_tpch_exe(benchmark_tpch_wave1_parallel benchmarks/tpch/parallel/benchmark_wave1_parallel.cpp)
+	accel_add_parallel_tpch_exe(benchmark_tpch_wave5_parallel benchmarks/tpch/parallel/benchmark_wave5_parallel.cpp)
 	add_executable(benchmark_tpch_scale_proxy
 		benchmarks/tpch/parallel/benchmark_scale_proxy.cpp
 	)
@@ -1575,19 +711,16 @@ endif()
 
 if(BUILD_TESTING)
     add_test(NAME registration_smoke_test COMMAND test_registration)
-    add_test(NAME tpch_q6_smoke_test COMMAND test_tpch_q6)
-    add_test(NAME tpch_q1_smoke_test COMMAND test_tpch_q1)
-    add_test(NAME tpch_q3_smoke_test COMMAND test_tpch_q3)
-    add_test(NAME tpch_q4_smoke_test COMMAND test_tpch_q4)
-    add_test(NAME tpch_q9_smoke_test COMMAND test_tpch_q9)
-    add_test(NAME tpch_q12_smoke_test COMMAND test_tpch_q12)
-    add_test(NAME tpch_q14_smoke_test COMMAND test_tpch_q14)
+    foreach(_q IN LISTS ACCEL_TPCH_SMOKE_QS)
+        add_test(NAME tpch_q${_q}_smoke_test COMMAND test_tpch_q${_q})
+        set_tests_properties(tpch_q${_q}_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
+    endforeach()
     add_test(NAME shared_aux_state_unit_test COMMAND test_shared_aux_state)
     add_test(NAME aux_calibration_unit_test COMMAND test_aux_calibration)
     set(_accel_shared_tpch_db
-        "${CMAKE_SOURCE_DIR}/../accelerator-codegen-duckdb/tpch_test.duckdb")
+        "${DUCKDB_ROOT}/tpch_test.duckdb")
     set(_accel_shared_sec_edgar_db
-        "${CMAKE_SOURCE_DIR}/../accelerator-codegen-duckdb/sec_edgar_test.duckdb")
+        "${DUCKDB_ROOT}/sec_edgar_test.duckdb")
     if(EXISTS "${_accel_shared_tpch_db}" AND EXISTS "${_accel_shared_sec_edgar_db}")
         add_test(
             NAME test_shared_incremental_differential_unit_test
@@ -1597,119 +730,40 @@ if(BUILD_TESTING)
             test_shared_incremental_differential_unit_test
             PROPERTIES RESOURCE_LOCK "tpch_sf1_db;sec_edgar_db")
     endif()
-    add_test(NAME tpch_q17_smoke_test COMMAND test_tpch_q17)
-    add_test(NAME tpch_q19_smoke_test COMMAND test_tpch_q19)
-    add_test(NAME tpch_q5_smoke_test COMMAND test_tpch_q5)
-    add_test(NAME tpch_q7_smoke_test COMMAND test_tpch_q7)
-    add_test(NAME tpch_q10_smoke_test COMMAND test_tpch_q10)
-    add_test(NAME tpch_q11_smoke_test COMMAND test_tpch_q11)
-    add_test(NAME tpch_q13_smoke_test COMMAND test_tpch_q13)
-    add_test(NAME tpch_q16_smoke_test COMMAND test_tpch_q16)
-    add_test(NAME tpch_q18_smoke_test COMMAND test_tpch_q18)
     accel_register_tpch_aux_ctests()
-    add_test(NAME tpch_q22_smoke_test COMMAND test_tpch_q22)
-    add_test(NAME tpch_q15_smoke_test COMMAND test_tpch_q15)
-    add_test(NAME tpch_q21_smoke_test COMMAND test_tpch_q21)
-    add_test(NAME tpch_q20_smoke_test COMMAND test_tpch_q20)
-    add_test(NAME tpch_q8_smoke_test COMMAND test_tpch_q8)
-    add_test(NAME tpch_q2_smoke_test COMMAND test_tpch_q2)
-    set_tests_properties(tpch_q6_smoke_test tpch_q1_smoke_test tpch_q3_smoke_test tpch_q4_smoke_test tpch_q9_smoke_test tpch_q12_smoke_test tpch_q14_smoke_test tpch_q17_smoke_test tpch_q19_smoke_test tpch_q5_smoke_test tpch_q7_smoke_test tpch_q10_smoke_test tpch_q11_smoke_test tpch_q13_smoke_test tpch_q16_smoke_test tpch_q18_smoke_test tpch_q22_smoke_test tpch_q15_smoke_test tpch_q21_smoke_test tpch_q20_smoke_test tpch_q8_smoke_test tpch_q2_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
 	if(ACCEL_ENABLE_PARALLEL_TPCH)
 		add_test(NAME tpch_parallel_smoke_test COMMAND test_tpch_parallel)
-		add_test(NAME tpch_q20_semantics_test COMMAND test_tpch_q20_semantics)
-		add_test(NAME tpch_q21_semantics_test COMMAND test_tpch_q21_semantics)
-		add_test(NAME tpch_q22_semantics_test COMMAND test_tpch_q22_semantics)
-		add_test(NAME tpch_q10_semantics_test COMMAND test_tpch_q10_semantics)
-		add_test(NAME tpch_q17_semantics_test COMMAND test_tpch_q17_semantics)
-		add_test(NAME tpch_q18_semantics_test COMMAND test_tpch_q18_semantics)
-		add_test(NAME tpch_q3_semantics_test COMMAND test_tpch_q3_semantics)
-		add_test(NAME tpch_q2_semantics_test COMMAND test_tpch_q2_semantics)
-		add_test(NAME tpch_q5_semantics_test COMMAND test_tpch_q5_semantics)
-		add_test(NAME tpch_q7_semantics_test COMMAND test_tpch_q7_semantics)
-		add_test(NAME tpch_q8_semantics_test COMMAND test_tpch_q8_semantics)
-		add_test(NAME tpch_q11_semantics_test COMMAND test_tpch_q11_semantics)
-		add_test(NAME tpch_q13_semantics_test COMMAND test_tpch_q13_semantics)
-		add_test(NAME tpch_q1_semantics_test COMMAND test_tpch_q1_semantics)
-		add_test(NAME tpch_q16_semantics_test COMMAND test_tpch_q16_semantics)
-		set_tests_properties(tpch_parallel_smoke_test tpch_q20_semantics_test tpch_q21_semantics_test tpch_q22_semantics_test tpch_q10_semantics_test tpch_q17_semantics_test tpch_q18_semantics_test tpch_q3_semantics_test tpch_q2_semantics_test tpch_q5_semantics_test tpch_q7_semantics_test tpch_q8_semantics_test tpch_q11_semantics_test tpch_q13_semantics_test tpch_q1_semantics_test tpch_q16_semantics_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
+		set_tests_properties(tpch_parallel_smoke_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
+		foreach(_q 20 21 22 10 17 18 3 2 5 7 8 11 13 1 16)
+			if(TARGET test_tpch_q${_q}_semantics)
+				add_test(NAME tpch_q${_q}_semantics_test COMMAND test_tpch_q${_q}_semantics)
+				set_tests_properties(tpch_q${_q}_semantics_test PROPERTIES RESOURCE_LOCK tpch_sf1_db)
+			endif()
+		endforeach()
 	endif()
 	if(ACCEL_ENABLE_PARALLEL_AUX)
 		add_test(NAME sec_edgar_aux_parallel_test COMMAND test_sec_edgar_aux_parallel)
 	endif()
 endif()
 
-accel_add_base_query(
-	BENCHMARK sec_edgar
-	QUERY_NUM 1
-	LIBRARY_TARGET accelerator_codegen
-	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-	CTEST_RESOURCE_LOCK sec_edgar_db
-)
+foreach(_q 1 2 3 4 6 24)
+	accel_add_base_query(
+		BENCHMARK sec_edgar
+		QUERY_NUM ${_q}
+		LIBRARY_TARGET accelerator_codegen
+		TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+		CTEST_RESOURCE_LOCK sec_edgar_db
+	)
+endforeach()
 
-accel_add_base_query(
-	BENCHMARK sec_edgar
-	QUERY_NUM 2
-	LIBRARY_TARGET accelerator_codegen
-	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-	CTEST_RESOURCE_LOCK sec_edgar_db
-)
-
-accel_add_base_query(
-	BENCHMARK sec_edgar
-	QUERY_NUM 3
-	LIBRARY_TARGET accelerator_codegen
-	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-	CTEST_RESOURCE_LOCK sec_edgar_db
-)
-
-accel_add_base_query(
-	BENCHMARK sec_edgar
-	QUERY_NUM 4
-	LIBRARY_TARGET accelerator_codegen
-	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-	CTEST_RESOURCE_LOCK sec_edgar_db
-)
-
-accel_add_base_query(
-	BENCHMARK sec_edgar
-	QUERY_NUM 6
-	LIBRARY_TARGET accelerator_codegen
-	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-	CTEST_RESOURCE_LOCK sec_edgar_db
-)
-
-accel_add_base_query(
-	BENCHMARK sec_edgar
-	QUERY_NUM 24
-	LIBRARY_TARGET accelerator_codegen
-	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-	CTEST_RESOURCE_LOCK sec_edgar_db
-)
-
-accel_add_aux_state_query(
-	BENCHMARK sec_edgar
-	QUERY_NUM 3
-	LIBRARY_TARGET accelerator_codegen
-	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-)
-accel_add_aux_state_query(
-	BENCHMARK sec_edgar
-	QUERY_NUM 4
-	LIBRARY_TARGET accelerator_codegen
-	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-)
-accel_add_aux_state_query(
-	BENCHMARK sec_edgar
-	QUERY_NUM 6
-	LIBRARY_TARGET accelerator_codegen
-	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-)
-accel_add_aux_state_query(
-	BENCHMARK sec_edgar
-	QUERY_NUM 24
-	LIBRARY_TARGET accelerator_codegen
-	TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
-)
+foreach(_q 3 4 6 24)
+	accel_add_aux_state_query(
+		BENCHMARK sec_edgar
+		QUERY_NUM ${_q}
+		LIBRARY_TARGET accelerator_codegen
+		TEST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tests
+	)
+endforeach()
 
 # SEC EDGAR Q6 on PostgreSQL: libpq-only differential / SF3 check / benchmark
 # against a running server (see the file header for modes).
@@ -1948,393 +1002,148 @@ if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
 endif()
 
 # ---------------------------------------------------------------------------
-# Engine backend layer harnesses (store layer: no PG server headers needed)
+# PostgreSQL engine backend layer harnesses. store / aux_backend link the
+# library; the later layers are plain libpq tests against the PG server.
 # ---------------------------------------------------------------------------
 if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_store.cpp")
-        add_executable(test_postgres_store
-            tests/engine_backend/test_postgres_store.cpp
-        )
-        target_link_libraries(test_postgres_store
-            PRIVATE
-                accelerator_codegen
-                duckdb_sibling
-        )
-        target_include_directories(test_postgres_store
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-        )
-        if(BUILD_TESTING)
-            add_test(NAME engine_postgres_store COMMAND test_postgres_store)
-        endif()
-    endif()
-endif()
-
-# ---------------------------------------------------------------------------
-# Engine backend layer harnesses (aux_backend layer: PG server headers needed)
-# ---------------------------------------------------------------------------
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_aux_backend.cpp")
-        add_executable(test_postgres_aux_backend
-            tests/engine_backend/test_postgres_aux_backend.cpp
-        )
-        target_link_libraries(test_postgres_aux_backend
-            PRIVATE
-                accelerator_codegen
-                duckdb_sibling
-        )
-        target_include_directories(test_postgres_aux_backend
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-        )
-        if(BUILD_TESTING)
-            add_test(NAME engine_postgres_aux_backend COMMAND test_postgres_aux_backend)
-        endif()
-    endif()
-endif()
-
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Engine backend layer harnesses (txn layer: libpq test)
-# ---------------------------------------------------------------------------
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
-    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_txn.cpp")
-        add_executable(test_postgres_txn
-            tests/engine_backend/test_postgres_txn.cpp
-        )
-        target_include_directories(test_postgres_txn
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${ACCEL_PG_INCLUDEDIR}
-        )
-        target_link_libraries(test_postgres_txn
-            PRIVATE
-                ${LIBPQ_LIB}
-        )
-        if(TARGET accelerator_codegen_pg)
-            add_dependencies(test_postgres_txn accelerator_codegen_pg)
-        endif()
-        if(BUILD_TESTING)
-            add_test(NAME engine_postgres_txn COMMAND test_postgres_txn)
-        endif()
-    endif()
-
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_mutations.cpp")
-        add_executable(test_postgres_mutations
-            tests/engine_backend/test_postgres_mutations.cpp
-        )
-        target_include_directories(test_postgres_mutations
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${ACCEL_PG_INCLUDEDIR}
-        )
-        target_link_libraries(test_postgres_mutations
-            PRIVATE
-                ${LIBPQ_LIB}
-        )
-        if(TARGET accelerator_codegen_pg)
-            add_dependencies(test_postgres_mutations accelerator_codegen_pg)
-        endif()
-        if(BUILD_TESTING)
-            add_test(NAME engine_postgres_mutations COMMAND test_postgres_mutations)
-        endif()
-    endif()
-endif()
-# ---------------------------------------------------------------------------
-# Engine backend layer harnesses (scan layer: libpq test)
-# ---------------------------------------------------------------------------
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
-    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_scan.cpp")
-        add_executable(test_postgres_scan
-            tests/engine_backend/test_postgres_scan.cpp
-        )
-        target_include_directories(test_postgres_scan
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${ACCEL_PG_INCLUDEDIR}
-        )
-        target_link_libraries(test_postgres_scan
-            PRIVATE
-                ${LIBPQ_LIB}
-        )
-        if(TARGET accelerator_codegen_pg)
-            add_dependencies(test_postgres_scan accelerator_codegen_pg)
-        endif()
-        if(BUILD_TESTING)
-            add_test(NAME engine_postgres_scan COMMAND test_postgres_scan)
-        endif()
-    endif()
-endif()
-# ---------------------------------------------------------------------------
-# Engine backend layer harnesses (runtime layer: libpq test)
-# ---------------------------------------------------------------------------
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
-    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_runtime.cpp")
-        add_executable(test_postgres_runtime
-            tests/engine_backend/test_postgres_runtime.cpp
-        )
-        target_include_directories(test_postgres_runtime
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${ACCEL_PG_INCLUDEDIR}
-        )
-        target_link_libraries(test_postgres_runtime
-            PRIVATE
-                ${LIBPQ_LIB}
-        )
-        if(TARGET accelerator_codegen_pg)
-            add_dependencies(test_postgres_runtime accelerator_codegen_pg)
-        endif()
-        if(BUILD_TESTING)
-            add_test(NAME engine_postgres_runtime COMMAND test_postgres_runtime)
-        endif()
-    endif()
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_visibility.cpp")
-        add_executable(test_postgres_visibility
-            tests/engine_backend/test_postgres_visibility.cpp
-        )
-        target_include_directories(test_postgres_visibility
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${ACCEL_PG_INCLUDEDIR}
-        )
-        target_link_libraries(test_postgres_visibility
-            PRIVATE
-                ${LIBPQ_LIB}
-        )
-        if(TARGET accelerator_codegen_pg)
-            add_dependencies(test_postgres_visibility accelerator_codegen_pg)
-        endif()
-        if(BUILD_TESTING)
-            add_test(NAME engine_postgres_visibility COMMAND test_postgres_visibility)
-        endif()
-    endif()
-endif()
-# ---------------------------------------------------------------------------
-# Engine backend layer harnesses (host layer: libpq test)
-# ---------------------------------------------------------------------------
-if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
-    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_host.cpp")
-        add_executable(test_postgres_host
-            tests/engine_backend/test_postgres_host.cpp
-        )
-        target_include_directories(test_postgres_host
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${ACCEL_PG_INCLUDEDIR}
-        )
-        target_link_libraries(test_postgres_host
-            PRIVATE
-                ${LIBPQ_LIB}
-        )
-        if(TARGET accelerator_codegen_pg)
-            add_dependencies(test_postgres_host accelerator_codegen_pg)
-        endif()
-        if(BUILD_TESTING)
-            add_test(NAME engine_postgres_host COMMAND test_postgres_host)
-        endif()
-    endif()
-endif()
-
-# ---------------------------------------------------------------------------
-# Engine backend layer harnesses (MySQL). Early layers link accelerator_codegen
-# only; later layers may add mysqlclient / plugin deps in MySQLAdapter.cmake.
-# ---------------------------------------------------------------------------
-if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
-    set(_accel_mysql_layers store aux_backend txn mutations scan runtime visibility host adversarial)
-    foreach(_layer IN LISTS _accel_mysql_layers)
-        set(_tgt "test_mysql_${_layer}")
-        set(_src "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/${_tgt}.cpp")
-        if(EXISTS "${_src}")
-            add_executable(${_tgt} tests/engine_backend/${_tgt}.cpp)
-            target_link_libraries(${_tgt}
+    foreach(_layer IN ITEMS store aux_backend)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_${_layer}.cpp")
+            add_executable(test_postgres_${_layer}
+                tests/engine_backend/test_postgres_${_layer}.cpp
+            )
+            target_link_libraries(test_postgres_${_layer}
                 PRIVATE
                     accelerator_codegen
                     duckdb_sibling
             )
-            target_include_directories(${_tgt}
+            target_include_directories(test_postgres_${_layer}
                 PRIVATE
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests
             )
-            if(ACCEL_MYSQL_FOUND AND ACCEL_MYSQL_INCLUDEDIR)
-                target_include_directories(${_tgt} PRIVATE ${ACCEL_MYSQL_INCLUDEDIR})
+            if(BUILD_TESTING)
+                add_test(NAME engine_postgres_${_layer} COMMAND test_postgres_${_layer})
             endif()
-            # txn and later layers use the mysql CLI for real SQL connection harnesses
-            # (no libmysqlclient linking needed; the CLI is already in the container)
-            if(TARGET accelerator_codegen_mysql)
-                add_dependencies(${_tgt} accelerator_codegen_mysql)
+        endif()
+    endforeach()
+endif()
+
+if(ACCELERATOR_CODEGEN_BUILD_POSTGRES AND ACCEL_PG_FOUND)
+    find_library(LIBPQ_LIB pq PATHS "${ACCEL_PG_LIBDIR}" NO_DEFAULT_PATH)
+    foreach(_layer IN ITEMS txn mutations scan runtime visibility host)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/engine_backend/test_postgres_${_layer}.cpp")
+            add_executable(test_postgres_${_layer}
+                tests/engine_backend/test_postgres_${_layer}.cpp
+            )
+            target_include_directories(test_postgres_${_layer}
+                PRIVATE
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                    ${ACCEL_PG_INCLUDEDIR}
+            )
+            target_link_libraries(test_postgres_${_layer}
+                PRIVATE
+                    ${LIBPQ_LIB}
+            )
+            if(TARGET accelerator_codegen_pg)
+                add_dependencies(test_postgres_${_layer} accelerator_codegen_pg)
             endif()
             if(BUILD_TESTING)
-                add_test(NAME engine_mysql_${_layer} COMMAND ${_tgt})
+                add_test(NAME engine_postgres_${_layer} COMMAND test_postgres_${_layer})
+            endif()
+        endif()
+    endforeach()
+endif()
+
+# ---------------------------------------------------------------------------
+# Engine backend layer harnesses and TPC-H aux harnesses (MySQL). Early layers
+# link accelerator_codegen only; later layers may add mysqlclient / plugin deps
+# in MySQLAdapter.cmake.
+# ---------------------------------------------------------------------------
+if(ACCELERATOR_CODEGEN_BUILD_MYSQL)
+    # The MySQL host state (scan helper, query catalog) is part of
+    # accelerator_codegen only when it is built for the mysql engine (the
+    # container build, ACCEL_CODEGEN_ENGINE=mysql). For any other engine the
+    # harnesses get it from a small separate library; none of it needs the
+    # plugin SDK.
+    accel_codegen_engine_name(_mysql_test_engine)
+    set(ACCEL_MYSQL_TEST_LIBS accelerator_codegen duckdb_sibling)
+    if(NOT _mysql_test_engine STREQUAL "mysql"
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/mysql/scan_helper.cpp"
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/catalog/mysql/query_catalog.cpp")
+        add_library(accelerator_codegen_mysql_host STATIC
+            src/runtime/mysql/scan_helper.cpp
+            src/generated/catalog/mysql/query_catalog.cpp
+        )
+        target_include_directories(accelerator_codegen_mysql_host PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+        )
+        target_compile_features(accelerator_codegen_mysql_host PUBLIC cxx_std_17)
+        set(ACCEL_MYSQL_TEST_LIBS accelerator_codegen_mysql_host accelerator_codegen duckdb_sibling)
+    endif()
+
+    # accel_add_mysql_test(<target> <source> [extra link libs...])
+    function(accel_add_mysql_test name src)
+        add_executable(${name} ${src})
+        target_link_libraries(${name} PRIVATE ${ACCEL_MYSQL_TEST_LIBS} ${ARGN})
+        target_include_directories(${name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+        )
+        if(ACCEL_MYSQL_FOUND AND ACCEL_MYSQL_INCLUDEDIR)
+            target_include_directories(${name} PRIVATE ${ACCEL_MYSQL_INCLUDEDIR})
+        endif()
+        # The harnesses use the mysql CLI for real SQL connections (no
+        # libmysqlclient linking; the CLI is already in the container).
+        if(TARGET accelerator_codegen_mysql)
+            add_dependencies(${name} accelerator_codegen_mysql)
+        endif()
+    endfunction()
+
+    foreach(_layer IN ITEMS store aux_backend txn mutations scan runtime visibility host adversarial)
+        set(_src "tests/engine_backend/test_mysql_${_layer}.cpp")
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_src}")
+            accel_add_mysql_test(test_mysql_${_layer} ${_src})
+            if(BUILD_TESTING)
+                add_test(NAME engine_mysql_${_layer} COMMAND test_mysql_${_layer})
             endif()
         endif()
     endforeach()
 
-    # MySQL TPC-H aux differential / isolation / calibration harnesses
+    # TPC-H aux differential / parameter-generality / isolation / calibration harnesses
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_mysql_tpch_differential.cpp")
-        add_executable(test_mysql_tpch_fuzz
-            tests/aux_state/test_mysql_tpch_fuzz.cpp
-        )
-        target_link_libraries(test_mysql_tpch_fuzz
-            PRIVATE accelerator_codegen duckdb_sibling)
-        target_include_directories(test_mysql_tpch_fuzz
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
-                ${CMAKE_CURRENT_SOURCE_DIR}/include
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
-        )
-        # Parameter-generality differential (all 22 queries, spec / off-spec / edge / NULL
-        # params; plain, data-perturb, wide-keys, negative-keys modes).
-        add_executable(test_mysql_tpch_params
-            tests/aux_state/test_mysql_tpch_params.cpp
-        )
-        target_link_libraries(test_mysql_tpch_params
-            PRIVATE accelerator_codegen duckdb_sibling)
-        target_include_directories(test_mysql_tpch_params
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
-                ${CMAKE_CURRENT_SOURCE_DIR}/include
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
-        )
-        add_executable(test_mysql_tpch_differential
-            tests/aux_state/test_mysql_tpch_differential.cpp
-        )
-        target_link_libraries(test_mysql_tpch_differential
-            PRIVATE accelerator_codegen duckdb_sibling)
-        target_include_directories(test_mysql_tpch_differential
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
-                ${CMAKE_CURRENT_SOURCE_DIR}/include
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
-        )
-        if(TARGET accelerator_codegen_mysql)
-            add_dependencies(test_mysql_tpch_differential accelerator_codegen_mysql)
-        endif()
+        accel_add_mysql_test(test_mysql_tpch_fuzz tests/aux_state/test_mysql_tpch_fuzz.cpp)
+        # all 22 queries; spec / off-spec / edge / NULL params; plain, data-perturb,
+        # wide-keys, negative-keys modes
+        accel_add_mysql_test(test_mysql_tpch_params tests/aux_state/test_mysql_tpch_params.cpp)
+        accel_add_mysql_test(test_mysql_tpch_differential tests/aux_state/test_mysql_tpch_differential.cpp)
         if(BUILD_TESTING)
             add_test(NAME mysql_tpch_differential COMMAND test_mysql_tpch_differential)
         endif()
     endif()
-
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_mysql_cross_accel.cpp")
-        add_executable(test_mysql_cross_accel
-            tests/aux_state/test_mysql_cross_accel.cpp
-        )
-        target_link_libraries(test_mysql_cross_accel
-            PRIVATE accelerator_codegen duckdb_sibling)
-        target_include_directories(test_mysql_cross_accel
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
-                ${CMAKE_CURRENT_SOURCE_DIR}/include
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
-        )
-        if(TARGET accelerator_codegen_mysql)
-            add_dependencies(test_mysql_cross_accel accelerator_codegen_mysql)
+    foreach(_t IN ITEMS test_mysql_cross_accel test_mysql_aux_multi_connection_stress
+                        test_mysql_aux_build_race test_mysql_aux_session_isolation)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/${_t}.cpp")
+            accel_add_mysql_test(${_t} tests/aux_state/${_t}.cpp)
         endif()
-        if(BUILD_TESTING)
-            add_test(NAME test_mysql_cross_accel COMMAND test_mysql_cross_accel)
-        endif()
-    endif()
-
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_mysql_aux_multi_connection_stress.cpp")
-        add_executable(test_mysql_aux_multi_connection_stress
-            tests/aux_state/test_mysql_aux_multi_connection_stress.cpp
-        )
+    endforeach()
+    if(TARGET test_mysql_aux_multi_connection_stress)
         find_package(Threads REQUIRED)
-        target_link_libraries(test_mysql_aux_multi_connection_stress
-            PRIVATE accelerator_codegen duckdb_sibling Threads::Threads)
-        target_include_directories(test_mysql_aux_multi_connection_stress
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
-                ${CMAKE_CURRENT_SOURCE_DIR}/include
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
-        )
-        if(TARGET accelerator_codegen_mysql)
-            add_dependencies(test_mysql_aux_multi_connection_stress accelerator_codegen_mysql)
-        endif()
-        if(BUILD_TESTING)
-            add_test(NAME test_mysql_aux_multi_connection_stress COMMAND test_mysql_aux_multi_connection_stress)
-        endif()
+        target_link_libraries(test_mysql_aux_multi_connection_stress PRIVATE Threads::Threads)
     endif()
-
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_mysql_aux_build_race.cpp")
-        add_executable(test_mysql_aux_build_race
-            tests/aux_state/test_mysql_aux_build_race.cpp
-        )
-        target_link_libraries(test_mysql_aux_build_race
-            PRIVATE accelerator_codegen duckdb_sibling)
-        target_include_directories(test_mysql_aux_build_race
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
-                ${CMAKE_CURRENT_SOURCE_DIR}/include
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
-        )
-        if(TARGET accelerator_codegen_mysql)
-            add_dependencies(test_mysql_aux_build_race accelerator_codegen_mysql)
-        endif()
+    if(BUILD_TESTING)
+        foreach(_t IN ITEMS test_mysql_cross_accel test_mysql_aux_multi_connection_stress)
+            if(TARGET ${_t})
+                add_test(NAME ${_t} COMMAND ${_t})
+            endif()
+        endforeach()
     endif()
-
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state/test_mysql_aux_session_isolation.cpp")
-        add_executable(test_mysql_aux_session_isolation
-            tests/aux_state/test_mysql_aux_session_isolation.cpp
-        )
-        target_link_libraries(test_mysql_aux_session_isolation
-            PRIVATE accelerator_codegen duckdb_sibling)
-        target_include_directories(test_mysql_aux_session_isolation
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
-                ${CMAKE_CURRENT_SOURCE_DIR}/include
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
-        )
-        if(TARGET accelerator_codegen_mysql)
-            add_dependencies(test_mysql_aux_session_isolation accelerator_codegen_mysql)
+    foreach(_t IN ITEMS benchmark_mysql_tpch_aux calibrate_mysql_tpch_aux_cost_model)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/mysql/${_t}.cpp")
+            accel_add_mysql_test(${_t} benchmarks/mysql/${_t}.cpp)
         endif()
-    endif()
-
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/mysql/benchmark_mysql_tpch_aux.cpp")
-        add_executable(benchmark_mysql_tpch_aux
-            benchmarks/mysql/benchmark_mysql_tpch_aux.cpp
-        )
-        target_link_libraries(benchmark_mysql_tpch_aux
-            PRIVATE accelerator_codegen duckdb_sibling)
-        target_include_directories(benchmark_mysql_tpch_aux
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${CMAKE_CURRENT_SOURCE_DIR}/include
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
-        )
-        if(TARGET accelerator_codegen_mysql)
-            add_dependencies(benchmark_mysql_tpch_aux accelerator_codegen_mysql)
-        endif()
-    endif()
-
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/mysql/calibrate_mysql_tpch_aux_cost_model.cpp")
-        add_executable(calibrate_mysql_tpch_aux_cost_model
-            benchmarks/mysql/calibrate_mysql_tpch_aux_cost_model.cpp
-        )
-        target_link_libraries(calibrate_mysql_tpch_aux_cost_model
-            PRIVATE accelerator_codegen duckdb_sibling)
-        target_include_directories(calibrate_mysql_tpch_aux_cost_model
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/aux_state
-                ${CMAKE_CURRENT_SOURCE_DIR}/include
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
-        )
-        if(TARGET accelerator_codegen_mysql)
-            add_dependencies(calibrate_mysql_tpch_aux_cost_model accelerator_codegen_mysql)
-        endif()
-    endif()
+    endforeach()
 endif()
 
 # SEC EDGAR Q2 aux: differential test (maintenance matrix, random parameters).
