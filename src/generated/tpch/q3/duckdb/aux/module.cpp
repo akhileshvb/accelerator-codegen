@@ -571,7 +571,7 @@ bool DecodeTpchQ3OrderSegmentSide(const std::vector<uint8_t> &bytes,
   uint32_t count = 0;
   if (!core::ReadImageHeader(reader, kOrderSegmentMagic, kVersion, count))
     return false;
-  TpchQ3ShardBuilder<TpchQ3OrderRec> orders;
+  TpchQ3ShardIndex<TpchQ3OrderRec>::Builder orders;
   for (uint32_t i = 0; i < count; ++i) {
     TpchQ3OrderRec rec;
     uint32_t orderdate = 0;
@@ -585,7 +585,7 @@ bool DecodeTpchQ3OrderSegmentSide(const std::vector<uint8_t> &bytes,
   uint32_t cust_count = 0;
   if (!reader.U32(cust_count))
     return false;
-  TpchQ3ShardBuilder<TpchQ3CustRec> custs;
+  TpchQ3ShardIndex<TpchQ3CustRec>::Builder custs;
   for (uint32_t i = 0; i < cust_count; ++i) {
     TpchQ3CustRec rec;
     if (!reader.U32(rec.key) || !reader.U32(rec.orphan_orders) ||
@@ -969,8 +969,8 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
     return rebuild_all();
 
 
-  TpchQ3ShardTxn<TpchQ3OrderRec> otx(side->orders);
-  TpchQ3ShardTxn<TpchQ3CustRec> ctx(side->custs);
+  TpchQ3ShardIndex<TpchQ3OrderRec>::Txn otx(side->orders);
+  TpchQ3ShardIndex<TpchQ3CustRec>::Txn ctx(side->custs);
   std::map<core::PartitionId, Q3SegmentTxn> seg_txns;
   auto segtx = [&](core::PartitionId segment) -> Q3SegmentTxn & {
     auto it = seg_txns.find(segment);
@@ -1002,12 +1002,12 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
       TpchQ3CustRec next = *rec;
       const int64_t count = static_cast<int64_t>(next.orphan_orders) + delta;
       next.orphan_orders = count > 0 ? static_cast<uint32_t>(count) : 0;
-      ctx.Set(next);
+      ctx.Upsert(next);
     } else if (delta > 0) {
       TpchQ3CustRec next;
       next.key = key;
       next.orphan_orders = static_cast<uint32_t>(delta);
-      ctx.Set(next);
+      ctx.Upsert(next);
     }
   };
   auto tracked_customer = [&](int64_t custkey) -> const TpchQ3CustRec * {
@@ -1338,7 +1338,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
   // (C) Side index.
   for (auto &w : works) {
     if (w.exists)
-      otx.Set(w.rec);
+      otx.Upsert(w.rec);
     else if (w.had)
       otx.Erase(w.key);
   }
@@ -1386,7 +1386,7 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
         }
         r.seg_flags = static_cast<uint8_t>(new_seg);
         place_order(r, day);
-        otx.Set(r);
+        otx.Upsert(r);
       }
       next.orphan_orders =
           new_seg == 0 ? static_cast<uint32_t>(orders.size()) : 0;
@@ -1426,13 +1426,13 @@ TpchQ3Module::StageMaintenance(core::AuxEngineServices &services,
           if (e.second != 0)
             day[e.first] = e.second;
         place_order(r, day);
-        otx.Set(r);
+        otx.Upsert(r);
       }
       next.orphan_orders = 0;
     } else {
       next.orphan_orders = new_seg == 0 ? orphans : 0;
     }
-    ctx.Set(next);
+    ctx.Upsert(next);
     return true;
   };
   using CKind = TpchQ3CustomerDelta::Kind;
@@ -1579,7 +1579,7 @@ TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q3 requires a typed initial scan source");
 
-  TpchQ3ShardBuilder<TpchQ3CustRec> custs;
+  TpchQ3ShardIndex<TpchQ3CustRec>::Builder custs;
   initial_scan->ScanCustomers([&](const TpchQ3CustomerInput &input) {
     const auto partition = TpchQ3PartitionFromMktsegment(input.mktsegment);
     if (partition == 0 || input.key < 0 ||
@@ -1594,7 +1594,7 @@ TpchQ3Module::BuildState(core::AuxEngineServices &services) const {
 
   // `bound` temporarily holds the head of the order's day-node chain.
   std::unordered_map<uint32_t, uint32_t> orphan_custs;
-  TpchQ3ShardBuilder<TpchQ3OrderRec> orders;
+  TpchQ3ShardIndex<TpchQ3OrderRec>::Builder orders;
   initial_scan->ScanOrders([&](const TpchQ3OrderInput &input) {
     if (input.custkey < 0 ||
         input.custkey > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))

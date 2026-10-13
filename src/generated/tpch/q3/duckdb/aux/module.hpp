@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/sharded_sorted_map.hpp"
 #include "tpch/q3/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -132,191 +133,21 @@ inline uint8_t PackTpchQ3Shippriority(int32_t shippriority) {
 }
 
 // ---------------------------------------------------------------------------
-// Persistent (copy-on-write) hash-sharded sorted maps keyed by uint32 `key`.
-// A published index is never mutated: a write copies the 256-entry top array,
-// the touched 256-entry mid arrays and the touched leaves (a few hundred
-// entries); everything else stays shared.
+// Persistent (copy-on-write) hash-sharded sorted maps keyed by uint32 `key`
+// (core::ShardedSortedMap, 2^18 shards: 1024 top slots x 256 leaves per mid).
+// A published index is never mutated: a write copies the top array, the
+// touched mid arrays and the touched leaves (a few hundred entries);
+// everything else stays shared.
 // ---------------------------------------------------------------------------
-constexpr uint32_t kTpchQ3ShardBits = 18;
-constexpr uint32_t kTpchQ3TopCount = 1u << (kTpchQ3ShardBits - 8);
-
-inline uint32_t TpchQ3ShardOf(uint32_t key) {
-  return static_cast<uint32_t>((static_cast<uint64_t>(key) *
-                                0x9E3779B97F4A7C15ULL) >> (64 - kTpchQ3ShardBits));
-}
-
-template <typename E> struct TpchQ3ShardIndex {
-  using Leaf = std::vector<E>;
-  struct Mid {
-    std::array<std::shared_ptr<const Leaf>, 256> leaves;
-  };
-  std::array<std::shared_ptr<const Mid>, kTpchQ3TopCount> mids;
-
-  static const E *FindIn(const Leaf *leaf, uint32_t key) {
-    if (!leaf)
-      return nullptr;
-    auto it = std::lower_bound(
-        leaf->begin(), leaf->end(), key,
-        [](const E &e, uint32_t k) { return e.key < k; });
-    return (it != leaf->end() && it->key == key) ? &*it : nullptr;
-  }
-  const E *Find(uint32_t key) const {
-    const auto shard = TpchQ3ShardOf(key);
-    const auto &mid = mids[shard >> 8];
-    if (!mid)
-      return nullptr;
-    return FindIn(mid->leaves[shard & 255].get(), key);
-  }
-  template <typename F> void ForEach(F &&f) const {
-    for (const auto &mid : mids) {
-      if (!mid)
-        continue;
-      for (const auto &leaf : mid->leaves)
-        if (leaf)
-          for (const auto &e : *leaf)
-            f(e);
-    }
+struct TpchQ3KeyOf {
+  template <typename E> const uint32_t &operator()(const E &e) const {
+    return e.key;
   }
 };
-
-template <typename E> class TpchQ3ShardTxn {
-public:
-  using Index = TpchQ3ShardIndex<E>;
-  using Leaf = typename Index::Leaf;
-  using Mid = typename Index::Mid;
-
-  explicit TpchQ3ShardTxn(const Index &base) : top_(base) {}
-
-  const E *Find(uint32_t key) const {
-    return Index::FindIn(Current(TpchQ3ShardOf(key)), key);
-  }
-  void Set(const E &value) {
-    auto &leaf = Mutable(TpchQ3ShardOf(value.key));
-    auto it = std::lower_bound(
-        leaf.begin(), leaf.end(), value.key,
-        [](const E &e, uint32_t k) { return e.key < k; });
-    if (it != leaf.end() && it->key == value.key)
-      *it = value;
-    else
-      leaf.insert(it, value);
-  }
-  void Erase(uint32_t key) {
-    const auto shard = TpchQ3ShardOf(key);
-    if (!Index::FindIn(Current(shard), key))
-      return;
-    auto &leaf = Mutable(shard);
-    auto it = std::lower_bound(
-        leaf.begin(), leaf.end(), key,
-        [](const E &e, uint32_t k) { return e.key < k; });
-    if (it != leaf.end() && it->key == key)
-      leaf.erase(it);
-  }
-  bool Dirty() const { return !leaves_.empty(); }
-  // `parallel_for(n, fn)` runs fn(0..n) (possibly on several threads).
-  template <class ParallelFor> Index Finish(ParallelFor &&parallel_for) {
-    std::vector<uint32_t> his;
-    his.reserve(leaves_.size());
-    {
-      std::vector<uint8_t> seen(kTpchQ3TopCount, 0);
-      for (const auto &entry : leaves_) {
-        const uint32_t hi = entry.first >> 8;
-        if (!seen[hi]) {
-          seen[hi] = 1;
-          his.push_back(hi);
-        }
-      }
-    }
-    std::vector<std::shared_ptr<Mid>> built(his.size());
-    // Each task owns one mid: it copies the old mid and swaps in the leaves
-    // written to it (leaves_ is only read here).
-    std::vector<std::vector<std::pair<uint32_t, std::shared_ptr<Leaf> *>>> by_hi(
-        kTpchQ3TopCount);
-    for (auto &entry : leaves_)
-      by_hi[entry.first >> 8].emplace_back(entry.first & 255, &entry.second);
-    parallel_for(his.size(), [&](std::size_t t) {
-      const uint32_t hi = his[t];
-      auto mid = top_.mids[hi] ? std::make_shared<Mid>(*top_.mids[hi])
-                               : std::make_shared<Mid>();
-      for (auto &lw : by_hi[hi]) {
-        if ((*lw.second)->empty())
-          mid->leaves[lw.first] = nullptr;
-        else
-          mid->leaves[lw.first] = std::move(*lw.second);
-      }
-      built[t] = std::move(mid);
-    });
-    for (std::size_t t = 0; t < his.size(); ++t)
-      top_.mids[his[t]] = std::move(built[t]);
-    leaves_.clear();
-    return std::move(top_);
-  }
-
-private:
-  const Leaf *Current(uint32_t shard) const {
-    auto it = leaves_.find(shard);
-    if (it != leaves_.end())
-      return it->second.get();
-    const auto &mid = top_.mids[shard >> 8];
-    return mid ? mid->leaves[shard & 255].get() : nullptr;
-  }
-  Leaf &Mutable(uint32_t shard) {
-    auto it = leaves_.find(shard);
-    if (it != leaves_.end())
-      return *it->second;
-    const auto *cur = Current(shard);
-    auto copy = cur ? std::make_shared<Leaf>(*cur) : std::make_shared<Leaf>();
-    return *leaves_.emplace(shard, std::move(copy)).first->second;
-  }
-
-  Index top_;
-  std::unordered_map<uint32_t, std::shared_ptr<Leaf>> leaves_;
-};
-
-// Bulk builder for the initial build: append, Sort(), mutable Find(), Finish().
-template <typename E> class TpchQ3ShardBuilder {
-public:
-  using Index = TpchQ3ShardIndex<E>;
-  using Leaf = typename Index::Leaf;
-
-  TpchQ3ShardBuilder() : shards_(std::size_t{1} << kTpchQ3ShardBits) {}
-  void Add(const E &value) { shards_[TpchQ3ShardOf(value.key)].push_back(value); }
-  void Sort() {
-    for (auto &shard : shards_)
-      std::sort(shard.begin(), shard.end(),
-                [](const E &a, const E &b) { return a.key < b.key; });
-  }
-  E *Find(uint32_t key) {
-    auto &shard = shards_[TpchQ3ShardOf(key)];
-    auto it = std::lower_bound(
-        shard.begin(), shard.end(), key,
-        [](const E &e, uint32_t k) { return e.key < k; });
-    return (it != shard.end() && it->key == key) ? &*it : nullptr;
-  }
-  template <typename F> void ForEach(F &&f) {
-    for (auto &shard : shards_)
-      for (auto &e : shard)
-        f(e);
-  }
-  Index Finish() {
-    Index index;
-    for (uint32_t hi = 0; hi < kTpchQ3TopCount; ++hi) {
-      std::shared_ptr<typename Index::Mid> mid;
-      for (uint32_t lo = 0; lo < 256; ++lo) {
-        auto &shard = shards_[(hi << 8) | lo];
-        if (shard.empty())
-          continue;
-        if (!mid)
-          mid = std::make_shared<typename Index::Mid>();
-        mid->leaves[lo] = std::make_shared<const Leaf>(std::move(shard));
-      }
-      index.mids[hi] = std::move(mid);
-    }
-    return index;
-  }
-
-private:
-  std::vector<Leaf> shards_;
-};
+template <typename E>
+using TpchQ3ShardIndex =
+    core::ShardedSortedMap<uint32_t, E, TpchQ3KeyOf,
+                           core::ShardedSortedMapHash<uint32_t>, 18, 8>;
 
 // Per-order record (every order whose customer is in a tracked segment).
 // `bound` is an upper bound on the order's revenue for ANY cutoff: the sum of
