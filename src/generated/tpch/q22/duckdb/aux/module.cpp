@@ -370,18 +370,15 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
   if (!parent)
     return rebuild_all();
 
-  // Staged copy: shares every page, aggregate and the orphan map with the
-  // parent; only what a delta touches is cloned (once), so published versions
-  // stay immutable and an aborted commit leaves no trace.
+  // Staged copy: shares every page, aggregate block, sparse shard and orphan
+  // shard with the parent; only what a delta touches is cloned (once), so
+  // published versions stay immutable and an aborted commit leaves no trace.
   auto new_state = std::make_shared<TpchQ22State>(*parent);
   using Prefix = TpchQ22State::Prefix;
   using Record = TpchQ22State::CustomerRecord;
 
   std::unordered_set<std::size_t> owned_pages;
-  bool sparse_owned = false;
-  bool orphan_owned = false;
-  std::shared_ptr<TpchQ22State::OrphanMap> orphans;
-  std::unordered_map<Prefix, std::shared_ptr<TpchQ22PrefixAggregate>> touched_aggs;
+  std::unordered_map<Prefix, std::shared_ptr<core::SortedCountSum>> touched_aggs;
 
   const auto mutable_customer = [&](int64_t custkey) -> Record & {
     if (custkey >= 0 && custkey < TpchQ22State::kDenseLimit) {
@@ -397,34 +394,20 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
       return new_state->pages[page]->recs[static_cast<std::size_t>(custkey) %
                                           TpchQ22State::kPageSize];
     }
-    if (!sparse_owned) {
-      new_state->sparse = std::make_shared<TpchQ22State::SparseMap>(
-          new_state->sparse ? *new_state->sparse : TpchQ22State::SparseMap{});
-      sparse_owned = true;
-    }
-    return (*new_state->sparse)[custkey];
+    return new_state->sparse[custkey];
   };
 
-  const auto mutable_orphans = [&]() -> TpchQ22State::OrphanMap & {
-    if (!orphan_owned) {
-      orphans = std::make_shared<TpchQ22State::OrphanMap>(
-          new_state->orphan_orders ? *new_state->orphan_orders
-                                   : TpchQ22State::OrphanMap{});
-      orphan_owned = true;
-    }
-    return *orphans;
-  };
-
-  const auto aggregate = [&](Prefix prefix, bool create) -> TpchQ22PrefixAggregate * {
+  const auto aggregate = [&](Prefix prefix, bool create) -> core::SortedCountSum * {
     const auto it = touched_aggs.find(prefix);
     if (it != touched_aggs.end())
       return it->second.get();
     const auto base_it = new_state->prefix_aggregates.find(prefix);
     if (base_it == new_state->prefix_aggregates.end() && !create)
       return nullptr;
+    // Copying a SortedCountSum shares its blocks; Add clones the touched one.
     auto clone = base_it == new_state->prefix_aggregates.end()
-                     ? std::make_shared<TpchQ22PrefixAggregate>()
-                     : std::make_shared<TpchQ22PrefixAggregate>(*base_it->second);
+                     ? std::make_shared<core::SortedCountSum>()
+                     : std::make_shared<core::SortedCountSum>(*base_it->second);
     return touched_aggs.emplace(prefix, std::move(clone)).first->second.get();
   };
 
@@ -450,9 +433,9 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
       positive_remove(rec.prefix, rec.balance_raw);
     if (rec.order_count == 0) {
       if (sign > 0)
-        aggregate(rec.prefix, true)->AddBalance(rec.balance_raw);
+        aggregate(rec.prefix, true)->Add(rec.balance_raw, 1);
       else if (auto *agg = aggregate(rec.prefix, false))
-        agg->RemoveBalance(rec.balance_raw);
+        agg->Add(rec.balance_raw, -1);
     }
   };
 
@@ -465,14 +448,9 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
       rec.prefix = new_prefix;
       rec.balance_raw = delta.new_balance;
       rec.order_count = 0;
-      if (orphan_owned || !new_state->orphan_orders->empty()) {
-        const auto &orphan_view =
-            orphan_owned ? *orphans : *new_state->orphan_orders;
-        const auto orphan_it = orphan_view.find(delta.custkey);
-        if (orphan_it != orphan_view.end()) {
-          rec.order_count = orphan_it->second;
-          mutable_orphans().erase(delta.custkey);
-        }
+      if (const int64_t *orphan = new_state->orphan_orders.Find(delta.custkey)) {
+        rec.order_count = *orphan;
+        new_state->orphan_orders.Erase(delta.custkey);
       }
       mutable_customer(delta.custkey) = rec;
       contribute(rec, +1);
@@ -484,7 +462,7 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
       contribute(rec, -1);
       mutable_customer(delta.custkey) = Record{};
       if (rec.order_count != 0)
-        mutable_orphans()[delta.custkey] = rec.order_count;
+        new_state->orphan_orders.Upsert(delta.custkey, rec.order_count);
     } else {
       const Record *found = new_state->FindCustomer(delta.custkey);
       if (!found)
@@ -515,33 +493,25 @@ TpchQ22Module::StageMaintenance(core::AuxEngineServices &services,
       const bool is_zero = rec.order_count == 0;
       if (was_zero != is_zero && rec.balance_raw > 0 && rec.prefix != 0) {
         if (is_zero)
-          aggregate(rec.prefix, true)->AddBalance(rec.balance_raw);
+          aggregate(rec.prefix, true)->Add(rec.balance_raw, 1);
         else if (auto *agg = aggregate(rec.prefix, false))
-          agg->RemoveBalance(rec.balance_raw);
+          agg->Add(rec.balance_raw, -1);
       }
     } else {
       // Customer not found — update orphan orders
-      const auto &view = orphan_owned ? *orphans : *new_state->orphan_orders;
-      const auto orphan_it = view.find(delta.custkey);
-      const int64_t old_count = orphan_it != view.end() ? orphan_it->second : 0;
-      const int64_t new_count = old_count + delta.sign;
-      if (new_count <= 0) {
-        if (orphan_it != view.end())
-          mutable_orphans().erase(delta.custkey);
-      } else {
-        mutable_orphans()[delta.custkey] = new_count;
-      }
+      const int64_t *orphan = new_state->orphan_orders.Find(delta.custkey);
+      const int64_t new_count = (orphan ? *orphan : 0) + delta.sign;
+      if (new_count <= 0)
+        new_state->orphan_orders.Erase(delta.custkey);
+      else
+        new_state->orphan_orders.Upsert(delta.custkey, new_count);
     }
   }
 
-  // Publish the touched aggregates / orphan map as immutable shared pieces.
+  // Publish the touched aggregates as immutable shared pieces.
   for (auto &[prefix, agg] : touched_aggs)
     new_state->prefix_aggregates[prefix] =
-        std::static_pointer_cast<const TpchQ22PrefixAggregate>(std::move(agg));
-  if (orphan_owned)
-    new_state->orphan_orders =
-        std::static_pointer_cast<const TpchQ22State::OrphanMap>(
-            std::move(orphans));
+        std::static_pointer_cast<const core::SortedCountSum>(std::move(agg));
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
   const auto typed_state =
@@ -636,7 +606,6 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
 
   using Prefix = TpchQ22State::Prefix;
   std::unordered_map<Prefix, std::map<int64_t, int64_t>> distributions;
-  std::unordered_set<int64_t> customers_seen_sparse;
 
   const auto record_of = [&](int64_t custkey) -> TpchQ22State::CustomerRecord & {
     if (custkey < TpchQ22State::kDenseLimit) {
@@ -649,7 +618,7 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
       return state.pages[page]->recs[static_cast<std::size_t>(custkey) %
                                      TpchQ22State::kPageSize];
     }
-    return (*state.sparse)[custkey];
+    return state.sparse[custkey];
   };
 
   initial_scan->ScanCustomers([&](const TpchQ22CustomerInput &input) {
@@ -671,30 +640,16 @@ TpchQ22Module::BuildState(core::AuxEngineServices &services) const {
   });
 
   // Orphan orders (custkeys in orders but not in customers).
-  auto orphans = std::make_shared<TpchQ22State::OrphanMap>();
   for (const auto &[custkey, count] : order_counts) {
-    const auto *rec = state.FindCustomer(custkey);
-    if (!rec)
-      (*orphans)[custkey] = count;
+    if (!state.FindCustomer(custkey))
+      state.orphan_orders.Upsert(custkey, count);
   }
-  state.orphan_orders = std::move(orphans);
 
-  // Sorted arrays + suffix aggregates per prefix.
+  // Per-prefix count/sum structures over the zero-order balances.
   for (auto &[prefix, counts] : distributions) {
-    auto agg = std::make_shared<TpchQ22PrefixAggregate>();
-    const std::size_t n = counts.size();
-    agg->keys.reserve(n);
-    agg->counts.reserve(n);
-    for (const auto &[balance, count] : counts) {
-      agg->keys.push_back(balance);
-      agg->counts.push_back(count);
-    }
-    agg->suffix_count.assign(n + 1, 0);
-    agg->suffix_sum.assign(n + 1, 0);
-    for (std::size_t i = n; i-- > 0;) {
-      agg->suffix_count[i] = agg->suffix_count[i + 1] + agg->counts[i];
-      agg->suffix_sum[i] = agg->suffix_sum[i + 1] + agg->keys[i] * agg->counts[i];
-    }
+    auto agg = std::make_shared<core::SortedCountSum>();
+    for (const auto &[balance, count] : counts)
+      agg->Add(balance, count);
     state.prefix_aggregates[prefix] = std::move(agg);
   }
   return state;
@@ -770,7 +725,9 @@ void TpchQ22Module::EmitResult(
     if (agg_it == state.prefix_aggregates.end())
       continue;
     // Published state is shared by concurrent readers: read-only query.
-    const auto [count, sum] = agg_it->second->QueryGreaterThanConst(threshold_raw);
+    const auto totals = agg_it->second->SuffixAbove(threshold_raw);
+    const int64_t count = totals.count;
+    const int64_t sum = static_cast<int64_t>(totals.sum);
     if (count > 0) {
       TpchQ22OutputRow row;
       row.cntrycode = *code;

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -126,20 +127,21 @@ struct TpchQ18State {
   // cover every order that can appear in the default result set.
   static constexpr int64_t kMinPersistQuantityRaw = 30000;
 
+  // The three maps are copy-on-write sharded hash maps: copying the state is
+  // pointer copies and a write clones only the touched shard, so a commit
+  // costs O(rows changed), not O(survivors).
+
   // Sparse quantity sums for survivor orders only. Non-survivors are resolved
   // with a point SQL lookup on write so Execute memory stays O(survivors)
   // at SF20 (dense max(orderkey) arrays do not).
-  std::unordered_map<int64_t, int64_t> quantity_overflow;
+  core::ShardedCowHashMap<int64_t, 8> quantity_overflow;
 
   // Sparse order metadata for high-quantity orders only.
-  std::unordered_map<int64_t, TpchQ18SurvivorMeta> survivors;
-
-  // Survivor orderkeys — mirrors survivors keys for fast iteration.
-  std::vector<int64_t> active_orderkeys;
+  core::ShardedCowHashMap<TpchQ18SurvivorMeta, 8> survivors;
 
   // Customer names cached at build time so EmitResult does not rescan
   // the customer table on every hit (dominant cost at SF20).
-  std::unordered_map<int64_t, std::string> customer_names;
+  core::ShardedCowHashMap<std::string, 8> customer_names;
 
   // ── Quantity sum accessors ──────────────────────────────────────────────
   void AddOrderQuantity(int64_t orderkey, int64_t delta);

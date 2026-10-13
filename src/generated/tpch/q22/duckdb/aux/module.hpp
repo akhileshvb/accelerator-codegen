@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/sorted_count_sum.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -62,65 +64,6 @@ public:
 };
 
 // ── State structures ────────────────────────────────────────────────────────
-// Per-prefix distribution of zero-order positive-balance customers as sorted
-// parallel arrays with suffix aggregates (always consistent: no dirty flag, a
-// published aggregate is never mutated).
-struct TpchQ22PrefixAggregate {
-  std::vector<int64_t> keys;         // distinct balances, ascending
-  std::vector<int64_t> counts;       // customers per balance
-  std::vector<int64_t> suffix_count; // size n + 1
-  std::vector<int64_t> suffix_sum;   // size n + 1
-
-  TpchQ22PrefixAggregate() : suffix_count(1, 0), suffix_sum(1, 0) {}
-
-  void AddBalance(int64_t balance) {
-    const auto it = std::lower_bound(keys.begin(), keys.end(), balance);
-    const std::size_t idx = static_cast<std::size_t>(it - keys.begin());
-    if (it != keys.end() && *it == balance) {
-      ++counts[idx];
-    } else {
-      keys.insert(it, balance);
-      counts.insert(counts.begin() + static_cast<std::ptrdiff_t>(idx), 1);
-      suffix_count.insert(suffix_count.begin() + static_cast<std::ptrdiff_t>(idx),
-                          suffix_count[idx]);
-      suffix_sum.insert(suffix_sum.begin() + static_cast<std::ptrdiff_t>(idx),
-                        suffix_sum[idx]);
-      // The new slot carries the old suffix; the loop below makes it exact.
-    }
-    for (std::size_t i = 0; i <= idx; ++i) {
-      suffix_count[i] += 1;
-      suffix_sum[i] += balance;
-    }
-  }
-
-  bool RemoveBalance(int64_t balance) {
-    const auto it = std::lower_bound(keys.begin(), keys.end(), balance);
-    if (it == keys.end() || *it != balance)
-      return false;
-    const std::size_t idx = static_cast<std::size_t>(it - keys.begin());
-    for (std::size_t i = 0; i <= idx; ++i) {
-      suffix_count[i] -= 1;
-      suffix_sum[i] -= balance;
-    }
-    if (--counts[idx] == 0) {
-      keys.erase(it);
-      counts.erase(counts.begin() + static_cast<std::ptrdiff_t>(idx));
-      suffix_count.erase(suffix_count.begin() + static_cast<std::ptrdiff_t>(idx));
-      suffix_sum.erase(suffix_sum.begin() + static_cast<std::ptrdiff_t>(idx));
-    }
-    return true;
-  }
-
-  // Strictly-greater-than lookup: {count, sum}. Read-only.
-  std::pair<int64_t, int64_t> QueryGreaterThanConst(int64_t balance) const {
-    if (keys.empty())
-      return {0, 0};
-    const auto it = std::upper_bound(keys.begin(), keys.end(), balance);
-    const std::size_t idx = static_cast<std::size_t>(it - keys.begin());
-    return {suffix_count[idx], suffix_sum[idx]};
-  }
-};
-
 struct TpchQ22State {
   // Two-character phone prefix packed as (c0 << 8) | c1; 0 = no prefix.
   using Prefix = uint16_t;
@@ -134,15 +77,14 @@ struct TpchQ22State {
 
   // Customers live in fixed-size pages shared between published versions: a
   // write clones only the touched page(s). Keys outside the dense range go to
-  // a (rarely used) sparse map. A null page means "no customers".
+  // a (rarely used) copy-on-write sparse map. A null page means "no customers".
   static constexpr std::size_t kPageSize = 2048;
   static constexpr int64_t kDenseLimit = int64_t{1} << 26;
   struct Page {
     std::vector<CustomerRecord> recs = std::vector<CustomerRecord>(kPageSize);
   };
-  using SparseMap = std::unordered_map<int64_t, CustomerRecord>;
   std::vector<std::shared_ptr<Page>> pages;
-  std::shared_ptr<SparseMap> sparse = std::make_shared<SparseMap>();
+  core::ShardedCowHashMap<CustomerRecord, 6> sparse;
 
   const CustomerRecord *FindCustomer(int64_t custkey) const {
     if (custkey >= 0 && custkey < kDenseLimit) {
@@ -153,10 +95,8 @@ struct TpchQ22State {
       }
       return nullptr;
     }
-    if (!sparse)
-      return nullptr;
-    const auto it = sparse->find(custkey);
-    return it == sparse->end() || !it->second.present ? nullptr : &it->second;
+    const CustomerRecord *rec = sparse.Find(custkey);
+    return rec && rec->present ? rec : nullptr;
   }
 
   // Per-prefix positive-balance totals (AVG numerator / denominator).
@@ -166,16 +106,13 @@ struct TpchQ22State {
   };
   std::unordered_map<Prefix, PositiveTotals> positive;
 
-  // Zero-order positive-balance distributions; each shared between versions
-  // until a write touches that prefix.
-  std::unordered_map<Prefix, std::shared_ptr<const TpchQ22PrefixAggregate>>
+  // Zero-order positive-balance distributions (count and sum of balances
+  // above x); each shared between versions until a write touches that prefix.
+  std::unordered_map<Prefix, std::shared_ptr<const core::SortedCountSum>>
       prefix_aggregates;
 
-  // Orphan order counts: custkeys seen in orders but not in customer (shared
-  // between versions, cloned on write).
-  using OrphanMap = std::unordered_map<int64_t, int64_t>;
-  std::shared_ptr<const OrphanMap> orphan_orders =
-      std::make_shared<const OrphanMap>();
+  // Orphan order counts: custkeys seen in orders but not in customer.
+  core::ShardedCowHashMap<int64_t, 6> orphan_orders;
 };
 
 enum class TpchQ22ImageKind : uint8_t { FullState };
