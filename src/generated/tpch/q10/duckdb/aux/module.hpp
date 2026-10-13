@@ -13,6 +13,7 @@
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
 #include "accelerator_codegen/stateful/prims/dense_id_array.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
 #include "tpch/q10/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -327,7 +328,9 @@ struct TpchQ10State {
       std::make_shared<const TpchQ10SideBase>();
   std::shared_ptr<const TpchQ10CustomerOverlay> customer_overlay; // nullable
   std::unordered_map<int32_t, std::string> nations;
-  std::unordered_map<int64_t, TpchQ10Order> orders;
+  // Order metadata (write maintenance only): copy-on-write shards, so a commit
+  // clones the shards it touches, not the whole map.
+  core::ShardedCowHashMap<TpchQ10Order, 14> orders;
 
   bool HasCustomer(int64_t custkey) const { return RankOf(custkey).present != 0; }
   TpchQ10CustomerRank RankOf(int64_t custkey) const {

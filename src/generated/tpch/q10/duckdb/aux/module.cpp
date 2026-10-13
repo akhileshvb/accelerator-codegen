@@ -521,7 +521,7 @@ void TpchQ10Module::Build(core::AuxEngineServices &services,
 
   // Orders partition is optional: SQL-pushdown builds skip it and resolve
   // orderkeys via LookupOrders during maintenance.
-  if (!data.state.orders.empty()) {
+  if (data.state.orders.size() != 0) {
     auto orders_state = std::make_shared<TpchQ10State>();
     orders_state->orders = std::move(data.state.orders);
     builder.Write(core::StateImage::Make(
@@ -859,8 +859,8 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
   if (!buffer.OrderDeltas().empty() && have_orders_partition && order_metadata) {
     for (const auto &delta : buffer.OrderDeltas()) {
       if (delta.sign > 0) {
-        order_metadata->orders[delta.orderkey] =
-            TpchQ10Order{delta.custkey, delta.orderdate_days};
+        order_metadata->orders.Upsert(
+            delta.orderkey, TpchQ10Order{delta.custkey, delta.orderdate_days});
         orders_changed = true;
       }
     }
@@ -871,10 +871,7 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
   // taken from the order deltas themselves.
   std::unordered_map<int64_t, TpchQ10Order> looked_up_orders;
   std::unordered_map<int64_t, TpchQ10Order> overlay_orders;
-  const std::unordered_map<int64_t, TpchQ10Order> *orders_by_key = nullptr;
-  if (have_orders_partition && order_metadata) {
-    orders_by_key = &order_metadata->orders;
-  } else if (!buffer.Deltas().empty()) {
+  if (!(have_orders_partition && order_metadata) && !buffer.Deltas().empty()) {
     for (const auto &delta : buffer.OrderDeltas())
       overlay_orders[delta.orderkey] =
           TpchQ10Order{delta.custkey, delta.orderdate_days};
@@ -891,8 +888,13 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
     }
     for (const auto &[key, order] : looked_up_orders)
       overlay_orders.emplace(key, order);
-    orders_by_key = &overlay_orders;
   }
+  const auto find_order = [&](int64_t orderkey) -> const TpchQ10Order * {
+    if (have_orders_partition && order_metadata)
+      return order_metadata->orders.Find(orderkey);
+    const auto it = overlay_orders.find(orderkey);
+    return it == overlay_orders.end() ? nullptr : &it->second;
+  };
 
   std::set<int32_t> rebuild_months;
   auto add_month_from_days = [&](int32_t days) {
@@ -903,16 +905,14 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
   // month -> (custkey, signed revenue) for this buffer's lineitem deltas.
   std::map<int32_t, std::vector<std::pair<int64_t, int64_t>>> month_deltas;
   if (!buffer.Deltas().empty()) {
-    if (!orders_by_key)
-      return rebuild_all();
     for (const auto &delta : buffer.Deltas()) {
-      const auto order_it = orders_by_key->find(delta.orderkey);
-      if (order_it == orders_by_key->end())
+      const TpchQ10Order *order = find_order(delta.orderkey);
+      if (!order)
         return rebuild_all();
-      const auto month = TpchQ10MonthKeyFromDays(order_it->second.orderdate_days);
+      const auto month = TpchQ10MonthKeyFromDays(order->orderdate_days);
       rebuild_months.insert(month);
       month_deltas[month].emplace_back(
-          order_it->second.custkey,
+          order->custkey,
           static_cast<int64_t>(delta.sign) * delta.revenue_raw);
     }
   }
@@ -1034,7 +1034,7 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
     if (orders_changed && order_metadata) {
       for (const auto &delta : buffer.OrderDeltas()) {
         if (delta.sign < 0)
-          order_metadata->orders.erase(delta.orderkey);
+          order_metadata->orders.Erase(delta.orderkey);
       }
       const auto typed_orders =
           std::static_pointer_cast<const TpchQ10State>(std::move(order_metadata));
@@ -1177,7 +1177,7 @@ TpchQ10Module::StageMaintenance(core::AuxEngineServices &services,
   if (order_metadata) {
     for (const auto &delta : buffer.OrderDeltas()) {
       if (delta.sign < 0) {
-        order_metadata->orders.erase(delta.orderkey);
+        order_metadata->orders.Erase(delta.orderkey);
         orders_changed = true;
       }
     }
@@ -1338,15 +1338,16 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
   if (!used_sql_revenue) {
     t = std::chrono::steady_clock::now();
     initial_scan->ScanOrders([&](const TpchQ10OrderInput &input) {
-      state.orders[input.key] = {input.custkey, input.orderdate_days};
+      state.orders.Upsert(input.key,
+                          TpchQ10Order{input.custkey, input.orderdate_days});
     });
     log_phase("orders", t);
     t = std::chrono::steady_clock::now();
     initial_scan->ScanLineitems([&](const TpchQ10LineitemInput &input) {
       if (!input.returned)
         return;
-      const auto order = state.orders.find(input.orderkey);
-      if (order == state.orders.end())
+      const TpchQ10Order *order = state.orders.Find(input.orderkey);
+      if (!order)
         return;
       double extended_scale = 1.0;
       double discount_scale = 1.0;
@@ -1357,8 +1358,8 @@ TpchQ10Module::BuildState(core::AuxEngineServices &services) const {
       const auto revenue = TpchQ10RevenueRaw(
           static_cast<double>(input.extended_price_raw) / extended_scale,
           static_cast<double>(input.discount_raw) / discount_scale);
-      data.months[TpchQ10MonthKeyFromDays(order->second.orderdate_days)]
-          .push_back({order->second.custkey, revenue});
+      data.months[TpchQ10MonthKeyFromDays(order->orderdate_days)]
+          .push_back({order->custkey, revenue});
     });
     log_phase("lineitems", t);
   }
