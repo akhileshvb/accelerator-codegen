@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS accel_tpch_q17_immv CASCADE;

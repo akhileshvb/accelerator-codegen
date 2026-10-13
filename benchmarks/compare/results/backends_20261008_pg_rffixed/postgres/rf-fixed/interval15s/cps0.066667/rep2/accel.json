@@ -1,0 +1,474 @@
+{
+ "mode": "writerate",
+ "backend": "postgres",
+ "system": "accel",
+ "rate_target": 0.066667,
+ "rep": 2,
+ "seed": 35489019,
+ "sf": 20.0,
+ "batch_orders": null,
+ "rf_source": "tpch_update_sets",
+ "rf_dir": "/disk3/akhilvb_tpch/refresh_sf20",
+ "rf_orders_used": 30000,
+ "readers": 8,
+ "shared_state": true,
+ "seconds": 60.0,
+ "warmup": 7.5,
+ "queries": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19,
+  20,
+  21,
+  22
+ ],
+ "sets_per_query": 4,
+ "prime_s": 11.477958919,
+ "triggers_on": 32,
+ "qps": 20.883333333333333,
+ "reads": 1253,
+ "timeouts": 0,
+ "read_errors": 0,
+ "read_p50_us": 102505.726,
+ "read_p99_us": 444407.48,
+ "per_query": {
+  "1": {
+   "reads": 60,
+   "p50_us": 80094.116,
+   "p95_us": 245494.286,
+   "p99_us": 369747.89,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "2": {
+   "reads": 60,
+   "p50_us": 81254.009,
+   "p95_us": 311013.937,
+   "p99_us": 19857358.988,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "3": {
+   "reads": 60,
+   "p50_us": 63971.015,
+   "p95_us": 332928.552,
+   "p99_us": 354789.837,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "4": {
+   "reads": 60,
+   "p50_us": 56149.491,
+   "p95_us": 241838.018,
+   "p99_us": 353678.557,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "5": {
+   "reads": 62,
+   "p50_us": 81025.632,
+   "p95_us": 338760.099,
+   "p99_us": 83720934.115,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "6": {
+   "reads": 56,
+   "p50_us": 62061.728,
+   "p95_us": 175302.169,
+   "p99_us": 246456.73,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "7": {
+   "reads": 53,
+   "p50_us": 57515.258,
+   "p95_us": 268252.042,
+   "p99_us": 115160906.938,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "8": {
+   "reads": 48,
+   "p50_us": 45746.815,
+   "p95_us": 306991.3,
+   "p99_us": 347074.889,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "9": {
+   "reads": 49,
+   "p50_us": 65849.838,
+   "p95_us": 257614.727,
+   "p99_us": 714255068.243,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "10": {
+   "reads": 49,
+   "p50_us": 181162.359,
+   "p95_us": 371398.79,
+   "p99_us": 7192630.438,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "11": {
+   "reads": 52,
+   "p50_us": 154461.145,
+   "p95_us": 263148.307,
+   "p99_us": 9783046.652,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "12": {
+   "reads": 52,
+   "p50_us": 61217.987,
+   "p95_us": 182546.782,
+   "p99_us": 283257.198,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "13": {
+   "reads": 52,
+   "p50_us": 189372.056,
+   "p95_us": 362134.422,
+   "p99_us": 33893487.25,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "14": {
+   "reads": 55,
+   "p50_us": 66820.598,
+   "p95_us": 335347.762,
+   "p99_us": 369290.497,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "15": {
+   "reads": 60,
+   "p50_us": 72782.997,
+   "p95_us": 369710.114,
+   "p99_us": 26590344.234,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "16": {
+   "reads": 60,
+   "p50_us": 154434.644,
+   "p95_us": 314399.18,
+   "p99_us": 444407.48,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "17": {
+   "reads": 60,
+   "p50_us": 52995.593,
+   "p95_us": 306792.801,
+   "p99_us": 328793.097,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "18": {
+   "reads": 60,
+   "p50_us": 33596.763,
+   "p95_us": 241750.427,
+   "p99_us": 333959.035,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "19": {
+   "reads": 62,
+   "p50_us": 68445.51,
+   "p95_us": 316511.197,
+   "p99_us": 359144.844,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "20": {
+   "reads": 66,
+   "p50_us": 103447.84,
+   "p95_us": 240389.513,
+   "p99_us": 341184.518,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "21": {
+   "reads": 59,
+   "p50_us": 91225.682,
+   "p95_us": 257445.489,
+   "p99_us": 54577172.109,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "22": {
+   "reads": 58,
+   "p50_us": 79651.486,
+   "p95_us": 328198.978,
+   "p99_us": 338427.264,
+   "timeouts": 0,
+   "errors": 0
+  }
+ },
+ "commits": 14,
+ "commits_total": 21,
+ "commit_rate": 0.23333333333333334,
+ "rf_commits": 2,
+ "rf_rate": 0.03333333333333333,
+ "write_errors": 0,
+ "commit_p50_us": 317507.4113532901,
+ "commit_p99_us": 19674879.078753293,
+ "commit_max_us": 19674879.078753293,
+ "writer_lag_p50_s": 0.0018585547804832458,
+ "writer_lag_max_s": 30.99587570177391,
+ "rows_per_commit": 21512.571428571428,
+ "rows_per_s": 5019.6,
+ "rf_rows_per_s": 5013.816666666667,
+ "pg_workers": 9,
+ "worker_restart": "never",
+ "commit_us_by_kind": {
+  "rf1": {
+   "n": 2,
+   "p50": 31516201.346181333,
+   "max": 31516201.346181333
+  },
+  "supplier update": {
+   "n": 3,
+   "p50": 261879.20104712248,
+   "max": 279106.28030076623
+  },
+  "part delete": {
+   "n": 3,
+   "p50": 2354529.167059809,
+   "max": 2507439.9118311703
+  },
+  "part insert": {
+   "n": 3,
+   "p50": 35833.02907645702,
+   "max": 292407.88193419576
+  },
+  "supplier delete": {
+   "n": 3,
+   "p50": 6426440.148148686,
+   "max": 6443281.167186797
+  },
+  "supplier insert": {
+   "n": 3,
+   "p50": 317507.4113532901,
+   "max": 461165.5520275235
+  },
+  "partsupp update": {
+   "n": 3,
+   "p50": 121939.04910236597,
+   "max": 308625.9397678077
+  },
+  "rf2": {
+   "n": 1,
+   "p50": 8469928.170088679,
+   "max": 8469928.170088679
+  }
+ },
+ "tables_written": {
+  "region": 0,
+  "nation": 0,
+  "customer": 0,
+  "supplier": 9,
+  "part": 6,
+  "partsupp": 15,
+  "orders": 3,
+  "lineitem": 3
+ },
+ "tables_not_written": [],
+ "rf_only": false,
+ "dim_after_rf": true,
+ "final_check": {
+  "1": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "2": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": false,
+   "match": true
+  },
+  "3": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": false,
+   "match": true
+  },
+  "4": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "5": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "6": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "7": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "8": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": false,
+   "match": true
+  },
+  "9": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "10": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": false,
+   "match": true
+  },
+  "11": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "12": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "13": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "14": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": false,
+   "match": true
+  },
+  "15": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": false,
+   "match": true
+  },
+  "16": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "17": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "18": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": false,
+   "match": true
+  },
+  "19": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "20": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": true
+  },
+  "21": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": true,
+   "match": false
+  },
+  "22": {
+   "accel": "ok",
+   "base": "ok",
+   "changed": false,
+   "match": true
+  }
+ },
+ "restore_s": 86.41581748891622,
+ "restore_ok": true,
+ "shared_worker": {
+  "requests": 1654,
+  "hits": 1644,
+  "rebuilds": 0,
+  "declined": 10,
+  "errors": 0,
+  "applies": 21,
+  "synced": 216,
+  "unsynced": 0
+ },
+ "answers_changed": [
+  1,
+  4,
+  5,
+  6,
+  7,
+  9,
+  11,
+  12,
+  13,
+  16,
+  17,
+  19,
+  20,
+  21
+ ],
+ "answers_unchanged": [
+  2,
+  3,
+  8,
+  10,
+  14,
+  15,
+  18,
+  22
+ ],
+ "final_mismatches": [
+  21
+ ]
+}

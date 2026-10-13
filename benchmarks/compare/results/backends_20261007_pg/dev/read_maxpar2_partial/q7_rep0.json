@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 7,
+ "rep": 0,
+ "seed": 991050523,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 15531.687280400345,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "nation1": "VIETNAM",
+    "nation2": "KENYA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 96316165.532,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 9915280.666000001,
+   "accel_us": 499.88,
+   "speedup": 19835.321809234218
+  },
+  {
+   "params": {
+    "nation1": "IRAN",
+    "nation2": "SAUDI ARABIA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 2274.281,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 10055870.803,
+   "accel_us": 562.854,
+   "speedup": 17865.860068507995
+  },
+  {
+   "params": {
+    "nation1": "ARGENTINA",
+    "nation2": "ROMANIA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1793.755,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 10142590.274500001,
+   "accel_us": 994.451,
+   "speedup": 10199.185555145503
+  },
+  {
+   "params": {
+    "nation1": "PERU",
+    "nation2": "ETHIOPIA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 970.943,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 10070289.311,
+   "accel_us": 625.455,
+   "speedup": 16100.741557745961
+  }
+ ]
+}

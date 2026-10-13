@@ -1,0 +1,30 @@
+=== rf-fixed postgres interval=60s window=180s warmup=30.0s readers=8 pg_workers=9 11:56:00
+# --pg-workers 9: max_parallel_workers_per_gather and table parallel_workers = 9 for every session (tables' original reloptions {'region': None, 'nation': None, 'customer': 80, 'supplier': None, 'part': 80, 'partsupp': 80, 'orders': 80, 'lineitem': 80}, restored on exit)
+parameter draws: 1 repetition(s) x 4 sets, seeds 2536782116..2536782116
+cps0.016667 rep 0 base (RF: update sets, whole sets, 8 readers) 11:56:00
+   qps 0.4  read p50 7284.4ms p99 156399.1ms  timeouts 0  RF commits 3 (0.0167/s of 0.016667) of 21 commits  commit p50 53.0ms max 14070ms  lag max 1.4s  rows/s 2506 (RF 2503)  errors read 0 write 0
+cps0.016667 rep 0 accel (RF: update sets, whole sets, 8 readers) 12:01:12
+Traceback (most recent call last):
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 1126, in <module>
+    main()
+    ~~~~^^
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 1122, in main
+    {"read": cmd_read, "writerate": cmd_writerate}[a.mode](a)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 977, in cmd_writerate
+    return cmd_writerate_body(a)
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 993, in cmd_writerate_body
+    r = run_one(a, system, rate, k, seed, spec)
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 858, in run_one
+    rows, _, st = timed(ctl, asql)
+                  ~~~~~^^^^^^^^^^^
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 702, in timed
+    rows, us = db.query(sql)
+               ~~~~~~~~^^^^^
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 184, in query
+    self.cur.execute(sql)
+    ~~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3.14/encodings/utf_8.py", line 15, in decode
+    def decode(input, errors='strict'):
+    
+KeyboardInterrupt

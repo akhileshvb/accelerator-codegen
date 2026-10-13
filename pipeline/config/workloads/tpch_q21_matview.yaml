@@ -1,0 +1,36 @@
+workload_kind: materialized_view
+benchmark_name: tpch
+query_number: 21
+engine_name: postgres
+query_id: "21"
+accelerator_id: tpch_q21_mv
+mv_function_name: accel_tpch_q21_mv
+mv_relation_name: accel_tpch_q21_matview
+
+requires_base_accelerator: false
+
+allow_poor_fitness: false
+
+reference_sql_path: src/generated/tpch/q21/postgres/matview/reference.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: nation_name
+    type: VARCHAR
+
+dependent_tables:
+  - name: supplier
+    watched_columns: []
+  - name: lineitem
+    watched_columns: []
+  - name: orders
+    watched_columns: []
+  - name: nation
+    watched_columns: []
+
+output_schema: []
+
+speedup_verification:
+  min_speedup_vs_native_sql: 1.2
+
+agent_boundary: prompts/materialized_view/shared/agent_boundary.md

@@ -31,6 +31,13 @@ the baseline is the same TPC-H text with the same parameters as plain SQL.
              "final check") and with those before the first write ("answer changed", i.e. which
              queries the stream actually exercised).
 
+  --shared-state (Postgres): the accelerators live once, in the extension's per-database background
+             worker (accel.shared_state), instead of once per connection.  Each writer commit ships its
+             captured rows to the worker, which applies them as a delta before answering the next read;
+             per connection, every write by another connection forces a full rebuild in each reader.
+             The worker is restarted at the start of every run: base runs write with the capture
+             triggers off, which it cannot see.
+
   summary    median [min-max] over repetitions of a writerate output directory.
 
 Needs: pip install psycopg2-binary pymysql.
@@ -122,10 +129,29 @@ def accel_sql(q, cpp_args, backend):
 # ---------------------------------------------------------------------------------------------
 # connections
 # ---------------------------------------------------------------------------------------------
-class Db:
-    """One connection, either backend: execute / fetch with timing, transactions, statement timeout."""
+def schema(a):
+    """--schema (Postgres): the schema holding the TPC-H tables (and, for system mv, the views)."""
+    return getattr(a, "schema", None) or "public"
 
-    def __init__(self, a, accel):
+
+def qident(name):
+    return '"' + name.replace('"', '""') + '"'
+
+
+def pg_connect(a):
+    """A raw autocommit psycopg2 connection whose search_path is --schema (then pgivm, public)."""
+    import psycopg2
+    c = psycopg2.connect(host=a.host, port=a.port, user=a.user, password=a.password, dbname=a.db)
+    c.autocommit = True
+    c.cursor().execute(f"SET search_path = {qident(schema(a))}, pgivm, public")
+    return c
+
+
+class Db:
+    """One connection, either backend: execute / fetch with timing, transactions, statement timeout.
+    ivm (system mv, Postgres): LOAD 'pg_ivm', so the IMMVs are maintained by this session's writes."""
+
+    def __init__(self, a, accel, ivm=False):
         self.backend = a.backend
         self.timeout_s = a.query_timeout
         if a.backend == "postgres":
@@ -134,8 +160,27 @@ class Db:
             self.c = psycopg2.connect(host=a.host, port=a.port, user=a.user, password=a.password, dbname=a.db)
             self.c.autocommit = True
             self.cur = self.c.cursor()
+            # every table name the harness uses is unqualified: --schema picks the TPC-H copy (and its views).
+            # Only when needed: the accelerators' shared worker declines a request whose search_path differs
+            # from the one its state was built under, so accelerator (and base) sessions keep the default
+            if ivm or schema(a) != "public":
+                self.cur.execute(f"SET search_path = {qident(schema(a))}, pgivm, public")
+            if ivm:
+                self.cur.execute("LOAD 'pg_ivm'")
+                # pg_ivm's delta statements carry inflated cost estimates, so JIT compiles each (~0.3 s); off for
+                # the view baseline's sessions (its reads are short too)
+                self.cur.execute("SET jit = off")
+            if getattr(a, "pg_workers", None) is not None:
+                # the same per-session parallel budget for every connection (base and accel, readers and writer)
+                self.cur.execute(f"SET max_parallel_workers_per_gather = {int(a.pg_workers)}")
             if accel:
                 self.cur.execute(f"LOAD '{a.pg_so}'")
+                if a.shared_state:
+                    self.cur.execute("SET accel.shared_state = on")
+                    self.cur.execute(f"SET accel.shared_apply_timeout_ms = {int(a.apply_timeout * 1000)}")
+                    # wait for the worker (e.g. while it builds another query's state) instead of answering
+                    # from SQL after the 60 s default; the statement timeout still bounds the call
+                    self.cur.execute(f"SET accel.shared_timeout_ms = {min(3600000, int(a.query_timeout * 1000))}")
         else:
             import pymysql
             self.mod = pymysql
@@ -224,6 +269,16 @@ class Db:
             pass
 
 
+def sys_db(a, system):
+    """A connection for one system's sessions: accel loads the extension, mv loads pg_ivm."""
+    return Db(a, accel=system == "accel", ivm=system == "mv")
+
+
+def mv_defs():
+    import mv_defs as M  # (only the mv system needs it)
+    return M
+
+
 # ---------------------------------------------------------------------------------------------
 # triggers: the base system must not pay for the accelerator's write capture
 # ---------------------------------------------------------------------------------------------
@@ -257,11 +312,49 @@ def set_triggers(a, on):
                        "AND trigger_name LIKE 'accel_codegen_%'")
             n = db.cur.fetchone()[0]
         else:
-            db.execute("SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled <> 'D'")
+            # (this schema's tables only: --schema may point at a copy next to a database other runs use; the
+            # pg_ivm triggers of system mv are internal, so DISABLE TRIGGER USER leaves them alone)
+            db.execute("SELECT COUNT(*) FROM pg_trigger t JOIN pg_class r ON r.oid = t.tgrelid "
+                       "WHERE NOT t.tgisinternal AND t.tgenabled <> 'D' AND r.relnamespace = %s::regnamespace",
+                       (schema(a),))
             n = db.cur.fetchone()[0]
         return n
     finally:
         db.close()
+
+
+def restart_shared_worker(a):
+    """Stop the shared-state worker (if any): the next accelerator call starts a fresh one, which builds from
+    the tables as they are now.  A worker that lived through writes with the capture triggers off would not
+    know it is stale."""
+    if a.backend != "postgres" or not a.shared_state:
+        return
+    if schema(a) != "public":  # the worker is per database and serves public: never restart it from a test copy
+        print(f"  (--schema {schema(a)}: the shared worker is not restarted)", flush=True)
+        return
+    db = Db(a, accel=True)
+    try:
+        db.execute("SELECT accel_postgres_stop_shared_worker()")
+        for _ in range(100):  # wait until it has exited (it restarts on demand)
+            db.execute("SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'accel aux server' AND datname = current_database()")
+            if db.cur.fetchone()[0] == 0:
+                break
+            time.sleep(0.1)
+    finally:
+        db.close()
+
+
+def shared_stats(a, db):
+    """The shared-state worker's counters (cumulative per database): requests, hits, rebuilds, declined,
+    errors, applies (commits shipped to it), synced (applied as a delta) / unsynced (not: the next read
+    rebuilds)."""
+    if a.backend != "postgres" or not a.shared_state:
+        return None
+    try:
+        rows, _ = db.query("SELECT accel_postgres_shared_stats()")
+        return {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", str(rows[0][0]))}
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -597,16 +690,18 @@ class Stream:
 
     # --- undo ----------------------------------------------------------------------------
     def restore(self, db):
-        """Put the data back as it was before the stream (triggers, if on, maintain the accelerators)."""
-        for table, cond, old in reversed(self.reupdate):
-            cols = list(old)
-            db.execute(f"UPDATE {table} SET " + ", ".join(f"{c} = %s" for c in cols) + f" WHERE {cond}",
-                       [old[c] for c in cols])
+        """Put the data back as it was before the stream (triggers, if on, maintain the accelerators).
+        Updates are undone last: a row the stream updated and later deleted (a partsupp row of a deleted supplier)
+        comes back from reinsert with the updated values, and only then gets its old values."""
         for table, col, keys in reversed(self.redelete):
             db.delete_in(table, col, keys)
         for table, rows in reversed(self.reinsert):
             if rows:
                 db.insert_rows(table, rows)
+        for table, cond, old in reversed(self.reupdate):
+            cols = list(old)
+            db.execute(f"UPDATE {table} SET " + ", ".join(f"{c} = %s" for c in cols) + f" WHERE {cond}",
+                       [old[c] for c in cols])
 
 
 _pool_cache = {}
@@ -639,11 +734,13 @@ def draws(a):
 
 
 def case_list(a, spec, system):
-    """[(q, accel_sql, base_sql)] over every query and parameter set of one draw."""
+    """[(q, system_sql, base_sql)] over every query and parameter set of one draw: system_sql is the accelerator
+    call (base, accel) or the materialized-view read (mv); readers of every system but base run it."""
     out = []
     for q in a.queries:
         for s in spec[str(q)]["sets"]:
-            out.append((q, accel_sql(q, s["cpp"], a.backend), base_sql(q, s["verus"], a.backend)))
+            ssql = mv_defs().mv_sql(q, s["verus"]) if system == "mv" else accel_sql(q, s["cpp"], a.backend)
+            out.append((q, ssql, base_sql(q, s["verus"], a.backend)))
     return out
 
 
@@ -662,6 +759,7 @@ def cmd_read(a):
     os.makedirs(a.out, exist_ok=True)
     reps = draws(a)
     set_triggers(a, True)
+    restart_shared_worker(a)
     db = Db(a, accel=True)
     for k, seed, spec in reps:
         for q in a.queries:
@@ -685,7 +783,7 @@ def cmd_read(a):
                     row["speedup"] = row["base_us"] / max(row["accel_us"], 1.0)
                 results.append(row)
             sp = [r["speedup"] for r in results if "speedup" in r]
-            out = {"mode": "read", "backend": a.backend, "query": q, "rep": k, "seed": seed, "sf": a.sf,
+            out = {"mode": "read", "backend": a.backend, "query": q, "rep": k, "seed": seed, "sf": a.sf, "shared_state": a.shared_state,
                    "speedup_geomean": math.exp(sum(map(math.log, sp)) / len(sp)) if sp else None,
                    "mismatches": sum(1 for r in results if r.get("match") is False), "cases": results}
             with open(os.path.join(a.out, f"q{q}_rep{k}.json"), "w") as f:
@@ -697,15 +795,39 @@ def cmd_read(a):
 
 
 class Counters:
-    def __init__(self):
+    def __init__(self, order=()):
         self.lock = threading.Lock()
         self.reads = []      # (q, start offset s, us, status)
         self.commits = []    # (kind, start offset s, lag s, us, rows, status)
+        self.refreshes = []  # mv: per commit (kind, start offset s, refresh us, {view: us}, status)
+        self.order = list(order)  # the readers' shared queue of cases (see read_order), cycled
+        self.next = 0
+        self.dbs = []             # the readers' connections (run_one cancels base reads at the window's end)
+
+    def take(self):
+        with self.lock:
+            c = self.order[self.next % len(self.order)]
+            self.next += 1
+            return c
+
+
+def read_order(cases, sets, seed):
+    """The readers' shared queue: parameter set outer, query inner (Q1 s0, Q2 s0, .., Q22 s0, Q1 s1, ..),
+    rotated by a seeded offset.  Every reader takes the next case from it, so each query gets an equal share
+    of the reads whatever its latency (a slow baseline query no longer starves the queries behind it in one
+    reader's slice), the first reads (in the warmup) fall on different queries per draw, and the mix of
+    queries in flight is the same at every write rate."""
+    by_q = {}
+    for c in cases:
+        by_q.setdefault(c[0], []).append(c)
+    order = [by_q[q][s] for s in range(sets) for q in by_q if s < len(by_q[q])]
+    k = random.Random(seed).randrange(len(order))
+    return order[k:] + order[:k]
 
 
 def reader(a, system, cases, idx, ctr, t0, stop, ready):
     try:
-        db = Db(a, accel=system == "accel")
+        db = sys_db(a, system)
         prime = []
         for q, asql, bsql in cases:  # prime: the accelerator builds its state (per backend process on Postgres)
             if system == "accel":
@@ -715,16 +837,17 @@ def reader(a, system, cases, idx, ctr, t0, stop, ready):
         print(f"  reader {idx} failed to start: {e}", flush=True)
         ready.append(0.0)
         return
+    with ctr.lock:
+        ctr.dbs.append(db)
     ready.append(sum(prime) / 1e6)
     while not t0[0]:
         time.sleep(0.01)
-    n = len(cases)
-    i = idx * max(1, n // max(1, a.readers))
     while not stop.is_set():
-        q, asql, bsql = cases[i % n]
-        i += 1
+        q, asql, bsql = ctr.take()
         s = time.perf_counter()
-        rows, us, st = timed(db, asql if system == "accel" else bsql)
+        rows, us, st = timed(db, bsql if system == "base" else asql)
+        if st != "ok" and stop.is_set():
+            st = "cancelled"  # cut off at the window's end (run_one): neither a timeout nor an error
         with ctr.lock:
             ctr.reads.append((q, s - t0[0], us, st))
         if st.startswith("error"):
@@ -734,7 +857,7 @@ def reader(a, system, cases, idx, ctr, t0, stop, ready):
 
 
 def writer(a, system, rate, stream, ctr, t0, stop):
-    db = Db(a, accel=system == "accel")
+    db = sys_db(a, system)
     interval = 0 if rate < 0 else 1.0 / rate
     nxt = t0[0]
     # (a refresh slot's point writes, --dim-after-rf, run unpaced and complete after the stop)
@@ -747,6 +870,7 @@ def writer(a, system, rate, stream, ctr, t0, stop):
             nxt += interval
         else:
             sched = time.perf_counter()
+        w0 = dict(stream.written)  # (prepare counts the tables a commit writes)
         try:
             kind, apply = stream.next(db)
         except Exception as e:  # noqa: BLE001  (a pool ran out, a query failed: the run is not valid)
@@ -754,10 +878,19 @@ def writer(a, system, rate, stream, ctr, t0, stop):
             with ctr.lock:
                 ctr.commits.append(("stream error", time.perf_counter() - t0[0], 0.0, 0.0, 0, "error: " + str(e)[:200]))
             break
+        # mv: the plain views reading a written table are refreshed in the commit's transaction (timed with it)
+        refresh = mv_defs().refresh_for([t for t, n in stream.written.items() if n != w0.get(t)], kind) if system == "mv" else []
+        ref_us = {}
         s = time.perf_counter()
         try:
             db.begin()
             rows = apply(db)
+            for stmt in mv_defs().REFRESH_SETTINGS if refresh else []:
+                db.execute(stmt)  # SET LOCAL: this transaction's refreshes only (pg_ivm's maintenance ran in apply)
+            for stmt in refresh:
+                r0 = time.perf_counter()
+                db.execute(stmt)
+                ref_us[stmt.split()[-1]] = (time.perf_counter() - r0) * 1e6
             db.commit()
             st = "ok"
         except Exception as e:  # noqa: BLE001
@@ -767,11 +900,14 @@ def writer(a, system, rate, stream, ctr, t0, stop):
         us = (time.perf_counter() - s) * 1e6
         with ctr.lock:
             ctr.commits.append((kind, s - t0[0], max(0.0, s - sched), us, rows, st))
+            if system == "mv":
+                ctr.refreshes.append((kind, s - t0[0], sum(ref_us.values()), ref_us, st))
     db.close()
 
 
 def final_check(a, db, cases_one, before):
-    """Accelerator answers after the stream vs the DBMS's (and vs before it)."""
+    """Accelerator (or materialized-view) answers after the stream vs the DBMS's (and vs before it).
+    (The keys stay "accel" / "base" for every system, so the aggregation scripts read mv runs alike.)"""
     out = {}
     db.set_timeout(a.check_timeout)
     for q, asql, bsql in cases_one:
@@ -793,16 +929,25 @@ def run_one(a, system, rate, rep, seed, spec):
     triggers = set_triggers(a, system == "accel")
     if (system == "accel") != (triggers > 0):
         raise SystemExit(f"{system}: {triggers} enabled capture triggers (base needs none, accel needs them)")
-    ctr, stop, ready, t0 = Counters(), threading.Event(), [], [0.0]
-    ctl = Db(a, accel=system == "accel")
+    # --worker-restart: each (default) = a fresh worker per run; first = only before this invocation's
+    # first run; never = keep the running worker (valid only while every write since its start ran with the
+    # capture triggers on, i.e. no base run in between: the triggers are what tell it a commit happened)
+    # (base and mv: no worker to restart; their writes run with the capture triggers off)
+    if system == "accel" and (a.worker_restart == "each" or
+                              (a.worker_restart == "first" and not getattr(a, "_worker_restarted", False))):
+        restart_shared_worker(a)
+        a._worker_restarted = True
+    ctr, stop, ready, t0 = Counters(read_order(cases, a.sets, seed)), threading.Event(), [], [0.0]
+    ctl = sys_db(a, system)
     fp0 = fingerprint(ctl)
-    commits = int((a.warmup + a.seconds) * (200 if rate < 0 else rate) * 1.3) + 8
+    commits = int((a.warmup + max(a.seconds, a.max_seconds or 0)) * (200 if rate < 0 else rate) * 1.3) + 8
     commits = min(commits, a.max_commits, a.max_write_commits or a.max_commits)
     stream = Stream(ctl, commits, 1 if a.rf_dir else a.batch_orders, seed, a.rf_only, a.dim_after_rf,
                     a.rf_dir, a.batch_orders or 0 if a.rf_dir else 0)
+    a._live_stream = stream  # undone by cmd_writerate_body if this run dies before its own restore
     one = [next(c for c in cases if c[0] == q) for q in a.queries]  # one case per query, for the checks
     before = {}
-    if system == "accel":
+    if system != "base":
         for q, asql, _ in one:
             rows, _, st = timed(ctl, asql)
             before[q] = canon(a.backend, rows, True) if st == "ok" else None
@@ -813,18 +958,48 @@ def run_one(a, system, rate, rep, seed, spec):
     while len(ready) < a.readers:
         time.sleep(0.2)
     t_prime = max(ready or [0.0])
+    stats0 = shared_stats(a, ctl) if system == "accel" else None
     t0[0] = time.perf_counter()
     if wt:
         wt.start()
     end = t0[0] + a.warmup + a.seconds
-    while time.perf_counter() < end:
+    # --min-reads K: past --seconds, keep the window open (to --max-seconds) until every query has K reads
+    # that started in it, so a slow baseline still gets a latency per query; the rates divide by the
+    # window actually measured
+    cap = t0[0] + a.warmup + max(a.seconds, a.max_seconds or 0)
+    while True:
+        now = time.perf_counter()
+        if now >= end:
+            if not a.min_reads or now >= cap:
+                break
+            with ctr.lock:
+                done = [r[0] for r in ctr.reads if r[1] >= a.warmup and r[3] == "ok"]
+            if all(done.count(q) >= a.min_reads for q in a.queries):
+                break
         time.sleep(0.2)
         if a.max_write_commits and wt and len(ctr.commits) >= a.max_write_commits:
             break
+        if wt and not wt.is_alive():  # the writer died (its error is printed): do not wait out the window
+            print("  WRITER THREAD EXITED before the window ended", flush=True)
+            break
+    seconds = max(a.seconds, time.perf_counter() - t0[0] - a.warmup)
     stop.set()
+    if system == "base" and a.backend == "postgres":
+        # a baseline read still running at the window's end can take minutes (Q18) and is past the window's
+        # count anyway: cancel it instead of waiting.  Accelerator reads are left alone (short, and a cancel
+        # mid-request to the shared worker is not a path the runs exercise)
+        while any(t.is_alive() for t in ts):  # again until they exit: one may start its next read just after
+            with ctr.lock:
+                for db in ctr.dbs:
+                    try:
+                        db.c.cancel()
+                    except Exception:  # noqa: BLE001  (the reader exited and closed it)
+                        pass
+            for t in ts:
+                t.join(0.5)
     for t in ts + ([wt] if wt else []):
         t.join()
-    lo, hi = a.warmup, a.warmup + a.seconds
+    lo, hi = a.warmup, a.warmup + seconds
     reads = [r for r in ctr.reads if lo <= r[1] < hi]
     commits_m = [c for c in ctr.commits if lo <= c[1] < hi]
     per_q = {}
@@ -837,10 +1012,13 @@ def run_one(a, system, rate, rep, seed, spec):
     by_kind = {}
     for c in ctr.commits:
         by_kind.setdefault(c[0], []).append(c[3])
-    check = final_check(a, ctl, one, before) if system == "accel" or a.check_base else {}
+    stats1 = shared_stats(a, ctl) if system == "accel" else None
+    check = final_check(a, ctl, one, before) if system != "base" or a.check_base else {}
     t_r = time.perf_counter()
-    stream.restore(ctl)
+    stream.restore(ctl)  # (mv: ctl loaded pg_ivm, so the IMMVs follow the undo)
+    a._live_stream = None
     restore_s = time.perf_counter() - t_r
+    mv_post = refresh_all(ctl) if system == "mv" else None  # fresh plain views for the next run (unmeasured)
     fp1 = fingerprint(ctl)
     restore_ok = fp0 == fp1
     if not restore_ok:
@@ -852,65 +1030,168 @@ def run_one(a, system, rate, rep, seed, spec):
                        {"orders", "lineitem", "part", "partsupp", "supplier"} if a.dim_after_rf
                        else {"orders", "lineitem"})
     res = {"mode": "writerate", "backend": a.backend, "system": system, "rate_target": rate, "rep": rep, "seed": seed,
+           "chunk": CHUNK,
            "sf": a.sf, "batch_orders": a.batch_orders,
            "rf_source": "tpch_update_sets" if a.rf_dir else "clone", "rf_dir": a.rf_dir,
-           "rf_orders_used": stream.rf_orders_used or a.batch_orders, "readers": a.readers, "seconds": a.seconds, "warmup": a.warmup,
+           "rf_orders_used": stream.rf_orders_used or a.batch_orders, "readers": a.readers, "shared_state": a.shared_state, "seconds": seconds, "seconds_min": a.seconds, "min_reads": a.min_reads, "warmup": a.warmup,
            "queries": a.queries, "sets_per_query": a.sets, "prime_s": t_prime, "triggers_on": triggers,
-           "qps": len(ok) / a.seconds, "reads": len(reads), "timeouts": sum(1 for r in reads if r[3] == "timeout"),
+           "qps": len(ok) / seconds, "reads": len(reads), "timeouts": sum(1 for r in reads if r[3] == "timeout"),
            "read_errors": sum(1 for r in reads if r[3].startswith("error")),
            "read_p50_us": pct([r[2] for r in ok], .5), "read_p99_us": pct([r[2] for r in ok], .99), "per_query": per_q,
            "commits": len(commits_m), "commits_total": len(ctr.commits),
-           "commit_rate": len(commits_m) / a.seconds,
+           "commit_rate": len(commits_m) / seconds,
            "rf_commits": sum(1 for c in commits_m if c[0] in ("rf1", "rf2")),
-           "rf_rate": sum(1 for c in commits_m if c[0] in ("rf1", "rf2")) / a.seconds,
+           "rf_rate": sum(1 for c in commits_m if c[0] in ("rf1", "rf2")) / seconds,
            "write_errors": sum(1 for c in ctr.commits if c[5] != "ok"),
            "commit_p50_us": pct(cus, .5), "commit_p99_us": pct(cus, .99), "commit_max_us": max(cus or [0]),
            "writer_lag_p50_s": pct([c[2] for c in commits_m], .5), "writer_lag_max_s": max([c[2] for c in commits_m] or [0]),
            "rows_per_commit": statistics.mean([c[4] for c in commits_m]) if commits_m else 0,
+           "rows_per_s": sum(c[4] for c in commits_m if c[5] == "ok") / seconds,
+           "rf_rows_per_s": sum(c[4] for c in commits_m if c[5] == "ok" and c[0] in ("rf1", "rf2")) / seconds,
+           "pg_workers": getattr(a, "pg_workers", None), "worker_restart": a.worker_restart,
            "commit_us_by_kind": {k: {"n": len(v), "p50": pct(v, .5), "max": max(v)} for k, v in by_kind.items()},
            "tables_written": stream.written, "tables_not_written": [t for t, n in stream.written.items()
                                   if n == 0 and t in expected_tables],
            "rf_only": a.rf_only, "dim_after_rf": a.dim_after_rf,
-           "final_check": check, "restore_s": restore_s, "restore_ok": restore_ok}
-    if system == "accel":
+           "final_check": check, "restore_s": restore_s, "restore_ok": restore_ok,
+           "shared_worker": {k: stats1[k] - stats0.get(k, 0) for k in stats1 if k not in ("generation", "pid")}
+                            if stats0 and stats1 else None,
+           # every read and commit of the run (offsets from the writer's start, s; latencies, us), window or not
+           "reads_raw": [[q, round(s, 3), round(us, 1), st] for q, s, us, st in ctr.reads],
+           "commits_raw": [[k, round(s, 3), round(lag, 3), round(us, 1), rows, st] for k, s, lag, us, rows, st in ctr.commits]}
+    w = res["shared_worker"] or {}
+    # an accelerator run whose worker rebuilt or fell out of sync measured that, not maintenance by deltas
+    res["valid"] = system != "accel" or not (w.get("rebuilds", 0) or w.get("unsynced", 0))
+    if system == "mv":
+        by_view = {}
+        for _, _, _, per, st in ctr.refreshes:
+            if st == "ok":
+                for v, us in per.items():
+                    by_view.setdefault(v, []).append(us)
+        res["mv_refresh_us_by_view"] = {v: {"n": len(x), "p50": pct(x, .5), "max": max(x)} for v, x in sorted(by_view.items())}
+        res["mv_refresh_s"] = sum(r[2] for r in ctr.refreshes if lo <= r[1] < hi and r[4] == "ok") / 1e6
+        res["mv_refresh_s_total"] = sum(r[2] for r in ctr.refreshes if r[4] == "ok") / 1e6
+        res["mv_refresh_raw"] = [[k, round(s, 3), round(us, 1), {v: round(x, 1) for v, x in per.items()}, st]
+                                 for k, s, us, per, st in ctr.refreshes]
+        res["mv_post_restore_refresh_s"] = mv_post
+        # every write committed, every read answered, the data put back, every view answer equal to the DBMS's
+        res["valid"] = (res["write_errors"] == 0 and not any(r[3].startswith("error") for r in ctr.reads)
+                        and restore_ok and bool(check) and all(e.get("match") is True for e in check.values()))
+    if system != "base":
         res["answers_changed"] = sorted(q for q, e in check.items() if e.get("changed"))
         res["answers_unchanged"] = sorted(q for q, e in check.items() if e.get("changed") is False)
         res["final_mismatches"] = sorted(q for q, e in check.items() if e.get("match") is False)
     return res
 
 
+def refresh_all(db):
+    """REFRESH every plain materialized view of mv_defs (after a run's restore) -> seconds."""
+    t = time.perf_counter()
+    db.execute("SET enable_nestloop = off")  # (see mv_defs.REFRESH_SETTINGS)
+    for name, _ in mv_defs().full_views():
+        db.execute(f"REFRESH MATERIALIZED VIEW {name}")
+    db.execute("RESET enable_nestloop")
+    return time.perf_counter() - t
+
+
 def rate_name(r):
     return "uncapped" if r < 0 else f"cps{r:g}"
 
 
+def table_parallel_workers(a, workers=None):
+    """Read the TPC-H tables' parallel_workers reloptions; with `workers` (dict or int), set them first."""
+    c = pg_connect(a)  # (unqualified names: --schema's tables)
+    cur = c.cursor()
+    if workers is not None:
+        for t in TABLES:
+            w = workers.get(t) if isinstance(workers, dict) else workers
+            cur.execute(f"ALTER TABLE {t} RESET (parallel_workers)" if w is None
+                        else f"ALTER TABLE {t} SET (parallel_workers = {int(w)})")
+    out = {}
+    for t in TABLES:
+        cur.execute("SELECT option_value FROM pg_options_to_table((SELECT reloptions FROM pg_class "
+                    "WHERE oid = %s::regclass)) WHERE option_name = 'parallel_workers'", (f"{qident(schema(a))}.{t}",))
+        r = cur.fetchone()
+        out[t] = int(r[0]) if r else None
+    c.close()
+    return out
+
+
+def cmd_reloptions(a):
+    """run_backends.sh helper: --set N saves the current parallel_workers reloptions to --file and sets N;
+    --restore puts the saved ones back."""
+    if a.restore:
+        table_parallel_workers(a, {k: v for k, v in json.load(open(a.file)).items()})
+    else:
+        if not os.path.exists(a.file):  # never overwrite a saved original with an already-modified state
+            with open(a.file, "w") as f:
+                json.dump(table_parallel_workers(a), f)
+        table_parallel_workers(a, a.set)
+    print("# table parallel_workers now", table_parallel_workers(a), flush=True)
+
+
 def cmd_writerate(a):
+    if a.backend == "postgres" and a.pg_workers is not None:
+        # PostgreSQL sizes a scan's workers from the table's parallel_workers reloption (capped by
+        # max_parallel_workers_per_gather): set it to the per-session budget for the run, restore it after.
+        original = table_parallel_workers(a)
+        if all(original[t] == a.pg_workers for t in TABLES):
+            # already set by the caller for a whole experiment (run_backends.sh rf-fixed): leave it to restore
+            print(f"# --pg-workers {a.pg_workers}: max_parallel_workers_per_gather = {a.pg_workers} for every "
+                  f"session; table parallel_workers already {a.pg_workers}", flush=True)
+            return cmd_writerate_body(a)
+        print(f"# --pg-workers {a.pg_workers}: max_parallel_workers_per_gather and table parallel_workers = "
+              f"{a.pg_workers} for every session (tables' original reloptions {original}, restored on exit)", flush=True)
+        table_parallel_workers(a, a.pg_workers)
+        try:
+            return cmd_writerate_body(a)
+        finally:
+            table_parallel_workers(a, original)
+    return cmd_writerate_body(a)
+
+
+def cmd_writerate_body(a):
     os.makedirs(a.out, exist_ok=True)
     rates = [float(x) for x in str(a.rates).replace(",", " ").split()]
-    reps = draws(a)
+    reps = [r for r in draws(a) if a.only_rep is None or r[0] == a.only_rep]
     for rate in rates:
         for k, seed, spec in reps:
-            order = ["base", "accel"] if k % 2 == 0 else ["accel", "base"]  # alternate, so drift cancels
-            for system in order:
+            order = ["base", "accel", "mv"][::1 if k % 2 == 0 else -1]  # alternate, so drift cancels
+            for system in [s for s in order if s in a.systems.split()]:
                 print(f"{rate_name(rate)} rep {k} {system} (RF: {'update sets, ' + (str(a.batch_orders) if a.batch_orders else 'whole sets') if a.rf_dir else str(a.batch_orders) + ' cloned orders'}, {a.readers} readers) "
                       f"{time.strftime('%T')}", flush=True)
-                r = run_one(a, system, rate, k, seed, spec)
+                a._live_stream = None
+                try:
+                    r = run_one(a, system, rate, k, seed, spec)
+                except BaseException:
+                    if a._live_stream:  # the writer may have committed: put the data back before re-raising
+                        print("  run failed: undoing its writes", flush=True)
+                        db = sys_db(a, system)
+                        a._live_stream.restore(db)
+                        if system == "mv":
+                            refresh_all(db)
+                        db.close()
+                    raise
                 d = os.path.join(a.out, rate_name(rate), f"rep{k}")
                 os.makedirs(d, exist_ok=True)
                 with open(os.path.join(d, f"{system}.json"), "w") as f:
                     json.dump(r, f, indent=1, default=str)
                 print("   " + line(r), flush=True)
                 if a.vacuum and a.backend == "postgres":
-                    vacuum(a)
+                    vacuum(a, system)
     set_triggers(a, True)
 
 
-def vacuum(a):
-    import psycopg2
-    c = psycopg2.connect(host=a.host, port=a.port, user=a.user, password=a.password, dbname=a.db)
-    c.autocommit = True
+def vacuum(a, system=None):
+    c = pg_connect(a)  # (--schema's tables)
     cur = c.cursor()
     for t in TABLES:
         cur.execute(f"VACUUM (ANALYZE) {t}")
+    if system == "mv":  # the IMMVs collect dead rows from their maintenance (plain views are rewritten by REFRESH)
+        for name in sorted(n for views in mv_defs().IMMV.values() for n in views):
+            cur.execute("SELECT to_regclass(%s)", (f"{qident(schema(a))}.{name}",))
+            if cur.fetchone()[0] is not None:
+                cur.execute(f"VACUUM (ANALYZE) {name}")
     c.close()
 
 
@@ -918,10 +1199,20 @@ def line(r):
     s = (f"qps {r['qps']:.1f}  read p50 {r['read_p50_us'] / 1000:.1f}ms p99 {r['read_p99_us'] / 1000:.1f}ms  timeouts "
          f"{r['timeouts']}  RF commits {r['rf_commits']} ({r['rf_rate']:.3g}/s of {r['rate_target']:g}) of {r['commits']} commits  commit p50 "
          f"{r['commit_p50_us'] / 1000:.1f}ms max {r['commit_max_us'] / 1000:.0f}ms  lag max {r['writer_lag_max_s']:.1f}s  "
+         f"rows/s {r.get('rows_per_s', 0):.0f} (RF {r.get('rf_rows_per_s', 0):.0f})  "
          f"errors read {r['read_errors']} write {r['write_errors']}")
-    if r["system"] == "accel":
+    if r["system"] == "mv":
+        s += (f"  refresh {r.get('mv_refresh_s', 0):.1f}s in window (post-restore {r.get('mv_post_restore_refresh_s') or 0:.1f}s)")
+    if r["system"] != "base":
         s += (f"  final-check mismatches {r['final_mismatches'] or 'none'}  answers unchanged by writes "
               f"{r['answers_unchanged'] or 'none'}")
+    if r.get("shared_worker"):
+        w = r["shared_worker"]
+        s += (f"  worker: applies {w.get('applies', 0)} as delta {w.get('synced', 0)} not {w.get('unsynced', 0)} "
+              f"rebuilds {w.get('rebuilds', 0)} declined {w.get('declined', 0)} errors {w.get('errors', 0)}")
+    if not r.get("valid", True):
+        s += ("  RUN INVALID (an error, a failed restore or a final-check mismatch)" if r["system"] == "mv"
+              else "  RUN INVALID (the worker rebuilt / fell out of sync)")
     if not r["restore_ok"]:
         s += "  RESTORE FAILED"
     if r["reads"] == 0:
@@ -944,7 +1235,7 @@ def cmd_summary(a):
     for (rate, system), rs in sorted(runs.items()):
         print(f"{rate_name(rate):>9} {system:>6} {ms(rs, 'qps', 1):>20} {ms(rs, 'read_p50_us'):>20} "
               f"{ms(rs, 'read_p99_us'):>20} {ms(rs, 'commit_p50_us'):>20} {ms(rs, 'writer_lag_max_s', 1):>14}")
-        if system == "accel":
+        if system != "base":
             bad = sorted({q for r in rs for q in r.get("final_mismatches", [])})
             unch = sorted(set.intersection(*[set(r.get("answers_unchanged", [])) for r in rs]))
             if bad:
@@ -954,6 +1245,7 @@ def cmd_summary(a):
 
 
 def main():
+    global CHUNK
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="mode", required=True)
     for mode in ("read", "writerate"):
@@ -972,11 +1264,30 @@ def main():
         p.add_argument("--repeats", type=int, default=3, help="repetitions, each with its own parameter draw")
         p.add_argument("--sf", type=float, default=20)
         p.add_argument("--query-timeout", type=float, default=1800, help="seconds, per baseline query (timeouts are reported)")
+        p.add_argument("--shared-state", action=argparse.BooleanOptionalAction, default=False,
+                       help="postgres: one shared copy of the accelerators in a background worker, maintained by "
+                            "deltas (accel.shared_state); default: a copy per connection, rebuilt after others' writes")
+        p.add_argument("--schema", default="public",
+                       help="postgres: the schema of the TPC-H tables (and of system mv's views); every connection "
+                            "runs with search_path = <schema>, pgivm, public")
+        p.add_argument("--apply-timeout", type=float, default=600,
+                       help="seconds a committing writer waits for the shared worker's apply (--shared-state)")
     r = sub.choices["read"]
     r.add_argument("--reps", type=int, default=5, help="timed accelerator runs per parameter set")
     r.add_argument("--base-reps", type=int, default=2, help="timed baseline runs per parameter set (after one warm run)")
     w = sub.choices["writerate"]
     w.add_argument("--readers", type=int, default=8)
+    w.add_argument("--systems", default="base accel",
+                   help="which systems to run, of base / accel / mv (\"base accel\": both per repetition, alternating "
+                        "order); mv (postgres): readers query the materialized views of mv_defs.py (pg_ivm IMMVs "
+                        "maintained in every writing statement; plain views refreshed in each commit that writes "
+                        "a table they read)")
+    w.add_argument("--worker-restart", choices=("each", "first", "never"), default="each",
+                   help="shared-state worker restarts: before every run (default), only before this invocation's "
+                        "first run, or never (accel runs only: base runs write with the capture triggers off)")
+    w.add_argument("--pg-workers", type=int, default=None,
+                   help="Postgres: max_parallel_workers_per_gather (and the tables' parallel_workers) for every "
+                        "session of the run, e.g. floor(cores / readers) - 1; default: the server's settings")
     w.add_argument("--rates", default="1 5 20", help="writer commits/s (list; -1 uncapped; 0 no writes)")
     w.add_argument("--batch-orders", type=int, default=None,
                    help="orders per RF1 / RF2 commit.  With --rf-dir: only the first B orders of each update set (default: "
@@ -985,9 +1296,18 @@ def main():
                    help="directory of TPC-H update sets written by `dbgen -s SF -U N` (orders.tbl.uK, lineitem.tbl.uK, "
                         "delete.K): RF1 of set K inserts its orders, RF2 of set K deletes the listed ones, the "
                         "specification's refresh functions (default: $RF_DIR)")
+    w.add_argument("--chunk", type=int, default=CHUNK,
+                   help="rows per multi-row INSERT / keys per DELETE IN list (one commit spans several statements). "
+                        "pg_ivm's per-statement maintenance grows faster than linearly in the statement's rows, so the "
+                        "view baseline writes in smaller statements")
     w.add_argument("--seconds", type=float, default=60)
     w.add_argument("--warmup", type=float, default=5)
     w.add_argument("--max-commits", type=int, default=3000)
+    w.add_argument("--min-reads", type=int, default=0,
+                   help="extend the window past --seconds until every query has this many reads in it (to --max-seconds)")
+    w.add_argument("--max-seconds", type=float, default=0, help="the longest window --min-reads may extend to")
+    w.add_argument("--only-rep", type=int, default=None,
+                   help="run only repetition K of the --repeats draws (its seed is still --seed + K)")
     w.add_argument("--rf-only", action="store_true", help="the writer commits RF1 / RF2 only (no point writes)")
     w.add_argument("--dim-after-rf", action="store_true",
                    help="every RF commit is followed by one point write of each kind on part / partsupp / supplier "
@@ -999,13 +1319,34 @@ def main():
                    help="Postgres: VACUUM ANALYZE after every run (autovacuum is off in the test container)")
     s = sub.add_parser("summary")
     s.add_argument("dir")
+    o = sub.add_parser("reloptions", help="save / set / restore the TPC-H tables' parallel_workers (Postgres)")
+    o.add_argument("--db", required=True)
+    o.add_argument("--host", default="127.0.0.1")
+    o.add_argument("--port", type=int, default=None)
+    o.add_argument("--user", default=None)
+    o.add_argument("--password", default=None)
+    o.add_argument("--file", required=True, help="JSON file holding the original reloptions")
+    o.add_argument("--set", type=int, default=None)
+    o.add_argument("--restore", action="store_true")
+    o.add_argument("--schema", default="public")
     a = ap.parse_args()
     if a.mode == "summary":
         return cmd_summary(a)
+    if a.mode == "reloptions":
+        a.port = a.port or int(os.environ.get("PG_PORT", 5434))
+        a.user = a.user or os.environ.get("PGUSER", "postgres")
+        a.password = a.password or os.environ.get("PGPASSWORD", "postgres")
+        return cmd_reloptions(a)
+    pg = a.backend == "postgres"
     a.queries = [int(x) for x in a.queries.replace(",", " ").split()]
+    if getattr(a, "chunk", None):
+        CHUNK = a.chunk
+    if a.mode == "writerate":
+        bad = set(a.systems.split()) - {"base", "accel", "mv"}
+        if bad or ("mv" in a.systems.split() and not pg):
+            raise SystemExit(f"--systems: base / accel / mv (mv: postgres only), not {a.systems!r}")
     if a.mode == "writerate" and not a.rf_dir and a.batch_orders is None:
         a.batch_orders = 1  # clone mode: the old one-order mini-chunk
-    pg = a.backend == "postgres"
     a.port = a.port or int(os.environ.get("PG_PORT" if pg else "MYSQL_TCP_PORT", 5434 if pg else 3307))
     a.user = a.user or os.environ.get("PGUSER" if pg else "MYSQL_USER", "postgres" if pg else "root")
     a.password = a.password or os.environ.get("PGPASSWORD" if pg else "MYSQL_PWD", "postgres" if pg else "mysql")

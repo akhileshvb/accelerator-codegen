@@ -1,0 +1,1 @@
+REFRESH MATERIALIZED VIEW accel_tpch_q21_matview;

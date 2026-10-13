@@ -1,0 +1,155 @@
+{
+ "mode": "writerate",
+ "backend": "postgres",
+ "system": "base",
+ "rate_target": -1.0,
+ "rep": 0,
+ "seed": 3738036867,
+ "sf": 20.0,
+ "batch_orders": null,
+ "rf_source": "tpch_update_sets",
+ "rf_dir": "/disk3/akhilvb_tpch/refresh_sf20",
+ "rf_orders_used": 30000,
+ "readers": 2,
+ "shared_state": true,
+ "seconds": 86400.0,
+ "warmup": 0.0,
+ "queries": [
+  1,
+  2,
+  3,
+  9,
+  12,
+  21
+ ],
+ "sets_per_query": 1,
+ "prime_s": 0.0,
+ "triggers_on": 0,
+ "qps": 2.3148148148148147e-05,
+ "reads": 2,
+ "timeouts": 0,
+ "read_errors": 0,
+ "read_p50_us": 34072877.347,
+ "read_p99_us": 34072877.347,
+ "per_query": {
+  "1": {
+   "reads": 1,
+   "p50_us": 34072877.347,
+   "p95_us": 34072877.347,
+   "p99_us": 34072877.347,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "2": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "3": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "9": {
+   "reads": 1,
+   "p50_us": 28853872.215,
+   "p95_us": 28853872.215,
+   "p99_us": 28853872.215,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "12": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  },
+  "21": {
+   "reads": 0,
+   "p50_us": 0.0,
+   "p95_us": 0.0,
+   "p99_us": 0.0,
+   "timeouts": 0,
+   "errors": 0
+  }
+ },
+ "commits": 21,
+ "commits_total": 21,
+ "commit_rate": 0.00024305555555555555,
+ "rf_commits": 3,
+ "rf_rate": 3.472222222222222e-05,
+ "write_errors": 0,
+ "commit_p50_us": 770.2838629484177,
+ "commit_p99_us": 7215224.8499915,
+ "commit_max_us": 7215224.8499915,
+ "writer_lag_p50_s": 0.0007366561330854893,
+ "writer_lag_max_s": 9.64197362260893,
+ "rows_per_commit": 21503.380952380954,
+ "commit_us_by_kind": {
+  "rf1": {
+   "n": 2,
+   "p50": 7215224.8499915,
+   "max": 7215224.8499915
+  },
+  "supplier update": {
+   "n": 3,
+   "p50": 569.8730237782001,
+   "max": 770.2838629484177
+  },
+  "part delete": {
+   "n": 3,
+   "p50": 633.0041214823723,
+   "max": 653.6426953971386
+  },
+  "part insert": {
+   "n": 3,
+   "p50": 1151.2208729982376,
+   "max": 1270.241104066372
+  },
+  "supplier delete": {
+   "n": 3,
+   "p50": 746.0177876055241,
+   "max": 824.3592455983162
+  },
+  "supplier insert": {
+   "n": 3,
+   "p50": 4785.326309502125,
+   "max": 5113.854072988033
+  },
+  "partsupp update": {
+   "n": 3,
+   "p50": 496.4638501405716,
+   "max": 553.0850030481815
+  },
+  "rf2": {
+   "n": 1,
+   "p50": 369404.5483134687,
+   "max": 369404.5483134687
+  }
+ },
+ "tables_written": {
+  "region": 0,
+  "nation": 0,
+  "customer": 0,
+  "supplier": 9,
+  "part": 6,
+  "partsupp": 15,
+  "orders": 3,
+  "lineitem": 3
+ },
+ "tables_not_written": [],
+ "rf_only": false,
+ "dim_after_rf": true,
+ "final_check": {},
+ "restore_s": 8.223563400097191,
+ "restore_ok": true,
+ "shared_worker": null
+}

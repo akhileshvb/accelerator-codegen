@@ -1,0 +1,16 @@
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.2 rep 0 accel (RF: update sets, whole sets, 8 readers) 18:57:48
+   qps 17.1  read p50 48.7ms p99 19373.8ms  timeouts 0  RF commits 2 (0.0333/s of 0.2) of 14 commits  commit p50 347.8ms max 18973ms  lag max 38.3s  rows/s 5020 (RF 5014)  errors read 0 write 0  final-check mismatches [21]  answers unchanged by writes [2, 3, 8, 10, 11, 15, 18, 22]  worker: applies 21 as delta 216 not 0 rebuilds 0 declined 14 errors 0
+cps0.2 rep 1 accel (RF: update sets, whole sets, 8 readers) 19:09:45
+   qps 17.9  read p50 52.7ms p99 20561.6ms  timeouts 0  RF commits 2 (0.0333/s of 0.2) of 14 commits  commit p50 348.2ms max 20278ms  lag max 38.0s  rows/s 5020 (RF 5014)  errors read 0 write 0  final-check mismatches [21]  answers unchanged by writes [2, 3, 8, 10, 14, 15, 18, 22]  worker: applies 21 as delta 216 not 0 rebuilds 0 declined 12 errors 0
+cps0.2 rep 2 accel (RF: update sets, whole sets, 8 readers) 19:23:08
+   qps 19.5  read p50 58.1ms p99 1288.3ms  timeouts 0  RF commits 2 (0.0333/s of 0.2) of 14 commits  commit p50 296.7ms max 19587ms  lag max 40.6s  rows/s 5020 (RF 5014)  errors read 0 write 0  final-check mismatches [21]  answers unchanged by writes [2, 3, 8, 10, 14, 15, 18, 22]  worker: applies 21 as delta 216 not 0 rebuilds 0 declined 11 errors 0
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.2 rep 0 base (RF: update sets, whole sets, 8 readers) 20:15:15
+   qps 0.7  read p50 5582.1ms p99 42733.8ms  timeouts 0  RF commits 6 (0.1/s of 0.2) of 42 commits  commit p50 57.0ms max 14299ms  lag max 31.7s  rows/s 15017 (RF 15000)  errors read 0 write 0
+cps0.2 rep 1 base (RF: update sets, whole sets, 8 readers) 20:17:29
+   qps 0.6  read p50 6590.5ms p99 43773.3ms  timeouts 0  RF commits 6 (0.1/s of 0.2) of 42 commits  commit p50 37.7ms max 14135ms  lag max 33.6s  rows/s 15017 (RF 15000)  errors read 0 write 0
+cps0.2 rep 2 base (RF: update sets, whole sets, 8 readers) 20:19:51
+   qps 0.6  read p50 7531.4ms p99 45261.8ms  timeouts 0  RF commits 6 (0.1/s of 0.2) of 42 commits  commit p50 49.2ms max 14179ms  lag max 33.3s  rows/s 15017 (RF 15000)  errors read 0 write 0

@@ -1,0 +1,24 @@
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.016667 rep 0 accel (RF: update sets, whole sets, 8 readers) 23:15:08
+   qps 32.3  read p50 6.7ms p99 234.2ms  timeouts 0  RF commits 3 (0.0167/s of 0.016667) of 21 commits  commit p50 646.8ms max 26270ms  lag max 1.6s  rows/s 2506 (RF 2503)  errors read 0 write 0  final-check mismatches [21]  answers unchanged by writes [2, 3, 8, 10, 11, 15, 18, 22]  worker: applies 28 as delta 288 not 0 rebuilds 0 declined 20 errors 0
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.016667 rep 1 accel (RF: update sets, whole sets, 8 readers) 02:54:00
+   qps 34.0  read p50 17.2ms p99 253.6ms  timeouts 0  RF commits 3 (0.0167/s of 0.016667) of 21 commits  commit p50 340.5ms max 18583ms  lag max 1.7s  rows/s 2506 (RF 2503)  errors read 0 write 0  final-check mismatches [21]  answers unchanged by writes [2, 3, 8, 10, 15, 18, 22]  worker: applies 28 as delta 288 not 0 rebuilds 0 declined 19 errors 0
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.016667 rep 2 accel (RF: update sets, whole sets, 8 readers) 03:07:32
+   qps 33.4  read p50 7.4ms p99 332.2ms  timeouts 0  RF commits 3 (0.0166/s of 0.016667) of 21 commits  commit p50 313.8ms max 22006ms  lag max 2.5s  rows/s 2504 (RF 2501)  errors read 0 write 0  final-check mismatches [21]  answers unchanged by writes [2, 3, 6, 8, 10, 15, 18, 22]  worker: applies 28 as delta 288 not 0 rebuilds 0 declined 20 errors 0
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.016667 rep 0 base (RF: update sets, whole sets, 8 readers) 04:40:39
+   qps 0.2  read p50 7213.7ms p99 555010.6ms  timeouts 0  RF commits 13 (0.0171/s of 0.016667) of 91 commits  commit p50 89.1ms max 104094ms  lag max 46.8s  rows/s 2566 (RF 2563)  errors read 0 write 0
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.016667 rep 1 base (RF: update sets, whole sets, 8 readers) 07:25:00
+   qps 0.2  read p50 5996.7ms p99 510637.6ms  timeouts 0  RF commits 12 (0.0165/s of 0.016667) of 84 commits  commit p50 75.5ms max 21463ms  lag max 12.6s  rows/s 2476 (RF 2474)  errors read 0 write 0
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.016667 rep 2 base (RF: update sets, whole sets, 8 readers) 07:38:48
+   qps 0.2  read p50 7158.0ms p99 534432.7ms  timeouts 0  RF commits 13 (0.0165/s of 0.016667) of 91 commits  commit p50 78.3ms max 130855ms  lag max 74.4s  rows/s 2484 (RF 2481)  errors read 0 write 0

@@ -1,0 +1,85 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 2,
+ "rep": 0,
+ "seed": 2716834049,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 995.1015671234251,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "size": 16,
+    "type": "COPPER",
+    "region": "AMERICA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 7574827.949,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5735802.0095,
+   "accel_us": 5786.411,
+   "speedup": 991.2538202868756
+  },
+  {
+   "params": {
+    "size": 21,
+    "type": "TIN",
+    "region": "EUROPE"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 6464.166,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5661819.556,
+   "accel_us": 5221.789,
+   "speedup": 1084.2681609693536
+  },
+  {
+   "params": {
+    "size": 11,
+    "type": "BRASS",
+    "region": "AFRICA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 6536.398,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5660317.0055,
+   "accel_us": 5887.276,
+   "speedup": 961.4492348413766
+  },
+  {
+   "params": {
+    "size": 18,
+    "type": "NICKEL",
+    "region": "EUROPE"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 7609.209,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5724740.704,
+   "accel_us": 6033.011,
+   "speedup": 948.9027459091321
+  }
+ ]
+}

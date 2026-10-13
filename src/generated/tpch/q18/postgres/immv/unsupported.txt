@@ -1,0 +1,1 @@
+FROM subquery with SUM aggregate unsupported

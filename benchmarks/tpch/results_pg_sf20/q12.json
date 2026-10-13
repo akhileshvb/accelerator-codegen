@@ -1,0 +1,17 @@
+{
+  "query": 12,
+  "native_median_ms": 17406.053591985255,
+  "matview_median_ms": 0.6731210742145777,
+  "ivm_median_ms": 0.7750280201435089,
+  "aux_median_ms": 0.7071769796311855,
+  "aux_build_ms": 92950.54966199677,
+  "ivm_build_ms": 26672.74785891641,
+  "refresh_ms": 26938.737682066858,
+  "ivm_status": "ok",
+  "matview_speedup_vs_native": 25858.72625113584,
+  "ivm_speedup_vs_native": 22458.61199800524,
+  "aux_speedup_vs_native": 24613.43354398081,
+  "aux_speedup_vs_matview": 0.9518424575494963,
+  "aux_speedup_vs_ivm": 1.0959463365842448,
+  "ivm_speedup_vs_matview": 0.8685119204979692
+}

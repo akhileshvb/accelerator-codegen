@@ -1,0 +1,63 @@
+# Shared materialized-view pipeline settings (workload_kind=materialized_view).
+# Pure Postgres SQL: CREATE MATERIALIZED VIEW + indexes + residual query + REFRESH.
+# No C++ aux modules or extension kernels for this kind.
+
+write_paths:
+  - src/generated/tpch/q*/postgres/matview/**
+  - scripts/postgres_matview_*.sh
+  - pipeline/gates/run_mv_*.sh
+  - pipeline/gates/mv_gate_common.sh
+
+allowed_commands:
+  - "^bash scripts/ensure_accel_pg_test\\.sh( .*)?$"
+  - "^bash scripts/postgres_matview_apply\\.sh \\d+$"
+  - "^bash scripts/postgres_matview_refresh\\.sh \\d+$"
+  - "^bash pipeline/gates/run_mv_apply\\.sh \\d+$"
+  - "^bash pipeline/gates/run_mv_correctness\\.sh \\d+$"
+  - "^bash pipeline/gates/run_mv_refresh\\.sh \\d+$"
+  - "^bash pipeline/gates/run_mv_bench\\.sh \\d+$"
+  - "^docker exec( .*)?$"
+  - "^psql( .*)?$"
+
+post_implementation_gates:
+  - mv_apply
+  - mv_correctness
+  - mv_refresh
+  - mv_bench
+
+post_optimization_gates:
+  - mv_apply
+  - mv_correctness
+  - mv_refresh
+  - mv_bench
+
+post_audit_gates:
+  - mv_correctness
+  - mv_refresh
+  - mv_bench
+
+prompt_subdir: materialized_view
+
+stage_max_turns:
+  analysis: 24
+  adversarial_tests: 8
+  implementation: 0
+  optimization: 0
+  audit: 12
+
+optimization:
+  max_iterations: 3
+  max_attempts_per_iteration: 5
+  improvement_threshold_pct: 2.0
+  reject_threshold_pct: 1.0
+  smoke_runs: 2
+  skip_confirmation: true
+  skip_per_attempt_correctness: true
+  early_stop:
+    enabled: true
+
+# Dual-axis style targets (read query vs REFRESH cost); gates report both.
+mv_bench:
+  warmup: 2
+  queries: 10
+  write_mix_pct: 10

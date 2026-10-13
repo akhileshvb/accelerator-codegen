@@ -1,0 +1,25 @@
+    PID USER     %CPU %MEM     ELAPSED COMMAND
+ 461025 999      74.3 10.3       46:49 postgres
+ 519704 renjie   14.2  0.0       04:31 chrome
+ 500099 102       9.3  0.3       16:16 java
+ 336763 renjie    6.5  0.2    01:31:07 MainThread
+ 519491 renjie    5.7  0.0       04:32 chrome
+ 519565 renjie    3.3  0.0       04:32 node
+ 520429 82        2.8  0.0       03:28 php-fpm
+ 520669 82        2.5  0.0       02:29 php-fpm
+ 520435 82        2.5  0.0       03:27 php-fpm
+ 500094 104       2.4  0.0       16:16 mysqld
+ 519520 renjie    2.3  0.0       04:32 chrome
+ 459730 renjie    2.2  0.1       47:05 codex
+ 519521 renjie    2.1  0.0       04:32 chrome
+ 290641 akhilvb   2.0  0.0    03:42:33 claude
+1764110 root      1.9  0.1 21-21:32:15 dockerd
+ 289559 akhilvb   1.8  0.1    03:42:39 MainThread
+ 338001 renjie    1.4  0.2    01:30:58 MainThread
+3424398 renjie    1.1  0.0    19:37:43 python
+2994593 root      0.9  0.0  9-19:29:21 docker-proxy
+ 519748 renjie    0.8  0.1       04:30 codex
+ 500098 root      0.6  0.0       16:16 redis-server
+ 354778 renjie    0.5  0.0    01:19:44 python
+3250718 999       0.3  0.0  1-03:35:22 postgres
+ 501972 renjie    0.3  0.0       15:29 python

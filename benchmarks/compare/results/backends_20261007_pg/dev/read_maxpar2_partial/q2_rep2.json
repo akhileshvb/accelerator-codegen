@@ -1,0 +1,85 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 2,
+ "rep": 2,
+ "seed": 991050525,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 941.7059062034708,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "size": 42,
+    "type": "BRASS",
+    "region": "EUROPE"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 7544.975,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5346486.6335,
+   "accel_us": 5948.714,
+   "speedup": 898.7634358451256
+  },
+  {
+   "params": {
+    "size": 13,
+    "type": "NICKEL",
+    "region": "MIDDLE EAST"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 6948.943,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5354666.0285,
+   "accel_us": 5410.462,
+   "speedup": 989.6873924075245
+  },
+  {
+   "params": {
+    "size": 44,
+    "type": "NICKEL",
+    "region": "MIDDLE EAST"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 7475.216,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5407926.365,
+   "accel_us": 5595.729,
+   "speedup": 966.4382183268704
+  },
+  {
+   "params": {
+    "size": 49,
+    "type": "COPPER",
+    "region": "ASIA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 6558.658,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5393287.966,
+   "accel_us": 5895.355,
+   "speedup": 914.8368446005372
+  }
+ ]
+}

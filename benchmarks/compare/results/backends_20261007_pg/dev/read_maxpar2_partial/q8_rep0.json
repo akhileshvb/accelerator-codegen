@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 8,
+ "rep": 0,
+ "seed": 991050523,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 11357.702934842002,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "nation": "IRAN",
+    "type": "SMALL ANODIZED BRASS"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 118113781.396,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 4303726.7575,
+   "accel_us": 252.835,
+   "speedup": 17021.87892301303
+  },
+  {
+   "params": {
+    "nation": "IRAN",
+    "type": "STANDARD PLATED STEEL"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 981.261,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 4361740.757,
+   "accel_us": 326.646,
+   "speedup": 13353.112412213834
+  },
+  {
+   "params": {
+    "nation": "UNITED KINGDOM",
+    "type": "ECONOMY PLATED STEEL"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 596.524,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 4474790.6155,
+   "accel_us": 410.42,
+   "speedup": 10902.954572145607
+  },
+  {
+   "params": {
+    "nation": "ETHIOPIA",
+    "type": "SMALL PLATED NICKEL"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1003.644,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 4350298.31,
+   "accel_us": 647.875,
+   "speedup": 6714.718595408064
+  }
+ ]
+}

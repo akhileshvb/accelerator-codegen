@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 5,
+ "rep": 0,
+ "seed": 991050523,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 34879.04679132909,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "region": "AFRICA",
+    "date": "1997-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 63173374.756,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 12021587.79,
+   "accel_us": 300.692,
+   "speedup": 39979.739367858136
+  },
+  {
+   "params": {
+    "region": "AFRICA",
+    "date": "1995-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 784.464,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 11824257.4335,
+   "accel_us": 380.371,
+   "speedup": 31086.11706334079
+  },
+  {
+   "params": {
+    "region": "AFRICA",
+    "date": "1996-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1055.456,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 11490182.5265,
+   "accel_us": 327.128,
+   "speedup": 35124.42385396542
+  },
+  {
+   "params": {
+    "region": "AFRICA",
+    "date": "1994-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 765.904,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 11601527.5275,
+   "accel_us": 342.194,
+   "speedup": 33903.36337720708
+  }
+ ]
+}

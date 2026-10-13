@@ -1,0 +1,88 @@
+# query=10 benchmark=tpch suite=lineitem_only write_frequency_pct=0
+tpch_q10_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q10_aux_build: customers 8236 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 23540 ms
+tpch_q10_aux_build: total_build_state 31777 ms
+tpch_q10_aux_bench: duckdb_ref uses JSON profile latency; accel queries use TF SQL path
+tpch_q10_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600
+tpch_q10_aux_bench: wrote row write_interval_sec=0 write_frequency_pct=0 num_queries=1729 writes=0 workload_speedup=30.3345
+tpch_q10_aux_bench: starting write_mode=rf write_interval_sec=300 measured_duration_sec=1500
+tpch_aux_bench: RF write begin seq=0 orders=30000 elapsed_sec=300.129
+tpch_q10_aux_build: customers 7785 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 22241 ms
+tpch_q10_aux_build: total_build_state 30027 ms
+tpch_aux_bench: RF write end seq=0 write_sec=33.2375
+tpch_aux_bench: RF write begin seq=1 orders=30000 elapsed_sec=600.136
+tpch_q10_aux_build: customers 7562 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 21547 ms
+tpch_q10_aux_build: total_build_state 29110 ms
+tpch_aux_bench: RF write end seq=1 write_sec=185.514
+tpch_aux_bench: RF write begin seq=2 orders=30000 elapsed_sec=900.003
+tpch_q10_aux_build: customers 7524 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 21374 ms
+tpch_q10_aux_build: total_build_state 28899 ms
+tpch_aux_bench: RF write end seq=2 write_sec=32.1983
+tpch_aux_bench: RF write begin seq=3 orders=30000 elapsed_sec=1200.07
+tpch_q10_aux_build: customers 7534 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 21328 ms
+tpch_q10_aux_build: total_build_state 28863 ms
+tpch_aux_bench: RF write end seq=3 write_sec=184.262
+tpch_q10_aux_bench: wrote row write_interval_sec=300 write_frequency_pct=0 num_queries=3450 writes=4 workload_speedup=24.2147
+tpch_q10_aux_bench: starting write_mode=rf write_interval_sec=120 measured_duration_sec=600
+tpch_aux_bench: RF write begin seq=0 orders=30000 elapsed_sec=120.034
+tpch_q10_aux_build: customers 7543 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 21419 ms
+tpch_q10_aux_build: total_build_state 28964 ms
+tpch_aux_bench: RF write end seq=0 write_sec=32.2095
+tpch_aux_bench: RF write begin seq=1 orders=30000 elapsed_sec=240.026
+tpch_q10_aux_build: customers 7554 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 21388 ms
+tpch_q10_aux_build: total_build_state 28943 ms
+tpch_aux_bench: RF write end seq=1 write_sec=184.321
+tpch_aux_bench: RF write begin seq=2 orders=30000 elapsed_sec=480.041
+tpch_q10_aux_build: customers 7559 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 21586 ms
+tpch_q10_aux_build: total_build_state 29146 ms
+tpch_aux_bench: RF write end seq=2 write_sec=32.439
+tpch_q10_aux_bench: wrote row write_interval_sec=120 write_frequency_pct=0 num_queries=1171 writes=3 workload_speedup=20.5447
+tpch_q10_aux_bench: starting write_mode=rf write_interval_sec=60 measured_duration_sec=600
+tpch_aux_bench: RF write begin seq=0 orders=30000 elapsed_sec=60.0134
+tpch_q10_aux_build: customers 7543 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 21519 ms
+tpch_q10_aux_build: total_build_state 29064 ms
+tpch_aux_bench: RF write end seq=0 write_sec=32.2983
+tpch_aux_bench: RF write begin seq=1 orders=30000 elapsed_sec=120.181
+tpch_q10_aux_build: customers 7583 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 21682 ms
+tpch_q10_aux_build: total_build_state 29266 ms
+tpch_aux_bench: RF write end seq=1 write_sec=188.733
+tpch_aux_bench: RF write begin seq=2 orders=30000 elapsed_sec=360.295
+tpch_q10_aux_build: customers 7561 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 21784 ms
+tpch_q10_aux_build: total_build_state 29346 ms
+tpch_aux_bench: RF write end seq=2 write_sec=32.7324
+tpch_aux_bench: RF write begin seq=3 orders=30000 elapsed_sec=420.116
+tpch_q10_aux_build: customers 7575 ms
+tpch_q10_aux_build: nations 0 ms
+tpch_q10_aux_build: returned_revenue_sql 21481 ms
+tpch_q10_aux_build: total_build_state 29057 ms
+tpch_aux_bench: RF write end seq=3 write_sec=188.897
+tpch_q10_aux_bench: wrote row write_interval_sec=60 write_frequency_pct=1 num_queries=535 writes=4 workload_speedup=9.2503
+suite,write_mode,write_policy,locality,write_frequency_pct,write_interval_sec,measured_duration_sec,reader_qps,query_num,num_queries,writes_executed,duckdb_ref_query_median_us,base_kernel_median_us,base_write_median_us,accel_write_median_us,accel_hit_median_us,fallback_median_us,accel_hit_rate,fallback_rate,total_duckdb_query_us,total_accel_query_us,total_base_write_us,total_accel_write_us,duckdb_workload_us,accel_workload_us,workload_speedup,cold_start_workload_speedup,query_only_speedup,blended_query_speedup,cold_start_accel_workload_us,setup_full_build_ms,aux_state_bytes,valid_partitions,total_slots,validity_slots_scanned_median,validity_scan_us_median,partitions_read_per_query_median,state_bytes_read_median,store_execute_calls
+lineitem_only,rf,hybrid,global,0,0,600,2.78842,10,1729,0,10529992.24,6312029.21,0.00,0.00,352457.20,0.00,1.00,0.00,18206356581.23,600186993.36,0.00,0.00,18206356581.23,600186993.36,30.33,28.81,17.91,17.91,631963993.36,31777.00,701888186,43,43,43.00,7.00,0.00,0,0
+lineitem_only,rf,hybrid,global,0,300.00,1500.00,2.79,10,3450,4,10529992.24,6312029.21,0.00,108803109.40,303522.45,0.00,1.00,0.00,36328473224.55,1065053551.43,0.00,435212437.60,36328473224.55,1500265989.03,24.21,23.71,20.80,20.80,1532042989.03,31777.00,701888186,43,43,43.00,6.00,0.00,0,0
+lineitem_only,rf,hybrid,global,0,120.00,600.00,2.79,10,1171,3,10529992.24,6312029.21,0.00,82989662.34,301515.56,0.00,1.00,0.00,12330620911.87,351215675.36,0.00,248968987.03,12330620911.87,600184662.39,20.54,19.51,20.93,20.93,631961662.39,31777.00,701888186,43,43,43.00,5.00,0.00,0,0
+lineitem_only,rf,hybrid,global,1,60.00,600.00,2.79,10,535,4,10529992.24,6312029.21,0.00,110665096.76,308675.72,0.00,1.00,0.00,5633545847.86,166352004.50,0.00,442660387.02,5633545847.86,609012391.52,9.25,8.79,20.45,20.45,640789391.52,31777.00,701888186,43,43,43.00,5.00,0.00,0,0
+wrote /home/akhilvb/accelerator-codegen/build-release/q10_aux_bench_tpch_sf20/results.csv
+/home/akhilvb/accelerator-codegen/build-release/q10_aux_bench_tpch_sf20/results.csv

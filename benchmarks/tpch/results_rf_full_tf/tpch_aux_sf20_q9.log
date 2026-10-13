@@ -1,0 +1,32 @@
+# query=9 benchmark=tpch suite=lineitem_only write_frequency_pct=0
+tpch_q9_aux_bench: write_mode=rf rf_chunk_orders=30000 vary_args=1 arg_pool=32 arg_seed=1
+tpch_q9_aux_bench: duckdb_ref uses JSON profile latency; accel queries use TF SQL path
+tpch_q9_aux_bench: starting write_mode=rf write_interval_sec=0 measured_duration_sec=600
+tpch_q9_aux_bench: wrote row write_interval_sec=0 write_frequency_pct=0 num_queries=1946 writes=0 workload_speedup=88.0813
+tpch_q9_aux_bench: starting write_mode=rf write_interval_sec=300 measured_duration_sec=1500
+tpch_aux_bench: RF write begin seq=0 orders=30000 elapsed_sec=300.242
+tpch_aux_bench: RF write end seq=0 write_sec=8.24214
+tpch_aux_bench: RF write begin seq=1 orders=30000 elapsed_sec=600.21
+tpch_aux_bench: RF write end seq=1 write_sec=506.691
+tpch_aux_bench: RF write begin seq=2 orders=30000 elapsed_sec=1200.28
+tpch_aux_bench: RF write end seq=2 write_sec=7.61265
+tpch_q9_aux_bench: wrote row write_interval_sec=300 write_frequency_pct=0 num_queries=3174 writes=3 workload_speedup=57.4766
+tpch_q9_aux_bench: starting write_mode=rf write_interval_sec=120 measured_duration_sec=600
+tpch_aux_bench: RF write begin seq=0 orders=30000 elapsed_sec=120.042
+tpch_aux_bench: RF write end seq=0 write_sec=7.508
+tpch_aux_bench: RF write begin seq=1 orders=30000 elapsed_sec=240.217
+tpch_aux_bench: RF write end seq=1 write_sec=501.667
+tpch_q9_aux_bench: wrote row write_interval_sec=120 write_frequency_pct=0 num_queries=752 writes=2 workload_speedup=27.5363
+tpch_q9_aux_bench: starting write_mode=rf write_interval_sec=60 measured_duration_sec=600
+tpch_aux_bench: RF write begin seq=0 orders=30000 elapsed_sec=60.1039
+tpch_aux_bench: RF write end seq=0 write_sec=7.61641
+tpch_aux_bench: RF write begin seq=1 orders=30000 elapsed_sec=120.15
+tpch_aux_bench: RF write end seq=1 write_sec=503.485
+tpch_q9_aux_bench: wrote row write_interval_sec=60 write_frequency_pct=1 num_queries=361 writes=2 workload_speedup=15.7253
+suite,write_mode,write_policy,locality,write_frequency_pct,write_interval_sec,measured_duration_sec,reader_qps,query_num,num_queries,writes_executed,duckdb_ref_query_median_us,base_kernel_median_us,base_write_median_us,accel_write_median_us,accel_hit_median_us,fallback_median_us,accel_hit_rate,fallback_rate,total_duckdb_query_us,total_accel_query_us,total_base_write_us,total_accel_write_us,duckdb_workload_us,accel_workload_us,workload_speedup,cold_start_workload_speedup,query_only_speedup,blended_query_speedup,cold_start_accel_workload_us,setup_full_build_ms,aux_state_bytes,valid_partitions,total_slots,validity_slots_scanned_median,validity_scan_us_median,partitions_read_per_query_median,state_bytes_read_median,store_execute_calls
+lineitem_only,rf,hybrid,global,0,0,600,3.07439,9,1946,0,27165832.77,7623874.51,0.00,0.00,307414.44,0.00,1.00,0.00,52864710578.20,600180605.75,0.00,0.00,52864710578.20,600180605.75,88.08,56.03,24.80,24.80,943499605.75,343319.00,2195700557,514,514,514.00,83.00,0.00,0,0
+lineitem_only,rf,hybrid,global,0,300.00,1500.00,3.07,9,3174,3,27165832.77,7623874.51,0.00,174181901.62,307577.44,0.00,1.00,0.00,86224353224.68,977617791.88,0.00,522545704.86,86224353224.68,1500163496.74,57.48,46.77,24.79,24.79,1843482496.74,343319.00,2195700557,514,514,514.00,75.00,0.00,0,0
+lineitem_only,rf,hybrid,global,0,120.00,600.00,3.07,9,752,2,27165832.77,7623874.51,0.00,254587558.90,308537.59,0.00,1.00,0.00,20428706246.05,232708313.98,0.00,509175117.79,20428706246.05,741883431.77,27.54,18.82,24.71,24.71,1085202431.77,343319.00,2195700557,514,514,514.00,59.00,0.00,0,0
+lineitem_only,rf,hybrid,global,1,60.00,600.00,3.07,9,361,2,27165832.77,7623874.51,0.00,255550532.59,311930.25,0.00,1.00,0.00,9806865631.41,112533652.01,0.00,511101065.19,9806865631.41,623634717.20,15.73,10.14,24.44,24.44,966953717.20,343319.00,2195700557,514,514,514.00,63.00,0.00,0,0
+wrote /home/akhilvb/accelerator-codegen/build-release/q9_aux_bench_tpch_sf20/results.csv
+/home/akhilvb/accelerator-codegen/build-release/q9_aux_bench_tpch_sf20/results.csv

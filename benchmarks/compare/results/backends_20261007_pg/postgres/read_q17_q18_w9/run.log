@@ -1,0 +1,8 @@
+# read mode with max_parallel_workers_per_gather = 9 for every session
+parameter draws: 3 repetition(s) x 4 sets, seeds 2716834049..2716834051
+rep 0 q17: speedup 101620.5x mismatches 0/4  states ['ok/ok']
+rep 0 q18: speedup 42522.6x mismatches 0/4  states ['ok/ok']
+rep 1 q17: speedup 112203.5x mismatches 0/4  states ['ok/ok']
+rep 1 q18: speedup 41863.8x mismatches 0/4  states ['ok/ok']
+rep 2 q17: speedup 111016.9x mismatches 0/4  states ['ok/ok']
+rep 2 q18: speedup 40394.5x mismatches 0/4  states ['ok/ok']

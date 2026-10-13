@@ -1,0 +1,6 @@
+=== Postgres TPC-H SF20 RF sweep ===
+db=accel_tpch_sf20 queries=1 3 6 10 12 14 intervals=0 300 120 60
+duration_sec=600 min_writes=5 rf_chunk_orders=30000
+=== postgres tpch Q1 ===
+engine,workload,query,write_mode,write_interval_sec,mode,reads,writes,rows,read_p50_us,read_sum_us,write_p50_us,write_sum_us,build_us,workload_sum_us,workload_speedup_vs_base,workload_with_build_us,workload_with_build_speedup_vs_base,measured_duration_sec,rf_chunk_orders
+# interval=0.0 duration_sec=600.0 write_mode=rf rf_chunk_orders=30000

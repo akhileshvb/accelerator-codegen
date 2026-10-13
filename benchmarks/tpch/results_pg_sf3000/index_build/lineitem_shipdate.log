@@ -1,0 +1,4 @@
+[10:21:15] START lineitem_shipdate
+ERROR:  canceling statement due to user request
+Time: 4087799.846 ms (01:08:07.800)
+[11:29:23] END lineitem_shipdate rc=3 elapsed=4088s

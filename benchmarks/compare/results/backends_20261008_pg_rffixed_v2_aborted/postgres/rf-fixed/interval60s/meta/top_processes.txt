@@ -1,0 +1,25 @@
+    PID USER     %CPU %MEM     ELAPSED COMMAND
+1296093 renjie    250  0.1       00:06 python
+1295100 renjie    102  0.1       00:33 python
+1294277 renjie   98.6  0.1       00:58 python
+1292605 renjie   95.8  0.1       01:37 python
+1293019 renjie   95.7  0.1       01:30 python
+1291437 renjie   81.2  0.1       02:07 python
+1296435 renjie   80.2  0.0       00:02 chrome
+1284578 renjie   34.4  0.1       06:48 python
+1267284 renjie   31.7  0.2       20:03 python
+1267611 renjie   30.8  0.2       19:58 python
+1267688 renjie   30.7  0.2       19:58 python
+1243111 102      29.8  0.4       30:58 java
+1296363 renjie   28.4  0.0       00:02 chrome
+1296351 renjie   27.0  0.0       00:03 node
+1296382 renjie   18.9  0.0       00:02 chrome
+1292171 82       16.2  0.0       01:53 php-fpm
+1291719 82       15.2  0.0       02:01 php-fpm
+1291703 82       14.3  0.0       02:02 php-fpm
+1295405 renjie   13.7  0.0       00:27 chrome
+1243106 104      12.8  0.0       30:58 mysqld
+1295322 renjie    9.9  0.0       00:28 node
+1295341 renjie    8.7  0.0       00:27 chrome
+1294645 renjie    8.5  0.0       00:54 chrome
+1292955 renjie    7.2  0.0       01:33 chrome

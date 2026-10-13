@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 5,
+ "rep": 2,
+ "seed": 2716834051,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 22892.76907868147,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "region": "AMERICA",
+    "date": "1997-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 774.536,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 6968000.776,
+   "accel_us": 337.672,
+   "speedup": 20635.411807908262
+  },
+  {
+   "params": {
+    "region": "EUROPE",
+    "date": "1995-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 709.173,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 7843047.3405,
+   "accel_us": 267.093,
+   "speedup": 29364.481062775885
+  },
+  {
+   "params": {
+    "region": "ASIA",
+    "date": "1993-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 731.595,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 7003803.695499999,
+   "accel_us": 298.332,
+   "speedup": 23476.541891248675
+  },
+  {
+   "params": {
+    "region": "MIDDLE EAST",
+    "date": "1997-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 742.198,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 7058204.918,
+   "accel_us": 365.57,
+   "speedup": 19307.39644390951
+  }
+ ]
+}

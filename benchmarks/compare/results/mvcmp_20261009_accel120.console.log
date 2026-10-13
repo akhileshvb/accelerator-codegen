@@ -1,0 +1,48 @@
+# table parallel_workers now {'region': 9, 'nation': 9, 'customer': 9, 'supplier': 9, 'part': 9, 'partsupp': 9, 'orders': 9, 'lineitem': 9}
+=== rf-fixed postgres accel rep 0 interval=120s window=180s (min reads 3, max 900s) warmup=30s readers=8 seed=35489017 pg_workers=9 16:36:54
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.008333 rep 0 accel (RF: update sets, whole sets, 8 readers) 16:36:54
+   qps 50.3  read p50 16.6ms p99 284.0ms  timeouts 0  RF commits 1 (0.00555/s of 0.008333) of 7 commits  commit p50 204.7ms max 7239ms  lag max 1.5s  rows/s 837 (RF 836)  errors read 0 write 0  final-check mismatches [21]  answers unchanged by writes [2, 3, 8, 10, 11, 15, 18, 22]  worker: applies 14 as delta 144 not 0 rebuilds 0 declined 11 errors 0
+=== rf-fixed postgres accel rep 1 interval=120s window=180s (min reads 3, max 900s) warmup=30s readers=8 seed=35489017 pg_workers=9 17:31:05
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.008333 rep 1 accel (RF: update sets, whole sets, 8 readers) 17:31:05
+  run failed: undoing its writes
+Traceback (most recent call last):
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 1339, in <module>
+    if bad or ("mv" in a.systems.split() and not pg):
+    ^^
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 1335, in main
+    if getattr(a, "chunk", None):
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 1131, in cmd_writerate
+    if all(original[t] == a.pg_workers for t in TABLES):
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 1154, in cmd_writerate_body
+    print(f"{rate_name(rate)} rep {k} {system} (RF: {'update sets, ' + (str(a.batch_orders) if a.batch_orders else 'whole sets') if a.rf_dir else str(a.batch_orders) + ' cloned orders'}, {a.readers} readers) "
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/akhilvb/accelerator-codegen/.worktrees/pgconc/benchmarks/compare/run_sql_backend.py", line 951, in run_one
+    for t in ts:
+        ^^^^^^^^
+KeyboardInterrupt
+# table parallel_workers now {'region': None, 'nation': None, 'customer': 80, 'supplier': None, 'part': 80, 'partsupp': 80, 'orders': 80, 'lineitem': 80}
+benchmarks/compare/run_backends.sh: line 125: 2428761 Killed                     $PYTHON benchmarks/compare/run_sql_backend.py writerate $(sql_args "$b") --sf "$SF" --out "$D" --queries "$QUERIES" --rates "$R" --seconds "$S" --warmup "$W" --readers "$N" $WF --rf-dir "$RF_DIR" ${BATCH_ORDERS:+--batch-orders "$BATCH_ORDERS"} --query-timeout "$QUERY_TIMEOUT" "$@"
+### 18:27:25 rep 1 (started 17:31) was killed: its readers ran the accelerators per connection (harness mid-edit); reps 1-2 rerun below with FIRST_REP=1, worker kept (FIRST_RESTART=never)
+# table parallel_workers now {'region': 9, 'nation': 9, 'customer': 9, 'supplier': 9, 'part': 9, 'partsupp': 9, 'orders': 9, 'lineitem': 9}
+=== rf-fixed postgres accel rep 1 interval=120s window=180s (min reads 3, max 900s) warmup=30s readers=8 seed=35489017 pg_workers=9 18:27:25
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.008333 rep 1 accel (RF: update sets, whole sets, 8 readers) 18:27:25
+### 18:29:03 rerun of reps 1-2 (18:27) killed too: the harness set search_path on accel sessions, and the shared worker declines requests whose search_path differs from its state's; fixed (search_path only for mv / non-public schema)
+# table parallel_workers now {'region': 9, 'nation': 9, 'customer': 9, 'supplier': 9, 'part': 9, 'partsupp': 9, 'orders': 9, 'lineitem': 9}
+=== rf-fixed postgres accel rep 1 interval=120s window=180s (min reads 3, max 900s) warmup=30s readers=8 seed=35489017 pg_workers=9 18:29:57
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.008333 rep 1 accel (RF: update sets, whole sets, 8 readers) 18:29:57
+   qps 45.1  read p50 32.8ms p99 353.3ms  timeouts 0  RF commits 1 (0.00555/s of 0.008333) of 7 commits  commit p50 249.3ms max 8222ms  lag max 1.3s  rows/s 836 (RF 835)  errors read 0 write 0  final-check mismatches [21]  answers unchanged by writes [2, 3, 8, 10, 14, 15, 18, 22]  worker: applies 14 as delta 144 not 0 rebuilds 0 declined 13 errors 0
+=== rf-fixed postgres accel rep 2 interval=120s window=180s (min reads 3, max 900s) warmup=30s readers=8 seed=35489017 pg_workers=9 18:44:01
+# --pg-workers 9: max_parallel_workers_per_gather = 9 for every session; table parallel_workers already 9
+parameter draws: 3 repetition(s) x 4 sets, seeds 35489017..35489019
+cps0.008333 rep 2 accel (RF: update sets, whole sets, 8 readers) 18:44:01
+   qps 46.1  read p50 31.7ms p99 347.6ms  timeouts 0  RF commits 1 (0.00555/s of 0.008333) of 9 commits  commit p50 208.5ms max 8035ms  lag max 1.8s  rows/s 837 (RF 836)  errors read 0 write 0  final-check mismatches [21]  answers unchanged by writes [2, 3, 8, 10, 15, 18, 20, 22]  worker: applies 14 as delta 144 not 0 rebuilds 0 declined 12 errors 0
+# table parallel_workers now {'region': None, 'nation': None, 'customer': 80, 'supplier': None, 'part': 80, 'partsupp': 80, 'orders': 80, 'lineitem': 80}

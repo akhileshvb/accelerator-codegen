@@ -51,6 +51,7 @@ extern "C" {
 #include <csignal>
 #include <cstring>
 #include <dlfcn.h>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <set>
@@ -68,6 +69,7 @@ bool g_shared_state = false;
 int g_timeout_ms = 60000;       // a reader waits this long for the worker
 int g_apply_timeout_ms = 5000;  // a committing writer waits this long
 int g_idle_exit_s = 0;          // worker exits after this much idleness (0: never)
+bool g_sharding = true;         // one worker per accelerator (see ShardOfFunction)
 
 bool g_in_server = false;
 bool g_log_decisions = false;
@@ -79,6 +81,34 @@ constexpr int kMaxAttnums = 64;
 constexpr int kKeyLen = 64;
 constexpr Size kMqBytes = 256 * 1024;
 constexpr std::size_t kMaxShipRows = 500000;
+
+// ---- shards -------------------------------------------------------------------
+// Each database has kMaxShards state servers ("shards"), each a background
+// worker with its own Shm (catalog, stats, client slots, apply_inflight), so a
+// cheap accelerator's read never queues behind an expensive one's read or
+// behind an apply for tables it does not read.  A read goes to the shard of
+// the function it calls (ShardOfFunction); a commit is shipped to every shard
+// whose catalog has an accelerator depending on a written table.
+//
+// Mapping: accel_tpch_q<N>_aux (or accel_tpch_q<N>), 1 <= N <= 22  ->  shard N;
+// anything else, or accel.shared_sharding = off  ->  shard 0.
+constexpr int kMaxShards = 23;
+
+int ShardOfFunctionName(const char *name) {
+  static const char kPrefix[] = "accel_tpch_q";
+  if (name == nullptr || std::strncmp(name, kPrefix, sizeof(kPrefix) - 1) != 0)
+    return 0;
+  const char *p = name + sizeof(kPrefix) - 1;
+  int n = 0, digits = 0;
+  while (*p >= '0' && *p <= '9' && digits < 3) {
+    n = n * 10 + (*p - '0');
+    ++p;
+    ++digits;
+  }
+  if (digits == 0 || (*p != '\0' && std::strcmp(p, "_aux") != 0))
+    return 0;
+  return n >= 1 && n < kMaxShards ? n : 0;
+}
 
 enum : uint32 { kStopped = 0, kStarting = 1, kRunning = 2 };
 enum Stat : int {
@@ -123,6 +153,7 @@ struct Shm {
   char forced[48];
   char last_action[48];
   char last_decision[160];
+  pg_atomic_uint64 last_decision_ms;
   slock_t catalog_lock;
   pg_atomic_uint32 catalog_version;
   int32 nentries;
@@ -142,6 +173,7 @@ void InitShm(void *ptr) {
   pg_atomic_init_u64(&shm->started_ms, 0);
   pg_atomic_init_u64(&shm->apply_since_ms, 0);
   pg_atomic_init_u64(&shm->skip_ship_until_ms, 0);
+  pg_atomic_init_u64(&shm->last_decision_ms, 0);
   for (int i = 0; i < kStatCount; ++i)
     pg_atomic_init_u64(&shm->stats[i], 0);
   SpinLockInit(&shm->catalog_lock);
@@ -154,19 +186,25 @@ void InitShm(void *ptr) {
   }
 }
 
+// In the worker: its own shard's Shm.  Backends use ShmFor.
 Shm *g_shm = nullptr;
-Oid g_shm_db = InvalidOid;
+Shm *g_shms[kMaxShards] = {};
+Oid g_shms_db = InvalidOid;
 
-Shm *ShmFor(Oid db) {
-  if (g_shm && g_shm_db == db)
-    return g_shm;
-  const std::string name =
-      "accel_aux_srv_" + std::to_string(static_cast<unsigned>(db));
+Shm *ShmFor(Oid db, int shard) {
+  if (g_shms_db != db) {
+    std::fill(std::begin(g_shms), std::end(g_shms), nullptr);
+    g_shms_db = db;
+  }
+  if (g_shms[shard])
+    return g_shms[shard];
+  const std::string name = "accel_aux_srv_s_" +
+                           std::to_string(static_cast<unsigned>(db)) + "_" +
+                           std::to_string(shard);
   bool found = false;
-  g_shm = static_cast<Shm *>(
+  g_shms[shard] = static_cast<Shm *>(
       GetNamedDSMSegment(name.c_str(), sizeof(Shm), InitShm, &found));
-  g_shm_db = db;
-  return g_shm;
+  return g_shms[shard];
 }
 
 int64_t NowMs() { return static_cast<int64_t>(GetCurrentTimestamp() / 1000); }
@@ -369,6 +407,7 @@ MqResult RecvOne(shm_mq_handle *mqh, std::string &out, int64_t deadline_ms,
 // =================================================================================
 // Reader / writer side
 // =================================================================================
+// One channel per shard this backend talks to.
 struct Chan {
   dsm_segment *seg = nullptr;
   shm_mq_handle *req = nullptr; // backend -> worker
@@ -376,11 +415,12 @@ struct Chan {
   int slot = -1;
   uint32 gen = 0;
   Oid db = InvalidOid;
+  Shm *shm = nullptr; // the shard's Shm (slot owner)
   uint32 worker_generation = 0;
+  int64_t backoff_until_ms = 0;
 };
-Chan g_chan;
+Chan g_chans[kMaxShards];
 bool g_exit_hook = false;
-int64_t g_backoff_until_ms = 0;
 
 void ReleaseSlot(Shm *shm, int slot) {
   if (slot < 0)
@@ -390,22 +430,26 @@ void ReleaseSlot(Shm *shm, int slot) {
   pg_atomic_compare_exchange_u32(&shm->slots[slot].pid, &expected, 0);
 }
 
-void CloseChannel() {
-  if (g_chan.seg == nullptr && g_chan.slot < 0)
+void CloseChannel(int shard) {
+  Chan &ch = g_chans[shard];
+  if (ch.seg == nullptr && ch.slot < 0)
     return;
-  Shm *shm = g_shm;
-  if (shm && g_chan.slot >= 0)
-    ReleaseSlot(shm, g_chan.slot);
-  if (g_chan.seg)
-    dsm_detach(g_chan.seg); // detaches the mqs (the worker sees it)
-  g_chan = Chan{};
+  if (ch.shm && ch.slot >= 0)
+    ReleaseSlot(ch.shm, ch.slot);
+  if (ch.seg)
+    dsm_detach(ch.seg); // detaches the mqs (the worker sees it)
+  const int64_t backoff = ch.backoff_until_ms;
+  ch = Chan{};
+  ch.backoff_until_ms = backoff;
 }
 
 void ClientExit(int, Datum) {
-  // Only the slot needs releasing: dsm detach runs by itself at exit.
-  if (g_shm && g_chan.slot >= 0)
-    ReleaseSlot(g_shm, g_chan.slot);
-  g_chan.slot = -1;
+  // Only the slots need releasing: dsm detach runs by itself at exit.
+  for (auto &ch : g_chans) {
+    if (ch.shm && ch.slot >= 0)
+      ReleaseSlot(ch.shm, ch.slot);
+    ch.slot = -1;
+  }
 }
 
 bool WorkerRunning(Shm *shm) {
@@ -423,8 +467,8 @@ std::string ModulePath() {
   return "accelerator_codegen_pg";
 }
 
-// Starts this database's worker if it is not running.
-bool EnsureWorker(Shm *shm) {
+// Starts this database's worker for `shard` if it is not running.
+bool EnsureWorker(Shm *shm, int shard) {
   for (int attempt = 0; attempt < 3; ++attempt) {
     uint32 st = pg_atomic_read_u32(&shm->state);
     if (st == kRunning) {
@@ -465,10 +509,13 @@ bool EnsureWorker(Shm *shm) {
     const std::string lib = ModulePath();
     snprintf(bgw.bgw_library_name, BGW_MAXLEN, "%s", lib.c_str());
     snprintf(bgw.bgw_function_name, BGW_MAXLEN, "accel_aux_server_main");
-    snprintf(bgw.bgw_name, BGW_MAXLEN, "accel aux server (database %u)",
-             static_cast<unsigned>(MyDatabaseId));
+    snprintf(bgw.bgw_name, BGW_MAXLEN,
+             "accel aux server (database %u shard %d)",
+             static_cast<unsigned>(MyDatabaseId), shard);
     snprintf(bgw.bgw_type, BGW_MAXLEN, "accel aux server");
     bgw.bgw_main_arg = ObjectIdGetDatum(MyDatabaseId);
+    const int32 shard_arg = shard;
+    std::memcpy(bgw.bgw_extra, &shard_arg, sizeof(shard_arg));
     bgw.bgw_notify_pid = MyProcPid;
     BackgroundWorkerHandle *handle = nullptr;
     if (!RegisterDynamicBackgroundWorker(&bgw, &handle)) {
@@ -493,18 +540,20 @@ bool EnsureWorker(Shm *shm) {
   return false;
 }
 
-// Makes sure this backend has a channel to the running worker.  `start`:
-// start the worker if needed (readers do; writers only use a running one).
-bool EnsureChannel(bool start) {
-  Shm *shm = ShmFor(MyDatabaseId);
+// Makes sure this backend has a channel to `shard`'s running worker.
+// `start`: start the worker if needed (readers do; writers only use a running
+// one).
+bool EnsureChannel(int shard, bool start) {
+  Shm *shm = ShmFor(MyDatabaseId, shard);
   if (!shm)
     return false;
-  if (g_chan.seg && g_chan.db == MyDatabaseId && WorkerRunning(shm) &&
-      g_chan.worker_generation == pg_atomic_read_u32(&shm->generation))
+  Chan &ch = g_chans[shard];
+  if (ch.seg && ch.db == MyDatabaseId && WorkerRunning(shm) &&
+      ch.worker_generation == pg_atomic_read_u32(&shm->generation))
     return true;
-  CloseChannel();
+  CloseChannel(shard);
   if (!WorkerRunning(shm)) {
-    if (!start || !EnsureWorker(shm))
+    if (!start || !EnsureWorker(shm, shard))
       return false;
   }
   if (!g_exit_hook) {
@@ -520,14 +569,15 @@ bool EnsureChannel(bool start) {
   shm_mq *sq = shm_mq_create(base + kMqBytes, kMqBytes);
   shm_mq_set_sender(rq, MyProc);
   shm_mq_set_receiver(sq, MyProc);
-  g_chan.seg = seg;
+  ch.seg = seg;
   // The handles outlive the statement that creates them.
   MemoryContext old_ctx = MemoryContextSwitchTo(TopMemoryContext);
-  g_chan.req = shm_mq_attach(rq, seg, nullptr);
-  g_chan.rsp = shm_mq_attach(sq, seg, nullptr);
+  ch.req = shm_mq_attach(rq, seg, nullptr);
+  ch.rsp = shm_mq_attach(sq, seg, nullptr);
   MemoryContextSwitchTo(old_ctx);
-  g_chan.db = MyDatabaseId;
-  g_chan.worker_generation = pg_atomic_read_u32(&shm->generation);
+  ch.db = MyDatabaseId;
+  ch.shm = shm;
+  ch.worker_generation = pg_atomic_read_u32(&shm->generation);
   int slot = -1;
   for (int i = 0; i < kMaxClients && slot < 0; ++i) {
     uint32 expected = 0;
@@ -536,11 +586,11 @@ bool EnsureChannel(bool start) {
       slot = i;
   }
   if (slot < 0) {
-    CloseChannel();
+    CloseChannel(shard);
     return false;
   }
-  g_chan.slot = slot;
-  g_chan.gen = pg_atomic_add_fetch_u32(&shm->slots[slot].gen, 1);
+  ch.slot = slot;
+  ch.gen = pg_atomic_add_fetch_u32(&shm->slots[slot].gen, 1);
   pg_memory_barrier();
   pg_atomic_write_u32(&shm->slots[slot].handle, dsm_segment_handle(seg));
   pg_memory_barrier();
@@ -553,14 +603,18 @@ struct CatalogCopy {
   std::string key;
   std::vector<std::pair<uint64_t, std::vector<int32_t>>> deps;
 };
-std::vector<CatalogCopy> g_catalog;
-uint32 g_catalog_version = 0;
-Oid g_catalog_db = InvalidOid;
+struct ShardCatalog {
+  std::vector<CatalogCopy> entries;
+  uint32 version = 0;
+  Oid db = InvalidOid;
+};
+ShardCatalog g_catalogs[kMaxShards];
 
-void RefreshCatalog(Shm *shm) {
+const std::vector<CatalogCopy> &RefreshCatalog(Shm *shm, int shard) {
+  ShardCatalog &cat = g_catalogs[shard];
   const uint32 v = pg_atomic_read_u32(&shm->catalog_version);
-  if (g_catalog_db == MyDatabaseId && v == g_catalog_version)
-    return;
+  if (cat.db == MyDatabaseId && v == cat.version)
+    return cat.entries;
   std::vector<CatalogCopy> copy;
   uint32 version;
   SpinLockAcquire(&shm->catalog_lock);
@@ -577,9 +631,10 @@ void RefreshCatalog(Shm *shm) {
     copy.push_back(std::move(c));
   }
   SpinLockRelease(&shm->catalog_lock);
-  g_catalog = std::move(copy);
-  g_catalog_version = version;
-  g_catalog_db = MyDatabaseId;
+  cat.entries = std::move(copy);
+  cat.version = version;
+  cat.db = MyDatabaseId;
+  return cat.entries;
 }
 
 // ---- writer staging ------------------------------------------------------------------
@@ -587,14 +642,19 @@ struct StagedBatch {
   std::string key;
   core::MutationBatch batch;
 };
+// What one commit ships to one shard.
+struct ShardShip {
+  int shard = 0;
+  std::string payload;
+  uint32_t entries = 0;
+  bool inflight_marked = false;
+};
 struct Stage {
   std::vector<std::vector<StagedBatch>> frames;
   std::map<std::string, std::set<std::size_t>> examined;
   std::set<std::string> poisoned;
-  std::string payload;
-  uint32_t entries = 0;
+  std::vector<ShardShip> ships;
   bool prepared = false;
-  bool inflight_marked = false;
 };
 Stage g_stage;
 
@@ -914,6 +974,8 @@ void HandleApply(Shm *shm, int slot, const std::string &msg) {
     snprintf(shm->last_action, sizeof(shm->last_action), "%s", name.c_str());
     snprintf(shm->last_decision, sizeof(shm->last_decision), "%s", text.c_str());
     SpinLockRelease(&shm->text_lock);
+    if (!name.empty())
+      pg_atomic_write_u64(&shm->last_decision_ms, static_cast<uint64>(NowMs()));
   }
   Out ack;
   ack.u8('A');
@@ -961,6 +1023,11 @@ void DefineGucs() {
       "The shared state worker exits after this many idle seconds (0: never).",
       nullptr, &g_idle_exit_s, 0, 0, 86400, PGC_SIGHUP, 0, nullptr, nullptr,
       nullptr);
+  DefineCustomBoolVariable(
+      "accel.shared_sharding",
+      "Serve each accelerator (accel_tpch_q<N>_aux) from its own shared state "
+      "worker; off: one worker per database serves every read.",
+      nullptr, &g_sharding, true, PGC_USERSET, 0, nullptr, nullptr, nullptr);
 }
 
 bool InServer() { return g_in_server; }
@@ -1009,6 +1076,12 @@ void NoteDeclined() {
 }
 void NoteCurrentRuntime(ServerRuntime *runtime) { g_current_runtime = runtime; }
 
+bool ApplyPending() {
+  return g_shm && pg_atomic_read_u32(&g_shm->apply_inflight) > 0 &&
+         NowMs() - static_cast<int64_t>(pg_atomic_read_u64(&g_shm->apply_since_ms)) <
+             g_apply_timeout_ms;
+}
+
 BusyScope::BusyScope() : active(g_in_server && g_shm != nullptr) {
   if (active)
     pg_atomic_write_u32(&g_shm->busy, 1);
@@ -1019,6 +1092,24 @@ BusyScope::~BusyScope() {
 }
 
 // ---- reader ---------------------------------------------------------------------------
+namespace {
+// The shard serving reads of function `fn_oid` (see ShardOfFunctionName).
+int ShardOf(Oid fn_oid) {
+  if (!g_sharding)
+    return 0;
+  static std::unordered_map<Oid, int> cache;
+  const auto it = cache.find(fn_oid);
+  if (it != cache.end())
+    return it->second;
+  char *name = get_func_name(fn_oid);
+  const int shard = ShardOfFunctionName(name);
+  if (name)
+    pfree(name);
+  cache.emplace(fn_oid, shard);
+  return shard;
+}
+} // namespace
+
 Remote RemoteExecute(FunctionCallInfo fcinfo, core::AuxExecutePath &path) {
   if (!SharedEnabled() || fcinfo == nullptr || fcinfo->flinfo == nullptr)
     return Remote::Unavailable;
@@ -1027,7 +1118,9 @@ Remote RemoteExecute(FunctionCallInfo fcinfo, core::AuxExecutePath &path) {
   Snapshot snapshot = GetActiveSnapshot();
   if (!auxsync::UsableSnapshot(snapshot))
     return Remote::Unavailable;
-  if (NowMs() < g_backoff_until_ms)
+  const int shard = ShardOf(fcinfo->flinfo->fn_oid);
+  Chan &ch = g_chans[shard];
+  if (NowMs() < ch.backoff_until_ms)
     return Remote::Unavailable;
 
   Oid *argtypes = nullptr;
@@ -1071,18 +1164,18 @@ Remote RemoteExecute(FunctionCallInfo fcinfo, core::AuxExecutePath &path) {
 
   PG_TRY();
   {
-    if (!EnsureChannel(true)) {
-      g_backoff_until_ms = NowMs() + 2000;
-    } else if (SendAll(g_chan.req, req.b, deadline, true) != MqResult::Ok) {
+    if (!EnsureChannel(shard, true)) {
+      ch.backoff_until_ms = NowMs() + 2000;
+    } else if (SendAll(ch.req, req.b, deadline, true) != MqResult::Ok) {
       close = true;
     } else {
       for (;;) {
         std::string msg;
-        const MqResult r = RecvOne(g_chan.rsp, msg, deadline, true);
+        const MqResult r = RecvOne(ch.rsp, msg, deadline, true);
         if (r != MqResult::Ok) {
           close = true;
           if (r == MqResult::Detached)
-            g_backoff_until_ms = NowMs() + 500;
+            ch.backoff_until_ms = NowMs() + 500;
           break;
         }
         In in(msg.data(), msg.size());
@@ -1111,13 +1204,13 @@ Remote RemoteExecute(FunctionCallInfo fcinfo, core::AuxExecutePath &path) {
   }
   PG_CATCH();
   {
-    CloseChannel();
+    CloseChannel(shard);
     PG_RE_THROW();
   }
   PG_END_TRY();
 
   if (close)
-    CloseChannel();
+    CloseChannel(shard);
   if (result == Remote::Served) {
     auto *rsinfo = reinterpret_cast<ReturnSetInfo *>(fcinfo->resultinfo);
     Tuplestorestate *store = rsinfo->setResult;
@@ -1138,15 +1231,20 @@ std::vector<CaptureTarget> CaptureTargets(core::TableId table) {
   std::vector<CaptureTarget> out;
   if (!SharedEnabled())
     return out;
-  Shm *shm = ShmFor(MyDatabaseId);
-  if (!shm || pg_atomic_read_u32(&shm->state) != kRunning)
-    return out;
-  RefreshCatalog(shm);
-  for (const auto &entry : g_catalog) {
-    for (const auto &dep : entry.deps) {
-      if (dep.first == table) {
-        out.push_back(CaptureTarget{entry.key, dep.second});
-        break;
+  // Every shard's accelerators (an accelerator hosted by two shards, e.g.
+  // after accel.shared_sharding changed in some session, is listed once).
+  std::set<std::string> seen;
+  for (int shard = 0; shard < kMaxShards; ++shard) {
+    Shm *shm = ShmFor(MyDatabaseId, shard);
+    if (!shm || pg_atomic_read_u32(&shm->state) != kRunning)
+      continue;
+    for (const auto &entry : RefreshCatalog(shm, shard)) {
+      for (const auto &dep : entry.deps) {
+        if (dep.first == table) {
+          if (seen.insert(entry.key).second)
+            out.push_back(CaptureTarget{entry.key, dep.second});
+          break;
+        }
       }
     }
   }
@@ -1187,144 +1285,207 @@ void OnSubAbort(std::size_t depth) {
   g_stage.frames.resize(depth);
 }
 
+namespace {
+bool ShardShippable(Shm *shm) {
+  return WorkerRunning(shm) && pg_atomic_read_u32(&shm->busy) == 0 &&
+         NowMs() >= static_cast<int64_t>(pg_atomic_read_u64(&shm->skip_ship_until_ms));
+}
+
+void UnmarkInflight(ShardShip &ship) {
+  if (!ship.inflight_marked)
+    return;
+  Shm *shm = ShmFor(MyDatabaseId, ship.shard);
+  if (shm)
+    pg_atomic_fetch_sub_u32(&shm->apply_inflight, 1);
+  ship.inflight_marked = false;
+}
+} // namespace
+
 void PrepareCommit() {
   g_stage.prepared = false;
-  g_stage.payload.clear();
-  g_stage.entries = 0;
+  g_stage.ships.clear();
   if (!SharedEnabled() || g_stage.examined.empty())
     return;
-  Shm *shm = ShmFor(MyDatabaseId);
-  if (!shm || !WorkerRunning(shm) || NowMs() < static_cast<int64_t>(pg_atomic_read_u64(&shm->skip_ship_until_ms)) ||
-      pg_atomic_read_u32(&shm->busy) != 0)
-    return;
 
-  // Per accelerator: its batches in order; ship only when there is at most
-  // one (see the design note) and nothing was poisoned.
+  // Per accelerator: its batches in statement order (see the design note);
+  // not shipped if a savepoint was poisoned or the batches are too large.
   std::map<std::string, std::vector<const core::MutationBatch *>> per_key;
   for (const auto &frame : g_stage.frames)
     for (const auto &b : frame)
       per_key[b.key].push_back(&b.batch);
-  Out payload;
-  uint32_t entries = 0;
+  std::map<std::string, std::string> entry_bytes; // key -> serialised entry
   for (const auto &kv : g_stage.examined) {
     const std::string &key = kv.first;
     if (g_stage.poisoned.count(key))
       continue;
     const auto it = per_key.find(key);
     const std::size_t nbatches = it == per_key.end() ? 0 : it->second.size();
-    if (nbatches > 1)
+    std::size_t rows = 0;
+    for (std::size_t i = 0; i < nbatches; ++i)
+      rows += RowCount(*it->second[i]);
+    if (rows > kMaxShipRows)
       continue;
-    if (nbatches == 1 && RowCount(*it->second[0]) > kMaxShipRows)
-      continue;
+    Out payload;
     payload.str(key);
     payload.u32(static_cast<uint32_t>(kv.second.size()));
     for (auto s : kv.second)
       payload.u32(static_cast<uint32_t>(s));
     payload.u32(static_cast<uint32_t>(nbatches));
-    if (nbatches == 1)
-      PutBatch(payload, *it->second[0]);
-    ++entries;
+    for (std::size_t i = 0; i < nbatches; ++i)
+      PutBatch(payload, *it->second[i]);
+    entry_bytes.emplace(key, std::move(payload.b));
   }
-  if (entries == 0)
+  if (entry_bytes.empty())
     return;
-  if (!EnsureChannel(false))
+
+  // Per shard: the entries of the accelerators it hosts.  A shard hosting
+  // none of them gets nothing (its accelerators do not read these tables).
+  std::vector<ShardShip> ships;
+  for (int shard = 0; shard < kMaxShards; ++shard) {
+    Shm *shm = ShmFor(MyDatabaseId, shard);
+    if (!shm || !ShardShippable(shm))
+      continue;
+    ShardShip ship;
+    ship.shard = shard;
+    for (const auto &entry : RefreshCatalog(shm, shard)) {
+      const auto it = entry_bytes.find(entry.key);
+      if (it == entry_bytes.end())
+        continue;
+      ship.payload += it->second;
+      ++ship.entries;
+    }
+    if (ship.entries == 0 || !EnsureChannel(shard, false))
+      continue;
+    ships.push_back(std::move(ship));
+  }
+  if (ships.empty())
     return;
   auxsync::AcquireCommitGate();
   // The wait for the gate may have been long: do not queue behind a worker
   // that has become busy or unresponsive meanwhile (the gate stays held).
-  if (!WorkerRunning(shm) || pg_atomic_read_u32(&shm->busy) != 0 ||
-      NowMs() < static_cast<int64_t>(pg_atomic_read_u64(&shm->skip_ship_until_ms)))
-    return;
-  pg_atomic_fetch_add_u32(&shm->apply_inflight, 1);
-  pg_atomic_write_u64(&shm->apply_since_ms, NowMs());
-  g_stage.inflight_marked = true;
-  g_stage.payload = std::move(payload.b);
-  g_stage.entries = entries;
-  g_stage.prepared = true;
+  for (auto &ship : ships) {
+    Shm *shm = ShmFor(MyDatabaseId, ship.shard);
+    if (!ShardShippable(shm))
+      continue;
+    pg_atomic_fetch_add_u32(&shm->apply_inflight, 1);
+    pg_atomic_write_u64(&shm->apply_since_ms, NowMs());
+    ship.inflight_marked = true;
+    g_stage.ships.push_back(std::move(ship));
+  }
+  g_stage.prepared = !g_stage.ships.empty();
 }
 
 void ShipCommit(const aux_sync::CommitInfo &info) {
   if (!g_stage.prepared)
     return;
-  Shm *shm = g_shm;
-  bool acked = false;
   try {
-    if (shm && g_chan.seg && TransactionIdIsValid(info.xid)) {
-      Out msg;
-      msg.u8('A');
-      msg.u32(info.xid);
+    if (TransactionIdIsValid(info.xid)) {
+      Out head;
+      head.u8('A');
+      head.u32(info.xid);
       uint32_t nwrote = 0;
       for (std::size_t k = 0; k < auxsync::kSlots; ++k)
         if (info.wrote[k])
           ++nwrote;
-      msg.u32(nwrote);
+      head.u32(nwrote);
       for (std::size_t k = 0; k < auxsync::kSlots; ++k) {
         if (!info.wrote[k])
           continue;
-        msg.u32(static_cast<uint32_t>(k));
-        msg.u64(info.old_seq[k]);
+        head.u32(static_cast<uint32_t>(k));
+        head.u64(info.old_seq[k]);
       }
-      msg.u32(g_stage.entries);
-      msg.b += g_stage.payload;
       const int64_t deadline = NowMs() + g_apply_timeout_ms;
-          if (SendAll(g_chan.req, msg.b, deadline, false) == MqResult::Ok) {
-        std::string reply;
-        acked = RecvOne(g_chan.rsp, reply, deadline, false) == MqResult::Ok;
+      // Send to every shard first, then wait for the acks: the shards apply
+      // in parallel.
+      std::vector<bool> sent(g_stage.ships.size(), false);
+      for (std::size_t i = 0; i < g_stage.ships.size(); ++i) {
+        const ShardShip &ship = g_stage.ships[i];
+        Chan &ch = g_chans[ship.shard];
+        if (!ch.seg)
+          continue;
+        std::string msg = head.b;
+        Out n;
+        n.u32(ship.entries);
+        msg += n.b;
+        msg += ship.payload;
+        sent[i] = SendAll(ch.req, msg, deadline, false) == MqResult::Ok;
       }
-      if (!acked) {
-        // The worker is busy or gone: stop queueing behind it for a while.
-        // (The counters already tell it that it missed this commit.)
-        pg_atomic_write_u64(&shm->skip_ship_until_ms, NowMs() + 3000);
-        CloseChannel();
+      for (std::size_t i = 0; i < g_stage.ships.size(); ++i) {
+        const ShardShip &ship = g_stage.ships[i];
+        Chan &ch = g_chans[ship.shard];
+        bool acked = false;
+        if (sent[i]) {
+          std::string reply;
+          acked = RecvOne(ch.rsp, reply, deadline, false) == MqResult::Ok;
+        }
+        if (!acked) {
+          // The worker is busy or gone: stop queueing behind it for a while.
+          // (The counters already tell it that it missed this commit.)
+          if (Shm *shm = ShmFor(MyDatabaseId, ship.shard))
+            pg_atomic_write_u64(&shm->skip_ship_until_ms, NowMs() + 3000);
+          CloseChannel(ship.shard);
+        }
       }
     }
   } catch (...) {
   }
-  if (g_stage.inflight_marked && shm) {
-    pg_atomic_fetch_sub_u32(&shm->apply_inflight, 1);
-    g_stage.inflight_marked = false;
-  }
+  for (auto &ship : g_stage.ships)
+    UnmarkInflight(ship);
   g_stage.prepared = false;
 }
 
 void ResetStage() {
-  if (g_stage.inflight_marked && g_shm) {
-    pg_atomic_fetch_sub_u32(&g_shm->apply_inflight, 1);
-  }
+  for (auto &ship : g_stage.ships)
+    UnmarkInflight(ship);
   g_stage = Stage{};
 }
 
 // ---- diagnostics ------------------------------------------------------------------------
+// Summed over the shards with a running worker; generation is the largest
+// shard generation and pid that of the lowest running shard.
 std::string StatsText() {
-  Shm *shm = ShmFor(MyDatabaseId);
-  if (!shm || pg_atomic_read_u32(&shm->state) != kRunning)
+  uint64 sums[kStatCount] = {};
+  uint32 generation = 0, pid = 0;
+  bool any = false;
+  for (int shard = 0; shard < kMaxShards; ++shard) {
+    Shm *shm = ShmFor(MyDatabaseId, shard);
+    if (!shm || pg_atomic_read_u32(&shm->state) != kRunning)
+      continue;
+    for (int k = 0; k < kStatCount; ++k)
+      sums[k] += pg_atomic_read_u64(&shm->stats[k]);
+    generation = std::max(generation, pg_atomic_read_u32(&shm->generation));
+    if (!any)
+      pid = pg_atomic_read_u32(&shm->worker_pid);
+    any = true;
+  }
+  if (!any)
     return "no worker";
   char buf[320];
   snprintf(buf, sizeof(buf),
            "requests=%llu hits=%llu rebuilds=%llu declined=%llu errors=%llu "
            "applies=%llu synced=%llu unsynced=%llu generation=%u pid=%u",
-           (unsigned long long)pg_atomic_read_u64(&shm->stats[kStatRequests]),
-           (unsigned long long)pg_atomic_read_u64(&shm->stats[kStatHits]),
-           (unsigned long long)pg_atomic_read_u64(&shm->stats[kStatRebuilds]),
-           (unsigned long long)pg_atomic_read_u64(&shm->stats[kStatDeclined]),
-           (unsigned long long)pg_atomic_read_u64(&shm->stats[kStatErrors]),
-           (unsigned long long)pg_atomic_read_u64(&shm->stats[kStatApplies]),
-           (unsigned long long)pg_atomic_read_u64(&shm->stats[kStatSynced]),
-           (unsigned long long)pg_atomic_read_u64(&shm->stats[kStatUnsynced]),
-           pg_atomic_read_u32(&shm->generation),
-           pg_atomic_read_u32(&shm->worker_pid));
+           (unsigned long long)sums[kStatRequests],
+           (unsigned long long)sums[kStatHits],
+           (unsigned long long)sums[kStatRebuilds],
+           (unsigned long long)sums[kStatDeclined],
+           (unsigned long long)sums[kStatErrors],
+           (unsigned long long)sums[kStatApplies],
+           (unsigned long long)sums[kStatSynced],
+           (unsigned long long)sums[kStatUnsynced], generation, pid);
   return buf;
 }
 
 void SetForcedMaintenance(const std::string &action_name) {
   if (!g_shared_state || g_in_server)
     return;
-  Shm *shm = ShmFor(MyDatabaseId);
-  if (!shm)
-    return;
-  SpinLockAcquire(&shm->text_lock);
-  snprintf(shm->forced, sizeof(shm->forced), "%s", action_name.c_str());
-  SpinLockRelease(&shm->text_lock);
+  for (int shard = 0; shard < kMaxShards; ++shard) {
+    Shm *shm = ShmFor(MyDatabaseId, shard);
+    if (!shm)
+      continue;
+    SpinLockAcquire(&shm->text_lock);
+    snprintf(shm->forced, sizeof(shm->forced), "%s", action_name.c_str());
+    SpinLockRelease(&shm->text_lock);
+  }
 }
 
 namespace {
@@ -1336,12 +1497,29 @@ std::string ReadText(const char *field, std::size_t size, Shm *shm) {
   buf[std::min(size, sizeof(buf)) - 1] = '\0';
   return buf;
 }
+
+// The shard whose worker published a maintenance decision last.
+Shm *LatestDecisionShm() {
+  Shm *best = nullptr;
+  uint64 best_ms = 0;
+  for (int shard = 0; shard < kMaxShards; ++shard) {
+    Shm *shm = ShmFor(MyDatabaseId, shard);
+    if (!shm)
+      continue;
+    const uint64 ms = pg_atomic_read_u64(&shm->last_decision_ms);
+    if (best == nullptr || ms > best_ms) {
+      best = shm;
+      best_ms = ms;
+    }
+  }
+  return best;
+}
 } // namespace
 
 std::string LastMaintenanceActionName() {
   if (!g_shared_state || g_in_server)
     return std::string();
-  Shm *shm = ShmFor(MyDatabaseId);
+  Shm *shm = LatestDecisionShm();
   return shm ? ReadText(shm->last_action, sizeof(shm->last_action), shm)
              : std::string();
 }
@@ -1349,17 +1527,21 @@ std::string LastMaintenanceActionName() {
 std::string LastMaintenanceDecisionText() {
   if (!g_shared_state || g_in_server)
     return std::string();
-  Shm *shm = ShmFor(MyDatabaseId);
+  Shm *shm = LatestDecisionShm();
   return shm ? ReadText(shm->last_decision, sizeof(shm->last_decision), shm)
              : std::string();
 }
 
 bool StopWorker() {
-  Shm *shm = ShmFor(MyDatabaseId);
-  if (!shm || !WorkerRunning(shm))
-    return false;
-  kill(static_cast<pid_t>(pg_atomic_read_u32(&shm->worker_pid)), SIGTERM);
-  return true;
+  bool any = false;
+  for (int shard = 0; shard < kMaxShards; ++shard) {
+    Shm *shm = ShmFor(MyDatabaseId, shard);
+    if (!shm || !WorkerRunning(shm))
+      continue;
+    kill(static_cast<pid_t>(pg_atomic_read_u32(&shm->worker_pid)), SIGTERM);
+    any = true;
+  }
+  return any;
 }
 
 void NoteApplyOutcome(bool synced) {
@@ -1379,12 +1561,17 @@ extern "C" {
 void accel_aux_server_main(Datum main_arg) {
   using namespace accelerator_codegen::aux_state::engine::postgres::aux_server;
   const Oid dboid = DatumGetObjectId(main_arg);
+  int32 shard = 0;
+  std::memcpy(&shard, MyBgworkerEntry->bgw_extra, sizeof(shard));
+  if (shard < 0 || shard >= as::kMaxShards)
+    shard = 0;
   as::g_in_server = true;
   pqsignal(SIGTERM, die);
   pqsignal(SIGHUP, SignalHandlerForConfigReload);
   BackgroundWorkerUnblockSignals();
 
-  as::Shm *shm = as::ShmFor(dboid);
+  as::Shm *shm = as::ShmFor(dboid, shard);
+  as::g_shm = shm;
   before_shmem_exit(as::WorkerExit, 0);
   BackgroundWorkerInitializeConnectionByOid(dboid, InvalidOid, 0);
 
@@ -1407,7 +1594,8 @@ void accel_aux_server_main(Datum main_arg) {
     pg_atomic_write_u64(&shm->stats[i], 0);
   pg_memory_barrier();
   pg_atomic_write_u32(&shm->state, as::kRunning);
-  elog(LOG, "accel aux server started for database %u", (unsigned)dboid);
+  elog(LOG, "accel aux server started for database %u shard %d",
+       (unsigned)dboid, (int)shard);
 
   struct Pending {
     int slot;

@@ -1,0 +1,1 @@
+ERROR:  ALTER SYSTEM cannot run inside a transaction block

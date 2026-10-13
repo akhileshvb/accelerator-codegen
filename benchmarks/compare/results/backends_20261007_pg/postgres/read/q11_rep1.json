@@ -1,0 +1,85 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 11,
+ "rep": 1,
+ "seed": 2716834050,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 21.121475421629157,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "nation": "KENYA",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 68007.986,
+   "match": true,
+   "rows": [
+    19331,
+    19331
+   ],
+   "base_us": 1693601.0665000002,
+   "accel_us": 82867.398,
+   "speedup": 20.437483345380294
+  },
+  {
+   "params": {
+    "nation": "CANADA",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 62027.242,
+   "match": true,
+   "rows": [
+    17826,
+    17826
+   ],
+   "base_us": 1719783.727,
+   "accel_us": 77142.285,
+   "speedup": 22.29365810203833
+  },
+  {
+   "params": {
+    "nation": "INDIA",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 62188.012,
+   "match": true,
+   "rows": [
+    17673,
+    17673
+   ],
+   "base_us": 1723968.6485000001,
+   "accel_us": 76091.0,
+   "speedup": 22.656669625842742
+  },
+  {
+   "params": {
+    "nation": "MOZAMBIQUE",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 71425.896,
+   "match": true,
+   "rows": [
+    20477,
+    20477
+   ],
+   "base_us": 1690458.1925,
+   "accel_us": 87682.364,
+   "speedup": 19.27934096872662
+  }
+ ]
+}

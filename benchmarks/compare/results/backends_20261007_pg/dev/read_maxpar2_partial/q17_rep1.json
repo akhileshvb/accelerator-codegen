@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 17,
+ "rep": 1,
+ "seed": 991050524,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 153093.18710954915,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "brand": "Brand#33",
+    "container": "JUMBO BOX"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 975.201,
+   "match": true,
+   "rows": [
+    1,
+    1
+   ],
+   "base_us": 41425307.839,
+   "accel_us": 277.107,
+   "speedup": 149492.10174770033
+  },
+  {
+   "params": {
+    "brand": "Brand#44",
+    "container": "SM PACK"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 724.221,
+   "match": true,
+   "rows": [
+    1,
+    1
+   ],
+   "base_us": 41488392.9565,
+   "accel_us": 293.447,
+   "speedup": 141382.9173803106
+  },
+  {
+   "params": {
+    "brand": "Brand#32",
+    "container": "WRAP BOX"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 683.147,
+   "match": true,
+   "rows": [
+    1,
+    1
+   ],
+   "base_us": 41251592.6935,
+   "accel_us": 261.009,
+   "speedup": 158046.62940166812
+  },
+  {
+   "params": {
+    "brand": "Brand#14",
+    "container": "JUMBO BOX"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 701.174,
+   "match": true,
+   "rows": [
+    1,
+    1
+   ],
+   "base_us": 41475556.537,
+   "accel_us": 252.214,
+   "speedup": 164445.89331678653
+  }
+ ]
+}

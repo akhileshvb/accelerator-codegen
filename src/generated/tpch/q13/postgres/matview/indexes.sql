@@ -1,0 +1,1 @@
+CREATE INDEX accel_tpch_q13_matview_pat_idx ON accel_tpch_q13_matview (comment_pattern);

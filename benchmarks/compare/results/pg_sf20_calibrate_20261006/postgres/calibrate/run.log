@@ -1,0 +1,5 @@
+parameter draws: 1 repetition(s) x 1 sets, seeds 1171004986..1171004986
+uncapped rep 0 base (RF: update sets, whole sets, 0 readers) 23:10:20
+  !!! RESTORE FAILED: table contents differ from before the run: partsupp
+   qps 0.0  read p50 0.0ms p99 0.0ms  timeouts 0  RF commits 5 (5.79e-05/s of -1) of 35 commits  commit p50 0.9ms max 6721ms  lag max 16.4s  errors read 0 write 0  RESTORE FAILED  NO READ COMPLETED IN THE WINDOW (reads take longer than it: lengthen the window)
+uncapped rep 0 accel (RF: update sets, whole sets, 0 readers) 23:11:48

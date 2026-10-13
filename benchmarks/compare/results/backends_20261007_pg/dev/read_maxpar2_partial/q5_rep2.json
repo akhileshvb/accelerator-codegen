@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 5,
+ "rep": 2,
+ "seed": 991050525,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 32280.517966359304,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "region": "EUROPE",
+    "date": "1996-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 935.909,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 11740403.1425,
+   "accel_us": 423.439,
+   "speedup": 27726.315106780432
+  },
+  {
+   "params": {
+    "region": "AFRICA",
+    "date": "1994-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 792.78,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 11639427.1025,
+   "accel_us": 327.632,
+   "speedup": 35525.91658476583
+  },
+  {
+   "params": {
+    "region": "AMERICA",
+    "date": "1997-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 943.709,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 11677946.2795,
+   "accel_us": 317.042,
+   "speedup": 36834.06703055116
+  },
+  {
+   "params": {
+    "region": "EUROPE",
+    "date": "1993-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1118.876,
+   "match": true,
+   "rows": [
+    5,
+    5
+   ],
+   "base_us": 11605583.599,
+   "accel_us": 387.786,
+   "speedup": 29927.804508156558
+  }
+ ]
+}

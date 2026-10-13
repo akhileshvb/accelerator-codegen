@@ -1,0 +1,121 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 16,
+ "rep": 0,
+ "seed": 2716834049,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 100.75971406400336,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "brand": "Brand#31",
+    "type": "LARGE BRUSHED",
+    "sizes": [
+     17,
+     48,
+     22,
+     28,
+     31,
+     5,
+     40,
+     30
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 10068443.052,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11201513.395,
+   "accel_us": 112300.962,
+   "speedup": 99.74548031921579
+  },
+  {
+   "params": {
+    "brand": "Brand#12",
+    "type": "MEDIUM PLATED",
+    "sizes": [
+     38,
+     8,
+     25,
+     21,
+     11,
+     4,
+     49,
+     40
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 96847.664,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11182256.867,
+   "accel_us": 116528.052,
+   "speedup": 95.96193084048123
+  },
+  {
+   "params": {
+    "brand": "Brand#55",
+    "type": "MEDIUM PLATED",
+    "sizes": [
+     19,
+     17,
+     35,
+     9,
+     24,
+     4,
+     21,
+     14
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 43313.581,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11201990.8305,
+   "accel_us": 116020.611,
+   "speedup": 96.55173105837203
+  },
+  {
+   "params": {
+    "brand": "Brand#52",
+    "type": "LARGE BRUSHED",
+    "sizes": [
+     16,
+     26,
+     41,
+     43,
+     45,
+     48,
+     50,
+     25
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 101936.503,
+   "match": true,
+   "rows": [
+    27840,
+    27840
+   ],
+   "base_us": 11205343.3765,
+   "accel_us": 100468.457,
+   "speedup": 111.53095917955622
+  }
+ ]
+}

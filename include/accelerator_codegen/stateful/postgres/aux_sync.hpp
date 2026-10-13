@@ -84,6 +84,14 @@ void ResetTransaction();
 bool ReadCounters(const std::vector<std::size_t> &slots, bool allow_own,
                   std::vector<uint64_t> &seq_out);
 
+// For serving statement S: like ReadCounters (allow_own false), but a slot
+// with writers in flight still reads when every one of them is known (its
+// top-level xid published at its first write) and invisible to S: their rows
+// are not in S, and none of them is counted in seq yet.  Unknown writers
+// (no xid yet, or the writer table full) read as before: false.
+bool ReadCountersFor(Snapshot snapshot, const std::vector<std::size_t> &slots,
+                     std::vector<uint64_t> &seq_out);
+
 // Like ReadCounters but only reads seq (no in-flight check): for the shared
 // state server applying one commit while holding the commit gate, when other
 // in-flight writers are harmless (they cannot become visible meanwhile).

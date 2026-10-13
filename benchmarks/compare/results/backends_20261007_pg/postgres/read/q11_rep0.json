@@ -1,0 +1,85 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 11,
+ "rep": 0,
+ "seed": 2716834049,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 22.43827036870453,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "nation": "ROMANIA",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 6913177.22,
+   "match": true,
+   "rows": [
+    19045,
+    19045
+   ],
+   "base_us": 1835308.7365,
+   "accel_us": 82120.711,
+   "speedup": 22.34891434999875
+  },
+  {
+   "params": {
+    "nation": "MOROCCO",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 64564.123,
+   "match": true,
+   "rows": [
+    18062,
+    18062
+   ],
+   "base_us": 1765654.9825,
+   "accel_us": 77382.358,
+   "speedup": 22.817280684313083
+  },
+  {
+   "params": {
+    "nation": "SAUDI ARABIA",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 64646.75,
+   "match": true,
+   "rows": [
+    18618,
+    18618
+   ],
+   "base_us": 1746947.8575,
+   "accel_us": 79774.525,
+   "speedup": 21.898567963895744
+  },
+  {
+   "params": {
+    "nation": "IRAN",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 62764.64,
+   "match": true,
+   "rows": [
+    17955,
+    17955
+   ],
+   "base_us": 1760383.1060000001,
+   "accel_us": 77550.699,
+   "speedup": 22.69977097176133
+  }
+ ]
+}

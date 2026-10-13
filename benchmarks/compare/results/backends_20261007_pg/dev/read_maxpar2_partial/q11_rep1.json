@@ -1,0 +1,85 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 11,
+ "rep": 1,
+ "seed": 991050524,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 21.301795908906758,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "nation": "UNITED STATES",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 64234.849,
+   "match": true,
+   "rows": [
+    18330,
+    18330
+   ],
+   "base_us": 1732849.8845000002,
+   "accel_us": 79306.392,
+   "speedup": 21.85006581184528
+  },
+  {
+   "params": {
+    "nation": "PERU",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 67971.66,
+   "match": true,
+   "rows": [
+    18283,
+    18283
+   ],
+   "base_us": 1725228.9525000001,
+   "accel_us": 78765.035,
+   "speedup": 21.903487410371874
+  },
+  {
+   "params": {
+    "nation": "SAUDI ARABIA",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 66488.378,
+   "match": true,
+   "rows": [
+    18618,
+    18618
+   ],
+   "base_us": 1719061.596,
+   "accel_us": 80504.382,
+   "speedup": 21.353640054028364
+  },
+  {
+   "params": {
+    "nation": "ALGERIA",
+    "fraction": "0.000005",
+    "sf": 20.0
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 68198.936,
+   "match": true,
+   "rows": [
+    19446,
+    19446
+   ],
+   "base_us": 1691036.97,
+   "accel_us": 83931.727,
+   "speedup": 20.147768078214334
+  }
+ ]
+}

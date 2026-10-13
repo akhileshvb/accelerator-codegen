@@ -1,0 +1,4 @@
+[10:21:15] START lineitem_suppkey
+ERROR:  canceling statement due to user request
+Time: 4087887.730 ms (01:08:07.888)
+[11:29:23] END lineitem_suppkey rc=3 elapsed=4088s

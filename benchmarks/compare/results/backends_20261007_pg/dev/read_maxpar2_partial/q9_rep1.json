@@ -1,0 +1,77 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 9,
+ "rep": 1,
+ "seed": 991050524,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 1731.0688708671805,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "color": "ghost"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 18057.521,
+   "match": true,
+   "rows": [
+    175,
+    175
+   ],
+   "base_us": 30353005.901,
+   "accel_us": 16298.971,
+   "speedup": 1862.2651639174032
+  },
+  {
+   "params": {
+    "color": "ivory"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 20719.655,
+   "match": true,
+   "rows": [
+    175,
+    175
+   ],
+   "base_us": 29993279.182499997,
+   "accel_us": 17976.935,
+   "speedup": 1668.4311971145246
+  },
+  {
+   "params": {
+    "color": "lawn"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 21964.266,
+   "match": true,
+   "rows": [
+    175,
+    175
+   ],
+   "base_us": 27572576.8415,
+   "accel_us": 18479.152,
+   "speedup": 1492.091024604376
+  },
+  {
+   "params": {
+    "color": "goldenrod"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 19087.801,
+   "match": true,
+   "rows": [
+    175,
+    175
+   ],
+   "base_us": 30231341.3565,
+   "accel_us": 15607.925,
+   "speedup": 1936.922515741202
+  }
+ ]
+}

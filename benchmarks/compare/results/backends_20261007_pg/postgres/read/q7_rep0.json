@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 7,
+ "rep": 0,
+ "seed": 2716834049,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 5726.860316215269,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "nation1": "JAPAN",
+    "nation2": "JORDAN"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 100000776.808,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 3034927.1234999998,
+   "accel_us": 331.457,
+   "speedup": 9156.3223087761
+  },
+  {
+   "params": {
+    "nation1": "SAUDI ARABIA",
+    "nation2": "FRANCE"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 2586.441,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 2989570.7205,
+   "accel_us": 1070.655,
+   "speedup": 2792.282033428135
+  },
+  {
+   "params": {
+    "nation1": "EGYPT",
+    "nation2": "JAPAN"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 940.296,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 3022361.59,
+   "accel_us": 321.79,
+   "speedup": 9392.341558159047
+  },
+  {
+   "params": {
+    "nation1": "JAPAN",
+    "nation2": "VIETNAM"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 3592.208,
+   "match": true,
+   "rows": [
+    4,
+    4
+   ],
+   "base_us": 3015039.535,
+   "accel_us": 673.102,
+   "speedup": 4479.320422461975
+  }
+ ]
+}

@@ -6,6 +6,9 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 #include <limits>
 #include <map>
 #include <mutex>
@@ -89,6 +92,242 @@ bool Q13OutputRowBetter(const TpchQ13OutputRow &lhs,
 
 } // namespace
 
+// ── Known patterns ─────────────────────────────────────────────────────────
+namespace {
+constexpr std::string_view kWord1[4] = {"special", "pending", "unusual", "express"};
+constexpr std::string_view kWord2[4] = {"packages", "requests", "accounts", "deposits"};
+} // namespace
+
+int TpchQ13State::PatternIndex(std::string_view pattern) {
+  // '%' w1 '%' w2 '%' exactly (no other wildcard / escape characters).
+  if (pattern.size() < 3 || pattern.front() != '%' || pattern.back() != '%')
+    return -1;
+  for (int i = 0; i < 4; ++i) {
+    const auto w1 = kWord1[i];
+    if (pattern.size() < w1.size() + 3 || pattern.substr(1, w1.size()) != w1 ||
+        pattern[1 + w1.size()] != '%')
+      continue;
+    const auto rest = pattern.substr(2 + w1.size(), pattern.size() - 3 - w1.size());
+    for (int j = 0; j < 4; ++j)
+      if (rest == kWord2[j])
+        return i * 4 + j;
+  }
+  return -1;
+}
+
+// s LIKE '%a%b%' iff some occurrence of a ends at or before the start of some
+// occurrence of b, i.e. (end of the first a) <= (start of the last b). Byte
+// comparison is exact for PostgreSQL's case-sensitive LIKE on UTF-8 / single
+// byte encodings (the words are ASCII).
+namespace {
+// First position >= from of `w` in buf[0, n), or -1. buf must be readable (and
+// hold no letters) for 32 bytes past n. SSE2: a 16-position block is a
+// candidate where both of w's first two bytes line up; candidates are checked
+// with memcmp.
+inline int64_t FindWord(const char *buf, std::size_t n, std::size_t from,
+                        std::string_view w) {
+#if defined(__SSE2__)
+  const __m128i c0 = _mm_set1_epi8(w[0]);
+  const __m128i c1 = _mm_set1_epi8(w[1]);
+  for (std::size_t k = from; k + w.size() <= n; k += 16) {
+    const __m128i b0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(buf + k));
+    const __m128i b1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(buf + k + 1));
+    uint32_t bits = static_cast<uint32_t>(_mm_movemask_epi8(
+        _mm_and_si128(_mm_cmpeq_epi8(b0, c0), _mm_cmpeq_epi8(b1, c1))));
+    while (bits) {
+      const std::size_t pos = k + static_cast<std::size_t>(__builtin_ctz(bits));
+      bits &= bits - 1;
+      if (pos + w.size() > n)
+        return -1;
+      if (std::memcmp(buf + pos + 2, w.data() + 2, w.size() - 2) == 0)
+        return static_cast<int64_t>(pos);
+    }
+  }
+  return -1;
+#else
+  if (from > n)
+    return -1;
+  const void *hit = memmem(buf + from, n - from, w.data(), w.size());
+  return hit ? static_cast<const char *>(hit) - buf : -1;
+#endif
+}
+} // namespace
+
+uint32_t TpchQ13State::PatternMask(std::string_view comment) {
+  static_assert(!kLikeCaseInsensitive);
+  // Most comments contain no word1: 4 short SIMD scans. For each word1 found,
+  // the end of its first occurrence is the best start for a word2.
+  constexpr std::size_t kInline = 224;
+  char local[kInline + 32];
+  std::string padded;
+  const char *d;
+  const std::size_t n = comment.size();
+  if (n <= kInline) {
+    std::memcpy(local, comment.data(), n);
+    std::memset(local + n, 0, 32);
+    d = local;
+  } else {
+    padded.assign(comment.data(), n);
+    padded.append(32, '\0');
+    d = padded.data();
+  }
+  uint32_t mask = 0;
+  for (int i = 0; i < 4; ++i) {
+    const int64_t pos = FindWord(d, n, 0, kWord1[i]);
+    if (pos < 0)
+      continue;
+    const auto end = static_cast<std::size_t>(pos) + kWord1[i].size();
+    for (int j = 0; j < 4; ++j)
+      if (FindWord(d, n, end, kWord2[j]) >= 0)
+        mask |= uint32_t{1} << (i * 4 + j);
+  }
+  return mask;
+}
+
+void TpchQ13PatternHist::Add(int64_t c_count, int64_t delta) {
+  if (c_count < kDenseLimit) {
+    const auto i = static_cast<std::size_t>(c_count);
+    if (dense.size() <= i)
+      dense.resize(i + 1, 0);
+    dense[i] += delta;
+    return;
+  }
+  auto &v = big[c_count];
+  v += delta;
+  if (v == 0)
+    big.erase(c_count);
+}
+
+TpchQ13State::PatternCounts TpchQ13State::Matched(int64_t key) const {
+  if (Dense(key))
+    return matched.Get(key);
+  const PatternCounts *m = sparse_matched.Find(key);
+  return m ? *m : PatternCounts{};
+}
+
+// Adds (sign = +1) / removes (-1) customer `custkey` to / from every pattern
+// histogram at its current effective count total - matched[p].
+void TpchQ13State::HistAdd(int64_t custkey, int64_t sign) {
+  const int64_t total = Count(custkey);
+  const PatternCounts m = Matched(custkey);
+  for (std::size_t p = 0; p < kTpchQ13Patterns; ++p)
+    hist[p].Add(total - m[p], sign);
+}
+
+void TpchQ13State::DisablePatternIndex() {
+  patterns_ready = false;
+  matched.Clear();
+  sparse_matched = {};
+  hist = {};
+}
+
+// An order delta of `sign` for `custkey` whose comment matches the patterns in
+// `mask`: c_count changes by `sign` exactly for the patterns NOT in `mask`.
+void TpchQ13State::ApplyOrderCount(int64_t custkey, int32_t sign, uint32_t mask) {
+  if (!patterns_ready) {
+    AddCount(custkey, sign);
+    return;
+  }
+  const int64_t total = Count(custkey);
+  AddCount(custkey, sign);
+  PatternCounts m = Matched(custkey);
+  if (mask != 0) {
+    PatternCounts next = m;
+    for (uint32_t b = mask; b; b &= b - 1) {
+      const int p = __builtin_ctz(b);
+      const int v = static_cast<int>(next[p]) + sign;
+      if (v < 0 || v > 255) {
+        DisablePatternIndex();
+        return;
+      }
+      next[p] = static_cast<uint8_t>(v);
+    }
+    (Dense(custkey) ? matched.Mutable(custkey) : sparse_matched[custkey]) = next;
+  }
+  if (!Valid(custkey))
+    return;
+  for (std::size_t p = 0; p < kTpchQ13Patterns; ++p) {
+    if (mask >> p & 1)
+      continue;
+    const int64_t eff = total - m[p];
+    hist[p].Add(eff, -1);
+    hist[p].Add(eff + sign, +1);
+  }
+}
+
+void TpchQ13State::EnablePatternIndex() {
+  DisablePatternIndex();
+  // 1. Match masks of every order, segments in parallel.
+  const std::size_t nseg = segments.size();
+  std::vector<std::vector<uint16_t>> masks(nseg);
+  {
+    constexpr std::size_t kBlock = 16;
+    unsigned threads = 1;
+    if (nseg >= 64)
+      threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+    std::atomic<std::size_t> next{0};
+    auto worker = [&] {
+      for (;;) {
+        const std::size_t lo = next.fetch_add(kBlock);
+        if (lo >= nseg)
+          return;
+        for (std::size_t s = lo; s < std::min(nseg, lo + kBlock); ++s) {
+          const auto *seg = segments[s].get();
+          if (!seg || seg->live == 0)
+            continue;
+          auto &out = masks[s];
+          out.assign(seg->orderkey.size(), 0);
+          for (std::size_t i = 0; i < out.size(); ++i)
+            if (seg->alive[i])
+              out[i] = static_cast<uint16_t>(PatternMask(seg->comment.View(i)));
+        }
+      }
+    };
+    std::vector<std::thread> pool;
+    for (unsigned t = 1; t < threads; ++t)
+      pool.emplace_back(worker);
+    worker();
+    for (auto &th : pool)
+      th.join();
+  }
+  // 2. Per-customer match counts.
+  for (std::size_t s = 0; s < nseg; ++s) {
+    const auto &mk = masks[s];
+    for (std::size_t i = 0; i < mk.size(); ++i) {
+      if (!mk[i])
+        continue;
+      const int64_t custkey = segments[s]->custkey[i];
+      PatternCounts &m = Dense(custkey) ? matched.Mutable(custkey)
+                                        : sparse_matched[custkey];
+      for (uint32_t b = mk[i]; b; b &= b - 1) {
+        const int p = __builtin_ctz(b);
+        if (m[p] == 255) {
+          DisablePatternIndex();
+          return;
+        }
+        ++m[p];
+      }
+    }
+    std::vector<uint16_t>().swap(masks[s]);
+  }
+  // 3. Histograms over the valid customers.
+  using ValidArray = core::ChunkedCowArray<uint8_t>;
+  for (std::size_t ci = 0; ci < customer_valid.NumChunks(); ++ci) {
+    const auto *valid = customer_valid.ChunkAt(ci);
+    if (!valid)
+      continue;
+    const int64_t base = static_cast<int64_t>(ci * ValidArray::kChunkSize);
+    for (std::size_t j = 0; j < valid->size(); ++j)
+      if ((*valid)[j])
+        HistAdd(base + static_cast<int64_t>(j), +1);
+  }
+  sparse_customers.ForEach([&](int64_t key, const SparseSlot &slot) {
+    if (slot.valid)
+      HistAdd(key, +1);
+  });
+  patterns_ready = true;
+}
+
 // ── TpchQ13State implementation ─────────────────────────────────────────────
 int32_t TpchQ13State::Count(int64_t key) const {
   if (Dense(key))
@@ -120,11 +359,15 @@ void TpchQ13State::AddCustomer(int64_t custkey) {
     return;
   SetValid(custkey, true);
   ++customers;
+  if (patterns_ready)
+    HistAdd(custkey, +1);
 }
 
 void TpchQ13State::RemoveCustomer(int64_t custkey) {
   if (!Valid(custkey))
     return;
+  if (patterns_ready)
+    HistAdd(custkey, -1);
   SetValid(custkey, false);
   --customers;
 }
@@ -168,7 +411,7 @@ void TpchQ13State::AddOrder(int64_t orderkey, int64_t custkey,
   segment.comment.Append(comment);
   ++segment.live;
   order_row.Upsert(orderkey, (static_cast<uint64_t>(id) << kSlotBits) | slot);
-  AddCount(custkey, 1);
+  ApplyOrderCount(custkey, 1, patterns_ready ? PatternMask(comment) : 0);
   ++live_orders;
 }
 
@@ -181,7 +424,8 @@ void TpchQ13State::RemoveOrder(int64_t orderkey) {
   auto &segment = *MutableSegment(id);
   segment.alive[slot] = 0;
   --segment.live;
-  AddCount(segment.custkey[slot], -1);
+  ApplyOrderCount(segment.custkey[slot], -1,
+                  patterns_ready ? PatternMask(segment.comment.View(slot)) : 0);
   order_row.Erase(orderkey);
   --live_orders;
   touched_.push_back(id);
@@ -262,7 +506,7 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ13Module::CreateTxnBuffer() const {
 
 void TpchQ13Module::Build(core::AuxEngineServices &services,
                           core::StateBuilder &builder) {
-  const auto state = BuildState(services);
+  const auto state = BuildState(services, /*pattern_index=*/true);
   builder.Write(core::StateImage::Make(
       kId, core::TpchQ13Layout::kCustomerCounts, 0,
       MakeStateImage(TpchQ13ImageKind::CustomerCounts, state)));
@@ -270,7 +514,8 @@ void TpchQ13Module::Build(core::AuxEngineServices &services,
 }
 
 std::shared_ptr<TpchQ13State>
-TpchQ13Module::BuildState(core::AuxEngineServices &services) const {
+TpchQ13Module::BuildState(core::AuxEngineServices &services,
+                          bool pattern_index) const {
   (void)services;
   if (!initial_scan)
     throw std::logic_error("TPC-H Q13 requires a typed initial scan source");
@@ -282,6 +527,8 @@ TpchQ13Module::BuildState(core::AuxEngineServices &services) const {
   initial_scan->ScanOrders([&](const TpchQ13OrderInput &input) {
     state->AddOrder(input.orderkey, input.custkey, input.comment);
   });
+  if (pattern_index)
+    state->EnablePatternIndex();
   return state;
 }
 
@@ -435,7 +682,8 @@ void TpchQ13Module::Execute(core::AuxEngineServices &services,
 void TpchQ13Module::ExecuteFallback(core::AuxEngineServices &services,
                                     const core::QueryArguments &arguments,
                                     core::AuxRowSink &sink) {
-  const auto state = BuildState(services);
+  // One-shot state: the pattern index would not pay for itself.
+  const auto state = BuildState(services, /*pattern_index=*/false);
   EmitResult(*state, arguments, sink);
 }
 
@@ -537,6 +785,42 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
       arguments.values.empty() || arguments.values[0].is_null ||
       !std::holds_alternative<std::string>(arguments.values[0].payload);
 
+  auto emit = [&](std::vector<TpchQ13OutputRow> &rows) {
+    std::sort(rows.begin(), rows.end(), Q13OutputRowBetter);
+    sink.Begin({{{"c_count", core::AuxType::Int64, false},
+                 {"custdist", core::AuxType::Int64, false}}});
+    for (const auto &r : rows)
+      sink.WriteRow({{core::AuxValue::Of(core::AuxType::Int64, r.c_count),
+                      core::AuxValue::Of(core::AuxType::Int64, r.custdist)}});
+    sink.End();
+  };
+
+  // Fast paths, O(result rows): a NULL pattern (every customer has c_count 0)
+  // and the known patterns (maintained histograms).
+  if (pattern_null) {
+    std::vector<TpchQ13OutputRow> rows;
+    if (state.customers > 0)
+      rows.push_back({0, state.customers});
+    emit(rows);
+    return;
+  }
+  if (state.patterns_ready) {
+    const int p = TpchQ13State::PatternIndex(
+        std::get<std::string>(arguments.values[0].payload));
+    if (p >= 0) {
+      const auto &h = state.hist[static_cast<std::size_t>(p)];
+      std::vector<TpchQ13OutputRow> rows;
+      for (std::size_t c = 0; c < h.dense.size(); ++c)
+        if (h.dense[c] > 0)
+          rows.push_back({static_cast<int64_t>(c), h.dense[c]});
+      for (const auto &[c, n] : h.big)
+        if (n > 0)
+          rows.push_back({c, n});
+      emit(rows);
+      return;
+    }
+  }
+
   using Array = core::ChunkedCowArray<int32_t>;
   const std::size_t span =
       std::max(state.order_count.NumChunks(), state.customer_valid.NumChunks()) *
@@ -602,14 +886,7 @@ void TpchQ13Module::EmitResult(const TpchQ13State &state,
       rows.push_back({static_cast<int64_t>(c), dense[c]});
   for (const auto &[c, n] : sparse)
     rows.push_back({c, n});
-  std::sort(rows.begin(), rows.end(), Q13OutputRowBetter);
-
-  sink.Begin({{{"c_count", core::AuxType::Int64, false},
-               {"custdist", core::AuxType::Int64, false}}});
-  for (const auto &r : rows)
-    sink.WriteRow({{core::AuxValue::Of(core::AuxType::Int64, r.c_count),
-                    core::AuxValue::Of(core::AuxType::Int64, r.custdist)}});
-  sink.End();
+  emit(rows);
 }
 
 std::vector<core::CalibrationWrite> TpchQ13Module::CalibrationWrites() const {

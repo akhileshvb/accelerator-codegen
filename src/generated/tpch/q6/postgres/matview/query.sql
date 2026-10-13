@@ -1,0 +1,6 @@
+SELECT SUM(revenue) AS revenue
+FROM accel_tpch_q6_matview
+WHERE l_shipdate >= DATE '1995-01-01'
+  AND l_shipdate < DATE '1995-01-01' + INTERVAL '1' year
+  AND l_discount BETWEEN 0.02 AND 0.04
+  AND l_quantity < 25

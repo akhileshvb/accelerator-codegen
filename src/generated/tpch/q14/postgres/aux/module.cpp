@@ -334,6 +334,10 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
           affected.push_back(entry.first);
     }
   }
+  // Nothing to apply (e.g. a part rewritten with the same promo class): the
+  // state stays valid as it is.
+  if (next && affected.empty() && buffer.Deltas().empty())
+    return outcome;
   const auto decision = services.ChooseMaintenance(
       {static_cast<uint64_t>(buffer.Deltas().size() + affected.size()), 1,
        next != nullptr && affected.size() <= kMaxPointParts && initial_scan,

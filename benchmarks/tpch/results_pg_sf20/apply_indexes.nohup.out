@@ -1,0 +1,6 @@
+start Sat Sep 19 11:56:50 PM EDT 2026
+ALTER TABLE
+ALTER TABLE
+psql:/home/akhilvb/accelerator-codegen/scripts/postgres_tpch_indexes.sql:4: ERROR:  could not create unique index "customer_pkey"
+DETAIL:  Key (c_custkey)=(1926890) is duplicated.
+done Sat Sep 19 11:56:51 PM EDT 2026

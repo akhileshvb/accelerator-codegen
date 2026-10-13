@@ -1,0 +1,85 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 2,
+ "rep": 0,
+ "seed": 991050523,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 891.7356066517109,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "size": 36,
+    "type": "TIN",
+    "region": "AFRICA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 7513863.144,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5338195.816,
+   "accel_us": 6436.419,
+   "speedup": 829.3735718572702
+  },
+  {
+   "params": {
+    "size": 16,
+    "type": "STEEL",
+    "region": "AMERICA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 7962.363,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5196699.967,
+   "accel_us": 6608.165,
+   "speedup": 786.4059034542872
+  },
+  {
+   "params": {
+    "size": 8,
+    "type": "STEEL",
+    "region": "AFRICA"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 7878.079,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5152904.8245,
+   "accel_us": 5128.923,
+   "speedup": 1004.6758012354641
+  },
+  {
+   "params": {
+    "size": 23,
+    "type": "COPPER",
+    "region": "MIDDLE EAST"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 7867.649,
+   "match": true,
+   "rows": [
+    100,
+    100
+   ],
+   "base_us": 5256395.054,
+   "accel_us": 5447.114,
+   "speedup": 964.9871572359234
+  }
+ ]
+}

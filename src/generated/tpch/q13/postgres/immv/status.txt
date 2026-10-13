@@ -1,0 +1,1 @@
+unsupported: array_agg + outer join with aggregate unsupported

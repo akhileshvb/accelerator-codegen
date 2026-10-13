@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 
@@ -122,23 +123,60 @@ private:
   std::vector<std::pair<int64_t, bool>> lines;
 };
 
+// ORDER BY numwait DESC, s_name (bytewise, the C collation the runtime
+// requires): true when (numwait, name) comes first.
+bool RanksBefore(int64_t lhs_numwait, std::string_view lhs_name,
+                 int64_t rhs_numwait, std::string_view rhs_name) {
+  if (lhs_numwait != rhs_numwait)
+    return lhs_numwait > rhs_numwait;
+  return lhs_name < rhs_name;
+}
+
+// The first kTpchQ21Limit groups in answer order, from (name, numwait) groups
+// with distinct names: a bounded heap whose top is the worst group kept.
+template <typename Name>
+std::vector<TpchQ21OutputRow>
+TopGroups(const std::vector<std::pair<Name, int64_t>> &groups) {
+  using Group = std::pair<Name, int64_t>;
+  const auto before = [](const Group &lhs, const Group &rhs) {
+    return RanksBefore(lhs.second, std::string_view(*lhs.first), rhs.second,
+                       std::string_view(*rhs.first));
+  };
+  std::vector<Group> heap;
+  heap.reserve(std::min(groups.size(), kTpchQ21Limit));
+  for (const auto &group : groups) {
+    if (heap.size() < kTpchQ21Limit) {
+      heap.push_back(group);
+      std::push_heap(heap.begin(), heap.end(), before);
+    } else if (before(group, heap.front())) {
+      std::pop_heap(heap.begin(), heap.end(), before);
+      heap.back() = group;
+      std::push_heap(heap.begin(), heap.end(), before);
+    }
+  }
+  std::sort_heap(heap.begin(), heap.end(), before);
+  std::vector<TpchQ21OutputRow> rows;
+  rows.reserve(heap.size());
+  for (const auto &group : heap)
+    rows.push_back({std::string(*group.first), group.second});
+  return rows;
+}
+
 // Q21 groups by s_name, not s_suppkey: suppliers that share a name form one
-// output group whose numwait is the sum of their counts. ORDER BY numwait
-// DESC, s_name (bytewise, the C collation the runtime requires).
-void MergeByNameAndSort(std::vector<TpchQ21OutputRow> &rows) {
-  std::map<std::string, int64_t> by_name;
-  for (const auto &row : rows)
-    by_name[row.name] += row.numwait;
-  rows.clear();
-  rows.reserve(by_name.size());
-  for (auto &[name, numwait] : by_name)
-    rows.push_back({name, numwait});
-  std::sort(rows.begin(), rows.end(),
-            [](const TpchQ21OutputRow &lhs, const TpchQ21OutputRow &rhs) {
-              if (lhs.numwait != rhs.numwait)
-                return lhs.numwait > rhs.numwait;
-              return lhs.name < rhs.name;
-            });
+// output group whose numwait is the sum of their counts. Then ORDER BY
+// numwait DESC, s_name LIMIT 100.
+std::vector<TpchQ21OutputRow>
+MergeByNameAndTop(const std::vector<std::pair<std::string_view, int64_t>> &rows) {
+  std::unordered_map<std::string_view, int64_t> by_name;
+  by_name.reserve(rows.size());
+  for (const auto &[name, numwait] : rows)
+    by_name[name] += numwait;
+  std::vector<std::pair<const std::string_view *, int64_t>> groups;
+  groups.reserve(by_name.size());
+  for (const auto &[name, numwait] : by_name)
+    if (numwait > 0)
+      groups.emplace_back(&name, numwait);
+  return TopGroups(groups);
 }
 
 bool NationParameter(const core::QueryArguments &arguments, std::string &name) {
@@ -188,7 +226,8 @@ void TpchQ21State::AdjustNumwait(int64_t suppkey, int64_t delta) {
     return;
   const int64_t nationkey = supplier->nationkey;
   if (value != 0) {
-    nation_numwait[nationkey].Upsert(suppkey, value);
+    nation_numwait[nationkey].Upsert(suppkey,
+                                     TpchQ21NationEntry{value, supplier->name});
     return;
   }
   const auto it = nation_numwait.find(nationkey);
@@ -202,9 +241,26 @@ void TpchQ21State::AdjustNumwait(int64_t suppkey, int64_t delta) {
 void TpchQ21State::PutSupplier(int64_t suppkey, const std::string &name,
                                int64_t nationkey) {
   RemoveSupplier(suppkey);
-  suppliers.Upsert(suppkey, TpchQ21Supplier{name, nationkey});
+  auto shared_name = std::make_shared<const std::string>(name);
+  CountNameHash(name, 1);
   if (const int64_t *current = numwait.Find(suppkey))
-    nation_numwait[nationkey].Upsert(suppkey, *current);
+    nation_numwait[nationkey].Upsert(suppkey,
+                                     TpchQ21NationEntry{*current, shared_name});
+  suppliers.Upsert(suppkey, TpchQ21Supplier{std::move(shared_name), nationkey});
+}
+
+void TpchQ21State::CountNameHash(const std::string &name, int64_t delta) {
+  const auto key = static_cast<int64_t>(std::hash<std::string>{}(name));
+  const int64_t *found = name_hash_counts.Find(key);
+  const int64_t before = found ? *found : 0;
+  const int64_t after = before + delta;
+  // Suppliers in a hash group of size n >= 2 all share it.
+  const auto sharing = [](int64_t n) { return n >= 2 ? n : 0; };
+  suppliers_sharing_name_hash += sharing(after) - sharing(before);
+  if (after == 0)
+    name_hash_counts.Erase(key);
+  else
+    name_hash_counts.Upsert(key, after);
 }
 
 bool TpchQ21State::RemoveSupplier(int64_t suppkey) {
@@ -212,6 +268,7 @@ bool TpchQ21State::RemoveSupplier(int64_t suppkey) {
   if (!found)
     return false;
   const int64_t nationkey = found->nationkey;
+  CountNameHash(*found->name, -1);
   const auto it = nation_numwait.find(nationkey);
   if (it != nation_numwait.end()) {
     it->second.Erase(suppkey);
@@ -238,6 +295,55 @@ bool TpchQ21State::RemoveNation(int64_t nationkey, const std::string &name) {
   if (keys.empty())
     nation_keys.erase(it);
   return true;
+}
+
+// Read cost: one pass over the nation's index (suppliers with waiting orders)
+// keeping the best kTpchQ21Limit in a bounded heap; no supplier lookups and
+// no string copies but the emitted rows. With shared names (rare), a hash
+// merge by name first.
+std::vector<TpchQ21OutputRow>
+TpchQ21State::TopRows(const std::string &nation) const {
+  const auto keys = nation_keys.find(nation);
+  if (keys == nation_keys.end())
+    return {};
+  if (suppliers_sharing_name_hash == 0) {
+    std::vector<std::pair<const std::string *, int64_t>> groups;
+    for (const int64_t nationkey : keys->second) {
+      const auto index = nation_numwait.find(nationkey);
+      if (index == nation_numwait.end())
+        continue;
+      groups.reserve(groups.size() + index->second.size());
+      index->second.ForEach([&](int64_t, const TpchQ21NationEntry &entry) {
+        if (entry.numwait > 0)
+          groups.emplace_back(entry.name.get(), entry.numwait);
+      });
+    }
+    return TopGroups(groups);
+  }
+  std::vector<std::pair<std::string_view, int64_t>> rows;
+  for (const int64_t nationkey : keys->second) {
+    const auto index = nation_numwait.find(nationkey);
+    if (index == nation_numwait.end())
+      continue;
+    index->second.ForEach([&](int64_t, const TpchQ21NationEntry &entry) {
+      rows.emplace_back(*entry.name, entry.numwait);
+    });
+  }
+  return MergeByNameAndTop(rows);
+}
+
+TpchQ21AnswerCache::Rows
+TpchQ21AnswerCache::Get(const std::string &nation) const {
+  std::lock_guard<std::mutex> lock(mu);
+  const auto it = by_nation.find(nation);
+  return it == by_nation.end() ? nullptr : it->second;
+}
+
+void TpchQ21AnswerCache::Put(const std::string &nation, Rows rows) const {
+  std::lock_guard<std::mutex> lock(mu);
+  if (by_nation.size() >= kMaxEntries)
+    by_nation.clear(); // bounded: arbitrary parameter strings
+  by_nation[nation] = std::move(rows);
 }
 
 // ── TxnBuffer ───────────────────────────────────────────────────────────────
@@ -505,7 +611,9 @@ bool TpchQ21Module::CheckValidity(core::AuxEngineServices &services,
       .IsValid();
 }
 
-// Execute cost: O(suppliers of the nation) (the result size) plus its sort.
+// Execute cost: the first read of a nation in a state version is one pass over
+// the nation's suppliers with waiting orders (TopRows); later reads of that
+// version reuse its answer. Either way at most kTpchQ21Limit rows are emitted.
 void TpchQ21Module::Execute(core::AuxEngineServices &services,
                             const core::QueryArguments &arguments,
                             core::AuxRowSink &sink) {
@@ -527,21 +635,13 @@ void TpchQ21Module::Execute(core::AuxEngineServices &services,
     return;
   }
 
-  std::vector<TpchQ21OutputRow> rows;
-  const auto keys = state->nation_keys.find(nation_name);
-  if (keys != state->nation_keys.end()) {
-    for (const int64_t nationkey : keys->second) {
-      const auto nation = state->nation_numwait.find(nationkey);
-      if (nation == state->nation_numwait.end())
-        continue;
-      nation->second.ForEach([&](int64_t suppkey, const int64_t &numwait) {
-        const TpchQ21Supplier *supplier = state->suppliers.Find(suppkey);
-        if (supplier && numwait > 0)
-          rows.push_back({supplier->name, numwait});
-      });
-    }
+  auto rows = state->answers.Get(nation_name);
+  if (!rows) {
+    rows = std::make_shared<const std::vector<TpchQ21OutputRow>>(
+        state->TopRows(nation_name));
+    state->answers.Put(nation_name, rows);
   }
-  EmitRows(std::move(rows), sink);
+  EmitRows(*rows, sink);
 }
 
 // No usable state: stream the fulfilled lineitems once, keeping only the
@@ -567,7 +667,7 @@ void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &,
         nationkeys.end())
       suppliers[input.suppkey] = input.name;
   });
-  std::vector<TpchQ21OutputRow> rows;
+  std::vector<std::pair<std::string_view, int64_t>> rows;
   if (!suppliers.empty()) {
     std::unordered_map<int64_t, int64_t> numwait;
     OrderGrouper grouper([&](int64_t, bool has,
@@ -579,9 +679,9 @@ void TpchQ21Module::ExecuteFallback(core::AuxEngineServices &,
         [&](const TpchQ21LineInput &line) { grouper.Add(line); });
     grouper.Flush();
     for (const auto &[suppkey, count] : numwait)
-      rows.push_back({suppliers[suppkey], count});
+      rows.emplace_back(suppliers[suppkey], count);
   }
-  EmitRows(std::move(rows), sink);
+  EmitRows(MergeByNameAndTop(rows), sink);
 }
 
 TpchQ21State TpchQ21Module::BuildState() const {
@@ -628,9 +728,8 @@ bool TpchQ21Module::LoadState(core::AuxEngineServices &services,
   return false;
 }
 
-void TpchQ21Module::EmitRows(std::vector<TpchQ21OutputRow> rows,
+void TpchQ21Module::EmitRows(const std::vector<TpchQ21OutputRow> &rows,
                              core::AuxRowSink &sink) const {
-  MergeByNameAndSort(rows);
   sink.Begin(core::OutputSchema{});
   for (const auto &row : rows) {
     core::AuxRow out;

@@ -1,0 +1,109 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 22,
+ "rep": 1,
+ "seed": 2716834050,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 2727.7955188573105,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "codes": [
+     "26",
+     "22",
+     "30",
+     "14",
+     "20",
+     "33",
+     "13"
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 1338.134,
+   "match": true,
+   "rows": [
+    7,
+    7
+   ],
+   "base_us": 823960.2475,
+   "accel_us": 269.73,
+   "speedup": 3054.7593797501204
+  },
+  {
+   "params": {
+    "codes": [
+     "17",
+     "33",
+     "14",
+     "16",
+     "34",
+     "25",
+     "18"
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 429.815,
+   "match": true,
+   "rows": [
+    7,
+    7
+   ],
+   "base_us": 612055.119,
+   "accel_us": 323.755,
+   "speedup": 1890.4885453506508
+  },
+  {
+   "params": {
+    "codes": [
+     "34",
+     "31",
+     "19",
+     "15",
+     "29",
+     "33",
+     "14"
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 741.324,
+   "match": true,
+   "rows": [
+    7,
+    7
+   ],
+   "base_us": 503757.869,
+   "accel_us": 151.372,
+   "speedup": 3327.9461789498714
+  },
+  {
+   "params": {
+    "codes": [
+     "25",
+     "18",
+     "26",
+     "24",
+     "10",
+     "15",
+     "20"
+    ]
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 738.746,
+   "match": true,
+   "rows": [
+    7,
+    7
+   ],
+   "base_us": 1106469.193,
+   "accel_us": 384.078,
+   "speedup": 2880.8450184597923
+  }
+ ]
+}

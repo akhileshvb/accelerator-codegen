@@ -5,6 +5,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -82,17 +83,56 @@ struct TpchQ21Contribution {
   int64_t count = 0;
 };
 
+// s_name is shared (immutable) between the supplier map and the per-nation
+// index, so a read ranks a nation's suppliers without a supplier lookup each.
+using TpchQ21Name = std::shared_ptr<const std::string>;
+
 struct TpchQ21Supplier {
-  std::string name;
+  TpchQ21Name name;
   int64_t nationkey = 0;
 };
 
-// Memory: ~29 B per contributing order + ~90 B per supplier + ~25 B per
+// One entry of a nation's index: a supplier with numwait != 0.
+struct TpchQ21NationEntry {
+  int64_t numwait = 0;
+  TpchQ21Name name;
+};
+
+// ── Output row ──────────────────────────────────────────────────────────────
+struct TpchQ21OutputRow {
+  std::string name;
+  int64_t numwait = 0;
+};
+
+// TPC-H Q21: ORDER BY numwait DESC, s_name LIMIT 100.
+inline constexpr std::size_t kTpchQ21Limit = 100;
+
+// The answer per nation name, computed on the first read of a published state
+// version and kept with it (a state version is immutable). A copy (the next
+// version, made by maintenance) starts empty.
+class TpchQ21AnswerCache {
+public:
+  using Rows = std::shared_ptr<const std::vector<TpchQ21OutputRow>>;
+  TpchQ21AnswerCache() = default;
+  TpchQ21AnswerCache(const TpchQ21AnswerCache &) {}
+  TpchQ21AnswerCache &operator=(const TpchQ21AnswerCache &) {
+    std::lock_guard<std::mutex> lock(mu);
+    by_nation.clear();
+    return *this;
+  }
+  Rows Get(const std::string &nation) const;
+  void Put(const std::string &nation, Rows rows) const;
+
+private:
+  static constexpr std::size_t kMaxEntries = 64;
+  mutable std::mutex mu;
+  mutable std::map<std::string, Rows> by_nation;
+};
+
+// Memory: ~29 B per contributing order + ~120 B per supplier + ~35 B per
 // supplier with waiting orders. At SF100 (1e6 suppliers, ~2-3% of the 1.5e8
-// orders contributing) that is ~0.2 GB, at SF1000 ~2 GB; the previous state
-// kept a node map per contributing order with a nested map per supplier
-// (~250 B each) and built it from a per-order map of ALL orders (~25-40 GB
-// transient at SF100). Maintenance clones touched shards only.
+// orders contributing) that is ~0.25 GB, at SF1000 ~2.5 GB. Maintenance clones
+// touched shards only.
 struct TpchQ21State {
   // orderkey -> contribution, for contributing orders.
   core::ShardedCowHashMap<TpchQ21Contribution, 12> contributions;
@@ -100,10 +140,20 @@ struct TpchQ21State {
   // supplier row exists (a supplier inserted later picks it up).
   core::ShardedCowHashMap<int64_t, 10> numwait;
   core::ShardedCowHashMap<TpchQ21Supplier, 10> suppliers;
-  // nationkey -> (suppkey -> numwait) for existing suppliers with numwait != 0.
-  std::map<int64_t, core::ShardedCowHashMap<int64_t, 6>> nation_numwait;
+  // nationkey -> (suppkey -> numwait, s_name) for existing suppliers with
+  // numwait != 0.
+  std::map<int64_t, core::ShardedCowHashMap<TpchQ21NationEntry, 6>>
+      nation_numwait;
   // n_name -> nationkeys (several nations may share a name).
   std::map<std::string, std::vector<int64_t>> nation_keys;
+  // hash(s_name) -> number of suppliers with it, and the number of suppliers
+  // whose name hash another supplier also has. While that is 0, every s_name
+  // is unique, so the GROUP BY s_name groups are single suppliers and a read
+  // needs no merge by name.
+  core::ShardedCowHashMap<int64_t, 8> name_hash_counts;
+  int64_t suppliers_sharing_name_hash = 0;
+  // Answers already computed from this version (not part of the state's value).
+  TpchQ21AnswerCache answers;
 
   // Replace the contribution of one order (`has` false: it contributes nothing).
   void SetContribution(int64_t orderkey, bool has,
@@ -115,16 +165,16 @@ struct TpchQ21State {
   void PutNation(int64_t nationkey, const std::string &name);
   // false: no such nation row.
   bool RemoveNation(int64_t nationkey, const std::string &name);
+  // The Q21 answer for nation name `nation` (top kTpchQ21Limit by numwait
+  // DESC, s_name), from the per-nation index.
+  std::vector<TpchQ21OutputRow> TopRows(const std::string &nation) const;
+
+private:
+  void CountNameHash(const std::string &name, int64_t delta);
 };
 
 struct TpchQ21StateImage {
   std::shared_ptr<const TpchQ21State> state;
-};
-
-// ── Output row ──────────────────────────────────────────────────────────────
-struct TpchQ21OutputRow {
-  std::string name;
-  int64_t numwait = 0;
 };
 
 // ── Deltas ──────────────────────────────────────────────────────────────────
@@ -211,7 +261,8 @@ private:
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ21State> &state,
                  core::Version *version = nullptr) const;
-  void EmitRows(std::vector<TpchQ21OutputRow> rows,
+  // Rows already in answer order (merged by name, sorted, limited).
+  void EmitRows(const std::vector<TpchQ21OutputRow> &rows,
                 core::AuxRowSink &sink) const;
 
   TpchQ21Config config;

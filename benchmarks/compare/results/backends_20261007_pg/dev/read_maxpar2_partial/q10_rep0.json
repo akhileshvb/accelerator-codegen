@@ -1,0 +1,77 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 10,
+ "rep": 0,
+ "seed": 991050523,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 90.35875098034249,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "date": "1994-08-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 96334644.967,
+   "match": true,
+   "rows": [
+    20,
+    20
+   ],
+   "base_us": 14683228.809,
+   "accel_us": 160974.831,
+   "speedup": 91.21443841739458
+  },
+  {
+   "params": {
+    "date": "1993-05-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 217867.854,
+   "match": true,
+   "rows": [
+    20,
+    20
+   ],
+   "base_us": 14879863.263500001,
+   "accel_us": 165089.148,
+   "speedup": 90.13229181787287
+  },
+  {
+   "params": {
+    "date": "1995-01-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 204518.927,
+   "match": true,
+   "rows": [
+    20,
+    20
+   ],
+   "base_us": 13779367.443500001,
+   "accel_us": 157046.884,
+   "speedup": 87.74047018659728
+  },
+  {
+   "params": {
+    "date": "1994-07-01"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 217522.27,
+   "match": true,
+   "rows": [
+    20,
+    20
+   ],
+   "base_us": 14809316.7485,
+   "accel_us": 160250.025,
+   "speedup": 92.41381864683017
+  }
+ ]
+}

@@ -1,0 +1,81 @@
+{
+ "mode": "read",
+ "backend": "postgres",
+ "query": 8,
+ "rep": 2,
+ "seed": 2716834051,
+ "sf": 20.0,
+ "shared_state": true,
+ "speedup_geomean": 3526.3132844486986,
+ "mismatches": 0,
+ "cases": [
+  {
+   "params": {
+    "nation": "SAUDI ARABIA",
+    "type": "ECONOMY BURNISHED TIN"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 532.69,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 772585.125,
+   "accel_us": 188.123,
+   "speedup": 4106.808444475158
+  },
+  {
+   "params": {
+    "nation": "INDONESIA",
+    "type": "LARGE BRUSHED STEEL"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 6257.027,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 819161.1444999999,
+   "accel_us": 192.274,
+   "speedup": 4260.384370741754
+  },
+  {
+   "params": {
+    "nation": "CHINA",
+    "type": "SMALL BURNISHED STEEL"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 19843.974,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 772445.4180000001,
+   "accel_us": 211.636,
+   "speedup": 3649.8772326069293
+  },
+  {
+   "params": {
+    "nation": "CHINA",
+    "type": "STANDARD BRUSHED STEEL"
+   },
+   "base_status": "ok",
+   "accel_status": "ok",
+   "accel_first_us": 501.393,
+   "match": true,
+   "rows": [
+    2,
+    2
+   ],
+   "base_us": 781822.2520000001,
+   "accel_us": 322.891,
+   "speedup": 2421.319429776612
+  }
+ ]
+}
