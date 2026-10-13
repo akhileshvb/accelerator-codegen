@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
 #include "accelerator_codegen/stateful/prims/dense_id_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -305,47 +306,14 @@ private:
   std::unordered_map<int64_t, std::size_t> bulk_index;
 };
 
-// ── Copy-on-write paged dense array ─────────────────────────────────────────
-// Pages are shared_ptr'd: copying the array copies only the page directory, and
-// Set() clones a page only when it is shared with a published image.
-template <typename T, std::size_t Shift>
-struct Q9PagedArray {
-  static constexpr std::size_t kShift = Shift;
-  static constexpr std::size_t kSize = std::size_t{1} << Shift;
-  static constexpr std::size_t kMask = kSize - 1;
-  static constexpr int64_t kMaxId = int64_t{1} << 28; // 268M ids
-
-  std::vector<std::shared_ptr<std::vector<T>>> chunks;
-
-  static bool Fits(int64_t key) { return key >= 0 && key < kMaxId; }
-  void Clear() { chunks.clear(); }
-
-  T Get(int64_t key, T absent = T{}) const {
-    if (!Fits(key))
-      return absent;
-    const auto id = static_cast<std::size_t>(key);
-    const auto chunk_idx = id >> kShift;
-    if (chunk_idx >= chunks.size() || !chunks[chunk_idx])
-      return absent;
-    return (*chunks[chunk_idx])[id & kMask];
-  }
-
-  bool Set(int64_t key, T value, T fill = T{}) {
-    if (!Fits(key))
-      return false;
-    const auto id = static_cast<std::size_t>(key);
-    const auto chunk_idx = id >> kShift;
-    if (chunks.size() <= chunk_idx)
-      chunks.resize(chunk_idx + 1);
-    auto &page = chunks[chunk_idx];
-    if (!page)
-      page = std::make_shared<std::vector<T>>(kSize, fill);
-    else if (page.use_count() > 1)
-      page = std::make_shared<std::vector<T>>(*page);
-    (*page)[id & kMask] = value;
-    return true;
-  }
-};
+// Ids beyond this are never stored in the dense COW arrays (a directory entry
+// per chunk must stay affordable).
+constexpr int64_t kQ9MaxId = int64_t{1} << 28; // 268M ids
+inline bool Q9InRange(int64_t key) { return key >= 0 && key < kQ9MaxId; }
+template <typename Array, typename V>
+bool Q9BoundedSet(Array &array, int64_t key, const V &value) {
+  return Q9InRange(key) && array.Set(key, value);
+}
 
 // Per-token aggregate of profit cells over all parts whose name has the token.
 struct Q9TokenCube;
@@ -378,10 +346,10 @@ struct TpchQ9State {
   static constexpr uint8_t kAbsentYearCode = 0;
   static constexpr int32_t kPackedYearBias = 1991; // stored = year - 1991
 
-  Q9PagedArray<uint8_t, 16> supplier_nations;
-  Q9PagedArray<uint8_t, 16> order_years;
+  core::ChunkedCowArray<uint8_t, 16> supplier_nations{kAbsentNationCode};
+  core::ChunkedCowArray<uint8_t, 16> order_years{kAbsentYearCode};
   // suppkey -> partkeys that have a lineitem-aggregate pair with that supplier.
-  Q9PagedArray<std::shared_ptr<const std::vector<int64_t>>, 10> supp_pairs;
+  core::ChunkedCowArray<std::shared_ptr<const std::vector<int64_t>>, 10> supp_pairs;
   std::unordered_map<int64_t, int32_t> order_year_overflow;
 
   struct PackedPartsuppRow {
@@ -389,7 +357,7 @@ struct TpchQ9State {
     int32_t suppkeys[kSlots]{};
     int32_t costs[kSlots]{};
   };
-  Q9PagedArray<PackedPartsuppRow, 10> partsupp_rows;
+  core::ChunkedCowArray<PackedPartsuppRow, 10> partsupp_rows;
 
   struct PartsuppKey {
     int64_t partkey = 0;
@@ -427,7 +395,7 @@ struct TpchQ9State {
   }
 
   void EraseSupplierNation(int64_t suppkey) {
-    supplier_nations.Set(suppkey, kAbsentNationCode, kAbsentNationCode);
+    Q9BoundedSet(supplier_nations, suppkey, kAbsentNationCode);
   }
   std::shared_ptr<const std::vector<int64_t>> SuppPairs(int64_t suppkey) const {
     return supp_pairs.Get(suppkey, nullptr);
@@ -438,7 +406,7 @@ struct TpchQ9State {
     auto next = cur ? std::make_shared<std::vector<int64_t>>(*cur)
                     : std::make_shared<std::vector<int64_t>>();
     next->push_back(partkey);
-    supp_pairs.Set(suppkey, std::move(next), nullptr);
+    Q9BoundedSet(supp_pairs, suppkey, std::shared_ptr<const std::vector<int64_t>>(std::move(next)));
   }
 
   bool LookupSupplierNation(int64_t suppkey, int32_t &nationkey) const {
@@ -453,7 +421,7 @@ struct TpchQ9State {
         (nationkey < 0 || nationkey >= static_cast<int32_t>(kAbsentNationCode))
             ? kAbsentNationCode
             : static_cast<uint8_t>(nationkey);
-    supplier_nations.Set(suppkey, code, kAbsentNationCode);
+    Q9BoundedSet(supplier_nations, suppkey, code);
   }
 
   bool LookupOrderYear(int64_t orderkey, int32_t &year) const {
@@ -472,14 +440,15 @@ struct TpchQ9State {
     if (year > kPackedYearBias &&
         year <= kPackedYearBias + 254) {
       order_year_overflow.erase(orderkey);
-      order_years.Set(orderkey, static_cast<uint8_t>(year - kPackedYearBias));
+      Q9BoundedSet(order_years, orderkey,
+                   static_cast<uint8_t>(year - kPackedYearBias));
       return;
     }
-    order_years.Set(orderkey, kAbsentYearCode);
+    Q9BoundedSet(order_years, orderkey, kAbsentYearCode);
     order_year_overflow[orderkey] = year;
   }
   void EraseOrderYear(int64_t orderkey) {
-    order_years.Set(orderkey, kAbsentYearCode);
+    Q9BoundedSet(order_years, orderkey, kAbsentYearCode);
     order_year_overflow.erase(orderkey);
   }
 
@@ -490,7 +459,7 @@ struct TpchQ9State {
       cost = ov->second;
       return true;
     }
-    if (!decltype(partsupp_rows)::Fits(partkey) || suppkey < 1 ||
+    if (!Q9InRange(partkey) || suppkey < 1 ||
         suppkey > static_cast<int64_t>(INT32_MAX))
       return false;
     const auto row = partsupp_rows.Get(partkey);
@@ -505,7 +474,7 @@ struct TpchQ9State {
   }
   // Clear the packed-row entry (if any) for the pair.
   void ErasePackedPartsupp(int64_t partkey, int64_t suppkey) {
-    if (!decltype(partsupp_rows)::Fits(partkey) || suppkey < 1 || suppkey > static_cast<int64_t>(INT32_MAX))
+    if (!Q9InRange(partkey) || suppkey < 1 || suppkey > static_cast<int64_t>(INT32_MAX))
       return;
     auto row = partsupp_rows.Get(partkey);
     const auto sk = static_cast<int32_t>(suppkey);
@@ -513,7 +482,7 @@ struct TpchQ9State {
       if (row.suppkeys[i] == sk) {
         row.suppkeys[i] = 0;
         row.costs[i] = 0;
-        partsupp_rows.Set(partkey, row);
+        Q9BoundedSet(partsupp_rows, partkey, row);
         return;
       }
     }
@@ -525,7 +494,7 @@ struct TpchQ9State {
   void SetPartsuppCost(int64_t partkey, int64_t suppkey, int64_t cost) {
     if (!partsupp_overflow.empty())
       partsupp_overflow.erase(PartsuppKey{partkey, suppkey});
-    if (!decltype(partsupp_rows)::Fits(partkey) || suppkey < 1 ||
+    if (!Q9InRange(partkey) || suppkey < 1 ||
         suppkey > static_cast<int64_t>(INT32_MAX) ||
         cost < static_cast<int64_t>(INT32_MIN) ||
         cost > static_cast<int64_t>(INT32_MAX)) {
@@ -539,7 +508,7 @@ struct TpchQ9State {
     for (int i = 0; i < PackedPartsuppRow::kSlots; ++i) {
       if (row.suppkeys[i] == sk) {
         row.costs[i] = static_cast<int32_t>(cost);
-        partsupp_rows.Set(partkey, row);
+        Q9BoundedSet(partsupp_rows, partkey, row);
         return;
       }
       if (empty < 0 && row.suppkeys[i] == 0)
@@ -548,7 +517,7 @@ struct TpchQ9State {
     if (empty >= 0) {
       row.suppkeys[empty] = sk;
       row.costs[empty] = static_cast<int32_t>(cost);
-      partsupp_rows.Set(partkey, row);
+      Q9BoundedSet(partsupp_rows, partkey, row);
       return;
     }
     partsupp_overflow[PartsuppKey{partkey, suppkey}] = cost;
