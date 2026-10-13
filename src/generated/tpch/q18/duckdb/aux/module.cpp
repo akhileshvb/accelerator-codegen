@@ -114,33 +114,11 @@ void CollectSparseQuantities(
     std::vector<std::pair<int64_t, int64_t>> &entries) {
   entries.clear();
   entries.reserve(state.quantity_overflow.size());
-  for (const auto &entry : state.quantity_overflow) {
-    if (entry.second != 0)
-      entries.emplace_back(entry.first, entry.second);
-  }
+  state.quantity_overflow.ForEach([&](int64_t orderkey, int64_t sum) {
+    if (sum != 0)
+      entries.emplace_back(orderkey, sum);
+  });
   std::sort(entries.begin(), entries.end());
-}
-
-void RebuildActiveOrderkeys(TpchQ18State &state) {
-  state.active_orderkeys.clear();
-  state.active_orderkeys.reserve(state.survivors.size());
-  for (const auto &[orderkey, _] : state.survivors)
-    state.active_orderkeys.push_back(orderkey);
-}
-
-void UpdateActiveOrderkey(TpchQ18State &state, int64_t orderkey) {
-  const bool should_be_active = state.HasOrderMeta(orderkey);
-  auto &keys = state.active_orderkeys;
-  auto it = std::find(keys.begin(), keys.end(), orderkey);
-  if (should_be_active) {
-    if (it == keys.end())
-      keys.push_back(orderkey);
-    return;
-  }
-  if (it != keys.end()) {
-    *it = keys.back();
-    keys.pop_back();
-  }
 }
 
 // Per-order quantity sums from the tables. The state holds only orders above
@@ -283,10 +261,10 @@ void AppendNonSurvivorRows(const TpchQ18State &state, int64_t threshold_raw,
     return;
 
   std::unordered_map<int64_t, std::string> customer_names;
-  for (const auto &[custkey, name] : state.customer_names) {
+  state.customer_names.ForEach([&](int64_t custkey, const std::string &name) {
     if (needed_custkeys.find(custkey) != needed_custkeys.end())
       customer_names.emplace(custkey, name);
-  }
+  });
   if (customer_names.size() < needed_custkeys.size()) {
     initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
       if (needed_custkeys.find(input.key) == needed_custkeys.end())
@@ -322,18 +300,17 @@ void TpchQ18State::SetOrderQuantitySum(int64_t orderkey, int64_t sum) {
   if (orderkey < 0)
     return;
   if (sum <= 0) {
-    quantity_overflow.erase(orderkey);
+    quantity_overflow.Erase(orderkey);
     return;
   }
-  quantity_overflow[orderkey] = sum;
+  quantity_overflow.Upsert(orderkey, sum);
 }
 
 int64_t TpchQ18State::OrderQuantitySum(int64_t orderkey) const {
-  const auto ov = quantity_overflow.find(orderkey);
-  if (ov != quantity_overflow.end())
-    return ov->second;
-  const auto it = survivors.find(orderkey);
-  return it == survivors.end() ? 0 : it->second.quantity_sum_raw;
+  if (const int64_t *ov = quantity_overflow.Find(orderkey))
+    return *ov;
+  const auto *meta = survivors.Find(orderkey);
+  return meta ? meta->quantity_sum_raw : 0;
 }
 
 void TpchQ18State::SetOrderMeta(int64_t orderkey, int64_t custkey,
@@ -341,44 +318,45 @@ void TpchQ18State::SetOrderMeta(int64_t orderkey, int64_t custkey,
                                   int64_t totalprice_raw) {
   if (orderkey < 0 || custkey <= 0)
     return;
-  survivors[orderkey] = TpchQ18SurvivorMeta{
-      custkey, orderdate_days, totalprice_raw, OrderQuantitySum(orderkey)};
+  survivors.Upsert(orderkey,
+                   TpchQ18SurvivorMeta{custkey, orderdate_days, totalprice_raw,
+                                       OrderQuantitySum(orderkey)});
 }
 
 void TpchQ18State::RemoveSurvivor(int64_t orderkey) {
-  survivors.erase(orderkey);
+  survivors.Erase(orderkey);
 }
 
 void TpchQ18State::SyncSurvivorQuantity(int64_t orderkey) {
-  const auto it = survivors.find(orderkey);
-  if (it != survivors.end())
-    it->second.quantity_sum_raw = OrderQuantitySum(orderkey);
+  if (survivors.Contains(orderkey))
+    survivors[orderkey].quantity_sum_raw = OrderQuantitySum(orderkey);
 }
 
 bool TpchQ18State::HasOrderMeta(int64_t orderkey) const {
-  return survivors.find(orderkey) != survivors.end();
+  return survivors.Contains(orderkey);
 }
 
 int64_t TpchQ18State::OrderCustkey(int64_t orderkey) const {
-  const auto it = survivors.find(orderkey);
-  return it == survivors.end() ? 0 : it->second.custkey;
+  const auto *meta = survivors.Find(orderkey);
+  return meta ? meta->custkey : 0;
 }
 
 int32_t TpchQ18State::OrderOrderdate(int64_t orderkey) const {
-  const auto it = survivors.find(orderkey);
-  return it == survivors.end() ? 0 : it->second.orderdate_days;
+  const auto *meta = survivors.Find(orderkey);
+  return meta ? meta->orderdate_days : 0;
 }
 
 int64_t TpchQ18State::OrderTotalprice(int64_t orderkey) const {
-  const auto it = survivors.find(orderkey);
-  return it == survivors.end() ? 0 : it->second.totalprice_raw;
+  const auto *meta = survivors.Find(orderkey);
+  return meta ? meta->totalprice_raw : 0;
 }
 
 std::vector<uint8_t> EncodeTpchQ18OrderQuantitySums(const TpchQ18State &state) {
   std::vector<int64_t> survivor_keys;
   survivor_keys.reserve(state.survivors.size());
-  for (const auto &[orderkey, _] : state.survivors)
+  state.survivors.ForEach([&](int64_t orderkey, const TpchQ18SurvivorMeta &) {
     survivor_keys.push_back(orderkey);
+  });
   std::sort(survivor_keys.begin(), survivor_keys.end());
 
   std::vector<std::pair<int64_t, int64_t>> qty_entries;
@@ -386,8 +364,9 @@ std::vector<uint8_t> EncodeTpchQ18OrderQuantitySums(const TpchQ18State &state) {
 
   std::vector<std::pair<int64_t, std::string>> names;
   names.reserve(state.customer_names.size());
-  for (const auto &[custkey, name] : state.customer_names)
+  state.customer_names.ForEach([&](int64_t custkey, const std::string &name) {
     names.emplace_back(custkey, name);
+  });
   std::sort(names.begin(), names.end(),
             [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
 
@@ -395,7 +374,7 @@ std::vector<uint8_t> EncodeTpchQ18OrderQuantitySums(const TpchQ18State &state) {
   core::WriteImageHeader(writer, kQuantitySumsMagic, kVersionV3,
                          static_cast<uint32_t>(survivor_keys.size()));
   for (const int64_t orderkey : survivor_keys) {
-    const auto &meta = state.survivors.at(orderkey);
+    const auto &meta = *state.survivors.Find(orderkey);
     writer.I64(orderkey);
     writer.I64(meta.custkey);
     writer.I32(meta.orderdate_days);
@@ -417,10 +396,7 @@ std::vector<uint8_t> EncodeTpchQ18OrderQuantitySums(const TpchQ18State &state) {
 bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
                                     TpchQ18State &state) {
   auto decode_v3 = [&](ByteReader &reader, uint32_t survivor_count) -> bool {
-    state.quantity_overflow.clear();
-    state.survivors.clear();
-    state.active_orderkeys.clear();
-    state.customer_names.clear();
+    state = TpchQ18State{};
 
     for (uint32_t i = 0; i < survivor_count; ++i) {
       int64_t orderkey = 0, custkey = 0, totalprice = 0;
@@ -430,8 +406,8 @@ bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
         return false;
       if (orderkey < 0 || custkey <= 0)
         return false;
-      state.survivors[orderkey] =
-          TpchQ18SurvivorMeta{custkey, orderdate, totalprice, 0};
+      state.survivors.Upsert(
+          orderkey, TpchQ18SurvivorMeta{custkey, orderdate, totalprice, 0});
     }
 
     uint32_t qty_count = 0;
@@ -457,18 +433,15 @@ bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
         return false;
       if (custkey <= 0)
         return false;
-      state.customer_names.emplace(custkey, std::move(name));
+      if (!state.customer_names.Contains(custkey))
+        state.customer_names.Upsert(custkey, std::move(name));
     }
 
-    RebuildActiveOrderkeys(state);
     return reader.FullyConsumed();
   };
 
   auto decode_v2 = [&](ByteReader &reader, uint32_t count) -> bool {
-    state.quantity_overflow.clear();
-    state.survivors.clear();
-    state.active_orderkeys.clear();
-    state.customer_names.clear();
+    state = TpchQ18State{};
 
     for (uint32_t i = 0; i < count; ++i) {
       int64_t key = 0, sum = 0, custkey = 0, totalprice = 0;
@@ -482,15 +455,11 @@ bool DecodeTpchQ18OrderQuantitySums(const std::vector<uint8_t> &bytes,
       if (sum > TpchQ18State::kMinPersistQuantityRaw)
         state.SetOrderMeta(key, custkey, orderdate, totalprice);
     }
-    RebuildActiveOrderkeys(state);
     return reader.FullyConsumed();
   };
 
   auto decode_v1 = [&](ByteReader &reader, uint32_t count) -> bool {
-    state.quantity_overflow.clear();
-    state.survivors.clear();
-    state.active_orderkeys.clear();
-    state.customer_names.clear();
+    state = TpchQ18State{};
 
     for (uint32_t i = 0; i < count; ++i) {
       int64_t key = 0, sum = 0;
@@ -770,9 +739,9 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
 
   // Customer renames: refresh the cached names of survivors' customers.
   for (const auto &[custkey, name] : buffer.CustomerNames()) {
-    const auto it = base_state->customer_names.find(custkey);
-    if (it != base_state->customer_names.end() && it->second != name)
-      mut().customer_names[custkey] = name;
+    const std::string *cached = base_state->customer_names.Find(custkey);
+    if (cached && *cached != name)
+      mut().customer_names.Upsert(custkey, name);
   }
 
   for (const auto &[orderkey, net] : net_by_order) {
@@ -802,8 +771,7 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
     if (is_survivor && !will_be_survivor) {
       auto &st = mut();
       st.RemoveSurvivor(orderkey);
-      st.quantity_overflow.erase(orderkey);
-      UpdateActiveOrderkey(st, orderkey);
+      st.quantity_overflow.Erase(orderkey);
       continue;
     }
     if (!will_be_survivor)
@@ -822,17 +790,16 @@ TpchQ18Module::StageMaintenance(core::AuxEngineServices &services,
       }
       st.SetOrderMeta(order.key, order.custkey, order.orderdate_days,
                       order.totalprice_raw);
-      if (st.customer_names.find(order.custkey) == st.customer_names.end()) {
+      if (!st.customer_names.Contains(order.custkey)) {
         std::string name;
         if (initial_scan->LookupCustomerName(order.custkey, name))
-          st.customer_names.emplace(order.custkey, std::move(name));
+          st.customer_names.Upsert(order.custkey, std::move(name));
         else
           initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
             if (input.key == order.custkey)
-              st.customer_names.emplace(input.key, input.name);
+              st.customer_names.Upsert(input.key, input.name);
           });
       }
-      UpdateActiveOrderkey(st, orderkey);
     } else {
       st.SyncSurvivorQuantity(orderkey);
     }
@@ -948,28 +915,29 @@ TpchQ18Module::BuildState(core::AuxEngineServices &services) const {
 
   // Published state is survivor-only. Drop every other quantity row even
   // when the SQL aggregate path ran — otherwise SF20 keeps O(orders).
-  for (auto it = state.quantity_overflow.begin();
-       it != state.quantity_overflow.end();) {
-    if (state.survivors.find(it->first) == state.survivors.end())
-      it = state.quantity_overflow.erase(it);
-    else
-      ++it;
-  }
+  std::vector<int64_t> non_survivors;
+  state.quantity_overflow.ForEach([&](int64_t orderkey, int64_t) {
+    if (!state.survivors.Contains(orderkey))
+      non_survivors.push_back(orderkey);
+  });
+  for (const int64_t orderkey : non_survivors)
+    state.quantity_overflow.Erase(orderkey);
 
   std::unordered_set<int64_t> needed_custkeys;
   needed_custkeys.reserve(state.survivors.size());
-  for (const auto &[_, meta] : state.survivors)
+  state.survivors.ForEach([&](int64_t, const TpchQ18SurvivorMeta &meta) {
     needed_custkeys.insert(meta.custkey);
+  });
 
   initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
     if (input.key <= 0)
       return;
     if (needed_custkeys.find(input.key) == needed_custkeys.end())
       return;
-    state.customer_names.emplace(input.key, input.name);
+    if (!state.customer_names.Contains(input.key))
+      state.customer_names.Upsert(input.key, input.name);
   });
 
-  RebuildActiveOrderkeys(state);
   return state;
 }
 
@@ -999,13 +967,14 @@ void TpchQ18Module::EmitResult(const TpchQ18State &state,
 
   // The state holds every order above kMinPersistQuantityRaw: with no
   // survivors there is no qualifying order (no SQL at query time).
-  if (state.survivors.empty() &&
+  const bool no_survivors = state.survivors.size() == 0;
+  if (no_survivors &&
       threshold_raw >= TpchQ18State::kMinPersistQuantityRaw) {
     sink.Begin(core::OutputSchema{});
     sink.End();
     return;
   }
-  if (state.survivors.empty()) {
+  if (no_survivors) {
     EmitResultScanOrders(state, threshold_raw, initial_scan, sink);
     return;
   }
@@ -1013,33 +982,33 @@ void TpchQ18Module::EmitResult(const TpchQ18State &state,
   std::vector<TpchQ18OutputRow> output_rows;
   std::unordered_set<int64_t> emitted_orderkeys;
 
-  for (const auto &[orderkey, meta] : state.survivors) {
+  state.survivors.ForEach([&](int64_t orderkey, const TpchQ18SurvivorMeta &meta) {
     // meta.quantity_sum_raw is kept in sync with the sum on every write.
     if (meta.quantity_sum_raw <= threshold_raw)
-      continue;
-    const auto name_it = state.customer_names.find(meta.custkey);
-    if (name_it == state.customer_names.end())
-      continue;
+      return;
+    const std::string *name = state.customer_names.Find(meta.custkey);
+    if (!name)
+      return;
     emitted_orderkeys.insert(orderkey);
     TpchQ18OutputRow row;
-    row.name = name_it->second;
+    row.name = *name;
     row.custkey = meta.custkey;
     row.orderkey = orderkey;
     row.orderdate_days = meta.orderdate_days;
     row.totalprice_raw = meta.totalprice_raw;
     row.quantity_sum_raw = meta.quantity_sum_raw;
     output_rows.push_back(std::move(row));
-  }
+  });
 
-  if (output_rows.empty() && state.customer_names.empty()) {
+  if (output_rows.empty() && state.customer_names.size() == 0) {
     std::unordered_set<int64_t> needed_custkeys;
-    for (const auto &[orderkey, meta] : state.survivors) {
+    state.survivors.ForEach([&](int64_t orderkey, const TpchQ18SurvivorMeta &meta) {
       const int64_t sum = state.OrderQuantitySum(orderkey);
       if (sum <= threshold_raw)
-        continue;
+        return;
       if (meta.custkey > 0)
         needed_custkeys.insert(meta.custkey);
-    }
+    });
     if (!needed_custkeys.empty()) {
       std::unordered_map<int64_t, std::string> customer_names;
       initial_scan->ScanCustomers([&](const TpchQ18CustomerInput &input) {
@@ -1047,13 +1016,13 @@ void TpchQ18Module::EmitResult(const TpchQ18State &state,
           return;
         customer_names.emplace(input.key, input.name);
       });
-      for (const auto &[orderkey, meta] : state.survivors) {
+      state.survivors.ForEach([&](int64_t orderkey, const TpchQ18SurvivorMeta &meta) {
         const int64_t sum = state.OrderQuantitySum(orderkey);
         if (sum <= threshold_raw)
-          continue;
+          return;
         const auto name_it = customer_names.find(meta.custkey);
         if (name_it == customer_names.end())
-          continue;
+          return;
         emitted_orderkeys.insert(orderkey);
         TpchQ18OutputRow row;
         row.name = name_it->second;
@@ -1063,7 +1032,7 @@ void TpchQ18Module::EmitResult(const TpchQ18State &state,
         row.totalprice_raw = meta.totalprice_raw;
         row.quantity_sum_raw = sum;
         output_rows.push_back(std::move(row));
-      }
+      });
     }
   }
 
