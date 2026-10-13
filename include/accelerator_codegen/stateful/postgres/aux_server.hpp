@@ -1,8 +1,12 @@
 // Shared aux state server for PostgreSQL (workload-agnostic).
 //
-// One background worker per database owns every accelerator's state in its own
-// heap; backends do not hold a copy.  Per-backend mode (the default) is
-// unchanged; this mode is selected by the GUC accel.shared_state.
+// Background workers own the accelerators' state in their own heaps; backends
+// do not hold a copy.  Per-backend mode (the default) is unchanged; this mode
+// is selected by the GUC accel.shared_state.  Each database has one worker per
+// shard (accel.shared_sharding, on by default: one shard per TPC-H
+// accelerator accel_tpch_q<N>_aux, shard 0 for anything else; off: shard 0
+// serves everything), so reads of different accelerators and the applies for
+// them never queue behind each other.
 //
 //   Reads   A backend's accelerator UDF sends (function oid, arguments,
 //           statement snapshot) to the worker over a per-backend shm_mq pair.
@@ -17,20 +21,29 @@
 //           transaction (with savepoint frames).  At PRE_COMMIT the backend
 //           takes the commit gate (a transaction-scoped lock) and serialises
 //           what it will ship; at COMMIT, after the counters are published, it
-//           sends the batches to the worker and waits (bounded) for the apply.
+//           sends each shard the batches of the accelerators it hosts (only
+//           shards hosting an accelerator on a written table), and then waits
+//           (bounded) for all their applies, which run in parallel.
 //           Nothing uncommitted ever reaches the worker, so aborts and dying
 //           backends need no cleanup there.  The worker applies the batches
 //           through the existing coordinator / module code, then advances the
-//           sync marker.  Only a transaction with exactly one captured
-//           statement for an accelerator is applied incrementally (the
-//           module's lookups then see the same database as at statement time);
-//           anything else, or any commit the worker did not apply, leaves the
+//           sync marker.  All of a transaction's captured statements for an
+//           accelerator are applied in order, under a snapshot taken right
+//           after the commit (the commit gate and the counters exclude any
+//           other write to its tables): module lookups therefore see the
+//           database as the whole transaction left it, not as each statement
+//           did.  That is what every TPC-H module expects: lookups in
+//           StageMaintenance run at pre-commit anyway, and those in
+//           AccumulateMutation (Q3, Q21) replace each touched order's record
+//           from a fresh read, so a later read of the same key wins.  A commit
+//           that is too large, poisoned by an aborted savepoint, or that the
+//           worker did not apply, leaves the
 //           shared counters ahead of the worker's marker, so it stops serving
 //           hits until it rebuilds.  Correctness rests on those counters, not
 //           on message delivery.
 //
 // The worker needs no shared_preload_libraries: a backend starts it on demand
-// (dynamic background worker, one per database) and everything else lives in
+// (dynamic background worker, one per database and shard) and everything else lives in
 // the DSM registry.
 #pragma once
 
@@ -73,7 +86,7 @@ struct ApplyInfo {
 struct ApplyEntry {
   // Counter slots whose writes the capture examined for this accelerator.
   std::vector<std::size_t> examined_slots;
-  // At most one (a transaction with more is not shipped).
+  // In statement order.
   std::vector<core::MutationBatch> batches;
 };
 
@@ -99,6 +112,11 @@ void NoteCurrentRuntime(ServerRuntime *runtime);
 
 // Counts one apply outcome (the commit was folded into the state or not).
 void NoteApplyOutcome(bool synced);
+
+// In the worker: a writer has committed (or is committing) a transaction it
+// ships, and the apply has not been handled yet (bounded by the apply timeout).
+// A state that is behind only by such a commit is about to be caught up.
+bool ApplyPending();
 
 // Marks the worker busy (a rebuild) so writers do not queue behind it.
 class BusyScope {
@@ -146,9 +164,11 @@ void ResetStage();
 
 // ---- diagnostics ------------------------------------------------------------
 // "requests=N hits=N rebuilds=N declined=N errors=N applies=N synced=N
-//  unsynced=N generation=G pid=P" of this database's worker (or "no worker").
+//  unsynced=N generation=G pid=P" summed over this database's shard workers
+// (generation: the largest; pid: the lowest running shard's), or "no worker".
 std::string StatsText();
-// Stops this database's worker (it restarts on demand).  Returns false if none.
+// Stops all of this database's shard workers (they restart on demand).
+// Returns false if none was running.
 bool StopWorker();
 
 } // namespace accelerator_codegen::aux_state::engine::postgres::aux_server

@@ -6,7 +6,10 @@
 
 #if defined(ACCELERATOR_CODEGEN_POSTGRES_EXTENSION)
 
+#include <chrono>
+
 #include "postgres/engine_helpers.hpp"
+#include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
 #include "accelerator_codegen/stateful/postgres/aux_server.hpp"
 
 namespace accelerator_codegen::aux_state::engine::postgres {
@@ -277,10 +280,13 @@ public:
     Snapshot statement = GetActiveSnapshot();
     bool hit = HitAllowed(statement);
     bool rebuilt = false;
-    if (!hit && NeedsSync() && CanRebuildNow()) {
+    if (!hit && NeedsSync() && CanRebuildNow() && RebuildWarranted()) {
       Rebuild();
       hit = HitAllowed(statement);
       rebuilt = hit;
+    }
+    if (hit) {
+      behind_since_ms = 0;
     }
     if (!hit) {
       srv::NoteDeclined();
@@ -324,14 +330,19 @@ public:
       marker.own_commits.clear();
       srv::NoteApplyOutcome(false);
     };
-    if (!entry || entry->batches.size() > 1) {
-      return fail();
+    auto fail_because = [&](const char *why) {
+      elog(LOG, "accel apply %s: not applied (%s): the next query rebuilds",
+           accelerator.c_str(), why);
+      fail();
+    };
+    if (!entry) {
+      return fail_because("the commit shipped no entry for it");
     }
     for (auto slot : dep_slots) {
       if (info.wrote[slot] &&
           std::find(entry->examined_slots.begin(), entry->examined_slots.end(),
                     slot) == entry->examined_slots.end()) {
-        return fail();
+        return fail_because("a written table was not examined");
       }
     }
     std::vector<uint64_t> seq;
@@ -341,9 +352,24 @@ public:
       const uint64_t add = info.wrote[slot] ? 1 : 0;
       if (seq[i] != marker.seq[i] + add ||
           (add && info.old_seq[slot] != marker.seq[i])) {
-        return fail();
+        return fail_because("another commit slipped in");
       }
     }
+    // One LOG line per apply: what the module chose and what it cost (the
+    // Postgres cost models are calibrated from these).
+    std::size_t rows = 0;
+    for (const auto &batch : entry->batches)
+      rows += batch.old_rows.size() + batch.new_rows.size();
+    core::ClearMaintenanceDecisionLog();
+    const auto started = std::chrono::steady_clock::now();
+    auto report = [&](const char *outcome) {
+      const double ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - started)
+                            .count();
+      elog(LOG, "accel apply %s: %s batches=%zu rows=%zu ms=%.1f %s",
+           accelerator.c_str(), outcome, entry->batches.size(), rows, ms,
+           core::FormatLastMaintenanceDecision().c_str());
+    };
     try {
       if (!entry->batches.empty()) {
         for (const auto &batch : entry->batches) {
@@ -352,19 +378,30 @@ public:
         backend.OnPreCommit();
         backend.OnCommit();
       }
+    } catch (const std::exception &e) {
+      try {
+        backend.OnAbort();
+      } catch (...) {
+      }
+      store.ClearTransactionDirty();
+      report(e.what());
+      return fail();
     } catch (...) {
       try {
         backend.OnAbort();
       } catch (...) {
       }
       store.ClearTransactionDirty();
+      report("failed");
       return fail();
     }
     std::vector<uint64_t> after;
     auxsync::ReadSeq(dep_slots, after);
     if (store.NeedsRebuild() || after != seq) {
+      report(store.NeedsRebuild() ? "invalidated" : "raced");
       return fail();
     }
+    report("applied");
     marker.seq = seq;
     marker.own_commits.push_back(info.xid);
     if (marker.own_commits.size() >= kRebaseOwnCommits) {
@@ -433,6 +470,8 @@ public:
 private:
   static constexpr std::size_t kMaxOwnCommits = 1024;
   static constexpr std::size_t kRebaseOwnCommits = 64;
+  static constexpr int64_t kBehindRebuildMs = 30000;
+  int64_t behind_since_ms = 0; // first declined read of a synced state behind the counters
   struct SyncMarker {
     bool synced = false;
     auxsync::SnapMark base;
@@ -450,6 +489,30 @@ private:
     return !built || !marker.synced || store.NeedsRebuild() || !CountersMatch();
   }
 
+  // NeedsSync also holds while the state is in sync and only a commit in
+  // flight (a writer between its statement and the worker's apply of it) keeps
+  // the counters from matching.  Rebuilding then would throw away a state the
+  // apply is about to catch up, and a long rebuild keeps the worker busy, so
+  // every commit meanwhile goes unshipped and leaves its accelerators stale
+  // too.  Decline instead (the caller answers from SQL); rebuild only a state
+  // known stale, or one still behind after kBehindRebuildMs (a commit that was
+  // never shipped).
+  bool RebuildWarranted() {
+    namespace srv = accelerator_codegen::aux_state::engine::postgres::aux_server;
+    if (!built || !marker.synced || store.NeedsRebuild()) {
+      return true;
+    }
+    const int64_t now = static_cast<int64_t>(GetCurrentTimestamp() / 1000);
+    if (srv::ApplyPending()) {
+      behind_since_ms = 0;
+      return false;
+    }
+    if (behind_since_ms == 0) {
+      behind_since_ms = now;
+    }
+    return now - behind_since_ms >= kBehindRebuildMs;
+  }
+
   bool HitAllowed(Snapshot statement) const {
     if (!built || !marker.synced || store.NeedsRebuild() ||
         store.IsTransactionDirty() || auxsync::OwnRegisteredAnyOf(dep_slots)) {
@@ -463,8 +526,11 @@ private:
         return false;
       }
     }
-    // Read after the statement snapshot was taken.
-    return CountersMatch();
+    // Read after the statement snapshot was taken.  Writers still in flight
+    // are fine as long as S cannot see them (ReadCountersFor).
+    std::vector<uint64_t> seq;
+    return auxsync::ReadCountersFor(statement, dep_slots, seq) &&
+           seq == marker.seq;
   }
 
   bool CanRebuildNow() const {
@@ -481,6 +547,7 @@ private:
       return;
     }
     aux_server::BusyScope busy;
+    const auto started = std::chrono::steady_clock::now();
     marker = SyncMarker{};
     Snapshot fresh = GetLatestSnapshot();
     auxsync::SnapMark base = auxsync::MarkOf(fresh);
@@ -505,8 +572,12 @@ private:
       marker.base = std::move(base);
       marker.seq = std::move(before);
     }
-    elog(DEBUG1, "accelerator %s: rebuild (%s)", accelerator.c_str(),
-         marker.synced ? "synced" : "unsynced");
+    elog(aux_server::InServer() ? LOG : DEBUG1,
+         "accel rebuild %s: %s ms=%.1f", accelerator.c_str(),
+         marker.synced ? "synced" : "unsynced",
+         std::chrono::duration<double, std::milli>(
+             std::chrono::steady_clock::now() - started)
+             .count());
     if (!aux_server::InServer()) {
       accelerator_codegen::aux_state::engine::postgres::
           RegisterPostgresBackendForMutations();
