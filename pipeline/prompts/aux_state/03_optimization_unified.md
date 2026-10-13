@@ -68,7 +68,7 @@ Structured, evidence-backed hypothesis **before any edit**. Cite measured diagno
 }
 ```
 
-When `write_mix_workload_speedup` is below ~1× while read-only is already strong, set `"scope": "maintenance"` (or `"complete"`) and prioritize cheap incremental apply over further hit-path micro-opts.
+When `write_mix_workload_speedup` is below ~1× while read-only is already strong, check the maintenance profile against refresh-shaped writes (bulk, keys spread uniformly: COW unit size, per-touch index rebuilds, size-guard rebuilds, base-table rescans, cost-model calibration; `maintenance_framework.md`), then set `"scope": "maintenance"` (or `"complete"`) and prioritize cheap incremental apply over further hit-path micro-opts.
 Two-phase flow (default): end hypothesis phase with **`HYPOTHESIS_COMPLETE`**, then patch phase with **`HYPOTHESIS_PATCH_COMPLETE`**. No grep/edit switching within patch phase.
 
 Retrieved precedents are **non-binding** — adapt, combine, or reject based on this query's constraints.

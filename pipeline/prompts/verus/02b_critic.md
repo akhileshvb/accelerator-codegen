@@ -32,7 +32,11 @@ estimate breaks the check.
   tables' rows, e.g. orders with their lineitems) needs a rescan keyed on a
   column the table is not clustered or indexed by, if any write's cost grows
   with a table, or if apply can decline a valid write (a decline rebuilds
-  from scratch).
+  from scratch). Also fails if a refresh (0.1% of orders and lineitems, keys
+  spread uniformly, so nearly every page is touched) copies a unit much
+  larger than the changed rows (whole pages or per-key containers cloned on
+  first touch), or if a rescan re-reads every row of each touched key when
+  per-key sums, counts or multisets in the state would let the delta suffice.
 * **C3 size**: the state grows with what queries read, not with whole tables;
   a read does not touch the whole state. Fails if your SF20 estimate exceeds
   the budget in `scale_principles` (about 3 GB steady per accelerator, build

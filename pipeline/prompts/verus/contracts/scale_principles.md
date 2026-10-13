@@ -62,6 +62,17 @@ accelerator keeps its advantage as data grows:
   refresh functions): keep their rescans on clustered keys. An apply that
   declines a valid write makes the host rebuild from scratch: hours at
   SF3000.
+  A refresh touches nearly every key range (0.1% of orders and their
+  lineitems, keys spread uniformly), so the unit a write copies must itself
+  cost O(changed rows): plain records in small pages or persistent maps with
+  small leaves, never a large container cloned whole on first touch; batch a
+  commit's changes per page so each page is copied once. Do not re-read the
+  base rows of a touched key when the delta suffices: keep what maintenance
+  needs (per-key sums and counts, multisets) in the state. One rescan of ~3.5M
+  lineitems per refresh took ~50 s as chunked IN-lists and 5.6 s as one
+  semi-join: declare any unavoidable rescan in the inputs so it runs as one
+  set-oriented query over all touched keys. Cost must scale with the delta
+  plus a small fixed per-commit cost.
 * **Reads**: cost in proportion to the answer, not to the state or to the
   rows behind the answer. A read that visits a large slice to return a few
   rows, or that sorts a large result, gives back little of the base query's
@@ -76,6 +87,11 @@ accelerator keeps its advantage as data grows:
     buckets (e.g. by month or by power-of-two spans) beside the fine ones,
     so a range costs a few coarse lookups plus its two partial ends, not
     one lookup per fine bucket;
+  * **partial aggregates per bucket**: keep per-bucket (e.g. per key range
+    or group) partial aggregates and merge only the buckets the parameters
+    select; a read that scans a slice proportional to the table (measured:
+    a read slower than the DuckDB query itself, 57 vs 52 ms at SF1; others
+    10-20x slower than a bucketed design) gives the accelerator away;
   * when the answer itself is large, a read is bounded by it: then make each
     emitted row cheap (no per-row recomputation, no re-sorting).
   Where no parameter-independent state can avoid visiting many keys per read

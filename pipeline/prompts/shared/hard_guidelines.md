@@ -82,7 +82,7 @@ Fast is worthless if the answer is wrong or the state breaks at scale. Spec-valu
 
 **Memory.** Target ~10-20 B/row of compact columnar state: no node-based maps, no `std::string`/per-row heap object per row, no per-row `shared_ptr`. Build without 2-5x transient copies (stream into chunks; no whole-table vector then re-copy).
 
-**Per-write cost.** O(touched rows/chunks), via copy-on-write chunks that share untouched data. Never copy the whole state per batch, and never `RebuildAll` for a routine insert/delete/update that a delta can apply (rebuild only for what a delta truly cannot express).
+**Per-write cost.** O(touched rows/chunks), via copy-on-write chunks that share untouched data. A refresh (~0.1% of rows, keys spread uniformly) touches nearly every chunk/shard/page, so the COW unit must itself cost O(changed rows) (pointer-copied entries, small chunks, hot/cold base+overlay), not a whole chunk per touched key; see `maintenance_framework.md` "Refresh-shaped writes". Never copy the whole state per batch, and never `RebuildAll` for a routine insert/delete/update that a delta can apply (rebuild only for what a delta truly cannot express). No hard-coded size guard may force a full rebuild outside the cost model; bound overlays by incremental compaction.
 
 **Primitive selection.** Use the generic substrate primitives in `include/accelerator_codegen/stateful/core/` (see the "Which one to use" guide in `core/README.md`: COW arrays/maps/record stores/blob maps, dense/sorted/Fenwick/radix structures, `sql_date`, `sql_like`, exact decimal/int128) instead of hand-rolled `std::unordered_map`/`std::vector` state; read that guide before choosing a layout.
 

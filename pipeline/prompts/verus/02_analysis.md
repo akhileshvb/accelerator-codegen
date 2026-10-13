@@ -31,7 +31,13 @@ Decide:
 2. **Maintenance**: for every table the query reads, how an insert / delete
    / update changes the state, locally: cost per changed row, independent of
    table size, including keeping the read-side indexes above in order. Which changes need rows the state
-   does not keep (a rescan), and of which keys.
+   does not keep (a rescan), and of which keys. Prefer keeping per-key
+   sums, counts or multisets so a delta suffices; a rescan of every row of each
+   touched key (e.g. all lineitems of each touched part) is paid per refresh and
+   dominates it. If one is unavoidable, declare it in the inputs so it runs as
+   one set-oriented query. Obligations are frozen before implementation, so this
+   is decided here. A refresh (0.1% of orders, keys spread uniformly) touches
+   nearly every page: state the unit a write copies and why it is O(changed rows).
 3. **The kernel inputs** (`inputs/q.inputs`): the scans the build needs, the
    rescans, and one delta per table (lossy where you can drop columns or text).
 4. **Complexity notes** (guidance, see scale_principles): state size, build,
