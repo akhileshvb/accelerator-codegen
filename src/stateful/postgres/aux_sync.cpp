@@ -162,7 +162,6 @@ bool OwnTruncatedAnyOf(const std::vector<std::size_t> &slots) {
   return false;
 }
 
-bool OwnRegistered(std::size_t slot) { return g_registered[slot]; }
 
 bool OwnRegisteredAny() { return g_registered_any; }
 

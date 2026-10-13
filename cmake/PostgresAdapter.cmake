@@ -50,10 +50,6 @@ function(accel_build_postgres_extension)
     list(APPEND _pg_ext_sources src/stateful/postgres/aux_mutation_epoch.cpp)
   endif()
 
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/stateful/postgres/aux_mutation_epoch.cpp")
-    list(APPEND _pg_ext_sources src/stateful/postgres/aux_mutation_epoch.cpp)
-  endif()
-
   # Per-query module code (SPI scans, PG_FUNCTION shims, base kernels). Each
   # query registers itself through static registrars (postgres/runtime.hpp);
   # no query is named here, and a tree without any q<N> directory still builds.
