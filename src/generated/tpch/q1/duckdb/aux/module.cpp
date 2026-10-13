@@ -459,8 +459,9 @@ TpchQ1Module::StageMaintenance(core::AuxEngineServices &services,
 
   // RF-sized batches are always applied incrementally; the cost model is
   // only consulted for bulk changes (a partition rebuild is not possible for
-  // aggregate nodes, so it maps to RebuildAll).
-  if (buffer.Deltas().size() > 256) {
+  // aggregate nodes, so it maps to RebuildAll). A forced action applies to
+  // every batch.
+  if (core::ForcedMaintenanceAction() || buffer.Deltas().size() > 256) {
     const auto decision = services.ChooseMaintenance(
         {static_cast<uint64_t>(buffer.Deltas().size()), 1, true, false, true,
          false, false, core::MaintenanceAction::NoOp,
