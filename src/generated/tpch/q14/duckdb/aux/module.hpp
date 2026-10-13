@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
 #include "tpch/q14/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -107,12 +108,11 @@ struct TpchQ14MonthTotals {
   bool saw_contribution = false;
 };
 
-// Part -> promo class, paged so a point write copies one 64 KiB page plus the
-// page-pointer vector (published states are never mutated; a copy of the
-// state shares every page until SetRaw replaces the touched one).
+// Part -> promo class, in 64 KiB copy-on-write chunks so a point write copies
+// one chunk plus the chunk directory (published states are never mutated; a
+// copy of the state shares every chunk until SetRaw replaces the touched one).
 struct TpchQ14State {
   static constexpr int64_t kMaxDensePartkey = 1 << 24; // 16M; SF20 is 4M
-  static constexpr std::size_t kPageSize = std::size_t(1) << 16;
   static constexpr uint8_t kClassMask = 3;
   // Part inserted after the build and not yet referenced by any lineitem
   // delta: deleting/retyping it needs no lineitem scan.
@@ -123,8 +123,7 @@ struct TpchQ14State {
   static constexpr uint8_t kDeadBit = 16;
   // Largest partkey present at build; larger absent keys never had rows.
   int64_t build_max_partkey = std::numeric_limits<int64_t>::max();
-  using Page = std::vector<uint8_t>;
-  std::vector<std::shared_ptr<Page>> pages;
+  core::ChunkedCowArray<uint8_t, 16> classes{};
   std::unordered_map<int64_t, uint8_t> promo_overflow;
   std::map<int32_t, TpchQ14MonthTotals> month_totals;
 
@@ -135,11 +134,7 @@ struct TpchQ14State {
       const auto ov = promo_overflow.find(partkey);
       return ov == promo_overflow.end() ? 0 : ov->second;
     }
-    const auto id = static_cast<std::size_t>(partkey);
-    const auto page = id / kPageSize;
-    if (page >= pages.size() || !pages[page])
-      return 0;
-    return (*pages[page])[id % kPageSize];
+    return classes.Get(partkey);
   }
   TpchQ14PromoClass PromoOf(int64_t partkey) const {
     return static_cast<TpchQ14PromoClass>(RawOf(partkey) & kClassMask);
@@ -151,16 +146,7 @@ struct TpchQ14State {
       promo_overflow[partkey] = raw;
       return;
     }
-    const auto id = static_cast<std::size_t>(partkey);
-    const auto index = id / kPageSize;
-    if (pages.size() <= index)
-      pages.resize(index + 1);
-    auto &page = pages[index];
-    if (!page)
-      page = std::make_shared<Page>(kPageSize, 0);
-    else if (page.use_count() != 1) // shared with a published state: copy
-      page = std::make_shared<Page>(*page);
-    (*page)[id % kPageSize] = raw;
+    classes.Set(partkey, raw);
   }
   void SetPromo(int64_t partkey, TpchQ14PromoClass promo) {
     SetRaw(partkey, static_cast<uint8_t>(promo));
