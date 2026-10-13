@@ -37,7 +37,6 @@
 #include <functional>
 #include <memory>
 #include <type_traits>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -176,6 +175,7 @@ public:
   explicit Txn(const Map &base) : map_(base) {
     if (map_.top_.empty())
       map_.top_.resize(Map::TopCount(map_.bits_));
+    owned_.resize(map_.top_.size());
   }
 
   const T *Find(const K &key) const {
@@ -212,37 +212,32 @@ public:
     --map_.size_;
     return true;
   }
-  bool Dirty() const { return !leaves_.empty(); }
+  bool Dirty() const { return !touched_.empty(); }
   std::size_t size() const { return map_.size_; }
 
   // Publishes the new map. `parallel_for(n, fn)` must run fn(0..n-1), possibly
   // on several threads; each call owns one Mid.
   template <class ParallelFor> Map Finish(ParallelFor &&parallel_for) {
-    std::vector<uint32_t> his;
-    std::vector<std::vector<std::pair<uint32_t, std::shared_ptr<Leaf> *>>> by_hi(
-        map_.top_.size());
-    for (auto &entry : leaves_) {
-      const uint32_t hi = entry.first >> kMidBits;
-      if (by_hi[hi].empty())
-        his.push_back(hi);
-      by_hi[hi].emplace_back(entry.first & (kMidSize - 1), &entry.second);
-    }
-    std::vector<std::shared_ptr<Mid>> built(his.size());
-    parallel_for(his.size(), [&](std::size_t t) {
-      const uint32_t hi = his[t];
+    std::vector<std::shared_ptr<Mid>> built(touched_.size());
+    parallel_for(touched_.size(), [&](std::size_t t) {
+      const uint32_t hi = touched_[t];
       auto mid = map_.top_[hi] ? std::make_shared<Mid>(*map_.top_[hi])
                                : std::make_shared<Mid>();
-      for (auto &lw : by_hi[hi]) {
-        if ((*lw.second)->empty())
-          mid->leaves[lw.first] = nullptr;
+      auto &own = *owned_[hi];
+      for (uint32_t lo = 0; lo < kMidSize; ++lo) {
+        if (!own.leaves[lo])
+          continue;
+        if (own.leaves[lo]->empty())
+          mid->leaves[lo] = nullptr;
         else
-          mid->leaves[lw.first] = std::move(*lw.second);
+          mid->leaves[lo] = std::move(own.leaves[lo]);
       }
       built[t] = std::move(mid);
     });
-    for (std::size_t t = 0; t < his.size(); ++t)
-      map_.top_[his[t]] = std::move(built[t]);
-    leaves_.clear();
+    for (std::size_t t = 0; t < touched_.size(); ++t)
+      map_.top_[touched_[t]] = std::move(built[t]);
+    touched_.clear();
+    owned_.clear();
     return std::move(map_);
   }
   Map Finish() {
@@ -253,24 +248,45 @@ public:
   }
 
 private:
+  // Shards cloned by this transaction, grouped by mid (no hashing on the
+  // lookup path); `touched_` lists the mids that have any.
+  struct Owned {
+    std::array<std::shared_ptr<Leaf>, kMidSize> leaves;
+  };
+
   const Leaf *Current(uint32_t shard) const {
-    auto it = leaves_.find(shard);
-    if (it != leaves_.end())
-      return it->second.get();
-    const auto &mid = map_.top_[shard >> kMidBits];
-    return mid ? mid->leaves[shard & (kMidSize - 1)].get() : nullptr;
+    const uint32_t hi = shard >> kMidBits, lo = shard & (kMidSize - 1);
+    if (const auto &own = owned_[hi])
+      if (const Leaf *leaf = own->leaves[lo].get())
+        return leaf;
+    const auto &mid = map_.top_[hi];
+    return mid ? mid->leaves[lo].get() : nullptr;
   }
   Leaf &Own(uint32_t shard) {
-    auto it = leaves_.find(shard);
-    if (it != leaves_.end())
-      return *it->second;
-    const Leaf *cur = Current(shard);
-    auto copy = cur ? std::make_shared<Leaf>(*cur) : std::make_shared<Leaf>();
-    return *leaves_.emplace(shard, std::move(copy)).first->second;
+    const uint32_t hi = shard >> kMidBits, lo = shard & (kMidSize - 1);
+    auto &own = owned_[hi];
+    if (!own) {
+      own = std::make_unique<Owned>();
+      touched_.push_back(hi);
+    }
+    auto &slot = own->leaves[lo];
+    if (slot)
+      return *slot;
+    const auto &mid = map_.top_[hi];
+    const Leaf *cur = mid ? mid->leaves[lo].get() : nullptr;
+    slot = std::make_shared<Leaf>();
+    if (cur) {
+      // One slot of headroom: the common write is a single insert, which
+      // would otherwise reallocate and copy the whole shard a second time.
+      slot->reserve(cur->size() + 1);
+      slot->assign(cur->begin(), cur->end());
+    }
+    return *slot;
   }
 
   Map map_;
-  std::unordered_map<uint32_t, std::shared_ptr<Leaf>> leaves_;
+  std::vector<std::unique_ptr<Owned>> owned_;
+  std::vector<uint32_t> touched_;
 };
 
 // Bulk loader: Add (any order), Sort / SortDedupe, mutable Find / ForEach,
