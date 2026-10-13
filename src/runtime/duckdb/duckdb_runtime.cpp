@@ -1590,58 +1590,62 @@ void DuckdbRuntime::Execute(const core::QueryArguments &arguments) {
   last_rows = rows.size();
 }
 
-void DuckdbRuntime::Apply(SharedProbe &probe) {
+namespace {
+
+// Common envelope of a timed maintenance write: fresh decision log, wall time
+// of `write` (begin ... commit) recorded as the actual maintenance cost.
+template <typename Write> void TimedMaintenanceWrite(Write &&write) {
   core::ClearMaintenanceDecisionLog();
   const auto start = std::chrono::steady_clock::now();
-  connection_.BeginTransaction();
-  auto result = connection_.Query(ProbeWriteSql(probe));
-  Require(result != nullptr && !result->HasError(),
-          result ? result->GetError() : "DuckDB write failed");
-  backend_.CaptureMutation(BuildSharedMutation(entry_, probe));
-  CommitWrite();
-  AdvanceProbe(probe);
+  write();
   const auto end = std::chrono::steady_clock::now();
   core::RecordMaintenanceActualCostUs(static_cast<double>(
-      std::chrono::duration_cast<std::chrono::microseconds>(end - start)
-          .count()));
+      std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()));
+}
+
+// Runs one write statement inside the open transaction; rolls back and throws on error.
+void RunWriteQuery(::duckdb::Connection &connection, const std::string &sql) {
+  auto result = connection.Query(sql);
+  if (result == nullptr || result->HasError()) {
+    const auto error = result ? result->GetError() : "DuckDB write failed";
+    connection.Rollback();
+    Require(false, error);
+  }
+}
+
+} // namespace
+
+void DuckdbRuntime::Apply(SharedProbe &probe) {
+  TimedMaintenanceWrite([&] {
+    connection_.BeginTransaction();
+    RunWriteQuery(connection_, ProbeWriteSql(probe));
+    backend_.CaptureMutation(BuildSharedMutation(entry_, probe));
+    CommitWrite();
+    AdvanceProbe(probe);
+  });
 }
 
 void DuckdbRuntime::ApplyBatch(std::vector<SharedProbe> &probes) {
   Require(!probes.empty(), "ApplyBatch requires at least one probe");
-  core::ClearMaintenanceDecisionLog();
-  const auto start = std::chrono::steady_clock::now();
-  connection_.BeginTransaction();
-  for (auto &probe : probes) {
-    auto result = connection_.Query(ProbeWriteSql(probe));
-    Require(result != nullptr && !result->HasError(),
-            result ? result->GetError() : "DuckDB batch write failed");
-    backend_.CaptureMutation(BuildSharedMutation(entry_, probe));
-    AdvanceProbe(probe);
-  }
-  CommitWrite();
-  const auto end = std::chrono::steady_clock::now();
-  core::RecordMaintenanceActualCostUs(static_cast<double>(
-      std::chrono::duration_cast<std::chrono::microseconds>(end - start)
-          .count()));
+  TimedMaintenanceWrite([&] {
+    connection_.BeginTransaction();
+    for (auto &probe : probes) {
+      RunWriteQuery(connection_, ProbeWriteSql(probe));
+      backend_.CaptureMutation(BuildSharedMutation(entry_, probe));
+      AdvanceProbe(probe);
+    }
+    CommitWrite();
+  });
 }
 
 void DuckdbRuntime::ApplyBatchWrite(const std::string &sql,
                                     const core::MutationBatch &mutation) {
-  core::ClearMaintenanceDecisionLog();
-  const auto start = std::chrono::steady_clock::now();
-  connection_.BeginTransaction();
-  auto result = connection_.Query(sql);
-  if (result == nullptr || result->HasError()) {
-    const auto error = result ? result->GetError() : "DuckDB batch write failed";
-    connection_.Rollback();
-    Require(false, error);
-  }
-  backend_.CaptureMutation(mutation);
-  CommitWrite();
-  const auto end = std::chrono::steady_clock::now();
-  core::RecordMaintenanceActualCostUs(static_cast<double>(
-      std::chrono::duration_cast<std::chrono::microseconds>(end - start)
-          .count()));
+  TimedMaintenanceWrite([&] {
+    connection_.BeginTransaction();
+    RunWriteQuery(connection_, sql);
+    backend_.CaptureMutation(mutation);
+    CommitWrite();
+  });
 }
 
 void DuckdbRuntime::ApplyRfChunk(int write_seq, int order_count) {
