@@ -24,6 +24,7 @@
 #include "accelerator_codegen/stateful/prims/keyed_string_column.hpp"
 #include "accelerator_codegen/stateful/prims/pg_numeric_div.hpp"
 #include "accelerator_codegen/stateful/prims/radix_range_tree.hpp"
+#include "accelerator_codegen/stateful/prims/sharded_cow_map.hpp"
 #include "accelerator_codegen/stateful/prims/sharded_cow_open_map.hpp"
 #include "accelerator_codegen/stateful/prims/sorted_count_sum.hpp"
 #include "accelerator_codegen/stateful/prims/sql_date.hpp"
@@ -1118,6 +1119,100 @@ static void TestCowBox() {
   CHECK(*v == 7);
 }
 
+struct StrShardHash {
+  size_t operator()(const std::string &s) const {
+    size_t h = 1469598103934665603ULL;
+    for (unsigned char c : s) h = (h ^ c) * 1099511628211ULL;
+    return h;
+  }
+};
+
+static void TestShardedCowMap() {
+  using Map = ShardedCowMap<std::string, std::vector<int>, StrShardHash>;
+  using Txn = ShardedCowMapTxn<std::string, std::vector<int>, StrShardHash>;
+  // Empty default map: no shards, finds nothing, size 0.
+  Map empty;
+  CHECK(empty.size() == 0 && empty.shard_count() == 0 && empty.Find("x") == nullptr);
+  CHECK(Map(5).shard_count() == 8 && Map(0).shard_count() == 1 && Map(64).shard_count() == 64);
+
+  std::mt19937_64 rng(21);
+  std::vector<std::string> pool;
+  for (int i = 0; i < 700; ++i) {
+    std::string k(rng() % 24, 'a');
+    for (auto &c : k) c = char('a' + rng() % 26);
+    pool.push_back(k + std::to_string(i));
+  }
+  using Ref = std::map<std::string, std::vector<int>>;
+  auto verify = [&](const Map &m, const Ref &r) {
+    CHECK(m.size() == r.size());
+    for (const auto &k : pool) {
+      const auto *v = m.Find(k);
+      auto it = r.find(k);
+      CHECK((v != nullptr) == (it != r.end()) && m.Contains(k) == (v != nullptr));
+      if (v) CHECK(*v == it->second);
+    }
+    Ref seen;
+    m.ForEach([&](const std::string &k, const std::vector<int> &v) { CHECK(seen.emplace(k, v).second); });
+    CHECK(seen == r);
+    size_t extra_calls = 0;
+    CHECK(m.memory_bytes([&](const std::string &, const std::vector<int> &) { ++extra_calls; return size_t{8}; }) >=
+          r.size() * 8);
+    CHECK(extra_calls == r.size());
+  };
+  Map cur(16);
+  Ref ref;
+  std::vector<std::pair<Map, Ref>> snaps;
+  for (int round = 0; round < 120; ++round) {
+    // One maintenance step = one Txn over the published map.
+    Txn txn(cur);
+    Ref next = ref;
+    const int ops = 1 + int(rng() % 40);
+    for (int j = 0; j < ops; ++j) {
+      const std::string &k = pool[rng() % pool.size()];
+      switch (rng() % 4) {
+      case 0: txn.GetOrCreate(k).push_back(j); next[k].push_back(j); break;
+      case 1: {
+        std::vector<int> *p = txn.FindMut(k);
+        auto it = next.find(k);
+        CHECK((p != nullptr) == (it != next.end()));
+        if (p) { p->push_back(-j); it->second.push_back(-j); }
+        break;
+      }
+      case 2: txn.Erase(k); next.erase(k); break;
+      default: { // read-only lookup sees the txn's own writes
+        const std::vector<int> *p = static_cast<const Txn &>(txn).Find(k);
+        auto it = next.find(k);
+        CHECK((p != nullptr) == (it != next.end()));
+        if (p) CHECK(*p == it->second);
+      }
+      }
+    }
+    CHECK(txn.size() == next.size());
+    Map published = txn.Finish();
+    verify(cur, ref); // the previous version is untouched by the txn
+    if (round % 20 == 0 && snaps.size() < 6) snaps.emplace_back(cur, ref);
+    cur = std::move(published);
+    ref = std::move(next);
+    if (round % 30 == 29) {
+      verify(cur, ref);
+      for (auto &s : snaps) verify(s.first, s.second);
+    }
+  }
+  verify(cur, ref);
+  for (auto &s : snaps) verify(s.first, s.second);
+
+  // A txn that only reads is not dirty.
+  Txn ro(cur);
+  for (const auto &k : pool) (void)static_cast<const Txn &>(ro).Find(k);
+  CHECK(!ro.dirty());
+  // A txn that writes one key reports dirty and leaves the base intact.
+  Txn w(cur);
+  w.GetOrCreate("zz-new-key").push_back(1);
+  CHECK(w.dirty());
+  Map after = w.Finish();
+  CHECK(after.Find("zz-new-key") && cur.Find("zz-new-key") == nullptr && after.size() == cur.size() + 1);
+}
+
 int main() {
   TestDenseIdArray();
   TestCow();
@@ -1139,6 +1234,7 @@ int main() {
   TestPgNumericDiv();
   TestShardedCowOpenMap();
   TestCowBox();
+  TestShardedCowMap();
   std::puts("test_prims: PASS");
   return 0;
 }

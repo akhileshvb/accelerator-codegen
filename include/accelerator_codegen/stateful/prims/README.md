@@ -23,6 +23,7 @@ concurrent const reads of a published copy are safe.
 | `flat_hash_map.hpp` | `FlatHashMap<V>` | any int64 | any V | ~10 B + 1.14 sizeof(V) | Not COW. Swiss-table style. |
 | `flat_hash_map.hpp` | `ShardedCowHashMap<V, kShardBits>` | any int64 | any V | same | COW shards. |
 | `sharded_cow_open_map.hpp` | `ShardedCowOpenMap<K, V, kShardBits, Traits>` | integral or small struct (Traits: hash + empty marker) | any V | sizeof({K, V}) per slot, load <= 0.75, + 32 B per directory entry | COW shards. Key stored in the slot, one cache line per lookup; `Prefetch` / `FindBatch` for batched point lookups; `Reserve`, `BulkLoad`. |
+| `sharded_cow_map.hpp` | `ShardedCowMap<K, V, Hash>` + `ShardedCowMapTxn` | any hashable K (strings, composites) | any V | std::unordered_map node (~32 B + K + V) + 8 B per bucket | COW shards of `std::unordered_map`; a `Txn` clones each touched shard once per version. Runtime shard count. |
 | `chunked_blob_map.hpp` | `ChunkedBlobMap` | any int64 | byte string | 4 B offset + ~1 B length + payload | COW. Clustered keys; bitmap + arena chunks; chunk-granular iteration for parallel scans. Also varint helpers. |
 | `cow_record_store.hpp` | `ShardedCowRecordStore<kShardBits>` | any int64 | byte record | ~13 B slot + 4 B length + payload | COW. Scattered keys, small records. |
 | `keyed_string_column.hpp` | `KeyedStringColumn` | any int64 | string | ~12 B + bytes | COW. Parallel SIMD LIKE scan over the whole column. |
@@ -64,6 +65,8 @@ concurrent const reads of a published copy are safe.
   Keys with no locality, small values, latency-critical and batchable point
   lookups (probe-side joins, key -> id indexes): `ShardedCowOpenMap` (key in the
   slot, prefetch / `FindBatch`; reserve one key value as the empty marker).
+  Strings or composite keys, values that own memory, one write batch per
+  version: `ShardedCowMap` + `ShardedCowMapTxn`.
 - **Variable-length value per key.** Keys cluster (dense or locally dense):
   `ChunkedBlobMap`. Keys scattered, records small: `ShardedCowRecordStore`.
   The column must be filtered by a LIKE pattern: `KeyedStringColumn`. Build-time

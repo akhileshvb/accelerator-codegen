@@ -768,7 +768,10 @@ void Q24GroupState::InheritResults(
 }
 
 std::size_t Q24GroupState::Bytes() const {
-  std::size_t total = orphans.Bytes() + groups.Bytes();
+  std::size_t total = orphans.memory_bytes([](const std::string &key, const Q24OrphanEntry &entry) {
+                        return key.capacity() + Q24ExtraBytes(entry);
+                      }) +
+                      groups.memory_bytes([](const std::string &key, const Q24Acc &) { return key.capacity(); });
   for (const auto &h : heavy) {
     total += h.first.capacity() + 64;
     if (h.second)
