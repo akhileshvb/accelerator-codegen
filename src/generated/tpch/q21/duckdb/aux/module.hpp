@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -103,77 +104,6 @@ public:
 };
 
 // ── State structures ────────────────────────────────────────────────────────
-// Copy-on-write hash map: 128 shards, each an immutable-once-published
-// shared_ptr<Map>. Copying shares every shard; a mutation clones only the
-// touched shard (once per staged commit). Only the staging owner may mutate.
-template <typename K, typename V, typename H = std::hash<K>>
-class TpchQ21CowMap {
-public:
-  using Map = std::unordered_map<K, V, H>;
-  static constexpr std::size_t kShards = 128;
-
-  TpchQ21CowMap() = default;
-  TpchQ21CowMap(const TpchQ21CowMap &other)
-      : shards(other.shards), count(other.count) {}
-  TpchQ21CowMap &operator=(const TpchQ21CowMap &other) {
-    shards = other.shards;
-    count = other.count;
-    owned.fill(false);
-    return *this;
-  }
-
-  const V *Find(const K &key) const {
-    const auto &shard = shards[ShardOf(key)];
-    if (!shard)
-      return nullptr;
-    const auto it = shard->find(key);
-    return it == shard->end() ? nullptr : &it->second;
-  }
-  V &Mutable(const K &key, bool *inserted = nullptr) {
-    auto &map = OwnedShard(ShardOf(key));
-    const auto res = map.try_emplace(key);
-    if (res.second)
-      ++count;
-    if (inserted)
-      *inserted = res.second;
-    return res.first->second;
-  }
-  void Erase(const K &key) {
-    const std::size_t i = ShardOf(key);
-    if (!shards[i] || shards[i]->find(key) == shards[i]->end())
-      return;
-    OwnedShard(i).erase(key);
-    --count;
-  }
-  std::size_t Size() const { return count; }
-  bool Empty() const { return count == 0; }
-  template <typename F> void ForEach(F &&f) const {
-    for (const auto &shard : shards) {
-      if (!shard)
-        continue;
-      for (const auto &kv : *shard)
-        f(kv.first, kv.second);
-    }
-  }
-
-private:
-  static std::size_t ShardOf(const K &key) {
-    return static_cast<std::size_t>(
-        (static_cast<uint64_t>(H{}(key)) * 0x9E3779B97F4A7C15ULL) >> 57);
-  }
-  Map &OwnedShard(std::size_t i) {
-    if (!shards[i])
-      shards[i] = std::make_shared<Map>();
-    else if (!owned[i])
-      shards[i] = std::make_shared<Map>(*shards[i]);
-    owned[i] = true;
-    return *shards[i];
-  }
-  std::array<std::shared_ptr<Map>, kShards> shards{};
-  std::array<bool, kShards> owned{};
-  std::size_t count = 0;
-};
-
 struct SupplierOrderInfo {
   int64_t suppkey = 0;
   int64_t total_count = 0; // lineitems of this supplier on this order
@@ -206,13 +136,11 @@ struct TpchQ21SupplierOverlay {
 // Supplier directory: shared immutable base + small copy-on-write overlay.
 struct TpchQ21Dir {
   std::shared_ptr<const std::unordered_map<int64_t, TpchQ21Supplier>> base;
-  TpchQ21CowMap<int64_t, TpchQ21SupplierOverlay> overlay;
+  core::ShardedCowHashMap<TpchQ21SupplierOverlay, 7> overlay;
 
   const TpchQ21Supplier *Find(int64_t suppkey) const {
-    if (!overlay.Empty()) {
-      if (const auto *ov = overlay.Find(suppkey))
-        return ov->present ? &ov->supplier : nullptr;
-    }
+    if (const auto *ov = overlay.Find(suppkey))
+      return ov->present ? &ov->supplier : nullptr;
     if (!base)
       return nullptr;
     const auto it = base->find(suppkey);
@@ -225,15 +153,13 @@ struct TpchQ21Dir {
 struct TpchQ21Core {
   using OrderMap = std::unordered_map<int64_t, OrderSummary>;
   std::shared_ptr<const OrderMap> base;
-  TpchQ21CowMap<int64_t, OrderSummary> overlay;
+  core::ShardedCowHashMap<OrderSummary, 7> overlay;
   // suppkey -> numwait (independent of whether the supplier row exists).
-  TpchQ21CowMap<int64_t, int64_t> numwait;
+  core::ShardedCowHashMap<int64_t, 7> numwait;
 
   const OrderSummary *FindOrder(int64_t orderkey) const {
-    if (!overlay.Empty()) {
-      if (const auto *ov = overlay.Find(orderkey))
-        return ov;
-    }
+    if (const auto *ov = overlay.Find(orderkey))
+      return ov;
     if (!base)
       return nullptr;
     const auto it = base->find(orderkey);
@@ -241,8 +167,8 @@ struct TpchQ21Core {
   }
   // Staging owner only: copy the base summary into the overlay on first touch.
   OrderSummary &MutableOrder(int64_t orderkey) {
-    bool inserted = false;
-    auto &slot = overlay.Mutable(orderkey, &inserted);
+    const bool inserted = overlay.Find(orderkey) == nullptr;
+    auto &slot = overlay[orderkey];
     if (inserted && base) {
       const auto it = base->find(orderkey);
       if (it != base->end())
