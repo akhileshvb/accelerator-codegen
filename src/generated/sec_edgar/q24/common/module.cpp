@@ -639,13 +639,13 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
   // every (year, uom) bucket. False: inconsistent state (caller rebuilds).
   const auto retract_orphan = [&](const std::string &key,
                                   std::size_t group_off) {
-    const Q24OrphanEntry *entry = orphans.FindConst(key);
+    const Q24OrphanEntry *entry = orphans.Find(key);
     if (!entry) return true;
     const Q24OrphanEntry removed_entry = *entry; // Erase invalidates it
     for (const auto &removed : removed_entry) {
       const std::string bkey = bucket_of(removed.year, removed.uom);
       const std::string gkey = bkey + key.substr(group_off);
-      Q24Acc *g = group_map.Find(gkey);
+      Q24Acc *g = group_map.FindMut(gkey);
       if (!g || g->cnt < removed.acc.cnt) return false;
       g->cnt -= removed.acc.cnt;
       g->Add(-removed.acc.sum);
@@ -698,11 +698,11 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
       g.Add(op.value);
       if (!std::isfinite(g.Total())) return fallback();
     } else {
-      const Q24OrphanEntry *probe = orphans.FindConst(op.key);
+      const Q24OrphanEntry *probe = orphans.Find(op.key);
       if (!probe) return fallback();
-      Q24OrphanEntry *entry = orphans.Find(op.key);
+      Q24OrphanEntry *entry = orphans.FindMut(op.key);
       Q24OrphanBucket *o = find_bucket(*entry, op.year, op.uom);
-      Q24Acc *g = group_map.Find(gkey);
+      Q24Acc *g = group_map.FindMut(gkey);
       if (!o || !g || o->acc.cnt <= 0 || g->cnt <= 0) return fallback();
       o->acc.cnt--;
       o->acc.Add(-op.value);
@@ -769,7 +769,7 @@ SecEdgarQ24Module::StageMaintenance(core::AuxEngineServices &services,
   for (const auto &gkey : touched_groups) {
     const std::size_t bsz = 4 + Q24ComponentSize(gkey, 4);
     const std::string bkey = gkey.substr(0, bsz);
-    const Q24Acc *g = group_map.FindConst(gkey);
+    const Q24Acc *g = group_map.Find(gkey);
     const bool want = g && g->cnt >= kSecEdgarQ24MinimumCount;
     const auto it = heavy.find(bkey);
     const bool have = it != heavy.end() && it->second && it->second->count(gkey) != 0;

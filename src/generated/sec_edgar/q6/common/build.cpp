@@ -651,14 +651,14 @@ std::shared_ptr<SecEdgarQ6State> SecEdgarQ6Builder::Finish() {
   m.hit_adsh = {};
 
   const auto &keys = table.Keys();
-  s.group_index.Reserve(keys.size() + keys.size() / 2 + 4096);
+  s.group_index.Mutable().Reserve(keys.size() + keys.size() / 2 + 4096);
   constexpr size_t kAhead = 16;
   const auto index_key = [&](size_t g) {
     return SecEdgarQ6GroupKey{keys[g].name, keys[g].tag, keys[g].plabel, keys[g].combo};
   };
   for (uint32_t gid = 0; gid < keys.size(); ++gid) {
     if (gid + kAhead < keys.size()) {
-      s.group_index.Prefetch(SecEdgarQ6GroupKeyHash(index_key(gid + kAhead)));
+      s.group_index->Prefetch(SecEdgarQ6GroupKeyHash(index_key(gid + kAhead)));
     }
     const GroupKey &k = keys[gid];
     if (s.AddNewGroup(k.name, k.tag, k.plabel, k.combo) != gid) {

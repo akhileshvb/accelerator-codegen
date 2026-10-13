@@ -33,6 +33,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "accelerator_codegen/stateful/prims/sharded_cow_map.hpp"
+
 namespace accelerator_codegen::aux_state::query {
 
 // Query constants (the query has no template parameters).
@@ -256,107 +258,13 @@ inline bool Q24DdateYear(int64_t ddate, int32_t &year) {
 // enc(version). Orphan key = enc(adsh) enc(tag) enc(version).
 std::string Q24BucketKey(int32_t year, const Q24Str &uom);
 
-// Sharded copy-on-write hash map: a maintenance step copies only the shards
-// it touches.
-template <typename V> class Q24ShardedMapTxn;
-
-template <typename V> class Q24ShardedMap {
-public:
-  using Shard = std::unordered_map<std::string, V>;
-  Q24ShardedMap() = default;
-  explicit Q24ShardedMap(std::size_t shard_count) {
-    std::size_t n = 1;
-    while (n < std::max<std::size_t>(1, shard_count)) n <<= 1;
-    shards_.resize(n);
+// Shard of a key: its byte hash, so a maintenance step copies only the shards it
+// touches (see core::ShardedCowMap).
+struct Q24KeyHash {
+  std::size_t operator()(const std::string &key) const {
+    return static_cast<std::size_t>(Q24HashBytes(key.data(), key.size()));
   }
-  const V *Find(const std::string &key) const {
-    if (shards_.empty()) return nullptr;
-    const auto &shard = shards_[ShardOf(key)];
-    if (!shard) return nullptr;
-    const auto it = shard->find(key);
-    return it == shard->end() ? nullptr : &it->second;
-  }
-  std::size_t size() const { return size_; }
-  std::size_t Bytes() const {
-    std::size_t total = shards_.capacity() * sizeof(shards_[0]);
-    for (const auto &shard : shards_) {
-      if (!shard) continue;
-      total += sizeof(Shard) + shard->bucket_count() * sizeof(void *);
-      for (const auto &e : *shard)
-        total += e.first.capacity() + 32 + sizeof(V) + Q24ExtraBytes(e.second);
-    }
-    return total;
-  }
-  template <typename F> void ForEach(F &&f) const {
-    for (const auto &shard : shards_) {
-      if (!shard) continue;
-      for (const auto &entry : *shard) f(entry.first, entry.second);
-    }
-  }
-  std::size_t shard_count() const { return shards_.size(); }
-
-private:
-  friend class Q24ShardedMapTxn<V>;
-  std::size_t ShardOf(const std::string &key) const {
-    return static_cast<std::size_t>(Q24HashBytes(key.data(), key.size())) &
-           (shards_.size() - 1);
-  }
-  std::vector<std::shared_ptr<const Shard>> shards_;
-  std::size_t size_ = 0;
 };
-
-// Mutating view that clones a shard on first write.
-template <typename V> class Q24ShardedMapTxn {
-public:
-  explicit Q24ShardedMapTxn(const Q24ShardedMap<V> &base)
-      : map_(base), owned_(base.shards_.size()) {}
-  // Read-only lookup (does not clone the shard or mark the txn dirty).
-  const V *FindConst(const std::string &key) const { return map_.Find(key); }
-  V *Find(const std::string &key) {
-    const std::size_t s = map_.ShardOf(key);
-    const auto &shard = map_.shards_[s];
-    if (!shard || shard->find(key) == shard->end()) return nullptr;
-    auto &mutable_shard = Mutable(s);
-    dirty_ = true;
-    return &mutable_shard.find(key)->second;
-  }
-  V &GetOrCreate(const std::string &key) {
-    auto &shard = Mutable(map_.ShardOf(key));
-    dirty_ = true;
-    const auto result = shard.emplace(key, V());
-    if (result.second) map_.size_++;
-    return result.first->second;
-  }
-  void Erase(const std::string &key) {
-    const std::size_t s = map_.ShardOf(key);
-    if (!map_.shards_[s] || map_.shards_[s]->count(key) == 0) return;
-    auto &shard = Mutable(s);
-    dirty_ = true;
-    map_.size_ -= shard.erase(key);
-  }
-  Q24ShardedMap<V> Finish() {
-    owned_.clear();
-    return std::move(map_);
-  }
-  bool dirty() const { return dirty_; }
-
-private:
-  typename Q24ShardedMap<V>::Shard &Mutable(std::size_t shard) {
-    if (!owned_[shard]) {
-      owned_[shard] =
-          map_.shards_[shard]
-              ? std::make_shared<typename Q24ShardedMap<V>::Shard>(*map_.shards_[shard])
-              : std::make_shared<typename Q24ShardedMap<V>::Shard>();
-      map_.shards_[shard] = owned_[shard];
-    }
-    return *owned_[shard];
-  }
-  Q24ShardedMap<V> map_;
-  std::vector<std::shared_ptr<typename Q24ShardedMap<V>::Shard>> owned_;
-  bool dirty_ = false;
-};
-
-inline std::size_t Q24ExtraBytes(const Q24Acc &) { return 0; }
 
 // One (year, uom) slice of an orphan triple's accumulators.
 struct Q24OrphanBucket {
@@ -371,10 +279,10 @@ inline std::size_t Q24ExtraBytes(const Q24OrphanEntry &e) {
   return n;
 }
 
-using Q24AccMap = Q24ShardedMap<Q24Acc>;
-using Q24AccMapTxn = Q24ShardedMapTxn<Q24Acc>;
-using Q24OrphanMap = Q24ShardedMap<Q24OrphanEntry>;
-using Q24OrphanMapTxn = Q24ShardedMapTxn<Q24OrphanEntry>;
+using Q24AccMap = core::ShardedCowMap<std::string, Q24Acc, Q24KeyHash>;
+using Q24AccMapTxn = core::ShardedCowMapTxn<std::string, Q24Acc, Q24KeyHash>;
+using Q24OrphanMap = core::ShardedCowMap<std::string, Q24OrphanEntry, Q24KeyHash>;
+using Q24OrphanMapTxn = core::ShardedCowMapTxn<std::string, Q24OrphanEntry, Q24KeyHash>;
 
 // bucket key -> group keys (bucket key + enc(tag) enc(version)) whose count
 // passes HAVING COUNT(*) > 10. Per-bucket sets are shared between states.

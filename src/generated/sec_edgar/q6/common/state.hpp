@@ -59,7 +59,9 @@
 
 #include "accelerator_codegen/stateful/prims/chunked_blob_map.hpp"
 #include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/cow_box.hpp"
 #include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/sharded_cow_open_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -67,22 +69,6 @@ namespace accelerator_codegen::aux_state::query {
 // Copy-on-write building blocks. Copying any of them copies one pointer; the
 // first mutation of a shared one clones its (directory-level) contents.
 // ---------------------------------------------------------------------------
-template <typename T> class SecEdgarQ6Box {
-public:
-  SecEdgarQ6Box() : p_(std::make_shared<T>()) {}
-  const T &operator*() const noexcept { return *p_; }
-  const T *operator->() const noexcept { return p_.get(); }
-  T &Mutable() {
-    if (p_.use_count() > 1) {
-      p_ = std::make_shared<T>(*p_);
-    }
-    return *p_;
-  }
-
-private:
-  std::shared_ptr<T> p_;
-};
-
 template <typename T, unsigned kShift> class SecEdgarQ6BoxedArray {
 public:
   using Chunk = typename core::ChunkedCowArray<T, kShift>::Chunk;
@@ -94,7 +80,7 @@ public:
   size_t MemoryBytes() const { return box_->MemoryBytes(); }
 
 private:
-  SecEdgarQ6Box<core::ChunkedCowArray<T, kShift>> box_;
+  core::CowBox<core::ChunkedCowArray<T, kShift>> box_;
 };
 
 class SecEdgarQ6BoxedBlobMap {
@@ -107,124 +93,7 @@ public:
   size_t MemoryBytes() const { return box_->MemoryBytes(); }
 
 private:
-  SecEdgarQ6Box<core::ChunkedBlobMap> box_;
-};
-
-// Open-addressing key -> u32 index with the key in the slot (a lookup is one
-// or two cache lines and can be prefetched). Chunked copy-on-write: a copy
-// shares the table; an insert clones the chunk directory once per version and
-// each touched chunk once.
-template <typename K> class SecEdgarQ6CowIndex {
-public:
-  static constexpr uint32_t kAbsent = 0xFFFFFFFFu;
-
-  uint32_t Find(const K &k, uint64_t hash) const noexcept {
-    if (!table_) {
-      return kAbsent;
-    }
-    const size_t mask = table_->cap - 1;
-    for (size_t i = hash & mask;; i = (i + 1) & mask) {
-      const Slot &s = At(i);
-      if (s.value == kAbsent) {
-        return kAbsent;
-      }
-      if (s.key == k) {
-        return s.value;
-      }
-    }
-  }
-  void Prefetch(uint64_t hash) const noexcept {
-    if (table_) {
-      __builtin_prefetch(&At(hash & (table_->cap - 1)));
-    }
-  }
-  // `k` must be absent; `hash` is the hash `Find` is called with (the table
-  // recomputes it with the hasher when it grows).
-  void Insert(const K &k, uint64_t hash, uint32_t value) {
-    if (!table_ || size_ + 1 > table_->cap - table_->cap / 4) {
-      Rehash(table_ ? table_->cap * 2 : 16);
-    }
-    const size_t mask = table_->cap - 1;
-    size_t i = hash & mask;
-    while (At(i).value != kAbsent) {
-      i = (i + 1) & mask;
-    }
-    MutableAt(i) = Slot{k, value};
-    ++size_;
-  }
-  void SetHasher(uint64_t (*hash_of)(const K &)) { hash_of_ = hash_of; }
-  // Room for n keys without rehashing (bulk build).
-  void Reserve(size_t n) {
-    size_t cap = 16;
-    while (cap - cap / 4 < n) {
-      cap <<= 1;
-    }
-    if (!table_ || cap > table_->cap) {
-      Rehash(cap);
-    }
-  }
-  size_t size() const noexcept { return size_; }
-  size_t memory_bytes() const {
-    return table_ ? table_->cap * sizeof(Slot) + table_->chunks.capacity() * 16 : 0;
-  }
-
-private:
-  struct Slot {
-    K key;
-    uint32_t value; // kAbsent: empty
-  };
-  struct Table {
-    size_t cap = 0;
-    unsigned shift = 0; // log2(slots per chunk)
-    std::vector<std::shared_ptr<std::vector<Slot>>> chunks;
-  };
-  const Slot &At(size_t i) const noexcept {
-    return (*table_->chunks[i >> table_->shift])[i & ((size_t{1} << table_->shift) - 1)];
-  }
-  Slot &MutableAt(size_t i) {
-    if (table_.use_count() > 1) {
-      table_ = std::make_shared<Table>(*table_); // shares the chunks
-    }
-    auto &chunk = table_->chunks[i >> table_->shift];
-    if (chunk.use_count() > 1) {
-      chunk = std::make_shared<std::vector<Slot>>(*chunk);
-    }
-    return (*chunk)[i & ((size_t{1} << table_->shift) - 1)];
-  }
-  void Rehash(size_t cap) {
-    auto next = std::make_shared<Table>();
-    next->cap = cap;
-    unsigned shift = 0;
-    while ((size_t{1} << (shift + 1)) <= cap && shift < 16) {
-      ++shift;
-    }
-    next->shift = shift;
-    const size_t chunk_slots = size_t{1} << shift;
-    next->chunks.resize(cap / chunk_slots);
-    for (auto &c : next->chunks) {
-      c = std::make_shared<std::vector<Slot>>(chunk_slots, Slot{K{}, kAbsent});
-    }
-    if (table_) {
-      const size_t mask = cap - 1;
-      for (const auto &chunk : table_->chunks) {
-        for (const Slot &s : *chunk) {
-          if (s.value == kAbsent) {
-            continue;
-          }
-          size_t i = hash_of_(s.key) & mask;
-          while ((*next->chunks[i >> shift])[i & (chunk_slots - 1)].value != kAbsent) {
-            i = (i + 1) & mask;
-          }
-          (*next->chunks[i >> shift])[i & (chunk_slots - 1)] = s;
-        }
-      }
-    }
-    table_ = std::move(next);
-  }
-
-  std::shared_ptr<Table> table_;
-  size_t size_ = 0;
-  uint64_t (*hash_of_)(const K &) = nullptr;
+  core::CowBox<core::ChunkedBlobMap> box_;
 };
 
 inline uint64_t SecEdgarQ6Mix64(uint64_t x) noexcept {
@@ -235,6 +104,19 @@ inline uint64_t SecEdgarQ6Mix64(uint64_t x) noexcept {
   x ^= x >> 33;
   return x;
 }
+
+// Key -> u32 indexes: key stored in the slot, prefetchable lookups. The empty
+// marker is a key value that is never inserted (ids stay below 0xFFFFFFFE).
+struct SecEdgarQ6U64IndexTraits {
+  static uint64_t Hash(const uint64_t &key) noexcept { return SecEdgarQ6Mix64(key); }
+  static uint64_t Empty() noexcept { return ~uint64_t{0}; }
+};
+// Keys that already are well-mixed hashes (string pool index).
+struct SecEdgarQ6HashKeyTraits {
+  static uint64_t Hash(const uint64_t &key) noexcept { return key; }
+  static uint64_t Empty() noexcept { return ~uint64_t{0}; }
+};
+using SecEdgarQ6U64Index = core::ShardedCowOpenMap<uint64_t, uint32_t, 8, SecEdgarQ6U64IndexTraits>;
 
 // ---------------------------------------------------------------------------
 // Interned string pool (ids start at 1, 0 is reserved for NULL / "absent").
@@ -263,15 +145,13 @@ public:
 
 private:
   struct Data {
-    Data() { index.SetHasher(&IndexHash); }
     core::ChunkedBlobMap strings;
     // hash(+probe) -> id. A key holds at most one id; equal hashes probe to
     // the next key and compare the strings, so lookups are exact.
-    SecEdgarQ6CowIndex<uint64_t> index;
+    core::ShardedCowOpenMap<uint64_t, uint32_t, 6, SecEdgarQ6HashKeyTraits> index;
     uint32_t count = 0;
   };
-  static uint64_t IndexHash(const uint64_t &key) { return key; }
-  SecEdgarQ6Box<Data> data_;
+  core::CowBox<Data> data_;
 };
 
 struct SecEdgarQ6Group {
@@ -313,6 +193,14 @@ struct SecEdgarQ6GroupKey {
   }
 };
 uint64_t SecEdgarQ6GroupKeyHash(const SecEdgarQ6GroupKey &k) noexcept;
+struct SecEdgarQ6GroupKeyTraits {
+  static uint64_t Hash(const SecEdgarQ6GroupKey &k) noexcept { return SecEdgarQ6GroupKeyHash(k); }
+  static SecEdgarQ6GroupKey Empty() noexcept {
+    return {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
+  }
+};
+using SecEdgarQ6GroupIndex =
+    core::ShardedCowOpenMap<SecEdgarQ6GroupKey, uint32_t, 8, SecEdgarQ6GroupKeyTraits>;
 
 // ---------------------------------------------------------------------------
 // Join structure (copy-on-write value type).
@@ -333,23 +221,21 @@ struct SecEdgarQ6Structure {
   SecEdgarQ6StringPool uoms;
 
   // canonical adsh ("dddddddddd-dd-dddddd" as an integer) -> adsh_id
-  SecEdgarQ6CowIndex<uint64_t> adsh_keys;
+  core::CowBox<SecEdgarQ6U64Index> adsh_keys;
   SecEdgarQ6BoxedArray<uint32_t, 12> adsh_name; // [adsh_id] -> name_id (0 = NULL)
   SecEdgarQ6BoxedArray<uint32_t, 12> adsh_fy;   // [adsh_id] -> fy (int32 bits)
-  SecEdgarQ6CowIndex<uint64_t> tv_index;        // (tag_id << 32 | version_id) -> tv_id
+  core::CowBox<SecEdgarQ6U64Index> tv_index;    // (tag_id << 32 | version_id) -> tv_id
   SecEdgarQ6BoxedArray<uint32_t, 12> tv_tag;    // [tv_id]   -> tag_id
   uint32_t tv_count = 0;
   SecEdgarQ6BoxedBlobMap runs;                  // [adsh_id] -> bridge run
 
   SecEdgarQ6BoxedArray<SecEdgarQ6Group, kQ6GroupShift> groups; // append-only
   SecEdgarQ6BoxedArray<uint32_t, kQ6GroupShift> group_combo;
-  SecEdgarQ6CowIndex<SecEdgarQ6GroupKey> group_index;
+  core::CowBox<SecEdgarQ6GroupIndex> group_index;
   std::shared_ptr<const SecEdgarQ6Combos> combos =
       std::make_shared<const SecEdgarQ6Combos>();
   uint32_t group_count = 0;
   uint32_t base_group_count = 0; // groups at the last full build
-
-  SecEdgarQ6Structure();
 
   uint32_t GroupCount() const noexcept { return group_count; }
   uint32_t ComboCount() const noexcept {
@@ -363,11 +249,10 @@ struct SecEdgarQ6Structure {
   }
   // tv id of (tag, version) or 0.
   uint32_t FindTv(std::string_view tag, std::string_view version) const;
-  static uint64_t U64Hash(const uint64_t &key) noexcept { return SecEdgarQ6Mix64(key); }
   uint32_t FindTvIds(uint32_t tag_id, uint32_t version_id) const {
     const uint64_t key = static_cast<uint64_t>(TvKey(tag_id, version_id));
-    const uint32_t tv = tv_index.Find(key, U64Hash(key));
-    return tv == SecEdgarQ6CowIndex<uint64_t>::kAbsent ? 0 : tv;
+    const uint32_t *tv = tv_index->Find(key);
+    return tv ? *tv : 0;
   }
   // adsh id (0 = unknown); canonical adsh strings use adsh_keys.
   uint32_t FindAdsh(std::string_view adsh) const;

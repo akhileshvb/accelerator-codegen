@@ -406,30 +406,37 @@ uint64_t SecEdgarQ6StringPool::Hash(const char *p, size_t n) noexcept {
   return h;
 }
 
+namespace {
+// Index keys are string hashes probed linearly; ~0 is the index's empty marker.
+constexpr uint64_t kPoolEmptyKey = ~uint64_t{0};
+inline uint64_t PoolFirstKey(uint64_t hash) noexcept { return hash == kPoolEmptyKey ? 0 : hash; }
+inline uint64_t PoolNextKey(uint64_t key) noexcept { return key + 1 == kPoolEmptyKey ? 0 : key + 1; }
+} // namespace
+
 uint32_t SecEdgarQ6StringPool::FindHashed(uint64_t hash,
                                           std::string_view s) const {
   const auto &index = data_->index;
-  for (uint64_t key = hash;; ++key) {
-    const uint32_t id = index.Find(key, key);
-    if (id == SecEdgarQ6CowIndex<uint64_t>::kAbsent) {
+  for (uint64_t key = PoolFirstKey(hash);; key = PoolNextKey(key)) {
+    const uint32_t *id = index.FindHashed(key, key);
+    if (!id) {
       return 0;
     }
-    if (View(id) == s) {
-      return id;
+    if (View(*id) == s) {
+      return *id;
     }
   }
 }
 
 uint32_t SecEdgarQ6StringPool::Intern(std::string_view s) {
   const uint64_t hash = Hash(s);
-  uint64_t key = hash;
-  for (;; ++key) {
-    const uint32_t id = data_->index.Find(key, key);
-    if (id == SecEdgarQ6CowIndex<uint64_t>::kAbsent) {
+  uint64_t key = PoolFirstKey(hash);
+  for (;; key = PoolNextKey(key)) {
+    const uint32_t *id = data_->index.FindHashed(key, key);
+    if (!id) {
       break;
     }
-    if (View(id) == s) {
-      return id;
+    if (View(*id) == s) {
+      return *id;
     }
   }
   Data &d = data_.Mutable();
@@ -438,7 +445,7 @@ uint32_t SecEdgarQ6StringPool::Intern(std::string_view s) {
   }
   const uint32_t id = ++d.count;
   d.strings.Set(id, s);
-  d.index.Insert(key, key, id);
+  d.index.UpsertHashed(key, key, id);
   return id;
 }
 
@@ -462,12 +469,6 @@ uint32_t SecEdgarQ6Structure::FindTv(std::string_view tag,
   return FindTvIds(tag_id, version_id);
 }
 
-SecEdgarQ6Structure::SecEdgarQ6Structure() {
-  adsh_keys.SetHasher(&U64Hash);
-  tv_index.SetHasher(&U64Hash);
-  group_index.SetHasher(&SecEdgarQ6GroupKeyHash);
-}
-
 uint32_t SecEdgarQ6Structure::InternTv(uint32_t tag_id, uint32_t version_id) {
   const uint32_t found = FindTvIds(tag_id, version_id);
   if (found != 0) {
@@ -478,7 +479,7 @@ uint32_t SecEdgarQ6Structure::InternTv(uint32_t tag_id, uint32_t version_id) {
   }
   const uint32_t tv = ++tv_count;
   const uint64_t key = static_cast<uint64_t>(TvKey(tag_id, version_id));
-  tv_index.Insert(key, U64Hash(key), tv);
+  tv_index.Mutable().Upsert(key, tv);
   tv_tag.Set(tv, tag_id);
   return tv;
 }
@@ -510,8 +511,8 @@ uint32_t SecEdgarQ6Structure::FindAdshHashed(uint64_t pool_hash,
                                              std::string_view adsh) const {
   uint64_t key;
   if (AdshKey(adsh, key)) {
-    const uint32_t id = adsh_keys.Find(key, U64Hash(key));
-    return id == SecEdgarQ6CowIndex<uint64_t>::kAbsent ? 0 : id;
+    const uint32_t *id = adsh_keys->Find(key);
+    return id ? *id : 0;
   }
   return adshs.FindHashed(pool_hash, adsh);
 }
@@ -519,8 +520,8 @@ uint32_t SecEdgarQ6Structure::FindAdshHashed(uint64_t pool_hash,
 uint32_t SecEdgarQ6Structure::FindAdsh(std::string_view adsh) const {
   uint64_t key;
   if (AdshKey(adsh, key)) {
-    const uint32_t id = adsh_keys.Find(key, U64Hash(key));
-    return id == SecEdgarQ6CowIndex<uint64_t>::kAbsent ? 0 : id;
+    const uint32_t *id = adsh_keys->Find(key);
+    return id ? *id : 0;
   }
   return adshs.Find(adsh);
 }
@@ -530,7 +531,7 @@ uint32_t SecEdgarQ6Structure::InternAdsh(std::string_view adsh) {
   const uint32_t id = adshs.Intern(adsh);
   uint64_t key;
   if (id > before && AdshKey(adsh, key)) {
-    adsh_keys.Insert(key, U64Hash(key), id);
+    adsh_keys.Mutable().Upsert(key, id);
   }
   return id;
 }
@@ -571,8 +572,8 @@ uint64_t SecEdgarQ6GroupKeyHash(const SecEdgarQ6GroupKey &k) noexcept {
 uint32_t SecEdgarQ6Structure::FindGroup(uint32_t name_id, uint32_t tag_id,
                                         uint32_t plabel_id, uint32_t combo) const {
   const SecEdgarQ6GroupKey key{name_id, tag_id, plabel_id, combo};
-  const uint32_t gid = group_index.Find(key, SecEdgarQ6GroupKeyHash(key));
-  return gid == SecEdgarQ6CowIndex<SecEdgarQ6GroupKey>::kAbsent ? kNoPayload : gid;
+  const uint32_t *gid = group_index->Find(key);
+  return gid ? *gid : kNoPayload;
 }
 
 uint32_t SecEdgarQ6Structure::FindOrAddGroup(uint32_t name_id, uint32_t tag_id,
@@ -593,17 +594,17 @@ uint32_t SecEdgarQ6Structure::AddNewGroup(uint32_t name_id, uint32_t tag_id,
   const uint32_t gid = group_count++;
   groups.Mutable(gid) = {name_id, tag_id, plabel_id};
   group_combo.Mutable(gid) = combo;
-  group_index.Insert(key, SecEdgarQ6GroupKeyHash(key), gid);
+  group_index.Mutable().Upsert(key, gid);
   return gid;
 }
 
 size_t SecEdgarQ6Structure::Bytes() const {
   return adshs.Bytes() + names.Bytes() + tags.Bytes() + versions.Bytes() +
-         plabels.Bytes() + stmts.Bytes() + uoms.Bytes() + adsh_keys.memory_bytes() +
+         plabels.Bytes() + stmts.Bytes() + uoms.Bytes() + adsh_keys->memory_bytes() +
          adsh_name.MemoryBytes() +
-         adsh_fy.MemoryBytes() + tv_index.memory_bytes() + tv_tag.MemoryBytes() +
+         adsh_fy.MemoryBytes() + tv_index->memory_bytes() + tv_tag.MemoryBytes() +
          runs.MemoryBytes() + groups.MemoryBytes() + group_combo.MemoryBytes() +
-         group_index.memory_bytes() + sizeof(*this);
+         group_index->memory_bytes() + sizeof(*this);
 }
 
 void SecEdgarQ6StructureBuilder::AddCohort(std::string_view adsh, int32_t fy,
@@ -1135,18 +1136,15 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
   std::vector<uint32_t> gids(pending.size());
   constexpr size_t kAhead = 8;
   for (size_t j = 0; j < std::min(kAhead, pending.size()); ++j) {
-    s.group_index.Prefetch(pending[j].hash);
+    s.group_index->Prefetch(pending[j].hash);
   }
   for (size_t j = 0; j < pending.size(); ++j) {
     if (j + kAhead < pending.size()) {
-      s.group_index.Prefetch(pending[j + kAhead].hash);
+      s.group_index->Prefetch(pending[j + kAhead].hash);
     }
     const Pending &p = pending[j];
-    uint32_t gid = s.group_index.Find(p.key, p.hash);
-    if (gid == SecEdgarQ6CowIndex<SecEdgarQ6GroupKey>::kAbsent) {
-      gid = s.AddNewGroup(p.key.name, p.key.tag, p.key.plabel, p.key.combo);
-    }
-    gids[j] = gid;
+    const uint32_t *found = s.group_index->FindHashed(p.key, p.hash);
+    gids[j] = found ? *found : s.AddNewGroup(p.key.name, p.key.tag, p.key.plabel, p.key.combo);
   }
 
   // 4. deltas

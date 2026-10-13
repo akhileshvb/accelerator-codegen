@@ -22,10 +22,18 @@ concurrent const reads of a published copy are safe.
 | `any_key_cow_array.hpp` | `AnyKeyCowArray<T, kShift, kShardBits>` | any int64 | fixed-size | sizeof(T) per slot of touched chunks; ~60 B per far key | COW. Zigzag dense range [-2^35, 2^35) for both signs, two-level sparse directory (memory only for touched pages), sharded hash for far keys, ordered / full iteration. |
 | `flat_hash_map.hpp` | `FlatHashMap<V>` | any int64 | any V | ~10 B + 1.14 sizeof(V) | Not COW. Swiss-table style. |
 | `flat_hash_map.hpp` | `ShardedCowHashMap<V, kShardBits>` | any int64 | any V | same | COW shards. |
+| `sharded_cow_open_map.hpp` | `ShardedCowOpenMap<K, V, kShardBits, Traits>` | integral or small struct (Traits: hash + empty marker) | any V | sizeof({K, V}) per slot, load <= 0.75, + 32 B per directory entry | COW shards. Key stored in the slot, one cache line per lookup; `Prefetch` / `FindBatch` for batched point lookups; `Reserve`, `BulkLoad`. |
+| `sharded_cow_map.hpp` | `ShardedCowMap<K, V, Hash>` + `ShardedCowMapTxn` | any hashable K (strings, composites) | any V | std::unordered_map node (~32 B + K + V) + 8 B per bucket | COW shards of `std::unordered_map`; a `Txn` clones each touched shard once per version. Runtime shard count. |
 | `chunked_blob_map.hpp` | `ChunkedBlobMap` | any int64 | byte string | 4 B offset + ~1 B length + payload | COW. Clustered keys; bitmap + arena chunks; chunk-granular iteration for parallel scans. Also varint helpers. |
 | `cow_record_store.hpp` | `ShardedCowRecordStore<kShardBits>` | any int64 | byte record | ~13 B slot + 4 B length + payload | COW. Scattered keys, small records. |
 | `keyed_string_column.hpp` | `KeyedStringColumn` | any int64 | string | ~12 B + bytes | COW. Parallel SIMD LIKE scan over the whole column. |
 | `string_blob.hpp` | `StringBlob`, `StringDict` | id / string | string | 8 B + bytes; dict adds ~9-12 B | Append-only, not COW. |
+
+### Composition helpers
+
+| Header | Primitive | Use it for |
+| --- | --- | --- |
+| `cow_box.hpp` | `CowBox<T>` | Making a state struct that holds containers with an O(directory) copy cheap to copy: the box copies one pointer and clones `T` on the first `Mutable()` while shared. |
 
 ### Ordered and aggregate structures
 
@@ -54,6 +62,11 @@ concurrent const reads of a published copy are safe.
   sparse, or you must scan it: `AnyKeyCowArray` (the default; a far or negative
   key is exact, only slower per key). Never published, single owner:
   `DenseIdArray`. Keys with no locality and fat values: `ShardedCowHashMap`.
+  Keys with no locality, small values, latency-critical and batchable point
+  lookups (probe-side joins, key -> id indexes): `ShardedCowOpenMap` (key in the
+  slot, prefetch / `FindBatch`; reserve one key value as the empty marker).
+  Strings or composite keys, values that own memory, one write batch per
+  version: `ShardedCowMap` + `ShardedCowMapTxn`.
 - **Variable-length value per key.** Keys cluster (dense or locally dense):
   `ChunkedBlobMap`. Keys scattered, records small: `ShardedCowRecordStore`.
   The column must be filtered by a LIKE pattern: `KeyedStringColumn`. Build-time
