@@ -53,6 +53,4 @@ TpchRfApplyResult ApplyTpchRfChunkSql(::duckdb::Connection &connection,
 // existing orders, under fresh keys above the maximum.
 std::string TpchRfChunkStatements(::duckdb::Connection &connection, const TpchRfChunkPlan &plan);
 
-std::string TpchRfKindName(TpchRfKind kind);
-
 } // namespace accelerator_codegen::aux_state::engine

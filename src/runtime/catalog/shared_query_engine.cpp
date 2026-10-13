@@ -4,28 +4,6 @@
 #include <stdexcept>
 
 namespace accelerator_codegen::aux_state::engine {
-namespace {
-
-const char *RequireSql(const char *sql, const char *label) {
-  if (!sql || !*sql) {
-    throw std::runtime_error(std::string("missing shared query ") + label);
-  }
-  return sql;
-}
-
-} // namespace
-
-const char *SharedQueryEngine::KernelSql(const SharedQueryCatalogEntry &entry,
-                                         SharedQueryPath path) {
-  switch (path) {
-  case SharedQueryPath::BaseKernel:
-    return RequireSql(entry.postgres_base_kernel_sql, "base kernel SQL");
-  case SharedQueryPath::AuxStateful:
-    return RequireSql(entry.postgres_aux_sql, "aux kernel SQL");
-  }
-  throw std::runtime_error("unknown shared query path");
-}
-
 bool SharedQueryEngine::HasSharedQuery(SharedWorkloadKind workload,
                                        int query_id) {
   try {

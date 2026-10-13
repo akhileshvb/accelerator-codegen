@@ -62,7 +62,6 @@ constexpr Civil CivilFromDays(int64_t z) {
 
 constexpr int32_t YearOf(int64_t days) { return CivilFromDays(days).year; }
 constexpr int32_t MonthOf(int64_t days) { return CivilFromDays(days).month; }
-constexpr int32_t DayOfMonth(int64_t days) { return CivilFromDays(days).day; }
 
 constexpr int64_t AddDays(int64_t days, int64_t n) { return days + n; }
 
@@ -87,10 +86,6 @@ constexpr int64_t MonthStart(int64_t days) {
   return days - (c.day - 1);
 }
 constexpr bool IsMonthStart(int64_t days) { return CivilFromDays(days).day == 1; }
-// First day of the year containing `days`.
-constexpr int64_t YearStart(int64_t days) {
-  return DaysFromCivil(CivilFromDays(days).year, 1, 1);
-}
 // Months since year 0 (year*12 + month-1): handy dense month index.
 constexpr int64_t MonthIndex(int64_t days) {
   const Civil c = CivilFromDays(days);

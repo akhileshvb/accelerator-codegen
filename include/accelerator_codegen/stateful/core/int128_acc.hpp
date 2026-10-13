@@ -30,21 +30,8 @@ inline void AddChecked(Int128 &acc, Int128 v) {
     throw std::overflow_error("int128 accumulation overflow");
   acc = r;
 }
-inline void SubChecked(Int128 &acc, Int128 v) {
-  Int128 r;
-  if (__builtin_sub_overflow(acc, v, &r))
-    throw std::overflow_error("int128 accumulation overflow");
-  acc = r;
-}
 // a * b widened to int128 (int64 x int64 never overflows).
 inline Int128 Mul64(int64_t a, int64_t b) { return static_cast<Int128>(a) * b; }
-// acc += a * b, checked.
-inline void MulAddChecked(Int128 &acc, Int128 a, Int128 b) {
-  Int128 p;
-  if (__builtin_mul_overflow(a, b, &p))
-    throw std::overflow_error("int128 multiplication overflow");
-  AddChecked(acc, p);
-}
 // Decimal text of an int128 integer (no scale).
 inline std::string ToString(Int128 v) { return pg_numeric::ToText(v, 0); }
 
