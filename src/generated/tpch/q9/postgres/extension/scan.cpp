@@ -119,6 +119,39 @@ void ScanTpchQ9ProfitContributions(
       });
 }
 
+// Index lookup of the lineitems whose `column` (l_partkey, l_suppkey or
+// l_orderkey) is one of `keys`, as the transaction leaves the database (this
+// runs while staging maintenance at pre-commit).
+void LookupTpchQ9Lineitems(
+    const char *column, const std::vector<int64_t> &keys,
+    const std::function<void(const query::TpchQ9LineitemInput &, int32_t)>
+        &consumer) {
+  constexpr std::size_t kBatch = 4096;
+  for (std::size_t from = 0; from < keys.size(); from += kBatch) {
+    const std::vector<int64_t> batch(
+        keys.begin() + from,
+        keys.begin() + std::min(keys.size(), from + kBatch));
+    const std::string sql =
+        std::string("SELECT l_partkey, l_suppkey, l_orderkey, l_quantity, "
+                    "l_extendedprice, l_discount, l_linenumber FROM lineitem "
+                    "WHERE ") +
+        KeyListPredicate(column, batch) +
+        " AND l_partkey IS NOT NULL AND l_suppkey IS NOT NULL AND "
+        "l_orderkey IS NOT NULL AND l_quantity IS NOT NULL AND "
+        "l_extendedprice IS NOT NULL AND l_discount IS NOT NULL";
+    ScanTypedTuplesAfterOwnWrites(
+        sql, [&](HeapTuple tuple, TupleDesc tuple_desc) {
+          consumer({TypedInt(tuple, tuple_desc, 0),
+                    TypedInt(tuple, tuple_desc, 1),
+                    TypedInt(tuple, tuple_desc, 2),
+                    TypedDecimalRaw(tuple, tuple_desc, 3),
+                    TypedDecimalRaw(tuple, tuple_desc, 4),
+                    TypedDecimalRaw(tuple, tuple_desc, 5)},
+                   static_cast<int32_t>(TypedInt(tuple, tuple_desc, 6)));
+        });
+  }
+}
+
 } // namespace scans
 
 class TpchQ9Scan final : public query::TpchQ9InitialScan {
@@ -157,6 +190,13 @@ public:
       const std::function<void(const query::TpchQ9ProfitContribution &)> &consumer)
       override {
     scans::ScanTpchQ9ProfitContributions(consumer);
+    return true;
+  }
+  bool LookupLineitems(
+      const char *column, const std::vector<int64_t> &keys,
+      const std::function<void(const query::TpchQ9LineitemInput &, int32_t)>
+          &consumer) override {
+    scans::LookupTpchQ9Lineitems(column, keys, consumer);
     return true;
   }
 };

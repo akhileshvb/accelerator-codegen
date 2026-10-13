@@ -6,11 +6,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -142,6 +145,7 @@ bool NameLess(const std::string &a, const std::string &b) {
 struct EditBlock {
   std::array<std::vector<TpchQ9Cell>, kParts> cells;
   std::array<std::vector<TpchQ9PartsuppEntry>, kParts> ps;
+  uint32_t name_dirty = 0; // slots whose p_name changed in this batch
 
   // cells[slot] += (drows, dprofit) for `group`; a cell whose row count drops to
   // 0 disappears (the group no longer has joined rows).
@@ -242,6 +246,132 @@ std::shared_ptr<TpchQ9PartBlock> EncodeBlock(const EditBlock &edit) {
   return block;
 }
 
+// ── Color index ─────────────────────────────────────────────────────────────
+// TPC-H spec 4.2.3 P_NAME words (the Q9 substitution parameter domain).
+constexpr std::array<const char *, kTpchQ9Colors> kColors = {
+    "almond", "antique", "aquamarine", "azure", "beige", "bisque", "black", "blanched", "blue", "blush", "brown",
+    "burlywood", "burnished", "chartreuse", "chiffon", "chocolate", "coral", "cornflower", "cornsilk", "cream",
+    "cyan", "dark", "deep", "dim", "dodger", "drab", "firebrick", "floral", "forest", "frosted", "gainsboro",
+    "ghost", "goldenrod", "green", "grey", "honeydew", "hot", "indian", "ivory", "khaki", "lace", "lavender",
+    "lawn", "lemon", "light", "lime", "linen", "magenta", "maroon", "medium", "metallic", "midnight", "mint",
+    "misty", "moccasin", "navajo", "navy", "olive", "orange", "orchid", "pale", "papaya", "peach", "peru", "pink",
+    "plum", "powder", "puff", "purple", "red", "rose", "rosy", "royal", "saddle", "salmon", "sandy", "seashell",
+    "sienna", "sky", "slate", "smoke", "snow", "spring", "steel", "tan", "thistle", "tomato", "turquoise",
+    "violet", "wheat", "white", "yellow"};
+
+// Bit c set <=> kColors[c] occurs in the name (== p_name LIKE '%kColors[c]%':
+// the words are lowercase ASCII without LIKE metacharacters; PostgreSQL LIKE is
+// case-sensitive, kCaseInsensitive is false in this copy).
+using ColorMask = std::array<uint64_t, 2>;
+static_assert(kTpchQ9Colors <= 128);
+
+// kColors is sorted, so the words starting with one byte are a contiguous
+// range; the tables are constexpr (.rodata, ~1 KB) to stay cheap on a cold
+// cache (maintenance computes a mask per changed part).
+static_assert([] {
+  for (std::size_t c = 1; c < kTpchQ9Colors; ++c)
+    if (std::string_view(kColors[c - 1]) >= std::string_view(kColors[c]))
+      return false;
+  return true;
+}());
+struct ColorRanges {
+  std::array<uint8_t, 256> begin{}, end{};
+  std::array<uint8_t, kTpchQ9Colors> length{};
+};
+constexpr ColorRanges kColorRanges = [] {
+  ColorRanges r;
+  for (std::size_t c = kTpchQ9Colors; c-- > 0;) {
+    const auto first = static_cast<unsigned char>(kColors[c][0]);
+    if (r.end[first] == 0)
+      r.end[first] = static_cast<uint8_t>(c + 1);
+    r.begin[first] = static_cast<uint8_t>(c);
+    r.length[c] = static_cast<uint8_t>(std::string_view(kColors[c]).size());
+  }
+  return r;
+}();
+
+ColorMask MaskOfName(std::string_view name) {
+  static_assert(!kCaseInsensitive, "color index assumes case-sensitive LIKE");
+  ColorMask mask{0, 0};
+  const char *data = name.data();
+  const std::size_t n = name.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto b = static_cast<unsigned char>(data[i]);
+    for (std::size_t c = kColorRanges.begin[b]; c < kColorRanges.end[b]; ++c) {
+      const std::size_t len = kColorRanges.length[c];
+      if (n - i >= len && std::memcmp(data + i, kColors[c], len) == 0)
+        mask[c >> 6] |= uint64_t{1} << (c & 63);
+    }
+  }
+  return mask;
+}
+
+// Absent part (no p_name row): joins no LIKE, contributes to no color.
+ColorMask MaskOfPart(const TpchQ9State &state, int64_t partkey) {
+  std::string_view name;
+  return state.part_names.Get(partkey, name) ? MaskOfName(name) : ColorMask{0, 0};
+}
+
+int ColorOf(std::string_view argument) {
+  for (std::size_t c = 0; c < kTpchQ9Colors; ++c)
+    if (argument == kColors[c])
+      return static_cast<int>(c);
+  return -1;
+}
+
+template <typename F> void ForEachColor(const ColorMask &mask, F &&fn) {
+  for (std::size_t w = 0; w < 2; ++w)
+    for (uint64_t bits = mask[w]; bits; bits &= bits - 1)
+      fn((w << 6) | static_cast<std::size_t>(__builtin_ctzll(bits)));
+}
+
+// Copy-on-write writer of a state's color aggregates: the first write of a
+// batch to a group clones its record (the published state keeps the old one).
+class ColorWriter {
+public:
+  explicit ColorWriter(TpchQ9State &state) : state_(state) {}
+  void Add(const ColorMask &mask, uint32_t group, int64_t drows, int64_t dprofit) {
+    if (mask[0] == 0 && mask[1] == 0)
+      return;
+    auto &record = Mutable(group);
+    ForEachColor(mask, [&](std::size_t c) {
+      auto &acc = record.by_color[c];
+      acc.rows += drows;
+      overflow_ |= __builtin_add_overflow(acc.profit, dprofit, &acc.profit);
+    });
+  }
+  // Call once after all Adds: an overflowing sum drops the index.
+  void Finish() {
+    if (overflow_) {
+      state_.color_index = false;
+      state_.color_groups.clear();
+    }
+  }
+
+private:
+  TpchQ9GroupColors &Mutable(uint32_t group) {
+    if (group >= owned_.size())
+      owned_.resize(std::max<std::size_t>(group + 1, state_.groups.size()));
+    if (!owned_[group]) {
+      auto &groups = state_.color_groups;
+      if (group >= groups.size())
+        groups.resize(std::max<std::size_t>(group + 1, state_.groups.size()));
+      auto fresh = groups[group] ? std::make_shared<TpchQ9GroupColors>(*groups[group])
+                                 : std::make_shared<TpchQ9GroupColors>();
+      owned_[group] = fresh.get();
+      groups[group] = std::move(fresh);
+    }
+    return *owned_[group];
+  }
+  TpchQ9State &state_;
+  std::vector<TpchQ9GroupColors *> owned_;
+  bool overflow_ = false;
+};
+
+// Orders, suppliers and parts whose join changes are re-counted through index
+// lookups of their lineitems; more than this (a bulk dimension update) rebuild.
+constexpr std::size_t kMaxJoinChangeKeys = 200000;
+
 constexpr int64_t kBlockParts = static_cast<int64_t>(kParts);
 static_assert((kBlockParts & (kBlockParts - 1)) == 0);
 // Floor division / modulo by the (power of two) block size: exact for negative keys.
@@ -249,28 +379,154 @@ constexpr int64_t BlockOf(int64_t key) { return key >> __builtin_ctzll(static_ca
 constexpr std::size_t SlotOf(int64_t key) { return static_cast<std::size_t>(key & (kBlockParts - 1)); }
 
 // Blocks being edited, keyed by block index; re-encoded into the state by Flush.
+// With `before` (the published state of a write batch) and a state carrying the
+// color index, Flush also applies each edited part's cell diff to the color
+// aggregates (parts renamed in the batch must be marked with MarkRenamed).
 class BlockEditor {
 public:
-  explicit BlockEditor(TpchQ9State &state) : state_(state) {}
+  explicit BlockEditor(TpchQ9State &state, const TpchQ9State *before = nullptr)
+      : state_(state), before_(before) {}
   EditBlock &For(int64_t partkey) {
     auto &slot = edited_[BlockOf(partkey)];
     if (!slot)
       slot = DecodeBlock(state_.FindBlock(partkey));
     return *slot;
   }
+  void MarkRenamed(int64_t partkey) { For(partkey).name_dirty |= uint32_t{1} << SlotOf(partkey); }
   void Flush() {
+    const bool index = before_ && state_.color_index;
+    ColorWriter colors(state_);
     for (auto entry : edited_) {
+      if (index) // state_.blocks still holds the published block here
+        DiffColors(entry.first, state_.blocks.Get(entry.first).get(), *entry.second, colors);
       auto encoded = EncodeBlock(*entry.second);
       if (encoded || state_.blocks.Get(entry.first))
         state_.blocks.Set(entry.first, encoded);
     }
+    if (index)
+      colors.Finish();
     edited_.Clear();
   }
 
 private:
+  void DiffColors(int64_t block_index, const TpchQ9PartBlock *old_block, const EditBlock &edit,
+                  ColorWriter &colors) const {
+    for (std::size_t slot = 0; slot < kParts; ++slot) {
+      const TpchQ9Cell *ob = old_block ? old_block->cells.data() + old_block->cell_begin[slot] : nullptr;
+      const TpchQ9Cell *oe = old_block ? old_block->cells.data() + old_block->cell_begin[slot + 1] : nullptr;
+      const auto &now = edit.cells[slot];
+      const bool renamed = (edit.name_dirty >> slot) & 1;
+      const std::size_t nold = static_cast<std::size_t>(oe - ob);
+      if (nold == 0 && now.empty())
+        continue;
+      if (!renamed && nold == now.size() &&
+          std::equal(ob, oe, now.begin(), [](const TpchQ9Cell &a, const TpchQ9Cell &b) {
+            return a.group == b.group && a.rows == b.rows && a.profit == b.profit;
+          }))
+        continue;
+      const int64_t partkey = block_index * kBlockPartsI + static_cast<int64_t>(slot);
+      const ColorMask old_mask = MaskOfPart(*before_, partkey);
+      const ColorMask new_mask = renamed ? MaskOfPart(state_, partkey) : old_mask;
+      if (old_mask == new_mask) {
+        if (old_mask[0] == 0 && old_mask[1] == 0)
+          continue;
+        // Merge the two group-sorted lists; apply only the differences.
+        auto it = now.begin();
+        for (const TpchQ9Cell *o = ob; o != oe || it != now.end();) {
+          if (it == now.end() || (o != oe && o->group < it->group)) {
+            colors.Add(old_mask, o->group, -static_cast<int64_t>(o->rows), -o->profit);
+            ++o;
+          } else if (o == oe || it->group < o->group) {
+            colors.Add(old_mask, it->group, it->rows, it->profit);
+            ++it;
+          } else {
+            if (o->rows != it->rows || o->profit != it->profit)
+              colors.Add(old_mask, o->group,
+                         static_cast<int64_t>(it->rows) - static_cast<int64_t>(o->rows),
+                         it->profit - o->profit);
+            ++o;
+            ++it;
+          }
+        }
+      } else {
+        for (const TpchQ9Cell *o = ob; o != oe; ++o)
+          colors.Add(old_mask, o->group, -static_cast<int64_t>(o->rows), -o->profit);
+        for (const auto &c : now)
+          colors.Add(new_mask, c.group, c.rows, c.profit);
+      }
+    }
+  }
+
+  static constexpr int64_t kBlockPartsI = static_cast<int64_t>(kParts);
   TpchQ9State &state_;
+  const TpchQ9State *before_ = nullptr;
   core::FlatHashMap<std::shared_ptr<EditBlock>> edited_;
 };
+
+// Bulk computation of the color aggregates from all blocks (multithreaded).
+void BuildColorIndex(TpchQ9State &state) {
+  std::vector<std::pair<int64_t, const TpchQ9PartBlock *>> blocks;
+  state.blocks.ForEach([&](int64_t key, const std::shared_ptr<TpchQ9PartBlock> &block) {
+    if (block)
+      blocks.emplace_back(key, block.get());
+  });
+  const std::size_t ngroups = state.groups.size();
+  const unsigned nthreads = static_cast<unsigned>(std::max<std::size_t>(
+      1, std::min<std::size_t>({16u, std::max(1u, std::thread::hardware_concurrency()),
+                                blocks.size() / 1024 + 1})));
+  struct Wide {
+    int64_t rows = 0;
+    __int128 profit = 0;
+  };
+  // partial[t][group * kTpchQ9Colors + color]
+  std::vector<std::vector<Wide>> partial(nthreads, std::vector<Wide>(ngroups * kTpchQ9Colors));
+  const auto work = [&](unsigned t) {
+    auto &acc = partial[t];
+    for (std::size_t i = t; i < blocks.size(); i += nthreads) {
+      const auto [key, block] = blocks[i];
+      for (std::size_t slot = 0; slot < kParts; ++slot) {
+        if (block->cell_begin[slot] == block->cell_begin[slot + 1])
+          continue;
+        const ColorMask mask = MaskOfPart(state, key * static_cast<int64_t>(kParts) +
+                                                     static_cast<int64_t>(slot));
+        if (mask[0] == 0 && mask[1] == 0)
+          continue;
+        for (uint32_t j = block->cell_begin[slot]; j < block->cell_begin[slot + 1]; ++j) {
+          Wide *row = acc.data() + static_cast<std::size_t>(block->cells[j].group) * kTpchQ9Colors;
+          ForEachColor(mask, [&](std::size_t c) {
+            row[c].rows += block->cells[j].rows;
+            row[c].profit += block->cells[j].profit;
+          });
+        }
+      }
+    }
+  };
+  std::vector<std::thread> threads;
+  for (unsigned t = 1; t < nthreads; ++t)
+    threads.emplace_back(work, t);
+  work(0);
+  for (auto &th : threads)
+    th.join();
+  state.color_groups.assign(ngroups, nullptr);
+  for (std::size_t g = 0; g < ngroups; ++g) {
+    auto record = std::make_shared<TpchQ9GroupColors>();
+    for (std::size_t c = 0; c < kTpchQ9Colors; ++c) {
+      Wide total;
+      for (unsigned t = 0; t < nthreads; ++t) {
+        total.rows += partial[t][g * kTpchQ9Colors + c].rows;
+        total.profit += partial[t][g * kTpchQ9Colors + c].profit;
+      }
+      if (total.profit > std::numeric_limits<int64_t>::max() ||
+          total.profit < std::numeric_limits<int64_t>::min()) {
+        state.color_groups.clear(); // beyond int64: no index, reads scan
+        return;
+      }
+      record->by_color[c] = TpchQ9ColorAcc{total.rows, static_cast<int64_t>(total.profit)};
+    }
+    state.color_groups[g] = std::move(record);
+  }
+  state.color_index = true;
+}
 
 // profit = extendedprice * (1 - discount) - supplycost * quantity, in 1e-4
 // units (all four inputs are hundredths).
@@ -283,6 +539,45 @@ bool ProfitRaw(int64_t extendedprice_raw, int64_t discount_raw, int64_t supplyco
     throw std::overflow_error("Q9 lineitem profit overflows int64");
   out = static_cast<int64_t>(profit);
   return true;
+}
+
+// Any argument without a color aggregate: scan the name column for matching
+// parts and add up their cells; emit(group, rows, profit) per group.
+template <typename Emit>
+void ScanMatching(const TpchQ9State &state, const std::string &argument, Emit &&emit) {
+  // The template is `p_name LIKE '%<color>%'`: the argument is spliced into the
+  // pattern as is, so any LIKE metacharacter in it keeps its meaning.
+  const std::string pattern = "%" + argument + "%";
+  const auto matcher = like::LikeMatcher::Compile(pattern, '\\', kCaseInsensitive,
+                                                  /*utf8_underscore=*/true);
+  struct Acc {
+    __int128 profit = 0;
+    int64_t rows = 0;
+  };
+  const std::size_t ngroups = state.groups.size();
+  const unsigned max_threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+  std::vector<std::vector<Acc>> acc(max_threads, std::vector<Acc>(ngroups));
+
+  // Matching parts (SIMD scan of the name column), then their profit cells.
+  state.part_names.ForEachMatch(matcher, max_threads, [&](unsigned worker, int64_t partkey) {
+    const TpchQ9PartBlock *block = state.FindBlock(partkey);
+    if (!block)
+      return;
+    const auto slot = SlotOf(partkey);
+    auto &mine = acc[worker];
+    for (uint32_t i = block->cell_begin[slot]; i < block->cell_begin[slot + 1]; ++i) {
+      mine[block->cells[i].group].profit += block->cells[i].profit;
+      mine[block->cells[i].group].rows += block->cells[i].rows;
+    }
+  });
+  for (std::size_t g = 0; g < ngroups; ++g) {
+    Acc total;
+    for (const auto &worker : acc) {
+      total.profit += worker[g].profit;
+      total.rows += worker[g].rows;
+    }
+    emit(g, total.rows, total.profit);
+  }
 }
 
 } // namespace
@@ -418,7 +713,7 @@ std::unique_ptr<core::AuxTxnBuffer> TpchQ9Module::CreateTxnBuffer() const {
   return std::make_unique<TpchQ9TxnBuffer>();
 }
 
-std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState() const {
+std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState(bool color_index) const {
   if (!initial_scan)
     throw std::logic_error("TPC-H Q9 aux requires a typed initial scan source");
   auto state = std::make_shared<TpchQ9State>();
@@ -470,11 +765,13 @@ std::shared_ptr<TpchQ9State> TpchQ9Module::BuildState() const {
     });
   }
   editor.Flush();
+  if (color_index)
+    BuildColorIndex(*state);
   return state;
 }
 
 void TpchQ9Module::Build(core::AuxEngineServices &, core::StateBuilder &builder) {
-  const auto state = BuildState();
+  const auto state = BuildState(/*color_index=*/true);
   builder.Write(core::StateImage::Make(
       TpchQ9Layout::kAccelerator, TpchQ9Layout::kCompleteState, 0,
       MakeStateImage(state)));
@@ -615,10 +912,15 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   }
   const TpchQ9State &old = *old_state;
 
-  // A dimension row whose join value changes (order year, supplier nation,
-  // supplycost) moves the profit of its existing lineitems between cells,
-  // which the lineitem deltas cannot express: rebuild. Net effect per key
-  // (old value in the published state vs. last value after the batch).
+  // Join changes: an order, supplier or partsupp row that appears, disappears
+  // or changes its join value (order year, supplier nation, supplycost) moves
+  // the lineitems that join it between cells or changes their profit (also
+  // lineitems this batch does not touch: a supplier deleted before or without
+  // its lineitems, an order re-inserted after them).  Those lineitems are looked
+  // up in the database as the transaction leaves it and re-counted in step 4.
+  // Net effect per key: the published state vs. the last value of the batch.
+  std::vector<int64_t> changed_orders, changed_suppliers, changed_parts;
+  std::set<std::pair<int64_t, int64_t>> changed_ps;
   {
     std::unordered_map<int64_t, std::optional<int32_t>> year_after;
     for (const auto &d : buffer.OrderDeltas())
@@ -629,24 +931,28 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     std::map<std::pair<int64_t, int64_t>, std::optional<int64_t>> cost_after;
     for (const auto &d : buffer.PartsuppDeltas())
       cost_after[{d.partkey, d.suppkey}] = d.sign > 0 ? std::optional<int64_t>(d.cost_raw) : std::nullopt;
-    bool value_change = false;
     for (const auto &[key, after] : year_after) {
       int32_t before = 0;
-      value_change |= after && old.LookupOrderYear(key, before) && before != *after;
+      const bool had = old.LookupOrderYear(key, before);
+      if (had != after.has_value() || (had && before != *after))
+        changed_orders.push_back(key);
     }
     for (const auto &[key, after] : nation_after) {
       int32_t before = 0;
-      value_change |= after && old.LookupSupplierNation(key, before) && before != *after;
+      const bool had = old.LookupSupplierNation(key, before);
+      if (had != after.has_value() || (had && before != *after))
+        changed_suppliers.push_back(key);
     }
     for (const auto &[key, after] : cost_after) {
       int64_t before = 0;
-      value_change |= after &&
-                      BlockFindPs(old.FindBlock(key.first),
-                                  SlotOf(key.first), key.second,
-                                  before) &&
-                      before != *after;
+      const bool had = BlockFindPs(old.FindBlock(key.first), SlotOf(key.first), key.second, before);
+      if (had != after.has_value() || (had && before != *after)) {
+        changed_ps.insert(key);
+        if (changed_parts.empty() || changed_parts.back() != key.first)
+          changed_parts.push_back(key.first);
+      }
     }
-    if (value_change) {
+    if (changed_orders.size() + changed_suppliers.size() + changed_parts.size() > kMaxJoinChangeKeys) {
       core::FinishRebuildAll(outcome);
       return outcome;
     }
@@ -684,7 +990,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
   // Copy-on-write: shares every block / chunk / shard with the published state;
   // only the touched ones are cloned below.
   auto updated = std::make_shared<TpchQ9State>(old);
-  BlockEditor editor(*updated);
+  BlockEditor editor(*updated, &old);
 
   // 1. Deleted lineitems leave the cells they were counted in (resolved against
   //    the dimension values of the published state).
@@ -700,7 +1006,7 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
     editor.For(d->partkey).AddCell(slot, updated->GroupFor(nationkey, year), -1, -profit);
   }
 
-  // 2. Dimension changes (value changes were ruled out above).
+  // 2. Dimension changes (the lineitems they move are re-counted in step 4).
   for (const auto &d : buffer.SupplierDeltas()) {
     if (d.sign > 0)
       updated->SetSupplierNation(d.suppkey, d.nationkey);
@@ -726,6 +1032,8 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
       updated->part_names.Set(d.partkey, d.name);
     else
       updated->part_names.Erase(d.partkey);
+    if (updated->color_index)
+      editor.MarkRenamed(d.partkey); // its cells move between colors at Flush
   }
   for (const auto &d : buffer.NationDeltas()) {
     if (d.sign > 0)
@@ -745,6 +1053,58 @@ TpchQ9Module::StageMaintenance(core::AuxEngineServices &services,
       continue; // does not join (yet)
     ProfitRaw(d->extendedprice_raw, d->discount_raw, cost, d->quantity_raw, profit);
     edit.AddCell(slot, updated->GroupFor(nationkey, year), 1, profit);
+  }
+
+  // 4. Join changes: every lineitem joining a changed order, supplier or
+  //    partsupp that was there before the batch and still is after it (not one
+  //    of the batch's own inserts, which step 3 counted against the new
+  //    dimensions; deleted ones left in step 1 against the old) leaves the cell
+  //    it was counted in (old dimensions, if it joined) and enters the one it
+  //    joins now (new dimensions, if any).
+  if (!changed_orders.empty() || !changed_suppliers.empty() || !changed_parts.empty()) {
+    std::map<std::pair<int64_t, int32_t>, TpchQ9LineitemInput> affected; // (orderkey, linenumber)
+    const auto collect = [&](const char *column, const std::vector<int64_t> &keys, bool by_part) {
+      if (keys.empty())
+        return true;
+      return initial_scan &&
+             initial_scan->LookupLineitems(column, keys, [&](const TpchQ9LineitemInput &l, int32_t line) {
+               if (!by_part || changed_ps.count({l.partkey, l.suppkey}))
+                 affected.emplace(std::make_pair(l.orderkey, line), l);
+             });
+    };
+    if (!collect("l_orderkey", changed_orders, false) ||
+        !collect("l_suppkey", changed_suppliers, false) ||
+        !collect("l_partkey", changed_parts, true)) {
+      core::FinishRebuildAll(outcome);
+      return outcome;
+    }
+    std::map<std::array<int64_t, 6>, std::size_t> own_inserts;
+    for (const auto *d : inserts)
+      ++own_inserts[{d->partkey, d->suppkey, d->orderkey, d->quantity_raw,
+                     d->extendedprice_raw, d->discount_raw}];
+    for (const auto &entry : affected) {
+      const TpchQ9LineitemInput &l = entry.second;
+      const auto own = own_inserts.find({l.partkey, l.suppkey, l.orderkey, l.quantity_raw,
+                                         l.extendedprice_raw, l.discount_raw});
+      if (own != own_inserts.end() && own->second > 0) {
+        --own->second;
+        continue;
+      }
+      const auto slot = SlotOf(l.partkey);
+      auto &edit = editor.For(l.partkey);
+      int32_t nationkey = 0, year = 0;
+      int64_t cost = 0, profit = 0;
+      if (old.LookupSupplierNation(l.suppkey, nationkey) && old.LookupOrderYear(l.orderkey, year) &&
+          BlockFindPs(old.FindBlock(l.partkey), slot, l.suppkey, cost)) {
+        ProfitRaw(l.extendedprice_raw, l.discount_raw, cost, l.quantity_raw, profit);
+        edit.AddCell(slot, updated->GroupFor(nationkey, year), -1, -profit);
+      }
+      if (updated->LookupSupplierNation(l.suppkey, nationkey) &&
+          updated->LookupOrderYear(l.orderkey, year) && edit.FindPs(slot, l.suppkey, cost)) {
+        ProfitRaw(l.extendedprice_raw, l.discount_raw, cost, l.quantity_raw, profit);
+        edit.AddCell(slot, updated->GroupFor(nationkey, year), 1, profit);
+      }
+    }
   }
   editor.Flush();
 
@@ -786,8 +1146,8 @@ void TpchQ9Module::Execute(core::AuxEngineServices &services,
 void TpchQ9Module::ExecuteFallback(core::AuxEngineServices &,
                                    const core::QueryArguments &arguments,
                                    core::AuxRowSink &sink) {
-  // Recompute from base tables: build state and emit
-  const auto state = BuildState();
+  // Recompute from base tables: build state and emit (one-shot: no color index)
+  const auto state = BuildState(/*color_index=*/false);
   EmitResult(*state, arguments, sink);
 }
 
@@ -818,48 +1178,30 @@ void TpchQ9Module::EmitResult(const TpchQ9State &state,
   if (arguments.values.empty() || arguments.values[0].is_null ||
       !std::holds_alternative<std::string>(arguments.values[0].payload))
     return empty();
-  // The template is `p_name LIKE '%<color>%'`: the argument is spliced into the
-  // pattern as is, so any LIKE metacharacter in it keeps its meaning.
-  const std::string pattern = "%" + std::get<std::string>(arguments.values[0].payload) + "%";
-  const auto matcher = like::LikeMatcher::Compile(pattern, '\\', kCaseInsensitive,
-                                                  /*utf8_underscore=*/true);
-
-  struct Acc {
-    __int128 profit = 0;
-    int64_t rows = 0;
-  };
-  const std::size_t ngroups = state.groups.size();
-  const unsigned max_threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
-  std::vector<std::vector<Acc>> acc(max_threads, std::vector<Acc>(ngroups));
-
-  // Matching parts (SIMD scan of the name column), then their profit cells.
-  state.part_names.ForEachMatch(matcher, max_threads, [&](unsigned worker, int64_t partkey) {
-    const TpchQ9PartBlock *block = state.FindBlock(partkey);
-    if (!block)
-      return;
-    const auto slot = SlotOf(partkey);
-    auto &mine = acc[worker];
-    for (uint32_t i = block->cell_begin[slot]; i < block->cell_begin[slot + 1]; ++i) {
-      mine[block->cells[i].group].profit += block->cells[i].profit;
-      mine[block->cells[i].group].rows += block->cells[i].rows;
-    }
-  });
-
+  const std::string &argument = std::get<std::string>(arguments.values[0].payload);
+  std::map<std::pair<std::string, int32_t>, __int128> sums;
   // GROUP BY n_name, year: groups of nations that share a name merge, and a
   // supplier nation without a nation row joins nothing.
-  std::map<std::pair<std::string, int32_t>, __int128> sums;
-  for (std::size_t g = 0; g < ngroups; ++g) {
-    Acc total;
-    for (const auto &worker : acc) {
-      total.profit += worker[g].profit;
-      total.rows += worker[g].rows;
-    }
-    if (total.rows == 0)
-      continue;
+  const auto add_group = [&](std::size_t g, int64_t rows, __int128 profit) {
+    if (rows == 0)
+      return;
     const auto nation = state.nation_names.find(state.groups[g].first);
     if (nation == state.nation_names.end())
-      continue;
-    sums[{nation->second, state.groups[g].second}] += total.profit;
+      return;
+    sums[{nation->second, state.groups[g].second}] += profit;
+  };
+
+  const int color = state.color_index ? ColorOf(argument) : -1;
+  if (color >= 0) {
+    // Pre-aggregated answer of one of the 92 color words: O(groups).
+    const std::size_t n = std::min(state.color_groups.size(), state.groups.size());
+    for (std::size_t g = 0; g < n; ++g)
+      if (const auto &record = state.color_groups[g]) {
+        const auto &acc = record->by_color[static_cast<std::size_t>(color)];
+        add_group(g, acc.rows, acc.profit);
+      }
+  } else {
+    ScanMatching(state, argument, add_group);
   }
 
   std::vector<std::pair<std::pair<std::string, int32_t>, __int128>> rows(sums.begin(), sums.end());

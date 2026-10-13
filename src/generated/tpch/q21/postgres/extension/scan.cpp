@@ -94,7 +94,12 @@ public:
         [](const std::string &sql, auto &&row) {
           ScanTypedTuplesAfterOwnWrites(sql, row);
         },
-        " AND " + KeyListPredicate("l_orderkey", orderkeys), consumer);
+        // The key list on both join sides: PostgreSQL does not carry an
+        // = ANY(...) across the join, and with it on lineitem only it hashes
+        // every fulfilled order (seconds per lookup at SF20).
+        " AND " + KeyListPredicate("l_orderkey", orderkeys) + " AND " +
+            KeyListPredicate("o_orderkey", orderkeys),
+        consumer);
     return true;
   }
 };

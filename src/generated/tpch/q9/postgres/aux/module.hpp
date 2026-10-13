@@ -110,6 +110,20 @@ public:
     (void)consumer;
     return false;
   }
+
+  // Optional: the lineitems whose `column` (l_partkey, l_suppkey or
+  // l_orderkey, all indexed) is one of `keys`, as the transaction leaves the
+  // database (index lookups at pre-commit), with their l_linenumber; returns
+  // false when not supported (a join change then rebuilds).
+  virtual bool LookupLineitems(
+      const char *column, const std::vector<int64_t> &keys,
+      const std::function<void(const TpchQ9LineitemInput &, int32_t linenumber)>
+          &consumer) {
+    (void)column;
+    (void)keys;
+    (void)consumer;
+    return false;
+  }
 };
 
 // ── State ───────────────────────────────────────────────────────────────────
@@ -158,8 +172,33 @@ struct TpchQ9PartBlock {
   std::vector<TpchQ9PartsuppEntry> ps;     // per part sorted by suppkey
 };
 
+// Color index (read path): for each of the 92 TPC-H P_NAME color words w, the
+// answer of `p_name LIKE '%w%'` pre-aggregated per group (supplier nationkey,
+// order year). A part contributes its cells to every color whose word occurs
+// in its name (byte substring == LIKE '%w%': the words hold no LIKE
+// metacharacters). Maintained from the per-block cell diff of each write batch,
+// so a read for one of these colors is O(groups) (~175 at TPC-H scale); any
+// other argument scans the name column as before. Stored group-major, one
+// immutable record of 92 (rows, profit) pairs (1.5 KB) per group: a batch
+// clones only the records of the groups its changed cells fall in.
+// Sums are int64 in 1e-4 units (per color and group: ~1e15 at SF1000); an
+// overflow drops the index (color_index = false) and reads scan again.
+constexpr std::size_t kTpchQ9Colors = 92;
+
+struct TpchQ9ColorAcc {
+  int64_t rows = 0;
+  int64_t profit = 0;
+};
+
+struct TpchQ9GroupColors {
+  std::array<TpchQ9ColorAcc, kTpchQ9Colors> by_color{};
+};
+
 struct TpchQ9State {
   core::AnyKeyCowArray<std::shared_ptr<TpchQ9PartBlock>, 12> blocks;
+  bool color_index = false; // color_groups maintained (false in fallback builds)
+  // Per group id (may be shorter than groups; null / missing = all zero).
+  std::vector<std::shared_ptr<const TpchQ9GroupColors>> color_groups;
   core::KeyedStringColumn part_names;
 
   // (nationkey, year) groups, interned in first-use order; never removed.
@@ -309,7 +348,7 @@ public:
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 
 private:
-  std::shared_ptr<TpchQ9State> BuildState() const;
+  std::shared_ptr<TpchQ9State> BuildState(bool color_index) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ9State> &state) const;
   void EmitResult(const TpchQ9State &state, const core::QueryArguments &arguments,

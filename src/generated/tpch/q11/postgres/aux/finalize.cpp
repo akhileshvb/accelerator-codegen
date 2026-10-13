@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -72,6 +73,26 @@ public:
     if (lhs_sign == 0)
       return false;
     return lhs_sign > 0 ? lhs > rhs_mag_ : rhs_mag_ > lhs;
+  }
+
+  // The smallest value v with Above(v), or nullopt if there is none.  Above
+  // is monotone in v (a constant for NaN / +-Infinity, else the exact
+  // comparison v * 10^scale > total * coeff), so a binary search over the
+  // whole int128 range finds the cut once and each row costs one compare.
+  std::optional<Q11AccT> MinAbove() const {
+    constexpr Q11AccT kMax = static_cast<Q11AccT>(~static_cast<U128>(0) >> 1);
+    constexpr Q11AccT kMin = -kMax - 1;
+    if (!Above(kMax))
+      return std::nullopt;
+    if (Above(kMin))
+      return kMin;
+    Q11AccT lo = kMin, hi = kMax; // !Above(lo), Above(hi)
+    while (static_cast<U128>(hi) - static_cast<U128>(lo) > 1) {
+      const Q11AccT mid = static_cast<Q11AccT>(
+          static_cast<U128>(lo) + ((static_cast<U128>(hi) - static_cast<U128>(lo)) >> 1));
+      (Above(mid) ? hi : lo) = mid;
+    }
+    return hi;
   }
 
 private:
@@ -206,9 +227,25 @@ bool TpchQ11ParseFraction(std::string_view text, TpchQ11Fraction &out) {
   return true;
 }
 
+TpchQ11ResultCollector *&TpchQ11ActiveCollector() {
+  static thread_local TpchQ11ResultCollector *collector = nullptr;
+  return collector;
+}
+
 void TpchQ11FinalizeAndEmit(const TpchQ11State &state, const TpchQ11Args &args,
                             core::AuxRowSink &sink) {
   sink.Begin(core::OutputSchema{});
+  TpchQ11ResultCollector *const collector = TpchQ11ActiveCollector();
+  if (collector) {
+    collector->emitted = true;
+    collector->rows.clear();
+  }
+  const auto write = [&](int64_t partkey, Q11AccT value) {
+    if (collector)
+      collector->rows.push_back({partkey, value});
+    else
+      sink.WriteRow(MakeRow(partkey, value));
+  };
   const auto finish = [&] { sink.End(); };
   if (!args.nation || !args.fraction) {
     finish();
@@ -232,11 +269,16 @@ void TpchQ11FinalizeAndEmit(const TpchQ11State &state, const TpchQ11Args &args,
     // threshold: values only decrease, so the first miss ends the scan.
     const TpchQ11Group &group = *groups[0];
     const ThresholdTest test(group.total, *args.fraction);
+    const std::optional<Q11AccT> cut = test.MinAbove();
+    if (!cut) {
+      finish();
+      return;
+    }
     bool more = true;
     const auto emit = [&](int64_t partkey, Q11AccT value) {
-      if (!test.Above(value))
+      if (value < *cut)
         return more = false;
-      sink.WriteRow(MakeRow(partkey, value));
+      write(partkey, value);
       return true;
     };
     for (const auto &key : group.wide_positive)
@@ -280,7 +322,7 @@ void TpchQ11FinalizeAndEmit(const TpchQ11State &state, const TpchQ11Args &args,
               return a.value != b.value ? a.value > b.value : a.partkey < b.partkey;
             });
   for (const auto &row : rows)
-    sink.WriteRow(MakeRow(row.partkey, row.value));
+    write(row.partkey, row.value);
   finish();
 }
 

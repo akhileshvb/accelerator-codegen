@@ -1,7 +1,9 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -36,6 +38,21 @@ namespace accelerator_codegen::aux_state::query {
 // comment blobs, then one pass over the customers); nothing in the state can
 // answer an arbitrary LIKE faster. A write batch costs O(touched segments +
 // touched index shards + customer chunks) and never rebuilds.
+//
+// Pattern index (read path): the benchmark draws the pattern from a fixed set
+// of 16 ('%w1%w2%', w1 in {special, pending, unusual, express}, w2 in
+// {packages, requests, accounts, deposits}). For each of them the state keeps
+// the answer itself, the histogram c_count -> custdist over the valid
+// customers, maintained per order delta: per customer it keeps, next to the
+// total order count, the number of its orders matching each known pattern
+// (uint8 x 16); an order delta moves its customer between two buckets of each
+// histogram (O(16)). A read of a known pattern is O(result rows); any other
+// pattern takes the general scan above. If a per-customer match count would
+// leave [0, 255] the index is dropped (reads fall back to the scan) until the
+// next rebuild. Cost: 16 B per custkey (chunks of 512 keys, allocated once a
+// key has a matching order), 4 SIMD word scans (+4 per word1 present) and
+// O(16) bucket moves per order delta; the build adds one parallel O(orders)
+// pass.
 //
 // Data assumptions: o_orderkey is the orders primary key; keys may be any int64; rows
 // with a NULL key or NULL comment never contribute (they cannot join).
@@ -75,6 +92,15 @@ struct TpchQ13OrderSegment {
   uint32_t live = 0;
 };
 
+constexpr std::size_t kTpchQ13Patterns = 16;
+
+struct TpchQ13PatternHist {
+  std::vector<int64_t> dense;        // c_count < kDenseLimit -> custdist
+  std::map<int64_t, int64_t> big;    // larger c_count (never expected)
+  static constexpr int64_t kDenseLimit = int64_t{1} << 16;
+  void Add(int64_t c_count, int64_t delta);
+};
+
 struct TpchQ13State {
   // Per-custkey columns for keys in [0, 2^36); negative / huge keys live in the
   // sparse hash (exact, pay only for what is present).
@@ -99,6 +125,19 @@ struct TpchQ13State {
   int64_t open_segment = -1;           // segment receiving appends
   core::ShardedCowHashMap<uint64_t, 16> order_row; // orderkey -> seg*4096+slot
 
+  // ── pattern index (see the header comment) ──
+  using PatternCounts = std::array<uint8_t, kTpchQ13Patterns>;
+  bool patterns_ready = false;
+  core::ChunkedCowArray<PatternCounts, 9> matched{PatternCounts{}};
+  core::ShardedCowHashMap<PatternCounts, 8> sparse_matched;
+  std::array<TpchQ13PatternHist, kTpchQ13Patterns> hist;
+  // Builds the index from the current orders/customers (O(orders), parallel).
+  void EnablePatternIndex();
+  // Index of a known pattern, or -1.
+  static int PatternIndex(std::string_view pattern);
+  // Bit p set iff `comment` LIKE known pattern p.
+  static uint32_t PatternMask(std::string_view comment);
+
   void AddCustomer(int64_t custkey);
   void RemoveCustomer(int64_t custkey);
   void AddOrder(int64_t orderkey, int64_t custkey, std::string_view comment);
@@ -108,6 +147,10 @@ struct TpchQ13State {
   void CompactTouched();
 
 private:
+  PatternCounts Matched(int64_t key) const;
+  void HistAdd(int64_t custkey, int64_t sign);
+  void ApplyOrderCount(int64_t custkey, int32_t sign, uint32_t mask);
+  void DisablePatternIndex();
   std::shared_ptr<TpchQ13OrderSegment> &MutableSegment(uint32_t id);
   void CompactSegment(uint32_t id);
   std::vector<uint32_t> touched_;
@@ -171,7 +214,8 @@ public:
                        core::AuxRowSink &) override;
   std::vector<core::CalibrationWrite> CalibrationWrites() const override;
 private:
-  std::shared_ptr<TpchQ13State> BuildState(core::AuxEngineServices &services) const;
+  std::shared_ptr<TpchQ13State> BuildState(core::AuxEngineServices &services,
+                                           bool pattern_index) const;
   bool LoadState(core::AuxEngineServices &services,
                  std::shared_ptr<const TpchQ13State> &state) const;
   void EmitResult(const TpchQ13State &state, const core::QueryArguments &arguments,

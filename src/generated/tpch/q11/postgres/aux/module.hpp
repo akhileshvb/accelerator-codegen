@@ -226,6 +226,21 @@ struct TpchQ11Args {
 void TpchQ11FinalizeAndEmit(const TpchQ11State &state, const TpchQ11Args &args,
                             core::AuxRowSink &sink);
 
+// Typed result channel for the engine adapter.  While a collector is active
+// (set by the adapter around one execution, this thread only),
+// TpchQ11FinalizeAndEmit hands the result rows (in output order) to it
+// instead of building one AuxRow per row for the sink; Begin/End still reach
+// the sink.  The PostgreSQL adapter writes them straight into the tuplestore
+// (fast numeric construction) or, in the shared-state worker, packs them into
+// a few compact tuples that the calling backend unpacks
+// (extension/scan.cpp).  `emitted` tells the adapter the result was produced
+// in this process.  Default (nullptr): rows go to the sink as before.
+struct TpchQ11ResultCollector {
+  bool emitted = false;
+  std::vector<TpchQ11OutputRow> rows;
+};
+TpchQ11ResultCollector *&TpchQ11ActiveCollector();
+
 // ── Captured row changes ────────────────────────────────────────────────────
 struct TpchQ11PartsuppEvent {
   int8_t sign = 0;
