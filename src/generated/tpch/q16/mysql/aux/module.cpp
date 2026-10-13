@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "accelerator_codegen/stateful/core/sql_like.hpp"
+#include "accelerator_codegen/stateful/prims/sql_like.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {

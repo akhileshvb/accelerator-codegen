@@ -12,8 +12,8 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/radix_range_tree.hpp"
-#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/radix_range_tree.hpp"
+#include "accelerator_codegen/stateful/prims/any_key_cow_array.hpp"
 #include "tpch/q5/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {

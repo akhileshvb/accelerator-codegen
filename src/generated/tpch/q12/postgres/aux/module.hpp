@@ -10,8 +10,8 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
-#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/any_key_cow_array.hpp"
 #include "tpch/q12/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {

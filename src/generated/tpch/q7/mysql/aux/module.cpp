@@ -13,7 +13,7 @@
 
 #include "accelerator_codegen/stateful/core/mysql_collation.hpp"
 #include "accelerator_codegen/stateful/core/query_module_helpers.hpp"
-#include "accelerator_codegen/stateful/core/sql_date.hpp"
+#include "accelerator_codegen/stateful/prims/sql_date.hpp"
 #include "tpch/q7/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {

@@ -41,9 +41,9 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
-#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_blob_map.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
 #include "sec_edgar/q3/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {

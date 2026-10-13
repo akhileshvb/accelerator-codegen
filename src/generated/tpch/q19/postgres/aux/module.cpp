@@ -1,6 +1,6 @@
 #include "tpch/q19/postgres/aux/module.hpp"
 #include "tpch/q19/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/pg_numeric.hpp"
+#include "accelerator_codegen/stateful/prims/pg_numeric.hpp"
 
 #include <algorithm>
 #include <limits>

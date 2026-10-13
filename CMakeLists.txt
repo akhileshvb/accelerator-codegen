@@ -448,16 +448,16 @@ target_include_directories(test_tpch_arg_variants_differential
         ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/tpch/single-threaded
 )
 
-# Generic core primitives (DenseIdArray, ChunkedCowArray, FlatHashMap, sql_date,
-# sql_like, StringBlob/StringDict, int128 helpers). Header-only; no DBMS needed.
+# Generic primitives library (include/accelerator_codegen/stateful/prims/, see its README).
+# Header-only; no DBMS needed. New primitives add their tests to test_prims.cpp.
 find_package(Threads REQUIRED)
-add_executable(test_core_primitives
-    tests/aux_state/test_core_primitives.cpp
+add_executable(test_prims
+    tests/aux_state/test_prims.cpp
 )
-target_include_directories(test_core_primitives PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(test_core_primitives PRIVATE Threads::Threads)
+target_include_directories(test_prims PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_prims PRIVATE Threads::Threads)
 if(BUILD_TESTING)
-    add_test(NAME core_primitives_unit_test COMMAND test_core_primitives)
+    add_test(NAME prims_unit_test COMMAND test_prims)
 endif()
 
 add_executable(test_aux_calibration

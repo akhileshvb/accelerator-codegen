@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-#include "accelerator_codegen/stateful/core/pg_numeric.hpp"
+#include "accelerator_codegen/stateful/prims/pg_numeric.hpp"
 
 // Finalize payload: turns the maintained state into ordered result rows.
 namespace accelerator_codegen::aux_state::query {

@@ -12,11 +12,11 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
-#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
-#include "accelerator_codegen/stateful/core/string_blob.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/any_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_blob_map.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 

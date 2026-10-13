@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "accelerator_codegen/stateful/core/cow_fenwick.hpp"
+#include "accelerator_codegen/stateful/prims/cow_fenwick.hpp"
 
 namespace accelerator_codegen {
 

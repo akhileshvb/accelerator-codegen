@@ -15,7 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 

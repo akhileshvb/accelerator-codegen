@@ -10,9 +10,9 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
-#include "accelerator_codegen/stateful/core/string_blob.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/string_blob.hpp"
 #include "tpch/q13/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {

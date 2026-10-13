@@ -9,7 +9,7 @@
 #include "tpch/postgres_tpch_table_ids.hpp"
 #include "postgres/engine_runtime.hpp"
 #include "postgres/runtime.hpp"
-#include "accelerator_codegen/stateful/core/pg_numeric.hpp"
+#include "accelerator_codegen/stateful/prims/pg_numeric.hpp"
 
 #include <cstring>
 #include <limits>

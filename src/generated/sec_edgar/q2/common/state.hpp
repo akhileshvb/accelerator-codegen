@@ -49,9 +49,9 @@
 #include <string_view>
 #include <vector>
 
-#include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
-#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/string_blob.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_blob_map.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 

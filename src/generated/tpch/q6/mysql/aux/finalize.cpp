@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "accelerator_codegen/stateful/core/sql_date.hpp"
+#include "accelerator_codegen/stateful/prims/sql_date.hpp"
 
 namespace accelerator_codegen {
 namespace {

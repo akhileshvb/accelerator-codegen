@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/cow_fenwick.hpp"
+#include "accelerator_codegen/stateful/prims/any_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/cow_fenwick.hpp"
 #include "tpch/q14/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {

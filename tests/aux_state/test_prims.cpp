@@ -10,23 +10,23 @@
 #include <unordered_map>
 #include <vector>
 
-#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
-#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/cow_fenwick.hpp"
-#include "accelerator_codegen/stateful/core/cow_record_store.hpp"
-#include "accelerator_codegen/stateful/core/cow_sorted_blocks.hpp"
-#include "accelerator_codegen/stateful/core/decimal_text.hpp"
-#include "accelerator_codegen/stateful/core/dense_id_array.hpp"
-#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
-#include "accelerator_codegen/stateful/core/int128_acc.hpp"
-#include "accelerator_codegen/stateful/core/keyed_string_column.hpp"
-#include "accelerator_codegen/stateful/core/pg_numeric_div.hpp"
-#include "accelerator_codegen/stateful/core/radix_range_tree.hpp"
-#include "accelerator_codegen/stateful/core/sorted_count_sum.hpp"
-#include "accelerator_codegen/stateful/core/sql_date.hpp"
-#include "accelerator_codegen/stateful/core/sql_like.hpp"
-#include "accelerator_codegen/stateful/core/string_blob.hpp"
+#include "accelerator_codegen/stateful/prims/any_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_blob_map.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/cow_fenwick.hpp"
+#include "accelerator_codegen/stateful/prims/cow_record_store.hpp"
+#include "accelerator_codegen/stateful/prims/cow_sorted_blocks.hpp"
+#include "accelerator_codegen/stateful/prims/decimal_text.hpp"
+#include "accelerator_codegen/stateful/prims/dense_id_array.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/int128_acc.hpp"
+#include "accelerator_codegen/stateful/prims/keyed_string_column.hpp"
+#include "accelerator_codegen/stateful/prims/pg_numeric_div.hpp"
+#include "accelerator_codegen/stateful/prims/radix_range_tree.hpp"
+#include "accelerator_codegen/stateful/prims/sorted_count_sum.hpp"
+#include "accelerator_codegen/stateful/prims/sql_date.hpp"
+#include "accelerator_codegen/stateful/prims/sql_like.hpp"
+#include "accelerator_codegen/stateful/prims/string_blob.hpp"
 
 using namespace accelerator_codegen::aux_state::core;
 namespace sd = accelerator_codegen::aux_state::core::sql_date;
@@ -953,6 +953,6 @@ int main() {
   TestCowFenwick();
   TestDecimalText();
   TestPgNumericDiv();
-  std::puts("test_core_primitives: PASS");
+  std::puts("test_prims: PASS");
   return 0;
 }

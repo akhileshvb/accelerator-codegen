@@ -14,7 +14,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "accelerator_codegen/stateful/core/pg_numeric.hpp"
+#include "accelerator_codegen/stateful/prims/pg_numeric.hpp"
 
 namespace accelerator_codegen::aux_state::core::i128 {
 

@@ -1,6 +1,6 @@
 #include "tpch/q13/postgres/aux/module.hpp"
 #include "tpch/q13/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/sql_like.hpp"
+#include "accelerator_codegen/stateful/prims/sql_like.hpp"
 
 #include <algorithm>
 #include <atomic>

@@ -1,6 +1,6 @@
 #include "tpch/q6/mysql/aux/module.hpp"
 #include "tpch/q6/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/pg_numeric.hpp"
+#include "accelerator_codegen/stateful/prims/pg_numeric.hpp"
 
 #include <limits>
 #include <map>

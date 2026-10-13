@@ -1,8 +1,8 @@
 #include "tpch/q9/postgres/aux/module.hpp"
 #include "tpch/q9/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/pg_numeric.hpp"
-#include "accelerator_codegen/stateful/core/sql_date.hpp"
-#include "accelerator_codegen/stateful/core/sql_like.hpp"
+#include "accelerator_codegen/stateful/prims/pg_numeric.hpp"
+#include "accelerator_codegen/stateful/prims/sql_date.hpp"
+#include "accelerator_codegen/stateful/prims/sql_like.hpp"
 
 #include <algorithm>
 #include <array>

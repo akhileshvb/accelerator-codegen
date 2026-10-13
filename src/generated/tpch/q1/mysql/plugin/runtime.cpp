@@ -8,7 +8,7 @@
 
 #include <stdexcept>
 
-#include "accelerator_codegen/stateful/core/decimal_text.hpp"
+#include "accelerator_codegen/stateful/prims/decimal_text.hpp"
 #include "tpch/mysql_table_ids.hpp"
 #include "tpch/q1/mysql/aux/module.hpp"
 #include "tpch/q1/layout.hpp"

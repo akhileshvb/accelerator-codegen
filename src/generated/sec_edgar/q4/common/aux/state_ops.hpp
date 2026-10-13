@@ -8,7 +8,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
 #include "sec_edgar/q4/common/aux/module.hpp"
 #include "sec_edgar/q4/common/aux/state.hpp"
 

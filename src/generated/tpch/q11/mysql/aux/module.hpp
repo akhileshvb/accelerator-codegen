@@ -14,10 +14,10 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/cow_sorted_blocks.hpp"
-#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/any_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/cow_sorted_blocks.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 

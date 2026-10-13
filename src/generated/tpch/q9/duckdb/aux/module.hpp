@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/dense_id_array.hpp"
+#include "accelerator_codegen/stateful/prims/dense_id_array.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 

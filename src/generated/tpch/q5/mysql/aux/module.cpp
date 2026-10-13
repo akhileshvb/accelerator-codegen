@@ -1,7 +1,7 @@
 #include "tpch/q5/mysql/aux/module.hpp"
 #include "tpch/q5/calibration_writes.hpp"
 #include "accelerator_codegen/stateful/core/mysql_collation.hpp"
-#include "accelerator_codegen/stateful/core/sql_date.hpp"
+#include "accelerator_codegen/stateful/prims/sql_date.hpp"
 
 #include <algorithm>
 #include <limits>

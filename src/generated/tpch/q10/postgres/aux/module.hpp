@@ -9,8 +9,8 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
-#include "accelerator_codegen/stateful/core/chunked_blob_map.hpp"
-#include "accelerator_codegen/stateful/core/any_key_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_blob_map.hpp"
+#include "accelerator_codegen/stateful/prims/any_key_cow_array.hpp"
 #include "tpch/q10/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {

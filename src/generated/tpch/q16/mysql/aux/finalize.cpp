@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/mysql_collation.hpp"
-#include "accelerator_codegen/stateful/core/sql_like.hpp"
+#include "accelerator_codegen/stateful/prims/sql_like.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {

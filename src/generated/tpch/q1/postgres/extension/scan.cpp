@@ -8,8 +8,8 @@
 #include <stdexcept>
 
 
-#include "accelerator_codegen/stateful/core/decimal_text.hpp"
-#include "accelerator_codegen/stateful/core/sql_date.hpp"
+#include "accelerator_codegen/stateful/prims/decimal_text.hpp"
+#include "accelerator_codegen/stateful/prims/sql_date.hpp"
 #include "tpch/postgres_tpch_table_ids.hpp"
 #include "postgres/engine_runtime.hpp"
 #include "postgres/runtime.hpp"

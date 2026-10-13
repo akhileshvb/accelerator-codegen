@@ -1,7 +1,7 @@
 #include "tpch/q14/mysql/aux/module.hpp"
 
 #include "accelerator_codegen/stateful/core/mysql_decimal.hpp"
-#include "accelerator_codegen/stateful/core/pg_numeric.hpp"
+#include "accelerator_codegen/stateful/prims/pg_numeric.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 

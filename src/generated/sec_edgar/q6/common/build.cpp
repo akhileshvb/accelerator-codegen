@@ -15,7 +15,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 namespace {

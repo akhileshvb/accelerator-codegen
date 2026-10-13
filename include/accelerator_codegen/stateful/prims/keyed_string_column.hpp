@@ -24,10 +24,10 @@
 #include <thread>
 #include <vector>
 
-#include "accelerator_codegen/stateful/core/chunked_cow_array.hpp"
-#include "accelerator_codegen/stateful/core/flat_hash_map.hpp"
-#include "accelerator_codegen/stateful/core/sql_like.hpp"
-#include "accelerator_codegen/stateful/core/string_blob.hpp"
+#include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
+#include "accelerator_codegen/stateful/prims/sql_like.hpp"
+#include "accelerator_codegen/stateful/prims/string_blob.hpp"
 
 namespace accelerator_codegen::aux_state::core {
 

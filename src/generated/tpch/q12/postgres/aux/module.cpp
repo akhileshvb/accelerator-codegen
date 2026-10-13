@@ -1,6 +1,6 @@
 #include "tpch/q12/postgres/aux/module.hpp"
 #include "tpch/q12/calibration_writes.hpp"
-#include "accelerator_codegen/stateful/core/sql_date.hpp"
+#include "accelerator_codegen/stateful/prims/sql_date.hpp"
 
 #include <algorithm>
 #include <limits>
