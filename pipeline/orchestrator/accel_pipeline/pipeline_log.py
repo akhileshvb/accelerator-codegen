@@ -269,6 +269,7 @@ _GATE_DURATION_HINTS: dict[str, str] = {
     "aux_multi_connection": "~1 min",
     "aux_correctness": "usually seconds",
     "aux_unit": "usually seconds",
+    "prims_tests": "~1 min (builds test_prims)",
 }
 
 

@@ -102,6 +102,7 @@ optimization:
 post_implementation_gates:
   - aux_correctness
   - aux_unit
+  - prims_tests
   - aux_cost_model_calibrate
   - aux_multi_connection
   - aux_cross_accel
@@ -111,6 +112,7 @@ post_implementation_gates:
 post_optimization_gates:
   - aux_correctness
   - aux_unit
+  - prims_tests
   - aux_cost_model_calibrate
   - aux_multi_connection
   - aux_cross_accel
@@ -122,6 +124,7 @@ post_optimization_gates:
 post_audit_gates:
   - aux_correctness
   - aux_unit
+  - prims_tests
   - aux_mutation_scenarios
   - aux_bench_sweep
 

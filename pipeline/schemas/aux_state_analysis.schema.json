@@ -32,6 +32,33 @@
         "rationale": { "type": "string", "minLength": 1 }
       }
     },
+    "primitives_used": {
+      "type": "array",
+      "description": "Existing stateful/prims/ primitives the design builds on.",
+      "items": {
+        "type": "object",
+        "required": ["name", "why"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "why": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "primitives_proposed": {
+      "type": "array",
+      "description": "Generic primitives to add to stateful/prims/ (via primitive_publish) because no existing one fits.",
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "api_sketch", "closest_existing", "why_not_closest"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "description": { "type": "string", "minLength": 1 },
+          "api_sketch": { "type": "string", "minLength": 1 },
+          "closest_existing": { "type": "string" },
+          "why_not_closest": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "state_candidate_search": {
       "type": "object",
       "properties": {

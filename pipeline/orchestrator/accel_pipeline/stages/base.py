@@ -57,6 +57,11 @@ def run_agent_stage(
 ) -> Any:
     workload = load_workload(workload_name, pipeline_config.repo_root)
     pipeline_config = apply_workload_overrides(pipeline_config, workload)
+    if not dry_run:
+        # pick up primitives other workers published (no-op outside worker worktrees)
+        from accel_pipeline.prims_library import refresh_for_stage
+
+        refresh_for_stage(pipeline_config.repo_root)
     merged_extra = dict(extra_context or {})
     if analysis_revision_request:
         merged_extra["analysis_revision_request"] = analysis_revision_request

@@ -74,6 +74,7 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "acquire_shared_lease",
         "release_shared_lease",
         "discover_host_sdk",
+        "primitive_publish",
     ],
     "optimization_unified": [
         "rip_grep",
@@ -86,6 +87,7 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "delete_file",
         "file_info",
         "request_structural_reanalysis",
+        "primitive_publish",
     ],
     "optimization_unified_hypothesis": [
         "file_info",
@@ -109,6 +111,7 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "insert_lines",
         "file_info",
         "run_command",
+        "primitive_publish",
     ],
     "optimization_worker": [
         "rip_grep",
@@ -129,6 +132,7 @@ STAGE_TOOL_NAMES: dict[str, list[str]] = {
         "record_optimization_trap",
         "acquire_shared_lease",
         "release_shared_lease",
+        "primitive_publish",
     ],
     "crash_debug": [
         "read_file",
@@ -496,6 +500,12 @@ def build_tool_registry(
             indent=2,
         )
 
+    def primitive_publish(files: list[str], rationale: str) -> str:
+        """Publish staged primitives to the shared stateful/prims/ library (additions only)."""
+        from accel_pipeline.prims_library import publish_tool
+
+        return publish_tool(pipeline_config, query, files, rationale)
+
     def release_shared_lease() -> str:
         """Release the sticky shared-file lease after shared edits + rebuild."""
         import json
@@ -534,6 +544,7 @@ def build_tool_registry(
         "record_optimization_trap": record_optimization_trap,
         "acquire_shared_lease": acquire_shared_lease,
         "release_shared_lease": release_shared_lease,
+        "primitive_publish": primitive_publish,
         "search_repo": search_repo,
         "rip_grep": rip_grep,
         "ast_grep": ast_grep,

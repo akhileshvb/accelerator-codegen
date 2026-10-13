@@ -22,6 +22,7 @@ GATE_SCRIPTS = {
     "fairness": "check_fairness.sh",
     "aux_correctness": "run_aux_correctness.sh",
     "aux_unit": "run_aux_unit_tests.sh",
+    "prims_tests": "run_prims_tests.sh",
     "aux_mutation_scenarios": "run_aux_mutation_scenarios.sh",
     "aux_speedup_verification": "run_aux_speedup_verification.sh",
     "aux_bench_sweep": "run_aux_bench_sweep.sh",

@@ -176,7 +176,7 @@ Map equality keys directly to rows, row identifiers, aggregates, or state partit
 key → payload or matching row IDs
 ```
 
-**Best for:** Equality predicates; key-based joins; point lookup queries; sparse access into large state. Keys are 64-bit and may be negative or sparse: do not index a dense array by raw key without a bound known at bind time; use `AnyKeyCowArray` / `FlatHashMap` (see `core/README.md` "Which one to use"). A probe for an absent or unseen key returns "no match", not an error.
+**Best for:** Equality predicates; key-based joins; point lookup queries; sparse access into large state. Keys are 64-bit and may be negative or sparse: do not index a dense array by raw key without a bound known at bind time; use `AnyKeyCowArray` / `FlatHashMap` (see `prims/README.md` "Which one to use"). A probe for an absent or unseen key returns "no match", not an error.
 
 **Advantages:** Expected constant-time lookup; eliminates scan and often hash-table construction; straightforward point maintenance.
 

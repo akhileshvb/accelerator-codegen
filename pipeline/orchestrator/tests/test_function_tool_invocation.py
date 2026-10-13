@@ -26,6 +26,11 @@ MINIMAL_ARGS: dict[str, dict[str, Any]] = {
     "list_dir": {"path": "pipeline"},
     "glob_files": {"pattern": "README.md", "path": "pipeline"},
     "file_info": {"path": "pipeline/README.md"},
+    # nothing staged: the tool must answer with a rejection, not crash
+    "primitive_publish": {
+        "files": ["include/accelerator_codegen/stateful/prims/__not_staged__.hpp"],
+        "rationale": "tool invocation test: nothing is staged",
+    },
     "apply_patch": {
         "path": "pipeline/artifacts/tpch/q18/tool_invoke_test.txt",
         "old_string": "tool test\n",

@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.prims_library import is_prims_path, refresh_prims
 from accel_pipeline.write_ownership import owned_path_globs, query_id_from_rel
 
 
@@ -199,6 +200,8 @@ def ensure_worker_worktree(
     else:
         _seed_generated_sources(primary, dest)
         _seed_pack_peers_from_baselines(primary, dest, pack_queries=pack_queries)
+    # Mirror the shared primitives library exactly (also reverts any direct edit).
+    refresh_prims(primary, dest)
     _link_shared_pipeline_dirs(primary, dest)
     _link_shared_artifacts(primary, dest)
     return dest
@@ -263,6 +266,9 @@ def sync_owned_to_primary(
     copied: list[str] = []
     for src in _iter_owned_files(worktree, query, benchmark=benchmark):
         rel = src.relative_to(worktree)
+        # The shared primitives library reaches the primary only via primitive_publish.
+        if is_prims_path(str(rel)):
+            continue
         # Never sync another query id (defense in depth).
         other = query_id_from_rel(str(rel))
         if other is not None and other != int(query):

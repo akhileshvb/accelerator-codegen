@@ -19,6 +19,16 @@ Under `include/accelerator_codegen/stateful/`:
 - **`state/`** — `PartitionedStateStore`, invalidation plans, partition keys
 - **`maintenance/`** — `MaintenanceAction`, `ActionCostEstimate`, `CostModelParams`, `SelectMinCostAction`
 
+## Shared primitives library (`stateful/prims/`) — growable, but only through `primitive_publish`
+
+`include/accelerator_codegen/stateful/prims/` holds the generic, workload-agnostic data structures and value helpers accelerator state is built from (copy-on-write arrays/maps/record stores/blob maps, sorted/Fenwick/radix structures, `sql_date`, `sql_like`, exact decimal/int128). Catalogue and "Which one to use": `prims/README.md`.
+
+- **Search it first.** Build the state from existing primitives. Read the README, then the header comment (PURPOSE / COMPLEXITY / MEMORY / COW/THREADS / USE WHEN) of each candidate.
+- **Never edit `prims/`, `prims/README.md` or `tests/aux_state/test_prims.cpp` directly** (writes are denied; they are shared by every concurrent worker). To add a primitive: stage the new header, the full updated README and the full updated `test_prims.cpp` under `pipeline/prims_staging/<same repo-relative path>` and call the **`primitive_publish(files, rationale)`** tool. It checks additions-only, header comment, README row, tests, and no workload vocabulary; builds and runs `test_prims`; and only then makes it visible to everyone. After a successful publish your `prims/` copy is refreshed, so just `#include` it.
+- **Additions only.** New headers, or new members/lines in an existing header. Never change or remove an existing line, signature or behavior; prefer a new primitive over modifying an existing one.
+- **Generic only.** Name a primitive by what it is (`ShardedSortedMap`), never by who uses it. No table/column names, benchmark names or query numbers anywhere in it, comments included.
+- Workload-specific structures (an inverted index for one LIKE predicate, a query-specific cube layout) stay in your module, but must still be copy-on-write and built from primitives.
+
 ## Engine backends (`stateful/{engine}/`, `runtime/{engine}/`)
 
 Owned by the **engine_backend** pipeline (`workload_kind: engine_backend`), not per-query agents.

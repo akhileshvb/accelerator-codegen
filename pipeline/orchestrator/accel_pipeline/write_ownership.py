@@ -3,7 +3,10 @@
 Owned paths (this query's aux module / tests / cost model) may be written freely.
 Shared registration paths require the sticky shared-file lease and are blocked
 during optimization stages so concurrent workers cannot desync catalog wiring.
-Cross-query aux sources are never writable.
+Cross-query aux sources are never writable.  The shared primitives library
+(stateful/prims/, its README, tests/aux_state/test_prims.cpp) is never directly
+writable: agents stage candidates under pipeline/prims_staging/ and call
+primitive_publish.
 """
 
 from __future__ import annotations
@@ -13,6 +16,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from accel_pipeline.prims_library import DENY_MESSAGE as _PRIMS_DENY
+from accel_pipeline.prims_library import is_prims_path, is_staging_path
 from accel_pipeline.shared_file_lease import is_shared_path, shared_path_globs
 
 _OPTIMIZATION_STAGES = frozenset(
@@ -134,6 +139,12 @@ def write_allowed(
             False,
             f"{stage} may only write under pipeline/artifacts/** (got {rel})",
         )
+
+    # The shared primitives library changes only through primitive_publish.
+    if is_prims_path(rel):
+        return False, f"direct write denied: {rel}. {_PRIMS_DENY}"
+    if is_staging_path(rel):
+        return True, "prims-staging"
 
     if is_cross_query_path(repo_root, path, query=query):
         other = query_id_from_rel(rel)

@@ -20,7 +20,7 @@ Aux state must **materially accelerate** the query while remaining maintainable 
 
 ## Parameter generality applies to every family
 
-Whatever the family, the read algorithm must be exact for any parameter value (`hard_guidelines.md` §4). Coarse grains (months, buckets, precomputed value lists) are acceleration structure only: pair them with an exact residual (finer grain, Fenwick/range tree over the exact key, or bounded edge scan) rather than restricting the parameter domain. Key spaces are 64-bit, possibly sparse or negative; payload arithmetic is exact. Choose containers via `core/README.md` "Which one to use".
+Whatever the family, the read algorithm must be exact for any parameter value (`hard_guidelines.md` §4). Coarse grains (months, buckets, precomputed value lists) are acceleration structure only: pair them with an exact residual (finer grain, Fenwick/range tree over the exact key, or bounded edge scan) rather than restricting the parameter domain. Key spaces are 64-bit, possibly sparse or negative; payload arithmetic is exact. Choose containers via `prims/README.md` "Which one to use" (copy-on-write, built from `prims/`).
 
 ## Prohibited full-result cache (precise definition)
 
