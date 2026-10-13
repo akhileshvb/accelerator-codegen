@@ -206,6 +206,27 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "required": [],
         "description": "Official gate for this impl_* layer (impl_txn → engine_txn).",
     },
+    "primitive_publish": {
+        "type": "object",
+        "properties": {
+            "files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Repo-relative paths of the files to publish: new/extended headers under "
+                    "include/accelerator_codegen/stateful/prims/, that directory's README.md, and "
+                    "tests/aux_state/test_prims.cpp. Each is staged as a FULL file under "
+                    "pipeline/prims_staging/<same path>."
+                ),
+            },
+            "rationale": {
+                "type": "string",
+                "description": "One line: what the primitive is and why no existing primitive fits.",
+            },
+        },
+        "required": ["files", "rationale"],
+        "description": "Add a generic primitive to the shared library (additions only; built and tested first).",
+    },
     "request_structural_reanalysis": {
         "type": "object",
         "properties": {

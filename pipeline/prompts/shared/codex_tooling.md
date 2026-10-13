@@ -34,6 +34,7 @@ Call these **by tool name** on server `accel_pipeline`. Do **not** use `list_mcp
 | `begin_ab_trial` / `run_quick_benchmark` / `end_ab_trial` | Exploratory A/B vs **best_valid_score** — **honor the signal** |
 | `request_structural_reanalysis` | Aux structural redesign escape hatch |
 | `record_optimization_trap` | Optional: add a short recurring anti-pattern to shared negative memory (advisory only) |
+| `primitive_publish` | Add a generic primitive to the shared `stateful/prims/` library (stage files under `pipeline/prims_staging/`; additions only) |
 | `run_pipeline_command` | Allowlisted cmake/ctest only |
 
 If an MCP call fails, retry once; then fall back to Codex shell for build/ctest only — still prefer MCP for digests / A/B / correctness when the server is up.

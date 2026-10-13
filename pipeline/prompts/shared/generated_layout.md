@@ -13,7 +13,7 @@ Hand-written scaffolding stays in `include/accelerator_codegen/`:
 | Directory | Purpose |
 |-----------|---------|
 | `runtime/` | Engine hosts; DuckDB-private scan under `runtime/duckdb/`; other engines under `runtime/{engine}/` |
-| `stateful/` | Aux-state substrate (`core/`, `state/`, `maintenance/`) + per-engine adapters |
+| `stateful/` | Aux-state substrate (`core/`, `state/`, `maintenance/`) + shared primitives library (`prims/`, grows only via `primitive_publish`) + per-engine adapters |
 | `harness/` | Differential + calibration helpers |
 
 Per-engine adapters (`runtime/{engine}/`, `stateful/{engine}/`, optional `src/generated/{engine}/`) are owned by `workload_kind: engine_backend`, not query agents.

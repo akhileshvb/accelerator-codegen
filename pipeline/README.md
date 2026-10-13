@@ -90,6 +90,22 @@ file and the backends build with every `q<N>/` removed.
 and `engine_build` gates); `scripts/run_duckdb_registry_checks.sh` runs the
 DuckDB accelerators end to end.
 
+## Shared primitives library (`stateful/prims/`)
+
+Accelerator state is versioned copy-on-write and built from the generic, workload-agnostic
+primitives in `include/accelerator_codegen/stateful/prims/` (catalogue: its `README.md`).
+The library grows through the `primitive_publish` tool (aux_state agents), the C++ analogue of
+the Verus `prooflib_publish`: the agent stages the new header, the updated README and
+`tests/aux_state/test_prims.cpp` under `pipeline/prims_staging/<repo path>`; under an exclusive
+lock (`pipeline/.locks/prims.lock`) the tool checks additions-only, header comment / README row /
+tests, and the workload-vocabulary check (`scripts/check_backend_query_free.py`), writes into the
+primary tree with a backup, builds and runs `test_prims` (and every target that includes a
+changed existing header), restores on failure, and appends `pipeline/prims_provenance.jsonl`.
+Direct writes to those paths are denied (`write_ownership.py`); `refresh_prims` mirrors the
+primary's copy into each worker worktree at stage start and after a publish; worktree merge-back
+never copies `prims/`. Gate `prims_tests` (`pipeline/gates/run_prims_tests.sh`) builds and runs
+`test_prims`, checks the vocabulary and that the library only grew relative to HEAD.
+
 ## Agent backends
 
 Set `provider` in `config/models.yaml` (and optional per-stage overrides via `stage_providers`):

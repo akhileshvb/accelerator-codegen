@@ -31,7 +31,7 @@ SEC workloads use **SF3** as both iteration and production scale in this repo (`
 | SF1-only win | Fails at SF20 because |
 |--------------|----------------------|
 | `std::vector` sized to SF1 max groups | Memory and cache blow up |
-| Per-row `unordered_map<std::string,…>` / node-based maps | Memory (tens of B/row overhead) and probe cost dominate at scale; use columnar `core/` primitives |
+| Per-row `unordered_map<std::string,…>` / node-based maps | Memory (tens of B/row overhead) and probe cost dominate at scale; use columnar `prims/` primitives |
 | 32-bit keys/offsets, bit-packed ids, fixed dense caps | Silent overflow / collisions at SF1000 (e.g. a fact-table key reaching ~6e9) |
 | Copy whole state per write batch / transient build copies | O(state) per write, 2-5x peak memory |
 | Scan all partition slots / all groups | Read cost ∝ total state, not query window |

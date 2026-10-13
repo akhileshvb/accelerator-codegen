@@ -17,6 +17,7 @@
 ## Must not modify
 
 - `stateful/core|state|maintenance` (fixed substrate)
+- `stateful/prims/` (shared primitives library; read-only for this pipeline. It grows only through `primitive_publish`, which aux_state query agents use; additions only, generic only)
 - Per-query `src/generated/{benchmark}/q{N}/**` — layer tests must **not** depend on these, and backend files must not name a query (no per-query arrays, switches, function lists, includes)
 - **Any other engine’s tree** (`runtime|stateful|{other}/`). From-scratch: substrate
   + templates + this engine’s SDK hints only.

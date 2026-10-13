@@ -48,3 +48,9 @@ tools/verus/
 
 # orchestrator virtualenv (the MCP server launcher prefers it)
 pipeline/orchestrator/.venv/
+
+# Claude Code local state and worktrees
+.claude/
+
+# Primitive staging area (agents stage candidate prims files here; primitive_publish is the only way in)
+pipeline/prims_staging/

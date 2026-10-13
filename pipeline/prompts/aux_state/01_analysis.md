@@ -70,7 +70,9 @@ Read `taxonomy_index.md` first; open `aux_state_taxonomy.md` and `aux_state_desi
 
 Keep prose fields concise (≤3 sentences each unless schema requires lists).
 
-**Generality in the design (required):** for the selected candidate, list in `fallback_conditions`/`notes` (a) each template parameter and how an arbitrary value (incl. NULL, off-domain) is answered exactly and fast when not precomputed, (b) key/offset width and capacity at SF1000+, (c) bytes/row estimate and chosen `core/` primitives (`core/README.md` "Which one to use"), (d) per-write cost for each mutation. Reject candidates that need a parameter-domain enumeration, narrow key packing, or whole-state copy/rebuild per write.
+**Generality in the design (required):** for the selected candidate, list in `fallback_conditions`/`notes` (a) each template parameter and how an arbitrary value (incl. NULL, off-domain) is answered exactly and fast when not precomputed, (b) key/offset width and capacity at SF1000+, (c) bytes/row estimate and chosen `prims/` primitives (`prims/README.md` "Which one to use"), (d) per-write cost for each mutation. Reject candidates that need a parameter-domain enumeration, narrow key packing, or whole-state copy/rebuild per write.
+
+**Primitives (optional fields `primitives_used[]`, `primitives_proposed[]`).** Search `prims/README.md` first. List each existing primitive the design uses with `name` and `why`. If the state needs a container no primitive covers, list a `primitives_proposed[]` entry: `name` (generic, by what it is), `description` (generic, no table/column/query words), `api_sketch`, `closest_existing` (which existing primitive is nearest) and `why_not_closest`. Proposed primitives are written and published (`primitive_publish`) in implementation, before use. Workload-specific structures stay in the module (still COW, built from primitives) and are not proposed.
 
 ### 5. Performance hypotheses
 

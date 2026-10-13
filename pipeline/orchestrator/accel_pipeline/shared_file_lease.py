@@ -34,6 +34,10 @@ DEFAULT_SHARED_PATH_GLOBS = (
     "tests/test_support/cross_accel_helpers.hpp",
     "benchmarks/tpch/single-threaded/tpch_arg_variants.cpp",
     "benchmarks/tpch/single-threaded/tpch_arg_variants.hpp",
+    # Shared primitives library: changed only by primitive_publish; builds that
+    # read it take the lease so a publish cannot land mid-compile.
+    "include/accelerator_codegen/stateful/prims/**",
+    "tests/aux_state/test_prims.cpp",
 )
 
 _LOCK_DIRNAME = ".locks"

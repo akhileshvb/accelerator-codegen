@@ -16,7 +16,7 @@ Under `src/generated/{benchmark}/q{N}/postgres/matview/` **only**:
 ## Forbidden
 
 - C++ (`module.cpp`, kernels, AuxQueryModule, extension SRFs) for this workload
-- Editing `aux/`, `base/`, `stateful/`, `runtime/`, catalog, or CMake for matview work
+- Editing `aux/`, `base/`, `stateful/` (including `stateful/prims/`, which changes only through `primitive_publish`), `runtime/`, catalog, or CMake for matview work
 - Incremental delta maintenance other than Postgres `REFRESH` (which replaces MV contents)
 - Shared cross-query matviews (one MV suite per query)
 - Non-Postgres engines

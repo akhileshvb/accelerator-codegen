@@ -33,7 +33,8 @@ Hard gates after this stage verify **correctness** and run a **fair SF1 bench sw
      8. Writes: per-write cost O(touched); no whole-state copy per batch; no `RebuildAll` for routine insert/delete/update.
      9. Parameters not precomputed take a fast exact path, not a per-call full rebuild.
      10. Numerics: no `double` for decimals/thresholds, no int128 -> int64 truncation, engine rounding rules matched.
-     11. Evidence: host `test_<engine>_<bench>_params` (plain, `--data-perturb`, `--wide-keys`, `--negative-keys`) run or equivalent tests present; state results.
+     11. Copy-on-write hygiene: report as findings (file:line) any hand-rolled sharded/chunked COW container in the module, any whole-state copy per commit (e.g. `make_shared<State>(*old)` over O(rows) members, copying a map/vector of all rows to apply a delta), and any container duplicating what a `prims/` primitive already covers (name the primitive). Workload-specific structures built from primitives and still COW are fine. List them in `scale_review.cow_findings`.
+     12. Evidence: host `test_<engine>_<bench>_params` (plain, `--data-perturb`, `--wide-keys`, `--negative-keys`) run or equivalent tests present; state results.
 4. **Harness / benchmark fairness** — confirm the timed path is the real production query (consume results; no result-cache-as-aux; no skipping work the base path does). Flag any harness gaming.
 5. Write `{{artifacts_path}}/audit_result.json` and `{{artifacts_path}}/final_audit.md` with clear verdicts:
 
@@ -52,6 +53,7 @@ Hard gates after this stage verify **correctness** and run a **fair SF1 bench sw
     "likely_scales": true,
     "bytes_per_row_estimate": 0.0,
     "generality_failures": [],
+    "cow_findings": [],
     "risks": [],
     "notes": ""
   },
@@ -65,7 +67,7 @@ Hard gates after this stage verify **correctness** and run a **fair SF1 bench sw
 
 Optional: `request_gate` `fairness` is a **heuristic** static scan (informational). Do not treat substring false-positives as blockers; explain them in the audit.
 
-Post-stage hard gates: `aux_correctness`, `aux_unit`, `aux_mutation_scenarios`, `aux_bench_sweep`.
+Post-stage hard gates: `aux_correctness`, `aux_unit`, `prims_tests`, `aux_mutation_scenarios`, `aux_bench_sweep`.
 
 {{shared_docs_reference}}
 
