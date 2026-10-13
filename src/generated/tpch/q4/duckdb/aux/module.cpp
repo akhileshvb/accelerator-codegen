@@ -248,97 +248,6 @@ bool LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days) {
   return commitdate_days < receiptdate_days;
 }
 
-// ---- eligibility index helpers (see TpchQ4EligIndex in module.hpp) ----
-inline uint32_t EligShard(int64_t key) {
-  const uint64_t h = static_cast<uint64_t>(key) * 0x9E3779B97F4A7C15ULL;
-  return static_cast<uint32_t>(h >> 48);
-}
-
-struct EligKeyLess {
-  bool operator()(const TpchQ4EligEntry &a, int64_t key) const {
-    return a.key < key;
-  }
-};
-
-const TpchQ4EligEntry *EligFindIn(const TpchQ4EligLeaf *leaf, int64_t key) {
-  if (!leaf)
-    return nullptr;
-  auto it = std::lower_bound(leaf->begin(), leaf->end(), key, EligKeyLess{});
-  return (it != leaf->end() && it->key == key) ? &*it : nullptr;
-}
-
-// Copy-on-write writer over a published (immutable) index: only touched
-// leaves and their mid arrays are copied; everything else stays shared.
-class TpchQ4EligTxn {
-public:
-  explicit TpchQ4EligTxn(const TpchQ4EligIndex &base) : top_(base) {}
-
-  const TpchQ4OrderInfo *Find(int64_t key) const {
-    const auto *e = EligFindIn(Current(EligShard(key)), key);
-    return e ? &e->info : nullptr;
-  }
-
-  void Set(int64_t key, const TpchQ4OrderInfo &info) {
-    auto &leaf = Mutable(EligShard(key));
-    auto it = std::lower_bound(leaf.begin(), leaf.end(), key, EligKeyLess{});
-    if (it != leaf.end() && it->key == key)
-      it->info = info;
-    else
-      leaf.insert(it, TpchQ4EligEntry{key, info});
-  }
-
-  void Erase(int64_t key) {
-    const auto shard = EligShard(key);
-    if (!EligFindIn(Current(shard), key))
-      return;
-    auto &leaf = Mutable(shard);
-    auto it = std::lower_bound(leaf.begin(), leaf.end(), key, EligKeyLess{});
-    if (it != leaf.end() && it->key == key)
-      leaf.erase(it);
-  }
-
-  TpchQ4EligIndex Finish() {
-    std::unordered_map<uint32_t, std::shared_ptr<TpchQ4EligMid>> mids;
-    for (auto &entry : leaves_) {
-      const uint32_t hi = entry.first >> 8, lo = entry.first & 255;
-      auto &mid = mids[hi];
-      if (!mid) {
-        mid = top_.mids[hi] ? std::make_shared<TpchQ4EligMid>(*top_.mids[hi])
-                            : std::make_shared<TpchQ4EligMid>();
-      }
-      if (entry.second->empty())
-        mid->leaves[lo] = nullptr;
-      else
-        mid->leaves[lo] = std::move(entry.second);
-    }
-    for (auto &entry : mids)
-      top_.mids[entry.first] = std::move(entry.second);
-    leaves_.clear();
-    return std::move(top_);
-  }
-
-private:
-  const TpchQ4EligLeaf *Current(uint32_t shard) const {
-    auto it = leaves_.find(shard);
-    if (it != leaves_.end())
-      return it->second.get();
-    const auto &mid = top_.mids[shard >> 8];
-    return mid ? mid->leaves[shard & 255].get() : nullptr;
-  }
-  TpchQ4EligLeaf &Mutable(uint32_t shard) {
-    auto it = leaves_.find(shard);
-    if (it != leaves_.end())
-      return *it->second;
-    const auto *cur = Current(shard);
-    auto copy = cur ? std::make_shared<TpchQ4EligLeaf>(*cur)
-                    : std::make_shared<TpchQ4EligLeaf>();
-    return *leaves_.emplace(shard, std::move(copy)).first->second;
-  }
-
-  TpchQ4EligIndex top_;
-  std::unordered_map<uint32_t, std::shared_ptr<TpchQ4EligLeaf>> leaves_;
-};
-
 bool ReadOrder(const core::AuxRow &row, int64_t &orderkey,
                int32_t &orderdate_days, std::string &orderpriority) {
   return IntCell(row, 0, orderkey) && DateCell(row, 1, orderdate_days) &&
@@ -346,15 +255,6 @@ bool ReadOrder(const core::AuxRow &row, int64_t &orderkey,
 }
 
 }  // namespace
-
-const TpchQ4OrderInfo *TpchQ4EligIndex::Find(int64_t key) const {
-  const auto shard = EligShard(key);
-  const auto &mid = mids[shard >> 8];
-  if (!mid)
-    return nullptr;
-  const auto *e = EligFindIn(mid->leaves[shard & 255].get(), key);
-  return e ? &e->info : nullptr;
-}
 
 int32_t TpchQ4DaysFromYmd(int32_t year, unsigned month, unsigned day) {
   return DaysFromCivil(year, month, day);
@@ -643,14 +543,14 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
       adj[info.priority_idx] += by;
   };
 
-  TpchQ4EligTxn elig(elig_payload->order_eligibility);
+  TpchQ4EligIndex::Txn elig(elig_payload->order_eligibility);
   for (const auto orderkey : touched_orders) {
     const auto *found = elig.Find(orderkey);
     const bool existed = found != nullptr;
     bool exists = existed;
     TpchQ4OrderInfo info;
     if (found) {
-      info = *found;
+      info = found->value;
       if (info.qualifying_count > 0)
         adjust(info, -1);
     }
@@ -677,7 +577,7 @@ TpchQ4Module::StageMaintenance(core::AuxEngineServices &services,
         elig.Erase(orderkey);
       continue;
     }
-    elig.Set(orderkey, info);
+    elig.Upsert({orderkey, info});
     if (info.qualifying_count > 0)
       adjust(info, +1);
   }
@@ -921,14 +821,13 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
 
   // First scan: orders go straight into hash-sharded vectors (no intermediate
   // 30M-entry map); counts are filled in by the lineitem scan.
-  std::vector<TpchQ4EligLeaf> shards(65536);
+  TpchQ4EligIndex::Builder shards;
   bool have_date_bounds = false;
 
   initial_scan->ScanOrders([&](const TpchQ4OrderInput &input) {
     int32_t pidx = TpchQ4PriorityIndex(input.orderpriority, state.priority_names,
                                         state.priority_map);
-    shards[EligShard(input.key)].push_back(
-        TpchQ4EligEntry{input.key, TpchQ4OrderInfo{input.orderdate_days, pidx, 0}});
+    shards.Add({input.key, TpchQ4OrderInfo{input.orderdate_days, pidx, 0}});
     if (!have_date_bounds) {
       state.min_orderdate_days = input.orderdate_days;
       state.max_orderdate_days = input.orderdate_days;
@@ -940,11 +839,7 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
           std::max(state.max_orderdate_days, input.orderdate_days);
     }
   });
-  for (auto &shard : shards)
-    std::sort(shard.begin(), shard.end(),
-              [](const TpchQ4EligEntry &a, const TpchQ4EligEntry &b) {
-                return a.key < b.key;
-              });
+  shards.Sort();
 
   if (state.min_orderdate_days > state.max_orderdate_days) {
     state.min_orderdate_days = 0;
@@ -955,11 +850,8 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   initial_scan->ScanLineitems([&](const TpchQ4LineitemInput &input) {
     if (!LineitemQualifies(input.commitdate_days, input.receiptdate_days))
       return;
-    auto &shard = shards[EligShard(input.orderkey)];
-    auto it = std::lower_bound(shard.begin(), shard.end(), input.orderkey,
-                               EligKeyLess{});
-    if (it != shard.end() && it->key == input.orderkey)
-      it->info.qualifying_count += 1;
+    if (auto *entry = shards.Find(input.orderkey))
+      entry->value.qualifying_count += 1;
   });
 
   // Build segment tree (flat: node * stride + priority)
@@ -972,20 +864,18 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
   state.tree.assign(static_cast<std::size_t>(state.tree_size) * 2 * num_p, 0);
 
   // Populate leaves
-  for (const auto &shard : shards) {
-    for (const auto &entry : shard) {
-      const auto &info = entry.info;
-      if (info.qualifying_count <= 0)
-        continue;
-      int32_t ord = info.orderdate_days - state.min_orderdate_days;
-      if (ord < 0 || ord >= static_cast<int32_t>(state.tree_size))
-        continue;
-      uint32_t leaf = LeafNode(state.tree_size, ord);
-      if (info.priority_idx >= 0 &&
-          info.priority_idx < static_cast<int32_t>(num_p))
-        state.tree[static_cast<std::size_t>(leaf) * num_p + info.priority_idx] += 1;
-    }
-  }
+  shards.ForEach([&](const TpchQ4EligIndex::Element &entry) {
+    const auto &info = entry.value;
+    if (info.qualifying_count <= 0)
+      return;
+    int32_t ord = info.orderdate_days - state.min_orderdate_days;
+    if (ord < 0 || ord >= static_cast<int32_t>(state.tree_size))
+      return;
+    uint32_t leaf = LeafNode(state.tree_size, ord);
+    if (info.priority_idx >= 0 &&
+        info.priority_idx < static_cast<int32_t>(num_p))
+      state.tree[static_cast<std::size_t>(leaf) * num_p + info.priority_idx] += 1;
+  });
 
   // Populate internal nodes
   for (uint32_t i = state.tree_size - 1; i > 0; i--)
@@ -995,18 +885,7 @@ TpchQ4State TpchQ4Module::BuildState(core::AuxEngineServices &services) const {
           state.tree[static_cast<std::size_t>(i * 2 + 1) * num_p + pi];
 
   // Pack shards into the immutable index (moves, no copies).
-  for (uint32_t hi = 0; hi < 256; ++hi) {
-    std::shared_ptr<TpchQ4EligMid> mid;
-    for (uint32_t lo = 0; lo < 256; ++lo) {
-      auto &shard = shards[(hi << 8) | lo];
-      if (shard.empty())
-        continue;
-      if (!mid)
-        mid = std::make_shared<TpchQ4EligMid>();
-      mid->leaves[lo] = std::make_shared<const TpchQ4EligLeaf>(std::move(shard));
-    }
-    state.order_eligibility.mids[hi] = std::move(mid);
-  }
+  state.order_eligibility = shards.Finish();
   return state;
 }
 
