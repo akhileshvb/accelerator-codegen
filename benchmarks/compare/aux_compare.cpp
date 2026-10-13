@@ -60,8 +60,11 @@
 // ACCEL_RF_ONLY=1: RF1 / RF2 commits only, no dimension point writes.
 // ACCEL_RF_BATCH_ORDERS=B (default 1): each RF1 / RF2 commit inserts / deletes B orders with their
 // lineitems instead of one (the TPC-H refresh functions move 1500 x SF orders each).
+//   aux_compare tpch <db> <phase> <spec.tsv> <streams> <runs> <sf> [check=1]: the TPC-H power and throughput
+// tests (see Tpch).
 // Output: one JSON object on stdout.
 #include "accelerator_codegen/runtime/duckdb/duckdb_runtime.hpp"
+#include "accelerator_codegen/runtime/catalog/shared_query_engine.hpp"
 #include "accelerator_codegen/runtime/duckdb/register.hpp"
 #include "accelerator_codegen/stateful/core/aux_execute_stats.hpp"
 #include "accelerator_codegen/stateful/core/aux_maintenance_decision_log.hpp"
@@ -1259,6 +1262,286 @@ int Multi(const std::string &path, const std::string &phase, const std::string &
   return 0;
 }
 
+// The query order of each TPC-H query stream (qgen's permute.h, spec Appendix A): stream 0 is the power test's,
+// streams 1..S the throughput test's.
+constexpr int kStreamOrder[41][22] = {
+    {14, 2, 9, 20, 6, 17, 18, 8, 21, 13, 3, 22, 16, 4, 11, 15, 1, 10, 19, 5, 7, 12},
+    {21, 3, 18, 5, 11, 7, 6, 20, 17, 12, 16, 15, 13, 10, 2, 8, 14, 19, 9, 22, 1, 4},
+    {6, 17, 14, 16, 19, 10, 9, 2, 15, 8, 5, 22, 12, 7, 13, 18, 1, 4, 20, 3, 11, 21},
+    {8, 5, 4, 6, 17, 7, 1, 18, 22, 14, 9, 10, 15, 11, 20, 2, 21, 19, 13, 16, 12, 3},
+    {5, 21, 14, 19, 15, 17, 12, 6, 4, 9, 8, 16, 11, 2, 10, 18, 1, 13, 7, 22, 3, 20},
+    {21, 15, 4, 6, 7, 16, 19, 18, 14, 22, 11, 13, 3, 1, 2, 5, 8, 20, 12, 17, 10, 9},
+    {10, 3, 15, 13, 6, 8, 9, 7, 4, 11, 22, 18, 12, 1, 5, 16, 2, 14, 19, 20, 17, 21},
+    {18, 8, 20, 21, 2, 4, 22, 17, 1, 11, 9, 19, 3, 13, 5, 7, 10, 16, 6, 14, 15, 12},
+    {19, 1, 15, 17, 5, 8, 9, 12, 14, 7, 4, 3, 20, 16, 6, 22, 10, 13, 2, 21, 18, 11},
+    {8, 13, 2, 20, 17, 3, 6, 21, 18, 11, 19, 10, 15, 4, 22, 1, 7, 12, 9, 14, 5, 16},
+    {6, 15, 18, 17, 12, 1, 7, 2, 22, 13, 21, 10, 14, 9, 3, 16, 20, 19, 11, 4, 8, 5},
+    {15, 14, 18, 17, 10, 20, 16, 11, 1, 8, 4, 22, 5, 12, 3, 9, 21, 2, 13, 6, 19, 7},
+    {1, 7, 16, 17, 18, 22, 12, 6, 8, 9, 11, 4, 2, 5, 20, 21, 13, 10, 19, 3, 14, 15},
+    {21, 17, 7, 3, 1, 10, 12, 22, 9, 16, 6, 11, 2, 4, 5, 14, 8, 20, 13, 18, 15, 19},
+    {2, 9, 5, 4, 18, 1, 20, 15, 16, 17, 7, 21, 13, 14, 19, 8, 22, 11, 10, 3, 12, 6},
+    {16, 9, 17, 8, 14, 11, 10, 12, 6, 21, 7, 3, 15, 5, 22, 20, 1, 13, 19, 2, 4, 18},
+    {1, 3, 6, 5, 2, 16, 14, 22, 17, 20, 4, 9, 10, 11, 15, 8, 12, 19, 18, 13, 7, 21},
+    {3, 16, 5, 11, 21, 9, 2, 15, 10, 18, 17, 7, 8, 19, 14, 13, 1, 4, 22, 20, 6, 12},
+    {14, 4, 13, 5, 21, 11, 8, 6, 3, 17, 2, 20, 1, 19, 10, 9, 12, 18, 15, 7, 22, 16},
+    {4, 12, 22, 14, 5, 15, 16, 2, 8, 10, 17, 9, 21, 7, 3, 6, 13, 18, 11, 20, 19, 1},
+    {16, 15, 14, 13, 4, 22, 18, 19, 7, 1, 12, 17, 5, 10, 20, 3, 9, 21, 11, 2, 6, 8},
+    {20, 14, 21, 12, 15, 17, 4, 19, 13, 10, 11, 1, 16, 5, 18, 7, 8, 22, 9, 6, 3, 2},
+    {16, 14, 13, 2, 21, 10, 11, 4, 1, 22, 18, 12, 19, 5, 7, 8, 6, 3, 15, 20, 9, 17},
+    {18, 15, 9, 14, 12, 2, 8, 11, 22, 21, 16, 1, 6, 17, 5, 10, 19, 4, 20, 13, 3, 7},
+    {7, 3, 10, 14, 13, 21, 18, 6, 20, 4, 9, 8, 22, 15, 2, 1, 5, 12, 19, 17, 11, 16},
+    {18, 1, 13, 7, 16, 10, 14, 2, 19, 5, 21, 11, 22, 15, 8, 17, 20, 3, 4, 12, 6, 9},
+    {13, 2, 22, 5, 11, 21, 20, 14, 7, 10, 4, 9, 19, 18, 6, 3, 1, 8, 15, 12, 17, 16},
+    {14, 17, 21, 8, 2, 9, 6, 4, 5, 13, 22, 7, 15, 3, 1, 18, 16, 11, 10, 12, 20, 19},
+    {10, 22, 1, 12, 13, 18, 21, 20, 2, 14, 16, 7, 15, 3, 4, 17, 5, 19, 6, 8, 9, 11},
+    {10, 8, 9, 18, 12, 6, 1, 5, 20, 11, 17, 22, 16, 3, 13, 2, 15, 21, 14, 19, 7, 4},
+    {7, 17, 22, 5, 3, 10, 13, 18, 9, 1, 14, 15, 21, 19, 16, 12, 8, 6, 11, 20, 4, 2},
+    {2, 9, 21, 3, 4, 7, 1, 11, 16, 5, 20, 19, 18, 8, 17, 13, 10, 12, 15, 6, 14, 22},
+    {15, 12, 8, 4, 22, 13, 16, 17, 18, 3, 7, 5, 6, 1, 9, 11, 21, 10, 14, 20, 19, 2},
+    {15, 16, 2, 11, 17, 7, 5, 14, 20, 4, 21, 3, 10, 9, 12, 8, 13, 6, 18, 19, 22, 1},
+    {1, 13, 11, 3, 4, 21, 6, 14, 15, 22, 18, 9, 7, 5, 10, 20, 12, 16, 17, 8, 19, 2},
+    {14, 17, 22, 20, 8, 16, 5, 10, 1, 13, 2, 21, 12, 9, 4, 18, 3, 7, 6, 19, 15, 11},
+    {9, 17, 7, 4, 5, 13, 21, 18, 11, 3, 22, 1, 6, 16, 20, 14, 15, 10, 8, 2, 12, 19},
+    {13, 14, 5, 22, 19, 11, 9, 6, 18, 15, 8, 10, 7, 4, 17, 16, 3, 1, 12, 2, 21, 20},
+    {20, 5, 4, 14, 11, 1, 6, 16, 8, 22, 7, 3, 2, 12, 21, 19, 17, 13, 10, 15, 18, 9},
+    {3, 7, 14, 15, 6, 5, 21, 20, 18, 10, 4, 16, 19, 1, 13, 9, 8, 17, 11, 12, 22, 2},
+    {13, 15, 17, 1, 22, 11, 3, 4, 7, 20, 14, 21, 9, 8, 2, 18, 16, 6, 10, 12, 5, 19}};
+
+std::string DoublesJson(const std::vector<double> &v) {
+  std::string j = "[";
+  for (std::size_t i = 0; i < v.size(); ++i)
+    j += (i ? "," : "") + std::to_string(v[i]);
+  return j + "]";
+}
+
+// aux_compare tpch <db> <phase> <spec.tsv> <streams> <runs> <sf> [check=1]
+// The TPC-H performance test (spec 5.3) on one process holding all 22 accelerators: <runs> runs back to back on the
+// same database and state, each a power test then a throughput test, as the specification's Run 1, Run 2.
+//   power test:      RF1, then the 22 queries of stream 0 in its order, one at a time, then RF2.
+//   throughput test: <streams> query streams (1..S, each its own order and parameters) concurrently, each on its own
+//                    connection, and one refresh stream applying S RF1 / RF2 pairs back to back.
+// spec.tsv: 22 lines, query 1..22 in order, "<accel_id>\t<baseline_kit>\t<cases.tsv>"; case run * (S + 1) + s is
+// the parameter set of stream s in run `run`.  The refresh functions are the dbgen update sets (ACCEL_RF_DIR,
+// ACCEL_RF_ONLY=1); run r uses sets r * (S + 1) + 1 .. (r + 1) * (S + 1): one for the power test, S for the
+// throughput test.  phase=accel: every commit maintains all 22 accelerators in one engine transaction; check=1: in the
+// power test each accelerator answer is compared (untimed) to DuckDB's on the same, unchanging state.
+// Metrics (spec 5.4), timing intervals in seconds:
+//   Power@Size      = 3600 * SF / (prod_i QI(i,0) * RI(1,0) * RI(2,0)) ^ (1/24), where a query interval below
+//                     max_i QI(i,0) / 1000 counts as max / 1000 (5.4.1.4); the unadjusted value is reported too
+//   Throughput@Size = S * 22 * 3600 / Ts * SF, Ts from the first query's start to the end of the last query stream or
+//                     the refresh stream, whichever is later
+//   QphH@Size       = sqrt(Power@Size * Throughput@Size)
+// One JSON line per run.
+int Tpch(const std::string &path, const std::string &phase, const std::string &spec_path, int streams, int runs,
+         double sf, bool check) {
+  Require(phase == "accel" || phase == "base" || phase == "stateless", "phase must be accel, base or stateless");
+  Require(streams >= 1 && streams <= 40, "streams must be 1..40 (the specification's permutations)");
+  Require(RfOnly() && !RfDir().empty(), "tpch needs the TPC-H update sets and no point writes (ACCEL_RF_DIR, ACCEL_RF_ONLY=1)");
+  const bool accel = phase == "accel", stateless = phase == "stateless";
+  const std::size_t per_run = static_cast<std::size_t>(streams) + 1;
+  std::vector<MultiSpec> specs;
+  {
+    std::ifstream in(spec_path);
+    Require(in.good(), "cannot read " + spec_path);
+    for (std::string line; std::getline(in, line);) {
+      if (line.empty() || line[0] == '#')
+        continue;
+      std::istringstream fields(line);
+      MultiSpec m;
+      std::string cases_path;
+      Require(std::getline(fields, m.id, '\t') && std::getline(fields, m.base_kit, '\t') && std::getline(fields, cases_path),
+              spec_path + ": want <accel_id>\t<baseline_kit>\t<cases.tsv>");
+      m.glue = kit::Find(m.base_kit);
+      Require(m.glue != nullptr, "no baseline kit " + m.base_kit);
+      m.cases = ReadCases(cases_path);
+      Require(m.cases.size() >= per_run * runs, cases_path + ": want a parameter set per (run, stream)");
+      m.fn = accel ? FunctionFor(m.id) : stateless ? StatelessFunctionFor(m.id) : std::string();
+      specs.push_back(std::move(m));
+    }
+  }
+  Require(specs.size() == 22, spec_path + ": want the 22 TPC-H queries, 1..22 in order");
+  duckdb::DuckDB db(path);
+  duckdb::Connection wc(db), qc(db);
+  accelerator_codegen::RegisterAcceleratorFunctions(qc);
+  ApplyDuckdbThreads(qc);
+  if (const char *limit = std::getenv("ACCEL_COMPARE_DUCKDB_MEMORY"); limit && *limit) {
+    auto r = qc.Query(std::string("SET memory_limit = '") + limit + "'");
+    Require(r && !r->HasError(), r ? r->GetError() : "memory_limit");
+  }
+  const std::size_t pairs = per_run * runs;
+  Writes writes(qc, 2 * pairs, 1, RfBatchOrders());
+  Require(writes.SetsLoaded() >= pairs, "the runs need " + std::to_string(pairs) + " update sets but only " +
+                                            std::to_string(writes.SetsLoaded()) + " are available (scripts/gen_tpch_refresh_sets.sh)");
+  std::vector<std::unique_ptr<DuckdbRuntime>> runtimes;
+  std::vector<DuckdbRuntime *> live;
+  std::string builds = "{";
+  double build_ms_total = 0;
+  if (accel) {
+    ApplyDuckdbBuildThreads(qc);
+    for (auto &m : specs) {
+      runtimes.push_back(std::make_unique<DuckdbRuntime>(wc, EntryFor(m.id), 10.0));
+      runtimes.back()->EnableMutationCapture();
+      const auto b0 = Clock::now();
+      runtimes.back()->Build();
+      const double ms = Us(b0, Clock::now()) / 1000;
+      build_ms_total += ms;
+      builds += (builds.size() > 1 ? "," : "") + Json(m.id) + ":" + std::to_string(ms);
+      std::cerr << "built " << m.id << " in " << ms / 1000 << "s, rss " << RssMb().first / 1024 << " GB" << std::endl;
+      live.push_back(runtimes.back().get());
+    }
+    ApplyDuckdbThreads(qc);
+  }
+  builds += "}";
+
+  // one refresh function: its kind (rf1 / rf2), commit time, and in the accel phase the maintenance actions it caused
+  // ("RebuildAll:3,ApplyDelta:17": accelerators per action, NoOp left out)
+  struct Refresh {
+    std::string kind, actions;
+    double us = 0;
+  };
+  const auto refresh = [&]() {
+    const auto [kind, sql] = writes.Next();
+    Refresh r{kind, "", 0};
+    DuckdbRuntime::WriteAllTiming timing;
+    const auto t0 = Clock::now();
+    if (accel) {
+      DuckdbRuntime::ApplyWriteAll(live, sql, &timing);
+    } else {
+      auto res = wc.Query("BEGIN; " + sql + "; COMMIT;");
+      if (res && res->HasError()) {
+        wc.Query("ROLLBACK");
+        throw std::runtime_error(kind + ": " + res->GetError());
+      }
+    }
+    r.us = Us(t0, Clock::now());
+    if (accel) {
+      std::map<std::string, int> n;
+      for (const auto &a : timing.action)
+        if (a != "none" && a != "NoOp")
+          ++n[a];
+      for (const auto &[a, k] : n)
+        r.actions += (r.actions.empty() ? "" : ",") + a + ":" + std::to_string(k);
+    }
+    return r;
+  };
+  const auto query = [&](duckdb::Connection &c, const MultiSpec &m, const Case &cs) {
+    const auto t0 = Clock::now();
+    if (accel || stateless)
+      RunAccel(c, m.fn, cs.accel_args);
+    else
+      RunBaseline(c, m.glue->query_sql, cs.base_args);
+    return Us(t0, Clock::now());
+  };
+  const auto refresh_json = [](const std::vector<Refresh> &rs) {
+    std::string j = "[";
+    for (std::size_t i = 0; i < rs.size(); ++i)
+      j += std::string(i ? "," : "") + "{\"kind\":" + Json(rs[i].kind) + ",\"us\":" + std::to_string(rs[i].us) +
+           ",\"actions\":" + Json(rs[i].actions) + "}";
+    return j + "]";
+  };
+
+  for (int run = 0; run < runs; ++run) {
+    // ---- power test: RF1, stream 0, RF2
+    std::vector<Refresh> power_rf;
+    std::vector<double> qi(22, 0); // by query number - 1
+    std::string mismatched;
+    std::vector<double> fallbacks_by_query(22, 0); // accelerator reads that fell back to DuckDB, per power query
+    power_rf.push_back(refresh());
+    Require(power_rf.back().kind == "rf1", "power test: the first refresh must be RF1");
+    core::ResetAuxExecuteCounts();
+    for (const int q : kStreamOrder[0]) {
+      const auto &m = specs[q - 1];
+      const auto &cs = m.cases[run * per_run];
+      qi[q - 1] = query(qc, m, cs);
+      fallbacks_by_query[q - 1] = static_cast<double>(core::ReadAuxExecuteCounts().fallback);
+      if (check && (accel || stateless)) {
+        auto a = Canon(*RunAccel(qc, m.fn, cs.accel_args)), b = Canon(*RunBaseline(qc, m.glue->query_sql, cs.base_args));
+        std::sort(a.begin(), a.end());
+        std::sort(b.begin(), b.end());
+        if (a != b)
+          mismatched += (mismatched.empty() ? "" : ",") + std::to_string(q);
+      }
+      core::ResetAuxExecuteCounts(); // per query: only its timed read counts
+    }
+    power_rf.push_back(refresh());
+    const double qmax = *std::max_element(qi.begin(), qi.end());
+    double log_raw = 0, log_adj = 0;
+    int adjusted = 0;
+    for (const double us : qi) {
+      log_raw += std::log(us / 1e6);
+      log_adj += std::log(std::max(us, qmax / 1000) / 1e6);
+      adjusted += us < qmax / 1000 ? 1 : 0;
+    }
+    for (const auto &r : power_rf) {
+      log_raw += std::log(r.us / 1e6);
+      log_adj += std::log(r.us / 1e6);
+    }
+    const double power = 3600 * sf / std::exp(log_adj / 24), power_raw = 3600 * sf / std::exp(log_raw / 24);
+
+    // ---- throughput test: streams 1..S and the refresh stream, concurrently
+    std::vector<std::vector<double>> stream_qi(streams, std::vector<double>(22, 0));
+    std::vector<double> stream_s(streams, 0);
+    std::vector<std::string> stream_errors(streams);
+    std::vector<Refresh> tput_rf;
+    std::string refresh_error;
+    double refresh_s = 0;
+    core::ResetAuxExecuteCounts();
+    const auto t_start = Clock::now();
+    std::vector<std::thread> threads;
+    for (int s = 1; s <= streams; ++s)
+      threads.emplace_back([&, s] {
+        try {
+          duckdb::Connection c(db);
+          for (const int q : kStreamOrder[s])
+            stream_qi[s - 1][q - 1] = query(c, specs[q - 1], specs[q - 1].cases[run * per_run + s]);
+        } catch (const std::exception &e) {
+          stream_errors[s - 1] = e.what();
+        }
+        stream_s[s - 1] = Us(t_start, Clock::now()) / 1e6;
+      });
+    threads.emplace_back([&] {
+      try {
+        for (int k = 0; k < 2 * streams; ++k)
+          tput_rf.push_back(refresh());
+      } catch (const std::exception &e) {
+        refresh_error = e.what();
+      }
+      refresh_s = Us(t_start, Clock::now()) / 1e6;
+    });
+    for (auto &t : threads)
+      t.join();
+    const auto tput_counts = core::ReadAuxExecuteCounts();
+    const double queries_s = *std::max_element(stream_s.begin(), stream_s.end());
+    const double ts = std::max(queries_s, refresh_s);
+    const double throughput = streams * 22 * 3600 / ts * sf;
+    std::string errors;
+    for (int s = 0; s < streams; ++s)
+      if (!stream_errors[s].empty())
+        errors += (errors.empty() ? "" : "; ") + ("stream " + std::to_string(s + 1) + ": " + stream_errors[s]);
+    if (!refresh_error.empty())
+      errors += (errors.empty() ? "" : "; ") + ("refresh stream: " + refresh_error);
+    std::string sq = "[";
+    for (int s = 0; s < streams; ++s)
+      sq += (s ? "," : "") + DoublesJson(stream_qi[s]);
+    sq += "]";
+    std::cout << "{\"mode\":\"tpch\",\"phase\":" << Json(phase) << ",\"run\":" << run << ",\"sf\":" << sf
+              << ",\"streams\":" << streams << ",\"store\":" << Json(!accel ? "none" : live.front()->UsesVerusStore() ? "verus" : "cpp")
+              << ",\"build_ms\":" << build_ms_total << ",\"build_ms_by_accel\":" << builds << "," << writes.RfInfoJson()
+              << ",\"power_at_size\":" << power << ",\"power_at_size_unadjusted\":" << power_raw
+              << ",\"power_queries_adjusted\":" << adjusted << ",\"power_query_us\":" << DoublesJson(qi)
+              << ",\"power_fallbacks_by_query\":" << DoublesJson(fallbacks_by_query)
+              << ",\"power_refresh\":" << refresh_json(power_rf) << ",\"power_mismatches\":" << Json(mismatched)
+              << ",\"power_checked\":" << (check && (accel || stateless) ? "true" : "false")
+              << ",\"throughput_at_size\":" << throughput << ",\"ts_s\":" << ts << ",\"query_streams_s\":" << queries_s
+              << ",\"refresh_stream_s\":" << refresh_s << ",\"stream_s\":" << DoublesJson(stream_s)
+              << ",\"stream_query_us\":" << sq << ",\"throughput_hits\":" << tput_counts.hit
+              << ",\"throughput_fallbacks\":" << tput_counts.fallback << ",\"throughput_refresh\":" << refresh_json(tput_rf)
+              << ",\"qphh_at_size\":" << std::sqrt(power * throughput) << ",\"errors\":" << Json(errors.substr(0, 600))
+              << ",\"rss_mb_end\":" << RssMb().first << ",\"rss_mb_peak\":" << RssMb().second << "}" << std::endl;
+  }
+  return 0;
+}
+
 } // namespace
 
 // aux_compare cycle <db> <accel_id> <baseline_kit> <cases.tsv> <phase> <pairs> <burst> [seed=1]
@@ -1392,6 +1675,11 @@ int main(int argc, char **argv) {
       return Multi(argv[2], argv[3], argv[4], std::stoi(argv[5]), std::stod(argv[6]), rates,
                    argc > 8 ? std::stoull(argv[8]) : 1, argc > 9 ? std::stod(argv[9]) : 2,
                    argc > 10 ? argv[10] : "rotate");
+    }
+    if (mode == "tpch") {
+      Require(argc >= 8, "tpch: <db> <phase> <spec.tsv> <streams> <runs> <sf> [check=1]");
+      return Tpch(argv[2], argv[3], argv[4], std::stoi(argv[5]), std::stoi(argv[6]), std::stod(argv[7]),
+                  argc > 8 ? std::string(argv[8]) != "0" : true);
     }
     const auto cases = ReadCases(argv[5]);
     if (mode == "read")

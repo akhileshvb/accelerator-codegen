@@ -23,6 +23,13 @@
               for all, so unrelated accelerators' commits and reads meet.
               Runs base, cpp, verus on fresh copies of the database.
 
+  tpch        the TPC-H performance test (spec 5.3): the 22 accelerators in one
+              process, then per run a power test (RF1, the 22 queries one at a
+              time in stream 0's order, RF2) and a throughput test (S query
+              streams concurrently, each in its own order with its own
+              parameters, and a refresh stream of S RF1 / RF2 pairs back to
+              back); reports Power@Size, Throughput@Size and QphH@Size.
+
 Both compare against the same DuckDB query: the TPC-H text the Verus kits
 implement, with the same parameters (gen_tpch_params.py).  Known differences:
 the C++ Q18 accelerator keeps LIMIT 100 and the C++ Q21 accelerator drops it, so
@@ -31,6 +38,7 @@ their answers are compared as sets and may report a row-count mismatch.
   python3 benchmarks/compare/run_compare.py read --queries "1 3 6" --sets 4
   python3 benchmarks/compare/run_compare.py concurrent --readers 8 --seconds 60 --wps 5
   python3 benchmarks/compare/run_compare.py multi --readers 8 --seconds 120 --wps 5
+  python3 benchmarks/compare/run_compare.py tpch --streams 3 --runs 3 --systems "cpp verus"
   python3 benchmarks/compare/run_compare.py summary <out_dir>
 Env defaults: DB=<repo>/../accelerator-codegen-duckdb/tpch_sf20.duckdb  WORK=/flash1/akhilvb/tpch/work (each run works on a copy of DB in WORK)
 """
@@ -83,13 +91,15 @@ def cases_file(work, q, system, spec, rep=0):
     return path
 
 
-def env_for(system, q):
+def env_for(system, q, sf=20):
+    """The environment of a process for one query's accelerator: its store, and the cost model calibrated at this
+    scale (config[/verus]/q<N>_aux_cost_model_sf<SF>.json) when there is one, else the runtime's default."""
     env = dict(os.environ)
     env.pop("ACCEL_AUX_STORE", None)
     env.update(SYSTEMS.get(system, {}))
     env["ACCEL_AUX_DIAG"] = "0"  # no per-read diagnostics sampling
-    model = (os.path.join(ROOT, "config", "verus", f"q{q}_aux_cost_model_sf20.json") if system.startswith("verus")
-             else os.path.join(ROOT, "config", f"q{q}_aux_cost_model_sf20.json"))
+    model = os.path.join(ROOT, "config", *(["verus"] if system.startswith("verus") else []),
+                         f"q{q}_aux_cost_model_sf{sf:g}.json")
     if os.path.exists(model):
         env["ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL"] = model
     return env
@@ -155,7 +165,7 @@ def cmd_read(a):
             # reads do not write; one copy per run keeps the WAL and catalog untouched
             db = fresh_copy(a.db, a.work, f"cmp_read_q{q}_{system}.duckdb") if a.copy else a.db
             print(f"read q{q} {system} ({len(reps)} draws) {time.strftime('%T')}", flush=True)
-            r = run([a.bin, "read", db, accel, base, path, str(a.reps)], env_for(system, q), log, a.timeout)
+            r = run([a.bin, "read", db, accel, base, path, str(a.reps)], env_for(system, q, a.sf), log, a.timeout)
             if a.copy:
                 drop(db)
             for k, seed, first, n in spans:
@@ -187,7 +197,7 @@ def cmd_concurrent(a):
                 db = fresh_copy(a.db, a.work, f"cmp_conc_q{q}_{name}.duckdb")
                 print(f"concurrent q{q} {name} rep {k} {time.strftime('%T')}", flush=True)
                 r = run([a.bin, "concurrent", db, accel, base, cases, phase, str(a.readers), str(a.seconds),
-                         str(a.wps), str(seed), str(a.warmup)], env_for(system, q), log, a.timeout)
+                         str(a.wps), str(seed), str(a.warmup)], env_for(system, q, a.sf), log, a.timeout)
                 drop(db)
                 r.update({"query": q, "system": name, "rep": k, "seed": seed})
                 with open(os.path.join(a.out, f"conc_q{q}_{name}_r{k}.json"), "w") as f:
@@ -211,6 +221,123 @@ def multi_line(r):
 def multi_dir(a, rates, w, k):
     d = os.path.join(a.out, rate_name(w)) if len(rates) > 1 else a.out
     return os.path.join(d, f"rep{k}") if a.repeats > 1 else d
+
+
+def many_env(a, system):
+    """The environment of a process holding many accelerators (multi, tpch): each picks its own cost model."""
+    env = env_for(system, a.queries[0], a.sf)
+    env.pop("ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL", None)  # one process, many accelerators: no single model file
+    if system.startswith("verus"):  # the Verus kits' own models (config/verus/qN_*), as env_for picks per query
+        env["ACCEL_AUX_COST_MODEL_DIR"] = os.path.join(ROOT, "config", "verus")
+    # each accelerator's runtime then picks config/q<N>_aux_cost_model_sf<SF>.json when ACCEL_AUX_BENCH_DB_LABEL is
+    # tpch_sf<SF> (the models calibrated at this scale) and it exists, else the default config/q<N>_aux_cost_model.json
+    label = os.environ.get("ACCEL_AUX_BENCH_DB_LABEL") or f"tpch_sf{a.sf:g}"
+    env["ACCEL_AUX_BENCH_DB_LABEL"] = label
+    cdir = os.path.join(ROOT, "config", *(["verus"] if system.startswith("verus") else []))
+    scale = label[5:] if label.startswith("tpch_sf") else ""
+    have = [q for q in a.queries if scale and os.path.exists(os.path.join(cdir, f"q{q}_aux_cost_model_{scale}.json"))]
+    print(f"  cost models: {len(have)}/{len(a.queries)} calibrated at {scale or '?'} "
+          f"({os.path.relpath(cdir, ROOT)}/qN_aux_cost_model_{scale}.json), the rest default", flush=True)
+    if a.duckdb_memory:
+        env["ACCEL_COMPARE_DUCKDB_MEMORY"] = a.duckdb_memory
+    if a.duckdb_threads:
+        env["ACCEL_COMPARE_DUCKDB_THREADS"] = str(a.duckdb_threads)
+    return env
+
+
+def cmd_tpch(a):
+    """The TPC-H performance test (power test, then throughput test; spec 5.3) with the 22 accelerators in ONE process.
+
+    Per system one process: the accelerators are built once (the load), then --runs runs back to back on the same
+    database and state, as the specification's Run 1, Run 2.  Each query stream gets its own parameter draw (as qgen
+    gives each stream its own seed) and its own query order (qgen's stream permutations); the refresh functions are the
+    dbgen update sets.  Results: <out>/tpch_<system>_r<k>.json, and the summary."""
+    log = os.path.join(a.out, "tpch.log")
+    per_run = a.streams + 1
+    base = a.seed if a.seed is not None else int.from_bytes(os.urandom(4), "little")
+    seeds = [base + i for i in range(a.runs * per_run)]  # draw i: run i // (S+1), stream i % (S+1)
+    drawn = [params(1, s, a.sf) for s in seeds]
+    os.makedirs(a.out, exist_ok=True)
+    with open(os.path.join(a.out, "seeds.json"), "w") as f:
+        json.dump({"base_seed": base, "runs": a.runs, "streams": a.streams, "sf": a.sf, "seeds": seeds,
+                   "duckdb_threads": a.duckdb_threads, "rf_dir": os.environ["ACCEL_RF_DIR"]}, f, indent=1)
+    print(f"TPC-H performance test: {a.runs} run(s), power + throughput with {a.streams} streams, "
+          f"parameter seeds {base}..{seeds[-1]}", flush=True)
+    for name, phase in [("base", "base")] * (not a.no_base) + [(s, "stateless" if s == "stateless" else "accel")
+                                                                 for s in a.systems]:
+        system = "cpp" if name == "base" else name
+        lines = []
+        for q in range(1, 23):
+            accel, base_kit = ids(q, system)
+            path = os.path.join(a.work, f"tpch_cases_q{q}_{name}.tsv")
+            with open(path, "w") as f:
+                for spec in drawn:
+                    st = spec[str(q)]["sets"][0]
+                    f.write((st["cpp"] if system in ("cpp", "stateless") else st["verus"]) + "\t" + st["verus"] + "\n")
+            lines.append(f"{accel}\t{base_kit}\t{path}\n")
+        spec_path = os.path.join(a.work, f"tpch_{name}.tsv")
+        with open(spec_path, "w") as f:
+            f.writelines(lines)
+        db = fresh_copy(a.db, a.work, f"cmp_tpch_{name}.duckdb")
+        print(f"tpch {name} {time.strftime('%T')}", flush=True)
+        env = many_env(a, system)
+        rs = run([a.bin, "tpch", db, phase, spec_path, str(a.streams), str(a.runs), f"{a.sf:g}", "1" if a.check else "0"],
+                 env, log, a.timeout, lines=a.runs)
+        drop(db)
+        rs = rs if isinstance(rs, list) else [rs] * a.runs
+        for k, r in enumerate(rs):
+            r = dict(r, system=name, run=k, seeds=seeds[k * per_run:(k + 1) * per_run])
+            with open(os.path.join(a.out, f"tpch_{name}_r{k}.json"), "w") as f:
+                json.dump(r, f, indent=1)
+            if k == 0 and "build_ms" in r and phase == "accel":
+                print(f"  build (load) {r['build_ms'] / 1000:.0f}s", flush=True)
+            print(f"  run {k}: " + tpch_line(r), flush=True)
+    summary_tpch(a.out)
+
+
+def tpch_line(r):
+    if "error" in r:
+        return "ERROR " + r["error"]
+    rf = " ".join(f"{x['kind']} {x['us'] / 1e6:.2f}s" for x in r["power_refresh"])
+    s = (f"Power@Size {r['power_at_size']:.0f} ({rf}, slowest query {max(r['power_query_us']) / 1e6:.2f}s)  "
+         f"Throughput@Size {r['throughput_at_size']:.0f} (Ts {r['ts_s']:.1f}s: queries {r['query_streams_s']:.1f}s, "
+         f"refresh {r['refresh_stream_s']:.1f}s)  QphH@Size {r['qphh_at_size']:.0f}")
+    if r.get("power_mismatches"):
+        s += f"  MISMATCH q{r['power_mismatches']}"
+    if r.get("errors"):
+        s += f"  ERRORS {r['errors']}"
+    return s
+
+
+def summary_tpch(out):
+    runs = {}
+    for name in sorted(os.listdir(out)):
+        if name.startswith("tpch_") and name.endswith(".json"):
+            r = json.load(open(os.path.join(out, name)))
+            if "error" not in r:
+                runs.setdefault(r["system"], []).append(r)
+    if not runs:
+        return
+    order = [s for s in ("base", "cpp", "verus_cpp", "verus_kit", "verus", "stateless") if s in runs]
+    n = max(len(v) for v in runs.values())
+    print(f"\nTPC-H performance test, median [min-max] over {n} run(s); spec 5.4.3 reports the run with the lower QphH")
+    print(f"{'system':>10} {'Power@Size':>24} {'Throughput@Size':>24} {'QphH@Size':>24} {'min QphH':>9} "
+          f"{'RF1+RF2 s (power)':>18} {'Ts s':>16} {'load s':>7}")
+    for s in order:
+        rs = runs[s]
+        print(f"{s:>10} {spread([r['power_at_size'] for r in rs], '%.0f'):>24} "
+              f"{spread([r['throughput_at_size'] for r in rs], '%.0f'):>24} {spread([r['qphh_at_size'] for r in rs], '%.0f'):>24} "
+              f"{min(r['qphh_at_size'] for r in rs):>9.0f} "
+              f"{spread([sum(x['us'] for x in r['power_refresh']) / 1e6 for r in rs], '%.1f'):>18} "
+              f"{spread([r['ts_s'] for r in rs], '%.1f'):>16} {rs[0]['build_ms'] / 1000:>7.0f}")
+    print(f"\npower test, per query s (median over runs):")
+    print(f"{'q':>4} " + " ".join(f"{s:>10}" for s in order))
+    for q in range(22):
+        print(f"{q + 1:>4} " + " ".join(f"{med([r['power_query_us'][q] for r in runs[s]]) / 1e6:>10.4f}" for s in order))
+    for s in order:
+        bad = [f"run {r['run']}: q{r['power_mismatches']}" for r in runs[s] if r.get("power_mismatches")]
+        if bad:
+            print(f"{s}: answers differing from DuckDB in the power test: " + "; ".join(bad))
 
 
 def cmd_multi(a):
@@ -237,22 +364,7 @@ def cmd_multi(a):
         db = fresh_copy(a.db, a.work, f"cmp_multi_{name}.duckdb")
         print(f"multi {name} ({len(a.queries)} accelerators, {a.reader_mode} readers, rates "
               f"{' '.join(rate_name(w) for w in rates)}, {a.repeats} repetition(s)) {time.strftime('%T')}", flush=True)
-        env = env_for(system, a.queries[0])
-        env.pop("ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL", None)  # one process, many accelerators: no single model file
-        if system.startswith("verus"):  # the Verus kits' own models (config/verus/qN_*), as env_for picks per query
-            env["ACCEL_AUX_COST_MODEL_DIR"] = os.path.join(ROOT, "config", "verus")
-        # each accelerator's runtime then picks config/q<N>_aux_cost_model_sf20.json when ACCEL_AUX_BENCH_DB_LABEL is
-        # tpch_sf20 (the models calibrated at this scale), else the default small-scale config/q<N>_aux_cost_model.json
-        label = os.environ.get("ACCEL_AUX_BENCH_DB_LABEL") or ("tpch_sf20" if a.sf == 20 else "")
-        if label:
-            env["ACCEL_AUX_BENCH_DB_LABEL"] = label
-        cdir = "config/verus/" if system.startswith("verus") else "config/"
-        print(f"  cost models: {cdir + 'qN_aux_cost_model_sf20.json (SF20)' if label == 'tpch_sf20' else cdir + 'qN_aux_cost_model.json (default)'}",
-              flush=True)
-        if a.duckdb_memory:
-            env["ACCEL_COMPARE_DUCKDB_MEMORY"] = a.duckdb_memory
-        if a.duckdb_threads:
-            env["ACCEL_COMPARE_DUCKDB_THREADS"] = str(a.duckdb_threads)
+        env = many_env(a, system)
         n = len(rates) * a.repeats
         rs = run([a.bin, "multi", db, phase, spec_path, str(a.readers), str(a.seconds), ",".join(f"{w:g}" for w in rates),
                   str(reps[0][1]), str(a.warmup), a.reader_mode], env, log, a.timeout, lines=n)
@@ -285,12 +397,12 @@ def cmd_cycle(a):
     reps = draws(a)
     for k, seed, spec in reps:
         for q in a.queries:
-            accel_id, base_kit = ids(q, "cpp")
-            cfile = cases_file(a.work, q, "cpp", spec[str(q)], k)
+            accel_id, base_kit = ids(q, a.system)
+            cfile = cases_file(a.work, q, a.system, spec[str(q)], k)
             ncases = len(spec[str(q)]["sets"])
-            for phase in ("base", "accel"):
+            for phase in ("base", "accel")[1 if a.no_base else 0:]:
                 db = fresh_copy(a.db, a.work, f"cmp_cycle_{phase}.duckdb")
-                env = env_for("cpp", q)  # this query's SF20 cost model (ACCELERATOR_CODEGEN_DUCKDB_AUX_COST_MODEL)
+                env = env_for(a.system, q, a.sf)  # this query's cost model at this scale, if calibrated
                 env["ACCEL_COMPARE_DUCKDB_MEMORY"] = a.duckdb_memory
                 if a.duckdb_threads:
                     env["ACCEL_COMPARE_DUCKDB_THREADS"] = str(a.duckdb_threads)
@@ -298,7 +410,8 @@ def cmd_cycle(a):
                 r = run([a.bin, "cycle", db, accel_id, base_kit, cfile, phase, str(a.pairs), str(burst), str(seed)],
                         env, log, a.timeout)
                 drop(db)
-                r = dict(r, query=q, system=phase, rep=k, seed=seed, sf=a.sf, threads=a.duckdb_threads)
+                r = dict(r, query=q, system=phase, accel_system=a.system, rep=k, seed=seed, sf=a.sf,
+                         threads=a.duckdb_threads, forced_action=os.environ.get("ACCEL_FORCE_MAINTENANCE_ACTION", ""))
                 with open(os.path.join(a.out, f"cycle_q{q}_{phase}_r{k}.json"), "w") as f:
                     json.dump(r, f, indent=1)
                 if "error" in r:
@@ -408,6 +521,7 @@ def summary_multi(out):
 
 
 def summary(out):
+    summary_tpch(out)
     summary_multi(out)
     rows = {}
     for name in sorted(os.listdir(out)):
@@ -480,7 +594,7 @@ def summary(out):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="mode", required=True)
-    for mode in ("read", "concurrent", "multi", "cycle"):
+    for mode in ("read", "concurrent", "multi", "cycle", "tpch"):
         p = sub.add_parser(mode)
         p.add_argument("--db", default=os.environ.get("DB", os.path.join(ROOT, "..", "accelerator-codegen-duckdb", "tpch_sf20.duckdb")))
         p.add_argument("--work", default=os.environ.get("WORK", "/flash1/akhilvb/tpch/work"))
@@ -539,18 +653,37 @@ def main():
                        help="end the run after this many commits (calibration; exported as ACCEL_WRITE_MAX_COMMITS)")
     y = sub.choices["cycle"]
     y.add_argument("--pairs", type=int, default=2, help="RF1+RF2 pairs (update sets 1..N) per run")
+    y.add_argument("--system", choices=("cpp", "verus", "verus_cpp", "verus_kit"), default="cpp",
+                   help="the accelerator: the C++ one (accel_tpch_qN) or the Verus kit (tpch_qN_vgen) on that store")
+    y.add_argument("--no-base", action="store_true", help="skip the DuckDB run (accel only)")
     y.add_argument("--burst", type=int, default=200, help="timed reads of the query after every commit (accelerator run)")
     y.add_argument("--rf-dir", default=None, required=True, help="the TPC-H update sets written by dbgen -U")
     y.add_argument("--batch-orders", type=int, default=None, help="use only the first B orders of each update set")
     y.add_argument("--duckdb-threads", type=int, default=None, help="DuckDB's thread count (the accelerators' read kernels are single-threaded)")
     y.add_argument("--duckdb-memory", default="8GB", help="DuckDB memory_limit")
+    t = sub.choices["tpch"]
+    t.add_argument("--streams", type=int, default=3,
+                   help="query streams of the throughput test (the specification's minimum is 3 at SF10, 4 at SF30)")
+    t.add_argument("--runs", type=int, default=3, help="performance-test runs (power + throughput) back to back, each "
+                   "with its own parameter draws and update sets (the specification requires 2)")
+    t.add_argument("--rf-dir", default="/flash1/akhilvb/tpch/refresh_sf20", help="the TPC-H update sets written by dbgen -U")
+    t.add_argument("--duckdb-threads", type=int, default=None,
+                   help="DuckDB's thread count (default: all cores, as a TPC-H run would; the accelerators' read kernels are single-threaded)")
+    t.add_argument("--duckdb-memory", default="16GB", help="DuckDB memory_limit")
+    t.add_argument("--no-base", action="store_true", help="skip the DuckDB run (pair with an earlier run's, same --seed)")
+    t.add_argument("--no-check", dest="check", action="store_false",
+                   help="do not compare the power test's accelerator answers with DuckDB's (untimed)")
+    t.set_defaults(timeout=12 * 3600)
     s = sub.add_parser("summary")
     s.add_argument("out")
     a = ap.parse_args()
     if a.mode == "summary":
         return summary(a.out)
     if a.mode == "cycle":
-        os.environ["ACCEL_DIM_AFTER_RF"] = "1"  # a slot: an RF commit + the point writes after it (as in the concurrent run)
+        os.environ["ACCEL_DIM_AFTER_RF"] = "1"
+    if a.mode == "tpch":  # the refresh functions only: no point writes
+        os.environ["ACCEL_RF_ONLY"] = "1"
+        os.environ.pop("ACCEL_DIM_AFTER_RF", None)  # a slot: an RF commit + the point writes after it (as in the concurrent run)
     if getattr(a, "max_write_commits", 0):
         os.environ["ACCEL_WRITE_MAX_COMMITS"] = str(a.max_write_commits)
     if getattr(a, "dim_after_rf", False):
@@ -567,7 +700,7 @@ def main():
     assert os.path.exists(a.bin), f"no {a.bin} (cmake --build build-verus-duckdb --target aux_compare)"
     assert os.path.exists(a.db), f"no database {a.db}"
     os.makedirs(a.work, exist_ok=True)
-    {"read": cmd_read, "concurrent": cmd_concurrent, "multi": cmd_multi, "cycle": cmd_cycle}[a.mode](a)
+    {"read": cmd_read, "concurrent": cmd_concurrent, "multi": cmd_multi, "cycle": cmd_cycle, "tpch": cmd_tpch}[a.mode](a)
 
 
 if __name__ == "__main__":

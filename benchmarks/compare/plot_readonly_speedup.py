@@ -118,10 +118,10 @@ def load_postgres(path: Path) -> tuple[list[float], set[int]]:
     return values, mismatched
 
 
-LABEL_SIZE = 15
-PG_LABEL_SIZE = 18
-TICK_SIZE = 20
-AXIS_LABEL_SIZE = 22
+LABEL_SIZE = 19
+PG_LABEL_SIZE = 26
+TICK_SIZE = 28
+AXIS_LABEL_SIZE = 31
 
 
 def label_bars(ax, bars, values, size: float = LABEL_SIZE) -> list:
@@ -153,8 +153,10 @@ def place_labels(fig, ax, groups: list[list[tuple]]) -> int:
         return True
 
     def collide(a, b) -> bool:
+        # rotated labels: the right edge of each box is the font's descent, empty for digits, so it may overlap
         ea, eb = extent(a), extent(b)
-        return ea.x1 > eb.x0 + 1 and eb.x1 > ea.x0 + 1 and ea.y1 > eb.y0 and eb.y1 > ea.y0
+        slack = 0.15 * a.get_fontsize() * fig.dpi / 72
+        return ea.x1 > eb.x0 + slack and eb.x1 > ea.x0 + slack and ea.y1 > eb.y0 and eb.y1 > ea.y0
 
     left = 0
     for group in groups:
@@ -211,7 +213,7 @@ def main() -> None:
         ("_stateful", pg, STATEFUL_COLOR),
     ]
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(30, 11), sharex=True, facecolor="white",
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(30, 14), sharex=True, facecolor="white",
                                    gridspec_kw={"height_ratios": [1.3, 1]})
     x = np.arange(len(QUERIES))
 
@@ -230,7 +232,7 @@ def main() -> None:
     present = [v for _, vs, _ in top for v in vs if v is not None]
     ax1.set_ylim(min(0.8, min(present) * 0.7), max(present) * 25)
     ax1.set_ylabel("Speedup vs DuckDB", fontsize=AXIS_LABEL_SIZE)
-    ax1.set_title("TPC-H (SF=20): Read-only Speedup", fontsize=24)
+    ax1.set_title("TPC-H (SF=20): Read-only Speedup", fontsize=33)
 
     bottom_groups = grouped(ax2, bottom, PG_LABEL_SIZE)
     style_axis(ax2, len(QUERIES))
@@ -240,9 +242,11 @@ def main() -> None:
     ax2.set_xticklabels([f"Q{q}" for q in QUERIES])
     ax2.set_xlabel("Query", fontsize=AXIS_LABEL_SIZE)
 
-    fig.legend(handles=ax1.containers, loc="lower center", ncol=3, frameon=False, fontsize=19,
-               bbox_to_anchor=(0.5, -0.01), title="Geomean speedup", title_fontsize=19)
-    fig.tight_layout(rect=(0, 0.11, 1, 1))
+    # two rows of three; the two longest entries share a column so the legend fits the width
+    h = ax1.containers
+    fig.legend(handles=[h[0], h[3], h[1], h[2], h[4]], loc="lower center", ncol=3, frameon=False, fontsize=27,
+               bbox_to_anchor=(0.5, -0.01), handlelength=1.2, handletextpad=0.4, columnspacing=1.2)
+    fig.tight_layout(rect=(0, 0.12, 1, 1))
     left = place_labels(fig, ax1, top_groups) + place_labels(fig, ax2, bottom_groups)
     if left:
         print(f"warning: {left} label collisions could not be resolved")

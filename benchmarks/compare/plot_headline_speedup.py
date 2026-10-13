@@ -3,7 +3,7 @@
 
 Read-only (one bar per system, geomean over Q1-Q22 of the per-query speedup):
   JetStream stateless / stateful / stateful-verified and the GenDB / Bespoke baselines, single-threaded
-  (--readonly-threads st), against multi-threaded DuckDB (mt) or each at its best (best, the default); sources in
+  (--readonly-threads st), against multi-threaded DuckDB (mt) or each as on plot_readonly_speedup.py's figure (best, the default); sources in
   READONLY below.
 Under writes (geomean over Q1-Q22 of workload.py's workload speedup, median over repetitions with min..max
 whiskers), from a run_rf_interval_sweep.sh concurrent directory (--rf-conc): per query, ONE accelerator in the process,
@@ -28,7 +28,9 @@ import matplotlib.pyplot as plt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from plot_readonly_speedup import BESPOKE_ST, STATEFUL_DIR, STATELESS_CSV, geomean  # noqa: E402
+from plot_readonly_speedup import BESPOKE_ST, GENDB_MT, STATEFUL_DIR, STATELESS_CSV, geomean  # noqa: E402
+from plot_memory_footprint import (BESPOKE_COLOR, GENDB_COLOR, STATEFUL_COLOR, STATELESS_COLOR,  # noqa: E402
+                                   VERIFIED_COLOR)
 from plot_rf_multi_sweep import load, rep_of, rows_per_slot  # noqa: E402
 from workload import workload_speedup, workload_speedup_per_query  # noqa: E402
 
@@ -38,30 +40,28 @@ RF_CONC = [os.path.join(HERE, "results/rf_interval_sf20_20261007_222743"),
            os.path.join(HERE, "results/rf_interval_sf20_T15_headline")]
 RF_DIR = "/flash1/akhilvb/tpch/refresh_sf20"
 
-# Read-only panel per thread setting.  GenDB: its reported TPC-H geomean speedups over DuckDB, single-threaded and
-# multi-threaded.  Stateless: benchmarks/tpch/results/stateless_duckdb_sf20_summary.csv, kernel and DuckDB at the
+# Read-only panel per thread setting.  GenDB: single-threaded, its reported TPC-H geomean speedup over DuckDB;
+# multi-threaded, the geomean of its per-query speedups as on plot_readonly_speedup.py's figure.  Stateless: benchmarks/tpch/results/stateless_duckdb_sf20_summary.csv, kernel and DuckDB at the
 # same thread count.  Stateful: run_compare.py read JSONs; the accelerators' read kernels are single-threaded, DuckDB
 # runs single-threaded (ACCEL_COMPARE_DUCKDB_THREADS=1) for "st" and with all cores for "mt".  Bespoke OLAP reports
 # single-threaded numbers only.
 READONLY = {"st": {"label": "single-threaded", "gendb": 5.4, "stateless_col": ["st_speedup"],
                    "stateful_dir": [os.path.join(HERE, "results/read_duckdb1t_sf20/read")], "bespoke": True},
-            "mt": {"label": "DuckDB multi-threaded", "gendb": 34.4, "stateless_col": ["par_speedup_32t"],
+            "mt": {"label": "DuckDB multi-threaded", "gendb": geomean(GENDB_MT), "stateless_col": ["par_speedup_32t"],
                    "stateful_dir": [str(STATEFUL_DIR)], "bespoke": False},
-            # each system's best measured configuration: GenDB multi-threaded, stateless at its best thread count,
-            # stateful / verified from the complete read run with the highest geomean
-            "best": {"label": "best configuration", "gendb": 34.4,
-                     "stateless_col": ["st_speedup", "par_speedup_16t", "par_speedup_32t"],
-                     "stateful_dir": [os.path.join(HERE, "results", d) for d in
-                                      ("backends_20261007_v2/duckdb/read", "cpp_verus_writerate-read/read",
-                                       "rf_interval_multi_sf20_20261008_112014/read")],
+            # each system as on plot_readonly_speedup.py's per-query figure, so both agree: GenDB multi-threaded,
+            # stateless at 32 threads, stateful / verified from that figure's read run
+            "best": {"label": "best configuration", "gendb": geomean(GENDB_MT),
+                     "stateless_col": ["par_speedup_32t"],
+                     "stateful_dir": [str(STATEFUL_DIR)],
                      "bespoke": True}}
 
-# (key, label, color); same order in both panels.
-SYSTEMS = [("stateless", "JetStream\n(stateless)", "C0"),
-           ("bespoke", "Bespoke\nOLAP", "C1"),
-           ("gendb", "GenDB", "C2"),
-           ("verus", "JetStream\n(stateful,\nverified)", "C3"),
-           ("cpp", "JetStream\n(stateful)", "C4")]
+# (key, label, color); same order in both panels, colors as the memory-footprint figure.
+SYSTEMS = [("stateless", "JetStream\n(stateless)", STATELESS_COLOR),
+           ("bespoke", "Bespoke\nOLAP", BESPOKE_COLOR),
+           ("gendb", "GenDB", GENDB_COLOR),
+           ("verus", "JetStream\n(stateful,\nverified)", VERIFIED_COLOR),
+           ("cpp", "JetStream\n(stateful)", STATEFUL_COLOR)]
 
 
 def readonly_speedups(cfg):
@@ -114,9 +114,11 @@ def write_speedups(out, T):
     return res, rows_per_slot(RF_DIR) / T
 
 
-def write_speedups_conc(outs, T):
+def write_speedups_conc(outs, T, partial=None):
     """As write_speedups, from a concurrent sweep: per repetition the geomean over the 22 queries of each query's
-    workload speedup against its own DuckDB run; rows/s is the median touched by the DuckDB runs."""
+    workload speedup against its own DuckDB run; rows/s is the median touched by the DuckDB runs.  With a dict as
+    `partial`, a repetition missing queries is kept as the geomean over the queries it has, and partial[system] is set
+    to that query count."""
     runs, rows = {}, []
     for f in (f for out in outs for f in glob.glob(os.path.join(out, f"T{T:g}s", "conc_q*_*_r*.json"))):
         r = json.load(open(f))
@@ -132,6 +134,10 @@ def write_speedups_conc(outs, T):
                   for q in range(1, 23)]
             if all(pq):
                 vals.append(geomean(pq))
+            elif partial is not None and any(pq):
+                vals.append(geomean([v for v in pq if v]))
+                partial[s] = sum(map(bool, pq))
+                print(f"warning: T={T:g}s {s} rep {k}: partial, {partial[s]} of 22 queries")
             else:
                 print(f"warning: T={T:g}s {s} rep {k}: {sum(map(bool, pq))} of 22 queries, left out")
         if vals:
@@ -141,7 +147,7 @@ def write_speedups_conc(outs, T):
 
 
 def fmt(v):
-    return f"{v:,.0f}×" if v >= 100 else f"{v:.1f}×" if v >= 10 else f"{v:.2f}×"
+    return f"{v:.1f}×" if v >= 10 else f"{v:.2f}×"
 
 
 def panel(ax, values, title, errs=None, missing=(), fallback=()):
@@ -157,7 +163,7 @@ def panel(ax, values, title, errs=None, missing=(), fallback=()):
             _, lo, hi = errs[k]
             ax.errorbar([x], [top], yerr=[[top - lo], [hi - top]], fmt="none", ecolor="black", capsize=3)
             top = hi
-        label = fmt(values[k]) + ("\n(DuckDB\nfallback)" if k in fallback else "")
+        label = fmt(values[k]) + ("\n(fallback)" if k in fallback else "")
         ax.text(x, top * 1.15, label, ha="center", va="bottom")
     ax.set_yscale("log")
     ax.axhline(1.0, color="gray", ls="--", lw=1)
@@ -183,8 +189,11 @@ def main():
                          "base run of the same query and repetition in any of them)")
     ap.add_argument("--rf-out", default=RF_OUT, help="run_rf_interval_sweep.sh MODE=multi directory")
     ap.add_argument("--readonly-threads", choices=("best", "st", "mt"), default="best",
-                    help="read-only panel: best = each system's best measured configuration; st = everything single-threaded (as the refresh-stream panel); "
+                    help="read-only panel: best = each system as on plot_readonly_speedup.py's figure; st = everything single-threaded (as the refresh-stream panel); "
                          "mt = DuckDB multi-threaded")
+    ap.add_argument("--partial", action="store_true",
+                    help="refresh-stream panel: plot a system with missing queries as the geomean over the queries it "
+                         "has (concurrent mode only)")
     ap.add_argument("--out-prefix", default=os.path.join(HERE, "results/headline_sf20"))
     a = ap.parse_args()
 
@@ -198,7 +207,8 @@ def main():
     panel(ax, ro, ro_title, missing=ro_missing)
     save(fig, a.out_prefix + f"_readonly_{a.readonly_threads}")
 
-    w, rate = (write_speedups_conc(a.rf_conc, a.interval) if a.writes_mode == "concurrent"
+    partial = {} if a.partial else None
+    w, rate = (write_speedups_conc(a.rf_conc, a.interval, partial) if a.writes_mode == "concurrent"
                else write_speedups(a.rf_out, a.interval))
     wv = {"gendb": 1.0, "bespoke": 1.0, **{k: v[0] for k, v in w.items()}}
     fig, ax = plt.subplots(figsize=(7, 4.6))
