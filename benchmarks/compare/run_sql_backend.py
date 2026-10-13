@@ -729,10 +729,6 @@ def fingerprint(db):
 # ---------------------------------------------------------------------------------------------
 # experiments
 # ---------------------------------------------------------------------------------------------
-def draws(a):
-    return run_compare.draws(a)
-
-
 def case_list(a, spec, system):
     """[(q, system_sql, base_sql)] over every query and parameter set of one draw: system_sql is the accelerator
     call (base, accel) or the materialized-view read (mv); readers of every system but base run it."""
@@ -757,7 +753,7 @@ def timed(db, sql):
 
 def cmd_read(a):
     os.makedirs(a.out, exist_ok=True)
-    reps = draws(a)
+    reps = run_compare.draws(a)
     set_triggers(a, True)
     restart_shared_worker(a)
     db = Db(a, accel=True)
@@ -1153,7 +1149,7 @@ def cmd_writerate(a):
 def cmd_writerate_body(a):
     os.makedirs(a.out, exist_ok=True)
     rates = [float(x) for x in str(a.rates).replace(",", " ").split()]
-    reps = [r for r in draws(a) if a.only_rep is None or r[0] == a.only_rep]
+    reps = [r for r in run_compare.draws(a) if a.only_rep is None or r[0] == a.only_rep]
     for rate in rates:
         for k, seed, spec in reps:
             order = ["base", "accel", "mv"][::1 if k % 2 == 0 else -1]  # alternate, so drift cancels
