@@ -1,0 +1,2 @@
+O(SF) grain (GROUP BY c_custkey): not feasible at SF3000.
+Use lean answer-grain MATERIALIZED VIEW (Top-20 returned-revenue customers per month start) instead; ignore IMMV.

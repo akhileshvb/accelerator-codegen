@@ -1,0 +1,1 @@
+unsupported: O(SF) part-grain IMMV — use lean matview at SF3000

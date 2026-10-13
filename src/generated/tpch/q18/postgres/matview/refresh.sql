@@ -1,0 +1,1 @@
+REFRESH MATERIALIZED VIEW accel_tpch_q18_matview;

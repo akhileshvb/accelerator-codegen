@@ -1,0 +1,2 @@
+O(SF) grain (GROUP BY l_orderkey): not feasible at SF3000.
+Use lean answer-grain MATERIALIZED VIEW (Top-10 per segment×March-1995 cutoff) instead; ignore IMMV.

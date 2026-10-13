@@ -1,0 +1,2 @@
+O(SF) grain (GROUP BY l_suppkey × l_shipdate): not feasible at SF3000.
+Use lean answer-grain MATERIALIZED VIEW (top supplier per month) instead; ignore IMMV.

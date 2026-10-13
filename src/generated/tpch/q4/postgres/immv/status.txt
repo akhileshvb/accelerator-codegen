@@ -1,0 +1,1 @@
+unsupported: aggregate + EXISTS not supported together by pg_ivm

@@ -19,7 +19,16 @@
 #      TPCH_PG_DB (default accel_tpch_test for SF1, accel_tpch_sf${SF} otherwise — the name
 #      scripts/setup_sf20_sql_backends.sh uses),
 #      PGHOST/PGPORT/PGUSER/PGPASSWORD for the client (default 127.0.0.1:5434 postgres/postgres),
-#      OUT_DIR (default benchmarks/tpch/results), SKIP_BUILD=1 to reuse the installed module.
+#      OUT_DIR (default benchmarks/tpch/results), SKIP_BUILD=1 to reuse the installed module,
+#      STATELESS_SCHEMA (default public; the build drops every accel_tpch_qN* function in it, so
+#      use another schema on a database that also holds the stateful accelerator's functions),
+#      PYTHON (default python3; needs psycopg2),
+#      PG_FORCE_WORKERS=1 to set parallel_workers = T-1 on the TPC-H tables while PostgreSQL runs
+#      at T participants (otherwise its planner may use fewer than T-1 workers); the original
+#      reloptions are restored when the sweep ends.  The sweep CSV records PostgreSQL's planned
+#      workers either way (pg_workers_planned).
+#      PG_BEST_PLAN=1 to time PostgreSQL at each T > 1 under default and zero parallel costs on the
+#      warm-up parametrization and use the faster for that query (its cost model keeps Q13 serial).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 THREADS="${1:-16,32}"
@@ -31,6 +40,11 @@ if [[ "$SF" == "1" ]]; then DB="${TPCH_PG_DB:-accel_tpch_test}"; else DB="${TPCH
 INSTANCES="${ROOT}/benchmarks/tpch/stateless_instances_sf${SF}.jsonl"
 [[ -f "$INSTANCES" ]] || { echo "no instance file $INSTANCES (build-stateless/stateless_matrix --scale-factor ${SF} --emit-instances ...)" >&2; exit 1; }
 CONTAINER="${ACCEL_PG_CONTAINER:-accel_pg_test}"
+SCHEMA="${STATELESS_SCHEMA:-public}"
+PYTHON="${PYTHON:-python3}"
+FORCE=()
+[[ "${PG_FORCE_WORKERS:-0}" == "1" ]] && FORCE=(--force-workers)
+[[ "${PG_BEST_PLAN:-0}" == "1" ]] && FORCE+=(--pg-best-plan)
 mkdir -p "$OUT_DIR"
 STAMP="sf${SF}_$(uname -n | cut -d. -f1)_$(date +%Y%m%d_%H%M%S)"
 
@@ -40,7 +54,7 @@ if ! docker exec "$CONTAINER" psql -U "${PGUSER:-postgres}" -d "$DB" -Atc "SELEC
 fi
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  "$ROOT/scripts/build_stateless_pg.sh" --schema public --db "$DB"
+  "$ROOT/scripts/build_stateless_pg.sh" --schema "$SCHEMA" --db "$DB"
 fi
 
 max_t=1
@@ -55,14 +69,14 @@ if (( mwp < max_t - 1 || mpw < max_t - 1 )); then
 fi
 
 echo "=== correctness (db=${DB}, seeds=${SEEDS}, participants 1,${THREADS}) ==="
-COMMON=(--db "$DB" --instances "$INSTANCES" --queries "$QUERIES" --seeds "$SEEDS")
-python3 "$ROOT/scripts/pg_stateless_bench.py" --mode check "${COMMON[@]}" \
+COMMON=(--db "$DB" --schema "$SCHEMA" --instances "$INSTANCES" --queries "$QUERIES" --seeds "$SEEDS")
+"$PYTHON" "$ROOT/scripts/pg_stateless_bench.py" --mode check "${COMMON[@]}" \
     --threads-list "$THREADS" > "$OUT_DIR/stateless_postgres_check_${STAMP}.log" || true
 tail -n 1 "$OUT_DIR/stateless_postgres_check_${STAMP}.log"
 
 echo "=== sweep (participants=${THREADS}, seeds=${SEEDS}) ==="
 OUT="$OUT_DIR/stateless_postgres_sweep_${STAMP}.csv"
-python3 "$ROOT/scripts/pg_stateless_bench.py" --mode sweep "${COMMON[@]}" \
-    --threads-list "$THREADS" --out "$OUT"
+"$PYTHON" "$ROOT/scripts/pg_stateless_bench.py" --mode sweep "${COMMON[@]}" \
+    --threads-list "$THREADS" "${FORCE[@]}" --out "$OUT"
 grep '^#' "$OUT"
 echo "raw: $OUT"

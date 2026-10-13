@@ -4,6 +4,7 @@
 #   bash benchmarks/compare/run_backends.sh read      <out_root>   # 1. read-only, single-threaded
 #   bash benchmarks/compare/run_backends.sh calibrate <out_root>   # writer-only: how long does one RF commit take?
 #   bash benchmarks/compare/run_backends.sh rf        <out_root>   # 2. concurrent RF writer + readers
+#   bash benchmarks/compare/run_backends.sh rf-fixed  <out_root>   # 2b. concurrent RF writer + readers at fixed intervals
 #   bash benchmarks/compare/run_backends.sh cycle     <out_root>   # 3. per-query workload speedup per write interval (DuckDB)
 #   bash benchmarks/compare/run_backends.sh summary   <out_root>
 #
@@ -25,6 +26,18 @@
 #             (INTERVAL_MULT).  Base DBMS (no capture) vs accelerator on the same schedule; N_COMMITS (4) RF
 #             commits are measured per point.
 #
+# rf-fixed:   as rf, but at fixed wall-clock intervals between RF commits instead of calibrated multiples:
+#             FIXED_INTERVALS (default "60 30 15 10 5" s, the DuckDB schedule).  Every interval gets the same
+#             window FIXED_WINDOW (180 s) and warmup FIXED_WARMUP (30 s), so the points differ only in the write
+#             rate; a window is extended (to MAX_WINDOW, 900 s) until every query has MIN_READS (3) reads in it.
+#             Repetitions are the outer loop and the interval order reverses every other repetition, so drift
+#             of the one shared worker over the sweep does not line up with the rate.  An interval below the
+#             commit time saturates the writer (back to back, lag grows): the run reports the achieved rows/s.
+#             Postgres: PG_WORKERS (default floor(nproc / READERS) - 1) parallel workers per session for base and
+#             accel alike, so READERS concurrent readers together get the whole machine.  With PG_SHARED=1 all
+#             accelerator points run first on one shared-state worker (state built once), then all base points;
+#             SEED (default random) fixes the parameter draws so base and accel stay paired.
+#
 # cycle:      (DuckDB only) the overnight experiment: per query, ONE accelerator alone in its process; the TPC-H refresh
 #             functions applied one commit at a time from the real update sets (PAIRS pairs of RF1 / RF2, default 4), a
 #             burst of BURST reads (default 200) after every commit, on a base run (plain SQL, DuckDB reads) and an accelerator
@@ -39,7 +52,13 @@
 #   RF_DIR (/flash1/akhilvb/tpch/refresh_sf<SF>)   the update sets; BATCH_ORDERS (default: whole sets) uses only the
 #   first B orders of each set
 #   duckdb:    DB (../accelerator-codegen-duckdb/tpch_sf20.duckdb)  WORK (/flash1/akhilvb/tpch/work: the per-run copies)  BIN (build-verus-duckdb/aux_compare)  CAP (96G)
-#   postgres:  PG_PORT (5434)  PG_DB (accel_tpch_sf20)    PGUSER / PGPASSWORD
+#   postgres:  PG_PORT (5434)  PG_DB (accel_tpch_sf20)    PGUSER / PGPASSWORD  PG_WORKERS (rf-fixed)
+#              ONLY_PHASES (rf-fixed): the systems to run, of base / accel / mv; mv reads the materialized views
+#              of mv_defs.py in schema MV_SCHEMA (default public)
+#              PG_SHARED (1): one copy of the accelerators in the extension's shared-state worker, maintained
+#              by the deltas each writer commit ships to it (accel.shared_state; the analogue of DuckDB's one
+#              process).  PG_SHARED=0: a copy per connection, which every other connection's write invalidates,
+#              so each reader rebuilds its copy in full on its next query.
 #   mysql:     MYSQL_TCP_PORT (3307)  MYSQL_DB (tpch_sf20)  MYSQL_USER / MYSQL_PWD
 #   postgres/mysql: QUERY_TIMEOUT (1800 s per baseline query; timeouts are reported, not fatal)
 # Needs for postgres/mysql: pip install psycopg2-binary pymysql  (PYTHON=<venv python>).
@@ -58,6 +77,7 @@ BIN=${BIN:-$ROOT/build-verus-duckdb/aux_compare}
 CAP=${CAP:-96G}   # a commit that rebuilds state keeps old and new copies alive; 64G may be too tight
 PG_DB=${PG_DB:-accel_tpch_sf20}
 MYSQL_DB=${MYSQL_DB:-tpch_sf20}
+PG_SHARED=${PG_SHARED:-1}
 export PG_PORT=${PG_PORT:-5434} MYSQL_TCP_PORT=${MYSQL_TCP_PORT:-3307}
 QUERY_TIMEOUT=${QUERY_TIMEOUT:-1800}
 RF_DIR=${RF_DIR:-/flash1/akhilvb/tpch/refresh_sf${SF}}
@@ -79,7 +99,7 @@ meta() {  # what this ran on
   local d=$1/meta; mkdir -p "$d"
   {
     echo "date: $(date -Is)"; echo "host: $(uname -n)"; echo "cmd: $0 $*"
-    echo "sf: $SF repeats: $REPEATS readers: $READERS backends: $BACKENDS rf_dir: $RF_DIR batch_orders: ${BATCH_ORDERS:-whole sets}"
+    echo "sf: $SF repeats: $REPEATS readers: $READERS backends: $BACKENDS rf_dir: $RF_DIR batch_orders: ${BATCH_ORDERS:-whole sets} pg_shared: $PG_SHARED"
     echo "update sets: $(ls "$RF_DIR"/delete.* 2>/dev/null | wc -l), orders in set 1: $(wc -l < "$RF_DIR/delete.1" 2>/dev/null)"
     echo "interval_mult: $INTERVAL_MULT n_commits: $N_COMMITS queries: $QUERIES"
     echo "git HEAD: $(git rev-parse HEAD)"; echo "uncommitted files: $(git status --short | wc -l)"
@@ -95,7 +115,7 @@ meta() {  # what this ran on
 
 sql_args() {
   case $1 in
-    postgres) echo "--backend postgres --db $PG_DB" ;;
+    postgres) echo "--backend postgres --db $PG_DB $([ "$PG_SHARED" = 1 ] && echo --shared-state)" ;;
     mysql)    echo "--backend mysql --db $MYSQL_DB" ;;
   esac
 }
@@ -119,6 +139,65 @@ run_rf() {
 }
 
 case $MODE in
+rf-fixed)
+  need_rf_sets
+  PG_WORKERS=${PG_WORKERS:-$(( $(nproc) / READERS - 1 ))}
+  SEED=${SEED:-$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')}   # one draw base for every point: base and accel paired
+  IVS=${FIXED_INTERVALS:-60 30 15 10 5}
+  if [[ " $BACKENDS " == *" postgres "* ]]; then
+    # the tables' parallel_workers = PG_WORKERS once for the whole experiment (no DDL between the runs that
+    # share one worker's state); the originals are saved first and restored on any exit
+    # (ONLY_PHASES=mv: the tables of MV_SCHEMA, which may be a copy next to the public tables other runs use)
+    RELOPT_SCHEMA=public; [ "${ONLY_PHASES:-}" = mv ] && RELOPT_SCHEMA=${MV_SCHEMA:-public}
+    RELOPT_FILE=$OUT/postgres/reloptions_original.json; mkdir -p "$OUT/postgres"
+    $PYTHON benchmarks/compare/run_sql_backend.py reloptions --db "$PG_DB" --schema "$RELOPT_SCHEMA" --file "$RELOPT_FILE" --set "$PG_WORKERS" || exit 1
+    trap '$PYTHON benchmarks/compare/run_sql_backend.py reloptions --db "$PG_DB" --schema "$RELOPT_SCHEMA" --file "$RELOPT_FILE" --restore' EXIT
+  fi
+  for b in $BACKENDS; do
+    # Postgres shared state: every accelerator point first, on ONE worker that builds its state once (the
+    # first run's priming; ~1 h at SF20, serial) and is maintained by the deltas of every later commit
+    # (writer and restore alike, all with the capture triggers on); then every base point (triggers off, so
+    # the worker is stopped before each).  Priming is outside the measured window either way.
+    PHASES="base accel"; [ "$b" = postgres ] && [ "$PG_SHARED" = 1 ] && PHASES="accel base"
+    # e.g. "accel": one system only (the other's runs exist elsewhere); "mv" (postgres): the materialized-view
+    # baseline (mv_defs.py create --schema MV_SCHEMA first), on the tables of schema MV_SCHEMA (default public)
+    [ -n "${ONLY_PHASES:-}" ] && PHASES=$ONLY_PHASES
+    FIRST=1
+    S=${FIXED_WINDOW:-180}; W=${FIXED_WARMUP:-30}
+    for SYS in $PHASES; do
+      for ((K = ${FIRST_REP:-0}; K < REPEATS; K++)); do   # FIRST_REP: resume a sweep at that repetition
+      ORDER=$IVS; [ $((K % 2)) = 1 ] && ORDER=$(echo $IVS | tr ' ' '\n' | tac | tr '\n' ' ')
+      for IV in $ORDER; do
+        RATE=$($PYTHON -c "print(round(1.0 / $IV, 6))")
+        D=$OUT/$b/rf-fixed/interval${IV}s; mkdir -p "$D"; meta "$D" "$@"
+        echo "pg_workers: $PG_WORKERS (per session, base and accel) seed: $SEED phases: $PHASES" >> "$D/meta/meta.txt"
+        EXTRA=(--seed "$SEED")
+        # the SQL harness runs one repetition per call (DuckDB's runs every repetition in one call)
+        [ "$b" != duckdb ] && EXTRA+=(--only-rep "$K" --min-reads "${MIN_READS:-3}" --max-seconds "${MAX_WINDOW:-900}")
+        if [ "$b" = postgres ]; then
+          EXTRA+=(--pg-workers "$PG_WORKERS")
+          if [ "$PHASES" = "accel base" ] || [ -n "${ONLY_PHASES:-}" ]; then
+            EXTRA+=(--systems "$SYS")
+            # (mv: no shared worker, so no --worker-restart)
+            # mv: the views' schema, and smaller write statements (pg_ivm maintenance per statement is superlinear)
+            [ "$SYS" = mv ] && EXTRA+=(--schema "${MV_SCHEMA:-public}" --chunk "${MV_CHUNK:-500}")
+            if [ "$SYS" = accel ]; then
+              # FIRST_RESTART=never: keep a worker that is already running and valid (no writes with the
+              # triggers off since it started), e.g. one whose build an interrupted run left behind
+              EXTRA+=(--worker-restart "$([ $FIRST = 1 ] && echo "${FIRST_RESTART:-first}" || echo never)"); FIRST=0
+            fi
+          fi
+        fi
+        echo "=== rf-fixed $b ${SYS} rep $K interval=${IV}s window=${S}s (min reads ${MIN_READS:-3}, max ${MAX_WINDOW:-900}s) warmup=${W}s readers=$READERS seed=$SEED$([ "$b" = postgres ] && echo " pg_workers=$PG_WORKERS") $(date +%T)"
+        run_rf "$b" "$D" "$RATE" "$S" "$W" "$READERS" --dim-after-rf --repeats "$REPEATS" --sets 4 "${EXTRA[@]}" 2>&1 | tee -ia "$D/run.log"
+      done
+      [ "$b" = duckdb ] && break
+      done
+      # (otherwise both systems ran per invocation; ONLY_PHASES runs one system per invocation)
+      [ "$b" = postgres ] && { [ "$PHASES" = "accel base" ] || [ -n "${ONLY_PHASES:-}" ]; } || break
+    done
+  done
+  ;;
 read)
   for b in $BACKENDS; do
     D=$OUT/$b/read; mkdir -p "$D"; meta "$D" "$@"
@@ -173,7 +252,7 @@ cycle)
 summary)
   for b in $BACKENDS; do
     [ -d "$OUT/$b/read" ] && [ "$b" = duckdb ] && $PYTHON benchmarks/compare/run_compare.py summary "$OUT/$b/read"
-    for D in "$OUT/$b"/rf/interval*; do
+    for D in "$OUT/$b"/rf/interval* "$OUT/$b"/rf-fixed/interval*; do
       [ -d "$D" ] || continue
       echo "=== $b $(basename "$D")"
       if [ "$b" = duckdb ]; then

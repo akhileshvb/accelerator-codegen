@@ -1,0 +1,44 @@
+workload_kind: materialized_view
+benchmark_name: tpch
+query_number: 22
+engine_name: postgres
+query_id: "22"
+accelerator_id: tpch_q22_mv
+mv_function_name: accel_tpch_q22_mv
+mv_relation_name: accel_tpch_q22_matview
+
+requires_base_accelerator: false
+
+allow_poor_fitness: false
+
+reference_sql_path: src/generated/tpch/q22/postgres/matview/reference.sql
+seed_manifest_root: /home/akhilvb/tpch-utils/generated/sf1_instances
+
+parameters:
+  - name: country_code1
+    type: VARCHAR
+  - name: country_code2
+    type: VARCHAR
+  - name: country_code3
+    type: VARCHAR
+  - name: country_code4
+    type: VARCHAR
+  - name: country_code5
+    type: VARCHAR
+  - name: country_code6
+    type: VARCHAR
+  - name: country_code7
+    type: VARCHAR
+
+dependent_tables:
+  - name: customer
+    watched_columns: []
+  - name: orders
+    watched_columns: []
+
+output_schema: []
+
+speedup_verification:
+  min_speedup_vs_native_sql: 1.2
+
+agent_boundary: prompts/materialized_view/shared/agent_boundary.md
