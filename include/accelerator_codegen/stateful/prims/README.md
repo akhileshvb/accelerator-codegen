@@ -28,6 +28,12 @@ concurrent const reads of a published copy are safe.
 | `keyed_string_column.hpp` | `KeyedStringColumn` | any int64 | string | ~12 B + bytes | COW. Parallel SIMD LIKE scan over the whole column. |
 | `string_blob.hpp` | `StringBlob`, `StringDict` | id / string | string | 8 B + bytes; dict adds ~9-12 B | Append-only, not COW. |
 
+### Composition helpers
+
+| Header | Primitive | Use it for |
+| --- | --- | --- |
+| `cow_box.hpp` | `CowBox<T>` | Making a state struct that holds containers with an O(directory) copy cheap to copy: the box copies one pointer and clones `T` on the first `Mutable()` while shared. |
+
 ### Ordered and aggregate structures
 
 | Header | Primitive | Operations | Memory | Notes |

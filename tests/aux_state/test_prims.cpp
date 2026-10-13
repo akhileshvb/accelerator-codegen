@@ -13,6 +13,7 @@
 #include "accelerator_codegen/stateful/prims/any_key_cow_array.hpp"
 #include "accelerator_codegen/stateful/prims/chunked_blob_map.hpp"
 #include "accelerator_codegen/stateful/prims/chunked_cow_array.hpp"
+#include "accelerator_codegen/stateful/prims/cow_box.hpp"
 #include "accelerator_codegen/stateful/prims/cow_fenwick.hpp"
 #include "accelerator_codegen/stateful/prims/cow_record_store.hpp"
 #include "accelerator_codegen/stateful/prims/cow_sorted_blocks.hpp"
@@ -1083,6 +1084,40 @@ static void TestShardedCowOpenMap() {
   CHECK(*bulk.Find(5) == 5 && bulk.Erase(es[0].first) && !bulk.Find(es[0].first));
 }
 
+static void TestCowBox() {
+  // Copy shares; the first Mutable() on a shared box clones, the other copy is unchanged.
+  CowBox<std::vector<int>> a;
+  CHECK(a->empty() && a.unique());
+  a.Mutable().push_back(1);
+  CowBox<std::vector<int>> b = a;
+  CHECK(!a.unique() && !b.unique() && &*a == &*b);
+  b.Mutable().push_back(2);
+  CHECK(a.unique() && b.unique() && &*a != &*b);
+  CHECK(a->size() == 1 && b->size() == 2);
+  const std::vector<int> *addr = &*b;
+  b.Mutable().push_back(3); // private: in place, no clone
+  CHECK(&*b == addr && b->size() == 3);
+  // Randomized: boxes of maps copied/mutated like published versions.
+  std::mt19937_64 rng(11);
+  using M = std::map<int, int>;
+  CowBox<M> cur;
+  M ref;
+  std::vector<std::pair<CowBox<M>, M>> snaps;
+  for (int step = 0; step < 5000; ++step) {
+    switch (rng() % 4) {
+    case 0: case 1: { int k = int(rng() % 50), v = int(rng()); cur.Mutable()[k] = v; ref[k] = v; break; }
+    case 2: { int k = int(rng() % 50); cur.Mutable().erase(k); ref.erase(k); break; }
+    default: if (snaps.size() < 12) snaps.emplace_back(cur, ref);
+    }
+    if (step % 500 == 499) {
+      CHECK(*cur == ref);
+      for (auto &s : snaps) CHECK(*s.first == s.second);
+    }
+  }
+  CowBox<int> v(7);
+  CHECK(*v == 7);
+}
+
 int main() {
   TestDenseIdArray();
   TestCow();
@@ -1103,6 +1138,7 @@ int main() {
   TestDecimalText();
   TestPgNumericDiv();
   TestShardedCowOpenMap();
+  TestCowBox();
   std::puts("test_prims: PASS");
   return 0;
 }
