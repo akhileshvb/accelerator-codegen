@@ -1,5 +1,8 @@
 build/
 build-*/
+# build-* symlinks into scratch storage (a trailing slash only matches real directories)
+build-*
+.verus-solver-log/
 benchmarks/tpch/results/
 benchmarks/tpch/tmp/
 benchmarks/sec_edgar/.venv/
