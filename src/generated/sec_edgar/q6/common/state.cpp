@@ -25,29 +25,6 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-struct DebugTimer {
-  const char *what;
-  std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
-  long flt0 = Faults();
-  double cpu0 = Cpu();
-  static long Faults() { rusage u; getrusage(RUSAGE_THREAD, &u); return u.ru_minflt; }
-  static double Cpu() { rusage u; getrusage(RUSAGE_THREAD, &u); return u.ru_utime.tv_sec * 1e6 + u.ru_utime.tv_usec; }
-  explicit DebugTimer(const char *w) : what(w) {}
-  void Lap(const char *w) {
-    static const bool on = std::getenv("ACCEL_Q6_APPLY_STATS") != nullptr;
-    const auto now = std::chrono::steady_clock::now();
-    const long f = Faults();
-    const double c = Cpu();
-    if (on) {
-      std::fprintf(stderr, "q6apply  %s %.1fus faults=%ld user=%.0fus\n", w,
-                   std::chrono::duration<double, std::micro>(now - t0).count(), f - flt0, c - cpu0);
-    }
-    t0 = now;
-    flt0 = f;
-    cpu0 = c;
-  }
-};
-
 constexpr size_t kTopTarget = 512;     // desired cache size after a rescan / trim
 constexpr size_t kTopFloorMax = 4096;  // trim when the cache grows past this
 
@@ -997,13 +974,8 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
   std::vector<Span> spans;
   std::vector<uint32_t> ref_span(n, kNone);
 
-  DebugTimer dt("x");
-  uint64_t cy[6] = {0, 0, 0, 0, 0, 0};
-  uint64_t t_prev = 0;
-#define Q6TICK(k) do { const uint64_t t_now = __rdtsc(); cy[k] += t_now - t_prev; t_prev = t_now; } while (0)
   // 1. strings -> ids, (adsh, tv, uom) -> span
   for (size_t i = 0; i < n; ++i) {
-    t_prev = __rdtsc();
     const auto &r = refs[i];
     const auto adsh_of = [&](uint64_t h, std::string_view v) {
       const uint32_t id = s.FindAdshHashed(h, v);
@@ -1020,19 +992,16 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
     } else {
       adsh_id = adsh_memo.Get(r.adsh, adsh_of);
     }
-    Q6TICK(0);
     if (adsh_id == kNone) {
       continue;
     }
     const uint32_t tag_id = tag_memo.Get(
         r.tag, [&](uint64_t h, std::string_view v) { return s.tags.FindHashed(h, v); });
-    Q6TICK(1);
     if (tag_id == 0) {
       continue;
     }
     const uint32_t version_id = version_memo.Get(
         r.version, [&](uint64_t h, std::string_view v) { return s.versions.FindHashed(h, v); });
-    Q6TICK(2);
     if (version_id == 0) {
       continue;
     }
@@ -1047,10 +1016,8 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
     if (tv == 0) {
       continue;
     }
-    Q6TICK(3);
     const uint32_t uom_id = uom_memo.Get(
         r.uom, [&](uint64_t, std::string_view v) { return s.uoms.Intern(v); });
-    Q6TICK(4);
     // (tv, adsh) is exact in 64 bits; the uom is folded in with a check.
     const uint64_t hit_key = (static_cast<uint64_t>(tv) << 32) | adsh_id;
     uint64_t probe = SecEdgarQ6Mix64(hit_key ^ (static_cast<uint64_t>(uom_id) * 0x9E3779B97F4A7C15ULL));
@@ -1068,14 +1035,8 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
         break;
       }
     }
-    Q6TICK(5);
-  }
-  if (std::getenv("ACCEL_Q6_APPLY_STATS")) {
-    std::fprintf(stderr, "q6apply r1 cycles adsh=%.1fM tag=%.1fM ver=%.1fM tv=%.1fM uom=%.1fM span=%.1fM\n",
-                 cy[0] / 1e6, cy[1] / 1e6, cy[2] / 1e6, cy[3] / 1e6, cy[4] / 1e6, cy[5] / 1e6);
   }
 
-  dt.Lap("r1");
   // 2. bridge runs adsh by adsh (one record read per adsh) -> group keys
   struct Pending {
     SecEdgarQ6GroupKey key;
@@ -1084,8 +1045,6 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
   std::vector<Pending> pending;
   pending.reserve(spans.size() + spans.size() / 4);
   {
-    for (auto &c : cy) c = 0;
-    t_prev = __rdtsc();
     // Group the spans by adsh (any order inside an adsh).
     std::vector<uint32_t> order(spans.size());
     {
@@ -1112,7 +1071,6 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
       combo_memo.Upsert(key, c);
       return c;
     };
-    Q6TICK(0);
     // Prefetch the run records a few adsh ahead (their tv arrays are searched).
     std::vector<uint32_t> adsh_starts;
     for (size_t k = 0; k < order.size(); ++k) {
@@ -1140,10 +1098,8 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
     uint32_t name = 0;
     int32_t fy = 0;
     uint32_t cur_tv = 0, cur_tag = 0;
-    Q6TICK(1);
     for (const uint32_t k : order) {
       Span &sp = spans[k];
-      t_prev = __rdtsc();
       if (sp.adsh != cur_adsh) {
         cur_adsh = sp.adsh;
         if (next_prefetch < adsh_starts.size()) {
@@ -1154,12 +1110,10 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
         fy = static_cast<int32_t>(s.adsh_fy.Get(cur_adsh));
       }
       sp.first = static_cast<uint32_t>(pending.size());
-      Q6TICK(2);
       if (!has_run) {
         continue;
       }
       const SecEdgarQ6Hit hit = HitOfRun(run, sp.tv);
-      Q6TICK(3);
       if (!hit.Found()) {
         continue;
       }
@@ -1174,15 +1128,9 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
         pending.push_back(p);
       }
       sp.count = hit.count;
-      Q6TICK(4);
     }
   }
-  if (std::getenv("ACCEL_Q6_APPLY_STATS")) {
-    std::fprintf(stderr, "q6apply r2 cycles sort=%.1fM starts=%.1fM get=%.1fM hit=%.1fM keys=%.1fM\n",
-                 cy[0] / 1e6, cy[1] / 1e6, cy[2] / 1e6, cy[3] / 1e6, cy[4] / 1e6);
-  }
 
-  dt.Lap("r2");
   // 3. group ids (prefetched lookups; new groups are added in order)
   std::vector<uint32_t> gids(pending.size());
   constexpr size_t kAhead = 8;
@@ -1201,7 +1149,6 @@ void SecEdgarQ6ResolveBatch(SecEdgarQ6Structure &s, const SecEdgarQ6NumRef *refs
     gids[j] = gid;
   }
 
-  dt.Lap("r3");
   // 4. deltas
   for (size_t i = 0; i < n; ++i) {
     if (ref_span[i] == kNone) {
@@ -1365,7 +1312,6 @@ bool ApplyInto(SecEdgarQ6State &next, std::vector<SecEdgarQ6GroupDelta> &deltas,
   if (deltas.empty()) {
     return false;
   }
-  DebugTimer dt("x");
   SyncTops(next);
   const SecEdgarQ6Structure &structure = next.structure;
 
@@ -1396,7 +1342,6 @@ bool ApplyInto(SecEdgarQ6State &next, std::vector<SecEdgarQ6GroupDelta> &deltas,
     }
   }
 
-  dt.Lap("write");
   std::sort(touched.begin(), touched.end(), [](const Touch &a, const Touch &b) {
     return a.combo != b.combo ? a.combo < b.combo : a.gid < b.gid;
   });
@@ -1416,11 +1361,9 @@ bool ApplyInto(SecEdgarQ6State &next, std::vector<SecEdgarQ6GroupDelta> &deltas,
     }
     i = j;
   }
-  dt.Lap("tops");
   for (const uint32_t combo : rescan) {
     SecEdgarQ6RescanCombo(next, combo);
   }
-  dt.Lap(rescan.empty() ? "norescan" : "rescan");
   return true;
 }
 
@@ -1443,13 +1386,10 @@ SecEdgarQ6ApplyDeltas(const SecEdgarQ6State &old_state,
 std::shared_ptr<const SecEdgarQ6State>
 SecEdgarQ6ApplyNums(const SecEdgarQ6State &old_state, const SecEdgarQ6NumRef *refs,
                     size_t n, bool *overflow) {
-  DebugTimer dt("x");
   auto next = std::make_shared<SecEdgarQ6State>(old_state);
-  dt.Lap("copy");
   std::vector<SecEdgarQ6GroupDelta> deltas;
   deltas.reserve(n + n / 2);
   SecEdgarQ6ResolveBatch(next->structure, refs, n, deltas);
-  dt.Lap("resolve");
   if (TooManyGroups(next->structure) && overflow) {
     *overflow = true;
   }

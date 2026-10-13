@@ -36,20 +36,6 @@ inline uint64_t Mix(uint64_t x) noexcept {
 
 inline std::string_view View(const SecEdgarQ6Str &s) { return {s.data, s.size}; }
 
-struct BuildStats {
-  uint64_t dict_rows = 0, flat_rows = 0, resolves = 0, dict_resets = 0;
-};
-BuildStats g_stats;
-auto g_t0 = std::chrono::steady_clock::now();
-void Dump(const char *phase) {
-  if (!std::getenv("ACCEL_Q6_BUILD_STATS")) return;
-  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - g_t0).count();
-  std::fprintf(stderr, "q6build %s t=%.0fms dict_rows=%llu flat_rows=%llu resolves=%llu resets=%llu\n", phase, ms,
-               (unsigned long long)g_stats.dict_rows, (unsigned long long)g_stats.flat_rows,
-               (unsigned long long)g_stats.resolves, (unsigned long long)g_stats.dict_resets);
-  g_stats = {};
-}
-
 // Per-column id cache keyed by the batch's dictionary.
 struct ColumnCache {
   uint64_t token = 0;
@@ -66,13 +52,11 @@ void ResolveColumn(const SecEdgarQ6StrColumn &col, size_t rows, ColumnCache &cac
     bool cached = col.dict_token != 0 && col.dict_token == cache.token &&
                   cache.ids.size() == col.dict_size;
     if (!cached && (col.dict_token != 0 || col.dict_size <= rows)) {
-      ++g_stats.dict_resets;
       cache.token = col.dict_token;
       cache.ids.assign(col.dict_size, kUnknown);
       cached = true;
     }
     if (cached) {
-      g_stats.dict_rows += rows;
       uint32_t *ids = cache.ids.data();
       for (size_t i = 0; i < rows; ++i) {
         const uint32_t code = col.codes[i];
@@ -82,7 +66,6 @@ void ResolveColumn(const SecEdgarQ6StrColumn &col, size_t rows, ColumnCache &cac
         }
         uint32_t id = ids[code];
         if (id == kUnknown) {
-          ++g_stats.resolves;
           id = resolve(col.dict_get(col.dict, code));
           ids[code] = id;
         }
@@ -91,7 +74,6 @@ void ResolveColumn(const SecEdgarQ6StrColumn &col, size_t rows, ColumnCache &cac
       return;
     }
   }
-  g_stats.flat_rows += rows;
   for (size_t i = 0; i < rows; ++i) {
     out[i] = resolve(col.At(i));
   }
@@ -391,7 +373,7 @@ struct SecEdgarQ6Builder::Impl {
   }
 };
 
-SecEdgarQ6Builder::SecEdgarQ6Builder() : impl_(std::make_unique<Impl>()) { g_t0 = std::chrono::steady_clock::now(); }
+SecEdgarQ6Builder::SecEdgarQ6Builder() : impl_(std::make_unique<Impl>()) {}
 SecEdgarQ6Builder::~SecEdgarQ6Builder() = default;
 
 void SecEdgarQ6Builder::AddCohort(std::string_view adsh, int32_t fy,
@@ -447,7 +429,6 @@ void SecEdgarQ6Builder::AddPreBatch(const SecEdgarQ6PreBatch &batch) {
 }
 
 void SecEdgarQ6Builder::FinishPre() {
-  Dump("pre_scanned");
   Impl &m = *impl_;
   auto &s = m.s;
   const size_t n = m.entries.size();
@@ -524,7 +505,6 @@ void SecEdgarQ6Builder::FinishPre() {
   flush();
   m.hit_first.push_back(static_cast<uint32_t>(n));
   m.hit_aggs.assign(hit_count, Impl::HitAgg{});
-  Dump("pre_finished");
 }
 
 void SecEdgarQ6Builder::AddNumBatch(const SecEdgarQ6NumBatch &batch) {
@@ -588,7 +568,6 @@ void SecEdgarQ6Builder::AddNumBatch(const SecEdgarQ6NumBatch &batch) {
 }
 
 std::shared_ptr<SecEdgarQ6State> SecEdgarQ6Builder::Finish() {
-  Dump("num_scanned");
   Impl &m = *impl_;
   auto &s = m.s;
 
@@ -671,7 +650,6 @@ std::shared_ptr<SecEdgarQ6State> SecEdgarQ6Builder::Finish() {
   m.hit_first = {};
   m.hit_adsh = {};
 
-  Dump("contributed");
   const auto &keys = table.Keys();
   s.group_index.Reserve(keys.size() + keys.size() / 2 + 4096);
   constexpr size_t kAhead = 16;
@@ -687,7 +665,6 @@ std::shared_ptr<SecEdgarQ6State> SecEdgarQ6Builder::Finish() {
       throw std::logic_error("SEC EDGAR Q6 build: group id mismatch");
     }
   }
-  Dump("groups_added");
   s.base_group_count = s.group_count;
   s.adshs.Shrink();
   s.names.Shrink();
@@ -704,9 +681,7 @@ std::shared_ptr<SecEdgarQ6State> SecEdgarQ6Builder::Finish() {
     SecEdgarQ6Agg *data = writer.MutableData(sums.size());
     std::copy(sums.begin(), sums.end(), data);
   }
-  Dump("aggs");
   SecEdgarQ6Rescan(*state);
-  Dump("rescanned");
   return state;
 }
 
