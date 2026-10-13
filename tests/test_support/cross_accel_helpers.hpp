@@ -22,7 +22,6 @@ std::string CrossAccelAuxSql(int query_num);
 std::string CrossAccelReferenceSql(int query_num);
 std::vector<int> CrossAccelAllQueries();
 std::vector<int> CrossAccelTestQueries();
-std::vector<int> CrossAccelQueriesIncludingTarget(int target_query);
 void RequireCrossAccelQueryCorrectness(duckdb::Connection &connection, int query_num, const std::string &label);
 void RequireCrossAccelCorrectness(duckdb::Connection &connection, const std::vector<int> &queries);
 

@@ -694,14 +694,6 @@ std::vector<int> CrossAccelTestQueries() {
 	return CrossAccelAllQueries();
 }
 
-std::vector<int> CrossAccelQueriesIncludingTarget(int target_query) {
-	auto queries = CrossAccelAllQueries();
-	if (std::find(queries.begin(), queries.end(), target_query) == queries.end()) {
-		queries.push_back(target_query);
-	}
-	return queries;
-}
-
 void BuildCrossAccelAux(duckdb::Connection &connection, int query_num) {
 	auto result = connection.Query(CrossAccelAuxSql(query_num));
 	if (!result || result->HasError()) {
