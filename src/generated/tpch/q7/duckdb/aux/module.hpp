@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/sharded_sorted_map.hpp"
 #include "tpch/q7/layout.hpp"
 
 namespace accelerator_codegen::aux_state::query {
@@ -103,169 +104,18 @@ constexpr int32_t kTpchQ7MinNationSlots = 25;
 constexpr int32_t kTpchQ7MinYear = 1995;
 constexpr int32_t kTpchQ7MaxYear = 1996;
 
-// Copy-on-write hash-paged sorted map. Small sorted pages are grouped in
-// fixed-size chunks of page pointers; pages and chunks are immutable once
-// published. With() copies the chunk table, the touched chunks (kChunk page
-// pointers each) and the touched pages (a few hundred entries) and shares the
-// rest.  A null page is an empty page.
-template <class V> class PagedMap {
-public:
-  struct Entry {
-    int64_t key;
-    V val;
-  };
-  using Page = std::vector<Entry>;
-  static constexpr std::size_t kTargetPage = 256;
-  static constexpr std::size_t kChunk = 256;
-  static constexpr std::size_t kMaxPages = 1u << 18;
-  struct Chunk {
-    std::array<std::shared_ptr<const Page>, kChunk> p;
-  };
-
-  static std::size_t PagesFor(std::size_t n) {
-    std::size_t p = 1;
-    while (p < kMaxPages && n / p > kTargetPage)
-      p <<= 1;
-    return p;
-  }
-
-  const V *Find(int64_t key) const {
-    if (chunks.empty())
-      return nullptr;
-    const std::size_t slot = Slot(key, mask);
-    const auto &pg = chunks[slot / kChunk]->p[slot % kChunk];
-    if (!pg)
-      return nullptr;
-    const Page &p = *pg;
-    const auto it = std::lower_bound(
-        p.begin(), p.end(), key,
-        [](const Entry &e, int64_t k) { return e.key < k; });
-    return (it != p.end() && it->key == key) ? &it->val : nullptr;
-  }
-  std::size_t Size() const { return total; }
-  template <class F> void ForEach(F &&f) const {
-    for (const auto &c : chunks)
-      for (const auto &p : c->p)
-        if (p)
-          for (const auto &e : *p)
-            f(e.key, e.val);
-  }
-
-  // Returns a new map with `changes` applied (nullopt = erase). *this and its
-  // pages are untouched; only touched chunks/pages are copied.
-  PagedMap With(const std::unordered_map<int64_t, std::optional<V>> &changes) const {
-    PagedMap out = *this;
-    if (out.chunks.empty()) {
-      out.chunks.push_back(std::make_shared<const Chunk>());
-      out.mask = 0;
-    }
-    struct Change {
-      std::size_t slot;
-      int64_t key;
-      const std::optional<V> *val;
-    };
-    std::vector<Change> list;
-    list.reserve(changes.size());
-    for (const auto &[k, v] : changes)
-      list.push_back({Slot(k, out.mask), k, &v});
-    std::sort(list.begin(), list.end(), [](const Change &a, const Change &b) {
-      return a.slot != b.slot ? a.slot < b.slot : a.key < b.key;
-    });
-    static const Page kEmpty;
-    std::size_t cur_chunk = static_cast<std::size_t>(-1);
-    Chunk *mut_chunk = nullptr;
-    std::size_t j = 0;
-    while (j < list.size()) {
-      const std::size_t slot = list[j].slot;
-      std::size_t end = j;
-      while (end < list.size() && list[end].slot == slot)
-        ++end;
-      const std::size_t ci = slot / kChunk;
-      if (ci != cur_chunk) {
-        auto fresh = std::make_shared<Chunk>(*out.chunks[ci]);
-        mut_chunk = fresh.get();
-        out.chunks[ci] = std::move(fresh);
-        cur_chunk = ci;
-      }
-      auto &slot_ptr = mut_chunk->p[slot % kChunk];
-      const Page &old = slot_ptr ? *slot_ptr : kEmpty;
-      auto next = std::make_shared<Page>();
-      next->reserve(old.size() + (end - j));
-      std::size_t i = 0;
-      while (i < old.size() || j < end) {
-        if (j == end || (i < old.size() && old[i].key < list[j].key)) {
-          next->push_back(old[i++]);
-        } else {
-          if (i < old.size() && old[i].key == list[j].key)
-            ++i;
-          if (list[j].val->has_value())
-            next->push_back({list[j].key, **list[j].val});
-          ++j;
-        }
-      }
-      out.total = out.total - old.size() + next->size();
-      if (next->empty())
-        slot_ptr.reset();
-      else
-        slot_ptr = std::shared_ptr<const Page>(std::move(next));
-    }
-    return out;
-  }
-
-  class Builder {
-  public:
-    explicit Builder(std::size_t expected_entries)
-        : pages(PagesFor(expected_entries)), mask(pages.size() - 1) {}
-    void Add(int64_t key, const V &val) {
-      pages[Slot(key, mask)].push_back({key, val});
-    }
-    void Sort() {
-      for (auto &p : pages)
-        std::sort(p.begin(), p.end(), [](const Entry &a, const Entry &b) {
-          return a.key < b.key;
-        });
-    }
-    // Valid only after Sort().
-    V *FindMut(int64_t key) {
-      Page &p = pages[Slot(key, mask)];
-      const auto it = std::lower_bound(
-          p.begin(), p.end(), key,
-          [](const Entry &e, int64_t k) { return e.key < k; });
-      return (it != p.end() && it->key == key) ? &it->val : nullptr;
-    }
-    PagedMap Freeze() {
-      PagedMap out;
-      out.mask = mask;
-      const std::size_t nchunks = (pages.size() + kChunk - 1) / kChunk;
-      for (std::size_t c = 0; c < nchunks; ++c) {
-        auto chunk = std::make_shared<Chunk>();
-        for (std::size_t k = 0; k < kChunk && c * kChunk + k < pages.size(); ++k) {
-          auto &p = pages[c * kChunk + k];
-          out.total += p.size();
-          if (!p.empty())
-            chunk->p[k] = std::make_shared<const Page>(std::move(p));
-        }
-        out.chunks.push_back(std::move(chunk));
-      }
-      pages.clear();
-      return out;
-    }
-
-  private:
-    std::vector<Page> pages;
-    std::size_t mask;
-  };
-
-private:
-  static std::size_t Slot(int64_t key, std::size_t mask) {
-    return static_cast<std::size_t>(
-               (static_cast<uint64_t>(key) * 0x9E3779B97F4A7C15ULL) >> 40) &
-           mask;
-  }
-  std::vector<std::shared_ptr<const Chunk>> chunks;
-  std::size_t mask = 0;
-  std::size_t total = 0;
-};
+// Copy-on-write hash-sharded sorted map (core::ShardedSortedMap): sorted
+// shards under a two-level directory; a Txn copies the directory, the touched
+// mid arrays and the touched shards (a few hundred entries) and shares the
+// rest.  Builder(expected) sizes the shard count from the row count.
+template <class V> using TpchQ7Map = core::ShardedSortedKvMap<int64_t, V>;
+// Find returns the {key, value} element; these yield the value (or nullptr).
+template <class E> inline const auto *TpchQ7Val(const E *e) {
+  return e ? &e->value : nullptr;
+}
+template <class E> inline auto *TpchQ7ValMut(E *e) {
+  return e ? &e->value : nullptr;
+}
 
 // nation key plus the number of in-window (1995-1996) lineitems that reference
 // the key. nation < 0 is a tombstone: the dimension row is absent but that many
@@ -282,10 +132,10 @@ struct TpchQ7OrderCust {
 
 struct TpchQ7State {
   std::unordered_map<int32_t, std::string> nation_names;
-  PagedMap<TpchQ7NationCount> supplier_nations;
-  PagedMap<TpchQ7NationCount> customer_nations;
+  TpchQ7Map<TpchQ7NationCount> supplier_nations;
+  TpchQ7Map<TpchQ7NationCount> customer_nations;
   // All orders (orderkey -> custkey), paged copy-on-write.
-  PagedMap<TpchQ7OrderCust> order_custkeys;
+  TpchQ7Map<TpchQ7OrderCust> order_custkeys;
   std::vector<int64_t> revenue_1995;
   std::vector<int64_t> revenue_1996;
   int32_t num_nation_slots = kTpchQ7MinNationSlots;
