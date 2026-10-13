@@ -193,13 +193,13 @@ int64_t TpchQ14RevenueRaw(int64_t extended_price_raw, int32_t extended_scale,
 std::vector<uint8_t> EncodeTpchQ14PartPromo(const TpchQ14State &state) {
   ByteWriter writer;
   std::vector<int64_t> keys;
-  for (std::size_t p = 0; p < state.pages.size(); ++p) {
-    if (!state.pages[p])
+  for (std::size_t p = 0; p < state.classes.NumChunks(); ++p) {
+    const auto *page = state.classes.ChunkAt(p);
+    if (!page)
       continue;
-    const auto &page = *state.pages[p];
-    for (std::size_t i = 0; i < page.size(); ++i) {
-      if ((page[i] & TpchQ14State::kClassMask) != 0)
-        keys.push_back(static_cast<int64_t>(p * TpchQ14State::kPageSize + i));
+    for (std::size_t i = 0; i < page->size(); ++i) {
+      if (((*page)[i] & TpchQ14State::kClassMask) != 0)
+        keys.push_back(state.classes.ChunkBase(p) + static_cast<int64_t>(i));
     }
   }
   const auto dense = keys.size();
@@ -237,7 +237,7 @@ bool DecodeTpchQ14PartPromo(const std::vector<uint8_t> &bytes,
   uint32_t count = 0;
   if (!core::ReadImageHeader(reader, kPartMagic, kVersion, count))
     return false;
-  state.pages.clear();
+  state.classes.Clear();
   state.promo_overflow.clear();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0;
@@ -597,7 +597,7 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
   if (!part_state)
     return rebuild_all();
 
-  // The part classes are only copied (page table; pages stay shared until
+  // The part classes are only copied (chunk directory; chunks stay shared until
   // SetRaw touches one) when a write actually changes a class: lineitem-only
   // batches read the published state and copy nothing.
   struct WorkState {
@@ -614,7 +614,7 @@ TpchQ14Module::StageMaintenance(core::AuxEngineServices &services,
     void SetRaw(int64_t key, uint8_t raw) {
       if (!copied) {
         copy.build_max_partkey = published->build_max_partkey;
-        copy.pages = published->pages;
+        copy.classes = published->classes;
         copy.promo_overflow = published->promo_overflow;
         copied = true;
       }

@@ -251,9 +251,11 @@ bool TpchQ12LineitemQualifies(int32_t commitdate_days, int32_t receiptdate_days,
 
 std::vector<uint8_t> EncodeTpchQ12OrderPriorities(const TpchQ12State &state) {
   ByteWriter writer;
-  std::vector<int64_t> keys; // ascending (ForEachNonZero walks in key order)
-  state.order_priorities.ForEachNonZero(
-      [&](int64_t key, uint8_t) { keys.push_back(key); });
+  std::vector<int64_t> keys; // ascending (ForEachOrdered walks in key order)
+  state.order_priorities.ForEachOrdered([&](int64_t key, uint8_t v) {
+    if (v != 0)
+      keys.push_back(key);
+  });
   core::WriteImageHeader(writer, kPriorityMagic, kVersion, static_cast<uint32_t>(keys.size()));
   for (const auto key : keys) {
     writer.I64(key);
@@ -291,8 +293,8 @@ bool DecodeTpchQ12OrderPriorities(const std::vector<uint8_t> &bytes,
   uint32_t count = 0;
   if (!core::ReadImageHeader(reader, kPriorityMagic, kVersion, count))
     return false;
-  state.order_priorities.Clear();
-  state.line_counts.Clear();
+  state.order_priorities = decltype(state.order_priorities)();
+  state.line_counts = decltype(state.line_counts)();
   for (uint32_t i = 0; i < count; ++i) {
     int64_t key = 0;
     uint8_t priority = 0;

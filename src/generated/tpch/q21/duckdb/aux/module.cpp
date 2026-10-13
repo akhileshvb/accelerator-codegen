@@ -306,7 +306,7 @@ void FlattenOrders(TpchQ21Core &core) {
     (*merged)[key] = summary;
   });
   core.base = std::move(merged);
-  core.overlay = TpchQ21CowMap<int64_t, OrderSummary>();
+  core.overlay = {};
 }
 
 } // namespace
@@ -491,7 +491,7 @@ bool DecodeTpchQ21OrderSummaries(const std::vector<uint8_t> &bytes,
       int64_t key = 0, nw = 0;
       if (!reader.I64(key) || !reader.I64(nw))
         return false;
-      state.core->numwait.Mutable(key) = nw;
+      state.core->numwait[key] = nw;
     }
   }
   return reader.offset == bytes.size();
@@ -1010,7 +1010,7 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
     if (a.new_nw == 0)
       next_core->numwait.Erase(suppkey);
     else
-      next_core->numwait.Mutable(suppkey) = a.new_nw;
+      next_core->numwait[suppkey] = a.new_nw;
   }
 
   // ── Supplier directory deltas ─────────────────────────────────────────────
@@ -1021,7 +1021,7 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
     }
     // had_old only records that a row went away; the final directory state is
     // the last delta per supplier (delete then insert = replace).
-    auto &slot = next_dir->overlay.Mutable(delta.suppkey);
+    auto &slot = next_dir->overlay[delta.suppkey];
     if (delta.has_new) {
       slot.present = true;
       slot.supplier = {std::make_shared<const std::string>(delta.new_name),
@@ -1095,7 +1095,7 @@ TpchQ21Module::StageMaintenance(core::AuxEngineServices &services,
   }
 
   // Compact the order overlay (amortized; off the common path).
-  if (next_core->overlay.Size() > kOrderOverlayCompactThreshold)
+  if (next_core->overlay.size() > kOrderOverlayCompactThreshold)
     FlattenOrders(*next_core);
 
   outcome.action = core::MaintenanceAction::ApplyDelta;
@@ -1315,7 +1315,7 @@ TpchQ21Module::BuildState(core::AuxEngineServices &services) const {
   }
   state.core->base = orders;
   for (const auto &[suppkey, nw] : numwait)
-    state.core->numwait.Mutable(suppkey) = nw;
+    state.core->numwait[suppkey] = nw;
 
   // Per-nation answer rows.
   std::map<int32_t, std::map<std::string,

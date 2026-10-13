@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "accelerator_codegen/stateful/core/aux_query_module.hpp"
+#include "accelerator_codegen/stateful/prims/flat_hash_map.hpp"
 
 namespace accelerator_codegen::aux_state::query {
 
@@ -117,78 +118,6 @@ struct TpchQ20SupplierRecord {
   std::string name;
   std::string address;
   int32_t nationkey = 0;
-};
-
-// Copy-on-write hash map: 128 shards, each an immutable-once-published
-// shared_ptr<Map>. Copying a TpchQ20CowMap shares every shard; a mutation
-// clones only the touched shard (and only once per staged commit).
-template <typename V> class TpchQ20CowMap {
-public:
-  using Map = std::unordered_map<uint64_t, V>;
-  static constexpr std::size_t kShards = 128;
-
-  TpchQ20CowMap() = default;
-  TpchQ20CowMap(const TpchQ20CowMap &other)
-      : shards(other.shards), count(other.count) {} // owned stays empty
-  TpchQ20CowMap &operator=(const TpchQ20CowMap &other) {
-    shards = other.shards;
-    count = other.count;
-    owned.fill(false);
-    return *this;
-  }
-
-  const V *Find(uint64_t key) const {
-    const auto &shard = shards[ShardOf(key)];
-    if (!shard)
-      return nullptr;
-    const auto it = shard->find(key);
-    return it == shard->end() ? nullptr : &it->second;
-  }
-  // Returns a mutable slot (default-constructed when absent). The caller must
-  // be the staging owner of this instance (never a published state).
-  V &Mutable(uint64_t key, bool *inserted = nullptr) {
-    auto &map = OwnedShard(ShardOf(key));
-    const auto res = map.try_emplace(key);
-    if (res.second) {
-      ++count;
-    }
-    if (inserted)
-      *inserted = res.second;
-    return res.first->second;
-  }
-  void Erase(uint64_t key) {
-    const std::size_t i = ShardOf(key);
-    if (!shards[i] || shards[i]->find(key) == shards[i]->end())
-      return;
-    OwnedShard(i).erase(key);
-    --count;
-  }
-  std::size_t Size() const { return count; }
-  bool Empty() const { return count == 0; }
-  template <typename F> void ForEach(F &&f) const {
-    for (const auto &shard : shards) {
-      if (!shard)
-        continue;
-      for (const auto &kv : *shard)
-        f(kv.first, kv.second);
-    }
-  }
-
-private:
-  static std::size_t ShardOf(uint64_t key) {
-    return static_cast<std::size_t>((key * 0x9E3779B97F4A7C15ULL) >> 57);
-  }
-  Map &OwnedShard(std::size_t i) {
-    if (!shards[i])
-      shards[i] = std::make_shared<Map>();
-    else if (!owned[i])
-      shards[i] = std::make_shared<Map>(*shards[i]);
-    owned[i] = true;
-    return *shards[i];
-  }
-  std::array<std::shared_ptr<Map>, kShards> shards{};
-  std::array<bool, kShards> owned{};
-  std::size_t count = 0;
 };
 
 // Immutable bulk image built once per (re)build; shared by every version.
@@ -555,13 +484,13 @@ struct TpchQ20State {
   // by shipdate.
   TpchQ20SeriesOverlay series;
   // partkey -> complete current partsupp list (empty = none).
-  TpchQ20CowMap<std::vector<TpchQ20PsPair>> partsupps;
-  TpchQ20CowMap<TpchQ20PartOverlay> parts;
-  TpchQ20CowMap<TpchQ20SupplierOverlay> suppliers;
+  core::ShardedCowHashMap<std::vector<TpchQ20PsPair>, 7> partsupps;
+  core::ShardedCowHashMap<TpchQ20PartOverlay, 7> parts;
+  core::ShardedCowHashMap<TpchQ20SupplierOverlay, 7> suppliers;
 
   // Total overlay population; Stage requests a rebuild past a bound.
   std::size_t OverlayWeight() const {
-    return series.Size() + partsupps.Size() + parts.Size() + suppliers.Size();
+    return series.Size() + partsupps.size() + parts.size() + suppliers.size();
   }
 
   // Effective-state helpers (overlay first, then base).

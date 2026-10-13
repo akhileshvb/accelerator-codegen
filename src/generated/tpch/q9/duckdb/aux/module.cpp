@@ -190,14 +190,13 @@ bool CopyMaintenanceSideFromImage(const TpchQ9StateImage *image,
 void CollectSupplierNations(const TpchQ9State &state,
                             std::vector<int64_t> &keys) {
   keys.clear();
-  for (std::size_t chunk_idx = 0; chunk_idx < state.supplier_nations.chunks.size();
+  for (std::size_t chunk_idx = 0; chunk_idx < state.supplier_nations.NumChunks();
        ++chunk_idx) {
-    const auto &page = state.supplier_nations.chunks[chunk_idx];
+    const auto *page = state.supplier_nations.ChunkAt(chunk_idx);
     if (!page)
       continue;
     const auto &chunk = *page;
-    const int64_t base = static_cast<int64_t>(
-        chunk_idx << decltype(state.supplier_nations)::kShift);
+    const int64_t base = state.supplier_nations.ChunkBase(chunk_idx);
     for (std::size_t slot = 0; slot < chunk.size(); ++slot) {
       if (chunk[slot] == TpchQ9State::kAbsentNationCode)
         continue;
@@ -209,14 +208,13 @@ void CollectSupplierNations(const TpchQ9State &state,
 
 void CollectOrderYears(const TpchQ9State &state, std::vector<int64_t> &keys) {
   keys.clear();
-  for (std::size_t chunk_idx = 0; chunk_idx < state.order_years.chunks.size();
+  for (std::size_t chunk_idx = 0; chunk_idx < state.order_years.NumChunks();
        ++chunk_idx) {
-    const auto &page = state.order_years.chunks[chunk_idx];
+    const auto *page = state.order_years.ChunkAt(chunk_idx);
     if (!page)
       continue;
     const auto &chunk = *page;
-    const int64_t base = static_cast<int64_t>(
-        chunk_idx << decltype(state.order_years)::kShift);
+    const int64_t base = state.order_years.ChunkBase(chunk_idx);
     for (std::size_t slot = 0; slot < chunk.size(); ++slot) {
       if (chunk[slot] == TpchQ9State::kAbsentYearCode)
         continue;
@@ -238,14 +236,13 @@ struct PartsuppTriple {
 void CollectPartsupp(const TpchQ9State &state,
                      std::vector<PartsuppTriple> &rows) {
   rows.clear();
-  for (std::size_t chunk_idx = 0; chunk_idx < state.partsupp_rows.chunks.size();
+  for (std::size_t chunk_idx = 0; chunk_idx < state.partsupp_rows.NumChunks();
        ++chunk_idx) {
-    const auto &page = state.partsupp_rows.chunks[chunk_idx];
+    const auto *page = state.partsupp_rows.ChunkAt(chunk_idx);
     if (!page)
       continue;
     const auto &chunk = *page;
-    const int64_t base = static_cast<int64_t>(
-        chunk_idx << decltype(state.partsupp_rows)::kShift);
+    const int64_t base = state.partsupp_rows.ChunkBase(chunk_idx);
     for (std::size_t slot = 0; slot < chunk.size(); ++slot) {
       const auto &row = chunk[slot];
       const int64_t partkey = base + static_cast<int64_t>(slot);
@@ -914,9 +911,9 @@ void TpchQ9State::BuildSuppPairsIndex() {
   supp_pairs.Clear();
   for (auto &[suppkey, parts] : by_supp) {
     std::sort(parts.begin(), parts.end());
-    supp_pairs.Set(suppkey,
-                   std::make_shared<std::vector<int64_t>>(std::move(parts)),
-                   nullptr);
+    Q9BoundedSet(supp_pairs, suppkey,
+                 std::shared_ptr<const std::vector<int64_t>>(
+                     std::make_shared<std::vector<int64_t>>(std::move(parts))));
   }
 }
 
@@ -1137,14 +1134,14 @@ void WriteTpchQ9MaintenanceSideBody(ByteWriter &writer,
   // suppkey -> partkeys with lineitem-aggregate pairs
   std::vector<std::pair<int64_t, std::shared_ptr<const std::vector<int64_t>>>>
       sp;
-  for (std::size_t ci = 0; ci < state.supp_pairs.chunks.size(); ++ci) {
-    const auto &page = state.supp_pairs.chunks[ci];
+  for (std::size_t ci = 0; ci < state.supp_pairs.NumChunks(); ++ci) {
+    const auto *page = state.supp_pairs.ChunkAt(ci);
     if (!page)
       continue;
     for (std::size_t slot = 0; slot < page->size(); ++slot)
       if ((*page)[slot])
-        sp.emplace_back(static_cast<int64_t>(
-                            (ci << decltype(state.supp_pairs)::kShift) + slot),
+        sp.emplace_back(state.supp_pairs.ChunkBase(ci) +
+                            static_cast<int64_t>(slot),
                         (*page)[slot]);
   }
   writer.U32(static_cast<uint32_t>(sp.size()));
@@ -1260,7 +1257,8 @@ bool ReadTpchQ9MaintenanceSideBody(ByteReader &reader, TpchQ9State &state) {
         return false;
       parts->push_back(pk);
     }
-    state.supp_pairs.Set(suppkey, std::move(parts), nullptr);
+    Q9BoundedSet(state.supp_pairs, suppkey,
+                 std::shared_ptr<const std::vector<int64_t>>(std::move(parts)));
   }
   return true;
 }

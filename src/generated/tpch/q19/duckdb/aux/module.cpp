@@ -432,10 +432,8 @@ core::InvalidationPlan All() {
 std::vector<TpchQ19State::IndexEnt>
 TpchQ19State::IndexEntries(int64_t partkey) const {
   std::vector<IndexEnt> out;
-  if (!index_overlay.Empty()) {
-    if (const auto *ov = index_overlay.Find(static_cast<uint64_t>(partkey)))
-      return *ov;
-  }
+  if (const auto *ov = index_overlay.Find(partkey))
+    return *ov;
   const auto &b = *index_base;
   const auto it = std::lower_bound(b.keys.begin(), b.keys.end(), partkey);
   if (it == b.keys.end() || *it != partkey)
@@ -786,7 +784,7 @@ TpchQ19State TpchQ19Module::BuildState(core::AuxEngineServices &services,
           e.count > std::numeric_limits<int32_t>::max())
         fits = false;
     if (!fits) {
-      state.index_overlay.Mutable(static_cast<uint64_t>(cur_key)) = std::move(merged);
+      state.index_overlay.Upsert(cur_key, std::move(merged));
       return;
     }
     base->keys.push_back(cur_key);
@@ -928,7 +926,7 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
   // Index/dimension overlays are bounded: past this, a fresh bulk build is
   // the compaction.
   constexpr std::size_t kMaxIndexOverlay = 300000;
-  if (current_state->index_overlay.Size() + deltas.size() > kMaxIndexOverlay) {
+  if (current_state->index_overlay.size() + deltas.size() > kMaxIndexOverlay) {
     outcome.action = core::MaintenanceAction::RebuildAll;
     return outcome;
   }
@@ -943,13 +941,10 @@ TpchQ19Module::StageMaintenance(core::AuxEngineServices &services,
   };
 
   const auto mutable_index = [&](int64_t part) -> std::vector<TpchQ19State::IndexEnt> & {
-    const uint64_t k = static_cast<uint64_t>(part);
-    if (next->index_overlay.Find(k))
-      return next->index_overlay.Mutable(k);
+    if (next->index_overlay.Find(part))
+      return next->index_overlay[part];
     auto init = next->IndexEntries(part);
-    auto &v = next->index_overlay.Mutable(k);
-    v = std::move(init);
-    return v;
+    return next->index_overlay.Upsert(part, std::move(init));
   };
   // Adds (+1) / removes (-1) all of a part's indexed lineitems to / from the
   // aggregates under the given dimension code.

@@ -606,31 +606,25 @@ int64_t TpchQ20Base::Avail(const PairEntry &e) const {
 }
 
 int32_t TpchQ20State::SupplierNation(int64_t suppkey) const {
-  if (!suppliers.Empty()) {
-    if (const auto *ov = suppliers.Find(static_cast<uint64_t>(suppkey)))
-      return ov->present ? ov->record.nationkey : -1;
-  }
+  if (const auto *ov = suppliers.Find(suppkey))
+    return ov->present ? ov->record.nationkey : -1;
   return base->BaseNation(suppkey);
 }
 
 const TpchQ20SupplierRecord *
 TpchQ20State::SupplierRecord(int64_t suppkey) const {
-  if (!suppliers.Empty()) {
-    if (const auto *ov = suppliers.Find(static_cast<uint64_t>(suppkey)))
-      return ov->present ? &ov->record : nullptr;
-  }
+  if (const auto *ov = suppliers.Find(suppkey))
+    return ov->present ? &ov->record : nullptr;
   return base->BaseSupplier(suppkey);
 }
 
 bool TpchQ20State::FindSupplier(int64_t suppkey,
                                 TpchQ20SupplierRecord &out) const {
-  if (!suppliers.Empty()) {
-    if (const auto *ov = suppliers.Find(static_cast<uint64_t>(suppkey))) {
-      if (!ov->present)
-        return false;
-      out = ov->record;
-      return true;
-    }
+  if (const auto *ov = suppliers.Find(suppkey)) {
+    if (!ov->present)
+      return false;
+    out = ov->record;
+    return true;
   }
   const auto *rec = base->BaseSupplier(suppkey);
   if (!rec)
@@ -756,7 +750,7 @@ std::vector<uint8_t> EncodeTpchQ20State(const TpchQ20State &state) {
   // parts (merged)
   std::vector<std::pair<int64_t, std::string>> part_rows;
   for (std::size_t i = 0; i < base.name_partkey.size(); ++i) {
-    if (state.parts.Find(static_cast<uint64_t>(base.name_partkey[i])))
+    if (state.parts.Find(base.name_partkey[i]))
       continue;
     part_rows.emplace_back(base.name_partkey[i],
                            std::string(base.PartName(i)));
@@ -1272,9 +1266,8 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
 
   // Partsupp deltas: per-part complete list, copied from base on first touch.
   for (const auto &delta : buffer.PartsuppDeltas()) {
-    bool inserted = false;
-    auto &list = next->partsupps.Mutable(static_cast<uint64_t>(delta.partkey),
-                                         &inserted);
+    const bool inserted = next->partsupps.Find(delta.partkey) == nullptr;
+    auto &list = next->partsupps[delta.partkey];
     if (inserted) {
       base.ForEachBasePair(delta.partkey,
                            [&](int64_t suppkey, int64_t availqty, uint32_t) {
@@ -1296,7 +1289,7 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
 
   // Part deltas: the overlay record shadows the base name.
   for (const auto &delta : buffer.PartNameDeltas()) {
-    auto &rec = next->parts.Mutable(static_cast<uint64_t>(delta.partkey));
+    auto &rec = next->parts[delta.partkey];
     if (delta.sign < 0) {
       rec.present = false;
       rec.name.clear();
@@ -1308,7 +1301,7 @@ core::StagedMaintenanceOutcome TpchQ20Module::StageMaintenance(
 
   // Supplier deltas.
   for (const auto &delta : buffer.SupplierDeltas()) {
-    auto &rec = next->suppliers.Mutable(static_cast<uint64_t>(delta.suppkey));
+    auto &rec = next->suppliers[delta.suppkey];
     rec.present = delta.present;
     if (delta.present)
       rec.record = delta.record;
@@ -1587,14 +1580,14 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
     return matches(name.data(), name.size());
   };
 
-  const bool overlay_parts = !state.parts.Empty();
-  const bool overlay_ps = !state.partsupps.Empty();
+  const bool overlay_parts = state.parts.size() != 0;
+  const bool overlay_ps = state.partsupps.size() != 0;
   const bool overlay_series = !state.series.Empty();
-  const bool overlay_suppliers = !state.suppliers.Empty();
+  const bool overlay_suppliers = state.suppliers.size() != 0;
   // A part whose name or partsupp list changed since the base is evaluated
   // from the overlays (pass 2), never from its base pairs.
   const auto part_changed = [&](int64_t partkey) {
-    const auto k = static_cast<uint64_t>(partkey);
+    const int64_t k = partkey;
     return (overlay_parts && state.parts.Find(k)) ||
            (overlay_ps && state.partsupps.Find(k));
   };
@@ -1688,7 +1681,7 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
     changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
     for (const int64_t partkey : changed) {
       bool name_ok = false;
-      if (const auto *ov = state.parts.Find(static_cast<uint64_t>(partkey))) {
+      if (const auto *ov = state.parts.Find(partkey)) {
         name_ok = ov->present && matches(ov->name.data(), ov->name.size());
       } else if (const uint32_t r = base.RankOf(partkey);
                  r != TpchQ20Base::kNoRank) {
@@ -1711,7 +1704,7 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
           evaluate(partkey, suppkey, availqty, series_idx, resolve_idx);
       };
       if (const auto *list =
-              overlay_ps ? state.partsupps.Find(static_cast<uint64_t>(partkey))
+              overlay_ps ? state.partsupps.Find(partkey)
                          : nullptr) {
         for (const auto &p : *list)
           consider(p.suppkey, p.availqty, TpchQ20Base::kNoSeries, true);
@@ -1774,7 +1767,7 @@ void TpchQ20Module::EmitResult(const TpchQ20State &state,
   output_rows.reserve(qualifying_suppkeys.size());
   for (const auto suppkey : qualifying_suppkeys) {
     const TpchQ20SupplierOverlay *ov =
-        overlay_suppliers ? state.suppliers.Find(static_cast<uint64_t>(suppkey))
+        overlay_suppliers ? state.suppliers.Find(suppkey)
                           : nullptr;
     OutRow row{nullptr, TpchQ20Base::kNoRank};
     if (ov) {
