@@ -1,7 +1,6 @@
 #include "sec_edgar/q4/common/aux/state_ops.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -1232,15 +1231,6 @@ void Builder::AddBridgeRow(const SecEdgarQ4BridgeRow &row) {
 
 SecEdgarQ4State Builder::Finish() {
   auto &m = *impl_;
-  auto t0 = std::chrono::steady_clock::now();
-  const bool profile = std::getenv("Q4_BUILD_PROFILE") != nullptr;
-  const auto lap = [&](const char *what) {
-    if (!profile) return;
-    const auto now = std::chrono::steady_clock::now();
-    fprintf(stderr, "q4 finish %s: %.1f ms\n", what,
-            std::chrono::duration<double, std::milli>(now - t0).count());
-    t0 = now;
-  };
   // 1. one pass over the keys: the pre map (partitioned by its shards) and
   //    every (key, stmt, uom) contribution (partitioned by group key)
   std::vector<std::vector<std::pair<int64_t, SecEdgarQ4PreVal>>> pre_parts(SecEdgarQ4PreMap::kShards);
@@ -1283,7 +1273,6 @@ SecEdgarQ4State Builder::Finish() {
   m.table.Reset();
   m.side.Reset();
   m.extra.Clear();
-  lap("expand");
 
   // 2. aggregate each group partition (its groups and pairs fit in cache)
   std::vector<int64_t> gkey;
@@ -1332,7 +1321,6 @@ SecEdgarQ4State Builder::Finish() {
       std::vector<GRec>().swap(part);
     }
   }
-  lap("aggregate");
 
   // 3. groups: per (stmt, uom) slot, ordered by sic, then tlabel id
   const size_t ng = gkey.size();
@@ -1396,18 +1384,15 @@ SecEdgarQ4State Builder::Finish() {
   pair_entries.reserve(prs.size());
   for (const auto &p : prs) pair_entries.emplace_back(Q4PairKey(final_gid[p.g], p.cik), p.rows);
   std::vector<PairRec>().swap(prs);
-  lap("groups");
 
   auto gindex = std::make_shared<SecEdgarQ4GroupIndex>();
   gindex->BulkLoad(gindex_entries);
   auto pairs = std::make_shared<SecEdgarQ4PairMap>();
   pairs->BulkLoad(pair_entries);
-  lap("gindex+pairs");
   auto pre = std::make_shared<SecEdgarQ4PreMap>();
   pre->BulkLoadParts(pre_parts);
   auto pre_over = std::make_shared<SecEdgarQ4PreOverflowMap>();
   pre_over->BulkLoad(over_entries);
-  lap("pre map");
   std::vector<std::pair<int64_t, uint32_t>> tag_entries;
   tag_entries.reserve(m.tcount);
   for (const auto &e : m.tslots) {
@@ -1415,7 +1400,6 @@ SecEdgarQ4State Builder::Finish() {
   }
   auto tags = std::make_shared<SecEdgarQ4TagMap>();
   tags->BulkLoad(tag_entries);
-  lap("tags");
 
   SecEdgarQ4State out;
   out.cohort = std::make_shared<const SecEdgarQ4Cohort>(std::move(m.cohort));
@@ -1448,7 +1432,6 @@ ComputeResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params) {
     uint32_t shard;
     uint32_t i;
   };
-  const auto tp0 = std::chrono::steady_clock::now();
   auto result = std::make_shared<SecEdgarQ4Result>();
   if (params.empty || params.sic_lo > params.sic_hi || !groups.sud || !groups.labels ||
       !groups.su_slot) {
@@ -1479,7 +1462,6 @@ ComputeResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params) {
       }
     }
   }
-  const auto tp1 = std::chrono::steady_clock::now();
   const auto &tls = groups.labels->tlabels;
   const auto better = [&](const Cand &a, const Cand &b) {
     const bool an = std::isnan(a.sum), bn = std::isnan(b.sum);
@@ -1497,7 +1479,6 @@ ComputeResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params) {
   }
   const size_t ncands = cands.size();
   std::sort(cands.begin(), cands.end(), better);
-  const auto tp2 = std::chrono::steady_clock::now();
 
   result->rows.reserve(cands.size());
   for (const auto &c : cands) {
@@ -1509,13 +1490,6 @@ ComputeResult(const SecEdgarQ4Groups &groups, const SecEdgarQ4Params &params) {
     row.total = c.sum;
     row.avg = c.sum / static_cast<double>(sh.count[c.i]);
     result->rows.push_back(row);
-  }
-  if (std::getenv("Q4_APPLY_PROFILE")) {
-    const auto tp3 = std::chrono::steady_clock::now();
-    fprintf(stderr, "q4 compute scan=%.1f sort=%.1f rows=%.1f us cands=%zu shards=%u\n",
-            std::chrono::duration<double, std::micro>(tp1 - tp0).count(),
-            std::chrono::duration<double, std::micro>(tp2 - tp1).count(),
-            std::chrono::duration<double, std::micro>(tp3 - tp2).count(), ncands, nshards);
   }
   return result;
 }

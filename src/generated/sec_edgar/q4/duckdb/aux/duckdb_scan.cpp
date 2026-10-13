@@ -1,7 +1,5 @@
 #include "sec_edgar/q4/duckdb/aux/duckdb_scan.hpp"
 
-#include <chrono>
-#include <x86intrin.h>
 #include <cstdio>
 #include <cstdlib>
 #include <set>
@@ -213,13 +211,6 @@ template <typename Fn> void InTransaction(::duckdb::Connection &connection, Fn &
 bool SecEdgarQ4DuckDbScan::BuildFull(q4::Builder &b) const {
   if (!connection.context) return false;
   auto &context = *connection.context;
-  auto t0 = std::chrono::steady_clock::now();
-  const auto lap = [&](const char *what) {
-    if (!std::getenv("Q4_BUILD_PROFILE")) return;
-    const auto now = std::chrono::steady_clock::now();
-    fprintf(stderr, "q4 build %s: %.1f ms\n", what, std::chrono::duration<double, std::milli>(now - t0).count());
-    t0 = now;
-  };
   InTransaction(connection, [&] {
     StreamQuery(connection, "SELECT adsh, cik, sic FROM sub WHERE sic IS NOT NULL AND adsh IS NOT NULL",
                 [&](::duckdb::DataChunk &chunk) {
@@ -235,7 +226,6 @@ bool SecEdgarQ4DuckDbScan::BuildFull(q4::Builder &b) const {
                              cik_null ? 0 : Data<int32_t>(c)[ci], Data<int32_t>(s)[s.sel->get_index(r)]);
                   }
                 });
-    lap("sub");
     {
       const auto spec = Spec("tag", {{"tag", Col::Str}, {"version", Col::Str}, {"abstract", Col::Int}, {"tlabel", Col::Str}});
       b.ReserveTags(GetNativeScanTableRowCount(context, spec));
@@ -265,7 +255,6 @@ bool SecEdgarQ4DuckDbScan::BuildFull(q4::Builder &b) const {
         b.AddTags(tv.data(), vv.data(), lv.data(), lnull.data(), k);
       });
     }
-    lap("tag");
     const auto adsh_id = [&](const std::string_view *v, size_t k, uint32_t *o) { b.AdshIds(v, k, o); };
     const auto tag_id = [&](const std::string_view *v, size_t k, uint32_t *o) { b.TagIds(v, k, o); };
     const auto ver_id = [&](const std::string_view *v, size_t k, uint32_t *o) { b.VerIds(v, k, o); };
@@ -291,7 +280,6 @@ bool SecEdgarQ4DuckDbScan::BuildFull(q4::Builder &b) const {
         cs.Map(chunk.data[3], n, stmt_id, ix.data());
         b.AddPre(ia.data(), it.data(), iv.data(), ix.data(), n);
       });
-      lap("pre");
     }
     {
       const auto spec = Spec("num", {{"adsh", Col::Str},
@@ -300,18 +288,12 @@ bool SecEdgarQ4DuckDbScan::BuildFull(q4::Builder &b) const {
                                      {"uom", Col::Str},
                                      {"value", Col::Dbl}});
       IdColumn ca, ct, cv, cu;
-      uint64_t cyc[5] = {0, 0, 0, 0, 0};
       ScanNativeBaseTable(context, spec, [&](::duckdb::DataChunk &chunk) {
         const auto n = chunk.size();
-        uint64_t c0 = __rdtsc();
         ca.Map(chunk.data[0], n, adsh_id, ia.data());
-        uint64_t c1 = __rdtsc(); cyc[0] += c1 - c0;
         ct.Map(chunk.data[1], n, tag_id, it.data());
-        uint64_t c2 = __rdtsc(); cyc[1] += c2 - c1;
         cv.Map(chunk.data[2], n, ver_id, iv.data());
-        uint64_t c3 = __rdtsc(); cyc[2] += c3 - c2;
         cu.Map(chunk.data[3], n, uom_id, ix.data());
-        uint64_t c4 = __rdtsc(); cyc[3] += c4 - c3;
         ::duckdb::UnifiedVectorFormat f;
         chunk.data[4].ToUnifiedFormat(n, f);
         const double *x = Data<double>(f);
@@ -323,12 +305,8 @@ bool SecEdgarQ4DuckDbScan::BuildFull(q4::Builder &b) const {
             ix[i] = kQ4None; // value IS NULL: no contribution
           }
         }
-        uint64_t c5 = __rdtsc();
         b.AddNum(ia.data(), it.data(), iv.data(), ix.data(), xs.data(), n);
-        cyc[4] += __rdtsc() - c5;
       });
-      lap("num");
-      if (std::getenv("Q4_BUILD_PROFILE")) fprintf(stderr, "num Mcyc adsh=%lu tag=%lu ver=%lu uom=%lu add=%lu\n", cyc[0]/1000000, cyc[1]/1000000, cyc[2]/1000000, cyc[3]/1000000, cyc[4]/1000000);
     }
   });
   return true;

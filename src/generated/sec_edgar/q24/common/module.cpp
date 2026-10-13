@@ -917,15 +917,6 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
   if (!initial_scan)
     throw std::logic_error("SEC EDGAR Q24 requires a typed initial scan source");
   SecEdgarQ24State state;
-  const bool trace = std::getenv("ACCEL_Q24_TRACE") != nullptr;
-  auto t_start = std::chrono::steady_clock::now();
-  auto lap = [&](const char *what) {
-    if (!trace) return;
-    const auto now = std::chrono::steady_clock::now();
-    std::fprintf(stderr, "[q24 build] %-28s %8.1f ms\n", what,
-                 std::chrono::duration<double, std::milli>(now - t_start).count());
-    t_start = now;
-  };
 
   // 1. pre -> immutable exact membership base.
   std::vector<Q24RawPre> parts(1);
@@ -940,16 +931,13 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
       raw.Add(Q24Str::Of(in.adsh), Q24Str::Of(in.tag), Q24Str::Of(in.version));
     });
   }
-  lap("pre scan + dictionary ingest");
   auto pre = std::make_shared<Q24PreState>();
   pre->base = BuildQ24PreBase(parts);
   const Q24PreBase &base = *pre->base;
-  lap("pre base (pairs, CSR)");
 
   // 2. qualifying num rows with no pre match are the only rows that matter.
   Q24OrphanAccumulator orphans;
   std::vector<uint8_t> hits;
-  double probe_ms = 0;
   const bool orphan_scan = initial_scan->ScanNumOrphans(
       base, [&](const SecEdgarQ24NumBatch &b) {
         for (std::size_t i = 0; i < b.count; ++i) {
@@ -960,11 +948,6 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
       });
   const bool fast_num = orphan_scan || initial_scan->ScanQualifyingNumBatches(
       [&](const SecEdgarQ24NumBatch &b) {
-        const auto probe_start = std::chrono::steady_clock::now();
-        struct Timer {
-          bool on; double &acc; std::chrono::steady_clock::time_point t0;
-          ~Timer() { if (on) acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); }
-        } timer{trace, probe_ms, probe_start};
         hits.resize(b.count);
         base.ContainsBatch(b.adsh, b.tag, b.version, b.count, hits.data());
         for (std::size_t i = 0; i < b.count; ++i) {
@@ -982,25 +965,8 @@ SecEdgarQ24Module::BuildState(core::AuxEngineServices &) const {
       if (!base.Contains(a, t, v)) orphans.Add(a, t, v, year, Q24Str::Of(in.uom), in.value);
     });
   }
-  if (trace) std::fprintf(stderr, "[q24 build]   of which probe callback  %8.1f ms\n", probe_ms);
-  lap("num scan + probe");
   state.pre = std::move(pre);
   state.groups = orphans.Finish();
-  lap("group state");
-  if (trace) {
-    const auto &b = *state.pre->base;
-    std::fprintf(stderr,
-                 "[q24 state] resident bytes: adsh_dict=%zu tag_dict=%zu version_dict=%zu "
-                 "pairs=%zu bits256=%zu ids16=%zu ids32=%zu offsets=%zu groups=%zu total=%zu "
-                 "(triples=%llu, adsh=%u tags=%u versions=%u pairs=%zu orphans=%zu groups=%zu)\n",
-                 b.adsh.Bytes(), b.tag.Bytes(), b.version.Bytes(), b.pairs.Bytes(),
-                 b.bits256.capacity() * 8, b.ids16.capacity() * 2, b.ids32.capacity() * 4,
-                 (b.off16.capacity() + b.off32.capacity()) * 8,
-                 state.groups->Bytes(), state.pre->Bytes() + state.groups->Bytes(),
-                 static_cast<unsigned long long>(b.triple_count), b.adsh.size(),
-                 b.tag.size(), b.version.size(), b.pairs.size(),
-                 state.groups->orphans.size(), state.groups->groups.size());
-  }
   return state;
 }
 

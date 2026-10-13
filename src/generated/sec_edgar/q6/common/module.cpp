@@ -20,19 +20,6 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-struct DebugTimer {
-  const char *what;
-  std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
-  explicit DebugTimer(const char *w) : what(w) {}
-  ~DebugTimer() {
-    static const bool on = std::getenv("ACCEL_Q6_APPLY_STATS") != nullptr;
-    if (on) {
-      std::fprintf(stderr, "q6apply %s %.1fus\n", what,
-                   std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count());
-    }
-  }
-};
-
 constexpr int64_t kDefaultFy = 2023;
 constexpr std::string_view kDefaultStmt = "IS";
 constexpr std::string_view kDefaultUom = "USD";
@@ -387,7 +374,6 @@ SecEdgarQ6Module::InterpretMutation(const core::MutationBatch &mutation) const {
 void SecEdgarQ6Module::AccumulateMutation(const core::MutationBatch &mutation,
                                           core::AuxEngineServices &,
                                           core::AuxTxnBuffer &base_buffer) {
-  DebugTimer dt("accumulate");
   auto &buffer = static_cast<SecEdgarQ6TxnBuffer &>(base_buffer);
   const bool is_num = mutation.table == config.num_table;
   const bool is_sub = mutation.table == config.sub_table;
@@ -674,7 +660,6 @@ core::StagedMaintenanceOutcome
 SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
                                    const core::InvalidationPlan &,
                                    core::AuxTxnBuffer &base_buffer) {
-  DebugTimer dt("stage");
   auto &buffer = static_cast<SecEdgarQ6TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
   if (!buffer.HasPendingChanges()) {
@@ -830,7 +815,6 @@ SecEdgarQ6Module::StageMaintenance(core::AuxEngineServices &services,
   }
   bool overflow = false;
   std::shared_ptr<const SecEdgarQ6State> next;
-  DebugTimer dt2("applynums");
   try {
     next = SecEdgarQ6ApplyNums(*state, refs.data(), refs.size(), &overflow);
   } catch (const std::length_error &) {

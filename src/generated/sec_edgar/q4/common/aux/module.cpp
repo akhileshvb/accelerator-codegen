@@ -1,7 +1,6 @@
 #include "sec_edgar/q4/common/aux/module.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cerrno>
@@ -447,12 +446,7 @@ SecEdgarQ4Module::MakeImages(const SecEdgarQ4State &state,
 
 void SecEdgarQ4Module::Build(core::AuxEngineServices &services,
                              core::StateBuilder &builder) {
-  const auto t0 = std::chrono::steady_clock::now();
   const auto state = BuildState(services);
-  if (std::getenv("Q4_BUILD_PROFILE")) {
-    fprintf(stderr, "q4 BuildState total: %.1f ms\n",
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
-  }
   const core::Version versions[4] = {0, 0, 0, 0};
   for (auto &image : MakeImages(state, versions)) {
     builder.Write(std::move(image));
@@ -479,25 +473,9 @@ SecEdgarQ4Module::InterpretMutation(const core::MutationBatch &) const {
   return {};
 }
 
-namespace {
-struct Q4ApplyTimer {
-  const char *what;
-  std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
-  explicit Q4ApplyTimer(const char *w) : what(w) {}
-  ~Q4ApplyTimer() {
-    static const bool on = std::getenv("Q4_APPLY_PROFILE") != nullptr;
-    if (on) {
-      fprintf(stderr, "q4 %s: %.1f us\n", what,
-              std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count());
-    }
-  }
-};
-} // namespace
-
 void SecEdgarQ4Module::AccumulateMutation(const core::MutationBatch &mutation,
                                           core::AuxEngineServices &,
                                           core::AuxTxnBuffer &base_buffer) {
-  Q4ApplyTimer timer("accumulate");
   auto &buffer = dynamic_cast<SecEdgarQ4TxnBuffer &>(base_buffer);
   const bool is_update = mutation.kind == core::MutationKind::Update;
   if (is_update && mutation.old_rows.size() != mutation.new_rows.size()) {
@@ -691,7 +669,6 @@ core::StagedMaintenanceOutcome
 SecEdgarQ4Module::StageMaintenance(core::AuxEngineServices &services,
                                    const core::InvalidationPlan &,
                                    core::AuxTxnBuffer &base_buffer) {
-  Q4ApplyTimer timer("stage");
   auto &buffer = dynamic_cast<SecEdgarQ4TxnBuffer &>(base_buffer);
   core::StagedMaintenanceOutcome outcome;
   if (buffer.RequiresRebuild()) {
@@ -743,8 +720,7 @@ SecEdgarQ4Module::StageMaintenance(core::AuxEngineServices &services,
       }
     }
     // The num deltas of the structurally re-read keys are already reflected.
-    Q4ApplyTimer t_deltas("deltas");
-    if (!writer.ApplyNumDeltas(buffer, structural ? &structural_keys : nullptr)) {
+      if (!writer.ApplyNumDeltas(buffer, structural ? &structural_keys : nullptr)) {
       return RebuildOutcome(services, "delta inconsistent with state");
     }
     const bool full = writer.StructureChanged();
@@ -774,7 +750,6 @@ bool SecEdgarQ4Module::CheckValidity(core::AuxEngineServices &services,
 void SecEdgarQ4Module::EmitGroups(const SecEdgarQ4Groups &groups,
                                   const SecEdgarQ4Params &params,
                                   core::AuxRowSink &sink) const {
-  Q4ApplyTimer timer("emit");
   const auto result = q4::CachedResult(groups, params);
   sink.Begin({{{"sic", core::AuxType::Int64, false},
                {"tlabel", core::AuxType::String, true},
@@ -811,7 +786,6 @@ void SecEdgarQ4Module::EmitGroups(const SecEdgarQ4Groups &groups,
 void SecEdgarQ4Module::Execute(core::AuxEngineServices &services,
                                const core::QueryArguments &arguments,
                                core::AuxRowSink &sink) {
-  Q4ApplyTimer timer("execute");
   const SecEdgarQ4Params params = ParseArguments(arguments);
   const auto snapshot = services.StateStore().ReadPartitions(
       services.CurrentVisibility(), {core::SecEdgarQ4Layout::kGroupAggregates});

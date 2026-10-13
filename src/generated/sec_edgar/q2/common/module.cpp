@@ -24,20 +24,6 @@
 namespace accelerator_codegen::aux_state::query {
 namespace {
 
-struct BuildTrace {
-  bool on = std::getenv("ACCEL_Q2_BUILD_TRACE") != nullptr;
-  std::chrono::steady_clock::time_point t = std::chrono::steady_clock::now();
-  void Mark(const char *what) {
-    if (!on) {
-      return;
-    }
-    const auto n = std::chrono::steady_clock::now();
-    std::fprintf(stderr, "q2 build: %-24s %8.1f ms\n", what,
-                 std::chrono::duration<double, std::milli>(n - t).count());
-    t = n;
-  }
-};
-
 // ------------------------------------------------------------ row parsing
 
 bool ReadString(const core::AuxRow &row, std::size_t index, std::string &value,
@@ -1112,7 +1098,7 @@ public:
 
   // Applies the max_uom_rows opt-out (the default unit is always kept),
   // aggregates every partition and builds the sorted bases.
-  void Finish(uint64_t max_uom_rows, BuildTrace &trace) {
+  void Finish(uint64_t max_uom_rows) {
     for (uint32_t u = 0; u < uom_rows_.size(); ++u) {
       dir_.excluded[u] =
           dir_.names.Get(u) != kSecEdgarQ2DefaultUom && uom_rows_[u] > max_uom_rows ? 1 : 0;
@@ -1173,7 +1159,6 @@ public:
       i = j;
     }
     std::vector<WideRec>().swap(wide_);
-    trace.Mark("aggregate partitions");
     state_.slices.assign(nuom, nullptr);
     for (uint32_t u = 0; u < nuom; ++u) {
       if (!dir_.excluded[u]) {
@@ -1421,7 +1406,6 @@ std::shared_ptr<const SecEdgarQ2State> SecEdgarQ2Module::BuildState() const {
   if (!initial_scan) {
     throw std::logic_error("SEC EDGAR Q2 requires a typed initial scan source");
   }
-  BuildTrace trace;
   auto state = std::make_shared<SecEdgarQ2State>();
   BuildAggregator agg(*state);
   // The default unit of measure always exists (an empty slice answers it).
@@ -1449,7 +1433,6 @@ std::shared_ptr<const SecEdgarQ2State> SecEdgarQ2Module::BuildState() const {
       });
     }
   }
-  trace.Mark("scan");
   state->adsh.Compact();
   state->tag.Compact();
 
@@ -1461,11 +1444,9 @@ std::shared_ptr<const SecEdgarQ2State> SecEdgarQ2Module::BuildState() const {
     }
   });
   state->names.Shrink();
-  trace.Mark("sub scan");
 
   // 3. Aggregation and sorted bases.
-  agg.Finish(config.max_uom_rows, trace);
-  trace.Mark("base build");
+  agg.Finish(config.max_uom_rows);
   return state;
 }
 
