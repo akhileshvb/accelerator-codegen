@@ -31,6 +31,7 @@ concurrent const reads of a published copy are safe.
 
 | Header | Primitive | Operations | Memory | Notes |
 | --- | --- | --- | --- | --- |
+| `sharded_sorted_map.hpp` | `ShardedSortedMap<K, T, KeyOf, ...>`, `ShardedSortedKvMap<K, V>` | find / upsert / erase through a transaction, bulk sorted build, per-shard ordered scan | sizeof(T) per entry + ~24 B per shard | COW hash-sharded map with key-sorted flat shards; a Txn clones each touched shard and directory page once; the shard count is a template cap plus a runtime choice from the expected size. |
 | `cow_sorted_blocks.hpp` | `CowSortedBlocks<Key, Less>` | insert / erase / contains / in-order scan with early exit | ~1.35 sizeof(Key) per key | COW ordered set under a custom order. |
 | `sorted_count_sum.hpp` | `SortedCountSum` | add(key, n), count and sum of keys > x | 16 B per distinct key | COW multiset with block summaries; exact int128 sums. |
 | `radix_range_tree.hpp` | `RadixRangeTree<T>` | point add, range sum over [0, 2^24) | sizeof(T) per touched slot x 4 levels | COW, additive T. |
@@ -54,6 +55,13 @@ concurrent const reads of a published copy are safe.
   sparse, or you must scan it: `AnyKeyCowArray` (the default; a far or negative
   key is exact, only slower per key). Never published, single owner:
   `DenseIdArray`. Keys with no locality and fat values: `ShardedCowHashMap`.
+  Millions of records keyed by an id (or any ordered key type with a hash), read
+  by point lookup, updated in batches that must publish a new version, and built
+  from a scan in any order: `ShardedSortedMap` (records stay in their natural
+  layout, one binary search in a ~100-500 entry shard per lookup, a batch clones
+  only the touched shards). Choose `ShardedCowHashMap` instead when the key is
+  int64, lookups are hot, and nothing needs sorted shards, a bulk sorted build
+  or a record that carries its own key.
 - **Variable-length value per key.** Keys cluster (dense or locally dense):
   `ChunkedBlobMap`. Keys scattered, records small: `ShardedCowRecordStore`.
   The column must be filtered by a LIKE pattern: `KeyedStringColumn`. Build-time
