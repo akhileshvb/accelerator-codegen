@@ -7,16 +7,6 @@
 
 namespace accelerator_codegen::aux_state::core {
 
-inline bool MutationTouchesColumn(const MutationBatch &mutation,
-                                  ColumnId column) {
-  if (mutation.kind != MutationKind::Update) {
-    return true;
-  }
-  return std::find(mutation.updated_columns.begin(),
-                   mutation.updated_columns.end(),
-                   column) != mutation.updated_columns.end();
-}
-
 inline std::size_t MutationRowCount(const MutationBatch &mutation) {
   switch (mutation.kind) {
   case MutationKind::Insert:

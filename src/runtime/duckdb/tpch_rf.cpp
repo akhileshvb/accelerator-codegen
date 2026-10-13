@@ -332,10 +332,6 @@ TpchRfTableIds TpchRfTableIdsForQuery(int query_id) {
   return ids;
 }
 
-std::string TpchRfKindName(TpchRfKind kind) {
-  return kind == TpchRfKind::Rf1Insert ? "rf1" : "rf2";
-}
-
 TpchRfChunkPlan NextTpchRfChunkPlan(int write_seq, int order_count,
                                     ::duckdb::Connection &connection) {
   TpchRfChunkPlan plan;

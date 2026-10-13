@@ -32,7 +32,6 @@ struct NativeScanConsumerOptions {
 	duckdb::unique_ptr<duckdb::RowGroupOrderOptions> row_group_order;
 };
 
-duckdb::StorageIndex GetNativeScanColumnStorageIndex(const duckdb::FunctionData &bind_data, const std::string &source_name);
 duckdb::idx_t GetNativeScanTableRowCount(duckdb::ClientContext &context, const NativeScanSpec &scan_spec);
 duckdb::idx_t GetNativeScanTableRowCount(duckdb::ClientContext &context, const duckdb::FunctionData &bind_data);
 duckdb::unique_ptr<ChunkSource> CreateNativeChunkSource(duckdb::ClientContext &context,

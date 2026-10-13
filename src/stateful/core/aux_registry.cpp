@@ -430,17 +430,6 @@ void AuxTransactionCoordinator::Abort() {
   ClearTransactionState();
 }
 
-bool AuxTransactionCoordinator::HasRegisteredModule(
-    const AcceleratorId &id) const {
-  std::lock_guard<std::mutex> guard(mutex);
-  return entry_by_id.find(id) != entry_by_id.end();
-}
-
-std::size_t AuxTransactionCoordinator::ModuleCount() const {
-  std::lock_guard<std::mutex> guard(mutex);
-  return entries.size();
-}
-
 std::optional<std::vector<int32_t>>
 AuxTransactionCoordinator::MutationCaptureAttnums(TableId table) const {
   // Return the first registered module's projection for `table`. Postgres

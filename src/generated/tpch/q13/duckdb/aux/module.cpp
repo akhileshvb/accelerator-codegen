@@ -1546,7 +1546,7 @@ TpchQ13State TpchQ13Module::BuildState(
     EmitCustomProfile("build_finish", t_fin.us(), 0, 0, 0, 0);
   auto state = m.Finish();
   if (profiling) {
-    uint64_t blob = 0, ids = 0, offs = 0, cust = 0, post = 0, tokoff = 0, matchb = 0;
+    uint64_t blob = 0, ids = 0, cust = 0, post = 0, tokoff = 0, matchb = 0;
     for (const auto &o : state.orders)
       if (o && o->base) {
         const auto &b = *o->base;

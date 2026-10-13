@@ -348,16 +348,6 @@ bool NativeScanHasFilters(const duckdb::FunctionData &bind_data) {
     return native.translated_filters && !native.translated_filters->filters.empty();
 }
 
-duckdb::StorageIndex GetNativeScanColumnStorageIndex(const duckdb::FunctionData &bind_data, const std::string &source_name) {
-    const auto &native = GetNativeScanBindData(&bind_data);
-    for (const auto &column : native.bound_spec.projected_columns) {
-        if (column.source_name == source_name) {
-            return column.storage_index;
-        }
-    }
-    throw std::runtime_error("native scan column not found: " + source_name);
-}
-
 duckdb::idx_t GetNativeScanTableRowCount(duckdb::ClientContext &context, const NativeScanSpec &scan_spec) {
     auto &table = LookupTable(context, scan_spec);
     return table.GetStorage().GetTotalRows();

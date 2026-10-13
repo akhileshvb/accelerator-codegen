@@ -31,8 +31,6 @@ public:
   void Abort();
 
   bool HasPendingWork() const;
-  bool HasRegisteredModule(const AcceleratorId &id) const;
-  std::size_t ModuleCount() const;
 
   // Projection for mutation capture on `table`: nullopt if no module depends
   // on it; empty vector means full-row capture; otherwise physical attnums in

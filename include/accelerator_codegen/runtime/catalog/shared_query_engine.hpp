@@ -23,16 +23,8 @@ namespace accelerator_codegen::aux_state::engine {
 //   Others:  runtime/{engine}/ helpers from engine_backend + accelerators
 // Aux modules stay engine-agnostic; kernels under
 // src/generated/{bench}/q{N}/{engine}/ do not.
-enum class SharedQueryPath {
-  BaseKernel,
-  AuxStateful,
-};
-
 class SharedQueryEngine {
 public:
-  static const char *KernelSql(const SharedQueryCatalogEntry &entry,
-                               SharedQueryPath path);
-
   static bool HasSharedQuery(SharedWorkloadKind workload, int query_id);
   static bool HasSharedQuery(const std::string &workload_name, int query_id);
 };
@@ -47,9 +39,5 @@ void PrimeAuxSchema(::duckdb::Connection &connection, const SharedQueryCatalogEn
 // accel_<id>(...) types them (by the entry's argument types).
 core::QueryArguments AuxArgumentsFromValues(const SharedQueryCatalogEntry &entry,
                                             const std::vector<::duckdb::Value> &values);
-
-#ifdef ACCEL_ENABLE_PARALLEL_AUX
-void RegisterDuckdbAuxParallelTableFunctions(::duckdb::Connection &connection);
-#endif
 
 } // namespace accelerator_codegen::aux_state::engine
